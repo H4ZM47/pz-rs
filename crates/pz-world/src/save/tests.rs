@@ -1,6 +1,8 @@
 //! Chunk files built from hand-made chunks: save, load, save again.
 
-use super::chunk_file::{chunk_path, do_load_gridsquare, load_chunk, save_chunk, ChunkLoadHook};
+use super::chunk_file::{
+    chunk_path, do_load_gridsquare, load_chunk, save_chunk, ChunkLoadHook, HookCtx,
+};
 use super::io::{Reader, Writer};
 use super::items::{AllItems, ItemBlob, ItemRegistry};
 use super::lua_table::{LuaKey, LuaTable, LuaValue};
@@ -406,44 +408,70 @@ fn errors_and_versions() {
 fn erosion_hook_order() {
     struct Log(Vec<(i32, i32, i32)>, bool);
     impl ChunkLoadHook for Log {
-        fn load_grid_square(&mut self, _c: &mut IsoChunk, x: i32, y: i32, z: i32) {
+        fn load_grid_square(
+            &mut self,
+            _c: &mut IsoChunk,
+            x: i32,
+            y: i32,
+            z: i32,
+            _ctx: &mut HookCtx<'_>,
+        ) {
             self.0.push((x, y, z));
         }
-        fn chunk_loaded(&mut self, _c: &mut IsoChunk) {
+        fn chunk_loaded(&mut self, _c: &mut IsoChunk, _ctx: &mut HookCtx<'_>) {
             self.1 = true;
         }
     }
-    let m = sprites();
+    let mut m = sprites();
     let t = SaveTables::for_tests();
     let mut ch = sample_chunk(&m, &t);
+    let cell = crate::chunk::IsoCell::default();
+    let mut ctx = HookCtx {
+        sprites: &mut m,
+        neighbours: &cell,
+    };
     let mut log = Log(Vec::new(), false);
-    do_load_gridsquare(&mut ch, Some(&mut log));
+    do_load_gridsquare(&mut ch, Some(&mut log), &mut ctx);
     assert_eq!(log.0, vec![(0, 0, 0), (1, 0, 0)]);
     assert!(log.1);
-    do_load_gridsquare(&mut ch, None);
+    do_load_gridsquare(&mut ch, None, &mut ctx);
 }
 
 #[test]
 fn finish_chunk_load_recalculates_before_hook() {
-    struct Seen<'a>(&'a IsoSpriteManager, Vec<bool>);
-    impl ChunkLoadHook for Seen<'_> {
-        fn load_grid_square(&mut self, c: &mut IsoChunk, x: i32, y: i32, z: i32) {
+    struct Seen(Vec<bool>, bool);
+    impl ChunkLoadHook for Seen {
+        fn load_grid_square(
+            &mut self,
+            c: &mut IsoChunk,
+            x: i32,
+            y: i32,
+            z: i32,
+            ctx: &mut HookCtx<'_>,
+        ) {
+            // The chunk is out of the cell while hooks run.
+            self.1 |= ctx
+                .neighbours
+                .get_grid_square(c.wx * 8 + x, c.wy * 8 + y, z)
+                .is_some();
             let sq = c.get_grid_square(x, y, z).unwrap();
             let mut fresh = sq.clone();
-            fresh.recalc_properties(self.0);
-            self.1
+            fresh.recalc_properties(ctx.sprites);
+            self.0
                 .push(format!("{:?}", fresh.properties) == format!("{:?}", sq.properties));
         }
-        fn chunk_loaded(&mut self, _c: &mut IsoChunk) {}
+        fn chunk_loaded(&mut self, _c: &mut IsoChunk, _ctx: &mut HookCtx<'_>) {}
     }
-    let m = sprites();
+    let mut m = sprites();
     let t = SaveTables::for_tests();
     let ch = sample_chunk(&m, &t);
     let (wx, wy) = (ch.wx, ch.wy);
     let mut cell = crate::chunk::IsoCell::default();
     cell.chunks.insert((wx, wy), ch);
     let meta = crate::meta_grid::IsoMetaGrid::empty();
-    let mut seen = Seen(&m, Vec::new());
-    crate::save::chunk_file::finish_chunk_load(&mut cell, wx, wy, &meta, &m, Some(&mut seen));
-    assert!(!seen.1.is_empty() && seen.1.iter().all(|&b| b));
+    let mut seen = Seen(Vec::new(), false);
+    crate::save::chunk_file::finish_chunk_load(&mut cell, wx, wy, &meta, &mut m, Some(&mut seen));
+    assert!(!seen.0.is_empty() && seen.0.iter().all(|&b| b));
+    assert!(!seen.1);
+    assert!(cell.chunks.contains_key(&(wx, wy)));
 }

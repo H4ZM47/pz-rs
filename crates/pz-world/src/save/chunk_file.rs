@@ -555,6 +555,16 @@ fn save_erosion_square(w: &mut Writer, e: Option<&ErosionSquareData>) {
     }
 }
 
+/// What a [`ChunkLoadHook`] may use besides the chunk itself.
+pub struct HookCtx<'a> {
+    /// `IsoSpriteManager.instance`: hooks may add sprites the way
+    /// `getSprite`/`AddSprite` does.
+    pub sprites: &'a mut crate::sprite::IsoSpriteManager,
+    /// The rest of the cell (every loaded chunk except the one being
+    /// loaded), for neighbour lookups across the chunk edge.
+    pub neighbours: &'a dyn crate::square::GetSquare,
+}
+
 /// Calls the original makes into the erosion system once a chunk is loaded
 /// (`IsoChunk.doLoadGridsquare`, after `LoadFromDisk`). Implemented by
 /// `pz-erosion`.
@@ -564,10 +574,17 @@ pub trait ChunkLoadHook {
     /// has objects, levels `minLevel..=maxLevel` outer, then `x`, then `y`
     /// (not on a soft reset). The square's `erosion` holds the loaded
     /// `ErosionData.Square`.
-    fn load_grid_square(&mut self, chunk: &mut IsoChunk, x: i32, y: i32, z: i32);
+    fn load_grid_square(
+        &mut self,
+        chunk: &mut IsoChunk,
+        x: i32,
+        y: i32,
+        z: i32,
+        ctx: &mut HookCtx<'_>,
+    );
     /// `ErosionMain.ChunkLoaded(chunk)`, once after all squares. The
     /// chunk's `erosion` holds the loaded `ErosionData.Chunk`.
-    fn chunk_loaded(&mut self, chunk: &mut IsoChunk);
+    fn chunk_loaded(&mut self, chunk: &mut IsoChunk, ctx: &mut HookCtx<'_>);
     /// Called when chunk `(wx, wy)` leaves the cell. The original has no
     /// such call: per-square erosion state lives on `IsoGridSquare` objects
     /// and goes away with them. Hooks that keep that state on the side drop
@@ -575,28 +592,40 @@ pub trait ChunkLoadHook {
     fn chunk_unloaded(&mut self, _wx: i32, _wy: i32) {}
 }
 
-/// The erosion part of `IsoChunk.doLoadGridsquare`: runs `hook` where the
-/// original calls `ErosionMain`. The other per-square work there
-/// (`addToWorld`, `MapObjects`, Lua events) is not ported.
 /// The steps after a chunk read from disk is placed in `cell`, in the
 /// original's order: `loadInWorldStreamerThread`/`loadInMainThread`
 /// (missing squares, `RecalcProperties`, roofs, neighbour matrices) and then
 /// the erosion calls of `doLoadGridsquare`, so hooks see recalculated flags.
+/// While the hook runs the chunk is taken out of `cell`, which is passed to
+/// the hook as the neighbour view, and put back afterwards.
 pub fn finish_chunk_load(
     cell: &mut crate::chunk::IsoCell,
     wx: i32,
     wy: i32,
     meta: &crate::meta_grid::IsoMetaGrid,
-    m: &crate::sprite::IsoSpriteManager,
+    sprites: &mut crate::sprite::IsoSpriteManager,
     hook: Option<&mut dyn ChunkLoadHook>,
 ) {
-    cell.recalc_chunk_squares(wx, wy, meta, m);
-    if let Some(ch) = cell.chunks.get_mut(&(wx, wy)) {
-        do_load_gridsquare(ch, hook);
-    }
+    cell.recalc_chunk_squares(wx, wy, meta, sprites);
+    let Some(mut ch) = cell.chunks.remove(&(wx, wy)) else {
+        return;
+    };
+    let mut ctx = HookCtx {
+        sprites,
+        neighbours: &*cell,
+    };
+    do_load_gridsquare(&mut ch, hook, &mut ctx);
+    cell.chunks.insert((wx, wy), ch);
 }
 
-pub fn do_load_gridsquare(ch: &mut IsoChunk, hook: Option<&mut dyn ChunkLoadHook>) {
+/// The erosion part of `IsoChunk.doLoadGridsquare`: runs `hook` where the
+/// original calls `ErosionMain`. The other per-square work there
+/// (`addToWorld`, `MapObjects`, Lua events) is not ported.
+pub fn do_load_gridsquare(
+    ch: &mut IsoChunk,
+    hook: Option<&mut dyn ChunkLoadHook>,
+    ctx: &mut HookCtx<'_>,
+) {
     let Some(hook) = hook else {
         return;
     };
@@ -607,10 +636,10 @@ pub fn do_load_gridsquare(ch: &mut IsoChunk, hook: Option<&mut dyn ChunkLoadHook
                     .get_grid_square(x, y, z)
                     .is_some_and(|sq| !sq.objects.is_empty())
                 {
-                    hook.load_grid_square(ch, x, y, z);
+                    hook.load_grid_square(ch, x, y, z, ctx);
                 }
             }
         }
     }
-    hook.chunk_loaded(ch);
+    hook.chunk_loaded(ch, ctx);
 }
