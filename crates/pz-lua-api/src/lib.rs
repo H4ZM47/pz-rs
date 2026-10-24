@@ -9,12 +9,12 @@
 
 pub mod bind_core;
 pub mod bind_debug;
-pub mod bind_globals;
-pub mod bind_ui;
-pub mod bind_text;
 pub mod bind_fs;
+pub mod bind_globals;
 pub mod bind_java_util;
 pub mod bind_render;
+pub mod bind_text;
+pub mod bind_ui;
 pub mod bind_world;
 pub mod events;
 pub mod expose;

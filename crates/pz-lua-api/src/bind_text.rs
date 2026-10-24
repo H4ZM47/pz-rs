@@ -6,15 +6,18 @@
 //! list text is recorded into with [`install`]; until then the globals
 //! behave as with empty tables (keys come back unchanged, sizes are 0).
 
+use crate::bind_java_util::{list_value, JavaList, JavaMap};
 use crate::expose::{
-    bool_arg, enum_value, expose_class, expose_enum, global, int_arg, num_arg, str_arg, with_this,
+    bool_arg, enum_value, expose_class, expose_enum, global, int_arg, num_arg, str_arg, this,
+    with_this,
 };
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_render::DrawList;
+use pz_render::{DrawList, Rgba};
 use pz_text::jfmt::JavaArg;
 use pz_text::translator::Language;
-use pz_text::{TextManager, Translator, UIFont};
+use pz_text::{AngelCodeFont, ModDirs, TextManager, Translator, TranslatorEnv, UIFont};
+use pz_ui::{SpriteRenderer, TextAlign, TextRenderer, UiDrawCmd};
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -25,8 +28,9 @@ use std::rc::Rc;
 pub struct TextState {
     pub translator: Rc<RefCell<Translator>>,
     pub text_manager: Rc<RefCell<TextManager>>,
-    /// Where `TextManager.DrawString*` records glyph quads.
-    pub draw: Rc<RefCell<DrawList>>,
+    /// Where `TextManager.DrawString*` records glyph quads; `None` sends
+    /// them to the UI sprite list (`SpriteRenderer.instance`).
+    pub draw: Option<Rc<RefCell<DrawList>>>,
     /// `ZomboidFileSystem.getString(path) != path`, for
     /// `isUsingNonEnglishFonts`.
     pub known_file: Rc<dyn Fn(&str) -> bool>,
@@ -37,9 +41,123 @@ thread_local! {
     static LANGUAGES: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::new());
 }
 
-/// Install the translator and text manager the bindings use.
+/// Install the translator and text manager the bindings use, and make the
+/// text manager the renderer `UIElement` draws and measures text with.
 pub fn install(state: TextState) {
+    let renderer: Rc<dyn TextRenderer> = Rc::new(UiTextRenderer(state.text_manager.clone()));
+    pz_ui::UIManager::set_text_renderer(Some(renderer));
     STATE.with(|s| *s.borrow_mut() = Some(state));
+}
+
+/// Engine start-up for text: `Languages.init`, `Translator.loadFiles` and
+/// `TextManager.Init` from the game files and `Core` options, then
+/// [`install`]. Text draws go to the UI sprite list.
+pub fn boot(fs: &pz_fs::GameFs, core: &pz_core::core::Core) -> Result<(), String> {
+    let mods = fs
+        .mod_ids()
+        .iter()
+        .filter_map(|id| fs.mod_dir(id).and_then(|d| fs.mod_info(d)))
+        .map(|m| {
+            let dir = |s: &str| (!s.is_empty()).then(|| std::path::PathBuf::from(s));
+            ModDirs {
+                common: dir(&m.common_dir),
+                version: dir(&m.version_dir),
+            }
+        })
+        .collect();
+    let lang = core.get_option_language_name();
+    let env = TranslatorEnv {
+        base_dir: fs.base.clone(),
+        mods,
+        option_language_name: (!lang.is_empty()).then_some(lang),
+        user_language: core.system_language.clone(),
+        cache_dir: Some(fs.cache_dir().to_path_buf()),
+        ..TranslatorEnv::default()
+    };
+    let mut translator = Translator::new(env);
+    translator.init_languages();
+    translator.load_files().map_err(|e| e.to_string())?;
+    let opts = pz_text::TextOptions {
+        language: translator.get_language().name.clone(),
+        dyslexic: core.get_option_enable_dyslexic_font(),
+        font_size: core.get_option_font_size_real(),
+    };
+    let mut tm = TextManager::default();
+    {
+        let textures = crate::bind_render::textures();
+        let mut textures = textures.borrow_mut();
+        let mut loader = textures.loader(fs);
+        tm.init(&opts, &|p| fs.resolve(p), &mut loader)
+            .map_err(|e| e.to_string())?;
+    }
+    // isUsingNonEnglishFonts only asks about media/fonts/<LANG>/fonts.txt.
+    let known: std::collections::HashSet<String> = translator
+        .languages
+        .languages()
+        .iter()
+        .map(|l| format!("media/fonts/{}/fonts.txt", l.name))
+        .filter(|p| fs.get_string(p) != *p)
+        .collect();
+    install(TextState {
+        translator: Rc::new(RefCell::new(translator)),
+        text_manager: Rc::new(RefCell::new(tm)),
+        draw: None,
+        known_file: Rc::new(move |p| known.contains(p)),
+    });
+    Ok(())
+}
+
+/// `TextManager.instance` as `UIElement` sees it.
+struct UiTextRenderer(Rc<RefCell<TextManager>>);
+
+impl TextRenderer for UiTextRenderer {
+    fn measure_x(&self, font: Option<UIFont>, s: &str) -> i32 {
+        self.0.borrow().measure_string_x(font, Some(s))
+    }
+
+    fn measure_y(&self, font: Option<UIFont>, s: &str) -> i32 {
+        self.0.borrow().measure_string_y(font, Some(s))
+    }
+
+    fn font_height(&self, font: Option<UIFont>) -> i32 {
+        self.0.borrow().get_font_height(font)
+    }
+
+    fn draw(
+        &self,
+        out: &mut SpriteRenderer,
+        font: Option<UIFont>,
+        x: f64,
+        y: f64,
+        zoom: f32,
+        text: &str,
+        color: Rgba,
+        align: TextAlign,
+        _trimmed: bool,
+    ) {
+        // DrawStringUntrimmed draws exactly like DrawString in the original.
+        let tm = self.0.borrow();
+        let mut dl = DrawList::default();
+        let (r, g, b, a) = (
+            color.0 as f64,
+            color.1 as f64,
+            color.2 as f64,
+            color.3 as f64,
+        );
+        match align {
+            // pz-ui passes zoom 1.0 for the overloads without a zoom, which
+            // draw at integer positions; only a real zoom takes the scaled path.
+            TextAlign::Left if zoom != 1.0 => {
+                tm.draw_string_zoom(&mut dl, font, x, y, zoom as f64, text, r, g, b, a)
+            }
+            TextAlign::Left => tm.draw_string(&mut dl, font, x, y, text, r, g, b, a),
+            TextAlign::Centre => tm.draw_string_centre(&mut dl, font, x, y, text, r, g, b, a),
+            TextAlign::Right => tm.draw_string_right(&mut dl, font, x, y, text, r, g, b, a),
+        }
+        for cmd in dl.cmds {
+            out.push(UiDrawCmd::Render(cmd));
+        }
+    }
 }
 
 fn state() -> Option<TextState> {
@@ -49,6 +167,40 @@ fn state() -> Option<TextState> {
 const UIFONT: &str = "zombie.ui.UIFont";
 const LANGUAGE: &str = "zombie.core.Language";
 const TEXT_MANAGER: &str = "zombie.ui.TextManager";
+const ANGEL_CODE_FONT: &str = "zombie.core.fonts.AngelCodeFont";
+
+/// `zombie.core.fonts.AngelCodeFont` instance.
+struct FontObj(Rc<AngelCodeFont>);
+
+impl LuaObject for FontObj {
+    fn class_name(&self) -> &str {
+        ANGEL_CODE_FONT
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+thread_local! {
+    static FONTS: RefCell<HashMap<usize, (Rc<AngelCodeFont>, Value)>> = RefCell::new(HashMap::new());
+}
+
+/// One Lua object per loaded font, so `==` compares identity like Java.
+fn font_object(f: Option<Rc<AngelCodeFont>>) -> Value {
+    let Some(f) = f else { return Value::Nil };
+    let key = Rc::as_ptr(&f) as usize;
+    FONTS.with(|m| {
+        m.borrow_mut()
+            .entry(key)
+            .or_insert_with(|| (f.clone(), Value::Object(Rc::new(FontObj(f)))))
+            .1
+            .clone()
+    })
+}
+
+fn utf16(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
+}
 
 /// Kahlua's conversion of Lua values to the `Object...` varargs.
 fn java_arg(v: &Value) -> JavaArg {
@@ -229,6 +381,7 @@ pub fn register(thread: &mut Thread) {
 
     register_translator(thread);
     register_text_manager(thread);
+    register_angel_code_font(thread);
 }
 
 fn register_translator(thread: &mut Thread) {
@@ -277,6 +430,33 @@ fn register_translator(thread: &mut Thread) {
         };
         with_translator_mut(|t| t.set_language(lang));
         Ok(0)
+    });
+    t.static_fn("getAvailableLanguage", |c| {
+        // A fresh list per call; the original caches one ArrayList.
+        let langs =
+            with_translator_mut(|t| t.get_available_language().to_vec()).unwrap_or_default();
+        Ok(c.push(list_value(langs.into_iter().map(language_value).collect())))
+    });
+    t.static_fn("getAzertyMap", |c| {
+        let v = with_translator_mut(|t| t.get_azerty_map().to_vec()).unwrap_or_default();
+        Ok(c.push(list_value(v.into_iter().map(Value::from).collect())))
+    });
+    t.static_fn("getUI", |c| {
+        // A snapshot HashMap. Keys go in sorted, so iteration matches Java's
+        // bucket order; keys sharing a bucket may differ in relative order.
+        let map = JavaMap::hash_map();
+        if let Some(mut entries) = with_translator(|t| {
+            t.get_ui()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>()
+        }) {
+            entries.sort();
+            for (k, v) in entries {
+                map.put(Value::from(k), Value::from(v));
+            }
+        }
+        Ok(c.push(Value::Object(Rc::new(map))))
     });
     t.static_fn("getRecipeName", |c| {
         let k = key(c, 0);
@@ -362,6 +542,109 @@ fn register_translator(thread: &mut Thread) {
     }
 }
 
+fn register_angel_code_font(thread: &mut Thread) {
+    let f = expose_class(thread, ANGEL_CODE_FONT, None);
+    f.method("getLineHeight", |c| {
+        let v = with_this::<FontObj, _>(c, |f| f.0.line_height())?;
+        Ok(c.push(v))
+    });
+    // getWidth(text), (text, xadvance), (text, start, end), (text, start, end, xadvance)
+    f.method("getWidth", |c| {
+        let s = utf16(&key(c, 1));
+        let n = c.nargs() - 1;
+        let (start, end, xadv) = match n {
+            2 => (0, s.len() as i32 - 1, bool_arg(c, 2)),
+            3 => (int_arg(c, 2), int_arg(c, 3), false),
+            4.. => (int_arg(c, 2), int_arg(c, 3), bool_arg(c, 4)),
+            _ => (0, s.len() as i32 - 1, false),
+        };
+        if end >= start && (start < 0 || end >= s.len() as i32) {
+            return Err(LuaError::Runtime {
+                message: format!(
+                    "Index {} out of bounds for length {}",
+                    end.max(start),
+                    s.len()
+                ),
+                class: "java.lang.StringIndexOutOfBoundsException",
+            });
+        }
+        let v = with_this::<FontObj, _>(c, |f| f.0.get_width(&s, start, end, xadv))?;
+        Ok(c.push(v))
+    });
+    // getHeight(text) or (text, returnActualHeight, returnOffset)
+    f.method("getHeight", |c| {
+        let s = utf16(&key(c, 1));
+        let (actual, offset) = if c.nargs() >= 4 {
+            (bool_arg(c, 2), bool_arg(c, 3))
+        } else {
+            (false, false)
+        };
+        let v = with_this::<FontObj, _>(c, |f| f.0.get_height(&s, actual, offset))?;
+        Ok(c.push(v))
+    });
+    f.method("getYOffset", |c| {
+        let s = utf16(&key(c, 1));
+        match with_this::<FontObj, _>(c, |f| f.0.get_y_offset(&s))? {
+            Some(v) => Ok(c.push(v)),
+            None => Err(LuaError::Runtime {
+                message: "Index out of bounds".into(),
+                class: "java.lang.ArrayIndexOutOfBoundsException",
+            }),
+        }
+    });
+    f.method("isSdf", |c| {
+        let v = with_this::<FontObj, _>(c, |f| f.0.is_sdf())?;
+        Ok(c.push(v))
+    });
+    f.method("isLoading", |c| {
+        let v = with_this::<FontObj, _>(c, |f| f.0.is_loading())?;
+        Ok(c.push(v))
+    });
+    // drawString(x, y, text[, r, g, b, a]) or (x, y, scale, text, r, g, b, a)
+    f.method("drawString", |c| {
+        let font = this::<FontObj>(c)?;
+        let font = font.as_any().downcast_ref::<FontObj>().unwrap().0.clone();
+        let (x, y) = (num_arg(c, 1) as f32, num_arg(c, 2) as f32);
+        let (scale, text, rgba_at) = match c.arg(3) {
+            Value::Num(_) if c.nargs() >= 9 => (num_arg(c, 3) as f32, key(c, 4), Some(5)),
+            _ => (0.0, key(c, 3), (c.nargs() >= 8).then_some(4)),
+        };
+        let color = match rgba_at {
+            Some(i) => Rgba(
+                num_arg(c, i) as f32,
+                num_arg(c, i + 1) as f32,
+                num_arg(c, i + 2) as f32,
+                num_arg(c, i + 3) as f32,
+            ),
+            None => Rgba(1.0, 1.0, 1.0, 1.0),
+        };
+        if let Some(st) = state() {
+            emit(&st, |dl| {
+                font.draw_string_scaled(dl, x, y, scale, &text, color)
+            });
+        }
+        Ok(0)
+    });
+    // Textures are owned by the texture manager; nothing to release here.
+    f.method("destroy", |_| Ok(0));
+}
+
+/// Runs `f` against the installed draw sink.
+fn emit(st: &TextState, f: impl FnOnce(&mut DrawList)) {
+    match &st.draw {
+        Some(dl) => f(&mut dl.borrow_mut()),
+        None => {
+            let mut dl = DrawList::default();
+            f(&mut dl);
+            pz_ui::with_ui(|m| {
+                dl.cmds
+                    .into_iter()
+                    .for_each(|c| m.sprite.push(UiDrawCmd::Render(c)))
+            });
+        }
+    }
+}
+
 fn rgba_args(c: &NativeCall<'_>, from: usize) -> [f64; 4] {
     [
         num_arg(c, from),
@@ -373,7 +656,8 @@ fn rgba_args(c: &NativeCall<'_>, from: usize) -> [f64; 4] {
 
 fn draw(f: impl FnOnce(&TextManager, &mut DrawList)) {
     if let Some(s) = state() {
-        f(&s.text_manager.borrow(), &mut s.draw.borrow_mut());
+        let tm = s.text_manager.clone();
+        emit(&s, |dl| f(&tm.borrow(), dl));
     }
 }
 
@@ -438,6 +722,27 @@ fn register_text_manager(thread: &mut Thread) {
                 .is_using_non_english_fonts(&lang, &*s.known_file)
         });
         Ok(c.push(r))
+    });
+    tm.method("getAllFonts", |c| {
+        // Clears `result`, fills it with every UIFont sorted by name ignoring
+        // case, and returns it.
+        let result = c.arg(1);
+        let Value::Object(o) = &result else {
+            return Err(LuaError::Runtime {
+                message: "null".into(),
+                class: "java.lang.NullPointerException",
+            });
+        };
+        let Some(list) = o.as_any().downcast_ref::<JavaList>() else {
+            return Err(LuaError::Runtime {
+                message: format!("{} cannot be cast to java.util.ArrayList", o.class_name()),
+                class: "java.lang.ClassCastException",
+            });
+        };
+        let fonts = with_tm(TextManager::get_all_fonts)
+            .unwrap_or_else(|| TextManager::default().get_all_fonts());
+        *list.items.borrow_mut() = fonts.into_iter().map(font_value).collect();
+        Ok(c.push(result.clone()))
     });
     tm.method("getCurrentCodeFont", |c| {
         let r = with_tm(|tm| tm.current_code_font).unwrap_or(UIFont::CodeSmall);
@@ -550,11 +855,20 @@ fn register_text_manager(thread: &mut Thread) {
     });
     tm.method("DrawTextFromGameWorld", |_| {
         if let Some(st) = state() {
-            st.text_manager
-                .borrow_mut()
-                .draw_text_from_game_world(&mut st.draw.borrow_mut());
+            let tm = st.text_manager.clone();
+            emit(&st, |dl| tm.borrow_mut().draw_text_from_game_world(dl));
         }
         Ok(0)
+    });
+    tm.method("getFontFromEnum", |c| {
+        let f = font_arg(c, 1);
+        let r = state().and_then(|s| s.text_manager.borrow().font_rc(f));
+        Ok(c.push(font_object(r)))
+    });
+    tm.method("getNormalFromFontSize", |c| {
+        let n = int_arg(c, 1);
+        let r = state().and_then(|s| s.text_manager.borrow().normal_rc(n));
+        Ok(c.push(font_object(r)))
     });
     // Empty in the original.
     tm.method("DrawStringBBcode", |_| Ok(0));
@@ -571,6 +885,7 @@ mod tests {
         let env = pz_kahlua::TableRef::new();
         let mut thread = Thread::new(env.clone());
         pz_kahlua::stdlib::install(&mut thread, None).unwrap();
+        crate::bind_java_util::register(&mut thread);
         register(&mut thread);
         let mut t = Translator::new(TranslatorEnv::default());
         t.table_mut(Table::Ui)
@@ -581,12 +896,17 @@ mod tests {
         install(TextState {
             translator: Rc::new(RefCell::new(t)),
             text_manager: Rc::new(RefCell::new(tm)),
-            draw: Rc::new(RefCell::new(DrawList::default())),
+            draw: Some(Rc::new(RefCell::new(DrawList::default()))),
             known_file: Rc::new(|_| false),
         });
         let src = "return getText('UI_hello', 'Bob', 3), getTextOrNull('UI_nope'), \
                    getTextManager():MeasureStringX(UIFont.Medium, 'aaa'), UIFont.FromString('Title') == UIFont.Title, \
-                   Translator.getLanguage():name()";
+                   Translator.getLanguage():name(), Translator.getAzertyMap():get(0), \
+                   getTextManager():getAllFonts(ArrayList.new()):get(0):name(), Translator.getUI():get('UI_hello'), \
+                   Translator.getAvailableLanguage():size(), \
+                   getTextManager():getFontFromEnum(UIFont.Small):getLineHeight(), \
+                   getTextManager():getFontFromEnum(UIFont.Title) == getTextManager():getFontFromEnum(nil), \
+                   getTextManager():getFontFromEnum(UIFont.Small):getWidth('aa', true)";
         let proto = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
         let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(proto), env));
         let r = thread.call(&f, &[]).unwrap();
@@ -595,5 +915,28 @@ mod tests {
         assert!(r[2].raw_equals(&Value::Num(17.0)));
         assert!(r[3].raw_equals(&Value::Bool(true)));
         assert_eq!(r[4].as_str().unwrap(), "EN");
+        assert_eq!(r[5].as_str().unwrap(), "FR");
+        assert_eq!(r[6].as_str().unwrap(), "AutoNormLarge");
+        assert_eq!(r[7].as_str().unwrap(), "Hi %1$s, %2$s items");
+        assert!(r[8].raw_equals(&Value::Num(1.0)));
+        assert!(r[9].raw_equals(&Value::Num(8.0)));
+        assert!(r[10].raw_equals(&Value::Bool(true)));
+        assert!(r[11].raw_equals(&Value::Num(12.0)));
+
+        // UIElement text goes through the installed TextManager.
+        pz_ui::with_ui(|m| m.sprite.clear());
+        assert_eq!(pz_ui::draw::measure_string_x(Some(UIFont::Small), "aa"), 11);
+        pz_ui::draw::draw_string(
+            Some(UIFont::Small),
+            3.5,
+            4.0,
+            1.0,
+            "aa",
+            Rgba(1.0, 1.0, 1.0, 1.0),
+            TextAlign::Left,
+            true,
+        );
+        let quads = pz_ui::with_ui(|m| m.sprite.cmds.len());
+        assert_eq!(quads, 2);
     }
 }
