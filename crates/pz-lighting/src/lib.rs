@@ -19,7 +19,9 @@
 //!    eight vertex colours (four floor corners, four wall tops).
 //!
 //! [`LightingSession`] mirrors the native method table one-to-one; see its
-//! docs for the hand-off model. [`SquareLighting`] decodes the 44-int block
+//! docs for the hand-off model. [`jni`] ports the Java half of
+//! `LightingJNI` (chunk streaming, light sync, vision cone, result
+//! decoding) on plain data. [`SquareLighting`] decodes the 44-int block
 //! `getSquareLighting` produces.
 //!
 //! # Example: a noon frame without a player

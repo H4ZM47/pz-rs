@@ -41,6 +41,35 @@ For a frame without a player (a map render at noon), set
 `Character::see_all`: every square is visible with a darkness multiplier of
 1, so the colours come straight from sun, sky and lights.
 
+## The Java side
+
+`pz_lighting::jni` ports what `LightingJNI.java` does around the natives,
+on plain data: the world crate fills `GridSquare` (vision matrix, exterior,
+stairs, building and room ids, special objects: curtains, doors,
+thumpables, windows, barricades), `ChunkInfo`, `LightSource`,
+`RoomLightSource`, `TorchInfo`, `PlayerInput` and the render settings, and
+implements `LightingWorld` for square lookup. Each field documents the
+Java accessor it mirrors.
+
+* `LightSync::check_lights`: `checkLights` (ids, colour/active updates,
+  removals, temporary lights, room lights, torches);
+* `update_player`: one player's block of `update()`, including
+  `updateChunk` with the per-square arguments (`square_args`: vision flags
+  from the Java `testVisionAdjacent`, open air, curtain filters, door,
+  window and barricade transmissions);
+* `VisionCone::calculate`: `calculateVisionCone`;
+* `SquareLight` / `ChunkLevelLight`: `JNILighting`, decoding the results
+  for the renderer (light colour, darkness, eight ABGR vertex lights,
+  `ForcedVis`, the light list) with the FBO path's per-level invalidation
+  signal, or the legacy path's 0.85 dimming below the player.
+
+Everything calls the natives through the `LightingNatives` trait, which
+`LightingSession` implements.
+
+Note: a curtain `LightFilterIntensity` or `LightFilterMix` above 100
+amplifies light through closed edges; the native sunlight flood then never
+settles, and neither does the port.
+
 ## Exactness
 
 The port follows the arm64 build of the library: `f32` throughout, fused
