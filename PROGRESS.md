@@ -103,8 +103,13 @@ Status of the Rust port. Update this file with every merged change.
   cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
   bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
   two players over 2400 ticks of scripted injuries plus a save/load matches
-  the original bit for bit (checked locally). Item, zombie and weapon inputs
-  are plain data until pz-inventory lands.
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.

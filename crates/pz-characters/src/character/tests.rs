@@ -4,8 +4,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use pz_scripts::objects::items::{add_character_trait_definition, CharacterTrait, MoodleType};
+use pz_inventory::saved::SavedItem;
+use pz_inventory::{InventoryItem, ItemClass, ItemTemplate};
+use pz_scripts::objects::items::{add_character_trait_definition, get_item, CharacterTrait, Item, MoodleType};
 use pz_scripts::registry::builtin::{BuiltinTables, CharacterStatDecl, MoodleStatDecl, PerkDecl, PerkInit};
+use pz_scripts::base::{ScriptObject, ScriptRef};
+use pz_scripts::script_type::ScriptLoadMode;
 use pz_scripts::ScriptManager;
 
 use super::*;
@@ -36,6 +40,8 @@ pub(crate) const TRAITS: &[&str] = &[
     "WEIGHT_LOSS",
     "AGORAPHOBIC",
     "CLAUSTROPHOBIC",
+    "IRON_GUT",
+    "WEAK_STOMACH",
 ];
 
 const STATS: &[&str] = &[
@@ -62,6 +68,7 @@ const STATS: &[&str] = &[
     "WETNESS",
     "ZOMBIE_FEVER",
     "ZOMBIE_INFECTION",
+    "POISON",
 ];
 
 const MOODLES: &[&str] = &[
@@ -99,7 +106,7 @@ pub(crate) fn fixture() -> (ScriptManager, Characters) {
             "ENDURANCE" | "MORALE" | "SANITY" => (0.0, 1.0, 1.0),
             "FITNESS" => (-1.0, 1.0, 0.0),
             "TEMPERATURE" => (20.0, 40.0, 37.0),
-            "PANIC" | "PAIN" => (0.0, 100.0, 0.0),
+            "PANIC" | "PAIN" | "POISON" => (0.0, 100.0, 0.0),
             _ => (0.0, 1.0, 0.0),
         };
         t.character_stats.push(CharacterStatDecl {
@@ -175,6 +182,57 @@ impl SimContext for Recorder {
             other => format!("{other:?}"),
         };
         self.events.borrow_mut().push(s);
+    }
+}
+
+/// An invented item: registers the script `Base.<ty>` (changed by
+/// `script`) and puts an item of it with id `id` in `c`'s inventory.
+pub(crate) fn give_item<I>(
+    sm: &ScriptManager,
+    c: &mut GameCharacter<I>,
+    class: ItemClass,
+    ty: &str,
+    id: i32,
+    tpl: impl FnOnce(&mut ItemTemplate),
+    script: impl FnOnce(&mut Item),
+) {
+    if sm.get_module("Base").is_none() {
+        sm.parse_script(ScriptLoadMode::Init, "module Base { }").unwrap();
+    }
+    let mut it = Item::new();
+    it.set_module(&sm.get_module("Base").unwrap());
+    it.init_load_pp(sm, ty);
+    script(&mut it);
+    sm.add_runtime_script(ScriptRef::new(it)).unwrap();
+    assert!(get_item(sm, &format!("Base.{ty}")).is_some());
+    let mut t = ItemTemplate::new(class, "Base", ty);
+    tpl(&mut t);
+    let mut item = InventoryItem::create(Rc::new(t), 0);
+    item.id = id;
+    c.items.inventory.items.push(SavedItem::Item(Box::new(item)));
+}
+
+/// Registers `ItemTag.<field>` (or another item registry's constant) as
+/// the invented id `t:<field>`.
+pub(crate) fn item_constant(sm: &ScriptManager, registry: &str, field: &str) -> Rc<pz_scripts::registry::RegistryKey> {
+    let id = format!("t:{}", field.to_lowercase());
+    let k = sm.registries.get(registry).unwrap().borrow_mut().register_id(&id, false).unwrap();
+    sm.statics.items.borrow_mut().constants.insert(registry, field, &id);
+    k
+}
+
+/// An empty visual with `n` blood/dirt/hole entries.
+pub(crate) fn visual(n: usize) -> pz_inventory::visual::ItemVisual {
+    pz_inventory::visual::ItemVisual {
+        full_type: String::new(),
+        alternate_model_name: String::new(),
+        clothing_item_name: String::new(),
+        tint: None,
+        base_texture: -1,
+        texture_choice: -1,
+        hue: f32::INFINITY,
+        decal: None,
+        arrays: [Some(vec![0; n]), Some(vec![0; n]), Some(vec![0; n]), None, None, None],
     }
 }
 
@@ -298,7 +356,7 @@ fn moodles_follow_stats() {
     c.stats.set(&cs.field("ENDURANCE").unwrap(), 0.5);
     c.stats.set(&cs.field("STRESS").unwrap(), 0.5);
     c.stats.set(&cs.field("TEMPERATURE").unwrap(), 34.0);
-    c.update_moodles(&chars, &ctx).unwrap();
+    c.update_moodles(&sm, &chars, &ctx).unwrap();
     let lvl = |c: &GameCharacter<()>, f| c.moodles.moodle_level_of(&sm, f).unwrap();
     assert_eq!((lvl(&c, "PANIC"), lvl(&c, "ENDURANCE"), lvl(&c, "STRESS")), (2, 2, 2));
     assert_eq!(lvl(&c, "HYPOTHERMIA"), 2);
@@ -307,15 +365,15 @@ fn moodles_follow_stats() {
     c.stats.set(&cs.field("PAIN").unwrap(), 60.0);
     // The first update above already counted once.
     for _ in 0..118 {
-        c.update_moodles(&chars, &ctx).unwrap();
+        c.update_moodles(&sm, &chars, &ctx).unwrap();
     }
     assert_eq!(lvl(&c, "PAIN"), 0);
-    c.update_moodles(&chars, &ctx).unwrap();
+    c.update_moodles(&sm, &chars, &ctx).unwrap();
     assert_eq!(lvl(&c, "PAIN"), 3);
     assert!(ctx.events.borrow().iter().any(|e| e.contains("PainMoodle")));
     // Dead: everything resets except Dead.
     c.health = 0.0;
-    c.update_moodles(&chars, &ctx).unwrap();
+    c.update_moodles(&sm, &chars, &ctx).unwrap();
     assert_eq!((lvl(&c, "PANIC"), lvl(&c, "DEAD"), lvl(&c, "ZOMBIE")), (0, 4, 0));
     let t = MoodleType::constant(&sm, "PANIC").unwrap();
     let text = c.moodles.moodle_display_string(Some(&t), &|k| k.to_string()).unwrap();

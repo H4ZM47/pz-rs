@@ -11,15 +11,17 @@
 //! Side effects on unported systems (blood splats, clothing holes, sounds,
 //! Lua `OnPlayerGetDamage`, network sync) are [`SimEvent`]s in the
 //! original's order; inputs from them come from
-//! [`super::CharacterEnvironment`], the [`SimContext`] and the attack
-//! structs ([`ZombieAttack`], [`WeaponHit`]).
+//! [`super::CharacterEnvironment`], the [`SimContext`] and the attacker
+//! structs ([`ZombieAttack`], [`WeaponUser`]). Food, pills, literature and
+//! weapons are `pz-inventory` items; the clothing is the character's worn
+//! items ([`super::items`]).
 //!
-//! TODO(ClothingWetness): `UpdateWetness` does not update the clothing
-//! wetness (`getClothingWetness()` behaves as `null`).
 //! TODO(MusicIntensityConfig): `RestoreToFullHealth` does not notify it.
 //! TODO(Thermoregulator): its part of `save`/`load` is the caller's.
 //! TODO(IsoAnimal): `DamageFromAnimal`.
 
+use pz_inventory::InventoryItem;
+use pz_scripts::objects::items::WeaponCategory;
 use pz_scripts::{ScriptError, ScriptManager, ScriptResult};
 
 use super::body_part::{
@@ -27,6 +29,7 @@ use super::body_part::{
     InjuryEnv,
 };
 use super::context::{SimContext, SimEvent};
+use super::items::{has_tag, is_hand_weapon};
 use super::stats::{clamp_f32, CharacterStatRef, CharacterStats, Stats};
 use super::thermoregulator::Thermoregulator;
 use super::GameCharacter;
@@ -533,98 +536,36 @@ impl BodyDamage {
     }
 }
 
-/// `Food` as `JustAteFood`/`JustDrankBooze` read it. TODO(pz-inventory):
-/// filled from the `Food` item.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct FoodInfo {
-    /// `getType()`.
-    pub item_type: String,
-    /// `getName()`.
-    pub name: String,
-    pub poison_power: i32,
-    pub tainted: bool,
-    pub reduce_infection_power: f32,
-    pub boredom_change: f32,
-    pub unhappy_change: f32,
-    pub alcoholic: bool,
-    /// `getHungerChange()`.
-    pub hunger_change: f32,
-    /// `getHungChange()`.
-    pub hung_change: f32,
-    pub base_hunger: f32,
-    pub cooked: bool,
-    /// `isbDangerousUncooked()`.
-    pub dangerous_uncooked: bool,
-    pub burnt: bool,
-    pub age: f32,
-    pub off_age: i32,
-    pub off_age_max: i32,
-    /// `hasTag(ItemTag.LOW_ALCOHOL)`.
-    pub low_alcohol: bool,
-    /// `hasTag(ItemTag.EGG)`.
-    pub egg: bool,
+/// The player using a weapon (`weapon.getUsingPlayer()`), as
+/// `DamageFromWeapon` and `damageFromSpikedArmor` read it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WeaponUser<'a> {
+    /// `isDoShove()` (`IsoLivingCharacter`).
+    pub do_shove: bool,
+    /// `isAimAtFloor()`.
+    pub aim_at_floor: bool,
+    /// `isBehind(target)`.
+    pub behind: bool,
+    /// `getPrimaryHandItem()`.
+    pub primary_hand_item: Option<&'a InventoryItem>,
+    /// `getSecondaryHandItem()`.
+    pub secondary_hand_item: Option<&'a InventoryItem>,
 }
 
-/// A pill (`DrainableComboItem`) as `JustTookPill` reads it.
-/// TODO(pz-inventory): filled from the item; its `UseAndSync` is the
-/// caller's.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct PillInfo {
-    pub item_type: String,
-    pub fatigue_change: f32,
-    pub stress_change: f32,
-    /// `getOnEat()`.
-    pub on_eat: Option<String>,
+/// `WeaponType.getWeaponType(weapon) == WeaponType.KNIFE` (STUB in
+/// `pz-inventory`: never a knife until `get_weapon_type` is ported).
+fn is_knife(weapon: &InventoryItem) -> bool {
+    weapon.get_weapon_type() == Some("KNIFE")
 }
 
-/// A weapon hit as `DamageFromWeapon` reads it. TODO(pz-inventory): the
-/// `HandWeapon` fields and the clothing defense/spikes from worn items.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct WeaponHit {
-    /// `BLUNT` or `SMALL_BLUNT` category.
-    pub blunt: bool,
-    /// `isAimedFirearm()`.
-    pub aimed_firearm: bool,
-    pub ranged: bool,
-    pub min_damage: f32,
-    pub max_damage: f32,
-    /// `WeaponType.getWeaponType(weapon) == KNIFE`.
-    pub knife: bool,
-    /// `hasTag(ItemTag.HANDGUARD)`.
-    pub handguard: bool,
-    /// `getUsingPlayer() != null`.
-    pub has_using_player: bool,
-    /// The using player's `isDoShove()`.
-    pub owner_shove: bool,
-    /// The using player's `isAimAtFloor()`.
-    pub owner_aim_at_floor: bool,
-    /// The using player's `isBehind(target)`.
-    pub owner_behind: bool,
-    /// The using player's primary hand is empty or a `HandWeapon`.
-    pub owner_primary_free: bool,
-    /// The using player's secondary hand is empty or a `HandWeapon`.
-    pub owner_secondary_free: bool,
-    /// The target's `isFallOnFront()`.
-    pub target_fall_on_front: bool,
-    /// The target's `bodyPartIsSpiked(part)` by part index.
-    pub target_spiked: Vec<bool>,
-    /// The target's `bodyPartIsSpikedBehind(part)` by part index.
-    pub target_spiked_behind: Vec<bool>,
-    /// `getBodyPartClothingDefense(part, blade, bullet)` by part index.
-    pub clothing_defense: Vec<f32>,
+/// `weapon.isOfWeaponCategory(WeaponCategory.<field>)`.
+fn is_of_weapon_category(sm: &ScriptManager, weapon: &InventoryItem, field: &str) -> bool {
+    WeaponCategory::constant(sm, field)
+        .is_some_and(|k| weapon.get_weapon_categories().iter().any(|c| c.eq_ignore_ascii_case(&k.location.to_string())))
 }
 
-impl WeaponHit {
-    /// `BodyDamage.isSpikedPart(owner, target, part)`.
-    fn spiked_part(&self, slot: usize) -> bool {
-        let behind = if !self.owner_aim_at_floor { self.owner_behind } else { self.target_fall_on_front };
-        let v = if behind { &self.target_spiked_behind } else { &self.target_spiked };
-        v.get(slot).copied().unwrap_or(false)
-    }
-}
-
-/// A zombie attack as `AddRandomDamageFromZombie` reads it.
-/// TODO(pz-inventory): the clothing defense and spikes from worn items.
+/// A zombie attack as `AddRandomDamageFromZombie` reads it (the zombie
+/// side; the clothing defense and spikes are the character's worn items).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ZombieAttack {
     pub hit_reaction: Option<String>,
@@ -647,16 +588,6 @@ pub struct ZombieAttack {
     pub cant_bite: bool,
     /// `zombie.getBiteSoundName()`.
     pub bite_sound: String,
-    /// `isFallOnFront()`.
-    pub fall_on_front: bool,
-    /// `bodyPartIsSpiked(part)` by part index.
-    pub spiked: Vec<bool>,
-    /// `bodyPartIsSpikedBehind(part)` by part index.
-    pub spiked_behind: Vec<bool>,
-    /// `getBodyPartClothingDefense(part, false, false)` by part index.
-    pub scratch_defense: Vec<f32>,
-    /// `getBodyPartClothingDefense(part, true, false)` by part index.
-    pub bite_defense: Vec<f32>,
 }
 
 /// What `AddRandomDamageFromZombie` did to the zombie and the character
@@ -1054,14 +985,20 @@ impl<I> GameCharacter<I> {
 
     // ---- food, drink, pills ------------------------------------------------
 
-    /// `BodyDamage.JustDrankBooze`.
-    pub fn just_drank_booze(&mut self, chars: &Characters, food: &FoodInfo, mut percentage: f32) -> ScriptResult {
+    /// `BodyDamage.JustDrankBooze(food, percentage)`.
+    pub fn just_drank_booze(
+        &mut self,
+        sm: &ScriptManager,
+        chars: &Characters,
+        food: &InventoryItem,
+        mut percentage: f32,
+    ) -> ScriptResult {
         let mut del = 1.0f32;
-        if food.base_hunger != 0.0 {
-            percentage = food.hung_change * percentage / food.base_hunger * 2.0;
+        if food.get_base_hunger() != 0.0 {
+            percentage = food.get_hung_change() * percentage / food.get_base_hunger() * 2.0;
         }
         del *= percentage;
-        if food.name.to_lowercase().contains("beer") || food.low_alcohol {
+        if food.get_name().to_lowercase().contains("beer") || has_tag(sm, food, "LOW_ALCOHOL") {
             del *= 0.25;
         }
         let hunger = self.stats.get(&stat(chars, "HUNGER")?);
@@ -1096,33 +1033,40 @@ impl<I> GameCharacter<I> {
         Ok(())
     }
 
-    /// `BodyDamage.JustTookPill` (the item's `UseAndSync` is the caller's).
-    pub fn just_took_pill(&mut self, chars: &Characters, ctx: &dyn SimContext, pill: &PillInfo) -> ScriptResult {
+    /// `BodyDamage.JustTookPill(pill)`: ends with `pill.UseAndSync()`.
+    pub fn just_took_pill(
+        &mut self,
+        chars: &Characters,
+        ctx: &dyn SimContext,
+        pill: &mut InventoryItem,
+    ) -> ScriptResult {
         let drunk = self.stats.get(&stat(chars, "INTOXICATION")?) > 10.0;
-        match pill.item_type.as_str() {
+        match pill.get_type() {
             "PillsBeta" => self.beta_blockers(if drunk { 0.15 } else { 0.3 }),
             "PillsAntiDep" => self.beta_anti_depress(if drunk { 0.15 } else { 0.3 }),
             "PillsSleepingTablets" => {
                 self.sleeping_tablet(0.1);
                 if self.is_player() {
-                    self.sleeping_pills_taken += 1;
+                    let n = self.sleeping_pills_taken + 1;
+                    self.set_sleeping_pills_taken(chars, ctx, n)?;
                 }
             }
             "Pills" => self.pain_meds(if drunk { 0.15 } else { 0.45 }),
             "PillsVitamins" => {
                 let f = stat(chars, "FATIGUE")?;
                 if drunk {
-                    self.stats.add(&f, pill.fatigue_change / 2.0);
+                    self.stats.add(&f, pill.get_fatigue_change() / 2.0);
                 } else {
-                    self.stats.add(&f, pill.fatigue_change);
+                    self.stats.add(&f, pill.get_fatigue_change());
                 }
             }
             _ => {}
         }
-        self.stats.add(&stat(chars, "STRESS")?, pill.stress_change);
-        if let Some(f) = &pill.on_eat {
-            ctx.event(SimEvent::CallOnEat(f.clone()));
+        self.stats.add(&stat(chars, "STRESS")?, pill.get_stress_change());
+        if let Some(f) = pill.get_on_eat() {
+            ctx.event(SimEvent::CallOnEat(f.to_string()));
         }
+        pill.use_and_sync();
         Ok(())
     }
 
@@ -1132,29 +1076,29 @@ impl<I> GameCharacter<I> {
         sm: &ScriptManager,
         chars: &Characters,
         ctx: &dyn SimContext,
-        food: &FoodInfo,
+        food: &InventoryItem,
         percentage: f32,
         use_utensil: bool,
     ) -> ScriptResult {
         let poison = stat(chars, "POISON")?;
         let pain = stat(chars, "PAIN")?;
-        if food.poison_power > 0 {
-            let mut power = food.poison_power as f32 * percentage;
-            if self.has_trait(sm, "IRON_GUT")? && food.item_type != "Bleach" {
+        if food.get_poison_power() > 0 {
+            let mut power = food.get_poison_power() as f32 * percentage;
+            if self.has_trait(sm, "IRON_GUT")? && food.get_type() != "Bleach" {
                 power /= 2.0;
             }
             if self.has_trait(sm, "WEAK_STOMACH")? {
                 power *= 2.0;
             }
             self.stats.add(&poison, power);
-            self.stats.add(&pain, food.poison_power as f32 * percentage / 6.0);
+            self.stats.add(&pain, food.get_poison_power() as f32 * percentage / 6.0);
         }
-        if food.tainted {
+        if food.is_tainted() {
             self.stats.add(&poison, 20.0 * percentage);
             self.stats.add(&pain, 10.0 * percentage / 6.0);
         }
-        if food.reduce_infection_power > 0.0 {
-            self.reduce_infection_power = food.reduce_infection_power;
+        if food.get_reduce_infection_power() > 0.0 {
+            self.reduce_infection_power = food.get_reduce_infection_power();
         }
         let modifier = |change: f32| {
             if !use_utensil {
@@ -1165,16 +1109,18 @@ impl<I> GameCharacter<I> {
                 0.75
             }
         };
-        self.stats.add(&stat(chars, "BOREDOM")?, food.boredom_change * percentage * modifier(food.boredom_change));
-        self.stats.add(&stat(chars, "UNHAPPINESS")?, food.unhappy_change * percentage * modifier(food.unhappy_change));
-        if food.alcoholic {
-            self.just_drank_booze(chars, food, percentage)?;
+        let boredom = food.get_boredom_change();
+        self.stats.add(&stat(chars, "BOREDOM")?, boredom * percentage * modifier(boredom));
+        let unhappy = food.get_unhappy_change();
+        self.stats.add(&stat(chars, "UNHAPPINESS")?, unhappy * percentage * modifier(unhappy));
+        if food.is_alcoholic() {
+            self.just_drank_booze(sm, chars, food, percentage)?;
         }
         if self.stats.is_at_minimum(&stat(chars, "HUNGER")?) {
-            let change = food.hunger_change.abs() * percentage;
+            let change = food.get_hunger_change().abs() * percentage;
             let bd = &mut self.body_damage;
             bd.health_from_food_timer = (bd.health_from_food_timer + change * 13000.0) as i32 as f32;
-            if food.cooked {
+            if food.is_cooked() {
                 bd.health_from_food_timer = (bd.health_from_food_timer + change * 13000.0) as i32 as f32;
             }
             if bd.health_from_food_timer > 11000.0 {
@@ -1184,35 +1130,37 @@ impl<I> GameCharacter<I> {
         if ctx.game_mode() == "Tutorial" {
             return Ok(());
         }
-        if !food.cooked && food.dangerous_uncooked {
+        let egg = has_tag(sm, food, "EGG");
+        if !food.is_cooked() && food.is_b_dangerous_uncooked() {
             self.body_damage.health_from_food_timer = 0.0;
             let mut chance = 75;
-            if food.egg {
+            if egg {
                 chance = 5;
             }
             if self.has_trait(sm, "IRON_GUT")? {
                 chance /= 2;
-                if food.egg {
+                if egg {
                     chance = 0;
                 }
             }
             if self.has_trait(sm, "WEAK_STOMACH")? {
                 chance *= 2;
             }
-            if chance > 0 && !self.body_damage.is_infected && !food.burnt {
+            if chance > 0 && !self.body_damage.is_infected && !food.is_burnt() {
                 self.stats.add(&poison, 15.0 * percentage);
             }
         }
-        if food.age >= food.off_age_max as f32 {
-            let mut off = food.age - food.off_age_max as f32;
+        let (age, off_age, off_age_max) = (food.get_age(), food.get_off_age(), food.get_off_age_max());
+        if age >= off_age_max as f32 {
+            let mut off = age - off_age_max as f32;
             if off == 0.0 {
                 off = 1.0;
             }
             if off > 5.0 {
                 off = 5.0;
             }
-            let mut chance = if food.off_age_max > food.off_age {
-                (off / (food.off_age_max - food.off_age) as f32 * 100.0) as i32
+            let mut chance = if off_age_max > off_age {
+                (off / (off_age_max - off_age) as f32 * 100.0) as i32
             } else {
                 100
             };
@@ -1224,20 +1172,19 @@ impl<I> GameCharacter<I> {
             }
             if !self.body_damage.is_infected {
                 if ctx.rand_next(100) < chance {
-                    self.stats.add(&poison, 5.0 * (food.hung_change * 10.0).abs() * percentage);
+                    self.stats.add(&poison, 5.0 * (food.get_hung_change() * 10.0).abs() * percentage);
                 } else {
-                    self.stats.add(&poison, 2.0 * (food.hung_change * 10.0).abs() * percentage);
+                    self.stats.add(&poison, 2.0 * (food.get_hung_change() * 10.0).abs() * percentage);
                 }
             }
         }
         Ok(())
     }
 
-    /// `BodyDamage.JustReadSomething`, given the literature's boredom and
-    /// unhappiness changes.
-    pub fn just_read_something(&mut self, chars: &Characters, boredom: f32, unhappy: f32) -> ScriptResult {
-        self.stats.add(&stat(chars, "BOREDOM")?, boredom);
-        self.stats.add(&stat(chars, "UNHAPPINESS")?, unhappy);
+    /// `BodyDamage.JustReadSomething(literature)`.
+    pub fn just_read_something(&mut self, chars: &Characters, literature: &InventoryItem) -> ScriptResult {
+        self.stats.add(&stat(chars, "BOREDOM")?, literature.get_boredom_change());
+        self.stats.add(&stat(chars, "UNHAPPINESS")?, literature.get_unhappy_change());
         Ok(())
     }
 
@@ -1296,9 +1243,20 @@ impl<I> GameCharacter<I> {
             }
             decrease = v;
         }
-        // TODO(ClothingWetness): `clothingWetness.updateWetness(increase,
-        // decrease)` (and its sync on a server).
-        let _ = (increase, decrease);
+        if let Some(cw) = self.clothing_wetness.as_mut() {
+            let thermo = self.body_damage.thermoregulator.as_ref().ok_or_else(|| npe("getThermoregulator()"))?;
+            cw.update_wetness(
+                sm,
+                ctx,
+                &chars.sim.body_part_types,
+                &mut self.items,
+                &mut self.body_damage.parts,
+                thermo,
+                increase,
+                decrease,
+            );
+            // TODO(network): `getClothingWetnessSync().update()` on a server.
+        }
         let wet = stat(chars, "WETNESS")?;
         let current = self.stats.get(&wet);
         let mut average = 0.0f32;
@@ -1368,19 +1326,7 @@ impl<I> GameCharacter<I> {
         } else if smoker {
             bd.time_to_sneeze_or_cough = timer(SMOKER_SNEEZE_TIMER_MIN, SMOKER_SNEEZE_TIMER_MAX);
         }
-        let mut consumed = false;
-        let env = &mut self.environment;
-        if let Some(uses) = env.primary_hand_tissue_uses {
-            if uses > 0 {
-                env.primary_hand_tissue_uses = Some(uses - 1);
-                ctx.event(SimEvent::TissueUsed { primary: true, used_up: uses - 1 <= 0 });
-                consumed = true;
-            }
-        } else if let Some(uses) = env.secondary_hand_tissue_uses.filter(|u| *u > 0) {
-            env.secondary_hand_tissue_uses = Some(uses - 1);
-            ctx.event(SimEvent::TissueUsed { primary: false, used_up: uses - 1 <= 0 });
-            consumed = true;
-        }
+        let consumed = self.items.use_tissue(sm);
         let bd = &mut self.body_damage;
         if consumed {
             bd.sneeze_cough_active += 2;
@@ -1710,7 +1656,7 @@ impl<I> GameCharacter<I> {
         if ctx.decaying_corpse_health_impact() != 1 {
             let mut rate = self.base_corpse_sickness(ctx);
             if rate > 0.0 {
-                let defense = self.environment.corpse_sickness_defense;
+                let defense = self.items.corpse_sickness_defense(sm, ctx, rate, true);
                 if defense > 0.0 {
                     let m = 0.0f32.max(1.0 - defense / 100.0);
                     rate *= m;
@@ -1767,7 +1713,13 @@ impl<I> GameCharacter<I> {
     // ---- BodyPart.DamageUpdate ---------------------------------------------
 
     /// `BodyPart.DamageUpdate` of part `i`.
-    pub fn body_part_damage_update(&mut self, chars: &Characters, ctx: &dyn SimContext, i: usize) -> ScriptResult {
+    pub fn body_part_damage_update(
+        &mut self,
+        sm: &ScriptManager,
+        chars: &Characters,
+        ctx: &dyn SimContext,
+        i: usize,
+    ) -> ScriptResult {
         if ctx.is_client() && self.is_local_player(ctx) {
             return Ok(());
         }
@@ -1813,8 +1765,8 @@ impl<I> GameCharacter<I> {
         if p.fracture_time > 0.0 && !p.splint {
             apply(p, 3.125 * s * mult);
         }
-        let dirty = self.environment.dirty_clothing.get(i).copied().unwrap_or(false);
-        let bloody = self.environment.bloody_clothing.get(i).copied().unwrap_or(false);
+        let dirty = self.items.has_dirty_clothing(sm, i as i32);
+        let bloody = self.items.has_bloody_clothing(sm, i as i32);
         let stiffness = if self.is_player() { self.fitness.as_ref().map(|f| f.on_going_stiffness()) } else { None };
         let mut rip = self.reduce_infection_power;
         self.body_damage.parts[i].heal_update(ctx, &mut rip, dirty, bloody, stiffness);
@@ -2104,7 +2056,7 @@ impl<I> GameCharacter<I> {
             }
         }
         for i in 0..max {
-            self.body_part_damage_update(chars, ctx, i)?;
+            self.body_part_damage_update(sm, chars, ctx, i)?;
         }
         self.calculate_overall_health(chars);
         if self.body_damage.overall_body_health <= 0.0 {
@@ -2199,14 +2151,26 @@ impl<I> GameCharacter<I> {
         Ok(())
     }
 
-    /// `BodyDamage.DamageFromWeapon`. The owner's `spikePart` calls are the
+    /// `BodyDamage.isSpikedPart(owner, this, part)`.
+    fn is_spiked_part(&self, sm: &ScriptManager, owner: &WeaponUser<'_>, part_index: i32) -> bool {
+        let behind = if !owner.aim_at_floor { owner.behind } else { self.environment.fall_on_front };
+        if behind {
+            self.items.body_part_is_spiked_behind(sm, part_index)
+        } else {
+            self.items.body_part_is_spiked(sm, part_index)
+        }
+    }
+
+    /// `BodyDamage.DamageFromWeapon(weapon, part)`; `owner` is
+    /// `weapon.getUsingPlayer()`. The owner's `spikePart` calls are the
     /// owner's.
     pub fn damage_from_weapon(
         &mut self,
         sm: &ScriptManager,
         chars: &Characters,
         ctx: &dyn SimContext,
-        weapon: &WeaponHit,
+        weapon: &InventoryItem,
+        owner: Option<&WeaponUser<'_>>,
         mut part_index: i32,
     ) -> ScriptResult {
         if ctx.is_client() && self.is_player() && !self.is_local_player(ctx) {
@@ -2214,9 +2178,9 @@ impl<I> GameCharacter<I> {
         }
         let types = &chars.sim.body_part_types;
         let (mut blunt, mut blade, mut bullet) = (false, false, false);
-        if weapon.blunt {
+        if is_of_weapon_category(sm, weapon, "BLUNT") || is_of_weapon_category(sm, weapon, "SMALL_BLUNT") {
             blunt = true;
-        } else if !weapon.aimed_firearm {
+        } else if !weapon.is_aimed_firearm() {
             blade = true;
         } else {
             bullet = true;
@@ -2225,9 +2189,11 @@ impl<I> GameCharacter<I> {
             part_index = ctx.rand_next_range(types.index("Hand_L")? as i32, types.max_index() as i32);
         }
         let slot = self.part_slot(chars, part_index)?;
-        let def = weapon.clothing_defense.get(slot).copied().unwrap_or(0.0);
+        let def = self.items.body_part_clothing_defense(sm, part_index, blade, bullet);
         if (ctx.rand_next(100) as f32) < def {
-            if weapon.has_using_player && weapon.knife && !weapon.handguard && weapon.spiked_part(slot) {
+            if owner.is_some_and(|o| {
+                is_knife(weapon) && !has_tag(sm, weapon, "HANDGUARD") && self.is_spiked_part(sm, o, part_index)
+            }) {
                 ctx.event(SimEvent::AddBlood { part: part_index, scratched: true, bitten: false, all_layers: false });
             }
             ctx.event(SimEvent::AddHoleFromZombieAttacks { part: part_index, scratch_or_bite: false });
@@ -2269,7 +2235,7 @@ impl<I> GameCharacter<I> {
             p.set_have_bullet(&env, true, 0);
             pain = bd.initial_bite_pain * types.pain_modifier(part_index);
         }
-        let mut damage = ctx.rand_next_float(weapon.min_damage, weapon.max_damage) * 15.0;
+        let mut damage = ctx.rand_next_float(weapon.get_min_damage(), weapon.get_max_damage()) * 15.0;
         if part_index == types.index("Head")? as i32 {
             damage *= 4.0;
         }
@@ -2280,14 +2246,15 @@ impl<I> GameCharacter<I> {
             damage *= 2.0;
         }
         if ctx.is_server() {
-            let m = if weapon.ranged { ctx.pvp_firearm_damage_modifier() } else { ctx.pvp_melee_damage_modifier() };
+            let m = if weapon.is_ranged() { ctx.pvp_firearm_damage_modifier() } else { ctx.pvp_melee_damage_modifier() };
             damage = (damage as f64 * m) as f32;
         }
         // `damageFromSpikedArmor(owner, this, part, weapon)`.
-        if weapon.has_using_player && (weapon.owner_shove || weapon.knife) && weapon.spiked_part(slot) {
-            let foot = weapon.owner_aim_at_floor && weapon.owner_shove;
-            let primary = !foot && weapon.owner_primary_free;
-            let secondary = !foot && weapon.owner_secondary_free && weapon.owner_shove;
+        if let Some(o) = owner.filter(|o| (o.do_shove || is_knife(weapon)) && self.is_spiked_part(sm, o, part_index)) {
+            let free = |i: Option<&InventoryItem>| i.is_none_or(is_hand_weapon);
+            let foot = o.aim_at_floor && o.do_shove;
+            let primary = !foot && free(o.primary_hand_item);
+            let secondary = !foot && free(o.secondary_hand_item) && o.do_shove;
             for hit in [foot, primary, secondary] {
                 if hit {
                     ctx.event(SimEvent::AddBlood {
@@ -2491,12 +2458,14 @@ impl<I> GameCharacter<I> {
         damage *= (ctx.rand_next(10) + 10) as f32;
         let mut hole_done = false;
         let mut scratch_or_bite = true;
-        let behind_hit = behind || z.fall_on_front;
-        let slot = self.part_slot(chars, part)?;
+        let behind_hit = behind || self.environment.fall_on_front;
         let player = self.is_player();
         if ctx.rand_next(100) > base {
-            let spiked = if behind_hit { &z.spiked_behind } else { &z.spiked };
-            let spiked = spiked.get(slot).copied().unwrap_or(false);
+            let spiked = if behind_hit {
+                self.items.body_part_is_spiked_behind(sm, part)
+            } else {
+                self.items.body_part_is_spiked(sm, part)
+            };
             out.scratch = true;
             out.helmet_fall = Some(part == idx("Neck")? || part == idx("Head")?);
             if ctx.rand_next(100) > lacer {
@@ -2510,7 +2479,7 @@ impl<I> GameCharacter<I> {
             }
             let alive = self.body_damage.health() > 0.0;
             if out.scratch || out.laceration {
-                let defense = z.scratch_defense.get(slot).copied().unwrap_or(0.0);
+                let defense = self.items.body_part_clothing_defense(sm, part, false, false);
                 out.zombie_state = Some(if out.scratch { "AttackScratch" } else { "AttackLacerate" });
                 if alive {
                     ctx.event(SimEvent::PlaySound("ZombieScratch".to_string()));
@@ -2546,7 +2515,7 @@ impl<I> GameCharacter<I> {
                 }
                 ctx.event(SimEvent::AddBlood { part, scratched: true, bitten: false, all_layers: true });
             } else {
-                let defense = z.bite_defense.get(slot).copied().unwrap_or(0.0);
+                let defense = self.items.body_part_clothing_defense(sm, part, true, false);
                 out.zombie_state = Some("AttackBite");
                 if alive {
                     let sound = if part == idx("Neck")? { "NeckBite".to_string() } else { z.bite_sound.clone() };

@@ -236,6 +236,7 @@ impl Moodle {
     pub fn update<I>(
         &mut self,
         chr: &mut GameCharacter<I>,
+        sm: &ScriptManager,
         chars: &Characters,
         ctx: &dyn SimContext,
     ) -> ScriptResult<bool> {
@@ -364,7 +365,7 @@ impl Moodle {
             }
         }
         if self.is("HEAVY_LOAD") {
-            let ratio = chr.environment.inventory_capacity_weight / chr.max_weight() as f32;
+            let ratio = chr.capacity_weight(sm, ctx) / chr.max_weight() as f32;
             if alive {
                 let t = ms.thresholds("HEAVY_LOAD")?;
                 if ratio >= t[4] {
@@ -503,7 +504,7 @@ impl Moodle {
             }
         }
         if self.is("NOXIOUS_SMELL") && alive {
-            if chr.environment.building_toxic && !chr.environment.protected_from_toxic {
+            if chr.environment.building_toxic && !chr.items.is_protected_from_toxic(sm) {
                 level = MAX;
             } else if ctx.decaying_corpse_health_impact() != 1 {
                 let rate = chr.corpse_sickness_rate;
@@ -644,11 +645,11 @@ impl Moodles {
 
 impl<I> GameCharacter<I> {
     /// `getMoodles().Update()`.
-    pub fn update_moodles(&mut self, chars: &Characters, ctx: &dyn SimContext) -> ScriptResult {
+    pub fn update_moodles(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext) -> ScriptResult {
         let mut moodles = std::mem::take(&mut self.moodles.moodles);
         let mut result = Ok(());
         for m in &mut moodles {
-            match m.update(self, chars, ctx) {
+            match m.update(self, sm, chars, ctx) {
                 Ok(true) => self.moodles.moodles_state_changed = true,
                 Ok(false) => {}
                 Err(e) => {

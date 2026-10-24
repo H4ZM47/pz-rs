@@ -668,11 +668,12 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
         Ok(0)
     });
     let ch = chars.clone();
+    let s = sm.clone();
     b.method("Update", move |c| {
         let chr = moodles_chr(c)?;
         let v = character_value(&chr);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().update_moodles(&chars, ctx))?;
+        with_ctx(c, &v, |ctx| chr.borrow_mut().update_moodles(&s, &chars, ctx))?;
         Ok(0)
     });
 
@@ -719,6 +720,7 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
         Ok(0)
     });
     let ch = chars.clone();
+    let s = sm.clone();
     b.method("Update", move |c| {
         let (chr, t) = moodle_this(c)?;
         let v = character_value(&chr);
@@ -729,7 +731,7 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
                 return Err(ScriptError::new("java.lang.NullPointerException"));
             };
             let mut m = g.moodles.all()[i].clone();
-            let r = m.update(&mut g, &chars, ctx);
+            let r = m.update(&mut g, &s, &chars, ctx);
             *g.moodles.moodle_mut(&t).expect("present") = m;
             r
         })?;

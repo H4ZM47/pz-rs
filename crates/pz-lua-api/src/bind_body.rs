@@ -9,12 +9,14 @@
 //! `SimContext` ([`crate::bind_character_sim::install_sim_context`]);
 //! `OnPlayerGetDamage` reaches the Lua event sink after the call returns.
 //!
-//! Not exposed yet (their arguments are unported objects):
-//! `JustAteFood`, `JustDrankBooze`, `JustTookPill`, `JustReadSomething`,
-//! `DamageFromWeapon`, `DamageFromAnimal`, `AddRandomDamageFromZombie`,
-//! `damageFromSpikedArmor`, `load`/`save`,
-//! `getBodyPartsLastState`, `BodyPart.sync`/`syncWrite`/`getThermalNode`.
-//! TODO(Food, Literature, HandWeapon, IsoZombie, IsoAnimal).
+//! Not exposed yet: the methods taking items (`JustAteFood`,
+//! `JustDrankBooze`, `JustTookPill`, `JustReadSomething`,
+//! `DamageFromWeapon`, `damageFromSpikedArmor`) are ported over
+//! `pz-inventory` items, which have no Lua objects yet; the ones taking a
+//! zombie or animal (`AddRandomDamageFromZombie`, `DamageFromAnimal`);
+//! `load`/`save`, `getBodyPartsLastState`,
+//! `BodyPart.sync`/`syncWrite`/`getThermalNode`.
+//! TODO(InventoryItem Lua objects, IsoZombie, IsoAnimal).
 
 use crate::bind_body_damage::{enum_arg, BODY_PART_TYPE_CLASS};
 use crate::bind_character_sim::{character_value, chr_of, with_ctx, LuaGameCharacterRef, ISO_GAME_CHARACTER_CLASS};
@@ -841,20 +843,23 @@ fn register_body_part(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         with_env(c, &s, |p, e| p.generate_fracture_new(e, v))
     });
     let k = chars.clone();
+    let s = sm.clone();
     b.method("DamageUpdate", move |c| {
         let (chr, i) = bp_this(c)?;
         let chars = k.borrow();
-        run(c, &chr, |ch, ctx| ch.body_part_damage_update(&chars, ctx, i))?;
+        run(c, &chr, |ch, ctx| ch.body_part_damage_update(&s, &chars, ctx, i))?;
         Ok(0)
     });
-    b.method("hasDirtyClothing", |c| {
+    let s = sm.clone();
+    b.method("hasDirtyClothing", move |c| {
         let (chr, i) = bp_this(c)?;
-        let v = chr.borrow().environment.dirty_clothing.get(i).copied().unwrap_or(false);
+        let v = chr.borrow().items.has_dirty_clothing(&s, i as i32);
         Ok(c.push(v))
     });
-    b.method("hasBloodyClothing", |c| {
+    let s = sm.clone();
+    b.method("hasBloodyClothing", move |c| {
         let (chr, i) = bp_this(c)?;
-        let v = chr.borrow().environment.bloody_clothing.get(i).copied().unwrap_or(false);
+        let v = chr.borrow().items.has_bloody_clothing(&s, i as i32);
         Ok(c.push(v))
     });
 }
