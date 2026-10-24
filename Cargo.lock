@@ -178,10 +178,12 @@ name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "pz-classfile",
  "pz-core",
  "pz-fs",
  "pz-kahlua",
  "pz-render",
+ "pz-sandbox",
  "pz-text",
  "pz-ui",
 ]
@@ -193,6 +195,16 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "png",
  "pz-fs",
+]
+
+[[package]]
+name = "pz-sandbox"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-core",
+ "pz-kahlua",
+ "pz-text",
 ]
 
 [[package]]

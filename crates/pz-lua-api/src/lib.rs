@@ -13,6 +13,7 @@ pub mod bind_globals;
 pub mod bind_java_util;
 pub mod bind_misc;
 pub mod bind_render;
+pub mod bind_sandbox;
 pub mod bind_text;
 pub mod bind_ui;
 pub mod events;
@@ -31,6 +32,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_render::register(mgr);
     bind_text::register(&mut mgr.thread);
     bind_misc::register(&mut mgr.thread, mgr.fs.clone(), mgr.events.clone());
+    bind_sandbox::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }
