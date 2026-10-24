@@ -16,6 +16,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::rc::Rc;
 
+use pz_inventory::component::FactoryRng;
 use pz_inventory::context::{ItemContext, NoOwner};
 use pz_inventory::dictionary::WorldDictionary;
 use pz_inventory::factory::{parse_item_names, ScriptItems};
@@ -27,6 +28,53 @@ use pz_world::objects::ObjectKind;
 use pz_world::save::chunk_file::{chunk_path, load_chunk};
 use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables, WORLD_VERSION};
 use pz_world::{IsoSpriteManager, SpriteTables};
+
+/// `java.util.Random`.
+struct JavaRandom(u64);
+
+impl JavaRandom {
+    fn new(seed: i64) -> Self {
+        JavaRandom((seed as u64 ^ 0x5DEECE66D) & ((1 << 48) - 1))
+    }
+    fn bits(&mut self, bits: u32) -> i32 {
+        self.0 = (self.0.wrapping_mul(0x5DEECE66D).wrapping_add(0xB)) & ((1 << 48) - 1);
+        (self.0 >> (48 - bits)) as i64 as i32
+    }
+}
+
+impl FactoryRng for JavaRandom {
+    fn next_int(&mut self, bound: i32) -> i32 {
+        if bound <= 0 {
+            return 0;
+        }
+        let mut r = self.bits(31);
+        let m = bound - 1;
+        if bound & m == 0 {
+            return ((bound as i64 * r as i64) >> 31) as i32;
+        }
+        let mut u = r;
+        loop {
+            r = u % bound;
+            if u.wrapping_sub(r).wrapping_add(m) >= 0 {
+                return r;
+            }
+            u = self.bits(31);
+        }
+    }
+    fn next_float(&mut self, min: f32, max: f32) -> f32 {
+        if max == min {
+            return min;
+        }
+        let (min, max) = if min > max { (max, min) } else { (min, max) };
+        min + (self.bits(24) as f32 / (1 << 24) as f32) * (max - min)
+    }
+}
+
+/// `String.hashCode()`.
+fn java_hash(s: &str) -> i32 {
+    s.encode_utf16()
+        .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
+}
 
 struct Ctx {
     world_age: f64,
@@ -439,11 +487,11 @@ fn main() {
     env.world_age_hours = world_age;
     // Every script item, as `ScriptManager.FindItem` gives it.
     let mut scripts = HashMap::new();
-    for it in pz_scripts::objects::items::get_all_items(&sm) {
-        let it = it.borrow();
-        let Some(t) = ItemTemplate::from_script(&sm, &it) else {
+    for rc in pz_scripts::objects::items::get_all_items(&sm) {
+        let Some(t) = ItemTemplate::from_script_ref(&sm, &rc) else {
             continue;
         };
+        let it = rc.borrow();
         let t = match names.get(&it.full_name()) {
             Some(n) if *n != t.display_name => {
                 let mut t = (*t).clone();
@@ -482,6 +530,7 @@ fn main() {
         if full.starts_with("Moveables.") {
             continue;
         }
+        *ctx.env.rand.borrow_mut() = Some(Box::new(JavaRandom::new(java_hash(full) as i64)));
         let mut i = ctx.create_item(full).unwrap();
         let mut o = format!("{full}\tclass={}", i.class_name());
         getters(&mut i, &ctx, &mut o, false);
@@ -523,6 +572,9 @@ fn main() {
     let mut n = 0;
     for (wx, wy) in chunks {
         let bytes = std::fs::read(chunk_path(save_dir, wx, wy)).unwrap();
+        *env.rand.borrow_mut() = Some(Box::new(JavaRandom::new(
+            ((wx as i64) << 32) ^ (wy as i64 & 0xffff_ffff),
+        )));
         let ch = match load_chunk(&bytes, wx, wy, &save_ctx) {
             Ok(c) => c.chunk,
             Err(e) => {

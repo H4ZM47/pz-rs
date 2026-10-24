@@ -91,6 +91,20 @@ pub trait GameRand {
     }
 }
 
+/// [`FactoryRng`](pz_inventory::component::FactoryRng) over a [`GameRand`]: component
+/// creation (`GameEntityFactory`) drawing from the game's `Rand`.
+pub struct FactoryRand<'a>(pub &'a mut dyn GameRand);
+
+impl pz_inventory::component::FactoryRng for FactoryRand<'_> {
+    fn next_int(&mut self, max: i32) -> i32 {
+        self.0.next(max)
+    }
+
+    fn next_float(&mut self, min: f32, max: f32) -> f32 {
+        self.0.next_float_range(min, max)
+    }
+}
+
 /// `Integer.parseInt(s)`: an optional sign and decimal digits.
 pub fn parse_int(s: &str) -> Option<i32> {
     let digits = s.strip_prefix(['+', '-']).unwrap_or(s);

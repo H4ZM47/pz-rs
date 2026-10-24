@@ -1241,23 +1241,7 @@ impl ItemContainer {
 pub fn fluid_container_amount(
     item: &InventoryItem,
     entity: &dyn pz_entity::EntityContext,
-    world_version: i32,
+    _world_version: i32,
 ) -> Option<f32> {
-    let fluid = pz_scripts::objects::entity::ComponentType::FluidContainer;
-    for b in &item.components {
-        let mut bytes = vec![1u8];
-        bytes.extend_from_slice(&(b.data.len() as i32 + 2).to_be_bytes());
-        bytes.extend_from_slice(&b.type_id.to_be_bytes());
-        bytes.extend_from_slice(&b.data);
-        let Ok((c, _)) = pz_entity::entity::load_components(&bytes, world_version, entity) else {
-            continue;
-        };
-        for comp in c.list {
-            if let pz_entity::entity::Component::FluidContainer(f) = comp {
-                let _ = fluid;
-                return Some(f.amount());
-            }
-        }
-    }
-    None
+    item.get_fluid_container(entity).map(|f| f.get_amount())
 }

@@ -208,6 +208,14 @@ impl Components {
         self.list.push(c);
     }
 
+    /// Replaces the component of `c`'s type where it is, or appends it.
+    pub fn add_replace_in_place(&mut self, c: Component) {
+        match self.list.iter_mut().find(|x| x.kind() == c.kind()) {
+            Some(x) => *x = c,
+            None => self.list.push(c),
+        }
+    }
+
     pub fn remove(&mut self, kind: ComponentType) -> Option<Component> {
         let i = self.list.iter().position(|c| c.kind() == kind)?;
         Some(self.list.remove(i))

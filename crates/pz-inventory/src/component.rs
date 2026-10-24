@@ -10,9 +10,21 @@
 //! and encodes them back on `save_entity`, and supplies the components
 //! `GameEntityFactory.CreateInventoryItemEntity` gives a new item
 //! ([`ComponentCodec::factory_components`]).
+//!
+//! With [`EntityCodec`] the blobs are always the current format and decode
+//! through [`InventoryItem::decode_components`](crate::InventoryItem::decode_components) /
+//! [`get_fluid_container`](crate::InventoryItem::get_fluid_container).
+
+pub use pz_entity::factory::FactoryRng;
 
 use crate::io::{err, Reader, SaveResult, Writer};
+use crate::model::{decode_blobs, encode_blobs};
 use crate::template::ItemTemplate;
+
+/// The world version component blobs decoded by
+/// [`EntityCodec`] are stored in (re-encoded in the current format,
+/// `IsoWorld.getWorldVersion()` of this build).
+pub const COMPONENT_WORLD_VERSION: i32 = 249;
 
 /// One saved ECS component: its `ComponentType` id and payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,12 +76,34 @@ pub trait ComponentCodec {
         Ok(())
     }
 
-    /// Components a newly created item of this script has, as saved. The
-    /// opaque codec has no component definitions and returns none; items
-    /// whose script defines components then only round-trip when their
-    /// file holds them (see the crate notes).
-    fn factory_components(&self, _template: &ItemTemplate) -> Vec<ComponentBlob> {
+    /// Components a newly created item of this script has, as saved
+    /// (`GameEntityFactory.CreateInventoryItemEntity`), drawing from `rng`
+    /// where the original calls `Rand`. The opaque codec has no component
+    /// definitions and returns none; items whose script defines components
+    /// then only round-trip when their file holds them (see the crate
+    /// notes).
+    fn factory_components(
+        &self,
+        _template: &ItemTemplate,
+        _rng: &mut dyn FactoryRng,
+    ) -> Vec<ComponentBlob> {
         Vec::new()
+    }
+
+    /// The decoded form of [`factory_components`](Self::factory_components)
+    /// for codecs that decode (`None`: use the blobs).
+    fn factory_entity(
+        &self,
+        _template: &ItemTemplate,
+        _rng: &mut dyn FactoryRng,
+    ) -> Option<pz_entity::Components> {
+        None
+    }
+
+    /// The registries decoded components resolve against (`None` for a
+    /// codec that keeps bytes).
+    fn entity_context(&self) -> Option<&dyn pz_entity::EntityContext> {
+        None
     }
 
     /// Whether the codec can build this script's components. Items whose
@@ -84,11 +118,13 @@ pub struct OpaqueComponents;
 impl ComponentCodec for OpaqueComponents {}
 
 /// [`ComponentCodec`] backed by `pz-entity`: every component block is
-/// decoded into its component and encoded back, so items whose components
-/// do not decode cleanly stay raw records. Storage stays [`ComponentBlob`]s
-/// (re-encoded bytes). `factory_components` still adds none: building them
-/// needs `pz_entity::factory::create_from_script` with the game's `Rand`
-/// and scripts dictionary (not wired yet).
+/// decoded into its component (loading in place into the components the
+/// item already has, as `loadEntity` does) and encoded back, so items whose
+/// components do not decode cleanly stay raw records. Storage stays
+/// [`ComponentBlob`]s, in the current format (decode them with
+/// [`InventoryItem::decode_components`](crate::InventoryItem::decode_components)).
+/// New items get their components from
+/// `pz_entity::factory::create_from_script`.
 pub struct EntityCodec<'a> {
     pub ctx: &'a dyn pz_entity::EntityContext,
 }
@@ -103,27 +139,73 @@ impl ComponentCodec for EntityCodec<'_> {
         let rest = &r.buf[r.pos..];
         let n = pz_entity::entity::entity_len(rest)
             .map_err(|e| crate::io::SaveError(format!("entity: {e:?}")))?;
-        let (decoded, info) =
-            pz_entity::entity::load_components(&rest[..n], world_version, self.ctx)
-                .map_err(|e| crate::io::SaveError(format!("entity: {e:?}")))?;
+        let Some(mut comps) = decode_blobs(components, self.ctx) else {
+            return err("entity: existing components do not decode");
+        };
+        let info = pz_entity::entity::load_components_into(
+            &mut comps,
+            &rest[..n],
+            world_version,
+            self.ctx,
+        )
+        .map_err(|e| crate::io::SaveError(format!("entity: {e:?}")))?;
         if !info.issues.is_empty() || info.consumed != n {
             return err(format!("entity issues: {:?}", info.issues));
         }
         r.bytes(n)?;
-        // Re-encode and split into blocks.
-        let bytes = pz_entity::entity::save_components(&decoded);
-        let mut blobs = Vec::new();
-        let loaded =
-            OpaqueComponents.load_entity(&mut Reader::new(&bytes), world_version, &mut blobs)?;
-        // An existing component of the type loads in place.
-        let mut out = std::mem::take(components);
-        for b in blobs {
-            match out.iter_mut().find(|e| e.type_id == b.type_id) {
-                Some(e) => *e = b,
-                None => out.push(b),
-            }
+        *components = encode_blobs(&comps);
+        Ok(info.loaded.iter().map(|t| t.id()).collect())
+    }
+
+    fn entity_context(&self) -> Option<&dyn pz_entity::EntityContext> {
+        Some(self.ctx)
+    }
+
+    fn factory_components(
+        &self,
+        template: &ItemTemplate,
+        rng: &mut dyn FactoryRng,
+    ) -> Vec<ComponentBlob> {
+        self.factory_entity(template, rng)
+            .map_or_else(Vec::new, |c| encode_blobs(&c))
+    }
+
+    fn factory_entity(
+        &self,
+        template: &ItemTemplate,
+        rng: &mut dyn FactoryRng,
+    ) -> Option<pz_entity::Components> {
+        let script = template.script.as_ref()?;
+        let script = script.0.borrow();
+        // `CreateInventoryItemEntity`: nothing without component scripts.
+        if !script.entity.has_components() {
+            return None;
         }
-        *components = out;
-        Ok(loaded)
+        let dictionary = |_: pz_entity::ScriptRegister, _: &str| None;
+        let mut input = pz_entity::factory::FactoryInput {
+            ctx: self.ctx,
+            rng,
+            dictionary: &dictionary,
+        };
+        let comps = pz_entity::factory::create_from_script(
+            &script.entity,
+            &script.full_name(),
+            pz_entity::factory::EntityKind::InventoryItem,
+            &mut input,
+        );
+        Some(comps)
+    }
+}
+
+/// [`FactoryRng`] drawing from an [`ItemEnv`](crate::ItemEnv)'s `Rand`.
+pub struct EnvRng<'a>(pub &'a dyn crate::ItemEnv);
+
+impl FactoryRng for EnvRng<'_> {
+    fn next_int(&mut self, max: i32) -> i32 {
+        self.0.rand_next(max)
+    }
+
+    fn next_float(&mut self, min: f32, max: f32) -> f32 {
+        self.0.rand_float(min, max)
     }
 }
