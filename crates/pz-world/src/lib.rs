@@ -19,6 +19,7 @@ pub mod objects;
 pub mod save;
 pub mod sprite;
 pub mod square;
+pub mod streamer;
 pub mod tiledef;
 
 pub use chunk::{ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare};
