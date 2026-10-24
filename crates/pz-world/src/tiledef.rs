@@ -55,7 +55,7 @@ pub fn sprite_id(file_number: i32, tileset_number: i32, tile_index: i32) -> i32 
     0x100000 + (file_number - 2) * 262144 + (tileset_number - 1) * 512 + tile_index
 }
 
-fn read_int<R: Read>(r: &mut R) -> io::Result<i32> {
+pub(crate) fn read_int<R: Read>(r: &mut R) -> io::Result<i32> {
     let mut b = [0u8; 4];
     r.read_exact(&mut b)?;
     Ok(i32::from_le_bytes(b))
@@ -63,7 +63,7 @@ fn read_int<R: Read>(r: &mut R) -> io::Result<i32> {
 
 /// `IsoWorld.readString(InputStream, StringBuilder)`: bytes up to `\n` or
 /// end of stream as Latin-1; a `\r` is an error.
-fn read_string<R: BufRead>(r: &mut R) -> io::Result<Option<String>> {
+pub(crate) fn read_string<R: BufRead>(r: &mut R) -> io::Result<Option<String>> {
     let mut out = String::new();
     let mut c: i32;
     loop {

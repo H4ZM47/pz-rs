@@ -13,6 +13,7 @@ pub mod iso_lot;
 pub mod java;
 pub mod map_files;
 pub mod meta_grid;
+pub mod sprite;
 pub mod tiledef;
 
 pub use chunk::{
@@ -25,3 +26,4 @@ pub use map_files::{LotHeader, MapFiles, MapInfo};
 pub use meta_grid::{
     CreateParams, IsoMetaCell, IsoMetaChunk, IsoMetaGrid, WorldGenBounds, ZombieVoronoi,
 };
+pub use sprite::{IsoSpriteManager, SpriteTables};

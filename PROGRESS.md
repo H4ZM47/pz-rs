@@ -19,6 +19,11 @@ Status of the Rust port. Update this file with every merged change.
   `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk` with generic tile
   objects. Header and lotpack decoding match the original loader on 163
   cells (Muldraugh sample plus six challenge maps), checked locally.
+  Tile definitions (`pz_world::sprite`): `IsoSpriteManager`,
+  `PropertyContainer`, `TilePropertyAliasMap` and the full
+  `IsoWorld.LoadTileDefinitions` property pass; all 61,229 sprites match the
+  original loader locally. Enum tables are runtime data (`SpriteTables`); the
+  jar loader awaits `pz-classfile`.
 
 ## In progress
 - StringLib, OsLib.
