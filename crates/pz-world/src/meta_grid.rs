@@ -105,6 +105,35 @@ impl IsoMetaChunk {
         Ok(None)
     }
 
+    /// `getBuildingsIntersecting(x, y, w, h, result)`: the buildings of this
+    /// chunk's rooms that intersect the rectangle, each once, skipping the
+    /// empty-outside rooms of buildings that have rooms. The original adds a
+    /// room's null building (or throws for an empty-outside room without
+    /// one); a room here always has a building, and one without is skipped.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_buildings_intersecting(
+        &self,
+        rooms: &[RoomDef],
+        buildings: &[BuildingDef],
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        result: &mut Vec<BuildingIdx>,
+    ) {
+        for &idx in &self.rooms {
+            let room = &rooms[idx.0 as usize];
+            let Some(b) = room.building else { continue };
+            if room.is_empty_outside() && !buildings[b.0 as usize].rooms.is_empty()
+                || result.contains(&b)
+                || !room.intersects(x, y, w, h)
+            {
+                continue;
+            }
+            result.push(b);
+        }
+    }
+
     pub fn get_empty_outside_at(
         &self,
         rooms: &[RoomDef],
@@ -168,6 +197,81 @@ impl IsoMetaCell {
             return None;
         }
         self.chunk_map[(y * 32 + x) as usize].as_ref()
+    }
+
+    /// `IsoMetaCell.removeRoom(room)`: removes the room from the chunks of
+    /// this cell its bounds cover. Like the original's `getChunk(i)`, a
+    /// missing chunk would be created (empty); here it is skipped, which
+    /// leaves the same rooms.
+    pub fn remove_room(&mut self, rooms: &[RoomDef], room: RoomIdx) {
+        let r = &rooms[room.0 as usize];
+        let mut xmax = r.x2 / 8;
+        if r.x2 % 8 == 0 {
+            xmax -= 1;
+        }
+        let mut ymax = r.y2 / 8;
+        if r.y2 % 8 == 0 {
+            ymax -= 1;
+        }
+        let (ox, oy) = (self.wx * 256, self.wy * 256);
+        for yy in r.y / 8..=ymax {
+            for xx in r.x / 8..=xmax {
+                if xx < ox / 8 || xx >= (ox + 256) / 8 || yy < oy / 8 || yy >= (oy + 256) / 8 {
+                    continue;
+                }
+                let i = (xx - ox / 8 + (yy - oy / 8) * 32) as usize;
+                if let Some(c) = self.chunk_map[i].as_mut() {
+                    c.remove_room(room);
+                }
+            }
+        }
+    }
+
+    /// `IsoMetaCell.removeRooms(rooms, userDefined)`: `user_defined` is -1
+    /// (all), 0 (only rooms that are not user-defined) or 1 (only
+    /// user-defined rooms).
+    pub fn remove_rooms(&mut self, rooms: &[RoomDef], list: &[RoomIdx], user_defined: i32) {
+        for &r in list {
+            let ud = rooms[r.0 as usize].user_defined;
+            if user_defined != -1 && (user_defined != 1 || !ud) && (user_defined != 0 || ud) {
+                continue;
+            }
+            self.remove_room(rooms, r);
+        }
+    }
+
+    /// `IsoMetaCell.getBuildingsIntersecting(x, y, w, h, result)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_buildings_intersecting(
+        &self,
+        rooms: &[RoomDef],
+        buildings: &[BuildingDef],
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        result: &mut Vec<BuildingIdx>,
+    ) {
+        let mut xmax = (x + w) / 8;
+        if (x + w) % 8 == 0 {
+            xmax -= 1;
+        }
+        let mut ymax = (y + h) / 8;
+        if (y + h) % 8 == 0 {
+            ymax -= 1;
+        }
+        let (ox, oy) = (self.wx * 256, self.wy * 256);
+        for yy in y / 8..=ymax {
+            for xx in x / 8..=xmax {
+                if xx < ox / 8 || xx >= (ox + 256) / 8 || yy < oy / 8 || yy >= (oy + 256) / 8 {
+                    continue;
+                }
+                let i = (xx - ox / 8 + (yy - oy / 8) * 32) as usize;
+                if let Some(c) = &self.chunk_map[i] {
+                    c.get_buildings_intersecting(rooms, buildings, x, y, w, h, result);
+                }
+            }
+        }
     }
 }
 
@@ -272,7 +376,8 @@ impl IsoMetaGrid {
         self.get_cell(x - self.min_x, y - self.min_y)
     }
 
-    fn get_cell_data_mut(&mut self, x: i32, y: i32) -> Option<&mut IsoMetaCell> {
+    /// `getCellData(cellX, cellY)`, mutable.
+    pub fn get_cell_data_mut(&mut self, x: i32, y: i32) -> Option<&mut IsoMetaCell> {
         let (gx, gy) = (x - self.min_x, y - self.min_y);
         if gx < 0 || gy < 0 || gx >= self.width || gy >= self.height {
             return None;
@@ -402,7 +507,7 @@ impl IsoMetaGrid {
     }
 
     /// `IsoMetaCell.addRoom(room, cellX*256, cellY*256)`.
-    fn add_room_to_cell(&mut self, cell_x: i32, cell_y: i32, room: RoomIdx) {
+    pub fn add_room_to_cell(&mut self, cell_x: i32, cell_y: i32, room: RoomIdx) {
         let (ox, oy) = (cell_x * 256, cell_y * 256);
         let r = &self.room_defs[room.0 as usize];
         let (rx, ry, rx2, ry2) = (r.x, r.y, r.x2, r.y2);
@@ -436,8 +541,9 @@ impl IsoMetaGrid {
 
     /// `IsoMetaGrid.Create()` for the parts that read map files: directory
     /// scan, lot headers (rooms, buildings, zombie intensity), building
-    /// consolidation and adjacent-cell flags. The building loop that follows
-    /// (adjacent-cell rooms, alarms) is [`IsoMetaGrid::assign_alarms`].
+    /// consolidation, adjacent-cell flags and the adjacent-cell rooms of
+    /// `CreateStep2`'s building loop. The alarms of that loop are
+    /// [`IsoMetaGrid::assign_alarms`].
     ///
     /// The original reads headers on 8 threads (rows `minY+i`, step 8) that
     /// share `Rand`; this port reads them in that per-thread row order on one
@@ -465,6 +571,16 @@ impl IsoMetaGrid {
         grid.load_headers(rand, &mut voronois);
         grid.consolidate_buildings();
         grid.init_incomplete_cells();
+        // The first half of `CreateStep2`'s building loop. The original
+        // interleaves it with the alarm draws ([`IsoMetaGrid::assign_alarms`]);
+        // it draws nothing and the alarms read no chunk room lists, so
+        // running it first gives the same state, and every caller gets the
+        // rooms of buildings that cross into the cells east, south and
+        // south-east.
+        for i in 0..grid.buildings.len() {
+            let b = grid.buildings[i];
+            grid.add_rooms_to_adjacent_cells(b);
+        }
         Ok(grid)
     }
 
@@ -889,8 +1005,9 @@ impl IsoMetaGrid {
         }
     }
 
-    /// The building loop of `CreateStep2`: rooms are added to adjacent
-    /// cells, then alarms are assigned from the sandbox `alarm` option.
+    /// The alarm half of `CreateStep2`'s building loop: alarms are assigned
+    /// from the sandbox `alarm` option. The other half
+    /// (`addRoomsToAdjacentCells`) already ran in [`IsoMetaGrid::create`].
     pub fn assign_alarms(
         &mut self,
         rand: &mut dyn GameRand,
@@ -900,9 +1017,7 @@ impl IsoMetaGrid {
         alarm_decay: impl Fn() -> i32,
     ) {
         for i in 0..self.buildings.len() {
-            let bidx = self.buildings[i];
-            self.add_rooms_to_adjacent_cells(bidx);
-            let b = bidx.0 as usize;
+            let b = self.buildings[i].0 as usize;
             if last_stand || self.building_defs[b].rooms.len() <= 2 {
                 continue;
             }
@@ -922,5 +1037,727 @@ impl IsoMetaGrid {
                 self.building_defs[b].alarm_decay = alarm_decay();
             }
         }
+    }
+}
+
+/// Building and room editing used by `zombie.basements.Basements`
+/// (`addBasementBuildingDefsToLotHeaders`, `addBasementBuildingDefsToMetaGrid`
+/// and the merge of access pieces into the building they touch).
+impl IsoMetaGrid {
+    /// A grid covering cells `min..=max` with no map files and no cells;
+    /// add cells with [`IsoMetaGrid::create_cell`].
+    pub fn blank(min_x: i32, min_y: i32, max_x: i32, max_y: i32) -> Self {
+        let mut g = Self::empty();
+        g.min_x = min_x;
+        g.min_y = min_y;
+        g.max_x = max_x;
+        g.max_y = max_y;
+        g.min_non_procedural_x = min_x;
+        g.min_non_procedural_y = min_y;
+        g.max_non_procedural_x = max_x;
+        g.max_non_procedural_y = max_y;
+        g.width = max_x - min_x + 1;
+        g.height = max_y - min_y + 1;
+        g.grid = Vec::new();
+        g.grid.resize_with((g.width * g.height) as usize, || None);
+        g
+    }
+
+    /// `new IsoMetaCell(x, y)` stored at absolute cell `(x, y)`, or the cell
+    /// already there. `None` outside the grid.
+    pub fn create_cell(&mut self, x: i32, y: i32) -> Option<&mut IsoMetaCell> {
+        let (gx, gy) = (x - self.min_x, y - self.min_y);
+        if gx < 0 || gy < 0 || gx >= self.width || gy >= self.height {
+            return None;
+        }
+        let slot = self.cell_slot(gx, gy);
+        if slot.is_none() {
+            *slot = Some(IsoMetaCell::new(x, y));
+        }
+        slot.as_mut()
+    }
+
+    /// Adds `def` and its rooms to the arenas, as the tail of
+    /// `createBasementBuildingDefs` does: each room's `building` is set,
+    /// `rooms` / `emptyoutside` are appended to the def's lists in order and
+    /// the def's bounds are calculated. Ids, meta ids and cells are left to
+    /// [`IsoMetaGrid::add_building_to_lot_header`] /
+    /// [`IsoMetaGrid::merge_buildings`].
+    pub fn insert_building(
+        &mut self,
+        mut def: BuildingDef,
+        rooms: Vec<RoomDef>,
+        emptyoutside: Vec<RoomDef>,
+    ) -> BuildingIdx {
+        let bidx = BuildingIdx(self.building_defs.len() as u32);
+        for (list, is_empty) in [(rooms, false), (emptyoutside, true)] {
+            for mut room in list {
+                room.building = Some(bidx);
+                let ridx = RoomIdx(self.room_defs.len() as u32);
+                self.room_defs.push(room);
+                if is_empty {
+                    def.emptyoutside.push(ridx);
+                } else {
+                    def.rooms.push(ridx);
+                }
+            }
+        }
+        def.CalculateBounds(&self.room_defs);
+        self.building_defs.push(def);
+        bidx
+    }
+
+    /// Registers a new building with cell `(cell_x, cell_y)` and the grid:
+    /// [`IsoMetaGrid::insert_building`], then the no-merge branch of
+    /// `addBasementBuildingDefsToLotHeaders` and the per-building step of
+    /// `addBasementBuildingDefsToMetaGrid`, both for that cell (the original
+    /// uses `x / 256`, `y / 256` of the def). `None` if the cell does not
+    /// exist (the original skips the building).
+    ///
+    /// The original runs the lot-header step for every basement before the
+    /// meta-grid step of any; callers reproducing that order use the two
+    /// steps directly.
+    pub fn add_building(
+        &mut self,
+        cell_x: i32,
+        cell_y: i32,
+        def: BuildingDef,
+        rooms: Vec<RoomDef>,
+        emptyoutside: Vec<RoomDef>,
+    ) -> Option<BuildingIdx> {
+        self.get_cell_data(cell_x, cell_y)?;
+        let b = self.insert_building(def, rooms, emptyoutside);
+        self.register_building_in_cell(cell_x, cell_y, b);
+        self.add_building_rooms_to_cell(cell_x, cell_y, b);
+        Some(b)
+    }
+
+    /// The no-merge branch of `addBasementBuildingDefsToLotHeaders` for
+    /// building `b` in cell `x / 256`, `y / 256`. `false` if there is no
+    /// such cell.
+    pub fn add_building_to_lot_header(&mut self, b: BuildingIdx) -> bool {
+        let d = &self.building_defs[b.0 as usize];
+        let (cell_x, cell_y) = (d.x / 256, d.y / 256);
+        if self.get_cell_data(cell_x, cell_y).is_none() {
+            return false;
+        }
+        self.register_building_in_cell(cell_x, cell_y, b);
+        true
+    }
+
+    fn register_building_in_cell(&mut self, cell_x: i32, cell_y: i32, b: BuildingIdx) {
+        let index = self.get_cell_data(cell_x, cell_y).unwrap().buildings.len() as i32;
+        let def = &mut self.building_defs[b.0 as usize];
+        def.id = building_id::make_id(cell_x, cell_y, index);
+        def.meta_id = def.calculate_meta_id(&self.room_defs, cell_x, cell_y);
+        let (meta_id, bx, by) = (def.meta_id, def.x, def.y);
+        // Only the rooms: the original does not merge `emptyoutside` here.
+        let rooms = def.rooms.clone();
+        self.merge_rooms_onto_meta_cell(cell_x, cell_y, &rooms);
+        let cell = self.get_cell_data_mut(cell_x, cell_y).unwrap();
+        cell.buildings.push(b);
+        if cell.building_by_meta_id.contains_key(&meta_id) {
+            eprintln!("duplicate BuildingDef.metaID for building at {bx},{by}");
+        }
+        cell.building_by_meta_id.insert(meta_id, b);
+    }
+
+    /// The per-building step of `addBasementBuildingDefsToMetaGrid` for cell
+    /// `x / 256`, `y / 256`: rooms and empty-outside rooms go into that
+    /// cell's chunks and the adjacent cells', and the building is appended
+    /// to [`IsoMetaGrid::buildings`] unless already there. `false` if there
+    /// is no such cell.
+    pub fn add_building_to_meta_grid(&mut self, b: BuildingIdx) -> bool {
+        let d = &self.building_defs[b.0 as usize];
+        let (cell_x, cell_y) = (d.x / 256, d.y / 256);
+        if self.get_cell_data(cell_x, cell_y).is_none() {
+            return false;
+        }
+        self.add_building_rooms_to_cell(cell_x, cell_y, b);
+        true
+    }
+
+    fn add_building_rooms_to_cell(&mut self, cell_x: i32, cell_y: i32, b: BuildingIdx) {
+        let d = &self.building_defs[b.0 as usize];
+        let (rooms, empty) = (d.rooms.clone(), d.emptyoutside.clone());
+        self.add_rooms_to_cell(cell_x, cell_y, &rooms);
+        self.add_rooms_to_cell(cell_x, cell_y, &empty);
+        self.add_rooms_to_adjacent_cells(b);
+        if !self.buildings.contains(&b) {
+            self.buildings.push(b);
+        }
+    }
+
+    /// The merged-rooms step of `addBasementBuildingDefsToMetaGrid`: rooms
+    /// merged into `merge_def` go into the chunks of its cell (`x / 256`,
+    /// `y / 256`) and of the adjacent cells. `false` if there is no such
+    /// cell.
+    pub fn add_merged_rooms_to_meta_grid(
+        &mut self,
+        merge_def: BuildingIdx,
+        rooms: &[RoomIdx],
+        emptyoutside: &[RoomIdx],
+    ) -> bool {
+        let d = &self.building_defs[merge_def.0 as usize];
+        let (cell_x, cell_y) = (d.x / 256, d.y / 256);
+        if self.get_cell_data(cell_x, cell_y).is_none() {
+            return false;
+        }
+        self.add_rooms_to_cell(cell_x, cell_y, rooms);
+        self.add_rooms_to_cell(cell_x, cell_y, emptyoutside);
+        self.add_rooms_to_adjacent_cells_of(merge_def, rooms);
+        self.add_rooms_to_adjacent_cells_of(merge_def, emptyoutside);
+        true
+    }
+
+    /// `IsoMetaCell.addRooms(rooms, cellX*256, cellY*256)`.
+    pub fn add_rooms_to_cell(&mut self, cell_x: i32, cell_y: i32, rooms: &[RoomIdx]) {
+        for &r in rooms {
+            self.add_room_to_cell(cell_x, cell_y, r);
+        }
+    }
+
+    /// `addRoomsToAdjacentCells(buildingDef, roomDefs)`: like
+    /// [`IsoMetaGrid::add_rooms_to_adjacent_cells`] for the given rooms; the
+    /// building's own cell comes from `fastfloor`.
+    pub fn add_rooms_to_adjacent_cells_of(&mut self, b: BuildingIdx, rooms: &[RoomIdx]) {
+        let def = &self.building_defs[b.0 as usize];
+        let cell_x = fastfloor(def.x as f32 / 256.0);
+        let cell_y = fastfloor(def.y as f32 / 256.0);
+        let cell_x2 = (def.x2 - 1) / 256;
+        let cell_y2 = (def.y2 - 1) / 256;
+        if cell_x2 == cell_x && cell_y2 == cell_y {
+            return;
+        }
+        for dy in 0..=1 {
+            for dx in 0..=1 {
+                if dx == 0 && dy == 0 || self.get_cell_data(cell_x + dx, cell_y + dy).is_none() {
+                    continue;
+                }
+                self.add_rooms_to_cell(cell_x + dx, cell_y + dy, rooms);
+            }
+        }
+    }
+
+    /// `removeRoomsFromAdjacentCells(rooms, cellX1, cellY1, cellX2, cellY2,
+    /// userDefined)`.
+    pub fn remove_rooms_from_adjacent_cells(
+        &mut self,
+        rooms: &[RoomIdx],
+        (cell_x1, cell_y1): (i32, i32),
+        (cell_x2, cell_y2): (i32, i32),
+        user_defined: i32,
+    ) {
+        if cell_x2 == cell_x1 && cell_y2 == cell_y1 {
+            return;
+        }
+        for cy in cell_y1..=cell_y2 {
+            for cx in cell_x1..=cell_x2 {
+                if cx == cell_x1 && cy == cell_y1 {
+                    continue;
+                }
+                let (gx, gy) = (cx - self.min_x, cy - self.min_y);
+                if gx < 0 || gy < 0 || gx >= self.width || gy >= self.height {
+                    continue;
+                }
+                let idx = (gx * self.height + gy) as usize;
+                if let Some(cell) = self.grid[idx].as_mut() {
+                    cell.remove_rooms(&self.room_defs, rooms, user_defined);
+                }
+            }
+        }
+    }
+
+    /// `getBuildingsIntersecting(x, y, w, h, result)`. The cell range runs
+    /// to `(y + height) / 256` and `(x + width) / 256` with the grid's
+    /// `width` / `height` in cells, as in the original.
+    pub fn get_buildings_intersecting(
+        &self,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        result: &mut Vec<BuildingIdx>,
+    ) {
+        for cy in y / 256..=(y + self.height) / 256 {
+            for cx in x / 256..=(x + self.width) / 256 {
+                if cx < self.min_x || cx > self.max_x || cy < self.min_y || cy > self.max_y {
+                    continue;
+                }
+                let Some(cell) = self.get_cell(cx - self.min_x, cy - self.min_y) else {
+                    continue;
+                };
+                cell.get_buildings_intersecting(
+                    &self.room_defs,
+                    &self.building_defs,
+                    x,
+                    y,
+                    w,
+                    h,
+                    result,
+                );
+            }
+        }
+    }
+
+    /// `target.addRoomsOf(source, tempRooms)` on two buildings of the arena.
+    pub fn add_rooms_of(&mut self, target: BuildingIdx, source: BuildingIdx) {
+        let (t, s) = (target.0 as usize, source.0 as usize);
+        if t == s {
+            // `addRoomsOf(this)` appends to the list it walks and never
+            // ends upstream; no caller does it.
+            panic!("add_rooms_of: a building cannot absorb itself");
+        }
+        let (target_def, source_def) = if t < s {
+            let (a, b) = self.building_defs.split_at_mut(s);
+            (&mut a[t], &mut b[0])
+        } else {
+            let (a, b) = self.building_defs.split_at_mut(t);
+            (&mut b[0], &mut a[s])
+        };
+        target_def.add_rooms_of(target, source_def, &mut self.room_defs);
+    }
+
+    /// `Basements.mergeRoomsOntoMetaCell(rooms, metaCell)`: each room gets
+    /// the next room id of the cell (`roomList.size()`) and its meta id, and
+    /// is added to `rooms`, `room_list` and `room_by_meta_id`. Chunks are
+    /// not touched.
+    pub fn merge_rooms_onto_meta_cell(&mut self, cell_x: i32, cell_y: i32, rooms: &[RoomIdx]) {
+        for &idx in rooms {
+            let cell = self.get_cell_data(cell_x, cell_y).expect("meta cell");
+            let (cx, cy) = (cell.get_x(), cell.get_y());
+            let id = room_id::make_id(cx, cy, cell.room_list.len() as i32);
+            let room = &mut self.room_defs[idx.0 as usize];
+            room.id = id;
+            room.meta_id = room.calculate_meta_id(cx, cy);
+            let (meta_id, rx, ry, level) = (room.meta_id, room.x, room.y, room.level);
+            let cell = self.get_cell_data_mut(cell_x, cell_y).unwrap();
+            if cell.rooms.contains_key(&id) {
+                eprintln!("duplicate RoomDef.ID for room at {rx},{ry},{level}");
+            }
+            cell.rooms.insert(id, idx);
+            cell.room_list.push(idx);
+            if cell.room_by_meta_id.contains_key(&meta_id) {
+                eprintln!("duplicate RoomDef.metaID for room at {rx},{ry},{level}");
+            }
+            cell.room_by_meta_id.insert(meta_id, idx);
+        }
+    }
+
+    /// `Basements.removeBuildingFromMetaCell(buildingDef, metaCell)`: drops
+    /// the building from `buildings` / `building_by_meta_id` and its rooms
+    /// and empty-outside rooms from `rooms` (by their current id),
+    /// `room_list` and `room_by_meta_id`. Chunk room lists are left alone,
+    /// as in the original. Follow with
+    /// [`IsoMetaGrid::recalculate_building_and_room_ids`].
+    pub fn remove_building_from_meta_cell(&mut self, b: BuildingIdx, cell_x: i32, cell_y: i32) {
+        let def = &self.building_defs[b.0 as usize];
+        let (meta_id, bid) = (def.meta_id, def.id);
+        let all: Vec<RoomIdx> = def.rooms.iter().chain(&def.emptyoutside).copied().collect();
+        let cell = self
+            .grid
+            .get_mut({
+                let (gx, gy) = (cell_x - self.min_x, cell_y - self.min_y);
+                assert!(gx >= 0 && gy >= 0 && gx < self.width && gy < self.height);
+                (gx * self.height + gy) as usize
+            })
+            .and_then(Option::as_mut)
+            .expect("meta cell");
+        if let Some(i) = cell.buildings.iter().position(|&x| x == b) {
+            cell.buildings.remove(i);
+        }
+        cell.building_by_meta_id.remove(&meta_id);
+        debug_assert!(!cell.iso_buildings.borrow().contains(&bid));
+        for r in all {
+            let room = &self.room_defs[r.0 as usize];
+            cell.rooms.remove(&room.id);
+            if let Some(i) = cell.room_list.iter().position(|&x| x == r) {
+                cell.room_list.remove(i);
+            }
+            cell.room_by_meta_id.remove(&room.meta_id);
+        }
+    }
+
+    /// `Basements.recalculateBuildingAndRoomIDs(metaCell)`: room ids follow
+    /// `room_list` order and building ids `buildings` order; `rooms` and the
+    /// runtime-building keys are rebuilt with the new ids. Meta-id maps are
+    /// unchanged.
+    pub fn recalculate_building_and_room_ids(&mut self, cell_x: i32, cell_y: i32) {
+        let (gx, gy) = (cell_x - self.min_x, cell_y - self.min_y);
+        assert!(gx >= 0 && gy >= 0 && gx < self.width && gy < self.height);
+        let cell = self.grid[(gx * self.height + gy) as usize]
+            .as_mut()
+            .expect("meta cell");
+        let (cx, cy) = (cell.get_x(), cell.get_y());
+        cell.rooms.clear();
+        for (i, &r) in cell.room_list.iter().enumerate() {
+            let id = room_id::make_id(cx, cy, i as i32);
+            self.room_defs[r.0 as usize].id = id;
+            cell.rooms.insert(id, r);
+        }
+        // `isoBuildings` is keyed by `def.id`; re-key the entries whose
+        // building is in this cell.
+        let mut by_old_id: HashMap<i64, i64> = HashMap::new();
+        for (i, &b) in cell.buildings.iter().enumerate() {
+            let def = &mut self.building_defs[b.0 as usize];
+            let new_id = building_id::make_id(cx, cy, i as i32);
+            by_old_id.entry(def.id).or_insert(new_id);
+            def.id = new_id;
+        }
+        let old: Vec<i64> = cell.iso_buildings.borrow_mut().drain().collect();
+        let mut iso = cell.iso_buildings.borrow_mut();
+        for id in old {
+            iso.insert(by_old_id.get(&id).copied().unwrap_or(id));
+        }
+    }
+
+    /// `Basements.getBuildingToMergeWith(buildingDef)`: the single building
+    /// with no level below 0 that `b` is adjacent to (same level), found
+    /// among the buildings intersecting `b`'s bounds grown by one tile.
+    /// `None` if `b` itself goes below 0, or if there is none or more than
+    /// one.
+    pub fn get_building_to_merge_with(&mut self, b: BuildingIdx) -> Option<BuildingIdx> {
+        if self.building_defs[b.0 as usize].get_min_level(&self.room_defs) < 0 {
+            return None;
+        }
+        let d = &self.building_defs[b.0 as usize];
+        let mut candidates = Vec::new();
+        self.get_buildings_intersecting(
+            d.x - 1,
+            d.y - 1,
+            d.get_w() + 2,
+            d.get_h() + 2,
+            &mut candidates,
+        );
+        let mut merge = None;
+        for c in candidates {
+            if self.building_defs[c.0 as usize].get_min_level(&self.room_defs) < 0 {
+                continue;
+            }
+            let (bd, cd) = (
+                &self.building_defs[b.0 as usize],
+                &self.building_defs[c.0 as usize],
+            );
+            if !bd.is_adjacent(&self.room_defs, cd) {
+                continue;
+            }
+            if merge.is_some() {
+                return None;
+            }
+            merge = Some(c);
+        }
+        merge
+    }
+
+    /// `Basements.mergeBuildings(buildingDef, mergeDef)`: `b`'s rooms join
+    /// `merge_def`. If `merge_def` lives in another cell than the lower of
+    /// the two cells, it is moved there first (removed from its cell, ids
+    /// recalculated in both). `b`'s rooms and empty-outside rooms are merged
+    /// onto the cell, `merge_def` absorbs them (`addRoomsOf`) and its meta id
+    /// is recalculated. Returns `false` on the original's early returns (a
+    /// missing cell). The caller keeps the `MergedRooms` bookkeeping
+    /// (`b`'s room lists, for [`IsoMetaGrid::add_merged_rooms_to_meta_grid`])
+    /// and drops `b` from its own list either way.
+    pub fn merge_buildings(&mut self, b: BuildingIdx, merge_def: BuildingIdx) -> bool {
+        let (bd, md) = (
+            &self.building_defs[b.0 as usize],
+            &self.building_defs[merge_def.0 as usize],
+        );
+        let (cell_x1, cell_y1) = (bd.x / 256, bd.y / 256);
+        let (cell_x2, cell_y2) = (md.x / 256, md.y / 256);
+        let cell_x = cell_x1.min(cell_x2);
+        let cell_y = cell_y1.min(cell_y2);
+        if self.get_cell_data(cell_x, cell_y).is_none() {
+            return false;
+        }
+        if cell_x != cell_x2 || cell_y != cell_y2 {
+            if self.get_cell_data(cell_x2, cell_y2).is_none() {
+                return false;
+            }
+            self.remove_building_from_meta_cell(merge_def, cell_x2, cell_y2);
+            self.recalculate_building_and_room_ids(cell_x2, cell_y2);
+            let cell = self.get_cell_data_mut(cell_x, cell_y).unwrap();
+            let (cx, cy, n) = (cell.get_x(), cell.get_y(), cell.buildings.len() as i32);
+            cell.buildings.push(merge_def);
+            let md = &mut self.building_defs[merge_def.0 as usize];
+            md.id = building_id::make_id(cx, cy, n);
+            let moved: Vec<RoomIdx> = md.rooms.iter().chain(&md.emptyoutside).copied().collect();
+            let cell = self.get_cell_data_mut(cell_x, cell_y).unwrap();
+            cell.room_list.extend(moved);
+            self.recalculate_building_and_room_ids(cell_x, cell_y);
+        }
+        let bd = &self.building_defs[b.0 as usize];
+        let (rooms, empty) = (bd.rooms.clone(), bd.emptyoutside.clone());
+        self.merge_rooms_onto_meta_cell(cell_x, cell_y, &rooms);
+        self.merge_rooms_onto_meta_cell(cell_x, cell_y, &empty);
+        let old_meta = self.building_defs[merge_def.0 as usize].meta_id;
+        self.get_cell_data_mut(cell_x, cell_y)
+            .unwrap()
+            .building_by_meta_id
+            .remove(&old_meta);
+        self.add_rooms_of(merge_def, b);
+        let md = &mut self.building_defs[merge_def.0 as usize];
+        md.meta_id = md.calculate_meta_id(&self.room_defs, cell_x, cell_y);
+        let meta = md.meta_id;
+        self.get_cell_data_mut(cell_x, cell_y)
+            .unwrap()
+            .building_by_meta_id
+            .insert(meta, merge_def);
+        true
+    }
+}
+
+#[cfg(test)]
+mod building_api_tests {
+    use super::*;
+
+    struct Zero;
+    impl GameRand for Zero {
+        fn next(&mut self, _max: i32) -> i32 {
+            0
+        }
+    }
+
+    fn room(name: &str, level: i32, rects: &[(i32, i32, i32, i32)]) -> RoomDef {
+        let mut r = RoomDef::new(0, name.into());
+        r.level = level;
+        for &(x, y, w, h) in rects {
+            r.rects.push(RoomRect::new(x, y, w, h));
+        }
+        r.CalculateBounds();
+        r
+    }
+
+    fn grid() -> IsoMetaGrid {
+        let mut g = IsoMetaGrid::blank(0, 0, 1, 1);
+        for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            g.create_cell(x, y).unwrap();
+        }
+        g
+    }
+
+    fn chunk_rooms(g: &IsoMetaGrid, wx: i32, wy: i32) -> Vec<RoomIdx> {
+        g.get_chunk_data(wx, wy)
+            .map(|c| c.rooms().to_vec())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn add_building_assigns_ids_and_fills_cell() {
+        let mut g = grid();
+        let b0 = g
+            .add_building(
+                0,
+                0,
+                BuildingDef::new(&mut Zero),
+                vec![room("kitchen", 0, &[(10, 10, 5, 5)])],
+                vec![room("emptyoutside", 0, &[(8, 8, 2, 2)])],
+            )
+            .unwrap();
+        let b1 = g
+            .add_building(
+                0,
+                0,
+                BuildingDef::new(&mut Zero),
+                vec![
+                    room("basement", -1, &[(40, 40, 4, 4)]),
+                    room("storage", -1, &[(44, 40, 4, 4)]),
+                ],
+                vec![],
+            )
+            .unwrap();
+        let cell = g.get_cell_data(0, 0).unwrap();
+        // Rooms only (not empty-outside) are merged onto the cell lists.
+        assert_eq!(cell.room_list, vec![RoomIdx(0), RoomIdx(2), RoomIdx(3)]);
+        assert_eq!(cell.buildings, vec![b0, b1]);
+        assert_eq!(
+            g.building_defs[b1.0 as usize].id,
+            building_id::make_id(0, 0, 1)
+        );
+        assert_eq!(g.room_defs[3].id, room_id::make_id(0, 0, 2));
+        assert_eq!(cell.rooms[&room_id::make_id(0, 0, 2)], RoomIdx(3));
+        assert_eq!(g.room_defs[1].id, 0, "empty-outside room keeps its id");
+        assert_eq!(cell.room_by_meta_id[&g.room_defs[2].meta_id], RoomIdx(2));
+        assert_eq!(
+            cell.building_by_meta_id[&g.building_defs[b1.0 as usize].meta_id],
+            b1
+        );
+        // Chunk lists: rooms, then empty-outside rooms, per building.
+        assert_eq!(chunk_rooms(&g, 1, 1), vec![RoomIdx(0), RoomIdx(1)]);
+        assert_eq!(chunk_rooms(&g, 5, 5), vec![RoomIdx(2), RoomIdx(3)]);
+        assert_eq!(g.buildings, vec![b0, b1]);
+        assert_eq!(g.get_room_at(46, 41, -1).unwrap().name, "storage");
+    }
+
+    #[test]
+    fn building_across_cells_reaches_adjacent_chunks() {
+        let mut g = grid();
+        let b = g
+            .add_building(
+                0,
+                0,
+                BuildingDef::new(&mut Zero),
+                vec![room("hall", 0, &[(250, 250, 12, 12)])],
+                vec![],
+            )
+            .unwrap();
+        for (wx, wy) in [(31, 31), (32, 31), (31, 32), (32, 32)] {
+            assert_eq!(chunk_rooms(&g, wx, wy), vec![RoomIdx(0)], "{wx},{wy}");
+        }
+        assert_eq!(g.get_room_at(256, 256, 0).unwrap().building, Some(b));
+        assert!(g.get_cell_data(1, 1).unwrap().room_list.is_empty());
+    }
+
+    #[test]
+    fn adjacency_and_intersection() {
+        let mut g = grid();
+        let house = g
+            .add_building(
+                1,
+                0,
+                BuildingDef::new(&mut Zero),
+                vec![room("living", 0, &[(256, 20, 10, 10)])],
+                vec![room("emptyoutside", 0, &[(256, 30, 10, 2)])],
+            )
+            .unwrap();
+        let rd = &g.room_defs;
+        let hd = &g.building_defs[house.0 as usize];
+        assert!(hd.is_adjacent_rect(rd, 250, 20, 6, 2, 0));
+        assert!(!hd.is_adjacent_rect(rd, 250, 20, 5, 2, 0));
+        assert!(!hd.is_adjacent_rect(rd, 250, 20, 6, 2, 1));
+        assert!(hd.intersects(rd, 260, 25, 1, 1, 0));
+        let mut out = Vec::new();
+        // The cell range ends at `(x + width) / 256` with `width` = 2 cells
+        // here, so cell 1 is only searched from x >= 254.
+        g.get_buildings_intersecting(253, 19, 9, 4, &mut out);
+        assert!(out.is_empty());
+        g.get_buildings_intersecting(254, 19, 9, 4, &mut out);
+        assert_eq!(out, vec![house]);
+        out.clear();
+        g.get_buildings_intersecting(200, 0, 40, 40, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn merge_access_piece_into_neighbour_moves_it_to_lower_cell() {
+        let mut g = grid();
+        // Two buildings in cell (1, 0); the house is the second.
+        let other = g
+            .add_building(
+                1,
+                0,
+                BuildingDef::new(&mut Zero),
+                vec![room("shed", 0, &[(400, 100, 4, 4)])],
+                vec![],
+            )
+            .unwrap();
+        let house = g
+            .add_building(
+                1,
+                0,
+                BuildingDef::new(&mut Zero),
+                vec![
+                    room("living", 0, &[(256, 20, 10, 10)]),
+                    room("cellar", -1, &[(256, 20, 4, 4)]),
+                ],
+                vec![room("emptyoutside", 0, &[(256, 30, 10, 2)])],
+            )
+            .unwrap();
+        // Access piece west of the house, in cell (0, 0). It must start at
+        // x >= 255 for cell 1 to be searched (see `get_buildings_intersecting`).
+        let access = g.insert_building(
+            BuildingDef::new(&mut Zero),
+            vec![room("stairs", 0, &[(255, 22, 1, 3)])],
+            vec![room("emptyoutside", 0, &[(255, 25, 1, 1)])],
+        );
+        // The house goes below 0, so it is not a candidate.
+        assert_eq!(g.get_building_to_merge_with(access), None);
+        g.building_defs[house.0 as usize].reset_min_max_level();
+        let cellar = g.building_defs[house.0 as usize].rooms[1];
+        g.room_defs[cellar.0 as usize].level = 0;
+        assert_eq!(g.get_building_to_merge_with(access), Some(house));
+        assert!(g.merge_buildings(access, house));
+
+        let c1 = g.get_cell_data(1, 0).unwrap();
+        assert_eq!(c1.buildings, vec![other]);
+        assert_eq!(c1.room_list, vec![RoomIdx(0)]);
+        assert_eq!(c1.rooms.len(), 1);
+        assert_eq!(c1.rooms[&room_id::make_id(1, 0, 0)], RoomIdx(0));
+
+        let c0 = g.get_cell_data(0, 0).unwrap();
+        assert_eq!(c0.buildings, vec![house]);
+        let hd = &g.building_defs[house.0 as usize];
+        assert_eq!(hd.id, building_id::make_id(0, 0, 0));
+        // living, cellar, emptyoutside moved; then stairs and its emptyoutside.
+        let expect = vec![RoomIdx(1), RoomIdx(2), RoomIdx(3), RoomIdx(4), RoomIdx(5)];
+        assert_eq!(c0.room_list, expect);
+        for (i, r) in expect.iter().enumerate() {
+            assert_eq!(
+                g.room_defs[r.0 as usize].id,
+                room_id::make_id(0, 0, i as i32)
+            );
+            assert_eq!(c0.rooms[&room_id::make_id(0, 0, i as i32)], *r);
+            assert_eq!(g.room_defs[r.0 as usize].building, Some(house));
+        }
+        assert_eq!(hd.rooms, vec![RoomIdx(1), RoomIdx(2), RoomIdx(4)]);
+        assert_eq!(hd.emptyoutside, vec![RoomIdx(3), RoomIdx(5)]);
+        assert_eq!((hd.x, hd.y, hd.x2, hd.y2), (255, 20, 266, 32));
+        assert_eq!(c0.building_by_meta_id[&hd.meta_id], house);
+        assert_eq!(hd.meta_id, hd.calculate_meta_id(&g.room_defs, 0, 0));
+
+        // Meta-grid step for the merged rooms: into the chunks of cell (0, 0)
+        // and, since the house now spans cells, of cell (1, 0).
+        assert!(g.add_merged_rooms_to_meta_grid(house, &[RoomIdx(4)], &[RoomIdx(5)]));
+        assert_eq!(
+            chunk_rooms(&g, 31, 3),
+            vec![RoomIdx(4), RoomIdx(5)],
+            "access piece chunk"
+        );
+        assert_eq!(g.get_room_at(255, 23, 0).unwrap().name, "stairs");
+    }
+
+    #[test]
+    fn remove_and_recalculate() {
+        let mut g = grid();
+        let mk = |g: &mut IsoMetaGrid, x| {
+            g.add_building(
+                0,
+                0,
+                BuildingDef::new(&mut Zero),
+                vec![room("a", 0, &[(x, 0, 2, 2)]), room("b", 0, &[(x, 2, 2, 2)])],
+                vec![],
+            )
+            .unwrap()
+        };
+        let a = mk(&mut g, 0);
+        let b = mk(&mut g, 10);
+        let c = mk(&mut g, 20);
+        g.get_cell_data(0, 0)
+            .unwrap()
+            .iso_buildings
+            .borrow_mut()
+            .insert(building_id::make_id(0, 0, 2));
+        g.remove_building_from_meta_cell(b, 0, 0);
+        let cell = g.get_cell_data(0, 0).unwrap();
+        assert_eq!(cell.buildings, vec![a, c]);
+        // `rooms` lost b's ids (2, 3); recalculation renumbers.
+        assert_eq!(cell.rooms.len(), 4);
+        g.recalculate_building_and_room_ids(0, 0);
+        let cell = g.get_cell_data(0, 0).unwrap();
+        assert_eq!(
+            cell.room_list,
+            vec![RoomIdx(0), RoomIdx(1), RoomIdx(4), RoomIdx(5)]
+        );
+        assert_eq!(g.room_defs[4].id, room_id::make_id(0, 0, 2));
+        assert_eq!(
+            g.building_defs[c.0 as usize].id,
+            building_id::make_id(0, 0, 1)
+        );
+        assert_eq!(
+            *cell.iso_buildings.borrow(),
+            [building_id::make_id(0, 0, 1)].into_iter().collect()
+        );
+        // Chunks still list b's rooms (the original leaves them).
+        assert_eq!(chunk_rooms(&g, 1, 0).len(), 2);
     }
 }
