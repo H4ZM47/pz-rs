@@ -54,6 +54,10 @@ impl Limiter {
 }
 
 impl Dsp for Limiter {
+    fn set_param(&mut self, index: usize, value: f32) {
+        self.set_float(index, value);
+    }
+
     fn process(&mut self, buf: &mut [f32], channels: usize) {
         let channels = channels.min(32);
         let ceiling = db_gain(self.ceiling_db);

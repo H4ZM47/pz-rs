@@ -63,6 +63,21 @@ The FMOD runtime shipped with the game (FMOD 2.03.09, Studio header version
 0x00020309) can be driven through ctypes for parity checks; keep such
 scripts and their output outside the repository.
 
+## Automation
+
+* `CTRL`: GUID, target object GUID, curve GUID, u32 property id.
+* `CURV`: GUID, controller GUID, array of points {f32 x, f32 y, f32 shape,
+  u32 flags}. Shapes are non-zero on about a fifth of points (flags 3).
+* `MAP `: GUID, array of (f32, f32): maps the automation scale to the
+  property's value (fader display scale to dB, distance scale to metres).
+* `PRPS` → `PROP` on any object: u32 property id (0 volume on buses and
+  instruments; effect parameters are 1000 + DSP parameter index), u16, u16,
+  `MAP` GUID, array of curve GUIDs, array of modulator GUIDs.
+* `CTRO` beside `PMLB` (and `TLNB`): the controllers that parameter sheet
+  (timeline) drives. A curve's x axis is that parameter's value.
+* Runtime (current approximation): automated value = map(sum of the
+  property's active curves), replacing the base value.
+
 ## Effects
 
 Effect objects (`BEFF`) hold `BEFB` (GUID, u32 Studio effect type), `PMEF`
@@ -92,6 +107,15 @@ properties through `MAP` and `CURV` objects.
 The game's master bus runs Fader (+3 dB), Compressor (-20 dB, 3.1:1,
 500/3000 ms, +1 dB), Limiter (10 ms, -1 dB ceiling, +10 dB maximizer) and a
 loudness meter, so every event's level depends on these.
+
+### Spatializer (Pan) measurements
+
+Studio's spatializer is the core Pan DSP in surround mode into 5.1:
+point sources use 2D VBAP over C 0°, FR/FL ±30°, SR/SL ±110°; rolloffs
+are linear-squared, linear, inverse (clamped at max), inverse-tapered
+(min of inverse and linear-squared) and custom (none); the 5.1 → stereo
+output downmix is L = FL + C/√2 + SL/√2. Extent spreading, sound size,
+elevation and gain smoothing are approximated (see `src/dsp/pan.rs`).
 
 ### Measured behaviour (core DSPs driven through the oracle)
 

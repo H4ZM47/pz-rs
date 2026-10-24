@@ -47,6 +47,10 @@ pub struct Studio {
     instances: Vec<EventInstance>,
     rng: u64,
     bus_buffers: HashMap<Guid, Vec<f32>>,
+    /// Listener position, forward and up vectors.
+    listener: [[f32; 3]; 3],
+    /// Global parameter values by parameter GUID.
+    global_params: HashMap<Guid, f32>,
     /// Runtime state of each bus effect (`None`: passes the signal through).
     dsps: HashMap<Guid, Option<Box<dyn crate::dsp::Dsp>>>,
 }
@@ -66,6 +70,7 @@ enum Start {
         subsound: u32,
         gain: f32,
         delay_ms: f32,
+        track: Guid,
     },
     Event {
         event: Guid,
@@ -76,6 +81,8 @@ enum Start {
 
 struct Voice {
     pcm: Arc<Pcm>,
+    /// Event bus the voice plays into (an audio track).
+    track: Guid,
     pos: usize,
     gain: f32,
     /// Frames until the voice starts.
@@ -96,6 +103,12 @@ pub struct EventInstance {
     triggered: Vec<bool>,
     /// Set for nested events: their output joins the parent's track.
     parent: Option<InstanceId>,
+    /// World position of the event (FMOD's left-handed axes).
+    pub world_position: [f32; 3],
+    /// Runtime state of the event's own bus effects.
+    dsps: HashMap<Guid, Option<Box<dyn crate::dsp::Dsp>>>,
+    /// Local parameter values by parameter GUID.
+    params: HashMap<Guid, f32>,
     /// Gain of the routing below the event (cached per block).
     route: f32,
     start_delay: usize,
@@ -112,8 +125,166 @@ impl Studio {
             instances: Vec::new(),
             rng: 0x9e37_79b9_7f4a_7c15,
             bus_buffers: HashMap::new(),
+            listener: [[0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
+            global_params: HashMap::new(),
             dsps: HashMap::new(),
         }
+    }
+
+    /// `Studio::System::setListenerAttributes` (position, forward, up).
+    pub fn set_listener(&mut self, position: [f32; 3], forward: [f32; 3], up: [f32; 3]) {
+        self.listener = [position, forward, up];
+    }
+
+    /// `EventInstance::set3DAttributes` (position only for now).
+    pub fn set_position(&mut self, id: InstanceId, position: [f32; 3]) {
+        self.instances[id].world_position = position;
+    }
+
+    fn find_parameter(&self, id: &Guid) -> Option<&crate::bank::Parameter> {
+        self.banks.iter().find_map(|b| b.model.parameters.get(id))
+    }
+
+    /// `EventInstance::setParameterByName` (case-insensitive).
+    pub fn set_parameter_by_name(&mut self, id: InstanceId, name: &str, value: f32) -> bool {
+        let e = self.banks[self.instances[id].bank].model.events[&self.instances[id].event].clone();
+        for sheet in &e.parameter_sheets {
+            let Some(s) = self
+                .banks
+                .iter()
+                .find_map(|b| b.model.parameter_sheets.get(sheet))
+            else {
+                continue;
+            };
+            let Some(p) = self.find_parameter(&s.parameter) else {
+                continue;
+            };
+            if p.name.eq_ignore_ascii_case(name) {
+                let v = value.clamp(p.minimum, p.maximum);
+                let pid = p.id;
+                if p.flags & crate::bank::Parameter::GLOBAL != 0 {
+                    self.global_params.insert(pid, v);
+                } else {
+                    self.instances[id].params.insert(pid, v);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `Studio::System::setParameterByName` for global parameters.
+    pub fn set_global_parameter(&mut self, name: &str, value: f32) -> bool {
+        let found = self
+            .banks
+            .iter()
+            .flat_map(|b| b.model.parameters.values())
+            .find(|p| {
+                p.flags & crate::bank::Parameter::GLOBAL != 0 && p.name.eq_ignore_ascii_case(name)
+            })
+            .map(|p| (p.id, value.clamp(p.minimum, p.maximum)));
+        if let Some((id, v)) = found {
+            self.global_params.insert(id, v);
+        }
+        found.is_some()
+    }
+
+    /// Current value of a parameter for an instance, computing the built-in
+    /// automatic parameters from the 3D position.
+    fn parameter_value(
+        &self,
+        id: InstanceId,
+        p: &crate::bank::Parameter,
+        e: &Event,
+        rel: [f32; 3],
+    ) -> f32 {
+        let [x, y, z] = rel;
+        let horiz = (x * x + z * z).sqrt();
+        let dist = (horiz * horiz + y * y).sqrt();
+        let v = match p.kind {
+            1 => dist,
+            4 => x.atan2(z).to_degrees(),
+            5 => y.atan2(horiz).to_degrees(),
+            9 => {
+                if e.max_distance > e.min_distance {
+                    ((dist - e.min_distance) / (e.max_distance - e.min_distance)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            }
+            _ if p.flags & crate::bank::Parameter::GLOBAL != 0 => {
+                *self.global_params.get(&p.id).unwrap_or(&p.default)
+            }
+            _ => *self.instances[id].params.get(&p.id).unwrap_or(&p.default),
+        };
+        v.clamp(p.minimum, p.maximum)
+    }
+
+    /// Values of every controller active for an instance: controller GUID →
+    /// value of the parameter driving it.
+    fn controller_inputs(&self, id: InstanceId, e: &Event, rel: [f32; 3]) -> HashMap<Guid, f32> {
+        let mut out = HashMap::new();
+        for sheet in &e.parameter_sheets {
+            let Some((s, ctrls)) = self.banks.iter().find_map(|b| {
+                Some((
+                    b.model.parameter_sheets.get(sheet)?,
+                    b.model.sheet_controllers.get(sheet)?,
+                ))
+            }) else {
+                continue;
+            };
+            let Some(p) = self.find_parameter(&s.parameter) else {
+                continue;
+            };
+            let v = self.parameter_value(id, p, e, rel);
+            for c in ctrls {
+                out.insert(*c, v);
+            }
+        }
+        out
+    }
+
+    /// Automated value of `property` on `target`, if any controller drives it.
+    fn automated(&self, target: &Guid, property: u32, inputs: &HashMap<Guid, f32>) -> Option<f32> {
+        let props = self
+            .banks
+            .iter()
+            .find_map(|b| b.model.properties.get(target))?;
+        let prop = props.iter().find(|p| p.property == property)?;
+        let mut total = None;
+        for cg in &prop.curves {
+            let Some(curve) = self.banks.iter().find_map(|b| b.model.curves.get(cg)) else {
+                continue;
+            };
+            let Some(v) = inputs.get(&curve.controller) else {
+                continue;
+            };
+            *total.get_or_insert(0.0) += curve.eval(*v);
+        }
+        let ui = total?;
+        Some(
+            match self
+                .banks
+                .iter()
+                .find_map(|b| b.model.mappings.get(&prop.mapping))
+            {
+                Some(m) => m.apply(ui),
+                None => ui,
+            },
+        )
+    }
+
+    fn relative(&self, p: [f32; 3]) -> [f32; 3] {
+        let [lp, f, u] = self.listener;
+        let d = [p[0] - lp[0], p[1] - lp[1], p[2] - lp[2]];
+        // Left-handed: right = up x forward.
+        let r = [
+            u[1] * f[2] - u[2] * f[1],
+            u[2] * f[0] - u[0] * f[2],
+            u[0] * f[1] - u[1] * f[0],
+        ];
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        [dot(d, r), dot(d, u), dot(d, f)]
     }
 
     pub fn load_bank(&mut self, path: &Path) -> std::io::Result<()> {
@@ -156,6 +327,9 @@ impl Studio {
             gain: 1.0,
             triggered: vec![false; n],
             parent: None,
+            world_position: [0.0; 3],
+            dsps: HashMap::new(),
+            params: HashMap::new(),
             route: 1.0,
             start_delay: 0,
         });
@@ -199,7 +373,14 @@ impl Studio {
     }
 
     /// Resolve an instrument to the voices it starts, with its gain applied.
-    fn instrument_voices(&mut self, id: &Guid, gain: f32, depth: u32, out: &mut Vec<Start>) {
+    fn instrument_voices(
+        &mut self,
+        id: &Guid,
+        gain: f32,
+        track: Guid,
+        depth: u32,
+        out: &mut Vec<Start>,
+    ) {
         if depth > 8 {
             return;
         }
@@ -211,6 +392,10 @@ impl Studio {
             return;
         }
         let gain = gain * db_to_gain(inst.base.volume_db);
+        let track = match inst.base.output {
+            Some(o) if track == Guid::NULL => o.target,
+            _ => track,
+        };
         let delay_ms =
             inst.base.delay_min + (inst.base.delay_max - inst.base.delay_min) * self.random();
         match &inst.kind {
@@ -221,6 +406,7 @@ impl Studio {
                         subsound: w.subsound,
                         gain,
                         delay_ms,
+                        track,
                     });
                 }
             }
@@ -229,7 +415,7 @@ impl Studio {
                 let mut pick = self.random() * total;
                 for (g, w) in &playlist.entries {
                     if pick < *w {
-                        self.instrument_voices(g, gain, depth + 1, out);
+                        self.instrument_voices(g, gain, track, depth + 1, out);
                         break;
                     }
                     pick -= w;
@@ -246,7 +432,7 @@ impl Studio {
 
     fn start_instrument(&mut self, inst: InstanceId, id: Guid, remaining: Option<usize>) {
         let mut v = Vec::new();
-        self.instrument_voices(&id, 1.0, 0, &mut v);
+        self.instrument_voices(&id, 1.0, Guid::NULL, 0, &mut v);
         for start in v {
             match start {
                 Start::Wave {
@@ -254,11 +440,13 @@ impl Studio {
                     subsound,
                     gain,
                     delay_ms,
+                    track,
                 } => {
                     if let Some(pcm) = self.pcm(bank, subsound) {
                         let delay = (delay_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as usize;
                         self.instances[inst].voices.push(Voice {
                             pcm,
+                            track,
                             pos: 0,
                             gain,
                             delay,
@@ -294,6 +482,102 @@ impl Studio {
     fn event_gain(&self, e: &Event) -> f32 {
         self.find_bus(&e.master_bus)
             .map_or(1.0, |b| db_to_gain(b.1.body.volume_db))
+    }
+
+    /// Run an event's own mixer: tracks into the event's master bus, each
+    /// bus applying its effects and volume. Writes the master's output to `out`.
+    fn run_event_buses(
+        &mut self,
+        id: InstanceId,
+        e: &Event,
+        mut bufs: HashMap<Guid, Vec<f32>>,
+        out: &mut [f32],
+        rel: [f32; 3],
+    ) {
+        out.iter_mut().for_each(|s| *s = 0.0);
+        for _ in 0..16 {
+            let Some(g) = bufs.keys().copied().find(|g| *g != e.master_bus) else {
+                break;
+            };
+            let mut buf = bufs.remove(&g).unwrap();
+            let target = match self.find_bus(&g) {
+                Some((_, bus)) if bus.output.target != Guid::NULL => {
+                    let bus = bus.clone();
+                    self.event_bus_effects(id, e, &bus, &mut buf, rel);
+                    bus.output.target
+                }
+                _ => e.master_bus,
+            };
+            let dst = bufs.entry(target).or_insert_with(|| vec![0.0; buf.len()]);
+            dst.iter_mut().zip(&buf).for_each(|(o, s)| *o += s);
+        }
+        if let Some(mut buf) = bufs.remove(&e.master_bus) {
+            if let Some((_, bus)) = self.find_bus(&e.master_bus) {
+                let bus = bus.clone();
+                self.event_bus_effects(id, e, &bus, &mut buf, rel);
+            }
+            out.copy_from_slice(&buf);
+        }
+    }
+
+    fn event_bus_effects(
+        &mut self,
+        id: InstanceId,
+        e: &Event,
+        bus: &crate::bank::Bus,
+        buf: &mut [f32],
+        rel: [f32; 3],
+    ) {
+        let inputs = self.controller_inputs(id, e, rel);
+        for fx in bus.body.effects.iter().chain(&bus.body.effects_2) {
+            let n = self
+                .banks
+                .iter()
+                .find_map(|b| b.model.effects.get(fx))
+                .map_or(0, |x| x.params.len());
+            let auto: Vec<(usize, f32)> = (0..n)
+                .filter_map(|i| {
+                    Some((
+                        i,
+                        self.automated(
+                            fx,
+                            crate::bank::property::EFFECT_PARAMETER + i as u32,
+                            &inputs,
+                        )?,
+                    ))
+                })
+                .collect();
+            if !self.instances[id].dsps.contains_key(fx) {
+                let made = self
+                    .banks
+                    .iter()
+                    .find_map(|b| b.model.effects.get(fx))
+                    .and_then(|x| {
+                        if x.bypass {
+                            None
+                        } else {
+                            crate::dsp::from_effect(
+                                x,
+                                SAMPLE_RATE,
+                                (e.min_distance, e.max_distance),
+                            )
+                        }
+                    });
+                self.instances[id].dsps.insert(*fx, made);
+            }
+            if let Some(Some(d)) = self.instances[id].dsps.get_mut(fx) {
+                for (i, v) in &auto {
+                    d.set_param(*i, *v);
+                }
+                d.set_position(rel);
+                d.process(buf, 2);
+            }
+        }
+        let vol = self
+            .automated(&bus.id, crate::bank::property::VOLUME, &inputs)
+            .unwrap_or(bus.body.volume_db);
+        let v = db_to_gain(vol);
+        buf.iter_mut().for_each(|s| *s *= v);
     }
 
     /// Number of buses between `id` and the root master bus.
@@ -344,7 +628,7 @@ impl Studio {
                             if fx.bypass {
                                 None
                             } else {
-                                crate::dsp::from_effect(fx, SAMPLE_RATE)
+                                crate::dsp::from_effect(fx, SAMPLE_RATE, (1.0, 20.0))
                             }
                         });
                     self.dsps.insert(*e, made);
@@ -391,8 +675,7 @@ impl Studio {
                 let i = &self.instances[id];
                 (i.bank, self.banks[i.bank].model.events[&i.event].clone())
             };
-            let route = self.event_gain(&event);
-            self.instances[id].route = route;
+            self.instances[id].route = self.event_gain(&event);
             if !self.instances[id].started {
                 self.instances[id].started = true;
                 for g in event.instruments.clone() {
@@ -419,10 +702,13 @@ impl Studio {
                     }
                 }
             }
-            scratch.iter_mut().for_each(|s| *s = 0.0);
+            let mut tracks: HashMap<Guid, Vec<f32>> = HashMap::new();
             let inst = &mut self.instances[id];
-            let g = inst.gain * route;
+            let g = inst.gain;
             for v in &mut inst.voices {
+                let buf = tracks
+                    .entry(v.track)
+                    .or_insert_with(|| vec![0.0; out.len()]);
                 let ch = v.pcm.channels as usize;
                 for f in 0..frames {
                     if v.delay > 0 {
@@ -442,8 +728,8 @@ impl Studio {
                     } else {
                         (v.pcm.data[v.pos * ch], v.pcm.data[v.pos * ch + 1])
                     };
-                    scratch[f * 2] += l * v.gain * g;
-                    scratch[f * 2 + 1] += r * v.gain * g;
+                    buf[f * 2] += l * v.gain * g;
+                    buf[f * 2 + 1] += r * v.gain * g;
                     v.pos += 1;
                 }
             }
@@ -458,6 +744,8 @@ impl Studio {
             if inst.voices.is_empty() && inst.position >= end {
                 inst.state = PlaybackState::Stopped;
             }
+            let rel = self.relative(self.instances[id].world_position);
+            self.run_event_buses(id, &event, tracks, &mut scratch, rel);
             // Nested events join their parent's routing.
             let mut top = id;
             while let Some(p) = self.instances[top].parent {

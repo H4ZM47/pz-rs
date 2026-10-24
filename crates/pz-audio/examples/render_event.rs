@@ -1,6 +1,6 @@
 //! Render one event offline to a 16-bit stereo WAV with `studio::Studio`.
 //!
-//! `cargo run -p pz-audio --release --example render_event -- <game dir> <event path> <seconds> <out.wav>`
+//! `cargo run -p pz-audio --release --example render_event -- <game dir> <event path> <seconds> <out.wav> [x,y,z]`
 
 use pz_audio::studio::{Studio, SAMPLE_RATE};
 use pz_audio::vorbis_setup::SetupHeaders;
@@ -22,6 +22,10 @@ fn main() {
     }
     let ev = strings.lookup(&a[1]).expect("unknown event");
     let id = s.create_instance(ev).unwrap();
+    if let Some(p) = a.get(4) {
+        let v: Vec<f32> = p.split(',').map(|x| x.parse().unwrap()).collect();
+        s.set_position(id, [v[0], v[1], v[2]]);
+    }
     s.start(id);
     let frames = (a[2].parse::<f32>().unwrap() * SAMPLE_RATE as f32) as usize;
     let mut out = vec![0f32; frames * 2];

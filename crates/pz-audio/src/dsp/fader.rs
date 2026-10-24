@@ -8,6 +8,12 @@ pub struct Fader {
 }
 
 impl Dsp for Fader {
+    fn set_param(&mut self, index: usize, value: f32) {
+        if index == 0 {
+            self.gain_db = value;
+        }
+    }
+
     fn process(&mut self, buf: &mut [f32], _channels: usize) {
         let g = if self.gain_db <= -80.0 {
             0.0

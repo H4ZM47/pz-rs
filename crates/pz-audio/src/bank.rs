@@ -528,6 +528,122 @@ fn read_bypass(b: Option<&[u8]>) -> bool {
         .is_some_and(|w| u32::from_le_bytes(w.try_into().unwrap()) != 0)
 }
 
+/// `CTRL`: automation of one property of `target` by a curve.
+#[derive(Debug, Clone, Copy)]
+pub struct Controller {
+    pub id: Guid,
+    pub target: Guid,
+    pub curve: Guid,
+    pub property: u32,
+}
+
+/// `CURV` point: x, y, shape (curvature of the segment that follows), flags.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CurvePoint {
+    pub x: f32,
+    pub y: f32,
+    pub shape: f32,
+    pub flags: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Curve {
+    pub id: Guid,
+    pub controller: Guid,
+    pub points: Vec<CurvePoint>,
+}
+
+impl Curve {
+    /// Value at `x`, clamped to the end points. Segments interpolate
+    /// linearly; segment shapes are not applied yet.
+    pub fn eval(&self, x: f32) -> f32 {
+        let p = &self.points;
+        match p.len() {
+            0 => 0.0,
+            1 => p[0].y,
+            _ => {
+                if x <= p[0].x {
+                    return p[0].y;
+                }
+                for w in p.windows(2) {
+                    if x <= w[1].x {
+                        let t = if w[1].x > w[0].x {
+                            (x - w[0].x) / (w[1].x - w[0].x)
+                        } else {
+                            1.0
+                        };
+                        return w[0].y + (w[1].y - w[0].y) * t;
+                    }
+                }
+                p[p.len() - 1].y
+            }
+        }
+    }
+}
+
+/// `MAP `: piecewise-linear map from a property's automation scale to its
+/// value (for example the fader's display scale to dB).
+#[derive(Debug, Clone)]
+pub struct Mapping {
+    pub id: Guid,
+    pub points: Vec<(f32, f32)>,
+}
+
+impl Mapping {
+    pub fn apply(&self, x: f32) -> f32 {
+        let p = &self.points;
+        if p.is_empty() {
+            return x;
+        }
+        if x <= p[0].0 {
+            return p[0].1;
+        }
+        for w in p.windows(2) {
+            if x <= w[1].0 {
+                let t = if w[1].0 > w[0].0 {
+                    (x - w[0].0) / (w[1].0 - w[0].0)
+                } else {
+                    1.0
+                };
+                return w[0].1 + (w[1].1 - w[0].1) * t;
+            }
+        }
+        p[p.len() - 1].1
+    }
+}
+
+/// `PROP` in an object's `PRPS` list: an automated or modulated property.
+#[derive(Debug, Clone)]
+pub struct Property {
+    pub property: u32,
+    pub unknown_a: u16,
+    pub unknown_b: u16,
+    pub mapping: Guid,
+    pub curves: Vec<Guid>,
+    pub modulators: Vec<Guid>,
+}
+
+impl Property {
+    pub fn parse(b: &[u8]) -> Result<Property> {
+        let mut r = Reader::new(b);
+        Ok(Property {
+            property: r.u32()?,
+            unknown_a: r.u16()?,
+            unknown_b: r.u16()?,
+            mapping: r.guid()?,
+            curves: r.read_structs(|r| r.guid())?,
+            modulators: r.read_structs(|r| r.guid())?,
+        })
+    }
+}
+
+/// Property ids on buses, events and instruments.
+pub mod property {
+    pub const VOLUME: u32 = 0;
+    /// Effect parameters are `EFFECT_PARAMETER + index`.
+    pub const EFFECT_PARAMETER: u32 = 1000;
+}
+
 /// Every object of one bank file.
 #[derive(Default, Debug)]
 pub struct BankModel {
@@ -540,6 +656,15 @@ pub struct BankModel {
     pub buses: HashMap<Guid, (BusKind, Bus)>,
     pub effects: HashMap<Guid, Effect>,
     pub sends: HashMap<Guid, Send>,
+    pub controllers: HashMap<Guid, Controller>,
+    pub curves: HashMap<Guid, Curve>,
+    pub mappings: HashMap<Guid, Mapping>,
+    /// Automated properties of each object, keyed by the object's GUID.
+    pub properties: HashMap<Guid, Vec<Property>>,
+    /// Controllers each parameter sheet drives (`CTRO` of `PMLO`).
+    pub sheet_controllers: HashMap<Guid, Vec<Guid>>,
+    /// Controllers each timeline drives (`CTRO` of `TMLN`).
+    pub timeline_controllers: HashMap<Guid, Vec<Guid>>,
 }
 
 impl BankModel {
@@ -556,13 +681,89 @@ impl BankModel {
             let p = Parameter::parse(o.get(b"PRMB").ok_or(Truncated)?)?;
             m.parameters.insert(p.id, p);
         }
+        let guid_list = |b: Option<&[u8]>| -> Result<Vec<Guid>> {
+            match b {
+                Some(b) => Reader::new(b).read_structs(|r| r.guid()),
+                None => Ok(Vec::new()),
+            }
+        };
         for o in objects(b"PMLS") {
             let p = ParameterSheet::parse(o.get(b"PMLB").ok_or(Truncated)?)?;
+            m.sheet_controllers.insert(p.id, guid_list(o.get(b"CTRO"))?);
             m.parameter_sheets.insert(p.id, p);
         }
         for o in objects(b"TLNS") {
             let t = Timeline::parse(o.get(b"TLNB").ok_or(Truncated)?)?;
+            m.timeline_controllers
+                .insert(t.id, guid_list(o.get(b"CTRO"))?);
             m.timelines.insert(t.id, t);
+        }
+        for b in raw_leaves(file, proj, b"CTRS", b"CTRL") {
+            let mut r = Reader::new(b);
+            let c = Controller {
+                id: r.guid()?,
+                target: r.guid()?,
+                curve: r.guid()?,
+                property: r.u32()?,
+            };
+            m.controllers.insert(c.id, c);
+        }
+        for b in raw_leaves(file, proj, b"CRVS", b"CURV") {
+            let mut r = Reader::new(b);
+            let id = r.guid()?;
+            let controller = r.guid()?;
+            let points = r.read_structs(|r| {
+                Ok(CurvePoint {
+                    x: r.f32()?,
+                    y: r.f32()?,
+                    shape: r.f32()?,
+                    flags: r.u32()?,
+                })
+            })?;
+            m.curves.insert(
+                id,
+                Curve {
+                    id,
+                    controller,
+                    points,
+                },
+            );
+        }
+        for b in raw_leaves(file, proj, b"MPGS", b"MAP ") {
+            let mut r = Reader::new(b);
+            let id = r.guid()?;
+            let points = r.read_structs(|r| Ok((r.f32()?, r.f32()?)))?;
+            m.mappings.insert(id, Mapping { id, points });
+        }
+        // Every object list may carry a PRPS list of automated properties.
+        for list in &proj.children {
+            for item in list.children.iter().filter(|c| c.list_type.is_some()) {
+                let Some(prps) = item
+                    .children
+                    .iter()
+                    .find(|c| c.list_type.as_ref() == Some(b"PRPS"))
+                else {
+                    continue;
+                };
+                // The owner is the GUID at the start of the object's first data chunk.
+                let Some(first) = item
+                    .children
+                    .iter()
+                    .find(|c| c.list_type.is_none() && c.body.len() >= 16)
+                else {
+                    continue;
+                };
+                let owner = Reader::new(&file[first.body.clone()]).guid()?;
+                let props = prps
+                    .children
+                    .iter()
+                    .filter(|c| &c.id == b"PROP")
+                    .map(|c| Property::parse(&file[c.body.clone()]))
+                    .collect::<Result<Vec<_>>>()?;
+                if !props.is_empty() {
+                    m.properties.insert(owner, props);
+                }
+            }
         }
         for b in raw_leaves(file, proj, b"WAVS", b"WAV ") {
             let w = Waveform::parse(b)?;

@@ -141,6 +141,10 @@ impl MultibandEq {
 }
 
 impl Dsp for MultibandEq {
+    fn set_param(&mut self, index: usize, value: f32) {
+        self.set(index, value);
+    }
+
     fn process(&mut self, buf: &mut [f32], channels: usize) {
         let channels = channels.min(MAX_CHANNELS);
         for (bi, band) in self.bands.iter().enumerate() {

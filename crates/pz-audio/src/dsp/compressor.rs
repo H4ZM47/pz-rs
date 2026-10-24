@@ -58,6 +58,10 @@ impl Compressor {
 }
 
 impl Dsp for Compressor {
+    fn set_param(&mut self, index: usize, value: f32) {
+        self.set_float(index, value);
+    }
+
     fn process(&mut self, buf: &mut [f32], channels: usize) {
         let channels = channels.min(32);
         let threshold = 10f32.powf(self.threshold_db / 10.0);
