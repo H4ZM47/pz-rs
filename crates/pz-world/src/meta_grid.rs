@@ -541,8 +541,9 @@ impl IsoMetaGrid {
 
     /// `IsoMetaGrid.Create()` for the parts that read map files: directory
     /// scan, lot headers (rooms, buildings, zombie intensity), building
-    /// consolidation and adjacent-cell flags. The building loop that follows
-    /// (adjacent-cell rooms, alarms) is [`IsoMetaGrid::assign_alarms`].
+    /// consolidation, adjacent-cell flags and the adjacent-cell rooms of
+    /// `CreateStep2`'s building loop. The alarms of that loop are
+    /// [`IsoMetaGrid::assign_alarms`].
     ///
     /// The original reads headers on 8 threads (rows `minY+i`, step 8) that
     /// share `Rand`; this port reads them in that per-thread row order on one
@@ -570,6 +571,16 @@ impl IsoMetaGrid {
         grid.load_headers(rand, &mut voronois);
         grid.consolidate_buildings();
         grid.init_incomplete_cells();
+        // The first half of `CreateStep2`'s building loop. The original
+        // interleaves it with the alarm draws ([`IsoMetaGrid::assign_alarms`]);
+        // it draws nothing and the alarms read no chunk room lists, so
+        // running it first gives the same state, and every caller gets the
+        // rooms of buildings that cross into the cells east, south and
+        // south-east.
+        for i in 0..grid.buildings.len() {
+            let b = grid.buildings[i];
+            grid.add_rooms_to_adjacent_cells(b);
+        }
         Ok(grid)
     }
 
@@ -994,8 +1005,9 @@ impl IsoMetaGrid {
         }
     }
 
-    /// The building loop of `CreateStep2`: rooms are added to adjacent
-    /// cells, then alarms are assigned from the sandbox `alarm` option.
+    /// The alarm half of `CreateStep2`'s building loop: alarms are assigned
+    /// from the sandbox `alarm` option. The other half
+    /// (`addRoomsToAdjacentCells`) already ran in [`IsoMetaGrid::create`].
     pub fn assign_alarms(
         &mut self,
         rand: &mut dyn GameRand,
@@ -1005,9 +1017,7 @@ impl IsoMetaGrid {
         alarm_decay: impl Fn() -> i32,
     ) {
         for i in 0..self.buildings.len() {
-            let bidx = self.buildings[i];
-            self.add_rooms_to_adjacent_cells(bidx);
-            let b = bidx.0 as usize;
+            let b = self.buildings[i].0 as usize;
             if last_stand || self.building_defs[b].rooms.len() <= 2 {
                 continue;
             }
