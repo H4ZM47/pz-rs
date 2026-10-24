@@ -258,6 +258,12 @@ pub enum WorldShader {
     /// `seamFix2` (`TileSeamShader`): as `TileDepth`, also discarding where
     /// the seam mask (texture coordinates `uv2`) has alpha 0.
     Seam { depth: Texture, uv1: [[f32; 2]; 4], mask: Texture, uv2: [[f32; 2]; 4], front: f32, far: f32 },
+    /// `CircleStencil` (`DoCutawayShader`): a wall cut down by the stencil
+    /// texture (`wallcutaways.png`): texels where the stencil's red channel
+    /// is zero are discarded when `discard_value` > 0 (kept otherwise, for
+    /// window-frame outlines), the stencil's channels shape alpha and add
+    /// the edge highlight, and depth comes from `depth`.
+    Cutaway { depth: Texture, uv1: [[f32; 2]; 4], stencil: Texture, uv2: [[f32; 2]; 4], front: f32, far: f32, discard_value: f32 },
 }
 
 #[derive(Default)]

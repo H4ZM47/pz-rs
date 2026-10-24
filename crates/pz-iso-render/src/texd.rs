@@ -44,6 +44,7 @@ impl TexDraw {
         let shader = match shader {
             WorldShader::TileDepth { depth, front, far, opaque, .. } => WorldShader::TileDepth { depth, uv1: self.uv1, front, far, opaque },
             WorldShader::Seam { depth, mask, front, far, .. } => WorldShader::Seam { depth, uv1: self.uv1, mask, uv2: self.uv2, front, far },
+            WorldShader::Cutaway { depth, stencil, front, far, discard_value, .. } => WorldShader::Cutaway { depth, uv1: self.uv1, stencil, uv2: self.uv2, front, far, discard_value },
             s => s,
         };
         DrawCmd::WorldSprite(self.sprite, shader)

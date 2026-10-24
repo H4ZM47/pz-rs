@@ -486,6 +486,27 @@ fn render_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderO
         None => plain_wall(obj),
     };
     ctx.out.push(DrawCmd::DepthMask(true));
+    // Cut-away north and west walls go through DoCutawayShader.
+    if let Some(cv) = cv {
+        let wc = cv.wall_cutaway(sq, obj);
+        let side = if !obj.is_wall_se() && !(sprite.cut_w && sprite.cut_n) {
+            if t == TileType::DoorFrW || t == TileType::DoorW || sprite.cut_w {
+                Some(WallSide::W)
+            } else if t == TileType::DoorFrN || t == TileType::DoorN || sprite.cut_n {
+                Some(WallSide::N)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(side) = side {
+            if cv.wall_draw(sq, obj, side, &wc) == WallDraw::Cutaway {
+                do_cutaway_shader(ctx, sq, obj, side, &wc, cv);
+                return;
+            }
+        }
+    }
     if obj.is_wall_se() {
         wall_lighting_w(ctx, sq, obj, draw(WallSide::W));
     } else if sprite.cut_w && sprite.cut_n {
@@ -497,6 +518,144 @@ fn render_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderO
     } else if t == TileType::DoorFrN || t == TileType::DoorN || sprite.cut_n {
         wall_lighting_n(ctx, sq, obj, draw(WallSide::N));
     }
+}
+
+/// `hasCutawayCapableWallNorth` / `West`.
+fn has_cutaway_capable_wall(sq: Option<&RenderSquare>, north: bool) -> bool {
+    let Some(sq) = sq else { return false };
+    let any = |f: &dyn Fn(&crate::world::SpriteFlags) -> bool| sq.objects.iter().any(|o| o.sprite.as_ref().is_some_and(|s| f(&s.flags)));
+    if any(&|f| f.wall_se) {
+        return false;
+    }
+    let wall = sq.objects.iter().any(|o| o.sprite.as_ref().is_some_and(|s| if north { s.cut_n } else { s.cut_w }));
+    let (window, wall_flag, door_wall) = if north {
+        (any(&|f| f.window_n), any(&|f| f.wall_n || f.wall_nw), any(&|f| f.door_wall_n))
+    } else {
+        (any(&|f| f.window_w), any(&|f| f.wall_w || f.wall_nw), any(&|f| f.door_wall_w))
+    };
+    let wall_like = (wall || window) && (wall_flag || door_wall || window);
+    wall_like || sq.objects.iter().any(|o| o.flags().garage_door && o.sprite.as_ref().is_some_and(|s| if north { s.cut_n } else { s.cut_w }))
+}
+
+/// `IsoGridSquare.DoCutawayShader` for a north or west wall (corner and
+/// south-east walls, and attached sprites on cut walls
+/// (`DoCutawayShaderAttached`), are not ported).
+fn do_cutaway_shader(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, side: WallSide, wc: &crate::alpha::WallCutaway, cv: &CutawayView<'_>) {
+    let sprite = obj.sprite.as_deref().expect("sprite");
+    let Some(mut stencil) = ctx.depth_maps.cutaway_stencil(0) else { return };
+    let at = |dx: i32, dy: i32| cv.world.square(sq.x + dx, sq.y + dy, sq.z);
+    let (sq_n, sq_s, sq_w, sq_e) = (at(0, -1), at(0, 1), at(-1, 0), at(1, 0));
+    let hint = sprite.cutaway_hint.as_deref();
+    // The lowest door/window object on the square gets the door/window
+    // stencil rows.
+    let lowest = |north: bool| {
+        sq.objects.iter().position(|o| {
+            let Some(s) = o.sprite.as_ref() else { return false };
+            let window = matches!(o.kind, ObjectKind::Window { .. }) || if north { s.flags.window_n } else { s.flags.window_w };
+            let door = if north { matches!(s.tile_type, TileType::DoorFrN | TileType::DoorN) || s.flags.door_wall_n } else { matches!(s.tile_type, TileType::DoorFrW | TileType::DoorW) || s.flags.door_wall_w };
+            window || door
+        })
+    };
+    let is_lowest = |north: bool| lowest(north).is_some_and(|i| std::ptr::eq(&sq.objects[i], obj));
+    let window_row = |stencil: &mut Option<usize>, y: &mut i32, left: &str, right: &str, swap: bool| {
+        *y = 226;
+        match hint {
+            Some(h) if h == left => *y = if swap { 452 } else { 678 },
+            Some(h) if h == right => *y = if swap { 678 } else { 452 },
+            Some(_) => {}
+            None => {
+                if let Some(n) = sprite.window_shape {
+                    let (tex, row) = match n {
+                        1..=9 => (1, n - 1),
+                        10..=18 => (2, n - 10),
+                        19..=21 => (3, n - 19),
+                        _ => return,
+                    };
+                    *stencil = Some(tex);
+                    *y = 226 * row;
+                }
+            }
+        }
+    };
+    let mut stencil_index = None;
+    let v = &sq.vert_lights;
+    let (cut_x, mut cut_y, cols, preset) = match side {
+        WallSide::N => {
+            let mut x = 700;
+            if wc.cutaway_self & 1 != 0 {
+                if wc.cutaway_e & 1 == 0 && has_cutaway_capable_wall(sq_e, true) {
+                    x = 444;
+                }
+                if (wc.cutaway_w & 1 == 0 && has_cutaway_capable_wall(sq_w, true)) || (wc.cutaway_n & 2 == 0 && has_cutaway_capable_wall(sq_n, false)) {
+                    x = 956;
+                }
+            } else {
+                x = if wc.cutaway_e & 1 == 0 { 828 } else { 956 };
+            }
+            (x, 0, [v[4], v[5], v[1], v[0]], crate::world::DepthPreset::NWall)
+        }
+        WallSide::W => {
+            let mut x = 512;
+            if wc.cutaway_s & 2 != 0 {
+                if (wc.cutaway_n & 2 == 0 && has_cutaway_capable_wall(sq_n, false)) || (wc.cutaway_w & 1 == 0 && has_cutaway_capable_wall(sq_w, true)) || (wc.cutaway_self & 1 == 0 && has_cutaway_capable_wall(Some(sq), true)) {
+                    x = 768;
+                }
+            } else if wc.cutaway_self & 2 == 0 {
+                x = 896;
+            } else if wc.cutaway_n & 2 == 0 && has_cutaway_capable_wall(sq_n, false) {
+                x = 768;
+            } else if has_cutaway_capable_wall(sq_s, false) {
+                x = 256;
+            } else if wc.cutaway_w & 1 == 0 && has_cutaway_capable_wall(sq_w, true) {
+                x = 768;
+            }
+            (x, 0, [v[7], v[4], v[0], v[3]], crate::world::DepthPreset::WWall)
+        }
+    };
+    let mut cut_x = cut_x;
+    let north = side == WallSide::N;
+    let (has_door, has_window) = if north { (wc.has_seen_door_n, wc.has_seen_window_n) } else { (wc.has_seen_door_w, wc.has_seen_window_w) };
+    if is_lowest(north) {
+        if has_door {
+            cut_y = 904;
+            match (hint, north) {
+                (Some("DoubleDoorLeft"), true) | (Some("DoubleDoorRight"), false) => cut_y = 1130,
+                (Some("DoubleDoorRight"), true) | (Some("DoubleDoorLeft"), false) => cut_y = 1356,
+                (Some("GarageDoorLeft"), _) => {
+                    cut_x = if north { 444 } else { 0 };
+                    cut_y = 1808;
+                }
+                (Some("GarageDoorMiddle"), _) => {
+                    cut_x = if north { 572 } else { 128 };
+                    cut_y = 1808;
+                }
+                (Some("GarageDoorRight"), _) => {
+                    cut_x = if north { 700 } else { 256 };
+                    cut_y = 1808;
+                }
+                _ => {}
+            }
+        } else if has_window {
+            window_row(&mut stencil_index, &mut cut_y, "DoubleWindowLeft", "DoubleWindowRight", !north);
+        }
+    }
+    if let Some(i) = stencil_index {
+        match ctx.depth_maps.cutaway_stencil(i) {
+            Some(t) => stencil = t,
+            None => return,
+        }
+    }
+    let Some(depth) = ctx.depth_maps.preset(preset) else { return };
+    let no_wall_lighting = sprite.flags.no_wall_lighting;
+    let col = prepare_color(obj, if no_wall_lighting { sq.light_info } else { ColorInfo::WHITE });
+    let shaper = WallShaper { col: cols, tint: 0, part: WallPart::Whole };
+    let offset_y = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32;
+    // The stencils have no mipmaps: drawn with (SRC_ALPHA, 1 - SRC_ALPHA).
+    ctx.out.push(DrawCmd::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
+    let d = SpriteDraw { sprite, obj: Some(obj), main: true, x: sq.x as f32, y: sq.y as f32, z: sq.z as f32, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::None, seam: None };
+    let c = sprite::CutawayDraw { stencil, region: [cut_x, cut_y, 66, 226], depth, tex_render: sprite::WallTexRender::All, discard_value: 1.0 };
+    sprite::render_cutaway(ctx, &d, &shaper, &c);
+    set_blend(ctx.out);
 }
 
 /// The ±4.5% contrast tweak `DoWallLightingN/W` apply between a wall's top

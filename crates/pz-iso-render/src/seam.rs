@@ -145,6 +145,9 @@ pub struct WorldDepthMaps<'a> {
     pub tiles: &'a pz_render::tile_depth::TileDepthTextureManager,
     /// [`seam_masks`] of `SEAMS_01.png`.
     pub seams: Vec<Texture>,
+    /// The cutaway stencils, as [`crate::world::DepthMaps::cutaway_stencil`]
+    /// numbers them.
+    pub cutaways: Vec<Texture>,
 }
 
 impl crate::world::DepthMaps for WorldDepthMaps<'_> {
@@ -158,6 +161,10 @@ impl crate::world::DepthMaps for WorldDepthMaps<'_> {
 
     fn seam_mask(&self, tile: SeamTile) -> Option<Texture> {
         self.seams.get(tile.index()).cloned()
+    }
+
+    fn cutaway_stencil(&self, index: usize) -> Option<Texture> {
+        self.cutaways.get(index).cloned()
     }
 }
 

@@ -10,6 +10,8 @@ struct Globals {
     alpha_func: u32,
     alpha_ref: f32,
     clip_z: f32,
+    // Per-program extra uniform (CircleStencil's discardValue).
+    extra: f32,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;

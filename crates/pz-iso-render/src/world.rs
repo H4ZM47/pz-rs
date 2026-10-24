@@ -74,6 +74,10 @@ pub struct SpriteInfo {
     pub tileset: String,
     /// `tileSheetIndex`.
     pub tile_sheet_index: i32,
+    /// The `CutawayHint` property (`DoubleDoorLeft`, `GarageDoorMiddle`, …).
+    pub cutaway_hint: Option<String>,
+    /// The `WindowShape` property, parsed.
+    pub window_shape: Option<i32>,
     /// The texture of the frame drawn (`getTextureForFrame`).
     pub texture: Option<Texture>,
     pub soff_x: i32,
@@ -331,6 +335,12 @@ pub trait DepthMaps {
     fn default_texture(&self) -> Option<Texture>;
     /// `TileSeamManager.getTexture(tile)`.
     fn seam_mask(&self, _tile: crate::seam::SeamTile) -> Option<Texture> {
+        None
+    }
+    /// The cutaway stencils `DoCutawayShader` loads: 0 is
+    /// `media/wallcutaways.png`, 1-3 `media/windowframe_cutaways.png`,
+    /// `_2` and `_3` (flags 3, GL_NEAREST).
+    fn cutaway_stencil(&self, _index: usize) -> Option<Texture> {
         None
     }
 }

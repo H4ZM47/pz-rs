@@ -8,7 +8,7 @@ struct Globals {
     alpha_func: u32,
     alpha_ref: f32,
     clip_z: f32,
-    _pad: u32,
+    extra: f32,
     // DesaturationVal, timer, bgl_RenderedTextureWidth/Height.
     screen0: vec4<f32>,
     // TextureSize, unused, unused.

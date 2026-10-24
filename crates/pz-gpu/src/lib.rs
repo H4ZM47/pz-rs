@@ -93,7 +93,8 @@ struct Globals {
     alpha_func: u32,
     alpha_ref: f32,
     clip_z: f32,
-    _pad: u32,
+    /// A per-program uniform (CircleStencil's `discardValue`).
+    extra: f32,
     /// The screen pass's uniforms (see screen.wgsl).
     screen: [[f32; 4]; 2],
 }
@@ -608,7 +609,7 @@ impl Gpu {
                 f.push(key, s.texture.as_ref().and_then(|t| t.id), Tex2::None, &self.state, g, sprite_vertices(s));
             }
             DrawCmd::WorldSprite(s, shader) => {
-                let g = f.globals(&self.state, f.mvp_for_target(), 0.5);
+                let mut g = f.globals(&self.state, f.mvp_for_target(), 0.5);
                 let mut v = sprite_vertices(s);
                 let (program, tex2) = match shader {
                     WorldShader::Default { z } => {
@@ -624,6 +625,19 @@ impl Gpu {
                         }
                         let Some(id) = depth.id else { return };
                         (if *opaque { Program::OpaqueDepth } else { Program::TileDepth }, Tex2::Texture(id))
+                    }
+                    WorldShader::Cutaway { depth, uv1, stencil, uv2, front, far, discard_value } => {
+                        for ((vx, a), b) in v.iter_mut().zip(uv1).zip(uv2) {
+                            vx.uv1 = *a;
+                            vx.uv2 = *b;
+                            vx.depth = [*front, *far];
+                        }
+                        let (Some(id), Some(sid)) = (depth.id, stencil.id) else { return };
+                        f.tex3 = Some(sid);
+                        let mut gl = f.globals[g as usize];
+                        gl.extra = *discard_value;
+                        g = f.push_globals(gl);
+                        (Program::Cutaway, Tex2::Texture(id))
                     }
                     WorldShader::Seam { depth, uv1, mask, uv2, front, far } => {
                         for ((vx, a), b) in v.iter_mut().zip(uv1).zip(uv2) {
@@ -984,7 +998,7 @@ impl FrameBuilder {
 
     fn globals(&mut self, st: &GlState, mvp: [[f32; 4]; 4], clip_z: f32) -> u32 {
         let (alpha_func, alpha_ref) = if st.alpha_test { (st.alpha_func.wrapping_sub(gl::NEVER), st.alpha_ref) } else { (8, 0.0) };
-        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, _pad: 0, screen: [[0.0; 4]; 2] };
+        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, extra: 0.0, screen: [[0.0; 4]; 2] };
         self.push_globals(g)
     }
 

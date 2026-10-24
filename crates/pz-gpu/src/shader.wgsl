@@ -11,6 +11,8 @@ struct Globals {
     alpha_ref: f32,
     // Window-space depth of the quad (0.5 is GL clip z 0).
     clip_z: f32,
+    // Per-program extra uniform (CircleStencil's discardValue).
+    extra: f32,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;

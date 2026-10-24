@@ -374,3 +374,87 @@ fn render_seam(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, tex: &Texture, tile:
     m.accept(&mut draw);
     ctx.out.push(draw.into_cmd(WorldShader::Seam { depth, uv1: [[0.0; 2]; 4], mask, uv2: [[0.0; 2]; 4], front, far }));
 }
+
+/// `SpriteRenderer.WallShaderTexRender`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WallTexRender {
+    All,
+    LeftOnly,
+    RightOnly,
+}
+
+/// One `DoCutawayShader` draw: the stencil cell and the wall's depth preset.
+pub struct CutawayDraw {
+    pub stencil: Texture,
+    /// `setCutawayTexture(tex, x, y, w, h)`.
+    pub region: [i32; 4],
+    pub depth: Texture,
+    pub tex_render: WallTexRender,
+    /// `discardValue` (1 for the wall, 0 for window-frame outlines).
+    pub discard_value: f32,
+}
+
+/// `IsoObject.renderWallTileOnly(null, …, CircleStencilShader, shaper)`:
+/// the wall quad cut to the intersection of the sprite, stencil cell and
+/// depth texture (`GenericSpriteRenderState.render` with cutaway textures),
+/// coloured by the wall shaper, drawn with `CircleStencil`.
+pub fn render_cutaway(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, shaper: &WallShaper, c: &CutawayDraw) {
+    let s = d.sprite;
+    let Some(tex0) = s.texture.as_ref() else { return };
+    let mut info = d.col;
+    if s.flags.unlit {
+        info.r = 1.0;
+        info.g = 1.0;
+        info.b = 1.0;
+    }
+    info.a = d.alpha;
+    if info.a == 0.0 {
+        return;
+    }
+    let ((gox, goy), lx, ly) = match ctx.chunk {
+        Some(ch) => (ch.record_offset(), coordmodulof(d.x, 8), coordmodulof(d.y, 8)),
+        None => ((-ctx.cam.off_x as f32, -ctx.cam.off_y as f32), d.x, d.y),
+    };
+    let sx = x_to_screen(lx, ly) - d.offset_x + gox + s.soff_x as f32;
+    let sy = y_to_screen(lx, ly, d.z, 0) - d.offset_y + goy + s.soff_y as f32;
+    let (front, far) = tile_depths(ctx, d.x, d.y, d.z, d.z);
+    let (t1, t2) = (&c.stencil, &c.depth);
+    let [cx, cy, cw, ch] = c.region;
+    let t1x = (cx % 128) as f32;
+    let t1y = (cy % 226) as f32;
+    let mut x0 = tex0.offset_x.max(t1x).max(t2.offset_x);
+    let mut x1 = (tex0.offset_x + tex0.width as f32).min(t1x + cw as f32).min(t2.offset_x + t2.width as f32);
+    let y0 = tex0.offset_y.max(t1y).max(t2.offset_y);
+    let y2 = (tex0.offset_y + tex0.height as f32).min(t1y + ch as f32).min(t2.offset_y + t2.height as f32);
+    match c.tex_render {
+        WallTexRender::LeftOnly => x1 = x1.min(63.0),
+        WallTexRender::RightOnly => x0 = x0.max(63.0),
+        WallTexRender::All => {}
+    }
+    let xs = [x0, x1, x1, x0];
+    let ys = [y0, y0, y2, y2];
+    // Texture.render offsets by the trim offset; left = x - offsetX.
+    let (left, top) = (sx, sy);
+    let col = crate::color::to_abgr(info.r, info.g, info.b, info.a);
+    let u = |t: &Texture, x: f32, off: f32| (t.x_start * t.width_hw as f32 + (x - off)) / t.width_hw as f32;
+    let v = |t: &Texture, y: f32, off: f32| (t.y_start * t.height_hw as f32 + (y - off)) / t.height_hw as f32;
+    let mut sprite = pz_render::Sprite {
+        texture: Some(tex0.clone()),
+        x: xs.map(|x| left + x),
+        y: ys.map(|y| top + y),
+        u: xs.map(|x| u(tex0, x, tex0.offset_x)),
+        v: ys.map(|y| v(tex0, y, tex0.offset_y)),
+        color: [col; 4],
+        flipped: false,
+    };
+    if d.flip {
+        sprite.flipped = true;
+    }
+    let uv_stencil: [[f32; 2]; 4] = std::array::from_fn(|i| [(cx as f32 + (xs[i] - t1x)) / t1.width_hw as f32, (cy as f32 + (ys[i] - t1y)) / t1.height_hw as f32]);
+    let uv_depth: [[f32; 2]; 4] = std::array::from_fn(|i| [u(t2, xs[i], t2.offset_x), v(t2, ys[i], t2.offset_y)]);
+    let mut draw = TexDraw { sprite, tex1: Some(t2.clone()), uv1: uv_depth, tex2: Some(t1.clone()), uv2: uv_stencil };
+    shaper.accept(&mut draw);
+    ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
+    ctx.out.push(DrawCmd::DepthFunc(gl::LEQUAL));
+    ctx.out.push(draw.into_cmd(WorldShader::Cutaway { depth: t2.clone(), uv1: [[0.0; 2]; 4], stencil: t1.clone(), uv2: [[0.0; 2]; 4], front, far, discard_value: c.discard_value }));
+}
