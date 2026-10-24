@@ -20,6 +20,13 @@ pub struct Loader {
     pub errors: Vec<String>,
 }
 
+impl Loader {
+    /// `LuaManager.loaded.remove(path)`: the next `run_lua` runs it again.
+    pub fn forget(&mut self, path: &str) {
+        self.loaded.remove(&path.replace('\\', "/"));
+    }
+}
+
 pub struct LuaManager {
     pub thread: Thread,
     /// `ZomboidFileSystem.instance`. Never hold a borrow across a Lua call.

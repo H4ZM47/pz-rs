@@ -20,11 +20,14 @@ pub mod bind_global_objects;
 pub mod bind_globals;
 pub mod bind_iso_enums;
 pub mod bind_java_util;
+pub mod bind_misc;
+pub mod bind_misc_classes;
 pub mod bind_mods;
 pub mod bind_nutrition;
 pub mod bind_popman;
 pub mod bind_registry;
 pub mod bind_render;
+pub mod bind_sandbox;
 pub mod bind_save;
 pub mod bind_scripts;
 pub mod bind_skills;
@@ -53,6 +56,12 @@ pub fn register_all(mgr: &mut LuaManager) {
     // Text before UI: bind_text's UIFont is canonical.
     bind_text::register(&mut mgr.thread);
     bind_debug::register(&mut mgr.thread);
+    bind_misc::register(&mut mgr.thread, mgr.fs.clone(), mgr.events.clone());
+    bind_sandbox::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
+    {
+        let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
+        bind_misc_classes::register(&mut mgr.thread, jar.as_ref());
+    }
     bind_ui::register(&mut mgr.thread);
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());

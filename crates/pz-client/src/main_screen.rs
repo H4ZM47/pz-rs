@@ -42,6 +42,13 @@ pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
         *e2.borrow_mut().entry(first).or_default() += 1;
     });
     mgr.thread.out = Box::new(|s| println!("LOG  : {s}"));
+    // GameWindow.init: Translator.loadFiles and TextManager.Init.
+    {
+        let core = pz_lua_api::bind_core::shared_core();
+        let fs = mgr.fs.borrow();
+        pz_lua_api::bind_text::boot(&fs, &core.borrow())
+            .map_err(|e| format!("text init failed: {e}"))?;
+    }
     UIManager::init();
     mgr.load_all_client();
     let load_failures = mgr.loader.borrow().errors.len();
@@ -67,6 +74,8 @@ pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
     for _ in 0..frames {
         // MainScreenState.update
         mgr.trigger_event("OnFETick", &[0.0.into()]);
+        // UIManager.update starts with UITransition.UpdateAll().
+        pz_lua_api::bind_misc::ui_transition_update_all();
         UIManager::update(&mut mgr.thread);
         // MainScreenState.render
         UIManager::render(&mut mgr.thread);

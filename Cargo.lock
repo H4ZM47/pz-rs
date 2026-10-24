@@ -1575,6 +1575,7 @@ dependencies = [
  "pz-kahlua",
  "pz-popman",
  "pz-render",
+ "pz-sandbox",
  "pz-scripts",
  "pz-text",
  "pz-ui",
@@ -1586,6 +1587,7 @@ name = "pz-popman"
 version = "0.1.0"
 dependencies = [
  "pz-fs",
+ "pz-sandbox",
  "pz-world",
 ]
 
@@ -1597,6 +1599,16 @@ dependencies = [
  "png",
  "pz-fs",
  "pz-kahlua",
+]
+
+[[package]]
+name = "pz-sandbox"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-core",
+ "pz-kahlua",
+ "pz-text",
 ]
 
 [[package]]
