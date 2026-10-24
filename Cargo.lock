@@ -81,15 +81,13 @@ version = "0.1.0"
 [[package]]
 name = "pz-text"
 version = "0.1.0"
+dependencies = [
+ "pz-render",
+]
 
 [[package]]
 name = "pz-ui"
 version = "0.1.0"
-dependencies = [
- "pz-kahlua",
- "pz-render",
- "pz-text",
-]
 
 [[package]]
 name = "regex"
