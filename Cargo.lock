@@ -1761,6 +1761,7 @@ name = "pz-pathfind"
 version = "0.1.0"
 dependencies = [
  "pz-classfile",
+ "pz-clipper6",
  "pz-fs",
  "pz-world",
 ]
