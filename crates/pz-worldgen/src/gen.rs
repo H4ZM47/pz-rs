@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use pz_world::cell_loader::{do_tile_object_creation, ObjectEnv};
 use pz_world::chunk::ChunksCache;
-use pz_world::chunk::{ChunkLoadEnv, IsoChunk, IsoGridSquare};
+use pz_world::chunk::{ChunkGenerationStatus, ChunkLoadEnv, IsoChunk, IsoGridSquare};
 use pz_world::objects::{IsoObject, ObjectId, ObjectKind};
 use pz_world::sprite::SpriteIdx;
 use pz_world::{IsoMetaGrid, IsoSpriteManager};
@@ -338,14 +338,7 @@ impl WorldGen {
 
     /// `genRandomChunk`.
     fn gen_random_chunk(&mut self, c: &mut Ctx<'_, '_, '_>, key: (i32, i32)) -> JResult<()> {
-        {
-            let ch = c.chunks.get_mut(key.0, key.1).expect("chunk");
-            ch.set_min_max_level(0, 0);
-            ch.saved.blending_done_full = true;
-            ch.saved.blending_done_partial = false;
-            ch.saved.attachments_done_full = false;
-            ch.saved.attachments_state = [false; 5];
-        }
+        start_random_chunk(c.chunks.get_mut(key.0, key.1).expect("chunk"));
         let mut roads: Vec<Road> = Vec::new();
         for g in &self.road_generators {
             roads = g.roads(key.0, key.1);
@@ -1287,6 +1280,18 @@ impl WorldGen {
     }
 }
 
+/// The chunk state `genRandomChunk` sets before generating squares: level
+/// 0 only, blending done, attachments pending and the `WORLDGEN`
+/// generation status.
+pub fn start_random_chunk(ch: &mut IsoChunk) {
+    ch.set_min_max_level(0, 0);
+    ch.saved.blending_done_full = true;
+    ch.saved.blending_done_partial = false;
+    ch.saved.attachments_done_full = false;
+    ch.saved.attachments_state = [false; 5];
+    ch.add_modded(ChunkGenerationStatus::Worldgen);
+}
+
 /// `IsoChunk.hasEmptySquaresOnLevelZero()`: a level-0 square that is
 /// missing or empty with nothing below it.
 pub fn has_empty_squares_on_level_zero(ch: &IsoChunk) -> bool {
@@ -1318,4 +1323,37 @@ pub fn axis_names() -> [&'static [&'static str]; 6] {
         HYGROMETRY.names,
         ORE_LEVEL.names,
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn random_chunks_are_marked_worldgen() {
+        let mut ch = IsoChunk::new(3, 4);
+        ch.set_square(0, 0, -1, Some(IsoGridSquare::new(24, 32, -1)));
+        assert!(has_empty_squares_on_level_zero(&ch));
+        start_random_chunk(&mut ch);
+        assert!(ch
+            .generation_status
+            .contains(ChunkGenerationStatus::Worldgen));
+        assert_eq!((ch.min_level, ch.max_level), (0, 0));
+        assert!(ch.saved.blending_done_full);
+        assert!(!ch.saved.attachments_done_full);
+        assert_eq!(ch.saved.attachments_state, [false; 5]);
+    }
+
+    #[test]
+    fn map_chunk_without_holes_is_not_random() {
+        let mut ch = IsoChunk::new(0, 0);
+        for x in 0..8 {
+            for y in 0..8 {
+                let mut sq = IsoGridSquare::new(x, y, 0);
+                sq.objects.push(IsoObject::new(0, ObjectKind::Object, None));
+                ch.set_square(x, y, 0, Some(sq));
+            }
+        }
+        assert!(!has_empty_squares_on_level_zero(&ch));
+    }
 }

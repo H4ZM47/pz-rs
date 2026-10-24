@@ -41,7 +41,8 @@ over to the squares they cover.
 Blending and attachments (`Blending.applyBlending`,
 `AttachmentsHandler.applyAttachments`) are not part of loading: they run
 later from `IsoChunk.update()`. This crate sets the chunk flags they read
-but does not port them. Foraging zones (`ZoneGenerator.genForaging`) and
+but does not port them. Generated procedural chunks get the `WORLDGEN`
+generation status, as in the original. Foraging zones (`ZoneGenerator.genForaging`) and
 basements (`Basements.onNewChunkLoaded`, `WorldGenHook::on_new_chunk_loaded`
 is a no-op) are not ported either.
 
