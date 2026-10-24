@@ -326,16 +326,6 @@ const PREFIXES: [(&str, Table); 25] = [
     ("AEBS_", Table::DynamicRadio),
 ];
 
-/// Characters the original refuses in English sources (`Core.IS_DEV` only).
-pub const LOOKALIKE_CHARS: [char; 44] = [
-    '\u{2019}', '\u{2018}', '\u{02bc}', '\u{02b9}', '\u{2032}', '\u{201c}', '\u{201d}', '\u{201f}',
-    '\u{2033}', '\u{2013}', '\u{2014}', '\u{2212}', '\u{2010}', '\u{2011}', '\u{0430}', '\u{0435}',
-    '\u{043e}', '\u{0440}', '\u{0441}', '\u{0443}', '\u{0445}', '\u{0456}', '\u{0458}', '\u{0455}',
-    '\u{051d}', '\u{03f3}', '\u{2170}', '\u{2174}', '\u{2179}', '\u{217c}', '\u{217d}', '\u{217e}',
-    '\u{217f}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{feff}', '\u{200e}', '\u{200f}', '\u{202a}',
-    '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}',
-];
-
 /// What the original's `Core` / `ZomboidFileSystem` / system properties
 /// supply to the translator.
 #[derive(Clone, Debug, Default)]
@@ -354,6 +344,10 @@ pub struct TranslatorEnv {
     pub translation_prefix: bool,
     /// `Core.IS_DEV`.
     pub is_dev: bool,
+    /// `Translator.LOOKALIKE_CHARS`, the characters refused in English
+    /// sources when `is_dev`. It is game data, so it is read from the
+    /// installed `projectzomboid.jar` at runtime rather than kept here.
+    pub lookalike_chars: Vec<char>,
     /// `ZomboidFileSystem.getCacheDir()`, for `translationProblems.txt`.
     pub cache_dir: Option<PathBuf>,
 }
@@ -617,7 +611,9 @@ impl Translator {
         };
         let content = std::fs::read_to_string(&file).map_err(|e| err(e.to_string()))?;
         if self.env.is_dev && language.name == "EN" && file_name != "Mod" {
-            let found: Vec<String> = LOOKALIKE_CHARS
+            let found: Vec<String> = self
+                .env
+                .lookalike_chars
                 .iter()
                 .filter(|c| content.contains(**c))
                 .map(|c| format!("'{c}'"))
