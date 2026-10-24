@@ -5,7 +5,7 @@
 //! Until then a default host lists the installed `media/maps` only (no mods,
 //! untranslated conflict keys).
 
-use crate::bind_core::JavaList;
+use crate::bind_java_util::JavaList;
 use crate::expose::{bool_arg, expose_class, int_arg, str_arg, this};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, NativeCall, Thread, Value};
@@ -86,7 +86,7 @@ fn with_groups<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut MapGroups) -> R) -> Re
 }
 
 fn string_list(v: Vec<String>) -> Value {
-    Value::Object(Rc::new(JavaList(v.into_iter().map(Value::from).collect())))
+    Value::Object(Rc::new(JavaList::new(v.into_iter().map(Value::from).collect())))
 }
 
 /// `maps_dir` is `ZomboidFileSystem.getMediaFile("maps")` for the default
@@ -191,6 +191,7 @@ mod tests {
         }
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        crate::bind_java_util::register(&mut t);
         crate::bind_core::register(&mut t, None, crate::bind_core::shared_core());
         let maps = root.join("media/maps");
         register(&mut t, move || maps.clone());

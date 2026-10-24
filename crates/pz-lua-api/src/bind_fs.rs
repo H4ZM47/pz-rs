@@ -60,7 +60,7 @@ fn opt_list(v: &Option<Vec<String>>) -> Value {
 }
 
 /// `isModActive`'s id: `mod.getId()` unless blank, else `mod.getDir()`.
-fn mod_id_of(c: &NativeCall<'_>, i: usize) -> Option<String> {
+pub(crate) fn mod_id_of(c: &NativeCall<'_>, i: usize) -> Option<String> {
     match c.arg(i) {
         Value::Object(o) => o.as_any().downcast_ref::<LuaMod>().map(|m| {
             let fs = m.fs.borrow();
