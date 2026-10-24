@@ -152,6 +152,15 @@ pub enum ObjectKind {
     WorldInventory,
 }
 
+/// An object's overlay sprite (`overlaySprite`, e.g. grime or graffiti)
+/// and its colour.
+#[derive(Clone, Debug)]
+pub struct Overlay {
+    pub sprite: Rc<SpriteInfo>,
+    /// `overlaySpriteColor`: when set, multiplied by the square's light.
+    pub color: Option<ColorInfo>,
+}
+
 /// An `IsoSpriteInstance` attached to an object (`attachedAnimSprite`).
 #[derive(Clone, Debug)]
 pub struct AttachedSprite {
@@ -184,6 +193,8 @@ pub struct RenderObject {
     pub fascia_attached: Option<[i32; 3]>,
     /// `getContainerCount()`.
     pub container_count: u32,
+    /// `overlaySprite` and `overlaySpriteColor`.
+    pub overlay: Option<Overlay>,
 }
 
 /// A garage door segment's place in its door.
@@ -211,6 +222,7 @@ impl RenderObject {
             garage_door: None,
             fascia_attached: None,
             container_count: 0,
+            overlay: None,
         }
     }
 
