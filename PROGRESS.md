@@ -8,8 +8,14 @@ Status of the Rust port. Update this file with every merged change.
 - Kahlua tables: insertion order, metatable-aware `rawget`, `#` length.
 - Kahlua number formatting/parsing (Java `Double.toString`/`parseDouble`).
 
+- Kahlua compiler: all 1,395 Lua files shipped with Build 42.21 compile to
+  bytecode byte-identical to the original compiler (checked locally with
+  `examples/compare_bytecode.rs` against the original's `Prototype.dump`).
+- Kahlua VM (KahluaThread loop, metatables, errors, coroutines) and
+  BaseLib, TableLib, MathLib, CoroutineLib, RandomLib.
+
 ## In progress
-- Kahlua compiler (LexState/FuncState) and VM (KahluaThread, coroutines).
+- StringLib, OsLib.
 
 ## Next (main-menu milestone)
 1. Kahlua stdlib; load `stdlib.lbc`/`stdlib.lua` from the install.

@@ -214,3 +214,89 @@ impl NativeCall<'_> {
         self.thread.top - self.base
     }
 }
+
+impl Prototype {
+    /// `Prototype.dump`: Lua 5.1 bytecode in the original's exact layout
+    /// (big-endian, modified-UTF-8 strings, no debug locals).
+    pub fn dump(&self) -> Vec<u8> {
+        let mut out = vec![27, 76, 117, 97, 81, 0, 0, 4, 4, 4, 8, 0];
+        self.dump_into(&mut out);
+        out
+    }
+
+    fn dump_into(&self, o: &mut Vec<u8>) {
+        dump_string(self.name.as_deref(), o);
+        o.extend_from_slice(&0i32.to_be_bytes());
+        o.extend_from_slice(&0i32.to_be_bytes());
+        o.push(self.num_upvalues);
+        o.push(self.num_params);
+        o.push(if self.is_vararg { 2 } else { 0 });
+        o.push(self.max_stack_size);
+        o.extend_from_slice(&(self.code.len() as i32).to_be_bytes());
+        for c in &self.code {
+            o.extend_from_slice(&c.to_be_bytes());
+        }
+        o.extend_from_slice(&(self.constants.len() as i32).to_be_bytes());
+        for k in &self.constants {
+            match k {
+                Value::Nil => o.push(0),
+                Value::Bool(b) => {
+                    o.push(1);
+                    o.push(*b as u8);
+                }
+                Value::Num(n) => {
+                    o.push(3);
+                    // Double.doubleToLongBits canonicalises NaN.
+                    let bits = if n.is_nan() { 0x7ff8_0000_0000_0000u64 } else { n.to_bits() };
+                    o.extend_from_slice(&bits.to_be_bytes());
+                }
+                Value::Str(s) => {
+                    o.push(4);
+                    dump_string(Some(s), o);
+                }
+                _ => panic!("Bad type in constant pool"),
+            }
+        }
+        o.extend_from_slice(&(self.prototypes.len() as i32).to_be_bytes());
+        for p in &self.prototypes {
+            p.dump_into(o);
+        }
+        o.extend_from_slice(&(self.lines.len() as i32).to_be_bytes());
+        for l in &self.lines {
+            o.extend_from_slice(&l.to_be_bytes());
+        }
+        o.extend_from_slice(&0i32.to_be_bytes());
+        o.extend_from_slice(&0i32.to_be_bytes());
+    }
+}
+
+fn dump_string(s: Option<&str>, o: &mut Vec<u8>) {
+    let Some(s) = s else {
+        o.extend_from_slice(&0i16.to_be_bytes());
+        return;
+    };
+    let bytes = modified_utf8(s);
+    o.extend_from_slice(&(bytes.len() as i32 + 1).to_be_bytes());
+    o.extend_from_slice(&bytes);
+    o.push(0);
+}
+
+/// Java modified UTF-8 (`DataOutputStream.writeUTF` body).
+pub fn modified_utf8(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    for c in s.encode_utf16() {
+        match c {
+            0x0001..=0x007F => out.push(c as u8),
+            0x0000 | 0x0080..=0x07FF => {
+                out.push(0xC0 | ((c >> 6) & 0x1F) as u8);
+                out.push(0x80 | (c & 0x3F) as u8);
+            }
+            _ => {
+                out.push(0xE0 | ((c >> 12) & 0x0F) as u8);
+                out.push(0x80 | ((c >> 6) & 0x3F) as u8);
+                out.push(0x80 | (c & 0x3F) as u8);
+            }
+        }
+    }
+    out
+}
