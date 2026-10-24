@@ -24,11 +24,6 @@ impl GameVersion {
         Ok(GameVersion { major, minor, suffix: suffix.to_string() })
     }
 
-    /// `Core.gameVersion` of the build this port targets.
-    pub fn current() -> Self {
-        GameVersion { major: 42, minor: 21, suffix: String::new() }
-    }
-
     /// `ChooseGameInfo.minRequiredVersion`.
     pub fn min_required() -> Self {
         GameVersion { major: 42, minor: 0, suffix: String::new() }

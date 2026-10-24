@@ -37,7 +37,9 @@ pub struct GameFs {
     all_absolute_paths: HashSet<String>,
     /// `relativeMap`: memoised `getRelativeFile` results.
     relative_map: Mutex<HashMap<String, String>>,
-    /// `Core.getGameVersion()`.
+    /// `Core.getGameVersion()`. The engine sets it from the installed
+    /// `projectzomboid.jar`; until then it is the oldest version mods may
+    /// target, so only `common/` and `42.0`-style folders are chosen.
     pub game_version: GameVersion,
     /// `TextureID.useCompressionOption`; feeds mod pack flags.
     pub texture_compression: bool,
@@ -76,7 +78,7 @@ impl GameFs {
             active_file_map: HashMap::new(),
             all_absolute_paths: HashSet::new(),
             relative_map: Mutex::new(HashMap::new()),
-            game_version: GameVersion::current(),
+            game_version: GameVersion::min_required(),
             texture_compression: true,
             cache_dir: default_cache_dir(),
             mod_folders_order: vec!["workshop".into(), "steam".into(), "mods".into()],
