@@ -247,6 +247,7 @@ fn keep_world_item(ctx: &SaveCtx<'_>, wi: &crate::objects::IsoWorldInventoryObje
     let Some(ty) = ctx.items.full_type(reg) else {
         return true;
     };
+    let ty = ty.as_str();
     if ctx.items.obsolete(ty) {
         return false;
     }
@@ -419,7 +420,7 @@ pub fn save_square(w: &mut Writer, ctx: &SaveCtx<'_>, sq: &IsoGridSquare) -> Sav
         w.i16(sq.static_moving.len() as i16);
         let class = ctx.class_id("DeadBody")?;
         for b in &sq.static_moving {
-            b.save(w, class)?;
+            b.save(w, class, ctx.items)?;
         }
     }
     if let Some(t) = sq.mod_data.as_ref().filter(|t| !t.is_empty()) {

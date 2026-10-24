@@ -111,7 +111,7 @@ impl SavedItem {
         if !env.decodes(&t) {
             return raw(t.class.java_name());
         }
-        let Some(mut item) = env.create_item(reg) else {
+        let Some(mut item) = crate::env::create_item(env, reg) else {
             return raw("not creatable");
         };
         let mut sub = Reader::new(&data[3..]);
@@ -141,4 +141,18 @@ impl SavedItem {
         w.bytes(&rec);
         Ok(())
     }
+}
+
+/// `loadItem`'s framing alone: the record bytes after the length.
+pub fn read_record<'a>(r: &mut Reader<'a>) -> SaveResult<&'a [u8]> {
+    let len = r.i32()?;
+    if len <= 0 {
+        return err(format!(
+            "InventoryItem.loadItem() invalid item data length: {len}"
+        ));
+    }
+    if len < 7 {
+        return err(format!("item record of {len} bytes"));
+    }
+    r.bytes(len as usize)
 }

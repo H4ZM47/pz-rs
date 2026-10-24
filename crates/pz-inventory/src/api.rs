@@ -194,21 +194,40 @@ impl InventoryItem {
         self.template.on_eat.as_deref()
     }
 
-    /// Port of `getCurrentUses()`.
+    /// Port of `getCurrentUses()` (`Food` with a base hunger counts its
+    /// remaining hunger).
     pub fn get_current_uses(&self) -> i32 {
-        self.uses
+        match self.food() {
+            Some(f) if f.base_hunger != 0.0 => (f.hung_change * 100.0).abs() as i32,
+            _ => self.uses,
+        }
     }
 
-    /// Port of `setCurrentUses(int)`.
+    /// Port of `setCurrentUses(int)` (`Food` consumes hunger; the
+    /// drainable weight update is STUB).
     pub fn set_current_uses(&mut self, uses: i32) {
-        self.uses = uses;
+        let cur = self.get_current_uses();
+        match &mut self.kind {
+            ItemKind::Food(f) => {
+                let uses = uses.max(0);
+                if f.base_hunger == 0.0 {
+                    self.uses = uses;
+                } else {
+                    // consumeHunger((current - new) / 100)
+                    let used = (cur - uses) as f32 / 100.0;
+                    let pct = (used / f.hung_change).abs();
+                    f.multiply_food_values(1.0 - pct);
+                }
+            }
+            _ => self.uses = uses,
+        }
     }
 
-    /// Port of `getMaxUses()`: `DrainableComboItem` uses `1 / useDelta`
-    /// (rounded), every other item 1.
+    /// Port of `getMaxUses()`: `DrainableComboItem` uses
+    /// `floor(1 / useDelta)`, every other item 1.
     pub fn get_max_uses(&self) -> i32 {
         if self.template.class == ItemClass::Drainable {
-            (1.0 / self.template.use_delta).round() as i32
+            (1.0 / self.template.use_delta).floor() as i32
         } else {
             1
         }
@@ -350,6 +369,27 @@ impl InventoryItem {
             ItemKind::Clothing(c) | ItemKind::AlarmClockClothing(c, _) => Some(c),
             _ => None,
         }
+    }
+}
+
+impl FoodData {
+    /// Port of `Food.multiplyFoodValues`.
+    pub fn multiply_food_values(&mut self, p: f32) {
+        self.boredom_change *= p;
+        self.unhappy_change *= p;
+        self.hung_change *= p;
+        self.flu_reduction = (self.flu_reduction as f32 * p) as i32;
+        self.thirst_change *= p;
+        self.pain_reduction *= p;
+        self.food_sickness_change = (self.food_sickness_change as f32 * p) as i32;
+        self.end_change *= p;
+        self.stress_change *= p;
+        self.fatigue_change *= p;
+        self.calories *= p;
+        self.carbohydrates *= p;
+        self.proteins *= p;
+        self.lipids *= p;
+        self.poison_power = (self.poison_power as f32 * p) as i32;
     }
 }
 

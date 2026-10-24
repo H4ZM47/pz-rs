@@ -72,7 +72,80 @@ impl DictionaryInfo {
     }
 }
 
-/// The item and entity tables of a `WorldDictionary.bin`.
+/// A `DictionaryStringInfo` / `DictionaryScriptInfo` entry of a register.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisterEntry {
+    pub registry_id: i16,
+    /// `string` / script `name` (a leading `Base.` is stored compressed).
+    pub name: String,
+    /// The script version hash (script registers only).
+    pub version: Option<i64>,
+    pub is_loaded: bool,
+}
+
+/// A `StringDictionary.StringRegister` or `ScriptsDictionary.ScriptRegister`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Register {
+    pub name: String,
+    pub next_id: i16,
+    pub entries: Vec<RegisterEntry>,
+}
+
+impl Register {
+    /// Id to name.
+    pub fn name_of(&self, id: i16) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|e| e.registry_id == id)
+            .map(|e| e.name.as_str())
+    }
+
+    /// Name to id.
+    pub fn id_of(&self, name: &str) -> Option<i16> {
+        self.entries
+            .iter()
+            .find(|e| e.name == name)
+            .map(|e| e.registry_id)
+    }
+}
+
+/// `StringDictionary`/`ScriptsDictionary.loadFromByteBuffer`: named
+/// registers, each a `ByteBlock` (an int length, then the content).
+fn load_registers(r: &mut Reader<'_>, scripts: bool) -> SaveResult<Vec<Register>> {
+    let n = r.i32()?;
+    let mut out = Vec::new();
+    for _ in 0..n.max(0) {
+        let name = r.string()?;
+        let len = r.i32()?;
+        if len < 0 {
+            return err("negative ByteBlock length");
+        }
+        let block = r.bytes(len as usize)?;
+        let b = &mut Reader::new(block);
+        let mut reg = Register {
+            name,
+            next_id: b.i16()?,
+            entries: Vec::new(),
+        };
+        let count = b.i32()?;
+        for _ in 0..count.max(0) {
+            let h = b.i8()? as u8;
+            let registry_id = b.i16()?;
+            let version = if scripts { Some(b.i64()?) } else { None };
+            let s = b.string()?;
+            reg.entries.push(RegisterEntry {
+                registry_id,
+                name: if h & 1 != 0 { format!("Base.{s}") } else { s },
+                version,
+                is_loaded: h & 2 != 0,
+            });
+        }
+        out.push(reg);
+    }
+    Ok(out)
+}
+
+/// The tables of a `WorldDictionary.bin`.
 #[derive(Clone, Debug, Default)]
 pub struct WorldDictionary {
     pub version: i32,
@@ -82,11 +155,14 @@ pub struct WorldDictionary {
     pub object_names: HashMap<i8, String>,
     /// `spriteIdToNameMap`.
     pub sprite_names: HashMap<i32, String>,
+    /// `StringDictionary` registers, in file order.
+    pub string_registers: Vec<Register>,
+    /// `ScriptsDictionary` registers, in file order.
+    pub script_registers: Vec<Register>,
 }
 
 impl WorldDictionary {
-    /// Reads the file up to the sprite names (the string and script
-    /// registers after them are not needed for items).
+    /// Reads the whole file (`DictionaryData.loadFromByteBuffer`).
     pub fn load(bytes: &[u8]) -> SaveResult<Self> {
         let r = &mut Reader::new(bytes);
         let version = r.i32()?;
@@ -127,12 +203,59 @@ impl WorldDictionary {
             let id = r.i32()?;
             d.sprite_names.insert(id, r.string()?);
         }
+        if r.remaining() > 0 {
+            d.string_registers = load_registers(r, false)?;
+        }
+        if r.remaining() > 0 {
+            d.script_registers = load_registers(r, true)?;
+        }
         Ok(d)
     }
 
     /// `getItemTypeFromID`.
     pub fn item_type(&self, id: i16) -> Option<&str> {
         self.items.get(&id).map(|i| i.full_type.as_str())
+    }
+
+    /// `getObjectNameFromID`.
+    pub fn object_name(&self, id: i8) -> Option<&str> {
+        self.object_names.get(&id).map(String::as_str)
+    }
+
+    /// `getIdForObjectName`.
+    pub fn object_id(&self, name: &str) -> Option<i8> {
+        self.object_names
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(&id, _)| id)
+    }
+
+    /// `getSpriteNameFromID`.
+    pub fn sprite_name(&self, id: i32) -> Option<&str> {
+        self.sprite_names.get(&id).map(String::as_str)
+    }
+
+    /// `getIdForSpriteName`.
+    pub fn sprite_id(&self, name: &str) -> Option<i32> {
+        self.sprite_names
+            .iter()
+            .find(|(_, n)| *n == name)
+            .map(|(&id, _)| id)
+    }
+
+    /// `getEntityTypeFromID`.
+    pub fn entity_type(&self, id: i16) -> Option<&str> {
+        self.entities.get(&id).map(|i| i.full_type.as_str())
+    }
+
+    /// A string register by name (`StringDictionary.Generic`, ...).
+    pub fn string_register(&self, name: &str) -> Option<&Register> {
+        self.string_registers.iter().find(|r| r.name == name)
+    }
+
+    /// A script register by name.
+    pub fn script_register(&self, name: &str) -> Option<&Register> {
+        self.script_registers.iter().find(|r| r.name == name)
     }
 
     /// `getItemRegistryID(fullType)`.
@@ -178,11 +301,27 @@ mod tests {
         w.i8(5);
         w.string("Door");
         w.i32(0);
+        // one string register
+        w.i32(1);
+        w.string("Generic");
+        let mut b = Writer::new();
+        b.i16(2);
+        b.i32(1);
+        b.i8(3);
+        b.i16(1);
+        b.string("Thing");
+        w.i32(b.buf.len() as i32);
+        w.bytes(&b.buf);
+        w.i32(0);
         let d = WorldDictionary::load(&w.buf).unwrap();
         assert_eq!(d.item_type(1), Some("Base.Axe"));
         assert_eq!(d.items[&2].mod_id, "mymod");
         assert!(d.items[&2].obsolete && d.items[&1].exists_as_vanilla);
         assert_eq!(d.item_id("Farming.Hoe"), Some(2));
-        assert_eq!(d.object_names[&5], "Door");
+        assert_eq!(d.object_name(5), Some("Door"));
+        assert_eq!(d.object_id("Door"), Some(5));
+        let g = d.string_register("Generic").unwrap();
+        assert_eq!(g.name_of(1), Some("Base.Thing"));
+        assert!(g.entries[0].is_loaded);
     }
 }

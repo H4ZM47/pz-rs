@@ -16,25 +16,33 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::Path;
 
+use pz_inventory::dictionary::WorldDictionary;
+use pz_inventory::factory::ScriptItems;
 use pz_world::chunk::IsoChunk;
 use pz_world::objects::{IsoObject, ItemContainer, ObjectKind, ObjectName, SpriteName};
 use pz_world::save::chunk_file::{chunk_path, load_chunk, save_chunk};
-use pz_world::save::items::{ItemBlob, ItemRegistry};
+use pz_world::save::items::{AllItems, ItemBlob, ItemRegistry};
 use pz_world::save::object_io::sprite_save_id;
 use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables};
 use pz_world::{IsoSpriteManager, SpriteTables};
 
-struct Registry(HashMap<i16, (String, bool, bool)>);
+/// Item ids the original could create (`items.txt` of the oracle run).
+struct OracleItems(HashMap<i16, (String, bool, bool)>);
 
-impl ItemRegistry for Registry {
+/// Every id kept, never decoded: for comparing raw records.
+struct RawOnly<'a>(&'a ScriptItems);
+impl ItemRegistry for RawOnly<'_> {
     fn exists(&self, id: i16) -> bool {
-        self.0.get(&id).is_some_and(|e| e.1)
+        self.0.exists(id)
     }
-    fn full_type(&self, id: i16) -> Option<&str> {
-        self.0.get(&id).map(|e| e.0.as_str())
+    fn full_type(&self, id: i16) -> Option<String> {
+        self.0.full_type(id)
     }
     fn obsolete(&self, t: &str) -> bool {
-        self.0.values().any(|e| e.0 == t && e.2)
+        self.0.obsolete(t)
+    }
+    fn blood_body_parts(&self) -> usize {
+        self.0.blood_body_parts
     }
 }
 
@@ -146,7 +154,7 @@ fn digest(ctx: &SaveCtx<'_>, ch: &IsoChunk, out: &mut String) {
 fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(&mut ItemBlob)) {
     fn cont(c: &mut ItemContainer, f: &mut dyn FnMut(&mut ItemBlob)) {
         for r in &mut c.items {
-            f(&mut r.item);
+            f(r);
         }
     }
     for x in 0..8 {
@@ -200,7 +208,12 @@ fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(&mut ItemBlob)) {
 }
 
 fn mask_items(ch: &mut IsoChunk) {
-    for_each_item(ch, &mut |i| i.data.truncate(7));
+    let env = AllItems;
+    for_each_item(ch, &mut |i| {
+        let mut rec = i.record(&env).unwrap_or_default();
+        rec.truncate(7);
+        *i = ItemBlob::Raw(rec);
+    });
 }
 
 /// The value of `key=` up to the next ` <word>=`.
@@ -327,7 +340,31 @@ fn main() {
         tile_scale,
         ..Default::default()
     };
-    let registry = Registry(reg);
+    let oracle_items = OracleItems(reg);
+    let sm = pz_scripts::ScriptManager::new();
+    sm.load_builtin_registries(&game.join("projectzomboid.jar"))
+        .expect("built-in registries");
+    sm.load(&pz_fs::GameFs::new(game.to_str().unwrap()), &[])
+        .expect("scripts");
+    let dict = WorldDictionary::load(&std::fs::read(save_dir.join("WorldDictionary.bin")).unwrap())
+        .unwrap();
+    let names = pz_inventory::factory::parse_item_names(
+        &std::fs::read_to_string(game.join("media/lua/shared/Translate/EN/ItemName.json")).unwrap(),
+    );
+    let mut registry = ScriptItems::new(&sm, dict, &names);
+    registry.world_age_hours = world_age;
+    registry.blood_body_parts = save_tables.blood_body_parts;
+    registry.world_sprites = pz_world::save::items::moveable_sprites(&sprites);
+    let mut creatable_mismatch = 0;
+    for (id, (ft, ok, _)) in &oracle_items.0 {
+        if registry.exists(*id) != *ok {
+            creatable_mismatch += 1;
+            if creatable_mismatch <= 10 {
+                eprintln!("creatable differs: {id} {ft} java={ok}");
+            }
+        }
+    }
+    let raw_env = RawOnly(&registry);
     let ctx = SaveCtx {
         sprites: &sprites,
         tables: &save_tables,
@@ -367,6 +404,9 @@ fn main() {
         e.push('\n');
     }
     let mut dict_names: HashMap<String, String> = HashMap::new();
+    let mut item_hist = BTreeMap::<String, usize>::new();
+    let mut item_examples = HashMap::<String, usize>::new();
+    let mut item_diffs = String::new();
     for &(wx, wy) in &files {
         *counts.entry("files").or_default() += 1;
         let bytes = std::fs::read(chunk_path(save_dir, wx, wy)).unwrap();
@@ -413,10 +453,96 @@ fn main() {
         if out == bytes {
             *counts.entry("rust resave == input").or_default() += 1;
         }
+        if let Ok(dir) = std::env::var("RUST_OUT") {
+            let p = chunk_path(Path::new(&dir), wx, wy);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, &out).unwrap();
+        }
         let java_bytes = std::fs::read(chunk_path(oracle, wx, wy)).unwrap();
         if out == java_bytes {
             *counts.entry("rust resave == java resave").or_default() += 1;
             continue;
+        }
+        // Item records of both re-saves, pairwise.
+        {
+            let rctx = SaveCtx {
+                items: &raw_env,
+                ..ctx
+            };
+            if let (Ok(mut ro), Ok(mut jo)) = (
+                load_chunk(&out, wx, wy, &rctx),
+                load_chunk(&java_bytes, wx, wy, &rctx),
+            ) {
+                let (mut rr, mut jr) = (Vec::new(), Vec::new());
+                for_each_item(&mut ro.chunk, &mut |i| rr.push(i.record(&raw_env).unwrap()));
+                for_each_item(&mut jo.chunk, &mut |i| jr.push(i.record(&raw_env).unwrap()));
+                let mut any = false;
+                if rr.len() != jr.len() {
+                    *item_hist
+                        .entry(format!("record count {} vs {}", rr.len(), jr.len()))
+                        .or_default() += 0;
+                    *item_hist
+                        .entry("chunk: record count differs".into())
+                        .or_default() += 1;
+                    any = true;
+                }
+                for (a, b) in rr.iter().zip(jr.iter()) {
+                    if a == b {
+                        continue;
+                    }
+                    any = true;
+                    let reg = i16::from_be_bytes([b[0], b[1]]);
+                    let class = registry.template(reg).map_or("?", |t| t.class.java_name());
+                    let at = a
+                        .iter()
+                        .zip(b.iter())
+                        .position(|(x, y)| x != y)
+                        .unwrap_or(a.len().min(b.len()));
+                    let key = format!(
+                        "{class} len {}",
+                        if a.len() == b.len() {
+                            "same"
+                        } else {
+                            "differs"
+                        }
+                    );
+                    *item_hist.entry(key.clone()).or_default() += 1;
+                    if item_examples.entry(key).or_insert(0usize) < &mut 6 {
+                        *item_examples
+                            .get_mut(&format!(
+                                "{class} len {}",
+                                if a.len() == b.len() {
+                                    "same"
+                                } else {
+                                    "differs"
+                                }
+                            ))
+                            .unwrap() += 1;
+                        let lo = at.saturating_sub(8);
+                        writeln!(
+                            item_diffs,
+                            "{wx},{wy} {class} {} at {at} rust={} java={}\n  rust:{:02x?}\n  java:{:02x?}",
+                            registry.full_type(reg).unwrap_or_default(),
+                            a.len(),
+                            b.len(),
+                            &a[lo..(at + 24).min(a.len())],
+                            &b[lo..(at + 24).min(b.len())]
+                        )
+                        .unwrap();
+                    }
+                }
+                if any {
+                    *counts
+                        .entry("chunks with differing item records")
+                        .or_default() += 1;
+                } else {
+                    writeln!(
+                        item_diffs,
+                        "{wx},{wy} item records equal, grouping or framing differs"
+                    )
+                    .unwrap();
+                }
+            }
         }
         // Compare with item bodies masked: the Java side re-saves items
         // through their own classes.
@@ -470,5 +596,13 @@ fn main() {
     }
     std::fs::write(oracle.join("rust_digest.txt"), dg).unwrap();
     std::fs::write(oracle.join("rust_diffs.txt"), diffs).unwrap();
+    std::fs::write(oracle.join("rust_item_diffs.txt"), item_diffs).unwrap();
+    for (k, v) in &item_hist {
+        println!("ITEMDIFF {v} {k}");
+    }
+    for (k, v) in registry.raw_counts.borrow().iter() {
+        println!("RAW {v} {k}");
+    }
+    println!("creatable mismatches vs original: {creatable_mismatch}");
     println!("{counts:?}");
 }

@@ -10,6 +10,7 @@ pub mod container;
 pub mod device;
 pub mod dictionary;
 pub mod env;
+pub mod factory;
 pub mod io;
 pub mod item;
 pub mod java;
@@ -24,3 +25,6 @@ pub use env::ItemEnv;
 pub use item::{InventoryItem, ItemKind};
 pub use saved::SavedItem;
 pub use template::{ItemClass, ItemTemplate};
+
+#[cfg(test)]
+mod tests;

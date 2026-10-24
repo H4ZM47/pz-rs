@@ -6,6 +6,22 @@ use crate::component::{ComponentCodec, OpaqueComponents};
 use crate::item::InventoryItem;
 use crate::template::{ItemClass, ItemTemplate};
 
+/// A moveable sprite's properties (`IsoSprite.getProperties()`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorldSpriteInfo {
+    /// `CustomItem`.
+    pub custom_item: Option<String>,
+    /// `PickUpWeight` as a number.
+    pub pick_up_weight: Option<f32>,
+    /// `CustomName` and `GroupName`.
+    pub custom_name: Option<String>,
+    pub group_name: Option<String>,
+    /// The sprite's index in its `IsoSpriteGrid` and the grid's count.
+    pub sprite_grid: Option<(i32, i32)>,
+    /// `ForceSingleItem`.
+    pub force_single_item: bool,
+}
+
 /// Game state and lookups used by item `load`/`save`.
 ///
 /// The defaults describe a game where every item id is creatable (with
@@ -52,19 +68,10 @@ pub trait ItemEnv {
     }
 
     /// Whether items of this script are decoded into fields; others stay
-    /// raw records. `MapItem` (world map symbols) and
-    /// `AnimalInventoryItem` (a whole `IsoAnimal`) are not ported.
+    /// raw records. `AnimalInventoryItem` (a whole `IsoAnimal`) is not
+    /// ported.
     fn decodes(&self, t: &ItemTemplate) -> bool {
-        !matches!(t.class, ItemClass::Map | ItemClass::Animal)
-            && self.components().knows_factory_components(t)
-    }
-
-    /// `InventoryItemFactory.CreateItem(registryID)`.
-    fn create_item(&self, registry_id: i16) -> Option<InventoryItem> {
-        let t = self.template(registry_id)?;
-        let mut item = InventoryItem::create(t.clone(), registry_id);
-        item.components = self.components().factory_components(&t);
-        Some(item)
+        t.class != ItemClass::Animal && self.components().knows_factory_components(t)
     }
 
     /// `extraItems` load and save: id to full type and back through the
@@ -87,14 +94,45 @@ pub trait ItemEnv {
         Some(None)
     }
 
-    /// `Moveable.customItem != null` after `ReadFromWorldSprite`: custom
-    /// moveables keep their type. True by default (no change).
-    fn moveable_is_custom_item(&self, _world_sprite: &str) -> bool {
-        true
+    /// The properties `Moveable.ReadFromWorldSprite` reads from a sprite
+    /// that has `IsMoveAble` (`None` for other or unknown sprites).
+    fn world_sprite(&self, _name: &str) -> Option<WorldSpriteInfo> {
+        None
+    }
+
+    /// `ScriptManager.FindItem(name).actualWeight`.
+    fn script_actual_weight(&self, _name: &str) -> Option<f32> {
+        None
+    }
+
+    /// `Rand.Next(bound)`. The default returns 0; the game's generator is
+    /// not seeded here.
+    fn rand_next(&self, _bound: i32) -> i32 {
+        0
     }
 
     /// Called when an item is kept as raw bytes, with the reason.
     fn note_raw(&self, _registry_id: i16, _reason: &str) {}
+}
+
+/// `InventoryItemFactory.CreateItem(registryID)`.
+pub fn create_item(env: &dyn ItemEnv, registry_id: i16) -> Option<InventoryItem> {
+    let t = env.template(registry_id)?;
+    let mut item = InventoryItem::create(t.clone(), registry_id);
+    item.components = env.components().factory_components(&t);
+    // Item.InstanceItem: moveables and radios read their world sprite;
+    // createItemInternal then reads the `Moveables.<sprite>` name.
+    if let Some(ws) = t
+        .world_object_sprite
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        item.read_from_world_sprite(ws, env);
+    }
+    if let Some(ms) = &t.moveable_sprite {
+        item.read_from_world_sprite(ms, env);
+    }
+    Some(item)
 }
 
 /// [`ItemEnv`] with every default.

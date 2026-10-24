@@ -114,6 +114,9 @@ pub struct ItemTemplate {
     pub weapon_sprites_by_index: bool,
     pub static_models_by_index: bool,
     pub world_object_sprite: Option<String>,
+    /// For `Moveables.<sprite>` items: the sprite `InventoryItemFactory`
+    /// reads (`ReadFromWorldSprite(movName)`).
+    pub moveable_sprite: Option<String>,
     /// `getTags()` as registry ids (`base:egg`, ...).
     pub tags: Vec<String>,
     pub weapon_categories: Vec<String>,
@@ -179,6 +182,7 @@ impl ItemTemplate {
             weapon_sprites_by_index: false,
             static_models_by_index: false,
             world_object_sprite: None,
+            moveable_sprite: None,
             tags: Vec::new(),
             weapon_categories: Vec::new(),
             display_category: None,
@@ -285,6 +289,7 @@ impl ItemTemplate {
                     .as_ref()
                     .is_some_and(|v| !v.is_empty()),
             world_object_sprite: item.world_object_sprite.clone(),
+            moveable_sprite: None,
             tags: keys(&item.item_tags),
             weapon_categories: keys(&item.weapon_categories),
             display_category: item.display_category.clone(),

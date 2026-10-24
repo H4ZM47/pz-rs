@@ -2,7 +2,7 @@
 
 use super::chunk_file::{chunk_path, do_load_gridsquare, load_chunk, save_chunk, ChunkLoadHook};
 use super::io::{Reader, Writer};
-use super::items::{AllItems, ItemBlob, ItemRegistry, ItemRun};
+use super::items::{AllItems, ItemBlob, ItemRegistry};
 use super::lua_table::{LuaKey, LuaTable, LuaValue};
 use super::object_io::{load_object, save_object};
 use super::visual::{CorpseVisual, HumanVisual, IsoDeadBody, MovingBase};
@@ -37,7 +37,7 @@ fn blob(reg: i16, id: i32, extra: &[u8]) -> ItemBlob {
     d.push(0xff);
     d.extend_from_slice(&id.to_be_bytes());
     d.extend_from_slice(extra);
-    ItemBlob { data: d }
+    ItemBlob::Raw(d)
 }
 
 fn ctx<'a>(
@@ -59,10 +59,8 @@ fn ctx<'a>(
 fn body(parts: usize) -> IsoDeadBody {
     let mut c = ItemContainer::new(Some("inventorymale"));
     c.id = 42;
-    c.items.push(ItemRun {
-        item: blob(9, 77, &[1, 2, 3]),
-        other_ids: vec![78],
-    });
+    c.items.push(blob(9, 77, &[1, 2, 3]));
+    c.items.push(blob(9, 78, &[1, 2, 3]));
     IsoDeadBody {
         base: MovingBase {
             offset_x: 64.0,
@@ -139,10 +137,7 @@ fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
         sprite: Some(idx("overlay_blood_0")),
     }]);
     let mut c = ItemContainer::new(Some("crate"));
-    c.items.push(ItemRun {
-        item: blob(3, 1, &[9]),
-        other_ids: vec![],
-    });
+    c.items.push(blob(3, 1, &[9]));
     floor.container = Some(c);
     floor.components.push(ComponentBlob {
         type_id: 17,
@@ -322,8 +317,8 @@ fn load_transforms() {
         fn exists(&self, r: i16) -> bool {
             r != 3
         }
-        fn full_type(&self, r: i16) -> Option<&str> {
-            Some(if r == 4 { "Base.Hat" } else { "Base.Other" })
+        fn full_type(&self, r: i16) -> Option<String> {
+            Some(if r == 4 { "Base.Hat" } else { "Base.Other" }.into())
         }
     }
     let c0 = ctx(&m, &t, &s, &AllItems);

@@ -8,7 +8,7 @@
 
 use crate::chunk::IsoGridSquare;
 use crate::defs::RoomDef;
-use crate::save::items::{ItemBlob, ItemRun};
+use crate::save::items::ItemBlob;
 use crate::save::lua_table::LuaTable;
 use crate::save::visual::HumanVisual;
 use crate::sprite::SpriteIdx;
@@ -17,44 +17,7 @@ use crate::sprite::SpriteIdx;
 /// identity, e.g. for `specialObjects`).
 pub type ObjectId = u32;
 
-/// `ItemContainer`: created from sprite properties by map loading, or read
-/// from a chunk file with its items (see [`crate::save::items`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ItemContainer {
-    /// `type`; `None` when the sprite has the `container` flag but no
-    /// `container` property.
-    pub kind: Option<String>,
-    pub capacity: i32,
-    pub container_position: Option<String>,
-    pub freezer_position: Option<String>,
-    /// `ID` (saved by dead bodies and mannequins only).
-    pub id: i32,
-    pub explored: bool,
-    pub has_been_looted: bool,
-    /// `items` as saved: runs of identical items.
-    pub items: Vec<ItemRun>,
-}
-
-impl ItemContainer {
-    /// `new ItemContainer(type, square, parent)`.
-    pub fn new(kind: Option<&str>) -> Self {
-        ItemContainer {
-            kind: kind.map(str::to_string),
-            capacity: 50,
-            container_position: None,
-            freezer_position: None,
-            id: 0,
-            explored: false,
-            has_been_looted: false,
-            items: Vec::new(),
-        }
-    }
-
-    /// `getItems().size()`.
-    pub fn item_count(&self) -> usize {
-        self.items.iter().map(ItemRun::count).sum()
-    }
-}
+pub use pz_inventory::container::ItemContainer;
 
 /// `IsoLightSource` (map-loading fields).
 #[derive(Clone, Debug, PartialEq)]
@@ -273,7 +236,6 @@ pub struct IsoTree {
 }
 
 pub use pz_inventory::device::{DeviceData, DevicePresets, PresetEntry};
-
 
 /// `IsoWorldInventoryObject`: an item lying on the floor.
 #[derive(Clone, Debug, PartialEq)]

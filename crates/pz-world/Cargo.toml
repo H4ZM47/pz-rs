@@ -6,3 +6,6 @@ edition.workspace = true
 [dependencies]
 pz-fs.workspace = true
 pz-inventory.workspace = true
+
+[dev-dependencies]
+pz-scripts.workspace = true

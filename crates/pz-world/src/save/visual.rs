@@ -2,7 +2,7 @@
 //! `IsoDeadBody` as saved in chunk files.
 
 use super::io::{err, Reader, SaveResult, Writer};
-use super::items::{load_items, save_items, ItemRegistry};
+use super::items::ItemRegistry;
 use super::lua_table::{LuaKey, LuaTable, LuaValue};
 use super::SaveTables;
 use crate::objects::ItemContainer;
@@ -91,7 +91,8 @@ impl HumanVisual {
         }
         let n = r.i8()?;
         for _ in 0..n.max(0) {
-            v.body_visuals.push(ItemVisual::load(r, t.blood_body_parts)?);
+            v.body_visuals
+                .push(ItemVisual::load(r, t.blood_body_parts)?);
         }
         v.non_attached_hair = non_blank(r.string()?);
         let f2 = r.i8()? as u8;
@@ -482,7 +483,7 @@ impl IsoDeadBody {
         let mut attached_items = Vec::new();
         if r.bool()? {
             let id = r.i32()?;
-            let mut c = load_container(r, items)?;
+            let mut c = load_container(r, wv, items)?;
             c.id = id;
             container = Some(c);
             let n = r.i8()?;
@@ -558,7 +559,7 @@ impl IsoDeadBody {
     }
 
     /// `IsoDeadBody.save` (including the serialise and class bytes).
-    pub fn save(&self, w: &mut Writer, class_id: i8) -> SaveResult<()> {
+    pub fn save(&self, w: &mut Writer, class_id: i8, items: &dyn ItemRegistry) -> SaveResult<()> {
         let b = &self.base;
         w.i8(1);
         w.i8(class_id);
@@ -633,7 +634,7 @@ impl IsoDeadBody {
             Some(c) => {
                 w.i8(1);
                 w.i32(c.id);
-                save_container(w, c);
+                save_container(w, c, items)?;
                 w.i8(self.worn_items.len() as i8);
                 for (loc, i) in &self.worn_items {
                     w.string(loc);
@@ -676,23 +677,23 @@ impl IsoDeadBody {
 }
 
 /// `ItemContainer.load` (the type, flags, items and capacity).
-pub fn load_container(r: &mut Reader<'_>, items: &dyn ItemRegistry) -> SaveResult<ItemContainer> {
-    let kind = r.string()?;
-    let mut c = ItemContainer::new(Some(&kind));
-    c.explored = r.bool()?;
-    c.items = load_items(r, items)?;
-    c.has_been_looted = r.bool()?;
-    c.capacity = r.i32()?;
+pub fn load_container(
+    r: &mut Reader<'_>,
+    wv: i32,
+    items: &dyn ItemRegistry,
+) -> SaveResult<ItemContainer> {
+    let mut c = ItemContainer::new(None);
+    c.load(r, wv, items)?;
     Ok(c)
 }
 
 /// `ItemContainer.save`.
-pub fn save_container(w: &mut Writer, c: &ItemContainer) {
-    w.opt_string(c.kind.as_deref());
-    w.bool(c.explored);
-    save_items(w, &c.items);
-    w.bool(c.has_been_looted);
-    w.i32(c.capacity);
+pub fn save_container(
+    w: &mut Writer,
+    c: &ItemContainer,
+    items: &dyn ItemRegistry,
+) -> SaveResult<()> {
+    c.save(w, items)
 }
 
 #[cfg(test)]

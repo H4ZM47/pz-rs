@@ -14,7 +14,7 @@ use crate::container::ItemContainer;
 use crate::device::DeviceData;
 use crate::env::ItemEnv;
 use crate::io::{err, has, read_header, BitHeaderWrite, Reader, SaveError, SaveResult, Writer};
-use crate::lua_table::{present, LuaTable};
+use crate::lua_table::{present, LuaKey, LuaTable, LuaValue};
 use crate::template::{ItemClass, ItemTemplate};
 use crate::visual::ItemVisual;
 
@@ -300,6 +300,9 @@ pub struct MoveableLight {
 pub struct MoveableData {
     pub world_sprite: String,
     pub light: Option<MoveableLight>,
+    /// `customItem` (from the sprite's `CustomItem` property).
+    pub custom_item: Option<String>,
+    pub has_read_world_sprite: bool,
 }
 
 /// `InventoryContainer`.
@@ -321,13 +324,21 @@ pub enum ItemKind {
     Weapon(Box<WeaponData>),
     Literature(Box<LiteratureData>),
     AlarmClock(AlarmData),
-    /// `Key`: `numberOfKey` (the key id is the base `keyId`).
+    /// `Key`: its own `keyId` (the base field stays -1) and
+    /// `numberOfKey`.
     Key {
+        key_id: i32,
         number_of_key: i8,
     },
     Moveable(Box<MoveableData>),
     Radio(Box<MoveableData>, Box<DeviceData>),
     Container(Box<ContainerData>),
+    /// `MapItem`: `mapId` and its `WorldMapSymbols`, kept as bytes (the
+    /// symbols run to the end of the item record).
+    Map {
+        map_id: String,
+        symbols: Vec<u8>,
+    },
 }
 
 /// `InventoryItem` state that saving and loading touch.
@@ -414,23 +425,34 @@ impl InventoryItem {
                 learned_recipes: None,
             })),
             ItemClass::AlarmClock => ItemKind::AlarmClock(AlarmData::default()),
-            ItemClass::Key => ItemKind::Key { number_of_key: 0 },
+            ItemClass::Key => ItemKind::Key {
+                key_id: -1,
+                number_of_key: 0,
+            },
             ItemClass::Moveable => ItemKind::Moveable(Box::new(MoveableData {
                 world_sprite: String::new(),
                 light: None,
+                custom_item: None,
+                has_read_world_sprite: false,
             })),
             ItemClass::Radio => ItemKind::Radio(
                 Box::new(MoveableData {
                     world_sprite: String::new(),
                     light: None,
+                    custom_item: None,
+                    has_read_world_sprite: false,
                 }),
-                Box::new(DeviceData::default()),
+                Box::default(),
             ),
             ItemClass::Container => ItemKind::Container(Box::new(ContainerData {
                 weight_reduction: t.weight_reduction,
                 container: ItemContainer::new(Some("none")),
             })),
-            ItemClass::Map | ItemClass::Animal => ItemKind::Plain,
+            ItemClass::Map => ItemKind::Map {
+                map_id: String::new(),
+                symbols: Vec::new(),
+            },
+            ItemClass::Animal => ItemKind::Plain,
         };
         InventoryItem {
             registry_id,
@@ -531,9 +553,10 @@ impl InventoryItem {
 
     fn save_fields(&self, w: &mut Writer, env: &dyn ItemEnv) -> SaveResult<()> {
         let mut header = BitHeaderWrite::alloc(w, 1);
-        if self.uses != 1 {
+        let uses = self.get_current_uses();
+        if uses != 1 {
             header.add(1);
-            w.i32(self.uses);
+            w.i32(uses);
         }
         if self.condition != self.condition_max {
             header.add(4);
@@ -699,8 +722,11 @@ impl InventoryItem {
             ItemKind::Weapon(wd) => wd.save(w, env, &self.template)?,
             ItemKind::Literature(l) => l.save(w),
             ItemKind::AlarmClock(a) => a.save(w),
-            ItemKind::Key { number_of_key } => {
-                w.i32(self.key_id);
+            ItemKind::Key {
+                key_id,
+                number_of_key,
+            } => {
+                w.i32(*key_id);
                 w.i8(*number_of_key);
             }
             ItemKind::Moveable(m) => m.save(w),
@@ -708,6 +734,10 @@ impl InventoryItem {
                 m.save(w);
                 w.i8(1);
                 d.save(w);
+            }
+            ItemKind::Map { map_id, symbols } => {
+                w.string(map_id);
+                w.bytes(symbols);
             }
             ItemKind::Container(c) => {
                 w.i32(c.container.id);
@@ -727,7 +757,7 @@ impl InventoryItem {
         }
         self.id = r.i32()?;
         let header = read_header(r, 1)?;
-        self.uses = 1;
+        self.set_current_uses_loading(1);
         self.name = self.original_name.clone();
         self.condition = self.condition_max;
         self.custom_color = false;
@@ -761,11 +791,13 @@ impl InventoryItem {
         if header != 0 {
             if wv >= 220 {
                 if has(header, 1) {
-                    self.uses = r.i32()?;
+                    let u = r.i32()?;
+                    self.set_current_uses_loading(u);
                 }
             } else {
                 if has(header, 1) {
-                    self.uses = r.i16()? as i32;
+                    let u = r.i16()? as i32;
+                    self.set_current_uses_loading(u);
                 }
                 if has(header, 2) {
                     r.i8()?;
@@ -826,7 +858,12 @@ impl InventoryItem {
                         self.extra_items = Some(v);
                     }
                 }
+                // setCustomName also stores the name in the mod data.
                 self.custom_name = has(bits, 64);
+                self.table.get_or_insert_with(LuaTable::default).rawset(
+                    LuaKey::Str("customName".into()),
+                    Some(LuaValue::Str(self.name.clone())),
+                );
                 if has(bits, 128) {
                     let weight = r.f32()?;
                     if weight >= 0.0 {
@@ -836,7 +873,8 @@ impl InventoryItem {
                     }
                 }
                 if has(bits, 256) {
-                    self.key_id = r.i32()?;
+                    let k = r.i32()?;
+                    self.set_key_id(k, env);
                 }
                 if has(bits, 1024) {
                     self.remote_control_id = r.i32()?;
@@ -848,6 +886,7 @@ impl InventoryItem {
                     self.color_blue = r.unit_byte()?;
                     self.col = [self.color_red, self.color_green, self.color_blue, 1.0];
                     self.custom_color = true;
+                    self.tint_visual();
                 }
                 if has(bits, 4096) {
                     self.worker = Some(r.string()?);
@@ -917,6 +956,41 @@ impl InventoryItem {
         self.load_kind(r, wv, env)
     }
 
+    /// `setCurrentUses` while `InventoryItem.load` runs: `Food` with a
+    /// base hunger (still the script's here) consumes hunger instead, which
+    /// `Food.load` then overwrites, so only the uses of other items change.
+    fn set_current_uses_loading(&mut self, v: i32) {
+        match &self.kind {
+            ItemKind::Food(f) if f.base_hunger != 0.0 => {}
+            ItemKind::Food(_) => self.uses = v.max(0),
+            _ => self.uses = v,
+        }
+    }
+
+    /// `getVisual().setTint(new ImmutableColor(colorRed, colorGreen,
+    /// colorBlue))`.
+    fn tint_visual(&mut self) {
+        let c = [self.color_red, self.color_green, self.color_blue].map(|v| v.clamp(0.0, 1.0));
+        if let Some(v) = &mut self.visual {
+            v.tint = Some(c);
+        }
+    }
+
+    /// `setKeyId` (`Key` overrides it: its own field, and -1 draws a
+    /// random id).
+    fn set_key_id(&mut self, k: i32, env: &dyn ItemEnv) {
+        match &mut self.kind {
+            ItemKind::Key { key_id, .. } => {
+                *key_id = if k == -1 {
+                    env.rand_next(10_000_000)
+                } else {
+                    k
+                };
+            }
+            _ => self.key_id = k,
+        }
+    }
+
     /// `setRecordedMediaIndex` (the media name is looked up through the
     /// environment).
     fn set_recorded_media_index(&mut self, idx: i16, env: &dyn ItemEnv) {
@@ -945,9 +1019,13 @@ impl InventoryItem {
             ItemKind::Weapon(w) => w.load(r, wv, env, &template)?,
             ItemKind::Literature(l) => l.load(r, wv)?,
             ItemKind::AlarmClock(a) => *a = AlarmData::load(r, wv)?,
-            ItemKind::Key { number_of_key } => {
-                self.key_id = r.i32()?;
-                *number_of_key = r.i8()?;
+            ItemKind::Key { .. } => {
+                let k = r.i32()?;
+                let n = r.i8()?;
+                self.set_key_id(k, env);
+                if let ItemKind::Key { number_of_key, .. } = &mut self.kind {
+                    *number_of_key = n;
+                }
             }
             ItemKind::Moveable(m) => {
                 m.load(r)?;
@@ -959,6 +1037,16 @@ impl InventoryItem {
                     d.load(r)?;
                 }
                 self.after_moveable_load(env);
+            }
+            ItemKind::Map { map_id, symbols } => {
+                *map_id = r.string()?;
+                // WorldMapSymbols.load: a version short, then the symbols.
+                // Only version 2 is saved back unchanged.
+                let rest = r.bytes(r.remaining())?;
+                if rest.len() < 2 || i16::from_be_bytes([rest[0], rest[1]]) != 2 {
+                    return Err(SaveError("map symbols version is not 2".into()));
+                }
+                *symbols = rest.to_vec();
             }
             ItemKind::Container(c) => {
                 let id = r.i32()?;
@@ -972,17 +1060,70 @@ impl InventoryItem {
         Ok(())
     }
 
-    /// `Moveable.load` after the world sprite: a non-custom moveable takes
-    /// its sprite name as its type.
+    /// `Moveable.load` after the world sprite: `ReadFromWorldSprite`, then
+    /// a moveable without a custom item takes its sprite name as its type.
     fn after_moveable_load(&mut self, env: &dyn ItemEnv) {
         let ws = match &self.kind {
             ItemKind::Moveable(m) | ItemKind::Radio(m, _) => m.world_sprite.clone(),
             _ => return,
         };
-        let custom = env.moveable_is_custom_item(&ws);
+        self.read_from_world_sprite(&ws, env);
+        let custom = match &self.kind {
+            ItemKind::Moveable(m) | ItemKind::Radio(m, _) => m.custom_item.is_some(),
+            _ => false,
+        };
         if !custom && !ws.trim().is_empty() && !self.type_.eq_ignore_ascii_case(&ws) {
             self.type_ = ws;
         }
+    }
+
+    /// `Moveable.ReadFromWorldSprite`: the item state the sprite's
+    /// properties give (textures and the flatpack colour, drawn from
+    /// `Rand`, are not modelled).
+    pub fn read_from_world_sprite(&mut self, sprite: &str, env: &dyn ItemEnv) -> bool {
+        let (ItemKind::Moveable(m) | ItemKind::Radio(m, _)) = &mut self.kind else {
+            return false;
+        };
+        if m.has_read_world_sprite && m.world_sprite.eq_ignore_ascii_case(sprite) {
+            return true;
+        }
+        m.custom_item = None;
+        let Some(info) = env.world_sprite(sprite) else {
+            return false;
+        };
+        if let Some(ci) = info.custom_item {
+            if let Some(w) = env.script_actual_weight(&ci) {
+                self.weight = w;
+                self.actual_weight = w;
+            }
+            m.custom_item = Some(ci);
+            m.world_sprite = sprite.to_string();
+            return true;
+        }
+        m.world_sprite = sprite.to_string();
+        let w = info.pick_up_weight.map_or(1.0, |w| w / 10.0);
+        self.weight = w;
+        self.actual_weight = w;
+        self.custom_weight = true;
+        let mut name = match (&info.custom_name, &info.group_name) {
+            (Some(c), Some(g)) => format!("{g} {c}"),
+            (Some(c), None) => c.clone(),
+            _ => "Moveable Object".to_string(),
+        };
+        if let Some((index, count)) = info.sprite_grid {
+            name = if info.force_single_item {
+                format!("{name} (1/1)")
+            } else {
+                format!("{name} ({}/{count})", index + 1)
+            };
+            self.table.get_or_insert_with(LuaTable::default).rawset(
+                LuaKey::Str("Flatpack".into()),
+                Some(LuaValue::Str("true".into())),
+            );
+        }
+        self.name = name;
+        m.has_read_world_sprite = true;
+        true
     }
 }
 
@@ -1646,7 +1787,7 @@ impl WeaponData {
             let n = r.i8()?;
             for _ in 0..n.max(0) {
                 let reg = r.i16()?;
-                let Some(mut part) = env.create_item(reg) else {
+                let Some(mut part) = crate::env::create_item(env, reg) else {
                     // InventoryItemFactory.CreateItem returned null: the
                     // original throws and the whole item is dropped.
                     return Err(SaveError(format!("weapon part {reg} cannot be created")));
@@ -1695,7 +1836,7 @@ impl WeaponData {
             let n = r.i8()?;
             for _ in 0..n.max(0) {
                 let reg = r.i16()?;
-                if let Some(part) = env.create_item(reg) {
+                if let Some(part) = crate::env::create_item(env, reg) {
                     if part.template.class == ItemClass::WeaponPart {
                         self.attachments.push(part);
                     }
