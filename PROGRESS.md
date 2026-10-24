@@ -27,9 +27,12 @@ Status of the Rust port. Update this file with every merged change.
   Field-level dumps of every Build 42 script of these types match the
   original (checked locally). Built-in registry keys come from the installed
   `projectzomboid.jar` via `pz-classfile`.
+- StringLib and OsLib. Local differential run against the original Kahlua
+  (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
+  output; the remaining one differs only in an identity hash.
 
 ## In progress
-- StringLib, OsLib.
+- UIElement/UIManager, Core options, client window loop.
 
 ## Next (main-menu milestone)
 1. Kahlua stdlib; load `stdlib.lbc`/`stdlib.lua` from the install.

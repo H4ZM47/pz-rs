@@ -50,7 +50,7 @@ pub fn register(env: &TableRef) {
         }
         let d = raw_tonumber(&a).unwrap_or(f64::NAN);
         let index = d as i32;
-        if index >= 1 && index as usize <= c.nargs() - 1 {
+        if index >= 1 && (index as usize) < c.nargs() {
             // The last nArguments-index values on the stack are the result.
             return Ok(c.nargs() - index as usize);
         }

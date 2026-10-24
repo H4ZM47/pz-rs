@@ -30,7 +30,7 @@ impl JavaRandom {
         if bound <= 0 {
             return None;
         }
-        if bound & -bound == bound {
+        if bound.count_ones() == 1 {
             return Some(((bound as i64 * self.next(31) as i64) >> 31) as i32);
         }
         loop {
