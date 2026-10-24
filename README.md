@@ -25,6 +25,7 @@ to Rust with the original semantics and the same Lua-facing API.
 | `pz-world` | `zombie.iso` map files, `IsoMetaGrid`, `IsoCell`/`IsoChunk`/`IsoGridSquare` |
 | `pz-classfile` | reads built-in constants from the installed `projectzomboid.jar` (no JVM) |
 | `pz-world` | `zombie.iso` map files, `IsoMetaGrid`, `IsoCell`/`IsoChunk`/`IsoGridSquare` |
+| `pz-classfile` | reads built-in constants from the installed `projectzomboid.jar` (no JVM) |
 | `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |
 | `pz-client` | desktop binary |
 
