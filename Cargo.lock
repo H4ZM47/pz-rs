@@ -781,6 +781,9 @@ dependencies = [
 [[package]]
 name = "pz-text"
 version = "0.1.0"
+dependencies = [
+ "pz-render",
+]
 
 [[package]]
 name = "pz-ui"

@@ -8,6 +8,6 @@ pz-kahlua.workspace = true
 pz-core.workspace = true
 pz-fs.workspace = true
 pz-render.workspace = true
+indexmap.workspace = true
 pz-text.workspace = true
 pz-ui.workspace = true
-indexmap.workspace = true
