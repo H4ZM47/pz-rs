@@ -714,7 +714,7 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
             let skeleton = r.bool()?;
             let mannequin_script_name = r.string()?;
             let pose = r.string()?;
-            let human_visual = HumanVisual::load(r, ctx.tables)?;
+            let human_visual = HumanVisual::load(r, ctx.tables.blood_body_parts)?;
             let mut container = o
                 .container
                 .take()

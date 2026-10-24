@@ -373,8 +373,14 @@ impl InventoryItem {
 
     /// `getActualWeightUnmodded()`: 0 when the display name equals the
     /// full type, else the non-negative `actualWeight`.
+    /// (`Moveable` and `Radio` that read their world sprite compare their
+    /// translated moveable name, which is never the full type.)
     pub fn get_actual_weight_unmodded(&self) -> f32 {
-        if self.name == self.get_full_type() {
+        // Moveable.getDisplayName: a moveable that read its world sprite
+        // shows its (translated) moveable name instead.
+        let sprite_named = matches!(&self.kind,
+            ItemKind::Moveable(m) | ItemKind::Radio(m, _) if m.has_read_world_sprite);
+        if !sprite_named && self.name == self.get_full_type() {
             return 0.0;
         }
         self.actual_weight.max(0.0)
@@ -965,13 +971,25 @@ impl InventoryItem {
 
     // ----- Use -----
 
-    /// `DrainableComboItem.getCurrentUsesFloat()` (`uses * useDelta`).
+    /// `getCurrentUsesFloat()`: `uses * useDelta` for `DrainableComboItem`
+    /// and `WeaponPart`, `uses / getMaxUses()` for the rest.
     pub fn get_current_uses_float(&self) -> f32 {
-        self.uses as f32 * self.template.use_delta
+        match self.template.class {
+            ItemClass::Drainable | ItemClass::WeaponPart => {
+                self.uses as f32 * self.template.use_delta
+            }
+            _ => self.uses as f32 / self.get_max_uses() as f32,
+        }
     }
 
     /// `DrainableComboItem.updateWeight()`.
     pub fn update_weight(&mut self, ctx: Option<&dyn ItemContext>) {
+        self.update_weight_by(|f| ctx.and_then(|c| c.script(f)).map(|s| s.actual_weight));
+    }
+
+    /// [`Self::update_weight`] with the script weight lookup
+    /// (`ScriptManager.getItem(name).getActualWeight()`).
+    pub fn update_weight_by(&mut self, script_weight_of: impl Fn(&str) -> Option<f32>) {
         if self.template.class != ItemClass::Drainable {
             return;
         }
@@ -985,11 +1003,10 @@ impl InventoryItem {
             }
             let empty = self
                 .get_replace_on_deplete_full_type()
-                .and_then(|f| ctx?.script(&f));
+                .and_then(|f| script_weight_of(&f));
             if let Some(e) = empty {
                 self.custom_weight = true;
-                let w = (script_weight - e.actual_weight) * self.get_current_uses_float()
-                    + e.actual_weight;
+                let w = (script_weight - e) * self.get_current_uses_float() + e;
                 self.actual_weight = w.max(0.0);
                 self.weight = self.get_actual_weight_unmodded().max(0.0);
             }
