@@ -38,6 +38,15 @@ Status of the Rust port. Update this file with every merged change.
   records, which the original re-saves through classes not ported here);
   4,085 map-loaded chunks saved here load and re-save as expected in the
   original. Checked locally.
+- Erosion (`pz-erosion`): `ErosionMain`, `ErosionConfig`, `ErosionSeason`,
+  `ErosionIceQueen`, `Noise2D`, `RandLocation`, the eight categories and
+  the erosion objects, driven through `ChunkLoadHook`; tables are read from
+  the jar at runtime. Against the original classes run in a JVM, noise,
+  location randoms, chunk/square initialisation, a year of seasons, config
+  defaults and category spawn decisions match bit for bit (checked
+  locally). Square flags and wall/window edge queries come from
+  `pz_world::square`; season dates use `pz_core::calendar` (the host time
+  zone with daylight saving). Lua: `bind_erosion`.
 - Items (`pz-inventory`): `InventoryItem` and the subclasses saves hold
   (Food, Clothing, AlarmClock(Clothing), HandWeapon with weapon parts,
   DrainableComboItem, ComboItem, WeaponPart, Literature, Key, Moveable,

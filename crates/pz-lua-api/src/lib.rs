@@ -13,6 +13,7 @@ pub mod bind_body_damage;
 pub mod bind_character_sim;
 pub mod bind_characters;
 pub mod bind_audio;
+pub mod bind_erosion;
 pub mod bind_core;
 pub mod bind_globals;
 pub mod bind_input;
@@ -68,6 +69,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     // Text before UI: bind_text's UIFont is canonical.
     bind_text::register(&mut mgr.thread);
     bind_debug::register(&mut mgr.thread);
+    bind_erosion::register(&mut mgr.thread);
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());
     // Before bind_scripts, whose enum fallbacks skip classes registered here.

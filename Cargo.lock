@@ -1657,6 +1657,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-erosion"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "pz-classfile",
+ "pz-core",
+ "pz-inventory",
+ "pz-world",
+]
+
+[[package]]
 name = "pz-fs"
 version = "0.1.0"
 
@@ -1721,6 +1732,7 @@ dependencies = [
  "pz-characters",
  "pz-classfile",
  "pz-core",
+ "pz-erosion",
  "pz-fs",
  "pz-input",
  "pz-kahlua",

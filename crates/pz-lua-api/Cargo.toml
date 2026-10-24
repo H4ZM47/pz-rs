@@ -9,6 +9,7 @@ pz-core.workspace = true
 pz-characters.workspace = true
 pz-scripts.workspace = true
 pz-fs.workspace = true
+pz-erosion.workspace = true
 pz-render.workspace = true
 pz-text.workspace = true
 pz-sandbox.workspace = true

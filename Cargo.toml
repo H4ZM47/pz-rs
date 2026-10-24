@@ -16,6 +16,7 @@ pz-classfile = { path = "crates/pz-classfile" }
 pz-sandbox = { path = "crates/pz-sandbox" }
 pz-server-settings = { path = "crates/pz-server-settings" }
 pz-input = { path = "crates/pz-input" }
+pz-erosion = { path = "crates/pz-erosion" }
 pz-render = { path = "crates/pz-render" }
 pz-text = { path = "crates/pz-text" }
 pz-ui = { path = "crates/pz-ui" }
