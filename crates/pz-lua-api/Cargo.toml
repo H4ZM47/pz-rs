@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 pz-kahlua.workspace = true
-pz-engine.workspace = true
+pz-core.workspace = true
 pz-fs.workspace = true
 pz-render.workspace = true
 pz-text.workspace = true

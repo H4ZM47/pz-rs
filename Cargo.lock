@@ -56,10 +56,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "pz-engine"
+name = "pz-core"
 version = "0.1.0"
 dependencies = [
  "pz-kahlua",
+]
+
+[[package]]
+name = "pz-engine"
+version = "0.1.0"
+dependencies = [
+ "pz-core",
+ "pz-fs",
+ "pz-kahlua",
+ "pz-lua-api",
+ "pz-ui",
 ]
 
 [[package]]
@@ -79,7 +90,7 @@ dependencies = [
 name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
- "pz-engine",
+ "pz-core",
  "pz-fs",
  "pz-kahlua",
  "pz-render",

@@ -38,7 +38,7 @@
 
 use crate::events::EventManager;
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, str_arg, ClassBuilder};
-use pz_engine::core::{ColorInfo, Core, EventArg, GameVersion, KeyBinding, SimpleAccessor, SIMPLE_ACCESSORS};
+use pz_core::core::{ColorInfo, Core, EventArg, GameVersion, KeyBinding, SimpleAccessor, SIMPLE_ACCESSORS};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, TableRef, Thread, Value};
 use std::any::Any;
@@ -1477,7 +1477,7 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
                 _ => Err(LuaError::runtime("Expected ConfigOption")),
             }
         }
-        fn with_opt<R>(core: &mut Core, i: usize, f: impl FnOnce(&mut pz_engine::config::ConfigOption) -> R) -> R {
+        fn with_opt<R>(core: &mut Core, i: usize, f: impl FnOnce(&mut pz_core::config::ConfigOption) -> R) -> R {
             let name = core.options()[i].name().to_string();
             f(core.option_mut(&name).unwrap())
         }
@@ -1502,7 +1502,7 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             Ok(c.push(s))
         });
         b.method("getValueAsObject", |c| {
-            use pz_engine::config::ConfigObject;
+            use pz_core::config::ConfigObject;
             let v = opt(c, |core, i| match core.options()[i].get_value_as_object() {
                 ConfigObject::Bool(b) => Value::Bool(b),
                 ConfigObject::Double(d) => Value::Num(d),
@@ -1522,7 +1522,7 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             Ok(0)
         });
         b.method("setValueFromObject", |c| {
-            use pz_engine::config::ConfigObject;
+            use pz_core::config::ConfigObject;
             let v = match c.arg(1) {
                 Value::Nil => ConfigObject::Null,
                 Value::Bool(b) => ConfigObject::Bool(b),
