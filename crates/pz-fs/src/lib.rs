@@ -206,6 +206,23 @@ impl GameFs {
         self.active_file_map.get(&java::lower(rel)).map(String::as_str)
     }
 
+    /// `validatePrefix(input)`: whether `input` lies inside the install, the
+    /// user folder or a known mod folder. The original throws otherwise,
+    /// which callers such as `Texture.getSharedTexture` treat as a failed
+    /// load.
+    pub fn validate_prefix(&self, input: &str) -> bool {
+        let norm = |p: &str| -> Vec<String> {
+            let abs = jfile::absolute(p, &self.base_str);
+            let uri = jfile::uri_normalize(&abs.replace(SEP, "/"));
+            java::lower(&uri).split('/').filter(|c| !c.is_empty()).map(str::to_string).collect()
+        };
+        let input = norm(input);
+        let mut bases: Vec<String> = self.mod_folders.clone().unwrap_or_default();
+        bases.push(self.cache_dir.to_string_lossy().into_owned());
+        bases.push(self.base_str.clone());
+        bases.iter().any(|b| input.starts_with(&norm(b)))
+    }
+
     /// `getAllPathsContaining(str)` (unordered, like the HashMap it scans).
     pub fn all_paths_containing(&self, s: &str) -> Vec<&str> {
         self.active_file_map.iter().filter(|(k, _)| k.contains(s)).map(|(_, v)| v.as_str()).collect()
