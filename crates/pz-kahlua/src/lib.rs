@@ -3,6 +3,8 @@
 //! tables, metatable-aware `rawget`, truncating `%`, Java number formatting,
 //! UTF-16 string lengths) so existing game scripts and mods behave the same.
 
+pub mod compiler;
+pub mod exec;
 pub mod number;
 pub mod stdlib;
 pub mod table;

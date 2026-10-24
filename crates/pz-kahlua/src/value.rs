@@ -26,6 +26,11 @@ pub trait LuaObject: Any {
         format!("{}@{:x}", self.class_name(), self as *const Self as *const () as usize)
     }
     fn as_any(&self) -> &dyn Any;
+    /// Superclasses and interfaces, nearest first, for metatable lookup
+    /// when no metatable is registered for `class_name` itself.
+    fn super_classes(&self) -> &[&'static str] {
+        &[]
+    }
 }
 
 #[derive(Clone, Default)]

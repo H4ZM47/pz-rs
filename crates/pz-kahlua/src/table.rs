@@ -20,6 +20,12 @@ pub struct Table {
 #[derive(Clone, Default)]
 pub struct TableRef(Rc<RefCell<Table>>);
 
+impl std::fmt::Debug for TableRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "table 0x{:x}", self.ptr_id())
+    }
+}
+
 impl TableRef {
     pub fn new() -> Self {
         Self::default()

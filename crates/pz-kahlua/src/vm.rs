@@ -1,5 +1,5 @@
 //! Kahlua virtual machine: prototypes, closures, coroutines and the
-//! `KahluaThread` interpreter loop.
+//! `KahluaThread` interpreter loop (see `exec.rs`).
 //!
 //! The public contract other crates build on is [`NativeFunction`] /
 //! [`NativeCall`] (the equivalent of Kahlua's `JavaFunction` and
@@ -37,6 +37,20 @@ pub struct LuaClosure {
     pub debug_name: RefCell<Option<Rc<str>>>,
 }
 
+impl LuaClosure {
+    pub fn new(prototype: Rc<Prototype>, env: TableRef) -> Rc<Self> {
+        Rc::new(LuaClosure { prototype, env: RefCell::new(env), upvalues: Vec::new(), debug_name: RefCell::new(None) })
+    }
+    /// `LuaClosure.toString`.
+    pub fn describe(&self) -> String {
+        let p = &self.prototype;
+        match p.lines.first() {
+            Some(l) => format!("function {}:{}", p.name.as_deref().unwrap_or("null"), l),
+            None => "function[?]".to_string(),
+        }
+    }
+}
+
 pub type UpValueRef = Rc<RefCell<UpValue>>;
 
 pub enum UpValue {
@@ -47,16 +61,31 @@ pub enum UpValue {
 
 pub type CoroutineRef = Rc<RefCell<Coroutine>>;
 
-/// Coroutine state. The running coroutine's stack is held by the
-/// [`Thread`]; a suspended coroutine keeps its own.
+/// Execution state of one coroutine. While a coroutine runs, its state is
+/// moved into the [`Thread`]; while suspended, it lives here.
 #[derive(Default)]
 pub struct Coroutine {
     pub(crate) stack: Vec<Value>,
+    pub(crate) top: usize,
     pub(crate) frames: Vec<CallFrame>,
     pub(crate) open_upvalues: Vec<UpValueRef>,
     pub(crate) parent: Option<CoroutineRef>,
+    pub(crate) status: CoStatus,
     pub env: Option<TableRef>,
     pub stack_trace: String,
+    pub(crate) started: bool,
+    pub(crate) yielded: Option<Vec<Value>>,
+    pub(crate) yield_return_base: Option<usize>,
+    pub(crate) resume_level: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub(crate) enum CoStatus {
+    #[default]
+    Suspended,
+    Running,
+    Normal,
+    Dead,
 }
 
 #[derive(Clone)]
@@ -68,12 +97,11 @@ pub(crate) struct CallFrame {
     pub return_base: usize,
     pub n_arguments: usize,
     pub from_lua: bool,
-    pub can_yield: bool,
     pub restore_top: bool,
 }
 
 /// A Lua error. Kahlua distinguishes `KahluaException` (carrying any Lua
-/// value, raised by `error()` and compiler/runtime asserts) from Java runtime
+/// value, raised by `error()` and compile errors) from Java runtime
 /// exceptions, whose pcall message is `getMessage() + " " + className`.
 #[derive(Clone, Debug)]
 pub enum LuaError {
@@ -85,6 +113,7 @@ impl LuaError {
     pub fn kahlua(msg: impl Into<String>) -> Self {
         LuaError::Kahlua(Value::from(msg.into()))
     }
+    /// `KahluaUtil.fail` / `new RuntimeException(msg)`.
     pub fn runtime(msg: impl Into<String>) -> Self {
         LuaError::Runtime { message: msg.into(), class: "java.lang.RuntimeException" }
     }
@@ -100,6 +129,7 @@ impl LuaError {
 impl fmt::Display for LuaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            LuaError::Kahlua(Value::Str(s)) => f.write_str(s),
             LuaError::Kahlua(v) => write!(f, "{v:?}"),
             LuaError::Runtime { message, .. } => f.write_str(message),
         }
@@ -126,16 +156,24 @@ impl NativeFunction {
 
 /// The interpreter (`KahluaThread`).
 pub struct Thread {
+    /// Identity of the running coroutine (its fields are moved out).
     pub(crate) current: CoroutineRef,
     pub(crate) root: CoroutineRef,
-    /// Stack of the running coroutine (moved out of `current` while it runs).
     pub(crate) stack: Vec<Value>,
     pub(crate) top: usize,
+    pub(crate) frames: Vec<CallFrame>,
+    pub(crate) open_upvalues: Vec<UpValueRef>,
     pub(crate) env: TableRef,
-    /// Class name -> metatable for engine objects (`classMetatables`).
+    /// Metatables for non-table values, keyed by type: `"string"` for
+    /// strings, the Java class name for engine objects (`classMetatables`).
     pub class_metatables: TableRef,
     /// Engine-wide host state reachable from native callbacks.
     pub host: Option<Box<dyn std::any::Any>>,
+    /// Sink for `print` and Lua error dumps (`DebugType.Lua` log stream).
+    pub out: Box<dyn FnMut(&str)>,
+    /// Sink for Lua error dumps (`DebugType.General.error`).
+    pub log: Box<dyn FnMut(&str)>,
+    pub(crate) exec_level: usize,
 }
 
 /// View of the current native call frame (`LuaCallFrame` for a Java function).
@@ -152,41 +190,27 @@ impl NativeCall<'_> {
     /// Argument `i` (0-based), nil when absent.
     pub fn arg(&self, i: usize) -> Value {
         if i < self.nargs {
-            self.thread.stack[self.base + i].clone()
+            self.thread.stack.get(self.base + i).cloned().unwrap_or_default()
         } else {
             Value::Nil
         }
     }
-    /// Push a return value; returns 1 so `return call.push(v)` mirrors Kahlua.
+    /// Push a return value; returns 1 so `return Ok(call.push(v))` mirrors
+    /// Kahlua's `return callFrame.push(v)`.
     pub fn push(&mut self, v: impl Into<Value>) -> usize {
         self.thread.push_value(v.into());
         1
     }
-}
-
-impl Thread {
-    /// A thread over `env` (the global table). The standard library is
-    /// installed separately by [`crate::stdlib::install`].
-    pub fn new(env: TableRef) -> Self {
-        let root = Rc::new(RefCell::new(Coroutine { env: Some(env.clone()), ..Default::default() }));
-        Thread {
-            current: root.clone(),
-            root,
-            stack: Vec::with_capacity(1000),
-            top: 0,
-            env,
-            class_metatables: TableRef::new(),
-            host: None,
-        }
+    /// `callFrame.setTop(n)` relative to this frame's arguments.
+    pub fn set_top(&mut self, n: usize) -> LuaResult<()> {
+        self.thread.set_top(self.base + n)
     }
-    pub fn globals(&self) -> &TableRef {
-        &self.env
+    /// `callFrame.set(i, v)`.
+    pub fn set(&mut self, i: usize, v: Value) {
+        self.thread.stack[self.base + i] = v;
     }
-    pub(crate) fn push_value(&mut self, v: Value) {
-        if self.stack.len() <= self.top {
-            self.stack.resize(self.top + 1, Value::Nil);
-        }
-        self.stack[self.top] = v;
-        self.top += 1;
+    /// `callFrame.getTop()`.
+    pub fn top(&self) -> usize {
+        self.thread.top - self.base
     }
 }
