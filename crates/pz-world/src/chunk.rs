@@ -21,6 +21,11 @@ use crate::sprite::IsoSpriteManager;
 use crate::sprite::{PropertyContainer, SurfaceInfo};
 use crate::square::IsoDirections;
 
+mod brand_new;
+pub use brand_new::{
+    get_corner_of_generation, load_brand_new, load_brand_new_cached, BrandNewHook, ChunksCache,
+};
+
 pub const CHUNK_WIDTH: i32 = 8;
 pub const MIN_LEVEL: i32 = -32;
 pub const MAX_LEVEL: i32 = 31;
@@ -151,6 +156,9 @@ pub struct IsoChunk {
     /// `erosion` (`ErosionData.Chunk`, created on first use); `None` saves
     /// as uninitialised.
     pub erosion: Option<ErosionChunkData>,
+    /// `addZombies`: set by `LoadBrandNew`; `doLoadGridsquare` then adds
+    /// vehicles, zone stories and zombies.
+    pub add_zombies: bool,
 }
 
 /// `IsoFloorBloodSplat` (positions quantised to 1/255 of a chunk).
@@ -222,6 +230,7 @@ impl IsoChunk {
             modded: false,
             saved: ChunkSaveData::default(),
             erosion: None,
+            add_zombies: false,
         }
     }
 

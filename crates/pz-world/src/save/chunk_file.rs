@@ -613,9 +613,14 @@ pub trait ChunkLoadHook {
 }
 
 /// The steps after a chunk read from disk is placed in `cell`, in the
-/// original's order: `loadInWorldStreamerThread`/`loadInMainThread`
-/// (missing squares, `RecalcProperties`, roofs, neighbour matrices) and then
-/// the erosion calls of `doLoadGridsquare`, so hooks see recalculated flags.
+/// original's order: `loadInWorldStreamerThread` (missing squares,
+/// `RecalcProperties`, roofs, matrices within the chunk;
+/// [`IsoCell::recalc_chunk_squares`](crate::chunk::IsoCell::recalc_chunk_squares)),
+/// `loadInMainThread` at the start of `doLoadGridsquare` (squares and
+/// levels across the edges with the loaded neighbour chunks, matrices across
+/// the edges; [`IsoCell::load_in_main_thread`](crate::chunk::IsoCell::load_in_main_thread))
+/// and then the erosion calls of `doLoadGridsquare`, so hooks see
+/// recalculated flags and the final level range.
 /// While the hook runs the chunk is taken out of `cell`, which is passed to
 /// the hook as the neighbour view, and put back afterwards.
 pub fn finish_chunk_load(
@@ -627,6 +632,7 @@ pub fn finish_chunk_load(
     hook: Option<&mut dyn ChunkLoadHook>,
 ) {
     cell.recalc_chunk_squares(wx, wy, meta, sprites);
+    cell.load_in_main_thread(wx, wy, meta, sprites);
     let Some(mut ch) = cell.chunks.remove(&(wx, wy)) else {
         return;
     };
