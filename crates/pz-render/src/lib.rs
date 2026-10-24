@@ -252,6 +252,9 @@ pub enum WorldShader {
     /// discarded. `uv1` holds the depth texture coordinates of the four
     /// corners.
     TileDepth { depth: Texture, uv1: [[f32; 2]; 4], front: f32, far: f32, opaque: bool },
+    /// `seamFix2` (`TileSeamShader`): as `TileDepth`, also discarding where
+    /// the seam mask (texture coordinates `uv2`) has alpha 0.
+    Seam { depth: Texture, uv1: [[f32; 2]; 4], mask: Texture, uv2: [[f32; 2]; 4], front: f32, far: f32 },
 }
 
 #[derive(Default)]

@@ -1,6 +1,6 @@
 // Ports of the world shaders: `default` with world depth, `tileWithDepth`,
 // `opaqueWithDepth` and `chunkShader`. Per-quad depth values, uniforms in
-// the original, travel in the vertex's texture-2 coordinates so quads with
+// the original, travel in the vertex's extra depth attribute so quads with
 // different depths still batch: (zDepth in window space, unused) for
 // `default`, (zDepthBlendZ, zDepthBlendToZ) for the depth-texture shaders,
 // (chunkDepth, unused) for `chunkShader`.
@@ -21,10 +21,11 @@ struct VsOut {
     @location(1) uv: vec2<f32>,
     @location(2) uv1: vec2<f32>,
     @location(3) @interpolate(flat) depth: vec2<f32>,
+    @location(4) uv2: vec2<f32>,
 };
 
 @vertex
-fn vs_world(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) col: vec4<f32>, @location(3) uv1: vec2<f32>, @location(4) depth: vec2<f32>) -> VsOut {
+fn vs_world(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) col: vec4<f32>, @location(3) uv1: vec2<f32>, @location(4) uv2: vec2<f32>, @location(5) depth: vec2<f32>) -> VsOut {
     var o: VsOut;
     let p = g.mvp * vec4<f32>(pos.x, pos.y, 0.0, 1.0);
     o.pos = vec4<f32>(p.x, p.y, depth.x, p.w);
@@ -32,6 +33,7 @@ fn vs_world(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2
     o.uv = uv;
     o.uv1 = uv1;
     o.depth = depth;
+    o.uv2 = uv2;
     return o;
 }
 

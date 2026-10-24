@@ -51,6 +51,13 @@ pub struct SpriteFlags {
     pub never_cutaway: bool,
     pub door_trans: bool,
     pub garage_door: bool,
+    pub wall_n: bool,
+    pub wall_w: bool,
+    pub wall_nw: bool,
+    pub hoppable_n: bool,
+    pub hoppable_w: bool,
+    pub floor_height_one_third: bool,
+    pub floor_height_two_thirds: bool,
 }
 
 /// An `IsoSprite` as the renderer needs it.
@@ -58,6 +65,8 @@ pub struct SpriteFlags {
 pub struct SpriteInfo {
     pub name: String,
     pub tileset: String,
+    /// `tileSheetIndex`.
+    pub tile_sheet_index: i32,
     /// The texture of the frame drawn (`getTextureForFrame`).
     pub texture: Option<Texture>,
     pub soff_x: i32,
@@ -174,11 +183,33 @@ pub struct RenderSquare {
     pub vert_lights: [u32; 8],
     /// `getLightLevel(playerIndex)`.
     pub light_level: f32,
+    /// What the seam fixes need to know about the south and east
+    /// neighbours.
+    pub seam: SeamNeighbours,
+}
+
+/// The neighbour tests `renderSeamFix2_Floor` and `renderSeamFix2_Wall`
+/// make.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeamNeighbours {
+    /// The south square exists and has a floor.
+    pub s_floor: bool,
+    /// The east square exists and has a floor.
+    pub e_floor: bool,
+    /// The south/east square has the `water` flag (water quality not 2).
+    pub s_water: bool,
+    pub e_water: bool,
+    /// The south square has a west wall (`getWallType() & 4`), an
+    /// east-west window frame or `DoorWallW`.
+    pub s_wall_w: bool,
+    /// The east square has a north wall (`getWallType() & 1`), a
+    /// north-south window frame or `DoorWallN`.
+    pub e_wall_n: bool,
 }
 
 impl RenderSquare {
     pub fn new(x: i32, y: i32, z: i32) -> Self {
-        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0 }
+        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default() }
     }
 
     /// `getFloor()`: the first solid-floor object.
@@ -201,6 +232,10 @@ pub trait DepthMaps {
     fn preset(&self, preset: DepthPreset) -> Option<Texture>;
     /// `getDefaultDepthTexture()` when not empty.
     fn default_texture(&self) -> Option<Texture>;
+    /// `TileSeamManager.getTexture(tile)`.
+    fn seam_mask(&self, _tile: crate::seam::SeamTile) -> Option<Texture> {
+        None
+    }
 }
 
 impl DepthMaps for pz_render::tile_depth::TileDepthTextureManager {
