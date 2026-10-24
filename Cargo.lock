@@ -1570,6 +1570,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-model"
+version = "0.1.0"
+dependencies = [
+ "pz-render",
+]
+
+[[package]]
 name = "pz-render"
 version = "0.1.0"
 dependencies = [
