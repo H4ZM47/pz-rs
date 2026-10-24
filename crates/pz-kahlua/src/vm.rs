@@ -179,6 +179,9 @@ pub struct Thread {
     /// Development aid: called with the name of every global read that
     /// resolves to nil.
     pub on_missing_global: Option<StrHook>,
+    /// Development aid: called with `(class, key)` when indexing an engine
+    /// object yields nil (typically an unported Java method).
+    pub on_missing_member: Option<Box<dyn FnMut(&str, &str)>>,
 }
 
 /// View of the current native call frame (`LuaCallFrame` for a Java function).
