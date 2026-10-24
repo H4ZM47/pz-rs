@@ -453,6 +453,81 @@ pub enum BusKind {
     Return,
 }
 
+/// A value from an effect's `PMEF` parameter list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamValue {
+    Float(f32),
+    Int(i32),
+    Bool(bool),
+    Data(Vec<u8>),
+}
+
+impl ParamValue {
+    pub fn as_f32(&self) -> f32 {
+        match self {
+            ParamValue::Float(v) => *v,
+            ParamValue::Int(v) => *v as f32,
+            ParamValue::Bool(v) => *v as u8 as f32,
+            ParamValue::Data(_) => 0.0,
+        }
+    }
+}
+
+fn read_params(b: &[u8]) -> Result<Vec<ParamValue>> {
+    let mut r = Reader::new(b);
+    let n = r.u32()? as usize;
+    let mut out = Vec::with_capacity(n.min(64));
+    for _ in 0..n {
+        out.push(match r.u32()? {
+            0 => ParamValue::Float(r.f32()?),
+            1 => ParamValue::Int(r.i32()?),
+            2 => ParamValue::Bool(r.u8()? != 0),
+            _ => {
+                let size = r.u16()? as usize;
+                ParamValue::Data(r.bytes(size)?.to_vec())
+            }
+        });
+    }
+    Ok(out)
+}
+
+/// Studio effect types (`BEFB`), named after the core DSP they run.
+pub mod effect_type {
+    pub const ECHO: u32 = 6;
+    pub const FADER: u32 = 7;
+    pub const LIMITER: u32 = 11;
+    pub const COMPRESSOR: u32 = 18;
+    pub const SFX_REVERB: u32 = 19;
+    pub const PAN: u32 = 27;
+    pub const THREE_EQ: u32 = 28;
+    pub const LOUDNESS_METER: u32 = 30;
+    pub const TRANSCEIVER: u32 = 34;
+    pub const MULTIBAND_EQ: u32 = 36;
+}
+
+/// A built-in effect (`BEFF`).
+#[derive(Debug, Clone)]
+pub struct Effect {
+    pub id: Guid,
+    pub kind: u32,
+    pub params: Vec<ParamValue>,
+    pub bypass: bool,
+}
+
+/// A send to a return bus (`SEFF`).
+#[derive(Debug, Clone)]
+pub struct Send {
+    pub id: Guid,
+    pub return_bus: Guid,
+    pub level_db: f32,
+    pub bypass: bool,
+}
+
+fn read_bypass(b: Option<&[u8]>) -> bool {
+    b.and_then(|b| b.get(0..4))
+        .is_some_and(|w| u32::from_le_bytes(w.try_into().unwrap()) != 0)
+}
+
 /// Every object of one bank file.
 #[derive(Default, Debug)]
 pub struct BankModel {
@@ -463,6 +538,8 @@ pub struct BankModel {
     pub waveforms: HashMap<Guid, Waveform>,
     pub instruments: HashMap<Guid, Instrument>,
     pub buses: HashMap<Guid, (BusKind, Bus)>,
+    pub effects: HashMap<Guid, Effect>,
+    pub sends: HashMap<Guid, Send>,
 }
 
 impl BankModel {
@@ -527,6 +604,42 @@ impl BankModel {
                 };
                 m.instruments.insert(id, Instrument { id, base, kind });
             }
+        }
+
+        for o in objects(b"BEFX") {
+            let b = o.get(b"BEFB").ok_or(Truncated)?;
+            let mut r = Reader::new(b);
+            let id = r.guid()?;
+            let kind = r.u32()?;
+            let params = o
+                .get(b"PMEF")
+                .map(read_params)
+                .transpose()?
+                .unwrap_or_default();
+            m.effects.insert(
+                id,
+                Effect {
+                    id,
+                    kind,
+                    params,
+                    bypass: read_bypass(o.get(b"EFFB")),
+                },
+            );
+        }
+        for o in objects(b"SEFX") {
+            let mut r = Reader::new(o.get(b"SEFB").ok_or(Truncated)?);
+            let id = r.guid()?;
+            let return_bus = r.guid()?;
+            let level_db = r.f32()?;
+            m.sends.insert(
+                id,
+                Send {
+                    id,
+                    return_bus,
+                    level_db,
+                    bypass: read_bypass(o.get(b"EFFB")),
+                },
+            );
         }
 
         let bus_lists: [(&[u8; 4], &[u8; 4], BusKind); 4] = [

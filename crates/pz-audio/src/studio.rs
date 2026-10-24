@@ -46,6 +46,9 @@ pub struct Studio {
     pcm_cache: HashMap<(usize, u32), Arc<Pcm>>,
     instances: Vec<EventInstance>,
     rng: u64,
+    bus_buffers: HashMap<Guid, Vec<f32>>,
+    /// Runtime state of each bus effect (`None`: passes the signal through).
+    dsps: HashMap<Guid, Option<Box<dyn crate::dsp::Dsp>>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +111,8 @@ impl Studio {
             pcm_cache: HashMap::new(),
             instances: Vec::new(),
             rng: 0x9e37_79b9_7f4a_7c15,
+            bus_buffers: HashMap::new(),
+            dsps: HashMap::new(),
         }
     }
 
@@ -280,42 +285,96 @@ impl Studio {
         }
     }
 
-    /// Gain of the path from an event to the output: the event's master
-    /// bus and input bus, then the mixer group chain.
-    fn routing_gain(&self, bank: usize, e: &Event, track: Option<Guid>) -> f32 {
-        let mut g = 1.0;
-        let mut seen = 0;
-        let mut cur = track.unwrap_or(e.master_bus);
-        let mut visited_master = track.is_none();
-        loop {
-            seen += 1;
-            if seen > 32 {
+    fn find_bus(&self, id: &Guid) -> Option<&(BusKind, crate::bank::Bus)> {
+        self.banks.iter().find_map(|b| b.model.buses.get(id))
+    }
+
+    /// Gain inside the event: its master bus volume (tracks and event
+    /// effects are not modelled yet).
+    fn event_gain(&self, e: &Event) -> f32 {
+        self.find_bus(&e.master_bus)
+            .map_or(1.0, |b| db_to_gain(b.1.body.volume_db))
+    }
+
+    /// Number of buses between `id` and the root master bus.
+    fn depth(&self, id: &Guid) -> usize {
+        let mut d = 0;
+        let mut cur = *id;
+        while let Some((_, b)) = self.find_bus(&cur) {
+            if b.output.target == Guid::NULL || d > 64 {
                 break;
             }
-            let found = self.banks.iter().find_map(|b| b.model.buses.get(&cur));
-            let Some((kind, bus)) = found else { break };
-            g *= db_to_gain(bus.body.volume_db);
-            if *kind == BusKind::Master && cur == e.master_bus {
-                visited_master = true;
-                cur = e.input_bus;
-                continue;
-            }
-            if bus.output.target == Guid::NULL {
-                if !visited_master {
-                    cur = e.master_bus;
-                    continue;
-                }
-                break;
-            }
-            cur = bus.output.target;
+            cur = b.output.target;
+            d += 1;
         }
-        let _ = bank;
-        g
+        d
+    }
+
+    /// Run the mixer's buses: effects then volume on each, deepest first,
+    /// each adding into its output. The root's result goes to `out`.
+    fn process_buses(&mut self, out: &mut [f32]) {
+        let mut pending: Vec<Guid> = self.bus_buffers.keys().copied().collect();
+        // Make sure every bus on the way to the root has a buffer.
+        let mut k = 0;
+        while k < pending.len() {
+            if let Some((_, b)) = self.find_bus(&pending[k]) {
+                let t = b.output.target;
+                if t != Guid::NULL && !self.bus_buffers.contains_key(&t) {
+                    self.bus_buffers.insert(t, vec![0.0; out.len()]);
+                    pending.push(t);
+                }
+            }
+            k += 1;
+        }
+        pending.sort_by_key(|g| std::cmp::Reverse(self.depth(g)));
+        for g in pending {
+            let Some(mut buf) = self.bus_buffers.remove(&g) else {
+                continue;
+            };
+            let Some((_, bus)) = self.find_bus(&g).cloned() else {
+                continue;
+            };
+            for e in bus.body.effects.iter().chain(&bus.body.effects_2) {
+                if !self.dsps.contains_key(e) {
+                    let made = self
+                        .banks
+                        .iter()
+                        .find_map(|b| b.model.effects.get(e))
+                        .and_then(|fx| {
+                            if fx.bypass {
+                                None
+                            } else {
+                                crate::dsp::from_effect(fx, SAMPLE_RATE)
+                            }
+                        });
+                    self.dsps.insert(*e, made);
+                }
+                if let Some(Some(d)) = self.dsps.get_mut(e) {
+                    d.process(&mut buf, 2);
+                }
+            }
+            let v = db_to_gain(bus.body.volume_db);
+            if bus.output.target == Guid::NULL {
+                for (o, s) in out.iter_mut().zip(&buf) {
+                    *o += s * v;
+                }
+            } else {
+                let dst = self
+                    .bus_buffers
+                    .entry(bus.output.target)
+                    .or_insert_with(|| vec![0.0; buf.len()]);
+                for (o, s) in dst.iter_mut().zip(&buf) {
+                    *o += s * v;
+                }
+            }
+        }
+        self.bus_buffers.clear();
     }
 
     /// Mix `frames` frames of stereo into `out` (interleaved, added).
     pub fn mix(&mut self, out: &mut [f32]) {
         let frames = out.len() / 2;
+        let mut scratch = vec![0f32; out.len()];
         let mut id = 0;
         while id < self.instances.len() {
             let this = id;
@@ -332,15 +391,7 @@ impl Studio {
                 let i = &self.instances[id];
                 (i.bank, self.banks[i.bank].model.events[&i.event].clone())
             };
-            let route = if self.instances[id].parent.is_some() {
-                // Only the nested event's own master bus applies.
-                self.banks
-                    .iter()
-                    .find_map(|b| b.model.buses.get(&event.master_bus))
-                    .map_or(1.0, |b| db_to_gain(b.1.body.volume_db))
-            } else {
-                self.routing_gain(bank, &event, None)
-            };
+            let route = self.event_gain(&event);
             self.instances[id].route = route;
             if !self.instances[id].started {
                 self.instances[id].started = true;
@@ -368,6 +419,7 @@ impl Studio {
                     }
                 }
             }
+            scratch.iter_mut().for_each(|s| *s = 0.0);
             let inst = &mut self.instances[id];
             let g = inst.gain * route;
             for v in &mut inst.voices {
@@ -384,13 +436,14 @@ impl Studio {
                         *r -= 1;
                     }
                     let (l, r) = if ch == 1 {
+                        // Studio tracks place mono at full level on both sides.
                         let s = v.pcm.data[v.pos];
                         (s, s)
                     } else {
                         (v.pcm.data[v.pos * ch], v.pcm.data[v.pos * ch + 1])
                     };
-                    out[f * 2] += l * v.gain * g;
-                    out[f * 2 + 1] += r * v.gain * g;
+                    scratch[f * 2] += l * v.gain * g;
+                    scratch[f * 2 + 1] += r * v.gain * g;
                     v.pos += 1;
                 }
             }
@@ -405,7 +458,23 @@ impl Studio {
             if inst.voices.is_empty() && inst.position >= end {
                 inst.state = PlaybackState::Stopped;
             }
+            // Nested events join their parent's routing.
+            let mut top = id;
+            while let Some(p) = self.instances[top].parent {
+                top = p;
+            }
+            let input = self.banks[self.instances[top].bank].model.events
+                [&self.instances[top].event]
+                .input_bus;
+            let dst = self
+                .bus_buffers
+                .entry(input)
+                .or_insert_with(|| vec![0.0; out.len()]);
+            for (o, s) in dst.iter_mut().zip(&scratch) {
+                *o += s;
+            }
         }
+        self.process_buses(out);
     }
 
     pub fn lookup_event(&self, strings: &crate::strings::StringTable, path: &str) -> Option<Guid> {
@@ -423,7 +492,7 @@ impl Studio {
             i.voices.len(),
             i.state,
             i.position,
-            self.routing_gain(i.bank, e, None),
+            self.event_gain(e),
             e.instruments.len(),
             self.banks[i.bank]
                 .model
