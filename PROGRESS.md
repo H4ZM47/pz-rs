@@ -174,6 +174,32 @@ Status of the Rust port. Update this file with every merged change.
   zombies goes through `PopulationHost`, which waits on `IsoZombie` and
   `VirtualZombieManager`.
 
+- Zombies (`pz-characters::character::zombie`, `states::zombie`):
+  `IsoZombie`'s simulation (construction from a descriptor, the lore-driven
+  `DoZombieStats`/speeds/`makeInactive`/`toggleCrawling`, sight
+  (`spottedNew`/`spottedOld`, vision radius, cone, light, sneaking, traits,
+  close-sneak-bonus sprites read from the jar), hearing through
+  `pz_audio::world_sound` (`RespondToSound`, `setTurnAlertedValues`),
+  memory and target selection, thumping, eating bodies, the corpse
+  search, `updateInternal`/`postupdate`), the zombie animation variable
+  slots, the zombie states (idle, walk toward, path find, lunge, attack
+  with `AddRandomDamageFromZombie`, thump, fall down, get up, on ground,
+  reanimate, eat body, face target, get down, sitting, crawler turn, fake
+  dead, turn alerted, get up from crawl, falling), `initializeStates`,
+  `pz_pathfind`'s `ZombieMover`, the `pz-popman` host's zombie side
+  (`create_real_zombie_always` and the setters) and Lua bindings
+  (`bind_zombie`: `IsoZombie` members, `getWorldSoundManager`, `addSound`).
+  The world (squares, light, rooms, doors and thumpables, corpses, sounds,
+  path behaviour) is reached through `StateWorld` hooks; lore settings are
+  `SimContext` getters with the sandbox defaults. A seeded run against the
+  original (600 lore-matrix `DoZombieStats`/`makeInactive`/`toggleCrawling`
+  cases with the `Rand` stream after each, 2000 `setTurnAlertedValues` and
+  500 vision-radius cases, 40 rounds of `WorldSoundManager` sounds with
+  1200 zombie hearing queries and aging) matches bit for bit (checked
+  locally). Spotting, the zombie states' world interplay, ragdolls,
+  vehicles and the network states are not yet checked against the
+  original; the movement code (`IsoGameCharacter.update`) is TODO.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 

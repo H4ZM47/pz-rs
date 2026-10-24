@@ -370,3 +370,33 @@ fn zombie_bites_through_attack_state() {
     assert_eq!(p.vars.attacked_by, Some(7));
     assert!(p.body_damage.health() <= health);
 }
+
+#[test]
+fn population_creates_a_real_zombie() {
+    let (sm, mut chars) = fixture();
+    let ctx = Lore::new(4);
+    let d = desc(&sm, &mut chars, false);
+    let r = super::population::create_real_zombie_always(
+        &sm,
+        &ctx,
+        &[(10, 12, 0), (30, 31, 0)],
+        &|_| false,
+        pz_world::square::IsoDirections::S,
+        false,
+        0,
+        100.0,
+        super::ZombieSpawn { descriptor: Some((d, 1)), create_survivor: &mut || unreachable!(), random_blood: &mut || {} },
+    )
+    .unwrap();
+    let z = &r.zombie;
+    assert!(r.spawn_building_key);
+    assert_eq!(z.vars.dir, pz_world::square::IsoDirections::S);
+    assert!(z.zombie.dress_in_random_outfit);
+    assert!(z.health >= 1.5 && z.health < 1.8);
+    assert_eq!((z.vars.x as i32, z.vars.y as i32), (r.square.0, r.square.1));
+    let mut z = r.zombie;
+    z.pop_make_crawler(&ctx, false);
+    assert!(z.vars.crawling && !z.zombie.can_walk && z.vars.on_floor);
+    z.pop_sit_against_wall(1.5, 2.5, Some(pz_world::square::IsoDirections::W));
+    assert!(z.vars.sit_against_wall);
+}

@@ -19,6 +19,7 @@
 
 pub mod math;
 pub mod mover;
+pub mod population;
 pub mod senses;
 pub mod update;
 pub mod vars;
