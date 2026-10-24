@@ -67,7 +67,7 @@ pub fn lua_assert(cond: bool, msg: &str) -> LuaResult<()> {
 
 /// `getOptionalArg`: arguments beyond the frame top are nil.
 pub fn opt_arg(c: &NativeCall<'_>, n: usize) -> Value {
-    if n - 1 >= c.top() {
+    if n > c.top() {
         Value::Nil
     } else {
         c.arg(n - 1)
