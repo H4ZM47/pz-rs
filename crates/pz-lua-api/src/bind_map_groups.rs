@@ -7,7 +7,6 @@
 
 use crate::bind_core::JavaList;
 use crate::expose::{bool_arg, expose_class, int_arg, str_arg, this};
-use pz_fs::GameFs;
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, NativeCall, Thread, Value};
 use pz_world::map_groups::{add_missing_vanilla_directories, ActiveModsView, MapGroups};
@@ -33,7 +32,7 @@ pub trait MapGroupsHost {
 }
 
 struct DefaultHost {
-    fs: Rc<GameFs>,
+    maps_dir: Box<dyn Fn() -> PathBuf>,
 }
 
 impl MapGroupsHost for DefaultHost {
@@ -92,10 +91,14 @@ fn string_list(v: Vec<String>) -> Value {
     Value::Object(Rc::new(JavaList(v.into_iter().map(Value::from).collect())))
 }
 
-pub fn register(thread: &mut Thread, fs: Rc<GameFs>) {
+/// `maps_dir` is `ZomboidFileSystem.getMediaFile("maps")` for the default
+/// host.
+pub fn register(thread: &mut Thread, maps_dir: impl Fn() -> PathBuf + 'static) {
     HOST.with(|h| {
         if h.borrow().is_none() {
-            *h.borrow_mut() = Some(Rc::new(DefaultHost { fs }));
+            *h.borrow_mut() = Some(Rc::new(DefaultHost {
+                maps_dir: Box::new(maps_dir),
+            }));
         }
     });
     let b = expose_class(thread, MAP_GROUPS, None);
@@ -191,7 +194,8 @@ mod tests {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         crate::bind_core::register(&mut t, None, crate::bind_core::shared_core());
-        register(&mut t, Rc::new(GameFs::new(&root)));
+        let maps = root.join("media/maps");
+        register(&mut t, move || maps.clone());
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end");
         let out = run(
             &mut t,

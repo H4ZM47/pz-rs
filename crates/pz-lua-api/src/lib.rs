@@ -22,7 +22,10 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_globals::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
     bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
-    bind_map_groups::register(&mut mgr.thread, mgr.fs.clone());
+    let fs = mgr.fs.clone();
+    bind_map_groups::register(&mut mgr.thread, move || {
+        fs.resolve("media/maps").unwrap_or_else(|| fs.base.join("media").join("maps"))
+    });
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }
