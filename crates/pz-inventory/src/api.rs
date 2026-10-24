@@ -225,11 +225,18 @@ impl InventoryItem {
         }
     }
 
-    /// Port of `getMaxUses()`: `DrainableComboItem` uses
-    /// `floor(1 / useDelta)`, every other item 1.
+    /// Port of `getMaxUses()`: `DrainableComboItem` and `WeaponPart` use
+    /// `floor(1 / useDelta)`, `Food` with a base hunger its hunger in
+    /// hundredths, every other item 1.
     pub fn get_max_uses(&self) -> i32 {
-        if self.template.class == ItemClass::Drainable {
+        if matches!(
+            self.template.class,
+            ItemClass::Drainable | ItemClass::WeaponPart
+        ) {
             (1.0 / self.template.use_delta).floor() as i32
+        } else if let Some(f) = self.food().filter(|f| f.base_hunger != 0.0) {
+            // Food.getMaxUses.
+            (f.base_hunger * 100.0).abs() as i32
         } else {
             1
         }

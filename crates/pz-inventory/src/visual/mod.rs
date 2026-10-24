@@ -1,4 +1,8 @@
-//! `ItemVisual` (also part of `HumanVisual`).
+//! `ItemVisual` (also part of `HumanVisual`) and `HumanVisual`
+//! ([`human`]).
+
+pub mod human;
+pub use human::HumanVisual;
 
 use crate::io::{color_from_byte, color_to_byte, Reader, SaveResult, Writer};
 
