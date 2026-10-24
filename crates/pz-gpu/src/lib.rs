@@ -624,10 +624,14 @@ impl Gpu {
             }
             DrawCmd::ChunkBegin { id, width, height, clear } => {
                 self.ensure_chunk(*id, *width, *height);
+                // TextureFBO.startDrawing remembers the bound buffer.
+                if !matches!(f.target, PassTarget::Chunk(_)) {
+                    f.chunk_return = f.target;
+                }
                 f.target = PassTarget::Chunk(*id);
                 f.passes.push(PassDesc { target: f.target, clear: *clear, batches: f.batches.len()..f.batches.len() });
             }
-            DrawCmd::ChunkEnd => f.target = PassTarget::Main,
+            DrawCmd::ChunkEnd => f.target = f.chunk_return,
             DrawCmd::ChunkComposite { id, x, y, w, h, color, chunk_depth, mag_linear } => {
                 if !self.chunks.contains_key(id) {
                     return;
@@ -865,6 +869,8 @@ struct FrameBuilder {
     /// Chunk textures released once the frame is drawn.
     freed: Vec<u64>,
     target: PassTarget,
+    /// The target a chunk texture's `ChunkEnd` returns to.
+    chunk_return: PassTarget,
     mvp: [[f32; 4]; 4],
     viewport: (u32, u32),
 }
@@ -879,6 +885,7 @@ impl Default for FrameBuilder {
             passes: Vec::new(),
             freed: Vec::new(),
             target: PassTarget::Main,
+            chunk_return: PassTarget::Main,
             mvp: IDENTITY,
             viewport: (1, 1),
         }

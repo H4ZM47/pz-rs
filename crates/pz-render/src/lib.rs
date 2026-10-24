@@ -203,7 +203,8 @@ pub enum DrawCmd {
     /// texture `id` (colour plus 16-bit depth), created at this size if
     /// needed; `clear` clears colour to 0 and depth to 1.
     ChunkBegin { id: u64, width: u32, height: u32, clear: bool },
-    /// `FBORenderChunk.endRenderThread`: back to the main target.
+    /// `FBORenderChunk.endRenderThread`: back to the target bound before
+    /// `ChunkBegin`.
     ChunkEnd,
     /// `FBORenderChunk.renderInWorldMainThread`: chunk texture `id` drawn
     /// with `chunkShader` (colour times `color`, depth = `chunk_depth` +

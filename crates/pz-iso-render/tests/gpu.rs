@@ -117,3 +117,33 @@ fn open_door_is_drawn_translucent_over_the_floor() {
     let got = px(128, 20);
     assert!((i32::from(got[2]) - 153).abs() <= 1 && got[0] == 0, "{got:?}");
 }
+
+/// The whole frame: offscreen buffer, chunk composite and screen pass.
+#[test]
+fn world_frame_reaches_the_screen() {
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else { return };
+    let mut tm = TextureManager::new();
+    let mut floor_tex = solid(&mut tm, "floor", 128, 64, [200, 100, 50, 255]);
+    floor_tex.offset_y = 192.0;
+    floor_tex.width_orig = 128;
+    floor_tex.height_orig = 256;
+    let mut depth = solid(&mut tm, "depth", 128, 256, [128, 128, 128, 255]);
+    depth.width_orig = 128;
+    depth.height_orig = 256;
+    let floor = Rc::new(SpriteInfo { texture: Some(floor_tex), flags: SpriteFlags { solidfloor: true, ..Default::default() }, tint_mod: [1.0; 3], ..Default::default() });
+    let mut sq = RenderSquare::new(4, 4, 0);
+    sq.objects.push(RenderObject::new(ObjectKind::Plain, Some(floor)));
+    let cam = Camera::centred(4.0, 4.0, 0.0, 256, 128, 1.0);
+    let maps = Maps(depth.clone(), depth);
+    let r = ChunkRenderer { cam, depth_maps: &maps };
+    let mut level = [None; 64];
+    level[36] = Some(&sq);
+    let chunks = [pz_iso_render::frame::ChunkLevels { texture: ChunkTexture::new(0, 0, 0, 0, 0), levels: vec![(0, level)], dirty: true }];
+    let cmds = pz_iso_render::frame::world_frame(&r, pz_iso_render::frame::FrameSize { width: 256, height: 128 }, &chunks, pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 });
+    let list = pz_render::DrawList { cmds };
+    gpu.render_frame(&[(pz_gpu::FrameParams::ui(256, 128), &list)], &mut tm);
+    let p = gpu.read_pixels();
+    let px = |x: usize, y: usize| p[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].to_vec();
+    let got = px(128, 96);
+    assert!(got[0] > 150 && got[2] < 100, "{got:?}");
+}
