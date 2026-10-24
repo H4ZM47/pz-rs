@@ -5,8 +5,9 @@
 use std::rc::Rc;
 
 /// `FMOD_STUDIO_PLAYBACK_STATE` (same order and indices).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlaybackState {
+    #[default]
     Playing = 0,
     Sustaining = 1,
     Stopped = 2,

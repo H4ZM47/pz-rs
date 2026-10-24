@@ -1582,11 +1582,6 @@ pub(crate) mod tests {
         pub(crate) sustain: bool,
     }
 
-    impl Default for PlaybackState {
-        fn default() -> Self {
-            PlaybackState::Playing
-        }
-    }
 
     /// Parameters every mock event has, by global index.
     pub(crate) const PARAMS: [&str; 8] = [
