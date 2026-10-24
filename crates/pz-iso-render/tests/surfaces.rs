@@ -352,7 +352,7 @@ fn rain_splashes_land_on_outdoor_floors() {
     // Square (4, 4): splash frame 0 at its centre.
     level.frame[36] = 0.0;
     level.splash_xy[36] = (0.5, 0.5);
-    let rain = std::cell::RefCell::new(RainSplashes { levels: HashMap::from([((0, 0, 0), level)]), ..Default::default() });
+    let rain = std::cell::RefCell::new(RainSplashes { levels: HashMap::from([((0, 0, 0), level)]) });
     let wet = ClimateInputs { cell_rain_intensity: 5, ..Default::default() };
     let mut s = surfaces(&world, &textures, SurfaceSettings::default(), wet, PuddlesState::default());
     s.frame.frame_count = 7;
