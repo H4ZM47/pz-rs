@@ -112,6 +112,7 @@ version = "0.1.0"
 name = "pz-world"
 version = "0.1.0"
 dependencies = [
+ "pz-classfile",
  "pz-fs",
 ]
 
