@@ -12,6 +12,8 @@ use std::rc::Rc;
 pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
     let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(game_dir)));
     let errors: Rc<RefCell<BTreeMap<String, usize>>> = Rc::default();
+    // GameWindow.init: the UI texture packs, then the pack lookup.
+    pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
     let mut mgr = LuaManager::init(fs).map_err(|e| format!("LuaManager.init failed: {e}"))?;
     let e2 = errors.clone();
     mgr.thread.log = Box::new(move |s| {
