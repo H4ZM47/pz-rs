@@ -1599,6 +1599,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-clipper6"
+version = "0.1.0"
+
+[[package]]
 name = "pz-core"
 version = "0.1.0"
 dependencies = [
@@ -1703,6 +1707,16 @@ name = "pz-model"
 version = "0.1.0"
 dependencies = [
  "pz-render",
+]
+
+[[package]]
+name = "pz-pathfind"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-clipper6",
+ "pz-fs",
+ "pz-world",
 ]
 
 [[package]]

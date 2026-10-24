@@ -128,6 +128,10 @@ Status of the Rust port. Update this file with every merged change.
   attack is still plain data. Eating, drinking, pills, clothing defense
   queries, inventory weight and weapon hits on real game items match the
   original's state bit for bit (checked locally).
+- `pz-clipper6`: the polygon code of the native pathfinder (Clipper 6.4.2,
+  earcut.hpp and the game's `PZClipper` wrapper) in pure Rust. Local
+  differential run against the shipped arm64 library: 1.15 million random
+  cases bit-identical.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
