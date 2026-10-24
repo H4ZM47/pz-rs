@@ -6,7 +6,6 @@
 //! [`textures`]). The same texture is always the same Lua object, so Lua
 //! `==` compares like Java references.
 
-use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -22,25 +21,7 @@ use crate::LuaManager;
 pub const TEXTURE: &str = "zombie.core.textures.Texture";
 pub const ASSET: &str = "zombie.asset.Asset";
 
-/// A `Texture` handed to Lua.
-pub struct LuaTexture(pub RefCell<Texture>);
-
-impl LuaObject for LuaTexture {
-    fn class_name(&self) -> &str {
-        TEXTURE
-    }
-    fn to_lua_string(&self) -> String {
-        // `Texture.toString()`.
-        let t = self.0.borrow();
-        format!("Texture{{ name:\"{}\", w:{}, h:{} }}", t.name, t.width, t.height)
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn super_classes(&self) -> &[&'static str] {
-        &[ASSET]
-    }
-}
+pub use pz_render::LuaTexture;
 
 /// Texture identity: image id, region bits, name.
 type TextureKey = (Option<u32>, [u32; 4], Rc<str>);
@@ -60,7 +41,7 @@ pub fn textures() -> Rc<RefCell<TextureManager>> {
 pub fn texture_value(t: Option<Texture>) -> Value {
     let Some(t) = t else { return Value::Nil };
     let key = (t.id, t.uv.map(f32::to_bits), t.name.clone());
-    OBJECTS.with(|o| o.borrow_mut().entry(key).or_insert_with(|| Value::Object(Rc::new(LuaTexture(RefCell::new(t))))).clone())
+    OBJECTS.with(|o| o.borrow_mut().entry(key).or_insert_with(|| Value::Object(Rc::new(LuaTexture::new(t)))).clone())
 }
 
 fn shared(fs: &RefCell<GameFs>, name: &str) -> Value {
@@ -76,6 +57,8 @@ fn get<R>(c: &NativeCall<'_>, f: impl FnOnce(&Texture) -> R) -> pz_kahlua::LuaRe
 
 pub fn register(mgr: &mut LuaManager) {
     let fs = mgr.fs.clone();
+    let f = fs.clone();
+    pz_render::install_shared_texture_loader(move |name| textures().borrow_mut().shared_texture(&f.borrow(), name));
     let thread = &mut mgr.thread;
 
     let asset = expose_class(thread, ASSET, None);
