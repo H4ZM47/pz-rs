@@ -115,3 +115,13 @@ fn installed_game() {
     eprintln!("lua shared {} client {}; first {:?} last {:?}", shared.len(), client.len(), client.first(), client.last());
     assert!(!client.is_empty());
 }
+
+#[test]
+fn prefix_validation() {
+    let s = Scratch::new("prefix");
+    let fs = install(&s);
+    assert!(fs.validate_prefix("media/ui/Icon.png"));
+    assert!(fs.validate_prefix(&s.0.join("user/mods/x.png").to_string_lossy()));
+    assert!(!fs.validate_prefix("media/../../outside.png"));
+    assert!(!fs.validate_prefix("/etc/passwd"));
+}
