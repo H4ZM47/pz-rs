@@ -547,6 +547,10 @@ fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderOb
     } else {
         render_not_door_or_wall(ctx, sq, &o);
     }
+    // hasAnimatedAttachments: a fire's flames and smoke.
+    if o.kind == ObjectKind::Fire {
+        crate::fire::render_animated_attachments(ctx, sq, &o);
+    }
 }
 
 /// `FBORenderCell.renderMinusFloor(object)`.

@@ -310,6 +310,7 @@ impl Gpu {
         let world_composite = module("chunkShader", format!("{world}\n{}", include_str!("world_composite.wgsl")));
         let screen = module("screen", include_str!("screen.wgsl").to_string());
         let surface = module("surface", include_str!("surface.wgsl").to_string());
+        let particles = module("particles", include_str!("particles.wgsl").to_string());
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -363,6 +364,7 @@ impl Gpu {
             world_tile,
             world_composite,
             surface,
+            particles,
             screen,
         };
         let depth_stencil = depth_stencil_view(&device, width, height);
@@ -922,6 +924,41 @@ impl Gpu {
                     f.push_split(key, tex, Tex2::Surface(refl(0)), &self.state, gi, v, split02);
                 }
                 f.tex3 = None;
+                self.state = saved;
+            }
+            DrawCmd::Particles(d) => {
+                // RenderParticles pushes and pops the GL attributes around
+                // the two draws; this port leaves the depth test off.
+                let saved = self.state.clone();
+                let saved_viewport = f.viewport;
+                self.state.depth_test = false;
+                self.state.blend = true;
+                self.state.blend_func = [d.blend_func[0], d.blend_func[1], d.blend_func[0], d.blend_func[1]];
+                self.state.alpha_test = false;
+                f.viewport = d.viewport;
+                let mut mvp = d.mvp;
+                if f.target != PassTarget::Main {
+                    for col in &mut mvp {
+                        col[1] = -col[1];
+                    }
+                }
+                let mut g = Globals::zeroed();
+                g.mvp = mvp;
+                g.alpha_func = 8;
+                g.clip_z = 0.5;
+                let col = |c: usize| [d.param[c][0], d.param[c][1], d.param[c][2], 0.0];
+                g.surface = [[d.time, 0.0, 0.0, 0.0], col(0), col(1), col(2), [0.0; 4]];
+                let gi = f.push_globals(g);
+                let key = self.key(f, Program::Particles(d.program));
+                let tex = d.texture.as_ref().and_then(|t| t.id);
+                // The strip (-1,-1), (1,-1), (-1,1), (1,1) as a quad split
+                // on its 1-3 diagonal.
+                let corners = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+                for p in &d.particles {
+                    let v: [Vertex; 4] = std::array::from_fn(|i| Vertex { pos: corners[i], uv: [p[0], p[1]], color: 0xFFFF_FFFF, uv1: [p[2], p[3]], uv2: [0.0; 2], depth: [0.0; 2] });
+                    f.push_split(key, tex, Tex2::None, &self.state, gi, v, false);
+                }
+                f.viewport = saved_viewport;
                 self.state = saved;
             }
             DrawCmd::SkyBox(d) => {

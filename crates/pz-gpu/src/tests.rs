@@ -317,3 +317,53 @@ fn skybox_renders_into_its_reflection_texture() {
         assert_eq!(px(&p, 64, 1, 1), [0, 0, 0, 255], "{hires}");
     }
 }
+
+fn particles(program: pz_render::ParticleProgram, time: f32, texture: Option<pz_render::Texture>, particles: Vec<[f32; 4]>, blend: u32) -> DrawCmd {
+    // Particles.orthogonal(0, 256, 256, 0, -1, 1), column major.
+    let mvp = [[2.0 / 256.0, 0.0, 0.0, 0.0], [0.0, -2.0 / 256.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [-1.0, 1.0, 0.0, 1.0]];
+    DrawCmd::Particles(Box::new(pz_render::ParticlesDraw { program, mvp, time, param: [[0.0; 3]; 3], texture, particles, blend_func: [gl::SRC_ALPHA, blend], viewport: (256, 256) }))
+}
+
+/// One flame at the middle of its life: `fire.vert` with `hashA` = -1
+/// (id 0, first cycle) gives size 0.5 (a 90-pixel quad turned by
+/// -0.13 * 3.1415), lifted 75 pixels, alpha 0.5, atlas cell 16 (column 0,
+/// row 2); `fire.frag` takes alpha from the texel's red, added to black.
+#[test]
+fn a_fire_particle_lands_where_fire_vert_puts_it() {
+    let Some(mut g) = gpu(256, 256) else { return };
+    let mut tm = TextureManager::new();
+    let mut px8x4 = vec![0u8; 8 * 4 * 4];
+    for t in px8x4.chunks_mut(4) {
+        t.copy_from_slice(&[0, 255, 0, 255]);
+    }
+    px8x4[(2 * 8) * 4..(2 * 8) * 4 + 4].copy_from_slice(&[255, 0, 0, 255]);
+    let atlas = tm.texture_from_pixels("FireFlame", 8, 4, px8x4, 0);
+    let mut dl = DrawList::default();
+    dl.cmds.push(particles(pz_render::ParticleProgram::Fire, 0.3, Some(atlas), vec![[128.0, 203.0, 0.0, 0.0]], gl::ONE));
+    g.render_frame(&[(opaque_black(256, 256), &dl)], &mut tm);
+    let p = g.read_pixels();
+    // Centre: the cell's red at alpha 0.5 (bilinear filtering pulls in a
+    // little of the neighbouring cells).
+    let c = px(&p, 256, 128, 128);
+    assert!((118..=130).contains(&c[0]) && c[1] < 8 && c[2] == 0, "{c:?}");
+    // Inside the turned square, and outside it.
+    assert!(px(&p, 256, 128, 165)[0] > 0);
+    assert_eq!(px(&p, 256, 128 + 60, 128), [0, 0, 0, 255]);
+    assert_eq!(px(&p, 256, 128, 128 - 60), [0, 0, 0, 255]);
+}
+
+/// `smoke.vert`/`smoke.frag` draw alpha-blended puffs above the particle.
+#[test]
+fn a_smoke_particle_draws_above_its_origin() {
+    let Some(mut g) = gpu(256, 256) else { return };
+    let mut tm = TextureManager::new();
+    let white = tm.texture_from_pixels("FireSmokes", 2, 2, [255u8; 4].repeat(4), 0);
+    let mut dl = DrawList::default();
+    dl.cmds.push(particles(pz_render::ParticleProgram::Smoke, 0.5, Some(white), vec![[128.0, 250.0, 0.0, 0.0]], gl::ONE_MINUS_SRC_ALPHA));
+    g.render_frame(&[(opaque_black(256, 256), &dl)], &mut tm);
+    let p = g.read_pixels();
+    // Life 0.28..0.36: 110..145 pixels up, at least 105 pixels across.
+    let c = px(&p, 256, 128, 120);
+    assert!(c[0] > 0 && c[0] == c[1] && c[1] == c[2], "{c:?}");
+    assert_eq!(px(&p, 256, 2, 254), [0, 0, 0, 255]);
+}

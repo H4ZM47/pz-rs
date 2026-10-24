@@ -201,6 +201,8 @@ pub struct RenderObject {
     pub container_count: u32,
     /// `overlaySprite` and `overlaySpriteColor`.
     pub overlay: Option<Overlay>,
+    /// For an `IsoFire`: what drawing its animations reads.
+    pub fire: Option<crate::fire::FireRender>,
 }
 
 /// A garage door segment's place in its door.
@@ -229,6 +231,7 @@ impl RenderObject {
             fascia_attached: None,
             container_count: 0,
             overlay: None,
+            fire: None,
         }
     }
 
@@ -402,6 +405,10 @@ pub trait DepthMaps {
     fn cutaway_stencil(&self, _index: usize) -> Option<Texture> {
         None
     }
+    /// `getBillboardDepthTexture()` when not empty (fire sprites).
+    fn billboard(&self) -> Option<Texture> {
+        None
+    }
 }
 
 impl DepthMaps for pz_render::tile_depth::TileDepthTextureManager {
@@ -411,6 +418,14 @@ impl DepthMaps for pz_render::tile_depth::TileDepthTextureManager {
 
     fn default_texture(&self) -> Option<Texture> {
         let t = self.default_depth_texture()?;
+        if t.is_empty() {
+            return None;
+        }
+        t.uploaded_texture().cloned()
+    }
+
+    fn billboard(&self) -> Option<Texture> {
+        let t = self.billboard_depth_texture()?;
         if t.is_empty() {
             return None;
         }
