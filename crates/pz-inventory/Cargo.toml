@@ -1,0 +1,8 @@
+[package]
+name = "pz-inventory"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-scripts.workspace = true
+pz-entity.workspace = true

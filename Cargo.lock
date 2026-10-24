@@ -744,6 +744,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-entity"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-scripts",
+]
+
+[[package]]
 name = "pz-fs"
 version = "0.1.0"
 
@@ -761,6 +769,14 @@ dependencies = [
  "pz-ui",
  "raw-window-handle",
  "wgpu",
+]
+
+[[package]]
+name = "pz-inventory"
+version = "0.1.0"
+dependencies = [
+ "pz-entity",
+ "pz-scripts",
 ]
 
 [[package]]
@@ -816,6 +832,17 @@ dependencies = [
  "pz-kahlua",
  "pz-render",
  "pz-text",
+]
+
+[[package]]
+name = "pz-world"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-entity",
+ "pz-fs",
+ "pz-inventory",
+ "pz-scripts",
 ]
 
 [[package]]
