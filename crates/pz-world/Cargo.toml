@@ -7,7 +7,7 @@ edition.workspace = true
 pz-fs.workspace = true
 pz-inventory.workspace = true
 pz-classfile.workspace = true
+pz-entity.workspace = true
 
 [dev-dependencies]
 pz-scripts.workspace = true
-pz-entity.workspace = true

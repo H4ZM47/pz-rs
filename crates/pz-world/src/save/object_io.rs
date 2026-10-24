@@ -1,6 +1,7 @@
 //! `IsoObject.factoryFromFileInput`, `IsoObject.load`/`save` and the
 //! `load`/`save` overrides of the object classes chunk files hold.
 
+use super::animal::IsoAnimal;
 use super::io::{err, has, BitHeaderWrite, Reader, SaveResult, Writer};
 use super::items::ItemBlob;
 use super::lua_table::{present, LuaKey, LuaTable, LuaValue};
@@ -44,6 +45,7 @@ fn instantiate(name: Option<&str>) -> SaveResult<ObjectKind> {
         Some("StackedWasherDryer") => ObjectKind::StackedWasherDryer(WasherDryer::default()),
         Some("ButcherHook") => ObjectKind::ButcherHook,
         Some("IsoWindowFrame") => ObjectKind::WindowFrame { north: false },
+        Some("IsoAnimalTrack") => ObjectKind::AnimalTrack(Box::default()),
         // The remaining classes read every saved field in load; the kind is
         // built there.
         Some(
@@ -55,7 +57,9 @@ fn instantiate(name: Option<&str>) -> SaveResult<ObjectKind> {
             | "IsoGenerator"
             | "IsoTrap"
             | "IsoCarBatteryCharger"
-            | "Fire"),
+            | "Fire"
+            | "Pushable"
+            | "WheelieBin"),
         ) => return err(format!("deferred:{n}")),
         Some(n) => return err(format!("object class {n} is not supported in chunk files")),
     })
@@ -86,6 +90,9 @@ pub fn load_object(
         }
         Err(e) if e.0.starts_with("deferred:") => {
             obj.components = ctx.hooks.factory_components(name.unwrap_or("IsoObject"));
+            if name == Some("FeedingTrough") {
+                feeding_trough_constructor(&mut obj);
+            }
             obj.has_components = !obj.components.is_empty();
             load_special(r, ctx, wv, &mut obj, &e.0["deferred:".len()..])?;
         }
@@ -94,28 +101,37 @@ pub fn load_object(
     Ok(Some(obj))
 }
 
+/// `new IsoFeedingTrough(cell)`: `createFluidContainer()` while `maxWater`
+/// is still 0 (the definition is read after `load`).
+fn feeding_trough_constructor(obj: &mut IsoObject) {
+    let fc = pz_entity::factory::feeding_trough_fluid_container(0.0);
+    let blob = pz_inventory::component::encode_component(pz_entity::Component::FluidContainer(fc));
+    // GameEntityFactory.AddComponent(this, true, fc) replaces one of the type.
+    match obj
+        .components
+        .iter_mut()
+        .find(|c| c.type_id == blob.type_id)
+    {
+        Some(c) => *c = blob,
+        None => obj.components.push(blob),
+    }
+}
+
 fn sprite_or_null(ctx: &SaveCtx<'_>, id: i32) -> Option<SpriteIdx> {
     ctx.sprites.idx_by_id(id)
 }
 
-fn load_entity(r: &mut Reader<'_>, obj: &mut IsoObject) -> SaveResult<()> {
-    let n = r.i8()?;
-    for _ in 0..n.max(0) {
-        let len = r.i32()?;
-        if len < 2 {
-            return err("DataBlock possible corruption.");
-        }
-        let block = r.bytes(len as usize)?;
-        let c = ComponentBlob {
-            type_id: i16::from_be_bytes([block[0], block[1]]),
-            data: block[2..].to_vec(),
-        };
-        // An existing component of the type loads in place.
-        match obj.components.iter_mut().find(|e| e.type_id == c.type_id) {
-            Some(e) => *e = c,
-            None => obj.components.push(c),
-        }
-    }
+/// `GameEntity.loadEntity`: through the item environment's component
+/// codec, so components the constructor made load in place.
+fn load_entity(
+    r: &mut Reader<'_>,
+    ctx: &SaveCtx<'_>,
+    wv: i32,
+    obj: &mut IsoObject,
+) -> SaveResult<()> {
+    ctx.items
+        .components()
+        .load_entity(r, wv, &mut obj.components)?;
     obj.has_components = !obj.components.is_empty();
     Ok(())
 }
@@ -310,7 +326,7 @@ fn load_base(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
             }
             o.moved_thumpable = has(bits, 2048);
             if has(bits, 4096) {
-                load_entity(r, o)?;
+                load_entity(r, ctx, wv, o)?;
             }
             if has(bits, 8192) {
                 o.sprite_model_name = Some(r.string()?);
@@ -585,7 +601,9 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
         ObjectKind::Object
         | ObjectKind::Jukebox
         | ObjectKind::BrokenGlass
-        | ObjectKind::ButcherHook => {}
+        | ObjectKind::ButcherHook
+        | ObjectKind::Pushable(_) => {}
+        ObjectKind::AnimalTrack(t) => **t = super::movers::AnimalTracks::load(r)?,
         ObjectKind::Door(d) => {
             d.open = r.bool()?;
             d.locked = r.bool()?;
@@ -1023,6 +1041,51 @@ fn opt_item(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32) -> SaveResult<Option
     ItemBlob::load(r, wv, ctx.items)
 }
 
+/// `IsoHutch.addAnimalInside(animal, false)` while loading: a taken place
+/// (or one a nest box animal prefers) draws a new one with `Rand`.
+fn add_animal_inside(
+    animals: &mut Vec<(i32, IsoAnimal)>,
+    nest_boxes: &[NestBox],
+    mut a: IsoAnimal,
+    ctx: &SaveCtx<'_>,
+    sprite_name: &str,
+) -> SaveResult<()> {
+    let taken = |p: i32, animals: &[(i32, IsoAnimal)]| {
+        animals.iter().any(|(k, _)| *k == p)
+            || nest_boxes
+                .iter()
+                .filter_map(|n| n.animal.as_ref())
+                .any(|n| n.preferred_hutch_position == p)
+    };
+    let draw = |a: &mut IsoAnimal| -> SaveResult<()> {
+        let Some(max) = ctx.hooks.hutch_max_animals(sprite_name) else {
+            return err("hutch maxAnimals unknown");
+        };
+        a.preferred_hutch_position = ctx.hooks.rand_next(0, max);
+        Ok(())
+    };
+    if a.preferred_hutch_position == -1 {
+        draw(&mut a)?;
+    }
+    let mut tries = 0;
+    while taken(a.preferred_hutch_position, animals) {
+        tries += 1;
+        if tries > 100 {
+            break;
+        }
+        draw(&mut a)?;
+    }
+    let p = a.preferred_hutch_position;
+    if animals.iter().any(|(k, _)| *k == p) {
+        // No place: the animal is dropped.
+        return Ok(());
+    }
+    a.hutch_position = p;
+    a.item_id = 0;
+    animals.push((p, a));
+    Ok(())
+}
+
 /// Classes whose state is built entirely in their `load`.
 fn load_special(
     r: &mut Reader<'_>,
@@ -1032,6 +1095,25 @@ fn load_special(
     name: &str,
 ) -> SaveResult<()> {
     match name {
+        "Pushable" | "WheelieBin" => {
+            let wheelie = name == "WheelieBin";
+            let (p, sprite, container) = super::movers::IsoPushableObject::load(
+                r,
+                wv,
+                wheelie,
+                ctx.settings.tile_scale,
+                ctx.items,
+            )?;
+            // IsoSpriteManager.getSprite(int): null for an unknown id. A
+            // wheelie bin keeps the unregistered sprite CreateSprite made.
+            match sprite {
+                Some(id) => o.sprite = sprite_or_null(ctx, id),
+                None => o.sprite_id_override = Some(UNREGISTERED_SPRITE_ID),
+            }
+            o.container = container;
+            o.kind = ObjectKind::Pushable(Box::new(p));
+            return Ok(());
+        }
         "WorldInventoryItem" => {
             let xoff = r.f32()?;
             let yoff = r.f32()?;
@@ -1065,7 +1147,7 @@ fn load_special(
                 return Ok(());
             }
             if has(bits, 2) {
-                load_entity(r, o)?;
+                load_entity(r, ctx, wv, o)?;
             }
             o.sprite_id_override = Some(UNREGISTERED_SPRITE_ID);
             return Ok(());
@@ -1128,12 +1210,24 @@ fn load_special(
                 linked_y = r.i32()?;
                 o.container = None;
             }
+            let north = r.bool()?;
+            // initWithDef: masters only.
+            let (max_water, max_feed) = if linked_x > 0 && linked_y > 0 {
+                (0.0, 0)
+            } else {
+                o.sprite
+                    .and_then(|s| ctx.sprites.sprites[s].name.as_deref())
+                    .and_then(|n| ctx.hooks.feeding_trough_def(n))
+                    .unwrap_or((0.0, 0))
+            };
             ObjectKind::FeedingTrough(IsoFeedingTrough {
                 feeding_types,
                 water,
                 linked_x,
                 linked_y,
-                north: r.bool()?,
+                north,
+                max_water,
+                max_feed,
             })
         }
         "IsoHutch" => {
@@ -1155,12 +1249,15 @@ fn load_special(
                 let open_egg_hatch = r.bool()?;
                 let saved = (r.i32()?, r.i32()?, r.i32()?);
                 let size = r.i32()?;
-                if size < 1 {
-                    return err("hutch animal block too short");
+                if size < 0 || (size as usize) > r.remaining() {
+                    return err("hutch animal block length");
                 }
-                let animals = r.bytes(size as usize)?.to_vec();
-                if animals[0] != 0 {
-                    return err("IsoHutch with animals inside is not supported");
+                let mut loaded = Vec::new();
+                let nb = r.i8()?;
+                for _ in 0..nb.max(0) {
+                    let _serialize = r.bool()?;
+                    let _class_id = r.i8()?;
+                    loaded.push(IsoAnimal::load(r, wv, ctx.hooks)?);
                 }
                 let hutch_dirt = r.f32()?;
                 let nest_box_dirt = r.f32()?;
@@ -1171,16 +1268,23 @@ fn load_special(
                     let ne = r.i8()?;
                     let mut eggs = Vec::new();
                     for _ in 0..ne.max(0) {
+                        // Only Food items are kept.
                         if let Some(e) = opt_item(r, ctx, wv)? {
                             eggs.push(e);
                         }
                     }
-                    if r.bool()? {
-                        return err("IsoHutch nest box with an animal is not supported");
-                    }
+                    let animal = if r.bool()? {
+                        Some(IsoAnimal::load(r, wv, ctx.hooks)?)
+                    } else {
+                        None
+                    };
                     if max.is_none_or(|m| i <= m) {
-                        nest_boxes.push(NestBox { eggs });
+                        nest_boxes.push(NestBox { eggs, animal });
                     }
+                }
+                let mut animals: Vec<(i32, IsoAnimal)> = Vec::new();
+                for a in loaded {
+                    add_animal_inside(&mut animals, &nest_boxes, a, ctx, &sprite_name)?;
                 }
                 master = Some(HutchMaster {
                     sprite_name,
@@ -1351,6 +1455,11 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
             bits.write(w);
             return Ok(());
         }
+        ObjectKind::Pushable(p) => {
+            let class = ctx.class_id(p.object_name())?;
+            let sprite = o.sprite.map(|s| ctx.sprite_id(s));
+            return p.save(w, class, sprite, o.container.as_ref(), ctx.items);
+        }
         ObjectKind::Barricade(b) => {
             w.i8(1);
             w.i8(ctx.class_id("Barricade")?);
@@ -1390,7 +1499,9 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
         ObjectKind::Object
         | ObjectKind::Jukebox
         | ObjectKind::BrokenGlass
-        | ObjectKind::ButcherHook => {}
+        | ObjectKind::ButcherHook
+        | ObjectKind::Pushable(_) => {}
+        ObjectKind::AnimalTrack(t) => t.save(w),
         ObjectKind::Door(d) => {
             w.bool(d.open);
             w.bool(d.locked);
@@ -1571,8 +1682,17 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
                 w.i32(m.saved_x);
                 w.i32(m.saved_y);
                 w.i32(m.saved_z);
-                w.i32(m.animals.len() as i32);
-                w.bytes(&m.animals);
+                let len_at = w.pos();
+                w.i32(0);
+                let start = w.pos();
+                let mut inside: Vec<&(i32, IsoAnimal)> = m.animals.iter().collect();
+                pz_inventory::java::sort_int_hash_map(&mut inside, |e| e.0);
+                w.i8(inside.len() as i8);
+                for (_, a) in inside {
+                    a.save(w, ctx, true)?;
+                }
+                let end = w.pos();
+                w.patch_i32(len_at, (end - start) as i32);
                 w.f32(m.hutch_dirt);
                 w.f32(m.nest_box_dirt);
                 w.i8(m.nest_boxes.len() as i8);
@@ -1581,7 +1701,13 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
                     for e in &nb.eggs {
                         e.save(w, ctx.items)?;
                     }
-                    w.i8(0);
+                    match &nb.animal {
+                        Some(a) => {
+                            w.i8(1);
+                            a.save(w, ctx, false)?;
+                        }
+                        None => w.i8(0),
+                    }
                 }
             }
         }

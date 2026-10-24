@@ -159,6 +159,14 @@ pub struct ItemTemplate {
     pub weight_reduction: i32,
     pub use_delta: f32,
     pub count: i32,
+    /// `activatedItem` (`InventoryItem.canBeActivated` at creation).
+    pub activated_item: bool,
+    /// `lightStrength`, `torchCone`, `lightDistance` (copied to the item at
+    /// creation) and `torchDot` (read through the script).
+    pub light_strength: f32,
+    pub torch_cone: bool,
+    pub light_distance: i32,
+    pub torch_dot: f32,
 }
 
 impl ItemTemplate {
@@ -222,6 +230,11 @@ impl ItemTemplate {
             weight_reduction: 0,
             use_delta: 0.03125,
             count: 1,
+            activated_item: false,
+            light_strength: 0.0,
+            torch_cone: false,
+            light_distance: 0,
+            torch_dot: 0.96,
         }
     }
 
@@ -329,6 +342,11 @@ impl ItemTemplate {
             weight_reduction: item.weight_reduction,
             use_delta: item.use_delta,
             count: item.count,
+            activated_item: item.activated_item,
+            light_strength: item.light_strength,
+            torch_cone: item.torch_cone,
+            light_distance: item.light_distance,
+            torch_dot: item.torch_dot,
         }))
     }
 }

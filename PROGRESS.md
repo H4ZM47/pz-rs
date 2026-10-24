@@ -51,6 +51,45 @@ Status of the Rust port. Update this file with every merged change.
   original's field values (the 14 others are those random key ids), and
   the original loads the chunks written here with the same item fields.
   `AnimalInventoryItem` stays raw bytes. Checked locally.
+- Vehicles and moving objects in saves (`pz_world::save::vehicle`,
+  `save::movers`): `BaseVehicle.save`/`load` with `VehiclePart`,
+  `VehicleEngine`, lights, doors, windows, device data, part items and
+  containers, shared by `vehicles.db` rows and chunk-file vehicle lists
+  (read; saving writes the empty list as the original), with the load-time
+  changes re-saves show (the JOML transform round trip of the rotation,
+  physics-height and position clamps, engine/lightbar/condition clamps,
+  dropped vehicle id, alarm sound without a script). `IsoPushableObject`,
+  `IsoWheelieBin` and `IsoAnimalTrack` in square object lists. All 243
+  `vehicles.db` rows of 8 local saves load with the original's field values
+  and 242 re-save byte-identically to the original's re-save (the other
+  holds a trailer animal, kept as bytes, whose record the original
+  re-derives); on 1,400 synthetic chunk files built with the original's
+  classes, 1,248 chunk-list vehicles, 1,869 pushables, 1,862 wheelie bins
+  and 1,869 animal tracks decode and re-save identically. Checked locally.
+- Feeding troughs and hutch animals in chunk files: the `IsoFeedingTrough`
+  constructor's fluid container (components the constructor makes load in
+  place), `initWithDef`, and `IsoAnimal.save`/`load` as hutches and nest
+  boxes store animals (stats, genome, `AnimalData` fields) with their
+  load-time changes and `addAnimalInside`. 14,870 of 14,894 re-saves are
+  byte-identical to the original's; all 60 troughs load with the original's
+  fields. Test hutches filled with 34 animals by the original's own classes
+  re-save byte-identically except one wild animal (`setWild(true)` draws a
+  random stress), and the original loads the chunks written here with the
+  same animal fields. Checked locally.
+- World hooks (`pz_world::WorldState`, `SquareHooks` and the renderer's
+  `WorldHooks`): `IsoBarricade` queries (barricades on both sides of door,
+  window and thumpable edges, planks, metal, vision, light transmission),
+  `IsoThumpable` blocked doors and windows, `IsoDoor` curtains,
+  `haveElectricity` from the chunks' generator lists, `hasGridPower`,
+  `IsoLightSwitch.canSwitchLight`, and light items (`isEmittingLight`, the
+  light getters, `HandWeapon`'s weapon light) as player torches; sandbox
+  and world power values are runtime input. On 7 local saves and on 3
+  copies barricaded, curtained and powered by the original's own classes
+  (with the grid on and shut off), every compared line matches the
+  original's queries: 14,723 + 751,347 square lines (blocked doors and
+  windows, electricity), 5,570 barricades, 7,358 doors, 8,895 windows,
+  157 thumpables, 17,055 light switches and 378 light items per sandbox
+  setting. Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all
