@@ -402,7 +402,7 @@ struct ItemData {
     base_texture: String,
     tint: Rgb,
     hue: f32,
-    decal: Option<ClothingDecal>,
+    decal: Option<Rc<ClothingDecal>>,
     blood: [f32; BLOOD_PARTS],
     dirt: [f32; BLOOD_PARTS],
     basic: [f32; BLOOD_PARTS],
@@ -416,8 +416,8 @@ pub struct TextureCreatorInput<'a> {
     pub human: &'a HumanModel<'a>,
     pub item_visuals: &'a [ResolvedItemVisual],
     pub body_locations: &'a BodyLocationGroup,
-    /// `ClothingDecals.getDecal`.
-    pub decals: &'a dyn Fn(&str) -> Option<ClothingDecal>,
+    /// `ClothingDecals.getDecal` (e.g. `|n| decals.get_decal(fs, n)`).
+    pub decals: &'a dyn Fn(&str) -> Option<Rc<ClothingDecal>>,
     /// `Core.isOptionSimpleClothingTextures(zombie)`.
     pub simple_clothing_textures: bool,
 }
@@ -668,7 +668,10 @@ fn create_full_item_texture(d: &ItemData, out: &mut TextureCreatorOutput) -> Tex
     st.add_texture(tex(&d.base_texture), 3, d.tint, d.hue);
     if let Some(dec) = &d.decal {
         st.commands.push(CombinerCommand {
-            tex: tex(&format!("media/textures/{}.png", dec.texture)),
+            tex: tex(&format!(
+                "media/textures/{}.png",
+                dec.texture.as_deref().unwrap_or("")
+            )),
             mask: None,
             shader: SmartShader::Blit,
             params: vec![],

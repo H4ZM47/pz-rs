@@ -17,7 +17,7 @@ use std::rc::Rc;
 use pz_anim::math::Matrix4f;
 use pz_anim::skeleton::Skeleton;
 use pz_anim::AnimationPlayer;
-use pz_character_model::data::{BodyLocationGroup, HairStyles, HumanModel, HumanVisual};
+use pz_character_model::data::{BodyLocationGroup, HumanModel, HumanVisual};
 use pz_character_model::items::{EquippedModels, HeldItem};
 use pz_character_model::lights::{EffectLight, PlayerLightData, ResultLight};
 use pz_character_model::model_tree::{CharacterModelInput, InstanceKind, ModelInstance, ModelSlot};
@@ -261,7 +261,8 @@ fn matches_model_oracle() {
         item_visuals: &[],
         equipped: &eq,
         body_locations: &groups,
-        hair_styles: &HairStyles::default(),
+        hair_styles: None,
+        beard_styles: None,
         scripts: &model_scripts,
         body_model_script: Some(m_body.model_script.clone().unwrap()),
         bone_index: &bone_of,

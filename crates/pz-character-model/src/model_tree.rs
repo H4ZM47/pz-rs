@@ -11,8 +11,9 @@ use pz_scripts::objects::items::ItemReplacement;
 use pz_scripts::registry::{RegistryKey, ResourceLocation};
 
 use crate::data::{
-    attachment_by_id, BodyLocationGroup, BodyLocationKey, ClothingItem, ClothingItemExt,
-    HairStyles, HumanModel, ModelAttachment, ModelScript, ModelScriptRef, ResolvedItemVisual, Rgb,
+    attachment_by_id, BeardStyles, BodyLocationGroup, BodyLocationKey, ClothingItem,
+    ClothingItemExt, HairStyles, HumanModel, ModelAttachment, ModelScript, ModelScriptRef,
+    ResolvedItemVisual, Rgb,
 };
 use crate::items::{EquippedModels, HeldItem, ItemTextureInit};
 
@@ -145,7 +146,10 @@ pub struct CharacterModelInput<'a> {
     pub equipped: &'a EquippedModels<'a>,
     /// The `Human` body-location group.
     pub body_locations: &'a BodyLocationGroup,
-    pub hair_styles: &'a HairStyles,
+    /// `HairStyles.instance` (`Population::hair_styles`).
+    pub hair_styles: Option<&'a HairStyles>,
+    /// `BeardStyles.instance` (`Population::beard_styles`).
+    pub beard_styles: Option<&'a BeardStyles>,
     pub scripts: &'a dyn ModelScripts,
     /// The body's model script (`getVisual().getModelScript()`), if any.
     pub body_model_script: Option<ModelScriptRef>,
@@ -246,29 +250,38 @@ impl ModelSlot {
         beard_only: bool,
     ) {
         let h = input.human;
-        let styles = input.hair_styles;
         let hat_category = hat
             .and_then(|v| v.clothing_item.as_ref())
             .and_then(|c| c.hat_category.clone());
         let hat_item = hat.and_then(|v| v.clothing_item.as_ref());
-        let (style, color, kind) = if !beard_only {
-            let found = if h.female {
-                styles.find_female(h.hair_model())
-            } else {
-                styles.find_male(h.hair_model())
+        let (model, texture, color, kind) = if !beard_only {
+            let Some(styles) = input.hair_styles else {
+                return;
             };
+            let found = styles.find_style(h.female, Some(h.hair_model()));
             let style = match (found, hat_item) {
                 (Some(s), Some(_)) => {
-                    styles.alternate_for_hat(s, hat_category.as_deref(), h.female)
+                    styles.get_alternate_for_hat(s, hat_category.as_deref().unwrap_or(""))
                 }
                 (s, _) => s,
             };
-            (style, h.hair_color(), InstanceKind::Hair)
+            let Some(style) = style.filter(|s| s.is_valid()) else {
+                return;
+            };
+            (
+                &style.model,
+                &style.texture,
+                h.hair_color(),
+                InstanceKind::Hair,
+            )
         } else {
             if h.female {
                 return;
             }
-            let Some(style) = styles.find_beard(h.beard_model()) else {
+            let Some(style) = input
+                .beard_styles
+                .and_then(|b| b.find_style(Some(h.beard_model())))
+            else {
                 return;
             };
             if !style.is_valid() {
@@ -280,13 +293,15 @@ impl ModelSlot {
             {
                 return;
             }
-            (Some(style), h.beard_color(), InstanceKind::Beard)
+            (
+                &style.model,
+                &style.texture,
+                h.beard_color(),
+                InstanceKind::Beard,
+            )
         };
-        let Some(style) = style.filter(|s| s.is_valid()) else {
-            return;
-        };
-        let model = process_model_file_name(style.model.as_deref().unwrap_or(""));
-        let inst = ModelInstance::new(kind, &model, style.texture.as_deref(), false, None);
+        let model = process_model_file_name(model.as_deref().unwrap_or(""));
+        let inst = ModelInstance::new(kind, &model, Some(texture), false, None);
         self.post_process_new_item_instance(inst, color);
     }
 

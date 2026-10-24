@@ -83,41 +83,51 @@ fn human_visual() -> HumanVisual {
     v
 }
 
-fn human<'a>(v: &'a mut HumanVisual, hs: &HairStyles) -> HumanModel<'a> {
-    let skins = PopTemplateSkins::default();
-    let styles = CharacterStyles {
-        hair: hs,
-        skins: &skins,
-    };
-    HumanModel::resolve(v, false, false, false, &styles, &[])
+fn human<'a>(v: &'a mut HumanVisual, pop: &Population) -> HumanModel<'a> {
+    HumanModel::resolve(v, false, false, false, &pop.styles(&[], 0.0), &[])
 }
 
 fn iv(full_type: &str, c: Rc<ClothingItem>) -> ResolvedItemVisual {
     ResolvedItemVisual::new(full_type, Some(c))
 }
 
-fn styles() -> HairStyles {
-    let st = |name: &str, model: &str| HairStyle {
-        name: name.into(),
-        model: Some(model.into()),
-        texture: Some("F_Hair_White".into()),
-        alternate: vec![("Group01".into(), "Bald".into())],
-        level: 1,
+/// The population tables the tests use, built in code.
+fn styles() -> Population {
+    let alt = |category: &str, style: &str| HairStyleAlternate {
+        category: Some(category.into()),
+        style: Some(style.into()),
     };
-    HairStyles {
+    let mut pop = Population::default();
+    pop.pop_template.init();
+    pop.hair_styles = Some(HairStyles {
         male: vec![
             HairStyle {
                 name: "Bald".into(),
                 model: Some(String::new()),
-                texture: Some("F_Hair_White".into()),
-                alternate: vec![],
-                level: 0,
+                ..Default::default()
             },
-            st("CrewCut", "Skinned\\Hair\\M_Hair_CrewCut"),
+            HairStyle {
+                name: "CrewCut".into(),
+                model: Some("Skinned\\Hair\\M_Hair_CrewCut".into()),
+                alternate: vec![alt("Group01", "Bald")],
+                level: 1,
+                ..Default::default()
+            },
         ],
         female: vec![],
-        beards: vec![st("Chops", "skinned/beards/bob_beard_chops")],
-    }
+    });
+    pop.beard_styles = Some(BeardStyles {
+        styles: vec![
+            BeardStyle::default(),
+            BeardStyle {
+                name: "Chops".into(),
+                model: Some("skinned/beards/bob_beard_chops".into()),
+                level: 1,
+                ..Default::default()
+            },
+        ],
+    });
+    pop
 }
 
 fn build(visuals: &[ResolvedItemVisual], eq: &EquippedModels) -> ModelSlot {
@@ -143,7 +153,8 @@ fn build_with(
         item_visuals: visuals,
         equipped: eq,
         body_locations: &groups,
-        hair_styles: &hs,
+        hair_styles: hs.hair_styles.as_ref(),
+        beard_styles: hs.beard_styles.as_ref(),
         scripts,
         body_model_script: None,
         bone_index: &bi,
@@ -321,6 +332,47 @@ impl ModelResources for Res {
 }
 
 #[test]
+fn decals_blit_onto_the_full_item_texture() {
+    let mut shirt = (*clothing("Shirt", Some("skinned/shirt"), "clothes/shirt", &[1])).clone();
+    shirt.decal_group = Some("Logos".into());
+    let mut v = iv("Base.Shirt", Rc::new(shirt));
+    v.visual.decal = Some("Logo".into());
+    let visuals = vec![v];
+    let mut slot = build(&visuals, &EquippedModels::default());
+    let pop = styles();
+    let mut hv = human_visual();
+    let h = human(&mut hv, &pop);
+    let groups = BodyLocationGroup::new("Human").unwrap();
+    let logo = Rc::new(ClothingDecal {
+        name: Some("Logo".into()),
+        texture: Some("decals/logo".into()),
+        x: 10,
+        y: 20,
+        width: 30,
+        height: 40,
+    });
+    let decals = |n: &str| (n == "Logo").then(|| logo.clone());
+    let out = create_textures(
+        &mut slot,
+        &TextureCreatorInput {
+            human: &h,
+            item_visuals: &visuals,
+            body_locations: &groups,
+            decals: &decals,
+            simple_clothing_textures: false,
+        },
+    );
+    let blit = out
+        .jobs
+        .iter()
+        .flat_map(|j| &j.commands)
+        .find(|c| c.tex == TexRef::File("media/textures/decals/logo.png".into()))
+        .expect("decal command");
+    assert_eq!(blit.rect, Some([10, 20, 30, 40]));
+    assert_eq!(blit.shader, SmartShader::Blit);
+}
+
+#[test]
 fn draws_follow_tree_order_with_lights() {
     let shirt = clothing("Shirt", Some("skinned/shirt"), "Shirt", &[]);
     let visuals = vec![iv("Base.Shirt", shirt)];
@@ -447,7 +499,8 @@ fn body_locations_hide_and_alt_models() {
         item_visuals: &visuals,
         equipped: &eq,
         body_locations: &group,
-        hair_styles: &hs,
+        hair_styles: hs.hair_styles.as_ref(),
+        beard_styles: hs.beard_styles.as_ref(),
         scripts: &scripts,
         body_model_script: None,
         bone_index: &|_| -1,

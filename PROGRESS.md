@@ -28,6 +28,11 @@ Status of the Rust port. Update this file with every merged change.
   `IsoWorld.LoadTileDefinitions` property pass; all 61,229 sprites match the
   original loader locally. Enum and lookup tables are runtime data
   (`SpriteTables`, `ObjectTables`); the jar loader awaits `pz-classfile`.
+  Meta-grid zones (`Zone` and the vehicle/mannequin/world-gen/animal
+  subclasses, chunk zone arrays, Lua-facing registration, lot-priority
+  removal) match the original `IsoMetaGrid` on randomized registrations;
+  the native clipper is an injected trait and the zone tables are runtime
+  input.
 - Chunk save files (`pz_world::save`): `map/<wx>/<wy>.bin` load and save
   (`IsoChunk`, `IsoGridSquare`, `IsoObject` and the object classes chunks
   hold, corpses, containers, mod data, erosion data). Items and ECS
@@ -74,6 +79,19 @@ Status of the Rust port. Update this file with every merged change.
   all 148,039 component blocks (objects, items, meta entities) decode and
   re-encode byte-identically with fields matching the original's loaded
   objects.
+- Climate and clock (`pz-core::weather`, `GameTime`): `ClimateManager`
+  with its float/colour/bool layers, `ClimateValues`, `WeatherPeriod`,
+  `ThunderStorm`, `ClimateForecaster`, `ClimateMoon`, `ErosionSeason`,
+  `SimplexNoise` and `GameTime.update`, bound to Lua (`bind_climate`) and
+  feeding the character simulation's air temperature, humidity, rain and
+  wind chill. Hourly and daily dumps match the original bit for bit over
+  more than 400 simulated days across seasons, sandbox weather cycles and
+  daylight-saving changes (checked locally).
+- World save files: `map_t.bin` (`GameTime` + climate, in `pz-core`),
+  `map_meta.bin` (room/building state, safehouses, factions, designation
+  zones, stashes), `map_zone.bin` and `gos_*.bin` (global-object systems)
+  read and write byte-identically to the original on 7 local saves
+  (checked with the original's load/save on scratch copies).
 - StringLib and OsLib. Local differential run against the original Kahlua
   (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
   output; the remaining one differs only in an identity hash.
@@ -110,6 +128,17 @@ Status of the Rust port. Update this file with every merged change.
   attack is still plain data. Eating, drinking, pills, clothing defense
   queries, inventory weight and weapon hits on real game items match the
   original's state bit for bit (checked locally).
+
+- Appearance tables and outfit draws (`pz-characters::population`):
+  `ClothingDecals`, `HairStyles`, `BeardStyles`, `VoiceStyles` (JAXB
+  binding rules, mod overrides), `PopTemplateManager` skin lists,
+  `HairOutfitDefinitions`, `OutfitRNG`/`LocationRNG` (`pz-core`),
+  `OutfitManager`/`Outfit`/`ClothingItemReference` with `Randomize`, the
+  random outfit picks and `dressInOutfit`'s clothing choices,
+  `DefaultClothing`, and a `HumanStyles` for `HumanVisual`. Lua bindings
+  (`bind_appearance`). Loaded lists and seeded draws match the original on
+  the installed media (every outfit randomized and dressed on three seeds)
+  and on invented edge-case XML (checked locally).
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.

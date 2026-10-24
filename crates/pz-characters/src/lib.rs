@@ -3,7 +3,8 @@
 //! `zombie.characters.SurvivorFactory` and `SurvivorDesc`, with the parts of
 //! `HumanVisual` and `zombie.characters.WornItems` a descriptor holds,
 //! `zombie.characters.AttachedItems`, and
-//! `zombie.characters.skills.PerkFactory`.
+//! `zombie.characters.skills.PerkFactory`, and the appearance tables of
+//! `zombie.core.skinnedmodel.population` ([`population`]).
 //!
 //! `CharacterTraitDefinition` and `CharacterProfessionDefinition` live in
 //! `pz-scripts` (their scripts fill them); the trait and profession keys are
@@ -14,6 +15,7 @@
 pub mod attached_items;
 pub mod character;
 pub mod observation;
+pub mod population;
 pub mod skills;
 pub mod survivor;
 pub mod traits;

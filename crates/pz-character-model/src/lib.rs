@@ -20,7 +20,6 @@ pub mod data;
 pub mod external;
 pub mod items;
 pub mod lights;
-mod local;
 pub mod mask;
 pub mod model_tree;
 pub mod render;
@@ -28,9 +27,9 @@ pub mod resources;
 pub mod texture_creator;
 
 pub use data::{
-    BodyLocationGroup, BodyLocationKey, CharacterStyles, ClothingDecal, ClothingItem,
+    BeardStyles, BodyLocationGroup, BodyLocationKey, ClothingDecal, ClothingDecals, ClothingItem,
     ClothingItemExt, HairStyles, HumanModel, HumanVisual, ItemVisual, ModelAttachment, ModelScript,
-    ModelScriptRef, PopTemplateSkins, ResolvedItemVisual,
+    ModelScriptRef, PopTemplateManager, Population, PopulationStyles, ResolvedItemVisual,
 };
 pub use items::{
     ActionHandModels, AttachedModel, EquippedModels, FluidState, HeldItem, ItemTextureInit,

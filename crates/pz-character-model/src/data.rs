@@ -14,10 +14,10 @@
 //! - Held and attached items: pz-inventory `InventoryItem` with its
 //!   pz-scripts `Item` (see [`crate::items`]).
 //!
-//! Local until the characters thread ports them, behind
-//! [`crate::external`]: [`ClothingDecal`], [`HairStyles`] and the
-//! `PopTemplateManager` skin lists ([`PopTemplateSkins`],
-//! [`CharacterStyles`]).
+//! - [`ClothingDecals`], [`HairStyles`], [`BeardStyles`] and the
+//!   [`PopTemplateManager`] skin lists: pz-characters `population` (through
+//!   [`crate::external`]); [`Population::styles`] is the [`HumanStyles`]
+//!   over them that [`HumanModel::resolve`] takes.
 //!
 //! The random choices the original makes lazily through `OutfitRNG`
 //! (texture choice, tint, hue, decal) are expected already resolved on the
@@ -38,8 +38,8 @@ pub use pz_scripts::registry::RegistryKey;
 
 use crate::external::HumanVisualOwner;
 pub use crate::external::{
-    CharacterStyles, ClothingDecal, HairStyle, HairStyles, HumanStyles, HumanVisual,
-    PopTemplateSkins,
+    BeardStyle, BeardStyles, ClothingDecal, ClothingDecals, HairStyle, HairStyleAlternate,
+    HairStyles, HumanStyles, HumanVisual, PopTemplateManager, Population, PopulationStyles,
 };
 
 /// `zombie.scripting.objects.ModelScript` as the script manager shares it.
