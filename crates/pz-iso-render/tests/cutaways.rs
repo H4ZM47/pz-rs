@@ -294,3 +294,52 @@ fn edge_wall_changes_dirty_the_neighbour_chunk() {
     let dirty = far.dirty_chunk_levels(&near);
     assert_eq!(dirty, vec![(1, 0, 0), (1, 1, 0)]);
 }
+
+/// Depth maps with no textures: sprites fall back to the default shader.
+struct NoMaps;
+
+impl pz_iso_render::DepthMaps for NoMaps {
+    fn preset(&self, _: pz_iso_render::DepthPreset) -> Option<pz_render::Texture> {
+        None
+    }
+    fn default_texture(&self) -> Option<pz_render::Texture> {
+        None
+    }
+}
+
+/// The draw commands of one recorded level, with or without cutaways.
+fn record_level(w: &GridWorld, cv: Option<CutawayView<'_>>, wx: i32, wy: i32, z: i32) -> Vec<pz_render::DrawCmd> {
+    let cam = pz_iso_render::Camera::centred(12.0, 12.0, 0.0, 256, 128, 1.0);
+    let r = pz_iso_render::ChunkRenderer { cam, depth_maps: &NoMaps, cutaways: cv };
+    let mut level = [None; 64];
+    for (i, slot) in level.iter_mut().enumerate() {
+        *slot = w.squares.get(&(wx * 8 + (i % 8) as i32, wy * 8 + (i / 8) as i32, z));
+    }
+    let mut out = Vec::new();
+    r.record(pz_iso_render::ChunkTexture::new(wx, wy, z, 0, 1), &[(z, level)], &mut out);
+    out
+}
+
+#[test]
+fn recording_skips_collapsed_squares() {
+    let mut tm = pz_render::TextureManager::new();
+    let tex = tm.texture_from_pixels("floor", 128, 64, [255u8; 4].repeat(128 * 64), 0);
+    let mut w = GridWorld::default();
+    ground(&mut w, 0, 0, 24, 24);
+    building(&mut w, 7, 8, 8, 16, 16);
+    for sq in w.squares.values_mut() {
+        for o in &mut sq.objects {
+            let mut s = (**o.sprite.as_ref().unwrap()).clone();
+            s.texture = Some(tex.clone());
+            o.sprite = Some(Rc::new(s));
+        }
+    }
+    let st = Cutaways::new().update(&w, &CutawayPlayer::at(6.5, 6.5, 0.0));
+    assert_eq!(st.buildings_to_collapse, vec![BuildingId(7)]);
+    let cv = CutawayView { state: &st, world: &w };
+    let plain = record_level(&w, None, 1, 1, 1);
+    let cut = record_level(&w, Some(cv), 1, 1, 1);
+    assert!(cut.len() < plain.len(), "{} {}", cut.len(), plain.len());
+    // The ground floor is unaffected.
+    assert_eq!(record_level(&w, Some(cv), 1, 1, 0).len(), record_level(&w, None, 1, 1, 0).len());
+}

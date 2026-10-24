@@ -7,12 +7,18 @@
 //! `renderTranslucentObjects`) draws windows, open doors and other
 //! translucent objects over the composited chunks.
 //!
+//! With a [`CutawayView`], squares hidden by building collapse, orphan
+//! structures or occlusion are skipped, objects take the cutaway target
+//! alphas and cut doors and windows are lit as `DoWallLighting*` does.
+//!
 //! Not yet ported: trees (`FBORenderTrees`), fading and obscuring objects,
-//! cutaways and building collapse, occlusion, snow, blood, puddles, seam
-//! fixes and overlay sprites.
+//! cut walls drawn with `DoCutawayShader` (the circle stencil and the
+//! `wallcutaways` masks; such walls are drawn whole), snow, blood, puddles,
+//! seam fixes and overlay sprites.
 
 use pz_render::{gl, DrawCmd};
 
+use crate::alpha::{self, CutawayView, WallDraw, WallSide};
 use crate::chunk::ChunkTexture;
 use crate::color::{self, ColorInfo};
 use crate::sprite::{self, Dir, Modifier, SpriteCtx, SpriteDraw};
@@ -112,6 +118,8 @@ pub fn render_layer(square: &RenderSquare, obj: &RenderObject) -> Layer {
 pub struct ChunkRenderer<'a> {
     pub cam: Camera,
     pub depth_maps: &'a dyn DepthMaps,
+    /// This frame's cutaways; `None` renders every square uncut.
+    pub cutaways: Option<CutawayView<'a>>,
 }
 
 /// The squares of one chunk level, `[x + y * 8]`.
@@ -137,13 +145,17 @@ impl ChunkRenderer<'_> {
     fn render_one_level(&self, tex: ChunkTexture, squares: &LevelSquares<'_>, out: &mut Vec<DrawCmd>) {
         let mut solid_floor = Vec::new();
         let mut minus_floor = Vec::new();
+        let cv = self.cutaways.as_ref();
         for sq in squares.iter().flatten() {
+            if cv.is_some_and(|cv| !cv.is_visible(sq)) {
+                continue;
+            }
             if sq.objects.is_empty() {
                 continue;
             }
             let mut flags = 0;
             for obj in &sq.objects {
-                match render_layer(sq, obj) {
+                match alpha::render_layer(cv, sq, obj) {
                     Layer::Floor => flags |= 1,
                     Layer::Vegetation => flags |= 2,
                     Layer::MinusFloor | Layer::MinusFloorSE | Layer::WorldInventoryObject => flags |= 4,
@@ -160,7 +172,7 @@ impl ChunkRenderer<'_> {
         let mut ctx = SpriteCtx { cam: &self.cam, chunk: Some(tex), depth_maps: self.depth_maps, out };
         for sq in &solid_floor {
             for (i, obj) in sq.objects.iter().enumerate() {
-                if render_layer(sq, obj) == Layer::Floor {
+                if alpha::render_layer(cv, sq, obj) == Layer::Floor {
                     render_floor(&mut ctx, sq, i);
                 }
             }
@@ -168,8 +180,8 @@ impl ChunkRenderer<'_> {
         for sq in &minus_floor {
             for layer in [Layer::MinusFloor, Layer::MinusFloorSE] {
                 for obj in &sq.objects {
-                    if render_layer(sq, obj) == layer {
-                        render_minus_floor(&mut ctx, sq, obj);
+                    if alpha::render_layer(cv, sq, obj) == layer && !(layer == Layer::MinusFloor && alpha::skip_on_force_render_square(cv, sq, obj)) {
+                        render_minus_floor(&mut ctx, sq, obj, cv);
                     }
                 }
             }
@@ -181,8 +193,9 @@ impl ChunkRenderer<'_> {
     /// square of that level, in any order).
     pub fn render_translucent(&self, squares: &[&RenderSquare], z: i32, out: &mut Vec<DrawCmd>) {
         let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out };
-        let at_level: Vec<&RenderSquare> = squares.iter().copied().filter(|s| s.z == z).collect();
-        let has = |sq: &RenderSquare, l: &[Layer]| sq.objects.iter().any(|o| l.contains(&render_layer(sq, o)));
+        let cv = self.cutaways.as_ref();
+        let at_level: Vec<&RenderSquare> = squares.iter().copied().filter(|s| s.z == z && cv.is_none_or(|cv| cv.is_visible(s))).collect();
+        let has = |sq: &RenderSquare, l: &[Layer]| sq.objects.iter().any(|o| l.contains(&alpha::render_layer(cv, sq, o)));
         let begin = |ctx: &mut SpriteCtx<'_>| {
             ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
             ctx.out.push(DrawCmd::DepthFunc(gl::LEQUAL));
@@ -191,8 +204,8 @@ impl ChunkRenderer<'_> {
         // Translucent floors, in chunk-cache order.
         for sq in at_level.iter().filter(|s| has(s, &[Layer::TranslucentFloor])) {
             begin(&mut ctx);
-            for obj in sq.objects.iter().filter(|o| render_layer(sq, o) == Layer::TranslucentFloor) {
-                render_translucent(&mut ctx, sq, obj);
+            for obj in sq.objects.iter().filter(|o| alpha::render_layer(cv, sq, o) == Layer::TranslucentFloor) {
+                render_translucent(&mut ctx, sq, obj, cv);
             }
         }
         // Translucent objects, sorted by x + y * worldRight.
@@ -201,12 +214,12 @@ impl ChunkRenderer<'_> {
         for sq in sorted {
             begin(&mut ctx);
             for layer in [Layer::Translucent, Layer::TranslucentSE] {
-                for obj in sq.objects.iter().filter(|o| render_layer(sq, o) == layer) {
+                for obj in sq.objects.iter().filter(|o| alpha::render_layer(cv, sq, o) == layer) {
                     if obj.kind == ObjectKind::Tree {
                         // FBORenderTrees is not ported yet.
                         continue;
                     }
-                    render_translucent(&mut ctx, sq, obj);
+                    render_translucent(&mut ctx, sq, obj, cv);
                 }
             }
         }
@@ -315,7 +328,7 @@ fn render_attached(ctx: &mut SpriteCtx<'_>, obj: &RenderObject, x: f32, y: f32, 
 
 /// `FBORenderCell.renderTranslucent(object)`: with the default blend, the
 /// object at its target alpha.
-fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject) {
+fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, cv: Option<&CutawayView<'_>>) {
     ctx.out.push(DrawCmd::BlendFunc(gl::ONE, gl::ONE_MINUS_SRC_ALPHA));
     let f = obj.flags();
     if f.transparent_floor {
@@ -323,46 +336,56 @@ fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderOb
         render_floor(ctx, sq, i);
         return;
     }
-    let layer = render_layer(sq, obj);
     let mut o = obj.clone();
-    o.alpha = target_alpha(obj, object_layer(sq, obj));
-    let _ = layer;
+    o.alpha = alpha::target_alpha(cv, sq, obj);
     let t = o.tile_type();
     let wallish = matches!(o.kind, ObjectKind::Door { .. }) || matches!(t, TileType::DoorFrW | TileType::DoorFrN) || o.sprite.as_ref().is_some_and(|s| s.cut_n || s.cut_w);
     ctx.out.push(DrawCmd::AlphaFunc(gl::GREATER, 0.0));
     if o.sprite.is_some() && wallish {
-        render_door_or_wall(ctx, sq, &o, t);
+        render_door_or_wall(ctx, sq, &o, t, cv);
     } else {
         render_not_door_or_wall(ctx, sq, &o);
     }
 }
 
 /// `FBORenderCell.renderMinusFloor(object)`.
-fn render_minus_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject) {
+fn render_minus_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, cv: Option<&CutawayView<'_>>) {
     let t = obj.tile_type();
     let west = t == TileType::DoorFrW || t == TileType::DoorW || obj.sprite.as_ref().is_some_and(|s| s.cut_w);
     let north = t == TileType::DoorFrN || t == TileType::DoorN || obj.sprite.as_ref().is_some_and(|s| s.cut_n);
     ctx.out.push(DrawCmd::AlphaFunc(gl::GREATER, 0.0));
     set_blend(ctx.out);
     if obj.sprite.is_some() && (west || north) {
-        render_door_or_wall(ctx, sq, obj, t);
+        render_door_or_wall(ctx, sq, obj, t, cv);
     } else {
         render_not_door_or_wall(ctx, sq, obj);
     }
 }
 
-/// `renderMinusFloor_DoorOrWall` without cutaways.
-fn render_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, t: TileType) {
+/// How a wall is drawn without cutaways: lit by the wall shaper unless
+/// its sprite is `NoWallLighting`.
+fn plain_wall(obj: &RenderObject) -> WallDraw {
+    WallDraw::Normal { no_wall_lighting: obj.flags().no_wall_lighting }
+}
+
+/// `renderMinusFloor_DoorOrWall`.
+fn render_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, t: TileType, cv: Option<&CutawayView<'_>>) {
     let sprite = obj.sprite.as_deref().expect("sprite");
+    let draw = |side: WallSide| match cv {
+        Some(cv) => cv.wall_draw(sq, obj, side, &cv.wall_cutaway(sq, obj)),
+        None => plain_wall(obj),
+    };
     ctx.out.push(DrawCmd::DepthMask(true));
     if obj.is_wall_se() {
-        wall_lighting_w(ctx, sq, obj);
+        wall_lighting_w(ctx, sq, obj, draw(WallSide::W));
     } else if sprite.cut_w && sprite.cut_n {
+        // DoWallLightingNW's corner rules (calculateWallAlphaAndCircleStencilCorner)
+        // are not ported; corners are drawn whole.
         wall_lighting_nw(ctx, sq, obj);
     } else if t == TileType::DoorFrW || t == TileType::DoorW || sprite.cut_w {
-        wall_lighting_w(ctx, sq, obj);
+        wall_lighting_w(ctx, sq, obj, draw(WallSide::W));
     } else if t == TileType::DoorFrN || t == TileType::DoorN || sprite.cut_n {
-        wall_lighting_n(ctx, sq, obj);
+        wall_lighting_n(ctx, sq, obj, draw(WallSide::N));
     }
 }
 
@@ -374,24 +397,24 @@ fn wall_contrast(a: u32, b: u32) -> u32 {
 }
 
 /// `IsoGridSquare.DoWallLightingN`.
-fn wall_lighting_n(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject) {
+fn wall_lighting_n(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, draw: WallDraw) {
     let v = &sq.vert_lights;
     let (colu, coll, colu2, coll2) = (v[0], v[1], v[4], v[5]);
     let colu_new = wall_contrast(colu, colu2);
     let coll2_new = wall_contrast(coll2, coll);
     let shaper = WallShaper { col: [colu2, coll2_new, coll, colu_new], tint: 0, part: WallPart::Whole };
-    perform_draw_wall(ctx, sq, obj, Dir::N, shaper);
+    perform_draw_wall(ctx, sq, obj, Dir::N, shaper, draw);
 }
 
 /// `IsoGridSquare.DoWallLightingW`.
-fn wall_lighting_w(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject) {
+fn wall_lighting_w(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, draw: WallDraw) {
     let v = &sq.vert_lights;
     let (colu, coll, colu2, coll2) = (v[0], v[3], v[4], v[7]);
     let colu_new = wall_contrast(colu, colu2);
     let coll2_new = wall_contrast(coll2, coll);
     let shaper = WallShaper { col: [coll2_new, colu2, colu_new, coll], tint: 0, part: WallPart::Whole };
     let dir = if obj.is_wall_se() { Dir::SE } else { Dir::W };
-    perform_draw_wall(ctx, sq, obj, dir, shaper);
+    perform_draw_wall(ctx, sq, obj, dir, shaper, draw);
 }
 
 /// `IsoGridSquare.DoWallLightingNW`: the corner piece drawn as its north
@@ -399,17 +422,22 @@ fn wall_lighting_w(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObjec
 fn wall_lighting_nw(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject) {
     let v = &sq.vert_lights;
     let (colu, coll, colr, colu2, coll2, colr2) = (v[0], v[3], v[1], v[4], v[7], v[5]);
-    perform_draw_wall(ctx, sq, obj, Dir::NW, WallShaper { col: [colu2, colr2, colr, colu], tint: 0, part: WallPart::N });
-    perform_draw_wall(ctx, sq, obj, Dir::NW, WallShaper { col: [coll2, colu2, colu, coll], tint: 0, part: WallPart::W });
+    perform_draw_wall(ctx, sq, obj, Dir::NW, WallShaper { col: [colu2, colr2, colr, colu], tint: 0, part: WallPart::N }, plain_wall(obj));
+    perform_draw_wall(ctx, sq, obj, Dir::NW, WallShaper { col: [coll2, colu2, colu, coll], tint: 0, part: WallPart::W }, plain_wall(obj));
 }
 
-/// `performDrawWall` and `IsoObject.renderWallTile`.
-fn perform_draw_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, dir: Dir, shaper: WallShaper) {
+/// `performDrawWall` and `IsoObject.renderWallTile`. A
+/// [`WallDraw::Cutaway`] wall is drawn whole until `DoCutawayShader` is
+/// ported.
+fn perform_draw_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, dir: Dir, shaper: WallShaper, draw: WallDraw) {
     let sprite = obj.sprite.as_deref().expect("sprite");
     let t = sprite.tile_type;
     let is_door = matches!(t, TileType::DoorFrN | TileType::DoorN | TileType::DoorFrW | TileType::DoorW);
     let _ = is_door;
-    let no_wall_lighting = sprite.flags.no_wall_lighting;
+    let no_wall_lighting = match draw {
+        WallDraw::Normal { no_wall_lighting } => no_wall_lighting,
+        WallDraw::Cutaway => sprite.flags.no_wall_lighting,
+    };
     let light = sq.light_info;
     let col = if no_wall_lighting { light } else { ColorInfo::WHITE };
     let (x, y, z) = (sq.x as f32, sq.y as f32, sq.z as f32);
@@ -441,9 +469,9 @@ fn render_not_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &Ren
         let wall = sq.objects.iter().find(|o| o.sprite.as_ref().is_some_and(|s| if north { s.cut_n } else { s.cut_w }));
         if wall.is_some_and(|w| std::ptr::eq(w, obj)) {
             if north {
-                wall_lighting_n(ctx, sq, obj);
+                wall_lighting_n(ctx, sq, obj, plain_wall(obj));
             } else {
-                wall_lighting_w(ctx, sq, obj);
+                wall_lighting_w(ctx, sq, obj, plain_wall(obj));
             }
             return;
         }
