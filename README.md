@@ -20,6 +20,7 @@ to Rust with the original semantics and the same Lua-facing API.
 | `pz-text` | `zombie.core.Translator`, `zombie.ui.TextManager`, `AngelCodeFont` |
 | `pz-ui` | `zombie.ui.UIElement`, `UIManager` |
 | `pz-scripts` | `zombie.scripting` (`ScriptParser`, `ScriptManager`, script objects) |
+| `pz-world` | `zombie.iso` map files, `IsoMetaGrid`, `IsoCell`/`IsoChunk`/`IsoGridSquare` |
 | `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |
 | `pz-client` | desktop binary |
 

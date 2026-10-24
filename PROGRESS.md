@@ -23,6 +23,11 @@ Status of the Rust port. Update this file with every merged change.
   37 script types load with the same per-type order and script versions as
   the original (checked locally against the original `ScriptManager`); only
   `StringList` has its typed class so far, others load as raw blocks.
+- World/maps (`pz-world`): lot headers, lotpacks, `MapFiles`, meta grid
+  rooms/buildings, `.tiles` reader, `Fix2x`, and chunk loading through
+  `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk` with generic tile
+  objects. Header and lotpack decoding match the original loader on 163
+  cells (Muldraugh sample plus six challenge maps), checked locally.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
