@@ -2,16 +2,19 @@
 //! pz-world, the render squares and lighting.
 
 use pz_iso_render::CutawayWorld;
+use pz_lighting::jni::{Barricade, SpecialObject, Thumpable};
 use pz_lighting::jni::{IsoDirection, PlayerRenderSettings, VisionConeInput};
-use pz_world::objects::{IsoLightSource, IsoLightSwitch};
+use pz_world::objects::{IsoBarricade, IsoDoor, IsoLightSource, IsoLightSwitch, IsoThumpable};
 use pz_world::sprite::PropertyValueMap;
+use pz_world::world_state::PlayerLights;
 use pz_world::{
     IsoCell, IsoChunk, IsoGridSquare, IsoMetaGrid, IsoObject, IsoSpriteManager, ObjectKind,
-    SpriteTables,
+    PowerSettings, SpriteTables, WorldState,
 };
 use pz_world_render::{
-    default_player, seam_neighbours, wall_type, NoTextures, NoWorldHooks, NoonSettings,
-    PlayerFrameInput, RenderSettingsSource, RenderWorld, SpriteCache, WorldLighting, WorldView,
+    default_player, grid_square, seam_neighbours, wall_type, NoTextures, NoWorldHooks,
+    NoonSettings, PlayerFrameInput, RenderSettingsSource, RenderWorld, SpriteCache, WorldHooks,
+    WorldLighting, WorldView,
 };
 
 /// Hand-authored enum tables: the names pz-world and this crate refer to,
@@ -37,6 +40,8 @@ const SPRITES: &[Spec] = &[
     ("wall_n", "wall", &["collideN", "cutN", "WallN"]),
     ("roof", "normal", &["solidfloor"]),
     ("lamp", "lightswitch", &[]),
+    ("door_n", "doorN", &["doorN"]),
+    ("thump_window", "normal", &["WindowN"]),
 ];
 
 fn sprites() -> IsoSpriteManager {
@@ -304,4 +309,138 @@ fn lamp_lights_its_surroundings_at_night() {
     let near = world.squares[&(16, 15, 0)].light_level;
     let far = world.squares[&(14, 26, 0)].light_level;
     assert!(near > far + 0.2, "near {near} far {far}");
+}
+
+fn add_special(
+    cell: &mut IsoCell,
+    m: &IsoSpriteManager,
+    at: (i32, i32),
+    sprite: &str,
+    k: ObjectKind,
+) {
+    let sq = cell.get_grid_square_mut(at.0, at.1, 0).unwrap();
+    let id = sq.new_object_id();
+    sq.objects
+        .push(IsoObject::new(id, k, Some(m.named_map[sprite])));
+    sq.special_objects.push(id);
+}
+
+/// Barricades, thumpables, door curtains, power and torches from
+/// [`WorldState`] in lighting's square inputs and hooks.
+#[test]
+fn world_state_feeds_lighting() {
+    let (mut cell, m, meta) = scene();
+    let bar = |dir: i8, planks: [i32; 4], metal: i32| {
+        ObjectKind::Barricade(IsoBarricade {
+            dir,
+            plank_health: planks,
+            metal_health: metal,
+            metal_bar_health: 0,
+        })
+    };
+    let door = IsoDoor {
+        north: true,
+        has_curtain: true,
+        curtain_open: false,
+        ..Default::default()
+    };
+    add_special(&mut cell, &m, (15, 15), "door_n", ObjectKind::Door(door));
+    // The S side of the door's edge lives on the square to the north.
+    add_special(&mut cell, &m, (15, 14), "floor", bar(4, [9, 9, 0, 0], 0));
+    let th = IsoThumpable {
+        north: true,
+        can_barricade: true,
+        ..Default::default()
+    };
+    add_special(
+        &mut cell,
+        &m,
+        (17, 15),
+        "thump_window",
+        ObjectKind::Thumpable(Box::new(th)),
+    );
+    add_special(&mut cell, &m, (17, 15), "floor", bar(0, [0; 4], 77));
+    let mut p = PowerSettings {
+        hydro_power_on: false,
+        world_age_days: 1.0,
+        elec_shut_modifier: 4,
+        allow_exterior_generator: true,
+        generator_tile_range: 3,
+        generator_vertical_power_range: 1,
+    };
+    let view = WorldView {
+        cell: &cell,
+        meta: &meta,
+        sprites: &m,
+    };
+    let ws = WorldState::new(&cell, &meta, &m, p);
+    let g = grid_square(&view, cell.get_grid_square(15, 15, 0).unwrap(), &ws, 0, 0);
+    match &g.special_objects[..] {
+        [SpecialObject::Door(d)] => {
+            assert!(d.has_curtain && !d.curtain_open);
+            assert_eq!(d.barricade_same, None);
+            let b = d.barricade_opposite.unwrap();
+            assert_eq!((b.dir, b.planks), (Some(IsoDirection::S), 2));
+        }
+        o => panic!("{o:?}"),
+    }
+    let g = grid_square(&view, cell.get_grid_square(17, 15, 0).unwrap(), &ws, 0, 0);
+    let metal = Barricade {
+        dir: Some(IsoDirection::N),
+        metal_health: 77,
+        metal_bar: false,
+        planks: 0,
+    };
+    assert_eq!(
+        g.special_objects,
+        vec![
+            SpecialObject::Thumpable(Thumpable {
+                north: true,
+                is_window: true,
+                barricade_same: Some(metal),
+                ..Default::default()
+            }),
+            SpecialObject::Barricade(metal),
+        ]
+    );
+    // The same view without the world state sees no barricades or curtain.
+    let g = grid_square(
+        &view,
+        cell.get_grid_square(15, 15, 0).unwrap(),
+        &NoWorldHooks,
+        0,
+        0,
+    );
+    assert!(
+        matches!(&g.special_objects[..], [SpecialObject::Door(d)] if !d.has_curtain && d.barricade_opposite.is_none())
+    );
+
+    assert!(ws.hydro_power_off());
+    // No switch at the position: no power.
+    assert!(ws.light_switch_unpowered(9, 9, 0));
+    p.hydro_power_on = true;
+    let flashlight = {
+        let mut t = pz_inventory::template::ItemTemplate::new(
+            pz_inventory::template::ItemClass::Normal,
+            "Test",
+            "Lamp",
+        );
+        t.light_strength = 0.5;
+        t.light_distance = 7;
+        pz_inventory::item::InventoryItem::create(std::rc::Rc::new(t), 3)
+    };
+    let mut ws = WorldState::new(&cell, &meta, &m, p);
+    ws.players.push(PlayerLights {
+        index: 2,
+        x: 14.5,
+        y: 14.5,
+        z: 0.0,
+        look_x: 1.0,
+        look_y: 0.0,
+        items: vec![&flashlight],
+    });
+    assert!(!ws.hydro_power_off());
+    let t = ws.torches();
+    assert_eq!(t.len(), 1);
+    assert_eq!((t[0].id, t[0].dist, t[0].strength), (9, 7.0, 0.5));
 }

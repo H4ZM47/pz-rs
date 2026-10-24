@@ -27,6 +27,7 @@ pub mod square;
 pub mod tiledef;
 pub mod zone_save;
 pub mod zones;
+pub mod world_state;
 
 pub use chunk::{
     ChunkGenerationStatus, ChunkGenerationStatusSet, ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare,
@@ -51,3 +52,4 @@ pub use square::{
     ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks,
     SpecialObject, SquareHooks, ThumpableInfo, VisionEnv, VisionResult,
 };
+pub use world_state::{PowerSettings, WorldState};

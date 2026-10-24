@@ -17,6 +17,7 @@ pub mod gameplay;
 pub mod io;
 pub mod item;
 pub mod java;
+pub mod light;
 pub mod lua_table;
 pub mod saved;
 pub mod template;
