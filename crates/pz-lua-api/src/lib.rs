@@ -7,6 +7,7 @@
 //! Each exposed class gets a global table (statics, `new`, `class`) and a
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
+pub mod bind_audio;
 pub mod bind_core;
 pub mod bind_debug;
 pub mod bind_globals;
@@ -23,6 +24,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     // Core: binds the shared instance (`bind_core::install_core` before init).
     bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
     bind_debug::register(&mut mgr.thread);
+    bind_audio::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }
