@@ -395,20 +395,51 @@ impl TextureCreatorOutput {
     }
 }
 
-struct ItemData {
-    instance: Option<usize>,
-    mask: CharacterMask,
-    mask_folder: String,
-    base_texture: String,
-    tint: Rgb,
-    hue: f32,
-    decal: Option<Rc<ClothingDecal>>,
-    blood: [f32; BLOOD_PARTS],
-    dirt: [f32; BLOOD_PARTS],
-    basic: [f32; BLOOD_PARTS],
-    denim: [f32; BLOOD_PARTS],
-    leather: [f32; BLOOD_PARTS],
-    hole: [f32; BLOOD_PARTS],
+/// `ModelInstanceTextureCreator.ItemData`: a clothing item's texture
+/// inputs, gathered by `init`.
+#[derive(Clone, Debug)]
+pub struct ItemTextureData {
+    /// The item's model instance in the slot; `None` for texture-only
+    /// clothing drawn on the body.
+    pub instance: Option<usize>,
+    pub mask: CharacterMask,
+    pub mask_folder: String,
+    /// `media/textures/<name>.png`.
+    pub base_texture: String,
+    pub tint: Rgb,
+    pub hue: f32,
+    pub decal: Option<Rc<ClothingDecal>>,
+    pub blood: [f32; BLOOD_PARTS],
+    pub dirt: [f32; BLOOD_PARTS],
+    pub basic: [f32; BLOOD_PARTS],
+    pub denim: [f32; BLOOD_PARTS],
+    pub leather: [f32; BLOOD_PARTS],
+    /// > 0: a hole; -1: a hole in a garment above shows this one.
+    pub hole: [f32; BLOOD_PARTS],
+}
+
+/// `ModelInstanceTextureCreator.CharacterData` and its `holeMask`.
+#[derive(Clone, Debug)]
+pub struct CharacterTextureData {
+    pub mask: CharacterMask,
+    pub mask_folder: String,
+    /// `media/textures/Body/<skin>.png`.
+    pub base_texture: String,
+    pub blood: [f32; BLOOD_PARTS],
+    pub dirt: [f32; BLOOD_PARTS],
+    pub hole_mask: [bool; BLOOD_PARTS],
+}
+
+/// What `ModelInstanceTextureCreator.render` gives the model instances.
+#[derive(Clone, Debug, Default)]
+pub struct RenderedTextures {
+    pub out: TextureCreatorOutput,
+    /// The body's job.
+    pub body: usize,
+    /// Clothing instances and their textures, in assignment order.
+    pub instances: Vec<(usize, TextureSource)>,
+    /// Instances whose tint is reset to white (`createFullItemTexture`).
+    pub white_tint: Vec<usize>,
 }
 
 /// Inputs beyond the model slot.
@@ -429,7 +460,7 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
     let mut overlayer = CharacterMask::default();
     let mut overlay_folder = DEFAULT_MASKS_FOLDER.to_string();
     let mut hole_mask = [false; BLOOD_PARTS];
-    let mut items: Vec<ItemData> = Vec::new();
+    let mut items: Vec<ItemTextureData> = Vec::new();
     let body_sub = slot.instances[slot.model].sub.clone();
     let find_instance = |c: &Rc<ClothingItem>| {
         body_sub.iter().copied().find(|&i| {
@@ -502,19 +533,36 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
         ));
     }
 
-    // render()
-    let mut out = TextureCreatorOutput::default();
+    let chr = CharacterTextureData {
+        mask: chr_mask,
+        mask_folder: chr_folder,
+        base_texture: format!("media/textures/Body/{}.png", h.skin_texture()),
+        blood: std::array::from_fn(|i| h.blood(i)),
+        dirt: std::array::from_fn(|i| h.dirt(i)),
+        hole_mask,
+    };
+    let r = render_textures(&chr, &items);
+    for &i in &r.white_tint {
+        slot.instances[i].tint = [1.0; 3];
+    }
+    for (i, t) in r.instances {
+        slot.instances[i].tex = t;
+    }
+    slot.instances[slot.model].tex = TextureSource::Smart(r.body);
+    r.out
+}
+
+/// `ModelInstanceTextureCreator.render`: the jobs for the character and
+/// clothing data `init` gathered (`items` in `itemData` order).
+pub fn render_textures(chr: &CharacterTextureData, items: &[ItemTextureData]) -> RenderedTextures {
+    let mut r = RenderedTextures::default();
+    let out = &mut r.out;
     let mut full = SmartTexture::default();
-    full.add_texture(
-        tex(&format!("media/textures/Body/{}.png", h.skin_texture())),
-        0,
-        WHITE,
-        0.0,
-    );
+    full.add_texture(tex(&chr.base_texture), 0, WHITE, 0.0);
     for (i, _) in BloodBodyPartType::ALL.iter().enumerate() {
         let m = mask_file("BloodTextures", MASK_FILES[i]);
-        if h.dirt(i) > 0.0 {
-            let d = h.dirt(i);
+        if chr.dirt[i] > 0.0 {
+            let d = chr.dirt[i];
             full.add_intensity(400 + i as i32, d, |s| {
                 s.add_dirt_overlay(
                     "media/textures/BloodTextures/GrimeOverlay.png",
@@ -524,8 +572,8 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
                 )
             });
         }
-        if h.blood(i) > 0.0 {
-            let b = h.blood(i);
+        if chr.blood[i] > 0.0 {
+            let b = chr.blood[i];
             full.add_intensity(300 + i as i32, b, |s| {
                 s.add_overlay(
                     "media/textures/BloodTextures/BloodOverlay.png",
@@ -538,9 +586,16 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
     }
     let full_id = out.finish(full);
     let mut body = SmartTexture::default();
-    body.add_masked_texture(&chr_mask, &chr_folder, TexRef::Job(full_id), 0, WHITE, 0.0);
+    body.add_masked_texture(
+        &chr.mask,
+        &chr.mask_folder,
+        TexRef::Job(full_id),
+        0,
+        WHITE,
+        0.0,
+    );
     for (i, b) in BloodBodyPartType::ALL.iter().enumerate() {
-        if hole_mask[i] {
+        if chr.hole_mask[i] {
             body.remove_hole(TexRef::Job(full_id), *b);
         }
     }
@@ -549,15 +604,17 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
         if is_simple_texture(d) {
             item_tex = tex(&d.base_texture);
             if !is_item_smart_texture_required(d) {
-                slot.instances[d.instance.unwrap()].tex =
-                    TextureSource::File(d.base_texture.clone());
+                r.instances.push((
+                    d.instance.unwrap(),
+                    TextureSource::File(d.base_texture.clone()),
+                ));
                 continue;
             }
         } else {
             if let Some(i) = d.instance {
-                slot.instances[i].tint = [1.0; 3];
+                r.white_tint.push(i);
             }
-            item_tex = create_full_item_texture(d, &mut out);
+            item_tex = create_full_item_texture(d, out);
         }
         match d.instance {
             None => apply_item_texture(d, item_tex, &mut body),
@@ -565,13 +622,12 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
                 let mut st = SmartTexture::default();
                 apply_item_texture(d, item_tex, &mut st);
                 let id = out.finish(st);
-                slot.instances[i].tex = TextureSource::Smart(id);
+                r.instances.push((i, TextureSource::Smart(id)));
             }
         }
     }
-    let body_id = out.finish(body);
-    slot.instances[slot.model].tex = TextureSource::Smart(body_id);
-    out
+    r.body = out.finish(body);
+    r
 }
 
 fn item_data(
@@ -582,13 +638,13 @@ fn item_data(
     overlay_folder: &str,
     hole_mask: &mut [bool; BLOOD_PARTS],
     input: &TextureCreatorInput,
-) -> ItemData {
+) -> ItemTextureData {
     let tex_name = if inst.is_none() {
         v.base_texture(c)
     } else {
         v.texture_choice(c)
     };
-    let mut d = ItemData {
+    let mut d = ItemTextureData {
         instance: inst,
         mask: overlayer.clone(),
         mask_folder: c.masks_folder().to_string(),
@@ -634,7 +690,7 @@ fn item_data(
     d
 }
 
-fn is_simple_texture(d: &ItemData) -> bool {
+fn is_simple_texture(d: &ItemTextureData) -> bool {
     if d.hue != 0.0 {
         return false;
     }
@@ -652,7 +708,7 @@ fn is_simple_texture(d: &ItemData) -> bool {
     })
 }
 
-fn is_item_smart_texture_required(d: &ItemData) -> bool {
+fn is_item_smart_texture_required(d: &ItemTextureData) -> bool {
     if d.instance.is_none() {
         return true;
     }
@@ -663,7 +719,7 @@ fn is_item_smart_texture_required(d: &ItemData) -> bool {
 }
 
 /// `createFullItemTexture`; holes split it into chained jobs.
-fn create_full_item_texture(d: &ItemData, out: &mut TextureCreatorOutput) -> TexRef {
+fn create_full_item_texture(d: &ItemTextureData, out: &mut TextureCreatorOutput) -> TexRef {
     let mut st = SmartTexture::default();
     st.add_texture(tex(&d.base_texture), 3, d.tint, d.hue);
     if let Some(dec) = &d.decal {
@@ -746,7 +802,7 @@ fn create_full_item_texture(d: &ItemData, out: &mut TextureCreatorOutput) -> Tex
 }
 
 /// `applyItemTexture`.
-fn apply_item_texture(d: &ItemData, full: TexRef, dest: &mut SmartTexture) {
+fn apply_item_texture(d: &ItemTextureData, full: TexRef, dest: &mut SmartTexture) {
     dest.add_masked_texture(&d.mask, &d.mask_folder, full.clone(), 3, WHITE, 0.0);
     for (i, b) in BloodBodyPartType::ALL.iter().enumerate() {
         if d.hole[i] < 0.0 {

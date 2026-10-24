@@ -20,20 +20,20 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use pz_anim::AnimationPlayer;
+use pz_character_model::combine::run_jobs;
 use pz_character_model::data::{
     BodyLocationGroup, ClothingItem, HumanModel, HumanVisual, ModelScriptRef, Population,
     ResolvedItemVisual,
 };
 use pz_character_model::items::EquippedModels;
 use pz_character_model::lights::EffectLight;
+use pz_character_model::mask::BloodBodyPartType;
 use pz_character_model::mask::BLOOD_PARTS;
+use pz_character_model::model_tree::TextureSource;
 use pz_character_model::model_tree::{CharacterModelInput, ModelSlot};
 use pz_character_model::render::{CharacterFrame, ModelResources};
 use pz_character_model::resources::{MediaModelResources, TextureLoader};
 use pz_character_model::scene::{character_shadow, render_character_object, ShadowInput};
-use pz_character_model::combine::run_jobs;
-use pz_character_model::mask::BloodBodyPartType;
-use pz_character_model::model_tree::TextureSource;
 use pz_character_model::texture_creator::{create_textures, TextureCreatorInput};
 use pz_iso_render::frame::{world_frame_with_objects, ChunkLevels, FrameSize};
 use pz_iso_render::models::ModelCamera;
@@ -142,7 +142,12 @@ fn bloodied_player_on_a_tile() {
 fn damage(hv: &mut HumanVisual, visuals: &mut [ResolvedItemVisual]) {
     use BloodBodyPartType as B;
     let n = BLOOD_PARTS;
-    for (p, b, d) in [(B::Head, 0.8, 0.0), (B::HandL, 1.0, 0.6), (B::HandR, 0.5, 0.9), (B::Neck, 0.6, 0.3)] {
+    for (p, b, d) in [
+        (B::Head, 0.8, 0.0),
+        (B::HandL, 1.0, 0.6),
+        (B::HandR, 0.5, 0.9),
+        (B::Neck, 0.6, 0.3),
+    ] {
         hv.set_blood(p.index(), b);
         hv.set_dirt(p.index(), d);
     }
@@ -273,9 +278,15 @@ fn player_frame(game: &Path, damaged: bool) {
     let model_flags = flags::COMPRESS | flags::LIMIT_TEXTURE_SIZE_1;
     let mut file = |tm: &mut TextureManager, p: &str| tm.shared_texture_flags(&fs, p, model_flags);
     let smart = run_jobs(&jobs.jobs, &mut file, &mut gpu, &mut tm);
-    let prefix = if damaged { "charrender_damaged" } else { "charrender_frame" };
+    let prefix = if damaged {
+        "charrender_damaged"
+    } else {
+        "charrender_frame"
+    };
     for inst in &slot.instances {
-        let TextureSource::Smart(job) = inst.tex else { continue };
+        let TextureSource::Smart(job) = inst.tex else {
+            continue;
+        };
         let Some(t) = &smart[job] else { continue };
         let px = gpu.read_combined(t).expect("combined texture");
         let name = inst.mesh_name.rsplit(['/', '\\']).next().unwrap_or("tex");
