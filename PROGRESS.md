@@ -200,6 +200,8 @@ Status of the Rust port. Update this file with every merged change.
   records, which the original re-saves through classes not ported here);
   4,085 map-loaded chunks saved here load and re-save as expected in the
   original. Checked locally.
+  original loader locally. Enum and lookup tables are runtime data
+  (`SpriteTables`, `ObjectTables`); the jar loader awaits `pz-classfile`.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.

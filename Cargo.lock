@@ -1819,6 +1819,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-world-render"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "pz-fs",
+ "pz-gpu",
+ "pz-iso-render",
+ "pz-lighting",
+ "pz-render",
+ "pz-world",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
