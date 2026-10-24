@@ -19,26 +19,22 @@
 //! `IsoZombie` with only its position set. Nothing here is game data;
 //! results are recorded as notes only.
 //!
-//! The harness also writes every square's `collideMatrix`.
-//! `closestPointOnPath` reads it (through `testCollideAdjacent`), so cases
-//! whose path or query point is within 2 squares of a square whose inputs or
-//! collide matrix differ from the game's are skipped for the two
-//! square-reading helpers (`getPathLength` reads no squares).
+//! Chunks are loaded in the game's load order (each chunk loaded,
+//! recalculated and passed through `loadInMainThread` before the next one
+//! enters the cell). Cases whose path or query point is within 2 squares of
+//! a square whose inputs differ from the game's (worldgen) are skipped for
+//! the two square-reading helpers (`getPathLength` reads no squares). The
+//! harness also writes every square's `collideMatrix`; the replay reports
+//! how many differ (none in `westpoint` and `louisville`; elsewhere only
+//! next to worldgen differences) but does not skip on them.
 //!
 //! Results on build 42 (30000 cases in 5 regions):
 //!
 //! | helper | compared | match |
 //! |---|---|---|
-//! | `closestPointOnPath` | 9955 | 9955 (index, `dist`, `x`, `y` bits) |
-//! | `advanceAlongPath` | 9955 | 9955 |
+//! | `closestPointOnPath` | 14939 | 14939 (index, `dist`, `x`, `y` bits) |
+//! | `advanceAlongPath` | 14939 | 14939 |
 //! | `getPathLength` | 30000 | 30000 |
-//!
-//! The 3 cases that differed before collide matrices were compared all sat
-//! on squares whose `pz-world` collide matrix differs from the game's
-//! although their inputs match (1472 such squares in the 5 regions, e.g.
-//! the edge between two `solidtrans` seats is open in the game and blocked
-//! in `pz-world`); that is a `pz-world` `CalculateCollide` difference, not a
-//! pathfinding one.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -390,8 +386,10 @@ fn main() {
             continue;
         }
         let inputs = oracle_inputs(&oracle.join("regions").join(region).join("squares.tsv"));
+        // The game's load order: each chunk is loaded, recalculated and
+        // passed through `loadInMainThread` before the next one enters the
+        // cell (`IsoChunkMap.processAllLoadGridSquare`).
         let mut cell = IsoCell::default();
-        let mut order = Vec::new();
         for wy in ry - 1..ry + rh + 1 {
             for wx in rx - 1..rx + rw + 1 {
                 let mut rand = JavaRandom::new(((wx as i64) << 32) ^ (wy as i64 & 0xffff_ffff));
@@ -405,11 +403,9 @@ fn main() {
                     hooks: &mut hooks,
                 };
                 cell.load_chunk(&meta, wx, wy, &mut env);
-                order.push((wx, wy));
+                cell.recalc_chunk_squares(wx, wy, &meta, &sprites);
+                cell.load_in_main_thread(wx, wy, &meta, &sprites);
             }
-        }
-        for &(wx, wy) in &order {
-            cell.recalc_chunk_squares(wx, wy, &meta, &sprites);
         }
         let sb = SquareBits::new(&sprites, &meta, &cell, &DefaultBitsHooks).unwrap();
         let bad = differing_squares(
@@ -420,9 +416,8 @@ fn main() {
             (rx * 8, ry * 8, (rx + rw) * 8, (ry + rh) * 8),
         );
         let map = MainThreadMap::new(&sb, &NoVehicles);
-        // The collide matrices the game computed; squares where pz-world's
-        // differ are skipped too (closestPointOnPath reads them).
-        let mut bad = bad;
+        // The collide matrices the game computed, compared for the record
+        // (closestPointOnPath reads them; they are not used for skipping).
         let mut matrix_diffs = 0;
         let mut matrix_diffs_same_inputs = 0;
         let collide = std::fs::read_to_string(oracle.join("lcc").join(region).join("collide.txt"))
@@ -437,7 +432,6 @@ fn main() {
                 if !bad.contains(&(c[0], c[1], c[2])) {
                     matrix_diffs_same_inputs += 1;
                 }
-                bad.insert((c[0], c[1], c[2]));
             }
         }
         println!(

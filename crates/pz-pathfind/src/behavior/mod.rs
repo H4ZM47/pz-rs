@@ -27,7 +27,7 @@ use pz_world::chunk::IsoGridSquare;
 use pz_world::objects::ObjectKind;
 use pz_world::{GetSquare, IsoDirections};
 
-use crate::main_thread::los_util::{line_clear, TestResults};
+use crate::main_thread::{line_clear, TestResults};
 use crate::main_thread::{normalize, LineClearCollideMain, MainThreadMap};
 use crate::mover::{
     CharacterState, CharacterView, FaceTarget, MoverId, MoverSnapshot, ObjectRef, PathFindProgress,
@@ -745,7 +745,8 @@ impl PathFindBehavior2 {
             .current_square()
             .and_then(|(x, y, z)| map.square(x, y, z));
         if let Some(tsq) = target_sq.filter(|s| {
-            target.is_sitting_on_furniture() && (map.is_solid(s) || map.is_solid_trans(s))
+            target.is_sitting_on_furniture()
+                && (s.is_solid(map.sprites()) || s.is_solid_trans(map.sprites()))
         }) {
             let dir = target.sit_on_furniture_direction();
             let x = ff(target.x());
@@ -814,10 +815,10 @@ impl PathFindBehavior2 {
     ) -> bool {
         let Some(a) = adjacent else { return false };
         let water = map.bits.t.water;
-        !map.is_solid(a)
-            && !map.is_solid_trans(a)
+        !a.is_solid(map.sprites())
+            && !a.is_solid_trans(map.sprites())
             && (!a.has(water) || a.has_floor_over_water(map.bits.sprites))
-            && map.can_reach_to(a, target)
+            && a.can_reach_to(target, map.sprites(), map.squares(), map.hooks())
     }
 
     /// `pathToSitOnFurniture(furniture, bAnySpriteGridObject)`.
@@ -874,7 +875,7 @@ impl PathFindBehavior2 {
                 else {
                     continue;
                 };
-                let solid = map.is_solid(square) || map.is_solid_trans(square);
+                let solid = square.is_solid(map.sprites()) || square.is_solid_trans(map.sprites());
                 let in_square = is_point_in_square(wp.0, wp.1, square.x, square.y);
                 if solid && in_square {
                     let (ox, oy) = (wp.0, wp.1);
@@ -894,7 +895,7 @@ impl PathFindBehavior2 {
                         _ => wp.1 = (sy + 1) as f32 + 0.3,
                     }
                     let r = line_clear(
-                        map,
+                        &map.vision_env(),
                         ff(wp.0),
                         ff(wp.1),
                         ff(wp.2),
@@ -908,7 +909,7 @@ impl PathFindBehavior2 {
                     }
                 } else if !in_square {
                     let r = line_clear(
-                        map,
+                        &map.vision_env(),
                         ff(wp.0),
                         ff(wp.1),
                         ff(wp.2),

@@ -88,8 +88,8 @@
 //! * [`service`]: `PathfindNative` and `PathfindNativeThread` (task and
 //!   request queues, priorities, cancel, delivery), single-threaded.
 //! * [`main_thread`]: `LineClearCollideMain` (`PolygonalMap2.canStandAt`,
-//!   `lineClearCollide`, ...) and `LosUtil.lineClear` on live `pz-world`
-//!   squares.
+//!   `lineClearCollide`, ...) on live `pz-world` squares, using
+//!   `pz-world`'s square queries and `LosUtil.lineClear`.
 //! * [`game_vehicle`]: what that code reads from `BaseVehicle`.
 //! * [`behavior`]: `PathFindBehavior2`, the per-frame path follower.
 
