@@ -20,6 +20,7 @@ pub mod objects;
 pub mod save;
 pub mod sprite;
 pub mod square;
+pub mod streamer;
 pub mod tiledef;
 pub mod world_state;
 
