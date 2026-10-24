@@ -517,7 +517,9 @@ impl PathMover for Fake {
     fn could_open_door(&self, _: ObjectRef) -> bool {
         true
     }
-    fn toggle_door(&mut self, _: ObjectRef) {}
+    fn toggle_door(&mut self, _: ObjectRef) -> bool {
+        true
+    }
     fn get_variable_boolean(&self, _: &str) -> bool {
         false
     }

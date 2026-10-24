@@ -234,8 +234,11 @@ pub trait PathMover: CharacterView {
     fn can_climb_through_window(&self, window: ObjectRef) -> bool;
     /// `IsoDoor.couldBeOpen(this)` / `IsoThumpable.couldBeOpen(this)`.
     fn could_open_door(&self, door: ObjectRef) -> bool;
-    /// `IsoDoor.ToggleDoor(this)` / `IsoThumpable.ToggleDoor(this)`.
-    fn toggle_door(&mut self, door: ObjectRef);
+    /// `IsoDoor.ToggleDoor(this)` / `IsoThumpable.ToggleDoor(this)`, then
+    /// `door.isOpen()` / `door.open`: whether the door is open afterwards
+    /// (`PathFindBehavior2` fails the path when it is still closed). The
+    /// toggle must be visible to the answer, so it cannot be deferred.
+    fn toggle_door(&mut self, door: ObjectRef) -> bool;
 
     // ----- animation variables -----
 

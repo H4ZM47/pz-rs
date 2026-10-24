@@ -8,6 +8,7 @@ use pz_world::{EdgeFacing, GetSquare, GridSquareEdge, IsoDirections};
 
 use super::los_util::TestResults;
 use super::MainThreadMap;
+use crate::mover::ObjectRef;
 
 /// `IsoObject.VisionResult`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,6 +316,154 @@ impl<'w, 'a: 'w, G: GetSquare> MainThreadMap<'w, 'a, G> {
             }
             _ => false,
         })
+    }
+
+    // ----- edge objects between two squares (PathFindBehavior2) -----
+
+    fn obj_ref(sq: &IsoGridSquare, o: &IsoObject) -> ObjectRef {
+        ObjectRef {
+            x: sq.x,
+            y: sq.y,
+            z: sq.z,
+            id: o.id,
+        }
+    }
+
+    /// The object an [`ObjectRef`] names.
+    pub fn object(&self, r: ObjectRef) -> Option<&'a IsoObject> {
+        self.square(r.x, r.y, r.z)?
+            .objects
+            .iter()
+            .find(|o| o.id == r.id)
+    }
+
+    /// `getEdgeElementTo(next, getter)` with a per-square getter.
+    fn edge_to(
+        &self,
+        this: &'a IsoGridSquare,
+        next: &'a IsoGridSquare,
+        get: &dyn Fn(&'a IsoGridSquare, EdgeFacing) -> Option<ObjectRef>,
+    ) -> Option<ObjectRef> {
+        this.get_edge_element_to(Some(next), self.bits.squares, get)
+    }
+
+    /// `IsoGridSquare.getDoorTo(next)`: an `IsoDoor` or door `IsoThumpable`
+    /// special object on the edge between the squares.
+    pub fn door_to(&self, this: &'a IsoGridSquare, next: &'a IsoGridSquare) -> Option<ObjectRef> {
+        self.edge_to(this, next, &|s, f| {
+            specials(s)
+                .find(|o| match &o.kind {
+                    ObjectKind::Door(d) => EdgeFacing::of_north(d.north) == f,
+                    ObjectKind::Thumpable(t) => t.is_door && EdgeFacing::of_north(t.north) == f,
+                    _ => false,
+                })
+                .map(|o| Self::obj_ref(s, o))
+        })
+    }
+
+    /// `IsoGridSquare.getWindowTo(next)`.
+    pub fn window_to(&self, this: &'a IsoGridSquare, next: &'a IsoGridSquare) -> Option<ObjectRef> {
+        self.edge_to(this, next, &|s, f| {
+            specials(s)
+                .find(|o| matches!(&o.kind, ObjectKind::Window(w) if EdgeFacing::of_north(w.north) == f))
+                .map(|o| Self::obj_ref(s, o))
+        })
+    }
+
+    /// `IsoGridSquare.getWindowThumpableTo(next)`.
+    pub fn window_thumpable_to(
+        &self,
+        this: &'a IsoGridSquare,
+        next: &'a IsoGridSquare,
+    ) -> Option<ObjectRef> {
+        self.edge_to(this, next, &|s, f| {
+            specials(s)
+                .find(|o| {
+                    matches!(&o.kind, ObjectKind::Thumpable(t) if EdgeFacing::of_north(t.north) == f)
+                        && self.is_window_object(o)
+                })
+                .map(|o| Self::obj_ref(s, o))
+        })
+    }
+
+    /// `IsoGridSquare.getWindowFrameTo(next)`.
+    pub fn window_frame_to(
+        &self,
+        this: &'a IsoGridSquare,
+        next: &'a IsoGridSquare,
+    ) -> Option<ObjectRef> {
+        self.edge_to(this, next, &|s, f| {
+            s.objects
+                .iter()
+                .find(|o| matches!(&o.kind, ObjectKind::WindowFrame { north } if EdgeFacing::of_north(*north) == f))
+                .map(|o| Self::obj_ref(s, o))
+        })
+    }
+
+    /// `BarricadeAble.isBarricaded()` of the object.
+    pub fn is_barricaded(&self, r: ObjectRef) -> bool {
+        match (self.square(r.x, r.y, r.z), self.object(r)) {
+            (Some(sq), Some(o)) => self.bits.hooks.is_barricaded(sq, o),
+            _ => false,
+        }
+    }
+
+    /// `hasBlockedWindow(facing)`: an `IsoWindow` on that edge that is
+    /// closed and intact, or barricaded (`IsoWindow.isBlocked`).
+    pub fn has_blocked_window(&self, sq: &IsoGridSquare, f: EdgeFacing) -> bool {
+        sq.objects.iter().any(|o| match &o.kind {
+            ObjectKind::Window(w) => {
+                EdgeFacing::of_north(w.north) == f
+                    && (!w.destroyed && !w.open || self.bits.hooks.is_barricaded(sq, o))
+            }
+            _ => false,
+        })
+    }
+
+    /// `getWallExcludingList(bNorth, ignoreBlockingSprites)` with the
+    /// (vanilla: empty) exclusion list.
+    fn has_wall_excluding(&self, sq: &IsoGridSquare, north: bool) -> bool {
+        let t = &self.bits.t;
+        let tf = &self.bits.sprites.tables.flag;
+        sq.objects.iter().any(|o| {
+            let Some(s) = o.sprite else { return false };
+            let spr = &self.bits.sprites.sprites[s];
+            let p = &spr.properties;
+            if p.has(tf.WallSE) || north && p.has(t.DoorWallN) || !north && p.has(t.DoorWallW) {
+                return false;
+            }
+            north && (spr.cut_n || p.has(t.WallN)) || !north && (spr.cut_w || p.has(t.WallW))
+        })
+    }
+
+    /// `IsoGridSquare.canReachTo(other)`.
+    pub fn can_reach_to(&self, this: &IsoGridSquare, other: &IsoGridSquare) -> bool {
+        if same(this, other) {
+            return true;
+        }
+        let g = self.bits.squares;
+        if (other.x - this.x).abs() > 1
+            || (other.y - this.y).abs() > 1
+            || other.z != this.z
+            || this.is_edge_element_to(Some(other), g, &|s, f| self.has_blocked_window(s, f))
+            || this.is_edge_element_to(Some(other), g, &|s, f| self.has_blocked_door(s, f))
+        {
+            return false;
+        }
+        if other.y < this.y && self.has_wall_excluding(this, true)
+            || this.y < other.y && self.has_wall_excluding(other, true)
+            || other.x < this.x && self.has_wall_excluding(this, false)
+            || this.x < other.x && self.has_wall_excluding(other, false)
+        {
+            return false;
+        }
+        let t = &self.bits.t;
+        if this.x > other.x && this.has_type(t.stairsTW)
+            || this.y > other.y && this.has_type(t.stairsTN)
+        {
+            return false;
+        }
+        !this.is_wall_to(Some(other), self.bits.sprites, g)
     }
 
     // ----- vision -----

@@ -91,12 +91,14 @@
 //!   `lineClearCollide`, ...) and `LosUtil.lineClear` on live `pz-world`
 //!   squares.
 //! * [`game_vehicle`]: what that code reads from `BaseVehicle`.
+//! * [`behavior`]: `PathFindBehavior2`, the per-frame path follower.
 
 // Loops index squares and nodes by position to keep the native iteration
 // order visible.
 #![allow(clippy::needless_range_loop)]
 
 pub mod astar;
+pub mod behavior;
 pub mod bytes;
 mod clip;
 pub mod game_vehicle;
