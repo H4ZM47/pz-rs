@@ -8,6 +8,7 @@
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
 pub mod bind_attached_items;
+pub mod bind_body;
 pub mod bind_body_damage;
 pub mod bind_character_sim;
 pub mod bind_characters;
@@ -46,6 +47,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_character_sim::register_shared(&mut mgr.thread);
+    bind_body::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
     let events = mgr.events.clone();

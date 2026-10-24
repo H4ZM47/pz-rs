@@ -18,6 +18,9 @@ pub struct Thermoregulator {
     pub fluids_multiplier: f64,
     /// `fatigueMultiplier`.
     pub fatigue_multiplier: f64,
+    /// TODO(Thermoregulator): `metabolicTarget` (starts at
+    /// `Metabolics.Default.getMet()`).
+    pub metabolic_target: f32,
 }
 
 impl Default for Thermoregulator {
@@ -27,6 +30,7 @@ impl Default for Thermoregulator {
             thermal_chevron_count: 0,
             fluids_multiplier: 1.0,
             fatigue_multiplier: 1.0,
+            metabolic_target: 0.0,
         }
     }
 }
@@ -48,4 +52,19 @@ impl Thermoregulator {
     pub fn fatigue_multiplier(&self) -> f64 {
         self.fatigue_multiplier
     }
+    /// `getMetabolicTarget`.
+    pub fn metabolic_target(&self) -> f32 {
+        self.metabolic_target
+    }
+    /// TODO(Thermoregulator): `getCatchAColdDelta` (from the thermal
+    /// nodes' skin temperatures).
+    pub fn catch_a_cold_delta(&self) -> f32 {
+        0.0
+    }
+    /// TODO(Thermoregulator): `update` (called first by
+    /// `BodyDamage.Update`).
+    pub fn update(&mut self) {}
+    /// TODO(Thermoregulator): `reset` (called by
+    /// `BodyDamage.RestoreToFullHealth`).
+    pub fn reset(&mut self) {}
 }

@@ -55,6 +55,7 @@ pub struct ZomboidGlobals {
     pub food_sickness_decrease: f64,
     pub idle_increase_rate: f64,
     pub idle_decrease_rate: f64,
+    pub vehicle_discomfort_when_over_encumbered: f64,
 }
 
 impl Default for ZomboidGlobals {
@@ -98,6 +99,7 @@ impl ZomboidGlobals {
         food_sickness_decrease: 0.0,
         idle_increase_rate: 0.0,
         idle_decrease_rate: 0.0,
+        vehicle_discomfort_when_over_encumbered: 0.0,
     };
 }
 
@@ -126,6 +128,9 @@ pub enum SimEvent {
     GainExperienceLevelSound,
     /// `IsoPlayer.playerVoiceSound(name)`.
     PlayerVoiceSound(&'static str),
+    /// A tissue in hand was used by a sneeze (`setCurrentUses(uses - 1)`,
+    /// and `Use()` when it reaches 0).
+    TissueUsed { primary: bool, used_up: bool },
     /// `MoodlesUI.getInstance().wiggle(type)`.
     MoodleWiggle(Rc<RegistryKey>),
     /// `HaloTextHelper`.
@@ -134,6 +139,36 @@ pub enum SimEvent {
     SendPerks,
     /// `StopAllActionQueue()`.
     StopAllActionQueue,
+    /// `LuaEventManager.triggerEvent("OnPlayerGetDamage", chr, kind, amount)`
+    /// (`INFECTION` with the `Integer` 110 is `110.0` here).
+    PlayerGetDamage { kind: &'static str, amount: f32 },
+    /// `splatBloodFloor()` (TODO(IsoChunk): consumes `Rand` when the square
+    /// has a chunk).
+    SplatBloodFloor,
+    /// `splatBloodFloorBig()`.
+    SplatBloodFloorBig,
+    /// `addBlood(BloodBodyPartType.FromIndex(part), scratched, bitten,
+    /// allLayers)`.
+    AddBlood { part: i32, scratched: bool, bitten: bool, all_layers: bool },
+    /// `addHole(BloodBodyPartType.FromIndex(part))` /
+    /// `addHole(part, true)`.
+    AddHole { part: i32, all_layers: bool },
+    /// `addHoleFromZombieAttacks(BloodBodyPartType.FromIndex(part),
+    /// scratchOrBite)`.
+    AddHoleFromZombieAttacks { part: i32, scratch_or_bite: bool },
+    /// `playSound(name)` / `getEmitter().playSoundImpl(name, null)`.
+    PlaySound(String),
+    /// `playWeaponHitArmourSound(part, bullet)`.
+    WeaponHitArmourSound { part: i32, bullet: bool },
+    /// `WorldSoundManager.instance.addSound(chr, x, y, z, radius, volume,
+    /// false)` (with `stressAnimals = false`), from a sneeze or cough.
+    SneezeCoughSound { radius: i32, volume: i32 },
+    /// `GameServer.sendSneezingCoughing(player, sneezingCoughing, var)`.
+    SendSneezingCoughing { sneezing_coughing: i32, var: i32 },
+    /// `LuaManager.caller.pcallvoid(thread, OnEat function, pill, chr)`.
+    CallOnEat(String),
+    /// `getNetworkCharacterAI().syncDamage()` / `syncVisuals()` on a server.
+    SyncDamage,
 }
 
 /// The singletons the simulation reads. Every method has the default a
@@ -221,6 +256,97 @@ pub trait SimContext {
     fn get_text(&self, key: &str) -> String {
         key.to_string()
     }
+    /// `Rand.Next(int max)` (`RandStandard.INSTANCE`).
+    fn rand_next(&self, max: i32) -> i32 {
+        pz_core::random::next(max)
+    }
+    /// `Rand.Next(int min, int max)`.
+    fn rand_next_range(&self, min: i32, max: i32) -> i32 {
+        pz_core::random::next_range(min, max)
+    }
+    /// `Rand.Next(float min, float max)`.
+    fn rand_next_float(&self, min: f32, max: f32) -> f32 {
+        pz_core::random::next_float(min, max)
+    }
+    /// `PerformanceSettings.getLockFPS()`.
+    fn lock_fps(&self) -> i32 {
+        60
+    }
+    /// `GameTime.instance.getInvMultiplier()`.
+    fn inv_multiplier(&self) -> f32 {
+        1.0 / self.multiplier()
+    }
+    /// `GameTime.instance.getGameWorldSecondsSinceLastUpdate()`:
+    /// `getTimeDelta() * (1440 / minutesPerDay)` (`multiplierBias` 1).
+    fn game_world_seconds_since_last_update(&self) -> f32 {
+        let time_delta = self.multiplier() / 0.8 / 1.0 / 60.0;
+        time_delta * (1440.0 / self.minutes_per_day())
+    }
+    /// `SandboxOptions.instance.lore.transmission.getValue()`.
+    fn lore_transmission(&self) -> i32 {
+        1
+    }
+    /// `SandboxOptions.instance.lore.mortality.getValue()`.
+    fn lore_mortality(&self) -> i32 {
+        5
+    }
+    /// `SandboxOptions.instance.lore.strength.getValue()`.
+    fn lore_strength(&self) -> i32 {
+        2
+    }
+    /// `SandboxOptions.instance.lore.zombiesDragDown.getValue()`.
+    fn lore_zombies_drag_down(&self) -> bool {
+        true
+    }
+    /// `SandboxOptions.instance.lore.zombiesCrawlersDragDown.getValue()`.
+    fn lore_zombies_crawlers_drag_down(&self) -> bool {
+        false
+    }
+    /// `SandboxOptions.instance.injurySeverity.getValue()` (1 low, 2
+    /// normal, 3 high).
+    fn injury_severity(&self) -> i32 {
+        2
+    }
+    /// `SandboxOptions.instance.boneFracture.getValue()`.
+    fn bone_fracture(&self) -> bool {
+        true
+    }
+    /// `SandboxOptions.instance.woundInfectionFactor.getValue()`.
+    fn wound_infection_factor(&self) -> f64 {
+        0.0
+    }
+    /// `SandboxOptions.instance.rearVulnerability.getValue()`.
+    fn rear_vulnerability(&self) -> i32 {
+        3
+    }
+    /// `ServerOptions.instance.pvpMeleeDamageModifier.getValue()`.
+    fn pvp_melee_damage_modifier(&self) -> f64 {
+        30.0
+    }
+    /// `ServerOptions.instance.pvpFirearmDamageModifier.getValue()`.
+    fn pvp_firearm_damage_modifier(&self) -> f64 {
+        50.0
+    }
+    /// `SandboxOptions.instance.muscleStrainFactor.getValue()`.
+    fn muscle_strain_factor(&self) -> f64 {
+        1.0
+    }
+    /// `GameServer.fastForward`.
+    fn server_fast_forward(&self) -> bool {
+        false
+    }
+    /// `ClimateManager.getInstance().isRaining()`.
+    fn is_raining(&self) -> bool {
+        false
+    }
+    /// `ClimateManager.getInstance().getRainIntensity()`.
+    fn rain_intensity(&self) -> f32 {
+        0.0
+    }
+    /// `FliesSound.maxCorpseCount`.
+    fn flies_max_corpse_count(&self) -> i32 {
+        25
+    }
     /// Receives the side effects (Lua events, sounds, UI).
     fn event(&self, _event: SimEvent) {}
 }
@@ -263,6 +389,40 @@ pub struct CharacterEnvironment {
     pub protected_from_toxic: bool,
     /// `Temperature.getWindChillAmountForPlayer(player)`.
     pub wind_chill_amount: f32,
+    /// `isDraggingCorpse()`.
+    pub dragging_corpse: bool,
+    /// `getCurrentSquare().haveRoof`.
+    pub square_have_roof: bool,
+    /// `vehicle.hasRoof(vehicle.getSeat(chr))`.
+    pub vehicle_has_roof: bool,
+    /// The vehicle's `Windshield` part has a destroyed window.
+    pub vehicle_windshield_destroyed: bool,
+    /// `vehicle.getCurrentSpeedKmHour()`.
+    pub vehicle_speed_kmh: f32,
+    /// `getBed() != null && getBed().getSprite() != null && getBed().isTent()`.
+    pub bed_is_tent: bool,
+    /// `ClimateManager.getInstance().getAirTemperatureForCharacter(chr)`.
+    pub air_temperature: f32,
+    /// `IsSpeaking()`.
+    pub speaking: bool,
+    /// `callOut`.
+    pub call_out: bool,
+    /// The first queued action is not pathfinding (`isCurrentlyBusy`).
+    pub busy_with_action: bool,
+    /// `CorpseCount.instance.getCorpseCount(chr)`.
+    pub corpse_count: i32,
+    /// `getCorpseSicknessDefense(rate, true)` (TODO(Clothing): it also
+    /// drains gas mask filters).
+    pub corpse_sickness_defense: f32,
+    /// `hasDirtyClothing(part)`, by body part index (missing: false).
+    pub dirty_clothing: Vec<bool>,
+    /// `hasBloodyClothing(part)`, by body part index (missing: false).
+    pub bloody_clothing: Vec<bool>,
+    /// The primary hand item's `getCurrentUses()` when it is a `Tissue`,
+    /// `ToiletPaper` or has the `MUFFLE_SNEEZE` tag.
+    pub primary_hand_tissue_uses: Option<i32>,
+    /// The same for the secondary hand item.
+    pub secondary_hand_tissue_uses: Option<i32>,
 }
 
 impl Default for CharacterEnvironment {
@@ -281,6 +441,22 @@ impl Default for CharacterEnvironment {
             building_toxic: false,
             protected_from_toxic: false,
             wind_chill_amount: 0.0,
+            dragging_corpse: false,
+            square_have_roof: false,
+            vehicle_has_roof: false,
+            vehicle_windshield_destroyed: false,
+            vehicle_speed_kmh: 0.0,
+            bed_is_tent: false,
+            air_temperature: 0.0,
+            speaking: false,
+            call_out: false,
+            busy_with_action: false,
+            corpse_count: 0,
+            corpse_sickness_defense: 0.0,
+            dirty_clothing: Vec::new(),
+            bloody_clothing: Vec::new(),
+            primary_hand_tissue_uses: None,
+            secondary_hand_tissue_uses: None,
         }
     }
 }

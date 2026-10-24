@@ -15,8 +15,10 @@
 //! calls it mid-update). Sounds, halo texts and UI wiggles are dropped.
 //! TODO(sounds, HaloTextHelper, MoodlesUI).
 //!
+//! `getBodyDamage` and the body damage classes are in [`crate::bind_body`].
+//!
 //! Not exposed yet: `getCharacterTraits` (the character's `CharacterTraits`
-//! is not shared with the Lua object of that class), `getBodyDamage`,
+//! is not shared with the Lua object of that class),
 //! `getNutrition`, `Stats.load/save`, `CharacterStat.REGISTRY` and
 //! `ORDERED_STATS`, `XP.load/save`. TODO(BodyDamage, Nutrition, saves).
 
@@ -71,6 +73,11 @@ thread_local! {
 /// Makes `ctx` the singletons the bound characters read.
 pub fn install_sim_context(ctx: Rc<dyn SimContext>) {
     CONTEXT.with(|c| *c.borrow_mut() = ctx);
+}
+
+/// The installed context (singletons only; events are dropped).
+pub(crate) fn current_sim_context() -> Rc<dyn SimContext> {
+    CONTEXT.with(|c| c.borrow().clone())
 }
 
 /// Where the simulation's Lua events go (`LuaEventManager.triggerEvent`).
@@ -152,7 +159,7 @@ impl SimContext for CallContext {
 
 /// Runs `f` with the installed context, then fires the Lua events it
 /// raised with `chr` as the character.
-fn with_ctx<R>(
+pub(crate) fn with_ctx<R>(
     c: &mut NativeCall<'_>,
     chr: &Value,
     f: impl FnOnce(&dyn SimContext) -> Result<R, ScriptError>,
@@ -172,6 +179,9 @@ fn with_ctx<R>(
                 }
                 SimEvent::AddXp { perk, amount } => {
                     ("AddXP", vec![chr.clone(), perk_value(Some(&perk)), Value::Num(f64::from(amount))])
+                }
+                SimEvent::PlayerGetDamage { kind, amount } => {
+                    ("OnPlayerGetDamage", vec![chr.clone(), Value::str(kind), Value::Num(f64::from(amount))])
                 }
                 _ => continue,
             };
@@ -325,7 +335,7 @@ lua_object!(XpObject, XP_CLASS);
 lua_object!(PerkInfoObject, PERK_INFO_CLASS);
 lua_object!(XpMultiplierObject, XP_MULTIPLIER_CLASS);
 
-fn chr_of(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
+pub(crate) fn chr_of(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
     with_this::<CharacterObject, _>(c, |o| o.0.clone())
 }
 

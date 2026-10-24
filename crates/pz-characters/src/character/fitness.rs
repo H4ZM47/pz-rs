@@ -8,3 +8,11 @@
 /// `Fitness`. TODO(Fitness): everything.
 #[derive(Clone, Debug, Default)]
 pub struct Fitness {}
+
+impl Fitness {
+    /// TODO(Fitness): `onGoingStiffness`: `bodypartToIncStiffness` is not
+    /// empty (it starts empty).
+    pub fn on_going_stiffness(&self) -> bool {
+        false
+    }
+}

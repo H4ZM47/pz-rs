@@ -15,7 +15,8 @@
 //!   [`CharacterEnvironment`] (per-character inputs from unported world
 //!   systems).
 //! * Slots for later ports, each owned by [`GameCharacter`]:
-//!   [`body_damage`] (`BodyDamage`/`BodyPart`), [`nutrition`],
+//!   [`body_damage`] (`BodyDamage`), [`body_part`] (`BodyPart`,
+//!   `BodyPartType`, `BodyPartLast`, `BodyPartContacts`), [`nutrition`],
 //!   [`thermoregulator`] (inside `BodyDamage`, as in the original) and
 //!   [`fitness`].
 //!
@@ -28,6 +29,7 @@
 //! `"FAST_LEARNER"`, `"Fitness"`); the ids behind them come from the jar.
 
 pub mod body_damage;
+pub mod body_part;
 pub mod context;
 pub mod fitness;
 pub mod moodles;
@@ -43,7 +45,8 @@ use pz_scripts::objects::items::CharacterTrait;
 use pz_scripts::registry::builtin::BuiltinTables;
 use pz_scripts::{ScriptManager, ScriptResult};
 
-pub use body_damage::BodyDamage;
+pub use body_damage::{BodyDamage, FoodInfo, WeaponHit, ZombieAttack};
+pub use body_part::{BodyPart, BodyPartContacts, BodyPartLast, BodyPartTypes, InjuryEnv};
 pub use context::{CharacterEnvironment, DefaultSimContext, HaloText, SimContext, SimEvent, ZomboidGlobals};
 pub use fitness::Fitness;
 pub use moodles::{ChevronColor, Moodle, MoodleLevel, MoodleStat, MoodleStatRef, MoodleStats, Moodles};
@@ -67,6 +70,8 @@ pub struct SimStatics {
     pub level_up_levels: Vec<i32>,
     /// `CheatType.values()` names.
     pub cheat_types: Vec<String>,
+    /// `BodyPartType`'s constants.
+    pub body_part_types: BodyPartTypes,
 }
 
 impl SimStatics {
@@ -76,6 +81,7 @@ impl SimStatics {
             moodle_stats: MoodleStats::from_tables(tables),
             level_up_levels: tables.level_up_levels.clone(),
             cheat_types: tables.cheat_types.clone(),
+            body_part_types: BodyPartTypes::from_tables(tables),
         })
     }
 }
@@ -227,6 +233,24 @@ pub struct GameCharacter<I> {
     pub survivor_kills: i32,
     /// `knownRecipes`.
     pub known_recipes: Vec<String>,
+    /// `reduceInfectionPower`.
+    pub reduce_infection_power: f32,
+    /// `timeSinceLastSmoke`.
+    pub time_since_last_smoke: f32,
+    /// `isReading`.
+    pub is_reading: bool,
+    /// `numSurvivorsInVicinity`.
+    pub num_survivors_in_vicinity: i32,
+    /// `clothingDiscomfortModifier`.
+    pub clothing_discomfort_modifier: f32,
+    /// `IsoPlayer.sleepingPillsTaken`.
+    pub sleeping_pills_taken: i32,
+    /// `IsoPlayer.maxWeightDelta`.
+    pub max_weight_delta: f32,
+    /// `IsoPlayer.bleedingLevel`.
+    pub bleeding_level: i8,
+    /// `IsoPlayer.moveSpeed`.
+    pub move_speed: f32,
 }
 
 impl<I> GameCharacter<I> {
@@ -236,10 +260,7 @@ impl<I> GameCharacter<I> {
     /// and a `Thermoregulator`.
     pub fn new(sm: &ScriptManager, kind: CharacterKind) -> Self {
         let player = kind == CharacterKind::Player;
-        let mut body_damage = BodyDamage::default();
-        if player {
-            body_damage.thermoregulator = Some(Thermoregulator::default());
-        }
+        let body_damage = BodyDamage::new(&BodyPartTypes::from_tables(&sm.builtin_tables.borrow()), player);
         GameCharacter {
             kind,
             in_players: false,
@@ -288,6 +309,15 @@ impl<I> GameCharacter<I> {
             zombie_kills: 0,
             survivor_kills: 0,
             known_recipes: Vec::new(),
+            reduce_infection_power: 0.0,
+            time_since_last_smoke: 0.0,
+            is_reading: false,
+            num_survivors_in_vicinity: 0,
+            clothing_discomfort_modifier: 0.0,
+            sleeping_pills_taken: 0,
+            max_weight_delta: 1.0,
+            bleeding_level: 0,
+            move_speed: 0.06,
         }
     }
 
