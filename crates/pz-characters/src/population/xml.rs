@@ -114,6 +114,24 @@ pub fn jaxb_int(s: &str) -> i32 {
     r.wrapping_mul(sign)
 }
 
+/// `DatatypeConverterImpl._parseFloat`, with a rejected literal as 0:
+/// trimmed; `NaN`, `INF`, `-INF`; otherwise it must start and end with a
+/// digit, sign or period and go through `Float.parseFloat`.
+pub fn jaxb_float(s: &str) -> f32 {
+    let t = s.trim_matches(is_ws);
+    match t {
+        "NaN" => return f32::NAN,
+        "INF" => return f32::INFINITY,
+        "-INF" => return f32::NEG_INFINITY,
+        _ => {}
+    }
+    let edge = |c: Option<char>| c.is_some_and(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.'));
+    if !edge(t.chars().next()) || !edge(t.chars().last()) {
+        return 0.0;
+    }
+    pz_scripts::java::parse_f32(t).unwrap_or(0.0)
+}
+
 /// `DatatypeConverterImpl._parseBoolean` as JAXB stores it in a
 /// `boolean`: `null` results and exceptions are `false`.
 pub fn jaxb_bool(s: &str) -> bool {

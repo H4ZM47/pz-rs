@@ -192,6 +192,14 @@ impl ClothingItems {
         self.by_guid.get(guid)?.as_ref()
     }
 
+    /// `OutfitManager.getClothingItem(guid)` for a table guid
+    /// (`game-<guid>`): `None` if the table has no clothing item with that
+    /// guid, `Some(None)` for an asset that failed to load (not ready, its
+    /// fields the `ClothingItemXML` defaults).
+    pub fn get_by_guid(&self, guid: &str) -> Option<Option<&ClothingItem>> {
+        self.by_guid.get(guid).map(Option::as_ref)
+    }
+
     /// Number of ready assets.
     pub fn len(&self) -> usize {
         self.by_guid.values().filter(|v| v.is_some()).count()

@@ -94,6 +94,126 @@ fn nm(s: Option<&HairStyle>) -> String {
     s.map_or("null".into(), |s| s.name.clone())
 }
 
+fn fb(f: f32) -> String {
+    (f.to_bits() as i32).to_string()
+}
+
+fn col(c: Option<[f32; 3]>) -> String {
+    c.map_or("null".into(), |c| format!("{},{},{}", fb(c[0]), fb(c[1]), fb(c[2])))
+}
+
+fn opt(s: &Option<String>) -> &str {
+    s.as_deref().unwrap_or("null")
+}
+
+fn dump_ref(ind: &str, r: &ClothingItemReference) {
+    println!("{ind}ref prob={} guid={} randomized={}", fb(r.probability), q(r.item_guid.as_deref()), r.randomized);
+    for s in &r.sub_items {
+        dump_ref(&format!("{ind}  "), s);
+    }
+}
+
+fn dump_outfit(sex: &str, o: &Outfit) {
+    println!(
+        "outfit {sex} {} top={} pants={} topTex={} pantsTex={} hue={} ptint={} ttint={} decal={} mod={}",
+        q(Some(&o.name)),
+        o.top,
+        o.pants,
+        list(&o.top_textures),
+        list(&o.pants_textures),
+        o.allow_pants_hue,
+        o.allow_pants_tint,
+        o.allow_top_tint,
+        o.allow_tshirt_decal,
+        q(o.mod_id.as_deref())
+    );
+    for r in &o.items {
+        dump_ref("  ", r);
+    }
+}
+
+fn outfits(game: &str, pop: &mut Population) {
+    println!("== outfits");
+    for seed in [42i64, -7] {
+        let mut l: Vec<String> = (0..23).map(|i: i32| i.to_string()).collect();
+        pz_characters::population::outfit_manager::java_shuffle(&mut l, &pz_core::random::JavaRandom::new(seed));
+        println!("shuffle {}", list(&l));
+    }
+    let items = pz_inventory::ClothingItems::load(std::path::Path::new(game)).unwrap();
+    println!("items {}", items.len());
+    let om = OutfitManager::parse(&format!("{game}/media/clothing/clothing.xml"), "game").unwrap();
+    om.male_outfits.iter().for_each(|o| dump_outfit("m", o));
+    om.female_outfits.iter().for_each(|o| dump_outfit("f", o));
+    pop.hair_outfit_definitions.haircut_definition.clear();
+    pop.hair_outfit_definitions.outfit_definition.clear();
+    let dc = &mut pop.default_clothing;
+    for (f, c) in [("pants", &mut dc.pants), ("tShirt", &mut dc.tshirt), ("tShirtDecal", &mut dc.tshirt_decal), ("vest", &mut dc.vest)] {
+        for (l, v) in [("hue", &mut c.hue), ("texture", &mut c.texture), ("tint", &mut c.tint)] {
+            *v = vec![format!("{f}_{l}1"), format!("{f}_{l}2")];
+        }
+    }
+    println!("noBlack true");
+    let common: [[f32; 3]; 3] = [[0.1, 0.2, 0.3], [0.5, 0.4, 0.3], [0.9, 0.8, 0.7]];
+    let ctx = OutfitContext { clothing_items: &items, population: pop, hair_common_colors: &common, world_age_days: 0.0, no_black_clothes: true };
+    for (sex, list) in [("maleOutfits", &om.male_outfits), ("femaleOutfits", &om.female_outfits)] {
+        for src in list {
+            for seed in [1i64, 99, -12345] {
+                outfit_rng::set_seed(seed);
+                let mut o = src.clone_outfit();
+                o.randomize(&ctx).unwrap();
+                println!("rand {sex} {} seed {seed}", o.name);
+                let rd = &o.random_data;
+                println!(
+                    "  rd hair={} f={} m={} b={} top={} pants={} hue={} hasTop={} tshirt={} tdecal={} topTex={} pantsTex={}",
+                    col(rd.hair_color),
+                    opt(&rd.female_hair_name),
+                    opt(&rd.male_hair_name),
+                    opt(&rd.beard_name),
+                    col(rd.top_tint),
+                    col(rd.pants_tint),
+                    fb(rd.pants_hue),
+                    rd.has_top,
+                    rd.has_tshirt,
+                    rd.has_tshirt_decal,
+                    opt(&rd.top_texture),
+                    opt(&rd.pants_texture)
+                );
+                for (i, r) in o.items.iter().enumerate() {
+                    let d = &r.random_data;
+                    let picked = match &d.picked_item_guid {
+                        None => "null".to_string(),
+                        Some(g) => opt(g).to_string(),
+                    };
+                    println!(
+                        "  item {i} active={} hue={} tint={} base={} picked={picked} choice={} decal={}",
+                        d.active,
+                        fb(d.hue),
+                        col(Some(d.tint)),
+                        opt(&d.base_texture),
+                        opt(&d.texture_choice),
+                        opt(&d.decal)
+                    );
+                }
+                let mut sb = String::from("  dress");
+                for d in dress_in_outfit(&mut o, &ctx) {
+                    sb.push(' ');
+                    sb.push_str(opt(&d.clothing_item_name));
+                    if d.item_ref.is_some() {
+                        sb.push('[');
+                        for w in &d.spawn_with {
+                            sb.push_str(w);
+                            sb.push(';');
+                        }
+                        sb.push(']');
+                    }
+                }
+                println!("{sb}");
+                println!("  next={}", outfit_rng::next(1000000));
+            }
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let (game, edge) = (&args[1], &args[2]);
@@ -236,4 +356,5 @@ fn main() {
         nm(hs.find_female_style(Some(""))),
         bs.find_style(Some("")).map_or("null".into(), |b| b.name.clone())
     );
+    outfits(game, &mut pop);
 }

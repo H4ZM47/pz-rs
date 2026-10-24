@@ -2,7 +2,9 @@
 //! `ClothingDecals` (with `ClothingDecal`, `ClothingDecalGroup`),
 //! `HairStyles`/`HairStyle`, `BeardStyles`/`BeardStyle`,
 //! `VoiceStyles`/`VoiceStyle`, `PopTemplateManager`'s skin lists, and
-//! `zombie.characters.HairOutfitDefinitions`. `OutfitRNG` is
+//! `OutfitManager`/`Outfit`/`ClothingItemReference` with the outfit
+//! draws, `DefaultClothing`, and `zombie.characters.HairOutfitDefinitions`.
+//! `OutfitRNG` is
 //! [`pz_core::random::outfit_rng`].
 //!
 //! The XML files are read from the installed game (`media/...`) and then
@@ -19,16 +21,25 @@
 
 pub mod beard_styles;
 pub mod clothing_decals;
+pub mod default_clothing;
 pub mod hair_outfit_definitions;
 pub mod hair_styles;
+pub mod outfit;
+pub mod outfit_manager;
 pub mod pop_template;
 pub mod voice_styles;
 pub mod xml;
 
 pub use beard_styles::{BeardStyle, BeardStyles};
 pub use clothing_decals::{ClothingDecal, ClothingDecalGroup, ClothingDecals};
+pub use default_clothing::{DefaultClothing, DefaultClothingLists};
 pub use hair_outfit_definitions::{HairOutfitDefinitions, HaircutDefinition, HaircutOutfitDefinition, StringChance};
 pub use hair_styles::{HairStyle, HairStyleAlternate, HairStyles};
+pub use outfit::{
+    dress_in_outfit, ClothingItemRandomData, ClothingItemReference, ClothingItemSource, DressItem, Outfit, OutfitContext,
+    OutfitRandomData,
+};
+pub use outfit_manager::{dress_in_clothing_item, OutfitManager};
 pub use pop_template::PopTemplateManager;
 pub use voice_styles::{VoiceStyle, VoiceStyles};
 
@@ -132,16 +143,21 @@ pub struct Population {
     pub pop_template: PopTemplateManager,
     /// `HairOutfitDefinitions.instance`.
     pub hair_outfit_definitions: HairOutfitDefinitions,
+    /// `OutfitManager.instance`.
+    pub outfit_manager: Option<OutfitManager>,
+    /// `DefaultClothing.instance`.
+    pub default_clothing: DefaultClothing,
 }
 
 impl Population {
     /// `GameWindow.initShared`'s loads, in its order (`ClothingDecals`,
-    /// `BeardStyles`, `HairStyles`, `VoiceStyles`), plus
+    /// `BeardStyles`, `HairStyles`, `OutfitManager`, `VoiceStyles`), then
     /// `PopTemplateManager.init` (run by `ModelManager`).
     pub fn init(&mut self, fs: &mut GameFs) {
         self.clothing_decals = ClothingDecals::init(fs);
         self.beard_styles = BeardStyles::init(fs);
         self.hair_styles = HairStyles::init(fs);
+        self.outfit_manager = OutfitManager::init(fs);
         self.voice_styles = VoiceStyles::init(fs);
         self.pop_template = PopTemplateManager::default();
         self.pop_template.init();
