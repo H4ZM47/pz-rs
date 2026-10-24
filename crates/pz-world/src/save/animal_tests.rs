@@ -78,6 +78,23 @@ fn trough(linked: (i32, i32)) -> IsoObject {
     )
 }
 
+/// Made-up stats: a 0..1 stat and a 20..40 stat defaulting to 30.
+fn stat_defs() -> Vec<CharacterStatDef> {
+    let d = |id: &str, min, max, default| CharacterStatDef {
+        id: id.into(),
+        min,
+        max,
+        default,
+    };
+    vec![d("Calm", 0.0, 1.0, 0.0), d("Warmth", 20.0, 40.0, 30.0)]
+}
+
+fn tables() -> SaveTables {
+    let mut t = SaveTables::for_tests();
+    t.character_stats = stat_defs();
+    t
+}
+
 fn fluid_id() -> i16 {
     pz_entity::ComponentType::FluidContainer.id()
 }
@@ -85,7 +102,7 @@ fn fluid_id() -> i16 {
 #[test]
 fn feeding_trough_constructor_adds_a_fluid_container() {
     let m = crate::sprite::IsoSpriteManager::new(crate::sprite::test_tables());
-    let (t, s) = (SaveTables::for_tests(), SaveSettings::default());
+    let (t, s) = (tables(), SaveSettings::default());
     let c = ctx(&m, &t, &s, &AllItems, &NoSaveHooks);
     let want = encode_component(pz_entity::Component::FluidContainer(
         pz_entity::factory::feeding_trough_fluid_container(0.0),
@@ -125,7 +142,7 @@ fn feeding_trough_constructor_adds_a_fluid_container() {
 #[test]
 fn saved_trough_container_loads_in_place() {
     let m = crate::sprite::IsoSpriteManager::new(crate::sprite::test_tables());
-    let (t, s) = (SaveTables::for_tests(), SaveSettings::default());
+    let (t, s) = (tables(), SaveSettings::default());
     let env = entity_env();
     let c = ctx(&m, &t, &s, &env, &NoSaveHooks);
     // A saved plain container: capacity 2, no rain catcher, no filter.
@@ -187,8 +204,9 @@ fn test_def() -> AnimalDefinition {
 fn animal(pos: i32) -> IsoAnimal {
     let mut md = LuaTable::default();
     md.rawset(LuaKey::Str("k".into()), Some(LuaValue::Num(1.0)));
-    let mut stats = Stats::default();
-    stats.set(18, 50.0);
+    let defs = stat_defs();
+    let mut stats = Stats::new(&defs);
+    stats.0[1] = 50.0;
     IsoAnimal {
         animal_zone: None,
         x: 10.5,
@@ -295,7 +313,7 @@ fn master(o: &IsoObject) -> &HutchMaster {
 #[test]
 fn hutch_animals_round_trip_with_load_changes() {
     let m = crate::sprite::IsoSpriteManager::new(crate::sprite::test_tables());
-    let (t, s) = (SaveTables::for_tests(), SaveSettings::default());
+    let (t, s) = (tables(), SaveSettings::default());
     let hooks = TestHooks { def: test_def() };
     let c = ctx(&m, &t, &s, &AllItems, &hooks);
     let mut big = animal(17);
@@ -326,7 +344,7 @@ fn hutch_animals_round_trip_with_load_changes() {
     // setWild(false) clears the migration group and virtual id.
     assert_eq!((a.migration_group.as_deref(), a.virtual_id), (None, 0.0));
     // Stats are clamped; the genome is in HashMap<String, _> order.
-    assert_eq!(a.stats.0[18], 40.0);
+    assert_eq!(a.stats.0, vec![0.0, 40.0]);
     let mut names = vec![("maxsize", 0), ("stress", 0)];
     pz_inventory::java::sort_string_hash_map(&mut names, |e| e.0);
     assert_eq!(
@@ -361,13 +379,17 @@ fn hutch_animals_round_trip_with_load_changes() {
 #[test]
 fn hutch_animal_needs_its_definition_and_free_places() {
     let m = crate::sprite::IsoSpriteManager::new(crate::sprite::test_tables());
-    let (t, s) = (SaveTables::for_tests(), SaveSettings::default());
+    let (t, s) = (tables(), SaveSettings::default());
     let hooks = TestHooks { def: test_def() };
     let c = ctx(&m, &t, &s, &AllItems, &hooks);
     let mut w = Writer::new();
     save_object(&mut w, &c, &hutch(vec![(2, animal(2))], None)).unwrap();
     let none = ctx(&m, &t, &s, &AllItems, &NoSaveHooks);
     assert!(load_object(&mut Reader::new(&w.buf), &none, WORLD_VERSION, 1).is_err());
+    // ... and the CharacterStat table.
+    let bare = SaveTables::for_tests();
+    let no_stats = ctx(&m, &bare, &s, &AllItems, &hooks);
+    assert!(load_object(&mut Reader::new(&w.buf), &no_stats, WORLD_VERSION, 1).is_err());
     // Two animals preferring one place: the second draws a new one.
     let o = hutch(vec![(5, animal(5)), (6, animal(5))], None);
     let back = round(&o, &c);

@@ -12,34 +12,75 @@ use super::lua_table::LuaTable;
 use super::{SaveCtx, SaveHooks};
 use pz_inventory::item::AnimalGene;
 
-/// `CharacterStat`: id, minimum, maximum and default value, in
-/// `CharacterStat.ORDERED_STATS` order (the order `Stats.save` writes).
-pub const CHARACTER_STATS: [(&str, f32, f32, f32); 24] = [
-    ("Anger", 0.0, 1.0, 0.0),
-    ("Boredom", 0.0, 100.0, 0.0),
-    ("Discomfort", 0.0, 100.0, 0.0),
-    ("Endurance", 0.0, 1.0, 1.0),
-    ("Fatigue", 0.0, 1.0, 0.0),
-    ("Fitness", -1.0, 1.0, 0.0),
-    ("FoodSickness", 0.0, 100.0, 0.0),
-    ("Hunger", 0.0, 1.0, 0.0),
-    ("Idleness", 0.0, 1.0, 0.0),
-    ("Intoxication", 0.0, 100.0, 0.0),
-    ("Morale", 0.0, 1.0, 1.0),
-    ("NicotineWithdrawal", 0.0, 0.51, 0.0),
-    ("Pain", 0.0, 100.0, 0.0),
-    ("Panic", 0.0, 100.0, 0.0),
-    ("Poison", 0.0, 100.0, 0.0),
-    ("Sanity", 0.0, 1.0, 1.0),
-    ("Sickness", 0.0, 1.0, 0.0),
-    ("Stress", 0.0, 1.0, 0.0),
-    ("Temperature", 20.0, 40.0, 37.0),
-    ("Thirst", 0.0, 1.0, 0.0),
-    ("Unhappiness", 0.0, 100.0, 0.0),
-    ("Wetness", 0.0, 100.0, 0.0),
-    ("ZombieFever", 0.0, 100.0, 0.0),
-    ("ZombieInfection", 0.0, 100.0, 0.0),
-];
+/// One `CharacterStat`: its id, range and default value.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CharacterStatDef {
+    pub id: String,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+}
+
+const CHARACTER_STAT: &str = "zombie/characters/CharacterStat";
+
+/// Reads `CharacterStat.ORDERED_STATS` (the order `Stats.save` writes) and
+/// each stat's `register(id, min, max, default)` arguments from the
+/// installed game's `projectzomboid.jar`.
+pub fn character_stats_from_jar(jar: &pz_classfile::Jar) -> Result<Vec<CharacterStatDef>, String> {
+    use pz_classfile::Value;
+    let cf = pz_classfile::load_class(jar, CHARACTER_STAT).map_err(|e| e.to_string())?;
+    let inits = pz_classfile::static_inits(&cf).map_err(|e| e.to_string())?;
+    let num = |v: &Value| match v {
+        Value::Float(f) => Some(*f as f32),
+        Value::Int(i) => Some(*i as f32),
+        _ => None,
+    };
+    let mut registered: Vec<(String, CharacterStatDef)> = Vec::new();
+    for i in &inits {
+        if i.class != cf.this_class {
+            continue;
+        }
+        let Value::Call { name, args, .. } = &i.value else {
+            continue;
+        };
+        if name != "register" || args.len() != 4 {
+            continue;
+        }
+        let (Value::Str(id), Some(min), Some(max), Some(default)) =
+            (&args[0], num(&args[1]), num(&args[2]), num(&args[3]))
+        else {
+            continue;
+        };
+        registered.push((
+            i.field.clone(),
+            CharacterStatDef {
+                id: id.clone(),
+                min,
+                max,
+                default,
+            },
+        ));
+    }
+    let ordered = inits
+        .iter()
+        .rev()
+        .find(|i| i.class == cf.this_class && i.field == "ORDERED_STATS")
+        .ok_or("CharacterStat.ORDERED_STATS not found")?;
+    let Value::Array(elems) = &ordered.value else {
+        return Err("CharacterStat.ORDERED_STATS is not an array".into());
+    };
+    elems
+        .iter()
+        .map(|e| match e {
+            Value::Static { name, .. } => registered
+                .iter()
+                .find(|(f, _)| f == name)
+                .map(|(_, d)| d.clone())
+                .ok_or_else(|| format!("CharacterStat.{name} not registered")),
+            _ => Err("unexpected ORDERED_STATS element".into()),
+        })
+        .collect()
+}
 
 /// `PZMath.clamp(float, float, float)`.
 fn clamp(v: f32, min: f32, max: f32) -> f32 {
@@ -54,33 +95,31 @@ fn clamp(v: f32, min: f32, max: f32) -> f32 {
 
 /// `Stats` of a character: the `ORDERED_STATS` values.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Stats(pub [f32; 24]);
-
-impl Default for Stats {
-    fn default() -> Self {
-        Stats(CHARACTER_STATS.map(|s| s.3))
-    }
-}
+pub struct Stats(pub Vec<f32>);
 
 impl Stats {
+    /// Every stat at its default value.
+    pub fn new(defs: &[CharacterStatDef]) -> Self {
+        Stats(defs.iter().map(|d| d.default).collect())
+    }
+
     /// `Stats.set`: clamped to the stat's range.
-    pub fn set(&mut self, i: usize, v: f32) {
-        let (_, min, max, _) = CHARACTER_STATS[i];
-        self.0[i] = clamp(v, min, max);
+    pub fn set(&mut self, defs: &[CharacterStatDef], i: usize, v: f32) {
+        self.0[i] = clamp(v, defs[i].min, defs[i].max);
     }
 
     /// `Stats.load(ByteBuffer, int)`.
-    pub fn load(&mut self, r: &mut Reader<'_>) -> SaveResult<()> {
-        for i in 0..CHARACTER_STATS.len() {
+    pub fn load(&mut self, defs: &[CharacterStatDef], r: &mut Reader<'_>) -> SaveResult<()> {
+        for i in 0..defs.len() {
             let v = r.f32()?;
-            self.set(i, v);
+            self.set(defs, i, v);
         }
         Ok(())
     }
 
     /// `Stats.save(ByteBuffer)`.
     pub fn save(&self, w: &mut Writer) {
-        for v in self.0 {
+        for &v in &self.0 {
             w.f32(v);
         }
     }
@@ -247,7 +286,12 @@ impl IsoAnimal {
 
     /// `IsoAnimal.load` into `new IsoAnimal(cell)` (after the serialise
     /// flag and class id, which the hutch reads and drops).
-    pub fn load(r: &mut Reader<'_>, wv: i32, hooks: &dyn SaveHooks) -> SaveResult<Self> {
+    pub fn load(r: &mut Reader<'_>, wv: i32, ctx: &SaveCtx<'_>) -> SaveResult<Self> {
+        let hooks = ctx.hooks;
+        let stat_defs = &ctx.tables.character_stats;
+        if stat_defs.is_empty() {
+            return err("CharacterStat table not loaded");
+        }
         let msb = r.i64()?;
         let lsb = r.i64()?;
         let animal_zone =
@@ -257,8 +301,8 @@ impl IsoAnimal {
         let y = r.f32()?;
         let z = r.f32()?;
         let dir = r.i32()? & 7;
-        let mut stats = Stats::default();
-        stats.load(r)?;
+        let mut stats = Stats::new(stat_defs);
+        stats.load(stat_defs, r)?;
         let animal_type = r.string()?;
         let Some(def) = hooks.animal_definition(&animal_type) else {
             return err(format!("animal definition {animal_type} not found"));

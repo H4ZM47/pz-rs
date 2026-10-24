@@ -1233,7 +1233,7 @@ fn load_special(
                 for _ in 0..nb.max(0) {
                     let _serialize = r.bool()?;
                     let _class_id = r.i8()?;
-                    loaded.push(IsoAnimal::load(r, wv, ctx.hooks)?);
+                    loaded.push(IsoAnimal::load(r, wv, ctx)?);
                 }
                 let hutch_dirt = r.f32()?;
                 let nest_box_dirt = r.f32()?;
@@ -1250,7 +1250,7 @@ fn load_special(
                         }
                     }
                     let animal = if r.bool()? {
-                        Some(IsoAnimal::load(r, wv, ctx.hooks)?)
+                        Some(IsoAnimal::load(r, wv, ctx)?)
                     } else {
                         None
                     };

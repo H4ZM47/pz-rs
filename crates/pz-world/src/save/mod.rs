@@ -37,6 +37,10 @@ pub struct SaveTables {
     /// `BloodBodyPartType.MAX.index()`: length of the visual blood, dirt
     /// and hole arrays.
     pub blood_body_parts: usize,
+    /// `CharacterStat.ORDERED_STATS` (animals' saved stats); empty until
+    /// [`SaveTables::load_character_stats`] reads it. Loading an animal
+    /// needs it.
+    pub character_stats: Vec<animal::CharacterStatDef>,
 }
 
 impl SaveTables {
@@ -65,11 +69,19 @@ impl SaveTables {
         let t = SaveTables {
             factory,
             blood_body_parts: parts.ok_or("missing bloodBodyParts")?,
+            character_stats: Vec::new(),
         };
         if t.class_name(0) != Some("IsoObject") {
             return Err("factory table has no IsoObject at 0".into());
         }
         Ok(t)
+    }
+
+    /// Reads `CharacterStat.ORDERED_STATS` from the installed game's
+    /// `projectzomboid.jar` (see [`animal::character_stats_from_jar`]).
+    pub fn load_character_stats(&mut self, jar: &pz_classfile::Jar) -> Result<(), String> {
+        self.character_stats = animal::character_stats_from_jar(jar)?;
+        Ok(())
     }
 
     /// `IsoObject.factoryGetClassID(name)`: matched by `String.hashCode`,
@@ -146,6 +158,7 @@ impl SaveTables {
                 )
                 .collect(),
             blood_body_parts: 7,
+            character_stats: Vec::new(),
         }
     }
 }

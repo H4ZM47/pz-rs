@@ -161,7 +161,7 @@ fn animal_line(a: &IsoAnimal) -> String {
         a.dir
     )
     .unwrap();
-    for v in a.stats.0 {
+    for &v in &a.stats.0 {
         write!(s, "{}:", fx(v)).unwrap();
     }
     write!(
@@ -568,7 +568,10 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let game = Path::new(&a[1]);
     let tables = SpriteTables::from_text(&std::fs::read_to_string(&a[2]).unwrap()).unwrap();
-    let save_tables = SaveTables::from_text(&std::fs::read_to_string(&a[3]).unwrap()).unwrap();
+    let mut save_tables = SaveTables::from_text(&std::fs::read_to_string(&a[3]).unwrap()).unwrap();
+    save_tables
+        .load_character_stats(&pz_classfile::Jar::open(game.join("projectzomboid.jar")).unwrap())
+        .unwrap();
     let save_dir = Path::new(&a[4]);
     let oracle = Path::new(&a[5]);
     let mut sprites =
