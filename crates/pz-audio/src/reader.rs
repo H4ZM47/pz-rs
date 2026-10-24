@@ -2,8 +2,9 @@
 //!
 //! Counts are u16 values; when bit 15 is set, the count continues with a
 //! second u16 holding bits 15 and up. Arrays of structures are written as
-//! `count << 1 | 1` followed by a u16 element size, so newer runtimes can add
-//! fields: readers take the fields they know and skip the rest.
+//! `count << 1 | 1` followed by a u16 element size, or as `count << 1` with
+//! a u16 size before each element, so newer runtimes can add fields: readers
+//! take the fields they know and skip the rest.
 
 use std::fmt;
 
@@ -137,14 +138,18 @@ impl<'a> Reader<'a> {
         Ok((lo & 0x7fff) | ((self.u16()? as usize) << 15))
     }
 
-    /// Header of an array of structures: (count, element size).
-    pub fn struct_array(&mut self) -> Result<(usize, usize)> {
+    /// Header of an array of structures: (count, element size), where a
+    /// size of `None` means each element carries its own u16 size. An empty
+    /// sized array is written as `01 00` with no element size.
+    pub fn struct_array(&mut self) -> Result<(usize, Option<usize>)> {
         let c = self.count()?;
         if c & 1 == 0 {
-            // Unsized form: elements are read field by field.
-            return Ok((c >> 1, 0));
+            return Ok((c >> 1, None));
         }
-        Ok((c >> 1, self.u16()? as usize))
+        if c == 1 {
+            return Ok((0, None));
+        }
+        Ok((c >> 1, Some(self.u16()? as usize)))
     }
 
     /// Read an array of structures, giving each element its own reader.
@@ -153,15 +158,21 @@ impl<'a> Reader<'a> {
         mut f: impl FnMut(&mut Reader<'a>) -> Result<T>,
     ) -> Result<Vec<T>> {
         let (n, size) = self.struct_array()?;
-        let mut out = Vec::with_capacity(n);
+        let mut out = Vec::with_capacity(n.min(self.remaining()));
         for _ in 0..n {
-            if size == 0 {
-                out.push(f(self)?);
-            } else {
-                let mut r = Reader::new(self.bytes(size)?);
-                out.push(f(&mut r)?);
-            }
+            let size = match size {
+                Some(s) => s,
+                None => self.u16()? as usize,
+            };
+            let mut r = Reader::new(self.bytes(size)?);
+            out.push(f(&mut r)?);
         }
         Ok(out)
+    }
+
+    /// A string: u16 byte length then the bytes (no terminator).
+    pub fn string(&mut self) -> Result<String> {
+        let n = self.u16()? as usize;
+        Ok(String::from_utf8_lossy(self.bytes(n)?).into_owned())
     }
 }
