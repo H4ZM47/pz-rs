@@ -96,6 +96,7 @@ dependencies = [
  "pz-render",
  "pz-text",
  "pz-ui",
+ "pz-world",
 ]
 
 [[package]]

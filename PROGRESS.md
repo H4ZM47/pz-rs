@@ -23,6 +23,9 @@ Status of the Rust port. Update this file with every merged change.
   (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
   output; the remaining one differs only in an identity hash.
 
+- `MapGroups` (`pz_world::map_groups`) with its Lua binding; ActiveMods,
+  mod folders and Translator come through an engine-installed host.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 
