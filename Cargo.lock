@@ -1598,6 +1598,7 @@ name = "pz-characters"
 version = "0.1.0"
 dependencies = [
  "pz-core",
+ "pz-inventory",
  "pz-scripts",
 ]
 
@@ -1703,6 +1704,7 @@ dependencies = [
 name = "pz-inventory"
 version = "0.1.0"
 dependencies = [
+ "pz-classfile",
  "pz-entity",
  "pz-scripts",
 ]
@@ -1741,6 +1743,7 @@ dependencies = [
  "pz-erosion",
  "pz-fs",
  "pz-input",
+ "pz-inventory",
  "pz-kahlua",
  "pz-render",
  "pz-sandbox",

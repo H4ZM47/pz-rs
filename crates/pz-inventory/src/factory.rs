@@ -33,6 +33,8 @@ pub struct ScriptItems {
     pub recorded_media: Option<HashMap<i16, String>>,
     /// Moveable sprite properties (from the tile definitions), by name.
     pub world_sprites: HashMap<String, WorldSpriteInfo>,
+    /// The `ClothingItem` assets; with them loads run `synchWithVisual`.
+    pub assets: Option<crate::assets::ItemAssets>,
     /// `actualWeight` of every script item, by full type.
     script_weights: HashMap<String, f32>,
     /// Scripts marked `Obsolete`, by full type.
@@ -130,6 +132,7 @@ impl ScriptItems {
             script_weights,
             recorded_media: None,
             obsolete,
+            assets: None,
         }
     }
 }
@@ -187,6 +190,10 @@ impl ItemEnv for ScriptItems {
             None => None,
             Some(m) => m.get(&index).map(|n| Some(n.clone())),
         }
+    }
+
+    fn assets(&self) -> Option<&crate::assets::ItemAssets> {
+        self.assets.as_ref()
     }
 
     fn note_raw(&self, _registry_id: i16, reason: &str) {

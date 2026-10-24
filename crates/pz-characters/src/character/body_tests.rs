@@ -4,18 +4,19 @@
 
 use std::cell::Cell;
 
-use pz_scripts::objects::items::{CharacterProfession, CharacterTrait};
+use pz_inventory::ItemClass;
+use pz_scripts::objects::items::{CharacterProfession, CharacterTrait, ItemBodyLocation, ItemTag, WeaponCategory};
 use pz_scripts::registry::builtin::BodyPartDecl;
 use pz_scripts::ScriptManager;
 
-use super::super::tests::{fixture, player, Recorder};
+use super::super::tests::{fixture, give_item, item_constant, player, visual, Recorder};
 use super::super::*;
 use super::{true_insulation_value, BODY_PARTS};
 use crate::Characters;
 
 /// The fixture plus invented body parts and metabolics.
 fn body_fixture() -> (ScriptManager, Characters) {
-    let (sm, chars) = fixture();
+    let (sm, mut chars) = fixture();
     {
         let mut t = sm.builtin_tables.borrow_mut();
         let mut fields: Vec<&str> = BODY_PARTS.iter().map(|(f, _)| *f).collect();
@@ -59,6 +60,7 @@ fn body_fixture() -> (ScriptManager, Characters) {
         CharacterProfession::register(&sm, id).unwrap();
         sm.statics.items.borrow_mut().constants.insert("character_profession", field, id);
     }
+    chars.sim.body_part_types = BodyPartTypes::from_tables(&sm.builtin_tables.borrow());
     (sm, chars)
 }
 
@@ -187,8 +189,13 @@ fn thermoregulator_nodes_and_cold() {
     c.set_metabolic_target(20.0).unwrap();
     assert_eq!(c.body_damage.thermoregulator().unwrap().metabolic_target(), 9.0);
     // A hat (no covered parts) goes on the head.
-    let hat = WornClothing { insulation: 0.5, current_condition: 100.0, hat_or_mask: true, ..Default::default() };
-    c.environment.worn_clothing = vec![hat];
+    let hat = item_constant(&sm, ItemBodyLocation::REGISTRY, "HAT");
+    give_item(&sm, &mut c, ItemClass::Clothing, "Hat", 7, |t| t.insulation = 0.5, |s| s.body_location = Some(hat));
+    c.items.worn_items = vec![7];
+    // Without a visual (no clothing asset) it is not in the item visuals.
+    c.thermoregulator_update(&sm, &chars, &ctx).unwrap();
+    assert_eq!(c.body_damage.thermoregulator().unwrap().nodes().iter().map(|n| n.insulation()).sum::<f32>(), 0.0);
+    c.items.item_mut(7).unwrap().visual = Some(visual(18));
     c.environment.air_temperature = -10.0;
     c.environment.air_and_wind_temperature = -14.0;
     for _ in 0..400 {
@@ -277,4 +284,185 @@ fn fitness_profession_regularity() {
     // Fire officers: Rand.Next(10, 20) (this context's Rand returns min + 1).
     let f = c.fitness.as_ref().unwrap();
     assert_eq!((f.regularity("hop"), f.regularity("lift")), (11.0, 11.0));
+}
+
+/// A context whose `Rand.Next(n)` is `n / 2` and that records events.
+#[derive(Default)]
+struct HalfRand {
+    rec: Recorder,
+}
+
+impl SimContext for HalfRand {
+    fn zomboid_globals(&self) -> &ZomboidGlobals {
+        &self.rec.globals
+    }
+    fn rand_next(&self, max: i32) -> i32 {
+        max / 2
+    }
+    fn rand_next_range(&self, min: i32, max: i32) -> i32 {
+        (min + max) / 2
+    }
+    fn rand_next_float(&self, min: f32, _max: f32) -> f32 {
+        min
+    }
+    fn event(&self, e: SimEvent) {
+        self.rec.event(e)
+    }
+}
+
+fn food(t: &mut pz_inventory::ItemTemplate) {
+    t.poison_power = 6;
+    t.hunger_change = -20.0;
+    t.boredom_change = -4.0;
+    t.unhappy_change = 2.0;
+    t.dangerous_uncooked = true;
+}
+
+#[test]
+fn food_pills_and_books_are_items() {
+    let (sm, mut chars) = body_fixture();
+    let mut c = player(&sm, &mut chars);
+    let ctx = HalfRand::default();
+    let st = |c: &GameCharacter<()>, f| c.stat(&chars, f).unwrap();
+    let egg = item_constant(&sm, ItemTag::REGISTRY, "EGG");
+    give_item(&sm, &mut c, ItemClass::Food, "Stew", 1, food, |_| {});
+    give_item(&sm, &mut c, ItemClass::Food, "Omelette", 2, |t| {
+        food(t);
+        t.tags = vec![egg.location.to_string()];
+    }, |_| {});
+    let stew = c.items.item(1).unwrap().clone();
+    c.just_ate_food(&sm, &chars, &ctx, &stew, 0.5, false).unwrap();
+    // Poison 6 * 0.5, plus 15 * 0.5 for dangerous uncooked food.
+    assert_eq!(st(&c, "POISON"), 3.0 + 7.5);
+    assert_eq!(st(&c, "PAIN"), 6.0 * 0.5 / 6.0);
+    assert_eq!(st(&c, "UNHAPPINESS"), 2.0 * 0.5);
+    // Eggs: the chance is 5, still above 0.
+    let omelette = c.items.item(2).unwrap().clone();
+    c.just_ate_food(&sm, &chars, &ctx, &omelette, 1.0, true).unwrap();
+    assert_eq!(st(&c, "POISON"), 10.5 + 6.0 + 15.0);
+    // Pills: the original's types, and one use per pill.
+    give_item(&sm, &mut c, ItemClass::Drainable, "PillsVitamins", 3, |t| t.fatigue_change = -10.0, |_| {});
+    c.items.item_mut(3).unwrap().uses = 5;
+    c.just_took_held_pill(&sm, &chars, &ctx, 3).unwrap().unwrap();
+    assert_eq!((st(&c, "FATIGUE"), c.items.item(3).unwrap().uses), (0.0, 4));
+    c.stats.set(&chars.sim.character_stats.field("FATIGUE").unwrap(), 0.5);
+    c.just_took_held_pill(&sm, &chars, &ctx, 3).unwrap().unwrap();
+    assert_eq!((st(&c, "FATIGUE"), c.items.item(3).unwrap().uses), (0.4, 3));
+    // A loose pill: the outcome is the caller's (no container to leave).
+    let mut last = c.items.item(3).unwrap().clone();
+    last.uses = 1;
+    let out = c.just_took_pill(&sm, &chars, &ctx, &mut last, &pz_inventory::context::Loose).unwrap();
+    assert_eq!(last.uses, 0);
+    assert!(!out.remove && !out.remove_from_hands);
+    // The last pill in the inventory is used up and leaves it.
+    c.items.item_mut(3).unwrap().uses = 1;
+    let out = c.just_took_held_pill(&sm, &chars, &ctx, 3).unwrap().unwrap();
+    assert!(out.remove && out.remove_from_hands);
+    assert!(c.items.item(3).is_none());
+    give_item(&sm, &mut c, ItemClass::Literature, "Comic", 4, |t| t.boredom_change = -0.25, |_| {});
+    let comic = c.items.item(4).unwrap().clone();
+    let before = st(&c, "BOREDOM");
+    c.just_read_something(&chars, &comic).unwrap();
+    assert_eq!(st(&c, "BOREDOM"), (before - 0.25).max(0.0));
+}
+
+#[test]
+fn worn_clothing_defends_and_weighs() {
+    let (sm, mut chars) = body_fixture();
+    let mut c = player(&sm, &mut chars);
+    let ctx = HalfRand::default();
+    let spiked = item_constant(&sm, ItemTag::REGISTRY, "SPIKED");
+    give_item(&sm, &mut c, ItemClass::Clothing, "Gloves", 10, |t| {
+        t.scratch_defense = 80.0;
+        t.bite_defense = 30.0;
+        t.tags = vec![spiked.location.to_string()];
+    }, |s| s.blood_clothing_type = Some(vec!["Hands".into()]));
+    give_item(&sm, &mut c, ItemClass::Clothing, "Mittens", 11, |t| t.scratch_defense = 40.0, |s| {
+        s.blood_clothing_type = Some(vec!["Hand_L".into()])
+    });
+    c.items.worn_items = vec![10, 11];
+    // No visuals yet: nothing is worn as far as the visuals go.
+    assert_eq!(c.items.body_part_clothing_defense(&sm, 0, false, false), 0.0);
+    for id in [10, 11] {
+        c.items.item_mut(id).unwrap().visual = Some(visual(18));
+    }
+    let hand_l = 0;
+    assert_eq!(c.items.body_part_clothing_defense(&sm, hand_l, false, false), 100.0);
+    assert_eq!(c.items.body_part_clothing_defense(&sm, 1, true, false), 30.0);
+    assert!(c.items.body_part_is_spiked(&sm, 1) && !c.items.body_part_is_spiked_behind(&sm, 1));
+    // A hole removes a layer for that part.
+    c.items.item_mut(10).unwrap().visual.as_mut().unwrap().arrays[2].as_mut().unwrap()[1] = -1;
+    assert_eq!(c.items.body_part_clothing_defense(&sm, 1, false, false), 0.0);
+    // Dirt and blood above the thresholds.
+    c.items.item_mut(11).unwrap().visual.as_mut().unwrap().arrays[1].as_mut().unwrap()[0] = 40;
+    c.items.item_mut(10).unwrap().visual.as_mut().unwrap().arrays[0].as_mut().unwrap()[0] = 70;
+    assert!(c.items.has_dirty_clothing(&sm, 0) && c.items.has_bloody_clothing(&sm, 0));
+    assert!(!c.items.has_dirty_clothing(&sm, 1));
+
+    // A blunt weapon on the covered hand: 50 < 100, the armour holds.
+    let blunt = item_constant(&sm, WeaponCategory::REGISTRY, "BLUNT");
+    give_item(&sm, &mut c, ItemClass::Weapon, "Bat", 20, |t| t.weapon_categories = vec![blunt.location.to_string()], |_| {});
+    let bat = c.items.item(20).unwrap().clone();
+    c.damage_from_weapon(&sm, &chars, &ctx, &bat, None, hand_l).unwrap();
+    assert_eq!(
+        ctx.rec.events.borrow().clone(),
+        [
+            "AddHoleFromZombieAttacks { part: 0, scratch_or_bite: false }",
+            "WeaponHitArmourSound { part: 0, bullet: false }"
+        ]
+    );
+    assert_eq!(c.body_damage.parts[0].scratch_time, 0.0);
+
+    // Weight: the two worn and the held item count with the multiplier.
+    let g = ZomboidGlobals { equipped_or_worn_encumbrance_multiplier: 0.5, ..Default::default() };
+    let wctx = HalfRand { rec: Recorder { globals: g, ..Default::default() } };
+    give_item(&sm, &mut c, ItemClass::Normal, "Rock", 30, |t| t.actual_weight = 3.0, |_| {});
+    c.items.primary_hand_item = Some(20);
+    assert_eq!(c.capacity_weight(&sm, &wctx), 0.5 * 3.0 + 3.0);
+}
+
+#[test]
+fn tissues_and_no_sprint_hand_items() {
+    let (sm, mut chars) = body_fixture();
+    let mut c = player(&sm, &mut chars);
+    give_item(&sm, &mut c, ItemClass::Drainable, "Tissue", 1, |_| {}, |_| {});
+    give_item(&sm, &mut c, ItemClass::Normal, "Plank", 2, |_| {}, |s| s.equipped_no_sprint = true);
+    c.items.item_mut(1).unwrap().uses = 2;
+    let ctx = crate::character::DefaultSimContext;
+    // Not in a hand: nothing used.
+    assert!(!c.use_tissue(&sm, &ctx));
+    c.items.secondary_hand_item = Some(1);
+    assert!(c.use_tissue(&sm, &ctx));
+    assert_eq!(c.items.item(1).unwrap().uses, 1);
+    // At 0 uses it is used up (`Use()`): out of the hand and the inventory.
+    assert!(c.use_tissue(&sm, &ctx));
+    assert_eq!((c.items.item(1), c.items.secondary_hand_item), (None, None));
+    assert!(!c.use_tissue(&sm, &ctx));
+    assert!(!c.items.hand_item_equipped_no_sprint(&sm));
+    c.items.primary_hand_item = Some(2);
+    assert!(c.items.hand_item_equipped_no_sprint(&sm));
+}
+
+#[test]
+fn rain_wets_the_outer_layer() {
+    let (sm, mut chars) = body_fixture();
+    let mut c = player(&sm, &mut chars);
+    let g = ZomboidGlobals { wetness_increase: 0.5, ..Default::default() };
+    let ctx = HalfRand { rec: Recorder { globals: g, ..Default::default() } };
+    give_item(&sm, &mut c, ItemClass::Clothing, "Coat", 1, |_| {}, |s| s.blood_clothing_type = Some(vec!["Jacket".into()]));
+    give_item(&sm, &mut c, ItemClass::Clothing, "Tee", 2, |_| {}, |s| s.blood_clothing_type = Some(vec!["ShirtNoSleeves".into()]));
+    c.items.worn_items = vec![2, 1];
+    for id in [1, 2] {
+        c.items.item_mut(id).unwrap().visual = Some(visual(18));
+    }
+    let mut cw = c.clothing_wetness.take().unwrap();
+    let thermo = c.body_damage.thermoregulator.take().unwrap();
+    cw.update_wetness(&sm, &ctx, &chars.sim.body_part_types, &mut c.items, &mut c.body_damage.parts, &thermo, 1.0, 0.0);
+    // The coat (outermost) takes the rain on its parts, split over its 9
+    // parts per covered part; the tee and the skin under it stay dry.
+    let coat = c.items.item(1).unwrap().get_wetness();
+    assert!(coat > 0.0);
+    assert_eq!(c.items.item(2).unwrap().get_wetness(), 0.0);
+    // The hands have no clothing: the skin gets wet.
+    assert_eq!(c.body_damage.parts[0].wetness, 0.5);
 }

@@ -19,6 +19,7 @@ pub mod bind_debug;
 pub mod bind_globals;
 pub mod bind_input;
 pub mod bind_joypad;
+pub mod bind_items;
 pub mod bind_registry;
 pub mod bind_scripts;
 pub mod bind_skills;
@@ -72,6 +73,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_text::register(&mut mgr.thread);
     bind_debug::register(&mut mgr.thread);
     bind_erosion::register(&mut mgr.thread);
+    bind_items::register(&mut mgr.thread);
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());
     // Before bind_scripts, whose enum fallbacks skip classes registered here.

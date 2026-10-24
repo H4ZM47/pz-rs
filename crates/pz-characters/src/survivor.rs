@@ -10,8 +10,12 @@ use pz_scripts::objects::items::{CharacterProfession, CharacterProfessionDefinit
 use pz_scripts::registry::RegistryKey;
 use pz_scripts::{ScriptManager, ScriptResult};
 
+use pz_inventory::visual::human::{HumanStyles, HumanVisualOwner};
+use pz_inventory::visual::HumanVisual;
+
+use crate::character::items::blood_part;
+use crate::color::{Color, ImmutableColor};
 use crate::observation::ObservationRef;
-use crate::visual::{Color, HumanVisual, ImmutableColor};
 use crate::worn_items::{ItemIdentity, WornItems};
 use crate::{index_out_of_bounds, Characters};
 
@@ -209,6 +213,34 @@ impl Characters {
     }
 }
 
+/// `SurvivorDesc implements IHumanVisual`: what its `HumanVisual` asks.
+impl<I> HumanVisualOwner for SurvivorDesc<I> {
+    fn is_female(&self) -> bool {
+        SurvivorDesc::is_female(self)
+    }
+    fn is_zombie(&self) -> bool {
+        false
+    }
+    fn is_skeleton(&self) -> bool {
+        false
+    }
+}
+
+/// STUB [`HumanStyles`] until `HairStyles`, `BeardStyles`,
+/// `HairOutfitDefinitions`, `PopTemplateManager` and `OutfitRNG` are
+/// ported: a set hair or beard style counts as known (so the getters keep
+/// it), an unset one stays unset, and no skins, colours or draws exist.
+pub struct UnportedStyles;
+
+impl HumanStyles for UnportedStyles {
+    fn has_hair_style(&self, _female: bool, name: Option<&str>) -> bool {
+        name.is_some()
+    }
+    fn has_beard_style(&self, name: Option<&str>) -> bool {
+        name.is_some()
+    }
+}
+
 /// `SurvivorFactory.setTorso`.
 pub fn set_torso<I>(desc: &mut SurvivorDesc<I>) {
     desc.torso = Some(if desc.is_female() { "Kate" } else { "Male" }.to_string());
@@ -257,7 +289,7 @@ impl<I: ItemIdentity> SurvivorDesc<I> {
     fn fields(chars: &mut Characters, sm: &ScriptManager) -> ScriptResult<Self> {
         let group = chars.body_locations.get_group("Human")?;
         Ok(SurvivorDesc {
-            human_visual: HumanVisual::default(),
+            human_visual: HumanVisual::new(blood_part::MAX),
             worn_items: WornItems::new(group),
             xp_boost_map: Vec::new(),
             character_profession: CharacterProfession::constant(sm, "UNEMPLOYED"),

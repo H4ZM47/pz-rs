@@ -7,167 +7,8 @@ use super::lua_table::{LuaKey, LuaTable, LuaValue};
 use super::SaveTables;
 use crate::objects::ItemContainer;
 
-pub use pz_inventory::visual::{load_rgb, non_blank, save_rgb, ItemVisual, Rgb};
-
-/// `HumanVisual`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct HumanVisual {
-    pub hair_color: Option<Rgb>,
-    pub beard_color: Option<Rgb>,
-    /// `clear()` sets `ImmutableColor.white`, so a loaded visual always has
-    /// one.
-    pub skin_color: Option<Rgb>,
-    pub body_hair: i8,
-    pub skin_texture: i8,
-    pub zombie_rot_stage: i8,
-    pub skin_texture_name: Option<String>,
-    pub beard_model: Option<String>,
-    pub hair_model: Option<String>,
-    /// `BloodBodyPartType.MAX.index()` entries each.
-    pub blood: Vec<i8>,
-    pub dirt: Vec<i8>,
-    pub holes: Vec<i8>,
-    pub body_visuals: Vec<ItemVisual>,
-    pub non_attached_hair: Option<String>,
-    pub natural_hair_color: Option<Rgb>,
-    pub natural_beard_color: Option<Rgb>,
-}
-
-impl HumanVisual {
-    /// A visual after `clear()`.
-    pub fn new(parts: usize) -> Self {
-        HumanVisual {
-            hair_color: None,
-            beard_color: None,
-            skin_color: Some([1.0, 1.0, 1.0]),
-            body_hair: -1,
-            skin_texture: -1,
-            zombie_rot_stage: -1,
-            skin_texture_name: None,
-            beard_model: None,
-            hair_model: None,
-            blood: vec![0; parts],
-            dirt: vec![0; parts],
-            holes: vec![0; parts],
-            body_visuals: Vec::new(),
-            non_attached_hair: None,
-            natural_hair_color: None,
-            natural_beard_color: None,
-        }
-    }
-
-    pub fn load(r: &mut Reader<'_>, t: &SaveTables) -> SaveResult<Self> {
-        let mut v = HumanVisual::new(t.blood_body_parts);
-        let f1 = r.i8()? as u8;
-        if f1 & 4 != 0 {
-            v.hair_color = Some(load_rgb(r)?);
-        }
-        if f1 & 2 != 0 {
-            v.beard_color = Some(load_rgb(r)?);
-        }
-        if f1 & 8 != 0 {
-            v.skin_color = Some(load_rgb(r)?);
-        }
-        v.body_hair = r.i8()?;
-        v.skin_texture = r.i8()?;
-        v.zombie_rot_stage = r.i8()?;
-        if f1 & 0x40 != 0 {
-            v.skin_texture_name = Some(r.string()?);
-        }
-        if f1 & 0x10 != 0 {
-            v.beard_model = Some(r.string()?);
-        }
-        if f1 & 0x20 != 0 {
-            v.hair_model = Some(r.string()?);
-        }
-        for arr in [&mut v.blood, &mut v.dirt, &mut v.holes] {
-            let n = r.i8()?;
-            for i in 0..n.max(0) as usize {
-                let a = r.i8()?;
-                if i < arr.len() {
-                    arr[i] = a;
-                }
-            }
-        }
-        let n = r.i8()?;
-        for _ in 0..n.max(0) {
-            v.body_visuals
-                .push(ItemVisual::load(r, t.blood_body_parts)?);
-        }
-        v.non_attached_hair = non_blank(r.string()?);
-        let f2 = r.i8()? as u8;
-        if f2 & 4 != 0 {
-            v.natural_hair_color = Some(load_rgb(r)?);
-        }
-        if f2 & 2 != 0 {
-            v.natural_beard_color = Some(load_rgb(r)?);
-        }
-        Ok(v)
-    }
-
-    pub fn save(&self, w: &mut Writer) {
-        let mut f1: u8 = 0;
-        if self.hair_color.is_some() {
-            f1 |= 4;
-        }
-        if self.beard_color.is_some() {
-            f1 |= 2;
-        }
-        if self.skin_color.is_some() {
-            f1 |= 8;
-        }
-        if self.beard_model.is_some() {
-            f1 |= 0x10;
-        }
-        if self.hair_model.is_some() {
-            f1 |= 0x20;
-        }
-        if self.skin_texture_name.is_some() {
-            f1 |= 0x40;
-        }
-        w.i8(f1 as i8);
-        for c in [&self.hair_color, &self.beard_color, &self.skin_color]
-            .into_iter()
-            .flatten()
-        {
-            save_rgb(w, c);
-        }
-        w.i8(self.body_hair);
-        w.i8(self.skin_texture);
-        w.i8(self.zombie_rot_stage);
-        for s in [&self.skin_texture_name, &self.beard_model, &self.hair_model]
-            .into_iter()
-            .flatten()
-        {
-            w.string(s);
-        }
-        for arr in [&self.blood, &self.dirt, &self.holes] {
-            w.i8(arr.len() as i8);
-            for &a in arr {
-                w.i8(a);
-            }
-        }
-        w.i8(self.body_visuals.len() as i8);
-        for v in &self.body_visuals {
-            v.save(w);
-        }
-        w.opt_string(self.non_attached_hair.as_deref());
-        let mut f2: u8 = 0;
-        if self.natural_hair_color.is_some() {
-            f2 |= 4;
-        }
-        if self.natural_beard_color.is_some() {
-            f2 |= 2;
-        }
-        w.i8(f2 as i8);
-        for c in [&self.natural_hair_color, &self.natural_beard_color]
-            .into_iter()
-            .flatten()
-        {
-            save_rgb(w, c);
-        }
-    }
-}
+pub use pz_inventory::visual::human::{HumanStyles, HumanVisualOwner, NoStyles, SkinList};
+pub use pz_inventory::visual::{load_rgb, non_blank, save_rgb, HumanVisual, ItemVisual, Rgb};
 
 /// `SurvivorDesc` as saved.
 #[derive(Clone, Debug, PartialEq)]
@@ -536,7 +377,7 @@ impl IsoDeadBody {
             None
         };
         let visual = match r.i8()? {
-            0 => CorpseVisual::Human(Box::new(HumanVisual::load(r, t)?)),
+            0 => CorpseVisual::Human(Box::new(HumanVisual::load(r, t.blood_body_parts)?)),
             1 => CorpseVisual::Animal {
                 skin_texture_name: r.string()?,
                 rot_stage: r.i8()?,
@@ -770,13 +611,13 @@ mod tests {
         });
         let mut w = Writer::new();
         v.save(&mut w);
-        let back = HumanVisual::load(&mut Reader::new(&w.buf), &t).unwrap();
+        let back = HumanVisual::load(&mut Reader::new(&w.buf), t.blood_body_parts).unwrap();
         assert_eq!(back.skin_color, Some([1.0, 1.0, 1.0]));
         assert_eq!(back.blood.len(), t.blood_body_parts);
         assert_eq!(back.body_visuals[0].decal, None);
         let mut w2 = Writer::new();
         back.save(&mut w2);
-        let again = HumanVisual::load(&mut Reader::new(&w2.buf), &t).unwrap();
+        let again = HumanVisual::load(&mut Reader::new(&w2.buf), t.blood_body_parts).unwrap();
         assert_eq!(again, back);
     }
 }

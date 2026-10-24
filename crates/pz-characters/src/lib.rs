@@ -1,7 +1,8 @@
 //! Character data the main menu and character creation use:
 //! `zombie.characters.traits` (`CharacterTraits`, `ObservationFactory`),
-//! `zombie.characters.SurvivorFactory` and `SurvivorDesc`, with the parts of
-//! `HumanVisual` and `zombie.characters.WornItems` a descriptor holds,
+//! `zombie.characters.SurvivorFactory` and `SurvivorDesc`, with its
+//! `HumanVisual` (`pz_inventory::visual::HumanVisual`) and the parts of
+//! `zombie.characters.WornItems` a descriptor holds,
 //! `zombie.characters.AttachedItems`, and
 //! `zombie.characters.skills.PerkFactory`.
 //!
@@ -13,11 +14,11 @@
 
 pub mod attached_items;
 pub mod character;
+pub mod color;
 pub mod observation;
 pub mod skills;
 pub mod survivor;
 pub mod traits;
-pub mod visual;
 pub mod worn_items;
 
 pub use attached_items::{
@@ -29,7 +30,8 @@ pub use observation::{Observation, ObservationFactory, ObservationRef};
 pub use skills::{Perk, PerkFactory, PerkRef};
 pub use survivor::{CharacterGender, SurvivorDesc, SurvivorDescRef, SurvivorDescStatics, SurvivorFactory, SurvivorType};
 pub use traits::CharacterTraits;
-pub use visual::{Color, HumanVisual, ImmutableColor};
+pub use color::{Color, ImmutableColor};
+pub use survivor::UnportedStyles;
 pub use worn_items::{BodyLocation, BodyLocationGroup, BodyLocationGroupRef, BodyLocationRef, BodyLocations, ItemIdentity, WornItem, WornItems};
 
 use pz_scripts::ScriptError;

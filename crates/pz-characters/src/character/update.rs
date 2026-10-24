@@ -370,7 +370,7 @@ impl<I> GameCharacter<I> {
     ) -> ScriptResult {
         let in_vehicle = self.environment.in_vehicle;
         if ctx.is_client() && !self.is_zombie() {
-            self.update_moodles(chars, ctx)?;
+            self.update_moodles(sm, chars, ctx)?;
         }
         if ctx.is_client() || self.is_zombie() {
             return Ok(());
@@ -408,7 +408,7 @@ impl<I> GameCharacter<I> {
             let k = if self.has_trait(sm, "HEMOPHOBIC")? { 0.4 } else { 0.2 };
             self.stats.add(&panic, k * del * fps);
         }
-        self.update_moodles(chars, ctx)?;
+        self.update_moodles(sm, chars, ctx)?;
         if self.asleep {
             self.beta_effect = 0.0;
             self.sleeping_tablet_effect = 0.0;

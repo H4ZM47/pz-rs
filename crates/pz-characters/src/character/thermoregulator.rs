@@ -5,7 +5,8 @@
 //! The original holds its `BodyDamage`, character and `ClimateManager`;
 //! here [`Thermoregulator::update`] takes the owning character, the climate
 //! readings come from [`super::context::CharacterEnvironment`]
-//! (`air_temperature`, `air_and_wind_temperature`, `worn_clothing`) and
+//! (`air_temperature`, `air_and_wind_temperature`), the clothing from the
+//! owner's worn items ([`super::items`]) and
 //! [`SimContext::climate_humidity`], and the `Metabolics` values from the
 //! jar table.
 //!
@@ -16,16 +17,17 @@
 //! Clothing: the original rebuilds the per-node clothing lists only when
 //! the worn item visuals change (checked against a cache shared by all
 //! characters) and reads each item's live insulation, wetness, condition
-//! and holes every update; this rebuilds the lists from
-//! [`super::context::CharacterEnvironment::worn_clothing`] every update,
-//! which gives the same lists. TODO(saves): `save`/`load`.
+//! and holes every update; this rebuilds the lists from the owner's
+//! `getItemVisuals` every update, which gives the same lists. TODO(saves): `save`/`load`.
 
 use std::cell::Cell;
 
+use pz_inventory::InventoryItem;
 use pz_scripts::{ScriptError, ScriptManager, ScriptResult};
 
 use super::body_part::CONTACT_CHILDREN;
 use super::context::SimContext;
+use super::items::{covered_parts, current_condition, is_body_location, is_clothing, visual_hole};
 use super::metabolics::Metabolics;
 use super::stats::{clamp_f32, CharacterStats, Stats};
 use super::GameCharacter;
@@ -142,7 +144,7 @@ pub struct ThermalNode {
     secondary_delta: f32,
     clothing_wetness: f32,
     body_wetness: f32,
-    /// `clothing`: indices into the environment's worn clothing.
+    /// `clothing`: indices into the owner's `getItemVisuals` list.
     clothing: Vec<usize>,
 }
 
@@ -259,7 +261,7 @@ impl ThermalNode {
 
     /// `calculateInsulation`, with the body part's wetness and the worn
     /// clothing.
-    fn calculate_insulation(&mut self, part_wetness: f32, worn: &[super::context::WornClothing]) {
+    fn calculate_insulation(&mut self, part_wetness: f32, worn: &[&InventoryItem]) {
         let layers = self.clothing.len();
         self.insulation = 0.0;
         self.windresist = 0.0;
@@ -268,16 +270,15 @@ impl ThermalNode {
         self.body_wetness = clamp_01(self.body_wetness);
         if layers > 0 {
             for &c in &self.clothing {
-                let item = &worn[c];
-                let item_wetness = clamp_f32(item.wetness * 0.01, 0.0, 1.0);
+                let item = worn[c];
+                let item_wetness = clamp_f32(item.get_wetness() * 0.01, 0.0, 1.0);
                 self.clothing_wetness += item_wetness;
-                let hole = item.holes.get(self.body_part_index).copied().unwrap_or(0.0);
-                if hole > 0.0 {
+                if visual_hole(item, self.body_part_index) > 0.0 {
                     continue;
                 }
-                let mut ins = true_insulation_value(item.insulation);
-                let mut wind = true_windresistance_value(item.windresistance);
-                let mut condition = clamp_f32(item.current_condition * 0.01, 0.0, 1.0);
+                let mut ins = true_insulation_value(item.get_insulation());
+                let mut wind = true_windresistance_value(item.get_windresistance());
+                let mut condition = clamp_f32(current_condition(item) * 0.01, 0.0, 1.0);
                 condition = 0.5 + 0.5 * condition;
                 ins *= (1.0 - item_wetness * 0.75) * condition;
                 self.insulation += ins;
@@ -801,7 +802,7 @@ impl Thermoregulator {
         }
         self.update_core_rate_of_change(ctx)?;
         self.update_metabolic_rate(chr, sm, defs, &moodles, ctx)?;
-        self.update_clothing(chr);
+        self.update_clothing(chr, sm);
         self.update_nodes_heat_delta(chr, defs, ctx)?;
         self.update_heat_deltas(&mut chr.stats, defs, ctx)?;
         self.update_nodes(ctx)?;
@@ -853,7 +854,7 @@ impl Thermoregulator {
         let energy = Self::energy(&chr.stats, defs)?;
         let excercise = clamp_01(1.0 - chr.stats.get(&defs.field("ENDURANCE")?)) * self.met("DefaultExercise")?;
         self.set_metabolic_target(excercise * energy)?;
-        let weight = clamp_01(chr.environment.inventory_capacity_weight / chr.max_weight() as f32);
+        let weight = clamp_01(chr.capacity_weight(sm, ctx) / chr.max_weight() as f32);
         let ratio = 1.0 + weight * weight * 0.35;
         self.set_metabolic_target(self.metabolic_target * ratio)?;
         if !pz_equal(self.metabolic_rate, self.metabolic_target) {
@@ -873,31 +874,33 @@ impl Thermoregulator {
         Ok(())
     }
 
-    /// `updateClothing`: each node's clothing from the worn items.
+    /// `updateClothing`: each node's clothing from the worn items (rebuilt
+    /// every update; the original rebuilds it when `getItemVisuals`
+    /// changes, which gives the same lists).
     // `!(x > 0)` keeps the original's handling of NaN.
     #[allow(clippy::neg_cmp_op_on_partial_ord)]
-    fn update_clothing<I>(&mut self, chr: &GameCharacter<I>) {
+    fn update_clothing<I>(&mut self, chr: &GameCharacter<I>, sm: &ScriptManager) {
         for node in &mut self.nodes {
             node.clothing.clear();
         }
         // `nodes[BodyPartType.ToIndex(BodyPartType.Head)]`.
         let head = self.nodes.iter().find(|n| n.body_part_type == "Head").map(|n| n.body_part_index);
         let n = self.nodes.len();
-        for (i, item) in chr.environment.worn_clothing.iter().enumerate() {
-            if !(item.insulation > 0.0) && !(item.windresistance > 0.0) {
+        for (i, item) in chr.items.item_visuals().into_iter().enumerate() {
+            if !is_clothing(item) || !(item.get_insulation() > 0.0) && !(item.get_windresistance() > 0.0) {
                 continue;
             }
             let mut added = false;
-            if let Some(parts) = &item.covered_parts {
-                for &p in parts {
-                    if p < 0 || p as usize >= n {
+            if let Some(parts) = covered_parts(sm, item) {
+                for p in parts {
+                    if p >= n {
                         continue;
                     }
                     added = true;
-                    self.nodes[p as usize].clothing.push(i);
+                    self.nodes[p].clothing.push(i);
                 }
             }
-            if added || !item.hat_or_mask {
+            if added || !is_body_location(sm, item, "HAT") && !is_body_location(sm, item, "MASK") {
                 continue;
             }
             if let Some(node) = head.and_then(|h| self.nodes.get_mut(h)) {
@@ -936,11 +939,9 @@ impl Thermoregulator {
         let default_met = self.met("Default")?;
         let max_met = self.met("MAX")?;
         let mut nodes_total_heat = 0.0f32;
+        let worn = chr.items.item_visuals();
         for node in &mut self.nodes {
-            node.calculate_insulation(
-                chr.body_damage.body_part_wetness(node.body_part_index),
-                &chr.environment.worn_clothing,
-            );
+            node.calculate_insulation(chr.body_damage.body_part_wetness(node.body_part_index), &worn);
             let mut external_temp = self.air_temperature;
             if self.air_and_wind_temp < self.air_temperature {
                 external_temp -= (self.air_temperature - self.air_and_wind_temp) / (1.0 + node.windresist);

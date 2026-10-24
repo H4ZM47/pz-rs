@@ -1207,63 +1207,77 @@ fn visual<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut LuaSurvivorDesc) -> R) -> L
 }
 
 fn register_human_visual(thread: &mut Thread) {
+    use pz_inventory::visual::human::HumanVisualOwner;
+    use pz_inventory::visual::HumanVisual;
+    // STUB(HairStyles, BeardStyles, PopTemplateManager): see `UnportedStyles`.
+    let styles = &pz_characters::UnportedStyles;
     let b = expose_class(thread, HUMAN_VISUAL_CLASS, None);
+    // `HumanVisual.isFemale()` etc. ask the owner (`IHumanVisual`).
     b.method("isFemale", |c| {
-        let v = visual(c, |d| d.is_female())?;
+        let v = visual(c, |d| HumanVisualOwner::is_female(d))?;
         Ok(c.push(v))
     });
-    b.method("isZombie", |c| Ok(c.push(false)));
-    b.method("isSkeleton", |c| Ok(c.push(false)));
+    b.method("isZombie", |c| {
+        let v = visual(c, |d| HumanVisualOwner::is_zombie(d))?;
+        Ok(c.push(v))
+    });
+    b.method("isSkeleton", |c| {
+        let v = visual(c, |d| HumanVisualOwner::is_skeleton(d))?;
+        Ok(c.push(v))
+    });
     b.method("getSkinTextureIndex", |c| {
-        let v = visual(c, |d| d.human_visual.skin_texture)?;
+        let v = visual(c, |d| d.human_visual.get_skin_texture_index())?;
         Ok(c.push(v))
     });
     b.method("setSkinTextureIndex", |c| {
         let v = int_arg(c, 1);
-        visual(c, |d| d.human_visual.skin_texture = v)?;
+        visual(c, |d| d.human_visual.set_skin_texture_index(v))?;
         Ok(0)
     });
     b.method("getBodyHairIndex", |c| {
-        let v = visual(c, |d| d.human_visual.body_hair)?;
+        let v = visual(c, |d| d.human_visual.get_body_hair_index())?;
         Ok(c.push(v))
     });
     b.method("setBodyHairIndex", |c| {
         let v = int_arg(c, 1);
-        visual(c, |d| d.human_visual.body_hair = v)?;
+        visual(c, |d| d.human_visual.set_body_hair_index(v))?;
         Ok(0)
     });
     b.method("setSkinTextureName", |c| {
         let v = opt_string(c, 1);
-        visual(c, |d| d.human_visual.skin_texture_name = v)?;
+        visual(c, |d| d.human_visual.set_skin_texture_name(v.as_deref()))?;
         Ok(0)
     });
-    // TODO(HairStyles): an unknown style is replaced by a random one.
     b.method("getHairModel", |c| {
-        let v = visual(c, |d| opt_value(d.human_visual.hair_model.as_deref()))?;
+        let v = visual(c, |d| {
+            let mut hv = std::mem::replace(&mut d.human_visual, HumanVisual::new(0));
+            let m = hv.get_hair_model(d, styles);
+            d.human_visual = hv;
+            opt_value(m.as_deref())
+        })?;
         Ok(c.push(v))
     });
     b.method("setHairModel", |c| {
         let v = opt_string(c, 1);
-        visual(c, |d| d.human_visual.hair_model = v)?;
+        visual(c, |d| d.human_visual.set_hair_model(v.as_deref()))?;
         Ok(0)
     });
-    // TODO(BeardStyles): an unknown style is replaced by a random one.
     b.method("getBeardModel", |c| {
         let v = visual(c, |d| {
-            if d.is_female() {
-                d.human_visual.beard_model = None;
-            }
-            opt_value(d.human_visual.beard_model.as_deref())
+            let mut hv = std::mem::replace(&mut d.human_visual, HumanVisual::new(0));
+            let m = hv.get_beard_model(d, styles);
+            d.human_visual = hv;
+            opt_value(m.as_deref())
         })?;
         Ok(c.push(v))
     });
     b.method("setBeardModel", |c| {
         let v = opt_string(c, 1);
-        visual(c, |d| d.human_visual.beard_model = v)?;
+        visual(c, |d| d.human_visual.set_beard_model(v.as_deref()))?;
         Ok(0)
     });
     b.method("getNonAttachedHair", |c| {
-        let v = visual(c, |d| opt_value(d.human_visual.non_attached_hair.as_deref()))?;
+        let v = visual(c, |d| opt_value(d.human_visual.get_non_attached_hair()))?;
         Ok(c.push(v))
     });
     b.method("setNonAttachedHair", |c| {
@@ -1273,7 +1287,7 @@ fn register_human_visual(thread: &mut Thread) {
     });
     b.method("setForceModelScript", |c| {
         let v = opt_string(c, 1);
-        visual(c, |d| d.human_visual.force_model_script = v)?;
+        visual(c, |d| d.human_visual.set_force_model_script(v.as_deref()))?;
         Ok(0)
     });
     b.method("clear", |c| {
@@ -1281,7 +1295,7 @@ fn register_human_visual(thread: &mut Thread) {
         Ok(0)
     });
     b.method("lerp", |c| {
-        let v = pz_characters::HumanVisual::lerp(num_arg(c, 1) as f32, num_arg(c, 2) as f32, num_arg(c, 3) as f32);
+        let v = HumanVisual::lerp(num_arg(c, 1) as f32, num_arg(c, 2) as f32, num_arg(c, 3) as f32);
         Ok(c.push(v as f64))
     });
     b.method("hasBodyVisualFromItemType", |c| {
@@ -1289,7 +1303,7 @@ fn register_human_visual(thread: &mut Thread) {
         let v = visual(c, |d| d.human_visual.has_body_visual_from_item_type(&t))?;
         Ok(c.push(v))
     });
-    // TODO(ItemVisual): returns the removed `ItemVisual`.
+    // TODO(ItemVisual Lua object): returns the removed `ItemVisual`.
     b.method("removeBodyVisualFromItemType", |c| {
         let t = opt_string(c, 1).ok_or_else(npe)?;
         visual(c, |d| d.human_visual.remove_body_visual_from_item_type(&t))?;

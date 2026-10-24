@@ -3,7 +3,7 @@
 //! `GameServer.server`/`GameClient.client`, `Core.debug`/`Core.gameMode`,
 //! `LuaEventManager`/`LuaHookManager`, `Translator`), behind [`SimContext`],
 //! and the per-character world inputs ([`CharacterEnvironment`]) that come
-//! from systems not ported yet (squares, buildings, inventory, sounds).
+//! from systems not ported yet (squares, buildings, sounds).
 //!
 //! Every default is the value the original has in a fresh single-player
 //! game at normal speed with default sandbox options; nothing else is
@@ -58,6 +58,14 @@ pub struct ZomboidGlobals {
     pub idle_increase_rate: f64,
     pub idle_decrease_rate: f64,
     pub vehicle_discomfort_when_over_encumbered: f64,
+    pub equipped_or_worn_encumbrance_multiplier: f64,
+    pub corpse_sickness_filter_drain_multiplier: f64,
+    /// Static initializer: 25.0.
+    pub basic_mask_defense: f32,
+    /// Static initializer: 85.0.
+    pub improvised_gas_mask_defense: f32,
+    /// Static initializer: 100.0.
+    pub standard_gas_mask_defense: f32,
 }
 
 impl Default for ZomboidGlobals {
@@ -102,6 +110,11 @@ impl ZomboidGlobals {
         idle_increase_rate: 0.0,
         idle_decrease_rate: 0.0,
         vehicle_discomfort_when_over_encumbered: 0.0,
+        equipped_or_worn_encumbrance_multiplier: 0.0,
+        corpse_sickness_filter_drain_multiplier: 0.0,
+        basic_mask_defense: 25.0,
+        improvised_gas_mask_defense: 85.0,
+        standard_gas_mask_defense: 100.0,
     };
 }
 
@@ -130,9 +143,6 @@ pub enum SimEvent {
     GainExperienceLevelSound,
     /// `IsoPlayer.playerVoiceSound(name)`.
     PlayerVoiceSound(&'static str),
-    /// A tissue in hand was used by a sneeze (`setCurrentUses(uses - 1)`,
-    /// and `Use()` when it reaches 0).
-    TissueUsed { primary: bool, used_up: bool },
     /// `MoodlesUI.getInstance().wiggle(type)`.
     MoodleWiggle(Rc<RegistryKey>),
     /// `HaloTextHelper`.
@@ -395,30 +405,6 @@ pub trait SimContext {
     fn event(&self, _event: SimEvent) {}
 }
 
-/// One worn `Clothing` item as the thermoregulator reads it (an
-/// `ItemVisual` of `getItemVisuals` whose `getInventoryItem()` is a
-/// `Clothing`), in `getItemVisuals` order.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct WornClothing {
-    /// `getInsulation()`.
-    pub insulation: f32,
-    /// `getWindresistance()`.
-    pub windresistance: f32,
-    /// `getWetness()`.
-    pub wetness: f32,
-    /// `getCurrentCondition()`.
-    pub current_condition: f32,
-    /// `BloodClothingType.getCoveredParts(getBloodClothingType())` as
-    /// `BloodBodyPartType` indices; `None` when `getBloodClothingType()` is
-    /// null.
-    pub covered_parts: Option<Vec<i32>>,
-    /// `getBodyLocation()` is `ItemBodyLocation.HAT` or `MASK`.
-    pub hat_or_mask: bool,
-    /// `getVisual().getHole(part)` by `BloodBodyPartType` index (missing
-    /// entries are 0).
-    pub holes: Vec<f32>,
-}
-
 /// A [`SimContext`] with every default.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefaultSimContext;
@@ -426,7 +412,7 @@ pub struct DefaultSimContext;
 impl SimContext for DefaultSimContext {}
 
 /// What the original reads per character from systems that are not ported
-/// yet (`IsoGridSquare`, `IsoBuilding`, `ItemContainer`, `WorldSoundManager`,
+/// yet (`IsoGridSquare`, `IsoBuilding`, `WorldSoundManager`,
 /// `Temperature`, the state machine). The owner of those systems fills it
 /// before the update; each field names the original call.
 #[derive(Clone, Debug, PartialEq)]
@@ -449,17 +435,15 @@ pub struct CharacterEnvironment {
     pub stress_from_sounds: f32,
     /// `getTotalBlood()`.
     pub total_blood: f32,
-    /// `getInventory().getCapacityWeight()`.
-    pub inventory_capacity_weight: f32,
     /// `getCurrentBuilding() != null && getCurrentBuilding().isToxic()`.
     pub building_toxic: bool,
-    /// `isProtectedFromToxic(false)`.
-    pub protected_from_toxic: bool,
     /// `Temperature.getWindChillAmountForPlayer(player)` when no climate
     /// runs ([`SimContext::climate`] is `None`).
     pub wind_chill_amount: f32,
     /// `isDraggingCorpse()`.
     pub dragging_corpse: bool,
+    /// `isFallOnFront()`.
+    pub fall_on_front: bool,
     /// `getCurrentSquare().haveRoof`.
     pub square_have_roof: bool,
     /// `vehicle.hasRoof(vehicle.getSeat(chr))`.
@@ -478,20 +462,6 @@ pub struct CharacterEnvironment {
     pub busy_with_action: bool,
     /// `CorpseCount.instance.getCorpseCount(chr)`.
     pub corpse_count: i32,
-    /// `getCorpseSicknessDefense(rate, true)` (TODO(pz-inventory): from the
-    /// worn clothing; it also drains gas mask filters).
-    pub corpse_sickness_defense: f32,
-    /// `hasDirtyClothing(part)`, by body part index (missing: false).
-    /// TODO(pz-inventory): from the worn items' visuals.
-    pub dirty_clothing: Vec<bool>,
-    /// `hasBloodyClothing(part)`, by body part index (missing: false).
-    pub bloody_clothing: Vec<bool>,
-    /// The primary hand item's `getCurrentUses()` when it is a `Tissue`,
-    /// `ToiletPaper` or has the `MUFFLE_SNEEZE` tag. TODO(pz-inventory):
-    /// filled from the hand items (and `SimEvent::TissueUsed` applied).
-    pub primary_hand_tissue_uses: Option<i32>,
-    /// The same for the secondary hand item.
-    pub secondary_hand_tissue_uses: Option<i32>,
     /// `ClimateManager.getAirTemperatureForCharacter(chr, false)` when no
     /// climate runs (default 0); with one it is computed.
     pub air_temperature: f32,
@@ -505,14 +475,10 @@ pub struct CharacterEnvironment {
     /// The cell's heat sources on the square's level
     /// (`IsoCell.getHeatSourceHighestTemperature`).
     pub heat_sources: Vec<HeatSource>,
-    /// The worn clothing (`getItemVisuals`).
-    pub worn_clothing: Vec<WornClothing>,
     /// `sprinting` (input and movement).
     pub sprinting: bool,
     /// `IsoPlayer.isAllowSprint()`.
     pub allow_sprint: bool,
-    /// The primary or secondary hand item `isEquippedNoSprint()`.
-    pub hand_item_equipped_no_sprint: bool,
     /// `sneaking`.
     pub sneaking: bool,
     /// `IsoPlayer.currentSpeed`.
@@ -540,11 +506,10 @@ impl Default for CharacterEnvironment {
             swipe_state: false,
             stress_from_sounds: 0.0,
             total_blood: 0.0,
-            inventory_capacity_weight: 0.0,
             building_toxic: false,
-            protected_from_toxic: false,
             wind_chill_amount: 0.0,
             dragging_corpse: false,
+            fall_on_front: false,
             square_have_roof: false,
             vehicle_has_roof: false,
             vehicle_windshield_destroyed: false,
@@ -554,20 +519,13 @@ impl Default for CharacterEnvironment {
             call_out: false,
             busy_with_action: false,
             corpse_count: 0,
-            corpse_sickness_defense: 0.0,
-            dirty_clothing: Vec::new(),
-            bloody_clothing: Vec::new(),
-            primary_hand_tissue_uses: None,
-            secondary_hand_tissue_uses: None,
             air_temperature: 0.0,
             air_and_wind_temperature: 0.0,
             square_z: 0,
             vehicle_inside_temperature: 0.0,
             heat_sources: Vec::new(),
-            worn_clothing: Vec::new(),
             sprinting: false,
             allow_sprint: true,
-            hand_item_equipped_no_sprint: false,
             sneaking: false,
             current_speed: 0.0,
             attacking_weapon_type: None,

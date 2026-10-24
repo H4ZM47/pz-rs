@@ -15,6 +15,7 @@ pz-text.workspace = true
 pz-sandbox.workspace = true
 pz-server-settings.workspace = true
 pz-ui.workspace = true
+pz-inventory.workspace = true
 indexmap.workspace = true
 pz-world.workspace = true
 pz-input.workspace = true

@@ -14,6 +14,9 @@
 //!   `SandboxOptions`, `ZomboidGlobals`, network flags, Lua events) and
 //!   [`CharacterEnvironment`] (per-character inputs from unported world
 //!   systems).
+//! * [`items`]: the inventory, hand and worn items (`pz-inventory` items)
+//!   and the `IsoGameCharacter` methods reading them; [`clothing_wetness`]
+//!   (`ClothingWetness`).
 //! * The body systems, each owned by [`GameCharacter`]: [`body_damage`]
 //!   (`BodyDamage`), [`body_part`] (`BodyPart`, `BodyPartType`,
 //!   `BodyPartLast`, `BodyPartContacts`), [`nutrition`],
@@ -30,8 +33,11 @@
 
 pub mod body_damage;
 pub mod body_part;
+pub mod clothing_wetness;
 pub mod context;
 pub mod fitness;
+pub mod item_owner;
+pub mod items;
 pub mod metabolics;
 pub mod moodles;
 pub mod nutrition;
@@ -46,10 +52,13 @@ use pz_scripts::objects::items::CharacterTrait;
 use pz_scripts::registry::builtin::BuiltinTables;
 use pz_scripts::{ScriptManager, ScriptResult};
 
-pub use body_damage::{BodyDamage, FoodInfo, PillInfo, WeaponHit, ZombieAttack, ZombieAttackOutcome};
+pub use body_damage::{BodyDamage, WeaponUser, ZombieAttack, ZombieAttackOutcome};
+pub use clothing_wetness::ClothingWetness;
+pub use item_owner::CharacterItemContext;
+pub use items::CharacterItems;
 pub use body_part::{BodyPart, BodyPartContacts, BodyPartLast, BodyPartTypes, InjuryEnv};
 pub use context::{
-    CharacterEnvironment, DefaultSimContext, HaloText, SimContext, SimEvent, WornClothing, ZomboidGlobals,
+    CharacterEnvironment, DefaultSimContext, HaloText, SimContext, SimEvent, ZomboidGlobals,
 };
 pub use fitness::{Fitness, FitnessExercise};
 pub use metabolics::Metabolics;
@@ -171,6 +180,10 @@ pub struct GameCharacter<I> {
     pub fitness: Option<Fitness>,
     /// Inputs from unported world systems.
     pub environment: CharacterEnvironment,
+    /// `inventory`, the hand items and `wornItems`.
+    pub items: CharacterItems,
+    /// `clothingWetness` (players only).
+    pub clothing_wetness: Option<ClothingWetness>,
     /// `health`.
     pub health: f32,
     /// `dead`.
@@ -249,12 +262,16 @@ pub struct GameCharacter<I> {
     pub clothing_discomfort_modifier: f32,
     /// `IsoPlayer.sleepingPillsTaken`.
     pub sleeping_pills_taken: i32,
+    /// `IsoPlayer.lastPillsTaken` (calendar millis).
+    pub last_pills_taken: i64,
     /// `IsoPlayer.maxWeightDelta`.
     pub max_weight_delta: f32,
     /// `IsoPlayer.bleedingLevel`.
     pub bleeding_level: i8,
     /// `IsoPlayer.moveSpeed`.
     pub move_speed: f32,
+    /// `IsoZombie.isSkeleton` (zombies only).
+    pub skeleton: bool,
 }
 
 impl<I> GameCharacter<I> {
@@ -280,6 +297,8 @@ impl<I> GameCharacter<I> {
             nutrition: player.then(Nutrition::default),
             fitness: player.then(Fitness::default),
             environment: CharacterEnvironment::default(),
+            items: CharacterItems::default(),
+            clothing_wetness: player.then(ClothingWetness::default),
             health: 1.0,
             dead: false,
             asleep: false,
@@ -319,9 +338,11 @@ impl<I> GameCharacter<I> {
             num_survivors_in_vicinity: 0,
             clothing_discomfort_modifier: 0.0,
             sleeping_pills_taken: 0,
+            last_pills_taken: 0,
             max_weight_delta: 1.0,
             bleeding_level: 0,
             move_speed: 0.06,
+            skeleton: false,
         }
     }
 
@@ -366,7 +387,7 @@ impl<I> GameCharacter<I> {
         if ctx.game_mode() == "Tutorial" {
             return true;
         }
-        if self.environment.hand_item_equipped_no_sprint {
+        if self.items.hand_item_equipped_no_sprint(sm) {
             return false;
         }
         self.moodles.moodle_level_of(sm, "ENDURANCE").map_or(true, |l| l < 2)
@@ -393,6 +414,34 @@ impl<I> GameCharacter<I> {
     /// `isGodMod`.
     pub fn is_god_mod(&self, ctx: &dyn SimContext) -> bool {
         self.cheats.is_set(ctx, "GOD_MODE")
+    }
+
+    /// `IsoPlayer.setSleepingPillsTaken`: one more while intoxicated, and
+    /// the time of the last pill.
+    pub fn set_sleeping_pills_taken(&mut self, chars: &Characters, ctx: &dyn SimContext, n: i32) -> ScriptResult {
+        if self.is_god_mod(ctx) {
+            self.sleeping_pills_taken = 0;
+            return Ok(());
+        }
+        self.sleeping_pills_taken = n;
+        if self.stats.get(&chars.sim.character_stats.field("INTOXICATION")?) > 10.0 {
+            self.sleeping_pills_taken += 1;
+        }
+        self.last_pills_taken = ctx.calendar_time_in_millis();
+        Ok(())
+    }
+
+    /// `IsoPlayer.updateSleepingPillsTaken` (from the player update, its
+    /// owner's): one pill wears off two hours after the last.
+    pub fn update_sleeping_pills_taken(&mut self, chars: &Characters, ctx: &dyn SimContext) -> ScriptResult {
+        if self.sleeping_pills_taken > 0
+            && self.last_pills_taken > 0
+            && ctx.calendar_time_in_millis() - self.last_pills_taken > 0x6DDD00
+        {
+            let n = self.sleeping_pills_taken - 1;
+            self.set_sleeping_pills_taken(chars, ctx, n)?;
+        }
+        Ok(())
     }
     /// `isUnlimitedEndurance`.
     pub fn is_unlimited_endurance(&self, ctx: &dyn SimContext) -> bool {
