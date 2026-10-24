@@ -1791,6 +1791,20 @@ mod tests {
         let c = e.play_sound("Bang", &mut ctx!(b, g));
         let d = e.play_sound("Bang", &mut ctx!(b, g));
         assert!(!e.is_playing(a) && e.is_playing(c) && e.is_playing(d));
+        // Same call stream as the original (checked through the JVM oracle).
+        assert_eq!(
+            b.calls,
+            [
+                "create 1",
+                "prop 1 4 30",
+                "create 2",
+                "prop 2 4 30",
+                "stop 1 false",
+                "release 1",
+                "create 3",
+                "prop 3 4 30"
+            ]
+        );
     }
 
     #[test]
