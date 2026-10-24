@@ -988,8 +988,84 @@ fn register_items(thread: &mut Thread) {
         pz_kahlua::exec::raw_tonumber(a).unwrap_or(0.0) as i8);
     dset!("setIsTurnedOn", |d, a| d.is_turned_on =
         matches!(a, Value::Bool(true)));
-    dset!("setChannel", |d, a| d.channel =
-        pz_kahlua::exec::raw_tonumber(a).unwrap_or(0.0) as i32);
+    dset!("setChannel", |d, a| {
+        let ch = pz_kahlua::exec::raw_tonumber(a).unwrap_or(0.0) as i32;
+        if ch >= d.min_channel_range && ch <= d.max_channel_range {
+            d.channel = ch;
+        }
+    });
+    // `generatePresets` / `addEmergencyChannel` read the channel lists of
+    // `ZomboidRadio`, which is not loaded here: the presets stay empty.
+    dset!("generatePresets", |d, _a| d.presets.presets.clear());
+    dset!("addEmergencyChannel", |_d, _a| ());
+    dset!("setRandomChannel", |d, _a| {
+        if !d.presets.presets.is_empty() {
+            let r = pz_vehicles::rand::next_range(0, d.presets.presets.len() as i32);
+            d.channel = d.presets.presets[r as usize].frequency;
+        } else {
+            let ch = pz_vehicles::rand::next_range(d.min_channel_range, d.max_channel_range);
+            d.channel = ch - ch % 200;
+        }
+    });
+}
+
+pub const VEHICLE_TYPE_CLASS: &str = "zombie.vehicles.VehicleType";
+
+/// A `VehicleType` (zone spawn list).
+pub struct LuaVehicleType(pub Rc<pz_vehicles::vehicle_type::VehicleType>);
+
+impl LuaObject for LuaVehicleType {
+    fn class_name(&self) -> &str {
+        VEHICLE_TYPE_CLASS
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+fn vehicle_type_value(t: Option<Rc<pz_vehicles::vehicle_type::VehicleType>>) -> Value {
+    match t {
+        Some(t) => Value::Object(Rc::new(LuaVehicleType(t))),
+        None => Value::Nil,
+    }
+}
+
+fn register_vehicle_type(thread: &mut Thread) {
+    use pz_vehicles::vehicle_type as vt;
+    let b = expose_class(thread, VEHICLE_TYPE_CLASS, None);
+    let s = |c: &NativeCall<'_>, i: usize| match c.arg(i) {
+        Value::Str(s) => s.to_string(),
+        _ => String::new(),
+    };
+    b.static_fn("getTypeFromName", move |c| {
+        let n = s(c, 0);
+        Ok(c.push(vehicle_type_value(vt::type_from_name(&n))))
+    });
+    b.static_fn("hasTypeForZone", move |c| {
+        let n = s(c, 0);
+        Ok(c.push(vt::has_type_for_zone(&n)))
+    });
+    b.static_fn("getRandomVehicleType", move |c| {
+        let n = s(c, 0);
+        let normal = !matches!(c.arg(1), Value::Bool(false));
+        Ok(c.push(vehicle_type_value(vt::random_vehicle_type(&n, normal))))
+    });
+    b.static_fn("Reset", |_| {
+        vt::reset();
+        Ok(0)
+    });
+    b.method("getBaseVehicleQuality", |c| {
+        let q = with_this::<LuaVehicleType, _>(c, |t| t.0.base_vehicle_quality)?;
+        Ok(c.push(f(q)))
+    });
+    b.method("getRandomBaseVehicleQuality", |c| {
+        let t = with_this::<LuaVehicleType, _>(c, |t| t.0.clone())?;
+        Ok(c.push(f(t.random_base_vehicle_quality())))
+    });
+    b.method("getChanceToSpawnKey", |c| {
+        let k = with_this::<LuaVehicleType, _>(c, |t| t.0.chance_to_spawn_key)?;
+        Ok(c.push(k as f64))
+    });
 }
 
 fn register_collections(thread: &mut Thread) {
@@ -1050,6 +1126,7 @@ pub fn register(thread: &mut Thread) {
     register_script(thread);
     register_items(thread);
     register_collections(thread);
+    register_vehicle_type(thread);
     vlua::install_item_conversions(
         Rc::new(|i: &ItemRef| item_value(i)),
         Rc::new(|v: &Value| item_of(v)),

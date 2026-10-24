@@ -75,13 +75,27 @@ struct Items {
 
 /// The `Rand` draws `Item.InstanceItem` makes before the id: a radio's
 /// `setRandomChannel` (no presets headless) and the `OutfitRNG` seed.
-fn instance_draw_bounds(sm: &pz_scripts::ScriptManager, t: &pz_inventory::ItemTemplate) -> Vec<i32> {
+fn instance_draw_bounds(
+    sm: &pz_scripts::ScriptManager,
+    t: &pz_inventory::ItemTemplate,
+) -> Vec<i32> {
     let mut b = Vec::new();
     if t.class == pz_inventory::ItemClass::Radio {
-        if let Some(i) = sm.find_item(&t.full_type(), true).and_then(|s| s.downcast::<Item>()) {
+        if let Some(i) = sm
+            .find_item(&t.full_type(), true)
+            .and_then(|s| s.downcast::<Item>())
+        {
             let i = i.borrow();
-            let min = if (200..=1_000_000).contains(&i.min_channel) { i.min_channel } else { 200 };
-            let max = if (200..=1_000_000).contains(&i.max_channel) { i.max_channel } else { 1_000_000 };
+            let min = if (200..=1_000_000).contains(&i.min_channel) {
+                i.min_channel
+            } else {
+                200
+            };
+            let max = if (200..=1_000_000).contains(&i.max_channel) {
+                i.max_channel
+            } else {
+                1_000_000
+            };
             b.push(-(max - min));
         }
     }
@@ -104,6 +118,17 @@ impl env::ItemFactory for Items {
             }
         }
         let mut item = pz_inventory::env::create_item(self.registry, id)?;
+        // `Item.InstanceItem` copies these from the script; the item
+        // templates do not carry them yet.
+        if let Some(s) = self
+            .sm
+            .find_item(full_type, true)
+            .and_then(|s| s.downcast::<Item>())
+        {
+            let s = s.borrow();
+            item.max_capacity = s.max_capacity;
+            item.item_capacity = s.item_capacity as f32;
+        }
         item.id = rand::next(2_146_250_223) + 1_233_423;
         Some(item)
     }
@@ -427,7 +452,9 @@ fn install_globals(lua: &mut LuaManager, sandbox_lines: &[String]) {
     native(&g, "instanceItem", |c| {
         let t = c.arg(0).as_str().map(str::to_string);
         let item = t.and_then(|t| env::items().create_item(&t));
-        let v = item.map_or(Value::Nil, |i| pz_lua_api::bind_vehicles::item_value(&Rc::new(std::cell::RefCell::new(i))));
+        let v = item.map_or(Value::Nil, |i| {
+            pz_lua_api::bind_vehicles::item_value(&Rc::new(std::cell::RefCell::new(i)))
+        });
         Ok(c.push(v))
     });
     native(&g, "isClient", |c| Ok(c.push(false)));
@@ -539,7 +566,10 @@ fn main() {
     // Runtime environment.
     pz_vehicles::vehicle::set_script_manager(sm.clone());
     let registry: &'static ScriptItems = Box::leak(Box::new(registry));
-    env::set_items(Rc::new(Items { sm: sm.clone(), registry }));
+    env::set_items(Rc::new(Items {
+        sm: sm.clone(),
+        registry,
+    }));
     env::set_events(Rc::new(NoSound));
     let sandbox_lines: Vec<String> = std::fs::read_to_string(oracle.join("sandbox.txt"))
         .unwrap()
@@ -592,41 +622,86 @@ fn main() {
         println!("lua load: {}", e.lines().next().unwrap_or(""));
     }
 
-    let rows = std::fs::read_to_string(rows_dir.join("rows.tsv")).unwrap();
-    let mut totals = (0usize, 0usize, 0usize, 0usize, 0usize);
-    for line in rows.lines().filter(|l| !l.is_empty()) {
-        let t: Vec<&str> = line.split('\t').collect();
-        let id: i32 = t[0].parse().unwrap();
-        if only.is_some_and(|o| o != id) {
-            continue;
+    // Cases: the rows of a vehicles.db, or (rows dir `--scripts`) a new
+    // vehicle of every script the harness spawned.
+    struct Case {
+        id: i32,
+        dir: std::path::PathBuf,
+        chunk: (i32, i32),
+        saved: Option<pz_world::save::vehicle::BaseVehicle>,
+        bounds: Vec<i32>,
+        script: Option<String>,
+    }
+    let mut cases = Vec::new();
+    if a[5] == "--scripts" {
+        let mut i = 1;
+        while oracle.join(format!("s{i}")).exists() {
+            let dir = oracle.join(format!("s{i}"));
+            let dump = std::fs::read_to_string(dir.join("dump.txt")).unwrap_or_default();
+            let script = dump
+                .lines()
+                .find_map(|l| l.strip_prefix("S "))
+                .map(str::to_string);
+            if only.is_none_or(|o| o == i) {
+                cases.push(Case {
+                    id: i,
+                    dir,
+                    chunk: (1250 + i % 7, 1100 + i / 7),
+                    saved: None,
+                    bounds: Vec::new(),
+                    script,
+                });
+            }
+            i += 1;
         }
-        let vdir = oracle.join(format!("v{id}"));
-        let Ok(java_dump) = std::fs::read_to_string(vdir.join("dump.txt")) else {
-            continue;
-        };
-        let blog = std::fs::read_to_string(vdir.join("bullet.log")).unwrap();
-        let row = VehicleRow {
-            id,
-            wx: t[1].parse().unwrap(),
-            wy: t[2].parse().unwrap(),
-            x: t[3].parse().unwrap(),
-            y: t[4].parse().unwrap(),
-            world_version: t[5].parse().unwrap(),
-            in_meta: t[6] == "1",
-            data: std::fs::read(rows_dir.join(format!("rows/{id}.bin"))).unwrap(),
-        };
-        let drawing = DrawingItems {
-            inner: registry,
-            sm: &sm,
-            bounds: Default::default(),
-        };
-        let saved = match row.load(class, offsets, &drawing) {
-            Ok(Some(v)) => v,
-            other => {
-                println!("v{id}: not loaded ({:?})", other.err());
+    } else {
+        let rows = std::fs::read_to_string(rows_dir.join("rows.tsv")).unwrap();
+        for line in rows.lines().filter(|l| !l.is_empty()) {
+            let t: Vec<&str> = line.split('\t').collect();
+            let id: i32 = t[0].parse().unwrap();
+            if only.is_some_and(|o| o != id) {
                 continue;
             }
+            let row = VehicleRow {
+                id,
+                wx: t[1].parse().unwrap(),
+                wy: t[2].parse().unwrap(),
+                x: t[3].parse().unwrap(),
+                y: t[4].parse().unwrap(),
+                world_version: t[5].parse().unwrap(),
+                in_meta: t[6] == "1",
+                data: std::fs::read(rows_dir.join(format!("rows/{id}.bin"))).unwrap(),
+            };
+            let drawing = DrawingItems {
+                inner: registry,
+                sm: &sm,
+                bounds: Default::default(),
+            };
+            let saved = match row.load(class, offsets, &drawing) {
+                Ok(Some(v)) => v,
+                other => {
+                    println!("v{id}: not loaded ({:?})", other.err());
+                    continue;
+                }
+            };
+            let bounds = drawing.bounds.borrow().clone();
+            cases.push(Case {
+                id,
+                dir: oracle.join(format!("v{id}")),
+                chunk: (row.wx, row.wy),
+                saved: Some(saved),
+                bounds,
+                script: None,
+            });
+        }
+    }
+    let mut totals = (0usize, 0usize, 0usize, 0usize, 0usize);
+    for case in cases {
+        let id = case.id;
+        let Ok(java_dump) = std::fs::read_to_string(case.dir.join("dump.txt")) else {
+            continue;
         };
+        let blog = std::fs::read_to_string(case.dir.join("bullet.log")).unwrap();
         let java_lines: Vec<&str> = java_dump
             .lines()
             .filter(|l| l.starts_with('V') || l.starts_with('E') || l.starts_with("D loadDraws"))
@@ -651,19 +726,36 @@ fn main() {
             rand::seed_standard(id as i64);
             rand::seed_lua(id as i64 * 31 + 7);
             apply_time(times[0]);
-            let bounds = drawing.bounds.borrow().clone();
-            let v = pz_vehicles::save::from_save_with(&saved, || {
-                for b in &bounds {
-                    if *b < 0 {
-                        rand::next_range(0, -*b);
-                    } else {
-                        rand::next(*b);
+            let bounds = case.bounds.clone();
+            let v = match &case.saved {
+                Some(saved) => pz_vehicles::save::from_save_with(saved, || {
+                    for b in &bounds {
+                        if *b < 0 {
+                            rand::next_range(0, -*b);
+                        } else {
+                            rand::next(*b);
+                        }
                     }
+                }),
+                None => {
+                    let v = BaseVehicle::new();
+                    v.set_script_name(case.script.as_deref().unwrap_or(""));
+                    let (wx, wy) = case.chunk;
+                    v.set_position((wx * 8) as f32 + 4.5, (wy * 8) as f32 + 3.25, 0.0);
+                    let q = pz_vehicles::jmath::Quaternionf::angle_axis(
+                        id as f32 * 0.37,
+                        0.0,
+                        1.0,
+                        0.0,
+                    );
+                    v.st_mut().saved_rot = q;
+                    v.st_mut().jni_transform.set_rotation(&q);
+                    v
                 }
-            });
+            };
             rust_lines.push(format!("D loadDraws={}", bounds.len()));
             rand::seed_standard(id as i64 + 1_000_003);
-            v.st_mut().chunk = Some((row.wx, row.wy));
+            v.st_mut().chunk = Some(case.chunk);
             v.add_to_world();
             manager::process_add_vehicles();
             rust_lines.push(vdump(&v, -1));
@@ -755,8 +847,15 @@ fn main() {
                                     let pid = pa.split(':').next().unwrap_or("");
                                     let fa: Vec<&str> = pa.split(':').collect();
                                     let fb: Vec<&str> = pb.split(':').collect();
-                                    let k = fa.iter().zip(fb.iter()).position(|(x, y)| x != y).unwrap_or(0);
-                                    fields.push(format!("parts.{pid}.{}", fa.get(k).map_or("", |x| &x[..1.min(x.len())])));
+                                    let k = fa
+                                        .iter()
+                                        .zip(fb.iter())
+                                        .position(|(x, y)| x != y)
+                                        .unwrap_or(0);
+                                    fields.push(format!(
+                                        "parts.{pid}.{}",
+                                        fa.get(k).map_or("", |x| &x[..1.min(x.len())])
+                                    ));
                                 }
                             }
                         } else {
@@ -781,13 +880,17 @@ fn main() {
         totals.3 += mism.len();
         totals.4 += remaining;
         println!(
-            "v{id}: lines={} diff={} bullet_mismatch={} bullet_left={} lua_errors={}",
+            "{}{id}: lines={} diff={} bullet_mismatch={} bullet_left={} lua_errors={}",
+            if case.script.is_some() { "s" } else { "v" },
             java_lines.len(),
             ndiff,
             mism.len(),
             remaining,
             pz_vehicles::lua::take_errors().len()
         );
+        for e in pz_vehicles::lua::take_errors().iter().take(2) {
+            println!("  lua: {}", e.lines().next().unwrap_or(""));
+        }
         if !field_counts.is_empty() {
             println!("  differing fields: {:?}", field_counts);
         }
