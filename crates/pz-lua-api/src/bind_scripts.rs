@@ -1413,6 +1413,7 @@ mod tests {
         }
         let sm = ScriptManager::new();
         sm.builtin_tables.borrow_mut().perk_ids = ["Woodwork", "Cooking"].map(String::from).to_vec();
+        sm.builtin_tables.borrow_mut().metabolics = vec![("Default".into(), 1.5), ("Napping".into(), 0.5)];
         for (reg, id) in [("item_tag", "t:shiny"), ("item_tag", "t:dull"), ("item_type", "t:normal")] {
             sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
         }
@@ -1444,6 +1445,7 @@ mod tests {
         item Apple { DisplayName = Red Apple, Weight = 0.5, Tags = t:shiny, ClothingItem = AppleHat, }
         item Stone { Weight = -2, Tags = t:dull, }
         recipe Mash { Apple, keep Stone=2, Result:Apple=2, Time:30.0, }
+        timedAction Nap { metabolics = Napping, }
         model AppleModel { mesh = Apple, attachment world { offset = 1 2 3, rotate = 0 90 0, } }
         vehicle Cart {
             mass = 300, zombieType = Farmer,
@@ -1506,6 +1508,7 @@ mod tests {
             &mut t,
             r#"
             local sm = getScriptManager()
+            assert(sm:getTimedActionScript("Nap"):getMetabolics() == Metabolics.Napping)
             local m = sm:getModelScript("AppleModel")
             local w0 = m:getAttachmentById("world")
             assert(m:getMeshName() == "Apple" and m:getTextureName() == "Apple" and m:getAttachmentCount() == 1)

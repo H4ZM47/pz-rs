@@ -355,6 +355,25 @@ pub struct BuiltinTables {
 }
 
 impl BuiltinTables {
+    /// `Metabolics.valueOf`: `name` if it is a constant.
+    pub fn metabolics_value_of(&self, name: &str) -> ScriptResult<String> {
+        if self.metabolics.iter().any(|(n, _)| n == name) {
+            return Ok(name.to_string());
+        }
+        Err(ScriptError::new(format!(
+            "java.lang.IllegalArgumentException: No enum constant zombie.characters.BodyDamage.Metabolics.{name}"
+        )))
+    }
+
+    /// `BodyPartType.FromString`: the constant whose `name` equals `s`
+    /// ignoring case, else `MAX`.
+    pub fn body_part_from_string(&self, s: &str) -> String {
+        self.body_parts
+            .iter()
+            .find(|p| crate::java::eq_ignore_case(&p.name, s))
+            .map_or_else(|| "MAX".to_string(), |p| p.field.clone())
+    }
+
     /// `PerkFactory.Perks.FromString`: the perk id, or `"MAX"` when unknown.
     pub fn perk_from_string(&self, id: &str) -> String {
         if self.perk_ids.iter().any(|p| p == id) {
