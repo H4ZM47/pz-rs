@@ -284,6 +284,7 @@ fn lamp_lights_its_surroundings_at_night() {
         primary_g: 0.9,
         primary_b: 0.8,
         lights: vec![light],
+        ..Default::default()
     };
     sq.objects.push(IsoObject::new(
         id,
