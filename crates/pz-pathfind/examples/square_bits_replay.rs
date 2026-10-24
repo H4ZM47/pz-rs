@@ -12,13 +12,18 @@
 //! chunk). Nothing here is game data; results are recorded as notes only.
 //!
 //! The replay loads the same chunks (region plus margin, row-major) with
-//! `pz-world`'s lotpack loader, recalculates their squares, builds every
+//! `pz-world`'s lotpack loader in the game's load order: each chunk is
+//! loaded, recalculated (`recalc_chunk_squares`) and passed through
+//! `loadInMainThread` before the next one enters the cell, as
+//! `IsoChunkMap.processAllLoadGridSquare` adds chunks one at a time. It then
+//! builds every
 //! chunk buffer with [`SquareBits::chunk_update_buffer`] and compares byte
 //! for byte, then square by square with per-bit counts. Each mismatching
 //! square is classified by comparing the inputs `getBits` reads (flags,
 //! roof, room, building, tree/bush, objects) with the oracle's.
 //!
-//! Results on build 42 (612 chunks, 101056 squares):
+//! Results on build 42 (612 chunks, 101056 squares; unchanged by the
+//! load order, which only moves collide matrices):
 //!
 //! | region | squares | bit-exact | buffers identical |
 //! |---|---|---|---|
@@ -392,7 +397,10 @@ fn main() {
             records.iter().map(|r| r.wy).max().unwrap(),
         );
         let mut cell = IsoCell::default();
-        let mut order = Vec::new();
+        // Load order (`IsoChunkMap.processAllLoadGridSquare`): each chunk is
+        // loaded, recalculated and passed through `loadInMainThread` before
+        // the next one enters the cell, so the cross-chunk passes only see
+        // the chunks loaded before it.
         for wy in ry0 - 1..=ry1 + 1 {
             for wx in rx0 - 1..=rx1 + 1 {
                 let mut rand = JavaRandom::new(((wx as i64) << 32) ^ (wy as i64 & 0xffff_ffff));
@@ -406,14 +414,9 @@ fn main() {
                     hooks: &mut hooks,
                 };
                 cell.load_chunk(&meta, wx, wy, &mut env);
-                order.push((wx, wy));
+                cell.recalc_chunk_squares(wx, wy, &meta, &sprites);
+                cell.load_in_main_thread(wx, wy, &meta, &sprites);
             }
-        }
-        for &(wx, wy) in &order {
-            cell.recalc_chunk_squares(wx, wy, &meta, &sprites);
-        }
-        for &(wx, wy) in &order {
-            cell.load_in_main_thread(wx, wy, &meta, &sprites);
         }
         let sb = SquareBits::new(&sprites, &meta, &cell, &DefaultBitsHooks).unwrap();
         let (mut n_sq, mut n_exact, mut n_buf, mut n_content) = (0, 0, 0, 0);
