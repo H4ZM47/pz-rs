@@ -39,6 +39,7 @@ pub mod bind_world;
 pub mod events;
 pub mod expose;
 pub mod global_objects;
+pub mod global_objects_save;
 pub mod lua_manager;
 pub mod savefile;
 

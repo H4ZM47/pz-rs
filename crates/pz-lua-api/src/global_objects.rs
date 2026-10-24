@@ -13,8 +13,9 @@
 //! The engine drives it with [`init_lookup`] once the world's meta grid is
 //! known (`GlobalObjectLookup.init`), [`init_systems`] at world start, and
 //! [`update_server`] / [`update_client`] each frame (the single-player
-//! packet pumps). Saving and loading `gos_*.bin`, multiplayer transport and
-//! the `IsoObject`-based hooks are not ported.
+//! packet pumps). Saving and loading `gos_*.bin` is in
+//! [`crate::global_objects_save`]; multiplayer transport and the
+//! `IsoObject`-based hooks are not ported.
 
 use pz_kahlua::{LuaError, LuaResult, TableRef, Thread, Value};
 use std::cell::{Cell, RefCell};
@@ -656,13 +657,16 @@ fn int_field(t: &TableRef, key: &str) -> LuaResult<i32> {
 }
 
 /// `registerSystem(name)`. A new client system takes over the initial
-/// state the server handed over; a new server system would load its save
-/// file (not ported: behaves as if there is none).
+/// state the server handed over; a new server system loads its save file
+/// from the folder set by [`crate::global_objects_save::set_save_dir`].
 pub fn register_system(side: Side, name: &str) -> LuaResult<Rc<GlobalObjectSystem>> {
     if let Some(s) = system_by_name(side, name) {
         return Ok(s);
     }
     let system = new_system(side, name)?;
+    if side == Side::Server {
+        crate::global_objects_save::load_registered(&system);
+    }
     if side == Side::Client {
         let state = with_registry(side, |r| r.initial_state.get(name).cloned());
         if let Some(tbl) = state {

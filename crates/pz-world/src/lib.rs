@@ -18,8 +18,10 @@ pub mod map_groups;
 pub mod meta_grid;
 pub mod objects;
 pub mod sprite;
+pub mod meta_save;
 pub mod meta_zones;
 pub mod tiledef;
+pub mod zone_save;
 pub mod zones;
 
 pub use chunk::{ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare};

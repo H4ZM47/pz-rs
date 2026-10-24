@@ -208,6 +208,9 @@ pub struct Zone {
     pub last_action_timestamp: i32,
     pub have_construction: bool,
     pub kind: ZoneKind,
+    /// `id`. The original draws a random UUID in the constructor; here it
+    /// stays unset until a save assigns one (see `zone_save`).
+    pub id: Option<pz_kahlua::java_io::JavaUuid>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

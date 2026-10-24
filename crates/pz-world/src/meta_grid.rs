@@ -296,6 +296,17 @@ impl IsoMetaGrid {
         self.grid[(x * self.height + y) as usize].as_ref()
     }
 
+    /// `setCell(x, y, cell)` (grid-relative). Panics outside the grid, like
+    /// the original's array store; the debug-only coordinate check is not
+    /// ported.
+    pub fn set_cell(&mut self, x: i32, y: i32, cell: Option<IsoMetaCell>) {
+        assert!(
+            x >= 0 && y >= 0 && x < self.width && y < self.height,
+            "cell {x},{y} outside the grid"
+        );
+        *self.cell_slot(x, y) = cell;
+    }
+
     /// An empty grid covering cells `min..=max` with no map files, as the
     /// state `Create()` leaves when no lot headers exist in that range.
     pub fn with_bounds(min_x: i32, min_y: i32, max_x: i32, max_y: i32) -> IsoMetaGrid {
