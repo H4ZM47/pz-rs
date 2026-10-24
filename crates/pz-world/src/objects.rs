@@ -8,7 +8,7 @@
 
 use crate::chunk::IsoGridSquare;
 use crate::defs::RoomDef;
-use crate::save::items::{ItemBlob, ItemRun};
+use crate::save::items::ItemBlob;
 use crate::save::lua_table::LuaTable;
 use crate::save::visual::HumanVisual;
 use crate::sprite::SpriteIdx;
@@ -17,44 +17,7 @@ use crate::sprite::SpriteIdx;
 /// identity, e.g. for `specialObjects`).
 pub type ObjectId = u32;
 
-/// `ItemContainer`: created from sprite properties by map loading, or read
-/// from a chunk file with its items (see [`crate::save::items`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ItemContainer {
-    /// `type`; `None` when the sprite has the `container` flag but no
-    /// `container` property.
-    pub kind: Option<String>,
-    pub capacity: i32,
-    pub container_position: Option<String>,
-    pub freezer_position: Option<String>,
-    /// `ID` (saved by dead bodies and mannequins only).
-    pub id: i32,
-    pub explored: bool,
-    pub has_been_looted: bool,
-    /// `items` as saved: runs of identical items.
-    pub items: Vec<ItemRun>,
-}
-
-impl ItemContainer {
-    /// `new ItemContainer(type, square, parent)`.
-    pub fn new(kind: Option<&str>) -> Self {
-        ItemContainer {
-            kind: kind.map(str::to_string),
-            capacity: 50,
-            container_position: None,
-            freezer_position: None,
-            id: 0,
-            explored: false,
-            has_been_looted: false,
-            items: Vec::new(),
-        }
-    }
-
-    /// `getItems().size()`.
-    pub fn item_count(&self) -> usize {
-        self.items.iter().map(ItemRun::count).sum()
-    }
-}
+pub use pz_inventory::container::ItemContainer;
 
 /// `IsoLightSource` (map-loading fields).
 #[derive(Clone, Debug, PartialEq)]
@@ -272,137 +235,7 @@ pub struct IsoTree {
     pub damage: i32,
 }
 
-/// `PresetEntry`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PresetEntry {
-    pub name: String,
-    pub frequency: i32,
-}
-
-/// `DevicePresets`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DevicePresets {
-    pub max_presets: i32,
-    pub presets: Vec<PresetEntry>,
-}
-
-impl Default for DevicePresets {
-    fn default() -> Self {
-        DevicePresets {
-            max_presets: 10,
-            presets: Vec::new(),
-        }
-    }
-}
-
-impl DevicePresets {
-    /// `addPreset`: skipped when the frequency or the name is present, or
-    /// when full.
-    pub fn add_preset(&mut self, name: &str, frequency: i32) {
-        if self
-            .presets
-            .iter()
-            .any(|p| p.frequency == frequency || p.name == name)
-        {
-            return;
-        }
-        if (self.presets.len() as i32) < self.max_presets {
-            self.presets.push(PresetEntry {
-                name: name.to_string(),
-                frequency,
-            });
-        }
-    }
-}
-
-/// `DeviceData` (state fields; sound and media playback are not ported).
-#[derive(Clone, Debug, PartialEq)]
-pub struct DeviceData {
-    pub device_name: String,
-    pub two_way: bool,
-    pub transmit_range: i32,
-    pub mic_range: i32,
-    pub mic_is_muted: bool,
-    pub base_volume_range: f32,
-    pub device_volume: f32,
-    pub is_portable: bool,
-    pub is_television: bool,
-    pub is_high_tier: bool,
-    pub is_turned_on: bool,
-    pub channel: i32,
-    pub min_channel_range: i32,
-    pub max_channel_range: i32,
-    pub presets: DevicePresets,
-    pub is_battery_powered: bool,
-    pub has_battery: bool,
-    pub power_delta: f32,
-    pub use_delta: f32,
-    pub headphone_type: i32,
-    pub media_index: i16,
-    pub media_type: i8,
-    pub no_transmit: bool,
-    pub last_minute_stamp: i64,
-    pub media_item: Option<String>,
-}
-
-impl Default for DeviceData {
-    /// `new DeviceData()`.
-    fn default() -> Self {
-        DeviceData {
-            device_name: "WaveSignalDevice".to_string(),
-            two_way: false,
-            transmit_range: 1000,
-            mic_range: 5,
-            mic_is_muted: false,
-            base_volume_range: 15.0,
-            device_volume: 1.0,
-            is_portable: false,
-            is_television: false,
-            is_high_tier: false,
-            is_turned_on: false,
-            channel: 88000,
-            min_channel_range: 200,
-            max_channel_range: 1000000,
-            presets: DevicePresets::default(),
-            is_battery_powered: true,
-            has_battery: true,
-            power_delta: 1.0,
-            use_delta: 0.001,
-            headphone_type: -1,
-            media_index: -1,
-            media_type: -1,
-            no_transmit: false,
-            last_minute_stamp: -1,
-            media_item: None,
-        }
-    }
-}
-
-impl DeviceData {
-    /// `setDeviceVolume` (without the network transmit).
-    pub fn set_device_volume(&mut self, f: f32) {
-        self.device_volume = f.clamp(0.0, 1.0);
-    }
-
-    /// `setTurnedOnRaw`.
-    pub fn set_turned_on_raw(&mut self, b: bool) {
-        self.is_turned_on = b;
-        if !b {
-            self.last_minute_stamp = -1;
-        }
-    }
-
-    /// `setPower`.
-    pub fn set_power(&mut self, p: f32) {
-        self.power_delta = p.clamp(0.0, 1.0);
-    }
-
-    /// `setInitialPower` with `GameTime.getMinutesStamp()`.
-    pub fn set_initial_power(&mut self, minutes_stamp: i64) {
-        self.last_minute_stamp = minutes_stamp;
-        self.set_power(self.power_delta - self.use_delta * minutes_stamp as f32);
-    }
-}
+pub use pz_inventory::device::{DeviceData, DevicePresets, PresetEntry};
 
 /// `IsoWorldInventoryObject`: an item lying on the floor.
 #[derive(Clone, Debug, PartialEq)]
@@ -854,13 +687,7 @@ pub struct OverlaySprite {
     pub color: Option<[f32; 4]>,
 }
 
-/// One saved ECS component (`GameEntity.saveEntity`): its type id and
-/// payload, kept as bytes (the `ByteBlock` length frames it).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ComponentBlob {
-    pub type_id: i16,
-    pub data: Vec<u8>,
-}
+pub use pz_inventory::component::ComponentBlob;
 
 /// `IsoObject` plus its class.
 #[derive(Clone, Debug, PartialEq)]

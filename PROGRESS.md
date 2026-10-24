@@ -47,6 +47,42 @@ Status of the Rust port. Update this file with every merged change.
   locally). Square flags and wall/window edge queries come from
   `pz_world::square`; season dates use `pz_core::calendar` (the host time
   zone with daylight saving). Lua: `bind_erosion`.
+- Items (`pz-inventory`): `InventoryItem` and the subclasses saves hold
+  (Food, Clothing, AlarmClock(Clothing), HandWeapon with weapon parts,
+  DrainableComboItem, ComboItem, WeaponPart, Literature, Key, Moveable,
+  Radio, InventoryContainer, MapItem with opaque symbols), creation from
+  item scripts, `save`/`load` with their load-time changes,
+  `ItemContainer` and `CompressIdenticalItems`, mod data tables and
+  `WorldDictionary.bin`. Chunk files now hold decoded items: 14,850 of
+  14,894 chunk re-saves are byte-identical to the original's (13 still
+  differ in items: keys saved with id -1 draw a random id, and a
+  respirator's alternate model name), 62,900 of 62,914 items load with the
+  original's field values (the 14 others are those random key ids), and
+  the original loads the chunks written here with the same item fields.
+  `AnimalInventoryItem` stays raw bytes. Checked locally.
+- `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
+  of `media/scripts` (game + mods, template-first file order), with Java
+  `HashMap` iteration order and script version hashes. On Build 42 all
+  37 script types load with the same per-type order and script versions as
+  the original (checked locally against the original `ScriptManager`); only
+  `StringList` has its typed class so far, others load as raw blocks.
+- `pz-scripts` script classes: items, recipes, evolved recipes, fixing,
+  models, sounds, animations, ragdolls, vehicles and templates, fluids,
+  energy, timed actions, XUI scripts, entities with all components, craft
+  recipes, item configs, traits/professions, item filters, hit reactions.
+  Field-level dumps of every Build 42 script of these types match the
+  original (checked locally). Built-in registry keys come from the installed
+  `projectzomboid.jar` via `pz-classfile`.
+- `pz-entity`: `GameEntity` component storage and `saveEntity`/`loadEntity`
+  (`ByteBlock` framing, load-in-place), the saved state of every component
+  type found in Build 42 saves (FluidContainer with fluids/filters,
+  Attributes, Durability, SpriteConfig, SpriteOverlayConfig, UiConfig,
+  Script, CraftBench, CraftLogic/DryingCraftLogic, Resources, MetaTag and
+  the data-less ones), meta entities (`entity_data.bin`), and
+  `GameEntityFactory` components from scripts. Checked locally on 7 saves:
+  all 148,039 component blocks (objects, items, meta entities) decode and
+  re-encode byte-identically with fields matching the original's loaded
+  objects.
 - StringLib and OsLib. Local differential run against the original Kahlua
   (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
   output; the remaining one differs only in an identity hash.

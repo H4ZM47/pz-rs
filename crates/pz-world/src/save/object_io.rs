@@ -262,7 +262,7 @@ fn load_base(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
             if has(bits, 2) {
                 let n = r.i8()?;
                 for i in 0..n.max(0) {
-                    let c = load_container(r, ctx.items)?;
+                    let c = load_container(r, wv, ctx.items)?;
                     if i == 0 {
                         o.container = Some(c);
                     } else {
@@ -466,7 +466,7 @@ fn save_base(
         bits.add(2);
         w.i8(o.container_count() as i8);
         for c in o.containers() {
-            save_container(w, c);
+            save_container(w, c, ctx.items)?;
         }
     }
     if let Some(t) = mod_data.filter(|t| !t.is_empty()) {
@@ -556,83 +556,11 @@ fn sprite_id_npe(ctx: &SaveCtx<'_>, s: Option<SpriteIdx>, what: &str) -> SaveRes
 }
 
 fn load_device(r: &mut Reader<'_>, d: &mut DeviceData) -> SaveResult<()> {
-    d.device_name = r.string()?;
-    d.two_way = r.bool()?;
-    d.transmit_range = r.i32()?;
-    d.mic_range = r.i32()?;
-    d.mic_is_muted = r.bool()?;
-    d.base_volume_range = r.f32()?;
-    d.device_volume = r.f32()?;
-    d.is_portable = r.bool()?;
-    d.is_television = r.bool()?;
-    d.is_high_tier = r.bool()?;
-    d.is_turned_on = r.bool()?;
-    d.channel = r.i32()?;
-    d.min_channel_range = r.i32()?;
-    d.max_channel_range = r.i32()?;
-    d.is_battery_powered = r.bool()?;
-    d.has_battery = r.bool()?;
-    d.power_delta = r.f32()?;
-    d.use_delta = r.f32()?;
-    d.headphone_type = r.i32()?;
-    if r.bool()? {
-        d.presets.presets.clear();
-        d.presets.max_presets = r.i32()?;
-        let n = r.i32()?;
-        for _ in 0..n.max(0) {
-            let name = r.string()?;
-            let frequency = r.i32()?;
-            if (d.presets.presets.len() as i32) < d.presets.max_presets {
-                d.presets.presets.push(PresetEntry { name, frequency });
-            }
-        }
-    }
-    d.media_index = r.i16()?;
-    d.media_type = r.i8()?;
-    if r.bool()? {
-        d.media_item = Some(r.string()?);
-    }
-    d.no_transmit = r.bool()?;
-    Ok(())
+    d.load(r)
 }
 
 fn save_device(w: &mut Writer, d: &DeviceData) {
-    w.string(&d.device_name);
-    w.bool(d.two_way);
-    w.i32(d.transmit_range);
-    w.i32(d.mic_range);
-    w.bool(d.mic_is_muted);
-    w.f32(d.base_volume_range);
-    w.f32(d.device_volume);
-    w.bool(d.is_portable);
-    w.bool(d.is_television);
-    w.bool(d.is_high_tier);
-    w.bool(d.is_turned_on);
-    w.i32(d.channel);
-    w.i32(d.min_channel_range);
-    w.i32(d.max_channel_range);
-    w.bool(d.is_battery_powered);
-    w.bool(d.has_battery);
-    w.f32(d.power_delta);
-    w.f32(d.use_delta);
-    w.i32(d.headphone_type);
-    w.i8(1);
-    w.i32(d.presets.max_presets);
-    w.i32(d.presets.presets.len() as i32);
-    for p in &d.presets.presets {
-        w.string(&p.name);
-        w.i32(p.frequency);
-    }
-    w.i16(d.media_index);
-    w.i8(d.media_type);
-    match &d.media_item {
-        Some(m) => {
-            w.i8(1);
-            w.string(m);
-        }
-        None => w.i8(0),
-    }
-    w.bool(d.no_transmit);
+    d.save(w)
 }
 
 fn load_washer(r: &mut Reader<'_>) -> SaveResult<WasherLogic> {
@@ -798,7 +726,7 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
             let mut worn_items = Vec::new();
             if r.bool()? {
                 let id = r.i32()?;
-                let mut c = load_container(r, ctx.items)?;
+                let mut c = load_container(r, wv, ctx.items)?;
                 c.id = id;
                 container = c;
                 let n = r.i8()?;
@@ -1091,9 +1019,8 @@ fn save_thumpable(w: &mut Writer, ctx: &SaveCtx<'_>, t: &IsoThumpable, key_id: i
     bits.write(w);
 }
 
-fn opt_item(r: &mut Reader<'_>, ctx: &SaveCtx<'_>) -> SaveResult<Option<ItemBlob>> {
-    let item = ItemBlob::load(r)?;
-    Ok(ctx.items.exists(item.registry_id()).then_some(item))
+fn opt_item(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32) -> SaveResult<Option<ItemBlob>> {
+    ItemBlob::load(r, wv, ctx.items)
 }
 
 /// Classes whose state is built entirely in their `load`.
@@ -1111,8 +1038,13 @@ fn load_special(
             let zoff = r.f32()?;
             let _offset_x = r.f32()?;
             let _offset_y = r.f32()?;
-            let item = ItemBlob::load(r)?;
-            let exists = ctx.items.exists(item.registry_id());
+            let rec = super::items::read_record(r)?;
+            let exists = ctx.items.exists(i16::from_be_bytes([rec[0], rec[1]]));
+            let item = if exists {
+                ItemBlob::decode(rec, wv, ctx.items)
+            } else {
+                ItemBlob::Raw(rec.to_vec())
+            };
             let drop_time = r.f64()?;
             let bits = super::io::read_header(r, 1)?;
             o.kind = ObjectKind::WorldInventory(Box::new(IsoWorldInventoryObject {
@@ -1239,7 +1171,7 @@ fn load_special(
                     let ne = r.i8()?;
                     let mut eggs = Vec::new();
                     for _ in 0..ne.max(0) {
-                        if let Some(e) = opt_item(r, ctx)? {
+                        if let Some(e) = opt_item(r, ctx, wv)? {
                             eggs.push(e);
                         }
                     }
@@ -1326,13 +1258,21 @@ fn load_special(
                 _ => s,
             };
             if r.bool()? {
-                t.weapon = opt_item(r, ctx)?;
+                t.weapon = opt_item(r, ctx, wv)?;
             }
             ObjectKind::Trap(Box::new(t))
         }
         "IsoCarBatteryCharger" => {
-            let item = if r.bool()? { opt_item(r, ctx)? } else { None };
-            let battery = if r.bool()? { opt_item(r, ctx)? } else { None };
+            let item = if r.bool()? {
+                opt_item(r, ctx, wv)?
+            } else {
+                None
+            };
+            let battery = if r.bool()? {
+                opt_item(r, ctx, wv)?
+            } else {
+                None
+            };
             ObjectKind::CarBatteryCharger(Box::new(IsoCarBatteryCharger {
                 item,
                 battery,
@@ -1395,7 +1335,7 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
             w.f32(wi.zoff);
             w.f32(wi.offset_x);
             w.f32(wi.offset_y);
-            wi.item.save(w);
+            wi.item.save(w, ctx.items)?;
             w.f64(wi.drop_time);
             let mut bits = BitHeaderWrite::alloc(w, 1);
             if wi.ignore_remove_sandbox {
@@ -1583,7 +1523,7 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
                 Some(c) => {
                     w.i8(1);
                     w.i32(c.id);
-                    save_container(w, c);
+                    save_container(w, c, ctx.items)?;
                     w.i8(m.worn_items.len() as i8);
                     for (loc, i) in &m.worn_items {
                         w.string(loc);
@@ -1639,7 +1579,7 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
                 for nb in &m.nest_boxes {
                     w.i8(nb.eggs.len() as i8);
                     for e in &nb.eggs {
-                        e.save(w);
+                        e.save(w, ctx.items)?;
                     }
                     w.i8(0);
                 }
@@ -1673,7 +1613,7 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
             match &t.weapon {
                 Some(i) => {
                     w.i8(1);
-                    i.save(w);
+                    i.save(w, ctx.items)?;
                 }
                 None => w.i8(0),
             }
@@ -1683,7 +1623,7 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
                 match i {
                     Some(i) => {
                         w.i8(1);
-                        i.save(w);
+                        i.save(w, ctx.items)?;
                     }
                     None => w.i8(0),
                 }
