@@ -350,6 +350,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
+name = "defmt"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4a0795ac740cb54d7b3775c9c17345f6aaecf884c01733b39d6017738e0e3e1"
+dependencies = [
+ "bitflags 1.3.2",
+ "defmt-macros",
+]
+
+[[package]]
+name = "defmt-macros"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "840bb056bd99c495c9188198a258ab787c79f306d864db3e6e8451442d6d8366"
+dependencies = [
+ "defmt-parser",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
+]
+
+[[package]]
+name = "defmt-parser"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71958f69fb2de856c5dd51ac9377e986ca1aa5919f931bf5395a807277f889a0"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "dispatch"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -679,6 +710,60 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c033f80b2c113cdf91ab7a33faa9cbc014726dcad99880c8609af2a370edf37d"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "jiff"
+version = "0.2.38"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2b005715dcbeb0089a3c0dab99f2ff1cc3b2525323552703d648585d342a383"
+dependencies = [
+ "defmt",
+ "jiff-core",
+ "jiff-static",
+ "jiff-tzdb-platform",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+ "windows-link",
+]
+
+[[package]]
+name = "jiff-core"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e52fe76043ccecc9005d2305ebaadf7d7fc0cc89ca6baa10a94d6bc68c7128c"
+dependencies = [
+ "defmt",
+ "log",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.38"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cc9817253cf7c7ee4684451bd327e88d6f3658014e54a29198625590650695c"
+dependencies = [
+ "jiff-core",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa8377070c6bae868759445e5a77f66d84f0b72f3a054bfb00e6d038b8282da7"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
+dependencies = [
+ "jiff-tzdb",
 ]
 
 [[package]]
@@ -1475,6 +1560,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
+name = "pz-characters"
+version = "0.1.0"
+dependencies = [
+ "pz-core",
+ "pz-scripts",
+]
+
+[[package]]
 name = "pz-classfile"
 version = "0.1.0"
 dependencies = [
@@ -1485,9 +1578,13 @@ dependencies = [
 name = "pz-client"
 version = "0.1.0"
 dependencies = [
+ "png",
+ "pz-characters",
+ "pz-engine",
  "pz-fs",
  "pz-kahlua",
  "pz-lua-api",
+ "pz-scripts",
  "pz-ui",
 ]
 
@@ -1495,6 +1592,7 @@ dependencies = [
 name = "pz-core"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "pz-kahlua",
 ]
 
@@ -1504,9 +1602,12 @@ version = "0.1.0"
 dependencies = [
  "pz-core",
  "pz-fs",
+ "pz-gpu",
  "pz-kahlua",
  "pz-lua-api",
+ "pz-render",
  "pz-ui",
+ "winit",
 ]
 
 [[package]]
@@ -1557,7 +1658,10 @@ dependencies = [
 name = "pz-iso-render"
 version = "0.1.0"
 dependencies = [
+ "pz-core",
+ "pz-fs",
  "pz-gpu",
+ "pz-kahlua",
  "pz-render",
 ]
 
@@ -1579,12 +1683,14 @@ name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "pz-characters",
  "pz-classfile",
  "pz-core",
  "pz-fs",
  "pz-input",
  "pz-kahlua",
  "pz-render",
+ "pz-scripts",
  "pz-text",
  "pz-ui",
 ]
@@ -1610,6 +1716,9 @@ dependencies = [
 [[package]]
 name = "pz-text"
 version = "0.1.0"
+dependencies = [
+ "pz-render",
+]
 
 [[package]]
 name = "pz-ui"
@@ -1628,6 +1737,7 @@ dependencies = [
  "pz-entity",
  "pz-fs",
  "pz-inventory",
+ "pz-kahlua",
  "pz-scripts",
 ]
 

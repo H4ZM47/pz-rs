@@ -40,6 +40,17 @@ pub fn stencil_op(op: u32) -> wgpu::StencilOperation {
     }
 }
 
+/// `glBlendEquation`'s mode.
+pub fn blend_operation(e: u32) -> wgpu::BlendOperation {
+    match e {
+        FUNC_SUBTRACT => wgpu::BlendOperation::Subtract,
+        FUNC_REVERSE_SUBTRACT => wgpu::BlendOperation::ReverseSubtract,
+        MIN => wgpu::BlendOperation::Min,
+        MAX => wgpu::BlendOperation::Max,
+        _ => wgpu::BlendOperation::Add,
+    }
+}
+
 pub fn blend_factor(f: u32) -> wgpu::BlendFactor {
     use wgpu::BlendFactor as B;
     match f {

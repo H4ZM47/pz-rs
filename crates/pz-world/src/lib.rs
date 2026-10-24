@@ -8,6 +8,7 @@
 pub mod bra;
 pub mod cell_loader;
 pub mod chunk;
+pub mod chunk_data;
 pub mod defs;
 pub mod erosion_data;
 pub mod fix2x;
@@ -20,9 +21,13 @@ pub mod objects;
 pub mod save;
 pub mod sprite;
 pub mod square;
+pub mod meta_save;
+pub mod meta_zones;
 pub mod streamer;
 pub mod tiledef;
 pub mod world_state;
+pub mod zone_save;
+pub mod zones;
 
 pub use chunk::{ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare};
 pub use defs::{BuildingDef, BuildingIdx, MetaObject, RoomDef, RoomIdx, RoomRect};
@@ -42,3 +47,7 @@ pub use square::{
     SpecialObject, SquareHooks, ThumpableInfo, VisionEnv, VisionResult,
 };
 pub use world_state::{ObjectHooks, PowerSettings, WorldState};
+pub use zones::{
+    ClipperOps, PropValue, RoomTone, Zone, ZoneError, ZoneGeometryType, ZoneId, ZoneKind,
+    ZoneProps, ZoneTables,
+};

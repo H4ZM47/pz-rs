@@ -169,6 +169,7 @@ fn build(
     };
     let flags = SpriteFlags {
         solidfloor: has(f.solidfloor),
+        vegitation: has(f.vegitation),
         floor_overlay: has(f.FloorOverlay),
         diamond_floor: has(f.diamondFloor),
         water: opt(named.water),

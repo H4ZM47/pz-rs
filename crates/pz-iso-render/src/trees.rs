@@ -31,6 +31,11 @@ impl Mat4 {
         Mat4(m)
     }
 
+    /// `self * o`.
+    pub fn mul_mat(&self, o: &Mat4) -> Mat4 {
+        self.mul(o)
+    }
+
     fn mul(&self, o: &Mat4) -> Mat4 {
         let mut r = [[0.0f32; 4]; 4];
         for (c, col) in r.iter_mut().enumerate() {

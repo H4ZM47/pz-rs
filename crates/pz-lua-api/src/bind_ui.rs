@@ -35,38 +35,9 @@ pub const UIFONT_NAMES: &[&str] = &[
     "SdfRobertoSans", "SdfCaveat",
 ];
 
-/// Map a Java `UIFont` name onto `pz_text::UIFont`. Constants pz-text does
-/// not have yet (`CodeSmall`, `SdfOld*`, ...) map to `None` (default font).
+/// Map a Java `UIFont` name onto `pz_text::UIFont` (`UIFont.valueOf`).
 pub fn ui_font_from_name(name: &str) -> Option<UIFont> {
-    use UIFont::*;
-    Some(match name {
-        "Small" => Small,
-        "Medium" => Medium,
-        "Large" => Large,
-        "Massive" => Massive,
-        "MainMenu1" => MainMenu1,
-        "MainMenu2" => MainMenu2,
-        "Cred1" => Cred1,
-        "Cred2" => Cred2,
-        "NewSmall" => NewSmall,
-        "NewMedium" => NewMedium,
-        "NewLarge" => NewLarge,
-        "Code" => Code,
-        "MediumNew" => MediumNew,
-        "AutoNormSmall" => AutoNormSmall,
-        "AutoNormMedium" => AutoNormMedium,
-        "AutoNormLarge" => AutoNormLarge,
-        "Dialogue" => Dialogue,
-        "Intro" => Intro,
-        "Handwritten" => Handwritten,
-        "DebugConsole" => DebugConsole,
-        "Title" => Title,
-        "SdfRegular" => SdfRegular,
-        "SdfBold" => SdfBold,
-        "SdfItalic" => SdfItalic,
-        "SdfBoldItalic" => SdfBoldItalic,
-        _ => return None,
-    })
+    UIFont::from_string(name)
 }
 
 // ---- argument helpers ----

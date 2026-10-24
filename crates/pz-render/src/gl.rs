@@ -23,6 +23,12 @@ pub const SRC_ALPHA_SATURATE: u32 = 776;
 pub const CONSTANT_COLOR: u32 = 32769;
 pub const ONE_MINUS_CONSTANT_COLOR: u32 = 32770;
 
+pub const FUNC_ADD: u32 = 32774;
+pub const MIN: u32 = 32775;
+pub const MAX: u32 = 32776;
+pub const FUNC_SUBTRACT: u32 = 32778;
+pub const FUNC_REVERSE_SUBTRACT: u32 = 32779;
+
 pub const KEEP: u32 = 7680;
 pub const REPLACE: u32 = 7681;
 pub const INCR: u32 = 7682;

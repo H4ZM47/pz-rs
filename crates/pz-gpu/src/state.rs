@@ -35,11 +35,15 @@ pub enum Program {
     Seam,
     /// `CircleStencil` (cut-away walls).
     Cutaway,
+    /// `water`/`water_hq`/`puddles_*` (`IsoWater`, `IsoPuddles`).
+    Surface(pz_render::SurfaceProgram),
+    /// `fogCircle` (`IsoWeatherFX.renderFogCircle`).
+    FogCircle,
 }
 
 impl Program {
     pub fn uses_world_shader(self) -> bool {
-        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::Seam | Program::Cutaway)
+        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::Seam | Program::Cutaway | Program::Surface(_))
     }
 }
 
@@ -49,6 +53,8 @@ pub struct GlState {
     pub blend: bool,
     /// `glBlendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha)`.
     pub blend_func: [u32; 4],
+    /// `glBlendEquation`.
+    pub blend_equation: u32,
     pub color_mask: [bool; 4],
     pub stencil_test: bool,
     /// `glStencilFunc(func, ref, mask)`.
@@ -78,6 +84,7 @@ impl Default for GlState {
         GlState {
             blend: true,
             blend_func: [gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA, gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA],
+            blend_equation: gl::FUNC_ADD,
             color_mask: [true; 4],
             stencil_test: false,
             stencil_func: gl::ALWAYS,
@@ -104,6 +111,8 @@ impl Default for GlState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PipeKey {
     pub blend: Option<[u32; 4]>,
+    /// The blend equation (`gl::FUNC_ADD` ...).
+    pub equation: u32,
     pub color_mask: u8,
     /// compare, read mask, write mask, sfail, dpfail, dppass.
     pub stencil: Option<[u32; 6]>,
@@ -133,6 +142,7 @@ impl GlState {
             DrawCmd::SetBlend(Blend::Additive) => self.blend_func = [gl::SRC_ALPHA, gl::ONE, gl::SRC_ALPHA, gl::ONE],
             DrawCmd::BlendFunc(s, d) => self.blend_func = [s, d, s, d],
             DrawCmd::BlendFuncSeparate(a, b, c, d) => self.blend_func = [a, b, c, d],
+            DrawCmd::BlendEquation(e) => self.blend_equation = e,
             DrawCmd::GlEnable(cap) | DrawCmd::GlDisable(cap) => {
                 let on = matches!(cmd, DrawCmd::GlEnable(_));
                 match cap {
@@ -178,6 +188,7 @@ impl GlState {
     pub fn pipe_key(&self) -> PipeKey {
         PipeKey {
             blend: self.blend.then_some(self.blend_func),
+            equation: self.blend_equation,
             color_mask: Self::mask_bits(self.color_mask),
             stencil: self.stencil_test.then_some([
                 self.stencil_func,
@@ -196,7 +207,7 @@ impl GlState {
     /// `glClear(bit)`: colour clears write through the colour mask without
     /// blending; stencil clears replace through the stencil write mask.
     pub fn clear_key(&self, bit: u32) -> PipeKey {
-        let base = PipeKey { blend: None, color_mask: 0, stencil: None, program: Program::Clear, depth: None, target: TargetKind::Main };
+        let base = PipeKey { blend: None, equation: gl::FUNC_ADD, color_mask: 0, stencil: None, program: Program::Clear, depth: None, target: TargetKind::Main };
         match bit {
             gl::STENCIL_BUFFER_BIT => PipeKey { stencil: Some([gl::ALWAYS, 0xFF, self.stencil_write_mask & 0xFF, gl::REPLACE, gl::REPLACE, gl::REPLACE]), ..base },
             gl::DEPTH_BUFFER_BIT => PipeKey { depth: Some((gl::ALWAYS, self.depth_mask)), ..base },
@@ -212,6 +223,8 @@ pub struct Programs {
     pub world_tile: wgpu::ShaderModule,
     /// `world.wgsl` with `world_composite.wgsl`.
     pub world_composite: wgpu::ShaderModule,
+    /// `surface.wgsl`: water and puddles.
+    pub surface: wgpu::ShaderModule,
     pub screen: wgpu::ShaderModule,
     pub sprite_layout: wgpu::PipelineLayout,
     pub tile_layout: wgpu::PipelineLayout,
@@ -220,9 +233,12 @@ pub struct Programs {
 }
 
 pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu::TextureFormat, key: PipeKey) -> wgpu::RenderPipeline {
+    let op = gl::blend_operation(key.equation);
+    // Min and max ignore the factors; wgpu wants them One.
+    let factor = |f: u32| if matches!(op, wgpu::BlendOperation::Min | wgpu::BlendOperation::Max) { wgpu::BlendFactor::One } else { gl::blend_factor(f) };
     let blend = key.blend.map(|[sc, dc, sa, da]| wgpu::BlendState {
-        color: wgpu::BlendComponent { src_factor: gl::blend_factor(sc), dst_factor: gl::blend_factor(dc), operation: wgpu::BlendOperation::Add },
-        alpha: wgpu::BlendComponent { src_factor: gl::blend_factor(sa), dst_factor: gl::blend_factor(da), operation: wgpu::BlendOperation::Add },
+        color: wgpu::BlendComponent { src_factor: factor(sc), dst_factor: factor(dc), operation: op },
+        alpha: wgpu::BlendComponent { src_factor: factor(sa), dst_factor: factor(da), operation: op },
     });
     let mut write_mask = wgpu::ColorWrites::empty();
     for (i, w) in [wgpu::ColorWrites::RED, wgpu::ColorWrites::GREEN, wgpu::ColorWrites::BLUE, wgpu::ColorWrites::ALPHA].into_iter().enumerate() {
@@ -253,13 +269,15 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::TileDepth | Program::OpaqueDepth => (&programs.world_tile, &programs.tile_layout),
         Program::Composite => (&programs.world_composite, &programs.composite_layout),
         Program::Seam | Program::Cutaway => (&programs.world_tile, &programs.seam_layout),
+        Program::Surface(_) => (&programs.surface, &programs.seam_layout),
         Program::WorldDefault | Program::Projected => (&programs.world_tile, &programs.sprite_layout),
-        Program::Default | Program::Clear => (&programs.sprite, &programs.sprite_layout),
+        Program::Default | Program::Clear | Program::FogCircle => (&programs.sprite, &programs.sprite_layout),
         Program::Screen => (&programs.screen, &programs.sprite_layout),
     };
     let (vs, fs) = match key.program {
         Program::Default => ("vs_main", "fs_main"),
         Program::Clear => ("vs_main", "fs_clear"),
+        Program::FogCircle => ("vs_main", "fs_fog_circle"),
         Program::WorldDefault => ("vs_world", "fs_default"),
         Program::TileDepth => ("vs_world", "fs_tile"),
         Program::OpaqueDepth => ("vs_world", "fs_opaque"),
@@ -268,6 +286,16 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::Projected => ("vs_world", "fs_projected"),
         Program::Seam => ("vs_world", "fs_seam"),
         Program::Cutaway => ("vs_world", "fs_cutaway"),
+        Program::Surface(p) => (
+            "vs_surface",
+            match p {
+                pz_render::SurfaceProgram::Water => "fs_water",
+                pz_render::SurfaceProgram::WaterHq => "fs_water_hq",
+                pz_render::SurfaceProgram::PuddlesHq => "fs_puddles_hq",
+                pz_render::SurfaceProgram::PuddlesMq => "fs_puddles_mq",
+                pz_render::SurfaceProgram::PuddlesLq => "fs_puddles_lq",
+            },
+        ),
     };
     let attributes: &[wgpu::VertexAttribute] = if world {
         &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x2]

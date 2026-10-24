@@ -216,3 +216,156 @@ fn screen_pass_keeps_orientation() {
     assert!(top[0] > 200 && top[2] < 50, "{top:?}");
     assert!(bottom[2] > 200 && bottom[0] < 50, "{bottom:?}");
 }
+
+fn surface_quad(x0: f32, y0: f32, x1: f32, y1: f32, attr: [f32; 4], depth: f32) -> [pz_render::SurfaceVertex; 4] {
+    let v = |x, y| pz_render::SurfaceVertex { attr, pos: [x, y], color: 0xFFFF_FFFF, depth };
+    [v(x0, y0), v(x1, y0), v(x1, y1), v(x0, y1)]
+}
+
+fn surface(program: pz_render::SurfaceProgram, quads: Vec<[pz_render::SurfaceVertex; 4]>, ground: Option<pz_render::Texture>, params: [[f32; 4]; 2]) -> DrawCmd {
+    DrawCmd::Surface(Box::new(pz_render::SurfaceDraw {
+        program,
+        quads,
+        uniforms: pz_render::SurfaceUniforms { time: 1.0, offset: [-90000.0, -640000.0, 16.0, 8.0], viewport: [0.0, 0.0, 16.0, 8.0], reflection_param: 0.5, params },
+        ground,
+        reflection: [None, None],
+        depth_func: gl::LEQUAL,
+        blend_func: [gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA, gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA],
+    }))
+}
+
+/// `puddles_lq` with a white height map: full level, so the puddle colour
+/// is `mix(dark, reflection, 0.8)` at alpha 0.5.
+#[test]
+fn low_quality_puddles_follow_the_height_map() {
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let hm = tm.texture_from_pixels("hm", 4, 4, [255u8; 4].repeat(16), 0);
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::DepthMask(true));
+    dl.cmds.push(DrawCmd::Clear(gl::DEPTH_BUFFER_BIT));
+    dl.cmds.push(surface(pz_render::SurfaceProgram::PuddlesLq, vec![surface_quad(0.0, 0.0, 8.0, 8.0, [0.0; 4], 0.5)], Some(hm), [[0.0; 4], [0.0, 0.0, 0.5, 0.0]]));
+    g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+    let p = g.read_pixels();
+    assert!(near_rgb(px(&p, 16, 3, 3), [54, 54, 61]), "{:?}", px(&p, 16, 3, 3));
+    assert_eq!(px(&p, 16, 12, 3), [0, 0, 0, 255]);
+}
+
+/// Every surface program builds and draws; water is depth-tested with
+/// its fragment depth.
+#[test]
+fn surface_programs_draw_with_their_fragment_depth() {
+    use pz_render::SurfaceProgram as P;
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let ground = tm.texture_from_pixels("ground", 4, 4, [200u8, 150, 100, 255].repeat(16), 0);
+    for program in [P::Water, P::WaterHq, P::PuddlesHq, P::PuddlesMq, P::PuddlesLq] {
+        let mut dl = DrawList::default();
+        dl.cmds.push(DrawCmd::DepthMask(true));
+        dl.cmds.push(DrawCmd::Clear(gl::DEPTH_BUFFER_BIT));
+        // A nearer quad on the right half: depth 0.2 written.
+        dl.cmds.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
+        dl.cmds.push(DrawCmd::DepthFunc(gl::ALWAYS));
+        dl.cmds.push(DrawCmd::WorldSprite(
+            pz_render::Sprite { texture: None, x: [8.0, 16.0, 16.0, 8.0], y: [0.0, 0.0, 8.0, 8.0], u: [0.0; 4], v: [0.0; 4], color: [0xFF00_00FF; 4], flipped: false },
+            WorldShader::Default { z: 0.2 * 2.0 - 1.0 },
+        ));
+        let attr = if program.is_water() { [1.0, 0.0, 0.0, 1.0] } else { [0.0; 4] };
+        dl.cmds.push(surface(program, vec![surface_quad(0.0, 0.0, 16.0, 8.0, attr, 0.5)], Some(ground.clone()), [[0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.7, 0.0]]));
+        g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+        let p = g.read_pixels();
+        // Behind the nearer quad: untouched red.
+        assert_eq!(px(&p, 16, 12, 4), [255, 0, 0, 255], "{program:?}");
+        // In front of the cleared depth: the surface blended over black.
+        assert_ne!(px(&p, 16, 3, 4), [0, 0, 0, 255], "{program:?}");
+    }
+}
+
+/// The sky renders into its reflection texture: sky inside the sphere
+/// map, black outside it; sampled like any texture afterwards.
+#[test]
+fn skybox_renders_into_its_reflection_texture() {
+    let Some(mut g) = gpu(64, 64) else { return };
+    let mut tm = TextureManager::new();
+    let l = [0.35f32, 0.22, 0.3];
+    let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
+    let uniforms = pz_render::SkyBoxUniforms {
+        time: 1.0,
+        cloud_count: 0.3,
+        cloud_size: 0.2,
+        sun_light: l.map(|v| v / n),
+        sun_colour: [1.0, 0.86, 0.7],
+        sky_h_colour: [0.1, 0.1, 0.4],
+        sky_l_colour: [0.1, 0.45, 0.7],
+        cloud_light: 0.99,
+        stars: 0.0,
+        fog: 0.0,
+        wind: [0.0; 3],
+    };
+    for hires in [false, true] {
+        let mut dl = DrawList::default();
+        dl.cmds.push(DrawCmd::SkyBox(Box::new(pz_render::SkyBoxDraw { target: 0, hires, uniforms })));
+        let sky = pz_render::skybox_texture(0);
+        dl.render(Some(&sky), 0.0, 0.0, 64.0, 64.0, Rgba(1.0, 1.0, 1.0, 1.0));
+        g.render_frame(&[(opaque_black(64, 64), &dl)], &mut tm);
+        let p = g.read_pixels();
+        // Clouds overhead (the centre), blue sky lower down.
+        let c = px(&p, 64, 32, 32);
+        assert!(c[0] > 60 && c[3] == 255, "{hires}: {c:?}");
+        let b = px(&p, 64, 50, 50);
+        assert!(b[2] > b[0] + 40, "{hires}: {b:?}");
+        assert_eq!(px(&p, 64, 1, 1), [0, 0, 0, 255], "{hires}");
+    }
+}
+
+/// `WeatherFxMask`'s compositing: particles drawn into one weather
+/// texture, the mask texture subtracted from them with
+/// `GL_FUNC_REVERSE_SUBTRACT`, the result blended over the screen.
+#[test]
+fn weather_fx_mask_subtracts_from_particles() {
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    let gl_uv = |tex: &pz_render::Texture, dl: &mut DrawList| {
+        // Texture.rendershader2's coordinates: v from the top (1) down.
+        dl.render_uv(Some(tex), 0.0, 0.0, 16.0, 8.0, Rgba(1.0, 1.0, 1.0, 1.0), [0.0, 1.0, 1.0, 0.0], [1.0, 1.0, 0.0, 0.0]);
+    };
+    dl.cmds.push(DrawCmd::WeatherFxBegin { index: 0, width: 16, height: 8 });
+    dl.render_rect(0, 0, 8, 8, Rgba(1.0, 1.0, 1.0, 1.0));
+    dl.cmds.push(DrawCmd::WeatherFxEnd);
+    dl.cmds.push(DrawCmd::WeatherFxBegin { index: 1, width: 16, height: 8 });
+    dl.cmds.push(DrawCmd::BlendFuncSeparate(gl::ONE, gl::ONE_MINUS_SRC_ALPHA, gl::ONE, gl::ONE_MINUS_SRC_ALPHA));
+    dl.render_rect(0, 0, 16, 4, Rgba(1.0, 0.0, 0.0, 1.0));
+    dl.render_rect(0, 4, 16, 4, Rgba(0.0, 1.0, 0.0, 1.0));
+    dl.cmds.push(DrawCmd::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
+    dl.cmds.push(DrawCmd::BlendEquation(gl::FUNC_REVERSE_SUBTRACT));
+    gl_uv(&pz_render::weather_fx_texture(0, 16, 8), &mut dl);
+    dl.cmds.push(DrawCmd::BlendEquation(gl::FUNC_ADD));
+    dl.cmds.push(DrawCmd::WeatherFxEnd);
+    gl_uv(&pz_render::weather_fx_texture(1, 16, 8), &mut dl);
+    g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+    let p = g.read_pixels();
+    // Masked on the left, red over green on the right, the right way up.
+    assert_eq!(px(&p, 16, 2, 2), [0, 0, 0, 255]);
+    assert_eq!(px(&p, 16, 2, 6), [0, 0, 0, 255]);
+    assert!(near_rgb(px(&p, 16, 12, 1), [255, 0, 0]), "{:?}", px(&p, 16, 12, 1));
+    assert!(near_rgb(px(&p, 16, 12, 6), [0, 255, 0]), "{:?}", px(&p, 16, 12, 6));
+}
+
+/// The `fogCircle` program draws through its own screen-space projection,
+/// whatever the zoomed world projection is.
+#[test]
+fn fog_circle_uses_its_own_projection() {
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::Ortho { left: 0.0, right: 32.0, bottom: 16.0, top: 0.0, width: 16, height: 8 });
+    let mut q = DrawList::default();
+    q.render_rect(8, 0, 8, 8, Rgba(1.0, 1.0, 1.0, 0.5));
+    let DrawCmd::Sprite(s) = q.cmds.remove(0) else { panic!() };
+    dl.cmds.push(DrawCmd::FogCircle { sprite: s, width: 16.0, height: 8.0 });
+    g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+    let p = g.read_pixels();
+    assert_eq!(px(&p, 16, 4, 4), [0, 0, 0, 255]);
+    assert!(near_rgb(px(&p, 16, 12, 4), [127, 127, 127]), "{:?}", px(&p, 16, 12, 4));
+}

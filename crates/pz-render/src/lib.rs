@@ -11,6 +11,7 @@ pub mod image;
 pub mod iso;
 pub mod lua;
 pub mod manager;
+pub mod model;
 pub mod png;
 pub mod tile_depth;
 
@@ -232,6 +233,166 @@ pub enum DrawCmd {
     /// Texels with alpha below 0.01 are discarded; `nearest` forces
     /// `GL_NEAREST` sampling (`setMinMagFilters`).
     ProjectedQuad { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32, nearest: bool },
+    /// A 3D model draw (`basicEffect`), depth-tested against the world.
+    Model(Box<model::ModelDraw>),
+    /// An `IsoWater`/`IsoPuddles` vertex-buffer draw (`ModelManager.RenderWater`,
+    /// `RenderPuddles`, `IsoPuddles.RenderToChunkTexture`) with the water or
+    /// puddles shader.
+    Surface(Box<SurfaceDraw>),
+    /// `ModelManager.RenderSkyBox`: the sky drawn into one of the two
+    /// 512x512 reflection textures ([`skybox_texture`]) with the `skybox` or
+    /// `skybox_hires` shader.
+    SkyBox(Box<SkyBoxDraw>),
+    /// `glBlendEquation` (`gl::FUNC_ADD`, `gl::FUNC_REVERSE_SUBTRACT`, ...).
+    BlendEquation(u32),
+    /// `WeatherFxMask`'s `glBuffer(4)`/`glBuffer(6)`: following draws go to
+    /// weather texture `index` (0 `fboMask`, 1 `fboParticles`; see
+    /// [`weather_fx_texture`]), screen-sized, created at this size if
+    /// needed and cleared to transparent black (`startDrawing(true, true)`).
+    WeatherFxBegin { index: usize, width: u32, height: u32 },
+    /// `glBuffer(5)`/`glBuffer(7)`: back to the target bound before
+    /// `WeatherFxBegin`.
+    WeatherFxEnd,
+    /// A quad drawn with the `fogCircle` shader (`IsoWeatherFX.renderFogCircle`):
+    /// texture times colour, positions through its own `u_mvp`,
+    /// `ortho(0, width, height, 0)`.
+    FogCircle { sprite: Sprite, width: f32, height: f32 },
+}
+
+/// The ids of `WeatherFxMask`'s two screen-sized render textures
+/// (`fboMask`, `fboParticles`), reserved like [`SKYBOX_TEXTURE_IDS`] so
+/// draws can sample them.
+pub const WEATHER_FX_TEXTURE_IDS: [u32; 2] = [0xFFFF_FE10, 0xFFFF_FE11];
+
+/// A [`Texture`] naming weather texture `index` at `width` x `height`
+/// (`new Texture(w, h, 16)`: its power-of-two size is its own).
+pub fn weather_fx_texture(index: usize, width: u32, height: u32) -> Texture {
+    let mut t = Texture::empty(if index == 0 { "WeatherFxMask.fboMask" } else { "WeatherFxMask.fboParticles" });
+    t.id = Some(WEATHER_FX_TEXTURE_IDS[index.min(1)]);
+    t.width = width;
+    t.height = height;
+    t.width_hw = width as i32;
+    t.height_hw = height as i32;
+    t.uv = [0.0, 0.0, width as f32, height as f32];
+    t.ready = true;
+    t
+}
+
+/// The ids of `SkyBox`'s two render textures (`textureFboA`/`B`), reserved
+/// above any [`TextureManager`] id so surface draws can sample them like
+/// any texture.
+pub const SKYBOX_TEXTURE_IDS: [u32; 2] = [0xFFFF_FE00, 0xFFFF_FE01];
+
+/// The size of the sky textures.
+pub const SKYBOX_TEXTURE_SIZE: u32 = 512;
+
+/// A [`Texture`] naming sky texture `index` (0 = A, 1 = B).
+pub fn skybox_texture(index: usize) -> Texture {
+    let mut t = Texture::empty(if index == 0 { "SkyBox.textureFboA" } else { "SkyBox.textureFboB" });
+    t.id = Some(SKYBOX_TEXTURE_IDS[index]);
+    t.width = SKYBOX_TEXTURE_SIZE;
+    t.height = SKYBOX_TEXTURE_SIZE;
+    t.width_hw = SKYBOX_TEXTURE_SIZE as i32;
+    t.height_hw = SKYBOX_TEXTURE_SIZE as i32;
+    t.uv = [0.0, 0.0, SKYBOX_TEXTURE_SIZE as f32, SKYBOX_TEXTURE_SIZE as f32];
+    t.ready = true;
+    t
+}
+
+/// `SkyBoxShader`'s uniforms.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SkyBoxUniforms {
+    /// `SBTime`.
+    pub time: f32,
+    pub cloud_count: f32,
+    pub cloud_size: f32,
+    pub sun_light: [f32; 3],
+    pub sun_colour: [f32; 3],
+    pub sky_h_colour: [f32; 3],
+    pub sky_l_colour: [f32; 3],
+    pub cloud_light: f32,
+    pub stars: f32,
+    pub fog: f32,
+    pub wind: [f32; 3],
+}
+
+/// One sky render.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkyBoxDraw {
+    /// Which of [`SKYBOX_TEXTURE_IDS`] to draw into.
+    pub target: usize,
+    /// `skybox_hires` (`Core.getPerfSkybox() == 0`).
+    pub hires: bool,
+    pub uniforms: SkyBoxUniforms,
+}
+
+/// The shader of a [`SurfaceDraw`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SurfaceProgram {
+    /// `water` (water quality 1).
+    Water,
+    /// `water_hq` (water quality 0).
+    WaterHq,
+    /// `puddles_hq` (puddles quality 0).
+    PuddlesHq,
+    /// `puddles_mq` (puddles quality 1).
+    PuddlesMq,
+    /// `puddles_lq` (puddles quality 2, drawn into chunk textures).
+    PuddlesLq,
+}
+
+impl SurfaceProgram {
+    pub fn is_water(self) -> bool {
+        matches!(self, SurfaceProgram::Water | SurfaceProgram::WaterHq)
+    }
+}
+
+/// One vertex of an `IsoWater`/`IsoPuddles` quad as `RenderData.addSquare`
+/// packs it: four shader attributes (water: depth, flow, speed, external;
+/// puddles: dirNE, dirNW, dirAll, dirNone), the position, the ABGR vertex
+/// light and the fragment depth (`aFragDepth`, window depth 0..1).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SurfaceVertex {
+    pub attr: [f32; 4],
+    pub pos: [f32; 2],
+    pub color: u32,
+    pub depth: f32,
+}
+
+/// The uniforms `WaterShader.updateWaterParams` / `PuddlesShader.updatePuddlesParams`
+/// set.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SurfaceUniforms {
+    /// `WTime`.
+    pub time: f32,
+    /// `WOffset` (already shifted by -90000, -640000).
+    pub offset: [f32; 4],
+    /// `WViewport`.
+    pub viewport: [f32; 4],
+    /// `WReflectionParam` (`SkyBox.getTextureShift`).
+    pub reflection_param: f32,
+    /// Water: `[WParamWind.x, WParamWind.y, WParamWindSpeed,
+    /// WParamRainIntensity]` and zeros. Puddles: columns 0 and 1 of
+    /// `PuddlesParams` (`[windX, windY, windSpeed, z]`, `[muddy, wetGround,
+    /// size, rainIntensity]`).
+    pub params: [[f32; 4]; 2],
+}
+
+/// A batch of water or puddle quads. The draw sets its own GL state for its
+/// duration (`glPushAttrib`/`glPopAttrib` in the original): depth test on
+/// with `depth_func`, depth writes off, blending with `blend_func`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceDraw {
+    pub program: SurfaceProgram,
+    pub quads: Vec<[SurfaceVertex; 4]>,
+    pub uniforms: SurfaceUniforms,
+    /// Texture unit 0: `WaterGroundTex` (`river_bottom.png`) for water,
+    /// `PuddlesHM` (`puddles_hm.png`) for puddles.
+    pub ground: Option<Texture>,
+    /// `WaterTextureReflectionA`/`B` (`SkyBox.getTextureCurrent/Prev`).
+    pub reflection: [Option<Texture>; 2],
+    pub depth_func: u32,
+    pub blend_func: [u32; 4],
 }
 
 /// The `WeatherShader` uniforms the screen pass reads.
