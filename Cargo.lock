@@ -72,6 +72,8 @@ version = "0.1.0"
 dependencies = [
  "pz-fs",
  "pz-kahlua",
+ "pz-render",
+ "pz-text",
 ]
 
 [[package]]

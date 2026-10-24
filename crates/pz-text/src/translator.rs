@@ -436,7 +436,7 @@ impl Translator {
         &self.tables[&t]
     }
 
-    fn table_mut(&mut self, t: Table) -> &mut Map {
+    pub fn table_mut(&mut self, t: Table) -> &mut Map {
         self.tables.get_mut(&t).unwrap()
     }
 

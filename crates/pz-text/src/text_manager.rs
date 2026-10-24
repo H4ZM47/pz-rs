@@ -254,6 +254,16 @@ impl TextManager {
         Ok(())
     }
 
+    /// Puts `font` in the slot for `f` (as `Init` would for a fonts.txt
+    /// entry); setting `Small` also sets `TextManager.font`.
+    pub fn set_font(&mut self, f: UIFont, font: AngelCodeFont) {
+        let font = Rc::new(font);
+        if f == UIFont::Small {
+            self.font = Some(font.clone());
+        }
+        self.enum_to_font[f as usize] = Some(font);
+    }
+
     /// `TextManager.font` (the `Small` font).
     pub fn font(&self) -> Option<&AngelCodeFont> {
         self.font.as_deref()
