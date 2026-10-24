@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use pz_classfile::{load_class, method_effects, static_inits, Effect, Jar, StaticInit, Value};
+use pz_classfile::{load_class, method_effects, method_return, static_inits, Effect, Jar, StaticInit, Value};
 
 use super::Registries;
 use crate::base::{ScriptError, ScriptResult};
@@ -170,6 +170,165 @@ fn perk_init(effects: Vec<Effect>) -> ScriptResult<Vec<PerkInit>> {
     Ok(out)
 }
 const RAGDOLL_CLASS: &str = "zombie/scripting/objects/RagdollScript";
+pub const METABOLICS_CLASS: &str = "zombie/characters/BodyDamage/Metabolics";
+pub const BODY_PART_TYPE_CLASS: &str = "zombie/characters/BodyDamage/BodyPartType";
+pub const ITEM_KEY_CLASS: &str = "zombie/scripting/objects/ItemKey";
+const ITEM_TYPE_CLASS: &str = "zombie/scripting/objects/ItemType";
+
+/// One `BodyPartType` constant: its constructor arguments.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BodyPartDecl {
+    /// The enum constant (`name()`).
+    pub field: String,
+    /// The `name` field (`ToString`, `FromString`).
+    pub name: String,
+    pub display_name_key: Option<String>,
+    pub bandage_model: Option<String>,
+    pub bite_wound_model: Option<String>,
+    pub scratch_wound_model: Option<String>,
+    pub cut_wound_model: Option<String>,
+    pub pain_modifier: f32,
+    pub damage_modifier: f32,
+    pub bleeding_time_modifier: f32,
+    pub skin_surface: f32,
+    pub dist_to_core: f32,
+    pub umbrella_mod: f32,
+    pub max_action_penalty: f32,
+    pub max_movement_penalty: f32,
+}
+
+/// One `ItemKey` constant of a nested holder class (`ItemKey.Container.X`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ItemKeyDecl {
+    /// The holder's simple name (`Container`).
+    pub holder: String,
+    pub field: String,
+    /// `ItemKey.id()`.
+    pub id: String,
+    /// The `ItemType` constant (field name) of `ItemKey.itemType()`.
+    pub item_type: String,
+}
+
+const STATES_PACKAGE: &str = "zombie/ai/states/";
+
+/// Classes of the `zombie.ai.states` packages with a singleton accessor
+/// `public static <Self> instance()`, in jar order.
+fn state_singletons(jar: &Jar) -> ScriptResult<Vec<String>> {
+    let names: Vec<String> = jar
+        .names()
+        .filter_map(|n| n.strip_suffix(".class"))
+        .filter(|n| n.starts_with(STATES_PACKAGE) && !n.contains('$'))
+        .map(str::to_string)
+        .collect();
+    let mut out = Vec::new();
+    for class in names {
+        let cf = load_class(jar, &class).map_err(class_error)?;
+        let accessor = format!("()L{class};");
+        let public_static = pz_classfile::class::ACC_STATIC | 0x0001;
+        if cf
+            .methods
+            .iter()
+            .any(|m| m.name == "instance" && m.descriptor == accessor && m.access & public_static == public_static)
+        {
+            out.push(class);
+        }
+    }
+    Ok(out)
+}
+
+fn opt_str(v: Option<&Value>) -> Option<String> {
+    v.and_then(Value::as_str).map(str::to_string)
+}
+
+fn float(v: Option<&Value>) -> Option<f32> {
+    match v? {
+        Value::Float(f) => Some(*f as f32),
+        Value::Int(i) => Some(*i as f32),
+        _ => None,
+    }
+}
+
+/// `Metabolics` constants and their `met`.
+fn metabolics(jar: &Jar) -> ScriptResult<Vec<(String, f32)>> {
+    pz_classfile::self_constructed_constants(jar, METABOLICS_CLASS)
+        .map_err(class_error)?
+        .into_iter()
+        // (name, ordinal, met)
+        .map(|(field, args)| {
+            let met = float(args.get(2)).ok_or_else(|| ScriptError::new(format!("Metabolics.{field}: met")))?;
+            Ok((field, met))
+        })
+        .collect()
+}
+
+/// `BodyPartType` constants with their constructor arguments.
+fn body_parts(jar: &Jar) -> ScriptResult<Vec<BodyPartDecl>> {
+    pz_classfile::self_constructed_constants(jar, BODY_PART_TYPE_CLASS)
+        .map_err(class_error)?
+        .into_iter()
+        .map(|(field, args)| {
+            // (enum name, ordinal, name, displayNameKey, bandageModel,
+            // biteWoundModel, scratchWoundModel, cutWoundModel, 8 floats)
+            let bad = || ScriptError::new(format!("BodyPartType.{field}: constructor arguments"));
+            let f = |i: usize| float(args.get(i)).ok_or_else(bad);
+            Ok(BodyPartDecl {
+                name: opt_str(args.get(2)).ok_or_else(bad)?,
+                display_name_key: opt_str(args.get(3)),
+                bandage_model: opt_str(args.get(4)),
+                bite_wound_model: opt_str(args.get(5)),
+                scratch_wound_model: opt_str(args.get(6)),
+                cut_wound_model: opt_str(args.get(7)),
+                pain_modifier: f(8)?,
+                damage_modifier: f(9)?,
+                bleeding_time_modifier: f(10)?,
+                skin_surface: f(11)?,
+                dist_to_core: f(12)?,
+                umbrella_mod: f(13)?,
+                max_action_penalty: f(14)?,
+                max_movement_penalty: f(15)?,
+                field,
+            })
+        })
+        .collect()
+}
+
+/// The `ItemKey` constants of every nested holder class of `ItemKey`
+/// (`ItemKey.Container.KEY_RING = container("KeyRing")`): each factory call
+/// is evaluated to its `new ItemKey(id, ItemType.X)`.
+fn item_keys(jar: &Jar) -> ScriptResult<Vec<ItemKeyDecl>> {
+    let prefix = format!("{ITEM_KEY_CLASS}$");
+    let holders: Vec<String> = jar
+        .names()
+        .filter_map(|n| n.strip_suffix(".class")?.strip_prefix(&prefix).map(str::to_string))
+        .filter(|h| !h.contains('$') && !h.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .collect();
+    let mut out = Vec::new();
+    for holder in holders {
+        let class = format!("{prefix}{holder}");
+        let cf = load_class(jar, &class).map_err(class_error)?;
+        for init in static_inits(&cf).map_err(class_error)? {
+            if init.class != class {
+                continue;
+            }
+            let made = match &init.value {
+                Value::Call { class: c, name, args, .. } if *c == class => method_return(&cf, name, args).map_err(class_error)?,
+                v @ Value::New { .. } => Some(v.clone()),
+                _ => None,
+            };
+            let Some(Value::New { class: c, args }) = made else { continue };
+            if c != ITEM_KEY_CLASS {
+                continue;
+            }
+            let (Some(id), Some(Value::Static { class: tc, name: item_type })) = (opt_str(args.first()), args.get(1)) else {
+                continue;
+            };
+            if tc == ITEM_TYPE_CLASS {
+                out.push(ItemKeyDecl { holder: holder.clone(), field: init.field, id, item_type: item_type.clone() });
+            }
+        }
+    }
+    Ok(out)
+}
 
 /// Built-in name tables the original defines in code, read from the jar.
 #[derive(Clone, Debug, Default)]
@@ -184,6 +343,15 @@ pub struct BuiltinTables {
     pub ragdoll_bone_names: Vec<String>,
     /// [`VEHICLE_ENUM_CLASSES`] constants: (class, [(constant, id)]).
     pub vehicle_enums: Vec<(String, Vec<(String, String)>)>,
+    /// `Metabolics` constants in declaration order, with `getMet()`.
+    pub metabolics: Vec<(String, f32)>,
+    /// `BodyPartType` constants in declaration order.
+    pub body_parts: Vec<BodyPartDecl>,
+    /// `ItemKey`'s nested holder constants, by holder in jar order.
+    pub item_keys: Vec<ItemKeyDecl>,
+    /// `zombie.ai.states` classes with a static `instance()` singleton
+    /// (`a/b/C` form).
+    pub state_singletons: Vec<String>,
 }
 
 impl BuiltinTables {
@@ -228,6 +396,16 @@ impl BuiltinTables {
                 .collect();
             vehicle_enums.push((class.rsplit('/').next().unwrap().to_string(), consts));
         }
-        Ok(BuiltinTables { perk_ids, perks, perk_init, ragdoll_bone_names, vehicle_enums })
+        Ok(BuiltinTables {
+            perk_ids,
+            perks,
+            perk_init,
+            ragdoll_bone_names,
+            vehicle_enums,
+            metabolics: metabolics(jar)?,
+            body_parts: body_parts(jar)?,
+            item_keys: item_keys(jar)?,
+            state_singletons: state_singletons(jar)?,
+        })
     }
 }

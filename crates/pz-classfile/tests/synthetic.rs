@@ -1,9 +1,10 @@
 //! Round trip over a hand-assembled class inside a hand-assembled jar.
 
-use pz_classfile::{load_class, method_effects, static_inits, Effect, Jar, Value};
+use pz_classfile::{load_class, method_effects, method_return, static_inits, Effect, Jar, Value};
 
 /// A class `t/K` whose `<clinit>` runs `A = reg("id_a"); B = reg("id_b", t/O.X)`
-/// and whose `init()` runs `A.p = B; reg("id_a"); reg("id_b", t/O.X);`.
+/// and whose `init()` runs `A.p = B; reg("id_a"); reg("id_b", t/O.X);`, plus
+/// a factory `static K make(String id) { return new K(id, t/O.X); }`.
 fn class_bytes() -> Vec<u8> {
     let mut pool: Vec<Vec<u8>> = Vec::new();
     let utf8 = |pool: &mut Vec<Vec<u8>>, s: &str| {
@@ -53,6 +54,9 @@ fn class_bytes() -> Vec<u8> {
     let s_val = string(&mut pool, "constant");
     let f_p = member(&mut pool, 9, this_class, "p", "Lt/K;");
     let init_name = utf8(&mut pool, "init");
+    let make_name = utf8(&mut pool, "make");
+    let make_desc = utf8(&mut pool, "(Ljava/lang/String;)Lt/K;");
+    let ctor = member(&mut pool, 10, this_class, "<init>", "(Ljava/lang/String;Lt/O;)V");
 
     let mut code = vec![0x12, s_a as u8, 0xb8];
     code.extend(u(reg1));
@@ -81,6 +85,14 @@ fn class_bytes() -> Vec<u8> {
     init.extend(u(reg2));
     init.extend([0x57, 0xb1]);
 
+    let mut make = vec![0xbb];
+    make.extend(u(this_class));
+    make.extend([0x59, 0x2a, 0xb2]);
+    make.extend(u(o_x));
+    make.push(0xb7);
+    make.extend(u(ctor));
+    make.push(0xb0);
+
     let mut b = vec![0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 61];
     b.extend(u(pool.len() as u16 + 1));
     for c in &pool {
@@ -102,11 +114,11 @@ fn class_bytes() -> Vec<u8> {
     b.extend(u(cv_attr));
     b.extend(2u32.to_be_bytes());
     b.extend(u(s_val));
-    b.extend(u(2)); // methods
-    for (name, code) in [(clinit, &code), (init_name, &init)] {
+    b.extend(u(3)); // methods
+    for (name, desc, code) in [(clinit, void, &code), (init_name, void, &init), (make_name, make_desc, &make)] {
         b.extend(u(0x08));
         b.extend(u(name));
-        b.extend(u(void));
+        b.extend(u(desc));
         b.extend(u(1));
         b.extend(u(code_attr));
         b.extend(((12 + code.len()) as u32).to_be_bytes());
@@ -205,4 +217,21 @@ fn evaluates_method_effects() {
         e => panic!("{e:?}"),
     }
     assert!(method_effects(&cf, "missing").unwrap().is_empty());
+}
+
+#[test]
+fn evaluates_factory_return_values() {
+    let jar = Jar::from_bytes(jar_bytes("t/K.class", &class_bytes())).unwrap();
+    let cf = load_class(&jar, "t/K").unwrap();
+    let ret = method_return(&cf, "make", &[Value::Str("id_c".into())]).unwrap();
+    assert_eq!(
+        ret,
+        Some(Value::New {
+            class: "t/K".into(),
+            args: vec![Value::Str("id_c".into()), Value::Static { class: "t/O".into(), name: "X".into() }],
+        })
+    );
+    // Without arguments the factory's effects are unchanged (none).
+    assert!(method_effects(&cf, "make").unwrap().is_empty());
+    assert_eq!(method_return(&cf, "missing", &[]).unwrap(), None);
 }

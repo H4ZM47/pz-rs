@@ -8,12 +8,14 @@
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
 pub mod bind_attached_items;
+pub mod bind_body_damage;
 pub mod bind_characters;
 pub mod bind_core;
 pub mod bind_globals;
 pub mod bind_registry;
 pub mod bind_scripts;
 pub mod bind_skills;
+pub mod bind_states;
 pub mod bind_ui;
 pub mod bind_fs;
 pub mod bind_java_util;
@@ -34,6 +36,9 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_ui::register(&mut mgr.thread);
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());
+    // Before bind_scripts, whose enum fallbacks skip classes registered here.
+    bind_body_damage::register_shared(&mut mgr.thread);
+    bind_states::register_shared(&mut mgr.thread);
     bind_scripts::register(&mut mgr.thread, bind_registry::shared_script_manager());
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
