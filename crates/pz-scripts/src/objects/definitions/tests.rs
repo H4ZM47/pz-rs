@@ -76,20 +76,40 @@ fn fluid_filter_lists() {
 
 #[test]
 fn timed_action_fields() {
-    let body = "timedAction T { time = 50, metabolics = LightWork, soundTime = animation_event, \
-        muscleStrainParts = hand_l; Torso_Upper ;nope, muscleStrainSkill = Axe, faceObject = TRUE, }";
-    let (t, r) = load(TimedActionScript::new(), "T", body);
+    use crate::registry::builtin::BodyPartDecl;
+    let sm = ScriptManager::new();
+    {
+        let mut t = sm.builtin_tables.borrow_mut();
+        t.perk_ids = test_perks();
+        t.metabolics = vec![("Default".into(), 1.0), ("Juggling".into(), 2.0), ("MAX".into(), 3.0)];
+        let part = |field: &str, name: &str| BodyPartDecl { field: field.into(), name: name.into(), ..Default::default() };
+        t.body_parts = vec![part("Elbow_L", "Elbow_L"), part("Knee_R", "Knee_R"), part("MAX", "Odd Part")];
+    }
+    let load = |body: &str| {
+        let mut t = TimedActionScript::new();
+        let r = t.load(&sm, "T", body);
+        (t, r)
+    };
+    let body = "timedAction T { time = 50, metabolics = Juggling, soundTime = animation_event, \
+        muscleStrainParts = elbow_l; Knee_R ;nope;odd part, muscleStrainSkill = Axe, faceObject = TRUE, }";
+    let (t, r) = load(body);
     r.unwrap();
     assert_eq!(t.time(), 50);
-    assert_eq!(t.metabolics(), Metabolics::LightWork);
+    assert_eq!(t.metabolics(), "Juggling");
     assert_eq!(t.sound_time(), ActionSoundTime::AnimationEvent);
-    assert_eq!(t.muscle_strain_parts(), [BodyPartType::Hand_L, BodyPartType::Torso_Upper, BodyPartType::MAX]);
+    assert_eq!(t.muscle_strain_parts(), ["Elbow_L", "Knee_R", "MAX", "MAX"]);
     assert_eq!(t.muscle_strain_skill(), Some("Axe"));
     assert!(t.is_face_object());
+    assert_eq!(TimedActionScript::new().metabolics(), "Default");
 
-    let (_, r) = load(TimedActionScript::new(), "T", "timedAction T { time = 1.5, }");
+    let (_, r) = load("timedAction T { metabolics = juggling, }");
+    assert_eq!(
+        r.unwrap_err().0,
+        "java.lang.IllegalArgumentException: No enum constant zombie.characters.BodyDamage.Metabolics.juggling"
+    );
+    let (_, r) = load("timedAction T { time = 1.5, }");
     assert_eq!(r.unwrap_err().0, "java.lang.NumberFormatException: For input string: \"1.5\"");
-    let (_, r) = load(TimedActionScript::new(), "T", "timedAction T { soundTime = ACTION_START, }");
+    let (_, r) = load("timedAction T { soundTime = ACTION_START, }");
     assert_eq!(r.unwrap_err().0, "java.lang.IllegalArgumentException: No enum constant for value: ACTION_START");
 }
 
