@@ -18,6 +18,7 @@ pub mod bind_misc_classes;
 pub mod bind_mods;
 pub mod bind_render;
 pub mod bind_sandbox;
+pub mod bind_server;
 pub mod bind_text;
 pub mod bind_map_groups;
 pub mod bind_registry;
@@ -48,6 +49,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_map_groups::register(&mut mgr.thread, move || fs.borrow().media_file("maps"));
     bind_misc::register(&mut mgr.thread, mgr.fs.clone(), mgr.events.clone());
     bind_sandbox::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
+    bind_server::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
     {
         let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
         bind_misc_classes::register(&mut mgr.thread, jar.as_ref());

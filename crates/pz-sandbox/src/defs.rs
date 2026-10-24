@@ -69,10 +69,19 @@ pub enum Arg {
     /// A class literal (`Foo.class`).
     Class(String),
     /// `getstatic owner.name`.
-    Static { class: String, name: String },
+    Static {
+        class: String,
+        name: String,
+    },
     /// The result of a call the evaluator does not model.
-    Call { class: String, name: String, args: Vec<Arg> },
+    Call {
+        class: String,
+        name: String,
+        args: Vec<Arg>,
+    },
     Opt(usize),
+    /// An object recorded by [`ctor_calls`] (index into its calls).
+    Ctor(usize),
     New(String),
     Unknown,
 }
@@ -131,9 +140,24 @@ struct Reader<'a> {
     /// Record `new <class>(this, ...)` for classes with this prefix.
     ctor_prefix: Option<String>,
     ctors: Vec<(String, Vec<Arg>)>,
+    /// Field name -> recorded constructor stored into it.
+    fields: std::collections::HashMap<String, usize>,
+    /// String arguments of `ArrayList.remove(String)` calls.
+    removals: Vec<String>,
 }
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
+    fn new(jar: &'a Jar, ctor_prefix: Option<String>) -> Self {
+        Reader {
+            jar,
+            out: Vec::new(),
+            ctor_prefix,
+            ctors: Vec::new(),
+            fields: Default::default(),
+            removals: Vec::new(),
+        }
+    }
+
     /// Runs `class.<init>`; `inner` is true for an inner class whose first
     /// constructor argument is the outer `SandboxOptions`.
     fn run_init(&mut self, cf: &ClassFile, inner: bool) -> Result<()> {
@@ -199,14 +223,20 @@ impl Reader<'_> {
                     let obj = pop(&mut stack);
                     stack.push(if inner && obj == V::This && r.name == "this$0" {
                         V::Outer
+                    } else if obj == V::This && self.fields.contains_key(&r.name) {
+                        V::Ctor(self.fields[&r.name])
                     } else {
                         V::Unknown
                     });
                 }
                 // putfield
                 0xb5 => {
-                    pop(&mut stack);
-                    pop(&mut stack);
+                    let r = cf.member_ref(u16_at(pc + 1)?)?;
+                    let value = pop(&mut stack);
+                    let obj = pop(&mut stack);
+                    if let (V::This, V::Ctor(i)) = (obj, value) {
+                        self.fields.insert(r.name, i);
+                    }
                 }
                 0xb6..=0xb9 => {
                     let r = cf.member_ref(u16_at(pc + 1)?)?;
@@ -216,9 +246,13 @@ impl Reader<'_> {
                     if op == 0xb7 && r.name == "<init>" {
                         let target = pop(&mut stack);
                         if let V::New(class) = &target {
+                            let mut recorded = None;
                             if let Some(prefix) = &self.ctor_prefix {
-                                if class.starts_with(prefix.as_str()) && args.first() == Some(&V::This) {
+                                if class.starts_with(prefix.as_str())
+                                    && args.first() == Some(&V::This)
+                                {
                                     self.ctors.push((class.clone(), args[1..].to_vec()));
+                                    recorded = Some(self.ctors.len() - 1);
                                 }
                             }
                             // `new Inner(this)`: run the inner constructor now.
@@ -231,7 +265,7 @@ impl Reader<'_> {
                             // The `dup`ed reference stays as the new object.
                             if let Some(top) = stack.last_mut() {
                                 if *top == target {
-                                    *top = V::New(class.clone());
+                                    *top = recorded.map_or_else(|| V::New(class.clone()), V::Ctor);
                                 }
                             }
                         }
@@ -316,6 +350,17 @@ impl Reader<'_> {
             });
             return Ok(V::Opt(self.out.len() - 1));
         }
+        if let V::Ctor(idx) = recv {
+            // `option.getName()`: the option name is the first argument.
+            if name == "getName" {
+                return Ok(self.ctors[*idx].1.first().cloned().unwrap_or(V::Unknown));
+            }
+        }
+        if class == "java/util/ArrayList" && name == "remove" {
+            if let Some(V::Str(s)) = args.first() {
+                self.removals.push(s.clone());
+            }
+        }
         if let V::Opt(idx) = recv {
             match name {
                 "setTranslation" => self.out[*idx].translation = args.first().and_then(s),
@@ -331,7 +376,11 @@ impl Reader<'_> {
             all.push(recv.clone());
         }
         all.extend_from_slice(args);
-        Ok(V::Call { class: class.to_string(), name: name.to_string(), args: all })
+        Ok(V::Call {
+            class: class.to_string(),
+            name: name.to_string(),
+            args: all,
+        })
     }
 }
 
@@ -339,7 +388,7 @@ impl Reader<'_> {
 /// original's constructor adds them.
 pub fn builtin_options(jar: &Jar) -> Result<Vec<OptionDef>> {
     let cf = load_class(jar, SANDBOX_CLASS)?;
-    let mut r = Reader { jar, out: Vec::new(), ctor_prefix: None, ctors: Vec::new() };
+    let mut r = Reader::new(jar, None);
     r.run_init(&cf, false)?;
     Ok(r.out)
 }
@@ -347,9 +396,22 @@ pub fn builtin_options(jar: &Jar) -> Result<Vec<OptionDef>> {
 /// Every `new <C>(this, args...)` that `class.<init>` performs for a class
 /// `C` whose name starts with `prefix`, in execution order, with the
 /// arguments after `this` (how `ServerOptions` declares its options).
-pub fn ctor_calls(jar: &Jar, class: &str, prefix: &str) -> Result<Vec<(String, Vec<Arg>)>> {
+pub fn ctor_calls(jar: &Jar, class: &str, prefix: &str) -> Result<CtorScan> {
     let cf = load_class(jar, class)?;
-    let mut r = Reader { jar, out: Vec::new(), ctor_prefix: Some(prefix.to_string()), ctors: Vec::new() };
+    let mut r = Reader::new(jar, Some(prefix.to_string()));
     r.run_init(&cf, false)?;
-    Ok(r.ctors)
+    Ok(CtorScan {
+        calls: r.ctors,
+        list_removals: r.removals,
+    })
+}
+
+/// What [`ctor_calls`] found in a constructor.
+#[derive(Clone, Debug, Default)]
+pub struct CtorScan {
+    /// `(class, arguments after this)` for each recorded `new`.
+    pub calls: Vec<(String, Vec<Arg>)>,
+    /// Strings passed to `ArrayList.remove`, in order (option names when the
+    /// constructor removes `this.option.getName()`).
+    pub list_removals: Vec<String>,
 }

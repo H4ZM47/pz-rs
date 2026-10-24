@@ -198,7 +198,11 @@ impl SandboxOption {
 
     /// `getValueTranslationByIndex(index)`; `Err` where the original throws
     /// `ArrayIndexOutOfBoundsException`.
-    pub fn value_translation_by_index(&self, t: &Translator, index: i32) -> Result<String, OutOfRange> {
+    pub fn value_translation_by_index(
+        &self,
+        t: &Translator,
+        index: i32,
+    ) -> Result<String, OutOfRange> {
         if index < 1 || index > self.num_values() {
             return Err(OutOfRange);
         }
@@ -545,6 +549,26 @@ impl SandboxOptions {
             }
             let value = self.upgrade_option_value(&name, &value, version);
             if let Some(o) = self.option_by_name_mut(&name) {
+                o.config.parse(&value);
+            }
+        }
+        true
+    }
+
+    /// `loadServerZombiesFile`: an old `<server>_zombies.ini` whose names
+    /// are `ZombieConfig.` options without the table prefix.
+    pub fn load_server_zombies_file(&mut self, file: &Path) -> bool {
+        let mut cf = ConfigFile::new();
+        if !cf.read(file) {
+            return false;
+        }
+        let entries: Vec<(String, String)> = cf
+            .get_options()
+            .iter()
+            .map(|c| (c.name().to_string(), c.get_value_as_string()))
+            .collect();
+        for (name, value) in entries {
+            if let Some(o) = self.option_by_name_mut(&format!("ZombieConfig.{name}")) {
                 o.config.parse(&value);
             }
         }

@@ -1510,6 +1510,7 @@ dependencies = [
  "pz-render",
  "pz-sandbox",
  "pz-scripts",
+ "pz-server-settings",
  "pz-text",
  "pz-ui",
  "pz-world",
@@ -1541,6 +1542,17 @@ version = "0.1.0"
 dependencies = [
  "pz-classfile",
  "pz-fs",
+]
+
+[[package]]
+name = "pz-server-settings"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-core",
+ "pz-kahlua",
+ "pz-sandbox",
+ "pz-text",
 ]
 
 [[package]]
