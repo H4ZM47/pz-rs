@@ -258,6 +258,9 @@ pub struct WorldLighting {
     light_source_update: f32,
     /// `LosUtil.cachecleared[player]`.
     cache_cleared: [bool; 4],
+    /// `IsoCell.chunkMap[player]` in squares, `(min_x, min_y, max_x,
+    /// max_y)`, for each local player (`None`: `ignore`).
+    chunk_maps: [Option<(i32, i32, i32, i32)>; 4],
     /// `Core.dirtyGlobalLightsCount`.
     pub dirty_global_lights: i32,
     /// `PerformanceSettings.getLockFPS()`.
@@ -290,6 +293,7 @@ impl WorldLighting {
             levels: HashMap::new(),
             light_source_update: 100.0,
             cache_cleared: [true; 4],
+            chunk_maps: [None; 4],
             dirty_global_lights: 0,
             lock_fps: 60,
         }
@@ -498,14 +502,13 @@ impl WorldLighting {
 
     /// `IsoCell.getLamppostPositions()` with each lamp's `active` after
     /// `checkLights`' power rules, plus removed lamps once, then the cell's
-    /// own lights. A cell light that is dead or outside `bounds`
-    /// (`isInBounds`, the player's chunk map in squares) is sent as not
-    /// alive and leaves the list, as `checkLights` removes it.
+    /// own lights. A cell light that is dead or outside every local
+    /// player's chunk map (`isInBounds`) is sent as not alive and leaves the
+    /// list, as `checkLights` removes it.
     fn lamp_list(
         &mut self,
         settings: &dyn RenderSettingsSource,
         hooks: &dyn WorldHooks,
-        bounds: (i32, i32, i32, i32),
     ) -> Vec<LightSource> {
         let mut keys: Vec<_> = self.lights.keys().copied().collect();
         keys.sort();
@@ -523,10 +526,16 @@ impl WorldLighting {
                 out.push(LightSource { active, ..l.source });
             }
         }
-        let (min_x, min_y, max_x, max_y) = bounds;
+        let maps = self.chunk_maps;
+        // `IsoLightSource.isInBounds()`: inside any local player's map.
+        let in_bounds = |c: &CellLight| {
+            maps.iter().flatten().any(|&(min_x, min_y, max_x, max_y)| {
+                c.x >= min_x && c.x < max_x && c.y >= min_y && c.y < max_y
+            })
+        };
         for l in &self.lampposts {
             let c = &l.light;
-            let in_bounds = c.x >= min_x && c.x < max_x && c.y >= min_y && c.y < max_y;
+            let in_bounds = in_bounds(c);
             out.push(LightSource {
                 key: l.key,
                 x: c.x,
@@ -542,10 +551,7 @@ impl WorldLighting {
                 alive: !l.dead && in_bounds,
             });
         }
-        self.lampposts.retain(|l| {
-            let c = &l.light;
-            !l.dead && c.x >= min_x && c.x < max_x && c.y >= min_y && c.y < max_y
-        });
+        self.lampposts.retain(|l| !l.dead && in_bounds(&l.light));
         out
     }
 
@@ -554,7 +560,6 @@ impl WorldLighting {
         &mut self,
         w: &WorldView<'_>,
         hooks: &dyn WorldHooks,
-        bounds: (i32, i32, i32, i32),
     ) -> Vec<RoomLightSource> {
         let rooms: BTreeSet<i64> = self
             .lights
@@ -583,11 +588,17 @@ impl WorldLighting {
                     self.next_key += 1;
                     self.next_key
                 });
-                let (min_x, min_y, max_x, max_y) = bounds;
-                let in_bounds = !(r.x - 5 >= max_x
-                    || r.x + r.w + 5 <= min_x
-                    || r.y - 5 >= max_y
-                    || r.y + r.h + 5 <= min_y);
+                // `IsoRoomLight.isInBounds()`: near any local player's map.
+                let in_bounds =
+                    self.chunk_maps
+                        .iter()
+                        .flatten()
+                        .any(|&(min_x, min_y, max_x, max_y)| {
+                            !(r.x - 5 >= max_x
+                                || r.x + r.w + 5 <= min_x
+                                || r.y - 5 >= max_y
+                                || r.y + r.h + 5 <= min_y)
+                        });
                 out.push(RoomLightSource {
                     key,
                     building_id,
@@ -622,6 +633,15 @@ impl WorldLighting {
         out
     }
 
+    /// Sets local player `player`'s chunk map, `(getWorldXMin(),
+    /// getWorldYMin(), chunkGridWidth)` in chunks, or `None` when the
+    /// player has left (`chunkMap[player].ignore`). [`Self::frame`] sets
+    /// its own player's; cell lights stay while inside any player's map.
+    pub fn set_chunk_map(&mut self, player: i32, map: Option<(i32, i32, i32)>) {
+        self.chunk_maps[player as usize & 3] =
+            map.map(|(x, y, w)| (x * 8, y * 8, (x + w) * 8, (y + w) * 8));
+    }
+
     /// The decoded light of a square for `player`.
     pub fn square_light(&self, player: i32, x: i32, y: i32, z: i32) -> Option<&SquareLight> {
         let lvl = self
@@ -645,14 +665,9 @@ impl WorldLighting {
         on_screen: &dyn Fn(i32, i32, i32) -> bool,
     ) -> Result<LightingFrame, LightingError> {
         let pi = p.index;
-        let bounds = (
-            p.chunk_x_min * 8,
-            p.chunk_y_min * 8,
-            (p.chunk_x_min + p.chunk_grid_width) * 8,
-            (p.chunk_y_min + p.chunk_grid_width) * 8,
-        );
-        let lamps = self.lamp_list(settings, hooks, bounds);
-        let rooms = self.room_light_list(w, hooks, bounds);
+        self.set_chunk_map(pi, Some((p.chunk_x_min, p.chunk_y_min, p.chunk_grid_width)));
+        let lamps = self.lamp_list(settings, hooks);
+        let rooms = self.room_light_list(w, hooks);
         let torches = hooks.torches();
         let r =
             self.sync

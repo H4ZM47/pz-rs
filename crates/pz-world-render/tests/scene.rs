@@ -450,3 +450,55 @@ fn a_fireplace_light_follows_its_fuel() {
     assert_eq!(lighting.light_id(second), None);
     assert_eq!(lighting.lampposts().count(), 0);
 }
+
+#[test]
+fn a_cell_light_stays_while_inside_any_players_chunk_map() {
+    let (cell, m, meta) = scene();
+    let view = WorldView {
+        cell: &cell,
+        meta: &meta,
+        sprites: &m,
+    };
+    let (_, mut lighting) = build(&view);
+    // Player 0's map is chunk (1, 1) alone (squares 8..16); player 1's is
+    // chunks (2, 2)..(3, 3) (squares 16..32). The light is in player 1's.
+    let frame = |lighting: &mut WorldLighting, f: u64| {
+        let input = PlayerFrameInput {
+            index: 0,
+            player: default_player(12.5, 12.5, 0.0, IsoDirection::E),
+            cone: VisionConeInput {
+                worn_items_vision_multiplier: 1.0,
+                ..Default::default()
+            },
+            chunk_x_min: 1,
+            chunk_y_min: 1,
+            chunk_grid_width: 1,
+        };
+        lighting
+            .frame(
+                &view,
+                &input,
+                &mut Night,
+                &NoWorldHooks,
+                f * 33_000_000,
+                &|_, _, _| true,
+            )
+            .unwrap();
+    };
+    lighting.set_chunk_map(1, Some((2, 2, 2)));
+    let key = lighting.add_lamppost(CellLight::new(20, 20, 0, 1.0, 0.5, 0.2, 4));
+    for f in 0..3 {
+        frame(&mut lighting, f);
+    }
+    // Outside player 0's map but inside player 1's: kept and sent.
+    assert_eq!(lighting.lampposts().count(), 1);
+    assert!(lighting.light_id(key).is_some());
+
+    // Player 1 leaves: outside every map, the light goes.
+    lighting.set_chunk_map(1, None);
+    for f in 3..6 {
+        frame(&mut lighting, f);
+    }
+    assert_eq!(lighting.lampposts().count(), 0);
+    assert_eq!(lighting.light_id(key), None);
+}
