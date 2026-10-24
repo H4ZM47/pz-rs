@@ -194,6 +194,31 @@ pub enum SimEvent {
     /// `onKilled(killer, weapon, isGory)` (the subclass reaction, run by
     /// the owner of the corpse code).
     Killed { attacker: Option<i32> },
+    /// `LuaEventManager.triggerEvent("OnWeaponHitCharacter", wielder,
+    /// target, weapon, damageSplit)` (characters by id).
+    WeaponHitCharacter { wielder: i32, target: i32, damage: f32 },
+    /// `addWorldSoundUnlessInvisible(radius, volume, false)`.
+    WorldSound { radius: i32, volume: i32 },
+    /// `splatBlood(amount, speed)`.
+    SplatBlood { amount: i32, speed: f32 },
+    /// `die()` after `Kill`: the corpse (`becomeCorpse`).
+    Die,
+    /// `getCharacterActions().get(0).forceStop()`.
+    ForceStopAction,
+    /// `LuaEventManager.triggerEvent("OnWeaponSwing", chr, weapon)`.
+    WeaponSwing,
+    /// `LuaEventManager.triggerEvent("OnWeaponSwingHitPoint", chr, weapon)`.
+    WeaponSwingHitPoint,
+    /// `LuaEventManager.triggerEvent("OnWeaponHitXp", chr, weapon, target,
+    /// damageSplit, 1)` (the target by id).
+    WeaponHitXp { target: i32, damage: f32 },
+    /// `LuaEventManager.triggerEvent("OnPlayerAttackFinished", chr, weapon)`.
+    PlayerAttackFinished,
+    /// The weapon's swing sound for a sound id (`getSoundByID`, else
+    /// `getSwingSound`).
+    SwingSound(String),
+    /// An error the original would log (`DebugType.printException`).
+    Error(String),
 }
 
 /// The singletons the simulation reads. Every method has the default a
@@ -368,6 +393,30 @@ pub trait SimContext {
     /// `SandboxOptions.instance.lore.zombiesCrawlersDragDown.getValue()`.
     fn lore_zombies_crawlers_drag_down(&self) -> bool {
         false
+    }
+    /// `Core.getInstance().isOptionAutoProneAtk()`.
+    fn option_auto_prone_attack(&self) -> bool {
+        true
+    }
+    /// `SandboxOptions.instance.multiHitZombies.getValue()`.
+    fn multi_hit_zombies(&self) -> bool {
+        false
+    }
+    /// `SandboxOptions.instance.attackBlockMovements.getValue()`.
+    fn attack_block_movements(&self) -> bool {
+        true
+    }
+    /// `SandboxOptions.instance.lore.toughness.getValue()`.
+    fn lore_toughness(&self) -> i32 {
+        2
+    }
+    /// `SandboxOptions.instance.lore.zombiesArmorFactor.getValue()`.
+    fn lore_zombies_armor_factor(&self) -> f64 {
+        2.0
+    }
+    /// `SandboxOptions.instance.lore.zombiesMaxDefense.getValue()`.
+    fn lore_zombies_max_defense(&self) -> i32 {
+        85
     }
     /// `SandboxOptions.instance.injurySeverity.getValue()` (1 low, 2
     /// normal, 3 high).

@@ -9,6 +9,9 @@ use super::state::{Param, StateId, StateRef};
 
 pub mod generic_default;
 pub mod idle;
+pub mod player;
+pub mod stagger_back;
+pub mod swipe;
 
 /// Every `zombie.ai.states` class (the jar's names).
 pub mod ids {
@@ -102,5 +105,19 @@ pub const STRAFE_SPEED: Param<f32> = Param::new(ids::PLAYER_STRAFE, "strafe_spee
 
 /// The ported states.
 pub fn all<I: 'static>() -> Vec<StateRef<I>> {
-    vec![generic_default::instance(), idle::instance()]
+    vec![
+        generic_default::instance(),
+        idle::instance(),
+        stagger_back::instance(),
+        swipe::instance(),
+        player::knocked_down(),
+        player::fall_down(),
+        player::hit_reaction(),
+        player::hit_reaction_pvp(),
+        player::on_ground(),
+        player::get_up(),
+        player::collide_with_wall(),
+        player::aim(),
+        player::strafe(),
+    ]
 }

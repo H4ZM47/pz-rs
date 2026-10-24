@@ -70,6 +70,16 @@ pub trait StateWorld<I> {
         None
     }
 
+    /// Takes the character with `id` out of the world for a call that
+    /// needs it and another character mutably (a hit); it goes back with
+    /// [`Self::put_character`].
+    fn take_character(&mut self, _id: i32) -> Option<GameCharacter<I>> {
+        None
+    }
+
+    /// Returns a character taken with [`Self::take_character`].
+    fn put_character(&mut self, _chr: GameCharacter<I>) {}
+
     /// The ids of the characters `CombatManager` considers (the cell's
     /// moving objects near `(x, y, z)`).
     fn characters_near(&self, _x: f32, _y: f32, _z: f32, _radius: f32) -> Vec<i32> {

@@ -224,9 +224,47 @@ pub struct CharacterVars {
     /// `isOverEncumbered()` as the last update computed it (the getter
     /// needs the inventory weight).
     pub over_encumbered: bool,
-    // ---- IsoZombie (read by the shared code) ----
+    /// `IsoPlayer.chargeTime`.
+    pub charge_time: f32,
+    /// `IsoLivingCharacter.useChargeDelta`.
+    pub use_charge_delta: f32,
+    /// `isMeleeButtonDown()`, `isManualFloorAtkButtonDown()` (input).
+    pub melee_button_down: bool,
+    pub manual_floor_attack_button_down: bool,
+    /// `clickSound`.
+    pub click_sound: Option<String>,
+    pub force_run: bool,
+    pub force_sprint: bool,
+    /// `isShootable()`.
+    pub shootable: bool,
+    pub deferred_movement_enabled: bool,
+    /// `IsoZombie.playerAttackPosition` (`testDotSide` name).
+    pub player_attack_position: Option<String>,
+    pub playing_death_sound: bool,
+    pub hide_weapon_model: bool,
+    /// `collidedN/S/E/W` (from the movement code).
+    pub collided_n: bool,
+    pub collided_s: bool,
+    pub collided_e: bool,
+    pub collided_w: bool,
+    pub last_collide_time: f32,
+    // ---- IsoZombie (read and written by the shared combat code) ----
     pub crawling: bool,
     pub sit_against_wall: bool,
+    /// `lastHitPart` (`BodyPartType` index).
+    pub last_hit_part: i32,
+    /// `hitTime`.
+    pub hit_time: i32,
+    pub time_since_seen_flesh: f32,
+    pub only_jaw_stab: bool,
+    /// `target` (by character id).
+    pub target: Option<i32>,
+    pub always_knocked_down: bool,
+    pub become_crawler: bool,
+    /// `IsoZombie.staggerBack` (`setStaggerBack`).
+    pub stagger_back: bool,
+    pub hit_legs_while_on_floor: bool,
+    pub hit_head_while_on_floor: i32,
 }
 
 impl Default for CharacterVars {
@@ -379,8 +417,35 @@ impl Default for CharacterVars {
             is_player_moving: false,
             path_strafing: false,
             over_encumbered: false,
+            charge_time: 0.0,
+            use_charge_delta: 0.0,
+            melee_button_down: false,
+            manual_floor_attack_button_down: false,
+            click_sound: None,
+            force_run: false,
+            force_sprint: false,
+            shootable: true,
+            deferred_movement_enabled: true,
+            player_attack_position: None,
+            playing_death_sound: false,
+            hide_weapon_model: false,
+            collided_n: false,
+            collided_s: false,
+            collided_e: false,
+            collided_w: false,
+            last_collide_time: 0.0,
             crawling: false,
             sit_against_wall: false,
+            last_hit_part: 0,
+            hit_time: 0,
+            time_since_seen_flesh: 100000.0,
+            only_jaw_stab: false,
+            target: None,
+            always_knocked_down: false,
+            become_crawler: false,
+            stagger_back: false,
+            hit_legs_while_on_floor: false,
+            hit_head_while_on_floor: 0,
         }
     }
 }

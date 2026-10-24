@@ -284,6 +284,10 @@ pub struct GameCharacter<I: 'static> {
     pub game_variables: pz_anim::MapVariableSource,
     /// The pathfinding fields (`finder`, `path2`, ...).
     pub path: path_mover::PathMoverState,
+    /// `attackVars`.
+    pub attack_vars: states::swipe::AttackVars,
+    /// `IsoLivingCharacter.bareHands` (`Base.BareHands`), when created.
+    pub bare_hands: Option<pz_inventory::InventoryItem>,
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -359,6 +363,8 @@ impl<I: 'static> GameCharacter<I> {
             vars: state::CharacterVars::default(),
             game_variables: pz_anim::MapVariableSource::new(),
             path: path_mover::PathMoverState::default(),
+            attack_vars: states::swipe::AttackVars::default(),
+            bare_hands: None,
         }
     }
 
