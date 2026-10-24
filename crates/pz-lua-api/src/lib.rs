@@ -7,6 +7,7 @@
 //! Each exposed class gets a global table (statics, `new`, `class`) and a
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
+pub mod bind_globals;
 pub mod events;
 pub mod expose;
 pub mod lua_manager;
@@ -14,4 +15,6 @@ pub mod lua_manager;
 pub use lua_manager::LuaManager;
 
 /// Register all globals and exposed classes.
-pub fn register_all(_mgr: &mut LuaManager) {}
+pub fn register_all(mgr: &mut LuaManager) {
+    bind_globals::register(&mut mgr.thread);
+}
