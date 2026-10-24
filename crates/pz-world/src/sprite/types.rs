@@ -103,6 +103,14 @@ known!(
         NeverCutaway,
         HasLightOnSprite,
         EntityScript,
+        water,
+        solidtrans,
+        blueprint,
+        BlockRain,
+        trans,
+        noStart,
+        forceRender,
+        burntOut,
     ]
 );
 
@@ -126,6 +134,12 @@ known!(
         radio,
         doorFrN,
         doorFrW,
+        stairsTN,
+        stairsMN,
+        stairsBN,
+        stairsTW,
+        stairsMW,
+        stairsBW,
     ]
 );
 
@@ -299,6 +313,14 @@ pub(crate) fn test_tables() -> SpriteTables {
             "NeverCutaway",
             "HasLightOnSprite",
             "EntityScript",
+            "water",
+            "solidtrans",
+            "blueprint",
+            "BlockRain",
+            "trans",
+            "noStart",
+            "forceRender",
+            "burntOut",
         ]),
         s(&[
             "normal",
@@ -319,6 +341,11 @@ pub(crate) fn test_tables() -> SpriteTables {
             "radio",
             "doorFrN",
             "doorFrW",
+            "stairsTN",
+            "stairsMN",
+            "stairsBN",
+            "stairsMW",
+            "stairsBW",
         ]),
         s(&["North", "West"]),
     )
