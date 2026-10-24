@@ -10,6 +10,12 @@
 
 use std::collections::HashMap;
 
+pub mod assets;
+pub mod import;
+pub mod loader;
+pub mod processed;
+pub mod txt;
+
 pub use pz_render::model::{MeshData, MeshKind};
 
 /// A column-major 4x4 matrix.

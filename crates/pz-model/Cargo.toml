@@ -6,3 +6,5 @@ publish.workspace = true
 
 [dependencies]
 pz-render = { path = "../pz-render" }
+miniz_oxide.workspace = true
+serde_json = "1.0.154"
