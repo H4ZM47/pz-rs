@@ -427,3 +427,28 @@ fn erosion_hook_order() {
     assert!(log.1);
     do_load_gridsquare(&mut ch, None);
 }
+
+#[test]
+fn finish_chunk_load_recalculates_before_hook() {
+    struct Seen<'a>(&'a IsoSpriteManager, Vec<bool>);
+    impl ChunkLoadHook for Seen<'_> {
+        fn load_grid_square(&mut self, c: &mut IsoChunk, x: i32, y: i32, z: i32) {
+            let sq = c.get_grid_square(x, y, z).unwrap();
+            let mut fresh = sq.clone();
+            fresh.recalc_properties(self.0);
+            self.1
+                .push(format!("{:?}", fresh.properties) == format!("{:?}", sq.properties));
+        }
+        fn chunk_loaded(&mut self, _c: &mut IsoChunk) {}
+    }
+    let m = sprites();
+    let t = SaveTables::for_tests();
+    let ch = sample_chunk(&m, &t);
+    let (wx, wy) = (ch.wx, ch.wy);
+    let mut cell = crate::chunk::IsoCell::default();
+    cell.chunks.insert((wx, wy), ch);
+    let meta = crate::meta_grid::IsoMetaGrid::empty();
+    let mut seen = Seen(&m, Vec::new());
+    crate::save::chunk_file::finish_chunk_load(&mut cell, wx, wy, &meta, &m, Some(&mut seen));
+    assert!(!seen.1.is_empty() && seen.1.iter().all(|&b| b));
+}
