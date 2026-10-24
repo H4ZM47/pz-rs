@@ -56,19 +56,28 @@ pub struct OptionDef {
     pub value_translation: Option<String>,
 }
 
+/// A value on the evaluator's stack; also the argument type of
+/// [`ctor_calls`].
 #[derive(Clone, Debug, PartialEq)]
-enum V {
+pub enum Arg {
     This,
     Outer,
+    Null,
     Int(i64),
     Float(f64),
     Str(String),
+    /// A class literal (`Foo.class`).
     Class(String),
+    /// `getstatic owner.name`.
     Static { class: String, name: String },
+    /// The result of a call the evaluator does not model.
+    Call { class: String, name: String, args: Vec<Arg> },
     Opt(usize),
     New(String),
     Unknown,
 }
+
+use Arg as V;
 
 /// Length of the instruction at `pc` (JVMS §6.5).
 fn insn_len(code: &[u8], pc: usize) -> Result<usize> {
@@ -119,6 +128,9 @@ fn insn_len(code: &[u8], pc: usize) -> Result<usize> {
 struct Reader<'a> {
     jar: &'a Jar,
     out: Vec<OptionDef>,
+    /// Record `new <class>(this, ...)` for classes with this prefix.
+    ctor_prefix: Option<String>,
+    ctors: Vec<(String, Vec<Arg>)>,
 }
 
 impl Reader<'_> {
@@ -140,6 +152,7 @@ impl Reader<'_> {
         while pc < code.len() {
             let op = code[pc];
             match op {
+                0x01 => stack.push(V::Null),
                 0x02..=0x08 => stack.push(V::Int(op as i64 - 3)),
                 0x09 | 0x0a => stack.push(V::Int(op as i64 - 9)),
                 0x0b..=0x0d => stack.push(V::Float((op - 0x0b) as f64)),
@@ -203,6 +216,11 @@ impl Reader<'_> {
                     if op == 0xb7 && r.name == "<init>" {
                         let target = pop(&mut stack);
                         if let V::New(class) = &target {
+                            if let Some(prefix) = &self.ctor_prefix {
+                                if class.starts_with(prefix.as_str()) && args.first() == Some(&V::This) {
+                                    self.ctors.push((class.clone(), args[1..].to_vec()));
+                                }
+                            }
                             // `new Inner(this)`: run the inner constructor now.
                             if class.starts_with(&format!("{SANDBOX_CLASS}$"))
                                 && args.first() == Some(&V::This)
@@ -308,7 +326,12 @@ impl Reader<'_> {
             }
             return Ok(V::Opt(*idx));
         }
-        Ok(V::Unknown)
+        let mut all = Vec::with_capacity(args.len() + 1);
+        if !matches!(recv, V::Unknown) {
+            all.push(recv.clone());
+        }
+        all.extend_from_slice(args);
+        Ok(V::Call { class: class.to_string(), name: name.to_string(), args: all })
     }
 }
 
@@ -316,10 +339,17 @@ impl Reader<'_> {
 /// original's constructor adds them.
 pub fn builtin_options(jar: &Jar) -> Result<Vec<OptionDef>> {
     let cf = load_class(jar, SANDBOX_CLASS)?;
-    let mut r = Reader {
-        jar,
-        out: Vec::new(),
-    };
+    let mut r = Reader { jar, out: Vec::new(), ctor_prefix: None, ctors: Vec::new() };
     r.run_init(&cf, false)?;
     Ok(r.out)
+}
+
+/// Every `new <C>(this, args...)` that `class.<init>` performs for a class
+/// `C` whose name starts with `prefix`, in execution order, with the
+/// arguments after `this` (how `ServerOptions` declares its options).
+pub fn ctor_calls(jar: &Jar, class: &str, prefix: &str) -> Result<Vec<(String, Vec<Arg>)>> {
+    let cf = load_class(jar, class)?;
+    let mut r = Reader { jar, out: Vec::new(), ctor_prefix: Some(prefix.to_string()), ctors: Vec::new() };
+    r.run_init(&cf, false)?;
+    Ok(r.ctors)
 }
