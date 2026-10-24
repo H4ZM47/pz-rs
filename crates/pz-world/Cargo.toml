@@ -1,0 +1,7 @@
+[package]
+name = "pz-world"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-fs.workspace = true
