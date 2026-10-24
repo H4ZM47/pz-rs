@@ -70,11 +70,42 @@ impl VehicleWorld for OracleWorld {
 
 struct Items {
     sm: Rc<pz_scripts::ScriptManager>,
+    registry: &'static ScriptItems,
+}
+
+/// The `Rand` draws `Item.InstanceItem` makes before the id: a radio's
+/// `setRandomChannel` (no presets headless) and the `OutfitRNG` seed.
+fn instance_draw_bounds(sm: &pz_scripts::ScriptManager, t: &pz_inventory::ItemTemplate) -> Vec<i32> {
+    let mut b = Vec::new();
+    if t.class == pz_inventory::ItemClass::Radio {
+        if let Some(i) = sm.find_item(&t.full_type(), true).and_then(|s| s.downcast::<Item>()) {
+            let i = i.borrow();
+            let min = if (200..=1_000_000).contains(&i.min_channel) { i.min_channel } else { 200 };
+            let max = if (200..=1_000_000).contains(&i.max_channel) { i.max_channel } else { 1_000_000 };
+            b.push(-(max - min));
+        }
+    }
+    b.push(i32::MAX);
+    b
 }
 
 impl env::ItemFactory for Items {
-    fn create_item(&self, _full_type: &str) -> Option<InventoryItem> {
-        None
+    /// `InventoryItemFactory.CreateItem(fullType)` with the original's
+    /// `Rand` draws.
+    fn create_item(&self, full_type: &str) -> Option<InventoryItem> {
+        use pz_inventory::ItemEnv as _;
+        let id = self.registry.dictionary.item_id(full_type)?;
+        let t = self.registry.template(id)?;
+        for b in instance_draw_bounds(&self.sm, &t) {
+            if b < 0 {
+                rand::next_range(0, -b);
+            } else {
+                rand::next(b);
+            }
+        }
+        let mut item = pz_inventory::env::create_item(self.registry, id)?;
+        item.id = rand::next(2_146_250_223) + 1_233_423;
+        Some(item)
     }
     fn stats(&self, full_type: &str) -> ItemStats {
         self.sm
@@ -102,31 +133,10 @@ impl pz_inventory::ItemEnv for DrawingItems<'_> {
         if e {
             let t = self.inner.template(id);
             let mut b = self.bounds.borrow_mut();
-            if let Some(t) = &t {
-                // Item.InstanceItem: a radio's DeviceData.setRandomChannel
-                // (no presets headless), the OutfitRNG seed, then the id.
-                if t.class == pz_inventory::ItemClass::Radio {
-                    if let Some(i) = self
-                        .sm
-                        .find_item(&t.full_type(), true)
-                        .and_then(|s| s.downcast::<Item>())
-                    {
-                        let i = i.borrow();
-                        let min = if (200..=1_000_000).contains(&i.min_channel) {
-                            i.min_channel
-                        } else {
-                            200
-                        };
-                        let max = if (200..=1_000_000).contains(&i.max_channel) {
-                            i.max_channel
-                        } else {
-                            1_000_000
-                        };
-                        b.push(-(max - min));
-                    }
-                }
+            match &t {
+                Some(t) => b.extend(instance_draw_bounds(self.sm, t)),
+                None => b.push(i32::MAX),
             }
-            b.push(i32::MAX);
             b.push(2_146_250_223);
         }
         e
@@ -166,6 +176,14 @@ impl pz_inventory::ItemEnv for DrawingItems<'_> {
     }
     fn rand_next(&self, bound: i32) -> i32 {
         self.bounds.borrow_mut().push(bound);
+        0
+    }
+}
+
+/// `Core.soundDisabled`: sounds play on a `DummySoundEmitter`.
+struct NoSound;
+impl env::VehicleEvents for NoSound {
+    fn play_sound(&self, _name: &str) -> i64 {
         0
     }
 }
@@ -406,6 +424,12 @@ fn install_globals(lua: &mut LuaManager, sandbox_lines: &[String]) {
         Ok(c.push(rand::zomb_rand_float(a, b) as f64))
     });
     native(&g, "isServer", |c| Ok(c.push(false)));
+    native(&g, "instanceItem", |c| {
+        let t = c.arg(0).as_str().map(str::to_string);
+        let item = t.and_then(|t| env::items().create_item(&t));
+        let v = item.map_or(Value::Nil, |i| pz_lua_api::bind_vehicles::item_value(&Rc::new(std::cell::RefCell::new(i))));
+        Ok(c.push(v))
+    });
     native(&g, "isClient", |c| Ok(c.push(false)));
     let gt = TableRef::new();
     native(&gt, "getWorldAgeHours", |c| {
@@ -514,7 +538,9 @@ fn main() {
 
     // Runtime environment.
     pz_vehicles::vehicle::set_script_manager(sm.clone());
-    env::set_items(Rc::new(Items { sm: sm.clone() }));
+    let registry: &'static ScriptItems = Box::leak(Box::new(registry));
+    env::set_items(Rc::new(Items { sm: sm.clone(), registry }));
+    env::set_events(Rc::new(NoSound));
     let sandbox_lines: Vec<String> = std::fs::read_to_string(oracle.join("sandbox.txt"))
         .unwrap()
         .lines()
@@ -590,7 +616,7 @@ fn main() {
             data: std::fs::read(rows_dir.join(format!("rows/{id}.bin"))).unwrap(),
         };
         let drawing = DrawingItems {
-            inner: &registry,
+            inner: registry,
             sm: &sm,
             bounds: Default::default(),
         };
@@ -715,9 +741,32 @@ fn main() {
         }
         let mut first_diff = None;
         let mut ndiff = 0;
+        let mut field_counts: std::collections::BTreeMap<String, usize> = Default::default();
         for (i, (j, r)) in java_lines.iter().zip(rust_lines.iter()).enumerate() {
             if *j != r.as_str() {
                 ndiff += 1;
+                let mut fields: Vec<String> = Vec::new();
+                for (a, b) in j.split(' ').zip(r.split(' ')) {
+                    if a != b {
+                        let key = a.split('=').next().unwrap_or("").to_string();
+                        if key == "parts" {
+                            for (pa, pb) in a.split(';').zip(b.split(';')) {
+                                if pa != pb {
+                                    let pid = pa.split(':').next().unwrap_or("");
+                                    let fa: Vec<&str> = pa.split(':').collect();
+                                    let fb: Vec<&str> = pb.split(':').collect();
+                                    let k = fa.iter().zip(fb.iter()).position(|(x, y)| x != y).unwrap_or(0);
+                                    fields.push(format!("parts.{pid}.{}", fa.get(k).map_or("", |x| &x[..1.min(x.len())])));
+                                }
+                            }
+                        } else {
+                            fields.push(key);
+                        }
+                    }
+                }
+                for f in fields {
+                    *field_counts.entry(f).or_insert(0usize) += 1;
+                }
                 if first_diff.is_none() {
                     first_diff = Some((i, j.to_string(), r.clone()));
                 }
@@ -739,6 +788,9 @@ fn main() {
             remaining,
             pz_vehicles::lua::take_errors().len()
         );
+        if !field_counts.is_empty() {
+            println!("  differing fields: {:?}", field_counts);
+        }
         if let Some((i, j, r)) = first_diff {
             println!("  first diff at {i}:\n  J {j}\n  R {r}");
             for (k, (jw, rw)) in j.split(' ').zip(r.split(' ')).enumerate() {
