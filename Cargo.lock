@@ -1649,6 +1649,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-entity"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-scripts",
+]
+
+[[package]]
 name = "pz-fs"
 version = "0.1.0"
 
