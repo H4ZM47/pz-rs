@@ -1,56 +1,14 @@
-//! `zombie.scripting.objects.TimedActionScript` with the enums it loads:
-//! `Metabolics`, `ActionSoundTime` and `BodyPartType`.
+//! `zombie.scripting.objects.TimedActionScript` with `ActionSoundTime`.
+//!
+//! The `Metabolics` and `BodyPartType` constants it names are game data read
+//! from the jar ([`crate::registry::builtin::BuiltinTables`]); the script
+//! holds their constant names.
 
 use super::{parse_float, parse_int};
 use crate::base::{index_error, BaseScriptObject, ScriptError, ScriptObject, ScriptResult};
 use crate::java;
 use crate::manager::ScriptManager;
 use crate::script_type::ScriptType;
-
-java_enum!(
-    /// `zombie.characters.BodyDamage.Metabolics`.
-    #[allow(clippy::upper_case_acronyms)]
-    Metabolics,
-    "zombie.characters.BodyDamage.Metabolics",
-    [
-        Sleeping, SeatedResting, StandingAtRest, SedentaryActivity, Default, DrivingCar, LightDomestic,
-        HeavyDomestic, DefaultExercise, UsingTools, LightWork, MediumWork, DiggingSpade, HeavyWork, ForestryAxe,
-        Walking2kmh, Walking5kmh, Running10kmh, Running15kmh, JumpFence, ClimbRope, Fitness, FitnessHeavy, MAX,
-    ]
-);
-
-impl Metabolics {
-    /// `getMet`.
-    pub fn met(self) -> f32 {
-        use Metabolics::*;
-        match self {
-            Sleeping => 0.8,
-            SeatedResting => 1.0,
-            StandingAtRest => 1.1,
-            SedentaryActivity => 1.2,
-            Default => 1.5,
-            DrivingCar => 1.4,
-            LightDomestic => 1.6,
-            HeavyDomestic => 2.0,
-            DefaultExercise => 3.0,
-            UsingTools => 2.5,
-            LightWork => 3.2,
-            MediumWork => 3.9,
-            DiggingSpade => 5.5,
-            HeavyWork => 6.0,
-            ForestryAxe => 8.0,
-            Walking2kmh => 1.9,
-            Walking5kmh => 3.1,
-            Running10kmh => 6.9,
-            Running15kmh => 9.5,
-            JumpFence => 4.0,
-            ClimbRope => 8.0,
-            Fitness => 6.0,
-            FitnessHeavy => 9.0,
-            MAX => 10.3,
-        }
-    }
-}
 
 /// `zombie.scripting.objects.ActionSoundTime`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -81,31 +39,8 @@ impl ActionSoundTime {
     }
 }
 
-java_enum!(
-    /// `zombie.characters.BodyDamage.BodyPartType`.
-    #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
-    BodyPartType,
-    "zombie.characters.BodyDamage.BodyPartType",
-    [
-        Hand_L, Hand_R, ForeArm_L, ForeArm_R, UpperArm_L, UpperArm_R, Torso_Upper, Torso_Lower, Head, Neck, Groin,
-        UpperLeg_L, UpperLeg_R, LowerLeg_L, LowerLeg_R, Foot_L, Foot_R, MAX,
-    ]
-);
-
-impl BodyPartType {
-    /// The `name` field (`ToString`): the constant name, except for `MAX`.
-    pub fn part_name(self) -> &'static str {
-        match self {
-            BodyPartType::MAX => "Unknown Body Part",
-            t => t.name(),
-        }
-    }
-
-    /// `FromString`: case-insensitive on `part_name`, `MAX` when unknown.
-    pub fn from_string(s: &str) -> BodyPartType {
-        Self::ALL.iter().copied().find(|t| java::eq_ignore_case(t.part_name(), s)).unwrap_or(BodyPartType::MAX)
-    }
-}
+/// The original's field initializer, `Metabolics.Default`.
+const DEFAULT_METABOLICS: &str = "Default";
 
 /// Ids of the perks `PerkFactory.Perks` creates statically, which is what
 /// `Perks.FromString` finds at script load. Perks added later from Lua are
@@ -114,7 +49,8 @@ impl BodyPartType {
 #[derive(Debug)]
 pub struct TimedActionScript {
     pub base: BaseScriptObject,
-    metabolics: Metabolics,
+    /// A `Metabolics` constant name.
+    metabolics: String,
     time: i32,
     face_object: bool,
     prop1: Option<String>,
@@ -126,7 +62,8 @@ pub struct TimedActionScript {
     sound_time: ActionSoundTime,
     completion_sound: Option<String>,
     muscle_strain_factor: f32,
-    muscle_strain_parts: Vec<BodyPartType>,
+    /// `BodyPartType` constant names.
+    muscle_strain_parts: Vec<String>,
     /// Perk id; `None` is Java's `null`.
     muscle_strain_skill: Option<String>,
     cant_sit: bool,
@@ -136,7 +73,7 @@ impl TimedActionScript {
     pub fn new() -> Self {
         TimedActionScript {
             base: BaseScriptObject::new(ScriptType::TimedAction),
-            metabolics: Metabolics::Default,
+            metabolics: DEFAULT_METABOLICS.to_string(),
             time: -1,
             face_object: false,
             prop1: None,
@@ -164,9 +101,9 @@ impl TimedActionScript {
         self.base.full_type()
     }
 
-    /// `getMetabolics`.
-    pub fn metabolics(&self) -> Metabolics {
-        self.metabolics
+    /// `getMetabolics`: the constant's name.
+    pub fn metabolics(&self) -> &str {
+        &self.metabolics
     }
 
     /// `getTime`.
@@ -228,7 +165,8 @@ impl TimedActionScript {
         self.muscle_strain_factor
     }
 
-    pub fn muscle_strain_parts(&self) -> &[BodyPartType] {
+    /// The `BodyPartType` constant names.
+    pub fn muscle_strain_parts(&self) -> &[String] {
         &self.muscle_strain_parts
     }
 
@@ -274,7 +212,7 @@ impl ScriptObject for TimedActionScript {
                 continue;
             }
             if java::eq_ignore_case(key, "metabolics") {
-                self.metabolics = Metabolics::value_of(val)?;
+                self.metabolics = sm.builtin_tables.borrow().metabolics_value_of(val)?;
             } else if java::eq_ignore_case(key, "time") {
                 self.time = parse_int(val)?;
             } else if java::eq_ignore_case(key, "faceObject") {
@@ -308,8 +246,9 @@ impl ScriptObject for TimedActionScript {
                 }
                 self.muscle_strain_skill = Some(val.to_string());
             } else if java::eq_ignore_case(key, "muscleStrainParts") {
+                let tables = sm.builtin_tables.borrow();
                 self.muscle_strain_parts =
-                    java::split_char(val, ';').into_iter().map(|s| BodyPartType::from_string(java::trim(s))).collect();
+                    java::split_char(val, ';').into_iter().map(|s| tables.body_part_from_string(java::trim(s))).collect();
             }
         }
         Ok(())
@@ -317,7 +256,7 @@ impl ScriptObject for TimedActionScript {
 
     /// `PreReload`. The muscle strain fields are not reset.
     fn pre_reload(&mut self) {
-        self.metabolics = Metabolics::Default;
+        self.metabolics = DEFAULT_METABOLICS.to_string();
         self.time = -1;
         self.face_object = false;
         self.cant_sit = false;

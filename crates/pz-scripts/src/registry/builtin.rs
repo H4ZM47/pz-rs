@@ -94,6 +94,86 @@ pub const VEHICLE_ENUM_CLASSES: &[&str] = &[
 const PERKS_CLASS: &str = "zombie/characters/skills/PerkFactory$Perks";
 const PERK_CLASS: &str = "zombie/characters/skills/PerkFactory$Perk";
 const RAGDOLL_CLASS: &str = "zombie/scripting/objects/RagdollScript";
+pub const METABOLICS_CLASS: &str = "zombie/characters/BodyDamage/Metabolics";
+pub const BODY_PART_TYPE_CLASS: &str = "zombie/characters/BodyDamage/BodyPartType";
+
+/// One `BodyPartType` constant: its constructor arguments.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BodyPartDecl {
+    /// The enum constant (`name()`).
+    pub field: String,
+    /// The `name` field (`ToString`, `FromString`).
+    pub name: String,
+    pub display_name_key: Option<String>,
+    pub bandage_model: Option<String>,
+    pub bite_wound_model: Option<String>,
+    pub scratch_wound_model: Option<String>,
+    pub cut_wound_model: Option<String>,
+    pub pain_modifier: f32,
+    pub damage_modifier: f32,
+    pub bleeding_time_modifier: f32,
+    pub skin_surface: f32,
+    pub dist_to_core: f32,
+    pub umbrella_mod: f32,
+    pub max_action_penalty: f32,
+    pub max_movement_penalty: f32,
+}
+
+fn opt_str(v: Option<&Value>) -> Option<String> {
+    v.and_then(Value::as_str).map(str::to_string)
+}
+
+fn float(v: Option<&Value>) -> Option<f32> {
+    match v? {
+        Value::Float(f) => Some(*f as f32),
+        Value::Int(i) => Some(*i as f32),
+        _ => None,
+    }
+}
+
+/// `Metabolics` constants and their `met`.
+fn metabolics(jar: &Jar) -> ScriptResult<Vec<(String, f32)>> {
+    pz_classfile::self_constructed_constants(jar, METABOLICS_CLASS)
+        .map_err(class_error)?
+        .into_iter()
+        // (name, ordinal, met)
+        .map(|(field, args)| {
+            let met = float(args.get(2)).ok_or_else(|| ScriptError::new(format!("Metabolics.{field}: met")))?;
+            Ok((field, met))
+        })
+        .collect()
+}
+
+/// `BodyPartType` constants with their constructor arguments.
+fn body_parts(jar: &Jar) -> ScriptResult<Vec<BodyPartDecl>> {
+    pz_classfile::self_constructed_constants(jar, BODY_PART_TYPE_CLASS)
+        .map_err(class_error)?
+        .into_iter()
+        .map(|(field, args)| {
+            // (enum name, ordinal, name, displayNameKey, bandageModel,
+            // biteWoundModel, scratchWoundModel, cutWoundModel, 8 floats)
+            let bad = || ScriptError::new(format!("BodyPartType.{field}: constructor arguments"));
+            let f = |i: usize| float(args.get(i)).ok_or_else(bad);
+            Ok(BodyPartDecl {
+                name: opt_str(args.get(2)).ok_or_else(bad)?,
+                display_name_key: opt_str(args.get(3)),
+                bandage_model: opt_str(args.get(4)),
+                bite_wound_model: opt_str(args.get(5)),
+                scratch_wound_model: opt_str(args.get(6)),
+                cut_wound_model: opt_str(args.get(7)),
+                pain_modifier: f(8)?,
+                damage_modifier: f(9)?,
+                bleeding_time_modifier: f(10)?,
+                skin_surface: f(11)?,
+                dist_to_core: f(12)?,
+                umbrella_mod: f(13)?,
+                max_action_penalty: f(14)?,
+                max_movement_penalty: f(15)?,
+                field,
+            })
+        })
+        .collect()
+}
 
 /// Built-in name tables the original defines in code, read from the jar.
 #[derive(Clone, Debug, Default)]
@@ -104,9 +184,32 @@ pub struct BuiltinTables {
     pub ragdoll_bone_names: Vec<String>,
     /// [`VEHICLE_ENUM_CLASSES`] constants: (class, [(constant, id)]).
     pub vehicle_enums: Vec<(String, Vec<(String, String)>)>,
+    /// `Metabolics` constants in declaration order, with `getMet()`.
+    pub metabolics: Vec<(String, f32)>,
+    /// `BodyPartType` constants in declaration order.
+    pub body_parts: Vec<BodyPartDecl>,
 }
 
 impl BuiltinTables {
+    /// `Metabolics.valueOf`: `name` if it is a constant.
+    pub fn metabolics_value_of(&self, name: &str) -> ScriptResult<String> {
+        if self.metabolics.iter().any(|(n, _)| n == name) {
+            return Ok(name.to_string());
+        }
+        Err(ScriptError::new(format!(
+            "java.lang.IllegalArgumentException: No enum constant zombie.characters.BodyDamage.Metabolics.{name}"
+        )))
+    }
+
+    /// `BodyPartType.FromString`: the constant whose `name` equals `s`
+    /// ignoring case, else `MAX`.
+    pub fn body_part_from_string(&self, s: &str) -> String {
+        self.body_parts
+            .iter()
+            .find(|p| crate::java::eq_ignore_case(&p.name, s))
+            .map_or_else(|| "MAX".to_string(), |p| p.field.clone())
+    }
+
     /// `PerkFactory.Perks.FromString`: the perk id, or `"MAX"` when unknown.
     pub fn perk_from_string(&self, id: &str) -> String {
         if self.perk_ids.iter().any(|p| p == id) {
@@ -141,6 +244,12 @@ impl BuiltinTables {
                 .collect();
             vehicle_enums.push((class.rsplit('/').next().unwrap().to_string(), consts));
         }
-        Ok(BuiltinTables { perk_ids, ragdoll_bone_names, vehicle_enums })
+        Ok(BuiltinTables {
+            perk_ids,
+            ragdoll_bone_names,
+            vehicle_enums,
+            metabolics: metabolics(jar)?,
+            body_parts: body_parts(jar)?,
+        })
     }
 }
