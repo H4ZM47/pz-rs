@@ -42,7 +42,12 @@ impl MediaIndex {
     }
 
     pub fn from_files(files: impl IntoIterator<Item = (String, PathBuf)>) -> MediaIndex {
-        MediaIndex { files: files.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect() }
+        MediaIndex {
+            files: files
+                .into_iter()
+                .map(|(k, v)| (k.to_lowercase(), v))
+                .collect(),
+        }
     }
 
     /// `getString` + `File.exists`.
@@ -56,8 +61,12 @@ impl MediaIndex {
         if !prefix.ends_with('/') {
             prefix.push('/');
         }
-        let mut v: Vec<(&str, &PathBuf)> =
-            self.files.iter().filter(|(k, _)| k.starts_with(&prefix)).map(|(k, v)| (k.as_str(), v)).collect();
+        let mut v: Vec<(&str, &PathBuf)> = self
+            .files
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(k, v)| (k.as_str(), v))
+            .collect();
         v.sort();
         v
     }
@@ -111,7 +120,11 @@ pub fn split_mesh_path(path: &str) -> (&str, Option<&str>) {
 
 /// `FileTask_AbstractLoadModel.checkExtensionType`: the file a raw asset
 /// name loads from, and how it is read.
-pub fn resolve_model_file(media: &MediaIndex, raw: &str, kind: AssetKind) -> Option<(PathBuf, ModelFileType)> {
+pub fn resolve_model_file(
+    media: &MediaIndex,
+    raw: &str,
+    kind: AssetKind,
+) -> Option<(PathBuf, ModelFileType)> {
     let (media_path, media_x_path) = kind.dirs();
     let mut processed = raw.to_lowercase();
     if processed.ends_with(".txt") {
@@ -122,7 +135,11 @@ pub fn resolve_model_file(media: &MediaIndex, raw: &str, kind: AssetKind) -> Opt
         processed = raw[2..].to_string();
     }
     if raw.contains("media/") || raw.contains('.') {
-        let name = if raw.contains("media/") { raw.to_string() } else { format!("{media_x_path}/{raw}") };
+        let name = if raw.contains("media/") {
+            raw.to_string()
+        } else {
+            format!("{media_x_path}/{raw}")
+        };
         if let Some(p) = media.get(&name) {
             let s = p.to_string_lossy();
             let ty = if s.ends_with(".fbx") {
@@ -135,7 +152,11 @@ pub fn resolve_model_file(media: &MediaIndex, raw: &str, kind: AssetKind) -> Opt
             return Some((p.clone(), ty));
         }
     }
-    for (ext, ty) in [("fbx", ModelFileType::Fbx), ("glb", ModelFileType::Gltf), ("x", ModelFileType::X)] {
+    for (ext, ty) in [
+        ("fbx", ModelFileType::Fbx),
+        ("glb", ModelFileType::Gltf),
+        ("x", ModelFileType::X),
+    ] {
         if let Some(p) = media.get(&format!("{media_x_path}/{processed}.{ext}")) {
             return Some((p.clone(), ty));
         }
@@ -144,7 +165,11 @@ pub fn resolve_model_file(media: &MediaIndex, raw: &str, kind: AssetKind) -> Opt
         return None;
     }
     if !processed.ends_with(".x") {
-        let name = if raw.contains("media/") { raw.to_string() } else { format!("{media_path}/{processed}.txt") };
+        let name = if raw.contains("media/") {
+            raw.to_string()
+        } else {
+            format!("{media_path}/{processed}.txt")
+        };
         if let Some(p) = media.get(&name) {
             return Some((p.clone(), ModelFileType::Txt));
         }
@@ -211,12 +236,22 @@ impl ModelScriptInfo {
 
     /// `ModelManager.createModelKey` for this script.
     pub fn model_key(&self) -> Option<String> {
-        model_key(self.mesh.as_deref()?, self.texture_name(), self.is_static, Some(self.shader_name()))
+        model_key(
+            self.mesh.as_deref()?,
+            self.texture_name(),
+            self.is_static,
+            Some(self.shader_name()),
+        )
     }
 }
 
 /// `ModelManager.createModelKey`: `mesh&shader=...;tex=...;isStatic=true`.
-pub fn model_key(mesh: &str, tex: Option<&str>, is_static: bool, shader: Option<&str>) -> Option<String> {
+pub fn model_key(
+    mesh: &str,
+    tex: Option<&str>,
+    is_static: bool,
+    shader: Option<&str>,
+) -> Option<String> {
     let mut k = mesh.to_lowercase().trim().to_string();
     k.push('&');
     let shader = match shader {
@@ -297,11 +332,17 @@ pub fn animations_for_mesh(media: &MediaIndex, am: &AnimationsMeshInfo) -> Vec<(
     let mut out = Vec::new();
     for dir in &am.animation_directories {
         for (rel, path) in media.list_dir(&format!("media/anims_x/{dir}")) {
-            let real_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            let real_name = path
+                .file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_default();
             if !check_animation_prefixes(&real_name, &am.animation_prefixes) {
                 continue;
             }
-            out.push((anim_name(rel.strip_prefix("media/").unwrap_or(rel)), path.clone()));
+            out.push((
+                anim_name(rel.strip_prefix("media/").unwrap_or(rel)),
+                path.clone(),
+            ));
         }
     }
     out
@@ -330,22 +371,60 @@ mod tests {
     #[test]
     fn extension_probing() {
         let m = index();
-        assert_eq!(resolve_model_file(&m, "Skinned/MaleBody", AssetKind::Mesh).unwrap().1, ModelFileType::X);
-        assert_eq!(resolve_model_file(&m, "WorldItems/Apple", AssetKind::Mesh).unwrap().1, ModelFileType::Fbx);
-        assert_eq!(resolve_model_file(&m, "IsoObject/Door", AssetKind::Mesh).unwrap().1, ModelFileType::Gltf);
-        assert_eq!(resolve_model_file(&m, "Vehicles_Wheel", AssetKind::Mesh).unwrap().1, ModelFileType::Txt);
-        assert_eq!(resolve_model_file(&m, "bob/bob_idle", AssetKind::Animation).unwrap().1, ModelFileType::X);
+        assert_eq!(
+            resolve_model_file(&m, "Skinned/MaleBody", AssetKind::Mesh)
+                .unwrap()
+                .1,
+            ModelFileType::X
+        );
+        assert_eq!(
+            resolve_model_file(&m, "WorldItems/Apple", AssetKind::Mesh)
+                .unwrap()
+                .1,
+            ModelFileType::Fbx
+        );
+        assert_eq!(
+            resolve_model_file(&m, "IsoObject/Door", AssetKind::Mesh)
+                .unwrap()
+                .1,
+            ModelFileType::Gltf
+        );
+        assert_eq!(
+            resolve_model_file(&m, "Vehicles_Wheel", AssetKind::Mesh)
+                .unwrap()
+                .1,
+            ModelFileType::Txt
+        );
+        assert_eq!(
+            resolve_model_file(&m, "bob/bob_idle", AssetKind::Animation)
+                .unwrap()
+                .1,
+            ModelFileType::X
+        );
         assert!(resolve_model_file(&m, "missing", AssetKind::Mesh).is_none());
-        assert_eq!(split_mesh_path("physics/ramp10|Segment1"), ("physics/ramp10", Some("Segment1")));
+        assert_eq!(
+            split_mesh_path("physics/ramp10|Segment1"),
+            ("physics/ramp10", Some("Segment1"))
+        );
     }
 
     #[test]
     fn script_defaults_and_keys() {
-        let s = ModelScriptInfo { name: "Apple".into(), mesh: Some("WorldItems/Apple".into()), ..Default::default() };
+        let s = ModelScriptInfo {
+            name: "Apple".into(),
+            mesh: Some("WorldItems/Apple".into()),
+            ..Default::default()
+        };
         assert_eq!(s.texture_name(), Some("WorldItems/Apple"));
         assert_eq!(s.shader_name(), "basicEffect");
-        assert_eq!(s.model_key().unwrap(), "worlditems/apple&shader=basiceffect;tex=worlditems/apple;isStatic=true");
-        assert_eq!(texture_path("WorldItems/Apple"), "media/textures/WorldItems/Apple.png");
+        assert_eq!(
+            s.model_key().unwrap(),
+            "worlditems/apple&shader=basiceffect;tex=worlditems/apple;isStatic=true"
+        );
+        assert_eq!(
+            texture_path("WorldItems/Apple"),
+            "media/textures/WorldItems/Apple.png"
+        );
         assert_eq!(texture_path("media/textures/x.png"), "media/textures/x.png");
     }
 
@@ -359,7 +438,10 @@ mod tests {
             animation_prefixes: vec!["Chk_".into(), "!Chk_Chick_".into()],
             ..Default::default()
         };
-        let names: Vec<String> = animations_for_mesh(&m, &am).into_iter().map(|(n, _)| n).collect();
+        let names: Vec<String> = animations_for_mesh(&m, &am)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
         assert_eq!(names, vec!["chicken/chk_walk".to_string()]);
     }
 }

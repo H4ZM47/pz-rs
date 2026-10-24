@@ -38,7 +38,12 @@ impl ModelTxt {
         SkinningData {
             bind_pose: self.bind_pose.clone(),
             inverse_bind_pose: self.inv_bind_pose.clone(),
-            bone_offset: self.skin_offset.iter().take(self.skeleton_hierarchy.len()).cloned().collect(),
+            bone_offset: self
+                .skin_offset
+                .iter()
+                .take(self.skeleton_hierarchy.len())
+                .cloned()
+                .collect(),
             skeleton_hierarchy: self.skeleton_hierarchy.clone(),
             bone_indices: self.bone_indices.clone(),
             animation_clips: self.clips.clone(),
@@ -97,16 +102,20 @@ fn jsplit(s: &str) -> Vec<&str> {
 fn pf(s: &str) -> Result<f32, TxtError> {
     let t = s.trim_matches(|c: char| c <= ' ');
     let t = t.strip_suffix(['f', 'F', 'd', 'D']).unwrap_or(t);
-    t.parse::<f32>().map_err(|_| TxtError(format!("NumberFormatException: \"{s}\"")))
+    t.parse::<f32>()
+        .map_err(|_| TxtError(format!("NumberFormatException: \"{s}\"")))
 }
 
 /// `Integer.parseInt` (no whitespace allowed).
 fn pi(s: &str) -> Result<i32, TxtError> {
-    s.parse::<i32>().map_err(|_| TxtError(format!("NumberFormatException: \"{s}\"")))
+    s.parse::<i32>()
+        .map_err(|_| TxtError(format!("NumberFormatException: \"{s}\"")))
 }
 
 fn field<'s>(v: &[&'s str], i: usize) -> Result<&'s str, TxtError> {
-    v.get(i).copied().ok_or_else(|| TxtError("ArrayIndexOutOfBounds".into()))
+    v.get(i)
+        .copied()
+        .ok_or_else(|| TxtError("ArrayIndexOutOfBounds".into()))
 }
 
 fn need(l: Option<String>) -> Result<String, TxtError> {
@@ -154,8 +163,17 @@ pub fn java_hashmap_order(keys: &[String]) -> Vec<String> {
 }
 
 /// `ModelLoader.loadTxt(filename, bStatic, bReverse, skinnedTo)`.
-pub fn load_txt(data: &[u8], is_static: bool, reverse: bool, skinned_to: Option<&SkinningData>) -> Result<ModelTxt, TxtError> {
-    let mut mt = ModelTxt { is_static, reverse, ..Default::default() };
+pub fn load_txt(
+    data: &[u8],
+    is_static: bool,
+    reverse: bool,
+    skinned_to: Option<&SkinningData>,
+) -> Result<ModelTxt, TxtError> {
+    let mut mt = ModelTxt {
+        is_static,
+        reverse,
+        ..Default::default()
+    };
     let stride = mt.stride();
     let mut r = Lines { b: data, p: 0 };
     let mut mode = 0u32;
@@ -310,15 +328,33 @@ pub fn load_txt(data: &[u8], is_static: bool, reverse: bool, skinned_to: Option<
                     let s = jsplit(&line);
                     let pos = [pf(field(&s, 0)?)?, pf(field(&s, 1)?)?, pf(field(&s, 2)?)?];
                     let s = jsplit(&line2);
-                    let rot = Quat { x: pf(field(&s, 0)?)?, y: pf(field(&s, 1)?)?, z: pf(field(&s, 2)?)?, w: pf(field(&s, 3)?)? };
+                    let rot = Quat {
+                        x: pf(field(&s, 0)?)?,
+                        y: pf(field(&s, 1)?)?,
+                        z: pf(field(&s, 2)?)?,
+                        w: pf(field(&s, 3)?)?,
+                    };
                     if n + 1 < n_frames {
                         line = need(r.read())?;
                     }
-                    frames.push(Keyframe { bone: bindex, bone_name: bone, time: t, position: pos, rotation: rot, scale: [1.0; 3] });
+                    frames.push(Keyframe {
+                        bone: bindex,
+                        bone_name: bone,
+                        time: t,
+                        position: pos,
+                        rotation: rot,
+                        scale: [1.0; 3],
+                    });
                 }
                 mt.clips.insert(
                     anim_name.clone(),
-                    AnimationClip { name: anim_name, duration, keep_last_frame: false, is_ragdoll: false, keyframes: frames },
+                    AnimationClip {
+                        name: anim_name,
+                        duration,
+                        keep_last_frame: false,
+                        is_ragdoll: false,
+                        keyframes: frames,
+                    },
                 );
             }
             _ => {}
@@ -347,13 +383,19 @@ fn remap_to(mt: &mut ModelTxt, st: &SkinningData, put_order: &[String]) {
         if ri == -1 {
             ri = new_idx.len() as i32;
             new_idx.insert(name.clone(), ri);
-            let Some(&op) = orig_h.get(oi as usize) else { return };
+            let Some(&op) = orig_h.get(oi as usize) else {
+                return;
+            };
             if op >= 0 {
-                let Some(&rp) = remap.get(op as usize) else { return };
+                let Some(&rp) = remap.get(op as usize) else {
+                    return;
+                };
                 new_h.push(rp);
             }
         }
-        let Some(slot) = remap.get_mut(oi as usize) else { return };
+        let Some(slot) = remap.get_mut(oi as usize) else {
+            return;
+        };
         *slot = ri;
     }
     mt.bone_indices = new_idx;
@@ -363,14 +405,18 @@ fn remap_to(mt: &mut ModelTxt, st: &SkinningData, put_order: &[String]) {
         for k in 0..4 {
             let b = v[15 + k] as i32;
             if b >= 0 {
-                let Some(&r) = remap.get(b as usize) else { return };
+                let Some(&r) = remap.get(b as usize) else {
+                    return;
+                };
                 v[15 + k] = r as f32;
             }
         }
     }
     for clip in mt.clips.values_mut() {
         for kf in clip.keyframes.iter_mut() {
-            let Some(&r) = remap.get(kf.bone as usize) else { return };
+            let Some(&r) = remap.get(kf.bone as usize) else {
+                return;
+            };
             kf.bone = r;
         }
     }
@@ -405,7 +451,10 @@ mod tests {
     fn java_hashmap_iteration() {
         // "a" (97) and "b" (98) land in buckets 1 and 2 of 16.
         let keys = vec!["b".to_string(), "a".to_string()];
-        assert_eq!(java_hashmap_order(&keys), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            java_hashmap_order(&keys),
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 
     #[test]
@@ -419,7 +468,10 @@ mod tests {
 # Number of Faces:\n1\n# Face Data:\n0, 1, 2\n";
         let mt = load_txt(txt.as_bytes(), true, false, None).unwrap();
         assert_eq!(mt.vertices.len(), 3 * 11);
-        assert_eq!(&mt.vertices[11..22], &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.75, 0.5]);
+        assert_eq!(
+            &mt.vertices[11..22],
+            &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.75, 0.5]
+        );
         assert_eq!(mt.elements, vec![0, 1, 2]);
     }
 }

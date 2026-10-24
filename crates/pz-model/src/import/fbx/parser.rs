@@ -76,9 +76,16 @@ pub fn tokenize_ascii(input: &[u8]) -> Result<Vec<Token<'_>>, ImportError> {
             if q {
                 return err(format!("non-terminated double quotes (line {line})"));
             }
-            out.push(Token { bytes: &input[b..e + 1], ty, line, binary: false });
+            out.push(Token {
+                bytes: &input[b..e + 1],
+                ty,
+                line,
+                binary: false,
+            });
         } else if must {
-            return err(format!("unexpected character, expected data token (line {line})"));
+            return err(format!(
+                "unexpected character, expected data token (line {line})"
+            ));
         }
         *begin = None;
         *end = None;
@@ -100,7 +107,15 @@ pub fn tokenize_ascii(input: &[u8]) -> Result<Vec<Token<'_>>, ImportError> {
             if c == b'"' {
                 in_quotes = false;
                 end = Some(cur);
-                process(input, &mut out, &mut begin, &mut end, line, TokenType::Data, false)?;
+                process(
+                    input,
+                    &mut out,
+                    &mut begin,
+                    &mut end,
+                    line,
+                    TokenType::Data,
+                    false,
+                )?;
                 pending = false;
             }
             cur += 1;
@@ -117,34 +132,89 @@ pub fn tokenize_ascii(input: &[u8]) -> Result<Vec<Token<'_>>, ImportError> {
                 continue;
             }
             b';' => {
-                process(input, &mut out, &mut begin, &mut end, line, TokenType::Data, false)?;
+                process(
+                    input,
+                    &mut out,
+                    &mut begin,
+                    &mut end,
+                    line,
+                    TokenType::Data,
+                    false,
+                )?;
                 comment = true;
                 cur += 1;
                 continue;
             }
             b'{' => {
-                process(input, &mut out, &mut begin, &mut end, line, TokenType::Data, false)?;
-                out.push(Token { bytes: &input[cur..cur + 1], ty: TokenType::OpenBracket, line, binary: false });
+                process(
+                    input,
+                    &mut out,
+                    &mut begin,
+                    &mut end,
+                    line,
+                    TokenType::Data,
+                    false,
+                )?;
+                out.push(Token {
+                    bytes: &input[cur..cur + 1],
+                    ty: TokenType::OpenBracket,
+                    line,
+                    binary: false,
+                });
                 cur += 1;
                 continue;
             }
             b'}' => {
-                process(input, &mut out, &mut begin, &mut end, line, TokenType::Data, false)?;
-                out.push(Token { bytes: &input[cur..cur + 1], ty: TokenType::CloseBracket, line, binary: false });
+                process(
+                    input,
+                    &mut out,
+                    &mut begin,
+                    &mut end,
+                    line,
+                    TokenType::Data,
+                    false,
+                )?;
+                out.push(Token {
+                    bytes: &input[cur..cur + 1],
+                    ty: TokenType::CloseBracket,
+                    line,
+                    binary: false,
+                });
                 cur += 1;
                 continue;
             }
             b',' => {
                 if pending {
-                    process(input, &mut out, &mut begin, &mut end, line, TokenType::Data, true)?;
+                    process(
+                        input,
+                        &mut out,
+                        &mut begin,
+                        &mut end,
+                        line,
+                        TokenType::Data,
+                        true,
+                    )?;
                 }
-                out.push(Token { bytes: &input[cur..cur + 1], ty: TokenType::Comma, line, binary: false });
+                out.push(Token {
+                    bytes: &input[cur..cur + 1],
+                    ty: TokenType::Comma,
+                    line,
+                    binary: false,
+                });
                 cur += 1;
                 continue;
             }
             b':' => {
                 if pending {
-                    process(input, &mut out, &mut begin, &mut end, line, TokenType::Key, true)?;
+                    process(
+                        input,
+                        &mut out,
+                        &mut begin,
+                        &mut end,
+                        line,
+                        TokenType::Key,
+                        true,
+                    )?;
                 } else {
                     return err(format!("unexpected colon (line {line})"));
                 }
@@ -155,7 +225,15 @@ pub fn tokenize_ascii(input: &[u8]) -> Result<Vec<Token<'_>>, ImportError> {
         }
         if is_space_or_newline(c) {
             if begin.is_some() {
-                process(input, &mut out, &mut begin, &mut end, line, TokenType::Data, false)?;
+                process(
+                    input,
+                    &mut out,
+                    &mut begin,
+                    &mut end,
+                    line,
+                    TokenType::Data,
+                    false,
+                )?;
             }
             pending = false;
         } else {
@@ -204,8 +282,17 @@ impl<'a> Bin<'a> {
         self.cursor += 1;
         Ok(v)
     }
-    fn string(&mut self, end: usize, long: bool, allow_null: bool) -> Result<(usize, usize), ImportError> {
-        let len = if long { self.word(end)? as usize } else { self.byte(end)? as usize };
+    fn string(
+        &mut self,
+        end: usize,
+        long: bool,
+        allow_null: bool,
+    ) -> Result<(usize, usize), ImportError> {
+        let len = if long {
+            self.word(end)? as usize
+        } else {
+            self.byte(end)? as usize
+        };
         if end < self.cursor + len {
             return err("cannot ReadString, length is out of bounds");
         }
@@ -254,7 +341,12 @@ impl<'a> Bin<'a> {
             b'S' => {
                 self.string(end, true, true)?;
             }
-            _ => return err(format!("cannot ReadData, unexpected type code: {}", ty as char)),
+            _ => {
+                return err(format!(
+                    "cannot ReadData, unexpected type code: {}",
+                    ty as char
+                ))
+            }
         }
         if self.cursor > end {
             return err("cannot ReadData, the remaining size is too small for the data type");
@@ -263,7 +355,11 @@ impl<'a> Bin<'a> {
     }
 
     fn scope(&mut self, out: &mut Vec<Token<'a>>, end: usize) -> Result<bool, ImportError> {
-        let end_offset = if self.is64 { self.dword(end)? } else { self.word(end)? as u64 } as usize;
+        let end_offset = if self.is64 {
+            self.dword(end)?
+        } else {
+            self.word(end)? as u64
+        } as usize;
         if end_offset == 0 {
             return Ok(false);
         }
@@ -272,20 +368,43 @@ impl<'a> Bin<'a> {
         } else if end_offset < self.cursor {
             return err("block offset is negative out of range");
         }
-        let prop_count = if self.is64 { self.dword(end)? } else { self.word(end)? as u64 };
-        let prop_length = if self.is64 { self.dword(end)? } else { self.word(end)? as u64 } as usize;
+        let prop_count = if self.is64 {
+            self.dword(end)?
+        } else {
+            self.word(end)? as u64
+        };
+        let prop_length = if self.is64 {
+            self.dword(end)?
+        } else {
+            self.word(end)? as u64
+        } as usize;
         let (sb, se) = self.string(end, false, false)?;
-        out.push(Token { bytes: &self.input[sb..se], ty: TokenType::Key, line: self.cursor, binary: true });
+        out.push(Token {
+            bytes: &self.input[sb..se],
+            ty: TokenType::Key,
+            line: self.cursor,
+            binary: true,
+        });
         let begin_cursor = self.cursor;
         if begin_cursor + prop_length > end {
             return err("property length out of bounds reading length");
         }
         for i in 0..prop_count {
             let (b, e) = self.data(begin_cursor + prop_length)?;
-            out.push(Token { bytes: &self.input[b..e], ty: TokenType::Data, line: self.cursor, binary: true });
+            out.push(Token {
+                bytes: &self.input[b..e],
+                ty: TokenType::Data,
+                line: self.cursor,
+                binary: true,
+            });
             if i != prop_count - 1 {
                 let c = self.cursor.min(self.input.len() - 1);
-                out.push(Token { bytes: &self.input[c..c + 1], ty: TokenType::Comma, line: self.cursor, binary: true });
+                out.push(Token {
+                    bytes: &self.input[c..c + 1],
+                    ty: TokenType::Comma,
+                    line: self.cursor,
+                    binary: true,
+                });
             }
         }
         if self.cursor - begin_cursor != prop_length {
@@ -297,12 +416,22 @@ impl<'a> Bin<'a> {
                 return err("insufficient padding bytes at block end");
             }
             let c = self.cursor;
-            out.push(Token { bytes: &self.input[c..c + 1], ty: TokenType::OpenBracket, line: c, binary: true });
+            out.push(Token {
+                bytes: &self.input[c..c + 1],
+                ty: TokenType::OpenBracket,
+                line: c,
+                binary: true,
+            });
             while self.cursor < end_offset - sentinel {
                 self.scope(out, end_offset - sentinel)?;
             }
             let c = self.cursor;
-            out.push(Token { bytes: &self.input[c..c + 1], ty: TokenType::CloseBracket, line: c, binary: true });
+            out.push(Token {
+                bytes: &self.input[c..c + 1],
+                ty: TokenType::CloseBracket,
+                line: c,
+                binary: true,
+            });
             if self.input[c..c + sentinel].iter().any(|&b| b != 0) {
                 return err("failed to read nested block sentinel, expected all bytes to be 0");
             }
@@ -324,7 +453,11 @@ pub fn tokenize_binary(input: &[u8]) -> Result<Vec<Token<'_>>, ImportError> {
     if !input.starts_with(b"Kaydara FBX Binary") {
         return err("magic bytes not found");
     }
-    let mut b = Bin { input, cursor: 18, is64: false };
+    let mut b = Bin {
+        input,
+        cursor: 18,
+        is64: false,
+    };
     for _ in 0..5 {
         b.byte(length)?;
     }
@@ -381,7 +514,9 @@ impl<'a> Scope<'a> {
 
     /// All elements in multimap order.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Element<'a>)> {
-        self.elements.iter().flat_map(|(k, v)| v.iter().map(move |e| (k, e)))
+        self.elements
+            .iter()
+            .flat_map(|(k, v)| v.iter().map(move |e| (k, e)))
     }
 }
 
@@ -401,7 +536,11 @@ impl<'a, 't> Parser<'a, 't> {
     }
 
     fn element(&mut self, key: Token<'a>) -> Result<Element<'a>, ImportError> {
-        let mut el = Element { key, tokens: Vec::new(), compound: None };
+        let mut el = Element {
+            key,
+            tokens: Vec::new(),
+            compound: None,
+        };
         loop {
             let mut n = match self.advance() {
                 Some(n) => n,
@@ -414,11 +553,18 @@ impl<'a, 't> Parser<'a, 't> {
                     Some(n) => n,
                     None => return err("unexpected end of file, expected bracket, comma or key"),
                 };
-                if n.ty == TokenType::Data && prev.ty == TokenType::Data && n.line == prev.line + 1 {
+                if n.ty == TokenType::Data && prev.ty == TokenType::Data && n.line == prev.line + 1
+                {
                     el.tokens.push(n);
                     continue;
                 }
-                if !matches!(n.ty, TokenType::OpenBracket | TokenType::CloseBracket | TokenType::Comma | TokenType::Key) {
+                if !matches!(
+                    n.ty,
+                    TokenType::OpenBracket
+                        | TokenType::CloseBracket
+                        | TokenType::Comma
+                        | TokenType::Key
+                ) {
                     return err("unexpected token; expected bracket, comma or key");
                 }
             }
@@ -477,7 +623,11 @@ impl<'a, 't> Parser<'a, 't> {
 }
 
 pub fn parse<'a>(tokens: &[Token<'a>]) -> Result<Scope<'a>, ImportError> {
-    let mut p = Parser { tokens, cursor: 0, current: None };
+    let mut p = Parser {
+        tokens,
+        cursor: 0,
+        current: None,
+    };
     p.scope(true)
 }
 
@@ -630,15 +780,23 @@ pub fn bytes_to_string(b: &[u8]) -> String {
 }
 
 pub fn required_token<'e, 'a>(el: &'e Element<'a>, i: usize) -> Result<&'e Token<'a>, ImportError> {
-    el.tokens.get(i).ok_or_else(|| ImportError(format!("FBX: missing token at index {i}")))
+    el.tokens
+        .get(i)
+        .ok_or_else(|| ImportError(format!("FBX: missing token at index {i}")))
 }
 
 pub fn required_scope<'e, 'a>(el: &'e Element<'a>) -> Result<&'e Scope<'a>, ImportError> {
-    el.compound.as_deref().ok_or_else(|| ImportError("FBX: expected compound scope".into()))
+    el.compound
+        .as_deref()
+        .ok_or_else(|| ImportError("FBX: expected compound scope".into()))
 }
 
-pub fn required_element<'s, 'a>(sc: &'s Scope<'a>, key: &str) -> Result<&'s Element<'a>, ImportError> {
-    sc.get(key).ok_or_else(|| ImportError(format!("FBX: did not find required element \"{key}\"")))
+pub fn required_element<'s, 'a>(
+    sc: &'s Scope<'a>,
+    key: &str,
+) -> Result<&'s Element<'a>, ImportError> {
+    sc.get(key)
+        .ok_or_else(|| ImportError(format!("FBX: did not find required element \"{key}\"")))
 }
 
 // ---------------------------------------------------------------------------
@@ -676,7 +834,10 @@ fn binary_array(t: &Token) -> Result<(u8, u32, Vec<u8>), ImportError> {
 }
 
 fn ascii_values<'e, 'a>(el: &'e Element<'a>) -> Result<&'e [Token<'a>], ImportError> {
-    let first = el.tokens.first().ok_or_else(|| ImportError("FBX: unexpected empty element".into()))?;
+    let first = el
+        .tokens
+        .first()
+        .ok_or_else(|| ImportError("FBX: unexpected empty element".into()))?;
     parse_dim(first)?;
     let sc = required_scope(el)?;
     Ok(&required_element(sc, "a")?.tokens)
@@ -684,15 +845,24 @@ fn ascii_values<'e, 'a>(el: &'e Element<'a>) -> Result<&'e [Token<'a>], ImportEr
 
 /// `ParseVectorDataArray(std::vector<float>&)` (doubles narrowed).
 pub fn read_floats(el: &Element) -> Result<Vec<f32>, ImportError> {
-    let first = el.tokens.first().ok_or_else(|| ImportError("FBX: unexpected empty element".into()))?;
+    let first = el
+        .tokens
+        .first()
+        .ok_or_else(|| ImportError("FBX: unexpected empty element".into()))?;
     if first.binary {
         let (ty, count, buf) = binary_array(first)?;
         if count == 0 {
             return Ok(Vec::new());
         }
         return match ty {
-            b'd' => Ok(buf.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap()) as f32).collect()),
-            b'f' => Ok(buf.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect()),
+            b'd' => Ok(buf
+                .chunks_exact(8)
+                .map(|c| f64::from_le_bytes(c.try_into().unwrap()) as f32)
+                .collect()),
+            b'f' => Ok(buf
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect()),
             _ => err("expected float or double array (binary)"),
         };
     }
@@ -710,7 +880,10 @@ pub fn read_float_tuples(el: &Element, n: usize) -> Result<Vec<f32>, ImportError
 }
 
 pub fn read_ints(el: &Element) -> Result<Vec<i32>, ImportError> {
-    let first = el.tokens.first().ok_or_else(|| ImportError("FBX: unexpected empty element".into()))?;
+    let first = el
+        .tokens
+        .first()
+        .ok_or_else(|| ImportError("FBX: unexpected empty element".into()))?;
     if first.binary {
         let (ty, count, buf) = binary_array(first)?;
         if count == 0 {
@@ -719,13 +892,19 @@ pub fn read_ints(el: &Element) -> Result<Vec<i32>, ImportError> {
         if ty != b'i' {
             return err("expected int array (binary)");
         }
-        return Ok(buf.chunks_exact(4).map(|c| i32::from_le_bytes(c.try_into().unwrap())).collect());
+        return Ok(buf
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+            .collect());
     }
     ascii_values(el)?.iter().map(parse_int).collect()
 }
 
 pub fn read_int64s(el: &Element) -> Result<Vec<i64>, ImportError> {
-    let first = el.tokens.first().ok_or_else(|| ImportError("FBX: unexpected empty element".into()))?;
+    let first = el
+        .tokens
+        .first()
+        .ok_or_else(|| ImportError("FBX: unexpected empty element".into()))?;
     if first.binary {
         let (ty, count, buf) = binary_array(first)?;
         if count == 0 {
@@ -734,7 +913,10 @@ pub fn read_int64s(el: &Element) -> Result<Vec<i64>, ImportError> {
         if ty != b'l' {
             return err("expected long array (binary)");
         }
-        return Ok(buf.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap())).collect());
+        return Ok(buf
+            .chunks_exact(8)
+            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            .collect());
     }
     ascii_values(el)?.iter().map(parse_int64).collect()
 }

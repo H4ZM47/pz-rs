@@ -71,7 +71,8 @@ impl AiMat4 {
         let mut r = [[0.0f32; 4]; 4];
         for i in 0..4 {
             for j in 0..4 {
-                r[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] + a[i][3] * b[3][j];
+                r[i][j] =
+                    a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] + a[i][3] * b[3][j];
             }
         }
         AiMat4 { m: r }
@@ -106,27 +107,45 @@ impl AiMat4 {
     pub fn inverse(&self) -> AiMat4 {
         let det = self.determinant();
         if det == 0.0 {
-            return AiMat4 { m: [[f32::NAN; 4]; 4] };
+            return AiMat4 {
+                m: [[f32::NAN; 4]; 4],
+            };
         }
         let invdet = 1.0 / det;
         let [[a1, a2, a3, a4], [b1, b2, b3, b4], [c1, c2, c3, c4], [d1, d2, d3, d4]] = self.m;
         let mut r = [[0.0f32; 4]; 4];
-        r[0][0] = invdet * (b2 * (c3 * d4 - c4 * d3) + b3 * (c4 * d2 - c2 * d4) + b4 * (c2 * d3 - c3 * d2));
-        r[0][1] = -invdet * (a2 * (c3 * d4 - c4 * d3) + a3 * (c4 * d2 - c2 * d4) + a4 * (c2 * d3 - c3 * d2));
-        r[0][2] = invdet * (a2 * (b3 * d4 - b4 * d3) + a3 * (b4 * d2 - b2 * d4) + a4 * (b2 * d3 - b3 * d2));
-        r[0][3] = -invdet * (a2 * (b3 * c4 - b4 * c3) + a3 * (b4 * c2 - b2 * c4) + a4 * (b2 * c3 - b3 * c2));
-        r[1][0] = -invdet * (b1 * (c3 * d4 - c4 * d3) + b3 * (c4 * d1 - c1 * d4) + b4 * (c1 * d3 - c3 * d1));
-        r[1][1] = invdet * (a1 * (c3 * d4 - c4 * d3) + a3 * (c4 * d1 - c1 * d4) + a4 * (c1 * d3 - c3 * d1));
-        r[1][2] = -invdet * (a1 * (b3 * d4 - b4 * d3) + a3 * (b4 * d1 - b1 * d4) + a4 * (b1 * d3 - b3 * d1));
-        r[1][3] = invdet * (a1 * (b3 * c4 - b4 * c3) + a3 * (b4 * c1 - b1 * c4) + a4 * (b1 * c3 - b3 * c1));
-        r[2][0] = invdet * (b1 * (c2 * d4 - c4 * d2) + b2 * (c4 * d1 - c1 * d4) + b4 * (c1 * d2 - c2 * d1));
-        r[2][1] = -invdet * (a1 * (c2 * d4 - c4 * d2) + a2 * (c4 * d1 - c1 * d4) + a4 * (c1 * d2 - c2 * d1));
-        r[2][2] = invdet * (a1 * (b2 * d4 - b4 * d2) + a2 * (b4 * d1 - b1 * d4) + a4 * (b1 * d2 - b2 * d1));
-        r[2][3] = -invdet * (a1 * (b2 * c4 - b4 * c2) + a2 * (b4 * c1 - b1 * c4) + a4 * (b1 * c2 - b2 * c1));
-        r[3][0] = -invdet * (b1 * (c2 * d3 - c3 * d2) + b2 * (c3 * d1 - c1 * d3) + b3 * (c1 * d2 - c2 * d1));
-        r[3][1] = invdet * (a1 * (c2 * d3 - c3 * d2) + a2 * (c3 * d1 - c1 * d3) + a3 * (c1 * d2 - c2 * d1));
-        r[3][2] = -invdet * (a1 * (b2 * d3 - b3 * d2) + a2 * (b3 * d1 - b1 * d3) + a3 * (b1 * d2 - b2 * d1));
-        r[3][3] = invdet * (a1 * (b2 * c3 - b3 * c2) + a2 * (b3 * c1 - b1 * c3) + a3 * (b1 * c2 - b2 * c1));
+        r[0][0] = invdet
+            * (b2 * (c3 * d4 - c4 * d3) + b3 * (c4 * d2 - c2 * d4) + b4 * (c2 * d3 - c3 * d2));
+        r[0][1] = -invdet
+            * (a2 * (c3 * d4 - c4 * d3) + a3 * (c4 * d2 - c2 * d4) + a4 * (c2 * d3 - c3 * d2));
+        r[0][2] = invdet
+            * (a2 * (b3 * d4 - b4 * d3) + a3 * (b4 * d2 - b2 * d4) + a4 * (b2 * d3 - b3 * d2));
+        r[0][3] = -invdet
+            * (a2 * (b3 * c4 - b4 * c3) + a3 * (b4 * c2 - b2 * c4) + a4 * (b2 * c3 - b3 * c2));
+        r[1][0] = -invdet
+            * (b1 * (c3 * d4 - c4 * d3) + b3 * (c4 * d1 - c1 * d4) + b4 * (c1 * d3 - c3 * d1));
+        r[1][1] = invdet
+            * (a1 * (c3 * d4 - c4 * d3) + a3 * (c4 * d1 - c1 * d4) + a4 * (c1 * d3 - c3 * d1));
+        r[1][2] = -invdet
+            * (a1 * (b3 * d4 - b4 * d3) + a3 * (b4 * d1 - b1 * d4) + a4 * (b1 * d3 - b3 * d1));
+        r[1][3] = invdet
+            * (a1 * (b3 * c4 - b4 * c3) + a3 * (b4 * c1 - b1 * c4) + a4 * (b1 * c3 - b3 * c1));
+        r[2][0] = invdet
+            * (b1 * (c2 * d4 - c4 * d2) + b2 * (c4 * d1 - c1 * d4) + b4 * (c1 * d2 - c2 * d1));
+        r[2][1] = -invdet
+            * (a1 * (c2 * d4 - c4 * d2) + a2 * (c4 * d1 - c1 * d4) + a4 * (c1 * d2 - c2 * d1));
+        r[2][2] = invdet
+            * (a1 * (b2 * d4 - b4 * d2) + a2 * (b4 * d1 - b1 * d4) + a4 * (b1 * d2 - b2 * d1));
+        r[2][3] = -invdet
+            * (a1 * (b2 * c4 - b4 * c2) + a2 * (b4 * c1 - b1 * c4) + a4 * (b1 * c2 - b2 * c1));
+        r[3][0] = -invdet
+            * (b1 * (c2 * d3 - c3 * d2) + b2 * (c3 * d1 - c1 * d3) + b3 * (c1 * d2 - c2 * d1));
+        r[3][1] = invdet
+            * (a1 * (c2 * d3 - c3 * d2) + a2 * (c3 * d1 - c1 * d3) + a3 * (c1 * d2 - c2 * d1));
+        r[3][2] = -invdet
+            * (a1 * (b2 * d3 - b3 * d2) + a2 * (b3 * d1 - b1 * d3) + a3 * (b1 * d2 - b2 * d1));
+        r[3][3] = invdet
+            * (a1 * (b2 * c3 - b3 * c2) + a2 * (b3 * c1 - b1 * c3) + a3 * (b1 * c2 - b2 * c1));
         AiMat4 { m: r }
     }
 
@@ -308,7 +327,12 @@ pub struct AiQuat {
 
 impl Default for AiQuat {
     fn default() -> Self {
-        AiQuat { w: 1.0, x: 0.0, y: 0.0, z: 0.0 }
+        AiQuat {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
     }
 }
 
@@ -325,16 +349,36 @@ impl AiQuat {
         let t = a1 + b2 + c3;
         if t > 0.0 {
             let s = (1.0 + t).sqrt() * 2.0;
-            AiQuat { x: (c2 - b3) / s, y: (a3 - c1) / s, z: (b1 - a2) / s, w: 0.25 * s }
+            AiQuat {
+                x: (c2 - b3) / s,
+                y: (a3 - c1) / s,
+                z: (b1 - a2) / s,
+                w: 0.25 * s,
+            }
         } else if a1 > b2 && a1 > c3 {
             let s = (1.0 + a1 - b2 - c3).sqrt() * 2.0;
-            AiQuat { x: 0.25 * s, y: (b1 + a2) / s, z: (a3 + c1) / s, w: (c2 - b3) / s }
+            AiQuat {
+                x: 0.25 * s,
+                y: (b1 + a2) / s,
+                z: (a3 + c1) / s,
+                w: (c2 - b3) / s,
+            }
         } else if b2 > c3 {
             let s = (1.0 + b2 - a1 - c3).sqrt() * 2.0;
-            AiQuat { x: (b1 + a2) / s, y: 0.25 * s, z: (c2 + b3) / s, w: (a3 - c1) / s }
+            AiQuat {
+                x: (b1 + a2) / s,
+                y: 0.25 * s,
+                z: (c2 + b3) / s,
+                w: (a3 - c1) / s,
+            }
         } else {
             let s = (1.0 + c3 - a1 - b2).sqrt() * 2.0;
-            AiQuat { x: (a3 + c1) / s, y: (c2 + b3) / s, z: 0.25 * s, w: (b1 - a2) / s }
+            AiQuat {
+                x: (a3 + c1) / s,
+                y: (c2 + b3) / s,
+                z: 0.25 * s,
+                w: (b1 - a2) / s,
+            }
         }
     }
 
@@ -342,9 +386,21 @@ impl AiQuat {
     pub fn get_matrix(&self) -> [[f32; 3]; 3] {
         let AiQuat { w, x, y, z } = *self;
         [
-            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
-            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
-            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+            [
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y - z * w),
+                2.0 * (x * z + y * w),
+            ],
+            [
+                2.0 * (x * y + z * w),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z - x * w),
+            ],
+            [
+                2.0 * (x * z - y * w),
+                2.0 * (y * z + x * w),
+                1.0 - 2.0 * (x * x + y * y),
+            ],
         ]
     }
 
@@ -352,7 +408,12 @@ impl AiQuat {
         let mag = (self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w).sqrt();
         if mag != 0.0 {
             let inv = 1.0 / mag;
-            AiQuat { x: self.x * inv, y: self.y * inv, z: self.z * inv, w: self.w * inv }
+            AiQuat {
+                x: self.x * inv,
+                y: self.y * inv,
+                z: self.z * inv,
+                w: self.w * inv,
+            }
         } else {
             *self
         }
@@ -374,7 +435,12 @@ impl AiQuat {
         let mut end = *end;
         if cosom < 0.0 {
             cosom = -cosom;
-            end = AiQuat { x: -end.x, y: -end.y, z: -end.z, w: -end.w };
+            end = AiQuat {
+                x: -end.x,
+                y: -end.y,
+                z: -end.z,
+                w: -end.w,
+            };
         }
         let (sclp, sclq);
         if 1.0 - cosom > 0.0001 {

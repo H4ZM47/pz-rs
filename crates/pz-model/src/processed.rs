@@ -52,7 +52,12 @@ pub fn fbx_bone_rotate_modifier() -> Quat {
     let (ax, ay, az, aw) = (1.0f32, 0.0f32, 0.0f32, -1.570_796_4_f32);
     let n = ((ax * ax + ay * ay + az * az) as f64).sqrt() as f32;
     let s = ((0.5 * aw as f64).sin() / n as f64) as f32;
-    Quat { x: ax * s, y: ay * s, z: az * s, w: (0.5 * aw as f64).cos() as f32 }
+    Quat {
+        x: ax * s,
+        y: ay * s,
+        z: az * s,
+        w: (0.5 * aw as f64).cos() as f32,
+    }
 }
 
 /// `ImportedStaticMesh`: position, normal and one (u, v) pair per UV set
@@ -121,7 +126,12 @@ pub struct LMat {
 
 impl LMat {
     pub const IDENTITY: LMat = LMat {
-        m: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+        m: [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
     };
 
     /// `JAssImpImporter.getMatrixFromAiMatrix`: `mij = ai.get(i, j)`.
@@ -157,7 +167,8 @@ impl LMat {
         let mut d = [[0.0f32; 4]; 4];
         for i in 0..4 {
             for j in 0..4 {
-                d[i][j] = l[0][j] * r[i][0] + l[1][j] * r[i][1] + l[2][j] * r[i][2] + l[3][j] * r[i][3];
+                d[i][j] =
+                    l[0][j] * r[i][0] + l[1][j] * r[i][1] + l[2][j] * r[i][2] + l[3][j] * r[i][3];
             }
         }
         LMat { m: d }
@@ -166,22 +177,30 @@ impl LMat {
     pub fn determinant(&self) -> f32 {
         let m = &self.m;
         let mut f = m[0][0]
-            * (m[1][1] * m[2][2] * m[3][3] + m[1][2] * m[2][3] * m[3][1] + m[1][3] * m[2][1] * m[3][2]
+            * (m[1][1] * m[2][2] * m[3][3]
+                + m[1][2] * m[2][3] * m[3][1]
+                + m[1][3] * m[2][1] * m[3][2]
                 - m[1][3] * m[2][2] * m[3][1]
                 - m[1][1] * m[2][3] * m[3][2]
                 - m[1][2] * m[2][1] * m[3][3]);
         f -= m[0][1]
-            * (m[1][0] * m[2][2] * m[3][3] + m[1][2] * m[2][3] * m[3][0] + m[1][3] * m[2][0] * m[3][2]
+            * (m[1][0] * m[2][2] * m[3][3]
+                + m[1][2] * m[2][3] * m[3][0]
+                + m[1][3] * m[2][0] * m[3][2]
                 - m[1][3] * m[2][2] * m[3][0]
                 - m[1][0] * m[2][3] * m[3][2]
                 - m[1][2] * m[2][0] * m[3][3]);
         f += m[0][2]
-            * (m[1][0] * m[2][1] * m[3][3] + m[1][1] * m[2][3] * m[3][0] + m[1][3] * m[2][0] * m[3][1]
+            * (m[1][0] * m[2][1] * m[3][3]
+                + m[1][1] * m[2][3] * m[3][0]
+                + m[1][3] * m[2][0] * m[3][1]
                 - m[1][3] * m[2][1] * m[3][0]
                 - m[1][0] * m[2][3] * m[3][1]
                 - m[1][1] * m[2][0] * m[3][3]);
         f -= m[0][3]
-            * (m[1][0] * m[2][1] * m[3][2] + m[1][1] * m[2][2] * m[3][0] + m[1][2] * m[2][0] * m[3][1]
+            * (m[1][0] * m[2][1] * m[3][2]
+                + m[1][1] * m[2][2] * m[3][0]
+                + m[1][2] * m[2][0] * m[3][1]
                 - m[1][2] * m[2][1] * m[3][0]
                 - m[1][0] * m[2][2] * m[3][1]
                 - m[1][1] * m[2][0] * m[3][2]);
@@ -196,25 +215,67 @@ impl LMat {
         }
         let inv = 1.0 / det;
         let s = &self.m;
-        let d3 = |t00: f32, t01: f32, t02: f32, t10: f32, t11: f32, t12: f32, t20: f32, t21: f32, t22: f32| {
-            t00 * (t11 * t22 - t12 * t21) + t01 * (t12 * t20 - t10 * t22) + t02 * (t10 * t21 - t11 * t20)
+        let d3 = |t00: f32,
+                  t01: f32,
+                  t02: f32,
+                  t10: f32,
+                  t11: f32,
+                  t12: f32,
+                  t20: f32,
+                  t21: f32,
+                  t22: f32| {
+            t00 * (t11 * t22 - t12 * t21)
+                + t01 * (t12 * t20 - t10 * t22)
+                + t02 * (t10 * t21 - t11 * t20)
         };
-        let t00 = d3(s[1][1], s[1][2], s[1][3], s[2][1], s[2][2], s[2][3], s[3][1], s[3][2], s[3][3]);
-        let t01 = -d3(s[1][0], s[1][2], s[1][3], s[2][0], s[2][2], s[2][3], s[3][0], s[3][2], s[3][3]);
-        let t02 = d3(s[1][0], s[1][1], s[1][3], s[2][0], s[2][1], s[2][3], s[3][0], s[3][1], s[3][3]);
-        let t03 = -d3(s[1][0], s[1][1], s[1][2], s[2][0], s[2][1], s[2][2], s[3][0], s[3][1], s[3][2]);
-        let t10 = -d3(s[0][1], s[0][2], s[0][3], s[2][1], s[2][2], s[2][3], s[3][1], s[3][2], s[3][3]);
-        let t11 = d3(s[0][0], s[0][2], s[0][3], s[2][0], s[2][2], s[2][3], s[3][0], s[3][2], s[3][3]);
-        let t12 = -d3(s[0][0], s[0][1], s[0][3], s[2][0], s[2][1], s[2][3], s[3][0], s[3][1], s[3][3]);
-        let t13 = d3(s[0][0], s[0][1], s[0][2], s[2][0], s[2][1], s[2][2], s[3][0], s[3][1], s[3][2]);
-        let t20 = d3(s[0][1], s[0][2], s[0][3], s[1][1], s[1][2], s[1][3], s[3][1], s[3][2], s[3][3]);
-        let t21 = -d3(s[0][0], s[0][2], s[0][3], s[1][0], s[1][2], s[1][3], s[3][0], s[3][2], s[3][3]);
-        let t22 = d3(s[0][0], s[0][1], s[0][3], s[1][0], s[1][1], s[1][3], s[3][0], s[3][1], s[3][3]);
-        let t23 = -d3(s[0][0], s[0][1], s[0][2], s[1][0], s[1][1], s[1][2], s[3][0], s[3][1], s[3][2]);
-        let t30 = -d3(s[0][1], s[0][2], s[0][3], s[1][1], s[1][2], s[1][3], s[2][1], s[2][2], s[2][3]);
-        let t31 = d3(s[0][0], s[0][2], s[0][3], s[1][0], s[1][2], s[1][3], s[2][0], s[2][2], s[2][3]);
-        let t32 = -d3(s[0][0], s[0][1], s[0][3], s[1][0], s[1][1], s[1][3], s[2][0], s[2][1], s[2][3]);
-        let t33 = d3(s[0][0], s[0][1], s[0][2], s[1][0], s[1][1], s[1][2], s[2][0], s[2][1], s[2][2]);
+        let t00 = d3(
+            s[1][1], s[1][2], s[1][3], s[2][1], s[2][2], s[2][3], s[3][1], s[3][2], s[3][3],
+        );
+        let t01 = -d3(
+            s[1][0], s[1][2], s[1][3], s[2][0], s[2][2], s[2][3], s[3][0], s[3][2], s[3][3],
+        );
+        let t02 = d3(
+            s[1][0], s[1][1], s[1][3], s[2][0], s[2][1], s[2][3], s[3][0], s[3][1], s[3][3],
+        );
+        let t03 = -d3(
+            s[1][0], s[1][1], s[1][2], s[2][0], s[2][1], s[2][2], s[3][0], s[3][1], s[3][2],
+        );
+        let t10 = -d3(
+            s[0][1], s[0][2], s[0][3], s[2][1], s[2][2], s[2][3], s[3][1], s[3][2], s[3][3],
+        );
+        let t11 = d3(
+            s[0][0], s[0][2], s[0][3], s[2][0], s[2][2], s[2][3], s[3][0], s[3][2], s[3][3],
+        );
+        let t12 = -d3(
+            s[0][0], s[0][1], s[0][3], s[2][0], s[2][1], s[2][3], s[3][0], s[3][1], s[3][3],
+        );
+        let t13 = d3(
+            s[0][0], s[0][1], s[0][2], s[2][0], s[2][1], s[2][2], s[3][0], s[3][1], s[3][2],
+        );
+        let t20 = d3(
+            s[0][1], s[0][2], s[0][3], s[1][1], s[1][2], s[1][3], s[3][1], s[3][2], s[3][3],
+        );
+        let t21 = -d3(
+            s[0][0], s[0][2], s[0][3], s[1][0], s[1][2], s[1][3], s[3][0], s[3][2], s[3][3],
+        );
+        let t22 = d3(
+            s[0][0], s[0][1], s[0][3], s[1][0], s[1][1], s[1][3], s[3][0], s[3][1], s[3][3],
+        );
+        let t23 = -d3(
+            s[0][0], s[0][1], s[0][2], s[1][0], s[1][1], s[1][2], s[3][0], s[3][1], s[3][2],
+        );
+        let t30 = -d3(
+            s[0][1], s[0][2], s[0][3], s[1][1], s[1][2], s[1][3], s[2][1], s[2][2], s[2][3],
+        );
+        let t31 = d3(
+            s[0][0], s[0][2], s[0][3], s[1][0], s[1][2], s[1][3], s[2][0], s[2][2], s[2][3],
+        );
+        let t32 = -d3(
+            s[0][0], s[0][1], s[0][3], s[1][0], s[1][1], s[1][3], s[2][0], s[2][1], s[2][3],
+        );
+        let t33 = d3(
+            s[0][0], s[0][1], s[0][2], s[1][0], s[1][1], s[1][2], s[2][0], s[2][1], s[2][2],
+        );
         let mut d = [[0.0f32; 4]; 4];
         d[0][0] = t00 * inv;
         d[1][1] = t11 * inv;
@@ -289,7 +350,10 @@ fn java_min(a: f32, b: f32) -> f32 {
     if a.is_nan() {
         return a;
     }
-    if a == 0.0 && b == 0.0 && (a.to_bits() == (-0.0f32).to_bits() || b.to_bits() == (-0.0f32).to_bits()) {
+    if a == 0.0
+        && b == 0.0
+        && (a.to_bits() == (-0.0f32).to_bits() || b.to_bits() == (-0.0f32).to_bits())
+    {
         return -0.0;
     }
     if a <= b {
@@ -318,7 +382,10 @@ fn java_max(a: f32, b: f32) -> f32 {
 
 impl ProcessedAiScene {
     /// `ProcessedAiScene.process`.
-    pub fn process(scene: &AiScene, params: &ProcessParams) -> Result<ProcessedAiScene, ProcessError> {
+    pub fn process(
+        scene: &AiScene,
+        params: &ProcessParams,
+    ) -> Result<ProcessedAiScene, ProcessError> {
         let mut out = ProcessedAiScene::default();
         if params.all_meshes {
             if params.mode != LoadMode::StaticMesh {
@@ -364,7 +431,11 @@ fn find_mesh(scene: &AiScene, name: Option<&str>) -> Option<usize> {
         }
         return Some(0);
     };
-    if let Some(i) = scene.meshes.iter().position(|m| java_equals_ignore_case(&m.name, name)) {
+    if let Some(i) = scene
+        .meshes
+        .iter()
+        .position(|m| java_equals_ignore_case(&m.name, name))
+    {
         return Some(i);
     }
     let node = find_node_below(scene, scene.root, name)?;
@@ -379,9 +450,7 @@ fn java_equals_ignore_case(a: &str, b: &str) -> bool {
     let b: Vec<char> = b.chars().collect();
     a.len() == b.len()
         && a.iter().zip(b.iter()).all(|(x, y)| {
-            x == y
-                || x.to_uppercase().eq(y.to_uppercase())
-                || x.to_lowercase().eq(y.to_lowercase())
+            x == y || x.to_uppercase().eq(y.to_uppercase()) || x.to_lowercase().eq(y.to_lowercase())
         })
 }
 
@@ -472,14 +541,21 @@ fn imported_static_mesh(scene: &AiScene, mi: usize) -> ImportedStaticMesh {
     out
 }
 
-fn imported_skinned_mesh(scene: &AiScene, mi: usize, sk: &ImportedSkeleton) -> Result<ImportedSkinnedMesh, ProcessError> {
+fn imported_skinned_mesh(
+    scene: &AiScene,
+    mi: usize,
+    sk: &ImportedSkeleton,
+) -> Result<ImportedSkinnedMesh, ProcessError> {
     let mesh = &scene.meshes[mi];
     let n = mesh.vertices.len();
     let mut ids = vec![0u32; n * 4];
     let mut weights = vec![0.0f32; n * 4];
     for bone in &mesh.bones {
         let Some(&bi) = sk.bone_indices.get(&bone.name) else {
-            return Err(ProcessError(format!("mesh bone \"{}\" is not in the skeleton", bone.name)));
+            return Err(ProcessError(format!(
+                "mesh bone \"{}\" is not in the skeleton",
+                bone.name
+            )));
         };
         'w: for &(vid, w) in &bone.weights {
             let start = vid as usize * 4;
@@ -560,14 +636,23 @@ impl ImportedSkeleton {
         SkinningData {
             bind_pose: self.bind_pose.iter().map(LMat::to_mat4).collect(),
             inverse_bind_pose: self.inv_bind_pose.iter().map(LMat::to_mat4).collect(),
-            bone_offset: self.skin_offset.iter().take(self.skeleton_hierarchy.len()).map(LMat::to_mat4).collect(),
+            bone_offset: self
+                .skin_offset
+                .iter()
+                .take(self.skeleton_hierarchy.len())
+                .map(LMat::to_mat4)
+                .collect(),
             skeleton_hierarchy: self.skeleton_hierarchy,
             bone_indices: self.bone_indices,
             animation_clips: self.clips,
         }
     }
 
-    fn process(scene: &AiScene, mi: usize, params: &ProcessParams) -> Result<ImportedSkeleton, ProcessError> {
+    fn process(
+        scene: &AiScene,
+        mi: usize,
+        params: &ProcessParams,
+    ) -> Result<ImportedSkeleton, ProcessError> {
         let root = scene.root;
         let mut vehicle = false;
         let mut root_bone = find_node_below(scene, root, "Dummy01");
@@ -604,8 +689,10 @@ impl ImportedSkeleton {
             clips: HashMap::new(),
         };
         if let Some(st) = params.skinned_to {
-            sk.bone_indices.extend(st.bone_indices.iter().map(|(k, v)| (k.clone(), *v)));
-            sk.skeleton_hierarchy.extend_from_slice(&st.skeleton_hierarchy);
+            sk.bone_indices
+                .extend(st.bone_indices.iter().map(|(k, v)| (k.clone(), *v)));
+            sk.skeleton_hierarchy
+                .extend_from_slice(&st.skeleton_hierarchy);
         }
         for &n in &bone_nodes {
             let name = &scene.nodes[n].name;
@@ -626,7 +713,9 @@ impl ImportedSkeleton {
                 p = scene.nodes[pi].parent;
             }
             match p {
-                Some(pi) => sk.skeleton_hierarchy.push(sk.bone_indices[&scene.nodes[pi].name]),
+                Some(pi) => sk
+                    .skeleton_hierarchy
+                    .push(sk.bone_indices[&scene.nodes[pi].name]),
                 None => sk.skeleton_hierarchy.push(0),
             }
         }
@@ -637,14 +726,24 @@ impl ImportedSkeleton {
         // jassimp only fills a bone's offset matrix inside its weight loop,
         // so bones without weights reach Java with a null offset and are
         // skipped here.
-        let find_bone = |name: &str| bones.iter().find(|b| b.name == name).filter(|b| !b.weights.is_empty());
+        let find_bone = |name: &str| {
+            bones
+                .iter()
+                .find(|b| b.name == name)
+                .filter(|b| !b.weights.is_empty())
+        };
         for &n in &bone_nodes {
             let name = &scene.nodes[n].name;
-            let Some(bone) = find_bone(name) else { continue };
+            let Some(bone) = find_bone(name) else {
+                continue;
+            };
             let skin_offset = LMat::from_ai(&bone.offset);
             let skin_offset_i = skin_offset.invert();
             let Some(parent) = scene.nodes[n].parent else {
-                return Err(ProcessError(format!("bone node \"{}\" has no parent", name)));
+                return Err(ProcessError(format!(
+                    "bone node \"{}\" has no parent",
+                    name
+                )));
             };
             let mut skin_offset_parent = LMat::IDENTITY;
             if let Some(pb) = find_bone(&scene.nodes[parent].name) {
@@ -661,7 +760,12 @@ impl ImportedSkeleton {
             if vehicle {
                 sk.process_animation(anim, true, 1.0, None);
             } else {
-                sk.process_animation(anim, false, params.anim_bones_scale_modifier, params.anim_bones_rotate_modifier);
+                sk.process_animation(
+                    anim,
+                    false,
+                    params.anim_bones_scale_modifier,
+                    params.anim_bones_rotate_modifier,
+                );
             }
         }
         Ok(sk)
@@ -669,13 +773,22 @@ impl ImportedSkeleton {
 
     fn parent_bone_idx(&self, bone: i32) -> i32 {
         if bone > -1 {
-            self.skeleton_hierarchy.get(bone as usize).copied().unwrap_or(-1)
+            self.skeleton_hierarchy
+                .get(bone as usize)
+                .copied()
+                .unwrap_or(-1)
         } else {
             -1
         }
     }
 
-    fn process_animation(&mut self, anim: &AiAnimation, vehicle: bool, scale_mod: f32, rot_mod: Option<Quat>) {
+    fn process_animation(
+        &mut self,
+        anim: &AiAnimation,
+        vehicle: bool,
+        scale_mod: f32,
+        rot_mod: Option<Quat>,
+    ) {
         let duration = anim.duration as f32;
         let tps = anim.ticks_per_second as f32;
         let duration_seconds = duration / tps;
@@ -683,7 +796,9 @@ impl ImportedSkeleton {
         let mut frame_times: Vec<Option<Vec<f32>>> = vec![None; nb];
         let mut channels_per_bone: Vec<Option<Vec<&AiNodeAnim>>> = vec![None; nb];
         for ch in &anim.channels {
-            let Some(&bi) = self.bone_indices.get(&ch.node_name) else { continue };
+            let Some(&bi) = self.bone_indices.get(&ch.node_name) else {
+                continue;
+            };
             let bi = bi as usize;
             if bi >= nb {
                 continue;
@@ -704,7 +819,17 @@ impl ImportedSkeleton {
             }
         }
         let apply_rot = rot_mod.is_some();
-        let mut rot_inv = rot_mod.map(|m| quat_mul_inverse(&Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 }, &m));
+        let mut rot_inv = rot_mod.map(|m| {
+            quat_mul_inverse(
+                &Quat {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    w: 1.0,
+                },
+                &m,
+            )
+        });
         let mut frames: Vec<Keyframe> = Vec::new();
         for bone in 0..nb {
             let Some(chans) = &channels_per_bone[bone] else {
@@ -729,7 +854,8 @@ impl ImportedSkeleton {
                 None => continue,
             }
             let parent = self.parent_bone_idx(bone as i32);
-            let parent_adjusted = apply_rot && (parent == 0 || self.bone_has_frames(&frame_times, &channels_per_bone, parent));
+            let parent_adjusted = apply_rot
+                && (parent == 0 || self.bone_has_frames(&frame_times, &channels_per_bone, parent));
             let times = frame_times[bone].clone().unwrap();
             for &ft in &times {
                 let secs = ft / tps;
@@ -743,7 +869,11 @@ impl ImportedSkeleton {
                             vehicle_key_scale(a, ft),
                         )
                     };
-                    position = [position[0] * scale_mod, position[1] * scale_mod, position[2] * scale_mod];
+                    position = [
+                        position[0] * scale_mod,
+                        position[1] * scale_mod,
+                        position[2] * scale_mod,
+                    ];
                     if let (true, Some(m)) = (apply_rot, rot_mod) {
                         if parent_adjusted {
                             let inv = rot_inv.as_mut().unwrap();
@@ -774,11 +904,22 @@ impl ImportedSkeleton {
         let name = java_trim(name).to_string();
         self.clips.insert(
             name.clone(),
-            AnimationClip { name, duration: duration_seconds, keep_last_frame: true, is_ragdoll: false, keyframes: frames },
+            AnimationClip {
+                name,
+                duration: duration_seconds,
+                keep_last_frame: true,
+                is_ragdoll: false,
+                keyframes: frames,
+            },
         );
     }
 
-    fn bone_has_frames(&self, ft: &[Option<Vec<f32>>], ch: &[Option<Vec<&AiNodeAnim>>], bone: i32) -> bool {
+    fn bone_has_frames(
+        &self,
+        ft: &[Option<Vec<f32>>],
+        ch: &[Option<Vec<&AiNodeAnim>>],
+        bone: i32,
+    ) -> bool {
         if bone < 0 {
             return false;
         }
@@ -832,7 +973,11 @@ fn key_position(a: &AiNodeAnim, time: f32) -> [f32; 3] {
         let r = t2 - t1;
         let f = (time - t1) / r;
         let (a, b) = (keys[s].value, keys[s + 1].value);
-        return [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])];
+        return [
+            a[0] + f * (b[0] - a[0]),
+            a[1] + f * (b[1] - a[1]),
+            a[2] + f * (b[2] - a[2]),
+        ];
     }
     keys[s].value
 }
@@ -860,13 +1005,22 @@ fn key_scale(a: &AiNodeAnim, time: f32) -> [f32; 3] {
         let r = t2 - t1;
         let f = (time - t1) / r;
         let (a, b) = (keys[s].value, keys[s + 1].value);
-        return [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])];
+        return [
+            a[0] + f * (b[0] - a[0]),
+            a[1] + f * (b[1] - a[1]),
+            a[2] + f * (b[2] - a[2]),
+        ];
     }
     keys[s].value
 }
 
 fn q(k: &crate::import::aimath::AiQuat) -> Quat {
-    Quat { x: k.x, y: k.y, z: k.z, w: k.w }
+    Quat {
+        x: k.x,
+        y: k.y,
+        z: k.z,
+        w: k.w,
+    }
 }
 
 fn key_rotation(a: &AiNodeAnim, time: f32) -> Quat {
@@ -883,7 +1037,12 @@ fn key_rotation(a: &AiNodeAnim, time: f32) -> Quat {
         }
     }
     if sidx < 0 {
-        return Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 };
+        return Quat {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        };
     }
     let s = sidx as usize;
     if keys.len() > s + 1 {
@@ -928,7 +1087,11 @@ fn vehicle_key_position(a: &AiNodeAnim, time: f32, duration: f64) -> [f32; 3] {
         let r = t2 - t1;
         let s = (time - t1) / r;
         let (a, b) = (keys[frame].value, keys[next].value);
-        [a[0] + s * (b[0] - a[0]), a[1] + s * (b[1] - a[1]), a[2] + s * (b[2] - a[2])]
+        [
+            a[0] + s * (b[0] - a[0]),
+            a[1] + s * (b[1] - a[1]),
+            a[2] + s * (b[2] - a[2]),
+        ]
     } else {
         keys[frame].value
     }
@@ -937,7 +1100,12 @@ fn vehicle_key_position(a: &AiNodeAnim, time: f32, duration: f64) -> [f32; 3] {
 fn vehicle_key_rotation(a: &AiNodeAnim, time: f32, duration: f64) -> Quat {
     let keys = &a.rotation_keys;
     if keys.is_empty() {
-        return Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 };
+        return Quat {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            w: 1.0,
+        };
     }
     let frame = vehicle_frame(keys.iter().map(|k| k.time), keys.len(), time);
     let next = (frame + 1) % keys.len();
@@ -952,10 +1120,20 @@ fn vehicle_key_rotation(a: &AiNodeAnim, time: f32, duration: f64) -> Quat {
         let s = keys[frame].value;
         let e = keys[next].value;
         let mut cosom = (s.x * e.x + s.y * e.y + s.z * e.z + s.w * e.w) as f64;
-        let mut end = Quat { x: e.x, y: e.y, z: e.z, w: e.w };
+        let mut end = Quat {
+            x: e.x,
+            y: e.y,
+            z: e.z,
+            w: e.w,
+        };
         if cosom < 0.0 {
             cosom = -cosom;
-            end = Quat { x: -end.x, y: -end.y, z: -end.z, w: -end.w };
+            end = Quat {
+                x: -end.x,
+                y: -end.y,
+                z: -end.z,
+                w: -end.w,
+            };
         }
         let (sclp, sclq);
         if 1.0 - cosom > 1.0e-4 {
@@ -1001,7 +1179,12 @@ impl ImportedStaticMesh {
                 v.extend_from_slice(&[0.0, 0.0]);
             }
         }
-        crate::MeshData { id, kind: crate::MeshKind::Static, vertices: v, indices: self.elements.clone() }
+        crate::MeshData {
+            id,
+            kind: crate::MeshKind::Static,
+            vertices: v,
+            indices: self.elements.clone(),
+        }
     }
 }
 
@@ -1018,7 +1201,12 @@ impl ImportedSkinnedMesh {
                 v.extend_from_slice(&[0.0, 0.0]);
             }
         }
-        crate::MeshData { id, kind: crate::MeshKind::Skinned, vertices: v, indices: self.elements.clone() }
+        crate::MeshData {
+            id,
+            kind: crate::MeshKind::Skinned,
+            vertices: v,
+            indices: self.elements.clone(),
+        }
     }
 }
 

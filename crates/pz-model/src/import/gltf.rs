@@ -26,7 +26,9 @@ struct Accessor<'b> {
 impl<'b> Accessor<'b> {
     fn elem(&self, i: usize) -> Result<&'b [u8], ImportError> {
         let s = i * self.stride;
-        self.data.get(s..s + self.elem_size).ok_or_else(|| ImportError("GLTF: accessor index out of range".into()))
+        self.data
+            .get(s..s + self.elem_size)
+            .ok_or_else(|| ImportError("GLTF: accessor index out of range".into()))
     }
 
     /// `Accessor::ExtractData`: raw element bytes (optionally remapped),
@@ -50,7 +52,11 @@ impl<'b> Accessor<'b> {
         Ok(self
             .extract(n * 4, remap)?
             .into_iter()
-            .map(|e| e.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect())
+            .map(|e| {
+                e.chunks_exact(4)
+                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    .collect()
+            })
             .collect())
     }
 
@@ -72,8 +78,12 @@ struct Glb {
 impl Glb {
     fn parse(data: &[u8]) -> Result<Glb, ImportError> {
         if data.len() < 20 || &data[0..4] != b"glTF" {
-            let json: Value = serde_json::from_slice(data).map_err(|e| ImportError(format!("GLTF: {e}")))?;
-            return Ok(Glb { json, bin: Vec::new() });
+            let json: Value =
+                serde_json::from_slice(data).map_err(|e| ImportError(format!("GLTF: {e}")))?;
+            return Ok(Glb {
+                json,
+                bin: Vec::new(),
+            });
         }
         let mut off = 12;
         let mut json = None;
@@ -83,22 +93,33 @@ impl Glb {
             let ty = u32::from_le_bytes(data[off + 4..off + 8].try_into().unwrap());
             let body = &data[off + 8..(off + 8 + len).min(data.len())];
             if ty == 0x4E4F_534A {
-                json = Some(serde_json::from_slice(body).map_err(|e| ImportError(format!("GLTF: {e}")))?);
+                json = Some(
+                    serde_json::from_slice(body).map_err(|e| ImportError(format!("GLTF: {e}")))?,
+                );
             } else if ty == 0x004E_4942 {
                 bin = body.to_vec();
             }
             off += 8 + len;
         }
-        let Some(json) = json else { return err("no JSON chunk") };
+        let Some(json) = json else {
+            return err("no JSON chunk");
+        };
         Ok(Glb { json, bin })
     }
 
     fn arr(&self, k: &str) -> &[Value] {
-        self.json.get(k).and_then(|v| v.as_array()).map(|v| v.as_slice()).unwrap_or(&[])
+        self.json
+            .get(k)
+            .and_then(|v| v.as_array())
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     fn accessor(&self, idx: u64) -> Result<Accessor<'_>, ImportError> {
-        let a = self.arr("accessors").get(idx as usize).ok_or_else(|| ImportError("GLTF: bad accessor".into()))?;
+        let a = self
+            .arr("accessors")
+            .get(idx as usize)
+            .ok_or_else(|| ImportError("GLTF: bad accessor".into()))?;
         let comp_type = a["componentType"].as_u64().unwrap_or(5126);
         let count = a["count"].as_u64().unwrap_or(0) as usize;
         let num_comp = match a["type"].as_str().unwrap_or("SCALAR") {
@@ -118,7 +139,10 @@ impl Glb {
         let Some(bv) = a.get("bufferView").and_then(|v| v.as_u64()) else {
             return err("accessor without data");
         };
-        let view = self.arr("bufferViews").get(bv as usize).ok_or_else(|| ImportError("GLTF: bad bufferView".into()))?;
+        let view = self
+            .arr("bufferViews")
+            .get(bv as usize)
+            .ok_or_else(|| ImportError("GLTF: bad bufferView".into()))?;
         if view["buffer"].as_u64().unwrap_or(0) != 0 || self.bin.is_empty() {
             return err("only the GLB binary chunk is supported");
         }
@@ -132,7 +156,14 @@ impl Glb {
         if start > end {
             return err("accessor out of range");
         }
-        Ok(Accessor { data: &self.bin[start..end], count, elem_size, stride, comp_type, num_comp })
+        Ok(Accessor {
+            data: &self.bin[start..end],
+            count,
+            elem_size,
+            stride,
+            comp_type,
+            num_comp,
+        })
     }
 }
 
@@ -155,7 +186,8 @@ fn mat_from_cols(v: &[f32]) -> AiMat4 {
 }
 
 fn fvec(v: &Value) -> Option<Vec<f32>> {
-    v.as_array().map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect())
+    v.as_array()
+        .map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect())
 }
 
 /// `GetNodeTransform`.
@@ -170,7 +202,12 @@ fn node_transform(n: &Value) -> AiMat4 {
         out = out.mul(&AiMat4::translation([t[0], t[1], t[2]]));
     }
     if let Some(r) = fvec(&n["rotation"]) {
-        let q = AiQuat { x: r[0], y: r[1], z: r[2], w: r[3] };
+        let q = AiQuat {
+            x: r[0],
+            y: r[1],
+            z: r[2],
+            w: r[3],
+        };
         out = out.mul(&AiMat4::from_3x3(&q.get_matrix()));
     }
     if let Some(s) = fvec(&n["scale"]) {
@@ -197,7 +234,13 @@ pub(crate) fn libcxx_unordered_order(keys: &[u32]) -> Vec<u32> {
             p += 1;
         }
     }
-    let constrain = |h: usize, bc: usize| if bc.is_power_of_two() { h & (bc - 1) } else { h % bc };
+    let constrain = |h: usize, bc: usize| {
+        if bc.is_power_of_two() {
+            h & (bc - 1)
+        } else {
+            h % bc
+        }
+    };
     let mut key: Vec<usize> = Vec::new();
     let mut next: Vec<Option<usize>> = Vec::new();
     let mut head: Option<usize> = None;
@@ -295,13 +338,21 @@ struct Ctx<'g> {
     remaps: Vec<Option<Vec<u32>>>,
 }
 
-fn import_node(c: &Ctx, out: &mut AiScene, idx: usize, parent: Option<usize>, depth: usize) -> Result<usize, ImportError> {
+fn import_node(
+    c: &Ctx,
+    out: &mut AiScene,
+    idx: usize,
+    parent: Option<usize>,
+    depth: usize,
+) -> Result<usize, ImportError> {
     if depth > 1000 {
         return err("recursive node reference");
     }
     let g = c.g;
     let nodes = g.arr("nodes");
-    let n = nodes.get(idx).ok_or_else(|| ImportError("GLTF: bad node".into()))?;
+    let n = nodes
+        .get(idx)
+        .ok_or_else(|| ImportError("GLTF: bad node".into()))?;
     let id = out.add_node(&node_name(n, idx), AiMat4::IDENTITY, parent);
     if let Some(ch) = n["children"].as_array() {
         for ci in ch.iter().filter_map(|v| v.as_u64()) {
@@ -309,16 +360,33 @@ fn import_node(c: &Ctx, out: &mut AiScene, idx: usize, parent: Option<usize>, de
         }
     }
     out.nodes[id].transform = node_transform(n);
-    let Some(mi) = n["mesh"].as_u64() else { return Ok(id) };
+    let Some(mi) = n["mesh"].as_u64() else {
+        return Ok(id);
+    };
     let mi = mi as usize;
     let (s, e) = (c.mesh_offsets[mi], c.mesh_offsets[mi + 1]);
     if let Some(si) = n["skin"].as_u64() {
-        let skin = g.arr("skins").get(si as usize).ok_or_else(|| ImportError("GLTF: bad skin".into()))?;
-        let joints: Vec<usize> =
-            skin["joints"].as_array().map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as usize).collect()).unwrap_or_default();
-        let Some(ibm_acc) = skin["inverseBindMatrices"].as_u64() else { return err("skin without inverseBindMatrices") };
+        let skin = g
+            .arr("skins")
+            .get(si as usize)
+            .ok_or_else(|| ImportError("GLTF: bad skin".into()))?;
+        let joints: Vec<usize> = skin["joints"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(ibm_acc) = skin["inverseBindMatrices"].as_u64() else {
+            return err("skin without inverseBindMatrices");
+        };
         let ibm = g.accessor(ibm_acc)?.floats(16, None)?;
-        let prims = g.arr("meshes")[mi]["primitives"].as_array().cloned().unwrap_or_default();
+        let prims = g.arr("meshes")[mi]["primitives"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         for (pn, ai) in (s..e).enumerate() {
             let nb = joints.len();
             let mut weighting: Vec<Vec<(u32, f32)>> = vec![Vec::new(); nb];
@@ -327,7 +395,10 @@ fn import_node(c: &Ctx, out: &mut AiScene, idx: usize, parent: Option<usize>, de
             let mut wsets = Vec::new();
             let mut jsets = Vec::new();
             for k in 0.. {
-                let (Some(w), Some(j)) = (attr[format!("WEIGHTS_{k}")].as_u64(), attr[format!("JOINTS_{k}")].as_u64()) else {
+                let (Some(w), Some(j)) = (
+                    attr[format!("WEIGHTS_{k}")].as_u64(),
+                    attr[format!("JOINTS_{k}")].as_u64(),
+                ) else {
                     break;
                 };
                 wsets.push(g.accessor(w)?);
@@ -335,10 +406,15 @@ fn import_node(c: &Ctx, out: &mut AiScene, idx: usize, parent: Option<usize>, de
             }
             // BuildVertexWeightMapping
             if !wsets.is_empty() && wsets[0].count == jsets[0].count {
-                let ws: Vec<Vec<Vec<f32>>> = wsets.iter().map(|a| a.floats(4, r)).collect::<Result<_, _>>()?;
+                let ws: Vec<Vec<Vec<f32>>> = wsets
+                    .iter()
+                    .map(|a| a.floats(4, r))
+                    .collect::<Result<_, _>>()?;
                 let small = jsets[0].elem_size == 4;
-                let js: Vec<Vec<Vec<u8>>> =
-                    jsets.iter().map(|a| a.extract(if small { 4 } else { 8 }, r)).collect::<Result<_, _>>()?;
+                let js: Vec<Vec<Vec<u8>>> = jsets
+                    .iter()
+                    .map(|a| a.extract(if small { 4 } else { 8 }, r))
+                    .collect::<Result<_, _>>()?;
                 let num_vertices = ws.last().map_or(0, |w| w.len());
                 for w in 0..ws.len() {
                     for i in 0..num_vertices {
@@ -346,7 +422,8 @@ fn import_node(c: &Ctx, out: &mut AiScene, idx: usize, parent: Option<usize>, de
                             let bone = if small {
                                 js[w][i][jj] as usize
                             } else {
-                                u16::from_le_bytes([js[w][i][2 * jj], js[w][i][2 * jj + 1]]) as usize
+                                u16::from_le_bytes([js[w][i][2 * jj], js[w][i][2 * jj + 1]])
+                                    as usize
                             };
                             let weight = ws[w][i][jj];
                             if weight > 0.0 && bone < nb {
@@ -368,7 +445,11 @@ fn import_node(c: &Ctx, out: &mut AiScene, idx: usize, parent: Option<usize>, de
                     weights.push((0, 0.0));
                 }
                 let offset = ibm.get(i).map(|m| mat_from_cols(m)).unwrap_or_default();
-                bones.push(AiBone { name, weights, offset });
+                bones.push(AiBone {
+                    name,
+                    weights,
+                    offset,
+                });
             }
             out.meshes[ai].bones = bones;
         }
@@ -408,7 +489,10 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
         let prims = mesh["primitives"].as_array().cloned().unwrap_or_default();
         for (p, prim) in prims.iter().enumerate() {
             let attr = &prim["attributes"];
-            let pos = attr["POSITION"].as_u64().map(|i| g.accessor(i)).transpose()?;
+            let pos = attr["POSITION"]
+                .as_u64()
+                .map(|i| g.accessor(i))
+                .transpose()?;
             let num_all = pos.as_ref().map_or(0, |a| a.count);
             let mut index_buffer = Vec::new();
             let mut remap: Option<Vec<u32>> = None;
@@ -439,7 +523,11 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
                 Some(s) if !s.is_empty() => s.to_string(),
                 _ => format!("meshes[{mi}]"),
             };
-            aim.name = if prims.len() > 1 { format!("{base}-{p}") } else { base };
+            aim.name = if prims.len() > 1 {
+                format!("{base}-{p}")
+            } else {
+                base
+            };
             let mode = prim["mode"].as_u64().unwrap_or(4);
             aim.primitive_types |= match mode {
                 0 => PT_POINT,
@@ -447,12 +535,20 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
                 _ => PT_TRIANGLE,
             };
             if let Some(a) = &pos {
-                aim.vertices = a.floats(3, r)?.into_iter().map(|v| [v[0], v[1], v[2]]).collect();
+                aim.vertices = a
+                    .floats(3, r)?
+                    .into_iter()
+                    .map(|v| [v[0], v[1], v[2]])
+                    .collect();
             }
             if let Some(ni) = attr["NORMAL"].as_u64() {
                 let a = g.accessor(ni)?;
                 if a.count == num_all {
-                    let ns: Vec<[f32; 3]> = a.floats(3, r)?.into_iter().map(|v| [v[0], v[1], v[2]]).collect();
+                    let ns: Vec<[f32; 3]> = a
+                        .floats(3, r)?
+                        .into_iter()
+                        .map(|v| [v[0], v[1], v[2]])
+                        .collect();
                     if let Some(ti) = attr["TANGENT"].as_u64() {
                         let t = g.accessor(ti)?;
                         if t.count == num_all {
@@ -462,7 +558,11 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
                                 ns.iter()
                                     .zip(ts.iter())
                                     .map(|(a, b)| {
-                                        let c = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+                                        let c = [
+                                            a[1] * b[2] - a[2] * b[1],
+                                            a[2] * b[0] - a[0] * b[2],
+                                            a[0] * b[1] - a[1] * b[0],
+                                        ];
                                         [c[0] * b[3], c[1] * b[3], c[2] * b[3]]
                                     })
                                     .collect(),
@@ -473,19 +573,35 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
                 }
             }
             for c in 0..MAX_COLORS {
-                let Some(ci) = attr[format!("COLOR_{c}")].as_u64() else { break };
+                let Some(ci) = attr[format!("COLOR_{c}")].as_u64() else {
+                    break;
+                };
                 let a = g.accessor(ci)?;
                 if a.count != num_all {
                     continue;
                 }
                 let cols: Vec<[f32; 4]> = match a.comp_type {
-                    5126 => a.floats(4, r)?.into_iter().map(|v| [v[0], v[1], v[2], v[3]]).collect(),
+                    5126 => a
+                        .floats(4, r)?
+                        .into_iter()
+                        .map(|v| [v[0], v[1], v[2], v[3]])
+                        .collect(),
                     5121 | 5123 => {
-                        let (max, cs) = if a.comp_type == 5121 { (255.0f32, 1) } else { (65535.0, 2) };
+                        let (max, cs) = if a.comp_type == 5121 {
+                            (255.0f32, 1)
+                        } else {
+                            (65535.0, 2)
+                        };
                         a.extract(4 * cs, r)?
                             .into_iter()
                             .map(|e| {
-                                let gv = |i: usize| if cs == 1 { e[i] as f32 } else { u16::from_le_bytes([e[2 * i], e[2 * i + 1]]) as f32 };
+                                let gv = |i: usize| {
+                                    if cs == 1 {
+                                        e[i] as f32
+                                    } else {
+                                        u16::from_le_bytes([e[2 * i], e[2 * i + 1]]) as f32
+                                    }
+                                };
                                 [gv(0) / max, gv(1) / max, gv(2) / max, gv(3) / max]
                             })
                             .collect()
@@ -495,12 +611,18 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
                 aim.colors[c] = Some(cols);
             }
             for tc in 0..MAX_UV {
-                let Some(ti) = attr[format!("TEXCOORD_{tc}")].as_u64() else { break };
+                let Some(ti) = attr[format!("TEXCOORD_{tc}")].as_u64() else {
+                    break;
+                };
                 let a = g.accessor(ti)?;
                 if a.count != num_all {
                     continue;
                 }
-                let mut uv: Vec<[f32; 3]> = a.floats(3, r)?.into_iter().map(|v| [v[0], v[1], v[2]]).collect();
+                let mut uv: Vec<[f32; 3]> = a
+                    .floats(3, r)?
+                    .into_iter()
+                    .map(|v| [v[0], v[1], v[2]])
+                    .collect();
                 for v in uv.iter_mut() {
                     v[1] = 1.0 - v[1];
                 }
@@ -508,7 +630,11 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
                 aim.num_uv_components[tc] = a.num_comp as u32;
             }
             let nv = aim.vertices.len() as u32;
-            let idx: Vec<u32> = if remap.is_some() { index_buffer } else { (0..nv).collect() };
+            let idx: Vec<u32> = if remap.is_some() {
+                index_buffer
+            } else {
+                (0..nv).collect()
+            };
             let count = idx.len();
             let mut faces: Vec<Vec<u32>> = Vec::new();
             let mut push = |f: Vec<u32>| {
@@ -547,25 +673,42 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
                         }
                     }
                 }
-                _ => (0..count / 3).for_each(|i| push(vec![idx[3 * i], idx[3 * i + 1], idx[3 * i + 2]])),
+                _ => (0..count / 3)
+                    .for_each(|i| push(vec![idx[3 * i], idx[3 * i + 1], idx[3 * i + 2]])),
             }
             if faces.is_empty() {
                 return err(format!("Mesh \"{}\" has no faces", aim.name));
             }
             aim.faces = faces;
-            aim.material_index = prim["material"].as_u64().map(|m| m as u32).unwrap_or(default_mat);
+            aim.material_index = prim["material"]
+                .as_u64()
+                .map(|m| m as u32)
+                .unwrap_or(default_mat);
             out.meshes.push(aim);
             remaps.push(remap);
         }
     }
     mesh_offsets.push(out.meshes.len());
-    let ctx = Ctx { g: &g, mesh_offsets, remaps };
+    let ctx = Ctx {
+        g: &g,
+        mesh_offsets,
+        remaps,
+    };
 
     // ImportNodes
     let scene_idx = g.json["scene"].as_u64().unwrap_or(0) as usize;
-    let Some(scene) = g.arr("scenes").get(scene_idx) else { return err("No scene") };
-    let roots: Vec<usize> =
-        scene["nodes"].as_array().map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as usize).collect()).unwrap_or_default();
+    let Some(scene) = g.arr("scenes").get(scene_idx) else {
+        return err("No scene");
+    };
+    let roots: Vec<usize> = scene["nodes"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_u64())
+                .map(|v| v as usize)
+                .collect()
+        })
+        .unwrap_or_default();
     if roots.len() == 1 {
         out.root = import_node(&ctx, &mut out, roots[0], None, 0)?;
     } else {
@@ -581,16 +724,23 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
     for anim in g.arr("animations") {
         let samplers = anim["samplers"].as_array().cloned().unwrap_or_default();
         let channels = anim["channels"].as_array().cloned().unwrap_or_default();
-        let mut per_node: std::collections::HashMap<u32, [Option<usize>; 4]> = std::collections::HashMap::new();
+        let mut per_node: std::collections::HashMap<u32, [Option<usize>; 4]> =
+            std::collections::HashMap::new();
         let mut order = Vec::new();
         for ch in &channels {
-            let Some(si) = ch["sampler"].as_u64().map(|v| v as usize) else { continue };
+            let Some(si) = ch["sampler"].as_u64().map(|v| v as usize) else {
+                continue;
+            };
             let Some(s) = samplers.get(si) else { continue };
-            let (Some(inp), Some(outp)) = (s["input"].as_u64(), s["output"].as_u64()) else { continue };
+            let (Some(inp), Some(outp)) = (s["input"].as_u64(), s["output"].as_u64()) else {
+                continue;
+            };
             if g.accessor(inp)?.count > g.accessor(outp)?.count {
                 continue;
             }
-            let Some(node) = ch["target"]["node"].as_u64() else { continue };
+            let Some(node) = ch["target"]["node"].as_u64() else {
+                continue;
+            };
             let node = node as u32;
             order.push(node);
             let e = per_node.entry(node).or_insert([None; 4]);
@@ -602,57 +752,106 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
                 _ => {}
             }
         }
-        let read = |si: usize, comps: usize| -> Result<(Vec<f32>, Vec<Vec<f32>>, bool), ImportError> {
-            let s = &samplers[si];
-            let times = g.accessor(s["input"].as_u64().unwrap_or(0))?.floats(1, None)?.into_iter().map(|v| v[0]).collect();
-            let vals = g.accessor(s["output"].as_u64().unwrap_or(0))?.floats(comps, None)?;
-            Ok((times, vals, s["interpolation"].as_str() == Some("CUBICSPLINE")))
+        let read =
+            |si: usize, comps: usize| -> Result<(Vec<f32>, Vec<Vec<f32>>, bool), ImportError> {
+                let s = &samplers[si];
+                let times = g
+                    .accessor(s["input"].as_u64().unwrap_or(0))?
+                    .floats(1, None)?
+                    .into_iter()
+                    .map(|v| v[0])
+                    .collect();
+                let vals = g
+                    .accessor(s["output"].as_u64().unwrap_or(0))?
+                    .floats(comps, None)?;
+                Ok((
+                    times,
+                    vals,
+                    s["interpolation"].as_str() == Some("CUBICSPLINE"),
+                ))
+            };
+        let mut na = AiAnimation {
+            name: anim["name"].as_str().unwrap_or("").to_string(),
+            ..Default::default()
         };
-        let mut na = AiAnimation { name: anim["name"].as_str().unwrap_or("").to_string(), ..Default::default() };
         for node in libcxx_unordered_order(&order) {
             let smp = per_node[&node];
             if smp[0].is_none() && smp[1].is_none() && smp[2].is_none() {
                 continue;
             }
             let n = &nodes[node as usize];
-            let mut ch = AiNodeAnim { node_name: node_name(n, node as usize), ..Default::default() };
+            let mut ch = AiNodeAnim {
+                node_name: node_name(n, node as usize),
+                ..Default::default()
+            };
             let ms = |t: f32| (t * 1000.0f32) as f64;
             if let Some(si) = smp[0] {
                 let (t, v, cubic) = read(si, 3)?;
                 let mut ii = cubic as usize;
                 for &time in &t {
-                    ch.position_keys.push(AiVectorKey { time: ms(time), value: [v[ii][0], v[ii][1], v[ii][2]] });
+                    ch.position_keys.push(AiVectorKey {
+                        time: ms(time),
+                        value: [v[ii][0], v[ii][1], v[ii][2]],
+                    });
                     ii += if cubic { 3 } else { 1 };
                 }
             } else if let Some(tv) = fvec(&n["translation"]) {
-                ch.position_keys.push(AiVectorKey { time: 0.0, value: [tv[0], tv[1], tv[2]] });
+                ch.position_keys.push(AiVectorKey {
+                    time: 0.0,
+                    value: [tv[0], tv[1], tv[2]],
+                });
             }
             if let Some(si) = smp[1] {
                 let (t, v, cubic) = read(si, 4)?;
                 let mut ii = cubic as usize;
                 for &time in &t {
                     let q = &v[ii];
-                    ch.rotation_keys.push(AiQuatKey { time: ms(time), value: AiQuat { x: q[0], y: q[1], z: q[2], w: q[3] } });
+                    ch.rotation_keys.push(AiQuatKey {
+                        time: ms(time),
+                        value: AiQuat {
+                            x: q[0],
+                            y: q[1],
+                            z: q[2],
+                            w: q[3],
+                        },
+                    });
                     ii += if cubic { 3 } else { 1 };
                 }
             } else if let Some(rv) = fvec(&n["rotation"]) {
-                ch.rotation_keys.push(AiQuatKey { time: 0.0, value: AiQuat { x: rv[0], y: rv[1], z: rv[2], w: rv[3] } });
+                ch.rotation_keys.push(AiQuatKey {
+                    time: 0.0,
+                    value: AiQuat {
+                        x: rv[0],
+                        y: rv[1],
+                        z: rv[2],
+                        w: rv[3],
+                    },
+                });
             }
             if let Some(si) = smp[2] {
                 let (t, v, cubic) = read(si, 3)?;
                 let mut ii = cubic as usize;
                 for &time in &t {
-                    ch.scaling_keys.push(AiVectorKey { time: ms(time), value: [v[ii][0], v[ii][1], v[ii][2]] });
+                    ch.scaling_keys.push(AiVectorKey {
+                        time: ms(time),
+                        value: [v[ii][0], v[ii][1], v[ii][2]],
+                    });
                     ii += if cubic { 3 } else { 1 };
                 }
             } else if let Some(sv) = fvec(&n["scale"]) {
-                ch.scaling_keys.push(AiVectorKey { time: 0.0, value: [sv[0], sv[1], sv[2]] });
+                ch.scaling_keys.push(AiVectorKey {
+                    time: 0.0,
+                    value: [sv[0], sv[1], sv[2]],
+                });
             }
             na.channels.push(ch);
         }
         let mut max_d = 0.0f64;
         for c in &na.channels {
-            for t in [c.position_keys.last(), c.scaling_keys.last()].into_iter().flatten().map(|k| k.time)
+            for t in [c.position_keys.last(), c.scaling_keys.last()]
+                .into_iter()
+                .flatten()
+                .map(|k| k.time)
                 .chain(c.rotation_keys.last().map(|k| k.time))
             {
                 if t > max_d {

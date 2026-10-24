@@ -132,7 +132,13 @@ impl AiMaterial {
     /// `aiMaterial::AddBinaryProperty`: replaces a property with the same
     /// key/semantic/index in place, else appends.
     pub fn add(&mut self, key: &str, semantic: u32, index: u32, ty: u32, data: Vec<u8>) {
-        let p = AiMaterialProperty { key: key.to_string(), semantic, index, ty, data };
+        let p = AiMaterialProperty {
+            key: key.to_string(),
+            semantic,
+            index,
+            ty,
+            data,
+        };
         if let Some(e) = self
             .properties
             .iter_mut()
@@ -163,10 +169,9 @@ impl AiMaterial {
     }
 
     pub fn get_string(&self, key: &str, semantic: u32, index: u32) -> Option<String> {
-        let p = self
-            .properties
-            .iter()
-            .find(|e| e.key == key && e.semantic == semantic && e.index == index && e.ty == PTI_STRING)?;
+        let p = self.properties.iter().find(|e| {
+            e.key == key && e.semantic == semantic && e.index == index && e.ty == PTI_STRING
+        })?;
         if p.data.len() < 4 {
             return None;
         }
@@ -187,7 +192,13 @@ pub struct AiScene {
 impl AiScene {
     pub fn add_node(&mut self, name: &str, transform: AiMat4, parent: Option<usize>) -> usize {
         let id = self.nodes.len();
-        self.nodes.push(AiNode { name: name.to_string(), transform, parent, children: vec![], meshes: vec![] });
+        self.nodes.push(AiNode {
+            name: name.to_string(),
+            transform,
+            parent,
+            children: vec![],
+            meshes: vec![],
+        });
         if let Some(p) = parent {
             self.nodes[p].children.push(id);
         }

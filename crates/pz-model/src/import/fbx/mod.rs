@@ -24,7 +24,9 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
     let scene = convert::Converter::convert(&doc)?;
     let usf = doc.globals.get_or::<f32>("UnitScaleFactor", 1.0)?;
     if usf == 0.0 {
-        return Err(ImportError("FBX: The UnitScaleFactor must be non-zero".into()));
+        return Err(ImportError(
+            "FBX: The UnitScaleFactor must be non-zero".into(),
+        ));
     }
     Ok(scene)
 }

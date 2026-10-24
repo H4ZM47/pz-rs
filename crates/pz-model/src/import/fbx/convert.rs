@@ -225,11 +225,16 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             if !con.prop.is_empty() {
                 continue;
             }
-            let Some(obj) = self.doc.get(con.src)? else { continue };
-            let Some(model) = obj.as_model() else { continue };
+            let Some(obj) = self.doc.get(con.src)? else {
+                continue;
+            };
+            let Some(model) = obj.as_model() else {
+                continue;
+            };
             let new_abs = self.out.nodes[parent].transform;
             let node_name = fix_node_name(&model.name);
-            let (mut chain, post, need_additional) = self.transformation_chain(model, &node_name)?;
+            let (mut chain, post, need_additional) =
+                self.transformation_chain(model, &node_name)?;
             if need_additional {
                 chain.push((node_name.clone(), AiMat4::IDENTITY));
             }
@@ -239,7 +244,12 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             let mut last: Option<usize> = None;
             for (n, t) in &chain {
                 let id = self.out.nodes.len();
-                self.out.nodes.push(AiNode { name: n.clone(), transform: *t, parent: Some(last.unwrap_or(parent)), ..Default::default() });
+                self.out.nodes.push(AiNode {
+                    name: n.clone(),
+                    transform: *t,
+                    parent: Some(last.unwrap_or(parent)),
+                    ..Default::default()
+                });
                 if let Some(l) = last {
                     self.out.nodes[l].children.push(id);
                 }
@@ -253,7 +263,12 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             if !child_conns.is_empty() {
                 for (n, t) in &post {
                     let id = self.out.nodes.len();
-                    self.out.nodes.push(AiNode { name: n.clone(), transform: *t, parent: Some(last_parent), ..Default::default() });
+                    self.out.nodes.push(AiNode {
+                        name: n.clone(),
+                        transform: *t,
+                        parent: Some(last_parent),
+                        ..Default::default()
+                    });
                     self.out.nodes[last_parent].children.push(id);
                     last_parent = id;
                 }
@@ -294,7 +309,8 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             if sq(v) > eps {
                 bits |= b(Comp::RotationPivot) | b(Comp::RotationPivotInverse);
                 chain[Comp::RotationPivot as usize] = AiMat4::translation(v);
-                chain[Comp::RotationPivotInverse as usize] = AiMat4::translation([-v[0], -v[1], -v[2]]);
+                chain[Comp::RotationPivotInverse as usize] =
+                    AiMat4::translation([-v[0], -v[1], -v[2]]);
             }
         }
         if let Some(v) = g("RotationOffset")? {
@@ -313,7 +329,8 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             if sq(v) > eps {
                 bits |= b(Comp::ScalingPivot) | b(Comp::ScalingPivotInverse);
                 chain[Comp::ScalingPivot as usize] = AiMat4::translation(v);
-                chain[Comp::ScalingPivotInverse as usize] = AiMat4::translation([-v[0], -v[1], -v[2]]);
+                chain[Comp::ScalingPivotInverse as usize] =
+                    AiMat4::translation([-v[0], -v[1], -v[2]]);
             }
         }
         if let Some(v) = g("Lcl Translation")? {
@@ -365,7 +382,8 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             if sq(v) > eps {
                 bits |= b(Comp::GeometricTranslation) | b(Comp::GeometricTranslationInverse);
                 chain[Comp::GeometricTranslation as usize] = AiMat4::translation(v);
-                chain[Comp::GeometricTranslationInverse as usize] = AiMat4::translation([-v[0], -v[1], -v[2]]);
+                chain[Comp::GeometricTranslationInverse as usize] =
+                    AiMat4::translation([-v[0], -v[1], -v[2]]);
             }
         }
         let simple = b(Comp::Translation) + b(Comp::Scaling) + b(Comp::Rotation);
@@ -385,7 +403,9 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                 let nd = (chain_node_name(name, c), chain[i]);
                 if matches!(
                     c,
-                    Comp::GeometricScalingInverse | Comp::GeometricRotationInverse | Comp::GeometricTranslationInverse
+                    Comp::GeometricScalingInverse
+                        | Comp::GeometricRotationInverse
+                        | Comp::GeometricTranslationInverse
                 ) {
                     post.push(nd);
                 } else {
@@ -402,10 +422,17 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         Ok((out, post, false))
     }
 
-    fn convert_model(&mut self, model: &Model, node: usize, abs: &AiMat4) -> Result<(), ImportError> {
+    fn convert_model(
+        &mut self,
+        model: &Model,
+        node: usize,
+        abs: &AiMat4,
+    ) -> Result<(), ImportError> {
         let mut meshes = Vec::new();
         for geo in model.geometry.clone() {
-            let ObjectKind::Geometry(g) = &geo.kind else { continue };
+            let ObjectKind::Geometry(g) = &geo.kind else {
+                continue;
+            };
             if g.mesh.is_some() {
                 meshes.extend(self.convert_mesh(&geo, g, model, node, abs)?);
             }
@@ -416,7 +443,14 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         Ok(())
     }
 
-    fn convert_mesh(&mut self, geo_obj: &Rc<Object>, geo: &Geometry, model: &Model, node: usize, abs: &AiMat4) -> Result<Vec<u32>, ImportError> {
+    fn convert_mesh(
+        &mut self,
+        geo_obj: &Rc<Object>,
+        geo: &Geometry,
+        model: &Model,
+        node: usize,
+        abs: &AiMat4,
+    ) -> Result<Vec<u32>, ImportError> {
         if let Some(v) = self.meshes_converted.get(&geo_obj.id) {
             return Ok(v.clone());
         }
@@ -438,17 +472,29 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                 return Ok(out);
             }
         }
-        Ok(vec![self.convert_mesh_single(geo_obj, geo, model, node, abs)?])
+        Ok(vec![
+            self.convert_mesh_single(geo_obj, geo, model, node, abs)?
+        ])
     }
 
     fn setup_empty_mesh(&mut self, geo_obj: &Rc<Object>, node: usize) -> AiMesh {
         let idx = self.out.meshes.len() as u32;
-        self.meshes_converted.entry(geo_obj.id).or_default().push(idx);
+        self.meshes_converted
+            .entry(geo_obj.id)
+            .or_default()
+            .push(idx);
         let mut name = geo_obj.name.clone();
         if let Some(s) = name.strip_prefix("Geometry::") {
             name = s.to_string();
         }
-        AiMesh { name: if name.is_empty() { self.out.nodes[node].name.clone() } else { name }, ..Default::default() }
+        AiMesh {
+            name: if name.is_empty() {
+                self.out.nodes[node].name.clone()
+            } else {
+                name
+            },
+            ..Default::default()
+        }
     }
 
     fn binormals(mesh: &MeshGeometry) -> Option<Vec<[f32; 3]>> {
@@ -462,7 +508,13 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             mesh.normals
                 .iter()
                 .zip(mesh.tangents.iter())
-                .map(|(a, b)| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]])
+                .map(|(a, b)| {
+                    [
+                        a[1] * b[2] - a[2] * b[1],
+                        a[2] * b[0] - a[0] * b[2],
+                        a[0] * b[1] - a[1] * b[0],
+                    ]
+                })
                 .collect(),
         )
     }
@@ -476,7 +528,14 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         }
     }
 
-    fn convert_mesh_single(&mut self, geo_obj: &Rc<Object>, geo: &Geometry, model: &Model, node: usize, abs: &AiMat4) -> Result<u32, ImportError> {
+    fn convert_mesh_single(
+        &mut self,
+        geo_obj: &Rc<Object>,
+        geo: &Geometry,
+        model: &Model,
+        node: usize,
+        abs: &AiMat4,
+    ) -> Result<u32, ImportError> {
         let mesh = geo.mesh.as_ref().unwrap();
         let mut out = self.setup_empty_mesh(geo_obj, node);
         let mesh_index = self.out.meshes.len() as u32;
@@ -544,12 +603,22 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                 count_vertices += f;
             }
         }
-        let mut reverse = if process_weights { vec![0u32; count_vertices as usize] } else { Vec::new() };
-        let binorm = if mesh.tangents.is_empty() { None } else { Self::binormals(mesh) };
+        let mut reverse = if process_weights {
+            vec![0u32; count_vertices as usize]
+        } else {
+            Vec::new()
+        };
+        let binorm = if mesh.tangents.is_empty() {
+            None
+        } else {
+            Self::binormals(mesh)
+        };
         let has_n = !mesh.normals.is_empty();
         let has_t = binorm.is_some();
         let num_uvs = (0..MAX_UV).take_while(|&i| !mesh.uvs[i].is_empty()).count();
-        let num_vcs = (0..MAX_COLORS).take_while(|&i| !mesh.colors[i].is_empty()).count();
+        let num_vcs = (0..MAX_COLORS)
+            .take_while(|&i| !mesh.colors[i].is_empty())
+            .count();
         let (mut ns, mut ts, mut bs) = (Vec::new(), Vec::new(), Vec::new());
         let mut uvs: Vec<Vec<[f32; 3]>> = vec![Vec::new(); num_uvs];
         let mut cols: Vec<Vec<[f32; 4]>> = vec![Vec::new(); num_vcs];
@@ -619,11 +688,15 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         mat: Option<(i32, &Vec<u32>)>,
         _abs: &AiMat4,
     ) -> Result<(), ImportError> {
-        let ObjectKind::Skin(sk) = &skin.kind else { return Ok(()) };
+        let ObjectKind::Skin(sk) = &skin.kind else {
+            return Ok(());
+        };
         let mut bones: Vec<AiBone> = Vec::new();
         let mut bone_map: HashMap<String, usize> = HashMap::new();
         for cobj in &sk.clusters {
-            let ObjectKind::Cluster(cluster) = &cobj.kind else { continue };
+            let ObjectKind::Cluster(cluster) = &cobj.kind else {
+                continue;
+            };
             let mut out_indices: Vec<u32> = Vec::new();
             let mut index_out: Vec<Option<usize>> = Vec::new();
             let mut count_out: Vec<usize> = Vec::new();
@@ -654,14 +727,20 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                 }
             }
             // ConvertCluster
-            let ObjectKind::Model(target) = &cluster.node.kind else { continue };
+            let ObjectKind::Model(target) = &cluster.node.kind else {
+                continue;
+            };
             let deformer_name = target.name.clone();
             if let Some(&bi) = bone_map.get(&deformer_name) {
                 let b = bones[bi].clone();
                 bones.push(b);
                 continue;
             }
-            let mut bone = AiBone { name: fix_node_name(&deformer_name), offset: cluster.transform, weights: Vec::new() };
+            let mut bone = AiBone {
+                name: fix_node_name(&deformer_name),
+                offset: cluster.transform,
+                weights: Vec::new(),
+            };
             for (i, io) in index_out.iter().enumerate() {
                 let Some(ii) = io else { continue };
                 for j in 0..count_out[i] {
@@ -691,7 +770,12 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         i
     }
 
-    fn convert_material_for_mesh(&mut self, model: &Model, geo: &MeshGeometry, index: i32) -> Result<u32, ImportError> {
+    fn convert_material_for_mesh(
+        &mut self,
+        model: &Model,
+        geo: &MeshGeometry,
+        index: i32,
+    ) -> Result<u32, ImportError> {
         if index < 0 || index as usize >= model.materials.len() {
             return Ok(self.default_material());
         }
@@ -704,8 +788,14 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         Ok(i)
     }
 
-    fn convert_material(&mut self, obj: &Rc<Object>, geo: &MeshGeometry) -> Result<u32, ImportError> {
-        let ObjectKind::Material(mat) = &obj.kind else { return Ok(self.default_material()) };
+    fn convert_material(
+        &mut self,
+        obj: &Rc<Object>,
+        geo: &MeshGeometry,
+    ) -> Result<u32, ImportError> {
+        let ObjectKind::Material(mat) = &obj.kind else {
+            return Ok(self.default_material());
+        };
         let idx = self.out.materials.len() as u32;
         self.materials_converted.insert(obj.id, idx);
         self.out.materials.push(AiMaterial::default());
@@ -722,16 +812,19 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         }
         let p = &mat.props;
         // SetShadingPropertiesCommon
-        let color_factored = |c: &str, f: &str, tmpl: bool| -> Result<Option<[f32; 3]>, ImportError> {
-            let Some(mut v) = p.get_ok::<[f32; 3]>(c, tmpl)? else { return Ok(None) };
-            if f.is_empty() {
-                return Ok(Some(v));
-            }
-            if let Some(fac) = p.get_ok::<f32>(f, tmpl)? {
-                v = [v[0] * fac, v[1] * fac, v[2] * fac];
-            }
-            Ok(Some(v))
-        };
+        let color_factored =
+            |c: &str, f: &str, tmpl: bool| -> Result<Option<[f32; 3]>, ImportError> {
+                let Some(mut v) = p.get_ok::<[f32; 3]>(c, tmpl)? else {
+                    return Ok(None);
+                };
+                if f.is_empty() {
+                    return Ok(Some(v));
+                }
+                if let Some(fac) = p.get_ok::<f32>(f, tmpl)? {
+                    v = [v[0] * fac, v[1] * fac, v[2] * fac];
+                }
+                Ok(Some(v))
+            };
         if let Some(v) = color_factored("DiffuseColor", "DiffuseFactor", true)? {
             out.add_floats("$clr.diffuse", 0, 0, &v);
         }
@@ -810,7 +903,9 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             }
         }
         for (k, tex) in &mat.textures {
-            let ObjectKind::Texture(t) = &tex.kind else { continue };
+            let ObjectKind::Texture(t) = &tex.kind else {
+                continue;
+            };
             let name = format!("$raw.{k}");
             let mut path = t.relative_filename.clone();
             if let Some(media) = &t.media {
@@ -897,7 +992,9 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
     }
 
     fn uv_index(&self, t: &Texture, geo: &MeshGeometry) -> Result<i32, ImportError> {
-        let Some(uvset) = t.props.get_ok::<String>("UVSet", false)? else { return Ok(0) };
+        let Some(uvset) = t.props.get_ok::<String>("UVSet", false)? else {
+            return Ok(0);
+        };
         if uvset == "default" || uvset.is_empty() {
             return Ok(0);
         }
@@ -947,7 +1044,9 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
     }
 
     fn convert_stack(&mut self, obj: &Rc<Object>) -> Result<(), ImportError> {
-        let ObjectKind::AnimationStack(st) = &obj.kind else { return Ok(()) };
+        let ObjectKind::AnimationStack(st) = &obj.kind else {
+            return Ok(());
+        };
         if st.layers.is_empty() {
             return Ok(());
         }
@@ -957,15 +1056,27 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         } else if let Some(s) = name.strip_prefix("AnimStack::") {
             name = s.to_string();
         }
-        let whitelist = ["Lcl Scaling", "Lcl Rotation", "Lcl Translation", "DeformPercent"];
+        let whitelist = [
+            "Lcl Scaling",
+            "Lcl Rotation",
+            "Lcl Translation",
+            "DeformPercent",
+        ];
         let mut node_map: BTreeMap<String, Vec<Rc<Object>>> = BTreeMap::new();
         for layer in &st.layers {
-            let ObjectKind::AnimationLayer(l) = &layer.kind else { continue };
+            let ObjectKind::AnimationLayer(l) = &layer.kind else {
+                continue;
+            };
             for n in self.doc.layer_nodes(l, &whitelist)? {
-                let ObjectKind::AnimationCurveNode(cn) = &n.kind else { continue };
+                let ObjectKind::AnimationCurveNode(cn) = &n.kind else {
+                    continue;
+                };
                 if let Some(t) = &cn.target {
                     if let Some(m) = t.as_model() {
-                        node_map.entry(fix_node_name(&m.name)).or_default().push(n.clone());
+                        node_map
+                            .entry(fix_node_name(&m.name))
+                            .or_default()
+                            .push(n.clone());
                     }
                 }
             }
@@ -980,13 +1091,29 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             stop = 9223372036854775807i64 - 20000;
         }
         for (k, v) in &node_map {
-            self.generate_node_animations(&mut node_anims, k, v, start, stop, &mut max_time, &mut min_time)?;
+            self.generate_node_animations(
+                &mut node_anims,
+                k,
+                v,
+                start,
+                stop,
+                &mut max_time,
+                &mut min_time,
+            )?;
         }
         if node_anims.is_empty() {
             return Ok(());
         }
-        let start_fps = if has_ss { start as f64 / FBX_TIME * self.anim_fps } else { min_time };
-        let stop_fps = if has_ss { stop as f64 / FBX_TIME * self.anim_fps } else { max_time };
+        let start_fps = if has_ss {
+            start as f64 / FBX_TIME * self.anim_fps
+        } else {
+            min_time
+        };
+        let stop_fps = if has_ss {
+            stop as f64 / FBX_TIME * self.anim_fps
+        } else {
+            max_time
+        };
         for ch in node_anims.iter_mut() {
             for k in ch.position_keys.iter_mut() {
                 k.time -= start_fps;
@@ -1021,7 +1148,9 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         let mut prop_map: BTreeMap<String, Vec<Rc<Object>>> = BTreeMap::new();
         let mut curve_node: Option<Rc<Object>> = None;
         for n in curves {
-            let ObjectKind::AnimationCurveNode(cn) = &n.kind else { continue };
+            let ObjectKind::AnimationCurveNode(cn) = &n.kind else {
+                continue;
+            };
             if cn.prop.is_empty() {
                 continue;
             }
@@ -1031,10 +1160,18 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             }
             prop_map.entry(cn.prop.clone()).or_default().push(n.clone());
         }
-        let Some(cnode) = curve_node else { return Ok(()) };
-        let ObjectKind::AnimationCurveNode(cn) = &cnode.kind else { return Ok(()) };
-        let Some(target_obj) = cn.target.clone() else { return Ok(()) };
-        let Some(target) = target_obj.as_model() else { return Ok(()) };
+        let Some(cnode) = curve_node else {
+            return Ok(());
+        };
+        let ObjectKind::AnimationCurveNode(cn) = &cnode.kind else {
+            return Ok(());
+        };
+        let Some(target_obj) = cn.target.clone() else {
+            return Ok(());
+        };
+        let Some(target) = target_obj.as_model() else {
+            return Ok(());
+        };
         let mut chain: [Option<&Vec<Rc<Object>>>; COMP_MAX] = [None; COMP_MAX];
         let mut has_any = false;
         let mut has_complex = false;
@@ -1044,7 +1181,9 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             }
             chain[i] = prop_map.get(comp_property(c));
             if let Some(nodes) = chain[i] {
-                if self.doc.settings.optimize_empty_animation_curves && self.is_redundant(target, c, nodes)? {
+                if self.doc.settings.optimize_empty_animation_curves
+                    && self.is_redundant(target, c, nodes)?
+                {
                     // assimp `continue`s here but keeps chain[i] set.
                     continue;
                 }
@@ -1058,8 +1197,12 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             return Ok(());
         }
         if !has_complex && !self.needs_complex_chain(target)? {
-            let nd = self.simple_node_anim(fixed_name, target, &chain, start, stop, max_time, min_time)?;
-            if !(nd.position_keys.is_empty() && nd.rotation_keys.is_empty() && nd.scaling_keys.is_empty()) {
+            let nd =
+                self.simple_node_anim(fixed_name, target, &chain, start, stop, max_time, min_time)?;
+            if !(nd.position_keys.is_empty()
+                && nd.rotation_keys.is_empty()
+                && nd.scaling_keys.is_empty())
+            {
                 out.push(nd);
             }
             return Ok(());
@@ -1071,30 +1214,75 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             flags |= bit;
             let cname = chain_node_name(fixed_name, c);
             let na = match c {
-                Comp::Rotation | Comp::PreRotation | Comp::PostRotation | Comp::GeometricRotation => {
-                    let mut na = AiNodeAnim { node_name: cname, ..Default::default() };
+                Comp::Rotation
+                | Comp::PreRotation
+                | Comp::PostRotation
+                | Comp::GeometricRotation => {
+                    let mut na = AiNodeAnim {
+                        node_name: cname,
+                        ..Default::default()
+                    };
                     let inputs = self.rotation_keyframe_list(nodes, start, stop)?;
                     let keys = key_time_list(&inputs);
-                    na.rotation_keys = self.interpolate_quat(&keys, &inputs, [0.0; 3], max_time, min_time, rotation_order(target)?);
-                    na.scaling_keys = vec![AiVectorKey { time: 0.0, value: [1.0; 3] }];
-                    na.position_keys = vec![AiVectorKey { time: 0.0, value: [0.0; 3] }];
+                    na.rotation_keys = self.interpolate_quat(
+                        &keys,
+                        &inputs,
+                        [0.0; 3],
+                        max_time,
+                        min_time,
+                        rotation_order(target)?,
+                    );
+                    na.scaling_keys = vec![AiVectorKey {
+                        time: 0.0,
+                        value: [1.0; 3],
+                    }];
+                    na.position_keys = vec![AiVectorKey {
+                        time: 0.0,
+                        value: [0.0; 3],
+                    }];
                     na
                 }
                 Comp::Scaling | Comp::GeometricScaling => {
-                    let mut na = AiNodeAnim { node_name: cname, ..Default::default() };
+                    let mut na = AiNodeAnim {
+                        node_name: cname,
+                        ..Default::default()
+                    };
                     let inputs = self.keyframe_list(nodes, start, stop)?;
                     let keys = key_time_list(&inputs);
-                    na.scaling_keys = self.interpolate_vec(&keys, &inputs, [1.0; 3], max_time, min_time);
-                    na.rotation_keys = vec![AiQuatKey { time: 0.0, value: AiQuat::default() }];
-                    na.position_keys = vec![AiVectorKey { time: 0.0, value: [0.0; 3] }];
+                    na.scaling_keys =
+                        self.interpolate_vec(&keys, &inputs, [1.0; 3], max_time, min_time);
+                    na.rotation_keys = vec![AiQuatKey {
+                        time: 0.0,
+                        value: AiQuat::default(),
+                    }];
+                    na.position_keys = vec![AiVectorKey {
+                        time: 0.0,
+                        value: [0.0; 3],
+                    }];
                     na
                 }
                 _ => {
-                    let na = self.translation_anim(&cname, nodes, start, stop, max_time, min_time, false)?;
+                    let na = self
+                        .translation_anim(&cname, nodes, start, stop, max_time, min_time, false)?;
                     if c == Comp::RotationPivot || c == Comp::ScalingPivot {
-                        let inv_c = if c == Comp::RotationPivot { Comp::RotationPivotInverse } else { Comp::ScalingPivotInverse };
-                        let inv = self.translation_anim(&chain_node_name(fixed_name, inv_c), nodes, start, stop, max_time, min_time, true)?;
-                        if !(inv.position_keys.is_empty() && inv.rotation_keys.is_empty() && inv.scaling_keys.is_empty()) {
+                        let inv_c = if c == Comp::RotationPivot {
+                            Comp::RotationPivotInverse
+                        } else {
+                            Comp::ScalingPivotInverse
+                        };
+                        let inv = self.translation_anim(
+                            &chain_node_name(fixed_name, inv_c),
+                            nodes,
+                            start,
+                            stop,
+                            max_time,
+                            min_time,
+                            true,
+                        )?;
+                        if !(inv.position_keys.is_empty()
+                            && inv.rotation_keys.is_empty()
+                            && inv.scaling_keys.is_empty())
+                        {
                             out.push(inv);
                         }
                         flags |= bit << (Comp::RotationPivotInverse as usize - i);
@@ -1102,11 +1290,15 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                     na
                 }
             };
-            if !(na.position_keys.is_empty() && na.rotation_keys.is_empty() && na.scaling_keys.is_empty()) {
+            if !(na.position_keys.is_empty()
+                && na.rotation_keys.is_empty()
+                && na.scaling_keys.is_empty())
+            {
                 out.push(na);
             }
         }
-        self.node_anim_chain_bits.insert(fixed_name.to_string(), flags);
+        self.node_anim_chain_bits
+            .insert(fixed_name.to_string(), flags);
         Ok(())
     }
 
@@ -1121,7 +1313,10 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         min_time: &mut f64,
         inverse: bool,
     ) -> Result<AiNodeAnim, ImportError> {
-        let mut na = AiNodeAnim { node_name: name.to_string(), ..Default::default() };
+        let mut na = AiNodeAnim {
+            node_name: name.to_string(),
+            ..Default::default()
+        };
         let inputs = self.keyframe_list(nodes, start, stop)?;
         let keys = key_time_list(&inputs);
         na.position_keys = self.interpolate_vec(&keys, &inputs, [0.0; 3], max_time, min_time);
@@ -1130,25 +1325,50 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                 k.value = [k.value[0] * -1.0, k.value[1] * -1.0, k.value[2] * -1.0];
             }
         }
-        na.scaling_keys = vec![AiVectorKey { time: 0.0, value: [1.0; 3] }];
-        na.rotation_keys = vec![AiQuatKey { time: 0.0, value: AiQuat::default() }];
+        na.scaling_keys = vec![AiVectorKey {
+            time: 0.0,
+            value: [1.0; 3],
+        }];
+        na.rotation_keys = vec![AiQuatKey {
+            time: 0.0,
+            value: AiQuat::default(),
+        }];
         Ok(na)
     }
 
-    fn is_redundant(&self, target: &Model, c: Comp, nodes: &[Rc<Object>]) -> Result<bool, ImportError> {
+    fn is_redundant(
+        &self,
+        target: &Model,
+        c: Comp,
+        nodes: &[Rc<Object>],
+    ) -> Result<bool, ImportError> {
         if nodes.len() > 1 {
             return Ok(false);
         }
-        let ObjectKind::AnimationCurveNode(cn) = &nodes[0].kind else { return Ok(false) };
+        let ObjectKind::AnimationCurveNode(cn) = &nodes[0].kind else {
+            return Ok(false);
+        };
         let sub = self.doc.curves(cn)?;
         let get = |k: &str| -> Option<Vec<f32>> {
-            sub.get(k).and_then(|o| if let ObjectKind::AnimationCurve(c) = &o.kind { Some(c.values.clone()) } else { None })
+            sub.get(k).and_then(|o| {
+                if let ObjectKind::AnimationCurve(c) = &o.kind {
+                    Some(c.values.clone())
+                } else {
+                    None
+                }
+            })
         };
-        let (Some(vx), Some(vy), Some(vz)) = (get("d|X"), get("d|Y"), get("d|Z")) else { return Ok(false) };
+        let (Some(vx), Some(vy), Some(vz)) = (get("d|X"), get("d|Y"), get("d|Z")) else {
+            return Ok(false);
+        };
         if vx.len() != 1 || vy.len() != 1 || vz.len() != 1 {
             return Ok(false);
         }
-        let def = if c == Comp::Scaling { [1.0; 3] } else { [0.0; 3] };
+        let def = if c == Comp::Scaling {
+            [1.0; 3]
+        } else {
+            [0.0; 3]
+        };
         let sv = target.props.get_or::<[f32; 3]>(comp_property(c), def)?;
         let d = [vx[0] - sv[0], vy[0] - sv[1], vz[0] - sv[2]];
         Ok(sq(d) < f32::EPSILON)
@@ -1156,7 +1376,14 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
 
     fn needs_complex_chain(&self, model: &Model) -> Result<bool, ImportError> {
         for &c in ALL_COMPS.iter() {
-            if matches!(c, Comp::Rotation | Comp::Scaling | Comp::Translation | Comp::PreRotation | Comp::PostRotation) {
+            if matches!(
+                c,
+                Comp::Rotation
+                    | Comp::Scaling
+                    | Comp::Translation
+                    | Comp::PreRotation
+                    | Comp::PostRotation
+            ) {
                 continue;
             }
             let scale = c == Comp::GeometricScaling || c == Comp::Scaling;
@@ -1173,11 +1400,18 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         Ok(false)
     }
 
-    fn keyframe_list(&self, nodes: &[Rc<Object>], start: i64, stop: i64) -> Result<Vec<KeyFrameList>, ImportError> {
+    fn keyframe_list(
+        &self,
+        nodes: &[Rc<Object>],
+        start: i64,
+        stop: i64,
+    ) -> Result<Vec<KeyFrameList>, ImportError> {
         let (adj_start, adj_stop) = (start - 10000, stop + 10000);
         let mut inputs = Vec::new();
         for n in nodes {
-            let ObjectKind::AnimationCurveNode(cn) = &n.kind else { continue };
+            let ObjectKind::AnimationCurveNode(cn) = &n.kind else {
+                continue;
+            };
             for (k, c) in self.doc.curves(cn)? {
                 let mapto = match k.as_str() {
                     "d|X" => 0,
@@ -1185,7 +1419,9 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                     "d|Z" => 2,
                     _ => continue,
                 };
-                let ObjectKind::AnimationCurve(curve) = &c.kind else { continue };
+                let ObjectKind::AnimationCurve(curve) = &c.kind else {
+                    continue;
+                };
                 let (mut ks, mut vs) = (Vec::new(), Vec::new());
                 for (t, v) in curve.keys.iter().zip(curve.values.iter()) {
                     if *t >= adj_start && *t <= adj_stop {
@@ -1199,11 +1435,18 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         Ok(inputs)
     }
 
-    fn rotation_keyframe_list(&self, nodes: &[Rc<Object>], start: i64, stop: i64) -> Result<Vec<KeyFrameList>, ImportError> {
+    fn rotation_keyframe_list(
+        &self,
+        nodes: &[Rc<Object>],
+        start: i64,
+        stop: i64,
+    ) -> Result<Vec<KeyFrameList>, ImportError> {
         let (adj_start, adj_stop) = (start - 10000, stop + 10000);
         let mut inputs = Vec::new();
         for n in nodes {
-            let ObjectKind::AnimationCurveNode(cn) = &n.kind else { continue };
+            let ObjectKind::AnimationCurveNode(cn) = &n.kind else {
+                continue;
+            };
             for (k, c) in self.doc.curves(cn)? {
                 let mapto = match k.as_str() {
                     "d|X" => 0,
@@ -1211,7 +1454,9 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                     "d|Z" => 2,
                     _ => continue,
                 };
-                let ObjectKind::AnimationCurve(curve) = &c.kind else { continue };
+                let ObjectKind::AnimationCurve(curve) = &c.kind else {
+                    continue;
+                };
                 let count = curve.keys.len();
                 let (mut ks, mut vs) = (Vec::new(), Vec::new());
                 let mut tp = curve.keys[0];
@@ -1223,7 +1468,9 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                     let mut vc = curve.values[1];
                     for n in 1..count {
                         while (vc - vp).abs() >= 180.0 {
-                            let step = ((tc - tp) as f64 / (vc - vp).abs() as f64 * 179.0f32 as f64).floor();
+                            let step = ((tc - tp) as f64 / (vc - vp).abs() as f64
+                                * 179.0f32 as f64)
+                                .floor();
                             let tnew = tp + step as i64;
                             let vnew = vp + (vc - vp) * (step / (tc - tp) as f64) as f32;
                             if tnew >= adj_start && tnew <= adj_stop {
@@ -1277,14 +1524,21 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                 let id1 = if next[i] == ksize { ksize - 1 } else { next[i] };
                 let (va, vb) = (vs[id0], vs[id1]);
                 let (ta, tb) = (ks[id0], ks[id1]);
-                let factor = if tb == ta { 0.0f32 } else { (time - ta) as f32 / (tb - ta) as f32 };
+                let factor = if tb == ta {
+                    0.0f32
+                } else {
+                    (time - ta) as f32 / (tb - ta) as f32
+                };
                 // clang fuses this into one multiply-add in the game's build
                 result[*mapto] = (vb - va).mul_add(factor, va);
             }
             let t = time as f64 / FBX_TIME * self.anim_fps;
             *min_time = min_time.min(t);
             *max_time = max_time.max(t);
-            out.push(AiVectorKey { time: t, value: result });
+            out.push(AiVectorKey {
+                time: t,
+                value: result,
+            });
         }
         out
     }
@@ -1304,10 +1558,18 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             .map(|k| {
                 let mut q = AiQuat::from_matrix(&m3(&rotation_matrix(order, k.value)));
                 if q.x * lastq.x + q.y * lastq.y + q.z * lastq.z + q.w * lastq.w < 0.0 {
-                    q = AiQuat { w: -q.w, x: -q.x, y: -q.y, z: -q.z };
+                    q = AiQuat {
+                        w: -q.w,
+                        x: -q.x,
+                        y: -q.y,
+                        z: -q.z,
+                    };
                 }
                 lastq = q;
-                AiQuatKey { time: k.time, value: q }
+                AiQuatKey {
+                    time: k.time,
+                    value: q,
+                }
             })
             .collect()
     }
@@ -1328,7 +1590,10 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         let mut keytimes: Vec<i64> = Vec::new();
         for (i, &c) in ALL_COMPS.iter().enumerate() {
             let Some(nodes) = chain[i] else { continue };
-            lists[i] = if matches!(c, Comp::Rotation | Comp::PreRotation | Comp::PostRotation | Comp::GeometricRotation) {
+            lists[i] = if matches!(
+                c,
+                Comp::Rotation | Comp::PreRotation | Comp::PostRotation | Comp::GeometricRotation
+            ) {
                 self.rotation_keyframe_list(nodes, start, stop)?
             } else {
                 self.keyframe_list(nodes, start, stop)?
@@ -1351,17 +1616,35 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         let mut outt = if !lists[tr].is_empty() {
             self.interpolate_vec(&keytimes, &lists[tr], def_t, max_time, min_time)
         } else {
-            keytimes.iter().map(|&t| AiVectorKey { time: conv(t), value: def_t }).collect()
+            keytimes
+                .iter()
+                .map(|&t| AiVectorKey {
+                    time: conv(t),
+                    value: def_t,
+                })
+                .collect()
         };
         let mut outr = if !lists[ro].is_empty() {
             self.interpolate_quat(&keytimes, &lists[ro], def_r, max_time, min_time, rot_order)
         } else {
-            keytimes.iter().map(|&t| AiQuatKey { time: conv(t), value: def_q }).collect()
+            keytimes
+                .iter()
+                .map(|&t| AiQuatKey {
+                    time: conv(t),
+                    value: def_q,
+                })
+                .collect()
         };
         let mut outs = if !lists[sc].is_empty() {
             self.interpolate_vec(&keytimes, &lists[sc], def_s, max_time, min_time)
         } else {
-            keytimes.iter().map(|&t| AiVectorKey { time: conv(t), value: def_s }).collect()
+            keytimes
+                .iter()
+                .map(|&t| AiVectorKey {
+                    time: conv(t),
+                    value: def_s,
+                })
+                .collect()
         };
         if let Some(pre) = props.get_ok::<[f32; 3]>("PreRotation", false)? {
             if sq(pre) > 1e-6 {
@@ -1388,12 +1671,23 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
             outr[i].value = r;
             outt[i].value = t;
         }
-        Ok(AiNodeAnim { node_name: name.to_string(), position_keys: outt, rotation_keys: outr, scaling_keys: outs })
+        Ok(AiNodeAnim {
+            node_name: name.to_string(),
+            position_keys: outt,
+            rotation_keys: outr,
+            scaling_keys: outs,
+        })
     }
 }
 
 fn uv_trafo(t: &Texture) -> [f32; 5] {
-    [t.uv_trans[0], t.uv_trans[1], t.uv_scaling[0], t.uv_scaling[1], t.uv_rotation]
+    [
+        t.uv_trans[0],
+        t.uv_trans[1],
+        t.uv_scaling[0],
+        t.uv_scaling[1],
+        t.uv_rotation,
+    ]
 }
 
 fn key_time_list(inputs: &[KeyFrameList]) -> Vec<i64> {

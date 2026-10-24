@@ -21,7 +21,11 @@ struct N {
 }
 
 fn n(name: &'static str, props: Vec<P>, children: Vec<N>) -> N {
-    N { name, props, children }
+    N {
+        name,
+        props,
+        children,
+    }
 }
 
 fn s(v: &str) -> P {
@@ -40,11 +44,19 @@ fn tree() -> Vec<N> {
     let geom_id = 2000i64;
     let mat_id = 3000i64;
     vec![
-        n("FBXHeaderExtension", vec![], vec![n("FBXVersion", vec![P::I(7400)], vec![])]),
+        n(
+            "FBXHeaderExtension",
+            vec![],
+            vec![n("FBXVersion", vec![P::I(7400)], vec![])],
+        ),
         n(
             "GlobalSettings",
             vec![],
-            vec![n("Properties70", vec![], vec![prop("UnitScaleFactor", "double", vec![P::D(1.0)])])],
+            vec![n(
+                "Properties70",
+                vec![],
+                vec![prop("UnitScaleFactor", "double", vec![P::D(1.0)])],
+            )],
         ),
         n(
             "Objects",
@@ -54,7 +66,11 @@ fn tree() -> Vec<N> {
                     "Geometry",
                     vec![P::L(geom_id), s("Quad\u{0}\u{1}Geometry"), s("Mesh")],
                     vec![
-                        n("Vertices", vec![P::Ad(vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.])], vec![]),
+                        n(
+                            "Vertices",
+                            vec![P::Ad(vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.])],
+                            vec![],
+                        ),
                         n("PolygonVertexIndex", vec![P::Ai(vec![0, 1, 2, -4])], vec![]),
                         n(
                             "LayerElementNormal",
@@ -72,7 +88,11 @@ fn tree() -> Vec<N> {
                                 n("Name", vec![s("UVMap")], vec![]),
                                 n("MappingInformationType", vec![s("ByPolygonVertex")], vec![]),
                                 n("ReferenceInformationType", vec![s("IndexToDirect")], vec![]),
-                                n("UV", vec![P::Ad(vec![0., 0., 1., 0., 1., 1., 0., 1.])], vec![]),
+                                n(
+                                    "UV",
+                                    vec![P::Ad(vec![0., 0., 1., 0., 1., 1., 0., 1.])],
+                                    vec![],
+                                ),
                                 n("UVIndex", vec![P::Ai(vec![0, 1, 2, 3])], vec![]),
                             ],
                         ),
@@ -89,9 +109,30 @@ fn tree() -> Vec<N> {
                             "Layer",
                             vec![P::I(0)],
                             vec![
-                                n("LayerElement", vec![], vec![n("Type", vec![s("LayerElementNormal")], vec![]), n("TypedIndex", vec![P::I(0)], vec![])]),
-                                n("LayerElement", vec![], vec![n("Type", vec![s("LayerElementUV")], vec![]), n("TypedIndex", vec![P::I(0)], vec![])]),
-                                n("LayerElement", vec![], vec![n("Type", vec![s("LayerElementMaterial")], vec![]), n("TypedIndex", vec![P::I(0)], vec![])]),
+                                n(
+                                    "LayerElement",
+                                    vec![],
+                                    vec![
+                                        n("Type", vec![s("LayerElementNormal")], vec![]),
+                                        n("TypedIndex", vec![P::I(0)], vec![]),
+                                    ],
+                                ),
+                                n(
+                                    "LayerElement",
+                                    vec![],
+                                    vec![
+                                        n("Type", vec![s("LayerElementUV")], vec![]),
+                                        n("TypedIndex", vec![P::I(0)], vec![]),
+                                    ],
+                                ),
+                                n(
+                                    "LayerElement",
+                                    vec![],
+                                    vec![
+                                        n("Type", vec![s("LayerElementMaterial")], vec![]),
+                                        n("TypedIndex", vec![P::I(0)], vec![]),
+                                    ],
+                                ),
                             ],
                         ),
                     ],
@@ -103,13 +144,29 @@ fn tree() -> Vec<N> {
                         "Properties70",
                         vec![],
                         vec![
-                            prop("PreRotation", "Vector3D", vec![P::D(-90.0), P::D(0.0), P::D(0.0)]),
-                            prop("Lcl Translation", "Lcl Translation", vec![P::D(0.0), P::D(2.0), P::D(0.0)]),
-                            prop("Lcl Scaling", "Lcl Scaling", vec![P::D(0.5), P::D(0.5), P::D(0.5)]),
+                            prop(
+                                "PreRotation",
+                                "Vector3D",
+                                vec![P::D(-90.0), P::D(0.0), P::D(0.0)],
+                            ),
+                            prop(
+                                "Lcl Translation",
+                                "Lcl Translation",
+                                vec![P::D(0.0), P::D(2.0), P::D(0.0)],
+                            ),
+                            prop(
+                                "Lcl Scaling",
+                                "Lcl Scaling",
+                                vec![P::D(0.5), P::D(0.5), P::D(0.5)],
+                            ),
                         ],
                     )],
                 ),
-                n("Material", vec![P::L(mat_id), s("Skin\u{0}\u{1}Material"), s("")], vec![n("ShadingModel", vec![s("lambert")], vec![])]),
+                n(
+                    "Material",
+                    vec![P::L(mat_id), s("Skin\u{0}\u{1}Material"), s("")],
+                    vec![n("ShadingModel", vec![s("lambert")], vec![])],
+                ),
             ],
         ),
         n(
@@ -217,7 +274,11 @@ fn write_ascii(nodes: &[N]) -> String {
             _ => None,
         });
         if let Some(a) = arr {
-            out.push_str(&format!("*{} {{\n{ind}\ta: {}\n{ind}}}\n", a.len(), a.join(",")));
+            out.push_str(&format!(
+                "*{} {{\n{ind}\ta: {}\n{ind}}}\n",
+                a.len(),
+                a.join(",")
+            ));
             return;
         }
         out.push_str(&nd.props.iter().map(val).collect::<Vec<_>>().join(", "));
@@ -243,7 +304,11 @@ fn check(data: &[u8]) {
     let root = &scene.nodes[scene.root];
     assert_eq!(root.name, "RootNode");
     // PreRotation needs the full pivot chain.
-    let names: Vec<&str> = scene.preorder().iter().map(|&i| scene.nodes[i].name.as_str()).collect();
+    let names: Vec<&str> = scene
+        .preorder()
+        .iter()
+        .map(|&i| scene.nodes[i].name.as_str())
+        .collect();
     assert_eq!(
         names,
         [
@@ -257,7 +322,15 @@ fn check(data: &[u8]) {
     assert_eq!(scene.meshes.len(), 1);
     assert_eq!(scene.meshes[0].name, "Quad");
 
-    let p = load_mesh(data, Format::Fbx, &MeshParams { is_static: true, ..Default::default() }).unwrap();
+    let p = load_mesh(
+        data,
+        Format::Fbx,
+        &MeshParams {
+            is_static: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let m = &p.static_meshes[0];
     assert_eq!(m.num_uvs, 1);
     // The quad is triangulated (fanned from the first corner) and its four
@@ -269,7 +342,10 @@ fn check(data: &[u8]) {
     // Matrix4f.mul(parent, node), which composes child-first: the chain's
     // translation (0, 2, 0) comes out rotated by PreRotation (-90 deg about
     // x, mirrored by MAKE_LEFT_HANDED) and scaled by 0.5.
-    assert!((t[3][2] - 1.0).abs() < 1e-6 && t[3][1].abs() < 1e-6, "{t:?}");
+    assert!(
+        (t[3][2] - 1.0).abs() < 1e-6 && t[3][1].abs() < 1e-6,
+        "{t:?}"
+    );
     // Scale 0.5 on x.
     assert!((t[0][0] - 0.5).abs() < 1e-6, "{t:?}");
     assert_eq!(m.min_xyz[0], 0.0);

@@ -154,7 +154,10 @@ fn mesh_vertices_winding_and_skeleton() {
     // has no bone in the mesh, so its offset is identity.
     assert_eq!(sk.bind_pose[1][3], [0.0, -0.5, 0.0, 1.0]);
     assert_eq!(sk.inverse_bind_pose[1][3], [0.0, 0.5, 0.0, 1.0]);
-    assert_eq!(sk.bind_pose[0], pz_model::import::aimath::AiMat4::IDENTITY.m);
+    assert_eq!(
+        sk.bind_pose[0],
+        pz_model::import::aimath::AiMat4::IDENTITY.m
+    );
 }
 
 #[test]
@@ -171,7 +174,10 @@ fn animation_keys_and_clip_name() {
     assert_eq!((k0.bone, k0.bone_name.as_str(), k0.time), (1, "Bip01", 0.0));
     assert_eq!(k0.position, [0.0, 0.5, 0.0]);
     // X rotation keys are inverted on import (w negated).
-    assert_eq!((k0.rotation.x, k0.rotation.y, k0.rotation.z, k0.rotation.w), (0.0, 0.0, 0.0, -1.0));
+    assert_eq!(
+        (k0.rotation.x, k0.rotation.y, k0.rotation.z, k0.rotation.w),
+        (0.0, 0.0, 0.0, -1.0)
+    );
     let k1 = &clip.keyframes[1];
     assert_eq!(k1.time, 1.0);
     assert_eq!(k1.position, [0.0, 1.0, 0.0]);

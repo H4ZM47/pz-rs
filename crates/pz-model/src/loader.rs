@@ -59,7 +59,11 @@ pub struct MeshParams<'a> {
 }
 
 /// `FileTask_LoadMesh.loadX/loadFBX/loadGLTF`.
-pub fn load_mesh(data: &[u8], format: Format, p: &MeshParams) -> Result<ProcessedAiScene, LoadError> {
+pub fn load_mesh(
+    data: &[u8],
+    format: Format,
+    p: &MeshParams,
+) -> Result<ProcessedAiScene, LoadError> {
     let mut steps = Steps::mesh_default();
     if format != Format::X {
         if let Some(pp) = &p.post_process {
@@ -68,7 +72,11 @@ pub fn load_mesh(data: &[u8], format: Format, p: &MeshParams) -> Result<Processe
     }
     let scene = import::import(data, format, steps)?;
     let mut params = ProcessParams {
-        mode: if p.is_static { LoadMode::StaticMesh } else { LoadMode::Normal },
+        mode: if p.is_static {
+            LoadMode::StaticMesh
+        } else {
+            LoadMode::Normal
+        },
         skinned_to: p.skinned_to,
         mesh_name: p.mesh_name.clone(),
         ..Default::default()
@@ -88,7 +96,11 @@ pub fn load_animation(
     skinned_to: Option<&SkinningData>,
 ) -> Result<HashMap<String, AnimationClip>, LoadError> {
     let scene = import::import(data, format, Steps::animation_default())?;
-    let mut params = ProcessParams { mode: LoadMode::AnimationOnly, skinned_to, ..Default::default() };
+    let mut params = ProcessParams {
+        mode: LoadMode::AnimationOnly,
+        skinned_to,
+        ..Default::default()
+    };
     if format != Format::X {
         params.anim_bones_scale_modifier = 0.01;
         params.anim_bones_rotate_modifier = Some(fbx_bone_rotate_modifier());
@@ -97,6 +109,8 @@ pub fn load_animation(
     match p.skeleton {
         Some(s) => Ok(s.animation_clips),
         // ProcessedAiScene.applyToAnimation would throw here.
-        None => Err(LoadError::Process(crate::processed::ProcessError("animation file has no skinned mesh".into()))),
+        None => Err(LoadError::Process(crate::processed::ProcessError(
+            "animation file has no skinned mesh".into(),
+        ))),
     }
 }

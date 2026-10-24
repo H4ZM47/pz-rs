@@ -215,7 +215,13 @@ fn preprocess_mesh(mesh: &mut AiMesh) {
         let b = n
             .iter()
             .zip(t.iter())
-            .map(|(a, b)| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]])
+            .map(|(a, b)| {
+                [
+                    a[1] * b[2] - a[2] * b[1],
+                    a[2] * b[0] - a[0] * b[2],
+                    a[0] * b[1] - a[1] * b[0],
+                ]
+            })
             .collect();
         mesh.bitangents = Some(b);
     }
@@ -241,18 +247,28 @@ fn preprocess_animation(scene: &mut AiScene, ai: usize) {
                 last = last.max(k.time);
             }
         }
-        if ch.rotation_keys.is_empty() || ch.position_keys.is_empty() || ch.scaling_keys.is_empty() {
+        if ch.rotation_keys.is_empty() || ch.position_keys.is_empty() || ch.scaling_keys.is_empty()
+        {
             if let Some(node) = scene.find_node(&ch.node_name) {
                 let (s, r, p) = scene.nodes[node].transform.decompose();
                 let ch = &mut scene.animations[ai].channels[ci];
                 if ch.rotation_keys.is_empty() {
-                    ch.rotation_keys.push(AiQuatKey { time: 0.0, value: r });
+                    ch.rotation_keys.push(AiQuatKey {
+                        time: 0.0,
+                        value: r,
+                    });
                 }
                 if ch.scaling_keys.is_empty() {
-                    ch.scaling_keys.push(AiVectorKey { time: 0.0, value: s });
+                    ch.scaling_keys.push(AiVectorKey {
+                        time: 0.0,
+                        value: s,
+                    });
                 }
                 if ch.position_keys.is_empty() {
-                    ch.position_keys.push(AiVectorKey { time: 0.0, value: p });
+                    ch.position_keys.push(AiVectorKey {
+                        time: 0.0,
+                        value: p,
+                    });
                 }
             }
         }
@@ -463,7 +479,8 @@ fn mesh_hash(m: &AiMesh) -> u64 {
     let nv = m.vertices.len() as u32;
     let nf = m.faces.len() as u32;
     (f << 32)
-        | (((nb << 16) ^ nv ^ (nf << 4) ^ (m.material_index << 15) ^ (m.primitive_types << 28)) & 0xffffffff) as u64
+        | (((nb << 16) ^ nv ^ (nf << 4) ^ (m.material_index << 15) ^ (m.primitive_types << 28))
+            & 0xffffffff) as u64
 }
 
 fn array_bounds(v: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
@@ -484,7 +501,9 @@ fn position_epsilon(m: &AiMesh) -> f32 {
 }
 
 fn compare_arrays(a: &[[f32; 3]], b: &[[f32; 3]], e: f32) -> bool {
-    a.iter().zip(b.iter()).all(|(x, y)| vsqlen(vsub(*x, *y)) < e)
+    a.iter()
+        .zip(b.iter())
+        .all(|(x, y)| vsqlen(vsub(*x, *y)) < e)
 }
 
 fn color_diff(a: &[f32; 4], b: &[f32; 4]) -> f32 {
@@ -538,12 +557,25 @@ fn find_instances(scene: &mut AiScene) {
             if !orig.vertices.is_empty() && !compare_arrays(&orig.vertices, &inst.vertices, eps) {
                 continue;
             }
-            if orig.has_normals() && !compare_arrays(orig.normals.as_ref().unwrap(), inst.normals.as_ref().unwrap(), eps) {
+            if orig.has_normals()
+                && !compare_arrays(
+                    orig.normals.as_ref().unwrap(),
+                    inst.normals.as_ref().unwrap(),
+                    eps,
+                )
+            {
                 continue;
             }
             if orig.has_tangents()
-                && (!compare_arrays(orig.tangents.as_ref().unwrap(), inst.tangents.as_ref().unwrap(), eps)
-                    || !compare_arrays(orig.bitangents.as_ref().unwrap(), inst.bitangents.as_ref().unwrap(), eps))
+                && (!compare_arrays(
+                    orig.tangents.as_ref().unwrap(),
+                    inst.tangents.as_ref().unwrap(),
+                    eps,
+                ) || !compare_arrays(
+                    orig.bitangents.as_ref().unwrap(),
+                    inst.bitangents.as_ref().unwrap(),
+                    eps,
+                ))
             {
                 continue;
             }
@@ -562,7 +594,11 @@ fn find_instances(scene: &mut AiScene) {
             }
             for j in 0..orig.num_color_channels() {
                 if let (Some(a), Some(b)) = (orig.colors[j].as_ref(), inst.colors[j].as_ref()) {
-                    if !a.iter().zip(b.iter()).all(|(x, y)| color_diff(x, y) < uv_eps) {
+                    if !a
+                        .iter()
+                        .zip(b.iter())
+                        .all(|(x, y)| color_diff(x, y) < uv_eps)
+                    {
                         bad = true;
                         break;
                     }
@@ -603,7 +639,12 @@ fn find_instances(scene: &mut AiScene) {
     }
     if num_out as usize != n {
         let meshes = std::mem::take(&mut scene.meshes);
-        scene.meshes = meshes.into_iter().zip(removed.iter()).filter(|(_, r)| !**r).map(|(m, _)| m).collect();
+        scene.meshes = meshes
+            .into_iter()
+            .zip(removed.iter())
+            .filter(|(_, r)| !**r)
+            .map(|(m, _)| m)
+            .collect();
         for node in scene.nodes.iter_mut() {
             for m in node.meshes.iter_mut() {
                 *m = remapping[*m as usize];
@@ -870,7 +911,10 @@ fn optimize_meshes(scene: &mut AiScene, pts: bool) -> Result<(), ImportError> {
         }
     }
     let vformat: Vec<u32> = scene.meshes.iter().map(vformat_unique).collect();
-    let mut src: Vec<Option<AiMesh>> = std::mem::take(&mut scene.meshes).into_iter().map(Some).collect();
+    let mut src: Vec<Option<AiMesh>> = std::mem::take(&mut scene.meshes)
+        .into_iter()
+        .map(Some)
+        .collect();
     // Instanced meshes go first, shared by every node referencing them.
     let mut output: Vec<AiMesh> = Vec::new();
     let mut n = 0u32;
@@ -936,8 +980,15 @@ fn optimize_meshes(scene: &mut AiScene, pts: bool) -> Result<(), ImportError> {
 /// `SceneCombiner::MergeMeshes` for meshes without bones.
 fn merge_meshes(list: Vec<AiMesh>) -> AiMesh {
     let first = &list[0];
-    let mut out = AiMesh { material_index: first.material_index, ..Default::default() };
-    out.name = list.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(".");
+    let mut out = AiMesh {
+        material_index: first.material_index,
+        ..Default::default()
+    };
+    out.name = list
+        .iter()
+        .map(|m| m.name.as_str())
+        .collect::<Vec<_>>()
+        .join(".");
     for m in &list {
         out.primitive_types |= m.primitive_types;
     }
@@ -1117,9 +1168,12 @@ fn join_mesh(m: &mut AiMesh) {
         }
         let v = Vertex::new(m, a);
         let key = pos_key(v.position);
-        let found = buckets
-            .get(&key)
-            .and_then(|list| list.iter().rev().copied().find(|&u| unique[u as usize].equal(&v, nuv, ncol)));
+        let found = buckets.get(&key).and_then(|list| {
+            list.iter()
+                .rev()
+                .copied()
+                .find(|&u| unique[u as usize].equal(&v, nuv, ncol))
+        });
         match found {
             Some(u) => replace[a] = u | JOINED,
             None => {
@@ -1280,7 +1334,10 @@ fn limit_bone_weights(scene: &mut AiScene, max_weights: usize) {
                 if (v as usize) >= nv {
                     continue;
                 }
-                per_vertex[v as usize].push(Weight { bone: b as u32, weight: w });
+                per_vertex[v as usize].push(Weight {
+                    bone: b as u32,
+                    weight: w,
+                });
                 max_seen = max_seen.max(per_vertex[v as usize].len());
             }
         }
@@ -1313,4 +1370,3 @@ fn limit_bone_weights(scene: &mut AiScene, max_weights: usize) {
         m.bones.retain(|b| !b.weights.is_empty());
     }
 }
-

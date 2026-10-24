@@ -61,9 +61,14 @@ fn read_typed_property(el: &Element) -> Result<Option<Prop>, ImportError> {
             need(5)?;
             Prop::KTime(parse_int64(&tok[4])?)
         }
-        "Vector3D" | "ColorRGB" | "Vector" | "Color" | "Lcl Translation" | "Lcl Rotation" | "Lcl Scaling" => {
+        "Vector3D" | "ColorRGB" | "Vector" | "Color" | "Lcl Translation" | "Lcl Rotation"
+        | "Lcl Scaling" => {
             need(7)?;
-            Prop::Vec3([parse_float(&tok[4])?, parse_float(&tok[5])?, parse_float(&tok[6])?])
+            Prop::Vec3([
+                parse_float(&tok[4])?,
+                parse_float(&tok[5])?,
+                parse_float(&tok[6])?,
+            ])
         }
         "double" | "Number" | "float" | "Float" | "FieldOfView" | "UnitScaleFactor" => {
             need(5)?;
@@ -71,7 +76,12 @@ fn read_typed_property(el: &Element) -> Result<Option<Prop>, ImportError> {
         }
         "ColorAndAlpha" => {
             need(8)?;
-            Prop::Color4([parse_float(&tok[4])?, parse_float(&tok[5])?, parse_float(&tok[6])?, parse_float(&tok[7])?])
+            Prop::Color4([
+                parse_float(&tok[4])?,
+                parse_float(&tok[5])?,
+                parse_float(&tok[6])?,
+                parse_float(&tok[7])?,
+            ])
         }
         _ => return Ok(None),
     }))
@@ -89,9 +99,15 @@ pub struct PropertyTable {
 }
 
 impl PropertyTable {
-    pub fn from_element(el: &Element, template: Option<Rc<PropertyTable>>) -> Result<PropertyTable, ImportError> {
+    pub fn from_element(
+        el: &Element,
+        template: Option<Rc<PropertyTable>>,
+    ) -> Result<PropertyTable, ImportError> {
         let sc = required_scope(el)?;
-        let mut t = PropertyTable { template, ..Default::default() };
+        let mut t = PropertyTable {
+            template,
+            ..Default::default()
+        };
         for (k, e) in sc.iter() {
             if k != "P" {
                 continue;
@@ -132,11 +148,18 @@ impl PropertyTable {
     }
 
     pub fn get_or<T: FromProp>(&self, name: &str, default: T) -> Result<T, ImportError> {
-        Ok(self.get(name)?.and_then(|p| T::from_prop(&p)).unwrap_or(default))
+        Ok(self
+            .get(name)?
+            .and_then(|p| T::from_prop(&p))
+            .unwrap_or(default))
     }
 
     /// `PropertyGet<T>(props, name, ok, useTemplate)`.
-    pub fn get_ok<T: FromProp>(&self, name: &str, use_template: bool) -> Result<Option<T>, ImportError> {
+    pub fn get_ok<T: FromProp>(
+        &self,
+        name: &str,
+        use_template: bool,
+    ) -> Result<Option<T>, ImportError> {
         let mut p = self.get(name)?;
         if p.is_none() {
             if !use_template {
@@ -455,8 +478,12 @@ impl<'a, 'd> Document<'a, 'd> {
             dest_conns: BTreeMap::new(),
         };
         // ReadHeader
-        let ehead = root.get("FBXHeaderExtension").filter(|e| e.compound.is_some());
-        let Some(ehead) = ehead else { return err("no FBXHeaderExtension dictionary found") };
+        let ehead = root
+            .get("FBXHeaderExtension")
+            .filter(|e| e.compound.is_some());
+        let Some(ehead) = ehead else {
+            return err("no FBXHeaderExtension dictionary found");
+        };
         let shead = required_scope(ehead)?;
         doc.fbx_version = parse_int(required_token(required_element(shead, "FBXVersion")?, 0)?)?;
         if doc.fbx_version < SUPPORTED_MIN {
@@ -468,12 +495,20 @@ impl<'a, 'd> Document<'a, 'd> {
         // ReadPropertyTemplates
         if let Some(edefs) = root.get("Definitions").and_then(|e| e.compound.as_deref()) {
             for el in edefs.collection("ObjectType") {
-                let Some(cur) = el.compound.as_deref() else { continue };
-                let Some(t0) = el.tokens.first() else { continue };
+                let Some(cur) = el.compound.as_deref() else {
+                    continue;
+                };
+                let Some(t0) = el.tokens.first() else {
+                    continue;
+                };
                 let oname = parse_string(t0)?;
                 for inner in cur.collection("PropertyTemplate") {
-                    let Some(isc) = inner.compound.as_deref() else { continue };
-                    let Some(ct) = inner.tokens.first() else { continue };
+                    let Some(isc) = inner.compound.as_deref() else {
+                        continue;
+                    };
+                    let Some(ct) = inner.tokens.first() else {
+                        continue;
+                    };
                     let pname = parse_string(ct)?;
                     if let Some(p70) = isc.get("Properties70") {
                         let t = PropertyTable::from_element(p70, None)?;
@@ -503,14 +538,21 @@ impl<'a, 'd> Document<'a, 'd> {
             },
         );
         for (k, el) in required_scope(eobjects)?.iter() {
-            let Some(t0) = el.tokens.first() else { return err("expected ID after object key") };
+            let Some(t0) = el.tokens.first() else {
+                return err("expected ID after object key");
+            };
             let id = parse_id(t0)?;
             if id == 0 {
                 return err("encountered object with implicitly defined id 0");
             }
             doc.objects.insert(
                 id,
-                LazyObject { element: el, key: k.clone(), state: Cell::new(0), object: RefCell::new(None) },
+                LazyObject {
+                    element: el,
+                    key: k.clone(),
+                    state: Cell::new(0),
+                    object: RefCell::new(None),
+                },
             );
             if k == "AnimationStack" {
                 doc.animation_stacks.push(id);
@@ -528,11 +570,20 @@ impl<'a, 'd> Document<'a, 'd> {
             }
             let src = parse_id(required_token(el, 1)?)?;
             let dest = parse_id(required_token(el, 2)?)?;
-            let prop = if ty == "OP" { parse_string(required_token(el, 3)?)? } else { String::new() };
+            let prop = if ty == "OP" {
+                parse_string(required_token(el, 3)?)?
+            } else {
+                String::new()
+            };
             if !doc.objects.contains_key(&src) || !doc.objects.contains_key(&dest) {
                 continue;
             }
-            let c = Connection { order, src, dest, prop };
+            let c = Connection {
+                order,
+                src,
+                dest,
+                prop,
+            };
             order += 1;
             doc.src_conns.entry(src).or_default().push(c.clone());
             doc.dest_conns.entry(dest).or_default().push(c);
@@ -541,8 +592,17 @@ impl<'a, 'd> Document<'a, 'd> {
     }
 
     /// `GetPropertyTable`.
-    pub fn property_table(&self, template: &str, _el: &Element, sc: &Scope) -> Result<Rc<PropertyTable>, ImportError> {
-        let tmpl = if template.is_empty() { None } else { self.templates.get(template).cloned() };
+    pub fn property_table(
+        &self,
+        template: &str,
+        _el: &Element,
+        sc: &Scope,
+    ) -> Result<Rc<PropertyTable>, ImportError> {
+        let tmpl = if template.is_empty() {
+            None
+        } else {
+            self.templates.get(template).cloned()
+        };
         match sc.get("Properties70").filter(|e| e.compound.is_some()) {
             None => Ok(tmpl.unwrap_or_else(|| Rc::new(PropertyTable::default()))),
             Some(p70) => Ok(Rc::new(PropertyTable::from_element(p70, tmpl)?)),
@@ -556,7 +616,11 @@ impl<'a, 'd> Document<'a, 'd> {
     /// Connections where `id` is the source (`is_src`) or destination,
     /// optionally filtered by the other end's object key, in file order.
     pub fn connections(&self, id: u64, is_src: bool, classes: Option<&[&str]>) -> Vec<Connection> {
-        let map = if is_src { &self.src_conns } else { &self.dest_conns };
+        let map = if is_src {
+            &self.src_conns
+        } else {
+            &self.dest_conns
+        };
         let mut v: Vec<Connection> = map
             .get(&id)
             .map(|v| {
@@ -604,7 +668,9 @@ impl<'a, 'd> Document<'a, 'd> {
     /// `LazyObject::Get`: construction errors make the object null (non
     /// strict mode); objects already being built return null.
     pub fn get(&self, id: u64) -> Result<Option<Rc<Object>>, ImportError> {
-        let Some(lo) = self.objects.get(&id) else { return Ok(None) };
+        let Some(lo) = self.objects.get(&id) else {
+            return Ok(None);
+        };
         if lo.state.get() != 0 {
             return Ok(None);
         }
@@ -630,7 +696,11 @@ impl<'a, 'd> Document<'a, 'd> {
         }
     }
 
-    fn construct(&self, id: u64, lo: &LazyObject<'a, 'd>) -> Result<Option<Rc<Object>>, ImportError> {
+    fn construct(
+        &self,
+        id: u64,
+        lo: &LazyObject<'a, 'd>,
+    ) -> Result<Option<Rc<Object>>, ImportError> {
         let el = lo.element;
         let tokens = &el.tokens;
         if tokens.len() < 3 {
@@ -642,7 +712,11 @@ impl<'a, 'd> Document<'a, 'd> {
             let mut i = 0;
             while i < b.len() {
                 if b[i] == 0 && b.get(i + 1) == Some(&1) {
-                    name = format!("{}::{}", bytes_to_string(&b[i + 2..]), bytes_to_string(&b[..i]));
+                    name = format!(
+                        "{}::{}",
+                        bytes_to_string(&b[i + 2..]),
+                        bytes_to_string(&b[..i])
+                    );
                     break;
                 }
                 i += 1;
@@ -661,8 +735,12 @@ impl<'a, 'd> Document<'a, 'd> {
                 }
             }
             "NodeAttribute" => {
-                if ["Camera", "CameraSwitcher", "Light", "Null", "LimbNode"].contains(&classtag.as_str()) {
-                    ObjectKind::NodeAttribute { class: classtag.clone() }
+                if ["Camera", "CameraSwitcher", "Light", "Null", "LimbNode"]
+                    .contains(&classtag.as_str())
+                {
+                    ObjectKind::NodeAttribute {
+                        class: classtag.clone(),
+                    }
                 } else {
                     return Ok(None);
                 }
@@ -697,7 +775,11 @@ impl<'a, 'd> Document<'a, 'd> {
                         }
                     }
                 }
-                ObjectKind::AnimationStack(AnimationStack { name: name.clone(), props, layers })
+                ObjectKind::AnimationStack(AnimationStack {
+                    name: name.clone(),
+                    props,
+                    layers,
+                })
             }
             "AnimationLayer" => ObjectKind::AnimationLayer(AnimationLayer { id }),
             "AnimationCurve" => {
@@ -705,7 +787,9 @@ impl<'a, 'd> Document<'a, 'd> {
                 let keys = read_int64s(required_element(sc, "KeyTime")?)?;
                 let values = read_floats(required_element(sc, "KeyValueFloat")?)?;
                 if keys.len() != values.len() {
-                    return err("the number of key times does not match the number of keyframe values");
+                    return err(
+                        "the number of key times does not match the number of keyframe values",
+                    );
                 }
                 if keys.windows(2).any(|w| w[0] >= w[1]) {
                     return err("the keyframes are not in ascending order");
@@ -719,7 +803,9 @@ impl<'a, 'd> Document<'a, 'd> {
                     if c.prop.is_empty() {
                         continue;
                     }
-                    let Some(ob) = self.get(c.dest)? else { continue };
+                    let Some(ob) = self.get(c.dest)? else {
+                        continue;
+                    };
                     target = Some(ob);
                     prop = c.prop.clone();
                     break;
@@ -740,7 +826,14 @@ impl<'a, 'd> Document<'a, 'd> {
     fn read_model(&self, id: u64, el: &Element, name: &str) -> Result<Model, ImportError> {
         let sc = required_scope(el)?;
         let props = self.property_table("Model.FbxNode", el, sc)?;
-        let mut m = Model { id, name: name.to_string(), props, materials: vec![], geometry: vec![], attributes: vec![] };
+        let mut m = Model {
+            id,
+            name: name.to_string(),
+            props,
+            materials: vec![],
+            geometry: vec![],
+            attributes: vec![],
+        };
         for c in self.by_dest(id, &["Geometry", "Material", "NodeAttribute"]) {
             if !c.prop.is_empty() {
                 continue;
@@ -756,7 +849,13 @@ impl<'a, 'd> Document<'a, 'd> {
         Ok(m)
     }
 
-    fn read_geometry(&self, id: u64, el: &Element, name: &str, is_mesh: bool) -> Result<Geometry, ImportError> {
+    fn read_geometry(
+        &self,
+        id: u64,
+        el: &Element,
+        name: &str,
+        is_mesh: bool,
+    ) -> Result<Geometry, ImportError> {
         let mut skin = None;
         for c in self.by_dest(id, &["Deformer"]) {
             if !c.prop.is_empty() {
@@ -768,8 +867,17 @@ impl<'a, 'd> Document<'a, 'd> {
                 }
             }
         }
-        let mesh = if is_mesh { Some(self.read_mesh(el)?) } else { None };
-        Ok(Geometry { id, name: name.to_string(), skin, mesh })
+        let mesh = if is_mesh {
+            Some(self.read_mesh(el)?)
+        } else {
+            None
+        };
+        Ok(Geometry {
+            id,
+            name: name.to_string(),
+            skin,
+            mesh,
+        })
     }
 
     fn read_mesh(&self, el: &Element) -> Result<MeshGeometry, ImportError> {
@@ -788,7 +896,11 @@ impl<'a, 'd> Document<'a, 'd> {
         m.mappings = vec![0; temp_faces.len()];
         let mut count = 0u32;
         for &index in &temp_faces {
-            let absi = if index < 0 { (-(index as i64) - 1) as usize } else { index as usize };
+            let absi = if index < 0 {
+                (-(index as i64) - 1) as usize
+            } else {
+                index as usize
+            };
             if absi >= vc {
                 return err("polygon vertex index out of range");
             }
@@ -808,19 +920,29 @@ impl<'a, 'd> Document<'a, 'd> {
         }
         cursor = 0;
         for &index in &temp_faces {
-            let absi = if index < 0 { (-(index as i64) - 1) as usize } else { index as usize };
+            let absi = if index < 0 {
+                (-(index as i64) - 1) as usize
+            } else {
+                index as usize
+            };
             m.mappings[(m.mapping_offsets[absi] + m.mapping_counts[absi]) as usize] = cursor;
             m.mapping_counts[absi] += 1;
             cursor += 1;
         }
         for layer in sc.collection("Layer") {
-            let index = parse_int(layer.tokens.first().ok_or_else(|| ImportError("FBX: layer index".into()))?)?;
+            let index = parse_int(
+                layer
+                    .tokens
+                    .first()
+                    .ok_or_else(|| ImportError("FBX: layer index".into()))?,
+            )?;
             if self.settings.read_all_layers || index == 0 {
                 let lsc = required_scope(layer)?;
                 for le in lsc.collection("LayerElement") {
                     let les = required_scope(le)?;
                     let ty = parse_string(required_token(required_element(les, "Type")?, 0)?)?;
-                    let typed_index = parse_int(required_token(required_element(les, "TypedIndex")?, 0)?)?;
+                    let typed_index =
+                        parse_int(required_token(required_element(les, "TypedIndex")?, 0)?)?;
                     let mut found = false;
                     for cand in sc.collection(&ty) {
                         let ci = parse_int(required_token(cand, 0)?)?;
@@ -866,8 +988,16 @@ impl<'a, 'd> Document<'a, 'd> {
                 }
             }
         }
-        let Some(node) = node else { return err("failed to read target Node for Cluster") };
-        Ok(Cluster { indices: ind, weights: w, transform, transform_link, node })
+        let Some(node) = node else {
+            return err("failed to read target Node for Cluster");
+        };
+        Ok(Cluster {
+            indices: ind,
+            weights: w,
+            transform,
+            transform_link,
+            node,
+        })
     }
 
     fn read_skin(&self, id: u64) -> Result<Skin, ImportError> {
@@ -912,7 +1042,9 @@ impl<'a, 'd> Document<'a, 'd> {
                 ObjectKind::LayeredTexture => {
                     let mut texs = Vec::new();
                     for lc in self.by_dest_all(ob.id) {
-                        let t = self.get(lc.src)?.filter(|o| matches!(o.kind, ObjectKind::Texture(_)));
+                        let t = self
+                            .get(lc.src)?
+                            .filter(|o| matches!(o.kind, ObjectKind::Texture(_)));
                         texs.push(t);
                     }
                     layered.insert(c.prop.clone(), texs);
@@ -920,7 +1052,13 @@ impl<'a, 'd> Document<'a, 'd> {
                 _ => {}
             }
         }
-        Ok(Material { name: name.to_string(), shading, props, textures, layered })
+        Ok(Material {
+            name: name.to_string(),
+            shading,
+            props,
+            textures,
+            layered,
+        })
     }
 
     fn read_texture(&self, id: u64, el: &Element) -> Result<Texture, ImportError> {
@@ -943,10 +1081,16 @@ impl<'a, 'd> Document<'a, 'd> {
             t.relative_filename = parse_string(required_token(e, 0)?)?;
         }
         if let Some(e) = sc.get("ModelUVTranslation") {
-            t.uv_trans = [parse_float(required_token(e, 0)?)?, parse_float(required_token(e, 1)?)?];
+            t.uv_trans = [
+                parse_float(required_token(e, 0)?)?,
+                parse_float(required_token(e, 1)?)?,
+            ];
         }
         if let Some(e) = sc.get("ModelUVScaling") {
-            t.uv_scaling = [parse_float(required_token(e, 0)?)?, parse_float(required_token(e, 1)?)?];
+            t.uv_scaling = [
+                parse_float(required_token(e, 0)?)?,
+                parse_float(required_token(e, 1)?)?,
+            ];
         }
         t.props = self.property_table("Texture.FbxFileTexture", el, sc)?;
         if let Some(s) = t.props.get_ok::<[f32; 3]>("Scaling", false)? {
@@ -977,7 +1121,8 @@ impl<'a, 'd> Document<'a, 'd> {
             if let Some(tok) = c.tokens.first() {
                 if tok.binary {
                     if tok.bytes.len() >= 5 && tok.bytes[0] == b'R' {
-                        content_length = u32::from_le_bytes(tok.bytes[1..5].try_into().unwrap()) as u64;
+                        content_length =
+                            u32::from_le_bytes(tok.bytes[1..5].try_into().unwrap()) as u64;
                     }
                 } else if tok.bytes.first() == Some(&b'"') {
                     // base64 text: decoded size
@@ -998,7 +1143,10 @@ impl<'a, 'd> Document<'a, 'd> {
     }
 
     /// `AnimationCurveNode::Curves`.
-    pub fn curves(&self, node: &AnimationCurveNode) -> Result<BTreeMap<String, Rc<Object>>, ImportError> {
+    pub fn curves(
+        &self,
+        node: &AnimationCurveNode,
+    ) -> Result<BTreeMap<String, Rc<Object>>, ImportError> {
         if let Some(c) = node.curves.borrow().as_ref() {
             if !c.is_empty() {
                 return Ok(c.clone());
@@ -1019,7 +1167,11 @@ impl<'a, 'd> Document<'a, 'd> {
     }
 
     /// `AnimationLayer::Nodes(whitelist)`.
-    pub fn layer_nodes(&self, layer: &AnimationLayer, whitelist: &[&str]) -> Result<Vec<Rc<Object>>, ImportError> {
+    pub fn layer_nodes(
+        &self,
+        layer: &AnimationLayer,
+        whitelist: &[&str],
+    ) -> Result<Vec<Rc<Object>>, ImportError> {
         let mut out = Vec::new();
         for c in self.by_dest(layer.id, &["AnimationCurveNode"]) {
             if !c.prop.is_empty() {
@@ -1036,9 +1188,20 @@ impl<'a, 'd> Document<'a, 'd> {
     }
 }
 
-fn read_vertex_data(m: &mut MeshGeometry, ty: &str, index: i32, source: &Scope) -> Result<(), ImportError> {
-    let mit = parse_string(required_token(required_element(source, "MappingInformationType")?, 0)?)?;
-    let rit = parse_string(required_token(required_element(source, "ReferenceInformationType")?, 0)?)?;
+fn read_vertex_data(
+    m: &mut MeshGeometry,
+    ty: &str,
+    index: i32,
+    source: &Scope,
+) -> Result<(), ImportError> {
+    let mit = parse_string(required_token(
+        required_element(source, "MappingInformationType")?,
+        0,
+    )?)?;
+    let rit = parse_string(required_token(
+        required_element(source, "ReferenceInformationType")?,
+        0,
+    )?)?;
     match ty {
         "LayerElementUV" => {
             if index as usize >= MAX_UV || index < 0 {
@@ -1050,7 +1213,9 @@ fn read_vertex_data(m: &mut MeshGeometry, ty: &str, index: i32, source: &Scope) 
                 None => String::new(),
             };
             let mut out = Vec::new();
-            resolve(m, &mut out, source, &mit, &rit, "UV", "UVIndex", 2, |c| [c[0], c[1]])?;
+            resolve(m, &mut out, source, &mit, &rit, "UV", "UVIndex", 2, |c| {
+                [c[0], c[1]]
+            })?;
             m.uvs[i] = out;
         }
         "LayerElementMaterial" => {
@@ -1087,26 +1252,47 @@ fn read_vertex_data(m: &mut MeshGeometry, ty: &str, index: i32, source: &Scope) 
                 return Ok(());
             }
             let mut out = Vec::new();
-            resolve(m, &mut out, source, &mit, &rit, "Normals", "NormalsIndex", 3, |c| [c[0], c[1], c[2]])?;
+            resolve(
+                m,
+                &mut out,
+                source,
+                &mit,
+                &rit,
+                "Normals",
+                "NormalsIndex",
+                3,
+                |c| [c[0], c[1], c[2]],
+            )?;
             m.normals = out;
         }
         "LayerElementTangent" => {
             if !m.tangents.is_empty() {
                 return Ok(());
             }
-            let (s, si) = if source.count("Tangents") > 0 { ("Tangents", "TangentsIndex") } else { ("Tangent", "TangentIndex") };
+            let (s, si) = if source.count("Tangents") > 0 {
+                ("Tangents", "TangentsIndex")
+            } else {
+                ("Tangent", "TangentIndex")
+            };
             let mut out = Vec::new();
-            resolve(m, &mut out, source, &mit, &rit, s, si, 3, |c| [c[0], c[1], c[2]])?;
+            resolve(m, &mut out, source, &mit, &rit, s, si, 3, |c| {
+                [c[0], c[1], c[2]]
+            })?;
             m.tangents = out;
         }
         "LayerElementBinormal" => {
             if !m.binormals.is_empty() {
                 return Ok(());
             }
-            let (s, si) =
-                if source.count("Binormals") > 0 { ("Binormals", "BinormalsIndex") } else { ("Binormal", "BinormalIndex") };
+            let (s, si) = if source.count("Binormals") > 0 {
+                ("Binormals", "BinormalsIndex")
+            } else {
+                ("Binormal", "BinormalIndex")
+            };
             let mut out = Vec::new();
-            resolve(m, &mut out, source, &mit, &rit, s, si, 3, |c| [c[0], c[1], c[2]])?;
+            resolve(m, &mut out, source, &mit, &rit, s, si, 3, |c| {
+                [c[0], c[1], c[2]]
+            })?;
             m.binormals = out;
         }
         "LayerElementColor" => {
@@ -1114,7 +1300,17 @@ fn read_vertex_data(m: &mut MeshGeometry, ty: &str, index: i32, source: &Scope) 
                 return Ok(());
             }
             let mut out = Vec::new();
-            resolve(m, &mut out, source, &mit, &rit, "Colors", "ColorIndex", 4, |c| [c[0], c[1], c[2], c[3]])?;
+            resolve(
+                m,
+                &mut out,
+                source,
+                &mit,
+                &rit,
+                "Colors",
+                "ColorIndex",
+                4,
+                |c| [c[0], c[1], c[2], c[3]],
+            )?;
             m.colors[index as usize] = out;
         }
         _ => {}

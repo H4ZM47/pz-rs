@@ -184,7 +184,8 @@ impl<'a> Parser<'a> {
                     if len < 0 || self.remaining() < len {
                         return String::new();
                     }
-                    let s = String::from_utf8_lossy(&self.b[self.p..self.p + len as usize]).into_owned();
+                    let s = String::from_utf8_lossy(&self.b[self.p..self.p + len as usize])
+                        .into_owned();
                     self.p += len as usize;
                     s
                 }
@@ -196,7 +197,8 @@ impl<'a> Parser<'a> {
                     if self.remaining() < len {
                         return String::new();
                     }
-                    let s = String::from_utf8_lossy(&self.b[self.p..self.p + len as usize]).into_owned();
+                    let s = String::from_utf8_lossy(&self.b[self.p..self.p + len as usize])
+                        .into_owned();
                     self.p += len as usize + 2;
                     s
                 }
@@ -389,7 +391,11 @@ impl<'a> Parser<'a> {
             self.p += 1;
         }
         self.check_for_separator()?;
-        Ok(if neg { (n as i32).wrapping_neg() as u32 } else { n })
+        Ok(if neg {
+            (n as i32).wrapping_neg() as u32
+        } else {
+            n
+        })
     }
 
     fn read_float(&mut self) -> Result<f32, ImportError> {
@@ -447,7 +453,12 @@ impl<'a> Parser<'a> {
     }
 
     fn read_rgba(&mut self) -> Result<[f32; 4], ImportError> {
-        let v = [self.read_float()?, self.read_float()?, self.read_float()?, self.read_float()?];
+        let v = [
+            self.read_float()?,
+            self.read_float()?,
+            self.read_float()?,
+            self.read_float()?,
+        ];
         self.test_for_separator();
         Ok(v)
     }
@@ -519,13 +530,20 @@ impl<'a> Parser<'a> {
     fn parse_frame(&mut self, parent: Option<usize>) -> Result<(), ImportError> {
         let name = self.read_head_of_data_object()?;
         let id = self.scene.nodes.len();
-        self.scene.nodes.push(XNode { name: name.clone(), parent, ..Default::default() });
+        self.scene.nodes.push(XNode {
+            name: name.clone(),
+            parent,
+            ..Default::default()
+        });
         if let Some(p) = parent {
             self.scene.nodes[p].children.push(id);
         } else if let Some(root) = self.scene.root {
             if self.scene.nodes[root].name != "$dummy_root" {
                 let dummy = self.scene.nodes.len();
-                self.scene.nodes.push(XNode { name: "$dummy_root".into(), ..Default::default() });
+                self.scene.nodes.push(XNode {
+                    name: "$dummy_root".into(),
+                    ..Default::default()
+                });
                 self.scene.nodes[dummy].children.push(root);
                 self.scene.nodes[root].parent = Some(dummy);
                 self.scene.root = Some(dummy);
@@ -553,7 +571,10 @@ impl<'a> Parser<'a> {
                 }
                 "Mesh" => {
                     let mid = self.scene.meshes.len();
-                    self.scene.meshes.push(XMesh { name: name.clone(), ..Default::default() });
+                    self.scene.meshes.push(XMesh {
+                        name: name.clone(),
+                        ..Default::default()
+                    });
                     self.scene.nodes[id].meshes.push(mid);
                     self.parse_mesh(mid)?;
                 }
@@ -689,7 +710,11 @@ impl<'a> Parser<'a> {
         let offset = self.read_matrix()?;
         self.check_for_semicolon()?;
         self.check_for_closing_brace()?;
-        self.scene.meshes[mid].bones.push(XBone { name, weights, offset });
+        self.scene.meshes[mid].bones.push(XBone {
+            name,
+            weights,
+            offset,
+        });
         Ok(())
     }
 
@@ -825,7 +850,10 @@ impl<'a> Parser<'a> {
         if name.is_empty() {
             name = format!("material{}", self.line);
         }
-        let mut m = XMaterial { name, ..Default::default() };
+        let mut m = XMaterial {
+            name,
+            ..Default::default()
+        };
         m.diffuse = self.read_rgba()?;
         m.specular_exponent = self.read_float()?;
         m.specular = self.read_rgb()?;
@@ -837,11 +865,17 @@ impl<'a> Parser<'a> {
                 "}" => break,
                 "TextureFilename" | "TextureFileName" => {
                     let t = self.parse_texture_filename()?;
-                    m.textures.push(XTex { name: t, is_normal_map: false });
+                    m.textures.push(XTex {
+                        name: t,
+                        is_normal_map: false,
+                    });
                 }
                 "NormalmapFilename" | "NormalmapFileName" => {
                     let t = self.parse_texture_filename()?;
-                    m.textures.push(XTex { name: t, is_normal_map: true });
+                    m.textures.push(XTex {
+                        name: t,
+                        is_normal_map: true,
+                    });
                 }
                 _ => self.parse_unknown()?,
             }
@@ -861,7 +895,10 @@ impl<'a> Parser<'a> {
 
     fn parse_animation_set(&mut self) -> Result<(), ImportError> {
         let name = self.read_head_of_data_object()?;
-        self.scene.anims.push(XAnimation { name, anims: vec![] });
+        self.scene.anims.push(XAnimation {
+            name,
+            anims: vec![],
+        });
         let ai = self.scene.anims.len() - 1;
         loop {
             let obj = self.next_token();
@@ -913,7 +950,10 @@ impl<'a> Parser<'a> {
                     let x = self.read_float()?;
                     let y = self.read_float()?;
                     let z = self.read_float()?;
-                    b.rot_keys.push(AiQuatKey { time, value: AiQuat { w, x, y, z } });
+                    b.rot_keys.push(AiQuatKey {
+                        time,
+                        value: AiQuat { w, x, y, z },
+                    });
                     self.check_for_semicolon()?;
                 }
                 1 | 2 => {
@@ -972,7 +1012,8 @@ impl<'a> Parser<'a> {
     fn filter_hierarchy(&mut self, n: usize) {
         if self.scene.nodes[n].children.len() == 1 && self.scene.nodes[n].meshes.is_empty() {
             let child = self.scene.nodes[n].children[0];
-            if self.scene.nodes[child].name.is_empty() && !self.scene.nodes[child].meshes.is_empty() {
+            if self.scene.nodes[child].name.is_empty() && !self.scene.nodes[child].meshes.is_empty()
+            {
                 let meshes = std::mem::take(&mut self.scene.nodes[child].meshes);
                 self.scene.nodes[n].meshes.extend(meshes);
                 let ct = self.scene.nodes[child].trafo;
@@ -1012,7 +1053,10 @@ fn parse(data: &[u8]) -> Result<XScene, ImportError> {
     let fs = |i: usize| (buf[i] as i32 - 48) as u32;
     let float_size = fs(12) * 1000 + fs(13) * 100 + fs(14) * 10 + fs(15);
     if float_size != 32 && float_size != 64 {
-        return err(format!("Unknown float size {} specified in x-file header.", float_size));
+        return err(format!(
+            "Unknown float size {} specified in x-file header.",
+            float_size
+        ));
     }
     if compressed {
         return err("compressed X files are not supported");
@@ -1059,7 +1103,11 @@ fn convert_materials(out: &mut AiScene, mats: &mut [XMaterial]) {
         let mut mat = AiMaterial::default();
         mat.add_string(MATKEY_NAME.0, 0, 0, &m.name);
         // (int)mSpecularExponent == 0.0f ? Gouraud(3) : Phong(4)
-        let shade = if (m.specular_exponent as i32) as f32 == 0.0 { 3 } else { 4 };
+        let shade = if (m.specular_exponent as i32) as f32 == 0.0 {
+            3
+        } else {
+            4
+        };
         mat.add_ints("$mat.shadingm", 0, 0, &[shade]);
         mat.add_floats("$clr.emissive", 0, 0, &m.emissive);
         mat.add_floats("$clr.diffuse", 0, 0, &m.diffuse);
@@ -1068,17 +1116,25 @@ fn convert_materials(out: &mut AiScene, mats: &mut [XMaterial]) {
         if m.textures.len() == 1 {
             let t = &m.textures[0];
             if !t.name.is_empty() {
-                let (k, ty, n) = if t.is_normal_map { tex_key(6, 0) } else { tex_key(1, 0) };
+                let (k, ty, n) = if t.is_normal_map {
+                    tex_key(6, 0)
+                } else {
+                    tex_key(1, 0)
+                };
                 mat.add_string(k, ty, n, &t.name);
             }
         } else {
-            let (mut ihm, mut inm, mut idm, mut ism, mut iam, mut iem) = (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
+            let (mut ihm, mut inm, mut idm, mut ism, mut iam, mut iem) =
+                (0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
             for t in &m.textures {
                 let mut sz = t.name.clone().into_bytes();
                 if sz.is_empty() {
                     continue;
                 }
-                let s = sz.iter().rposition(|&c| c == b'\\' || c == b'/').unwrap_or(0);
+                let s = sz
+                    .iter()
+                    .rposition(|&c| c == b'\\' || c == b'/')
+                    .unwrap_or(0);
                 if let Some(e) = sz.iter().rposition(|&c| c == b'.') {
                     sz[e] = 0;
                 }
@@ -1182,7 +1238,11 @@ fn create_meshes(out: &mut AiScene, node: usize, xs: &mut XScene, meshes: &[usiz
                     if let Some(n) = mesh.normals.as_mut() {
                         if let Some(nf) = src.norm_faces.get(f) {
                             if nf.indices.len() > d {
-                                n[new_index] = src.normals.get(nf.indices[d] as usize).copied().unwrap_or_default();
+                                n[new_index] = src
+                                    .normals
+                                    .get(nf.indices[d] as usize)
+                                    .copied()
+                                    .unwrap_or_default();
                             }
                         }
                     }
@@ -1218,7 +1278,11 @@ fn create_meshes(out: &mut AiScene, node: usize, xs: &mut XScene, meshes: &[usiz
                 if nw.is_empty() {
                     continue;
                 }
-                mesh.bones.push(AiBone { name: ob.name.clone(), weights: nw, offset: ob.offset });
+                mesh.bones.push(AiBone {
+                    name: ob.name.clone(),
+                    weights: nw,
+                    offset: ob.offset,
+                });
             }
             new_meshes.push(mesh);
         }
@@ -1277,7 +1341,10 @@ fn create_animations(out: &mut AiScene, xs: &XScene) {
             channels: vec![],
         };
         for bone in &anim.anims {
-            let mut nb = AiNodeAnim { node_name: bone.bone_name.clone(), ..Default::default() };
+            let mut nb = AiNodeAnim {
+                node_name: bone.bone_name.clone(),
+                ..Default::default()
+            };
             if !bone.trafo_keys.is_empty() {
                 for &(time, t) in &bone.trafo_keys {
                     let m = &t.m;
@@ -1286,13 +1353,19 @@ fn create_animations(out: &mut AiScene, xs: &XScene) {
                     let sx = super::aimath::vlen([m[0][0], m[1][0], m[2][0]]);
                     let sy = super::aimath::vlen([m[0][1], m[1][1], m[2][1]]);
                     let sz = super::aimath::vlen([m[0][2], m[1][2], m[2][2]]);
-                    nb.scaling_keys.push(AiVectorKey { time, value: [sx, sy, sz] });
+                    nb.scaling_keys.push(AiVectorKey {
+                        time,
+                        value: [sx, sy, sz],
+                    });
                     let r = [
                         [m[0][0] / sx, m[0][1] / sy, m[0][2] / sz],
                         [m[1][0] / sx, m[1][1] / sy, m[1][2] / sz],
                         [m[2][0] / sx, m[2][1] / sy, m[2][2] / sz],
                     ];
-                    nb.rotation_keys.push(AiQuatKey { time, value: AiQuat::from_matrix(&r) });
+                    nb.rotation_keys.push(AiQuatKey {
+                        time,
+                        value: AiQuat::from_matrix(&r),
+                    });
                 }
                 na.duration = na.duration.max(bone.trafo_keys.last().unwrap().0);
             } else {
@@ -1301,7 +1374,10 @@ fn create_animations(out: &mut AiScene, xs: &XScene) {
                     let r = rot_key_matrix(&k.value);
                     let mut q = AiQuat::from_matrix(&r);
                     q.w *= -1.0;
-                    nb.rotation_keys.push(AiQuatKey { time: k.time, value: q });
+                    nb.rotation_keys.push(AiQuatKey {
+                        time: k.time,
+                        value: q,
+                    });
                 }
                 nb.scaling_keys = bone.scale_keys.clone();
                 if let Some(k) = bone.pos_keys.last() {
