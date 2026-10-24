@@ -44,6 +44,12 @@ fn class_bytes() -> Vec<u8> {
     let clinit = utf8(&mut pool, "<clinit>");
     let void = utf8(&mut pool, "()V");
     let code_attr = utf8(&mut pool, "Code");
+    let red = utf8(&mut pool, "RED");
+    let k_desc = utf8(&mut pool, "Lt/K;");
+    let s_name = utf8(&mut pool, "S");
+    let str_desc = utf8(&mut pool, "Ljava/lang/String;");
+    let cv_attr = utf8(&mut pool, "ConstantValue");
+    let s_val = string(&mut pool, "constant");
 
     let mut code = vec![0x12, s_a as u8, 0xb8];
     code.extend(u(reg1));
@@ -66,7 +72,18 @@ fn class_bytes() -> Vec<u8> {
     b.extend(u(this_class));
     b.extend(u(super_class));
     b.extend(u(0)); // interfaces
-    b.extend(u(0)); // fields
+    b.extend(u(2)); // fields
+    b.extend(u(0x4019)); // public static final enum RED
+    b.extend(u(red));
+    b.extend(u(k_desc));
+    b.extend(u(0));
+    b.extend(u(0x0019)); // public static final String S = "constant"
+    b.extend(u(s_name));
+    b.extend(u(str_desc));
+    b.extend(u(1));
+    b.extend(u(cv_attr));
+    b.extend(2u32.to_be_bytes());
+    b.extend(u(s_val));
     b.extend(u(1)); // methods
     b.extend(u(0x08));
     b.extend(u(clinit));
@@ -138,4 +155,13 @@ fn evaluates_static_initializer_from_jar() {
         ),
         v => panic!("{v:?}"),
     }
+}
+
+#[test]
+fn reads_enum_constants_and_static_strings() {
+    let jar = Jar::from_bytes(jar_bytes("t/K.class", &class_bytes())).unwrap();
+    assert_eq!(pz_classfile::enum_constants(&jar, "t/K").unwrap(), vec!["RED"]);
+    assert_eq!(pz_classfile::static_strings(&jar, "t/K").unwrap(), vec![("S".to_string(), "constant".to_string())]);
+    let cf = load_class(&jar, "t/K").unwrap();
+    assert_eq!(cf.static_fields_of_type("Lt/K;"), vec!["RED"]);
 }

@@ -39,3 +39,25 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub fn load_class(jar: &Jar, class: &str) -> Result<ClassFile> {
     ClassFile::parse(&jar.read(&format!("{class}.class"))?)
 }
+
+/// `values()` names of enum `class`, in declaration order.
+pub fn enum_constants(jar: &Jar, class: &str) -> Result<Vec<String>> {
+    Ok(load_class(jar, class)?.enum_constants().into_iter().map(str::to_string).collect())
+}
+
+/// Static fields of `class` that end up holding a string: compile-time
+/// `static final String` constants, then fields its static initializer
+/// assigns a string literal, each in declaration/execution order.
+pub fn static_strings(jar: &Jar, class: &str) -> Result<Vec<(String, String)>> {
+    let cf = load_class(jar, class)?;
+    let mut out: Vec<(String, String)> =
+        cf.static_final_strings().into_iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
+    for init in static_inits(&cf)? {
+        if let Value::Str(v) = init.value {
+            if init.class == cf.this_class && !out.iter().any(|(n, _)| *n == init.field) {
+                out.push((init.field, v));
+            }
+        }
+    }
+    Ok(out)
+}

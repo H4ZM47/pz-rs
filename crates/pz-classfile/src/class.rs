@@ -32,7 +32,13 @@ pub struct Member {
     pub descriptor: String,
     /// The `Code` attribute's bytecode, for methods that have one.
     pub code: Option<Vec<u8>>,
+    /// The `ConstantValue` attribute's pool index, for constant fields.
+    pub constant_value: Option<u16>,
 }
+
+pub const ACC_STATIC: u16 = 0x0008;
+pub const ACC_FINAL: u16 = 0x0010;
+pub const ACC_ENUM: u16 = 0x4000;
 
 #[derive(Clone, Debug)]
 pub struct ClassFile {
@@ -171,16 +177,20 @@ impl ClassFile {
             let name = self.utf8(r.u16()?)?.to_string();
             let descriptor = self.utf8(r.u16()?)?.to_string();
             let mut code = None;
+            let mut constant_value = None;
             for _ in 0..r.u16()? {
                 let attr = self.utf8(r.u16()?)?.to_string();
                 let len = r.u32()? as usize;
                 let body = r.bytes(len)?;
+                if attr == "ConstantValue" && body.len() >= 2 {
+                    constant_value = Some(u16::from_be_bytes([body[0], body[1]]));
+                }
                 if attr == "Code" {
                     let code_len = u32::from_be_bytes(body.get(4..8).ok_or(Error::Truncated)?.try_into().unwrap()) as usize;
                     code = Some(body.get(8..8 + code_len).ok_or(Error::Truncated)?.to_vec());
                 }
             }
-            out.push(Member { access, name, descriptor, code });
+            out.push(Member { access, name, descriptor, code, constant_value });
         }
         Ok(out)
     }
@@ -222,5 +232,33 @@ impl ClassFile {
 
     pub fn method(&self, name: &str) -> Option<&Member> {
         self.methods.iter().find(|m| m.name == name)
+    }
+
+    /// Names of an enum's constants in declaration order (`values()` order).
+    pub fn enum_constants(&self) -> Vec<&str> {
+        self.fields.iter().filter(|f| f.access & ACC_ENUM != 0).map(|f| f.name.as_str()).collect()
+    }
+
+    /// Names of `static` fields of type `descriptor` (e.g. `Lpkg/Cls;`), in
+    /// declaration order: the constants of key classes such as `ItemTag`.
+    pub fn static_fields_of_type(&self, descriptor: &str) -> Vec<&str> {
+        self.fields
+            .iter()
+            .filter(|f| f.access & ACC_STATIC != 0 && f.descriptor == descriptor)
+            .map(|f| f.name.as_str())
+            .collect()
+    }
+
+    /// `static final String` compile-time constants (`ConstantValue`), in
+    /// declaration order.
+    pub fn static_final_strings(&self) -> Vec<(&str, &str)> {
+        self.fields
+            .iter()
+            .filter(|f| f.access & (ACC_STATIC | ACC_FINAL) == ACC_STATIC | ACC_FINAL)
+            .filter_map(|f| match self.constant(f.constant_value?).ok()? {
+                Constant::String(s) => Some((f.name.as_str(), self.utf8(*s).ok()?)),
+                _ => None,
+            })
+            .collect()
     }
 }
