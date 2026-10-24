@@ -31,6 +31,9 @@ pub(crate) const TRAITS: &[&str] = &[
     "OVERWEIGHT",
     "VERY_UNDERWEIGHT",
     "EMACIATED",
+    "UNDERWEIGHT",
+    "WEIGHT_GAIN",
+    "WEIGHT_LOSS",
     "AGORAPHOBIC",
     "CLAUSTROPHOBIC",
 ];
@@ -61,8 +64,19 @@ const STATS: &[&str] = &[
     "ZOMBIE_INFECTION",
 ];
 
-const MOODLES: &[&str] =
-    &["PANIC", "TIRED", "ENDURANCE", "STRESS", "PAIN", "DEAD", "ZOMBIE", "FOOD_EATEN", "HYPOTHERMIA"];
+const MOODLES: &[&str] = &[
+    "PANIC",
+    "TIRED",
+    "ENDURANCE",
+    "STRESS",
+    "PAIN",
+    "DEAD",
+    "ZOMBIE",
+    "FOOD_EATEN",
+    "HYPOTHERMIA",
+    "HYPERTHERMIA",
+    "HEAVY_LOAD",
+];
 
 const PERKS: &[&str] = &["None", "Fitness", "Strength", "Sprinting", "Crafting", "Carving", "Axe", "Juggle", "MAX"];
 
@@ -106,6 +120,8 @@ pub(crate) fn fixture() -> (ScriptManager, Characters) {
         ms("STRESS", [0.0, 0.2, 0.4, 0.6, 0.8]),
         ms("PAIN", [0.0, 10.0, 20.0, 50.0, 70.0]),
         ms("HYPOTHERMIA", [0.0, 30.0, 70.0, 9.0, 100.0]),
+        ms("HYPERTHERMIA", [0.0, 30.0, 70.0, 9.0, 100.0]),
+        ms("HEAVY_LOAD", [0.0, 0.25, 0.5, 0.75, 1.0]),
     ];
     t.level_up_levels = vec![10, 20, 40];
     t.cheat_types = vec!["GOD_MODE".into(), "UNLIMITED_ENDURANCE".into(), "INVISIBLE".into()];
@@ -240,7 +256,7 @@ fn add_xp_traits_and_multipliers() {
     assert_eq!(c.perk_level(Some(&fitness)), 1);
     assert_eq!(c.stat(&chars, "FITNESS").unwrap(), 1.0 / 5.0 - 1.0);
     // Strength XP with proteins between 50 and 300 is 1.5x.
-    c.nutrition.as_mut().unwrap().proteins = 100.0;
+    c.nutrition.as_mut().unwrap().set_proteins(100.0);
     let strength = perk(&chars, "Strength");
     c.add_xp(&sm, &chars, Some(&strength), 4.0, &ctx).unwrap();
     assert_eq!(c.xp.xp(&strength), 6.0);

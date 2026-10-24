@@ -37,8 +37,27 @@ Status of the Rust port. Update this file with every merged change.
   `updateInternal`, with Lua bindings. A scripted headless run (XP with
   boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
   200 `calculateStats` ticks awake and asleep) matches the original bit for
-  bit (checked locally). BodyDamage, Nutrition, Thermoregulator and Fitness
-  are stubs.
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Item, zombie and weapon inputs
+  are plain data until pz-inventory lands.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.

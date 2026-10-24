@@ -1225,6 +1225,23 @@ impl BodyPartLast {
 
 // ---- BodyPartContacts ------------------------------------------------------
 
+/// `BodyPartContacts`' static initializer: each node's children, rooted at
+/// `Torso_Upper` (shared with the thermoregulator's nodes).
+pub(crate) const CONTACT_CHILDREN: [(&str, &[&str]); 12] = [
+    ("Torso_Upper", &["Neck", "Torso_Lower", "UpperArm_L", "UpperArm_R"]),
+    ("Neck", &["Head"]),
+    ("UpperArm_L", &["ForeArm_L"]),
+    ("ForeArm_L", &["Hand_L"]),
+    ("UpperArm_R", &["ForeArm_R"]),
+    ("ForeArm_R", &["Hand_R"]),
+    ("Torso_Lower", &["Groin"]),
+    ("Groin", &["UpperLeg_L", "UpperLeg_R"]),
+    ("UpperLeg_L", &["LowerLeg_L"]),
+    ("LowerLeg_L", &["Foot_L"]),
+    ("UpperLeg_R", &["LowerLeg_R"]),
+    ("LowerLeg_R", &["Foot_R"]),
+];
+
 /// One node of `BodyPartContacts`' tree (by part index).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ContactNode {
@@ -1246,21 +1263,7 @@ impl BodyPartContacts {
     pub fn new(types: &BodyPartTypes) -> ScriptResult<Self> {
         let max = types.max_index();
         let mut nodes = vec![ContactNode { depth: -1, ..ContactNode::default() }; max];
-        let tree: [(&str, &[&str]); 12] = [
-            ("Torso_Upper", &["Neck", "Torso_Lower", "UpperArm_L", "UpperArm_R"]),
-            ("Neck", &["Head"]),
-            ("UpperArm_L", &["ForeArm_L"]),
-            ("ForeArm_L", &["Hand_L"]),
-            ("UpperArm_R", &["ForeArm_R"]),
-            ("ForeArm_R", &["Hand_R"]),
-            ("Torso_Lower", &["Groin"]),
-            ("Groin", &["UpperLeg_L", "UpperLeg_R"]),
-            ("UpperLeg_L", &["LowerLeg_L"]),
-            ("LowerLeg_L", &["Foot_L"]),
-            ("UpperLeg_R", &["LowerLeg_R"]),
-            ("LowerLeg_R", &["Foot_R"]),
-        ];
-        for (p, cs) in tree {
+        for (p, cs) in CONTACT_CHILDREN {
             let pi = types.index(p)?;
             let mut v = Vec::new();
             for c in cs {

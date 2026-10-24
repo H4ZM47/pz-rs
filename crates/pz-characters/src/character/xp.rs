@@ -627,8 +627,10 @@ impl<I> GameCharacter<I> {
             }
         }
         if self.is_player() {
-            if let Some(n) = &mut self.nutrition {
-                n.apply_weight_from_traits();
+            if let Some(mut n) = self.nutrition.take() {
+                let r = n.apply_weight_from_traits(&|f| self.has_trait(sm, f));
+                self.nutrition = Some(n);
+                r?;
             }
         }
         let d = self.descriptor.clone().ok_or_else(|| npe("descriptor"))?;

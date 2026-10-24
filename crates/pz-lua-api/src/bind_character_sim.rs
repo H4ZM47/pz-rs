@@ -15,12 +15,14 @@
 //! calls it mid-update). Sounds, halo texts and UI wiggles are dropped.
 //! TODO(sounds, HaloTextHelper, MoodlesUI).
 //!
-//! `getBodyDamage` and the body damage classes are in [`crate::bind_body`].
+//! `getBodyDamage` and the body damage classes are in [`crate::bind_body`];
+//! `Nutrition`, `Thermoregulator` and `Fitness` are in
+//! [`crate::bind_nutrition`].
 //!
 //! Not exposed yet: `getCharacterTraits` (the character's `CharacterTraits`
-//! is not shared with the Lua object of that class),
-//! `getNutrition`, `Stats.load/save`, `CharacterStat.REGISTRY` and
-//! `ORDERED_STATS`, `XP.load/save`. TODO(BodyDamage, Nutrition, saves).
+//! is not shared with the Lua object of that class), `Stats.load/save`,
+//! `CharacterStat.REGISTRY` and `ORDERED_STATS`, `XP.load/save`.
+//! TODO(saves).
 
 use crate::bind_characters::{
     adopt_survivor_desc_value, desc_arg, shared_characters, survivor_desc_value, trait_def_arg, LuaItem,
@@ -119,6 +121,21 @@ impl SimContext for CallContext {
     fn thirty_fps_multiplier(&self) -> f32 {
         self.base.thirty_fps_multiplier()
     }
+    fn multiplier_bias(&self) -> f32 {
+        self.base.multiplier_bias()
+    }
+    fn time_delta(&self) -> f32 {
+        self.base.time_delta()
+    }
+    fn game_world_seconds_since_last_update(&self) -> f32 {
+        self.base.game_world_seconds_since_last_update()
+    }
+    fn minutes(&self) -> i32 {
+        self.base.minutes()
+    }
+    fn calendar_time_in_millis(&self) -> i64 {
+        self.base.calendar_time_in_millis()
+    }
     fn world_age_hours(&self) -> f64 {
         self.base.world_age_hours()
     }
@@ -133,6 +150,18 @@ impl SimContext for CallContext {
     }
     fn decaying_corpse_health_impact(&self) -> i32 {
         self.base.decaying_corpse_health_impact()
+    }
+    fn nutrition_enabled(&self) -> bool {
+        self.base.nutrition_enabled()
+    }
+    fn do_character_stats(&self) -> bool {
+        self.base.do_character_stats()
+    }
+    fn climate_humidity(&self) -> f32 {
+        self.base.climate_humidity()
+    }
+    fn rand_next_range(&self, min: i32, max: i32) -> i32 {
+        self.base.rand_next_range(min, max)
     }
     fn xp_multiplier_global_toggle(&self) -> bool {
         self.base.xp_multiplier_global_toggle()

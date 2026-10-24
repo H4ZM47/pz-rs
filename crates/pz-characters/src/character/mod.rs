@@ -14,11 +14,11 @@
 //!   `SandboxOptions`, `ZomboidGlobals`, network flags, Lua events) and
 //!   [`CharacterEnvironment`] (per-character inputs from unported world
 //!   systems).
-//! * Slots for later ports, each owned by [`GameCharacter`]:
-//!   [`body_damage`] (`BodyDamage`), [`body_part`] (`BodyPart`,
-//!   `BodyPartType`, `BodyPartLast`, `BodyPartContacts`), [`nutrition`],
+//! * The body systems, each owned by [`GameCharacter`]: [`body_damage`]
+//!   (`BodyDamage`), [`body_part`] (`BodyPart`, `BodyPartType`,
+//!   `BodyPartLast`, `BodyPartContacts`), [`nutrition`],
 //!   [`thermoregulator`] (inside `BodyDamage`, as in the original) and
-//!   [`fitness`].
+//!   [`fitness`], with [`metabolics`] (the jar's `Metabolics` table).
 //!
 //! The original's statics the simulation needs (`CharacterStat.REGISTRY`,
 //! `MoodleStat`'s thresholds, `LevelUpLevels`, `CheatType`) are in
@@ -32,6 +32,7 @@ pub mod body_damage;
 pub mod body_part;
 pub mod context;
 pub mod fitness;
+pub mod metabolics;
 pub mod moodles;
 pub mod nutrition;
 pub mod stats;
@@ -45,14 +46,17 @@ use pz_scripts::objects::items::CharacterTrait;
 use pz_scripts::registry::builtin::BuiltinTables;
 use pz_scripts::{ScriptManager, ScriptResult};
 
-pub use body_damage::{BodyDamage, FoodInfo, WeaponHit, ZombieAttack};
+pub use body_damage::{BodyDamage, FoodInfo, PillInfo, WeaponHit, ZombieAttack, ZombieAttackOutcome};
 pub use body_part::{BodyPart, BodyPartContacts, BodyPartLast, BodyPartTypes, InjuryEnv};
-pub use context::{CharacterEnvironment, DefaultSimContext, HaloText, SimContext, SimEvent, ZomboidGlobals};
-pub use fitness::Fitness;
+pub use context::{
+    CharacterEnvironment, DefaultSimContext, HaloText, SimContext, SimEvent, WornClothing, ZomboidGlobals,
+};
+pub use fitness::{Fitness, FitnessExercise};
+pub use metabolics::Metabolics;
 pub use moodles::{ChevronColor, Moodle, MoodleLevel, MoodleStat, MoodleStatRef, MoodleStats, Moodles};
 pub use nutrition::Nutrition;
 pub use stats::{CharacterStat, CharacterStatRef, CharacterStats, Stats};
-pub use thermoregulator::Thermoregulator;
+pub use thermoregulator::{ThermalNode, Thermoregulator};
 pub use xp::{PerkInfo, XPMultiplier, XP};
 
 use crate::survivor::SurvivorDescRef;
@@ -260,7 +264,7 @@ impl<I> GameCharacter<I> {
     /// and a `Thermoregulator`.
     pub fn new(sm: &ScriptManager, kind: CharacterKind) -> Self {
         let player = kind == CharacterKind::Player;
-        let body_damage = BodyDamage::new(&BodyPartTypes::from_tables(&sm.builtin_tables.borrow()), player);
+        let body_damage = BodyDamage::new(sm, player);
         GameCharacter {
             kind,
             in_players: false,
@@ -351,6 +355,32 @@ impl<I> GameCharacter<I> {
             return false;
         }
         self.running
+    }
+    /// `canSprint`: not for a player that may not sprint, always in the
+    /// tutorial, not with a no-sprint hand item, and only below endurance
+    /// moodle level 2.
+    pub fn can_sprint(&self, sm: &ScriptManager, ctx: &dyn SimContext) -> bool {
+        if self.is_player() && !self.environment.allow_sprint {
+            return false;
+        }
+        if ctx.game_mode() == "Tutorial" {
+            return true;
+        }
+        if self.environment.hand_item_equipped_no_sprint {
+            return false;
+        }
+        self.moodles.moodle_level_of(sm, "ENDURANCE").map_or(true, |l| l < 2)
+    }
+    /// `isSprinting`.
+    pub fn is_sprinting(&self, sm: &ScriptManager, ctx: &dyn SimContext) -> bool {
+        if self.environment.sprinting && !self.can_sprint(sm, ctx) {
+            return false;
+        }
+        self.environment.sprinting
+    }
+    /// `isSneaking`.
+    pub fn is_sneaking(&self) -> bool {
+        self.environment.sneaking
     }
     /// `isInCombat`: a very close zombie or at least three chasing.
     pub fn is_in_combat(&self) -> bool {

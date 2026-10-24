@@ -135,7 +135,8 @@ impl BodyDamage {
     /// `new BodyDamage(parent)`: one part per `BodyPartType` below `MAX`,
     /// restored to full health (before the owner is set, so the owner's
     /// stats are untouched), and a `Thermoregulator` for players.
-    pub fn new(types: &BodyPartTypes, player: bool) -> Self {
+    pub fn new(sm: &ScriptManager, player: bool) -> Self {
+        let types = &BodyPartTypes::from_tables(&sm.builtin_tables.borrow());
         let parts: Vec<BodyPart> =
             types.decls.iter().take(types.max_index()).enumerate().map(|(i, d)| BodyPart::new(d, i)).collect();
         let last_state = vec![BodyPartLast::default(); parts.len()];
@@ -198,7 +199,7 @@ impl BodyDamage {
         };
         bd.restore_parts_to_full_health();
         if player {
-            bd.thermoregulator = Some(Thermoregulator::default());
+            bd.thermoregulator = Some(Thermoregulator::new(sm));
         }
         bd.set_body_parts_last_state();
         bd
@@ -302,6 +303,31 @@ impl BodyDamage {
     /// `getThermoregulator`.
     pub fn thermoregulator(&self) -> Option<&Thermoregulator> {
         self.thermoregulator.as_ref()
+    }
+    /// `getThermoregulator` (mutable).
+    pub fn thermoregulator_mut(&mut self) -> Option<&mut Thermoregulator> {
+        self.thermoregulator.as_mut()
+    }
+    /// `setColdDamageStage`.
+    pub fn set_cold_damage_stage(&mut self, stage: f32) {
+        self.cold_damage_stage = stage;
+    }
+    /// `getBodyPart(BodyPartType.FromIndex(index)).getWetness()` (0 without
+    /// the part).
+    pub fn body_part_wetness(&self, index: usize) -> f32 {
+        self.parts.get(index).map_or(0.0, |p| p.wetness)
+    }
+    /// `getBodyPart(BodyPartType.FromIndex(index)).getStiffness()` (0
+    /// without the part).
+    pub fn body_part_stiffness(&self, index: usize) -> f32 {
+        self.parts.get(index).map_or(0.0, |p| p.stiffness)
+    }
+    /// `getBodyPart(BodyPartType.FromIndex(index)).setStiffness(v)`:
+    /// clamped to 0..100 (nothing without the part).
+    pub fn set_body_part_stiffness(&mut self, index: usize, v: f32) {
+        if let Some(p) = self.parts.get_mut(index) {
+            p.set_stiffness(v);
+        }
     }
     /// `getApparentInfectionLevel`: the largest of zombie fever, zombie
     /// infection and food sickness.
@@ -507,7 +533,8 @@ impl BodyDamage {
     }
 }
 
-/// `Food` as `JustAteFood`/`JustDrankBooze` read it.
+/// `Food` as `JustAteFood`/`JustDrankBooze` read it. TODO(pz-inventory):
+/// filled from the `Food` item.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FoodInfo {
     /// `getType()`.
@@ -539,6 +566,8 @@ pub struct FoodInfo {
 }
 
 /// A pill (`DrainableComboItem`) as `JustTookPill` reads it.
+/// TODO(pz-inventory): filled from the item; its `UseAndSync` is the
+/// caller's.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PillInfo {
     pub item_type: String,
@@ -548,7 +577,8 @@ pub struct PillInfo {
     pub on_eat: Option<String>,
 }
 
-/// A weapon hit as `DamageFromWeapon` reads it.
+/// A weapon hit as `DamageFromWeapon` reads it. TODO(pz-inventory): the
+/// `HandWeapon` fields and the clothing defense/spikes from worn items.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WeaponHit {
     /// `BLUNT` or `SMALL_BLUNT` category.
@@ -594,6 +624,7 @@ impl WeaponHit {
 }
 
 /// A zombie attack as `AddRandomDamageFromZombie` reads it.
+/// TODO(pz-inventory): the clothing defense and spikes from worn items.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ZombieAttack {
     pub hit_reaction: Option<String>,
@@ -807,7 +838,7 @@ impl<I> GameCharacter<I> {
     }
 
     /// `BodyDamage.RestoreToFullHealth`.
-    pub fn restore_to_full_health(&mut self, chars: &Characters) {
+    pub fn restore_to_full_health(&mut self, chars: &Characters) -> ScriptResult {
         for p in &mut self.body_damage.parts {
             p.restore_to_full_health();
         }
@@ -825,8 +856,9 @@ impl<I> GameCharacter<I> {
         bd.infection_time = -1.0;
         bd.infection_mortality_duration = -1.0;
         if let Some(t) = &mut bd.thermoregulator {
-            t.reset();
+            t.reset()?;
         }
+        Ok(())
     }
 
     /// `BodyDamage.loadMainFields`.
@@ -1282,7 +1314,8 @@ impl<I> GameCharacter<I> {
             p.set_wetness(target);
         }
         self.stats.set(&wet, target);
-        let mut delta = self.body_damage.thermoregulator.as_ref().map_or(0.0, |t| t.catch_a_cold_delta());
+        let hypothermia = self.moodle(sm, "HYPOTHERMIA")?;
+        let mut delta = self.body_damage.thermoregulator.as_ref().map_or(0.0, |t| t.catch_a_cold_delta(hypothermia));
         if !self.body_damage.has_a_cold && delta > 0.1 {
             if self.has_trait(sm, "PRONE_TO_ILLNESS")? {
                 delta *= 1.7;
@@ -1798,12 +1831,12 @@ impl<I> GameCharacter<I> {
         }
         if ctx.is_client() && self.is_player() && !self.is_dead() {
             if !self.is_local_player(ctx) {
-                self.restore_to_full_health(chars);
+                self.restore_to_full_health(chars)?;
             }
             return Ok(());
         }
         if self.is_god_mod(ctx) {
-            self.restore_to_full_health(chars);
+            self.restore_to_full_health(chars)?;
             if !self.is_player() {
                 return Err(class_cast());
             }
@@ -1837,9 +1870,7 @@ impl<I> GameCharacter<I> {
                 ctx.event(SimEvent::SplatBloodFloor);
             }
         }
-        if let Some(t) = &mut self.body_damage.thermoregulator {
-            t.update();
-        }
+        self.thermoregulator_update(sm, chars, ctx)?;
         self.update_dragging_corpse();
         self.update_wetness(sm, chars, ctx)?;
         self.update_cold(sm, chars, ctx)?;

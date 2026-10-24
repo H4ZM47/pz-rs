@@ -12,9 +12,9 @@
 //! Not exposed yet (their arguments are unported objects):
 //! `JustAteFood`, `JustDrankBooze`, `JustTookPill`, `JustReadSomething`,
 //! `DamageFromWeapon`, `DamageFromAnimal`, `AddRandomDamageFromZombie`,
-//! `damageFromSpikedArmor`, `load`/`save`, `getThermoregulator`,
+//! `damageFromSpikedArmor`, `load`/`save`,
 //! `getBodyPartsLastState`, `BodyPart.sync`/`syncWrite`/`getThermalNode`.
-//! TODO(Food, Literature, HandWeapon, IsoZombie, IsoAnimal, Thermoregulator).
+//! TODO(Food, Literature, HandWeapon, IsoZombie, IsoAnimal).
 
 use crate::bind_body_damage::{enum_arg, BODY_PART_TYPE_CLASS};
 use crate::bind_character_sim::{character_value, chr_of, with_ctx, LuaGameCharacterRef, ISO_GAME_CHARACTER_CLASS};
@@ -397,6 +397,10 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         let chr = bd_chr(c)?;
         Ok(c.push(character_value(&chr)))
     });
+    b.method("getThermoregulator", |c| {
+        let chr = bd_chr(c)?;
+        Ok(c.push(crate::bind_nutrition::thermoregulator_value(&chr)))
+    });
     b.method("getBodyParts", |c| {
         let chr = bd_chr(c)?;
         let ch = chr.clone();
@@ -572,8 +576,7 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
     });
     owner!("TriggerSneezeCough", |ch, c, sm, chars, ctx, args| ch.trigger_sneeze_cough(sm, ctx).map(|_| Value::Nil));
     owner!("RestoreToFullHealth", |ch, c, sm, chars, ctx, args| {
-        ch.restore_to_full_health(chars);
-        Ok(Value::Nil)
+        ch.restore_to_full_health(chars).map(|_| Value::Nil)
     });
     owner!("calculateOverallHealth", |ch, c, sm, chars, ctx, args| {
         ch.calculate_overall_health(chars);
