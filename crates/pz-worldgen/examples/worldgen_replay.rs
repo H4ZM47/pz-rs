@@ -18,8 +18,9 @@
 //! `pz_world::chunk::load_brand_new_cached` with [`WorldGenHook`], runs
 //! `recalc_chunk_squares` and `load_in_main_thread`, and compares each
 //! square's object list (class and sprite name, in order) with the
-//! oracle's `objects` column. It also counts squares that are in a room on
-//! one side only (`REPLAY_ROOMS=1` prints the first ones), and compares the
+//! oracle's `objects` column. It also compares each square's room id and
+//! whether it has a building (`REPLAY_ROOMS=1` prints the first
+//! differences), and compares the
 //! basement placements with the oracle's `out/placements.txt` when present.
 //! `REPLAY_NO_WORLDGEN=1` / `REPLAY_NO_BASEMENTS=1` leave either part out.
 
@@ -52,8 +53,11 @@ fn region_chunks(path: &Path) -> Vec<(i32, i32)> {
     out
 }
 
-/// `(x, y, z) -> (null, objects, in a room)` from `squares.tsv`.
-fn oracle_objects(path: &Path) -> HashMap<(i32, i32, i32), (bool, String, bool)> {
+/// `(x, y, z) -> (null, objects, (room id, has building))` from
+/// `squares.tsv`.
+type OracleSquare = (bool, String, (String, bool));
+
+fn oracle_objects(path: &Path) -> HashMap<(i32, i32, i32), OracleSquare> {
     let text = std::fs::read_to_string(path).expect("squares.tsv");
     let mut out = HashMap::new();
     for line in text.lines().filter(|l| !l.starts_with('#')) {
@@ -68,7 +72,10 @@ fn oracle_objects(path: &Path) -> HashMap<(i32, i32, i32), (bool, String, bool)>
             (
                 c[8] == "1",
                 c.get(20).copied().unwrap_or("").to_string(),
-                c.get(14).is_some_and(|r| *r != "-1" && !r.is_empty()),
+                (
+                    c.get(14).copied().unwrap_or("").to_string(),
+                    c.get(15) == Some(&"1"),
+                ),
             ),
         );
     }
@@ -113,7 +120,7 @@ fn main() {
         IsoSpriteManager::load_tile_definitions_from(tables, &game.join("media"), &[]).unwrap();
     sprites.loaded_tile_definitions(&|_| true).unwrap();
     let fs = Rc::new(GameFs::new(&game));
-    let meta = IsoMetaGrid::create(
+    let mut meta = IsoMetaGrid::create(
         &fs,
         CreateParams {
             game_map: "Muldraugh, KY",
@@ -155,7 +162,7 @@ fn main() {
     let basements = pz_worldgen::load_basements(
         fs.clone(),
         &["Muldraugh, KY"],
-        &meta,
+        &mut meta,
         &gen,
         &mut JavaRandom::new(0),
     )
@@ -176,9 +183,11 @@ fn main() {
             .filter(|(g, o)| **g == o.as_str())
             .count();
         println!(
-            "== basement placements: game {}, port {}, identical in order {same}",
+            "== basement placements: game {}, port {}, identical in order {same}; buildings added {}, merged into a neighbour {}",
             game.len(),
-            ours.len()
+            ours.len(),
+            basements.meta_buildings.0,
+            basements.meta_buildings.1
         );
         if let Some(i) = game.iter().zip(&ours).position(|(g, o)| *g != o.as_str()) {
             println!(
@@ -271,13 +280,16 @@ fn main() {
                     .join(";")
             });
             let p_null = ours.is_none();
-            if *g_room != ours.is_some_and(|sq| sq.room_id != -1) {
+            let p_room = ours.map_or((String::new(), false), |sq| {
+                (
+                    sq.room_id.to_string(),
+                    sq.room_def(&meta).is_some_and(|r| r.building.is_some()),
+                )
+            });
+            if *g_room != p_room {
                 room_diff += 1;
                 if std::env::var_os("REPLAY_ROOMS").is_some() && room_diff <= 5 {
-                    println!(
-                        "  room differs at {k:?}: game {g_room} port {:?}",
-                        ours.map(|sq| sq.room_id)
-                    );
+                    println!("  room/building differs at {k:?}: game {g_room:?} port {p_room:?}");
                 }
             }
             let p_obj = p_obj.unwrap_or_default();
@@ -306,7 +318,7 @@ fn main() {
             }
         }
         println!(
-            "== {region}: squares {n}, object lists identical {same} ({null_vs_empty} null on one side, empty on the other), differ {}; in a room on one side only {room_diff}",
+            "== {region}: squares {n}, object lists identical {same} ({null_vs_empty} null on one side, empty on the other), differ {}; room id or building differs {room_diff}",
             n - same
         );
         for (c, k) in &causes {

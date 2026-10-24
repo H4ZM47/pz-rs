@@ -20,7 +20,7 @@ use pz_fs::GameFs;
 use pz_kahlua::{TableRef, Value};
 use pz_world::cell_loader::{do_tile_object_creation, ObjectEnv};
 use pz_world::chunk::{ChunkLoadEnv, IsoChunk, IsoGridSquare};
-use pz_world::{GameRand, IsoMetaGrid};
+use pz_world::{BuildingDef, BuildingIdx, GameRand, IsoMetaGrid, RoomDef, RoomIdx, RoomRect};
 
 use crate::java::{hashmap_order, JavaRandom};
 use crate::pzby::{PzbyChunk, PzbyHeader, CHUNK_DIM};
@@ -85,6 +85,9 @@ enum ApiCall {
 /// `Basements.getInstance()`.
 pub struct Basements {
     fs: Rc<GameFs>,
+    /// Buildings added to the meta grid and buildings merged into a
+    /// neighbour by [`Basements::add_buildings_to_meta_grid`].
+    pub meta_buildings: (usize, usize),
     /// In `getOrCreatePerMap` order.
     pub per_map: Vec<BasementsPerMap>,
     pub placements: Vec<BasementPlacement>,
@@ -108,6 +111,7 @@ impl Basements {
             per_map: Vec::new(),
             placements: Vec::new(),
             errors: Vec::new(),
+            meta_buildings: (0, 0),
         }
     }
 
@@ -338,6 +342,99 @@ impl Basements {
                 name: a.name.clone(),
             });
         }
+    }
+
+    /// The header of a placement's piece: a basement definition (the
+    /// global `basementDefinitionByName`), else an access definition.
+    fn placement_header(&self, name: &str) -> Option<Rc<PzbyHeader>> {
+        let find = |access: bool| {
+            self.per_map.iter().rev().find_map(|pm| {
+                let (by_name, defs) = if access {
+                    (&pm.access_by_name, &pm.access_definitions)
+                } else {
+                    (&pm.definition_by_name, &pm.definitions)
+                };
+                by_name.get(name).and_then(|&i| defs[i].header.clone())
+            })
+        };
+        find(false).or_else(|| find(true))
+    }
+
+    /// `createBasementBuildingDefs`, `addBasementBuildingDefsToLotHeaders`
+    /// and `addBasementBuildingDefsToMetaGrid`: each placement becomes a
+    /// building of the meta grid (rooms moved to the placement and its
+    /// bottom level). A building that does not go below level 0 (an access
+    /// piece) and touches exactly one other such building is merged into
+    /// it. `rand` is `Rand` at world loading (`new BuildingDef()` draws).
+    /// Returns the number of new buildings and of merged ones.
+    pub fn add_buildings_to_meta_grid(
+        &self,
+        meta: &mut IsoMetaGrid,
+        rand: &mut dyn GameRand,
+    ) -> (usize, usize) {
+        let mut defs: Vec<BuildingIdx> = Vec::new();
+        for p in &self.placements {
+            let Some(header) = self.placement_header(&p.name) else {
+                continue;
+            };
+            if header.buildings.is_empty() || meta.get_cell_data(p.x / 256, p.y / 256).is_none() {
+                continue;
+            }
+            let mut def = BuildingDef::new(rand);
+            def.id = defs.len() as i64;
+            let (mut rooms, mut empty) = (Vec::new(), Vec::new());
+            for r in &header.rooms {
+                let mut nr = RoomDef::new(rooms.len() as i64, r.name.clone());
+                nr.level = p.z + r.level;
+                for &(x, y, w, h) in &r.rects {
+                    nr.rects.push(RoomRect::new(p.x + x, p.y + y, w, h));
+                }
+                nr.CalculateBounds();
+                if r.is_empty_outside() {
+                    empty.push(nr);
+                } else {
+                    rooms.push(nr);
+                }
+            }
+            defs.push(meta.insert_building(def, rooms, empty));
+        }
+        // `mergedRooms` (a HashMap keyed by identity in the original; kept
+        // here in first-merge order).
+        let mut merged: Vec<(BuildingIdx, Vec<RoomIdx>, Vec<RoomIdx>)> = Vec::new();
+        let mut kept = Vec::new();
+        let mut n_merged = 0;
+        for b in defs {
+            let d = &meta.building_defs[b.0 as usize];
+            if meta.get_cell_data(d.x / 256, d.y / 256).is_none() {
+                kept.push(b);
+                continue;
+            }
+            if let Some(m) = meta.get_building_to_merge_with(b) {
+                let d = &meta.building_defs[b.0 as usize];
+                let (r, e) = (d.rooms.clone(), d.emptyoutside.clone());
+                n_merged += 1;
+                if meta.merge_buildings(b, m) {
+                    match merged.iter_mut().find(|x| x.0 == m) {
+                        Some(x) => {
+                            x.1.extend(r);
+                            x.2.extend(e);
+                        }
+                        None => merged.push((m, r, e)),
+                    }
+                }
+                continue;
+            }
+            meta.add_building_to_lot_header(b);
+            kept.push(b);
+        }
+        let counts = (kept.len(), n_merged);
+        for b in kept {
+            meta.add_building_to_meta_grid(b);
+        }
+        for (m, r, e) in merged {
+            meta.add_merged_rooms_to_meta_grid(m, &r, &e);
+        }
+        counts
     }
 
     /// `onNewChunkLoaded(chunk)`: stamps every placement whose bounds (plus
@@ -763,5 +860,48 @@ mod tests {
             (100, 200, 8, 12, 7, false)
         );
         assert_eq!(l.access.as_deref(), Some("ba_x"));
+    }
+
+    #[test]
+    fn placed_basement_becomes_a_meta_grid_building() {
+        let mut meta = IsoMetaGrid::blank(0, 0, 0, 0);
+        meta.create_cell(0, 0);
+        let room = crate::pzby::PzbyRoom {
+            name: "basement".into(),
+            level: 0,
+            rects: vec![(0, 0, 3, 3)],
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 0,
+        };
+        let header = Rc::new(PzbyHeader::synthetic(1, vec![room]));
+        let mut b = Basements::new(Rc::new(GameFs::new("/nonexistent")));
+        let pm = b.per_map_mut("m");
+        pm.definition_by_name.insert("b".into(), 0);
+        pm.definitions.push(BasementDefinition {
+            name: "b".into(),
+            width: 3,
+            height: 3,
+            stairx: 0,
+            stairy: 0,
+            north: true,
+            header: Some(header),
+        });
+        b.placements.push(BasementPlacement {
+            x: 10,
+            y: 20,
+            z: -1,
+            w: 3,
+            h: 3,
+            name: "b".into(),
+        });
+        let counts = b.add_buildings_to_meta_grid(&mut meta, &mut JavaRandom::new(1));
+        assert_eq!(counts, (1, 0));
+        let r = meta.get_room_at(11, 21, -1).expect("basement room");
+        assert_eq!(r.level, -1);
+        assert!(r.building.is_some());
+        assert!(meta.get_room_at(11, 21, 0).is_none());
+        assert!(meta.get_room_at(13, 21, -1).is_none());
     }
 }

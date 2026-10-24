@@ -147,13 +147,13 @@ pub fn load(setup: &WorldGenSetup<'_>) -> Result<WorldGen, String> {
 
 /// `Basements.beforeLoadMetaGrid` for a new world (no `map_basements.bin`):
 /// the definitions of each lot directory's `basements.lua`, the `Basement`
-/// zones `load` found in `objects.lua`, their `.pzby` headers and the
-/// placements. `rand` is `Rand` at that point of world loading (each
+/// zones `load` found in `objects.lua`, their `.pzby` headers, the
+/// placements and their buildings in the meta grid. `rand` is `Rand` at that point of world loading (each
 /// header room draws from it).
 pub fn load_basements(
     fs: Rc<GameFs>,
     lot_dirs: &[&str],
-    meta: &IsoMetaGrid,
+    meta: &mut IsoMetaGrid,
     gen: &WorldGen,
     rand: &mut dyn pz_world::GameRand,
 ) -> Result<basements::Basements, String> {
@@ -164,6 +164,7 @@ pub fn load_basements(
     }
     b.load_headers(rand);
     b.calculate_placements(meta, gen.params.seed());
+    b.meta_buildings = b.add_buildings_to_meta_grid(meta, rand);
     Ok(b)
 }
 

@@ -223,6 +223,36 @@ impl PzbyHeader {
         })
     }
 
+    /// A header with the given rooms and one building of all of them (for
+    /// tests of code that only reads headers).
+    #[cfg(test)]
+    pub(crate) fn synthetic(levels: i32, rooms: Vec<PzbyRoom>) -> PzbyHeader {
+        let mut rooms = rooms;
+        for r in &mut rooms {
+            r.calculate_bounds();
+        }
+        let mut b = PzbyBuilding {
+            rooms: (0..rooms.len()).collect(),
+            emptyoutside: Vec::new(),
+            x: 0,
+            y: 0,
+            x2: 0,
+            y2: 0,
+        };
+        b.calculate_bounds(&rooms);
+        PzbyHeader {
+            path: PathBuf::new(),
+            version: 1,
+            used_tile_names: Vec::new(),
+            width: 1,
+            height: 1,
+            levels,
+            rooms,
+            buildings: vec![b],
+            chunk_table_position: 0,
+        }
+    }
+
     /// `loadChunk(header, chunkX, chunkY)`.
     pub fn load_chunk(&self, chunk_x: i32, chunk_y: i32) -> io::Result<PzbyChunk> {
         let mut r = BufferedRandomAccessFile::open(&self.path, 4096)?;
