@@ -51,6 +51,21 @@ pub struct SpriteFlags {
     pub never_cutaway: bool,
     pub door_trans: bool,
     pub garage_door: bool,
+    /// `WallN`, `WallW` and `WallNW`: the wall pieces cutaway walls are
+    /// built from.
+    pub wall_n: bool,
+    pub wall_w: bool,
+    pub wall_nw: bool,
+    /// `forceRender`: never collapsed by a cutaway.
+    pub force_render: bool,
+    /// `FloorHeightOneThird` / `FloorHeightTwoThirds`: elevated floors.
+    pub floor_height_one_third: bool,
+    pub floor_height_two_thirds: bool,
+    /// `transparentN` / `transparentW`, `exterior`: read by the circle
+    /// stencil test of cut walls.
+    pub transparent_n: bool,
+    pub transparent_w: bool,
+    pub exterior: bool,
 }
 
 /// An `IsoSprite` as the renderer needs it.
@@ -81,6 +96,10 @@ pub struct SpriteInfo {
     pub tint_mod: [f32; 3],
     /// The sprite's own non-empty depth texture (`depthTexture`).
     pub depth_texture: Option<Texture>,
+    /// `getSpriteGrid().getLevels()` (0 without a sprite grid) and
+    /// `getSpriteGridPosZ(sprite)`: multi-level objects.
+    pub grid_levels: i32,
+    pub grid_pos_z: i32,
 }
 
 impl SpriteInfo {
@@ -129,6 +148,21 @@ pub struct RenderObject {
     pub offset_y: f32,
     /// Whether the main sprite instance is flipped.
     pub flip: bool,
+    /// For a garage door segment: its orientation and the span of the
+    /// whole door along its wall (`getGarageDoorPrev/Next` walked to the
+    /// ends).
+    pub garage_door: Option<GarageDoorSpan>,
+    /// For a fascia: `getFasciaAttachedSquare()`.
+    pub fascia_attached: Option<[i32; 3]>,
+}
+
+/// A garage door segment's place in its door.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GarageDoorSpan {
+    pub north: bool,
+    /// The first and last segment's x (north doors) or y (west doors).
+    pub first: i32,
+    pub last: i32,
 }
 
 impl RenderObject {
@@ -144,6 +178,8 @@ impl RenderObject {
             offset_x: (32 * pz_render::iso::TILE_SCALE) as f32,
             offset_y: (96 * pz_render::iso::TILE_SCALE) as f32,
             flip: false,
+            garage_door: None,
+            fascia_attached: None,
         }
     }
 
@@ -174,11 +210,80 @@ pub struct RenderSquare {
     pub vert_lights: [u32; 8],
     /// `getLightLevel(playerIndex)`.
     pub light_level: f32,
+    /// Rooms, buildings and visibility for cutaways and occlusion.
+    pub cut: SquareCutawayInfo,
+}
+
+/// A `BuildingDef` (and its `IsoBuilding`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BuildingId(pub u32);
+
+/// A room id (`getRoomID()`, never -1 here).
+pub type RoomId = i64;
+
+/// `getSlopedSurfaceDirection()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlopeDir {
+    N,
+    S,
+    E,
+    W,
+}
+
+/// What cutaways and occlusion read from an `IsoGridSquare` beyond its
+/// objects.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SquareCutawayInfo {
+    /// `getRoomID()`.
+    pub room: Option<RoomId>,
+    /// `getBuilding()`: the building of the square's room.
+    pub building: Option<BuildingId>,
+    /// `roofHideBuilding`.
+    pub roof_hide_building: Option<BuildingId>,
+    /// `associatedBuilding`.
+    pub associated_building: Option<BuildingId>,
+    /// `lighting[playerIndex]`: `bCanSee`, `bCouldSee`, `bSeen` and
+    /// `darkMulti`.
+    pub can_see: bool,
+    pub could_see: bool,
+    pub seen: bool,
+    pub dark_multi: f32,
+    /// `getPlayerBuiltFloor() != null`.
+    pub player_built_floor: bool,
+    /// `HasStairs()`.
+    pub has_stairs: bool,
+    /// `getStairPillar() != null`.
+    pub stair_pillar: bool,
+    /// `getSlopedSurfaceDirection()`.
+    pub sloped: Option<SlopeDir>,
+    /// `getVisionMatrix(0, 0, -1)`: vision down to the square below is
+    /// blocked.
+    pub vision_blocked_below: bool,
+}
+
+impl Default for SquareCutawayInfo {
+    fn default() -> Self {
+        SquareCutawayInfo {
+            room: None,
+            building: None,
+            roof_hide_building: None,
+            associated_building: None,
+            can_see: true,
+            could_see: true,
+            seen: true,
+            dark_multi: 1.0,
+            player_built_floor: false,
+            has_stairs: false,
+            stair_pillar: false,
+            sloped: None,
+            vision_blocked_below: false,
+        }
+    }
 }
 
 impl RenderSquare {
     pub fn new(x: i32, y: i32, z: i32) -> Self {
-        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0 }
+        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, cut: SquareCutawayInfo::default() }
     }
 
     /// `getFloor()`: the first solid-floor object.
