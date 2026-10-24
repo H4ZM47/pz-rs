@@ -257,6 +257,68 @@ fn presets_default_and_empty() {
 }
 
 #[test]
+fn modifier_uv1() {
+    let mut tm = TextureManager::new();
+    let mut depth = tm.texture_from_pixels("d", 128, 256, vec![0; 128 * 256 * 4], DEPTH_TEXTURE_FLAGS);
+    // A trimmed sprite texture: 60x100 placed at (30, 140) in its frame.
+    let mut tex0 = Texture::empty("s");
+    tex0.width = 60;
+    tex0.height = 100;
+    tex0.offset_x = 30.0;
+    tex0.offset_y = 140.0;
+    let uv = depth_uv1(&tex0, &depth, 0, 0, 1.0, 1.0);
+    let (l, r, t, b) = (30.0 / 128.0, 90.0 / 128.0, 140.0 / 256.0, 240.0 / 256.0);
+    assert_eq!(uv, [[l, t], [r, t], [r, b], [l, b]]);
+    // The sprite offset moves it; the depth texture's edges clip it.
+    let uv = depth_uv1(&tex0, &depth, -40, 20, 1.0, 1.0);
+    assert_eq!(uv, [[0.0, 160.0 / 256.0], [50.0 / 128.0, 160.0 / 256.0], [50.0 / 128.0, 1.0], [0.0, 1.0]]);
+    // Scaled sprites, and a depth texture that is part of a larger image.
+    depth.x_start = 0.5;
+    depth.y_start = 0.25;
+    depth.width_hw = 256;
+    depth.height_hw = 1024;
+    depth.offset_x = 4.0;
+    let mut m = TileDepthModifier { depth, soff_x: 0, soff_y: 0, scale_x: 1.0, scale_y: 1.0 };
+    m.set_sprite_scale(0.5, 2.0);
+    let uv = m.uv1(&tex0);
+    // x: 15..45; y: 280..480 clipped to the depth texture's 0..256, which
+    // leaves the top below the bottom, as in the original.
+    assert_eq!(uv[0], [0.5 + 11.0 / 256.0, 0.25 + 280.0 / 1024.0]);
+    assert_eq!(uv[2], [0.5 + 41.0 / 256.0, 0.25 + 256.0 / 1024.0]);
+}
+
+#[test]
+fn wall_presets() {
+    use WallDirection::*;
+    let f = WallFlags::default();
+    assert_eq!(wall_preset(N, f), TileDepthPreset::NWall);
+    assert_eq!(wall_preset(N, WallFlags { door_wall_n: true, ..f }), TileDepthPreset::NDoorFrame);
+    assert_eq!(wall_preset(N, WallFlags { door_wall_n: true, door_n: true, ..f }), TileDepthPreset::NWall);
+    assert_eq!(wall_preset(NW, f), TileDepthPreset::NWWall);
+    assert_eq!(wall_preset(W, f), TileDepthPreset::WWall);
+    assert_eq!(wall_preset(W, WallFlags { door_wall_w: true, ..f }), TileDepthPreset::WDoorFrame);
+    assert_eq!(wall_preset(W, WallFlags { door_wall_w: true, wall_se: true, ..f }), TileDepthPreset::SEWall);
+    assert_eq!(wall_preset(SE, f), TileDepthPreset::SEWall);
+    assert_eq!(wall_preset(Other, f), TileDepthPreset::Floor);
+    assert_eq!(TileDepthPreset::SEWall.index(), 7);
+}
+
+#[test]
+fn wall_modifier_prefers_sprite_depth() {
+    let (game, _) = fixture("wallmod");
+    let mut tm = TextureManager::new();
+    let mut mgr = TileDepthTextureManager::init_from_dirs(&[], &game, &mut tm, &mut walls_only, false);
+    let own = mgr.texture("walls_01", 1).unwrap().clone();
+    let m = TileDepthModifier::wall(&mut mgr, &mut tm, Some(&own), WallDirection::N, WallFlags::default(), 3, 4);
+    assert_eq!(&*m.depth.name, "DEPTH_walls_01_1");
+    assert_eq!((m.soff_x, m.soff_y, m.scale_x, m.scale_y), (3, 4, 1.0, 1.0));
+    let m = TileDepthModifier::wall(&mut mgr, &mut tm, None, WallDirection::N, WallFlags::default(), 0, 0);
+    assert_eq!(&*m.depth.name, "DEPTH_preset_depthmaps_01_5");
+    assert_eq!(&*TileDepthModifier::floor(&mgr, 0, 0).depth.name, "DEPTH_preset_depthmaps_01_0");
+    assert_eq!(&*TileDepthModifier::tile(&mut mgr, &mut tm, &own, 0, 0).depth.name, "DEPTH_walls_01_1");
+}
+
+#[test]
 fn assignments_parse() {
     let mut a = TileDepthTextureAssignments::new();
     a.parse("t\n{\n    VERSION = 1,\n    a_1 = b_2,\n    a_2 = a_2,\n    a_3 = ,\n    a_1 = c_3,\n    junk,\n}\n").unwrap();
