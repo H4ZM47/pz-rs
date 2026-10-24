@@ -1,5 +1,7 @@
 //! Parity against the original classes (`transformToParent`, clothing skin
-//! palettes, `Shader.setLightInst`, `PlayerData` light fading).
+//! palettes, `Shader.setLightInst`, `PlayerData` light fading, and a hand
+//! weapon with attached parts: `Item.Load`'s `ModelWeaponPart` entries
+//! picked for the attached parts and their transforms on the weapon).
 //!
 //! The oracle harness (outside the repo) writes `skeleton.txt`,
 //! `clothing_skeleton.txt` and `model_frames.txt`; point
@@ -15,12 +17,16 @@ use std::rc::Rc;
 use pz_anim::math::Matrix4f;
 use pz_anim::skeleton::Skeleton;
 use pz_anim::AnimationPlayer;
+use pz_character_model::data::{BodyLocationGroup, HairStyles, HumanModel, HumanVisual};
+use pz_character_model::items::{EquippedModels, HeldItem};
 use pz_character_model::lights::{EffectLight, PlayerLightData, ResultLight};
-use pz_character_model::model_tree::{InstanceKind, ModelInstance};
+use pz_character_model::model_tree::{CharacterModelInput, InstanceKind, ModelInstance, ModelSlot};
 use pz_character_model::render::transform_to_parent;
 use pz_character_model::{ModelScript, ModelScriptRef, TextureSource};
+use pz_inventory::{InventoryItem, ItemClass, ItemKind, ItemTemplate};
 use pz_model::{AnimationClip, Keyframe, Quat, SkinningData};
-use pz_scripts::{ScriptManager, ScriptObject};
+use pz_scripts::objects::items::Item;
+use pz_scripts::{ScriptLoadMode, ScriptManager, ScriptObject};
 
 fn f(s: &str) -> f32 {
     s.parse().unwrap()
@@ -137,8 +143,28 @@ fn inst() -> ModelInstance {
         scale: 1.0,
         model_script: None,
         item_visual: None,
+        mask_variable_value: None,
+        texture_init: None,
         sub: Vec::new(),
     }
+}
+
+/// The item block of `name` in `items/weapon.txt`, cut down to its model
+/// lines (`WeaponSprite`, `ModelWeaponPart`) as the harness does.
+fn weapon_block(dir: &std::path::Path, name: &str) -> String {
+    let t = std::fs::read_to_string(dir.join("items/weapon.txt")).unwrap();
+    let i = t.find(&format!("    item {name}\n")).unwrap();
+    let open = i + t[i..].find('{').unwrap();
+    let close = open + t[open..].find('}').unwrap();
+    let mut b = format!("item {name}\n{{\n");
+    for l in t[open + 1..close].split('\n') {
+        let tl = l.trim();
+        if tl.starts_with("WeaponSprite") || tl.starts_with("ModelWeaponPart") {
+            b += l;
+            b += "\n";
+        }
+    }
+    b + "}"
 }
 
 #[test]
@@ -184,6 +210,71 @@ fn matches_model_oracle() {
     scope.model_script = Some(rifle.clone());
     let mut band = inst();
     band.parent_bone_name = Some("Bip01_Head".into());
+
+    // A HuntingRifle in the right hand with an x4Scope and a RecoilPad
+    // attached, through `DoCharacterModelEquipped`.
+    sm.parse_script(ScriptLoadMode::Init, "module Base { }")
+        .unwrap();
+    let base = sm.get_module("Base").unwrap();
+    let mut rifle_item = Item::new();
+    rifle_item.set_module(&base);
+    rifle_item
+        .load(&sm, "HuntingRifle", &weapon_block(&scripts, "HuntingRifle"))
+        .unwrap();
+    let mut tpl = ItemTemplate::new(ItemClass::Weapon, "Base", "HuntingRifle");
+    tpl.weapon_sprite = rifle_item.weapon_sprite.clone();
+    let mut held_rifle = InventoryItem::create(Rc::new(tpl), 0);
+    if let ItemKind::Weapon(w) = &mut held_rifle.kind {
+        for part in ["x4Scope", "RecoilPad"] {
+            let t = ItemTemplate::new(ItemClass::WeaponPart, "Base", part);
+            w.attachments.push(InventoryItem::create(Rc::new(t), 0));
+        }
+    }
+    let mut model_scripts: std::collections::HashMap<String, ModelScriptRef> =
+        [("HuntingRifle".to_string(), rifle.clone())].into();
+    for part in ["x4Scope", "RecoilPad", "x2Scope", "x8Scope"] {
+        model_scripts.insert(
+            format!("Base.{part}"),
+            script(&sm, &scripts, "models_items.txt", part),
+        );
+    }
+    let eq = EquippedModels {
+        primary: Some(HeldItem::new(
+            &held_rifle,
+            Some(Rc::new(RefCell::new(rifle_item))),
+        )),
+        ..Default::default()
+    };
+    let mut hv = HumanVisual::new(pz_character_model::mask::BLOOD_PARTS);
+    let human = HumanModel::resolve(
+        &mut hv,
+        false,
+        false,
+        false,
+        &pz_inventory::visual::human::NoStyles,
+        &[],
+    );
+    let groups = BodyLocationGroup::new("Human").unwrap();
+    let bone_of = |n: &str| body.bone_indices.get(n).map_or(-1, |&i| i);
+    let wslot = ModelSlot::build(&CharacterModelInput {
+        human: &human,
+        item_visuals: &[],
+        equipped: &eq,
+        body_locations: &groups,
+        hair_styles: &HairStyles::default(),
+        scripts: &model_scripts,
+        body_model_script: Some(m_body.model_script.clone().unwrap()),
+        bone_index: &bone_of,
+    });
+    let wprim = wslot.instance(wslot.primary_hand.unwrap()).clone();
+    let wparts: Vec<ModelInstance> = wprim
+        .sub
+        .iter()
+        .map(|&i| wslot.instance(i).clone())
+        .collect();
+    let mut cur_wprim = [[0f32; 4]; 4];
+    let mut max_w = 0f32;
+    let mut nw = 0;
 
     let mut max_x = 0f32;
     let mut max_p = 0f32;
@@ -234,6 +325,11 @@ fn matches_model_oracle() {
                     }
                     "band" => transform_to_parent(&band, None, Some((&m_body, &ident)), &player),
                     "scope" => transform_to_parent(&scope, None, Some((&back, &cur_back)), &player),
+                    "wprim" => {
+                        cur_wprim =
+                            transform_to_parent(&wprim, None, Some((&m_body, &ident)), &player);
+                        cur_wprim
+                    }
                     _ => unreachable!(),
                 };
                 // The original keeps xfrm transposed; JOML's get() is column-major.
@@ -243,6 +339,26 @@ fn matches_model_oracle() {
                     }
                 }
                 nx += 1;
+            }
+            "wp" => {
+                // `wp <i> <modelName> <attachSelf> <attachParent> <xfrm>`.
+                let i: usize = p[1].parse().unwrap();
+                let part = &wparts[i];
+                let script_name = part
+                    .model_script
+                    .as_ref()
+                    .and_then(|s| s.borrow().name.clone())
+                    .unwrap();
+                assert_eq!(format!("Base.{script_name}"), p[2], "part {i} model");
+                assert_eq!(part.attachment_name_self.as_deref(), Some(p[3]));
+                assert_eq!(part.attachment_name_parent.as_deref(), Some(p[4]));
+                let ours = transform_to_parent(part, None, Some((&wprim, &cur_wprim)), &player);
+                for r in 0..4 {
+                    for c in 0..4 {
+                        max_w = max_w.max((f(p[5 + r * 4 + c]) - ours[c][r]).abs());
+                    }
+                }
+                nw += 1;
             }
             "p" => {
                 let b: usize = p[1].parse().unwrap();
@@ -333,7 +449,8 @@ fn matches_model_oracle() {
         }
     }
     eprintln!(
-        "model oracle: {nx} attachment transforms max err {max_x:e}; {np} clothing palette matrices max err {max_p:e}; {nl} light encodings max err {max_l:e}; {fade_frame} fade frames, {fade_mismatch} mismatches"
+        "model oracle: {nx} attachment transforms max err {max_x:e}; {nw} weapon-part transforms max err {max_w:e}; {np} clothing palette matrices max err {max_p:e}; {nl} light encodings max err {max_l:e}; {fade_frame} fade frames, {fade_mismatch} mismatches"
     );
-    assert!(max_x < 1e-4 && max_p < 1e-4 && max_l < 1e-5 && fade_mismatch == 0);
+    assert_eq!(nw, wparts.len() * 12, "weapon parts per frame");
+    assert!(max_x < 1e-4 && max_w < 1e-4 && max_p < 1e-4 && max_l < 1e-5 && fade_mismatch == 0);
 }

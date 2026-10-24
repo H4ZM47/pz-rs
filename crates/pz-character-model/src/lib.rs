@@ -7,14 +7,20 @@
 //! the original's order.
 //!
 //! Item visuals and clothing items come from pz-inventory, the human
-//! visual and body-location groups from pz-characters, model scripts from
-//! pz-scripts and meshes from pz-model (see [`data`] and
-//! [`resources`]); square lights are still minimal structs in [`lights`].
+//! visual from pz-inventory, body-location groups and attached items from
+//! pz-characters, model scripts from pz-scripts and meshes from pz-model
+//! (see [`data`], [`items`] and [`resources`]); the static models of held
+//! and attached items are picked in [`items`]. Types other threads own
+//! come in through [`external`]; square lights are still minimal structs
+//! in [`lights`].
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
 pub mod data;
+pub mod external;
+pub mod items;
 pub mod lights;
+mod local;
 pub mod mask;
 pub mod model_tree;
 pub mod render;
@@ -22,9 +28,12 @@ pub mod resources;
 pub mod texture_creator;
 
 pub use data::{
-    BodyLocationGroup, BodyLocationKey, ClothingDecal, ClothingItem, ClothingItemExt,
-    EquippedItems, HairStyles, HumanModel, HumanVisual, ItemVisual, ModelAttachment, ModelScript,
-    ModelScriptRef, ResolvedItemVisual, StaticItemModel,
+    BodyLocationGroup, BodyLocationKey, CharacterStyles, ClothingDecal, ClothingItem,
+    ClothingItemExt, HairStyles, HumanModel, HumanVisual, ItemVisual, ModelAttachment, ModelScript,
+    ModelScriptRef, PopTemplateSkins, ResolvedItemVisual,
+};
+pub use items::{
+    ActionHandModels, AttachedModel, EquippedModels, FluidState, HeldItem, ItemTextureInit,
 };
 pub use lights::{EffectLight, LightContext, PlayerLightData, ResultLight};
 pub use model_tree::{

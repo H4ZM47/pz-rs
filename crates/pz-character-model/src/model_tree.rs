@@ -1,16 +1,25 @@
 //! `ModelManager.ModelSlot` / `ModelInstance` and the character's model
 //! tree: `ModelManager.Add`/`Reset` → `PopTemplateManager.populateCharacterModelSlot`
 //! (body, hair, beard, clothing, body visuals) and `DoCharacterModelEquipped`
-//! (attached items and hand items as static models).
+//! (attached items, hand items, weapon parts and hand replacements as
+//! static models; the item getters are in [`crate::items`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use pz_scripts::objects::items::ItemReplacement;
+use pz_scripts::registry::{RegistryKey, ResourceLocation};
+
 use crate::data::{
     attachment_by_id, BodyLocationGroup, BodyLocationKey, ClothingItem, ClothingItemExt,
-    EquippedItems, HairStyles, HumanModel, ModelAttachment, ModelScript, ModelScriptRef,
-    ResolvedItemVisual, Rgb,
+    HairStyles, HumanModel, ModelAttachment, ModelScript, ModelScriptRef, ResolvedItemVisual, Rgb,
 };
+use crate::items::{EquippedModels, HeldItem, ItemTextureInit};
+
+/// The primary hand item's bone.
+pub const PRIMARY_BONE: &str = "Bip01_Prop1";
+/// The secondary hand item's bone.
+pub const SECONDARY_BONE: &str = "Bip01_Prop2";
 use crate::mask::CharacterMask;
 
 /// Where an instance's texture comes from.
@@ -33,6 +42,8 @@ pub enum InstanceKind {
     Beard,
     Clothing,
     Attached,
+    /// A `ModelWeaponPart` on a weapon model.
+    WeaponPart,
     PrimaryHand,
     SecondaryHand,
 }
@@ -61,6 +72,11 @@ pub struct ModelInstance {
     pub model_script: Option<ModelScriptRef>,
     /// The item visual this instance shows (clothing).
     pub item_visual: Option<ResolvedItemVisual>,
+    /// `maskVariableValue` (a masking hand model).
+    pub mask_variable_value: Option<String>,
+    /// `setTextureInitializer`: the item values its equipped texture is
+    /// built from ([`crate::texture_creator::equipped_texture_job`]).
+    pub texture_init: Option<ItemTextureInit>,
     pub sub: Vec<usize>,
 }
 
@@ -92,6 +108,8 @@ impl ModelInstance {
             scale: 1.0,
             model_script: None,
             item_visual: None,
+            mask_variable_value: None,
+            texture_init: None,
             sub: Vec::new(),
         }
     }
@@ -124,7 +142,7 @@ pub struct CharacterModelInput<'a> {
     pub human: &'a HumanModel<'a>,
     /// `getItemVisuals` (worn items) in the character's order.
     pub item_visuals: &'a [ResolvedItemVisual],
-    pub equipped: &'a EquippedItems,
+    pub equipped: &'a EquippedModels<'a>,
     /// The `Human` body-location group.
     pub body_locations: &'a BodyLocationGroup,
     pub hair_styles: &'a HairStyles,
@@ -144,8 +162,13 @@ pub struct ModelSlot {
     /// `sub`: the slot's instances in render order.
     pub sub: Vec<usize>,
     pub attached_models: Vec<usize>,
+    /// `chr.primaryHandModel`.
     pub primary_hand: Option<usize>,
+    /// `chr.secondaryHandModel`.
     pub secondary_hand: Option<usize>,
+    /// `chr.setVariable(name, value)` calls the hand replacements made
+    /// (`RightHandMask` / `LeftHandMask`), in order.
+    pub mask_variables: Vec<(String, String)>,
 }
 
 impl ModelSlot {
@@ -315,14 +338,18 @@ impl ModelSlot {
         i
     }
 
-    /// `addStaticForcedTex(slot, staticModel, boneName, forcedTex)` /
-    /// `addStatic(slot, ...)`.
+    /// `addStaticForcedTex(slot, staticModel, boneName, forcedTex)` (and
+    /// `addStatic(slot, staticModel, boneName)`): on a bone of the body,
+    /// in the slot's and the body's `sub`. A model script's texture wins
+    /// over `forced_tex`. (`ModelMetaData`, which only Lua's
+    /// `setModelMetaData` fills, is not consulted.)
     fn add_static_on_bone(
         &mut self,
         input: &CharacterModelInput,
         static_model: &str,
         bone: &str,
         kind: InstanceKind,
+        forced_tex: Option<&str>,
     ) -> Option<usize> {
         let item_name = get_item_name(static_model);
         let script = input.scripts.model_script(static_model);
@@ -335,7 +362,10 @@ impl ModelSlot {
                     s.shader_name.clone(),
                 )
             }
-            None => (item_name.to_string(), Some(item_name.to_string()), None),
+            None => {
+                let tex = forced_tex.filter(|t| !t.is_empty()).unwrap_or(item_name);
+                (item_name.to_string(), Some(tex.to_string()), None)
+            }
         };
         let mut inst = ModelInstance::new(kind, &mesh, tex.as_deref(), true, shader.as_deref());
         inst.parent = Some(self.model);
@@ -354,17 +384,23 @@ impl ModelSlot {
         Some(i)
     }
 
-    /// `addStatic(parentInst, modelName, attachNameSelf, attachNameParent)`.
+    /// `addStaticForcedTex(parentInst, modelName, attachNameSelf,
+    /// attachNameParent, forcedTex)` (and `addStatic(parentInst, ...)`):
+    /// in the parent's `sub` only. `forced_tex` wins over a model script's
+    /// texture.
     fn add_static_on_attachment(
         &mut self,
         input: &CharacterModelInput,
         parent: usize,
         model_name: &str,
-        attach: &str,
+        attach_self: Option<&str>,
+        attach_parent: Option<&str>,
+        kind: InstanceKind,
+        forced_tex: Option<&str>,
     ) -> Option<usize> {
         let item_name = get_item_name(model_name);
         let script = input.scripts.model_script(model_name);
-        let (mesh, tex, shader) = match &script {
+        let (mesh, mut tex, shader) = match &script {
             Some(s) => {
                 let s = s.borrow();
                 (
@@ -375,55 +411,302 @@ impl ModelSlot {
             }
             None => (item_name.to_string(), Some(item_name.to_string()), None),
         };
-        let mut inst = ModelInstance::new(
-            InstanceKind::Attached,
-            &mesh,
-            tex.as_deref(),
-            true,
-            shader.as_deref(),
-        );
+        if let Some(t) = forced_tex.filter(|t| !t.is_empty()) {
+            tex = Some(t.to_string());
+        }
+        let mut inst = ModelInstance::new(kind, &mesh, tex.as_deref(), true, shader.as_deref());
         inst.parent = Some(parent);
         if let Some(s) = script {
             inst.scale = s.borrow().scale;
             inst.model_script = Some(s);
         }
-        inst.attachment_name_self = Some(attach.to_string());
-        inst.attachment_name_parent = Some(attach.to_string());
+        inst.attachment_name_self = attach_self.map(str::to_string);
+        inst.attachment_name_parent = attach_parent.map(str::to_string);
         let i = self.push(inst);
         self.instances[parent].sub.push(i);
         Some(i)
     }
 
-    /// `DoCharacterModelEquipped` for static item models (attached items,
-    /// then the primary and secondary hand items).
+    /// `addWeaponPartModels`.
+    fn add_weapon_part_models(
+        &mut self,
+        input: &CharacterModelInput,
+        weapon: &HeldItem,
+        parent: usize,
+    ) {
+        for m in weapon.weapon_part_models() {
+            self.add_static_on_attachment(
+                input,
+                parent,
+                &m.model_name,
+                m.attachment_name_self.as_deref(),
+                m.attachment_parent.as_deref(),
+                InstanceKind::WeaponPart,
+                None,
+            );
+        }
+    }
+
+    /// `DoCharacterModelEquipped` on a fresh slot: attached items, then the
+    /// hand items (action and override models first).
     fn do_equipped(&mut self, input: &CharacterModelInput) {
         let eq = input.equipped;
         for a in &eq.attached {
-            if a.model.trim().is_empty() {
+            let Some(model) = a
+                .item
+                .static_model_exception(input.scripts)
+                .filter(|m| !m.trim().is_empty())
+            else {
+                continue;
+            };
+            let name = a.attachment_name.as_deref();
+            // `ItemBodyLocation.get(ResourceLocation.of(attachmentName))`.
+            let loc = name
+                .and_then(|n| ResourceLocation::of(n).ok())
+                .map(|location| {
+                    Rc::new(RegistryKey {
+                        location,
+                        name: name.unwrap_or_default().to_string(),
+                        item_key: None,
+                    })
+                });
+            if loc.is_some_and(|l| should_hide_model(input.body_locations, input.item_visuals, &l))
+            {
                 continue;
             }
-            if let Some(loc) = &a.body_location {
-                if should_hide_model(input.body_locations, input.item_visuals, loc) {
-                    continue;
+            let Some(i) = self.add_static_on_attachment(
+                input,
+                self.model,
+                &model,
+                name,
+                name,
+                InstanceKind::Attached,
+                None,
+            ) else {
+                continue;
+            };
+            self.sub.push(i);
+            if a.item.is_weapon() {
+                self.add_weapon_part_models(input, &a.item, i);
+                if !eq.simple_weapon_textures {
+                    self.instances[i].texture_init = Some(a.item.texture_init());
+                }
+            } else if a.item.requires_smart_texture() {
+                self.instances[i].texture_init = Some(a.item.texture_init());
+            }
+            self.attached_models.push(i);
+        }
+
+        let mut primary = eq.primary.as_ref();
+        let mut secondary = eq.secondary.as_ref();
+        if eq.hide_weapon_model {
+            primary = None;
+            secondary = None;
+        }
+        if eq.hide_equipped_hand_l {
+            secondary = None;
+        }
+        if eq.hide_equipped_hand_r {
+            primary = None;
+        }
+        if eq.force_null_override {
+            primary = None;
+            secondary = None;
+        }
+        let mut override_hands = false;
+        if let Some(action) = &eq.action {
+            override_hands = true;
+            primary = action.primary_item.as_ref();
+            if primary.is_none() {
+                if let Some(m) = &action.primary_model {
+                    self.primary_hand = self.add_static_on_bone(
+                        input,
+                        m,
+                        PRIMARY_BONE,
+                        InstanceKind::PrimaryHand,
+                        None,
+                    );
                 }
             }
-            if let Some(i) =
-                self.add_static_on_attachment(input, self.model, &a.model, &a.attachment)
-            {
-                self.sub.push(i);
-                self.attached_models.push(i);
+            secondary = action.secondary_item.as_ref();
+            if secondary.is_none() {
+                if let Some(m) = &action.secondary_model {
+                    self.secondary_hand = self.add_static_on_bone(
+                        input,
+                        m,
+                        SECONDARY_BONE,
+                        InstanceKind::SecondaryHand,
+                        None,
+                    );
+                }
             }
         }
-        if let Some(p) = &eq.primary {
+        if let Some(m) = eq
+            .override_primary_hand_model
+            .as_deref()
+            .filter(|m| !m.is_empty())
+        {
+            override_hands = true;
             self.primary_hand =
-                self.add_static_on_bone(input, p, "Bip01_Prop1", InstanceKind::PrimaryHand);
+                self.add_static_on_bone(input, m, PRIMARY_BONE, InstanceKind::PrimaryHand, None);
         }
-        if let Some(s) = &eq.secondary {
-            if eq.primary.as_ref() != Some(s) {
-                self.secondary_hand =
-                    self.add_static_on_bone(input, s, "Bip01_Prop2", InstanceKind::SecondaryHand);
+        if let Some(m) = eq
+            .override_secondary_hand_model
+            .as_deref()
+            .filter(|m| !m.is_empty())
+        {
+            override_hands = true;
+            self.secondary_hand = self.add_static_on_bone(
+                input,
+                m,
+                SECONDARY_BONE,
+                InstanceKind::SecondaryHand,
+                None,
+            );
+        }
+        if let Some(p) = primary {
+            self.primary_hand = self.add_equipped_model_instance(
+                input,
+                p,
+                PRIMARY_BONE,
+                p.replacement_primary_hand(),
+                p.replacement_primary_clothing.as_ref(),
+                override_hands,
+                InstanceKind::PrimaryHand,
+            );
+        }
+        if let Some(s) = secondary {
+            // `primaryItem != secondaryItem` (identity).
+            if !primary.is_some_and(|p| std::ptr::eq(p.item, s.item)) {
+                self.secondary_hand = self.add_equipped_model_instance(
+                    input,
+                    s,
+                    SECONDARY_BONE,
+                    s.replacement_second_hand(),
+                    s.replacement_second_clothing.as_ref(),
+                    override_hands,
+                    InstanceKind::SecondaryHand,
+                );
             }
         }
+    }
+
+    /// `addEquippedModelInstance`.
+    fn add_equipped_model_instance(
+        &mut self,
+        input: &CharacterModelInput,
+        item: &HeldItem,
+        bone: &str,
+        replacement: Option<ItemReplacement>,
+        replacement_clothing: Option<&Rc<ClothingItem>>,
+        override_hands: bool,
+        kind: InstanceKind,
+    ) -> Option<usize> {
+        let scripts = input.scripts;
+        if item.clothing_item.is_none() && item.is_weapon() {
+            // A weapon without a sprite: the original's `addStatic(null)`
+            // fails.
+            let sprite = item.static_model(scripts)?;
+            let i = self.add_static_on_bone(input, &sprite, bone, kind, None)?;
+            self.add_weapon_part_models(input, item, i);
+            if !input.equipped.simple_weapon_textures {
+                self.instances[i].texture_init = Some(item.texture_init());
+            }
+            return Some(i);
+        }
+        if let Some(r) = &replacement {
+            let has_value = r
+                .mask_variable_value
+                .as_deref()
+                .is_some_and(|v| !v.is_empty());
+            if has_value && !(replacement_clothing.is_none() && !item.has_static_model(scripts)) {
+                let i = self.add_masking_model(input, item, r, replacement_clothing, bone, kind);
+                if let Some(i) = i {
+                    if item.requires_smart_texture() {
+                        self.instances[i].texture_init = Some(item.texture_init());
+                    }
+                }
+                return i;
+            }
+        }
+        if override_hands && item.has_static_model(scripts) {
+            let model = item
+                .fluid_model(scripts)
+                .or_else(|| item.static_model(scripts))?;
+            let i = self.add_static_on_bone(input, &model, bone, kind, None)?;
+            if item.requires_smart_texture() {
+                self.instances[i].texture_init = Some(item.texture_init());
+            }
+            return Some(i);
+        }
+        None
+    }
+
+    /// `addMaskingModel`: the replacement clothing item, or the item's
+    /// static model with its texture choice (on the replacement's
+    /// attachment, else on the hand bone); then the mask variable.
+    fn add_masking_model(
+        &mut self,
+        input: &CharacterModelInput,
+        item: &HeldItem,
+        r: &ItemReplacement,
+        replacement_clothing: Option<&Rc<ClothingItem>>,
+        bone: &str,
+        kind: InstanceKind,
+    ) -> Option<usize> {
+        let value = r.mask_variable_value.clone().unwrap_or_default();
+        let result = match (replacement_clothing, &item.visual) {
+            (Some(c), Some(v)) => {
+                let rv = ResolvedItemVisual {
+                    visual: v.clone(),
+                    clothing_item: Some(c.clone()),
+                    body_location: None,
+                };
+                let i = self.add_clothing_item(input, &rv, c, false);
+                if let Some(i) = i {
+                    self.instances[i].kind = kind;
+                }
+                i
+            }
+            _ => {
+                let model = item
+                    .static_model(input.scripts)
+                    .filter(|m| !m.trim().is_empty())?;
+                let forced = match (&item.visual, &item.clothing_item) {
+                    (Some(v), Some(c)) => usize::try_from(v.texture_choice)
+                        .ok()
+                        .and_then(|t| c.texture_choices.get(t))
+                        .cloned(),
+                    _ => None,
+                };
+                let i = match r.attachment.as_deref().filter(|a| !a.is_empty()) {
+                    Some(att) => self.add_static_on_attachment(
+                        input,
+                        self.model,
+                        &model,
+                        Some(att),
+                        Some(att),
+                        kind,
+                        forced.as_deref(),
+                    ),
+                    None => self.add_static_on_bone(input, &model, bone, kind, forced.as_deref()),
+                };
+                if let Some(i) = i {
+                    let inst = &mut self.instances[i];
+                    inst.mask_variable_value = Some(value.clone());
+                    if let Some(t) = item.visual.as_ref().and_then(|v| v.tint) {
+                        inst.tint = t;
+                    }
+                }
+                i
+            }
+        };
+        if !value.is_empty() {
+            if let Some(name) = &r.mask_variable_name {
+                self.mask_variables.push((name.clone(), value));
+            }
+        }
+        result
     }
 }
 

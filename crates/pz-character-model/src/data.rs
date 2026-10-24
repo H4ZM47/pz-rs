@@ -5,27 +5,27 @@
 //!   `visual`); [`ResolvedItemVisual`] pairs an `ItemVisual` with what the
 //!   original reads through it (`getClothingItem`, the script item's body
 //!   location).
-//! - [`HumanVisual`]: pz-characters `visual` (moving to pz-inventory next
-//!   to `ItemVisual`; only the `human_visual` import below names the
-//!   owner). [`HumanModel`] adds what `IHumanVisual` answers.
+//! - [`HumanVisual`]: pz-inventory `visual::human` (through
+//!   [`crate::external`]). [`HumanModel`] resolves its lazy getters and adds
+//!   what `IHumanVisual` answers.
 //! - [`BodyLocationGroup`]: pz-characters `worn_items` (keys are
 //!   `ItemBodyLocation` [`RegistryKey`]s).
 //! - [`ModelScript`] / [`ModelAttachment`]: pz-scripts.
+//! - Held and attached items: pz-inventory `InventoryItem` with its
+//!   pz-scripts `Item` (see [`crate::items`]).
 //!
-//! Local until an owner ports them: [`ClothingDecal`] (`ClothingDecals`),
-//! [`HairStyles`] (`HairStyles`/`BeardStyles`, listed as not ported in
-//! pz-characters `visual`), and [`EquippedItems`] (the static models
-//! `DoCharacterModelEquipped` reads off `InventoryItem`/`AttachedItems`).
+//! Local until the characters thread ports them, behind
+//! [`crate::external`]: [`ClothingDecal`], [`HairStyles`] and the
+//! `PopTemplateManager` skin lists ([`PopTemplateSkins`],
+//! [`CharacterStyles`]).
 //!
 //! The random choices the original makes lazily through `OutfitRNG`
 //! (texture choice, tint, hue, decal) are expected already resolved on the
 //! visuals (`ItemVisual::pick_uninitialized_values`).
 
 use std::cell::RefCell;
-use std::path::Path;
 use std::rc::Rc;
 
-use pz_anim::xml::{self, Element};
 use pz_scripts::objects::models;
 
 use crate::mask::{CharacterMask, BLOOD_PARTS};
@@ -36,9 +36,11 @@ pub use pz_inventory::visual::{ItemVisual, Rgb};
 pub use pz_scripts::objects::models::ModelAttachment;
 pub use pz_scripts::registry::RegistryKey;
 
-pub use human_visual::HumanVisual;
-/// The `HumanVisual` owner (switch here when it moves to pz-inventory).
-use pz_characters::visual as human_visual;
+use crate::external::HumanVisualOwner;
+pub use crate::external::{
+    CharacterStyles, ClothingDecal, HairStyle, HairStyles, HumanStyles, HumanVisual,
+    PopTemplateSkins,
+};
 
 /// `zombie.scripting.objects.ModelScript` as the script manager shares it.
 pub type ModelScript = models::ModelScript;
@@ -51,14 +53,6 @@ pub const WHITE: Rgb = [1.0, 1.0, 1.0];
 
 /// `ClothingItemXML`'s default `m_MasksFolder` / `m_UnderlayMasksFolder`.
 pub const DEFAULT_MASKS_FOLDER: &str = "media/textures/Body/Masks";
-
-fn text(e: &Element) -> String {
-    e.text_content()
-}
-
-fn trimmed(e: &Element) -> String {
-    pz_anim::vars::java_trim(&e.text_content()).to_string()
-}
 
 /// The `ClothingItem` methods the model code calls that pz-inventory does
 /// not (yet) have.
@@ -225,8 +219,10 @@ impl ResolvedItemVisual {
     }
 }
 
-/// A [`HumanVisual`] with what its owner (`IHumanVisual`) answers and its
-/// body visuals resolved.
+/// A [`HumanVisual`] with what its owner (`IHumanVisual`) answers, its
+/// lazy getters resolved (`getSkinTexture`, `getHairModel`,
+/// `getBeardModel`, `getHairColor`, `getBeardColor`) and its body visuals
+/// resolved.
 pub struct HumanModel<'a> {
     pub visual: &'a HumanVisual,
     /// `isFemale()`.
@@ -235,49 +231,111 @@ pub struct HumanModel<'a> {
     pub zombie: bool,
     /// `isSkeleton()`.
     pub skeleton: bool,
-    /// `bodyVisuals`, resolved. pz-characters keeps only the item type and
-    /// clothing item name of each; this goes once `HumanVisual` holds full
-    /// `ItemVisual`s (pz-inventory).
+    /// `bodyVisuals` with their clothing items (the caller resolves
+    /// `HumanVisual::body_visuals` against the clothing assets).
     pub body_visuals: &'a [ResolvedItemVisual],
+    skin_texture: String,
+    hair_model: String,
+    beard_model: String,
+    hair_color: Rgb,
+    beard_color: Rgb,
 }
 
-impl HumanModel<'_> {
-    /// `getSkinTexture()`: the stored name. TODO(PopTemplateManager): the
-    /// name from the `skinTexture` index when none is stored.
+struct Owner {
+    female: bool,
+    zombie: bool,
+    skeleton: bool,
+}
+
+impl HumanVisualOwner for Owner {
+    fn is_female(&self) -> bool {
+        self.female
+    }
+    fn is_zombie(&self) -> bool {
+        self.zombie
+    }
+    fn is_skeleton(&self) -> bool {
+        self.skeleton
+    }
+}
+
+impl<'a> HumanModel<'a> {
+    /// Runs the getters `populateCharacterModelSlot` and the texture
+    /// creator call (which fill unset values from `styles`, as the
+    /// original does), then keeps the visual read-only.
+    pub fn resolve(
+        visual: &'a mut HumanVisual,
+        female: bool,
+        zombie: bool,
+        skeleton: bool,
+        styles: &dyn HumanStyles,
+        body_visuals: &'a [ResolvedItemVisual],
+    ) -> Self {
+        let owner = Owner {
+            female,
+            zombie,
+            skeleton,
+        };
+        let hair_model = visual.get_hair_model(&owner, styles).unwrap_or_default();
+        let hair_color = visual.get_hair_color(styles).unwrap_or(WHITE);
+        let beard_model = visual.get_beard_model(&owner, styles).unwrap_or_default();
+        let beard_color = visual.get_beard_color(styles).unwrap_or(WHITE);
+        let skin_texture = visual.get_skin_texture(&owner, styles).unwrap_or_default();
+        HumanModel {
+            visual,
+            female,
+            zombie,
+            skeleton,
+            body_visuals,
+            skin_texture,
+            hair_model,
+            beard_model,
+            hair_color,
+            beard_color,
+        }
+    }
+
+    /// `getSkinTexture()`.
     pub fn skin_texture(&self) -> &str {
-        self.visual.skin_texture_name.as_deref().unwrap_or("")
+        &self.skin_texture
     }
 
+    /// `getHairModel()`.
     pub fn hair_model(&self) -> &str {
-        self.visual.hair_model.as_deref().unwrap_or("")
+        &self.hair_model
     }
 
+    /// `getBeardModel()`.
     pub fn beard_model(&self) -> &str {
-        self.visual.beard_model.as_deref().unwrap_or("")
-    }
-
-    fn rgb(c: Option<human_visual::ImmutableColor>) -> Rgb {
-        c.map_or(WHITE, |c| [c.r, c.g, c.b])
+        &self.beard_model
     }
 
     /// `getHairColor()` (white when unset).
     pub fn hair_color(&self) -> Rgb {
-        Self::rgb(self.visual.hair_color)
+        self.hair_color
     }
 
     /// `getBeardColor()` (white when unset).
     pub fn beard_color(&self) -> Rgb {
-        Self::rgb(self.visual.beard_color)
+        self.beard_color
     }
 
     /// `getBlood(part)`.
     pub fn blood(&self, i: usize) -> f32 {
-        self.visual.blood.get(i).map_or(0.0, |&b| b as f32 / 255.0)
+        if i < self.visual.blood.len() {
+            self.visual.get_blood(i)
+        } else {
+            0.0
+        }
     }
 
     /// `getDirt(part)`.
     pub fn dirt(&self, i: usize) -> f32 {
-        self.visual.dirt.get(i).map_or(0.0, |&b| b as f32 / 255.0)
+        if i < self.visual.dirt.len() {
+            self.visual.get_dirt(i)
+        } else {
+            0.0
+        }
     }
 }
 
@@ -287,206 +345,4 @@ pub fn attachment_by_id(s: &ModelScript, id: &str) -> Option<Rc<RefCell<ModelAtt
         return None;
     }
     s.attachment_by_id(id)
-}
-
-/// `ClothingDecal`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ClothingDecal {
-    pub name: String,
-    pub texture: String,
-    pub x: i32,
-    pub y: i32,
-    pub width: i32,
-    pub height: i32,
-}
-
-impl ClothingDecal {
-    pub fn load(dir: &Path, name: &str) -> Option<ClothingDecal> {
-        let root = xml::parse_xml_file(&dir.join(format!("{name}.xml"))).ok()?;
-        let mut d = ClothingDecal {
-            name: name.into(),
-            texture: String::new(),
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-        };
-        for f in root.elements() {
-            let i = || trimmed(f).parse().unwrap_or(0);
-            match f.tag.as_str() {
-                "texture" => d.texture = text(f),
-                "x" => d.x = i(),
-                "y" => d.y = i(),
-                "width" => d.width = i(),
-                "height" => d.height = i(),
-                _ => {}
-            }
-        }
-        Some(d)
-    }
-
-    /// `isValid`.
-    pub fn is_valid(&self) -> bool {
-        !self.texture.trim().is_empty()
-            && self.x >= 0
-            && self.y >= 0
-            && self.width > 0
-            && self.height > 0
-    }
-}
-
-/// `HairStyle` / `BeardStyle`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct HairStyle {
-    pub name: String,
-    pub model: Option<String>,
-    pub texture: Option<String>,
-    /// (category, style)
-    pub alternate: Vec<(String, String)>,
-    pub level: i32,
-}
-
-impl HairStyle {
-    /// `isValid`.
-    pub fn is_valid(&self) -> bool {
-        self.model.as_deref().is_some_and(|m| !m.trim().is_empty())
-            && self
-                .texture
-                .as_deref()
-                .is_some_and(|t| !t.trim().is_empty())
-    }
-
-    /// `getAlternate(category)`.
-    pub fn alternate_for(&self, category: &str) -> &str {
-        self.alternate
-            .iter()
-            .find(|(c, _)| c.eq_ignore_ascii_case(category))
-            .map(|(_, s)| s.as_str())
-            .unwrap_or(&self.name)
-    }
-
-    fn from_element(e: &Element) -> HairStyle {
-        let mut s = HairStyle {
-            name: String::new(),
-            model: None,
-            texture: Some("F_Hair_White".into()),
-            alternate: Vec::new(),
-            level: 0,
-        };
-        for f in e.elements() {
-            match f.tag.as_str() {
-                "name" => s.name = text(f),
-                "model" => s.model = Some(text(f)),
-                "texture" => s.texture = Some(text(f)),
-                "level" => s.level = trimmed(f).parse().unwrap_or(0),
-                "alternate" => s.alternate.push((
-                    f.attr_or_empty("category").to_string(),
-                    f.attr_or_empty("style").to_string(),
-                )),
-                _ => {}
-            }
-        }
-        s
-    }
-}
-
-/// `HairStyles` and `BeardStyles`.
-#[derive(Clone, Debug, Default)]
-pub struct HairStyles {
-    pub male: Vec<HairStyle>,
-    pub female: Vec<HairStyle>,
-    pub beards: Vec<HairStyle>,
-}
-
-impl HairStyles {
-    /// `hairStyles.xml` and `beardStyles.xml` from `media/hairStyles`.
-    pub fn load(dir: &Path) -> HairStyles {
-        let mut h = HairStyles::default();
-        if let Ok(root) = xml::parse_xml_file(&dir.join("hairStyles.xml")) {
-            for e in root.elements() {
-                match e.tag.as_str() {
-                    "male" => h.male.push(HairStyle::from_element(e)),
-                    "female" => h.female.push(HairStyle::from_element(e)),
-                    _ => {}
-                }
-            }
-        }
-        if let Ok(root) = xml::parse_xml_file(&dir.join("beardStyles.xml")) {
-            for e in root.elements().filter(|e| e.tag == "style") {
-                h.beards.push(HairStyle::from_element(e));
-            }
-        }
-        h
-    }
-
-    fn find(list: &[HairStyle], name: &str) -> Option<usize> {
-        for (i, s) in list.iter().enumerate() {
-            if s.name.eq_ignore_ascii_case(name) {
-                return Some(i);
-            }
-            if name.is_empty() && s.name.eq_ignore_ascii_case("bald") {
-                return Some(i);
-            }
-        }
-        None
-    }
-
-    pub fn find_male(&self, name: &str) -> Option<&HairStyle> {
-        Self::find(&self.male, name).map(|i| &self.male[i])
-    }
-
-    pub fn find_female(&self, name: &str) -> Option<&HairStyle> {
-        Self::find(&self.female, name).map(|i| &self.female[i])
-    }
-
-    pub fn find_beard(&self, name: &str) -> Option<&HairStyle> {
-        self.beards
-            .iter()
-            .find(|s| s.name.eq_ignore_ascii_case(name))
-    }
-
-    /// `getAlternateForHat`.
-    pub fn alternate_for_hat<'a>(
-        &'a self,
-        style: &'a HairStyle,
-        category: Option<&str>,
-        female: bool,
-    ) -> Option<&'a HairStyle> {
-        let category = category.unwrap_or("");
-        if category.eq_ignore_ascii_case("nohair") || category.eq_ignore_ascii_case("nohairnobeard")
-        {
-            return None;
-        }
-        let alt = style.alternate_for(category);
-        if female && self.female.iter().any(|s| s == style) {
-            return self.find_female(alt);
-        }
-        if !female && self.male.iter().any(|s| s == style) {
-            return self.find_male(alt);
-        }
-        Some(style)
-    }
-}
-
-/// A static model the character carries: an attached item (`AttachedItem`,
-/// on its location's attachment point) or a hand item.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StaticItemModel {
-    /// The model script name (`getStaticModel` / `getStaticModelException`).
-    pub model: String,
-    /// The attachment point name (attached items) or bone (hand items).
-    pub attachment: String,
-    /// The item's body location for `shouldHideModel` (attached items).
-    pub body_location: Option<BodyLocationKey>,
-}
-
-/// What the character holds and carries (`DoCharacterModelEquipped`):
-/// static weapon / item models only.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct EquippedItems {
-    pub attached: Vec<StaticItemModel>,
-    /// Model on `Bip01_Prop1`.
-    pub primary: Option<String>,
-    /// Model on `Bip01_Prop2` (skipped when the same item as the primary).
-    pub secondary: Option<String>,
 }

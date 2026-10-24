@@ -354,6 +354,12 @@ impl SmartTexture {
         }
     }
 
+    /// `addTintedOverlay`.
+    fn add_tinted_overlay(&mut self, t: &str, mask: &str, intensity: f32, cat: i32, c: Rgb) {
+        self.add_overlay(t, mask, intensity, cat);
+        self.add_tint(tex(t), cat, c);
+    }
+
     /// `removeHole(bodyTex, part)`.
     fn remove_hole(&mut self, body: TexRef, part: BloodBodyPartType) {
         self.add_to_cat(3);
@@ -744,4 +750,59 @@ fn apply_item_texture(d: &ItemData, full: TexRef, dest: &mut SmartTexture) {
             dest.remove_hole(full.clone(), *b);
         }
     }
+}
+
+/// `EquippedTextureCreator.initTextureName`.
+pub fn equipped_texture_name(name: &str, suffix: &str) -> String {
+    let name = name.strip_suffix(".png").unwrap_or(name);
+    if name.contains("media/") || name.contains("media\\") {
+        format!("{name}{suffix}.png")
+    } else {
+        format!("media/textures/{name}{suffix}.png")
+    }
+}
+
+/// The `ItemSmartTexture` an `EquippedTextureCreator` builds for a model
+/// instance's first render (`init(inst, item)` + `updateTexture`):
+/// `texture` is the instance texture's name, `texture_exists` stands for
+/// the texture manager's lookups. `None` when the plain texture stays (a
+/// white, bloodless item: its fluid overlay is then skipped too, as in the
+/// original).
+pub fn equipped_texture_job(
+    texture: &str,
+    init: &crate::items::ItemTextureInit,
+    texture_exists: &dyn Fn(&str) -> bool,
+) -> Option<SmartTextureJob> {
+    const FULL_ALPHA: &str = "media/textures/FullAlpha.png";
+    if init.tint == WHITE && init.blood_level <= 0.0 {
+        return None;
+    }
+    let tint_mask = Some(equipped_texture_name(texture, "TINT")).filter(|m| texture_exists(m));
+    let fluid_mask = Some(equipped_texture_name(texture, "FLUIDTINT"))
+        .filter(|m| init.fluid_level > 0.0 && texture_exists(m));
+    let mut st = SmartTexture::default();
+    st.add(tex(texture));
+    if init.tint != WHITE {
+        match &tint_mask {
+            Some(m) => st.add_tinted_overlay(m, FULL_ALPHA, 1.0, 300, init.tint),
+            None => st.add_tint(tex(texture), 300, init.tint),
+        }
+    }
+    if init.blood_level > 0.0 {
+        st.add_overlay(
+            "media/textures/BloodTextures/BloodOverlayWeapon.png",
+            "media/textures/BloodTextures/BloodOverlayWeaponMask.png",
+            init.blood_level.clamp(0.0, 1.0),
+            301,
+        );
+    }
+    if let Some(m) = &fluid_mask {
+        let level = init.fluid_level.clamp(0.0, 1.0);
+        if level > 0.0 {
+            st.add_tinted_overlay(m, FULL_ALPHA, level, 302, init.fluid_tint.unwrap_or(WHITE));
+        }
+    }
+    Some(SmartTextureJob {
+        commands: st.commands,
+    })
 }
