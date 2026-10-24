@@ -1787,6 +1787,7 @@ dependencies = [
 name = "pz-world-popman"
 version = "0.1.0"
 dependencies = [
+ "pz-fs",
  "pz-popman",
  "pz-world",
 ]
