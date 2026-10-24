@@ -749,7 +749,7 @@ impl Thread {
                         if f.is_nil() {
                             return Err(LuaError::runtime("__len not defined for operand"));
                         }
-                        self.call1(&f, std::slice::from_ref(o))?
+                        self.call1(&f, std::slice::from_ref(&o))?
                     }
                 };
                 self.stack[base + a8(op)] = r;
