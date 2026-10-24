@@ -40,6 +40,14 @@ pub struct BodyDamage {
     pub standard_health_from_food_time: i32,
     /// `thermoregulator` (players only).
     pub thermoregulator: Option<Thermoregulator>,
+    /// `coldDamageStage`.
+    pub cold_damage_stage: f32,
+    /// TODO(BodyDamage): `getBodyPart(type).getWetness()` by
+    /// `BodyPartType` index, from the body parts (missing entries are 0).
+    pub body_part_wetness: Vec<f32>,
+    /// TODO(BodyDamage): `getBodyPart(type).getStiffness()` by
+    /// `BodyPartType` index, from the body parts (missing entries are 0).
+    pub body_part_stiffness: Vec<f32>,
 }
 
 impl Default for BodyDamage {
@@ -56,6 +64,9 @@ impl Default for BodyDamage {
             health_from_food_timer: 0.0,
             standard_health_from_food_time: 1600,
             thermoregulator: None,
+            cold_damage_stage: 0.0,
+            body_part_wetness: Vec::new(),
+            body_part_stiffness: Vec::new(),
         }
     }
 }
@@ -108,6 +119,30 @@ impl BodyDamage {
     /// `getThermoregulator`.
     pub fn thermoregulator(&self) -> Option<&Thermoregulator> {
         self.thermoregulator.as_ref()
+    }
+    /// `getThermoregulator` (mutable).
+    pub fn thermoregulator_mut(&mut self) -> Option<&mut Thermoregulator> {
+        self.thermoregulator.as_mut()
+    }
+    /// `setColdDamageStage`.
+    pub fn set_cold_damage_stage(&mut self, stage: f32) {
+        self.cold_damage_stage = stage;
+    }
+    /// `getBodyPart(BodyPartType.FromIndex(index)).getWetness()`.
+    pub fn body_part_wetness(&self, index: usize) -> f32 {
+        self.body_part_wetness.get(index).copied().unwrap_or(0.0)
+    }
+    /// `getBodyPart(BodyPartType.FromIndex(index)).getStiffness()`.
+    pub fn body_part_stiffness(&self, index: usize) -> f32 {
+        self.body_part_stiffness.get(index).copied().unwrap_or(0.0)
+    }
+    /// `getBodyPart(BodyPartType.FromIndex(index)).setStiffness(v)`:
+    /// clamped to 0..100.
+    pub fn set_body_part_stiffness(&mut self, index: usize, v: f32) {
+        if self.body_part_stiffness.len() <= index {
+            self.body_part_stiffness.resize(index + 1, 0.0);
+        }
+        self.body_part_stiffness[index] = super::stats::clamp_f32(v, 0.0, 100.0);
     }
     /// `getApparentInfectionLevel`: the largest of zombie fever, zombie
     /// infection and food sickness.

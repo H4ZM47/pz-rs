@@ -175,6 +175,31 @@ pub trait SimContext {
     fn thirty_fps_multiplier(&self) -> f32 {
         self.multiplier() / 1.6
     }
+    /// `GameTime.instance.multiplierBias`.
+    fn multiplier_bias(&self) -> f32 {
+        1.0
+    }
+    /// `GameTime.getTimeDelta()`: `getMultiplier() / 0.8f / multiplierBias
+    /// / 60.0f`.
+    fn time_delta(&self) -> f32 {
+        self.multiplier() / 0.8 / self.multiplier_bias() / 60.0
+    }
+    /// `GameTime.getGameWorldSecondsSinceLastUpdate()`: `getTimeDelta() *
+    /// (1440.0f / getMinutesPerDay())`.
+    fn game_world_seconds_since_last_update(&self) -> f32 {
+        let dif = 1440.0 / self.minutes_per_day();
+        self.time_delta() * dif
+    }
+    /// `GameTime.getMinutes()`: the minutes of `timeOfDay` (9.0 in a fresh
+    /// game).
+    fn minutes(&self) -> i32 {
+        0
+    }
+    /// `GameTime.getCalender().getTimeInMillis()`. The default is 0: the
+    /// owner of `GameTime` supplies the calendar.
+    fn calendar_time_in_millis(&self) -> i64 {
+        0
+    }
     /// `GameTime.instance.getWorldAgeHours()`.
     fn world_age_hours(&self) -> f64 {
         0.0
@@ -194,6 +219,24 @@ pub trait SimContext {
     /// `SandboxOptions.instance.decayingCorpseHealthImpact.getValue()`.
     fn decaying_corpse_health_impact(&self) -> i32 {
         3
+    }
+    /// `SandboxOptions.instance.nutrition.getValue()` (the option's
+    /// default is `false`; the presets turn it on).
+    fn nutrition_enabled(&self) -> bool {
+        false
+    }
+    /// `SystemDisabler.doCharacterStats`.
+    fn do_character_stats(&self) -> bool {
+        true
+    }
+    /// `ClimateManager.getInstance().getHumidity()`. The default is 0: the
+    /// owner of the climate supplies it.
+    fn climate_humidity(&self) -> f32 {
+        0.0
+    }
+    /// `Rand.Next(min, max)`.
+    fn rand_next_range(&self, min: i32, max: i32) -> i32 {
+        pz_core::random::next_range(min, max)
     }
     /// `multipliersConfig.xpMultiplierGlobalToggle.getValue()`.
     fn xp_multiplier_global_toggle(&self) -> bool {
@@ -223,6 +266,30 @@ pub trait SimContext {
     }
     /// Receives the side effects (Lua events, sounds, UI).
     fn event(&self, _event: SimEvent) {}
+}
+
+/// One worn `Clothing` item as the thermoregulator reads it (an
+/// `ItemVisual` of `getItemVisuals` whose `getInventoryItem()` is a
+/// `Clothing`), in `getItemVisuals` order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WornClothing {
+    /// `getInsulation()`.
+    pub insulation: f32,
+    /// `getWindresistance()`.
+    pub windresistance: f32,
+    /// `getWetness()`.
+    pub wetness: f32,
+    /// `getCurrentCondition()`.
+    pub current_condition: f32,
+    /// `BloodClothingType.getCoveredParts(getBloodClothingType())` as
+    /// `BloodBodyPartType` indices; `None` when `getBloodClothingType()` is
+    /// null.
+    pub covered_parts: Option<Vec<i32>>,
+    /// `getBodyLocation()` is `ItemBodyLocation.HAT` or `MASK`.
+    pub hat_or_mask: bool,
+    /// `getVisual().getHole(part)` by `BloodBodyPartType` index (missing
+    /// entries are 0).
+    pub holes: Vec<f32>,
 }
 
 /// A [`SimContext`] with every default.
@@ -263,6 +330,32 @@ pub struct CharacterEnvironment {
     pub protected_from_toxic: bool,
     /// `Temperature.getWindChillAmountForPlayer(player)`.
     pub wind_chill_amount: f32,
+    /// `ClimateManager.getAirTemperatureForCharacter(chr, false)`. The
+    /// owner of the climate supplies it (default 0).
+    pub air_temperature: f32,
+    /// `ClimateManager.getAirTemperatureForCharacter(chr, true)` (default 0).
+    pub air_and_wind_temperature: f32,
+    /// The worn clothing (`getItemVisuals`).
+    pub worn_clothing: Vec<WornClothing>,
+    /// `sprinting` (input and movement).
+    pub sprinting: bool,
+    /// `IsoPlayer.isAllowSprint()`.
+    pub allow_sprint: bool,
+    /// The primary or secondary hand item `isEquippedNoSprint()`.
+    pub hand_item_equipped_no_sprint: bool,
+    /// `sneaking`.
+    pub sneaking: bool,
+    /// `IsoPlayer.currentSpeed`.
+    pub current_speed: f32,
+    /// `WeaponType.getWeaponType(player)` (the constant's name) while
+    /// `IsoPlayer.isAttacking()`; `None` when not attacking.
+    pub attacking_weapon_type: Option<String>,
+    /// `isCurrentState(ClimbOverFenceState)` or
+    /// `isCurrentState(ClimbThroughWindowState)`.
+    pub climbing_state: bool,
+    /// `getCharacterActions().get(0).caloriesModifier`; `None` when there
+    /// is no action.
+    pub first_action_calories_modifier: Option<f32>,
 }
 
 impl Default for CharacterEnvironment {
@@ -281,6 +374,17 @@ impl Default for CharacterEnvironment {
             building_toxic: false,
             protected_from_toxic: false,
             wind_chill_amount: 0.0,
+            air_temperature: 0.0,
+            air_and_wind_temperature: 0.0,
+            worn_clothing: Vec::new(),
+            sprinting: false,
+            allow_sprint: true,
+            hand_item_equipped_no_sprint: false,
+            sneaking: false,
+            current_speed: 0.0,
+            attacking_weapon_type: None,
+            climbing_state: false,
+            first_action_calories_modifier: None,
         }
     }
 }
