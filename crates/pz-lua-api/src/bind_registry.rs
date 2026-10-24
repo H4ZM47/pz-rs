@@ -17,7 +17,7 @@
 use crate::expose::{expose_class, str_arg, this};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_scripts::objects::items::{AmmoType, GameMode, ItemType};
+use pz_scripts::objects::items::{AmmoType, GameMode, ItemBodyLocation, ItemType};
 use pz_scripts::registry::{RegistryKey, ResourceLocation, DEFAULT_NAMESPACE};
 use pz_scripts::{ScriptError, ScriptManager};
 use std::any::Any;
@@ -287,6 +287,7 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
                 let k = this_key(c)?;
                 let name = match class {
                     ITEM_TYPE_CLASS => ItemType::translation_name(&k),
+                    ITEM_BODY_LOCATION_CLASS => ItemBodyLocation::translation_name(&k).to_string(),
                     _ => k.name.clone(),
                 };
                 Ok(c.push(name))

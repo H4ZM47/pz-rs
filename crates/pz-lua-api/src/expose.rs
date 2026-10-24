@@ -181,6 +181,161 @@ impl LuaObject for ListView {
     }
 }
 
+/// `java.lang.Integer`: a boxed int that reaches Lua without Kahlua's
+/// number conversion, e.g. a `HashMap<?, Integer>` value copied raw by
+/// `transformIntoKahluaTable`. Lua reads it with `intValue()`.
+pub struct JavaInteger(pub i32);
+
+pub const INTEGER_CLASS: &str = "java.lang.Integer";
+
+impl LuaObject for JavaInteger {
+    fn class_name(&self) -> &str {
+        INTEGER_CLASS
+    }
+    fn to_lua_string(&self) -> String {
+        self.0.to_string()
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn super_classes(&self) -> &[&'static str] {
+        &["java.lang.Number"]
+    }
+}
+
+/// Expose `java.lang.Integer`'s value methods (once per thread).
+pub fn expose_integer(thread: &mut Thread) {
+    if !thread.class_metatables.get_str(INTEGER_CLASS).is_nil() {
+        return;
+    }
+    let b = expose_class(thread, INTEGER_CLASS, None);
+    for name in ["intValue", "longValue", "floatValue", "doubleValue", "shortValue", "byteValue"] {
+        b.method(name, move |c| {
+            let v = with_this::<JavaInteger, _>(c, |i| i.0)?;
+            let v = match name {
+                "shortValue" => v as i16 as f64,
+                "byteValue" => v as i8 as f64,
+                _ => v as f64,
+            };
+            Ok(c.push(v))
+        });
+    }
+    b.method("toString", |c| {
+        let v = with_this::<JavaInteger, _>(c, |i| i.0.to_string())?;
+        Ok(c.push(v))
+    });
+    b.method("hashCode", |c| {
+        let v = with_this::<JavaInteger, _>(c, |i| i.0)?;
+        Ok(c.push(v as f64))
+    });
+    // `Integer.equals`: another Integer with the same value.
+    b.method("equals", |c| {
+        let v = with_this::<JavaInteger, _>(c, |i| i.0)?;
+        let eq = match c.arg(1) {
+            Value::Object(o) => o.as_any().downcast_ref::<JavaInteger>().is_some_and(|o| o.0 == v),
+            _ => false,
+        };
+        Ok(c.push(eq))
+    });
+    b.method("compareTo", |c| {
+        let v = with_this::<JavaInteger, _>(c, |i| i.0)?;
+        let other = match c.arg(1) {
+            Value::Object(o) => o.as_any().downcast_ref::<JavaInteger>().map(|o| o.0),
+            _ => None,
+        };
+        let Some(other) = other else {
+            return Err(LuaError::Runtime { message: String::new(), class: "java.lang.ClassCastException" });
+        };
+        Ok(c.push(v.cmp(&other) as i32 as f64))
+    });
+}
+
+/// A live `java.util.HashMap` held by an engine object, like [`ListView`]:
+/// reads go to the owner's current map. [`MapView::entries`] is the
+/// iteration order (`transformIntoKahluaTable` copies it raw); each owner
+/// documents its order.
+pub struct MapView {
+    pub entries: Box<dyn Fn() -> Vec<(Value, Value)>>,
+}
+
+pub const HASH_MAP_CLASS: &str = "java.util.HashMap";
+
+impl MapView {
+    pub fn new(entries: impl Fn() -> Vec<(Value, Value)> + 'static) -> Self {
+        MapView { entries: Box::new(entries) }
+    }
+
+    /// `get(key)` with the raw (unconverted) value.
+    pub fn get_raw(&self, key: &Value) -> Value {
+        (self.entries)().into_iter().find(|(k, _)| k.raw_equals(key)).map(|(_, v)| v).unwrap_or_default()
+    }
+}
+
+impl LuaObject for MapView {
+    fn class_name(&self) -> &str {
+        HASH_MAP_CLASS
+    }
+    /// `AbstractMap.toString`.
+    fn to_lua_string(&self) -> String {
+        let parts: Vec<String> = (self.entries)()
+            .iter()
+            .map(|(k, v)| format!("{}={}", pz_kahlua::exec::java_value_of(k), pz_kahlua::exec::java_value_of(v)))
+            .collect();
+        format!("{{{}}}", parts.join(", "))
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn super_classes(&self) -> &[&'static str] {
+        &["java.util.AbstractMap", "java.util.Map"]
+    }
+}
+
+/// Kahlua's return conversion of a boxed number (`Integer` -> `Double`).
+pub fn to_lua_number(v: Value) -> Value {
+    match &v {
+        Value::Object(o) => match o.as_any().downcast_ref::<JavaInteger>() {
+            Some(i) => Value::Num(i.0 as f64),
+            None => v,
+        },
+        _ => v,
+    }
+}
+
+/// Expose the read side of `java.util.HashMap` for [`MapView`]s (once per
+/// thread; a fuller `HashMap` binding registered first takes precedence).
+pub fn expose_map_view(thread: &mut Thread) {
+    if !thread.class_metatables.get_str(HASH_MAP_CLASS).is_nil() {
+        return;
+    }
+    let b = expose_class(thread, HASH_MAP_CLASS, None);
+    fn view<R>(c: &NativeCall<'_>, f: impl FnOnce(&MapView) -> R) -> LuaResult<R> {
+        with_this::<MapView, _>(c, f)
+    }
+    b.method("size", |c| {
+        let n = view(c, |m| (m.entries)().len())?;
+        Ok(c.push(n as f64))
+    });
+    b.method("isEmpty", |c| {
+        let e = view(c, |m| (m.entries)().is_empty())?;
+        Ok(c.push(e))
+    });
+    b.method("get", |c| {
+        let k = c.arg(1);
+        let v = view(c, |m| m.get_raw(&k))?;
+        Ok(c.push(to_lua_number(v)))
+    });
+    b.method("containsKey", |c| {
+        let k = c.arg(1);
+        let v = view(c, |m| (m.entries)().iter().any(|(e, _)| e.raw_equals(&k)))?;
+        Ok(c.push(v))
+    });
+    b.method("toString", |c| {
+        let s = view(c, |m| m.to_lua_string())?;
+        Ok(c.push(s))
+    });
+}
+
 /// A Java enum constant. Constants are singletons so Lua `==` (identity)
 /// behaves like Java.
 pub struct JavaEnum {

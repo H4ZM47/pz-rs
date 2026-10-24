@@ -10,7 +10,7 @@ pub mod static_init;
 
 pub use class::ClassFile;
 pub use jar::Jar;
-pub use static_init::{static_inits, StaticInit, Value};
+pub use static_init::{method_effects, static_inits, Effect, StaticInit, Value};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
