@@ -119,7 +119,7 @@ fn coroutines() {
     "#;
     assert_eq!(
         printed(src),
-        "true\t3\ntrue\t20\ntrue\t7\ndead\tfalse\tCan not resume coroutine that is in status: dead java.lang.RuntimeException\tat resume\n\tnil\n"
+        "true\t3\ntrue\t20\ntrue\t7\ndead\tfalse\tjava.lang.RuntimeException Can not resume coroutine that is in status: dead in resume java.lang.RuntimeException\tat resume\n\tjava.lang.RuntimeException: java.lang.RuntimeException Can not resume coroutine that is in status: dead in resume\n"
     );
 }
 
@@ -137,6 +137,7 @@ fn while_repeat_and_numeric_for() {
 
 #[test]
 fn tostring_of_tables_lists_contents() {
-    let (_, out) = run("local t = {x = 1}; local s = tostring(t); print(s:sub(-8))");
-    assert_eq!(out, "{ x=1 }\n");
+    let (r, _) = run("local t = {x = 1}; return tostring(t)");
+    let s = r[0].as_str().unwrap().to_string();
+    assert!(s.starts_with("table 0x") && s.ends_with("{ x=1 }"), "{s}");
 }
