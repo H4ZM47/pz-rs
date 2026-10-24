@@ -193,10 +193,25 @@ fn rooms_reach_adjacent_cells() {
         },
     )
     .unwrap();
-    // Before CreateStep2 the part in cell 1,0 is not found there.
-    assert!(grid.get_room_at(257, 10, 0).is_none());
+    // `create` runs `CreateStep2`'s `addRoomsToAdjacentCells`, so the part
+    // in cell 1,0 is found there; the alarm pass does not add it again.
     assert_eq!(grid.get_room_at(255, 10, 0).unwrap().name, "hall");
+    assert_eq!(grid.get_room_at(257, 10, 0).unwrap().name, "hall");
+    assert_eq!(
+        grid.get_chunk_data_from_tile(257, 10)
+            .unwrap()
+            .rooms()
+            .len(),
+        1
+    );
     grid.assign_alarms(&mut Zero, false, false, 1, || 0);
+    assert_eq!(
+        grid.get_chunk_data_from_tile(257, 10)
+            .unwrap()
+            .rooms()
+            .len(),
+        1
+    );
     assert_eq!(grid.get_room_at(257, 10, 0).unwrap().name, "hall");
     assert_eq!(grid.get_room_at(276, 20, 0).unwrap().name, "shed");
     // Squares just outside the room's north-west edge belong to it too.

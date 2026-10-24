@@ -23,7 +23,9 @@ pub mod square;
 pub mod tiledef;
 pub mod world_state;
 
-pub use chunk::{ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare};
+pub use chunk::{
+    ChunkGenerationStatus, ChunkGenerationStatusSet, ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare,
+};
 pub use defs::{BuildingDef, BuildingIdx, MetaObject, RoomDef, RoomIdx, RoomRect};
 pub use iso_lot::IsoLot;
 pub use java::GameRand;
