@@ -1832,7 +1832,9 @@ impl World {
                         self.connect_two_nodes(
                             outside,
                             split,
-                            (cxn.flags & CXN_FLAG_THUMP) | CXN_FLAG_CAN_PATH,
+                            // The native code also marks the rerouted crossing
+                            // as target-only.
+                            (cxn.flags & CXN_FLAG_THUMP) | CXN_FLAG_CAN_PATH | CXN_FLAG_TARGET_PATH,
                         );
                         if let Some(mid) = mid {
                             self.connect_two_nodes(split, mid, 0);

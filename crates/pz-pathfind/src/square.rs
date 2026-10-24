@@ -43,6 +43,10 @@ pub mod bits {
     pub const BENDABLE_N: u64 = 0x20000000;
     pub const TALL_HOPPABLE_N: u64 = 0x40000000;
     pub const TALL_HOPPABLE_W: u64 = 0x80000000;
+    /// The mask the native code actually tests for `TALL_HOPPABLE_W`: the
+    /// 32-bit constant is sign-extended, so any bit from 31 up (including
+    /// `FARMING_PLANT`) matches.
+    pub const TALL_HOPPABLE_W_TEST: u64 = 0xffff_ffff_8000_0000;
     pub const FARMING_PLANT: u64 = 0x100000000;
     pub const ALL_STAIRS: u64 = 0x1f8;
     pub const ALL_SOLID: u64 = SOLID | SOLID_TRANS;

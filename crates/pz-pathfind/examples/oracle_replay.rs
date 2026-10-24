@@ -5,7 +5,10 @@
 //! cargo run --release -p pz-pathfind --example oracle_replay -- <oracle-dir> [region ...] [--show N] [--only INDEX]
 //! ```
 //!
-//! `<oracle-dir>` holds `regions/<name>/{world.txt,chunks.bin,requests.bin,results.txt}`
+//! `<oracle-dir>` holds `regions/<name>/{world.txt,chunks.bin,requests.bin,results.txt}`,
+//! or, for regions with live edits and vehicles, an `ops.bin` call script
+//! (tagged ops with little-endian payloads and verbatim native buffers)
+//! plus `results.txt`,
 //! recorded from the original library; nothing is read from this
 //! repository. Each region is replayed in a fresh world: `initWorld` with
 //! the arguments in `world.txt`, every `chunks.bin` record through
@@ -108,6 +111,9 @@ struct Opts {
 
 /// Replays one region; returns (requests, mismatches).
 fn replay(dir: &Path, opts: &Opts) -> (usize, usize) {
+    if dir.join("ops.bin").exists() {
+        return replay_ops(dir, opts);
+    }
     let world_txt = fs::read_to_string(dir.join("world.txt")).expect("world.txt");
     let args: Vec<i32> = world_txt
         .lines()
@@ -165,6 +171,111 @@ fn replay(dir: &Path, opts: &Opts) -> (usize, usize) {
         }
     }
     (if opts.only.is_some() { 1 } else { n }, mismatches)
+}
+
+/// Little-endian container reader for `ops.bin`.
+struct Ops<'a> {
+    b: &'a [u8],
+    o: usize,
+}
+
+impl<'a> Ops<'a> {
+    fn take(&mut self, n: usize) -> &'a [u8] {
+        let s = &self.b[self.o..self.o + n];
+        self.o += n;
+        s
+    }
+    fn u8(&mut self) -> u8 {
+        self.take(1)[0]
+    }
+    fn i32(&mut self) -> i32 {
+        i32::from_le_bytes(self.take(4).try_into().unwrap())
+    }
+    fn i64(&mut self) -> i64 {
+        i64::from_le_bytes(self.take(8).try_into().unwrap())
+    }
+    fn i16(&mut self) -> i16 {
+        i16::from_le_bytes(self.take(2).try_into().unwrap())
+    }
+    fn f32(&mut self) -> f32 {
+        f32::from_le_bytes(self.take(4).try_into().unwrap())
+    }
+}
+
+/// Replays an interleaved call script (`ops.bin`) in one world, strictly
+/// in file order. `--only` limits the report, not the replay, since
+/// earlier requests can leave visibility graphs built.
+fn replay_ops(dir: &Path, opts: &Opts) -> (usize, usize) {
+    let bytes = fs::read(dir.join("ops.bin")).expect("ops.bin");
+    let expected =
+        parse_results(&fs::read_to_string(dir.join("results.txt")).expect("results.txt"));
+    let mut ops = Ops { b: &bytes, o: 0 };
+    let mut world: Option<World> = None;
+    let (mut n, mut mismatches, mut shown) = (0, 0, 0);
+    let mut out = Vec::new();
+    while ops.o < bytes.len() {
+        let tag = ops.u8();
+        if tag == 0 {
+            let (x, y, w, h) = (ops.i32(), ops.i32(), ops.i32(), ops.i32());
+            let server = ops.u8() != 0;
+            world = Some(World::new(x, y, w, h, server));
+            continue;
+        }
+        let world = world.as_mut().expect("INIT first");
+        match tag {
+            1 => {
+                let (load_id, wx, wy, len) = (ops.i32(), ops.i32(), ops.i32(), ops.i32());
+                let buf = ops.take(len as usize);
+                world
+                    .update_chunk(load_id, wx, wy, buf)
+                    .unwrap_or_else(|e| panic!("updateChunk {wx},{wy}: {e:?}"));
+            }
+            2 => world.update(),
+            3 => {
+                let (load_id, x, y, z) = (ops.i32(), ops.i32(), ops.i32(), ops.i32());
+                let (bits, cost) = (ops.i64(), ops.i16());
+                let (dir, min, max) = (ops.i32(), ops.f32(), ops.f32());
+                world.update_square(load_id, x, y, z, bits, cost, dir, min, max);
+            }
+            4 => {
+                let (wx, wy) = (ops.i32(), ops.i32());
+                world.remove_chunk(wx, wy).expect("removeChunk");
+            }
+            5 | 6 => {
+                let len = ops.i32() as usize;
+                let buf = ops.take(len);
+                if tag == 5 {
+                    world.add_vehicle(buf).expect("addVehicle");
+                } else {
+                    world.teleport_vehicle(buf).expect("teleportVehicle");
+                }
+            }
+            7 => world.remove_vehicle(ops.i32()),
+            8 => {
+                let i = ops.i32() as usize;
+                let req = ops.take(REQUEST_SIZE);
+                let ret = world
+                    .find_path_into(req, &mut out, 3072)
+                    .unwrap_or_else(|e| panic!("request {i}: {e:?}"));
+                if opts.only.is_some_and(|only| only != i) {
+                    continue;
+                }
+                n += 1;
+                let got = decode_path(ret, &out);
+                if got != expected[i] {
+                    mismatches += 1;
+                    if shown < opts.show {
+                        shown += 1;
+                        println!("  #{i}: {}", describe_request(req));
+                        println!("    native: {}", fmt(&expected[i]));
+                        println!("    port:   {}", fmt(&got));
+                    }
+                }
+            }
+            t => panic!("unknown op tag {t} at {}", ops.o - 1),
+        }
+    }
+    (n, mismatches)
 }
 
 fn main() -> ExitCode {

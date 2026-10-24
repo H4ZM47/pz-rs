@@ -51,16 +51,33 @@
 //!
 //! `examples/oracle_replay.rs` replays recorded runs of the original
 //! library (directory passed on the command line; no recorded data is
-//! kept in this repository). On 6 map regions (town, dense downtown with
-//! basements, high-rises up to level 13, open forest, and a synthetic
-//! sloped-ramp region) all 6300 requests, 4136 of them with a path, match
-//! the native output bit for bit: return code, node count, raw float bits
-//! of every node and node flags.
+//! kept in this repository). Plain regions are replayed as chunk loads
+//! followed by requests; derived regions are replayed from an interleaved
+//! call script (chunk and square updates, chunk removal and re-adding,
+//! stale load ids, vehicle add / teleport / remove, requests) in one
+//! world, strictly in order. Every request matches the native output bit
+//! for bit (return code, node count, raw float bits of every node, node
+//! flags):
 //!
-//! Not covered by that data: vehicles and the visibility graphs built
-//! around them, farming plants, bendable fences and open doors or
-//! windows. Those paths are ported from the disassembly and checked by the
-//! behavioural tests in `tests/synthetic.rs` only.
+//! | region | requests | mismatches |
+//! |---|---|---|
+//! | 6 plain regions (town, dense downtown with basements, high-rises up to level 13, forest, synthetic ramps) | 6300 | 0 |
+//! | two regions with open, closed and barricaded doors and windows, doors toggled live | 2000 | 0 |
+//! | farming plants and bendable fences | 900 | 0 |
+//! | two regions with 24 vehicles each, teleports, removals, chunk reloads | 1822 | 0 |
+//!
+//! The vehicle regions also depend on which visibility graphs earlier
+//! requests have already built (graphs are built lazily, on first touch,
+//! after each rebuild); building every graph up front changes 3 of those
+//! results, so the lazy order is reproduced too.
+//!
+//! Two native details found by that replay:
+//!
+//! * The tall-hoppable-west test in `canNotMoveBetween` and the search
+//!   costs uses the sign-extended 32-bit constant, so any square bit from
+//!   31 up (including the farming-plant bit) counts as a tall west fence.
+//! * Door, window and fence crossings rerouted through a vehicle's crawl
+//!   nodes are also marked target-only.
 
 // Loops index squares and nodes by position to keep the native iteration
 // order visible.
