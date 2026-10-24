@@ -29,4 +29,4 @@ pub use element::UIElement;
 pub use manager::{with_ui, MouseState, UIManager};
 pub use sprite::{SpriteRenderer, TextAlign, UiDrawCmd};
 pub use text::TextRenderer;
-pub use texture::{ColorObject, UiTexture};
+pub use texture::ColorObject;

@@ -16,7 +16,8 @@ use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, NativeFunction, TableRef, Thread, Value};
 use pz_render::Rgba;
 use pz_text::UIFont;
-use pz_ui::{with_ui, ColorObject, UIElement, UIManager, UiTexture};
+use pz_render::{LuaTexture, Texture};
+use pz_ui::{with_ui, ColorObject, UIElement, UIManager};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -89,9 +90,9 @@ fn el_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Rc<UIElement>> {
     })
 }
 
-fn tex_arg(c: &NativeCall<'_>, i: usize) -> Option<UiTexture> {
+fn tex_arg(c: &NativeCall<'_>, i: usize) -> Option<Texture> {
     match c.arg(i) {
-        Value::Object(o) => o.as_any().downcast_ref::<UiTexture>().cloned(),
+        Value::Object(o) => o.as_any().downcast_ref::<LuaTexture>().map(LuaTexture::get),
         _ => None,
     }
 }
@@ -880,9 +881,9 @@ fn register_manager(thread: &mut Thread) {
         let (w, h, a) = if c.nargs() >= 6 {
             (num_arg(c, 3) as i32, num_arg(c, 4) as i32, num_arg(c, 5))
         } else {
-            (t.width(), t.height(), 1.0)
+            (t.width as i32, t.height as i32, 1.0)
         };
-        with_ui(|m| m.sprite.renderi(Some(&t.tex), x as i32, y as i32, w, h, Rgba(1.0, 1.0, 1.0, a as f32)));
+        with_ui(|m| m.sprite.renderi(Some(&t), x as i32, y as i32, w, h, Rgba(1.0, 1.0, 1.0, a as f32)));
         Ok(0)
     });
     // FadeIn(seconds) / FadeIn(playerIndex, seconds); FadeOut likewise.

@@ -772,6 +772,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "png",
  "pz-fs",
+ "pz-kahlua",
 ]
 
 [[package]]
