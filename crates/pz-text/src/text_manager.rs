@@ -277,6 +277,26 @@ impl TextManager {
         }
     }
 
+    /// `getFontFromEnum` as a shared handle (the same object for every
+    /// `UIFont` that maps to it, like the original's references).
+    pub fn font_rc(&self, font: Option<UIFont>) -> Option<Rc<AngelCodeFont>> {
+        match font {
+            None => self.font.clone(),
+            Some(f) => self.enum_to_font[f as usize]
+                .clone()
+                .or_else(|| self.font.clone()),
+        }
+    }
+
+    /// `getNormalFromFontSize(points)` as a shared handle.
+    pub fn normal_rc(&self, points: i32) -> Option<Rc<AngelCodeFont>> {
+        usize::try_from(points - 11)
+            .ok()
+            .and_then(|i| self.normal.get(i))
+            .cloned()
+            .flatten()
+    }
+
     /// `getNormalFromFontSize(points)`.
     pub fn get_normal_from_font_size(&self, points: i32) -> Option<&AngelCodeFont> {
         self.normal

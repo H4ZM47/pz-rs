@@ -128,10 +128,30 @@ dependencies = [
 [[package]]
 name = "pz-client"
 version = "0.1.0"
+dependencies = [
+ "pz-fs",
+ "pz-kahlua",
+ "pz-lua-api",
+ "pz-ui",
+]
+
+[[package]]
+name = "pz-core"
+version = "0.1.0"
+dependencies = [
+ "pz-kahlua",
+]
 
 [[package]]
 name = "pz-engine"
 version = "0.1.0"
+dependencies = [
+ "pz-core",
+ "pz-fs",
+ "pz-kahlua",
+ "pz-lua-api",
+ "pz-ui",
+]
 
 [[package]]
 name = "pz-fs"
@@ -151,6 +171,7 @@ name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "pz-core",
  "pz-fs",
  "pz-kahlua",
  "pz-render",

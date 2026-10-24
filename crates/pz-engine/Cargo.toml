@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pz-core.workspace = true
+pz-kahlua.workspace = true
+pz-lua-api.workspace = true
+pz-ui.workspace = true
+pz-fs.workspace = true
