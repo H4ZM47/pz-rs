@@ -20,7 +20,7 @@ use pz_inventory::dictionary::WorldDictionary;
 use pz_inventory::factory::ScriptItems;
 use pz_world::chunk::IsoChunk;
 use pz_world::objects::{IsoObject, ItemContainer, ObjectKind, ObjectName, SpriteName};
-use pz_world::save::animal::{AnimalBreedDef, AnimalDefinition, IsoAnimal};
+use pz_world::save::animal::{AnimalBreedDef, AnimalDefinition, CharacterStatDecl, IsoAnimal};
 use pz_world::save::chunk_file::{chunk_path, load_chunk, save_chunk};
 use pz_world::save::items::{AllItems, ItemBlob, ItemRegistry};
 use pz_world::save::object_io::sprite_save_id;
@@ -569,9 +569,24 @@ fn main() {
     let game = Path::new(&a[1]);
     let tables = SpriteTables::from_text(&std::fs::read_to_string(&a[2]).unwrap()).unwrap();
     let mut save_tables = SaveTables::from_text(&std::fs::read_to_string(&a[3]).unwrap()).unwrap();
-    save_tables
-        .load_character_stats(&pz_classfile::Jar::open(game.join("projectzomboid.jar")).unwrap())
-        .unwrap();
+    // CharacterStat declarations in ORDERED_STATS order, as the oracle run
+    // read them (`stat` lines of animal_defs.txt).
+    if let Ok(t) = std::fs::read_to_string(Path::new(&a[5]).join("animal_defs.txt")) {
+        save_tables.character_stats = t
+            .lines()
+            .filter_map(|l| l.strip_prefix("stat\t"))
+            .map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                CharacterStatDecl {
+                    field: f[0].into(),
+                    id: f[1].into(),
+                    minimum: f[2].parse().unwrap(),
+                    maximum: f[3].parse().unwrap(),
+                    default: f[4].parse().unwrap(),
+                }
+            })
+            .collect();
+    }
     let save_dir = Path::new(&a[4]);
     let oracle = Path::new(&a[5]);
     let mut sprites =

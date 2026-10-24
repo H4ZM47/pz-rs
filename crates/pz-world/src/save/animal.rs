@@ -12,73 +12,30 @@ use super::lua_table::LuaTable;
 use super::{SaveCtx, SaveHooks};
 use pz_inventory::item::AnimalGene;
 
-/// One `CharacterStat`: its id, range and default value.
+/// One `CharacterStat` declaration: the static field, the stat id, its
+/// range and default value. Mirrors `pz_scripts`' `CharacterStatDecl`
+/// (`BuiltinTables::character_stats`, read from the installed game); this
+/// crate only takes the list as input.
 #[derive(Clone, Debug, PartialEq)]
-pub struct CharacterStatDef {
+pub struct CharacterStatDecl {
+    pub field: String,
     pub id: String,
-    pub min: f32,
-    pub max: f32,
+    pub minimum: f32,
+    pub maximum: f32,
     pub default: f32,
 }
 
-const CHARACTER_STAT: &str = "zombie/characters/CharacterStat";
-
-/// Reads `CharacterStat.ORDERED_STATS` (the order `Stats.save` writes) and
-/// each stat's `register(id, min, max, default)` arguments from the
-/// installed game's `projectzomboid.jar`.
-pub fn character_stats_from_jar(jar: &pz_classfile::Jar) -> Result<Vec<CharacterStatDef>, String> {
-    use pz_classfile::Value;
-    let cf = pz_classfile::load_class(jar, CHARACTER_STAT).map_err(|e| e.to_string())?;
-    let inits = pz_classfile::static_inits(&cf).map_err(|e| e.to_string())?;
-    let num = |v: &Value| match v {
-        Value::Float(f) => Some(*f as f32),
-        Value::Int(i) => Some(*i as f32),
-        _ => None,
-    };
-    let mut registered: Vec<(String, CharacterStatDef)> = Vec::new();
-    for i in &inits {
-        if i.class != cf.this_class {
-            continue;
-        }
-        let Value::Call { name, args, .. } = &i.value else {
-            continue;
-        };
-        if name != "register" || args.len() != 4 {
-            continue;
-        }
-        let (Value::Str(id), Some(min), Some(max), Some(default)) =
-            (&args[0], num(&args[1]), num(&args[2]), num(&args[3]))
-        else {
-            continue;
-        };
-        registered.push((
-            i.field.clone(),
-            CharacterStatDef {
-                id: id.clone(),
-                min,
-                max,
-                default,
-            },
-        ));
-    }
-    let ordered = inits
+/// The declarations in `CharacterStat.ORDERED_STATS` order (the order
+/// `Stats.save` writes), from `BuiltinTables::character_stats` and
+/// `BuiltinTables::ordered_stats` (field names). `None` if a name has no
+/// declaration.
+pub fn ordered_character_stats(
+    decls: &[CharacterStatDecl],
+    ordered: &[String],
+) -> Option<Vec<CharacterStatDecl>> {
+    ordered
         .iter()
-        .rev()
-        .find(|i| i.class == cf.this_class && i.field == "ORDERED_STATS")
-        .ok_or("CharacterStat.ORDERED_STATS not found")?;
-    let Value::Array(elems) = &ordered.value else {
-        return Err("CharacterStat.ORDERED_STATS is not an array".into());
-    };
-    elems
-        .iter()
-        .map(|e| match e {
-            Value::Static { name, .. } => registered
-                .iter()
-                .find(|(f, _)| f == name)
-                .map(|(_, d)| d.clone())
-                .ok_or_else(|| format!("CharacterStat.{name} not registered")),
-            _ => Err("unexpected ORDERED_STATS element".into()),
-        })
+        .map(|f| decls.iter().find(|d| d.field == *f).cloned())
         .collect()
 }
 
@@ -99,17 +56,17 @@ pub struct Stats(pub Vec<f32>);
 
 impl Stats {
     /// Every stat at its default value.
-    pub fn new(defs: &[CharacterStatDef]) -> Self {
+    pub fn new(defs: &[CharacterStatDecl]) -> Self {
         Stats(defs.iter().map(|d| d.default).collect())
     }
 
     /// `Stats.set`: clamped to the stat's range.
-    pub fn set(&mut self, defs: &[CharacterStatDef], i: usize, v: f32) {
-        self.0[i] = clamp(v, defs[i].min, defs[i].max);
+    pub fn set(&mut self, defs: &[CharacterStatDecl], i: usize, v: f32) {
+        self.0[i] = clamp(v, defs[i].minimum, defs[i].maximum);
     }
 
     /// `Stats.load(ByteBuffer, int)`.
-    pub fn load(&mut self, defs: &[CharacterStatDef], r: &mut Reader<'_>) -> SaveResult<()> {
+    pub fn load(&mut self, defs: &[CharacterStatDecl], r: &mut Reader<'_>) -> SaveResult<()> {
         for i in 0..defs.len() {
             let v = r.f32()?;
             self.set(defs, i, v);

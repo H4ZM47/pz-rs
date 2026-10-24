@@ -79,14 +79,19 @@ fn trough(linked: (i32, i32)) -> IsoObject {
 }
 
 /// Made-up stats: a 0..1 stat and a 20..40 stat defaulting to 30.
-fn stat_defs() -> Vec<CharacterStatDef> {
-    let d = |id: &str, min, max, default| CharacterStatDef {
+fn stat_defs() -> Vec<CharacterStatDecl> {
+    let d = |id: &str, minimum, maximum, default| CharacterStatDecl {
+        field: id.to_uppercase(),
         id: id.into(),
-        min,
-        max,
+        minimum,
+        maximum,
         default,
     };
-    vec![d("Calm", 0.0, 1.0, 0.0), d("Warmth", 20.0, 40.0, 30.0)]
+    // Declared in one order, saved in another.
+    let decls = vec![d("Warmth", 20.0, 40.0, 30.0), d("Calm", 0.0, 1.0, 0.0)];
+    let order = ["CALM".to_string(), "WARMTH".to_string()];
+    assert!(ordered_character_stats(&decls, &["NONE".to_string()]).is_none());
+    ordered_character_stats(&decls, &order).unwrap()
 }
 
 fn tables() -> SaveTables {
