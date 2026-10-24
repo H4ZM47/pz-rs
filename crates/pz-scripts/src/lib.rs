@@ -7,9 +7,11 @@ pub mod base;
 pub mod bucket;
 pub mod java;
 pub mod manager;
+pub mod math;
 pub mod module;
 pub mod objects;
 pub mod parser;
+pub mod registry;
 pub mod script_type;
 
 pub use base::{BaseScriptObject, ScriptError, ScriptObject, ScriptRef, ScriptResult};
