@@ -235,6 +235,79 @@ pub enum DrawCmd {
     ProjectedQuad { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32, nearest: bool },
     /// A 3D model draw (`basicEffect`), depth-tested against the world.
     Model(Box<model::ModelDraw>),
+    /// An `IsoWater`/`IsoPuddles` vertex-buffer draw (`ModelManager.RenderWater`,
+    /// `RenderPuddles`, `IsoPuddles.RenderToChunkTexture`) with the water or
+    /// puddles shader.
+    Surface(Box<SurfaceDraw>),
+}
+
+/// The shader of a [`SurfaceDraw`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SurfaceProgram {
+    /// `water` (water quality 1).
+    Water,
+    /// `water_hq` (water quality 0).
+    WaterHq,
+    /// `puddles_hq` (puddles quality 0).
+    PuddlesHq,
+    /// `puddles_mq` (puddles quality 1).
+    PuddlesMq,
+    /// `puddles_lq` (puddles quality 2, drawn into chunk textures).
+    PuddlesLq,
+}
+
+impl SurfaceProgram {
+    pub fn is_water(self) -> bool {
+        matches!(self, SurfaceProgram::Water | SurfaceProgram::WaterHq)
+    }
+}
+
+/// One vertex of an `IsoWater`/`IsoPuddles` quad as `RenderData.addSquare`
+/// packs it: four shader attributes (water: depth, flow, speed, external;
+/// puddles: dirNE, dirNW, dirAll, dirNone), the position, the ABGR vertex
+/// light and the fragment depth (`aFragDepth`, window depth 0..1).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SurfaceVertex {
+    pub attr: [f32; 4],
+    pub pos: [f32; 2],
+    pub color: u32,
+    pub depth: f32,
+}
+
+/// The uniforms `WaterShader.updateWaterParams` / `PuddlesShader.updatePuddlesParams`
+/// set.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SurfaceUniforms {
+    /// `WTime`.
+    pub time: f32,
+    /// `WOffset` (already shifted by -90000, -640000).
+    pub offset: [f32; 4],
+    /// `WViewport`.
+    pub viewport: [f32; 4],
+    /// `WReflectionParam` (`SkyBox.getTextureShift`).
+    pub reflection_param: f32,
+    /// Water: `[WParamWind.x, WParamWind.y, WParamWindSpeed,
+    /// WParamRainIntensity]` and zeros. Puddles: columns 0 and 1 of
+    /// `PuddlesParams` (`[windX, windY, windSpeed, z]`, `[muddy, wetGround,
+    /// size, rainIntensity]`).
+    pub params: [[f32; 4]; 2],
+}
+
+/// A batch of water or puddle quads. The draw sets its own GL state for its
+/// duration (`glPushAttrib`/`glPopAttrib` in the original): depth test on
+/// with `depth_func`, depth writes off, blending with `blend_func`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfaceDraw {
+    pub program: SurfaceProgram,
+    pub quads: Vec<[SurfaceVertex; 4]>,
+    pub uniforms: SurfaceUniforms,
+    /// Texture unit 0: `WaterGroundTex` (`river_bottom.png`) for water,
+    /// `PuddlesHM` (`puddles_hm.png`) for puddles.
+    pub ground: Option<Texture>,
+    /// `WaterTextureReflectionA`/`B` (`SkyBox.getTextureCurrent/Prev`).
+    pub reflection: [Option<Texture>; 2],
+    pub depth_func: u32,
+    pub blend_func: [u32; 4],
 }
 
 /// The `WeatherShader` uniforms the screen pass reads.

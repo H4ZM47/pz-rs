@@ -98,6 +98,8 @@ struct Globals {
     extra: f32,
     /// The screen pass's uniforms (see screen.wgsl).
     screen: [[f32; 4]; 2],
+    /// The water and puddles uniforms (see surface.wgsl).
+    surface: [[f32; 4]; 5],
 }
 
 /// Uniform blocks are bound at 256-byte aligned offsets.
@@ -122,6 +124,8 @@ enum Tex2 {
     Offscreen,
     /// The batch texture sampled GL_NEAREST.
     Nearest,
+    /// A surface draw's first reflection texture, white when missing.
+    Surface(Option<u32>),
 }
 
 /// Where a pass draws.
@@ -284,6 +288,7 @@ impl Gpu {
         let world_tile = module("tileWithDepth", format!("{world}\n{}", include_str!("world_tile.wgsl")));
         let world_composite = module("chunkShader", format!("{world}\n{}", include_str!("world_composite.wgsl")));
         let screen = module("screen", include_str!("screen.wgsl").to_string());
+        let surface = module("surface", include_str!("surface.wgsl").to_string());
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -336,6 +341,7 @@ impl Gpu {
             sprite,
             world_tile,
             world_composite,
+            surface,
             screen,
         };
         let depth_stencil = depth_stencil_view(&device, width, height);
@@ -513,7 +519,7 @@ impl Gpu {
             if let Some(id) = f.batches[i].texture {
                 self.ensure_texture(id, textures);
             }
-            if let Tex2::Texture(id) = f.batches[i].tex2 {
+            if let Tex2::Texture(id) | Tex2::Surface(Some(id)) = f.batches[i].tex2 {
                 self.ensure_texture(id, textures);
             }
             if let Some(id) = f.batches[i].tex3 {
@@ -667,9 +673,14 @@ impl Gpu {
                         Some(o) => &o.bind,
                         None => continue,
                     },
+                    Tex2::Surface(id) => {
+                        pass.set_bind_group(2, id.and_then(|id| self.textures.get(&id)).unwrap_or(white), &[]);
+                        pass.set_bind_group(3, b.tex3.and_then(|id| self.textures.get(&id)).unwrap_or(white), &[]);
+                        b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white)
+                    }
                     Tex2::None => b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white),
                 };
-                if let Some(id) = b.tex3 {
+                if let (Some(id), false) = (b.tex3, matches!(b.tex2, Tex2::Surface(_))) {
                     let Some(t3) = self.textures.get(&id) else { continue };
                     pass.set_bind_group(3, t3, &[]);
                 }
@@ -822,6 +833,41 @@ impl Gpu {
                 let u = (f.model_uniforms.len() - 1) as u32;
                 let key = model::ModelKey { kind: d.mesh.kind, pass: d.pass, target: f.target.kind() };
                 f.push_model(key, d.mesh.id, u, d.texture.as_ref().and_then(|t| t.id), &self.state);
+            }
+            DrawCmd::Surface(d) => {
+                // The original pushes and pops the GL attributes around the
+                // draw.
+                let saved = self.state.clone();
+                self.state.depth_test = true;
+                self.state.depth_func = d.depth_func;
+                self.state.depth_mask = false;
+                self.state.blend = true;
+                self.state.blend_func = d.blend_func;
+                self.state.alpha_test = false;
+                let u = &d.uniforms;
+                let flip = if f.target == PassTarget::Main { f.viewport.1 as f32 } else { 0.0 };
+                let mut g = Globals::zeroed();
+                g.mvp = f.mvp_for_target();
+                g.alpha_func = 8;
+                g.clip_z = 0.5;
+                g.surface = [[u.time, u.reflection_param, flip, 0.0], u.offset, u.viewport, u.params[0], u.params[1]];
+                let gi = f.push_globals(g);
+                let key = self.key(f, Program::Surface(d.program));
+                let tex = d.ground.as_ref().and_then(|t| t.id);
+                let refl = |i: usize| d.reflection[i].as_ref().and_then(|t| t.id);
+                f.tex3 = refl(1);
+                for q in &d.quads {
+                    let v: [Vertex; 4] = std::array::from_fn(|i| {
+                        let s = &q[i];
+                        Vertex { pos: s.pos, uv: [s.attr[0], s.attr[1]], color: s.color, uv1: [s.attr[2], s.attr[3]], uv2: [0.0; 2], depth: [s.depth, 0.0] }
+                    });
+                    // IsoWater.renderSome splits on the 0-2 diagonal when
+                    // corners 0 and 2 have the same depth; IsoPuddles always.
+                    let split02 = !d.program.is_water() || q[0].attr[0] == q[2].attr[0];
+                    f.push_split(key, tex, Tex2::Surface(refl(0)), &self.state, gi, v, split02);
+                }
+                f.tex3 = None;
+                self.state = saved;
             }
             DrawCmd::ProjectedQuad { texture, pos, uv, color, nearest } => {
                 let Some(id) = texture.id else { return };
@@ -1151,7 +1197,7 @@ impl FrameBuilder {
 
     fn globals(&mut self, st: &GlState, mvp: [[f32; 4]; 4], clip_z: f32) -> u32 {
         let (alpha_func, alpha_ref) = if st.alpha_test { (st.alpha_func.wrapping_sub(gl::NEVER), st.alpha_ref) } else { (8, 0.0) };
-        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, extra: 0.0, screen: [[0.0; 4]; 2] };
+        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, extra: 0.0, screen: [[0.0; 4]; 2], surface: [[0.0; 4]; 5] };
         self.push_globals(g)
     }
 
@@ -1186,6 +1232,14 @@ impl FrameBuilder {
     }
 
     fn push(&mut self, key: PipeKey, texture: Option<u32>, tex2: Tex2, st: &GlState, globals: u32, verts: [Vertex; 4]) {
+        let split02 = verts[0].color == verts[2].color;
+        self.push_split(key, texture, tex2, st, globals, verts, split02);
+    }
+
+    /// [`FrameBuilder::push`] with the quad's diagonal given: 0-2 when
+    /// `split02`, else 1-3.
+    #[allow(clippy::too_many_arguments)]
+    fn push_split(&mut self, key: PipeKey, texture: Option<u32>, tex2: Tex2, st: &GlState, globals: u32, verts: [Vertex; 4], split02: bool) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
             self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
@@ -1196,7 +1250,7 @@ impl FrameBuilder {
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&verts);
         let start = self.indices.len() as u32;
-        self.indices.extend_from_slice(&quad_indices(base, verts[0].color, verts[2].color));
+        self.indices.extend_from_slice(&if split02 { quad_indices(base, 0, 0) } else { quad_indices(base, 0, 1) });
         let end = self.indices.len() as u32;
         let pass = self.passes.last_mut().expect("pass");
         match self.batches.last_mut() {
