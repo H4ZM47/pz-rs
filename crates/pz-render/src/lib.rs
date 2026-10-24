@@ -6,6 +6,7 @@
 //! Texture pixels are decoded here ([`TextureManager`]); the backend uploads
 //! them from [`TextureManager::data`] by [`Texture::id`].
 
+pub mod gl;
 pub mod image;
 pub mod iso;
 pub mod lua;
