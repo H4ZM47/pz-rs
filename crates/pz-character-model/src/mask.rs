@@ -121,7 +121,9 @@ pub struct CharacterMask {
 
 impl Default for CharacterMask {
     fn default() -> Self {
-        CharacterMask { visible: [true; 16] }
+        CharacterMask {
+            visible: [true; 16],
+        }
     }
 }
 
@@ -158,7 +160,9 @@ impl CharacterMask {
     }
 
     pub fn is_blood_body_part_visible(&self, b: BloodBodyPartType) -> bool {
-        b.character_mask_parts().iter().any(|&p| self.is_part_visible(p))
+        b.character_mask_parts()
+            .iter()
+            .any(|&p| self.is_part_visible(p))
     }
 
     fn is_all(&self, v: bool) -> bool {
@@ -175,7 +179,9 @@ impl CharacterMask {
 
     /// `forEachVisible`: the visible leaves in enum order.
     pub fn visible_leaves(&self) -> Vec<Part> {
-        Part::leaves().filter(|&p| self.is_part_visible(p)).collect()
+        Part::leaves()
+            .filter(|&p| self.is_part_visible(p))
+            .collect()
     }
 }
 
@@ -208,7 +214,10 @@ pub const BLOOD_PARTS: usize = 18;
 impl BloodBodyPartType {
     pub const ALL: [BloodBodyPartType; BLOOD_PARTS] = {
         use BloodBodyPartType::*;
-        [HandL, HandR, ForeArmL, ForeArmR, UpperArmL, UpperArmR, TorsoUpper, TorsoLower, Head, Neck, Groin, UpperLegL, UpperLegR, LowerLegL, LowerLegR, FootL, FootR, Back]
+        [
+            HandL, HandR, ForeArmL, ForeArmR, UpperArmL, UpperArmR, TorsoUpper, TorsoLower, Head,
+            Neck, Groin, UpperLegL, UpperLegR, LowerLegL, LowerLegR, FootL, FootR, Back,
+        ]
     };
 
     pub fn index(self) -> usize {

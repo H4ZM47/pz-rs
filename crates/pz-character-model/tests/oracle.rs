@@ -8,6 +8,7 @@
 
 #![allow(clippy::needless_range_loop)]
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -17,8 +18,9 @@ use pz_anim::AnimationPlayer;
 use pz_character_model::lights::{EffectLight, PlayerLightData, ResultLight};
 use pz_character_model::model_tree::{InstanceKind, ModelInstance};
 use pz_character_model::render::transform_to_parent;
-use pz_character_model::{ModelScript, TextureSource};
+use pz_character_model::{ModelScript, ModelScriptRef, TextureSource};
 use pz_model::{AnimationClip, Keyframe, Quat, SkinningData};
+use pz_scripts::{ScriptManager, ScriptObject};
 
 fn f(s: &str) -> f32 {
     s.parse().unwrap()
@@ -46,9 +48,12 @@ fn load_skinning(path: &std::path::Path) -> SkinningData {
                 sd.skeleton_hierarchy = vec![-1; n];
             }
             "name" => {
-                sd.bone_indices.insert(p[2].to_string(), p[1].parse().unwrap());
+                sd.bone_indices
+                    .insert(p[2].to_string(), p[1].parse().unwrap());
             }
-            "parent" => sd.skeleton_hierarchy[p[1].parse::<usize>().unwrap()] = p[2].parse().unwrap(),
+            "parent" => {
+                sd.skeleton_hierarchy[p[1].parse::<usize>().unwrap()] = p[2].parse().unwrap()
+            }
             "bind" => sd.bind_pose[p[1].parse::<usize>().unwrap()] = m16(&p[2..]),
             "invbind" => sd.inverse_bind_pose[p[1].parse::<usize>().unwrap()] = m16(&p[2..]),
             "offset" => sd.bone_offset[p[1].parse::<usize>().unwrap()] = m16(&p[2..]),
@@ -56,13 +61,23 @@ fn load_skinning(path: &std::path::Path) -> SkinningData {
                 if let Some(c) = clip.take() {
                     sd.animation_clips.insert(c.name.clone(), c);
                 }
-                clip = Some(AnimationClip { name: p[1].into(), duration: f(p[2]), keep_last_frame: p[3] == "true", ..Default::default() });
+                clip = Some(AnimationClip {
+                    name: p[1].into(),
+                    duration: f(p[2]),
+                    keep_last_frame: p[3] == "true",
+                    ..Default::default()
+                });
             }
             "k" => clip.as_mut().unwrap().keyframes.push(Keyframe {
                 bone: p[1].parse().unwrap(),
                 time: f(p[2]),
                 position: [f(p[3]), f(p[4]), f(p[5])],
-                rotation: Quat { x: f(p[6]), y: f(p[7]), z: f(p[8]), w: f(p[9]) },
+                rotation: Quat {
+                    x: f(p[6]),
+                    y: f(p[7]),
+                    z: f(p[8]),
+                    w: f(p[9]),
+                },
                 scale: [f(p[10]), f(p[11]), f(p[12])],
                 bone_name: p.get(13).unwrap_or(&"").to_string(),
             }),
@@ -75,9 +90,14 @@ fn load_skinning(path: &std::path::Path) -> SkinningData {
     sd
 }
 
-fn script(dir: &std::path::Path, file: &str, name: &str) -> Rc<ModelScript> {
+/// One `model <name> { ... }` block of a generated script file, loaded by
+/// pz-scripts' `ModelScript.Load`.
+fn script(sm: &ScriptManager, dir: &std::path::Path, file: &str, name: &str) -> ModelScriptRef {
     let t = std::fs::read_to_string(dir.join(file)).unwrap();
-    let start = t.find(&format!("    model {name}\n")).or_else(|| t.find(&format!("    model {name}\r\n"))).unwrap();
+    let start = t
+        .find(&format!("    model {name}\n"))
+        .or_else(|| t.find(&format!("    model {name}\r\n")))
+        .unwrap();
     let open = start + t[start..].find('{').unwrap();
     let mut depth = 0;
     let mut end = open;
@@ -92,7 +112,10 @@ fn script(dir: &std::path::Path, file: &str, name: &str) -> Rc<ModelScript> {
             }
         }
     }
-    Rc::new(ModelScript::parse(name, &t[start..=end]))
+    let mut m = ModelScript::new();
+    m.init_load_pp(sm, name);
+    m.load(sm, name, &t[start..=end]).unwrap();
+    Rc::new(RefCell::new(m))
 }
 
 fn inst() -> ModelInstance {
@@ -120,7 +143,10 @@ fn inst() -> ModelInstance {
 
 #[test]
 fn matches_model_oracle() {
-    let (Ok(dir), Ok(scripts)) = (std::env::var("PZ_MODEL_ORACLE_DIR"), std::env::var("PZ_SCRIPTS_DIR")) else {
+    let (Ok(dir), Ok(scripts)) = (
+        std::env::var("PZ_MODEL_ORACLE_DIR"),
+        std::env::var("PZ_SCRIPTS_DIR"),
+    ) else {
         eprintln!("PZ_MODEL_ORACLE_DIR / PZ_SCRIPTS_DIR not set; skipping");
         return;
     };
@@ -134,22 +160,23 @@ fn matches_model_oracle() {
     let t = player.play("Bob_Walk", true, false, -1.0).unwrap();
     player.track_mut(t).unwrap().set_blend_weight(1.0);
 
-    let body_script = script(&scripts, "models_characters.txt", "MaleBody");
-    let bowl = script(&scripts, "models_items.txt", "Bowl");
-    let rifle = script(&scripts, "models_weapons.txt", "HuntingRifle");
+    let sm = ScriptManager::new();
+    let body_script = script(&sm, &scripts, "models_characters.txt", "MaleBody");
+    let bowl = script(&sm, &scripts, "models_items.txt", "Bowl");
+    let rifle = script(&sm, &scripts, "models_weapons.txt", "HuntingRifle");
     let mut m_body = inst();
     m_body.is_static = false;
     m_body.model_script = Some(body_script);
     let mut prim = inst();
     prim.parent_bone_name = Some("Bip01_Prop1".into());
-    prim.scale = bowl.scale;
+    prim.scale = bowl.borrow().scale;
     prim.model_script = Some(bowl.clone());
     let mut sec = prim.clone();
     sec.parent_bone_name = Some("Bip01_Prop2".into());
     let mut back = inst();
     back.attachment_name_self = Some("rifle_back".into());
     back.attachment_name_parent = Some("rifle_back".into());
-    back.scale = rifle.scale;
+    back.scale = rifle.borrow().scale;
     back.model_script = Some(rifle.clone());
     let mut scope = inst();
     scope.attachment_name_self = Some("scope".into());
@@ -166,10 +193,28 @@ fn matches_model_oracle() {
     let mut np = 0;
     let mut nl = 0;
     let mut cur_back = [[0f32; 4]; 4];
-    let ident = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+    let ident = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
     let mut lights = PlayerLightData::default();
     let mut fade_frame = 0;
-    let seq: [&[i32]; 12] = [&[1, 2], &[1, 2], &[1, 2, 3], &[2, 3], &[2, 3], &[3], &[3], &[], &[], &[], &[1], &[1]];
+    let seq: [&[i32]; 12] = [
+        &[1, 2],
+        &[1, 2],
+        &[1, 2, 3],
+        &[2, 3],
+        &[2, 3],
+        &[3],
+        &[3],
+        &[],
+        &[],
+        &[],
+        &[1],
+        &[1],
+    ];
     for line in frames.lines() {
         let p: Vec<&str> = line.split_whitespace().collect();
         match p[0] {
@@ -183,7 +228,8 @@ fn matches_model_oracle() {
                     "prim" => transform_to_parent(&prim, None, Some((&m_body, &ident)), &player),
                     "sec" => transform_to_parent(&sec, None, Some((&m_body, &ident)), &player),
                     "back" => {
-                        cur_back = transform_to_parent(&back, None, Some((&m_body, &ident)), &player);
+                        cur_back =
+                            transform_to_parent(&back, None, Some((&m_body, &ident)), &player);
                         cur_back
                     }
                     "band" => transform_to_parent(&band, None, Some((&m_body, &ident)), &player),
@@ -217,9 +263,24 @@ fn matches_model_oracle() {
                     [14.0, 3.0, 2.0, 0.9, 0.2, 0.1, 4.0],
                 ];
                 let l = ls[i];
-                let e = EffectLight { x: l[0], y: l[1], z: l[2], r: l[3], g: l[4], b: l[5], radius: l[6] as i32 };
+                let e = EffectLight {
+                    x: l[0],
+                    y: l[1],
+                    z: l[2],
+                    r: l[3],
+                    g: l[4],
+                    b: l[5],
+                    radius: l[6] as i32,
+                };
                 let m = e.to_model_light([10.3, 10.6, 0.2], (!ang.is_nan()).then_some(ang));
-                let got = [m.direction[0], m.direction[1], m.direction[2], m.colour[0], m.colour[1], m.colour[2]];
+                let got = [
+                    m.direction[0],
+                    m.direction[1],
+                    m.direction[2],
+                    m.colour[0],
+                    m.colour[1],
+                    m.colour[2],
+                ];
                 for k in 0..6 {
                     max_l = max_l.max((f(p[3 + k]) - got[k]).abs());
                 }
@@ -260,7 +321,12 @@ fn matches_model_oracle() {
                     .collect();
                 if ours.join(" ") != p[2..].join(" ") {
                     fade_mismatch += 1;
-                    eprintln!("fade frame {}: ours {:?} java {:?}", fade_frame - 1, ours, &p[2..]);
+                    eprintln!(
+                        "fade frame {}: ours {:?} java {:?}",
+                        fade_frame - 1,
+                        ours,
+                        &p[2..]
+                    );
                 }
             }
             _ => {}

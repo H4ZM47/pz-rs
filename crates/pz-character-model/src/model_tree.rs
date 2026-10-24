@@ -3,9 +3,14 @@
 //! (body, hair, beard, clothing, body visuals) and `DoCharacterModelEquipped`
 //! (attached items and hand items as static models).
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::data::{BodyLocationGroup, ClothingItem, EquippedItems, HairStyles, HumanVisual, ImmutableColor, ItemVisual, ModelScript};
+use crate::data::{
+    attachment_by_id, BodyLocationGroup, BodyLocationKey, ClothingItem, ClothingItemExt,
+    EquippedItems, HairStyles, HumanModel, ModelAttachment, ModelScript, ModelScriptRef,
+    ResolvedItemVisual, Rgb,
+};
 use crate::mask::CharacterMask;
 
 /// Where an instance's texture comes from.
@@ -33,7 +38,7 @@ pub enum InstanceKind {
 }
 
 /// `ModelInstance`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ModelInstance {
     pub kind: InstanceKind,
     /// The model's mesh name (`skinned/malebody`, `skinned/hair/m_hair_crewcut`, ...).
@@ -53,21 +58,29 @@ pub struct ModelInstance {
     pub attachment_name_self: Option<String>,
     pub attachment_name_parent: Option<String>,
     pub scale: f32,
-    pub model_script: Option<Rc<ModelScript>>,
+    pub model_script: Option<ModelScriptRef>,
     /// The item visual this instance shows (clothing).
-    pub item_visual: Option<ItemVisual>,
+    pub item_visual: Option<ResolvedItemVisual>,
     pub sub: Vec<usize>,
 }
 
 impl ModelInstance {
-    fn new(kind: InstanceKind, mesh: &str, texture: Option<&str>, is_static: bool, shader: Option<&str>) -> Self {
+    fn new(
+        kind: InstanceKind,
+        mesh: &str,
+        texture: Option<&str>,
+        is_static: bool,
+        shader: Option<&str>,
+    ) -> Self {
         ModelInstance {
             kind,
             mesh_name: mesh.to_string(),
             model_texture: texture.map(str::to_string),
             is_static,
             shader: shader.map(str::to_string),
-            tex: texture.map(|t| TextureSource::File(t.to_string())).unwrap_or(TextureSource::None),
+            tex: texture
+                .map(|t| TextureSource::File(t.to_string()))
+                .unwrap_or(TextureSource::None),
             tint: [1.0; 3],
             hue: 0.0,
             depth_bias: 0.0,
@@ -84,40 +97,46 @@ impl ModelInstance {
     }
 
     /// `getAttachmentById`.
-    pub fn attachment(&self, id: Option<&str>) -> Option<&crate::data::ModelAttachment> {
-        self.model_script.as_ref()?.attachment(id?)
+    pub fn attachment(&self, id: Option<&str>) -> Option<Rc<RefCell<ModelAttachment>>> {
+        attachment_by_id(&self.model_script.as_ref()?.borrow(), id?)
     }
 }
 
 /// Looks up model scripts (`ScriptManager.getModelScript`).
 pub trait ModelScripts {
-    fn model_script(&self, name: &str) -> Option<Rc<ModelScript>>;
+    fn model_script(&self, name: &str) -> Option<ModelScriptRef>;
 }
 
-impl ModelScripts for std::collections::HashMap<String, Rc<ModelScript>> {
-    fn model_script(&self, name: &str) -> Option<Rc<ModelScript>> {
+impl ModelScripts for std::collections::HashMap<String, ModelScriptRef> {
+    fn model_script(&self, name: &str) -> Option<ModelScriptRef> {
         self.get(name).cloned()
+    }
+}
+
+impl ModelScripts for pz_scripts::ScriptManager {
+    fn model_script(&self, name: &str) -> Option<ModelScriptRef> {
+        self.get::<ModelScript>(pz_scripts::ScriptType::Model, name)
     }
 }
 
 /// What a character model is built from.
 pub struct CharacterModelInput<'a> {
-    pub human: &'a HumanVisual,
+    pub human: &'a HumanModel<'a>,
     /// `getItemVisuals` (worn items) in the character's order.
-    pub item_visuals: &'a [ItemVisual],
+    pub item_visuals: &'a [ResolvedItemVisual],
     pub equipped: &'a EquippedItems,
     /// The `Human` body-location group.
     pub body_locations: &'a BodyLocationGroup,
     pub hair_styles: &'a HairStyles,
     pub scripts: &'a dyn ModelScripts,
     /// The body's model script (`getVisual().getModelScript()`), if any.
-    pub body_model_script: Option<Rc<ModelScript>>,
+    pub body_model_script: Option<ModelScriptRef>,
     /// `animPlayer.getSkinningBoneIndex(name, -1)`.
     pub bone_index: &'a dyn Fn(&str) -> i32,
 }
 
 /// `ModelManager.ModelSlot`.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct ModelSlot {
     pub instances: Vec<ModelInstance>,
     /// `model`: the body (index 0 once built).
@@ -145,7 +164,11 @@ impl ModelSlot {
         let mut slot = ModelSlot::default();
         let h = input.human;
         let body_mesh = if h.zombie && h.skeleton {
-            if h.female { "skinned/Female_Skeleton" } else { "skinned/Male_Skeleton" }
+            if h.female {
+                "skinned/Female_Skeleton"
+            } else {
+                "skinned/Male_Skeleton"
+            }
         } else if h.female {
             "skinned/femalebody"
         } else {
@@ -170,8 +193,12 @@ impl ModelSlot {
             }
         }
         if mask.is_part_visible(crate::mask::Part::Head) {
-            let hat = visuals.iter().find(|v| v.clothing_item.as_ref().is_some_and(|c| c.is_hat()));
-            let face = visuals.iter().find(|v| v.clothing_item.as_ref().is_some_and(|c| c.is_mask()));
+            let hat = visuals
+                .iter()
+                .find(|v| v.clothing_item.as_ref().is_some_and(|c| c.is_hat()));
+            let face = visuals
+                .iter()
+                .find(|v| v.clothing_item.as_ref().is_some_and(|c| c.is_mask()));
             self.add_head_hair(input, hat, false);
             self.add_head_hair(input, face, true);
         }
@@ -189,39 +216,65 @@ impl ModelSlot {
         }
     }
 
-    fn add_head_hair(&mut self, input: &CharacterModelInput, hat: Option<&ItemVisual>, beard_only: bool) {
+    fn add_head_hair(
+        &mut self,
+        input: &CharacterModelInput,
+        hat: Option<&ResolvedItemVisual>,
+        beard_only: bool,
+    ) {
         let h = input.human;
         let styles = input.hair_styles;
-        let hat_category = hat.and_then(|v| v.clothing_item.as_ref()).and_then(|c| c.hat_category.clone());
+        let hat_category = hat
+            .and_then(|v| v.clothing_item.as_ref())
+            .and_then(|c| c.hat_category.clone());
         let hat_item = hat.and_then(|v| v.clothing_item.as_ref());
         let (style, color, kind) = if !beard_only {
-            let found = if h.female { styles.find_female(&h.hair_model) } else { styles.find_male(&h.hair_model) };
+            let found = if h.female {
+                styles.find_female(h.hair_model())
+            } else {
+                styles.find_male(h.hair_model())
+            };
             let style = match (found, hat_item) {
-                (Some(s), Some(_)) => styles.alternate_for_hat(s, hat_category.as_deref(), h.female),
+                (Some(s), Some(_)) => {
+                    styles.alternate_for_hat(s, hat_category.as_deref(), h.female)
+                }
                 (s, _) => s,
             };
-            (style, h.hair_color, InstanceKind::Hair)
+            (style, h.hair_color(), InstanceKind::Hair)
         } else {
             if h.female {
                 return;
             }
-            let Some(style) = styles.find_beard(&h.beard_model) else { return };
+            let Some(style) = styles.find_beard(h.beard_model()) else {
+                return;
+            };
             if !style.is_valid() {
                 return;
             }
-            if hat_category.as_deref().is_some_and(|c| !c.is_empty() && c.contains("nobeard")) {
+            if hat_category
+                .as_deref()
+                .is_some_and(|c| !c.is_empty() && c.contains("nobeard"))
+            {
                 return;
             }
-            (Some(style), h.beard_color, InstanceKind::Beard)
+            (Some(style), h.beard_color(), InstanceKind::Beard)
         };
-        let Some(style) = style.filter(|s| s.is_valid()) else { return };
+        let Some(style) = style.filter(|s| s.is_valid()) else {
+            return;
+        };
         let model = process_model_file_name(style.model.as_deref().unwrap_or(""));
         let inst = ModelInstance::new(kind, &model, style.texture.as_deref(), false, None);
         self.post_process_new_item_instance(inst, color);
     }
 
     /// `PopTemplateManager.addClothingItem`.
-    fn add_clothing_item(&mut self, input: &CharacterModelInput, v: &ItemVisual, c: &Rc<ClothingItem>, alt: bool) -> Option<usize> {
+    fn add_clothing_item(
+        &mut self,
+        input: &CharacterModelInput,
+        v: &ResolvedItemVisual,
+        c: &Rc<ClothingItem>,
+        alt: bool,
+    ) -> Option<usize> {
         let female = input.human.female;
         let mut model = c.model(female).map(str::to_string);
         if alt {
@@ -236,7 +289,8 @@ impl ModelSlot {
         let shader = c.shader.as_deref();
         let mut inst = match c.attach_bone.as_deref().filter(|b| !b.is_empty()) {
             Some(bone) => {
-                let mut i = ModelInstance::new(InstanceKind::Clothing, &model, texture, true, shader);
+                let mut i =
+                    ModelInstance::new(InstanceKind::Clothing, &model, texture, true, shader);
                 let b = (input.bone_index)(bone);
                 if b != -1 {
                     i.parent_bone = b;
@@ -251,9 +305,9 @@ impl ModelSlot {
     }
 
     /// `postProcessNewItemInstance`: parented to the body, inserted first.
-    fn post_process_new_item_instance(&mut self, mut inst: ModelInstance, tint: ImmutableColor) -> usize {
+    fn post_process_new_item_instance(&mut self, mut inst: ModelInstance, tint: Rgb) -> usize {
         inst.depth_bias = 0.0;
-        inst.tint = [tint.r, tint.g, tint.b];
+        inst.tint = tint;
         inst.parent = Some(self.model);
         let i = self.push(inst);
         self.instances[self.model].sub.insert(0, i);
@@ -263,11 +317,24 @@ impl ModelSlot {
 
     /// `addStaticForcedTex(slot, staticModel, boneName, forcedTex)` /
     /// `addStatic(slot, ...)`.
-    fn add_static_on_bone(&mut self, input: &CharacterModelInput, static_model: &str, bone: &str, kind: InstanceKind) -> Option<usize> {
+    fn add_static_on_bone(
+        &mut self,
+        input: &CharacterModelInput,
+        static_model: &str,
+        bone: &str,
+        kind: InstanceKind,
+    ) -> Option<usize> {
         let item_name = get_item_name(static_model);
         let script = input.scripts.model_script(static_model);
         let (mesh, tex, shader) = match &script {
-            Some(s) => (s.mesh_name.clone(), s.texture_name.clone(), s.shader_name.clone()),
+            Some(s) => {
+                let s = s.borrow();
+                (
+                    s.mesh_name.clone().unwrap_or_default(),
+                    s.texture_name.clone(),
+                    s.shader_name.clone(),
+                )
+            }
             None => (item_name.to_string(), Some(item_name.to_string()), None),
         };
         let mut inst = ModelInstance::new(kind, &mesh, tex.as_deref(), true, shader.as_deref());
@@ -278,7 +345,7 @@ impl ModelSlot {
         }
         inst.parent_bone_name = Some(bone.to_string());
         if let Some(s) = script {
-            inst.scale = s.scale;
+            inst.scale = s.borrow().scale;
             inst.model_script = Some(s);
         }
         let i = self.push(inst);
@@ -288,17 +355,36 @@ impl ModelSlot {
     }
 
     /// `addStatic(parentInst, modelName, attachNameSelf, attachNameParent)`.
-    fn add_static_on_attachment(&mut self, input: &CharacterModelInput, parent: usize, model_name: &str, attach: &str) -> Option<usize> {
+    fn add_static_on_attachment(
+        &mut self,
+        input: &CharacterModelInput,
+        parent: usize,
+        model_name: &str,
+        attach: &str,
+    ) -> Option<usize> {
         let item_name = get_item_name(model_name);
         let script = input.scripts.model_script(model_name);
         let (mesh, tex, shader) = match &script {
-            Some(s) => (s.mesh_name.clone(), s.texture_name.clone(), s.shader_name.clone()),
+            Some(s) => {
+                let s = s.borrow();
+                (
+                    s.mesh_name.clone().unwrap_or_default(),
+                    s.texture_name.clone(),
+                    s.shader_name.clone(),
+                )
+            }
             None => (item_name.to_string(), Some(item_name.to_string()), None),
         };
-        let mut inst = ModelInstance::new(InstanceKind::Attached, &mesh, tex.as_deref(), true, shader.as_deref());
+        let mut inst = ModelInstance::new(
+            InstanceKind::Attached,
+            &mesh,
+            tex.as_deref(),
+            true,
+            shader.as_deref(),
+        );
         inst.parent = Some(parent);
         if let Some(s) = script {
-            inst.scale = s.scale;
+            inst.scale = s.borrow().scale;
             inst.model_script = Some(s);
         }
         inst.attachment_name_self = Some(attach.to_string());
@@ -321,17 +407,21 @@ impl ModelSlot {
                     continue;
                 }
             }
-            if let Some(i) = self.add_static_on_attachment(input, self.model, &a.model, &a.attachment) {
+            if let Some(i) =
+                self.add_static_on_attachment(input, self.model, &a.model, &a.attachment)
+            {
                 self.sub.push(i);
                 self.attached_models.push(i);
             }
         }
         if let Some(p) = &eq.primary {
-            self.primary_hand = self.add_static_on_bone(input, p, "Bip01_Prop1", InstanceKind::PrimaryHand);
+            self.primary_hand =
+                self.add_static_on_bone(input, p, "Bip01_Prop1", InstanceKind::PrimaryHand);
         }
         if let Some(s) = &eq.secondary {
             if eq.primary.as_ref() != Some(s) {
-                self.secondary_hand = self.add_static_on_bone(input, s, "Bip01_Prop2", InstanceKind::SecondaryHand);
+                self.secondary_hand =
+                    self.add_static_on_bone(input, s, "Bip01_Prop2", InstanceKind::SecondaryHand);
             }
         }
     }
@@ -347,26 +437,60 @@ pub fn process_model_file_name(name: &str) -> String {
     name.replace('\\', "/").to_lowercase()
 }
 
+fn location_of(group: &BodyLocationGroup, k: Option<&BodyLocationKey>) -> Option<BodyLocationKey> {
+    let k = k?;
+    group.location(Some(k)).ok().flatten().map(|_| k.clone())
+}
+
+fn hides(group: &BodyLocationGroup, a: &BodyLocationKey, b: &BodyLocationKey) -> bool {
+    group.is_hide_model(Some(a), Some(b)).unwrap_or(false)
+}
+
 /// `isItemModelHidden(group, visuals, visual)`.
-pub fn is_item_model_hidden(group: &BodyLocationGroup, visuals: &[ItemVisual], i: usize) -> bool {
-    let Some(loc1) = visuals[i].body_location.as_deref().filter(|l| group.has(l)) else { return false };
+pub fn is_item_model_hidden(
+    group: &BodyLocationGroup,
+    visuals: &[ResolvedItemVisual],
+    i: usize,
+) -> bool {
+    let Some(loc1) = location_of(group, visuals[i].body_location.as_ref()) else {
+        return false;
+    };
     visuals.iter().enumerate().any(|(j, v)| {
-        j != i && v.body_location.as_deref().is_some_and(|loc2| group.has(loc2) && group.is_hide_model(loc2, loc1))
+        j != i
+            && location_of(group, v.body_location.as_ref())
+                .is_some_and(|loc2| hides(group, &loc2, &loc1))
     })
 }
 
 /// `isItemModelAlt(group, visuals, visual)`.
-pub fn is_item_model_alt(group: &BodyLocationGroup, visuals: &[ItemVisual], i: usize) -> bool {
-    let Some(loc1) = visuals[i].body_location.as_deref().filter(|l| group.has(l)) else { return false };
+pub fn is_item_model_alt(
+    group: &BodyLocationGroup,
+    visuals: &[ResolvedItemVisual],
+    i: usize,
+) -> bool {
+    let Some(loc1) = location_of(group, visuals[i].body_location.as_ref()) else {
+        return false;
+    };
     visuals.iter().enumerate().any(|(j, v)| {
-        j != i && v.body_location.as_deref().is_some_and(|loc2| group.has(loc2) && group.is_alt_model(loc2, loc1))
+        j != i
+            && location_of(group, v.body_location.as_ref()).is_some_and(|loc2| {
+                group
+                    .is_alt_model(Some(&loc2), Some(&loc1))
+                    .unwrap_or(false)
+            })
     })
 }
 
 /// `shouldHideModel(itemVisuals, location)`.
-pub fn should_hide_model(group: &BodyLocationGroup, visuals: &[ItemVisual], loc: &str) -> bool {
-    if !group.has(loc) {
+pub fn should_hide_model(
+    group: &BodyLocationGroup,
+    visuals: &[ResolvedItemVisual],
+    loc: &BodyLocationKey,
+) -> bool {
+    let Some(loc) = location_of(group, Some(loc)) else {
         return false;
-    }
-    visuals.iter().any(|v| v.body_location.as_deref().is_some_and(|l2| group.has(l2) && group.is_hide_model(l2, loc)))
+    };
+    visuals.iter().any(|v| {
+        location_of(group, v.body_location.as_ref()).is_some_and(|l2| hides(group, &l2, &loc))
+    })
 }

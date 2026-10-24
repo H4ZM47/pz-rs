@@ -41,7 +41,15 @@ pub struct EffectLight {
 
 impl EffectLight {
     pub fn set(&mut self, x: f32, y: f32, z: f32, r: f32, g: f32, b: f32, radius: i32) {
-        *self = EffectLight { x, y, z, r, g, b, radius };
+        *self = EffectLight {
+            x,
+            y,
+            z,
+            r,
+            g,
+            b,
+            radius,
+        };
     }
 
     pub fn clear(&mut self) {
@@ -51,7 +59,13 @@ impl EffectLight {
     /// `Shader.setLightInst` for a model at `obj` drawn at `angle`
     /// (`animPlayer.getRenderedAngle()`; `None` for direction lights).
     pub fn to_model_light(&self, obj: [f32; 3], angle: Option<f32>) -> ModelLight {
-        pz_iso_render::models::encode_light([self.x, self.y, self.z], [self.r, self.g, self.b], self.radius as f32, obj, angle)
+        pz_iso_render::models::encode_light(
+            [self.x, self.y, self.z],
+            [self.r, self.g, self.b],
+            self.radius as f32,
+            obj,
+            angle,
+        )
     }
 }
 
@@ -198,18 +212,30 @@ impl PlayerLightData {
         }
         self.sort_lights(ctx);
         for i in 0..5 {
-            let Some(light) = self.frame_lights[i] else { continue };
+            let Some(light) = self.frame_lights[i] else {
+                continue;
+            };
             if !light.active {
                 continue;
             }
             let e = &mut self.effect_lights_main[i];
             let mut flags = light.flags;
-            if flags & RLF_ROOMLIGHT != 0 && !(ctx.in_room && ctx.room_light_ids.contains(&light.id)) {
+            if flags & RLF_ROOMLIGHT != 0
+                && !(ctx.in_room && ctx.room_light_ids.contains(&light.id))
+            {
                 flags &= !RLF_ROOMLIGHT;
             }
             let c = light.current_color;
             if flags & RLF_ROOMLIGHT != 0 {
-                e.set(ctx.x, ctx.y, (crate::fastfloor(ctx.z) + 1) as f32, c[0] * 0.7, c[1] * 0.7, c[2] * 0.7, light.radius);
+                e.set(
+                    ctx.x,
+                    ctx.y,
+                    (crate::fastfloor(ctx.z) + 1) as f32,
+                    c[0] * 0.7,
+                    c[1] * 0.7,
+                    c[2] * 0.7,
+                    light.radius,
+                );
                 continue;
             }
             if light.flags & RLF_TORCH != 0 {
@@ -219,16 +245,48 @@ impl PlayerLightData {
                     if light.id >= min_id && light.id <= max_id {
                         continue;
                     }
-                    e.set(light.x as f32, light.y as f32, light.z as f32, c[0], c[1], c[2], light.radius);
+                    e.set(
+                        light.x as f32,
+                        light.y as f32,
+                        light.z as f32,
+                        c[0],
+                        c[1],
+                        c[2],
+                        light.radius,
+                    );
                     continue;
                 }
-                e.set(light.x as f32, light.y as f32, light.z as f32, c[0] * 2.0, c[1], c[2], light.radius);
+                e.set(
+                    light.x as f32,
+                    light.y as f32,
+                    light.z as f32,
+                    c[0] * 2.0,
+                    c[1],
+                    c[2],
+                    light.radius,
+                );
                 continue;
             }
-            e.set(light.x as f32 + 0.5, light.y as f32 + 0.5, light.z as f32 + 0.5, c[0] * 0.7, c[1] * 0.7, c[2] * 0.7, light.radius);
+            e.set(
+                light.x as f32 + 0.5,
+                light.y as f32 + 0.5,
+                light.z as f32 + 0.5,
+                c[0] * 0.7,
+                c[1] * 0.7,
+                c[2] * 0.7,
+                light.radius,
+            );
         }
         if count <= 3 && ctx.player_index.is_some() && ctx.torch_strength > 0.0 {
-            self.effect_lights_main[2].set(ctx.x + ctx.forward[0] * 0.5, ctx.y + ctx.forward[1] * 0.5, ctx.z + 0.25, 1.0, 1.0, 1.0, 2);
+            self.effect_lights_main[2].set(
+                ctx.x + ctx.forward[0] * 0.5,
+                ctx.y + ctx.forward[1] * 0.5,
+                ctx.z + 0.25,
+                1.0,
+                1.0,
+                1.0,
+                2,
+            );
         }
         let lerp = |f: f32, t: f32, d: f32| f + (t - f) * d;
         let mut ar = lerp(0.0, 1.0, self.current_ambient[0]);
@@ -238,8 +296,24 @@ impl PlayerLightData {
             ar *= 1.7;
             ag *= 1.7;
             ab *= 1.7;
-            self.effect_lights_main[3].set(ctx.x - 2.0, ctx.y - 2.0, ctx.z + 1.0, ar / 4.0, ag / 4.0, ab / 4.0, 5000);
-            self.effect_lights_main[4].set(ctx.x + 2.0, ctx.y + 2.0, ctx.z + 1.0, ar / 4.0, ag / 4.0, ab / 4.0, 5000);
+            self.effect_lights_main[3].set(
+                ctx.x - 2.0,
+                ctx.y - 2.0,
+                ctx.z + 1.0,
+                ar / 4.0,
+                ag / 4.0,
+                ab / 4.0,
+                5000,
+            );
+            self.effect_lights_main[4].set(
+                ctx.x + 2.0,
+                ctx.y + 2.0,
+                ctx.z + 1.0,
+                ar / 4.0,
+                ag / 4.0,
+                ab / 4.0,
+                5000,
+            );
         }
     }
 
@@ -261,8 +335,15 @@ impl PlayerLightData {
         }
         'chosen: for cl in &self.chosen {
             let found = (0..5).find(|&x| {
-                let Some(f) = &self.frame_lights[x] else { return false };
-                f.active && if cl.id != -1 { cl.id == f.id } else { f.x == cl.x && f.y == cl.y && f.z == cl.z }
+                let Some(f) = &self.frame_lights[x] else {
+                    return false;
+                };
+                f.active
+                    && if cl.id != -1 {
+                        cl.id == f.id
+                    } else {
+                        f.x == cl.x && f.y == cl.y && f.z == cl.z
+                    }
             });
             if let Some(x) = found {
                 let f = self.frame_lights[x].as_mut().unwrap();
@@ -321,7 +402,11 @@ impl PlayerLightData {
             f.dist_sq = if !f.active {
                 f32::MAX
             } else {
-                let (dx, dy, dz) = (ctx.x - (f.x as f32 + 0.5), ctx.y - (f.y as f32 + 0.5), ctx.z - f.z as f32);
+                let (dx, dy, dz) = (
+                    ctx.x - (f.x as f32 + 0.5),
+                    ctx.y - (f.y as f32 + 0.5),
+                    ctx.z - f.z as f32,
+                );
                 dx * dx + dy * dy + dz * dz
             };
         }
@@ -334,11 +419,13 @@ impl PlayerLightData {
                 (false, true) => Less,
                 _ => {
                     let (a, b) = (a.unwrap(), b.unwrap());
-                    a.stage.cmp(&b.stage).then_with(|| match signum(a.dist_sq - b.dist_sq) as i32 {
-                        -1 => Less,
-                        1 => Greater,
-                        _ => Equal,
-                    })
+                    a.stage
+                        .cmp(&b.stage)
+                        .then_with(|| match signum(a.dist_sq - b.dist_sq) as i32 {
+                            -1 => Less,
+                            1 => Greater,
+                            _ => Equal,
+                        })
                 }
             }
         });

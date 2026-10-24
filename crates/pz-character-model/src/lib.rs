@@ -6,9 +6,10 @@
 //! draw list (`ModelSlotRenderData`) as [`pz_render::model::ModelDraw`]s in
 //! the original's order.
 //!
-//! Inputs the other crates will own once merged (item visuals, model
-//! scripts, body-location rules, square lights) are minimal structs in
-//! [`data`] and [`lights`].
+//! Item visuals and clothing items come from pz-inventory, the human
+//! visual and body-location groups from pz-characters, model scripts from
+//! pz-scripts and meshes from pz-model (see [`data`] and
+//! [`resources`]); square lights are still minimal structs in [`lights`].
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
@@ -17,13 +18,23 @@ pub mod lights;
 pub mod mask;
 pub mod model_tree;
 pub mod render;
+pub mod resources;
 pub mod texture_creator;
 
-pub use data::{BodyLocationGroup, ClothingDecal, ClothingItem, EquippedItems, HairStyles, HumanVisual, ImmutableColor, ItemVisual, ModelAttachment, ModelScript, StaticItemModel};
+pub use data::{
+    BodyLocationGroup, BodyLocationKey, ClothingDecal, ClothingItem, ClothingItemExt,
+    EquippedItems, HairStyles, HumanModel, HumanVisual, ItemVisual, ModelAttachment, ModelScript,
+    ModelScriptRef, ResolvedItemVisual, StaticItemModel,
+};
 pub use lights::{EffectLight, LightContext, PlayerLightData, ResultLight};
-pub use model_tree::{CharacterModelInput, InstanceKind, ModelInstance, ModelScripts, ModelSlot, TextureSource};
+pub use model_tree::{
+    CharacterModelInput, InstanceKind, ModelInstance, ModelScripts, ModelSlot, TextureSource,
+};
 pub use render::{render_character, CharacterFrame, LoadedMesh, ModelResources};
-pub use texture_creator::{create_textures, SmartTextureJob, TextureCreatorInput, TextureCreatorOutput};
+pub use resources::MediaModelResources;
+pub use texture_creator::{
+    create_textures, SmartTextureJob, TextureCreatorInput, TextureCreatorOutput,
+};
 
 /// `PZMath.fastfloor`.
 pub(crate) fn fastfloor(v: f32) -> i32 {

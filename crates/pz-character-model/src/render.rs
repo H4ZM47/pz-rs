@@ -57,14 +57,22 @@ pub struct CharacterFrame<'a> {
 /// matrix the shader's `transform` receives.
 pub type Xfrm = Mat4;
 
-const IDENT: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+const IDENT: Mat4 = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
 
 /// `a * b` (column-major).
 pub fn mul(a: &Mat4, b: &Mat4) -> Mat4 {
     let mut r = [[0.0f32; 4]; 4];
     for c in 0..4 {
         for row in 0..4 {
-            r[c][row] = a[0][row] * b[c][0] + a[1][row] * b[c][1] + a[2][row] * b[c][2] + a[3][row] * b[c][3];
+            r[c][row] = a[0][row] * b[c][0]
+                + a[1][row] * b[c][1]
+                + a[2][row] * b[c][2]
+                + a[3][row] * b[c][3];
         }
     }
     r
@@ -72,32 +80,53 @@ pub fn mul(a: &Mat4, b: &Mat4) -> Mat4 {
 
 fn rot_x(a: f32) -> Mat4 {
     let (s, c) = (a.sin(), a.cos());
-    [[1.0, 0.0, 0.0, 0.0], [0.0, c, s, 0.0], [0.0, -s, c, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, c, s, 0.0],
+        [0.0, -s, c, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
 }
 
 fn rot_y(a: f32) -> Mat4 {
     let (s, c) = (a.sin(), a.cos());
-    [[c, 0.0, -s, 0.0], [0.0, 1.0, 0.0, 0.0], [s, 0.0, c, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    [
+        [c, 0.0, -s, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [s, 0.0, c, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
 }
 
 fn rot_z(a: f32) -> Mat4 {
     let (s, c) = (a.sin(), a.cos());
-    [[c, s, 0.0, 0.0], [-s, c, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    [
+        [c, s, 0.0, 0.0],
+        [-s, c, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
 }
 
 fn scaling(s: f32) -> Mat4 {
-    [[s, 0.0, 0.0, 0.0], [0.0, s, 0.0, 0.0], [0.0, 0.0, s, 0.0], [0.0, 0.0, 0.0, 1.0]]
+    [
+        [s, 0.0, 0.0, 0.0],
+        [0.0, s, 0.0, 0.0],
+        [0.0, 0.0, s, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
 }
 
 /// `makeAttachmentTransform`: `translation(offset).rotateXYZ(rotate°).scale(scale)`.
 pub fn attachment_transform(a: &ModelAttachment) -> Mat4 {
     let d = std::f32::consts::PI / 180.0;
     let mut m = IDENT;
-    m[3] = [a.offset[0], a.offset[1], a.offset[2], 1.0];
-    m = mul(&m, &rot_x(a.rotate[0] * d));
-    m = mul(&m, &rot_y(a.rotate[1] * d));
-    m = mul(&m, &rot_z(a.rotate[2] * d));
-    mul(&m, &scaling(a.scale))
+    let (o, r) = (a.offset(), a.rotate());
+    m[3] = [o.x, o.y, o.z, 1.0];
+    m = mul(&m, &rot_x(r.x * d));
+    m = mul(&m, &rot_y(r.y * d));
+    m = mul(&m, &rot_z(r.z * d));
+    mul(&m, &scaling(a.scale()))
 }
 
 /// `makeBoneTransform`: the bone's model-space transform.
@@ -110,8 +139,15 @@ pub fn bone_transform(player: &AnimationPlayer, bone: &str) -> Mat4 {
 }
 
 /// `transformToParent(parentData)`.
-pub fn transform_to_parent(inst: &ModelInstance, mesh: Option<&LoadedMesh>, parent: Option<(&ModelInstance, &Xfrm)>, player: &AnimationPlayer) -> Xfrm {
-    let Some((pinst, pxfrm)) = parent else { return IDENT };
+pub fn transform_to_parent(
+    inst: &ModelInstance,
+    mesh: Option<&LoadedMesh>,
+    parent: Option<(&ModelInstance, &Xfrm)>,
+    player: &AnimationPlayer,
+) -> Xfrm {
+    let Some((pinst, pxfrm)) = parent else {
+        return IDENT;
+    };
     let mut x = *pxfrm;
     let mut parent_att = pinst.attachment(inst.attachment_name_parent.as_deref());
     if parent_att.is_none() && inst.parent_bone_name.is_some() {
@@ -124,8 +160,9 @@ pub fn transform_to_parent(inst: &ModelInstance, mesh: Option<&LoadedMesh>, pare
             }
         }
         Some(a) => {
-            x = mul(&bone_transform(player, a.bone.as_deref().unwrap_or("")), &x);
-            x = mul(&x, &attachment_transform(a));
+            let a = a.borrow();
+            x = mul(&bone_transform(player, a.bone().unwrap_or("")), &x);
+            x = mul(&x, &attachment_transform(&a));
         }
     }
     let mut self_att = inst.attachment(inst.attachment_name_self.as_deref());
@@ -133,7 +170,7 @@ pub fn transform_to_parent(inst: &ModelInstance, mesh: Option<&LoadedMesh>, pare
         self_att = inst.attachment(inst.parent_bone_name.as_deref());
     }
     if let Some(a) = self_att {
-        x = mul(&x, &attachment_transform(a));
+        x = mul(&x, &attachment_transform(&a.borrow()));
     }
     if let Some(t) = mesh.and_then(|m| m.transform.as_ref()) {
         x = mul(&x, t);
@@ -157,17 +194,30 @@ pub struct InstanceRenderData {
 
 /// `ModelSlotRenderData.initModel` + `init`'s transforms: the instances in
 /// render order with their transforms and palettes.
-pub fn init_render_data(slot: &ModelSlot, player: &AnimationPlayer, res: &dyn ModelResources) -> Vec<InstanceRenderData> {
+pub fn init_render_data(
+    slot: &ModelSlot,
+    player: &AnimationPlayer,
+    res: &dyn ModelResources,
+) -> Vec<InstanceRenderData> {
     let mut out: Vec<InstanceRenderData> = Vec::new();
     let body = slot.instance(slot.model);
     let body_data = res.mesh(&body.mesh_name, body.is_static).map(|mesh| {
         out.push(make_data(slot.model, None, IDENT, mesh, body, player));
         out.len() - 1
     });
-    fn walk(slot: &ModelSlot, list: &[usize], parent: Option<usize>, player: &AnimationPlayer, res: &dyn ModelResources, out: &mut Vec<InstanceRenderData>) {
+    fn walk(
+        slot: &ModelSlot,
+        list: &[usize],
+        parent: Option<usize>,
+        player: &AnimationPlayer,
+        res: &dyn ModelResources,
+        out: &mut Vec<InstanceRenderData>,
+    ) {
         for &i in list {
             let inst = slot.instance(i);
-            let Some(mesh) = res.mesh(&inst.mesh_name, inst.is_static) else { continue };
+            let Some(mesh) = res.mesh(&inst.mesh_name, inst.is_static) else {
+                continue;
+            };
             let pdata = parent.map(|p| (slot.instance(out[p].instance), &out[p].xfrm));
             let x = transform_to_parent(inst, Some(&mesh), pdata, player);
             out.push(make_data(i, parent, x, mesh, inst, player));
@@ -179,18 +229,36 @@ pub fn init_render_data(slot: &ModelSlot, player: &AnimationPlayer, res: &dyn Mo
     out
 }
 
-fn make_data(instance: usize, parent: Option<usize>, xfrm: Xfrm, mesh: LoadedMesh, inst: &ModelInstance, player: &AnimationPlayer) -> InstanceRenderData {
+fn make_data(
+    instance: usize,
+    parent: Option<usize>,
+    xfrm: Xfrm,
+    mesh: LoadedMesh,
+    inst: &ModelInstance,
+    player: &AnimationPlayer,
+) -> InstanceRenderData {
     let palette = (!inst.is_static).then(|| {
         Rc::new(match &mesh.skeleton {
             Some(s) => player.palette_for(s),
             None => player.palette(),
         })
     });
-    InstanceRenderData { instance, parent, xfrm, mesh, palette }
+    InstanceRenderData {
+        instance,
+        parent,
+        xfrm,
+        mesh,
+        palette,
+    }
 }
 
 /// `performRenderCharacter`: the frame's draws for one character.
-pub fn render_character(slot: &ModelSlot, frame: &CharacterFrame, camera: &ModelCamera, res: &dyn ModelResources) -> Vec<ModelDraw> {
+pub fn render_character(
+    slot: &ModelSlot,
+    frame: &CharacterFrame,
+    camera: &ModelCamera,
+    res: &dyn ModelResources,
+) -> Vec<ModelDraw> {
     let mut draws = Vec::new();
     if frame.alpha < 0.01 {
         return draws;
@@ -200,15 +268,27 @@ pub fn render_character(slot: &ModelSlot, frame: &CharacterFrame, camera: &Model
     let mvp = camera.mvp(&mv);
     let target_depth = camera.target_depth(&mvp, frame.x, frame.y, frame.z, 1.0e-4);
     let obj = [frame.x, frame.y, frame.z];
-    let lights: [ModelLight; 5] = std::array::from_fn(|i| frame.effect_lights[i].to_model_light(obj, Some(angle)));
-    let ambient = [frame.ambient[0] * 0.45, frame.ambient[1] * 0.45, frame.ambient[2] * 0.45];
+    let lights: [ModelLight; 5] =
+        std::array::from_fn(|i| frame.effect_lights[i].to_model_light(obj, Some(angle)));
+    let ambient = [
+        frame.ambient[0] * 0.45,
+        frame.ambient[1] * 0.45,
+        frame.ambient[2] * 0.45,
+    ];
     for d in init_render_data(slot, frame.player, res) {
         let inst = slot.instance(d.instance);
         if inst.tex == TextureSource::None && inst.model_texture.is_none() {
             continue;
         }
-        let texture = res.texture(&inst.tex).or_else(|| inst.model_texture.as_ref().and_then(|t| res.texture(&TextureSource::File(t.clone()))));
-        let cull = inst.model_script.as_ref().is_none_or(|s| s.cull_face != 0);
+        let texture = res.texture(&inst.tex).or_else(|| {
+            inst.model_texture
+                .as_ref()
+                .and_then(|t| res.texture(&TextureSource::File(t.clone())))
+        });
+        let cull = inst
+            .model_script
+            .as_ref()
+            .is_none_or(|s| s.borrow().cull_face != 0);
         draws.push(ModelDraw {
             mesh: d.mesh.mesh.clone(),
             texture,

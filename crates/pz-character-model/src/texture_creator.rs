@@ -13,7 +13,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::data::{ClothingDecal, ClothingItem, HumanVisual, ImmutableColor, ItemVisual, DEFAULT_MASKS_FOLDER};
+use crate::data::{
+    BodyLocationGroup, ClothingDecal, ClothingItem, ClothingItemExt, HumanModel,
+    ResolvedItemVisual, Rgb, DEFAULT_MASKS_FOLDER, WHITE,
+};
 use crate::mask::{patch_mask_file, BloodBodyPartType, CharacterMask, BLOOD_PARTS, MASK_FILES};
 use crate::model_tree::{ModelSlot, TextureSource};
 
@@ -75,7 +78,11 @@ pub struct ShaderParam {
 
 impl ShaderParam {
     fn f(name: &str, v: f32) -> Self {
-        ShaderParam { name: name.into(), min: v, max: v }
+        ShaderParam {
+            name: name.into(),
+            min: v,
+            max: v,
+        }
     }
 }
 
@@ -124,28 +131,79 @@ impl SmartTexture {
         self.commands.get_mut(i)
     }
 
-    fn cmd(&mut self, tex: TexRef, shader: SmartShader, params: Vec<ShaderParam>, mask: Option<TexRef>, blend: [u32; 4]) {
-        self.commands.push(CombinerCommand { tex, mask, shader, params, blend, rect: None });
+    fn cmd(
+        &mut self,
+        tex: TexRef,
+        shader: SmartShader,
+        params: Vec<ShaderParam>,
+        mask: Option<TexRef>,
+        blend: [u32; 4],
+    ) {
+        self.commands.push(CombinerCommand {
+            tex,
+            mask,
+            shader,
+            params,
+            blend,
+            rect: None,
+        });
     }
 
     /// `add(tex)`.
     fn add(&mut self, t: TexRef) {
-        self.cmd(t, SmartShader::Blit, vec![], None, [GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA]);
+        self.cmd(
+            t,
+            SmartShader::Blit,
+            vec![],
+            None,
+            [
+                GL_SRC_ALPHA,
+                GL_ONE_MINUS_SRC_ALPHA,
+                GL_ONE,
+                GL_ONE_MINUS_SRC_ALPHA,
+            ],
+        );
     }
 
-    fn add_tint(&mut self, t: TexRef, cat: i32, c: ImmutableColor) {
+    fn add_tint(&mut self, t: TexRef, cat: i32, c: Rgb) {
         self.add_to_cat(cat);
-        self.cmd(t, SmartShader::HueChange, vec![ShaderParam::f("R", c.r), ShaderParam::f("G", c.g), ShaderParam::f("B", c.b)], None, [GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA]);
+        self.cmd(
+            t,
+            SmartShader::HueChange,
+            vec![
+                ShaderParam::f("R", c[0]),
+                ShaderParam::f("G", c[1]),
+                ShaderParam::f("B", c[2]),
+            ],
+            None,
+            [
+                GL_SRC_ALPHA,
+                GL_ONE_MINUS_SRC_ALPHA,
+                GL_ONE,
+                GL_ONE_MINUS_SRC_ALPHA,
+            ],
+        );
     }
 
     fn add_hue(&mut self, t: TexRef, cat: i32, h: f32) {
         self.add_to_cat(cat);
-        self.cmd(t, SmartShader::HueChange, vec![ShaderParam::f("HueChange", h)], None, [GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA]);
+        self.cmd(
+            t,
+            SmartShader::HueChange,
+            vec![ShaderParam::f("HueChange", h)],
+            None,
+            [
+                GL_SRC_ALPHA,
+                GL_ONE_MINUS_SRC_ALPHA,
+                GL_ONE,
+                GL_ONE_MINUS_SRC_ALPHA,
+            ],
+        );
     }
 
     /// `addTexture(base, category, tint, hue)`.
-    fn add_texture(&mut self, base: TexRef, cat: i32, tint: ImmutableColor, hue: f32) {
-        if tint != ImmutableColor::WHITE {
+    fn add_texture(&mut self, base: TexRef, cat: i32, tint: Rgb, hue: f32) {
+        if tint != WHITE {
             self.add_tint(base, cat, tint);
         } else if !(-1.0e-4..=1.0e-4).contains(&hue) {
             self.add_hue(base, cat, hue);
@@ -160,22 +218,56 @@ impl SmartTexture {
         self.cmd(
             tex(t),
             SmartShader::OverlayMask,
-            vec![ShaderParam::f("intensity", intensity), ShaderParam { name: "bloodDark".into(), min: 0.5, max: 0.5 }],
+            vec![
+                ShaderParam::f("intensity", intensity),
+                ShaderParam {
+                    name: "bloodDark".into(),
+                    min: 0.5,
+                    max: 0.5,
+                },
+            ],
             Some(tex(mask)),
-            [GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ONE_MINUS_SRC_ALPHA],
+            [
+                GL_DST_COLOR,
+                GL_ONE_MINUS_SRC_ALPHA,
+                GL_DST_ALPHA,
+                GL_ONE_MINUS_SRC_ALPHA,
+            ],
         );
     }
 
     /// `addDirtOverlay`.
     fn add_dirt_overlay(&mut self, t: &str, mask: &str, intensity: f32, cat: i32) {
         self.add_to_cat(cat);
-        self.cmd(tex(t), SmartShader::DirtMask, vec![ShaderParam::f("intensity", intensity)], Some(tex(mask)), [GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA, GL_DST_ALPHA, GL_ONE_MINUS_SRC_ALPHA]);
+        self.cmd(
+            tex(t),
+            SmartShader::DirtMask,
+            vec![ShaderParam::f("intensity", intensity)],
+            Some(tex(mask)),
+            [
+                GL_DST_COLOR,
+                GL_ONE_MINUS_SRC_ALPHA,
+                GL_DST_ALPHA,
+                GL_ONE_MINUS_SRC_ALPHA,
+            ],
+        );
     }
 
     /// `addOverlayPatches`.
     fn add_overlay_patches(&mut self, t: &str, mask: &str, cat: i32) {
         self.add_to_cat(cat);
-        self.cmd(tex(t), SmartShader::Blit, vec![], Some(tex(mask)), [GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA]);
+        self.cmd(
+            tex(t),
+            SmartShader::Blit,
+            vec![],
+            Some(tex(mask)),
+            [
+                GL_SRC_ALPHA,
+                GL_ONE_MINUS_SRC_ALPHA,
+                GL_ONE,
+                GL_ONE_MINUS_SRC_ALPHA,
+            ],
+        );
     }
 
     /// The `addBlood`/`addDirt` merge: add to the first command of the
@@ -194,13 +286,39 @@ impl SmartTexture {
         start(self);
     }
 
-    fn mask(&mut self, t: TexRef, mask: TexRef, cat: i32, shader: SmartShader, params: Vec<ShaderParam>) {
+    fn mask(
+        &mut self,
+        t: TexRef,
+        mask: TexRef,
+        cat: i32,
+        shader: SmartShader,
+        params: Vec<ShaderParam>,
+    ) {
         self.add_to_cat(cat);
-        self.cmd(t, shader, params, Some(mask), [GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA]);
+        self.cmd(
+            t,
+            shader,
+            params,
+            Some(mask),
+            [
+                GL_SRC_ALPHA,
+                GL_ONE_MINUS_SRC_ALPHA,
+                GL_ONE,
+                GL_ONE_MINUS_SRC_ALPHA,
+            ],
+        );
     }
 
     /// `addMaskedTexture`.
-    fn add_masked_texture(&mut self, mask: &CharacterMask, folder: &str, base: TexRef, cat: i32, tint: ImmutableColor, hue: f32) {
+    fn add_masked_texture(
+        &mut self,
+        mask: &CharacterMask,
+        folder: &str,
+        base: TexRef,
+        cat: i32,
+        tint: Rgb,
+        hue: f32,
+    ) {
         if mask.is_nothing_visible() {
             return;
         }
@@ -210,10 +328,26 @@ impl SmartTexture {
         }
         for part in mask.visible_leaves() {
             let m = tex(&format!("{folder}/{}.png", part.name()));
-            if tint != ImmutableColor::WHITE {
-                self.mask(base.clone(), m, cat, SmartShader::BodyMaskTint, vec![ShaderParam::f("R", tint.r), ShaderParam::f("G", tint.g), ShaderParam::f("B", tint.b)]);
+            if tint != WHITE {
+                self.mask(
+                    base.clone(),
+                    m,
+                    cat,
+                    SmartShader::BodyMaskTint,
+                    vec![
+                        ShaderParam::f("R", tint[0]),
+                        ShaderParam::f("G", tint[1]),
+                        ShaderParam::f("B", tint[2]),
+                    ],
+                );
             } else if !(-1.0e-4..=1.0e-4).contains(&hue) {
-                self.mask(base.clone(), m, cat, SmartShader::BodyMaskHue, vec![ShaderParam::f("HueChange", hue)]);
+                self.mask(
+                    base.clone(),
+                    m,
+                    cat,
+                    SmartShader::BodyMaskHue,
+                    vec![ShaderParam::f("HueChange", hue)],
+                );
             } else {
                 self.mask(base.clone(), m, cat, SmartShader::BodyMask, vec![]);
             }
@@ -224,7 +358,18 @@ impl SmartTexture {
     fn remove_hole(&mut self, body: TexRef, part: BloodBodyPartType) {
         self.add_to_cat(3);
         let m = tex(&mask_file("HoleTextures", MASK_FILES[part.index()]));
-        self.cmd(body, SmartShader::RemoveHole, vec![], Some(m), [GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA]);
+        self.cmd(
+            body,
+            SmartShader::RemoveHole,
+            vec![],
+            Some(m),
+            [
+                GL_SRC_ALPHA,
+                GL_ONE_MINUS_SRC_ALPHA,
+                GL_ONE,
+                GL_ONE_MINUS_SRC_ALPHA,
+            ],
+        );
     }
 }
 
@@ -237,7 +382,9 @@ pub struct TextureCreatorOutput {
 
 impl TextureCreatorOutput {
     fn finish(&mut self, st: SmartTexture) -> usize {
-        self.jobs.push(SmartTextureJob { commands: st.commands });
+        self.jobs.push(SmartTextureJob {
+            commands: st.commands,
+        });
         self.jobs.len() - 1
     }
 }
@@ -247,7 +394,7 @@ struct ItemData {
     mask: CharacterMask,
     mask_folder: String,
     base_texture: String,
-    tint: ImmutableColor,
+    tint: Rgb,
     hue: f32,
     decal: Option<ClothingDecal>,
     blood: [f32; BLOOD_PARTS],
@@ -260,9 +407,9 @@ struct ItemData {
 
 /// Inputs beyond the model slot.
 pub struct TextureCreatorInput<'a> {
-    pub human: &'a HumanVisual,
-    pub item_visuals: &'a [ItemVisual],
-    pub body_locations: &'a crate::data::BodyLocationGroup,
+    pub human: &'a HumanModel<'a>,
+    pub item_visuals: &'a [ResolvedItemVisual],
+    pub body_locations: &'a BodyLocationGroup,
     /// `ClothingDecals.getDecal`.
     pub decals: &'a dyn Fn(&str) -> Option<ClothingDecal>,
     /// `Core.isOptionSimpleClothingTextures(zombie)`.
@@ -279,7 +426,13 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
     let mut items: Vec<ItemData> = Vec::new();
     let body_sub = slot.instances[slot.model].sub.clone();
     let find_instance = |c: &Rc<ClothingItem>| {
-        body_sub.iter().copied().find(|&i| slot.instances[i].item_visual.as_ref().and_then(|v| v.clothing_item.as_ref()).is_some_and(|ic| Rc::ptr_eq(ic, c)))
+        body_sub.iter().copied().find(|&i| {
+            slot.instances[i]
+                .item_visual
+                .as_ref()
+                .and_then(|v| v.clothing_item.as_ref())
+                .is_some_and(|ic| Rc::ptr_eq(ic, c))
+        })
     };
     let visuals = input.item_visuals;
     for (vi, v) in visuals.iter().enumerate().rev() {
@@ -291,7 +444,15 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
         if inst.is_none() && c.model(h.female).is_some_and(|m| !m.trim().is_empty()) {
             continue;
         }
-        items.push(item_data(inst, v, c, &overlayer, &overlay_folder, &mut hole_mask, input));
+        items.push(item_data(
+            inst,
+            v,
+            c,
+            &overlayer,
+            &overlay_folder,
+            &mut hole_mask,
+            input,
+        ));
         for (j, b) in BloodBodyPartType::ALL.iter().enumerate() {
             if v.hole(j) > 0.0 && overlayer.is_blood_body_part_visible(*b) {
                 hole_mask[j] = true;
@@ -307,8 +468,11 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
             }
         }
         c.combined_mask(&mut overlayer);
-        if !c.underlay_masks_folder.eq_ignore_ascii_case(DEFAULT_MASKS_FOLDER) {
-            overlay_folder = c.underlay_masks_folder.clone();
+        if !c
+            .underlay_masks_folder()
+            .eq_ignore_ascii_case(DEFAULT_MASKS_FOLDER)
+        {
+            overlay_folder = c.underlay_masks_folder().to_string();
         }
     }
     let chr_mask = overlayer.clone();
@@ -321,27 +485,54 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
         if inst.is_none() && c.model(h.female).is_some_and(|m| !m.trim().is_empty()) {
             continue;
         }
-        items.push(item_data(inst, v, c, &overlayer, &overlay_folder, &mut hole_mask, input));
+        items.push(item_data(
+            inst,
+            v,
+            c,
+            &overlayer,
+            &overlay_folder,
+            &mut hole_mask,
+            input,
+        ));
     }
 
     // render()
     let mut out = TextureCreatorOutput::default();
     let mut full = SmartTexture::default();
-    full.add_texture(tex(&format!("media/textures/Body/{}.png", h.skin_texture)), 0, ImmutableColor::WHITE, 0.0);
+    full.add_texture(
+        tex(&format!("media/textures/Body/{}.png", h.skin_texture())),
+        0,
+        WHITE,
+        0.0,
+    );
     for (i, _) in BloodBodyPartType::ALL.iter().enumerate() {
         let m = mask_file("BloodTextures", MASK_FILES[i]);
-        if h.dirt[i] > 0.0 {
-            let d = h.dirt[i];
-            full.add_intensity(400 + i as i32, d, |s| s.add_dirt_overlay("media/textures/BloodTextures/GrimeOverlay.png", &m, d, 400 + i as i32));
+        if h.dirt(i) > 0.0 {
+            let d = h.dirt(i);
+            full.add_intensity(400 + i as i32, d, |s| {
+                s.add_dirt_overlay(
+                    "media/textures/BloodTextures/GrimeOverlay.png",
+                    &m,
+                    d,
+                    400 + i as i32,
+                )
+            });
         }
-        if h.blood[i] > 0.0 {
-            let b = h.blood[i];
-            full.add_intensity(300 + i as i32, b, |s| s.add_overlay("media/textures/BloodTextures/BloodOverlay.png", &m, b, 300 + i as i32));
+        if h.blood(i) > 0.0 {
+            let b = h.blood(i);
+            full.add_intensity(300 + i as i32, b, |s| {
+                s.add_overlay(
+                    "media/textures/BloodTextures/BloodOverlay.png",
+                    &m,
+                    b,
+                    300 + i as i32,
+                )
+            });
         }
     }
     let full_id = out.finish(full);
     let mut body = SmartTexture::default();
-    body.add_masked_texture(&chr_mask, &chr_folder, TexRef::Job(full_id), 0, ImmutableColor::WHITE, 0.0);
+    body.add_masked_texture(&chr_mask, &chr_folder, TexRef::Job(full_id), 0, WHITE, 0.0);
     for (i, b) in BloodBodyPartType::ALL.iter().enumerate() {
         if hole_mask[i] {
             body.remove_hole(TexRef::Job(full_id), *b);
@@ -352,7 +543,8 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
         if is_simple_texture(d) {
             item_tex = tex(&d.base_texture);
             if !is_item_smart_texture_required(d) {
-                slot.instances[d.instance.unwrap()].tex = TextureSource::File(d.base_texture.clone());
+                slot.instances[d.instance.unwrap()].tex =
+                    TextureSource::File(d.base_texture.clone());
                 continue;
             }
         } else {
@@ -378,18 +570,22 @@ pub fn create_textures(slot: &mut ModelSlot, input: &TextureCreatorInput) -> Tex
 
 fn item_data(
     inst: Option<usize>,
-    v: &ItemVisual,
+    v: &ResolvedItemVisual,
     c: &ClothingItem,
     overlayer: &CharacterMask,
     overlay_folder: &str,
     hole_mask: &mut [bool; BLOOD_PARTS],
     input: &TextureCreatorInput,
 ) -> ItemData {
-    let tex_name = if inst.is_none() { v.base_texture(c) } else { v.texture_choice(c) };
+    let tex_name = if inst.is_none() {
+        v.base_texture(c)
+    } else {
+        v.texture_choice(c)
+    };
     let mut d = ItemData {
         instance: inst,
         mask: overlayer.clone(),
-        mask_folder: c.masks_folder.clone(),
+        mask_folder: c.masks_folder().to_string(),
         base_texture: format!("media/textures/{}.png", tex_name.unwrap_or("null")),
         tint: v.tint(c),
         hue: v.hue(c),
@@ -436,11 +632,18 @@ fn is_simple_texture(d: &ItemData) -> bool {
     if d.hue != 0.0 {
         return false;
     }
-    let tint = if d.instance.is_some() { ImmutableColor::WHITE } else { d.tint };
-    if tint != ImmutableColor::WHITE || d.decal.is_some() {
+    let tint = if d.instance.is_some() { WHITE } else { d.tint };
+    if tint != WHITE || d.decal.is_some() {
         return false;
     }
-    (0..BLOOD_PARTS).all(|i| !(d.blood[i] > 0.0 || d.dirt[i] > 0.0 || d.hole[i] > 0.0 || d.basic[i] > 0.0 || d.denim[i] > 0.0 || d.leather[i] > 0.0))
+    (0..BLOOD_PARTS).all(|i| {
+        !(d.blood[i] > 0.0
+            || d.dirt[i] > 0.0
+            || d.hole[i] > 0.0
+            || d.basic[i] > 0.0
+            || d.denim[i] > 0.0
+            || d.leather[i] > 0.0)
+    })
 }
 
 fn is_item_smart_texture_required(d: &ItemData) -> bool {
@@ -463,7 +666,12 @@ fn create_full_item_texture(d: &ItemData, out: &mut TextureCreatorOutput) -> Tex
             mask: None,
             shader: SmartShader::Blit,
             params: vec![],
-            blend: [GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA],
+            blend: [
+                GL_SRC_ALPHA,
+                GL_ONE_MINUS_SRC_ALPHA,
+                GL_ONE,
+                GL_ONE_MINUS_SRC_ALPHA,
+            ],
             rect: Some([dec.x, dec.y, dec.width, dec.height]),
         });
     }
@@ -471,7 +679,14 @@ fn create_full_item_texture(d: &ItemData, out: &mut TextureCreatorOutput) -> Tex
         let m = mask_file("BloodTextures", MASK_FILES[i]);
         if d.blood[i] > 0.0 {
             let v = d.blood[i];
-            st.add_intensity(300 + i as i32, v, |s| s.add_overlay("media/textures/BloodTextures/BloodOverlay.png", &m, v, 300 + i as i32));
+            st.add_intensity(300 + i as i32, v, |s| {
+                s.add_overlay(
+                    "media/textures/BloodTextures/BloodOverlay.png",
+                    &m,
+                    v,
+                    300 + i as i32,
+                )
+            });
         }
         if d.dirt[i] > 0.0 {
             let v = d.dirt[i];
@@ -482,13 +697,23 @@ fn create_full_item_texture(d: &ItemData, out: &mut TextureCreatorOutput) -> Tex
             if st.first_from_category(cat).is_none() {
                 st.add_dirt_overlay("media/textures/BloodTextures/GrimeOverlay.png", &m, v, cat);
             } else {
-                st.add_intensity(cat, v, |s| s.add_overlay("media/textures/BloodTextures/GrimeOverlay.png", &m, v, cat));
+                st.add_intensity(cat, v, |s| {
+                    s.add_overlay("media/textures/BloodTextures/GrimeOverlay.png", &m, v, cat)
+                });
             }
         }
-        for (amount, suffix) in [(d.basic[i], "sheet"), (d.denim[i], "denim"), (d.leather[i], "leather")] {
+        for (amount, suffix) in [
+            (d.basic[i], "sheet"),
+            (d.denim[i], "denim"),
+            (d.leather[i], "leather"),
+        ] {
             if amount > 0.0 {
                 if let Some(f) = patch_mask_file(*b, suffix) {
-                    st.add_overlay_patches(&format!("media/textures/patches/{f}.png"), "media/textures/patches/patchesmask.png", 300 + i as i32);
+                    st.add_overlay_patches(
+                        &format!("media/textures/patches/{f}.png"),
+                        "media/textures/patches/patchesmask.png",
+                        300 + i as i32,
+                    );
                 }
             }
         }
@@ -499,7 +724,13 @@ fn create_full_item_texture(d: &ItemData, out: &mut TextureCreatorOutput) -> Tex
             st.add_to_cat(3);
             let prev = out.finish(std::mem::take(&mut st));
             let m = tex(&mask_file("HoleTextures", MASK_FILES[b.index()]));
-            st.cmd(TexRef::Job(prev), SmartShader::AddHole, vec![], Some(m), [GL_SRC_ALPHA, GL_ZERO, GL_ONE, GL_ONE_MINUS_SRC_ALPHA]);
+            st.cmd(
+                TexRef::Job(prev),
+                SmartShader::AddHole,
+                vec![],
+                Some(m),
+                [GL_SRC_ALPHA, GL_ZERO, GL_ONE, GL_ONE_MINUS_SRC_ALPHA],
+            );
         }
     }
     TexRef::Job(out.finish(st))
@@ -507,7 +738,7 @@ fn create_full_item_texture(d: &ItemData, out: &mut TextureCreatorOutput) -> Tex
 
 /// `applyItemTexture`.
 fn apply_item_texture(d: &ItemData, full: TexRef, dest: &mut SmartTexture) {
-    dest.add_masked_texture(&d.mask, &d.mask_folder, full.clone(), 3, ImmutableColor::WHITE, 0.0);
+    dest.add_masked_texture(&d.mask, &d.mask_folder, full.clone(), 3, WHITE, 0.0);
     for (i, b) in BloodBodyPartType::ALL.iter().enumerate() {
         if d.hole[i] < 0.0 {
             dest.remove_hole(full.clone(), *b);
