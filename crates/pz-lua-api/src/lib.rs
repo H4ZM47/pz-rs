@@ -21,6 +21,7 @@ pub mod bind_registry;
 pub mod bind_scripts;
 pub mod bind_skills;
 pub mod bind_states;
+pub mod bind_items;
 pub mod bind_ui;
 pub mod bind_fs;
 pub mod bind_java_util;
@@ -42,6 +43,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     // Core: binds the shared instance (`bind_core::install_core` before init).
     bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
     bind_debug::register(&mut mgr.thread);
+    bind_items::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());

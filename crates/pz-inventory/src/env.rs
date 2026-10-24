@@ -111,6 +111,18 @@ pub trait ItemEnv {
         0
     }
 
+    /// The `ClothingItem` assets. With them, `load` and [`create_item`]
+    /// run `synchWithVisual` (visuals from the assets, blood and dirt
+    /// levels, colour); without them (the default) visuals stay as saved.
+    fn assets(&self) -> Option<&crate::assets::ItemAssets> {
+        None
+    }
+
+    /// `OutfitRNG` for new visuals.
+    fn visual_rng(&self) -> &dyn crate::visual::VisualRng {
+        &crate::visual::NoVisualRng
+    }
+
     /// Called when an item is kept as raw bytes, with the reason.
     fn note_raw(&self, _registry_id: i16, _reason: &str) {}
 }
@@ -131,6 +143,9 @@ pub fn create_item(env: &dyn ItemEnv, registry_id: i16) -> Option<InventoryItem>
     }
     if let Some(ms) = &t.moveable_sprite {
         item.read_from_world_sprite(ms, env);
+    }
+    if let Some(a) = env.assets() {
+        item.synch_with_visual(Some(a), &crate::context::Loose, env.visual_rng());
     }
     Some(item)
 }
