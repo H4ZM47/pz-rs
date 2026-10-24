@@ -4,13 +4,14 @@
 use std::collections::HashMap;
 use std::io;
 
+use pz_core::debug::{self, DebugType, FmtArg, StackElement};
 use pz_fs::GameFs;
 
 use crate::bra::BufferedRandomAccessFile;
 use crate::defs::{
     building_id, room_id, BuildingDef, BuildingIdx, MetaObject, RoomDef, RoomIdx, RoomRect,
 };
-use crate::java::{coordmodulo, fastfloor, java_trim, GameRand};
+use crate::java::{coordmodulo, fastfloor, io_throwable, java_trim, GameRand};
 use crate::map_files::{
     header_name, lot_directories, zombie_intensity_for_chunk, MapFiles, MapInfo, LOTHEADER_MAGIC,
 };
@@ -587,7 +588,11 @@ impl IsoMetaGrid {
             *self.cell_slot(gx, gy) = Some(cell);
         }
         if let Err(e) = self.read_header(mf, &name, &path, w_x, w_y, rand, voronois) {
-            eprintln!("ERROR loading {}: {e}", path.display());
+            // `DebugLog.log("ERROR loading " + fo.getAbsolutePath())` then
+            // `ExceptionLogger.logException(e)`.
+            let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
+            debug::log(&format!("ERROR loading {}", abs.display()));
+            debug::log_exception(&io_throwable(&e), Some(&loader_thread_caller()));
         }
     }
 
@@ -689,7 +694,16 @@ impl IsoMetaGrid {
             let cell = self.get_cell_data_mut(w_x, w_y).unwrap();
             cell.rooms.insert(id, idx);
             if cell.room_by_meta_id.contains_key(&meta_id) && !had_error {
-                eprintln!("duplicate RoomDef.metaID for room at x={rx}, y={ry}, level={level}, filename={}", path.file_name().unwrap_or_default().to_string_lossy());
+                let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+                let _ =
+                    debug::with(|d| {
+                        d.error(
+                        DebugType::General,
+                        Some(&loader_thread_caller()),
+                        "duplicate RoomDef.metaID for room at x=%d, y=%d, level=%d, filename=%s",
+                        &[rx.into(), ry.into(), level.into(), FmtArg::from(&*file_name)],
+                    )
+                    });
                 had_error = true;
             }
             cell.room_by_meta_id.insert(meta_id, idx);
@@ -923,4 +937,9 @@ impl IsoMetaGrid {
             }
         }
     }
+}
+
+/// The frame `IsoMetaGrid.MetaGridLoaderThread.loadCell` logs from.
+fn loader_thread_caller() -> StackElement {
+    StackElement::new("zombie.iso.IsoMetaGrid$MetaGridLoaderThread", "loadCell")
 }

@@ -4,7 +4,10 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use pz_core::debug::{self, StackElement};
+
 use crate::bra::BufferedRandomAccessFile;
+use crate::java::io_throwable;
 use crate::map_files::{header_name, lotpack_name, LotHeader, MapFiles, LOTPACK_MAGIC};
 
 /// Squares per chunk level times the 64 supported levels (-32..=31).
@@ -89,7 +92,7 @@ impl IsoLot {
         self.wy = w_y;
         let Some(info) = files.info_headers.get(&header) else {
             // NPE on `this.info.minLevel` upstream, caught by the same handler.
-            self.fail(io::Error::other("no lot header"));
+            self.fail(io::Error::other("NullPointerException"));
             return;
         };
         if let Err(e) = self.load_inner(files, info, c_x, c_y) {
@@ -100,7 +103,11 @@ impl IsoLot {
     fn fail(&mut self, e: io::Error) {
         self.offset_in_data.fill(-1);
         self.data.clear();
-        eprintln!("IsoLot.load: {e}");
+        // `ExceptionLogger.logException(ex)`.
+        debug::log_exception(
+            &io_throwable(&e),
+            Some(&StackElement::new("zombie.iso.IsoLot", "load")),
+        );
     }
 
     fn load_inner(
@@ -113,7 +120,7 @@ impl IsoLot {
         let pack = files
             .info_file_names
             .get(&lotpack_name(c_x, c_y))
-            .ok_or_else(|| io::Error::other("no lotpack"))?;
+            .ok_or_else(|| io::Error::other("NullPointerException"))?;
         let abs = std::path::absolute(pack).unwrap_or_else(|_| pack.clone());
         if self.in_file.is_none() || self.last_used_path != abs {
             self.in_file = None;
@@ -182,5 +189,32 @@ impl IsoLot {
         }
         self.max_level = used_z + 1;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pz_core::debug::{DebugType, LogSeverity, MemorySink};
+
+    #[test]
+    fn load_failure_goes_to_exception_logger() {
+        let sink = MemorySink::new();
+        debug::with(|d| {
+            d.set_sink(sink.clone());
+            d.set_severity(DebugType::General, LogSeverity::General);
+        });
+        let files = [MapFiles::new("Test", PathBuf::from("/nonexistent"), 0, 0)];
+        let mut lot = IsoLot::default();
+        lot.load(&files, 0, 0, 0, 0, 0);
+        assert!(lot.data.is_empty());
+        assert!(lot.offset_in_data.iter().all(|&o| o == -1));
+        assert_eq!(
+            sink.log().stderr(),
+            "ERROR: General      f:0> IsoLot.load> Exception thrown\n\
+             \tjava.lang.NullPointerException at No Stack Trace Available.\n\
+             \tStack trace:\n"
+        );
+        assert_eq!(debug::with(|d| d.exception_count), 1);
     }
 }

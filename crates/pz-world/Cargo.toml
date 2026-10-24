@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 pz-fs.workspace = true
 pz-classfile.workspace = true
+pz-core.workspace = true
