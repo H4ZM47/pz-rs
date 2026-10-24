@@ -165,6 +165,7 @@ dependencies = [
  "pz-fs",
  "pz-kahlua",
  "pz-render",
+ "pz-sound",
  "pz-text",
  "pz-ui",
 ]

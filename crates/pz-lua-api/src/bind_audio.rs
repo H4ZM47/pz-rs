@@ -9,6 +9,12 @@
 //! `rawgetFloat`/`rawgetInt` returning -1 for non-numbers, and a later entry
 //! with the same id replacing the earlier one at the end of the list.
 //!
+//! `zombie.SoundManager` is exposed through `getSoundManager()` over a
+//! shared [`pz_sound::system::SoundSystem`]: call [`install_sound_system`]
+//! with the engine's before Lua starts; without one a silent system is used
+//! (the original's `DummySoundManager` when sound is off). Methods that need
+//! the world (`PlaySound`, `PlayWorldSound*`) return nil until it is ported.
+//!
 //! Character-dependent parts (`checkHealthPanelVisible`,
 //! `restoreToFullHealth`, `MusicThreatStatuses.update`) only act on an
 //! `IsoPlayer`, which is not ported yet, so they do nothing for now.
@@ -26,6 +32,37 @@ pub const INTENSITY_EVENTS_CLASS: &str = "zombie.audio.MusicIntensityEvents";
 pub const THREAT_CONFIG_CLASS: &str = "zombie.audio.MusicThreatConfig";
 pub const THREAT_STATUS_CLASS: &str = "zombie.audio.MusicThreatStatus";
 pub const THREAT_STATUSES_CLASS: &str = "zombie.audio.MusicThreatStatuses";
+pub const SOUND_MANAGER_CLASS: &str = "zombie.SoundManager";
+pub const BASE_SOUND_MANAGER_CLASS: &str = "zombie.BaseSoundManager";
+
+thread_local! {
+    static SOUND: RefCell<Option<Rc<RefCell<pz_sound::system::SoundSystem>>>> = const { RefCell::new(None) };
+    static SOUND_HANDLE: Rc<SoundManagerObject> = Rc::new(SoundManagerObject);
+}
+
+/// Make `system` the one `getSoundManager()` drives.
+pub fn install_sound_system(system: Rc<RefCell<pz_sound::system::SoundSystem>>) {
+    SOUND.with(|s| *s.borrow_mut() = Some(system));
+}
+
+/// The shared sound system, created silent on first use.
+pub fn sound_system() -> Rc<RefCell<pz_sound::system::SoundSystem>> {
+    SOUND.with(|s| {
+        s.borrow_mut().get_or_insert_with(|| Rc::new(RefCell::new(pz_sound::system::SoundSystem::silent()))).clone()
+    })
+}
+
+/// The Lua handle of `SoundManager.instance`.
+pub struct SoundManagerObject;
+
+impl LuaObject for SoundManagerObject {
+    fn class_name(&self) -> &str {
+        SOUND_MANAGER_CLASS
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 fn java_error(message: String, class: &'static str) -> LuaError {
     LuaError::Runtime { message, class }
@@ -431,7 +468,167 @@ fn out_of_bounds(index: i32, len: usize) -> LuaError {
     java_error(format!("Index {index} out of bounds for length {len}"), "java.lang.IndexOutOfBoundsException")
 }
 
+fn sm_this(c: &NativeCall<'_>) -> LuaResult<()> {
+    obj::<SoundManagerObject>(c, 0).map(|_| ())
+}
+
+/// Java `long` and `float` returns become Lua numbers.
+fn num(c: &mut NativeCall<'_>, v: f64) -> usize {
+    c.push(v)
+}
+
+fn register_sound_manager(thread: &mut Thread) {
+    expose_class(thread, BASE_SOUND_MANAGER_CLASS, None);
+    let b = expose_class(thread, SOUND_MANAGER_CLASS, Some(BASE_SOUND_MANAGER_CLASS));
+    crate::expose::global(thread, "getSoundManager", |c| {
+        let h: Rc<dyn LuaObject> = SOUND_HANDLE.with(|h| h.clone());
+        Ok(c.push(Value::Object(h)))
+    });
+    b.method("playUISound", |c| {
+        sm_this(c)?;
+        let name = str_arg(c, 1).unwrap_or_else(|| Rc::from(""));
+        let r = sound_system().borrow_mut().with(|m, ctx| m.play_ui_sound(&name, None, ctx));
+        Ok(num(c, r as f64))
+    });
+    b.method("stopUISound", |c| {
+        sm_this(c)?;
+        let inst = num_arg(c, 1) as i64;
+        sound_system().borrow_mut().with(|m, ctx| m.stop_ui_sound(inst, ctx));
+        Ok(0)
+    });
+    b.method("isPlayingUISound", |c| {
+        sm_this(c)?;
+        let v = match c.arg(1) {
+            Value::Str(s) => sound_system().borrow_mut().with(|m, _| m.is_playing_ui_sound(&s)),
+            _ => {
+                let inst = num_arg(c, 1) as i64;
+                sound_system().borrow_mut().with(|m, _| m.is_playing_ui_sound_instance(inst))
+            }
+        };
+        Ok(c.push(v))
+    });
+    b.method("setUiSoundMuted", |c| {
+        sm_this(c)?;
+        let v = matches!(c.arg(1), Value::Bool(true));
+        sound_system().borrow_mut().manager.set_ui_sound_muted(v);
+        Ok(0)
+    });
+    b.method("isUiSoundMuted", |c| {
+        sm_this(c)?;
+        let v = sound_system().borrow().manager.is_ui_sound_muted();
+        Ok(c.push(v))
+    });
+    b.method("playMusic", |c| {
+        sm_this(c)?;
+        let name = str_arg(c, 1).unwrap_or_else(|| Rc::from(""));
+        sound_system().borrow_mut().with(|m, ctx| m.play_music(&name, ctx));
+        Ok(0)
+    });
+    b.method("stopMusic", |c| {
+        sm_this(c)?;
+        let name = str_arg(c, 1);
+        sound_system().borrow_mut().with(|m, ctx| m.stop_music(name.as_deref(), ctx.backend));
+        Ok(0)
+    });
+    b.method("StopMusic", |c| {
+        sm_this(c)?;
+        sound_system().borrow_mut().with(|m, ctx| m.stop_music_all(ctx.backend));
+        Ok(0)
+    });
+    b.method("isPlayingMusic", |c| {
+        sm_this(c)?;
+        let v = sound_system().borrow_mut().with(|m, ctx| m.is_playing_music(ctx.backend));
+        Ok(c.push(v))
+    });
+    b.method("IsMusicPlaying", |c| {
+        sm_this(c)?;
+        Ok(c.push(false))
+    });
+    b.method("getMusicPosition", |c| {
+        sm_this(c)?;
+        let v = sound_system().borrow_mut().with(|m, ctx| m.music_position(ctx.backend));
+        Ok(num(c, v as f64))
+    });
+    b.method("getCurrentMusicName", |c| {
+        sm_this(c)?;
+        let v = sound_system().borrow_mut().with(|m, ctx| m.current_music_name(ctx.backend));
+        Ok(c.push(v.map_or(Value::Nil, |s| Value::str(&s))))
+    });
+    b.method("getCurrentMusicLibrary", |c| {
+        sm_this(c)?;
+        let v = sound_system().borrow_mut().with(|m, ctx| m.current_music_library(ctx.backend));
+        Ok(c.push(v.map_or(Value::Nil, |s| Value::str(&s))))
+    });
+    b.method("setMusicState", |c| {
+        sm_this(c)?;
+        let name = str_arg(c, 1).ok_or_else(|| npe("String.hashCode()"))?;
+        sound_system().borrow().manager.set_music_state(&name);
+        Ok(0)
+    });
+    b.method("isRemastered", |c| {
+        sm_this(c)?;
+        let sys = sound_system();
+        let mut sys = sys.borrow_mut();
+        let pz_sound::system::SoundSystem { manager, rand_next, .. } = &mut *sys;
+        let v = manager.is_remastered(rand_next.as_mut());
+        drop(sys);
+        Ok(c.push(v))
+    });
+    b.method("pauseSoundAndMusic", |c| {
+        sm_this(c)?;
+        let keep = matches!(c.arg(1), Value::Bool(true));
+        sound_system().borrow_mut().with(|m, ctx| m.pause_sound_and_music(keep, false, ctx));
+        Ok(0)
+    });
+    b.method("resumeSoundAndMusic", |c| {
+        sm_this(c)?;
+        sound_system().borrow_mut().with(|m, ctx| m.resume_sound_and_music(ctx));
+        Ok(0)
+    });
+    macro_rules! volume {
+        ($get:literal, $set:literal, $field:ident, $setter:ident) => {
+            b.method($get, |c| {
+                sm_this(c)?;
+                let v = sound_system().borrow().manager.$field;
+                Ok(num(c, v as f64))
+            });
+            b.method($set, |c| {
+                sm_this(c)?;
+                let v = num_arg(c, 1) as f32;
+                sound_system().borrow_mut().with(|m, ctx| m.$setter(v, ctx.backend));
+                Ok(0)
+            });
+        };
+    }
+    volume!("getSoundVolume", "setSoundVolume", sound_volume, set_sound_volume);
+    volume!("getMusicVolume", "setMusicVolume", music_volume, set_music_volume);
+    volume!("getVehicleEngineVolume", "setVehicleEngineVolume", vehicle_engine_volume, set_vehicle_engine_volume);
+    b.method("setAmbientVolume", |c| {
+        sm_this(c)?;
+        let v = num_arg(c, 1) as f32;
+        sound_system().borrow_mut().with(|m, ctx| m.set_ambient_volume(v, ctx.backend));
+        Ok(0)
+    });
+    b.method("getAmbientVolume", |c| {
+        sm_this(c)?;
+        Ok(num(c, 1.0))
+    });
+    b.method("getAmbientPieces", |c| {
+        sm_this(c)?;
+        Ok(c.push(Value::Object(Rc::new(crate::bind_core::JavaList(Vec::new())))))
+    });
+    // World sounds need IsoWorld's free emitters (not ported yet): the
+    // original returns null when there is no world.
+    for name in ["PlaySound", "PlayWorldSound", "PlayWorldSoundImpl", "PlayWorldSoundWav", "PlayWorldSoundWavImpl"] {
+        b.method(name, |c| {
+            sm_this(c)?;
+            Ok(c.push(Value::Nil))
+        });
+    }
+}
+
 pub fn register(thread: &mut Thread) {
+    register_sound_manager(thread);
     let b = expose_class(thread, INTENSITY_CONFIG_CLASS, None);
     b.static_fn("getInstance", |c| {
         let h: Rc<dyn LuaObject> = INTENSITY_HANDLE.with(|h| h.clone());
@@ -703,6 +900,28 @@ mod tests {
 
     fn strs(v: &[Value]) -> Vec<String> {
         v.iter().map(java_value_of).collect()
+    }
+
+    #[test]
+    fn sound_manager_global() {
+        let mut t = setup();
+        let r = run(
+            &mut t,
+            r#"
+            local sm = getSoundManager()
+            local same = sm == getSoundManager()
+            local inst = sm:playUISound("UIHighlightMainMenuItem")
+            sm:setUiSoundMuted(true)
+            local muted = sm:isUiSoundMuted()
+            sm:setSoundVolume(0.5)
+            sm:setMusicState("MainMenu")
+            return same, inst, muted, sm:getSoundVolume(), sm:getAmbientVolume(), sm:isPlayingMusic(),
+                type(sm:getAmbientPieces()), sm:PlayWorldSound("x", nil, 0, 0, 0, false)
+            "#,
+        )
+        .unwrap();
+        // The default system is silent: nothing plays.
+        assert_eq!(strs(&r), ["true", "0.0", "true", "0.5", "1.0", "false", "userdata", "null"]);
     }
 
     #[test]

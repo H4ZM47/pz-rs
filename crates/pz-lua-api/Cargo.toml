@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pz-sound = { path = "../pz-sound" }
 pz-kahlua.workspace = true
 pz-core.workspace = true
 pz-fs.workspace = true
