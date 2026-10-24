@@ -19,6 +19,11 @@ Status of the Rust port. Update this file with every merged change.
   `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk` with generic tile
   objects. Header and lotpack decoding match the original loader on 163
   cells (Muldraugh sample plus six challenge maps), checked locally.
+  Meta-grid zones (`Zone` and the vehicle/mannequin/world-gen/animal
+  subclasses, chunk zone arrays, Lua-facing registration, lot-priority
+  removal) match the original `IsoMetaGrid` on randomized registrations;
+  the native clipper is an injected trait and the zone tables are runtime
+  input.
 
 ## In progress
 - StringLib, OsLib.
