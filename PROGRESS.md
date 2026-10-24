@@ -14,6 +14,13 @@ Status of the Rust port. Update this file with every merged change.
 - Kahlua VM (KahluaThread loop, metatables, errors, coroutines) and
   BaseLib, TableLib, MathLib, CoroutineLib, RandomLib.
 
+- `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
+  of `media/scripts` (game + mods, template-first file order), with Java
+  `HashMap` iteration order and script version hashes. On Build 42 all
+  37 script types load with the same per-type order and script versions as
+  the original (checked locally against the original `ScriptManager`); only
+  `StringList` has its typed class so far, others load as raw blocks.
+
 ## In progress
 - StringLib, OsLib.
 
