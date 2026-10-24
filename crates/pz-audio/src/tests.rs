@@ -267,3 +267,21 @@ fn parses_every_game_bank_model() {
     }
     assert!(events > 0);
 }
+
+#[test]
+fn pan_matches_measured_fmod_vbap_and_rolloff() {
+    use dsp::pan::{spread, vbap, Rolloff};
+    let close = |a: f32, b: f32| (a - b).abs() < 2e-3;
+    let g = vbap(45.0);
+    assert!(close(g[1], 0.962) && close(g[5], 0.275), "{g:?}");
+    let g = vbap(90.0);
+    assert!(close(g[1], 0.367) && close(g[5], 0.930), "{g:?}");
+    let g = vbap(180.0);
+    assert!(close(g[4], 0.707) && close(g[5], 0.707), "{g:?}");
+    let g = spread(0.0, 60.0);
+    assert!(close(g[2], 0.816) && close(g[0], 0.408), "{g:?}");
+    assert!(close(Rolloff::Linear.gain(5.0, 2.0, 20.0), 0.8333));
+    assert!(close(Rolloff::LinearSquared.gain(5.0, 2.0, 20.0), 0.6944));
+    assert!(close(Rolloff::Inverse.gain(25.0, 2.0, 20.0), 0.1));
+    assert!(close(Rolloff::InverseTapered.gain(15.0, 2.0, 20.0), 0.0772));
+}

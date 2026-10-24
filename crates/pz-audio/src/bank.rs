@@ -400,7 +400,49 @@ pub struct Instrument {
 pub struct Bus {
     pub id: Guid,
     pub output: Output,
-    pub raw_bus: Vec<u8>,
+    pub body: BusBody,
+}
+
+/// `BUS `: fields every bus kind shares.
+#[derive(Debug, Clone, Default)]
+pub struct BusBody {
+    pub unknown_0: u32,
+    pub speaker_mode: u32,
+    /// Effect chain, in order (`BEFF`, `SEFF`, ...).
+    pub effects: Vec<Guid>,
+    pub effects_2: Vec<Guid>,
+    pub volume_db: f32,
+    pub unknown_vol_2: f32,
+    pub vcas: Vec<Guid>,
+    pub unknown_max: u32,
+    pub unknown_e: u32,
+    pub effect_speaker_modes: Vec<u32>,
+    pub effect_speaker_modes_2: Vec<u32>,
+}
+
+impl BusBody {
+    pub fn parse(b: &[u8]) -> Result<BusBody> {
+        let mut r = Reader::new(b);
+        let unknown_0 = r.u32()?;
+        let speaker_mode = r.u32()?;
+        let effects = r.read_structs(|r| r.guid())?;
+        let effects_2 = r.read_structs(|r| r.guid())?;
+        let size = r.u16()? as usize;
+        let mut v = Reader::new(r.bytes(size)?);
+        Ok(BusBody {
+            unknown_0,
+            speaker_mode,
+            effects,
+            effects_2,
+            volume_db: v.f32()?,
+            unknown_vol_2: v.f32()?,
+            vcas: r.read_structs(|r| r.guid())?,
+            unknown_max: r.u32()?,
+            unknown_e: r.u32()?,
+            effect_speaker_modes: r.read_structs(|r| r.u32())?,
+            effect_speaker_modes_2: r.read_structs(|r| r.u32())?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -409,6 +451,197 @@ pub enum BusKind {
     Master,
     Input,
     Return,
+}
+
+/// A value from an effect's `PMEF` parameter list.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParamValue {
+    Float(f32),
+    Int(i32),
+    Bool(bool),
+    Data(Vec<u8>),
+}
+
+impl ParamValue {
+    pub fn as_f32(&self) -> f32 {
+        match self {
+            ParamValue::Float(v) => *v,
+            ParamValue::Int(v) => *v as f32,
+            ParamValue::Bool(v) => *v as u8 as f32,
+            ParamValue::Data(_) => 0.0,
+        }
+    }
+}
+
+fn read_params(b: &[u8]) -> Result<Vec<ParamValue>> {
+    let mut r = Reader::new(b);
+    let n = r.u32()? as usize;
+    let mut out = Vec::with_capacity(n.min(64));
+    for _ in 0..n {
+        out.push(match r.u32()? {
+            0 => ParamValue::Float(r.f32()?),
+            1 => ParamValue::Int(r.i32()?),
+            2 => ParamValue::Bool(r.u8()? != 0),
+            _ => {
+                let size = r.u16()? as usize;
+                ParamValue::Data(r.bytes(size)?.to_vec())
+            }
+        });
+    }
+    Ok(out)
+}
+
+/// Studio effect types (`BEFB`), named after the core DSP they run.
+pub mod effect_type {
+    pub const ECHO: u32 = 6;
+    pub const FADER: u32 = 7;
+    pub const LIMITER: u32 = 11;
+    pub const COMPRESSOR: u32 = 18;
+    pub const SFX_REVERB: u32 = 19;
+    pub const PAN: u32 = 27;
+    pub const THREE_EQ: u32 = 28;
+    pub const LOUDNESS_METER: u32 = 30;
+    pub const TRANSCEIVER: u32 = 34;
+    pub const MULTIBAND_EQ: u32 = 36;
+}
+
+/// A built-in effect (`BEFF`).
+#[derive(Debug, Clone)]
+pub struct Effect {
+    pub id: Guid,
+    pub kind: u32,
+    pub params: Vec<ParamValue>,
+    pub bypass: bool,
+}
+
+/// A send to a return bus (`SEFF`).
+#[derive(Debug, Clone)]
+pub struct Send {
+    pub id: Guid,
+    pub return_bus: Guid,
+    pub level_db: f32,
+    pub bypass: bool,
+}
+
+fn read_bypass(b: Option<&[u8]>) -> bool {
+    b.and_then(|b| b.get(0..4))
+        .is_some_and(|w| u32::from_le_bytes(w.try_into().unwrap()) != 0)
+}
+
+/// `CTRL`: automation of one property of `target` by a curve.
+#[derive(Debug, Clone, Copy)]
+pub struct Controller {
+    pub id: Guid,
+    pub target: Guid,
+    pub curve: Guid,
+    pub property: u32,
+}
+
+/// `CURV` point: x, y, shape (curvature of the segment that follows), flags.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CurvePoint {
+    pub x: f32,
+    pub y: f32,
+    pub shape: f32,
+    pub flags: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct Curve {
+    pub id: Guid,
+    pub controller: Guid,
+    pub points: Vec<CurvePoint>,
+}
+
+impl Curve {
+    /// Value at `x`, clamped to the end points. Segments interpolate
+    /// linearly; segment shapes are not applied yet.
+    pub fn eval(&self, x: f32) -> f32 {
+        let p = &self.points;
+        match p.len() {
+            0 => 0.0,
+            1 => p[0].y,
+            _ => {
+                if x <= p[0].x {
+                    return p[0].y;
+                }
+                for w in p.windows(2) {
+                    if x <= w[1].x {
+                        let t = if w[1].x > w[0].x {
+                            (x - w[0].x) / (w[1].x - w[0].x)
+                        } else {
+                            1.0
+                        };
+                        return w[0].y + (w[1].y - w[0].y) * t;
+                    }
+                }
+                p[p.len() - 1].y
+            }
+        }
+    }
+}
+
+/// `MAP `: piecewise-linear map from a property's automation scale to its
+/// value (for example the fader's display scale to dB).
+#[derive(Debug, Clone)]
+pub struct Mapping {
+    pub id: Guid,
+    pub points: Vec<(f32, f32)>,
+}
+
+impl Mapping {
+    pub fn apply(&self, x: f32) -> f32 {
+        let p = &self.points;
+        if p.is_empty() {
+            return x;
+        }
+        if x <= p[0].0 {
+            return p[0].1;
+        }
+        for w in p.windows(2) {
+            if x <= w[1].0 {
+                let t = if w[1].0 > w[0].0 {
+                    (x - w[0].0) / (w[1].0 - w[0].0)
+                } else {
+                    1.0
+                };
+                return w[0].1 + (w[1].1 - w[0].1) * t;
+            }
+        }
+        p[p.len() - 1].1
+    }
+}
+
+/// `PROP` in an object's `PRPS` list: an automated or modulated property.
+#[derive(Debug, Clone)]
+pub struct Property {
+    pub property: u32,
+    pub unknown_a: u16,
+    pub unknown_b: u16,
+    pub mapping: Guid,
+    pub curves: Vec<Guid>,
+    pub modulators: Vec<Guid>,
+}
+
+impl Property {
+    pub fn parse(b: &[u8]) -> Result<Property> {
+        let mut r = Reader::new(b);
+        Ok(Property {
+            property: r.u32()?,
+            unknown_a: r.u16()?,
+            unknown_b: r.u16()?,
+            mapping: r.guid()?,
+            curves: r.read_structs(|r| r.guid())?,
+            modulators: r.read_structs(|r| r.guid())?,
+        })
+    }
+}
+
+/// Property ids on buses, events and instruments.
+pub mod property {
+    pub const VOLUME: u32 = 0;
+    /// Effect parameters are `EFFECT_PARAMETER + index`.
+    pub const EFFECT_PARAMETER: u32 = 1000;
 }
 
 /// Every object of one bank file.
@@ -421,6 +654,17 @@ pub struct BankModel {
     pub waveforms: HashMap<Guid, Waveform>,
     pub instruments: HashMap<Guid, Instrument>,
     pub buses: HashMap<Guid, (BusKind, Bus)>,
+    pub effects: HashMap<Guid, Effect>,
+    pub sends: HashMap<Guid, Send>,
+    pub controllers: HashMap<Guid, Controller>,
+    pub curves: HashMap<Guid, Curve>,
+    pub mappings: HashMap<Guid, Mapping>,
+    /// Automated properties of each object, keyed by the object's GUID.
+    pub properties: HashMap<Guid, Vec<Property>>,
+    /// Controllers each parameter sheet drives (`CTRO` of `PMLO`).
+    pub sheet_controllers: HashMap<Guid, Vec<Guid>>,
+    /// Controllers each timeline drives (`CTRO` of `TMLN`).
+    pub timeline_controllers: HashMap<Guid, Vec<Guid>>,
 }
 
 impl BankModel {
@@ -437,13 +681,89 @@ impl BankModel {
             let p = Parameter::parse(o.get(b"PRMB").ok_or(Truncated)?)?;
             m.parameters.insert(p.id, p);
         }
+        let guid_list = |b: Option<&[u8]>| -> Result<Vec<Guid>> {
+            match b {
+                Some(b) => Reader::new(b).read_structs(|r| r.guid()),
+                None => Ok(Vec::new()),
+            }
+        };
         for o in objects(b"PMLS") {
             let p = ParameterSheet::parse(o.get(b"PMLB").ok_or(Truncated)?)?;
+            m.sheet_controllers.insert(p.id, guid_list(o.get(b"CTRO"))?);
             m.parameter_sheets.insert(p.id, p);
         }
         for o in objects(b"TLNS") {
             let t = Timeline::parse(o.get(b"TLNB").ok_or(Truncated)?)?;
+            m.timeline_controllers
+                .insert(t.id, guid_list(o.get(b"CTRO"))?);
             m.timelines.insert(t.id, t);
+        }
+        for b in raw_leaves(file, proj, b"CTRS", b"CTRL") {
+            let mut r = Reader::new(b);
+            let c = Controller {
+                id: r.guid()?,
+                target: r.guid()?,
+                curve: r.guid()?,
+                property: r.u32()?,
+            };
+            m.controllers.insert(c.id, c);
+        }
+        for b in raw_leaves(file, proj, b"CRVS", b"CURV") {
+            let mut r = Reader::new(b);
+            let id = r.guid()?;
+            let controller = r.guid()?;
+            let points = r.read_structs(|r| {
+                Ok(CurvePoint {
+                    x: r.f32()?,
+                    y: r.f32()?,
+                    shape: r.f32()?,
+                    flags: r.u32()?,
+                })
+            })?;
+            m.curves.insert(
+                id,
+                Curve {
+                    id,
+                    controller,
+                    points,
+                },
+            );
+        }
+        for b in raw_leaves(file, proj, b"MPGS", b"MAP ") {
+            let mut r = Reader::new(b);
+            let id = r.guid()?;
+            let points = r.read_structs(|r| Ok((r.f32()?, r.f32()?)))?;
+            m.mappings.insert(id, Mapping { id, points });
+        }
+        // Every object list may carry a PRPS list of automated properties.
+        for list in &proj.children {
+            for item in list.children.iter().filter(|c| c.list_type.is_some()) {
+                let Some(prps) = item
+                    .children
+                    .iter()
+                    .find(|c| c.list_type.as_ref() == Some(b"PRPS"))
+                else {
+                    continue;
+                };
+                // The owner is the GUID at the start of the object's first data chunk.
+                let Some(first) = item
+                    .children
+                    .iter()
+                    .find(|c| c.list_type.is_none() && c.body.len() >= 16)
+                else {
+                    continue;
+                };
+                let owner = Reader::new(&file[first.body.clone()]).guid()?;
+                let props = prps
+                    .children
+                    .iter()
+                    .filter(|c| &c.id == b"PROP")
+                    .map(|c| Property::parse(&file[c.body.clone()]))
+                    .collect::<Result<Vec<_>>>()?;
+                if !props.is_empty() {
+                    m.properties.insert(owner, props);
+                }
+            }
         }
         for b in raw_leaves(file, proj, b"WAVS", b"WAV ") {
             let w = Waveform::parse(b)?;
@@ -487,6 +807,42 @@ impl BankModel {
             }
         }
 
+        for o in objects(b"BEFX") {
+            let b = o.get(b"BEFB").ok_or(Truncated)?;
+            let mut r = Reader::new(b);
+            let id = r.guid()?;
+            let kind = r.u32()?;
+            let params = o
+                .get(b"PMEF")
+                .map(read_params)
+                .transpose()?
+                .unwrap_or_default();
+            m.effects.insert(
+                id,
+                Effect {
+                    id,
+                    kind,
+                    params,
+                    bypass: read_bypass(o.get(b"EFFB")),
+                },
+            );
+        }
+        for o in objects(b"SEFX") {
+            let mut r = Reader::new(o.get(b"SEFB").ok_or(Truncated)?);
+            let id = r.guid()?;
+            let return_bus = r.guid()?;
+            let level_db = r.f32()?;
+            m.sends.insert(
+                id,
+                Send {
+                    id,
+                    return_bus,
+                    level_db,
+                    bypass: read_bypass(o.get(b"EFFB")),
+                },
+            );
+        }
+
         let bus_lists: [(&[u8; 4], &[u8; 4], BusKind); 4] = [
             (b"GBSS", b"GBSB", BusKind::Group),
             (b"MBSS", b"MBSB", BusKind::Master),
@@ -499,18 +855,12 @@ impl BankModel {
                 let mut r = Reader::new(b);
                 let id = r.guid()?;
                 let output = read_output(&mut r)?;
-                let raw_bus = o.get(b"BUS ").unwrap_or_default().to_vec();
-                m.buses.insert(
-                    id,
-                    (
-                        kind,
-                        Bus {
-                            id,
-                            output,
-                            raw_bus,
-                        },
-                    ),
-                );
+                let body = o
+                    .get(b"BUS ")
+                    .map(BusBody::parse)
+                    .transpose()?
+                    .unwrap_or_default();
+                m.buses.insert(id, (kind, Bus { id, output, body }));
             }
         }
         Ok(m)

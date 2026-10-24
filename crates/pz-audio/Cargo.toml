@@ -3,6 +3,12 @@ name = "pz-audio"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = ["output"]
+# Live playback through the system's audio device.
+output = ["dep:cpal"]
+
 [dependencies]
 lewton = "0.10"
 memmap2 = "0.9"
+cpal = { version = "0.15", optional = true }

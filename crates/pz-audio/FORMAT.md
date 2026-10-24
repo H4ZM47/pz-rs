@@ -62,3 +62,63 @@ file offset. `LCNT` in each list holds the u32 element count.
 The FMOD runtime shipped with the game (FMOD 2.03.09, Studio header version
 0x00020309) can be driven through ctypes for parity checks; keep such
 scripts and their output outside the repository.
+
+## Automation
+
+* `CTRL`: GUID, target object GUID, curve GUID, u32 property id.
+* `CURV`: GUID, controller GUID, array of points {f32 x, f32 y, f32 shape,
+  u32 flags}. Shapes are non-zero on about a fifth of points (flags 3).
+* `MAP `: GUID, array of (f32, f32): maps the automation scale to the
+  property's value (fader display scale to dB, distance scale to metres).
+* `PRPS` → `PROP` on any object: u32 property id (0 volume on buses and
+  instruments; effect parameters are 1000 + DSP parameter index), u16, u16,
+  `MAP` GUID, array of curve GUIDs, array of modulator GUIDs.
+* `CTRO` beside `PMLB` (and `TLNB`): the controllers that parameter sheet
+  (timeline) drives. A curve's x axis is that parameter's value.
+* Runtime (current approximation): automated value = map(sum of the
+  property's active curves), replacing the base value.
+
+## Effects
+
+Effect objects (`BEFF`) hold `BEFB` (GUID, u32 Studio effect type), `PMEF`
+(u32 parameter count, then per parameter u32 kind and a value: 0 float f32,
+1 int i32, 2 bool u8, 3 data u16 size + bytes; one trailing u8) and `EFFB`
+(u32 bypass flag, f32 100, f32 0, f32 -80, u32 0). Parameters are in the
+order of the matching core DSP's parameters (FMOD_DSP_<TYPE>_* indices).
+Studio type → core DSP, from parameter counts and values:
+
+| Studio | Core DSP | Uses in the game's banks |
+| --- | --- | --- |
+| 6 | Echo | 6 |
+| 7 | Fader | 266 |
+| 11 | Limiter | 1 (master bus) |
+| 18 | Compressor | 39 |
+| 19 | SFX Reverb | 8 |
+| 27 | Pan (spatializer) | 73 |
+| 28 | 3-EQ | 1 |
+| 30 | Loudness Meter | 1 |
+| 34 | Transceiver | 21 |
+| 36 | Multiband Equalizer | 149 |
+
+Send effects (`SEFF`: `SEFB` GUID, return bus GUID, f32 level dB) route to
+return buses. Buses carry `PRPS` lists whose `PROP` entries automate
+properties through `MAP` and `CURV` objects.
+
+The game's master bus runs a fader, compressor, limiter and loudness meter,
+so every event's level depends on them.
+
+### Spatializer (Pan) measurements
+
+Studio's spatializer is the core Pan DSP in surround mode into 5.1:
+point sources use 2D VBAP over C 0°, FR/FL ±30°, SR/SL ±110°; rolloffs
+are linear-squared, linear, inverse (clamped at max), inverse-tapered
+(min of inverse and linear-squared) and custom (none); the 5.1 → stereo
+output downmix is L = FL + C/√2 + SL/√2. Extent spreading, sound size,
+elevation and gain smoothing are approximated (see `src/dsp/pan.rs`).
+
+### Measured behaviour (core DSPs driven through the oracle)
+
+* Fader: exact dB gain.
+* Compressor, limiter, multiband EQ and reverb are not implemented in this
+  tree yet; they pass the signal through, so levels through the master bus
+  differ from FMOD's.
