@@ -4,6 +4,7 @@
 //! parameters in the order of the matching `FMOD_DSP_<TYPE>_*` indices.
 
 pub mod compressor;
+pub mod limiter;
 
 /// A processing effect on interleaved audio.
 pub trait Dsp: Send {

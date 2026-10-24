@@ -96,8 +96,8 @@ loudness meter, so every event's level depends on these.
 ### Measured behaviour (core DSPs driven through the oracle)
 
 * Fader: exact dB gain.
-* Limiter (10, -1, 10, linked): static curve is +10 dB gain clamped at the
-  -1 dB ceiling.
+* Limiter: ported exactly (`src/dsp/limiter.rs`); matches FMOD's output to
+  16-bit precision on noise and tone bursts.
 * Compressor: ported exactly from `libfmod` (`src/dsp/compressor.rs`); the
   apparent detector offset comes from linked detection summing the
   channels' power and two cascaded smoothers. Output matches FMOD's to
