@@ -45,6 +45,15 @@ Status of the Rust port. Update this file with every merged change.
   wind chill. Hourly and daily dumps match the original bit for bit over
   more than 400 simulated days across seasons, sandbox weather cycles and
   daylight-saving changes (checked locally).
+- Weather effects (`pz-iso-render::weather_fx`, `weather_fx_mask`):
+  `IsoWeatherFX` cloud, fog, snow and rain particle layers driven by the
+  climate's render values, the fog circle, `WeatherParticleDrawer`
+  batching, and `WeatherFxMask` keeping them out of the player's building
+  (mask and particle render textures in `pz-gpu`, `fogCircle` shader).
+  Particle state and drawer quads over 600-900 frames match the original
+  bit for bit but for last-ulp rain rotations; `RasterizeBounds` and
+  `Rasterize.scanTriangle` match exactly (checked locally). Mask walls are
+  drawn without cutaways and characters are not in the mask yet.
 - World save files: `map_t.bin` (`GameTime` + climate, in `pz-core`),
   `map_meta.bin` (room/building state, safehouses, factions, designation
   zones, stashes), `map_zone.bin` and `gos_*.bin` (global-object systems)

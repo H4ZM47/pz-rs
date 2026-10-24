@@ -254,3 +254,109 @@ fn rain_stays_out_of_the_players_building() {
     assert_eq!(wet_in.0, 0, "rain inside the room with the player in it");
     assert!(wet_out > 150, "rain outside the room: {wet_out}");
 }
+
+/// With `PZ_GAME_DIR` set: every texture the effects and the mask load
+/// exists in the game's packs, and a frame of each layer renders with
+/// them (written out with `PZ_WEATHERFX_BMP`).
+#[test]
+fn game_textures_load_and_render() {
+    let Ok(game) = std::env::var("PZ_GAME_DIR") else {
+        return;
+    };
+    let mut fs = pz_fs::GameFs::new(std::path::Path::new(&game));
+    fs.set_cache_dir(std::env::temp_dir().join("pz-weatherfx-test"));
+    let mut tm = TextureManager::new();
+    tm.load_ui_packs(&fs);
+    for p in ["Tiles2x", "Tiles2x.floor"] {
+        tm.load_texture_pack(&fs, p, 0, None);
+    }
+    tm.set_texture_pack_lookup(fs.mod_ids());
+    let textures = WeatherFxTextures::load(|path, flags| {
+        if flags == 0 {
+            tm.shared_texture(&fs, path)
+        } else {
+            tm.shared_texture_flags(&fs, path, flags)
+        }
+    });
+    let all: Vec<_> = textures
+        .clouds
+        .iter()
+        .chain(&textures.fog)
+        .chain(&textures.snow)
+        .chain([&textures.fog_circle, &textures.fog_white])
+        .collect();
+    for (t, (path, _)) in all.iter().zip(WeatherFxTextures::paths()) {
+        assert!(
+            t.as_ref().is_some_and(|t| t.ready && t.width > 0),
+            "missing {path}"
+        );
+    }
+    let sprite = |tm: &mut TextureManager, name: &str| {
+        let t = tm.shared_texture(&fs, name);
+        assert!(t.is_some(), "missing {name}");
+        Rc::new(SpriteInfo {
+            texture: t,
+            ..Default::default()
+        })
+    };
+    let names = FxMaskSprites::SPRITES;
+    let sprites = FxMaskSprites {
+        floor: Some(sprite(&mut tm, names[0])),
+        wall_n: Some(sprite(&mut tm, names[1])),
+        wall_w: Some(sprite(&mut tm, names[2])),
+        wall_nw: Some(sprite(&mut tm, names[3])),
+        wall_se: Some(sprite(&mut tm, names[4])),
+        white: tm.shared_texture(&fs, FxMaskSprites::WHITE),
+    };
+    assert!(sprites.white.is_some(), "missing {}", FxMaskSprites::WHITE);
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else {
+        return;
+    };
+    let world = room();
+    let rand = Rand::new(5);
+    let mut fx = IsoWeatherFx::new(&rand, &textures);
+    for (name, snow) in [("rain", false), ("snow", true)] {
+        let c = WeatherFxClimate {
+            precipitation_intensity: 0.8,
+            precipitation_is_snow: snow,
+            wind_intensity: 0.4,
+            wind_precip_intensity: 0.2,
+            wind_angle_intensity: 0.3,
+            fog_intensity: 0.4,
+            cloud_intensity: 0.8,
+        };
+        fx.update_fx(&c, &Default::default());
+        for _ in 0..400 {
+            fx.update(&rand, &WeatherFxFrame::default());
+        }
+        let outdoors = frame(
+            &mut gpu,
+            &mut tm,
+            &mut fx,
+            &world,
+            &sprites,
+            [5, 5, 0],
+            None,
+        );
+        let indoors = frame(
+            &mut gpu,
+            &mut tm,
+            &mut fx,
+            &world,
+            &sprites,
+            [12, 12, 0],
+            Some(BuildingId(1)),
+        );
+        assert_ne!(outdoors, indoors);
+        if let Ok(dir) = std::env::var("PZ_WEATHERFX_BMP") {
+            write_bmp(
+                &std::path::Path::new(&dir).join(format!("game_{name}_outdoors.bmp")),
+                &outdoors,
+            );
+            write_bmp(
+                &std::path::Path::new(&dir).join(format!("game_{name}_indoors.bmp")),
+                &indoors,
+            );
+        }
+    }
+}
