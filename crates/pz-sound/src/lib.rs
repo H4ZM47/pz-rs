@@ -7,4 +7,6 @@
 //! (`pz-audio`'s studio, or a silent backend) stays swappable.
 
 pub mod backend;
+pub mod emitter;
 pub mod game_sounds;
+pub mod params;

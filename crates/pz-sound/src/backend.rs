@@ -26,6 +26,15 @@ pub struct ParameterDescription {
     pub kind: i32,
     /// `FMOD_STUDIO_PARAMETER_FLAGS`.
     pub flags: u32,
+    /// `globalIndex`: FMODManager's index of this parameter across all events.
+    pub global_index: usize,
+}
+
+impl ParameterDescription {
+    /// `isGlobal()`.
+    pub fn is_global(&self) -> bool {
+        self.flags & 4 != 0
+    }
 }
 
 /// `fmod.fmod.FMOD_STUDIO_EVENT_DESCRIPTION`.
@@ -55,6 +64,14 @@ pub type ChannelHandle = u64;
 
 /// `FMOD_LOOP_NORMAL` for `Channel_SetMode`.
 pub const MODE_LOOP_NORMAL: u64 = 2;
+/// `FMOD_2D`.
+pub const MODE_2D: u64 = 8;
+/// `FMOD_3D`.
+pub const MODE_3D: u64 = 16;
+
+/// `FMOD_STUDIO_EVENT_PROPERTY` indices used by the game.
+pub const EVENT_PROPERTY_MINIMUM_DISTANCE: i32 = 3;
+pub const EVENT_PROPERTY_MAXIMUM_DISTANCE: i32 = 4;
 
 pub trait AudioBackend {
     /// `FMODManager.getEventDescription(path)` (`event:/...`).
@@ -92,6 +109,47 @@ pub trait AudioBackend {
     fn channel_stop(&mut self, ch: ChannelHandle);
     /// `FMOD_ChannelGroup_SetVolume(FMOD_System_GetMasterChannelGroup(), v)`.
     fn master_channel_group_set_volume(&mut self, volume: f32);
+
+    // Calls the sound emitters make; defaults do nothing.
+
+    /// `FMOD_Studio_EventInstance_SetParameterByID(inst, id, value, false)`.
+    fn instance_set_parameter_by_id(
+        &mut self,
+        _inst: InstanceHandle,
+        _id: (u32, u32),
+        _value: f32,
+    ) {
+    }
+    /// `FMOD_Studio_System_SetParameterByID(id, value, false)`.
+    fn system_set_parameter_by_id(&mut self, _id: (u32, u32), _value: f32) {}
+    /// `FMOD_Studio_EventInstance_SetProperty(inst, property, value)`.
+    fn instance_set_property(&mut self, _inst: InstanceHandle, _property: i32, _value: f32) {}
+    /// `FMOD_Studio_EventInstance_KeyOff`.
+    fn instance_key_off(&mut self, _inst: InstanceHandle) {}
+    /// `FMOD_Studio_GetTimelinePosition` (ms).
+    fn instance_timeline_position(&mut self, _inst: InstanceHandle) -> i64 {
+        0
+    }
+    /// `FMOD_Studio_EventInstance_SetTimelinePosition` (ms).
+    fn instance_set_timeline_position(&mut self, _inst: InstanceHandle, _ms: i32) {}
+    /// `FMOD_Studio_EventInstance3D(inst, x, y, z)`.
+    fn instance_set_3d_position(&mut self, _inst: InstanceHandle, _x: f32, _y: f32, _z: f32) {}
+    /// `FMOD_Channel_SetPriority`.
+    fn channel_set_priority(&mut self, _ch: ChannelHandle, _priority: i32) {}
+    /// `FMOD_Channel_SetChannelGroup(ch, FMODManager.channelGroupInGameNonBankSounds)`.
+    fn channel_set_non_bank_group(&mut self, _ch: ChannelHandle) {}
+    /// `FMOD_Channel_Set3DAttributes(ch, pos, vel)`.
+    fn channel_set_3d_attributes(&mut self, _ch: ChannelHandle, _pos: [f32; 3], _vel: [f32; 3]) {}
+    /// `FMOD_Channel_Set3DLevel`.
+    fn channel_set_3d_level(&mut self, _ch: ChannelHandle, _level: f32) {}
+    /// `FMOD_Channel_Set3DMinMaxDistance`.
+    fn channel_set_3d_min_max_distance(&mut self, _ch: ChannelHandle, _min: f32, _max: f32) {}
+    /// `FMOD_Channel_Set3DOcclusion(direct, reverb)`.
+    fn channel_set_3d_occlusion(&mut self, _ch: ChannelHandle, _direct: f32, _reverb: f32) {}
+    /// `FMOD_Channel_SetReverbProperties(ch, instance, wet)`.
+    fn channel_set_reverb_properties(&mut self, _ch: ChannelHandle, _instance: i32, _wet: f32) {}
+    /// `FMOD_System_SetReverbDefault(instance, preset)`.
+    fn system_set_reverb_default(&mut self, _instance: i32, _preset: i32) {}
 }
 
 /// A backend with no sound: nothing exists and nothing plays.
