@@ -198,7 +198,11 @@ impl SandboxOption {
 
     /// `getValueTranslationByIndex(index)`; `Err` where the original throws
     /// `ArrayIndexOutOfBoundsException`.
-    pub fn value_translation_by_index(&self, t: &Translator, index: i32) -> Result<String, OutOfRange> {
+    pub fn value_translation_by_index(
+        &self,
+        t: &Translator,
+        index: i32,
+    ) -> Result<String, OutOfRange> {
         if index < 1 || index > self.num_values() {
             return Err(OutOfRange);
         }
@@ -316,6 +320,27 @@ fn rand_between(min: i32, max: i32) -> i32 {
     lo + (r % (hi - lo) as u64) as i32
 }
 
+/// `SandboxOptions.ZombieConfig`: current values of the `ZombieConfig.*`
+/// options, as the population manager reads them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ZombieConfig {
+    pub population_multiplier: f64,
+    pub population_start_multiplier: f64,
+    pub population_peak_multiplier: f64,
+    pub population_peak_day: i32,
+    pub respawn_hours: f64,
+    pub respawn_unseen_hours: f64,
+    pub respawn_multiplier: f64,
+    pub redistribute_hours: f64,
+    pub follow_sound_distance: i32,
+    pub rally_group_size: i32,
+    pub rally_group_size_variance: i32,
+    pub rally_travel_distance: i32,
+    pub rally_group_separation: i32,
+    pub rally_group_radius: i32,
+    pub zombies_count_before_deletion: i32,
+}
+
 /// `zombie.SandboxOptions`.
 #[derive(Clone, Debug, Default)]
 pub struct SandboxOptions {
@@ -389,6 +414,35 @@ impl SandboxOptions {
 
     fn int(&self, name: &str) -> i32 {
         self.option_by_name(name).map_or(0, |o| o.config.get_int())
+    }
+
+    fn double(&self, name: &str) -> f64 {
+        self.option_by_name(name)
+            .map_or(0.0, |o| o.config.get_double())
+    }
+
+    /// `zombieConfig`: the population manager's options, read from the
+    /// `ZombieConfig.*` options (missing ones read as zero).
+    pub fn zombie_config(&self) -> ZombieConfig {
+        let d = |n: &str| self.double(&format!("ZombieConfig.{n}"));
+        let i = |n: &str| self.int(&format!("ZombieConfig.{n}"));
+        ZombieConfig {
+            population_multiplier: d("PopulationMultiplier"),
+            population_start_multiplier: d("PopulationStartMultiplier"),
+            population_peak_multiplier: d("PopulationPeakMultiplier"),
+            population_peak_day: i("PopulationPeakDay"),
+            respawn_hours: d("RespawnHours"),
+            respawn_unseen_hours: d("RespawnUnseenHours"),
+            respawn_multiplier: d("RespawnMultiplier"),
+            redistribute_hours: d("RedistributeHours"),
+            follow_sound_distance: i("FollowSoundDistance"),
+            rally_group_size: i("RallyGroupSize"),
+            rally_group_size_variance: i("RallyGroupSizeVariance"),
+            rally_travel_distance: i("RallyTravelDistance"),
+            rally_group_separation: i("RallyGroupSeparation"),
+            rally_group_radius: i("RallyGroupRadius"),
+            zombies_count_before_deletion: i("ZombiesCountBeforeDeletion"),
+        }
     }
 
     fn bool(&self, name: &str) -> bool {
@@ -1003,5 +1057,36 @@ mod tests {
         assert_eq!(s.option_by_name("DayLength").unwrap().config.get_int(), 15);
         assert!(SandboxOptions::is_valid_preset_name(Some("My Preset")));
         assert!(!SandboxOptions::is_valid_preset_name(Some("a.b")));
+    }
+
+    #[test]
+    fn zombie_config_reads_its_options() {
+        let d = |name: &str, kind| OptionDef {
+            name: name.into(),
+            kind,
+            translation: None,
+            value_translation: None,
+        };
+        let defs = vec![
+            d(
+                "ZombieConfig.RespawnHours",
+                OptionKind::Double {
+                    min: 0.0,
+                    max: 100.0,
+                    default: 7.5,
+                },
+            ),
+            d(
+                "ZombieConfig.RallyGroupSize",
+                OptionKind::Integer {
+                    min: 0,
+                    max: 100,
+                    default: 9,
+                },
+            ),
+        ];
+        let z = SandboxOptions::new(&defs).zombie_config();
+        assert_eq!((z.respawn_hours, z.rally_group_size), (7.5, 9));
+        assert_eq!(z.population_peak_day, 0);
     }
 }

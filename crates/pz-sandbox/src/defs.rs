@@ -69,9 +69,16 @@ pub enum Arg {
     /// A class literal (`Foo.class`).
     Class(String),
     /// `getstatic owner.name`.
-    Static { class: String, name: String },
+    Static {
+        class: String,
+        name: String,
+    },
     /// The result of a call the evaluator does not model.
-    Call { class: String, name: String, args: Vec<Arg> },
+    Call {
+        class: String,
+        name: String,
+        args: Vec<Arg>,
+    },
     Opt(usize),
     New(String),
     Unknown,
@@ -217,7 +224,9 @@ impl Reader<'_> {
                         let target = pop(&mut stack);
                         if let V::New(class) = &target {
                             if let Some(prefix) = &self.ctor_prefix {
-                                if class.starts_with(prefix.as_str()) && args.first() == Some(&V::This) {
+                                if class.starts_with(prefix.as_str())
+                                    && args.first() == Some(&V::This)
+                                {
                                     self.ctors.push((class.clone(), args[1..].to_vec()));
                                 }
                             }
@@ -331,7 +340,11 @@ impl Reader<'_> {
             all.push(recv.clone());
         }
         all.extend_from_slice(args);
-        Ok(V::Call { class: class.to_string(), name: name.to_string(), args: all })
+        Ok(V::Call {
+            class: class.to_string(),
+            name: name.to_string(),
+            args: all,
+        })
     }
 }
 
@@ -339,7 +352,12 @@ impl Reader<'_> {
 /// original's constructor adds them.
 pub fn builtin_options(jar: &Jar) -> Result<Vec<OptionDef>> {
     let cf = load_class(jar, SANDBOX_CLASS)?;
-    let mut r = Reader { jar, out: Vec::new(), ctor_prefix: None, ctors: Vec::new() };
+    let mut r = Reader {
+        jar,
+        out: Vec::new(),
+        ctor_prefix: None,
+        ctors: Vec::new(),
+    };
     r.run_init(&cf, false)?;
     Ok(r.out)
 }
@@ -349,7 +367,12 @@ pub fn builtin_options(jar: &Jar) -> Result<Vec<OptionDef>> {
 /// arguments after `this` (how `ServerOptions` declares its options).
 pub fn ctor_calls(jar: &Jar, class: &str, prefix: &str) -> Result<Vec<(String, Vec<Arg>)>> {
     let cf = load_class(jar, class)?;
-    let mut r = Reader { jar, out: Vec::new(), ctor_prefix: Some(prefix.to_string()), ctors: Vec::new() };
+    let mut r = Reader {
+        jar,
+        out: Vec::new(),
+        ctor_prefix: Some(prefix.to_string()),
+        ctors: Vec::new(),
+    };
     r.run_init(&cf, false)?;
     Ok(r.ctors)
 }
