@@ -14,6 +14,12 @@ Status of the Rust port. Update this file with every merged change.
 - Kahlua VM (KahluaThread loop, metatables, errors, coroutines) and
   BaseLib, TableLib, MathLib, CoroutineLib, RandomLib.
 
+- World/maps (`pz-world`): lot headers, lotpacks, `MapFiles`, meta grid
+  rooms/buildings, `.tiles` reader, `Fix2x`, and chunk loading through
+  `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk` with generic tile
+  objects. Header and lotpack decoding match the original loader on 163
+  cells (Muldraugh sample plus six challenge maps), checked locally.
+
 ## In progress
 - StringLib, OsLib.
 
