@@ -46,9 +46,12 @@ Status of the Rust port. Update this file with every merged change.
   defaults and category spawn decisions match bit for bit (checked
   locally). Wall edge queries (`isWallTo`, windows) are inputs until the
   collision model is ported. Lua: `bind_erosion`.
+- StringLib and OsLib. Local differential run against the original Kahlua
+  (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
+  output; the remaining one differs only in an identity hash.
 
 ## In progress
-- StringLib, OsLib.
+- UIElement/UIManager, Core options, client window loop.
 
 ## Next (main-menu milestone)
 1. Kahlua stdlib; load `stdlib.lbc`/`stdlib.lua` from the install.

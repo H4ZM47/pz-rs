@@ -1,0 +1,8 @@
+[package]
+name = "pz-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-kahlua.workspace = true
+jiff.workspace = true

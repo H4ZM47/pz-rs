@@ -4,26 +4,29 @@
 //! wrap a Java `UIElement` created with `UIElement.new(luaTable)`; the Java
 //! element calls back into its Lua table (`prerender`, `render`,
 //! `onMouseDown`, ...). This crate owns that tree and its input dispatch.
+//!
+//! Layout:
+//! * [`element`]: `UIElement` (tree, geometry, event dispatch into Lua);
+//! * [`draw`]: the `UIElement.Draw*` family and stencil clipping;
+//! * [`manager`]: `UIManager` statics (`UI` list, per-frame update/render);
+//! * [`sprite`]: the UI draw list (`SpriteRenderer` equivalent);
+//! * [`text`]: the `TextManager` interface the engine implements;
+//! * [`texture`]: Lua-facing `Texture` / `Color` wrappers.
+//!
+//! Java statics live in a thread-local [`UIManager`] (Lua is single
+//! threaded); nothing holds a `RefCell` borrow while calling into Lua, so
+//! callbacks may freely re-enter (`AddUI`, `bringToTop`, `setX`, ...).
 
-/// Index into [`UiTree::elements`].
-pub type ElementId = usize;
+pub mod draw;
+pub mod element;
+pub mod lua;
+pub mod manager;
+pub mod sprite;
+pub mod text;
+pub mod texture;
 
-#[derive(Default, Debug, Clone)]
-pub struct UIElement {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-    pub visible: bool,
-    pub parent: Option<ElementId>,
-    pub children: Vec<ElementId>,
-    pub always_on_top: bool,
-    pub back_most: bool,
-}
-
-/// `UIManager.UI`: top-level elements in draw order.
-#[derive(Default)]
-pub struct UiTree {
-    pub elements: Vec<UIElement>,
-    pub roots: Vec<ElementId>,
-}
+pub use element::UIElement;
+pub use manager::{with_ui, MouseState, UIManager};
+pub use sprite::{SpriteRenderer, TextAlign, UiDrawCmd};
+pub use text::TextRenderer;
+pub use texture::{ColorObject, UiTexture};

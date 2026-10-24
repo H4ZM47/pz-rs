@@ -18,7 +18,9 @@ pz-ui = { path = "crates/pz-ui" }
 pz-lua-api = { path = "crates/pz-lua-api" }
 pz-engine = { path = "crates/pz-engine" }
 pz-world = { path = "crates/pz-world" }
+pz-core = { path = "crates/pz-core" }
 indexmap = "2"
+jiff = "0.2"
 macroquad = { version = "0.4", default-features = false }
 png = "0.17"
 regex = "1"
