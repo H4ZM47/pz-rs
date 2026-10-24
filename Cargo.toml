@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 pz-kahlua = { path = "crates/pz-kahlua" }
 pz-fs = { path = "crates/pz-fs" }
+pz-classfile = { path = "crates/pz-classfile" }
 pz-render = { path = "crates/pz-render" }
 pz-text = { path = "crates/pz-text" }
 pz-ui = { path = "crates/pz-ui" }
