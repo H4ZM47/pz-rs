@@ -29,6 +29,7 @@
 //! [`ObjectRef`]: crate::mover::ObjectRef
 
 pub mod line_clear_collide;
+pub mod los;
 pub mod square;
 
 use pz_world::chunk::IsoGridSquare;
@@ -39,6 +40,7 @@ use crate::game_vehicle::VehicleSource;
 use crate::square_bits::SquareBits;
 
 pub use line_clear_collide::LineClearCollideMain;
+pub use los::los_line_clear_collide;
 pub use pz_world::los::{line_clear, line_clear_range, TestResults};
 
 /// The world the main-thread queries read.

@@ -92,6 +92,8 @@
 //!   `pz-world`'s square queries and `LosUtil.lineClear`.
 //! * [`game_vehicle`]: what that code reads from `BaseVehicle`.
 //! * [`behavior`]: `PathFindBehavior2`, the per-frame path follower.
+//! * [`host`]: [`host::PathHost`], the service plus one behaviour per
+//!   character, with the calls the character states make on the world.
 
 // Loops index squares and nodes by position to keep the native iteration
 // order visible.
@@ -103,6 +105,7 @@ pub mod bytes;
 mod clip;
 pub mod game_vehicle;
 pub mod high_level;
+pub mod host;
 pub mod line_clear_collide;
 pub mod main_thread;
 pub mod mover;
