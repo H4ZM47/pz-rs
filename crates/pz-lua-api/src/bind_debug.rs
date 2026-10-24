@@ -23,7 +23,6 @@
 //! Enum constants are exposed from [`DEBUG_TYPE_NAMES`] and
 //! [`LOG_SEVERITY_NAMES`] only.
 
-use crate::bind_core::JavaList;
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, global, int_arg, ClassBuilder, JavaEnum};
 use pz_core::debug::{
     self, DebugLog, DebugType, FmtArg, JavaError, LogSeverity, LogThrowable, StackElement, DEBUG_TYPE_NAMES,
@@ -187,7 +186,7 @@ fn caller_prefix(c: &NativeCall<'_>) -> String {
 }
 
 fn list_of(values: Vec<Value>) -> Value {
-    Value::Object(Rc::new(JavaList(values)))
+    crate::bind_java_util::list_value(values)
 }
 
 fn str_list(v: Vec<String>) -> Value {
@@ -808,6 +807,7 @@ mod tests {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         crate::bind_core::register(&mut t, None, Rc::new(RefCell::new(pz_core::core::Core::new())));
+        crate::bind_java_util::register(&mut t);
         let sink = MemorySink::new();
         debug::with(|d| {
             d.set_sink(sink.clone());

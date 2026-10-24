@@ -61,6 +61,7 @@ pub fn render_square(
         let mut ro = RenderObject::new(kind, o.sprite.map(|s| cache.get(w.sprites, s, tex)));
         ro.render_y_offset = o.render_y_offset;
         ro.tint = [o.tint_r, o.tint_g, o.tint_b];
+        ro.container_count = u32::from(o.container.is_some()) + o.secondary_containers.len() as u32;
         if let Some(att) = &o.attached_anim_sprite {
             ro.attached = att
                 .iter()

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use pz_fs::GameFs;
+use pz_iso_render::world::StairPart;
 use pz_iso_render::{SpriteFlags, SpriteInfo, TileType};
 use pz_render::tile_depth::{
     TileDepthTextureAssignmentManager, TileDepthTextureManager, TileGeometryManager,
@@ -82,6 +83,8 @@ struct NamedFlags {
     wall_w: Option<IsoFlagType>,
     wall_nw: Option<IsoFlagType>,
     force_render: Option<IsoFlagType>,
+    attached_surface: Option<IsoFlagType>,
+    attached_ceiling: Option<IsoFlagType>,
 }
 
 /// [`SpriteInfo`]s by sprite index, built on first use.
@@ -125,6 +128,8 @@ impl SpriteCache {
                 wall_w: n("WallW"),
                 wall_nw: n("WallNW"),
                 force_render: n("forceRender"),
+                attached_surface: n("attachedSurface"),
+                attached_ceiling: n("attachedCeiling"),
             }
         });
         let info = Rc::new(build(sprites, idx, named, tex));
@@ -186,6 +191,10 @@ fn build(
         never_cutaway: has(f.NeverCutaway),
         door_trans: p.has_name(&sprites.alias, "doorTrans"),
         garage_door: p.has_name(&sprites.alias, "GarageDoor"),
+        attached_surface: opt(named.attached_surface),
+        attached_ceiling: opt(named.attached_ceiling),
+        // PropertyContainer.isTableTop (surfaceFlags & 8).
+        table_top: p.has_name(&sprites.alias, "IsTableTop"),
         wall_n: opt(named.wall_n),
         wall_w: opt(named.wall_w),
         wall_nw: opt(named.wall_nw),
@@ -214,6 +223,15 @@ fn build(
         cut_n: sp.cut_n,
         cut_w: sp.cut_w,
         tile_type,
+        stairs: match sp.tile_type {
+            x if x == ty.stairsTN => Some(StairPart::TopN),
+            x if x == ty.stairsMN => Some(StairPart::MiddleN),
+            x if x == ty.stairsBN => Some(StairPart::BottomN),
+            x if x == ty.stairsTW => Some(StairPart::TopW),
+            x if x == ty.stairsMW => Some(StairPart::MiddleW),
+            x if x == ty.stairsBW => Some(StairPart::BottomW),
+            _ => None,
+        },
         flags,
         is_bush: sp.is_bush,
         can_be_removed: sp.can_be_removed,
