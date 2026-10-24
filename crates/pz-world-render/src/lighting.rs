@@ -9,12 +9,12 @@ use pz_lighting::jni::{
     detection_range, effective_fatigue, luma_inverted, update_player, ChunkInfo, ChunkLevelLight,
     Curtain, CurtainType, DecodePlayer, Door, FrameParams, GridSquare, IsoDirection, LightSource,
     LightSync, LightingWorld, PlayerFrame, PlayerInput, RoomLightSource, SpecialObject,
-    SquareLight, VisionCone, VisionConeInput, Window,
+    SquareLight, Thumpable, VisionCone, VisionConeInput, Window,
 };
 use pz_lighting::{LightingError, LightingSession};
 use pz_world::{IsoGridSquare, ObjectKind};
 
-use crate::hooks::WorldHooks;
+use crate::hooks::{lighting_barricade, WorldHooks};
 use crate::render_world::{RenderWorld, WorldView};
 use crate::settings::RenderSettingsSource;
 
@@ -102,6 +102,25 @@ pub fn grid_square(
                     light_filter_intensity: prop("LightFilterIntensity"),
                     light_filter_mix: prop("LightFilterMix"),
                 }));
+            }
+            ObjectKind::Thumpable(th) => {
+                let (same, opposite) = hooks.barricades(sq, o);
+                let flag = &t.flag;
+                special_objects.push(SpecialObject::Thumpable(Thumpable {
+                    north: th.north,
+                    open: th.open,
+                    is_door: th.is_door,
+                    is_window: sp.is_some_and(|sp| {
+                        sp.properties.has(flag.WindowN) || sp.properties.has(flag.WindowW)
+                    }),
+                    can_pass_through: th.can_pass_through,
+                    door_trans: has_name("doorTrans"),
+                    barricade_same: same,
+                    barricade_opposite: opposite,
+                }));
+            }
+            ObjectKind::Barricade(b) => {
+                special_objects.push(SpecialObject::Barricade(lighting_barricade(b)));
             }
             _ => {}
         }

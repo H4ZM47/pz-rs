@@ -20,6 +20,7 @@ pub mod save;
 pub mod sprite;
 pub mod square;
 pub mod tiledef;
+pub mod world_state;
 
 pub use chunk::{ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare};
 pub use defs::{BuildingDef, BuildingIdx, MetaObject, RoomDef, RoomIdx, RoomRect};
@@ -36,3 +37,4 @@ pub use sprite::{IsoSpriteManager, SpriteTables};
 pub use square::{
     ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks, SquareHooks,
 };
+pub use world_state::{PowerSettings, WorldState};
