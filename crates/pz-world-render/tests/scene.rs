@@ -11,7 +11,8 @@ use pz_world::{
 };
 use pz_world_render::{
     default_player, seam_neighbours, wall_type, NoTextures, NoWorldHooks, NoonSettings,
-    PlayerFrameInput, RenderSettingsSource, RenderWorld, SpriteCache, WorldLighting, WorldView,
+    PlayerFrameInput, RenderSettings, RenderSettingsSource, RenderWorld, SpriteCache, StateLighting,
+    WorldLighting, WorldView,
 };
 
 /// Hand-authored enum tables: the names pz-world and this crate refer to,
@@ -304,4 +305,34 @@ fn lamp_lights_its_surroundings_at_night() {
     let near = world.squares[&(16, 15, 0)].light_level;
     let far = world.squares[&(14, 26, 0)].light_level;
     assert!(near > far + 0.2, "near {near} far {far}");
+
+    // The state hooks read the same decoded colour: `(r + g + b) / 3` and
+    // `max(r, g, b)` of the `getSquareLighting` colour word (bytes r, g, b).
+    let mut settings = RenderSettings::new();
+    settings.update(&mut Night, [true, false, false, false], false);
+    let mut words = Vec::new();
+    for sq in [(16, 15, 0), (14, 26, 0), (15, 15, 0)] {
+        let ints = lighting.session.get_square_lighting(0, sq.0, sq.1, sq.2 + 32).unwrap().unwrap();
+        words.push((sq, ints[1]));
+    }
+    let hooks = StateLighting::new(&lighting, &settings);
+    for (sq, c) in words {
+        let (r, g, b) = (
+            (c & 0xff) as f32 / 255.0,
+            ((c >> 8) & 0xff) as f32 / 255.0,
+            ((c >> 16) & 0xff) as f32 / 255.0,
+        );
+        assert_eq!(hooks.square_light(sq, 0), (r + g + b) / 3.0, "{sq:?}");
+        assert_eq!(hooks.square_light_level(sq, 0), r.max(g).max(b), "{sq:?}");
+        assert_eq!(hooks.square_light_level(sq, 0), world.squares[&sq].light_level);
+    }
+    assert!(hooks.square_light((16, 15, 0), 0) > hooks.square_light((14, 26, 0), 0));
+    // A square no frame decoded keeps `new ColorInfo()` (white).
+    assert_eq!(hooks.square_light((200, 200, 0), 0), 1.0);
+    assert_eq!(hooks.square_light_level((200, 200, 0), 0), 1.0);
+    // `getLightLevel(-1)` decodes the shared buffer, zeroed here.
+    assert_eq!(hooks.square_light_level((16, 15, 0), -1), 0.0);
+    // Ambient as of the last `RenderSettings.update()`; slot 1 never ran.
+    assert_eq!(hooks.ambient_for_player(0), 0.1);
+    assert_eq!(hooks.ambient_for_player(1), 0.0);
 }
