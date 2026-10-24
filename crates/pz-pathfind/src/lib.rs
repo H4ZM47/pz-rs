@@ -61,6 +61,19 @@
 //! around them, farming plants, bendable fences and open doors or
 //! windows. Those paths are ported from the disassembly and checked by the
 //! behavioural tests in `tests/synthetic.rs` only.
+//!
+//! # The Java layer around it
+//!
+//! * [`mover`]: what `PathFindBehavior2`, `PathFindRequest.init`,
+//!   `PathRequestTask` and `PathfindNative.findPath` read and call on the
+//!   moving character ([`mover::PathMover`]), implemented by the character
+//!   port.
+//! * [`service`]: `PathfindNative` and `PathfindNativeThread` (task and
+//!   request queues, priorities, cancel, delivery), single-threaded.
+//! * [`main_thread`]: `LineClearCollideMain` (`PolygonalMap2.canStandAt`,
+//!   `lineClearCollide`, ...) and `LosUtil.lineClear` on live `pz-world`
+//!   squares.
+//! * [`game_vehicle`]: what that code reads from `BaseVehicle`.
 
 // Loops index squares and nodes by position to keep the native iteration
 // order visible.
@@ -69,12 +82,16 @@
 pub mod astar;
 pub mod bytes;
 mod clip;
+pub mod game_vehicle;
 pub mod high_level;
 pub mod line_clear_collide;
+pub mod main_thread;
+pub mod mover;
 pub mod path;
 pub mod polygonal_map2;
 pub mod pool;
 pub mod request;
+pub mod service;
 pub mod square;
 pub mod square_bits;
 pub mod util;

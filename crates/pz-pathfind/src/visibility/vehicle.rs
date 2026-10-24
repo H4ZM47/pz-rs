@@ -18,7 +18,7 @@ pub struct VehiclePoly {
 }
 
 /// `Vehicle`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Vehicle {
     pub id: i32,
     pub poly: VehiclePoly,
