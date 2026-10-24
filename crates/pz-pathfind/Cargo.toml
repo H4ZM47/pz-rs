@@ -5,3 +5,4 @@ edition.workspace = true
 description = "Port of Project Zomboid's native pathfinder (libPZPathFind, the C++ counterpart of zombie.pathfind)"
 
 [dependencies]
+pz-clipper6.workspace = true

@@ -21,6 +21,7 @@
 
 pub mod astar;
 pub mod bytes;
+mod clip;
 pub mod high_level;
 pub mod line_clear_collide;
 pub mod path;
