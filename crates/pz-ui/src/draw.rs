@@ -8,7 +8,7 @@
 //!
 //! Texture UVs are texture-local (`getXStart() == 0`, `getXEnd() == 1`);
 //! mapping into the pack page happens when lowering (see
-//! [`crate::sprite::apply_sub_uv`]).
+//! [`crate::SpriteRenderer::lower_into`]).
 
 use crate::element::UIElement;
 use crate::manager::with_ui;
@@ -646,12 +646,14 @@ impl UIElement {
     /// `setStencilRect(x, y, w, h)` (local coordinates, no scroll).
     pub fn set_stencil_rect(&self, x: f64, y: f64, w: f64, h: f64) {
         let (ax, ay) = self.abs();
-        sprite(|s| s.push_stencil((x + ax) as i32, (y + ay) as i32, w as i32, h as i32));
+        sprite(|s| s.push_stencil((x + ax) as i32, (y + ay) as i32, w as i32, h as i32, None));
     }
-    /// `setStencilCircle`: clipped to the circle's bounding box (TODO(render):
-    /// real stencil with `media/ui/circle.png`).
+    /// `setStencilCircle`: the stencil takes the shape of
+    /// `media/ui/circle.png` (transparent pixels are discarded).
     pub fn set_stencil_circle(&self, x: f64, y: f64, w: f64, h: f64) {
-        self.set_stencil_rect(x, y, w, h);
+        let (ax, ay) = self.abs();
+        let circle = pz_render::get_shared_texture("media/ui/circle.png");
+        sprite(|s| s.push_stencil((x + ax) as i32, (y + ay) as i32, w as i32, h as i32, circle.as_ref()));
     }
     pub fn clear_stencil_rect(&self) {
         sprite(|s| s.pop_stencil());
