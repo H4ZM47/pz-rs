@@ -67,6 +67,17 @@ Status of the Rust port. Update this file with every merged change.
 - `MapGroups` (`pz_world::map_groups`) with its Lua binding; ActiveMods,
   mod folders and Translator come through an engine-installed host.
 
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup. The
+  Studio object model (events, parameters, timelines, instruments, buses)
+  parses from every game bank; event lengths, distances and parameter
+  descriptions match the FMOD runtime for all 3,490 events but one unused
+  legacy event (see `crates/pz-audio/FORMAT.md`).
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 

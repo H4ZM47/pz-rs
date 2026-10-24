@@ -1,5 +1,5 @@
 //! The string table of `*.strings.bank` files (`STDT` chunk): a radix tree
-//! mapping lower-cased paths such as `event:/Zombies/Male 1` to GUIDs.
+//! mapping lower-cased paths such as `event:/Folder/Name` to GUIDs.
 //!
 //! ```text
 //! u32 version (1)
