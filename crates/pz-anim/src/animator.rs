@@ -20,53 +20,8 @@ use crate::math::pzmath;
 use crate::player::{AnimationPlayer, LayerBinding, StartAnimTrackParameters};
 use crate::track::{TrackEventKind, TrackId, TrackListener};
 use crate::vars::{equals_ignore_case, AnimationVariableHandle, AnimationVariableSource, VariableReferenceRc, VariableValue};
+use crate::rand::{AnimRandom, JavaRandom};
 use crate::BoneAxis;
-
-/// `zombie.core.random.Rand` as the animator uses it.
-pub trait AnimRandom {
-    /// `Rand.Next(float min, float max)`.
-    fn next_f32(&mut self, min: f32, max: f32) -> f32;
-    /// `Rand.Next(int max)`: `0..max`.
-    fn next_int(&mut self, max: i32) -> i32;
-}
-
-/// A small deterministic generator (xorshift). Not the game's RNG stream.
-#[derive(Clone, Debug)]
-pub struct XorShiftRandom(pub u64);
-
-impl Default for XorShiftRandom {
-    fn default() -> Self {
-        XorShiftRandom(0x9E37_79B9_7F4A_7C15)
-    }
-}
-
-impl XorShiftRandom {
-    fn next_u32(&mut self) -> u32 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        (x >> 32) as u32
-    }
-}
-
-impl AnimRandom for XorShiftRandom {
-    fn next_f32(&mut self, min: f32, max: f32) -> f32 {
-        if max <= min {
-            return min;
-        }
-        let f = (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32;
-        min + f * (max - min)
-    }
-
-    fn next_int(&mut self, max: i32) -> i32 {
-        if max <= 0 {
-            return 0;
-        }
-        (self.next_u32() % max as u32) as i32
-    }
-}
 
 /// One fired event (`IAnimEventCallback.OnAnimEvent(sender, track, event)`).
 #[derive(Clone, Debug)]
@@ -404,7 +359,7 @@ impl AdvancedAnimator {
             nodes: vec![None],
             set_flag_counters: Vec::new(),
             events: Vec::new(),
-            rng: Box::new(XorShiftRandom::default()),
+            rng: Box::new(JavaRandom::default()),
         };
         a.root = a.alloc_layer(None);
         a
@@ -766,13 +721,13 @@ impl AdvancedAnimator {
     fn start_live_node_tracks(&mut self, player: &mut AnimationPlayer, vars: &mut dyn AnimationVariableSource, id: u32) {
         let node = self.node(id).unwrap().source.clone();
         let real = node.get_speed_scale(&*vars);
-        let alpha = self.rng.next_f32(0.0, 1.0);
+        let alpha = self.rng.next_float_range(0.0, 1.0);
         let mult = pzmath::lerp(node.speed_scale_random_multiplier_min, node.speed_scale_random_multiplier_max, alpha);
         let speed = real * mult;
         let is_ragdoll = node.is_ragdoll;
         let rmin = pzmath::max(node.ragdoll_start_time_min, 0.0);
         let rmax = pzmath::max(node.ragdoll_start_time_max, rmin);
-        let ragdoll_start = self.rng.next_f32(rmin, rmax);
+        let ragdoll_start = self.rng.next_float_range(rmin, rmax);
         let start_as_ragdoll = is_ragdoll && pzmath::equal(ragdoll_start, 0.0, 0.01);
         let is_blend_field = !start_as_ragdoll && !node.blends2d.is_empty();
         self.node_mut(id).is_blend_field = is_blend_field;
@@ -1354,7 +1309,7 @@ impl AdvancedAnimator {
         let frac = self.node(id).unwrap().source.random_advance_fraction;
         let mut random_advance = 0.0f32;
         if frac > 0.0 {
-            let f = self.rng.next_f32(0.0, frac);
+            let f = self.rng.next_float_range(0.0, frac);
             random_advance = f * self.max_duration(player, id);
         }
         let n = self.node(id).unwrap();

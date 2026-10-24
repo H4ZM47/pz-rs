@@ -36,6 +36,7 @@ pub mod clip;
 pub mod interp;
 pub mod math;
 pub mod player;
+pub mod rand;
 pub mod shared_skele;
 pub mod skeleton;
 pub mod track;
@@ -43,7 +44,8 @@ pub mod vars;
 pub mod xml;
 
 pub use animatable::{event_names, AnimEventBroadcaster, AnimEventListener, AnimatedCharacter, AnimationVariableHandles};
-pub use animator::{AdvancedAnimator, AnimEventRecord, AnimRandom, XorShiftRandom};
+pub use animator::{AdvancedAnimator, AnimEventRecord};
+pub use rand::{AnimRandom, JavaRandom};
 pub use animset::{
     Anim2DBlend, Anim2DBlendPicker, Anim2DBlendTriangle, AnimCondition, AnimConditionType, AnimEvent, AnimEventKind, AnimEventTime,
     AnimNode, AnimState, AnimTransition, AnimationSet, GrappleOffsetBehaviour,

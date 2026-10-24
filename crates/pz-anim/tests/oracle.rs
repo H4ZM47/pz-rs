@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use pz_anim::math::Matrix4f;
-use pz_anim::{AdvancedAnimator, AnimationPlayer, AnimationSet, AnimationVariableSource, MapVariableSource};
+use pz_anim::{JavaRandom, AdvancedAnimator, AnimationPlayer, AnimationSet, AnimationVariableSource, MapVariableSource};
 use pz_model::{AnimationClip, Keyframe, Quat, SkinningData};
 
 fn f(s: &str) -> f32 {
@@ -77,6 +77,8 @@ struct JavaFrame {
     events: Vec<String>,
     dm: [f32; 5],
     mats: Vec<[f32; 16]>,
+    attached: Vec<[f32; 16]>,
+    shared: Vec<[f32; 16]>,
 }
 
 fn load_frames(path: &PathBuf) -> Vec<JavaFrame> {
@@ -85,7 +87,7 @@ fn load_frames(path: &PathBuf) -> Vec<JavaFrame> {
     for line in text.lines() {
         let p: Vec<&str> = line.split_whitespace().collect();
         match p[0] {
-            "frame" => out.push(JavaFrame { events: vec![], dm: [0.0; 5], mats: vec![] }),
+            "frame" => out.push(JavaFrame { events: vec![], dm: [0.0; 5], mats: vec![], attached: vec![], shared: vec![] }),
             "ev" => out.last_mut().unwrap().events.push(p[1..].join(" ")),
             "dm" => {
                 let d = &mut out.last_mut().unwrap().dm;
@@ -93,12 +95,17 @@ fn load_frames(path: &PathBuf) -> Vec<JavaFrame> {
                     d[i] = f(p[1 + i]);
                 }
             }
-            "m" => {
+            "m" | "c" | "s" => {
                 let mut a = [0f32; 16];
                 for i in 0..16 {
                     a[i] = f(p[2 + i]);
                 }
-                out.last_mut().unwrap().mats.push(a);
+                let fr = out.last_mut().unwrap();
+                match p[0] {
+                    "m" => fr.mats.push(a),
+                    "c" => fr.attached.push(a),
+                    _ => fr.shared.push(a),
+                }
             }
             _ => {}
         }
@@ -127,6 +134,11 @@ fn matches_java_oracle() {
     player.motion_scale = 1.6;
     player.rotation_scale = 1.1;
     let mut animator = AdvancedAnimator::new();
+    let seed = lines.iter().find(|l| l[0] == "seed").map(|l| l[1].parse().unwrap()).unwrap_or(12345i64);
+    animator.rng = Box::new(JavaRandom::new(seed));
+    let mut attached: Option<AnimationPlayer> = None;
+    let mut shared: Option<AnimationPlayer> = None;
+    let mut side_err = [0f32; 2];
     let mut vars = MapVariableSource::new();
     let states: Vec<&str> = lines.iter().find(|l| l[0] == "states").unwrap()[1..].iter().map(String::as_str).collect();
     animator.set_anim_set(Some(Rc::new(AnimationSet::load_states("player", &PathBuf::from(sets), &states))));
@@ -148,6 +160,22 @@ fn matches_java_oracle() {
                 "reparent" => player.add_bone_reparent(&l[2], &l[3]),
                 _ => panic!(),
             },
+            "attached" => {
+                let mut p = AnimationPlayer::new(sd.clone());
+                let t = p.play(&l[1], true, false, -1.0).unwrap();
+                p.track_mut(t).unwrap().set_blend_weight(1.0);
+                attached = Some(p);
+            }
+            "shared" => {
+                let mut p = AnimationPlayer::new(sd.clone());
+                p.do_blending = false;
+                p.set_shared_anim_repo(Some(Default::default()));
+                let t = p.play(&l[1], true, false, -1.0).unwrap();
+                let t = p.track_mut(t).unwrap();
+                t.set_blend_weight(1.0);
+                t.set_blend_field_weight(0.0);
+                shared = Some(p);
+            }
             "dirnow" => player.set_target_and_current_direction(f(&l[1]), f(&l[2])),
             "dir" => player.set_target_direction(f(&l[1]), f(&l[2])),
             "var" => {
@@ -172,6 +200,19 @@ fn matches_java_oracle() {
                     for i in 0..5 {
                         max_dm_err = max_dm_err.max((ours[i] - j.dm[i]).abs());
                     }
+                    for (k, side) in [attached.as_mut(), shared.as_mut()].into_iter().enumerate() {
+                        let Some(sp) = side else { continue };
+                        match k {
+                            0 => sp.update_attached(dt, None, &player),
+                            _ => sp.update(dt, None),
+                        }
+                        let want = if k == 0 { &j.attached } else { &j.shared };
+                        for (b, m) in sp.skin_transforms(None).iter().enumerate() {
+                            for (a, c) in m.store().iter().zip(&want[b]) {
+                                side_err[k] = side_err[k].max((a - c).abs());
+                            }
+                        }
+                    }
                     let evs: Vec<String> = animator
                         .events
                         .drain(..)
@@ -184,6 +225,7 @@ fn matches_java_oracle() {
                                 e.event.parameter_value.as_deref().unwrap_or("-")
                             )
                         })
+                        .map(|s| s.trim_end().to_string())
                         .collect();
                     if evs != j.events {
                         event_mismatches += 1;
@@ -216,6 +258,7 @@ fn matches_java_oracle() {
             _ => {}
         }
     }
+    eprintln!("attached player max err = {:e}, shared-skeleton player max err = {:e}", side_err[0], side_err[1]);
     eprintln!(
         "oracle parity: {frame} frames, {} bones; max |skin - java| = {max_err:e} (frame {max_err_frame}); max deferred/angle err = {max_dm_err:e}; event mismatches = {event_mismatches}; first frame > 1e-3: {first_bad:?}",
         sd.num_bones()
@@ -223,4 +266,5 @@ fn matches_java_oracle() {
     assert_eq!(frame, frames.len());
     assert!(max_err < 1e-3, "skin transforms diverge");
     assert_eq!(event_mismatches, 0);
+    assert!(side_err[0] < 1e-3 && side_err[1] < 1e-3, "side players diverge");
 }
