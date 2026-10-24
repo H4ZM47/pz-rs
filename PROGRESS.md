@@ -133,6 +133,27 @@ Status of the Rust port. Update this file with every merged change.
   differential run against the shipped arm64 library: 1.15 million random
   cases bit-identical.
 
+- Character state machine (`pz-characters::character::state`, `states`,
+  `combat`): `State`/`StateMachine`/`State.Param`/`StateMachineComponent`,
+  the action system (`ActionGroup` from `media/actiongroups`,
+  `ActionState`, `ActionTransition`, the variable/event/Lua conditions,
+  `ActionContext`), the character's animation variables (game variables
+  plus the `IsoGameCharacter`/`IsoLivingCharacter`/`IsoPlayer` callback
+  slots, as `pz_anim::AnimationVariableSource`), anim-event routing
+  (`OnAnimEvent`), `pz_pathfind`'s `PathMover`/`PlayerMover` for
+  characters, the player states (`IdleState`, `SwipeStatePlayer`,
+  `StaggerBackState`, knocked down, fall down, hit reactions, get up,
+  collide, aim, strafe) and the melee combat helpers (`Hit`,
+  `processHitDamage`, `hitConsequences`, crit chance, endurance, damage
+  split), with Lua bindings (`bind_states`, `bind_combat`). A seeded run of
+  the real `player`, `zombie` and `zombie-crawler` action groups (6000
+  scripted variable/event steps plus every state's sorted transition list)
+  and 48 weapon/perk/trait setups of the combat helpers (weapon type and
+  mods, crit chance, `processHitDamage` on zombie and player targets,
+  endurance loss, a full `Hit` on a player) match the original bit for bit
+  (checked locally). Climbing, window, sitting and timed-action states are
+  stand-ins; ranged combat and target bones are TODO.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 

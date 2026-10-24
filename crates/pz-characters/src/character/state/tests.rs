@@ -253,3 +253,27 @@ fn registry_and_directions() {
     assert_eq!(vars::fall_severity(0.0), "None");
     assert_eq!(vars::fall_severity(vars::iso_impact_speed_from_height(2.0)), "Hard");
 }
+
+#[test]
+fn player_ai_states_follow_the_action_group() {
+    let (sm, mut chars) = fixture();
+    let mut c = player(&sm, &mut chars);
+    let ctx = Recorder::default();
+    let mut world = NullWorld;
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+    let mut reg = StateRegistry::with_ported();
+    c.initialize_player_states(&mut reg, false);
+    let idle: &[(&str, &str)] =
+        &[("to_kd.xml", "<transition><transitionTo>knockeddown</transitionTo><conditions><isTrue>bKnockedDown</isTrue></conditions></transition>")];
+    let g = ActionGroups::default().insert(ActionGroup::from_xml("player", None, &[("idle", idle), ("knockeddown", &[])]));
+    c.set_action_group(g);
+    c.update_action_context(&mut cx);
+    assert_eq!(c.current_state_name(), Some("IdleState"));
+    c.vars.knocked_down = true;
+    c.update_action_context(&mut cx);
+    assert_eq!(c.current_state_name(), Some("PlayerKnockedDown"));
+    assert!(c.vars.block_movement && c.vars.block_turning);
+    c.initialize_player_states(&mut reg, true);
+    assert!(c.try_get_ai_state("knockeddown").is_none());
+    assert_eq!(c.try_get_ai_state("melee").map(|s| s.name()), Some("SwipeStatePlayer"));
+}

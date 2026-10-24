@@ -10,6 +10,7 @@ use super::state::{Param, StateId, StateRef};
 pub mod generic_default;
 pub mod idle;
 pub mod player;
+pub mod player_ai;
 pub mod stagger_back;
 pub mod swipe;
 
