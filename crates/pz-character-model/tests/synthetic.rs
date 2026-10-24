@@ -46,13 +46,13 @@ fn weapon(name: &str, sprite: Option<&str>) -> InventoryItem {
     })
 }
 
-/// A plain item and its script with `staticModel`.
+/// A plain item with `staticModel`, and its script.
 fn plain(name: &str, static_model: Option<&str>) -> (InventoryItem, ItemScriptRef) {
-    let mut s = Item::new();
-    s.static_model = static_model.map(Into::into);
     (
-        item(ItemClass::Normal, name, |_| {}),
-        Rc::new(RefCell::new(s)),
+        item(ItemClass::Normal, name, |t| {
+            t.static_model = static_model.map(Into::into)
+        }),
+        Rc::new(RefCell::new(Item::new())),
     )
 }
 
@@ -64,13 +64,13 @@ fn model_script(name: &str, mesh: &str) -> ModelScriptRef {
     Rc::new(RefCell::new(m))
 }
 
-fn mwp(part: &str, model: &str, att: &str) -> Rc<RefCell<ModelWeaponPart>> {
-    Rc::new(RefCell::new(ModelWeaponPart {
+fn mwp(part: &str, model: &str, att: &str) -> ModelWeaponPart {
+    ModelWeaponPart {
         part_type: part.into(),
         model_name: model.into(),
         attachment_name_self: Some(att.into()),
         attachment_parent: Some(att.into()),
-    }))
+    }
 }
 
 fn human_visual() -> HumanVisual {
@@ -187,8 +187,8 @@ fn tree_order_matches_populate() {
     let visuals = vec![iv("Base.Shirt", shirt), iv("Base.Pants", pants)];
     let hammer = weapon("Hammer", Some("Hammer"));
     let eq = EquippedModels {
-        primary: Some(HeldItem::new(&hammer, None)),
-        secondary: Some(HeldItem::new(&hammer, None)),
+        primary: Some(HeldItem::new(&hammer)),
+        secondary: Some(HeldItem::new(&hammer)),
         ..Default::default()
     };
     let slot = build(&visuals, &eq);
@@ -485,11 +485,11 @@ fn body_locations_hide_and_alt_models() {
         attached: vec![
             AttachedModel {
                 attachment_name: Some("t:shirt".into()),
-                item: HeldItem::new(&shirt_item.0, Some(shirt_item.1.clone())),
+                item: HeldItem::new(&shirt_item.0),
             },
             AttachedModel {
                 attachment_name: Some("t:belt".into()),
-                item: HeldItem::new(&belt_item.0, Some(belt_item.1.clone())),
+                item: HeldItem::new(&belt_item.0),
             },
         ],
         ..Default::default()
@@ -529,24 +529,25 @@ fn body_locations_hide_and_alt_models() {
 /// A rifle with a scope attached: in the right hand and on the back, each
 /// with its `ModelWeaponPart` models under it.
 fn rifle_with_scope() -> (InventoryItem, ItemScriptRef) {
-    let mut rifle = weapon("HuntingRifle", Some("HuntingRifle"));
+    let mut rifle = item(ItemClass::Weapon, "HuntingRifle", |t| {
+        t.weapon_sprite = Some("HuntingRifle".into());
+        t.model_weapon_part = Some(Rc::new(vec![
+            mwp("Base.RecoilPad", "Base.RecoilPad", "recoilpad"),
+            mwp("Base.x4Scope", "Base.x4Scope", "scope"),
+            mwp("Base.x8Scope", "Base.x8Scope", "scope"),
+        ]));
+    });
     let scope = item(ItemClass::WeaponPart, "x4Scope", |_| {});
     if let ItemKind::Weapon(w) = &mut rifle.kind {
         w.attachments.push(scope);
         w.blood_level = 0.25;
     }
-    let mut s = Item::new();
-    s.model_weapon_part = Some(vec![
-        mwp("Base.RecoilPad", "Base.RecoilPad", "recoilpad"),
-        mwp("Base.x4Scope", "Base.x4Scope", "scope"),
-        mwp("Base.x8Scope", "Base.x8Scope", "scope"),
-    ]);
-    (rifle, Rc::new(RefCell::new(s)))
+    (rifle, Rc::new(RefCell::new(Item::new())))
 }
 
 #[test]
 fn weapons_carry_their_part_models() {
-    let (rifle, script) = rifle_with_scope();
+    let (rifle, _) = rifle_with_scope();
     let scripts: HashMap<String, ModelScriptRef> = [
         ("HuntingRifle", "weapons/firearm/MSR788_Rifle"),
         ("Base.x4Scope", "weapons/parts/Rifle_4XScope"),
@@ -557,10 +558,10 @@ fn weapons_carry_their_part_models() {
     let eq = EquippedModels {
         attached: vec![AttachedModel {
             attachment_name: Some("rifle_back".into()),
-            item: HeldItem::new(&rifle, Some(script.clone())),
+            item: HeldItem::new(&rifle),
         }],
-        primary: Some(HeldItem::new(&rifle, Some(script.clone()))),
-        secondary: Some(HeldItem::new(&rifle, Some(script))),
+        primary: Some(HeldItem::new(&rifle)),
+        secondary: Some(HeldItem::new(&rifle)),
         ..Default::default()
     };
     let slot = build_with(&[], &eq, &scripts);
@@ -610,28 +611,26 @@ fn static_model_getters() {
     )]
     .into();
     // Weapon: `weaponSpritesByIndex` by model index, else the sprite.
-    let mut w = weapon("Bat", Some("Bat"));
-    let mut ws = Item::new();
-    ws.weapon_sprites_by_index = Some(vec!["BatA".into(), "BatB".into()]);
-    let ws = Rc::new(RefCell::new(ws));
+    let mut w = item(ItemClass::Weapon, "Bat", |t| {
+        t.weapon_sprite = Some("Bat".into());
+        t.weapon_sprites_by_index = Some(Rc::new(vec!["BatA".into(), "BatB".into()]));
+    });
     assert_eq!(
-        HeldItem::new(&w, Some(ws.clone()))
-            .static_model(&scripts)
-            .as_deref(),
+        HeldItem::new(&w).static_model(&scripts).as_deref(),
         Some("Bat")
     );
     w.model_index = 1;
     assert_eq!(
-        HeldItem::new(&w, Some(ws))
-            .static_model(&scripts)
-            .as_deref(),
+        HeldItem::new(&w).static_model(&scripts).as_deref(),
         Some("BatB")
     );
     // Plain item: mod data, then the script; the world model by tag.
-    let (mut p, ps) = plain("Pan", Some("Base.Pan"));
-    ps.borrow_mut().world_static_model = Some("Base.PanGround".into());
+    let (mut p, _) = plain("Pan", Some("Base.Pan"));
+    let mut tpl = (*p.template).clone();
+    tpl.world_static_model = Some("Base.PanGround".into());
+    p.template = Rc::new(tpl);
     assert_eq!(
-        HeldItem::new(&p, Some(ps.clone()))
+        HeldItem::new(&p)
             .static_model_exception(&scripts)
             .as_deref(),
         Some("Base.Pan")
@@ -642,43 +641,69 @@ fn static_model_getters() {
         Some(LuaValue::Str("Base.Pot".into())),
     );
     p.table = Some(t);
-    let h = HeldItem::new(&p, Some(ps.clone()));
+    let h = HeldItem::new(&p);
     assert_eq!(h.static_model(&scripts).as_deref(), Some("Base.Pot"));
-    assert_eq!(h.world_static_model().as_deref(), Some("Base.PanGround"));
+    assert_eq!(
+        p.get_world_static_model().as_deref(),
+        Some("Base.PanGround")
+    );
     let mut tpl = (*p.template).clone();
     tpl.tags.push(TAG_USE_WORLD_STATIC_MODEL.into());
     p.template = Rc::new(tpl);
     assert_eq!(
-        HeldItem::new(&p, Some(ps))
+        HeldItem::new(&p)
             .static_model_exception(&scripts)
             .as_deref(),
         Some("Base.PanGround")
     );
     // Food: a burnt variant when its model script exists.
-    let mut apple = item(ItemClass::Food, "Apple", |_| {});
-    let (_, s) = plain("Apple", Some("Base.Apple"));
+    let mut apple = item(ItemClass::Food, "Apple", |t| {
+        t.static_model = Some("Base.Apple".into())
+    });
     if let ItemKind::Food(f) = &mut apple.kind {
         f.burnt = true;
     }
-    let h = HeldItem::new(&apple, Some(s));
+    let h = HeldItem::new(&apple);
     assert_eq!(h.static_model(&scripts).as_deref(), Some("AppleBurnt"));
     assert!(!h.requires_smart_texture());
+    // A part-filled fluid container: smart texture with its fill level.
+    let mut fc = pz_entity::FluidContainer::default();
+    fc.fluids.push(pz_entity::FluidInstance {
+        fluid: None,
+        custom_color: Some([0.2, 0.4, 0.6]),
+        amount: 0.25,
+    });
+    fc.recalculate_caches(true);
+    let h = HeldItem {
+        fluid: Some(fc),
+        ..h
+    };
+    assert!(h.requires_smart_texture());
+    let init = h.texture_init();
+    assert_eq!(
+        (init.fluid_level, init.fluid_tint),
+        (0.25, Some([0.2, 0.4, 0.6]))
+    );
 }
 
 #[test]
 fn hand_replacements_and_action_overrides() {
     // A non-weapon held item only shows through a hand replacement or an
     // action that overrides the hand models.
-    let (torch, s) = plain("Torch", Some("Base.Torch"));
-    let held = |s: &ItemScriptRef| HeldItem::new(&torch, Some(s.clone()));
+    let (mut torch, _) = plain("Torch", Some("Base.Torch"));
+    let set_repl = |torch: &mut InventoryItem, r: ItemReplacement| {
+        let mut t = (*torch.template).clone();
+        t.replace_primary_hand = Some(r);
+        torch.template = Rc::new(t);
+    };
     let eq = EquippedModels {
-        primary: Some(held(&s)),
+        primary: Some(HeldItem::new(&torch)),
         ..Default::default()
     };
     assert!(build(&[], &eq).primary_hand.is_none());
     let eq = EquippedModels {
         action: Some(ActionHandModels {
-            primary_item: Some(held(&s)),
+            primary_item: Some(HeldItem::new(&torch)),
             secondary_model: Some("Base.Lighter".into()),
             ..Default::default()
         }),
@@ -693,14 +718,15 @@ fn hand_replacements_and_action_overrides() {
     );
     // `primaryAnimMask`: the static model as a masking model, with the
     // mask variable set.
-    s.borrow_mut().replace_primary_hand = Some(ItemReplacement {
+    let repl = ItemReplacement {
         clothing_item_name: None,
         mask_variable_name: Some("RightHandMask".into()),
         mask_variable_value: Some("HoldTorch".into()),
         attachment: None,
-    });
+    };
+    set_repl(&mut torch, repl.clone());
     let eq = EquippedModels {
-        primary: Some(held(&s)),
+        primary: Some(HeldItem::new(&torch)),
         ..Default::default()
     };
     let slot = build(&[], &eq);
@@ -711,11 +737,17 @@ fn hand_replacements_and_action_overrides() {
         [("RightHandMask".to_string(), "HoldTorch".to_string())]
     );
     // On an attachment it hangs off the body only (not the slot's `sub`).
-    s.borrow_mut()
-        .replace_primary_hand
-        .as_mut()
-        .unwrap()
-        .attachment = Some("torch".into());
+    set_repl(
+        &mut torch,
+        ItemReplacement {
+            attachment: Some("torch".into()),
+            ..repl
+        },
+    );
+    let eq = EquippedModels {
+        primary: Some(HeldItem::new(&torch)),
+        ..Default::default()
+    };
     let slot = build(&[], &eq);
     let i = slot.primary_hand.unwrap();
     assert_eq!(
@@ -729,7 +761,7 @@ fn hand_replacements_and_action_overrides() {
 fn equipped_texture_jobs() {
     let (mut rifle, _) = rifle_with_scope();
     rifle.color_red = 0.5;
-    let init = HeldItem::new(&rifle, None).texture_init();
+    let init = HeldItem::new(&rifle).texture_init();
     assert_eq!(init.tint, [0.5, 1.0, 1.0]);
     let tex = "media/textures/weapons/firearm/MSR788.png";
     assert_eq!(

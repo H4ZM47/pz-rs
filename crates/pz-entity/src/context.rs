@@ -69,12 +69,15 @@ impl AttributeKind {
 }
 
 /// A registered `Fluid`: its type string and `getColor()` (r, g, b, a).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct FluidInfo {
     pub name: String,
     pub color: [f32; 4],
     /// `getCategories()` (ordinal order); empty when unknown.
     pub categories: Vec<pz_scripts::objects::definitions::FluidCategory>,
+    /// `blendWhitelist` / `blendBlacklist` (`canBlendWith`).
+    pub blend_whitelist: Option<crate::fluids::FluidFilter>,
+    pub blend_blacklist: Option<crate::fluids::FluidFilter>,
 }
 
 /// `ScriptsDictionary` registers whose script references components save.
