@@ -343,6 +343,49 @@ mod tests {
     }
 
     #[test]
+    fn checks_ask_for_redraws_when_surfaces_change() {
+        struct W;
+        impl SurfaceWorld for W {
+            fn square(&self, _: i32, _: i32, _: i32) -> Option<&RenderSquare> {
+                None
+            }
+        }
+        impl SurfaceTextures for W {
+            fn texture(&self, _: &str) -> Option<Texture> {
+                None
+            }
+        }
+        let mut s = Surfaces {
+            settings: SurfaceSettings::default(),
+            climate: ClimateInputs::default(),
+            water: WaterState::default(),
+            puddles: PuddlesState::default(),
+            sky: SkyReflection::default(),
+            world_age_hours: 0.0,
+            meta_grid_min_x: 0,
+            world: &W,
+            textures: &W,
+            frame: Default::default(),
+            rain: None,
+            fish: None,
+        };
+        let mut c = SurfaceChecks::default();
+        assert_eq!(c.run(&s, true, 0), SurfaceInvalidation::default());
+        s.settings.water_quality = 2;
+        assert!(c.run(&s, true, 10).level_zero);
+        s.climate.snow_target = 40;
+        assert!(c.run(&s, true, 20).all);
+        assert!(!c.run(&s, true, 30).all);
+        s.settings.puddles_quality = 2;
+        let inv = c.run(&s, true, 40);
+        assert!(inv.all && inv.reinit_puddles);
+        // Low-quality puddles redraw as they grow, at most once a second.
+        s.puddles.puddles_size.set(0.5);
+        assert!(!c.run(&s, true, 900).all);
+        assert!(c.run(&s, true, 1100).all);
+    }
+
+    #[test]
     fn water_time_and_wind_advance() {
         let mut w = WaterState::default();
         let c = ClimateInputs { wind_intensity: 1.0, corrected_wind_angle_intensity: 0.0, ..Default::default() };
