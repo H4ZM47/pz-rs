@@ -115,54 +115,146 @@ impl FluidFilter {
 }
 
 impl FluidContainer {
-    /// `addFluid(FluidInstance, amount)`: clamps to the free capacity and
-    /// merges into an instance of the same fluid. Blend rules between
-    /// different fluids (`canBlendWith`) and colour mixing are not ported.
+    /// A fluid instance's colour (`FluidInstance.getColor()`): its own, or
+    /// its fluid's; white when the fluid is not registered.
+    pub fn instance_color(fi: &FluidInstance, ctx: &dyn EntityContext) -> [f32; 3] {
+        if let Some(c) = fi.custom_color {
+            return c;
+        }
+        let info = match &fi.fluid {
+            Some(FluidRef::Type(id)) => ctx.fluid_by_id(*id),
+            Some(FluidRef::Modded(n)) => ctx.fluid_by_name(n),
+            None => Lookup::Missing,
+        };
+        match info {
+            Lookup::Found(f) => [f.color[0], f.color[1], f.color[2]],
+            _ => [1.0, 1.0, 1.0],
+        }
+    }
+
+    /// `getColor()`: the fluid colours weighted by their share of the
+    /// summed amount, in list order; white when empty.
+    pub fn get_color(&self, ctx: &dyn EntityContext) -> [f32; 3] {
+        let sum = self.amount();
+        if sum <= 0.0 {
+            return [1.0, 1.0, 1.0];
+        }
+        let (mut r, mut g, mut b) = (0.0f32, 0.0f32, 0.0f32);
+        for f in &self.fluids {
+            let pct = f.amount / sum;
+            let c = Self::instance_color(f, ctx);
+            r += c[0] * pct;
+            g += c[1] * pct;
+            b += c[2] * pct;
+        }
+        [r, g, b]
+    }
+
+    /// `Empty()`.
+    pub fn empty(&mut self) {
+        self.fluids.clear();
+        self.amount_cache = 0.0;
+        self.recalculate_caches(true);
+    }
+
+    /// `removeFluidInstanceIfEmpty` for the instance at `i`.
+    pub(crate) fn remove_if_empty(&mut self, i: usize) -> bool {
+        if self.fluids[i].amount.abs() < 1.0e-4 {
+            self.fluids.remove(i);
+            return true;
+        }
+        false
+    }
+
+    /// `addFluid(Fluid, amount)` (and the `FluidInstance` form with a
+    /// colour): clamps to the free capacity, merges into an instance of the
+    /// same fluid (mixing a `Colors` fluid's colour in LCH) or appends one.
     pub fn add_fluid(
         &mut self,
         fluid: FluidRef,
-        info: Option<&FluidInfo>,
         custom_color: Option<[f32; 3]>,
         add: f32,
+        ctx: &dyn EntityContext,
     ) {
         let add = add.max(0.0);
-        let full = (self.amount() - self.capacity).abs() <= 1.0e-4;
-        if add <= 0.0 || full || !self.can_add_fluid(&fluid, info) {
+        if add <= 0.0 {
             return;
         }
-        let add = add.min(self.capacity - self.amount());
+        let full = (self.capacity - self.amount_mut()).abs() < 1.0e-4;
+        if full || !self.can_add_fluid(&fluid, ctx) {
+            return;
+        }
+        let available = self.capacity - self.amount_mut();
+        let add = add.min(available);
+        let info = lookup_ref(ctx, &fluid);
+        let fluid_color = info.as_ref().map(|i| [i.color[0], i.color[1], i.color[2]]);
+        let add_color = custom_color.or(fluid_color).unwrap_or([1.0, 1.0, 1.0]);
         match self
             .fluids
             .iter_mut()
             .find(|f| f.fluid.as_ref() == Some(&fluid))
         {
-            Some(f) => f.amount += add,
             None => {
                 let mut fi = FluidInstance::new(fluid, add);
-                fi.custom_color = custom_color;
+                fi.custom_color = Some(add_color).filter(|c| Some(*c) != fluid_color);
                 self.fluids.push(fi);
             }
+            Some(fi) => {
+                let colors = info.as_ref().is_some_and(|i| {
+                    i.categories
+                        .contains(&pz_scripts::objects::definitions::FluidCategory::Colors)
+                });
+                let cur = fi.custom_color.or(fluid_color).unwrap_or([1.0, 1.0, 1.0]);
+                if colors && add_color != cur {
+                    // `mixColor(color, add)`.
+                    let mixed = if fi.amount == 0.0 {
+                        add_color
+                    } else {
+                        let delta = add / (add + fi.amount);
+                        let m = crate::color::lerp_lch(
+                            [cur[0], cur[1], cur[2], 1.0],
+                            [add_color[0], add_color[1], add_color[2], 1.0],
+                            delta,
+                        );
+                        [m[0], m[1], m[2]]
+                    };
+                    fi.custom_color = Some(mixed).filter(|c| Some(*c) != fluid_color);
+                }
+                fi.amount += add;
+            }
         }
+        self.cache_invalidated = true;
     }
 
-    /// `canAddFluid` without the blend checks.
-    pub fn can_add_fluid(&self, fluid: &FluidRef, info: Option<&FluidInfo>) -> bool {
+    /// `canAddFluid(Fluid)`.
+    pub fn can_add_fluid(&self, fluid: &FluidRef, ctx: &dyn EntityContext) -> bool {
         let contains = self.fluids.iter().any(|f| f.fluid.as_ref() == Some(fluid));
         if self.fluids.len() >= 8 && !contains || self.input_locked || !self.can_player_empty {
             return false;
         }
+        let info = lookup_ref(ctx, fluid);
+        for f in &self.fluids {
+            let Some(other) = &f.fluid else { continue };
+            let other_info = lookup_ref(ctx, other);
+            if !(can_blend_with(other, other_info.as_ref(), fluid, info.as_ref())
+                && can_blend_with(fluid, info.as_ref(), other, other_info.as_ref()))
+            {
+                return false;
+            }
+        }
         !(self
             .whitelist
             .as_ref()
-            .is_some_and(|w| !w.allows(fluid, info))
+            .is_some_and(|w| !w.allows(fluid, info.as_ref()))
             || self
                 .blacklist
                 .as_ref()
-                .is_some_and(|b| !b.allows(fluid, info)))
+                .is_some_and(|b| !b.allows(fluid, info.as_ref())))
     }
 
     /// `readFromScript(FluidContainerScript)` on a fresh container,
-    /// including the initial fluids.
+    /// including the initial fluids (`getInitialAmount()` is called twice,
+    /// as the original does: each call of a ranged amount draws).
     pub fn from_script(
         script: &FluidContainerScript,
         ctx: &dyn EntityContext,
@@ -180,9 +272,8 @@ impl FluidContainer {
             ..Default::default()
         };
         fc.set_capacity(script.capacity());
-        if let Some(initial) = script.initial_fluids().filter(|f| !f.is_empty()) {
-            // `getInitialAmount`.
-            let amount = if !script.initial_amount_set() {
+        let initial_amount = |rng: &mut dyn FactoryRng| {
+            if !script.initial_amount_set() {
                 script.capacity()
             } else {
                 let (min, max) = script.initial_amount_range();
@@ -191,8 +282,11 @@ impl FluidContainer {
                 } else {
                     rng.next_float(min, max)
                 }
-            };
-            if amount > 0.0 {
+            }
+        };
+        if let Some(initial) = script.initial_fluids().filter(|f| !f.is_empty()) {
+            if initial_amount(rng) > 0.0 {
+                let amount = initial_amount(rng);
                 let picks: Vec<_> = if initial.len() == 1 {
                     vec![&initial[0]]
                 } else if script.is_initial_fluids_is_random() {
@@ -201,11 +295,11 @@ impl FluidContainer {
                     initial.iter().collect()
                 };
                 for fs in picks {
-                    if let Some((r, info)) = fluid_ref(ctx, fs.fluid_type()) {
+                    // `addInitialFluid`: a fluid that does not resolve is
+                    // logged and skipped.
+                    if let Some((r, _)) = fluid_ref(ctx, fs.fluid_type()) {
                         let color = fs.custom_color().map(|c| [c.r, c.g, c.b]);
-                        let color =
-                            color.filter(|c| info.as_ref().is_none_or(|i| i.color[..3] != *c));
-                        fc.add_fluid(r, info.as_ref(), color, amount * fs.percentage());
+                        fc.add_fluid(r, color, amount * fs.percentage(), ctx);
                     }
                 }
             }
@@ -215,6 +309,38 @@ impl FluidContainer {
         fc.hidden_amount = script.is_hidden_amount();
         fc
     }
+}
+
+/// The registered fluid a saved reference names (`None` when unknown or
+/// missing).
+fn lookup_ref(ctx: &dyn EntityContext, r: &FluidRef) -> Option<FluidInfo> {
+    let l = match r {
+        FluidRef::Type(id) => ctx.fluid_by_id(*id),
+        FluidRef::Modded(n) => ctx.fluid_by_name(n),
+    };
+    match l {
+        Lookup::Found(f) => Some(f),
+        _ => None,
+    }
+}
+
+/// `Fluid.canBlendWith(other)`.
+fn can_blend_with(
+    this: &FluidRef,
+    this_info: Option<&FluidInfo>,
+    other: &FluidRef,
+    other_info: Option<&FluidInfo>,
+) -> bool {
+    if this == other {
+        return true;
+    }
+    let Some(i) = this_info else { return true };
+    !(i.blend_whitelist
+        .as_ref()
+        .is_some_and(|w| !w.allows(other, other_info))
+        || i.blend_blacklist
+            .as_ref()
+            .is_some_and(|b| !b.allows(other, other_info)))
 }
 
 /// `Float.parseFloat`: surrounding whitespace and a type suffix allowed.

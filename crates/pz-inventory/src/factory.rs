@@ -39,24 +39,32 @@ pub struct ScriptItems {
     script_weights: HashMap<String, f32>,
     /// Scripts marked `Obsolete`, by full type.
     obsolete: HashMap<String, bool>,
+    /// The game's `Rand` (`None`: every draw is 0, or `min` for floats).
+    pub rand: RefCell<Option<Box<dyn crate::component::FactoryRng>>>,
 }
 
 /// `ScriptManager.FindItem(type, false)` with `createItemInternal`'s
 /// `Empty` fallback (a script whose name drops the suffix and that has a
-/// `FluidContainer` or `Durability` component).
-fn find_script(sm: &ScriptManager, item_type: &str) -> Option<Rc<RefCell<Item>>> {
+/// `FluidContainer` or `Durability` component). The flag is set when the
+/// fallback found a `FluidContainer` script (the new item is emptied).
+fn find_script(sm: &ScriptManager, item_type: &str) -> Option<(Rc<RefCell<Item>>, bool)> {
     let find = |n: &str| sm.find_item(n, false)?.downcast::<Item>();
     if let Some(i) = find(item_type) {
-        return Some(i);
+        return Some((i, false));
     }
     let base = item_type.strip_suffix("Empty")?;
     let i = find(base)?;
-    let ok = {
+    let (durability, fluid) = {
         let b = i.borrow();
-        b.entity.contains_component(ComponentType::Durability)
-            || b.entity.contains_component(ComponentType::FluidContainer)
+        (
+            b.entity.contains_component(ComponentType::Durability),
+            b.entity.contains_component(ComponentType::FluidContainer),
+        )
     };
-    ok.then_some(i)
+    if durability {
+        return Some((i, false));
+    }
+    fluid.then_some((i, true))
 }
 
 impl ScriptItems {
@@ -89,7 +97,7 @@ impl ScriptItems {
                     item_type = "Moveables.Moveable".into();
                 }
             }
-            let Some(script) = find_script(sm, &item_type) else {
+            let Some((script, empty)) = find_script(sm, &item_type) else {
                 continue;
             };
             let s = script.borrow();
@@ -98,8 +106,17 @@ impl ScriptItems {
             if info.removed || info.obsolete || s.obsolete {
                 continue;
             }
-            let Some(t) = ItemTemplate::from_script(sm, &s) else {
+            drop(s);
+            let Some(t) = ItemTemplate::from_script_ref(sm, &script) else {
                 continue;
+            };
+            let s = script.borrow();
+            let t = if empty {
+                let mut t = (*t).clone();
+                t.empty_fluid_container = true;
+                Rc::new(t)
+            } else {
+                t
             };
             let t = match item_names.get(&s.full_name()) {
                 Some(n) if *n != t.display_name => {
@@ -133,6 +150,7 @@ impl ScriptItems {
             recorded_media: None,
             obsolete,
             assets: None,
+            rand: RefCell::new(None),
         }
     }
 }
@@ -194,6 +212,20 @@ impl ItemEnv for ScriptItems {
 
     fn assets(&self) -> Option<&crate::assets::ItemAssets> {
         self.assets.as_ref()
+    }
+
+    fn rand_next(&self, bound: i32) -> i32 {
+        match self.rand.borrow_mut().as_mut() {
+            Some(r) if bound > 0 => r.next_int(bound),
+            _ => 0,
+        }
+    }
+
+    fn rand_float(&self, min: f32, max: f32) -> f32 {
+        match self.rand.borrow_mut().as_mut() {
+            Some(r) => r.next_float(min, max),
+            None => min,
+        }
     }
 
     fn note_raw(&self, _registry_id: i16, reason: &str) {

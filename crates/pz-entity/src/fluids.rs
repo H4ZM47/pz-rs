@@ -59,6 +59,7 @@ impl FluidRegistry {
                             name: s.to_string(),
                             color,
                             categories,
+                            ..Default::default()
                         },
                     );
                 }
@@ -72,6 +73,7 @@ impl FluidRegistry {
                 name: name.clone(),
                 color,
                 categories,
+                ..Default::default()
             };
             if let Ok(t) = FluidType::value_of(name) {
                 reg.by_id.insert(t.id(), info.clone());
@@ -109,11 +111,62 @@ impl FluidRegistry {
                 )
             })
             .collect();
-        Ok(Self::from_definitions(
+        let mut reg = Self::from_definitions(
             &enum_fluids,
             defs.iter()
                 .map(|(t, s, c, k)| (*t, s.as_deref(), *c, k.clone())),
-        ))
+        );
+        // The tail of `Fluid.Init`: blend filters, created once every fluid
+        // is registered.
+        let ctx = crate::context::BasicContext {
+            fluids: Some(reg.clone()),
+            ..Default::default()
+        };
+        for d in sm.get_all::<FluidDefinitionScript>(ScriptType::FluidDefinition) {
+            let d = d.borrow();
+            let name = match d.fluid_type() {
+                FluidType::Modded => match d.fluid_type_string() {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                },
+                t => t.name().to_string(),
+            };
+            let white = d
+                .blend_whitelist()
+                .map(|f| crate::factory::filter_from_script(f, &ctx));
+            let black = d
+                .blend_blacklist()
+                .map(|f| crate::factory::filter_from_script(f, &ctx));
+            if white.is_none() && black.is_none() {
+                continue;
+            }
+            reg.set_blend_filters(&name, white, black);
+        }
+        Ok(reg)
+    }
+
+    /// Sets a registered fluid's `blendWhitelist` / `blendBlacklist`.
+    pub fn set_blend_filters(
+        &mut self,
+        name: &str,
+        whitelist: Option<FluidFilter>,
+        blacklist: Option<FluidFilter>,
+    ) {
+        let Some(info) = self.by_name.get_mut(name) else {
+            return;
+        };
+        if whitelist.is_some() {
+            info.blend_whitelist = whitelist;
+        }
+        if blacklist.is_some() {
+            info.blend_blacklist = blacklist;
+        }
+        let info = info.clone();
+        if let Ok(t) = FluidType::value_of(name) {
+            if let Some(e) = self.by_id.get_mut(&t.id()) {
+                *e = info;
+            }
+        }
     }
 
     /// Adds or replaces one fluid (`Modded` fluids go in by name only).
@@ -324,8 +377,9 @@ impl FluidFilter {
 }
 
 /// `FluidContainer`'s state: the saved fields, plus the script-only fields
-/// a load leaves in place.
-#[derive(Clone, Debug, PartialEq)]
+/// a load leaves in place and the amount cache (`amountCache`,
+/// `cacheInvalidated`), which equality ignores.
+#[derive(Clone, Debug)]
 pub struct FluidContainer {
     pub capacity: f32,
     pub fluids: Vec<FluidInstance>,
@@ -341,6 +395,26 @@ pub struct FluidContainer {
     pub custom_drink_sound: Option<String>,
     /// Script-only (`fillsWithCleanWater`), not saved.
     pub fills_with_clean_water: bool,
+    /// `amountCache`: the clamped amount as of the last recalculation.
+    pub amount_cache: f32,
+    /// `cacheInvalidated`.
+    pub cache_invalidated: bool,
+}
+
+impl PartialEq for FluidContainer {
+    fn eq(&self, o: &Self) -> bool {
+        self.capacity == o.capacity
+            && self.fluids == o.fluids
+            && self.whitelist == o.whitelist
+            && self.blacklist == o.blacklist
+            && self.input_locked == o.input_locked
+            && self.can_player_empty == o.can_player_empty
+            && self.container_name == o.container_name
+            && self.hidden_amount == o.hidden_amount
+            && self.rain_catcher == o.rain_catcher
+            && self.custom_drink_sound == o.custom_drink_sound
+            && self.fills_with_clean_water == o.fills_with_clean_water
+    }
 }
 
 impl Default for FluidContainer {
@@ -358,27 +432,109 @@ impl Default for FluidContainer {
             rain_catcher: 0.0,
             custom_drink_sound: None,
             fills_with_clean_water: false,
+            amount_cache: 0.0,
+            cache_invalidated: false,
         }
     }
 }
 
 impl FluidContainer {
-    /// `getAmount()` before cache clamping: the sum of the fluid amounts.
+    /// The sum of the fluid amounts (`recalculateCaches` adds them last to
+    /// first), before the capacity clamp.
     pub fn amount(&self) -> f32 {
         self.fluids.iter().rev().fold(0.0, |a, f| a + f.amount)
     }
 
+    /// `recalculateCaches`' amount: the sum, or the capacity when it is
+    /// within 0.001 of it (or above).
+    fn clamped_amount(&self) -> f32 {
+        let a = self.amount();
+        if self.capacity - a < 0.001 {
+            self.capacity
+        } else {
+            a
+        }
+    }
+
+    /// `recalculateCaches(force)`'s amount part (the colour is computed on
+    /// demand by [`get_color`](Self::get_color)).
+    pub fn recalculate_caches(&mut self, force: bool) {
+        if self.cache_invalidated || force {
+            self.amount_cache = self.clamped_amount();
+            self.cache_invalidated = false;
+        }
+    }
+
+    /// `getAmount()` without updating the cache.
+    pub fn get_amount(&self) -> f32 {
+        if self.cache_invalidated {
+            self.clamped_amount()
+        } else {
+            self.amount_cache
+        }
+    }
+
+    /// `getAmount()` as the original calls it internally (recalculating).
+    pub(crate) fn amount_mut(&mut self) -> f32 {
+        self.recalculate_caches(false);
+        self.amount_cache
+    }
+
+    /// `getCapacity()`.
+    pub fn get_capacity(&self) -> f32 {
+        self.capacity
+    }
+
+    /// `isEmpty()`.
+    pub fn is_empty(&self) -> bool {
+        self.get_amount() == 0.0
+    }
+
+    /// `isFull()`: `PZMath.equal(getAmount(), capacity, 1.0E-4f)`.
+    pub fn is_full(&self) -> bool {
+        (self.capacity - self.get_amount()).abs() < 1.0e-4
+    }
+
+    /// `getFreeCapacity()`.
+    pub fn get_free_capacity(&self) -> f32 {
+        let free = self.capacity - self.get_amount();
+        if free.abs() < 1.0e-4 {
+            0.0
+        } else {
+            free
+        }
+    }
+
+    /// `getFilledRatio()`.
+    pub fn get_filled_ratio(&self) -> f32 {
+        if self.is_full() {
+            return 1.0;
+        }
+        if self.is_empty() {
+            return 0.0;
+        }
+        if self.capacity != 0.0 {
+            self.get_amount() / self.capacity
+        } else {
+            0.0
+        }
+    }
+
     /// `setCapacity`: at least `FluidUtil.getMinContainerCapacity()`; when
-    /// the fluids exceed it they shrink by the capacity ratio.
+    /// `getAmount()` exceeds it the fluids shrink by the capacity ratio
+    /// (empty instances are removed).
     pub fn set_capacity(&mut self, capacity: f32) {
         let old = self.capacity;
         self.capacity = capacity.max(0.05);
-        if self.amount() > self.capacity {
-            for f in self.fluids.iter_mut().rev() {
+        if self.amount_mut() > self.capacity {
+            for i in (0..self.fluids.len()).rev() {
+                let f = &mut self.fluids[i];
                 let ratio = f.amount / old;
                 f.amount = self.capacity * ratio;
+                self.remove_if_empty(i);
             }
         }
+        self.cache_invalidated = true;
     }
 
     /// `FluidContainer.load` into this container (loading in place keeps
@@ -422,6 +578,7 @@ impl FluidContainer {
         if h & 512 != 0 {
             self.rain_catcher = r.f32()?;
         }
+        self.recalculate_caches(true);
         Ok(())
     }
 
