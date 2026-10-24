@@ -1278,7 +1278,8 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                 let (va, vb) = (vs[id0], vs[id1]);
                 let (ta, tb) = (ks[id0], ks[id1]);
                 let factor = if tb == ta { 0.0f32 } else { (time - ta) as f32 / (tb - ta) as f32 };
-                result[*mapto] = va + (vb - va) * factor;
+                // clang fuses this into one multiply-add in the game's build
+                result[*mapto] = (vb - va).mul_add(factor, va);
             }
             let t = time as f64 / FBX_TIME * self.anim_fps;
             *min_time = min_time.min(t);
