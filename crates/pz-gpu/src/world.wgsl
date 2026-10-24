@@ -72,3 +72,10 @@ fn fs_projected(in: VsOut) -> @location(0) vec4<f32> {
     }
     return in.col * texel;
 }
+
+// `vboRenderer_PositionColorUVDepth`: colour times texel with no discard;
+// the per-corner depth arrives as the position's z.
+@fragment
+fn fs_projected_depth(in: VsOut) -> @location(0) vec4<f32> {
+    return in.col * textureSample(diffuse, diffuse_sampler, in.uv);
+}

@@ -210,31 +210,43 @@ impl ChunkRenderer<'_> {
     /// then `renderTranslucentObjects` over `squares` (every on-screen
     /// square of that level, in any order).
     pub fn render_translucent(&self, squares: &[&RenderSquare], z: i32, out: &mut Vec<DrawCmd>) {
+        self.render_translucent_floors(squares, z, out);
+        self.render_translucent_objects(squares, z, out);
+    }
+
+    /// The squares of level `z` the cut-aways leave visible.
+    fn level_squares<'s>(&self, squares: &[&'s RenderSquare], z: i32) -> Vec<&'s RenderSquare> {
+        let cv = self.cutaways.as_ref();
+        squares.iter().copied().filter(|s| s.z == z && cv.is_none_or(|cv| cv.is_visible(s))).collect()
+    }
+
+    /// `renderTranslucentFloorObjects(z)`: translucent floors, in
+    /// chunk-cache order.
+    pub fn render_translucent_floors(&self, squares: &[&RenderSquare], z: i32, out: &mut Vec<DrawCmd>) {
         let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out };
         let cv = self.cutaways.as_ref();
-        let at_level: Vec<&RenderSquare> = squares.iter().copied().filter(|s| s.z == z && cv.is_none_or(|cv| cv.is_visible(s))).collect();
-        let has = |sq: &RenderSquare, l: &[Layer]| sq.objects.iter().any(|o| l.contains(&alpha::render_layer(cv, sq, o)));
-        let begin = |ctx: &mut SpriteCtx<'_>| {
-            ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
-            ctx.out.push(DrawCmd::DepthFunc(gl::LEQUAL));
-            ctx.out.push(DrawCmd::DepthMask(false));
-        };
-        // Translucent floors, in chunk-cache order.
-        for sq in at_level.iter().filter(|s| has(s, &[Layer::TranslucentFloor])) {
-            begin(&mut ctx);
+        let at_level = self.level_squares(squares, z);
+        for sq in at_level.iter().filter(|s| has_layer(cv, s, &[Layer::TranslucentFloor])) {
+            begin_translucent(ctx.out);
             for obj in sq.objects.iter().filter(|o| alpha::render_layer(cv, sq, o) == Layer::TranslucentFloor) {
                 render_translucent(&mut ctx, sq, obj, cv);
             }
         }
-        // Translucent objects, sorted by x + y * worldRight. Trees are
-        // collected and drawn (FBORenderTrees) before the next other
-        // object and at the end.
-        let mut sorted: Vec<&RenderSquare> = at_level.iter().copied().filter(|s| has(s, &[Layer::Translucent, Layer::TranslucentSE])).collect();
+    }
+
+    /// `renderTranslucentObjects(z)`: translucent objects, sorted by
+    /// x + y * worldRight. Trees are collected and drawn (FBORenderTrees)
+    /// before the next other object and at the end.
+    pub fn render_translucent_objects(&self, squares: &[&RenderSquare], z: i32, out: &mut Vec<DrawCmd>) {
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out };
+        let cv = self.cutaways.as_ref();
+        let at_level = self.level_squares(squares, z);
+        let mut sorted: Vec<&RenderSquare> = at_level.iter().copied().filter(|s| has_layer(cv, s, &[Layer::Translucent, Layer::TranslucentSE])).collect();
         sorted.sort_by_key(|s| (s.y, s.x));
         let mut trees = self.trees.borrow_mut();
         let (vw, vh) = (self.view_size.0 as f32 * self.cam.zoom, self.view_size.1 as f32 * self.cam.zoom);
         for sq in sorted {
-            begin(&mut ctx);
+            begin_translucent(ctx.out);
             for layer in [Layer::Translucent, Layer::TranslucentSE] {
                 for obj in sq.objects.iter().filter(|o| alpha::render_layer(cv, sq, o) == layer) {
                     if obj.kind == ObjectKind::Tree {
@@ -461,6 +473,19 @@ fn flush_trees(trees: &mut crate::trees::Trees, cam: &Camera, w: f32, h: f32, ou
 
 /// `FBORenderCell.renderTranslucent(object)`: with the default blend, the
 /// object at its target alpha.
+/// Whether any of the square's objects renders in one of `layers`.
+fn has_layer(cv: Option<&CutawayView<'_>>, sq: &RenderSquare, layers: &[Layer]) -> bool {
+    sq.objects.iter().any(|o| layers.contains(&alpha::render_layer(cv, sq, o)))
+}
+
+/// The depth state each translucent square starts with: tested
+/// `LEQUAL`, not written.
+fn begin_translucent(out: &mut Vec<DrawCmd>) {
+    out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
+    out.push(DrawCmd::DepthFunc(gl::LEQUAL));
+    out.push(DrawCmd::DepthMask(false));
+}
+
 fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, cv: Option<&CutawayView<'_>>) {
     ctx.out.push(DrawCmd::BlendFunc(gl::ONE, gl::ONE_MINUS_SRC_ALPHA));
     let f = obj.flags();

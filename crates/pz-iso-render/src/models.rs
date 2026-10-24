@@ -12,7 +12,7 @@ use crate::trees::Mat4;
 use crate::Camera;
 
 /// `Core.scale`.
-fn core_scale() -> f32 {
+pub(crate) fn core_scale() -> f32 {
     (std::f64::consts::SQRT_2 / 2.0 / 10.0) as f32 / 1.5
 }
 
