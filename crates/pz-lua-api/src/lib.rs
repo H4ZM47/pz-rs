@@ -12,6 +12,7 @@ pub mod bind_fs;
 pub mod bind_debug;
 pub mod bind_globals;
 pub mod bind_java_util;
+pub mod bind_map_symbols;
 pub mod bind_render;
 pub mod bind_save;
 pub mod bind_text;
@@ -31,6 +32,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_fs::register(mgr);
     bind_render::register(mgr);
     bind_save::register(mgr);
+    bind_map_symbols::register(mgr);
     // Text before UI: bind_text's UIFont is canonical.
     bind_text::register(&mut mgr.thread);
     bind_debug::register(&mut mgr.thread);
