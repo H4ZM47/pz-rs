@@ -25,6 +25,7 @@ pz-world = { path = "crates/pz-world" }
 pz-audio = { path = "crates/pz-audio" }
 pz-characters = { path = "crates/pz-characters" }
 pz-clipper = { path = "crates/pz-clipper" }
+pz-sqlite = { path = "crates/pz-sqlite" }
 indexmap = "2"
 macroquad = { version = "0.4", default-features = false }
 png = "0.17"

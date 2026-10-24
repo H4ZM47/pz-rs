@@ -1614,6 +1614,7 @@ dependencies = [
  "pz-sandbox",
  "pz-scripts",
  "pz-server-settings",
+ "pz-sqlite",
  "pz-text",
  "pz-ui",
  "pz-world",
@@ -1657,6 +1658,10 @@ dependencies = [
  "pz-sandbox",
  "pz-text",
 ]
+
+[[package]]
+name = "pz-sqlite"
+version = "0.1.0"
 
 [[package]]
 name = "pz-text"

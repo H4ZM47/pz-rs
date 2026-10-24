@@ -40,6 +40,7 @@ pub mod events;
 pub mod expose;
 pub mod global_objects;
 pub mod lua_manager;
+pub mod savefile;
 
 pub use lua_manager::LuaManager;
 
