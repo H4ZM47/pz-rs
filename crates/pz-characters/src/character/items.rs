@@ -464,6 +464,29 @@ impl CharacterItems {
         false
     }
 
+    /// `isProtectedFromToxic(true)`: as [`Self::is_protected_from_toxic`]
+    /// (with `getUsedDelta` storing a missing 0), draining the protecting
+    /// gas mask's filter by 0.01.
+    pub fn is_protected_from_toxic_drain(&mut self, sm: &ScriptManager, ctx: &dyn SimContext) -> ScriptResult<bool> {
+        let ictx = CharacterItemContext::new(sm, ctx);
+        for id in self.worn_items.clone() {
+            let Some(item) = self.item_mut(id) else { continue };
+            if !is_clothing(item) {
+                continue;
+            }
+            if has_tag(sm, item, "SCBA") && item.activated && item.has_tank() && item.get_used_delta() > 0.0 {
+                return Ok(true);
+            }
+            let mask = ["GAS_MASK", "RESPIRATOR", "IMPROVISED_GAS_MASK"].iter().any(|t| has_tag(sm, item, t));
+            if !mask || !item.has_filter() || item.get_used_delta() <= 0.0 {
+                continue;
+            }
+            item.drain_gas_mask(0.01, &ictx).map_err(|_| crate::npe())?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// A hand item `isEquippedNoSprint()` (`canSprint`).
     pub fn hand_item_equipped_no_sprint(&self, sm: &ScriptManager) -> bool {
         self.primary_hand_item().is_some_and(|i| is_equipped_no_sprint(sm, i))

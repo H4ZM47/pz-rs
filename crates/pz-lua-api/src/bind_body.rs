@@ -9,18 +9,24 @@
 //! `SimContext` ([`crate::bind_character_sim::install_sim_context`]);
 //! `OnPlayerGetDamage` reaches the Lua event sink after the call returns.
 //!
-//! Not exposed yet: the methods taking items (`JustAteFood`,
-//! `JustDrankBooze`, `JustTookPill`, `JustReadSomething`,
-//! `DamageFromWeapon`, `damageFromSpikedArmor`) are ported over
-//! `pz-inventory` items, which have no Lua objects yet; the ones taking a
-//! zombie or animal (`AddRandomDamageFromZombie`, `DamageFromAnimal`);
-//! `load`/`save`, `getBodyPartsLastState`,
-//! `BodyPart.sync`/`syncWrite`/`getThermalNode`.
-//! TODO(InventoryItem Lua objects, IsoZombie, IsoAnimal).
+//! The methods taking items (`JustAteFood`, `JustDrankBooze`,
+//! `JustTookPill`, `JustReadSomething`, `DamageFromWeapon`) take
+//! [`crate::bind_items`] item objects; `JustTookPill`'s `UseAndSync`
+//! goes through the installed item environment (its holder and outcome).
+//! The character's own item readers (`bodyPartIsSpiked`,
+//! `getBodyPartClothingDefense`, `getCorpseSicknessDefense`,
+//! `isProtectedFromToxic`, `getInventoryWeight`) read its inventory.
+//!
+//! Not exposed yet: `damageFromSpikedArmor` (needs the attacker's
+//! `isBehind`/`isDoShove` state), the ones taking a zombie or animal
+//! (`AddRandomDamageFromZombie`, `DamageFromAnimal`), `load`/`save`,
+//! `getBodyPartsLastState`, `BodyPart.sync`/`syncWrite`/`getThermalNode`.
+//! TODO(IsoLivingCharacter, IsoZombie, IsoAnimal).
 
 use crate::bind_body_damage::{enum_arg, BODY_PART_TYPE_CLASS};
 use crate::bind_character_sim::{character_value, chr_of, with_ctx, LuaGameCharacterRef, ISO_GAME_CHARACTER_CLASS};
 use crate::bind_characters::shared_characters;
+use crate::bind_items::{item_env, ItemOutcome, ItemRef, LuaInventoryItem, INVENTORY_ITEM_CLASS};
 use crate::bind_java_util::JavaList;
 use crate::bind_registry::{java_error, shared_script_manager};
 use crate::expose::{bool_arg, enum_value, expose_class, int_arg, num_arg, str_arg, with_this};
@@ -96,6 +102,31 @@ fn fv(f: f32) -> Value {
     Value::Num(f64::from(f))
 }
 
+/// The item behind `args[i]`, which must be of `class` (or a subclass:
+/// `InventoryItem` takes any item).
+fn item_of(args: &[Value], i: usize, class: &str) -> LuaResult<ItemRef> {
+    match args.get(i) {
+        Some(Value::Object(o)) => match o.as_any().downcast_ref::<LuaInventoryItem>() {
+            Some(l) => {
+                let ok = class == INVENTORY_ITEM_CLASS
+                    || o.class_name() == class
+                    || o.super_classes().contains(&class);
+                if ok {
+                    Ok(l.item.clone())
+                } else {
+                    Err(LuaError::runtime(format!("Expected {class} but got {}", o.class_name())))
+                }
+            }
+            None => Err(LuaError::runtime(format!("Expected {class} but got {}", o.class_name()))),
+        },
+        Some(Value::Nil) | None => Err(java_error(ScriptError::new("java.lang.NullPointerException"))),
+        Some(other) => Err(LuaError::runtime(format!(
+            "Expected {class} but got {}",
+            pz_kahlua::stdlib::java_class_name(other)
+        ))),
+    }
+}
+
 fn opt_str(s: &Option<String>) -> Value {
     s.as_deref().map(Value::str).unwrap_or_default()
 }
@@ -162,6 +193,7 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
         Ok(c.push(body_damage_value(&chr)))
     });
     register_character_members(thread);
+    register_character_item_readers(thread, &sm);
     register_body_damage(thread, &sm, &chars);
     register_body_part(thread, &sm, &chars);
 }
@@ -169,6 +201,62 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
 /// `register` on the shared ScriptManager and Characters.
 pub fn register_shared(thread: &mut Thread) {
     register(thread, shared_script_manager(), shared_characters());
+}
+
+/// The `IsoGameCharacter` methods that read the character's inventory.
+fn register_character_item_readers(thread: &mut Thread, sm: &Rc<ScriptManager>) {
+    let b = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
+    let spiked: [(&str, bool); 2] = [("bodyPartIsSpiked", false), ("bodyPartIsSpikedBehind", true)];
+    for (name, behind) in spiked {
+        let s = sm.clone();
+        b.method(name, move |c| {
+            let chr = chr_of(c)?;
+            let part = int_arg(c, 1);
+            let ch = chr.borrow();
+            let v = if behind {
+                ch.items.body_part_is_spiked_behind(&s, part)
+            } else {
+                ch.items.body_part_is_spiked(&s, part)
+            };
+            Ok(c.push(v))
+        });
+    }
+    let s = sm.clone();
+    b.method("getBodyPartClothingDefense", move |c| {
+        let chr = chr_of(c)?;
+        let (part, bite, bullet) = (int_arg(c, 1), bool_arg(c, 2), bool_arg(c, 3));
+        let v = chr.borrow().items.body_part_clothing_defense(&s, part, bite, bullet);
+        Ok(c.push(fv(v)))
+    });
+    // getCorpseSicknessDefense() is (0, false); (rate) drains.
+    let s = sm.clone();
+    b.method("getCorpseSicknessDefense", move |c| {
+        let chr = chr_of(c)?;
+        let rate = if c.nargs() > 1 { float_arg(c, 1) } else { 0.0 };
+        let drain = match c.nargs() {
+            0 | 1 => false,
+            2 => true,
+            _ => bool_arg(c, 2),
+        };
+        let v = run(c, &chr, |ch, ctx| ch.items.corpse_sickness_defense(&s, ctx, rate, drain))?;
+        Ok(c.push(fv(v)))
+    });
+    let s = sm.clone();
+    b.method("isProtectedFromToxic", move |c| {
+        let chr = chr_of(c)?;
+        let v = if bool_arg(c, 1) {
+            run(c, &chr, |ch, ctx| ch.items.is_protected_from_toxic_drain(&s, ctx))?
+        } else {
+            chr.borrow().items.is_protected_from_toxic(&s)
+        };
+        Ok(c.push(v))
+    });
+    let s = sm.clone();
+    b.method("getInventoryWeight", move |c| {
+        let chr = chr_of(c)?;
+        let v = run(c, &chr, |ch, ctx| Ok(ch.inventory_weight(&s, ctx)))?;
+        Ok(c.push(fv(v)))
+    });
 }
 
 type ChrGetF = fn(&GameCharacter<crate::bind_characters::LuaItem>) -> f32;
@@ -630,6 +718,61 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         )
         .map(|_| Value::Nil)
     });
+    // Item methods (Lua item objects; `Food`, `Literature`, `HandWeapon`
+    // arguments as the original's signatures).
+    macro_rules! with_item {
+        ($name:expr, $class:expr, |$ch:ident, $sm:ident, $chars:ident, $ctx:ident, $args:ident, $item:ident| $body:expr) => {{
+            let s = sm.clone();
+            let k = chars.clone();
+            b.method($name, move |c| {
+                let chr = bd_chr(c)?;
+                let $args: Vec<Value> = (0..c.nargs()).map(|i| c.arg(i)).collect();
+                let $item = item_of(&$args, 1, $class)?;
+                let $sm: &ScriptManager = &s;
+                let chars_ref = k.borrow();
+                let $chars: &Characters = &chars_ref;
+                run(c, &chr, |$ch, $ctx| {
+                    let _ = (&$sm, &$chars, &$ctx, &$args);
+                    $body
+                })?;
+                Ok(0)
+            });
+        }};
+    }
+    const FOOD: &str = "zombie.inventory.types.Food";
+    with_item!("JustAteFood", FOOD, |ch, sm, chars, ctx, args, food| {
+        // JustAteFood(food) eats 100%; JustAteFood(food, pct) without a utensil.
+        let pct = if args.len() > 2 { num(&args, 2) as f32 } else { 100.0 };
+        let utensil = matches!(args.get(3), Some(Value::Bool(true)));
+        ch.just_ate_food(sm, chars, ctx, &food.borrow(), pct, utensil)
+    });
+    with_item!("JustDrankBooze", FOOD, |ch, sm, chars, ctx, args, food| {
+        ch.just_drank_booze(sm, chars, &food.borrow(), num(&args, 2) as f32)
+    });
+    with_item!("JustReadSomething", "zombie.inventory.types.Literature", |ch, sm, chars, ctx, args, lit| {
+        ch.just_read_something(chars, &lit.borrow())
+    });
+    // `weapon.getUsingPlayer()`: a Lua item object has no user here.
+    with_item!("DamageFromWeapon", "zombie.inventory.types.HandWeapon", |ch, sm, chars, ctx, args, weapon| {
+        ch.damage_from_weapon(sm, chars, ctx, &weapon.borrow(), None, num(&args, 2) as i32)
+    });
+    // `UseAndSync` runs with the pill's holder from the installed item
+    // environment, which gets the outcome (container and hands) after the
+    // character is released.
+    let s = sm.clone();
+    let k = chars.clone();
+    b.method("JustTookPill", move |c| {
+        let chr = bd_chr(c)?;
+        let args: Vec<Value> = (0..c.nargs()).map(|i| c.arg(i)).collect();
+        let pill = item_of(&args, 1, INVENTORY_ITEM_CLASS)?;
+        let env = item_env();
+        let holder = env.owner(&pill);
+        let chars = k.borrow();
+        let out = run(c, &chr, |ch, ctx| ch.just_took_pill(&s, &chars, ctx, &mut pill.borrow_mut(), holder.as_ref()))?;
+        drop(chars);
+        env.outcome(&pill, ItemOutcome::Use(Box::new(out)));
+        Ok(0)
+    });
     let s = sm.clone();
     let k = chars.clone();
     b.method("setScratchedWindow", move |c| {
@@ -880,6 +1023,11 @@ mod tests {
 
     /// Invented parts, stats and traits.
     fn setup() -> (Thread, LuaGameCharacterRef) {
+        setup_with(&[])
+    }
+
+    /// [`setup`] with more parts after `Hand_L` and `Neck`.
+    fn setup_with(more_parts: &[&str]) -> (Thread, LuaGameCharacterRef) {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         exec(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end")
@@ -888,12 +1036,15 @@ mod tests {
         let sm = Rc::new(ScriptManager::new());
         {
             let mut st = sm.statics.items.borrow_mut();
-            let (reg, field, id) = ("character_trait", "FAST_HEALER", "t:quickheal");
-            sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
-            st.constants.insert(reg, field, id);
+            let reg = "character_trait";
+            for (field, id) in [("FAST_HEALER", "t:quickheal"), ("IRON_GUT", "t:irongut"), ("WEAK_STOMACH", "t:weakstomach"), ("SLOW_HEALER", "t:slowheal")] {
+                sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
+                st.constants.insert(reg, field, id);
+            }
         }
         let mut tables = BuiltinTables::default();
-        for f in ["PAIN", "WETNESS", "PANIC", "STRESS"] {
+        let stats = ["PAIN", "WETNESS", "PANIC", "STRESS", "BOREDOM", "UNHAPPINESS", "HUNGER", "POISON", "INTOXICATION", "FATIGUE"];
+        for f in stats {
             tables.character_stats.push(CharacterStatDecl {
                 field: f.into(),
                 id: f.to_lowercase(),
@@ -910,7 +1061,9 @@ mod tests {
             bleeding_time_modifier: 0.25,
             ..Default::default()
         };
-        tables.body_parts = vec![part("Hand_L", 0.5), part("Neck", 0.25), part("MAX", 1.0)];
+        tables.body_parts = vec![part("Hand_L", 0.5), part("Neck", 0.25)];
+        tables.body_parts.extend(more_parts.iter().map(|f| part(f, 1.0)));
+        tables.body_parts.push(part("MAX", 1.0));
         *sm.builtin_tables.borrow_mut() = tables.clone();
         let chars = Characters { sim: pz_characters::SimStatics::from_tables(&tables).unwrap(), ..Default::default() };
         let chars = Rc::new(RefCell::new(chars));
@@ -953,5 +1106,78 @@ mod tests {
         )
         .unwrap();
         assert_eq!(chr.borrow().body_damage.parts[1].bandage_life, 4.0);
+    }
+
+    #[test]
+    fn item_methods_from_lua() {
+        use crate::bind_items::{item_value, ItemRef};
+        use pz_inventory::{InventoryItem, ItemClass, ItemTemplate};
+        let (mut t, chr) = setup_with(&["Head", "Torso_Upper"]);
+        crate::bind_globals::register(&mut t);
+        crate::bind_items::register(&mut t);
+        let item = |class, ty: &str, f: &dyn Fn(&mut ItemTemplate)| -> ItemRef {
+            let mut tpl = ItemTemplate::new(class, "Test", ty);
+            tpl.display_name = format!("Invented {ty}");
+            f(&mut tpl);
+            Rc::new(RefCell::new(InventoryItem::create(Rc::new(tpl), 0)))
+        };
+        let comic = item(ItemClass::Literature, "Pamphlet", &|t| {
+            t.boredom_change = -20.0;
+            t.unhappy_change = -10.0;
+        });
+        let pill = item(ItemClass::Drainable, "PillsVitamins", &|t| {
+            t.fatigue_change = -25.0;
+            t.stress_change = 50.0;
+            t.use_delta = 0.5;
+        });
+        pill.borrow_mut().uses = 2;
+        let soup = item(ItemClass::Food, "GreySoup", &|t| {
+            t.hunger_change = -0.2;
+            t.unhappy_change = 10.0;
+            t.poison_power = 2;
+        });
+        let blade = item(ItemClass::Weapon, "Shiv", &|t| {
+            t.min_damage = 1.0;
+            t.max_damage = 1.0;
+        });
+        for (name, i) in [("comic", &comic), ("pill", &pill), ("soup", &soup), ("blade", &blade)] {
+            t.globals().set_str(name, item_value(i));
+        }
+        exec(
+            &mut t,
+            r#"
+            local bd = player:getBodyDamage()
+            local stats = player:getStats()
+            stats:set(CharacterStat.BOREDOM, 50)
+            stats:set(CharacterStat.UNHAPPINESS, 30)
+            stats:set(CharacterStat.FATIGUE, 0.5)
+            bd:JustReadSomething(comic)
+            assert(stats:get(CharacterStat.BOREDOM) == 30, tostring(stats:get(CharacterStat.BOREDOM)))
+            assert(stats:get(CharacterStat.UNHAPPINESS) == 20, tostring(stats:get(CharacterStat.UNHAPPINESS)))
+            -- A pill: its effect, and UseAndSync takes a use (no container here).
+            bd:JustTookPill(pill)
+            assert(pill:getCurrentUses() == 1, tostring(pill:getCurrentUses()))
+            assert(stats:get(CharacterStat.FATIGUE) == 0.25 and stats:get(CharacterStat.STRESS) == 0.5, stats:get(CharacterStat.FATIGUE) .. " " .. stats:get(CharacterStat.STRESS))
+            bd:JustTookPill(pill)
+            assert(pill:getCurrentUses() == 0)
+            -- Arguments are typed as in the original.
+            assert(not pcall(function() bd:JustReadSomething(pill) end))
+            assert(not pcall(function() bd:JustAteFood(comic) end))
+            assert(not pcall(function() bd:JustTookPill(nil) end))
+            bd:JustAteFood(soup, 0.5)
+            assert(stats:get(CharacterStat.POISON) == 1, tostring(stats:get(CharacterStat.POISON)))
+            assert(stats:get(CharacterStat.UNHAPPINESS) > 20)
+            bd:JustDrankBooze(soup, 1)
+            local neck = bd:getBodyPart(BodyPartType.Neck)
+            bd:DamageFromWeapon(blade, 1)
+            assert(neck:getHealth() < 100, tostring(neck:getHealth()))
+            assert(not player:bodyPartIsSpiked(1) and player:getBodyPartClothingDefense(1, false, false) == 0)
+            assert(player:getCorpseSicknessDefense() == 0 and not player:isProtectedFromToxic())
+            assert(player:getInventoryWeight() == 0)
+            "#,
+        )
+        .unwrap();
+        assert_eq!(pill.borrow().uses, 0);
+        assert!(chr.borrow().body_damage.parts[1].health < 100.0);
     }
 }

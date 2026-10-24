@@ -93,6 +93,12 @@ fn env() -> Rc<dyn ItemLuaEnv> {
     ENV.with(|e| e.borrow().clone())
 }
 
+/// The installed environment (for bindings outside this module that use
+/// items, such as `BodyDamage:JustTookPill`).
+pub fn item_env() -> Rc<dyn ItemLuaEnv> {
+    env()
+}
+
 /// The Java class of an item.
 pub fn class_of(item: &InventoryItem) -> &'static str {
     match item.template.class {
