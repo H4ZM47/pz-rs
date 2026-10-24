@@ -8,6 +8,7 @@
 //! `winit` module); the game-facing logic (`GameKeyboard`, `zombie.input.Mouse`)
 //! lives in `pz-lua-api`'s `bind_input`.
 
+pub mod bindings;
 pub mod controller;
 #[cfg(feature = "gilrs")]
 pub mod gamepads;
