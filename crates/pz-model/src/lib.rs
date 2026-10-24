@@ -13,6 +13,7 @@ use std::collections::HashMap;
 pub mod import;
 pub mod loader;
 pub mod processed;
+pub mod txt;
 
 pub use pz_render::model::{MeshData, MeshKind};
 
