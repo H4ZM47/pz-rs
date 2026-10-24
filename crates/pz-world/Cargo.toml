@@ -6,3 +6,7 @@ edition.workspace = true
 [dependencies]
 pz-fs.workspace = true
 pz-classfile.workspace = true
+
+[features]
+# Hand-authored test helpers (e.g. `sprite::types::test_tables`) for other crates' tests.
+test-util = []

@@ -293,8 +293,9 @@ impl SpriteTables {
 
 /// Hand-authored tables for tests: the names the loader refers to plus a few
 /// others, in an arbitrary order (not the game's ordinals).
-#[cfg(test)]
-pub(crate) fn test_tables() -> SpriteTables {
+/// Exported for other crates' tests with the `test-util` feature.
+#[cfg(any(test, feature = "test-util"))]
+pub fn test_tables() -> SpriteTables {
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     SpriteTables::new(
         s(&[
