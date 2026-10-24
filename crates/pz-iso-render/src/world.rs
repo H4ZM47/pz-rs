@@ -203,6 +203,9 @@ pub struct RenderObject {
     pub overlay: Option<Overlay>,
     /// For an `IsoFire`: what drawing its animations reads.
     pub fire: Option<crate::fire::FireRender>,
+    /// For an `IsoFireplace` or `IsoBarbecue`: which of `attached` are
+    /// animated and how they are drawn.
+    pub hearth: Option<crate::hearth::HearthRender>,
 }
 
 /// A garage door segment's place in its door.
@@ -232,6 +235,7 @@ impl RenderObject {
             container_count: 0,
             overlay: None,
             fire: None,
+            hearth: None,
         }
     }
 
