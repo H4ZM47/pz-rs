@@ -51,6 +51,16 @@ Status of the Rust port. Update this file with every merged change.
   Field-level dumps of every Build 42 script of these types match the
   original (checked locally). Built-in registry keys come from the installed
   `projectzomboid.jar` via `pz-classfile`.
+- `pz-entity`: `GameEntity` component storage and `saveEntity`/`loadEntity`
+  (`ByteBlock` framing, load-in-place), the saved state of every component
+  type found in Build 42 saves (FluidContainer with fluids/filters,
+  Attributes, Durability, SpriteConfig, SpriteOverlayConfig, UiConfig,
+  Script, CraftBench, CraftLogic/DryingCraftLogic, Resources, MetaTag and
+  the data-less ones), meta entities (`entity_data.bin`), and
+  `GameEntityFactory` components from scripts. Checked locally on 7 saves:
+  all 148,039 component blocks (objects, items, meta entities) decode and
+  re-encode byte-identically with fields matching the original's loaded
+  objects.
 - StringLib and OsLib. Local differential run against the original Kahlua
   (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
   output; the remaining one differs only in an identity hash.
