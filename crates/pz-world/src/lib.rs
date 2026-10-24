@@ -18,6 +18,7 @@ pub mod meta_grid;
 pub mod objects;
 pub mod save;
 pub mod sprite;
+pub mod square;
 pub mod tiledef;
 
 pub use chunk::{ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare};
@@ -32,3 +33,6 @@ pub use objects::{
     IsoObject, NoHooks, ObjectKind, ObjectLoadHooks, ObjectLoadSettings, ObjectTables,
 };
 pub use sprite::{IsoSpriteManager, SpriteTables};
+pub use square::{
+    ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks, SquareHooks,
+};
