@@ -272,137 +272,8 @@ pub struct IsoTree {
     pub damage: i32,
 }
 
-/// `PresetEntry`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PresetEntry {
-    pub name: String,
-    pub frequency: i32,
-}
+pub use pz_inventory::device::{DeviceData, DevicePresets, PresetEntry};
 
-/// `DevicePresets`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DevicePresets {
-    pub max_presets: i32,
-    pub presets: Vec<PresetEntry>,
-}
-
-impl Default for DevicePresets {
-    fn default() -> Self {
-        DevicePresets {
-            max_presets: 10,
-            presets: Vec::new(),
-        }
-    }
-}
-
-impl DevicePresets {
-    /// `addPreset`: skipped when the frequency or the name is present, or
-    /// when full.
-    pub fn add_preset(&mut self, name: &str, frequency: i32) {
-        if self
-            .presets
-            .iter()
-            .any(|p| p.frequency == frequency || p.name == name)
-        {
-            return;
-        }
-        if (self.presets.len() as i32) < self.max_presets {
-            self.presets.push(PresetEntry {
-                name: name.to_string(),
-                frequency,
-            });
-        }
-    }
-}
-
-/// `DeviceData` (state fields; sound and media playback are not ported).
-#[derive(Clone, Debug, PartialEq)]
-pub struct DeviceData {
-    pub device_name: String,
-    pub two_way: bool,
-    pub transmit_range: i32,
-    pub mic_range: i32,
-    pub mic_is_muted: bool,
-    pub base_volume_range: f32,
-    pub device_volume: f32,
-    pub is_portable: bool,
-    pub is_television: bool,
-    pub is_high_tier: bool,
-    pub is_turned_on: bool,
-    pub channel: i32,
-    pub min_channel_range: i32,
-    pub max_channel_range: i32,
-    pub presets: DevicePresets,
-    pub is_battery_powered: bool,
-    pub has_battery: bool,
-    pub power_delta: f32,
-    pub use_delta: f32,
-    pub headphone_type: i32,
-    pub media_index: i16,
-    pub media_type: i8,
-    pub no_transmit: bool,
-    pub last_minute_stamp: i64,
-    pub media_item: Option<String>,
-}
-
-impl Default for DeviceData {
-    /// `new DeviceData()`.
-    fn default() -> Self {
-        DeviceData {
-            device_name: "WaveSignalDevice".to_string(),
-            two_way: false,
-            transmit_range: 1000,
-            mic_range: 5,
-            mic_is_muted: false,
-            base_volume_range: 15.0,
-            device_volume: 1.0,
-            is_portable: false,
-            is_television: false,
-            is_high_tier: false,
-            is_turned_on: false,
-            channel: 88000,
-            min_channel_range: 200,
-            max_channel_range: 1000000,
-            presets: DevicePresets::default(),
-            is_battery_powered: true,
-            has_battery: true,
-            power_delta: 1.0,
-            use_delta: 0.001,
-            headphone_type: -1,
-            media_index: -1,
-            media_type: -1,
-            no_transmit: false,
-            last_minute_stamp: -1,
-            media_item: None,
-        }
-    }
-}
-
-impl DeviceData {
-    /// `setDeviceVolume` (without the network transmit).
-    pub fn set_device_volume(&mut self, f: f32) {
-        self.device_volume = f.clamp(0.0, 1.0);
-    }
-
-    /// `setTurnedOnRaw`.
-    pub fn set_turned_on_raw(&mut self, b: bool) {
-        self.is_turned_on = b;
-        if !b {
-            self.last_minute_stamp = -1;
-        }
-    }
-
-    /// `setPower`.
-    pub fn set_power(&mut self, p: f32) {
-        self.power_delta = p.clamp(0.0, 1.0);
-    }
-
-    /// `setInitialPower` with `GameTime.getMinutesStamp()`.
-    pub fn set_initial_power(&mut self, minutes_stamp: i64) {
-        self.last_minute_stamp = minutes_stamp;
-        self.set_power(self.power_delta - self.use_delta * minutes_stamp as f32);
-    }
-}
 
 /// `IsoWorldInventoryObject`: an item lying on the floor.
 #[derive(Clone, Debug, PartialEq)]
@@ -854,13 +725,7 @@ pub struct OverlaySprite {
     pub color: Option<[f32; 4]>,
 }
 
-/// One saved ECS component (`GameEntity.saveEntity`): its type id and
-/// payload, kept as bytes (the `ByteBlock` length frames it).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ComponentBlob {
-    pub type_id: i16,
-    pub data: Vec<u8>,
-}
+pub use pz_inventory::component::ComponentBlob;
 
 /// `IsoObject` plus its class.
 #[derive(Clone, Debug, PartialEq)]
