@@ -8,3 +8,5 @@ pz-kahlua.workspace = true
 pz-fs.workspace = true
 pz-lua-api.workspace = true
 pz-ui.workspace = true
+pz-engine.workspace = true
+png = "0.17"
