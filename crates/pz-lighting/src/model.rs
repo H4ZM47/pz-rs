@@ -249,7 +249,8 @@ pub struct Character {
     pub look_x: f32,
     pub look_y: f32,
     /// "See everything": every square is marked seen, visible and in line
-    /// of sight. Java never sets it.
+    /// of sight, with a target darkness of 1. Java never sets it. Use it
+    /// for renders without a player (noon map frames).
     pub see_all: bool,
     pub reanimated: bool,
     pub ghost: bool,

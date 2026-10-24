@@ -45,10 +45,13 @@
 //! # Known differences
 //!
 //! * In "see everything" mode ([`Character::see_all`]) the native code never
-//!   writes the target darkness, so it reads uninitialised memory. The port
-//!   starts all arrays zeroed.
+//!   writes the target darkness and reads uninitialised memory instead. The
+//!   port writes 1 (fully visible), so a frame rendered without a player has
+//!   `darkMulti = 1` and colours straight from sun, sky and lights.
 //! * Arrays the native code leaves uninitialised (colours, vertex colours,
-//!   targets) read as zero here before the first update.
+//!   targets of squares the update never reaches, e.g. when the player
+//!   stands outside every square) read as zero here.
+//! * Sky seeds are flooded in chunk/column order (see above).
 
 // Many comparisons are written negated (`!(a <= b)`) on purpose: they mirror
 // the binary's branch conditions, which differ from the plain form for NaN.

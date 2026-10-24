@@ -383,6 +383,9 @@ impl LightingState {
         if chr.see_all && !chr.reanimated {
             let d = self.back[zi].data_mut(w, h);
             d.vis[idx] |= 1 | 2 | 4;
+            // The native code leaves the target untouched here and so reads
+            // uninitialised memory; a fully visible square has target 1.
+            d.target[idx] = 1.0;
             d.set_dirty(w, idx);
             return;
         }
