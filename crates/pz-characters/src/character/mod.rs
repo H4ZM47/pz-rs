@@ -36,6 +36,7 @@ pub mod body_part;
 pub mod clothing_wetness;
 pub mod context;
 pub mod fitness;
+pub mod item_owner;
 pub mod items;
 pub mod metabolics;
 pub mod moodles;
@@ -53,6 +54,7 @@ use pz_scripts::{ScriptManager, ScriptResult};
 
 pub use body_damage::{BodyDamage, WeaponUser, ZombieAttack, ZombieAttackOutcome};
 pub use clothing_wetness::ClothingWetness;
+pub use item_owner::CharacterItemContext;
 pub use items::CharacterItems;
 pub use body_part::{BodyPart, BodyPartContacts, BodyPartLast, BodyPartTypes, InjuryEnv};
 pub use context::{
@@ -268,6 +270,8 @@ pub struct GameCharacter<I> {
     pub bleeding_level: i8,
     /// `IsoPlayer.moveSpeed`.
     pub move_speed: f32,
+    /// `IsoZombie.isSkeleton` (zombies only).
+    pub skeleton: bool,
 }
 
 impl<I> GameCharacter<I> {
@@ -338,6 +342,7 @@ impl<I> GameCharacter<I> {
             max_weight_delta: 1.0,
             bleeding_level: 0,
             move_speed: 0.06,
+            skeleton: false,
         }
     }
 

@@ -58,6 +58,8 @@ pub struct ZomboidGlobals {
     pub vehicle_discomfort_when_over_encumbered: f64,
     pub equipped_or_worn_encumbrance_multiplier: f64,
     pub corpse_sickness_filter_drain_multiplier: f64,
+    /// Static initializer: 25.0.
+    pub basic_mask_defense: f32,
     /// Static initializer: 85.0.
     pub improvised_gas_mask_defense: f32,
     /// Static initializer: 100.0.
@@ -108,6 +110,7 @@ impl ZomboidGlobals {
         vehicle_discomfort_when_over_encumbered: 0.0,
         equipped_or_worn_encumbrance_multiplier: 0.0,
         corpse_sickness_filter_drain_multiplier: 0.0,
+        basic_mask_defense: 25.0,
         improvised_gas_mask_defense: 85.0,
         standard_gas_mask_defense: 100.0,
     };

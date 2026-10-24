@@ -342,13 +342,23 @@ fn food_pills_and_books_are_items() {
     assert_eq!(st(&c, "POISON"), 10.5 + 6.0 + 15.0);
     // Pills: the original's types, and one use per pill.
     give_item(&sm, &mut c, ItemClass::Drainable, "PillsVitamins", 3, |t| t.fatigue_change = -10.0, |_| {});
-    let mut pills = c.items.item(3).unwrap().clone();
-    pills.uses = 5;
-    c.just_took_pill(&chars, &ctx, &mut pills).unwrap();
-    assert_eq!((st(&c, "FATIGUE"), pills.uses), (0.0, 4));
+    c.items.item_mut(3).unwrap().uses = 5;
+    c.just_took_held_pill(&sm, &chars, &ctx, 3).unwrap().unwrap();
+    assert_eq!((st(&c, "FATIGUE"), c.items.item(3).unwrap().uses), (0.0, 4));
     c.stats.set(&chars.sim.character_stats.field("FATIGUE").unwrap(), 0.5);
-    c.just_took_pill(&chars, &ctx, &mut pills).unwrap();
-    assert_eq!((st(&c, "FATIGUE"), pills.uses), (0.4, 3));
+    c.just_took_held_pill(&sm, &chars, &ctx, 3).unwrap().unwrap();
+    assert_eq!((st(&c, "FATIGUE"), c.items.item(3).unwrap().uses), (0.4, 3));
+    // A loose pill: the outcome is the caller's (no container to leave).
+    let mut last = c.items.item(3).unwrap().clone();
+    last.uses = 1;
+    let out = c.just_took_pill(&sm, &chars, &ctx, &mut last, &pz_inventory::context::Loose).unwrap();
+    assert_eq!(last.uses, 0);
+    assert!(!out.remove && !out.remove_from_hands);
+    // The last pill in the inventory is used up and leaves it.
+    c.items.item_mut(3).unwrap().uses = 1;
+    let out = c.just_took_held_pill(&sm, &chars, &ctx, 3).unwrap().unwrap();
+    assert!(out.remove && out.remove_from_hands);
+    assert!(c.items.item(3).is_none());
     give_item(&sm, &mut c, ItemClass::Literature, "Comic", 4, |t| t.boredom_change = -0.25, |_| {});
     let comic = c.items.item(4).unwrap().clone();
     let before = st(&c, "BOREDOM");
@@ -418,15 +428,16 @@ fn tissues_and_no_sprint_hand_items() {
     give_item(&sm, &mut c, ItemClass::Drainable, "Tissue", 1, |_| {}, |_| {});
     give_item(&sm, &mut c, ItemClass::Normal, "Plank", 2, |_| {}, |s| s.equipped_no_sprint = true);
     c.items.item_mut(1).unwrap().uses = 2;
+    let ctx = crate::character::DefaultSimContext;
     // Not in a hand: nothing used.
-    assert!(!c.items.use_tissue(&sm));
+    assert!(!c.use_tissue(&sm, &ctx));
     c.items.secondary_hand_item = Some(1);
-    assert!(c.items.use_tissue(&sm));
+    assert!(c.use_tissue(&sm, &ctx));
     assert_eq!(c.items.item(1).unwrap().uses, 1);
-    // At 0 uses it is used up (`Use()`).
-    assert!(c.items.use_tissue(&sm));
-    assert_eq!(c.items.item(1).unwrap().uses, -1);
-    assert!(!c.items.use_tissue(&sm));
+    // At 0 uses it is used up (`Use()`): out of the hand and the inventory.
+    assert!(c.use_tissue(&sm, &ctx));
+    assert_eq!((c.items.item(1), c.items.secondary_hand_item), (None, None));
+    assert!(!c.use_tissue(&sm, &ctx));
     assert!(!c.items.hand_item_equipped_no_sprint(&sm));
     c.items.primary_hand_item = Some(2);
     assert!(c.items.hand_item_equipped_no_sprint(&sm));

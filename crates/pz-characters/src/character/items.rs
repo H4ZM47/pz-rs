@@ -22,9 +22,10 @@ use std::rc::Rc;
 
 use pz_inventory::{InventoryItem, ItemContainer, ItemKind};
 use pz_scripts::objects::items::{get_item, Item, ItemBodyLocation, ItemTag};
-use pz_scripts::ScriptManager;
+use pz_scripts::{ScriptManager, ScriptResult};
 
 use super::context::SimContext;
+use super::item_owner::CharacterItemContext;
 use super::GameCharacter;
 
 /// `BloodBodyPartType` indices.
@@ -345,26 +346,6 @@ impl CharacterItems {
         self.worn_items.contains(&id) || self.primary_hand_item == Some(id) || self.secondary_hand_item == Some(id)
     }
 
-    /// `getInventoryWeight()` (`getInventory().getCapacityWeight()` for a
-    /// character without unlimited carry). STUB parts: `isFakeEquipped`
-    /// is false; container contents weigh `ItemContainer::get_contents_weight`.
-    pub fn inventory_weight(&self, sm: &ScriptManager, ctx: &dyn SimContext) -> f32 {
-        let mut total = 0.0f32;
-        for item in self.inventory.items.iter().filter_map(|i| i.as_item()) {
-            let equipped = self.is_equipped(item.id);
-            if item.attached_slot > -1 && !equipped {
-                total += hotbar_equipped_weight(sm, item, ctx);
-                continue;
-            }
-            if equipped {
-                total += equipped_weight(item, ctx);
-                continue;
-            }
-            total += unequipped_weight(item);
-        }
-        total
-    }
-
     /// `bodyPartHasTag(part, tag)`.
     fn body_part_has_tag(&self, sm: &ScriptManager, part: i32, field: &str) -> bool {
         for item in self.item_visuals().into_iter().rev() {
@@ -427,26 +408,24 @@ impl CharacterItems {
         self.clothing_matches(sm, part, |i, p| visual_blood(i, p) > 0.25)
     }
 
-    /// `getCorpseSicknessDefense(rate, drain)`. The gas mask and SCBA
-    /// branches need `Clothing.hasFilter`/`hasTank`/`getUsedDelta`, which
-    /// `pz-inventory` lacks: STUB, `get_gas_mask_drain()` stands for the
-    /// used delta and no filter is drained.
-    pub fn corpse_sickness_defense(&self, sm: &ScriptManager, ctx: &dyn SimContext, rate: f32, drain: bool) -> f32 {
+    /// `getCorpseSicknessDefense(rate, drain)`: an active SCBA with air,
+    /// else the best worn defense, a gas mask with a filter (drained by
+    /// `rate * corpseSicknessFilterDrainMultiplier` when `drain`).
+    pub fn corpse_sickness_defense(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, rate: f32, drain: bool) -> ScriptResult<f32> {
         let g = ctx.zomboid_globals();
+        let ictx = CharacterItemContext::new(sm, ctx);
         let mut defense = 0.0f32;
-        for item in self.worn() {
+        for id in self.worn_items.clone() {
+            let Some(item) = self.item_mut(id) else { continue };
             if is_clothing(item) {
-                let used_delta = item.get_gas_mask_drain();
-                let has_tank = false;
-                let has_filter = false;
-                if has_tag(sm, item, "SCBA") && item.activated && has_tank && used_delta > 0.0 {
-                    return g.standard_gas_mask_defense;
+                if has_tag(sm, item, "SCBA") && item.activated && item.has_tank() && item.get_used_delta() > 0.0 {
+                    return Ok(g.standard_gas_mask_defense);
                 }
                 if item.get_corpse_sickness_defense() > defense {
                     defense = item.get_corpse_sickness_defense();
                 }
                 let mask = ["GAS_MASK", "RESPIRATOR", "IMPROVISED_GAS_MASK"].iter().any(|t| has_tag(sm, item, t));
-                if mask && has_filter && used_delta > 0.0 {
+                if mask && item.has_filter() && item.get_used_delta() > 0.0 {
                     let d = if has_tag(sm, item, "IMPROVISED_GAS_MASK") {
                         g.improvised_gas_mask_defense
                     } else {
@@ -454,32 +433,31 @@ impl CharacterItems {
                     };
                     defense = defense.max(d);
                     if drain && rate > 0.0 {
-                        // STUB: `drainGasMask(rate * corpseSicknessFilterDrainMultiplier)`.
-                        let _ = rate as f64 * g.corpse_sickness_filter_drain_multiplier;
+                        let r = (rate as f64 * g.corpse_sickness_filter_drain_multiplier) as f32;
+                        item.drain_gas_mask(r, &ictx).map_err(|_| crate::npe())?;
                     }
                 }
             }
             if defense >= g.standard_gas_mask_defense {
-                return g.standard_gas_mask_defense;
+                return Ok(g.standard_gas_mask_defense);
             }
         }
-        defense
+        Ok(defense)
     }
 
-    /// `isProtectedFromToxic(drain)`: STUB like
-    /// [`Self::corpse_sickness_defense`] (no tank or filter is known).
+    /// `isProtectedFromToxic(false)`: an active SCBA with air or a gas mask
+    /// with a filter. (The original's `getUsedDelta` also stores 0 in
+    /// the mod data when it is missing; that is not done here.)
     pub fn is_protected_from_toxic(&self, sm: &ScriptManager) -> bool {
         for item in self.worn() {
             if !is_clothing(item) {
                 continue;
             }
-            let used_delta = item.get_gas_mask_drain();
-            let (has_tank, has_filter) = (false, false);
-            if has_tag(sm, item, "SCBA") && item.activated && has_tank && used_delta > 0.0 {
+            if has_tag(sm, item, "SCBA") && item.activated && item.has_tank() && item.used_delta() > 0.0 {
                 return true;
             }
             let mask = ["GAS_MASK", "RESPIRATOR", "IMPROVISED_GAS_MASK"].iter().any(|t| has_tag(sm, item, t));
-            if mask && has_filter && used_delta > 0.0 {
+            if mask && item.has_filter() && item.used_delta() > 0.0 {
                 return true;
             }
         }
@@ -491,38 +469,66 @@ impl CharacterItems {
         self.primary_hand_item().is_some_and(|i| is_equipped_no_sprint(sm, i))
             || self.secondary_hand_item().is_some_and(|i| is_equipped_no_sprint(sm, i))
     }
-
-    /// The `TriggerSneezeCough` tissue: uses one use of a `Tissue`,
-    /// `ToiletPaper` or `MUFFLE_SNEEZE` item in the primary hand, else in
-    /// the secondary hand (`setCurrentUses(uses - 1)`, then `Use()` at 0).
-    /// Whether one was used.
-    pub fn use_tissue(&mut self, sm: &ScriptManager) -> bool {
-        let is_tissue = |i: &InventoryItem| {
-            i.get_type() == "Tissue" || i.get_type() == "ToiletPaper" || has_tag(sm, i, "MUFFLE_SNEEZE")
-        };
-        let primary = self.primary_hand_item().filter(|i| is_tissue(i)).map(|i| i.id);
-        let target = match primary {
-            Some(id) => Some(id),
-            None => self
-                .secondary_hand_item()
-                .filter(|i| is_tissue(i) && i.get_current_uses() > 0)
-                .map(|i| i.id),
-        };
-        let Some(item) = target.and_then(|id| self.item_mut(id)) else { return false };
-        if item.get_current_uses() <= 0 {
-            return false;
-        }
-        item.set_current_uses(item.get_current_uses() - 1);
-        if item.get_current_uses() <= 0 {
-            item.use_();
-        }
-        true
-    }
 }
 
 impl<I> GameCharacter<I> {
-    /// `getInventory().getCapacityWeight()`.
+    /// The `TriggerSneezeCough` tissue: uses one use of a `Tissue`,
+    /// `ToiletPaper` or `MUFFLE_SNEEZE` item in the primary hand, else in
+    /// the secondary hand (`setCurrentUses(uses - 1)`, then `Use()` at 0,
+    /// which takes a used-up tissue out of the hand and the inventory).
+    /// Whether one was used.
+    pub fn use_tissue(&mut self, sm: &ScriptManager, ctx: &dyn SimContext) -> bool {
+        let is_tissue = |i: &InventoryItem| {
+            i.get_type() == "Tissue" || i.get_type() == "ToiletPaper" || has_tag(sm, i, "MUFFLE_SNEEZE")
+        };
+        let items = &self.items;
+        let target = match items.primary_hand_item().filter(|i| is_tissue(i)) {
+            Some(i) => i,
+            None => match items.secondary_hand_item().filter(|i| is_tissue(i)) {
+                Some(i) => i,
+                None => return false,
+            },
+        };
+        if target.get_current_uses() <= 0 {
+            return false;
+        }
+        let id = target.id;
+        let ictx = CharacterItemContext::new(sm, ctx);
+        let Some(uses) = self.with_held_item(id, |item, _| {
+            item.set_current_uses_with(item.get_current_uses() - 1, Some(&ictx));
+            item.get_current_uses()
+        }) else {
+            return false;
+        };
+        if uses <= 0 {
+            self.use_held_item(sm, ctx, id, false, false, false);
+        }
+        true
+    }
+
+    /// `getInventory().getCapacityWeight()`: `getInventoryWeight()` (the
+    /// unlimited-carry and ghost-mode cheats are not modelled).
     pub fn capacity_weight(&self, sm: &ScriptManager, ctx: &dyn SimContext) -> f32 {
-        self.items.inventory_weight(sm, ctx)
+        self.inventory_weight(sm, ctx)
+    }
+
+    /// `getInventoryWeight()`: hotbar items not equipped, equipped (or
+    /// fake-equipped) items and the rest, each with its weight rule.
+    pub fn inventory_weight(&self, sm: &ScriptManager, ctx: &dyn SimContext) -> f32 {
+        let ictx = CharacterItemContext::new(sm, ctx);
+        let mut total = 0.0f32;
+        for item in self.items.inventory.items.iter().filter_map(|i| i.as_item()) {
+            let equipped = self.items.is_equipped(item.id);
+            if item.attached_slot > -1 && !equipped {
+                total += item.get_hotbar_equipped_weight(&ictx, self);
+                continue;
+            }
+            if equipped || item.is_fake_equipped(self) {
+                total += item.get_equipped_weight(&ictx, self);
+                continue;
+            }
+            total += item.get_unequipped_weight(&ictx, self);
+        }
+        total
     }
 }

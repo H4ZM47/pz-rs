@@ -17,7 +17,7 @@ use pz_scripts::{ScriptManager, ScriptResult};
 
 use super::context::{SimContext, SimEvent};
 use super::GameCharacter;
-use crate::visual::Color;
+use crate::color::Color;
 use crate::Characters;
 
 /// `Moodle.MoodleLevel`.

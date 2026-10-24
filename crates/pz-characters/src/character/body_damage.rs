@@ -20,7 +20,8 @@
 //! TODO(Thermoregulator): its part of `save`/`load` is the caller's.
 //! TODO(IsoAnimal): `DamageFromAnimal`.
 
-use pz_inventory::InventoryItem;
+use pz_inventory::gameplay::UseOutcome;
+use pz_inventory::{InventoryItem, ItemOwner};
 use pz_scripts::objects::items::WeaponCategory;
 use pz_scripts::{ScriptError, ScriptManager, ScriptResult};
 
@@ -29,6 +30,7 @@ use super::body_part::{
     InjuryEnv,
 };
 use super::context::{SimContext, SimEvent};
+use super::item_owner::CharacterItemContext;
 use super::items::{has_tag, is_hand_weapon};
 use super::stats::{clamp_f32, CharacterStatRef, CharacterStats, Stats};
 use super::thermoregulator::Thermoregulator;
@@ -1033,13 +1035,8 @@ impl<I> GameCharacter<I> {
         Ok(())
     }
 
-    /// `BodyDamage.JustTookPill(pill)`: ends with `pill.UseAndSync()`.
-    pub fn just_took_pill(
-        &mut self,
-        chars: &Characters,
-        ctx: &dyn SimContext,
-        pill: &mut InventoryItem,
-    ) -> ScriptResult {
+    /// `BodyDamage.JustTookPill(pill)` without its final `UseAndSync`.
+    fn pill_effects(&mut self, chars: &Characters, ctx: &dyn SimContext, pill: &InventoryItem) -> ScriptResult {
         let drunk = self.stats.get(&stat(chars, "INTOXICATION")?) > 10.0;
         match pill.get_type() {
             "PillsBeta" => self.beta_blockers(if drunk { 0.15 } else { 0.3 }),
@@ -1066,8 +1063,39 @@ impl<I> GameCharacter<I> {
         if let Some(f) = pill.get_on_eat() {
             ctx.event(SimEvent::CallOnEat(f.to_string()));
         }
-        pill.use_and_sync();
         Ok(())
+    }
+
+    /// `BodyDamage.JustTookPill(pill)`: ends with `pill.UseAndSync()`
+    /// (`Use(false, false, GameServer.server)`) for a pill held by `owner`;
+    /// the caller applies the returned outcome to the pill's container
+    /// (see [`Self::just_took_held_pill`] for a pill in this character's
+    /// inventory).
+    pub fn just_took_pill(
+        &mut self,
+        sm: &ScriptManager,
+        chars: &Characters,
+        ctx: &dyn SimContext,
+        pill: &mut InventoryItem,
+        owner: &dyn ItemOwner,
+    ) -> ScriptResult<UseOutcome> {
+        self.pill_effects(chars, ctx, pill)?;
+        let ictx = CharacterItemContext::new(sm, ctx);
+        Ok(pill.use_with(false, false, ctx.is_server(), owner, &ictx))
+    }
+
+    /// [`Self::just_took_pill`] for the item `id` of this character's
+    /// inventory, with the `Use` applied. `None` when it holds no such item.
+    pub fn just_took_held_pill(
+        &mut self,
+        sm: &ScriptManager,
+        chars: &Characters,
+        ctx: &dyn SimContext,
+        id: i32,
+    ) -> ScriptResult<Option<UseOutcome>> {
+        let Some(pill) = self.items.item(id).cloned() else { return Ok(None) };
+        self.pill_effects(chars, ctx, &pill)?;
+        Ok(self.use_held_item(sm, ctx, id, false, false, ctx.is_server()))
     }
 
     /// `BodyDamage.JustAteFood(food, percentage, useUtensil)`.
@@ -1326,7 +1354,7 @@ impl<I> GameCharacter<I> {
         } else if smoker {
             bd.time_to_sneeze_or_cough = timer(SMOKER_SNEEZE_TIMER_MIN, SMOKER_SNEEZE_TIMER_MAX);
         }
-        let consumed = self.items.use_tissue(sm);
+        let consumed = self.use_tissue(sm, ctx);
         let bd = &mut self.body_damage;
         if consumed {
             bd.sneeze_cough_active += 2;
@@ -1656,7 +1684,7 @@ impl<I> GameCharacter<I> {
         if ctx.decaying_corpse_health_impact() != 1 {
             let mut rate = self.base_corpse_sickness(ctx);
             if rate > 0.0 {
-                let defense = self.items.corpse_sickness_defense(sm, ctx, rate, true);
+                let defense = self.items.corpse_sickness_defense(sm, ctx, rate, true)?;
                 if defense > 0.0 {
                     let m = 0.0f32.max(1.0 - defense / 100.0);
                     rate *= m;
