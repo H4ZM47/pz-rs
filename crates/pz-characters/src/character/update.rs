@@ -64,8 +64,8 @@ impl<I> GameCharacter<I> {
     }
 
     /// `getRunningThirstReduction`.
-    fn running_thirst_reduction(&self) -> f64 {
-        if self.player_instance && self.running {
+    fn running_thirst_reduction(&self, sm: &ScriptManager) -> f64 {
+        if self.player_instance && self.is_running(sm) {
             1.2
         } else {
             1.0
@@ -95,7 +95,7 @@ impl<I> GameCharacter<I> {
                 let v = g.thirst_increase
                     * sd
                     * mult
-                    * self.running_thirst_reduction()
+                    * self.running_thirst_reduction(sm)
                     * delta
                     * trait_mod as f64
                     * self.thirst_multiplier();
@@ -210,7 +210,7 @@ impl<I> GameCharacter<I> {
         let hunger_mult = self.appetite_multiplier(sm, chars)? as f64;
         let hunger = Self::stat_ref(chars, "HUNGER")?;
         let well_fed = self.moodles.moodle_level_of(sm, "FOOD_EATEN")? != 0;
-        let exercising = self.is_player() && self.running && self.player_moving || self.environment.swipe_state;
+        let exercising = self.is_player() && self.is_running(sm) && self.player_moving || self.environment.swipe_state;
         let hm = self.hunger_multiplier();
         let v = if exercising {
             if !well_fed {
@@ -226,7 +226,7 @@ impl<I> GameCharacter<I> {
         self.stats.add(&hunger, v as f32);
         self.update_idle_square_time(ctx);
         let idle = Self::stat_ref(chars, "IDLENESS")?;
-        if self.environment.in_combat {
+        if self.is_in_combat() {
             self.stats.reset(&idle);
         } else if self.environment.currently_idle && self.environment.has_current_square {
             if self.environment.on_last_square && self.idle_square_time >= 1800.0 {

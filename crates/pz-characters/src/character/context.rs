@@ -247,8 +247,6 @@ pub struct CharacterEnvironment {
     pub room_size: i32,
     /// `vehicle != null`.
     pub in_vehicle: bool,
-    /// `isInCombat()`.
-    pub in_combat: bool,
     /// `isCurrentlyIdle()`.
     pub currently_idle: bool,
     /// `isCurrentState(SwipeStatePlayer.instance())`.
@@ -275,7 +273,6 @@ impl Default for CharacterEnvironment {
             square_in_room: false,
             room_size: 0,
             in_vehicle: false,
-            in_combat: false,
             currently_idle: false,
             swipe_state: false,
             stress_from_sounds: 0.0,

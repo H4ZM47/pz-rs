@@ -173,7 +173,7 @@ pub struct GameCharacter<I> {
     pub sit_on_ground: bool,
     /// `isSittingOnFurniture()`.
     pub sitting_on_furniture: bool,
-    /// `running` (`IsoPlayer.IsRunning()`).
+    /// `running` (see [`GameCharacter::is_running`]).
     pub running: bool,
     /// `IsoPlayer.isPlayerMoving`.
     pub player_moving: bool,
@@ -314,6 +314,17 @@ impl<I> GameCharacter<I> {
     /// `isAsleep`.
     pub fn is_asleep(&self) -> bool {
         self.asleep
+    }
+    /// `isRunning`: not with an endurance moodle at level 3 or more.
+    pub fn is_running(&self, sm: &ScriptManager) -> bool {
+        if self.moodles.moodle_level_of(sm, "ENDURANCE").is_ok_and(|l| l >= 3) {
+            return false;
+        }
+        self.running
+    }
+    /// `isInCombat`: a very close zombie or at least three chasing.
+    pub fn is_in_combat(&self) -> bool {
+        self.stats.num_very_close_zombies() > 0 || self.stats.num_chasing_zombies() >= 3
     }
     /// `isSitting`.
     pub fn is_sitting(&self) -> bool {
