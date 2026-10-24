@@ -111,6 +111,10 @@ pub struct SpriteInfo {
     /// `getSpriteGridPosZ(sprite)`: multi-level objects.
     pub grid_levels: i32,
     pub grid_pos_z: i32,
+    /// `hideForWaterRender` while the water shader is on: a shore blend
+    /// the water shader draws instead (see
+    /// [`crate::water::hides_for_water_render`]).
+    pub hide_for_water_render: bool,
 }
 
 impl SpriteInfo {
@@ -258,6 +262,8 @@ pub struct RenderSquare {
     pub seam: SeamNeighbours,
     /// Rooms, buildings and visibility for cutaways and occlusion.
     pub cut: SquareCutawayInfo,
+    /// `getWater()`: the square's water geometry, if any.
+    pub water: Option<crate::water::WaterGeometry>,
 }
 
 /// The neighbour tests `renderSeamFix2_Floor` and `renderSeamFix2_Wall`
@@ -348,7 +354,17 @@ impl Default for SquareCutawayInfo {
 
 impl RenderSquare {
     pub fn new(x: i32, y: i32, z: i32) -> Self {
-        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default() }
+        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default(), water: None }
+    }
+
+    /// `getProperties().has(flag)`: any object's sprite has it.
+    pub fn has(&self, f: impl Fn(&SpriteFlags) -> bool) -> bool {
+        self.objects.iter().any(|o| o.sprite.as_ref().is_some_and(|s| f(&s.flags)))
+    }
+
+    /// `getWaterObject()`: the first object with a `water` sprite.
+    pub fn water_object(&self) -> Option<usize> {
+        self.objects.iter().position(|o| o.flags().water)
     }
 
     /// `getFloor()`: the first solid-floor object.

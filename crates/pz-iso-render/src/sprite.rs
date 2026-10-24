@@ -208,6 +208,10 @@ fn setup_tile_depth_wall(ctx: &SpriteCtx<'_>, d: &SpriteDraw<'_>) -> Option<Text
 /// `IsoSprite.render` into the chunk texture being recorded.
 pub fn render(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>) {
     let s = d.sprite;
+    // performRenderFrame skips shore blends the water shader replaces.
+    if s.hide_for_water_render {
+        return;
+    }
     let Some(tex) = s.texture.as_ref() else { return };
     let mut info = d.col;
     if s.flags.unlit {

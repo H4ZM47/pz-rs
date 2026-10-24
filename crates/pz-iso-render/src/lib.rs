@@ -25,6 +25,8 @@ pub mod seam;
 pub mod sprite;
 pub mod texd;
 pub mod trees;
+pub mod water;
+pub mod weather;
 pub mod world;
 
 pub use cell::ChunkRenderer;

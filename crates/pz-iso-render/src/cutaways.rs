@@ -102,6 +102,12 @@ impl GridWorld {
     }
 }
 
+impl crate::weather::SurfaceWorld for GridWorld {
+    fn square(&self, x: i32, y: i32, z: i32) -> Option<&RenderSquare> {
+        self.squares.get(&(x, y, z))
+    }
+}
+
 impl CutawayWorld for GridWorld {
     fn square(&self, x: i32, y: i32, z: i32) -> Option<&RenderSquare> {
         self.squares.get(&(x, y, z))
