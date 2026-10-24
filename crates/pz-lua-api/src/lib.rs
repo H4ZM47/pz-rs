@@ -10,7 +10,9 @@
 pub mod bind_core;
 pub mod bind_fs;
 pub mod bind_debug;
+pub mod bind_global_objects;
 pub mod bind_globals;
+pub mod bind_iso_enums;
 pub mod bind_java_util;
 pub mod bind_render;
 pub mod bind_save;
@@ -18,6 +20,7 @@ pub mod bind_text;
 pub mod bind_ui;
 pub mod events;
 pub mod expose;
+pub mod global_objects;
 pub mod lua_manager;
 
 pub use lua_manager::LuaManager;
@@ -36,4 +39,6 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_debug::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
+    bind_iso_enums::register(mgr);
+    bind_global_objects::register(mgr);
 }

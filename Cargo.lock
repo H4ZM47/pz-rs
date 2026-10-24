@@ -1455,6 +1455,7 @@ name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "pz-classfile",
  "pz-core",
  "pz-fs",
  "pz-kahlua",
