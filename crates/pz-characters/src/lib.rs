@@ -12,6 +12,7 @@
 //! The original's static fields are kept in [`Characters`].
 
 pub mod attached_items;
+pub mod character;
 pub mod observation;
 pub mod skills;
 pub mod survivor;
@@ -23,6 +24,7 @@ pub use attached_items::{
     AttachedItem, AttachedItems, AttachedLocation, AttachedLocationGroup, AttachedLocationGroupRef, AttachedLocationRef,
     AttachedLocations,
 };
+pub use character::{CharacterKind, GameCharacter, SimContext, SimStatics};
 pub use observation::{Observation, ObservationFactory, ObservationRef};
 pub use skills::{Perk, PerkFactory, PerkRef};
 pub use survivor::{CharacterGender, SurvivorDesc, SurvivorDescRef, SurvivorDescStatics, SurvivorFactory, SurvivorType};
@@ -47,6 +49,9 @@ pub struct Characters {
     pub attached_locations: AttachedLocations,
     /// `PerkFactory`'s statics and the `PerkFactory.Perks` constants.
     pub perks: PerkFactory,
+    /// The character simulation's statics (`CharacterStat`, `MoodleStat`,
+    /// `LevelUpLevels`, `CheatType`).
+    pub sim: character::SimStatics,
 }
 
 pub(crate) fn npe() -> ScriptError {

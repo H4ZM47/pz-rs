@@ -26,7 +26,7 @@ pub use item::{Item, KeySet, ModDataValue};
 pub use item_filter::{resolve_get_item_types, FilterTypeInfo, ItemFilterScript};
 pub use keys::{
     load_builtin_constants, AmmoType, BookSubject, BuiltinConstants, CharacterProfession,
-    CharacterTrait, GameMode, ItemBodyLocation, ItemTag,
+    CharacterTrait, GameMode, ItemBodyLocation, ItemTag, MoodleType,
     ItemType, MagazineSubject, WeaponCategory,
 };
 pub use parts::{ItemReplacement, ModelWeaponPart, VehiclePartModel};

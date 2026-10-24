@@ -19,6 +19,7 @@ fn load_scripts(game_dir: &Path, fs: &pz_fs::GameFs) -> Result<(), String> {
         let tables = sm.builtin_tables.borrow();
         chars.perks = pz_characters::PerkFactory::from_tables(&tables).map_err(|e| format!("PerkFactory.Perks: {e}"))?;
         chars.perks.init(&tables, &pz_characters::Characters::translate).map_err(|e| format!("PerkFactory.init: {e}"))?;
+        chars.sim = pz_characters::SimStatics::from_tables(&tables).map_err(|e| format!("character statics: {e}"))?;
     }
     pz_lua_api::bind_characters::install_characters(Rc::new(RefCell::new(chars)));
     sm.load(fs, &[]).map_err(|e| format!("ScriptManager.Load failed: {e}"))?;
