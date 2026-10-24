@@ -1573,6 +1573,7 @@ dependencies = [
  "pz-anim",
  "pz-core",
  "pz-inventory",
+ "pz-pathfind",
  "pz-scripts",
  "pz-world",
 ]

@@ -5,7 +5,7 @@
 //! Each ported state is a unit struct with an `instance::<I>()`
 //! returning its [`StateRef`]; [`all`] lists them for the registry.
 
-use super::state::{StateId, StateRef};
+use super::state::{Param, StateId, StateRef};
 
 pub mod generic_default;
 pub mod idle;
@@ -96,6 +96,9 @@ pub mod ids {
     pub const ANIMAL_WALK: StateId = StateId("zombie.ai.states.animals.AnimalWalkState");
     pub const ANIMAL_ZONE: StateId = StateId("zombie.ai.states.animals.AnimalZoneState");
 }
+
+/// `PlayerStrafeState.STRAFE_SPEED`.
+pub const STRAFE_SPEED: Param<f32> = Param::new(ids::PLAYER_STRAFE, "strafe_speed", || 1.0);
 
 /// The ported states.
 pub fn all<I: 'static>() -> Vec<StateRef<I>> {

@@ -18,8 +18,11 @@ pub enum BehaviorResult {
     Succeeded,
 }
 
-/// The part of `PathFindBehavior2` the states use.
-/// TODO(pz-pathfind): replace with the pz-pathfind behaviour (PR #56).
+/// The part of `PathFindBehavior2` the states use. The character side of
+/// the pathfinder is `pz_pathfind::mover::PathMover` (implemented in
+/// [`crate::character::path_mover`]); this is the behaviour object's
+/// interface until pz-pathfind ports `PathFindBehavior2`.
+/// TODO(pz-pathfind): replace with its `PathFindBehavior2`.
 pub trait PathFindBehavior {
     /// `pathToLocation(x, y, z)`.
     fn path_to_location(&mut self, _x: i32, _y: i32, _z: i32) {}
@@ -84,7 +87,8 @@ pub trait StateWorld<I> {
     }
 
     /// `LosUtil.lineClear` / `PolygonalMap2.lineClearCollide` between two
-    /// points on one level. TODO(pz-pathfind).
+    /// points on one level (`pz_pathfind::main_thread::los_util` over the
+    /// world's squares).
     fn line_clear(&self, _x0: f32, _y0: f32, _x1: f32, _y1: f32, _z: i32) -> bool {
         true
     }

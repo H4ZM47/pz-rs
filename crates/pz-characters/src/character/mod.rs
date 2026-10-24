@@ -41,6 +41,7 @@ pub mod items;
 pub mod metabolics;
 pub mod moodles;
 pub mod nutrition;
+pub mod path_mover;
 pub mod state;
 pub mod states;
 pub mod stats;
@@ -281,6 +282,8 @@ pub struct GameCharacter<I: 'static> {
     pub vars: state::CharacterVars,
     /// `gameVariables`: the plain variable slots.
     pub game_variables: pz_anim::MapVariableSource,
+    /// The pathfinding fields (`finder`, `path2`, ...).
+    pub path: path_mover::PathMoverState,
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -355,6 +358,7 @@ impl<I: 'static> GameCharacter<I> {
             state: state::StateMachineComponent::default(),
             vars: state::CharacterVars::default(),
             game_variables: pz_anim::MapVariableSource::new(),
+            path: path_mover::PathMoverState::default(),
         }
     }
 
