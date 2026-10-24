@@ -15,7 +15,9 @@ pub mod map_files;
 pub mod meta_grid;
 pub mod tiledef;
 
-pub use chunk::{IsoCell, IsoChunk, IsoGridSquare, IsoObject, SpriteLookup, TileDefSprites};
+pub use chunk::{
+    ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare, IsoObject, SpriteLookup, TileDefSprites,
+};
 pub use defs::{BuildingDef, BuildingIdx, MetaObject, RoomDef, RoomIdx, RoomRect};
 pub use iso_lot::IsoLot;
 pub use java::GameRand;

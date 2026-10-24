@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use crate::defs::BuildingIdx;
-use crate::fix2x::fix2x;
+use crate::fix2x::Fix2xTable;
 use crate::iso_lot::IsoLot;
 use crate::java::{fastfloor, GameRand};
 use crate::map_files::{header_name, lotpack_name};
@@ -179,6 +179,16 @@ impl IsoChunk {
     }
 }
 
+/// Runtime inputs chunk loading takes from other systems.
+pub struct ChunkLoadEnv<'a> {
+    /// `IsoSpriteManager.namedMap`.
+    pub sprites: &'a dyn SpriteLookup,
+    /// `IsoChunk.Fix2xMap`, read from the installed game.
+    pub fix2x: &'a Fix2xTable,
+    /// `Rand`.
+    pub rand: &'a mut dyn GameRand,
+}
+
 struct PlaceError;
 
 /// `IsoCell.PlaceLot(lot, sx, sy, sz, ch, wx, wy, bDoneSquares)`.
@@ -193,8 +203,7 @@ pub fn place_lot(
     wx: i32,
     wy: i32,
     done: &mut [bool; 64],
-    sprites: &dyn SpriteLookup,
-    rand: &mut dyn GameRand,
+    env: &mut ChunkLoadEnv<'_>,
 ) -> i32 {
     let wx = wx * 8;
     let wy = wy * 8;
@@ -202,7 +211,7 @@ pub fn place_lot(
     let max_level = (sz + lot.max_level - lot.min_level - 1).min(MAX_LEVEL);
     let mut count = 0;
     let result = place_lot_inner(
-        meta, lot, sx, sy, ch, wx, wy, min_level, max_level, done, &mut count, sprites, rand,
+        meta, lot, sx, sy, ch, wx, wy, min_level, max_level, done, &mut count, env,
     );
     if result.is_err() {
         eprintln!("Failed to load chunk, blocking out area");
@@ -230,8 +239,7 @@ fn place_lot_inner(
     max_level: i32,
     done: &mut [bool; 64],
     count: &mut i32,
-    sprites: &dyn SpriteLookup,
-    rand: &mut dyn GameRand,
+    env: &mut ChunkLoadEnv<'_>,
 ) -> Result<(), PlaceError> {
     let info = lot.info(&meta.map_files).ok_or(PlaceError)?;
     for x in wx + sx..wx + sx + 8 {
@@ -304,9 +312,9 @@ fn place_lot_inner(
                     let tile = if info.fixed2x {
                         tile.clone()
                     } else {
-                        fix2x(tile, rand)
+                        env.fix2x.fix2x(tile, env.rand)
                     };
-                    let Some(id) = sprites.sprite_id(&tile) else {
+                    let Some(id) = env.sprites.sprite_id(&tile) else {
                         eprintln!("Missing tile definition: {tile}");
                         continue;
                     };
@@ -356,8 +364,7 @@ pub fn load_cell_binary_chunk(
     wx: i32,
     wy: i32,
     chunk: &mut IsoChunk,
-    sprites: &dyn SpriteLookup,
-    rand: &mut dyn GameRand,
+    env: &mut ChunkLoadEnv<'_>,
     cache: &mut LotCache,
 ) -> bool {
     let cell_x = fastfloor(wx as f32 / 32.0);
@@ -392,8 +399,7 @@ pub fn load_cell_binary_chunk(
         wx,
         wy,
         &mut done,
-        sprites,
-        rand,
+        env,
     );
     if count > 0 {
         chunk.modded |= meta.map_files[mf]
@@ -421,8 +427,7 @@ pub fn load_cell_binary_chunk(
             wx,
             wy,
             &mut done,
-            sprites,
-            rand,
+            env,
         );
         if count > 0 {
             chunk.modded |= meta.map_files[i]
@@ -452,12 +457,11 @@ impl IsoCell {
         meta: &IsoMetaGrid,
         wx: i32,
         wy: i32,
-        sprites: &dyn SpriteLookup,
-        rand: &mut dyn GameRand,
+        env: &mut ChunkLoadEnv<'_>,
     ) -> &IsoChunk {
         if !self.chunks.contains_key(&(wx, wy)) {
             let mut ch = IsoChunk::new(wx, wy);
-            load_cell_binary_chunk(meta, wx, wy, &mut ch, sprites, rand, &mut self.cache);
+            load_cell_binary_chunk(meta, wx, wy, &mut ch, env, &mut self.cache);
             self.chunks.insert((wx, wy), ch);
         }
         &self.chunks[&(wx, wy)]

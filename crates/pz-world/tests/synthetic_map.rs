@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use pz_fs::GameFs;
-use pz_world::chunk::{IsoCell, SpriteLookup};
+use pz_world::chunk::{ChunkLoadEnv, IsoCell, SpriteLookup};
+use pz_world::fix2x::Fix2xTable;
 use pz_world::{CreateParams, GameRand, IsoMetaGrid, WorldGenBounds};
 
 struct Zero;
@@ -98,7 +99,16 @@ fn loads_header_rooms_and_chunk() {
 
     let mut cell = IsoCell::default();
     let (wx, wy) = (32, 64);
-    let ch = cell.load_chunk(&grid, wx, wy, &Names, &mut Zero);
+    let ch = cell.load_chunk(
+        &grid,
+        wx,
+        wy,
+        &mut ChunkLoadEnv {
+            sprites: &Names,
+            fix2x: &Fix2xTable::default(),
+            rand: &mut Zero,
+        },
+    );
     let sq = ch.get_grid_square(0, 0, 0).unwrap();
     let names: Vec<_> = sq.objects.iter().map(|o| o.sprite_name.as_str()).collect();
     assert_eq!(names, vec!["floor_a", "wall_b"]);

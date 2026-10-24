@@ -75,7 +75,17 @@ fn main() {
             .expect("tiles");
         let mut cell = pz_world::IsoCell::default();
         let t = std::time::Instant::now();
-        let ch = cell.load_chunk(&grid, x.div_euclid(8), y.div_euclid(8), &sprites, &mut rand);
+        let ch = cell.load_chunk(
+            &grid,
+            x.div_euclid(8),
+            y.div_euclid(8),
+            &mut pz_world::chunk::ChunkLoadEnv {
+                sprites: &sprites,
+                // Muldraugh is fixed2x; other maps need the table from the jar.
+                fix2x: &pz_world::fix2x::Fix2xTable::default(),
+                rand: &mut rand,
+            },
+        );
         println!(
             "chunk {},{} levels {}..{}: {} squares in {:?}",
             ch.wx,
