@@ -128,12 +128,18 @@ dependencies = [
 name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
+ "pz-classfile",
  "pz-core",
+ "pz-entity",
  "pz-fs",
+ "pz-inventory",
  "pz-kahlua",
  "pz-render",
+ "pz-scripts",
  "pz-text",
  "pz-ui",
+ "pz-vehicles",
+ "pz-world",
 ]
 
 [[package]]

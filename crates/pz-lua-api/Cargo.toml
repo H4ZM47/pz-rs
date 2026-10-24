@@ -10,3 +10,11 @@ pz-fs.workspace = true
 pz-render.workspace = true
 pz-text.workspace = true
 pz-ui.workspace = true
+pz-vehicles.workspace = true
+pz-inventory.workspace = true
+
+[dev-dependencies]
+pz-world.workspace = true
+pz-scripts.workspace = true
+pz-entity.workspace = true
+pz-classfile.workspace = true

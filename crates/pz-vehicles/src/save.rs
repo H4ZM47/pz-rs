@@ -65,7 +65,15 @@ fn part_item(i: &SavedItem) -> PartItem {
 /// `new BaseVehicle(cell)` + `load`: a runtime vehicle with the saved
 /// state (not yet in the world; `addToWorld` attaches the script).
 pub fn from_save(s: &saved::BaseVehicle) -> VehicleRef {
+    from_save_with(s, || {})
+}
+
+/// [`from_save`] running `loading` between the constructor and the load
+/// (where the original's `InventoryItem.loadItem` creates the saved items,
+/// drawing their ids from `Rand`).
+pub fn from_save_with(s: &saved::BaseVehicle, loading: impl FnOnce()) -> VehicleRef {
     let v = BaseVehicle::new();
+    loading();
     {
         let (ox, oy) = env::offset();
         let mut st = v.st_mut();

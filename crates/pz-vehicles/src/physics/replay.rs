@@ -15,6 +15,8 @@
 //! tags; outputs are the written prefix of the output array as hex bits.
 
 use super::VehiclePhysics;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 /// One encoded argument.
 pub fn enc_i(v: i32) -> String {
@@ -114,23 +116,23 @@ impl Call {
     }
 }
 
-/// Replays a recorded call log.
+/// Replays a recorded call log. Clones share the replay state, so a copy
+/// kept by the caller sees the calls made through the installed one.
+#[derive(Clone, Default)]
 pub struct ReplayPhysics {
-    calls: Vec<Call>,
-    next: usize,
+    calls: Rc<Vec<Call>>,
+    next: Rc<Cell<usize>>,
     /// Calls that differed from the recording: `(index, expected, made)`.
-    pub mismatches: Vec<(usize, String, String)>,
+    mismatches: Rc<RefCell<Vec<(usize, String, String)>>>,
     /// Every call made, encoded.
-    pub made: Vec<String>,
+    made: Rc<RefCell<Vec<String>>>,
 }
 
 impl ReplayPhysics {
     pub fn new(calls: Vec<Call>) -> Self {
         ReplayPhysics {
-            calls,
-            next: 0,
-            mismatches: Vec::new(),
-            made: Vec::new(),
+            calls: Rc::new(calls),
+            ..Default::default()
         }
     }
 
@@ -141,12 +143,22 @@ impl ReplayPhysics {
 
     /// Calls left in the recording.
     pub fn remaining(&self) -> usize {
-        self.calls.len() - self.next
+        self.calls.len() - self.next.get()
     }
 
     /// Number of calls consumed so far.
     pub fn position(&self) -> usize {
-        self.next
+        self.next.get()
+    }
+
+    /// The calls that differed: `(index, expected, made)`.
+    pub fn mismatches(&self) -> Vec<(usize, String, String)> {
+        self.mismatches.borrow().clone()
+    }
+
+    /// Every call made, encoded.
+    pub fn made(&self) -> Vec<String> {
+        self.made.borrow().clone()
     }
 
     fn take(&mut self, name: &str, args: Vec<String>) -> Call {
@@ -157,21 +169,24 @@ impl ReplayPhysics {
             out: Vec::new(),
         };
         let made_line = made.line();
-        self.made.push(made_line.clone());
-        let idx = self.next;
+        self.made.borrow_mut().push(made_line.clone());
+        let idx = self.next.get();
         let Some(expected) = self.calls.get(idx).cloned() else {
             self.mismatches
+                .borrow_mut()
                 .push((idx, "<end of recording>".into(), made_line));
             return made;
         };
-        self.next += 1;
+        self.next.set(idx + 1);
         if expected.name != made.name || expected.args != made.args {
             let exp = Call {
                 ret: None,
                 out: Vec::new(),
                 ..expected.clone()
             };
-            self.mismatches.push((idx, exp.line(), made_line));
+            self.mismatches
+                .borrow_mut()
+                .push((idx, exp.line(), made_line));
             if expected.name != made.name {
                 // Answer with nothing rather than another call's values.
                 return made;
@@ -413,7 +428,7 @@ mod tests {
             ReplayPhysics::from_log("B getVehicleCount = i2\nB controlVehicle i1 f0 f0 f0\n");
         assert_eq!(p.get_vehicle_count(), 2);
         p.control_vehicle(1, 1.0, 0.0, 0.0);
-        assert_eq!(p.mismatches.len(), 1);
+        assert_eq!(p.mismatches().len(), 1);
         assert_eq!(p.remaining(), 0);
     }
 }

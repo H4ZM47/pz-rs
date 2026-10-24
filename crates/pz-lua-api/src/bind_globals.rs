@@ -7,7 +7,10 @@ use pz_kahlua::{TableRef, Thread, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// `LuaManager.copyTable(null, from)`: deep copy of nested tables, keeping
@@ -42,7 +45,13 @@ pub fn instance_of(v: &Value, name: &str) -> bool {
 
 pub fn register(thread: &mut Thread) {
     let ret_false: &[&str] = &[
-        "isServer", "isClient", "isDemo", "isCoopHost", "isMultiplayer", "isServerSoftReset", "getDebug",
+        "isServer",
+        "isClient",
+        "isDemo",
+        "isCoopHost",
+        "isMultiplayer",
+        "isServerSoftReset",
+        "getDebug",
     ];
     for name in ret_false {
         global(thread, name, |c| Ok(c.push(false)));
@@ -76,13 +85,23 @@ pub fn register(thread: &mut Thread) {
         let r = instance_of(&c.arg(0), &name);
         Ok(c.push(r))
     });
-    global(thread, "getTimestamp", |c| Ok(c.push((now_ms() / 1000) as f64)));
+    global(thread, "getTimestamp", |c| {
+        Ok(c.push((now_ms() / 1000) as f64))
+    });
     global(thread, "getTimestampMs", |c| Ok(c.push(now_ms() as f64)));
     global(thread, "getTimeInMillis", |c| Ok(c.push(now_ms() as f64)));
-    global(thread, "getFileSeparator", |c| Ok(c.push(std::path::MAIN_SEPARATOR.to_string())));
-    global(thread, "isSystemMacOS", |c| Ok(c.push(cfg!(target_os = "macos"))));
-    global(thread, "isSystemWindows", |c| Ok(c.push(cfg!(target_os = "windows"))));
-    global(thread, "isSystemLinux", |c| Ok(c.push(!cfg!(target_os = "macos") && !cfg!(target_os = "windows"))));
+    global(thread, "getFileSeparator", |c| {
+        Ok(c.push(std::path::MAIN_SEPARATOR.to_string()))
+    });
+    global(thread, "isSystemMacOS", |c| {
+        Ok(c.push(cfg!(target_os = "macos")))
+    });
+    global(thread, "isSystemWindows", |c| {
+        Ok(c.push(cfg!(target_os = "windows")))
+    });
+    global(thread, "isSystemLinux", |c| {
+        Ok(c.push(!cfg!(target_os = "macos") && !cfg!(target_os = "windows")))
+    });
     // Steam integration is not part of this port's runtime yet.
     global(thread, "getSteamModeActive", |c| Ok(c.push(false)));
     global(thread, "isSteamOverlayEnabled", |c| Ok(c.push(false)));
@@ -106,7 +125,13 @@ mod tests {
         t.set_str("b", inner.clone());
         t.set_str("a", 2);
         let c = copy_table(&t);
-        assert_eq!(c.keys().iter().map(|k| k.as_str().unwrap().to_string()).collect::<Vec<_>>(), ["b", "a"]);
+        assert_eq!(
+            c.keys()
+                .iter()
+                .map(|k| k.as_str().unwrap().to_string())
+                .collect::<Vec<_>>(),
+            ["b", "a"]
+        );
         assert!(!c.get_str("b").as_table().unwrap().ptr_eq(&inner));
     }
 }

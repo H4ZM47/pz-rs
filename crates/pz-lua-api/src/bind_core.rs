@@ -38,7 +38,9 @@
 
 use crate::events::EventManager;
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, str_arg, ClassBuilder};
-use pz_core::core::{ColorInfo, Core, EventArg, GameVersion, KeyBinding, SimpleAccessor, SIMPLE_ACCESSORS};
+use pz_core::core::{
+    ColorInfo, Core, EventArg, GameVersion, KeyBinding, SimpleAccessor, SIMPLE_ACCESSORS,
+};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, TableRef, Thread, Value};
 use std::any::Any;
@@ -67,7 +69,11 @@ pub fn install_core(core: Rc<RefCell<Core>>) {
 /// The shared Core (`Core.getInstance()`), created with defaults on first
 /// use.
 pub fn shared_core() -> Rc<RefCell<Core>> {
-    SHARED.with(|s| s.borrow_mut().get_or_insert_with(|| Rc::new(RefCell::new(Core::new()))).clone())
+    SHARED.with(|s| {
+        s.borrow_mut()
+            .get_or_insert_with(|| Rc::new(RefCell::new(Core::new())))
+            .clone()
+    })
 }
 
 /// The Lua object for the Core singleton.
@@ -198,7 +204,10 @@ pub const KEYBIND_IDS: &[(&str, &str)] = &[
     ("TOGGLE_SKILL_PANEL", "Toggle Skill Panel"),
     ("TOGGLE_HEALTH_PANEL", "Toggle Health Panel"),
     ("TOGGLE_INFO_PANEL", "Toggle Info Panel"),
-    ("TOGGLE_CLOTHING_PROTECTION_PANEL", "Toggle Clothing Protection Panel"),
+    (
+        "TOGGLE_CLOTHING_PROTECTION_PANEL",
+        "Toggle Clothing Protection Panel",
+    ),
     ("TOGGLE_MOVABLE_PANEL_MODE", "Toggle Moveable Panel Mode"),
     ("MAP", "Map"),
     ("ANIMAL_RADIAL_MENU", "AnimalRadialMenu"),
@@ -226,7 +235,10 @@ pub const KEYBIND_IDS: &[(&str, &str)] = &[
     ("DROP_PRIMARY_HELD_ITEM", "DropPrimaryHeldItem"),
     ("DROP_SECONDARY_HELD_ITEM", "DropSecondaryHeldItem"),
     ("DROP_WORN_BAG", "DropWornBag"),
-    ("DROP_BOTH_HELD_ITEMS_AND_WORN_BAG", "DropBothHeldItemsAndWornBag"),
+    (
+        "DROP_BOTH_HELD_ITEMS_AND_WORN_BAG",
+        "DropBothHeldItemsAndWornBag",
+    ),
     ("GRAB_CORPSE", "GrabCorpse"),
     ("TOGGLE_SAFETY", "Toggle Safety"),
     ("TOGGLE_CHAT", "Toggle chat"),
@@ -358,13 +370,23 @@ impl Ctx {
         }
     }
     fn color(&self, slot: &'static str, c: ColorInfo) -> Ret {
-        let obj = self.colors.borrow_mut().entry(slot).or_insert_with(|| LuaColorInfo::new(c)).clone();
+        let obj = self
+            .colors
+            .borrow_mut()
+            .entry(slot)
+            .or_insert_with(|| LuaColorInfo::new(c))
+            .clone();
         obj.c.set(c);
         Ret::Val(Value::Object(obj))
     }
 }
 
-fn def(b: &ClassBuilder, cx: &Rc<Ctx>, name: &str, f: impl Fn(&Ctx, &mut NativeCall<'_>) -> LuaResult<Ret> + 'static) {
+fn def(
+    b: &ClassBuilder,
+    cx: &Rc<Ctx>,
+    name: &str,
+    f: impl Fn(&Ctx, &mut NativeCall<'_>) -> LuaResult<Ret> + 'static,
+) {
     let cx = cx.clone();
     b.method(name, move |c| {
         let r = f(&cx, c)?;
@@ -376,7 +398,12 @@ fn def(b: &ClassBuilder, cx: &Rc<Ctx>, name: &str, f: impl Fn(&Ctx, &mut NativeC
     });
 }
 
-fn sdef(b: &ClassBuilder, cx: &Rc<Ctx>, name: &str, f: impl Fn(&Ctx, &mut NativeCall<'_>) -> LuaResult<Ret> + 'static) {
+fn sdef(
+    b: &ClassBuilder,
+    cx: &Rc<Ctx>,
+    name: &str,
+    f: impl Fn(&Ctx, &mut NativeCall<'_>) -> LuaResult<Ret> + 'static,
+) {
     let cx = cx.clone();
     b.static_fn(name, move |c| {
         let r = f(&cx, c)?;
@@ -389,11 +416,17 @@ fn sdef(b: &ClassBuilder, cx: &Rc<Ctx>, name: &str, f: impl Fn(&Ctx, &mut Native
 }
 
 fn java_error(message: impl Into<String>, class: &'static str) -> LuaError {
-    LuaError::Runtime { message: message.into(), class }
+    LuaError::Runtime {
+        message: message.into(),
+        class,
+    }
 }
 
 fn index_error(i: i32, size: usize) -> LuaError {
-    java_error(format!("Index {i} out of bounds for length {size}"), "java.lang.IndexOutOfBoundsException")
+    java_error(
+        format!("Index {i} out of bounds for length {size}"),
+        "java.lang.IndexOutOfBoundsException",
+    )
 }
 
 fn io_error(e: std::io::Error) -> LuaError {
@@ -429,15 +462,22 @@ fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<ColorInfo> {
         Value::Object(o) => match o.as_any().downcast_ref::<LuaColorInfo>() {
             Some(ci) => Ok(ci.c.get()),
             None => Err(java_error(
-                format!("class {} cannot be cast to class {COLOR_INFO_CLASS}", o.class_name()),
+                format!(
+                    "class {} cannot be cast to class {COLOR_INFO_CLASS}",
+                    o.class_name()
+                ),
                 "java.lang.ClassCastException",
             )),
         },
-        Value::Nil => {
-            Err(java_error("Cannot read field \"r\" because \"colorInfo\" is null", "java.lang.NullPointerException"))
-        }
+        Value::Nil => Err(java_error(
+            "Cannot read field \"r\" because \"colorInfo\" is null",
+            "java.lang.NullPointerException",
+        )),
         other => Err(java_error(
-            format!("{} cannot be cast to {COLOR_INFO_CLASS}", pz_kahlua::stdlib::java_class_name(&other)),
+            format!(
+                "{} cannot be cast to {COLOR_INFO_CLASS}",
+                pz_kahlua::stdlib::java_class_name(&other)
+            ),
             "java.lang.ClassCastException",
         )),
     }
@@ -452,7 +492,8 @@ fn store(v: Value) -> Option<Rc<dyn Any>> {
 }
 
 fn load(v: Option<Rc<dyn Any>>) -> Value {
-    v.and_then(|a| a.downcast_ref::<StoredValue>().map(|s| s.0.clone())).unwrap_or(Value::Nil)
+    v.and_then(|a| a.downcast_ref::<StoredValue>().map(|s| s.0.clone()))
+        .unwrap_or(Value::Nil)
 }
 
 fn class_free(thread: &Thread, fqn: &str) -> bool {
@@ -462,9 +503,18 @@ fn class_free(thread: &Thread, fqn: &str) -> bool {
 /// Register `zombie.core.Core`, its helper classes and the `getCore()`
 /// global on `thread`, bound to `core`. `events` receives the Lua events
 /// Core triggers (pass the `LuaManager`'s `events`).
-pub fn register(thread: &mut Thread, events: Option<EventManager>, core: Rc<RefCell<Core>>) -> Rc<Ctx> {
+pub fn register(
+    thread: &mut Thread,
+    events: Option<EventManager>,
+    core: Rc<RefCell<Core>>,
+) -> Rc<Ctx> {
     let object = Value::Object(Rc::new(CoreObject { core: core.clone() }));
-    let cx = Rc::new(Ctx { core, events, object: object.clone(), colors: RefCell::new(HashMap::new()) });
+    let cx = Rc::new(Ctx {
+        core,
+        events,
+        object: object.clone(),
+        colors: RefCell::new(HashMap::new()),
+    });
     register_helpers(thread, &cx);
     let b = expose_class(thread, CORE_CLASS, None);
     register_statics(&b, &cx);
@@ -479,11 +529,19 @@ fn register_simple(b: &ClassBuilder, cx: &Rc<Ctx>) {
     for acc in SIMPLE_ACCESSORS {
         let name = acc.java_name();
         match *acc {
-            SimpleAccessor::GetBool(_, f) => def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into())),
+            SimpleAccessor::GetBool(_, f) => {
+                def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into()))
+            }
             SimpleAccessor::GetInt(_, f) => def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into())),
-            SimpleAccessor::GetDouble(_, f) => def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into())),
-            SimpleAccessor::GetFloat(_, f) => def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into())),
-            SimpleAccessor::GetString(_, f) => def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into())),
+            SimpleAccessor::GetDouble(_, f) => {
+                def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into()))
+            }
+            SimpleAccessor::GetFloat(_, f) => {
+                def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into()))
+            }
+            SimpleAccessor::GetString(_, f) => {
+                def(b, cx, name, move |cx, _| Ok(f(&cx.core()).into()))
+            }
             SimpleAccessor::SetBool(_, f) => def(b, cx, name, move |cx, c| {
                 f(&mut cx.core_mut(), bool_arg(c, 1));
                 Ok(Ret::Void)
@@ -560,13 +618,24 @@ fn register_statics(b: &ClassBuilder, cx: &Rc<Ctx>) {
         b.field("scale", ((2f64.sqrt() / 2.0 / 10.0) as f32 / 1.5f32) as f64);
         b.field("lastStand", core.last_stand);
         b.field("exiting", core.exiting);
-        b.field("KEYBINDING_EMPTY", Value::Object(Rc::new(LuaKeyBinding(KeyBinding::empty()))));
+        b.field(
+            "KEYBINDING_EMPTY",
+            Value::Object(Rc::new(LuaKeyBinding(KeyBinding::empty()))),
+        );
     }
     sdef(b, cx, "getInstance", |cx, _| Ok(cx.object.clone().into()));
-    sdef(b, cx, "getTileScale", |cx, _| Ok(cx.core().get_tile_scale().into()));
-    sdef(b, cx, "isLastStand", |cx, _| Ok(cx.core().is_last_stand().into()));
-    sdef(b, cx, "isDevMode", |cx, _| Ok(cx.core().is_dev_mode().into()));
-    sdef(b, cx, "getMyDocumentFolder", |cx, _| Ok(cx.core().get_my_document_folder().into()));
+    sdef(b, cx, "getTileScale", |cx, _| {
+        Ok(cx.core().get_tile_scale().into())
+    });
+    sdef(b, cx, "isLastStand", |cx, _| {
+        Ok(cx.core().is_last_stand().into())
+    });
+    sdef(b, cx, "isDevMode", |cx, _| {
+        Ok(cx.core().is_dev_mode().into())
+    });
+    sdef(b, cx, "getMyDocumentFolder", |cx, _| {
+        Ok(cx.core().get_my_document_folder().into())
+    });
     sdef(b, cx, "UnfocusActiveTextEntryBox", |cx, _| {
         cx.core_mut().unfocus_active_text_entry_box();
         Ok(Ret::Void)
@@ -575,26 +644,39 @@ fn register_statics(b: &ClassBuilder, cx: &Rc<Ctx>) {
         cx.core_mut().set_full_screen(bool_arg(c, 0));
         Ok(Ret::Void)
     });
-    sdef(b, cx, "isUseGameViewport", |cx, _| Ok(cx.core().is_use_game_viewport().into()));
+    sdef(b, cx, "isUseGameViewport", |cx, _| {
+        Ok(cx.core().is_use_game_viewport().into())
+    });
     sdef(b, cx, "isImGui", |cx, _| Ok(cx.core().is_im_gui().into()));
-    sdef(b, cx, "isUseViewports", |cx, _| Ok(cx.core().is_use_viewports().into()));
-    sdef(b, cx, "getGLMajorVersion", |cx, _| Ok(cx.core().get_gl_major_version().into()));
-    sdef(b, cx, "getGLVersion", |cx, _| Ok(cx.core().get_gl_version().into()));
+    sdef(b, cx, "isUseViewports", |cx, _| {
+        Ok(cx.core().is_use_viewports().into())
+    });
+    sdef(b, cx, "getGLMajorVersion", |cx, _| {
+        Ok(cx.core().get_gl_major_version().into())
+    });
+    sdef(b, cx, "getGLVersion", |cx, _| {
+        Ok(cx.core().get_gl_version().into())
+    });
     // TODO(render): queried from GL by the renderer (`Core::set_open_gl_version`).
     sdef(b, cx, "getOpenGLVersions", |_, _| Ok(Ret::Void));
     // `flipPixels(int[], w, h)`: Lua cannot build a Java int[]; nil like a null input.
     sdef(b, cx, "flipPixels", |_, _| Ok(Value::Nil.into()));
     sdef(b, cx, "supportNPTTexture", |_, _| Ok(false.into()));
     sdef(b, cx, "setDisplayMode", |cx, c| {
-        cx.core_mut().set_display_mode(int_arg(c, 0), int_arg(c, 1), bool_arg(c, 2));
+        cx.core_mut()
+            .set_display_mode(int_arg(c, 0), int_arg(c, 1), bool_arg(c, 2));
         Ok(Ret::Void)
     });
     sdef(b, cx, "setInitialSize", |cx, _| {
         cx.core_mut().set_initial_size();
         Ok(Ret::Void)
     });
-    sdef(b, cx, "supportCompressedTextures", |cx, _| Ok(cx.core().support_compressed_textures().into()));
-    sdef(b, cx, "getGitRevisionString", |cx, _| Ok(cx.core().get_git_revision_string().into()));
+    sdef(b, cx, "supportCompressedTextures", |cx, _| {
+        Ok(cx.core().support_compressed_textures().into())
+    });
+    sdef(b, cx, "getGitRevisionString", |cx, _| {
+        Ok(cx.core().get_git_revision_string().into())
+    });
 }
 
 /// Methods that are not a single option `getValue()` / `setValue()`.
@@ -662,18 +744,29 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
         let i = int_arg(c, 1);
         let core = cx.core();
         let n = core.options().len();
-        let Some(o) = usize::try_from(i).ok().and_then(|i| core.get_option_by_index(i)) else {
+        let Some(o) = usize::try_from(i)
+            .ok()
+            .and_then(|i| core.get_option_by_index(i))
+        else {
             return Err(index_error(i, n));
         };
         let class = config_option_class(o.get_type());
-        Ok(Value::Object(Rc::new(LuaConfigOption { core: cx.core.clone(), index: i as usize, class })).into())
+        Ok(Value::Object(Rc::new(LuaConfigOption {
+            core: cx.core.clone(),
+            index: i as usize,
+            class,
+        }))
+        .into())
     });
     get!("isMultiThread", is_multi_thread);
     set_bool!("setMultiThread", set_multi_thread);
     set_bool!("setChallenge", set_challenge);
     get!("isChallenge", is_challenge);
     get!("getChallengeID", get_challenge_id);
-    set_bool!("setOptionTieredZombieUpdates", set_option_tiered_zombie_updates);
+    set_bool!(
+        "setOptionTieredZombieUpdates",
+        set_option_tiered_zombie_updates
+    );
     set_int!("setFramerate", set_framerate);
     get!("loadedShader", loaded_shader);
     get!("getUseShaders", get_use_shaders);
@@ -690,7 +783,10 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     get!("getGameMode", get_game_mode);
     def(b, cx, "setGameMode", |cx, c| {
         let Some(m) = opt_str(c, 1) else {
-            return Err(java_error("gameMode is null", "java.lang.NullPointerException"));
+            return Err(java_error(
+                "gameMode is null",
+                "java.lang.NullPointerException",
+            ));
         };
         cx.core_mut().set_game_mode(&m);
         Ok(Ret::Void)
@@ -703,7 +799,13 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
         match c.nargs() {
             0 | 1 => core.take_screenshot(),
             2..=4 => core.take_screenshot_sized(int_arg(c, 1), int_arg(c, 2), int_arg(c, 3)),
-            _ => core.take_screenshot_at(int_arg(c, 1), int_arg(c, 2), int_arg(c, 3), int_arg(c, 4), int_arg(c, 5)),
+            _ => core.take_screenshot_at(
+                int_arg(c, 1),
+                int_arg(c, 2),
+                int_arg(c, 3),
+                int_arg(c, 4),
+                int_arg(c, 5),
+            ),
         }
         Ok(Ret::Void)
     });
@@ -732,14 +834,17 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     });
     def(b, cx, "StartFrame", |cx, c| {
         if c.nargs() >= 3 {
-            cx.core_mut().start_frame_player(int_arg(c, 1), bool_arg(c, 2));
+            cx.core_mut()
+                .start_frame_player(int_arg(c, 1), bool_arg(c, 2));
         } else {
             cx.core_mut().start_frame();
         }
         Ok(Ret::Void)
     });
     set_int!("StartFrameText", start_frame_text);
-    def(b, cx, "StartFrameUI", |cx, _| Ok(cx.core_mut().start_frame_ui(1.0).into()));
+    def(b, cx, "StartFrameUI", |cx, _| {
+        Ok(cx.core_mut().start_frame_ui(1.0).into())
+    });
     for name in [
         "RenderOffScreenBuffer",
         "DoStartFrameStuff",
@@ -760,25 +865,36 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     }
     // TODO(render): no TextureFBO objects yet.
     def(b, cx, "getOffscreenBuffer", |_, _| Ok(Value::Nil.into()));
-    def(b, cx, "getOffscreenWidth", |cx, c| Ok(cx.core().get_offscreen_width(int_arg(c, 1)).into()));
-    def(b, cx, "getOffscreenHeight", |cx, c| Ok(cx.core().get_offscreen_height(int_arg(c, 1)).into()));
+    def(b, cx, "getOffscreenWidth", |cx, c| {
+        Ok(cx.core().get_offscreen_width(int_arg(c, 1)).into())
+    });
+    def(b, cx, "getOffscreenHeight", |cx, c| {
+        Ok(cx.core().get_offscreen_height(int_arg(c, 1)).into())
+    });
     get!("getOffscreenTrueWidth", get_offscreen_true_width);
     get!("getOffscreenTrueHeight", get_offscreen_true_height);
     get!("getScreenHeight", get_screen_height);
     get!("getScreenWidth", get_screen_width);
     def(b, cx, "setResolutionAndFullScreen", |cx, c| {
-        cx.core_mut().set_resolution_and_full_screen(int_arg(c, 1), int_arg(c, 2), bool_arg(c, 3));
+        cx.core_mut()
+            .set_resolution_and_full_screen(int_arg(c, 1), int_arg(c, 2), bool_arg(c, 3));
         Ok(Ret::Void)
     });
     def(b, cx, "setResolution", |cx, c| {
         let r = opt_str(c, 1).unwrap_or_default();
-        cx.core_mut().set_resolution(&r).map_err(|m| java_error(m, "java.lang.NumberFormatException"))?;
+        cx.core_mut()
+            .set_resolution(&r)
+            .map_err(|m| java_error(m, "java.lang.NumberFormatException"))?;
         Ok(Ret::Void)
     });
 
     // ---- options.ini ----
-    def(b, cx, "loadOptions", |cx, _| Ok(cx.core_mut().load_options().map_err(io_error)?.into()));
-    def(b, cx, "loadOptions_OLD", |cx, _| Ok(cx.core_mut().load_options().map_err(io_error)?.into()));
+    def(b, cx, "loadOptions", |cx, _| {
+        Ok(cx.core_mut().load_options().map_err(io_error)?.into())
+    });
+    def(b, cx, "loadOptions_OLD", |cx, _| {
+        Ok(cx.core_mut().load_options().map_err(io_error)?.into())
+    });
     def(b, cx, "saveOptions", |cx, _| {
         cx.core_mut().save_options().map_err(io_error)?;
         Ok(Ret::Void)
@@ -802,7 +918,9 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     void!("quit", quit);
     void!("exitToMenu", exit_to_menu);
     void!("quitToDesktop", quit_to_desktop);
-    def(b, cx, "supportRes", |cx, c| Ok(cx.core().support_res(int_arg(c, 1), int_arg(c, 2)).into()));
+    def(b, cx, "supportRes", |cx, c| {
+        Ok(cx.core().support_res(int_arg(c, 1), int_arg(c, 2)).into())
+    });
     def(b, cx, "init", |cx, c| {
         cx.core_mut().init(int_arg(c, 1), int_arg(c, 2));
         Ok(Ret::Void)
@@ -816,7 +934,10 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     void!("reinitKeyMaps", reinit_key_maps);
     def(b, cx, "invalidBindingShiftCtrl", |cx, c| {
         let kb = match c.arg(1) {
-            Value::Object(o) => o.as_any().downcast_ref::<LuaKeyBinding>().map(|k| k.0.clone()),
+            Value::Object(o) => o
+                .as_any()
+                .downcast_ref::<LuaKeyBinding>()
+                .map(|k| k.0.clone()),
             _ => None,
         };
         let Some(kb) = kb else {
@@ -876,7 +997,10 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
         Ok(Value::Object(Rc::new(LuaGameVersion(cx.core().get_game_version()))).into())
     });
     def(b, cx, "getBreakModGameVersion", |cx, _| {
-        Ok(Value::Object(Rc::new(LuaGameVersion(cx.core().get_break_mod_game_version()))).into())
+        Ok(Value::Object(Rc::new(LuaGameVersion(
+            cx.core().get_break_mod_game_version(),
+        )))
+        .into())
     });
     get!("getSteamServerVersion", get_steam_server_version);
     void!("DoFrameReady", do_frame_ready);
@@ -884,8 +1008,12 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
 
     // ---- zoom ----
     get!("getCurrentPlayerZoom", get_current_player_zoom);
-    def(b, cx, "getZoom", |cx, c| Ok(cx.core().get_zoom(int_arg(c, 1)).into()));
-    def(b, cx, "getNextZoom", |cx, c| Ok(cx.core().get_next_zoom(int_arg(c, 1), int_arg(c, 2)).into()));
+    def(b, cx, "getZoom", |cx, c| {
+        Ok(cx.core().get_zoom(int_arg(c, 1)).into())
+    });
+    def(b, cx, "getNextZoom", |cx, c| {
+        Ok(cx.core().get_next_zoom(int_arg(c, 1), int_arg(c, 2)).into())
+    });
     get!("getMinZoom", get_min_zoom);
     get!("getMaxZoom", get_max_zoom);
     def(b, cx, "doZoomScroll", |cx, c| {
@@ -900,15 +1028,25 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     void!("initFBOs", init_fbos);
     def(b, cx, "getAutoZoom", |cx, c| {
         let i = int_arg(c, 1);
-        cx.core().get_auto_zoom(i).map(Ret::from).ok_or_else(|| index_error(i, 4))
+        cx.core()
+            .get_auto_zoom(i)
+            .map(Ret::from)
+            .ok_or_else(|| index_error(i, 4))
     });
     def(b, cx, "setAutoZoom", |cx, c| {
         let i = int_arg(c, 1);
-        cx.core_mut().set_auto_zoom(i, bool_arg(c, 2)).ok_or_else(|| index_error(i, 4))?;
+        cx.core_mut()
+            .set_auto_zoom(i, bool_arg(c, 2))
+            .ok_or_else(|| index_error(i, 4))?;
         Ok(Ret::Void)
     });
     def(b, cx, "getDefaultZoomLevels", |cx, _| {
-        let v = cx.core().get_default_zoom_levels().into_iter().map(|p| Value::Num(p as f64)).collect();
+        let v = cx
+            .core()
+            .get_default_zoom_levels()
+            .into_iter()
+            .map(|p| Value::Num(p as f64))
+            .collect();
         Ok(Value::Object(Rc::new(JavaList(v))).into())
     });
 
@@ -918,10 +1056,14 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     set_int!("setOptionSoundVolume", set_option_sound_volume);
     set_int!("setOptionMusicVolume", set_option_music_volume);
     set_int!("setOptionAmbientVolume", set_option_ambient_volume);
-    set_int!("setOptionVehicleEngineVolume", set_option_vehicle_engine_volume);
+    set_int!(
+        "setOptionVehicleEngineVolume",
+        set_option_vehicle_engine_volume
+    );
     def(b, cx, "setOptionVoiceEnable", |cx, c| {
         if c.nargs() >= 3 {
-            cx.core_mut().set_option_voice_enable_restart(bool_arg(c, 1), bool_arg(c, 2));
+            cx.core_mut()
+                .set_option_voice_enable_restart(bool_arg(c, 1), bool_arg(c, 2));
         } else {
             cx.core_mut().set_option_voice_enable(bool_arg(c, 1));
         }
@@ -931,8 +1073,14 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     set_int!("setOptionVoiceVADMode", set_option_voice_vad_mode);
     set_int!("setOptionVoiceAGCMode", set_option_voice_agc_mode);
     set_int!("setOptionVoiceVolumeMic", set_option_voice_volume_mic);
-    set_int!("setOptionVoiceVolumePlayers", set_option_voice_volume_players);
-    set_str!("setOptionVoiceRecordDeviceName", set_option_voice_record_device_name);
+    set_int!(
+        "setOptionVoiceVolumePlayers",
+        set_option_voice_volume_players
+    );
+    set_str!(
+        "setOptionVoiceRecordDeviceName",
+        set_option_voice_record_device_name
+    );
     get!("getOptionVoiceRecordDevice", get_option_voice_record_device);
     set_int!("setOptionVoiceRecordDevice", set_option_voice_record_device);
     get!("getMicVolumeIndicator", get_mic_volume_indicator);
@@ -945,19 +1093,33 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     set_str!("setOptionTooltipFont", set_option_tooltip_font);
     get!("getOptionModsEnabled", get_option_mods_enabled);
     set_bool!("setOptionModsEnabled", set_option_mods_enabled);
-    get!("allowOptionTextureCompression", allow_option_texture_compression);
-    get!("getOptionTextureCompression", get_option_texture_compression);
+    get!(
+        "allowOptionTextureCompression",
+        allow_option_texture_compression
+    );
+    get!(
+        "getOptionTextureCompression",
+        get_option_texture_compression
+    );
     get!("getOptionTexture2x", get_option_texture2x);
     set_bool!("setOptionTexture2x", set_option_texture2x);
     def(b, cx, "getMaxTextureSizeFromFlags", |cx, c| {
-        Ok(cx.core().get_max_texture_size_from_flags(int_arg(c, 1)).into())
+        Ok(cx
+            .core()
+            .get_max_texture_size_from_flags(int_arg(c, 1))
+            .into())
     });
     def(b, cx, "getMaxTextureSizeFromOption", |cx, c| {
         let o = int_arg(c, 1);
         cx.core()
             .get_max_texture_size_from_option(o)
             .map(Ret::from)
-            .ok_or_else(|| java_error(format!("Unexpected value: {o}"), "java.lang.IllegalStateException"))
+            .ok_or_else(|| {
+                java_error(
+                    format!("Unexpected value: {o}"),
+                    "java.lang.IllegalStateException",
+                )
+            })
     });
     get!("getMaxTextureSize", get_max_texture_size);
     get!("getMaxVehicleTextureSize", get_max_vehicle_texture_size);
@@ -968,34 +1130,49 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     set_str!("setOptionScreenFilter", set_option_screen_filter);
     get!("getScreenFilter", get_screen_filter);
     def(b, cx, "setOptionActiveController", |cx, c| {
-        cx.core_mut().set_option_active_controller(int_arg(c, 1), bool_arg(c, 2));
+        cx.core_mut()
+            .set_option_active_controller(int_arg(c, 1), bool_arg(c, 2));
         Ok(Ret::Void)
     });
     def(b, cx, "getOptionActiveController", |cx, c| {
         let g = opt_str(c, 1);
-        Ok(g.is_some_and(|g| cx.core().get_option_active_controller(&g)).into())
+        Ok(
+            g.is_some_and(|g| cx.core().get_option_active_controller(&g))
+                .into(),
+        )
     });
     set_bool!("setOptionUIFBO", set_option_uifbo);
     def(b, cx, "onOptionControllerButtonStyleChanged", |cx, _| {
         cx.core_mut().on_option_controller_button_style_changed();
         Ok(Ret::Void)
     });
-    get!("getOptionControllerButtonStyleString", get_option_controller_button_style_string);
+    get!(
+        "getOptionControllerButtonStyleString",
+        get_option_controller_button_style_string
+    );
     def(b, cx, "onOptionGamepadBindingPresetChanged", |cx, _| {
         cx.core_mut().on_option_gamepad_binding_preset_changed();
         Ok(Ret::Void)
     });
     def(b, cx, "getOptionSingleContextMenu", |cx, c| {
         let i = int_arg(c, 1);
-        cx.core().get_option_single_context_menu(i).map(Ret::from).ok_or_else(|| index_error(i, 4))
+        cx.core()
+            .get_option_single_context_menu(i)
+            .map(Ret::from)
+            .ok_or_else(|| index_error(i, 4))
     });
     def(b, cx, "setOptionSingleContextMenu", |cx, c| {
         let i = int_arg(c, 1);
-        cx.core_mut().set_option_single_context_menu(i, bool_arg(c, 2)).ok_or_else(|| index_error(i, 4))?;
+        cx.core_mut()
+            .set_option_single_context_menu(i, bool_arg(c, 2))
+            .ok_or_else(|| index_error(i, 4))?;
         Ok(Ret::Void)
     });
     def(b, cx, "isOptionSimpleClothingTextures", |cx, c| {
-        Ok(cx.core().is_option_simple_clothing_textures(bool_arg(c, 1)).into())
+        Ok(cx
+            .core()
+            .is_option_simple_clothing_textures(bool_arg(c, 1))
+            .into())
     });
     get!("getIgnoreProneZombieRange", get_ignore_prone_zombie_range);
 
@@ -1034,7 +1211,13 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     set_str!("setPoisonousMushroom", set_poisonous_mushroom);
     get!("isSelectingAll", is_selecting_all);
     set_bool!("setIsSelectingAll", set_is_selecting_all);
-    color!("getMpTextColor", "setMpTextColor", "mpTextColor", get_mp_text_color, set_mp_text_color);
+    color!(
+        "getMpTextColor",
+        "setMpTextColor",
+        "mpTextColor",
+        get_mp_text_color,
+        set_mp_text_color
+    );
     get!("isAzerty", is_azerty);
     set_bool!("setAzerty", set_azerty);
     color!(
@@ -1065,17 +1248,45 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
         get_bad_highlited_color,
         set_bad_highlited_color
     );
-    color!("getTargetColor", "setTargetColor", "targetColor", get_target_color, set_target_color);
-    color!("getNoTargetColor", "setNoTargetColor", "noTargetColor", get_no_target_color, set_no_target_color);
-    def(b, cx, "getXAngle", |cx, c| Ok(cx.core().get_x_angle(int_arg(c, 1), float_arg(c, 2)).into()));
-    def(b, cx, "getYAngle", |cx, c| Ok(cx.core().get_y_angle(int_arg(c, 1), float_arg(c, 2)).into()));
+    color!(
+        "getTargetColor",
+        "setTargetColor",
+        "targetColor",
+        get_target_color,
+        set_target_color
+    );
+    color!(
+        "getNoTargetColor",
+        "setNoTargetColor",
+        "noTargetColor",
+        get_no_target_color,
+        set_no_target_color
+    );
+    def(b, cx, "getXAngle", |cx, c| {
+        Ok(cx.core().get_x_angle(int_arg(c, 1), float_arg(c, 2)).into())
+    });
+    def(b, cx, "getYAngle", |cx, c| {
+        Ok(cx.core().get_y_angle(int_arg(c, 1), float_arg(c, 2)).into())
+    });
     get!("isInDebug", is_in_debug);
     get!("isNoSave", is_no_save);
     set_bool!("setNoSave", set_no_save);
-    get!("isShowFirstTimeVehicleTutorial", is_show_first_time_vehicle_tutorial);
-    set_bool!("setShowFirstTimeVehicleTutorial", set_show_first_time_vehicle_tutorial);
-    get!("isShowFirstTimeWeatherTutorial", is_show_first_time_weather_tutorial);
-    set_bool!("setShowFirstTimeWeatherTutorial", set_show_first_time_weather_tutorial);
+    get!(
+        "isShowFirstTimeVehicleTutorial",
+        is_show_first_time_vehicle_tutorial
+    );
+    set_bool!(
+        "setShowFirstTimeVehicleTutorial",
+        set_show_first_time_vehicle_tutorial
+    );
+    get!(
+        "isShowFirstTimeWeatherTutorial",
+        is_show_first_time_weather_tutorial
+    );
+    set_bool!(
+        "setShowFirstTimeWeatherTutorial",
+        set_show_first_time_weather_tutorial
+    );
     set_bool!("setAnimPopupDone", set_anim_popup_done);
     get!("isAnimPopupDone", is_anim_popup_done);
     set_bool!("setModsPopupDone", set_mods_popup_done);
@@ -1106,15 +1317,27 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
     get!("isDisplayCursor", is_display_cursor);
     get!("getIsoCursorAlpha", get_iso_cursor_alpha);
     def(b, cx, "debugOutputMissingItemSpawn", |cx, _| {
-        Ok(cx.core().debug_output_missing_item_spawn().map_err(io_error)?.into())
+        Ok(cx
+            .core()
+            .debug_output_missing_item_spawn()
+            .map_err(io_error)?
+            .into())
     });
     def(b, cx, "debugOutputMissingCLothingSpawn", |cx, _| {
-        Ok(cx.core().debug_output_missing_clothing_spawn().map_err(io_error)?.into())
+        Ok(cx
+            .core()
+            .debug_output_missing_clothing_spawn()
+            .map_err(io_error)?
+            .into())
     });
     def(b, cx, "debugOutputMissingSpawn", |cx, c| {
         let d = opt_str(c, 1).unwrap_or_default();
         let k = opt_str(c, 2).unwrap_or_else(|| "null".into());
-        Ok(cx.core().debug_output_missing_spawn(&d, &k).map_err(io_error)?.into())
+        Ok(cx
+            .core()
+            .debug_output_missing_spawn(&d, &k)
+            .map_err(io_error)?
+            .into())
     });
     get!("getSelectedMap", get_selected_map);
     set_str!("setSelectedMap", set_selected_map);
@@ -1126,8 +1349,13 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
         }
         Ok(Ret::Void)
     });
-    get!("getOptionUsePhysicsHitReaction", get_option_use_physics_hit_reaction);
-    def(b, cx, "getAccountUsed", |cx, _| Ok(load(cx.core().get_account_used()).into()));
+    get!(
+        "getOptionUsePhysicsHitReaction",
+        get_option_use_physics_hit_reaction
+    );
+    def(b, cx, "getAccountUsed", |cx, _| {
+        Ok(load(cx.core().get_account_used()).into())
+    });
     def(b, cx, "setAccountUsed", |cx, c| {
         cx.core_mut().set_account_used(store(c.arg(1)));
         Ok(Ret::Void)
@@ -1148,11 +1376,15 @@ fn with_color<R>(c: &NativeCall<'_>, f: impl FnOnce(&LuaColorInfo) -> R) -> LuaR
     match c.arg(0) {
         Value::Object(o) => match o.as_any().downcast_ref::<LuaColorInfo>() {
             Some(ci) => Ok(f(ci)),
-            None => Err(LuaError::runtime(format!("Expected ColorInfo but got {}", o.class_name()))),
+            None => Err(LuaError::runtime(format!(
+                "Expected ColorInfo but got {}",
+                o.class_name()
+            ))),
         },
-        other => {
-            Err(LuaError::runtime(format!("Expected ColorInfo but got {}", pz_kahlua::stdlib::java_class_name(&other))))
-        }
+        other => Err(LuaError::runtime(format!(
+            "Expected ColorInfo but got {}",
+            pz_kahlua::stdlib::java_class_name(&other)
+        ))),
     }
 }
 
@@ -1161,7 +1393,12 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
         let b = expose_class(thread, COLOR_INFO_CLASS, None);
         b.ctor(|c| {
             let ci = if c.nargs() >= 4 {
-                ColorInfo::new(float_arg(c, 0), float_arg(c, 1), float_arg(c, 2), float_arg(c, 3))
+                ColorInfo::new(
+                    float_arg(c, 0),
+                    float_arg(c, 1),
+                    float_arg(c, 2),
+                    float_arg(c, 3),
+                )
             } else {
                 ColorInfo::default()
             };
@@ -1185,7 +1422,12 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
         });
         b.method("set", |c| {
             let new = if c.nargs() >= 5 {
-                ColorInfo::new(float_arg(c, 1), float_arg(c, 2), float_arg(c, 3), float_arg(c, 4))
+                ColorInfo::new(
+                    float_arg(c, 1),
+                    float_arg(c, 2),
+                    float_arg(c, 3),
+                    float_arg(c, 4),
+                )
             } else {
                 color_arg(c, 1)?
             };
@@ -1208,14 +1450,26 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
         b.method("setABGR", |c| {
             let abgr = int_arg(c, 1) as u32;
             let ch = |shift: u32| ((abgr >> shift) & 0xFF) as f32 / 255.0;
-            with_color(c, |ci| ci.c.set(ColorInfo::new(ch(0), ch(8), ch(16), ch(24))))?;
+            with_color(c, |ci| {
+                ci.c.set(ColorInfo::new(ch(0), ch(8), ch(16), ch(24)))
+            })?;
             Ok(c.push(c.arg(0)))
         });
         b.method("min", |c| {
-            let (r, g, bl, a) = (float_arg(c, 1), float_arg(c, 2), float_arg(c, 3), float_arg(c, 4));
+            let (r, g, bl, a) = (
+                float_arg(c, 1),
+                float_arg(c, 2),
+                float_arg(c, 3),
+                float_arg(c, 4),
+            );
             with_color(c, |ci| {
                 let o = ci.c.get();
-                ci.c.set(ColorInfo::new(o.r.min(r), o.g.min(g), o.b.min(bl), o.a.min(a)))
+                ci.c.set(ColorInfo::new(
+                    o.r.min(r),
+                    o.g.min(g),
+                    o.b.min(bl),
+                    o.a.min(a),
+                ))
             })?;
             Ok(c.push(c.arg(0)))
         });
@@ -1228,7 +1482,12 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             };
             with_color(c, |ci| {
                 let o = ci.c.get();
-                ci.c.set(ColorInfo::new(o.r.min(r), o.g.min(g), o.b.min(bl), o.a.min(1.0)))
+                ci.c.set(ColorInfo::new(
+                    o.r.min(r),
+                    o.g.min(g),
+                    o.b.min(bl),
+                    o.a.min(1.0),
+                ))
             })?;
             Ok(c.push(c.arg(0)))
         });
@@ -1253,7 +1512,10 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
                 return Err(java_error("dest is null", "java.lang.NullPointerException"));
             };
             let Some(dest) = dest.as_any().downcast_ref::<LuaColorInfo>() else {
-                return Err(java_error("dest is not a ColorInfo", "java.lang.ClassCastException"));
+                return Err(java_error(
+                    "dest is not a ColorInfo",
+                    "java.lang.ClassCastException",
+                ));
             };
             let from = with_color(c, |ci| ci.c.get())?;
             dest.c.set(ColorInfo::new(
@@ -1267,7 +1529,10 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
         b.method("equals", |c| {
             let a = with_color(c, |ci| ci.c.get())?;
             let r = match c.arg(1) {
-                Value::Object(o) => o.as_any().downcast_ref::<LuaColorInfo>().is_some_and(|o| o.c.get() == a),
+                Value::Object(o) => o
+                    .as_any()
+                    .downcast_ref::<LuaColorInfo>()
+                    .is_some_and(|o| o.c.get() == a),
                 _ => false,
             };
             Ok(c.push(r))
@@ -1286,20 +1551,34 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
                     .as_any()
                     .downcast_ref::<LuaGameVersion>()
                     .map(|g| g.0.clone())
-                    .ok_or_else(|| LuaError::runtime(format!("Expected GameVersion but got {}", o.class_name()))),
-                _ => Err(java_error("GameVersion is null", "java.lang.NullPointerException")),
+                    .ok_or_else(|| {
+                        LuaError::runtime(format!(
+                            "Expected GameVersion but got {}",
+                            o.class_name()
+                        ))
+                    }),
+                _ => Err(java_error(
+                    "GameVersion is null",
+                    "java.lang.NullPointerException",
+                )),
             }
         }
         b.ctor(|c| {
-            let v =
-                GameVersion::new(int_arg(c, 0).max(0), int_arg(c, 1).clamp(0, 999), &opt_str(c, 2).unwrap_or_default());
+            let v = GameVersion::new(
+                int_arg(c, 0).max(0),
+                int_arg(c, 1).clamp(0, 999),
+                &opt_str(c, 2).unwrap_or_default(),
+            );
             Ok(c.push(Value::Object(Rc::new(LuaGameVersion(v)))))
         });
         b.static_fn("parse", |c| {
             let s = opt_str(c, 0).unwrap_or_default();
             match GameVersion::parse(&s) {
                 Some(v) => Ok(c.push(Value::Object(Rc::new(LuaGameVersion(v))))),
-                None => Err(java_error(format!("invalid game version \"{s}\""), "java.lang.IllegalArgumentException")),
+                None => Err(java_error(
+                    format!("invalid game version \"{s}\""),
+                    "java.lang.IllegalArgumentException",
+                )),
             }
         });
         b.method("getMajor", |c| {
@@ -1353,7 +1632,9 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
                     .as_any()
                     .downcast_ref::<LuaKeyBinding>()
                     .map(|k| k.0.clone())
-                    .ok_or_else(|| LuaError::runtime(format!("Expected KeyBinding but got {}", o.class_name()))),
+                    .ok_or_else(|| {
+                        LuaError::runtime(format!("Expected KeyBinding but got {}", o.class_name()))
+                    }),
                 _ => Err(LuaError::runtime("Expected KeyBinding")),
             }
         }
@@ -1388,7 +1669,10 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
         b.method("equals", |c| {
             let k = kb(c)?;
             let r = match c.arg(1) {
-                Value::Object(o) => o.as_any().downcast_ref::<LuaKeyBinding>().is_some_and(|o| o.0 == k),
+                Value::Object(o) => o
+                    .as_any()
+                    .downcast_ref::<LuaKeyBinding>()
+                    .is_some_and(|o| o.0 == k),
                 _ => false,
             };
             Ok(c.push(r))
@@ -1398,7 +1682,10 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
     if class_free(thread, KEYBIND_ID_CLASS) {
         let b = expose_class(thread, KEYBIND_ID_CLASS, None);
         for (field, id) in KEYBIND_IDS {
-            b.field(field, Value::Object(Rc::new(KeybindId { id: id.to_string() })));
+            b.field(
+                field,
+                Value::Object(Rc::new(KeybindId { id: id.to_string() })),
+            );
         }
         b.static_fn("register", |c| {
             let id = opt_str(c, 0).unwrap_or_default();
@@ -1426,7 +1713,10 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             match c.arg(0) {
                 Value::Object(o) => match o.as_any().downcast_ref::<JavaList>() {
                     Some(l) => Ok(f(&l.0)),
-                    None => Err(LuaError::runtime(format!("Expected ArrayList but got {}", o.class_name()))),
+                    None => Err(LuaError::runtime(format!(
+                        "Expected ArrayList but got {}",
+                        o.class_name()
+                    ))),
                 },
                 _ => Err(LuaError::runtime("Expected ArrayList")),
             }
@@ -1441,7 +1731,12 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
         });
         b.method("get", |c| {
             let i = int_arg(c, 1);
-            let (v, n) = list(c, |l| (usize::try_from(i).ok().and_then(|i| l.get(i)).cloned(), l.len()))?;
+            let (v, n) = list(c, |l| {
+                (
+                    usize::try_from(i).ok().and_then(|i| l.get(i)).cloned(),
+                    l.len(),
+                )
+            })?;
             match v {
                 Some(v) => Ok(c.push(v)),
                 None => Err(index_error(i, n)),
@@ -1454,7 +1749,11 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
         });
         b.method("indexOf", |c| {
             let x = c.arg(1);
-            let r = list(c, |l| l.iter().position(|v| v.raw_equals(&x)).map_or(-1, |i| i as i32))?;
+            let r = list(c, |l| {
+                l.iter()
+                    .position(|v| v.raw_equals(&x))
+                    .map_or(-1, |i| i as i32)
+            })?;
             Ok(c.push(r))
         });
         b.method("toString", |c| {
@@ -1472,12 +1771,19 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             match c.arg(0) {
                 Value::Object(o) => match o.as_any().downcast_ref::<LuaConfigOption>() {
                     Some(r) => Ok(f(&mut r.core.borrow_mut(), r.index)),
-                    None => Err(LuaError::runtime(format!("Expected ConfigOption but got {}", o.class_name()))),
+                    None => Err(LuaError::runtime(format!(
+                        "Expected ConfigOption but got {}",
+                        o.class_name()
+                    ))),
                 },
                 _ => Err(LuaError::runtime("Expected ConfigOption")),
             }
         }
-        fn with_opt<R>(core: &mut Core, i: usize, f: impl FnOnce(&mut pz_core::config::ConfigOption) -> R) -> R {
+        fn with_opt<R>(
+            core: &mut Core,
+            i: usize,
+            f: impl FnOnce(&mut pz_core::config::ConfigOption) -> R,
+        ) -> R {
             let name = core.options()[i].name().to_string();
             f(core.option_mut(&name).unwrap())
         }
@@ -1513,7 +1819,9 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
         });
         b.method("isValidString", |c| {
             let s = opt_str(c, 1);
-            let r = opt(c, |core, i| s.is_some_and(|s| core.options()[i].is_valid_string(&s)))?;
+            let r = opt(c, |core, i| {
+                s.is_some_and(|s| core.options()[i].is_valid_string(&s))
+            })?;
             Ok(c.push(r))
         });
         b.method("parse", |c| {
@@ -1530,7 +1838,9 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
                 Value::Str(s) => ConfigObject::Str(s.to_string()),
                 other => ConfigObject::Other(pz_kahlua::exec::java_value_of(&other)),
             };
-            opt(c, |core, i| with_opt(core, i, |o| o.set_value_from_object(&v)))?;
+            opt(c, |core, i| {
+                with_opt(core, i, |o| o.set_value_from_object(&v))
+            })?;
             Ok(0)
         });
         b.method("resetToDefault", |c| {
@@ -1538,7 +1848,9 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             Ok(0)
         });
         b.method("setDefaultToCurrentValue", |c| {
-            opt(c, |core, i| with_opt(core, i, |o| o.set_default_to_current_value()))?;
+            opt(c, |core, i| {
+                with_opt(core, i, |o| o.set_default_to_current_value())
+            })?;
             Ok(0)
         });
     }
@@ -1658,7 +1970,10 @@ mod tests {
 
     fn run(t: &mut Thread, src: &str) {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
         if let Err((e, tr)) = t.pcall(&f, &[]) {
             panic!("lua error: {e:?}\n{tr}");
         }
@@ -1666,7 +1981,10 @@ mod tests {
 
     fn run_err(t: &mut Thread, src: &str) -> String {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
         match t.pcall(&f, &[]) {
             Ok(_) => panic!("expected an error"),
             Err((e, _)) => pz_kahlua::exec::java_value_of(&e),
@@ -1840,7 +2158,10 @@ mod tests {
         );
         let msg = run_err(&mut t, "getCore():getAutoZoom(7)");
         assert!(msg.contains("IndexOutOfBoundsException"), "{msg}");
-        assert_eq!(core.borrow_mut().get_object_highlited_color(), ColorInfo::new(0.25, 0.5, 0.75, 1.0));
+        assert_eq!(
+            core.borrow_mut().get_object_highlited_color(),
+            ColorInfo::new(0.25, 0.5, 0.75, 1.0)
+        );
     }
 
     #[test]
@@ -1876,7 +2197,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "pz-lua-api-core-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let mut c = Core::new();

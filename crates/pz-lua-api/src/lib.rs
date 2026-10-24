@@ -11,6 +11,7 @@ pub mod bind_core;
 pub mod bind_debug;
 pub mod bind_globals;
 pub mod bind_ui;
+pub mod bind_vehicles;
 pub mod events;
 pub mod expose;
 pub mod lua_manager;
@@ -21,8 +22,13 @@ pub use lua_manager::LuaManager;
 pub fn register_all(mgr: &mut LuaManager) {
     bind_globals::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
-    bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
+    bind_core::register(
+        &mut mgr.thread,
+        Some(mgr.events.clone()),
+        bind_core::shared_core(),
+    );
     bind_debug::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
+    bind_vehicles::register(&mut mgr.thread);
 }
