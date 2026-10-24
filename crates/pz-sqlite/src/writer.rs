@@ -6,75 +6,10 @@
 
 use crate::{TextEncoding, Value};
 
-pub fn varint(v: u64) -> Vec<u8> {
-    if v > 0x00ff_ffff_ffff_ffff {
-        // Nine bytes: 8 x 7 bits, then 8 bits.
-        let mut out = Vec::with_capacity(9);
-        let hi = v >> 8;
-        for i in (0..8).rev() {
-            out.push(0x80 | ((hi >> (7 * i)) & 0x7f) as u8);
-        }
-        out.push(v as u8);
-        return out;
-    }
-    let mut groups = vec![(v & 0x7f) as u8];
-    let mut rest = v >> 7;
-    while rest > 0 {
-        groups.push(0x80 | (rest & 0x7f) as u8);
-        rest >>= 7;
-    }
-    groups.reverse();
-    groups
-}
-
-fn int_serial(i: i64) -> (u64, Vec<u8>) {
-    let b = i.to_be_bytes();
-    match i {
-        0 => (8, vec![]),
-        1 => (9, vec![]),
-        -128..=127 => (1, b[7..].to_vec()),
-        -32768..=32767 => (2, b[6..].to_vec()),
-        -8_388_608..=8_388_607 => (3, b[5..].to_vec()),
-        -2_147_483_648..=2_147_483_647 => (4, b[4..].to_vec()),
-        -140_737_488_355_328..=140_737_488_355_327 => (5, b[2..].to_vec()),
-        _ => (6, b.to_vec()),
-    }
-}
-
-pub fn encode_text(s: &str, enc: TextEncoding) -> Vec<u8> {
-    match enc {
-        TextEncoding::Utf8 => s.as_bytes().to_vec(),
-        TextEncoding::Utf16le => s.encode_utf16().flat_map(u16::to_le_bytes).collect(),
-        TextEncoding::Utf16be => s.encode_utf16().flat_map(u16::to_be_bytes).collect(),
-    }
-}
+pub use crate::record::{encode_text, put_varint as varint};
 
 pub fn record(values: &[Value], enc: TextEncoding) -> Vec<u8> {
-    let mut types = Vec::new();
-    let mut body = Vec::new();
-    for v in values {
-        let (t, b) = match v {
-            Value::Null => (0, vec![]),
-            Value::Integer(i) => int_serial(*i),
-            Value::Real(r) => (7, r.to_bits().to_be_bytes().to_vec()),
-            Value::Text(s) => {
-                let b = encode_text(s, enc);
-                (13 + 2 * b.len() as u64, b)
-            }
-            Value::Blob(b) => (12 + 2 * b.len() as u64, b.clone()),
-        };
-        types.extend(varint(t));
-        body.extend(b);
-    }
-    // The header length includes its own varint.
-    let mut n = 1;
-    while varint((types.len() + n) as u64).len() > n {
-        n += 1;
-    }
-    let mut out = varint((types.len() + n) as u64);
-    out.extend(types);
-    out.extend(body);
-    out
+    crate::record::encode_record(values, enc, true)
 }
 
 pub struct Writer {
