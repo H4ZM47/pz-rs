@@ -1,6 +1,7 @@
 //! The registry key classes items refer to (`ItemType`, `ItemTag`,
 //! `ItemBodyLocation`, `AmmoType`, `WeaponCategory`, `BookSubject`,
-//! `MagazineSubject`): thin accessors over `sm.registries`.
+//! `MagazineSubject`), the character ones (`CharacterTrait`,
+//! `CharacterProfession`) and `GameMode`: thin accessors over `sm.registries`.
 //!
 //! The original names some built-in keys through static fields
 //! (`ItemType.FOOD`, `ItemTag.FAKE_WEAPON`, ...). Their ids are read from the
@@ -24,6 +25,8 @@ use crate::registry::{create_location, RegistryKey, ResourceLocation};
 #[derive(Clone, Debug, Default)]
 pub struct BuiltinConstants {
     ids: HashMap<(String, String), String>,
+    /// `(registry, field)` in declaration order.
+    order: Vec<(String, String)>,
 }
 
 impl BuiltinConstants {
@@ -31,7 +34,7 @@ impl BuiltinConstants {
     /// [`KEY_CLASSES`] from `jar`.
     pub fn read(jar: &Jar) -> ScriptResult<Self> {
         let err = |e: pz_classfile::Error| ScriptError::new(format!("projectzomboid.jar: {e}"));
-        let mut ids = HashMap::new();
+        let mut out = BuiltinConstants::default();
         for (registry, class) in KEY_CLASSES {
             let cf = load_class(jar, class).map_err(err)?;
             for init in static_inits(&cf).map_err(err)? {
@@ -42,17 +45,28 @@ impl BuiltinConstants {
                     continue;
                 }
                 if let Some(id) = args.first().and_then(Value::as_str) {
-                    ids.insert((registry.to_string(), init.field.clone()), id.to_string());
+                    out.insert(registry, &init.field, id);
                 }
             }
         }
-        Ok(BuiltinConstants { ids })
+        Ok(out)
     }
 
     /// Adds one constant (for callers that build the table themselves).
     pub fn insert(&mut self, registry: &str, field: &str, id: &str) {
-        self.ids
-            .insert((registry.to_string(), field.to_string()), id.to_string());
+        let key = (registry.to_string(), field.to_string());
+        if self.ids.insert(key.clone(), id.to_string()).is_none() {
+            self.order.push(key);
+        }
+    }
+
+    /// `(field, id)` of every constant of `registry`, in declaration order.
+    pub fn constants(&self, registry: &str) -> Vec<(&str, &str)> {
+        self.order
+            .iter()
+            .filter(|(r, _)| r == registry)
+            .map(|k| (k.1.as_str(), self.ids[k].as_str()))
+            .collect()
     }
 
     /// The id the key class's static field `field` registers.
@@ -174,6 +188,45 @@ registry_key!(
     MagazineSubject,
     "magazine_subject"
 );
+
+registry_key!(
+    /// `zombie.scripting.objects.CharacterTrait`.
+    CharacterTrait,
+    "character_trait"
+);
+registry_key!(
+    /// `zombie.scripting.objects.CharacterProfession`.
+    CharacterProfession,
+    "character_profession"
+);
+
+registry_key!(
+    /// `zombie.core.GameMode`.
+    GameMode,
+    "game_mode"
+);
+
+impl GameMode {
+    /// `getTitle`: `UI_NewGame_<id>`.
+    pub fn title(key: &RegistryKey) -> String {
+        format!("UI_NewGame_{}", key.name)
+    }
+
+    /// `getDescription`: the title with `_desc`.
+    pub fn description(key: &RegistryKey) -> String {
+        format!("{}_desc", Self::title(key))
+    }
+
+    /// `getThumbnail`.
+    pub fn thumbnail(key: &RegistryKey) -> String {
+        format!("media/ui/playstyleIcons/{}.png", key.name)
+    }
+
+    /// `getVideo`.
+    pub fn video(key: &RegistryKey) -> String {
+        format!("{}.bik", key.name)
+    }
+}
 
 impl ItemType {
     /// `getTranslationName`.

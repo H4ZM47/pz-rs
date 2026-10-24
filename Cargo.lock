@@ -742,6 +742,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-characters"
+version = "0.1.0"
+dependencies = [
+ "pz-core",
+ "pz-scripts",
+]
+
+[[package]]
 name = "pz-classfile"
 version = "0.1.0"
 dependencies = [
@@ -755,6 +763,7 @@ dependencies = [
  "pz-fs",
  "pz-kahlua",
  "pz-lua-api",
+ "pz-scripts",
  "pz-ui",
 ]
 
@@ -810,12 +819,14 @@ name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "pz-characters",
  "pz-classfile",
  "pz-core",
  "pz-fs",
  "pz-kahlua",
  "pz-render",
  "pz-sandbox",
+ "pz-scripts",
  "pz-text",
  "pz-ui",
  "pz-world",

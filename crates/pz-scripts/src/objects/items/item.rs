@@ -1015,10 +1015,9 @@ impl Item {
         self.disappear_on_use = !keep;
     }
 
-    /// `getStaticModelException`: items tagged `UseWorldStaticModel` use their
-    /// world model.
+    /// `getStaticModelException`: food uses its world model when it has one.
     pub fn static_model_exception(&self, sm: &ScriptManager) -> Option<&str> {
-        if self.has_tag_constant(sm, "USE_WORLD_STATIC_MODEL") {
+        if self.is_item_type(sm, "FOOD") && self.world_static_model.is_some() {
             return self.world_static_model.as_deref();
         }
         self.static_model.as_deref()

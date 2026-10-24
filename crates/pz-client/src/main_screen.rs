@@ -7,10 +7,22 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
 
+/// The `Registries` bootstrap and `ScriptManager.instance.Load()` of
+/// `GameWindow.init`, shared with the Lua API. TODO: mod script folders.
+fn load_scripts(game_dir: &Path, fs: &pz_fs::GameFs) -> Result<(), String> {
+    let sm = pz_scripts::ScriptManager::new();
+    sm.load_builtin_registries(&game_dir.join("projectzomboid.jar"))
+        .map_err(|e| format!("built-in registries: {e}"))?;
+    sm.load(fs, &[]).map_err(|e| format!("ScriptManager.Load failed: {e}"))?;
+    pz_lua_api::bind_registry::install_script_manager(Rc::new(sm));
+    Ok(())
+}
+
 /// `GameWindow.init` + `MainScreenState.enter`, then `frames` iterations
 /// of `MainScreenState.update`/`render`.
 pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
     let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(game_dir)));
+    load_scripts(game_dir, &fs.borrow())?;
     let errors: Rc<RefCell<BTreeMap<String, usize>>> = Rc::default();
     // GameWindow.init: the UI texture packs, then the pack lookup.
     pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
@@ -49,7 +61,7 @@ pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
     let mut errs: Vec<_> = errors.borrow().clone().into_iter().collect();
     errs.sort_by(|a, b| b.1.cmp(&a.1));
     println!("distinct Lua errors: {}", errs.len());
-    for (e, n) in errs.iter().take(30) {
+    for (e, n) in errs.iter().take(100000) {
         println!("{n:5}  {e}");
     }
     Ok(())

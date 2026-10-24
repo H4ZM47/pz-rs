@@ -150,6 +150,37 @@ pub fn str_arg(c: &NativeCall<'_>, i: usize) -> Option<Rc<str>> {
     }
 }
 
+/// A live `java.util.ArrayList` held by an engine object: reads (and
+/// `clear`, when the owner allows it) go to the owner's current list.
+pub struct ListView {
+    pub items: Box<dyn Fn() -> Vec<Value>>,
+    pub clear: Option<Box<dyn Fn()>>,
+}
+
+impl ListView {
+    pub fn new(items: impl Fn() -> Vec<Value> + 'static) -> Self {
+        ListView { items: Box::new(items), clear: None }
+    }
+
+    pub fn with_clear(mut self, clear: impl Fn() + 'static) -> Self {
+        self.clear = Some(Box::new(clear));
+        self
+    }
+}
+
+impl LuaObject for ListView {
+    fn class_name(&self) -> &str {
+        "java.util.ArrayList"
+    }
+    fn to_lua_string(&self) -> String {
+        let parts: Vec<String> = (self.items)().iter().map(pz_kahlua::exec::java_value_of).collect();
+        format!("[{}]", parts.join(", "))
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 /// A Java enum constant. Constants are singletons so Lua `==` (identity)
 /// behaves like Java.
 pub struct JavaEnum {
