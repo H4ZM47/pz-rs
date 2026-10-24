@@ -94,6 +94,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 mod color;
+pub mod jni;
 mod lights;
 mod model;
 mod results;
