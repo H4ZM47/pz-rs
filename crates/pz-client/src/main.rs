@@ -52,9 +52,15 @@ fn main() {
         eprintln!("Cannot find the Project Zomboid install (a directory containing media/). Use --game-dir or PZ_GAME_DIR.");
         std::process::exit(2);
     };
+    // Development cache dir: ~/Zomboid-rs unless --cache-dir is given. The
+    // original game's ~/Zomboid is never written.
+    let cache_dir = cache_dir.unwrap_or_else(|| {
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default();
+        home.join("Zomboid-rs")
+    });
+    let _ = std::fs::create_dir_all(&cache_dir);
     if let (Some(out), Some(frames)) = (png_out.clone(), headless_frames) {
-        let cache = cache_dir.clone().unwrap_or_else(|| std::env::temp_dir().join("pz-rs-cache"));
-        let _ = std::fs::create_dir_all(&cache);
+        let cache = cache_dir.clone();
         match pz_engine::game_window::render_headless(pz_engine::game_window::Launch { game_dir: dir, cache_dir: cache }, frames) {
             Ok((w, h, px)) => {
                 let f = std::fs::File::create(&out).expect("png");
@@ -72,18 +78,12 @@ fn main() {
         return;
     }
     if let Some(frames) = headless_frames {
-        if let Err(e) = main_screen::run_headless(&dir, frames) {
+        if let Err(e) = main_screen::run_headless(&dir, &cache_dir, frames) {
             eprintln!("{e}");
             std::process::exit(1);
         }
         return;
     }
-    // Development default keeps the original game's ~/Zomboid untouched.
-    let cache_dir = cache_dir.unwrap_or_else(|| {
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from).unwrap_or_default();
-        home.join("Zomboid-rs")
-    });
-    let _ = std::fs::create_dir_all(&cache_dir);
     if let Err(e) = pz_engine::game_window::run(pz_engine::game_window::Launch { game_dir: dir, cache_dir }) {
         eprintln!("{e}");
         std::process::exit(1);

@@ -9,8 +9,11 @@ use std::rc::Rc;
 
 /// `GameWindow.init` + `MainScreenState.enter`, then `frames` iterations
 /// of `MainScreenState.update`/`render`.
-pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
+pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<(), String> {
     let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(game_dir)));
+    // Never fall back to the original game's ~/Zomboid.
+    fs.borrow_mut().set_cache_dir(cache_dir);
+    pz_lua_api::bind_core::shared_core().borrow_mut().set_cache_dir(cache_dir);
     let errors: Rc<RefCell<BTreeMap<String, usize>>> = Rc::default();
     // GameWindow.init: the UI texture packs, then the pack lookup.
     pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
