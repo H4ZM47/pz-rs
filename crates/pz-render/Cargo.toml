@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pz-fs.workspace = true
+miniz_oxide.workspace = true
+
+[dev-dependencies]
+png.workspace = true
