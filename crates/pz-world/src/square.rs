@@ -1207,21 +1207,16 @@ impl IsoCell {
     }
 
     /// The square part of `IsoChunk.loadInWorldStreamerThread()` for chunk
-    /// `(wx, wy)`, followed by the chunk-edge pass of `doLoadGridsquare`
-    /// against already loaded neighbour chunks:
+    /// `(wx, wy)`:
     ///
     /// 1. creates the missing level-0 squares and the 3x3 neighbourhood of
     ///    every non-empty square on its level and the levels below
     ///    (`ensureNotNull3x3`, rooms from the meta grid);
     /// 2. `RecalcProperties` for every square;
     /// 3. `haveRoof` below the topmost rain-blocking square of each column;
-    /// 4. `RecalcAllWithNeighbours(true, chunkGetter)` for every square;
-    /// 5. for squares on the chunk edge, the collide/path/vision bits with
-    ///    the neighbours across the edge, through the cell
-    ///    (`RecalcAllWithNeighbour`).
+    /// 4. `RecalcAllWithNeighbours(true, chunkGetter)` for every square.
     ///
-    /// `doLoadGridsquare`'s `EnsureSurroundNotNull` across chunk edges is not
-    /// ported.
+    /// The work across chunk edges is [`IsoCell::load_in_main_thread`].
     pub fn recalc_chunk_squares(
         &mut self,
         wx: i32,
@@ -1285,37 +1280,302 @@ impl IsoCell {
         // the bits only depend on properties, so applying them afterwards
         // gives the same matrices.
         self.apply_matrix_bits(bits);
-        let mut bits = Vec::new();
-        {
+    }
+
+    /// The square part of `IsoChunk.loadInMainThread()` for chunk `(wx, wy)`
+    /// (called from `doLoadGridsquare` once the chunk is in the cell):
+    ///
+    /// 1. the level range of the chunk and its eight neighbours
+    ///    (`getMinLevelOf`/`getMaxLevelOf`, W N E S NW NE SE SW);
+    /// 2. over that range, `EnsureSurroundNotNull`/`X`/`Y`: an empty square
+    ///    in this chunk next to every non-empty square across an edge or
+    ///    corner of a neighbour, then the same in each neighbour next to
+    ///    this chunk's non-empty edge squares. `setSquare` widens the
+    ///    receiving chunk's levels (`setMinMaxLevel`);
+    /// 3. `RecalcAllWithNeighbours(true)` for each square created there, in
+    ///    creation order;
+    /// 4. "Recalc Nav": for every edge square of the chunk's (possibly
+    ///    widened) levels, `RecalcAllWithNeighbour` towards the neighbours
+    ///    across the edge on the levels below, at and above, and the pairs
+    ///    around the corner; then `RecalcAllWithNeighbours(true)` for the
+    ///    four corner squares of each level.
+    ///
+    /// Not ported: the path-adjacency links `RecalcAllWithNeighbour` sets
+    /// (`sq.n`/`sq.w`/...; nav links are cell lookups here), `room.addSquare`,
+    /// `fixObjectAmbientEmittersOnAdjacentChunks`, the lighting and
+    /// `LosUtil` invalidation, `IsoLightSwitch.chunkLoaded` and the cutaway
+    /// data.
+    ///
+    /// The neighbour chunks and squares this sees are those in `self`, which
+    /// must be the chunks the game has added to the chunk map by then:
+    /// `IsoChunkMap.processAllLoadGridSquare` calls `setChunkDirect` and then
+    /// `doLoadGridsquare` one chunk at a time, so chunks streamed in but not
+    /// yet added are invisible to this pass. The bits it computes across them
+    /// (for example a `solidtrans` square's window or hoppable lookup south
+    /// or east of it) stay as computed without them unless a later chunk's
+    /// pass recomputes that pair. When loading an area at once, run
+    /// [`IsoCell::recalc_chunk_squares`] and then this for each chunk in load
+    /// order, with the chunks not yet passed here held outside the cell.
+    pub fn load_in_main_thread(
+        &mut self,
+        wx: i32,
+        wy: i32,
+        meta: &IsoMetaGrid,
+        m: &IsoSpriteManager,
+    ) {
+        let Some(ch) = self.chunks.get(&(wx, wy)) else {
+            return;
+        };
+        // chunkW, chunkN, chunkE, chunkS, chunkNW, chunkNE, chunkSE, chunkSW.
+        const W: (i32, i32) = (-1, 0);
+        const N: (i32, i32) = (0, -1);
+        const E: (i32, i32) = (1, 0);
+        const S: (i32, i32) = (0, 1);
+        const NW: (i32, i32) = (-1, -1);
+        const NE: (i32, i32) = (1, -1);
+        const SE: (i32, i32) = (1, 1);
+        const SW: (i32, i32) = (-1, 1);
+        let (mut min2, mut max2) = (ch.min_level, ch.max_level);
+        for (dx, dy) in [W, N, E, S, NW, NE, SE, SW] {
+            if let Some(c) = self.chunks.get(&(wx + dx, wy + dy)) {
+                min2 = min2.min(c.min_level);
+                max2 = max2.max(c.max_level);
+            }
+        }
+        // The chunk at offset `d` exists and its square `(x, y, z)` has
+        // objects.
+        let has_objects = |cell: &IsoCell, d: (i32, i32), x: i32, y: i32, z: i32| {
+            cell.chunks
+                .get(&(wx + d.0, wy + d.1))
+                .and_then(|c| c.get_grid_square(x, y, z))
+                .is_some_and(|sq| !sq.objects.is_empty())
+        };
+        let exists =
+            |cell: &IsoCell, d: (i32, i32)| cell.chunks.contains_key(&(wx + d.0, wy + d.1));
+        let mut new_squares = Vec::new();
+        let here = (0, 0);
+        for z in min2..=max2 {
+            for x in 0..8 {
+                if has_objects(self, N, x, 7, z) {
+                    self.ensure_surround_not_null_x(wx, wy, x, 0, z, meta, &mut new_squares);
+                }
+                if has_objects(self, S, x, 0, z) {
+                    self.ensure_surround_not_null_x(wx, wy, x, 7, z, meta, &mut new_squares);
+                }
+            }
+            for y in 0..8 {
+                if has_objects(self, W, 7, y, z) {
+                    self.ensure_surround_not_null_y(wx, wy, 0, y, z, meta, &mut new_squares);
+                }
+                if has_objects(self, E, 0, y, z) {
+                    self.ensure_surround_not_null_y(wx, wy, 7, y, z, meta, &mut new_squares);
+                }
+            }
+            if has_objects(self, NW, 7, 7, z) {
+                self.ensure_surround_not_null(wx, wy, 0, 0, z, meta, &mut new_squares);
+            }
+            if has_objects(self, NE, 0, 7, z) {
+                self.ensure_surround_not_null(wx, wy, 7, 0, z, meta, &mut new_squares);
+            }
+            if has_objects(self, SE, 0, 0, z) {
+                self.ensure_surround_not_null(wx, wy, 7, 7, z, meta, &mut new_squares);
+            }
+            if has_objects(self, SW, 7, 0, z) {
+                self.ensure_surround_not_null(wx, wy, 0, 7, z, meta, &mut new_squares);
+            }
+        }
+        for z in min2..=max2 {
+            for x in 0..8 {
+                if exists(self, N) && has_objects(self, here, x, 0, z) {
+                    self.ensure_surround_not_null_x(wx, wy - 1, x, 7, z, meta, &mut new_squares);
+                }
+                if exists(self, S) && has_objects(self, here, x, 7, z) {
+                    self.ensure_surround_not_null_x(wx, wy + 1, x, 0, z, meta, &mut new_squares);
+                }
+            }
+            for y in 0..8 {
+                if exists(self, W) && has_objects(self, here, 0, y, z) {
+                    self.ensure_surround_not_null_y(wx - 1, wy, 7, y, z, meta, &mut new_squares);
+                }
+                if exists(self, E) && has_objects(self, here, 7, y, z) {
+                    self.ensure_surround_not_null_y(wx + 1, wy, 0, y, z, meta, &mut new_squares);
+                }
+            }
+            if exists(self, NW) && has_objects(self, here, 0, 0, z) {
+                self.ensure_surround_not_null(wx - 1, wy - 1, 7, 7, z, meta, &mut new_squares);
+            }
+            if exists(self, NE) && has_objects(self, here, 7, 0, z) {
+                self.ensure_surround_not_null(wx + 1, wy - 1, 0, 7, z, meta, &mut new_squares);
+            }
+            if exists(self, SE) && has_objects(self, here, 7, 7, z) {
+                self.ensure_surround_not_null(wx + 1, wy + 1, 0, 0, z, meta, &mut new_squares);
+            }
+            if exists(self, SW) && has_objects(self, here, 0, 7, z) {
+                self.ensure_surround_not_null(wx - 1, wy + 1, 7, 0, z, meta, &mut new_squares);
+            }
+        }
+        for (x, y, z) in new_squares {
+            self.recalc_all_with_neighbours(x, y, z, meta, m);
+        }
+        // Recalc Nav.
+        let (min, max) = {
             let ch = &self.chunks[&(wx, wy)];
-            for z in min..=max {
-                for y in 0..8 {
-                    for x in 0..8 {
-                        let Some(sq) = ch.get_grid_square(x, y, z) else {
-                            continue;
-                        };
-                        if !(x == 0 || x == 7 || y == 0 || y == 7) {
-                            continue;
+            (ch.min_level, ch.max_level)
+        };
+        for z in min..=max {
+            let mut bits = Vec::new();
+            for y in 0..8 {
+                for x in 0..8 {
+                    let Some(sq) = self.chunks[&(wx, wy)].get_grid_square(x, y, z) else {
+                        continue;
+                    };
+                    if !(x == 0 || x == 7 || y == 0 || y == 7) {
+                        continue;
+                    }
+                    use IsoDirections as D;
+                    for dz in -1..=1 {
+                        let mut dirs = Vec::with_capacity(6);
+                        if x == 0 {
+                            dirs.extend([D::W, D::NW, D::SW]);
+                        } else if x == 7 {
+                            dirs.extend([D::E, D::NE, D::SE]);
                         }
-                        for dz in -1..=1 {
-                            for dir in IsoDirections::ALL {
-                                let (dx, dy) = dir.delta();
-                                let (nx, ny) = (x + dx, y + dy);
-                                if (0..8).contains(&nx) && (0..8).contains(&ny) {
-                                    continue;
-                                }
-                                if let Some(n) =
-                                    self.get_grid_square(sq.x + dx, sq.y + dy, sq.z + dz)
-                                {
-                                    recalc_pair(sq, n, true, m, self, &mut bits);
-                                }
+                        if y == 0 {
+                            dirs.push(D::N);
+                            if x != 0 {
+                                dirs.push(D::NW);
                             }
+                            if x != 7 {
+                                dirs.push(D::NE);
+                            }
+                        } else if y == 7 {
+                            dirs.push(D::S);
+                            if x != 0 {
+                                dirs.push(D::SW);
+                            }
+                            if x != 7 {
+                                dirs.push(D::SE);
+                            }
+                        }
+                        for dir in dirs {
+                            self.recalc_all_with_neighbour(sq, dir, dz, m, &mut bits);
+                        }
+                    }
+                    let n = sq.get_adjacent_square(D::N, self);
+                    let s = sq.get_adjacent_square(D::S, self);
+                    let w = sq.get_adjacent_square(D::W, self);
+                    let e = sq.get_adjacent_square(D::E, self);
+                    if let (Some(n), Some(_)) = (n, w) {
+                        if x == 0 || y == 0 {
+                            self.recalc_all_with_neighbour(n, D::W, 0, m, &mut bits);
+                        }
+                    }
+                    if let (Some(n), Some(_)) = (n, e) {
+                        if x == 7 || y == 0 {
+                            self.recalc_all_with_neighbour(n, D::E, 0, m, &mut bits);
+                        }
+                    }
+                    if let (Some(s), Some(_)) = (s, w) {
+                        if x == 0 || y == 7 {
+                            self.recalc_all_with_neighbour(s, D::W, 0, m, &mut bits);
+                        }
+                    }
+                    if let (Some(s), Some(_)) = (s, e) {
+                        if x == 7 || y == 7 {
+                            self.recalc_all_with_neighbour(s, D::E, 0, m, &mut bits);
                         }
                     }
                 }
             }
+            // The squares' properties are final here and the bits only
+            // depend on properties, so applying them after the pass gives
+            // the same matrices.
+            self.apply_matrix_bits(bits);
+            for (x, y) in [(0, 0), (7, 0), (0, 7), (7, 7)] {
+                if self.chunks[&(wx, wy)].get_grid_square(x, y, z).is_some() {
+                    self.recalc_all_with_neighbours(wx * 8 + x, wy * 8 + y, z, meta, m);
+                }
+            }
         }
-        self.apply_matrix_bits(bits);
+    }
+
+    /// `IsoChunk.RecalcAllWithNeighbour(sq, dir, dz)`'s matrix updates: both
+    /// ways between `sq` and the square at `dir` on level `z + dz`.
+    fn recalc_all_with_neighbour(
+        &self,
+        sq: &IsoGridSquare,
+        dir: IsoDirections,
+        dz: i32,
+        m: &IsoSpriteManager,
+        out: &mut Vec<MatrixBits>,
+    ) {
+        let (dx, dy) = dir.delta();
+        if let Some(sq2) = self.get_grid_square(sq.x + dx, sq.y + dy, sq.z + dz) {
+            out.push(matrix_bits(sq, sq2, m, self));
+            out.push(matrix_bits(sq2, sq, m, self));
+        }
+    }
+
+    /// `chunk.EnsureSurroundNotNullX(x, y, z)` on chunk `(cwx, cwy)`.
+    #[allow(clippy::too_many_arguments)]
+    fn ensure_surround_not_null_x(
+        &mut self,
+        cwx: i32,
+        cwy: i32,
+        x: i32,
+        y: i32,
+        z: i32,
+        meta: &IsoMetaGrid,
+        new: &mut Vec<(i32, i32, i32)>,
+    ) {
+        for x1 in (x - 1).max(0)..=(x + 1).min(7) {
+            self.ensure_surround_not_null(cwx, cwy, x1, y, z, meta, new);
+        }
+    }
+
+    /// `chunk.EnsureSurroundNotNullY(x, y, z)` on chunk `(cwx, cwy)`.
+    #[allow(clippy::too_many_arguments)]
+    fn ensure_surround_not_null_y(
+        &mut self,
+        cwx: i32,
+        cwy: i32,
+        x: i32,
+        y: i32,
+        z: i32,
+        meta: &IsoMetaGrid,
+        new: &mut Vec<(i32, i32, i32)>,
+    ) {
+        for y1 in (y - 1).max(0)..=(y + 1).min(7) {
+            self.ensure_surround_not_null(cwx, cwy, x, y1, z, meta, new);
+        }
+    }
+
+    /// `chunk.EnsureSurroundNotNull(x, y, z)` on chunk `(cwx, cwy)`: a new
+    /// square (`IsoGridSquare.getNew`, `ConnectNewSquare` -> `setSquare`,
+    /// `assignRoom`) if there is none, recorded in `new` (`newSquareList`).
+    #[allow(clippy::too_many_arguments)]
+    fn ensure_surround_not_null(
+        &mut self,
+        cwx: i32,
+        cwy: i32,
+        x: i32,
+        y: i32,
+        z: i32,
+        meta: &IsoMetaGrid,
+        new: &mut Vec<(i32, i32, i32)>,
+    ) {
+        let Some(ch) = self.chunks.get_mut(&(cwx, cwy)) else {
+            return;
+        };
+        if !(MIN_LEVEL..=MAX_LEVEL).contains(&z) || ch.get_grid_square(x, y, z).is_some() {
+            return;
+        }
+        let (sx, sy) = (cwx * 8 + x, cwy * 8 + y);
+        let mut sq = IsoGridSquare::new(sx, sy, z);
+        sq.associated_building = meta.get_associated_building_at(sx, sy).ok().flatten();
+        sq.room_id = meta.get_room_at(sx, sy, z).map_or(-1, |r| r.id);
+        ch.set_square(x, y, z, Some(sq));
+        new.push((sx, sy, z));
     }
 
     /// `RecalcAllWithNeighbours(true)` through the cell, after a square's

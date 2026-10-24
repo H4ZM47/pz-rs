@@ -35,6 +35,7 @@ const SPRITES: &[Spec] = &[
     ),
     ("door_n", "doorN", &[("doorN", ""), ("collideN", "")]),
     ("crate", "normal", &[("solid", "")]),
+    ("seat", "normal", &[("solidtrans", "")]),
     ("plan", "normal", &[("solid", ""), ("blueprint", "")]),
     (
         "water",
@@ -156,8 +157,11 @@ impl World {
     fn recalc(&mut self) {
         let mut keys: Vec<_> = self.cell.chunks.keys().copied().collect();
         keys.sort();
-        for (wx, wy) in keys {
+        for &(wx, wy) in &keys {
             self.cell.recalc_chunk_squares(wx, wy, &self.meta, &self.m);
+        }
+        for &(wx, wy) in &keys {
+            self.cell.load_in_main_thread(wx, wy, &self.meta, &self.m);
         }
     }
 }
@@ -420,4 +424,88 @@ fn door() -> IsoDoor {
         open_sprite: None,
         closed_sprite: None,
     }
+}
+
+#[test]
+fn main_thread_load_fills_squares_across_edges() {
+    let mut w = World::new();
+    for (wx, wy) in [(2, 1), (0, 0), (1, 0), (0, 1)] {
+        w.cell.chunks.insert((wx, wy), IsoChunk::new(wx, wy));
+    }
+    // A neighbour's object on level 1 next to this chunk's east edge.
+    w.put(16, 10, 1, &["floor"]);
+    // This chunk's object on level 2 in its north-west corner.
+    w.put(8, 8, 2, &["floor"]);
+    for k in [(1, 1), (2, 1), (0, 0), (1, 0), (0, 1)] {
+        w.cell.recalc_chunk_squares(k.0, k.1, &w.meta, &w.m);
+    }
+    let levels = |w: &World, k| {
+        let c: &IsoChunk = &w.cell.chunks[&k];
+        (c.min_level, c.max_level)
+    };
+    assert_eq!(levels(&w, (1, 0)), (0, 0));
+    w.cell.load_in_main_thread(1, 1, &w.meta, &w.m);
+    let has = |w: &World, x, y, z| w.cell.get_grid_square(x, y, z).is_some();
+    // EnsureSurroundNotNullY(7, 2, 1) here: (15, 9..=11, 1).
+    assert_eq!(levels(&w, (1, 1)), (0, 2));
+    for y in 9..=11 {
+        assert!(has(&w, 15, y, 1));
+    }
+    assert!(!has(&w, 15, 8, 1) && !has(&w, 15, 12, 1) && !has(&w, 14, 10, 1));
+    // Around (8, 8, 2) in the NW, N and W neighbours.
+    assert_eq!(levels(&w, (0, 0)), (0, 2));
+    assert!(has(&w, 7, 7, 2));
+    assert_eq!(levels(&w, (1, 0)), (0, 2));
+    assert!(has(&w, 8, 7, 2) && has(&w, 9, 7, 2) && !has(&w, 10, 7, 2));
+    assert!(has(&w, 7, 8, 2) && has(&w, 7, 9, 2) && !has(&w, 7, 10, 2));
+    // The east neighbour is not widened downwards or upwards beyond its own
+    // objects' levels.
+    assert_eq!(levels(&w, (2, 1)), (0, 1));
+}
+
+/// `loadInMainThread` sees only the chunks already added to the cell
+/// (`setChunkDirect` comes just before it for each chunk), so a bit computed
+/// there across a missing neighbour keeps that neighbour's absence until a
+/// later chunk's pass recomputes the pair.
+#[test]
+fn main_thread_load_sees_only_chunks_added_before() {
+    let build = |game_order: bool| {
+        let mut w = World::new();
+        w.cell.chunks.insert((1, 2), IsoChunk::new(1, 2));
+        // Two seats on the south edge of chunk (1, 1), a window across the
+        // edge in chunk (1, 2) south of the east one.
+        w.put(8, 14, 0, &["floor"]);
+        w.put(9, 14, 0, &["floor"]);
+        w.put(8, 15, 0, &["floor", "seat"]);
+        w.put(9, 15, 0, &["floor", "seat"]);
+        w.put(8, 16, 0, &["floor"]);
+        w.put(9, 16, 0, &["floor", "window_n"]);
+        let south = w.cell.chunks.remove(&(1, 2)).unwrap();
+        w.cell.recalc_chunk_squares(1, 1, &w.meta, &w.m);
+        if game_order {
+            w.cell.load_in_main_thread(1, 1, &w.meta, &w.m);
+        }
+        w.cell.chunks.insert((1, 2), south);
+        w.cell.recalc_chunk_squares(1, 2, &w.meta, &w.m);
+        if !game_order {
+            w.cell.load_in_main_thread(1, 1, &w.meta, &w.m);
+        }
+        w.cell.load_in_main_thread(1, 2, &w.meta, &w.m);
+        w
+    };
+    let bit = |w: &World, dx: i32, dy: i32| {
+        get_matrix_bit(w.sq(8, 15, 0).collide_matrix, dx + 1, dy + 1, 1)
+    };
+    let w = build(true);
+    // The window next to the east seat lets it be passed (solidtrans with a
+    // window to the south): chunk (1, 2)'s corner pair recomputes the edge
+    // through the cell.
+    assert!(!bit(&w, 1, 0));
+    // The diagonal past the east seat was last computed by chunk (1, 1)'s
+    // pass, before chunk (1, 2) was in the cell.
+    assert!(bit(&w, 1, -1));
+    // Computed with both chunks present it is open.
+    let w = build(false);
+    assert!(!bit(&w, 1, 0));
+    assert!(!bit(&w, 1, -1));
 }
