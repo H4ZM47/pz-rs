@@ -14,6 +14,7 @@ pz-scripts = { path = "crates/pz-scripts" }
 pz-classfile = { path = "crates/pz-classfile" }
 pz-sandbox = { path = "crates/pz-sandbox" }
 pz-server-settings = { path = "crates/pz-server-settings" }
+pz-input = { path = "crates/pz-input" }
 pz-render = { path = "crates/pz-render" }
 pz-text = { path = "crates/pz-text" }
 pz-ui = { path = "crates/pz-ui" }
