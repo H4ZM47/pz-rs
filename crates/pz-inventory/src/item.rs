@@ -953,7 +953,11 @@ impl InventoryItem {
                 }
             }
         }
-        self.load_kind(r, wv, env)
+        self.load_kind(r, wv, env)?;
+        if let Some(a) = env.assets() {
+            self.synch_with_visual(Some(a), &crate::context::NoOwner, env.visual_rng());
+        }
+        Ok(())
     }
 
     /// `setCurrentUses` while `InventoryItem.load` runs: `Food` with a

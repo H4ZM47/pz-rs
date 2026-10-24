@@ -176,6 +176,7 @@ version = "0.1.0"
 name = "pz-inventory"
 version = "0.1.0"
 dependencies = [
+ "pz-classfile",
  "pz-entity",
  "pz-scripts",
 ]

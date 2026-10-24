@@ -140,3 +140,228 @@ impl ItemVisual {
         }
     }
 }
+
+/// `OutfitRNG` and `ClothingDecals.getRandomDecal`, which
+/// `ItemVisual.pickUninitializedValues` draws from.
+pub trait VisualRng {
+    /// `OutfitRNG.Next(bound)`.
+    fn next(&self, _bound: i32) -> i32 {
+        0
+    }
+    /// `OutfitRNG.randomImmutableColor()`.
+    fn random_color(&self) -> Rgb {
+        [1.0, 1.0, 1.0]
+    }
+    /// `ClothingDecals.instance.getRandomDecal(group)`.
+    fn random_decal(&self, _group: &str) -> Option<String> {
+        None
+    }
+}
+
+/// [`VisualRng`] with every default.
+pub struct NoVisualRng;
+impl VisualRng for NoVisualRng {}
+
+const BLOOD: usize = 0;
+const DIRT: usize = 1;
+const HOLES: usize = 2;
+const BASIC_PATCHES: usize = 3;
+const DENIM_PATCHES: usize = 4;
+const LEATHER_PATCHES: usize = 5;
+
+impl ItemVisual {
+    /// `new ItemVisual()` with `setItemType(fullType)`.
+    pub fn new(full_type: &str) -> Self {
+        ItemVisual {
+            full_type: full_type.to_string(),
+            alternate_model_name: String::new(),
+            clothing_item_name: String::new(),
+            tint: None,
+            base_texture: -1,
+            texture_choice: -1,
+            hue: f32::INFINITY,
+            decal: None,
+            arrays: Default::default(),
+        }
+    }
+
+    fn get(&self, array: usize, part: usize) -> f32 {
+        self.arrays[array]
+            .as_ref()
+            .and_then(|a| a.get(part))
+            .map_or(0.0, |&b| (b as u8) as f32 / 255.0)
+    }
+
+    fn set(&mut self, array: usize, part: usize, value: i8, max: usize) {
+        let a = self.arrays[array].get_or_insert_with(|| vec![0; max]);
+        if let Some(x) = a.get_mut(part) {
+            *x = value;
+        }
+    }
+
+    fn count(&self, array: usize) -> i32 {
+        self.arrays[array]
+            .as_ref()
+            .map_or(0, |a| a.iter().filter(|&&b| b != 0).count() as i32)
+    }
+
+    /// `getBlood(part)`.
+    pub fn get_blood(&self, part: usize) -> f32 {
+        self.get(BLOOD, part)
+    }
+
+    /// `getDirt(part)`.
+    pub fn get_dirt(&self, part: usize) -> f32 {
+        self.get(DIRT, part)
+    }
+
+    /// `getHole(part)`.
+    pub fn get_hole(&self, part: usize) -> f32 {
+        self.get(HOLES, part)
+    }
+
+    /// `getBasicPatch(part)`.
+    pub fn get_basic_patch(&self, part: usize) -> f32 {
+        self.get(BASIC_PATCHES, part)
+    }
+
+    /// `getDenimPatch(part)`.
+    pub fn get_denim_patch(&self, part: usize) -> f32 {
+        self.get(DENIM_PATCHES, part)
+    }
+
+    /// `getLeatherPatch(part)`.
+    pub fn get_leather_patch(&self, part: usize) -> f32 {
+        self.get(LEATHER_PATCHES, part)
+    }
+
+    /// `setBlood(part, amount)` (`max`: `BloodBodyPartType.MAX.index()`).
+    pub fn set_blood(&mut self, part: usize, amount: f32, max: usize) {
+        let v = (amount.clamp(0.0, 1.0) * 255.0) as i32 as i8;
+        self.set(BLOOD, part, v, max);
+    }
+
+    /// `setDirt(part, amount)`.
+    pub fn set_dirt(&mut self, part: usize, amount: f32, max: usize) {
+        let v = (amount.clamp(0.0, 1.0) * 255.0) as i32 as i8;
+        self.set(DIRT, part, v, max);
+    }
+
+    /// `setHole(part)`.
+    pub fn set_hole(&mut self, part: usize, max: usize) {
+        self.set(HOLES, part, -1, max);
+    }
+
+    /// `setBasicPatch(part)`.
+    pub fn set_basic_patch(&mut self, part: usize, max: usize) {
+        self.set(BASIC_PATCHES, part, -1, max);
+    }
+
+    /// `setDenimPatch(part)`.
+    pub fn set_denim_patch(&mut self, part: usize, max: usize) {
+        self.set(DENIM_PATCHES, part, -1, max);
+    }
+
+    /// `setLeatherPatch(part)`.
+    pub fn set_leather_patch(&mut self, part: usize, max: usize) {
+        self.set(LEATHER_PATCHES, part, -1, max);
+    }
+
+    /// `removeHole(part)`.
+    pub fn remove_hole(&mut self, part: usize) {
+        if let Some(x) = self.arrays[HOLES].as_mut().and_then(|a| a.get_mut(part)) {
+            *x = 0;
+        }
+    }
+
+    /// `removePatch(part)`.
+    pub fn remove_patch(&mut self, part: usize) {
+        for a in [BASIC_PATCHES, DENIM_PATCHES, LEATHER_PATCHES] {
+            if let Some(x) = self.arrays[a].as_mut().and_then(|a| a.get_mut(part)) {
+                *x = 0;
+            }
+        }
+    }
+
+    /// `removeBlood()`.
+    pub fn remove_blood(&mut self) {
+        if let Some(a) = &mut self.arrays[BLOOD] {
+            a.fill(0);
+        }
+    }
+
+    /// `removeDirt()`.
+    pub fn remove_dirt(&mut self) {
+        if let Some(a) = &mut self.arrays[DIRT] {
+            a.fill(0);
+        }
+    }
+
+    /// `getHolesNumber()`.
+    pub fn get_holes_number(&self) -> i32 {
+        self.count(HOLES)
+    }
+
+    /// `getBasicPatchesNumber()`.
+    pub fn get_basic_patches_number(&self) -> i32 {
+        self.count(BASIC_PATCHES)
+    }
+
+    /// `getTotalBlood()`.
+    pub fn get_total_blood(&self) -> f32 {
+        self.arrays[BLOOD]
+            .as_ref()
+            .map_or(0.0, |a| a.iter().map(|&b| (b as u8) as f32 / 255.0).sum())
+    }
+
+    /// `setHue(hue)` (clamped to `[-1, 1]`).
+    pub fn set_hue(&mut self, hue: f32) {
+        self.hue = hue.clamp(-1.0, 1.0);
+    }
+
+    /// `pickUninitializedValues(clothingItem)` (`getHue`, `getTint`,
+    /// `getBaseTexture`, `getTextureChoice`, `getDecal`). `custom_color`
+    /// is the item's `isCustomColor()` (the tint then stays as is).
+    pub fn pick_uninitialized_values(
+        &mut self,
+        c: &crate::assets::ClothingItem,
+        custom_color: bool,
+        rng: &dyn VisualRng,
+    ) {
+        if c.allow_random_hue {
+            if self.hue == f32::INFINITY {
+                self.hue = rng.next(200) as f32 / 100.0 - 1.0;
+            }
+        } else {
+            self.hue = 0.0;
+        }
+        if !custom_color {
+            if c.allow_random_tint {
+                if self.tint.is_none() {
+                    self.tint = Some(rng.random_color());
+                }
+            } else {
+                self.tint = Some([1.0, 1.0, 1.0]);
+            }
+        }
+        if c.base_textures.is_empty() {
+            self.base_texture = -1;
+        } else if self.base_texture < 0 || self.base_texture as usize >= c.base_textures.len() {
+            self.base_texture = rng.next(c.base_textures.len() as i32) as i8;
+        }
+        if c.texture_choices.is_empty() {
+            self.texture_choice = -1;
+        } else if self.texture_choice < 0 || self.texture_choice as usize >= c.texture_choices.len()
+        {
+            self.texture_choice = rng.next(c.texture_choices.len() as i32) as i8;
+        }
+        match c.decal_group.as_deref() {
+            Some(g) if !g.trim().is_empty() => {
+                if self.decal.is_none() {
+                    self.decal = rng.random_decal(g);
+                }
+            }
+            _ => self.decal = None,
+        }
+    }
+}
