@@ -12,6 +12,7 @@ pub mod iso;
 pub mod lua;
 pub mod manager;
 pub mod png;
+pub mod tile_depth;
 
 use std::rc::Rc;
 
