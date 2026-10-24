@@ -17,6 +17,7 @@ pz-lua-api = { path = "crates/pz-lua-api" }
 pz-engine = { path = "crates/pz-engine" }
 pz-core = { path = "crates/pz-core" }
 pz-clipper6 = { path = "crates/pz-clipper6" }
+pz-pathfind = { path = "crates/pz-pathfind" }
 indexmap = "2"
 macroquad = { version = "0.4", default-features = false }
 png = "0.17"
