@@ -14,7 +14,7 @@ pub mod png;
 use std::rc::Rc;
 
 pub use image::{ImageData, Mask, MipLevel};
-pub use lua::LuaTexture;
+pub use lua::{get_shared_texture, install_shared_texture_loader, LuaTexture};
 pub use manager::{SharedTextures, TextureData, TextureManager};
 
 /// `TextureFlags`.
@@ -293,6 +293,13 @@ impl DrawList {
         if tex.is_some_and(|t| !t.ready) {
             return;
         }
+        let col = color_to_abgr(c.0, c.1, c.2, c.3);
+        self.push_corners(tex, x, y, [col; 4]);
+    }
+
+    /// `SpriteRenderer.render(tex, x1, y1, ..., x4, y4, r, g, b, a)`: four
+    /// free corners, drawn even when the texture is not ready.
+    pub fn render4(&mut self, tex: Option<&Texture>, x: [f32; 4], y: [f32; 4], c: Rgba) {
         let col = color_to_abgr(c.0, c.1, c.2, c.3);
         self.push_corners(tex, x, y, [col; 4]);
     }

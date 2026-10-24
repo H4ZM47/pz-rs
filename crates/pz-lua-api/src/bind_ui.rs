@@ -1367,10 +1367,13 @@ mod tests {
         "#,
         );
         let cmds = with_ui(|m| m.sprite.cmds.clone());
-        assert!(matches!(cmds[0], UiDrawCmd::Render(pz_render::DrawCmd::Clip(Some([10, 10, 50, 50])))));
-        assert!(matches!(&cmds[1], UiDrawCmd::Text { align: TextAlign::Centre, font: None, x, .. } if *x == 15.0));
-        assert!(matches!(&cmds[2], UiDrawCmd::Text { align: TextAlign::Right, font: Some(UIFont::Small), .. }));
-        assert!(matches!(cmds[3], UiDrawCmd::Render(pz_render::DrawCmd::Clip(None))));
+        // setStencilRect: the stencil quad covers the element's rectangle.
+        assert!(cmds.iter().any(|c| matches!(c, UiDrawCmd::Quad { texture: None, x, y, w, h, .. } if (*x, *y, *w, *h) == (10.0, 10.0, 50.0, 50.0))));
+        let texts: Vec<_> = cmds.iter().filter(|c| matches!(c, UiDrawCmd::Text { .. })).collect();
+        assert!(matches!(texts[0], UiDrawCmd::Text { align: TextAlign::Centre, font: None, x, .. } if *x == 15.0));
+        assert!(matches!(texts[1], UiDrawCmd::Text { align: TextAlign::Right, font: Some(UIFont::Small), .. }));
+        // clearStencilRect at level 0 clears the stencil buffer.
+        assert!(matches!(cmds.last(), Some(UiDrawCmd::Render(pz_render::DrawCmd::Clear(1280)))));
         assert_eq!(eval(&mut t, "tostring(s.javaObject:getUIName())").as_str(), Some("Widget: s"));
     }
 }
