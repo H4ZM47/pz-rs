@@ -134,6 +134,7 @@ impl Thread {
             out: Box::new(|s| println!("{s}")),
             log: Box::new(|s| eprintln!("{s}")),
             exec_level: 0,
+            on_missing_global: None,
         }
     }
 
@@ -661,6 +662,11 @@ impl Thread {
             OP_GETGLOBAL => {
                 let env = Value::Table(closure.env.borrow().clone());
                 let v = self.table_get(&env, &k[bx(op)])?;
+                if v.is_nil() {
+                    if let (Some(h), Value::Str(name)) = (self.on_missing_global.as_mut(), &k[bx(op)]) {
+                        h(name);
+                    }
+                }
                 self.stack[base + a8(op)] = v;
             }
             OP_GETTABLE => {

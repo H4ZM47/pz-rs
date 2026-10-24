@@ -174,6 +174,9 @@ pub struct Thread {
     /// Sink for Lua error dumps (`DebugType.General.error`).
     pub log: Box<dyn FnMut(&str)>,
     pub(crate) exec_level: usize,
+    /// Development aid: called with the name of every global read that
+    /// resolves to nil.
+    pub on_missing_global: Option<Box<dyn FnMut(&str)>>,
 }
 
 /// View of the current native call frame (`LuaCallFrame` for a Java function).

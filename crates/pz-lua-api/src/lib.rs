@@ -1,11 +1,17 @@
-//! The Lua-facing game API: `LuaManager.GlobalObject` global functions and
-//! every class `LuaManager.Exposer.exposeAll` publishes, with the same names,
-//! arities and behaviour, so vanilla scripts and mods run unchanged.
+//! The Lua-facing game API: `LuaManager` (environment, load order,
+//! `require`), `LuaEventManager`/`LuaHookManager`, the
+//! `LuaManager.GlobalObject` global functions and the classes
+//! `LuaManager.Exposer.exposeAll` publishes, with the original names, arities
+//! and behaviour so vanilla scripts and mods run unchanged.
 //!
 //! Each exposed class gets a global table (statics, `new`, `class`) and a
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
-use pz_kahlua::Thread;
+pub mod events;
+pub mod expose;
+pub mod lua_manager;
+
+pub use lua_manager::LuaManager;
 
 /// Register all globals and exposed classes.
-pub fn register_all(_thread: &mut Thread) {}
+pub fn register_all(_mgr: &mut LuaManager) {}
