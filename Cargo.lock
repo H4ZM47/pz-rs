@@ -1550,6 +1550,7 @@ dependencies = [
 name = "pz-inventory"
 version = "0.1.0"
 dependencies = [
+ "pz-classfile",
  "pz-entity",
  "pz-scripts",
 ]
@@ -1572,6 +1573,7 @@ dependencies = [
  "pz-classfile",
  "pz-core",
  "pz-fs",
+ "pz-inventory",
  "pz-kahlua",
  "pz-render",
  "pz-scripts",

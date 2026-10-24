@@ -14,3 +14,4 @@ indexmap.workspace = true
 pz-text.workspace = true
 pz-ui.workspace = true
 pz-classfile.workspace = true
+pz-inventory.workspace = true

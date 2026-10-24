@@ -757,7 +757,7 @@ impl InventoryItem {
         }
         self.id = r.i32()?;
         let header = read_header(r, 1)?;
-        self.set_current_uses_loading(1);
+        self.set_current_uses_loading(1, env);
         self.name = self.original_name.clone();
         self.condition = self.condition_max;
         self.custom_color = false;
@@ -792,12 +792,12 @@ impl InventoryItem {
             if wv >= 220 {
                 if has(header, 1) {
                     let u = r.i32()?;
-                    self.set_current_uses_loading(u);
+                    self.set_current_uses_loading(u, env);
                 }
             } else {
                 if has(header, 1) {
                     let u = r.i16()? as i32;
-                    self.set_current_uses_loading(u);
+                    self.set_current_uses_loading(u, env);
                 }
                 if has(header, 2) {
                     r.i8()?;
@@ -953,18 +953,24 @@ impl InventoryItem {
                 }
             }
         }
-        self.load_kind(r, wv, env)
+        self.load_kind(r, wv, env)?;
+        if let Some(a) = env.assets() {
+            self.synch_with_visual(Some(a), &crate::context::NoOwner, env.visual_rng());
+        }
+        Ok(())
     }
 
     /// `setCurrentUses` while `InventoryItem.load` runs: `Food` with a
     /// base hunger (still the script's here) consumes hunger instead, which
     /// `Food.load` then overwrites, so only the uses of other items change.
-    fn set_current_uses_loading(&mut self, v: i32) {
+    fn set_current_uses_loading(&mut self, v: i32, env: &dyn ItemEnv) {
         match &self.kind {
             ItemKind::Food(f) if f.base_hunger != 0.0 => {}
             ItemKind::Food(_) => self.uses = v.max(0),
             _ => self.uses = v,
         }
+        // DrainableComboItem.setCurrentUses -> updateWeight.
+        self.update_weight_by(|n| env.script_actual_weight(n));
     }
 
     /// `getVisual().setTint(new ImmutableColor(colorRed, colorGreen,
