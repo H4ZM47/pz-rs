@@ -310,7 +310,7 @@ impl pz_iso_render::DepthMaps for NoMaps {
 /// The draw commands of one recorded level, with or without cutaways.
 fn record_level(w: &GridWorld, cv: Option<CutawayView<'_>>, wx: i32, wy: i32, z: i32) -> Vec<pz_render::DrawCmd> {
     let cam = pz_iso_render::Camera::centred(12.0, 12.0, 0.0, 256, 128, 1.0);
-    let r = pz_iso_render::ChunkRenderer { cam, depth_maps: &NoMaps, cutaways: cv };
+    let r = pz_iso_render::ChunkRenderer::new(cam, &NoMaps, (256, 128)).with_cutaways(cv);
     let mut level = [None; 64];
     for (i, slot) in level.iter_mut().enumerate() {
         *slot = w.squares.get(&(wx * 8 + (i % 8) as i32, wy * 8 + (i / 8) as i32, z));
@@ -342,4 +342,35 @@ fn recording_skips_collapsed_squares() {
     assert!(cut.len() < plain.len(), "{} {}", cut.len(), plain.len());
     // The ground floor is unaffected.
     assert_eq!(record_level(&w, Some(cv), 1, 1, 0).len(), record_level(&w, None, 1, 1, 0).len());
+}
+
+#[test]
+fn trees_on_hidden_squares_are_not_drawn() {
+    let mut tm = pz_render::TextureManager::new();
+    let tex = tm.texture_from_pixels("tree", 128, 256, [255u8; 4].repeat(128 * 256), 0);
+    let mut w = GridWorld::default();
+    ground(&mut w, 0, 0, 24, 24);
+    // An unowned platform at level 1 hides (9, 9, 0) from the camera.
+    for y in 8..16 {
+        for x in 8..16 {
+            w.insert(square(x, y, 1, None));
+        }
+    }
+    let tree = RenderObject::new(ObjectKind::Tree, Some(sprite(|s| s.texture = Some(tex.clone()))));
+    w.square_mut(9, 9, 0).objects.push(tree);
+    let mut player = CutawayPlayer::at(1.5, 1.5, 0.0);
+    player.occlusion_bounds = Some([-20, -20, 40, 40]);
+    let st = Cutaways::new().update(&w, &player);
+    assert!(!st.is_visible(9, 9, 0));
+    let squares: Vec<&RenderSquare> = w.squares.values().collect();
+    let cam = pz_iso_render::Camera::centred(12.0, 12.0, 0.0, 256, 128, 1.0);
+    let pass = |cv: Option<CutawayView<'_>>| {
+        let r = pz_iso_render::ChunkRenderer::new(cam, &NoMaps, (256, 128)).with_cutaways(cv);
+        let mut out = Vec::new();
+        r.render_translucent(&squares, 0, &mut out);
+        out.len()
+    };
+    let plain = pass(None);
+    let cut = pass(Some(CutawayView { state: &st, world: &w }));
+    assert!(cut < plain, "{cut} {plain}");
 }

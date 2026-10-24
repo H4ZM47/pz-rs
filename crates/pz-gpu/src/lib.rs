@@ -72,8 +72,9 @@ impl std::fmt::Display for GpuError {
 
 impl std::error::Error for GpuError {}
 
-/// Vertex as `SpriteRenderer` packs it (36 bytes): position, texture 0
-/// coordinates, ABGR colour, texture 1 and 2 coordinates.
+/// Vertex as `SpriteRenderer` packs it (position, texture 0 coordinates,
+/// ABGR colour, texture 1 and 2 coordinates), plus the per-quad depth
+/// values the world shaders take as uniforms in the original.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct Vertex {
@@ -82,6 +83,7 @@ pub struct Vertex {
     pub color: u32,
     pub uv1: [f32; 2],
     pub uv2: [f32; 2],
+    pub depth: [f32; 2],
 }
 
 #[repr(C)]
@@ -116,6 +118,8 @@ enum Tex2 {
     Chunk(u64, bool),
     /// The offscreen buffer's colour, in group 1.
     Offscreen,
+    /// The batch texture sampled GL_NEAREST.
+    Nearest,
 }
 
 /// Where a pass draws.
@@ -158,6 +162,8 @@ struct Batch {
     key: PipeKey,
     texture: Option<u32>,
     tex2: Tex2,
+    /// The seam mask (group 3).
+    tex3: Option<u32>,
     stencil_ref: u32,
     scissor: Option<[u32; 4]>,
     globals: u32,
@@ -194,6 +200,9 @@ pub struct Gpu {
     chunk_depth_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
     chunks: HashMap<u64, ChunkTarget>,
+    /// Texture views by id, and bind groups sampling them GL_NEAREST.
+    views: HashMap<u32, wgpu::TextureView>,
+    nearest: HashMap<u32, wgpu::BindGroup>,
     offscreen: Option<OffscreenTarget>,
     textures: HashMap<u32, wgpu::BindGroup>,
     samplers: HashMap<Filter, wgpu::Sampler>,
@@ -308,6 +317,7 @@ impl Gpu {
             sprite_layout: layout(&[Some(&globals_layout), Some(&texture_layout)]),
             tile_layout: layout(&[Some(&globals_layout), Some(&texture_layout), Some(&texture_layout)]),
             composite_layout: layout(&[Some(&globals_layout), Some(&texture_layout), Some(&chunk_depth_layout)]),
+            seam_layout: layout(&[Some(&globals_layout), Some(&texture_layout), Some(&texture_layout), Some(&texture_layout)]),
             sprite,
             world_tile,
             world_composite,
@@ -328,6 +338,8 @@ impl Gpu {
             chunk_depth_layout,
             pipelines: HashMap::new(),
             chunks: HashMap::new(),
+            views: HashMap::new(),
+            nearest: HashMap::new(),
             offscreen: None,
             textures: HashMap::new(),
             samplers: HashMap::new(),
@@ -448,6 +460,12 @@ impl Gpu {
             if let Tex2::Texture(id) = f.batches[i].tex2 {
                 self.ensure_texture(id, textures);
             }
+            if let Some(id) = f.batches[i].tex3 {
+                self.ensure_texture(id, textures);
+            }
+            if let (Tex2::Nearest, Some(id)) = (f.batches[i].tex2, f.batches[i].texture) {
+                self.ensure_nearest(id);
+            }
             self.ensure_pipeline(f.batches[i].key);
         }
         let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, .. } = f;
@@ -553,12 +571,20 @@ impl Gpu {
                         pass.set_bind_group(2, t2, &[]);
                         b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white)
                     }
+                    Tex2::Nearest => match b.texture.and_then(|id| self.nearest.get(&id)) {
+                        Some(bg) => bg,
+                        None => continue,
+                    },
                     Tex2::Offscreen => match self.offscreen.as_ref() {
                         Some(o) => &o.bind,
                         None => continue,
                     },
                     Tex2::None => b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white),
                 };
+                if let Some(id) = b.tex3 {
+                    let Some(t3) = self.textures.get(&id) else { continue };
+                    pass.set_bind_group(3, t3, &[]);
+                }
                 pass.set_viewport(0.0, 0.0, b.viewport.0.min(tw) as f32, b.viewport.1.min(th) as f32, 0.0, 1.0);
                 pass.set_pipeline(&self.pipelines[&b.key]);
                 pass.set_bind_group(0, &gbind, &[b.globals * GLOBALS_STRIDE as u32]);
@@ -588,20 +614,31 @@ impl Gpu {
                     WorldShader::Default { z } => {
                         // GL clip z (-1..1) to window depth.
                         let wz = (z + 1.0) * 0.5;
-                        v.iter_mut().for_each(|v| v.uv2 = [wz, 0.0]);
+                        v.iter_mut().for_each(|v| v.depth = [wz, 0.0]);
                         (Program::WorldDefault, Tex2::None)
                     }
                     WorldShader::TileDepth { depth, uv1, front, far, opaque } => {
                         for (vx, uv) in v.iter_mut().zip(uv1) {
                             vx.uv1 = *uv;
-                            vx.uv2 = [*front, *far];
+                            vx.depth = [*front, *far];
                         }
                         let Some(id) = depth.id else { return };
                         (if *opaque { Program::OpaqueDepth } else { Program::TileDepth }, Tex2::Texture(id))
                     }
+                    WorldShader::Seam { depth, uv1, mask, uv2, front, far } => {
+                        for ((vx, a), b) in v.iter_mut().zip(uv1).zip(uv2) {
+                            vx.uv1 = *a;
+                            vx.uv2 = *b;
+                            vx.depth = [*front, *far];
+                        }
+                        let (Some(id), Some(mid)) = (depth.id, mask.id) else { return };
+                        f.tex3 = Some(mid);
+                        (Program::Seam, Tex2::Texture(id))
+                    }
                 };
                 let key = self.key(f, program);
                 f.push(key, s.texture.as_ref().and_then(|t| t.id), tex2, &self.state, g, v);
+                f.tex3 = None;
             }
             DrawCmd::Quad { texture, x, y, w, h, color } => {
                 let mut dl = DrawList::default();
@@ -649,7 +686,7 @@ impl Gpu {
                 let mut v = sprite_vertices(&s);
                 for (vx, (u, vv)) in v.iter_mut().zip(s.u.iter().zip(s.v)) {
                     vx.uv = [*u, vv];
-                    vx.uv2 = [*chunk_depth, 0.0];
+                    vx.depth = [*chunk_depth, 0.0];
                 }
                 let key = self.key(f, Program::Composite);
                 f.push(key, None, Tex2::Chunk(*id, *mag_linear), &self.state, g, v);
@@ -660,6 +697,20 @@ impl Gpu {
                 f.target = PassTarget::Offscreen;
             }
             DrawCmd::OffscreenEnd => f.target = PassTarget::Main,
+            DrawCmd::ProjectedQuad { texture, pos, uv, color, nearest } => {
+                let Some(id) = texture.id else { return };
+                // The corners are already in normalised device coordinates.
+                let g = {
+                    let m = f.mvp;
+                    f.mvp = IDENTITY;
+                    let mm = f.mvp_for_target();
+                    f.mvp = m;
+                    f.globals(&self.state, mm, 0.5)
+                };
+                let v: [Vertex; 4] = std::array::from_fn(|i| Vertex { pos: [pos[i][0], pos[i][1]], uv: uv[i], color: *color, uv1: [0.0; 2], uv2: [0.0; 2], depth: [pos[i][2], 0.0] });
+                let key = self.key(f, Program::Projected);
+                f.push(key, Some(id), if *nearest { Tex2::Nearest } else { Tex2::None }, &self.state, g, v);
+            }
             DrawCmd::ScreenPass { x, y, w, h, tex, params } => {
                 let Some(o) = self.offscreen.as_ref() else { return };
                 let (tw, th) = (o.width as f32, o.height as f32);
@@ -672,7 +723,7 @@ impl Gpu {
                 g.clip_z = 0.5;
                 g.screen = [[params.desaturation, params.timer, f.viewport.0 as f32, f.viewport.1 as f32], [tw, th, 0.0, 0.0]];
                 let gi = f.push_globals(g);
-                let corner = |px: f32, py: f32, u: f32, v: f32| Vertex { pos: [px, py], uv: [u, v], color: 0xFFFF_FFFF, uv1: [0.0; 2], uv2: [0.0; 2] };
+                let corner = |px: f32, py: f32, u: f32, v: f32| Vertex { pos: [px, py], uv: [u, v], color: 0xFFFF_FFFF, uv1: [0.0; 2], uv2: [0.0; 2], depth: [0.0; 2] };
                 let v = [corner(*x, *y, u0, v_top), corner(x + w, *y, u1, v_top), corner(x + w, y + h, u1, v_bottom), corner(*x, y + h, u0, v_bottom)];
                 let key = PipeKey { blend: None, ..self.key(f, Program::Screen) };
                 f.push(key, None, Tex2::Offscreen, &self.state, gi, v);
@@ -793,8 +844,9 @@ impl Gpu {
         let one = d.width == 1 && d.height == 1;
         let filter = (d.min_nearest() || one, d.mag_nearest() || one, d.mipmaps() && !one, d.clamp_to_edge());
         let pixels: Vec<Vec<u8>> = levels.iter().map(|l| l.pixels.clone()).collect();
-        let bind_group = self.create_texture_bind_group(levels[0].width as u32, levels[0].height as u32, &pixels, filter);
+        let (bind_group, view) = self.create_texture(levels[0].width as u32, levels[0].height as u32, &pixels, filter);
         self.textures.insert(id, bind_group);
+        self.views.insert(id, view);
         // The original frees the CPU copy once uploaded.
         if let Some(d) = textures.data_mut(id) {
             d.image = None;
@@ -824,6 +876,28 @@ impl Gpu {
     }
 
     fn create_texture_bind_group(&mut self, width: u32, height: u32, levels: &[Vec<u8>], filter: Filter) -> wgpu::BindGroup {
+        self.create_texture(width, height, levels, filter).0
+    }
+
+    /// The bind group sampling texture `id` with `GL_NEAREST` both ways.
+    fn ensure_nearest(&mut self, id: u32) {
+        if self.nearest.contains_key(&id) {
+            return;
+        }
+        let Some(view) = self.views.get(&id).cloned() else { return };
+        let sampler = self.sampler((true, true, false, false));
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        self.nearest.insert(id, bg);
+    }
+
+    fn create_texture(&mut self, width: u32, height: u32, levels: &[Vec<u8>], filter: Filter) -> (wgpu::BindGroup, wgpu::TextureView) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -848,14 +922,15 @@ impl Gpu {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = self.sampler(filter);
         let device = &self.device;
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.texture_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
-        })
+        });
+        (bg, view)
     }
 }
 
@@ -871,6 +946,8 @@ struct FrameBuilder {
     target: PassTarget,
     /// The target a chunk texture's `ChunkEnd` returns to.
     chunk_return: PassTarget,
+    /// The seam mask of the quad being pushed.
+    tex3: Option<u32>,
     mvp: [[f32; 4]; 4],
     viewport: (u32, u32),
 }
@@ -886,6 +963,7 @@ impl Default for FrameBuilder {
             freed: Vec::new(),
             target: PassTarget::Main,
             chunk_return: PassTarget::Main,
+            tex3: None,
             mvp: IDENTITY,
             viewport: (1, 1),
         }
@@ -925,6 +1003,7 @@ impl FrameBuilder {
         }
         let (stencil_ref, scissor) = (st.stencil_ref, st.scissor_box());
         let viewport = self.viewport;
+        let tex3 = self.tex3;
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&verts);
         let start = self.indices.len() as u32;
@@ -937,6 +1016,7 @@ impl FrameBuilder {
                     && b.key == key
                     && b.texture == texture
                     && b.tex2 == tex2
+                    && b.tex3 == tex3
                     && b.stencil_ref == stencil_ref
                     && b.scissor == scissor
                     && b.globals == globals
@@ -946,7 +1026,7 @@ impl FrameBuilder {
                 b.indices.end = end
             }
             _ => {
-                self.batches.push(Batch { key, texture, tex2, stencil_ref, scissor, globals, viewport, indices: start..end });
+                self.batches.push(Batch { key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, indices: start..end });
                 pass.batches.end = self.batches.len();
             }
         }
@@ -957,7 +1037,7 @@ impl FrameBuilder {
     /// write the quad's depth, 1.
     fn clear(&mut self, st: &GlState, g: u32, bit: u32, color: [f64; 4]) {
         let c = pz_render::color_to_abgr(color[0] as f32, color[1] as f32, color[2] as f32, color[3] as f32);
-        let verts = [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)].map(|(x, y)| Vertex { pos: [x, y], uv: [0.0; 2], color: c, uv1: [0.0; 2], uv2: [0.0; 2] });
+        let verts = [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)].map(|(x, y)| Vertex { pos: [x, y], uv: [0.0; 2], color: c, uv1: [0.0; 2], uv2: [0.0; 2], depth: [0.0; 2] });
         let key = PipeKey { target: self.target.kind(), ..st.clear_key(bit) };
         let stencil = if bit == gl::STENCIL_BUFFER_BIT { st.clear_stencil } else { st.stencil_ref };
         let mut st2 = st.clone();
@@ -1021,7 +1101,7 @@ pub fn sprite_vertices(s: &pz_render::Sprite) -> [Vertex; 4] {
     std::array::from_fn(|i| {
         let ui = if s.flipped { flip[i] } else { i };
         let uv = if s.texture.is_some() { [s.u[ui], s.v[i]] } else { [0.0, 0.0] };
-        Vertex { pos: [s.x[i], s.y[i]], uv, color: s.color[i], uv1: [0.0; 2], uv2: [0.0; 2] }
+        Vertex { pos: [s.x[i], s.y[i]], uv, color: s.color[i], uv1: [0.0; 2], uv2: [0.0; 2], depth: [0.0; 2] }
     })
 }
 

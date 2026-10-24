@@ -51,16 +51,15 @@ pub struct SpriteFlags {
     pub never_cutaway: bool,
     pub door_trans: bool,
     pub garage_door: bool,
-    /// `WallN`, `WallW` and `WallNW`: the wall pieces cutaway walls are
-    /// built from.
     pub wall_n: bool,
     pub wall_w: bool,
     pub wall_nw: bool,
-    /// `forceRender`: never collapsed by a cutaway.
-    pub force_render: bool,
-    /// `FloorHeightOneThird` / `FloorHeightTwoThirds`: elevated floors.
+    pub hoppable_n: bool,
+    pub hoppable_w: bool,
     pub floor_height_one_third: bool,
     pub floor_height_two_thirds: bool,
+    /// `forceRender`: never collapsed by a cutaway.
+    pub force_render: bool,
     /// `transparentN` / `transparentW`, `exterior`: read by the circle
     /// stencil test of cut walls.
     pub transparent_n: bool,
@@ -73,6 +72,8 @@ pub struct SpriteFlags {
 pub struct SpriteInfo {
     pub name: String,
     pub tileset: String,
+    /// `tileSheetIndex`.
+    pub tile_sheet_index: i32,
     /// The texture of the frame drawn (`getTextureForFrame`).
     pub texture: Option<Texture>,
     pub soff_x: i32,
@@ -210,8 +211,30 @@ pub struct RenderSquare {
     pub vert_lights: [u32; 8],
     /// `getLightLevel(playerIndex)`.
     pub light_level: f32,
+    /// What the seam fixes need to know about the south and east
+    /// neighbours.
+    pub seam: SeamNeighbours,
     /// Rooms, buildings and visibility for cutaways and occlusion.
     pub cut: SquareCutawayInfo,
+}
+
+/// The neighbour tests `renderSeamFix2_Floor` and `renderSeamFix2_Wall`
+/// make.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeamNeighbours {
+    /// The south square exists and has a floor.
+    pub s_floor: bool,
+    /// The east square exists and has a floor.
+    pub e_floor: bool,
+    /// The south/east square has the `water` flag (water quality not 2).
+    pub s_water: bool,
+    pub e_water: bool,
+    /// The south square has a west wall (`getWallType() & 4`), an
+    /// east-west window frame or `DoorWallW`.
+    pub s_wall_w: bool,
+    /// The east square has a north wall (`getWallType() & 1`), a
+    /// north-south window frame or `DoorWallN`.
+    pub e_wall_n: bool,
 }
 
 /// A `BuildingDef` (and its `IsoBuilding`).
@@ -283,7 +306,7 @@ impl Default for SquareCutawayInfo {
 
 impl RenderSquare {
     pub fn new(x: i32, y: i32, z: i32) -> Self {
-        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, cut: SquareCutawayInfo::default() }
+        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default() }
     }
 
     /// `getFloor()`: the first solid-floor object.
@@ -306,6 +329,10 @@ pub trait DepthMaps {
     fn preset(&self, preset: DepthPreset) -> Option<Texture>;
     /// `getDefaultDepthTexture()` when not empty.
     fn default_texture(&self) -> Option<Texture>;
+    /// `TileSeamManager.getTexture(tile)`.
+    fn seam_mask(&self, _tile: crate::seam::SeamTile) -> Option<Texture> {
+        None
+    }
 }
 
 impl DepthMaps for pz_render::tile_depth::TileDepthTextureManager {

@@ -11,10 +11,13 @@
 //! structures or occlusion are skipped, objects take the cutaway target
 //! alphas and cut doors and windows are lit as `DoWallLighting*` does.
 //!
-//! Not yet ported: trees (`FBORenderTrees`), fading and obscuring objects,
-//! cut walls drawn with `DoCutawayShader` (the circle stencil and the
-//! `wallcutaways` masks; such walls are drawn whole), snow, blood, puddles,
-//! seam fixes and overlay sprites.
+//! Trees are drawn in the translucent pass through `FBORenderTrees`
+//! ([`crate::trees`]); floors and walls get `renderSeamFix2_*`
+//! ([`crate::seam`]).
+//!
+//! Not yet ported: fading and obscuring objects, cut walls drawn with
+//! `DoCutawayShader` (the circle stencil and the `wallcutaways` masks; such
+//! walls are drawn whole), snow, blood, puddles and overlay sprites.
 
 use pz_render::{gl, DrawCmd};
 
@@ -120,6 +123,21 @@ pub struct ChunkRenderer<'a> {
     pub depth_maps: &'a dyn DepthMaps,
     /// This frame's cutaways; `None` renders every square uncut.
     pub cutaways: Option<CutawayView<'a>>,
+    /// The screen size, for the tree camera.
+    pub view_size: (u32, u32),
+    /// This frame's trees (`FBORenderTrees`, with its depth stagger).
+    pub trees: std::cell::RefCell<crate::trees::Trees>,
+}
+
+impl<'a> ChunkRenderer<'a> {
+    pub fn new(cam: Camera, depth_maps: &'a dyn DepthMaps, view_size: (u32, u32)) -> Self {
+        ChunkRenderer { cam, depth_maps, view_size, trees: Default::default(), cutaways: None }
+    }
+
+    /// This renderer with this frame's cutaways.
+    pub fn with_cutaways(self, cutaways: Option<CutawayView<'a>>) -> Self {
+        ChunkRenderer { cutaways, ..self }
+    }
 }
 
 /// The squares of one chunk level, `[x + y * 8]`.
@@ -208,21 +226,29 @@ impl ChunkRenderer<'_> {
                 render_translucent(&mut ctx, sq, obj, cv);
             }
         }
-        // Translucent objects, sorted by x + y * worldRight.
+        // Translucent objects, sorted by x + y * worldRight. Trees are
+        // collected and drawn (FBORenderTrees) before the next other
+        // object and at the end.
         let mut sorted: Vec<&RenderSquare> = at_level.iter().copied().filter(|s| has(s, &[Layer::Translucent, Layer::TranslucentSE])).collect();
         sorted.sort_by_key(|s| (s.y, s.x));
+        let mut trees = self.trees.borrow_mut();
+        let (vw, vh) = (self.view_size.0 as f32 * self.cam.zoom, self.view_size.1 as f32 * self.cam.zoom);
         for sq in sorted {
             begin(&mut ctx);
             for layer in [Layer::Translucent, Layer::TranslucentSE] {
                 for obj in sq.objects.iter().filter(|o| alpha::render_layer(cv, sq, o) == layer) {
                     if obj.kind == ObjectKind::Tree {
-                        // FBORenderTrees is not ported yet.
+                        add_tree(&mut trees, sq, obj);
                         continue;
+                    }
+                    if !trees.trees.is_empty() {
+                        flush_trees(&mut trees, &self.cam, vw, vh, ctx.out);
                     }
                     render_translucent(&mut ctx, sq, obj, cv);
                 }
             }
         }
+        flush_trees(&mut trees, &self.cam, vw, vh, ctx.out);
         ctx.out.push(DrawCmd::DepthMask(false));
         ctx.out.push(DrawCmd::DepthFunc(gl::ALWAYS));
     }
@@ -275,11 +301,73 @@ fn render_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, index: usize) {
     let col = prepare_color(obj, ColorInfo::WHITE);
     let (x, y, z) = (sq.x as f32, sq.y as f32, sq.z as f32);
     let offset_y = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32;
+    if sq.floor() == Some(index) && ctx.chunk.is_some() {
+        seam_fix2_floor(ctx, sq, obj, sprite, col, [v[0], v[1], v[2], v[3]]);
+    }
     sprite::render(
         ctx,
-        &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: main },
+        &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: main, seam: None },
     );
     render_attached(ctx, obj, x, y, z, Dir::Other, ColorInfo::WHITE, false, Modifier::FloorAttached(shaper));
+}
+
+/// `FBORenderCell.renderSeamFix2_Floor` (shore seams not ported).
+fn seam_fix2_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, sprite: &crate::world::SpriteInfo, col: ColorInfo, seam_col: [u32; 4]) {
+    use crate::seam::SeamTile;
+    let f = &sprite.flags;
+    let (x, y, z) = (sq.x as f32, sq.y as f32, sq.z as f32);
+    let oy = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32 - 3.0;
+    let pick = |base: SeamTile, one: SeamTile, two: SeamTile| if f.floor_height_two_thirds { two } else if f.floor_height_one_third { one } else { base };
+    let draw = |ctx: &mut SpriteCtx<'_>, tile: SeamTile, ox: f32| {
+        sprite::render(
+            ctx,
+            &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir: Dir::Other, offset_x: ox, offset_y: oy, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::None, seam: Some((tile, seam_col)) },
+        );
+    };
+    if sq.y.rem_euclid(8) == 7 && sq.seam.s_floor && !sq.seam.s_water {
+        draw(ctx, pick(SeamTile::FloorSouth, SeamTile::FloorSouthOneThird, SeamTile::FloorSouthTwoThirds), obj.offset_x + 6.0);
+    }
+    if sq.x.rem_euclid(8) == 7 && sq.seam.e_floor && !sq.seam.e_water {
+        draw(ctx, pick(SeamTile::FloorEast, SeamTile::FloorEastOneThird, SeamTile::FloorEastTwoThirds), obj.offset_x - 6.0);
+    }
+}
+
+/// `FBORenderCell.renderSeamFix2_Wall`.
+fn seam_fix2_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, col: ColorInfo, shaper: WallShaper, seam_col: [u32; 4]) {
+    use crate::seam::SeamTile;
+    let Some(sprite) = obj.sprite.as_deref() else { return };
+    let f = &sprite.flags;
+    if f.hoppable_n || f.hoppable_w {
+        return;
+    }
+    if (80..=82).contains(&sprite.tile_sheet_index) && sprite.tileset == "carpentry_02" {
+        return;
+    }
+    if sprite.tileset == "walls_logs" {
+        return;
+    }
+    let (x, y, z) = (sq.x as f32, sq.y as f32, sq.z as f32);
+    let oy = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32 - 3.0;
+    let draw = |ctx: &mut SpriteCtx<'_>, tile: SeamTile, dir: Dir, ox: f32| {
+        sprite::render(
+            ctx,
+            &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir, offset_x: ox, offset_y: oy, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::Wall(shaper), seam: Some((tile, seam_col)) },
+        );
+    };
+    let south = sq.y.rem_euclid(8) == 7 && sq.seam.s_wall_w;
+    let east = sq.x.rem_euclid(8) == 7 && sq.seam.e_wall_n;
+    if f.wall_nw && shaper.part == WallPart::W && south {
+        draw(ctx, SeamTile::WallSouth, Dir::NW, obj.offset_x + 6.0);
+    }
+    if f.wall_nw && shaper.part == WallPart::N && east {
+        draw(ctx, SeamTile::WallEast, Dir::NW, obj.offset_x - 6.0);
+    }
+    if (f.wall_w || f.window_w) && south {
+        draw(ctx, SeamTile::WallSouth, Dir::W, obj.offset_x + 6.0);
+    }
+    if (f.wall_n || f.window_n) && east {
+        draw(ctx, SeamTile::WallEast, Dir::N, obj.offset_x - 6.0);
+    }
 }
 
 /// `IsoObject.renderAttachedSprites`.
@@ -320,10 +408,32 @@ fn render_attached(ctx: &mut SpriteCtx<'_>, obj: &RenderObject, x: f32, y: f32, 
         }
         sprite::render(
             ctx,
-            &SpriteDraw { sprite: &a.sprite, obj: Some(obj), main: false, x, y, z, dir, offset_x: obj.offset_x, offset_y, col: ColorInfo { a: a.alpha, ..col }, alpha: a.alpha, flip: false, modifier: m },
+            &SpriteDraw { sprite: &a.sprite, obj: Some(obj), main: false, x, y, z, dir, offset_x: obj.offset_x, offset_y, col: ColorInfo { a: a.alpha, ..col }, alpha: a.alpha, flip: false, modifier: m, seam: None },
         );
     }
     ctx.out.push(DrawCmd::DepthMask(true));
+}
+
+/// `IsoTree.render` in the per-frame pass: the trunk/base texture and the
+/// first attached sprite's (foliage) texture as one billboard, lit by the
+/// square.
+fn add_tree(trees: &mut crate::trees::Trees, sq: &RenderSquare, obj: &RenderObject) {
+    let base = obj.sprite.as_ref().and_then(|s| s.texture.clone());
+    let foliage = obj.attached.first().and_then(|a| a.sprite.texture.clone());
+    let c = sq.light_info;
+    trees.add(base, foliage, sq.x as f32, sq.y as f32, sq.z as f32, [c.r, c.g, c.b, c.a], false, 1.0, obj.alpha);
+}
+
+/// `SpriteRenderer.drawGeneric(FBORenderTrees.current)`, then the GL state
+/// the following draws expect.
+fn flush_trees(trees: &mut crate::trees::Trees, cam: &Camera, w: f32, h: f32, out: &mut Vec<DrawCmd>) {
+    if trees.trees.is_empty() {
+        return;
+    }
+    trees.render(cam, w, h, out);
+    trees.trees.clear();
+    out.push(DrawCmd::DepthMask(false));
+    out.push(DrawCmd::BlendFunc(gl::ONE, gl::ONE_MINUS_SRC_ALPHA));
 }
 
 /// `FBORenderCell.renderTranslucent(object)`: with the default blend, the
@@ -403,7 +513,7 @@ fn wall_lighting_n(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObjec
     let colu_new = wall_contrast(colu, colu2);
     let coll2_new = wall_contrast(coll2, coll);
     let shaper = WallShaper { col: [colu2, coll2_new, coll, colu_new], tint: 0, part: WallPart::Whole };
-    perform_draw_wall(ctx, sq, obj, Dir::N, shaper, draw);
+    perform_draw_wall(ctx, sq, obj, Dir::N, shaper, [coll2_new, colu2, colu_new, coll], draw);
 }
 
 /// `IsoGridSquare.DoWallLightingW`.
@@ -414,7 +524,7 @@ fn wall_lighting_w(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObjec
     let coll2_new = wall_contrast(coll2, coll);
     let shaper = WallShaper { col: [coll2_new, colu2, colu_new, coll], tint: 0, part: WallPart::Whole };
     let dir = if obj.is_wall_se() { Dir::SE } else { Dir::W };
-    perform_draw_wall(ctx, sq, obj, dir, shaper, draw);
+    perform_draw_wall(ctx, sq, obj, dir, shaper, [coll2_new, colu2, colu_new, coll], draw);
 }
 
 /// `IsoGridSquare.DoWallLightingNW`: the corner piece drawn as its north
@@ -422,14 +532,14 @@ fn wall_lighting_w(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObjec
 fn wall_lighting_nw(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject) {
     let v = &sq.vert_lights;
     let (colu, coll, colr, colu2, coll2, colr2) = (v[0], v[3], v[1], v[4], v[7], v[5]);
-    perform_draw_wall(ctx, sq, obj, Dir::NW, WallShaper { col: [colu2, colr2, colr, colu], tint: 0, part: WallPart::N }, plain_wall(obj));
-    perform_draw_wall(ctx, sq, obj, Dir::NW, WallShaper { col: [coll2, colu2, colu, coll], tint: 0, part: WallPart::W }, plain_wall(obj));
+    perform_draw_wall(ctx, sq, obj, Dir::NW, WallShaper { col: [colu2, colr2, colr, colu], tint: 0, part: WallPart::N }, [colu2, colr2, colr, colu], plain_wall(obj));
+    perform_draw_wall(ctx, sq, obj, Dir::NW, WallShaper { col: [coll2, colu2, colu, coll], tint: 0, part: WallPart::W }, [coll2, colu2, colu, coll], plain_wall(obj));
 }
 
 /// `performDrawWall` and `IsoObject.renderWallTile`. A
 /// [`WallDraw::Cutaway`] wall is drawn whole until `DoCutawayShader` is
 /// ported.
-fn perform_draw_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, dir: Dir, shaper: WallShaper, draw: WallDraw) {
+fn perform_draw_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, dir: Dir, shaper: WallShaper, seam_col: [u32; 4], draw: WallDraw) {
     let sprite = obj.sprite.as_deref().expect("sprite");
     let t = sprite.tile_type;
     let is_door = matches!(t, TileType::DoorFrN | TileType::DoorN | TileType::DoorFrW | TileType::DoorW);
@@ -444,9 +554,12 @@ fn perform_draw_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObj
     let offset_y = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32;
     ctx.out.push(DrawCmd::GlEnable(gl::ALPHA_TEST));
     let col = prepare_color(obj, col);
+    if ctx.chunk.is_some() {
+        seam_fix2_wall(ctx, sq, obj, col, shaper, seam_col);
+    }
     sprite::render(
         ctx,
-        &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::Wall(shaper) },
+        &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::Wall(shaper), seam: None },
     );
     render_attached(ctx, obj, x, y, z, dir, col, !no_wall_lighting, Modifier::Wall(shaper));
     // renderAttachedSpritesWithNoWallLighting: those attached sprites with
@@ -455,7 +568,7 @@ fn perform_draw_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObj
         let c = ColorInfo { r: light.r, g: light.g, b: light.b, a: a.alpha };
         sprite::render(
             ctx,
-            &SpriteDraw { sprite: &a.sprite, obj: Some(obj), main: false, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col: c, alpha: a.alpha, flip: false, modifier: Modifier::None },
+            &SpriteDraw { sprite: &a.sprite, obj: Some(obj), main: false, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col: c, alpha: a.alpha, flip: false, modifier: Modifier::None, seam: None },
         );
     }
 }
@@ -487,7 +600,7 @@ fn render_not_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &Ren
     let offset_y = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32;
     sprite::render(
         ctx,
-        &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::None },
+        &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::None, seam: None },
     );
     render_attached(ctx, obj, x, y, z, Dir::Other, sq.light_info, false, Modifier::None);
 }

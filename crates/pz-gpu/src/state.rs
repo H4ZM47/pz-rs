@@ -29,11 +29,15 @@ pub enum Program {
     Composite,
     /// `screen` (`WeatherShader`).
     Screen,
+    /// `vboRenderer_PositionColorUV` for projected quads.
+    Projected,
+    /// `seamFix2` (`TileSeamShader`).
+    Seam,
 }
 
 impl Program {
     pub fn uses_world_shader(self) -> bool {
-        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite)
+        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::Seam)
     }
 }
 
@@ -210,6 +214,7 @@ pub struct Programs {
     pub sprite_layout: wgpu::PipelineLayout,
     pub tile_layout: wgpu::PipelineLayout,
     pub composite_layout: wgpu::PipelineLayout,
+    pub seam_layout: wgpu::PipelineLayout,
 }
 
 pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu::TextureFormat, key: PipeKey) -> wgpu::RenderPipeline {
@@ -245,7 +250,8 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
     let (module, layout) = match key.program {
         Program::TileDepth | Program::OpaqueDepth => (&programs.world_tile, &programs.tile_layout),
         Program::Composite => (&programs.world_composite, &programs.composite_layout),
-        Program::WorldDefault => (&programs.world_tile, &programs.sprite_layout),
+        Program::Seam => (&programs.world_tile, &programs.seam_layout),
+        Program::WorldDefault | Program::Projected => (&programs.world_tile, &programs.sprite_layout),
         Program::Default | Program::Clear => (&programs.sprite, &programs.sprite_layout),
         Program::Screen => (&programs.screen, &programs.sprite_layout),
     };
@@ -257,9 +263,11 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::OpaqueDepth => ("vs_world", "fs_opaque"),
         Program::Composite => ("vs_world", "fs_composite"),
         Program::Screen => ("vs_screen", "fs_screen"),
+        Program::Projected => ("vs_world", "fs_projected"),
+        Program::Seam => ("vs_world", "fs_seam"),
     };
     let attributes: &[wgpu::VertexAttribute] = if world {
-        &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32x2, 4 => Float32x2]
+        &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x2]
     } else {
         &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4]
     };
@@ -275,7 +283,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
             module,
             entry_point: Some(vs),
             compilation_options: Default::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout { array_stride: 36, step_mode: wgpu::VertexStepMode::Vertex, attributes })],
+            buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<crate::Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes })],
         },
         primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
         depth_stencil: Some(wgpu::DepthStencilState {

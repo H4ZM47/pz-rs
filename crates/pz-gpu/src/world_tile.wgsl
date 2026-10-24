@@ -38,3 +38,23 @@ fn fs_opaque(in: VsOut) -> DepthOut {
     return o;
 }
 
+
+// `seamFix2`: the tile drawn only where the seam mask covers it.
+@group(3) @binding(0) var seam_mask: texture_2d<f32>;
+@group(3) @binding(1) var seam_sampler: sampler;
+
+@fragment
+fn fs_seam(in: VsOut) -> DepthOut {
+    var c = textureSample(diffuse, diffuse_sampler, in.uv);
+    let d = textureSample(depth_map, depth_sampler, in.uv1).r;
+    let m = textureSample(seam_mask, seam_sampler, in.uv2);
+    c = c * in.col;
+    c = vec4<f32>(c.rgb * in.col.a, c.a);
+    if (!(d * m.a > 0.0) || !alpha_pass(c.a)) {
+        discard;
+    }
+    var o: DepthOut;
+    o.color = c;
+    o.depth = (in.depth.y - in.depth.x) * d + in.depth.x;
+    return o;
+}

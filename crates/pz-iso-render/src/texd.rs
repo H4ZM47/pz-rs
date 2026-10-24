@@ -13,6 +13,9 @@ pub struct TexDraw {
     /// `tex1` and its corner coordinates (`tex1U0..3`, `tex1V0..3`).
     pub tex1: Option<Texture>,
     pub uv1: [[f32; 2]; 4],
+    /// `tex2` (the seam mask) and its corner coordinates.
+    pub tex2: Option<Texture>,
+    pub uv2: [[f32; 2]; 4],
 }
 
 impl TexDraw {
@@ -22,7 +25,7 @@ impl TexDraw {
         let mut dl = pz_render::DrawList::default();
         dl.render(Some(tex), x, y, w, h, c);
         match dl.cmds.pop()? {
-            DrawCmd::Sprite(sprite) => Some(TexDraw { sprite, tex1: None, uv1: [[0.0; 2]; 4] }),
+            DrawCmd::Sprite(sprite) => Some(TexDraw { sprite, tex1: None, uv1: [[0.0; 2]; 4], tex2: None, uv2: [[0.0; 2]; 4] }),
             _ => None,
         }
     }
@@ -40,6 +43,7 @@ impl TexDraw {
     pub fn into_cmd(self, shader: WorldShader) -> DrawCmd {
         let shader = match shader {
             WorldShader::TileDepth { depth, front, far, opaque, .. } => WorldShader::TileDepth { depth, uv1: self.uv1, front, far, opaque },
+            WorldShader::Seam { depth, mask, front, far, .. } => WorldShader::Seam { depth, uv1: self.uv1, mask, uv2: self.uv2, front, far },
             s => s,
         };
         DrawCmd::WorldSprite(self.sprite, shader)

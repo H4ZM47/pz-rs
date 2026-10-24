@@ -10,6 +10,7 @@ use pz_render::{gl, DrawCmd, Rgba, Texture, WorldShader};
 use crate::chunk::ChunkTexture;
 use crate::color::ColorInfo;
 use crate::texd::{self, FloorShaper, TexDraw, WallPart, WallShaper};
+use crate::seam::{SeamModifier, SeamTile};
 use crate::world::{DepthMaps, DepthPreset, ObjectKind, RenderObject, SpriteInfo};
 use crate::Camera;
 
@@ -82,6 +83,8 @@ pub struct SpriteDraw<'a> {
     pub alpha: f32,
     pub flip: bool,
     pub modifier: Modifier,
+    /// `IsoSprite.seamFix2` and the seam modifier's vertex colours.
+    pub seam: Option<(SeamTile, [u32; 4])>,
 }
 
 /// The steady-state instance scale `performRenderFrame` settles on: 64x128
@@ -246,6 +249,10 @@ pub fn render(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>) {
         ctx.out.push(DrawCmd::DepthMask(false));
     }
 
+    if let Some((tile, col)) = d.seam {
+        render_seam(ctx, d, tex, tile, col, info, sx, sy);
+        return;
+    }
     let wall = d.modifier.wall().is_some_and(|w| w.part == WallPart::Whole || w.part == WallPart::SliceN || w.part == WallPart::SliceW);
     let depth: Option<(Texture, f32, f32, (f32, f32))> = if d.dir == Dir::NW && d.modifier.wall().is_some() {
         setup_tile_depth_wall(ctx, d).map(|t| {
@@ -324,4 +331,46 @@ pub fn render(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>) {
     };
     d.modifier.apply(&mut draw);
     ctx.out.push(draw.into_cmd(shader));
+}
+
+/// A sprite drawn with `seamFix2` set: `TileSeamModifier` in place of the
+/// other modifiers and the seam shader.
+#[allow(clippy::too_many_arguments)]
+fn render_seam(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, tex: &Texture, tile: SeamTile, col: [u32; 4], info: ColorInfo, sx: f32, sy: f32) {
+    let Some(mask) = ctx.depth_maps.seam_mask(tile) else { return };
+    let s = d.sprite;
+    let (depth, z2) = if tile.is_floor() {
+        // setupTileDepth: the sprite's own depth texture, else the floor
+        // preset.
+        let mut z2 = d.z;
+        if let Some(o) = d.obj {
+            if o.render_y_offset != 0.0 {
+                z2 += o.render_y_offset / 96.0;
+            }
+        }
+        let t = match &s.depth_texture {
+            Some(t) => Some(t.clone()),
+            None if s.flags.solidfloor || s.flags.floor_overlay || s.render_layer == 1 => ctx.depth_maps.preset(DepthPreset::Floor),
+            None => None,
+        };
+        (t, z2)
+    } else {
+        // TileSeamModifier.setupWallDepth.
+        (s.depth_texture.clone().or_else(|| ctx.depth_maps.preset(wall_preset(s, d.dir))), d.z)
+    };
+    let Some(depth) = depth else { return };
+    let (front, far) = tile_depths(ctx, d.x, d.y, d.z, z2);
+    let scale = instance_scale(tex);
+    let (mut w, mut h) = (tex.width as f32, tex.height as f32);
+    let (mut tx, mut ty) = (sx, sy);
+    if scale != 1.0 {
+        tx += tex.offset_x * (scale - 1.0);
+        w *= scale;
+        ty += tex.offset_y * (scale - 1.0);
+        h *= scale;
+    }
+    let Some(mut draw) = TexDraw::new(tex, tx + tex.offset_x, ty + tex.offset_y, w, h, Rgba(info.r, info.g, info.b, info.a)) else { return };
+    let m = if tile.is_floor() { SeamModifier::floor(tile, depth.clone(), mask.clone(), col) } else { SeamModifier { tile, depth: depth.clone(), mask: mask.clone(), col } };
+    m.accept(&mut draw);
+    ctx.out.push(draw.into_cmd(WorldShader::Seam { depth, uv1: [[0.0; 2]; 4], mask, uv2: [[0.0; 2]; 4], front, far }));
 }
