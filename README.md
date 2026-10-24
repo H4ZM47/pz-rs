@@ -19,6 +19,7 @@ to Rust with the original semantics and the same Lua-facing API.
 | `pz-render` | `zombie.core.textures`, `SpriteRenderer` |
 | `pz-text` | `zombie.core.Translator`, `zombie.ui.TextManager`, `AngelCodeFont` |
 | `pz-ui` | `zombie.ui.UIElement`, `UIManager` |
+| `pz-inventory` | `zombie.inventory` items, `ItemContainer`, `zombie.world.WorldDictionary` |
 | `pz-world` | `zombie.iso` map files, `IsoMetaGrid`, `IsoCell`/`IsoChunk`/`IsoGridSquare` |
 | `pz-scripts` | `zombie.scripting` (`ScriptParser`, `ScriptManager`, script objects) |
 | `pz-classfile` | reads built-in constants from the installed `projectzomboid.jar` (no JVM) |

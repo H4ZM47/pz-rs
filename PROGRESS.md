@@ -38,6 +38,19 @@ Status of the Rust port. Update this file with every merged change.
   records, which the original re-saves through classes not ported here);
   4,085 map-loaded chunks saved here load and re-save as expected in the
   original. Checked locally.
+- Items (`pz-inventory`): `InventoryItem` and the subclasses saves hold
+  (Food, Clothing, AlarmClock(Clothing), HandWeapon with weapon parts,
+  DrainableComboItem, ComboItem, WeaponPart, Literature, Key, Moveable,
+  Radio, InventoryContainer, MapItem with opaque symbols), creation from
+  item scripts, `save`/`load` with their load-time changes,
+  `ItemContainer` and `CompressIdenticalItems`, mod data tables and
+  `WorldDictionary.bin`. Chunk files now hold decoded items: 14,850 of
+  14,894 chunk re-saves are byte-identical to the original's (13 still
+  differ in items: keys saved with id -1 draw a random id, and a
+  respirator's alternate model name), 62,900 of 62,914 items load with the
+  original's field values (the 14 others are those random key ids), and
+  the original loads the chunks written here with the same item fields.
+  `AnimalInventoryItem` stays raw bytes. Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all
