@@ -138,6 +138,46 @@ impl IsoGridSquare {
     }
 }
 
+/// `zombie.iso.enums.ChunkGenerationStatus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChunkGenerationStatus {
+    Core,
+    Modded,
+    Worldgen,
+}
+
+/// `EnumSet<ChunkGenerationStatus>`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChunkGenerationStatusSet(u8);
+
+impl ChunkGenerationStatusSet {
+    fn bit(s: ChunkGenerationStatus) -> u8 {
+        1 << s as u8
+    }
+    pub fn contains(&self, s: ChunkGenerationStatus) -> bool {
+        self.0 & Self::bit(s) != 0
+    }
+    pub fn add(&mut self, s: ChunkGenerationStatus) {
+        self.0 |= Self::bit(s);
+    }
+    pub fn remove(&mut self, s: ChunkGenerationStatus) {
+        self.0 &= !Self::bit(s);
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+    /// Members in ordinal order, as `EnumSet` iterates.
+    pub fn iter(&self) -> impl Iterator<Item = ChunkGenerationStatus> + '_ {
+        [
+            ChunkGenerationStatus::Core,
+            ChunkGenerationStatus::Modded,
+            ChunkGenerationStatus::Worldgen,
+        ]
+        .into_iter()
+        .filter(|s| self.contains(*s))
+    }
+}
+
 /// `IsoChunk` (map-loading fields).
 pub struct IsoChunk {
     pub wx: i32,
@@ -149,7 +189,13 @@ pub struct IsoChunk {
     /// `lotheader`: header file name, set when the lot came from the
     /// top-level header.
     pub lotheader: Option<String>,
+    /// True when any lot placed into the chunk came from a modded map
+    /// folder (kept alongside `generation_status` for existing callers).
     pub modded: bool,
+    /// `chunkGenerationStatus` (`isModded()` / `addModded` / `rmModded`):
+    /// `CORE` or `MODDED` from each placed lot's map folder, `WORLDGEN`
+    /// when world generation ran on the chunk.
+    pub generation_status: ChunkGenerationStatusSet,
     /// The chunk-level fields of the chunk file; see
     /// [`crate::save::chunk_file`].
     pub saved: ChunkSaveData,
@@ -215,6 +261,22 @@ impl Default for ChunkSaveData {
 }
 
 impl IsoChunk {
+    /// `addModded(status)`.
+    pub fn add_modded(&mut self, status: ChunkGenerationStatus) {
+        self.generation_status.add(status);
+        if status == ChunkGenerationStatus::Modded {
+            self.modded = true;
+        }
+    }
+
+    /// `rmModded(status)`.
+    pub fn rm_modded(&mut self, status: ChunkGenerationStatus) {
+        self.generation_status.remove(status);
+        if status == ChunkGenerationStatus::Modded {
+            self.modded = false;
+        }
+    }
+
     pub fn new(wx: i32, wy: i32) -> Self {
         IsoChunk {
             wx,
@@ -224,6 +286,7 @@ impl IsoChunk {
             squares: vec![vec![None; 64]],
             lotheader: None,
             modded: false,
+            generation_status: ChunkGenerationStatusSet::default(),
             saved: ChunkSaveData::default(),
             erosion: None,
             add_zombies: false,
@@ -552,11 +615,16 @@ pub fn load_cell_binary_chunk(
         env,
     );
     if count > 0 {
-        chunk.modded |= meta.map_files[mf]
+        let modded = meta.map_files[mf]
             .info_file_modded
             .get(&pack)
             .copied()
             .unwrap_or(false);
+        chunk.add_modded(if modded {
+            ChunkGenerationStatus::Modded
+        } else {
+            ChunkGenerationStatus::Core
+        });
     }
     if count == 64 {
         return true;
@@ -580,11 +648,16 @@ pub fn load_cell_binary_chunk(
             env,
         );
         if count > 0 {
-            chunk.modded |= meta.map_files[i]
+            let modded = meta.map_files[i]
                 .info_file_modded
                 .get(&pack)
                 .copied()
                 .unwrap_or(false);
+            chunk.add_modded(if modded {
+                ChunkGenerationStatus::Modded
+            } else {
+                ChunkGenerationStatus::Core
+            });
         }
         if count == 64 {
             break;
@@ -640,5 +713,27 @@ impl IsoCell {
         self.chunks
             .get(&(wx, wy))?
             .get_grid_square(x - wx * 8, y - wy * 8, z)
+    }
+}
+
+#[cfg(test)]
+mod generation_status_tests {
+    use super::*;
+
+    #[test]
+    fn add_and_remove() {
+        let mut ch = IsoChunk::new(0, 0);
+        assert!(ch.generation_status.is_empty());
+        ch.add_modded(ChunkGenerationStatus::Worldgen);
+        ch.add_modded(ChunkGenerationStatus::Core);
+        let v: Vec<_> = ch.generation_status.iter().collect();
+        assert_eq!(
+            v,
+            vec![ChunkGenerationStatus::Core, ChunkGenerationStatus::Worldgen]
+        );
+        ch.add_modded(ChunkGenerationStatus::Modded);
+        assert!(ch.modded);
+        ch.rm_modded(ChunkGenerationStatus::Modded);
+        assert!(!ch.modded && !ch.generation_status.contains(ChunkGenerationStatus::Modded));
     }
 }
