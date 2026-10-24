@@ -20,6 +20,13 @@ Status of the Rust port. Update this file with every merged change.
   37 script types load with the same per-type order and script versions as
   the original (checked locally against the original `ScriptManager`); only
   `StringList` has its typed class so far, others load as raw blocks.
+- `pz-scripts` script classes: items, recipes, evolved recipes, fixing,
+  models, sounds, animations, ragdolls, vehicles and templates, fluids,
+  energy, timed actions, XUI scripts, entities with all components, craft
+  recipes, item configs, traits/professions, item filters, hit reactions.
+  Field-level dumps of every Build 42 script of these types match the
+  original (checked locally). Built-in registry keys come from the installed
+  `projectzomboid.jar` via `pz-classfile`.
 
 ## In progress
 - StringLib, OsLib.

@@ -104,6 +104,7 @@ version = "0.1.0"
 name = "pz-scripts"
 version = "0.1.0"
 dependencies = [
+ "pz-classfile",
  "pz-fs",
 ]
 

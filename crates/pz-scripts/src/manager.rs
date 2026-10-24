@@ -352,6 +352,8 @@ pub struct ScriptManager {
     log: RefCell<Vec<LogLine>>,
     /// Per-type state owned by individual script classes (Java statics).
     pub statics: crate::objects::Statics,
+    /// `Registries` (the original's static registries).
+    pub registries: crate::registry::Registries,
 }
 
 impl Default for ScriptManager {
@@ -384,7 +386,16 @@ impl ScriptManager {
             hooks: RefCell::new(Rc::new(NoHooks)),
             log: RefCell::default(),
             statics: Default::default(),
+            registries: Default::default(),
         }
+    }
+
+    /// Registers the game's built-in registry keys, read from the installed
+    /// `projectzomboid.jar` (the `Registries` bootstrap).
+    pub fn load_builtin_registries(&self, jar_path: &Path) -> ScriptResult {
+        let jar = pz_classfile::Jar::open(jar_path).map_err(|e| ScriptError::new(format!("{}: {e}", jar_path.display())))?;
+        crate::registry::builtin::register_builtin(&self.registries, &jar)?;
+        crate::objects::items::load_builtin_constants(self, jar_path)
     }
 
     pub fn set_hooks(&self, hooks: Rc<dyn ScriptHooks>) {
@@ -502,8 +513,14 @@ impl ScriptManager {
         parser::parse_with(body, self.current_script_object.borrow().as_deref())
     }
 
-    pub(crate) fn on_script_load(&self, type_: ScriptType, mode: ScriptLoadMode, script: &ScriptRef) {
+    /// `ScriptBucket.onScriptLoad` overrides: `VehicleScript.Loaded()` for
+    /// vehicles, then the engine hook.
+    pub(crate) fn on_script_load(&self, type_: ScriptType, mode: ScriptLoadMode, script: &ScriptRef) -> ScriptResult {
+        if type_ == ScriptType::Vehicle {
+            crate::objects::vehicles::on_script_load(self, mode, script)?;
+        }
         self.hooks().on_script_load(self, type_, mode, script);
+        Ok(())
     }
 
     pub fn checksum(&self) -> String {
@@ -712,6 +729,12 @@ impl ScriptManager {
             let p = GameFs::new(root.clone()).resolve(rel)?;
             p.is_file().then_some(p)
         })
+    }
+
+    /// Whether `rel` (a lower-case game path) resolves to a file in the game
+    /// or an active mod (`ZomboidFileSystem.activeFileMap`).
+    pub fn active_file_exists(&self, rel: &str) -> bool {
+        self.resolve_active_file(rel).is_some()
     }
 
     /// `ScriptManager.Load()`: reads every script file of the game and the
@@ -974,15 +997,20 @@ impl ScriptManager {
         if t.contains('.') {
             return Some(t.to_string());
         }
+        // ModelScript.getFullType uses the model's own `name` field.
+        let full_type = |s: ScriptRef| match s.downcast::<crate::objects::models::ModelScript>() {
+            Some(m) => Some(m.borrow().full_type_name()),
+            None => s.full_type().ok(),
+        };
         if let Some(s) = module.get(self, type_, t) {
-            return s.full_type().ok();
+            return full_type(s);
         }
         for m in self.module_list() {
             if (skip_self && std::ptr::eq(&*m, module)) || m.is_disabled() {
                 continue;
             }
             if let Some(s) = m.get(self, type_, t) {
-                return s.full_type().ok();
+                return full_type(s);
             }
         }
         Some(format!("???.{t}"))
