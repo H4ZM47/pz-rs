@@ -623,12 +623,12 @@ impl CraftRecipe {
         let mut out = Vec::new();
         for entry in java::split_char(val, ';') {
             let split3 = java::split_char(entry, ':');
-            let perk = perk_from_string(array_get(&split3, 0)?);
+            let perk = perk_from_string(sm, array_get(&split3, 0)?);
             if perk == "MAX" {
                 sm.warn(&format!("Unknown skill \"{}\" in recipe \"{recipe}\"", split3[0]));
                 continue;
             }
-            out.push((perk.to_string(), try_parse_int(array_get(&split3, 1)?, 1)));
+            out.push((perk, try_parse_int(array_get(&split3, 1)?, 1)));
         }
         Ok(out)
     }
@@ -636,12 +636,12 @@ impl CraftRecipe {
     /// Parses `perk;perk` (`ResearchAll`, `ResearchAny`).
     fn parse_perks(sm: &ScriptManager, val: &str, recipe: &str, list: &mut Vec<String>) {
         for entry in java::split_char(val, ';') {
-            let perk = perk_from_string(entry);
+            let perk = perk_from_string(sm, entry);
             if perk == "MAX" {
                 sm.warn(&format!("Unknown skill \"{entry}\" in recipe \"{recipe}\""));
                 continue;
             }
-            list.push(perk.to_string());
+            list.push(perk);
         }
     }
 

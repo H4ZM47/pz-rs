@@ -58,7 +58,7 @@ fn pairs(block: &Block) -> impl Iterator<Item = (&str, &str)> {
 
 /// The `XPBoosts` value: `Perk=level;...`; unknown perks are skipped and
 /// a bad level counts as 1.
-fn xp_boosts(v: &str, limit_two: bool) -> Vec<(String, i32)> {
+fn xp_boosts(sm: &ScriptManager, v: &str, limit_two: bool) -> Vec<(String, i32)> {
     let mut out = Vec::new();
     for s in java::split_char(v, ';') {
         let pair: Vec<&str> = if limit_two {
@@ -72,11 +72,11 @@ fn xp_boosts(v: &str, limit_two: bool) -> Vec<(String, i32)> {
         if pair.len() < 2 {
             continue;
         }
-        let perk = perk_from_string(java::trim(pair[0]));
+        let perk = perk_from_string(sm, java::trim(pair[0]));
         if perk == "MAX" {
             continue;
         }
-        out.push((perk.to_string(), try_parse_int(pair[1], 1)));
+        out.push((perk, try_parse_int(pair[1], 1)));
     }
     out
 }
@@ -266,7 +266,7 @@ impl CharacterTraitDefinitionScript {
                     granted_traits.push(character_trait(sm, java::trim(s))?);
                 }
             } else if is("XPBoosts") {
-                xp.extend(xp_boosts(v, false));
+                xp.extend(xp_boosts(sm, v, false));
             } else if is("MutuallyExclusiveTraits") {
                 for s in java::split_char(v, ';') {
                     mutually_exclusive.push(character_trait(sm, java::trim(s))?);
@@ -425,7 +425,7 @@ impl CharacterProfessionDefinitionScript {
                     granted_traits.push(character_trait(sm, java::trim(s))?);
                 }
             } else if is("XPBoosts") {
-                xp.extend(xp_boosts(v, true));
+                xp.extend(xp_boosts(sm, v, true));
             } else if is("IconPathName") {
                 icon_path_name = Some(v);
             } else {

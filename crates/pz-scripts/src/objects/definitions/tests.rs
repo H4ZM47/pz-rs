@@ -5,6 +5,7 @@ use crate::script_type::ScriptLoadMode;
 
 fn load<T: ScriptObject>(mut s: T, name: &str, body: &str) -> (T, ScriptResult) {
     let sm = ScriptManager::new();
+    sm.builtin_tables.borrow_mut().perk_ids = test_perks();
     let r = s.load(&sm, name, body);
     (s, r)
 }
@@ -160,4 +161,9 @@ fn xui_skin_sections() {
     assert_eq!(r.unwrap_err().0, "java.lang.ArrayIndexOutOfBoundsException: Index 0 out of bounds for length 0");
     let (_, r) = load(XuiSkinScript::new(), "S", "xuiSkin S { Button { a = \", } }");
     assert!(r.unwrap_err().0.starts_with("java.lang.StringIndexOutOfBoundsException"));
+}
+
+/// Invented perk ids standing in for the jar's `PerkFactory.Perks`.
+fn test_perks() -> Vec<String> {
+    ["Axe", "Cooking", "Fitness", "Woodwork"].map(String::from).to_vec()
 }

@@ -236,62 +236,11 @@ pub fn format_recipe_tag_query(query: &str) -> ScriptResult<String> {
     Ok(sb)
 }
 
-/// Ids of the perks `PerkFactory.Perks` creates statically, which is what
-/// `Perks.FromString` finds at script load. Perks added later from Lua are
-/// not known here. TODO(PerkFactory)
-const PERK_IDS: &[&str] = &[
-    "None",
-    "Agility",
-    "Cooking",
-    "Melee",
-    "Crafting",
-    "Fitness",
-    "Strength",
-    "Blunt",
-    "Axe",
-    "Lightfoot",
-    "Nimble",
-    "Sprinting",
-    "Sneak",
-    "Woodwork",
-    "Aiming",
-    "Reloading",
-    "Farming",
-    "Survivalist",
-    "Fishing",
-    "Trapping",
-    "Passiv",
-    "Firearm",
-    "PlantScavenging",
-    "Doctor",
-    "Electricity",
-    "Blacksmith",
-    "MetalWelding",
-    "Melting",
-    "Mechanics",
-    "Spear",
-    "Maintenance",
-    "SmallBlade",
-    "LongBlade",
-    "SmallBlunt",
-    "Combat",
-    "Tailoring",
-    "Tracking",
-    "Husbandry",
-    "FlintKnapping",
-    "Masonry",
-    "Pottery",
-    "Carving",
-    "Butchering",
-    "Glassmaking",
-    "FarmingCategory",
-    "PhysicalCategory",
-    "MAX",
-];
-
 /// `PerkFactory.Perks.FromString`: the perk id, or `"MAX"` when unknown.
-pub(crate) fn perk_from_string(id: &str) -> &'static str {
-    PERK_IDS.iter().copied().find(|p| *p == id).unwrap_or("MAX")
+/// Only the perks `PerkFactory.Perks` creates statically are known here;
+/// perks added later from Lua are not. TODO(PerkFactory)
+pub(crate) fn perk_from_string(sm: &ScriptManager, id: &str) -> String {
+    sm.builtin_tables.borrow().perk_from_string(id)
 }
 
 #[cfg(test)]

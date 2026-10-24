@@ -110,55 +110,6 @@ impl BodyPartType {
 /// Ids of the perks `PerkFactory.Perks` creates statically, which is what
 /// `Perks.FromString` finds at script load. Perks added later from Lua are
 /// not known here. TODO(PerkFactory)
-const PERK_IDS: &[&str] = &[
-    "None",
-    "Agility",
-    "Cooking",
-    "Melee",
-    "Crafting",
-    "Fitness",
-    "Strength",
-    "Blunt",
-    "Axe",
-    "Lightfoot",
-    "Nimble",
-    "Sprinting",
-    "Sneak",
-    "Woodwork",
-    "Aiming",
-    "Reloading",
-    "Farming",
-    "Survivalist",
-    "Fishing",
-    "Trapping",
-    "Passiv",
-    "Firearm",
-    "PlantScavenging",
-    "Doctor",
-    "Electricity",
-    "Blacksmith",
-    "MetalWelding",
-    "Melting",
-    "Mechanics",
-    "Spear",
-    "Maintenance",
-    "SmallBlade",
-    "LongBlade",
-    "SmallBlunt",
-    "Combat",
-    "Tailoring",
-    "Tracking",
-    "Husbandry",
-    "FlintKnapping",
-    "Masonry",
-    "Pottery",
-    "Carving",
-    "Butchering",
-    "Glassmaking",
-    "FarmingCategory",
-    "PhysicalCategory",
-    "MAX",
-];
 
 #[derive(Debug)]
 pub struct TimedActionScript {
@@ -350,7 +301,7 @@ impl ScriptObject for TimedActionScript {
                 self.muscle_strain_factor = parse_float(val)?;
             } else if java::eq_ignore_case(key, "muscleStrainSkill") {
                 // Perks.FromString is an exact HashMap lookup defaulting to MAX.
-                if val == "MAX" || !PERK_IDS.contains(&val) {
+                if sm.builtin_tables.borrow().perk_from_string(val) == "MAX" {
                     // The original formats the script with Object.toString.
                     sm.warn(&format!("Unknown skill \"{val}\" in timedaction script \"{}\"", self.class_name()));
                     continue;

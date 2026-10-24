@@ -354,6 +354,8 @@ pub struct ScriptManager {
     pub statics: crate::objects::Statics,
     /// `Registries` (the original's static registries).
     pub registries: crate::registry::Registries,
+    /// Built-in name tables (perks, ragdoll bones, vehicle enums).
+    pub builtin_tables: RefCell<crate::registry::builtin::BuiltinTables>,
 }
 
 impl Default for ScriptManager {
@@ -387,6 +389,7 @@ impl ScriptManager {
             log: RefCell::default(),
             statics: Default::default(),
             registries: Default::default(),
+            builtin_tables: Default::default(),
         }
     }
 
@@ -395,6 +398,7 @@ impl ScriptManager {
     pub fn load_builtin_registries(&self, jar_path: &Path) -> ScriptResult {
         let jar = pz_classfile::Jar::open(jar_path).map_err(|e| ScriptError::new(format!("{}: {e}", jar_path.display())))?;
         crate::registry::builtin::register_builtin(&self.registries, &jar)?;
+        *self.builtin_tables.borrow_mut() = crate::registry::builtin::BuiltinTables::load(&jar)?;
         crate::objects::items::load_builtin_constants(self, jar_path)
     }
 

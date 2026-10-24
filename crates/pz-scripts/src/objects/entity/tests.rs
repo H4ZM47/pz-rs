@@ -22,6 +22,7 @@ use crate::script_type::ScriptLoadMode;
 /// script stubs created, nothing loaded yet).
 fn manager(body: &str) -> (ScriptManager, Rc<ScriptModule>) {
     let sm = ScriptManager::new();
+    sm.builtin_tables.borrow_mut().perk_ids = test_perks();
     sm.parse_script(ScriptLoadMode::Init, &format!("module Base {{ {body} }}")).unwrap();
     let m = sm.get_module("Base").unwrap();
     (sm, m)
@@ -419,6 +420,7 @@ fn item_config_roots_and_errors() {
 #[test]
 fn item_config_selector_buckets() {
     let sm = ScriptManager::new();
+    sm.builtin_tables.borrow_mut().perk_ids = test_perks();
     let root =
         sm.parse("LuaFunc { zone Forest/Farm { chance=1 func=g, } worldagedays 3 { situated shop { func=h, } } }");
     let block = &root.children[0];
@@ -433,4 +435,9 @@ fn item_config_selector_buckets() {
     assert!(err.0.contains("Default block may not have any nested children."), "{}", err.0);
     let err = load_selector_bucket(&sm, &root.children[0].children[1], true).unwrap_err();
     assert!(err.0.contains("A custom container bucket may not have any randomizer parameters."), "{}", err.0);
+}
+
+/// Invented perk ids standing in for the jar's `PerkFactory.Perks`.
+fn test_perks() -> Vec<String> {
+    ["Axe", "Cooking", "Fitness", "Woodwork"].map(String::from).to_vec()
 }

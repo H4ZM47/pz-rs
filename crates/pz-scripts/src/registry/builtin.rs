@@ -72,3 +72,74 @@ pub fn register_builtin(registries: &Registries, jar: &Jar) -> ScriptResult {
     }
     Ok(())
 }
+
+/// Enums the vehicle scripts name parts, areas and seats with, as exposed to
+/// Lua: (class, [(constant, id)]) where `id` is the constructor's string.
+pub const VEHICLE_ENUM_CLASSES: &[&str] = &[
+    "zombie/scripting/objects/VehicleArea",
+    "zombie/scripting/objects/VehicleAttachment",
+    "zombie/scripting/objects/VehicleCategory",
+    "zombie/scripting/objects/VehicleEngineRpmType",
+    "zombie/scripting/objects/VehicleItemEquip",
+    "zombie/scripting/objects/VehicleMechanicArea",
+    "zombie/scripting/objects/VehiclePart",
+    "zombie/scripting/objects/VehiclePassenger",
+    "zombie/scripting/objects/VehiclePosition",
+    "zombie/scripting/objects/VehicleSwitchSeat",
+    "zombie/scripting/objects/VehicleTable",
+    "zombie/scripting/objects/VehicleWheel",
+];
+
+const PERKS_CLASS: &str = "zombie/characters/skills/PerkFactory$Perks";
+const PERK_CLASS: &str = "zombie/characters/skills/PerkFactory$Perk";
+const RAGDOLL_CLASS: &str = "zombie/scripting/objects/RagdollScript";
+
+/// Built-in name tables the original defines in code, read from the jar.
+#[derive(Clone, Debug, Default)]
+pub struct BuiltinTables {
+    /// `PerkFactory.Perks` ids in declaration order.
+    pub perk_ids: Vec<String>,
+    /// `RagdollScript.boneNameArray`.
+    pub ragdoll_bone_names: Vec<String>,
+    /// [`VEHICLE_ENUM_CLASSES`] constants: (class, [(constant, id)]).
+    pub vehicle_enums: Vec<(String, Vec<(String, String)>)>,
+}
+
+impl BuiltinTables {
+    /// `PerkFactory.Perks.FromString`: the perk id, or `"MAX"` when unknown.
+    pub fn perk_from_string(&self, id: &str) -> String {
+        if self.perk_ids.iter().any(|p| p == id) {
+            id.to_string()
+        } else {
+            "MAX".to_string()
+        }
+    }
+
+    pub fn load(jar: &Jar) -> ScriptResult<Self> {
+        let perks = load_class(jar, PERKS_CLASS).map_err(class_error)?;
+        let perk_ids = static_inits(&perks)
+            .map_err(class_error)?
+            .into_iter()
+            .filter_map(|i| match i.value {
+                Value::New { class, args } if class == PERK_CLASS => args.first().and_then(Value::as_str).map(str::to_string),
+                _ => None,
+            })
+            .collect();
+        let bones = pz_classfile::static_value(jar, RAGDOLL_CLASS, "boneNameArray").map_err(class_error)?;
+        let ragdoll_bone_names = bones
+            .as_ref()
+            .and_then(Value::as_str_array)
+            .map(|v| v.into_iter().map(str::to_string).collect())
+            .unwrap_or_default();
+        let mut vehicle_enums = Vec::new();
+        for class in VEHICLE_ENUM_CLASSES {
+            let consts = pz_classfile::self_constructed_constants(jar, class)
+                .map_err(class_error)?
+                .into_iter()
+                .filter_map(|(name, args)| Some((name, args.get(2)?.as_str()?.to_string())))
+                .collect();
+            vehicle_enums.push((class.rsplit('/').next().unwrap().to_string(), consts));
+        }
+        Ok(BuiltinTables { perk_ids, ragdoll_bone_names, vehicle_enums })
+    }
+}

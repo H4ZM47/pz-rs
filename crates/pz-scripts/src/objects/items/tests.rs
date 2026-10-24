@@ -9,6 +9,7 @@ use crate::script_type::ScriptLoadMode;
 /// created, nothing loaded yet).
 fn manager(body: &str) -> (ScriptManager, Rc<ScriptModule>) {
     let sm = ScriptManager::new();
+    sm.builtin_tables.borrow_mut().perk_ids = test_perks();
     sm.parse_script(ScriptLoadMode::Init, &format!("module Base {{ {body} }}"))
         .unwrap();
     let m = sm.get_module("Base").unwrap();
@@ -42,6 +43,7 @@ fn load_game(files: &[(&str, &str)]) -> ScriptManager {
         std::fs::write(p, text).unwrap();
     }
     let sm = ScriptManager::new();
+    sm.builtin_tables.borrow_mut().perk_ids = test_perks();
     sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
     std::fs::remove_dir_all(dir).unwrap();
     sm
@@ -253,6 +255,7 @@ fn missing_references_fail_scripts_loaded() {
 #[test]
 fn trait_and_profession_definitions() {
     let sm = ScriptManager::new();
+    sm.builtin_tables.borrow_mut().perk_ids = test_perks();
     register(&sm, "character_trait", "Brave");
     let timid = register(&sm, "character_trait", "Timid");
     let bold = register(&sm, "character_trait", "Bold");
@@ -303,6 +306,7 @@ fn trait_and_profession_definitions() {
 #[test]
 fn item_filter_lists() {
     let sm = ScriptManager::new();
+    sm.builtin_tables.borrow_mut().perk_ids = test_perks();
     register(&sm, "item_type", "Food");
     let mut f = ItemFilterScript::new();
     let body = "itemFilter F { items = Base.A / Base.B / Base.A, types = food, \
@@ -413,4 +417,9 @@ fn create_instance_covers_group_types() {
         assert!(create_instance(t, &m, "x", "").is_some());
     }
     assert!(create_instance(ScriptType::Recipe, &m, "x", "").is_none());
+}
+
+/// Invented perk ids standing in for the jar's `PerkFactory.Perks`.
+fn test_perks() -> Vec<String> {
+    ["Axe", "Cooking", "Fitness", "Woodwork"].map(String::from).to_vec()
 }
