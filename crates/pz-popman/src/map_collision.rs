@@ -327,29 +327,9 @@ mod tests {
         assert_eq!(f.bits(), BIT_WATER);
     }
 
-    /// pz-world's own hand-authored test tables (names in an arbitrary
-    /// order), read from its source.
-    fn tables() -> pz_world::SpriteTables {
-        let src = include_str!("../../pz-world/src/sprite/types.rs");
-        let body = &src[src.find("fn test_tables").unwrap()..];
-        let lists: Vec<Vec<String>> = body
-            .split("s(&[")
-            .skip(1)
-            .take(3)
-            .map(|c| {
-                c[..c.find("])").unwrap()]
-                    .split(',')
-                    .map(|x| x.trim().trim_matches('"').to_string())
-                    .filter(|x| !x.is_empty())
-                    .collect()
-            })
-            .collect();
-        pz_world::SpriteTables::new(lists[0].clone(), lists[1].clone(), lists[2].clone()).unwrap()
-    }
-
     #[test]
     fn square_facts_from_pz_world() {
-        let m = IsoSpriteManager::new(tables());
+        let m = IsoSpriteManager::new(pz_world::sprite::test_tables());
         let (f, ty) = (m.tables.flag, m.tables.ty);
         let mut sq = IsoGridSquare::new(3, 4, 0);
         assert_eq!(SquareFlags::from_square(&sq, &m).bits(), 0);

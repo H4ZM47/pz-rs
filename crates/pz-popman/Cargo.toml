@@ -8,4 +8,5 @@ pz-sandbox.workspace = true
 pz-world.workspace = true
 
 [dev-dependencies]
+pz-world = { workspace = true, features = ["test-util"] }
 pz-fs.workspace = true

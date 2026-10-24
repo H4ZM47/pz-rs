@@ -18,7 +18,7 @@ pub use manager::{
 pub use properties::{
     PropertyContainer, PropertyValueMap, SurfaceInfo, TileProperty, TilePropertyAliasMap,
 };
-#[cfg(test)]
+#[cfg(all(test, not(feature = "test-util")))]
 pub(crate) use types::test_tables;
 pub use types::{FasciaEdge, Flags, IsoFlagType, IsoObjectType, ObjectTypes, SpriteTables};
 #[cfg(feature = "test-util")]
