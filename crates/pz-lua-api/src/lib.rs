@@ -9,8 +9,8 @@
 
 pub mod bind_characters;
 pub mod bind_core;
-pub mod bind_debug;
 pub mod bind_fs;
+pub mod bind_debug;
 pub mod bind_globals;
 pub mod bind_java_util;
 pub mod bind_misc;
@@ -21,6 +21,7 @@ pub mod bind_sandbox;
 pub mod bind_text;
 pub mod bind_map_groups;
 pub mod bind_registry;
+pub mod bind_save;
 pub mod bind_ui;
 pub mod bind_world;
 pub mod events;
@@ -38,6 +39,8 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
     bind_fs::register(mgr);
     bind_render::register(mgr);
+    bind_save::register(mgr);
+    // Text before UI: bind_text's UIFont is canonical.
     bind_text::register(&mut mgr.thread);
     bind_debug::register(&mut mgr.thread);
     bind_mods::register(mgr);

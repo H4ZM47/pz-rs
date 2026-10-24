@@ -9,3 +9,5 @@ pz-fs.workspace = true
 pz-lua-api.workspace = true
 pz-scripts.workspace = true
 pz-ui.workspace = true
+pz-engine.workspace = true
+png = "0.17"

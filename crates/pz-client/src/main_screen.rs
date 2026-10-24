@@ -20,8 +20,11 @@ fn load_scripts(game_dir: &Path, fs: &pz_fs::GameFs) -> Result<(), String> {
 
 /// `GameWindow.init` + `MainScreenState.enter`, then `frames` iterations
 /// of `MainScreenState.update`/`render`.
-pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
+pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<(), String> {
     let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(game_dir)));
+    // Never fall back to the original game's ~/Zomboid.
+    fs.borrow_mut().set_cache_dir(cache_dir);
+    pz_lua_api::bind_core::shared_core().borrow_mut().set_cache_dir(cache_dir);
     load_scripts(game_dir, &fs.borrow())?;
     let errors: Rc<RefCell<BTreeMap<String, usize>>> = Rc::default();
     // GameWindow.init: the UI texture packs, then the pack lookup.
@@ -43,6 +46,22 @@ pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
     UIManager::init();
     mgr.load_all_client();
     let load_failures = mgr.loader.borrow().errors.len();
+    mgr.thread.log = Box::new(|s| eprintln!("LUAERR: {s}"));
+    mgr.thread.on_missing_global = Some(Box::new(|n| eprintln!("MISSING-GLOBAL: {n}")));
+    mgr.thread.on_missing_member = Some(Box::new(|c, k| eprintln!("MISSING-MEMBER: {c}.{k}")));
+    if std::env::var_os("PZ_AUTOSTUB").is_some() {
+        // Discovery aid: unknown globals resolve to a chainable stub.
+        let src = r#"
+            local seen = {}
+            local stubmt = {}
+            local function mk(path) local s = setmetatable({__stubpath = path}, stubmt) return s end
+            stubmt.__index = function(t, k) if k == "__stubpath" then return nil end local p = rawget(t, "__stubpath") .. "." .. tostring(k) if not seen[p] then seen[p] = true print("STUB " .. p) end return mk(p) end
+            stubmt.__call = function(t, ...) return mk(rawget(t, "__stubpath") .. "()") end
+            setmetatable(_G, {__index = function(t, k) if type(k) == "string" and k:sub(1,1):match("[A-Za-z]") then local p = k if not seen[p] then seen[p] = true print("STUB " .. p) end return mk(p) end end})
+        "#;
+        let f = pz_kahlua::stdlib::load_string(src, Some("autostub"), mgr.thread.globals().clone()).unwrap();
+        mgr.thread.call(&f, &[]).unwrap();
+    }
     mgr.trigger_event("OnGameBoot", &[]);
     // MainScreenState.enter
     mgr.trigger_event("OnMainMenuEnter", &[]);
