@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 fn main() {
     let root = std::env::args().nth(1).expect("game directory containing media/");
-    let fs = Rc::new(pz_fs::GameFs::new(root));
+    let fs = Rc::new(std::cell::RefCell::new(pz_fs::GameFs::new(root)));
     let t = std::time::Instant::now();
     let mut mgr = pz_lua_api::LuaManager::init(fs).expect("init");
     mgr.thread.log = Box::new(|_| {});
