@@ -1,0 +1,8 @@
+[package]
+name = "pz-clipper"
+version.workspace = true
+edition.workspace = true
+description = "Port of the game's PZClipper native library (Clipper2 1.5.4 + earcut.hpp 2.2.1 + the zombie.vehicles.Clipper JNI layer)"
+license = "BSL-1.0 AND ISC AND Apache-2.0 WITH LLVM-exception"
+
+[dependencies]
