@@ -12,10 +12,11 @@ use crate::expose::{
 };
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_render::DrawList;
+use pz_render::{DrawList, Rgba};
 use pz_text::jfmt::JavaArg;
 use pz_text::translator::Language;
 use pz_text::{TextManager, Translator, UIFont};
+use pz_ui::{SpriteRenderer, TextAlign, TextRenderer, UiDrawCmd};
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -38,9 +39,65 @@ thread_local! {
     static LANGUAGES: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::new());
 }
 
-/// Install the translator and text manager the bindings use.
+/// Install the translator and text manager the bindings use, and make the
+/// text manager the renderer `UIElement` draws and measures text with.
 pub fn install(state: TextState) {
+    let renderer: Rc<dyn TextRenderer> = Rc::new(UiTextRenderer(state.text_manager.clone()));
+    pz_ui::UIManager::set_text_renderer(Some(renderer));
     STATE.with(|s| *s.borrow_mut() = Some(state));
+}
+
+/// `TextManager.instance` as `UIElement` sees it.
+struct UiTextRenderer(Rc<RefCell<TextManager>>);
+
+impl TextRenderer for UiTextRenderer {
+    fn measure_x(&self, font: Option<UIFont>, s: &str) -> i32 {
+        self.0.borrow().measure_string_x(font, Some(s))
+    }
+
+    fn measure_y(&self, font: Option<UIFont>, s: &str) -> i32 {
+        self.0.borrow().measure_string_y(font, Some(s))
+    }
+
+    fn font_height(&self, font: Option<UIFont>) -> i32 {
+        self.0.borrow().get_font_height(font)
+    }
+
+    fn draw(
+        &self,
+        out: &mut SpriteRenderer,
+        font: Option<UIFont>,
+        x: f64,
+        y: f64,
+        zoom: f32,
+        text: &str,
+        color: Rgba,
+        align: TextAlign,
+        _trimmed: bool,
+    ) {
+        // DrawStringUntrimmed draws exactly like DrawString in the original.
+        let tm = self.0.borrow();
+        let mut dl = DrawList::default();
+        let (r, g, b, a) = (
+            color.0 as f64,
+            color.1 as f64,
+            color.2 as f64,
+            color.3 as f64,
+        );
+        match align {
+            // pz-ui passes zoom 1.0 for the overloads without a zoom, which
+            // draw at integer positions; only a real zoom takes the scaled path.
+            TextAlign::Left if zoom != 1.0 => {
+                tm.draw_string_zoom(&mut dl, font, x, y, zoom as f64, text, r, g, b, a)
+            }
+            TextAlign::Left => tm.draw_string(&mut dl, font, x, y, text, r, g, b, a),
+            TextAlign::Centre => tm.draw_string_centre(&mut dl, font, x, y, text, r, g, b, a),
+            TextAlign::Right => tm.draw_string_right(&mut dl, font, x, y, text, r, g, b, a),
+        }
+        for cmd in dl.cmds {
+            out.push(UiDrawCmd::Render(cmd));
+        }
+    }
 }
 
 fn state() -> Option<TextState> {
@@ -651,5 +708,21 @@ mod tests {
         assert_eq!(r[6].as_str().unwrap(), "AutoNormLarge");
         assert_eq!(r[7].as_str().unwrap(), "Hi %1$s, %2$s items");
         assert!(r[8].raw_equals(&Value::Num(1.0)));
+
+        // UIElement text goes through the installed TextManager.
+        pz_ui::with_ui(|m| m.sprite.clear());
+        assert_eq!(pz_ui::draw::measure_string_x(Some(UIFont::Small), "aa"), 11);
+        pz_ui::draw::draw_string(
+            Some(UIFont::Small),
+            3.5,
+            4.0,
+            1.0,
+            "aa",
+            Rgba(1.0, 1.0, 1.0, 1.0),
+            TextAlign::Left,
+            true,
+        );
+        let quads = pz_ui::with_ui(|m| m.sprite.cmds.len());
+        assert_eq!(quads, 2);
     }
 }

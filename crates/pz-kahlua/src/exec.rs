@@ -536,13 +536,13 @@ impl Thread {
         if let Value::Table(_) = o {
             let m = self.table_get(o, &Value::str("tostring"))?;
             if m.is_function() {
-                let r = self.call1(&m, &[o.clone()])?;
+                let r = self.call1(&m, std::slice::from_ref(o))?;
                 return Ok(java_value_of(&r));
             }
         }
         let f = self.get_meta_op(o, "__tostring");
         if !f.is_nil() {
-            let r = self.call1(&f, &[o.clone()])?;
+            let r = self.call1(&f, std::slice::from_ref(o))?;
             return Ok(java_value_of(&r));
         }
         if let Value::Table(t) = o {
@@ -749,7 +749,7 @@ impl Thread {
                         if f.is_nil() {
                             return Err(LuaError::runtime("__len not defined for operand"));
                         }
-                        self.call1(&f, &[o.clone()])?
+                        self.call1(&f, std::slice::from_ref(&o))?
                     }
                 };
                 self.stack[base + a8(op)] = r;

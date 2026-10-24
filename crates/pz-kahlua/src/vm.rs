@@ -154,6 +154,8 @@ impl NativeFunction {
     }
 }
 
+pub type StrHook = Box<dyn FnMut(&str)>;
+
 /// The interpreter (`KahluaThread`).
 pub struct Thread {
     /// Identity of the running coroutine (its fields are moved out).
@@ -176,7 +178,7 @@ pub struct Thread {
     pub(crate) exec_level: usize,
     /// Development aid: called with the name of every global read that
     /// resolves to nil.
-    pub on_missing_global: Option<Box<dyn FnMut(&str)>>,
+    pub on_missing_global: Option<StrHook>,
 }
 
 /// View of the current native call frame (`LuaCallFrame` for a Java function).
