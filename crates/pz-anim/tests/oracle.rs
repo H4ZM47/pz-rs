@@ -1,5 +1,4 @@
 //! Parity against the original Java classes.
-#![allow(clippy::needless_range_loop)]
 //!
 //! The oracle harness (kept outside the repo) runs the game's
 //! `AnimationPlayer` / `AdvancedAnimator` headless over a script and writes
@@ -8,6 +7,8 @@
 //! `PZ_ANIM_ORACLE_DIR` at a directory holding those plus `script.txt`, and
 //! `PZ_ANIMSETS_DIR` at `media/AnimSets/player`; without them this test
 //! does nothing.
+
+#![allow(clippy::needless_range_loop)]
 
 use std::path::PathBuf;
 use std::rc::Rc;
