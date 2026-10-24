@@ -23,7 +23,7 @@
 //! Enum constants are exposed from [`DEBUG_TYPE_NAMES`] and
 //! [`LOG_SEVERITY_NAMES`] only.
 
-use crate::bind_core::JavaList;
+use crate::bind_java_util::JavaList;
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, global, int_arg, ClassBuilder, JavaEnum};
 use pz_core::debug::{
     self, DebugLog, DebugType, FmtArg, JavaError, LogSeverity, LogThrowable, StackElement, DEBUG_TYPE_NAMES,
@@ -187,7 +187,7 @@ fn caller_prefix(c: &NativeCall<'_>) -> String {
 }
 
 fn list_of(values: Vec<Value>) -> Value {
-    Value::Object(Rc::new(JavaList(values)))
+    Value::Object(Rc::new(JavaList::new(values)))
 }
 
 fn str_list(v: Vec<String>) -> Value {
