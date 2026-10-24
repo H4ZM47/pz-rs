@@ -10,7 +10,7 @@ pub fn register(env: &TableRef) {
     reg(env, "pcall", |c| {
         let f = c.arg(0);
         let args: Vec<Value> = (1..c.nargs()).map(|i| c.arg(i)).collect();
-        match c.thread.pcall(&f, &args) {
+        match c.thread.pcall_ex(&f, &args) {
             Ok(vals) => {
                 c.push(true);
                 for v in vals.iter() {
@@ -18,12 +18,11 @@ pub fn register(env: &TableRef) {
                 }
                 Ok(1 + vals.len())
             }
-            Err((msg, trace)) => {
+            Err((msg, trace, err)) => {
                 c.push(false);
                 c.push(msg);
                 c.push(trace);
-                // The Java exception object; scripts only check for nil.
-                c.push(Value::Nil);
+                c.push(Value::Object(std::rc::Rc::new(JavaException(err))));
                 Ok(4)
             }
         }
@@ -290,9 +289,19 @@ pub fn setmetatable(thread: &mut Thread, o: &Value, meta: Option<TableRef>, raw:
 /// `LuaCompiler.register`: `loadstring` and `loadstream`.
 pub fn register_compiler(env: &TableRef) {
     reg(env, "loadstring", |c| {
-        lua_assert(c.nargs() >= 1, "not enough arguments")?;
-        let Value::Str(src) = c.arg(0) else {
-            return Err(LuaError::runtime("No source given"));
+        // All failures are caught and returned as (nil, message).
+        let fail = |c: &mut NativeCall<'_>, m: &str| {
+            c.push(Value::Nil);
+            c.push(m.to_string());
+            Ok(2)
+        };
+        if c.nargs() < 1 {
+            return fail(c, "not enough arguments");
+        }
+        let src = match c.arg(0) {
+            Value::Str(s) => s,
+            Value::Nil => return fail(c, "No source given"),
+            other => return fail(c, &format!("class {} cannot be cast to class java.lang.String", java_class_name(&other))),
         };
         let name = if c.nargs() >= 2 { c.arg(1).as_str().map(str::to_string) } else { None };
         let env = c.thread.current_env();
@@ -321,4 +330,26 @@ pub fn register_compiler(env: &TableRef) {
 pub fn load_string(src: &str, name: Option<&str>, env: TableRef) -> LuaResult<Value> {
     let p = crate::compiler::compile(src, name, None, None)?;
     Ok(Value::Closure(LuaClosure::new(Rc::new(p), env)))
+}
+
+/// A Java exception object as Lua sees it (pcall's fourth result).
+pub struct JavaException(pub LuaError);
+
+impl crate::value::LuaObject for JavaException {
+    fn class_name(&self) -> &str {
+        match &self.0 {
+            LuaError::Kahlua(_) => "se.krka.kahlua.vm.KahluaException",
+            LuaError::Runtime { class, .. } => class,
+        }
+    }
+    /// `Throwable.toString()`.
+    fn to_lua_string(&self) -> String {
+        match &self.0 {
+            LuaError::Kahlua(v) => format!("se.krka.kahlua.vm.KahluaException: {}", java_value_of(v)),
+            LuaError::Runtime { message, class } => format!("{class}: {message}"),
+        }
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }

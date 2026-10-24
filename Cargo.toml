@@ -18,6 +18,7 @@ pz-engine = { path = "crates/pz-engine" }
 indexmap = "2"
 macroquad = { version = "0.4", default-features = false }
 png = "0.17"
+regex = "1"
 
 [profile.dev.package."*"]
 opt-level = 2

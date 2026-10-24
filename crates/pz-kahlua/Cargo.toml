@@ -5,3 +5,5 @@ edition.workspace = true
 
 [dependencies]
 indexmap.workspace = true
+libm = "0.2"
+regex.workspace = true
