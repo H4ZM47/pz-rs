@@ -4,3 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pz-kahlua.workspace = true
+pz-render.workspace = true
+pz-text.workspace = true

@@ -19,9 +19,12 @@ Status of the Rust port. Update this file with every merged change.
   `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk` with generic tile
   objects. Header and lotpack decoding match the original loader on 163
   cells (Muldraugh sample plus six challenge maps), checked locally.
+- StringLib and OsLib. Local differential run against the original Kahlua
+  (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
+  output; the remaining one differs only in an identity hash.
 
 ## In progress
-- StringLib, OsLib.
+- UIElement/UIManager, Core options, client window loop.
 
 ## Next (main-menu milestone)
 1. Kahlua stdlib; load `stdlib.lbc`/`stdlib.lua` from the install.
