@@ -7,4 +7,5 @@ edition.workspace = true
 pz-kahlua.workspace = true
 pz-fs.workspace = true
 pz-lua-api.workspace = true
+pz-scripts.workspace = true
 pz-ui.workspace = true

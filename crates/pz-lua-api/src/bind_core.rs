@@ -33,7 +33,8 @@
 //! registered that class first: `zombie.core.textures.ColorInfo`
 //! ([`LuaColorInfo`]), `zombie.core.GameVersion`, `zombie.core.Core$KeyBinding`,
 //! `zombie.input.KeybindId` (constants for `getCore():getKey(KeybindId.X)`),
-//! `java.util.ArrayList` (read-only, for `getDefaultZoomLevels`) and a live
+//! `java.util.ArrayList` (read-only, for `getDefaultZoomLevels`, plus the
+//! live [`crate::expose::ListView`]s other bindings hand out) and a live
 //! view of `zombie.config.ConfigOption` (for `getOptionByIndex`).
 
 use crate::events::EventManager;
@@ -1426,7 +1427,10 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             match c.arg(0) {
                 Value::Object(o) => match o.as_any().downcast_ref::<JavaList>() {
                     Some(l) => Ok(f(&l.0)),
-                    None => Err(LuaError::runtime(format!("Expected ArrayList but got {}", o.class_name()))),
+                    None => match o.as_any().downcast_ref::<crate::expose::ListView>() {
+                        Some(v) => Ok(f(&(v.items)())),
+                        None => Err(LuaError::runtime(format!("Expected ArrayList but got {}", o.class_name()))),
+                    },
                 },
                 _ => Err(LuaError::runtime("Expected ArrayList")),
             }
@@ -1463,6 +1467,16 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
                 _ => String::new(),
             };
             Ok(c.push(s))
+        });
+        b.method("clear", |c| {
+            match c.arg(0) {
+                Value::Object(o) => match o.as_any().downcast_ref::<crate::expose::ListView>() {
+                    Some(crate::expose::ListView { clear: Some(clear), .. }) => clear(),
+                    _ => return Err(LuaError::runtime(format!("{} is read-only here", o.class_name()))),
+                },
+                _ => return Err(LuaError::runtime("Expected ArrayList")),
+            }
+            Ok(0)
         });
     }
 
