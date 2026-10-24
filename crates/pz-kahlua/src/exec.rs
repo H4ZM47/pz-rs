@@ -135,6 +135,7 @@ impl Thread {
             log: Box::new(|s| eprintln!("{s}")),
             exec_level: 0,
             on_missing_global: None,
+            on_missing_member: None,
         }
     }
 
@@ -473,6 +474,9 @@ impl Thread {
             let meta = self.get_meta_op(&cur, "__index");
             if meta.is_nil() {
                 if matches!(cur, Value::Table(_)) {
+                    if let (Value::Object(o), Some(h)) = (table, self.on_missing_member.as_mut()) {
+                        h(o.class_name(), &java_value_of(key));
+                    }
                     return Ok(Value::Nil);
                 }
                 let msg = format!("attempted index: {} of non-table: {}", java_value_of(key), java_value_of(&cur));
@@ -536,13 +540,13 @@ impl Thread {
         if let Value::Table(_) = o {
             let m = self.table_get(o, &Value::str("tostring"))?;
             if m.is_function() {
-                let r = self.call1(&m, &[o.clone()])?;
+                let r = self.call1(&m, std::slice::from_ref(o))?;
                 return Ok(java_value_of(&r));
             }
         }
         let f = self.get_meta_op(o, "__tostring");
         if !f.is_nil() {
-            let r = self.call1(&f, &[o.clone()])?;
+            let r = self.call1(&f, std::slice::from_ref(o))?;
             return Ok(java_value_of(&r));
         }
         if let Value::Table(t) = o {
@@ -749,7 +753,7 @@ impl Thread {
                         if f.is_nil() {
                             return Err(LuaError::runtime("__len not defined for operand"));
                         }
-                        self.call1(&f, &[o.clone()])?
+                        self.call1(&f, std::slice::from_ref(&o))?
                     }
                 };
                 self.stack[base + a8(op)] = r;
