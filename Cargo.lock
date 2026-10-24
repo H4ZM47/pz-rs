@@ -103,6 +103,13 @@ name = "pz-render"
 version = "0.1.0"
 
 [[package]]
+name = "pz-scripts"
+version = "0.1.0"
+dependencies = [
+ "pz-fs",
+]
+
+[[package]]
 name = "pz-text"
 version = "0.1.0"
 
