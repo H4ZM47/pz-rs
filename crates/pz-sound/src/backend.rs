@@ -150,6 +150,41 @@ pub trait AudioBackend {
     fn channel_set_reverb_properties(&mut self, _ch: ChannelHandle, _instance: i32, _wet: f32) {}
     /// `FMOD_System_SetReverbDefault(instance, preset)`.
     fn system_set_reverb_default(&mut self, _instance: i32, _preset: i32) {}
+
+    // Calls SoundManager makes; defaults do nothing.
+
+    /// `FMOD_Studio_System_GetBus(path)`; 0 if missing.
+    fn get_bus(&mut self, _path: &str) -> u64 {
+        0
+    }
+    fn bus_set_mute(&mut self, _bus: u64, _mute: bool) {}
+    fn bus_set_paused(&mut self, _bus: u64, _paused: bool) {}
+    /// `FMOD_Studio_System_GetVCA(path)`; 0 if missing.
+    fn get_vca(&mut self, _path: &str) -> u64 {
+        0
+    }
+    fn vca_set_volume(&mut self, _vca: u64, _volume: f32) {}
+    /// `FMOD_Studio_LoadEventSampleData(desc)`.
+    fn load_event_sample_data(&mut self, _desc: &EventDescription) {}
+    /// Pause/unpause FMODManager's `channelGroupInGameNonBankSounds`.
+    fn non_bank_group_set_paused(&mut self, _paused: bool) {}
+    /// `FMOD_ChannelGroup_Stop(FMOD_System_GetMasterChannelGroup())`.
+    fn master_channel_group_stop(&mut self) {}
+    /// `FMOD_System_Update()`.
+    fn system_update(&mut self) {}
+    /// `FMOD_Studio_EventInstance_SetCallback(inst, cb, TIMELINE_MARKER)`:
+    /// markers are then reported by [`AudioBackend::take_timeline_markers`].
+    fn instance_watch_timeline_markers(&mut self, _inst: InstanceHandle) {}
+    /// Timeline markers passed since the last call: (instance, name, ms).
+    fn take_timeline_markers(&mut self) -> Vec<(InstanceHandle, String, i32)> {
+        Vec::new()
+    }
+    /// `FMOD_Sound_Release`.
+    fn sound_release(&mut self, _sound: SoundHandle) {}
+    /// `FMOD_Channel_GetPosition(ch, FMOD_TIMEUNIT_MS)`.
+    fn channel_position_ms(&mut self, _ch: ChannelHandle) -> u32 {
+        0
+    }
 }
 
 /// A backend with no sound: nothing exists and nothing plays.

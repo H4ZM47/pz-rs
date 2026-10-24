@@ -127,14 +127,16 @@ pub trait EmitterWorld {
     }
 }
 
-/// The original's `IFMODParameterUpdater`.
+/// The original's `IFMODParameterUpdater`. `event_params` are the global
+/// indices of the event's parameters; `set` marks those the emitter already
+/// handled.
 pub trait ParameterUpdater {
     fn start_event(
         &mut self,
         inst: InstanceHandle,
         sound: &SoundRef,
         clip: usize,
-        remote: bool,
+        event_params: &[usize],
         set: &[bool],
         backend: &mut dyn AudioBackend,
     );
@@ -150,7 +152,7 @@ pub trait ParameterUpdater {
         inst: InstanceHandle,
         sound: &SoundRef,
         clip: usize,
-        remote: bool,
+        event_params: &[usize],
         set: &[bool],
         backend: &mut dyn AudioBackend,
     );
@@ -893,7 +895,8 @@ impl FmodSoundEmitter {
             }
         }
         if let Some(u) = &mut self.parameter_updater {
-            u.start_event(inst, &s.sound, s.clip, s.remote, &set, ctx.backend);
+            let gi: Vec<usize> = params.iter().map(|p| p.global_index).collect();
+            u.start_event(inst, &s.sound, s.clip, &gi, &set, ctx.backend);
         }
     }
 
@@ -939,7 +942,8 @@ impl FmodSoundEmitter {
             }
         }
         if let Some(u) = &mut self.parameter_updater {
-            u.stop_event(inst, &s.sound, s.clip, s.remote, &set, ctx.backend);
+            let gi: Vec<usize> = params.iter().map(|p| p.global_index).collect();
+            u.stop_event(inst, &s.sound, s.clip, &gi, &set, ctx.backend);
         }
     }
 
@@ -1563,7 +1567,7 @@ impl FmodSoundEmitter {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::backend::{ChannelHandle, SoundHandle};
     use crate::game_sounds::SoundEnv;
@@ -1571,11 +1575,11 @@ mod tests {
     use std::cell::RefCell;
 
     #[derive(Default)]
-    struct Mock {
-        calls: Vec<String>,
-        state: PlaybackState,
-        next: i64,
-        sustain: bool,
+    pub(crate) struct Mock {
+        pub(crate) calls: Vec<String>,
+        pub(crate) state: PlaybackState,
+        pub(crate) next: i64,
+        pub(crate) sustain: bool,
     }
 
     impl Default for PlaybackState {
@@ -1583,6 +1587,18 @@ mod tests {
             PlaybackState::Playing
         }
     }
+
+    /// Parameters every mock event has, by global index.
+    pub(crate) const PARAMS: [&str; 8] = [
+        "Occlusion",
+        "ActionProgressPercent",
+        "Speed",
+        "MusicState",
+        "FootstepMaterial",
+        "FootstepMaterial2",
+        "Inside",
+        "RainIntensity",
+    ];
 
     fn pdesc(name: &str, idx: usize) -> ParameterDescription {
         ParameterDescription {
@@ -1608,21 +1624,29 @@ mod tests {
                     is_oneshot: false,
                     has_sustain_points: self.sustain,
                     max_distance: 20.0,
-                    parameters: vec![
-                        pdesc("Occlusion", 0),
-                        pdesc("ActionProgressPercent", 1),
-                        pdesc("Speed", 2),
-                    ],
+                    parameters: PARAMS
+                        .iter()
+                        .enumerate()
+                        .map(|(i, n)| pdesc(n, i))
+                        .collect(),
                 })
             })
         }
         fn parameter_description(&mut self, name: &str) -> Option<ParameterDescription> {
-            match name {
-                "Occlusion" => Some(pdesc(name, 0)),
-                "ActionProgressPercent" => Some(pdesc(name, 1)),
-                "Speed" => Some(pdesc(name, 2)),
-                _ => None,
-            }
+            PARAMS
+                .iter()
+                .position(|n| *n == name)
+                .map(|i| pdesc(name, i))
+        }
+        fn system_set_parameter_by_id(&mut self, id: (u32, u32), v: f32) {
+            self.calls.push(format!("gparam {} {v}", id.0));
+        }
+        fn system_update(&mut self) {
+            self.calls.push("update".into());
+        }
+        fn get_bus(&mut self, path: &str) -> u64 {
+            self.calls.push(format!("bus {path}"));
+            1
         }
         fn create_event_instance(&mut self, _d: &EventDescription) -> InstanceHandle {
             self.next += 1;
@@ -1686,10 +1710,10 @@ mod tests {
         }
     }
 
-    struct World;
+    pub(crate) struct World;
     impl EmitterWorld for World {}
 
-    fn sounds(names: &[(&str, Option<&str>, Option<&str>)], b: &mut Mock) -> GameSounds {
+    pub(crate) fn sounds(names: &[(&str, Option<&str>, Option<&str>)], b: &mut Mock) -> GameSounds {
         let mut g = GameSounds::new(SoundEnv::default());
         for (name, event, file) in names {
             let mut s = GameSoundScript::new();
