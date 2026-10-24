@@ -1727,6 +1727,7 @@ version = "0.1.0"
 dependencies = [
  "indexmap",
  "pz-anim",
+ "pz-audio",
  "pz-characters",
  "pz-classfile",
  "pz-core",

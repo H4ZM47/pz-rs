@@ -31,6 +31,7 @@ pub mod bind_save;
 pub mod bind_scripts;
 pub mod bind_skills;
 pub mod bind_states;
+pub mod bind_zombie;
 pub mod bind_text;
 pub mod bind_ui;
 pub mod events;
@@ -70,6 +71,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_body::register_shared(&mut mgr.thread);
     bind_nutrition::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
+    bind_zombie::register_shared(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
     let events = mgr.events.clone();
     let sink = move |t: &mut pz_kahlua::Thread, name: &str, a: &[pz_kahlua::Value]| {
