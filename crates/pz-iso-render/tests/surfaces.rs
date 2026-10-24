@@ -288,7 +288,8 @@ fn blood_splats_darken_the_floor_where_they_lie() {
     let maps = Maps(depth_map(&mut tm));
     let textures = Textures(HashMap::from([("blood_floor_small_01".to_string(), solid(&mut tm, "blood", 32, 16, [120, 0, 0, 255]))]));
     let splat = FloorBloodSplat { x: 4.5, y: 4.5, z: 0.0, kind: 0, world_age: 0.0, index: 1, fade: 0 };
-    world.blood.insert((0, 0), ChunkBlood { fade: Vec::new(), splats: vec![splat] });
+    let fading = FloorBloodSplat { x: 2.5, y: 2.5, fade: 2, ..splat };
+    world.blood.insert((0, 0), ChunkBlood { fade: vec![fading].into(), splats: vec![splat], next_splat_index: 0 });
     let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, SurfaceSettings::default(), ClimateInputs::default(), PuddlesState::default())));
     let p = draw(&mut gpu, &mut tm, &r, &world);
     // The splat's centre: (4.5, 4.5) is (256, 160); the texture is placed
