@@ -1784,6 +1784,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-world-popman"
+version = "0.1.0"
+dependencies = [
+ "pz-popman",
+ "pz-world",
+]
+
+[[package]]
 name = "pz-world-render"
 version = "0.1.0"
 dependencies = [
