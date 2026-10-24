@@ -4,7 +4,7 @@
 //! format document: varints are big-endian, 7 bits per byte with the high
 //! bit as continuation, except that a ninth byte contributes all 8 bits.
 
-use crate::{Error, Result, TextEncoding};
+use crate::{Affinity, Error, Result, TextEncoding};
 
 /// Reads a varint from the start of `b`: `(value, length)`.
 pub fn varint(b: &[u8]) -> Option<(u64, usize)> {
@@ -18,6 +18,83 @@ pub fn varint(b: &[u8]) -> Option<(u64, usize)> {
     }
     let c = *b.get(8)?;
     Some(((v << 8) | u64::from(c), 9))
+}
+
+/// Encodes a varint (the inverse of [`varint`]).
+pub fn put_varint(v: u64) -> Vec<u8> {
+    if v > 0x00ff_ffff_ffff_ffff {
+        // Nine bytes: 8 x 7 bits, then 8 bits.
+        let mut out = Vec::with_capacity(9);
+        let hi = v >> 8;
+        for i in (0..8).rev() {
+            out.push(0x80 | ((hi >> (7 * i)) & 0x7f) as u8);
+        }
+        out.push(v as u8);
+        return out;
+    }
+    let mut groups = vec![(v & 0x7f) as u8];
+    let mut rest = v >> 7;
+    while rest > 0 {
+        groups.push(0x80 | (rest & 0x7f) as u8);
+        rest >>= 7;
+    }
+    groups.reverse();
+    groups
+}
+
+/// Serial type and body of an integer: the smallest encoding, with the
+/// constant types 8 and 9 only in schema format 4 files.
+fn int_serial(i: i64, format4: bool) -> (u64, Vec<u8>) {
+    let b = i.to_be_bytes();
+    match i {
+        0 if format4 => (8, vec![]),
+        1 if format4 => (9, vec![]),
+        -128..=127 => (1, b[7..].to_vec()),
+        -32768..=32767 => (2, b[6..].to_vec()),
+        -8_388_608..=8_388_607 => (3, b[5..].to_vec()),
+        -2_147_483_648..=2_147_483_647 => (4, b[4..].to_vec()),
+        -140_737_488_355_328..=140_737_488_355_327 => (5, b[2..].to_vec()),
+        _ => (6, b.to_vec()),
+    }
+}
+
+/// A string in the database text encoding.
+pub fn encode_text(s: &str, enc: TextEncoding) -> Vec<u8> {
+    match enc {
+        TextEncoding::Utf8 => s.as_bytes().to_vec(),
+        TextEncoding::Utf16le => s.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        TextEncoding::Utf16be => s.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+    }
+}
+
+/// Builds a record (`OP_MakeRecord`). `format4` allows the serial types 8
+/// and 9 for the integers 0 and 1, as SQLite does in schema format 4.
+pub fn encode_record(values: &[Value], enc: TextEncoding, format4: bool) -> Vec<u8> {
+    let mut types = Vec::new();
+    let mut body = Vec::new();
+    for v in values {
+        let (t, b) = match v {
+            Value::Null => (0, vec![]),
+            Value::Integer(i) => int_serial(*i, format4),
+            Value::Real(r) => (7, r.to_bits().to_be_bytes().to_vec()),
+            Value::Text(s) => {
+                let b = encode_text(s, enc);
+                (13 + 2 * b.len() as u64, b)
+            }
+            Value::Blob(b) => (12 + 2 * b.len() as u64, b.clone()),
+        };
+        types.extend(put_varint(t));
+        body.extend(b);
+    }
+    // The header length includes its own varint.
+    let mut n = 1;
+    while put_varint((types.len() + n) as u64).len() > n {
+        n += 1;
+    }
+    let mut out = put_varint((types.len() + n) as u64);
+    out.extend(types);
+    out.extend(body);
+    out
 }
 
 /// One column value, in its storage class.
@@ -66,6 +143,87 @@ impl Value {
             Value::Text(s) => Some(s.clone()),
             Value::Blob(b) => Some(String::from_utf8_lossy(b).into_owned()),
         }
+    }
+}
+
+/// `sqlite3VdbeIntegerAffinity`: a real that converts to an integer and
+/// back unchanged becomes that integer (the extremes excluded).
+pub fn integer_affinity(r: f64) -> Value {
+    let ix = r as i64;
+    if r == ix as f64 && ix > i64::MIN && ix < i64::MAX {
+        Value::Integer(ix)
+    } else {
+        Value::Real(r)
+    }
+}
+
+/// `applyNumericAffinity(pRec, 1)`: text that is a well-formed number in
+/// its entirety (`sqlite3AtoF`, surrounding whitespace allowed) becomes
+/// that number; `None` otherwise.
+pub fn numeric_from_text(s: &str) -> Option<Value> {
+    let ws = |c: char| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r');
+    let t = s.trim_matches(ws);
+    let b = t.as_bytes();
+    let mut i = 0;
+    if matches!(b.first(), Some(b'+' | b'-')) {
+        i += 1;
+    }
+    let digits = |i: &mut usize| {
+        let st = *i;
+        while *i < b.len() && b[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        *i - st
+    };
+    let mut nd = digits(&mut i);
+    let mut pure = true;
+    if b.get(i) == Some(&b'.') {
+        i += 1;
+        nd += digits(&mut i);
+        pure = false;
+    }
+    if nd == 0 {
+        return None;
+    }
+    if matches!(b.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(b.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        if digits(&mut i) == 0 {
+            return None;
+        }
+        pure = false;
+    }
+    if i != b.len() {
+        return None;
+    }
+    let r: f64 = t.parse().ok()?;
+    if pure {
+        // alsoAnInt: an exact 64-bit integer stays one.
+        if let Ok(exact) = t.parse::<i64>() {
+            return Some(Value::Integer(exact));
+        }
+    }
+    Some(integer_affinity(r))
+}
+
+/// Column affinity applied to a value about to be stored (`applyAffinity`
+/// as `OP_MakeRecord` / `OP_Affinity` use it). REAL columns keep integral
+/// values as integers in the record, as SQLite stores them.
+pub fn apply_affinity(v: Value, aff: Affinity) -> Value {
+    match aff {
+        Affinity::Blob => v,
+        Affinity::Text => match v {
+            Value::Integer(i) => Value::Text(i.to_string()),
+            Value::Real(r) => Value::Text(real_to_text(r)),
+            v => v,
+        },
+        Affinity::Numeric | Affinity::Integer | Affinity::Real => match v {
+            Value::Text(s) => numeric_from_text(&s).unwrap_or(Value::Text(s)),
+            Value::Real(r) => integer_affinity(r),
+            v => v,
+        },
     }
 }
 

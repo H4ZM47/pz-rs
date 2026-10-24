@@ -19,6 +19,7 @@ pz-world.workspace = true
 pz-input.workspace = true
 pz-classfile.workspace = true
 pz-sqlite.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 pz-sqlite = { workspace = true, features = ["writer"] }

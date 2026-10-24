@@ -244,3 +244,85 @@ fn map_info() {
     "#,
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn save_folder_changes() {
+    let mut env = setup("changes");
+    let s = env.saves.clone();
+    let w = |rel: &str| {
+        let p = s.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, rel).unwrap();
+    };
+    for rel in [
+        "Sandbox/del/map/1/2.bin",
+        "Sandbox/del/x.bin",
+        "Sandbox/m/map/3/4.bin",
+        "Sandbox/m/map/3/x.bin",
+        "Sandbox/m/zpop/zpop_1_2.bin",
+        "Sandbox/m/zpop/zpop_-1_2.bin",
+        "Sandbox/m/entity_data.bin",
+        "Sandbox/m/entityXdata.bin",
+        "LastStand/a/b/c.bin",
+    ] {
+        w(rel);
+    }
+    let cache = env.dir.join("user");
+    std::fs::create_dir_all(cache.join("db")).unwrap();
+    std::fs::write(cache.join("db/coop.db"), "").unwrap();
+    crate::savefile::set_active_mods(
+        "currentGame",
+        pz_fs::ActiveMods {
+            mods: vec!["M1".into()],
+            map_order: vec!["Muldraugh, KY".into()],
+        },
+    );
+    run(
+        &mut env.mgr,
+        r#"
+        deleteSave("Sandbox/../Sandbox/del")
+        deleteSave("Sandbox/del")
+        assert(renameSavefile("Sandbox", "w3", "w 4") == false)
+        assert(renameSavefile("Sandbox", "w3", "w4") == true)
+        assert(renameSavefile("Sandbox", "w4", "w1") == false)
+        assert(renameSavefile("Sandbox", "w4", ".w") == false)
+        assert(renameSavefile("Sandbox", "../x", "y") == false)
+        manipulateSavefile("Sandbox/m", "DeleteMapXYBin")
+        manipulateSavefile("Sandbox/m", "DeleteZPopXYBin")
+        manipulateSavefile("Sandbox/m", "DeleteEntityDataBin")
+        manipulateSavefile("Sandbox/m", "WriteModsDotTxt")
+        assert(not pcall(manipulateSavefile, "Sandbox/m", "Nope"))
+        manipulateSavefile("Sandbox/missing", "Nope")
+        deleteAllGameModeSaves("LastStand")
+        deleteDatabase("Sandbox/coop")
+        setSavefilePlayer1("Sandbox", "w1", 5)
+        "#,
+    );
+    assert!(!s.join("Sandbox/del").exists());
+    assert!(s.join("Sandbox/w4").is_dir() && !s.join("Sandbox/w3").exists());
+    assert!(!s.join("Sandbox/m/map/3/4.bin").exists() && s.join("Sandbox/m/map/3/x.bin").exists());
+    assert!(!s.join("Sandbox/m/zpop/zpop_1_2.bin").exists());
+    assert!(s.join("Sandbox/m/zpop/zpop_-1_2.bin").exists());
+    assert!(
+        !s.join("Sandbox/m/entity_data.bin").exists()
+            && s.join("Sandbox/m/entityXdata.bin").exists()
+    );
+    let mods = std::fs::read_to_string(s.join("Sandbox/m/mods.txt")).unwrap();
+    assert!(
+        mods.contains("mod = M1,") && mods.contains("map = Muldraugh, KY,"),
+        "{mods}"
+    );
+    assert!(!s.join("LastStand").exists());
+    assert_eq!(shared_core().borrow().game_mode, "Sandbox");
+    assert!(!cache.join("db/coop.db").exists());
+    let ids: Vec<_> = crate::savefile::get_players(false, &s.join("Sandbox/w1").to_string_lossy())
+        .unwrap()
+        .into_iter()
+        .map(|p| (p.sql_id, p.name))
+        .collect();
+    assert_eq!(
+        ids,
+        [(1, Some("Bob".into())), (2, None), (5, Some("Kate".into()))]
+    );
+}

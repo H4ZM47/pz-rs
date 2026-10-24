@@ -41,6 +41,7 @@ pub mod expose;
 pub mod global_objects;
 pub mod global_objects_save;
 pub mod lua_manager;
+pub mod player_db;
 pub mod savefile;
 
 pub use lua_manager::LuaManager;

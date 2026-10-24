@@ -1,10 +1,14 @@
-//! Save-folder reads behind the save globals: `PlayerDBHelper` /
+//! Save-folder file work behind the save globals: `PlayerDBHelper` /
 //! `VehicleDBHelper` player queries on `players.db` / `vehicles.db`,
-//! `map_ver.bin`, save-folder listing and the "last played" date.
+//! `map_ver.bin`, save-folder listing and the "last played" date, and the
+//! menu's deleting, renaming and cleaning of save folders (`deleteSave`,
+//! `renameSavefile`, `manipulateSavefile`, `deleteAllGameModeSaves`,
+//! `deleteDatabase`).
 //!
-//! The databases are read with `pz-sqlite`, read-only. The original's
-//! `File.setReadable(true, false)` before opening is not repeated (it would
-//! change permissions in the user's save folder).
+//! The read queries open the databases with `pz-sqlite`, read-only. The
+//! original's `File.setReadable(true, false)` before those reads is not
+//! repeated (it would change permissions in the user's save folder); the
+//! writes in [`crate::player_db`] do repeat it.
 
 use pz_fs::jfile::{self, SEP};
 use pz_sqlite::{Database, Table, Value};
@@ -349,6 +353,347 @@ pub fn full_save_directory(save_dir: &str, no_save: bool) -> Vec<String> {
     let mut keyed: Vec<(i64, String)> = saves.into_iter().map(|p| (last_modified(&p), p)).collect();
     keyed.sort_by_key(|k| std::cmp::Reverse(k.0));
     keyed.into_iter().map(|(_, p)| save_name(&p)).collect()
+}
+
+// ---- save folder changes ----------------------------------------------------------
+
+/// `File.delete()`: removes a file, a symbolic link (not its target) or an
+/// empty directory; `false` when that fails.
+pub fn delete(path: &str) -> bool {
+    let p = jfile::normalize(path);
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir(&p).is_ok(),
+        Ok(_) => std::fs::remove_file(&p).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// `StringUtils.containsDoubleDot`.
+pub fn contains_double_dot(s: &str) -> bool {
+    s.contains("..") || s.contains("\0.\0.")
+}
+
+/// `GlobalObject.deleteSave(folder)` after its relative-path check, for
+/// the saves folder `saves`: deletes the entries of `<saves>/<folder>`
+/// (recursing into directories, symbolic links to directories included,
+/// through `has_relative_path` again) and then the folder. Failures are
+/// silent, as `File.delete` reports them only by its result.
+pub fn delete_save(saves: &str, folder: &str, has_relative_path: &dyn Fn(&str) -> bool) {
+    if has_relative_path(folder) {
+        return;
+    }
+    let to_remove = format!("{saves}{SEP}{folder}");
+    let Some(names) = list(&to_remove) else {
+        return;
+    };
+    for name in names {
+        let child = format!("{saves}{SEP}{folder}{SEP}{name}");
+        if is_directory(&child) {
+            delete_save(
+                saves,
+                &format!("{folder}{SEP}{}", file_name(&child)),
+                has_relative_path,
+            );
+        }
+        delete(&child);
+    }
+    delete(&to_remove);
+}
+
+/// `GlobalObject.deleteDatabase(folder)` after its relative-path check:
+/// deletes `<cache>/db/<last component of folder>.db`.
+pub fn delete_database(cache_dir: &str, folder: &str) {
+    // Path.of(folder).getFileName(): the last name; null for a root.
+    let n = jfile::normalize(folder);
+    let last = n.rsplit(SEP).find(|c| !c.is_empty());
+    let name = match last {
+        Some(l) => l.to_string(),
+        None if n.is_empty() => String::new(),
+        None => "null".to_string(),
+    };
+    let db = format!("{cache_dir}{SEP}db{SEP}{name}.db");
+    if exists(&db) {
+        delete(&db);
+    }
+}
+
+/// `GlobalObject.sanitizeWorldName`.
+pub fn sanitize_world_name(name: &str) -> String {
+    let s = name.replace(' ', "_");
+    let s: String = s
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | '?' | '*' | '<' | '>' | ':' | '|'))
+        .collect();
+    pz_fs::java::trim(&s).to_string()
+}
+
+/// `GlobalObject.isInvalidForRenameSavefile`.
+fn invalid_for_rename(s: Option<&str>) -> bool {
+    match s {
+        None => true,
+        Some(s) => s.contains('/') || s.contains('\\') || s.contains(SEP) || contains_double_dot(s),
+    }
+}
+
+/// `Files.move(source, target)` without options: fails when `target`
+/// exists, unless both are the same file (then nothing happens).
+pub fn files_move(source: &str, target: &str) -> std::io::Result<()> {
+    let (src, dst) = (jfile::normalize(source), jfile::normalize(target));
+    let sm = std::fs::symlink_metadata(&src)?;
+    if let Ok(tm) = std::fs::symlink_metadata(&dst) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if sm.dev() == tm.dev() && sm.ino() == tm.ino() {
+                return Ok(());
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = (&sm, &tm);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("java.nio.file.FileAlreadyExistsException: {dst}"),
+        ));
+    }
+    std::fs::rename(&src, &dst)
+}
+
+/// `GlobalObject.renameSaveFile(gameMode, oldName, newName)` (Lua
+/// `renameSavefile`) for the saves folder `saves`.
+pub fn rename_savefile(
+    saves: &str,
+    game_mode: Option<&str>,
+    old_name: Option<&str>,
+    new_name: Option<&str>,
+) -> bool {
+    if invalid_for_rename(game_mode) || invalid_for_rename(old_name) || invalid_for_rename(new_name)
+    {
+        return false;
+    }
+    let (game_mode, old_name, new_name) =
+        (game_mode.unwrap(), old_name.unwrap(), new_name.unwrap());
+    let world = sanitize_world_name(new_name);
+    if world != new_name || world.starts_with('.') || world.ends_with('.') {
+        return false;
+    }
+    if !exists(&format!("{saves}{SEP}{game_mode}")) {
+        return false;
+    }
+    let old = format!("{saves}{SEP}{game_mode}{SEP}{old_name}");
+    let new = format!("{saves}{SEP}{game_mode}{SEP}{world}");
+    files_move(&old, &new).is_ok()
+}
+
+/// `Files.newDirectoryStream(dir, filter)` entries whose name fully
+/// matches `re`, in directory order.
+fn matching_entries(dir: &str, re: &regex::Regex) -> std::io::Result<Vec<String>> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(jfile::normalize(dir))? {
+        let name = e?.file_name().to_string_lossy().into_owned();
+        if re.is_match(&name) {
+            out.push(format!("{}{SEP}{name}", jfile::normalize(dir)));
+        }
+    }
+    Ok(out)
+}
+
+/// `Files.deleteIfExists`.
+fn delete_if_exists(path: &str) -> std::io::Result<()> {
+    let p = jfile::normalize(path);
+    match std::fs::symlink_metadata(&p) {
+        Ok(m) if m.is_dir() => std::fs::remove_dir(&p),
+        Ok(_) => std::fs::remove_file(&p),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn full_match(regex: &str) -> regex::Regex {
+    regex::Regex::new(&format!("^(?:{regex})$")).expect("valid pattern")
+}
+
+/// `deleteSavefileFilesMatching(folder, regex)`: the first failure is
+/// logged and ends the deletion.
+pub fn delete_files_matching(folder: &str, regex: &str) {
+    let re = full_match(regex);
+    let r = (|| -> std::io::Result<()> {
+        for path in matching_entries(folder, &re)? {
+            println!("DELETE {path}");
+            delete_if_exists(&path)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = r {
+        log_exception(folder, &e);
+    }
+}
+
+/// `deleteSavefileFilesMatchingInSubdirectories(folder, regex)`.
+pub fn delete_files_matching_in_subdirectories(folder: &str, regex: &str) {
+    let re = full_match(regex);
+    let r = (|| -> std::io::Result<()> {
+        for e in std::fs::read_dir(jfile::normalize(folder))? {
+            let name = e?.file_name().to_string_lossy().into_owned();
+            let outer = format!("{}{SEP}{name}", jfile::normalize(folder));
+            // Files.isDirectory follows links.
+            if !std::path::Path::new(&outer).is_dir() {
+                continue;
+            }
+            for path in matching_entries(&outer, &re)? {
+                println!("DELETE {path}");
+                delete_if_exists(&path)?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(e) = r {
+        log_exception(folder, &e);
+    }
+}
+
+/// The `manipulateSavefile` actions: `(name, sub-folder, pattern, in
+/// sub-directories)`.
+pub const SAVEFILE_ACTIONS: &[(&str, &str, &str, bool)] = &[
+    (
+        "DeleteAPopXYBin",
+        "apop",
+        "apop_-?[0-9]+_-?[0-9]+\\.bin",
+        false,
+    ),
+    (
+        "DeleteChunkDataXYBin",
+        "chunkdata",
+        "chunkdata_-?[0-9]+_-?[0-9]+\\.bin",
+        false,
+    ),
+    ("DeleteEntityDataBin", "", "entity_data.bin", false),
+    ("DeleteMapXYBin", "map", "-?[0-9]+\\.bin", true),
+    ("DeleteMapAnimalsBin", "", "map_animals\\.bin", false),
+    ("DeleteMapBasementsBin", "", "map_basements\\.bin", false),
+    ("DeleteMapMetaBin", "", "map_meta\\.bin", false),
+    ("DeleteMapTBin", "", "map_t\\.bin", false),
+    ("DeleteMapZoneBin", "", "map_zone\\.bin", false),
+    ("DeletePlayersDB", "", "players\\.db", false),
+    (
+        "DeletePlayerBuildingsBin",
+        "",
+        "player_buildings\\.bin",
+        false,
+    ),
+    ("DeleteReanimatedBin", "", "reanimated\\.bin", false),
+    ("DeleteVehiclesDB", "", "vehicles\\.db", false),
+    ("DeleteZOutfitsBin", "", "z_outfits\\.bin", false),
+    ("DeleteZPopVirtualBin", "zpop", "zpop_virtual\\.bin", false),
+    ("DeleteZPopXYBin", "zpop", "zpop_[0-9]+_[0-9]+\\.bin", false),
+];
+
+/// `GlobalObject.manipulateSavefile(folder, action)` after its argument
+/// checks, for the save folder `dir` (an existing directory). `Err` with
+/// the `IllegalArgumentException` message for an unknown action;
+/// `WriteModsDotTxt` is left to the caller (`Ok(false)`).
+pub fn manipulate_savefile(dir: &str, action: &str) -> Result<bool, String> {
+    if action == "WriteModsDotTxt" {
+        return Ok(false);
+    }
+    let Some(&(_, sub, re, nested)) = SAVEFILE_ACTIONS.iter().find(|a| a.0 == action) else {
+        return Err(format!("unknown action \"{action}\""));
+    };
+    let folder = if sub.is_empty() {
+        dir.to_string()
+    } else {
+        format!("{dir}{SEP}{sub}")
+    };
+    if nested {
+        delete_files_matching_in_subdirectories(&folder, re);
+    } else {
+        delete_files_matching(&folder, re);
+    }
+    Ok(true)
+}
+
+thread_local! {
+    /// `ActiveMods.s_activeMods`, by id.
+    static ACTIVE_MODS: std::cell::RefCell<Vec<(String, pz_fs::ActiveMods)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `ActiveMods.getById(id)`: a copy of the registered mod list, registering
+/// an empty one first when `id` is new.
+pub fn active_mods_by_id(id: &str) -> pz_fs::ActiveMods {
+    let id = pz_fs::java::trim(id).to_string();
+    ACTIVE_MODS.with(|m| {
+        let mut m = m.borrow_mut();
+        if let Some((_, a)) = m.iter().find(|(k, _)| k.eq_ignore_ascii_case(&id)) {
+            return a.clone();
+        }
+        m.push((id, pz_fs::ActiveMods::default()));
+        pz_fs::ActiveMods::default()
+    })
+}
+
+/// Replaces the mod list registered as `id` (`ActiveMods.getById(id)
+/// .copyFrom(...)`), e.g. `currentGame` when a save is loaded.
+pub fn set_active_mods(id: &str, mods: pz_fs::ActiveMods) {
+    let id = pz_fs::java::trim(id).to_string();
+    ACTIVE_MODS.with(|m| {
+        let mut m = m.borrow_mut();
+        match m.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(&id)) {
+            Some((_, a)) => *a = mods,
+            None => m.push((id, mods)),
+        }
+    });
+}
+
+/// `ActiveModsFile.write(path, activeMods)`.
+pub fn write_active_mods(no_save: bool, path: &str, mods: &pz_fs::ActiveMods) -> bool {
+    if no_save {
+        return false;
+    }
+    match std::fs::write(
+        jfile::normalize(path),
+        pz_fs::mods::active_mods_to_string(mods),
+    ) {
+        Ok(()) => true,
+        Err(e) => {
+            log_exception(path, &e);
+            false
+        }
+    }
+}
+
+/// The `Files.walkFileTree` of `deleteAllGameModeSaves`: deletes files
+/// (links included, not followed) and then each directory after its
+/// entries. A directory that cannot be read is logged and skipped; the
+/// first failed delete ends the walk.
+pub fn delete_tree(root: &str) -> std::io::Result<()> {
+    fn walk(p: &std::path::Path) -> std::io::Result<()> {
+        let m = match std::fs::symlink_metadata(p) {
+            Ok(m) => m,
+            Err(e) => {
+                log_exception(&p.to_string_lossy(), &e);
+                return Ok(());
+            }
+        };
+        if !m.is_dir() {
+            return std::fs::remove_file(p);
+        }
+        match std::fs::read_dir(p) {
+            Ok(rd) => {
+                for e in rd {
+                    match e {
+                        Ok(e) => walk(&e.path())?,
+                        Err(e) => log_exception(&p.to_string_lossy(), &e),
+                    }
+                }
+            }
+            Err(e) => {
+                log_exception(&p.to_string_lossy(), &e);
+                return Ok(());
+            }
+        }
+        std::fs::remove_dir(p)
+    }
+    walk(std::path::Path::new(&jfile::normalize(root)))
 }
 
 #[cfg(test)]

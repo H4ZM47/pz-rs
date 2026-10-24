@@ -1,9 +1,9 @@
-//! A small read-only reader for SQLite 3 database files, in pure Rust.
+//! A small reader and writer for SQLite 3 database files, in pure Rust.
 //!
 //! The game keeps per-save player and vehicle records in SQLite files
-//! (`players.db`, `vehicles.db`) and reads them through sqlite-jdbc. This
-//! crate covers what those reads need, following the "Database File Format"
-//! document of SQLite:
+//! (`players.db`, `vehicles.db`) and uses them through sqlite-jdbc. This
+//! crate covers what the game does with them, following the "Database File
+//! Format" document of SQLite:
 //!
 //! * the 100-byte file header (page size with `1` meaning 65536, reserved
 //!   bytes per page, text encoding, in-header page count validity),
@@ -13,18 +13,28 @@
 //! * `sqlite_schema` (page 1) to find a table's root page and columns,
 //! * full scans in rowid order and rowid lookups.
 //!
-//! There is no SQL engine: callers implement their queries on top of
-//! [`Database::for_each_row`] and [`Database::row_by_rowid`].
+//! [`Database`] reads; there is no SQL engine, callers implement their
+//! queries on top of [`Database::for_each_row`] and
+//! [`Database::row_by_rowid`]. Not supported there: `WITHOUT ROWID` tables,
+//! generated columns, and WAL databases whose `-wal` file is non-empty (an
+//! error is returned). A hot rollback journal is not replayed by
+//! [`Database`]; the main file is read as it is.
 //!
-//! Not supported: index b-trees (not needed for rowid scans), `WITHOUT
-//! ROWID` tables, generated columns, and WAL databases whose `-wal` file is
-//! non-empty (an error is returned). A hot rollback journal is not replayed;
-//! the main file is read as it is. The file is only ever opened for reading.
+//! [`Connection`] writes: the schema statements and rowid-keyed row changes
+//! the game runs (see [`conn`]), with page allocation and the free list,
+//! b-tree splits and merges for table and index b-trees, overflow chains,
+//! header bookkeeping, and SQLite's rollback journal for atomic commits.
 
+mod btree;
+pub mod conn;
+mod ddl;
+mod pager;
 pub mod record;
 pub mod schema;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod write_tests;
 #[cfg(any(test, feature = "writer"))]
 pub mod writer;
 
@@ -34,8 +44,9 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+pub use conn::Connection;
 pub use record::Value;
-pub use schema::{Affinity, Column, TableDef};
+pub use schema::{Affinity, Column, Literal, TableDef};
 
 #[derive(Debug)]
 pub enum Error {
@@ -50,6 +61,11 @@ pub enum Error {
     NoSuchColumn(String),
     /// A valid database using a feature this reader does not implement.
     Unsupported(String),
+    /// A constraint failed (`SQLITE_CONSTRAINT`); nothing was changed.
+    Constraint(String),
+    /// A statement error (`SQLITE_ERROR`: bad SQL, object exists, ...);
+    /// nothing was changed.
+    Sql(String),
 }
 
 impl fmt::Display for Error {
@@ -61,6 +77,8 @@ impl fmt::Display for Error {
             Error::NoSuchTable(s) => write!(f, "no such table: {s}"),
             Error::NoSuchColumn(s) => write!(f, "no such column: {s}"),
             Error::Unsupported(s) => write!(f, "unsupported: {s}"),
+            Error::Constraint(s) => write!(f, "constraint failed: {s}"),
+            Error::Sql(s) => write!(f, "{s}"),
         }
     }
 }
@@ -190,7 +208,7 @@ pub struct SchemaEntry {
 }
 
 /// A rowid table found in the schema.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Table {
     pub name: String,
     pub root: u32,
@@ -225,7 +243,8 @@ pub struct Row {
 
 impl Row {
     /// Column `col` of `table` as a query sees it: the rowid for the alias
-    /// column, NULL for columns missing from an older record, and integers
+    /// column, the column default for columns missing from an older record
+    /// (rows written before `ALTER TABLE ... ADD`), and integers
     /// read back as reals in REAL-affinity columns (SQLite stores integral
     /// reals as integers there and `OP_RealAffinity` undoes it).
     pub fn get(&self, table: &Table, col: usize) -> Value {
@@ -233,7 +252,11 @@ impl Row {
             return Value::Integer(self.rowid);
         }
         match self.values.get(col) {
-            None => Value::Null,
+            None => table
+                .def
+                .columns
+                .get(col)
+                .map_or(Value::Null, Column::default_value),
             Some(Value::Integer(i))
                 if table
                     .def
