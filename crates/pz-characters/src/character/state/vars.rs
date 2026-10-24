@@ -850,7 +850,7 @@ impl CharVar {
             CharVar::AttackFromBehind => B(v.attack_from_behind),
             CharVar::UnderVehicle => B(v.under_vehicle),
             CharVar::ReanimateTimer => F(v.reanimate_timer),
-            CharVar::IsAttacking => B(v.attack_started),
+            CharVar::IsAttacking => B(!v.attack_type.is_empty()),
             CharVar::BeenSprintingFor => F(v.been_sprinting_for),
             CharVar::BannedAttacking => B(v.banned_attacking),
             CharVar::MeleePressed => B(v.melee_pressed),

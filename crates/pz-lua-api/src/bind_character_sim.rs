@@ -1221,6 +1221,41 @@ mod tests {
     }
 
     #[test]
+    fn states_and_variables_from_lua() {
+        let (mut t, chr, _) = setup();
+        crate::bind_states::register(&mut t, &Rc::new(ScriptManager::new()));
+        run(
+            &mut t,
+            r#"
+            assert(player:getCurrentState() == nil)
+            player:changeState(IdleState.instance())
+            assert(player:getCurrentState() == IdleState.instance() and player:isCurrentState(IdleState.instance()))
+            assert(player:getCurrentStateName() == "IdleState")
+            player:setDefaultState()
+            assert(player:getCurrentState() == GenericDefaultState.instance())
+            assert(player:getPreviousStateName() == "IdleState")
+            player:setVariable("hitreaction", "Bite")
+            assert(player:getHitReaction() == "Bite" and player:getVariableBoolean("hashitreaction"))
+            player:setVariable("Speed", 2.5)
+            assert(player:getVariableFloat("speed", 0) == 2.5 and player:getVariableString("Speed") == "2.5")
+            player:setVariable("Flag", true)
+            assert(player:getVariableBoolean("flag") and player:isVariable("Flag", "TRUE"))
+            player:clearVariable("Flag")
+            assert(not player:getVariableBoolean("Flag") and player:getVariableBoolean("Nope", true))
+            player:setIsAiming(true)
+            assert(player:isAiming() and player:getVariableBoolean("aim"))
+            player:setDoShove(true)
+            assert(player:isDoShove() and player:getVariableBoolean("bDoShove"))
+            player:reportEvent("EventX")
+            player:Kill(nil)
+            assert(player:getVariableBoolean("bdead"))
+            "#,
+        )
+        .unwrap();
+        assert!(chr.borrow().state.action_context.has_event_occurred("eventx", None));
+    }
+
+    #[test]
     fn xp_and_perks_from_lua() {
         let (mut t, chr, log) = setup();
         run(

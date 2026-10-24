@@ -13,6 +13,7 @@ pub mod bind_body_damage;
 pub mod bind_character_sim;
 pub mod bind_characters;
 pub mod bind_climate;
+pub mod bind_combat;
 pub mod bind_core;
 pub mod bind_debug;
 pub mod bind_input;
