@@ -51,7 +51,7 @@ pub use color::Color;
 pub use energy_definition::{EnergyDefinitionScript, EnergyType};
 pub use fluid_definition::{FluidCategory, FluidDefinitionScript, FluidType, PoisonEffect};
 pub use fluid_filter::{FilterType, FluidFilter, FluidFilterScript};
-pub use timed_action::{ActionSoundTime, BodyPartType, Metabolics, TimedActionScript};
+pub use timed_action::{ActionSoundTime, TimedActionScript};
 pub use xui_colors::XuiColorsScript;
 pub use xui_config::{XuiConfigScript, XuiVarType, ALLOWED_VAR_TYPES};
 pub use xui_layout::{read_lua_class_value, XuiLayoutScript, XuiScriptType};
