@@ -184,11 +184,11 @@ impl LuaObject for TextManagerObj {
     }
 }
 
-fn with_translator<R>(f: impl FnOnce(&Translator) -> R) -> Option<R> {
+pub fn with_translator<R>(f: impl FnOnce(&Translator) -> R) -> Option<R> {
     state().map(|s| f(&s.translator.borrow()))
 }
 
-fn with_translator_mut<R>(f: impl FnOnce(&mut Translator) -> R) -> Option<R> {
+pub fn with_translator_mut<R>(f: impl FnOnce(&mut Translator) -> R) -> Option<R> {
     state().map(|s| f(&mut s.translator.borrow_mut()))
 }
 

@@ -1,0 +1,246 @@
+use super::*;
+use pz_sqlite::writer::Writer;
+use pz_sqlite::TextEncoding;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+const LOCAL_PLAYERS: &str =
+    "CREATE TABLE localPlayers (id INTEGER PRIMARY KEY NOT NULL,name STRING,\
+wx INTEGER,wy INTEGER,x FLOAT,y FLOAT,z FLOAT,worldversion INTEGER,data BLOB,isDead BOOLEAN)";
+
+/// A `localPlayers` database with `(id, name, isDead)` rows.
+fn players_db(path: &Path, rows: &[(i64, Option<&str>, i64)]) {
+    use pz_sqlite::Value as V;
+    let mut w = Writer::new(4096, 0, TextEncoding::Utf8);
+    let rows: Vec<(i64, Vec<V>)> = rows
+        .iter()
+        .map(|&(id, name, dead)| {
+            let name = name.map_or(V::Null, |n| V::Text(n.into()));
+            let v = vec![
+                V::Null,
+                name,
+                V::Integer(1),
+                V::Integer(2),
+                V::Real(1.5),
+                V::Real(2.5),
+                V::Integer(0),
+                V::Integer(244),
+                // Large enough to spill onto overflow pages.
+                V::Blob(vec![9; 5000]),
+                V::Integer(dead),
+            ];
+            (id, v)
+        })
+        .collect();
+    w.table("localPlayers", LOCAL_PLAYERS, &rows);
+    std::fs::write(path, w.finish()).unwrap();
+}
+
+fn java_string(s: &str) -> Vec<u8> {
+    let mut v = (s.encode_utf16().count() as i32).to_be_bytes().to_vec();
+    v.extend(s.encode_utf16().flat_map(u16::to_be_bytes));
+    v
+}
+
+fn set_mtime(p: &Path, secs: u64) {
+    let f = std::fs::File::open(p).unwrap();
+    f.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+        .unwrap();
+}
+
+struct Env {
+    dir: PathBuf,
+    saves: PathBuf,
+    mgr: LuaManager,
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn setup(tag: &str) -> Env {
+    let dir = std::env::temp_dir().join(format!("pz-bind-save-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let maps = dir.join("game/media/maps");
+    std::fs::create_dir_all(maps.join("TestMap")).unwrap();
+    std::fs::write(
+        maps.join("TestMap/map.info"),
+        "title=Test Map\nlots=A\n  lots= B \ndescription=One \ndescription=two\nfixed2x=true\n\
+         zoomX=1.5\nzoomY=2\nzoomS=0.25\ndemoVideo=x.bik\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(maps.join("BadZoom")).unwrap();
+    std::fs::write(maps.join("BadZoom/map.info"), "title=Bad\nzoomX=wide\n").unwrap();
+
+    let saves = dir.join("user/Saves");
+    let w1 = saves.join("Sandbox/w1");
+    let w2 = saves.join("Apocalypse/w2");
+    let w3 = saves.join("Sandbox/w3");
+    for d in [&w1, &w2, &w3, &saves.join("Multiplayer/mp")] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(saves.join("Sandbox/not-a-save.txt"), "").unwrap();
+    std::fs::write(saves.join("stray.txt"), "").unwrap();
+
+    let mut b = 249i32.to_be_bytes().to_vec();
+    b.extend(java_string("Muldraugh, KY;Riverside, KY"));
+    std::fs::write(w1.join("map_ver.bin"), b).unwrap();
+    std::fs::write(
+        w1.join("mods.txt"),
+        "VERSION = 1,\n\nmods\n{\n    mod = A,\n    mod = \\B,\n}\n\nmaps\n{\n    map = X,\n}\n",
+    )
+    .unwrap();
+    players_db(
+        &w1.join("players.db"),
+        &[(1, Some("Kate"), 0), (2, None, 1), (5, Some("Bob"), 1)],
+    );
+
+    let mut b = 200i32.to_be_bytes().to_vec();
+    b.extend(java_string("DEFAULT"));
+    b.extend(java_string("Hard"));
+    std::fs::write(w2.join("map_ver.bin"), b).unwrap();
+    // Dead in players.db, but alive in vehicles.db, which is checked first.
+    players_db(&w2.join("players.db"), &[(1, Some("Dead"), 1)]);
+    players_db(&w2.join("vehicles.db"), &[(1, Some("Dead"), 0)]);
+
+    // An empty file is an SQLite database without tables.
+    std::fs::write(w3.join("players.db"), []).unwrap();
+
+    set_mtime(&w1, 1_000_000);
+    set_mtime(&w2, 3_000_000);
+    set_mtime(&w3, 2_000_000);
+
+    let mut gfs = GameFs::new(dir.join("game"));
+    gfs.set_cache_dir(dir.join("user"));
+    let fs = Rc::new(RefCell::new(gfs));
+    let mut mgr = LuaManager::init(fs).unwrap();
+    {
+        let core = shared_core();
+        let mut core = core.borrow_mut();
+        core.set_game_mode("Sandbox");
+        core.game_save_world = "w1".into();
+    }
+    run(
+        &mut mgr,
+        "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end",
+    );
+    Env { dir, saves, mgr }
+}
+
+fn run(mgr: &mut LuaManager, src: &str) {
+    let f =
+        pz_kahlua::stdlib::load_string(src, Some("test"), mgr.thread.globals().clone()).unwrap();
+    if let Err((e, tr)) = mgr.thread.pcall(&f, &[]) {
+        panic!("lua error: {e:?}\n{tr}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn save_listing_and_info() {
+    let mut env = setup("info");
+    let saves = env.saves.to_string_lossy().into_owned();
+    let abs_w1 = format!("{saves}/Sandbox/w1");
+    run(
+        &mut env.mgr,
+        &format!(
+            r#"
+        local d = getFullSaveDirectoryTable()
+        assert(#d == 3, "count " .. #d)
+        assert(d[1] == "Apocalypse/w2" and d[2] == "Sandbox/w3" and d[3] == "Sandbox/w1")
+        assert(#getSaveDirectoryTable() == 0)
+
+        local i = getSaveInfo("Sandbox/w1")
+        assert(i.saveName == "w1" and i.gameMode == "Sandbox" and i.saveDir == "Sandbox/w1")
+        assert(i.worldVersion == 249 and i.mapName == "Muldraugh, KY;Riverside, KY" and i.difficulty == nil)
+        assert(string.match(i.lastPlayed, "^%d%d/%d%d/%d%d%d%d %d%d:%d%d$"), i.lastPlayed)
+        local mods = i.activeMods:getMods()
+        assert(mods:size() == 2 and mods:get(0) == "A" and mods:get(1) == "B")
+        assert(i.activeMods:getMapOrder():get(0) == "X")
+        assert(i.playerAlive == true)
+        assert(#i.players == 3)
+        local p = i.players
+        assert(p[1].sqlID == 1 and p[1].name == "Kate" and p[1].isDead == false)
+        assert(p[2].sqlID == 2 and p[2].name == nil and p[2].isDead == true)
+        assert(p[3].sqlID == 5 and p[3].name == "Bob" and p[3].isDead == true)
+
+        -- Without a separator the save is looked up under Core's game mode.
+        assert(getSaveInfo("w1").saveDir == "Sandbox/w1")
+
+        local i2 = getSaveInfo("Apocalypse/w2")
+        assert(i2.worldVersion == 200 and i2.mapName == "Muldraugh, KY" and i2.difficulty == "Hard")
+        assert(i2.activeMods == nil and i2.playerAlive == true and i2.players[1].isDead == true)
+
+        local i3 = getSaveInfo("Sandbox/w3")
+        assert(i3.saveName == "w3" and i3.worldVersion == nil and i3.mapName == nil)
+        assert(i3.playerAlive == false and #i3.players == 0)
+
+        local m = getSaveInfo("Sandbox/nope")
+        assert(m.saveName == nil and m.lastPlayed == nil and m.playerAlive == false and #m.players == 0)
+        assert(not pcall(getSaveInfo, "/"))
+
+        assert(getLastPlayedDate("Sandbox/nope") == "UI_LastPlayed???")
+        assert(getLastPlayedDate("Sandbox/w1") == "UI_LastPlayed" .. i.lastPlayed)
+        assert(checkSaveFolderExists("Sandbox/w1") and not checkSaveFolderExists("Sandbox/zz"))
+        assert(getAbsoluteSaveFolderName("Sandbox/w1") == "{abs_w1}")
+        assert(checkSaveFileExists("map_ver.bin") and not checkSaveFileExists("map_t.bin"))
+        assert(checkSavePlayerExists() == true)
+
+        local l = getSaveDirectory("{saves}/Sandbox")
+        assert(l:size() == 2)
+        local names = {{}}
+        for k = 0, l:size() - 1 do
+            local f = l:get(k)
+            assert(f:isDirectory() and f:getParent() == "{saves}/Sandbox")
+            names[f:getName()] = f:getPath()
+        end
+        assert(names.w1 == "{abs_w1}" and names.w3)
+        assert(not pcall(getSaveDirectory, "/definitely/elsewhere"))
+
+        assert(getTextureFromSaveDir("../thumb.png", "Sandbox/w1") == nil)
+        assert(getTextureFromSaveDir("thumb.png", "Sandbox/w1") == nil)
+    "#
+        ),
+    );
+    // Player 1 dead and no vehicles.db.
+    {
+        let core = shared_core();
+        let mut core = core.borrow_mut();
+        core.set_game_mode("Apocalypse");
+        core.game_save_world = "w2".into();
+    }
+    std::fs::remove_file(env.saves.join("Apocalypse/w2/vehicles.db")).unwrap();
+    run(
+        &mut env.mgr,
+        "assert(checkSavePlayerExists() == false); assert(getSaveInfo('w2').playerAlive == false)",
+    );
+    shared_core().borrow_mut().set_no_save(true);
+    run(
+        &mut env.mgr,
+        "local i = getSaveInfo('Sandbox/w1'); assert(i.playerAlive == false and #i.players == 0)",
+    );
+    shared_core().borrow_mut().set_no_save(false);
+}
+
+#[test]
+fn map_info() {
+    let mut env = setup("map");
+    run(
+        &mut env.mgr,
+        r#"
+        local m = getMapInfo("TestMap;Other")
+        assert(m.title == "Test Map" and m.description == "Onetwo") -- lines are trimmed first
+        assert(m.lots[1] == "B" and m.lots[2] == nil)
+        assert(m.zoomX == 1.5 and m.zoomY == 2 and m.zoomS == 0.25 and m.demoVideo == "x.bik")
+        assert(string.sub(m.dir, -7) == "TestMap")
+        assert(m.thumb == nil and m.worldmap == nil and m.spawnSelectImagePyramid == nil)
+        assert(m.only_for_game_mode == nil)
+        assert(getMapInfo("TestMap").title == "Test Map")
+        assert(getMapInfo("Nope") == nil)
+        assert(getMapInfo("BadZoom") == nil)
+        assert(not pcall(getMapInfo, ";"))
+    "#,
+    );
+}
