@@ -663,6 +663,9 @@ pub struct CutawayState {
     flags: HashMap<(i32, i32, i32), [u8; 64]>,
     force_render: HashSet<(i32, i32, i32)>,
     pub occlusion: Option<OccludedGrid>,
+    /// Objects hiding the player and fading back in
+    /// ([`crate::obscuring::Obscuring::update`]); set by the caller.
+    pub obscuring: crate::obscuring::Obscuring,
 }
 
 fn key(x: i32, y: i32, z: i32) -> ((i32, i32, i32), usize) {

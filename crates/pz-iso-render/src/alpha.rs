@@ -95,6 +95,13 @@ impl CutawayView<'_> {
         if matches!(layer, Layer::Floor | Layer::TranslucentFloor) && self.state.should_hide_elevated_floor(sq, obj) {
             return Layer::None;
         }
+        // Solid objects fading in or hiding the player are translucent.
+        if layer == Layer::MinusFloor && obj.sprite.as_ref().is_some_and(|s| s.solid || s.solid_trans) {
+            let o = &self.state.obscuring;
+            if (obj.alpha < 1.0 && o.is_fading_in(sq.x, sq.y, sq.z)) || o.is_obscuring(sq.x, sq.y, sq.z) {
+                return Layer::Translucent;
+            }
+        }
         layer
     }
 
@@ -203,8 +210,23 @@ impl CutawayView<'_> {
                 return if sq.cut.can_see { 0.25 } else { 0.0 };
             }
         }
-        // Table tops and other objects obscuring the player
-        // (isSquareObscuringPlayer) are not ported.
+        let obscuring = st.obscuring.is_obscuring(sq.x, sq.y, sq.z);
+        if obscuring && obj.flags().table_top {
+            return 0.66;
+        }
+        if obscuring {
+            let player = (pz_render::iso::fastfloor(st.player_x), pz_render::iso::fastfloor(st.player_y), st.player_z);
+            let on_stairs = self.world.square(player.0, player.1, player.2).is_some_and(|s| s.objects.iter().any(|o| o.sprite.as_ref().is_some_and(|s| s.stairs.is_some())));
+            if crate::obscuring::is_potentially_obscuring(sq, obj, player, on_stairs) {
+                if obj.flags().attached_ceiling {
+                    return 0.25;
+                }
+                if obj.sprite.as_ref().is_some_and(|s| s.stairs.is_some()) {
+                    return 0.5;
+                }
+                return 0.66;
+            }
+        }
         1.0
     }
 

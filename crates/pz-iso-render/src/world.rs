@@ -65,6 +65,10 @@ pub struct SpriteFlags {
     pub transparent_n: bool,
     pub transparent_w: bool,
     pub exterior: bool,
+    pub attached_surface: bool,
+    pub attached_ceiling: bool,
+    /// `PropertyContainer.isTableTop()`.
+    pub table_top: bool,
 }
 
 /// An `IsoSprite` as the renderer needs it.
@@ -99,6 +103,8 @@ pub struct SpriteInfo {
     pub sloped: bool,
     /// `tintMod`.
     pub tint_mod: [f32; 3],
+    /// `isStairsNorth`/`isStairsWest`: which stair piece the sprite is.
+    pub stairs: Option<StairPart>,
     /// The sprite's own non-empty depth texture (`depthTexture`).
     pub depth_texture: Option<Texture>,
     /// `getSpriteGrid().getLevels()` (0 without a sprite grid) and
@@ -110,6 +116,23 @@ pub struct SpriteInfo {
 impl SpriteInfo {
     pub fn is_grass_etc(&self) -> bool {
         self.is_bush || self.can_be_removed || self.attached_floor
+    }
+}
+
+/// The `IsoObjectType` stair pieces (`stairsTN` … `stairsBW`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StairPart {
+    TopN,
+    MiddleN,
+    BottomN,
+    TopW,
+    MiddleW,
+    BottomW,
+}
+
+impl StairPart {
+    pub fn north(self) -> bool {
+        matches!(self, StairPart::TopN | StairPart::MiddleN | StairPart::BottomN)
     }
 }
 
@@ -159,6 +182,8 @@ pub struct RenderObject {
     pub garage_door: Option<GarageDoorSpan>,
     /// For a fascia: `getFasciaAttachedSquare()`.
     pub fascia_attached: Option<[i32; 3]>,
+    /// `getContainerCount()`.
+    pub container_count: u32,
 }
 
 /// A garage door segment's place in its door.
@@ -185,6 +210,7 @@ impl RenderObject {
             flip: false,
             garage_door: None,
             fascia_attached: None,
+            container_count: 0,
         }
     }
 
