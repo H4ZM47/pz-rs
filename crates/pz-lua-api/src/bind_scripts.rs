@@ -26,7 +26,7 @@ mod models;
 mod recipes;
 mod vehicles;
 
-use crate::bind_core::JavaList;
+use crate::bind_java_util::JavaList;
 use crate::bind_registry::{java_error, key_arg, key_value};
 use crate::expose::{
     bool_arg, enum_value, expose_class, expose_enum, global, int_arg, num_arg, str_arg, this, ClassBuilder, JavaEnum,
@@ -375,7 +375,7 @@ pub fn script_value(r: Option<&ScriptRef>) -> Value {
 
 /// A `java.util.ArrayList` holding `items`.
 pub fn list_value(items: Vec<Value>) -> Value {
-    Value::Object(Rc::new(JavaList(items)))
+    crate::bind_java_util::list_value(items)
 }
 
 /// An `ArrayList` of scripts.
@@ -569,7 +569,7 @@ pub fn list_arg(c: &NativeCall<'_>, i: usize) -> Vec<Value> {
     match c.arg(i) {
         Value::Object(o) => {
             if let Some(l) = o.as_any().downcast_ref::<JavaList>() {
-                l.0.clone()
+                l.items.borrow().clone()
             } else if let Some(v) = o.as_any().downcast_ref::<ListView>() {
                 (v.items)()
             } else {

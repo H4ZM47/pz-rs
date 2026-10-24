@@ -22,7 +22,8 @@
 //! item visuals, Java arrays (`CreateFamily`, `CreateSurvivorGroup`), saving
 //! and loading. TODO(Texture, ImmutableColor, Outfits, saves).
 
-use crate::bind_core::{JavaList, LuaColorInfo};
+use crate::bind_core::LuaColorInfo;
+use crate::bind_java_util::JavaList;
 use crate::bind_registry::{
     java_error, key_arg, key_value, shared_script_manager, CHARACTER_PROFESSION_CLASS, CHARACTER_TRAIT_CLASS,
     ITEM_BODY_LOCATION_CLASS,
@@ -96,7 +97,7 @@ fn trait_value(k: Option<&Rc<RegistryKey>>) -> Value {
 }
 
 fn trait_list(keys: &[Option<Rc<RegistryKey>>]) -> Value {
-    Value::Object(Rc::new(JavaList(keys.iter().map(|k| trait_value(k.as_ref())).collect())))
+    Value::Object(Rc::new(JavaList::new(keys.iter().map(|k| trait_value(k.as_ref())).collect())))
 }
 
 fn npe() -> LuaError {
@@ -395,7 +396,7 @@ fn register_trait_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let s = sm.clone();
     b.static_fn("getTraits", move |c| {
         let list = defs::character_trait_definitions(&s).iter().map(|d| trait_def_value(Some(d))).collect();
-        Ok(c.push(Value::Object(Rc::new(JavaList(list)))))
+        Ok(c.push(Value::Object(Rc::new(JavaList::new(list)))))
     });
     let s = sm.clone();
     b.static_fn("getCharacterTraitDefinition", move |c| {
@@ -556,7 +557,7 @@ fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let s = sm.clone();
     b.static_fn("getProfessions", move |c| {
         let list = defs::character_profession_definitions(&s).iter().map(|d| profession_def_value(Some(d))).collect();
-        Ok(c.push(Value::Object(Rc::new(JavaList(list)))))
+        Ok(c.push(Value::Object(Rc::new(JavaList::new(list)))))
     });
     let s = sm.clone();
     b.static_fn("getCharacterProfessionDefinition", move |c| {
@@ -696,7 +697,7 @@ fn register_character_traits(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     b.method("getKnownTraits", |c| {
         let known = traits_with(c, |t| t.known_traits())?;
         let list = known.iter().map(|k| trait_value(Some(k))).collect();
-        Ok(c.push(Value::Object(Rc::new(JavaList(list)))))
+        Ok(c.push(Value::Object(Rc::new(JavaList::new(list)))))
     });
     type Modifier = fn(&CharacterTraits, &ScriptManager) -> pz_scripts::ScriptResult<f32>;
     let modifiers: [(&str, Modifier); 3] = [

@@ -15,6 +15,10 @@ pub mod bind_registry;
 pub mod bind_scripts;
 pub mod bind_skills;
 pub mod bind_ui;
+pub mod bind_fs;
+pub mod bind_java_util;
+pub mod bind_mods;
+pub mod bind_render;
 pub mod events;
 pub mod expose;
 pub mod lua_manager;
@@ -23,6 +27,7 @@ pub use lua_manager::LuaManager;
 
 /// Register all globals and exposed classes.
 pub fn register_all(mgr: &mut LuaManager) {
+    bind_java_util::register(&mut mgr.thread);
     bind_globals::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
     bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
@@ -34,4 +39,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_skills::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
+    bind_fs::register(mgr);
+    bind_mods::register(mgr);
+    bind_render::register(mgr);
 }
