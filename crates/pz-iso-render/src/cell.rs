@@ -3,9 +3,13 @@
 //! doors (`renderMinusFloor_DoorOrWall` with `IsoGridSquare.DoWallLighting*`)
 //! and other objects (`renderMinusFloor_NotDoorOrWall`, `IsoObject.render`).
 //!
-//! Not yet ported: the per-frame translucent pass (windows, open doors,
-//! trees, fading objects), cutaways and building collapse, occlusion,
-//! snow, blood, puddles, seam fixes and overlay sprites.
+//! The per-frame translucent pass (`renderTranslucentFloorObjects`,
+//! `renderTranslucentObjects`) draws windows, open doors and other
+//! translucent objects over the composited chunks.
+//!
+//! Not yet ported: trees (`FBORenderTrees`), fading and obscuring objects,
+//! cutaways and building collapse, occlusion, snow, blood, puddles, seam
+//! fixes and overlay sprites.
 
 use pz_render::{gl, DrawCmd};
 
@@ -153,7 +157,7 @@ impl ChunkRenderer<'_> {
                 minus_floor.push(*sq);
             }
         }
-        let mut ctx = SpriteCtx { cam: &self.cam, chunk: tex, depth_maps: self.depth_maps, out };
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: Some(tex), depth_maps: self.depth_maps, out };
         for sq in &solid_floor {
             for (i, obj) in sq.objects.iter().enumerate() {
                 if render_layer(sq, obj) == Layer::Floor {
@@ -170,6 +174,44 @@ impl ChunkRenderer<'_> {
                 }
             }
         }
+    }
+
+    /// The translucent pass for level `z`: `renderTranslucentFloorObjects`
+    /// then `renderTranslucentObjects` over `squares` (every on-screen
+    /// square of that level, in any order).
+    pub fn render_translucent(&self, squares: &[&RenderSquare], z: i32, out: &mut Vec<DrawCmd>) {
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out };
+        let at_level: Vec<&RenderSquare> = squares.iter().copied().filter(|s| s.z == z).collect();
+        let has = |sq: &RenderSquare, l: &[Layer]| sq.objects.iter().any(|o| l.contains(&render_layer(sq, o)));
+        let begin = |ctx: &mut SpriteCtx<'_>| {
+            ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
+            ctx.out.push(DrawCmd::DepthFunc(gl::LEQUAL));
+            ctx.out.push(DrawCmd::DepthMask(false));
+        };
+        // Translucent floors, in chunk-cache order.
+        for sq in at_level.iter().filter(|s| has(s, &[Layer::TranslucentFloor])) {
+            begin(&mut ctx);
+            for obj in sq.objects.iter().filter(|o| render_layer(sq, o) == Layer::TranslucentFloor) {
+                render_translucent(&mut ctx, sq, obj);
+            }
+        }
+        // Translucent objects, sorted by x + y * worldRight.
+        let mut sorted: Vec<&RenderSquare> = at_level.iter().copied().filter(|s| has(s, &[Layer::Translucent, Layer::TranslucentSE])).collect();
+        sorted.sort_by_key(|s| (s.y, s.x));
+        for sq in sorted {
+            begin(&mut ctx);
+            for layer in [Layer::Translucent, Layer::TranslucentSE] {
+                for obj in sq.objects.iter().filter(|o| render_layer(sq, o) == layer) {
+                    if obj.kind == ObjectKind::Tree {
+                        // FBORenderTrees is not ported yet.
+                        continue;
+                    }
+                    render_translucent(&mut ctx, sq, obj);
+                }
+            }
+        }
+        ctx.out.push(DrawCmd::DepthMask(false));
+        ctx.out.push(DrawCmd::DepthFunc(gl::ALWAYS));
     }
 
     /// `FBORenderChunkManager.endFrame`: every recorded chunk texture
@@ -269,6 +311,30 @@ fn render_attached(ctx: &mut SpriteCtx<'_>, obj: &RenderObject, x: f32, y: f32, 
         );
     }
     ctx.out.push(DrawCmd::DepthMask(true));
+}
+
+/// `FBORenderCell.renderTranslucent(object)`: with the default blend, the
+/// object at its target alpha.
+fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject) {
+    ctx.out.push(DrawCmd::BlendFunc(gl::ONE, gl::ONE_MINUS_SRC_ALPHA));
+    let f = obj.flags();
+    if f.transparent_floor {
+        let i = sq.objects.iter().position(|o| std::ptr::eq(o, obj)).expect("object");
+        render_floor(ctx, sq, i);
+        return;
+    }
+    let layer = render_layer(sq, obj);
+    let mut o = obj.clone();
+    o.alpha = target_alpha(obj, object_layer(sq, obj));
+    let _ = layer;
+    let t = o.tile_type();
+    let wallish = matches!(o.kind, ObjectKind::Door { .. }) || matches!(t, TileType::DoorFrW | TileType::DoorFrN) || o.sprite.as_ref().is_some_and(|s| s.cut_n || s.cut_w);
+    ctx.out.push(DrawCmd::AlphaFunc(gl::GREATER, 0.0));
+    if o.sprite.is_some() && wallish {
+        render_door_or_wall(ctx, sq, &o, t);
+    } else {
+        render_not_door_or_wall(ctx, sq, &o);
+    }
 }
 
 /// `FBORenderCell.renderMinusFloor(object)`.

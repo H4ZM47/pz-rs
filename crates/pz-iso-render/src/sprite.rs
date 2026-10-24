@@ -1,7 +1,8 @@
-//! `IsoSprite.renderCurrentAnim_FBORender` while recording a chunk texture:
-//! sprite placement (`prepareToRenderSprite`), the depth-texture choice
-//! (`setupTileDepth*`, `startTileDepthShader`) and the quad
-//! (`performRenderFrame`).
+//! `IsoSprite.renderCurrentAnim_FBORender`: sprite placement
+//! (`prepareToRenderSprite`), the depth-texture choice (`setupTileDepth*`,
+//! `startTileDepthShader`) and the quad (`performRenderFrame`), either while
+//! recording a chunk texture or in the per-frame translucent pass
+//! (`renderTranslucentOnly`).
 
 use pz_render::iso::{self, coordmodulof, fastfloor, x_to_screen, y_to_screen, TILE_SCALE};
 use pz_render::{gl, DrawCmd, Rgba, Texture, WorldShader};
@@ -57,8 +58,8 @@ pub enum Dir {
 /// What a sprite draw needs from its surroundings.
 pub struct SpriteCtx<'a> {
     pub cam: &'a Camera,
-    /// The chunk texture being recorded.
-    pub chunk: ChunkTexture,
+    /// The chunk texture being recorded, or `None` in the translucent pass.
+    pub chunk: Option<ChunkTexture>,
     pub depth_maps: &'a dyn DepthMaps,
     pub out: &'a mut Vec<DrawCmd>,
 }
@@ -95,13 +96,20 @@ fn instance_scale(tex: &Texture) -> f32 {
 
 /// `IsoSprite.startTileDepthShader` while recording: the front and far
 /// depths relative to the chunk texture.
-fn tile_depths(ctx: &SpriteCtx<'_>, x: f32, y: f32, z: f32, z2: f32) -> (f32, f32) {
+fn tile_depths(ctx: &SpriteCtx<'_>, mut x: f32, mut y: f32, z: f32, z2: f32) -> (f32, f32) {
+    if ctx.chunk.is_none() {
+        x += ctx.cam.fix_jiggly_square_x;
+        y += ctx.cam.fix_jiggly_square_y;
+    }
     let (cx, cy) = (fastfloor(ctx.cam.x), fastfloor(ctx.cam.y));
     let mut far = iso::square_depth(cx, cy, x, y, z);
     let mut front = iso::square_depth(cx, cy, x + 1.0, y + 1.0, z + 1.0);
     if z != z2 {
         far -= (z2 - z) * iso::LEVEL_DEPTH;
         front -= (z2 - z) * iso::LEVEL_DEPTH;
+    }
+    if ctx.chunk.is_none() {
+        return (front, far);
     }
     let chunk_depth = iso::chunk_depth_data(ctx.cam.chunk_x(), ctx.cam.chunk_y(), fastfloor(x / 8.0), fastfloor(y / 8.0), fastfloor(z)).depth_start;
     (front - chunk_depth, far - chunk_depth)
@@ -204,10 +212,12 @@ pub fn render(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>) {
         info.g = 1.0;
         info.b = 1.0;
     }
-    // prepareToRenderSprite, recording: chunk-local position.
-    let (gox, goy) = ctx.chunk.record_offset();
-    let lx = coordmodulof(d.x, 8);
-    let ly = coordmodulof(d.y, 8);
+    // prepareToRenderSprite: chunk-local position while recording, else
+    // the camera offset.
+    let ((gox, goy), lx, ly) = match ctx.chunk {
+        Some(c) => (c.record_offset(), coordmodulof(d.x, 8), coordmodulof(d.y, 8)),
+        None => ((-ctx.cam.off_x as f32, -ctx.cam.off_y as f32), d.x, d.y),
+    };
     let mut sx = x_to_screen(lx, ly);
     let mut sy = y_to_screen(lx, ly, d.z, 0);
     sx -= d.offset_x;
@@ -216,6 +226,10 @@ pub fn render(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>) {
     sy += goy;
     sx += s.soff_x as f32;
     sy += s.soff_y as f32;
+    if ctx.chunk.is_none() {
+        sx += ctx.cam.fix_jiggly_x * ctx.cam.zoom;
+        sy += ctx.cam.fix_jiggly_y * ctx.cam.zoom;
+    }
     info.a = d.alpha;
     if s.tint_mod != [1.0; 3] {
         info.r *= s.tint_mod[0];
@@ -228,6 +242,9 @@ pub fn render(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>) {
     }
     ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
     ctx.out.push(DrawCmd::DepthFunc(gl::LEQUAL));
+    if ctx.chunk.is_none() {
+        ctx.out.push(DrawCmd::DepthMask(false));
+    }
 
     let wall = d.modifier.wall().is_some_and(|w| w.part == WallPart::Whole || w.part == WallPart::SliceN || w.part == WallPart::SliceW);
     let depth: Option<(Texture, f32, f32, (f32, f32))> = if d.dir == Dir::NW && d.modifier.wall().is_some() {
@@ -290,7 +307,20 @@ pub fn render(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>) {
             texd::tile_depth_modifier(&mut draw, &dt, (s.soff_x, s.soff_y), sc);
             WorldShader::TileDepth { depth: dt, uv1: [[0.0; 2]; 4], front, far, opaque: s.depth_flags & 4 != 0 }
         }
-        None => WorldShader::Default { z: sz * 2.0 - 1.0 },
+        None => {
+            // The translucent pass adds the chunk's depth (`nextChunkDepth`)
+            // in GL clip space; in a chunk texture the composite adds it.
+            let mut chunk_depth = 0.0;
+            if ctx.chunk.is_none() {
+                chunk_depth = iso::chunk_depth_data(ctx.cam.chunk_x(), ctx.cam.chunk_y(), fastfloor(d.x / 8.0), fastfloor(d.y / 8.0), fastfloor(d.z)).depth_start;
+                if s.soff_y != 0 && !matches!(d.obj.map(|o| o.kind), Some(ObjectKind::Fire)) {
+                    chunk_depth += s.soff_y as f32 / 96.0 * iso::LEVEL_DEPTH;
+                }
+                chunk_depth += 0.5;
+                chunk_depth = chunk_depth * 2.0 - 1.0;
+            }
+            WorldShader::Default { z: chunk_depth + (sz * 2.0 - 1.0) }
+        }
     };
     d.modifier.apply(&mut draw);
     ctx.out.push(draw.into_cmd(shader));

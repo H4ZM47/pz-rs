@@ -58,6 +58,13 @@ pub fn world_frame(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels
         recorded.push(c.texture);
     }
     r.composite(&recorded, w, h, &mut out);
+    // performRenderTiles' per-level translucent passes.
+    let squares: Vec<&crate::world::RenderSquare> = chunks.iter().flat_map(|c| c.levels.iter().flat_map(|(_, l)| l.iter().flatten().copied())).collect();
+    if let (Some(lo), Some(hi)) = (squares.iter().map(|s| s.z).min(), squares.iter().map(|s| s.z).max()) {
+        for z in lo..=hi {
+            r.render_translucent(&squares, z, &mut out);
+        }
+    }
     out.push(DrawCmd::GlDisable(gl::DEPTH_TEST));
     out.push(DrawCmd::OffscreenEnd);
     // Core.RenderOffScreenBuffer: 1:1 screen projection, no blending.
