@@ -12,7 +12,9 @@
 //! defaults are a fresh single-player world:
 //!
 //! * barricades: none (`isBarricaded()` is false for windows, window frames
-//!   and thumpables);
+//!   and thumpables); [`pz_world::ObjectHooks`] implements
+//!   [`SquareBitsHooks`] with the barricades of the loaded `IsoBarricade`
+//!   objects, as the game does, and every other default;
 //! * `hasLitCampfire()`: false (no campfire global objects);
 //! * `hasFarmingPlant()`: false (no farming global objects);
 //! * `BentFences.isEnabled()`: false (the default sandbox disables bent
@@ -128,6 +130,14 @@ pub trait SquareBitsHooks {
 pub struct DefaultBitsHooks;
 
 impl SquareBitsHooks for DefaultBitsHooks {}
+
+/// The loaded objects' barricades (`IsoBarricade` on the object's square or
+/// the square across its edge); the other hooks keep their defaults.
+impl SquareBitsHooks for pz_world::ObjectHooks<'_> {
+    fn is_barricaded(&self, sq: &IsoGridSquare, obj: &IsoObject) -> bool {
+        self.object_barricaded(sq, obj)
+    }
+}
 
 /// The `IsoFlagType` / `IsoObjectType` constants these queries use,
 /// resolved by name from the runtime tables.

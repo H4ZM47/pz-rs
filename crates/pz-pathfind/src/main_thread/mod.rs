@@ -4,10 +4,11 @@
 //! `PolygonalMap2.getApparentZ` and `intersectLineWithVehicle`.
 //!
 //! The `IsoGridSquare` queries and `LosUtil.lineClear` they rest on are
-//! `pz-world`'s ([`pz_world::los`], [`pz_world::square`]). What is here on
-//! top: `LineClearCollideMain` itself, the [`square::WorldObjectHooks`] that
-//! report `pz-world`'s thumpables, barricades, fires and door curtains to
-//! those queries, and the edge-object getters as [`ObjectRef`]s.
+//! `pz-world`'s ([`pz_world::los`], [`pz_world::square`]), with
+//! [`pz_world::ObjectHooks`] answering for the thumpables, barricades,
+//! fires and door curtains of the loaded objects. What is here on top:
+//! `LineClearCollideMain` itself and the edge-object getters as
+//! [`ObjectRef`]s.
 //!
 //! The arithmetic is the Java code's float arithmetic, not the native
 //! library's: no fused multiply-adds, Java's `Vector2.normalize`, and the
@@ -32,14 +33,13 @@ pub mod square;
 
 use pz_world::chunk::IsoGridSquare;
 use pz_world::square::{SquareHooks, VisionEnv};
-use pz_world::{GetSquare, IsoSpriteManager};
+use pz_world::{GetSquare, IsoSpriteManager, ObjectHooks};
 
 use crate::game_vehicle::VehicleSource;
 use crate::square_bits::SquareBits;
 
 pub use line_clear_collide::LineClearCollideMain;
 pub use pz_world::los::{line_clear, line_clear_range, TestResults};
-pub use square::WorldObjectHooks;
 
 /// The world the main-thread queries read.
 pub struct MainThreadMap<'w, 'a, G: GetSquare> {
@@ -50,20 +50,18 @@ pub struct MainThreadMap<'w, 'a, G: GetSquare> {
     /// `GameServer.server` (`testVisionAdjacent`'s diagonal re-check is
     /// skipped on a server).
     pub is_server: bool,
-    /// The objects `pz-world`'s square queries ask about.
-    pub hooks: WorldObjectHooks<'a>,
+    /// The objects `pz-world`'s square queries ask about (`IsoBarricade`,
+    /// `IsoThumpable`, `IsoFire`, door curtains).
+    pub hooks: ObjectHooks<'a>,
 }
 
-impl<'w, 'a: 'w, G: GetSquare> MainThreadMap<'w, 'a, G> {
+impl<'w, 'a: 'w, G: GetSquare + 'a> MainThreadMap<'w, 'a, G> {
     pub fn new(bits: &'w SquareBits<'a, G>, vehicles: &'w dyn VehicleSource) -> Self {
         MainThreadMap {
             bits,
             vehicles,
             is_server: false,
-            hooks: WorldObjectHooks {
-                sprites: bits.sprites,
-                bits_hooks: bits.hooks,
-            },
+            hooks: ObjectHooks::new(bits.squares, bits.sprites),
         }
     }
 

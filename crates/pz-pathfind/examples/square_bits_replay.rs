@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 
 use pz_classfile::Jar;
 use pz_fs::GameFs;
-use pz_pathfind::square_bits::{DefaultBitsHooks, SquareBits};
+use pz_pathfind::square_bits::SquareBits;
 use pz_world::chunk::{ChunkLoadEnv, IsoCell};
 use pz_world::fix2x::Fix2xTable;
 use pz_world::{
@@ -418,7 +418,9 @@ fn main() {
                 cell.load_in_main_thread(wx, wy, &meta, &sprites);
             }
         }
-        let sb = SquareBits::new(&sprites, &meta, &cell, &DefaultBitsHooks).unwrap();
+        // Barricades from the loaded objects (`pz_world::ObjectHooks`).
+        let object_hooks = pz_world::ObjectHooks::new(&cell, &sprites);
+        let sb = SquareBits::new(&sprites, &meta, &cell, &object_hooks).unwrap();
         let (mut n_sq, mut n_exact, mut n_buf, mut n_content) = (0, 0, 0, 0);
         let mut tilesets: BTreeMap<String, usize> = BTreeMap::new();
         let mut bit_diff: BTreeMap<u32, (usize, usize)> = BTreeMap::new();

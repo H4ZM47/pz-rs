@@ -47,7 +47,7 @@ use pz_classfile::{Jar, Value};
 use pz_fs::GameFs;
 use pz_pathfind::game_vehicle::NoVehicles;
 use pz_pathfind::main_thread::{line_clear, LineClearCollideMain, MainThreadMap};
-use pz_pathfind::square_bits::{DefaultBitsHooks, SquareBits};
+use pz_pathfind::square_bits::SquareBits;
 use pz_world::chunk::{ChunkLoadEnv, IsoCell};
 use pz_world::fix2x::Fix2xTable;
 use pz_world::{
@@ -412,7 +412,9 @@ fn main() {
                 cell.load_in_main_thread(wx, wy, &meta, &sprites);
             }
         }
-        let sb = SquareBits::new(&sprites, &meta, &cell, &DefaultBitsHooks).unwrap();
+        // Barricades from the loaded objects (`pz_world::ObjectHooks`).
+        let object_hooks = pz_world::ObjectHooks::new(&cell, &sprites);
+        let sb = SquareBits::new(&sprites, &meta, &cell, &object_hooks).unwrap();
         let bad = differing_squares(
             &inputs,
             &cell,
