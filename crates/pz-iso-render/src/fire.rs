@@ -334,7 +334,8 @@ pub struct FireState {
     pub light: Option<FireLight>,
     /// `attachedAnimSprite`.
     pub anims: Vec<FireAnim>,
-    accum: f32,
+    /// `accum`: the fraction of a tick `updateFromTimer` carries over.
+    pub accum: f32,
     saved_update_time: i64,
 }
 
