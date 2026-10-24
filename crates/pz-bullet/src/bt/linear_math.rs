@@ -27,7 +27,12 @@
 //! [`fma`]. `btVector3` keeps its fourth (`w`) component because `setMax`,
 //! `setMin` and `operator==` read it.
 
-#![allow(clippy::too_many_arguments)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::manual_clamp,
+    clippy::assign_op_pattern,
+    clippy::needless_late_init
+)]
 
 use std::ops::{Add, AddAssign, Div, Index, IndexMut, Mul, MulAssign, Neg, Sub, SubAssign};
 
@@ -41,7 +46,7 @@ pub const BT_LARGE_FLOAT: f64 = 1e30;
 pub const SIMD_PI: f64 = std::f64::consts::PI;
 pub const SIMD_2_PI: f64 = 2.0 * SIMD_PI;
 pub const SIMD_HALF_PI: f64 = SIMD_PI * 0.5;
-pub const SIMDSQRT12: f64 = 0.707_106_781_186_547_6;
+pub const SIMDSQRT12: f64 = std::f64::consts::FRAC_1_SQRT_2;
 
 /// Fused multiply-add `a * b + c` with a single rounding (`fmadd`).
 #[inline(always)]

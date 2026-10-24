@@ -118,6 +118,10 @@ pub struct RigidBody {
     pub inv_mass: Vec3,
     pub push_velocity: Vec3,
     pub turn_velocity: Vec3,
+    /// `m_contactSolverType` (always 0).
+    pub contact_solver_type: i32,
+    /// `m_frictionSolverType` (always 0).
+    pub friction_solver_type: i32,
 }
 
 /// `btCollisionObject` (plus `btRigidBody` data in `body`).
