@@ -4,6 +4,7 @@
 pub mod generic_6dof;
 pub mod hinge;
 pub mod point2point;
+pub mod raycast_vehicle;
 pub mod rigid_body;
 pub mod sequential_impulse;
 pub mod solver_body;
