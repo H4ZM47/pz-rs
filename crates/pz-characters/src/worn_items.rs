@@ -28,7 +28,7 @@ fn contains(list: &[Key], k: Option<&Rc<RegistryKey>>) -> bool {
     list.iter().any(|e| same_key(e.as_ref(), k))
 }
 
-/// `BodyLocation`.
+/// `BodyLocation` (the original's unused `group` back-reference is not kept).
 #[derive(Clone, Debug)]
 pub struct BodyLocation {
     pub id: Key,
@@ -64,14 +64,17 @@ impl BodyLocation {
         }
     }
 
+    /// `isExclusive`.
     pub fn is_exclusive(&self, k: Option<&Rc<RegistryKey>>) -> bool {
         contains(&self.exclusive, k)
     }
 
+    /// `isHideModel`.
     pub fn is_hide_model(&self, k: Option<&Rc<RegistryKey>>) -> bool {
         contains(&self.hide_model, k)
     }
 
+    /// `isAltModel`.
     pub fn is_alt_model(&self, k: Option<&Rc<RegistryKey>>) -> bool {
         contains(&self.alt_model, k)
     }
@@ -87,10 +90,11 @@ impl BodyLocation {
 #[derive(Clone, Debug)]
 pub struct BodyLocationGroup {
     id: String,
-    pub locations: Vec<BodyLocation>,
+    locations: Vec<BodyLocationRef>,
 }
 
 pub type BodyLocationGroupRef = Rc<RefCell<BodyLocationGroup>>;
+pub type BodyLocationRef = Rc<RefCell<BodyLocation>>;
 
 impl BodyLocationGroup {
     pub fn new(id: &str) -> ScriptResult<Self> {
@@ -100,14 +104,25 @@ impl BodyLocationGroup {
         Ok(BodyLocationGroup { id: id.to_string(), locations: Vec::new() })
     }
 
+    /// `getId`.
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// `getAllLocations`.
+    pub fn all_locations(&self) -> &[BodyLocationRef] {
+        &self.locations
+    }
+
+    /// `size`.
+    pub fn size(&self) -> usize {
+        self.locations.len()
     }
 
     /// `indexOf`.
     pub fn index_of(&self, k: Option<&Rc<RegistryKey>>) -> ScriptResult<i32> {
         for (i, l) in self.locations.iter().enumerate() {
-            if l.is_id(k)? {
+            if l.borrow().is_id(k)? {
                 return Ok(i as i32);
             }
         }
@@ -115,29 +130,31 @@ impl BodyLocationGroup {
     }
 
     /// `getLocation`.
-    pub fn location(&self, k: Option<&Rc<RegistryKey>>) -> ScriptResult<Option<&BodyLocation>> {
+    pub fn location(&self, k: Option<&Rc<RegistryKey>>) -> ScriptResult<Option<BodyLocationRef>> {
         Ok(match self.index_of(k)? {
             -1 => None,
-            i => Some(&self.locations[i as usize]),
+            i => Some(self.locations[i as usize].clone()),
         })
     }
 
-    fn location_mut(&mut self, k: Option<&Rc<RegistryKey>>) -> ScriptResult<&mut BodyLocation> {
-        match self.index_of(k)? {
-            -1 => Err(npe()),
-            i => Ok(&mut self.locations[i as usize]),
-        }
+    /// `getLocation`, where the original then dereferences the result.
+    fn existing(&self, k: Option<&Rc<RegistryKey>>) -> ScriptResult<BodyLocationRef> {
+        self.location(k)?.ok_or_else(npe)
     }
 
-    /// `getOrCreateLocation`: the location's index.
-    pub fn get_or_create_location(&mut self, k: Key) -> ScriptResult<usize> {
-        match self.index_of(k.as_ref())? {
-            -1 => {
-                self.locations.push(BodyLocation::new(k));
-                Ok(self.locations.len() - 1)
-            }
-            i => Ok(i as usize),
+    /// `getLocationByIndex`.
+    pub fn location_by_index(&self, index: i32) -> Option<BodyLocationRef> {
+        usize::try_from(index).ok().and_then(|i| self.locations.get(i)).cloned()
+    }
+
+    /// `getOrCreateLocation`.
+    pub fn get_or_create_location(&mut self, k: Key) -> ScriptResult<BodyLocationRef> {
+        if let Some(l) = self.location(k.as_ref())? {
+            return Ok(l);
         }
+        let l = Rc::new(RefCell::new(BodyLocation::new(k)));
+        self.locations.push(l.clone());
+        Ok(l)
     }
 
     /// `moveLocationToIndex`.
@@ -146,7 +163,7 @@ impl BodyLocationGroup {
             return Ok(());
         }
         for i in 0..self.locations.len() {
-            if self.locations[i].is_id(k)? {
+            if self.locations[i].borrow().is_id(k)? {
                 let l = self.locations.remove(i);
                 self.locations.insert(index as usize, l);
             }
@@ -156,47 +173,49 @@ impl BodyLocationGroup {
 
     /// `setExclusive`.
     pub fn set_exclusive(&mut self, a: Key, b: Key) -> ScriptResult {
-        self.location_mut(a.as_ref())?.set_exclusive(b.clone());
-        self.location_mut(b.as_ref())?.set_exclusive(a);
+        let first = self.location(a.as_ref())?;
+        let second = self.location(b.as_ref())?;
+        first.ok_or_else(npe)?.borrow_mut().set_exclusive(b);
+        second.ok_or_else(npe)?.borrow_mut().set_exclusive(a);
         Ok(())
     }
 
     /// `isExclusive`.
     pub fn is_exclusive(&self, a: Option<&Rc<RegistryKey>>, b: Option<&Rc<RegistryKey>>) -> ScriptResult<bool> {
-        Ok(self.location(a)?.ok_or_else(npe)?.is_exclusive(b))
+        Ok(self.existing(a)?.borrow().is_exclusive(b))
     }
 
     /// `setHideModel`.
     pub fn set_hide_model(&mut self, a: Option<&Rc<RegistryKey>>, b: Key) -> ScriptResult {
-        self.location_mut(a)?.set_hide_model(b);
+        self.existing(a)?.borrow_mut().set_hide_model(b);
         Ok(())
     }
 
     /// `isHideModel`.
     pub fn is_hide_model(&self, a: Option<&Rc<RegistryKey>>, b: Option<&Rc<RegistryKey>>) -> ScriptResult<bool> {
-        Ok(self.location(a)?.ok_or_else(npe)?.is_hide_model(b))
+        Ok(self.existing(a)?.borrow().is_hide_model(b))
     }
 
     /// `setAltModel`.
     pub fn set_alt_model(&mut self, a: Option<&Rc<RegistryKey>>, b: Key) -> ScriptResult {
-        self.location_mut(a)?.set_alt_model(b);
+        self.existing(a)?.borrow_mut().set_alt_model(b);
         Ok(())
     }
 
     /// `isAltModel`.
     pub fn is_alt_model(&self, a: Option<&Rc<RegistryKey>>, b: Option<&Rc<RegistryKey>>) -> ScriptResult<bool> {
-        Ok(self.location(a)?.ok_or_else(npe)?.is_alt_model(b))
+        Ok(self.existing(a)?.borrow().is_alt_model(b))
     }
 
     /// `setMultiItem`.
     pub fn set_multi_item(&mut self, k: Option<&Rc<RegistryKey>>, multi: bool) -> ScriptResult {
-        self.location_mut(k)?.multi_item = multi;
+        self.existing(k)?.borrow_mut().multi_item = multi;
         Ok(())
     }
 
     /// `isMultiItem`.
     pub fn is_multi_item(&self, k: Option<&Rc<RegistryKey>>) -> ScriptResult<bool> {
-        Ok(self.location(k)?.ok_or_else(npe)?.multi_item)
+        Ok(self.existing(k)?.borrow().multi_item)
     }
 }
 

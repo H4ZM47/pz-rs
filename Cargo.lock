@@ -79,6 +79,7 @@ dependencies = [
 name = "pz-client"
 version = "0.1.0"
 dependencies = [
+ "pz-characters",
  "pz-fs",
  "pz-kahlua",
  "pz-lua-api",

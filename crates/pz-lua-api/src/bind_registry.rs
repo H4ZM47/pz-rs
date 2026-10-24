@@ -1,6 +1,6 @@
 //! `zombie.scripting.objects.ResourceLocation` and the registry key classes
-//! `CharacterTrait`, `CharacterProfession` and `zombie.core.GameMode` exposed
-//! to Lua, over the shared
+//! `CharacterTrait`, `CharacterProfession`, `ItemBodyLocation` and
+//! `zombie.core.GameMode` exposed to Lua, over the shared
 //! `ScriptManager`'s registries.
 //!
 //! # Providing the ScriptManager
@@ -17,7 +17,7 @@
 use crate::expose::{expose_class, str_arg, this};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_scripts::objects::items::GameMode;
+use pz_scripts::objects::items::{GameMode, ItemBodyLocation};
 use pz_scripts::registry::{RegistryKey, ResourceLocation, DEFAULT_NAMESPACE};
 use pz_scripts::{ScriptError, ScriptManager};
 use std::any::Any;
@@ -29,12 +29,14 @@ pub const RESOURCE_LOCATION_CLASS: &str = "zombie.scripting.objects.ResourceLoca
 pub const CHARACTER_TRAIT_CLASS: &str = "zombie.scripting.objects.CharacterTrait";
 pub const CHARACTER_PROFESSION_CLASS: &str = "zombie.scripting.objects.CharacterProfession";
 pub const GAME_MODE_CLASS: &str = "zombie.core.GameMode";
+pub const ITEM_BODY_LOCATION_CLASS: &str = "zombie.scripting.objects.ItemBodyLocation";
 
 /// Key classes exposed here: `(Java class, registry)`.
 pub const KEY_CLASSES: &[(&str, &str)] = &[
     (CHARACTER_PROFESSION_CLASS, "character_profession"),
     (CHARACTER_TRAIT_CLASS, "character_trait"),
     (GAME_MODE_CLASS, "game_mode"),
+    (ITEM_BODY_LOCATION_CLASS, "item_body_location"),
 ];
 
 thread_local! {
@@ -250,6 +252,11 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
                     Ok(c.push(f(&k)))
                 });
             }
+        } else if class == ITEM_BODY_LOCATION_CLASS {
+            b.method("getTranslationName", |c| {
+                let k = this_key(c)?;
+                Ok(c.push(ItemBodyLocation::translation_name(&k)))
+            });
         } else {
             b.method("getName", |c| {
                 let k = this_key(c)?;

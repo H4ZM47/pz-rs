@@ -7,12 +7,20 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
 
-/// The `Registries` bootstrap and `ScriptManager.instance.Load()` of
-/// `GameWindow.init`, shared with the Lua API. TODO: mod script folders.
+/// The `Registries` bootstrap, `PerkFactory.init()` and
+/// `ScriptManager.instance.Load()` of `GameWindow.init`, shared with the Lua
+/// API. TODO: mod script folders, `CustomPerks`.
 fn load_scripts(game_dir: &Path, fs: &pz_fs::GameFs) -> Result<(), String> {
     let sm = pz_scripts::ScriptManager::new();
     sm.load_builtin_registries(&game_dir.join("projectzomboid.jar"))
         .map_err(|e| format!("built-in registries: {e}"))?;
+    let mut chars = pz_characters::Characters::default();
+    {
+        let tables = sm.builtin_tables.borrow();
+        chars.perks = pz_characters::PerkFactory::from_tables(&tables).map_err(|e| format!("PerkFactory.Perks: {e}"))?;
+        chars.perks.init(&tables, &pz_characters::Characters::translate).map_err(|e| format!("PerkFactory.init: {e}"))?;
+    }
+    pz_lua_api::bind_characters::install_characters(Rc::new(RefCell::new(chars)));
     sm.load(fs, &[]).map_err(|e| format!("ScriptManager.Load failed: {e}"))?;
     pz_lua_api::bind_registry::install_script_manager(Rc::new(sm));
     Ok(())

@@ -2,7 +2,9 @@
 //! creation use: `CharacterTraitDefinition`, `CharacterProfessionDefinition`
 //! (state in `pz-scripts`), `CharacterTraits`, `ObservationFactory` and its
 //! `Observation`, `SurvivorFactory` (with `SurvivorType`) and `SurvivorDesc`
-//! with its `HumanVisual` and `WornItems` (state in `pz-characters`).
+//! with its `HumanVisual` and `WornItems`, and `BodyLocations` with its
+//! `BodyLocationGroup`s and `BodyLocation`s (state in `pz-characters`).
+//! Perk members live in [`crate::bind_skills`].
 //!
 //! The statics live in a shared [`Characters`] ([`shared_characters`],
 //! [`install_characters`]) next to the shared `ScriptManager`
@@ -13,22 +15,23 @@
 //! `getGrantedRecipes`, `getExtras`, `getObservations`, the name lists) are
 //! [`ListView`]s.
 //!
-//! Not exposed yet: members taking or returning `PerkFactory.Perk`
-//! (`getXpBoosts`, `addXPBoost`, `getXPBoostMap`), textures, `HashMap`/
+//! Not exposed yet: textures, `HashMap`/
 //! `LinkedHashMap` statics (`characterTraitDefinitions`, `observationMap`,
 //! `CharacterTraits.getTraits`), boxed-number constants of
 //! `CharacterTraits`, colour objects (`ImmutableColor`, `Color`), outfits and
 //! item visuals, Java arrays (`CreateFamily`, `CreateSurvivorGroup`), saving
-//! and loading. TODO(PerkFactory, Texture, ImmutableColor, Outfits, saves).
+//! and loading. TODO(Texture, ImmutableColor, Outfits, saves).
 
 use crate::bind_core::{JavaList, LuaColorInfo};
 use crate::bind_registry::{
     java_error, key_arg, key_value, shared_script_manager, CHARACTER_PROFESSION_CLASS, CHARACTER_TRAIT_CLASS,
+    ITEM_BODY_LOCATION_CLASS,
 };
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this, JavaEnum, ListView};
 use pz_characters::survivor::{meet, set_torso};
 use pz_characters::{
-    CharacterGender, CharacterTraits, Characters, ItemIdentity, Observation, ObservationRef, SurvivorDesc, SurvivorType,
+    BodyLocationGroupRef, BodyLocationRef, CharacterGender, CharacterTraits, Characters, ItemIdentity, Observation,
+    ObservationRef, SurvivorDesc, SurvivorType,
 };
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -54,8 +57,10 @@ pub const SURVIVOR_DESC_CLASS: &str = "zombie.characters.SurvivorDesc";
 pub const HUMAN_VISUAL_CLASS: &str = "zombie.core.skinnedmodel.visual.HumanVisual";
 pub const WORN_ITEMS_CLASS: &str = "zombie.characters.WornItems.WornItems";
 pub const WORN_ITEM_CLASS: &str = "zombie.characters.WornItems.WornItem";
+pub const BODY_LOCATIONS_CLASS: &str = "zombie.characters.WornItems.BodyLocations";
+pub const BODY_LOCATION_GROUP_CLASS: &str = "zombie.characters.WornItems.BodyLocationGroup";
+pub const BODY_LOCATION_CLASS: &str = "zombie.characters.WornItems.BodyLocation";
 pub const CHARACTER_GENDER_CLASS: &str = "zombie.characters.CharacterGender";
-pub const ITEM_BODY_LOCATION_CLASS: &str = "zombie.scripting.objects.ItemBodyLocation";
 
 thread_local! {
     static SHARED: RefCell<Option<Rc<RefCell<Characters>>>> = const { RefCell::new(None) };
@@ -285,6 +290,41 @@ impl LuaObject for WornItemObject {
     }
 }
 
+/// A `BodyLocationGroup`.
+pub struct BodyLocationGroupObject(pub BodyLocationGroupRef);
+
+impl LuaObject for BodyLocationGroupObject {
+    fn class_name(&self) -> &str {
+        BODY_LOCATION_GROUP_CLASS
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+fn group_value(g: &BodyLocationGroupRef) -> Value {
+    canonical(g, || Value::Object(Rc::new(BodyLocationGroupObject(g.clone()))))
+}
+
+/// A `BodyLocation`.
+pub struct BodyLocationObject(pub BodyLocationRef);
+
+impl LuaObject for BodyLocationObject {
+    fn class_name(&self) -> &str {
+        BODY_LOCATION_CLASS
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+fn body_location_value(l: Option<&BodyLocationRef>) -> Value {
+    match l {
+        Some(l) => canonical(l, || Value::Object(Rc::new(BodyLocationObject(l.clone())))),
+        None => Value::Nil,
+    }
+}
+
 /// A `CharacterGender` constant (not exposed as a class by the original).
 pub struct GenderObject(pub CharacterGender);
 
@@ -338,6 +378,7 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
     register_survivor_desc(thread, &sm, &chars);
     register_human_visual(thread);
     register_worn_items(thread);
+    register_body_locations(thread, &chars);
 }
 
 /// `register` on the shared ScriptManager and Characters.
@@ -1256,6 +1297,10 @@ fn register_worn_items(thread: &mut Thread) {
         let k = worn(c, |d| d.worn_items.location(&item))?;
         Ok(c.push(location_value(k.as_ref())))
     });
+    b.method("getBodyLocationGroup", |c| {
+        let g = worn(c, |d| d.worn_items.body_location_group().clone())?;
+        Ok(c.push(group_value(&g)))
+    });
 
     let b = expose_class(thread, WORN_ITEM_CLASS, None);
     b.method("getItem", |c| {
@@ -1265,6 +1310,164 @@ fn register_worn_items(thread: &mut Thread) {
     b.method("getLocation", |c| {
         let v = with_this::<WornItemObject, _>(c, |w| location_value(w.location.as_ref()))?;
         Ok(c.push(v))
+    });
+}
+
+fn group(c: &NativeCall<'_>) -> LuaResult<BodyLocationGroupRef> {
+    with_this::<BodyLocationGroupObject, _>(c, |o| o.0.clone())
+}
+
+fn body_location(c: &NativeCall<'_>) -> LuaResult<BodyLocationRef> {
+    with_this::<BodyLocationObject, _>(c, |o| o.0.clone())
+}
+
+fn register_body_locations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
+    let b = expose_class(thread, BODY_LOCATIONS_CLASS, None);
+    let ch = chars.clone();
+    b.static_fn("getGroup", move |c| {
+        let Some(id) = opt_string(c, 0) else {
+            return Err(LuaError::Runtime { message: "id is null".into(), class: "java.lang.NullPointerException" });
+        };
+        let g = ch.borrow_mut().body_locations.get_group(&id).map_err(java_error)?;
+        Ok(c.push(group_value(&g)))
+    });
+    let ch = chars.clone();
+    b.static_fn("reset", move |_| {
+        ch.borrow_mut().body_locations.reset();
+        Ok(0)
+    });
+    let ch = chars.clone();
+    b.static_fn("getAllGroups", move |c| {
+        let ch = ch.clone();
+        let view = ListView::new(move || ch.borrow().body_locations.all_groups().iter().map(group_value).collect());
+        Ok(c.push(Value::Object(Rc::new(view))))
+    });
+
+    let b = expose_class(thread, BODY_LOCATION_GROUP_CLASS, None);
+    b.method("getId", |c| {
+        let v = group(c)?.borrow().id().to_string();
+        Ok(c.push(v))
+    });
+    b.method("getLocation", |c| {
+        let k = key_arg(c, 1)?;
+        let l = group(c)?.borrow().location(k.as_ref()).map_err(java_error)?;
+        Ok(c.push(body_location_value(l.as_ref())))
+    });
+    b.method("getOrCreateLocation", |c| {
+        let k = key_arg(c, 1)?;
+        let l = group(c)?.borrow_mut().get_or_create_location(k).map_err(java_error)?;
+        Ok(c.push(body_location_value(Some(&l))))
+    });
+    b.method("getLocationByIndex", |c| {
+        let l = group(c)?.borrow().location_by_index(int_arg(c, 1));
+        Ok(c.push(body_location_value(l.as_ref())))
+    });
+    b.method("moveLocationToIndex", |c| {
+        let k = key_arg(c, 1)?;
+        group(c)?.borrow_mut().move_location_to_index(k.as_ref(), int_arg(c, 2)).map_err(java_error)?;
+        Ok(0)
+    });
+    b.method("size", |c| {
+        let v = group(c)?.borrow().size() as i32;
+        Ok(c.push(v))
+    });
+    b.method("indexOf", |c| {
+        let k = key_arg(c, 1)?;
+        let v = group(c)?.borrow().index_of(k.as_ref()).map_err(java_error)?;
+        Ok(c.push(v))
+    });
+    b.method("setExclusive", |c| {
+        let (a, k) = (key_arg(c, 1)?, key_arg(c, 2)?);
+        group(c)?.borrow_mut().set_exclusive(a, k).map_err(java_error)?;
+        Ok(0)
+    });
+    b.method("setHideModel", |c| {
+        let (a, k) = (key_arg(c, 1)?, key_arg(c, 2)?);
+        group(c)?.borrow_mut().set_hide_model(a.as_ref(), k).map_err(java_error)?;
+        Ok(0)
+    });
+    b.method("setAltModel", |c| {
+        let (a, k) = (key_arg(c, 1)?, key_arg(c, 2)?);
+        group(c)?.borrow_mut().set_alt_model(a.as_ref(), k).map_err(java_error)?;
+        Ok(0)
+    });
+    type GroupTest = fn(
+        &pz_characters::BodyLocationGroup,
+        Option<&Rc<RegistryKey>>,
+        Option<&Rc<RegistryKey>>,
+    ) -> pz_scripts::ScriptResult<bool>;
+    let tests: [(&str, GroupTest); 3] = [
+        ("isExclusive", pz_characters::BodyLocationGroup::is_exclusive),
+        ("isHideModel", pz_characters::BodyLocationGroup::is_hide_model),
+        ("isAltModel", pz_characters::BodyLocationGroup::is_alt_model),
+    ];
+    for (name, f) in tests {
+        b.method(name, move |c| {
+            let (a, k) = (key_arg(c, 1)?, key_arg(c, 2)?);
+            let v = f(&group(c)?.borrow(), a.as_ref(), k.as_ref()).map_err(java_error)?;
+            Ok(c.push(v))
+        });
+    }
+    b.method("setMultiItem", |c| {
+        let k = key_arg(c, 1)?;
+        group(c)?.borrow_mut().set_multi_item(k.as_ref(), bool_arg(c, 2)).map_err(java_error)?;
+        Ok(0)
+    });
+    b.method("isMultiItem", |c| {
+        let k = key_arg(c, 1)?;
+        let v = group(c)?.borrow().is_multi_item(k.as_ref()).map_err(java_error)?;
+        Ok(c.push(v))
+    });
+    b.method("getAllLocations", |c| {
+        let g = group(c)?;
+        let view = ListView::new(move || g.borrow().all_locations().iter().map(|l| body_location_value(Some(l))).collect());
+        Ok(c.push(Value::Object(Rc::new(view))))
+    });
+
+    let b = expose_class(thread, BODY_LOCATION_CLASS, None);
+    // The setters return `this` for chaining.
+    type Setter = fn(&mut pz_characters::BodyLocation, Option<Rc<RegistryKey>>);
+    let setters: [(&str, Setter); 3] = [
+        ("setExclusive", pz_characters::BodyLocation::set_exclusive),
+        ("setHideModel", pz_characters::BodyLocation::set_hide_model),
+        ("setAltModel", pz_characters::BodyLocation::set_alt_model),
+    ];
+    for (name, f) in setters {
+        b.method(name, move |c| {
+            let k = key_arg(c, 1)?;
+            f(&mut body_location(c)?.borrow_mut(), k);
+            Ok(c.push(c.arg(0)))
+        });
+    }
+    type Test = fn(&pz_characters::BodyLocation, Option<&Rc<RegistryKey>>) -> bool;
+    let tests: [(&str, Test); 3] = [
+        ("isExclusive", pz_characters::BodyLocation::is_exclusive),
+        ("isHideModel", pz_characters::BodyLocation::is_hide_model),
+        ("isAltModel", pz_characters::BodyLocation::is_alt_model),
+    ];
+    for (name, f) in tests {
+        b.method(name, move |c| {
+            let k = key_arg(c, 1)?;
+            let v = f(&body_location(c)?.borrow(), k.as_ref());
+            Ok(c.push(v))
+        });
+    }
+    b.method("setMultiItem", |c| {
+        body_location(c)?.borrow_mut().multi_item = bool_arg(c, 1);
+        Ok(c.push(c.arg(0)))
+    });
+    b.method("isMultiItem", |c| {
+        let v = body_location(c)?.borrow().multi_item;
+        Ok(c.push(v))
+    });
+    b.method("isId", |c| {
+        let k = key_arg(c, 1)?;
+        let v = body_location(c)?.borrow().is_id(k.as_ref()).map_err(java_error)?;
+        Ok(c.push(v))
+    });
+    b.method("getId", |c| {
+        let v = body_location(c)?.borrow().id.clone();
+        Ok(c.push(location_value(v.as_ref())))
     });
 }
 
@@ -1278,7 +1481,7 @@ mod tests {
         for (reg, ids) in [
             ("character_trait", &["t:brave", "t:timid", "t:bold"][..]),
             ("character_profession", &["t:baker", "t:jobless"][..]),
-            ("item_body_location", &["t:hat"][..]),
+            ("item_body_location", &["t:hat", "t:mask", "t:ring"][..]),
         ] {
             for id in ids {
                 sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
@@ -1290,6 +1493,9 @@ mod tests {
         st.constants.insert("character_trait", "BOLD", "t:bold");
         st.constants.insert("character_profession", "BAKER", "t:baker");
         st.constants.insert("character_profession", "UNEMPLOYED", "t:jobless");
+        st.constants.insert("item_body_location", "HAT", "t:hat");
+        st.constants.insert("item_body_location", "MASK", "t:mask");
+        st.constants.insert("item_body_location", "RING", "t:ring");
         drop(st);
         sm
     }
@@ -1405,5 +1611,41 @@ mod tests {
         run(&mut t, "SurvivorFactory.Reset()").unwrap();
         let e = run(&mut t, "SurvivorFactory.getRandomSurname()").unwrap_err();
         assert!(e.contains("IndexOutOfBoundsException") || e.contains("out of bounds"), "{e}");
+    }
+
+    #[test]
+    fn body_locations() {
+        let (mut t, chars) = setup();
+        run(
+            &mut t,
+            r#"
+            local g = BodyLocations.getGroup("Human")
+            assert(g == BodyLocations.getGroup("Human") and g:getId() == "Human")
+            assert(BodyLocations.getAllGroups():size() == 1)
+            local hat = g:getOrCreateLocation(ItemBodyLocation.HAT)
+            assert(hat == g:getOrCreateLocation(ItemBodyLocation.HAT) and hat:getId() == ItemBodyLocation.HAT)
+            g:getOrCreateLocation(ItemBodyLocation.MASK)
+            g:getOrCreateLocation(ItemBodyLocation.RING)
+            assert(g:size() == 3 and g:indexOf(ItemBodyLocation.RING) == 2 and g:getLocationByIndex(5) == nil)
+            g:setExclusive(ItemBodyLocation.HAT, ItemBodyLocation.MASK)
+            g:setHideModel(ItemBodyLocation.HAT, ItemBodyLocation.RING)
+            g:setAltModel(ItemBodyLocation.MASK, ItemBodyLocation.HAT)
+            g:setMultiItem(ItemBodyLocation.RING, true)
+            assert(g:isExclusive(ItemBodyLocation.MASK, ItemBodyLocation.HAT) and hat:isExclusive(ItemBodyLocation.MASK))
+            assert(g:isHideModel(ItemBodyLocation.HAT, ItemBodyLocation.RING) and not hat:isHideModel(ItemBodyLocation.MASK))
+            assert(g:isAltModel(ItemBodyLocation.MASK, ItemBodyLocation.HAT) and g:isMultiItem(ItemBodyLocation.RING))
+            assert(hat:setMultiItem(true) == hat and hat:isMultiItem() and hat:isId(ItemBodyLocation.HAT))
+            g:moveLocationToIndex(ItemBodyLocation.RING, 0)
+            assert(g:getAllLocations():get(0):getId() == ItemBodyLocation.RING)
+            assert(ItemBodyLocation.HAT:getTranslationName() == "t:hat" and tostring(ItemBodyLocation.HAT) == "t:hat")
+            assert(SurvivorDesc.new():getWornItems():getBodyLocationGroup() == g)
+            "#,
+        )
+        .unwrap();
+        assert_eq!(chars.borrow().body_locations.all_groups()[0].borrow().size(), 3);
+        let e = run(&mut t, "BodyLocations.getGroup('Human'):setExclusive(nil, ItemBodyLocation.HAT)").unwrap_err();
+        assert!(e.contains("NullPointerException"), "{e}");
+        let e = run(&mut t, "BodyLocations.getGroup('')").unwrap_err();
+        assert!(e.contains("id is empty"), "{e}");
     }
 }
