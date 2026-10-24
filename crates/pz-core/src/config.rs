@@ -16,13 +16,15 @@ use pz_kahlua::number::{java_double_to_string, java_parse_double, java_parse_int
 use std::cell::RefCell;
 use std::path::Path;
 
+type LogHook = Option<Box<dyn Fn(&str)>>;
+
 thread_local! {
-    static LOG_HOOK: RefCell<Option<Box<dyn Fn(&str)>>> = const { RefCell::new(None) };
+    static LOG_HOOK: RefCell<LogHook> = const { RefCell::new(None) };
 }
 
 /// Install a sink for `DebugLog.log` messages emitted by this module and
 /// `Core` (parse errors, range errors, ...). Without one they are dropped.
-pub fn set_log_hook(hook: Option<Box<dyn Fn(&str)>>) {
+pub fn set_log_hook(hook: LogHook) {
     LOG_HOOK.with(|h| *h.borrow_mut() = hook);
 }
 

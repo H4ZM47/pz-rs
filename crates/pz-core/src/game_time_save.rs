@@ -14,10 +14,8 @@
 //! writes the climate and weather as absent.
 
 use crate::core::Core;
-use crate::game_time::{
-    AirFront, ClimateColorInfo, ClimateManager, GameTime, StrLerpVal, ThunderCloud, WeatherPeriod,
-    WeatherStage,
-};
+use crate::game_time::{AirFront, ClimateManager, GameTime, StrLerpVal, ThunderCloud, WeatherPeriod, WeatherStage};
+use crate::weather::{ColorRef, ThunderStorm};
 use pz_kahlua::java_io::{JavaReader, JavaWrite};
 use pz_kahlua::table_save::{load_table, save_table, Flavor};
 use pz_kahlua::TableRef;
@@ -205,13 +203,16 @@ fn load_front(f: &mut AirFront, r: &mut JavaReader<'_>) -> io::Result<()> {
     Ok(())
 }
 
-fn save_color(c: &ClimateColorInfo, out: &mut Vec<u8>) {
+fn save_color(c: &ColorRef, out: &mut Vec<u8>) {
+    let c = c.borrow();
     for v in c.interior.iter().chain(c.exterior.iter()) {
         out.put_f32(*v);
     }
 }
 
-fn load_color(c: &mut ClimateColorInfo, r: &mut JavaReader<'_>) -> io::Result<()> {
+fn load_color(c: &ColorRef, r: &mut JavaReader<'_>) -> io::Result<()> {
+    let mut guard = c.borrow_mut();
+    let c = &mut *guard;
     for v in c.interior.iter_mut().chain(c.exterior.iter_mut()) {
         *v = r.get_f32()?;
     }
@@ -236,7 +237,7 @@ pub fn save_climate(c: &ClimateManager, out: &mut Vec<u8>, client: bool) -> io::
         out.put_i8(0);
     }
     save_weather_period(&c.weather_period, out, client);
-    save_thunder_storm(&c.thunder_clouds, out, client);
+    save_thunder_storm(&c.thunder_storm.clouds, out, client);
     save_optional_table(c.mod_data_table.as_ref(), out, Flavor::DataStream)
 }
 
@@ -259,11 +260,12 @@ pub fn load_climate(
         c.day_fog_strength = r.get_f32()?;
     }
     load_weather_period(&mut c.weather_period, r)?;
-    load_thunder_storm(&mut c.thunder_clouds, r)?;
+    load_thunder_storm(&mut c.thunder_storm, r)?;
     if r.get_i8()? == 1 {
         let t = c.mod_data_table.get_or_insert_with(TableRef::new).clone();
         load_table(&t, r, world_version, Flavor::DataStream)?;
     }
+    c.after_load();
     Ok(())
 }
 
@@ -341,11 +343,7 @@ fn load_weather_period(w: &mut WeatherPeriod, r: &mut JavaReader<'_>) -> io::Res
         ws.fog_strength = r.get_f32()?;
         w.weather_stages.push(ws);
     }
-    load_color(&mut w.cloud_color, r)?;
-    if w.weather_stage_index < 0 || w.weather_stage_index as usize >= w.weather_stages.len() {
-        // "WeatherPeriod: Couldnt load stages correctly."
-        w.is_running = false;
-    }
+    load_color(&w.cloud_color, r)?;
     Ok(())
 }
 
@@ -375,16 +373,18 @@ fn save_thunder_storm(clouds: &[ThunderCloud; 3], out: &mut Vec<u8>, client: boo
     }
 }
 
-fn load_thunder_storm(clouds: &mut [ThunderCloud; 3], r: &mut JavaReader<'_>) -> io::Result<()> {
+fn load_thunder_storm(ts: &mut ThunderStorm, r: &mut JavaReader<'_>) -> io::Result<()> {
     let len = r.get_i8()? as i32;
     // Clouds past the third go into a scratch cloud (`dummyCloud`).
-    let mut dummy = ThunderCloud::default();
+    if len > ts.clouds.len() as i32 && ts.dummy_cloud.is_none() {
+        ts.dummy_cloud = Some(ThunderCloud::default());
+    }
     for i in 0..len.max(0) as usize {
         let running = r.get_bool()?;
-        let c = if i < clouds.len() {
-            &mut clouds[i]
+        let c = if i < ts.clouds.len() {
+            &mut ts.clouds[i]
         } else {
-            &mut dummy
+            ts.dummy_cloud.get_or_insert_with(ThunderCloud::default)
         };
         c.is_running = running;
         if !running {
@@ -435,8 +435,8 @@ mod tests {
             c.weather_period.weather_stages.push(ws);
         }
         c.weather_period.weather_stages[0].mod_id = Some("mod".into());
-        c.thunder_clouds[1].is_running = true;
-        c.thunder_clouds[1].duration = 2.0;
+        c.thunder_storm.clouds[1].is_running = true;
+        c.thunder_storm.clouds[1].duration = 2.0;
         let mut core = Core::new();
         core.set_poisonous_berry(Some("Base.BerryGeneric5"));
         core.set_poisonous_mushroom(Some("Base.MushroomGeneric1"));
@@ -451,7 +451,13 @@ mod tests {
         let (mut gt2, mut core2) = (GameTime::default(), Core::new());
         load_map_t(&mut gt2, &mut core2, &bytes, -1, false).unwrap();
         assert_eq!(gt2.day, 5);
-        assert_eq!(gt2.climate.weather_period, gt.climate.weather_period);
+        let ids = |g: &GameTime| {
+            g.climate.weather_period.weather_stages.iter().map(|s| (s.stage_id, s.stage_duration)).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&gt2), ids(&gt));
+        // `load` links the stages and starts the current one.
+        assert_eq!(gt2.climate.weather_period.weather_stages[0].next_stage, Some(1));
+        assert_eq!(gt2.climate.weather_period.current_stage, Some(1));
         assert_eq!(
             core2.get_poisonous_berry().as_deref(),
             Some("Base.BerryGeneric5")
