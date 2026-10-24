@@ -1,0 +1,8 @@
+[package]
+name = "pz-sound"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-core = { path = "../pz-core" }
+pz-scripts = { path = "../pz-scripts" }
