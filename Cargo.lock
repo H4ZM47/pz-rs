@@ -1573,6 +1573,7 @@ dependencies = [
 name = "pz-model"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide 0.8.9",
  "pz-render",
 ]
 

@@ -634,7 +634,10 @@ impl ImportedSkeleton {
         sk.bind_pose = vec![LMat::IDENTITY; nb];
         sk.skin_offset = vec![LMat::IDENTITY; nb];
         let bones = &scene.meshes[mi].bones;
-        let find_bone = |name: &str| bones.iter().find(|b| b.name == name);
+        // jassimp only fills a bone's offset matrix inside its weight loop,
+        // so bones without weights reach Java with a null offset and are
+        // skipped here.
+        let find_bone = |name: &str| bones.iter().find(|b| b.name == name).filter(|b| !b.weights.is_empty());
         for &n in &bone_nodes {
             let name = &scene.nodes[n].name;
             let Some(bone) = find_bone(name) else { continue };
