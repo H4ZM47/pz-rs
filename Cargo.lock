@@ -79,6 +79,7 @@ dependencies = [
 name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
+ "pz-engine",
  "pz-fs",
  "pz-kahlua",
  "pz-render",
