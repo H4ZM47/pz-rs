@@ -568,11 +568,34 @@ pub trait ChunkLoadHook {
     /// `ErosionMain.ChunkLoaded(chunk)`, once after all squares. The
     /// chunk's `erosion` holds the loaded `ErosionData.Chunk`.
     fn chunk_loaded(&mut self, chunk: &mut IsoChunk);
+    /// Called when chunk `(wx, wy)` leaves the cell. The original has no
+    /// such call: per-square erosion state lives on `IsoGridSquare` objects
+    /// and goes away with them. Hooks that keep that state on the side drop
+    /// it here.
+    fn chunk_unloaded(&mut self, _wx: i32, _wy: i32) {}
 }
 
 /// The erosion part of `IsoChunk.doLoadGridsquare`: runs `hook` where the
 /// original calls `ErosionMain`. The other per-square work there
 /// (`addToWorld`, `MapObjects`, Lua events) is not ported.
+/// The steps after a chunk read from disk is placed in `cell`, in the
+/// original's order: `loadInWorldStreamerThread`/`loadInMainThread`
+/// (missing squares, `RecalcProperties`, roofs, neighbour matrices) and then
+/// the erosion calls of `doLoadGridsquare`, so hooks see recalculated flags.
+pub fn finish_chunk_load(
+    cell: &mut crate::chunk::IsoCell,
+    wx: i32,
+    wy: i32,
+    meta: &crate::meta_grid::IsoMetaGrid,
+    m: &crate::sprite::IsoSpriteManager,
+    hook: Option<&mut dyn ChunkLoadHook>,
+) {
+    cell.recalc_chunk_squares(wx, wy, meta, m);
+    if let Some(ch) = cell.chunks.get_mut(&(wx, wy)) {
+        do_load_gridsquare(ch, hook);
+    }
+}
+
 pub fn do_load_gridsquare(ch: &mut IsoChunk, hook: Option<&mut dyn ChunkLoadHook>) {
     let Some(hook) = hook else {
         return;

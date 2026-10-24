@@ -18,6 +18,8 @@ use crate::objects::{IsoObject, ObjectId, ObjectLoadHooks, ObjectLoadSettings, O
 use crate::save::lua_table::LuaTable;
 use crate::save::visual::IsoDeadBody;
 use crate::sprite::IsoSpriteManager;
+use crate::sprite::{PropertyContainer, SurfaceInfo};
+use crate::square::IsoDirections;
 
 pub const CHUNK_WIDTH: i32 = 8;
 pub const MIN_LEVEL: i32 = -32;
@@ -53,14 +55,33 @@ pub struct IsoGridSquare {
     /// `table` (square mod data).
     pub mod_data: Option<LuaTable>,
     pub overlay_done: bool,
-    pub have_roof: bool,
-    pub burnt_out: bool,
     pub have_sheet_rope: bool,
     /// `isSeen(playerIndex)` for the four local players.
     pub seen: [bool; 4],
     /// `getTrapPositionX/Y/Z()` when X is positive. Loading reads and drops
     /// the saved position.
     pub trap_position: Option<(i32, i32, i32)>,
+    /// `properties`: the merged sprite properties and derived flags
+    /// (`RecalcProperties`, see [`crate::square`]).
+    pub properties: PropertyContainer,
+    /// `hasTypes`: bit `IsoObjectType.index()` per object type present
+    /// (`1L << index`, so indices wrap at 64 like Java's shift).
+    pub has_types: u64,
+    /// `hasTree`.
+    pub has_tree: bool,
+    /// `haveRoof`: a rain-blocking square is somewhere above.
+    pub have_roof: bool,
+    /// `burntOut`.
+    pub burnt_out: bool,
+    /// `properties.initSurface()` values of the merged properties.
+    pub surface: SurfaceInfo,
+    /// `properties.getSlopedSurfaceDirection()`.
+    pub sloped_surface_direction: Option<IsoDirections>,
+    /// `collideMatrix`, `pathMatrix`, `visionMatrix`: bit
+    /// `(dx+1) + 3 (dy+1) + 9 (dz+1)` set when blocked.
+    pub collide_matrix: i32,
+    pub path_matrix: i32,
+    pub vision_matrix: i32,
 }
 
 impl IsoGridSquare {
@@ -81,11 +102,19 @@ impl IsoGridSquare {
             static_moving: Vec::new(),
             mod_data: None,
             overlay_done: false,
-            have_roof: false,
-            burnt_out: false,
             have_sheet_rope: false,
             seen: [false; 4],
             trap_position: None,
+            properties: PropertyContainer::default(),
+            has_types: 0,
+            has_tree: false,
+            have_roof: false,
+            burnt_out: false,
+            surface: SurfaceInfo::default(),
+            sloped_surface_direction: None,
+            collide_matrix: 0x7FF_FFFF,
+            path_matrix: 0x7FF_FFFF,
+            vision_matrix: 0,
         }
     }
 
@@ -563,6 +592,23 @@ pub struct IsoCell {
 }
 
 impl IsoCell {
+    /// Remove chunk `(wx, wy)` from the cell (`IsoChunk.removeFromWorld`
+    /// for the parts ported so far) and tell `hook` it is gone.
+    pub fn unload_chunk(
+        &mut self,
+        wx: i32,
+        wy: i32,
+        hook: Option<&mut dyn crate::save::chunk_file::ChunkLoadHook>,
+    ) -> Option<IsoChunk> {
+        let chunk = self.chunks.remove(&(wx, wy));
+        if chunk.is_some() {
+            if let Some(h) = hook {
+                h.chunk_unloaded(wx, wy);
+            }
+        }
+        chunk
+    }
+
     /// Load chunk `(wx, wy)` from map files if it is not loaded yet.
     pub fn load_chunk(
         &mut self,
