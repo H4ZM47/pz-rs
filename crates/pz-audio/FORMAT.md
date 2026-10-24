@@ -62,3 +62,46 @@ file offset. `LCNT` in each list holds the u32 element count.
 The FMOD runtime shipped with the game (FMOD 2.03.09, Studio header version
 0x00020309) can be driven through ctypes for parity checks; keep such
 scripts and their output outside the repository.
+
+## Effects
+
+Effect objects (`BEFF`) hold `BEFB` (GUID, u32 Studio effect type), `PMEF`
+(u32 parameter count, then per parameter u32 kind and a value: 0 float f32,
+1 int i32, 2 bool u8, 3 data u16 size + bytes; one trailing u8) and `EFFB`
+(u32 bypass flag, f32 100, f32 0, f32 -80, u32 0). Parameters are in the
+order of the matching core DSP's parameters (FMOD_DSP_<TYPE>_* indices).
+Studio type → core DSP, from parameter counts and values:
+
+| Studio | Core DSP | Uses in the game's banks |
+| --- | --- | --- |
+| 6 | Echo | 6 |
+| 7 | Fader | 266 |
+| 11 | Limiter | 1 (master bus) |
+| 18 | Compressor | 39 |
+| 19 | SFX Reverb | 8 |
+| 27 | Pan (spatializer) | 73 |
+| 28 | 3-EQ | 1 |
+| 30 | Loudness Meter | 1 |
+| 34 | Transceiver | 21 |
+| 36 | Multiband Equalizer | 149 |
+
+Send effects (`SEFF`: `SEFB` GUID, return bus GUID, f32 level dB) route to
+return buses. Buses carry `PRPS` lists whose `PROP` entries automate
+properties through `MAP` and `CURV` objects.
+
+The game's master bus runs Fader (+3 dB), Compressor (-20 dB, 3.1:1,
+500/3000 ms, +1 dB), Limiter (10 ms, -1 dB ceiling, +10 dB maximizer) and a
+loudness meter, so every event's level depends on these.
+
+### Measured behaviour (core DSPs driven through the oracle)
+
+* Fader: exact dB gain.
+* Limiter (10, -1, 10, linked): static curve is +10 dB gain clamped at the
+  -1 dB ceiling.
+* Compressor (-20, 3.1, 500, 3000, +1): above threshold the steady-state
+  gain reduction is `(1 - 1/ratio) * over + 1.23 dB`, as if the detector
+  read 1.82 dB above the sine's peak; none below about -21 dB input. Gain
+  reduction reaches ~75 % within 10 ms and the rest follows the 500 ms
+  attack, so the detector is not a plain one-pole follower. Matching it
+  exactly needs the DSP code itself (`libfmod`), which is the plan for each
+  core DSP above.
