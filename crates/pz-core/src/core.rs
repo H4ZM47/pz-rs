@@ -25,8 +25,8 @@
 //! [`CoreEvent`]s for the Lua events Java triggers from here.
 
 use crate::config::{
-    case_insensitive_cmp, debug_log, float_to_string, java_lines, java_split, java_trim, ConfigFile, ConfigObject,
-    ConfigOption, OnChange,
+    case_insensitive_cmp, debug_log, float_to_string, java_lines, java_split, java_trim,
+    ConfigFile, ConfigObject, ConfigOption, OnChange,
 };
 use pz_kahlua::number::java_parse_int;
 use std::any::Any;
@@ -45,8 +45,15 @@ pub struct GameVersion {
 impl GameVersion {
     pub fn new(major: i32, minor: i32, suffix: &str) -> Self {
         assert!(major >= 0, "major version must be greater than zero");
-        assert!((0..=999).contains(&minor), "minor version must be from 0 to 999");
-        GameVersion { major, minor, suffix: suffix.to_string() }
+        assert!(
+            (0..=999).contains(&minor),
+            "minor version must be from 0 to 999"
+        );
+        GameVersion {
+            major,
+            minor,
+            suffix: suffix.to_string(),
+        }
     }
     pub fn get_int(&self) -> i32 {
         self.major * 1000 + self.minor
@@ -99,7 +106,12 @@ pub struct ColorInfo {
 
 impl Default for ColorInfo {
     fn default() -> Self {
-        ColorInfo { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }
+        ColorInfo {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        }
     }
 }
 
@@ -108,7 +120,12 @@ impl ColorInfo {
         ColorInfo { r, g, b, a }
     }
     fn from_array(c: [f32; 4]) -> Self {
-        ColorInfo { r: c[0], g: c[1], b: c[2], a: c[3] }
+        ColorInfo {
+            r: c[0],
+            g: c[1],
+            b: c[2],
+            a: c[3],
+        }
     }
 }
 
@@ -139,7 +156,14 @@ pub struct KeyBinding {
 impl KeyBinding {
     /// `Core.KEYBINDING_EMPTY`.
     pub fn empty() -> Self {
-        KeyBinding { name: "empty".into(), key_value: 0, alt_key: 0, shift: false, ctrl: false, alt: false }
+        KeyBinding {
+            name: "empty".into(),
+            key_value: 0,
+            alt_key: 0,
+            shift: false,
+            ctrl: false,
+            alt: false,
+        }
     }
 }
 
@@ -245,7 +269,10 @@ impl OffscreenBuffer {
     }
 
     pub fn get_default_zoom_levels(&self) -> Vec<i32> {
-        ZOOM_LEVELS_DEFAULT.iter().map(|l| round_f32(l * 100.0)).collect()
+        ZOOM_LEVELS_DEFAULT
+            .iter()
+            .map(|l| round_f32(l * 100.0))
+            .collect()
     }
 
     /// `setZoomLevelsFromOption`.
@@ -264,7 +291,9 @@ impl OffscreenBuffer {
             if s.is_empty() {
                 continue;
             }
-            let Some(percent) = java_parse_int(s, 10) else { continue };
+            let Some(percent) = java_parse_int(s, 10) else {
+                continue;
+            };
             for known in ZOOM_LEVELS_DEFAULT {
                 if round_f32(known * 100.0) != percent {
                     continue;
@@ -294,7 +323,9 @@ impl OffscreenBuffer {
 
     /// `create(xres, yres)` without the texture (TODO(render)).
     pub fn create(&mut self) {
-        let levels = self.zoom_levels.get_or_insert_with(|| ZOOM_LEVELS_DEFAULT.to_vec());
+        let levels = self
+            .zoom_levels
+            .get_or_insert_with(|| ZOOM_LEVELS_DEFAULT.to_vec());
         self.zoomed_in_level = *levels.last().unwrap_or(&1.0);
         self.zoomed_out_level = *levels.first().unwrap_or(&1.0);
         self.created = true;
@@ -398,13 +429,23 @@ pub enum CoreRequest {
     /// `ResetLua(activeMods, reason)`.
     ResetLua { active_mods: String, reason: String },
     /// `setDisplayMode(width, height, fullscreen)`. TODO(render).
-    DisplayMode { width: i32, height: i32, fullscreen: bool },
+    DisplayMode {
+        width: i32,
+        height: i32,
+        fullscreen: bool,
+    },
     /// `setVSyncEnabled`. TODO(render).
     VSync(bool),
     /// `TakeFullScreenshot(filename)`. TODO(render).
     FullScreenshot(Option<String>),
     /// `TakeScreenshot(...)` of the current save's thumbnail. TODO(render).
-    Screenshot { x: i32, y: i32, width: i32, height: i32, read_buffer: i32 },
+    Screenshot {
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        read_buffer: i32,
+    },
 }
 
 /// The game version this port reports (`Core.gameVersion`).
@@ -1011,7 +1052,8 @@ impl Core {
     fn add(&mut self, fake: bool, option: ConfigOption) {
         let name = option.name().to_string();
         if fake {
-            self.fake_option_by_name.insert(name, self.fake_options.len());
+            self.fake_option_by_name
+                .insert(name, self.fake_options.len());
             self.fake_options.push(option);
         } else {
             self.option_by_name.insert(name, self.options.len());
@@ -1024,22 +1066,41 @@ impl Core {
         self.add(false, ConfigOption::integer("reticleMode", 0, 1, 0));
         self.add(false, ConfigOption::boolean("showAimTexture", false));
         self.add(false, ConfigOption::boolean("showReticleTexture", true));
-        self.add(false, ConfigOption::boolean("showValidTargetReticleTexture", true));
+        self.add(
+            false,
+            ConfigOption::boolean("showValidTargetReticleTexture", true),
+        );
         self.add(false, ConfigOption::integer("aimTextureIndex", 0, 17, 0));
         self.add(false, ConfigOption::integer("reticleTextureIndex", 0, 6, 0));
-        self.add(false, ConfigOption::integer("validTargetReticleTextureIndex", 0, 6, 3));
-        self.add(false, ConfigOption::integer("crosshairTextureIndex", 0, 2, 0));
+        self.add(
+            false,
+            ConfigOption::integer("validTargetReticleTextureIndex", 0, 6, 3),
+        );
+        self.add(
+            false,
+            ConfigOption::integer("crosshairTextureIndex", 0, 2, 0),
+        );
         self.add(false, ConfigOption::integer("maxCrosshairOffset", 0, 11, 5));
         self.add(false, ConfigOption::boolean("reticleCameraZoom", false));
         self.add(
             false,
-            ConfigOption::array("targetColor", ConfigOption::double("element", 0.0, 1.0, 1.0), ",", "1.0,1.0,1.0")
-                .fixed_size(3),
+            ConfigOption::array(
+                "targetColor",
+                ConfigOption::double("element", 0.0, 1.0, 1.0),
+                ",",
+                "1.0,1.0,1.0",
+            )
+            .fixed_size(3),
         );
         self.add(
             false,
-            ConfigOption::array("noTargetColor", ConfigOption::double("element", 0.0, 1.0, 1.0), ",", "1.0,1.0,1.0")
-                .fixed_size(3),
+            ConfigOption::array(
+                "noTargetColor",
+                ConfigOption::double("element", 0.0, 1.0, 1.0),
+                ",",
+                "1.0,1.0,1.0",
+            )
+            .fixed_size(3),
         );
         self.add(
             false,
@@ -1097,16 +1158,40 @@ impl Core {
         self.add(false, ConfigOption::integer("fontSize", 1, 6, 6));
         self.add(false, ConfigOption::integer("moodleSize", 1, 7, 7));
         self.add(false, ConfigOption::integer("sidebarSize", 1, 6, 6));
-        self.add(false, ConfigOption::integer("actionProgressBarSize", 1, 4, 1));
-        self.add(false, ConfigOption::string_values("contextMenuFont", "Medium", &["Small", "Medium", "Large"]));
-        self.add(false, ConfigOption::string_values("codeFontSize", "Medium", &["Small", "Medium", "Large"]));
-        self.add(false, ConfigOption::string_values("inventoryFont", "Medium", &["Small", "Medium", "Large"]));
-        self.add(false, ConfigOption::integer("inventoryContainerSize", 1, 3, 1));
-        self.add(false, ConfigOption::string_values("tooltipFont", "Small", &["Small", "Medium", "Large"]));
+        self.add(
+            false,
+            ConfigOption::integer("actionProgressBarSize", 1, 4, 1),
+        );
+        self.add(
+            false,
+            ConfigOption::string_values("contextMenuFont", "Medium", &["Small", "Medium", "Large"]),
+        );
+        self.add(
+            false,
+            ConfigOption::string_values("codeFontSize", "Medium", &["Small", "Medium", "Large"]),
+        );
+        self.add(
+            false,
+            ConfigOption::string_values("inventoryFont", "Medium", &["Small", "Medium", "Large"]),
+        );
+        self.add(
+            false,
+            ConfigOption::integer("inventoryContainerSize", 1, 3, 1),
+        );
+        self.add(
+            false,
+            ConfigOption::string_values("tooltipFont", "Small", &["Small", "Medium", "Large"]),
+        );
         self.add(false, ConfigOption::boolean("colorblindPatterns", false));
         self.add(false, ConfigOption::boolean("enableDyslexicFont", false));
-        self.add(false, ConfigOption::boolean("disableLightningDuringStorms", false));
-        self.add(false, ConfigOption::string_values("measurementsFormat", "Metric", &["Imperial", "Metric"]));
+        self.add(
+            false,
+            ConfigOption::boolean("disableLightningDuringStorms", false),
+        );
+        self.add(
+            false,
+            ConfigOption::string_values("measurementsFormat", "Metric", &["Imperial", "Metric"]),
+        );
         self.add(false, ConfigOption::integer("clockFormat", 1, 2, 1));
         self.add(false, ConfigOption::integer("clockSize", 1, 2, 2));
         self.add(false, ConfigOption::boolean("clock24Hour", true));
@@ -1121,10 +1206,16 @@ impl Core {
         self.add(false, ConfigOption::integer("voiceMode", 1, 3, 3));
         self.add(false, ConfigOption::integer("voiceVADMode", 1, 4, 3));
         self.add(false, ConfigOption::integer("voiceAGCMode", 1, 3, 2));
-        self.add(false, ConfigOption::string_max("voiceRecordDeviceName", "", 256));
+        self.add(
+            false,
+            ConfigOption::string_max("voiceRecordDeviceName", "", 256),
+        );
         self.add(false, ConfigOption::integer("voiceVolumeMic", 0, 10, 10));
         self.add(false, ConfigOption::integer("voiceVolumePlayers", 0, 10, 5));
-        self.add(false, ConfigOption::integer("vehicleEngineVolume", 0, 10, 10));
+        self.add(
+            false,
+            ConfigOption::integer("vehicleEngineVolume", 0, 10, 10),
+        );
         self.add(false, ConfigOption::boolean("vehicleStreamerMode", false));
         self.add(false, ConfigOption::integer("reloadDifficulty", 1, 3, 2));
         self.add(false, ConfigOption::boolean("rackProgress", true));
@@ -1138,11 +1229,36 @@ impl Core {
         self.add(false, ConfigOption::boolean("texture2x", true));
         self.add(false, ConfigOption::boolean("highResPlacedItems", true));
         self.add(false, ConfigOption::integer("maxTextureSize", 1, 4, 1));
-        self.add(false, ConfigOption::integer("maxVehicleTextureSize", 1, 4, 2));
-        self.add(false, ConfigOption::string_values("screenFilter", "nearest", &["nearest", "linear"]));
-        self.add(false, ConfigOption::array("zoomLevels1x", ConfigOption::integer("element", 25, 250, 100), ";", ""));
-        self.add(false, ConfigOption::array("zoomLevels2x", ConfigOption::integer("element", 25, 250, 100), ";", ""));
-        self.add(false, ConfigOption::boolean("contentTranslationsEnabled", true));
+        self.add(
+            false,
+            ConfigOption::integer("maxVehicleTextureSize", 1, 4, 2),
+        );
+        self.add(
+            false,
+            ConfigOption::string_values("screenFilter", "nearest", &["nearest", "linear"]),
+        );
+        self.add(
+            false,
+            ConfigOption::array(
+                "zoomLevels1x",
+                ConfigOption::integer("element", 25, 250, 100),
+                ";",
+                "",
+            ),
+        );
+        self.add(
+            false,
+            ConfigOption::array(
+                "zoomLevels2x",
+                ConfigOption::integer("element", 25, 250, 100),
+                ";",
+                "",
+            ),
+        );
+        self.add(
+            false,
+            ConfigOption::boolean("contentTranslationsEnabled", true),
+        );
         self.add(false, ConfigOption::boolean("uiRenderOffscreen", true));
         self.add(false, ConfigOption::integer("uiRenderFPS", 10, 120, 60));
         self.add(false, ConfigOption::boolean("radialMenuKeyToggle", true));
@@ -1151,18 +1267,27 @@ impl Core {
         self.add(false, ConfigOption::boolean("panCameraWhileDriving", false));
         self.add(false, ConfigOption::boolean("showChatTimestamp", false));
         self.add(false, ConfigOption::boolean("showChatTitle", false));
-        self.add(false, ConfigOption::string_values("chatFontSize", "medium", &["small", "medium", "large"]));
+        self.add(
+            false,
+            ConfigOption::string_values("chatFontSize", "medium", &["small", "medium", "large"]),
+        );
         self.add(false, ConfigOption::double("minChatOpaque", 0.0, 1.0, 1.0));
         self.add(false, ConfigOption::double("maxChatOpaque", 0.0, 1.0, 1.0));
         self.add(false, ConfigOption::double("chatFadeTime", 0.0, 10.0, 0.0));
         self.add(false, ConfigOption::boolean("chatOpaqueOnFocus", true));
-        self.add(false, ConfigOption::boolean("temperatureDisplayCelsius", false));
+        self.add(
+            false,
+            ConfigOption::boolean("temperatureDisplayCelsius", false),
+        );
         self.add(false, ConfigOption::boolean("doVideoEffects", true));
         self.add(false, ConfigOption::boolean("doWindSpriteEffects", false));
         self.add(false, ConfigOption::boolean("doDoorSpriteEffects", true));
         self.add(false, ConfigOption::boolean("doContainerOutline", true));
         self.add(false, ConfigOption::boolean("renderPrecipIndoors", true));
-        self.add(false, ConfigOption::double("precipitationSpeedMultiplier", 0.01, 1.0, 1.0));
+        self.add(
+            false,
+            ConfigOption::double("precipitationSpeedMultiplier", 0.01, 1.0, 1.0),
+        );
         self.add(false, ConfigOption::boolean("autoProneAtk", true));
         self.add(false, ConfigOption::boolean("3DGroundItem", true));
         self.add(false, ConfigOption::integer("renderPrecipitation", 1, 3, 1));
@@ -1173,51 +1298,110 @@ impl Core {
             ConfigOption::string_values(
                 "cycleContainerKey",
                 "shift",
-                &["control", "shift", "control+shift", "command", "command+shift"],
+                &[
+                    "control",
+                    "shift",
+                    "control+shift",
+                    "command",
+                    "command+shift",
+                ],
             ),
         );
-        self.add(false, ConfigOption::boolean("dropItemsOnSquareCenter", false));
-        self.add(false, ConfigOption::boolean("timedActionGameSpeedReset", true));
-        self.add(false, ConfigOption::integer("shoulderButtonContainerSwitch", 1, 3, 1));
         self.add(
             false,
-            ConfigOption::integer("controllerButtonStyle", 1, 3, 1).on_change(OnChange::ControllerButtonStyle),
+            ConfigOption::boolean("dropItemsOnSquareCenter", false),
         );
         self.add(
             false,
-            ConfigOption::string_max("gamepadBindingPreset", "Original", 0).on_change(OnChange::GamepadBindingPreset),
+            ConfigOption::boolean("timedActionGameSpeedReset", true),
+        );
+        self.add(
+            false,
+            ConfigOption::integer("shoulderButtonContainerSwitch", 1, 3, 1),
+        );
+        self.add(
+            false,
+            ConfigOption::integer("controllerButtonStyle", 1, 3, 1)
+                .on_change(OnChange::ControllerButtonStyle),
+        );
+        self.add(
+            false,
+            ConfigOption::string_max("gamepadBindingPreset", "Original", 0)
+                .on_change(OnChange::GamepadBindingPreset),
         );
         self.add(false, ConfigOption::boolean("progressBar", false));
         self.add(false, ConfigOption::string_max("language", "", 64));
         self.add(
             false,
-            ConfigOption::array("singleContextMenu", ConfigOption::boolean("element", false), ",", "").fixed_size(4),
+            ConfigOption::array(
+                "singleContextMenu",
+                ConfigOption::boolean("element", false),
+                ",",
+                "",
+            )
+            .fixed_size(4),
         );
         self.add(false, ConfigOption::boolean("corpseShadows", true));
-        self.add(false, ConfigOption::integer("simpleClothingTextures", 1, 3, 1));
+        self.add(
+            false,
+            ConfigOption::integer("simpleClothingTextures", 1, 3, 1),
+        );
         self.add(false, ConfigOption::boolean("simpleWeaponTextures", false));
         self.add(false, ConfigOption::boolean("autoDrink", true));
-        self.add(false, ConfigOption::boolean("autoRevealPrintMediaMapLocations", false));
+        self.add(
+            false,
+            ConfigOption::boolean("autoRevealPrintMediaMapLocations", false),
+        );
         self.add(false, ConfigOption::boolean("leaveKeyInIgnition", false));
         self.add(false, ConfigOption::boolean("autoWalkContainer", false));
-        self.add(false, ConfigOption::integer("searchModeOverlayEffect", 1, 4, 1));
-        self.add(false, ConfigOption::integer("ignoreProneZombieRange", 1, 5, 2));
+        self.add(
+            false,
+            ConfigOption::integer("searchModeOverlayEffect", 1, 4, 1),
+        );
+        self.add(
+            false,
+            ConfigOption::integer("ignoreProneZombieRange", 1, 5, 2),
+        );
         self.add(false, ConfigOption::boolean("showItemModInfo", true));
         self.add(false, ConfigOption::boolean("showCraftingXP", true));
         self.add(false, ConfigOption::boolean("showSurvivalGuide", true));
-        self.add(false, ConfigOption::boolean("showFirstAnimalZoneInfo", true));
-        self.add(false, ConfigOption::boolean("enableLeftJoystickRadialMenu", true));
-        self.add(false, ConfigOption::boolean("macosIgnoreMouseWheelAcceleration", true));
-        self.add(false, ConfigOption::boolean("macosMapHorizontalMouseWheelToVertical", true));
-        self.add(false, ConfigOption::boolean("usePhysicsHitReaction", true));
-        self.add(false, ConfigOption::integer("maxActiveRagdolls", 5, 60, 20));
-        self.add(false, ConfigOption::double("worldMapBrightness", 0.0, 1.0, 1.0));
-        self.add(false, ConfigOption::boolean("showWelcomeMessage2", true));
-        self.add(false, ConfigOption::boolean("showYourUsername", true));
-        self.add(false, ConfigOption::boolean("populateServerListOnStart", false));
         self.add(
             false,
-            ConfigOption::array("mpTextColor", ConfigOption::double("element", 0.0, 1.0, 1.0), ",", "").fixed_size(3),
+            ConfigOption::boolean("showFirstAnimalZoneInfo", true),
+        );
+        self.add(
+            false,
+            ConfigOption::boolean("enableLeftJoystickRadialMenu", true),
+        );
+        self.add(
+            false,
+            ConfigOption::boolean("macosIgnoreMouseWheelAcceleration", true),
+        );
+        self.add(
+            false,
+            ConfigOption::boolean("macosMapHorizontalMouseWheelToVertical", true),
+        );
+        self.add(false, ConfigOption::boolean("usePhysicsHitReaction", true));
+        self.add(false, ConfigOption::integer("maxActiveRagdolls", 5, 60, 20));
+        self.add(
+            false,
+            ConfigOption::double("worldMapBrightness", 0.0, 1.0, 1.0),
+        );
+        self.add(false, ConfigOption::boolean("showWelcomeMessage2", true));
+        self.add(false, ConfigOption::boolean("showYourUsername", true));
+        self.add(
+            false,
+            ConfigOption::boolean("populateServerListOnStart", false),
+        );
+        self.add(
+            false,
+            ConfigOption::array(
+                "mpTextColor",
+                ConfigOption::double("element", 0.0, 1.0, 1.0),
+                ",",
+                "",
+            )
+            .fixed_size(3),
         );
         self.add(false, ConfigOption::string_max("seenNews", "", 64));
         self.add(false, ConfigOption::boolean("toggleToAim", false));
@@ -1229,7 +1413,13 @@ impl Core {
         self.add(false, ConfigOption::boolean("bPerfReflections", true));
         self.add(
             true,
-            ConfigOption::array("controller", ConfigOption::string_max("element", "", 256), ",", "").multi_line(true),
+            ConfigOption::array(
+                "controller",
+                ConfigOption::string_max("element", "", 256),
+                ",",
+                "",
+            )
+            .multi_line(true),
         );
         self.add(true, ConfigOption::boolean("doneNewSaveFolder", false));
         self.add(true, ConfigOption::integer("fogQuality", 0, 2, 0));
@@ -1242,10 +1432,22 @@ impl Core {
         self.add(true, ConfigOption::boolean("rosewoodSpawnDone", false));
         self.add(true, ConfigOption::integer("height", 0, 16384, 720));
         self.add(true, ConfigOption::integer("width", 0, 16384, 1280));
-        self.add(true, ConfigOption::boolean("showFirstTimeSearchTutorial", true));
-        self.add(true, ConfigOption::boolean("showFirstTimeSneakTutorial", true));
-        self.add(true, ConfigOption::double("shownWelcomeMessageVersion", 0.0, 1000.0, 0.0));
-        self.add(true, ConfigOption::integer("termsOfServiceVersion", -1, 1000, -1));
+        self.add(
+            true,
+            ConfigOption::boolean("showFirstTimeSearchTutorial", true),
+        );
+        self.add(
+            true,
+            ConfigOption::boolean("showFirstTimeSneakTutorial", true),
+        );
+        self.add(
+            true,
+            ConfigOption::double("shownWelcomeMessageVersion", 0.0, 1000.0, 0.0),
+        );
+        self.add(
+            true,
+            ConfigOption::integer("termsOfServiceVersion", -1, 1000, -1),
+        );
         self.add(true, ConfigOption::boolean("tieredZombieUpdates", true));
         self.add(true, ConfigOption::boolean("tutorialDone", false));
         self.add(true, ConfigOption::boolean("updateSneakButton", true));
@@ -1255,7 +1457,8 @@ impl Core {
         self.add(false, ConfigOption::boolean("fullScreen", false));
         self.add(
             false,
-            ConfigOption::array("autozoom", ConfigOption::boolean("element", false), ",", "").fixed_size(4),
+            ConfigOption::array("autozoom", ConfigOption::boolean("element", false), ",", "")
+                .fixed_size(4),
         );
     }
 
@@ -1264,7 +1467,9 @@ impl Core {
         if let Some(&i) = self.option_by_name.get(name) {
             return Some(&self.options[i]);
         }
-        self.fake_option_by_name.get(name).map(|&i| &self.fake_options[i])
+        self.fake_option_by_name
+            .get(name)
+            .map(|&i| &self.fake_options[i])
     }
 
     pub fn option_mut(&mut self, name: &str) -> Option<&mut ConfigOption> {
@@ -1278,11 +1483,13 @@ impl Core {
     }
 
     fn opt(&self, name: &str) -> &ConfigOption {
-        self.option(name).unwrap_or_else(|| panic!("unknown Core option {name}"))
+        self.option(name)
+            .unwrap_or_else(|| panic!("unknown Core option {name}"))
     }
 
     fn opt_mut(&mut self, name: &str) -> &mut ConfigOption {
-        self.option_mut(name).unwrap_or_else(|| panic!("unknown Core option {name}"))
+        self.option_mut(name)
+            .unwrap_or_else(|| panic!("unknown Core option {name}"))
     }
 
     /// The real (saved, non-fake) options in declaration order.
@@ -1370,7 +1577,9 @@ impl Core {
 
     /// `ZomboidFileSystem.getCacheDirSub("options.ini")`.
     pub fn options_path(&self) -> Option<PathBuf> {
-        self.options_path.clone().or_else(|| self.cache_dir.as_ref().map(|d| d.join("options.ini")))
+        self.options_path
+            .clone()
+            .or_else(|| self.cache_dir.as_ref().map(|d| d.join("options.ini")))
     }
 
     // ---- misc state -------------------------------------------------------
@@ -1544,8 +1753,21 @@ impl Core {
     }
 
     /// `TakeScreenshot(x, y, width, height, readBuffer)`. TODO(render).
-    pub fn take_screenshot_at(&mut self, x: i32, y: i32, width: i32, height: i32, read_buffer: i32) {
-        self.pending_requests.push(CoreRequest::Screenshot { x, y, width, height, read_buffer });
+    pub fn take_screenshot_at(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        read_buffer: i32,
+    ) {
+        self.pending_requests.push(CoreRequest::Screenshot {
+            x,
+            y,
+            width,
+            height,
+            read_buffer,
+        });
     }
 
     /// `TakeFullScreenshot(filename)`. Errs like the Java
@@ -1556,7 +1778,8 @@ impl Core {
                 return Err(format!("Unable to save options to filename: {f}"));
             }
         }
-        self.pending_requests.push(CoreRequest::FullScreenshot(filename.map(str::to_string)));
+        self.pending_requests
+            .push(CoreRequest::FullScreenshot(filename.map(str::to_string)));
         Ok(())
     }
 
@@ -1579,7 +1802,8 @@ impl Core {
 
     fn setup_multi_fbo(&mut self) {
         let levels = self.zoom_levels_option_string();
-        self.offscreen_buffer.set_zoom_levels_from_option(Some(&levels));
+        self.offscreen_buffer
+            .set_zoom_levels_from_option(Some(&levels));
         self.offscreen_buffer.create();
     }
 
@@ -1661,14 +1885,18 @@ impl Core {
     pub fn get_offscreen_width(&self, player: i32) -> i32 {
         let p = player.clamp(0, 3) as usize;
         (self.camera_screen_width(player) as f32
-            * self.offscreen_buffer.get_display_zoom(p, self.width, self.initial_width)
+            * self
+                .offscreen_buffer
+                .get_display_zoom(p, self.width, self.initial_width)
             * (self.tile_scale as f32 / 2.0)) as i32
     }
 
     pub fn get_offscreen_height(&self, player: i32) -> i32 {
         let p = player.clamp(0, 3) as usize;
         (self.camera_screen_height(player) as f32
-            * self.offscreen_buffer.get_display_zoom(p, self.width, self.initial_width)
+            * self
+                .offscreen_buffer
+                .get_display_zoom(p, self.width, self.initial_width)
             * (self.tile_scale as f32 / 2.0)) as i32
     }
 
@@ -1718,7 +1946,11 @@ impl Core {
 
     /// Static `setDisplayMode`. TODO(render).
     pub fn set_display_mode(&mut self, width: i32, height: i32, fullscreen: bool) {
-        self.pending_requests.push(CoreRequest::DisplayMode { width, height, fullscreen });
+        self.pending_requests.push(CoreRequest::DisplayMode {
+            width,
+            height,
+            fullscreen,
+        });
     }
 
     pub fn is_default_options(&self) -> bool {
@@ -1731,7 +1963,9 @@ impl Core {
 
     /// Static `getMyDocumentFolder()`: the cache dir.
     pub fn get_my_document_folder(&self) -> Option<String> {
-        self.cache_dir.as_ref().map(|d| d.to_string_lossy().into_owned())
+        self.cache_dir
+            .as_ref()
+            .map(|d| d.to_string_lossy().into_owned())
     }
 
     /// `setWindowed(b)` (which, as in Java, sets `fullScreen = b`).
@@ -1825,7 +2059,9 @@ impl Core {
 
     /// `supportRes(width, height)`. TODO(render): fullscreen capability.
     pub fn support_res(&self, width: i32, height: i32) -> bool {
-        self.available_display_modes.iter().any(|&(w, h)| w == width && h == height)
+        self.available_display_modes
+            .iter()
+            .any(|&(w, h)| w == width && h == height)
     }
 
     /// `init(width, height)` minus display creation (TODO(render)).
@@ -1894,7 +2130,8 @@ impl Core {
         let mut render_this_frame = true;
         if self.use_ui_fbo {
             self.ui_render_accumulator += thirty_fps_multiplier;
-            self.ui_render_this_frame = self.ui_render_accumulator >= 30.0 / self.get_option_ui_render_fps() as f32;
+            self.ui_render_this_frame =
+                self.ui_render_accumulator >= 30.0 / self.get_option_ui_render_fps() as f32;
             if !self.ui_render_this_frame {
                 render_this_frame = false;
             }
@@ -1922,7 +2159,8 @@ impl Core {
         if key_b.alt_key >= 10000 && self.mouse_buttons_down.contains(&(key_b.alt_key - 10000)) {
             return false;
         }
-        if key_b.key_value >= 10000 && self.mouse_buttons_down.contains(&(key_b.key_value - 10000)) {
+        if key_b.key_value >= 10000 && self.mouse_buttons_down.contains(&(key_b.key_value - 10000))
+        {
             return false;
         }
         if key_b.key_value == 0 && key_b.alt_key == 0 {
@@ -1950,11 +2188,17 @@ impl Core {
             return false;
         };
         for other in list {
-            if other == key_b || (other.shift == key_b.shift && other.ctrl == key_b.ctrl && other.alt == key_b.alt) {
+            if other == key_b
+                || (other.shift == key_b.shift
+                    && other.ctrl == key_b.ctrl
+                    && other.alt == key_b.alt)
+            {
                 continue;
             }
-            let matches_input = key_b.shift == shift_down && key_b.ctrl == ctrl_down && key_b.alt == alt_down;
-            let other_matches_input = other.shift == shift_down && other.ctrl == ctrl_down && other.alt == alt_down;
+            let matches_input =
+                key_b.shift == shift_down && key_b.ctrl == ctrl_down && key_b.alt == alt_down;
+            let other_matches_input =
+                other.shift == shift_down && other.ctrl == ctrl_down && other.alt == alt_down;
             if matches_input || !other_matches_input {
                 continue;
             }
@@ -1977,7 +2221,10 @@ impl Core {
     }
 
     pub fn get_key_binding(&self, key_name: &str) -> KeyBinding {
-        self.key_maps.get(key_name).cloned().unwrap_or_else(KeyBinding::empty)
+        self.key_maps
+            .get(key_name)
+            .cloned()
+            .unwrap_or_else(KeyBinding::empty)
     }
 
     /// `getKeyBinding(int keyId)`: the first binding on that key.
@@ -1988,8 +2235,23 @@ impl Core {
         }
     }
 
-    pub fn add_key_binding(&mut self, key_name: &str, key: i32, alt_key: i32, shift: bool, ctrl: bool, alt: bool) {
-        let binding = KeyBinding { name: key_name.to_string(), key_value: key, alt_key, shift, ctrl, alt };
+    pub fn add_key_binding(
+        &mut self,
+        key_name: &str,
+        key: i32,
+        alt_key: i32,
+        shift: bool,
+        ctrl: bool,
+        alt: bool,
+    ) {
+        let binding = KeyBinding {
+            name: key_name.to_string(),
+            key_value: key,
+            alt_key,
+            shift,
+            ctrl,
+            alt,
+        };
         if let Some(previous) = self.key_maps.insert(key_name.to_string(), binding.clone()) {
             if let Some(list) = self.key_binding_by_key_value.get_mut(&previous.key_value) {
                 if let Some(i) = list.iter().position(|b| *b == previous) {
@@ -2020,7 +2282,11 @@ impl Core {
     }
 
     pub fn get_version(&self) -> String {
-        format!("{} {}", self.get_game_and_build_version(), self.get_git_revision_string())
+        format!(
+            "{} {}",
+            self.get_game_and_build_version(),
+            self.get_git_revision_string()
+        )
     }
 
     pub fn get_game_and_build_version(&self) -> String {
@@ -2033,11 +2299,15 @@ impl Core {
 
     /// TODO(dev): `DevMainScreenState.getDevSha()` in dev builds.
     pub fn get_git_sha(&mut self) -> String {
-        self.git_sha.get_or_insert_with(|| GIT_REVISION.to_string()).clone()
+        self.git_sha
+            .get_or_insert_with(|| GIT_REVISION.to_string())
+            .clone()
     }
 
     pub fn get_git_revision(&mut self) -> String {
-        self.git_revision_string.get_or_insert_with(|| GIT_REVISION[..GIT_REVISION.len().min(20)].to_string()).clone()
+        self.git_revision_string
+            .get_or_insert_with(|| GIT_REVISION[..GIT_REVISION.len().min(20)].to_string())
+            .clone()
     }
 
     /// Static `getGitRevisionString()`.
@@ -2080,11 +2350,14 @@ impl Core {
 
     pub fn get_zoom(&self, player: i32) -> f32 {
         let p = player.clamp(0, 3) as usize;
-        self.offscreen_buffer.get_display_zoom(p, self.width, self.initial_width) * (self.tile_scale as f32 / 2.0)
+        self.offscreen_buffer
+            .get_display_zoom(p, self.width, self.initial_width)
+            * (self.tile_scale as f32 / 2.0)
     }
 
     pub fn get_next_zoom(&self, player: i32, del: i32) -> f32 {
-        self.offscreen_buffer.get_next_zoom(player.clamp(0, 3) as usize, del)
+        self.offscreen_buffer
+            .get_next_zoom(player.clamp(0, 3) as usize, del)
     }
 
     pub fn get_min_zoom(&self) -> f32 {
@@ -2096,7 +2369,8 @@ impl Core {
     }
 
     pub fn do_zoom_scroll(&mut self, player: i32, del: i32) {
-        self.offscreen_buffer.do_zoom_scroll(player.clamp(0, 3) as usize, del);
+        self.offscreen_buffer
+            .do_zoom_scroll(player.clamp(0, 3) as usize, del);
     }
 
     pub fn get_save_folder(&self) -> Option<String> {
@@ -2121,7 +2395,10 @@ impl Core {
             self.supports_fbo = true;
             self.supports_fbo();
         }
-        debug_log(&format!("SafeMode is {}", if self.safe_mode { "on" } else { "off" }));
+        debug_log(&format!(
+            "SafeMode is {}",
+            if self.safe_mode { "on" } else { "off" }
+        ));
     }
 
     pub fn zoom_levels_changed(&mut self) {
@@ -2147,14 +2424,20 @@ impl Core {
         } else {
             self.supports_fbo();
         }
-        debug_log(&format!("SafeMode is {}", if self.safe_mode { "on" } else { "off" }));
+        debug_log(&format!(
+            "SafeMode is {}",
+            if self.safe_mode { "on" } else { "off" }
+        ));
     }
 
     /// `getAutoZoom(playerIndex)`; `None` where Java throws
     /// `IndexOutOfBoundsException`.
     pub fn get_auto_zoom(&self, player: i32) -> Option<bool> {
         let a = self.opt("autozoom").as_array();
-        usize::try_from(player).ok().filter(|&i| i < a.size()).map(|i| a.get_element(i).get_bool())
+        usize::try_from(player)
+            .ok()
+            .filter(|&i| i < a.size())
+            .map(|i| a.get_element(i).get_bool())
     }
 
     pub fn set_auto_zoom(&mut self, player: i32, auto: bool) -> Option<()> {
@@ -2263,8 +2546,14 @@ impl Core {
         if option < 1 {
             return;
         }
-        let name = self.voice.record_driver_names.get(option as usize - 1).cloned().unwrap_or_default();
-        self.opt_mut("voiceRecordDeviceName").set_string(Some(&name));
+        let name = self
+            .voice
+            .record_driver_names
+            .get(option as usize - 1)
+            .cloned()
+            .unwrap_or_default();
+        self.opt_mut("voiceRecordDeviceName")
+            .set_string(Some(&name));
     }
 
     pub fn get_mic_volume_indicator(&self) -> i32 {
@@ -2366,11 +2655,13 @@ impl Core {
     }
 
     pub fn get_max_texture_size(&self) -> i32 {
-        self.get_max_texture_size_from_option(self.get_option_max_texture_size()).unwrap_or(256)
+        self.get_max_texture_size_from_option(self.get_option_max_texture_size())
+            .unwrap_or(256)
     }
 
     pub fn get_max_vehicle_texture_size(&self) -> i32 {
-        self.get_max_texture_size_from_option(self.get_option_max_vehicle_texture_size()).unwrap_or(256)
+        self.get_max_texture_size_from_option(self.get_option_max_vehicle_texture_size())
+            .unwrap_or(256)
     }
 
     pub fn get_option_zoom_levels1x(&self) -> String {
@@ -2395,7 +2686,14 @@ impl Core {
 
     pub fn set_option_screen_filter(&mut self, value: Option<&str>) {
         self.opt_mut("screenFilter").parse(value.unwrap_or(""));
-        self.screen_filter = if self.get_option_screen_filter().eq_ignore_ascii_case("linear") { 9729 } else { 9728 };
+        self.screen_filter = if self
+            .get_option_screen_filter()
+            .eq_ignore_ascii_case("linear")
+        {
+            9729
+        } else {
+            9728
+        };
     }
 
     pub fn get_screen_filter(&self) -> i32 {
@@ -2404,7 +2702,9 @@ impl Core {
 
     /// `setOptionActiveController(controllerIndex, active)`.
     pub fn set_option_active_controller(&mut self, controller_index: i32, active: bool) {
-        if controller_index < 0 || controller_index as usize >= self.connected_controller_guids.len() {
+        if controller_index < 0
+            || controller_index as usize >= self.connected_controller_guids.len()
+        {
             return;
         }
         let guid = self.connected_controller_guids[controller_index as usize].clone();
@@ -2435,8 +2735,10 @@ impl Core {
 
     pub fn on_option_controller_button_style_changed(&mut self) {
         let s = self.get_option_controller_button_style_string();
-        self.pending_events
-            .push(CoreEvent { name: "OptionControllerButtonStyleChanged", args: vec![EventArg::Str(s)] });
+        self.pending_events.push(CoreEvent {
+            name: "OptionControllerButtonStyleChanged",
+            args: vec![EventArg::Str(s)],
+        });
     }
 
     /// `ControllerButtonStyle.fromOptionCode(...).getLabel()`.
@@ -2451,12 +2753,18 @@ impl Core {
 
     pub fn on_option_gamepad_binding_preset_changed(&mut self) {
         let s = self.get_option_gamepad_binding_preset();
-        self.pending_events.push(CoreEvent { name: "OptionGamepadBindingPresetChanged", args: vec![EventArg::Str(s)] });
+        self.pending_events.push(CoreEvent {
+            name: "OptionGamepadBindingPresetChanged",
+            args: vec![EventArg::Str(s)],
+        });
     }
 
     pub fn get_option_single_context_menu(&self, player: i32) -> Option<bool> {
         let a = self.opt("singleContextMenu").as_array();
-        usize::try_from(player).ok().filter(|&i| i < a.size()).map(|i| a.get_element(i).get_bool())
+        usize::try_from(player)
+            .ok()
+            .filter(|&i| i < a.size())
+            .map(|i| a.get_element(i).get_bool())
     }
 
     pub fn set_option_single_context_menu(&mut self, player: i32, b: bool) -> Option<()> {
@@ -2492,7 +2800,10 @@ impl Core {
     /// `ResetLua(activeMods, reason)`: queued for the engine, which tears
     /// down and re-creates the Lua state ([`CoreRequest::ResetLua`]).
     pub fn reset_lua(&mut self, active_mods: &str, reason: &str) {
-        self.pending_requests.push(CoreRequest::ResetLua { active_mods: active_mods.into(), reason: reason.into() });
+        self.pending_requests.push(CoreRequest::ResetLua {
+            active_mods: active_mods.into(),
+            reason: reason.into(),
+        });
     }
 
     pub fn delay_reset_lua(&mut self, active_mods: &str, reason: &str) {
@@ -2606,8 +2917,11 @@ impl Core {
 
     /// `setValueVarArgs(c.r, c.g, c.b)` (floats widened to double).
     fn set_color_option(&mut self, name: &str, c: &ColorInfo) {
-        let args =
-            [ConfigObject::Double(c.r as f64), ConfigObject::Double(c.g as f64), ConfigObject::Double(c.b as f64)];
+        let args = [
+            ConfigObject::Double(c.r as f64),
+            ConfigObject::Double(c.g as f64),
+            ConfigObject::Double(c.b as f64),
+        ];
         self.opt_mut(name).as_array_mut().set_value_var_args(&args);
     }
 
@@ -2799,7 +3113,11 @@ impl Core {
     /// `debugOutputMissingSpawn(directory, category)`: dev tool listing
     /// script items that no distribution spawns (paths relative to the CWD,
     /// as in Java).
-    pub fn debug_output_missing_spawn(&self, directory: &str, category: &str) -> std::io::Result<String> {
+    pub fn debug_output_missing_spawn(
+        &self,
+        directory: &str,
+        category: &str,
+    ) -> std::io::Result<String> {
         let mut sb = format!("{category} items that don't spawn:\r\n");
         let script_folder = Path::new(directory);
         if !script_folder.is_dir() {
@@ -2943,7 +3261,9 @@ impl Core {
             }
             let guids: Vec<String> = {
                 let a = self.opt("controller").as_array();
-                (0..a.size()).map(|i| java_trim(&a.get_element(i).get_value_as_string()).to_string()).collect()
+                (0..a.size())
+                    .map(|i| java_trim(&a.get_element(i).get_value_as_string()).to_string())
+                    .collect()
             };
             for guid in guids {
                 if guid.is_empty() {
@@ -2951,7 +3271,8 @@ impl Core {
                 }
                 self.set_controller_active(&guid, true);
             }
-            self.moving_object_update_scheduler_enabled = self.opt("tieredZombieUpdates").get_bool();
+            self.moving_object_update_scheduler_enabled =
+                self.opt("tieredZombieUpdates").get_bool();
             let code_font = self.get_option_code_font_size();
             self.set_option_code_font_size(Some(&code_font));
         }
@@ -3018,7 +3339,9 @@ impl Core {
 
     /// `handleNewSaveFolderFormat()`: move pre-41 saves into `Saves/`.
     fn handle_new_save_folder_format(&mut self) {
-        let Some(cache) = self.cache_dir.clone() else { return };
+        let Some(cache) = self.cache_dir.clone() else {
+            return;
+        };
         let save_dir = cache.join("Saves");
         let _ = std::fs::create_dir(&save_dir);
         for mode in [
@@ -3049,7 +3372,9 @@ impl Core {
     /// is configured.
     pub fn save_options(&mut self) -> std::io::Result<()> {
         // TODO(server): ZipBackup.waitFinish() on dedicated servers.
-        let Some(path) = self.options_path() else { return Ok(()) };
+        let Some(path) = self.options_path() else {
+            return Ok(());
+        };
         self.add_fake_options_for_writing();
         let mut config_file = ConfigFile::new();
         config_file.set_version_string("version");
@@ -3057,7 +3382,8 @@ impl Core {
         let mut options: Vec<&ConfigOption> = self.options.iter().collect();
         if !cfg!(target_os = "macos") {
             options.retain(|o| {
-                o.name() != "macosIgnoreMouseWheelAcceleration" && o.name() != "macosMapHorizontalMouseWheelToVertical"
+                o.name() != "macosIgnoreMouseWheelAcceleration"
+                    && o.name() != "macosMapHorizontalMouseWheelToVertical"
             });
         }
         options.extend(self.fake_options.iter());
@@ -3137,7 +3463,10 @@ fn copy_paste_folders(src: &Path, dst: &Path) {
 }
 
 fn sorted_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)?.flatten().map(|e| e.path()).collect();
+    let mut v: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
     v.sort();
     Ok(v)
 }
@@ -3148,9 +3477,14 @@ fn clothing_spawn_strings(folder: &Path) -> std::io::Result<Vec<String>> {
     let mut meh = 500;
     for file in sorted_files(folder)? {
         let mut is_distribution = false;
-        let Ok(bytes) = std::fs::read(&file) else { continue };
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
         let text = String::from_utf8_lossy(&bytes);
-        let file_name = file.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let file_name = file
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
         for line in java_lines(&text) {
             if !is_distribution {
                 meh -= 1;
@@ -3179,14 +3513,18 @@ fn clothing_spawn_strings(folder: &Path) -> std::io::Result<Vec<String>> {
 fn clothing_strings(folder: &Path) -> std::io::Result<Vec<String>> {
     let mut out = Vec::new();
     for file in sorted_files(folder)? {
-        let Ok(bytes) = std::fs::read(&file) else { continue };
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
         let text = String::from_utf8_lossy(&bytes);
         for line in java_lines(&text) {
             let t = java_trim(line);
             if !t.starts_with("item") {
                 continue;
             }
-            let Some(n) = t.split("item ").nth(1) else { continue };
+            let Some(n) = t.split("item ").nth(1) else {
+                continue;
+            };
             let starts = [
                 "Wound",
                 "Bandage",

@@ -1,7 +1,9 @@
-//! Symbolic evaluation of a class's static initializer (`<clinit>`): which
-//! value each `putstatic` stores, as an expression over constants, other
-//! static fields, static calls and constructor calls. Straight-line code
-//! only; anything the evaluator does not model becomes [`Value::Unknown`].
+//! Symbolic evaluation of straight-line method bodies, such as a class's
+//! static initializer (`<clinit>`) or a static `init()` that registers
+//! built-in data: which value each `putstatic`/`putfield` stores and which
+//! calls run for their effect, as expressions over constants, other static
+//! fields, static calls and constructor calls. Anything the evaluator does
+//! not model (locals, branches, arithmetic) becomes [`Value::Unknown`].
 
 use crate::class::ClassFile;
 use crate::{Error, Result};
@@ -47,6 +49,18 @@ pub struct StaticInit {
     pub class: String,
     pub field: String,
     pub value: Value,
+}
+
+/// One effect of an evaluated method body, in execution order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Effect {
+    /// `putstatic class.field = value`.
+    PutStatic(StaticInit),
+    /// `putfield object.field = value` (`class` is the field's owner).
+    PutField { object: Value, class: String, field: String, value: Value },
+    /// A call whose result is unused: a `void` call, or one whose result is
+    /// popped. Always a [`Value::Call`].
+    Call(Value),
 }
 
 /// Number of argument slots in a method descriptor, and whether it returns
@@ -105,8 +119,36 @@ fn insn_len(code: &[u8], pc: usize) -> Result<usize> {
 
 /// Evaluates `class`'s `<clinit>`; empty if it has none.
 pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
-    let Some(code) = class.method("<clinit>").and_then(|m| m.code.as_ref()) else {
-        return Ok(Vec::new());
+    Ok(method_effects(class, "<clinit>")?
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::PutStatic(i) => Some(i),
+            _ => None,
+        })
+        .collect())
+}
+
+/// Evaluates the body of `class`'s first method named `method`; empty if
+/// it has no such method or the method has no code.
+pub fn method_effects(class: &ClassFile, method: &str) -> Result<Vec<Effect>> {
+    Ok(eval(class, method, None)?.0)
+}
+
+/// The value the static method `method` of `class` returns when called
+/// with the (reference or int) arguments `args`, for factory helpers such
+/// as `static K key(String id) { return new K(id, Type.X); }`; `None` if it
+/// has no such method or returns before the evaluator reaches an
+/// `areturn`.
+pub fn method_return(class: &ClassFile, method: &str, args: &[Value]) -> Result<Option<Value>> {
+    Ok(eval(class, method, Some(args))?.1)
+}
+
+/// The evaluator. With `params`, local loads of parameter slots push the
+/// arguments and the first `areturn` ends the evaluation with its value;
+/// without, both clear the stack like any unmodelled instruction.
+fn eval(class: &ClassFile, method: &str, params: Option<&[Value]>) -> Result<(Vec<Effect>, Option<Value>)> {
+    let Some(code) = class.method(method).and_then(|m| m.code.as_ref()) else {
+        return Ok((Vec::new(), None));
     };
     let u16_at = |pc: usize| -> Result<u16> {
         code.get(pc..pc + 2).map(|s| u16::from_be_bytes([s[0], s[1]])).ok_or(Error::Truncated)
@@ -115,9 +157,19 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
     let mut stack: Vec<Value> = Vec::new();
     let pop = |stack: &mut Vec<Value>| stack.pop().unwrap_or(Value::Unknown);
     let mut pc = 0;
+    let mut ret = None;
     while pc < code.len() {
         let op = code[pc];
+        let param = |slot: usize| params.map(|p| p.get(slot).cloned().unwrap_or(Value::Unknown));
         match op {
+            // iload/aload n, iload_0..3, aload_0..3 of a parameter.
+            0x15 | 0x19 if params.is_some() => stack.push(param(code[pc + 1] as usize).unwrap()),
+            0x1a..=0x1d if params.is_some() => stack.push(param((op - 0x1a) as usize).unwrap()),
+            0x2a..=0x2d if params.is_some() => stack.push(param((op - 0x2a) as usize).unwrap()),
+            0xac | 0xb0 if params.is_some() => {
+                ret = Some(pop(&mut stack));
+                break;
+            }
             0x01 => stack.push(Value::Null),
             0x02..=0x08 => stack.push(Value::Int(op as i64 - 3)),
             0x09 | 0x0a => stack.push(Value::Int(op as i64 - 9)),
@@ -137,7 +189,9 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
                 });
             }
             0x57 => {
-                pop(&mut stack);
+                if let call @ Value::Call { .. } = pop(&mut stack) {
+                    out.push(Effect::Call(call));
+                }
             }
             0x59 => {
                 let top = stack.last().cloned().unwrap_or(Value::Unknown);
@@ -154,7 +208,13 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
             0xb3 => {
                 let r = class.member_ref(u16_at(pc + 1)?)?;
                 let value = pop(&mut stack);
-                out.push(StaticInit { class: r.class, field: r.name, value });
+                out.push(Effect::PutStatic(StaticInit { class: r.class, field: r.name, value }));
+            }
+            0xb5 => {
+                let r = class.member_ref(u16_at(pc + 1)?)?;
+                let value = pop(&mut stack);
+                let object = pop(&mut stack);
+                out.push(Effect::PutField { object, class: r.class, field: r.name, value });
             }
             0xb6..=0xb9 => {
                 let r = class.member_ref(u16_at(pc + 1)?)?;
@@ -172,8 +232,11 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
                     if op != 0xb8 {
                         args.insert(0, pop(&mut stack));
                     }
+                    let call = Value::Call { class: r.class, name: r.name, descriptor: r.descriptor, args };
                     if returns {
-                        stack.push(Value::Call { class: r.class, name: r.name, descriptor: r.descriptor, args });
+                        stack.push(call);
+                    } else {
+                        out.push(Effect::Call(call));
                     }
                 }
             }
@@ -202,7 +265,7 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
         }
         pc += insn_len(code, pc)?;
     }
-    Ok(out)
+    Ok((out, ret))
 }
 
 #[cfg(test)]
