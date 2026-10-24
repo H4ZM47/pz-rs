@@ -76,6 +76,7 @@ pub mod polygonal_map2;
 pub mod pool;
 pub mod request;
 pub mod square;
+pub mod square_bits;
 pub mod util;
 pub mod vgastar;
 pub mod visibility;

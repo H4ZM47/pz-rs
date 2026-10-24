@@ -6,3 +6,8 @@ description = "Port of Project Zomboid's native pathfinder (libPZPathFind, the C
 
 [dependencies]
 pz-clipper6.workspace = true
+pz-world.workspace = true
+
+[dev-dependencies]
+pz-fs.workspace = true
+pz-classfile.workspace = true
