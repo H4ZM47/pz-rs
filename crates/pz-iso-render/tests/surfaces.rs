@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use pz_iso_render::cutaways::GridWorld;
+use pz_iso_render::puddles::{PuddleSquare, PuddlesGeometry};
 use pz_iso_render::water::{WaterGeometry, WaterInit};
 use pz_iso_render::weather::{ClimateInputs, PuddlesState, SkyReflection, SurfaceSettings, SurfaceTextures, Surfaces, WaterState};
 use pz_iso_render::{Camera, ChunkRenderer, ChunkTexture, DepthMaps, DepthPreset, ObjectKind, RenderObject, RenderSquare, SpriteFlags, SpriteInfo};
@@ -31,6 +32,10 @@ impl SurfaceTextures for Textures {
     fn texture(&self, name: &str) -> Option<Texture> {
         self.0.get(name).cloned()
     }
+}
+
+fn solid(tm: &mut TextureManager, name: &str, w: i32, h: i32, rgba: [u8; 4]) -> Texture {
+    tm.texture_from_pixels(name, w, h, rgba.repeat((w * h) as usize), flags::FILTER_MIN_NEAREST | flags::FILTER_MAG_NEAREST)
 }
 
 /// A floor tile: a diamond in the bottom 64 rows of a 128x256 frame.
@@ -92,8 +97,12 @@ fn draw(gpu: &mut pz_gpu::Gpu, tm: &mut TextureManager, r: &ChunkRenderer<'_>, w
     r.composite(&[tex], W, H, &mut cmds);
     let squares: Vec<&RenderSquare> = level.iter().flatten().copied().collect();
     let s = r.surfaces.as_ref().expect("surfaces");
+    if s.settings.puddles_quality < 2 {
+        pz_iso_render::puddles::render_puddles(r, s, &squares, &mut cmds);
+    }
     pz_iso_render::water::render_water(r, s, &squares, &mut cmds);
     r.render_translucent_floors(&squares, 0, &mut cmds);
+    pz_iso_render::puddles::render_puddles_translucent_floors(r, s, &squares, 0, &mut cmds);
     pz_iso_render::water::render_water_shore(r, s, &squares, &mut cmds);
     r.render_translucent_objects(&squares, 0, &mut cmds);
     let list = pz_render::DrawList { cmds };
@@ -155,4 +164,78 @@ fn water_covers_the_water_tile_and_the_shore_fades_into_it() {
     let west = px(&p, 262, 192);
     assert!(east[1] > 170 && east[0] < 30, "{east:?}");
     assert!(west[0] > 100 && west[2] > 100, "{west:?}");
+}
+
+fn puddle_world(tm: &mut TextureManager) -> GridWorld {
+    let floor = floor_tex(tm, "floor", [200, 100, 50, 255]);
+    let road = ground("street", floor);
+    let mut world = GridWorld::default();
+    for y in 2..7 {
+        for x in 2..7 {
+            let mut sq = RenderSquare::new(x, y, 0);
+            sq.objects.push(RenderObject::new(ObjectKind::Plain, Some(road.clone())));
+            let p = PuddleSquare { exterior: true, puddles_dir: 8, ..Default::default() };
+            sq.puddles = Some(PuddlesGeometry::init(&p, 0, |_, _| Some(p)));
+            world.squares.insert((x, y, 0), sq);
+        }
+    }
+    world
+}
+
+fn wet() -> PuddlesState {
+    let mut p = PuddlesState::default();
+    p.wet_ground.set(1.0);
+    p.puddles_size.set(0.7);
+    p
+}
+
+/// Low-quality puddles go into the chunk texture: with a white height
+/// map the puddle is `mix(dark, reflection, 0.8)` at alpha 0.5 over the
+/// floor.
+#[test]
+fn low_quality_puddles_are_recorded_into_the_chunk_texture() {
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else { return };
+    let mut tm = TextureManager::new();
+    let world = puddle_world(&mut tm);
+    let hm = solid(&mut tm, "hm", 8, 8, [255, 255, 255, 255]);
+    let maps = Maps(depth_map(&mut tm));
+    let textures = Textures(HashMap::from([("media/textures/puddles_hm.png".to_string(), hm)]));
+    let settings = SurfaceSettings { puddles_quality: 2, ..Default::default() };
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, settings, ClimateInputs::default(), wet())));
+    let p = draw(&mut gpu, &mut tm, &r, &world);
+    let c = px(&p, 256, 160);
+    let want = [153, 103, 86];
+    assert!(c[..3].iter().zip(want).all(|(a, b)| (i32::from(*a) - b).abs() <= 2), "{c:?}");
+    // Dry ground: the floor alone.
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, settings, ClimateInputs::default(), PuddlesState::default())));
+    let p = draw(&mut gpu, &mut tm, &r, &world);
+    assert_eq!(px(&p, 256, 160), [200, 100, 50, 255]);
+}
+
+/// Medium-quality puddles are drawn per frame over the composited floor.
+#[test]
+fn puddles_are_drawn_per_frame_below_quality_two() {
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else { return };
+    let mut tm = TextureManager::new();
+    let world = puddle_world(&mut tm);
+    let maps = Maps(depth_map(&mut tm));
+    let textures = Textures(HashMap::new());
+    let settings = SurfaceSettings { puddles_quality: 1, ..Default::default() };
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, settings, ClimateInputs::default(), wet())));
+    let mut cmds = Vec::new();
+    let sq: Vec<&RenderSquare> = world.squares.values().collect();
+    pz_iso_render::puddles::render_puddles(&r, r.surfaces.as_ref().unwrap(), &sq, &mut cmds);
+    let Some(DrawCmd::Surface(d)) = cmds.first() else { panic!("no puddle draw") };
+    assert_eq!(d.program, pz_render::SurfaceProgram::PuddlesMq);
+    assert_eq!(d.quads.len(), 25);
+    let p = draw(&mut gpu, &mut tm, &r, &world);
+    // Wet ground darkens the whole floor.
+    let c = px(&p, 256, 160);
+    assert!(c != [200, 100, 50, 255] && c[0] < 200, "{c:?}");
+    // Snow anywhere stops puddles.
+    let snowy = ClimateInputs { snow_target: 50, ..Default::default() };
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, settings, snowy, wet())));
+    let mut cmds = Vec::new();
+    pz_iso_render::puddles::render_puddles(&r, r.surfaces.as_ref().unwrap(), &sq, &mut cmds);
+    assert!(cmds.is_empty());
 }

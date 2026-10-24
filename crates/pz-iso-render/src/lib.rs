@@ -21,6 +21,7 @@ pub mod frame;
 pub mod models;
 pub mod obscuring;
 pub mod occlusion;
+pub mod puddles;
 pub mod seam;
 pub mod sprite;
 pub mod texd;

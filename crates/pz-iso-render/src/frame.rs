@@ -97,18 +97,23 @@ pub fn world_frame_into(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkL
     }
     r.composite(&recorded, w, h, &mut out);
     let squares: Vec<&crate::world::RenderSquare> = chunks.iter().flat_map(|c| c.levels.iter().flat_map(|(_, l)| l.iter().flatten().copied())).collect();
-    // performRenderTiles after the composite: open water.
+    // performRenderTiles after the composite: puddles (quality 0 and 1),
+    // then open water.
     if let Some(s) = r.surfaces.as_ref() {
+        if s.settings.puddles_quality < 2 {
+            crate::puddles::render_puddles(r, s, &squares, &mut out);
+        }
         crate::water::render_water(r, s, &squares, &mut out);
     }
     // The per-level translucent passes, over every on-screen square
-    // (recorded this frame or not): translucent floors, shores (from level
-    // 0), then translucent objects.
+    // (recorded this frame or not): translucent floors, puddles on them,
+    // shores (from level 0), then translucent objects.
     if let (Some(lo), Some(hi)) = (squares.iter().map(|s| s.z).min(), squares.iter().map(|s| s.z).max()) {
         let (lo, hi) = if r.surfaces.is_some() { (lo.min(0), hi.max(0)) } else { (lo, hi) };
         for z in lo..=hi {
             r.render_translucent_floors(&squares, z, &mut out);
             if let Some(s) = r.surfaces.as_ref() {
+                crate::puddles::render_puddles_translucent_floors(r, s, &squares, z, &mut out);
                 if z == 0 {
                     crate::water::render_water_shore(r, s, &squares, &mut out);
                 }

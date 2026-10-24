@@ -264,6 +264,9 @@ pub struct RenderSquare {
     pub cut: SquareCutawayInfo,
     /// `getWater()`: the square's water geometry, if any.
     pub water: Option<crate::water::WaterGeometry>,
+    /// `getPuddles()`, initialised (`IsoPuddlesGeometry.init`); `None`
+    /// draws no puddles.
+    pub puddles: Option<crate::puddles::PuddlesGeometry>,
 }
 
 /// The neighbour tests `renderSeamFix2_Floor` and `renderSeamFix2_Wall`
@@ -354,7 +357,7 @@ impl Default for SquareCutawayInfo {
 
 impl RenderSquare {
     pub fn new(x: i32, y: i32, z: i32) -> Self {
-        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default(), water: None }
+        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default(), water: None, puddles: None }
     }
 
     /// `getProperties().has(flag)`: any object's sprite has it.

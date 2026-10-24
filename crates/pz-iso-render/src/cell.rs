@@ -15,8 +15,9 @@
 //! ([`crate::trees`]); floors and walls get `renderSeamFix2_*`
 //! ([`crate::seam`]).
 //!
-//! With [`crate::weather::Surfaces`], water floors follow the water rules
-//! ([`crate::water`]).
+//! With [`crate::weather::Surfaces`], low-quality puddles
+//! ([`crate::puddles`]) are recorded after the other objects, and water
+//! floors follow the water rules ([`crate::water`]).
 
 use pz_render::{gl, DrawCmd};
 
@@ -180,7 +181,7 @@ impl ChunkRenderer<'_> {
         out.push(DrawCmd::ChunkEnd);
     }
 
-    fn render_one_level(&self, tex: ChunkTexture, _level: i32, squares: &LevelSquares<'_>, out: &mut Vec<DrawCmd>) {
+    fn render_one_level(&self, tex: ChunkTexture, level: i32, squares: &LevelSquares<'_>, out: &mut Vec<DrawCmd>) {
         let mut solid_floor = Vec::new();
         let mut minus_floor = Vec::new();
         let cv = self.cutaways.as_ref();
@@ -223,6 +224,10 @@ impl ChunkRenderer<'_> {
                     }
                 }
             }
+        }
+        if let Some(s) = self.surfaces.as_ref().filter(|s| s.settings.puddles_quality == 2) {
+            let all: Vec<&RenderSquare> = squares.iter().flatten().copied().collect();
+            crate::puddles::render_puddles_to_chunk(self, s, tex, &all, level, ctx.out);
         }
     }
 
