@@ -197,6 +197,7 @@ dependencies = [
  "indexmap",
  "pz-core",
  "pz-fs",
+ "pz-inventory",
  "pz-kahlua",
  "pz-render",
  "pz-text",
