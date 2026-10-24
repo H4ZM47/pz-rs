@@ -13,6 +13,7 @@ pub mod erosion_data;
 pub mod fix2x;
 pub mod iso_lot;
 pub mod java;
+pub mod los;
 pub mod map_files;
 pub mod meta_grid;
 pub mod objects;
@@ -26,6 +27,7 @@ pub use chunk::{ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare};
 pub use defs::{BuildingDef, BuildingIdx, MetaObject, RoomDef, RoomIdx, RoomRect};
 pub use iso_lot::IsoLot;
 pub use java::GameRand;
+pub use los::TestResults;
 pub use map_files::{LotHeader, MapFiles, MapInfo};
 pub use meta_grid::{
     CreateParams, IsoMetaCell, IsoMetaChunk, IsoMetaGrid, WorldGenBounds, ZombieVoronoi,
@@ -35,6 +37,7 @@ pub use objects::{
 };
 pub use sprite::{IsoSpriteManager, SpriteTables};
 pub use square::{
-    ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks, SquareHooks,
+    ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks,
+    SpecialObject, SquareHooks, ThumpableInfo, VisionEnv, VisionResult,
 };
 pub use world_state::{PowerSettings, WorldState};
