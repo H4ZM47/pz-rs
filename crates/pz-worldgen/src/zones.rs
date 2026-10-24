@@ -36,6 +36,9 @@ pub struct WorldGenZones {
     pub max_x: i32,
     pub max_y: i32,
     zones: Vec<WorldGenZone>,
+    /// The `Basement` zones met on the way (`handleBasementSpawnLocation`),
+    /// with their lot directory, in registration order.
+    pub basement_spawns: Vec<(String, crate::basements::BasementSpawnLocation)>,
     cells: HashMap<(i32, i32), Vec<usize>>,
 }
 
@@ -74,13 +77,13 @@ impl WorldGenZones {
                 continue;
             };
             if p.exists() {
-                self.load_objects(&p)?;
+                self.load_objects(&p, dir)?;
             }
         }
         Ok(())
     }
 
-    fn load_objects(&mut self, path: &Path) -> Result<(), String> {
+    fn load_objects(&mut self, path: &Path, dir: &str) -> Result<(), String> {
         let Some(objects) = crate::lua::load_data_table(path, "objects")? else {
             return Ok(());
         };
@@ -89,7 +92,15 @@ impl WorldGenZones {
             let v = objects.get_int(i);
             let Some(t) = v.as_table() else { break };
             i += 1;
-            if t.get_str("type").as_str() != Some("WorldGen") || !t.get_str("geometry").is_nil() {
+            let ty = t.get_str("type");
+            if ty.as_str() == Some("Basement") {
+                self.basement_spawns.push((
+                    dir.to_string(),
+                    crate::basements::spawn_location_from_zone(t),
+                ));
+                continue;
+            }
+            if ty.as_str() != Some("WorldGen") || !t.get_str("geometry").is_nil() {
                 continue;
             }
             let num = |k: &str| t.get_str(k).as_num().unwrap_or(0.0) as i32;

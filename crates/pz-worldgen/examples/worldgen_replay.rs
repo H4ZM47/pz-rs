@@ -18,7 +18,10 @@
 //! `pz_world::chunk::load_brand_new_cached` with [`WorldGenHook`], runs
 //! `recalc_chunk_squares` and `load_in_main_thread`, and compares each
 //! square's object list (class and sprite name, in order) with the
-//! oracle's `objects` column.
+//! oracle's `objects` column. It also counts squares that are in a room on
+//! one side only (`REPLAY_ROOMS=1` prints the first ones), and compares the
+//! basement placements with the oracle's `out/placements.txt` when present.
+//! `REPLAY_NO_WORLDGEN=1` / `REPLAY_NO_BASEMENTS=1` leave either part out.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -49,8 +52,8 @@ fn region_chunks(path: &Path) -> Vec<(i32, i32)> {
     out
 }
 
-/// `(x, y, z) -> (null, objects)` from `squares.tsv`.
-fn oracle_objects(path: &Path) -> HashMap<(i32, i32, i32), (bool, String)> {
+/// `(x, y, z) -> (null, objects, in a room)` from `squares.tsv`.
+fn oracle_objects(path: &Path) -> HashMap<(i32, i32, i32), (bool, String, bool)> {
     let text = std::fs::read_to_string(path).expect("squares.tsv");
     let mut out = HashMap::new();
     for line in text.lines().filter(|l| !l.starts_with('#')) {
@@ -62,7 +65,11 @@ fn oracle_objects(path: &Path) -> HashMap<(i32, i32, i32), (bool, String)> {
         );
         out.insert(
             key,
-            (c[8] == "1", c.get(20).copied().unwrap_or("").to_string()),
+            (
+                c[8] == "1",
+                c.get(20).copied().unwrap_or("").to_string(),
+                c.get(14).is_some_and(|r| *r != "-1" && !r.is_empty()),
+            ),
         );
     }
     out
@@ -143,7 +150,48 @@ fn main() {
         gen.veins.configs.len(),
         gen.road_generators.len()
     );
+    // `Rand` during world loading is not modelled here; the header loads'
+    // draws only matter to code that runs before the per-chunk reseeding.
+    let basements = pz_worldgen::load_basements(
+        fs.clone(),
+        &["Muldraugh, KY"],
+        &meta,
+        &gen,
+        &mut JavaRandom::new(0),
+    )
+    .expect("basements");
+    for e in basements.errors.iter().take(10) {
+        eprintln!("basements: {e}");
+    }
+    let ours: Vec<String> = basements
+        .placements
+        .iter()
+        .map(|p| format!("{} {} {} {} {} {}", p.name, p.x, p.y, p.z, p.w, p.h))
+        .collect();
+    if let Ok(text) = std::fs::read_to_string(oracle.join("out/placements.txt")) {
+        let game: Vec<&str> = text.lines().collect();
+        let same = game
+            .iter()
+            .zip(&ours)
+            .filter(|(g, o)| **g == o.as_str())
+            .count();
+        println!(
+            "== basement placements: game {}, port {}, identical in order {same}",
+            game.len(),
+            ours.len()
+        );
+        if let Some(i) = game.iter().zip(&ours).position(|(g, o)| *g != o.as_str()) {
+            println!(
+                "  first difference at {i}: game {} port {}",
+                game[i], ours[i]
+            );
+        }
+    }
     let mut hook = WorldGenHook::new(gen);
+    // `REPLAY_NO_BASEMENTS=1`: leave procedural basements out.
+    hook.basements = std::env::var_os("REPLAY_NO_BASEMENTS")
+        .is_none()
+        .then_some(basements);
     // `REPLAY_NO_WORLDGEN=1`: the lotpacks alone, to see what generation changes.
     hook.do_worldgen = std::env::var_os("REPLAY_NO_WORLDGEN").is_none();
     let fix2x = Fix2xTable::default();
@@ -200,13 +248,13 @@ fn main() {
         for &(wx, wy) in &order {
             cell.load_in_main_thread(wx, wy, &meta, &sprites);
         }
-        let (mut n, mut same, mut null_vs_empty) = (0, 0, 0);
+        let (mut n, mut same, mut null_vs_empty, mut room_diff) = (0, 0, 0, 0);
         let mut causes: BTreeMap<String, usize> = BTreeMap::new();
         let mut examples: Vec<String> = Vec::new();
         let mut keys: Vec<_> = game_sq.keys().copied().collect();
         keys.sort_by_key(|k| (k.2, k.1, k.0));
         for k in keys {
-            let (g_null, g_obj) = &game_sq[&k];
+            let (g_null, g_obj, g_room) = &game_sq[&k];
             n += 1;
             let ours = cell.get_grid_square(k.0, k.1, k.2);
             let p_obj = ours.map(|sq| {
@@ -223,6 +271,15 @@ fn main() {
                     .join(";")
             });
             let p_null = ours.is_none();
+            if *g_room != ours.is_some_and(|sq| sq.room_id != -1) {
+                room_diff += 1;
+                if std::env::var_os("REPLAY_ROOMS").is_some() && room_diff <= 5 {
+                    println!(
+                        "  room differs at {k:?}: game {g_room} port {:?}",
+                        ours.map(|sq| sq.room_id)
+                    );
+                }
+            }
             let p_obj = p_obj.unwrap_or_default();
             if *g_obj == p_obj {
                 same += 1;
@@ -249,7 +306,7 @@ fn main() {
             }
         }
         println!(
-            "== {region}: squares {n}, object lists identical {same} ({null_vs_empty} null on one side, empty on the other), differ {}",
+            "== {region}: squares {n}, object lists identical {same} ({null_vs_empty} null on one side, empty on the other), differ {}; in a room on one side only {room_diff}",
             n - same
         );
         for (c, k) in &causes {

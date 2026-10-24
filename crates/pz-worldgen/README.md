@@ -42,9 +42,40 @@ Blending and attachments (`Blending.applyBlending`,
 `AttachmentsHandler.applyAttachments`) are not part of loading: they run
 later from `IsoChunk.update()`. This crate sets the chunk flags they read
 but does not port them. Generated procedural chunks get the `WORLDGEN`
-generation status, as in the original. Foraging zones (`ZoneGenerator.genForaging`) and
-basements (`Basements.onNewChunkLoaded`, `WorldGenHook::on_new_chunk_loaded`
-is a no-op) are not ported either.
+generation status, as in the original. Foraging zones
+(`ZoneGenerator.genForaging`) are not ported.
+
+## Procedural basements
+
+`WorldGenHook::on_new_chunk_loaded` runs `Basements.onNewChunkLoaded`
+(module `basements`, `.pzby` reader in `pzby`). `load_basements` does the
+new-world part of `Basements.beforeLoadMetaGrid`: the definitions and spawn
+locations of each map's `basements.lua` (through a recorded
+`Basements.getAPIv1()`), the `Basement` zones of `objects.lua`, the
+`.pzby` headers of `media/binmap` and `media/basement_access`, and the
+placements (`calculateBasementPlacements`: per spawn location, a random
+fitting definition from a `Random(worldSeed)`, the overlap test with its
+original quirk that any intersecting bounds overlap, and the location's
+access piece). When a chunk is loaded, every placement within one square
+of it is stamped in (`SpawnBasementInChunk` / `addToIsoChunk`: new squares
+below ground, the keep-floors/walls/other attribute bits, tile creation,
+the floor removed over the new stairs); header loads draw `Rand.Next(2)`
+per room like the original.
+
+Not ported: `map_basements.bin` (saving and reloading placements), and
+adding the basements' buildings and rooms to the meta grid
+(`createBasementBuildingDefs`, `addBasementBuildingDefsToLotHeaders` with
+merging into an adjacent building, `addBasementBuildingDefsToMetaGrid`).
+Squares below ground therefore have no room (`room_id` -1) and no
+`IsoBuilding` is created for them. That needs `pz_world::IsoMetaGrid` to
+let another crate add a building to a cell: a public
+`get_cell_data_mut`, or better an `add_building(cell_x, cell_y, rooms,
+emptyoutside)` that assigns `RoomID`/`BuildingID`/meta ids the way
+`mergeRoomsOntoMetaCell` does, adds the rooms to the cell's meta chunks
+(`IsoMetaCell.addRooms`, the private `add_room_to_cell`) and to adjacent
+cells, and pushes the building to `buildings`; plus, for merging,
+`getBuildingsIntersecting`, `BuildingDef.isAdjacent`/`addRoomsOf` and
+removing a building from a cell with `recalculateBuildingAndRoomIDs`.
 
 ## Runtime data
 
@@ -101,7 +132,13 @@ sprite name, in order) with a local dump of the game's own
 | proc_highway | static module (prefab highway) | 2,304 | 2,304 |
 | proc_road | prefab road, dirt roads, map edge | 3,072 | 3,072 |
 | proc_vein | iron/copper vein (62 ore squares) | 2,304 | 2,304 |
+| bsm_a … bsm_g | 7 town areas with 24 placed basements and 13 access pieces (exterior, interior and house types) | 36,672 | 36,672 |
 
-All 130,560 squares match. Without world generation (lotpacks only) 7,025
-of the first five regions' 101,056 squares differ. None of the dumped
-regions overlaps one of the 785 procedural basement placements.
+All 167,232 squares match. Without world generation (lotpacks only) 7,025
+of the first five regions' 101,056 squares differ; without basements 1,109
+of the bsm regions' squares differ. All 785 basement placements match the
+game's in order. Every vanilla basement is one level deep (z = -1), so
+deeper levels are not exercised. Rooms differ as described above: 926
+basement squares are in a room in the game and in none here. (2,303
+westpoint squares also differ in room, on both oracles and unrelated to
+basements: a `pz-world` room-assignment gap, e.g. 11880,6912,0.)

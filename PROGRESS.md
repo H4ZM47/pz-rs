@@ -18,9 +18,10 @@ Status of the Rust port. Update this file with every merged change.
   for brand-new chunks (map biomes from the biome-map images, procedural
   biomes, roads, ore veins, static modules, map `WorldGen` zones), plugged
   into `pz_world::chunk::load_brand_new` as a `BrandNewHook`. Object lists
-  match the game on all 130,560 squares of 17 regions, checked locally.
-  Blending/attachments (chunk update), foraging zones and procedural
-  basements are not ported.
+  match the game on all 167,232 squares of 24 regions, checked locally,
+  including procedural basements (placements, `.pzby` stamping) on 7 regions.
+  Blending/attachments (chunk update) and foraging zones are not ported;
+  basement rooms are not yet added to the meta grid (needs a pz-world API).
 
 - World/maps (`pz-world`): lot headers, lotpacks, `MapFiles`, meta grid
   rooms/buildings, `.tiles` reader, `Fix2x`, and chunk loading through

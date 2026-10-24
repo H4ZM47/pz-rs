@@ -23,6 +23,7 @@
 //! `WorldGenOverride.lua`, and constants of `projectzomboid.jar` (simplex
 //! tables, road points, sandbox defaults).
 
+pub mod basements;
 pub mod biome_map;
 pub mod defs;
 pub mod gen;
@@ -30,6 +31,7 @@ pub mod jar_consts;
 pub mod java;
 pub mod lua;
 pub mod params;
+pub mod pzby;
 pub mod roads;
 pub mod simplex;
 pub mod veins;
@@ -143,12 +145,34 @@ pub fn load(setup: &WorldGenSetup<'_>) -> Result<WorldGen, String> {
     ))
 }
 
-/// The world-generation side of `IsoChunk.LoadBrandNew`.
-///
-/// `on_new_chunk_loaded` (`Basements.onNewChunkLoaded`) is not ported yet
-/// and does nothing.
+/// `Basements.beforeLoadMetaGrid` for a new world (no `map_basements.bin`):
+/// the definitions of each lot directory's `basements.lua`, the `Basement`
+/// zones `load` found in `objects.lua`, their `.pzby` headers and the
+/// placements. `rand` is `Rand` at that point of world loading (each
+/// header room draws from it).
+pub fn load_basements(
+    fs: Rc<GameFs>,
+    lot_dirs: &[&str],
+    meta: &IsoMetaGrid,
+    gen: &WorldGen,
+    rand: &mut dyn pz_world::GameRand,
+) -> Result<basements::Basements, String> {
+    let mut b = basements::Basements::new(fs);
+    b.load_lua(lot_dirs)?;
+    for (dir, loc) in &gen.zones.basement_spawns {
+        b.register_spawn_location(dir, loc.clone());
+    }
+    b.load_headers(rand);
+    b.calculate_placements(meta, gen.params.seed());
+    Ok(b)
+}
+
+/// The world-generation side of `IsoChunk.LoadBrandNew`: world generation
+/// and procedural basements.
 pub struct WorldGenHook {
     pub gen: WorldGen,
+    /// `None` leaves new chunks without procedural basements.
+    pub basements: Option<basements::Basements>,
     /// `IsoChunk.doWorldgen`.
     pub do_worldgen: bool,
 }
@@ -157,6 +181,7 @@ impl WorldGenHook {
     pub fn new(gen: WorldGen) -> Self {
         WorldGenHook {
             gen,
+            basements: None,
             do_worldgen: true,
         }
     }
@@ -180,10 +205,13 @@ impl BrandNewHook for WorldGenHook {
 
     fn on_new_chunk_loaded(
         &mut self,
-        _chunk: &mut IsoChunk,
-        _meta: &IsoMetaGrid,
-        _env: &mut ChunkLoadEnv<'_>,
+        chunk: &mut IsoChunk,
+        meta: &IsoMetaGrid,
+        env: &mut ChunkLoadEnv<'_>,
     ) {
+        if let Some(b) = self.basements.as_mut() {
+            b.on_new_chunk_loaded(chunk, meta, env);
+        }
     }
 
     fn do_worldgen(&self) -> bool {
