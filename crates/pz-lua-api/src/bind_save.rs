@@ -8,13 +8,15 @@
 //! when missing, as `getSaveDir` does), then `<mode>/<world>`. The file
 //! reads live in [`crate::savefile`].
 //!
-//! Not ported: `deleteSave`, `renameSavefile`, `manipulateSavefile`,
-//! `setSavefilePlayer1` (they write to save folders).
+//! The menu's save-folder changes are here too: `deleteSave`,
+//! `deleteDatabase`, `deleteAllGameModeSaves`, `renameSavefile`,
+//! `manipulateSavefile` and `setSavefilePlayer1` (the `players.db` change
+//! is in [`crate::player_db`]).
 
 use crate::bind_core::shared_core;
 use crate::bind_java_util::list_value;
 use crate::bind_render::{texture_value, textures};
-use crate::expose::{expose_class, global, str_arg, with_this};
+use crate::expose::{expose_class, global, int_arg, str_arg, with_this};
 use crate::savefile;
 use crate::LuaManager;
 use pz_fs::jfile::{self, SEP};
@@ -594,6 +596,99 @@ pub fn register(mgr: &mut LuaManager) {
     });
 
     fs_global(mgr, "getMapInfo", map_info);
+
+    register_save_changes(mgr);
+}
+
+fn null_pointer() -> LuaError {
+    java_error("null", "java.lang.NullPointerException")
+}
+
+fn register_save_changes(mgr: &mut LuaManager) {
+    fs_global(mgr, "deleteSave", |c, fs| {
+        let folder = string_arg(c, 0);
+        if !has_relative_path(&folder) {
+            savefile::delete_save(&save_dir(fs), &folder, &has_relative_path);
+        }
+        Ok(Value::Nil)
+    });
+
+    fs_global(mgr, "deleteDatabase", |c, fs| {
+        let Some(folder) = str_arg(c, 0) else {
+            return Err(null_pointer());
+        };
+        if !has_relative_path(&folder) {
+            let cache = fs.borrow().cache_dir().to_string_lossy().into_owned();
+            savefile::delete_database(&cache, &folder);
+        }
+        Ok(Value::Nil)
+    });
+
+    fs_global(mgr, "deleteAllGameModeSaves", |c, fs| {
+        let core = shared_core();
+        let old = core.borrow().game_mode.clone();
+        // A null mode becomes "Sandbox" in getGameModeCacheDir.
+        let mode = str_arg(c, 0).map_or_else(|| "Sandbox".to_string(), |s| s.to_string());
+        core.borrow_mut().set_game_mode(&mode);
+        let path = format!("{}{SEP}{mode}", save_dir(fs));
+        if savefile::exists(&path) {
+            if let Err(e) = savefile::delete_tree(&path) {
+                eprintln!("ERROR: General: {e}");
+            }
+        }
+        core.borrow_mut().set_game_mode(&old);
+        Ok(Value::Nil)
+    });
+
+    fs_global(mgr, "renameSavefile", |c, fs| {
+        let (mode, old, new) = (str_arg(c, 0), str_arg(c, 1), str_arg(c, 2));
+        Ok(savefile::rename_savefile(
+            &save_dir(fs),
+            mode.as_deref(),
+            old.as_deref(),
+            new.as_deref(),
+        )
+        .into())
+    });
+
+    fs_global(mgr, "manipulateSavefile", |c, fs| {
+        let Some(folder) = str_arg(c, 0) else {
+            return Ok(Value::Nil);
+        };
+        if pz_fs::java::is_null_or_whitespace(&folder) || has_relative_path(&folder) {
+            return Ok(Value::Nil);
+        }
+        let dir = format!("{}{SEP}{folder}", save_dir(fs));
+        if !savefile::exists(&dir) || !savefile::is_directory(&dir) {
+            return Ok(Value::Nil);
+        }
+        let Some(action) = str_arg(c, 1) else {
+            return Err(null_pointer());
+        };
+        match savefile::manipulate_savefile(&dir, &action) {
+            Err(msg) => Err(java_error(msg, "java.lang.IllegalArgumentException")),
+            Ok(true) => Ok(Value::Nil),
+            Ok(false) => {
+                // WriteModsDotTxt
+                let mods = savefile::active_mods_by_id("currentGame");
+                savefile::write_active_mods(is_no_save(), &format!("{dir}{SEP}mods.txt"), &mods);
+                Ok(Value::Nil)
+            }
+        }
+    });
+
+    fs_global(mgr, "setSavefilePlayer1", |c, fs| {
+        let path = format!(
+            "{}{SEP}{}{SEP}{}",
+            save_dir(fs),
+            string_arg(c, 0),
+            string_arg(c, 1)
+        );
+        if let Err(e) = crate::player_db::set_player1(is_no_save(), &path, int_arg(c, 2)) {
+            eprintln!("ERROR: {path}: {e}");
+        }
+        Ok(Value::Nil)
+    });
 }
 
 #[cfg(test)]

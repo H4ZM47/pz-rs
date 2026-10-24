@@ -1455,6 +1455,7 @@ dependencies = [
  "pz-sqlite",
  "pz-text",
  "pz-ui",
+ "regex",
 ]
 
 [[package]]

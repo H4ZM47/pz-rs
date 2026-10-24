@@ -12,6 +12,7 @@ indexmap.workspace = true
 pz-text.workspace = true
 pz-ui.workspace = true
 pz-sqlite.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 pz-sqlite = { workspace = true, features = ["writer"] }
