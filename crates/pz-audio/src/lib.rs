@@ -7,7 +7,9 @@
 //! bank) and decodes their Vorbis samples without any FMOD code.
 
 pub mod fsb5;
+pub mod reader;
 pub mod riff;
+pub mod strings;
 pub mod vorbis;
 pub mod vorbis_setup;
 
@@ -47,6 +49,16 @@ impl BankFile {
             fsb_range,
             fsb,
         })
+    }
+
+    /// Payload of the first chunk (or list) with this id.
+    pub fn chunk(&self, id: &[u8; 4]) -> Option<&[u8]> {
+        self.root.find(id).map(|c| &self.map[c.body.clone()])
+    }
+
+    /// The string table, for `*.strings.bank` files.
+    pub fn strings(&self) -> Option<strings::StringTable> {
+        strings::StringTable::parse(self.chunk(b"STDT")?).ok()
     }
 
     pub fn bytes(&self) -> &[u8] {
