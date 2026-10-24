@@ -6,6 +6,7 @@
 //! list text is recorded into with [`install`]; until then the globals
 //! behave as with empty tables (keys come back unchanged, sizes are 0).
 
+use crate::bind_java_util::{list_value, JavaList, JavaMap};
 use crate::expose::{
     bool_arg, enum_value, expose_class, expose_enum, global, int_arg, num_arg, str_arg, with_this,
 };
@@ -278,6 +279,33 @@ fn register_translator(thread: &mut Thread) {
         with_translator_mut(|t| t.set_language(lang));
         Ok(0)
     });
+    t.static_fn("getAvailableLanguage", |c| {
+        // A fresh list per call; the original caches one ArrayList.
+        let langs =
+            with_translator_mut(|t| t.get_available_language().to_vec()).unwrap_or_default();
+        Ok(c.push(list_value(langs.into_iter().map(language_value).collect())))
+    });
+    t.static_fn("getAzertyMap", |c| {
+        let v = with_translator_mut(|t| t.get_azerty_map().to_vec()).unwrap_or_default();
+        Ok(c.push(list_value(v.into_iter().map(Value::from).collect())))
+    });
+    t.static_fn("getUI", |c| {
+        // A snapshot HashMap. Keys go in sorted, so iteration matches Java's
+        // bucket order; keys sharing a bucket may differ in relative order.
+        let map = JavaMap::hash_map();
+        if let Some(mut entries) = with_translator(|t| {
+            t.get_ui()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>()
+        }) {
+            entries.sort();
+            for (k, v) in entries {
+                map.put(Value::from(k), Value::from(v));
+            }
+        }
+        Ok(c.push(Value::Object(Rc::new(map))))
+    });
     t.static_fn("getRecipeName", |c| {
         let k = key(c, 0);
         let r = with_translator_mut(|t| t.get_recipe_name(&k)).unwrap_or(k);
@@ -439,6 +467,27 @@ fn register_text_manager(thread: &mut Thread) {
         });
         Ok(c.push(r))
     });
+    tm.method("getAllFonts", |c| {
+        // Clears `result`, fills it with every UIFont sorted by name ignoring
+        // case, and returns it.
+        let result = c.arg(1);
+        let Value::Object(o) = &result else {
+            return Err(LuaError::Runtime {
+                message: "null".into(),
+                class: "java.lang.NullPointerException",
+            });
+        };
+        let Some(list) = o.as_any().downcast_ref::<JavaList>() else {
+            return Err(LuaError::Runtime {
+                message: format!("{} cannot be cast to java.util.ArrayList", o.class_name()),
+                class: "java.lang.ClassCastException",
+            });
+        };
+        let fonts = with_tm(TextManager::get_all_fonts)
+            .unwrap_or_else(|| TextManager::default().get_all_fonts());
+        *list.items.borrow_mut() = fonts.into_iter().map(font_value).collect();
+        Ok(c.push(result.clone()))
+    });
     tm.method("getCurrentCodeFont", |c| {
         let r = with_tm(|tm| tm.current_code_font).unwrap_or(UIFont::CodeSmall);
         Ok(c.push(font_value(r)))
@@ -571,6 +620,7 @@ mod tests {
         let env = pz_kahlua::TableRef::new();
         let mut thread = Thread::new(env.clone());
         pz_kahlua::stdlib::install(&mut thread, None).unwrap();
+        crate::bind_java_util::register(&mut thread);
         register(&mut thread);
         let mut t = Translator::new(TranslatorEnv::default());
         t.table_mut(Table::Ui)
@@ -586,7 +636,9 @@ mod tests {
         });
         let src = "return getText('UI_hello', 'Bob', 3), getTextOrNull('UI_nope'), \
                    getTextManager():MeasureStringX(UIFont.Medium, 'aaa'), UIFont.FromString('Title') == UIFont.Title, \
-                   Translator.getLanguage():name()";
+                   Translator.getLanguage():name(), Translator.getAzertyMap():get(0), \
+                   getTextManager():getAllFonts(ArrayList.new()):get(0):name(), Translator.getUI():get('UI_hello'), \
+                   Translator.getAvailableLanguage():size()";
         let proto = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
         let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(proto), env));
         let r = thread.call(&f, &[]).unwrap();
@@ -595,5 +647,9 @@ mod tests {
         assert!(r[2].raw_equals(&Value::Num(17.0)));
         assert!(r[3].raw_equals(&Value::Bool(true)));
         assert_eq!(r[4].as_str().unwrap(), "EN");
+        assert_eq!(r[5].as_str().unwrap(), "FR");
+        assert_eq!(r[6].as_str().unwrap(), "AutoNormLarge");
+        assert_eq!(r[7].as_str().unwrap(), "Hi %1$s, %2$s items");
+        assert!(r[8].raw_equals(&Value::Num(1.0)));
     }
 }
