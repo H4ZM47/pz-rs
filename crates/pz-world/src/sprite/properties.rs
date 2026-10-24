@@ -265,6 +265,19 @@ impl PropertyContainer {
             .is_some_and(|v| super::equals_ignore_case(v, value))
     }
 
+    /// `AddProperties(other)`: copies every property value of `other` over
+    /// this container's and ors in its flags.
+    pub fn add_properties(&mut self, other: &PropertyContainer) {
+        for &(p, v) in &other.entries {
+            match self.find(p) {
+                Some(i) => self.entries[i].1 = v,
+                None => self.entries.push((p, v)),
+            }
+        }
+        self.sprite_flags1 |= other.sprite_flags1;
+        self.sprite_flags2 |= other.sprite_flags2;
+    }
+
     /// Raw `(property id, value id)` entries.
     pub fn entries(&self) -> &[(i16, i16)] {
         &self.entries

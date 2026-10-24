@@ -78,6 +78,33 @@ impl IsoMetaChunk {
         non_user_defined
     }
 
+    /// `getAssociatedBuildingAt(x, y)`: the building of the first room
+    /// (of a building with a level >= 0) whose rects grown by one tile to
+    /// the north and west contain the point. `Err` is the NPE of a room
+    /// without a building.
+    pub fn get_associated_building_at(
+        &self,
+        rooms: &[RoomDef],
+        buildings: &[BuildingDef],
+        x: i32,
+        y: i32,
+    ) -> Result<Option<BuildingIdx>, String> {
+        for &idx in &self.rooms {
+            let room = &rooms[idx.0 as usize];
+            let b = room.building.ok_or("NullPointerException")?;
+            if buildings[b.0 as usize].max_level(rooms) < 0 {
+                continue;
+            }
+            for rr in &room.rects {
+                if rr.x - 1 > x || rr.y - 1 > y || x > rr.get_x2() || y > rr.get_y2() {
+                    continue;
+                }
+                return Ok(Some(b));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn get_empty_outside_at(
         &self,
         rooms: &[RoomDef],
@@ -105,6 +132,9 @@ pub struct IsoMetaCell {
     pub room_list: Vec<RoomIdx>,
     pub buildings: Vec<BuildingIdx>,
     pub building_by_meta_id: HashMap<i64, BuildingIdx>,
+    /// Keys of `isoBuildings`: buildings whose runtime `IsoBuilding` has been
+    /// created (by [`IsoMetaGrid::get_room_by_id`]).
+    pub iso_buildings: std::cell::RefCell<std::collections::HashSet<i64>>,
 }
 
 impl IsoMetaCell {
@@ -119,6 +149,7 @@ impl IsoMetaCell {
             room_list: Vec::new(),
             buildings: Vec::new(),
             building_by_meta_id: HashMap::new(),
+            iso_buildings: Default::default(),
         }
     }
     pub fn get_x(&self) -> i32 {
@@ -200,6 +231,31 @@ pub struct CreateParams<'a> {
 }
 
 impl IsoMetaGrid {
+    /// A grid with no map files, cells, rooms or buildings.
+    pub fn empty() -> Self {
+        IsoMetaGrid {
+            min_x: 0,
+            min_y: 0,
+            max_x: 0,
+            max_y: 0,
+            min_non_procedural_x: 0,
+            min_non_procedural_y: 0,
+            max_non_procedural_x: 0,
+            max_non_procedural_y: 0,
+            width: 1,
+            height: 1,
+            grid: std::iter::once(None).collect(),
+            map_files: Vec::new(),
+            info_headers: HashMap::new(),
+            info_header_names: Vec::new(),
+            info_file_names: HashMap::new(),
+            info_file_modded: HashMap::new(),
+            room_defs: Vec::new(),
+            building_defs: Vec::new(),
+            buildings: Vec::new(),
+        }
+    }
+
     pub fn get_cell(&self, x: i32, y: i32) -> Option<&IsoMetaCell> {
         if x < 0 || y < 0 || x >= self.width || y >= self.height {
             return None;
@@ -276,6 +332,63 @@ impl IsoMetaGrid {
         Some(&self.room_defs[idx.0 as usize])
     }
 
+    /// `getAssociatedBuildingAt(x, y)`: this square's chunk first, then the
+    /// neighbouring chunks across the edges the square touches.
+    pub fn get_associated_building_at(
+        &self,
+        x: i32,
+        y: i32,
+    ) -> Result<Option<BuildingIdx>, String> {
+        let at = |dx: i32, dy: i32| -> Result<Option<BuildingIdx>, String> {
+            match self.get_chunk_data_from_tile(x + dx, y + dy) {
+                Some(c) => c.get_associated_building_at(&self.room_defs, &self.building_defs, x, y),
+                None => Ok(None),
+            }
+        };
+        if let Some(b) = at(0, 0)? {
+            return Ok(Some(b));
+        }
+        let xmod = coordmodulo(x, 8);
+        let ymod = coordmodulo(y, 8);
+        // (condition, IsoDirections dx, dy) in the original order.
+        let checks = [
+            (xmod == 7, 1, 0),
+            (xmod == 0, -1, 0),
+            (ymod == 0, 0, -1),
+            (xmod == 0 || ymod == 0, -1, -1),
+            (xmod == 7 || ymod == 7, 1, 1),
+            (xmod == 0 || ymod == 7, -1, 1),
+            (xmod == 7 || ymod == 0, 1, -1),
+        ];
+        for (cond, dx, dy) in checks {
+            if cond {
+                if let Some(b) = at(dx, dy)? {
+                    return Ok(Some(b));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// `getRoomByID(id)`: the room, creating its runtime `IsoRoom` /
+    /// `IsoBuilding` on first use. A new `IsoBuilding` draws its
+    /// `scoreUpdate` from `Rand`; that draw is the only state kept here (the
+    /// runtime room and building objects are not ported). A room without a
+    /// building would also get a new `BuildingDef` (another draw); map data
+    /// has none, and that case is not ported.
+    pub fn get_room_by_id(&self, id: i64, rand: &mut dyn GameRand) -> Option<&RoomDef> {
+        let cell = self.get_cell_data(room_id::get_cell_x(id), room_id::get_cell_y(id))?;
+        let room = &self.room_defs[cell.rooms.get(&id)?.0 as usize];
+        if let Some(b) = room.building {
+            let bid = self.building_defs[b.0 as usize].id;
+            if cell.iso_buildings.borrow_mut().insert(bid) {
+                // `new IsoBuilding()`: `scoreUpdate = -120 + Rand.Next(120)`.
+                rand.next(120);
+            }
+        }
+        Some(room)
+    }
+
     pub fn get_room_def_by_id(&self, id: i64) -> Option<&RoomDef> {
         let cell = self.get_cell_data(room_id::get_cell_x(id), room_id::get_cell_y(id))?;
         Some(&self.room_defs[cell.rooms.get(&id)?.0 as usize])
@@ -323,8 +436,8 @@ impl IsoMetaGrid {
 
     /// `IsoMetaGrid.Create()` for the parts that read map files: directory
     /// scan, lot headers (rooms, buildings, zombie intensity), building
-    /// consolidation and adjacent-cell flags. Sandbox alarm assignment is
-    /// done by [`IsoMetaGrid::assign_alarms`].
+    /// consolidation and adjacent-cell flags. The building loop that follows
+    /// (adjacent-cell rooms, alarms) is [`IsoMetaGrid::assign_alarms`].
     ///
     /// The original reads headers on 8 threads (rows `minY+i`, step 8) that
     /// share `Rand`; this port reads them in that per-thread row order on one
@@ -561,7 +674,7 @@ impl IsoMetaGrid {
                     used: false,
                 });
             }
-            room.lights_active = rand.next(4) == 0;
+            room.lights_active.set(rand.next(4) == 0);
             room_list.push(RoomIdx(self.room_defs.len() as u32));
             self.room_defs.push(room);
         }
@@ -750,8 +863,34 @@ impl IsoMetaGrid {
         }
     }
 
-    /// The building loop of `CreateStep2`: rooms to adjacent cells is not
-    /// ported yet; this assigns alarms from the sandbox `alarm` option.
+    /// `addRoomsToAdjacentCells(buildingDef)`: a building that crosses
+    /// into the cells east, south and south-east of its own also registers
+    /// its rooms and empty-outside rooms with those cells' chunks.
+    pub fn add_rooms_to_adjacent_cells(&mut self, b: BuildingIdx) {
+        let def = &self.building_defs[b.0 as usize];
+        let cell_x = def.x / 256;
+        let cell_y = def.y / 256;
+        let cell_x2 = (def.x2 - 1) / 256;
+        let cell_y2 = (def.y2 - 1) / 256;
+        if cell_x2 == cell_x && cell_y2 == cell_y {
+            return;
+        }
+        let rooms = def.rooms.clone();
+        let empty = def.emptyoutside.clone();
+        for dy in 0..=1 {
+            for dx in 0..=1 {
+                if dx == 0 && dy == 0 || self.get_cell_data(cell_x + dx, cell_y + dy).is_none() {
+                    continue;
+                }
+                for &r in rooms.iter().chain(empty.iter()) {
+                    self.add_room_to_cell(cell_x + dx, cell_y + dy, r);
+                }
+            }
+        }
+    }
+
+    /// The building loop of `CreateStep2`: rooms are added to adjacent
+    /// cells, then alarms are assigned from the sandbox `alarm` option.
     pub fn assign_alarms(
         &mut self,
         rand: &mut dyn GameRand,
@@ -761,7 +900,9 @@ impl IsoMetaGrid {
         alarm_decay: impl Fn() -> i32,
     ) {
         for i in 0..self.buildings.len() {
-            let b = self.buildings[i].0 as usize;
+            let bidx = self.buildings[i];
+            self.add_rooms_to_adjacent_cells(bidx);
+            let b = bidx.0 as usize;
             if last_stand || self.building_defs[b].rooms.len() <= 2 {
                 continue;
             }

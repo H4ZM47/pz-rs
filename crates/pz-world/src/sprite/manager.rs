@@ -170,6 +170,13 @@ pub struct IsoSpriteManager {
     pub grids: Vec<IsoSpriteGrid>,
     pub named_map: HashMap<String, SpriteIdx>,
     pub int_map: HashMap<i32, SpriteIdx>,
+    /// `CellLoader.glassRemovedWindowSpriteMap`: glass-removed window sprite
+    /// to its intact window sprite (filled by
+    /// [`IsoSpriteManager::loaded_tile_definitions`]).
+    pub glass_removed_window_sprites: HashMap<SpriteIdx, SpriteIdx>,
+    /// `CellLoader.smashedWindowSpriteMap`: smashed window sprite to its
+    /// intact window sprite.
+    pub smashed_window_sprites: HashMap<SpriteIdx, SpriteIdx>,
 }
 
 impl IsoSpriteManager {
@@ -189,6 +196,8 @@ impl IsoSpriteManager {
             grids: Vec::new(),
             named_map,
             int_map: HashMap::new(),
+            glass_removed_window_sprites: HashMap::new(),
+            smashed_window_sprites: HashMap::new(),
         }
     }
 
@@ -228,6 +237,113 @@ impl IsoSpriteManager {
         self.int_map.get(&id).map(|&i| &self.sprites[i])
     }
 
+    /// `IsoSprite.getSprite(manager, spr, offset)`: the sprite named like
+    /// `spr` with `offset` added to the number after the last `_`. `Err` is
+    /// the `NumberFormatException` of a non-numeric suffix.
+    pub fn sprite_with_offset(
+        &self,
+        s: SpriteIdx,
+        offset: i32,
+    ) -> Result<Option<SpriteIdx>, String> {
+        let name = self.sprites[s].name();
+        if !name.contains('_') {
+            return Ok(None);
+        }
+        let split = super::java_split(name, '_');
+        let last = split
+            .last()
+            .ok_or_else(|| "ArrayIndexOutOfBoundsException".to_string())?;
+        let last = crate::java::java_trim(last);
+        let id = crate::java::parse_int(last)
+            .ok_or_else(|| format!("NumberFormatException: For input string: \"{last}\""))?;
+        let prefix = &name[..name.rfind('_').unwrap()];
+        Ok(self
+            .named_map
+            .get(&format!("{prefix}_{}", id.wrapping_add(offset)))
+            .copied())
+    }
+
+    /// `IsoSprite.getSprite(manager, id)` as an index (without
+    /// `WorldConverter` tileset conversions).
+    pub fn idx_by_id(&self, id: i32) -> Option<SpriteIdx> {
+        self.int_map.get(&id).copied()
+    }
+
+    /// `namedMap` keys in `java.util.HashMap` iteration order, assuming the
+    /// keys were inserted in sprite creation order.
+    pub fn named_map_java_order(&self) -> Vec<(&str, SpriteIdx)> {
+        let mut keys: Vec<(&str, SpriteIdx)> = self
+            .named_map
+            .iter()
+            .map(|(k, &v)| (k.as_str(), v))
+            .collect();
+        keys.sort_by_key(|&(k, v)| (v, k));
+        let names: Vec<&str> = keys.iter().map(|&(k, _)| k).collect();
+        crate::java::hashmap_order(&names)
+            .into_iter()
+            .map(|k| (k, self.named_map[k]))
+            .collect()
+    }
+
+    /// `IsoWorld.loadedTileDefinitions` (the sprite part): builds the
+    /// smashed / glass-removed window maps, marks `fixtures_railings_01`
+    /// sprites `NeverCutaway` and sets `HasLightOnSprite` where a
+    /// `<tileset>_on_<index>` sprite with textures exists. `has_textures`
+    /// is `!IsoSprite.hasNoTextures()`; a dedicated server has no textures.
+    pub fn loaded_tile_definitions(
+        &mut self,
+        has_textures: &dyn Fn(&IsoSprite) -> bool,
+    ) -> Result<(), String> {
+        self.glass_removed_window_sprites.clear();
+        self.smashed_window_sprites.clear();
+        let order: Vec<SpriteIdx> = self
+            .named_map_java_order()
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect();
+        let f = self.tables.flag;
+        for s in order {
+            let props = &self.sprites[s].properties;
+            if props.has(f.windowW) || props.has(f.windowN) {
+                for (key, smashed) in [("GlassRemovedOffset", false), ("SmashedTileOffset", true)] {
+                    let Some(val) = self.sprites[s].properties.get(&self.alias, key) else {
+                        continue;
+                    };
+                    let offset = super::try_parse_int(val, 0);
+                    if offset == 0 {
+                        continue;
+                    }
+                    if let Some(s2) = self.sprite_with_offset(s, offset)? {
+                        if smashed {
+                            self.smashed_window_sprites.insert(s2, s);
+                        } else {
+                            self.glass_removed_window_sprites.insert(s2, s);
+                        }
+                    }
+                }
+            }
+            if self.sprites[s].name().starts_with("fixtures_railings_01") {
+                self.sprites[s].properties.set_flag(f.NeverCutaway);
+            }
+            let spr = &self.sprites[s];
+            let on = format!(
+                "{}_on_{}",
+                spr.tileset_name.as_deref().unwrap_or("null"),
+                spr.tile_sheet_index
+            );
+            let lit = self
+                .named_map
+                .get(&on)
+                .is_some_and(|&s1| has_textures(&self.sprites[s1]));
+            if lit {
+                self.sprites[s].properties.set_flag(f.HasLightOnSprite);
+            } else {
+                self.sprites[s].properties.unset_flag(f.HasLightOnSprite);
+            }
+        }
+        Ok(())
+    }
+
     /// `getProperties().get(name)` of a sprite.
     pub fn prop(&self, s: &IsoSprite, name: &str) -> Option<&str> {
         s.properties.get(&self.alias, name)
@@ -239,25 +355,18 @@ impl IsoSpriteManager {
     }
 }
 
-impl crate::chunk::SpriteLookup for IsoSpriteManager {
-    fn sprite_id(&self, name: &str) -> Option<i32> {
-        self.by_name(name).map(|s| s.id)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::SpriteLookup;
 
     #[test]
     fn add_sprite_duplicates() {
         let mut m = IsoSpriteManager::new(super::super::types::test_tables());
-        assert_eq!(m.sprite_id(""), Some(-1));
+        assert_eq!(m.by_name("").map(|s| s.id), Some(-1));
         let a = m.add_sprite("a_0", 5);
         let b = m.add_sprite("a_0", 9);
         assert_ne!(a, b);
-        assert_eq!(m.sprite_id("a_0"), Some(5));
+        assert_eq!(m.by_name("a_0").map(|s| s.id), Some(5));
         assert_eq!(m.named_map["a_0"], b);
         assert_eq!(m.int_map[&5], b);
         assert!(!m.int_map.contains_key(&9));

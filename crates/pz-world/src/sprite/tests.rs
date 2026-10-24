@@ -2,7 +2,6 @@
 
 use super::types::test_tables;
 use super::*;
-use crate::chunk::SpriteLookup;
 
 type Tile<'a> = Vec<(&'a str, &'a str)>;
 
@@ -121,7 +120,7 @@ fn walls_doors_trees() {
     let v = m.by_name("vegetation_trees_x_0").unwrap();
     assert_eq!(v.id, 1024);
     assert!(v.properties.has(t.flag.blocksight));
-    assert_eq!(m.sprite_id("missing"), None);
+    assert_eq!(m.by_name("missing").map(|s| s.id), None);
 }
 
 #[test]

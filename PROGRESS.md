@@ -16,14 +16,18 @@ Status of the Rust port. Update this file with every merged change.
 
 - World/maps (`pz-world`): lot headers, lotpacks, `MapFiles`, meta grid
   rooms/buildings, `.tiles` reader, `Fix2x`, and chunk loading through
-  `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk` with generic tile
-  objects. Header and lotpack decoding match the original loader on 163
+  `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk`. Object creation
+  (`CellLoader.DoTileObjectCreation`: doors, windows, curtains, light
+  switches, trees, stoves, radios/TVs, ...), `FixStackableObjects`,
+  associated buildings and adjacent-cell rooms match the original per
+  square, field and `Rand` draw on 10,240 Muldraugh chunks, checked locally.
+  Header and lotpack decoding match the original loader on 163
   cells (Muldraugh sample plus six challenge maps), checked locally.
   Tile definitions (`pz_world::sprite`): `IsoSpriteManager`,
   `PropertyContainer`, `TilePropertyAliasMap` and the full
   `IsoWorld.LoadTileDefinitions` property pass; all 61,229 sprites match the
-  original loader locally. Enum tables are runtime data (`SpriteTables`); the
-  jar loader awaits `pz-classfile`.
+  original loader locally. Enum and lookup tables are runtime data
+  (`SpriteTables`, `ObjectTables`); the jar loader awaits `pz-classfile`.
 
 ## In progress
 - StringLib, OsLib.
