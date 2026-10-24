@@ -30,6 +30,7 @@ pz-clipper = { path = "crates/pz-clipper" }
 pz-sqlite = { path = "crates/pz-sqlite" }
 pz-lighting = { path = "crates/pz-lighting" }
 pz-inventory = { path = "crates/pz-inventory" }
+pz-clipper6 = { path = "crates/pz-clipper6" }
 indexmap = "2"
 jiff = "0.2"
 macroquad = { version = "0.4", default-features = false }

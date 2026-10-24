@@ -1627,6 +1627,10 @@ name = "pz-clipper"
 version = "0.1.0"
 
 [[package]]
+name = "pz-clipper6"
+version = "0.1.0"
+
+[[package]]
 name = "pz-core"
 version = "0.1.0"
 dependencies = [
