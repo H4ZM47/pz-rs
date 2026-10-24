@@ -137,6 +137,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-pathfind"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-fs",
+ "pz-world",
+]
+
+[[package]]
 name = "pz-render"
 version = "0.1.0"
 
