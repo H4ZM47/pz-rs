@@ -52,6 +52,9 @@ version = "0.1.0"
 [[package]]
 name = "pz-engine"
 version = "0.1.0"
+dependencies = [
+ "pz-kahlua",
+]
 
 [[package]]
 name = "pz-fs"
@@ -72,6 +75,9 @@ version = "0.1.0"
 dependencies = [
  "pz-fs",
  "pz-kahlua",
+ "pz-render",
+ "pz-text",
+ "pz-ui",
 ]
 
 [[package]]
