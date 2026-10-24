@@ -130,6 +130,9 @@ Status of the Rust port. Update this file with every merged change.
   the original bit for bit (checked locally). Item, zombie and weapon inputs
   are plain data until pz-inventory lands.
 
+  original loader locally. Enum and lookup tables are runtime data
+  (`SpriteTables`, `ObjectTables`); the jar loader awaits `pz-classfile`.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 

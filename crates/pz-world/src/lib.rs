@@ -20,6 +20,7 @@ pub mod objects;
 pub mod sprite;
 pub mod meta_save;
 pub mod meta_zones;
+pub mod square;
 pub mod tiledef;
 pub mod zone_save;
 pub mod zones;
@@ -39,4 +40,7 @@ pub use sprite::{IsoSpriteManager, SpriteTables};
 pub use zones::{
     ClipperOps, PropValue, RoomTone, Zone, ZoneError, ZoneGeometryType, ZoneId, ZoneKind,
     ZoneProps, ZoneTables,
+};
+pub use square::{
+    ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks, SquareHooks,
 };

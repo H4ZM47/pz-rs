@@ -25,9 +25,10 @@ transparentN,cutW,cutN,solid,invisible,HoppableN,HoppableW,canPathW,canPathN,blo
 ForceAmbient,WallSE,FloorHeightOneThird,FloorHeightTwoThirds,CantClimb,open,windowW,windowN,\
 WindowW,WindowN,diamondFloor,transparentFloor,solidfloor,hidewalls,container,WallOverlay,\
 attachedSE,attachedW,attachedN,FloorOverlay,vegitation,NeverCutaway,HasLightOnSprite,\
-EntityScript";
+EntityScript,water,solidtrans,blueprint,BlockRain,trans,noStart,forceRender,burntOut";
     let types = "normal,wall,doorW,doorN,tree,windowFN,windowFW,isMoveAbleObject,lightswitch,\
-curtainN,curtainS,curtainE,curtainW,jukebox,radio,doorFrN,doorFrW";
+curtainN,curtainS,curtainE,curtainW,jukebox,radio,doorFrN,doorFrW,stairsTN,stairsMN,stairsBN,\
+stairsTW,stairsMW,stairsBW";
     SpriteTables::from_text(&format!("{flags}\n{types}\nN,W\n")).unwrap()
 }
 

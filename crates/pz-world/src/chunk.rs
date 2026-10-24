@@ -15,6 +15,8 @@ use crate::map_files::{header_name, lotpack_name};
 use crate::meta_grid::IsoMetaGrid;
 use crate::objects::{IsoObject, ObjectId, ObjectLoadHooks, ObjectLoadSettings, ObjectTables};
 use crate::sprite::IsoSpriteManager;
+use crate::sprite::{PropertyContainer, SurfaceInfo};
+use crate::square::IsoDirections;
 
 pub const CHUNK_WIDTH: i32 = 8;
 pub const MIN_LEVEL: i32 = -32;
@@ -40,6 +42,27 @@ pub struct IsoGridSquare {
     /// are skipped by lookups.
     pub special_objects: Vec<ObjectId>,
     pub(crate) next_object_id: ObjectId,
+    /// `properties`: the merged sprite properties and derived flags
+    /// (`RecalcProperties`, see [`crate::square`]).
+    pub properties: PropertyContainer,
+    /// `hasTypes`: bit `IsoObjectType.index()` per object type present
+    /// (`1L << index`, so indices wrap at 64 like Java's shift).
+    pub has_types: u64,
+    /// `hasTree`.
+    pub has_tree: bool,
+    /// `haveRoof`: a rain-blocking square is somewhere above.
+    pub have_roof: bool,
+    /// `burntOut`.
+    pub burnt_out: bool,
+    /// `properties.initSurface()` values of the merged properties.
+    pub surface: SurfaceInfo,
+    /// `properties.getSlopedSurfaceDirection()`.
+    pub sloped_surface_direction: Option<IsoDirections>,
+    /// `collideMatrix`, `pathMatrix`, `visionMatrix`: bit
+    /// `(dx+1) + 3 (dy+1) + 9 (dz+1)` set when blocked.
+    pub collide_matrix: i32,
+    pub path_matrix: i32,
+    pub vision_matrix: i32,
 }
 
 impl IsoGridSquare {
@@ -55,6 +78,16 @@ impl IsoGridSquare {
             objects: Vec::new(),
             special_objects: Vec::new(),
             next_object_id: 0,
+            properties: PropertyContainer::default(),
+            has_types: 0,
+            has_tree: false,
+            have_roof: false,
+            burnt_out: false,
+            surface: SurfaceInfo::default(),
+            sloped_surface_direction: None,
+            collide_matrix: 0x7FF_FFFF,
+            path_matrix: 0x7FF_FFFF,
+            vision_matrix: 0,
         }
     }
 
