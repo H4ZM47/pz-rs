@@ -14,8 +14,10 @@ pub mod iso_lot;
 pub mod java;
 pub mod map_files;
 pub mod meta_grid;
+pub mod meta_save;
 pub mod meta_zones;
 pub mod tiledef;
+pub mod zone_save;
 pub mod zones;
 
 pub use chunk::{
