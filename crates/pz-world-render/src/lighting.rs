@@ -63,7 +63,7 @@ pub fn grid_square(
         match &o.kind {
             ObjectKind::Door(d) => {
                 let (same, opposite) = hooks.barricades(sq, o);
-                let curtain = hooks.door_curtain(sq, o);
+                let curtain = WorldHooks::door_curtain(hooks, sq, o);
                 special_objects.push(SpecialObject::Door(Door {
                     north: d.north,
                     open: d.open,

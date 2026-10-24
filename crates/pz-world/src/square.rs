@@ -3,17 +3,23 @@
 //! `haveRoof`, the collide/path/vision matrices (`CalculateCollide`,
 //! `CalculateVisionBlocked`, `RecalcAllWithNeighbours`) and the edge
 //! queries (`isWallTo`, `isWindowTo`, `isDoorTo`, `isWindowBlockedTo`,
-//! `isDoorBlockedTo`, `getWindowTo`, `testCollideAdjacent`).
+//! `isDoorBlockedTo`, `getWindowTo`, `getDoorTo`, `getWindowThumpableTo`,
+//! `getWindowFrameTo`, `canReachTo`, `isAdjacentToWindow`,
+//! `isAdjacentToHoppable`, `testCollideAdjacent`), the stairs and slope
+//! heights (`isStairsEdgeBlocked`, `getSlopedSurfaceHeight(dx, dy)`), and
+//! vision between neighbours (`IsoObject.TestVision`, `testVisionAdjacent`;
+//! [`crate::los`] walks it along a line).
 //!
 //! Neighbours are looked up through a [`GetSquare`] (`IsoGridSquare.GetSquare`):
 //! [`IsoCell`] looks across chunks, [`ChunkGetter`] only inside one chunk
 //! (what chunk loading uses before the chunk is in the world).
 //!
-//! Barricades and `IsoThumpable` are not in this crate yet; the queries that
-//! read them go through [`SquareHooks`], whose defaults report "no
-//! barricade" and "no thumpable".
+//! Barricades, `IsoThumpable`, `IsoFire` and door curtains are not in this
+//! crate yet; the queries that read them go through [`SquareHooks`], whose
+//! defaults report "no barricade", "no thumpable" and "no curtain".
 
 use crate::chunk::{IsoCell, IsoChunk, IsoGridSquare, MAX_LEVEL, MIN_LEVEL};
+use crate::los::TestResults;
 use crate::meta_grid::IsoMetaGrid;
 use crate::objects::{IsoObject, ObjectKind};
 use crate::sprite::{IsoFlagType, IsoObjectType, IsoSpriteManager, PropertyContainer};
@@ -140,6 +146,53 @@ pub trait SquareHooks {
     fn has_blocked_thumpable_door(&self, _sq: &IsoGridSquare, _facing: EdgeFacing) -> bool {
         false
     }
+
+    /// What the square queries read of `obj` on `sq` when it is an object
+    /// class this crate does not model (`IsoThumpable`, `IsoBarricade`,
+    /// `IsoFire`); `None` for every other object.
+    fn special_object(&self, _sq: &IsoGridSquare, _obj: &IsoObject) -> Option<SpecialObject> {
+        None
+    }
+
+    /// `IsoDoor.hasCurtain`/`curtainOpen` of the door `obj` on `sq`:
+    /// `Some(curtainOpen)` when it has a curtain.
+    fn door_curtain(&self, _sq: &IsoGridSquare, _obj: &IsoObject) -> Option<bool> {
+        None
+    }
+}
+
+/// An object of a class this crate does not model, as
+/// [`SquareHooks::special_object`] reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecialObject {
+    /// `IsoThumpable`.
+    Thumpable(ThumpableInfo),
+    /// `IsoBarricade`.
+    Barricade {
+        /// `getForwardIsoDirection()`.
+        dir: IsoDirections,
+        /// `metalHealth > 0 || getNumPlanks() > 2` (`isBlockVision()`).
+        blocks_vision: bool,
+    },
+    /// `IsoFire` (`TestVision` has no effect).
+    Fire,
+}
+
+/// The `IsoThumpable` fields and queries the square queries read. Its
+/// sprite (`isWindow()`, `doorTrans`) is the object's own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ThumpableInfo {
+    /// `north` (`getGridSquareEdgeFacingDirection()`).
+    pub north: bool,
+    /// `open` (`IsOpen()`).
+    pub open: bool,
+    /// `isDoor()`.
+    pub is_door: bool,
+    /// `isHoppable()`: the closed sprite's hoppable flags for a closed
+    /// door, else the sprite's, else the `isHoppable` field.
+    pub is_hoppable: bool,
+    /// `canPassThrough`.
+    pub can_pass_through: bool,
 }
 
 /// [`SquareHooks`] with every default: no barricades, no thumpables.
@@ -1099,6 +1152,702 @@ impl IsoGridSquare {
     }
 }
 
+/// `IsoObject.VisionResult`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisionResult {
+    NoEffect,
+    Blocked,
+    Unblocked,
+}
+
+/// What `testVisionAdjacent` and `LosUtil.lineClear` read: the squares
+/// (`IsoCell`), sprites, the objects this crate does not model, and
+/// `GameServer.server` (the diagonal re-check is skipped on a server).
+pub struct VisionEnv<'a, G: GetSquare> {
+    pub squares: &'a G,
+    pub sprites: &'a IsoSpriteManager,
+    pub hooks: &'a dyn SquareHooks,
+    pub is_server: bool,
+}
+
+impl<'a, G: GetSquare> VisionEnv<'a, G> {
+    pub fn new(squares: &'a G, sprites: &'a IsoSpriteManager, hooks: &'a dyn SquareHooks) -> Self {
+        VisionEnv {
+            squares,
+            sprites,
+            hooks,
+            is_server: false,
+        }
+    }
+}
+
+/// The class `testVisionAdjacent` tests a special object as.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VisionClass {
+    Door { open: bool },
+    Thumpable { door: bool, window: bool },
+    Window,
+    Curtain,
+    Barricade,
+    Other,
+}
+
+impl IsoObject {
+    /// `isWindow()`: the sprite has `WindowN` or `WindowW`.
+    pub fn is_window(&self, m: &IsoSpriteManager) -> bool {
+        let f = &m.tables.flag;
+        self.sprite.is_some_and(|s| {
+            let p = &m.sprites[s].properties;
+            p.has(f.WindowN) || p.has(f.WindowW)
+        })
+    }
+
+    fn sprite_has(&self, m: &IsoSpriteManager, flag: IsoFlagType) -> bool {
+        self.sprite
+            .is_some_and(|s| m.sprites[s].properties.has(flag))
+    }
+
+    /// `getHoppableDirection()`.
+    pub fn get_hoppable_direction(&self, m: &IsoSpriteManager) -> Option<EdgeFacing> {
+        if self.sprite_has(m, m.tables.flag.HoppableN) {
+            Some(EdgeFacing::NorthSouth)
+        } else if self.sprite_has(m, m.tables.flag.HoppableW) {
+            Some(EdgeFacing::EastWest)
+        } else {
+            None
+        }
+    }
+
+    /// `getWindowFrameDirection()`.
+    pub fn get_window_frame_direction(&self, m: &IsoSpriteManager) -> Option<EdgeFacing> {
+        if self.sprite_has(m, m.tables.flag.WindowN) {
+            Some(EdgeFacing::NorthSouth)
+        } else if self.sprite_has(m, m.tables.flag.WindowW) {
+            Some(EdgeFacing::EastWest)
+        } else {
+            None
+        }
+    }
+
+    /// `isHoppableOrWindowFrame(facing)`.
+    pub fn is_hoppable_or_window_frame(&self, facing: EdgeFacing, m: &IsoSpriteManager) -> bool {
+        self.get_hoppable_direction(m) == Some(facing)
+            || self.get_window_frame_direction(m) == Some(facing)
+    }
+
+    /// `TestVision(from, to)` of this object on `square` (`IsoDoor`,
+    /// `IsoThumpable`, `IsoWindow`, `IsoCurtain`, `IsoBarricade`, `IsoFire`
+    /// and `IsoObject`'s `Unblocked`).
+    pub fn test_vision(
+        &self,
+        square: &IsoGridSquare,
+        from: &IsoGridSquare,
+        to: &IsoGridSquare,
+        m: &IsoSpriteManager,
+        hooks: &dyn SquareHooks,
+    ) -> VisionResult {
+        self.vision(square, from, to, m, hooks).0
+    }
+
+    fn vision(
+        &self,
+        square: &IsoGridSquare,
+        from: &IsoGridSquare,
+        to: &IsoGridSquare,
+        m: &IsoSpriteManager,
+        hooks: &dyn SquareHooks,
+    ) -> (VisionResult, VisionClass) {
+        use VisionResult::*;
+        let sprite_has = |name: &str| self.sprite.is_some_and(|s| m.has_prop(&m.sprites[s], name));
+        // The edge test the doors, thumpables and windows share: whether
+        // `to` is across this object's edge from `from`.
+        let across = |north: bool| {
+            if is(from, square) {
+                north && to.y < from.y || !north && to.x < from.x
+            } else {
+                north && to.y > from.y || !north && to.x > from.x
+            }
+        };
+        match hooks.special_object(square, self) {
+            Some(SpecialObject::Thumpable(th)) => {
+                let class = VisionClass::Thumpable {
+                    door: th.is_door,
+                    window: self.is_window(m),
+                };
+                if th.can_pass_through {
+                    return (NoEffect, class);
+                }
+                let north = if th.open { !th.north } else { th.north };
+                if to.z != from.z {
+                    return (NoEffect, class);
+                }
+                let door_trans = sprite_has("doorTrans");
+                let r = if !across(north) {
+                    NoEffect
+                } else if door_trans || self.is_window(m) {
+                    Unblocked
+                } else {
+                    Blocked
+                };
+                return (r, class);
+            }
+            Some(SpecialObject::Barricade { dir, blocks_vision }) => {
+                return (
+                    barricade_vision(square, dir, blocks_vision, from, to),
+                    VisionClass::Barricade,
+                );
+            }
+            Some(SpecialObject::Fire) => return (NoEffect, VisionClass::Other),
+            None => {}
+        }
+        match &self.kind {
+            ObjectKind::Door(d) => {
+                let class = VisionClass::Door { open: d.open };
+                let mut door_trans = sprite_has("doorTrans");
+                if sprite_has("GarageDoor") && d.open {
+                    door_trans = true;
+                }
+                if d.open {
+                    door_trans = true;
+                } else if hooks.door_curtain(square, self) == Some(false) {
+                    door_trans = false;
+                }
+                let north = if d.open { !d.north } else { d.north };
+                if to.z != from.z {
+                    return (NoEffect, class);
+                }
+                let r = if !across(north) {
+                    NoEffect
+                } else if door_trans {
+                    Unblocked
+                } else {
+                    Blocked
+                };
+                (r, class)
+            }
+            ObjectKind::Window(w) => {
+                let r = if to.z == from.z && across(w.north) {
+                    Unblocked
+                } else {
+                    NoEffect
+                };
+                (r, VisionClass::Window)
+            }
+            ObjectKind::Curtain(c) => {
+                if to.z != from.z {
+                    return (NoEffect, VisionClass::Curtain);
+                }
+                let ty = self.sprite.map(|s| m.sprites[s].tile_type);
+                let tt = &m.tables.ty;
+                let near = is(from, square) && (ty == Some(tt.curtainW) || ty == Some(tt.curtainN))
+                    || !is(from, square) && (ty == Some(tt.curtainE) || ty == Some(tt.curtainS));
+                let blocked = if near {
+                    c.north && to.y < from.y && !c.open || !c.north && to.x < from.x && !c.open
+                } else {
+                    c.north && to.y > from.y && !c.open || !c.north && to.x > from.x && !c.open
+                };
+                (
+                    if blocked { Blocked } else { NoEffect },
+                    VisionClass::Curtain,
+                )
+            }
+            _ => (Unblocked, VisionClass::Other),
+        }
+    }
+}
+
+/// `IsoBarricade.TestVision(from, to)`.
+fn barricade_vision(
+    square: &IsoGridSquare,
+    dir: IsoDirections,
+    blocks_vision: bool,
+    from: &IsoGridSquare,
+    to: &IsoGridSquare,
+) -> VisionResult {
+    if !blocks_vision {
+        return VisionResult::NoEffect;
+    }
+    if is(from, square) {
+        let blocked = dir == IsoDirections::N && to.y < from.y
+            || dir == IsoDirections::S && to.y > from.y
+            || dir == IsoDirections::W && to.x < from.x
+            || dir == IsoDirections::E && to.x > from.x;
+        if blocked {
+            return VisionResult::Blocked;
+        }
+    } else if is(to, square) {
+        return barricade_vision(square, dir, blocks_vision, to, from);
+    }
+    VisionResult::NoEffect
+}
+
+impl IsoGridSquare {
+    /// `getSpecialObjects()`, skipping identities no longer in `objects`.
+    pub fn get_special_objects(&self) -> impl Iterator<Item = &IsoObject> {
+        self.special_objects
+            .iter()
+            .filter_map(move |&id| self.objects.iter().find(|o| o.id == id))
+    }
+
+    /// `isSolid()`.
+    pub fn is_solid(&self, m: &IsoSpriteManager) -> bool {
+        self.has(m.tables.flag.solid)
+    }
+
+    /// `isSolidTrans()`.
+    pub fn is_solid_trans(&self, m: &IsoSpriteManager) -> bool {
+        self.has(m.tables.flag.solidtrans)
+    }
+
+    /// `getSlopedSurfaceHeightMin()`.
+    pub fn get_sloped_surface_height_min(&self) -> f32 {
+        self.surface.sloped_surface_height_min as f32 / 100.0
+    }
+
+    /// `getSlopedSurfaceHeightMax()`.
+    pub fn get_sloped_surface_height_max(&self) -> f32 {
+        self.surface.sloped_surface_height_max as f32 / 100.0
+    }
+
+    /// `getSlopedSurfaceHeight(dx, dy)`: the surface height (0..1) at a
+    /// point of the square, 0 without a slope.
+    pub fn get_sloped_surface_height_at(&self, dx: f32, dy: f32) -> f32 {
+        let Some(dir) = self.sloped_surface_direction else {
+            return 0.0;
+        };
+        let dx = dx.clamp(0.0, 1.0);
+        let dy = dy.clamp(0.0, 1.0);
+        let min = self.surface.sloped_surface_height_min as f32;
+        let max = self.surface.sloped_surface_height_max as f32;
+        let lerp = |t: f32| min + (max - min) * t;
+        let z = match dir {
+            IsoDirections::N => lerp(1.0 - dy),
+            IsoDirections::S => lerp(dy),
+            IsoDirections::W => lerp(1.0 - dx),
+            IsoDirections::E => lerp(dx),
+            _ => -1.0,
+        };
+        if z < 0.0 {
+            0.0
+        } else {
+            z / 100.0
+        }
+    }
+
+    /// `hasIdenticalSlopedSurface(other)`.
+    pub fn has_identical_sloped_surface(&self, other: &IsoGridSquare) -> bool {
+        self.sloped_surface_direction == other.sloped_surface_direction
+            && self.get_sloped_surface_height_min() == other.get_sloped_surface_height_min()
+            && self.get_sloped_surface_height_max() == other.get_sloped_surface_height_max()
+    }
+
+    /// `getStairsDirection()`.
+    pub fn get_stairs_direction(&self, m: &IsoSpriteManager) -> Option<IsoDirections> {
+        if self.has_stairs_north(m) {
+            Some(IsoDirections::N)
+        } else if self.has_stairs_west(m) {
+            Some(IsoDirections::W)
+        } else {
+            None
+        }
+    }
+
+    /// `getStairsHeightMax()`. As in the original, bottom stairs report 0
+    /// (the middle-stairs test is repeated where the bottom one would be).
+    pub fn get_stairs_height_max(&self, m: &IsoSpriteManager) -> f32 {
+        let t = &m.tables.ty;
+        if self.has_type(t.stairsTN) || self.has_type(t.stairsTW) {
+            1.0
+        } else if self.has_type(t.stairsMN) || self.has_type(t.stairsMW) {
+            0.66
+        } else {
+            0.0
+        }
+    }
+
+    /// `getStairsHeightMin()`.
+    pub fn get_stairs_height_min(&self, m: &IsoSpriteManager) -> f32 {
+        let t = &m.tables.ty;
+        if self.has_type(t.stairsTN) || self.has_type(t.stairsTW) {
+            0.66
+        } else if self.has_type(t.stairsMN) || self.has_type(t.stairsMW) {
+            0.33
+        } else {
+            0.0
+        }
+    }
+
+    /// `getStairsHeight(edge)`.
+    pub fn get_stairs_height(&self, edge: IsoDirections, m: &IsoSpriteManager) -> f32 {
+        let Some(dir) = self.get_stairs_direction(m) else {
+            return 0.0;
+        };
+        if dir == edge {
+            self.get_stairs_height_max(m)
+        } else if dir.rot180() == edge {
+            self.get_stairs_height_min(m)
+        } else {
+            -1.0
+        }
+    }
+
+    /// `isStairsEdgeBlocked(edge)`.
+    pub fn is_stairs_edge_blocked(
+        &self,
+        edge: IsoDirections,
+        m: &IsoSpriteManager,
+        g: &impl GetSquare,
+    ) -> bool {
+        if self.get_stairs_direction(m).is_none() {
+            return false;
+        }
+        let Some(sq2) = self.get_adjacent_square(edge, g) else {
+            return true;
+        };
+        self.get_stairs_height(edge, m) != sq2.get_stairs_height(edge.rot180(), m)
+    }
+
+    /// The `IsoThumpable` facts of a special object, through `hooks`.
+    fn thumpables<'s>(
+        &'s self,
+        hooks: &'s dyn SquareHooks,
+    ) -> impl Iterator<Item = (&'s IsoObject, ThumpableInfo)> + 's {
+        self.get_special_objects()
+            .filter_map(move |o| match hooks.special_object(self, o) {
+                Some(SpecialObject::Thumpable(t)) => Some((o, t)),
+                _ => None,
+            })
+    }
+
+    /// `getThumpableWindow(facing)`: the first `IsoThumpable` special object
+    /// with `isWindow()` on that edge.
+    pub fn get_thumpable_window_facing<'s>(
+        &'s self,
+        facing: EdgeFacing,
+        m: &IsoSpriteManager,
+        hooks: &'s dyn SquareHooks,
+    ) -> Option<&'s IsoObject> {
+        self.thumpables(hooks)
+            .find(|(o, t)| o.is_window(m) && EdgeFacing::of_north(t.north) == facing)
+            .map(|(o, _)| o)
+    }
+
+    /// `getHoppableThumpable(facing)`.
+    pub fn get_hoppable_thumpable_facing<'s>(
+        &'s self,
+        facing: EdgeFacing,
+        hooks: &'s dyn SquareHooks,
+    ) -> Option<&'s IsoObject> {
+        self.thumpables(hooks)
+            .find(|(_, t)| t.is_hoppable && EdgeFacing::of_north(t.north) == facing)
+            .map(|(o, _)| o)
+    }
+
+    /// `getWindowFrame(facing)`: an `IsoWindowFrame` in `objects` on that
+    /// edge.
+    pub fn get_window_frame_facing(&self, facing: EdgeFacing) -> Option<&IsoObject> {
+        self.objects.iter().find(
+            |o| matches!(&o.kind, ObjectKind::WindowFrame { north } if EdgeFacing::of_north(*north) == facing),
+        )
+    }
+
+    /// `getHoppableOrWindowFrame(facing)`: the first object that is
+    /// hoppable or a window frame (by its sprite) on that edge.
+    pub fn get_hoppable_or_window_frame_facing(
+        &self,
+        facing: EdgeFacing,
+        m: &IsoSpriteManager,
+    ) -> Option<&IsoObject> {
+        self.objects
+            .iter()
+            .find(|o| o.is_hoppable_or_window_frame(facing, m))
+    }
+
+    /// `getDoor(facing)`: the first special object that is an `IsoDoor` or
+    /// a door `IsoThumpable` on that edge.
+    pub fn get_door_facing<'s>(
+        &'s self,
+        facing: EdgeFacing,
+        hooks: &'s dyn SquareHooks,
+    ) -> Option<&'s IsoObject> {
+        self.get_special_objects()
+            .find(|o| match hooks.special_object(self, o) {
+                Some(SpecialObject::Thumpable(t)) => {
+                    t.is_door && EdgeFacing::of_north(t.north) == facing
+                }
+                Some(_) => false,
+                None => matches!(&o.kind, ObjectKind::Door(d) if EdgeFacing::of_north(d.north) == facing),
+            })
+    }
+
+    /// `isAdjacentToEdgeElement(edgeGetter)` for a facing test: the north,
+    /// west, east and south edges (through the cell).
+    fn is_adjacent_to_edge_element(
+        &self,
+        g: &impl GetSquare,
+        test: &dyn Fn(&IsoGridSquare, EdgeFacing) -> bool,
+    ) -> bool {
+        [
+            GridSquareEdge::North,
+            GridSquareEdge::West,
+            GridSquareEdge::East,
+            GridSquareEdge::South,
+        ]
+        .into_iter()
+        .any(|e| self.is_edge_element(e, g, test))
+    }
+
+    /// `isAdjacentToWindow()`: a window, window thumpable or window frame
+    /// on one of the square's four edges.
+    pub fn is_adjacent_to_window(
+        &self,
+        m: &IsoSpriteManager,
+        g: &impl GetSquare,
+        hooks: &dyn SquareHooks,
+    ) -> bool {
+        self.is_adjacent_to_edge_element(g, &|s, f| s.get_window_facing(f).is_some())
+            || self.is_adjacent_to_edge_element(g, &|s, f| {
+                s.get_thumpable_window_facing(f, m, hooks).is_some()
+            })
+            || self.is_adjacent_to_edge_element(g, &|s, f| s.get_window_frame_facing(f).is_some())
+    }
+
+    /// `isAdjacentToHoppable()`.
+    pub fn is_adjacent_to_hoppable(
+        &self,
+        m: &IsoSpriteManager,
+        g: &impl GetSquare,
+        hooks: &dyn SquareHooks,
+    ) -> bool {
+        self.is_adjacent_to_edge_element(g, &|s, f| {
+            s.get_hoppable_or_window_frame_facing(f, m).is_some()
+        }) || self.is_adjacent_to_edge_element(g, &|s, f| {
+            s.get_hoppable_thumpable_facing(f, hooks).is_some()
+        })
+    }
+
+    /// `getDoorTo(next)`: the `IsoDoor` or door `IsoThumpable` between this
+    /// square and `next`, and the square it is on.
+    pub fn get_door_to<'s>(
+        &'s self,
+        next: Option<&'s IsoGridSquare>,
+        g: &'s impl GetSquare,
+        hooks: &'s dyn SquareHooks,
+    ) -> Option<(&'s IsoGridSquare, &'s IsoObject)> {
+        self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
+            s.get_door_facing(f, hooks).map(|o| (s, o))
+        })
+    }
+
+    /// `getWindowThumpableTo(next)`.
+    pub fn get_window_thumpable_to<'s>(
+        &'s self,
+        next: Option<&'s IsoGridSquare>,
+        m: &'s IsoSpriteManager,
+        g: &'s impl GetSquare,
+        hooks: &'s dyn SquareHooks,
+    ) -> Option<(&'s IsoGridSquare, &'s IsoObject)> {
+        self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
+            s.get_thumpable_window_facing(f, m, hooks).map(|o| (s, o))
+        })
+    }
+
+    /// `getWindowFrameTo(next)`.
+    pub fn get_window_frame_to<'s>(
+        &'s self,
+        next: Option<&'s IsoGridSquare>,
+        g: &'s impl GetSquare,
+    ) -> Option<(&'s IsoGridSquare, &'s IsoObject)> {
+        self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
+            s.get_window_frame_facing(f).map(|o| (s, o))
+        })
+    }
+
+    /// `getWallExcludingList(bNorth, ignoreBlockingSprites)` with the
+    /// (vanilla: empty) exclusion list: a wall object on that edge.
+    pub fn has_wall_excluding_list(&self, north: bool, m: &IsoSpriteManager) -> bool {
+        let f = &m.tables.flag;
+        // Flags a table without them cannot have set.
+        let flag = |name| m.tables.flag_from_string(name);
+        let (door_wall, wall) = if north {
+            (flag("DoorWallN"), flag("WallN"))
+        } else {
+            (flag("DoorWallW"), flag("WallW"))
+        };
+        let has = |p: &PropertyContainer, f: Option<IsoFlagType>| f.is_some_and(|f| p.has(f));
+        self.objects.iter().any(|o| {
+            let Some(s) = o.sprite else { return false };
+            let spr = &m.sprites[s];
+            let p = &spr.properties;
+            if p.has(f.WallSE) || has(p, door_wall) {
+                return false;
+            }
+            (if north { spr.cut_n } else { spr.cut_w }) || has(p, wall)
+        })
+    }
+
+    /// `canReachTo(other)`.
+    pub fn can_reach_to(
+        &self,
+        other: &IsoGridSquare,
+        m: &IsoSpriteManager,
+        g: &impl GetSquare,
+        hooks: &dyn SquareHooks,
+    ) -> bool {
+        if is(self, other) {
+            return true;
+        }
+        if (other.x - self.x).abs() > 1
+            || (other.y - self.y).abs() > 1
+            || other.z != self.z
+            || self.is_window_blocked_to(Some(other), g, hooks)
+            || self.is_door_blocked_to(Some(other), g, hooks)
+        {
+            return false;
+        }
+        if other.y < self.y && self.has_wall_excluding_list(true, m)
+            || self.y < other.y && other.has_wall_excluding_list(true, m)
+            || other.x < self.x && self.has_wall_excluding_list(false, m)
+            || self.x < other.x && other.has_wall_excluding_list(false, m)
+        {
+            return false;
+        }
+        let t = &m.tables.ty;
+        if self.x > other.x && self.has_type(t.stairsTW)
+            || self.y > other.y && self.has_type(t.stairsTN)
+        {
+            return false;
+        }
+        !self.is_wall_to(Some(other), m, g)
+    }
+
+    /// One special-object pass of `testVisionAdjacent` (`owner`'s special
+    /// objects, from `self` to `sq3`). `Err` is an early return.
+    fn vision_specials<G: GetSquare>(
+        &self,
+        owner: &IsoGridSquare,
+        sq3: &IsoGridSquare,
+        ignore_doors: bool,
+        env: &VisionEnv<'_, G>,
+        ret: &mut TestResults,
+    ) -> Result<(), TestResults> {
+        use VisionClass as C;
+        use VisionResult::*;
+        for obj in owner.get_special_objects() {
+            let (vis, class) = obj.vision(owner, self, sq3, env.sprites, env.hooks);
+            match (vis, class) {
+                (NoEffect, _) => {}
+                (Unblocked, C::Door { open }) => {
+                    *ret = if open {
+                        TestResults::ClearThroughOpenDoor
+                    } else {
+                        TestResults::ClearThroughClosedDoor
+                    };
+                }
+                (Unblocked, C::Thumpable { door: true, .. }) => {
+                    *ret = TestResults::ClearThroughOpenDoor;
+                }
+                (Unblocked, C::Window) => *ret = TestResults::ClearThroughWindow,
+                (Blocked, C::Door { .. }) if !ignore_doors => return Err(TestResults::Blocked),
+                (Blocked, C::Thumpable { door: true, .. }) if !ignore_doors => {
+                    return Err(TestResults::Blocked)
+                }
+                (Blocked, C::Thumpable { window: true, .. })
+                | (Blocked, C::Curtain)
+                | (Blocked, C::Window)
+                | (Blocked, C::Barricade) => return Err(TestResults::Blocked),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// `testVisionAdjacent(x, y, z, specialDiag, bIgnoreDoors)`.
+    pub fn test_vision_adjacent<G: GetSquare>(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        special_diag: bool,
+        ignore_doors: bool,
+        env: &VisionEnv<'_, G>,
+    ) -> TestResults {
+        if !(-1..=1).contains(&x) || !(-1..=1).contains(&y) || !(-1..=1).contains(&z) {
+            return TestResults::Blocked;
+        }
+        let g = env.squares;
+        let m = env.sprites;
+        if z == 1 && (x != 0 || y != 0) && self.has_elevated_floor(m) {
+            if let Some(sq) = g.get_grid_square(self.x, self.y, self.z + z) {
+                return sq.test_vision_adjacent(x, y, 0, special_diag, ignore_doors, env);
+            }
+        }
+        if z == -1 && (x != 0 || y != 0) {
+            if let Some(sq) = g.get_grid_square(self.x + x, self.y + y, self.z + z) {
+                if sq.has_elevated_floor(m) {
+                    return self.test_vision_adjacent(x, y, 0, special_diag, ignore_doors, env);
+                }
+            }
+        }
+        if x != 0 && y != 0 && special_diag {
+            let mut test = self.do_diagonal_check(x, y, z, ignore_doors, env);
+            if !env.is_server && test != TestResults::Blocked {
+                if let Some(sq2) = g.get_grid_square(self.x + x, self.y + y, self.z + z) {
+                    test = sq2.do_diagonal_check(-x, -y, -z, ignore_doors, env);
+                }
+            }
+            return test;
+        }
+        let sq3 = g.get_grid_square(self.x + x, self.y + y, self.z + z);
+        let mut ret = TestResults::Clear;
+        match sq3 {
+            Some(sq3) if sq3.z == self.z => {
+                if let Err(r) = self.vision_specials(self, sq3, ignore_doors, env, &mut ret) {
+                    return r;
+                }
+                if let Err(r) = self.vision_specials(sq3, sq3, ignore_doors, env, &mut ret) {
+                    return r;
+                }
+            }
+            Some(sq3) => {
+                let ext = m.tables.flag.exterior;
+                if z > 0 && (self.z != -1 || sq3.z != 0) && sq3.has(ext) && !self.has(ext) {
+                    ret = TestResults::Blocked;
+                }
+            }
+            None => {}
+        }
+        if self.get_vision_matrix(x, y, z) {
+            TestResults::Blocked
+        } else {
+            ret
+        }
+    }
+
+    /// `DoDiagnalCheck(x, y, z, bIgnoreDoors)`.
+    fn do_diagonal_check<G: GetSquare>(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+        ignore_doors: bool,
+        env: &VisionEnv<'_, G>,
+    ) -> TestResults {
+        let res = self.test_vision_adjacent(x, 0, z, false, ignore_doors, env);
+        if res == TestResults::Blocked {
+            return TestResults::Blocked;
+        }
+        let res2 = self.test_vision_adjacent(0, y, z, false, ignore_doors, env);
+        if res2 == TestResults::Blocked {
+            return TestResults::Blocked;
+        }
+        if res == TestResults::ClearThroughWindow || res2 == TestResults::ClearThroughWindow {
+            return TestResults::ClearThroughWindow;
+        }
+        self.test_vision_adjacent(x, y, z, false, ignore_doors, env)
+    }
+}
+
 /// `IsoMetaGrid.isValidChunk(wx, wy)`.
 fn is_valid_chunk(meta: &IsoMetaGrid, wx: i32, wy: i32) -> bool {
     let (x, y) = (wx * 8, wy * 8);
@@ -1305,6 +2054,17 @@ impl IsoCell {
     /// `fixObjectAmbientEmittersOnAdjacentChunks`, the lighting and
     /// `LosUtil` invalidation, `IsoLightSwitch.chunkLoaded` and the cutaway
     /// data.
+    ///
+    /// The neighbour chunks and squares this sees are those in `self`, which
+    /// must be the chunks the game has added to the chunk map by then:
+    /// `IsoChunkMap.processAllLoadGridSquare` calls `setChunkDirect` and then
+    /// `doLoadGridsquare` one chunk at a time, so chunks streamed in but not
+    /// yet added are invisible to this pass. The bits it computes across them
+    /// (for example a `solidtrans` square's window or hoppable lookup south
+    /// or east of it) stay as computed without them unless a later chunk's
+    /// pass recomputes that pair. When loading an area at once, run
+    /// [`IsoCell::recalc_chunk_squares`] and then this for each chunk in load
+    /// order, with the chunks not yet passed here held outside the cell.
     pub fn load_in_main_thread(
         &mut self,
         wx: i32,

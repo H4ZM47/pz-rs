@@ -11,8 +11,10 @@ pz-classfile.workspace = true
 pz-entity.workspace = true
 
 [dev-dependencies]
-pz-scripts.workspace = true
 pz-classfile.workspace = true
+
+pz-scripts.workspace = true
+pz-entity.workspace = true
 
 [features]
 # Hand-authored test helpers (e.g. `sprite::types::test_tables`) for other crates' tests.
