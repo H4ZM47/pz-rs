@@ -291,3 +291,88 @@ fn call_order_errors_match_the_native_messages() {
     assert_eq!(s.add_light(1, 0, 0, 32, 5, 1.0, 1.0, 1.0, -1, true), Err(LightingError::IllegalState("duplicate light id")));
     assert_eq!(s.remove_light(2), Err(LightingError::IllegalState("unknown light id")));
 }
+
+#[test]
+fn point_light_falls_off_with_distance() {
+    let scene = Scene::new(0, |_, _| Some(Sq::indoor(3)));
+    let mut s = LightingSession::new();
+    s.add_light(1, OX + 4, OY + 4, 32, 5, 1.0, 1.0, 1.0, -1, true).unwrap();
+    scene.frame(&mut s, true);
+    s.do_lighting_update(0, true);
+    scene.frame_lsu(&mut s, false, 100.0);
+    s.do_lighting_update(1, false);
+    scene.frame(&mut s, false);
+    let at = get(&mut s, 4, 4);
+    assert_eq!(at.light_count(), 1);
+    assert_eq!(at.light_info(), [255, 255, 255]);
+    let two = get(&mut s, 6, 4);
+    assert_eq!(two.light_info()[0], ((1.0f32 - 2.0 / 5.0) * 255.0) as u8);
+    // (0, 0) is sqrt(32) away, beyond the radius.
+    assert_eq!(get(&mut s, 0, 0).light_count(), 0);
+}
+
+#[test]
+fn inactive_point_light_adds_nothing() {
+    let scene = Scene::new(0, |_, _| Some(Sq::indoor(3)));
+    let mut s = LightingSession::new();
+    s.add_light(1, OX + 4, OY + 4, 32, 5, 1.0, 1.0, 1.0, -1, false).unwrap();
+    scene.frame(&mut s, true);
+    s.do_lighting_update(0, true);
+    scene.frame_lsu(&mut s, false, 100.0);
+    s.do_lighting_update(1, false);
+    scene.frame(&mut s, false);
+    assert_eq!(get(&mut s, 4, 4).light_count(), 0);
+}
+
+#[test]
+fn vision_cone_limits_can_see() {
+    // Looking east with a narrow cone and no close-range perception.
+    let mut scene = Scene::new(0x00_c8_c8_c8, |_, _| {
+        let mut q = Sq::outdoor();
+        q.vm = 0;
+        Some(q)
+    });
+    scene.player.x = OX as f32 + 4.5;
+    scene.player.y = OY as f32 + 4.5;
+    scene.player.perception = 0.0;
+    scene.player.cone = -0.9;
+    let mut s = scene.run();
+    assert_eq!(get(&mut s, 7, 4).vis(), 7, "ahead");
+    assert_eq!(get(&mut s, 1, 4).vis(), 4, "behind: in line of sight but outside the cone");
+    assert_eq!(get(&mut s, 4, 4).vis(), 7, "own square");
+}
+
+#[test]
+fn torch_lights_the_squares_ahead_on_the_player_level() {
+    let mut scene = Scene::new(0, |_, _| Some(Sq::indoor(3)));
+    scene.player.x = OX as f32 + 1.5;
+    scene.player.y = OY as f32 + 4.5;
+    let mut s = LightingSession::new();
+    s.update_torch(1, OX as f32 + 1.5, OY as f32 + 4.5, 32.0, 1.0, 1.0, 1.0, 1.0, 0.0, 6.0, 1.0, false, 0.0, 0);
+    scene.frame(&mut s, true);
+    s.do_lighting_update(0, true);
+    scene.frame(&mut s, false);
+    s.do_lighting_update(1, false);
+    scene.frame(&mut s, false);
+    let ahead = get(&mut s, 4, 4);
+    assert!(ahead.light_info()[0] > 0);
+    assert_eq!(ahead.light_count(), 1);
+    assert_eq!(ahead.light(0)[5] as u32 >> 24, 2, "torch entries are flagged 2");
+    assert_eq!(get(&mut s, 0, 4).light_info(), [0, 0, 0], "behind the torch");
+}
+
+#[test]
+fn see_all_renders_without_a_player_square() {
+    let mut scene = Scene::new(SKY, |_, _| {
+        let mut q = Sq::outdoor();
+        q.vm = 0;
+        Some(q)
+    });
+    scene.player.see_all = true;
+    scene.player.x = -1000.0;
+    let mut s = scene.run();
+    let l = get(&mut s, 5, 5);
+    assert_eq!(l.vis(), 7);
+    assert_eq!(l.dark_multi_raw(), 100000);
+    assert_eq!(l.light_info(), [info_byte(0xc8, 1.0), info_byte(0x80, 1.0), info_byte(0x40, 1.0)]);
+}

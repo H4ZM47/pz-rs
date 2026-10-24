@@ -347,3 +347,54 @@ pub(crate) fn distance_to(x0: i32, y0: i32, z0: i32, x1: i32, y1: i32, z1: i32) 
     let s = dx.wrapping_mul(dx).wrapping_add(dy.wrapping_mul(dy)).wrapping_add(dz.wrapping_mul(dz));
     (s as u32 as f32).sqrt()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn light_list_keeps_the_closer_entry_for_an_id() {
+        let mut l = ResultLights::default();
+        assert!(l.add_light(7, 1, 2, 32, 10, 1.0, 0.5, 0.25, 0, 3.0));
+        assert!(!l.add_light(7, 1, 2, 32, 10, 1.0, 1.0, 1.0, 0, 3.0));
+        assert!(l.add_light(7, 1, 2, 32, 10, 0.0, 0.0, 0.0, 0, 2.0));
+        assert_eq!(l.count, 1);
+        assert_eq!(l.lights[0].dist, 2.0);
+        assert_eq!(l.lights[0].packed, 0);
+    }
+
+    #[test]
+    fn full_light_list_evicts_the_relatively_farthest() {
+        let mut l = ResultLights::default();
+        for i in 0..5 {
+            assert!(l.add_light(i, 0, 0, 32, 10, 1.0, 1.0, 1.0, 0, i as f32));
+        }
+        // dist/radius 0.45 beats the worst entry (4/10).
+        assert!(!l.add_light(9, 0, 0, 32, 10, 1.0, 1.0, 1.0, 0, 4.5));
+        assert!(l.add_light(9, 0, 0, 32, 20, 1.0, 1.0, 1.0, 0, 4.5));
+        assert_eq!(l.count, 5);
+        assert_eq!(l.lights[4].id, 9);
+    }
+
+    #[test]
+    fn colours_pack_as_truncated_bytes_with_flags() {
+        let mut l = ResultLights::default();
+        l.add_light(1, 0, 0, 0, 1, 2.0, 0.5, 0.1, 2, 0.0);
+        assert_eq!(l.lights[0].packed, 0x0219_7fff);
+    }
+
+    #[test]
+    fn grey_transmission_scales_and_coloured_filters_by_the_brightest_channel() {
+        let t = Transmission { intensity: 0.5, ..Transmission::default() };
+        assert_eq!(t.apply(0.8, 0.4, 0.2), (0.4, 0.2, 0.1));
+        let t = Transmission { r: 1.0, g: 0.5, b: 0.0, intensity: 0.5, mix: 0.0 };
+        assert_eq!(t.apply(0.8, 0.4, 0.2), (0.4, 0.2, 0.0));
+    }
+
+    #[test]
+    fn fastfloor_rounds_down() {
+        assert_eq!(fastfloor(1.5), 1);
+        assert_eq!(fastfloor(-1.5), -2);
+        assert_eq!(fastfloor(-2.0), -2);
+    }
+}

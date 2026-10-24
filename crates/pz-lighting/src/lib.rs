@@ -22,6 +22,42 @@
 //! docs for the hand-off model. [`SquareLighting`] decodes the 44-int block
 //! `getSquareLighting` produces.
 //!
+//! # Example: a noon frame without a player
+//!
+//! ```
+//! use pz_lighting::{Character, LightingSession, SquareLighting, Transmission};
+//!
+//! let sky = 0x00_e6_e6_e6; // GameTime.getSkyLightLevel(): b | g << 8 | r << 16
+//! let frame = |s: &mut LightingSession, first: bool| {
+//!     s.state_begin_update(0, 10, 10, 1, 1).unwrap(); // chunk (10, 10), 1x1 chunks
+//!     s.player_set(Character { see_all: true, ..Character::default() }).unwrap();
+//!     s.state_end_frame(1.0, 1.0, 1.0, 1.0, 0.0, 30.0, 40.0, first, 100.0, sky).unwrap();
+//!     if first {
+//!         s.chunk_begin_update(10, 10, 32, 32).unwrap();
+//!         s.chunk_level_begin_update(32).unwrap();
+//!         for y in 0..8 {
+//!             for x in 0..8 {
+//!                 s.square_begin_update(x, y, 32).unwrap();
+//!                 // All eight directions open, sky above, outdoors.
+//!                 s.square_set(0xff, true, false, false, 0, -1, -1, sky, true).unwrap();
+//!                 s.square_set_light_transmission([Transmission::default(); 4]).unwrap();
+//!                 s.square_end_update().unwrap();
+//!             }
+//!         }
+//!         s.chunk_level_end_update().unwrap();
+//!         s.chunk_end_update().unwrap();
+//!     }
+//!     s.state_end_update().unwrap();
+//! };
+//! let mut s = LightingSession::new();
+//! frame(&mut s, true); // hands the world over
+//! s.do_lighting_update(0, true); // computes
+//! frame(&mut s, false); // swaps the results in
+//! let l = SquareLighting(s.get_square_lighting(0, 83, 84, 32).unwrap().unwrap());
+//! assert_eq!(l.dark_multi_raw(), 100000);
+//! assert_eq!(l.light_level(), sky as u32);
+//! ```
+//!
 //! # Exactness
 //!
 //! The port follows the arm64 build of the library: `f32` throughout, fused
