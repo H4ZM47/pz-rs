@@ -76,6 +76,20 @@ Status of the Rust port. Update this file with every merged change.
   re-save byte-identically except one wild animal (`setWild(true)` draws a
   random stress), and the original loads the chunks written here with the
   same animal fields. Checked locally.
+- World hooks (`pz_world::WorldState`, `SquareHooks` and the renderer's
+  `WorldHooks`): `IsoBarricade` queries (barricades on both sides of door,
+  window and thumpable edges, planks, metal, vision, light transmission),
+  `IsoThumpable` blocked doors and windows, `IsoDoor` curtains,
+  `haveElectricity` from the chunks' generator lists, `hasGridPower`,
+  `IsoLightSwitch.canSwitchLight`, and light items (`isEmittingLight`, the
+  light getters, `HandWeapon`'s weapon light) as player torches; sandbox
+  and world power values are runtime input. On 7 local saves and on 3
+  copies barricaded, curtained and powered by the original's own classes
+  (with the grid on and shut off), every compared line matches the
+  original's queries: 14,723 + 751,347 square lines (blocked doors and
+  windows, electricity), 5,570 barricades, 7,358 doors, 8,895 windows,
+  157 thumpables, 17,055 light switches and 378 light items per sandbox
+  setting. Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all
