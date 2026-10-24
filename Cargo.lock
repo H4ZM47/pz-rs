@@ -1435,6 +1435,7 @@ name = "pz-client"
 version = "0.1.0"
 dependencies = [
  "png",
+ "pz-characters",
  "pz-engine",
  "pz-fs",
  "pz-kahlua",

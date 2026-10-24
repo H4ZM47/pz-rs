@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use pz_classfile::{load_class, static_inits, Jar, StaticInit, Value};
+use pz_classfile::{load_class, method_effects, static_inits, Effect, Jar, StaticInit, Value};
 
 use super::Registries;
 use crate::base::{ScriptError, ScriptResult};
@@ -93,6 +93,82 @@ pub const VEHICLE_ENUM_CLASSES: &[&str] = &[
 
 const PERKS_CLASS: &str = "zombie/characters/skills/PerkFactory$Perks";
 const PERK_CLASS: &str = "zombie/characters/skills/PerkFactory$Perk";
+const PERK_FACTORY_CLASS: &str = "zombie/characters/skills/PerkFactory";
+
+/// A `PerkFactory.Perks` constant: `public static final Perk <field> = new
+/// Perk(id[, parent])`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PerkDecl {
+    /// The `Perks` field name.
+    pub field: String,
+    /// The constructor's `id`.
+    pub id: String,
+    /// The `Perks` field passed as `parent`, for `Perk(String, Perk)`.
+    pub parent: Option<String>,
+}
+
+/// One statement of `PerkFactory.init()`. Perks are named by their
+/// `PerkFactory.Perks` field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PerkInit {
+    /// `Perks.<perk>.parent = Perks.<parent>`.
+    SetParent { perk: String, parent: String },
+    /// `AddPerk(perk, translation, [parent,] xp1..xp10[, passiv])`; `parent`
+    /// is `None` for the overloads without one (they pass `Perks.None`).
+    AddPerk { perk: String, translation: String, parent: Option<String>, xp: [i32; 10], passiv: bool },
+}
+
+fn perks_field(v: &Value) -> Option<String> {
+    match v {
+        Value::Static { class, name } if class == PERKS_CLASS => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// Decodes the effects of `PerkFactory.init()`.
+fn perk_init(effects: Vec<Effect>) -> ScriptResult<Vec<PerkInit>> {
+    let bad = |what: &str| ScriptError::new(format!("{PERK_FACTORY_CLASS}.init: unreadable {what}"));
+    let mut out = Vec::new();
+    for e in effects {
+        match e {
+            Effect::PutField { object, class, field, value } if class == PERK_CLASS && field == "parent" => {
+                let perk = perks_field(&object).ok_or_else(|| bad("parent assignment"))?;
+                let parent = perks_field(&value).ok_or_else(|| bad("parent assignment"))?;
+                out.push(PerkInit::SetParent { perk, parent });
+            }
+            Effect::Call(Value::Call { class, name, args, .. }) if class == PERK_FACTORY_CLASS && name == "AddPerk" => {
+                let mut args = args.iter();
+                let perk = args.next().and_then(perks_field).ok_or_else(|| bad("AddPerk perk"))?;
+                let translation = args.next().and_then(Value::as_str).ok_or_else(|| bad("AddPerk translation"))?.to_string();
+                let rest: Vec<&Value> = args.collect();
+                let (parent, rest) = match rest.first() {
+                    Some(v @ Value::Static { .. }) => (Some(perks_field(v).ok_or_else(|| bad("AddPerk parent"))?), &rest[1..]),
+                    _ => (None, &rest[..]),
+                };
+                let ints: Vec<i64> = rest
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(i) => Some(*i),
+                        _ => None,
+                    })
+                    .collect::<Option<_>>()
+                    .ok_or_else(|| bad("AddPerk xp"))?;
+                let (xp, passiv) = match ints.len() {
+                    10 => (&ints[..], false),
+                    11 => (&ints[..10], ints[10] != 0),
+                    _ => return Err(bad("AddPerk arguments")),
+                };
+                let mut table = [0; 10];
+                for (t, v) in table.iter_mut().zip(xp) {
+                    *t = *v as i32;
+                }
+                out.push(PerkInit::AddPerk { perk, translation, parent, xp: table, passiv });
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
 const RAGDOLL_CLASS: &str = "zombie/scripting/objects/RagdollScript";
 pub const METABOLICS_CLASS: &str = "zombie/characters/BodyDamage/Metabolics";
 pub const BODY_PART_TYPE_CLASS: &str = "zombie/characters/BodyDamage/BodyPartType";
@@ -180,6 +256,10 @@ fn body_parts(jar: &Jar) -> ScriptResult<Vec<BodyPartDecl>> {
 pub struct BuiltinTables {
     /// `PerkFactory.Perks` ids in declaration order.
     pub perk_ids: Vec<String>,
+    /// `PerkFactory.Perks` constants in declaration (construction) order.
+    pub perks: Vec<PerkDecl>,
+    /// `PerkFactory.init()`, statement by statement.
+    pub perk_init: Vec<PerkInit>,
     /// `RagdollScript.boneNameArray`.
     pub ragdoll_bone_names: Vec<String>,
     /// [`VEHICLE_ENUM_CLASSES`] constants: (class, [(constant, id)]).
@@ -220,15 +300,22 @@ impl BuiltinTables {
     }
 
     pub fn load(jar: &Jar) -> ScriptResult<Self> {
-        let perks = load_class(jar, PERKS_CLASS).map_err(class_error)?;
-        let perk_ids = static_inits(&perks)
+        let perks_class = load_class(jar, PERKS_CLASS).map_err(class_error)?;
+        let perks: Vec<PerkDecl> = static_inits(&perks_class)
             .map_err(class_error)?
             .into_iter()
             .filter_map(|i| match i.value {
-                Value::New { class, args } if class == PERK_CLASS => args.first().and_then(Value::as_str).map(str::to_string),
+                Value::New { class, args } if class == PERK_CLASS && i.class == PERKS_CLASS => Some(PerkDecl {
+                    field: i.field,
+                    id: args.first().and_then(Value::as_str)?.to_string(),
+                    parent: args.get(1).and_then(perks_field),
+                }),
                 _ => None,
             })
             .collect();
+        let perk_ids = perks.iter().map(|p| p.id.clone()).collect();
+        let factory = load_class(jar, PERK_FACTORY_CLASS).map_err(class_error)?;
+        let perk_init = perk_init(method_effects(&factory, "init").map_err(class_error)?)?;
         let bones = pz_classfile::static_value(jar, RAGDOLL_CLASS, "boneNameArray").map_err(class_error)?;
         let ragdoll_bone_names = bones
             .as_ref()
@@ -246,6 +333,8 @@ impl BuiltinTables {
         }
         Ok(BuiltinTables {
             perk_ids,
+            perks,
+            perk_init,
             ragdoll_bone_names,
             vehicle_enums,
             metabolics: metabolics(jar)?,

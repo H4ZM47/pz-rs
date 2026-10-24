@@ -1,7 +1,9 @@
-//! Symbolic evaluation of a class's static initializer (`<clinit>`): which
-//! value each `putstatic` stores, as an expression over constants, other
-//! static fields, static calls and constructor calls. Straight-line code
-//! only; anything the evaluator does not model becomes [`Value::Unknown`].
+//! Symbolic evaluation of straight-line method bodies, such as a class's
+//! static initializer (`<clinit>`) or a static `init()` that registers
+//! built-in data: which value each `putstatic`/`putfield` stores and which
+//! calls run for their effect, as expressions over constants, other static
+//! fields, static calls and constructor calls. Anything the evaluator does
+//! not model (locals, branches, arithmetic) becomes [`Value::Unknown`].
 
 use crate::class::ClassFile;
 use crate::{Error, Result};
@@ -47,6 +49,18 @@ pub struct StaticInit {
     pub class: String,
     pub field: String,
     pub value: Value,
+}
+
+/// One effect of an evaluated method body, in execution order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Effect {
+    /// `putstatic class.field = value`.
+    PutStatic(StaticInit),
+    /// `putfield object.field = value` (`class` is the field's owner).
+    PutField { object: Value, class: String, field: String, value: Value },
+    /// A call whose result is unused: a `void` call, or one whose result is
+    /// popped. Always a [`Value::Call`].
+    Call(Value),
 }
 
 /// Number of argument slots in a method descriptor, and whether it returns
@@ -105,7 +119,19 @@ fn insn_len(code: &[u8], pc: usize) -> Result<usize> {
 
 /// Evaluates `class`'s `<clinit>`; empty if it has none.
 pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
-    let Some(code) = class.method("<clinit>").and_then(|m| m.code.as_ref()) else {
+    Ok(method_effects(class, "<clinit>")?
+        .into_iter()
+        .filter_map(|e| match e {
+            Effect::PutStatic(i) => Some(i),
+            _ => None,
+        })
+        .collect())
+}
+
+/// Evaluates the body of `class`'s first method named `method`; empty if
+/// it has no such method or the method has no code.
+pub fn method_effects(class: &ClassFile, method: &str) -> Result<Vec<Effect>> {
+    let Some(code) = class.method(method).and_then(|m| m.code.as_ref()) else {
         return Ok(Vec::new());
     };
     let u16_at = |pc: usize| -> Result<u16> {
@@ -137,7 +163,9 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
                 });
             }
             0x57 => {
-                pop(&mut stack);
+                if let call @ Value::Call { .. } = pop(&mut stack) {
+                    out.push(Effect::Call(call));
+                }
             }
             0x59 => {
                 let top = stack.last().cloned().unwrap_or(Value::Unknown);
@@ -154,7 +182,13 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
             0xb3 => {
                 let r = class.member_ref(u16_at(pc + 1)?)?;
                 let value = pop(&mut stack);
-                out.push(StaticInit { class: r.class, field: r.name, value });
+                out.push(Effect::PutStatic(StaticInit { class: r.class, field: r.name, value }));
+            }
+            0xb5 => {
+                let r = class.member_ref(u16_at(pc + 1)?)?;
+                let value = pop(&mut stack);
+                let object = pop(&mut stack);
+                out.push(Effect::PutField { object, class: r.class, field: r.name, value });
             }
             0xb6..=0xb9 => {
                 let r = class.member_ref(u16_at(pc + 1)?)?;
@@ -172,8 +206,11 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
                     if op != 0xb8 {
                         args.insert(0, pop(&mut stack));
                     }
+                    let call = Value::Call { class: r.class, name: r.name, descriptor: r.descriptor, args };
                     if returns {
-                        stack.push(Value::Call { class: r.class, name: r.name, descriptor: r.descriptor, args });
+                        stack.push(call);
+                    } else {
+                        out.push(Effect::Call(call));
                     }
                 }
             }

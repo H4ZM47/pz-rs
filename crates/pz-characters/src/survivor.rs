@@ -97,6 +97,11 @@ impl Characters {
     /// `Translator.getText(key)`. TODO(Translator): translation tables are
     /// not loaded; the key is returned as for a missing translation.
     pub fn get_text(&self, key: &str) -> String {
+        Self::translate(key)
+    }
+
+    /// [`Characters::get_text`] without a borrow of the statics.
+    pub fn translate(key: &str) -> String {
         key.to_string()
     }
 
@@ -218,7 +223,7 @@ pub fn set_torso<I>(desc: &mut SurvivorDesc<I>) {
 pub struct SurvivorDesc<I> {
     pub human_visual: HumanVisual,
     pub worn_items: WornItems<I>,
-    /// `xpBoostMap` (perk id -> level). TODO(PerkFactory): `Perk` keys.
+    /// `xpBoostMap` (perk id -> level; perks are singletons, one per id).
     pub xp_boost_map: Vec<(String, i32)>,
     pub character_profession: Option<Rc<RegistryKey>>,
     pub forename: Option<String>,
