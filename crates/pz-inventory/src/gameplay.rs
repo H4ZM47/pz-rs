@@ -14,6 +14,7 @@ use crate::lua_table::{LuaKey, LuaTable, LuaValue};
 use crate::saved::SavedItem;
 use crate::template::ItemClass;
 use crate::visual::{ItemVisual, VisualRng};
+use pz_scripts::objects::items::ItemReplacement;
 
 /// `ItemTag` registry ids these methods test.
 pub mod tags {
@@ -174,6 +175,18 @@ impl InventoryItem {
     /// `getClothingItem()`: the asset of the script's `clothingItem`, or of
     /// the hand replacement / `withoutDrainable` script the alternate
     /// model name selects. `None` without a ready asset.
+    /// `getItemReplacementPrimaryHand()`: the script item's
+    /// `replacePrimaryHand` (clothing item name, mask variable name and
+    /// value, attachment).
+    pub fn get_item_replacement_primary_hand(&self) -> Option<&ItemReplacement> {
+        self.template.replace_primary_hand.as_ref()
+    }
+
+    /// `getItemReplacementSecondHand()`.
+    pub fn get_item_replacement_second_hand(&self) -> Option<&ItemReplacement> {
+        self.template.replace_second_hand.as_ref()
+    }
+
     pub fn get_clothing_item<'a>(
         &self,
         assets: Option<&'a ItemAssets>,
@@ -184,10 +197,16 @@ impl InventoryItem {
         let get = |n: &Option<String>| n.as_deref().and_then(|n| a.clothing_items.get(n));
         match self.get_alternate_model_name(assets, owner) {
             Some(alternate_model::RIGHT_HAND) => {
-                return t.replace_primary_hand.as_ref().and_then(get);
+                return t
+                    .replace_primary_hand
+                    .as_ref()
+                    .and_then(|r| get(&r.clothing_item_name));
             }
             Some(alternate_model::LEFT_HAND) => {
-                return t.replace_second_hand.as_ref().and_then(get);
+                return t
+                    .replace_second_hand
+                    .as_ref()
+                    .and_then(|r| get(&r.clothing_item_name));
             }
             Some(alternate_model::WITHOUT_DRAINABLE) => {
                 if let Some(c) = get(&t.without_drainable_clothing_item) {

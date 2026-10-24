@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use std::cell::RefCell;
 
-use pz_scripts::objects::items::{Item, ModelWeaponPart};
+use pz_scripts::objects::items::{Item, ItemReplacement, ModelWeaponPart};
 use pz_scripts::ScriptManager;
 
 /// A shared script item (`ScriptManager.FindItem`), compared by identity.
@@ -204,11 +204,11 @@ pub struct ItemTemplate {
     // (`getScriptItem()`), resolved once when the template is built.
     /// `clothingItem` (the `ClothingItem` asset name).
     pub clothing_item: Option<String>,
-    /// `replacePrimaryHand.clothingItemName` (`Some(None)`: a replacement
-    /// without a clothing item).
-    pub replace_primary_hand: Option<Option<String>>,
-    /// `replaceSecondHand.clothingItemName`.
-    pub replace_second_hand: Option<Option<String>>,
+    /// `replacePrimaryHand` (clothing item name, mask variable name/value,
+    /// attachment).
+    pub replace_primary_hand: Option<ItemReplacement>,
+    /// `replaceSecondHand`.
+    pub replace_second_hand: Option<ItemReplacement>,
     /// `getWithoutDrainable()`.
     pub without_drainable: Option<String>,
     /// The `clothingItem` of the `withoutDrainable` script, if it exists.
@@ -457,14 +457,8 @@ impl ItemTemplate {
             use_delta: item.use_delta,
             count: item.count,
             clothing_item: item.clothing_item.clone(),
-            replace_primary_hand: item
-                .replace_primary_hand
-                .as_ref()
-                .map(|r| r.clothing_item_name.clone()),
-            replace_second_hand: item
-                .replace_second_hand
-                .as_ref()
-                .map(|r| r.clothing_item_name.clone()),
+            replace_primary_hand: item.replace_primary_hand.clone(),
+            replace_second_hand: item.replace_second_hand.clone(),
             without_drainable: item.without_drainable.clone(),
             without_drainable_clothing_item: item
                 .without_drainable
