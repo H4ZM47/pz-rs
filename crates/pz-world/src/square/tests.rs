@@ -1,6 +1,8 @@
 //! Square properties, matrices and edge queries on hand-built squares.
 
 use super::*;
+use crate::los::{line_clear, TestResults};
+use crate::objects::ObjectId;
 use crate::objects::{IsoDoor, IsoWindow};
 use crate::sprite::{test_tables, PropertyValueMap};
 use crate::IsoChunk;
@@ -36,6 +38,13 @@ const SPRITES: &[Spec] = &[
     ("door_n", "doorN", &[("doorN", ""), ("collideN", "")]),
     ("crate", "normal", &[("solid", "")]),
     ("seat", "normal", &[("solidtrans", "")]),
+    ("stairs_tn", "stairsTN", &[]),
+    ("stairs_mn", "stairsMN", &[]),
+    ("stairs_bn", "stairsBN", &[]),
+    ("thump_window_n", "normal", &[("WindowN", "")]),
+    ("thump", "normal", &[]),
+    ("frame_w", "normal", &[("WindowW", "")]),
+    ("barricade", "normal", &[]),
     ("plan", "normal", &[("solid", ""), ("blueprint", "")]),
     (
         "water",
@@ -508,4 +517,329 @@ fn main_thread_load_sees_only_chunks_added_before() {
     let w = build(false);
     assert!(!bit(&w, 1, 0));
     assert!(!bit(&w, 1, -1));
+}
+
+/// Special objects of classes this crate does not model, by square and
+/// object identity.
+#[derive(Default)]
+struct Specials(Vec<((i32, i32, i32), ObjectId, SpecialObject)>);
+
+impl SquareHooks for Specials {
+    fn special_object(&self, sq: &IsoGridSquare, obj: &IsoObject) -> Option<SpecialObject> {
+        self.0
+            .iter()
+            .find(|(at, id, _)| *at == (sq.x, sq.y, sq.z) && *id == obj.id)
+            .map(|(_, _, s)| *s)
+    }
+}
+
+impl World {
+    /// A plain object in `specialObjects` (what a hook-modelled class looks
+    /// like here).
+    fn add_special(&mut self, x: i32, y: i32, z: i32, name: &str) -> ObjectId {
+        self.add(x, y, z, name, ObjectKind::Object);
+        let sq = self.cell.get_grid_square_mut(x, y, z).unwrap();
+        let id = sq.objects.last().unwrap().id;
+        sq.special_objects.push(id);
+        id
+    }
+}
+
+fn thumpable(north: bool) -> ThumpableInfo {
+    ThumpableInfo {
+        north,
+        ..ThumpableInfo::default()
+    }
+}
+
+#[test]
+fn stairs_heights_and_edges() {
+    let mut w = World::new();
+    w.put(10, 9, 0, &["floor"]);
+    w.put(10, 10, 0, &["stairs_tn"]);
+    w.put(10, 11, 0, &["stairs_mn"]);
+    w.put(10, 12, 0, &["stairs_bn"]);
+    w.put(11, 10, 0, &["floor"]);
+    let m = &w.m;
+    let (top, mid, bottom) = (w.sq(10, 10, 0), w.sq(10, 11, 0), w.sq(10, 12, 0));
+    assert_eq!(top.get_stairs_direction(m), Some(IsoDirections::N));
+    assert_eq!(w.sq(10, 9, 0).get_stairs_direction(m), None);
+    assert_eq!(top.get_stairs_height(IsoDirections::N, m), 1.0);
+    assert_eq!(top.get_stairs_height(IsoDirections::S, m), 0.66);
+    assert_eq!(top.get_stairs_height(IsoDirections::E, m), -1.0);
+    assert_eq!(mid.get_stairs_height(IsoDirections::N, m), 0.66);
+    // Bottom stairs report 0 for both ends, as in the original.
+    assert_eq!(bottom.get_stairs_height_max(m), 0.0);
+    assert_eq!(bottom.get_stairs_height_min(m), 0.0);
+    let g = &w.cell;
+    // The top step is 1 high to the north, the floor beyond is 0.
+    assert!(top.is_stairs_edge_blocked(IsoDirections::N, m, g));
+    assert!(!top.is_stairs_edge_blocked(IsoDirections::S, m, g));
+    assert!(top.is_stairs_edge_blocked(IsoDirections::E, m, g));
+    // No square to the west.
+    assert!(top.is_stairs_edge_blocked(IsoDirections::W, m, g));
+    assert!(!w
+        .sq(10, 9, 0)
+        .is_stairs_edge_blocked(IsoDirections::S, m, g));
+}
+
+#[test]
+fn sloped_surface_heights() {
+    let m = manager();
+    let ramp = square(&m, 3, 3, 0, &["ramp_n"]);
+    let floor = square(&m, 4, 3, 0, &["floor"]);
+    assert_eq!(ramp.get_sloped_surface_height_at(0.5, 0.25), 0.75);
+    assert_eq!(ramp.get_sloped_surface_height_at(0.5, -3.0), 1.0);
+    assert_eq!(floor.get_sloped_surface_height_at(0.5, 0.5), 0.0);
+    assert_eq!(ramp.get_sloped_surface_height_max(), 1.0);
+    assert!(ramp.has_identical_sloped_surface(&square(&m, 9, 9, 0, &["ramp_n"])));
+    assert!(!ramp.has_identical_sloped_surface(&floor));
+}
+
+#[test]
+fn adjacent_windows_and_hoppables() {
+    let mut w = World::new();
+    for (x, y) in [
+        (9, 10),
+        (9, 11),
+        (11, 10),
+        (13, 10),
+        (15, 11),
+        (15, 12),
+        (9, 14),
+    ] {
+        w.put(x, y, 0, &["floor"]);
+    }
+    // A window on the south edge of (9, 10).
+    w.add(
+        9,
+        11,
+        0,
+        "window_n",
+        ObjectKind::Window(IsoWindow {
+            north: true,
+            ..window()
+        }),
+    );
+    // A window frame on the west edge of (11, 10).
+    w.add(
+        11,
+        10,
+        0,
+        "frame_w",
+        ObjectKind::WindowFrame { north: false },
+    );
+    let tw = w.add_special(13, 10, 0, "thump_window_n");
+    // A fence on the north edge of (15, 12).
+    w.add(15, 12, 0, "fence_n", ObjectKind::Object);
+    let th = w.add_special(9, 14, 0, "thump");
+    let hooks = Specials(vec![
+        ((13, 10, 0), tw, SpecialObject::Thumpable(thumpable(true))),
+        (
+            (9, 14, 0),
+            th,
+            SpecialObject::Thumpable(ThumpableInfo {
+                is_hoppable: true,
+                ..thumpable(false)
+            }),
+        ),
+    ]);
+    let (m, g, none) = (&w.m, &w.cell, &NoSquareHooks);
+    assert!(w.sq(9, 10, 0).is_adjacent_to_window(m, g, none));
+    assert!(w.sq(9, 11, 0).is_adjacent_to_window(m, g, none));
+    assert!(w.sq(11, 10, 0).is_adjacent_to_window(m, g, none));
+    assert!(!w.sq(13, 10, 0).is_adjacent_to_window(m, g, none));
+    assert!(w.sq(13, 10, 0).is_adjacent_to_window(m, g, &hooks));
+    assert!(!w.sq(15, 12, 0).is_adjacent_to_window(m, g, &hooks));
+    assert!(w.sq(15, 12, 0).is_adjacent_to_hoppable(m, g, none));
+    assert!(w.sq(15, 11, 0).is_adjacent_to_hoppable(m, g, none));
+    // The window frame's sprite counts as hoppable too.
+    assert!(w.sq(11, 10, 0).is_adjacent_to_hoppable(m, g, none));
+    assert!(!w.sq(9, 14, 0).is_adjacent_to_hoppable(m, g, none));
+    assert!(w.sq(9, 14, 0).is_adjacent_to_hoppable(m, g, &hooks));
+    // The thumpable window is on the north edge of (13, 10).
+    w.put(13, 9, 0, &["floor"]);
+    w.put(13, 11, 0, &["floor"]);
+    let (m, g) = (&w.m, &w.cell);
+    let a = w.sq(13, 10, 0);
+    let (sq, o) = a
+        .get_window_thumpable_to(g.get_grid_square(13, 9, 0), m, g, &hooks)
+        .unwrap();
+    assert_eq!(((sq.x, sq.y), o.id), ((13, 10), tw));
+    assert!(a
+        .get_window_thumpable_to(g.get_grid_square(13, 11, 0), m, g, &hooks)
+        .is_none());
+    assert!(w
+        .sq(11, 10, 0)
+        .get_window_frame_to(w.cell.get_grid_square(10, 10, 0), g)
+        .is_none());
+    w.put(10, 10, 0, &["floor"]);
+    let g = &w.cell;
+    let (sq, obj) = w
+        .sq(10, 10, 0)
+        .get_window_frame_to(g.get_grid_square(11, 10, 0), g)
+        .unwrap();
+    assert_eq!((sq.x, sq.y), (11, 10));
+    assert!(matches!(obj.kind, ObjectKind::WindowFrame { north: false }));
+}
+
+#[test]
+fn doors_to_and_reach() {
+    let mut w = World::new();
+    for (x, y) in [
+        (10, 10),
+        (10, 11),
+        (12, 10),
+        (12, 11),
+        (14, 10),
+        (14, 11),
+        (8, 8),
+        (9, 8),
+    ] {
+        w.put(x, y, 0, &["floor"]);
+    }
+    w.add(
+        10,
+        11,
+        0,
+        "door_n",
+        ObjectKind::Door(IsoDoor {
+            north: true,
+            ..door()
+        }),
+    );
+    let th = w.add_special(12, 11, 0, "thump");
+    w.add(14, 11, 0, "wall_n", ObjectKind::Object);
+    w.recalc();
+    let door_th = ThumpableInfo {
+        is_door: true,
+        ..thumpable(true)
+    };
+    let hooks = Specials(vec![((12, 11, 0), th, SpecialObject::Thumpable(door_th))]);
+    let (m, g, none) = (&w.m, &w.cell, &NoSquareHooks);
+    let at = |x, y| g.get_grid_square(x, y, 0);
+    let (_, d) = w.sq(10, 10, 0).get_door_to(at(10, 11), g, none).unwrap();
+    assert!(matches!(d.kind, ObjectKind::Door(_)));
+    assert!(w.sq(12, 10, 0).get_door_to(at(12, 11), g, none).is_none());
+    let (sq, d) = w.sq(12, 10, 0).get_door_to(at(12, 11), g, &hooks).unwrap();
+    assert_eq!(((sq.x, sq.y), d.id), ((12, 11), th));
+    // Closed doors and walls stop reaching; open floor does not.
+    assert!(!w.sq(10, 10, 0).can_reach_to(w.sq(10, 11, 0), m, g, none));
+    assert!(!w.sq(14, 10, 0).can_reach_to(w.sq(14, 11, 0), m, g, none));
+    assert!(w.sq(8, 8, 0).can_reach_to(w.sq(9, 8, 0), m, g, none));
+    assert!(w.sq(8, 8, 0).can_reach_to(w.sq(8, 8, 0), m, g, none));
+    assert!(!w.sq(8, 8, 0).can_reach_to(w.sq(10, 10, 0), m, g, none));
+}
+
+#[test]
+fn vision_through_edges() {
+    let mut w = World::new();
+    for x in 8..16 {
+        for y in 8..16 {
+            w.put(x, y, 0, &["floor"]);
+        }
+    }
+    w.add(12, 9, 0, "wall_w", ObjectKind::Object);
+    w.add(
+        9,
+        13,
+        0,
+        "window_n",
+        ObjectKind::Window(IsoWindow {
+            north: true,
+            ..window()
+        }),
+    );
+    w.add(
+        11,
+        13,
+        0,
+        "door_n",
+        ObjectKind::Door(IsoDoor {
+            north: true,
+            ..door()
+        }),
+    );
+    w.add(
+        14,
+        11,
+        0,
+        "door_n",
+        ObjectKind::Door(IsoDoor {
+            north: true,
+            open: true,
+            ..door()
+        }),
+    );
+    let bar = w.add_special(13, 13, 0, "barricade");
+    let th = w.add_special(15, 13, 0, "thump");
+    let thw = w.add_special(8, 13, 0, "thump_window_n");
+    w.recalc();
+    let door_th = ThumpableInfo {
+        is_door: true,
+        ..thumpable(true)
+    };
+    let barricade = |blocks_vision| SpecialObject::Barricade {
+        dir: IsoDirections::N,
+        blocks_vision,
+    };
+    let specials = |blocks| {
+        Specials(vec![
+            ((13, 13, 0), bar, barricade(blocks)),
+            ((15, 13, 0), th, SpecialObject::Thumpable(door_th)),
+            ((8, 13, 0), thw, SpecialObject::Thumpable(thumpable(true))),
+        ])
+    };
+    let (hooks, weak) = (specials(true), specials(false));
+    let env = VisionEnv::new(&w.cell, &w.m, &hooks);
+    let tva = |x, y, dx, dy, ignore, env: &VisionEnv<'_, IsoCell>| {
+        w.sq(x, y, 0)
+            .test_vision_adjacent(dx, dy, 0, true, ignore, env)
+    };
+    use TestResults::*;
+    // The wall on the west edge of (12, 9).
+    assert_eq!(tva(11, 9, 1, 0, false, &env), Blocked);
+    assert_eq!(tva(11, 10, 1, 0, false, &env), Clear);
+    // Out of range.
+    assert_eq!(tva(11, 10, 2, 0, false, &env), Blocked);
+    assert_eq!(tva(9, 12, 0, 1, false, &env), ClearThroughWindow);
+    assert_eq!(tva(9, 13, 0, -1, false, &env), ClearThroughWindow);
+    // A closed door blocks unless doors are ignored.
+    assert_eq!(tva(11, 12, 0, 1, false, &env), Blocked);
+    assert_eq!(tva(11, 12, 0, 1, true, &env), Clear);
+    // An open north door swings to the west edge.
+    assert_eq!(tva(14, 11, -1, 0, false, &env), ClearThroughOpenDoor);
+    assert_eq!(tva(14, 10, 0, 1, false, &env), Clear);
+    // The barricade blocks from either side when it blocks vision.
+    assert_eq!(tva(13, 13, 0, -1, false, &env), Blocked);
+    assert_eq!(tva(13, 12, 0, 1, false, &env), Blocked);
+    let weak_env = VisionEnv::new(&w.cell, &w.m, &weak);
+    assert_eq!(tva(13, 12, 0, 1, false, &weak_env), Clear);
+    let plain = VisionEnv::new(&w.cell, &w.m, &NoSquareHooks);
+    // Without the hook the barricade is a plain object (no effect here).
+    assert_eq!(tva(13, 12, 0, 1, false, &plain), Clear);
+    // A closed thumpable door; a thumpable window is seen through.
+    assert_eq!(tva(15, 12, 0, 1, false, &env), Blocked);
+    assert_eq!(tva(15, 12, 0, 1, true, &env), Clear);
+    assert_eq!(tva(8, 12, 0, 1, true, &env), Clear);
+    // Diagonals check both sides: past the wall corner at (12, 9).
+    assert_eq!(tva(11, 9, 1, 1, false, &env), Blocked);
+    assert_eq!(tva(11, 11, 1, 1, false, &env), Clear);
+    // Lines of sight.
+    assert_eq!(line_clear(&env, 8, 9, 0, 15, 9, 0, false), Blocked);
+    assert_eq!(line_clear(&env, 8, 10, 0, 15, 10, 0, false), Clear);
+    assert_eq!(
+        line_clear(&env, 9, 10, 0, 9, 15, 0, false),
+        ClearThroughWindow
+    );
+    assert_eq!(line_clear(&env, 11, 10, 0, 11, 15, 0, false), Blocked);
+    assert_eq!(line_clear(&env, 11, 10, 0, 11, 15, 0, true), Clear);
+    assert_eq!(
+        crate::los::line_clear_range(&env, 9, 8, 0, 9, 15, 0, false, 2),
+        Blocked
+    );
+    assert_eq!(
+        crate::los::line_clear_range(&env, 9, 8, 0, 9, 15, 0, false, 10),
+        ClearThroughWindow
+    );
 }
