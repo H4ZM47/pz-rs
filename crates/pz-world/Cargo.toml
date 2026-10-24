@@ -6,6 +6,12 @@ edition.workspace = true
 [dependencies]
 pz-fs.workspace = true
 pz-kahlua.workspace = true
+pz-inventory.workspace = true
+pz-classfile.workspace = true
+
+[dev-dependencies]
+pz-scripts.workspace = true
+pz-entity.workspace = true
 pz-classfile.workspace = true
 
 [features]

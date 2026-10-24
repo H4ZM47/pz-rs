@@ -1685,6 +1685,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-inventory"
+version = "0.1.0"
+dependencies = [
+ "pz-entity",
+ "pz-scripts",
+]
+
+[[package]]
 name = "pz-iso-render"
 version = "0.1.0"
 dependencies = [
@@ -1791,8 +1799,11 @@ name = "pz-world"
 version = "0.1.0"
 dependencies = [
  "pz-classfile",
+ "pz-entity",
  "pz-fs",
+ "pz-inventory",
  "pz-kahlua",
+ "pz-scripts",
 ]
 
 [[package]]

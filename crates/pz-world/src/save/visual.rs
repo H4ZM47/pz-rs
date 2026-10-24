@@ -1,28 +1,13 @@
 //! `HumanVisual`, `ItemVisual`, `AnimalVisual`, `SurvivorDesc` and
 //! `IsoDeadBody` as saved in chunk files.
 
-use super::io::{color_from_byte, color_to_byte, err, Reader, SaveResult, Writer};
-use super::items::{load_items, save_items, ItemRegistry};
+use super::io::{err, Reader, SaveResult, Writer};
+use super::items::ItemRegistry;
 use super::lua_table::{LuaKey, LuaTable, LuaValue};
 use super::SaveTables;
 use crate::objects::ItemContainer;
 
-/// An `ImmutableColor` built from bytes (components are `byte / 255f`).
-pub type Rgb = [f32; 3];
-
-fn load_rgb(r: &mut Reader<'_>) -> SaveResult<Rgb> {
-    Ok([
-        color_from_byte(r.i8()?),
-        color_from_byte(r.i8()?),
-        color_from_byte(r.i8()?),
-    ])
-}
-
-fn save_rgb(w: &mut Writer, c: &Rgb) {
-    for &v in c {
-        w.i8(color_to_byte(v));
-    }
-}
+pub use pz_inventory::visual::{load_rgb, non_blank, save_rgb, ItemVisual, Rgb};
 
 /// `HumanVisual`.
 #[derive(Clone, Debug, PartialEq)]
@@ -106,7 +91,8 @@ impl HumanVisual {
         }
         let n = r.i8()?;
         for _ in 0..n.max(0) {
-            v.body_visuals.push(ItemVisual::load(r, t)?);
+            v.body_visuals
+                .push(ItemVisual::load(r, t.blood_body_parts)?);
         }
         v.non_attached_hair = non_blank(r.string()?);
         let f2 = r.i8()? as u8;
@@ -179,128 +165,6 @@ impl HumanVisual {
             .flatten()
         {
             save_rgb(w, c);
-        }
-    }
-}
-
-/// `StringUtils.isNullOrWhitespace` folded to `None`.
-fn non_blank(s: String) -> Option<String> {
-    if s.trim().is_empty() {
-        None
-    } else {
-        Some(s)
-    }
-}
-
-/// `ItemVisual`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ItemVisual {
-    pub full_type: String,
-    pub alternate_model_name: String,
-    pub clothing_item_name: String,
-    pub tint: Option<Rgb>,
-    pub base_texture: i8,
-    pub texture_choice: i8,
-    pub hue: f32,
-    pub decal: Option<String>,
-    /// `blood`, `dirt`, `holes`, `basicPatches`, `denimPatches`,
-    /// `leatherPatches`: `None` until a non-empty array is read.
-    pub arrays: [Option<Vec<i8>>; 6],
-}
-
-impl ItemVisual {
-    pub fn load(r: &mut Reader<'_>, t: &SaveTables) -> SaveResult<Self> {
-        let f1 = r.i8()? as u8;
-        let mut v = ItemVisual {
-            full_type: r.string()?,
-            alternate_model_name: r.string()?,
-            clothing_item_name: r.string()?,
-            tint: None,
-            base_texture: -1,
-            texture_choice: -1,
-            hue: f32::INFINITY,
-            decal: None,
-            arrays: Default::default(),
-        };
-        if f1 & 1 != 0 {
-            v.tint = Some(load_rgb(r)?);
-        }
-        if f1 & 2 != 0 {
-            v.base_texture = r.i8()?;
-        }
-        if f1 & 4 != 0 {
-            v.texture_choice = r.i8()?;
-        }
-        if f1 & 8 != 0 {
-            v.hue = r.f32()?;
-        }
-        if f1 & 0x10 != 0 {
-            v.decal = Some(r.string()?);
-        }
-        for arr in v.arrays.iter_mut() {
-            let n = r.i8()?;
-            if n > 0 && arr.is_none() {
-                *arr = Some(vec![0; t.blood_body_parts]);
-            }
-            for i in 0..n.max(0) as usize {
-                let a = r.i8()?;
-                if let Some(arr) = arr {
-                    if i < arr.len() {
-                        arr[i] = a;
-                    }
-                }
-            }
-        }
-        Ok(v)
-    }
-
-    pub fn save(&self, w: &mut Writer) {
-        let decal = self.decal.as_deref().filter(|d| !d.trim().is_empty());
-        let mut f1: u8 = 0;
-        if self.tint.is_some() {
-            f1 |= 1;
-        }
-        if self.base_texture != -1 {
-            f1 |= 2;
-        }
-        if self.texture_choice != -1 {
-            f1 |= 4;
-        }
-        if self.hue != f32::INFINITY {
-            f1 |= 8;
-        }
-        if decal.is_some() {
-            f1 |= 0x10;
-        }
-        w.i8(f1 as i8);
-        w.string(&self.full_type);
-        w.string(&self.alternate_model_name);
-        w.string(&self.clothing_item_name);
-        if let Some(c) = &self.tint {
-            save_rgb(w, c);
-        }
-        if self.base_texture != -1 {
-            w.i8(self.base_texture);
-        }
-        if self.texture_choice != -1 {
-            w.i8(self.texture_choice);
-        }
-        if self.hue != f32::INFINITY {
-            w.f32(self.hue);
-        }
-        if let Some(d) = decal {
-            w.string(d);
-        }
-        for arr in &self.arrays {
-            match arr {
-                Some(a) => {
-                    w.i8(a.len() as i8);
-                    for &x in a {
-                        w.i8(x);
-                    }
-                }
-                None => w.i8(0),
-            }
         }
     }
 }
@@ -619,7 +483,7 @@ impl IsoDeadBody {
         let mut attached_items = Vec::new();
         if r.bool()? {
             let id = r.i32()?;
-            let mut c = load_container(r, items)?;
+            let mut c = load_container(r, wv, items)?;
             c.id = id;
             container = Some(c);
             let n = r.i8()?;
@@ -695,7 +559,7 @@ impl IsoDeadBody {
     }
 
     /// `IsoDeadBody.save` (including the serialise and class bytes).
-    pub fn save(&self, w: &mut Writer, class_id: i8) -> SaveResult<()> {
+    pub fn save(&self, w: &mut Writer, class_id: i8, items: &dyn ItemRegistry) -> SaveResult<()> {
         let b = &self.base;
         w.i8(1);
         w.i8(class_id);
@@ -770,7 +634,7 @@ impl IsoDeadBody {
             Some(c) => {
                 w.i8(1);
                 w.i32(c.id);
-                save_container(w, c);
+                save_container(w, c, items)?;
                 w.i8(self.worn_items.len() as i8);
                 for (loc, i) in &self.worn_items {
                     w.string(loc);
@@ -813,23 +677,23 @@ impl IsoDeadBody {
 }
 
 /// `ItemContainer.load` (the type, flags, items and capacity).
-pub fn load_container(r: &mut Reader<'_>, items: &dyn ItemRegistry) -> SaveResult<ItemContainer> {
-    let kind = r.string()?;
-    let mut c = ItemContainer::new(Some(&kind));
-    c.explored = r.bool()?;
-    c.items = load_items(r, items)?;
-    c.has_been_looted = r.bool()?;
-    c.capacity = r.i32()?;
+pub fn load_container(
+    r: &mut Reader<'_>,
+    wv: i32,
+    items: &dyn ItemRegistry,
+) -> SaveResult<ItemContainer> {
+    let mut c = ItemContainer::new(None);
+    c.load(r, wv, items)?;
     Ok(c)
 }
 
 /// `ItemContainer.save`.
-pub fn save_container(w: &mut Writer, c: &ItemContainer) {
-    w.opt_string(c.kind.as_deref());
-    w.bool(c.explored);
-    save_items(w, &c.items);
-    w.bool(c.has_been_looted);
-    w.i32(c.capacity);
+pub fn save_container(
+    w: &mut Writer,
+    c: &ItemContainer,
+    items: &dyn ItemRegistry,
+) -> SaveResult<()> {
+    c.save(w, items)
 }
 
 #[cfg(test)]
@@ -841,7 +705,7 @@ mod tests {
         let t = SaveTables::for_tests();
         let mut v = HumanVisual::new(t.blood_body_parts);
         v.skin_color = None;
-        v.hair_color = Some([color_from_byte(5), 0.5, 1.0]);
+        v.hair_color = Some([super::super::io::color_from_byte(5), 0.5, 1.0]);
         v.blood = vec![1, 2];
         v.body_visuals.push(ItemVisual {
             full_type: "Base.X".into(),
