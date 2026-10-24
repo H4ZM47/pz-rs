@@ -28,6 +28,16 @@ Status of the Rust port. Update this file with every merged change.
   `IsoWorld.LoadTileDefinitions` property pass; all 61,229 sprites match the
   original loader locally. Enum and lookup tables are runtime data
   (`SpriteTables`, `ObjectTables`); the jar loader awaits `pz-classfile`.
+- Chunk save files (`pz_world::save`): `map/<wx>/<wy>.bin` load and save
+  (`IsoChunk`, `IsoGridSquare`, `IsoObject` and the object classes chunks
+  hold, corpses, containers, mod data, erosion data). Items and ECS
+  components are kept as their length-framed bytes. On 14,894 real chunk
+  files the decoded squares match the original's load except for one
+  constructor-added component class, and 13,348 re-saves are byte-identical
+  to the original's own re-save (the rest differ inside item or component
+  records, which the original re-saves through classes not ported here);
+  4,085 map-loaded chunks saved here load and re-save as expected in the
+  original. Checked locally.
 
 ## In progress
 - StringLib, OsLib.
