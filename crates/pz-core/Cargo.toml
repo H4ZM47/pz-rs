@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 pz-kahlua.workspace = true
+jiff.workspace = true

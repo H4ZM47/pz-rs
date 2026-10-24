@@ -1,0 +1,13 @@
+[package]
+name = "pz-characters"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-core.workspace = true
+pz-scripts.workspace = true
+pz-inventory.workspace = true
+pz-anim.workspace = true
+pz-world.workspace = true
+pz-pathfind.workspace = true
+pz-audio.workspace = true

@@ -2,6 +2,7 @@
 //! which register `CharacterTraitDefinition`/`CharacterProfessionDefinition`
 //! entries (kept in this group's statics).
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::{parse_int, try_get_texture};
@@ -114,9 +115,13 @@ pub struct CharacterTraitDefinition {
     pub xp_boosts: Vec<(String, i32)>,
 }
 
+/// A definition as the original shares it (`characterTraitDefinitions`
+/// values, Lua handles).
+pub type CharacterTraitDefinitionRef = Rc<RefCell<CharacterTraitDefinition>>;
+
 impl CharacterTraitDefinition {
     /// The constructor: dereferences the trait type for its texture name.
-    fn new(
+    pub fn new(
         trait_type: Option<Rc<RegistryKey>>,
         name: Option<&str>,
         cost: i32,
@@ -147,6 +152,26 @@ impl CharacterTraitDefinition {
     pub fn right_label(&self) -> String {
         cost_label(self.cost)
     }
+
+    /// `isGrantedRecipe`.
+    pub fn is_granted_recipe(&self, recipe: &str) -> bool {
+        self.granted_recipes.iter().any(|r| r == recipe)
+    }
+
+    /// `hasMutuallyExclusiveTraits`.
+    pub fn has_mutually_exclusive_traits(&self) -> bool {
+        !self.mutually_exclusive_traits.is_empty()
+    }
+
+    /// `addXPBoost`.
+    pub fn add_xp_boost(&mut self, perk: &str, level: i32) {
+        put_xp_boost(&mut self.xp_boosts, perk, level);
+    }
+
+    /// `addMutuallyExclusive` (no duplicate check).
+    pub fn add_mutually_exclusive(&mut self, t: Option<Rc<RegistryKey>>) {
+        self.mutually_exclusive_traits.push(t);
+    }
 }
 
 /// `getRightLabel` of both definition classes: a positive cost is shown
@@ -162,38 +187,65 @@ fn cost_label(cost: i32) -> String {
     )
 }
 
-/// `isMutuallyExclusive`, on definitions held in `defs`.
-fn is_mutually_exclusive(defs: &[CharacterTraitDefinition], a: usize, b: usize) -> bool {
-    let other = defs[b].character_trait_type.as_ref();
-    if list_contains(&defs[a].mutually_exclusive_traits, other) {
+/// `isMutuallyExclusive`: `a` excludes `b`'s type directly or through one
+/// of its granted traits' definitions.
+pub fn is_mutually_exclusive(
+    sm: &ScriptManager,
+    a: &CharacterTraitDefinitionRef,
+    b: &CharacterTraitDefinitionRef,
+) -> bool {
+    let other = b.borrow().character_trait_type.clone();
+    let (direct, granted) = {
+        let a = a.borrow();
+        (
+            list_contains(&a.mutually_exclusive_traits, other.as_ref()),
+            a.granted_traits.clone(),
+        )
+    };
+    if direct {
         return true;
     }
-    defs[a].granted_traits.iter().any(|g| {
-        defs.iter()
-            .find(|d| key_eq(d.character_trait_type.as_ref(), g.as_ref()))
-            .is_some_and(|d| list_contains(&d.mutually_exclusive_traits, other))
+    granted.iter().any(|g| {
+        character_trait_definition(sm, g.as_ref()).is_some_and(|d| {
+            list_contains(&d.borrow().mutually_exclusive_traits, other.as_ref())
+        })
     })
 }
 
 /// `updateMutualExclusiveTraits`.
-fn update_mutual_exclusive_traits(defs: &mut [CharacterTraitDefinition], i: usize) {
-    for j in 0..defs.len() {
-        if i == j || (!is_mutually_exclusive(defs, i, j) && !is_mutually_exclusive(defs, j, i)) {
+fn update_mutual_exclusive_traits(sm: &ScriptManager, this: &CharacterTraitDefinitionRef) {
+    for other in character_trait_definitions(sm) {
+        if Rc::ptr_eq(this, &other)
+            || (!is_mutually_exclusive(sm, this, &other) && !is_mutually_exclusive(sm, &other, this))
+        {
             continue;
         }
-        let tj = defs[j].character_trait_type.clone();
-        if !list_contains(&defs[i].mutually_exclusive_traits, tj.as_ref()) {
-            defs[i].mutually_exclusive_traits.push(tj);
+        let other_type = other.borrow().character_trait_type.clone();
+        let this_type = this.borrow().character_trait_type.clone();
+        let mut t = this.borrow_mut();
+        if !list_contains(&t.mutually_exclusive_traits, other_type.as_ref()) {
+            t.mutually_exclusive_traits.push(other_type);
         }
-        let ti = defs[i].character_trait_type.clone();
-        if !list_contains(&defs[j].mutually_exclusive_traits, ti.as_ref()) {
-            defs[j].mutually_exclusive_traits.push(ti);
+        drop(t);
+        let mut o = other.borrow_mut();
+        if !list_contains(&o.mutually_exclusive_traits, this_type.as_ref()) {
+            o.mutually_exclusive_traits.push(this_type);
         }
     }
 }
 
+/// `addGrantedTrait`.
+pub fn add_granted_trait(
+    sm: &ScriptManager,
+    def: &CharacterTraitDefinitionRef,
+    t: Option<Rc<RegistryKey>>,
+) {
+    def.borrow_mut().granted_traits.push(t);
+    update_mutual_exclusive_traits(sm, def);
+}
+
 /// `CharacterTraitDefinition.getTraits()`, in registration order.
-pub fn character_trait_definitions(sm: &ScriptManager) -> Vec<CharacterTraitDefinition> {
+pub fn character_trait_definitions(sm: &ScriptManager) -> Vec<CharacterTraitDefinitionRef> {
     sm.statics
         .items
         .borrow()
@@ -205,12 +257,75 @@ pub fn character_trait_definitions(sm: &ScriptManager) -> Vec<CharacterTraitDefi
 pub fn character_trait_definition(
     sm: &ScriptManager,
     t: Option<&Rc<RegistryKey>>,
-) -> Option<CharacterTraitDefinition> {
+) -> Option<CharacterTraitDefinitionRef> {
     let st = sm.statics.items.borrow();
     st.character_trait_definitions
         .iter()
-        .find(|d| key_eq(d.character_trait_type.as_ref(), t))
+        .find(|d| key_eq(d.borrow().character_trait_type.as_ref(), t))
         .cloned()
+}
+
+/// `CharacterTraitDefinition.addCharacterTraitDefinition`: a new definition
+/// replacing any for the same trait in place (`LinkedHashMap.put`).
+pub fn add_character_trait_definition(
+    sm: &ScriptManager,
+    trait_type: Option<Rc<RegistryKey>>,
+    name: Option<&str>,
+    cost: i32,
+    description: Option<&str>,
+    is_profession_trait: bool,
+    disabled_in_multiplayer: bool,
+) -> ScriptResult<CharacterTraitDefinitionRef> {
+    let def = Rc::new(RefCell::new(CharacterTraitDefinition::new(
+        trait_type.clone(),
+        name,
+        cost,
+        description,
+        is_profession_trait,
+        disabled_in_multiplayer,
+    )?));
+    let mut st = sm.statics.items.borrow_mut();
+    let defs = &mut st.character_trait_definitions;
+    match defs
+        .iter()
+        .position(|d| key_eq(d.borrow().character_trait_type.as_ref(), trait_type.as_ref()))
+    {
+        Some(i) => defs[i] = def.clone(),
+        None => defs.push(def.clone()),
+    }
+    Ok(def)
+}
+
+/// `CharacterTraitDefinition.reset`.
+pub fn reset_character_trait_definitions(sm: &ScriptManager) {
+    sm.statics.items.borrow_mut().character_trait_definitions.clear();
+}
+
+/// `CharacterTraitDefinition.setMutualExclusive`; a trait without a
+/// definition is a `NullPointerException`.
+pub fn set_mutual_exclusive(
+    sm: &ScriptManager,
+    a: Option<&Rc<RegistryKey>>,
+    b: Option<&Rc<RegistryKey>>,
+) -> ScriptResult {
+    let npe = || ScriptError::new("java.lang.NullPointerException");
+    let da = character_trait_definition(sm, a).ok_or_else(npe)?;
+    {
+        let mut d = da.borrow_mut();
+        if !list_contains(&d.mutually_exclusive_traits, b) {
+            d.mutually_exclusive_traits.push(b.cloned());
+        }
+    }
+    let db = character_trait_definition(sm, b).ok_or_else(npe)?;
+    {
+        let mut d = db.borrow_mut();
+        if !list_contains(&d.mutually_exclusive_traits, a) {
+            d.mutually_exclusive_traits.push(a.cloned());
+        }
+    }
+    update_mutual_exclusive_traits(sm, &da);
+    update_mutual_exclusive_traits(sm, &db);
+    Ok(())
 }
 
 /// `zombie.scripting.objects.CharacterTraitDefinitionScript`.
@@ -277,40 +392,30 @@ impl CharacterTraitDefinitionScript {
                 unknown_key(sm, "CharacterTraitDefinitionScript", k, block)?;
             }
         }
-        let def = CharacterTraitDefinition::new(
-            trait_type.clone(),
+        let def = add_character_trait_definition(
+            sm,
+            trait_type,
             ui_name,
             cost,
             ui_description,
             profession,
             disabled_in_multiplayer,
         )?;
-        let mut st = sm.statics.items.borrow_mut();
-        let defs = &mut st.character_trait_definitions;
-        let i = match defs
-            .iter()
-            .position(|d| key_eq(d.character_trait_type.as_ref(), trait_type.as_ref()))
         {
-            Some(i) => {
-                defs[i] = def;
-                i
+            let mut d = def.borrow_mut();
+            for (perk, level) in xp {
+                d.add_xp_boost(&perk, level);
             }
-            None => {
-                defs.push(def);
-                defs.len() - 1
+            for t in mutually_exclusive {
+                d.add_mutually_exclusive(t);
             }
-        };
-        for (perk, level) in xp {
-            put_xp_boost(&mut defs[i].xp_boosts, &perk, level);
+            d.granted_recipes.extend(granted_recipes);
         }
-        defs[i].mutually_exclusive_traits.extend(mutually_exclusive);
-        defs[i].granted_recipes.extend(granted_recipes);
         for t in granted_traits {
-            defs[i].granted_traits.push(t);
-            update_mutual_exclusive_traits(defs, i);
+            add_granted_trait(sm, &def, t);
         }
         if let Some(t) = texture_name {
-            defs[i].texture_name = t.to_string();
+            def.borrow_mut().texture_name = t.to_string();
         }
         Ok(())
     }
@@ -345,7 +450,7 @@ pub struct CharacterProfessionDefinition {
     /// the untranslated key.
     pub display_name: Option<String>,
     pub cost: i32,
-    pub description: String,
+    pub description: Option<String>,
     /// TODO(Texture): the icon texture.
     pub icon_path_name: Option<String>,
     pub granted_traits: Vec<Option<Rc<RegistryKey>>>,
@@ -354,7 +459,39 @@ pub struct CharacterProfessionDefinition {
     pub xp_boosts: Vec<(String, i32)>,
 }
 
+/// A shared profession definition.
+pub type CharacterProfessionDefinitionRef = Rc<RefCell<CharacterProfessionDefinition>>;
+
 impl CharacterProfessionDefinition {
+    /// The constructor (`Texture.trygetTexture` on a non-empty icon path).
+    pub fn new(
+        sm: &ScriptManager,
+        profession_type: Option<Rc<RegistryKey>>,
+        name: Option<&str>,
+        cost: i32,
+        description: Option<&str>,
+        icon_path_name: Option<&str>,
+    ) -> ScriptResult<Self> {
+        if let Some(icon) = icon_path_name.filter(|i| !i.is_empty()) {
+            try_get_texture(sm, icon)?;
+        }
+        Ok(CharacterProfessionDefinition {
+            character_profession_type: profession_type,
+            display_name: name.map(str::to_string),
+            cost,
+            description: Some(
+                description
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or("")
+                    .to_string(),
+            ),
+            icon_path_name: icon_path_name.map(str::to_string),
+            granted_traits: Vec::new(),
+            granted_recipes: Vec::new(),
+            xp_boosts: Vec::new(),
+        })
+    }
+
     /// `getRightLabel`.
     pub fn right_label(&self) -> String {
         cost_label(self.cost)
@@ -364,15 +501,74 @@ impl CharacterProfessionDefinition {
     pub fn is_granted_recipe(&self, recipe: &str) -> bool {
         self.granted_recipes.iter().any(|r| r == recipe)
     }
+
+    /// `addXPBoost`.
+    pub fn add_xp_boost(&mut self, perk: &str, level: i32) {
+        put_xp_boost(&mut self.xp_boosts, perk, level);
+    }
 }
 
 /// `CharacterProfessionDefinition.getProfessions()`, in registration order.
-pub fn character_profession_definitions(sm: &ScriptManager) -> Vec<CharacterProfessionDefinition> {
+pub fn character_profession_definitions(
+    sm: &ScriptManager,
+) -> Vec<CharacterProfessionDefinitionRef> {
     sm.statics
         .items
         .borrow()
         .character_profession_definitions
         .clone()
+}
+
+/// `CharacterProfessionDefinition.getCharacterProfessionDefinition`.
+pub fn character_profession_definition(
+    sm: &ScriptManager,
+    p: Option<&Rc<RegistryKey>>,
+) -> Option<CharacterProfessionDefinitionRef> {
+    let st = sm.statics.items.borrow();
+    st.character_profession_definitions
+        .iter()
+        .find(|d| key_eq(d.borrow().character_profession_type.as_ref(), p))
+        .cloned()
+}
+
+/// `CharacterProfessionDefinition.addCharacterProfessionDefinition`.
+pub fn add_character_profession_definition(
+    sm: &ScriptManager,
+    profession_type: Option<Rc<RegistryKey>>,
+    name: Option<&str>,
+    cost: i32,
+    description: Option<&str>,
+    icon_path_name: Option<&str>,
+) -> ScriptResult<CharacterProfessionDefinitionRef> {
+    let def = Rc::new(RefCell::new(CharacterProfessionDefinition::new(
+        sm,
+        profession_type.clone(),
+        name,
+        cost,
+        description,
+        icon_path_name,
+    )?));
+    let mut st = sm.statics.items.borrow_mut();
+    let defs = &mut st.character_profession_definitions;
+    match defs.iter().position(|d| {
+        key_eq(
+            d.borrow().character_profession_type.as_ref(),
+            profession_type.as_ref(),
+        )
+    }) {
+        Some(i) => defs[i] = def.clone(),
+        None => defs.push(def.clone()),
+    }
+    Ok(def)
+}
+
+/// `CharacterProfessionDefinition.reset`.
+pub fn reset_character_profession_definitions(sm: &ScriptManager) {
+    sm.statics
+        .items
+        .borrow_mut()
+        .character_profession_definitions
+        .clear();
 }
 
 /// `zombie.scripting.objects.CharacterProfessionDefinitionScript`.
@@ -432,38 +628,20 @@ impl CharacterProfessionDefinitionScript {
                 unknown_key(sm, "CharacterProfessionDefinitionScript", k, block)?;
             }
         }
-        if let Some(icon) = icon_path_name.filter(|i| !i.is_empty()) {
-            try_get_texture(sm, icon)?;
-        }
-        let mut def = CharacterProfessionDefinition {
-            character_profession_type: profession,
-            display_name: ui_name.map(str::to_string),
+        let def = add_character_profession_definition(
+            sm,
+            profession,
+            ui_name,
             cost,
-            description: ui_description
-                .filter(|d| !d.is_empty())
-                .unwrap_or("")
-                .to_string(),
-            icon_path_name: icon_path_name.map(str::to_string),
-            granted_traits: Vec::new(),
-            granted_recipes: Vec::new(),
-            xp_boosts: Vec::new(),
-        };
+            ui_description,
+            icon_path_name,
+        )?;
+        let mut d = def.borrow_mut();
         for (perk, level) in xp {
-            put_xp_boost(&mut def.xp_boosts, &perk, level);
+            d.add_xp_boost(&perk, level);
         }
-        def.granted_recipes = granted_recipes;
-        def.granted_traits = granted_traits;
-        let mut st = sm.statics.items.borrow_mut();
-        let defs = &mut st.character_profession_definitions;
-        match defs.iter().position(|d| {
-            key_eq(
-                d.character_profession_type.as_ref(),
-                def.character_profession_type.as_ref(),
-            )
-        }) {
-            Some(i) => defs[i] = def,
-            None => defs.push(def),
-        }
+        d.granted_recipes.extend(granted_recipes);
+        d.granted_traits.extend(granted_traits);
         Ok(())
     }
 }

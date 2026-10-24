@@ -71,7 +71,9 @@ pub enum LogSeverity {
 
 /// Constant names of `LogSeverity`, in ordinal order. This is the one place
 /// the Lua exposure takes names from.
-pub const LOG_SEVERITY_NAMES: &[&str] = &["Trace", "Noise", "Debug", "General", "Warning", "Error", "Off"];
+pub const LOG_SEVERITY_NAMES: &[&str] = &[
+    "Trace", "Noise", "Debug", "General", "Warning", "Error", "Off",
+];
 
 impl LogSeverity {
     /// `LogSeverity.All`.
@@ -150,13 +152,81 @@ macro_rules! debug_types {
 }
 
 debug_types!(
-    General, Packet, NetworkFileDebug, Network, ZNet, DetailedInfo, Lua, LuaObject, GameOption, Mod, Sound, Zombie,
-    Combat, Objects, Fireplace, Radio, MapLoading, Clothing, Animation, AnimationDetailed, AnimationLayers, Asset,
-    Script, Shader, Sprite, Input, Recipe, ActionSystem, ActionSystemEvents, IsoRegion, FileIO, Multiplayer, Damage,
-    Death, Discord, Statistic, Vehicle, VehicleHit, Voice, Checksum, Animal, ItemPicker, CraftLogic, Action, Entity,
-    Lightning, Grapple, ExitDebug, BodyDamage, Xml, Physics, Ballistics, Ragdoll, PZBullet, ModelManager,
-    LoadAnimation, Zone, WorldGen, Foraging, Saving, Fluid, Energy, Translation, Moveable, Basement, FallDamage, ImGui,
-    CharacterTrait, ISUI, ISUIStackTrace, FaceLocationFix, Context, ClientCommand, VehicleClientCommand, UnitTest,
+    General,
+    Packet,
+    NetworkFileDebug,
+    Network,
+    ZNet,
+    DetailedInfo,
+    Lua,
+    LuaObject,
+    GameOption,
+    Mod,
+    Sound,
+    Zombie,
+    Combat,
+    Objects,
+    Fireplace,
+    Radio,
+    MapLoading,
+    Clothing,
+    Animation,
+    AnimationDetailed,
+    AnimationLayers,
+    Asset,
+    Script,
+    Shader,
+    Sprite,
+    Input,
+    Recipe,
+    ActionSystem,
+    ActionSystemEvents,
+    IsoRegion,
+    FileIO,
+    Multiplayer,
+    Damage,
+    Death,
+    Discord,
+    Statistic,
+    Vehicle,
+    VehicleHit,
+    Voice,
+    Checksum,
+    Animal,
+    ItemPicker,
+    CraftLogic,
+    Action,
+    Entity,
+    Lightning,
+    Grapple,
+    ExitDebug,
+    BodyDamage,
+    Xml,
+    Physics,
+    Ballistics,
+    Ragdoll,
+    PZBullet,
+    ModelManager,
+    LoadAnimation,
+    Zone,
+    WorldGen,
+    Foraging,
+    Saving,
+    Fluid,
+    Energy,
+    Translation,
+    Moveable,
+    Basement,
+    FallDamage,
+    ImGui,
+    CharacterTrait,
+    ISUI,
+    ISUIStackTrace,
+    FaceLocationFix,
+    Context,
+    ClientCommand,
+    VehicleClientCommand,
+    UnitTest,
     AnimationRecorder,
 );
 
@@ -176,7 +246,10 @@ impl DebugType {
     }
     /// `DebugType.valueOf(name)`.
     pub fn value_of(name: &str) -> Option<Self> {
-        DEBUG_TYPE_NAMES.iter().position(|n| *n == name).map(|i| Self::VALUES[i])
+        DEBUG_TYPE_NAMES
+            .iter()
+            .position(|n| *n == name)
+            .map(|i| Self::VALUES[i])
     }
     /// `valueOf` with the Java exception.
     pub fn value_of_or_throw(name: &str) -> Result<Self, JavaError> {
@@ -190,9 +263,17 @@ impl DebugType {
     pub fn also_activate(self) -> &'static [DebugType] {
         use DebugType::*;
         match self {
-            AnimationRecorder => {
-                &[General, Animation, ActionSystem, ActionSystemEvents, Death, Vehicle, VehicleHit, Ragdoll, Context]
-            }
+            AnimationRecorder => &[
+                General,
+                Animation,
+                ActionSystem,
+                ActionSystemEvents,
+                Death,
+                Vehicle,
+                VehicleHit,
+                Ragdoll,
+                Context,
+            ],
             _ => &[],
         }
     }
@@ -200,7 +281,11 @@ impl DebugType {
     /// `toBind.orWith = this` for its `alsoActivate` list, so the last
     /// constant listing this one wins.
     pub fn or_with(self) -> Option<DebugType> {
-        Self::VALUES.iter().rev().copied().find(|t| t.also_activate().contains(&self))
+        Self::VALUES
+            .iter()
+            .rev()
+            .copied()
+            .find(|t| t.also_activate().contains(&self))
     }
 
     // ---- convenience wrappers over the thread-local DebugLog ----
@@ -246,7 +331,10 @@ pub struct JavaError {
 
 impl JavaError {
     pub fn new(class: &str, message: impl Into<String>) -> Self {
-        JavaError { class: class.to_string(), message: Some(message.into()) }
+        JavaError {
+            class: class.to_string(),
+            message: Some(message.into()),
+        }
     }
     pub fn npe(message: &str) -> Self {
         JavaError::new("java.lang.NullPointerException", message)
@@ -264,11 +352,17 @@ impl fmt::Display for JavaError {
 }
 
 fn no_enum_constant(class: &str, name: &str) -> JavaError {
-    JavaError::new("java.lang.IllegalArgumentException", format!("No enum constant {class}.{name}"))
+    JavaError::new(
+        "java.lang.IllegalArgumentException",
+        format!("No enum constant {class}.{name}"),
+    )
 }
 
 fn index_oob(i: usize, len: usize) -> JavaError {
-    JavaError::new("java.lang.ArrayIndexOutOfBoundsException", format!("Index {i} out of bounds for length {len}"))
+    JavaError::new(
+        "java.lang.ArrayIndexOutOfBoundsException",
+        format!("Index {i} out of bounds for length {len}"),
+    )
 }
 
 fn io_error(path: &str, e: &std::io::Error) -> JavaError {
@@ -277,7 +371,10 @@ fn io_error(path: &str, e: &std::io::Error) -> JavaError {
         std::io::ErrorKind::PermissionDenied => "Permission denied".to_string(),
         _ => e.to_string(),
     };
-    JavaError::new("java.io.FileNotFoundException", format!("{path} ({reason})"))
+    JavaError::new(
+        "java.io.FileNotFoundException",
+        format!("{path} ({reason})"),
+    )
 }
 
 // ===========================================================================
@@ -298,7 +395,12 @@ pub struct StackElement {
 
 impl StackElement {
     pub fn new(class_name: &str, method_name: &str) -> Self {
-        StackElement { class_name: class_name.into(), method_name: method_name.into(), file_name: None, line_number: -1 }
+        StackElement {
+            class_name: class_name.into(),
+            method_name: method_name.into(),
+            file_name: None,
+            line_number: -1,
+        }
     }
     pub fn with_location(mut self, file: &str, line: i32) -> Self {
         self.file_name = Some(file.into());
@@ -352,12 +454,18 @@ pub fn lua_function_name(prototype_name: Option<&str>, file_name: &str) -> Strin
 
 /// `DebugLogStream.getStackTraceElementString(elements, idx, includeLoc)`.
 pub fn stack_trace_element_string(el: Option<&StackElement>, include_location: bool) -> String {
-    let Some(e) = el else { return "(UnknownStack)".into() };
+    let Some(e) = el else {
+        return "(UnknownStack)".into();
+    };
     let cls = unqualified_class_name(&e.class_name);
     let comment = if e.is_native() {
         " (Native Method)".to_string()
     } else if include_location {
-        format!("({}:{})", e.file_name.as_deref().unwrap_or("null"), e.line_number)
+        format!(
+            "({}:{})",
+            e.file_name.as_deref().unwrap_or("null"),
+            e.line_number
+        )
     } else {
         String::new()
     };
@@ -380,7 +488,10 @@ pub struct LogThrowable {
 
 impl LogThrowable {
     pub fn new(description: impl Into<String>) -> Self {
-        LogThrowable { description: description.into(), stack: Vec::new() }
+        LogThrowable {
+            description: description.into(),
+            stack: Vec::new(),
+        }
     }
     /// `DebugLogStream.getTopStackTraceString(ex)`.
     pub fn top_stack_trace_string(&self) -> String {
@@ -398,9 +509,18 @@ impl From<&JavaError> for LogThrowable {
 }
 
 /// `StackTraceContainer.getStackTraceString(elements, indent, start, count)`.
-pub fn stack_trace_string(elements: &[StackElement], indent: &str, depth_start: i32, depth_count: i32) -> String {
+pub fn stack_trace_string(
+    elements: &[StackElement],
+    indent: &str,
+    depth_start: i32,
+    depth_count: i32,
+) -> String {
     let start = depth_start.max(0) as usize;
-    let count = if depth_count <= 0 { elements.len() } else { depth_count as usize };
+    let count = if depth_count <= 0 {
+        elements.len()
+    } else {
+        depth_count as usize
+    };
     let mut out = String::new();
     let mut n = 0;
     let mut d = start;
@@ -541,7 +661,11 @@ pub enum FmtArg {
     Double(f64),
     Str(String),
     /// Any other object: its class name, `toString()` and `hashCode()`.
-    Object { class: String, text: String, hash: i32 },
+    Object {
+        class: String,
+        text: String,
+        hash: i32,
+    },
 }
 
 impl From<&str> for FmtArg {
@@ -642,10 +766,16 @@ impl FmtArg {
             FmtArg::Long(l) => (*l ^ ((*l as u64) >> 32) as i64) as i32,
             FmtArg::Float(f) => f.to_bits() as i32,
             FmtArg::Double(d) => {
-                let b = if d.is_nan() { 0x7ff8000000000000u64 } else { d.to_bits() };
+                let b = if d.is_nan() {
+                    0x7ff8000000000000u64
+                } else {
+                    d.to_bits()
+                };
                 (b ^ (b >> 32)) as i32
             }
-            FmtArg::Str(s) => s.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32)),
+            FmtArg::Str(s) => s
+                .encode_utf16()
+                .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32)),
             FmtArg::Object { hash, .. } => *hash,
         })
     }
@@ -657,7 +787,11 @@ fn decimal_digits(v: f64, single: bool) -> (Vec<u8>, i32) {
     if v == 0.0 {
         return (vec![b'0'], 0);
     }
-    let s = if single { format!("{:e}", (v.abs()) as f32) } else { format!("{:e}", v.abs()) };
+    let s = if single {
+        format!("{:e}", (v.abs()) as f32)
+    } else {
+        format!("{:e}", v.abs())
+    };
     let (m, e) = s.split_once('e').unwrap();
     let digits: Vec<u8> = m.bytes().filter(|b| *b != b'.').collect();
     (digits, e.parse::<i32>().unwrap() + 1)
@@ -669,10 +803,18 @@ pub fn java_float_to_string(f: f32) -> String {
         return "NaN".into();
     }
     if f.is_infinite() {
-        return if f < 0.0 { "-Infinity".into() } else { "Infinity".into() };
+        return if f < 0.0 {
+            "-Infinity".into()
+        } else {
+            "Infinity".into()
+        };
     }
     if f == 0.0 {
-        return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
+        return if f.is_sign_negative() {
+            "-0.0".into()
+        } else {
+            "0.0".into()
+        };
     }
     let (digits, dexp) = decimal_digits(f as f64, true);
     let digits = String::from_utf8(digits).unwrap();
@@ -685,7 +827,11 @@ pub fn java_float_to_string(f: f32) -> String {
         } else if point as usize >= digits.len() {
             format!("{}{}.0", digits, "0".repeat(point as usize - digits.len()))
         } else {
-            format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
+            format!(
+                "{}.{}",
+                &digits[..point as usize],
+                &digits[point as usize..]
+            )
         };
         format!("{sign}{s}")
     } else {
@@ -782,8 +928,16 @@ fn fill_scientific(precision: i32, digits: &[u8], exp: i32) -> (String, String) 
         m.push('.');
         m.push_str(std::str::from_utf8(&digits[1..=t as usize]).unwrap());
     }
-    let (sign, e) = if exp <= 0 { ('-', -exp + 1) } else { ('+', exp - 1) };
-    let e = if e <= 9 { format!("0{e}") } else { e.to_string() };
+    let (sign, e) = if exp <= 0 {
+        ('-', -exp + 1)
+    } else {
+        ('+', exp - 1)
+    };
+    let e = if e <= 9 {
+        format!("0{e}")
+    } else {
+        e.to_string()
+    };
     (m, format!("{sign}{e}"))
 }
 
@@ -872,7 +1026,11 @@ impl Spec {
         if self.dt {
             s.push(if self.upper { 'T' } else { 't' });
         }
-        s.push(if self.upper { self.conv.to_ascii_uppercase() } else { self.conv });
+        s.push(if self.upper {
+            self.conv.to_ascii_uppercase()
+        } else {
+            self.conv
+        });
         s
     }
 }
@@ -887,7 +1045,10 @@ fn fmt_err(class: &str, msg: String) -> JavaError {
 }
 
 fn mismatch(flag: char, conv: char) -> JavaError {
-    fmt_err("FormatFlagsConversionMismatchException", format!("Conversion = {conv}, Flags = {flag}"))
+    fmt_err(
+        "FormatFlagsConversionMismatchException",
+        format!("Conversion = {conv}, Flags = {flag}"),
+    )
 }
 
 fn check_bad_flags(s: &Spec, bad: &[char]) -> Result<(), JavaError> {
@@ -912,7 +1073,12 @@ fn check_bad_flags(s: &Spec, bad: &[char]) -> Result<(), JavaError> {
 fn check_spec(s: &Spec) -> Result<(), JavaError> {
     let missing_width = || fmt_err("MissingFormatWidthException", s.java_string());
     let bad_precision = |p: usize| fmt_err("IllegalFormatPrecisionException", p.to_string());
-    let bad_flags = || fmt_err("IllegalFormatFlagsException", format!("Flags = '{}'", s.flags.java_string()));
+    let bad_flags = || {
+        fmt_err(
+            "IllegalFormatFlagsException",
+            format!("Flags = '{}'", s.flags.java_string()),
+        )
+    };
     if s.dt {
         if let Some(p) = s.precision {
             return Err(bad_precision(p));
@@ -996,7 +1162,12 @@ fn check_spec(s: &Spec) -> Result<(), JavaError> {
 }
 
 fn parse_format(fmt: &str) -> Result<Vec<Piece>, JavaError> {
-    let unknown = |c: &str| fmt_err("UnknownFormatConversionException", format!("Conversion = '{c}'"));
+    let unknown = |c: &str| {
+        fmt_err(
+            "UnknownFormatConversionException",
+            format!("Conversion = '{c}'"),
+        )
+    };
     let ch: Vec<char> = fmt.chars().collect();
     let n = ch.len();
     let mut pieces = Vec::new();
@@ -1039,7 +1210,10 @@ fn parse_format(fmt: &str) -> Result<Vec<Piece>, JavaError> {
                 _ => &mut flags.prev,
             };
             if *slot {
-                return Err(fmt_err("DuplicateFormatFlagsException", format!("Flags = '{}'", ch[i])));
+                return Err(fmt_err(
+                    "DuplicateFormatFlagsException",
+                    format!("Flags = '{}'", ch[i]),
+                ));
             }
             *slot = true;
             i += 1;
@@ -1049,7 +1223,11 @@ fn parse_format(fmt: &str) -> Result<Vec<Piece>, JavaError> {
         while j < n && ch[j].is_ascii_digit() {
             j += 1;
         }
-        let width = if j > i { ch[i..j].iter().collect::<String>().parse::<usize>().ok() } else { None };
+        let width = if j > i {
+            ch[i..j].iter().collect::<String>().parse::<usize>().ok()
+        } else {
+            None
+        };
         i = j;
         // precision
         let mut precision = None;
@@ -1061,7 +1239,11 @@ fn parse_format(fmt: &str) -> Result<Vec<Piece>, JavaError> {
             if j == i + 1 {
                 return Err(unknown("."));
             }
-            precision = ch[i + 1..j].iter().collect::<String>().parse::<usize>().ok();
+            precision = ch[i + 1..j]
+                .iter()
+                .collect::<String>()
+                .parse::<usize>()
+                .ok();
             i = j;
         }
         let mut dt = false;
@@ -1084,7 +1266,9 @@ fn parse_format(fmt: &str) -> Result<Vec<Piece>, JavaError> {
             conv = c;
         } else {
             match c {
-                'b' | 'h' | 's' | 'c' | 'd' | 'o' | 'x' | 'e' | 'f' | 'g' | 'a' | '%' | 'n' => conv = c,
+                'b' | 'h' | 's' | 'c' | 'd' | 'o' | 'x' | 'e' | 'f' | 'g' | 'a' | '%' | 'n' => {
+                    conv = c
+                }
                 'B' | 'H' | 'S' | 'C' | 'X' | 'E' | 'G' | 'A' => {
                     conv = c.to_ascii_lowercase();
                     upper = true;
@@ -1092,7 +1276,15 @@ fn parse_format(fmt: &str) -> Result<Vec<Piece>, JavaError> {
                 _ => return Err(unknown(&c.to_string())),
             }
         }
-        let spec = Spec { index, flags, width, precision, dt, conv, upper };
+        let spec = Spec {
+            index,
+            flags,
+            width,
+            precision,
+            dt,
+            conv,
+            upper,
+        };
         check_spec(&spec)?;
         pieces.push(Piece::Spec(spec));
     }
@@ -1117,7 +1309,10 @@ fn justify(s: String, spec: &Spec) -> String {
 }
 
 fn conversion_error(spec: &Spec, arg: &FmtArg) -> JavaError {
-    fmt_err("IllegalFormatConversionException", format!("{} != {}", spec.conv, arg.java_class()))
+    fmt_err(
+        "IllegalFormatConversionException",
+        format!("{} != {}", spec.conv, arg.java_class()),
+    )
 }
 
 /// `Formatter.localizedMagnitude` (en-US): grouping and zero padding of
@@ -1184,8 +1379,16 @@ fn print_integral(spec: &Spec, v: i64, bits: u32) -> Result<String, JavaError> {
         }
         'o' | 'x' => {
             check_bad_flags(spec, &['(', ' ', '+'])?;
-            let u = if bits == 32 { v as i32 as u32 as u64 } else { v as u64 };
-            let digits = if spec.conv == 'o' { format!("{u:o}") } else { format!("{u:x}") };
+            let u = if bits == 32 {
+                v as i32 as u32 as u64
+            } else {
+                v as u64
+            };
+            let digits = if spec.conv == 'o' {
+                format!("{u:o}")
+            } else {
+                format!("{u:x}")
+            };
             let prefix = if !f.hash {
                 ""
             } else if spec.conv == 'o' {
@@ -1284,7 +1487,7 @@ fn print_float(spec: &Spec, value: f64, single: bool) -> String {
             } else {
                 let (mut digits, dexp) = decimal_digits(v, single);
                 let exp = apply_precision(dexp, &mut digits, prec);
-                if exp - 1 < -4 || exp - 1 >= prec {
+                if exp - 1 < -4 || exp > prec {
                     let (m, e) = fill_scientific(prec - 1, &digits, exp);
                     (m, Some(e), exp - 1)
                 } else {
@@ -1358,7 +1561,10 @@ fn print_arg(spec: &Spec, arg: &FmtArg) -> Result<String, JavaError> {
                 "java.lang.UnsupportedOperationException",
                 "date/time conversions are not supported by this port",
             )),
-            _ => Err(fmt_err("IllegalFormatConversionException", format!("{} != {}", spec.conv, arg.java_class()))),
+            _ => Err(fmt_err(
+                "IllegalFormatConversionException",
+                format!("{} != {}", spec.conv, arg.java_class()),
+            )),
         };
     }
     let upper = |s: String| if spec.upper { s.to_uppercase() } else { s };
@@ -1382,7 +1588,10 @@ fn print_arg(spec: &Spec, arg: &FmtArg) -> Result<String, JavaError> {
             if spec.flags.hash && !matches!(arg, FmtArg::Null) {
                 return Err(mismatch('#', 's'));
             }
-            Ok(justify(upper(truncate_precision(arg.to_java_string(), spec.precision)), spec))
+            Ok(justify(
+                upper(truncate_precision(arg.to_java_string(), spec.precision)),
+                spec,
+            ))
         }
         'c' => {
             let s = match arg {
@@ -1391,7 +1600,10 @@ fn print_arg(spec: &Spec, arg: &FmtArg) -> Result<String, JavaError> {
                 FmtArg::Int(i) => match char::from_u32(*i as u32) {
                     Some(c) => c.to_string(),
                     None => {
-                        return Err(fmt_err("IllegalFormatCodePointException", format!("Code point = {:#x}", i)));
+                        return Err(fmt_err(
+                            "IllegalFormatCodePointException",
+                            format!("Code point = {:#x}", i),
+                        ));
                     }
                 },
                 _ => return Err(conversion_error(spec, arg)),
@@ -1427,7 +1639,12 @@ pub fn java_format(format: &str, args: &[FmtArg]) -> Result<String, JavaError> {
                 '%' if !s.dt => out.push_str(&justify("%".into(), s)),
                 'n' if !s.dt => out.push('\n'),
                 _ => {
-                    let missing = || fmt_err("MissingFormatArgumentException", format!("Format specifier '{}'", s.java_string()));
+                    let missing = || {
+                        fmt_err(
+                            "MissingFormatArgumentException",
+                            format!("Format specifier '{}'", s.java_string()),
+                        )
+                    };
                     let idx = if s.flags.prev {
                         last.ok_or_else(missing)?
                     } else if let Some(k) = s.index.filter(|k| *k > 0) {
@@ -1480,7 +1697,10 @@ pub struct SystemClock {
 
 impl SystemClock {
     pub fn new() -> Self {
-        SystemClock { zone: load_local_zone(), server_time: None }
+        SystemClock {
+            zone: load_local_zone(),
+            server_time: None,
+        }
     }
 }
 
@@ -1498,7 +1718,9 @@ impl LogClock for SystemClock {
         }
     }
     fn local_offset_millis(&self, epoch_ms: i64) -> i64 {
-        self.zone.as_ref().map_or(0, |z| z.offset_secs(epoch_ms.div_euclid(1000)) * 1000)
+        self.zone
+            .as_ref()
+            .map_or(0, |z| z.offset_secs(epoch_ms.div_euclid(1000)) * 1000)
     }
     fn server_time_nanos(&self) -> i64 {
         self.server_time.as_ref().map_or(0, |f| f())
@@ -1515,7 +1737,11 @@ pub struct FixedClock {
 
 impl FixedClock {
     pub fn new(now_ms: i64, offset_ms: i64) -> Self {
-        FixedClock { now_ms: Cell::new(now_ms), offset_ms: Cell::new(offset_ms), server_nanos: Cell::new(0) }
+        FixedClock {
+            now_ms: Cell::new(now_ms),
+            offset_ms: Cell::new(offset_ms),
+            server_nanos: Cell::new(0),
+        }
     }
 }
 
@@ -1548,7 +1774,11 @@ impl TzInfo {
                 let i = self.isdst.iter().position(|d| !d).unwrap_or(0);
                 self.offsets[i]
             }
-            k => self.offsets.get(self.type_idx[k - 1] as usize).copied().unwrap_or(0),
+            k => self
+                .offsets
+                .get(self.type_idx[k - 1] as usize)
+                .copied()
+                .unwrap_or(0),
         }
     }
 
@@ -1582,7 +1812,11 @@ impl TzInfo {
         let mut transitions = Vec::with_capacity(timecnt);
         for k in 0..timecnt {
             let i = base + k * tsize;
-            transitions.push(if tsize == 8 { be64(data, i)? } else { be32(data, i)? });
+            transitions.push(if tsize == 8 {
+                be64(data, i)?
+            } else {
+                be32(data, i)?
+            });
         }
         let ti = base + timecnt * tsize;
         let type_idx = data.get(ti..ti + timecnt)?.to_vec();
@@ -1593,7 +1827,12 @@ impl TzInfo {
             offsets.push(be32(data, tt + k * 6)?);
             isdst.push(*data.get(tt + k * 6 + 4)? != 0);
         }
-        Some(TzInfo { transitions, type_idx, offsets, isdst })
+        Some(TzInfo {
+            transitions,
+            type_idx,
+            offsets,
+            isdst,
+        })
     }
 }
 
@@ -1666,7 +1905,10 @@ impl LocalTime {
     }
     /// `SimpleDateFormat("yyyy-MM-dd_HH-mm")` (log file names).
     pub fn date_time_stamp(&self) -> String {
-        format!("{:04}-{:02}-{:02}_{:02}-{:02}", self.year, self.month, self.day, self.hour, self.minute)
+        format!(
+            "{:04}-{:02}-{:02}_{:02}-{:02}",
+            self.year, self.month, self.day, self.hour, self.minute
+        )
     }
 }
 
@@ -1680,7 +1922,7 @@ pub fn group_number(v: i64) -> String {
     let digits = (v as i128).abs().to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -1693,7 +1935,12 @@ pub fn group_number(v: i64) -> String {
 }
 
 /// `ZLogger.writeUnsafe` line (without the newline `println` adds).
-pub fn zlogger_line(stamp: &str, logs: &str, prefix: Option<&str>, append: bool) -> Result<String, JavaError> {
+pub fn zlogger_line(
+    stamp: &str,
+    logs: &str,
+    prefix: Option<&str>,
+    append: bool,
+) -> Result<String, JavaError> {
     let mut sb = String::new();
     if !append {
         sb.push('[');
@@ -1707,7 +1954,10 @@ pub fn zlogger_line(stamp: &str, logs: &str, prefix: Option<&str>, append: bool)
     }
     // `logs.lastIndexOf('\n') == logs.length() - 1` is also true for "".
     let body = if logs.is_empty() {
-        return Err(JavaError::new("java.lang.StringIndexOutOfBoundsException", "start 0, end -1, length 0"));
+        return Err(JavaError::new(
+            "java.lang.StringIndexOutOfBoundsException",
+            "start 0, end -1, length 0",
+        ));
     } else if let Some(b) = logs.strip_suffix('\n') {
         b
     } else {
@@ -1725,8 +1975,16 @@ pub fn zlogger_line(stamp: &str, logs: &str, prefix: Option<&str>, append: bool)
 
 /// `FileName.sanitize(name)`.
 pub fn sanitize_file_name(name: &str) -> String {
-    let mut s: String =
-        name.chars().map(|c| if "\\/:*?\"<>|".contains(c) || (c as u32) < 0x20 { '_' } else { c }).collect();
+    let mut s: String = name
+        .chars()
+        .map(|c| {
+            if "\\/:*?\"<>|".contains(c) || (c as u32) < 0x20 {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
     while s.ends_with(|c: char| c == '.' || is_java_ws(c)) {
         s.pop();
     }
@@ -1734,8 +1992,8 @@ pub fn sanitize_file_name(name: &str) -> String {
         s = "_".into();
     }
     const RESERVED: &[&str] = &[
-        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1",
-        "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
     ];
     let base = s.split('.').next().unwrap_or("").to_uppercase();
     if RESERVED.contains(&base.as_str()) {
@@ -1824,7 +2082,9 @@ impl LoggerManager {
         }
         self.initialized = true;
         let _ = std::fs::create_dir_all(&self.logs_dir);
-        let Ok(rd) = std::fs::read_dir(&self.logs_dir) else { return };
+        let Ok(rd) = std::fs::read_dir(&self.logs_dir) else {
+            return;
+        };
         let entries: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).collect();
         let Some(first) = entries.first() else { return };
         let mtime = std::fs::metadata(first)
@@ -1832,7 +2092,8 @@ impl LoggerManager {
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_millis() as i64);
-        let stamp = LocalTime::from_epoch(mtime, self.clock.local_offset_millis(mtime)).date_time_stamp();
+        let stamp =
+            LocalTime::from_epoch(mtime, self.clock.local_offset_millis(mtime)).date_time_stamp();
         let backup = self.logs_dir.join(format!("logs_{stamp}"));
         let _ = std::fs::create_dir_all(&backup);
         for p in entries.iter().filter(|p| p.is_file()) {
@@ -1845,7 +2106,10 @@ impl LoggerManager {
     fn open(&mut self, logger: &str) -> ZLogFile {
         self.init();
         let _ = std::fs::create_dir_all(&self.logs_dir);
-        ZLogFile { file: std::fs::File::create(self.log_file_path(logger)).ok(), written: 0 }
+        ZLogFile {
+            file: std::fs::File::create(self.log_file_path(logger)).ok(),
+            written: 0,
+        }
     }
 
     /// `ZLogger.OutputStreams.println` + `checkSize`.
@@ -1937,17 +2201,29 @@ pub struct MemoryLog {
 
 impl MemoryLog {
     pub fn stdout(&self) -> String {
-        self.console.iter().filter(|(s, _)| *s == StdStream::Out).map(|(_, t)| t.as_str()).collect()
+        self.console
+            .iter()
+            .filter(|(s, _)| *s == StdStream::Out)
+            .map(|(_, t)| t.as_str())
+            .collect()
     }
     pub fn stderr(&self) -> String {
-        self.console.iter().filter(|(s, _)| *s == StdStream::Err).map(|(_, t)| t.as_str()).collect()
+        self.console
+            .iter()
+            .filter(|(s, _)| *s == StdStream::Err)
+            .map(|(_, t)| t.as_str())
+            .collect()
     }
     /// All console output in order.
     pub fn all_console(&self) -> String {
         self.console.iter().map(|(_, t)| t.as_str()).collect()
     }
     pub fn file_lines(&self, logger: &str) -> Vec<String> {
-        self.files.iter().filter(|(n, _)| n == logger).map(|(_, l)| l.clone()).collect()
+        self.files
+            .iter()
+            .filter(|(n, _)| n == logger)
+            .map(|(_, l)| l.clone())
+            .collect()
     }
 }
 
@@ -1972,7 +2248,10 @@ impl LogSink for MemorySink {
         self.0.borrow_mut().console.push((stream, text.to_string()));
     }
     fn file(&mut self, logger: &str, line: &str) {
-        self.0.borrow_mut().files.push((logger.to_string(), line.to_string()));
+        self.0
+            .borrow_mut()
+            .files
+            .push((logger.to_string(), line.to_string()));
     }
     fn recording(&mut self, line: &str) {
         self.0.borrow_mut().recording.push(line.to_string());
@@ -1992,7 +2271,10 @@ pub struct DebugLogProfile {
 
 impl DebugLogProfile {
     pub fn new(name: &str) -> Self {
-        DebugLogProfile { name: name.into(), commands: Vec::new() }
+        DebugLogProfile {
+            name: name.into(),
+            commands: Vec::new(),
+        }
     }
 
     pub fn add_command(&mut self, c: &str) -> &mut Self {
@@ -2015,12 +2297,15 @@ impl DebugLogProfile {
     }
 
     pub fn remove_debug_type_commands(&mut self) {
-        let mut set: HashSet<String> = ["+all".to_string(), "-all".to_string()].into_iter().collect();
+        let mut set: HashSet<String> = ["+all".to_string(), "-all".to_string()]
+            .into_iter()
+            .collect();
         for n in DEBUG_TYPE_NAMES {
             set.insert(format!("+{n}"));
             set.insert(format!("-{n}"));
         }
-        self.commands.retain(|c| !set.contains(&Self::command_argument0(c)));
+        self.commands
+            .retain(|c| !set.contains(&Self::command_argument0(c)));
     }
 
     /// `updateAll(logSeverity)` (`None` = Java `null`).
@@ -2069,8 +2354,15 @@ impl DebugLogProfile {
                 continue;
             }
             let cmd = java_trim(c);
-            let s = if contains_whitespace(cmd) { split_ws(cmd).get(1).map(|s| java_trim(s).to_string()) } else { None };
-            sev = Some(s.and_then(|s| LogSeverity::value_of(&s)).unwrap_or(LogSeverity::Debug));
+            let s = if contains_whitespace(cmd) {
+                split_ws(cmd).get(1).map(|s| java_trim(s).to_string())
+            } else {
+                None
+            };
+            sev = Some(
+                s.and_then(|s| LogSeverity::value_of(&s))
+                    .unwrap_or(LogSeverity::Debug),
+            );
         }
         sev
     }
@@ -2196,7 +2488,10 @@ impl DebugLogCfgFile {
             out.push('\n');
         }
         for a in &self.aliases {
-            out.push_str(&format!("${a} = {}\n", self.alias_map.get(a).map_or("null", |s| s.as_str())));
+            out.push_str(&format!(
+                "${a} = {}\n",
+                self.alias_map.get(a).map_or("null", |s| s.as_str())
+            ));
         }
         if let Some(s) = &self.selected_profile {
             if !self.aliases.is_empty() {
@@ -2211,10 +2506,11 @@ impl DebugLogCfgFile {
     /// indices of the named profiles that exist.
     pub fn resolve_alias_profiles(&self, alias: &str) -> Result<Vec<String>, JavaError> {
         let key: String = alias.chars().skip(1).collect();
-        let cmd = self
-            .alias_map
-            .get(&key)
-            .ok_or_else(|| JavaError::npe("Cannot invoke \"String.split(String)\" because \"aliasCommand\" is null"))?;
+        let cmd = self.alias_map.get(&key).ok_or_else(|| {
+            JavaError::npe(
+                "Cannot invoke \"String.split(String)\" because \"aliasCommand\" is null",
+            )
+        })?;
         Ok(java_regex_split(cmd, |c| c == '+', false)
             .into_iter()
             .map(|e| java_trim(&e).to_string())
@@ -2374,11 +2670,18 @@ impl DebugOptions {
 }
 
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn xml_unescape(s: &str) -> String {
-    s.trim().replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+    s.trim()
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 // ===========================================================================
@@ -2491,7 +2794,10 @@ impl DebugLog {
     }
 
     fn rebuild_default_sink(&mut self) {
-        let loggers = self.cache_dir.as_ref().map(|d| LoggerManager::new(d, self.clock.clone()));
+        let loggers = self
+            .cache_dir
+            .as_ref()
+            .map(|d| LoggerManager::new(d, self.clock.clone()));
         self.sink = Box::new(DefaultSink { loggers });
         self.default_sink = true;
     }
@@ -2547,7 +2853,13 @@ impl DebugLog {
     // ---- formatting ----
 
     /// `formatLogStringForConsole` (identical to `formatLogStringForLogFile`).
-    pub fn format_console_line(&self, t: Option<DebugType>, sev: LogSeverity, affix: &str, text: &str) -> String {
+    pub fn format_console_line(
+        &self,
+        t: Option<DebugType>,
+        sev: LogSeverity,
+        affix: &str,
+        text: &str,
+    ) -> String {
         let mut s = String::new();
         s.push_str(sev.log_prefix());
         s.push_str(&left_justify(t.unwrap_or(DebugType::General).name(), 12));
@@ -2556,7 +2868,10 @@ impl DebugLog {
             s.push_str(&format!(" t:{}", self.clock.now_millis()));
         }
         if self.should_log_include_server_time() {
-            s.push_str(&format!(" st:{}", group_number(self.clock.server_time_nanos().div_euclid(1_000_000))));
+            s.push_str(&format!(
+                " st:{}",
+                group_number(self.clock.server_time_nanos().div_euclid(1_000_000))
+            ));
         }
         if !affix.is_empty() {
             s.push_str(" at ");
@@ -2568,12 +2883,24 @@ impl DebugLog {
     }
 
     /// `formatLogStringForLogFile`.
-    pub fn format_log_file_line(&self, t: Option<DebugType>, sev: LogSeverity, affix: &str, text: &str) -> String {
+    pub fn format_log_file_line(
+        &self,
+        t: Option<DebugType>,
+        sev: LogSeverity,
+        affix: &str,
+        text: &str,
+    ) -> String {
         self.format_console_line(t, sev, affix, text)
     }
 
     /// `formatLogStringAnimationRecordingFile`.
-    pub fn format_recording_line(&self, t: Option<DebugType>, sev: LogSeverity, affix: &str, text: &str) -> String {
+    pub fn format_recording_line(
+        &self,
+        t: Option<DebugType>,
+        sev: LogSeverity,
+        affix: &str,
+        text: &str,
+    ) -> String {
         let t = t.unwrap_or(DebugType::General);
         format!(
             "{},{},{},\"{}{}{}> {}\"",
@@ -2582,8 +2909,14 @@ impl DebugLog {
             sev.name(),
             sev.log_prefix(),
             left_justify(t.name(), 12),
-            if affix.is_empty() { String::new() } else { format!(" at {affix}") },
-            text.replace("\r\n", "\n").replace('\n', "%0A").replace('"', "%22")
+            if affix.is_empty() {
+                String::new()
+            } else {
+                format!(" at {affix}")
+            },
+            text.replace("\r\n", "\n")
+                .replace('\n', "%0A")
+                .replace('"', "%22")
         )
     }
 
@@ -2600,7 +2933,13 @@ impl DebugLog {
     }
 
     /// `echoToLogFiles`.
-    pub fn echo_to_log_files(&mut self, t: Option<DebugType>, sev: LogSeverity, affix: &str, raw: &str) {
+    pub fn echo_to_log_files(
+        &mut self,
+        t: Option<DebugType>,
+        sev: LogSeverity,
+        affix: &str,
+        raw: &str,
+    ) {
         let line = self.format_log_file_line(t, sev, affix, raw);
         if let Ok(z) = zlogger_line(&self.zlogger_stamp(), &line, None, false) {
             let name = self.debug_log_file_name();
@@ -2615,7 +2954,13 @@ impl DebugLog {
     // ---- DebugLogStream writes ----
 
     /// `write(out, severity, text)`: `print` without newline.
-    fn stream_write(&mut self, t: Option<DebugType>, stream: StdStream, sev: LogSeverity, text: &str) {
+    fn stream_write(
+        &mut self,
+        t: Option<DebugType>,
+        stream: StdStream,
+        sev: LogSeverity,
+        text: &str,
+    ) {
         if !self.stream_enabled(t, sev) {
             return;
         }
@@ -2658,7 +3003,10 @@ impl DebugLog {
         if !self.stream_enabled(t, sev) {
             return Ok(());
         }
-        let affix = left_justify(&stack_trace_element_string(caller, self.log_trace_file_location_enabled), 36);
+        let affix = left_justify(
+            &stack_trace_element_string(caller, self.log_trace_file_location_enabled),
+            36,
+        );
         if !allow_repeat && !self.debug_once.entry(t).or_default().insert(affix.clone()) {
             return Ok(());
         }
@@ -2684,8 +3032,19 @@ impl DebugLog {
         let _ = self.stream_writeln(Some(t), StdStream::Out, LogSeverity::General, text, &[]);
     }
     /// `println(format, params...)`.
-    pub fn println_fmt(&mut self, t: DebugType, format: &str, params: &[FmtArg]) -> Result<(), JavaError> {
-        self.stream_writeln(Some(t), StdStream::Out, LogSeverity::General, format, params)
+    pub fn println_fmt(
+        &mut self,
+        t: DebugType,
+        format: &str,
+        params: &[FmtArg],
+    ) -> Result<(), JavaError> {
+        self.stream_writeln(
+            Some(t),
+            StdStream::Out,
+            LogSeverity::General,
+            format,
+            params,
+        )
     }
     /// `System.err.println(text)` (the `GeneralErr` stream).
     pub fn general_err_println(&mut self, text: &str) {
@@ -2697,46 +3056,150 @@ impl DebugLog {
     }
 
     /// `trace(format, params...)`.
-    pub fn trace(&mut self, t: DebugType, caller: Option<&StackElement>, f: &str, p: &[FmtArg]) -> Result<(), JavaError> {
-        self.write_with_caller(Some(t), StdStream::Out, LogSeverity::Trace, caller, true, f, p)
+    pub fn trace(
+        &mut self,
+        t: DebugType,
+        caller: Option<&StackElement>,
+        f: &str,
+        p: &[FmtArg],
+    ) -> Result<(), JavaError> {
+        self.write_with_caller(
+            Some(t),
+            StdStream::Out,
+            LogSeverity::Trace,
+            caller,
+            true,
+            f,
+            p,
+        )
     }
     /// `debugln(format, params...)` (only with `Core.debug`).
-    pub fn debugln(&mut self, t: DebugType, caller: Option<&StackElement>, f: &str, p: &[FmtArg]) -> Result<(), JavaError> {
+    pub fn debugln(
+        &mut self,
+        t: DebugType,
+        caller: Option<&StackElement>,
+        f: &str,
+        p: &[FmtArg],
+    ) -> Result<(), JavaError> {
         if !self.core_debug {
             return Ok(());
         }
-        self.write_with_caller(Some(t), StdStream::Out, LogSeverity::Debug, caller, true, f, p)
+        self.write_with_caller(
+            Some(t),
+            StdStream::Out,
+            LogSeverity::Debug,
+            caller,
+            true,
+            f,
+            p,
+        )
     }
     /// `debugOnceln(format, params...)`: once per caller affix.
-    pub fn debug_once(&mut self, t: DebugType, caller: Option<&StackElement>, f: &str, p: &[FmtArg]) -> Result<(), JavaError> {
+    pub fn debug_once(
+        &mut self,
+        t: DebugType,
+        caller: Option<&StackElement>,
+        f: &str,
+        p: &[FmtArg],
+    ) -> Result<(), JavaError> {
         if !self.core_debug {
             return Ok(());
         }
-        self.write_with_caller(Some(t), StdStream::Out, LogSeverity::Debug, caller, false, f, p)
+        self.write_with_caller(
+            Some(t),
+            StdStream::Out,
+            LogSeverity::Debug,
+            caller,
+            false,
+            f,
+            p,
+        )
     }
     /// `noise(format, params...)` (only with `Core.debug`).
-    pub fn noise(&mut self, t: DebugType, caller: Option<&StackElement>, f: &str, p: &[FmtArg]) -> Result<(), JavaError> {
+    pub fn noise(
+        &mut self,
+        t: DebugType,
+        caller: Option<&StackElement>,
+        f: &str,
+        p: &[FmtArg],
+    ) -> Result<(), JavaError> {
         if !self.core_debug {
             return Ok(());
         }
-        self.write_with_caller(Some(t), StdStream::Out, LogSeverity::Noise, caller, true, f, p)
+        self.write_with_caller(
+            Some(t),
+            StdStream::Out,
+            LogSeverity::Noise,
+            caller,
+            true,
+            f,
+            p,
+        )
     }
     /// `warn(format, params...)` (the warn stream is stdout).
-    pub fn warn(&mut self, t: DebugType, caller: Option<&StackElement>, f: &str, p: &[FmtArg]) -> Result<(), JavaError> {
-        self.write_with_caller(Some(t), StdStream::Out, LogSeverity::Warning, caller, true, f, p)
+    pub fn warn(
+        &mut self,
+        t: DebugType,
+        caller: Option<&StackElement>,
+        f: &str,
+        p: &[FmtArg],
+    ) -> Result<(), JavaError> {
+        self.write_with_caller(
+            Some(t),
+            StdStream::Out,
+            LogSeverity::Warning,
+            caller,
+            true,
+            f,
+            p,
+        )
     }
     /// `warnOnce(format, params...)`.
-    pub fn warn_once(&mut self, t: DebugType, caller: Option<&StackElement>, f: &str, p: &[FmtArg]) -> Result<(), JavaError> {
-        self.write_with_caller(Some(t), StdStream::Out, LogSeverity::Warning, caller, false, f, p)
+    pub fn warn_once(
+        &mut self,
+        t: DebugType,
+        caller: Option<&StackElement>,
+        f: &str,
+        p: &[FmtArg],
+    ) -> Result<(), JavaError> {
+        self.write_with_caller(
+            Some(t),
+            StdStream::Out,
+            LogSeverity::Warning,
+            caller,
+            false,
+            f,
+            p,
+        )
     }
     /// `error(format, params...)` (stderr).
-    pub fn error(&mut self, t: DebugType, caller: Option<&StackElement>, f: &str, p: &[FmtArg]) -> Result<(), JavaError> {
-        self.write_with_caller(Some(t), StdStream::Err, LogSeverity::Error, caller, true, f, p)
+    pub fn error(
+        &mut self,
+        t: DebugType,
+        caller: Option<&StackElement>,
+        f: &str,
+        p: &[FmtArg],
+    ) -> Result<(), JavaError> {
+        self.write_with_caller(
+            Some(t),
+            StdStream::Err,
+            LogSeverity::Error,
+            caller,
+            true,
+            f,
+            p,
+        )
     }
 
     /// `write(logSeverity, logText)` / `routedWrite`: `text` is not
     /// formatted; `General` has no caller affix; `Off` writes nothing.
-    pub fn routed_write(&mut self, t: DebugType, sev: LogSeverity, caller: Option<&StackElement>, text: &str) {
+    pub fn routed_write(
+        &mut self,
+        t: DebugType,
+        sev: LogSeverity,
+        caller: Option<&StackElement>,
+        text: &str,
+    ) {
         let _ = match sev {
             LogSeverity::Trace => self.trace(t, caller, text, &[]),
             LogSeverity::Noise => self.noise(t, caller, text, &[]),
@@ -2754,13 +3217,20 @@ impl DebugLog {
     /// `getPrintStream(severity)`.
     fn print_stream(&mut self, t: DebugType, sev: LogSeverity) -> StdStream {
         match sev {
-            LogSeverity::Trace | LogSeverity::Noise | LogSeverity::Debug | LogSeverity::General | LogSeverity::Warning => {
-                StdStream::Out
-            }
+            LogSeverity::Trace
+            | LogSeverity::Noise
+            | LogSeverity::Debug
+            | LogSeverity::General
+            | LogSeverity::Warning => StdStream::Out,
             LogSeverity::Error => StdStream::Err,
             LogSeverity::Off => {
                 let caller = caller_of("zombie.debug.DebugLogStream", "getPrintStream");
-                let _ = self.error(t, Some(&caller), "Unhandled LogSeverity: %s. Defaulted to Error.", &[FmtArg::Str(sev.name().into())]);
+                let _ = self.error(
+                    t,
+                    Some(&caller),
+                    "Unhandled LogSeverity: %s. Defaulted to Error.",
+                    &[FmtArg::Str(sev.name().into())],
+                );
                 StdStream::Err
             }
         }
@@ -2786,12 +3256,21 @@ impl DebugLog {
             return;
         }
         let stream = self.print_stream(t, sev);
-        let include_stack = !matches!(sev, LogSeverity::Trace | LogSeverity::Noise | LogSeverity::General | LogSeverity::Warning);
+        let include_stack = !matches!(
+            sev,
+            LogSeverity::Trace | LogSeverity::Noise | LogSeverity::General | LogSeverity::Warning
+        );
         let top = ex.top_stack_trace_string();
         if include_stack {
             let mut sb = match message {
-                Some(m) => format!("{caller_prefix}> Exception thrown\n\t{} at {top}. Message: {m}", ex.description),
-                None => format!("{caller_prefix}> Exception thrown\n\t{} at {top}.", ex.description),
+                Some(m) => format!(
+                    "{caller_prefix}> Exception thrown\n\t{} at {top}. Message: {m}",
+                    ex.description
+                ),
+                None => format!(
+                    "{caller_prefix}> Exception thrown\n\t{} at {top}.",
+                    ex.description
+                ),
             };
             sb.push('\n');
             sb.push_str("\tStack trace:\n");
@@ -2809,8 +3288,14 @@ impl DebugLog {
             self.stream_write(Some(t), stream, sev, &sb);
         } else {
             let m = match message {
-                Some(m) => format!("{caller_prefix}> Exception thrown {} at {top}. Message: {m}", ex.description),
-                None => format!("{caller_prefix}> Exception thrown {} at {top}.", ex.description),
+                Some(m) => format!(
+                    "{caller_prefix}> Exception thrown {} at {top}. Message: {m}",
+                    ex.description
+                ),
+                None => format!(
+                    "{caller_prefix}> Exception thrown {} at {top}.",
+                    ex.description
+                ),
             };
             let _ = self.stream_writeln(Some(t), stream, sev, &m, &[]);
         }
@@ -2848,11 +3333,18 @@ impl DebugLog {
         caller_prefix: &str,
         format: Option<&str>,
     ) -> Result<(), JavaError> {
-        self.print_exception_fmt(t, ex, sev, caller_prefix, format, &[FmtArg::Object {
-            class: "zombie.debug.LogSeverity".into(),
-            text: sev.name().into(),
-            hash: 0,
-        }])
+        self.print_exception_fmt(
+            t,
+            ex,
+            sev,
+            caller_prefix,
+            format,
+            &[FmtArg::Object {
+                class: "zombie.debug.LogSeverity".into(),
+                text: sev.name().into(),
+                hash: 0,
+            }],
+        )
     }
 
     /// `DebugLogStream.printStackTrace(severity, depthStart, depthCount, format, params)`.
@@ -2874,7 +3366,11 @@ impl DebugLog {
         }
         let stream = self.print_stream(t, sev);
         if let Some(f) = format {
-            let m = if params.is_empty() { f.to_string() } else { java_format(f, params)? };
+            let m = if params.is_empty() {
+                f.to_string()
+            } else {
+                java_format(f, params)?
+            };
             self.sink.console(stream, &format!("{m}\n"));
             self.echo_to_log_files(Some(t), sev, "", &m);
         }
@@ -2903,7 +3399,9 @@ impl DebugLog {
     pub fn set_default_log_severity(&mut self) {
         let def = self.default_log_severity();
         for &t in DebugType::VALUES {
-            if (t == DebugType::DetailedInfo && !self.core_debug) || def.ordinal() >= self.severity(t).ordinal() {
+            if (t == DebugType::DetailedInfo && !self.core_debug)
+                || def.ordinal() >= self.severity(t).ordinal()
+            {
                 continue;
             }
             self.set_severity(t, def);
@@ -2921,14 +3419,26 @@ impl DebugLog {
 
     /// `getConfigFilePath()` (`None` without a cache dir).
     pub fn config_file_path(&self) -> Option<String> {
-        self.cache_dir.as_ref().map(|d| format!("{}{}{}", d.display(), std::path::MAIN_SEPARATOR, self.config_file_name()))
+        self.cache_dir.as_ref().map(|d| {
+            format!(
+                "{}{}{}",
+                d.display(),
+                std::path::MAIN_SEPARATOR,
+                self.config_file_name()
+            )
+        })
     }
 
     /// `printLogLevels()`.
     pub fn print_log_levels(&mut self) {
         let name = self.config_file_name();
-        self.println(DebugType::General, &format!("You can setup the log levels in the {name} file"));
-        let path = self.config_file_path().unwrap_or_else(|| format!("null{}{name}", std::path::MAIN_SEPARATOR));
+        self.println(
+            DebugType::General,
+            &format!("You can setup the log levels in the {name} file"),
+        );
+        let path = self
+            .config_file_path()
+            .unwrap_or_else(|| format!("null{}{name}", std::path::MAIN_SEPARATOR));
         self.println(DebugType::DetailedInfo, &format!("log config path: {path}"));
         self.println(DebugType::General, "Logs configuration:");
         for sev in LogSeverity::VALUES {
@@ -2937,12 +3447,20 @@ impl DebugLog {
             }
             for &t in DebugType::VALUES {
                 if self.severity(t) == sev {
-                    let _ = self.println_fmt(DebugType::General, "%12s: %s", &[t.name().into(), sev.name().into()]);
+                    let _ = self.println_fmt(
+                        DebugType::General,
+                        "%12s: %s",
+                        &[t.name().into(), sev.name().into()],
+                    );
                 }
             }
         }
         let def = self.default_log_severity();
-        let _ = self.println_fmt(DebugType::General, "%12s: %s", &["Default".into(), def.name().into()]);
+        let _ = self.println_fmt(
+            DebugType::General,
+            "%12s: %s",
+            &["Default".into(), def.name().into()],
+        );
     }
 
     /// `DebugLog.log(type, str)` / `log(str)`.
@@ -2953,21 +3471,40 @@ impl DebugLog {
     /// `setLogEnabled(type, enabled)`.
     pub fn set_log_enabled(&mut self, t: DebugType, enabled: bool) {
         if self.is_enabled(t) != enabled {
-            let s = if enabled { self.default_log_severity() } else { LogSeverity::Off };
+            let s = if enabled {
+                self.default_log_severity()
+            } else {
+                LogSeverity::Off
+            };
             self.set_severity(t, s);
         }
     }
 
     /// `setLogEnabledFromCommandLine(token)` (`-debuglog=` entries).
     pub fn set_log_enabled_from_command_line(&mut self, token: &str) {
-        let Some(first) = token.chars().next() else { return };
+        let Some(first) = token.chars().next() else {
+            return;
+        };
         let enabled = first != '-';
-        let name = if first == '+' || first == '-' { &token[1..] } else { token };
-        let Some(t) = DebugType::value_of(name) else { return };
+        let name = if first == '+' || first == '-' {
+            &token[1..]
+        } else {
+            token
+        };
+        let Some(t) = DebugType::value_of(name) else {
+            return;
+        };
         if t == DebugType::General && !enabled {
             return;
         }
-        self.set_severity(t, if enabled { LogSeverity::General } else { LogSeverity::Off });
+        self.set_severity(
+            t,
+            if enabled {
+                LogSeverity::General
+            } else {
+                LogSeverity::Off
+            },
+        );
     }
 
     /// `getDebugTypes()`: sorted case-insensitively by name.
@@ -2995,12 +3532,15 @@ impl DebugLog {
     }
 
     /// `getLogSeverityForSelectedProfile(debugType)`.
-    pub fn log_severity_for_selected_profile(&self, t: DebugType) -> Result<Option<LogSeverity>, JavaError> {
-        let sel = self
-            .cfg
-            .selected_profile
-            .as_deref()
-            .ok_or_else(|| JavaError::npe("Cannot invoke \"String.startsWith(String)\" because \"selectedProfile\" is null"))?;
+    pub fn log_severity_for_selected_profile(
+        &self,
+        t: DebugType,
+    ) -> Result<Option<LogSeverity>, JavaError> {
+        let sel = self.cfg.selected_profile.as_deref().ok_or_else(|| {
+            JavaError::npe(
+                "Cannot invoke \"String.startsWith(String)\" because \"selectedProfile\" is null",
+            )
+        })?;
         if sel.starts_with('$') {
             let mut sev = None;
             for name in self.cfg.resolve_alias_profiles(sel)? {
@@ -3033,14 +3573,24 @@ impl DebugLog {
     pub fn invoke_profile(&mut self, name: &str) -> Result<(), JavaError> {
         self.cfg.selected_profile = Some(name.to_string());
         if name.starts_with('$') {
-            self.log(DebugType::General, &format!("Selected debug alias = '{name}'"));
+            self.log(
+                DebugType::General,
+                &format!("Selected debug alias = '{name}'"),
+            );
             for p in self.cfg.resolve_alias_profiles(name)? {
-                let cmds = self.cfg.profile(&p).map(|p| p.commands.clone()).unwrap_or_default();
+                let cmds = self
+                    .cfg
+                    .profile(&p)
+                    .map(|p| p.commands.clone())
+                    .unwrap_or_default();
                 self.invoke_commands(cmds);
             }
             return Ok(());
         }
-        self.log(DebugType::General, &format!("Selected debug profile = '{name}'"));
+        self.log(
+            DebugType::General,
+            &format!("Selected debug profile = '{name}'"),
+        );
         let cmds = self.cfg.profile(name).map(|p| p.commands.clone()).ok_or_else(|| {
             JavaError::npe("Cannot invoke \"zombie.debug.DebugLogProfile.invoke()\" because the return value of \"zombie.debug.DebugLogCfgFile.getProfile(String)\" is null")
         })?;
@@ -3052,7 +3602,9 @@ impl DebugLog {
     pub fn invoke_selected_profile(&mut self) -> Result<(), JavaError> {
         match self.selected_profile_name() {
             Some(n) => self.invoke_profile(&n),
-            None => Err(JavaError::npe("Cannot invoke \"String.startsWith(String)\" because \"profileOrAlias\" is null")),
+            None => Err(JavaError::npe(
+                "Cannot invoke \"String.startsWith(String)\" because \"profileOrAlias\" is null",
+            )),
         }
     }
 
@@ -3063,14 +3615,23 @@ impl DebugLog {
     }
 
     /// `updateSelectedProfileAll(logSeverity)`.
-    pub fn update_selected_profile_all(&mut self, sev: Option<LogSeverity>) -> Result<(), JavaError> {
-        self.selected_profile_mut("updateAll(zombie.debug.LogSeverity)")?.update_all(sev);
+    pub fn update_selected_profile_all(
+        &mut self,
+        sev: Option<LogSeverity>,
+    ) -> Result<(), JavaError> {
+        self.selected_profile_mut("updateAll(zombie.debug.LogSeverity)")?
+            .update_all(sev);
         Ok(())
     }
 
     /// `updateSelectedProfile(debugType, logSeverity)`.
-    pub fn update_selected_profile(&mut self, t: DebugType, sev: Option<LogSeverity>) -> Result<(), JavaError> {
-        self.selected_profile_mut("update(zombie.debug.DebugType, zombie.debug.LogSeverity)")?.update(t, sev);
+    pub fn update_selected_profile(
+        &mut self,
+        t: DebugType,
+        sev: Option<LogSeverity>,
+    ) -> Result<(), JavaError> {
+        self.selected_profile_mut("update(zombie.debug.DebugType, zombie.debug.LogSeverity)")?
+            .update(t, sev);
         Ok(())
     }
 
@@ -3079,7 +3640,9 @@ impl DebugLog {
         if self.debug_cfg_file_watcher_path.is_none() {
             self.debug_cfg_file_watcher_path = self.config_file_path();
         }
-        let Some(path) = self.debug_cfg_file_watcher_path.clone() else { return Ok(()) };
+        let Some(path) = self.debug_cfg_file_watcher_path.clone() else {
+            return Ok(());
+        };
         let cache = self.cache_dir.as_ref().map(|d| d.display().to_string());
         let Some(cache) = cache else { return Ok(()) };
         if !path.ends_with(".cfg") || path.contains("..") || !path.starts_with(&cache) {
@@ -3089,7 +3652,13 @@ impl DebugLog {
     }
 
     /// `nativeLog(logType, logSeverity, logTxt)`.
-    pub fn native_log(&mut self, log_type: &str, log_severity: &str, text: &str, caller: Option<&StackElement>) {
+    pub fn native_log(
+        &mut self,
+        log_type: &str,
+        log_severity: &str,
+        text: &str,
+        caller: Option<&StackElement>,
+    ) {
         let t = DebugType::value_of(log_type).unwrap_or(DebugType::General);
         let s = LogSeverity::value_of(log_severity).unwrap_or(LogSeverity::General);
         self.routed_write(t, s, caller, text);
@@ -3117,7 +3686,10 @@ impl DebugLog {
     pub fn load_debug_config(&mut self, filepath: Option<&str>) {
         let sev = self.severities;
         self.cfg.set_default(&sev);
-        let caller = stack_trace_element_string(Some(&caller_of("zombie.debug.DebugLog", "loadDebugConfig")), self.log_trace_file_location_enabled);
+        let caller = stack_trace_element_string(
+            Some(&caller_of("zombie.debug.DebugLog", "loadDebugConfig")),
+            self.log_trace_file_location_enabled,
+        );
         let path = match filepath {
             Some(p) => p.to_string(),
             None => match self.config_file_path() {
@@ -3129,15 +3701,26 @@ impl DebugLog {
         let mut file = PathBuf::from(&path);
         if !file.is_file() {
             self.log(DebugType::General, "Attempting relative path...");
-            let parent = std::env::current_dir().ok().and_then(|d| d.parent().map(|p| p.display().to_string()));
-            file = PathBuf::from(format!("{}{}{path}", parent.as_deref().unwrap_or("null"), std::path::MAIN_SEPARATOR));
+            let parent = std::env::current_dir()
+                .ok()
+                .and_then(|d| d.parent().map(|p| p.display().to_string()));
+            file = PathBuf::from(format!(
+                "{}{}{path}",
+                parent.as_deref().unwrap_or("null"),
+                std::path::MAIN_SEPARATOR
+            ));
         }
         let abs = if file.is_absolute() {
             file.clone()
         } else {
-            std::env::current_dir().map(|d| d.join(&file)).unwrap_or_else(|_| file.clone())
+            std::env::current_dir()
+                .map(|d| d.join(&file))
+                .unwrap_or_else(|_| file.clone())
         };
-        self.println(DebugType::DetailedInfo, &format!("file = {}", abs.display()));
+        self.println(
+            DebugType::DetailedInfo,
+            &format!("file = {}", abs.display()),
+        );
         if !file.is_file() {
             self.log(DebugType::General, "Could not find debug config.");
             return;
@@ -3150,18 +3733,36 @@ impl DebugLog {
                     self.log_trace_file_location_enabled,
                 );
                 for e in errs {
-                    self.print_exception(DebugType::General, Some(&(&e).into()), None, &read_caller, LogSeverity::Error);
+                    self.print_exception(
+                        DebugType::General,
+                        Some(&(&e).into()),
+                        None,
+                        &read_caller,
+                        LogSeverity::Error,
+                    );
                 }
             }
             Err(e) => {
                 self.cfg.clear();
                 let e = io_error(&path, &e);
-                self.print_exception(DebugType::General, Some(&(&e).into()), None, &caller, LogSeverity::Error);
+                self.print_exception(
+                    DebugType::General,
+                    Some(&(&e).into()),
+                    None,
+                    &caller,
+                    LogSeverity::Error,
+                );
             }
         }
         if let Some(sel) = self.cfg.selected_profile.clone() {
             if let Err(e) = self.invoke_profile(&sel) {
-                self.print_exception(DebugType::General, Some(&(&e).into()), None, &caller, LogSeverity::Error);
+                self.print_exception(
+                    DebugType::General,
+                    Some(&(&e).into()),
+                    None,
+                    &caller,
+                    LogSeverity::Error,
+                );
                 return;
             }
         }
@@ -3191,12 +3792,14 @@ impl DebugLog {
         if contains_whitespace(s) {
             let split = split_ws(s);
             type_str = java_trim(split.first().ok_or_else(|| index_oob(0, 0))?).to_string();
-            sev_str = Some(java_trim(split.get(1).ok_or_else(|| index_oob(1, split.len()))?).to_string());
+            sev_str =
+                Some(java_trim(split.get(1).ok_or_else(|| index_oob(1, split.len()))?).to_string());
         }
         let mut sev = LogSeverity::Debug;
         if !is_null_or_whitespace(sev_str.as_deref()) {
             let n = sev_str.unwrap();
-            sev = LogSeverity::value_of(&n).ok_or_else(|| no_enum_constant("zombie.debug.LogSeverity", &n))?;
+            sev = LogSeverity::value_of(&n)
+                .ok_or_else(|| no_enum_constant("zombie.debug.LogSeverity", &n))?;
         }
         if java_equals_ignore_case(&type_str, "LogTraceFileLocation") {
             self.log_trace_file_location_enabled = enable;
@@ -3242,8 +3845,17 @@ impl DebugLog {
         match zlogger_line(&self.zlogger_stamp(), logs, None, false) {
             Ok(line) => self.sink.file(&name, &line),
             Err(e) => {
-                let caller = stack_trace_element_string(Some(&caller_of("zombie.core.logger.ZLogger", "write")), self.log_trace_file_location_enabled);
-                self.print_exception(DebugType::General, Some(&(&e).into()), None, &caller, LogSeverity::Error);
+                let caller = stack_trace_element_string(
+                    Some(&caller_of("zombie.core.logger.ZLogger", "write")),
+                    self.log_trace_file_location_enabled,
+                );
+                self.print_exception(
+                    DebugType::General,
+                    Some(&(&e).into()),
+                    None,
+                    &caller,
+                    LogSeverity::Error,
+                );
             }
         }
     }
@@ -3330,8 +3942,14 @@ mod tests {
     fn enum_tables() {
         assert_eq!(DebugType::COUNT, 76);
         assert_eq!(DebugType::VALUES[75], DebugType::AnimationRecorder);
-        assert_eq!(DebugType::value_of("ISUIStackTrace"), Some(DebugType::ISUIStackTrace));
-        assert_eq!(DebugType::General.or_with(), Some(DebugType::AnimationRecorder));
+        assert_eq!(
+            DebugType::value_of("ISUIStackTrace"),
+            Some(DebugType::ISUIStackTrace)
+        );
+        assert_eq!(
+            DebugType::General.or_with(),
+            Some(DebugType::AnimationRecorder)
+        );
         assert_eq!(DebugType::Lua.or_with(), None);
         assert_eq!(LogSeverity::ALL, LogSeverity::Trace);
         assert!(LogSeverity::General.is_log_enabled(LogSeverity::Error));
@@ -3347,10 +3965,31 @@ mod tests {
         d.init();
         d.println(DebugType::General, "23-10-2026 23:30:04");
         let caller = StackElement::new("oshi.util.platform.mac.SysctlUtilFFM", "sysctlbyname");
-        d.warn(DebugType::General, Some(&caller), "Unable to parse version %s to a codename.", &["27.0".into()]).unwrap();
+        d.warn(
+            DebugType::General,
+            Some(&caller),
+            "Unable to parse version %s to a codename.",
+            &["27.0".into()],
+        )
+        .unwrap();
         let caller = StackElement::lua("Vanilla", "ISInventoryTransferUtil.lua", None, 3);
-        d.warn(DebugType::Lua, Some(&caller), "require(\"TimedActions/ISInventoryTransferAction\") failed", &[]).unwrap();
-        d.error(DebugType::General, Some(&StackElement::new("zombie.core.fonts.AngelCodeFont", "parseFnt")), "x", &[]).unwrap();
+        d.warn(
+            DebugType::Lua,
+            Some(&caller),
+            "require(\"TimedActions/ISInventoryTransferAction\") failed",
+            &[],
+        )
+        .unwrap();
+        d.error(
+            DebugType::General,
+            Some(&StackElement::new(
+                "zombie.core.fonts.AngelCodeFont",
+                "parseFnt",
+            )),
+            "x",
+            &[],
+        )
+        .unwrap();
         let log = sink.log();
         assert_eq!(
             log.stdout(),
@@ -3358,9 +3997,15 @@ mod tests {
              WARN : General      f:0 at SysctlUtilFFM.sysctlbyname          > Unable to parse version 27.0 to a codename.\n\
              WARN : Lua          f:0 at Lua(Vanilla).ISInventoryTransferUtil.lua> require(\"TimedActions/ISInventoryTransferAction\") failed\n"
         );
-        assert_eq!(log.stderr(), "ERROR: General      f:0 at AngelCodeFont.parseFnt              > x\n");
+        assert_eq!(
+            log.stderr(),
+            "ERROR: General      f:0 at AngelCodeFont.parseFnt              > x\n"
+        );
         let f = log.file_lines("DebugLog");
-        assert_eq!(f[0], "[23-10-26 23:30:04.860] LOG  : General      f:0> 23-10-2026 23:30:04.");
+        assert_eq!(
+            f[0],
+            "[23-10-26 23:30:04.860] LOG  : General      f:0> 23-10-2026 23:30:04."
+        );
         assert_eq!(
             f[1],
             "[23-10-26 23:30:04.860] WARN : General      f:0 at SysctlUtilFFM.sysctlbyname          > Unable to parse version 27.0 to a codename.."
@@ -3377,7 +4022,10 @@ mod tests {
         d.frame_no = 42;
         d.println(DebugType::Network, "hi");
         let now = clock.now_ms.get();
-        assert_eq!(sink.log().stdout(), format!("LOG  : Network      f:42 t:{now} st:1,234,567> hi\n"));
+        assert_eq!(
+            sink.log().stdout(),
+            format!("LOG  : Network      f:42 t:{now} st:1,234,567> hi\n")
+        );
     }
 
     #[test]
@@ -3385,7 +4033,8 @@ mod tests {
         let (mut d, sink, _) = logger();
         d.client_startup(&[], None);
         let out = sink.log().stdout();
-        let expected = "LOG  : General      f:0> You can setup the log levels in the debuglog.cfg file\n\
+        let expected =
+            "LOG  : General      f:0> You can setup the log levels in the debuglog.cfg file\n\
 LOG  : General      f:0> Logs configuration:\n\
 LOG  : General      f:0>      General: General\n\
 LOG  : General      f:0>      Network: General\n\
@@ -3411,12 +4060,18 @@ LOG  : General      f:0>      Default: Off\n";
         let (mut d, sink, _) = logger();
         d.init();
         d.set_severity(DebugType::Lua, LogSeverity::Trace);
-        d.debugln(DebugType::Lua, None, "hidden %d", &[FmtArg::Double(1.0)]).unwrap();
+        d.debugln(DebugType::Lua, None, "hidden %d", &[FmtArg::Double(1.0)])
+            .unwrap();
         d.noise(DebugType::Lua, None, "hidden", &[]).unwrap();
         d.trace(DebugType::Lua, None, "shown", &[]).unwrap();
-        assert_eq!(sink.log().stdout(), "TRACE: Lua          f:0 at (UnknownStack)                      > shown\n");
+        assert_eq!(
+            sink.log().stdout(),
+            "TRACE: Lua          f:0 at (UnknownStack)                      > shown\n"
+        );
         d.core_debug = true;
-        assert!(d.debugln(DebugType::Lua, None, "%d", &[FmtArg::Double(1.0)]).is_err());
+        assert!(d
+            .debugln(DebugType::Lua, None, "%d", &[FmtArg::Double(1.0)])
+            .is_err());
     }
 
     #[test]
@@ -3424,7 +4079,8 @@ LOG  : General      f:0>      Default: Off\n";
         let (mut d, sink, _) = logger();
         d.set_severity(DebugType::Sound, LogSeverity::Warning);
         d.println(DebugType::Sound, "general hidden");
-        d.trace(DebugType::Sound, None, "trace hidden", &[]).unwrap();
+        d.trace(DebugType::Sound, None, "trace hidden", &[])
+            .unwrap();
         d.warn(DebugType::Sound, None, "warn", &[]).unwrap();
         d.error(DebugType::Sound, None, "err", &[]).unwrap();
         let log = sink.log();
@@ -3467,35 +4123,137 @@ LOG  : General      f:0>      Default: Off\n";
     #[test]
     fn java_format_subset() {
         let f = |s: &str, a: &[FmtArg]| java_format(s, a).unwrap();
-        assert_eq!(f("%s|%5s|%-5s|%.2s", &["ab".into(), "ab".into(), "ab".into(), "abc".into()]), "ab|   ab|ab   |ab");
-        assert_eq!(f("%s %s %s", &[FmtArg::Double(5.0), FmtArg::Null, FmtArg::Bool(true)]), "5.0 null true");
-        assert_eq!(f("%d|%5d|%-5d|%05d|%,d|%+d|%(d", &[1.into(), 42.into(), 42.into(), (-42).into(), 1234567.into(), 3.into(), (-3).into()]), "1|   42|42   |-0042|1,234,567|+3|(3)");
-        assert_eq!(f("%x %X %#x %o", &[255.into(), (-1).into(), 255.into(), 8.into()]), "ff FFFFFFFF 0xff 10");
-        assert_eq!(f("%f|%.2f|%.1f|%.0f|%8.3f|%,.2f", &[1.5.into(), 0.125.into(), 0.15.into(), 0.5.into(), (-3.14159).into(), 1234567.891.into()]), "1.500000|0.13|0.2|1|  -3.142|1,234,567.89");
-        assert_eq!(f("%f %.3f", &[FmtArg::Float(0.1), 1e-5.into()]), "0.100000 0.000");
-        assert_eq!(f("%e|%.2E|%e", &[12345.678.into(), 0.000123.into(), 0.0.into()]), "1.234568e+04|1.23E-04|0.000000e+00");
-        assert_eq!(f("%g|%g|%g", &[0.0001.into(), 123456789.0.into(), 1.0.into()]), "0.000100000|1.23457e+08|1.00000");
-        assert_eq!(f("%f %f", &[f64::NAN.into(), f64::NEG_INFINITY.into()]), "NaN -Infinity");
-        assert_eq!(f("100%% %n%2$s %1$s %<s", &["a".into(), "b".into()]), "100% \nb a a");
-        assert_eq!(f("%b %b %c", &[FmtArg::Null, "x".into(), 65.into()]), "false true A");
-        assert_eq!(f("%12s: %s", &["Multiplayer".into(), "General".into()]), " Multiplayer: General");
+        assert_eq!(
+            f(
+                "%s|%5s|%-5s|%.2s",
+                &["ab".into(), "ab".into(), "ab".into(), "abc".into()]
+            ),
+            "ab|   ab|ab   |ab"
+        );
+        assert_eq!(
+            f(
+                "%s %s %s",
+                &[FmtArg::Double(5.0), FmtArg::Null, FmtArg::Bool(true)]
+            ),
+            "5.0 null true"
+        );
+        assert_eq!(
+            f(
+                "%d|%5d|%-5d|%05d|%,d|%+d|%(d",
+                &[
+                    1.into(),
+                    42.into(),
+                    42.into(),
+                    (-42).into(),
+                    1234567.into(),
+                    3.into(),
+                    (-3).into()
+                ]
+            ),
+            "1|   42|42   |-0042|1,234,567|+3|(3)"
+        );
+        assert_eq!(
+            f(
+                "%x %X %#x %o",
+                &[255.into(), (-1).into(), 255.into(), 8.into()]
+            ),
+            "ff FFFFFFFF 0xff 10"
+        );
+        assert_eq!(
+            f(
+                "%f|%.2f|%.1f|%.0f|%8.3f|%,.2f",
+                &[
+                    1.5.into(),
+                    0.125.into(),
+                    0.15.into(),
+                    0.5.into(),
+                    (-3.25159).into(),
+                    1234567.891.into()
+                ]
+            ),
+            "1.500000|0.13|0.2|1|  -3.252|1,234,567.89"
+        );
+        assert_eq!(
+            f("%f %.3f", &[FmtArg::Float(0.1), 1e-5.into()]),
+            "0.100000 0.000"
+        );
+        assert_eq!(
+            f(
+                "%e|%.2E|%e",
+                &[12345.678.into(), 0.000123.into(), 0.0.into()]
+            ),
+            "1.234568e+04|1.23E-04|0.000000e+00"
+        );
+        assert_eq!(
+            f("%g|%g|%g", &[0.0001.into(), 123456789.0.into(), 1.0.into()]),
+            "0.000100000|1.23457e+08|1.00000"
+        );
+        assert_eq!(
+            f("%f %f", &[f64::NAN.into(), f64::NEG_INFINITY.into()]),
+            "NaN -Infinity"
+        );
+        assert_eq!(
+            f("100%% %n%2$s %1$s %<s", &["a".into(), "b".into()]),
+            "100% \nb a a"
+        );
+        assert_eq!(
+            f("%b %b %c", &[FmtArg::Null, "x".into(), 65.into()]),
+            "false true A"
+        );
+        assert_eq!(
+            f("%12s: %s", &["Multiplayer".into(), "General".into()]),
+            " Multiplayer: General"
+        );
     }
 
     #[test]
     fn java_format_errors() {
         let e = |s: &str, a: &[FmtArg]| java_format(s, a).unwrap_err().to_string();
-        assert_eq!(e("%d", &[FmtArg::Double(1.0)]), "java.util.IllegalFormatConversionException: d != java.lang.Double");
-        assert_eq!(e("%X", &[FmtArg::Double(1.0)]), "java.util.IllegalFormatConversionException: x != java.lang.Double");
-        assert_eq!(e("%f", &[FmtArg::Int(1)]), "java.util.IllegalFormatConversionException: f != java.lang.Integer");
-        assert_eq!(e("%s %s", &["a".into()]), "java.util.MissingFormatArgumentException: Format specifier '%s'");
-        assert_eq!(e("%q", &[]), "java.util.UnknownFormatConversionException: Conversion = 'q'");
-        assert_eq!(e("abc %", &[]), "java.util.UnknownFormatConversionException: Conversion = '%'");
-        assert_eq!(e("%-d", &[1.into()]), "java.util.MissingFormatWidthException: %-d");
-        assert_eq!(e("%.2d", &[1.into()]), "java.util.IllegalFormatPrecisionException: 2");
-        assert_eq!(e("%+s", &["a".into()]), "java.util.FormatFlagsConversionMismatchException: Conversion = s, Flags = +");
-        assert_eq!(e("%--5s", &["a".into()]), "java.util.DuplicateFormatFlagsException: Flags = '-'");
+        assert_eq!(
+            e("%d", &[FmtArg::Double(1.0)]),
+            "java.util.IllegalFormatConversionException: d != java.lang.Double"
+        );
+        assert_eq!(
+            e("%X", &[FmtArg::Double(1.0)]),
+            "java.util.IllegalFormatConversionException: x != java.lang.Double"
+        );
+        assert_eq!(
+            e("%f", &[FmtArg::Int(1)]),
+            "java.util.IllegalFormatConversionException: f != java.lang.Integer"
+        );
+        assert_eq!(
+            e("%s %s", &["a".into()]),
+            "java.util.MissingFormatArgumentException: Format specifier '%s'"
+        );
+        assert_eq!(
+            e("%q", &[]),
+            "java.util.UnknownFormatConversionException: Conversion = 'q'"
+        );
+        assert_eq!(
+            e("abc %", &[]),
+            "java.util.UnknownFormatConversionException: Conversion = '%'"
+        );
+        assert_eq!(
+            e("%-d", &[1.into()]),
+            "java.util.MissingFormatWidthException: %-d"
+        );
+        assert_eq!(
+            e("%.2d", &[1.into()]),
+            "java.util.IllegalFormatPrecisionException: 2"
+        );
+        assert_eq!(
+            e("%+s", &["a".into()]),
+            "java.util.FormatFlagsConversionMismatchException: Conversion = s, Flags = +"
+        );
+        assert_eq!(
+            e("%--5s", &["a".into()]),
+            "java.util.DuplicateFormatFlagsException: Flags = '-'"
+        );
         // Parse errors win over missing arguments.
-        assert_eq!(e("%s %q", &[]), "java.util.UnknownFormatConversionException: Conversion = 'q'");
+        assert_eq!(
+            e("%s %q", &[]),
+            "java.util.UnknownFormatConversionException: Conversion = 'q'"
+        );
     }
 
     #[test]
@@ -3509,7 +4267,13 @@ LOG  : General      f:0>      Default: Off\n";
                 StackElement::lua("(MOD:Common Sense)", "BB_CS_Fireplace.lua", Some("BB_CS_Fireplace.lua"), 42),
             ],
         };
-        d.print_exception(DebugType::General, Some(&ex), None, "Lua((MOD:Common Sense)).BB_CS_Fireplace.lua", LogSeverity::Error);
+        d.print_exception(
+            DebugType::General,
+            Some(&ex),
+            None,
+            "Lua((MOD:Common Sense)).BB_CS_Fireplace.lua",
+            LogSeverity::Error,
+        );
         let log = sink.log();
         assert_eq!(
             log.stderr(),
@@ -3526,11 +4290,29 @@ LOG  : General      f:0>      Default: Off\n";
     fn stack_trace_print() {
         let (mut d, sink, _) = logger();
         d.set_severity(DebugType::LuaObject, LogSeverity::Warning);
-        let frames = vec![StackElement::lua("Vanilla", "a", Some("a.lua"), 1), StackElement::lua("Vanilla", "b", Some("b.lua"), 2)];
-        d.print_stack_trace(DebugType::LuaObject, LogSeverity::Warning, 1, 4, Some("No Type found: x"), &[], &frames).unwrap();
+        let frames = vec![
+            StackElement::lua("Vanilla", "a", Some("a.lua"), 1),
+            StackElement::lua("Vanilla", "b", Some("b.lua"), 2),
+        ];
+        d.print_stack_trace(
+            DebugType::LuaObject,
+            LogSeverity::Warning,
+            1,
+            4,
+            Some("No Type found: x"),
+            &[],
+            &frames,
+        )
+        .unwrap();
         let log = sink.log();
-        assert_eq!(log.stdout(), "No Type found: x\n\tLua(Vanilla).a(a.lua:1)\n\tLua(Vanilla).b(b.lua:2)\n");
-        assert_eq!(log.file_lines("DebugLog")[0], "[23-10-26 23:30:04.860] WARN : LuaObject    f:0> No Type found: x.");
+        assert_eq!(
+            log.stdout(),
+            "No Type found: x\n\tLua(Vanilla).a(a.lua:1)\n\tLua(Vanilla).b(b.lua:2)\n"
+        );
+        assert_eq!(
+            log.file_lines("DebugLog")[0],
+            "[23-10-26 23:30:04.860] WARN : LuaObject    f:0> No Type found: x."
+        );
     }
 
     #[test]
@@ -3549,12 +4331,21 @@ LOG  : General      f:0>      Default: Off\n";
         assert_eq!(d.severity(DebugType::Sound), LogSeverity::Warning);
         assert_eq!(d.severity(DebugType::Network), LogSeverity::Noise);
         assert_eq!(d.severity(DebugType::Mod), LogSeverity::Off);
-        assert_eq!(d.log_severity_for_selected_profile(DebugType::Network).unwrap(), Some(LogSeverity::Noise));
-        assert!(sink.log().stdout().contains("Selected debug alias = '$both'"));
+        assert_eq!(
+            d.log_severity_for_selected_profile(DebugType::Network)
+                .unwrap(),
+            Some(LogSeverity::Noise)
+        );
+        assert!(sink
+            .log()
+            .stdout()
+            .contains("Selected debug alias = '$both'"));
 
         d.cfg.selected_profile = Some("default".into());
-        d.update_selected_profile(DebugType::Lua, Some(LogSeverity::Off)).unwrap();
-        d.update_selected_profile_all(Some(LogSeverity::Error)).unwrap();
+        d.update_selected_profile(DebugType::Lua, Some(LogSeverity::Off))
+            .unwrap();
+        d.update_selected_profile_all(Some(LogSeverity::Error))
+            .unwrap();
         assert_eq!(d.cfg.profile("default").unwrap().commands, ["+all Error"]);
         let text = d.cfg.to_text();
         assert!(text.starts_with("default\n{\n    +all Error\n}\n\nnet\n"));
@@ -3595,7 +4386,10 @@ LOG  : General      f:0>      Default: Off\n";
         d.recording = true;
         d.set_severity(DebugType::Death, LogSeverity::General);
         d.println(DebugType::Death, "a\"b\nc");
-        assert_eq!(sink.log().recording[0], "0,Death,General,\"LOG  : Death       > a%22b%0Ac\"");
+        assert_eq!(
+            sink.log().recording[0],
+            "0,Death,General,\"LOG  : Death       > a%22b%0Ac\""
+        );
     }
 
     #[test]
@@ -3609,9 +4403,15 @@ LOG  : General      f:0>      Default: Off\n";
         assert!(!o.get_boolean("Missing"));
         o.set_boolean("Asset.SlowLoad", true);
         assert!(o.get_boolean("Asset.SlowLoad"));
-        assert!(o.options_list_xml().contains("<name>Asset.SlowLoad</name>\n        <value>true</value>"));
+        assert!(o
+            .options_list_xml()
+            .contains("<name>Asset.SlowLoad</name>\n        <value>true</value>"));
         let mut d = DebugOptions::default();
-        d.set_definitions(vec![DebugOptionDef { name: "X.Y".into(), default_value: false, debug_only: true }]);
+        d.set_definitions(vec![DebugOptionDef {
+            name: "X.Y".into(),
+            default_value: false,
+            debug_only: true,
+        }]);
         d.set_boolean("X.Y", true);
         assert!(!d.get_boolean("X.Y"));
         d.core_debug = true;
