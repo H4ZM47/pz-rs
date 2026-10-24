@@ -16,7 +16,7 @@ use crate::rand::world_gen_random;
 use crate::regions::ErosionRegions;
 use crate::season::ErosionSeason;
 use crate::tables::ErosionTables;
-use crate::world_host::{ChunkHost, EdgeQueries, NoEdges};
+use crate::world_host::{ChunkHost, WorldView};
 use pz_core::calendar::JavaZone;
 
 /// Engine state `ErosionMain` reads (`SandboxOptions`, `GameTime`,
@@ -490,7 +490,7 @@ impl ErosionMain {
         y: i32,
         z: i32,
         sprites: &mut IsoSpriteManager,
-        edges: &dyn EdgeQueries,
+        world: &WorldView<'_>,
         global: &mut dyn GameRand,
         logs_per_size: Option<&[i32]>,
     ) {
@@ -511,7 +511,7 @@ impl ErosionMain {
             let mut host = ChunkHost {
                 chunk,
                 sprites,
-                edges,
+                world,
                 logs_per_size,
             };
             if !sd.init {
@@ -560,7 +560,7 @@ impl ErosionMain {
         &mut self,
         chunk: &mut IsoChunk,
         sprites: &mut IsoSpriteManager,
-        edges: &dyn EdgeQueries,
+        world: &WorldView<'_>,
         global: &mut dyn GameRand,
         logs_per_size: Option<&[i32]>,
     ) {
@@ -571,7 +571,7 @@ impl ErosionMain {
         for yy in 0..8 {
             for xx in 0..8 {
                 if chunk.get_grid_square(xx, yy, 0).is_some() {
-                    self.load_grid_square(chunk, xx, yy, 0, sprites, edges, global, logs_per_size);
+                    self.load_grid_square(chunk, xx, yy, 0, sprites, world, global, logs_per_size);
                 }
             }
         }
@@ -633,7 +633,7 @@ impl ErosionMain {
 pub struct ErosionChunkHook<'a> {
     pub main: &'a mut ErosionMain,
     pub sprites: &'a mut IsoSpriteManager,
-    pub edges: &'a dyn EdgeQueries,
+    pub world: WorldView<'a>,
     /// `Rand`, for squares loaded without their `RandLocation`.
     pub rand: &'a mut dyn GameRand,
     pub logs_per_size: Option<&'a [i32]>,
@@ -647,7 +647,7 @@ impl pz_world::save::chunk_file::ChunkLoadHook for ErosionChunkHook<'_> {
             y,
             z,
             self.sprites,
-            self.edges,
+            &self.world,
             self.rand,
             self.logs_per_size,
         );
@@ -661,6 +661,3 @@ impl pz_world::save::chunk_file::ChunkLoadHook for ErosionChunkHook<'_> {
         self.main.chunk_unloaded(wx, wy);
     }
 }
-
-/// [`NoEdges`] as a static, for hooks without edge queries.
-pub static NO_EDGES: NoEdges = NoEdges;

@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use pz_erosion::regions::ErosionRegions;
 use pz_erosion::tables::{BushInit, Ev, PlantInit, TreeInit};
-use pz_erosion::world_host::NoEdges;
+use pz_erosion::category::valid_wall;
+use pz_erosion::world_host::{ChunkHost, WorldView};
 use pz_erosion::{ErosionMain, ErosionSettings, ErosionTables};
 use pz_world::objects::{IsoObject, ObjectKind, ObjectName};
 use pz_world::{GameRand, IsoChunk, IsoGridSquare, IsoSpriteManager, SpriteTables};
@@ -58,6 +59,14 @@ fn sprite_tables() -> SpriteTables {
         "NeverCutaway",
         "HasLightOnSprite",
         "EntityScript",
+        "water",
+        "solidtrans",
+        "blueprint",
+        "BlockRain",
+        "trans",
+        "noStart",
+        "forceRender",
+        "burntOut",
     ]);
     let types = names(&[
         "normal",
@@ -77,6 +86,12 @@ fn sprite_tables() -> SpriteTables {
         "radio",
         "doorFrN",
         "doorFrW",
+        "stairsTN",
+        "stairsMN",
+        "stairsBN",
+        "stairsTW",
+        "stairsMW",
+        "stairsBW",
     ]);
     SpriteTables::new(flags, types, names(&["North", "West"])).unwrap()
 }
@@ -173,6 +188,8 @@ fn setup() -> (IsoSpriteManager, IsoChunk) {
                 sq.objects
                     .push(IsoObject::new(id, ObjectKind::Object, Some(tree)));
             }
+            // As the chunk load does before erosion runs.
+            sq.recalc_properties(&m);
             chunk.set_square(x, y, 0, Some(sq));
         }
     }
@@ -207,7 +224,16 @@ fn chunk_load_replaces_and_grows() {
     let mut rand = Lcg(7);
     for x in 0..8 {
         for y in 0..8 {
-            main.load_grid_square(&mut chunk, x, y, 0, &mut sprites, &NoEdges, &mut rand, None);
+            main.load_grid_square(
+                &mut chunk,
+                x,
+                y,
+                0,
+                &mut sprites,
+                &WorldView::CHUNK_ONLY,
+                &mut rand,
+                None,
+            );
         }
     }
     main.chunk_loaded(&mut chunk);
@@ -254,7 +280,16 @@ fn chunk_load_replaces_and_grows() {
         .squares()
         .map(|s| (s.objects.len(), s.erosion.clone()))
         .collect();
-    main.load_grid_square(&mut chunk, 0, 0, 0, &mut sprites, &NoEdges, &mut rand, None);
+    main.load_grid_square(
+        &mut chunk,
+        0,
+        0,
+        0,
+        &mut sprites,
+        &WorldView::CHUNK_ONLY,
+        &mut rand,
+        None,
+    );
     let after: Vec<_> = chunk
         .squares()
         .map(|s| (s.objects.len(), s.erosion.clone()))
@@ -262,14 +297,29 @@ fn chunk_load_replaces_and_grows() {
     assert_eq!(before, after);
 
     // Levels other than 0 are ignored, like the original.
-    main.load_grid_square(&mut chunk, 0, 0, 1, &mut sprites, &NoEdges, &mut rand, None);
+    main.load_grid_square(
+        &mut chunk,
+        0,
+        0,
+        1,
+        &mut sprites,
+        &WorldView::CHUNK_ONLY,
+        &mut rand,
+        None,
+    );
 
     // After a reload (no in-memory state) squares come back from the saved
     // records without their RandLocation.
     main.chunk_unloaded(2, 3);
     assert!(main.square_data(16, 24, 0).is_none());
     main.e_ticks += 50;
-    main.update_chunk_now(&mut chunk, &mut sprites, &NoEdges, &mut rand, None);
+    main.update_chunk_now(
+        &mut chunk,
+        &mut sprites,
+        &WorldView::CHUNK_ONLY,
+        &mut rand,
+        None,
+    );
     let mem = main.square_data(16 + 3, 24 + 4, 0).unwrap();
     assert!(mem.rand.is_none());
     assert_eq!(chunk.erosion.as_ref().unwrap().e_tick_stamp, 110);
@@ -290,7 +340,16 @@ fn erosion_square_controls() {
         None,
     );
     let mut rand = Lcg(1);
-    main.load_grid_square(&mut chunk, 3, 4, 0, &mut sprites, &NoEdges, &mut rand, None);
+    main.load_grid_square(
+        &mut chunk,
+        3,
+        4,
+        0,
+        &mut sprites,
+        &WorldView::CHUNK_ONLY,
+        &mut rand,
+        None,
+    );
     main.disable_erosion(&mut chunk, 3, 4, 0);
     assert!(
         chunk
@@ -335,4 +394,31 @@ fn main_timer_advances() {
     let again = ErosionMain::new(tables, settings, &mut sprites, None, None);
     assert_eq!((again.get_etick(), again.cfg.time.epoch), (1, 1));
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn walls_come_from_square_queries() {
+    let (mut sprites, mut chunk) = setup();
+    let wall = sprite(&mut sprites, "walls_exterior_house_01_1", 102);
+    let ty = sprites.tables.ty.wall;
+    let f = sprites.tables.flag;
+    sprites.sprites[wall].tile_type = ty;
+    sprites.sprites[wall].cut_n = true;
+    for fl in [f.collideN, f.cutN] {
+        sprites.sprites[wall].properties.set_flag(fl);
+    }
+    let sq = chunk.get_grid_square_mut(2, 2, 0).unwrap();
+    let id = sq.new_object_id();
+    sq.objects.push(IsoObject::new(id, ObjectKind::Object, Some(wall)));
+    sq.recalc_properties(&sprites);
+    let host = ChunkHost {
+        chunk: &mut chunk,
+        sprites: &mut sprites,
+        world: &WorldView::CHUNK_ONLY,
+        logs_per_size: None,
+    };
+    // Square (18, 26) is the chunk's (2, 2): its north wall qualifies.
+    assert_eq!(valid_wall(&host, (18, 26, 0), true, false), Some(id));
+    assert_eq!(valid_wall(&host, (18, 26, 0), false, false), None);
+    assert_eq!(valid_wall(&host, (19, 26, 0), true, false), None);
 }

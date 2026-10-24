@@ -1,105 +1,95 @@
 //! [`ErosionHost`] over `pz-world`: a chunk's squares and objects and the
 //! sprite manager.
 //!
-//! Square flags are computed from the objects the way
-//! `IsoGridSquare.RecalcProperties` derives the ones erosion reads
-//! (`exterior`, `cutN/W`, `canPathN/W`). Edge queries that need the
-//! collision model (`isWallTo`, `isWindowTo`, `isWindowBlockedTo`,
-//! `getWindowTo`) and squares outside the chunk come from [`EdgeQueries`].
+//! Square flags and edge queries are `pz_world::square`'s, so squares must
+//! have had `recalc_properties` run, as the original's chunk load does
+//! before `ErosionMain.LoadGridsquare`. Squares outside the chunk come
+//! from [`WorldView`].
 
 use pz_world::objects::{IsoObject, IsoSpriteInstance, IsoTree, ObjectKind, ObjectName};
+use pz_world::square::{GetSquare, NoSquareHooks, SquareHooks};
 use pz_world::{IsoChunk, IsoGridSquare, IsoSpriteManager};
 
 use crate::host::{Attached, ErosionHost, ObjId, Sq, SqFlag};
 use crate::ice_queen::get_sprite;
 
-/// `IsoGridSquare` edge queries the port of the world does not model yet.
-/// The defaults answer as if no square had walls or windows.
-pub trait EdgeQueries {
-    /// `square.isWallTo(other)`.
-    fn is_wall_to(
-        &self,
-        _chunk: &IsoChunk,
-        _sprites: &IsoSpriteManager,
-        _sq: Sq,
-        _other: Sq,
-    ) -> bool {
-        false
-    }
-    /// `square.isWindowTo(other)`.
-    fn is_window_to(
-        &self,
-        _chunk: &IsoChunk,
-        _sprites: &IsoSpriteManager,
-        _sq: Sq,
-        _other: Sq,
-    ) -> bool {
-        false
-    }
-    /// `square.isWindowBlockedTo(other)`.
-    fn is_window_blocked_to(
-        &self,
-        _chunk: &IsoChunk,
-        _sprites: &IsoSpriteManager,
-        _sq: Sq,
-        _other: Sq,
-    ) -> bool {
-        false
-    }
-    /// `square.getWindowTo(other)` (an object of `sq`).
-    fn window_to(
-        &self,
-        _chunk: &IsoChunk,
-        _sprites: &IsoSpriteManager,
-        _sq: Sq,
-        _other: Sq,
-    ) -> Option<ObjId> {
+/// What erosion reads beyond the chunk it processes: squares in other
+/// chunks (neighbours across the chunk edge) and the object state
+/// `pz_world::square` delegates through [`SquareHooks`].
+#[derive(Clone, Copy)]
+pub struct WorldView<'a> {
+    /// Squares outside the chunk (usually the `IsoCell`); squares inside
+    /// it are always read from the chunk itself.
+    pub outside: &'a dyn GetSquare,
+    pub hooks: &'a dyn SquareHooks,
+}
+
+/// [`GetSquare`] that has no squares.
+pub struct NoSquares;
+
+impl GetSquare for NoSquares {
+    fn get_grid_square(&self, _x: i32, _y: i32, _z: i32) -> Option<&IsoGridSquare> {
         None
     }
 }
 
-/// [`EdgeQueries`] with every default.
-pub struct NoEdges;
-impl EdgeQueries for NoEdges {}
+impl WorldView<'_> {
+    /// Only the chunk's own squares; no barricades or thumpables.
+    pub const CHUNK_ONLY: WorldView<'static> = WorldView {
+        outside: &NoSquares,
+        hooks: &NoSquareHooks,
+    };
+}
+
+/// The chunk's squares, then [`WorldView::outside`] for the rest.
+struct HostSquares<'a> {
+    chunk: &'a IsoChunk,
+    outside: &'a dyn GetSquare,
+}
+
+impl GetSquare for HostSquares<'_> {
+    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
+        let (lx, ly) = (x - self.chunk.wx * 8, y - self.chunk.wy * 8);
+        if (0..8).contains(&lx) && (0..8).contains(&ly) {
+            if (-32..=31).contains(&z) {
+                self.chunk.get_grid_square(lx, ly, z)
+            } else {
+                None
+            }
+        } else {
+            self.outside.get_grid_square(x, y, z)
+        }
+    }
+}
 
 /// A chunk being processed by the erosion system.
 pub struct ChunkHost<'a> {
     pub chunk: &'a mut IsoChunk,
     pub sprites: &'a mut IsoSpriteManager,
-    pub edges: &'a dyn EdgeQueries,
+    pub world: &'a WorldView<'a>,
     /// `IsoTree.LOGS_PER_SIZE` (`pz_world::objects::ObjectTables`), for
     /// trees erosion creates.
     pub logs_per_size: Option<&'a [i32]>,
 }
 
-/// The square-level flags of `RecalcProperties` that erosion reads.
-pub fn square_has_flag(sq: &IsoGridSquare, m: &IsoSpriteManager, flag: SqFlag) -> bool {
-    let f = m.tables.flag;
-    let blueprint = m.tables.flag_from_string("blueprint");
-    let props = || {
-        sq.objects
-            .iter()
-            .filter_map(|o| o.sprite.map(|s| &m.sprites[s].properties))
-            .filter(move |p| !blueprint.is_some_and(|b| p.has(b)))
-    };
-    let any = |fl| props().any(|p| p.has(fl));
-    match flag {
-        SqFlag::Exterior => sq.room_id == -1 && !sq.have_roof,
-        SqFlag::CutN => any(f.cutN),
-        SqFlag::CutW => any(f.cutW),
-        SqFlag::CanPathN | SqFlag::CanPathW => {
-            let (can, hop, collide) = if flag == SqFlag::CanPathN {
-                (f.canPathN, f.HoppableN, f.collideN)
-            } else {
-                (f.canPathW, f.HoppableW, f.collideW)
-            };
-            let non_hoppable_collide = props().any(|p| p.has(collide) && !p.has(hop));
-            any(can) && !(non_hoppable_collide && any(hop))
+impl ChunkHost<'_> {
+    fn squares(&self) -> HostSquares<'_> {
+        HostSquares {
+            chunk: self.chunk,
+            outside: self.world.outside,
         }
     }
-}
 
-impl ChunkHost<'_> {
+    /// A square of the chunk or, through [`WorldView::outside`], next to it.
+    fn any_square(&self, sq: Sq) -> Option<&IsoGridSquare> {
+        let (x, y, z) = self.local(sq);
+        if (0..8).contains(&x) && (0..8).contains(&y) {
+            self.square(sq).filter(|_| (-32..=31).contains(&z))
+        } else {
+            self.world.outside.get_grid_square(sq.0, sq.1, sq.2)
+        }
+    }
+
     fn local(&self, sq: Sq) -> (i32, i32, i32) {
         (sq.0 - self.chunk.wx * 8, sq.1 - self.chunk.wy * 8, sq.2)
     }
@@ -135,22 +125,24 @@ impl ChunkHost<'_> {
 
 impl ErosionHost for ChunkHost<'_> {
     fn square_exists(&self, sq: Sq) -> bool {
-        self.square(sq).is_some()
+        self.any_square(sq).is_some()
     }
 
     fn has_flag(&self, sq: Sq, flag: SqFlag) -> bool {
-        self.square(sq)
-            .is_some_and(|s| square_has_flag(s, self.sprites, flag))
+        let f = self.sprites.tables.flag;
+        let flag = match flag {
+            SqFlag::Exterior => f.exterior,
+            SqFlag::CutN => f.cutN,
+            SqFlag::CutW => f.cutW,
+            SqFlag::CanPathN => f.canPathN,
+            SqFlag::CanPathW => f.canPathW,
+        };
+        self.any_square(sq).is_some_and(|s| s.has(flag))
     }
 
     fn has_wall_type(&self, sq: Sq) -> bool {
         let wall = self.sprites.tables.ty.wall;
-        self.square(sq).is_some_and(|s| {
-            s.objects.iter().any(|o| {
-                o.sprite
-                    .is_some_and(|sp| self.sprites.sprites[sp].tile_type == wall)
-            })
-        })
+        self.any_square(sq).is_some_and(|s| s.has_type(wall))
     }
 
     fn objects(&self, sq: Sq) -> Vec<ObjId> {
@@ -169,20 +161,30 @@ impl ErosionHost for ChunkHost<'_> {
     }
 
     fn is_wall_to(&self, sq: Sq, other: Sq) -> bool {
-        self.edges.is_wall_to(self.chunk, self.sprites, sq, other)
+        let g = self.squares();
+        self.any_square(sq)
+            .is_some_and(|s| s.is_wall_to(self.any_square(other), self.sprites, &g))
     }
 
     fn is_window_to(&self, sq: Sq, other: Sq) -> bool {
-        self.edges.is_window_to(self.chunk, self.sprites, sq, other)
+        let g = self.squares();
+        self.any_square(sq)
+            .is_some_and(|s| s.is_window_to(self.any_square(other), self.sprites, &g))
     }
 
     fn is_window_blocked_to(&self, sq: Sq, other: Sq) -> bool {
-        self.edges
-            .is_window_blocked_to(self.chunk, self.sprites, sq, other)
+        let g = self.squares();
+        self.any_square(sq)
+            .is_some_and(|s| s.is_window_blocked_to(self.any_square(other), &g, self.world.hooks))
     }
 
     fn window_to(&self, sq: Sq, other: Sq) -> Option<ObjId> {
-        self.edges.window_to(self.chunk, self.sprites, sq, other)
+        // Erosion only asks about the north and west edges, whose windows
+        // belong to `sq`.
+        let g = self.squares();
+        let s = self.square(sq)?;
+        let w = s.get_window_to(self.any_square(other), &g)?;
+        s.objects.iter().any(|o| std::ptr::eq(o, w)).then_some(w.id)
     }
 
     fn sprite_name(&self, sq: Sq, o: ObjId) -> Option<String> {

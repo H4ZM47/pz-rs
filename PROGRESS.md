@@ -44,8 +44,9 @@ Status of the Rust port. Update this file with every merged change.
   the jar at runtime. Against the original classes run in a JVM, noise,
   location randoms, chunk/square initialisation, a year of seasons, config
   defaults and category spawn decisions match bit for bit (checked
-  locally). Wall edge queries (`isWallTo`, windows) are inputs until the
-  collision model is ported. Lua: `bind_erosion`.
+  locally). Square flags and wall/window edge queries come from
+  `pz_world::square`; season dates use `pz_core::calendar` (the host time
+  zone with daylight saving). Lua: `bind_erosion`.
 - StringLib and OsLib. Local differential run against the original Kahlua
   (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
   output; the remaining one differs only in an identity hash.
