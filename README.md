@@ -20,6 +20,7 @@ to Rust with the original semantics and the same Lua-facing API.
 | `pz-text` | `zombie.core.Translator`, `zombie.ui.TextManager`, `AngelCodeFont` |
 | `pz-ui` | `zombie.ui.UIElement`, `UIManager` |
 | `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |
+| `pz-clipper6` | `PZClipper` + Clipper 6.4.2 + earcut inside the native pathfinder (`libPZPathFind`) |
 | `pz-client` | desktop binary |
 
 See [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md) for how the work is split and
