@@ -342,7 +342,8 @@ pub struct ScriptManager {
     has_load_errors: Cell<bool>,
     checksum: RefCell<String>,
     temp_file_to_mod_map: RefCell<HashMap<String, String>>,
-    roots: RefCell<Vec<PathBuf>>,
+    /// Game, then mod roots, each indexed once (`activeFileMap` sources).
+    roots: RefCell<Vec<GameFs>>,
     current_load_file_mod: RefCell<Option<String>>,
     current_load_file_abs_path: RefCell<Option<String>>,
     current_load_file_name: RefCell<Option<String>>,
@@ -709,7 +710,7 @@ impl ScriptManager {
     /// where later roots (mods, then their versioned folders) override.
     fn resolve_active_file(&self, rel: &str) -> Option<PathBuf> {
         self.roots.borrow().iter().rev().find_map(|root| {
-            let p = GameFs::new(root.clone()).resolve(rel)?;
+            let p = root.resolve(rel)?;
             p.is_file().then_some(p)
         })
     }
@@ -724,7 +725,7 @@ impl ScriptManager {
             roots.extend(m.common_dir.iter().cloned());
             roots.extend(m.version_dir.iter().cloned());
         }
-        *self.roots.borrow_mut() = roots;
+        *self.roots.borrow_mut() = roots.into_iter().map(GameFs::new).collect();
         if let Err(e) = self.load_files(fs, mods) {
             self.log_exception(&e);
         }
