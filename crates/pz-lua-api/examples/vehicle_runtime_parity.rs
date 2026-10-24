@@ -622,6 +622,11 @@ fn main() {
         println!("lua load: {}", e.lines().next().unwrap_or(""));
     }
 
+    if a[5] == "--spawn" {
+        pz_vehicles::lua::with_thread(&mut lua.thread, || run_spawn(&oracle, &sandbox_lines));
+        return;
+    }
+
     // Cases: the rows of a vehicles.db, or (rows dir `--scripts`) a new
     // vehicle of every script the harness spawned.
     struct Case {
@@ -914,5 +919,172 @@ fn main() {
     println!(
         "vehicles={} lines={} line_diffs={} bullet_mismatches={} bullet_left={}",
         totals.0, totals.1, totals.2, totals.3, totals.4
+    );
+}
+
+/// The harness's synthetic chunk map: every chunk loaded, a square missing
+/// where `(7x + 3y) mod 23 == 0`, indoors where `(x + 2y) mod 9 == 0`.
+struct SpawnTestWorld;
+
+impl pz_vehicles::spawn::SpawnWorld for SpawnTestWorld {
+    fn square_exists(&self, x: i32, y: i32, z: i32) -> bool {
+        z == 0 && (x * 7 + y * 3).rem_euclid(23) != 0
+    }
+    fn is_outside(&self, x: i32, y: i32, _z: i32) -> bool {
+        (x + 2 * y).rem_euclid(9) != 0
+    }
+    fn vehicle_zone_at(&self, _x: i32, _y: i32, _z: i32) -> bool {
+        false
+    }
+    fn vehicle_zones(&self, _cx: i32, _cy: i32) -> Vec<pz_vehicles::spawn::VehicleZone> {
+        Vec::new()
+    }
+    fn chunk_vehicles(&self, _wx: i32, _wy: i32) -> Option<Vec<pz_vehicles::VehicleRef>> {
+        Some(Vec::new())
+    }
+}
+
+/// `--spawn`: the `IsoChunk.AddVehicles` helpers on the harness's zones,
+/// compared with `spawn.txt`.
+fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
+    use pz_vehicles::spawn::{self, ChunkSpawner, SpawnOptions, VehicleZone};
+    let opt = |k: &str| {
+        sandbox_lines.iter().find_map(|l| {
+            let (a, b) = l.split_once(' ')?;
+            if a != k {
+                return None;
+            }
+            match b.as_bytes().first()? {
+                b'n' => Some(f64::from_bits(u64::from_str_radix(&b[1..], 16).ok()?)),
+                b'b' => Some(if &b[1..] == "1" { 1.0 } else { 0.0 }),
+                _ => None,
+            }
+        })
+    };
+    let mut options = SpawnOptions::default();
+    if let Some(v) = opt("CarSpawnRate") {
+        options.car_spawn_rate = v as i32;
+    }
+    if let Some(v) = opt("CarAlarm") {
+        options.car_alarm = v as i32;
+    }
+    if let Some(v) = opt("TrafficJam") {
+        options.traffic_jam = v != 0.0;
+    }
+    if let Some(v) = opt("EnableVehicles") {
+        options.enable_vehicles = v != 0.0;
+    }
+    world_sim::set_created(0.0, 0.0);
+    if std::env::var_os("SPAWN_DEBUG").is_some() {
+        let t = pz_vehicles::vehicle_type::type_from_name("parkingstall");
+        println!("parkingstall: {:?}", t.map(|t| t.vehicles_definition.len()));
+    }
+    let text = std::fs::read_to_string(oracle.join("spawn.txt")).unwrap();
+    let mut lines = text.lines();
+    let head: Vec<i32> = lines
+        .next()
+        .unwrap()
+        .split(' ')
+        .skip(1)
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let (wx, wy) = (head[0], head[1]);
+    let mut java: Vec<(String, Vec<String>)> = Vec::new();
+    for l in lines {
+        if l.starts_with("C ") {
+            java.push((l.to_string(), Vec::new()));
+        } else if let Some(c) = java.last_mut() {
+            c.1.push(l.to_string());
+        }
+    }
+    let world = SpawnTestWorld;
+    let (mut ok, mut bad, mut vehicles) = (0, 0, 0);
+    for (header, expect) in &java {
+        let t: Vec<&str> = header.split(' ').collect();
+        let i: i64 = t[1].parse().unwrap();
+        let kind: i32 = t[2].parse().unwrap();
+        let name = t[3];
+        let n = |k: usize| t[k].parse::<i32>().unwrap();
+        let mut zone = VehicleZone {
+            name: name.to_string(),
+            zone_type: "ParkingStall".to_string(),
+            x: n(4),
+            y: n(5),
+            z: 0,
+            w: n(6),
+            h: n(7),
+            dir: pz_world::IsoDirections::from_name(t[8]),
+            face_direction: t[9] == "true",
+            ..Default::default()
+        };
+        if kind == 1 || kind == 3 {
+            zone.points = t[11].split(',').map(|v| v.parse().unwrap()).collect();
+            zone.polyline_width = n(10);
+        }
+        spawn::reset_checked_vehicles();
+        rand::seed_standard(7000 + i);
+        let mut sp = ChunkSpawner::new(wx, wy, &world, options.clone());
+        match kind {
+            0 => sp.on_zone(&zone, name),
+            1 => sp.on_zone_polyline(&zone, name),
+            3 => sp.traffic_jam_polyline(&zone, name),
+            _ => {
+                let d = match name {
+                    "TrafficJamW" => pz_world::IsoDirections::W,
+                    "TrafficJamE" => pz_world::IsoDirections::E,
+                    "TrafficJamS" => pz_world::IsoDirections::S,
+                    _ => pz_world::IsoDirections::N,
+                };
+                sp.traffic_jam(&zone, name, d)
+            }
+        }
+        let mut got = Vec::new();
+        for v in &sp.vehicles {
+            let st = v.st();
+            let q = st.saved_rot;
+            let o = st.jni_transform.origin;
+            got.push(format!(
+                "V {} skin={} type={} zone={} pos={},{},{} rot={},{},{},{} o={},{},{} rust={} alarm={} key={} color={}",
+                st.script_name,
+                st.skin_index,
+                st.vehicle_type,
+                st.respawn_zone,
+                fh(st.x),
+                fh(st.y),
+                fh(st.z),
+                fh(q.x),
+                fh(q.y),
+                fh(q.z),
+                fh(q.w),
+                fh(o.x),
+                fh(o.y),
+                fh(o.z),
+                fh(st.rust),
+                st.alarmed,
+                st.key_id,
+                st.do_color
+            ));
+        }
+        vehicles += got.len();
+        got.push(format!("R {}", rand::next(1_000_000_000)));
+        let exp: Vec<&String> = expect.iter().filter(|l| !l.starts_with("E ")).collect();
+        if exp.len() == got.len() && exp.iter().zip(&got).all(|(a, b)| *a == b) {
+            ok += 1;
+        } else {
+            bad += 1;
+            if bad <= 5 {
+                println!("{header}");
+                for l in &exp {
+                    println!("  J {l}");
+                }
+                for l in &got {
+                    println!("  R {l}");
+                }
+            }
+        }
+    }
+    println!(
+        "spawn cases={} ok={ok} bad={bad} vehicles={vehicles}",
+        java.len()
     );
 }

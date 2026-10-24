@@ -20,6 +20,7 @@ pub mod physics;
 pub mod poly;
 pub mod rand;
 pub mod save;
+pub mod spawn;
 pub mod vehicle;
 pub mod vehicle_type;
 pub mod world_sim;
