@@ -21,6 +21,7 @@ pub mod bind_ui;
 pub mod bind_fs;
 pub mod bind_java_util;
 pub mod bind_mods;
+pub mod bind_nutrition;
 pub mod bind_render;
 pub mod events;
 pub mod expose;
@@ -46,6 +47,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_character_sim::register_shared(&mut mgr.thread);
+    bind_nutrition::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
     let events = mgr.events.clone();
