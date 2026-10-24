@@ -1,0 +1,11 @@
+[package]
+name = "pz-iso-render"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+pz-render = { path = "../pz-render" }
+
+[dev-dependencies]
+pz-gpu = { path = "../pz-gpu" }
