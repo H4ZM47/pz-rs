@@ -675,8 +675,8 @@ impl BaseVehicle {
             && ((speed < 1.0 && ef > idle * 2.0) || (speed > -0.5 && ef < idle * -2.0))
         {
             if self.st().ram_sound == 0 {
-                self.st_mut().ram_sound = 1;
-                env::events().event("playSound VehicleSkid");
+                let h = env::events().play_sound("VehicleSkid");
+                self.st_mut().ram_sound = h;
                 let t = env::now_ms() + 1000 + rand::next(2000) as i64;
                 self.st_mut().ram_sound_time = t;
             }

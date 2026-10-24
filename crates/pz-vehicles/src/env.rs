@@ -142,6 +142,11 @@ impl VehicleWorld for OpenWorld {
 /// sounds, Lua events, music events). The default ignores them.
 pub trait VehicleEvents {
     fn event(&self, _what: &str) {}
+    /// `getEmitter().playSoundImpl(name, null)`: the sound's handle (0 when
+    /// sound is disabled, as with `DummySoundEmitter`).
+    fn play_sound(&self, _name: &str) -> i64 {
+        1
+    }
 }
 
 struct NoEvents;
