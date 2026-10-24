@@ -106,7 +106,8 @@ fn installed_game() {
     let s = Scratch::new("installed");
     fs.set_cache_dir(&s.0);
     eprintln!("active files: {}", fs.active_file_map.len());
-    for p in ["media/lua/shared/luautils.lua", "media/ui/white.png", "media/texturepacks/UI.pack", "media/maps/Muldraugh, KY/"] {
+    let map_dir = fs.active_file_map.keys().find(|k| k.starts_with("media/maps/") && k.ends_with('/')).cloned().unwrap_or_default();
+    for p in ["media/lua/shared/luautils.lua", "media/ui/white.png", "media/texturepacks/UI.pack", map_dir.as_str()] {
         eprintln!("{p} -> {:?}", fs.directory_lookup(p));
     }
     let shared = fs.lua_files("shared");

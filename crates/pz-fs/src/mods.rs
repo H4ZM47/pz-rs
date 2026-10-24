@@ -461,11 +461,11 @@ mod tests {
 
     #[test]
     fn active_mods_round_trip() {
-        let mods = ActiveMods { mods: vec!["A".into(), "B".into()], map_order: vec!["Muldraugh, KY".into()] };
+        let mods = ActiveMods { mods: vec!["A".into(), "B".into()], map_order: vec!["Elmsworth, ZZ".into()] };
         let text = active_mods_to_string(&mods);
         // Map names containing ',' split into two values when read back, as in Java.
         let back = active_mods_from_string(&java::read_lines(&text).concat());
         assert_eq!(back.mods, mods.mods);
-        assert_eq!(back.map_order, ["Muldraugh"]);
+        assert_eq!(back.map_order, ["Elmsworth"]);
     }
 }
