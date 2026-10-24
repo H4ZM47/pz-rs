@@ -6,7 +6,7 @@
 
 use crate::native::Native;
 use pz_world::map_files::zombie_intensity_for_chunk;
-use pz_world::IsoMetaGrid;
+use pz_world::{IsoChunk, IsoGridSquare, IsoMetaGrid, IsoSpriteManager};
 use std::path::PathBuf;
 
 pub use crate::native::mcd::{BIT_ROOM, BIT_SOLID, BIT_WALLN, BIT_WALLW, BIT_WATER};
@@ -76,8 +76,9 @@ pub struct McdGameState {
     pub zombies_disabled: bool,
 }
 
-/// One square's `BIT_*` flags, from what the square holds
-/// (`isSolid`/`isBlockedN`/`isBlockedW`/`isWater`/`isRoom`).
+/// The square facts `isSolid`/`isBlockedN`/`isBlockedW`/`isWater`/`isRoom`
+/// combine into one square's `BIT_*` byte. [`SquareFlags::from_square`]
+/// reads them from a pz-world square.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SquareFlags {
     /// `isSolid() || isSolidTrans()`.
@@ -94,6 +95,36 @@ pub struct SquareFlags {
 }
 
 impl SquareFlags {
+    /// The facts as `IsoGridSquare` reports them (`isSolid`,
+    /// `isSolidTrans`, `HasStairs`, `has(...)`, `getProperties().has(...)`,
+    /// `getRoom()`).
+    pub fn from_square(sq: &IsoGridSquare, m: &IsoSpriteManager) -> SquareFlags {
+        let t = &m.tables;
+        let (f, ty) = (&t.flag, &t.ty);
+        let named = |name: &str| t.flag_from_string(name).is_some_and(|fl| sq.has(fl));
+        SquareFlags {
+            solid: sq.has(f.solid) || sq.has(f.solidtrans),
+            has_stairs: sq.has_stairs(m),
+            water: sq.has(f.water),
+            tree: sq.has_type(ty.tree),
+            hoppable_n: sq.has(f.HoppableN),
+            blocks_n: sq.has(f.collideN)
+                || sq.has_type(ty.doorFrN)
+                || named("DoorWallN")
+                || sq.has_type(ty.windowFN)
+                || sq.has(f.windowN)
+                || sq.has(f.WindowN),
+            hoppable_w: sq.has(f.HoppableW),
+            blocks_w: sq.has(f.collideW)
+                || sq.has_type(ty.doorFrW)
+                || named("DoorWallW")
+                || sq.has_type(ty.windowFW)
+                || sq.has(f.windowW)
+                || sq.has(f.WindowW),
+            room: sq.room_id != -1,
+        }
+    }
+
     /// The byte `addChunkToWorld` / `squareChanged` send.
     pub fn bits(&self) -> u8 {
         let mut solid = self.solid;
@@ -175,8 +206,30 @@ impl MapCollisionData {
         n.mcd_init(meta.min_x, meta.min_y, meta.width, meta.height);
     }
 
-    /// `addChunkToWorld`: `bits[x + y * 8]` of the chunk's level-0 squares
-    /// (`BIT_SOLID` for missing squares).
+    /// `addChunkToWorld(chunk)`.
+    pub fn add_iso_chunk(&mut self, n: &mut Native, chunk: &IsoChunk, m: &IsoSpriteManager) {
+        if self.client {
+            return;
+        }
+        let mut bits = [0u8; 64];
+        for y in 0..8 {
+            for x in 0..8 {
+                bits[(x + y * 8) as usize] = match chunk.get_grid_square(x, y, 0) {
+                    Some(sq) => SquareFlags::from_square(sq, m).bits(),
+                    None => BIT_SOLID,
+                };
+            }
+        }
+        self.add_chunk_to_world(n, chunk.wx, chunk.wy, &bits);
+    }
+
+    /// `squareChanged(sq)` for a pz-world square.
+    pub fn iso_square_changed(&mut self, n: &mut Native, sq: &IsoGridSquare, m: &IsoSpriteManager) {
+        self.square_changed(n, sq.x, sq.y, SquareFlags::from_square(sq, m));
+    }
+
+    /// `addChunkToWorld` from precomputed bytes: `bits[x + y * 8]` of the
+    /// chunk's level-0 squares (`BIT_SOLID` for missing squares).
     pub fn add_chunk_to_world(&mut self, n: &mut Native, wx: i32, wy: i32, bits: &[u8; 64]) {
         if self.client {
             return;
@@ -272,5 +325,47 @@ mod tests {
         assert_eq!(f.bits(), BIT_SOLID);
         let f = SquareFlags { water: true, solid: true, ..Default::default() };
         assert_eq!(f.bits(), BIT_WATER);
+    }
+
+    /// pz-world's own hand-authored test tables (names in an arbitrary
+    /// order), read from its source.
+    fn tables() -> pz_world::SpriteTables {
+        let src = include_str!("../../pz-world/src/sprite/types.rs");
+        let body = &src[src.find("fn test_tables").unwrap()..];
+        let lists: Vec<Vec<String>> = body
+            .split("s(&[")
+            .skip(1)
+            .take(3)
+            .map(|c| {
+                c[..c.find("])").unwrap()]
+                    .split(',')
+                    .map(|x| x.trim().trim_matches('"').to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
+            .collect();
+        pz_world::SpriteTables::new(lists[0].clone(), lists[1].clone(), lists[2].clone()).unwrap()
+    }
+
+    #[test]
+    fn square_facts_from_pz_world() {
+        let m = IsoSpriteManager::new(tables());
+        let (f, ty) = (m.tables.flag, m.tables.ty);
+        let mut sq = IsoGridSquare::new(3, 4, 0);
+        assert_eq!(SquareFlags::from_square(&sq, &m).bits(), 0);
+        sq.properties.set_flag(f.solidtrans);
+        sq.properties.set_flag(f.collideN);
+        sq.has_types |= 1 << ty.windowFW.index();
+        sq.room_id = 12;
+        assert_eq!(SquareFlags::from_square(&sq, &m).bits(), BIT_SOLID | BIT_WALLN | BIT_WALLW | BIT_ROOM);
+        sq.properties.set_flag(f.HoppableN);
+        sq.has_types |= 1 << ty.tree.index();
+        assert_eq!(SquareFlags::from_square(&sq, &m).bits(), BIT_WALLW | BIT_ROOM);
+        let mut sq = IsoGridSquare::new(0, 0, 0);
+        sq.properties.set_flag(f.water);
+        sq.has_types |= 1 << ty.stairsTW.index();
+        assert_eq!(SquareFlags::from_square(&sq, &m).bits(), BIT_WATER);
+        sq.properties = Default::default();
+        assert_eq!(SquareFlags::from_square(&sq, &m).bits(), BIT_SOLID);
     }
 }

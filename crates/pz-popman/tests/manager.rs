@@ -2,7 +2,8 @@
 //! chunk loads, goes back to the library when it unloads, and the
 //! population files are written. Invented bounds, no map data.
 
-use pz_popman::manager::{ChunkZombie, RealZombieInfo, SquareInfo, SquarePlace, ZombieConfig};
+use pz_popman::manager::{ChunkZombie, RealZombieInfo, SquareInfo, SquarePlace};
+use pz_sandbox::ZombieConfig;
 use pz_popman::native::Native;
 use pz_popman::state_flags::{ZombieStateFlag, ZombieStateFlags, ZombieStateSource};
 use pz_popman::{PopulationHost, ZombiePopulationManager};
@@ -101,7 +102,19 @@ fn chunk_load_makes_zombies_real_and_unload_stores_them() {
         n.mcd_init_meta_grid(0, 0, 2, 2);
         n.mcd_init(0, 0, 2, 2);
     }
-    let cfg = ZombieConfig { population_multiplier: 0.0, ..Default::default() };
+    // Invented values; a zero multiplier keeps the cells empty.
+    let cfg = ZombieConfig {
+        population_multiplier: 0.0,
+        population_start_multiplier: 1.0,
+        population_peak_multiplier: 2.0,
+        population_peak_day: 10,
+        respawn_hours: 5.0,
+        respawn_unseen_hours: 3.0,
+        respawn_multiplier: 0.5,
+        redistribute_hours: 6.0,
+        follow_sound_distance: 50,
+        ..Default::default()
+    };
     m.init((0, 0, 2, 2), &cfg, &["Generic01".to_string()]);
     let mut host = Host {
         rand: SeqRand(7),

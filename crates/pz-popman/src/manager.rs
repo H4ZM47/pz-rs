@@ -15,6 +15,7 @@
 use crate::map_collision::MapCollisionData;
 use crate::native::{Native, Zombie};
 use crate::state_flags::{ZombieStateFlags, ZombieStateSource};
+use pz_sandbox::ZombieConfig;
 use pz_world::java::{coordmodulo, fastfloor, GameRand};
 use pz_world::square::IsoDirections;
 use pz_world::IsoMetaGrid;
@@ -343,37 +344,6 @@ pub trait PopulationHost {
     fn remove_zombie(&mut self, z: Self::Zombie);
 }
 
-/// `SandboxOptions.ZombieConfig` values `onConfigReloaded` sends.
-#[derive(Clone, Copy, Debug)]
-pub struct ZombieConfig {
-    pub population_multiplier: f64,
-    pub population_start_multiplier: f64,
-    pub population_peak_multiplier: f64,
-    pub population_peak_day: i32,
-    pub respawn_hours: f64,
-    pub respawn_unseen_hours: f64,
-    pub respawn_multiplier: f64,
-    pub redistribute_hours: f64,
-    pub follow_sound_distance: i32,
-}
-
-impl Default for ZombieConfig {
-    /// The sandbox defaults.
-    fn default() -> Self {
-        ZombieConfig {
-            population_multiplier: 0.65,
-            population_start_multiplier: 1.0,
-            population_peak_multiplier: 1.5,
-            population_peak_day: 28,
-            respawn_hours: 72.0,
-            respawn_unseen_hours: 16.0,
-            respawn_multiplier: 0.1,
-            redistribute_hours: 12.0,
-            follow_sound_distance: 100,
-        }
-    }
-}
-
 /// `ChooseGameInfo.SpawnOrigin`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SpawnOrigin {
@@ -535,7 +505,7 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
         let _ = self.native.n_set_spawn_origins(&origins);
     }
 
-    /// `onConfigReloaded`.
+    /// `onConfigReloaded` (`cfg` is `SandboxOptions.zombieConfig`).
     pub fn on_config_reloaded(&mut self, cfg: &ZombieConfig) {
         let n = &mut self.native;
         let _ = n.n_config_float("PopulationMultiplier", cfg.population_multiplier as f32);
