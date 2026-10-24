@@ -13,6 +13,7 @@ const MULT: i64 = 0x5DEECE66D;
 const MASK: i64 = (1 << 48) - 1;
 
 /// `java.util.Random`.
+#[derive(Clone, Debug)]
 pub struct JavaRandom {
     seed: Cell<i64>,
 }
@@ -20,6 +21,11 @@ pub struct JavaRandom {
 impl JavaRandom {
     pub fn new(seed: i64) -> Self {
         JavaRandom { seed: Cell::new((seed ^ MULT) & MASK) }
+    }
+
+    /// `setSeed(seed)`.
+    pub fn set_seed(&self, seed: i64) {
+        self.seed.set((seed ^ MULT) & MASK);
     }
 
     fn next(&self, bits: u32) -> i32 {
@@ -43,6 +49,11 @@ impl JavaRandom {
         }
     }
 
+    /// `nextInt()`.
+    pub fn next_int_unbounded(&self) -> i32 {
+        self.next(32)
+    }
+
     /// `nextFloat()`.
     pub fn next_float(&self) -> f32 {
         self.next(24) as f32 / (1 << 24) as f32
@@ -50,6 +61,7 @@ impl JavaRandom {
 }
 
 /// `RandAbstract` over one generator.
+#[derive(Clone, Debug)]
 pub struct Rand {
     id: Cell<i32>,
     rand: JavaRandom,
@@ -83,6 +95,11 @@ impl Rand {
         let (min, max) = if min > max { (max, min) } else { (min, max) };
         self.bump();
         self.rand.next_int(max.wrapping_sub(min)) + min
+    }
+
+    /// The generator's own `nextInt()` (no range handling).
+    pub fn next_raw_int(&self) -> i32 {
+        self.rand.next_int_unbounded()
     }
 
     /// `Next(float min, float max)`.

@@ -40,6 +40,7 @@ pub mod bind_map_groups;
 pub mod bind_save;
 pub mod bind_world;
 pub mod bind_nutrition;
+pub mod bind_climate;
 pub mod events;
 pub mod expose;
 pub mod global_objects;
@@ -59,6 +60,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     let sink = move |t: &mut pz_kahlua::Thread, name: &str, a: &[pz_kahlua::Value]| {
         events.trigger(t, name, a);
     };
+    let sink: bind_climate::EventSink = Rc::new(sink);
     bind_java_util::register(&mut mgr.thread);
     bind_globals::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
@@ -98,7 +100,9 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
     bind_joypad::register(mgr);
+    bind_climate::register(mgr);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
-    bind_character_sim::install_event_sink(Rc::new(sink));
+    bind_character_sim::install_event_sink(sink.clone());
+    bind_climate::install_event_sink(sink);
 }

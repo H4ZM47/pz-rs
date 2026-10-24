@@ -6,8 +6,9 @@
 pub mod calendar;
 pub mod config;
 pub mod core;
-pub mod debug;
 pub mod random;
+pub mod weather;
+pub mod debug;
 pub mod map_symbols;
 pub mod game_time;
 pub mod game_time_save;

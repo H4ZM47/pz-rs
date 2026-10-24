@@ -282,6 +282,11 @@ pub fn with_translator<R>(f: impl FnOnce(&Translator) -> R) -> Option<R> {
     state().map(|s| f(&s.translator.borrow()))
 }
 
+/// `Translator.getText(key)` (the key itself when no translator is set).
+pub(crate) fn translate(key: &str) -> String {
+    with_translator(|t| t.get_text(key, &[])).unwrap_or_else(|| key.to_string())
+}
+
 pub fn with_translator_mut<R>(f: impl FnOnce(&mut Translator) -> R) -> Option<R> {
     state().map(|s| f(&mut s.translator.borrow_mut()))
 }

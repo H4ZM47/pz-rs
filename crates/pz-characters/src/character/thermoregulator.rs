@@ -790,8 +790,8 @@ impl Thermoregulator {
             hypothermia: chr.moodles.moodle_level_of(sm, "HYPOTHERMIA")?,
             hyperthermia: chr.moodles.moodle_level_of(sm, "HYPERTHERMIA")?,
         };
-        self.air_temperature = chr.environment.air_temperature;
-        self.air_and_wind_temp = chr.environment.air_and_wind_temperature;
+        self.air_temperature = chr.environment.air_temperature_for_character(ctx, false);
+        self.air_and_wind_temp = chr.environment.air_temperature_for_character(ctx, true);
         self.external_air_temperature = self.air_temperature;
         // updateSetPoint
         self.set_point = 37.0;

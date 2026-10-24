@@ -1487,7 +1487,7 @@ fn print_float(spec: &Spec, value: f64, single: bool) -> String {
             } else {
                 let (mut digits, dexp) = decimal_digits(v, single);
                 let exp = apply_precision(dexp, &mut digits, prec);
-                if exp - 1 < -4 || exp - 1 >= prec {
+                if exp - 1 < -4 || exp > prec {
                     let (m, e) = fill_scientific(prec - 1, &digits, exp);
                     (m, Some(e), exp - 1)
                 } else {
@@ -1922,7 +1922,7 @@ pub fn group_number(v: i64) -> String {
     let digits = (v as i128).abs().to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -4167,11 +4167,11 @@ LOG  : General      f:0>      Default: Off\n";
                     0.125.into(),
                     0.15.into(),
                     0.5.into(),
-                    (-3.14159).into(),
+                    (-3.25159).into(),
                     1234567.891.into()
                 ]
             ),
-            "1.500000|0.13|0.2|1|  -3.142|1,234,567.89"
+            "1.500000|0.13|0.2|1|  -3.252|1,234,567.89"
         );
         assert_eq!(
             f("%f %.3f", &[FmtArg::Float(0.1), 1e-5.into()]),

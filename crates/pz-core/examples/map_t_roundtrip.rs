@@ -61,8 +61,8 @@ fn main() {
                 mod_id: Some("rust".into()),
                 ..WeatherStage::default()
             });
-            gt.climate.thunder_clouds[2].is_running = true;
-            gt.climate.thunder_clouds[2].end_x = 12345;
+            gt.climate.thunder_storm.clouds[2].is_running = true;
+            gt.climate.thunder_storm.clouds[2].end_x = 12345;
             core.set_poisonous_berry(Some("Base.BerryGeneric2"));
             let name = Path::new(f)
                 .parent()
