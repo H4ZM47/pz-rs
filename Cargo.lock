@@ -150,6 +150,7 @@ dependencies = [
 name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "pz-fs",
  "pz-kahlua",
  "pz-render",
