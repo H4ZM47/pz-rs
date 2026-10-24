@@ -193,17 +193,7 @@ impl RenderSquare {
     }
 }
 
-/// `TileDepthMapManager.TileDepthPreset`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DepthPreset {
-    Floor,
-    WDoorFrame,
-    NDoorFrame,
-    WWall,
-    NWall,
-    NWWall,
-    SEWall,
-}
+pub use pz_render::tile_depth::TileDepthPreset as DepthPreset;
 
 /// The shared depth textures: presets and `TileDepthTextureManager`'s
 /// default.
@@ -211,4 +201,18 @@ pub trait DepthMaps {
     fn preset(&self, preset: DepthPreset) -> Option<Texture>;
     /// `getDefaultDepthTexture()` when not empty.
     fn default_texture(&self) -> Option<Texture>;
+}
+
+impl DepthMaps for pz_render::tile_depth::TileDepthTextureManager {
+    fn preset(&self, preset: DepthPreset) -> Option<Texture> {
+        Some(self.texture_for_preset(preset).clone())
+    }
+
+    fn default_texture(&self) -> Option<Texture> {
+        let t = self.default_depth_texture()?;
+        if t.is_empty() {
+            return None;
+        }
+        t.uploaded_texture().cloned()
+    }
 }

@@ -242,16 +242,6 @@ pub struct DepthTexture {
 /// sprite's `soffX/soffY`, `scale` the sprite instance scale.
 pub fn tile_depth_modifier(d: &mut TexDraw, depth: &Texture, soff: (i32, i32), scale: (f32, f32)) {
     let Some(tex0) = d.sprite.texture.as_ref() else { return };
-    let (sx, sy) = (soff.0 as f32, soff.1 as f32);
-    let x0 = (sx + tex0.offset_x * scale.0).max(depth.offset_x);
-    let x1 = (sx + (tex0.offset_x + tex0.width as f32) * scale.0).min(depth.offset_x + depth.width as f32);
-    let y0 = (sy + tex0.offset_y * scale.1).max(depth.offset_y);
-    let y2 = (sy + (tex0.offset_y + tex0.height as f32) * scale.1).min(depth.offset_y + depth.height as f32);
-    let (x2, x3, y1, y3) = (x1, x0, y0, y2);
-    let (xs, ys) = (depth.x_start, depth.y_start);
-    let (whw, hhw) = (depth.width_hw as f32, depth.height_hw as f32);
-    let u = |x: f32| xs + (x - depth.offset_x) / whw;
-    let v = |y: f32| ys + (y - depth.offset_y) / hhw;
-    d.uv1 = [[u(x0), v(y0)], [u(x1), v(y1)], [u(x2), v(y2)], [u(x3), v(y3)]];
+    d.uv1 = pz_render::tile_depth::depth_uv1(tex0, depth, soff.0 as i16, soff.1 as i16, scale.0, scale.1);
     d.tex1 = Some(depth.clone());
 }
