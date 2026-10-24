@@ -1,0 +1,11 @@
+[package]
+name = "pz-character-model"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+pz-anim = { path = "../pz-anim" }
+pz-model = { path = "../pz-model" }
+pz-render = { path = "../pz-render" }
+pz-iso-render = { path = "../pz-iso-render" }
