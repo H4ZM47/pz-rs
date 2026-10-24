@@ -629,71 +629,50 @@ impl ErosionMain {
 }
 
 /// [`pz_world::save::chunk_file::ChunkLoadHook`] running erosion on chunks
-/// loaded from a save.
+/// loaded from a save (pass it to `pz_world`'s `finish_chunk_load`).
 pub struct ErosionChunkHook<'a> {
     pub main: &'a mut ErosionMain,
-    pub sprites: &'a mut IsoSpriteManager,
-    pub world: WorldView<'a>,
+    /// Barricades and thumpables for the window queries.
+    pub hooks: &'a dyn pz_world::square::SquareHooks,
     /// `Rand`, for squares loaded without their `RandLocation`.
     pub rand: &'a mut dyn GameRand,
     pub logs_per_size: Option<&'a [i32]>,
 }
 
 impl pz_world::save::chunk_file::ChunkLoadHook for ErosionChunkHook<'_> {
-    fn load_grid_square(&mut self, chunk: &mut IsoChunk, x: i32, y: i32, z: i32) {
+    fn load_grid_square(
+        &mut self,
+        chunk: &mut IsoChunk,
+        x: i32,
+        y: i32,
+        z: i32,
+        ctx: &mut pz_world::save::chunk_file::HookCtx<'_>,
+    ) {
+        let world = WorldView {
+            outside: ctx.neighbours,
+            hooks: self.hooks,
+        };
         self.main.load_grid_square(
             chunk,
             x,
             y,
             z,
-            self.sprites,
-            &self.world,
+            ctx.sprites,
+            &world,
             self.rand,
             self.logs_per_size,
         );
     }
 
-    fn chunk_loaded(&mut self, chunk: &mut IsoChunk) {
+    fn chunk_loaded(
+        &mut self,
+        chunk: &mut IsoChunk,
+        _ctx: &mut pz_world::save::chunk_file::HookCtx<'_>,
+    ) {
         self.main.chunk_loaded(chunk);
     }
 
     fn chunk_unloaded(&mut self, wx: i32, wy: i32) {
         self.main.chunk_unloaded(wx, wy);
     }
-}
-
-/// `finish_chunk_load` with erosion as the hook: recalculates chunk
-/// `(wx, wy)`'s squares, then runs `LoadGridsquare`/`ChunkLoaded` with
-/// the rest of `cell` as the squares across the chunk edge.
-///
-/// The chunk is taken out of the cell while erosion runs, because erosion
-/// edits it (and may add sprites) while reading its neighbours.
-#[allow(clippy::too_many_arguments)]
-pub fn finish_chunk_load(
-    cell: &mut pz_world::IsoCell,
-    wx: i32,
-    wy: i32,
-    meta: &pz_world::IsoMetaGrid,
-    main: &mut ErosionMain,
-    sprites: &mut IsoSpriteManager,
-    hooks: &dyn pz_world::square::SquareHooks,
-    rand: &mut dyn GameRand,
-    logs_per_size: Option<&[i32]>,
-) {
-    cell.recalc_chunk_squares(wx, wy, meta, sprites);
-    let Some(mut chunk) = cell.chunks.remove(&(wx, wy)) else {
-        return;
-    };
-    let mut hook = ErosionChunkHook {
-        main,
-        sprites,
-        world: WorldView {
-            outside: &*cell,
-            hooks,
-        },
-        rand,
-        logs_per_size,
-    };
-    pz_world::save::chunk_file::do_load_gridsquare(&mut chunk, Some(&mut hook));
-    cell.chunks.insert((wx, wy), chunk);
 }

@@ -8,7 +8,7 @@ use pz_erosion::category::valid_wall;
 use pz_erosion::regions::ErosionRegions;
 use pz_erosion::tables::{BushInit, Ev, PlantInit, TreeInit};
 use pz_erosion::world_host::{ChunkHost, WorldView};
-use pz_erosion::{finish_chunk_load, ErosionMain, ErosionSettings, ErosionTables};
+use pz_erosion::{ErosionChunkHook, ErosionMain, ErosionSettings, ErosionTables};
 use pz_world::objects::{IsoObject, ObjectKind, ObjectName};
 use pz_world::{GameRand, IsoChunk, IsoGridSquare, IsoSpriteManager, SpriteTables};
 
@@ -425,23 +425,26 @@ fn walls_come_from_square_queries() {
 }
 
 #[test]
-fn finish_chunk_load_recalcs_then_runs_erosion() {
+fn world_chunk_load_runs_erosion() {
     let tables = synthetic_tables();
     let (mut sprites, chunk) = setup();
     let mut main = ErosionMain::new(tables, ErosionSettings::default(), &mut sprites, None, None);
     let mut cell = pz_world::IsoCell::default();
     cell.chunks.insert((2, 3), chunk);
     let mut rand = Lcg(3);
-    finish_chunk_load(
+    let mut hook = ErosionChunkHook {
+        main: &mut main,
+        hooks: &pz_world::square::NoSquareHooks,
+        rand: &mut rand,
+        logs_per_size: None,
+    };
+    pz_world::save::chunk_file::finish_chunk_load(
         &mut cell,
         2,
         3,
         &pz_world::IsoMetaGrid::empty(),
-        &mut main,
         &mut sprites,
-        &pz_world::square::NoSquareHooks,
-        &mut rand,
-        None,
+        Some(&mut hook),
     );
     let chunk = &cell.chunks[&(2, 3)];
     assert!(chunk.erosion.as_ref().is_some_and(|c| c.init));

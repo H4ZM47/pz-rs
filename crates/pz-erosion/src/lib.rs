@@ -21,7 +21,7 @@ pub mod season;
 pub mod tables;
 pub mod world_host;
 
-pub use erosion_main::{finish_chunk_load, ErosionChunkHook, ErosionMain, ErosionSettings};
+pub use erosion_main::{ErosionChunkHook, ErosionMain, ErosionSettings};
 pub use tables::ErosionTables;
 
 #[cfg(test)]
