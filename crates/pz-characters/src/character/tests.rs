@@ -264,7 +264,7 @@ fn apply_traits_levels_perks() {
     assert_eq!(c.xp.xp(&carving), carving.borrow().total_xp_for_level(5));
     let boosts = c.descriptor.as_ref().unwrap().borrow().xp_boost_map.clone();
     assert!(boosts.contains(&("Carving".into(), 3)) && boosts.contains(&("Fitness".into(), 3)));
-    c.modify_trait_xp_boost(&sm, t.as_ref(), true).unwrap();
+    c.modify_trait_xp_boost(Some(&def), true).unwrap();
     let boosts = c.descriptor.as_ref().unwrap().borrow().xp_boost_map.clone();
     assert!(boosts.contains(&("Carving".into(), 1)) && boosts.contains(&("Strength".into(), 5)));
     assert_eq!(c.xp_for_level(&chars, 1).unwrap(), 50);

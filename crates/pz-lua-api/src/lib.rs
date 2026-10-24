@@ -9,6 +9,7 @@
 
 pub mod bind_attached_items;
 pub mod bind_body_damage;
+pub mod bind_character_sim;
 pub mod bind_characters;
 pub mod bind_core;
 pub mod bind_globals;
@@ -27,6 +28,8 @@ pub mod lua_manager;
 
 pub use lua_manager::LuaManager;
 
+use std::rc::Rc;
+
 /// Register all globals and exposed classes.
 pub fn register_all(mgr: &mut LuaManager) {
     bind_java_util::register(&mut mgr.thread);
@@ -42,8 +45,14 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_scripts::register(&mut mgr.thread, bind_registry::shared_script_manager());
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
+    bind_character_sim::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
+    let events = mgr.events.clone();
+    let sink = move |t: &mut pz_kahlua::Thread, name: &str, a: &[pz_kahlua::Value]| {
+        events.trigger(t, name, a);
+    };
+    bind_character_sim::install_event_sink(Rc::new(sink));
     bind_fs::register(mgr);
     bind_mods::register(mgr);
     bind_render::register(mgr);

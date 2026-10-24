@@ -11,7 +11,7 @@
 use std::rc::Rc;
 
 use pz_scripts::objects::items::character_profession_definition;
-use pz_scripts::objects::items::character_trait_definition;
+use pz_scripts::objects::items::{character_trait_definition, CharacterTraitDefinitionRef};
 use pz_scripts::registry::RegistryKey;
 use pz_scripts::{ScriptError, ScriptManager, ScriptResult};
 
@@ -570,15 +570,8 @@ impl<I> GameCharacter<I> {
 
     /// `modifyTraitXPBoost`: adds (or removes) the trait definition's XP
     /// boosts to the descriptor's.
-    pub fn modify_trait_xp_boost(
-        &mut self,
-        sm: &ScriptManager,
-        t: Option<&Rc<RegistryKey>>,
-        removing: bool,
-    ) -> ScriptResult {
-        let Some(def) = character_trait_definition(sm, t) else {
-            return Ok(());
-        };
+    pub fn modify_trait_xp_boost(&mut self, def: Option<&CharacterTraitDefinitionRef>, removing: bool) -> ScriptResult {
+        let Some(def) = def else { return Ok(()) };
         let d = self.descriptor.as_ref().ok_or_else(|| npe("descriptor"))?;
         let mut d = d.borrow_mut();
         for (perk, v) in &def.borrow().xp_boosts {
