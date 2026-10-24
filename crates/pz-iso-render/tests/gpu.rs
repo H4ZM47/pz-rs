@@ -147,3 +147,89 @@ fn world_frame_reaches_the_screen() {
     let got = px(128, 96);
     assert!(got[0] > 150 && got[2] < 100, "{got:?}");
 }
+
+/// A cube mesh as `ImportedStaticMesh` lays it out: position, normal, uv.
+fn cube(id: u64, h: f32) -> pz_render::model::MeshData {
+    let mut v = Vec::new();
+    let mut idx = Vec::new();
+    let faces: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
+        ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+        ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+    ];
+    for (n, a, b) in faces {
+        let base = (v.len() / 8) as u32;
+        for (s, t) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+            let p: [f32; 3] = std::array::from_fn(|i| (n[i] + a[i] * s + b[i] * t) * h);
+            v.extend_from_slice(&[p[0], p[1], p[2], n[0], n[1], n[2], 0.5, 0.5]);
+        }
+        idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    pz_render::model::MeshData { id, kind: pz_render::model::MeshKind::Static, vertices: v, indices: idx }
+}
+
+/// A model drawn through the model camera lands where its square is and
+/// is hidden by world sprites nearer than its square.
+#[test]
+fn model_lands_on_its_square_and_depth_tests_against_tiles() {
+    use pz_iso_render::models::{fill_lights, ModelBasis, ModelCamera};
+    use pz_render::model::{ModelDraw, ModelPass};
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else { return };
+    let mut tm = TextureManager::new();
+    let white = tm.white();
+    let cam = Camera::centred(4.0, 4.0, 0.0, 256, 128, 1.0);
+    let mc = ModelCamera::new(&cam, 256.0, 128.0);
+    let identity = pz_iso_render::trees::Mat4::identity().0;
+    let draw = |x: f32, y: f32| {
+        let mv = mc.model_view(x, y, 0.0, ModelBasis::Character { angle: 0.0 });
+        let mvp = mc.mvp(&mv);
+        let (lights, ambient) = fill_lights(pz_iso_render::color::ColorInfo::WHITE, [x, y, 0.0], 0.0);
+        DrawCmd::Model(Box::new(ModelDraw {
+            mesh: Rc::new(cube(1, 0.4)),
+            texture: Some(white.clone()),
+            mvp: mvp.0,
+            transform: identity,
+            palette: Rc::new(Vec::new()),
+            target_depth: mc.target_depth(&mvp, x, y, 0.0, 1e-4),
+            final_scale: 1.0,
+            uv_scale: [1.0, 1.0],
+            lights,
+            ambient,
+            tint: [1.0, 0.0, 0.0],
+            hue: 0.0,
+            alpha: 1.0,
+            pass: ModelPass::Character { cull: true },
+        }))
+    };
+    // A blue sprite over the whole view, at the depth of the square two to
+    // the south-east: it hides models behind it but not models in front.
+    let mut bl = pz_render::DrawList::default();
+    let blue = solid(&mut tm, "blue", 4, 4, [0, 0, 255, 255]);
+    bl.render(Some(&blue), 0.0, 0.0, 256.0, 128.0, pz_render::Rgba(1.0, 1.0, 1.0, 1.0));
+    let DrawCmd::Sprite(s) = bl.cmds.pop().unwrap() else { unreachable!() };
+    let wall_depth = pz_render::iso::square_depth(4, 4, 5.0, 5.0, 0.0);
+    let mut cmds = vec![
+        DrawCmd::Ortho { left: 0.0, right: 256.0, bottom: 128.0, top: 0.0, width: 256, height: 128 },
+        DrawCmd::DepthMask(true),
+        DrawCmd::Clear(pz_render::gl::DEPTH_BUFFER_BIT),
+        DrawCmd::GlEnable(pz_render::gl::DEPTH_TEST),
+        DrawCmd::DepthFunc(pz_render::gl::LEQUAL),
+        DrawCmd::WorldSprite(s, pz_render::WorldShader::Default { z: wall_depth * 2.0 - 1.0 }),
+    ];
+    // Behind the wall (square 4,4) and in front of it (square 6,6).
+    cmds.push(draw(4.5, 4.5));
+    cmds.push(draw(6.5, 6.5));
+    let list = pz_render::DrawList { cmds };
+    gpu.render_frame(&[(pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(256, 128) }, &list)], &mut tm);
+    let p = gpu.read_pixels();
+    let px = |x: usize, y: usize| p[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].to_vec();
+    // Square (4.5, 4.5) projects to the view centre; (6.5, 6.5) is 128
+    // pixels lower, off screen at y 128; check its top instead.
+    assert_eq!(px(128, 64)[2], 255, "the hidden model stays behind the wall: {:?}", px(128, 64));
+    let red_rows: Vec<usize> = (0..128).filter(|&y| px(128, y)[0] > 0).collect();
+    assert!(!red_rows.is_empty(), "the near model is drawn");
+    assert!(*red_rows.first().unwrap() > 64, "{red_rows:?}");
+}

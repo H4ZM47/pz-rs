@@ -23,6 +23,7 @@
 //! addressed.
 
 mod gl;
+mod model;
 mod state;
 
 use std::collections::HashMap;
@@ -167,6 +168,8 @@ struct Batch {
     tex2: Tex2,
     /// The seam mask (group 3).
     tex3: Option<u32>,
+    /// A model draw: its pipeline, mesh and uniform block.
+    model: Option<(model::ModelKey, u64, u32)>,
     stencil_ref: u32,
     scissor: Option<[u32; 4]>,
     globals: u32,
@@ -207,6 +210,7 @@ pub struct Gpu {
     chunk_depth_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
     chunks: HashMap<u64, ChunkTarget>,
+    models: model::ModelPipelines,
     /// glGenerateMipmap's downsampling pipeline and its source layout.
     mip_pipeline: wgpu::RenderPipeline,
     mip_layout: wgpu::BindGroupLayout,
@@ -335,6 +339,7 @@ impl Gpu {
             screen,
         };
         let depth_stencil = depth_stencil_view(&device, width, height);
+        let models = model::ModelPipelines::new(&device, &texture_layout);
         let mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mip source"),
             entries: &[
@@ -385,6 +390,7 @@ impl Gpu {
             chunk_depth_layout,
             pipelines: HashMap::new(),
             chunks: HashMap::new(),
+            models,
             mip_pipeline,
             mip_layout,
             mip_sampler,
@@ -516,9 +522,26 @@ impl Gpu {
             if let (Tex2::Nearest, Some(id)) = (f.batches[i].tex2, f.batches[i].texture) {
                 self.ensure_nearest(id);
             }
-            self.ensure_pipeline(f.batches[i].key);
+            match f.batches[i].model {
+                Some((key, _, _)) => self.models.ensure(&self.device, self.format, key),
+                None => self.ensure_pipeline(f.batches[i].key),
+            }
         }
-        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, .. } = f;
+        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, .. } = f;
+        let mut mbytes = vec![0u8; model_uniforms.len().max(1) * model::MODEL_STRIDE as usize];
+        for (i, u) in model_uniforms.iter().enumerate() {
+            let at = i * model::MODEL_STRIDE as usize;
+            mbytes[at..at + std::mem::size_of::<model::ModelUniforms>()].copy_from_slice(bytemuck::bytes_of(u));
+        }
+        let mbuf = self.buffer(&mbytes, wgpu::BufferUsages::UNIFORM);
+        let mbind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("models"),
+            layout: &self.models.uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &mbuf, offset: 0, size: wgpu::BufferSize::new(std::mem::size_of::<model::ModelUniforms>() as u64) }),
+            }],
+        });
         if vertices.is_empty() {
             vertices.push(Vertex::zeroed());
         }
@@ -606,6 +629,21 @@ impl Gpu {
                     _ => [0, 0, tw, th],
                 };
                 if sw == 0 || sh == 0 {
+                    continue;
+                }
+                if let Some((key, mesh, u)) = b.model {
+                    let (Some(p), Some(m)) = (self.models.pipelines.get(&key), self.models.meshes.get(&mesh)) else { continue };
+                    let tex = b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white);
+                    pass.set_viewport(0.0, 0.0, b.viewport.0.min(tw) as f32, b.viewport.1.min(th) as f32, 0.0, 1.0);
+                    pass.set_scissor_rect(sx, sy, sw, sh);
+                    pass.set_pipeline(p);
+                    pass.set_bind_group(0, &mbind, &[u * model::MODEL_STRIDE as u32]);
+                    pass.set_bind_group(1, tex, &[]);
+                    pass.set_vertex_buffer(0, m.vertices.slice(..));
+                    pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..m.count, 0, 0..1);
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     continue;
                 }
                 let tex = match b.tex2 {
@@ -771,6 +809,20 @@ impl Gpu {
                 f.target = PassTarget::Offscreen;
             }
             DrawCmd::OffscreenEnd => f.target = PassTarget::Main,
+            DrawCmd::Model(d) => {
+                if d.alpha < 0.01 {
+                    return;
+                }
+                if !self.models.meshes.contains_key(&d.mesh.id) {
+                    let m = model::upload(&self.device, &self.queue, &d.mesh);
+                    self.models.meshes.insert(d.mesh.id, m);
+                }
+                let flip = f.target != PassTarget::Main;
+                f.model_uniforms.push(model::ModelUniforms::new(d, flip));
+                let u = (f.model_uniforms.len() - 1) as u32;
+                let key = model::ModelKey { kind: d.mesh.kind, pass: d.pass, target: f.target.kind() };
+                f.push_model(key, d.mesh.id, u, d.texture.as_ref().and_then(|t| t.id), &self.state);
+            }
             DrawCmd::ProjectedQuad { texture, pos, uv, color, nearest } => {
                 let Some(id) = texture.id else { return };
                 // The corners are already in normalised device coordinates.
@@ -1061,6 +1113,7 @@ struct FrameBuilder {
     chunk_return: PassTarget,
     /// The seam mask of the quad being pushed.
     tex3: Option<u32>,
+    model_uniforms: Vec<model::ModelUniforms>,
     mvp: [[f32; 4]; 4],
     viewport: (u32, u32),
 }
@@ -1077,6 +1130,7 @@ impl Default for FrameBuilder {
             target: PassTarget::Main,
             chunk_return: PassTarget::Main,
             tex3: None,
+            model_uniforms: Vec::new(),
             mvp: IDENTITY,
             viewport: (1, 1),
         }
@@ -1109,6 +1163,28 @@ impl FrameBuilder {
         (self.globals.len() - 1) as u32
     }
 
+    /// A model draw as its own batch.
+    fn push_model(&mut self, key: model::ModelKey, mesh: u64, uniform: u32, texture: Option<u32>, st: &GlState) {
+        if self.passes.last().is_none_or(|p| p.target != self.target) {
+            let at = self.batches.len();
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
+        }
+        let at = self.indices.len() as u32;
+        self.batches.push(Batch {
+            key: st.pipe_key(),
+            texture,
+            tex2: Tex2::None,
+            tex3: None,
+            model: Some((key, mesh, uniform)),
+            stencil_ref: st.stencil_ref,
+            scissor: st.scissor_box(),
+            globals: 0,
+            viewport: self.viewport,
+            indices: at..at,
+        });
+        self.passes.last_mut().expect("pass").batches.end = self.batches.len();
+    }
+
     fn push(&mut self, key: PipeKey, texture: Option<u32>, tex2: Tex2, st: &GlState, globals: u32, verts: [Vertex; 4]) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
@@ -1130,6 +1206,7 @@ impl FrameBuilder {
                     && b.texture == texture
                     && b.tex2 == tex2
                     && b.tex3 == tex3
+                    && b.model.is_none()
                     && b.stencil_ref == stencil_ref
                     && b.scissor == scissor
                     && b.globals == globals
@@ -1139,7 +1216,7 @@ impl FrameBuilder {
                 b.indices.end = end
             }
             _ => {
-                self.batches.push(Batch { key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, indices: start..end });
+                self.batches.push(Batch { model: None, key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, indices: start..end });
                 pass.batches.end = self.batches.len();
             }
         }

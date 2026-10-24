@@ -11,6 +11,7 @@ pub mod image;
 pub mod iso;
 pub mod lua;
 pub mod manager;
+pub mod model;
 pub mod png;
 pub mod tile_depth;
 
@@ -232,6 +233,8 @@ pub enum DrawCmd {
     /// Texels with alpha below 0.01 are discarded; `nearest` forces
     /// `GL_NEAREST` sampling (`setMinMagFilters`).
     ProjectedQuad { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32, nearest: bool },
+    /// A 3D model draw (`basicEffect`), depth-tested against the world.
+    Model(Box<model::ModelDraw>),
 }
 
 /// The `WeatherShader` uniforms the screen pass reads.
