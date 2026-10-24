@@ -30,6 +30,7 @@
 
 use pz_render::Texture;
 
+use crate::blood::ChunkBlood;
 use crate::world::RenderSquare;
 
 /// The climate values the surfaces read (see the module docs for where
@@ -198,6 +199,11 @@ impl SurfaceSettings {
 pub trait SurfaceWorld {
     /// `getGridSquare(x, y, z)`.
     fn square(&self, x: i32, y: i32, z: i32) -> Option<&RenderSquare>;
+    /// The loaded chunk `(wx, wy)`'s floor blood splats; `None` when the
+    /// chunk is not loaded.
+    fn chunk_blood(&self, _wx: i32, _wy: i32) -> Option<&ChunkBlood> {
+        None
+    }
 }
 
 /// Textures by name: `Texture.getSharedTexture(name)` for tiles

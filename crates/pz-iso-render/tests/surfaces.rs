@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use pz_iso_render::blood::{ChunkBlood, FloorBloodSplat};
 use pz_iso_render::cutaways::GridWorld;
 use pz_iso_render::puddles::{PuddleSquare, PuddlesGeometry};
 use pz_iso_render::water::{WaterGeometry, WaterInit};
@@ -261,4 +262,27 @@ fn snow_covers_outdoor_floors_in_winter() {
     let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, SurfaceSettings::default(), autumn, PuddlesState::default())));
     let p = draw(&mut gpu, &mut tm, &r, &world);
     assert_eq!(px(&p, 256, 160), [200, 100, 50, 255]);
+}
+
+/// A blood splat is recorded into the chunk texture over the floor,
+/// including one in the neighbouring chunk within a square of the edge.
+#[test]
+fn blood_splats_darken_the_floor_where_they_lie() {
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else { return };
+    let mut tm = TextureManager::new();
+    let mut world = puddle_world(&mut tm);
+    for sq in world.squares.values_mut() {
+        sq.puddles = None;
+    }
+    let maps = Maps(depth_map(&mut tm));
+    let textures = Textures(HashMap::from([("blood_floor_small_01".to_string(), solid(&mut tm, "blood", 32, 16, [120, 0, 0, 255]))]));
+    let splat = FloorBloodSplat { x: 4.5, y: 4.5, z: 0.0, kind: 0, world_age: 0.0, index: 1, fade: 0 };
+    world.blood.insert((0, 0), ChunkBlood { fade: Vec::new(), splats: vec![splat] });
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, SurfaceSettings::default(), ClimateInputs::default(), PuddlesState::default())));
+    let p = draw(&mut gpu, &mut tm, &r, &world);
+    // The splat's centre: (4.5, 4.5) is (256, 160); the texture is placed
+    // by its full size times the tile scale, drawn at its own size.
+    let at = px(&p, 256 - 32 + 16, 160 - 16 + 8);
+    assert!(at[0] < 200 && at[1] < 100, "{at:?}");
+    assert_eq!(px(&p, 256, 200), [200, 100, 50, 255]);
 }

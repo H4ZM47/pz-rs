@@ -15,10 +15,10 @@
 //! ([`crate::trees`]); floors and walls get `renderSeamFix2_*`
 //! ([`crate::seam`]).
 //!
-//! With [`crate::weather::Surfaces`], snow ([`crate::snow`]) is recorded
-//! after the floors, low-quality puddles ([`crate::puddles`]) after the
-//! other objects, and water floors follow the water rules
-//! ([`crate::water`]).
+//! With [`crate::weather::Surfaces`], snow ([`crate::snow`]) and blood
+//! ([`crate::blood`]) are recorded after the floors, low-quality puddles
+//! ([`crate::puddles`]) after the other objects, and water floors follow
+//! the water rules ([`crate::water`]).
 
 use pz_render::{gl, DrawCmd};
 
@@ -218,11 +218,12 @@ impl ChunkRenderer<'_> {
             }
         }
         if let Some(s) = self.surfaces.as_ref() {
-            // Snow with the depth test off.
+            // Snow with the depth test off, then blood.
             ctx.out.push(DrawCmd::GlDisable(gl::DEPTH_TEST));
             set_blend(ctx.out);
             crate::snow::render_snow(s, tex, level, &solid_floor, ctx.out);
             ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
+            crate::blood::render_level_blood(s, cv, self.cam.z, tex, level, ctx.out);
         }
         for sq in &minus_floor {
             for layer in [Layer::MinusFloor, Layer::MinusFloorSE] {

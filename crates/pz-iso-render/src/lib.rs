@@ -12,6 +12,7 @@
 //! vertex lights, as `LightingJNI` produces them.
 
 pub mod alpha;
+pub mod blood;
 pub mod cache;
 pub mod cell;
 pub mod chunk;
