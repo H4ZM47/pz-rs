@@ -10,6 +10,8 @@
 pub mod bind_core;
 pub mod bind_globals;
 pub mod bind_ui;
+pub mod bind_fs;
+pub mod bind_render;
 pub mod events;
 pub mod expose;
 pub mod lua_manager;
@@ -23,4 +25,6 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
+    bind_fs::register(mgr);
+    bind_render::register(mgr);
 }
