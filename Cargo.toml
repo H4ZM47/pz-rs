@@ -11,6 +11,7 @@ publish = false
 pz-kahlua = { path = "crates/pz-kahlua" }
 pz-fs = { path = "crates/pz-fs" }
 pz-scripts = { path = "crates/pz-scripts" }
+pz-entity = { path = "crates/pz-entity" }
 pz-classfile = { path = "crates/pz-classfile" }
 pz-render = { path = "crates/pz-render" }
 pz-text = { path = "crates/pz-text" }
