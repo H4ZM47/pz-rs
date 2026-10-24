@@ -8,6 +8,9 @@
 //! `winit` module); the game-facing logic (`GameKeyboard`, `zombie.input.Mouse`)
 //! lives in `pz-lua-api`'s `bind_input`.
 
+pub mod controller;
+#[cfg(feature = "gilrs")]
+pub mod gamepads;
 pub mod keys;
 #[cfg(feature = "winit")]
 pub mod winit;
@@ -271,6 +274,12 @@ impl InputState {
 
 thread_local! {
     static INPUT: RefCell<InputState> = RefCell::new(InputState::default());
+    static CONTROLLERS: RefCell<controller::Controllers> = RefCell::new(controller::Controllers::default());
+}
+
+/// The controllers the backend (`gamepads`) keeps up to date.
+pub fn with_controllers<R>(f: impl FnOnce(&mut controller::Controllers) -> R) -> R {
+    CONTROLLERS.with(|c| f(&mut c.borrow_mut()))
 }
 
 /// The input state of this (the game) thread.

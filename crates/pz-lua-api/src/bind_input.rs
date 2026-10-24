@@ -10,7 +10,7 @@
 //!    then `Mouse.update`), which dispatches key events to `UIManager` and
 //!    Lua and fills `UIManager`'s mouse state;
 //! 3. after `UIManager.update`, [`after_ui_update`] picks up the buttons the
-//!    UI consumed.
+//!    UI consumed and activates a joypad that pressed A.
 //!
 //! The `KEY_*` and `BTN_*` constants are read from the installed
 //! `projectzomboid.jar`.
@@ -271,8 +271,15 @@ pub fn mouse_is_button_down_ui_check(n: i32) -> bool {
 /// `GameKeyboard.update()` and `Mouse.update()`. `seconds` is
 /// `GameTime.getRealworldSecondsSinceLastUpdate()`.
 pub fn update(mgr: &mut LuaManager, seconds: f32) {
-    game_keyboard_update(mgr);
+    // `GameWindow.logic`: Mouse, then GameKeyboard, then GameInput.
     mouse_update(seconds);
+    game_keyboard_update(mgr);
+    crate::bind_joypad::update(mgr);
+}
+
+/// `Mouse.lastActivity`.
+pub fn mouse_last_activity() -> i64 {
+    MS.with(|m| m.borrow().last_activity)
 }
 
 fn game_keyboard_update(mgr: &mut LuaManager) {
@@ -386,8 +393,9 @@ fn mouse_update(seconds: f32) {
 }
 
 /// After `UIManager.update`: buttons the UI blocked
-/// (`Mouse.UIBlockButtonDown`).
-pub fn after_ui_update() {
+/// (`Mouse.UIBlockButtonDown`), then joypad activation.
+pub fn after_ui_update(mgr: &mut LuaManager) {
+    crate::bind_joypad::after_ui_update(mgr);
     let blocked = with_ui(|u| u.mouse.ui_blocked.clone());
     MS.with(|m| {
         let mut m = m.borrow_mut();
