@@ -38,6 +38,14 @@ Status of the Rust port. Update this file with every merged change.
   records, which the original re-saves through classes not ported here);
   4,085 map-loaded chunks saved here load and re-save as expected in the
   original. Checked locally.
+- Erosion (`pz-erosion`): `ErosionMain`, `ErosionConfig`, `ErosionSeason`,
+  `ErosionIceQueen`, `Noise2D`, `RandLocation`, the eight categories and
+  the erosion objects, driven through `ChunkLoadHook`; tables are read from
+  the jar at runtime. Against the original classes run in a JVM, noise,
+  location randoms, chunk/square initialisation, a year of seasons, config
+  defaults and category spawn decisions match bit for bit (checked
+  locally). Wall edge queries (`isWallTo`, windows) are inputs until the
+  collision model is ported. Lua: `bind_erosion`.
 
 ## In progress
 - StringLib, OsLib.
