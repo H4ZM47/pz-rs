@@ -7,8 +7,12 @@ edition.workspace = true
 pz-fs.workspace = true
 pz-inventory.workspace = true
 pz-kahlua.workspace = true
+pz-classfile.workspace = true
 
 [dev-dependencies]
 pz-scripts.workspace = true
 pz-entity.workspace = true
-pz-classfile.workspace = true
+
+[features]
+# Hand-authored test helpers (e.g. `sprite::types::test_tables`) for other crates' tests.
+test-util = []
