@@ -44,6 +44,7 @@ fn instantiate(name: Option<&str>) -> SaveResult<ObjectKind> {
         Some("StackedWasherDryer") => ObjectKind::StackedWasherDryer(WasherDryer::default()),
         Some("ButcherHook") => ObjectKind::ButcherHook,
         Some("IsoWindowFrame") => ObjectKind::WindowFrame { north: false },
+        Some("IsoAnimalTrack") => ObjectKind::AnimalTrack(Box::default()),
         // The remaining classes read every saved field in load; the kind is
         // built there.
         Some(
@@ -55,7 +56,9 @@ fn instantiate(name: Option<&str>) -> SaveResult<ObjectKind> {
             | "IsoGenerator"
             | "IsoTrap"
             | "IsoCarBatteryCharger"
-            | "Fire"),
+            | "Fire"
+            | "Pushable"
+            | "WheelieBin"),
         ) => return err(format!("deferred:{n}")),
         Some(n) => return err(format!("object class {n} is not supported in chunk files")),
     })
@@ -585,7 +588,9 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
         ObjectKind::Object
         | ObjectKind::Jukebox
         | ObjectKind::BrokenGlass
-        | ObjectKind::ButcherHook => {}
+        | ObjectKind::ButcherHook
+        | ObjectKind::Pushable(_) => {}
+        ObjectKind::AnimalTrack(t) => **t = super::movers::AnimalTracks::load(r)?,
         ObjectKind::Door(d) => {
             d.open = r.bool()?;
             d.locked = r.bool()?;
@@ -1032,6 +1037,25 @@ fn load_special(
     name: &str,
 ) -> SaveResult<()> {
     match name {
+        "Pushable" | "WheelieBin" => {
+            let wheelie = name == "WheelieBin";
+            let (p, sprite, container) = super::movers::IsoPushableObject::load(
+                r,
+                wv,
+                wheelie,
+                ctx.settings.tile_scale,
+                ctx.items,
+            )?;
+            // IsoSpriteManager.getSprite(int): null for an unknown id. A
+            // wheelie bin keeps the unregistered sprite CreateSprite made.
+            match sprite {
+                Some(id) => o.sprite = sprite_or_null(ctx, id),
+                None => o.sprite_id_override = Some(UNREGISTERED_SPRITE_ID),
+            }
+            o.container = container;
+            o.kind = ObjectKind::Pushable(Box::new(p));
+            return Ok(());
+        }
         "WorldInventoryItem" => {
             let xoff = r.f32()?;
             let yoff = r.f32()?;
@@ -1351,6 +1375,11 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
             bits.write(w);
             return Ok(());
         }
+        ObjectKind::Pushable(p) => {
+            let class = ctx.class_id(p.object_name())?;
+            let sprite = o.sprite.map(|s| ctx.sprite_id(s));
+            return p.save(w, class, sprite, o.container.as_ref(), ctx.items);
+        }
         ObjectKind::Barricade(b) => {
             w.i8(1);
             w.i8(ctx.class_id("Barricade")?);
@@ -1390,7 +1419,9 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
         ObjectKind::Object
         | ObjectKind::Jukebox
         | ObjectKind::BrokenGlass
-        | ObjectKind::ButcherHook => {}
+        | ObjectKind::ButcherHook
+        | ObjectKind::Pushable(_) => {}
+        ObjectKind::AnimalTrack(t) => t.save(w),
         ObjectKind::Door(d) => {
             w.bool(d.open);
             w.bool(d.locked);
