@@ -8,12 +8,15 @@ use std::collections::HashMap;
 
 use crate::cell_loader::{do_tile_object_creation, ObjectEnv};
 use crate::defs::{BuildingIdx, RoomDef};
+use crate::erosion_data::{ErosionChunkData, ErosionSquareData};
 use crate::fix2x::Fix2xTable;
 use crate::iso_lot::IsoLot;
 use crate::java::{fastfloor, GameRand};
 use crate::map_files::{header_name, lotpack_name};
 use crate::meta_grid::IsoMetaGrid;
 use crate::objects::{IsoObject, ObjectId, ObjectLoadHooks, ObjectLoadSettings, ObjectTables};
+use crate::save::lua_table::LuaTable;
+use crate::save::visual::IsoDeadBody;
 use crate::sprite::IsoSpriteManager;
 
 pub const CHUNK_WIDTH: i32 = 8;
@@ -40,6 +43,24 @@ pub struct IsoGridSquare {
     /// are skipped by lookups.
     pub special_objects: Vec<ObjectId>,
     pub(crate) next_object_id: ObjectId,
+    /// `erosion` (`ErosionData.Square`, created on first use), saved first
+    /// in the square record; `None` saves as uninitialised.
+    pub erosion: Option<ErosionSquareData>,
+    /// `worldObjects` (the `IsoWorldInventoryObject`s), by identity.
+    pub world_objects: Vec<ObjectId>,
+    /// `staticMovingObjects`: corpses.
+    pub static_moving: Vec<IsoDeadBody>,
+    /// `table` (square mod data).
+    pub mod_data: Option<LuaTable>,
+    pub overlay_done: bool,
+    pub have_roof: bool,
+    pub burnt_out: bool,
+    pub have_sheet_rope: bool,
+    /// `isSeen(playerIndex)` for the four local players.
+    pub seen: [bool; 4],
+    /// `getTrapPositionX/Y/Z()` when X is positive. Loading reads and drops
+    /// the saved position.
+    pub trap_position: Option<(i32, i32, i32)>,
 }
 
 impl IsoGridSquare {
@@ -55,6 +76,16 @@ impl IsoGridSquare {
             objects: Vec::new(),
             special_objects: Vec::new(),
             next_object_id: 0,
+            erosion: None,
+            world_objects: Vec::new(),
+            static_moving: Vec::new(),
+            mod_data: None,
+            overlay_done: false,
+            have_roof: false,
+            burnt_out: false,
+            have_sheet_rope: false,
+            seen: [false; 4],
+            trap_position: None,
         }
     }
 
@@ -85,6 +116,65 @@ pub struct IsoChunk {
     /// top-level header.
     pub lotheader: Option<String>,
     pub modded: bool,
+    /// The chunk-level fields of the chunk file; see
+    /// [`crate::save::chunk_file`].
+    pub saved: ChunkSaveData,
+    /// `erosion` (`ErosionData.Chunk`, created on first use); `None` saves
+    /// as uninitialised.
+    pub erosion: Option<ErosionChunkData>,
+}
+
+/// `IsoFloorBloodSplat` (positions quantised to 1/255 of a chunk).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FloorBloodSplat {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub kind: i8,
+    pub world_age: f32,
+    pub index: i8,
+}
+
+/// Fields of `IsoChunk` that chunk files carry besides the squares.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChunkSaveData {
+    pub blending_done_full: bool,
+    pub blending_modified: [bool; 4],
+    pub blending_done_partial: bool,
+    /// `blendingDepth` (N, S, W, E). A new chunk starts from
+    /// `BlendDirection.defaultDepth`, which is only saved once blending is
+    /// partially done; this defaults to zeros.
+    pub blending_depth: [i8; 4],
+    pub attachments_done_full: bool,
+    pub attachments_state: [bool; 5],
+    pub attachments_partial: Option<Vec<(i32, i32, i32)>>,
+    /// `floorBloodSplats` (a queue bounded to 1000).
+    pub floor_blood_splats: Vec<FloorBloodSplat>,
+    pub next_splat_index: i32,
+    /// `generatorsTouchingThisChunk`.
+    pub generators: Option<Vec<(i32, i32, i8)>>,
+    pub loot_respawn_hour: i32,
+    pub spawned_rooms: Vec<i64>,
+}
+
+impl Default for ChunkSaveData {
+    /// `new IsoChunk(cell)`.
+    fn default() -> Self {
+        ChunkSaveData {
+            blending_done_full: false,
+            blending_modified: [false; 4],
+            blending_done_partial: false,
+            blending_depth: [0; 4],
+            attachments_done_full: true,
+            attachments_state: [true; 5],
+            attachments_partial: None,
+            floor_blood_splats: Vec::new(),
+            next_splat_index: 0,
+            generators: None,
+            loot_respawn_hour: -1,
+            spawned_rooms: Vec::new(),
+        }
+    }
 }
 
 impl IsoChunk {
@@ -97,6 +187,8 @@ impl IsoChunk {
             squares: vec![vec![None; 64]],
             lotheader: None,
             modded: false,
+            saved: ChunkSaveData::default(),
+            erosion: None,
         }
     }
 

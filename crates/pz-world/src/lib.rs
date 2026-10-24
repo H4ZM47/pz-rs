@@ -9,12 +9,14 @@ pub mod bra;
 pub mod cell_loader;
 pub mod chunk;
 pub mod defs;
+pub mod erosion_data;
 pub mod fix2x;
 pub mod iso_lot;
 pub mod java;
 pub mod map_files;
 pub mod meta_grid;
 pub mod objects;
+pub mod save;
 pub mod sprite;
 pub mod tiledef;
 

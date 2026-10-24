@@ -102,7 +102,7 @@ fn object_line(m: &IsoSpriteManager, o: &IsoObject) -> String {
     if let Some(a) = &o.attached_anim_sprite {
         l.push_str(" att=");
         for s in a {
-            write!(l, "{},", name(m, Some(*s))).unwrap();
+            write!(l, "{},", name(m, Some(s.sprite))).unwrap();
         }
     }
     for c in o.container.iter().chain(o.secondary_containers.iter()) {
