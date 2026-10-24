@@ -168,6 +168,9 @@ impl PartialEq for Texture {
 }
 
 #[derive(Clone, Debug)]
+// Commands are recorded by the thousand per frame; boxing the large world
+// variants would cost an allocation each.
+#[allow(clippy::large_enum_variant)]
 pub enum DrawCmd {
     /// A plain rectangle in the scaffold's form; `texture: None` draws a
     /// solid rectangle.
