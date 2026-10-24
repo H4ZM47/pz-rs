@@ -129,6 +129,20 @@ Status of the Rust port. Update this file with every merged change.
   queries, inventory weight and weapon hits on real game items match the
   original's state bit for bit (checked locally).
 
+- Zombie population (`pz-popman`): a pure-Rust port of the native
+  `PZPopMan` library (population cells, repopulation and redistribution,
+  virtual zombies and their wall follower, world sounds, hordes, aggro
+  targets, the collision grid and its path tasks, and the `zpop_*.bin` /
+  `chunkdata_*.bin` save files), the single-player
+  `ZombiePopulationManager` with `LoadedAreas`, `PlayerSpawns`,
+  `RealZombieMap`, `ZombieStateFlags` and `ObjectPool`, and the population
+  Lua globals (`bind_popman`). Four scripted runs of 600 to 12000 ticks
+  match the shipped library line for line and save file for save file
+  (checked locally). The comparison follows the original's allocator
+  wherever a freed world sound was reused differently. Creating real
+  zombies goes through `PopulationHost`, which waits on `IsoZombie` and
+  `VirtualZombieManager`.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 

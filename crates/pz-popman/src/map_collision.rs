@@ -124,7 +124,7 @@ impl SquareFlags {
 }
 
 /// `zombie.MapCollisionData` (single player: the worker thread's steps are
-/// run by whoever drives it; see [`MapCollisionData::thread_step`]).
+/// run by whoever drives it; see [`crate::ZombiePopulationManager::thread_step`]).
 #[derive(Default)]
 pub struct MapCollisionData {
     pub client: bool,
