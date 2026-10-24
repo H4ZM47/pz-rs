@@ -806,6 +806,7 @@ mod tests {
     fn setup() -> (Thread, MemorySink) {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        crate::bind_java_util::register(&mut t);
         crate::bind_core::register(&mut t, None, Rc::new(RefCell::new(pz_core::core::Core::new())));
         crate::bind_java_util::register(&mut t);
         let sink = MemorySink::new();

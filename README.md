@@ -21,6 +21,7 @@ to Rust with the original semantics and the same Lua-facing API.
 | `pz-ui` | `zombie.ui.UIElement`, `UIManager` |
 | `pz-inventory` | `zombie.inventory` items, `ItemContainer`, `zombie.world.WorldDictionary` |
 | `pz-world` | `zombie.iso` map files, `IsoMetaGrid`, `IsoCell`/`IsoChunk`/`IsoGridSquare` |
+| `pz-popman` | `zombie.popman`, `zombie.MapCollisionData` and the native `PZPopMan` library |
 | `pz-scripts` | `zombie.scripting` (`ScriptParser`, `ScriptManager`, script objects) |
 | `pz-classfile` | reads built-in constants from the installed `projectzomboid.jar` (no JVM) |
 | `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |
