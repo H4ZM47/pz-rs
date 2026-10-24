@@ -31,9 +31,7 @@ pub use data::{
     ClothingItemExt, HairStyles, HumanModel, HumanVisual, ItemVisual, ModelAttachment, ModelScript,
     ModelScriptRef, PopTemplateManager, Population, PopulationStyles, ResolvedItemVisual,
 };
-pub use items::{
-    ActionHandModels, AttachedModel, EquippedModels, FluidState, HeldItem, ItemTextureInit,
-};
+pub use items::{ActionHandModels, AttachedModel, EquippedModels, HeldItem, ItemTextureInit};
 pub use lights::{EffectLight, LightContext, PlayerLightData, ResultLight};
 pub use model_tree::{
     CharacterModelInput, InstanceKind, ModelInstance, ModelScripts, ModelSlot, TextureSource,

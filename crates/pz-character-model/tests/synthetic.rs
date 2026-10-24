@@ -46,13 +46,13 @@ fn weapon(name: &str, sprite: Option<&str>) -> InventoryItem {
     })
 }
 
-/// A plain item and its script with `staticModel`.
+/// A plain item with `staticModel`, and its script.
 fn plain(name: &str, static_model: Option<&str>) -> (InventoryItem, ItemScriptRef) {
-    let mut s = Item::new();
-    s.static_model = static_model.map(Into::into);
     (
-        item(ItemClass::Normal, name, |_| {}),
-        Rc::new(RefCell::new(s)),
+        item(ItemClass::Normal, name, |t| {
+            t.static_model = static_model.map(Into::into)
+        }),
+        Rc::new(RefCell::new(Item::new())),
     )
 }
 
@@ -64,13 +64,13 @@ fn model_script(name: &str, mesh: &str) -> ModelScriptRef {
     Rc::new(RefCell::new(m))
 }
 
-fn mwp(part: &str, model: &str, att: &str) -> Rc<RefCell<ModelWeaponPart>> {
-    Rc::new(RefCell::new(ModelWeaponPart {
+fn mwp(part: &str, model: &str, att: &str) -> ModelWeaponPart {
+    ModelWeaponPart {
         part_type: part.into(),
         model_name: model.into(),
         attachment_name_self: Some(att.into()),
         attachment_parent: Some(att.into()),
-    }))
+    }
 }
 
 fn human_visual() -> HumanVisual {
@@ -529,19 +529,20 @@ fn body_locations_hide_and_alt_models() {
 /// A rifle with a scope attached: in the right hand and on the back, each
 /// with its `ModelWeaponPart` models under it.
 fn rifle_with_scope() -> (InventoryItem, ItemScriptRef) {
-    let mut rifle = weapon("HuntingRifle", Some("HuntingRifle"));
+    let mut rifle = item(ItemClass::Weapon, "HuntingRifle", |t| {
+        t.weapon_sprite = Some("HuntingRifle".into());
+        t.model_weapon_part = Some(Rc::new(vec![
+            mwp("Base.RecoilPad", "Base.RecoilPad", "recoilpad"),
+            mwp("Base.x4Scope", "Base.x4Scope", "scope"),
+            mwp("Base.x8Scope", "Base.x8Scope", "scope"),
+        ]));
+    });
     let scope = item(ItemClass::WeaponPart, "x4Scope", |_| {});
     if let ItemKind::Weapon(w) = &mut rifle.kind {
         w.attachments.push(scope);
         w.blood_level = 0.25;
     }
-    let mut s = Item::new();
-    s.model_weapon_part = Some(vec![
-        mwp("Base.RecoilPad", "Base.RecoilPad", "recoilpad"),
-        mwp("Base.x4Scope", "Base.x4Scope", "scope"),
-        mwp("Base.x8Scope", "Base.x8Scope", "scope"),
-    ]);
-    (rifle, Rc::new(RefCell::new(s)))
+    (rifle, Rc::new(RefCell::new(Item::new())))
 }
 
 #[test]
@@ -610,10 +611,11 @@ fn static_model_getters() {
     )]
     .into();
     // Weapon: `weaponSpritesByIndex` by model index, else the sprite.
-    let mut w = weapon("Bat", Some("Bat"));
-    let mut ws = Item::new();
-    ws.weapon_sprites_by_index = Some(vec!["BatA".into(), "BatB".into()]);
-    let ws = Rc::new(RefCell::new(ws));
+    let mut w = item(ItemClass::Weapon, "Bat", |t| {
+        t.weapon_sprite = Some("Bat".into());
+        t.weapon_sprites_by_index = Some(Rc::new(vec!["BatA".into(), "BatB".into()]));
+    });
+    let ws = Rc::new(RefCell::new(Item::new()));
     assert_eq!(
         HeldItem::new(&w, Some(ws.clone()))
             .static_model(&scripts)
@@ -629,7 +631,9 @@ fn static_model_getters() {
     );
     // Plain item: mod data, then the script; the world model by tag.
     let (mut p, ps) = plain("Pan", Some("Base.Pan"));
-    ps.borrow_mut().world_static_model = Some("Base.PanGround".into());
+    let mut tpl = (*p.template).clone();
+    tpl.world_static_model = Some("Base.PanGround".into());
+    p.template = Rc::new(tpl);
     assert_eq!(
         HeldItem::new(&p, Some(ps.clone()))
             .static_model_exception(&scripts)
@@ -644,7 +648,10 @@ fn static_model_getters() {
     p.table = Some(t);
     let h = HeldItem::new(&p, Some(ps.clone()));
     assert_eq!(h.static_model(&scripts).as_deref(), Some("Base.Pot"));
-    assert_eq!(h.world_static_model().as_deref(), Some("Base.PanGround"));
+    assert_eq!(
+        p.get_world_static_model().as_deref(),
+        Some("Base.PanGround")
+    );
     let mut tpl = (*p.template).clone();
     tpl.tags.push(TAG_USE_WORLD_STATIC_MODEL.into());
     p.template = Rc::new(tpl);
@@ -655,14 +662,34 @@ fn static_model_getters() {
         Some("Base.PanGround")
     );
     // Food: a burnt variant when its model script exists.
-    let mut apple = item(ItemClass::Food, "Apple", |_| {});
-    let (_, s) = plain("Apple", Some("Base.Apple"));
+    let mut apple = item(ItemClass::Food, "Apple", |t| {
+        t.static_model = Some("Base.Apple".into())
+    });
+    let s = Rc::new(RefCell::new(Item::new()));
     if let ItemKind::Food(f) = &mut apple.kind {
         f.burnt = true;
     }
     let h = HeldItem::new(&apple, Some(s));
     assert_eq!(h.static_model(&scripts).as_deref(), Some("AppleBurnt"));
     assert!(!h.requires_smart_texture());
+    // A part-filled fluid container: smart texture with its fill level.
+    let mut fc = pz_entity::FluidContainer::default();
+    fc.fluids.push(pz_entity::FluidInstance {
+        fluid: None,
+        custom_color: Some([0.2, 0.4, 0.6]),
+        amount: 0.25,
+    });
+    fc.recalculate_caches(true);
+    let h = HeldItem {
+        fluid: Some(fc),
+        ..h
+    };
+    assert!(h.requires_smart_texture());
+    let init = h.texture_init();
+    assert_eq!(
+        (init.fluid_level, init.fluid_tint),
+        (0.25, Some([0.2, 0.4, 0.6]))
+    );
 }
 
 #[test]

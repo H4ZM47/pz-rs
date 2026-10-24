@@ -223,6 +223,10 @@ fn matches_model_oracle() {
         .unwrap();
     let mut tpl = ItemTemplate::new(ItemClass::Weapon, "Base", "HuntingRifle");
     tpl.weapon_sprite = rifle_item.weapon_sprite.clone();
+    tpl.model_weapon_part = rifle_item
+        .model_weapon_part
+        .as_ref()
+        .map(|v| Rc::new(v.iter().map(|m| m.borrow().clone()).collect()));
     let mut held_rifle = InventoryItem::create(Rc::new(tpl), 0);
     if let ItemKind::Weapon(w) = &mut held_rifle.kind {
         for part in ["x4Scope", "RecoilPad"] {

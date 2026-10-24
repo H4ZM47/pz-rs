@@ -1,57 +1,33 @@
-//! Static models for the items a character holds or has attached: the
-//! `InventoryItem` / `HandWeapon` / `Food` model getters
-//! (`getStaticModel`, `getWorldStaticItem`, `getStaticModelException`),
-//! `ItemReplacement` hand replacements, the weapon-part models
-//! (`HandWeapon.getModelWeaponPart` + `getAllWeaponParts`), and what
+//! Static models for the items a character holds or has attached: what
+//! `ModelManager` decides from an item (hand replacements, the weapon-part
+//! models of `addWeaponPartModels`, the `_Fluid` model variant), and what
 //! `ModelInstanceTextureInitializer` / `EquippedTextureCreator.init` take
 //! from the item. `ModelManager.DoCharacterModelEquipped` itself is in
 //! [`crate::model_tree`].
 //!
-//! Item state comes from pz-inventory's [`InventoryItem`] (model index,
-//! mod data, colour, weapon sprite and parts, blood level, food state,
-//! tags) and script state from pz-scripts' [`Item`] (`staticModel`,
-//! `worldStaticModel`, the `*ByIndex` lists, `modelWeaponPart`,
-//! `replacePrimaryHand`/`replaceSecondHand`). What neither has yet is
-//! passed in:
-//! - the fluid container ([`FluidState`]; owner: the `FluidContainer`
-//!   component port, pz-inventory components are opaque blobs);
-//! - `getClothingItem()` / `getVisual()` and the replacement's clothing
-//!   asset (resolved by the caller through pz-inventory, see
-//!   [`HeldItem::with_visual`]).
-//!
-//! Adapters for fields pz-inventory lacks (owner: pz-inventory, items
-//! thread): `Food.isFertilized` is read as "has egg data", and the
-//! instance `staticModelsByIndex`/`worldStaticModelsByIndex`/
-//! `weaponSpritesByIndex`/`modelWeaponPart` lists are the script item's
-//! (what `InstanceItem` copies; the instance never changes them).
+//! The item getters themselves (`getStaticModel`, `getWorldStaticItem`,
+//! `getStaticModelException`, `getModelWeaponPart`, `Food.isRotten` and
+//! `getFluidContainer`) are pz-inventory's ([`InventoryItem`], in
+//! `pz_inventory::model`). The script item ([`Item`]) is only read for
+//! `replacePrimaryHand`/`replaceSecondHand` (the template keeps just the
+//! clothing name). `getClothingItem()` / `getVisual()` and the
+//! replacement's clothing asset are resolved by the caller through
+//! pz-inventory (see [`HeldItem::with_visual`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use pz_inventory::item::FoodData;
-use pz_inventory::lua_table::{LuaKey, LuaValue};
+use pz_entity::{EntityContext, FluidContainer};
 use pz_inventory::{InventoryItem, ItemKind};
 use pz_scripts::objects::items::{Item, ItemReplacement};
 
 use crate::data::{ClothingItem, ItemVisual, Rgb, WHITE};
 use crate::model_tree::ModelScripts;
 
+pub use pz_inventory::model::TAG_USE_WORLD_STATIC_MODEL;
+
 /// A script item as the script manager shares it.
 pub type ItemScriptRef = Rc<RefCell<Item>>;
-
-/// `ItemTag.USE_WORLD_STATIC_MODEL`.
-pub const TAG_USE_WORLD_STATIC_MODEL: &str = "base:useworldstaticmodel";
-
-/// What the model code reads off an item's `FluidContainer` component.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FluidState {
-    /// `getFilledRatio()`.
-    pub filled_ratio: f32,
-    /// `getColor()`.
-    pub color: Rgb,
-    /// `isEmpty()`.
-    pub empty: bool,
-}
 
 /// An item the character holds or carries, with its script and what the
 /// caller resolved for it.
@@ -61,7 +37,10 @@ pub struct HeldItem<'a> {
     /// `getScriptItem()`.
     pub script: Option<ItemScriptRef>,
     /// `getFluidContainer()`, if the item has one.
-    pub fluid: Option<FluidState>,
+    pub fluid: Option<FluidContainer>,
+    /// What the fluid colours resolve against (`FluidContainer.getColor`);
+    /// without it only custom fluid colours resolve (others are white).
+    pub entity_ctx: Option<&'a dyn EntityContext>,
     /// `getClothingItem()` (with the hand replacement it selects while
     /// held).
     pub clothing_item: Option<Rc<ClothingItem>>,
@@ -73,16 +52,25 @@ pub struct HeldItem<'a> {
     pub replacement_second_clothing: Option<Rc<ClothingItem>>,
 }
 
-fn str_key(k: &str) -> LuaKey {
-    LuaKey::Str(k.to_string())
+/// A context without registered fluids: only custom colours resolve.
+struct NoFluids;
+
+impl EntityContext for NoFluids {
+    fn attribute_kind(&self, _id: i16) -> Option<pz_entity::AttributeKind> {
+        None
+    }
 }
 
 fn blank(s: Option<&str>) -> bool {
     s.is_none_or(|s| s.trim().is_empty())
 }
 
-fn index<T: Clone>(list: Option<&Vec<T>>, i: i32) -> Option<T> {
-    usize::try_from(i).ok().and_then(|i| list?.get(i)).cloned()
+/// `ScriptManager.getModelScript(name).getName()`, as the pz-inventory
+/// getters take it.
+pub fn model_script_name(scripts: &dyn ModelScripts, name: &str) -> Option<String> {
+    scripts
+        .model_script(name)
+        .map(|m| m.borrow().name.clone().unwrap_or_default())
 }
 
 impl<'a> HeldItem<'a> {
@@ -91,6 +79,7 @@ impl<'a> HeldItem<'a> {
             item,
             script,
             fluid: None,
+            entity_ctx: None,
             clothing_item: None,
             visual: None,
             replacement_primary_clothing: None,
@@ -118,6 +107,14 @@ impl<'a> HeldItem<'a> {
         self
     }
 
+    /// Reads the item's `FluidContainer` component
+    /// (`InventoryItem::get_fluid_container`).
+    pub fn with_fluid(mut self, ctx: &'a dyn EntityContext) -> Self {
+        self.fluid = self.item.get_fluid_container(ctx);
+        self.entity_ctx = Some(ctx);
+        self
+    }
+
     /// Resolves the hand replacements' clothing assets by name.
     pub fn with_replacement_assets(mut self, assets: &pz_inventory::ItemAssets) -> Self {
         let get = |r: Option<ItemReplacement>| {
@@ -134,116 +131,23 @@ impl<'a> HeldItem<'a> {
         self.script.as_ref().map(|s| f(&s.borrow()))
     }
 
-    fn mod_data(&self, key: &str) -> Option<&LuaValue> {
-        self.item.table.as_ref()?.rawget(&str_key(key))
-    }
-
-    fn mod_data_str(&self, key: &str) -> Option<&str> {
-        match self.mod_data(key)? {
-            LuaValue::Str(s) => Some(s),
-            _ => None,
-        }
-    }
-
     pub fn is_weapon(&self) -> bool {
         matches!(self.item.kind, ItemKind::Weapon(_))
     }
 
-    fn food(&self) -> Option<&FoodData> {
-        match &self.item.kind {
-            ItemKind::Food(f) => Some(f),
-            _ => None,
-        }
-    }
-
-    /// `InventoryItem.getStaticModel()`.
-    fn base_static_model(&self) -> Option<String> {
-        if let Some(s) = self.mod_data_str("staticModel") {
-            return Some(s.to_string());
-        }
-        if self.item.model_index != -1 {
-            let list = self
-                .script_field(|s| s.static_models_by_index.clone())
-                .flatten()
-                .filter(|l| !l.is_empty());
-            if let Some(list) = list {
-                // The original throws when the index is out of range.
-                return index(Some(&list), self.item.model_index);
-            }
-        }
-        self.script_field(|s| s.static_model.clone()).flatten()
-    }
-
-    /// `getStaticModel()` with the `HandWeapon` (`weaponSpritesByIndex`,
-    /// then the weapon sprite) and `Food` (`Burnt`/`Rotten`/`Cooked`
-    /// model scripts) overrides.
+    /// `getStaticModel()` ([`InventoryItem::get_static_model`]) with the
+    /// model scripts.
     pub fn static_model(&self, scripts: &dyn ModelScripts) -> Option<String> {
-        if let ItemKind::Weapon(w) = &self.item.kind {
-            if self.item.model_index != -1 {
-                if let Some(list) = self
-                    .script_field(|s| s.weapon_sprites_by_index.clone())
-                    .flatten()
-                {
-                    return index(Some(&list), self.item.model_index);
-                }
-            }
-            // `staticModel` (only `Literature` sets it) is null here.
-            return w.weapon_sprite.clone();
-        }
-        let base = self.base_static_model();
-        if let Some(f) = self.food() {
-            let variant = |suffix: &str| {
-                let name = format!("{}{suffix}", base.as_deref().unwrap_or("null"));
-                scripts
-                    .model_script(&name)
-                    .map(|m| m.borrow().name.clone().unwrap_or_default())
-            };
-            let fertilized = f.egg.is_some();
-            if f.burnt {
-                if let Some(n) = variant("Burnt") {
-                    return Some(n);
-                }
-            }
-            if !fertilized && f.age >= f.off_age_max as f32 {
-                if let Some(n) = variant("Rotten") {
-                    return Some(n);
-                }
-            }
-            if f.cooked {
-                if let Some(n) = variant("Cooked") {
-                    return Some(n);
-                }
-            }
-        }
-        base
+        self.item
+            .get_static_model(&|n| model_script_name(scripts, n))
     }
 
-    /// `getWorldStaticItem()` / `getWorldStaticModel()`.
-    pub fn world_static_model(&self) -> Option<String> {
-        // The original compares with `==`; mod data strings are equal here.
-        if self.mod_data_str("Flatpack") == Some("true") {
-            return Some("Flatpack".into());
-        }
-        if let Some(s) = self.mod_data_str("worldStaticModel") {
-            return Some(s.to_string());
-        }
-        let list = self
-            .script_field(|s| s.world_static_models_by_index.clone())
-            .flatten()
-            .filter(|l| !l.is_empty());
-        if let Some(m) = index(list.as_ref(), self.item.model_index) {
-            return Some(m);
-        }
-        self.script_field(|s| s.world_static_model.clone())
-            .flatten()
-    }
-
-    /// `getStaticModelException()`.
+    /// `getStaticModelException()`
+    /// ([`InventoryItem::get_static_model_exception`]) with the model
+    /// scripts.
     pub fn static_model_exception(&self, scripts: &dyn ModelScripts) -> Option<String> {
-        if self.item.has_tag(TAG_USE_WORLD_STATIC_MODEL) {
-            return self.world_static_model();
-        }
-        self.static_model(scripts)
+        self.item
+            .get_static_model_exception(&|n| model_script_name(scripts, n))
     }
 
     /// `getItemReplacementPrimaryHand()`.
@@ -264,7 +168,7 @@ impl<'a> HeldItem<'a> {
         i.color_red != 1.0
             || i.color_green != 1.0
             || i.color_blue != 1.0
-            || self.fluid.is_some_and(|f| !f.empty)
+            || self.fluid.as_ref().is_some_and(|f| !f.is_empty())
     }
 
     /// `ModelInstanceTextureInitializer.init(inst, item)` →
@@ -283,33 +187,33 @@ impl<'a> HeldItem<'a> {
         ItemTextureInit {
             blood_level,
             tint,
-            fluid_level: self.fluid.map_or(0.0, |f| f.filled_ratio),
-            fluid_tint: self.fluid.map(|f| f.color),
+            fluid_level: self.fluid.as_ref().map_or(0.0, |f| f.get_filled_ratio()),
+            fluid_tint: self
+                .fluid
+                .as_ref()
+                .map(|f| f.get_color(self.entity_ctx.unwrap_or(&NoFluids))),
         }
     }
 
     /// `addWeaponPartModels`: for each attached part (in attach order),
-    /// every `modelWeaponPart` entry of its full type, in script order.
+    /// every `getModelWeaponPart()` entry of its full type, in script order.
     pub fn weapon_part_models(&self) -> Vec<WeaponPartModel> {
         let ItemKind::Weapon(w) = &self.item.kind else {
             return Vec::new();
         };
-        let Some(mwps) = self.script_field(|s| s.model_weapon_part.clone()).flatten() else {
+        let Some(mwps) = self.item.get_model_weapon_part() else {
             return Vec::new();
         };
         let mut out = Vec::new();
         for part in &w.attachments {
             let ft = part.get_full_type();
-            for m in &mwps {
-                let m = m.borrow();
-                if m.part_type == ft {
-                    out.push(WeaponPartModel {
-                        part_type: m.part_type.clone(),
-                        model_name: m.model_name.clone(),
-                        attachment_name_self: m.attachment_name_self.clone(),
-                        attachment_parent: m.attachment_parent.clone(),
-                    });
-                }
+            for m in mwps.iter().filter(|m| m.part_type == ft) {
+                out.push(WeaponPartModel {
+                    part_type: m.part_type.clone(),
+                    model_name: m.model_name.clone(),
+                    attachment_name_self: m.attachment_name_self.clone(),
+                    attachment_parent: m.attachment_parent.clone(),
+                });
             }
         }
         out
@@ -318,13 +222,16 @@ impl<'a> HeldItem<'a> {
     /// `item.hasComponent(FluidContainer) && getFilledRatio() > 0.5` with a
     /// `<worldStaticItem>_Fluid` model script: the model name to use.
     pub(crate) fn fluid_model(&self, scripts: &dyn ModelScripts) -> Option<String> {
-        let f = self.fluid?;
-        if f.filled_ratio <= 0.5 {
+        let f = self.fluid.as_ref()?;
+        if f.get_filled_ratio() <= 0.5 {
             return None;
         }
         let name = format!(
             "{}_Fluid",
-            self.world_static_model().as_deref().unwrap_or("null")
+            self.item
+                .get_world_static_model()
+                .as_deref()
+                .unwrap_or("null")
         );
         scripts.model_script(&name).map(|_| name)
     }

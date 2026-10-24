@@ -1578,6 +1578,7 @@ version = "0.1.0"
 dependencies = [
  "pz-anim",
  "pz-characters",
+ "pz-entity",
  "pz-fs",
  "pz-inventory",
  "pz-iso-render",

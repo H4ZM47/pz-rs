@@ -11,6 +11,7 @@ pz-render = { path = "../pz-render" }
 pz-iso-render = { path = "../pz-iso-render" }
 pz-characters.workspace = true
 pz-inventory.workspace = true
+pz-entity.workspace = true
 pz-scripts.workspace = true
 
 [dev-dependencies]
