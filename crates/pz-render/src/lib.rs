@@ -3,23 +3,136 @@
 //!
 //! Game code records [`DrawCmd`]s; a backend (macroquad in `pz-client`)
 //! executes them. This keeps simulation and UI code testable headless.
+//! Texture pixels are decoded here ([`TextureManager`]); the backend uploads
+//! them from [`TextureManager::data`] by [`Texture::id`].
+
+pub mod image;
+pub mod manager;
+pub mod png;
 
 use std::rc::Rc;
+
+pub use image::{ImageData, Mask, MipLevel};
+pub use manager::{SharedTextures, TextureData, TextureManager};
+
+/// `TextureFlags`.
+pub mod flags {
+    pub const FILTER_MIN_NEAREST: i32 = 1;
+    pub const FILTER_MAG_NEAREST: i32 = 2;
+    pub const COMPRESS: i32 = 4;
+    pub const CREATE_MASK: i32 = 8;
+    pub const FBO: i32 = 16;
+    pub const CLAMP_TO_EDGE: i32 = 32;
+    pub const MIPMAPS: i32 = 64;
+    pub const LIMIT_TEXTURE_SIZE_1: i32 = 128;
+    pub const LIMIT_TEXTURE_SIZE_2: i32 = 256;
+    pub const FBO_DEPTH: i32 = 512;
+}
 
 /// Shared texture handle (`Texture.getSharedTexture`).
 #[derive(Clone, Debug)]
 pub struct Texture {
     pub name: Rc<str>,
-    /// Backend image id; `None` until uploaded.
+    /// Index of the backing image (`TextureID`) in [`TextureManager::data`];
+    /// pack sub-textures share their page's image.
     pub id: Option<u32>,
     pub width: u32,
     pub height: u32,
-    /// Sub-rectangle inside a pack page, in pixels.
+    /// Sub-rectangle inside the backing image, in pixels: x, y, w, h.
     pub uv: [f32; 4],
+    /// Texture coordinates of the sub-rectangle (`xStart`..`yEnd`), relative
+    /// to the power-of-two image.
+    pub x_start: f32,
+    pub y_start: f32,
+    pub x_end: f32,
+    pub y_end: f32,
+    /// Where the trimmed image sits inside its original frame.
+    pub offset_x: f32,
+    pub offset_y: f32,
+    /// Original frame size; 0 means "same as width/height".
+    pub width_orig: i32,
+    pub height_orig: i32,
+    /// Power-of-two size of the backing image.
+    pub width_hw: i32,
+    pub height_hw: i32,
+    pub solid: bool,
+    pub flip: bool,
+    pub mask: Option<Rc<Mask>>,
+    /// `isReady()`; false once loading failed (`isFailure()`).
+    pub ready: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+impl Texture {
+    /// A texture with no image yet (`new Texture()`).
+    pub fn empty(name: &str) -> Self {
+        Texture {
+            name: Rc::from(name),
+            id: None,
+            width: 0,
+            height: 0,
+            uv: [0.0; 4],
+            x_start: 0.0,
+            y_start: 0.0,
+            x_end: 1.0,
+            y_end: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            width_orig: 0,
+            height_orig: 0,
+            width_hw: 0,
+            height_hw: 0,
+            solid: false,
+            flip: false,
+            mask: None,
+            ready: false,
+        }
+    }
+
+    /// `getWidthOrig()`.
+    pub fn width_orig(&self) -> i32 {
+        if self.width_orig == 0 { self.width as i32 } else { self.width_orig }
+    }
+
+    /// `getHeightOrig()`.
+    pub fn height_orig(&self) -> i32 {
+        if self.height_orig == 0 { self.height as i32 } else { self.height_orig }
+    }
+
+    /// `isMaskSet(x, y)`: true without a mask.
+    pub fn is_mask_set(&self, x: i32, y: i32) -> bool {
+        self.mask.as_ref().is_none_or(|m| m.get(x - self.offset_x as i32, y - self.offset_y as i32))
+    }
+
+    /// `setRegion(x, y, w, h)`, including its height clamp that ignores `y`.
+    pub fn set_region(&mut self, x: i32, y: i32, mut width: i32, mut height: i32) {
+        let (whw, hhw) = (self.width_hw, self.height_hw);
+        if x < 0 || x > whw || y < 0 || y > hhw || width <= 0 || height <= 0 {
+            return;
+        }
+        if width + x > whw {
+            width = whw - x;
+        }
+        if height > hhw {
+            height = hhw - y;
+        }
+        self.x_start = x as f32 / whw as f32;
+        self.y_start = y as f32 / hhw as f32;
+        self.x_end = (x + width) as f32 / whw as f32;
+        self.y_end = (y + height) as f32 / hhw as f32;
+        self.width = width.max(0) as u32;
+        self.height = height.max(0) as u32;
+        self.uv = [x as f32, y as f32, width as f32, height as f32];
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rgba(pub f32, pub f32, pub f32, pub f32);
+
+/// `Color.colorToABGR`: channels clamped to 0..1 and truncated to bytes.
+pub fn color_to_abgr(r: f32, g: f32, b: f32, a: f32) -> u32 {
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0) as i32 as u32 & 0xFF;
+    byte(a) << 24 | byte(b) << 16 | byte(g) << 8 | byte(r)
+}
 
 /// Blend modes the original sets through `IndieGL.glBlendFunc`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,11 +143,45 @@ pub enum Blend {
     Additive,
 }
 
+/// `TextureDraw` for a `glDraw`: one quad, corners clockwise from the top
+/// left, with per-corner ABGR colours and texture coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sprite {
+    pub texture: Option<Texture>,
+    pub x: [f32; 4],
+    pub y: [f32; 4],
+    pub u: [f32; 4],
+    pub v: [f32; 4],
+    pub color: [u32; 4],
+    pub flipped: bool,
+}
+
+impl PartialEq for Texture {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.id == other.id && self.uv == other.uv
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum DrawCmd {
-    /// `SpriteRenderer.renderi`; `texture: None` draws a solid rectangle.
+    /// A plain rectangle in the scaffold's form; `texture: None` draws a
+    /// solid rectangle.
     Quad { texture: Option<Texture>, x: f32, y: f32, w: f32, h: f32, color: Rgba },
+    /// A quad as `SpriteRenderer` records it.
+    Sprite(Sprite),
     SetBlend(Blend),
+    /// `glBlendFunc(src, dst)` with GL enum values.
+    BlendFunc(u32, u32),
+    /// `glBlendFuncSeparate(srcRGB, dstRGB, srcA, dstA)`.
+    BlendFuncSeparate(u32, u32, u32, u32),
+    GlEnable(u32),
+    GlDisable(u32),
+    StencilMask(u32),
+    StencilFunc(u32, i32, u32),
+    StencilOp(u32, u32, u32),
+    ColorMask(bool, bool, bool, bool),
+    AlphaFunc(u32, f32),
+    Clear(u32),
     /// Scissor rectangle (`UIElement` stencil/clip), `None` clears it.
     Clip(Option<[i32; 4]>),
 }
@@ -48,6 +195,139 @@ impl DrawList {
     pub fn quad(&mut self, texture: Option<&Texture>, x: f32, y: f32, w: f32, h: f32, color: Rgba) {
         self.cmds.push(DrawCmd::Quad { texture: texture.cloned(), x, y, w, h, color });
     }
+
+    /// `TextureDraw.Create(texd, tex, x0..y3, c0..c3)` with the texture's own
+    /// coordinates.
+    fn push_corners(&mut self, tex: Option<&Texture>, x: [f32; 4], y: [f32; 4], color: [u32; 4]) {
+        let (u, v) = match tex {
+            Some(t) => ([t.x_start, t.x_end, t.x_end, t.x_start], [t.y_start, t.y_start, t.y_end, t.y_end]),
+            None => ([0.0, 1.0, 1.0, 0.0], [0.0, 0.0, 1.0, 1.0]),
+        };
+        self.push_uv(tex, x, y, u, v, color);
+    }
+
+    fn push_uv(&mut self, tex: Option<&Texture>, x: [f32; 4], y: [f32; 4], u: [f32; 4], v: [f32; 4], color: [u32; 4]) {
+        let flipped = tex.is_some_and(|t| t.flip);
+        self.cmds.push(DrawCmd::Sprite(Sprite { texture: tex.cloned(), x, y, u, v, color, flipped }));
+    }
+
+    /// `Texture.render(x, y, w, h, r, g, b, a)`: offsets by the texture's
+    /// trim offset, then `SpriteRenderer.render`.
+    pub fn render_texture(&mut self, tex: &Texture, x: f32, y: f32, w: f32, h: f32, c: Rgba) {
+        self.render(Some(tex), x + tex.offset_x, y + tex.offset_y, w, h, c);
+    }
+
+    /// `SpriteRenderer.render(tex, x, y, w, h, r, g, b, a)` with
+    /// `fboRenderChunk` on (the B42 default): no pixel snapping. Skipped
+    /// when the texture is not ready or alpha is 0.
+    pub fn render(&mut self, tex: Option<&Texture>, x: f32, y: f32, w: f32, h: f32, c: Rgba) {
+        if tex.is_some_and(|t| !t.ready) || c.3 == 0.0 {
+            return;
+        }
+        let col = color_to_abgr(c.0, c.1, c.2, c.3);
+        let (x2, y2) = (x + w, y + h);
+        self.push_corners(tex, [x, x2, x2, x], [y, y, y2, y2], [col; 4]);
+    }
+
+    /// `SpriteRenderer.renderi`.
+    pub fn renderi(&mut self, tex: Option<&Texture>, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
+        self.render(tex, x as f32, y as f32, w as f32, h as f32, c);
+    }
+
+    /// `SpriteRenderer.render(tex, x, y, w, h, r, g, b, a, u1..v4)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_uv(&mut self, tex: Option<&Texture>, x: f32, y: f32, w: f32, h: f32, c: Rgba, u: [f32; 4], v: [f32; 4]) {
+        if c.3 == 0.0 {
+            return;
+        }
+        let col = color_to_abgr(c.0, c.1, c.2, c.3);
+        let (x2, y2) = (x + w, y + h);
+        self.push_uv(tex, [x, x2, x2, x], [y, y, y2, y2], u, v, [col; 4]);
+    }
+
+    /// `SpriteRenderer.renderClamped`: clips the quad (and its texture
+    /// coordinates) to a rectangle.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_clamped(&mut self, tex: Option<&Texture>, x: i32, y: i32, w: i32, h: i32, clamp: [i32; 4], c: Rgba) {
+        let [cx, cy, cw, ch] = clamp;
+        let x1 = x.clamp(cx, cx + cw);
+        let y1 = y.clamp(cy, cy + ch);
+        let x2 = (x + w).clamp(cx, cx + cw);
+        let y2 = (y + h).clamp(cy, cy + ch);
+        if x1 == x2 || y1 == y2 {
+            return;
+        }
+        let (dx1, dx2, dy1, dy2) = (x1 - x, x + w - x2, y1 - y, y + h - y2);
+        if dx1 == 0 && dx2 == 0 && dy1 == 0 && dy2 == 0 {
+            self.renderi(tex, x, y, w, h, c);
+            return;
+        }
+        let (mut u0, mut v0, mut u1, mut v1) = (0.0, 0.0, 1.0, 1.0);
+        if let Some(t) = tex {
+            u0 = dx1 as f32 / w as f32;
+            v0 = dy1 as f32 / h as f32;
+            u1 = (w - dx2) as f32 / w as f32;
+            v1 = (h - dy2) as f32 / h as f32;
+            let (us, vs) = (t.x_end - t.x_start, t.y_end - t.y_start);
+            u0 = t.x_start + u0 * us;
+            u1 = t.x_start + u1 * us;
+            v0 = t.y_start + v0 * vs;
+            v1 = t.y_start + v1 * vs;
+        }
+        self.render_uv(tex, x1 as f32, y1 as f32, (x2 - x1) as f32, (y2 - y1) as f32, c, [u0, u1, u1, u0], [v0, v0, v1, v1]);
+    }
+
+    /// `SpriteRenderer.renderRect`: a solid rectangle.
+    pub fn render_rect(&mut self, x: i32, y: i32, w: i32, h: i32, c: Rgba) {
+        if c.3 == 0.0 {
+            return;
+        }
+        self.render(None, x as f32, y as f32, w as f32, h as f32, c);
+    }
+
+    /// `SpriteRenderer.renderPoly(tex, x1..y4, r, g, b, a)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_poly(&mut self, tex: Option<&Texture>, x: [f32; 4], y: [f32; 4], c: Rgba) {
+        if tex.is_some_and(|t| !t.ready) {
+            return;
+        }
+        let col = color_to_abgr(c.0, c.1, c.2, c.3);
+        self.push_corners(tex, x, y, [col; 4]);
+    }
+
+    /// `SpriteRenderer.renderline(tex, x1, y1, x2, y2, r, g, b, a, thickness)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_line(&mut self, tex: Option<&Texture>, x1: f32, y1: f32, x2: f32, y2: f32, c: Rgba, t: f32) {
+        let (xs, ys) = if x1 <= x2 && y1 <= y2 {
+            ([x1 + t, x2 + t, x2 - t, x1 - t], [y1 - t, y2 - t, y2 + t, y1 + t])
+        } else if x1 >= x2 && y1 >= y2 {
+            ([x1 + t, x1 - t, x2 - t, x2 + t], [y1 - t, y1 + t, y2 + t, y2 - t])
+        } else if x1 >= x2 && y1 <= y2 {
+            ([x2 - t, x1 - t, x1 + t, x2 + t], [y2 - t, y1 - t, y1 + t, y2 + t])
+        } else {
+            ([x1 - t, x1 + t, x2 + t, x2 - t], [y1 - t, y1 + t, y2 + t, y2 - t])
+        };
+        let col = color_to_abgr(c.0, c.1, c.2, c.3);
+        self.push_corners(tex, xs, ys, [col; 4]);
+    }
+
+    /// `SpriteRenderer.renderline(tex, int x1, y1, x2, y2, r, g, b, a)`:
+    /// one pixel thick.
+    pub fn render_line_i(&mut self, tex: Option<&Texture>, x1: i32, y1: i32, x2: i32, y2: i32, c: Rgba) {
+        self.render_line(tex, x1 as f32, y1 as f32, x2 as f32, y2 as f32, c, 1.0);
+    }
+
+    pub fn blend_func(&mut self, src: u32, dst: u32) {
+        self.cmds.push(DrawCmd::BlendFunc(src, dst));
+    }
+
+    pub fn gl_enable(&mut self, cap: u32) {
+        self.cmds.push(DrawCmd::GlEnable(cap));
+    }
+
+    pub fn gl_disable(&mut self, cap: u32) {
+        self.cmds.push(DrawCmd::GlDisable(cap));
+    }
 }
 
 /// Texture loading service, implemented by the client backend.
@@ -55,3 +335,6 @@ pub trait TextureLoader {
     /// `Texture.getSharedTexture(path)`: loose image file or pack sub-texture.
     fn shared_texture(&mut self, path: &str) -> Option<Texture>;
 }
+
+#[cfg(test)]
+mod tests;
