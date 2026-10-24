@@ -1467,6 +1467,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-sqlite"
+version = "0.1.0"
+
+[[package]]
 name = "pz-text"
 version = "0.1.0"
 dependencies = [
