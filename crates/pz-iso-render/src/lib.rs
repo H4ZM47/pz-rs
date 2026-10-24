@@ -12,18 +12,29 @@
 //! vertex lights, as `LightingJNI` produces them.
 
 pub mod alpha;
+pub mod blood;
 pub mod cache;
 pub mod cell;
 pub mod chunk;
 pub mod color;
 pub mod cutaways;
+pub mod fire;
 pub mod frame;
+pub mod models;
 pub mod obscuring;
 pub mod occlusion;
+pub mod particles_fire;
+pub mod puddles;
 pub mod seam;
+pub mod skybox;
+pub mod snow;
+pub mod splashes;
 pub mod sprite;
 pub mod texd;
 pub mod trees;
+pub mod water;
+pub mod water_flow;
+pub mod weather;
 pub mod world;
 
 pub use cell::ChunkRenderer;

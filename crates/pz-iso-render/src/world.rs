@@ -67,6 +67,8 @@ pub struct SpriteFlags {
     pub exterior: bool,
     pub attached_surface: bool,
     pub attached_ceiling: bool,
+    /// `vegitation` (rain splashes skip such squares).
+    pub vegitation: bool,
     /// `PropertyContainer.isTableTop()`.
     pub table_top: bool,
 }
@@ -111,6 +113,10 @@ pub struct SpriteInfo {
     /// `getSpriteGridPosZ(sprite)`: multi-level objects.
     pub grid_levels: i32,
     pub grid_pos_z: i32,
+    /// `hideForWaterRender` while the water shader is on: a shore blend
+    /// the water shader draws instead (see
+    /// [`crate::water::hides_for_water_render`]).
+    pub hide_for_water_render: bool,
 }
 
 impl SpriteInfo {
@@ -195,6 +201,8 @@ pub struct RenderObject {
     pub container_count: u32,
     /// `overlaySprite` and `overlaySpriteColor`.
     pub overlay: Option<Overlay>,
+    /// For an `IsoFire`: what drawing its animations reads.
+    pub fire: Option<crate::fire::FireRender>,
 }
 
 /// A garage door segment's place in its door.
@@ -223,6 +231,7 @@ impl RenderObject {
             fascia_attached: None,
             container_count: 0,
             overlay: None,
+            fire: None,
         }
     }
 
@@ -258,6 +267,11 @@ pub struct RenderSquare {
     pub seam: SeamNeighbours,
     /// Rooms, buildings and visibility for cutaways and occlusion.
     pub cut: SquareCutawayInfo,
+    /// `getWater()`: the square's water geometry, if any.
+    pub water: Option<crate::water::WaterGeometry>,
+    /// `getPuddles()`, initialised (`IsoPuddlesGeometry.init`); `None`
+    /// draws no puddles.
+    pub puddles: Option<crate::puddles::PuddlesGeometry>,
 }
 
 /// The neighbour tests `renderSeamFix2_Floor` and `renderSeamFix2_Wall`
@@ -348,7 +362,17 @@ impl Default for SquareCutawayInfo {
 
 impl RenderSquare {
     pub fn new(x: i32, y: i32, z: i32) -> Self {
-        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default() }
+        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default(), water: None, puddles: None }
+    }
+
+    /// `getProperties().has(flag)`: any object's sprite has it.
+    pub fn has(&self, f: impl Fn(&SpriteFlags) -> bool) -> bool {
+        self.objects.iter().any(|o| o.sprite.as_ref().is_some_and(|s| f(&s.flags)))
+    }
+
+    /// `getWaterObject()`: the first object with a `water` sprite.
+    pub fn water_object(&self) -> Option<usize> {
+        self.objects.iter().position(|o| o.flags().water)
     }
 
     /// `getFloor()`: the first solid-floor object.
@@ -381,6 +405,10 @@ pub trait DepthMaps {
     fn cutaway_stencil(&self, _index: usize) -> Option<Texture> {
         None
     }
+    /// `getBillboardDepthTexture()` when not empty (fire sprites).
+    fn billboard(&self) -> Option<Texture> {
+        None
+    }
 }
 
 impl DepthMaps for pz_render::tile_depth::TileDepthTextureManager {
@@ -390,6 +418,14 @@ impl DepthMaps for pz_render::tile_depth::TileDepthTextureManager {
 
     fn default_texture(&self) -> Option<Texture> {
         let t = self.default_depth_texture()?;
+        if t.is_empty() {
+            return None;
+        }
+        t.uploaded_texture().cloned()
+    }
+
+    fn billboard(&self) -> Option<Texture> {
+        let t = self.billboard_depth_texture()?;
         if t.is_empty() {
             return None;
         }

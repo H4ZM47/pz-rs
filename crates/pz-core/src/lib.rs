@@ -5,3 +5,4 @@
 pub mod config;
 pub mod core;
 pub mod debug;
+pub mod random;

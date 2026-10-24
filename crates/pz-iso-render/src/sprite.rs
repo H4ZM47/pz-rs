@@ -90,11 +90,20 @@ pub struct SpriteDraw<'a> {
 /// The steady-state instance scale `performRenderFrame` settles on: 64x128
 /// textures are drawn at twice their size at tile scale 2.
 fn instance_scale(tex: &Texture) -> f32 {
+    frame_scale(tex, 1.0)
+}
+
+/// `performRenderFrame`'s scale for an instance at `inst`: 64x128 textures
+/// go to 2, and 128x256 textures at 2 back to 1, at tile scale 2.
+fn frame_scale(tex: &Texture, inst: f32) -> f32 {
+    let mut s = inst;
     if TILE_SCALE == 2 && tex.width_orig() == 64 && tex.height_orig() == 128 {
-        2.0
-    } else {
-        1.0
+        s = 2.0;
     }
+    if TILE_SCALE == 2 && s == 2.0 && tex.width_orig() == 128 && tex.height_orig() == 256 {
+        s = 1.0;
+    }
+    s
 }
 
 /// `IsoSprite.startTileDepthShader` while recording: the front and far
@@ -157,7 +166,8 @@ fn setup_tile_depth(ctx: &SpriteCtx<'_>, d: &SpriteDraw<'_>) -> Option<Texture> 
     if let Some(obj) = d.obj {
         match obj.kind {
             ObjectKind::Tree | ObjectKind::WorldInventory => return None,
-            ObjectKind::Fire if !d.main => return None,
+            // The billboard depth texture, if not empty.
+            ObjectKind::Fire if !d.main => return ctx.depth_maps.billboard(),
             _ => {}
         }
     }
@@ -207,7 +217,21 @@ fn setup_tile_depth_wall(ctx: &SpriteCtx<'_>, d: &SpriteDraw<'_>) -> Option<Text
 
 /// `IsoSprite.render` into the chunk texture being recorded.
 pub fn render(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>) {
+    render_inst(ctx, d, None);
+}
+
+/// [`render`] for an instance whose scale was set (`setScale(scale,
+/// scale)`) before the draw, as `IsoFire` does for its animations.
+pub fn render_scaled(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, scale: f32) {
+    render_inst(ctx, d, Some(scale));
+}
+
+fn render_inst(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, inst_scale: Option<f32>) {
     let s = d.sprite;
+    // performRenderFrame skips shore blends the water shader replaces.
+    if s.hide_for_water_render {
+        return;
+    }
     let Some(tex) = s.texture.as_ref() else { return };
     let mut info = d.col;
     if s.flags.unlit {
@@ -267,8 +291,13 @@ pub fn render(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>) {
             }
         }
         setup_tile_depth(ctx, d).map(|t| {
-            let (front, far) = tile_depths(ctx, d.x, d.y, d.z, z2);
-            let sc = instance_scale(tex);
+            // Fire animations take the billboard's depth half a square
+            // back (`startTileDepthShader(obj, x - 0.5, y - 0.5, …)`).
+            let back = if !d.main && matches!(d.obj.map(|o| o.kind), Some(ObjectKind::Fire)) { 0.5 } else { 0.0 };
+            let (front, far) = tile_depths(ctx, d.x - back, d.y - back, d.z, z2);
+            // TileDepthModifier.setSpriteScale(def.scaleX, def.scaleY),
+            // before performRenderFrame adjusts the instance.
+            let sc = inst_scale.unwrap_or_else(|| instance_scale(tex));
             (t, front, far, (sc, sc))
         })
     } else {
@@ -295,7 +324,13 @@ pub fn render(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>) {
     }
 
     // performRenderFrame.
-    let scale = instance_scale(tex);
+    let scale = match inst_scale {
+        Some(i) => frame_scale(tex, i),
+        None => instance_scale(tex),
+    };
+    if scale <= 0.0 {
+        return;
+    }
     let (mut w, mut h) = (tex.width as f32, tex.height as f32);
     let (mut tx, mut ty) = (sx, sy);
     if scale != 1.0 {
