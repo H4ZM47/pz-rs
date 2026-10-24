@@ -5,7 +5,11 @@ pub use pz_world::save::io::unpack_unit as unpack_byte_to_float_unit;
 /// `Bits.packFloatUnitToByte` (release build: out-of-range values are
 /// clamped instead of throwing).
 pub fn pack_float_unit_to_byte(f: f32) -> i8 {
-    let f = if !(0.0..=1.0).contains(&f) { f.clamp(0.0, 1.0) } else { f };
+    let f = if !(0.0..=1.0).contains(&f) {
+        f.clamp(0.0, 1.0)
+    } else {
+        f
+    };
     // `(byte)(float)`: float -> int (truncation), then the low 8 bits.
     (f * 255.0 + -128.0) as i32 as i8
 }

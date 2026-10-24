@@ -21,7 +21,13 @@ impl NatureBush {
         Self::default()
     }
 
-    pub fn replace_existing_object(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData, ctx: &mut Ctx<'_>) -> bool {
+    pub fn replace_existing_object(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+        ctx: &mut Ctx<'_>,
+    ) -> bool {
         let mut replaced = false;
         let n = host.objects(sq).len();
         for i in (1..n).rev() {
@@ -65,7 +71,14 @@ impl NatureBush {
         replaced
     }
 
-    pub fn validate_spawn(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData, has_wall: bool, ctx: &mut Ctx<'_>) -> bool {
+    pub fn validate_spawn(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+        has_wall: bool,
+        ctx: &mut Ctx<'_>,
+    ) -> bool {
         if host.objects(sq).len() > if has_wall { 2 } else { 1 } {
             return false;
         }
@@ -87,7 +100,15 @@ impl NatureBush {
         false
     }
 
-    pub fn update(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &SquareData, data: &mut CategoryData, e_tick: i32, season: &ErosionSeason) -> Keep {
+    pub fn update(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &SquareData,
+        data: &mut CategoryData,
+        e_tick: i32,
+        season: &ErosionSeason,
+    ) -> Keep {
         if e_tick < data.spawn_time || data.do_nothing {
             return Keep::Keep;
         }
@@ -106,7 +127,8 @@ impl NatureBush {
         }
         let disp = self.base.current_season(sd.magic_num, season);
         let bloom = self.base.current_bloom(sd.magic_num, obj, season);
-        self.base.update_obj(host, sq, data, obj, false, stage, disp, bloom)
+        self.base
+            .update_obj(host, sq, data, obj, false, stage, disp, bloom)
     }
 
     pub fn init(&mut self, tables: &ErosionTables, ice: &mut IceQueenSink) {
@@ -150,7 +172,11 @@ impl NatureBush {
                 spr.set_flower(0, &s(bloom_id));
                 spr.set_flower(1, &s(bloom_id + 32));
             }
-            let (bs, be) = if b.has_flower { (b.bloomstart, b.bloomend) } else { (0.0, 0.0) };
+            let (bs, be) = if b.has_flower {
+                (b.bloomstart, b.bloomend)
+            } else {
+                (0.0, 0.0)
+            };
             self.objs.push(ErosionObj::new(spr, 60, bs, be, true));
         }
     }

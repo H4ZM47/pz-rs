@@ -1,11 +1,12 @@
 //! `zombie.erosion.season.ErosionSeason`: the season, daylight and daily
 //! weather model.
 //!
-//! The original uses `GregorianCalendar` in the JVM's default time zone;
-//! [`CalendarZone`] supplies that zone's UTC offset (UTC by default, which
-//! is what a JVM started with `-Duser.timezone=UTC` computes).
+//! The original uses `GregorianCalendar` in the JVM's default time zone,
+//! done here through [`pz_core::calendar`].
 
 use std::sync::Arc;
+
+use pz_core::calendar::{self, JavaZone};
 
 use crate::noise::Noise2D;
 
@@ -19,29 +20,10 @@ pub const NUM_SEASONS: i32 = 6;
 
 const DAY_MS: i64 = 86_400_000;
 
-/// UTC offset in milliseconds of the calendar's time zone at a local
-/// (wall-clock) time given as milliseconds since the local epoch.
-pub type CalendarZone = Arc<dyn Fn(i64) -> i64 + Send + Sync>;
-
-/// Days since 1970-01-01 of a proleptic Gregorian date (`m` 1..=12).
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
 /// `new GregorianCalendar(year, month, day)` (lenient fields, midnight)
 /// followed by `add(DAY_OF_MONTH, add_days)`, as `getTime().getTime()`.
-fn calendar_millis(zone: &CalendarZone, year: i32, month: i32, day: i32, add_days: i64) -> i64 {
-    let y = year as i64 + (month as i64).div_euclid(12);
-    let m = (month as i64).rem_euclid(12) + 1;
-    let days = days_from_civil(y, m, 1) + (day as i64 - 1) + add_days;
-    let local = days * DAY_MS;
-    local - zone(local)
+fn calendar_millis(zone: &JavaZone, year: i32, month: i32, day: i32, add_days: i64) -> i64 {
+    calendar::calendar_millis(zone, year, month, day + add_days as i32, 0, 0, 0, 0)
 }
 
 /// One calendar date as the original keeps it (`GregorianCalendar`), by
@@ -144,12 +126,14 @@ pub struct ErosionSeason {
     pub names_translated: Vec<String>,
     /// `SandboxOptions.dayNightCycle` (2: endless day, 3: endless night).
     pub day_night_cycle: i32,
-    zone: CalendarZone,
+    zone: JavaZone,
 }
 
 impl std::fmt::Debug for ErosionSeason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ErosionSeason").field("season", &self.cur_season).finish_non_exhaustive()
+        f.debug_struct("ErosionSeason")
+            .field("season", &self.cur_season)
+            .finish_non_exhaustive()
     }
 }
 
@@ -174,8 +158,8 @@ fn day_diff(a: CalDate, b: CalDate) -> f32 {
 impl ErosionSeason {
     /// `new ErosionSeason()` (the field defaults of the original
     /// constructor, which `init` overwrites).
-    pub fn new(perm: Arc<[i32]>, names: Vec<String>, zone: Option<CalendarZone>) -> Self {
-        let zone: CalendarZone = zone.unwrap_or_else(|| Arc::new(|_| 0));
+    pub fn new(perm: Arc<[i32]>, names: Vec<String>, zone: Option<JavaZone>) -> Self {
+        let zone = zone.unwrap_or_else(JavaZone::default_zone);
         let zero_day = CalDate(calendar_millis(&zone, 1970, 0, 1, 0));
         ErosionSeason {
             lat: 0,
@@ -223,7 +207,7 @@ impl ErosionSeason {
     }
 
     /// The calendar time zone.
-    pub fn zone(&self) -> CalendarZone {
+    pub fn zone(&self) -> JavaZone {
         self.zone.clone()
     }
 
@@ -256,9 +240,16 @@ impl ErosionSeason {
         self.seed_b = seed_b;
         self.seed_c = seed_c;
         self.summer_tilt = 2.0;
-        self.winter_mod =
-            if self.temp_min < 0 { 0.05 * -(self.temp_min as f32) } else { 0.02 * -(self.temp_min as f32) };
-        self.summer_mod = if self.temp_max < 0 { 0.05 * self.temp_max as f32 } else { 0.02 * self.temp_max as f32 };
+        self.winter_mod = if self.temp_min < 0 {
+            0.05 * -(self.temp_min as f32)
+        } else {
+            0.02 * -(self.temp_min as f32)
+        };
+        self.summer_mod = if self.temp_max < 0 {
+            0.05 * self.temp_max as f32
+        } else {
+            0.02 * self.temp_max as f32
+        };
         // `Math.tan` / `Math.acos` are fdlibm (`StrictMath`) in the original.
         let lat = libm::tan(radian(self.lat as f64));
         let tilt = libm::tan(radian(23.44));
@@ -311,7 +302,8 @@ impl ErosionSeason {
 
     /// `clone()`: same climate parameters, no day set.
     pub fn clone_season(&self) -> Self {
-        let mut c = ErosionSeason::new(self.per_perm(), self.names.clone(), Some(self.zone.clone()));
+        let mut c =
+            ErosionSeason::new(self.per_perm(), self.names.clone(), Some(self.zone.clone()));
         c.names_translated = self.names_translated.clone();
         c.day_night_cycle = self.day_night_cycle;
         c.init(
@@ -432,13 +424,23 @@ impl ErosionSeason {
         for i in 0..3 {
             let cur_year = year.wrapping_add(i as i32 - 1);
             let lag = self.season_lag as i64;
-            let winter_s = self.per.layered_noise(64i32.wrapping_add(cur_year) as f32, 64.0);
-            let winter_e = self.per.layered_noise(64.0, 64i32.wrapping_add(cur_year) as f32);
-            let summer_s = self.per.layered_noise(128i32.wrapping_add(cur_year) as f32, 128.0);
-            let summer_e = self.per.layered_noise(128.0, 128i32.wrapping_add(cur_year) as f32);
-            let ws = (-((40.0f32 + 40.0 * self.winter_mod + 20.0 * winter_s) as f64).floor()) as i32;
+            let winter_s = self
+                .per
+                .layered_noise(64i32.wrapping_add(cur_year) as f32, 64.0);
+            let winter_e = self
+                .per
+                .layered_noise(64.0, 64i32.wrapping_add(cur_year) as f32);
+            let summer_s = self
+                .per
+                .layered_noise(128i32.wrapping_add(cur_year) as f32, 128.0);
+            let summer_e = self
+                .per
+                .layered_noise(128.0, 128i32.wrapping_add(cur_year) as f32);
+            let ws =
+                (-((40.0f32 + 40.0 * self.winter_mod + 20.0 * winter_s) as f64).floor()) as i32;
             let we = ((40.0f32 + 40.0 * self.winter_mod + 20.0 * winter_e) as f64).floor() as i32;
-            let ss = (-((40.0f32 + 40.0 * self.summer_mod + 20.0 * summer_s) as f64).floor()) as i32;
+            let ss =
+                (-((40.0f32 + 40.0 * self.summer_mod + 20.0 * summer_s) as f64).floor()) as i32;
             let se = ((40.0f32 + 40.0 * self.summer_mod + 20.0 * summer_e) as f64).floor() as i32;
             let d = YearData {
                 year: cur_year,
@@ -495,25 +497,29 @@ impl ErosionSeason {
             (
                 tmax + half * y1.last_summer_str,
                 tmin + half * y1.last_winter_str,
-                day_diff(day_date, yd[0].hottest_day) / day_diff(yd[0].hottest_day, yd[0].coldest_day),
+                day_diff(day_date, yd[0].hottest_day)
+                    / day_diff(yd[0].hottest_day, yd[0].coldest_day),
             )
         } else if lt(yd[1].hottest_day) && ge(yd[0].coldest_day) {
             (
                 tmin + half * y1.last_winter_str,
                 tmax + half * y1.summer_str,
-                day_diff(day_date, yd[0].coldest_day) / day_diff(yd[1].hottest_day, yd[0].coldest_day),
+                day_diff(day_date, yd[0].coldest_day)
+                    / day_diff(yd[1].hottest_day, yd[0].coldest_day),
             )
         } else if lt(yd[1].coldest_day) && ge(yd[1].hottest_day) {
             (
                 tmax + half * y1.summer_str,
                 tmin + half * y1.winter_str,
-                day_diff(day_date, yd[1].hottest_day) / day_diff(yd[1].hottest_day, yd[1].coldest_day),
+                day_diff(day_date, yd[1].hottest_day)
+                    / day_diff(yd[1].hottest_day, yd[1].coldest_day),
             )
         } else {
             (
                 tmin + half * y1.winter_str,
                 tmax + half * y1.next_summer_str,
-                day_diff(day_date, yd[1].coldest_day) / day_diff(yd[1].coldest_day, yd[2].hottest_day),
+                day_diff(day_date, yd[1].coldest_day)
+                    / day_diff(yd[1].coldest_day, yd[2].hottest_day),
             )
         };
         let day_average_temp = clerp(day_perc as f64, temp_a as f64, temp_b as f64) as f32;
@@ -527,7 +533,11 @@ impl ErosionSeason {
         self.is_sunny_day = false;
         // `rain[month]` throws upstream for a month outside 0..12.
         let rain = self.rain[month as usize];
-        let rain_mod = if 0.1f32 + rain <= 1.0 { 0.1f32 + rain } else { 1.0 };
+        let rain_mod = if 0.1f32 + rain <= 1.0 {
+            0.1f32 + rain
+        } else {
+            1.0
+        };
         if rain_mod > 0.0 && self.day_noise_val < rain_mod {
             self.is_rain_day = true;
             self.rain_day_strength = 1.0 - self.day_noise_val / rain_mod;
@@ -543,17 +553,18 @@ impl ErosionSeason {
 
     fn set_daylight_data(&mut self, day_value: i64, day_date: CalDate) {
         let y = &self.year_data;
-        let (cycle_start, cycle_end) = if day_value < y[1].win_sols.0 && day_value >= y[1].sum_sols.0 {
-            self.is_h1 = false;
-            (y[1].sum_sols, y[1].win_sols)
-        } else {
-            self.is_h1 = true;
-            if day_value >= y[1].win_sols.0 {
-                (y[1].win_sols, y[2].sum_sols)
+        let (cycle_start, cycle_end) =
+            if day_value < y[1].win_sols.0 && day_value >= y[1].sum_sols.0 {
+                self.is_h1 = false;
+                (y[1].sum_sols, y[1].win_sols)
             } else {
-                (y[0].win_sols, y[1].sum_sols)
-            }
-        };
+                self.is_h1 = true;
+                if day_value >= y[1].win_sols.0 {
+                    (y[1].win_sols, y[2].sum_sols)
+                } else {
+                    (y[0].win_sols, y[1].sum_sols)
+                }
+            };
         let h_cycle_perc = day_diff(day_date, cycle_start) / day_diff(cycle_start, cycle_end);
         let mut perc2 = h_cycle_perc;
         if self.is_h1 {
@@ -601,26 +612,40 @@ mod tests {
 
     fn synthetic_perm() -> Arc<[i32]> {
         // Any permutation of 0..256 exercises the code paths.
-        (0..256).map(|i| (i * 7 + 3) % 256).collect::<Vec<i32>>().into()
+        (0..256)
+            .map(|i| (i * 7 + 3) % 256)
+            .collect::<Vec<i32>>()
+            .into()
     }
 
     #[test]
     fn calendar() {
-        let utc: CalendarZone = Arc::new(|_| 0);
+        let utc = JavaZone::utc();
         assert_eq!(calendar_millis(&utc, 1970, 0, 1, 0), 0);
         assert_eq!(calendar_millis(&utc, 1970, 0, 2, 0), DAY_MS);
         // Lenient fields: day 0 is the last day of the previous month.
-        assert_eq!(calendar_millis(&utc, 2000, 2, 0, 0), calendar_millis(&utc, 2000, 1, 29, 0));
-        assert_eq!(calendar_millis(&utc, 1999, 12, 1, 0), calendar_millis(&utc, 2000, 0, 1, 0));
+        assert_eq!(
+            calendar_millis(&utc, 2000, 2, 0, 0),
+            calendar_millis(&utc, 2000, 1, 29, 0)
+        );
+        assert_eq!(
+            calendar_millis(&utc, 1999, 12, 1, 0),
+            calendar_millis(&utc, 2000, 0, 1, 0)
+        );
         assert_eq!(calendar_millis(&utc, 1993, 6, 9, 0) / DAY_MS, 8590);
-        let est: CalendarZone = Arc::new(|_| -5 * 3_600_000);
-        assert_eq!(calendar_millis(&est, 1970, 0, 1, 0), 5 * 3_600_000);
+        let ny = JavaZone::named("America/New_York").unwrap();
+        assert_eq!(calendar_millis(&ny, 1970, 0, 1, 0), 5 * 3_600_000);
+        // Summer dates are an hour shorter (EDT).
+        assert_eq!(
+            calendar_millis(&ny, 1993, 6, 9, 0) - calendar_millis(&utc, 1993, 6, 9, 0),
+            4 * 3_600_000
+        );
     }
 
     #[test]
     fn season_over_a_year() {
         let names = ["a", "b", "c", "d", "e", "f"].map(String::from).to_vec();
-        let mut s = ErosionSeason::new(synthetic_perm(), names, None);
+        let mut s = ErosionSeason::new(synthetic_perm(), names, Some(JavaZone::utc()));
         s.init(38, 25, 0, 7, 31, 12.5, 64, 128, 255);
         s.set_rain([0.3; 12]);
         assert_eq!(s.get_rain_year_average(), 109.0);

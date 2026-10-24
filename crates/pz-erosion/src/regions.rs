@@ -2,8 +2,8 @@
 //! and running them.
 
 use crate::category::{
-    Category, Ctx, Flowerbed, IceQueenSink, Keep, NatureBush, NatureGeneric, NaturePlants, NatureTrees, StreetCracks,
-    WallCracks, WallVines,
+    Category, Ctx, Flowerbed, IceQueenSink, Keep, NatureBush, NatureGeneric, NaturePlants,
+    NatureTrees, StreetCracks, WallCracks, WallVines,
 };
 use crate::data::{ChunkData, SquareData};
 use crate::host::{ErosionHost, Sq, SqFlag};
@@ -34,8 +34,21 @@ pub struct Region {
 }
 
 impl Region {
-    fn new(id: i32, tile_match: Option<&'static str>, check_ext: bool, is_ext: bool, has_wall: bool) -> Self {
-        Region { id, tile_name_match: tile_match, check_exterior: check_ext, is_exterior: is_ext, has_wall, categories: Vec::new() }
+    fn new(
+        id: i32,
+        tile_match: Option<&'static str>,
+        check_ext: bool,
+        is_ext: bool,
+        has_wall: bool,
+    ) -> Self {
+        Region {
+            id,
+            tile_name_match: tile_match,
+            check_exterior: check_ext,
+            is_exterior: is_ext,
+            has_wall,
+            categories: Vec::new(),
+        }
     }
 
     /// `addCategory(id, cat)`.
@@ -62,12 +75,20 @@ impl ErosionRegions {
                 .add_category(CATEGORY_TREES, Category::NatureTrees(NatureTrees::new()))
                 .add_category(CATEGORY_BUSH, Category::NatureBush(NatureBush::new()))
                 .add_category(CATEGORY_PLANTS, Category::NaturePlants(NaturePlants::new()))
-                .add_category(CATEGORY_GENERIC, Category::NatureGeneric(NatureGeneric::new())),
-            Region::new(REGION_STREET, Some("blends_street"), true, true, false)
-                .add_category(CATEGORY_STREET_CRACKS, Category::StreetCracks(StreetCracks::new())),
+                .add_category(
+                    CATEGORY_GENERIC,
+                    Category::NatureGeneric(NatureGeneric::new()),
+                ),
+            Region::new(REGION_STREET, Some("blends_street"), true, true, false).add_category(
+                CATEGORY_STREET_CRACKS,
+                Category::StreetCracks(StreetCracks::new()),
+            ),
             Region::new(REGION_WALL, None, false, false, true)
                 .add_category(CATEGORY_WALL_VINES, Category::WallVines(WallVines::new()))
-                .add_category(CATEGORY_WALL_CRACKS, Category::WallCracks(WallCracks::new())),
+                .add_category(
+                    CATEGORY_WALL_CRACKS,
+                    Category::WallCracks(WallCracks::new()),
+                ),
             Region::new(REGION_FLOWERBED, None, true, true, false)
                 .add_category(CATEGORY_FLOWERBED, Category::Flowerbed(Flowerbed::new())),
         ];
@@ -86,11 +107,21 @@ impl ErosionRegions {
 
     /// `getCategory(regionId, categoryId)`.
     pub fn get_category(&mut self, region: i32, category: i32) -> Option<&mut Category> {
-        self.regions.get_mut(region as usize)?.categories.get_mut(category as usize)
+        self.regions
+            .get_mut(region as usize)?
+            .categories
+            .get_mut(category as usize)
     }
 
     /// `ErosionWorld.validateSpawn(square, sqErosionData, chunkData)`.
-    pub fn validate_spawn(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData, chunk: &ChunkData, ctx: &mut Ctx<'_>) {
+    pub fn validate_spawn(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+        chunk: &ChunkData,
+        ctx: &mut Ctx<'_>,
+    ) {
         let is_exterior = host.has_flag(sq, SqFlag::Exterior);
         let has_wall = host.has_wall_type(sq);
         let tex = host.floor(sq).and_then(|f| host.sprite_name(sq, f));
@@ -107,9 +138,11 @@ impl ErosionRegions {
                 continue;
             }
             for cat in &mut region.categories {
-                let mut spawned = cat.replace_existing_object(host, sq, sd, chunk, is_exterior, has_wall, ctx);
+                let mut spawned =
+                    cat.replace_existing_object(host, sq, sd, chunk, is_exterior, has_wall, ctx);
                 if !spawned {
-                    spawned = cat.validate_spawn(host, sq, sd, chunk, is_exterior, has_wall, false, ctx);
+                    spawned =
+                        cat.validate_spawn(host, sq, sd, chunk, is_exterior, has_wall, false, ctx);
                 }
                 if spawned {
                     has_spawned = true;
@@ -123,7 +156,14 @@ impl ErosionRegions {
     }
 
     /// `ErosionWorld.update(square, sqErosionData, chunkData, eTick)`.
-    pub fn update(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData, e_tick: i32, ctx: &Ctx<'_>) {
+    pub fn update(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+        e_tick: i32,
+        ctx: &Ctx<'_>,
+    ) {
         let mut i = 0;
         while i < sd.regions.len() {
             let mut data = sd.regions[i].clone();

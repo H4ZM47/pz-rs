@@ -60,7 +60,10 @@ impl Ev {
 
     /// An `int[]` literal.
     pub fn int_array(&self) -> Option<Vec<i32>> {
-        self.as_array()?.iter().map(|v| v.as_int().map(|i| i as i32)).collect()
+        self.as_array()?
+            .iter()
+            .map(|v| v.as_int().map(|i| i as i32))
+            .collect()
     }
 
     /// An `int[][]` literal.
@@ -74,7 +77,18 @@ fn insn_len(code: &[u8], pc: usize) -> Option<usize> {
     let op = code[pc];
     Some(match op {
         0x10 | 0x12 | 0x15..=0x19 | 0x36..=0x3a | 0xa9 | 0xbc => 2,
-        0x11 | 0x13 | 0x14 | 0x84 | 0x99..=0xa8 | 0xb2..=0xb8 | 0xbb | 0xbd | 0xc0 | 0xc1 | 0xc6 | 0xc7 => 3,
+        0x11
+        | 0x13
+        | 0x14
+        | 0x84
+        | 0x99..=0xa8
+        | 0xb2..=0xb8
+        | 0xbb
+        | 0xbd
+        | 0xc0
+        | 0xc1
+        | 0xc6
+        | 0xc7 => 3,
         0xc5 => 4,
         0xb9 | 0xba | 0xc8 | 0xc9 => 5,
         0xc4 => {
@@ -86,7 +100,10 @@ fn insn_len(code: &[u8], pc: usize) -> Option<usize> {
         }
         0xaa | 0xab => {
             let base = (pc + 4) & !3;
-            let rd = |at: usize| code.get(at..at + 4).map(|s| i32::from_be_bytes(s.try_into().unwrap()));
+            let rd = |at: usize| {
+                code.get(at..at + 4)
+                    .map(|s| i32::from_be_bytes(s.try_into().unwrap()))
+            };
             if op == 0xaa {
                 let lo = rd(base + 4)?;
                 let hi = rd(base + 8)?;
@@ -107,7 +124,11 @@ pub fn instance_inits(class: &ClassFile) -> Vec<(String, Ev)> {
     let Some(code) = class.method("<init>").and_then(|m| m.code.as_ref()) else {
         return Vec::new();
     };
-    let u16_at = |pc: usize| code.get(pc..pc + 2).map(|s| u16::from_be_bytes([s[0], s[1]])).unwrap_or(0);
+    let u16_at = |pc: usize| {
+        code.get(pc..pc + 2)
+            .map(|s| u16::from_be_bytes([s[0], s[1]]))
+            .unwrap_or(0)
+    };
     let mut out = Vec::new();
     let mut stack: Vec<Ev> = Vec::new();
     let pop = |s: &mut Vec<Ev>| s.pop().unwrap_or(Ev::Unknown);
@@ -123,9 +144,16 @@ pub fn instance_inits(class: &ClassFile) -> Vec<(String, Ev)> {
             0x10 => stack.push(Ev::Int(code[pc + 1] as i8 as i64)),
             0x11 => stack.push(Ev::Int(u16_at(pc + 1) as i16 as i64)),
             0x12..=0x14 => {
-                let idx = if op == 0x12 { code[pc + 1] as u16 } else { u16_at(pc + 1) };
+                let idx = if op == 0x12 {
+                    code[pc + 1] as u16
+                } else {
+                    u16_at(pc + 1)
+                };
                 stack.push(match class.constant(idx) {
-                    Ok(Constant::String(s)) => class.utf8(*s).map(|s| Ev::Str(s.to_string())).unwrap_or(Ev::Unknown),
+                    Ok(Constant::String(s)) => class
+                        .utf8(*s)
+                        .map(|s| Ev::Str(s.to_string()))
+                        .unwrap_or(Ev::Unknown),
                     Ok(Constant::Integer(v)) => Ev::Int(*v as i64),
                     Ok(Constant::Long(v)) => Ev::Int(*v),
                     Ok(Constant::Float(v)) => Ev::Float(*v as f64),
@@ -143,8 +171,14 @@ pub fn instance_inits(class: &ClassFile) -> Vec<(String, Ev)> {
                 stack.push(top);
             }
             0xbb => {
-                let c = class.class_name(u16_at(pc + 1)).map(str::to_string).unwrap_or_default();
-                stack.push(Ev::New { class: c, args: Vec::new() });
+                let c = class
+                    .class_name(u16_at(pc + 1))
+                    .map(str::to_string)
+                    .unwrap_or_default();
+                stack.push(Ev::New {
+                    class: c,
+                    args: Vec::new(),
+                });
             }
             0xb2 => stack.push(Ev::Unknown),
             0xb4 => {
@@ -155,7 +189,10 @@ pub fn instance_inits(class: &ClassFile) -> Vec<(String, Ev)> {
                 pop(&mut stack);
             }
             0xb5 => {
-                let field = class.member_ref(u16_at(pc + 1)).map(|r| r.name).unwrap_or_default();
+                let field = class
+                    .member_ref(u16_at(pc + 1))
+                    .map(|r| r.name)
+                    .unwrap_or_default();
                 let value = pop(&mut stack);
                 if pop(&mut stack) == Ev::This {
                     out.push((field, value));
@@ -327,7 +364,9 @@ impl ErosionTables {
         if noise_perm.len() < 256 {
             return Err(missing("Noise2D.perm"));
         }
-        let soil_table = match static_value(jar, &format!("{ER}ErosionMain"), "soilTable").map_err(e)? {
+        let soil_table = match static_value(jar, &format!("{ER}ErosionMain"), "soilTable")
+            .map_err(e)?
+        {
             Some(Value::Array(rows)) => rows.iter().map(value_to_ints).collect::<Option<Vec<_>>>(),
             _ => None,
         }
@@ -338,10 +377,14 @@ impl ErosionTables {
         }
 
         let inits = |class: &str| -> Result<Vec<(String, Ev)>, String> {
-            Ok(instance_inits(&load_class(jar, &format!("{ER}{class}")).map_err(e)?))
+            Ok(instance_inits(
+                &load_class(jar, &format!("{ER}{class}")).map_err(e)?,
+            ))
         };
         let soil_ref = |inits: &[(String, Ev)], class: &str| {
-            field(inits, "soilRef").and_then(Ev::int_array2).ok_or_else(|| missing(&format!("{class}.soilRef")))
+            field(inits, "soilRef")
+                .and_then(Ev::int_array2)
+                .ok_or_else(|| missing(&format!("{class}.soilRef")))
         };
 
         let t = inits("categories/NatureTrees")?;
@@ -350,7 +393,13 @@ impl ErosionTables {
             .and_then(|v| ctor_args(v, &format!("{ER}categories/NatureTrees$TreeInit")))
             .and_then(|list| {
                 list.into_iter()
-                    .map(|a| Some(TreeInit::new(a.first()?.as_str()?, a.get(1)?.as_str()?, a.get(2)?.as_int()? != 0)))
+                    .map(|a| {
+                        Some(TreeInit::new(
+                            a.first()?.as_str()?,
+                            a.get(1)?.as_str()?,
+                            a.get(2)?.as_int()? != 0,
+                        ))
+                    })
                     .collect::<Option<Vec<_>>>()
             })
             .ok_or_else(|| missing("NatureTrees.trees"))?;
@@ -393,15 +442,27 @@ impl ErosionTables {
             .ok_or_else(|| missing("NatureBush.bush"))?;
 
         let f = inits("categories/Flowerbed")?;
-        let flowerbed_tile_ids = field(&f, "tileId").and_then(Ev::int_array).ok_or_else(|| missing("Flowerbed.tileId"))?;
+        let flowerbed_tile_ids = field(&f, "tileId")
+            .and_then(Ev::int_array)
+            .ok_or_else(|| missing("Flowerbed.tileId"))?;
 
         let s = inits("season/ErosionSeason")?;
         let season_names = field(&s, "names")
-            .and_then(|v| v.as_array()?.iter().map(|x| x.as_str().map(str::to_string)).collect::<Option<Vec<_>>>())
+            .and_then(|v| {
+                v.as_array()?
+                    .iter()
+                    .map(|x| x.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+            })
             .ok_or_else(|| missing("ErosionSeason.names"))?;
 
         let mut config_defaults = Vec::new();
-        for (section, class) in [("seeds", "Seeds"), ("time", "Time"), ("debug", "Debug"), ("season", "Season")] {
+        for (section, class) in [
+            ("seeds", "Seeds"),
+            ("time", "Time"),
+            ("debug", "Debug"),
+            ("season", "Season"),
+        ] {
             for (name, v) in inits(&format!("ErosionConfig${class}"))? {
                 config_defaults.push((format!("{section}.{name}"), v));
             }
@@ -431,6 +492,10 @@ impl ErosionTables {
     /// Default of a config field (`"season.noon"`), if the constructor
     /// assigns one (fields it leaves alone default to 0).
     pub fn config_default(&self, key: &str) -> Option<&Ev> {
-        self.config_defaults.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v)
+        self.config_defaults
+            .iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
     }
 }

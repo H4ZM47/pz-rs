@@ -14,9 +14,10 @@ use crate::ice_queen::ErosionIceQueen;
 use crate::noise::Noise2D;
 use crate::rand::world_gen_random;
 use crate::regions::ErosionRegions;
-use crate::season::{CalendarZone, ErosionSeason};
+use crate::season::ErosionSeason;
 use crate::tables::ErosionTables;
 use crate::world_host::{ChunkHost, EdgeQueries, NoEdges};
+use pz_core::calendar::JavaZone;
 
 /// Engine state `ErosionMain` reads (`SandboxOptions`, `GameTime`,
 /// `GameServer`/`GameClient`, `Core`, `ZomboidFileSystem`).
@@ -106,8 +107,8 @@ pub struct ErosionMain {
     snow_frac: i32,
     snow_frac_yesterday: i32,
     /// In-memory square state of loaded chunks (fields the save format does
-    /// not keep), by world square. Drop a chunk's entries with
-    /// [`ErosionMain::chunk_unloaded`].
+    /// not keep), by world square. [`ErosionChunkHook`] drops a chunk's
+    /// entries when `IsoCell::unload_chunk` reports it.
     squares: HashMap<(i32, i32, i32), SquareData>,
     /// Called with the season after it is set up (`OnInitSeasons`).
     pub on_init_seasons: Option<SeasonHook>,
@@ -119,7 +120,7 @@ impl ErosionMain {
         tables: ErosionTables,
         settings: ErosionSettings,
         sprites: &mut IsoSpriteManager,
-        zone: Option<CalendarZone>,
+        zone: Option<JavaZone>,
         on_init_seasons: Option<SeasonHook>,
     ) -> Self {
         let perm = tables.noise_perm.clone();
@@ -218,7 +219,8 @@ impl ErosionMain {
         let erosion_days = self.settings.erosion_days;
         if erosion_days > 0 {
             t.tickunit = 144;
-            t.eticks = ((1.0f32.min(days_since_apo / erosion_days as f32) * 100.0) as f64).floor() as i32;
+            t.eticks =
+                ((1.0f32.min(days_since_apo / erosion_days as f32) * 100.0) as f64).floor() as i32;
         }
         true
     }
@@ -273,9 +275,23 @@ impl ErosionMain {
             }
             _ => {}
         }
-        self.season = ErosionSeason::new(self.tables.noise_perm.clone(), self.tables.season_names.clone(), Some(self.season_zone()));
+        self.season = ErosionSeason::new(
+            self.tables.noise_perm.clone(),
+            self.tables.season_names.clone(),
+            Some(self.season_zone()),
+        );
         self.season.day_night_cycle = self.settings.day_night_cycle;
-        self.season.init(sc.lat, temp_max, temp_min, sc.temp_diff, sc.season_lag, sc.noon, sc.seed_a, sc.seed_b, sc.seed_c);
+        self.season.init(
+            sc.lat,
+            temp_max,
+            temp_min,
+            sc.temp_diff,
+            sc.season_lag,
+            sc.noon,
+            sc.seed_a,
+            sc.seed_b,
+            sc.seed_c,
+        );
         self.season.set_rain(sc.rain);
         self.season.set_day(self.day, self.month, self.year);
         if let Some(f) = self.on_init_seasons.as_mut() {
@@ -290,7 +306,7 @@ impl ErosionMain {
         self.snow_check();
     }
 
-    fn season_zone(&self) -> CalendarZone {
+    fn season_zone(&self) -> JavaZone {
         self.season.zone()
     }
 
@@ -384,8 +400,16 @@ impl ErosionMain {
         let ny = c.y as f32 / 5.0;
         let moisture = self.noise_moisture.layered_noise(nx, ny);
         let minerals = self.noise_minerals.layered_noise(nx, ny);
-        let moi = if moisture < 1.0 { ((moisture * 10.0) as f64).floor() as usize } else { 9 };
-        let min = if minerals < 1.0 { ((minerals * 10.0) as f64).floor() as usize } else { 9 };
+        let moi = if moisture < 1.0 {
+            ((moisture * 10.0) as f64).floor() as usize
+        } else {
+            9
+        };
+        let min = if minerals < 1.0 {
+            ((minerals * 10.0) as f64).floor() as usize
+        } else {
+            9
+        };
         c.init = true;
         c.e_tick_stamp = -1;
         c.epoch = -1;
@@ -396,12 +420,23 @@ impl ErosionMain {
 
     /// `initGridSquare(square, erosionModData)` for the square at world
     /// `(x, y)`.
-    pub fn init_grid_square(&self, x: i32, y: i32, sd: &mut SquareData, chunk: &ChunkData, global: &mut dyn GameRand) {
-        let noise = self.noise_main.layered_noise(x as f32 / 10.0, y as f32 / 10.0);
+    pub fn init_grid_square(
+        &self,
+        x: i32,
+        y: i32,
+        sd: &mut SquareData,
+        chunk: &ChunkData,
+        global: &mut dyn GameRand,
+    ) {
+        let noise = self
+            .noise_main
+            .layered_noise(x as f32 / 10.0, y as f32 / 10.0);
         sd.noise_main_byte = pack_float_unit_to_byte(noise);
         sd.noise_main = noise;
         sd.noise_main_int = ((sd.noise_main * 100.0) as f64).floor() as i32;
-        sd.noise_kudzu = self.noise_kudzu.layered_noise(x as f32 / 10.0, y as f32 / 10.0);
+        sd.noise_kudzu = self
+            .noise_kudzu
+            .layered_noise(x as f32 / 10.0, y as f32 / 10.0);
         sd.soil = chunk.soil;
         sd.rand = Some(world_gen_random(self.settings.world_seed, x, y, 0));
         let mut r = self.square_rand(global);
@@ -473,19 +508,33 @@ impl ErosionMain {
         let use_static = self.settings.static_rand || self.settings.server || self.settings.client;
         let (e_ticks, epoch) = (self.e_ticks, self.epoch);
         {
-            let mut host = ChunkHost { chunk, sprites, edges, logs_per_size };
+            let mut host = ChunkHost {
+                chunk,
+                sprites,
+                edges,
+                logs_per_size,
+            };
             if !sd.init {
                 self.init_grid_square(pos.0, pos.1, &mut sd, &cd, global);
                 let mut ctx = Ctx {
                     season: &self.season,
-                    rand: SquareRand { use_static, table: &self.tables.square_rands, global },
+                    rand: SquareRand {
+                        use_static,
+                        table: &self.tables.square_rands,
+                        global,
+                    },
                 };
-                self.world.validate_spawn(&mut host, pos, &mut sd, &cd, &mut ctx);
+                self.world
+                    .validate_spawn(&mut host, pos, &mut sd, &cd, &mut ctx);
             }
             if !sd.do_nothing && !(cd.e_tick_stamp >= e_ticks && cd.epoch == epoch) {
                 let ctx = Ctx {
                     season: &self.season,
-                    rand: SquareRand { use_static, table: &self.tables.square_rands, global },
+                    rand: SquareRand {
+                        use_static,
+                        table: &self.tables.square_rands,
+                        global,
+                    },
                 };
                 self.world.update(&mut host, pos, &mut sd, e_ticks, &ctx);
             }
@@ -535,7 +584,8 @@ impl ErosionMain {
     /// Forgets the in-memory state of a chunk's squares (the chunk was
     /// unloaded; its saved records stay in the chunk).
     pub fn chunk_unloaded(&mut self, wx: i32, wy: i32) {
-        self.squares.retain(|&(x, y, _), _| x.div_euclid(8) != wx || y.div_euclid(8) != wy);
+        self.squares
+            .retain(|&(x, y, _), _| x.div_euclid(8) != wx || y.div_euclid(8) != wy);
     }
 
     /// The in-memory state of a loaded square, if erosion has seen it.
@@ -560,7 +610,14 @@ impl ErosionMain {
     }
 
     /// `IsoGridSquare.removeErosionObject(type)`.
-    pub fn remove_erosion_object(&mut self, chunk: &mut IsoChunk, x: i32, y: i32, z: i32, kind: &str) {
+    pub fn remove_erosion_object(
+        &mut self,
+        chunk: &mut IsoChunk,
+        x: i32,
+        y: i32,
+        z: i32,
+        kind: &str,
+    ) {
         if kind != "WallVines" {
             return;
         }
@@ -584,11 +641,24 @@ pub struct ErosionChunkHook<'a> {
 
 impl pz_world::save::chunk_file::ChunkLoadHook for ErosionChunkHook<'_> {
     fn load_grid_square(&mut self, chunk: &mut IsoChunk, x: i32, y: i32, z: i32) {
-        self.main.load_grid_square(chunk, x, y, z, self.sprites, self.edges, self.rand, self.logs_per_size);
+        self.main.load_grid_square(
+            chunk,
+            x,
+            y,
+            z,
+            self.sprites,
+            self.edges,
+            self.rand,
+            self.logs_per_size,
+        );
     }
 
     fn chunk_loaded(&mut self, chunk: &mut IsoChunk) {
         self.main.chunk_loaded(chunk);
+    }
+
+    fn chunk_unloaded(&mut self, wx: i32, wy: i32) {
+        self.main.chunk_unloaded(wx, wy);
     }
 }
 

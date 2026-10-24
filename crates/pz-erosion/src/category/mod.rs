@@ -64,7 +64,11 @@ pub fn clerp(t: f32, a: f32, b: f32) -> f32 {
 
 impl Base {
     pub fn set_disp(&mut self, season: usize, s1: i32, s2: i32, split: bool) {
-        self.season_disp[season] = SeasonDisplay { season1: s1, season2: s2, split };
+        self.season_disp[season] = SeasonDisplay {
+            season1: s1,
+            season2: s2,
+            split,
+        };
     }
 
     /// `setCatModData(sqErosionData)`.
@@ -142,7 +146,8 @@ impl Base {
                 return Keep::Clear;
             }
             data.has_spawned = true;
-        } else if data.stage != stage || data.disp_season != disp_season || data.disp_bloom != bloom {
+        } else if data.stage != stage || data.disp_season != disp_season || data.disp_bloom != bloom
+        {
             let Some(o) = obj.get_object(host, sq, false) else {
                 return Keep::Clear;
             };
@@ -160,7 +165,11 @@ pub fn valid_wall(host: &dyn ErosionHost, sq: Sq, north: bool, do_window: bool) 
     if !host.square_exists(sq) {
         return None;
     }
-    let other = if north { (sq.0, sq.1 - 1, sq.2) } else { (sq.0 - 1, sq.1, sq.2) };
+    let other = if north {
+        (sq.0, sq.1 - 1, sq.2)
+    } else {
+        (sq.0 - 1, sq.1, sq.2)
+    };
     let mut object = None;
     if host.is_wall_to(sq, other) {
         if north && host.has_flag(sq, SqFlag::CutN) && !host.has_flag(sq, SqFlag::CanPathN)
@@ -187,7 +196,8 @@ pub fn valid_wall(host: &dyn ErosionHost, sq: Sq, north: bool, do_window: bool) 
 
 /// `(int)Math.floor((float)(eTick - spawnTime) / ((float)cycleTime / ((float)maxStage + 1.0f)))`.
 pub fn grown_stage(e_tick: i32, spawn_time: i32, cycle_time: i32, max_stage: i32) -> i32 {
-    (((e_tick - spawn_time) as f32 / (cycle_time as f32 / (max_stage as f32 + 1.0))) as f64).floor() as i32
+    (((e_tick - spawn_time) as f32 / (cycle_time as f32 / (max_stage as f32 + 1.0))) as f64).floor()
+        as i32
 }
 
 /// `Integer.parseInt(name.replace(prefix, ""))`; `None` is the

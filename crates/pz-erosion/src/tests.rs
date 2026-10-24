@@ -1,7 +1,6 @@
 //! Category behaviour against an in-memory host (synthetic data only).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::category::{Category, Ctx, Keep};
 use crate::data::{ChunkData, SquareData, SquareRand};
@@ -32,7 +31,11 @@ impl Mock {
     fn add(&mut self, sq: Sq, sprite: &str) -> ObjId {
         self.next += 1;
         let id = self.next;
-        self.squares.entry(sq).or_default().push(Obj { id, sprite: sprite.into(), ..Default::default() });
+        self.squares.entry(sq).or_default().push(Obj {
+            id,
+            sprite: sprite.into(),
+            ..Default::default()
+        });
         id
     }
     fn obj(&self, sq: Sq, o: ObjId) -> Option<&Obj> {
@@ -58,14 +61,20 @@ impl ErosionHost for Mock {
         self.walls
     }
     fn objects(&self, sq: Sq) -> Vec<ObjId> {
-        self.squares.get(&sq).map_or_else(Vec::new, |v| v.iter().map(|o| o.id).collect())
+        self.squares
+            .get(&sq)
+            .map_or_else(Vec::new, |v| v.iter().map(|o| o.id).collect())
     }
     fn floor(&self, sq: Sq) -> Option<ObjId> {
         self.squares.get(&sq)?.first().map(|o| o.id)
     }
     fn wall(&self, sq: Sq, north: bool) -> Option<ObjId> {
         let want = if north { "wall_n" } else { "wall_w" };
-        self.squares.get(&sq)?.iter().find(|o| o.sprite == want).map(|o| o.id)
+        self.squares
+            .get(&sq)?
+            .iter()
+            .find(|o| o.sprite == want)
+            .map(|o| o.id)
     }
     fn is_wall_to(&self, _: Sq, _: Sq) -> bool {
         self.walls
@@ -106,7 +115,14 @@ impl ErosionHost for Mock {
     }
     fn attached(&self, sq: Sq, o: ObjId) -> Option<Vec<Attached>> {
         let list = self.obj(sq, o)?.attached.as_ref()?;
-        Some(list.iter().map(|n| Attached { name: Some(n.clone()), id: self.sprite_ids[n] }).collect())
+        Some(
+            list.iter()
+                .map(|n| Attached {
+                    name: Some(n.clone()),
+                    id: self.sprite_ids[n],
+                })
+                .collect(),
+        )
     }
     fn attached_remove(&mut self, sq: Sq, o: ObjId, index: usize) {
         if let Some(l) = self.obj_mut(sq, o).and_then(|x| x.attached.as_mut()) {
@@ -121,7 +137,9 @@ impl ErosionHost for Mock {
     fn attached_add(&mut self, sq: Sq, o: ObjId, sprite: &str) -> i32 {
         let id = self.id_of(sprite);
         if let Some(x) = self.obj_mut(sq, o) {
-            x.attached.get_or_insert_with(Vec::new).push(sprite.to_string());
+            x.attached
+                .get_or_insert_with(Vec::new)
+                .push(sprite.to_string());
         }
         id
     }
@@ -150,7 +168,10 @@ impl pz_world::GameRand for NoRand {
 
 fn tables() -> ErosionTables {
     ErosionTables {
-        noise_perm: (0..256).map(|i| (i * 37 + 11) % 256).collect::<Vec<i32>>().into(),
+        noise_perm: (0..256)
+            .map(|i| (i * 37 + 11) % 256)
+            .collect::<Vec<i32>>()
+            .into(),
         soil_table: vec![vec![1; 10]; 10],
         square_rands: (0..8100).map(|i| (i * 13) % 100).collect(),
         trees: vec![TreeInit::new("T", "t_x_1", true)],
@@ -167,25 +188,65 @@ fn tables() -> ErosionTables {
 
 fn season() -> ErosionSeason {
     let t = tables();
-    let mut s = ErosionSeason::new(t.noise_perm.clone(), t.season_names, Some(Arc::new(|_| 0)));
+    let mut s = ErosionSeason::new(
+        t.noise_perm.clone(),
+        t.season_names,
+        Some(pz_core::calendar::JavaZone::utc()),
+    );
     s.init(38, 25, 0, 7, 31, 12.5, 64, 128, 255);
     s.set_rain([0.3; 12]);
     s.set_day(10, 6, 1993);
     s
 }
 
-fn spawn(cat: &mut Category, host: &mut Mock, sq: Sq, sd: &mut SquareData, season: &ErosionSeason) -> bool {
+fn spawn(
+    cat: &mut Category,
+    host: &mut Mock,
+    sq: Sq,
+    sd: &mut SquareData,
+    season: &ErosionSeason,
+) -> bool {
     let t = tables();
     let mut g = NoRand;
-    let mut ctx = Ctx { season, rand: SquareRand { use_static: true, table: &t.square_rands, global: &mut g } };
+    let mut ctx = Ctx {
+        season,
+        rand: SquareRand {
+            use_static: true,
+            table: &t.square_rands,
+            global: &mut g,
+        },
+    };
     let walls = host.walls;
-    cat.validate_spawn(host, sq, sd, &ChunkData::default(), true, walls, false, &mut ctx)
+    cat.validate_spawn(
+        host,
+        sq,
+        sd,
+        &ChunkData::default(),
+        true,
+        walls,
+        false,
+        &mut ctx,
+    )
 }
 
-fn update(cat: &mut Category, host: &mut Mock, sq: Sq, sd: &mut SquareData, e_tick: i32, season: &ErosionSeason) -> Keep {
+fn update(
+    cat: &mut Category,
+    host: &mut Mock,
+    sq: Sq,
+    sd: &mut SquareData,
+    e_tick: i32,
+    season: &ErosionSeason,
+) -> Keep {
     let t = tables();
     let mut g = NoRand;
-    let ctx = Ctx { season, rand: SquareRand { use_static: true, table: &t.square_rands, global: &mut g } };
+    let ctx = Ctx {
+        season,
+        rand: SquareRand {
+            use_static: true,
+            table: &t.square_rands,
+            global: &mut g,
+        },
+    };
     let mut d = sd.regions[0].clone();
     let k = cat.update(host, sq, sd, &mut d, e_tick, &ctx);
     sd.regions[0] = d;
@@ -199,7 +260,11 @@ fn street_cracks_overlay_and_grass() {
     let mut host = Mock::default();
     let sq = (5, 5, 0);
     host.add(sq, "blends_street_01_0");
-    let mut sd = SquareData { noise_main_int: 99, magic_num: 0.9, ..Default::default() };
+    let mut sd = SquareData {
+        noise_main_int: 99,
+        magic_num: 0.9,
+        ..Default::default()
+    };
     let cat = regions.get_category(1, 0).unwrap();
     assert!(spawn(cat, &mut host, sq, &mut sd, &season));
     let d = sd.regions[0].clone();
@@ -227,7 +292,11 @@ fn wall_vines_and_cracks_need_walls() {
         let sq = (1, 1, 0);
         host.add(sq, "floor");
         let e = if cat_id == 0 { 70 } else { 20 };
-        let mut sd = SquareData { noise_main_int: e, magic_num: 0.5, ..Default::default() };
+        let mut sd = SquareData {
+            noise_main_int: e,
+            magic_num: 0.5,
+            ..Default::default()
+        };
         let cat = regions.get_category(2, cat_id).unwrap();
         assert!(!spawn(cat, &mut host, sq, &mut sd, &season), "no walls");
         host.walls = true;
@@ -235,7 +304,11 @@ fn wall_vines_and_cracks_need_walls() {
         assert!(spawn(cat, &mut host, sq, &mut sd, &season));
         update(cat, &mut host, sq, &mut sd, 100, &season);
         let wall = host.obj(sq, w).unwrap();
-        let prefix = if cat_id == 0 { "f_wallvines_1_" } else { "d_wallcracks_1_" };
+        let prefix = if cat_id == 0 {
+            "f_wallvines_1_"
+        } else {
+            "d_wallcracks_1_"
+        };
         assert!(wall.attached.as_ref().unwrap()[0].starts_with(prefix));
         // Re-staging replaces the overlay instead of stacking it.
         let id = sd.regions[0].cur_id;
@@ -254,12 +327,31 @@ fn tree_replacement_and_staging() {
     let sq = (2, 2, 0);
     host.add(sq, "blends_natural_01_5");
     let jumbo = host.add(sq, "t_xJUMBO_1_3");
-    let mut sd = SquareData { noise_main_int: 40, soil: 0, ..Default::default() };
+    let mut sd = SquareData {
+        noise_main_int: 40,
+        soil: 0,
+        ..Default::default()
+    };
     let cat = regions.get_category(0, 0).unwrap();
     let t = tables();
     let mut g = NoRand;
-    let mut ctx = Ctx { season: &season, rand: SquareRand { use_static: true, table: &t.square_rands, global: &mut g } };
-    assert!(cat.replace_existing_object(&mut host, sq, &mut sd, &ChunkData::default(), true, false, &mut ctx));
+    let mut ctx = Ctx {
+        season: &season,
+        rand: SquareRand {
+            use_static: true,
+            table: &t.square_rands,
+            global: &mut g,
+        },
+    };
+    assert!(cat.replace_existing_object(
+        &mut host,
+        sq,
+        &mut sd,
+        &ChunkData::default(),
+        true,
+        false,
+        &mut ctx
+    ));
     assert!(host.obj(sq, jumbo).is_none(), "map tree removed");
     assert_eq!((sd.regions[0].max_stage, sd.regions[0].stage), (5, 5));
     update(cat, &mut host, sq, &mut sd, 0, &season);

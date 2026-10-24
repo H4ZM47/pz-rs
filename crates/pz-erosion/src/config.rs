@@ -67,40 +67,82 @@ pub struct ErosionConfig {
     pub season: Season,
 }
 
-const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const MONTHS: [&str; 12] = [
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+];
 
 /// The `erosion.ini` key (as the reader and writer spell it) of each
 /// integer field, with its accessor.
-type IntField = (&'static str, &'static str, fn(&mut ErosionConfig) -> &mut i32);
+type IntField = (
+    &'static str,
+    &'static str,
+    fn(&mut ErosionConfig) -> &mut i32,
+);
 
 fn int_fields() -> Vec<IntField> {
     vec![
-        ("seeds.seedMain_0", "seeds.seedMain0", |c| &mut c.seeds.seed_main_0),
-        ("seeds.seedMain_1", "seeds.seedMain1", |c| &mut c.seeds.seed_main_1),
-        ("seeds.seedMain_2", "seeds.seedMain2", |c| &mut c.seeds.seed_main_2),
-        ("seeds.seedMoisture_0", "seeds.seedMoisture0", |c| &mut c.seeds.seed_moisture_0),
-        ("seeds.seedMoisture_1", "seeds.seedMoisture1", |c| &mut c.seeds.seed_moisture_1),
-        ("seeds.seedMoisture_2", "seeds.seedMoisture2", |c| &mut c.seeds.seed_moisture_2),
-        ("seeds.seedMinerals_0", "seeds.seedMinerals0", |c| &mut c.seeds.seed_minerals_0),
-        ("seeds.seedMinerals_1", "seeds.seedMinerals1", |c| &mut c.seeds.seed_minerals_1),
-        ("seeds.seedMinerals_2", "seeds.seedMinerals2", |c| &mut c.seeds.seed_minerals_2),
-        ("seeds.seedKudzu_0", "seeds.seedKudzu0", |c| &mut c.seeds.seed_kudzu_0),
-        ("seeds.seedKudzu_1", "seeds.seedKudzu1", |c| &mut c.seeds.seed_kudzu_1),
-        ("seeds.seedKudzu_2", "seeds.seedKudzu2", |c| &mut c.seeds.seed_kudzu_2),
+        ("seeds.seedMain_0", "seeds.seedMain0", |c| {
+            &mut c.seeds.seed_main_0
+        }),
+        ("seeds.seedMain_1", "seeds.seedMain1", |c| {
+            &mut c.seeds.seed_main_1
+        }),
+        ("seeds.seedMain_2", "seeds.seedMain2", |c| {
+            &mut c.seeds.seed_main_2
+        }),
+        ("seeds.seedMoisture_0", "seeds.seedMoisture0", |c| {
+            &mut c.seeds.seed_moisture_0
+        }),
+        ("seeds.seedMoisture_1", "seeds.seedMoisture1", |c| {
+            &mut c.seeds.seed_moisture_1
+        }),
+        ("seeds.seedMoisture_2", "seeds.seedMoisture2", |c| {
+            &mut c.seeds.seed_moisture_2
+        }),
+        ("seeds.seedMinerals_0", "seeds.seedMinerals0", |c| {
+            &mut c.seeds.seed_minerals_0
+        }),
+        ("seeds.seedMinerals_1", "seeds.seedMinerals1", |c| {
+            &mut c.seeds.seed_minerals_1
+        }),
+        ("seeds.seedMinerals_2", "seeds.seedMinerals2", |c| {
+            &mut c.seeds.seed_minerals_2
+        }),
+        ("seeds.seedKudzu_0", "seeds.seedKudzu0", |c| {
+            &mut c.seeds.seed_kudzu_0
+        }),
+        ("seeds.seedKudzu_1", "seeds.seedKudzu1", |c| {
+            &mut c.seeds.seed_kudzu_1
+        }),
+        ("seeds.seedKudzu_2", "seeds.seedKudzu2", |c| {
+            &mut c.seeds.seed_kudzu_2
+        }),
         ("time.tickunit", "time.tickunit", |c| &mut c.time.tickunit),
         ("time.ticks", "time.ticks", |c| &mut c.time.ticks),
         ("time.eticks", "time.eticks", |c| &mut c.time.eticks),
         ("time.epoch", "time.epoch", |c| &mut c.time.epoch),
         ("season.lat", "season.lat", |c| &mut c.season.lat),
-        ("season.tempMax", "season.tempMax", |c| &mut c.season.temp_max),
-        ("season.tempMin", "season.tempMin", |c| &mut c.season.temp_min),
-        ("season.tempDiff", "season.tempDiff", |c| &mut c.season.temp_diff),
-        ("season.seasonLag", "season.seasonLag", |c| &mut c.season.season_lag),
+        ("season.tempMax", "season.tempMax", |c| {
+            &mut c.season.temp_max
+        }),
+        ("season.tempMin", "season.tempMin", |c| {
+            &mut c.season.temp_min
+        }),
+        ("season.tempDiff", "season.tempDiff", |c| {
+            &mut c.season.temp_diff
+        }),
+        ("season.seasonLag", "season.seasonLag", |c| {
+            &mut c.season.season_lag
+        }),
         ("season.seedA", "season.seedA", |c| &mut c.season.seed_a),
         ("season.seedB", "season.seedB", |c| &mut c.season.seed_b),
         ("season.seedC", "season.seedC", |c| &mut c.season.seed_c),
-        ("debug.startday", "debug.startday", |c| &mut c.debug.startday),
-        ("debug.startmonth", "debug.startmonth", |c| &mut c.debug.startmonth),
+        ("debug.startday", "debug.startday", |c| {
+            &mut c.debug.startday
+        }),
+        ("debug.startmonth", "debug.startmonth", |c| {
+            &mut c.debug.startmonth
+        }),
     ]
 }
 
@@ -113,14 +155,23 @@ impl ErosionConfig {
                 *get(&mut c) = v as i32;
             }
         }
-        if let Some(v) = tables.config_default("debug.enabled").and_then(|v| v.as_int()) {
+        if let Some(v) = tables
+            .config_default("debug.enabled")
+            .and_then(|v| v.as_int())
+        {
             c.debug.enabled = v != 0;
         }
-        if let Some(v) = tables.config_default("season.noon").and_then(|v| v.as_float()) {
+        if let Some(v) = tables
+            .config_default("season.noon")
+            .and_then(|v| v.as_float())
+        {
             c.season.noon = v as f32;
         }
         for (i, m) in MONTHS.iter().enumerate() {
-            if let Some(v) = tables.config_default(&format!("season.{m}")).and_then(|v| v.as_float()) {
+            if let Some(v) = tables
+                .config_default(&format!("season.{m}"))
+                .and_then(|v| v.as_float())
+            {
                 c.season.rain[i] = v as f32;
             }
         }
@@ -168,7 +219,9 @@ impl ErosionConfig {
             }
             let k = trim(ss[0]);
             let v = trim(ss[1]);
-            let section = ["seeds.", "time.", "season.", "debug."].into_iter().find(|p| k.starts_with(p));
+            let section = ["seeds.", "time.", "season.", "debug."]
+                .into_iter()
+                .find(|p| k.starts_with(p));
             let Some(section) = section else {
                 unknown(line);
                 continue;
@@ -184,7 +237,10 @@ impl ErosionConfig {
             let float_slot = if k == "season.noon" {
                 Some(&mut self.season.noon)
             } else {
-                MONTHS.iter().position(|m| k.strip_prefix("season.") == Some(m)).map(|i| &mut self.season.rain[i])
+                MONTHS
+                    .iter()
+                    .position(|m| k.strip_prefix("season.") == Some(m))
+                    .map(|i| &mut self.season.rain[i])
             };
             if let Some(slot) = float_slot {
                 let Some(f) = parse_float(v) else {
@@ -338,7 +394,10 @@ mod tests {
         let mut out = Vec::new();
         c.save(&mut out);
         assert_eq!(out.len(), 37 * 4);
-        let mut back = ErosionConfig { debug: c.debug.clone(), ..Default::default() };
+        let mut back = ErosionConfig {
+            debug: c.debug.clone(),
+            ..Default::default()
+        };
         back.load(&out).unwrap();
         assert_eq!(back, c);
     }

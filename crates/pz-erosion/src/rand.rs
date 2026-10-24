@@ -9,7 +9,9 @@ pub fn world_gen_random(world_seed: i32, wx: i32, wy: i32, offset: i64) -> JavaR
     let mut r = JavaRandom::new((world_seed as i64).wrapping_add(offset));
     let wx_rnd = r.next_long();
     let wy_rnd = r.next_long();
-    r.set_seed((wx as i64).wrapping_mul(wx_rnd) ^ (wy as i64).wrapping_mul(wy_rnd) ^ world_seed as i64);
+    r.set_seed(
+        (wx as i64).wrapping_mul(wx_rnd) ^ (wy as i64).wrapping_mul(wy_rnd) ^ world_seed as i64,
+    );
     r
 }
 
@@ -27,7 +29,9 @@ pub struct RandLocation {
 impl RandLocation {
     /// `new RandLocation(x, y)`.
     pub fn new(world_seed: i32, x: i32, y: i32) -> Self {
-        RandLocation { rand: world_gen_random(world_seed, x, y, 0) }
+        RandLocation {
+            rand: world_gen_random(world_seed, x, y, 0),
+        }
     }
 
     /// `Next(int max)` (`RandAbstract`): 0 without drawing when `max <= 0`.

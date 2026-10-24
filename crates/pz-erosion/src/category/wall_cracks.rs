@@ -29,7 +29,14 @@ impl WallCracks {
         Self::default()
     }
 
-    pub fn validate_spawn(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData, is_exterior: bool, ctx: &mut Ctx<'_>) -> bool {
+    pub fn validate_spawn(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+        is_exterior: bool,
+        ctx: &mut Ctx<'_>,
+    ) -> bool {
         if !is_exterior {
             return false;
         }
@@ -51,7 +58,9 @@ impl WallCracks {
         };
         let do_top = e < 35 && sd.magic_num > 0.3;
         let pick = sd.rand(sq.0, sq.1, self.objs_ref[dir].len() as i32, &mut ctx.rand);
-        let mut data = sd.set_cat_mod_data(self.base.region_id, self.base.id).clone();
+        let mut data = sd
+            .set_cat_mod_data(self.base.region_id, self.base.id)
+            .clone();
         data.game_obj = self.objs_ref[dir][pick as usize];
         data.alpha = 0.0;
         data.spawn_time = e;
@@ -70,7 +79,13 @@ impl WallCracks {
         true
     }
 
-    pub fn update(&mut self, host: &mut dyn ErosionHost, sq: Sq, data: &mut CategoryData, e_tick: i32) -> Keep {
+    pub fn update(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        data: &mut CategoryData,
+        e_tick: i32,
+    ) -> Keep {
         if e_tick < data.spawn_time || data.do_nothing {
             return Keep::Keep;
         }

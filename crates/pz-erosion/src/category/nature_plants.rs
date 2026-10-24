@@ -33,13 +33,22 @@ impl NaturePlants {
             let Some(&o) = host.objects(sq).get(i) else {
                 continue;
             };
-            if host.sprite_name(sq, o).is_some_and(|n| n.starts_with(GROUNDCOVER)) {
+            if host
+                .sprite_name(sq, o)
+                .is_some_and(|n| n.starts_with(GROUNDCOVER))
+            {
                 host.remove_tile_object_erosion_no_recalc(sq, o);
             }
         }
     }
 
-    pub fn replace_existing_object(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData, ctx: &mut Ctx<'_>) -> bool {
+    pub fn replace_existing_object(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+        ctx: &mut Ctx<'_>,
+    ) -> bool {
         let objs = host.objects(sq);
         for i in (1..objs.len()).rev() {
             let o = objs[i];
@@ -88,7 +97,14 @@ impl NaturePlants {
         false
     }
 
-    pub fn validate_spawn(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData, has_wall: bool, ctx: &mut Ctx<'_>) -> bool {
+    pub fn validate_spawn(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+        has_wall: bool,
+        ctx: &mut Ctx<'_>,
+    ) -> bool {
         if host.objects(sq).len() > if has_wall { 2 } else { 1 } {
             return false;
         }
@@ -97,7 +113,9 @@ impl NaturePlants {
         }
         let row = self.soil_ref[sd.soil as usize].clone();
         let e = sd.noise_main_int;
-        if sd.rand(sq.0, sq.1, 101, &mut ctx.rand) < self.spawn_chance.get(e as usize).copied().unwrap_or(0) {
+        if sd.rand(sq.0, sq.1, 101, &mut ctx.rand)
+            < self.spawn_chance.get(e as usize).copied().unwrap_or(0)
+        {
             let pick = sd.rand(sq.0, sq.1, row.len() as i32, &mut ctx.rand);
             let data = self.base.set_cat_mod_data(sd);
             data.game_obj = row[pick as usize] - 1;
@@ -108,7 +126,15 @@ impl NaturePlants {
         false
     }
 
-    pub fn update(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &SquareData, data: &mut CategoryData, e_tick: i32, season: &ErosionSeason) -> Keep {
+    pub fn update(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &SquareData,
+        data: &mut CategoryData,
+        e_tick: i32,
+        season: &ErosionSeason,
+    ) -> Keep {
         if e_tick < data.spawn_time || data.do_nothing {
             return Keep::Keep;
         }
@@ -118,7 +144,8 @@ impl NaturePlants {
         let obj = &mut self.objs[data.game_obj as usize];
         let disp = self.base.current_season(sd.magic_num, season);
         let bloom = self.base.current_bloom(sd.magic_num, obj, season);
-        self.base.update_obj(host, sq, data, obj, false, 0, disp, bloom)
+        self.base
+            .update_obj(host, sq, data, obj, false, 0, disp, bloom)
     }
 
     pub fn init(&mut self, tables: &ErosionTables) {
@@ -153,7 +180,11 @@ impl NaturePlants {
             spr.set_base_list(0, &autumn, 4);
             spr.set_base(0, &s(offset + i), 2);
             spr.set_flower(0, &s(offset + i + 8));
-            let (bs, be) = if plant.has_flower { (plant.bloomstart, plant.bloomend) } else { (0.0, 0.0) };
+            let (bs, be) = if plant.has_flower {
+                (plant.bloomstart, plant.bloomend)
+            } else {
+                (0.0, 0.0)
+            };
             self.objs.push(ErosionObj::new(spr, 30, bs, be, false));
         }
     }

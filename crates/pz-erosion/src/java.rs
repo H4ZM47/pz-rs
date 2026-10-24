@@ -47,7 +47,10 @@ impl JavaRandom {
 
     /// `nextInt(bound)`; `bound` must be positive (the original throws).
     pub fn next_int_bound(&mut self, bound: i32) -> i32 {
-        assert!(bound > 0, "IllegalArgumentException: bound must be positive");
+        assert!(
+            bound > 0,
+            "IllegalArgumentException: bound must be positive"
+        );
         let mut r = self.next(31);
         let m = bound - 1;
         if bound & m == 0 {
@@ -81,10 +84,18 @@ pub fn float_to_string(f: f32) -> String {
         return "NaN".into();
     }
     if f.is_infinite() {
-        return if f > 0.0 { "Infinity".into() } else { "-Infinity".into() };
+        return if f > 0.0 {
+            "Infinity".into()
+        } else {
+            "-Infinity".into()
+        };
     }
     if f == 0.0 {
-        return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
+        return if f.is_sign_negative() {
+            "-0.0".into()
+        } else {
+            "0.0".into()
+        };
     }
     // Shortest digits and exponent: d.ddddE<exp>.
     let sci = format!("{:e}", f.abs());
@@ -124,7 +135,11 @@ pub fn float_to_string(f: f32) -> String {
         } else if point >= n {
             format!("{}{}.0", digits, "0".repeat((point - n) as usize))
         } else {
-            format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
+            format!(
+                "{}.{}",
+                &digits[..point as usize],
+                &digits[point as usize..]
+            )
         };
         format!("{sign}{s}")
     } else {

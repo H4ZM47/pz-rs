@@ -53,7 +53,13 @@ pub struct ErosionObjSprites {
 }
 
 impl ErosionObjSprites {
-    pub fn new(stages: i32, name: &str, has_snow: bool, has_flower: bool, has_child_sprite: bool) -> Self {
+    pub fn new(
+        stages: i32,
+        name: &str,
+        has_snow: bool,
+        has_flower: bool,
+        has_child_sprite: bool,
+    ) -> Self {
         let sprites = (0..stages)
             .map(|_| {
                 let mut s: [Option<Section>; NUM_SECTIONS] = Default::default();
@@ -114,12 +120,26 @@ impl ErosionObjSprites {
     }
 
     fn set_sprites(&mut self, stage: i32, section: usize, sprites: Vec<String>, season: i32) {
-        let Some(sec) = self.sprites.get_mut(stage as usize).and_then(|s| s[section].as_mut()) else {
+        let Some(sec) = self
+            .sprites
+            .get_mut(stage as usize)
+            .and_then(|s| s[section].as_mut())
+        else {
             return;
         };
-        sec[season as usize] = Some(Sprites { sprites: sprites.clone(), index: -1 });
+        sec[season as usize] = Some(Sprites {
+            sprites: sprites.clone(),
+            index: -1,
+        });
         for s in sprites {
-            self.rev_lookup.insert(s, Entry { stage, section: section as i32, season });
+            self.rev_lookup.insert(
+                s,
+                Entry {
+                    stage,
+                    section: section as i32,
+                    season,
+                },
+            );
         }
     }
 
@@ -156,7 +176,13 @@ pub struct ErosionObj {
 }
 
 impl ErosionObj {
-    pub fn new(sprites: ErosionObjSprites, cycle_time: i32, bloom_start: f32, bloom_end: f32, no_season_base: bool) -> Self {
+    pub fn new(
+        sprites: ErosionObjSprites,
+        cycle_time: i32,
+        bloom_start: f32,
+        bloom_end: f32,
+        no_season_base: bool,
+    ) -> Self {
         ErosionObj {
             name: sprites.name.clone(),
             stages: sprites.stages,
@@ -198,11 +224,22 @@ impl ErosionObj {
     /// (which draws one base sprite), then `setStageObject` and adding the
     /// object to the square. A stage outside the sprite set (an
     /// `ArrayIndexOutOfBoundsException` upstream) places nothing.
-    pub fn place_object(&mut self, host: &mut dyn ErosionHost, sq: Sq, stage: i32, tree: bool, season: i32, bloom: bool) -> bool {
+    pub fn place_object(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        stage: i32,
+        tree: bool,
+        season: i32,
+        bloom: bool,
+    ) -> bool {
         if stage < 0 || stage >= self.sprites.sprites.len() as i32 {
             return false;
         }
-        let sprite = self.sprites.get_base(stage, self.base_season(season)).unwrap_or_default();
+        let sprite = self
+            .sprites
+            .get_base(stage, self.base_season(season))
+            .unwrap_or_default();
         if stage >= self.stages {
             return false;
         }
@@ -212,7 +249,15 @@ impl ErosionObj {
     }
 
     /// `setStageObject(stage, obj, season, bloom)`.
-    pub fn set_stage_object(&mut self, host: &mut dyn ErosionHost, sq: Sq, stage: i32, o: ObjId, season: i32, bloom: bool) -> bool {
+    pub fn set_stage_object(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        stage: i32,
+        o: ObjId,
+        season: i32,
+        bloom: bool,
+    ) -> bool {
         if stage < 0 || stage >= self.stages {
             return false;
         }
@@ -241,7 +286,14 @@ impl ErosionObj {
     }
 
     /// `setStage(square, stage, season, bloom)`.
-    pub fn set_stage(&mut self, host: &mut dyn ErosionHost, sq: Sq, stage: i32, season: i32, bloom: bool) -> bool {
+    pub fn set_stage(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        stage: i32,
+        season: i32,
+        bloom: bool,
+    ) -> bool {
         match self.get_object(host, sq, false) {
             Some(o) => self.set_stage_object(host, sq, stage, o, season, bloom),
             None => false,
@@ -268,12 +320,19 @@ pub struct ErosionObjOverlaySprites {
 
 impl ErosionObjOverlaySprites {
     pub fn new(stages: i32, name: &str) -> Self {
-        ErosionObjOverlaySprites { name: name.to_string(), stages, sprites: vec![Default::default(); stages.max(0) as usize] }
+        ErosionObjOverlaySprites {
+            name: name.to_string(),
+            stages,
+            sprites: vec![Default::default(); stages.max(0) as usize],
+        }
     }
 
     /// The sprite name of `getSprite(stage, season)`.
     pub fn get_sprite(&self, stage: i32, season: i32) -> Option<&str> {
-        self.sprites.get(stage as usize)?.get(season as usize)?.as_deref()
+        self.sprites
+            .get(stage as usize)?
+            .get(season as usize)?
+            .as_deref()
     }
 
     pub fn set_sprite(&mut self, stage: i32, sprite: &str, season: i32) {
@@ -293,13 +352,28 @@ pub struct ErosionObjOverlay {
 
 impl ErosionObjOverlay {
     pub fn new(sprites: ErosionObjOverlaySprites, cycle_time: i32, apply_alpha: bool) -> Self {
-        ErosionObjOverlay { name: sprites.name.clone(), stages: sprites.stages, sprites, apply_alpha, cycle_time }
+        ErosionObjOverlay {
+            name: sprites.name.clone(),
+            stages: sprites.stages,
+            sprites,
+            apply_alpha,
+            cycle_time,
+        }
     }
 
     /// `setOverlay(obj, curId, stage, season, alpha)`: the new overlay's
     /// sprite id, or -1.
     #[allow(clippy::too_many_arguments)]
-    pub fn set_overlay(&self, host: &mut dyn ErosionHost, sq: Sq, o: ObjId, cur_id: i32, stage: i32, season: i32, _alpha: f32) -> i32 {
+    pub fn set_overlay(
+        &self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        o: ObjId,
+        cur_id: i32,
+        stage: i32,
+        season: i32,
+        _alpha: f32,
+    ) -> i32 {
         if stage < 0 || stage >= self.stages {
             return -1;
         }

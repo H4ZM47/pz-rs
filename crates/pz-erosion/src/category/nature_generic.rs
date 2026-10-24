@@ -22,7 +22,12 @@ impl NatureGeneric {
         Self::default()
     }
 
-    pub fn replace_existing_object(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData) -> bool {
+    pub fn replace_existing_object(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+    ) -> bool {
         let objs = host.objects(sq);
         for i in (1..objs.len()).rev() {
             let o = objs[i];
@@ -56,7 +61,11 @@ impl NatureGeneric {
             if !name.starts_with("e_newgrass_1_") && !name.starts_with("d_generic_1_") {
                 continue;
             }
-            let Some(gi) = self.objs.iter().position(|ob| ob.get_entry(&name).is_some()) else {
+            let Some(gi) = self
+                .objs
+                .iter()
+                .position(|ob| ob.get_entry(&name).is_some())
+            else {
                 continue;
             };
             if !custom_from_map {
@@ -86,7 +95,15 @@ impl NatureGeneric {
         false
     }
 
-    pub fn update(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &SquareData, data: &mut CategoryData, e_tick: i32, season: &ErosionSeason) -> Keep {
+    pub fn update(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &SquareData,
+        data: &mut CategoryData,
+        e_tick: i32,
+        season: &ErosionSeason,
+    ) -> Keep {
         if e_tick < data.spawn_time || data.do_nothing {
             return Keep::Keep;
         }
@@ -116,7 +133,8 @@ impl NatureGeneric {
                 disp = disp.max(4);
             }
         }
-        self.base.update_obj(host, sq, data, obj, false, stage, disp, false)
+        self.base
+            .update_obj(host, sq, data, obj, false, stage, disp, false)
     }
 
     /// `getGroundGrassType(square)`.
@@ -130,7 +148,10 @@ impl NatureGeneric {
         if !name.starts_with("blends_natural_01_") {
             return 0;
         }
-        let chars: Vec<char> = name.encode_utf16().map(|u| char::from_u32(u as u32).unwrap_or('\0')).collect();
+        let chars: Vec<char> = name
+            .encode_utf16()
+            .map(|u| char::from_u32(u as u32).unwrap_or('\0'))
+            .collect();
         let mut id: i32 = 0;
         for x in 18..chars.len() {
             id = id.wrapping_add(to_int(chars[x]));
@@ -180,7 +201,10 @@ impl NatureGeneric {
             for stage in 0..=1 {
                 let id = 48 + stage * 32 + fernx;
                 spr.set_base(stage, &format!("d_generic_1_{id}"), 0);
-                ice.push((format!("d_generic_1_{id}"), format!("d_generic_1_{}", id + 16)));
+                ice.push((
+                    format!("d_generic_1_{id}"),
+                    format!("d_generic_1_{}", id + 16),
+                ));
             }
             self.objs.push(ErosionObj::new(spr, 60, 0.0, 0.0, true));
         }

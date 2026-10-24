@@ -47,12 +47,23 @@ impl StreetCracks {
         true
     }
 
-    pub fn update(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &SquareData, data: &mut CategoryData, e_tick: i32, season: &ErosionSeason) -> Keep {
+    pub fn update(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &SquareData,
+        data: &mut CategoryData,
+        e_tick: i32,
+        season: &ErosionSeason,
+    ) -> Keep {
         if e_tick < data.spawn_time || data.do_nothing {
             return Keep::Keep;
         }
         let floor = host.floor(sq);
-        let (Some(floor), true) = (floor, data.game_obj >= 0 && data.game_obj < self.crack_objs.len() as i32) else {
+        let (Some(floor), true) = (
+            floor,
+            data.game_obj >= 0 && data.game_obj < self.crack_objs.len() as i32,
+        ) else {
             data.do_nothing = true;
             return Keep::Keep;
         };
@@ -76,14 +87,24 @@ impl StreetCracks {
         if data.has_grass {
             if let Some(grass) = self.objs.get_mut(data.game_obj as usize) {
                 let disp = self.base.current_season(sd.magic_num, season);
-                return self.base.update_obj(host, sq, data, grass, false, stage, disp, false);
+                return self
+                    .base
+                    .update_obj(host, sq, data, grass, false, stage, disp, false);
             }
         }
         Keep::Keep
     }
 
     pub fn init(&mut self) {
-        self.spawn_chance = (0..100).map(|i| if i >= 40 { clerp((i - 40) as f32 / 60.0, 0.0, 60.0) as i32 } else { 0 }).collect();
+        self.spawn_chance = (0..100)
+            .map(|i| {
+                if i >= 40 {
+                    clerp((i - 40) as f32 / 60.0, 0.0, 60.0) as i32
+                } else {
+                    0
+                }
+            })
+            .collect();
         self.base.set_disp(5, 5, 0, false);
         self.base.set_disp(1, 1, 0, false);
         self.base.set_disp(2, 2, 4, true);
@@ -103,7 +124,8 @@ impl StreetCracks {
                     }
                 }
             }
-            self.crack_objs.push(ErosionObjOverlay::new(crack, 60, false));
+            self.crack_objs
+                .push(ErosionObjOverlay::new(crack, 60, false));
             self.objs.push(ErosionObj::new(grass, 60, 0.0, 0.0, false));
         }
     }

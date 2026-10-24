@@ -35,7 +35,10 @@ fn wrap(v: f32, m: f32) -> i32 {
 impl Noise2D {
     /// `new Noise2D()` over the permutation table.
     pub fn new(perm: Arc<[i32]>) -> Self {
-        Noise2D { perm, layers: Vec::with_capacity(3) }
+        Noise2D {
+            perm,
+            layers: Vec::with_capacity(3),
+        }
     }
 
     fn noise(&self, orig_x: f32, orig_y: f32, p: &[i32; 512]) -> f32 {

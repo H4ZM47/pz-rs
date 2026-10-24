@@ -29,7 +29,16 @@ pub struct ChunkData {
 
 impl Default for ChunkData {
     fn default() -> Self {
-        ChunkData { init: false, e_tick_stamp: -1, epoch: -1, x: 0, y: 0, moisture: 0.0, minerals: 0.0, soil: 0 }
+        ChunkData {
+            init: false,
+            e_tick_stamp: -1,
+            epoch: -1,
+            x: 0,
+            y: 0,
+            moisture: 0.0,
+            minerals: 0.0,
+            soil: 0,
+        }
     }
 }
 
@@ -126,13 +135,22 @@ fn top_from(t: &ErosionTop) -> Box<CategoryData> {
 }
 
 fn top_to(t: &CategoryData) -> ErosionTop {
-    ErosionTop { game_obj: t.game_obj as i8, spawn_time: t.spawn_time as i16, cur_id: t.cur_id, alpha: t.alpha }
+    ErosionTop {
+        game_obj: t.game_obj as i8,
+        spawn_time: t.spawn_time as i16,
+        cur_id: t.cur_id,
+        alpha: t.alpha,
+    }
 }
 
 impl CategoryData {
     /// `allocData()` with the ids set.
     pub fn new(region_id: i32, category_id: i32) -> Self {
-        CategoryData { region_id, category_id, ..Default::default() }
+        CategoryData {
+            region_id,
+            category_id,
+            ..Default::default()
+        }
     }
 
     pub fn from_saved(s: &saved::ErosionCategoryData) -> Self {
@@ -143,36 +161,66 @@ impl CategoryData {
         d.disp_season = s.disp_season as i32;
         d.disp_bloom = s.disp_bloom;
         match &s.extra {
-            ErosionExtra::Grown { game_obj, max_stage, spawn_time } => {
+            ErosionExtra::Grown {
+                game_obj,
+                max_stage,
+                spawn_time,
+            } => {
                 d.game_obj = *game_obj as i32;
                 d.max_stage = *max_stage as i32;
                 d.spawn_time = *spawn_time as i32;
             }
-            ErosionExtra::NatureGeneric { game_obj, max_stage, spawn_time, not_grass } => {
+            ErosionExtra::NatureGeneric {
+                game_obj,
+                max_stage,
+                spawn_time,
+                not_grass,
+            } => {
                 d.game_obj = *game_obj as i32;
                 d.max_stage = *max_stage as i32;
                 d.spawn_time = *spawn_time as i32;
                 d.not_grass = *not_grass;
             }
-            ErosionExtra::NaturePlants { game_obj, spawn_time } => {
+            ErosionExtra::NaturePlants {
+                game_obj,
+                spawn_time,
+            } => {
                 d.game_obj = *game_obj as i32;
                 d.spawn_time = *spawn_time as i32;
             }
-            ErosionExtra::StreetCracks { game_obj, max_stage, spawn_time, cur_id, has_grass } => {
+            ErosionExtra::StreetCracks {
+                game_obj,
+                max_stage,
+                spawn_time,
+                cur_id,
+                has_grass,
+            } => {
                 d.game_obj = *game_obj as i32;
                 d.max_stage = *max_stage as i32;
                 d.spawn_time = *spawn_time as i32;
                 d.cur_id = *cur_id;
                 d.has_grass = *has_grass;
             }
-            ErosionExtra::WallVines { game_obj, max_stage, spawn_time, cur_id, top } => {
+            ErosionExtra::WallVines {
+                game_obj,
+                max_stage,
+                spawn_time,
+                cur_id,
+                top,
+            } => {
                 d.game_obj = *game_obj as i32;
                 d.max_stage = *max_stage as i32;
                 d.spawn_time = *spawn_time as i32;
                 d.cur_id = *cur_id;
                 d.has_top = top.as_ref().map(top_from);
             }
-            ErosionExtra::WallCracks { game_obj, spawn_time, cur_id, alpha, top } => {
+            ErosionExtra::WallCracks {
+                game_obj,
+                spawn_time,
+                cur_id,
+                alpha,
+                top,
+            } => {
                 d.game_obj = *game_obj as i32;
                 d.spawn_time = *spawn_time as i32;
                 d.cur_id = *cur_id;
@@ -187,11 +235,27 @@ impl CategoryData {
     /// The saved record; `None` for ids no region defines (the original's
     /// `getCategory` would have thrown before such data existed).
     pub fn to_saved(&self) -> Option<saved::ErosionCategoryData> {
-        let (g, m, s) = (self.game_obj as i8, self.max_stage as i8, self.spawn_time as i16);
+        let (g, m, s) = (
+            self.game_obj as i8,
+            self.max_stage as i8,
+            self.spawn_time as i16,
+        );
         let extra = match (self.region_id, self.category_id) {
-            (0, 0) | (0, 1) => ErosionExtra::Grown { game_obj: g, max_stage: m, spawn_time: s },
-            (0, 2) => ErosionExtra::NaturePlants { game_obj: g, spawn_time: s },
-            (0, 3) => ErosionExtra::NatureGeneric { game_obj: g, max_stage: m, spawn_time: s, not_grass: self.not_grass },
+            (0, 0) | (0, 1) => ErosionExtra::Grown {
+                game_obj: g,
+                max_stage: m,
+                spawn_time: s,
+            },
+            (0, 2) => ErosionExtra::NaturePlants {
+                game_obj: g,
+                spawn_time: s,
+            },
+            (0, 3) => ErosionExtra::NatureGeneric {
+                game_obj: g,
+                max_stage: m,
+                spawn_time: s,
+                not_grass: self.not_grass,
+            },
             (1, 0) => ErosionExtra::StreetCracks {
                 game_obj: g,
                 max_stage: m,
@@ -256,7 +320,10 @@ impl SquareData {
 
     /// From a square's saved record (`ErosionData.Square.load`).
     pub fn from_saved(s: &saved::ErosionSquareData) -> Self {
-        let mut d = SquareData { init: s.init, ..Default::default() };
+        let mut d = SquareData {
+            init: s.init,
+            ..Default::default()
+        };
         if s.init {
             d.do_nothing = s.do_nothing;
             d.noise_main_byte = s.noise_main_byte;
@@ -277,13 +344,19 @@ impl SquareData {
             noise_main_byte: self.noise_main_byte,
             soil: self.soil as i8,
             magic_num_byte: self.magic_num_byte,
-            regions: self.regions.iter().filter_map(CategoryData::to_saved).collect(),
+            regions: self
+                .regions
+                .iter()
+                .filter_map(CategoryData::to_saved)
+                .collect(),
         }
     }
 
     /// `getCatModData`: index of this category's data.
     pub fn cat_index(&self, region: i32, category: i32) -> Option<usize> {
-        self.regions.iter().position(|d| d.region_id == region && d.category_id == category)
+        self.regions
+            .iter()
+            .position(|d| d.region_id == region && d.category_id == category)
     }
 
     /// `setCatModData`: this category's data, added if missing.
@@ -351,7 +424,12 @@ mod tests {
         let mut vines = CategoryData::new(2, 0);
         vines.stage = 6;
         vines.cur_id = 12;
-        vines.has_top = Some(Box::new(CategoryData { game_obj: 2, spawn_time: 9, cur_id: 4, ..Default::default() }));
+        vines.has_top = Some(Box::new(CategoryData {
+            game_obj: 2,
+            spawn_time: 9,
+            cur_id: 4,
+            ..Default::default()
+        }));
         let sq = SquareData {
             init: true,
             noise_main_byte: 10,
@@ -364,7 +442,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(SquareData::from_saved(&sq.to_saved()), sq);
-        let c = ChunkData { init: true, soil: -1, x: 3, y: 4, ..Default::default() };
+        let c = ChunkData {
+            init: true,
+            soil: -1,
+            x: 3,
+            y: 4,
+            ..Default::default()
+        };
         assert_eq!(ChunkData::from_saved(Some(&c.to_saved()), 3, 4), c);
         assert_eq!(ChunkData::from_saved(None, 0, 0).e_tick_stamp, -1);
     }
@@ -379,7 +463,11 @@ mod tests {
         }
         let table: Vec<i32> = (0..8100).map(|i| i % 100).collect();
         let mut g = NoRand;
-        let mut r = SquareRand { use_static: true, table: &table, global: &mut g };
+        let mut r = SquareRand {
+            use_static: true,
+            table: &table,
+            global: &mut g,
+        };
         let mut sq = SquareData::default();
         assert_eq!(sq.rand(-1, 0, 100, &mut r), 1);
         assert_eq!(sq.rand(0, 1, 10, &mut r), 9);

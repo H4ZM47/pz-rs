@@ -17,33 +17,109 @@ fn names(v: &[&str]) -> Vec<String> {
 
 fn sprite_tables() -> SpriteTables {
     let flags = names(&[
-        "collideW", "collideN", "exterior", "NoWallLighting", "doorW", "doorN", "transparentW", "transparentN",
-        "cutW", "cutN", "solid", "invisible", "HoppableN", "HoppableW", "canPathW", "canPathN", "blocksight",
-        "ForceAmbient", "WallSE", "FloorHeightOneThird", "FloorHeightTwoThirds", "CantClimb", "open", "windowW",
-        "windowN", "WindowW", "WindowN", "diamondFloor", "transparentFloor", "solidfloor", "hidewalls",
-        "container", "WallOverlay", "attachedSE", "attachedW", "attachedN", "FloorOverlay", "vegitation",
-        "NeverCutaway", "HasLightOnSprite", "EntityScript",
+        "collideW",
+        "collideN",
+        "exterior",
+        "NoWallLighting",
+        "doorW",
+        "doorN",
+        "transparentW",
+        "transparentN",
+        "cutW",
+        "cutN",
+        "solid",
+        "invisible",
+        "HoppableN",
+        "HoppableW",
+        "canPathW",
+        "canPathN",
+        "blocksight",
+        "ForceAmbient",
+        "WallSE",
+        "FloorHeightOneThird",
+        "FloorHeightTwoThirds",
+        "CantClimb",
+        "open",
+        "windowW",
+        "windowN",
+        "WindowW",
+        "WindowN",
+        "diamondFloor",
+        "transparentFloor",
+        "solidfloor",
+        "hidewalls",
+        "container",
+        "WallOverlay",
+        "attachedSE",
+        "attachedW",
+        "attachedN",
+        "FloorOverlay",
+        "vegitation",
+        "NeverCutaway",
+        "HasLightOnSprite",
+        "EntityScript",
     ]);
     let types = names(&[
-        "normal", "wall", "doorW", "doorN", "tree", "windowFN", "windowFW", "isMoveAbleObject", "lightswitch",
-        "curtainN", "curtainS", "curtainE", "curtainW", "jukebox", "radio", "doorFrN", "doorFrW",
+        "normal",
+        "wall",
+        "doorW",
+        "doorN",
+        "tree",
+        "windowFN",
+        "windowFW",
+        "isMoveAbleObject",
+        "lightswitch",
+        "curtainN",
+        "curtainS",
+        "curtainE",
+        "curtainW",
+        "jukebox",
+        "radio",
+        "doorFrN",
+        "doorFrW",
     ]);
     SpriteTables::new(flags, types, names(&["North", "West"])).unwrap()
 }
 
 /// Made-up tables with the shapes the game's have.
 fn synthetic_tables() -> ErosionTables {
-    let perm: Arc<[i32]> = (0..256).map(|i| (i * 37 + 11) % 256).collect::<Vec<i32>>().into();
-    let soil_ref = |n: usize, k: i32| (0..12).map(|r| (0..n).map(|c| ((r + c) as i32 % k) + 1).collect()).collect();
+    let perm: Arc<[i32]> = (0..256)
+        .map(|i| (i * 37 + 11) % 256)
+        .collect::<Vec<i32>>()
+        .into();
+    let soil_ref = |n: usize, k: i32| {
+        (0..12)
+            .map(|r| (0..n).map(|c| ((r + c) as i32 % k) + 1).collect())
+            .collect()
+    };
     ErosionTables {
         noise_perm: perm,
-        soil_table: (0..10).map(|r| (0..10).map(|c| (r + c) % 12 + 1).collect()).collect(),
+        soil_table: (0..10)
+            .map(|r| (0..10).map(|c| (r + c) % 12 + 1).collect())
+            .collect(),
         square_rands: (0..8100).map(|i| (i * 7) % 100).collect(),
-        trees: vec![TreeInit::new("Tree A", "t_a_1", false), TreeInit::new("Tree B", "t_b_1", true)],
+        trees: vec![
+            TreeInit::new("Tree A", "t_a_1", false),
+            TreeInit::new("Tree B", "t_b_1", true),
+        ],
         trees_soil_ref: soil_ref(4, 2),
-        plants: (0..24).map(|i| PlantInit { name: format!("Plant {i}"), has_flower: i % 2 == 0, bloomstart: 0.1, bloomend: 0.4 }).collect(),
+        plants: (0..24)
+            .map(|i| PlantInit {
+                name: format!("Plant {i}"),
+                has_flower: i % 2 == 0,
+                bloomstart: 0.1,
+                bloomend: 0.4,
+            })
+            .collect(),
         plants_soil_ref: soil_ref(5, 24),
-        bush: (0..16).map(|i| BushInit { name: format!("Bush {i}"), bloomstart: 0.2, bloomend: 0.5, has_flower: i % 3 == 0 }).collect(),
+        bush: (0..16)
+            .map(|i| BushInit {
+                name: format!("Bush {i}"),
+                bloomstart: 0.2,
+                bloomend: 0.5,
+                has_flower: i % 3 == 0,
+            })
+            .collect(),
         bush_soil_ref: soil_ref(4, 16),
         flowerbed_tile_ids: (16..28).collect(),
         season_names: names(&["s0", "s1", "s2", "s3", "s4", "s5"]),
@@ -65,7 +141,10 @@ impl GameRand for Lcg {
         if max <= 0 {
             return 0;
         }
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((self.0 >> 33) % max as u64) as i32
     }
 }
@@ -87,10 +166,12 @@ fn setup() -> (IsoSpriteManager, IsoChunk) {
         for y in 0..8 {
             let mut sq = IsoGridSquare::new(16 + x, 24 + y, 0);
             let id = sq.new_object_id();
-            sq.objects.push(IsoObject::new(id, ObjectKind::Object, Some(floor)));
+            sq.objects
+                .push(IsoObject::new(id, ObjectKind::Object, Some(floor)));
             if (x, y) == (3, 4) {
                 let id = sq.new_object_id();
-                sq.objects.push(IsoObject::new(id, ObjectKind::Object, Some(tree)));
+                sq.objects
+                    .push(IsoObject::new(id, ObjectKind::Object, Some(tree)));
             }
             chunk.set_square(x, y, 0, Some(sq));
         }
@@ -115,7 +196,10 @@ fn regions_and_categories() {
 fn chunk_load_replaces_and_grows() {
     let tables = synthetic_tables();
     let (mut sprites, mut chunk) = setup();
-    let settings = ErosionSettings { time_since_apo: 3, ..Default::default() };
+    let settings = ErosionSettings {
+        time_since_apo: 3,
+        ..Default::default()
+    };
     let mut main = ErosionMain::new(tables, settings, &mut sprites, None, None);
     // timeSinceApo 3: 60 days of a 100-day (tickunit 144) cycle.
     assert_eq!(main.get_etick(), 60);
@@ -136,12 +220,23 @@ fn chunk_load_replaces_and_grows() {
     let sq = chunk.get_grid_square(3, 4, 0).unwrap();
     let saved = sq.erosion.as_ref().unwrap();
     assert!(saved.init);
-    let tree_data = saved.regions.iter().find(|r| (r.region_id, r.category_id) == (0, 0)).unwrap();
+    let tree_data = saved
+        .regions
+        .iter()
+        .find(|r| (r.region_id, r.category_id) == (0, 0))
+        .unwrap();
     assert!(tree_data.has_spawned);
-    let tree = sq.objects.iter().find(|o| matches!(&o.name, Some(ObjectName::Str(n)) if n.starts_with("Tree"))).unwrap();
+    let tree = sq
+        .objects
+        .iter()
+        .find(|o| matches!(&o.name, Some(ObjectName::Str(n)) if n.starts_with("Tree")))
+        .unwrap();
     // update() then staged it with the erosion sprite set (`t_*_1_<n>`).
     let name = sprites.sprites[tree.sprite.unwrap()].name.clone().unwrap();
-    assert!(name.starts_with("t_a_1_") || name.starts_with("t_b_1_"), "{name}");
+    assert!(
+        name.starts_with("t_a_1_") || name.starts_with("t_b_1_"),
+        "{name}"
+    );
 
     // Every square was initialised; in-memory data mirrors the saved record.
     for x in 0..8 {
@@ -155,9 +250,15 @@ fn chunk_load_replaces_and_grows() {
     }
 
     // A second pass with unchanged stamps leaves everything alone.
-    let before: Vec<_> = chunk.squares().map(|s| (s.objects.len(), s.erosion.clone())).collect();
+    let before: Vec<_> = chunk
+        .squares()
+        .map(|s| (s.objects.len(), s.erosion.clone()))
+        .collect();
     main.load_grid_square(&mut chunk, 0, 0, 0, &mut sprites, &NoEdges, &mut rand, None);
-    let after: Vec<_> = chunk.squares().map(|s| (s.objects.len(), s.erosion.clone())).collect();
+    let after: Vec<_> = chunk
+        .squares()
+        .map(|s| (s.objects.len(), s.erosion.clone()))
+        .collect();
     assert_eq!(before, after);
 
     // Levels other than 0 are ignored, like the original.
@@ -178,13 +279,35 @@ fn chunk_load_replaces_and_grows() {
 fn erosion_square_controls() {
     let tables = synthetic_tables();
     let (mut sprites, mut chunk) = setup();
-    let mut main = ErosionMain::new(tables, ErosionSettings { static_rand: true, ..Default::default() }, &mut sprites, None, None);
+    let mut main = ErosionMain::new(
+        tables,
+        ErosionSettings {
+            static_rand: true,
+            ..Default::default()
+        },
+        &mut sprites,
+        None,
+        None,
+    );
     let mut rand = Lcg(1);
     main.load_grid_square(&mut chunk, 3, 4, 0, &mut sprites, &NoEdges, &mut rand, None);
     main.disable_erosion(&mut chunk, 3, 4, 0);
-    assert!(chunk.get_grid_square(3, 4, 0).unwrap().erosion.as_ref().unwrap().do_nothing);
+    assert!(
+        chunk
+            .get_grid_square(3, 4, 0)
+            .unwrap()
+            .erosion
+            .as_ref()
+            .unwrap()
+            .do_nothing
+    );
     main.reset_square(&mut chunk, 3, 4, 0);
-    let s = chunk.get_grid_square(3, 4, 0).unwrap().erosion.clone().unwrap();
+    let s = chunk
+        .get_grid_square(3, 4, 0)
+        .unwrap()
+        .erosion
+        .clone()
+        .unwrap();
     assert!(!s.init && s.regions.is_empty());
 }
 
@@ -195,7 +318,10 @@ fn main_timer_advances() {
     let dir = std::env::temp_dir().join(format!("pz-erosion-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("erosion.ini");
-    let settings = ErosionSettings { save_config: Some(cfg.clone()), ..Default::default() };
+    let settings = ErosionSettings {
+        save_config: Some(cfg.clone()),
+        ..Default::default()
+    };
     let mut main = ErosionMain::new(tables.clone(), settings.clone(), &mut sprites, None, None);
     for _ in 0..144 {
         main.main_timer(8, 6, 1993);

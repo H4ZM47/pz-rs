@@ -21,7 +21,14 @@ impl Flowerbed {
         Self::default()
     }
 
-    fn adopt(&mut self, host: &mut dyn ErosionHost, sq: Sq, o: u32, sd: &mut SquareData, game_obj: i32) -> bool {
+    fn adopt(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        o: u32,
+        sd: &mut SquareData,
+        game_obj: i32,
+    ) -> bool {
         let Some(name) = self.objs.get(game_obj as usize).map(|ob| ob.name.clone()) else {
             // Out of range: an IndexOutOfBoundsException upstream.
             return false;
@@ -34,7 +41,12 @@ impl Flowerbed {
         true
     }
 
-    pub fn replace_existing_object(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData) -> bool {
+    pub fn replace_existing_object(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+    ) -> bool {
         let objs = host.objects(sq);
         for i in (0..objs.len()).rev() {
             let o = objs[i];
@@ -65,7 +77,13 @@ impl Flowerbed {
         false
     }
 
-    pub fn update(&mut self, host: &mut dyn ErosionHost, sq: Sq, data: &mut CategoryData, season: &ErosionSeason) -> Keep {
+    pub fn update(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        data: &mut CategoryData,
+        season: &ErosionSeason,
+    ) -> Keep {
         if data.do_nothing {
             return Keep::Keep;
         }
@@ -81,7 +99,8 @@ impl Flowerbed {
             }
             return Keep::Clear;
         }
-        self.base.update_obj(host, sq, data, obj, false, 0, disp, false)
+        self.base
+            .update_obj(host, sq, data, obj, false, 0, disp, false)
     }
 
     pub fn init(&mut self, tables: &ErosionTables) {

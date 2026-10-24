@@ -17,19 +17,43 @@ use crate::ice_queen::get_sprite;
 /// The defaults answer as if no square had walls or windows.
 pub trait EdgeQueries {
     /// `square.isWallTo(other)`.
-    fn is_wall_to(&self, _chunk: &IsoChunk, _sprites: &IsoSpriteManager, _sq: Sq, _other: Sq) -> bool {
+    fn is_wall_to(
+        &self,
+        _chunk: &IsoChunk,
+        _sprites: &IsoSpriteManager,
+        _sq: Sq,
+        _other: Sq,
+    ) -> bool {
         false
     }
     /// `square.isWindowTo(other)`.
-    fn is_window_to(&self, _chunk: &IsoChunk, _sprites: &IsoSpriteManager, _sq: Sq, _other: Sq) -> bool {
+    fn is_window_to(
+        &self,
+        _chunk: &IsoChunk,
+        _sprites: &IsoSpriteManager,
+        _sq: Sq,
+        _other: Sq,
+    ) -> bool {
         false
     }
     /// `square.isWindowBlockedTo(other)`.
-    fn is_window_blocked_to(&self, _chunk: &IsoChunk, _sprites: &IsoSpriteManager, _sq: Sq, _other: Sq) -> bool {
+    fn is_window_blocked_to(
+        &self,
+        _chunk: &IsoChunk,
+        _sprites: &IsoSpriteManager,
+        _sq: Sq,
+        _other: Sq,
+    ) -> bool {
         false
     }
     /// `square.getWindowTo(other)` (an object of `sq`).
-    fn window_to(&self, _chunk: &IsoChunk, _sprites: &IsoSpriteManager, _sq: Sq, _other: Sq) -> Option<ObjId> {
+    fn window_to(
+        &self,
+        _chunk: &IsoChunk,
+        _sprites: &IsoSpriteManager,
+        _sq: Sq,
+        _other: Sq,
+    ) -> Option<ObjId> {
         None
     }
 }
@@ -115,17 +139,23 @@ impl ErosionHost for ChunkHost<'_> {
     }
 
     fn has_flag(&self, sq: Sq, flag: SqFlag) -> bool {
-        self.square(sq).is_some_and(|s| square_has_flag(s, self.sprites, flag))
+        self.square(sq)
+            .is_some_and(|s| square_has_flag(s, self.sprites, flag))
     }
 
     fn has_wall_type(&self, sq: Sq) -> bool {
         let wall = self.sprites.tables.ty.wall;
-        self.square(sq)
-            .is_some_and(|s| s.objects.iter().any(|o| o.sprite.is_some_and(|sp| self.sprites.sprites[sp].tile_type == wall)))
+        self.square(sq).is_some_and(|s| {
+            s.objects.iter().any(|o| {
+                o.sprite
+                    .is_some_and(|sp| self.sprites.sprites[sp].tile_type == wall)
+            })
+        })
     }
 
     fn objects(&self, sq: Sq) -> Vec<ObjId> {
-        self.square(sq).map_or_else(Vec::new, |s| s.objects.iter().map(|o| o.id).collect())
+        self.square(sq)
+            .map_or_else(Vec::new, |s| s.objects.iter().map(|o| o.id).collect())
     }
 
     fn floor(&self, sq: Sq) -> Option<ObjId> {
@@ -147,7 +177,8 @@ impl ErosionHost for ChunkHost<'_> {
     }
 
     fn is_window_blocked_to(&self, sq: Sq, other: Sq) -> bool {
-        self.edges.is_window_blocked_to(self.chunk, self.sprites, sq, other)
+        self.edges
+            .is_window_blocked_to(self.chunk, self.sprites, sq, other)
     }
 
     fn window_to(&self, sq: Sq, other: Sq) -> Option<ObjId> {
@@ -160,12 +191,16 @@ impl ErosionHost for ChunkHost<'_> {
     }
 
     fn sprite_tile_sheet_index(&self, sq: Sq, o: ObjId) -> i32 {
-        self.obj(sq, o).and_then(|x| x.sprite).map_or(0, |s| self.sprites.sprites[s].tile_sheet_index)
+        self.obj(sq, o)
+            .and_then(|x| x.sprite)
+            .map_or(0, |s| self.sprites.sprites[s].tile_sheet_index)
     }
 
     fn sprite_custom_name(&self, sq: Sq, o: ObjId) -> Option<String> {
         let s = self.obj(sq, o)?.sprite?;
-        self.sprites.prop(&self.sprites.sprites[s], "CustomName").map(str::to_string)
+        self.sprites
+            .prop(&self.sprites.sprites[s], "CustomName")
+            .map(str::to_string)
     }
 
     fn named_sprite_custom_name(&self, name: &str) -> Option<Option<String>> {
@@ -203,14 +238,20 @@ impl ErosionHost for ChunkHost<'_> {
             list.iter()
                 .map(|i| {
                     let s = &self.sprites.sprites[i.sprite];
-                    Attached { name: s.name.clone(), id: s.id }
+                    Attached {
+                        name: s.name.clone(),
+                        id: s.id,
+                    }
                 })
                 .collect(),
         )
     }
 
     fn attached_remove(&mut self, sq: Sq, o: ObjId, index: usize) {
-        if let Some(list) = self.obj_mut(sq, o).and_then(|x| x.attached_anim_sprite.as_mut()) {
+        if let Some(list) = self
+            .obj_mut(sq, o)
+            .and_then(|x| x.attached_anim_sprite.as_mut())
+        {
             if index < list.len() {
                 list.remove(index);
             }
@@ -219,7 +260,9 @@ impl ErosionHost for ChunkHost<'_> {
 
     fn attached_clear(&mut self, sq: Sq, o: ObjId) {
         if let Some(obj) = self.obj_mut(sq, o) {
-            obj.attached_anim_sprite.get_or_insert_with(Vec::new).clear();
+            obj.attached_anim_sprite
+                .get_or_insert_with(Vec::new)
+                .clear();
         }
     }
 
@@ -227,7 +270,9 @@ impl ErosionHost for ChunkHost<'_> {
         let s = get_sprite(self.sprites, sprite);
         let id = self.sprites.sprites[s].id;
         if let Some(obj) = self.obj_mut(sq, o) {
-            obj.attached_anim_sprite.get_or_insert_with(Vec::new).push(IsoSpriteInstance::new(s));
+            obj.attached_anim_sprite
+                .get_or_insert_with(Vec::new)
+                .push(IsoSpriteInstance::new(s));
         }
         id
     }
@@ -260,8 +305,15 @@ impl ErosionHost for ChunkHost<'_> {
                 }
                 None => 4,
             };
-            let log_yield = self.logs_per_size.and_then(|t| t.get(size as usize - 1).copied()).unwrap_or(0);
-            ObjectKind::Tree(IsoTree { size, log_yield, damage: ((log_yield - 1) * 80).max(40) })
+            let log_yield = self
+                .logs_per_size
+                .and_then(|t| t.get(size as usize - 1).copied())
+                .unwrap_or(0);
+            ObjectKind::Tree(IsoTree {
+                size,
+                log_yield,
+                damage: ((log_yield - 1) * 80).max(40),
+            })
         } else {
             ObjectKind::Object
         };

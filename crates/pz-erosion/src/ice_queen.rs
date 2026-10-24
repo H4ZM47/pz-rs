@@ -36,7 +36,10 @@ pub struct ErosionIceQueen {
 }
 
 fn is_java_whitespace(c: char) -> bool {
-    matches!(c, '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | '\u{1C}'..='\u{1F}' | ' ')
+    matches!(
+        c,
+        '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | '\u{1C}'..='\u{1F}' | ' '
+    )
 }
 
 /// `fixTileName`: normalizes the number after the last `_`.
@@ -45,7 +48,11 @@ fn fix_tile_name(name: &str) -> String {
         return name.to_string();
     };
     let t = crate::java::trim(&name[p + 1..]);
-    let index = if t.is_empty() { -1 } else { t.parse::<i32>().unwrap_or(-1) };
+    let index = if t.is_empty() {
+        -1
+    } else {
+        t.parse::<i32>().unwrap_or(-1)
+    };
     if index == -1 {
         return name.to_string();
     }
@@ -80,7 +87,10 @@ impl ErosionIceQueen {
         let spr = get_sprite(m, sprite);
         get_sprite(m, winter);
         m.sprites[spr].name = Some(sprite.to_string());
-        self.sprites.push(Entry { sprite: spr, winter: winter.to_string() });
+        self.sprites.push(Entry {
+            sprite: spr,
+            winter: winter.to_string(),
+        });
     }
 
     /// `setSnow(isSnow)`. Like the original, a change in either direction
@@ -89,7 +99,8 @@ impl ErosionIceQueen {
         if self.snow_state != is_snow {
             self.snow_state = is_snow;
             for e in &self.sprites {
-                self.snow_sprite.insert(e.sprite, m.named_map.get(&e.winter).copied());
+                self.snow_sprite
+                    .insert(e.sprite, m.named_map.get(&e.winter).copied());
             }
         }
     }

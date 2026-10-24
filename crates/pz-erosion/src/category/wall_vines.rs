@@ -33,7 +33,12 @@ impl WallVines {
         Self::default()
     }
 
-    pub fn replace_existing_object(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData) -> bool {
+    pub fn replace_existing_object(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+    ) -> bool {
         let objs = host.objects(sq);
         for i in (1..objs.len()).rev() {
             let o = objs[i];
@@ -66,7 +71,14 @@ impl WallVines {
         false
     }
 
-    pub fn validate_spawn(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData, is_exterior: bool, ctx: &mut Ctx<'_>) -> bool {
+    pub fn validate_spawn(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+        is_exterior: bool,
+        ctx: &mut Ctx<'_>,
+    ) -> bool {
         if !is_exterior {
             return false;
         }
@@ -87,7 +99,9 @@ impl WallVines {
             (None, None) => return false,
         };
         let pick = sd.rand(sq.0, sq.1, self.objs_ref[dir].len() as i32, &mut ctx.rand);
-        let mut data = sd.set_cat_mod_data(self.base.region_id, self.base.id).clone();
+        let mut data = sd
+            .set_cat_mod_data(self.base.region_id, self.base.id)
+            .clone();
         data.game_obj = self.objs_ref[dir][pick as usize];
         data.max_stage = if e > 65 {
             3
@@ -118,7 +132,8 @@ impl WallVines {
                         },
                         stage: 0,
                         spawn_time: data.spawn_time
-                            + (overlay.cycle_time as f32 / (data.max_stage as f32 + 1.0) * 4.0) as i32,
+                            + (overlay.cycle_time as f32 / (data.max_stage as f32 + 1.0) * 4.0)
+                                as i32,
                         ..Default::default()
                     };
                     data.has_top = Some(Box::new(t));
@@ -133,7 +148,14 @@ impl WallVines {
         true
     }
 
-    pub fn update(&mut self, host: &mut dyn ErosionHost, sq: Sq, data: &mut CategoryData, e_tick: i32, season: &ErosionSeason) -> Keep {
+    pub fn update(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        data: &mut CategoryData,
+        e_tick: i32,
+        season: &ErosionSeason,
+    ) -> Keep {
         if e_tick < data.spawn_time || data.do_nothing {
             return Keep::Keep;
         }
@@ -198,7 +220,8 @@ impl WallVines {
                     if season == 2 {
                         spr.set_sprite(stage, &name, seasons[season + 1]);
                     }
-                    self.sprite_to_obj.insert(name.clone(), self.objs.len() as i32);
+                    self.sprite_to_obj
+                        .insert(name.clone(), self.objs.len() as i32);
                     self.sprite_to_stage.insert(name, stage);
                 }
             }

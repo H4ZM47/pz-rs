@@ -40,7 +40,13 @@ impl NatureTrees {
         self.soil_ref[soil as usize].clone()
     }
 
-    pub fn replace_existing_object(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData, ctx: &mut Ctx<'_>) -> bool {
+    pub fn replace_existing_object(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+        ctx: &mut Ctx<'_>,
+    ) -> bool {
         let objs = host.objects(sq);
         for i in (1..objs.len()).rev() {
             let o = objs[i];
@@ -92,7 +98,14 @@ impl NatureTrees {
         false
     }
 
-    pub fn validate_spawn(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &mut SquareData, has_wall: bool, ctx: &mut Ctx<'_>) -> bool {
+    pub fn validate_spawn(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &mut SquareData,
+        has_wall: bool,
+        ctx: &mut Ctx<'_>,
+    ) -> bool {
         if host.objects(sq).len() > if has_wall { 2 } else { 1 } {
             return false;
         }
@@ -114,7 +127,15 @@ impl NatureTrees {
         false
     }
 
-    pub fn update(&mut self, host: &mut dyn ErosionHost, sq: Sq, sd: &SquareData, data: &mut CategoryData, e_tick: i32, season: &ErosionSeason) -> Keep {
+    pub fn update(
+        &mut self,
+        host: &mut dyn ErosionHost,
+        sq: Sq,
+        sd: &SquareData,
+        data: &mut CategoryData,
+        e_tick: i32,
+        season: &ErosionSeason,
+    ) -> Keep {
         if e_tick < data.spawn_time || data.do_nothing {
             return Keep::Keep;
         }
@@ -131,13 +152,22 @@ impl NatureTrees {
             stage = max_stage;
         }
         let disp = self.base.current_season(sd.magic_num, season);
-        self.base.update_obj(host, sq, data, obj, true, stage, disp, false)
+        self.base
+            .update_obj(host, sq, data, obj, true, stage, disp, false)
     }
 
     pub fn init(&mut self, tables: &ErosionTables, ice: &mut IceQueenSink) {
         self.soil_ref = tables.trees_soil_ref.clone();
         self.trees = tables.trees.clone();
-        self.spawn_chance = (0..100).map(|i| if i >= 50 { clerp((i - 50) as f32 / 50.0, 0.0, 90.0) as i32 } else { 0 }).collect();
+        self.spawn_chance = (0..100)
+            .map(|i| {
+                if i >= 50 {
+                    clerp((i - 50) as f32 / 50.0, 0.0, 90.0) as i32
+                } else {
+                    0
+                }
+            })
+            .collect();
         let snames = [0, 5, 1, 2, 3, 4];
         self.base.set_disp(5, 0, 0, false);
         self.base.set_disp(1, 1, 0, false);
