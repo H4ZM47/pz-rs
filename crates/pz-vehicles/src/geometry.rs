@@ -486,7 +486,7 @@ impl BaseVehicle {
 
     // ---- areas ------------------------------------------------------------
 
-    fn area(&self, id: &str) -> Option<Area> {
+    pub(crate) fn area(&self, id: &str) -> Option<Area> {
         let s = self.script()?;
         let s = s.borrow();
         s.area_by_id(Some(id)).cloned()

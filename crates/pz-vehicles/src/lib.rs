@@ -16,6 +16,7 @@ pub mod jmath;
 pub mod lua;
 pub mod manager;
 pub mod part;
+pub mod pathfind_view;
 pub mod physics;
 pub mod poly;
 pub mod rand;
