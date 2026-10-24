@@ -14,6 +14,7 @@ pub mod bind_globals;
 pub mod bind_java_util;
 pub mod bind_render;
 pub mod bind_text;
+pub mod bind_map_groups;
 pub mod bind_ui;
 pub mod bind_world;
 pub mod events;
@@ -24,6 +25,7 @@ pub use lua_manager::LuaManager;
 
 /// Register all globals and exposed classes.
 pub fn register_all(mgr: &mut LuaManager) {
+    let fs = mgr.fs.clone();
     bind_java_util::register(&mut mgr.thread);
     bind_globals::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
@@ -33,6 +35,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_text::register(&mut mgr.thread);
     bind_debug::register(&mut mgr.thread);
     bind_world::register(&mut mgr.thread);
+    bind_map_groups::register(&mut mgr.thread, move || fs.borrow().media_file("maps"));
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }

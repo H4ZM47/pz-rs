@@ -13,6 +13,7 @@ pub mod fix2x;
 pub mod iso_lot;
 pub mod java;
 pub mod map_files;
+pub mod map_groups;
 pub mod meta_grid;
 pub mod sprite;
 pub mod meta_zones;
