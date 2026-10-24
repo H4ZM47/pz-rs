@@ -24,6 +24,7 @@ pub mod sprite;
 pub mod meta_save;
 pub mod meta_zones;
 pub mod square;
+pub mod streamer;
 pub mod tiledef;
 pub mod zone_save;
 pub mod zones;

@@ -471,6 +471,15 @@ impl IsoMetaGrid {
         Some(&self.room_defs[cell.rooms.get(&id)?.0 as usize])
     }
 
+    /// `isValidChunk(wx, wy)`: the chunk's first square is inside the grid.
+    pub fn is_valid_chunk(&self, wx: i32, wy: i32) -> bool {
+        let (x, y) = (wx.wrapping_mul(8), wy.wrapping_mul(8));
+        x >= self.min_x * 256
+            && x < (self.max_x + 1) * 256
+            && y >= self.min_y * 256
+            && y < (self.max_y + 1) * 256
+    }
+
     pub fn is_valid_square(&self, x: i32, y: i32) -> bool {
         x >= self.min_x * 256
             && x < (self.max_x + 1) * 256
