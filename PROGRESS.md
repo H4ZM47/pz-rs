@@ -14,6 +14,14 @@ Status of the Rust port. Update this file with every merged change.
 - Kahlua VM (KahluaThread loop, metatables, errors, coroutines) and
   BaseLib, TableLib, MathLib, CoroutineLib, RandomLib.
 
+- World generation (`pz-worldgen`): B42 `WorldGenChunk.generateChunks`
+  for brand-new chunks (map biomes from the biome-map images, procedural
+  biomes, roads, ore veins, static modules, map `WorldGen` zones), plugged
+  into `pz_world::chunk::load_brand_new` as a `BrandNewHook`. Object lists
+  match the game on all 130,560 squares of 17 regions, checked locally.
+  Blending/attachments (chunk update), foraging zones and procedural
+  basements are not ported.
+
 - World/maps (`pz-world`): lot headers, lotpacks, `MapFiles`, meta grid
   rooms/buildings, `.tiles` reader, `Fix2x`, and chunk loading through
   `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk`. Object creation
