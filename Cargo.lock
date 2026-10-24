@@ -1611,6 +1611,7 @@ name = "pz-world-render"
 version = "0.1.0"
 dependencies = [
  "png",
+ "pz-core",
  "pz-fs",
  "pz-gpu",
  "pz-iso-render",
