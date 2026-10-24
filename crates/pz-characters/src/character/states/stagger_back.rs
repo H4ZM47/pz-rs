@@ -19,14 +19,7 @@ pub fn instance<I: 'static>() -> StateRef<I> {
 /// `getMaxStaggerTime(owner)`: `35 * hitForce * staggerTimeMod` in
 /// `[20, 30]`.
 pub fn max_stagger_time<I: 'static>(owner: &GameCharacter<I>) -> f32 {
-    let t = 35.0 * owner.vars.hit_force * owner.vars.stagger_time_mod;
-    if t < 20.0 {
-        20.0
-    } else if t > 30.0 {
-        30.0
-    } else {
-        t
-    }
+    (35.0 * owner.vars.hit_force * owner.vars.stagger_time_mod).clamp(20.0, 30.0)
 }
 
 impl<I: 'static> State<I> for StaggerBackState {

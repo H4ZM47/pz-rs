@@ -10,41 +10,8 @@ use pz_scripts::ScriptManager;
 use crate::character::{GameCharacter, SimContext};
 use crate::Characters;
 
-/// `PathFindBehavior2.BehaviorResult`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BehaviorResult {
-    Working,
-    Failed,
-    Succeeded,
-}
-
-/// The part of `PathFindBehavior2` the states use. The character side of
-/// the pathfinder is `pz_pathfind::mover::PathMover` (implemented in
-/// [`crate::character::path_mover`]); this is the behaviour object's
-/// interface until pz-pathfind ports `PathFindBehavior2`.
-/// TODO(pz-pathfind): replace with its `PathFindBehavior2`.
-pub trait PathFindBehavior {
-    /// `pathToLocation(x, y, z)`.
-    fn path_to_location(&mut self, _x: i32, _y: i32, _z: i32) {}
-    /// `pathToLocationF(x, y, z)`.
-    fn path_to_location_f(&mut self, _x: f32, _y: f32, _z: f32) {}
-    /// `pathToCharacter(target)` (by character id).
-    fn path_to_character(&mut self, _target: i32) {}
-    /// `update()`.
-    fn update(&mut self) -> BehaviorResult {
-        BehaviorResult::Failed
-    }
-    /// `cancel()`.
-    fn cancel(&mut self) {}
-    /// `isStrafing()`.
-    fn is_strafing(&self) -> bool {
-        false
-    }
-    /// `getTargetChar()` (by character id).
-    fn target_char(&self) -> Option<i32> {
-        None
-    }
-}
+pub use pz_pathfind::behavior::BehaviorResult;
+use pz_pathfind::mover::PathMover;
 
 /// What the states read about a square (`IsoGridSquare`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -91,10 +58,21 @@ pub trait StateWorld<I> {
         None
     }
 
-    /// `getPathFindBehavior2()` of the character with `id`.
-    fn path_find(&mut self, _id: i32) -> Option<&mut dyn PathFindBehavior> {
-        None
+    /// `getPathFindBehavior2().pathToLocation(x, y, z)` for `chr` (the
+    /// world owns each character's `pz_pathfind::behavior::PathFindBehavior2`
+    /// and the `PathfindService`).
+    fn path_to_location(&mut self, _chr: &mut dyn PathMover, _x: i32, _y: i32, _z: i32) {}
+
+    /// `getPathFindBehavior2().pathToCharacter(target)`.
+    fn path_to_character(&mut self, _chr: &mut dyn PathMover, _target: i32) {}
+
+    /// `getPathFindBehavior2().update()`.
+    fn path_update(&mut self, _chr: &mut dyn PathMover) -> BehaviorResult {
+        BehaviorResult::Failed
     }
+
+    /// `getPathFindBehavior2().cancel()`.
+    fn path_cancel(&mut self, _chr: &mut dyn PathMover) {}
 
     /// `LosUtil.lineClear` / `PolygonalMap2.lineClearCollide` between two
     /// points on one level (`pz_pathfind::main_thread::los_util` over the

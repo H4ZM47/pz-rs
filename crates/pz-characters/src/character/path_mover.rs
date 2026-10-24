@@ -58,6 +58,18 @@ pub struct PathMoverState {
     pub npc: bool,
     /// Obstacle calls for the world's owner, oldest first.
     pub requests: Vec<PathMoverRequest>,
+    /// Toggles a door and answers whether it is open afterwards.
+    pub door_hook: Option<DoorHook>,
+}
+
+/// A world hook for `IsoDoor`/`IsoThumpable.ToggleDoor(chr)` + `isOpen()`.
+#[derive(Clone)]
+pub struct DoorHook(pub std::rc::Rc<dyn Fn(ObjectRef) -> bool>);
+
+impl std::fmt::Debug for DoorHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DoorHook")
+    }
 }
 
 /// The `CharacterState` of a state class.
@@ -282,8 +294,15 @@ impl<I: 'static> PathMover for GameCharacter<I> {
     fn could_open_door(&self, _door: ObjectRef) -> bool {
         false
     }
-    fn toggle_door(&mut self, door: ObjectRef) {
+    /// `ToggleDoor(chr)` then `isOpen()`, through the world's door hook
+    /// (TODO(pz-world doors): call the door objects directly). Without a
+    /// hook the door stays shut.
+    fn toggle_door(&mut self, door: ObjectRef) -> bool {
         self.path.requests.push(PathMoverRequest::ToggleDoor(door));
+        match self.path.door_hook.clone() {
+            Some(h) => (h.0)(door),
+            None => false,
+        }
     }
 
     fn get_variable_boolean(&self, name: &str) -> bool {
@@ -340,6 +359,11 @@ mod tests {
         assert_eq!(c.vars.dir, IsoDirections::S);
         PathMover::set_variable_bool(&mut c, "bPathfind", true);
         assert!(PathMover::get_variable_boolean(&c, "bpathfind"));
+        let door = ObjectRef { x: 1, y: 2, z: 0, id: pz_world::objects::ObjectId::default() };
+        assert!(!c.toggle_door(door));
+        c.path.door_hook = Some(DoorHook(std::rc::Rc::new(|_| true)));
+        assert!(c.toggle_door(door));
+        c.path.requests.clear();
         c.climb_over_fence(IsoDirections::N);
         assert_eq!(c.path.requests, [PathMoverRequest::ClimbOverFence(IsoDirections::N)]);
     }

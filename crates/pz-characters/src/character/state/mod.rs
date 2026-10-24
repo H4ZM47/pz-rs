@@ -44,7 +44,7 @@ pub mod params;
 pub mod vars;
 
 pub use cx::{
-    BehaviorResult, NullWorld, PathFindBehavior, SquareInfo, StateCx, StateWorld,
+    BehaviorResult, NullWorld, SquareInfo, StateCx, StateWorld,
 };
 pub use machine::{StateMachine, StateMachineComponent, SubstateSlot};
 pub use params::{Param, StateParams};
