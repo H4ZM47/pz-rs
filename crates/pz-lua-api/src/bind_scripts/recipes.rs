@@ -10,7 +10,7 @@
 //! and `RequiredSkill.getPerk` (TODO(inventory, IsoGameCharacter,
 //! PerkFactory)).
 
-use super::{get, get_obj, method, opt_str, opt_string_list, set, string_list, void, IntoLua, JavaMap, ScriptHandle};
+use super::{get, get_obj, method, opt_str, opt_string_list, set, string_list, void, IntoLua, ScriptHandle};
 use crate::bind_registry::java_error;
 use crate::expose::{expose_class, int_arg};
 use pz_kahlua::{Thread, Value};
@@ -32,7 +32,7 @@ pub const FIXER_SKILL_CLASS: &str = "zombie.scripting.objects.Fixing$FixerSkill"
 pub const UNIQUE_RECIPE_CLASS: &str = "zombie.scripting.objects.UniqueRecipe";
 
 fn list(values: Vec<Value>) -> Value {
-    super::list_value(values)
+    crate::bind_java_util::list_value(values)
 }
 
 fn source_value(h: &ScriptHandle, i: usize) -> Value {
@@ -175,9 +175,16 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
     get_obj(&b, "getPossibleItems", |h, e: &EvolvedRecipe| {
         list(e.possible_items().iter().map(|r| item_recipe_value(h, r.name())).collect())
     });
-    get_obj(&b, "getItemsList", |h, e: &EvolvedRecipe| {
-        let entries = e.items_list.iter().map(|(k, _)| (Value::from(k), item_recipe_value(h, k))).collect();
-        Value::Object(Rc::new(JavaMap(entries)))
+    // The live `HashMap<String, ItemRecipe>`, in its own (Java) order.
+    method(&b, "getItemsList", |_, h| {
+        let h = h.clone();
+        let read = move || {
+            h.read(|e: &EvolvedRecipe| {
+                e.items_list.iter().map(|(k, _)| (Value::from(k), item_recipe_value(&h, k))).collect()
+            })
+            .unwrap_or_default()
+        };
+        Ok(Value::Object(Rc::new(crate::bind_java_util::JavaMap::live(read, None))))
     });
 
     let b = expose_class(thread, ITEM_RECIPE_CLASS, None);

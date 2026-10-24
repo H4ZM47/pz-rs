@@ -58,7 +58,7 @@ pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
     println!("script files failing at load: {load_failures}");
     println!("UI elements: {n_ui}, draw commands last frame: {n_cmds}");
     let mut errs: Vec<_> = errors.borrow().clone().into_iter().collect();
-    errs.sort_by(|a, b| b.1.cmp(&a.1));
+    errs.sort_by_key(|e| std::cmp::Reverse(e.1));
     println!("distinct Lua errors: {}", errs.len());
     for (e, n) in errs.iter().take(100000) {
         println!("{n:5}  {e}");

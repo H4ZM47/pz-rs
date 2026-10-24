@@ -26,11 +26,10 @@ mod models;
 mod recipes;
 mod vehicles;
 
-use crate::bind_java_util::JavaList;
+use crate::bind_java_util::{list_value, JavaList};
 use crate::bind_registry::{java_error, key_arg, key_value};
 use crate::expose::{
     bool_arg, enum_value, expose_class, expose_enum, global, int_arg, num_arg, str_arg, this, ClassBuilder, JavaEnum,
-    ListView,
 };
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -373,11 +372,6 @@ pub fn script_value(r: Option<&ScriptRef>) -> Value {
     canonical(ScriptHandle::new(r.clone(), class))
 }
 
-/// A `java.util.ArrayList` holding `items`.
-pub fn list_value(items: Vec<Value>) -> Value {
-    crate::bind_java_util::list_value(items)
-}
-
 /// An `ArrayList` of scripts.
 pub fn script_list<'a>(scripts: impl IntoIterator<Item = &'a ScriptRef>) -> Value {
     list_value(scripts.into_iter().map(|s| script_value(Some(s))).collect())
@@ -411,69 +405,6 @@ pub fn handle_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<ScriptHandle
             pz_kahlua::stdlib::java_class_name(&other)
         ))),
     }
-}
-
-/// A read-only `java.util.HashMap` snapshot (entries in the map's order).
-pub struct JavaMap(pub Vec<(Value, Value)>);
-
-pub const HASH_MAP_CLASS: &str = "java.util.HashMap";
-
-impl LuaObject for JavaMap {
-    fn class_name(&self) -> &str {
-        HASH_MAP_CLASS
-    }
-    fn to_lua_string(&self) -> String {
-        let parts: Vec<String> = self
-            .0
-            .iter()
-            .map(|(k, v)| format!("{}={}", pz_kahlua::exec::java_value_of(k), pz_kahlua::exec::java_value_of(v)))
-            .collect();
-        format!("{{{}}}", parts.join(", "))
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-fn register_map(thread: &mut Thread) {
-    if !thread.class_metatables.get_str(HASH_MAP_CLASS).is_nil() {
-        return;
-    }
-    let b = expose_class(thread, HASH_MAP_CLASS, None);
-    fn map<R>(c: &NativeCall<'_>, f: impl FnOnce(&[(Value, Value)]) -> R) -> LuaResult<R> {
-        let o = this::<JavaMap>(c)?;
-        Ok(f(&o.as_any().downcast_ref::<JavaMap>().unwrap().0))
-    }
-    b.method("get", |c| {
-        let k = c.arg(1);
-        let v = map(c, |m| m.iter().find(|(mk, _)| mk.raw_equals(&k)).map(|(_, v)| v.clone()))?;
-        Ok(c.push(v.unwrap_or_default()))
-    });
-    b.method("containsKey", |c| {
-        let k = c.arg(1);
-        let r = map(c, |m| m.iter().any(|(mk, _)| mk.raw_equals(&k)))?;
-        Ok(c.push(r))
-    });
-    b.method("size", |c| {
-        let n = map(c, |m| m.len())?;
-        Ok(c.push(n as f64))
-    });
-    b.method("isEmpty", |c| {
-        let r = map(c, |m| m.is_empty())?;
-        Ok(c.push(r))
-    });
-    b.method("keySet", |c| {
-        let keys = map(c, |m| m.iter().map(|(k, _)| k.clone()).collect())?;
-        Ok(c.push(list_value(keys)))
-    });
-    b.method("values", |c| {
-        let vals = map(c, |m| m.iter().map(|(_, v)| v.clone()).collect())?;
-        Ok(c.push(list_value(vals)))
-    });
-    b.method("toString", |c| {
-        let s = map(c, |m| JavaMap(m.to_vec()).to_lua_string())?;
-        Ok(c.push(s))
-    });
 }
 
 // ---- conversions ----
@@ -569,9 +500,7 @@ pub fn list_arg(c: &NativeCall<'_>, i: usize) -> Vec<Value> {
     match c.arg(i) {
         Value::Object(o) => {
             if let Some(l) = o.as_any().downcast_ref::<JavaList>() {
-                l.items.borrow().clone()
-            } else if let Some(v) = o.as_any().downcast_ref::<ListView>() {
-                (v.items)()
+                l.snapshot()
             } else {
                 Vec::new()
             }
@@ -1454,7 +1383,6 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
 /// Register the scripting classes and `getScriptManager()` on `thread`,
 /// bound to `sm`.
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
-    register_map(thread);
     register_script_type(thread);
     register_module(thread, &sm);
     register_base(thread, &sm);
@@ -1505,6 +1433,7 @@ mod tests {
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end")
             .unwrap();
+        crate::bind_java_util::register(&mut t);
         crate::bind_core::register(&mut t, None, Rc::new(RefCell::new(pz_core::core::Core::default())));
         crate::bind_registry::register(&mut t, sm.clone());
         register(&mut t, sm);

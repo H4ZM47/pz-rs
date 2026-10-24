@@ -47,7 +47,7 @@ pub const FLUID_MATCH_MODE_CLASS: &str = "zombie.entity.components.crafting.Flui
 pub const RESOURCE_TYPE_CLASS: &str = "zombie.entity.components.resources.ResourceType";
 
 fn list(values: Vec<Value>) -> Value {
-    super::list_value(values)
+    crate::bind_java_util::list_value(values)
 }
 
 /// Line `i` of a recipe (an `InputScript` or `OutputScript`).

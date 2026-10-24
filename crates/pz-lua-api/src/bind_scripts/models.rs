@@ -628,7 +628,7 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
     });
     get(&b, "getCategories", |f: &FluidDefinitionScript| {
         let list = f.categories().iter().map(|c| enum_value(FLUID_CATEGORY_CLASS, c.name())).collect();
-        super::list_value(list)
+        crate::bind_java_util::list_value(list)
     });
     get_obj(&b, "getBlendWhitelist", |h, f: &FluidDefinitionScript| match f.blend_whitelist() {
         Some(_) => h.child(FLUID_FILTER_CLASS, "blendWhitelist", |f: &FluidDefinitionScript| f.blend_whitelist()),
