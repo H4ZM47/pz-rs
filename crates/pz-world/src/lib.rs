@@ -7,6 +7,7 @@
 
 pub mod bra;
 pub mod chunk;
+pub mod chunk_data;
 pub mod defs;
 pub mod fix2x;
 pub mod iso_lot;
@@ -14,7 +15,9 @@ pub mod java;
 pub mod map_files;
 pub mod meta_grid;
 pub mod sprite;
+pub mod meta_zones;
 pub mod tiledef;
+pub mod zones;
 
 pub use chunk::{
     ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare, IsoObject, SpriteLookup, TileDefSprites,
@@ -27,3 +30,7 @@ pub use meta_grid::{
     CreateParams, IsoMetaCell, IsoMetaChunk, IsoMetaGrid, WorldGenBounds, ZombieVoronoi,
 };
 pub use sprite::{IsoSpriteManager, SpriteTables};
+pub use zones::{
+    ClipperOps, PropValue, RoomTone, Zone, ZoneError, ZoneGeometryType, ZoneId, ZoneKind,
+    ZoneProps, ZoneTables,
+};

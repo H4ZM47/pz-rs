@@ -53,6 +53,46 @@ pub fn hashmap_order<'a>(keys: &[&'a str]) -> Vec<&'a str> {
     indexed.into_iter().map(|(_, _, k)| k).collect()
 }
 
+/// `String.equalsIgnoreCase` (per UTF-16 unit: equal, or equal after
+/// upper-casing, or equal after upper- then lower-casing).
+pub fn java_equals_ignore_case(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<u16>, Vec<u16>) = (a.encode_utf16().collect(), b.encode_utf16().collect());
+    if a.len() != b.len() {
+        return false;
+    }
+    fn map(u: u16, f: impl Fn(char) -> Option<char>) -> u16 {
+        char::from_u32(u as u32)
+            .and_then(f)
+            .and_then(|c| u16::try_from(c as u32).ok())
+            .unwrap_or(u)
+    }
+    let upper = |c: char| {
+        let mut it = c.to_uppercase();
+        let r = it.next();
+        if it.next().is_some() {
+            Some(c)
+        } else {
+            r
+        }
+    };
+    let lower = |c: char| {
+        let mut it = c.to_lowercase();
+        let r = it.next();
+        if it.next().is_some() {
+            Some(c)
+        } else {
+            r
+        }
+    };
+    a.iter().zip(&b).all(|(&x, &y)| {
+        if x == y {
+            return true;
+        }
+        let (ux, uy) = (map(x, upper), map(y, upper));
+        ux == uy || map(ux, lower) == map(uy, lower)
+    })
+}
+
 /// `Boolean.parseBoolean`.
 pub fn parse_boolean(s: &str) -> bool {
     s.eq_ignore_ascii_case("true")
@@ -83,6 +123,8 @@ mod tests {
         assert_eq!(string_hash(""), 0);
         assert_eq!(string_hash("abc"), 96354);
         assert_eq!(java_trim(" \t a b\r\n"), "a b");
+        assert!(java_equals_ignore_case("ParkingStall", "parkingSTALL"));
+        assert!(!java_equals_ignore_case("Farm", "FarmLand"));
     }
 
     #[test]

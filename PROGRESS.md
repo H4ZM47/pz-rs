@@ -40,6 +40,11 @@ Status of the Rust port. Update this file with every merged change.
   in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
   output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
   table (paths to GUIDs) parses identically to FMOD's own lookup.
+  Meta-grid zones (`Zone` and the vehicle/mannequin/world-gen/animal
+  subclasses, chunk zone arrays, Lua-facing registration, lot-priority
+  removal) match the original `IsoMetaGrid` on randomized registrations;
+  the native clipper is an injected trait and the zone tables are runtime
+  input.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
