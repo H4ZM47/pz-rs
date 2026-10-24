@@ -6,10 +6,15 @@
 //! (RIFF `FEV ` containers holding the Studio event data and an FSB5 sample
 //! bank) and decodes their Vorbis samples without any FMOD code.
 
+pub mod bank;
+pub mod dsp;
 pub mod fsb5;
+#[cfg(feature = "output")]
+pub mod output;
 pub mod reader;
 pub mod riff;
 pub mod strings;
+pub mod studio;
 pub mod vorbis;
 pub mod vorbis_setup;
 
@@ -54,6 +59,11 @@ impl BankFile {
     /// Payload of the first chunk (or list) with this id.
     pub fn chunk(&self, id: &[u8; 4]) -> Option<&[u8]> {
         self.root.find(id).map(|c| &self.map[c.body.clone()])
+    }
+
+    /// The Studio objects stored in this bank.
+    pub fn model(&self) -> reader::Result<bank::BankModel> {
+        bank::BankModel::parse(&self.map, &self.root)
     }
 
     /// The string table, for `*.strings.bank` files.
