@@ -23,6 +23,7 @@ pub mod obscuring;
 pub mod occlusion;
 pub mod puddles;
 pub mod seam;
+pub mod snow;
 pub mod sprite;
 pub mod texd;
 pub mod trees;

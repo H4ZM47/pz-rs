@@ -239,3 +239,26 @@ fn puddles_are_drawn_per_frame_below_quality_two() {
     pz_iso_render::puddles::render_puddles(&r, r.surfaces.as_ref().unwrap(), &sq, &mut cmds);
     assert!(cmds.is_empty());
 }
+
+/// Full winter snow covers every outdoor floor with the square tiles.
+#[test]
+fn snow_covers_outdoor_floors_in_winter() {
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else { return };
+    let mut tm = TextureManager::new();
+    let world = puddle_world(&mut tm);
+    let maps = Maps(depth_map(&mut tm));
+    let mut map = HashMap::new();
+    for i in 0..48 {
+        map.insert(format!("e_newsnow_ground_1_{i}"), floor_tex(&mut tm, &format!("snow{i}"), [250, 250, 255, 255]));
+    }
+    let textures = Textures(map);
+    let winter = ClimateInputs { snow_target: 100, winter: true, ..Default::default() };
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, SurfaceSettings::default(), winter, PuddlesState::default())));
+    let p = draw(&mut gpu, &mut tm, &r, &world);
+    assert_eq!(px(&p, 256, 160), [250, 250, 255, 255]);
+    // Autumn: no snow.
+    let autumn = ClimateInputs { snow_target: 100, winter: false, ..Default::default() };
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(surfaces(&world, &textures, SurfaceSettings::default(), autumn, PuddlesState::default())));
+    let p = draw(&mut gpu, &mut tm, &r, &world);
+    assert_eq!(px(&p, 256, 160), [200, 100, 50, 255]);
+}
