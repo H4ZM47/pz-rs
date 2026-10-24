@@ -43,7 +43,8 @@ pub struct GameFs {
     pub game_version: GameVersion,
     /// `TextureID.useCompressionOption`; feeds mod pack flags.
     pub texture_compression: bool,
-    /// `getCacheDir()` / `Core.getMyDocumentFolder()`: `~/Zomboid`.
+    /// `getCacheDir()` / `Core.getMyDocumentFolder()`: `~/Zomboid-rs` by
+    /// default (see [`GameFs::set_cache_dir`]).
     cache_dir: PathBuf,
     mod_folders_order: Vec<String>,
     /// Steam: `SteamWorkshop.GetInstalledItemFolders()` (each holds `mods/`).
@@ -621,10 +622,13 @@ impl GameFs {
     }
 }
 
-/// `getCacheDir()` default: `<user.home>/Zomboid`.
+/// Default user folder. The original uses `<user.home>/Zomboid`; the port
+/// keeps its own `<user.home>/Zomboid-rs` so it never writes into the
+/// installed game's saves, options or mod lists. Engines may point it
+/// elsewhere with [`GameFs::set_cache_dir`].
 fn default_cache_dir() -> PathBuf {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).unwrap_or_default();
-    PathBuf::from(home).join("Zomboid")
+    PathBuf::from(home).join("Zomboid-rs")
 }
 
 /// `getCanonicalFile(parent, child)`: the first entry of `parent` whose name
