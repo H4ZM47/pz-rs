@@ -10,6 +10,7 @@ use crate::chunk::IsoGridSquare;
 use crate::defs::RoomDef;
 use crate::save::items::ItemBlob;
 use crate::save::lua_table::LuaTable;
+use crate::save::movers::{AnimalTracks, IsoPushableObject};
 use crate::save::visual::HumanVisual;
 use crate::sprite::SpriteIdx;
 
@@ -540,6 +541,12 @@ pub enum ObjectKind {
     Trap(Box<IsoTrap>),
     CarBatteryCharger(Box<IsoCarBatteryCharger>),
     Fire(IsoFire),
+    /// `IsoAnimalTrack`.
+    AnimalTrack(Box<AnimalTracks>),
+    /// `IsoPushableObject` or `IsoWheelieBin` in a square's object list
+    /// (saved as a moving object; the base `IsoObject` fields other than
+    /// `sprite` and `container` are unused).
+    Pushable(Box<IsoPushableObject>),
 }
 
 impl ObjectKind {
@@ -576,6 +583,9 @@ impl ObjectKind {
             ObjectKind::Trap(_) => "IsoTrap",
             ObjectKind::CarBatteryCharger(_) => "IsoCarBatteryCharger",
             ObjectKind::Fire(_) => "IsoFire",
+            ObjectKind::AnimalTrack(_) => "IsoAnimalTrack",
+            ObjectKind::Pushable(p) if p.wheelie_bin => "IsoWheelieBin",
+            ObjectKind::Pushable(_) => "IsoPushableObject",
         }
     }
 
@@ -613,6 +623,8 @@ impl ObjectKind {
             ObjectKind::Trap(_) => "IsoTrap",
             ObjectKind::CarBatteryCharger(_) => "IsoCarBatteryCharger",
             ObjectKind::Fire(_) => "Fire",
+            ObjectKind::AnimalTrack(_) => "IsoAnimalTrack",
+            ObjectKind::Pushable(p) => p.object_name(),
         })
     }
 

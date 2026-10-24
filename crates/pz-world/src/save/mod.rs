@@ -16,7 +16,9 @@ pub mod chunk_file;
 pub mod io;
 pub mod items;
 pub mod lua_table;
+pub mod movers;
 pub mod object_io;
+pub mod vehicle;
 pub mod visual;
 
 use crate::java::string_hash;
@@ -419,3 +421,5 @@ impl SaveCtx<'_> {
 mod animal_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod movers_tests;
