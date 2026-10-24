@@ -16,6 +16,7 @@ pub const KEY_CLASSES: &[(&str, &str)] = &[
     ("book_subject", "zombie/scripting/objects/BookSubject"),
     ("character_profession", "zombie/scripting/objects/CharacterProfession"),
     ("character_trait", "zombie/scripting/objects/CharacterTrait"),
+    ("game_mode", "zombie/core/GameMode"),
     ("item_body_location", "zombie/scripting/objects/ItemBodyLocation"),
     ("item_tag", "zombie/scripting/objects/ItemTag"),
     ("item_type", "zombie/scripting/objects/ItemType"),
