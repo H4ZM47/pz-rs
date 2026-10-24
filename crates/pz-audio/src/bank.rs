@@ -400,7 +400,49 @@ pub struct Instrument {
 pub struct Bus {
     pub id: Guid,
     pub output: Output,
-    pub raw_bus: Vec<u8>,
+    pub body: BusBody,
+}
+
+/// `BUS `: fields every bus kind shares.
+#[derive(Debug, Clone, Default)]
+pub struct BusBody {
+    pub unknown_0: u32,
+    pub speaker_mode: u32,
+    /// Effect chain, in order (`BEFF`, `SEFF`, ...).
+    pub effects: Vec<Guid>,
+    pub effects_2: Vec<Guid>,
+    pub volume_db: f32,
+    pub unknown_vol_2: f32,
+    pub vcas: Vec<Guid>,
+    pub unknown_max: u32,
+    pub unknown_e: u32,
+    pub effect_speaker_modes: Vec<u32>,
+    pub effect_speaker_modes_2: Vec<u32>,
+}
+
+impl BusBody {
+    pub fn parse(b: &[u8]) -> Result<BusBody> {
+        let mut r = Reader::new(b);
+        let unknown_0 = r.u32()?;
+        let speaker_mode = r.u32()?;
+        let effects = r.read_structs(|r| r.guid())?;
+        let effects_2 = r.read_structs(|r| r.guid())?;
+        let size = r.u16()? as usize;
+        let mut v = Reader::new(r.bytes(size)?);
+        Ok(BusBody {
+            unknown_0,
+            speaker_mode,
+            effects,
+            effects_2,
+            volume_db: v.f32()?,
+            unknown_vol_2: v.f32()?,
+            vcas: r.read_structs(|r| r.guid())?,
+            unknown_max: r.u32()?,
+            unknown_e: r.u32()?,
+            effect_speaker_modes: r.read_structs(|r| r.u32())?,
+            effect_speaker_modes_2: r.read_structs(|r| r.u32())?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -499,18 +541,12 @@ impl BankModel {
                 let mut r = Reader::new(b);
                 let id = r.guid()?;
                 let output = read_output(&mut r)?;
-                let raw_bus = o.get(b"BUS ").unwrap_or_default().to_vec();
-                m.buses.insert(
-                    id,
-                    (
-                        kind,
-                        Bus {
-                            id,
-                            output,
-                            raw_bus,
-                        },
-                    ),
-                );
+                let body = o
+                    .get(b"BUS ")
+                    .map(BusBody::parse)
+                    .transpose()?
+                    .unwrap_or_default();
+                m.buses.insert(id, (kind, Bus { id, output, body }));
             }
         }
         Ok(m)

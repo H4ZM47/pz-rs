@@ -11,6 +11,7 @@ pub mod fsb5;
 pub mod reader;
 pub mod riff;
 pub mod strings;
+pub mod studio;
 pub mod vorbis;
 pub mod vorbis_setup;
 
