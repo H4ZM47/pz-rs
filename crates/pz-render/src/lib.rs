@@ -7,12 +7,14 @@
 //! them from [`TextureManager::data`] by [`Texture::id`].
 
 pub mod image;
+pub mod lua;
 pub mod manager;
 pub mod png;
 
 use std::rc::Rc;
 
 pub use image::{ImageData, Mask, MipLevel};
+pub use lua::LuaTexture;
 pub use manager::{SharedTextures, TextureData, TextureManager};
 
 /// `TextureFlags`.
