@@ -1,4 +1,6 @@
-//! `MathLib` (J2SE variant). Kahlua has no `math.random`; the game provides
+//! `MathLib` (J2SE variant). Transcendental functions use the `libm`
+//! (fdlibm-derived) implementations, which match Java's `Math` results.
+//! Kahlua has no `math.random`; the game provides
 //! `ZombRand` and friends instead.
 
 use super::*;
@@ -25,21 +27,21 @@ pub fn register(env: &TableRef) {
     math.set_str("huge", f64::INFINITY);
     let m = &math;
     unary!(m, "abs", f64::abs);
-    unary!(m, "acos", f64::acos);
-    unary!(m, "asin", f64::asin);
+    unary!(m, "acos", libm::acos);
+    unary!(m, "asin", libm::asin);
     unary!(m, "atan", f64::atan);
     reg_named(m, "atan2", "math.atan2", |c| {
         lua_assert(c.nargs() >= 2, "Not enough arguments")?;
         let y = number_arg(c, 1, "atan2")?;
         let x = number_arg(c, 2, "atan2")?;
-        Ok(c.push(y.atan2(x)))
+        Ok(c.push(libm::atan2(y, x)))
     });
     unary!(m, "ceil", f64::ceil);
     unary!(m, "cos", f64::cos);
-    unary!(m, "cosh", f64::cosh);
+    unary!(m, "cosh", libm::cosh);
     // Math.toDegrees / toRadians use these exact constant factors.
     unary!(m, "deg", |x| x * (180.0 / std::f64::consts::PI));
-    unary!(m, "exp", f64::exp);
+    unary!(m, "exp", libm::exp);
     unary!(m, "floor", f64::floor);
     reg_named(m, "fmod", "math.fmod", |c| {
         lua_assert(c.nargs() >= 2, "Not enough arguments")?;
@@ -70,7 +72,7 @@ pub fn register(env: &TableRef) {
         let (mm, e) = if x.is_infinite() || x.is_nan() {
             (x, 0.0)
         } else {
-            let e = (x.ln() * (1.0 / std::f64::consts::LN_2)).ceil();
+            let e = (libm::log(x) * (1.0 / std::f64::consts::LN_2)).ceil();
             let div = 1i32.wrapping_shl(e as i32 as u32);
             (x / div as f64, e)
         };
@@ -86,8 +88,8 @@ pub fn register(env: &TableRef) {
         let r = if tmp.is_infinite() || tmp.is_nan() { mm } else { mm * 1i32.wrapping_shl(de as i32 as u32) as f64 };
         Ok(c.push(r))
     });
-    unary!(m, "log", f64::ln);
-    unary!(m, "log10", f64::log10);
+    unary!(m, "log", libm::log);
+    unary!(m, "log10", libm::log10);
     reg_named(m, "modf", "math.modf", |c| {
         lua_assert(c.nargs() >= 1, "Not enough arguments")?;
         let mut x = number_arg(c, 1, "modf")?;
@@ -109,12 +111,12 @@ pub fn register(env: &TableRef) {
         lua_assert(c.nargs() >= 2, "Not enough arguments")?;
         let x = number_arg(c, 1, "pow")?;
         let y = number_arg(c, 2, "pow")?;
-        Ok(c.push(x.powf(y)))
+        Ok(c.push(libm::pow(x, y)))
     });
     unary!(m, "rad", |x| x * (std::f64::consts::PI / 180.0));
     unary!(m, "sin", f64::sin);
-    unary!(m, "sinh", f64::sinh);
+    unary!(m, "sinh", libm::sinh);
     unary!(m, "sqrt", f64::sqrt);
     unary!(m, "tan", f64::tan);
-    unary!(m, "tanh", f64::tanh);
+    unary!(m, "tanh", libm::tanh);
 }

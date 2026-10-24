@@ -197,6 +197,12 @@ impl Thread {
 
     /// `KahluaThread.pcall`: `Ok(results)` or `Err((message, stacktrace))`.
     pub fn pcall(&mut self, f: &Value, args: &[Value]) -> Result<Vec<Value>, (Value, String)> {
+        self.pcall_ex(f, args).map_err(|(m, t, _)| (m, t))
+    }
+
+    /// `pcall` that also returns the error itself (the Java exception
+    /// object the original passes as pcall's fourth result).
+    pub fn pcall_ex(&mut self, f: &Value, args: &[Value]) -> Result<Vec<Value>, (Value, String, LuaError)> {
         let depth = self.frames.len();
         let base = self.top;
         let upv_floor = self.frames.last().map(|f| f.local_base).unwrap_or(0);
@@ -210,7 +216,7 @@ impl Thread {
                     trace.push_str(&frame_trace(&fr));
                 }
                 let _ = self.set_top(base);
-                Err((e.pcall_message(), trace))
+                Err((e.pcall_message(), trace, e))
             }
         }
     }
@@ -220,7 +226,15 @@ impl Thread {
     pub(crate) fn call_at(&mut self, base: usize, nargs: usize) -> LuaResult<usize> {
         let f = self.stack[base].clone();
         match f {
-            Value::Native(nf) => self.call_native(&nf, base + 1, base, nargs),
+            // KahluaThread.call(int) wraps exceptions from a directly called
+            // Java function as "<class> <message> in <function>".
+            Value::Native(nf) => self.call_native(&nf, base + 1, base, nargs).map_err(|e| {
+                let (class, msg) = match &e {
+                    LuaError::Kahlua(v) => ("se.krka.kahlua.vm.KahluaException", java_value_of(v)),
+                    LuaError::Runtime { message, class } => (*class, message.clone()),
+                };
+                LuaError::runtime(format!("{class} {msg} in {}", nf.name))
+            }),
             Value::Closure(c) => {
                 self.push_frame(c, base + 1, base, nargs, false)?;
                 self.execute()?;
@@ -1309,7 +1323,7 @@ pub fn primitive_math(v1: f64, v2: f64, op: u32) -> f64 {
                 v1 - ipart as f64 * v2
             }
         }
-        OP_POW => v1.powf(v2),
+        OP_POW => libm::pow(v1, v2),
         _ => 0.0,
     }
 }
