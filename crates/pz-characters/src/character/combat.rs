@@ -186,7 +186,8 @@ impl WeaponStats {
             weight: get(|s| s.actual_weight, 1.0).max(0.0),
             max_range: get(|s| s.max_range, 1.0),
             min_range: get(|s| s.min_range, 0.0),
-            hit_angle_mod: get(|s| s.hit_angle_mod, 0.0),
+            // `Math.toRadians(script.hitAngleMod)` (`Item.InstanceItem`).
+            hit_angle_mod: (get(|s| s.hit_angle_mod, 0.0) as f64).to_radians() as f32,
             ranged: item.is_ranged(),
             aimed_firearm: item.is_aimed_firearm(),
             categories: item.get_weapon_categories().to_vec(),
@@ -744,15 +745,10 @@ impl<I: 'static> GameCharacter<I> {
                     self.vars.hit_from_behind = side == Side::Behind;
                     return Ok(());
                 }
-                let behind = wielder.is_behind(self.vars.x, self.vars.y, (self.vars.forward_x, self.vars.forward_y));
-                let user = WeaponUser {
-                    do_shove: wielder.vars.do_shove,
-                    aim_at_floor: wielder.vars.aim_at_floor,
-                    behind,
-                    primary_hand_item: wielder.items.primary_hand_item(),
-                    secondary_hand_item: wielder.items.secondary_hand_item(),
-                };
-                self.damage_from_weapon(sm, chars, ctx, weapon_item, Some(&user), -1)?;
+                // `weapon.getUsingPlayer()` is the entity system's user (a
+                // crafting player), not the wielder: null for a swing.
+                let user: Option<&WeaponUser<'_>> = None;
+                self.damage_from_weapon(sm, chars, ctx, weapon_item, user, -1)?;
                 let mut reaction = hit_reaction;
                 if reaction == "Bite" {
                     match self.test_dot_side(wielder.vars.x, wielder.vars.y) {
