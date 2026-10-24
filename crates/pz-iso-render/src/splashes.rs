@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 
+use pz_core::random as rand;
 use pz_render::iso::{fastfloor, square_depth, x_to_screen, y_to_screen, TILE_SCALE};
 use pz_render::{gl, DrawCmd, Rgba, WorldShader};
 
@@ -27,41 +28,6 @@ pub struct FrameState {
     pub paused: bool,
     /// `unPausedAccumulator`: frames (at 60 a second) of unpaused time.
     pub unpaused_accumulator: f32,
-}
-
-/// A xorshift generator standing in for `Rand`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SplashRng(u64);
-
-impl Default for SplashRng {
-    fn default() -> Self {
-        SplashRng(0x9E37_79B9_7F4A_7C15)
-    }
-}
-
-impl SplashRng {
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-
-    /// `Rand.Next(max)`: 0..max, 0 for max <= 0.
-    pub fn next_int(&mut self, max: i32) -> i32 {
-        if max <= 0 {
-            return 0;
-        }
-        (self.next_u64() % max as u64) as i32
-    }
-
-    /// `Rand.Next(min, max)` for floats.
-    pub fn next_f32(&mut self, min: f32, max: f32) -> f32 {
-        let u = (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32;
-        min + u * (max - min)
-    }
 }
 
 /// `Rand.AdjustForFramerate(chance)`.
@@ -102,7 +68,6 @@ fn rain_values(s: &Surfaces<'_>) -> (i32, bool, f32) {
 #[derive(Clone, Debug, Default)]
 pub struct RainSplashes {
     pub levels: HashMap<(i32, i32, i32), ChunkLevelRain>,
-    pub rng: SplashRng,
 }
 
 impl RainSplashes {
@@ -116,7 +81,6 @@ impl RainSplashes {
         let (cell, raining, rm) = rain_values(s);
         let lock_fps = s.settings.lock_fps;
         let frame = s.frame;
-        let rng = &mut self.rng;
         let l = self.levels.entry((wx, wy, level)).or_default();
         if l.frame_num == frame.frame_count {
             return;
@@ -134,7 +98,7 @@ impl RainSplashes {
             for i in 0..64 {
                 if l.frame[i] < 0.0 {
                     let n = adjust_for_framerate((5.0 / intensity as f32) as i32 * 100, lock_fps);
-                    if rng.next_int(n) == 0 {
+                    if rand::next(n) == 0 {
                         l.frame[i] = 0.0;
                         l.flags[i] |= RAIN_RANDOM_XY;
                     }
@@ -160,7 +124,7 @@ pub fn render_rain_splashes(r: &ChunkRenderer<'_>, s: &Surfaces<'_>, wx: i32, wy
     let Some(rain) = s.rain else { return };
     let mut rain = rain.borrow_mut();
     rain.update(s, wx, wy, level);
-    let RainSplashes { levels, rng } = &mut *rain;
+    let RainSplashes { levels } = &mut *rain;
     let Some(l) = levels.get_mut(&(wx, wy, level)) else { return };
     if !l.raining {
         return;
@@ -174,7 +138,7 @@ pub fn render_rain_splashes(r: &ChunkRenderer<'_>, s: &Surfaces<'_>, wx: i32, wy
         if cv.is_some_and(|cv| !cv.is_visible(sq)) {
             continue;
         }
-        render_rain_splash(r, s, sq, l.frame[i], l.flags[i] & RAIN_RANDOM_XY != 0, &mut l.splash_xy[i], rng, out);
+        render_rain_splash(r, s, sq, l.frame[i], l.flags[i] & RAIN_RANDOM_XY != 0, &mut l.splash_xy[i], out);
         l.flags[i] &= !RAIN_RANDOM_XY;
     }
 }
@@ -182,7 +146,7 @@ pub fn render_rain_splashes(r: &ChunkRenderer<'_>, s: &Surfaces<'_>, wx: i32, wy
 /// `IsoGridSquare.renderRainSplash(playerIndex, lightInfo, splashFrame,
 /// bRandomXY)` in the chunk-texture renderer.
 #[allow(clippy::too_many_arguments)]
-fn render_rain_splash(r: &ChunkRenderer<'_>, s: &Surfaces<'_>, sq: &RenderSquare, frame: f32, random_xy: bool, xy: &mut (f32, f32), rng: &mut SplashRng, out: &mut Vec<DrawCmd>) {
+fn render_rain_splash(r: &ChunkRenderer<'_>, s: &Surfaces<'_>, sq: &RenderSquare, frame: f32, random_xy: bool, xy: &mut (f32, f32), out: &mut Vec<DrawCmd>) {
     let f = (frame * 4.0) as i32;
     if frame < 0.0 || f >= 50 {
         return;
@@ -195,7 +159,7 @@ fn render_rain_splash(r: &ChunkRenderer<'_>, s: &Surfaces<'_>, sq: &RenderSquare
     }
     let Some(tex) = s.textures.texture(&format!("RainSplash_00_{f}")) else { return };
     if random_xy {
-        *xy = (rng.next_f32(0.1, 0.9), rng.next_f32(0.1, 0.9));
+        *xy = (rand::next_float(0.1, 0.9), rand::next_float(0.1, 0.9));
     }
     let cam = &r.cam;
     let (x, y, z) = (sq.x as f32 + xy.0, sq.y as f32 + xy.1, sq.z as f32);
@@ -254,7 +218,7 @@ impl WaterSplashData {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn init(&mut self, frame_count: i32, shift: i32, random_size: bool, dx: f32, dy: f32, frame: &FrameState, rng: &mut SplashRng) {
+    fn init(&mut self, frame_count: i32, shift: i32, random_size: bool, dx: f32, dy: f32, frame: &FrameState) {
         self.frame = 0.0;
         self.frame_count = frame_count;
         self.frame_cache_shift = shift;
@@ -263,7 +227,7 @@ impl WaterSplashData {
         self.dy = dy;
         self.size = 0.5;
         if random_size {
-            self.size = rng.next_f32(0.25, 0.75);
+            self.size = rand::next_float(0.25, 0.75);
         }
     }
 
@@ -301,7 +265,6 @@ impl WaterSplashData {
 #[derive(Clone, Debug, Default)]
 pub struct FishSplashes {
     pub squares: HashMap<(i32, i32, i32), WaterSplashData>,
-    pub rng: SplashRng,
 }
 
 impl FishSplashes {
@@ -310,17 +273,17 @@ impl FishSplashes {
     /// random ones (`Rand.Next(0, 0.5) - 0.25`).
     #[allow(clippy::too_many_arguments)]
     pub fn start(&mut self, x: i32, y: i32, z: i32, big: bool, offset: Option<(f32, f32)>, seen: bool, frame: &FrameState) {
-        let (dx, dy) = offset.unwrap_or_else(|| (self.rng.next_f32(0.0, 0.5) - 0.25, self.rng.next_f32(0.0, 0.5) - 0.25));
+        let (dx, dy) = offset.unwrap_or_else(|| (rand::next_float(0.0, 0.5) - 0.25, rand::next_float(0.0, 0.5) - 0.25));
         let d = self.squares.entry((x, y, z)).or_default();
         if !seen || d.is_splash_now(frame) {
             return;
         }
         if big {
-            let i = self.rng.next_int(2);
-            d.init(32, 16 + 32 * i, false, dx, dy, frame, &mut self.rng);
+            let i = rand::next(2);
+            d.init(32, 16 + 32 * i, false, dx, dy, frame);
             d.big = true;
         } else {
-            d.init(16, 0, true, dx, dy, frame, &mut self.rng);
+            d.init(16, 0, true, dx, dy, frame);
             d.big = false;
         }
     }
@@ -433,7 +396,6 @@ mod tests {
     #[test]
     fn adjusts_chances_for_the_frame_rate() {
         assert_eq!(adjust_for_framerate(100, 60), 200);
-        let mut r = SplashRng::default();
-        assert!((0..1000).map(|_| r.next_f32(0.1, 0.9)).all(|v| (0.1..0.9).contains(&v)));
+        assert!((0..1000).map(|_| rand::next_float(0.1, 0.9)).all(|v| (0.1..0.9).contains(&v)));
     }
 }

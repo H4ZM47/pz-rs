@@ -5,6 +5,7 @@ version.workspace = true
 publish.workspace = true
 
 [dependencies]
+pz-core = { path = "../pz-core" }
 pz-render = { path = "../pz-render" }
 pz-kahlua = { path = "../pz-kahlua" }
 
