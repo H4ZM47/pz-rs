@@ -194,14 +194,31 @@ impl SpriteTables {
         })
     }
 
-    /// Reads the tables from the installed game's `projectzomboid.jar`.
-    ///
-    /// LOADER STUB: to be wired to the `pz-classfile` class-file reader
-    /// (the enum constants of `zombie.iso.SpriteDetails.IsoFlagType`,
-    /// `zombie.iso.SpriteDetails.IsoObjectType` and
-    /// `zombie.core.properties.FasciaEdge`, in declaration order).
-    pub fn from_game_jar(_jar: &std::path::Path) -> Result<Self, String> {
-        Err("SpriteTables::from_game_jar is not wired to pz-classfile yet".into())
+    /// Reads the tables from the installed game's `projectzomboid.jar`
+    /// (see [`SpriteTables::from_jar`]).
+    pub fn from_game_jar(jar: &std::path::Path) -> Result<Self, String> {
+        let jar = pz_classfile::Jar::open(jar).map_err(|e| format!("{}: {e}", jar.display()))?;
+        Self::from_jar(&jar)
+    }
+
+    /// Reads the tables from an open game jar: the enum constants of
+    /// `zombie.iso.SpriteDetails.IsoFlagType` and `IsoObjectType` (each
+    /// without its trailing `MAX`) and `zombie.core.properties.FasciaEdge`,
+    /// in declaration order.
+    pub fn from_jar(jar: &pz_classfile::Jar) -> Result<Self, String> {
+        let names = |class: &str, drop_max: bool| -> Result<Vec<String>, String> {
+            let mut v =
+                pz_classfile::enum_constants(jar, class).map_err(|e| format!("{class}: {e}"))?;
+            if drop_max && v.last().map(String::as_str) == Some("MAX") {
+                v.pop();
+            }
+            Ok(v)
+        };
+        Self::new(
+            names("zombie/iso/SpriteDetails/IsoFlagType", true)?,
+            names("zombie/iso/SpriteDetails/IsoObjectType", true)?,
+            names("zombie/core/properties/FasciaEdge", false)?,
+        )
     }
 
     /// Reads the tables from text: three lines, each a comma-separated list
@@ -219,6 +236,16 @@ impl SpriteTables {
         };
         let (f, o, e) = (next(), next(), next());
         Self::new(f, o, e)
+    }
+
+    /// The tables in the [`SpriteTables::from_text`] format.
+    pub fn to_text(&self) -> String {
+        format!(
+            "{}\n{}\n{}\n",
+            self.flag_names.join(","),
+            self.object_type_names.join(","),
+            self.fascia_edge_names.join(",")
+        )
     }
 
     /// `IsoObjectType.MAX`.
@@ -367,5 +394,8 @@ mod tests {
         assert!(SpriteTables::new(vec![], vec![], vec![]).is_err());
         let txt = "open,solid\nwall\n";
         assert!(SpriteTables::from_text(txt).is_err());
+        let back = SpriteTables::from_text(&t.to_text()).unwrap();
+        assert_eq!(back.to_text(), t.to_text());
+        assert_eq!(back.flag.cutN, t.flag.cutN);
     }
 }

@@ -808,13 +808,49 @@ pub struct ObjectTables {
 }
 
 impl ObjectTables {
-    /// Reads the tables from the installed game's `projectzomboid.jar`.
-    ///
-    /// LOADER STUB: to be wired to the `pz-classfile` class-file reader
-    /// (the static initialiser of `zombie.iso.objects.IsoTree` and the enum
-    /// constants of `zombie.iso.objects.IsoWindow$LockedHouseFrequency`).
-    pub fn from_game_jar(_jar: &std::path::Path) -> Result<Self, String> {
-        Err("ObjectTables::from_game_jar is not wired to pz-classfile yet".into())
+    /// Reads the tables from the installed game's `projectzomboid.jar`
+    /// (see [`ObjectTables::from_jar`]).
+    pub fn from_game_jar(jar: &std::path::Path) -> Result<Self, String> {
+        let jar = pz_classfile::Jar::open(jar).map_err(|e| format!("{}: {e}", jar.display()))?;
+        Self::from_jar(&jar)
+    }
+
+    /// Reads the tables from an open game jar: the array the static
+    /// initialiser of `zombie.iso.objects.IsoTree` stores in
+    /// `LOGS_PER_SIZE`, and the `(value, lockChance)` constructor arguments
+    /// of the `zombie.iso.objects.IsoWindow$LockedHouseFrequency` constants.
+    pub fn from_jar(jar: &pz_classfile::Jar) -> Result<Self, String> {
+        use pz_classfile::Value;
+        const TREE: &str = "zombie/iso/objects/IsoTree";
+        const FREQ: &str = "zombie/iso/objects/IsoWindow$LockedHouseFrequency";
+        let int = |what: &str, v: &Value| match v {
+            Value::Int(i) => i32::try_from(*i).map_err(|_| format!("{what}: {i} is not an int")),
+            other => Err(format!("{what}: expected an int, got {other:?}")),
+        };
+        let logs = match pz_classfile::static_value(jar, TREE, "LOGS_PER_SIZE")
+            .map_err(|e| format!("{TREE}: {e}"))?
+        {
+            Some(Value::Array(a)) => a
+                .iter()
+                .map(|v| int("LOGS_PER_SIZE", v))
+                .collect::<Result<Vec<_>, _>>()?,
+            other => return Err(format!("{TREE}.LOGS_PER_SIZE: {other:?}")),
+        };
+        let freq = pz_classfile::self_constructed_constants(jar, FREQ)
+            .map_err(|e| format!("{FREQ}: {e}"))?
+            .iter()
+            .map(|(name, args)| {
+                // name, ordinal, value, lockChance
+                match args.as_slice() {
+                    [_, _, value, chance] => Ok((int(name, value)?, int(name, chance)?)),
+                    _ => Err(format!(
+                        "{FREQ}.{name}: {} constructor arguments",
+                        args.len()
+                    )),
+                }
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Self::new(logs, freq)
     }
 
     /// Reads the tables from text: line 1 the comma-separated logs per
@@ -842,6 +878,17 @@ impl ObjectTables {
             })
             .collect::<Result<Vec<_>, String>>()?;
         Self::new(logs, freq)
+    }
+
+    /// The tables in the [`ObjectTables::from_text`] format.
+    pub fn to_text(&self) -> String {
+        let logs: Vec<String> = self.logs_per_size.iter().map(i32::to_string).collect();
+        let freq: Vec<String> = self
+            .locked_house_frequency
+            .iter()
+            .map(|(v, c)| format!("{v}:{c}"))
+            .collect();
+        format!("{}\n{}\n", logs.join(","), freq.join(","))
     }
 
     pub fn new(
