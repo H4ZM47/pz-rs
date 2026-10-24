@@ -738,7 +738,10 @@ dependencies = [
  "png",
  "pollster",
  "pz-fs",
+ "pz-kahlua",
+ "pz-lua-api",
  "pz-render",
+ "pz-ui",
  "raw-window-handle",
  "wgpu",
 ]

@@ -14,3 +14,6 @@ wgpu = "30.0.1"
 [dev-dependencies]
 png = "0.17"
 pz-fs = { path = "../pz-fs" }
+pz-kahlua = { path = "../pz-kahlua" }
+pz-lua-api = { path = "../pz-lua-api" }
+pz-ui = { path = "../pz-ui" }
