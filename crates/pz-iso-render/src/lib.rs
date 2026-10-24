@@ -34,6 +34,7 @@ pub mod water;
 pub mod water_flow;
 pub mod weather;
 pub mod weather_fx;
+pub mod weather_fx_mask;
 pub mod world;
 
 pub use cell::ChunkRenderer;
