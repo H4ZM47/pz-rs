@@ -13,6 +13,7 @@ pub mod bind_audio;
 pub mod bind_core;
 pub mod bind_globals;
 pub mod bind_input;
+pub mod bind_joypad;
 pub mod bind_ui;
 pub mod bind_fs;
 pub mod bind_debug;
@@ -74,6 +75,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_audio::register(&mut mgr.thread);
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
+    bind_joypad::register(mgr);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }
