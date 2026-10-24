@@ -33,12 +33,19 @@ struct OutfitMap(Vec<(String, Rc<Outfit>)>);
 
 impl OutfitMap {
     fn get(&self, name: &str) -> Option<&Rc<Outfit>> {
-        self.0.iter().find(|(k, _)| case_insensitive_cmp(k, name) == Ordering::Equal).map(|(_, v)| v)
+        self.0
+            .iter()
+            .find(|(k, _)| case_insensitive_cmp(k, name) == Ordering::Equal)
+            .map(|(_, v)| v)
     }
 
     /// `put`: an equal key keeps its spelling and takes the new value.
     fn put(&mut self, name: &str, outfit: Rc<Outfit>) {
-        match self.0.iter_mut().find(|(k, _)| case_insensitive_cmp(k, name) == Ordering::Equal) {
+        match self
+            .0
+            .iter_mut()
+            .find(|(k, _)| case_insensitive_cmp(k, name) == Ordering::Equal)
+        {
             Some(e) => e.1 = outfit,
             None => self.0.push((name.to_string(), outfit)),
         }
@@ -73,7 +80,11 @@ impl OutfitManager {
                 o.immutable = immutable;
                 o.items.iter_mut().for_each(|r| r.immutable = immutable);
                 let o = Rc::new(o);
-                let (list, map) = if female { (&mut m.female_outfits, &mut m.female_map) } else { (&mut m.male_outfits, &mut m.male_map) };
+                let (list, map) = if female {
+                    (&mut m.female_outfits, &mut m.female_map)
+                } else {
+                    (&mut m.male_outfits, &mut m.male_map)
+                };
                 map.put(&o.name.clone(), o.clone());
                 list.push(o);
             }
@@ -96,7 +107,9 @@ impl OutfitManager {
 
     /// `init()` with a clock-seeded shuffle, as the original.
     pub fn init(fs: &mut GameFs) -> Option<Self> {
-        let seed = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos() as i64);
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as i64);
         Self::init_with_shuffle(fs, &JavaRandom::new(seed))
     }
 
@@ -107,12 +120,15 @@ impl OutfitManager {
         let mut inst = Self::parse_inner(&base_file(fs, CLOTHING_FILE), "game", true)?;
         let rel = CLOTHING_FILE.replace('/', &SEP.to_string());
         for id in fs.mod_ids().to_vec() {
-            let Some(dir) = fs.available_mod_dir(&id) else { continue };
-            let Some(info) = fs.mod_info(&dir) else { continue };
+            let Some(dir) = fs.available_mod_dir(&id) else {
+                continue;
+            };
+            let Some(info) = fs.mod_info(&dir) else {
+                continue;
+            };
             let (version, common) = (info.version_dir.clone(), info.common_dir.clone());
-            let Some(m) =
-                Self::parse_inner(&format!("{version}{SEP}{rel}"), &id, true)
-                    .or_else(|| Self::parse_inner(&format!("{common}{SEP}{rel}"), &id, true))
+            let Some(m) = Self::parse_inner(&format!("{version}{SEP}{rel}"), &id, true)
+                .or_else(|| Self::parse_inner(&format!("{common}{SEP}{rel}"), &id, true))
             else {
                 continue;
             };
@@ -127,9 +143,15 @@ impl OutfitManager {
     fn merge(&mut self, m: OutfitManager) {
         for (outfits, female) in [(m.male_outfits, false), (m.female_outfits, true)] {
             for o in outfits {
-                let (list, map) =
-                    if female { (&mut self.female_outfits, &mut self.female_map) } else { (&mut self.male_outfits, &mut self.male_map) };
-                match map.get(&o.name).and_then(|old| list.iter().position(|x| Rc::ptr_eq(x, old))) {
+                let (list, map) = if female {
+                    (&mut self.female_outfits, &mut self.female_map)
+                } else {
+                    (&mut self.male_outfits, &mut self.male_map)
+                };
+                match map
+                    .get(&o.name)
+                    .and_then(|old| list.iter().position(|x| Rc::ptr_eq(x, old)))
+                {
                     Some(i) => list[i] = o.clone(),
                     None => list.push(o.clone()),
                 }
@@ -173,7 +195,11 @@ impl OutfitManager {
     }
 
     /// [`Self::get_random_outfit`] drawing from `next` (`Rand.Next(max)`).
-    pub fn get_random_outfit_with(&self, female: bool, next: &mut dyn FnMut(i32) -> i32) -> Option<&Rc<Outfit>> {
+    pub fn get_random_outfit_with(
+        &self,
+        female: bool,
+        next: &mut dyn FnMut(i32) -> i32,
+    ) -> Option<&Rc<Outfit>> {
         let list = self.get(female);
         if list.is_empty() {
             return None;
@@ -188,8 +214,16 @@ impl OutfitManager {
         self.get_random_non_silly_outfit_with(female, &mut random::next)
     }
 
-    pub fn get_random_non_silly_outfit_with(&self, female: bool, next: &mut dyn FnMut(i32) -> i32) -> Option<&Rc<Outfit>> {
-        let silly = |o: &Outfit| ["Santa", "Spiffo", "Naked"].iter().any(|s| o.name.contains(s));
+    pub fn get_random_non_silly_outfit_with(
+        &self,
+        female: bool,
+        next: &mut dyn FnMut(i32) -> i32,
+    ) -> Option<&Rc<Outfit>> {
+        let silly = |o: &Outfit| {
+            ["Santa", "Spiffo", "Naked"]
+                .iter()
+                .any(|s| o.name.contains(s))
+        };
         if self.get(female).iter().all(|o| silly(o)) {
             return None;
         }
@@ -214,7 +248,11 @@ impl OutfitManager {
         let mut name = format!("Generic0{}", next(5) + 1);
         if next(4) == 0 {
             let r = next(3);
-            let pick = if female { ["Mannequin1", "Mannequin2", "Classy"] } else { ["Classy", "Tourist", "MallSecurity"] };
+            let pick = if female {
+                ["Mannequin1", "Mannequin2", "Classy"]
+            } else {
+                ["Classy", "Tourist", "MallSecurity"]
+            };
             if let Some(p) = pick.get(r as usize) {
                 name = (*p).to_string();
             }
@@ -266,10 +304,16 @@ impl OutfitManager {
 
 /// `HumanVisual.dressInClothingItem(guid, itemVisuals)`: a one-item outfit
 /// without default pants/top. `None` if the guid names no clothing item.
-pub fn dress_in_clothing_item(guid: &str, ctx: &OutfitContext<'_>) -> Option<Result<(Outfit, Vec<DressItem>), String>> {
+pub fn dress_in_clothing_item(
+    guid: &str,
+    ctx: &OutfitContext<'_>,
+) -> Option<Result<(Outfit, Vec<DressItem>), String>> {
     ctx.clothing_items.clothing_item(guid)?;
     let mut outfit = Outfit {
-        items: vec![ClothingItemReference { item_guid: Some(guid.to_string()), ..Default::default() }],
+        items: vec![ClothingItemReference {
+            item_guid: Some(guid.to_string()),
+            ..Default::default()
+        }],
         pants: false,
         top: false,
         ..Default::default()
@@ -303,10 +347,17 @@ mod tests {
         assert!(!g.top);
         assert!(m.find_female_outfit("Generic01").is_none());
         let mut seq = [0, 1, 1].into_iter();
-        let o = m.get_random_non_silly_outfit_with(false, &mut |_| seq.next().unwrap()).unwrap();
+        let o = m
+            .get_random_non_silly_outfit_with(false, &mut |_| seq.next().unwrap())
+            .unwrap();
         assert_eq!(o.name, "Generic01");
         let mut seq = [0, 0, 2].into_iter();
-        assert_eq!(m.get_random_non_professional_outfit_with(true, &mut |_| seq.next().unwrap()).unwrap().name, "Classy");
+        assert_eq!(
+            m.get_random_non_professional_outfit_with(true, &mut |_| seq.next().unwrap())
+                .unwrap()
+                .name,
+            "Classy"
+        );
         let modded = OutfitManager::from_xml(b"<outfitManager><m_MaleOutfits><m_Name>GENERIC01</m_Name></m_MaleOutfits></outfitManager>", "m").unwrap();
         m.merge(modded);
         assert_eq!(m.male_outfits.len(), 3);

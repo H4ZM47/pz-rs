@@ -114,9 +114,15 @@ impl Default for ClothingItemReference {
 impl ClothingItemReference {
     pub fn from_element(e: &Element) -> Self {
         ClothingItemReference {
-            probability: e.children_named("probability").last().map_or(1.0, |p| jaxb_float(&p.leaf_text())),
+            probability: e
+                .children_named("probability")
+                .last()
+                .map_or(1.0, |p| jaxb_float(&p.leaf_text())),
             item_guid: e.string_field("itemGUID"),
-            sub_items: e.children_named("subItems").map(Self::from_element).collect(),
+            sub_items: e
+                .children_named("subItems")
+                .map(Self::from_element)
+                .collect(),
             randomized: e.bool_field("bRandomized").unwrap_or(false),
             ..Default::default()
         }
@@ -125,7 +131,10 @@ impl ClothingItemReference {
     /// `setModID(modID)`: prefixes the guids (a `null` guid becomes
     /// `"<mod>-null"`, as Java's concatenation does).
     pub fn set_mod_id(&mut self, mod_id: &str) {
-        self.item_guid = Some(format!("{mod_id}-{}", self.item_guid.as_deref().unwrap_or("null")));
+        self.item_guid = Some(format!(
+            "{mod_id}-{}",
+            self.item_guid.as_deref().unwrap_or("null")
+        ));
         for s in &mut self.sub_items {
             s.set_mod_id(mod_id);
         }
@@ -164,7 +173,11 @@ impl ClothingItemReference {
         } else {
             match outfit_rng::next(self.sub_items.len() as i32 + 1) {
                 0 => self.item_guid.clone(),
-                i => self.sub_items[i as usize - 1].random_data.picked_item_guid.clone().flatten(),
+                i => self.sub_items[i as usize - 1]
+                    .random_data
+                    .picked_item_guid
+                    .clone()
+                    .flatten(),
             }
         });
         self.randomized = true;
@@ -177,11 +190,23 @@ impl ClothingItemReference {
         if item.allow_random_hue {
             d.hue = outfit_rng::next(200) as f32 / 100.0 - 1.0;
         }
-        d.tint = if item.allow_random_tint { outfit_rng::random_immutable_color(ctx.no_black_clothes) } else { WHITE };
+        d.tint = if item.allow_random_tint {
+            outfit_rng::random_immutable_color(ctx.no_black_clothes)
+        } else {
+            WHITE
+        };
         d.base_texture = outfit_rng::pick_random(&item.base_textures).cloned();
         d.texture_choice = outfit_rng::pick_random(&item.texture_choices).cloned();
-        if let Some(group) = item.decal_group.as_deref().filter(|g| !is_null_or_whitespace(g)) {
-            d.decal = ctx.population.clothing_decals.as_ref().and_then(|c| c.get_random_decal(group));
+        if let Some(group) = item
+            .decal_group
+            .as_deref()
+            .filter(|g| !is_null_or_whitespace(g))
+        {
+            d.decal = ctx
+                .population
+                .clothing_decals
+                .as_ref()
+                .and_then(|c| c.get_random_decal(group));
         }
         Ok(())
     }
@@ -251,11 +276,18 @@ impl Outfit {
             pants: e.bool_field("m_Pants").unwrap_or(d.pants),
             top_textures: e.string_list("m_TopTextures"),
             pants_textures: e.string_list("m_PantsTextures"),
-            items: e.children_named("m_items").map(ClothingItemReference::from_element).collect(),
+            items: e
+                .children_named("m_items")
+                .map(ClothingItemReference::from_element)
+                .collect(),
             allow_pants_hue: e.bool_field("m_AllowPantsHue").unwrap_or(d.allow_pants_hue),
-            allow_pants_tint: e.bool_field("m_AllowPantsTint").unwrap_or(d.allow_pants_tint),
+            allow_pants_tint: e
+                .bool_field("m_AllowPantsTint")
+                .unwrap_or(d.allow_pants_tint),
             allow_top_tint: e.bool_field("m_AllowTopTint").unwrap_or(d.allow_top_tint),
-            allow_tshirt_decal: e.bool_field("m_AllowTShirtDecal").unwrap_or(d.allow_tshirt_decal),
+            allow_tshirt_decal: e
+                .bool_field("m_AllowTShirtDecal")
+                .unwrap_or(d.allow_tshirt_decal),
             ..d
         }
     }
@@ -276,7 +308,11 @@ impl Outfit {
             pants: self.pants,
             top_textures: self.top_textures.clone(),
             pants_textures: self.pants_textures.clone(),
-            items: self.items.iter().map(ClothingItemReference::clone_ref).collect(),
+            items: self
+                .items
+                .iter()
+                .map(ClothingItemReference::clone_ref)
+                .collect(),
             allow_pants_hue: self.allow_pants_hue,
             allow_pants_tint: self.allow_pants_tint,
             allow_top_tint: self.allow_top_tint,
@@ -301,12 +337,25 @@ impl Outfit {
         let name = Some(self.name.as_str());
         let r = &mut self.random_data;
         r.hair_color = defs.get_random_haircut_color(name, ctx.hair_common_colors);
-        r.female_hair_name = pop.hair_styles.as_ref().map(|h| h.get_random_female_style(defs, name, ctx.world_age_days));
-        r.male_hair_name = pop.hair_styles.as_ref().map(|h| h.get_random_male_style(defs, name, ctx.world_age_days));
-        r.beard_name = pop.beard_styles.as_ref().and_then(|b| b.get_random_style(defs, name));
+        r.female_hair_name = pop
+            .hair_styles
+            .as_ref()
+            .map(|h| h.get_random_female_style(defs, name, ctx.world_age_days));
+        r.male_hair_name = pop
+            .hair_styles
+            .as_ref()
+            .map(|h| h.get_random_male_style(defs, name, ctx.world_age_days));
+        r.beard_name = pop
+            .beard_styles
+            .as_ref()
+            .and_then(|b| b.get_random_style(defs, name));
         r.top_tint = Some(outfit_rng::random_immutable_color(ctx.no_black_clothes));
         r.pants_tint = Some(outfit_rng::random_immutable_color(ctx.no_black_clothes));
-        r.pants_hue = if outfit_rng::next(4) == 0 { outfit_rng::next(200) as f32 / 100.0 - 1.0 } else { 0.0 };
+        r.pants_hue = if outfit_rng::next(4) == 0 {
+            outfit_rng::next(200) as f32 / 100.0 - 1.0
+        } else {
+            0.0
+        };
         r.has_top = outfit_rng::next(16) != 0;
         r.has_tshirt = outfit_rng::next(2) == 0;
         r.has_tshirt_decal = outfit_rng::next(4) == 0;
@@ -324,7 +373,9 @@ impl Outfit {
     pub fn is_torso_visible(&self, ctx: &OutfitContext<'_>) -> bool {
         let (mut chest, mut waist) = (true, true);
         for r in self.items.iter().filter(|r| r.random_data.active) {
-            let Some(item) = ctx.item(r.picked_guid()) else { continue };
+            let Some(item) = ctx.item(r.picked_guid()) else {
+                continue;
+            };
             for &m in &item.masks {
                 match m {
                     1 => (chest, waist) = (false, false),
@@ -339,7 +390,9 @@ impl Outfit {
 
     /// `findItemByGUID(guid)`.
     pub fn find_item_by_guid(&self, guid: &str) -> Option<&ClothingItemReference> {
-        self.items.iter().find(|r| r.item_guid.as_deref() == Some(guid))
+        self.items
+            .iter()
+            .find(|r| r.item_guid.as_deref() == Some(guid))
     }
 }
 
@@ -366,7 +419,11 @@ pub struct DressItem {
 pub fn dress_in_outfit(outfit: &mut Outfit, ctx: &OutfitContext<'_>) -> Vec<DressItem> {
     let defaults = &ctx.population.default_clothing;
     let mut out = Vec::new();
-    let plain = |name: Option<String>| DressItem { clothing_item_name: name, item_ref: None, spawn_with: Vec::new() };
+    let plain = |name: Option<String>| DressItem {
+        clothing_item_name: name,
+        item_ref: None,
+        spawn_with: Vec::new(),
+    };
     if outfit.pants {
         let name = if outfit.allow_pants_hue {
             defaults.pick_pants_hue()
@@ -379,7 +436,10 @@ pub fn dress_in_outfit(outfit: &mut Outfit, ctx: &OutfitContext<'_>) -> Vec<Dres
     }
     if outfit.top && outfit.random_data.has_top {
         let name = if outfit.random_data.has_tshirt {
-            if outfit.random_data.has_tshirt_decal && outfit.is_torso_visible(ctx) && outfit.allow_tshirt_decal {
+            if outfit.random_data.has_tshirt_decal
+                && outfit.is_torso_visible(ctx)
+                && outfit.allow_tshirt_decal
+            {
                 if outfit.allow_top_tint {
                     defaults.pick_tshirt_decal_tint()
                 } else {
@@ -399,13 +459,22 @@ pub fn dress_in_outfit(outfit: &mut Outfit, ctx: &OutfitContext<'_>) -> Vec<Dres
     }
     let mod_id = outfit.mod_id.as_deref().unwrap_or("game");
     for (i, r) in outfit.items.iter().enumerate() {
-        let Some(item) = ctx.ready_item(r.picked_guid()) else { continue };
+        let Some(item) = ctx.ready_item(r.picked_guid()) else {
+            continue;
+        };
         let spawn_with = item
             .spawn_with
             .iter()
-            .filter_map(|s| ctx.ready_item(Some(&format!("{mod_id}-{s}"))).map(|w| w.name.clone()))
+            .filter_map(|s| {
+                ctx.ready_item(Some(&format!("{mod_id}-{s}")))
+                    .map(|w| w.name.clone())
+            })
             .collect();
-        out.push(DressItem { clothing_item_name: Some(item.name.clone()), item_ref: Some(i), spawn_with });
+        out.push(DressItem {
+            clothing_item_name: Some(item.name.clone()),
+            item_ref: Some(i),
+            spawn_with,
+        });
     }
     outfit.pants = false;
     outfit.top = false;
@@ -441,7 +510,10 @@ mod tests {
         let mut o = Outfit::from_element(root.children_named("m_MaleOutfits").next().unwrap());
         assert_eq!(o.items[0].probability, 0.5);
         o.set_mod_id("game");
-        assert_eq!(o.items[0].sub_items[0].item_guid.as_deref(), Some("game-broken"));
+        assert_eq!(
+            o.items[0].sub_items[0].item_guid.as_deref(),
+            Some("game-broken")
+        );
         let o2 = o.clone_outfit();
         assert_eq!(o2.mod_id, None);
         let mut o = o2;

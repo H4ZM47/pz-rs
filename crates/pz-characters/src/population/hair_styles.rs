@@ -71,14 +71,18 @@ impl HairStyle {
 
     /// `isValid()`: a model and a texture.
     pub fn is_valid(&self) -> bool {
-        !self.model.as_deref().is_none_or(is_null_or_whitespace) && !is_null_or_whitespace(&self.texture)
+        !self.model.as_deref().is_none_or(is_null_or_whitespace)
+            && !is_null_or_whitespace(&self.texture)
     }
 
     /// `getAlternate(category)`: the first alternate whose category equals
     /// `category` ignoring case (its style may be `null`), else the name.
     pub fn get_alternate(&self, category: &str) -> Option<&str> {
         for a in &self.alternate {
-            if a.category.as_deref().is_some_and(|c| eq_ignore_case(category, c)) {
+            if a.category
+                .as_deref()
+                .is_some_and(|c| eq_ignore_case(category, c))
+            {
                 return a.style.as_deref();
             }
         }
@@ -100,8 +104,14 @@ impl HairStyles {
     pub fn from_xml(bytes: &[u8]) -> Result<Self, String> {
         let root = parse_root(bytes, "hairStyles")?;
         Ok(HairStyles {
-            male: root.children_named("male").map(HairStyle::from_element).collect(),
-            female: root.children_named("female").map(HairStyle::from_element).collect(),
+            male: root
+                .children_named("male")
+                .map(HairStyle::from_element)
+                .collect(),
+            female: root
+                .children_named("female")
+                .map(HairStyle::from_element)
+                .collect(),
         })
     }
 
@@ -115,7 +125,9 @@ impl HairStyles {
     pub fn init(fs: &mut GameFs) -> Option<Self> {
         let mut inst = Self::parse(&base_file(fs, HAIR_STYLES_FILE))?;
         for (_mod_id, m) in mod_files(fs, HAIR_STYLES_FILE, Self::parse) {
-            merge_by(&mut inst.female, m.female, |l, s| find_index(l, Some(&s.name)));
+            merge_by(&mut inst.female, m.female, |l, s| {
+                find_index(l, Some(&s.name))
+            });
             merge_by(&mut inst.male, m.male, |l, s| find_index(l, Some(&s.name)));
         }
         Some(inst)
@@ -147,19 +159,33 @@ impl HairStyles {
     }
 
     /// `getRandomMaleStyle(outfitName)`.
-    pub fn get_random_male_style(&self, defs: &HairOutfitDefinitions, outfit: Option<&str>, world_age_days: f32) -> String {
+    pub fn get_random_male_style(
+        &self,
+        defs: &HairOutfitDefinitions,
+        outfit: Option<&str>,
+        world_age_days: f32,
+    ) -> String {
         defs.get_random_male_haircut(outfit, &self.male, world_age_days)
     }
 
     /// `getRandomFemaleStyle(outfitName)`.
-    pub fn get_random_female_style(&self, defs: &HairOutfitDefinitions, outfit: Option<&str>, world_age_days: f32) -> String {
+    pub fn get_random_female_style(
+        &self,
+        defs: &HairOutfitDefinitions,
+        outfit: Option<&str>,
+        world_age_days: f32,
+    ) -> String {
         defs.get_random_female_haircut(outfit, &self.female, world_age_days)
     }
 
     /// `getAlternateForHat(style, category)`: `None` for the `nohair`
     /// categories; the alternate of a style in either list (by identity);
     /// `style` itself if it is in neither.
-    pub fn get_alternate_for_hat<'a>(&'a self, style: &'a HairStyle, category: &str) -> Option<&'a HairStyle> {
+    pub fn get_alternate_for_hat<'a>(
+        &'a self,
+        style: &'a HairStyle,
+        category: &str,
+    ) -> Option<&'a HairStyle> {
         if eq_ignore_case("nohair", category) || eq_ignore_case("nohairnobeard", category) {
             return None;
         }
@@ -211,21 +237,39 @@ mod tests {
         assert!(h.find_male_style(None).is_none());
         assert_eq!(h.get_alternate_for_hat(short, "hat").unwrap().name, "Bald");
         assert!(h.get_alternate_for_hat(short, "x").is_none());
-        assert_eq!(h.get_alternate_for_hat(short, "other").unwrap().name, "Short");
+        assert_eq!(
+            h.get_alternate_for_hat(short, "other").unwrap().name,
+            "Short"
+        );
         assert!(h.get_alternate_for_hat(short, "NoHair").is_none());
         assert!(h.get_alternate_for_hat(long, "HAT").is_none());
         let outside = HairStyle::default();
-        assert!(std::ptr::eq(h.get_alternate_for_hat(&outside, "hat").unwrap(), &outside));
+        assert!(std::ptr::eq(
+            h.get_alternate_for_hat(&outside, "hat").unwrap(),
+            &outside
+        ));
         assert!(HairStyles::from_xml(b"<beardStyles/>").is_err());
     }
 
     #[test]
     fn mods_replace_in_place_or_append() {
         let mut list = HairStyles::from_xml(DOC.as_bytes()).unwrap().male;
-        let mut bald = HairStyle { name: "BALD".into(), level: 7, ..Default::default() };
-        let new = HairStyle { name: "New".into(), ..Default::default() };
-        merge_by(&mut list, vec![bald.clone(), new], |l, s| find_index(l, Some(&s.name)));
-        assert_eq!(list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["BALD", "Short", "New"]);
+        let mut bald = HairStyle {
+            name: "BALD".into(),
+            level: 7,
+            ..Default::default()
+        };
+        let new = HairStyle {
+            name: "New".into(),
+            ..Default::default()
+        };
+        merge_by(&mut list, vec![bald.clone(), new], |l, s| {
+            find_index(l, Some(&s.name))
+        });
+        assert_eq!(
+            list.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["BALD", "Short", "New"]
+        );
         bald.name = String::new();
         merge_by(&mut list, vec![bald], |l, s| find_index(l, Some(&s.name)));
         assert_eq!(list[0].name, "");

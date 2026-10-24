@@ -7,6 +7,7 @@
 //! Each exposed class gets a global table (statics, `new`, `class`) and a
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
+pub mod bind_appearance;
 pub mod bind_attached_items;
 pub mod bind_body;
 pub mod bind_body_damage;
@@ -67,6 +68,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_body::register_shared(&mut mgr.thread);
     bind_nutrition::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
+    bind_appearance::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
     let events = mgr.events.clone();
     let sink = move |t: &mut pz_kahlua::Thread, name: &str, a: &[pz_kahlua::Value]| {

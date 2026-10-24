@@ -129,6 +129,17 @@ Status of the Rust port. Update this file with every merged change.
   queries, inventory weight and weapon hits on real game items match the
   original's state bit for bit (checked locally).
 
+- Appearance tables and outfit draws (`pz-characters::population`):
+  `ClothingDecals`, `HairStyles`, `BeardStyles`, `VoiceStyles` (JAXB
+  binding rules, mod overrides), `PopTemplateManager` skin lists,
+  `HairOutfitDefinitions`, `OutfitRNG`/`LocationRNG` (`pz-core`),
+  `OutfitManager`/`Outfit`/`ClothingItemReference` with `Randomize`, the
+  random outfit picks and `dressInOutfit`'s clothing choices,
+  `DefaultClothing`, and a `HumanStyles` for `HumanVisual`. Lua bindings
+  (`bind_appearance`). Loaded lists and seeded draws match the original on
+  the installed media (every outfit randomized and dressed on three seeds)
+  and on invented edge-case XML (checked locally).
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 

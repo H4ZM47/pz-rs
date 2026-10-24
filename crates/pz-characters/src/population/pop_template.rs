@@ -43,17 +43,27 @@ impl PopTemplateManager {
             self.female_skins.push(format!("FemaleBody0{i}"));
         }
         for i in 1..=4 {
-            self.male_skins_zombie1.push(format!("M_ZedBody0{i}_level1"));
-            self.female_skins_zombie1.push(format!("F_ZedBody0{i}_level1"));
-            self.male_skins_zombie2.push(format!("M_ZedBody0{i}_level2"));
-            self.female_skins_zombie2.push(format!("F_ZedBody0{i}_level2"));
-            self.male_skins_zombie3.push(format!("M_ZedBody0{i}_level3"));
-            self.female_skins_zombie3.push(format!("F_ZedBody0{i}_level3"));
+            self.male_skins_zombie1
+                .push(format!("M_ZedBody0{i}_level1"));
+            self.female_skins_zombie1
+                .push(format!("F_ZedBody0{i}_level1"));
+            self.male_skins_zombie2
+                .push(format!("M_ZedBody0{i}_level2"));
+            self.female_skins_zombie2
+                .push(format!("F_ZedBody0{i}_level2"));
+            self.male_skins_zombie3
+                .push(format!("M_ZedBody0{i}_level3"));
+            self.female_skins_zombie3
+                .push(format!("F_ZedBody0{i}_level3"));
         }
-        for list in [&mut self.skeleton_male_skins_zombie, &mut self.skeleton_female_skins_zombie] {
+        for list in [
+            &mut self.skeleton_male_skins_zombie,
+            &mut self.skeleton_female_skins_zombie,
+        ] {
             list.extend(["SkeletonBurned", "Skeleton", "SkeletonMuscle"].map(String::from));
         }
-        self.cow_skins.extend(["Cow_Black", "Cow_Purple"].map(String::from));
+        self.cow_skins
+            .extend(["Cow_Black", "Cow_Purple"].map(String::from));
         self.rat_skins.push("Rat".into());
     }
 
@@ -80,7 +90,10 @@ impl PopTemplateManager {
     /// `None` out of range. `HumanVisual::get_skin_texture` does the index
     /// fix-up and body-hair suffix.
     pub fn skin_texture(&self, index: i32, list: SkinList) -> Option<&str> {
-        usize::try_from(index).ok().and_then(|i| self.skins(list).get(i)).map(String::as_str)
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| self.skins(list).get(i))
+            .map(String::as_str)
     }
 }
 
@@ -93,8 +106,17 @@ mod tests {
         let p = PopTemplateManager::initialized();
         assert_eq!(p.skin_texture(0, SkinList::Male), Some("MaleBody01"));
         assert_eq!(p.skin_texture(4, SkinList::Female), Some("FemaleBody05"));
-        assert_eq!(p.skin_texture(3, SkinList::FemaleZombie(2)), Some("F_ZedBody04_level2"));
-        assert_eq!(p.skin_texture(PopTemplateManager::SKELETON_MUSCLE_SKIN_INDEX, SkinList::SkeletonMaleZombie), Some("SkeletonMuscle"));
+        assert_eq!(
+            p.skin_texture(3, SkinList::FemaleZombie(2)),
+            Some("F_ZedBody04_level2")
+        );
+        assert_eq!(
+            p.skin_texture(
+                PopTemplateManager::SKELETON_MUSCLE_SKIN_INDEX,
+                SkinList::SkeletonMaleZombie
+            ),
+            Some("SkeletonMuscle")
+        );
         assert_eq!(p.skin_texture(5, SkinList::Male), None);
         assert_eq!(p.skin_texture(-1, SkinList::Male), None);
         assert!(p.skins(SkinList::MaleZombie(0)).is_empty());

@@ -65,7 +65,10 @@ impl Element {
 
     /// An attribute value; `None` is `null`.
     pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attrs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        self.attrs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
 
     /// A `String` field: the last `name` child's text, or `None` if absent.
@@ -75,12 +78,16 @@ impl Element {
 
     /// An `int` field, or `None` if absent.
     pub fn int_field(&self, name: &str) -> Option<i32> {
-        self.children_named(name).last().map(|e| jaxb_int(&e.leaf_text()))
+        self.children_named(name)
+            .last()
+            .map(|e| jaxb_int(&e.leaf_text()))
     }
 
     /// A `boolean` field, or `None` if absent.
     pub fn bool_field(&self, name: &str) -> Option<bool> {
-        self.children_named(name).last().map(|e| jaxb_bool(&e.leaf_text()))
+        self.children_named(name)
+            .last()
+            .map(|e| jaxb_bool(&e.leaf_text()))
     }
 
     /// An `ArrayList<String>` field: every `name` child's text.
@@ -125,7 +132,8 @@ pub fn jaxb_float(s: &str) -> f32 {
         "-INF" => return f32::NEG_INFINITY,
         _ => {}
     }
-    let edge = |c: Option<char>| c.is_some_and(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.'));
+    let edge =
+        |c: Option<char>| c.is_some_and(|c| c.is_ascii_digit() || matches!(c, '+' | '-' | '.'));
     if !edge(t.chars().next()) || !edge(t.chars().last()) {
         return 0.0;
     }
@@ -239,8 +247,11 @@ pub fn parse_document(bytes: &[u8]) -> Result<Element, String> {
                     if key.starts_with(b"xmlns") || key.contains(&b':') {
                         continue;
                     }
-                    let v = a.normalized_value(XmlVersion::Implicit1_0).map_err(|e| e.to_string())?;
-                    el.attrs.push((String::from_utf8_lossy(key).into_owned(), v.into_owned()));
+                    let v = a
+                        .normalized_value(XmlVersion::Implicit1_0)
+                        .map_err(|e| e.to_string())?;
+                    el.attrs
+                        .push((String::from_utf8_lossy(key).into_owned(), v.into_owned()));
                 }
                 if matches!(ev, Event::Empty(_)) {
                     close(&mut stack, &mut root, el);
@@ -262,7 +273,10 @@ pub fn parse_document(bytes: &[u8]) -> Result<Element, String> {
             }
             Event::GeneralRef(r) => {
                 let s = if r.is_char_ref() {
-                    r.resolve_char_ref().map_err(|e| e.to_string())?.ok_or("bad character reference")?.to_string()
+                    r.resolve_char_ref()
+                        .map_err(|e| e.to_string())?
+                        .ok_or("bad character reference")?
+                        .to_string()
                 } else {
                     let name = r.decode().map_err(|e| e.to_string())?;
                     quick_xml::escape::resolve_predefined_entity(&name)
@@ -292,7 +306,10 @@ fn close(stack: &mut [Element], root: &mut Option<Element>, el: Element) {
 pub fn parse_root(bytes: &[u8], root: &str) -> Result<Element, String> {
     let el = parse_document(bytes)?;
     if el.namespaced || el.name != root {
-        return Err(format!("unexpected element \"{}\" (expected \"{root}\")", el.name));
+        return Err(format!(
+            "unexpected element \"{}\" (expected \"{root}\")",
+            el.name
+        ));
     }
     Ok(el)
 }
@@ -318,7 +335,10 @@ mod tests {
         for t in ["1", "true", " true ", "\ttrue\t", "truex", "1a", "true "] {
             assert!(jaxb_bool(t), "{t:?}");
         }
-        for f in ["0", "false", "True", "TRUE", "yes", "maybe", "", " ", " tru", "t", "falsey", "0 ", "1ab"] {
+        for f in [
+            "0", "false", "True", "TRUE", "yes", "maybe", "", " ", " tru", "t", "falsey", "0 ",
+            "1ab",
+        ] {
             assert!(!jaxb_bool(f), "{f:?}");
         }
     }
@@ -328,7 +348,10 @@ mod tests {
         let doc = "\u{feff}<?xml version=\"1.0\"?><r><a>x<b>y</b>t</a><a>  <!--c--> q&amp;<![CDATA[<c>]]>&#x31;</a><a/>\
                    <n xmlns=\"urn:x\"><a>no</a></n><p:a xmlns:p=\"urn:p\">no</p:a><e k=\"v\" p:k=\"w\" xmlns:p=\"urn:p\"/></r>";
         let r = parse_root(doc.as_bytes(), "r").unwrap();
-        assert_eq!(r.string_list("a"), vec!["t".to_string(), "   q&<c>1".into(), String::new()]);
+        assert_eq!(
+            r.string_list("a"),
+            vec!["t".to_string(), "   q&<c>1".into(), String::new()]
+        );
         assert_eq!(r.children_named("n").count(), 0);
         let e = r.children_named("e").next().unwrap();
         assert_eq!(e.attrs, vec![("k".to_string(), "v".to_string())]);

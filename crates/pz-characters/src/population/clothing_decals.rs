@@ -73,7 +73,11 @@ pub struct ClothingDecalGroup {
 
 impl ClothingDecalGroup {
     pub fn from_element(e: &Element) -> Self {
-        ClothingDecalGroup { name: e.string_field("name"), decals: e.string_list("decal"), groups: e.string_list("group") }
+        ClothingDecalGroup {
+            name: e.string_field("name"),
+            decals: e.string_list("decal"),
+            groups: e.string_list("group"),
+        }
     }
 
     /// `getDecals(decals)`: this group's decals, then each included group's
@@ -102,7 +106,10 @@ impl ClothingDecalGroup {
     pub fn get_random_decal(&self, all: &ClothingDecals) -> Option<String> {
         let mut decals = Vec::new();
         if !self.get_decals(all, &mut decals) {
-            eprintln!("ERROR: clothing decal group \"{}\" includes itself", self.name.as_deref().unwrap_or("null"));
+            eprintln!(
+                "ERROR: clothing decal group \"{}\" includes itself",
+                self.name.as_deref().unwrap_or("null")
+            );
             return None;
         }
         outfit_rng::pick_random(&decals).cloned()
@@ -122,7 +129,10 @@ impl ClothingDecals {
     pub fn from_xml(bytes: &[u8]) -> Result<Self, String> {
         let root = parse_root(bytes, "clothingDecals")?;
         Ok(ClothingDecals {
-            groups: root.children_named("group").map(ClothingDecalGroup::from_element).collect(),
+            groups: root
+                .children_named("group")
+                .map(ClothingDecalGroup::from_element)
+                .collect(),
             cached: RefCell::default(),
         })
     }
@@ -149,7 +159,9 @@ impl ClothingDecals {
 
     fn find_group_index(&self, name: Option<&str>) -> Option<usize> {
         let name = name.filter(|n| !is_null_or_whitespace(n))?;
-        self.groups.iter().position(|g| g.name.as_deref().is_some_and(|gn| eq_ignore_case(gn, name)))
+        self.groups
+            .iter()
+            .position(|g| g.name.as_deref().is_some_and(|gn| eq_ignore_case(gn, name)))
     }
 
     /// `FindGroup(name)`: by name ignoring case.
@@ -173,8 +185,14 @@ impl ClothingDecals {
             return Some(d.clone());
         }
         let file = fs.get_string(&format!("media/clothing/clothingDecals/{name}.xml"));
-        let path = if Path::new(&file).is_absolute() { file.clone() } else { fs.base.join(&file).to_string_lossy().into_owned() };
-        let loaded = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|b| ClothingDecal::from_xml(&b));
+        let path = if Path::new(&file).is_absolute() {
+            file.clone()
+        } else {
+            fs.base.join(&file).to_string_lossy().into_owned()
+        };
+        let loaded = std::fs::read(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| ClothingDecal::from_xml(&b));
         let decal = match loaded {
             Ok(mut d) => {
                 d.name = Some(name.to_string());
@@ -185,7 +203,9 @@ impl ClothingDecals {
                 None
             }
         };
-        self.cached.borrow_mut().insert(name.to_string(), decal.clone());
+        self.cached
+            .borrow_mut()
+            .insert(name.to_string(), decal.clone());
         decal
     }
 }
@@ -220,7 +240,10 @@ mod tests {
     fn decal_binding() {
         let d = ClothingDecal::from_xml(b"<clothingDecal><texture>t/x</texture><x>1</x><y> 2</y><width>3</width><height>4</height></clothingDecal>").unwrap();
         assert!(d.is_valid());
-        let bad = ClothingDecal::from_xml(b"<clothingDecal><texture>  </texture><x>-1</x><width>bad</width></clothingDecal>").unwrap();
+        let bad = ClothingDecal::from_xml(
+            b"<clothingDecal><texture>  </texture><x>-1</x><width>bad</width></clothingDecal>",
+        )
+        .unwrap();
         assert_eq!((bad.x, bad.width), (-1, 0));
         assert!(!bad.is_valid());
     }

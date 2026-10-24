@@ -49,7 +49,8 @@ impl BeardStyle {
 
     /// `isValid()`.
     pub fn is_valid(&self) -> bool {
-        !self.model.as_deref().is_none_or(is_null_or_whitespace) && !is_null_or_whitespace(&self.texture)
+        !self.model.as_deref().is_none_or(is_null_or_whitespace)
+            && !is_null_or_whitespace(&self.texture)
     }
 }
 
@@ -63,7 +64,12 @@ impl BeardStyles {
     /// Unmarshal a `<beardStyles>` document.
     pub fn from_xml(bytes: &[u8]) -> Result<Self, String> {
         let root = parse_root(bytes, "beardStyles")?;
-        Ok(BeardStyles { styles: root.children_named("style").map(BeardStyle::from_element).collect() })
+        Ok(BeardStyles {
+            styles: root
+                .children_named("style")
+                .map(BeardStyle::from_element)
+                .collect(),
+        })
     }
 
     /// `Parse(filename)`.
@@ -77,7 +83,9 @@ impl BeardStyles {
         let mut inst = Self::parse(&base_file(fs, BEARD_STYLES_FILE))?;
         inst.styles.insert(0, BeardStyle::default());
         for (_mod_id, m) in mod_files(fs, BEARD_STYLES_FILE, Self::parse) {
-            merge_by(&mut inst.styles, m.styles, |l, s| find_index(l, Some(&s.name)));
+            merge_by(&mut inst.styles, m.styles, |l, s| {
+                find_index(l, Some(&s.name))
+            });
         }
         Some(inst)
     }
@@ -94,7 +102,11 @@ impl BeardStyles {
 
     /// `getRandomStyle(outfitName)`. `None` only for an empty list (where
     /// the original throws).
-    pub fn get_random_style(&self, defs: &HairOutfitDefinitions, outfit: Option<&str>) -> Option<String> {
+    pub fn get_random_style(
+        &self,
+        defs: &HairOutfitDefinitions,
+        outfit: Option<&str>,
+    ) -> Option<String> {
         defs.get_random_beard(outfit, &self.styles)
     }
 }

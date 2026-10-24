@@ -15,9 +15,16 @@ fn list(v: &[String]) -> String {
 }
 
 fn hair(tag: &str, h: &HairStyle) {
-    let trim: String = h.trim_choices.iter().map(|s| format!("{},", q(Some(s)))).collect();
-    let alt: String =
-        h.alternate.iter().map(|a| format!("{}:{},", q(a.category.as_deref()), q(a.style.as_deref()))).collect();
+    let trim: String = h
+        .trim_choices
+        .iter()
+        .map(|s| format!("{},", q(Some(s))))
+        .collect();
+    let alt: String = h
+        .alternate
+        .iter()
+        .map(|a| format!("{}:{},", q(a.category.as_deref()), q(a.style.as_deref())))
+        .collect();
     println!(
         "{tag} name={} model={} texture={} level={} grow={} attached={} noChoose={} trim=[{trim}] alt=[{alt}] valid={}",
         q(Some(&h.name)),
@@ -32,15 +39,23 @@ fn hair(tag: &str, h: &HairStyle) {
 }
 
 fn dump_hair(h: Option<&HairStyles>) {
-    let Some(h) = h else { return println!("hairStyles null") };
+    let Some(h) = h else {
+        return println!("hairStyles null");
+    };
     h.male.iter().for_each(|s| hair("male", s));
     h.female.iter().for_each(|s| hair("female", s));
 }
 
 fn dump_beard(b: Option<&BeardStyles>) {
-    let Some(b) = b else { return println!("beardStyles null") };
+    let Some(b) = b else {
+        return println!("beardStyles null");
+    };
     for s in &b.styles {
-        let trim: String = s.trim_choices.iter().map(|s| format!("{},", q(Some(s)))).collect();
+        let trim: String = s
+            .trim_choices
+            .iter()
+            .map(|s| format!("{},", q(Some(s))))
+            .collect();
         println!(
             "beard name={} model={} texture={} level={} grow={} trim=[{trim}] valid={}",
             q(Some(&s.name)),
@@ -54,7 +69,9 @@ fn dump_beard(b: Option<&BeardStyles>) {
 }
 
 fn dump_voice(v: Option<&VoiceStyles>) {
-    let Some(v) = v else { return println!("voiceStyles null") };
+    let Some(v) = v else {
+        return println!("voiceStyles null");
+    };
     for s in &v.styles {
         println!(
             "voice name={} prefix={} type={} body={} valid={}",
@@ -68,16 +85,31 @@ fn dump_voice(v: Option<&VoiceStyles>) {
 }
 
 fn dump_decals(d: Option<&ClothingDecals>) {
-    let Some(d) = d else { return println!("clothingDecals null") };
+    let Some(d) = d else {
+        return println!("clothingDecals null");
+    };
     for g in &d.groups {
-        let decals: String = g.decals.iter().map(|s| format!("{},", q(Some(s)))).collect();
-        let groups: String = g.groups.iter().map(|s| format!("{},", q(Some(s)))).collect();
-        println!("group name={} decals=[{decals}] groups=[{groups}]", q(g.name.as_deref()));
+        let decals: String = g
+            .decals
+            .iter()
+            .map(|s| format!("{},", q(Some(s))))
+            .collect();
+        let groups: String = g
+            .groups
+            .iter()
+            .map(|s| format!("{},", q(Some(s))))
+            .collect();
+        println!(
+            "group name={} decals=[{decals}] groups=[{groups}]",
+            q(g.name.as_deref())
+        );
     }
 }
 
 fn decal(tag: &str, d: Option<&ClothingDecal>) {
-    let Some(d) = d else { return println!("{tag} null") };
+    let Some(d) = d else {
+        return println!("{tag} null");
+    };
     println!(
         "{tag} name={} texture={} x={} y={} w={} h={} valid={}",
         q(d.name.as_deref()),
@@ -99,7 +131,9 @@ fn fb(f: f32) -> String {
 }
 
 fn col(c: Option<[f32; 3]>) -> String {
-    c.map_or("null".into(), |c| format!("{},{},{}", fb(c[0]), fb(c[1]), fb(c[2])))
+    c.map_or("null".into(), |c| {
+        format!("{},{},{}", fb(c[0]), fb(c[1]), fb(c[2]))
+    })
 }
 
 fn opt(s: &Option<String>) -> &str {
@@ -107,7 +141,12 @@ fn opt(s: &Option<String>) -> &str {
 }
 
 fn dump_ref(ind: &str, r: &ClothingItemReference) {
-    println!("{ind}ref prob={} guid={} randomized={}", fb(r.probability), q(r.item_guid.as_deref()), r.randomized);
+    println!(
+        "{ind}ref prob={} guid={} randomized={}",
+        fb(r.probability),
+        q(r.item_guid.as_deref()),
+        r.randomized
+    );
     for s in &r.sub_items {
         dump_ref(&format!("{ind}  "), s);
     }
@@ -136,7 +175,10 @@ fn outfits(game: &str, pop: &mut Population) {
     println!("== outfits");
     for seed in [42i64, -7] {
         let mut l: Vec<String> = (0..23).map(|i: i32| i.to_string()).collect();
-        pz_characters::population::outfit_manager::java_shuffle(&mut l, &pz_core::random::JavaRandom::new(seed));
+        pz_characters::population::outfit_manager::java_shuffle(
+            &mut l,
+            &pz_core::random::JavaRandom::new(seed),
+        );
         println!("shuffle {}", list(&l));
     }
     let items = pz_inventory::ClothingItems::load(std::path::Path::new(game)).unwrap();
@@ -147,15 +189,33 @@ fn outfits(game: &str, pop: &mut Population) {
     pop.hair_outfit_definitions.haircut_definition.clear();
     pop.hair_outfit_definitions.outfit_definition.clear();
     let dc = &mut pop.default_clothing;
-    for (f, c) in [("pants", &mut dc.pants), ("tShirt", &mut dc.tshirt), ("tShirtDecal", &mut dc.tshirt_decal), ("vest", &mut dc.vest)] {
-        for (l, v) in [("hue", &mut c.hue), ("texture", &mut c.texture), ("tint", &mut c.tint)] {
+    for (f, c) in [
+        ("pants", &mut dc.pants),
+        ("tShirt", &mut dc.tshirt),
+        ("tShirtDecal", &mut dc.tshirt_decal),
+        ("vest", &mut dc.vest),
+    ] {
+        for (l, v) in [
+            ("hue", &mut c.hue),
+            ("texture", &mut c.texture),
+            ("tint", &mut c.tint),
+        ] {
             *v = vec![format!("{f}_{l}1"), format!("{f}_{l}2")];
         }
     }
     println!("noBlack true");
     let common: [[f32; 3]; 3] = [[0.1, 0.2, 0.3], [0.5, 0.4, 0.3], [0.9, 0.8, 0.7]];
-    let ctx = OutfitContext { clothing_items: &items, population: pop, hair_common_colors: &common, world_age_days: 0.0, no_black_clothes: true };
-    for (sex, list) in [("maleOutfits", &om.male_outfits), ("femaleOutfits", &om.female_outfits)] {
+    let ctx = OutfitContext {
+        clothing_items: &items,
+        population: pop,
+        hair_common_colors: &common,
+        world_age_days: 0.0,
+        no_black_clothes: true,
+    };
+    for (sex, list) in [
+        ("maleOutfits", &om.male_outfits),
+        ("femaleOutfits", &om.female_outfits),
+    ] {
         for src in list {
             for seed in [1i64, 99, -12345] {
                 outfit_rng::set_seed(seed);
@@ -236,7 +296,9 @@ fn main() {
     dump_decals(ClothingDecals::parse(&format!("{edge}/decals1.xml")).as_ref());
     for f in ["decal1", "decal2"] {
         println!("-- {f}");
-        let d = std::fs::read(format!("{edge}/{f}.xml")).ok().and_then(|b| ClothingDecal::from_xml(&b).ok());
+        let d = std::fs::read(format!("{edge}/{f}.xml"))
+            .ok()
+            .and_then(|b| ClothingDecal::from_xml(&b).ok());
         decal("decal", d.as_ref());
     }
 
@@ -252,7 +314,11 @@ fn main() {
     for g in &cd.groups {
         let mut all = Vec::new();
         g.get_decals(cd, &mut all);
-        println!("resolved {} {}", g.name.as_deref().unwrap_or("null"), list(&all));
+        println!(
+            "resolved {} {}",
+            g.name.as_deref().unwrap_or("null"),
+            list(&all)
+        );
         for n in &all {
             decal("decal", cd.get_decal(&fs, n).as_deref());
         }
@@ -297,9 +363,17 @@ fn main() {
         outfit_rng::set_seed(seed);
         let mut sb = format!("seed {seed}:");
         for g in &cd.groups {
-            sb += &format!("{},", cd.get_random_decal(g.name.as_deref().unwrap_or("")).as_deref().unwrap_or("null"));
+            sb += &format!(
+                "{},",
+                cd.get_random_decal(g.name.as_deref().unwrap_or(""))
+                    .as_deref()
+                    .unwrap_or("null")
+            );
         }
-        sb += cd.get_random_decal("TShirtAll").as_deref().unwrap_or("null");
+        sb += cd
+            .get_random_decal("TShirtAll")
+            .as_deref()
+            .unwrap_or("null");
         sb += cd.get_random_decal("nope").as_deref().unwrap_or("null");
         println!("{sb}");
     }
@@ -307,25 +381,59 @@ fn main() {
     println!("== hairdefs");
     let d = &mut pop.hair_outfit_definitions;
     d.dirty = false;
-    d.haircut_definition.push(HaircutDefinition::new("Mohawk".into(), 0, "Punk,Bandit"));
-    let def = |o: &str, a: Option<&str>, b: Option<&str>, c: Option<&str>, e: Option<&str>, f: Option<&str>| {
+    d.haircut_definition
+        .push(HaircutDefinition::new("Mohawk".into(), 0, "Punk,Bandit"));
+    let def = |o: &str,
+               a: Option<&str>,
+               b: Option<&str>,
+               c: Option<&str>,
+               e: Option<&str>,
+               f: Option<&str>| {
         HaircutOutfitDefinition::new(o.into(), a, b, c, e, f).unwrap()
     };
-    d.outfit_definition.push(def("Punk", Some("Mohawk:60;Bald:10"), None, None, Some("Full:50;null:20"), Some("0.1,0.2,0.3:50")));
-    d.outfit_definition.push(def("Prisoner", None, Some("Bob:100"), Some("CrewCut:70;random:10"), None, None));
-    d.outfit_definition.push(def("Prisoner", Some("Bald:100"), None, None, None, None));
-    d.outfit_definition.push(def("Office", Some("null:30"), None, None, None, None));
+    d.outfit_definition.push(def(
+        "Punk",
+        Some("Mohawk:60;Bald:10"),
+        None,
+        None,
+        Some("Full:50;null:20"),
+        Some("0.1,0.2,0.3:50"),
+    ));
+    d.outfit_definition.push(def(
+        "Prisoner",
+        None,
+        Some("Bob:100"),
+        Some("CrewCut:70;random:10"),
+        None,
+        None,
+    ));
+    d.outfit_definition
+        .push(def("Prisoner", Some("Bald:100"), None, None, None, None));
+    d.outfit_definition
+        .push(def("Office", Some("null:30"), None, None, None, None));
     let hs = pop.hair_styles.as_ref().unwrap();
     let bs = pop.beard_styles.as_ref().unwrap();
     let d = &pop.hair_outfit_definitions;
-    for outfit in [None, Some(""), Some("Punk"), Some("Prisoner"), Some("Office"), Some("Bandit"), Some("None")] {
+    for outfit in [
+        None,
+        Some(""),
+        Some("Punk"),
+        Some("Prisoner"),
+        Some("Office"),
+        Some("Bandit"),
+        Some("None"),
+    ] {
         for seed in 0..25i64 {
             outfit_rng::set_seed(seed * 7919 + 3);
             let m = hs.get_random_male_style(d, outfit, 0.0);
             let f = hs.get_random_female_style(d, outfit, 0.0);
             let b = bs.get_random_style(d, outfit).unwrap_or_default();
             let h = d.get_random_haircut(outfit, &hs.male, 0.0);
-            println!("outfit {} seed {seed} m={m} f={f} b={b} h={h} next={}", q(outfit), outfit_rng::next(1000000));
+            println!(
+                "outfit {} seed {seed} m={m} f={f} b={b} h={h} next={}",
+                q(outfit),
+                outfit_rng::next(1000000)
+            );
         }
     }
     println!("== colors");
@@ -335,26 +443,49 @@ fn main() {
             outfit_rng::set_seed(seed * 31 + 1);
             let c = d.get_random_haircut_color(outfit, &common).unwrap();
             let s = random_skin_color();
-            let b = |v: [f32; 3]| format!("{},{},{}", v[0].to_bits() as i32, v[1].to_bits() as i32, v[2].to_bits() as i32);
+            let b = |v: [f32; 3]| {
+                format!(
+                    "{},{},{}",
+                    v[0].to_bits() as i32,
+                    v[1].to_bits() as i32,
+                    v[2].to_bits() as i32
+                )
+            };
             println!("color {} {seed} {} skin {}", q(outfit), b(c), b(s));
         }
     }
     println!("== alternates");
     for h in &hs.male {
-        for cat in ["default", "Group01", "group02", "nohair", "NoHairNoBeard", "x"] {
-            println!("altm {} {cat} -> {}", h.name, nm(hs.get_alternate_for_hat(h, cat)));
+        for cat in [
+            "default",
+            "Group01",
+            "group02",
+            "nohair",
+            "NoHairNoBeard",
+            "x",
+        ] {
+            println!(
+                "altm {} {cat} -> {}",
+                h.name,
+                nm(hs.get_alternate_for_hat(h, cat))
+            );
         }
     }
     for h in &hs.female {
         for cat in ["default", "Group01", "Group05", "nohair"] {
-            println!("altf {} {cat} -> {}", h.name, nm(hs.get_alternate_for_hat(h, cat)));
+            println!(
+                "altf {} {cat} -> {}",
+                h.name,
+                nm(hs.get_alternate_for_hat(h, cat))
+            );
         }
     }
     println!(
         "find '' m={} f={} beard ''={}",
         nm(hs.find_male_style(Some(""))),
         nm(hs.find_female_style(Some(""))),
-        bs.find_style(Some("")).map_or("null".into(), |b| b.name.clone())
+        bs.find_style(Some(""))
+            .map_or("null".into(), |b| b.name.clone())
     );
     outfits(game, &mut pop);
 }

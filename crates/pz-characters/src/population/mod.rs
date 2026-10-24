@@ -33,11 +33,13 @@ pub mod xml;
 pub use beard_styles::{BeardStyle, BeardStyles};
 pub use clothing_decals::{ClothingDecal, ClothingDecalGroup, ClothingDecals};
 pub use default_clothing::{DefaultClothing, DefaultClothingLists};
-pub use hair_outfit_definitions::{HairOutfitDefinitions, HaircutDefinition, HaircutOutfitDefinition, StringChance};
+pub use hair_outfit_definitions::{
+    HairOutfitDefinitions, HaircutDefinition, HaircutOutfitDefinition, StringChance,
+};
 pub use hair_styles::{HairStyle, HairStyleAlternate, HairStyles};
 pub use outfit::{
-    dress_in_outfit, ClothingItemRandomData, ClothingItemReference, ClothingItemSource, DressItem, Outfit, OutfitContext,
-    OutfitRandomData,
+    dress_in_outfit, ClothingItemRandomData, ClothingItemReference, ClothingItemSource, DressItem,
+    Outfit, OutfitContext, OutfitRandomData,
 };
 pub use outfit_manager::{dress_in_clothing_item, OutfitManager};
 pub use pop_template::PopTemplateManager;
@@ -62,7 +64,10 @@ pub(crate) fn base_file(fs: &GameFs, rel: &str) -> String {
 
 /// The `Parse(filename)` pattern: a missing file is silently `null`; a
 /// read or parse failure is logged and `null`.
-pub(crate) fn parse_file<T>(path: &str, parse: impl FnOnce(&[u8]) -> Result<T, String>) -> Option<T> {
+pub(crate) fn parse_file<T>(
+    path: &str,
+    parse: impl FnOnce(&[u8]) -> Result<T, String>,
+) -> Option<T> {
     let p = Path::new(path);
     if !p.is_file() {
         // `FileInputStream` throws `FileNotFoundException` for missing
@@ -88,14 +93,23 @@ pub(crate) fn parse_file<T>(path: &str, parse: impl FnOnce(&[u8]) -> Result<T, S
 /// For each loaded mod (`getModIDs`, available ones only), the file `rel`
 /// parsed from the mod's version folder, or failing that its `common/`
 /// folder, with the mod id.
-pub(crate) fn mod_files<T>(fs: &mut GameFs, rel: &str, parse: impl Fn(&str) -> Option<T>) -> Vec<(String, T)> {
+pub(crate) fn mod_files<T>(
+    fs: &mut GameFs,
+    rel: &str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Vec<(String, T)> {
     let mut out = Vec::new();
     for id in fs.mod_ids().to_vec() {
-        let Some(dir) = fs.available_mod_dir(&id) else { continue };
-        let Some(info) = fs.mod_info(&dir) else { continue };
+        let Some(dir) = fs.available_mod_dir(&id) else {
+            continue;
+        };
+        let Some(info) = fs.mod_info(&dir) else {
+            continue;
+        };
         let (version, common) = (info.version_dir.clone(), info.common_dir.clone());
         let rel = process_path(rel);
-        let found = parse(&format!("{version}{SEP}{rel}")).or_else(|| parse(&format!("{common}{SEP}{rel}")));
+        let found = parse(&format!("{version}{SEP}{rel}"))
+            .or_else(|| parse(&format!("{common}{SEP}{rel}")));
         if let Some(v) = found {
             out.push((id, v));
         }
@@ -105,7 +119,11 @@ pub(crate) fn mod_files<T>(fs: &mut GameFs, rel: &str, parse: impl Fn(&str) -> O
 
 /// Merge `incoming` into `list`: replace the entry `find` locates, else
 /// append (the mod loop of every `init`).
-pub(crate) fn merge_by<T>(list: &mut Vec<T>, incoming: Vec<T>, find: impl Fn(&[T], &T) -> Option<usize>) {
+pub(crate) fn merge_by<T>(
+    list: &mut Vec<T>,
+    incoming: Vec<T>,
+    find: impl Fn(&[T], &T) -> Option<usize>,
+) {
     for item in incoming {
         match find(list, &item) {
             Some(i) => list[i] = item,
@@ -166,8 +184,16 @@ impl Population {
     /// The [`HumanStyles`] over these tables. `hair_common_colors` is
     /// `SurvivorDesc.HairCommonColors`, `world_age_days`
     /// `IsoWorld.getWorldAgeDays()`.
-    pub fn styles<'a>(&'a self, hair_common_colors: &'a [Rgb], world_age_days: f32) -> PopulationStyles<'a> {
-        PopulationStyles { population: self, hair_common_colors, world_age_days }
+    pub fn styles<'a>(
+        &'a self,
+        hair_common_colors: &'a [Rgb],
+        world_age_days: f32,
+    ) -> PopulationStyles<'a> {
+        PopulationStyles {
+            population: self,
+            hair_common_colors,
+            world_age_days,
+        }
     }
 }
 
@@ -191,7 +217,10 @@ impl HumanStyles for PopulationStyles<'_> {
         self.population.pop_template.skins(list)
     }
     fn has_hair_style(&self, female: bool, name: Option<&str>) -> bool {
-        self.population.hair_styles.as_ref().is_some_and(|h| h.find_style(female, name).is_some())
+        self.population
+            .hair_styles
+            .as_ref()
+            .is_some_and(|h| h.find_style(female, name).is_some())
     }
     fn random_hair_style(&self, female: bool, outfit: Option<&str>) -> Option<String> {
         let h = self.population.hair_styles.as_ref()?;
@@ -203,14 +232,19 @@ impl HumanStyles for PopulationStyles<'_> {
         })
     }
     fn has_beard_style(&self, name: Option<&str>) -> bool {
-        self.population.beard_styles.as_ref().is_some_and(|b| b.find_style(name).is_some())
+        self.population
+            .beard_styles
+            .as_ref()
+            .is_some_and(|b| b.find_style(name).is_some())
     }
     fn random_beard_style(&self, outfit: Option<&str>) -> Option<String> {
         let b = self.population.beard_styles.as_ref()?;
         b.get_random_style(&self.population.hair_outfit_definitions, outfit)
     }
     fn random_haircut_color(&self, outfit: Option<&str>) -> Option<Rgb> {
-        self.population.hair_outfit_definitions.get_random_haircut_color(outfit, self.hair_common_colors)
+        self.population
+            .hair_outfit_definitions
+            .get_random_haircut_color(outfit, self.hair_common_colors)
     }
     fn random_skin_color(&self) -> Rgb {
         random_skin_color()
