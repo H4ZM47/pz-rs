@@ -9,6 +9,8 @@ struct Globals {
     // GL comparison (GL_NEVER + n) for the alpha test, or 8 when disabled.
     alpha_func: u32,
     alpha_ref: f32,
+    // Window-space depth of the quad (0.5 is GL clip z 0).
+    clip_z: f32,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -25,8 +27,7 @@ struct VsOut {
 fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) col: vec4<f32>) -> VsOut {
     var o: VsOut;
     let p = g.mvp * vec4<f32>(pos.x, pos.y, 0.0, 1.0);
-    // GL clip-space depth is -1..1; z is 0 here (chunkDepth + zDepth).
-    o.pos = vec4<f32>(p.x, p.y, 0.0, p.w);
+    o.pos = vec4<f32>(p.x, p.y, g.clip_z, p.w);
     o.col = col;
     o.uv = uv;
     return o;

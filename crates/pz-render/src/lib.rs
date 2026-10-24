@@ -7,6 +7,7 @@
 //! them from [`TextureManager::data`] by [`Texture::id`].
 
 pub mod image;
+pub mod iso;
 pub mod lua;
 pub mod manager;
 pub mod png;
@@ -186,6 +187,43 @@ pub enum DrawCmd {
     Clear(u32),
     /// Scissor rectangle (`UIElement` stencil/clip), `None` clears it.
     Clip(Option<[i32; 4]>),
+    /// `glDepthFunc` (GL comparison enum).
+    DepthFunc(u32),
+    /// `glDepthMask`.
+    DepthMask(bool),
+    /// A world sprite drawn with one of the world shaders.
+    WorldSprite(Sprite, WorldShader),
+    /// A new projection and viewport, as the `Core.DoStartFrameStuff`
+    /// variants set: `ortho2D(left, right, bottom, top)` over a viewport of
+    /// `width` x `height`.
+    Ortho { left: f32, right: f32, bottom: f32, top: f32, width: u32, height: u32 },
+    /// `FBORenderChunk.beginRenderThread`: following draws go to chunk
+    /// texture `id` (colour plus 16-bit depth), created at this size if
+    /// needed; `clear` clears colour to 0 and depth to 1.
+    ChunkBegin { id: u64, width: u32, height: u32, clear: bool },
+    /// `FBORenderChunk.endRenderThread`: back to the main target.
+    ChunkEnd,
+    /// `FBORenderChunk.renderInWorldMainThread`: chunk texture `id` drawn
+    /// with `chunkShader` (colour times `color`, depth = `chunk_depth` +
+    /// stored depth). `mag_linear` is the `GL_LINEAR` magnification used at
+    /// zoom 0.75.
+    ChunkComposite { id: u64, x: f32, y: f32, w: f32, h: f32, color: u32, chunk_depth: f32, mag_linear: bool },
+    /// Releases chunk texture `id` (`FBORenderChunk.destroy`).
+    ChunkFree(u64),
+}
+
+/// The shader a [`DrawCmd::WorldSprite`] is drawn with.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldShader {
+    /// `default`: texture times colour, transparent texels discarded, depth
+    /// `chunkDepth + zDepth` in GL clip space (-1..1).
+    Default { z: f32 },
+    /// `tileWithDepth` (or `opaqueWithDepth`, which also drops texels with
+    /// alpha <= 0.8): depth from the greyscale depth texture, blended from
+    /// `front` (texel 0) to `far` (texel 1); texels with depth 0 are
+    /// discarded. `uv1` holds the depth texture coordinates of the four
+    /// corners.
+    TileDepth { depth: Texture, uv1: [[f32; 2]; 4], front: f32, far: f32, opaque: bool },
 }
 
 #[derive(Default)]
