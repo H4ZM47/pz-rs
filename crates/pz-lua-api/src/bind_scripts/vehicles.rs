@@ -199,7 +199,7 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     get(&b, "getOffroadEfficiency", |v: &VehicleScript| v.offroad_efficiency());
     set(&b, "setOffroadEfficiency", |v: &mut VehicleScript, n: f32| v.set_offroad_efficiency(n));
     get(&b, "getCrawlOffsets", |v: &VehicleScript| {
-        super::list_value(v.crawl_offsets().iter().map(|f| Value::Num(*f as f64)).collect())
+        crate::bind_java_util::list_value(v.crawl_offsets().iter().map(|f| Value::Num(*f as f64)).collect())
     });
     get(&b, "getAnimalTrailerSize", |v: &VehicleScript| v.animal_trailer_size());
     get(&b, "getZombieType", |v: &VehicleScript| opt_string_list(v.zombie_type()));

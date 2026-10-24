@@ -11,10 +11,12 @@
 //!
 //! # XP boost maps
 //!
-//! The original returns its live `HashMap<Perk, Integer>`. Here that is an
-//! [`MapView`] over the owner's current boosts whose values are boxed
-//! [`JavaInteger`]s (Lua reads them with `intValue()` after
-//! `transformIntoKahluaTable`). `Perk` does not override `hashCode`, so the
+//! The original returns its live `HashMap<Perk, Integer>`. Here that is a
+//! live [`JavaMap`] over the owner's boosts (stored by perk id) whose values
+//! are boxed [`JavaInteger`]s (Lua reads them with `intValue()` after
+//! `transformIntoKahluaTable`); mutations write back to the owner, with a
+//! Lua number value stored as its `int` (the original would hold a
+//! `Double` there and fail later, when the boost is applied). `Perk` does not override `hashCode`, so the
 //! original's iteration order follows identity hash codes and is arbitrary;
 //! the view iterates in insertion order (the order of the `XPBoosts` script
 //! value, then later `addXPBoost` calls), which is one of the orders the
@@ -22,9 +24,8 @@
 
 use crate::bind_characters::{ProfessionDefObject, SurvivorDescObject, TraitDefObject};
 use crate::bind_registry::{java_error, shared_script_manager};
-use crate::expose::{
-    bool_arg, expose_class, expose_integer, expose_map_view, int_arg, str_arg, with_this, JavaInteger, ListView, MapView,
-};
+use crate::bind_java_util::{class_cast, integer_value, JavaInteger, JavaList, JavaMap, INTEGER};
+use crate::expose::{bool_arg, expose_class, int_arg, str_arg, with_this};
 use pz_characters::{Characters, PerkFactory, PerkRef};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -97,17 +98,46 @@ fn boost_entries(chars: &Rc<RefCell<Characters>>, boosts: &[(String, i32)]) -> V
     boosts
         .iter()
         .map(|(id, level)| {
-            (perk_value(chars.perks.from_string(id).as_ref()), Value::Object(Rc::new(JavaInteger(*level))))
+            (perk_value(chars.perks.from_string(id).as_ref()), integer_value(*level))
         })
         .collect()
+}
+
+/// The live boost map of `owner` (see the module docs).
+fn boost_map<O: 'static>(
+    chars: &Rc<RefCell<Characters>>,
+    owner: Rc<RefCell<O>>,
+    pick: fn(&O) -> &Vec<(String, i32)>,
+    pick_mut: fn(&mut O) -> &mut Vec<(String, i32)>,
+) -> Value {
+    let (ch, r) = (chars.clone(), owner.clone());
+    let read = move || boost_entries(&ch, pick(&r.borrow()));
+    let write = move |entries: Vec<(Value, Value)>| -> LuaResult<()> {
+        let mut out = Vec::with_capacity(entries.len());
+        for (k, v) in &entries {
+            let perk = match k {
+                Value::Object(o) => o.as_any().downcast_ref::<PerkObject>().map(|p| p.0.borrow().id().to_string()),
+                _ => None,
+            }
+            .ok_or_else(|| class_cast(k, PERK_CLASS))?;
+            let level = match v {
+                Value::Object(o) => o.as_any().downcast_ref::<JavaInteger>().map(|i| i.0),
+                Value::Num(n) => Some(*n as i32),
+                _ => None,
+            }
+            .ok_or_else(|| class_cast(v, INTEGER))?;
+            out.push((perk, level));
+        }
+        *pick_mut(&mut owner.borrow_mut()) = out;
+        Ok(())
+    };
+    Value::Object(Rc::new(JavaMap::live(read, Some(Box::new(write)))))
 }
 
 /// Register the perk classes and the perk members of the character
 /// classes (which [`crate::bind_characters::register`] must have exposed),
 /// bound to `sm` and `chars`.
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Characters>>) {
-    expose_integer(thread);
-    expose_map_view(thread);
     register_perk_factory(thread, &sm, &chars);
     register_perk(thread, &chars);
     register_perks(thread, &chars);
@@ -124,9 +154,10 @@ fn register_perk_factory(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc
     let ch = chars.clone();
     b.field(
         "PerkList",
-        Value::Object(Rc::new(ListView::new(move || {
-            ch.borrow().perks.perk_list.iter().map(|p| perk_value(Some(p))).collect()
-        }))),
+        Value::Object(Rc::new(JavaList::live(
+            move || ch.borrow().perks.perk_list.iter().map(|p| perk_value(Some(p))).collect(),
+            None,
+        ))),
     );
     b.static_fn("getPerkName", |c| {
         let p = perk_arg(c, 0)?.ok_or_else(npe)?;
@@ -283,8 +314,7 @@ fn register_xp_boosts(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     let ch = chars.clone();
     b.method("getXpBoosts", move |c| {
         let d = with_this::<TraitDefObject, _>(c, |o| o.0.clone())?;
-        let ch = ch.clone();
-        Ok(c.push(Value::Object(Rc::new(MapView::new(move || boost_entries(&ch, &d.borrow().xp_boosts))))))
+        Ok(c.push(boost_map(&ch, d, |d| &d.xp_boosts, |d| &mut d.xp_boosts)))
     });
     b.method("addXPBoost", |c| {
         let d = with_this::<TraitDefObject, _>(c, |o| o.0.clone())?;
@@ -299,8 +329,7 @@ fn register_xp_boosts(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     let ch = chars.clone();
     b.method("getXpBoosts", move |c| {
         let d = with_this::<ProfessionDefObject, _>(c, |o| o.0.clone())?;
-        let ch = ch.clone();
-        Ok(c.push(Value::Object(Rc::new(MapView::new(move || boost_entries(&ch, &d.borrow().xp_boosts))))))
+        Ok(c.push(boost_map(&ch, d, |d| &d.xp_boosts, |d| &mut d.xp_boosts)))
     });
     b.method("addXPBoost", |c| {
         let d = with_this::<ProfessionDefObject, _>(c, |o| o.0.clone())?;
@@ -314,8 +343,7 @@ fn register_xp_boosts(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     let ch = chars.clone();
     b.method("getXPBoostMap", move |c| {
         let d = with_this::<SurvivorDescObject, _>(c, |o| o.desc.clone())?;
-        let ch = ch.clone();
-        Ok(c.push(Value::Object(Rc::new(MapView::new(move || boost_entries(&ch, &d.borrow().xp_boost_map))))))
+        Ok(c.push(boost_map(&ch, d, |d| &d.xp_boost_map, |d| &mut d.xp_boost_map)))
     });
 }
 
@@ -329,6 +357,7 @@ mod tests {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end").unwrap();
+        crate::bind_java_util::register(&mut t);
         crate::bind_core::register(&mut t, None, Rc::new(RefCell::new(pz_core::core::Core::new())));
         let sm = Rc::new(ScriptManager::new());
         for (reg, id) in [("character_trait", "t:brave"), ("character_profession", "t:baker")] {
@@ -364,18 +393,6 @@ mod tests {
         crate::bind_registry::register(&mut t, sm.clone());
         crate::bind_characters::register(&mut t, sm.clone(), chars.clone());
         register(&mut t, sm, chars);
-        // What `transformIntoKahluaTable` does with a map view.
-        crate::expose::global(&mut t, "transformIntoKahluaTable", |c| {
-            let tbl = TableRef::new();
-            if let Value::Object(o) = c.arg(0) {
-                if let Some(m) = o.as_any().downcast_ref::<MapView>() {
-                    for (k, v) in (m.entries)() {
-                        tbl.rawset(k, v);
-                    }
-                }
-            }
-            Ok(c.push(tbl))
-        });
         t
     }
 
@@ -449,6 +466,12 @@ mod tests {
             assert(map:isEmpty())
             desc:setProfessionSkills(p)
             assert(map:size() == 2 and map:get(Perks.Digging) == 2)
+            -- The map is live both ways.
+            live:put(Perks.Shovel, 4)
+            assert(p:getXpBoosts():get(Perks.Shovel) == 4 and live:size() == 3)
+            live:remove(Perks.Outdoors)
+            assert(transformIntoKahluaTable(p:getXpBoosts())[Perks.Outdoors] == nil)
+            assert(not pcall(function() live:put("Shovel", 1) end))
             "#,
         )
         .unwrap();

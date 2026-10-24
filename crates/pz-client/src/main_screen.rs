@@ -37,6 +37,7 @@ pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<()
     let errors: Rc<RefCell<BTreeMap<String, usize>>> = Rc::default();
     // GameWindow.init: the UI texture packs, then the pack lookup.
     pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
+    load_scripts(game_dir, &fs.borrow())?;
     let mut mgr = LuaManager::init(fs).map_err(|e| format!("LuaManager.init failed: {e}"))?;
     let e2 = errors.clone();
     mgr.thread.log = Box::new(move |s| {
@@ -86,7 +87,7 @@ pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<()
     println!("script files failing at load: {load_failures}");
     println!("UI elements: {n_ui}, draw commands last frame: {n_cmds}");
     let mut errs: Vec<_> = errors.borrow().clone().into_iter().collect();
-    errs.sort_by(|a, b| b.1.cmp(&a.1));
+    errs.sort_by_key(|e| std::cmp::Reverse(e.1));
     println!("distinct Lua errors: {}", errs.len());
     for (e, n) in errs.iter().take(100000) {
         println!("{n:5}  {e}");

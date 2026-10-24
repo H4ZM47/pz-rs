@@ -12,8 +12,11 @@
 //!
 //! Lists the original returns as copies are `java.util.ArrayList`
 //! snapshots; lists it returns live (`getMutuallyExclusiveTraits`,
-//! `getGrantedRecipes`, `getExtras`, `getObservations`, the name lists) are
-//! [`ListView`]s.
+//! `getGrantedRecipes`, `getExtras`, `getObservations`, the name lists,
+//! `getAllGroups`, `getAllLocations`) are live [`JavaList`]s. The mutable
+//! ones write back to their owner; an element of the wrong type is a
+//! `ClassCastException` at the write (the original fails later, on use).
+//! `getAllGroups`/`getAllLocations` are read-only.
 //!
 //! Not exposed yet: textures, `HashMap`/
 //! `LinkedHashMap` statics (`characterTraitDefinitions`, `observationMap`,
@@ -23,12 +26,12 @@
 //! and loading. TODO(Texture, ImmutableColor, Outfits, saves).
 
 use crate::bind_core::LuaColorInfo;
-use crate::bind_java_util::JavaList;
+use crate::bind_java_util::{class_cast, JavaList};
 use crate::bind_registry::{
     java_error, key_arg, key_value, shared_script_manager, CHARACTER_PROFESSION_CLASS, CHARACTER_TRAIT_CLASS,
     ITEM_BODY_LOCATION_CLASS,
 };
-use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this, JavaEnum, ListView};
+use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this, JavaEnum};
 use pz_characters::survivor::{meet, set_torso};
 use pz_characters::{
     BodyLocationGroupRef, BodyLocationRef, CharacterGender, CharacterTraits, Characters, ItemIdentity, Observation,
@@ -102,6 +105,37 @@ fn trait_list(keys: &[Option<Rc<RegistryKey>>]) -> Value {
 
 fn npe() -> LuaError {
     LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" }
+}
+
+/// A live `ArrayList<String>` over an owner's strings.
+fn live_strings<O: 'static>(
+    owner: Rc<RefCell<O>>,
+    pick: fn(&O) -> &Vec<String>,
+    pick_mut: fn(&mut O) -> &mut Vec<String>,
+) -> Value {
+    let r = owner.clone();
+    let write = move |v: Vec<Value>| -> LuaResult<()> {
+        let v = v
+            .iter()
+            .map(|x| x.as_str().map(str::to_string).ok_or_else(|| class_cast(x, "java.lang.String")))
+            .collect::<LuaResult<Vec<_>>>()?;
+        *pick_mut(&mut owner.borrow_mut()) = v;
+        Ok(())
+    };
+    let read = move || pick(&r.borrow()).iter().map(|s| Value::from(s.as_str())).collect();
+    Value::Object(Rc::new(JavaList::live(read, Some(Box::new(write)))))
+}
+
+/// A list element that must be a `CharacterTrait` key (or `null`).
+fn trait_elem(v: &Value) -> LuaResult<Option<Rc<RegistryKey>>> {
+    match v {
+        Value::Nil => Ok(None),
+        Value::Object(o) => match o.as_any().downcast_ref::<crate::bind_registry::KeyObject>() {
+            Some(k) => Ok(Some(k.key.clone())),
+            None => Err(class_cast(v, CHARACTER_TRAIT_CLASS)),
+        },
+        _ => Err(class_cast(v, CHARACTER_TRAIT_CLASS)),
+    }
 }
 
 // ---- object types ----
@@ -496,10 +530,7 @@ fn register_trait_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
     b.method("getGrantedRecipes", |c| {
         let d = tdef(c)?;
-        let (r, w) = (d.clone(), d);
-        let view = ListView::new(move || r.borrow().granted_recipes.iter().map(|s| Value::from(s.as_str())).collect())
-            .with_clear(move || w.borrow_mut().granted_recipes.clear());
-        Ok(c.push(Value::Object(Rc::new(view))))
+        Ok(c.push(live_strings(d, |d| &d.granted_recipes, |d| &mut d.granted_recipes)))
     });
     b.method("isGrantedRecipe", |c| {
         let d = tdef(c)?;
@@ -526,9 +557,12 @@ fn register_trait_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     b.method("getMutuallyExclusiveTraits", |c| {
         let d = tdef(c)?;
         let (r, w) = (d.clone(), d);
-        let view = ListView::new(move || r.borrow().mutually_exclusive_traits.iter().map(|k| trait_value(k.as_ref())).collect())
-            .with_clear(move || w.borrow_mut().mutually_exclusive_traits.clear());
-        Ok(c.push(Value::Object(Rc::new(view))))
+        let write = move |v: Vec<Value>| -> LuaResult<()> {
+            w.borrow_mut().mutually_exclusive_traits = v.iter().map(trait_elem).collect::<LuaResult<_>>()?;
+            Ok(())
+        };
+        let read = move || r.borrow().mutually_exclusive_traits.iter().map(|k| trait_value(k.as_ref())).collect();
+        Ok(c.push(Value::Object(Rc::new(JavaList::live(read, Some(Box::new(write)))))))
     });
     b.method("addMutuallyExclusive", |c| {
         let d = tdef(c)?;
@@ -635,10 +669,7 @@ fn register_profession_definition(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
     b.method("getGrantedRecipes", |c| {
         let d = pdef(c)?;
-        let (r, w) = (d.clone(), d);
-        let view = ListView::new(move || r.borrow().granted_recipes.iter().map(|s| Value::from(s.as_str())).collect())
-            .with_clear(move || w.borrow_mut().granted_recipes.clear());
-        Ok(c.push(Value::Object(Rc::new(view))))
+        Ok(c.push(live_strings(d, |d| &d.granted_recipes, |d| &mut d.granted_recipes)))
     });
     b.method("isGrantedRecipe", |c| {
         let d = pdef(c)?;
@@ -776,18 +807,12 @@ fn register_observations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     });
 }
 
-fn names_view(chars: &Rc<RefCell<Characters>>, pick: fn(&Characters) -> &Vec<String>) -> Value {
-    let ch = chars.clone();
-    Value::Object(Rc::new(ListView::new(move || {
-        pick(&ch.borrow()).iter().map(|s| Value::from(s.as_str())).collect()
-    })))
-}
 
 fn register_survivor_factory(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
     let b = expose_class(thread, SURVIVOR_FACTORY_CLASS, None);
-    b.field("FemaleForenames", names_view(chars, |c| &c.survivor_factory.female_forenames));
-    b.field("MaleForenames", names_view(chars, |c| &c.survivor_factory.male_forenames));
-    b.field("Surnames", names_view(chars, |c| &c.survivor_factory.surnames));
+    b.field("FemaleForenames", live_strings(chars.clone(), |c| &c.survivor_factory.female_forenames, |c| &mut c.survivor_factory.female_forenames));
+    b.field("MaleForenames", live_strings(chars.clone(), |c| &c.survivor_factory.male_forenames, |c| &mut c.survivor_factory.male_forenames));
+    b.field("Surnames", live_strings(chars.clone(), |c| &c.survivor_factory.surnames, |c| &mut c.survivor_factory.surnames));
     let ch = chars.clone();
     b.static_fn("Reset", move |_| {
         ch.borrow_mut().survivor_factory_reset();
@@ -1034,17 +1059,26 @@ fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &R
     });
     b.method("getExtras", |c| {
         let d = dobj(c, |o| o.desc.clone())?;
-        let (r, w) = (d.clone(), d);
-        let view = ListView::new(move || r.borrow().extra.iter().map(|s| Value::from(s.as_str())).collect())
-            .with_clear(move || w.borrow_mut().extra.clear());
-        Ok(c.push(Value::Object(Rc::new(view))))
+        Ok(c.push(live_strings(d, |d| &d.extra, |d| &mut d.extra)))
     });
     b.method("getObservations", |c| {
         let d = dobj(c, |o| o.desc.clone())?;
         let (r, w) = (d.clone(), d);
-        let view = ListView::new(move || r.borrow().observations.iter().map(|o| observation_value(Some(o))).collect())
-            .with_clear(move || w.borrow_mut().observations.clear());
-        Ok(c.push(Value::Object(Rc::new(view))))
+        let write = move |v: Vec<Value>| -> LuaResult<()> {
+            let obs = v
+                .iter()
+                .map(|x| match x {
+                    Value::Object(o) => o.as_any().downcast_ref::<ObservationObject>().map(|o| o.0.clone()),
+                    _ => None,
+                })
+                .zip(&v)
+                .map(|(o, x)| o.ok_or_else(|| class_cast(x, OBSERVATION_CLASS)))
+                .collect::<LuaResult<_>>()?;
+            w.borrow_mut().observations = obs;
+            Ok(())
+        };
+        let read = move || r.borrow().observations.iter().map(|o| observation_value(Some(o))).collect();
+        Ok(c.push(Value::Object(Rc::new(JavaList::live(read, Some(Box::new(write)))))))
     });
     let ch = chars.clone();
     b.method("addObservation", move |c| {
@@ -1340,7 +1374,7 @@ fn register_body_locations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>)
     let ch = chars.clone();
     b.static_fn("getAllGroups", move |c| {
         let ch = ch.clone();
-        let view = ListView::new(move || ch.borrow().body_locations.all_groups().iter().map(group_value).collect());
+        let view = JavaList::live(move || ch.borrow().body_locations.all_groups().iter().map(group_value).collect(), None);
         Ok(c.push(Value::Object(Rc::new(view))))
     });
 
@@ -1421,7 +1455,8 @@ fn register_body_locations(thread: &mut Thread, chars: &Rc<RefCell<Characters>>)
     });
     b.method("getAllLocations", |c| {
         let g = group(c)?;
-        let view = ListView::new(move || g.borrow().all_locations().iter().map(|l| body_location_value(Some(l))).collect());
+        let view =
+            JavaList::live(move || g.borrow().all_locations().iter().map(|l| body_location_value(Some(l))).collect(), None);
         Ok(c.push(Value::Object(Rc::new(view))))
     });
 
@@ -1505,6 +1540,7 @@ mod tests {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end").unwrap();
+        crate::bind_java_util::register(&mut t);
         crate::bind_core::register(&mut t, None, Rc::new(RefCell::new(pz_core::core::Core::new())));
         let sm = sm_with_keys();
         crate::bind_registry::register(&mut t, sm.clone());
@@ -1532,6 +1568,16 @@ mod tests {
             bold:addGrantedTrait(CharacterTrait.BRAVE)
             assert(bold:getMutuallyExclusiveTraits():contains(CharacterTrait.TIMID))
             assert(timid:getMutuallyExclusiveTraits():size() == 2)
+            -- Live lists write back to their owner.
+            local ex = bold:getMutuallyExclusiveTraits()
+            ex:add(CharacterTrait.BRAVE)
+            assert(bold:getMutuallyExclusiveTraits():size() == 2 and ex:indexOf(CharacterTrait.BRAVE) == 1)
+            ex:remove(CharacterTrait.BRAVE)
+            assert(bold:getMutuallyExclusiveTraits():size() == 1)
+            local rec = bold:getGrantedRecipes()
+            rec:add("Make Thing")
+            assert(bold:isGrantedRecipe("Make Thing") and bold:getGrantedRecipes():get(0) == "Make Thing")
+            assert(not pcall(function() rec:add(1) end) and rec:size() == 1)
             assert(bold:isMutuallyExclusive(timid))
             local list = CharacterTraitDefinition.getTraits()
             assert(list:size() == 3 and list:get(0) == brave and list:get(2) == bold)
@@ -1589,7 +1635,10 @@ mod tests {
             assert(m:getID() == d:getID() + 1 and SurvivorDesc.getIDCount() == m:getID() + 1)
             m:addObservation("Calm")
             assert(m:hasObservation("Calm") and m:getObservations():get(0) == o)
+            m:getExtras():add("extra")
+            assert(m:getExtras():contains("extra"))
             m:getExtras():clear()
+            assert(m:getExtras():isEmpty())
             assert(m:getHumanVisual() == m:getHumanVisual())
             m:getHumanVisual():setHairModel("Bald")
             assert(m:getHumanVisual():getHairModel() == "Bald")
@@ -1623,6 +1672,7 @@ mod tests {
             local g = BodyLocations.getGroup("Human")
             assert(g == BodyLocations.getGroup("Human") and g:getId() == "Human")
             assert(BodyLocations.getAllGroups():size() == 1)
+            assert(not pcall(function() BodyLocations.getAllGroups():clear() end))
             local hat = g:getOrCreateLocation(ItemBodyLocation.HAT)
             assert(hat == g:getOrCreateLocation(ItemBodyLocation.HAT) and hat:getId() == ItemBodyLocation.HAT)
             g:getOrCreateLocation(ItemBodyLocation.MASK)

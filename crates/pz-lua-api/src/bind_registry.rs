@@ -13,6 +13,12 @@
 //!
 //! Key objects are canonical (one Lua object per registry key) so Lua `==`
 //! and table keys behave like the original's singletons.
+//!
+//! `zombie.scripting.objects.ItemKey` and its nested holder classes
+//! (`ItemKey.Container.KEY_RING`, ...) are exposed with the constants the
+//! jar declares ([`pz_scripts::registry::builtin::BuiltinTables::item_keys`]).
+//! TODO(ItemKey.BY_NAME): `getByName`/`getByItemKeyValue` read a map the
+//! holders fill as the JVM initializes them lazily; not exposed yet.
 
 use crate::expose::{expose_class, str_arg, this};
 use pz_kahlua::value::LuaObject;
@@ -180,8 +186,89 @@ fn this_key(c: &NativeCall<'_>) -> LuaResult<Rc<RegistryKey>> {
     Ok(o.as_any().downcast_ref::<KeyObject>().unwrap().key.clone())
 }
 
-/// Register `ResourceLocation` and the key classes of [`KEY_CLASSES`].
+pub const ITEM_KEY_CLASS: &str = "zombie.scripting.objects.ItemKey";
+
+/// An `ItemKey` record: `id` and `itemType`.
+pub struct ItemKeyObject {
+    pub id: String,
+    pub item_type: Option<Rc<RegistryKey>>,
+}
+
+impl LuaObject for ItemKeyObject {
+    fn class_name(&self) -> &str {
+        ITEM_KEY_CLASS
+    }
+    /// `toString`: `Base.<id>`.
+    fn to_lua_string(&self) -> String {
+        format!("Base.{}", self.id)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn super_classes(&self) -> &[&'static str] {
+        &["java.lang.Record"]
+    }
+}
+
+/// `ItemKey` and its holder classes, one canonical object per constant.
+fn register_item_keys(thread: &mut Thread, sm: &Rc<ScriptManager>) {
+    let b = expose_class(thread, ITEM_KEY_CLASS, None);
+    fn this_item_key<R>(c: &NativeCall<'_>, f: impl FnOnce(&ItemKeyObject) -> R) -> LuaResult<R> {
+        crate::expose::with_this::<ItemKeyObject, R>(c, f)
+    }
+    b.method("id", |c| {
+        let v = this_item_key(c, |k| k.id.clone())?;
+        Ok(c.push(v))
+    });
+    b.method("itemType", |c| {
+        let v = this_item_key(c, |k| key_value(ITEM_TYPE_CLASS, k.item_type.as_ref()))?;
+        Ok(c.push(v))
+    });
+    b.method("toString", |c| {
+        let v = this_item_key(c, |k| k.to_lua_string())?;
+        Ok(c.push(v))
+    });
+    // The record's `equals`: same `id` and `itemType`.
+    b.method("equals", |c| {
+        let (id, ty) = this_item_key(c, |k| (k.id.clone(), k.item_type.clone()))?;
+        let eq = match c.arg(1) {
+            Value::Object(o) => o.as_any().downcast_ref::<ItemKeyObject>().is_some_and(|k| {
+                k.id == id
+                    && match (&k.item_type, &ty) {
+                        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            }),
+            _ => false,
+        };
+        Ok(c.push(eq))
+    });
+    let decls = sm.builtin_tables.borrow().item_keys.clone();
+    let types = sm.registries.get("item_type").expect("known registry");
+    let mut holder: Option<(String, crate::expose::ClassBuilder)> = None;
+    for d in decls {
+        if holder.as_ref().is_none_or(|(h, _)| *h != d.holder) {
+            let class: &'static str = Box::leak(format!("{ITEM_KEY_CLASS}${}", d.holder).into_boxed_str());
+            holder = Some((d.holder.clone(), expose_class(thread, class, None)));
+        }
+        let item_type = sm
+            .statics
+            .items
+            .borrow()
+            .constants
+            .id("item_type", &d.item_type)
+            .and_then(|id| ResourceLocation::of(id).ok())
+            .and_then(|l| types.borrow().get(&l));
+        let v = Value::Object(Rc::new(ItemKeyObject { id: d.id, item_type }));
+        holder.as_ref().unwrap().1.field(&d.field, v);
+    }
+}
+
+/// Register `ResourceLocation`, the key classes of [`KEY_CLASSES`] and
+/// `ItemKey`.
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
+    register_item_keys(thread, &sm);
     let b = expose_class(thread, RESOURCE_LOCATION_CLASS, None);
     b.field("DEFAULT_NAMESPACE", DEFAULT_NAMESPACE);
     b.static_fn("of", |c| {
@@ -372,5 +459,36 @@ mod tests {
         assert!(e.contains("Identifier cannot be null or empty"), "{e}");
         let e = run(&mut t, "CharacterTrait.register('plain')").unwrap_err();
         assert!(e.contains("Default namespace"), "{e}");
+    }
+
+    #[test]
+    fn item_keys() {
+        use pz_scripts::registry::builtin::ItemKeyDecl;
+        let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end").unwrap();
+        let sm = sm_with_keys();
+        sm.registries.get("item_type").unwrap().borrow_mut().register_id("t:boxy", false).unwrap();
+        sm.statics.items.borrow_mut().constants.insert("item_type", "BOXY", "t:boxy");
+        let decl = |holder: &str, field: &str, id: &str| ItemKeyDecl {
+            holder: holder.into(),
+            field: field.into(),
+            id: id.into(),
+            item_type: "BOXY".into(),
+        };
+        sm.builtin_tables.borrow_mut().item_keys =
+            vec![decl("Crate", "SMALL_CRATE", "SmallCrate"), decl("Crate", "BIG_CRATE", "BigCrate"), decl("Odd", "THING", "Thing")];
+        register(&mut t, sm);
+        run(
+            &mut t,
+            r#"
+            local k = ItemKey.Crate.SMALL_CRATE
+            assert(k == ItemKey.Crate.SMALL_CRATE and k ~= ItemKey.Crate.BIG_CRATE)
+            assert(k:id() == "SmallCrate" and tostring(k) == "Base.SmallCrate" and k:toString() == "Base.SmallCrate")
+            assert(k:itemType() == ItemType.BOXY and ItemKey.Odd.THING:itemType() == ItemType.BOXY)
+            assert(k:equals(ItemKey.Crate.SMALL_CRATE) and not k:equals(ItemKey.Odd.THING))
+            "#,
+        )
+        .unwrap();
     }
 }

@@ -131,8 +131,24 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
 /// Evaluates the body of `class`'s first method named `method`; empty if
 /// it has no such method or the method has no code.
 pub fn method_effects(class: &ClassFile, method: &str) -> Result<Vec<Effect>> {
+    Ok(eval(class, method, None)?.0)
+}
+
+/// The value the static method `method` of `class` returns when called
+/// with the (reference or int) arguments `args`, for factory helpers such
+/// as `static K key(String id) { return new K(id, Type.X); }`; `None` if it
+/// has no such method or returns before the evaluator reaches an
+/// `areturn`.
+pub fn method_return(class: &ClassFile, method: &str, args: &[Value]) -> Result<Option<Value>> {
+    Ok(eval(class, method, Some(args))?.1)
+}
+
+/// The evaluator. With `params`, local loads of parameter slots push the
+/// arguments and the first `areturn` ends the evaluation with its value;
+/// without, both clear the stack like any unmodelled instruction.
+fn eval(class: &ClassFile, method: &str, params: Option<&[Value]>) -> Result<(Vec<Effect>, Option<Value>)> {
     let Some(code) = class.method(method).and_then(|m| m.code.as_ref()) else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     };
     let u16_at = |pc: usize| -> Result<u16> {
         code.get(pc..pc + 2).map(|s| u16::from_be_bytes([s[0], s[1]])).ok_or(Error::Truncated)
@@ -141,9 +157,19 @@ pub fn method_effects(class: &ClassFile, method: &str) -> Result<Vec<Effect>> {
     let mut stack: Vec<Value> = Vec::new();
     let pop = |stack: &mut Vec<Value>| stack.pop().unwrap_or(Value::Unknown);
     let mut pc = 0;
+    let mut ret = None;
     while pc < code.len() {
         let op = code[pc];
+        let param = |slot: usize| params.map(|p| p.get(slot).cloned().unwrap_or(Value::Unknown));
         match op {
+            // iload/aload n, iload_0..3, aload_0..3 of a parameter.
+            0x15 | 0x19 if params.is_some() => stack.push(param(code[pc + 1] as usize).unwrap()),
+            0x1a..=0x1d if params.is_some() => stack.push(param((op - 0x1a) as usize).unwrap()),
+            0x2a..=0x2d if params.is_some() => stack.push(param((op - 0x2a) as usize).unwrap()),
+            0xac | 0xb0 if params.is_some() => {
+                ret = Some(pop(&mut stack));
+                break;
+            }
             0x01 => stack.push(Value::Null),
             0x02..=0x08 => stack.push(Value::Int(op as i64 - 3)),
             0x09 | 0x0a => stack.push(Value::Int(op as i64 - 9)),
@@ -239,7 +265,7 @@ pub fn method_effects(class: &ClassFile, method: &str) -> Result<Vec<Effect>> {
         }
         pc += insn_len(code, pc)?;
     }
-    Ok(out)
+    Ok((out, ret))
 }
 
 #[cfg(test)]
