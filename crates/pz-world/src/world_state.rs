@@ -13,7 +13,9 @@ use crate::chunk::{IsoCell, IsoGridSquare};
 use crate::meta_grid::IsoMetaGrid;
 use crate::objects::{IsoBarricade, IsoLightSwitch, IsoObject, IsoThumpable, ObjectKind};
 use crate::sprite::IsoSpriteManager;
-use crate::square::{EdgeFacing, IsoDirections, SquareHooks};
+use crate::square::{
+    EdgeFacing, GetSquare, IsoDirections, SpecialObject, SquareHooks, ThumpableInfo,
+};
 
 // `IsoGenerator.GeneratorMinZ`/`GeneratorMaxZ` are the world's level range.
 use crate::chunk::{MAX_LEVEL, MIN_LEVEL};
@@ -217,52 +219,30 @@ impl PlayerLights<'_> {
     }
 }
 
-/// The loaded world as the square, lighting and render queries see it.
-pub struct WorldState<'a> {
-    pub cell: &'a IsoCell,
-    pub meta: &'a IsoMetaGrid,
+/// [`SquareHooks`] backed by the objects a loaded cell holds: barricades
+/// (`IsoBarricade`), player-built doors and windows (`IsoThumpable`), fire
+/// (`IsoFire`) and door curtains (`IsoDoor`). Needs only the squares and
+/// sprites, so it is the default for any caller with loaded objects
+/// (pathfinding, collision, vision); [`WorldState`] answers the same
+/// queries through it.
+#[derive(Clone, Copy)]
+pub struct ObjectHooks<'a> {
+    pub squares: &'a dyn GetSquare,
     pub sprites: &'a IsoSpriteManager,
-    pub power: PowerSettings,
-    /// STUB: `IsoMetaGrid.getZonesAt(x, y, 0)` has a `NoPower` or
-    /// `NoPowerOrWater` zone (zones are not ported; runtime input).
-    pub no_power_zone: &'a dyn Fn(i32, i32) -> bool,
-    /// The local players' light items, in player order.
-    pub players: Vec<PlayerLights<'a>>,
 }
 
-fn no_zone(_: i32, _: i32) -> bool {
-    false
-}
-
-impl<'a> WorldState<'a> {
-    /// A state without `NoPower` zones or players.
-    pub fn new(
-        cell: &'a IsoCell,
-        meta: &'a IsoMetaGrid,
-        sprites: &'a IsoSpriteManager,
-        power: PowerSettings,
-    ) -> Self {
-        WorldState {
-            cell,
-            meta,
-            sprites,
-            power,
-            no_power_zone: &no_zone,
-            players: Vec::new(),
-        }
-    }
-
-    fn square(&self, x: i32, y: i32, z: i32) -> Option<&'a IsoGridSquare> {
-        self.cell.get_grid_square(x, y, z)
+impl<'a> ObjectHooks<'a> {
+    pub fn new(squares: &'a dyn GetSquare, sprites: &'a IsoSpriteManager) -> Self {
+        ObjectHooks { squares, sprites }
     }
 
     /// `getOppositeSquare()` of an edge element on `sq` (`getNorth()` or
     /// `getWest()` of the square).
     pub fn opposite_square(&self, sq: &IsoGridSquare, north: bool) -> Option<&'a IsoGridSquare> {
         if north {
-            self.square(sq.x, sq.y - 1, sq.z)
+            self.squares.get_grid_square(sq.x, sq.y - 1, sq.z)
         } else {
-            self.square(sq.x - 1, sq.y, sq.z)
+            self.squares.get_grid_square(sq.x - 1, sq.y, sq.z)
         }
     }
 
@@ -315,12 +295,151 @@ impl<'a> WorldState<'a> {
         })
     }
 
+    /// `IsoThumpable.isHoppable()`: a closed door reads its closed sprite's
+    /// `HoppableN`/`HoppableW`; otherwise the current sprite's, falling back
+    /// to the `isHoppable` field.
+    pub fn thumpable_is_hoppable(&self, obj: &IsoObject, t: &IsoThumpable) -> bool {
+        let f = &self.sprites.tables.flag;
+        let hoppable = |s: crate::sprite::SpriteIdx| {
+            let p = &self.sprites.sprites[s].properties;
+            p.has(f.HoppableN) || p.has(f.HoppableW)
+        };
+        if t.is_door && !t.open {
+            if let Some(s) = t.closed_sprite {
+                return hoppable(s);
+            }
+        }
+        obj.sprite.is_some_and(hoppable) || t.is_hoppable
+    }
+
+    /// The `IsoThumpable` / `IsoBarricade` / `IsoFire` facts the square
+    /// queries read of `obj`.
+    pub fn special_object_info(&self, obj: &IsoObject) -> Option<SpecialObject> {
+        match &obj.kind {
+            ObjectKind::Thumpable(t) => Some(SpecialObject::Thumpable(ThumpableInfo {
+                north: t.north,
+                open: t.open,
+                is_door: t.is_door,
+                is_hoppable: self.thumpable_is_hoppable(obj, t),
+                can_pass_through: t.can_pass_through,
+            })),
+            ObjectKind::Barricade(b) => Some(SpecialObject::Barricade {
+                dir: b.forward_dir(),
+                blocks_vision: b.is_block_vision(),
+            }),
+            ObjectKind::Fire(_) => Some(SpecialObject::Fire),
+            _ => None,
+        }
+    }
+
     /// `IsoDoor.HasCurtains() != null`, as `Some(isCurtainOpen())`.
     pub fn door_curtain(&self, obj: &IsoObject) -> Option<bool> {
         match &obj.kind {
             ObjectKind::Door(d) if d.has_curtain => Some(d.curtain_open),
             _ => None,
         }
+    }
+}
+
+impl SquareHooks for ObjectHooks<'_> {
+    fn is_barricaded(&self, sq: &IsoGridSquare, obj: &IsoObject) -> bool {
+        self.object_barricaded(sq, obj)
+    }
+
+    fn has_blocked_thumpable_door(&self, sq: &IsoGridSquare, facing: EdgeFacing) -> bool {
+        self.thumpable_door_blocked(sq, facing)
+    }
+
+    fn special_object(&self, _sq: &IsoGridSquare, obj: &IsoObject) -> Option<SpecialObject> {
+        self.special_object_info(obj)
+    }
+
+    fn door_curtain(&self, _sq: &IsoGridSquare, obj: &IsoObject) -> Option<bool> {
+        ObjectHooks::door_curtain(self, obj)
+    }
+}
+
+/// The loaded world as the square, lighting and render queries see it.
+pub struct WorldState<'a> {
+    pub cell: &'a IsoCell,
+    pub meta: &'a IsoMetaGrid,
+    pub sprites: &'a IsoSpriteManager,
+    pub power: PowerSettings,
+    /// STUB: `IsoMetaGrid.getZonesAt(x, y, 0)` has a `NoPower` or
+    /// `NoPowerOrWater` zone (zones are not ported; runtime input).
+    pub no_power_zone: &'a dyn Fn(i32, i32) -> bool,
+    /// The local players' light items, in player order.
+    pub players: Vec<PlayerLights<'a>>,
+}
+
+fn no_zone(_: i32, _: i32) -> bool {
+    false
+}
+
+impl<'a> WorldState<'a> {
+    /// A state without `NoPower` zones or players.
+    pub fn new(
+        cell: &'a IsoCell,
+        meta: &'a IsoMetaGrid,
+        sprites: &'a IsoSpriteManager,
+        power: PowerSettings,
+    ) -> Self {
+        WorldState {
+            cell,
+            meta,
+            sprites,
+            power,
+            no_power_zone: &no_zone,
+            players: Vec::new(),
+        }
+    }
+
+    fn square(&self, x: i32, y: i32, z: i32) -> Option<&'a IsoGridSquare> {
+        self.cell.get_grid_square(x, y, z)
+    }
+
+    /// The object queries ([`ObjectHooks`]) over this state's cell.
+    pub fn objects(&self) -> ObjectHooks<'a> {
+        ObjectHooks::new(self.cell, self.sprites)
+    }
+
+    /// See [`ObjectHooks::opposite_square`].
+    pub fn opposite_square(&self, sq: &IsoGridSquare, north: bool) -> Option<&'a IsoGridSquare> {
+        self.objects().opposite_square(sq, north)
+    }
+
+    /// See [`ObjectHooks::barricades_for`].
+    pub fn barricades_for<'s>(
+        &self,
+        sq: &'s IsoGridSquare,
+        north: bool,
+    ) -> (Option<&'s IsoBarricade>, Option<&'a IsoBarricade>) {
+        self.objects().barricades_for(sq, north)
+    }
+
+    /// See [`ObjectHooks::object_barricaded`].
+    pub fn object_barricaded(&self, sq: &IsoGridSquare, obj: &IsoObject) -> bool {
+        self.objects().object_barricaded(sq, obj)
+    }
+
+    /// See [`ObjectHooks::thumpable_door_blocked`].
+    pub fn thumpable_door_blocked(&self, sq: &IsoGridSquare, facing: EdgeFacing) -> bool {
+        self.objects().thumpable_door_blocked(sq, facing)
+    }
+
+    /// See [`ObjectHooks::object_is_window`].
+    pub fn object_is_window(&self, obj: &IsoObject) -> bool {
+        self.objects().object_is_window(obj)
+    }
+
+    /// See [`ObjectHooks::special_object_info`].
+    pub fn special_object_info(&self, obj: &IsoObject) -> Option<SpecialObject> {
+        self.objects().special_object_info(obj)
+    }
+
+    /// See [`ObjectHooks::door_curtain`].
+    pub fn door_curtain(&self, obj: &IsoObject) -> Option<bool> {
+        self.objects().door_curtain(obj)
     }
 
     // Power.
@@ -474,11 +593,19 @@ impl<'a> WorldState<'a> {
 
 impl SquareHooks for WorldState<'_> {
     fn is_barricaded(&self, sq: &IsoGridSquare, obj: &IsoObject) -> bool {
-        self.object_barricaded(sq, obj)
+        self.objects().is_barricaded(sq, obj)
     }
 
     fn has_blocked_thumpable_door(&self, sq: &IsoGridSquare, facing: EdgeFacing) -> bool {
-        self.thumpable_door_blocked(sq, facing)
+        self.objects().has_blocked_thumpable_door(sq, facing)
+    }
+
+    fn special_object(&self, sq: &IsoGridSquare, obj: &IsoObject) -> Option<SpecialObject> {
+        self.objects().special_object(sq, obj)
+    }
+
+    fn door_curtain(&self, sq: &IsoGridSquare, obj: &IsoObject) -> Option<bool> {
+        SquareHooks::door_curtain(&self.objects(), sq, obj)
     }
 }
 

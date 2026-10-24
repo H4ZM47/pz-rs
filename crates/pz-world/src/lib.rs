@@ -40,4 +40,4 @@ pub use square::{
     ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks,
     SpecialObject, SquareHooks, ThumpableInfo, VisionEnv, VisionResult,
 };
-pub use world_state::{PowerSettings, WorldState};
+pub use world_state::{ObjectHooks, PowerSettings, WorldState};
