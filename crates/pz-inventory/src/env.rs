@@ -111,6 +111,18 @@ pub trait ItemEnv {
         0
     }
 
+    /// The `ClothingItem` assets. With them, `load` and [`create_item`]
+    /// run `synchWithVisual` (visuals from the assets, blood and dirt
+    /// levels, colour); without them (the default) visuals stay as saved.
+    fn assets(&self) -> Option<&crate::assets::ItemAssets> {
+        None
+    }
+
+    /// `OutfitRNG` for new visuals.
+    fn visual_rng(&self) -> &dyn crate::visual::VisualRng {
+        &crate::visual::NoVisualRng
+    }
+
     /// Called when an item is kept as raw bytes, with the reason.
     fn note_raw(&self, _registry_id: i16, _reason: &str) {}
 }
@@ -118,6 +130,15 @@ pub trait ItemEnv {
 /// `InventoryItemFactory.CreateItem(registryID)`.
 pub fn create_item(env: &dyn ItemEnv, registry_id: i16) -> Option<InventoryItem> {
     let t = env.template(registry_id)?;
+    Some(create_from_template(env, t, registry_id))
+}
+
+/// `Item.InstanceItem` and `createItemInternal` for a script template.
+pub fn create_from_template(
+    env: &dyn ItemEnv,
+    t: Rc<ItemTemplate>,
+    registry_id: i16,
+) -> InventoryItem {
     let mut item = InventoryItem::create(t.clone(), registry_id);
     item.components = env.components().factory_components(&t);
     // Item.InstanceItem: moveables and radios read their world sprite;
@@ -132,7 +153,15 @@ pub fn create_item(env: &dyn ItemEnv, registry_id: i16) -> Option<InventoryItem>
     if let Some(ms) = &t.moveable_sprite {
         item.read_from_world_sprite(ms, env);
     }
-    Some(item)
+    // createItemInternal: a `Drainable` starts full.
+    if matches!(t.class, ItemClass::Drainable | ItemClass::WeaponPart) {
+        item.uses = item.get_max_uses();
+        item.update_weight_by(|n| env.script_actual_weight(n));
+    }
+    if let Some(a) = env.assets() {
+        item.synch_with_visual(Some(a), &crate::context::Loose, env.visual_rng());
+    }
+    item
 }
 
 /// [`ItemEnv`] with every default.

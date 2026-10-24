@@ -5,6 +5,8 @@
 //! or is a marked stub ("STUB") with the behaviour it still lacks.
 
 use crate::container::ItemContainer;
+use crate::context::{ItemContext, NoOwner};
+use crate::gameplay::UseOutcome;
 use crate::item::{ClothingData, FoodData, InventoryItem, ItemKind, WeaponData};
 use crate::template::ItemClass;
 
@@ -223,26 +225,38 @@ impl InventoryItem {
         }
     }
 
-    /// Port of `getMaxUses()`: `DrainableComboItem` uses
-    /// `floor(1 / useDelta)`, every other item 1.
+    /// Port of `getMaxUses()`: `DrainableComboItem` and `WeaponPart` use
+    /// `floor(1 / useDelta)`, `Food` with a base hunger its hunger in
+    /// hundredths, every other item 1.
     pub fn get_max_uses(&self) -> i32 {
-        if self.template.class == ItemClass::Drainable {
+        if matches!(
+            self.template.class,
+            ItemClass::Drainable | ItemClass::WeaponPart
+        ) {
             (1.0 / self.template.use_delta).floor() as i32
+        } else if let Some(f) = self.food().filter(|f| f.base_hunger != 0.0) {
+            // Food.getMaxUses.
+            (f.base_hunger * 100.0).abs() as i32
         } else {
             1
         }
     }
 
-    /// STUB of `Use()`: decrements the uses only. The original also
-    /// replaces depleted drainables (`ReplaceOnDeplete`), removes the item
-    /// from its container and syncs; those need the container owner.
-    pub fn use_(&mut self) {
-        self.uses -= 1;
+    /// Port of `Use()` for an item in a container without a parent and
+    /// without script lookups: the item changes as in the original (a
+    /// drainable loses a use, so a used-up tissue reaches -1; food
+    /// consumes hunger) and the outcome says what the container must do
+    /// (`added` names a `ReplaceOnUse`/`ReplaceOnDeplete` item without
+    /// creating it). [`InventoryItem::use_with`] takes the owner and game
+    /// state; [`ItemContainer::use_item`] applies the outcome.
+    pub fn use_(&mut self) -> UseOutcome {
+        self.use_with(false, false, false, &NoOwner, &Offline)
     }
 
-    /// STUB of `UseAndSync()`: [`Self::use_`] without the network sync.
-    pub fn use_and_sync(&mut self) {
-        self.use_();
+    /// Port of `UseAndSync()`: `Use(false, false, GameServer.server)` (not
+    /// a server here, so no sync).
+    pub fn use_and_sync(&mut self) -> UseOutcome {
+        self.use_()
     }
 
     /// Port of `HandWeapon.getWeaponCategories()` (registry ids).
@@ -270,30 +284,79 @@ impl InventoryItem {
         self.weapon().map_or(0.0, |w| w.max_damage)
     }
 
-    /// STUB of `WeaponType.getWeaponType(HandWeapon)`: needs the
-    /// `WeaponType` table from `pz-classfile` and the swing animation;
-    /// returns `None` until ported.
+    /// Port of `WeaponType.getWeaponType(HandWeapon)`, as the enum
+    /// constant's name (`"KNIFE"`, ...). `None` for items that are not
+    /// weapons, or without a swing animation (the original throws).
     pub fn get_weapon_type(&self) -> Option<&'static str> {
-        None
+        self.weapon_type().map(WeaponType::name)
     }
 
-    /// Port of `Clothing.getScratchDefense()` (blade defense).
+    /// [`Self::get_weapon_type`] as the enum.
+    pub fn weapon_type(&self) -> Option<WeaponType> {
+        if !matches!(self.kind, ItemKind::Weapon(_)) {
+            return None;
+        }
+        let swing = self.template.swing_anim.as_deref()?;
+        let is = |s: &str| swing.eq_ignore_ascii_case(s);
+        Some(if is("Stab") {
+            WeaponType::Knife
+        } else if is("Heavy") {
+            WeaponType::Heavy
+        } else if is("Throw") {
+            WeaponType::Throwing
+        } else if self.is_ranged() {
+            if self.is_two_hand_weapon() {
+                WeaponType::Firearm
+            } else {
+                WeaponType::Handgun
+            }
+        } else if self.is_two_hand_weapon() {
+            if is("Spear") {
+                WeaponType::Spear
+            } else if self.type_ == "Chainsaw" {
+                WeaponType::Chainsaw
+            } else {
+                WeaponType::TwoHanded
+            }
+        } else {
+            WeaponType::OneHanded
+        })
+    }
+
+    /// Port of `Clothing.getScratchDefense()` (blade defense): 0 when
+    /// broken; the script value capped at 100 (`setScratchDefense`).
+    /// Other items: the script value.
     pub fn get_scratch_defense(&self) -> f32 {
-        self.template.scratch_defense
+        self.clothing_defense(self.template.scratch_defense)
     }
 
     /// Port of `Clothing.getBiteDefense()`.
     pub fn get_bite_defense(&self) -> f32 {
-        self.template.bite_defense
+        self.clothing_defense(self.template.bite_defense)
     }
 
     /// Port of `Clothing.getBulletDefense()`.
     pub fn get_bullet_defense(&self) -> f32 {
-        self.template.bullet_defense
+        self.clothing_defense(self.template.bullet_defense)
     }
 
-    /// Port of `getCorpseSicknessDefense()`.
+    fn clothing_defense(&self, v: f32) -> f32 {
+        if self.clothing().is_none() {
+            return v;
+        }
+        if self.condition <= 0 {
+            return 0.0;
+        }
+        v.min(100.0)
+    }
+
+    /// Port of `Clothing.getCorpseSicknessDefense()` without the filter
+    /// part (0 when broken); [`Self::get_corpse_sickness_defense_with`]
+    /// adds the gas mask filter.
     pub fn get_corpse_sickness_defense(&self) -> f32 {
+        if self.clothing().is_some() && self.condition <= 0 {
+            return 0.0;
+        }
         self.template.corpse_sickness_defense
     }
 
@@ -307,14 +370,16 @@ impl InventoryItem {
         self.template.windresist
     }
 
-    /// STUB of `Clothing.isSpikedFront()`/`isSpikedBehind()`: runtime
-    /// flags (not saved), default false.
+    /// Whether this clothing spikes attackers from the front: the
+    /// original has no such item method; `IsoGameCharacter.bodyPartIsSpiked`
+    /// tests the worn clothing's `Spiked` tag, which this reads.
     pub fn is_spiked_front(&self) -> bool {
-        self.clothing().is_some_and(|c| c.spiked_front)
+        self.clothing().is_some() && self.has_tag(crate::gameplay::tags::SPIKED)
     }
 
+    /// The `SpikedBehind` tag (`bodyPartIsSpikedBehind`).
     pub fn is_spiked_behind(&self) -> bool {
-        self.clothing().is_some_and(|c| c.spiked_behind)
+        self.clothing().is_some() && self.has_tag(crate::gameplay::tags::SPIKED_BEHIND)
     }
 
     /// Port of `Clothing.getDirtyness()`.
@@ -335,19 +400,28 @@ impl InventoryItem {
         self.clothing().map_or(0.0, |c| c.wetness)
     }
 
-    /// STUB of the gas mask filter drain (`ClothingFilter`/`Durability`
-    /// components): the components are opaque until `pz-entity` lands.
+    /// The gas mask filter (or SCBA tank) left: `Clothing.getUsedDelta()`
+    /// without its write of 0 when missing. See
+    /// [`Self::get_used_delta`], [`Self::drain_gas_mask`].
     pub fn get_gas_mask_drain(&self) -> f32 {
-        0.0
+        self.used_delta()
     }
 
-    /// STUB of `ClothingWetness.updateWetness` for this item: needs the
-    /// character's body parts and climate; not ported.
-    pub fn update_wetness(&mut self) {}
+    /// Port of the part of `Clothing.updateWetness(true)` that needs no
+    /// time or place: clothing without a blood clothing type dries at
+    /// once. [`Self::update_wetness_with`] is the whole method.
+    pub fn update_wetness(&mut self) {
+        if self.clothing().is_some() && self.template.blood_clothing_type.is_none() {
+            self.set_wetness(0.0);
+        }
+    }
 
-    /// Port of `getActualWeight()`.
+    /// Port of `getActualWeight()` (with the `name == fullType` rule and
+    /// the `HandWeapon` and `Food` overrides) without script lookups:
+    /// food with a `ReplaceOnUse` or extra items needs
+    /// [`Self::get_actual_weight_with`].
     pub fn get_actual_weight(&self) -> f32 {
-        self.actual_weight
+        self.actual_weight_impl(None)
     }
 
     fn food(&self) -> Option<&FoodData> {
@@ -394,16 +468,77 @@ impl FoodData {
 }
 
 impl ItemContainer {
-    /// STUB of `ItemContainer.getCapacityWeight()`/`getContentsWeight()`:
-    /// sums `getUnequippedWeight()` approximated by `getActualWeight()` of
-    /// decoded items. The original's equipped/worn weight rules,
-    /// `InventoryContainer` weight reduction and fluid weights are not
-    /// ported yet.
+    /// Port of `ItemContainer.getContentsWeight()` without script lookups
+    /// or fluids (no ammo or fluid weight):
+    /// [`Self::get_contents_weight_with`] is the whole method; the
+    /// equipped and worn rules (`getInventoryWeight`) are the character's.
     pub fn get_contents_weight(&self) -> f32 {
-        self.items
-            .iter()
-            .filter_map(|i| i.as_item())
-            .map(|i| i.get_actual_weight())
-            .sum()
+        self.get_contents_weight_with(&Offline)
+    }
+}
+
+/// `zombie.inventory.types.WeaponType`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WeaponType {
+    Unarmed,
+    TwoHanded,
+    OneHanded,
+    Heavy,
+    Knife,
+    Spear,
+    Handgun,
+    Firearm,
+    Throwing,
+    Chainsaw,
+}
+
+impl WeaponType {
+    /// The enum constant's name.
+    pub fn name(self) -> &'static str {
+        match self {
+            WeaponType::Unarmed => "UNARMED",
+            WeaponType::TwoHanded => "TWO_HANDED",
+            WeaponType::OneHanded => "ONE_HANDED",
+            WeaponType::Heavy => "HEAVY",
+            WeaponType::Knife => "KNIFE",
+            WeaponType::Spear => "SPEAR",
+            WeaponType::Handgun => "HANDGUN",
+            WeaponType::Firearm => "FIREARM",
+            WeaponType::Throwing => "THROWING",
+            WeaponType::Chainsaw => "CHAINSAW",
+        }
+    }
+}
+
+/// An [`ItemContext`] with no scripts, no climate and zero globals: what
+/// the context-free ports above run with.
+pub struct Offline;
+impl ItemContext for Offline {
+    fn world_age_hours(&self) -> f64 {
+        0.0
+    }
+    fn multiplier(&self) -> f32 {
+        1.0
+    }
+    fn rain_intensity(&self) -> f32 {
+        0.0
+    }
+    fn is_raining(&self) -> bool {
+        false
+    }
+    fn equipped_or_worn_encumbrance_multiplier(&self) -> f64 {
+        1.0
+    }
+    fn basic_mask_defense(&self) -> f32 {
+        0.0
+    }
+    fn improvised_gas_mask_defense(&self) -> f32 {
+        0.0
+    }
+    fn standard_gas_mask_defense(&self) -> f32 {
+        0.0
+    }
+    fn script(&self, _name: &str) -> Option<std::rc::Rc<crate::template::ItemTemplate>> {
+        None
     }
 }

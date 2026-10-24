@@ -159,6 +159,45 @@ pub struct ItemTemplate {
     pub weight_reduction: i32,
     pub use_delta: f32,
     pub count: i32,
+    // Values the gameplay methods (`gameplay.rs`) read from the script
+    // (`getScriptItem()`), resolved once when the template is built.
+    /// `clothingItem` (the `ClothingItem` asset name).
+    pub clothing_item: Option<String>,
+    /// `replacePrimaryHand.clothingItemName` (`Some(None)`: a replacement
+    /// without a clothing item).
+    pub replace_primary_hand: Option<Option<String>>,
+    /// `replaceSecondHand.clothingItemName`.
+    pub replace_second_hand: Option<Option<String>>,
+    /// `getWithoutDrainable()`.
+    pub without_drainable: Option<String>,
+    /// The `clothingItem` of the `withoutDrainable` script, if it exists.
+    pub without_drainable_clothing_item: Option<String>,
+    /// `bloodClothingType` names, in script order.
+    pub blood_clothing_type: Option<Vec<String>>,
+    /// `getBodyLocation()` as its registry id (`base:hat`, ...).
+    pub body_location: Option<String>,
+    pub equipped_no_sprint: bool,
+    pub protect_from_rain_when_equipped: bool,
+    pub neck_protection_modifier: f32,
+    pub disappear_on_use: bool,
+    pub replace_on_use: Option<String>,
+    pub replace_on_deplete: Option<String>,
+    pub weight_empty: f32,
+    pub swing_anim: Option<String>,
+    pub two_hand_weapon: bool,
+    pub have_chamber: bool,
+    /// `ammoType.getItemKey()`.
+    pub ammo_item: Option<String>,
+    pub cosmetic: bool,
+    pub remove_on_broken: bool,
+    pub can_have_holes: bool,
+    pub break_sound: Option<String>,
+    pub damaged_sound: Option<String>,
+    pub on_break: Option<String>,
+    /// `isItemType(ItemType.KEY_RING)`.
+    pub key_ring_type: bool,
+    /// `WeaponPart.getWeightModifier()` (`weightModifier`).
+    pub weight_modifier: f32,
 }
 
 impl ItemTemplate {
@@ -222,6 +261,32 @@ impl ItemTemplate {
             weight_reduction: 0,
             use_delta: 0.03125,
             count: 1,
+            clothing_item: None,
+            replace_primary_hand: None,
+            replace_second_hand: None,
+            without_drainable: None,
+            without_drainable_clothing_item: None,
+            blood_clothing_type: None,
+            body_location: None,
+            equipped_no_sprint: false,
+            protect_from_rain_when_equipped: false,
+            neck_protection_modifier: 1.0,
+            disappear_on_use: true,
+            replace_on_use: None,
+            replace_on_deplete: None,
+            weight_empty: 0.0,
+            swing_anim: None,
+            two_hand_weapon: false,
+            have_chamber: true,
+            ammo_item: None,
+            cosmetic: false,
+            remove_on_broken: true,
+            can_have_holes: true,
+            break_sound: None,
+            damaged_sound: None,
+            on_break: None,
+            key_ring_type: false,
+            weight_modifier: 0.0,
         }
     }
 
@@ -329,6 +394,42 @@ impl ItemTemplate {
             weight_reduction: item.weight_reduction,
             use_delta: item.use_delta,
             count: item.count,
+            clothing_item: item.clothing_item.clone(),
+            replace_primary_hand: item
+                .replace_primary_hand
+                .as_ref()
+                .map(|r| r.clothing_item_name.clone()),
+            replace_second_hand: item
+                .replace_second_hand
+                .as_ref()
+                .map(|r| r.clothing_item_name.clone()),
+            without_drainable: item.without_drainable.clone(),
+            without_drainable_clothing_item: item
+                .without_drainable
+                .as_deref()
+                .and_then(|n| pz_scripts::objects::items::get_item(sm, n))
+                .and_then(|i| i.borrow().clothing_item.clone()),
+            blood_clothing_type: item.blood_clothing_type.clone(),
+            body_location: item.body_location.as_ref().map(|k| k.location.to_string()),
+            equipped_no_sprint: item.equipped_no_sprint,
+            protect_from_rain_when_equipped: item.protect_from_rain_when_equipped,
+            neck_protection_modifier: item.neck_protection_modifier,
+            disappear_on_use: item.disappear_on_use,
+            replace_on_use: item.replace_on_use.clone(),
+            replace_on_deplete: item.replace_on_deplete.clone(),
+            weight_empty: item.weight_empty,
+            swing_anim: item.swing_anim.clone(),
+            two_hand_weapon: item.two_hand_weapon,
+            have_chamber: item.have_chamber,
+            ammo_item: item.ammo_type.as_ref().and_then(|k| k.item_key.clone()),
+            cosmetic: item.cosmetic,
+            remove_on_broken: item.remove_on_broken,
+            can_have_holes: item.can_have_holes,
+            break_sound: item.break_sound.clone(),
+            damaged_sound: item.damaged_sound.clone(),
+            on_break: item.on_break.clone(),
+            key_ring_type: item.is_item_type(sm, "KEY_RING"),
+            weight_modifier: item.weight_modifier,
         }))
     }
 }
