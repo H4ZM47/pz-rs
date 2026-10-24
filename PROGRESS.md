@@ -31,6 +31,15 @@ Status of the Rust port. Update this file with every merged change.
   (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
   output; the remaining one differs only in an identity hash.
 
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage, Nutrition, Thermoregulator and Fitness
+  are stubs.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 
