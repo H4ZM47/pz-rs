@@ -293,9 +293,7 @@ pub fn get_two_letters(input: &str) -> String {
         .filter(|c| c.is_ascii_alphabetic() || JAVA_SPACE.contains(c))
         .collect();
     // cleaned.split("\\s+"): a leading separator yields an empty first word.
-    let mut words: Vec<&str> = cleaned
-        .split(JAVA_SPACE)
-        .collect();
+    let mut words: Vec<&str> = cleaned.split(JAVA_SPACE).collect();
     // Collapse runs of separators like "\\s+" (keeping a leading empty word).
     let lead_empty = words.first().is_some_and(|w| w.is_empty());
     words.retain(|w| !w.is_empty());
@@ -364,6 +362,11 @@ fn no_op(_: &mut NativeCall<'_>) -> LuaResult<usize> {
 }
 
 pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>, events: EventManager) {
+    register_ui_transition(thread);
+    register_pz_math(thread);
+    register_lua_event_manager(thread, events.clone());
+    register_clipboard(thread);
+
     // Random numbers.
     global(thread, "ZombRand", |c| {
         let r = if c.nargs() >= 2 {
@@ -652,6 +655,229 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>, events: EventManag
     global(thread, "getServerPasswordFromArgs", nil);
 }
 
+// ---- zombie.ui.UITransition ---------------------------------------------------------
+
+thread_local! {
+    /// `UITransition.currentTimeMS` / `elapsedTimeMS`.
+    static TRANSITION_CLOCK: Cell<(i64, i64)> = const { Cell::new((0, 0)) };
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// `UITransition.UpdateAll()`, called once per frame by `UIManager.update`.
+pub fn ui_transition_update_all() {
+    TRANSITION_CLOCK.with(|c| {
+        let current = now_ms();
+        let (prev, _) = c.get();
+        c.set((current, current - prev));
+    });
+}
+
+/// `zombie.ui.UITransition`: a fade fraction advanced by frame time.
+#[derive(Default)]
+pub struct UITransition {
+    duration: Cell<f32>,
+    elapsed: Cell<f32>,
+    frac: Cell<f32>,
+    fade_out: Cell<bool>,
+    ignore_update_time: Cell<bool>,
+    update_time_ms: Cell<i64>,
+}
+
+impl LuaObject for UITransition {
+    fn class_name(&self) -> &str {
+        "zombie.ui.UITransition"
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl UITransition {
+    pub fn new() -> Self {
+        let t = UITransition::default();
+        t.duration.set(100.0);
+        t
+    }
+
+    pub fn init(&self, duration: f32, fade_out: bool) {
+        self.duration.set(duration.max(1.0));
+        let (frac, d) = (self.frac.get(), self.duration.get());
+        self.elapsed.set(if frac >= 1.0 {
+            0.0
+        } else if self.fade_out.get() != fade_out {
+            (1.0 - frac) * d
+        } else {
+            frac * d
+        });
+        self.fade_out.set(fade_out);
+    }
+
+    pub fn update(&self) {
+        let (current, elapsed_ms) = TRANSITION_CLOCK.with(Cell::get);
+        let d = self.duration.get();
+        if !self.ignore_update_time.get()
+            && self.update_time_ms.get() != 0
+            && self.update_time_ms.get() + (d as i64) < current
+        {
+            self.elapsed.set(d);
+        }
+        self.update_time_ms.set(current);
+        self.frac.set(self.elapsed.get() / d);
+        self.elapsed
+            .set((self.elapsed.get() + elapsed_ms as f32).min(d));
+    }
+
+    pub fn fraction(&self) -> f32 {
+        if self.fade_out.get() {
+            1.0 - self.frac.get()
+        } else {
+            self.frac.get()
+        }
+    }
+
+    pub fn set_fade_in(&self, fade_in: bool) {
+        if fade_in {
+            if self.fade_out.get() {
+                self.init(100.0, false);
+            }
+        } else if !self.fade_out.get() {
+            self.init(200.0, true);
+        }
+    }
+}
+
+fn register_ui_transition(thread: &mut Thread) {
+    let t = expose_class(thread, "zombie.ui.UITransition", None);
+    t.ctor(|c| Ok(c.push(Value::Object(Rc::new(UITransition::new())))));
+    t.static_fn("UpdateAll", |_| {
+        ui_transition_update_all();
+        Ok(0)
+    });
+    t.method("init", |c| {
+        let (d, out) = (num_arg(c, 1) as f32, bool_arg(c, 2));
+        with_this::<UITransition, _>(c, |t| t.init(d, out))?;
+        Ok(0)
+    });
+    t.method("update", |c| {
+        with_this::<UITransition, _>(c, UITransition::update)?;
+        Ok(0)
+    });
+    t.method("fraction", |c| {
+        let v = with_this::<UITransition, _>(c, UITransition::fraction)?;
+        Ok(c.push(v as f64))
+    });
+    t.method("setFadeIn", |c| {
+        let b = bool_arg(c, 1);
+        with_this::<UITransition, _>(c, |t| t.set_fade_in(b))?;
+        Ok(0)
+    });
+    t.method("reset", |c| {
+        with_this::<UITransition, _>(c, |t| t.elapsed.set(0.0))?;
+        Ok(0)
+    });
+    t.method("setIgnoreUpdateTime", |c| {
+        let b = bool_arg(c, 1);
+        with_this::<UITransition, _>(c, |t| t.ignore_update_time.set(b))?;
+        Ok(0)
+    });
+    t.method("getElapsed", |c| {
+        let v = with_this::<UITransition, _>(c, |t| t.elapsed.get())?;
+        Ok(c.push(v as f64))
+    });
+    t.method("setElapsed", |c| {
+        let v = num_arg(c, 1) as f32;
+        with_this::<UITransition, _>(c, |t| t.elapsed.set(v))?;
+        Ok(0)
+    });
+}
+
+// ---- zombie.core.math.PZMath (the statics menu code uses) ------------------------------
+
+fn register_pz_math(thread: &mut Thread) {
+    let m = expose_class(thread, "zombie.core.math.PZMath", None);
+    // Kahlua passes Lua numbers as Double, which selects the double overload.
+    m.static_fn("clamp", |c| {
+        let (v, lo, hi) = (num_arg(c, 0), num_arg(c, 1), num_arg(c, 2));
+        Ok(c.push(if v < lo {
+            lo
+        } else if v > hi {
+            hi
+        } else {
+            v
+        }))
+    });
+    m.static_fn("clampFloat", |c| {
+        let (v, lo, hi) = (
+            num_arg(c, 0) as f32,
+            num_arg(c, 1) as f32,
+            num_arg(c, 2) as f32,
+        );
+        Ok(c.push(
+            (if v < lo {
+                lo
+            } else if v > hi {
+                hi
+            } else {
+                v
+            }) as f64,
+        ))
+    });
+    m.static_fn("clamp_01", |c| {
+        let v = num_arg(c, 0) as f32;
+        Ok(c.push(v.clamp(0.0, 1.0) as f64))
+    });
+    m.static_fn("lerp", |c| {
+        let (a, b, t) = (
+            num_arg(c, 0) as f32,
+            num_arg(c, 1) as f32,
+            num_arg(c, 2) as f32,
+        );
+        Ok(c.push((a + (b - a) * t) as f64))
+    });
+    m.static_fn("radToDeg", |c| {
+        let r = num_arg(c, 0) as f32;
+        Ok(c.push((57.295776f32 * r) as f64))
+    });
+}
+
+// ---- zombie.Lua.LuaEventManager -----------------------------------------------------------
+
+fn register_lua_event_manager(thread: &mut Thread, events: EventManager) {
+    let m = expose_class(thread, "zombie.Lua.LuaEventManager", None);
+    m.static_fn("AddEvent", move |c| {
+        let name = str_or_null(c, 0);
+        events.add_event(&name);
+        Ok(0)
+    });
+}
+
+// ---- Clipboard ---------------------------------------------------------------------------------
+
+thread_local! {
+    /// Text set through `Clipboard.setClipboard` until the window backend
+    /// provides the system clipboard.
+    pub static CLIPBOARD: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+fn register_clipboard(thread: &mut Thread) {
+    let c = expose_class(thread, "zombie.core.Clipboard", None);
+    c.static_fn("setClipboard", |c| {
+        let s = str_or_null(c, 0);
+        CLIPBOARD.with(|b| *b.borrow_mut() = s);
+        Ok(0)
+    });
+    c.static_fn("getClipboard", |c| {
+        let s = CLIPBOARD.with(|b| b.borrow().clone());
+        Ok(c.push(s))
+    });
+}
+
 fn npe() -> LuaError {
     LuaError::Runtime {
         message: "null".into(),
@@ -726,6 +952,18 @@ mod tests {
         assert_eq!(get_two_letters("x"), "X ");
         assert_eq!(get_two_letters("123"), "- ");
         assert_eq!(get_two_letters(" a b"), "-A");
+    }
+
+    #[test]
+    fn ui_transition_fades() {
+        ui_transition_update_all();
+        let t = UITransition::new();
+        t.set_fade_in(false);
+        assert_eq!(t.fraction(), 1.0);
+        t.set_fade_in(true);
+        t.elapsed.set(50.0);
+        t.update();
+        assert_eq!(t.fraction(), 0.5);
     }
 
     #[test]
