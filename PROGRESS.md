@@ -27,6 +27,21 @@ Status of the Rust port. Update this file with every merged change.
   Field-level dumps of every Build 42 script of these types match the
   original (checked locally). Built-in registry keys come from the installed
   `projectzomboid.jar` via `pz-classfile`.
+- World/maps (`pz-world`): lot headers, lotpacks, `MapFiles`, meta grid
+  rooms/buildings, `.tiles` reader, `Fix2x`, and chunk loading through
+  `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk` with generic tile
+  objects. Header and lotpack decoding match the original loader on 163
+  cells (Muldraugh sample plus six challenge maps), checked locally.
+  Meta-grid zones (`Zone` and the vehicle/mannequin/world-gen/animal
+  subclasses, chunk zone arrays, Lua-facing registration, lot-priority
+  removal) match the original `IsoMetaGrid` on randomized registrations;
+  the native clipper is an injected trait and the zone tables are runtime
+  input.
+- World save files: `map_t.bin` (`GameTime` + climate, in `pz-core`),
+  `map_meta.bin` (room/building state, safehouses, factions, designation
+  zones, stashes), `map_zone.bin` and `gos_*.bin` (global-object systems)
+  read and write byte-identically to the original on 7 local saves
+  (checked with the original's load/save on scratch copies).
 - StringLib and OsLib. Local differential run against the original Kahlua
   (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
   output; the remaining one differs only in an identity hash.

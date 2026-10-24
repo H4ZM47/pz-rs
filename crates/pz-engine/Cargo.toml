@@ -9,3 +9,6 @@ pz-kahlua.workspace = true
 pz-lua-api.workspace = true
 pz-ui.workspace = true
 pz-fs.workspace = true
+pz-render.workspace = true
+pz-gpu = { path = "../pz-gpu" }
+winit = "0.30"

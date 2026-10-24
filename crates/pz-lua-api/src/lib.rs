@@ -13,19 +13,26 @@ pub mod bind_body_damage;
 pub mod bind_character_sim;
 pub mod bind_characters;
 pub mod bind_core;
-pub mod bind_globals;
-pub mod bind_registry;
-pub mod bind_scripts;
-pub mod bind_skills;
-pub mod bind_states;
-pub mod bind_ui;
+pub mod bind_debug;
 pub mod bind_fs;
+pub mod bind_global_objects;
+pub mod bind_globals;
+pub mod bind_iso_enums;
 pub mod bind_java_util;
 pub mod bind_mods;
 pub mod bind_nutrition;
+pub mod bind_registry;
 pub mod bind_render;
+pub mod bind_save;
+pub mod bind_scripts;
+pub mod bind_skills;
+pub mod bind_states;
+pub mod bind_text;
+pub mod bind_ui;
 pub mod events;
 pub mod expose;
+pub mod global_objects;
+pub mod global_objects_save;
 pub mod lua_manager;
 
 pub use lua_manager::LuaManager;
@@ -38,6 +45,12 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_globals::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
     bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
+    bind_fs::register(mgr);
+    bind_render::register(mgr);
+    bind_save::register(mgr);
+    // Text before UI: bind_text's UIFont is canonical.
+    bind_text::register(&mut mgr.thread);
+    bind_debug::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());
@@ -57,7 +70,7 @@ pub fn register_all(mgr: &mut LuaManager) {
         events.trigger(t, name, a);
     };
     bind_character_sim::install_event_sink(Rc::new(sink));
-    bind_fs::register(mgr);
     bind_mods::register(mgr);
-    bind_render::register(mgr);
+    bind_iso_enums::register(mgr);
+    bind_global_objects::register(mgr);
 }

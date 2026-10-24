@@ -1,0 +1,161 @@
+//! `zombie.gameStates.MainScreenState`: the title screen's own drawing
+//! (background, lightning, logo) around the Lua main menu.
+
+use pz_lua_api::LuaManager;
+use pz_render::{DrawList, Rgba, Texture};
+use pz_ui::UIManager;
+
+const GL_SRC_ALPHA: u32 = 770;
+const GL_ONE_MINUS_SRC_ALPHA: u32 = 771;
+const GL_ONE: u32 = 1;
+
+/// `MainScreenState.ScreenElement`.
+pub struct ScreenElement {
+    pub tex: Option<Texture>,
+    pub x: i32,
+    pub y: i32,
+    pub alpha: f32,
+    pub target_alpha: f32,
+    pub alpha_step: f32,
+}
+
+impl ScreenElement {
+    fn update(&mut self, multiplier: f32) {
+        if self.alpha < self.target_alpha {
+            self.alpha = (self.alpha + self.alpha_step * multiplier).min(self.target_alpha);
+        } else if self.alpha > self.target_alpha {
+            self.alpha = (self.alpha - self.alpha_step * multiplier).max(self.target_alpha);
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct MainScreenState {
+    pub elements: Vec<ScreenElement>,
+    pub lightning_delta: f32,
+    pub lightning_target_delta: f32,
+    pub lightning_full_timer: f32,
+    pub lightning_count: f32,
+    pub lightning_time: f32,
+    pub light_off_count: f32,
+    pub show_logo: bool,
+    pub fade_alpha: f32,
+    pub total_scale: f32,
+}
+
+fn tex(path: &str) -> Option<Texture> {
+    pz_render::get_shared_texture(path)
+}
+
+impl MainScreenState {
+    /// `enter()`.
+    pub fn enter(&mut self, lua: &mut LuaManager, screen_w: i32, screen_h: i32) {
+        self.elements.clear();
+        self.total_scale = screen_h as f32 / 1080.0;
+        let logo = tex("media/ui/PZ_Logo.png");
+        let lw = logo.as_ref().map_or(0, |t| t.width) as f32;
+        let y = (screen_h as f32 * 0.7) as i32;
+        self.elements.push(ScreenElement {
+            x: screen_w / 2 - (lw * self.total_scale) as i32 / 2,
+            y: y - (350.0 * self.total_scale) as i32,
+            tex: logo,
+            alpha: 0.0,
+            target_alpha: 1.0,
+            alpha_step: 0.2 * 0.9,
+        });
+        lua.trigger_event("OnMainMenuEnter", &[]);
+    }
+
+    /// `update()`.
+    pub fn update(&mut self, lua: &mut LuaManager, multiplier: f32) {
+        lua.trigger_event("OnFETick", &[0.0.into()]);
+        for e in &mut self.elements {
+            e.update(multiplier);
+        }
+    }
+
+    /// `render()`: black fill, background, then the UI.
+    pub fn render(&mut self, lua: &mut LuaManager, out: &mut DrawList, screen_w: i32, screen_h: i32, multiplier: f32) {
+        self.lightning_time += multiplier;
+        out.blend_func(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        out.renderi(None, 0, 0, screen_w, screen_h, Rgba(0.0, 0.0, 0.0, 1.0));
+        out.blend_func(GL_SRC_ALPHA, GL_SRC_ALPHA);
+        self.render_background(out, screen_w, screen_h, multiplier);
+        UIManager::render(&mut lua.thread);
+        pz_ui::with_ui(|m| m.sprite.lower_into(out));
+        pz_ui::with_ui(|m| m.sprite.clear());
+        if self.fade_alpha > 0.0 {
+            out.renderi(None, 0, 0, screen_w, screen_h, Rgba(0.0, 0.0, 0.0, self.fade_alpha));
+        }
+    }
+
+    /// `renderBackground()` (the original falls back to these stills when
+    /// the Bink title video is unavailable).
+    fn render_background(&mut self, out: &mut DrawList, sw: i32, sh: i32, multiplier: f32) {
+        if self.lightning_target_delta == 0.0 && self.lightning_delta != 0.0 && self.lightning_delta < 0.6 && self.lightning_count == 0.0 {
+            self.lightning_target_delta = 1.0;
+            self.lightning_count = 1.0;
+        }
+        if self.lightning_target_delta == 1.0
+            && self.lightning_delta == 1.0
+            && (self.lightning_full_timer > 1.0 && self.lightning_count == 0.0 || self.lightning_full_timer > 10.0)
+        {
+            self.lightning_target_delta = 0.0;
+            self.lightning_full_timer = 0.0;
+        }
+        if self.lightning_target_delta == 1.0 && self.lightning_delta == 1.0 {
+            self.lightning_full_timer += multiplier;
+        }
+        if self.lightning_delta != self.lightning_target_delta {
+            if self.lightning_delta < self.lightning_target_delta {
+                self.lightning_delta += 0.17 * multiplier;
+                if self.lightning_delta > self.lightning_target_delta {
+                    self.lightning_delta = self.lightning_target_delta;
+                    if self.lightning_delta == 1.0 {
+                        self.show_logo = true;
+                    }
+                }
+            }
+            if self.lightning_delta > self.lightning_target_delta {
+                self.lightning_delta -= 0.025 * multiplier;
+                if self.lightning_count == 0.0 {
+                    self.lightning_delta -= 0.1;
+                }
+                if self.lightning_delta < self.lightning_target_delta {
+                    self.lightning_delta = self.lightning_target_delta;
+                    self.lightning_count = 0.0;
+                }
+            }
+        }
+        // TODO(rand): `Rand.Next(150) == 0` sets lightOffCount (unused here).
+        let a = 1.0 - self.lightning_delta * 0.6;
+        let (Some(l), Some(l2), Some(l3), Some(l4)) =
+            (tex("media/ui/Title.png"), tex("media/ui/Title2.png"), tex("media/ui/Title3.png"), tex("media/ui/Title4.png"))
+        else {
+            return;
+        };
+        let he = sh as f32 / 1080.0;
+        let wi = l.width as f32 * he;
+        let wi2 = l2.width as f32 * he;
+        let mut bigger = sw as f32 - (wi + wi2);
+        if bigger >= 0.0 {
+            bigger = 0.0;
+        }
+        let he1 = 1024.0 * he;
+        let c = |al: f32| Rgba(1.0, 1.0, 1.0, al);
+        let b = bigger as i32;
+        out.renderi(Some(&l), b, 0, wi as i32, he1 as i32, c(a));
+        out.renderi(Some(&l2), b + wi as i32, 0, wi as i32, he1 as i32, c(a));
+        out.renderi(Some(&l3), b, he1 as i32, wi as i32, (l3.height as f32 * he) as i32, c(a));
+        out.renderi(Some(&l4), b + wi as i32, he1 as i32, wi as i32, (l3.height as f32 * he) as i32, c(a));
+        out.blend_func(GL_SRC_ALPHA, GL_ONE);
+        let names = ["media/ui/Title_lightning.png", "media/ui/Title_lightning2.png", "media/ui/Title_lightning3.png", "media/ui/Title_lightning4.png"];
+        let pos = [(b, 0), (b + wi as i32, 0), (b, he1 as i32), (b + wi as i32, he1 as i32)];
+        for (n, (x, y)) in names.iter().zip(pos) {
+            if let Some(t) = tex(n) {
+                out.renderi(Some(&t), x, y, wi as i32, he1 as i32, c(self.lightning_delta));
+            }
+        }
+        out.blend_func(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
+}

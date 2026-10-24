@@ -5,9 +5,11 @@
 
 pub mod compiler;
 pub mod exec;
+pub mod java_io;
 pub mod number;
 pub mod stdlib;
 pub mod table;
+pub mod table_save;
 pub mod value;
 pub mod vm;
 
