@@ -98,10 +98,7 @@ loudness meter, so every event's level depends on these.
 * Fader: exact dB gain.
 * Limiter (10, -1, 10, linked): static curve is +10 dB gain clamped at the
   -1 dB ceiling.
-* Compressor (-20, 3.1, 500, 3000, +1): above threshold the steady-state
-  gain reduction is `(1 - 1/ratio) * over + 1.23 dB`, as if the detector
-  read 1.82 dB above the sine's peak; none below about -21 dB input. Gain
-  reduction reaches ~75 % within 10 ms and the rest follows the 500 ms
-  attack, so the detector is not a plain one-pole follower. Matching it
-  exactly needs the DSP code itself (`libfmod`), which is the plan for each
-  core DSP above.
+* Compressor: ported exactly from `libfmod` (`src/dsp/compressor.rs`); the
+  apparent detector offset comes from linked detection summing the
+  channels' power and two cascaded smoothers. Output matches FMOD's to
+  16-bit precision on a level-step test signal.

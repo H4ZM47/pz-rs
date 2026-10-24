@@ -267,3 +267,24 @@ fn parses_every_game_bank_model() {
     }
     assert!(events > 0);
 }
+
+#[test]
+fn compressor_below_threshold_applies_makeup_only() {
+    use dsp::{compressor::Compressor, Dsp};
+    let mut c = Compressor::new(48000);
+    for (i, v) in [-20.0, 3.0, 10.0, 100.0, 6.0].into_iter().enumerate() {
+        c.set_float(i, v);
+    }
+    let mut buf = vec![0.01f32; 2 * 4800];
+    c.process(&mut buf, 2);
+    let g = buf[buf.len() - 1] / 0.01;
+    assert!((g - 10f32.powf(6.0 / 20.0)).abs() < 1e-4, "{g}");
+    // A loud signal settles to (1 - 1/ratio) of the overshoot in power.
+    let mut buf = vec![1.0f32; 2 * 48000];
+    c.process(&mut buf, 2);
+    let out_db = 20.0 * buf[buf.len() - 1].log10();
+    // Linked detection sums both channels' power: +3 dB over threshold+3.
+    let over = 10.0 * 2f32.log10() + 20.0;
+    let expect = -(1.0 - 1.0 / 3.0) * over + 6.0;
+    assert!((out_db - expect).abs() < 0.05, "{out_db} vs {expect}");
+}

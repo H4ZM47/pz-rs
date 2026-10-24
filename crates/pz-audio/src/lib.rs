@@ -7,6 +7,7 @@
 //! bank) and decodes their Vorbis samples without any FMOD code.
 
 pub mod bank;
+pub mod dsp;
 pub mod fsb5;
 pub mod reader;
 pub mod riff;
