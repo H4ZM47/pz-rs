@@ -431,7 +431,7 @@ impl ScriptBucket {
             }
             script.borrow_mut().base_mut().calculate_script_version()?;
             if mode == ScriptLoadMode::Init || added_on_reload {
-                sm.on_script_load(self.script_type, mode, &script);
+                sm.on_script_load(self.script_type, mode, &script)?;
                 let name = script.name();
                 let mut i = self.inner.borrow_mut();
                 i.script_map.insert(name.clone(), script.clone());
@@ -440,7 +440,7 @@ impl ScriptBucket {
                     i.dot_in_name.insert(name);
                 }
             } else if mode == ScriptLoadMode::Reload {
-                sm.on_script_load(self.script_type, mode, &script);
+                sm.on_script_load(self.script_type, mode, &script)?;
             }
         }
         self.inner.borrow_mut().load_data.get_mut(key).unwrap().added_on_reload = false;

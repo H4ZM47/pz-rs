@@ -8,6 +8,10 @@ use pz_scripts::{ScriptManager, ScriptType};
 fn main() {
     let dir = std::env::args().nth(1).expect("usage: load_scripts <game dir containing media/>");
     let sm = ScriptManager::new();
+    let jar = std::path::Path::new(&dir).join("projectzomboid.jar");
+    if jar.exists() {
+        sm.load_builtin_registries(&jar).expect("built-in registries");
+    }
     let t = std::time::Instant::now();
     sm.load(&GameFs::new(dir), &[]).expect("load");
     eprintln!("loaded in {:?}", t.elapsed());

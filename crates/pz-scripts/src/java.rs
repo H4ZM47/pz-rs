@@ -242,22 +242,31 @@ pub struct JHashMap<V> {
     entries: Vec<Option<(i32, String, V)>>,
     size: usize,
     threshold: usize,
+    /// The key's Java `hashCode()`; `String.hashCode` unless the map stands
+    /// in for one keyed by another type (see [`JHashMap::with_hasher`]).
+    hasher: fn(&str) -> i32,
 }
 
 impl<V> Default for JHashMap<V> {
     fn default() -> Self {
-        JHashMap { table: Vec::new(), entries: Vec::new(), size: 0, threshold: 0 }
+        JHashMap { table: Vec::new(), entries: Vec::new(), size: 0, threshold: 0, hasher: string_hash }
     }
-}
-
-fn spread(key: &str) -> i32 {
-    let h = string_hash(key);
-    h ^ ((h as u32) >> 16) as i32
 }
 
 impl<V> JHashMap<V> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A map whose keys are represented by strings but hash like another
+    /// Java type, e.g. `ResourceLocation` keyed by its `ns:path` id.
+    pub fn with_hasher(hasher: fn(&str) -> i32) -> Self {
+        JHashMap { hasher, ..Self::default() }
+    }
+
+    fn spread(&self, key: &str) -> i32 {
+        let h = (self.hasher)(key);
+        h ^ ((h as u32) >> 16) as i32
     }
 
     pub fn len(&self) -> usize {
@@ -272,7 +281,7 @@ impl<V> JHashMap<V> {
         if self.table.is_empty() {
             return None;
         }
-        let h = spread(key);
+        let h = self.spread(key);
         let bin = &self.table[(h as u32 as usize) & (self.table.len() - 1)];
         bin.iter().copied().find(|&i| {
             let (eh, ek, _) = self.entries[i].as_ref().unwrap();
@@ -301,7 +310,7 @@ impl<V> JHashMap<V> {
         if self.table.is_empty() {
             self.resize();
         }
-        let h = spread(&key);
+        let h = self.spread(&key);
         let idx = (h as u32 as usize) & (self.table.len() - 1);
         self.entries.push(Some((h, key, value)));
         let e = self.entries.len() - 1;
