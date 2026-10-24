@@ -560,3 +560,6 @@ pub type GameCharacterRef<I> = Rc<std::cell::RefCell<GameCharacter<I>>>;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod combat_tests;
