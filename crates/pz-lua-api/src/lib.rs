@@ -7,6 +7,7 @@
 //! Each exposed class gets a global table (statics, `new`, `class`) and a
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
+pub mod bind_attached_items;
 pub mod bind_characters;
 pub mod bind_core;
 pub mod bind_globals;
@@ -29,5 +30,6 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
+    bind_attached_items::register_shared(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }
