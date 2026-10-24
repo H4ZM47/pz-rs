@@ -153,6 +153,12 @@ Status of the Rust port. Update this file with every merged change.
   endurance loss, a full `Hit` on a player) match the original bit for bit
   (checked locally). Climbing, window, sitting and timed-action states are
   stand-ins; ranged combat and target bones are TODO.
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
