@@ -1,0 +1,8 @@
+[package]
+name = "pz-audio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lewton = "0.10"
+memmap2 = "0.9"
