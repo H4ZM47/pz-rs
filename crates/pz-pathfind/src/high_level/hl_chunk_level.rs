@@ -79,12 +79,6 @@ impl World {
         }
     }
 
-    /// The level data of a chunk level, after `getHighLevelData`.
-    pub(crate) fn hl_level(&mut self, r: LevelRef) -> &super::hl_chunk_level::HlChunkLevel {
-        self.get_high_level_data(r);
-        &self.chunk_level(r).hl
-    }
-
     /// `HLChunkLevel::releaseRegions` + stairs + sloped surfaces
     /// (`removeFromWorld`).
     pub(crate) fn hl_remove_from_world(&mut self, hl: &mut HlChunkLevel) {

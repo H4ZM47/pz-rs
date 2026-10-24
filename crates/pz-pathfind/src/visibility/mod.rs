@@ -66,4 +66,6 @@ pub struct VisState {
     pub(crate) clusters: Vec<ClusterId>,
     /// `PolygonalMap2::graphs`.
     pub(crate) graphs: Vec<VGraphId>,
+    /// The polygon clipper used for world obstacles.
+    pub(crate) clip: crate::clip::Clip,
 }

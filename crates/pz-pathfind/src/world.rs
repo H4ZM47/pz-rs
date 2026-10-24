@@ -34,8 +34,10 @@ pub const SQUARES_PER_CELL: i32 = 256;
 /// `ChunkLevel`: the 8x8 squares of one chunk on one level, plus the
 /// high-level (region / staircase) data derived from them.
 pub struct ChunkLevel {
-    pub(crate) chunk: ChunkId,
-    pub(crate) z: i32,
+    /// The chunk this level belongs to.
+    pub chunk: ChunkId,
+    /// Level, with the +32 offset.
+    pub z: i32,
     /// `ChunkSquares`, indexed `[x][y]`.
     pub(crate) squares: [[Option<SquareId>; 8]; 8],
     pub(crate) hl: HlChunkLevel,
@@ -179,8 +181,10 @@ impl World {
                 });
             }
         }
-        let mut flood_mover = PmMover::default();
-        flood_mover.kind = crate::request::MoverKind::Zombie;
+        let flood_mover = PmMover {
+            kind: crate::request::MoverKind::Zombie,
+            ..PmMover::default()
+        };
         World {
             is_server,
             min_x,

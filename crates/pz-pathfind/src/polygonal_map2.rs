@@ -291,6 +291,7 @@ impl World {
         };
         st.start_node = Some(start_node);
 
+        #[allow(clippy::needless_late_init)]
         let goal_node;
         if self
             .get_chunk_from_square_pos(fastfloor(req.target_x), fastfloor(req.target_y))

@@ -138,11 +138,119 @@ impl VehiclePoly {
                     continue;
                 }
                 let t2 = ex.mul_add(oy, -(ox * ey)) as f64 / denom;
-                if t2 >= 0.0 && t2 <= 1.0 {
+                if (0.0..=1.0).contains(&t2) {
                     return true;
                 }
             }
         }
         false
+    }
+}
+
+impl Vehicle {
+    /// Decode the `VehicleAddTask` / `VehicleUpdateTask` buffer: `i32 id`,
+    /// `poly` and `polyPlusRadius` (each `x1 y1 x2 y2 x3 y3 x4 y4 z+32` as
+    /// `f32`), `f32 upVectorDot`, `i8` crawl offset count and that many
+    /// `f32` offsets; big-endian.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Vehicle, crate::PathfindError> {
+        let mut bb = crate::bytes::ByteReader::big_endian(bytes);
+        let id = bb.get_i32()?;
+        let mut polys = [VehiclePoly::default(); 2];
+        for p in &mut polys {
+            let mut v = [0f32; 9];
+            for f in &mut v {
+                *f = bb.get_f32()?;
+            }
+            *p = VehiclePoly {
+                x1: v[0],
+                y1: v[1],
+                x2: v[2],
+                y2: v[3],
+                x3: v[4],
+                y3: v[5],
+                x4: v[6],
+                y4: v[7],
+                z: v[8],
+            };
+        }
+        let up_vector_dot = bb.get_f32()?;
+        let count = bb.get_u8()? as i8;
+        let mut crawl_offsets = Vec::new();
+        for _ in 0..count.max(0) {
+            crawl_offsets.push(bb.get_f32()?);
+        }
+        Ok(Vehicle {
+            id,
+            poly: polys[0],
+            poly_plus_radius: polys[1],
+            up_vector_dot,
+            crawl_offsets,
+        })
+    }
+
+    /// Encode in the layout read by [`Vehicle::from_bytes`].
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.id.to_be_bytes());
+        for p in [&self.poly, &self.poly_plus_radius] {
+            for f in [p.x1, p.y1, p.x2, p.y2, p.x3, p.y3, p.x4, p.y4, p.z] {
+                out.extend_from_slice(&f.to_be_bytes());
+            }
+        }
+        out.extend_from_slice(&self.up_vector_dot.to_be_bytes());
+        out.push(self.crawl_offsets.len() as u8);
+        for f in &self.crawl_offsets {
+            out.extend_from_slice(&f.to_be_bytes());
+        }
+        out
+    }
+}
+
+impl crate::World {
+    /// `PathfindNative.addVehicle(buffer)`. Like the native map insert, a
+    /// vehicle whose id is already present is left unchanged.
+    pub fn add_vehicle(&mut self, bytes: &[u8]) -> Result<(), crate::PathfindError> {
+        let v = Vehicle::from_bytes(bytes)?;
+        self.add_vehicle_typed(v);
+        Ok(())
+    }
+
+    /// Typed [`crate::World::add_vehicle`].
+    pub fn add_vehicle_typed(&mut self, v: Vehicle) {
+        if !self.vis.vehicle_map.contains_key(&v.id) {
+            let id = v.id;
+            let vid = self.vis.vehicles_pool.alloc(v);
+            self.vis.vehicle_map.insert(id, vid);
+        }
+        self.rebuild = true;
+    }
+
+    /// `PathfindNative.teleportVehicle(buffer)`: replace the geometry of a
+    /// known vehicle; unknown ids are ignored.
+    pub fn teleport_vehicle(&mut self, bytes: &[u8]) -> Result<(), crate::PathfindError> {
+        let v = Vehicle::from_bytes(bytes)?;
+        self.teleport_vehicle_typed(v);
+        Ok(())
+    }
+
+    /// Typed [`crate::World::teleport_vehicle`].
+    pub fn teleport_vehicle_typed(&mut self, v: Vehicle) {
+        if let Some(&vid) = self.vis.vehicle_map.get(&v.id) {
+            self.vis.vehicles_pool[vid] = v;
+        }
+        self.rebuild = true;
+    }
+
+    /// `PathfindNative.removeVehicle(id)`.
+    pub fn remove_vehicle(&mut self, id: i32) {
+        if let Some(vid) = self.vis.vehicle_map.remove(&id) {
+            self.vis.vehicles_pool.release(vid);
+        }
+        self.rebuild = true;
+    }
+
+    /// Number of vehicles currently known.
+    pub fn vehicle_count(&self) -> usize {
+        self.vis.vehicle_map.len()
     }
 }

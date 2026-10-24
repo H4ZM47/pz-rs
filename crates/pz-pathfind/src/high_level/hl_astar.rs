@@ -405,8 +405,8 @@ impl World {
             None => return,
         };
         let (sr, gr) = (self.hln(start).chunk_region, self.hln(goal).chunk_region);
-        if sr.is_some() && sr == gr {
-            let r = self.region(sr.unwrap()).level;
+        if let Some(srr) = sr.filter(|_| sr == gr) {
+            let r = self.region(srr).level;
             self.hl_add_level_and_adjacent(r, chunk_levels);
             return;
         }
@@ -414,10 +414,10 @@ impl World {
             self.hln(start).level_transition,
             self.hln(goal).level_transition,
         );
-        if st.is_some() && st == gt {
-            transitions.push(st.unwrap());
+        if let Some(stt) = st.filter(|_| st == gt) {
+            transitions.push(stt);
             bottoms.push(true);
-            self.hl_add_transition_levels(st.unwrap(), chunk_levels);
+            self.hl_add_transition_levels(stt, chunk_levels);
             return;
         }
         self.hl.goal = goal;

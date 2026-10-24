@@ -280,3 +280,141 @@ fn unloaded_target_and_removed_chunk() {
     ));
     assert!(p.is_some());
 }
+
+fn car(id: i32, x0: f32, y0: f32, x1: f32, y1: f32) -> pz_pathfind::Vehicle {
+    let poly = |r: f32| pz_pathfind::VehiclePoly {
+        x1: x1 + r,
+        y1: y0 - r,
+        x2: x0 - r,
+        y2: y0 - r,
+        x3: x0 - r,
+        y3: y1 + r,
+        x4: x1 + r,
+        y4: y1 + r,
+        z: 32.0,
+    };
+    pz_pathfind::Vehicle {
+        id,
+        poly: poly(0.0),
+        poly_plus_radius: poly(0.3),
+        up_vector_dot: 1.0,
+        crawl_offsets: vec![0.25, 0.5, 0.75],
+    }
+}
+
+/// Whether any path segment passes through the open rectangle.
+fn crosses_rect(path: &[PathNode], x0: f32, y0: f32, x1: f32, y1: f32) -> bool {
+    path.windows(2).any(|w| {
+        (0..=200).any(|i| {
+            let t = i as f32 / 200.0;
+            let px = w[0].x + (w[1].x - w[0].x) * t;
+            let py = w[0].y + (w[1].y - w[0].y) * t;
+            px > x0 && px < x1 && py > y0 && py < y1
+        })
+    })
+}
+
+#[test]
+fn vehicle_bytes_round_trip() {
+    let v = car(7, 10.0, 8.0, 12.0, 14.0);
+    let back = pz_pathfind::Vehicle::from_bytes(&v.to_bytes()).unwrap();
+    assert_eq!(back.id, 7);
+    assert_eq!(back.poly, v.poly);
+    assert_eq!(back.poly_plus_radius, v.poly_plus_radius);
+    assert_eq!(back.crawl_offsets, v.crawl_offsets);
+}
+
+#[test]
+fn path_goes_around_vehicle() {
+    let mut m = Map::new();
+    m.floor(0, 0, 23, 23, 0);
+    let mut w = m.world(3);
+    let r = request(MoverKind::Player, (5.5, 11.5, 0.0), (17.5, 11.5, 0.0));
+    assert_eq!(w.find_path(&r).unwrap().len(), 2);
+
+    w.add_vehicle(&car(1, 10.0, 8.0, 12.0, 14.0).to_bytes())
+        .unwrap();
+    assert_eq!(w.vehicle_count(), 1);
+    for mover in [MoverKind::Player, MoverKind::Zombie] {
+        let p = w
+            .find_path(&request(mover, (5.5, 11.5, 0.0), (17.5, 11.5, 0.0)))
+            .expect("path around the car");
+        assert!(p.len() > 2, "{p:?}");
+        assert!(!crosses_rect(&p, 10.0, 8.0, 12.0, 14.0), "{p:?}");
+        let last = p.last().unwrap();
+        assert_eq!((last.x, last.y), (17.5, 11.5));
+    }
+
+    // Moving the car out of the way restores the straight line.
+    w.teleport_vehicle(&car(1, 10.0, 18.0, 12.0, 22.0).to_bytes())
+        .unwrap();
+    assert_eq!(w.find_path(&r).unwrap().len(), 2);
+    w.teleport_vehicle(&car(1, 10.0, 8.0, 12.0, 14.0).to_bytes())
+        .unwrap();
+    assert!(w.find_path(&r).unwrap().len() > 2);
+    w.remove_vehicle(1);
+    assert_eq!(w.vehicle_count(), 0);
+    assert_eq!(w.find_path(&r).unwrap().len(), 2);
+}
+
+#[test]
+fn start_under_vehicle_and_two_cars() {
+    let mut m = Map::new();
+    m.floor(0, 0, 23, 23, 0);
+    let mut w = m.world(3);
+    w.add_vehicle(&car(1, 10.0, 8.0, 12.0, 14.0).to_bytes())
+        .unwrap();
+    w.add_vehicle(&car(2, 12.5, 6.0, 14.5, 12.0).to_bytes())
+        .unwrap();
+    // Start inside the first car's footprint: moved onto its outline.
+    let p = w
+        .find_path(&request(
+            MoverKind::Zombie,
+            (11.0, 11.0, 0.0),
+            (3.5, 3.5, 0.0),
+        ))
+        .expect("path from under the car");
+    assert!(p.len() >= 2);
+    let p = w
+        .find_path(&request(
+            MoverKind::Player,
+            (16.5, 9.5, 0.0),
+            (6.5, 9.5, 0.0),
+        ))
+        .expect("path around both cars");
+    assert!(!crosses_rect(&p, 10.0, 8.0, 12.0, 14.0), "{p:?}");
+    assert!(!crosses_rect(&p, 12.5, 6.0, 14.5, 12.0), "{p:?}");
+    // Repeated requests leave the graphs as they were.
+    let again = w
+        .find_path(&request(
+            MoverKind::Player,
+            (16.5, 9.5, 0.0),
+            (6.5, 9.5, 0.0),
+        ))
+        .unwrap();
+    assert_eq!(p, again);
+}
+
+#[test]
+fn vehicle_next_to_wall_and_door() {
+    // The car's graph also takes in the wall as a clipped world obstacle.
+    let mut w = wall_with_door(true).world(3);
+    w.add_vehicle(&car(3, 13.5, 13.5, 15.5, 18.0).to_bytes())
+        .unwrap();
+    for mover in [MoverKind::Player, MoverKind::Zombie] {
+        let p = w
+            .find_path(&request(mover, (6.5, 12.5, 0.0), (14.5, 19.5, 0.0)))
+            .expect("path through the door past the car");
+        assert!(!crosses_rect(&p, 13.5, 13.5, 15.5, 18.0), "{p:?}");
+        for win in p.windows(2) {
+            if (win[0].x < 12.0) != (win[1].x < 12.0) {
+                let t = (12.0 - win[0].x) / (win[1].x - win[0].x);
+                let y = win[0].y + (win[1].y - win[0].y) * t;
+                assert!(
+                    (12.0..13.0).contains(&y),
+                    "crossed the wall at y={y}: {p:?}"
+                );
+            }
+        }
+    }
+}
