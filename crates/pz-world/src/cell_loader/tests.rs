@@ -221,7 +221,7 @@ fn windows_smashed_and_frames() {
             .iter()
             .find(|o| o.tile.as_deref() == Some("wall_0"))
             .unwrap();
-    assert_eq!(wall.attached_anim_sprite, Some(vec![w.idx("frame_0")]));
+    assert_eq!(wall.attached_sprites(), Some(vec![w.idx("frame_0")]));
     w.place("frame_1").unwrap();
     assert_eq!(w.classes().last(), Some(&"IsoWindowFrame"));
 }
@@ -351,11 +351,11 @@ fn overlays_attach() {
     w.place("over_1").unwrap();
     assert_eq!(w.sq.objects.len(), 3);
     assert_eq!(
-        w.sq.objects[0].attached_anim_sprite,
+        w.sq.objects[0].attached_sprites(),
         Some(vec![w.idx("rug_0")])
     );
     assert_eq!(
-        w.sq.objects[1].attached_anim_sprite,
+        w.sq.objects[1].attached_sprites(),
         Some(vec![w.idx("over_0")])
     );
     assert_eq!(w.sq.objects[2].tile, None);

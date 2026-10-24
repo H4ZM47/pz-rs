@@ -180,6 +180,9 @@ impl IsoGridSquare {
     pub fn fix_stackable_objects(&mut self, m: &IsoSpriteManager) {
         let mut table: Option<usize> = None;
         for i in 0..self.objects.len() {
+            if matches!(self.objects[i].kind, ObjectKind::WorldInventory(_)) {
+                continue;
+            }
             let Some(mut s) = self.objects[i].sprite else {
                 continue;
             };
@@ -455,6 +458,7 @@ pub fn do_tile_object_creation(
             pushed_max_strength: 2500,
             open_sprite,
             closed_sprite,
+            ..Default::default()
         };
         let mut obj = IsoObject::new(id, ObjectKind::Curtain(c), open_sprite);
         obj.outline_on_mouseover = true;
@@ -498,18 +502,26 @@ pub fn do_tile_object_creation(
         // Fireplaces, campfires (except three camping tiles) and braziers.
         obj_index = Some(add_fireplace(sq, env, id, spr)?);
     } else if m.prop(&m.sprites[spr], "IsoType") == Some("IsoCombinationWasherDryer") {
-        let obj = IsoObject::new(id, ObjectKind::CombinationWasherDryer, Some(spr));
+        let obj = IsoObject::new(
+            id,
+            ObjectKind::CombinationWasherDryer(Default::default()),
+            Some(spr),
+        );
         obj_index = Some(add_object(sq, env, obj, false));
     } else if container_is(m, spr, "clothingdryer")? {
-        let obj = IsoObject::new(id, ObjectKind::ClothingDryer, Some(spr));
+        let obj = IsoObject::new(id, ObjectKind::ClothingDryer(Default::default()), Some(spr));
         obj_index = Some(add_object(sq, env, obj, false));
     } else if container_is(m, spr, "clothingwasher")? {
-        let obj = IsoObject::new(id, ObjectKind::ClothingWasher, Some(spr));
+        let obj = IsoObject::new(
+            id,
+            ObjectKind::ClothingWasher(Default::default()),
+            Some(spr),
+        );
         obj_index = Some(add_object(sq, env, obj, false));
     } else if container_is(m, spr, "woodstove")? {
         obj_index = Some(add_fireplace(sq, env, id, spr)?);
     } else if props.has(f.container) && (is_stove || container_is(m, spr, "microwave")?) {
-        let obj = IsoObject::new(id, ObjectKind::Stove, Some(spr));
+        let obj = IsoObject::new(id, ObjectKind::Stove(Default::default()), Some(spr));
         obj_index = Some(add_object(sq, env, obj, false));
     } else if ty == t.jukebox {
         let mut obj = IsoObject::new(id, ObjectKind::Jukebox, Some(spr));
@@ -590,7 +602,7 @@ pub fn do_tile_object_creation(
         }
         obj_index = None;
     } else if m.prop(&m.sprites[spr], "CustomName") == Some("Mannequin") {
-        let obj = IsoObject::new(id, ObjectKind::Mannequin, Some(spr));
+        let obj = IsoObject::new(id, ObjectKind::Mannequin(None), Some(spr));
         obj_index = Some(add_object(sq, env, obj, false));
     } else if ty == t.tree {
         let sname = m.sprites[spr].name.as_deref();
@@ -656,7 +668,7 @@ fn add_fireplace(
     id: ObjectId,
     spr: SpriteIdx,
 ) -> JavaResult<usize> {
-    let mut obj = IsoObject::new(id, ObjectKind::Fireplace, Some(spr));
+    let mut obj = IsoObject::new(id, ObjectKind::Fireplace(Default::default()), Some(spr));
     ctor_container(env.sprites, spr, &mut obj, "fireplace")?;
     Ok(add_object(sq, env, obj, false))
 }
@@ -695,6 +707,7 @@ fn new_barbecue(
         fuel_amount_minutes: 0,
         normal_sprite: None,
         no_tank_sprite: None,
+        ..Default::default()
     };
     let m = &*env.sprites;
     let tank = |s: Option<SpriteIdx>| s.is_some_and(|s| m.has_prop(&m.sprites[s], "propaneTank"));
@@ -772,6 +785,7 @@ fn new_door(env: &mut ObjectEnv<'_>, spr: SpriteIdx, north: bool) -> JavaResult<
         pushed_max_strength: 2500,
         open_sprite,
         closed_sprite,
+        ..Default::default()
     })
 }
 
@@ -862,6 +876,7 @@ fn new_light_switch(
         primary_g: 1.0,
         primary_b: 1.0,
         lights: Vec::new(),
+        ..Default::default()
     };
     if m.has_prop(sp, "lightR") {
         if m.has_prop(sp, "IsMoveAble") {

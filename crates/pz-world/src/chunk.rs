@@ -8,15 +8,23 @@ use std::collections::HashMap;
 
 use crate::cell_loader::{do_tile_object_creation, ObjectEnv};
 use crate::defs::{BuildingIdx, RoomDef};
+use crate::erosion_data::{ErosionChunkData, ErosionSquareData};
 use crate::fix2x::Fix2xTable;
 use crate::iso_lot::IsoLot;
 use crate::java::{fastfloor, GameRand};
 use crate::map_files::{header_name, lotpack_name};
 use crate::meta_grid::IsoMetaGrid;
 use crate::objects::{IsoObject, ObjectId, ObjectLoadHooks, ObjectLoadSettings, ObjectTables};
+use crate::save::lua_table::LuaTable;
+use crate::save::visual::IsoDeadBody;
 use crate::sprite::IsoSpriteManager;
 use crate::sprite::{PropertyContainer, SurfaceInfo};
 use crate::square::IsoDirections;
+
+mod brand_new;
+pub use brand_new::{
+    get_corner_of_generation, load_brand_new, load_brand_new_cached, BrandNewHook, ChunksCache,
+};
 
 pub const CHUNK_WIDTH: i32 = 8;
 pub const MIN_LEVEL: i32 = -32;
@@ -42,6 +50,22 @@ pub struct IsoGridSquare {
     /// are skipped by lookups.
     pub special_objects: Vec<ObjectId>,
     pub(crate) next_object_id: ObjectId,
+    /// `erosion` (`ErosionData.Square`, created on first use), saved first
+    /// in the square record; `None` saves as uninitialised.
+    pub erosion: Option<ErosionSquareData>,
+    /// `worldObjects` (the `IsoWorldInventoryObject`s), by identity.
+    pub world_objects: Vec<ObjectId>,
+    /// `staticMovingObjects`: corpses.
+    pub static_moving: Vec<IsoDeadBody>,
+    /// `table` (square mod data).
+    pub mod_data: Option<LuaTable>,
+    pub overlay_done: bool,
+    pub have_sheet_rope: bool,
+    /// `isSeen(playerIndex)` for the four local players.
+    pub seen: [bool; 4],
+    /// `getTrapPositionX/Y/Z()` when X is positive. Loading reads and drops
+    /// the saved position.
+    pub trap_position: Option<(i32, i32, i32)>,
     /// `properties`: the merged sprite properties and derived flags
     /// (`RecalcProperties`, see [`crate::square`]).
     pub properties: PropertyContainer,
@@ -78,6 +102,14 @@ impl IsoGridSquare {
             objects: Vec::new(),
             special_objects: Vec::new(),
             next_object_id: 0,
+            erosion: None,
+            world_objects: Vec::new(),
+            static_moving: Vec::new(),
+            mod_data: None,
+            overlay_done: false,
+            have_sheet_rope: false,
+            seen: [false; 4],
+            trap_position: None,
             properties: PropertyContainer::default(),
             has_types: 0,
             has_tree: false,
@@ -106,6 +138,46 @@ impl IsoGridSquare {
     }
 }
 
+/// `zombie.iso.enums.ChunkGenerationStatus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChunkGenerationStatus {
+    Core,
+    Modded,
+    Worldgen,
+}
+
+/// `EnumSet<ChunkGenerationStatus>`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChunkGenerationStatusSet(u8);
+
+impl ChunkGenerationStatusSet {
+    fn bit(s: ChunkGenerationStatus) -> u8 {
+        1 << s as u8
+    }
+    pub fn contains(&self, s: ChunkGenerationStatus) -> bool {
+        self.0 & Self::bit(s) != 0
+    }
+    pub fn add(&mut self, s: ChunkGenerationStatus) {
+        self.0 |= Self::bit(s);
+    }
+    pub fn remove(&mut self, s: ChunkGenerationStatus) {
+        self.0 &= !Self::bit(s);
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+    /// Members in ordinal order, as `EnumSet` iterates.
+    pub fn iter(&self) -> impl Iterator<Item = ChunkGenerationStatus> + '_ {
+        [
+            ChunkGenerationStatus::Core,
+            ChunkGenerationStatus::Modded,
+            ChunkGenerationStatus::Worldgen,
+        ]
+        .into_iter()
+        .filter(|s| self.contains(*s))
+    }
+}
+
 /// `IsoChunk` (map-loading fields).
 pub struct IsoChunk {
     pub wx: i32,
@@ -117,10 +189,94 @@ pub struct IsoChunk {
     /// `lotheader`: header file name, set when the lot came from the
     /// top-level header.
     pub lotheader: Option<String>,
+    /// True when any lot placed into the chunk came from a modded map
+    /// folder (kept alongside `generation_status` for existing callers).
     pub modded: bool,
+    /// `chunkGenerationStatus` (`isModded()` / `addModded` / `rmModded`):
+    /// `CORE` or `MODDED` from each placed lot's map folder, `WORLDGEN`
+    /// when world generation ran on the chunk.
+    pub generation_status: ChunkGenerationStatusSet,
+    /// The chunk-level fields of the chunk file; see
+    /// [`crate::save::chunk_file`].
+    pub saved: ChunkSaveData,
+    /// `erosion` (`ErosionData.Chunk`, created on first use); `None` saves
+    /// as uninitialised.
+    pub erosion: Option<ErosionChunkData>,
+    /// `addZombies`: set by `LoadBrandNew`; `doLoadGridsquare` then adds
+    /// vehicles, zone stories and zombies.
+    pub add_zombies: bool,
+}
+
+/// `IsoFloorBloodSplat` (positions quantised to 1/255 of a chunk).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FloorBloodSplat {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub kind: i8,
+    pub world_age: f32,
+    pub index: i8,
+}
+
+/// Fields of `IsoChunk` that chunk files carry besides the squares.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChunkSaveData {
+    pub blending_done_full: bool,
+    pub blending_modified: [bool; 4],
+    pub blending_done_partial: bool,
+    /// `blendingDepth` (N, S, W, E). A new chunk starts from
+    /// `BlendDirection.defaultDepth`, which is only saved once blending is
+    /// partially done; this defaults to zeros.
+    pub blending_depth: [i8; 4],
+    pub attachments_done_full: bool,
+    pub attachments_state: [bool; 5],
+    pub attachments_partial: Option<Vec<(i32, i32, i32)>>,
+    /// `floorBloodSplats` (a queue bounded to 1000).
+    pub floor_blood_splats: Vec<FloorBloodSplat>,
+    pub next_splat_index: i32,
+    /// `generatorsTouchingThisChunk`.
+    pub generators: Option<Vec<(i32, i32, i8)>>,
+    pub loot_respawn_hour: i32,
+    pub spawned_rooms: Vec<i64>,
+}
+
+impl Default for ChunkSaveData {
+    /// `new IsoChunk(cell)`.
+    fn default() -> Self {
+        ChunkSaveData {
+            blending_done_full: false,
+            blending_modified: [false; 4],
+            blending_done_partial: false,
+            blending_depth: [0; 4],
+            attachments_done_full: true,
+            attachments_state: [true; 5],
+            attachments_partial: None,
+            floor_blood_splats: Vec::new(),
+            next_splat_index: 0,
+            generators: None,
+            loot_respawn_hour: -1,
+            spawned_rooms: Vec::new(),
+        }
+    }
 }
 
 impl IsoChunk {
+    /// `addModded(status)`.
+    pub fn add_modded(&mut self, status: ChunkGenerationStatus) {
+        self.generation_status.add(status);
+        if status == ChunkGenerationStatus::Modded {
+            self.modded = true;
+        }
+    }
+
+    /// `rmModded(status)`.
+    pub fn rm_modded(&mut self, status: ChunkGenerationStatus) {
+        self.generation_status.remove(status);
+        if status == ChunkGenerationStatus::Modded {
+            self.modded = false;
+        }
+    }
+
     pub fn new(wx: i32, wy: i32) -> Self {
         IsoChunk {
             wx,
@@ -130,6 +286,10 @@ impl IsoChunk {
             squares: vec![vec![None; 64]],
             lotheader: None,
             modded: false,
+            generation_status: ChunkGenerationStatusSet::default(),
+            saved: ChunkSaveData::default(),
+            erosion: None,
+            add_zombies: false,
         }
     }
 
@@ -455,11 +615,16 @@ pub fn load_cell_binary_chunk(
         env,
     );
     if count > 0 {
-        chunk.modded |= meta.map_files[mf]
+        let modded = meta.map_files[mf]
             .info_file_modded
             .get(&pack)
             .copied()
             .unwrap_or(false);
+        chunk.add_modded(if modded {
+            ChunkGenerationStatus::Modded
+        } else {
+            ChunkGenerationStatus::Core
+        });
     }
     if count == 64 {
         return true;
@@ -483,11 +648,16 @@ pub fn load_cell_binary_chunk(
             env,
         );
         if count > 0 {
-            chunk.modded |= meta.map_files[i]
+            let modded = meta.map_files[i]
                 .info_file_modded
                 .get(&pack)
                 .copied()
                 .unwrap_or(false);
+            chunk.add_modded(if modded {
+                ChunkGenerationStatus::Modded
+            } else {
+                ChunkGenerationStatus::Core
+            });
         }
         if count == 64 {
             break;
@@ -504,6 +674,23 @@ pub struct IsoCell {
 }
 
 impl IsoCell {
+    /// Remove chunk `(wx, wy)` from the cell (`IsoChunk.removeFromWorld`
+    /// for the parts ported so far) and tell `hook` it is gone.
+    pub fn unload_chunk(
+        &mut self,
+        wx: i32,
+        wy: i32,
+        hook: Option<&mut dyn crate::save::chunk_file::ChunkLoadHook>,
+    ) -> Option<IsoChunk> {
+        let chunk = self.chunks.remove(&(wx, wy));
+        if chunk.is_some() {
+            if let Some(h) = hook {
+                h.chunk_unloaded(wx, wy);
+            }
+        }
+        chunk
+    }
+
     /// Load chunk `(wx, wy)` from map files if it is not loaded yet.
     pub fn load_chunk(
         &mut self,
@@ -526,5 +713,27 @@ impl IsoCell {
         self.chunks
             .get(&(wx, wy))?
             .get_grid_square(x - wx * 8, y - wy * 8, z)
+    }
+}
+
+#[cfg(test)]
+mod generation_status_tests {
+    use super::*;
+
+    #[test]
+    fn add_and_remove() {
+        let mut ch = IsoChunk::new(0, 0);
+        assert!(ch.generation_status.is_empty());
+        ch.add_modded(ChunkGenerationStatus::Worldgen);
+        ch.add_modded(ChunkGenerationStatus::Core);
+        let v: Vec<_> = ch.generation_status.iter().collect();
+        assert_eq!(
+            v,
+            vec![ChunkGenerationStatus::Core, ChunkGenerationStatus::Worldgen]
+        );
+        ch.add_modded(ChunkGenerationStatus::Modded);
+        assert!(ch.modded);
+        ch.rm_modded(ChunkGenerationStatus::Modded);
+        assert!(!ch.modded && !ch.generation_status.contains(ChunkGenerationStatus::Modded));
     }
 }
