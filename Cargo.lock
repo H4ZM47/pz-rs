@@ -1586,6 +1586,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
+name = "pz-anim"
+version = "0.1.0"
+dependencies = [
+ "pz-model",
+]
+
+[[package]]
 name = "pz-audio"
 version = "0.1.0"
 dependencies = [
@@ -1754,6 +1761,13 @@ dependencies = [
  "pz-ui",
  "pz-world",
  "regex",
+]
+
+[[package]]
+name = "pz-model"
+version = "0.1.0"
+dependencies = [
+ "pz-render",
 ]
 
 [[package]]
