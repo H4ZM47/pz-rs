@@ -254,8 +254,11 @@ fn the_logs_go_in_the_chunk_texture_and_the_flames_per_frame() {
         };
         assert_eq!(depth.id, Some(30));
     }
-    // The logs in the same colour as the fireplace.
-    assert_eq!(s[1].0.color, s[0].0.color);
+    // The fireplace and its logs in the square's light: a sprite's tint
+    // starts white, so neither comes out black.
+    let lit = crate::color::to_abgr(0.5, 0.4, 0.3, 1.0);
+    assert_eq!(s[0].0.color, [lit; 4]);
+    assert_eq!(s[1].0.color, [lit; 4]);
 
     // Per frame: the flame alone, white, half size, its depth nudged in
     // front of the fireplace.
