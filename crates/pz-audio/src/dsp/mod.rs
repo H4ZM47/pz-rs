@@ -6,6 +6,7 @@
 pub mod compressor;
 pub mod fader;
 pub mod limiter;
+pub mod multiband_eq;
 
 /// A processing effect on interleaved audio.
 pub trait Dsp: Send {
@@ -36,6 +37,13 @@ pub fn from_effect(e: &Effect, rate: u32) -> Option<Box<dyn Dsp>> {
             }
             l.linked = b(3);
             Some(Box::new(l))
+        }
+        effect_type::MULTIBAND_EQ => {
+            let mut m = multiband_eq::MultibandEq::new(rate);
+            for i in 0..20 {
+                m.set(i, f(i));
+            }
+            Some(Box::new(m))
         }
         _ => None,
     }

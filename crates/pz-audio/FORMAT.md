@@ -96,6 +96,11 @@ loudness meter, so every event's level depends on these.
 ### Measured behaviour (core DSPs driven through the oracle)
 
 * Fader: exact dB gain.
+* Multiband EQ: ported (`src/dsp/multiband_eq.rs`) for every filter type the
+  banks use (low/high-pass 12/24/48 dB, shelves, peaking); RBJ cookbook
+  biquads with FMOD's frequency clamp and cascaded-section Q. Matches to
+  16-bit precision on noise. Coefficient ramps on parameter changes are not
+  modelled yet.
 * Limiter: ported exactly (`src/dsp/limiter.rs`); matches FMOD's output to
   16-bit precision on noise and tone bursts.
 * Compressor: ported exactly from `libfmod` (`src/dsp/compressor.rs`); the

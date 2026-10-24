@@ -1,7 +1,7 @@
 //! Run one effect over a float WAV (32-bit, interleaved) for comparison with
 //! FMOD's own DSP: `dsp_file <effect> <in.wav> <out.wav> <param>...`.
 
-use pz_audio::dsp::{compressor::Compressor, limiter::Limiter, Dsp};
+use pz_audio::dsp::{compressor::Compressor, limiter::Limiter, multiband_eq::MultibandEq, Dsp};
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
@@ -28,6 +28,13 @@ fn main() {
                 l.set_bool(i, *p != 0.0);
             }
             Box::new(l)
+        }
+        "meq" => {
+            let mut m = MultibandEq::new(48000);
+            for (i, p) in params.iter().enumerate() {
+                m.set(i, *p);
+            }
+            Box::new(m)
         }
         other => panic!("unknown effect {other}"),
     };
