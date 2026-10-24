@@ -55,7 +55,7 @@ pub const HUMAN_VISUAL_CLASS: &str = "zombie.core.skinnedmodel.visual.HumanVisua
 pub const WORN_ITEMS_CLASS: &str = "zombie.characters.WornItems.WornItems";
 pub const WORN_ITEM_CLASS: &str = "zombie.characters.WornItems.WornItem";
 pub const CHARACTER_GENDER_CLASS: &str = "zombie.characters.CharacterGender";
-pub const ITEM_BODY_LOCATION_CLASS: &str = "zombie.scripting.objects.ItemBodyLocation";
+pub use crate::bind_registry::ITEM_BODY_LOCATION_CLASS;
 
 thread_local! {
     static SHARED: RefCell<Option<Rc<RefCell<Characters>>>> = const { RefCell::new(None) };

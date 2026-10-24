@@ -1003,6 +1003,46 @@ impl VehicleScript {
         )
     }
 
+    pub fn models(&self) -> &[Model] {
+        &self.models
+    }
+
+    pub fn models_mut(&mut self) -> &mut [Model] {
+        &mut self.models
+    }
+
+    pub fn areas(&self) -> &[Area] {
+        &self.areas
+    }
+
+    pub fn areas_mut(&mut self) -> &mut [Area] {
+        &mut self.areas
+    }
+
+    pub fn parts(&self) -> &[Part] {
+        &self.parts
+    }
+
+    pub fn parts_mut(&mut self) -> &mut [Part] {
+        &mut self.parts
+    }
+
+    pub fn wheels(&self) -> &[Wheel] {
+        &self.wheels
+    }
+
+    pub fn passengers(&self) -> &[Passenger] {
+        &self.passengers
+    }
+
+    pub fn physics_shapes(&self) -> &[PhysicsShape] {
+        &self.physics_shapes
+    }
+
+    pub fn physics_shapes_mut(&mut self) -> &mut [PhysicsShape] {
+        &mut self.physics_shapes
+    }
+
     /// `getModel`: the first model.
     pub fn model(&self) -> Option<&Model> {
         self.models.first()

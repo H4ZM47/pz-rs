@@ -315,6 +315,19 @@ impl ScriptRef {
         self.obj.borrow_mut()
     }
 
+    pub fn try_borrow(&self) -> Result<Ref<'_, dyn ScriptObject>, std::cell::BorrowError> {
+        self.obj.try_borrow()
+    }
+
+    pub fn try_borrow_mut(&self) -> Result<RefMut<'_, dyn ScriptObject>, std::cell::BorrowMutError> {
+        self.obj.try_borrow_mut()
+    }
+
+    /// Address of the shared script (identity, like Java's `==`).
+    pub fn as_ptr(&self) -> *const () {
+        Rc::as_ptr(&self.any) as *const ()
+    }
+
     pub fn downcast<T: ScriptObject>(&self) -> Option<Rc<RefCell<T>>> {
         self.any.clone().downcast::<RefCell<T>>().ok()
     }

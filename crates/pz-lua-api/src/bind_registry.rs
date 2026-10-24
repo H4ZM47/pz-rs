@@ -1,7 +1,7 @@
 //! `zombie.scripting.objects.ResourceLocation` and the registry key classes
-//! `CharacterTrait`, `CharacterProfession` and `zombie.core.GameMode` exposed
-//! to Lua, over the shared
-//! `ScriptManager`'s registries.
+//! (`CharacterTrait`, `CharacterProfession`, `zombie.core.GameMode`,
+//! `ItemType`, `ItemTag`, `ItemBodyLocation`, `WeaponCategory`, `AmmoType`)
+//! exposed to Lua, over the shared `ScriptManager`'s registries.
 //!
 //! # Providing the ScriptManager
 //!
@@ -17,7 +17,7 @@
 use crate::expose::{expose_class, str_arg, this};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
-use pz_scripts::objects::items::GameMode;
+use pz_scripts::objects::items::{AmmoType, GameMode, ItemType};
 use pz_scripts::registry::{RegistryKey, ResourceLocation, DEFAULT_NAMESPACE};
 use pz_scripts::{ScriptError, ScriptManager};
 use std::any::Any;
@@ -29,13 +29,28 @@ pub const RESOURCE_LOCATION_CLASS: &str = "zombie.scripting.objects.ResourceLoca
 pub const CHARACTER_TRAIT_CLASS: &str = "zombie.scripting.objects.CharacterTrait";
 pub const CHARACTER_PROFESSION_CLASS: &str = "zombie.scripting.objects.CharacterProfession";
 pub const GAME_MODE_CLASS: &str = "zombie.core.GameMode";
+pub const ITEM_TYPE_CLASS: &str = "zombie.scripting.objects.ItemType";
+pub const ITEM_TAG_CLASS: &str = "zombie.scripting.objects.ItemTag";
+pub const ITEM_BODY_LOCATION_CLASS: &str = "zombie.scripting.objects.ItemBodyLocation";
+pub const WEAPON_CATEGORY_CLASS: &str = "zombie.scripting.objects.WeaponCategory";
+pub const AMMO_TYPE_CLASS: &str = "zombie.scripting.objects.AmmoType";
 
 /// Key classes exposed here: `(Java class, registry)`.
 pub const KEY_CLASSES: &[(&str, &str)] = &[
     (CHARACTER_PROFESSION_CLASS, "character_profession"),
     (CHARACTER_TRAIT_CLASS, "character_trait"),
     (GAME_MODE_CLASS, "game_mode"),
+    (ITEM_TYPE_CLASS, "item_type"),
+    (ITEM_TAG_CLASS, "item_tag"),
+    (ITEM_BODY_LOCATION_CLASS, "item_body_location"),
+    (WEAPON_CATEGORY_CLASS, "weapon_category"),
+    (AMMO_TYPE_CLASS, "ammo_type"),
 ];
+
+/// The key class exposed for registry `registry`.
+pub fn key_class(registry: &str) -> Option<&'static str> {
+    KEY_CLASSES.iter().find(|(_, r)| *r == registry).map(|(c, _)| *c)
+}
 
 thread_local! {
     static SHARED: RefCell<Option<Rc<ScriptManager>>> = const { RefCell::new(None) };
@@ -165,7 +180,7 @@ fn this_key(c: &NativeCall<'_>) -> LuaResult<Rc<RegistryKey>> {
     Ok(o.as_any().downcast_ref::<KeyObject>().unwrap().key.clone())
 }
 
-/// Register `ResourceLocation`, `CharacterTrait` and `CharacterProfession`.
+/// Register `ResourceLocation` and the key classes of [`KEY_CLASSES`].
 pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
     let b = expose_class(thread, RESOURCE_LOCATION_CLASS, None);
     b.field("DEFAULT_NAMESPACE", DEFAULT_NAMESPACE);
@@ -231,11 +246,23 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
             Ok(c.push(key_value(class, key.as_ref())))
         });
         let s = sm.clone();
-        b.static_fn("register", move |c| {
-            let id = str_or_empty(c, 0);
-            let key = s.registries.get(registry).expect("known registry").borrow_mut().register_id(&id, false);
-            Ok(c.push(key_value(class, Some(&key.map_err(java_error)?))))
-        });
+        if class == AMMO_TYPE_CLASS {
+            b.static_fn("register", move |c| {
+                let key = AmmoType::register_with_item(&s, &str_or_empty(c, 0), &str_or_empty(c, 1));
+                Ok(c.push(key_value(class, Some(&key.map_err(java_error)?))))
+            });
+            let s = sm.clone();
+            b.static_fn("getByItemKey", move |c| {
+                let key = AmmoType::get_by_item_key(&s, &str_or_empty(c, 0));
+                Ok(c.push(key_value(class, key.as_ref())))
+            });
+        } else {
+            b.static_fn("register", move |c| {
+                let id = str_or_empty(c, 0);
+                let key = s.registries.get(registry).expect("known registry").borrow_mut().register_id(&id, false);
+                Ok(c.push(key_value(class, Some(&key.map_err(java_error)?))))
+            });
+        }
         if class == GAME_MODE_CLASS {
             type Text = fn(&RegistryKey) -> String;
             let texts: [(&str, Text); 4] = [
@@ -250,11 +277,26 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
                     Ok(c.push(f(&k)))
                 });
             }
-        } else {
+        } else if class == CHARACTER_TRAIT_CLASS || class == CHARACTER_PROFESSION_CLASS {
             b.method("getName", |c| {
                 let k = this_key(c)?;
                 Ok(c.push(k.path()))
             });
+        } else {
+            b.method("getTranslationName", move |c| {
+                let k = this_key(c)?;
+                let name = match class {
+                    ITEM_TYPE_CLASS => ItemType::translation_name(&k),
+                    _ => k.name.clone(),
+                };
+                Ok(c.push(name))
+            });
+            if class == AMMO_TYPE_CLASS {
+                b.method("getItemKey", |c| {
+                    let k = this_key(c)?;
+                    Ok(c.push(AmmoType::item_key(&k).map(Value::from).unwrap_or_default()))
+                });
+            }
         }
         b.method("toString", |c| {
             let o = this::<KeyObject>(c)?;
