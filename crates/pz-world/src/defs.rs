@@ -207,6 +207,28 @@ impl RoomDef {
         overlap_area as f32 / room_area as f32
     }
 
+    /// `isAdjacent(RoomDef other)`: some rect of `other`, grown by one tile
+    /// on every side, intersects this room.
+    pub fn is_adjacent(&self, other: &RoomDef) -> bool {
+        other
+            .rects
+            .iter()
+            .any(|r| self.intersects(r.x - 1, r.y - 1, r.w + 2, r.h + 2))
+    }
+
+    /// `isAdjacent(x, y, w, h)`.
+    pub fn is_adjacent_rect(&self, x: i32, y: i32, w: i32, h: i32) -> bool {
+        self.intersects(x - 1, y - 1, w + 2, h + 2)
+    }
+
+    /// `overlaps(RoomDef other)`.
+    pub fn overlaps(&self, other: &RoomDef) -> bool {
+        other
+            .rects
+            .iter()
+            .any(|r| self.get_area_overlapping(r.x, r.y, r.w, r.h) > 0.0)
+    }
+
     /// `getRoomRect(x, y, z)`: inclusive of the far edges, like the original.
     pub fn get_room_rect(&self, x: i32, y: i32) -> Option<&RoomRect> {
         self.rects
@@ -302,6 +324,104 @@ impl BuildingDef {
             self.max_level = rooms[r.0 as usize].level.max(self.max_level);
         }
         self.max_level
+    }
+
+    /// `getW()`.
+    pub fn get_w(&self) -> i32 {
+        self.x2 - self.x
+    }
+
+    /// `getH()`.
+    pub fn get_h(&self) -> i32 {
+        self.y2 - self.y
+    }
+
+    /// `intersects(x, y, w, h, z)`: a room (not empty-outside) on level `z`
+    /// intersects the rectangle.
+    pub fn intersects(&self, rooms: &[RoomDef], x: i32, y: i32, w: i32, h: i32, z: i32) -> bool {
+        self.rooms.iter().any(|r| {
+            let room = &rooms[r.0 as usize];
+            room.level == z && room.intersects(x, y, w, h)
+        })
+    }
+
+    /// `isAdjacent(x, y, w, h, z)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn is_adjacent_rect(
+        &self,
+        rooms: &[RoomDef],
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        z: i32,
+    ) -> bool {
+        self.rooms.iter().any(|r| {
+            let room = &rooms[r.0 as usize];
+            room.level == z && room.is_adjacent_rect(x, y, w, h)
+        })
+    }
+
+    /// `isAdjacent(BuildingDef other)`: `isAdjacent(other, false)`.
+    pub fn is_adjacent(&self, rooms: &[RoomDef], other: &BuildingDef) -> bool {
+        self.is_adjacent_ignore_z(rooms, other, false)
+    }
+
+    /// `isAdjacent(BuildingDef other, boolean bIgnoreZ)`: rooms only, not
+    /// empty-outside rooms.
+    pub fn is_adjacent_ignore_z(
+        &self,
+        rooms: &[RoomDef],
+        other: &BuildingDef,
+        ignore_z: bool,
+    ) -> bool {
+        self.rooms.iter().any(|a| {
+            let a = &rooms[a.0 as usize];
+            other.rooms.iter().any(|b| {
+                let b = &rooms[b.0 as usize];
+                (ignore_z || a.level == b.level) && a.is_adjacent(b)
+            })
+        })
+    }
+
+    /// `overlaps(BuildingDef other, boolean bIgnoreZ)`.
+    pub fn overlaps(&self, rooms: &[RoomDef], other: &BuildingDef, ignore_z: bool) -> bool {
+        self.rooms.iter().any(|a| {
+            let a = &rooms[a.0 as usize];
+            other.rooms.iter().any(|b| {
+                let b = &rooms[b.0 as usize];
+                (ignore_z || a.level == b.level) && a.overlaps(b)
+            })
+        })
+    }
+
+    /// `addRoomsOf(sourceDef, tempRooms)`: moves nothing out of `source`
+    /// (its lists are left as they are, like the original); its rooms and
+    /// empty-outside rooms are appended here and re-pointed at `this`, then
+    /// the levels are reset and the bounds recalculated. `this` is the
+    /// arena index of `self`.
+    pub fn add_rooms_of(
+        &mut self,
+        this: BuildingIdx,
+        source: &mut BuildingDef,
+        rooms: &mut [RoomDef],
+    ) {
+        for &r in &source.rooms {
+            rooms[r.0 as usize].building = Some(this);
+            self.rooms.push(r);
+        }
+        for &r in &source.emptyoutside {
+            rooms[r.0 as usize].building = Some(this);
+            self.emptyoutside.push(r);
+        }
+        self.reset_min_max_level();
+        self.CalculateBounds(rooms);
+        source.reset_min_max_level();
+    }
+
+    /// `isEntirelyEmptyOutside()`.
+    pub fn is_entirely_empty_outside(&self) -> bool {
+        self.rooms.is_empty() && !self.emptyoutside.is_empty()
     }
 
     #[allow(non_snake_case)]
