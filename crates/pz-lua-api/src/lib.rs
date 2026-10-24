@@ -16,6 +16,8 @@ pub mod bind_input;
 pub mod bind_ui;
 pub mod bind_fs;
 pub mod bind_debug;
+pub mod bind_global_objects;
+pub mod bind_iso_enums;
 pub mod bind_java_util;
 pub mod bind_misc;
 pub mod bind_misc_classes;
@@ -33,6 +35,7 @@ pub mod bind_scripts;
 pub mod bind_world;
 pub mod events;
 pub mod expose;
+pub mod global_objects;
 pub mod lua_manager;
 
 pub use lua_manager::LuaManager;
@@ -69,6 +72,8 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_skills::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
     bind_audio::register(&mut mgr.thread);
+    bind_iso_enums::register(mgr);
+    bind_global_objects::register(mgr);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }
