@@ -1,0 +1,15 @@
+/target/
+.DS_Store
+# Never commit original game material. Keep local-only reference data here:
+/local/
+*.lua
+*.lbc
+*.pack
+*.bank
+*.fnt
+*.png
+*.class
+*.jar
+*.java
+*.jsonl
+*.jsonl.gz

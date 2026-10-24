@@ -1,0 +1,6 @@
+[package]
+name = "pz-text"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,0 +1,7 @@
+[package]
+name = "pz-lua-api"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-kahlua.workspace = true

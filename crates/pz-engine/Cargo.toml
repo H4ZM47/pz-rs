@@ -1,0 +1,6 @@
+[package]
+name = "pz-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

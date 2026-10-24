@@ -1,0 +1,7 @@
+[package]
+name = "pz-kahlua"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+indexmap.workspace = true

@@ -1,0 +1,6 @@
+[package]
+name = "pz-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

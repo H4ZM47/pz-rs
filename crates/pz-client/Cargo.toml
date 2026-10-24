@@ -1,0 +1,6 @@
+[package]
+name = "pz-client"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
