@@ -1,0 +1,8 @@
+[package]
+name = "pz-world-sound"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-world.workspace = true
+pz-audio.workspace = true
