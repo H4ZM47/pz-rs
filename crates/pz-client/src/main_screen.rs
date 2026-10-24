@@ -10,7 +10,7 @@ use std::rc::Rc;
 /// `GameWindow.init` + `MainScreenState.enter`, then `frames` iterations
 /// of `MainScreenState.update`/`render`.
 pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
-    let fs = Rc::new(pz_fs::GameFs::new(game_dir));
+    let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(game_dir)));
     let errors: Rc<RefCell<BTreeMap<String, usize>>> = Rc::default();
     let mut mgr = LuaManager::init(fs).map_err(|e| format!("LuaManager.init failed: {e}"))?;
     let e2 = errors.clone();

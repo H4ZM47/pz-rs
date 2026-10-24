@@ -482,7 +482,7 @@ impl GameFs {
 
     /// `Mod.isAvailable()`: version range of the mod and, recursively, of
     /// everything it requires. Cached per mod, as in the original.
-    fn is_available(&mut self, dir: &str) -> bool {
+    pub fn is_available(&mut self, dir: &str) -> bool {
         if let Some(a) = self.mod_dir_to_mod[dir].available {
             return a;
         }

@@ -42,10 +42,13 @@ impl LuaObject for LuaTexture {
     }
 }
 
+/// Texture identity: image id, region bits, name.
+type TextureKey = (Option<u32>, [u32; 4], Rc<str>);
+
 thread_local! {
     static TEXTURES: Rc<RefCell<TextureManager>> = Rc::new(RefCell::new(TextureManager::new()));
     /// Lua objects by texture identity (image id + region + name).
-    static OBJECTS: RefCell<HashMap<(Option<u32>, [u32; 4], Rc<str>), Value>> = RefCell::new(HashMap::new());
+    static OBJECTS: RefCell<HashMap<TextureKey, Value>> = RefCell::new(HashMap::new());
 }
 
 /// The texture tables shared by Lua and the renderer.
@@ -60,9 +63,10 @@ pub fn texture_value(t: Option<Texture>) -> Value {
     OBJECTS.with(|o| o.borrow_mut().entry(key).or_insert_with(|| Value::Object(Rc::new(LuaTexture(RefCell::new(t))))).clone())
 }
 
-fn shared(fs: &GameFs, name: &str) -> Value {
+fn shared(fs: &RefCell<GameFs>, name: &str) -> Value {
+    let fs = fs.borrow();
     let tm = textures();
-    let t = tm.borrow_mut().shared_texture(fs, name);
+    let t = tm.borrow_mut().shared_texture(&fs, name);
     texture_value(t)
 }
 
@@ -94,7 +98,7 @@ pub fn register(mgr: &mut LuaManager) {
         let name = str_arg(c, 0).unwrap_or_else(|| Rc::from(""));
         let v = if c.nargs() >= 2 {
             let tm = textures();
-            let t = tm.borrow_mut().shared_texture_flags(&f, &name, int_arg(c, 1));
+            let t = tm.borrow_mut().shared_texture_flags(&f.borrow(), &name, int_arg(c, 1));
             texture_value(t)
         } else {
             shared(&f, &name)
@@ -104,7 +108,7 @@ pub fn register(mgr: &mut LuaManager) {
     let f = fs.clone();
     b.static_fn("trygetTexture", move |c| {
         let name = str_arg(c, 0).unwrap_or_else(|| Rc::from(""));
-        let t = textures().borrow_mut().try_get_texture(&f, &name);
+        let t = textures().borrow_mut().try_get_texture(&f.borrow(), &name);
         Ok(c.push(texture_value(t)))
     });
     b.static_fn("getWhite", |c| {
@@ -115,7 +119,7 @@ pub fn register(mgr: &mut LuaManager) {
         let t = textures().borrow_mut().error_texture();
         Ok(c.push(texture_value(Some(t))))
     });
-    b.static_fn("onTexturePacksChanged", |c| {
+    b.static_fn("onTexturePacksChanged", |_c| {
         textures().borrow_mut().on_texture_packs_changed();
         Ok(0)
     });
@@ -216,7 +220,7 @@ pub fn register(mgr: &mut LuaManager) {
     let f = fs;
     crate::expose::global(thread, "tryGetTexture", move |c| {
         let name = str_arg(c, 0).unwrap_or_else(|| Rc::from(""));
-        let t = textures().borrow_mut().try_get_texture(&f, &name);
+        let t = textures().borrow_mut().try_get_texture(&f.borrow(), &name);
         Ok(c.push(texture_value(t)))
     });
 }
@@ -229,7 +233,7 @@ mod tests {
     fn texture_globals_from_lua() {
         let dir = std::env::temp_dir().join(format!("pz-bind-render-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("media")).unwrap();
-        let fs = Rc::new(GameFs::new(&dir));
+        let fs = Rc::new(RefCell::new(GameFs::new(&dir)));
         let mut mgr = LuaManager::init(fs).unwrap();
         let w = mgr.thread.globals().get_str("Texture").as_table().unwrap().get_str("getWhite");
         let a = mgr.thread.call(&w, &[]).unwrap();
