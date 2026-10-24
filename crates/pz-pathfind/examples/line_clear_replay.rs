@@ -36,9 +36,8 @@
 //! recalculated and passed through `loadInMainThread` before the next one
 //! enters the cell). Skipped queries are almost all in `muldraugh`,
 //! `forest` and `riverside` (worldgen vegetation); in `westpoint` and
-//! `louisville` nearly every query is compared. Room ids are not compared
-//! (the port's upper-level room ids differ; they do not affect these
-//! queries, the `exterior` flag does and is compared).
+//! `louisville` nearly every query is compared. Room ids are part of the
+//! compared inputs and match the game's on every square.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -281,11 +280,6 @@ fn differing_squares(
     let mut bad = HashSet::new();
     for (k, gi) in inputs {
         let ri = rust_inputs(cell.get_grid_square(k.0, k.1, k.2), sb, m);
-        // Room ids do not matter here (the exterior flag is compared).
-        let ri = Inputs {
-            room: gi.room.clone(),
-            ..ri
-        };
         if *gi != ri {
             if std::env::var_os("REPLAY_DEBUG").is_some() {
                 let what = if gi.null != ri.null {
