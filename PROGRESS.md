@@ -45,6 +45,14 @@ Status of the Rust port. Update this file with every merged change.
   rooms/buildings, `.tiles` reader, `Fix2x`, and chunk loading through
   `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk` with generic tile
   objects. Header and lotpack decoding match the original loader on 163
+- World/maps (`pz-world`): lot headers, lotpacks, `MapFiles`, meta grid
+  rooms/buildings, `.tiles` reader, `Fix2x`, and chunk loading through
+  `IsoCell.PlaceLot`/`CellLoader.LoadCellBinaryChunk`. Object creation
+  (`CellLoader.DoTileObjectCreation`: doors, windows, curtains, light
+  switches, trees, stoves, radios/TVs, ...), `FixStackableObjects`,
+  associated buildings and adjacent-cell rooms match the original per
+  square, field and `Rand` draw on 10,240 Muldraugh chunks, checked locally.
+  Header and lotpack decoding match the original loader on 163
   cells (Muldraugh sample plus six challenge maps), checked locally.
   Tile definitions (`pz_world::sprite`): `IsoSpriteManager`,
   `PropertyContainer`, `TilePropertyAliasMap` and the full
@@ -77,6 +85,8 @@ Status of the Rust port. Update this file with every merged change.
   parses from every game bank; event lengths, distances and parameter
   descriptions match the FMOD runtime for all 3,490 events but one unused
   legacy event (see `crates/pz-audio/FORMAT.md`).
+  original loader locally. Enum and lookup tables are runtime data
+  (`SpriteTables`, `ObjectTables`); the jar loader awaits `pz-classfile`.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.

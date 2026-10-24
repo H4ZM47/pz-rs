@@ -1,6 +1,10 @@
 //! Load the installed game's meta grid and print a summary.
 //!
-//! `cargo run --release -p pz-world --example world_scan -- <dir containing media/> [map] [x y z]`
+//! `cargo run --release -p pz-world --example world_scan -- <dir containing media/> [map] [x y z <sprite tables> <object tables>]`
+//!
+//! The two tables files hold enum constants and lookup tables read from the
+//! installed game (see `SpriteTables::from_text`, `ObjectTables::from_text`);
+//! they are not part of this repository.
 
 use pz_fs::GameFs;
 use pz_world::{CreateParams, GameRand, IsoMetaGrid, WorldGenBounds};
@@ -58,7 +62,7 @@ fn main() {
         grid.building_defs.len(),
         grid.buildings.len()
     );
-    if args.len() >= 6 {
+    if args.len() >= 8 {
         let (x, y, z): (i32, i32, i32) = (
             args[3].parse().unwrap(),
             args[4].parse().unwrap(),
@@ -71,8 +75,16 @@ fn main() {
             ),
             None => println!("no room at {x},{y},{z}"),
         }
-        let sprites = pz_world::TileDefSprites::load(&std::path::Path::new(&args[1]).join("media"))
-            .expect("tiles");
+        let tables = pz_world::SpriteTables::from_text(&std::fs::read_to_string(&args[6]).unwrap())
+            .expect("sprite tables");
+        let objects =
+            pz_world::ObjectTables::from_text(&std::fs::read_to_string(&args[7]).unwrap())
+                .expect("object tables");
+        let media = std::path::Path::new(&args[1]).join("media");
+        let mut sprites =
+            pz_world::IsoSpriteManager::load_tile_definitions_from(tables, &media, &[])
+                .expect("tiles");
+        sprites.loaded_tile_definitions(&|_| false).expect("loaded");
         let mut cell = pz_world::IsoCell::default();
         let t = std::time::Instant::now();
         let ch = cell.load_chunk(
@@ -80,10 +92,13 @@ fn main() {
             x.div_euclid(8),
             y.div_euclid(8),
             &mut pz_world::chunk::ChunkLoadEnv {
-                sprites: &sprites,
+                sprites: &mut sprites,
                 // Muldraugh is fixed2x; other maps need the table from the jar.
                 fix2x: &pz_world::fix2x::Fix2xTable::default(),
                 rand: &mut rand,
+                tables: &objects,
+                settings: pz_world::ObjectLoadSettings::default(),
+                hooks: &mut pz_world::NoHooks,
             },
         );
         println!(
@@ -101,7 +116,7 @@ fn main() {
                 sq.room_id,
                 sq.objects
                     .iter()
-                    .map(|o| &o.sprite_name)
+                    .map(|o| (o.kind.class_name(), o.tile.as_deref().unwrap_or("")))
                     .collect::<Vec<_>>()
             );
         }

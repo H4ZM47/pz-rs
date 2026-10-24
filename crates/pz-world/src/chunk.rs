@@ -1,84 +1,27 @@
 //! `IsoCell`, `IsoChunk`, `IsoGridSquare` and lot placement
 //! (`IsoCell.PlaceLot`, `CellLoader.LoadCellBinaryChunk`).
 //!
-//! Object creation is the generic path of `CellLoader.DoTileObjectCreation`
-//! (one `IsoObject` per tile). Specialised object classes, stacking fixes,
-//! world regions and pathfinding hooks are not ported yet.
+//! Objects are created by [`crate::cell_loader::do_tile_object_creation`].
+//! World regions and pathfinding hooks are not ported.
 
 use std::collections::HashMap;
 
-use crate::defs::BuildingIdx;
+use crate::cell_loader::{do_tile_object_creation, ObjectEnv};
+use crate::defs::{BuildingIdx, RoomDef};
 use crate::fix2x::Fix2xTable;
 use crate::iso_lot::IsoLot;
 use crate::java::{fastfloor, GameRand};
 use crate::map_files::{header_name, lotpack_name};
 use crate::meta_grid::IsoMetaGrid;
-use crate::tiledef::{TileDefFile, TILE_DEFINITION_FILES};
+use crate::objects::{IsoObject, ObjectId, ObjectLoadHooks, ObjectLoadSettings, ObjectTables};
+use crate::sprite::IsoSpriteManager;
 
 pub const CHUNK_WIDTH: i32 = 8;
 pub const MIN_LEVEL: i32 = -32;
 pub const MAX_LEVEL: i32 = 31;
 
-/// What lot placement needs from `IsoSpriteManager.namedMap`.
-pub trait SpriteLookup {
-    /// Sprite id for a tile name, or `None` for a missing tile definition.
-    fn sprite_id(&self, name: &str) -> Option<i32>;
-}
-
-/// Sprite names and ids registered from the `.tiles` files, as
-/// `IsoSpriteManager.AddSprite(name, id)` does (a duplicate name keeps the
-/// first id; patch files add no sprites).
-#[derive(Default)]
-pub struct TileDefSprites {
-    named: HashMap<String, i32>,
-}
-
-impl TileDefSprites {
-    pub fn load(media_dir: &std::path::Path) -> std::io::Result<Self> {
-        let mut s = TileDefSprites::default();
-        for (name, number) in TILE_DEFINITION_FILES {
-            s.add_file(&TileDefFile::read(&media_dir.join(name), number)?);
-        }
-        Ok(s)
-    }
-
-    pub fn add_file(&mut self, file: &TileDefFile) {
-        if file.patch {
-            return;
-        }
-        for ts in &file.tilesets {
-            for tile in &ts.tiles {
-                self.named
-                    .entry(tile.name.clone())
-                    .or_insert(file.sprite_id(ts, tile));
-            }
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.named.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.named.is_empty()
-    }
-}
-
-impl SpriteLookup for TileDefSprites {
-    fn sprite_id(&self, name: &str) -> Option<i32> {
-        self.named.get(name).copied()
-    }
-}
-
-/// `IsoObject` created from a map tile.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IsoObject {
-    pub sprite_name: String,
-    pub sprite_id: i32,
-}
-
 /// `IsoGridSquare` (map-loading fields).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IsoGridSquare {
     pub x: i32,
     pub y: i32,
@@ -86,7 +29,17 @@ pub struct IsoGridSquare {
     pub room_id: i64,
     /// `roofHideBuilding`: the building of the `emptyoutside` room here.
     pub roof_hide_building: Option<BuildingIdx>,
+    /// `associatedBuilding` (`IsoMetaGrid.getAssociatedBuildingAt`, set
+    /// when the square is put in its chunk).
+    pub associated_building: Option<BuildingIdx>,
+    /// `hasSetIsoWorldRegion` (world regions are not ported).
+    pub has_set_iso_world_region: bool,
     pub objects: Vec<IsoObject>,
+    /// `specialObjects`, by object identity. Like the original, clearing
+    /// `objects` leaves this list alone; identities no longer in `objects`
+    /// are skipped by lookups.
+    pub special_objects: Vec<ObjectId>,
+    pub(crate) next_object_id: ObjectId,
 }
 
 impl IsoGridSquare {
@@ -97,8 +50,26 @@ impl IsoGridSquare {
             z,
             room_id: -1,
             roof_hide_building: None,
+            associated_building: None,
+            has_set_iso_world_region: false,
             objects: Vec::new(),
+            special_objects: Vec::new(),
+            next_object_id: 0,
         }
+    }
+
+    /// `ResetIsoWorldRegion()`. World regions are not ported; this clears
+    /// the flag that makes the region be looked up again.
+    pub fn reset_iso_world_region(&mut self) {
+        self.has_set_iso_world_region = false;
+    }
+
+    /// `getRoom().def`: the room this square's `roomID` names.
+    pub fn room_def<'m>(&self, meta: &'m IsoMetaGrid) -> Option<&'m RoomDef> {
+        if self.room_id == -1 {
+            return None;
+        }
+        meta.get_room_def_by_id(self.room_id)
     }
 }
 
@@ -181,15 +152,56 @@ impl IsoChunk {
 
 /// Runtime inputs chunk loading takes from other systems.
 pub struct ChunkLoadEnv<'a> {
-    /// `IsoSpriteManager.namedMap`.
-    pub sprites: &'a dyn SpriteLookup,
+    /// `IsoSpriteManager.instance` after `loadedTileDefinitions`. Object
+    /// creation changes some sprites (windows), as upstream.
+    pub sprites: &'a mut IsoSpriteManager,
     /// `IsoChunk.Fix2xMap`, read from the installed game.
     pub fix2x: &'a Fix2xTable,
     /// `Rand`.
     pub rand: &'a mut dyn GameRand,
+    /// Game-code tables, read from the installed game.
+    pub tables: &'a ObjectTables,
+    pub settings: ObjectLoadSettings,
+    pub hooks: &'a mut dyn ObjectLoadHooks,
 }
 
-struct PlaceError;
+impl ChunkLoadEnv<'_> {
+    fn objects(&mut self) -> ObjectEnv<'_> {
+        ObjectEnv {
+            sprites: self.sprites,
+            rand: self.rand,
+            tables: self.tables,
+            settings: self.settings,
+            hooks: self.hooks,
+        }
+    }
+}
+
+/// The exception `PlaceLot` caught.
+#[derive(Debug)]
+struct PlaceError(String);
+
+fn npe_place() -> PlaceError {
+    PlaceError("NullPointerException".into())
+}
+
+impl From<String> for PlaceError {
+    fn from(s: String) -> Self {
+        PlaceError(s)
+    }
+}
+
+fn place_error() -> PlaceError {
+    PlaceError("ArrayIndexOutOfBoundsException".into())
+}
+
+/// `IsoGridSquare.getNew` + `IsoChunk.setSquare`, which sets
+/// `associatedBuilding`.
+fn new_square(meta: &IsoMetaGrid, x: i32, y: i32, z: i32) -> Result<IsoGridSquare, PlaceError> {
+    let mut sq = IsoGridSquare::new(x, y, z);
+    sq.associated_building = meta.get_associated_building_at(x, y)?;
+    Ok(sq)
+}
 
 /// `IsoCell.PlaceLot(lot, sx, sy, sz, ch, wx, wy, bDoneSquares)`.
 #[allow(clippy::too_many_arguments)]
@@ -213,8 +225,8 @@ pub fn place_lot(
     let result = place_lot_inner(
         meta, lot, sx, sy, ch, wx, wy, min_level, max_level, done, &mut count, env,
     );
-    if result.is_err() {
-        eprintln!("Failed to load chunk, blocking out area");
+    if let Err(PlaceError(e)) = result {
+        eprintln!("Failed to load chunk, blocking out area: {e}");
         for x in wx + sx..wx + sx + 8 {
             for y in wy + sy..wy + sy + 8 {
                 for z in min_level..=max_level {
@@ -241,7 +253,7 @@ fn place_lot_inner(
     count: &mut i32,
     env: &mut ChunkLoadEnv<'_>,
 ) -> Result<(), PlaceError> {
-    let info = lot.info(&meta.map_files).ok_or(PlaceError)?;
+    let info = lot.info(&meta.map_files).ok_or_else(npe_place)?;
     for x in wx + sx..wx + sx + 8 {
         for y in wy + sy..wy + sy + 8 {
             if x < wx || y < wy || x >= wx + 8 || y >= wy + 8 {
@@ -258,13 +270,13 @@ fn place_lot_inner(
                 let lz = z - info.min_level;
                 let square_xyz = lx + ly * 8 + lz * 64;
                 if square_xyz < 0 || square_xyz as usize >= lot.offset_in_data.len() {
-                    return Err(PlaceError);
+                    return Err(place_error());
                 }
                 let off = lot.offset_in_data[square_xyz as usize];
                 if off == -1 {
                     continue;
                 }
-                let num_ints = *lot.data.get(off as usize).ok_or(PlaceError)?;
+                let num_ints = *lot.data.get(off as usize).ok_or_else(place_error)?;
                 if num_ints <= 0 {
                     continue;
                 }
@@ -273,7 +285,7 @@ fn place_lot_inner(
                     *count += 1;
                 }
                 if ch.get_grid_square(x - wx, y - wy, z).is_none() {
-                    ch.set_square(x - wx, y - wy, z, Some(IsoGridSquare::new(x, y, z)));
+                    ch.set_square(x - wx, y - wy, z, Some(new_square(meta, x, y, z)?));
                 }
                 for xx in -1..=1 {
                     for yy in -1..=1 {
@@ -292,29 +304,38 @@ fn place_lot_inner(
                             x + xx - wx,
                             y + yy - wy,
                             z,
-                            Some(IsoGridSquare::new(x + xx, y + yy, z)),
+                            Some(new_square(meta, x + xx, y + yy, z)?),
                         );
                     }
                 }
                 let room_id = meta.get_room_at(x, y, z).map_or(-1, |r| r.id);
-                let roof_hide = meta.get_empty_outside_at(x, y, z).map(|r| r.building);
                 let square = ch.get_grid_square_mut(x - wx, y - wy, z).unwrap();
+                // `setRoomID` looks the room up (`IsoChunk.getRoom`).
                 square.room_id = room_id;
-                if let Some(b) = roof_hide {
-                    square.roof_hide_building = b;
+                if room_id != -1 {
+                    meta.get_room_by_id(room_id, env.rand);
+                }
+                square.reset_iso_world_region();
+                if let Some(eo) = meta.get_empty_outside_at(x, y, z) {
+                    square.roof_hide_building = meta
+                        .get_room_by_id(eo.id, env.rand)
+                        .and_then(|r| r.building);
                 }
                 for n in 0..num_ints {
                     let tile_idx = *lot
                         .data
                         .get(off as usize + 1 + n as usize)
-                        .ok_or(PlaceError)?;
-                    let tile = info.tiles_used.get(tile_idx as usize).ok_or(PlaceError)?;
+                        .ok_or_else(place_error)?;
+                    let tile = info
+                        .tiles_used
+                        .get(tile_idx as usize)
+                        .ok_or_else(place_error)?;
                     let tile = if info.fixed2x {
                         tile.clone()
                     } else {
                         env.fix2x.fix2x(tile, env.rand)
                     };
-                    let Some(id) = env.sprites.sprite_id(&tile) else {
+                    let Some(&spr) = env.sprites.named_map.get(&tile) else {
                         eprintln!("Missing tile definition: {tile}");
                         continue;
                     };
@@ -324,11 +345,10 @@ fn place_lot_inner(
                     if n == 0 {
                         square.objects.clear();
                     }
-                    square.objects.push(IsoObject {
-                        sprite_name: tile,
-                        sprite_id: id,
-                    });
+                    let ty = env.sprites.sprites[spr].tile_type;
+                    do_tile_object_creation(&mut env.objects(), meta, square, spr, ty, &tile)?;
                 }
+                square.fix_stackable_objects(env.sprites);
             }
         }
     }

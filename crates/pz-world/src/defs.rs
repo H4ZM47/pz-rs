@@ -84,7 +84,8 @@ pub struct RoomDef {
     pub done_spawn: bool,
     pub indoor_zombies: i32,
     pub spawn_count: i32,
-    pub lights_active: bool,
+    /// `lightsActive`; light switches clear it while the map loads.
+    pub lights_active: std::cell::Cell<bool>,
     pub name: String,
     pub level: i32,
     pub building: Option<BuildingIdx>,
@@ -108,7 +109,7 @@ impl RoomDef {
             done_spawn: false,
             indoor_zombies: 0,
             spawn_count: -1,
-            lights_active: false,
+            lights_active: std::cell::Cell::new(false),
             name,
             level: 0,
             building: None,
@@ -281,6 +282,16 @@ impl BuildingDef {
     pub fn reset_min_max_level(&mut self) {
         self.min_level = 100;
         self.max_level = -100;
+    }
+
+    /// `getMaxLevel()` without caching the result.
+    pub fn max_level(&self, rooms: &[RoomDef]) -> i32 {
+        if self.max_level != -100 {
+            return self.max_level;
+        }
+        self.rooms
+            .iter()
+            .fold(self.max_level, |m, r| rooms[r.0 as usize].level.max(m))
     }
 
     pub fn get_max_level(&mut self, rooms: &[RoomDef]) -> i32 {

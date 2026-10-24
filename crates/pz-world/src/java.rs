@@ -98,10 +98,60 @@ pub fn parse_boolean(s: &str) -> bool {
     s.eq_ignore_ascii_case("true")
 }
 
-/// Random source matching `zombie.core.random.Rand.Next(int)`. The engine
-/// supplies the real generator; map loading only consumes it.
+/// Random source matching `zombie.core.random.Rand` (`RandAbstract` over a
+/// `java.util.Random`-like generator). The engine supplies the real
+/// generator; map loading only consumes it.
 pub trait GameRand {
+    /// `Rand.Next(int max)`: `nextInt(max)`, or 0 without drawing when
+    /// `max <= 0`.
     fn next(&mut self, max: i32) -> i32;
+
+    /// The generator's `nextFloat()` in `[0, 1)`. Generators that are never
+    /// asked for floats may keep the default, which draws nothing.
+    fn next_float(&mut self) -> f32 {
+        0.0
+    }
+
+    /// `Rand.Next(int min, int max)`.
+    fn next_range(&mut self, min: i32, max: i32) -> i32 {
+        if max == min {
+            return min;
+        }
+        let (min, max) = if min > max { (max, min) } else { (min, max) };
+        self.next(max.wrapping_sub(min)).wrapping_add(min)
+    }
+
+    /// `Rand.Next(float min, float max)`.
+    fn next_float_range(&mut self, min: f32, max: f32) -> f32 {
+        if max == min {
+            return min;
+        }
+        let (min, max) = if min > max { (max, min) } else { (min, max) };
+        min + self.next_float() * (max - min)
+    }
+}
+
+/// `Integer.parseInt(s)`: an optional sign and decimal digits.
+pub fn parse_int(s: &str) -> Option<i32> {
+    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse().ok()
+}
+
+/// `Float.parseFloat(s)` for decimal input: surrounding whitespace is
+/// ignored and a trailing `f`/`d` type suffix is accepted.
+pub fn parse_float(s: &str) -> Option<f32> {
+    let t = java_trim(s);
+    let t = t.strip_suffix(['f', 'F', 'd', 'D']).unwrap_or(t);
+    if t.is_empty()
+        || t.bytes()
+            .any(|b| !(b.is_ascii_digit() || b"+-.eE".contains(&b)))
+    {
+        return None;
+    }
+    t.parse().ok()
 }
 
 #[cfg(test)]
@@ -125,6 +175,37 @@ mod tests {
         assert_eq!(java_trim(" \t a b\r\n"), "a b");
         assert!(java_equals_ignore_case("ParkingStall", "parkingSTALL"));
         assert!(!java_equals_ignore_case("Farm", "FarmLand"));
+    }
+
+    #[test]
+    fn parsing() {
+        assert_eq!(parse_int("-12"), Some(-12));
+        assert_eq!(parse_int("+3"), Some(3));
+        assert_eq!(parse_int(" 3"), None);
+        assert_eq!(parse_int(""), None);
+        assert_eq!(parse_float(" 255 "), Some(255.0));
+        assert_eq!(parse_float("1.5f"), Some(1.5));
+        assert_eq!(parse_float("x"), None);
+    }
+
+    struct Seq(Vec<i32>);
+    impl GameRand for Seq {
+        fn next(&mut self, max: i32) -> i32 {
+            assert!(max > 0);
+            self.0.remove(0)
+        }
+        fn next_float(&mut self) -> f32 {
+            0.5
+        }
+    }
+
+    #[test]
+    fn rand_ranges() {
+        let mut r = Seq(vec![3]);
+        assert_eq!(r.next_range(5, 5), 5);
+        assert_eq!(r.next_range(10, 2), 5);
+        assert!(r.0.is_empty());
+        assert_eq!(r.next_float_range(1.0, 0.0), 0.5);
     }
 
     #[test]
