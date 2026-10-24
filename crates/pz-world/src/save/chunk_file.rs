@@ -567,6 +567,11 @@ pub trait ChunkLoadHook {
     /// `ErosionMain.ChunkLoaded(chunk)`, once after all squares. The
     /// chunk's `erosion` holds the loaded `ErosionData.Chunk`.
     fn chunk_loaded(&mut self, chunk: &mut IsoChunk);
+    /// Called when chunk `(wx, wy)` leaves the cell. The original has no
+    /// such call: per-square erosion state lives on `IsoGridSquare` objects
+    /// and goes away with them. Hooks that keep that state on the side drop
+    /// it here.
+    fn chunk_unloaded(&mut self, _wx: i32, _wy: i32) {}
 }
 
 /// The erosion part of `IsoChunk.doLoadGridsquare`: runs `hook` where the

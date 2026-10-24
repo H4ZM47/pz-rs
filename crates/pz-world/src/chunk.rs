@@ -563,6 +563,23 @@ pub struct IsoCell {
 }
 
 impl IsoCell {
+    /// Remove chunk `(wx, wy)` from the cell (`IsoChunk.removeFromWorld`
+    /// for the parts ported so far) and tell `hook` it is gone.
+    pub fn unload_chunk(
+        &mut self,
+        wx: i32,
+        wy: i32,
+        hook: Option<&mut dyn crate::save::chunk_file::ChunkLoadHook>,
+    ) -> Option<IsoChunk> {
+        let chunk = self.chunks.remove(&(wx, wy));
+        if chunk.is_some() {
+            if let Some(h) = hook {
+                h.chunk_unloaded(wx, wy);
+            }
+        }
+        chunk
+    }
+
     /// Load chunk `(wx, wy)` from map files if it is not loaded yet.
     pub fn load_chunk(
         &mut self,
