@@ -243,10 +243,7 @@ fn matches_model_oracle() {
         );
     }
     let eq = EquippedModels {
-        primary: Some(HeldItem::new(
-            &held_rifle,
-            Some(Rc::new(RefCell::new(rifle_item))),
-        )),
+        primary: Some(HeldItem::new(&held_rifle)),
         ..Default::default()
     };
     let mut hv = HumanVisual::new(pz_character_model::mask::BLOOD_PARTS);

@@ -34,8 +34,6 @@ pub type ItemScriptRef = Rc<RefCell<Item>>;
 #[derive(Clone)]
 pub struct HeldItem<'a> {
     pub item: &'a InventoryItem,
-    /// `getScriptItem()`.
-    pub script: Option<ItemScriptRef>,
     /// `getFluidContainer()`, if the item has one.
     pub fluid: Option<FluidContainer>,
     /// What the fluid colours resolve against (`FluidContainer.getColor`);
@@ -74,10 +72,9 @@ pub fn model_script_name(scripts: &dyn ModelScripts, name: &str) -> Option<Strin
 }
 
 impl<'a> HeldItem<'a> {
-    pub fn new(item: &'a InventoryItem, script: Option<ItemScriptRef>) -> Self {
+    pub fn new(item: &'a InventoryItem) -> Self {
         HeldItem {
             item,
-            script,
             fluid: None,
             entity_ctx: None,
             clothing_item: None,
@@ -85,14 +82,6 @@ impl<'a> HeldItem<'a> {
             replacement_primary_clothing: None,
             replacement_second_clothing: None,
         }
-    }
-
-    /// The item and its script from the script manager.
-    pub fn from_scripts(item: &'a InventoryItem, sm: &pz_scripts::ScriptManager) -> Self {
-        HeldItem::new(
-            item,
-            pz_scripts::objects::items::get_item(sm, &item.get_full_type()),
-        )
     }
 
     /// Sets `getClothingItem()`/`getVisual()` (from
@@ -127,10 +116,6 @@ impl<'a> HeldItem<'a> {
         self
     }
 
-    fn script_field<T>(&self, f: impl FnOnce(&Item) -> T) -> Option<T> {
-        self.script.as_ref().map(|s| f(&s.borrow()))
-    }
-
     pub fn is_weapon(&self) -> bool {
         matches!(self.item.kind, ItemKind::Weapon(_))
     }
@@ -152,14 +137,12 @@ impl<'a> HeldItem<'a> {
 
     /// `getItemReplacementPrimaryHand()`.
     pub fn replacement_primary_hand(&self) -> Option<ItemReplacement> {
-        self.script_field(|s| s.replace_primary_hand.clone())
-            .flatten()
+        self.item.get_item_replacement_primary_hand().cloned()
     }
 
     /// `getItemReplacementSecondHand()`.
     pub fn replacement_second_hand(&self) -> Option<ItemReplacement> {
-        self.script_field(|s| s.replace_second_hand.clone())
-            .flatten()
+        self.item.get_item_replacement_second_hand().cloned()
     }
 
     /// `ModelManager.requiresSmartTexture`.
