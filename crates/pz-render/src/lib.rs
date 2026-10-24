@@ -239,6 +239,58 @@ pub enum DrawCmd {
     /// `RenderPuddles`, `IsoPuddles.RenderToChunkTexture`) with the water or
     /// puddles shader.
     Surface(Box<SurfaceDraw>),
+    /// `ModelManager.RenderSkyBox`: the sky drawn into one of the two
+    /// 512x512 reflection textures ([`skybox_texture`]) with the `skybox` or
+    /// `skybox_hires` shader.
+    SkyBox(Box<SkyBoxDraw>),
+}
+
+/// The ids of `SkyBox`'s two render textures (`textureFboA`/`B`), reserved
+/// above any [`TextureManager`] id so surface draws can sample them like
+/// any texture.
+pub const SKYBOX_TEXTURE_IDS: [u32; 2] = [0xFFFF_FE00, 0xFFFF_FE01];
+
+/// The size of the sky textures.
+pub const SKYBOX_TEXTURE_SIZE: u32 = 512;
+
+/// A [`Texture`] naming sky texture `index` (0 = A, 1 = B).
+pub fn skybox_texture(index: usize) -> Texture {
+    let mut t = Texture::empty(if index == 0 { "SkyBox.textureFboA" } else { "SkyBox.textureFboB" });
+    t.id = Some(SKYBOX_TEXTURE_IDS[index]);
+    t.width = SKYBOX_TEXTURE_SIZE;
+    t.height = SKYBOX_TEXTURE_SIZE;
+    t.width_hw = SKYBOX_TEXTURE_SIZE as i32;
+    t.height_hw = SKYBOX_TEXTURE_SIZE as i32;
+    t.uv = [0.0, 0.0, SKYBOX_TEXTURE_SIZE as f32, SKYBOX_TEXTURE_SIZE as f32];
+    t.ready = true;
+    t
+}
+
+/// `SkyBoxShader`'s uniforms.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SkyBoxUniforms {
+    /// `SBTime`.
+    pub time: f32,
+    pub cloud_count: f32,
+    pub cloud_size: f32,
+    pub sun_light: [f32; 3],
+    pub sun_colour: [f32; 3],
+    pub sky_h_colour: [f32; 3],
+    pub sky_l_colour: [f32; 3],
+    pub cloud_light: f32,
+    pub stars: f32,
+    pub fog: f32,
+    pub wind: [f32; 3],
+}
+
+/// One sky render.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkyBoxDraw {
+    /// Which of [`SKYBOX_TEXTURE_IDS`] to draw into.
+    pub target: usize,
+    /// `skybox_hires` (`Core.getPerfSkybox() == 0`).
+    pub hires: bool,
+    pub uniforms: SkyBoxUniforms,
 }
 
 /// The shader of a [`SurfaceDraw`].

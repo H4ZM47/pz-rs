@@ -86,12 +86,16 @@ fn surfaces<'a>(world: &'a GridWorld, textures: &'a Textures, settings: SurfaceS
 /// Chunk (0, 0) level 0 recorded and composited into the main target,
 /// then the per-frame surface passes as `world_frame` orders them.
 fn draw(gpu: &mut pz_gpu::Gpu, tm: &mut TextureManager, r: &ChunkRenderer<'_>, world: &GridWorld) -> Vec<u8> {
+    draw_after(gpu, tm, r, world, Vec::new())
+}
+
+/// [`draw`] after the commands in `cmds`.
+fn draw_after(gpu: &mut pz_gpu::Gpu, tm: &mut TextureManager, r: &ChunkRenderer<'_>, world: &GridWorld, mut cmds: Vec<DrawCmd>) -> Vec<u8> {
     let mut level = [None; 64];
     for sq in world.squares.values().filter(|s| s.z == 0 && (0..8).contains(&s.x) && (0..8).contains(&s.y)) {
         level[(sq.x + sq.y * 8) as usize] = Some(sq);
     }
     let tex = ChunkTexture::new(0, 0, 0, 0, 0);
-    let mut cmds = Vec::new();
     r.record(tex, &[(0, level)], &mut cmds);
     cmds.push(DrawCmd::DepthMask(true));
     cmds.push(DrawCmd::Clear(pz_render::gl::DEPTH_BUFFER_BIT));
@@ -127,12 +131,10 @@ fn cam() -> Camera {
 
 /// Open water replaces the water tile; the shore's floor fades towards
 /// the water and the shore water fills in.
-#[test]
-fn water_covers_the_water_tile_and_the_shore_fades_into_it() {
-    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else { return };
-    let mut tm = TextureManager::new();
-    let red = floor_tex(&mut tm, "water", [255, 0, 0, 255]);
-    let green = floor_tex(&mut tm, "grass", [0, 200, 0, 255]);
+/// Water on square (4, 4) in grass, its neighbours shores.
+fn water_world(tm: &mut TextureManager) -> GridWorld {
+    let red = floor_tex(tm, "water", [255, 0, 0, 255]);
+    let green = floor_tex(tm, "grass", [0, 200, 0, 255]);
     let water_sprite = sprite("blends_natural_02_0", red, SpriteFlags { solidfloor: true, water: true, exterior: true, ..Default::default() });
     let grass = ground("blends_natural_01_16", green);
     let mut world = GridWorld::default();
@@ -147,6 +149,14 @@ fn water_covers_the_water_tile_and_the_shore_fades_into_it() {
             world.squares.insert((x, y, 0), sq);
         }
     }
+    world
+}
+
+#[test]
+fn water_covers_the_water_tile_and_the_shore_fades_into_it() {
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else { return };
+    let mut tm = TextureManager::new();
+    let world = water_world(&mut tm);
     assert!(world.squares[&(5, 4, 0)].water.is_some_and(|w| w.shore));
     let depth = depth_map(&mut tm);
     let maps = Maps(depth);
@@ -285,4 +295,44 @@ fn blood_splats_darken_the_floor_where_they_lie() {
     let at = px(&p, 256 - 32 + 16, 160 - 16 + 8);
     assert!(at[0] < 200 && at[1] < 100, "{at:?}");
     assert_eq!(px(&p, 256, 200), [200, 100, 50, 255]);
+}
+
+/// With the sky rendered, the water reflects it instead of the white
+/// stand-in: darker and bluer.
+#[test]
+fn water_reflects_the_rendered_sky() {
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else { return };
+    let mut tm = TextureManager::new();
+    let world = water_world(&mut tm);
+    let maps = Maps(depth_map(&mut tm));
+    let textures = Textures(HashMap::new());
+    let plain = {
+        let s = surfaces(&world, &textures, SurfaceSettings::default(), ClimateInputs::default(), PuddlesState::default());
+        let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(s));
+        px(&draw(&mut gpu, &mut tm, &r, &world), 256, 160)
+    };
+    let mut sky = pz_iso_render::skybox::SkyBox::new(0);
+    sky.update(&pz_iso_render::skybox::SkyInputs {
+        time_of_day: 12.0,
+        dawn: 6.0,
+        dusk: 20.0,
+        day_high_noon: 13.0,
+        exterior_light: [1.0, 0.95, 0.9, 1.0],
+        night_strength: 0.0,
+        cloud_intensity: 0.0,
+        precipitation_intensity: 0.0,
+        temperature: 20.0,
+        fog_intensity: 0.0,
+        wind_angle_intensity: 0.0,
+        wind_intensity: 0.0,
+    });
+    let cmd = sky.render(1001, 1.0, true, 1).expect("sky render");
+    let mut s = surfaces(&world, &textures, SurfaceSettings::default(), ClimateInputs::default(), PuddlesState::default());
+    // Mid-way through the blend between the two textures; both hold sky
+    // once rendered twice.
+    let cmd2 = sky.render(2002, 1.0, true, 1).expect("sky render");
+    s.sky = sky.reflection(2502, true, 1, 0.0, &textures);
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(s));
+    let c = px(&draw_after(&mut gpu, &mut tm, &r, &world, vec![cmd, cmd2]), 256, 160);
+    assert!(c[0] < plain[0] && c[2] >= c[0], "{c:?} vs {plain:?}");
 }

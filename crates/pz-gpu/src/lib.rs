@@ -102,6 +102,19 @@ struct Globals {
     surface: [[f32; 4]; 5],
 }
 
+/// `sky.wgsl`'s uniform block.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct SkyUniforms {
+    a: [f32; 4],
+    sun_light: [f32; 4],
+    sun_colour: [f32; 4],
+    sky_h: [f32; 4],
+    sky_l: [f32; 4],
+    b: [f32; 4],
+    wind: [f32; 4],
+}
+
 /// Uniform blocks are bound at 256-byte aligned offsets.
 const GLOBALS_STRIDE: u64 = 256;
 
@@ -134,6 +147,9 @@ enum PassTarget {
     Main,
     Chunk(u64),
     Offscreen,
+    /// A sky render (`RenderSkyBox`) into texture `id` with uniform block
+    /// `index` of the frame's sky uniforms.
+    Sky(u32, usize),
 }
 
 impl PassTarget {
@@ -141,7 +157,7 @@ impl PassTarget {
         match self {
             PassTarget::Main => TargetKind::Main,
             PassTarget::Chunk(_) => TargetKind::Chunk,
-            PassTarget::Offscreen => TargetKind::Offscreen,
+            PassTarget::Offscreen | PassTarget::Sky(..) => TargetKind::Offscreen,
         }
     }
 }
@@ -219,6 +235,11 @@ pub struct Gpu {
     mip_pipeline: wgpu::RenderPipeline,
     mip_layout: wgpu::BindGroupLayout,
     mip_sampler: wgpu::Sampler,
+    /// The sky shaders' pipeline, its uniform layout and the two sky
+    /// render textures' views by id.
+    sky_pipeline: wgpu::RenderPipeline,
+    sky_layout: wgpu::BindGroupLayout,
+    sky_targets: HashMap<u32, wgpu::TextureView>,
     /// Texture views by id, and bind groups sampling them GL_NEAREST.
     views: HashMap<u32, wgpu::TextureView>,
     nearest: HashMap<u32, wgpu::BindGroup>,
@@ -375,6 +396,32 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
+        let sky_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sky uniforms"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let sky_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("skybox"), source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()) });
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("skybox"),
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&sky_layout)], immediate_size: 0 })),
+            vertex: wgpu::VertexState { module: &sky_module, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_module,
+                entry_point: Some("fs_sky"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: state::OFFSCREEN_COLOR_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let mip_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -400,6 +447,9 @@ impl Gpu {
             mip_pipeline,
             mip_layout,
             mip_sampler,
+            sky_pipeline,
+            sky_layout,
+            sky_targets: HashMap::new(),
             views: HashMap::new(),
             nearest: HashMap::new(),
             offscreen: None,
@@ -533,7 +583,7 @@ impl Gpu {
                 None => self.ensure_pipeline(f.batches[i].key),
             }
         }
-        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, .. } = f;
+        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, sky, .. } = f;
         let mut mbytes = vec![0u8; model_uniforms.len().max(1) * model::MODEL_STRIDE as usize];
         for (i, u) in model_uniforms.iter().enumerate() {
             let at = i * model::MODEL_STRIDE as usize;
@@ -587,6 +637,10 @@ impl Gpu {
         }
         let mut main_cleared = false;
         for pass_desc in &passes {
+            if let PassTarget::Sky(id, u) = pass_desc.target {
+                self.sky_pass(&mut enc, id, &sky[u]);
+                continue;
+            }
             let (color_view, depth_view, load, depth_ops, stencil_ops, tw, th) = match pass_desc.target {
                 PassTarget::Main => {
                     let load = match clear_first.filter(|_| !main_cleared) {
@@ -606,6 +660,7 @@ impl Gpu {
                     };
                     (&c.color, &c.depth, load, Some(wgpu::Operations { load: dload, store: wgpu::StoreOp::Store }), None, c.width, c.height)
                 }
+                PassTarget::Sky(..) => continue,
                 PassTarget::Offscreen => {
                     let Some(o) = self.offscreen.as_ref() else { continue };
                     let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
@@ -869,6 +924,23 @@ impl Gpu {
                 f.tex3 = None;
                 self.state = saved;
             }
+            DrawCmd::SkyBox(d) => {
+                let id = pz_render::SKYBOX_TEXTURE_IDS[d.target.min(1)];
+                self.ensure_sky_target(id);
+                let u = &d.uniforms;
+                let v3 = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
+                f.sky.push(SkyUniforms {
+                    a: [u.time, u.cloud_count, u.cloud_size, u.fog],
+                    sun_light: v3(u.sun_light),
+                    sun_colour: v3(u.sun_colour),
+                    sky_h: v3(u.sky_h_colour),
+                    sky_l: v3(u.sky_l_colour),
+                    b: [u.cloud_light, u.stars, if d.hires { 1.0 } else { 0.0 }, 0.0],
+                    wind: v3(u.wind),
+                });
+                let at = f.batches.len();
+                f.passes.push(PassDesc { target: PassTarget::Sky(id, f.sky.len() - 1), clear: true, mipmaps: false, batches: at..at });
+            }
             DrawCmd::ProjectedQuad { texture, pos, uv, color, nearest } => {
                 let Some(id) = texture.id else { return };
                 // The corners are already in normalised device coordinates.
@@ -939,6 +1011,66 @@ impl Gpu {
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..3, 0..1);
         }
+    }
+
+    /// `SkyBox`'s `TextureFBO`: a 512x512 colour texture, registered under
+    /// its reserved id so surface draws sample it (`GL_LINEAR` both ways).
+    fn ensure_sky_target(&mut self, id: u32) {
+        if self.sky_targets.contains_key(&id) {
+            return;
+        }
+        let n = pz_render::SKYBOX_TEXTURE_SIZE;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("SkyBox.textureFbo"),
+            size: wgpu::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: state::OFFSCREEN_COLOR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let sampler = self.sampler((false, false, false, true));
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        self.textures.insert(id, bg);
+        self.views.insert(id, view.clone());
+        self.sky_targets.insert(id, view);
+    }
+
+    /// `ModelManager.RenderSkyBox`: clear, then the sky over the whole
+    /// texture.
+    fn sky_pass(&self, enc: &mut wgpu::CommandEncoder, id: u32, u: &SkyUniforms) {
+        let Some(view) = self.sky_targets.get(&id) else { return };
+        let buf = self.buffer(bytemuck::bytes_of(u), wgpu::BufferUsages::UNIFORM);
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.sky_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+        });
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("skybox"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.sky_pipeline);
+        pass.set_bind_group(0, &bg, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// `MultiTextureFBO2.create`: the offscreen buffer, with a
@@ -1160,6 +1292,8 @@ struct FrameBuilder {
     /// The seam mask of the quad being pushed.
     tex3: Option<u32>,
     model_uniforms: Vec<model::ModelUniforms>,
+    /// The frame's sky renders' uniforms.
+    sky: Vec<SkyUniforms>,
     mvp: [[f32; 4]; 4],
     viewport: (u32, u32),
 }
@@ -1177,6 +1311,7 @@ impl Default for FrameBuilder {
             chunk_return: PassTarget::Main,
             tex3: None,
             model_uniforms: Vec::new(),
+            sky: Vec::new(),
             mvp: IDENTITY,
             viewport: (1, 1),
         }

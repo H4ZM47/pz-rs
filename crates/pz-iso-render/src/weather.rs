@@ -213,7 +213,8 @@ pub trait SurfaceTextures {
     fn texture(&self, name: &str) -> Option<Texture>;
 }
 
-/// `SkyBox`'s reflection textures and their blend.
+/// `SkyBox`'s reflection textures and their blend
+/// ([`crate::skybox::SkyBox::reflection`]).
 #[derive(Clone, Debug, Default)]
 pub struct SkyReflection {
     /// `getTextureCurrent()` and `getTexturePrev()`; white when missing.

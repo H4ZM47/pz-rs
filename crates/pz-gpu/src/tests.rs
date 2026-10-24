@@ -280,3 +280,40 @@ fn surface_programs_draw_with_their_fragment_depth() {
         assert_ne!(px(&p, 16, 3, 4), [0, 0, 0, 255], "{program:?}");
     }
 }
+
+/// The sky renders into its reflection texture: sky inside the sphere
+/// map, black outside it; sampled like any texture afterwards.
+#[test]
+fn skybox_renders_into_its_reflection_texture() {
+    let Some(mut g) = gpu(64, 64) else { return };
+    let mut tm = TextureManager::new();
+    let l = [0.35f32, 0.22, 0.3];
+    let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
+    let uniforms = pz_render::SkyBoxUniforms {
+        time: 1.0,
+        cloud_count: 0.3,
+        cloud_size: 0.2,
+        sun_light: l.map(|v| v / n),
+        sun_colour: [1.0, 0.86, 0.7],
+        sky_h_colour: [0.1, 0.1, 0.4],
+        sky_l_colour: [0.1, 0.45, 0.7],
+        cloud_light: 0.99,
+        stars: 0.0,
+        fog: 0.0,
+        wind: [0.0; 3],
+    };
+    for hires in [false, true] {
+        let mut dl = DrawList::default();
+        dl.cmds.push(DrawCmd::SkyBox(Box::new(pz_render::SkyBoxDraw { target: 0, hires, uniforms })));
+        let sky = pz_render::skybox_texture(0);
+        dl.render(Some(&sky), 0.0, 0.0, 64.0, 64.0, Rgba(1.0, 1.0, 1.0, 1.0));
+        g.render_frame(&[(opaque_black(64, 64), &dl)], &mut tm);
+        let p = g.read_pixels();
+        // Clouds overhead (the centre), blue sky lower down.
+        let c = px(&p, 64, 32, 32);
+        assert!(c[0] > 60 && c[3] == 255, "{hires}: {c:?}");
+        let b = px(&p, 64, 50, 50);
+        assert!(b[2] > b[0] + 40, "{hires}: {b:?}");
+        assert_eq!(px(&p, 64, 1, 1), [0, 0, 0, 255], "{hires}");
+    }
+}
