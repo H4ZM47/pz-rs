@@ -15,6 +15,7 @@ pub mod cell;
 pub mod chunk;
 pub mod color;
 pub mod frame;
+pub mod occlusion;
 pub mod sprite;
 pub mod texd;
 pub mod world;
