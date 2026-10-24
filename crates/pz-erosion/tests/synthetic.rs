@@ -435,6 +435,7 @@ fn world_chunk_load_runs_erosion() {
     let mut hook = ErosionChunkHook {
         main: &mut main,
         hooks: &pz_world::square::NoSquareHooks,
+        dictionary: None,
         rand: &mut rand,
         logs_per_size: None,
     };
@@ -449,4 +450,32 @@ fn world_chunk_load_runs_erosion() {
     let chunk = &cell.chunks[&(2, 3)];
     assert!(chunk.erosion.as_ref().is_some_and(|c| c.init));
     assert!(chunk.get_grid_square(3, 4, 0).unwrap().erosion.is_some());
+}
+
+#[test]
+fn dictionary_object_names_resolve() {
+    use pz_erosion::host::ErosionHost;
+    let (mut sprites, mut chunk) = setup();
+    let sq = chunk.get_grid_square_mut(3, 4, 0).unwrap();
+    let tree = sq.objects.last_mut().unwrap();
+    tree.name = Some(ObjectName::Dict(5));
+    let id = tree.id;
+    let mut dict = pz_inventory::dictionary::WorldDictionary::default();
+    dict.object_names.insert(5, "Tree A".to_string());
+    let world = WorldView {
+        dictionary: Some(&dict),
+        ..WorldView::CHUNK_ONLY
+    };
+    let host = ChunkHost {
+        chunk: &mut chunk,
+        sprites: &mut sprites,
+        world: &world,
+        logs_per_size: None,
+    };
+    assert_eq!(host.object_name((19, 28, 0), id).as_deref(), Some("Tree A"));
+    let host = ChunkHost {
+        world: &WorldView::CHUNK_ONLY,
+        ..host
+    };
+    assert_eq!(host.object_name((19, 28, 0), id), None);
 }

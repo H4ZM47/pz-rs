@@ -6,6 +6,7 @@
 //! before `ErosionMain.LoadGridsquare`. Squares outside the chunk come
 //! from [`WorldView`].
 
+use pz_inventory::dictionary::WorldDictionary;
 use pz_world::objects::{IsoObject, IsoSpriteInstance, IsoTree, ObjectKind, ObjectName};
 use pz_world::square::{GetSquare, NoSquareHooks, SquareHooks};
 use pz_world::{IsoChunk, IsoGridSquare, IsoSpriteManager};
@@ -22,6 +23,8 @@ pub struct WorldView<'a> {
     /// it are always read from the chunk itself.
     pub outside: &'a dyn GetSquare,
     pub hooks: &'a dyn SquareHooks,
+    /// `WorldDictionary`, for object names saved as dictionary ids.
+    pub dictionary: Option<&'a WorldDictionary>,
 }
 
 /// [`GetSquare`] that has no squares.
@@ -34,10 +37,12 @@ impl GetSquare for NoSquares {
 }
 
 impl WorldView<'_> {
-    /// Only the chunk's own squares; no barricades or thumpables.
+    /// Only the chunk's own squares; no barricades, thumpables or
+    /// dictionary.
     pub const CHUNK_ONLY: WorldView<'static> = WorldView {
         outside: &NoSquares,
         hooks: &NoSquareHooks,
+        dictionary: None,
     };
 }
 
@@ -214,8 +219,11 @@ impl ErosionHost for ChunkHost<'_> {
         match self.obj(sq, o)?.name.as_ref()? {
             ObjectName::Str(s) => Some(s.clone()),
             ObjectName::Grass => Some("Grass".to_string()),
-            // A `WorldDictionary` id: not resolved here.
-            ObjectName::Dict(_) => None,
+            ObjectName::Dict(id) => self
+                .world
+                .dictionary
+                .and_then(|d| d.object_name(*id))
+                .map(str::to_string),
         }
     }
 

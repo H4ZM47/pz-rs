@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 pz-core.workspace = true
+pz-inventory.workspace = true
 pz-world.workspace = true
 pz-classfile.workspace = true
 libm = "0.2"

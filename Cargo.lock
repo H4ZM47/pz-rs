@@ -232,6 +232,7 @@ dependencies = [
  "libm",
  "pz-classfile",
  "pz-core",
+ "pz-inventory",
  "pz-world",
 ]
 
