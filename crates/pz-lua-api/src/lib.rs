@@ -17,6 +17,7 @@ pub mod bind_java_util;
 pub mod bind_misc;
 pub mod bind_misc_classes;
 pub mod bind_mods;
+pub mod bind_map_symbols;
 pub mod bind_render;
 pub mod bind_sandbox;
 pub mod bind_server;
@@ -47,6 +48,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     // Text before UI: bind_text's UIFont is canonical.
     bind_text::register(&mut mgr.thread);
     bind_debug::register(&mut mgr.thread);
+    bind_map_symbols::register(mgr);
     bind_mods::register(mgr);
     bind_world::register(&mut mgr.thread);
     bind_map_groups::register(&mut mgr.thread, move || fs.borrow().media_file("maps"));

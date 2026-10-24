@@ -197,12 +197,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "byteorder"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
-
-[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -724,17 +718,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
-name = "lewton"
-version = "0.10.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "777b48df9aaab155475a83a7df3070395ea1ac6902f5cd062b8f2b028075c030"
-dependencies = [
- "byteorder",
- "ogg",
- "tinyvec",
-]
-
-[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1220,15 +1203,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ogg"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6951b4e8bf21c8193da321bcce9c9dd2e13c858fe078bf9054a288b419ae5d6e"
-dependencies = [
- "byteorder",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1408,45 +1382,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
-name = "pz-audio"
-version = "0.1.0"
-dependencies = [
- "lewton",
- "memmap2",
-]
-
-[[package]]
-name = "pz-characters"
-version = "0.1.0"
-dependencies = [
- "pz-core",
- "pz-scripts",
-]
-
-[[package]]
-name = "pz-classfile"
-version = "0.1.0"
-dependencies = [
- "miniz_oxide 0.8.9",
-]
-
-[[package]]
 name = "pz-client"
 version = "0.1.0"
 dependencies = [
  "png",
- "pz-characters",
  "pz-engine",
  "pz-fs",
  "pz-kahlua",
  "pz-lua-api",
- "pz-scripts",
  "pz-ui",
 ]
-
-[[package]]
-name = "pz-clipper"
-version = "0.1.0"
 
 [[package]]
 name = "pz-core"
@@ -1503,18 +1448,12 @@ name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
  "indexmap",
- "pz-characters",
- "pz-classfile",
  "pz-core",
  "pz-fs",
  "pz-kahlua",
  "pz-render",
- "pz-sandbox",
- "pz-scripts",
- "pz-server-settings",
  "pz-text",
  "pz-ui",
- "pz-world",
 ]
 
 [[package]]
@@ -1525,35 +1464,6 @@ dependencies = [
  "png",
  "pz-fs",
  "pz-kahlua",
-]
-
-[[package]]
-name = "pz-sandbox"
-version = "0.1.0"
-dependencies = [
- "pz-classfile",
- "pz-core",
- "pz-kahlua",
- "pz-text",
-]
-
-[[package]]
-name = "pz-scripts"
-version = "0.1.0"
-dependencies = [
- "pz-classfile",
- "pz-fs",
-]
-
-[[package]]
-name = "pz-server-settings"
-version = "0.1.0"
-dependencies = [
- "pz-classfile",
- "pz-core",
- "pz-kahlua",
- "pz-sandbox",
- "pz-text",
 ]
 
 [[package]]
@@ -1570,13 +1480,6 @@ dependencies = [
  "pz-kahlua",
  "pz-render",
  "pz-text",
-]
-
-[[package]]
-name = "pz-world"
-version = "0.1.0"
-dependencies = [
- "pz-fs",
 ]
 
 [[package]]
@@ -2011,12 +1914,6 @@ dependencies = [
  "bytemuck",
  "strict-num",
 ]
-
-[[package]]
-name = "tinyvec"
-version = "1.13.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
