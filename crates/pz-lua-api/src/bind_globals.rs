@@ -40,6 +40,11 @@ pub fn instance_of(v: &Value, name: &str) -> bool {
     }
 }
 
+thread_local! {
+    /// `TextureID.useFiltering`.
+    pub static USE_TEXTURE_FILTERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub fn register(thread: &mut Thread) {
     let ret_false: &[&str] = &[
         "isServer", "isClient", "isDemo", "isCoopHost", "isMultiplayer", "isServerSoftReset", "getDebug",
@@ -86,6 +91,13 @@ pub fn register(thread: &mut Thread) {
     // Steam integration is not part of this port's runtime yet.
     global(thread, "getSteamModeActive", |c| Ok(c.push(false)));
     global(thread, "isSteamOverlayEnabled", |c| Ok(c.push(false)));
+    // TextureID.useFiltering: read by texture loading in pz-render.
+    global(thread, "useTextureFiltering", |c| {
+        USE_TEXTURE_FILTERING.with(|f| f.set(crate::expose::bool_arg(c, 0)));
+        Ok(0)
+    });
+    // Only returns a trace in debug mode with DebugType.ISUIStackTrace on.
+    global(thread, "getISUIStackTrace", |c| Ok(c.push(Value::Nil)));
     global(thread, "getNumActivePlayers", |c| Ok(c.push(0.0)));
     global(thread, "getPlayer", |c| Ok(c.push(Value::Nil)));
     global(thread, "getSpecificPlayer", |c| {

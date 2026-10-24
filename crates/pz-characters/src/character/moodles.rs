@@ -474,7 +474,7 @@ impl Moodle {
             }
         }
         if self.is("WINDCHILL") && chr.is_player() {
-            let w = chr.environment.wind_chill_amount;
+            let w = chr.environment.wind_chill_amount_for_player(ctx);
             let t = ms.thresholds("WINDCHILL")?;
             // The original tests the highest threshold for the low level.
             if w > t[3] {

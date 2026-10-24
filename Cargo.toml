@@ -23,6 +23,7 @@ pz-core = { path = "crates/pz-core" }
 pz-characters = { path = "crates/pz-characters" }
 pz-inventory = { path = "crates/pz-inventory" }
 indexmap = "2"
+jiff = "0.2"
 macroquad = { version = "0.4", default-features = false }
 png = "0.17"
 regex = "1"

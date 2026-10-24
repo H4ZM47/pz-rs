@@ -91,6 +91,8 @@ pub fn install_event_sink(sink: EventSink) {
 struct CallContext {
     base: Rc<dyn SimContext>,
     events: RefCell<Vec<SimEvent>>,
+    /// `ClimateManager.getInstance()` (the shared `GameTime`'s).
+    game_time: Rc<RefCell<pz_core::game_time::GameTime>>,
 }
 
 impl SimContext for CallContext {
@@ -157,8 +159,14 @@ impl SimContext for CallContext {
     fn do_character_stats(&self) -> bool {
         self.base.do_character_stats()
     }
-    fn climate_humidity(&self) -> f32 {
-        self.base.climate_humidity()
+    fn climate(&self) -> Option<std::cell::Ref<'_, pz_core::weather::ClimateManager>> {
+        if let Some(c) = self.base.climate() {
+            return Some(c);
+        }
+        self.game_time.try_borrow().ok().map(|g| std::cell::Ref::map(g, |g| &g.climate))
+    }
+    fn hydro_power_on(&self) -> bool {
+        self.base.hydro_power_on()
     }
     fn rand_next_range(&self, min: i32, max: i32) -> i32 {
         self.base.rand_next_range(min, max)
@@ -193,7 +201,11 @@ pub(crate) fn with_ctx<R>(
     chr: &Value,
     f: impl FnOnce(&dyn SimContext) -> Result<R, ScriptError>,
 ) -> LuaResult<R> {
-    let ctx = CallContext { base: CONTEXT.with(|c| c.borrow().clone()), events: RefCell::default() };
+    let ctx = CallContext {
+        base: CONTEXT.with(|c| c.borrow().clone()),
+        events: RefCell::default(),
+        game_time: crate::bind_climate::shared_game_time(),
+    };
     let r = f(&ctx);
     let events = ctx.events.into_inner();
     if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
