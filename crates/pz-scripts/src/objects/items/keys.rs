@@ -201,6 +201,19 @@ registry_key!(
 );
 
 registry_key!(
+    /// `zombie.scripting.objects.MoodleType`.
+    MoodleType,
+    "moodle_type"
+);
+
+impl MoodleType {
+    /// `getTranslationName`: the id it was registered with.
+    pub fn translation_name(key: &RegistryKey) -> &str {
+        &key.name
+    }
+}
+
+registry_key!(
     /// `zombie.core.GameMode`.
     GameMode,
     "game_mode"

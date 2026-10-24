@@ -40,6 +40,7 @@ pub const ITEM_TAG_CLASS: &str = "zombie.scripting.objects.ItemTag";
 pub const ITEM_BODY_LOCATION_CLASS: &str = "zombie.scripting.objects.ItemBodyLocation";
 pub const WEAPON_CATEGORY_CLASS: &str = "zombie.scripting.objects.WeaponCategory";
 pub const AMMO_TYPE_CLASS: &str = "zombie.scripting.objects.AmmoType";
+pub const MOODLE_TYPE_CLASS: &str = "zombie.scripting.objects.MoodleType";
 
 /// Key classes exposed here: `(Java class, registry)`.
 pub const KEY_CLASSES: &[(&str, &str)] = &[
@@ -51,6 +52,7 @@ pub const KEY_CLASSES: &[(&str, &str)] = &[
     (ITEM_BODY_LOCATION_CLASS, "item_body_location"),
     (WEAPON_CATEGORY_CLASS, "weapon_category"),
     (AMMO_TYPE_CLASS, "ammo_type"),
+    (MOODLE_TYPE_CLASS, "moodle_type"),
 ];
 
 /// The key class exposed for registry `registry`.

@@ -35,7 +35,7 @@ fn this_ordinal(c: &NativeCall<'_>, class: &str) -> LuaResult<usize> {
 }
 
 /// The ordinal of an enum argument of `class` (`None` for nil).
-fn enum_arg(c: &NativeCall<'_>, i: usize, class: &str) -> LuaResult<Option<usize>> {
+pub(crate) fn enum_arg(c: &NativeCall<'_>, i: usize, class: &str) -> LuaResult<Option<usize>> {
     match c.arg(i) {
         Value::Nil => Ok(None),
         Value::Object(o) => match o.as_any().downcast_ref::<JavaEnum>().filter(|e| e.class == class) {

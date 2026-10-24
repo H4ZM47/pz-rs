@@ -21,6 +21,7 @@ pub const KEY_CLASSES: &[(&str, &str)] = &[
     ("item_tag", "zombie/scripting/objects/ItemTag"),
     ("item_type", "zombie/scripting/objects/ItemType"),
     ("magazine_subject", "zombie/scripting/objects/MagazineSubject"),
+    ("moodle_type", "zombie/scripting/objects/MoodleType"),
     ("weapon_category", "zombie/scripting/objects/WeaponCategory"),
 ];
 
@@ -330,6 +331,109 @@ fn item_keys(jar: &Jar) -> ScriptResult<Vec<ItemKeyDecl>> {
     Ok(out)
 }
 
+pub const CHARACTER_STAT_CLASS: &str = "zombie/characters/CharacterStat";
+pub const MOODLE_STAT_CLASS: &str = "zombie/characters/Moodles/MoodleStat";
+pub const MOODLE_TYPE_CLASS: &str = "zombie/scripting/objects/MoodleType";
+const ISO_GAME_CHARACTER_CLASS: &str = "zombie/characters/IsoGameCharacter";
+const CHEAT_TYPE_CLASS: &str = "zombie/characters/CheatType";
+
+/// One `public static final CharacterStat <field> = register(id, min, max,
+/// default)`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CharacterStatDecl {
+    pub field: String,
+    pub id: String,
+    pub minimum: f32,
+    pub maximum: f32,
+    pub default: f32,
+}
+
+/// One `public static final MoodleStat <field> = register(MoodleType.<type>,
+/// minimum, lowest, moderate, highest, maximum)`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MoodleStatDecl {
+    pub field: String,
+    /// The `MoodleType` field passed as the type.
+    pub moodle_type: String,
+    /// minimum, lowest, moderate, highest, maximum.
+    pub thresholds: [f32; 5],
+}
+
+/// `CharacterStat`'s registrations and `ORDERED_STATS`.
+fn character_stats(jar: &Jar) -> ScriptResult<(Vec<CharacterStatDecl>, Vec<String>)> {
+    let cf = load_class(jar, CHARACTER_STAT_CLASS).map_err(class_error)?;
+    let mut decls = Vec::new();
+    let mut ordered = Vec::new();
+    for init in static_inits(&cf).map_err(class_error)? {
+        if init.class != CHARACTER_STAT_CLASS {
+            continue;
+        }
+        match &init.value {
+            Value::Call { class, name, args, .. } if class == CHARACTER_STAT_CLASS && name == "register" => {
+                let bad = || ScriptError::new(format!("CharacterStat.{}: register arguments", init.field));
+                decls.push(CharacterStatDecl {
+                    id: opt_str(args.first()).ok_or_else(bad)?,
+                    minimum: float(args.get(1)).ok_or_else(bad)?,
+                    maximum: float(args.get(2)).ok_or_else(bad)?,
+                    default: float(args.get(3)).ok_or_else(bad)?,
+                    field: init.field.clone(),
+                });
+            }
+            Value::Array(items) if init.field == "ORDERED_STATS" => {
+                ordered = items
+                    .iter()
+                    .map(|v| match v {
+                        Value::Static { class, name } if class == CHARACTER_STAT_CLASS => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect::<Option<_>>()
+                    .ok_or_else(|| ScriptError::new("CharacterStat.ORDERED_STATS: unreadable"))?;
+            }
+            _ => {}
+        }
+    }
+    Ok((decls, ordered))
+}
+
+/// `MoodleStat`'s registrations.
+fn moodle_stats(jar: &Jar) -> ScriptResult<Vec<MoodleStatDecl>> {
+    let cf = load_class(jar, MOODLE_STAT_CLASS).map_err(class_error)?;
+    let mut out = Vec::new();
+    for init in static_inits(&cf).map_err(class_error)? {
+        let Value::Call { class, name, args, .. } = &init.value else { continue };
+        if init.class != MOODLE_STAT_CLASS || class != MOODLE_STAT_CLASS || name != "register" {
+            continue;
+        }
+        let bad = || ScriptError::new(format!("MoodleStat.{}: register arguments", init.field));
+        let moodle_type = match args.first() {
+            Some(Value::Static { class, name }) if class == MOODLE_TYPE_CLASS => name.clone(),
+            _ => return Err(bad()),
+        };
+        let mut thresholds = [0.0; 5];
+        for (i, t) in thresholds.iter_mut().enumerate() {
+            *t = float(args.get(i + 1)).ok_or_else(bad)?;
+        }
+        out.push(MoodleStatDecl { field: init.field, moodle_type, thresholds });
+    }
+    Ok(out)
+}
+
+/// `IsoGameCharacter.LevelUpLevels`.
+fn level_up_levels(jar: &Jar) -> ScriptResult<Vec<i32>> {
+    let bad = || ScriptError::new("IsoGameCharacter.LevelUpLevels: unreadable");
+    match pz_classfile::static_value(jar, ISO_GAME_CHARACTER_CLASS, "LevelUpLevels").map_err(class_error)? {
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|v| match v {
+                Value::Int(i) => Some(*i as i32),
+                _ => None,
+            })
+            .collect::<Option<_>>()
+            .ok_or_else(bad),
+        _ => Err(bad()),
+    }
+}
+
 /// Built-in name tables the original defines in code, read from the jar.
 #[derive(Clone, Debug, Default)]
 pub struct BuiltinTables {
@@ -352,6 +456,16 @@ pub struct BuiltinTables {
     /// `zombie.ai.states` classes with a static `instance()` singleton
     /// (`a/b/C` form).
     pub state_singletons: Vec<String>,
+    /// `CharacterStat.register` calls of the static initializer, in order.
+    pub character_stats: Vec<CharacterStatDecl>,
+    /// `CharacterStat.ORDERED_STATS`: the `CharacterStat` fields, in order.
+    pub ordered_stats: Vec<String>,
+    /// `MoodleStat.register` calls of the static initializer, in order.
+    pub moodle_stats: Vec<MoodleStatDecl>,
+    /// `IsoGameCharacter.LevelUpLevels`.
+    pub level_up_levels: Vec<i32>,
+    /// `CheatType` constants in declaration order.
+    pub cheat_types: Vec<String>,
 }
 
 impl BuiltinTables {
@@ -415,6 +529,7 @@ impl BuiltinTables {
                 .collect();
             vehicle_enums.push((class.rsplit('/').next().unwrap().to_string(), consts));
         }
+        let (character_stats, ordered_stats) = character_stats(jar)?;
         Ok(BuiltinTables {
             perk_ids,
             perks,
@@ -425,6 +540,11 @@ impl BuiltinTables {
             body_parts: body_parts(jar)?,
             item_keys: item_keys(jar)?,
             state_singletons: state_singletons(jar)?,
+            character_stats,
+            ordered_stats,
+            moodle_stats: moodle_stats(jar)?,
+            level_up_levels: level_up_levels(jar)?,
+            cheat_types: pz_classfile::enum_constants(jar, CHEAT_TYPE_CLASS).map_err(class_error)?,
         })
     }
 }

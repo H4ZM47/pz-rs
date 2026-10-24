@@ -159,7 +159,7 @@ pub fn trait_def_value(d: Option<&CharacterTraitDefinitionRef>) -> Value {
     }
 }
 
-fn trait_def_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<CharacterTraitDefinitionRef>> {
+pub fn trait_def_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<CharacterTraitDefinitionRef>> {
     match c.arg(i) {
         Value::Nil => Ok(None),
         Value::Object(o) => match o.as_any().downcast_ref::<TraitDefObject>() {
@@ -272,7 +272,30 @@ impl LuaObject for SurvivorDescObject {
     }
 }
 
-fn desc_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Rc<RefCell<LuaSurvivorDesc>>> {
+/// The canonical Lua object of an existing descriptor.
+pub fn survivor_desc_value(desc: &Rc<RefCell<LuaSurvivorDesc>>) -> Value {
+    canonical(desc, || {
+        Value::Object(Rc::new(SurvivorDescObject {
+            desc: desc.clone(),
+            visual: RefCell::default(),
+            worn_items: RefCell::default(),
+            meta: RefCell::default(),
+        }))
+    })
+}
+
+/// Makes `v` (a `SurvivorDesc` object) the canonical object of its
+/// descriptor, unless it already has one.
+pub fn adopt_survivor_desc_value(v: &Value) {
+    if let Value::Object(o) = v {
+        if let Some(d) = o.as_any().downcast_ref::<SurvivorDescObject>() {
+            let desc = d.desc.clone();
+            canonical(&desc, || v.clone());
+        }
+    }
+}
+
+pub fn desc_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Rc<RefCell<LuaSurvivorDesc>>> {
     match c.arg(i) {
         Value::Object(o) => match o.as_any().downcast_ref::<SurvivorDescObject>() {
             Some(d) => Ok(d.desc.clone()),
