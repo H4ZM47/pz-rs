@@ -135,6 +135,7 @@ impl Thread {
             log: Box::new(|s| eprintln!("{s}")),
             exec_level: 0,
             on_missing_global: None,
+            on_missing_member: None,
         }
     }
 
@@ -473,6 +474,9 @@ impl Thread {
             let meta = self.get_meta_op(&cur, "__index");
             if meta.is_nil() {
                 if matches!(cur, Value::Table(_)) {
+                    if let (Value::Object(o), Some(h)) = (table, self.on_missing_member.as_mut()) {
+                        h(o.class_name(), &java_value_of(key));
+                    }
                     return Ok(Value::Nil);
                 }
                 let msg = format!("attempted index: {} of non-table: {}", java_value_of(key), java_value_of(&cur));

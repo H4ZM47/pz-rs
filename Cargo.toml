@@ -10,6 +10,8 @@ publish = false
 [workspace.dependencies]
 pz-kahlua = { path = "crates/pz-kahlua" }
 pz-fs = { path = "crates/pz-fs" }
+pz-scripts = { path = "crates/pz-scripts" }
+pz-entity = { path = "crates/pz-entity" }
 pz-classfile = { path = "crates/pz-classfile" }
 pz-input = { path = "crates/pz-input" }
 pz-render = { path = "crates/pz-render" }
@@ -17,7 +19,10 @@ pz-text = { path = "crates/pz-text" }
 pz-ui = { path = "crates/pz-ui" }
 pz-lua-api = { path = "crates/pz-lua-api" }
 pz-engine = { path = "crates/pz-engine" }
+pz-world = { path = "crates/pz-world" }
 pz-core = { path = "crates/pz-core" }
+pz-characters = { path = "crates/pz-characters" }
+pz-inventory = { path = "crates/pz-inventory" }
 indexmap = "2"
 macroquad = { version = "0.4", default-features = false }
 png = "0.17"

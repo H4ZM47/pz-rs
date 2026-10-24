@@ -8,6 +8,22 @@
 //! sees keys in the same order as in the original. Reference-typed keys
 //! (tables, objects) use identity, whose hash is arbitrary in Java too.
 //! Views (`keySet`, `values`, `entrySet`) are snapshots.
+//!
+//! # Live collections
+//!
+//! Where the original returns a collection an engine object owns (a
+//! definition's `getGrantedRecipes()`, a trait's `getXpBoosts()`), the list
+//! or map is [`JavaList::live`]/[`JavaMap::live`]: every call first reloads
+//! the elements from the owner, and a mutation writes the whole collection
+//! back through the owner's writer. Owners without a writer reject
+//! mutations with `UnsupportedOperationException` (a limitation of the port:
+//! the original's collections are mutable). A live map iterates in the
+//! owner's order, which the owner documents.
+//!
+//! Boxed `Integer`s ([`JavaInteger`]) can sit in a collection (the original's
+//! `HashMap<Perk, Integer>`); Kahlua converts them to Lua numbers when a
+//! collection method returns one, while `transformIntoKahluaTable` copies
+//! them raw, so Lua reads those with `intValue()`.
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -25,6 +41,7 @@ pub const LINKED_HASH_MAP: &str = "java.util.LinkedHashMap";
 pub const HASH_SET: &str = "java.util.HashSet";
 pub const ITERATOR: &str = "java.util.Iterator";
 pub const ENTRY: &str = "java.util.Map$Entry";
+pub const INTEGER: &str = "java.lang.Integer";
 
 // ---- Java value semantics ---------------------------------------------------
 
@@ -36,6 +53,8 @@ enum Key {
     /// `Double.doubleToLongBits`: NaNs are one value, `-0.0 != 0.0`.
     Num(u64),
     Str(Rc<str>),
+    /// A boxed `Integer` (equal to Integers of the same value only).
+    Int(i32),
     Ref(&'static str, usize),
 }
 
@@ -45,6 +64,7 @@ fn key_of(v: &Value) -> Key {
         Value::Bool(b) => Key::Bool(*b),
         Value::Num(n) => Key::Num(if n.is_nan() { 0x7ff8_0000_0000_0000 } else { n.to_bits() }),
         Value::Str(s) => Key::Str(s.clone()),
+        Value::Object(o) if o.as_any().is::<JavaInteger>() => Key::Int(o.as_any().downcast_ref::<JavaInteger>().unwrap().0),
         other => Key::Ref(other.type_name(), other.ptr_id()),
     }
 }
@@ -66,6 +86,7 @@ fn java_hash(k: &Key) -> i32 {
             }
         }
         Key::Num(bits) => (*bits ^ (*bits >> 32)) as i32,
+        Key::Int(i) => *i,
         Key::Str(s) => s.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c))),
         Key::Ref(_, p) => (*p as u64 ^ (*p as u64 >> 32)) as i32,
     }
@@ -91,11 +112,50 @@ fn no_such_element() -> LuaError {
     LuaError::Runtime { message: "No such element".into(), class: "java.util.NoSuchElementException" }
 }
 
+fn unsupported() -> LuaError {
+    LuaError::Runtime { message: String::new(), class: "java.lang.UnsupportedOperationException" }
+}
+
+/// `ClassCastException` for a live collection's writer given an element of
+/// the wrong type.
+pub fn class_cast(v: &Value, to: &str) -> LuaError {
+    LuaError::Runtime {
+        message: format!("class {} cannot be cast to class {to}", pz_kahlua::stdlib::java_class_name(v)),
+        class: "java.lang.ClassCastException",
+    }
+}
+
+/// Kahlua's conversion of a returned boxed number (`Integer` -> `Double`).
+pub fn to_lua_number(v: Value) -> Value {
+    match &v {
+        Value::Object(o) => match o.as_any().downcast_ref::<JavaInteger>() {
+            Some(i) => Value::Num(f64::from(i.0)),
+            None => v,
+        },
+        _ => v,
+    }
+}
+
 // ---- objects ------------------------------------------------------------------
 
-/// `java.util.ArrayList`.
+type ListRead = Box<dyn Fn() -> Vec<Value>>;
+/// Stores a live list's elements back in its owner.
+pub type ListWrite = Box<dyn Fn(Vec<Value>) -> LuaResult<()>>;
+type MapRead = Box<dyn Fn() -> Vec<(Value, Value)>>;
+/// Stores a live map's entries (in iteration order) back in its owner.
+pub type MapWrite = Box<dyn Fn(Vec<(Value, Value)>) -> LuaResult<()>>;
+
+/// Where a live collection's elements come from and go to.
+struct Live<R, W> {
+    read: R,
+    write: Option<W>,
+}
+
+/// `java.util.ArrayList`. `items` is the list itself, or for a live list
+/// the elements as last loaded from the owner.
 pub struct JavaList {
     pub items: RefCell<Vec<Value>>,
+    live: Option<Live<ListRead, ListWrite>>,
 }
 
 /// `java.util.HashMap` / `LinkedHashMap` (and, without values, `HashSet`).
@@ -106,7 +166,12 @@ pub struct JavaMap {
     /// Table capacity; 0 until the first insertion allocates it.
     capacity: Cell<usize>,
     initial: usize,
+    live: Option<Live<MapRead, MapWrite>>,
 }
+
+/// `java.lang.Integer`: a boxed int that reaches Lua without Kahlua's
+/// number conversion (see the module docs).
+pub struct JavaInteger(pub i32);
 
 /// `java.util.Iterator` over a snapshot.
 pub struct JavaIterator {
@@ -144,12 +209,72 @@ lua_object!(JavaMap, self => self.class, &[HASH_MAP, "java.util.AbstractMap", "j
 lua_object!(JavaIterator, self => ITERATOR, &[]);
 lua_object!(JavaEntry, self => ENTRY, &[]);
 
+impl LuaObject for JavaInteger {
+    fn class_name(&self) -> &str {
+        INTEGER
+    }
+    fn to_lua_string(&self) -> String {
+        self.0.to_string()
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn super_classes(&self) -> &[&'static str] {
+        &["java.lang.Number"]
+    }
+}
+
+/// A boxed `Integer`.
+pub fn integer_value(i: i32) -> Value {
+    Value::Object(Rc::new(JavaInteger(i)))
+}
+
 impl JavaList {
     pub fn new(items: Vec<Value>) -> Self {
-        JavaList { items: RefCell::new(items) }
+        JavaList { items: RefCell::new(items), live: None }
+    }
+
+    /// A live view of an owner's list; `write` stores a mutated list back
+    /// (`None`: mutations throw `UnsupportedOperationException`).
+    pub fn live(
+        read: impl Fn() -> Vec<Value> + 'static,
+        write: Option<ListWrite>,
+    ) -> Self {
+        JavaList { items: RefCell::new(Vec::new()), live: Some(Live { read: Box::new(read), write }) }
+    }
+
+    /// Reload a live list from its owner.
+    fn refresh(&self) {
+        if let Some(l) = &self.live {
+            let v = (l.read)();
+            *self.items.borrow_mut() = v;
+        }
+    }
+
+    /// The current elements.
+    pub fn snapshot(&self) -> Vec<Value> {
+        self.refresh();
+        self.items.borrow().clone()
+    }
+
+    fn check_writable(&self) -> LuaResult<()> {
+        match &self.live {
+            Some(Live { write: None, .. }) => Err(unsupported()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Store a live list's mutated elements back in its owner.
+    fn commit(&self) -> LuaResult<()> {
+        if let Some(Live { write: Some(w), .. }) = &self.live {
+            let v = self.items.borrow().clone();
+            w(v)?;
+        }
+        Ok(())
     }
 
     fn java_string(&self) -> String {
+        self.refresh();
         let parts: Vec<String> = self.items.borrow().iter().map(java_to_string).collect();
         format!("[{}]", parts.join(", "))
     }
@@ -168,7 +293,46 @@ impl JavaMap {
             entries: RefCell::new(IndexMap::new()),
             capacity: Cell::new(0),
             initial: table_size_for(initial_capacity),
+            live: None,
         }
+    }
+
+    /// A live view of an owner's `HashMap`: `read` lists the entries in the
+    /// owner's iteration order; `write` stores a mutated map back (`None`:
+    /// mutations throw `UnsupportedOperationException`).
+    pub fn live(
+        read: impl Fn() -> Vec<(Value, Value)> + 'static,
+        write: Option<MapWrite>,
+    ) -> Self {
+        JavaMap { live: Some(Live { read: Box::new(read), write }), ..Self::with_class(HASH_MAP, 16) }
+    }
+
+    /// Reload a live map from its owner.
+    fn refresh(&self) {
+        if let Some(l) = &self.live {
+            let src = (l.read)();
+            self.entries.borrow_mut().clear();
+            self.capacity.set(0);
+            for (k, v) in src {
+                self.put(k, v);
+            }
+        }
+    }
+
+    fn check_writable(&self) -> LuaResult<()> {
+        match &self.live {
+            Some(Live { write: None, .. }) => Err(unsupported()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Store a live map's mutated entries back in its owner.
+    fn commit(&self) -> LuaResult<()> {
+        if let Some(Live { write: Some(w), .. }) = &self.live {
+            let v = self.entries.borrow().values().cloned().collect();
+            w(v)?;
+        }
+        Ok(())
     }
 
     pub fn hash_map() -> Self {
@@ -225,11 +389,12 @@ impl JavaMap {
         self.len() == 0
     }
 
-    /// Entries in Java iteration order.
+    /// Entries in Java iteration order (a live map's in its owner's).
     pub fn ordered(&self) -> Vec<(Value, Value)> {
+        self.refresh();
         let e = self.entries.borrow();
         let mut v: Vec<(Value, Value)> = e.values().cloned().collect();
-        if !self.linked {
+        if !self.linked && self.live.is_none() {
             let mask = self.capacity.get().max(1) - 1;
             let mut idx: Vec<(usize, usize)> = e
                 .keys()
@@ -280,21 +445,52 @@ fn iterator_value(items: Vec<Value>) -> Value {
 
 fn list<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaList) -> R) -> LuaResult<R> {
     let o = this::<JavaList>(c)?;
-    Ok(f(o.as_any().downcast_ref::<JavaList>().unwrap()))
+    let l = o.as_any().downcast_ref::<JavaList>().unwrap();
+    l.refresh();
+    Ok(f(l))
+}
+
+/// A mutating call: a live list is reloaded first and written back after.
+fn list_mut<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaList) -> R) -> LuaResult<R> {
+    let o = this::<JavaList>(c)?;
+    let l = o.as_any().downcast_ref::<JavaList>().unwrap();
+    l.check_writable()?;
+    l.refresh();
+    let r = f(l);
+    l.commit()?;
+    Ok(r)
+}
+
+fn map_obj(c: &NativeCall<'_>) -> LuaResult<Rc<dyn LuaObject>> {
+    match c.arg(0) {
+        Value::Object(o) if o.as_any().is::<JavaMap>() => Ok(o),
+        other => Err(LuaError::runtime(format!("Expected a map or set but got {}", pz_kahlua::stdlib::java_class_name(&other)))),
+    }
 }
 
 fn map<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaMap) -> R) -> LuaResult<R> {
-    match c.arg(0) {
-        Value::Object(o) if o.as_any().is::<JavaMap>() => Ok(f(o.as_any().downcast_ref::<JavaMap>().unwrap())),
-        other => Err(LuaError::runtime(format!("Expected a map or set but got {}", pz_kahlua::stdlib::java_class_name(&other)))),
-    }
+    let o = map_obj(c)?;
+    let m = o.as_any().downcast_ref::<JavaMap>().unwrap();
+    m.refresh();
+    Ok(f(m))
+}
+
+/// A mutating call, like [`list_mut`].
+fn map_mut<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaMap) -> R) -> LuaResult<R> {
+    let o = map_obj(c)?;
+    let m = o.as_any().downcast_ref::<JavaMap>().unwrap();
+    m.check_writable()?;
+    m.refresh();
+    let r = f(m);
+    m.commit()?;
+    Ok(r)
 }
 
 /// Items of any collection argument (for `addAll` and copy constructors).
 fn collection_items(v: &Value) -> Option<Vec<Value>> {
     let Value::Object(o) = v else { return None };
     if let Some(l) = o.as_any().downcast_ref::<JavaList>() {
-        return Some(l.items.borrow().clone());
+        return Some(l.snapshot());
     }
     o.as_any().downcast_ref::<JavaMap>().filter(|m| m.is_set()).map(|m| m.ordered().into_iter().map(|e| e.0).collect())
 }
@@ -309,10 +505,21 @@ fn checked_index(c: &NativeCall<'_>, arg: usize, len: usize, inclusive: bool) ->
 }
 
 pub fn register(thread: &mut Thread) {
+    register_integer(thread);
     register_list(thread);
     register_maps(thread);
     register_set(thread);
     register_views(thread);
+    // `LuaManager.GlobalObject.transformIntoKahluaTable(HashMap)`: the
+    // entries in iteration order, values raw (boxed Integers stay boxed).
+    crate::expose::global(thread, "transformIntoKahluaTable", |c| {
+        let entries = map(c, JavaMap::ordered)?;
+        let t = pz_kahlua::TableRef::new();
+        for (k, v) in entries {
+            t.rawset(k, v);
+        }
+        Ok(c.push(t))
+    });
 }
 
 fn register_list(thread: &mut Thread) {
@@ -334,25 +541,25 @@ fn register_list(thread: &mut Thread) {
         let len = list(c, |l| l.items.borrow().len())?;
         let i = checked_index(c, 1, len, false)?;
         let v = list(c, |l| l.items.borrow()[i].clone())?;
-        Ok(c.push(v))
+        Ok(c.push(to_lua_number(v)))
     });
     b.method("set", |c| {
         let len = list(c, |l| l.items.borrow().len())?;
         let i = checked_index(c, 1, len, false)?;
         let v = c.arg(2);
-        let old = list(c, |l| std::mem::replace(&mut l.items.borrow_mut()[i], v))?;
-        Ok(c.push(old))
+        let old = list_mut(c, |l| std::mem::replace(&mut l.items.borrow_mut()[i], v))?;
+        Ok(c.push(to_lua_number(old)))
     });
     b.method("add", |c| {
         if c.nargs() >= 3 {
             let len = list(c, |l| l.items.borrow().len())?;
             let i = checked_index(c, 1, len, true)?;
             let v = c.arg(2);
-            list(c, |l| l.items.borrow_mut().insert(i, v))?;
+            list_mut(c, |l| l.items.borrow_mut().insert(i, v))?;
             return Ok(0);
         }
         let v = c.arg(1);
-        list(c, |l| l.items.borrow_mut().push(v))?;
+        list_mut(c, |l| l.items.borrow_mut().push(v))?;
         Ok(c.push(true))
     });
     b.method("addAll", |c| {
@@ -364,14 +571,14 @@ fn register_list(thread: &mut Thread) {
             if i < 0 || i as usize > len {
                 return Err(index_error(i, len));
             }
-            list(c, |l| {
+            list_mut(c, |l| {
                 let mut v = l.items.borrow_mut();
                 let tail = v.split_off(i as usize);
                 v.extend(items);
                 v.extend(tail);
             })?;
         } else {
-            list(c, |l| l.items.borrow_mut().extend(items))?;
+            list_mut(c, |l| l.items.borrow_mut().extend(items))?;
         }
         Ok(c.push(changed))
     });
@@ -380,11 +587,11 @@ fn register_list(thread: &mut Thread) {
         if let Value::Num(_) = c.arg(1) {
             let len = list(c, |l| l.items.borrow().len())?;
             let i = checked_index(c, 1, len, false)?;
-            let v = list(c, |l| l.items.borrow_mut().remove(i))?;
-            return Ok(c.push(v));
+            let v = list_mut(c, |l| l.items.borrow_mut().remove(i))?;
+            return Ok(c.push(to_lua_number(v)));
         }
         let target = c.arg(1);
-        let removed = list(c, |l| {
+        let removed = list_mut(c, |l| {
             let mut v = l.items.borrow_mut();
             match v.iter().position(|x| java_equals(x, &target)) {
                 Some(i) => {
@@ -412,28 +619,28 @@ fn register_list(thread: &mut Thread) {
         Ok(c.push(r))
     });
     b.method("clear", |c| {
-        list(c, |l| l.items.borrow_mut().clear())?;
+        list_mut(c, |l| l.items.borrow_mut().clear())?;
         Ok(0)
     });
     b.method("getFirst", |c| {
         let v = list(c, |l| l.items.borrow().first().cloned())?.ok_or_else(no_such_element)?;
-        Ok(c.push(v))
+        Ok(c.push(to_lua_number(v)))
     });
     b.method("getLast", |c| {
         let v = list(c, |l| l.items.borrow().last().cloned())?.ok_or_else(no_such_element)?;
-        Ok(c.push(v))
+        Ok(c.push(to_lua_number(v)))
     });
     b.method("removeFirst", |c| {
-        let v = list(c, |l| {
+        let v = list_mut(c, |l| {
             let mut v = l.items.borrow_mut();
             (!v.is_empty()).then(|| v.remove(0))
         })?
         .ok_or_else(no_such_element)?;
-        Ok(c.push(v))
+        Ok(c.push(to_lua_number(v)))
     });
     b.method("removeLast", |c| {
-        let v = list(c, |l| l.items.borrow_mut().pop())?.ok_or_else(no_such_element)?;
-        Ok(c.push(v))
+        let v = list_mut(c, |l| l.items.borrow_mut().pop())?.ok_or_else(no_such_element)?;
+        Ok(c.push(to_lua_number(v)))
     });
     b.method("iterator", |c| {
         let items = list(c, |l| l.items.borrow().clone())?;
@@ -448,34 +655,34 @@ fn register_list(thread: &mut Thread) {
 fn register_map_methods(b: &crate::expose::ClassBuilder) {
     b.method("put", |c| {
         let (k, v) = (c.arg(1), c.arg(2));
-        let old = map(c, |m| m.put(k, v))?;
-        Ok(c.push(old))
+        let old = map_mut(c, |m| m.put(k, v))?;
+        Ok(c.push(to_lua_number(old)))
     });
     b.method("get", |c| {
         let k = c.arg(1);
         let v = map(c, |m| m.get(&k))?;
-        Ok(c.push(v))
+        Ok(c.push(to_lua_number(v)))
     });
     b.method("getOrDefault", |c| {
         let (k, d) = (c.arg(1), c.arg(2));
         let v = map(c, |m| if m.contains_key(&k) { m.get(&k) } else { d })?;
-        Ok(c.push(v))
+        Ok(c.push(to_lua_number(v)))
     });
     b.method("putIfAbsent", |c| {
         let (k, v) = (c.arg(1), c.arg(2));
-        let old = map(c, |m| {
+        let old = map_mut(c, |m| {
             let cur = m.get(&k);
             if cur.is_nil() {
                 m.put(k, v);
             }
             cur
         })?;
-        Ok(c.push(old))
+        Ok(c.push(to_lua_number(old)))
     });
     b.method("remove", |c| {
         let k = c.arg(1);
-        let v = map(c, |m| m.remove(&k).unwrap_or_default())?;
-        Ok(c.push(v))
+        let v = map_mut(c, |m| m.remove(&k).unwrap_or_default())?;
+        Ok(c.push(to_lua_number(v)))
     });
     b.method("containsKey", |c| {
         let k = c.arg(1);
@@ -516,7 +723,7 @@ fn register_map_methods(b: &crate::expose::ClassBuilder) {
         Ok(c.push(n))
     });
     b.method("clear", |c| {
-        map(c, |m| m.entries.borrow_mut().clear())?;
+        map_mut(c, |m| m.entries.borrow_mut().clear())?;
         Ok(0)
     });
     b.method("toString", |c| {
@@ -579,7 +786,7 @@ fn register_set(thread: &mut Thread) {
     b.static_fn("newHashSet", |c| sized_ctor(c, HASH_SET));
     b.method("add", |c| {
         let v = c.arg(1);
-        let added = map(c, |m| {
+        let added = map_mut(c, |m| {
             let had = m.contains_key(&v);
             if !had {
                 m.put(v, Value::Nil);
@@ -590,7 +797,7 @@ fn register_set(thread: &mut Thread) {
     });
     b.method("remove", |c| {
         let v = c.arg(1);
-        let r = map(c, |m| m.remove(&v).is_some())?;
+        let r = map_mut(c, |m| m.remove(&v).is_some())?;
         Ok(c.push(r))
     });
     b.method("contains", |c| {
@@ -607,7 +814,7 @@ fn register_set(thread: &mut Thread) {
         Ok(c.push(n))
     });
     b.method("clear", |c| {
-        map(c, |m| m.entries.borrow_mut().clear())?;
+        map_mut(c, |m| m.entries.borrow_mut().clear())?;
         Ok(0)
     });
     b.method("iterator", |c| {
@@ -617,6 +824,54 @@ fn register_set(thread: &mut Thread) {
     b.method("toString", |c| {
         let s = map(c, |m| m.java_string())?;
         Ok(c.push(Value::str(&s)))
+    });
+}
+
+/// `java.lang.Integer`'s value methods.
+fn register_integer(thread: &mut Thread) {
+    fn int(c: &NativeCall<'_>) -> LuaResult<i32> {
+        let o = this::<JavaInteger>(c)?;
+        Ok(o.as_any().downcast_ref::<JavaInteger>().unwrap().0)
+    }
+    fn int_of(v: &Value) -> Option<i32> {
+        match v {
+            Value::Object(o) => o.as_any().downcast_ref::<JavaInteger>().map(|i| i.0),
+            _ => None,
+        }
+    }
+    let b = expose_class(thread, INTEGER, None);
+    for name in ["intValue", "longValue", "floatValue", "doubleValue", "shortValue", "byteValue"] {
+        b.method(name, move |c| {
+            let v = int(c)?;
+            let v = match name {
+                "shortValue" => f64::from(v as i16),
+                "byteValue" => f64::from(v as i8),
+                "floatValue" => f64::from(v as f32),
+                _ => f64::from(v),
+            };
+            Ok(c.push(v))
+        });
+    }
+    b.method("toString", |c| {
+        let v = int(c)?;
+        Ok(c.push(Value::str(&v.to_string())))
+    });
+    b.method("hashCode", |c| {
+        let v = int(c)?;
+        Ok(c.push(f64::from(v)))
+    });
+    // `Integer.equals`: another Integer with the same value.
+    b.method("equals", |c| {
+        let v = int(c)?;
+        Ok(c.push(int_of(&c.arg(1)) == Some(v)))
+    });
+    b.method("compareTo", |c| {
+        let v = int(c)?;
+        let other = int_of(&c.arg(1)).ok_or_else(|| LuaError::Runtime {
+            message: format!("class {} cannot be cast to class {INTEGER}", pz_kahlua::stdlib::java_class_name(&c.arg(1))),
+            class: "java.lang.ClassCastException",
+        })?;
+        Ok(c.push(f64::from(v.cmp(&other) as i32)))
     });
 }
 
@@ -632,18 +887,18 @@ fn register_views(thread: &mut Thread) {
         let it = o.as_any().downcast_ref::<JavaIterator>().unwrap();
         let v = it.items.get(it.pos.get()).cloned().ok_or_else(no_such_element)?;
         it.pos.set(it.pos.get() + 1);
-        Ok(c.push(v))
+        Ok(c.push(to_lua_number(v)))
     });
     let b = expose_class(thread, ENTRY, None);
     b.method("getKey", |c| {
         let o = this::<JavaEntry>(c)?;
         let k = o.as_any().downcast_ref::<JavaEntry>().unwrap().key.clone();
-        Ok(c.push(k))
+        Ok(c.push(to_lua_number(k)))
     });
     b.method("getValue", |c| {
         let o = this::<JavaEntry>(c)?;
         let v = o.as_any().downcast_ref::<JavaEntry>().unwrap().value.borrow().clone();
-        Ok(c.push(v))
+        Ok(c.push(to_lua_number(v)))
     });
 }
 
@@ -703,5 +958,47 @@ mod tests {
         let jl = o.as_any().downcast_ref::<JavaList>().unwrap();
         jl.items.borrow_mut().extend([Value::str("a"), Value::Num(2.0)]);
         assert_eq!(jl.java_string(), "[a, 2.0]");
+    }
+
+    fn run(t: &mut Thread, src: &str) -> Result<(), String> {
+        let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
+        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+    }
+
+    #[test]
+    fn live_collections_and_integers() {
+        let mut t = Thread::new(pz_kahlua::TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        register(&mut t);
+        run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end").unwrap();
+        let owner = Rc::new(RefCell::new(vec![1, 2]));
+        let (r, w) = (owner.clone(), owner.clone());
+        let list = JavaList::live(
+            move || r.borrow().iter().map(|i| integer_value(*i)).collect(),
+            Some(Box::new(move |v: Vec<Value>| {
+                *w.borrow_mut() = v.iter().map(|x| to_lua_number(x.clone()).as_num().unwrap_or(0.0) as i32).collect();
+                Ok(())
+            })),
+        );
+        t.globals().set_str("live", Value::Object(Rc::new(list)));
+        let r = owner.clone();
+        let ro = JavaMap::live(move || r.borrow().iter().map(|i| (Value::str("k"), integer_value(*i))).take(1).collect(), None);
+        t.globals().set_str("ro", Value::Object(Rc::new(ro)));
+        run(
+            &mut t,
+            r#"
+            assert(live:size() == 2 and live:get(1) == 2)
+            live:add(7)
+            assert(tostring(live) == "[1, 2, 7]")
+            assert(ro:get("k") == 1 and transformIntoKahluaTable(ro).k:intValue() == 1)
+            assert(not pcall(function() ro:put("x", 1) end))
+            local m = HashMap.new()
+            m:put(transformIntoKahluaTable(ro).k, "one")
+            assert(m:get(transformIntoKahluaTable(ro).k) == "one" and m:get(1) == nil)
+            "#,
+        )
+        .unwrap();
+        assert_eq!(*owner.borrow(), vec![1, 2, 7]);
     }
 }

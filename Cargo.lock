@@ -1498,6 +1498,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-characters"
+version = "0.1.0"
+dependencies = [
+ "pz-core",
+ "pz-inventory",
+ "pz-scripts",
+]
+
+[[package]]
 name = "pz-classfile"
 version = "0.1.0"
 dependencies = [
@@ -1508,9 +1517,11 @@ dependencies = [
 name = "pz-client"
 version = "0.1.0"
 dependencies = [
+ "pz-characters",
  "pz-fs",
  "pz-kahlua",
  "pz-lua-api",
+ "pz-scripts",
  "pz-ui",
 ]
 
@@ -1530,6 +1541,14 @@ dependencies = [
  "pz-kahlua",
  "pz-lua-api",
  "pz-ui",
+]
+
+[[package]]
+name = "pz-entity"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-scripts",
 ]
 
 [[package]]
@@ -1561,6 +1580,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-inventory"
+version = "0.1.0"
+dependencies = [
+ "pz-entity",
+ "pz-scripts",
+]
+
+[[package]]
 name = "pz-iso-render"
 version = "0.1.0"
 dependencies = [
@@ -1582,12 +1609,14 @@ name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "pz-characters",
  "pz-classfile",
  "pz-core",
  "pz-fs",
  "pz-input",
  "pz-kahlua",
  "pz-render",
+ "pz-scripts",
  "pz-text",
  "pz-ui",
 ]
@@ -1612,6 +1641,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-scripts"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-fs",
+]
+
+[[package]]
 name = "pz-text"
 version = "0.1.0"
 
@@ -1622,6 +1659,17 @@ dependencies = [
  "pz-kahlua",
  "pz-render",
  "pz-text",
+]
+
+[[package]]
+name = "pz-world"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-entity",
+ "pz-fs",
+ "pz-inventory",
+ "pz-scripts",
 ]
 
 [[package]]
