@@ -328,7 +328,7 @@ impl World {
             let ok_thump_n = m.can_thump || !s1.has(THUMP_N);
             let ok_thump_w = m.can_thump || !s1.has(THUMP_W);
             let no_tall_n = !m.can_climb_tall_fences || !s1.has(TALL_HOPPABLE_N);
-            let no_tall_w = !m.can_climb_tall_fences || !s1.has(TALL_HOPPABLE_W);
+            let no_tall_w = !m.can_climb_tall_fences || !s1.has(TALL_HOPPABLE_W_TEST);
             let can_path_n = s1.is_can_path_n(w);
             let can_path_w = s1.is_can_path_w(w);
             let col_n = test_n
@@ -347,7 +347,7 @@ impl World {
             let ok_thump_n = m.can_thump || !s2.has(THUMP_N);
             let ok_thump_w = m.can_thump || !s2.has(THUMP_W);
             let no_tall_n = !m.can_climb_tall_fences || !s2.has(TALL_HOPPABLE_N);
-            let no_tall_w = !m.can_climb_tall_fences || !s2.has(TALL_HOPPABLE_W);
+            let no_tall_w = !m.can_climb_tall_fences || !s2.has(TALL_HOPPABLE_W_TEST);
             let can_path_n = s2.is_can_path_n(w);
             let can_path_w = s2.is_can_path_w(w);
             let col_s = test_s
@@ -526,11 +526,11 @@ impl World {
             let south = s1.x == s2.x && s1.y == s2.y - 1;
             let north = s1.x == s2.x && s1.y == s2.y + 1;
             if east {
-                if s2.has(THUMP_W) || s2.has(TALL_HOPPABLE_W) {
+                if s2.has(THUMP_W) || s2.has(TALL_HOPPABLE_W_TEST) {
                     add = add.max_native(20.0);
                 }
             } else if west {
-                if s1.has(THUMP_W) || s1.has(TALL_HOPPABLE_W) {
+                if s1.has(THUMP_W) || s1.has(TALL_HOPPABLE_W_TEST) {
                     add = add.max_native(20.0);
                 }
             } else if south {
