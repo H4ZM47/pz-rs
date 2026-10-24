@@ -261,6 +261,9 @@ impl ModelSlot {
             let found = styles.find_style(h.female, Some(h.hair_model()));
             let style = match (found, hat_item) {
                 (Some(s), Some(_)) => {
+                    // A hat with no category: the original passes null, which
+                    // throws for styles with alternates; "" matches it
+                    // everywhere the original doesn't throw.
                     styles.get_alternate_for_hat(s, hat_category.as_deref().unwrap_or(""))
                 }
                 (s, _) => s,
