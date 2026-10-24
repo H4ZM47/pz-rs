@@ -30,6 +30,7 @@ pub mod sprite;
 pub mod texd;
 pub mod trees;
 pub mod water;
+pub mod water_flow;
 pub mod weather;
 pub mod world;
 

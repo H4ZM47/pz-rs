@@ -43,7 +43,8 @@ pub struct WaterInit<'a> {
     /// The square's properties have `water`.
     pub water: bool,
     pub exterior: bool,
-    /// `IsoWaterFlow.getShore(x, y)` (1 outside every water zone).
+    /// `IsoWaterFlow.getShore(x, y)` (1 outside every water zone;
+    /// [`crate::water_flow::IsoWaterFlow::get_shore`]).
     pub shore_zone: i32,
     /// `getFloor().getSprite().getName()`.
     pub floor_sprite: Option<&'a str>,
@@ -51,7 +52,8 @@ pub struct WaterInit<'a> {
     /// order W, NW, N, SW, S, SE, E, NE.
     pub neighbours: [Option<bool>; 8],
     /// `IsoWaterFlow.getFlow(square, ax, ay)` at corners (0,0), (0,1),
-    /// (1,1), (1,0): (flow, speed).
+    /// (1,1), (1,0): (flow, speed)
+    /// ([`crate::water_flow::IsoWaterFlow::corner_flows`]).
     pub flow: [(f32, f32); 4],
     pub shader: bool,
 }

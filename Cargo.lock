@@ -1542,6 +1542,7 @@ name = "pz-iso-render"
 version = "0.1.0"
 dependencies = [
  "pz-gpu",
+ "pz-kahlua",
  "pz-render",
 ]
 

@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 pz-render = { path = "../pz-render" }
+pz-kahlua = { path = "../pz-kahlua" }
 
 [dev-dependencies]
 pz-gpu = { path = "../pz-gpu" }
