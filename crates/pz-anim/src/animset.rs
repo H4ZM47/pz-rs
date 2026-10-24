@@ -420,6 +420,10 @@ impl Anim2DBlendPicker {
                 }
             }
         }
+        // The original collects the hull from a HashSet keyed by identity
+        // hash, so points that tie in the comparator (collinear hulls, such
+        // as the player's Idle blend) come out in an arbitrary order; here
+        // they keep first-seen edge order.
         let mut hull: Vec<usize> = Vec::new();
         for ((a, b), c) in &edges {
             if *c == 1 {
