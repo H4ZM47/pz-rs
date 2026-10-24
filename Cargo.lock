@@ -162,6 +162,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-vehicles"
+version = "0.1.0"
+dependencies = [
+ "pz-fs",
+ "pz-inventory",
+ "pz-kahlua",
+ "pz-scripts",
+ "pz-world",
+]
+
+[[package]]
 name = "pz-world"
 version = "0.1.0"
 dependencies = [
