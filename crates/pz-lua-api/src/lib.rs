@@ -9,6 +9,7 @@
 
 pub mod bind_attached_items;
 pub mod bind_characters;
+pub mod bind_audio;
 pub mod bind_core;
 pub mod bind_fs;
 pub mod bind_debug;
@@ -65,6 +66,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
+    bind_audio::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }
