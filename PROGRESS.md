@@ -37,6 +37,14 @@ Status of the Rust port. Update this file with every merged change.
   removal) match the original `IsoMetaGrid` on randomized registrations;
   the native clipper is an injected trait and the zone tables are runtime
   input.
+- Climate and clock (`pz-core::weather`, `GameTime`): `ClimateManager`
+  with its float/colour/bool layers, `ClimateValues`, `WeatherPeriod`,
+  `ThunderStorm`, `ClimateForecaster`, `ClimateMoon`, `ErosionSeason`,
+  `SimplexNoise` and `GameTime.update`, bound to Lua (`bind_climate`) and
+  feeding the character simulation's air temperature, humidity, rain and
+  wind chill. Hourly and daily dumps match the original bit for bit over
+  more than 400 simulated days across seasons, sandbox weather cycles and
+  daylight-saving changes (checked locally).
 - World save files: `map_t.bin` (`GameTime` + climate, in `pz-core`),
   `map_meta.bin` (room/building state, safehouses, factions, designation
   zones, stashes), `map_zone.bin` and `gos_*.bin` (global-object systems)

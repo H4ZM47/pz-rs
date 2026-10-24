@@ -524,6 +524,44 @@ pub struct AirTemperatureQuery<'a> {
     pub heat_source_highest: Option<&'a dyn Fn(f32) -> f32>,
 }
 
+/// One `IsoHeatSource` on the square's level as
+/// `IsoCell.getHeatSourceHighestTemperature` sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeatSource {
+    /// `IsoUtils.DistanceToSquared(x, y, source.x, source.y)`.
+    pub dist_sq: f32,
+    pub radius: i32,
+    pub temperature: i32,
+    /// The source square's `isInARoom()`; `None` when the square is not
+    /// loaded.
+    pub source_in_room: Option<bool>,
+    /// `LosUtil.lineClear` is `Clear` or `ClearThroughOpenDoor`.
+    pub line_clear: bool,
+}
+
+/// `IsoCell.getHeatSourceHighestTemperature(surroundingAirTemperature, x,
+/// y, z)` over the sources on the square's level, in the cell's order.
+pub fn heat_source_highest_temperature(surrounding: f32, sources: &[HeatSource]) -> f32 {
+    let mut temperature = surrounding;
+    for h in sources {
+        let m = match h.source_in_room {
+            None => 0.0,
+            Some(false) => (surrounding - 30.0).clamp(-15.0, 5.0),
+            Some(true) => (surrounding - 30.0).clamp(-7.0, 7.0),
+        };
+        let t = lerp(
+            (1.0 - (h.dist_sq as f64).sqrt() / h.radius as f64) as f32,
+            surrounding,
+            h.temperature as f32 + m,
+        );
+        if t <= temperature || h.dist_sq >= (h.radius * h.radius) as f32 || !h.line_clear {
+            continue;
+        }
+        temperature = t;
+    }
+    temperature
+}
+
 /// `ClimateManager`.
 #[derive(Clone, Debug)]
 pub struct ClimateManager {

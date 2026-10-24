@@ -1285,7 +1285,7 @@ impl<I> GameCharacter<I> {
             }
             increase = v;
         } else {
-            let t = env.air_temperature;
+            let t = env.air_temperature_for_character(ctx, false);
             let mut v = 0.1f32;
             if t > 5.0 {
                 v += (t - 5.0) / 10.0;

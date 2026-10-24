@@ -12,6 +12,7 @@ pub mod bind_body;
 pub mod bind_body_damage;
 pub mod bind_character_sim;
 pub mod bind_characters;
+pub mod bind_climate;
 pub mod bind_core;
 pub mod bind_debug;
 pub mod bind_fs;
@@ -69,7 +70,10 @@ pub fn register_all(mgr: &mut LuaManager) {
     let sink = move |t: &mut pz_kahlua::Thread, name: &str, a: &[pz_kahlua::Value]| {
         events.trigger(t, name, a);
     };
-    bind_character_sim::install_event_sink(Rc::new(sink));
+    let sink: bind_climate::EventSink = Rc::new(sink);
+    bind_character_sim::install_event_sink(sink.clone());
+    bind_climate::install_event_sink(sink);
+    bind_climate::register(mgr);
     bind_mods::register(mgr);
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);

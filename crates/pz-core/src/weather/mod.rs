@@ -25,7 +25,8 @@ pub mod values;
 pub use color::{ClimateColorInfo, ColorRef};
 pub use forecaster::{ClimateForecaster, DayForecast, ForecastValue};
 pub use manager::{
-    AirFront, ClimateBool, ClimateColor, ClimateFloat, ClimateManager, ClimateRenderValues, ClimateVars,
+    heat_source_highest_temperature, AirFront, AirTemperatureQuery, ClimateBool, ClimateColor, ClimateFloat,
+    ClimateManager, ClimateRenderValues, ClimateVars, HeatSource,
 };
 pub use moon::ClimateMoon;
 pub use period::{StrLerpVal, WeatherPeriod, WeatherStage};
@@ -109,7 +110,7 @@ pub enum ClimateEvent {
 
 /// Which `WeatherPeriod` an event is about: the climate's, or the dummy of
 /// a forecast day (by [`DayForecast::id`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PeriodId {
     Main,
     Forecast(usize),

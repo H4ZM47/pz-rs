@@ -9,8 +9,10 @@
 //! game at normal speed with default sandbox options; nothing else is
 //! assumed.
 
+use std::cell::Ref;
 use std::rc::Rc;
 
+use pz_core::weather::{AirTemperatureQuery, ClimateManager, HeatSource};
 use pz_scripts::registry::RegistryKey;
 
 use crate::skills::PerkRef;
@@ -264,10 +266,19 @@ pub trait SimContext {
     fn do_character_stats(&self) -> bool {
         true
     }
-    /// `ClimateManager.getInstance().getHumidity()`. The default is 0: the
-    /// owner of the climate supplies it.
+    /// `ClimateManager.getInstance()`; `None` when no climate runs (the
+    /// climate getters then read 0 and the air temperatures come from
+    /// [`CharacterEnvironment`]).
+    fn climate(&self) -> Option<Ref<'_, ClimateManager>> {
+        None
+    }
+    /// `IsoWorld.instance.isHydroPowerOn()`.
+    fn hydro_power_on(&self) -> bool {
+        false
+    }
+    /// `ClimateManager.getInstance().getHumidity()`.
     fn climate_humidity(&self) -> f32 {
-        0.0
+        self.climate().map_or(0.0, |c| c.get_humidity())
     }
     /// `Rand.Next(min, max)`.
     fn rand_next_range(&self, min: i32, max: i32) -> i32 {
@@ -370,11 +381,11 @@ pub trait SimContext {
     }
     /// `ClimateManager.getInstance().isRaining()`.
     fn is_raining(&self) -> bool {
-        false
+        self.climate().is_some_and(|c| c.is_raining())
     }
     /// `ClimateManager.getInstance().getRainIntensity()`.
     fn rain_intensity(&self) -> f32 {
-        0.0
+        self.climate().map_or(0.0, |c| c.get_rain_intensity())
     }
     /// `FliesSound.maxCorpseCount`.
     fn flies_max_corpse_count(&self) -> i32 {
@@ -444,7 +455,8 @@ pub struct CharacterEnvironment {
     pub building_toxic: bool,
     /// `isProtectedFromToxic(false)`.
     pub protected_from_toxic: bool,
-    /// `Temperature.getWindChillAmountForPlayer(player)`.
+    /// `Temperature.getWindChillAmountForPlayer(player)` when no climate
+    /// runs ([`SimContext::climate`] is `None`).
     pub wind_chill_amount: f32,
     /// `isDraggingCorpse()`.
     pub dragging_corpse: bool,
@@ -480,11 +492,19 @@ pub struct CharacterEnvironment {
     pub primary_hand_tissue_uses: Option<i32>,
     /// The same for the secondary hand item.
     pub secondary_hand_tissue_uses: Option<i32>,
-    /// `ClimateManager.getAirTemperatureForCharacter(chr, false)`. The
-    /// owner of the climate supplies it (default 0).
+    /// `ClimateManager.getAirTemperatureForCharacter(chr, false)` when no
+    /// climate runs (default 0); with one it is computed.
     pub air_temperature: f32,
-    /// `ClimateManager.getAirTemperatureForCharacter(chr, true)` (default 0).
+    /// `ClimateManager.getAirTemperatureForCharacter(chr, true)` when no
+    /// climate runs (default 0).
     pub air_and_wind_temperature: f32,
+    /// `getCurrentSquare().getZ()`.
+    pub square_z: i32,
+    /// `getVehicle().getInsideTemperature()`.
+    pub vehicle_inside_temperature: f32,
+    /// The cell's heat sources on the square's level
+    /// (`IsoCell.getHeatSourceHighestTemperature`).
+    pub heat_sources: Vec<HeatSource>,
     /// The worn clothing (`getItemVisuals`).
     pub worn_clothing: Vec<WornClothing>,
     /// `sprinting` (input and movement).
@@ -541,6 +561,9 @@ impl Default for CharacterEnvironment {
             secondary_hand_tissue_uses: None,
             air_temperature: 0.0,
             air_and_wind_temperature: 0.0,
+            square_z: 0,
+            vehicle_inside_temperature: 0.0,
+            heat_sources: Vec::new(),
             worn_clothing: Vec::new(),
             sprinting: false,
             allow_sprint: true,
@@ -551,5 +574,80 @@ impl Default for CharacterEnvironment {
             climbing_state: false,
             first_action_calories_modifier: None,
         }
+    }
+}
+
+impl CharacterEnvironment {
+    fn with_query<R>(&self, ctx: &dyn SimContext, f: impl FnOnce(Option<&AirTemperatureQuery<'_>>) -> R) -> R {
+        if !self.has_current_square {
+            return f(None);
+        }
+        let heat = |t: f32| pz_core::weather::heat_source_highest_temperature(t, &self.heat_sources);
+        let q = AirTemperatureQuery {
+            in_room: self.square_in_room,
+            z: self.square_z,
+            vehicle_inside_temperature: self.in_vehicle.then_some(self.vehicle_inside_temperature),
+            hydro_power_on: ctx.hydro_power_on(),
+            heat_source_highest: if self.heat_sources.is_empty() { None } else { Some(&heat) },
+        };
+        f(Some(&q))
+    }
+
+    /// `ClimateManager.getAirTemperatureForCharacter(chr, doWindChill)`:
+    /// from the climate when one runs, else the supplied value.
+    pub fn air_temperature_for_character(&self, ctx: &dyn SimContext, wind_chill: bool) -> f32 {
+        match ctx.climate() {
+            Some(c) => self.with_query(ctx, |q| c.get_air_temperature_for_square(q, wind_chill)),
+            None if wind_chill => self.air_and_wind_temperature,
+            None => self.air_temperature,
+        }
+    }
+
+    /// `Temperature.getWindChillAmountForPlayer(player)`.
+    pub fn wind_chill_amount_for_player(&self, ctx: &dyn SimContext) -> f32 {
+        match ctx.climate() {
+            Some(c) => self.with_query(ctx, |q| c.wind_chill_amount(q, self.in_vehicle)),
+            None => self.wind_chill_amount,
+        }
+    }
+}
+
+#[cfg(test)]
+mod climate_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Ctx(RefCell<ClimateManager>);
+
+    impl SimContext for Ctx {
+        fn climate(&self) -> Option<Ref<'_, ClimateManager>> {
+            Some(self.0.borrow())
+        }
+    }
+
+    #[test]
+    fn climate_drives_air_temperature() {
+        let mut c = ClimateManager::default();
+        c.vars.floats[pz_core::weather::manager::FLOAT_TEMPERATURE].final_value = 30.0;
+        c.vars.floats[pz_core::weather::manager::FLOAT_HUMIDITY].final_value = 0.75;
+        c.vars.floats[pz_core::weather::manager::FLOAT_PRECIPITATION_INTENSITY].final_value = 0.5;
+        c.wind_power = 0.4;
+        let ctx = Ctx(RefCell::new(c));
+        let mut env = CharacterEnvironment { air_temperature: -5.0, ..CharacterEnvironment::default() };
+        // No square: the climate's temperature.
+        assert_eq!(env.air_temperature_for_character(&ctx, false), 30.0);
+        env.has_current_square = true;
+        env.square_in_room = true;
+        // Above 22 indoors on the ground floor: 15% of the excess at 40%.
+        assert_eq!(env.air_temperature_for_character(&ctx, false), 30.0 - (8.0f32 * 0.85) * 0.4);
+        env.square_in_room = false;
+        env.heat_sources.push(HeatSource { dist_sq: 4.0, radius: 4, temperature: 60, source_in_room: Some(false), line_clear: true });
+        assert!(env.air_temperature_for_character(&ctx, false) > 30.0);
+        assert_eq!(env.wind_chill_amount_for_player(&ctx), 0.0);
+        assert_eq!(ctx.climate_humidity(), 0.75);
+        assert!(ctx.is_raining());
+        assert_eq!(ctx.rain_intensity(), 0.5);
+        // Without a climate the supplied values are used.
+        assert_eq!(env.air_temperature_for_character(&DefaultSimContext, false), -5.0);
     }
 }
