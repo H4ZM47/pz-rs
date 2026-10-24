@@ -10,6 +10,7 @@
 
 use std::collections::HashMap;
 
+pub mod assets;
 pub mod import;
 pub mod loader;
 pub mod processed;

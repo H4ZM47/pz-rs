@@ -986,3 +986,69 @@ fn vehicle_key_scale(a: &AiNodeAnim, time: f32) -> [f32; 3] {
     let frame = vehicle_frame(keys.iter().map(|k| k.time), keys.len(), time);
     keys[frame].value
 }
+
+impl ImportedStaticMesh {
+    /// The render layout (`MeshKind::Static`: position, normal, the first
+    /// UV set; zeros when the mesh has none).
+    pub fn to_mesh_data(&self, id: u64) -> crate::MeshData {
+        let s = self.stride();
+        let mut v = Vec::with_capacity(self.vertices.len() / s.max(1) * 8);
+        for c in self.vertices.chunks_exact(s) {
+            v.extend_from_slice(&c[0..6]);
+            if self.num_uvs > 0 {
+                v.extend_from_slice(&c[6..8]);
+            } else {
+                v.extend_from_slice(&[0.0, 0.0]);
+            }
+        }
+        crate::MeshData { id, kind: crate::MeshKind::Static, vertices: v, indices: self.elements.clone() }
+    }
+}
+
+impl ImportedSkinnedMesh {
+    /// The render layout (`MeshKind::Skinned`, first UV set).
+    pub fn to_mesh_data(&self, id: u64) -> crate::MeshData {
+        let s = self.stride();
+        let mut v = Vec::with_capacity(self.vertices.len() / s.max(1) * 16);
+        for c in self.vertices.chunks_exact(s) {
+            v.extend_from_slice(&c[0..14]);
+            if self.num_uvs > 0 {
+                v.extend_from_slice(&c[14..16]);
+            } else {
+                v.extend_from_slice(&[0.0, 0.0]);
+            }
+        }
+        crate::MeshData { id, kind: crate::MeshKind::Skinned, vertices: v, indices: self.elements.clone() }
+    }
+}
+
+impl ProcessedAiScene {
+    /// `ProcessedAiScene.applyToMesh`: the first static mesh (bounds and
+    /// transform) or the skinned mesh, plus the skeleton. `id` tags the
+    /// mesh for GPU caching.
+    pub fn into_model_mesh(self, id: u64) -> Option<crate::ModelMesh> {
+        let mut min = [f32::MAX; 3];
+        let mut max = [-f32::MAX; 3];
+        let mut transform = None;
+        let mut mesh = None;
+        if let Some(sm) = self.static_meshes.first() {
+            min = sm.min_xyz;
+            max = sm.max_xyz;
+            transform = sm.transform;
+            mesh = Some(sm.to_mesh_data(id));
+        }
+        if let Some(sk) = &self.skinned_mesh {
+            if sk.transform.is_some() {
+                transform = sk.transform;
+            }
+            mesh = Some(sk.to_mesh_data(id));
+        }
+        Some(crate::ModelMesh {
+            mesh: std::rc::Rc::new(mesh?),
+            min_xyz: min,
+            max_xyz: max,
+            transform,
+            skinning: self.skeleton,
+        })
+    }
+}
