@@ -80,7 +80,7 @@ fn ground(name: &str, tex: Texture) -> Rc<SpriteInfo> {
 }
 
 fn surfaces<'a>(world: &'a GridWorld, textures: &'a Textures, settings: SurfaceSettings, climate: ClimateInputs, puddles: PuddlesState) -> Surfaces<'a> {
-    Surfaces { settings, climate, water: WaterState::default(), puddles, sky: SkyReflection::default(), world_age_hours: 0.0, meta_grid_min_x: 0, world, textures }
+    Surfaces { settings, climate, water: WaterState::default(), puddles, sky: SkyReflection::default(), world_age_hours: 0.0, meta_grid_min_x: 0, world, textures, frame: Default::default(), rain: None, fish: None }
 }
 
 /// Chunk (0, 0) level 0 recorded and composited into the main target,
@@ -109,6 +109,7 @@ fn draw_after(gpu: &mut pz_gpu::Gpu, tm: &mut TextureManager, r: &ChunkRenderer<
     r.render_translucent_floors(&squares, 0, &mut cmds);
     pz_iso_render::puddles::render_puddles_translucent_floors(r, s, &squares, 0, &mut cmds);
     pz_iso_render::water::render_water_shore(r, s, &squares, &mut cmds);
+    pz_iso_render::splashes::render_rain_splashes(r, s, 0, 0, 0, &mut cmds);
     r.render_translucent_objects(&squares, 0, &mut cmds);
     let list = pz_render::DrawList { cmds };
     let params = pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(W, H) };
@@ -335,4 +336,52 @@ fn water_reflects_the_rendered_sky() {
     let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(s));
     let c = px(&draw_after(&mut gpu, &mut tm, &r, &world, vec![cmd, cmd2]), 256, 160);
     assert!(c[0] < plain[0] && c[2] >= c[0], "{c:?} vs {plain:?}");
+}
+
+/// A rain splash in flight on an outdoor floor, at its square position.
+#[test]
+fn rain_splashes_land_on_outdoor_floors() {
+    use pz_iso_render::splashes::{ChunkLevelRain, RainSplashes};
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else { return };
+    let mut tm = TextureManager::new();
+    let world = puddle_world(&mut tm);
+    let maps = Maps(depth_map(&mut tm));
+    let textures = Textures(HashMap::from([("RainSplash_00_0".to_string(), solid(&mut tm, "splash", 16, 16, [255, 255, 255, 255]))]));
+    let mut level = ChunkLevelRain { raining: true, frame_num: 7, ..Default::default() };
+    // Square (4, 4): splash frame 0 at its centre.
+    level.frame[36] = 0.0;
+    level.splash_xy[36] = (0.5, 0.5);
+    let rain = std::cell::RefCell::new(RainSplashes { levels: HashMap::from([((0, 0, 0), level)]), ..Default::default() });
+    let wet = ClimateInputs { cell_rain_intensity: 5, ..Default::default() };
+    let mut s = surfaces(&world, &textures, SurfaceSettings::default(), wet, PuddlesState::default());
+    s.frame.frame_count = 7;
+    s.rain = Some(&rain);
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(s));
+    let p = draw(&mut gpu, &mut tm, &r, &world);
+    // 0.6 of (0.8, 0.9, 1.0) over the floor.
+    let c = px(&p, 256, 160);
+    let want = [202, 177, 173];
+    assert!(c[..3].iter().zip(want).all(|(a, b)| (i32::from(*a) - b).abs() <= 2), "{c:?}");
+    assert_eq!(px(&p, 256, 200), [200, 100, 50, 255]);
+}
+
+/// A fish splash on open water, drawn after the water.
+#[test]
+fn fish_splashes_show_on_open_water() {
+    use pz_iso_render::splashes::{FishSplashes, FrameState};
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(W, H) else { return };
+    let mut tm = TextureManager::new();
+    let world = water_world(&mut tm);
+    let maps = Maps(depth_map(&mut tm));
+    let splash = solid(&mut tm, "fish", 64, 64, [255, 255, 255, 255]);
+    let textures = Textures(HashMap::from([("media/textures/waterSplashes/WaterSplashSmall0_0.png".to_string(), splash)]));
+    let frame = FrameState { frame_count: 1, paused: false, unpaused_accumulator: 10.0 };
+    let fish = std::cell::RefCell::new(FishSplashes::default());
+    fish.borrow_mut().start(4, 4, 0, false, Some((0.0, 0.0)), true, &frame);
+    let mut s = surfaces(&world, &textures, SurfaceSettings::default(), ClimateInputs::default(), PuddlesState::default());
+    s.frame = frame;
+    s.fish = Some(&fish);
+    let r = ChunkRenderer::new(cam(), &maps, (W, H)).with_surfaces(Some(s));
+    let p = draw(&mut gpu, &mut tm, &r, &world);
+    assert_eq!(px(&p, 256, 160), [204, 229, 255, 255]);
 }

@@ -117,6 +117,15 @@ pub fn world_frame_into(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkL
                 if z == 0 {
                     crate::water::render_water_shore(r, s, &squares, &mut out);
                 }
+                // renderRainSplashes: each on-screen chunk holding level z.
+                let mut seen = Vec::new();
+                for c in chunks.iter().filter(|c| (c.texture.min_level..=c.texture.top_level).contains(&z)) {
+                    let k = (c.texture.wx, c.texture.wy);
+                    if !seen.contains(&k) {
+                        seen.push(k);
+                        crate::splashes::render_rain_splashes(r, s, k.0, k.1, z, &mut out);
+                    }
+                }
             }
             r.render_translucent_objects(&squares, z, &mut out);
         }

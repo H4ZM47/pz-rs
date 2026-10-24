@@ -15,6 +15,9 @@
 //! | `temperature` | `getTemperature()` (`temperature`) |
 //! | `snow_target` | `IsoCell.getSnowTarget()`: `(int)(snowFracNow * 100)`, 0 when `SandboxOptions.enableSnowOnGround` is off (`snow_frac_now`) |
 //! | `winter` | `getSeason().isSeason(5)` or `Core.isForceSnow()` (`season`) |
+//! | `raining` | `isRaining()` (`RainManager.isRaining()`) |
+//! | `precipitation_intensity` | `getPrecipitationIntensity()` (`precipitation_intensity`; `RainManager.rainIntensity` while raining) |
+//! | `cell_rain_intensity` | `IsoCell.getRainIntensity()`: the debug override, normally 0 |
 //!
 //! and the `GameTime` values `multiplier` (`getMultiplier()`),
 //! `thirty_fps_multiplier` (`getThirtyFPSMultiplier()`) and
@@ -44,6 +47,9 @@ pub struct ClimateInputs {
     /// `IsoCell.getSnowTarget()`, 0..=100.
     pub snow_target: i32,
     pub winter: bool,
+    pub raining: bool,
+    pub precipitation_intensity: f32,
+    pub cell_rain_intensity: i32,
 }
 
 /// `IsoWater`'s per-update state.
@@ -237,6 +243,11 @@ pub struct Surfaces<'a> {
     pub meta_grid_min_x: i32,
     pub world: &'a dyn SurfaceWorld,
     pub textures: &'a dyn SurfaceTextures,
+    /// `IsoCamera.frameState`'s frame counter and pause state.
+    pub frame: crate::splashes::FrameState,
+    /// The rain and fish splash state; `None` draws none.
+    pub rain: Option<&'a std::cell::RefCell<crate::splashes::RainSplashes>>,
+    pub fish: Option<&'a std::cell::RefCell<crate::splashes::FishSplashes>>,
 }
 
 impl Surfaces<'_> {

@@ -67,6 +67,8 @@ pub struct SpriteFlags {
     pub exterior: bool,
     pub attached_surface: bool,
     pub attached_ceiling: bool,
+    /// `vegitation` (rain splashes skip such squares).
+    pub vegitation: bool,
     /// `PropertyContainer.isTableTop()`.
     pub table_top: bool,
 }

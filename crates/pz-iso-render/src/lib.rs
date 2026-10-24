@@ -26,6 +26,7 @@ pub mod puddles;
 pub mod seam;
 pub mod skybox;
 pub mod snow;
+pub mod splashes;
 pub mod sprite;
 pub mod texd;
 pub mod trees;

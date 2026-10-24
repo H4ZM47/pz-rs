@@ -224,6 +224,7 @@ pub fn render_water(r: &ChunkRenderer<'_>, s: &Surfaces<'_>, squares: &[&RenderS
     for z in 0..=max_z {
         let at: Vec<&RenderSquare> = squares.iter().copied().filter(|sq| sq.z == z && classified(cv, sq)).collect();
         let mut quads = Vec::new();
+        let mut fish = Vec::new();
         for sq in &at {
             let Some(w) = sq.water.as_ref() else { continue };
             // getCachedSquares_Water: squares with water.
@@ -239,12 +240,16 @@ pub fn render_water(r: &ChunkRenderer<'_>, s: &Surfaces<'_>, squares: &[&RenderS
             if shader && w.is_valid() && !w.shore && w.has_water {
                 quads.push(add_square(r, sq, w));
             }
+            if crate::splashes::should_render_fish_splash(s, sq) {
+                fish.push(*sq);
+            }
         }
         draw(r, s, quads, out);
         if shader {
             let attach: Vec<&RenderSquare> = at.iter().copied().filter(|sq| sq.water.is_some_and(|w| w.is_valid()) && has_water_attached(cv, sq)).collect();
             render_water_attached(r, &attach, out);
         }
+        crate::splashes::render_fish_splashes(r, s, &fish, out);
     }
 }
 
