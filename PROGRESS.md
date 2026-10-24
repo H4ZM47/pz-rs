@@ -88,6 +88,10 @@ Status of the Rust port. Update this file with every merged change.
   original loader locally. Enum and lookup tables are runtime data
   (`SpriteTables`, `ObjectTables`); the jar loader awaits `pz-classfile`.
 
+- `pz-clipper`: the `PZClipper` native library (Clipper2 1.5.4 + earcut.hpp
+  + the game's JNI glue) in pure Rust. Local differential run against the
+  shipped arm64 library: every in-contract case bit-identical.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 
