@@ -61,3 +61,24 @@ pub fn static_strings(jar: &Jar, class: &str) -> Result<Vec<(String, String)>> {
     }
     Ok(out)
 }
+
+/// For each static field of `class` initialized with `new <class>(...)` (an
+/// enum constant, or a key class built by its own constructor), the field
+/// name and the constructor arguments. For enums these start with the
+/// implicit name and ordinal.
+pub fn self_constructed_constants(jar: &Jar, class: &str) -> Result<Vec<(String, Vec<Value>)>> {
+    let cf = load_class(jar, class)?;
+    Ok(static_inits(&cf)?
+        .into_iter()
+        .filter_map(|i| match i.value {
+            Value::New { class: c, args } if c == cf.this_class && i.class == cf.this_class => Some((i.field, args)),
+            _ => None,
+        })
+        .collect())
+}
+
+/// The value a static initializer stores into `class.field`, if any.
+pub fn static_value(jar: &Jar, class: &str, field: &str) -> Result<Option<Value>> {
+    let cf = load_class(jar, class)?;
+    Ok(static_inits(&cf)?.into_iter().rev().find(|i| i.class == cf.this_class && i.field == field).map(|i| i.value))
+}
