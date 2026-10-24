@@ -153,6 +153,8 @@ struct OffscreenTarget {
 
 struct PassDesc {
     target: PassTarget,
+    /// Chunk passes: generate the mip chain afterwards (`endRenderThread`).
+    mipmaps: bool,
     /// Chunk passes: clear colour to 0 and depth to 1 first.
     clear: bool,
     batches: std::ops::Range<usize>,
@@ -176,6 +178,10 @@ struct Batch {
 struct ChunkTarget {
     width: u32,
     height: u32,
+    /// The colour texture with its mip chain, and views of each level.
+    color_texture: wgpu::Texture,
+    levels: Vec<wgpu::TextureView>,
+    /// Level 0, rendered into.
     color: wgpu::TextureView,
     depth: wgpu::TextureView,
     /// Colour bind groups for compositing, with nearest and linear
@@ -201,6 +207,10 @@ pub struct Gpu {
     chunk_depth_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
     chunks: HashMap<u64, ChunkTarget>,
+    /// glGenerateMipmap's downsampling pipeline and its source layout.
+    mip_pipeline: wgpu::RenderPipeline,
+    mip_layout: wgpu::BindGroupLayout,
+    mip_sampler: wgpu::Sampler,
     /// Texture views by id, and bind groups sampling them GL_NEAREST.
     views: HashMap<u32, wgpu::TextureView>,
     nearest: HashMap<u32, wgpu::BindGroup>,
@@ -325,6 +335,42 @@ impl Gpu {
             screen,
         };
         let depth_stencil = depth_stencil_view(&device, width, height);
+        let mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mip source"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
+        let mip_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("mipmap"), source: wgpu::ShaderSource::Wgsl(include_str!("mipmap.wgsl").into()) });
+        let mip_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("mipmap"),
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&mip_layout)], immediate_size: 0 })),
+            vertex: wgpu::VertexState { module: &mip_module, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &mip_module,
+                entry_point: Some("fs_down"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: state::CHUNK_COLOR_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let mip_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
         let mut gpu = Gpu {
             device,
             queue,
@@ -339,6 +385,9 @@ impl Gpu {
             chunk_depth_layout,
             pipelines: HashMap::new(),
             chunks: HashMap::new(),
+            mip_pipeline,
+            mip_layout,
+            mip_sampler,
             views: HashMap::new(),
             nearest: HashMap::new(),
             offscreen: None,
@@ -505,7 +554,7 @@ impl Gpu {
         // when that pass is empty.
         let mut passes = passes;
         if !passes.iter().any(|p| p.target == PassTarget::Main) {
-            passes.push(PassDesc { target: PassTarget::Main, clear: false, batches: 0..0 });
+            passes.push(PassDesc { target: PassTarget::Main, clear: false, mipmaps: false, batches: 0..0 });
         }
         let mut main_cleared = false;
         for pass_desc in &passes {
@@ -594,6 +643,10 @@ impl Gpu {
                 pass.set_scissor_rect(sx, sy, sw, sh);
                 pass.draw_indexed(b.indices.clone(), 0, 0..1);
             }
+            drop(pass);
+            if let (true, PassTarget::Chunk(id)) = (pass_desc.mipmaps, pass_desc.target) {
+                self.generate_mips(&mut enc, id);
+            }
         }
         self.queue.submit([enc.finish()]);
         for id in freed {
@@ -680,9 +733,16 @@ impl Gpu {
                     f.chunk_return = f.target;
                 }
                 f.target = PassTarget::Chunk(*id);
-                f.passes.push(PassDesc { target: f.target, clear: *clear, batches: f.batches.len()..f.batches.len() });
+                f.passes.push(PassDesc { target: f.target, clear: *clear, mipmaps: false, batches: f.batches.len()..f.batches.len() });
             }
-            DrawCmd::ChunkEnd => f.target = f.chunk_return,
+            DrawCmd::ChunkEnd => {
+                // FBORenderChunk.endRenderThread: glGenerateMipmap.
+                let t = f.target;
+                if let Some(p) = f.passes.iter_mut().rev().find(|p| p.target == t) {
+                    p.mipmaps = true;
+                }
+                f.target = f.chunk_return;
+            }
             DrawCmd::ChunkComposite { id, x, y, w, h, color, chunk_depth, mag_linear } => {
                 if !self.chunks.contains_key(id) {
                     return;
@@ -750,6 +810,39 @@ impl Gpu {
         PipeKey { program, target: f.target.kind(), ..self.state.pipe_key() }
     }
 
+    /// `glGenerateMipmap` for chunk texture `id`: each level the box filter
+    /// of the one above.
+    fn generate_mips(&self, enc: &mut wgpu::CommandEncoder, id: u64) {
+        let Some(c) = self.chunks.get(&id) else { return };
+        let _ = &c.color_texture;
+        for l in 1..c.levels.len() {
+            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.mip_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&c.levels[l - 1]) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.mip_sampler) },
+                ],
+            });
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mipmap"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &c.levels[l],
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.mip_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
     /// `MultiTextureFBO2.create`: the offscreen buffer, with a
     /// `GL_DEPTH24_STENCIL8` renderbuffer.
     fn ensure_offscreen(&mut self, width: u32, height: u32) {
@@ -789,11 +882,12 @@ impl Gpu {
         if self.chunks.get(&id).is_some_and(|c| c.width == width && c.height == height) {
             return;
         }
-        let tex = |format, label| {
+        let mips = 32 - width.max(height).max(1).leading_zeros();
+        let tex = |format, label, mips| {
             self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                mip_level_count: 1,
+                mip_level_count: mips,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format,
@@ -801,17 +895,22 @@ impl Gpu {
                 view_formats: &[],
             })
         };
-        let color = tex(state::CHUNK_COLOR_FORMAT, "FBORenderChunk.tex").create_view(&Default::default());
-        let depth = tex(state::CHUNK_DEPTH_FORMAT, "FBORenderChunk.depth").create_view(&Default::default());
-        // Minification GL_LINEAR_MIPMAP_LINEAR (one level until mipmaps
-        // are generated), magnification GL_NEAREST or GL_LINEAR.
+        let color_texture = tex(state::CHUNK_COLOR_FORMAT, "FBORenderChunk.tex", mips);
+        let levels: Vec<wgpu::TextureView> = (0..mips)
+            .map(|l| color_texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: l, mip_level_count: Some(1), ..Default::default() }))
+            .collect();
+        let color = levels[0].clone();
+        let all = color_texture.create_view(&Default::default());
+        let depth = tex(state::CHUNK_DEPTH_FORMAT, "FBORenderChunk.depth", 1).create_view(&Default::default());
+        // Minification GL_LINEAR_MIPMAP_LINEAR over the generated levels,
+        // magnification GL_NEAREST or GL_LINEAR.
         let composite = [true, false].map(|mag_nearest| {
-            let sampler = self.sampler((false, mag_nearest, false, true));
+            let sampler = self.sampler((false, mag_nearest, true, true));
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: None,
                 layout: &self.texture_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color) },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&all) },
                     wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
                 ],
             })
@@ -821,7 +920,7 @@ impl Gpu {
             layout: &self.chunk_depth_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&depth) }],
         });
-        self.chunks.insert(id, ChunkTarget { width, height, color, depth, composite, depth_bind });
+        self.chunks.insert(id, ChunkTarget { width, height, color_texture, levels, color, depth, composite, depth_bind });
     }
 
     fn buffer(&self, data: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {
@@ -1013,7 +1112,7 @@ impl FrameBuilder {
     fn push(&mut self, key: PipeKey, texture: Option<u32>, tex2: Tex2, st: &GlState, globals: u32, verts: [Vertex; 4]) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
-            self.passes.push(PassDesc { target: self.target, clear: false, batches: at..at });
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
         }
         let (stencil_ref, scissor) = (st.stencil_ref, st.scissor_box());
         let viewport = self.viewport;

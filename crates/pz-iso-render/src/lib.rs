@@ -18,6 +18,7 @@ pub mod chunk;
 pub mod color;
 pub mod cutaways;
 pub mod frame;
+pub mod obscuring;
 pub mod occlusion;
 pub mod seam;
 pub mod sprite;

@@ -308,6 +308,7 @@ fn render_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, index: usize) {
         ctx,
         &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: main, seam: None },
     );
+    render_overlay(ctx, sq, obj, x, y, z, ColorInfo::WHITE);
     render_attached(ctx, obj, x, y, z, Dir::Other, ColorInfo::WHITE, false, Modifier::FloorAttached(shaper));
 }
 
@@ -368,6 +369,28 @@ fn seam_fix2_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject
     if (f.wall_n || f.window_n) && east {
         draw(ctx, SeamTile::WallEast, Dir::N, obj.offset_x - 6.0);
     }
+}
+
+/// `IsoObject.renderOverlaySprites`: the overlay drawn over the object with
+/// no shaper, in its own colour times the square's light when it has one.
+fn render_overlay(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, x: f32, y: f32, z: f32, col: ColorInfo) {
+    let Some(ov) = obj.overlay.as_ref() else { return };
+    ctx.out.push(DrawCmd::DepthMask(true));
+    let mut c = col;
+    if let Some(oc) = ov.color {
+        c = oc;
+        c.r *= sq.light_info.r;
+        c.g *= sq.light_info.g;
+        c.b *= sq.light_info.b;
+    }
+    // The overlay's instance copies the object's alpha; a translucent
+    // overlay colour scales it.
+    let alpha = if c.a != 1.0 { obj.alpha * c.a } else { obj.alpha };
+    let offset_y = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32;
+    sprite::render(
+        ctx,
+        &SpriteDraw { sprite: &ov.sprite, obj: Some(obj), main: false, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col: c, alpha, flip: false, modifier: Modifier::None, seam: None },
+    );
 }
 
 /// `IsoObject.renderAttachedSprites`.
@@ -792,6 +815,7 @@ fn perform_draw_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObj
         ctx,
         &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::Wall(shaper), seam: None },
     );
+    render_overlay(ctx, sq, obj, x, y, z, col);
     render_attached(ctx, obj, x, y, z, dir, col, !no_wall_lighting, Modifier::Wall(shaper));
     // renderAttachedSpritesWithNoWallLighting: those attached sprites with
     // the square's light and no shaper.
@@ -833,5 +857,6 @@ fn render_not_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &Ren
         ctx,
         &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::None, seam: None },
     );
+    render_overlay(ctx, sq, obj, x, y, z, sq.light_info);
     render_attached(ctx, obj, x, y, z, Dir::Other, sq.light_info, false, Modifier::None);
 }
