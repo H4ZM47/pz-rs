@@ -1570,9 +1570,11 @@ dependencies = [
 name = "pz-characters"
 version = "0.1.0"
 dependencies = [
+ "pz-anim",
  "pz-core",
  "pz-inventory",
  "pz-scripts",
+ "pz-world",
 ]
 
 [[package]]

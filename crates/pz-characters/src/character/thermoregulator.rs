@@ -1136,7 +1136,7 @@ impl Thermoregulator {
     }
 }
 
-impl<I> GameCharacter<I> {
+impl<I: 'static> GameCharacter<I> {
     /// `BodyDamage.Update`'s `if (thermoregulator != null)
     /// thermoregulator.update()`.
     pub fn thermoregulator_update(

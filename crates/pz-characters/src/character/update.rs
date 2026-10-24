@@ -18,7 +18,7 @@ use super::stats::{clamp_f32, CharacterStatRef};
 use super::GameCharacter;
 use crate::Characters;
 
-impl<I> GameCharacter<I> {
+impl<I: 'static> GameCharacter<I> {
     fn stat_ref(chars: &Characters, field: &str) -> ScriptResult<CharacterStatRef> {
         chars.sim.character_stats.field(field)
     }

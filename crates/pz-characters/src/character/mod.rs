@@ -34,12 +34,15 @@
 pub mod body_damage;
 pub mod body_part;
 pub mod clothing_wetness;
+pub mod combat;
 pub mod context;
 pub mod fitness;
 pub mod items;
 pub mod metabolics;
 pub mod moodles;
 pub mod nutrition;
+pub mod state;
+pub mod states;
 pub mod stats;
 pub mod thermoregulator;
 pub mod update;
@@ -150,7 +153,9 @@ pub enum CharacterKind {
 }
 
 /// `IsoGameCharacter`'s simulation state.
-pub struct GameCharacter<I> {
+pub struct GameCharacter<I: 'static> {
+    /// `IsoMovingObject.getID()`.
+    pub id: i32,
     pub kind: CharacterKind,
     /// The player is one of `IsoPlayer.players` (see `isLocalPlayer`).
     pub in_players: bool,
@@ -268,9 +273,17 @@ pub struct GameCharacter<I> {
     pub bleeding_level: i8,
     /// `IsoPlayer.moveSpeed`.
     pub move_speed: f32,
+    /// The state machine, its parameters and the action context
+    /// (`StateMachineComponent`).
+    pub state: state::StateMachineComponent<I>,
+    /// The fields behind the callback variables and the state and combat
+    /// code.
+    pub vars: state::CharacterVars,
+    /// `gameVariables`: the plain variable slots.
+    pub game_variables: pz_anim::MapVariableSource,
 }
 
-impl<I> GameCharacter<I> {
+impl<I: 'static> GameCharacter<I> {
     /// The field initializers and the parts of the constructors that set up
     /// simulation state: every registered trait unset, one moodle per
     /// registered `MoodleType`, and for players a `Nutrition`, a `Fitness`
@@ -279,6 +292,7 @@ impl<I> GameCharacter<I> {
         let player = kind == CharacterKind::Player;
         let body_damage = BodyDamage::new(sm, player);
         GameCharacter {
+            id: 0,
             kind,
             in_players: false,
             player_instance: false,
@@ -338,6 +352,9 @@ impl<I> GameCharacter<I> {
             max_weight_delta: 1.0,
             bleeding_level: 0,
             move_speed: 0.06,
+            state: state::StateMachineComponent::default(),
+            vars: state::CharacterVars::default(),
+            game_variables: pz_anim::MapVariableSource::new(),
         }
     }
 

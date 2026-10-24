@@ -520,7 +520,7 @@ impl CharacterItems {
     }
 }
 
-impl<I> GameCharacter<I> {
+impl<I: 'static> GameCharacter<I> {
     /// `getInventory().getCapacityWeight()`.
     pub fn capacity_weight(&self, sm: &ScriptManager, ctx: &dyn SimContext) -> f32 {
         self.items.inventory_weight(sm, ctx)

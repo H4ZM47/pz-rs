@@ -178,6 +178,22 @@ pub enum SimEvent {
     CallOnEat(String),
     /// `getNetworkCharacterAI().syncDamage()` / `syncVisuals()` on a server.
     SyncDamage,
+    /// `LuaEventManager.triggerEvent("OnAIStateChange", chr, current,
+    /// previous)`.
+    AiStateChange {
+        current: Option<crate::character::state::StateId>,
+        previous: Option<crate::character::state::StateId>,
+    },
+    /// `DoFootstepSound(type)`.
+    Footstep(String),
+    /// `IsoPlayer.playerVoiceSound(name)` with a name from data.
+    PlayerVoiceSoundNamed(String),
+    /// `Kill(killer)` from the `KilledByAttacker` animation event (the
+    /// killer by id).
+    Kill { attacker: Option<i32> },
+    /// `onKilled(killer, weapon, isGory)` (the subclass reaction, run by
+    /// the owner of the corpse code).
+    Killed { attacker: Option<i32> },
 }
 
 /// The singletons the simulation reads. Every method has the default a
