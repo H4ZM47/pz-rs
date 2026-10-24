@@ -14,8 +14,8 @@
 //! (Java collections), `getSoundByID(SoundMapKey)`.
 
 use super::{
-    get, handle_arg, key_list, list_arg, method, opt_str, opt_string_list, req_str, script_value, set, string_list, void,
-    IntoLua, ScriptHandle, ITEM_CLASS,
+    get, handle_arg, key_list, list_arg, method, opt_str, opt_string_list, req_str, script_value, set, string_list,
+    void, IntoLua, ScriptHandle, ITEM_CLASS,
 };
 use crate::bind_registry::{
     java_error, key_arg, key_value, AMMO_TYPE_CLASS, ITEM_BODY_LOCATION_CLASS, ITEM_TAG_CLASS, ITEM_TYPE_CLASS,
@@ -239,7 +239,8 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     });
     let s = sm.clone();
     method(&b, "canSpawnAsLoot", move |_, h| {
-        checked_extra(&s, h, |i| (&mut i.can_spawn_as_loot, &mut i.can_spawn_as_loot_checked_extra)).map(IntoLua::into_lua)
+        checked_extra(&s, h, |i| (&mut i.can_spawn_as_loot, &mut i.can_spawn_as_loot_checked_extra))
+            .map(IntoLua::into_lua)
     });
     let s = sm.clone();
     method(&b, "isCraftRecipeProduct", move |_, h| {
@@ -269,7 +270,10 @@ fn register_fields(b: &ClassBuilder) {
     get(b, "getPoisonPower", |i: &Item| i.poison_power as f32);
     get(b, "getHerbalistType", |i: &Item| i.herbalist_type.clone());
     get(b, "getItemType", |i: &Item| key_value(ITEM_TYPE_CLASS, i.item_type.as_ref()));
-    void(b, "setItemType", |c, h| { let k = key_arg(c, 1)?; h.write(|i: &mut Item| i.item_type = k) });
+    void(b, "setItemType", |c, h| {
+        let k = key_arg(c, 1)?;
+        h.write(|i: &mut Item| i.item_type = k)
+    });
     get(b, "getVisionModifier", |i: &Item| i.vision_modifier);
     get(b, "getHearingModifier", |i: &Item| i.hearing_modifier);
     get(b, "getStaticModel", |i: &Item| i.static_model.clone());
@@ -363,7 +367,10 @@ fn register_fields(b: &ClassBuilder) {
     set(b, "setCount", |i: &mut Item, v: i32| i.count = v);
     set(b, "setAlcoholic", |i: &mut Item, v: bool| i.alcoholic = v);
     get(b, "getEatType", |i: &Item| i.eat_type.clone());
-    void(b, "setAmmoType", |c, h| { let k = key_arg(c, 1)?; h.write(|i: &mut Item| i.ammo_type = k) });
+    void(b, "setAmmoType", |c, h| {
+        let k = key_arg(c, 1)?;
+        h.write(|i: &mut Item| i.ammo_type = k)
+    });
     get(b, "getDigType", |i: &Item| i.dig_type.clone());
     set(b, "setSoundRadius", |i: &mut Item, v: i32| i.sound_radius = v);
     get(b, "isCosmetic", |i: &Item| i.cosmetic);
@@ -415,7 +422,10 @@ fn register_fields(b: &ClassBuilder) {
     get(b, "isCantBeFrozen", |i: &Item| i.cant_be_frozen);
     get(b, "getItemConfig", |i: &Item| script_value(i.item_config.as_ref()));
     get(b, "getItemConfigKey", |i: &Item| i.item_config_key.clone());
-    void(b, "setItemConfig", |c, h| { let s = handle_arg(c, 1)?.map(|s| s.root); h.write(|i: &mut Item| i.item_config = s) });
+    void(b, "setItemConfig", |c, h| {
+        let s = handle_arg(c, 1)?.map(|s| s.root);
+        h.write(|i: &mut Item| i.item_config = s)
+    });
     set(b, "setCanBeForaged", |i: &mut Item, v: bool| i.can_be_foraged = v);
     set(b, "setDaysFresh", |i: &mut Item, v: i32| i.days_fresh = v);
     set(b, "setCanBandage", |i: &mut Item, v: bool| i.can_bandage = v);
@@ -427,7 +437,10 @@ fn register_fields(b: &ClassBuilder) {
     get(b, "isCanBarricade", |i: &Item| i.can_barricade);
     get(b, "isUseWhileEquipped", |i: &Item| i.use_while_equipped);
     set(b, "setDisappearOnUse", |i: &mut Item, v: bool| i.disappear_on_use = v);
-    void(b, "setBodyLocation", |c, h| { let k = key_arg(c, 1)?; h.write(|i: &mut Item| i.body_location = k) });
+    void(b, "setBodyLocation", |c, h| {
+        let k = key_arg(c, 1)?;
+        h.write(|i: &mut Item| i.body_location = k)
+    });
     get(b, "getPaletteChoices", |i: &Item| string_list(&i.palette_choices));
     get(b, "getPalettesStart", |i: &Item| i.palettes_start.clone());
     set(b, "setPalettesStart", |i: &mut Item, v: Option<String>| i.palettes_start = v);
@@ -480,7 +493,10 @@ fn register_fields(b: &ClassBuilder) {
     set(b, "setKnockBackOnNoDeath", |i: &mut Item, v: bool| i.knock_back_on_no_death = v);
     get(b, "getMinimumSwingTime", |i: &Item| i.minimum_swing_time);
     set(b, "setMinimumSwingTime", |i: &mut Item, v: f32| i.minimum_swing_time = v);
-    void(b, "setOtherHandRequire", |c, h| { let k = key_arg(c, 1)?; h.write(|i: &mut Item| i.other_hand_require = k) });
+    void(b, "setOtherHandRequire", |c, h| {
+        let k = key_arg(c, 1)?;
+        h.write(|i: &mut Item| i.other_hand_require = k)
+    });
     set(b, "setSplatBloodOnNoDeath", |i: &mut Item, v: bool| i.splat_blood_on_no_death = v);
     get(b, "isMultipleHitConditionAffected", |i: &Item| i.multiple_hit_condition_affected);
     set(b, "setMultipleHitConditionAffected", |i: &mut Item, v: bool| i.multiple_hit_condition_affected = v);

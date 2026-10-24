@@ -21,8 +21,8 @@ use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_scripts::math::{Vector2, Vector3};
 use pz_scripts::objects::definitions::{
-    ActionSoundTime, Color, EnergyDefinitionScript, EnergyType, FluidCategory, FluidDefinitionScript, FluidFilterScript,
-    FluidType, Metabolics, PoisonEffect, TimedActionScript,
+    ActionSoundTime, Color, EnergyDefinitionScript, EnergyType, FluidCategory, FluidDefinitionScript,
+    FluidFilterScript, FluidType, Metabolics, PoisonEffect, TimedActionScript,
 };
 use pz_scripts::objects::entity::item_config::ItemConfig;
 use pz_scripts::objects::items::ItemFilterScript;
@@ -90,7 +90,9 @@ pub fn vec3<T: 'static>(h: &ScriptHandle, get: fn(&T) -> Vector3, set: Option<fn
     Value::Object(Rc::new(VecView {
         dims: 3,
         get: Box::new(move || hg.read(|t: &T| get(t)).map(|v| [v.x, v.y, v.z])),
-        set: set.map(|s| -> VecSet { Box::new(move |v| hs.write(|t: &mut T| s(t, Vector3 { x: v[0], y: v[1], z: v[2] }))) }),
+        set: set.map(|s| -> VecSet {
+            Box::new(move |v| hs.write(|t: &mut T| s(t, Vector3 { x: v[0], y: v[1], z: v[2] })))
+        }),
     }))
 }
 
@@ -210,9 +212,10 @@ fn register_enums(thread: &mut Thread) {
     if let Some(b) = enum_once(thread, ACTION_SOUND_TIME_CLASS, names) {
         b.method("toString", |c| {
             let id = match c.arg(0) {
-                Value::Object(o) => {
-                    ActionSoundTime::ALL.iter().find(|t| action_sound_time_name(**t) == o.to_lua_string()).map(|t| t.id())
-                }
+                Value::Object(o) => ActionSoundTime::ALL
+                    .iter()
+                    .find(|t| action_sound_time_name(**t) == o.to_lua_string())
+                    .map(|t| t.id()),
                 _ => None,
             };
             Ok(c.push(id.into_lua()))
@@ -392,7 +395,10 @@ fn set_owner(a: &AttachmentRef, owner: Option<&ScriptHandle>) {
 }
 
 fn index_error(i: i32, n: usize) -> LuaError {
-    LuaError::Runtime { message: format!("Index {i} out of bounds for length {n}"), class: "java.lang.IndexOutOfBoundsException" }
+    LuaError::Runtime {
+        message: format!("Index {i} out of bounds for length {n}"),
+        class: "java.lang.IndexOutOfBoundsException",
+    }
 }
 
 fn register_model_script(thread: &mut Thread) {
@@ -416,7 +422,8 @@ fn register_model_script(thread: &mut Thread) {
     get(&b, "getAttachmentCount", |m: &ModelScript| m.attachment_count());
     method(&b, "getAttachment", |c, h| {
         let i = int_arg(c, 1);
-        let (a, n) = h.read(|m: &ModelScript| (usize::try_from(i).ok().and_then(|i| m.attachment(i)), m.attachment_count()))?;
+        let (a, n) =
+            h.read(|m: &ModelScript| (usize::try_from(i).ok().and_then(|i| m.attachment(i)), m.attachment_count()))?;
         match a {
             Some(a) => Ok(attachment_value(Some(&a), Some(h))),
             None => Err(index_error(i, n)),
@@ -442,7 +449,10 @@ fn register_model_script(thread: &mut Thread) {
         let a = attachment_arg(c, 2)?;
         let n = h.read(|m: &ModelScript| m.attachment_count())?;
         if i < 0 || i as usize > n {
-            return Err(LuaError::Runtime { message: format!("Index: {i}, Size: {n}"), class: "java.lang.IndexOutOfBoundsException" });
+            return Err(LuaError::Runtime {
+                message: format!("Index: {i}, Size: {n}"),
+                class: "java.lang.IndexOutOfBoundsException",
+            });
         }
         h.write(|m: &mut ModelScript| m.add_attachment_at(i as usize, a.clone()))?;
         set_owner(&a, Some(h));
@@ -497,7 +507,12 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
     set(&b, "setFemale", |m: &mut MannequinScript, v: bool| m.set_female(v));
     type Text = (&'static str, &'static str, fn(&MannequinScript) -> Option<&str>, fn(&mut MannequinScript, &str));
     let texts: [Text; 6] = [
-        ("getModelScriptName", "setModelScriptName", MannequinScript::model_script_name, MannequinScript::set_model_script_name),
+        (
+            "getModelScriptName",
+            "setModelScriptName",
+            MannequinScript::model_script_name,
+            MannequinScript::set_model_script_name,
+        ),
         ("getTexture", "setTexture", MannequinScript::texture, MannequinScript::set_texture),
         ("getAnimSet", "setAnimSet", MannequinScript::anim_set, MannequinScript::set_anim_set),
         ("getAnimState", "setAnimState", MannequinScript::anim_state, MannequinScript::set_anim_state),
@@ -522,13 +537,17 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
     get(&b, "getAnimationTime", |m: &SpriteModel| m.animation_time);
     set(&b, "setAnimationTime", |m: &mut SpriteModel, v: f32| m.animation_time = v);
     get(&b, "getRuntimeString", |m: &SpriteModel| m.runtime_string().map(str::to_string));
-    set(&b, "setRuntimeString", |m: &mut SpriteModel, v: Option<String>| m.set_runtime_string(v.as_deref().unwrap_or("")));
+    set(&b, "setRuntimeString", |m: &mut SpriteModel, v: Option<String>| {
+        m.set_runtime_string(v.as_deref().unwrap_or(""))
+    });
     get(&b, "getScale", |m: &SpriteModel| m.scale);
     set(&b, "setScale", |m: &mut SpriteModel, v: f32| m.scale = v);
     get_obj(&b, "getTranslate", |h, _: &SpriteModel| {
         vec3(h, |m: &SpriteModel| m.translate, Some(|m: &mut SpriteModel, v| m.translate = v))
     });
-    get_obj(&b, "getRotate", |h, _: &SpriteModel| vec3(h, |m: &SpriteModel| m.rotate, Some(|m: &mut SpriteModel, v| m.rotate = v)));
+    get_obj(&b, "getRotate", |h, _: &SpriteModel| {
+        vec3(h, |m: &SpriteModel| m.rotate, Some(|m: &mut SpriteModel, v| m.rotate = v))
+    });
     method(&b, "set", |c, h| {
         let other = super::handle_arg(c, 1)?.ok_or_else(super::npe)?;
         if !other.root.ptr_eq(&h.root) {
@@ -553,7 +572,9 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
 
     let b = expose_class(thread, "zombie.scripting.objects.TimedActionScript", Some(super::BASE_SCRIPT_OBJECT_CLASS));
     get(&b, "getName", |t: &TimedActionScript| t.name().to_string());
-    method(&b, "getFullType", |_, h| h.read(|t: &TimedActionScript| t.full_type().map_err(java_error))?.map(IntoLua::into_lua));
+    method(&b, "getFullType", |_, h| {
+        h.read(|t: &TimedActionScript| t.full_type().map_err(java_error))?.map(IntoLua::into_lua)
+    });
     get(&b, "getTime", |t: &TimedActionScript| t.time());
     get(&b, "isFaceObject", |t: &TimedActionScript| t.is_face_object());
     get(&b, "isCantSit", |t: &TimedActionScript| t.is_cant_sit());
@@ -565,10 +586,13 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
     get(&b, "getSound", |t: &TimedActionScript| t.sound().map(str::to_string));
     get(&b, "getCompletionSound", |t: &TimedActionScript| t.completion_sound().map(str::to_string));
     get(&b, "hasMuscleStrain", |t: &TimedActionScript| t.has_muscle_strain());
-    get(&b, "getSoundTime", |t: &TimedActionScript| enum_value(ACTION_SOUND_TIME_CLASS, action_sound_time_name(t.sound_time())));
+    get(&b, "getSoundTime", |t: &TimedActionScript| {
+        enum_value(ACTION_SOUND_TIME_CLASS, action_sound_time_name(t.sound_time()))
+    });
     get(&b, "getMetabolics", |t: &TimedActionScript| enum_value(METABOLICS_CLASS, t.metabolics().name()));
 
-    let b = expose_class(thread, "zombie.scripting.objects.FluidDefinitionScript", Some(super::BASE_SCRIPT_OBJECT_CLASS));
+    let b =
+        expose_class(thread, "zombie.scripting.objects.FluidDefinitionScript", Some(super::BASE_SCRIPT_OBJECT_CLASS));
     type FluidF32 = fn(&FluidDefinitionScript) -> f32;
     let floats: [(&str, FluidF32); 15] = [
         ("getStressChange", FluidDefinitionScript::stress_change),
@@ -599,10 +623,12 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
     get(&b, "getDisplayName", |f: &FluidDefinitionScript| f.display_name().to_string());
     get(&b, "getColor", |f: &FluidDefinitionScript| color_value(f.color()));
     get(&b, "hasPropertiesSet", |f: &FluidDefinitionScript| f.has_properties_set());
-    get(&b, "getPoisonMaxEffect", |f: &FluidDefinitionScript| enum_value(POISON_EFFECT_CLASS, f.poison_max_effect().name()));
+    get(&b, "getPoisonMaxEffect", |f: &FluidDefinitionScript| {
+        enum_value(POISON_EFFECT_CLASS, f.poison_max_effect().name())
+    });
     get(&b, "getCategories", |f: &FluidDefinitionScript| {
         let list = f.categories().iter().map(|c| enum_value(FLUID_CATEGORY_CLASS, c.name())).collect();
-        Value::Object(Rc::new(crate::bind_core::JavaList(list)))
+        super::list_value(list)
     });
     get_obj(&b, "getBlendWhitelist", |h, f: &FluidDefinitionScript| match f.blend_whitelist() {
         Some(_) => h.child(FLUID_FILTER_CLASS, "blendWhitelist", |f: &FluidDefinitionScript| f.blend_whitelist()),
@@ -613,7 +639,8 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
         None => Value::Nil,
     });
 
-    let b = expose_class(thread, "zombie.scripting.objects.EnergyDefinitionScript", Some(super::BASE_SCRIPT_OBJECT_CLASS));
+    let b =
+        expose_class(thread, "zombie.scripting.objects.EnergyDefinitionScript", Some(super::BASE_SCRIPT_OBJECT_CLASS));
     get(&b, "getModID", |e: &EnergyDefinitionScript| e.mod_id().map(str::to_string));
     get(&b, "isVanilla", |e: &EnergyDefinitionScript| e.is_vanilla());
     get(&b, "getExistsAsVanilla", |e: &EnergyDefinitionScript| e.exists_as_vanilla());

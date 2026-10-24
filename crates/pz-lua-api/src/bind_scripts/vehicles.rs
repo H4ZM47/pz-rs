@@ -9,7 +9,6 @@
 
 use super::models::{attachment_arg, vec2, vec3, MODEL_ATTACHMENT_CLASS};
 use super::{get, get_obj, method, opt_str, opt_string_list, set, void, IntoLua, ScriptHandle};
-use crate::bind_core::JavaList;
 use crate::bind_registry::java_error;
 use crate::expose::{expose_class, int_arg, num_arg};
 use pz_kahlua::{LuaError, NativeCall, Thread, Value};
@@ -39,7 +38,10 @@ fn index(i: i32) -> Option<usize> {
 }
 
 fn out_of_bounds(i: i32, n: usize) -> LuaError {
-    LuaError::Runtime { message: format!("Index {i} out of bounds for length {n}"), class: "java.lang.IndexOutOfBoundsException" }
+    LuaError::Runtime {
+        message: format!("Index {i} out of bounds for length {n}"),
+        class: "java.lang.IndexOutOfBoundsException",
+    }
 }
 
 /// `get(i)` on a list of `n`: the value, or Java's exception.
@@ -51,21 +53,30 @@ fn checked(i: i32, n: usize, v: impl FnOnce(usize) -> Value) -> Result<Value, Lu
 }
 
 fn model_value(h: &ScriptHandle, i: usize) -> Value {
-    h.child_mut(MODEL_CLASS, &format!("model{i}"), move |v: &VehicleScript| v.models().get(i), move |v: &mut VehicleScript| {
-        v.models_mut().get_mut(i)
-    })
+    h.child_mut(
+        MODEL_CLASS,
+        &format!("model{i}"),
+        move |v: &VehicleScript| v.models().get(i),
+        move |v: &mut VehicleScript| v.models_mut().get_mut(i),
+    )
 }
 
 fn part_value(h: &ScriptHandle, i: usize) -> Value {
-    h.child_mut(PART_CLASS, &format!("part{i}"), move |v: &VehicleScript| v.parts().get(i), move |v: &mut VehicleScript| {
-        v.parts_mut().get_mut(i)
-    })
+    h.child_mut(
+        PART_CLASS,
+        &format!("part{i}"),
+        move |v: &VehicleScript| v.parts().get(i),
+        move |v: &mut VehicleScript| v.parts_mut().get_mut(i),
+    )
 }
 
 fn area_value(h: &ScriptHandle, i: usize) -> Value {
-    h.child_mut(AREA_CLASS, &format!("area{i}"), move |v: &VehicleScript| v.areas().get(i), move |v: &mut VehicleScript| {
-        v.areas_mut().get_mut(i)
-    })
+    h.child_mut(
+        AREA_CLASS,
+        &format!("area{i}"),
+        move |v: &VehicleScript| v.areas().get(i),
+        move |v: &mut VehicleScript| v.areas_mut().get_mut(i),
+    )
 }
 
 fn shape_value(h: &ScriptHandle, i: usize) -> Value {
@@ -182,11 +193,13 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     get(&b, "getForcedVal", |v: &VehicleScript| v.forced_val());
     set(&b, "setForcedVal", |v: &mut VehicleScript, n: f32| v.set_forced_val(n));
     get(&b, "getEngineRPMType", |v: &VehicleScript| v.engine_rpm_type().to_string());
-    set(&b, "setEngineRPMType", |v: &mut VehicleScript, t: Option<String>| v.set_engine_rpm_type(t.as_deref().unwrap_or("null")));
+    set(&b, "setEngineRPMType", |v: &mut VehicleScript, t: Option<String>| {
+        v.set_engine_rpm_type(t.as_deref().unwrap_or("null"))
+    });
     get(&b, "getOffroadEfficiency", |v: &VehicleScript| v.offroad_efficiency());
     set(&b, "setOffroadEfficiency", |v: &mut VehicleScript, n: f32| v.set_offroad_efficiency(n));
     get(&b, "getCrawlOffsets", |v: &VehicleScript| {
-        Value::Object(Rc::new(JavaList(v.crawl_offsets().iter().map(|f| Value::Num(*f as f64)).collect())))
+        super::list_value(v.crawl_offsets().iter().map(|f| Value::Num(*f as f64)).collect())
     });
     get(&b, "getAnimalTrailerSize", |v: &VehicleScript| v.animal_trailer_size());
     get(&b, "getZombieType", |v: &VehicleScript| opt_string_list(v.zombie_type()));
@@ -257,19 +270,40 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         Ok(i.map(|i| model_value(h, i)).unwrap_or_default())
     });
     get(&b, "getPartCount", |v: &VehicleScript| v.part_count());
-    indexed(&b, "getPart", Some("getPartById"), VehicleScript::part_count, |v, id| index(v.index_of_part_by_id(id)), part_value);
+    indexed(
+        &b,
+        "getPart",
+        Some("getPartById"),
+        VehicleScript::part_count,
+        |v, id| index(v.index_of_part_by_id(id)),
+        part_value,
+    );
     method(&b, "getIndexOfPartById", |c, h| {
         let id = id_arg(c);
         h.read(|v: &VehicleScript| v.index_of_part_by_id(id.as_deref()).into_lua())
     });
     get(&b, "getAreaCount", |v: &VehicleScript| v.area_count());
-    indexed(&b, "getArea", Some("getAreaById"), VehicleScript::area_count, |v, id| index(v.index_of_area_by_id(id)), area_value);
+    indexed(
+        &b,
+        "getArea",
+        Some("getAreaById"),
+        VehicleScript::area_count,
+        |v, id| index(v.index_of_area_by_id(id)),
+        area_value,
+    );
     method(&b, "getIndexOfAreaById", |c, h| {
         let id = id_arg(c);
         h.read(|v: &VehicleScript| v.index_of_area_by_id(id.as_deref()).into_lua())
     });
     get(&b, "getWheelCount", |v: &VehicleScript| v.wheel_count());
-    indexed(&b, "getWheel", Some("getWheelById"), VehicleScript::wheel_count, |v, id| index(v.index_of_wheel_by_id(id)), wheel_value);
+    indexed(
+        &b,
+        "getWheel",
+        Some("getWheelById"),
+        VehicleScript::wheel_count,
+        |v, id| index(v.index_of_wheel_by_id(id)),
+        wheel_value,
+    );
     method(&b, "getIndexOfWheelById", |c, h| {
         let id = id_arg(c);
         h.read(|v: &VehicleScript| v.index_of_wheel_by_id(id.as_deref()).into_lua())
@@ -342,9 +376,12 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
                 index(i).filter(|i| *i < n).ok_or_else(|| out_of_bounds(i, n))?
             }
             v => {
-                let id = super::handle_arg(c, 1)?.and_then(|a| a.read(|a: &pz_scripts::objects::models::ModelAttachment| a.id().to_string()).ok());
+                let id = super::handle_arg(c, 1)?
+                    .and_then(|a| a.read(|a: &pz_scripts::objects::models::ModelAttachment| a.id().to_string()).ok());
                 let _ = v;
-                match id.and_then(|id| h.read(|v: &VehicleScript| v.attachments.iter().position(|a| a.id() == id)).ok().flatten()) {
+                match id.and_then(|id| {
+                    h.read(|v: &VehicleScript| v.attachments.iter().position(|a| a.id() == id)).ok().flatten()
+                }) {
                     Some(i) => i,
                     None => return Ok(()),
                 }
@@ -374,7 +411,8 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     method(&b, "getModelById", |c, h| {
         let id = opt_str(c, 1);
         let i = h.read(|p: &Part| p.models.as_ref().and_then(|m| m.iter().position(|m| m.id == id)))?;
-        Ok(i.map(|i| h.child(MODEL_CLASS, &format!("model{i}"), move |p: &Part| p.models.as_ref()?.get(i))).unwrap_or_default())
+        Ok(i.map(|i| h.child(MODEL_CLASS, &format!("model{i}"), move |p: &Part| p.models.as_ref()?.get(i)))
+            .unwrap_or_default())
     });
 
     let b = expose_class(thread, MODEL_CLASS, None);
@@ -424,7 +462,8 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     method(&b, "getPositionById", |c, h| {
         let id = opt_str(c, 1);
         let i = h.read(|p: &Passenger| p.positions.iter().position(|pos| pos.id.is_some() && pos.id == id))?;
-        Ok(i.map(|i| h.child(POSITION_CLASS, &format!("position{i}"), move |p: &Passenger| p.positions.get(i))).unwrap_or_default())
+        Ok(i.map(|i| h.child(POSITION_CLASS, &format!("position{i}"), move |p: &Passenger| p.positions.get(i)))
+            .unwrap_or_default())
     });
 
     let b = expose_class(thread, POSITION_CLASS, None);

@@ -28,7 +28,10 @@ mod vehicles;
 
 use crate::bind_core::JavaList;
 use crate::bind_registry::{java_error, key_arg, key_value};
-use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, global, int_arg, num_arg, str_arg, this, ClassBuilder, JavaEnum, ListView};
+use crate::expose::{
+    bool_arg, enum_value, expose_class, expose_enum, global, int_arg, num_arg, str_arg, this, ClassBuilder, JavaEnum,
+    ListView,
+};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_scripts::objects::entity::components::crafting::{CraftRecipe, CraftRecipeComponentScript};
@@ -247,7 +250,8 @@ impl ScriptHandle {
             let root = self.root.try_borrow().map_err(|_| busy())?;
             return Ok(f(&*root));
         }
-        self.read_any(|a| cast::<CraftRecipe>(a).map(|r| f(r)))?.ok_or_else(|| wrong_type::<BaseScriptObject>(self.class))
+        self.read_any(|a| cast::<CraftRecipe>(a).map(|r| f(r)))?
+            .ok_or_else(|| wrong_type::<BaseScriptObject>(self.class))
     }
 
     pub fn script_mut<R>(&self, f: impl FnOnce(&mut dyn ScriptObject) -> R) -> LuaResult<R> {
@@ -255,7 +259,8 @@ impl ScriptHandle {
             let mut root = self.root.try_borrow_mut().map_err(|_| busy())?;
             return Ok(f(&mut *root));
         }
-        self.write_any(|a| cast_mut::<CraftRecipe>(a).map(|r| f(r)))?.ok_or_else(|| wrong_type::<BaseScriptObject>(self.class))
+        self.write_any(|a| cast_mut::<CraftRecipe>(a).map(|r| f(r)))?
+            .ok_or_else(|| wrong_type::<BaseScriptObject>(self.class))
     }
 
     /// The `BaseScriptObject` state of a script or component.
@@ -368,14 +373,19 @@ pub fn script_value(r: Option<&ScriptRef>) -> Value {
     canonical(ScriptHandle::new(r.clone(), class))
 }
 
+/// A `java.util.ArrayList` holding `items`.
+pub fn list_value(items: Vec<Value>) -> Value {
+    Value::Object(Rc::new(JavaList(items)))
+}
+
 /// An `ArrayList` of scripts.
 pub fn script_list<'a>(scripts: impl IntoIterator<Item = &'a ScriptRef>) -> Value {
-    Value::Object(Rc::new(JavaList(scripts.into_iter().map(|s| script_value(Some(s))).collect())))
+    list_value(scripts.into_iter().map(|s| script_value(Some(s))).collect())
 }
 
 /// An `ArrayList<String>`.
 pub fn string_list<S: AsRef<str>>(items: impl IntoIterator<Item = S>) -> Value {
-    Value::Object(Rc::new(JavaList(items.into_iter().map(|s| Value::from(s.as_ref())).collect())))
+    list_value(items.into_iter().map(|s| Value::from(s.as_ref())).collect())
 }
 
 /// A list field that may be `null`.
@@ -454,11 +464,11 @@ fn register_map(thread: &mut Thread) {
     });
     b.method("keySet", |c| {
         let keys = map(c, |m| m.iter().map(|(k, _)| k.clone()).collect())?;
-        Ok(c.push(Value::Object(Rc::new(JavaList(keys)))))
+        Ok(c.push(list_value(keys)))
     });
     b.method("values", |c| {
         let vals = map(c, |m| m.iter().map(|(_, v)| v.clone()).collect())?;
-        Ok(c.push(Value::Object(Rc::new(JavaList(vals)))))
+        Ok(c.push(list_value(vals)))
     });
     b.method("toString", |c| {
         let s = map(c, |m| JavaMap(m.to_vec()).to_lua_string())?;
@@ -600,7 +610,11 @@ pub fn get_obj<T: 'static>(b: &ClassBuilder, name: &str, f: impl Fn(&ScriptHandl
 }
 
 /// A method with arguments: `f(call, handle)`.
-pub fn method(b: &ClassBuilder, name: &str, f: impl Fn(&mut NativeCall<'_>, &ScriptHandle) -> LuaResult<Value> + 'static) {
+pub fn method(
+    b: &ClassBuilder,
+    name: &str,
+    f: impl Fn(&mut NativeCall<'_>, &ScriptHandle) -> LuaResult<Value> + 'static,
+) {
     b.method(name, move |c| {
         let h = this_handle(c)?;
         let v = f(c, &h)?;
@@ -773,7 +787,7 @@ fn register_script_type(thread: &mut Thread) {
     let b = expose_enum(thread, SCRIPT_TYPE_CLASS, &names);
     b.static_fn("GetEnumListLua", |c| {
         let list: Vec<Value> = ScriptType::enum_list_lua().into_iter().map(script_type_value).collect();
-        Ok(c.push(Value::Object(Rc::new(JavaList(list)))))
+        Ok(c.push(list_value(list)))
     });
     fn this_type(c: &NativeCall<'_>) -> LuaResult<ScriptType> {
         script_type_arg(c, 0).ok_or_else(|| LuaError::runtime("Expected ScriptType"))
@@ -813,7 +827,7 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     method(&b, "debugString", |_, h| h.base(|b| b.debug_string().into_lua()));
     method(&b, "getLoadedScriptBodyCount", |_, h| h.base(|b| b.loaded_script_body_count().into_lua()));
     method(&b, "getLoadedScriptBodies", |_, h| {
-        h.base(|b| Value::Object(Rc::new(JavaList(b.loaded_script_bodies().iter().map(|s| s.as_deref().into_lua()).collect()))))
+        h.base(|b| list_value(b.loaded_script_bodies().iter().map(|s| s.as_deref().into_lua()).collect()))
     });
     method(&b, "getScriptLines", |_, h| {
         h.base(|b| {
@@ -827,7 +841,7 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let mut more = Vec::new();
         h.base(|b| b.all_script_lines(&mut more))?;
         lines.extend(more.into_iter().map(Value::from));
-        Ok(Value::Object(Rc::new(JavaList(lines))))
+        Ok(list_value(lines))
     });
     method(&b, "getBodyScriptLines", |c, h| {
         let index = int_arg(c, 1);
@@ -835,7 +849,7 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let mut more = Vec::new();
         h.base(|b| b.body_script_lines(index, &mut more))?;
         lines.extend(more.into_iter().map(Value::from));
-        Ok(Value::Object(Rc::new(JavaList(lines))))
+        Ok(list_value(lines))
     });
     void(&b, "resetLoadedScriptBodies", |_, h| h.base_mut(|b| b.reset_loaded_script_bodies()));
     void(&b, "addLoadedScriptBody", |c, h| {
@@ -877,7 +891,10 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     b.method("getVersion", |c| {
         let h = this_handle(c)?;
         let simple = crate::expose::simple_name(h.class);
-        Err(LuaError::Runtime { message: format!("Not implemented. class = {simple}"), class: "java.lang.RuntimeException" })
+        Err(LuaError::Runtime {
+            message: format!("Not implemented. class = {simple}"),
+            class: "java.lang.RuntimeException",
+        })
     });
     b.method("toString", |c| {
         let s = this_handle(c)?.to_lua_string();
@@ -899,7 +916,9 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let b = expose_class(thread, GAME_ENTITY_SCRIPT_CLASS, Some(BASE_SCRIPT_OBJECT_CLASS));
     get(&b, "getName", |e: &GameEntityScript| e.name().map(str::to_string));
     get(&b, "getModuleName", |e: &GameEntityScript| e.module_name());
-    method(&b, "getFullName", |_, h| h.read(|e: &GameEntityScript| e.full_name().map_err(java_error))?.map(IntoLua::into_lua));
+    method(&b, "getFullName", |_, h| {
+        h.read(|e: &GameEntityScript| e.full_name().map_err(java_error))?.map(IntoLua::into_lua)
+    });
     get(&b, "getModID", |e: &GameEntityScript| e.mod_id().map(str::to_string));
     get(&b, "getExistsAsVanilla", |e: &GameEntityScript| e.exists_as_vanilla());
     get(&b, "getFileAbsPath", |e: &GameEntityScript| e.file_abs_path().map(str::to_string));
@@ -923,11 +942,12 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     method(&b, "getComponentScripts", |_, h| {
         let n = h.read(|e: &GameEntityScript| e.component_scripts().len())?;
         let list = (0..n).map(|i| component_value(h, i)).collect::<LuaResult<Vec<_>>>()?;
-        Ok(Value::Object(Rc::new(JavaList(list))))
+        Ok(list_value(list))
     });
     method(&b, "getComponentScriptFor", |c, h| {
         let t = component_type_arg(c, 1);
-        let i = h.read(|e: &GameEntityScript| e.component_scripts().iter().position(|s| Some(s.component_type()) == t))?;
+        let i =
+            h.read(|e: &GameEntityScript| e.component_scripts().iter().position(|s| Some(s.component_type()) == t))?;
         match i {
             Some(i) => component_value(h, i),
             None => Ok(Value::Nil),
@@ -956,7 +976,9 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
             .map_err(java_error)
     });
     method(&b, "getComponentType", |_, h| {
-        let t = h.read_any(|a| a.downcast_ref::<Box<dyn ComponentScript>>().map(|c| c.component_type()))?.ok_or_else(npe)?;
+        let t = h
+            .read_any(|a| a.downcast_ref::<Box<dyn ComponentScript>>().map(|c| c.component_type()))?
+            .ok_or_else(npe)?;
         Ok(enum_value(COMPONENT_TYPE_CLASS, t.name()))
     });
     let b = expose_class(thread, CRAFT_RECIPE_COMPONENT_CLASS, Some(COMPONENT_SCRIPT_CLASS));
@@ -1116,7 +1138,9 @@ pub fn get_craft_recipe(sm: &ScriptManager, name: &str) -> Value {
     }
     let Some(e) = sm.get_script(ScriptType::Entity, name) else { return Value::Nil };
     let has = e.downcast::<GameEntityScript>().is_some_and(|g| {
-        g.borrow().component::<CraftRecipeComponentScript>(ComponentType::CraftRecipe).is_some_and(|c| c.craft_recipe().is_some())
+        g.borrow()
+            .component::<CraftRecipeComponentScript>(ComponentType::CraftRecipe)
+            .is_some_and(|c| c.craft_recipe().is_some())
     });
     if has {
         entity_recipe_value(&e)
@@ -1188,7 +1212,7 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     b.method("getAllFixing", move |c| {
         let mut list = list_arg(c, 1);
         list.extend(s.collection(ScriptType::Fixing).get_all_scripts().iter().map(|f| script_value(Some(f))));
-        Ok(c.push(Value::Object(Rc::new(JavaList(list)))))
+        Ok(c.push(list_value(list)))
     });
     let s = sm.clone();
     b.method("getScriptsForType", move |c| {
@@ -1206,7 +1230,7 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     let s = sm.clone();
     b.method("getAllBuildableRecipes", move |c| {
         let list: Vec<Value> = buildable_recipes(&s).iter().map(|(e, _)| entity_recipe_value(e)).collect();
-        Ok(c.push(Value::Object(Rc::new(JavaList(list)))))
+        Ok(c.push(list_value(list)))
     });
     let s = sm.clone();
     b.method("getBuildableRecipe", move |c| {
@@ -1291,7 +1315,7 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
             .filter(|i| i.downcast::<Item>().is_some_and(|i| i.borrow().has_tag(tag.as_ref())))
             .map(|i| script_value(Some(i)))
             .collect();
-        Ok(c.push(Value::Object(Rc::new(JavaList(items)))))
+        Ok(c.push(list_value(items)))
     });
     let s = sm.clone();
     b.method("getItemsByType", move |c| {
@@ -1371,7 +1395,7 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
                 out.push(script_value(Some(&r)));
             }
         }
-        Ok(c.push(Value::Object(Rc::new(JavaList(out)))))
+        Ok(c.push(list_value(out)))
     });
     let s = sm.clone();
     b.method("getItemTypeForClothingItem", move |c| {
@@ -1381,7 +1405,8 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     let s = sm.clone();
     b.method("getItemForClothingItem", move |c| {
         let name = opt_str(c, 1).unwrap_or_default();
-        let item = pz_scripts::objects::items::get_item_type_for_clothing_item(&s, &name).and_then(|t| s.find_item(&t, true));
+        let item =
+            pz_scripts::objects::items::get_item_type_for_clothing_item(&s, &name).and_then(|t| s.find_item(&t, true));
         Ok(c.push(script_value(item.as_ref())))
     });
     let s = sm.clone();
@@ -1443,7 +1468,7 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
 
 /// A `Set` of registry keys as an `ArrayList` of key objects.
 pub fn key_list(class: &'static str, keys: &pz_scripts::objects::items::KeySet) -> Value {
-    Value::Object(Rc::new(JavaList(keys.iter().map(|k| key_value(class, k)).collect())))
+    list_value(keys.iter().map(|k| key_value(class, k)).collect())
 }
 
 #[cfg(test)]
@@ -1478,7 +1503,8 @@ mod tests {
     fn thread(sm: Rc<ScriptManager>) -> Thread {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
-        run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end").unwrap();
+        run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end")
+            .unwrap();
         crate::bind_core::register(&mut t, None, Rc::new(RefCell::new(pz_core::core::Core::default())));
         crate::bind_registry::register(&mut t, sm.clone());
         register(&mut t, sm);

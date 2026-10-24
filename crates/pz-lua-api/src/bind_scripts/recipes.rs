@@ -11,7 +11,6 @@
 //! PerkFactory)).
 
 use super::{get, get_obj, method, opt_str, opt_string_list, set, string_list, void, IntoLua, JavaMap, ScriptHandle};
-use crate::bind_core::JavaList;
 use crate::bind_registry::java_error;
 use crate::expose::{expose_class, int_arg};
 use pz_kahlua::{Thread, Value};
@@ -33,11 +32,16 @@ pub const FIXER_SKILL_CLASS: &str = "zombie.scripting.objects.Fixing$FixerSkill"
 pub const UNIQUE_RECIPE_CLASS: &str = "zombie.scripting.objects.UniqueRecipe";
 
 fn list(values: Vec<Value>) -> Value {
-    Value::Object(Rc::new(JavaList(values)))
+    super::list_value(values)
 }
 
 fn source_value(h: &ScriptHandle, i: usize) -> Value {
-    h.child_mut(SOURCE_CLASS, &format!("source{i}"), move |r: &Recipe| r.source.get(i), move |r: &mut Recipe| r.source.get_mut(i))
+    h.child_mut(
+        SOURCE_CLASS,
+        &format!("source{i}"),
+        move |r: &Recipe| r.source.get(i),
+        move |r: &mut Recipe| r.source.get_mut(i),
+    )
 }
 
 fn item_recipe_value(h: &ScriptHandle, name: &str) -> Value {
@@ -96,7 +100,9 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
         Ok(i.map(|i| source_value(h, i)).unwrap_or_default())
     });
     get_obj(&b, "getResult", |h, r: &Recipe| match r.result() {
-        Some(_) => h.child_mut(RESULT_CLASS, "result", |r: &Recipe| r.result.as_ref(), |r: &mut Recipe| r.result.as_mut()),
+        Some(_) => {
+            h.child_mut(RESULT_CLASS, "result", |r: &Recipe| r.result.as_ref(), |r: &mut Recipe| r.result.as_mut())
+        }
         None => Value::Nil,
     });
     get_obj(&b, "getResults", |h, r: &Recipe| {

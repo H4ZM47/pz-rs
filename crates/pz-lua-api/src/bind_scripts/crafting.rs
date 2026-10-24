@@ -19,16 +19,15 @@
 //! name in `getModName` (TODO(ChooseGameInfo)).
 
 use super::{
-    get, handle_arg, method, opt_str, script_list, script_value, set, string_list, void, IntoLua,
-    ScriptHandle, CRAFT_RECIPE_CLASS,
+    get, handle_arg, method, opt_str, script_list, script_value, set, string_list, void, IntoLua, ScriptHandle,
+    CRAFT_RECIPE_CLASS,
 };
-use crate::bind_core::JavaList;
 use crate::bind_registry::{key_value, ITEM_TAG_CLASS};
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg};
 use pz_kahlua::{LuaResult, NativeCall, Thread, Value};
 use pz_scripts::objects::entity::components::crafting::{
-    CraftRecipe, FluidMatchMode, InputFlag, InputScript, ItemApplyMode, OutputFlag, OutputScript,
-    RequiredSkill, XpAward,
+    CraftRecipe, FluidMatchMode, InputFlag, InputScript, ItemApplyMode, OutputFlag, OutputScript, RequiredSkill,
+    XpAward,
 };
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::entity::ComponentType;
@@ -48,15 +47,18 @@ pub const FLUID_MATCH_MODE_CLASS: &str = "zombie.entity.components.crafting.Flui
 pub const RESOURCE_TYPE_CLASS: &str = "zombie.entity.components.resources.ResourceType";
 
 fn list(values: Vec<Value>) -> Value {
-    Value::Object(Rc::new(JavaList(values)))
+    super::list_value(values)
 }
 
 /// Line `i` of a recipe (an `InputScript` or `OutputScript`).
 fn io_value(recipe: &ScriptHandle, i: usize) -> LuaResult<Value> {
     let input = recipe.read(|r: &CraftRecipe| r.io_lines().get(i).map(|io| io.as_input().is_some()))?;
     Ok(match input {
-        Some(true) => recipe.child(INPUT_SCRIPT_CLASS, &format!("io{i}"), move |r: &CraftRecipe| r.io_lines().get(i)?.as_input()),
-        Some(false) => recipe.child(OUTPUT_SCRIPT_CLASS, &format!("io{i}"), move |r: &CraftRecipe| r.io_lines().get(i)?.as_output()),
+        Some(true) => {
+            recipe.child(INPUT_SCRIPT_CLASS, &format!("io{i}"), move |r: &CraftRecipe| r.io_lines().get(i)?.as_input())
+        }
+        Some(false) => recipe
+            .child(OUTPUT_SCRIPT_CLASS, &format!("io{i}"), move |r: &CraftRecipe| r.io_lines().get(i)?.as_output()),
         None => Value::Nil,
     })
 }
@@ -85,16 +87,30 @@ fn line_index(h: &ScriptHandle) -> LuaResult<Option<(ScriptHandle, usize)>> {
     Ok(i.map(|i| (recipe, i)))
 }
 
-fn skill_list(h: &ScriptHandle, field: &'static str, f: fn(&CraftRecipe) -> Option<&Vec<RequiredSkill>>) -> LuaResult<Value> {
+fn skill_list(
+    h: &ScriptHandle,
+    field: &'static str,
+    f: fn(&CraftRecipe) -> Option<&Vec<RequiredSkill>>,
+) -> LuaResult<Value> {
     let n = h.read(|r: &CraftRecipe| f(r).map_or(0, Vec::len))?;
     Ok(list((0..n).map(|i| skill_value(h, field, f, i)).collect()))
 }
 
-fn skill_value(h: &ScriptHandle, field: &'static str, f: fn(&CraftRecipe) -> Option<&Vec<RequiredSkill>>, i: usize) -> Value {
+fn skill_value(
+    h: &ScriptHandle,
+    field: &'static str,
+    f: fn(&CraftRecipe) -> Option<&Vec<RequiredSkill>>,
+    i: usize,
+) -> Value {
     h.child(REQUIRED_SKILL_CLASS, &format!("{field}{i}"), move |r: &CraftRecipe| f(r)?.get(i))
 }
 
-fn skill_at(c: &NativeCall<'_>, h: &ScriptHandle, field: &'static str, f: fn(&CraftRecipe) -> Option<&Vec<RequiredSkill>>) -> LuaResult<Value> {
+fn skill_at(
+    c: &NativeCall<'_>,
+    h: &ScriptHandle,
+    field: &'static str,
+    f: fn(&CraftRecipe) -> Option<&Vec<RequiredSkill>>,
+) -> LuaResult<Value> {
     let i = int_arg(c, 1);
     let n = h.read(|r: &CraftRecipe| f(r).map_or(0, Vec::len))?;
     match usize::try_from(i).ok().filter(|i| *i < n) {
@@ -340,14 +356,17 @@ fn register_input(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     get(&b, "getItemApplyMode", |i: &InputScript| enum_value(ITEM_APPLY_MODE_CLASS, i.item_apply_mode().name()));
     get(&b, "getFluidMatchMode", |i: &InputScript| enum_value(FLUID_MATCH_MODE_CLASS, i.fluid_match_mode().name()));
     get(&b, "getItems", |i: &InputScript| string_list(i.loaded_items()));
-    get(&b, "getItemTags", |i: &InputScript| list(i.item_tags().iter().map(|k| key_value(ITEM_TAG_CLASS, k.as_ref())).collect()));
+    get(&b, "getItemTags", |i: &InputScript| {
+        list(i.item_tags().iter().map(|k| key_value(ITEM_TAG_CLASS, k.as_ref())).collect())
+    });
     get(&b, "getPossibleInputItems", |i: &InputScript| script_list(i.possible_input_items()));
     let s = sm.clone();
     method(&b, "hasPossibleFrozenFoodInputItems", move |_, h| h.read(|i: &InputScript| frozen_food(&s, i).into_lua()));
     let s = sm.clone();
     method(&b, "dontAllowFrozenItem", move |_, h| {
         h.read(|i: &InputScript| {
-            (i.resource_type() == ResourceType::Item && frozen_food(&s, i) && !i.has_flag(InputFlag::AllowFrozenItem)).into_lua()
+            (i.resource_type() == ResourceType::Item && frozen_food(&s, i) && !i.has_flag(InputFlag::AllowFrozenItem))
+                .into_lua()
         })
     });
     get(&b, "hasCreateToItem", |i: &InputScript| i.has_create_to_item());
@@ -479,7 +498,9 @@ fn register_output(thread: &mut Thread) {
         let Some((recipe, i)) = line_index(h)? else { return Ok(false.into_lua()) };
         recipe.read(|r: &CraftRecipe| {
             let out = r.io_lines()[i].as_output();
-            out.and_then(|o| r.output_mapper_for(o)).is_some_and(|m| m.result_items().iter().any(|s| s.ptr_eq(&item.root))).into_lua()
+            out.and_then(|o| r.output_mapper_for(o))
+                .is_some_and(|m| m.result_items().iter().any(|s| s.ptr_eq(&item.root)))
+                .into_lua()
         })
     });
 }
