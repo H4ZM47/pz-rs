@@ -546,8 +546,9 @@ pub fn register(thread: &mut Thread, fs: Rc<RefCell<GameFs>>, events: EventManag
     global(thread, "transformIntoKahluaTable", |c| {
         let t = TableRef::new();
         if let Value::Object(o) = c.arg(0) {
-            if let Some(m) = o.as_any().downcast_ref::<crate::bind_java_util::JavaMap>() {
-                for (k, v) in m.ordered() {
+            // Entries are copied as they are (no Integer -> number conversion).
+            if let Some(entries) = map_entries(o.as_ref()) {
+                for (k, v) in entries {
                     t.rawset(k, v);
                 }
             }
@@ -876,6 +877,34 @@ fn register_clipboard(thread: &mut Thread) {
         let s = CLIPBOARD.with(|b| b.borrow().clone());
         Ok(c.push(s))
     });
+}
+
+/// Reads a Java map object's entries for `transformIntoKahluaTable`;
+/// `None` when the object is not a map this source knows.
+pub type MapSource = fn(&dyn LuaObject) -> Option<Vec<(Value, Value)>>;
+
+thread_local! {
+    static MAP_SOURCES: RefCell<Vec<MapSource>> = RefCell::new(vec![java_map_entries as MapSource]);
+}
+
+fn java_map_entries(o: &dyn LuaObject) -> Option<Vec<(Value, Value)>> {
+    o.as_any().downcast_ref::<crate::bind_java_util::JavaMap>().map(|m| m.ordered())
+}
+
+/// Lets another binding's map objects (for example a view onto an engine
+/// `HashMap`) be passed to `transformIntoKahluaTable`.
+pub fn register_map_source(f: MapSource) {
+    MAP_SOURCES.with(|s| {
+        let mut s = s.borrow_mut();
+        if !s.iter().any(|g| *g as usize == f as usize) {
+            s.push(f);
+        }
+    });
+}
+
+fn map_entries(o: &dyn LuaObject) -> Option<Vec<(Value, Value)>> {
+    let sources = MAP_SOURCES.with(|s| s.borrow().clone());
+    sources.iter().find_map(|f| f(o))
 }
 
 fn npe() -> LuaError {
