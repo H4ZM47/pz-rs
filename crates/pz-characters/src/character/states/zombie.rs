@@ -730,6 +730,7 @@ pub fn trigger_player_reaction<I: 'static>(owner: &mut GameCharacter<I>, hit_rea
     let Some(tc) = cx.world.character_mut(t) else { return Ok(()) };
     tc.vars.attacked_by = Some(me_id);
     let outcome = tc.body_damage_add_random_damage_from_zombie(sm, chars, ctx, &attack)?;
+    tc.body_damage_update(sm, chars, ctx)?;
     let target_dead = tc.is_dead();
     let asleep = tc.is_asleep();
     if target_dead {
@@ -737,6 +738,7 @@ pub fn trigger_player_reaction<I: 'static>(owner: &mut GameCharacter<I>, hit_rea
     } else if asleep {
         tc.asleep = false;
     }
+    owner.zombie.voice_choice = attack.bite_voice.voice_choice.get();
     owner.apply_zombie_attack_outcome(&outcome);
     owner.set_var_bool("AttackDidDamage", outcome.hit);
     if target_dead {
@@ -1187,14 +1189,16 @@ impl<I: 'static> State<I> for ZombieEatBodyState {
         }
         let ctx = cx.ctx;
         if ctx.rand_next(crate::character::body_part::adjust_for_framerate(ctx, 450)) == 0 {
-            // The blood splat and giblets (`addBloodSplat`, `IsoZombieGiblets`).
+            // `getChunk().addBloodSplat(x + Rand(-0.5, 0.5), y + Rand(-0.5, 0.5),
+            // z, Rand.Next(8))`, then the giblets (`IsoZombieGiblets`, the
+            // world's).
             ctx.rand_next_float(-0.5, 0.5);
             ctx.rand_next_float(-0.5, 0.5);
-            ctx.rand_next(8);
+            let kind = ctx.rand_next(8);
+            ctx.event(SimEvent::AddBloodSplat { kind });
             ctx.rand_next(6);
             ctx.rand_next_float(-0.2, 0.2);
             ctx.rand_next_float(-0.2, 0.2);
-            ctx.event(SimEvent::SplatBloodFloor);
             if ctx.rand_next(4) == 0 {
                 ctx.event(SimEvent::AddBlood { part: -1, scratched: true, bitten: false, all_layers: false });
             }

@@ -49,6 +49,8 @@ pub(crate) const TRAITS: &[&str] = &[
     "THIN_SKINNED",
     "INCONSPICUOUS",
     "CONSPICUOUS",
+    "FAST_HEALER",
+    "SLOW_HEALER",
 ];
 
 const STATS: &[&str] = &[

@@ -365,9 +365,13 @@ fn zombie_bites_through_attack_state() {
     z.state_machine_update(&mut cx);
     assert_eq!(z.variable_string("AttackType"), "bite");
     z.set_var_str("PlayerHitReaction", "Bite");
-    zs::trigger_player_reaction(&mut z, "Bite", &mut cx).unwrap();
-    let p = &world.chars[0];
-    assert_eq!(p.vars.attacked_by, Some(7));
+    // The bite itself (the body damage tick after it needs the full moodle
+    // set the fixture lacks).
+    let attack = z.zombie_attack_for(1, "Bite", &mut cx);
+    assert_eq!(attack.surrounding_attacking_zombies, 1);
+    let p = &mut world.chars[0];
+    let out = p.body_damage_add_random_damage_from_zombie(&sm, &chars, &ctx, &attack).unwrap();
+    z.apply_zombie_attack_outcome(&out);
     assert!(p.body_damage.health() <= health);
 }
 

@@ -151,19 +151,19 @@ pub enum SimEvent {
     /// `LuaEventManager.triggerEvent("OnPlayerGetDamage", chr, kind, amount)`
     /// (`INFECTION` with the `Integer` 110 is `110.0` here).
     PlayerGetDamage { kind: &'static str, amount: f32 },
-    /// `splatBloodFloor()` (TODO(IsoChunk): consumes `Rand` when the square
-    /// has a chunk).
-    SplatBloodFloor,
-    /// `splatBloodFloorBig()`.
-    SplatBloodFloorBig,
+    /// `getCurrentSquare().getChunk().addBloodSplat(x, y, z, type)` from
+    /// `splatBloodFloor()`/`splatBloodFloorBig()` (the draws are made by
+    /// [`super::GameCharacter::splat_blood_floor`]).
+    AddBloodSplat { kind: i32 },
     /// `addBlood(BloodBodyPartType.FromIndex(part), scratched, bitten,
     /// allLayers)`.
     AddBlood { part: i32, scratched: bool, bitten: bool, all_layers: bool },
     /// `addHole(BloodBodyPartType.FromIndex(part))` /
-    /// `addHole(part, true)`.
+    /// `addHole(part, true)`: the worn items already have the hole
+    /// (`CharacterItems::add_hole`); the human visual's is the renderer's.
     AddHole { part: i32, all_layers: bool },
     /// `addHoleFromZombieAttacks(BloodBodyPartType.FromIndex(part),
-    /// scratchOrBite)`.
+    /// scratchOrBite)`, already applied to the worn items.
     AddHoleFromZombieAttacks { part: i32, scratch_or_bite: bool },
     /// `playSound(name)` / `getEmitter().playSoundImpl(name, null)`.
     PlaySound(String),
@@ -698,6 +698,9 @@ pub struct CharacterEnvironment {
     pub first_action_calories_modifier: Option<f32>,
     /// `isNearSirenVehicle()`.
     pub near_siren_vehicle: bool,
+    /// `getCurrentSquare().getChunk() != null` (blood splats draw `Rand`
+    /// only then).
+    pub square_has_chunk: bool,
 }
 
 impl Default for CharacterEnvironment {
@@ -738,6 +741,7 @@ impl Default for CharacterEnvironment {
             climbing_state: false,
             first_action_calories_modifier: None,
             near_siren_vehicle: false,
+            square_has_chunk: false,
         }
     }
 }

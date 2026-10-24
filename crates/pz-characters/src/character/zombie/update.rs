@@ -288,7 +288,11 @@ impl<I: 'static> GameCharacter<I> {
     /// The zombie as `AddRandomDamageFromZombie` sees it, attacking `target`.
     pub fn zombie_attack_for(&mut self, target: i32, hit_reaction: &str, cx: &mut StateCx<'_, I>) -> ZombieAttack {
         let (sm, chars) = (cx.sm, cx.chars);
-        let bite = self.bite_sound_name(cx.ctx);
+        let bite = crate::character::body_damage::BiteVoice {
+            voice_prefix: self.voice_prefix(),
+            speed_type: self.zombie.speed_type,
+            voice_choice: std::cell::Cell::new(self.zombie.voice_choice),
+        };
         let me = (self.id, self.vars.target, self.vars.crawling, self.vars.x, self.vars.y, self.current_state_id());
         let (melee, dot, current_reaction, tsq, tx, ty) = match cx.world.character_mut(target) {
             Some(t) => {
@@ -353,7 +357,7 @@ impl<I: 'static> GameCharacter<I> {
             crawling: self.vars.crawling,
             inactive: self.zombie.inactive,
             cant_bite: self.zombie.no_teeth,
-            bite_sound: bite,
+            bite_voice: bite,
         }
     }
 
