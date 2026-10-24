@@ -12,42 +12,42 @@
 //! chunk). Nothing here is game data; results are recorded as notes only.
 //!
 //! The replay loads the same chunks (region plus margin, row-major) with
-//! `pz-world`'s lotpack loader, recalculates their squares, builds every
+//! `pz-world`'s lotpack loader in the game's load order: each chunk is
+//! loaded, recalculated (`recalc_chunk_squares`) and passed through
+//! `loadInMainThread` before the next one enters the cell, as
+//! `IsoChunkMap.processAllLoadGridSquare` adds chunks one at a time. It then
+//! builds every
 //! chunk buffer with [`SquareBits::chunk_update_buffer`] and compares byte
 //! for byte, then square by square with per-bit counts. Each mismatching
 //! square is classified by comparing the inputs `getBits` reads (flags,
 //! roof, room, building, tree/bush, objects) with the oracle's.
 //!
-//! Results on build 42 (612 chunks, 101056 squares):
+//! Results on build 42 (612 chunks, 101056 squares; unchanged by the
+//! load order, which only moves collide matrices):
 //!
-//! | region | squares | bit-exact | buffers identical | + identical but for the level range |
-//! |---|---|---|---|---|
-//! | muldraugh | 10752 | 9997 | 87 / 144 | 3 |
-//! | westpoint | 30016 | 30016 | 142 / 168 | 26 |
-//! | riverside | 17536 | 17463 | 93 / 136 | 19 |
-//! | louisville | 38592 | 38592 | 83 / 100 | 17 |
-//! | forest | 4160 | 3858 | 42 / 64 | 0 |
+//! | region | squares | bit-exact | buffers identical |
+//! |---|---|---|---|
+//! | muldraugh | 10752 | 9997 | 90 / 144 |
+//! | westpoint | 30016 | 30016 | 168 / 168 |
+//! | riverside | 17536 | 17463 | 112 / 136 |
+//! | louisville | 38592 | 38592 | 100 / 100 |
+//! | forest | 4160 | 3858 | 42 / 64 |
 //!
 //! No square whose inputs (and neighbours' inputs) match the game's differs.
-//! The rest comes from two `pz-world` gaps:
-//!
-//! * World generation (`WorldGenChunk.generateChunks` in
-//!   `IsoChunk.LoadBrandNew`) is not run: the game replaces the lotpacks'
-//!   `vegetation_trees_01` placeholders and grass overlays with biome
-//!   vegetation (jumbo trees, bushes, grass, boulders). All 1130 differing
-//!   squares (750 + 5 through a neighbour in muldraugh, 73 in riverside, 302
-//!   in forest) have different objects there; the bits are `SOLID` (a tree
-//!   or boulder), `SOLID_TRANS` (boulders), the tall-hoppable bits (a solid
-//!   square beside a wall) and the cost (trees and bushes).
-//! * `IsoChunk.loadInMainThread`'s `EnsureSurroundNotNull` across chunk
-//!   edges is not run, so the game's chunks can span more levels (empty
-//!   squares on the edge next to a neighbour's objects). Those squares are
-//!   all zeros; 65 buffers differ only in their level range.
+//! Every remaining difference comes from world generation
+//! (`WorldGenChunk.generateChunks` in `IsoChunk.LoadBrandNew`), which
+//! `pz-world` does not run yet: the game replaces the lotpacks'
+//! `vegetation_trees_01` placeholders and grass overlays with biome
+//! vegetation (jumbo trees, bushes, grass, boulders). All 1130 differing
+//! squares (750 + 5 through a neighbour in muldraugh, 73 in riverside, 302 in
+//! forest) have different objects there; the bits are `SOLID` (a tree or
+//! boulder), `SOLID_TRANS` (boulders), the tall-hoppable bits (a solid square
+//! beside a wall) and the cost (trees and bushes).
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use pz_classfile::{Jar, Value};
+use pz_classfile::Jar;
 use pz_fs::GameFs;
 use pz_pathfind::square_bits::{DefaultBitsHooks, SquareBits};
 use pz_world::chunk::{ChunkLoadEnv, IsoCell};
@@ -92,58 +92,6 @@ impl GameRand for JavaRandom {
     fn next_float(&mut self) -> f32 {
         self.bits(24) as f32 / (1 << 24) as f32
     }
-}
-
-/// The enum tables, read from the game's own classes.
-fn sprite_tables(jar: &Jar) -> SpriteTables {
-    let names = |class: &str, drop_max: bool| {
-        let mut v = pz_classfile::enum_constants(jar, class).expect(class);
-        if drop_max && v.last().map(String::as_str) == Some("MAX") {
-            v.pop();
-        }
-        v
-    };
-    SpriteTables::new(
-        names("zombie/iso/SpriteDetails/IsoFlagType", true),
-        names("zombie/iso/SpriteDetails/IsoObjectType", true),
-        names("zombie/core/properties/FasciaEdge", false),
-    )
-    .expect("sprite tables")
-}
-
-/// `IsoTree.LOGS_PER_SIZE` and `IsoWindow.LockedHouseFrequency`, read from
-/// the game's own classes.
-fn object_tables(jar: &Jar) -> ObjectTables {
-    let int = |v: &Value| match v {
-        Value::Int(i) => *i,
-        other => panic!("expected an int, got {other:?}"),
-    };
-    let logs = match pz_classfile::static_value(jar, "zombie/iso/objects/IsoTree", "LOGS_PER_SIZE")
-        .expect("IsoTree")
-    {
-        Some(Value::Array(a)) => a.iter().map(int).collect::<Vec<_>>(),
-        other => panic!("LOGS_PER_SIZE: {other:?}"),
-    };
-    let freq = pz_classfile::self_constructed_constants(
-        jar,
-        "zombie/iso/objects/IsoWindow$LockedHouseFrequency",
-    )
-    .expect("LockedHouseFrequency");
-    let mut text = logs
-        .iter()
-        .map(|v| v.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    text.push('\n');
-    let pairs: Vec<String> = freq
-        .iter()
-        .map(|(_, args)| {
-            // name, ordinal, value, lockChance
-            format!("{}:{}", int(&args[2]), int(&args[3]))
-        })
-        .collect();
-    text.push_str(&pairs.join(","));
-    ObjectTables::from_text(&text).expect("object tables")
 }
 
 struct Record {
@@ -400,8 +348,8 @@ fn main() {
     let game = PathBuf::from(&a[2]);
     let only: Vec<&str> = a[3..].iter().map(String::as_str).collect();
     let jar = Jar::open(game.join("projectzomboid.jar")).expect("jar");
-    let tables = sprite_tables(&jar);
-    let objects = object_tables(&jar);
+    let tables = SpriteTables::from_jar(&jar).expect("sprite tables");
+    let objects = ObjectTables::from_jar(&jar).expect("object tables");
     let mut sprites =
         IsoSpriteManager::load_tile_definitions_from(tables, &game.join("media"), &[]).unwrap();
     sprites.loaded_tile_definitions(&|_| true).unwrap();
@@ -449,7 +397,10 @@ fn main() {
             records.iter().map(|r| r.wy).max().unwrap(),
         );
         let mut cell = IsoCell::default();
-        let mut order = Vec::new();
+        // Load order (`IsoChunkMap.processAllLoadGridSquare`): each chunk is
+        // loaded, recalculated and passed through `loadInMainThread` before
+        // the next one enters the cell, so the cross-chunk passes only see
+        // the chunks loaded before it.
         for wy in ry0 - 1..=ry1 + 1 {
             for wx in rx0 - 1..=rx1 + 1 {
                 let mut rand = JavaRandom::new(((wx as i64) << 32) ^ (wy as i64 & 0xffff_ffff));
@@ -463,11 +414,9 @@ fn main() {
                     hooks: &mut hooks,
                 };
                 cell.load_chunk(&meta, wx, wy, &mut env);
-                order.push((wx, wy));
+                cell.recalc_chunk_squares(wx, wy, &meta, &sprites);
+                cell.load_in_main_thread(wx, wy, &meta, &sprites);
             }
-        }
-        for &(wx, wy) in &order {
-            cell.recalc_chunk_squares(wx, wy, &meta, &sprites);
         }
         let sb = SquareBits::new(&sprites, &meta, &cell, &DefaultBitsHooks).unwrap();
         let (mut n_sq, mut n_exact, mut n_buf, mut n_content) = (0, 0, 0, 0);

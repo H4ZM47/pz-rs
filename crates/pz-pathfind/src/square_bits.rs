@@ -26,11 +26,10 @@
 //! `pz-world`'s lotpack loader and compares the chunk buffers byte for byte
 //! with the ones the game's own `ChunkUpdateTask.init` produced for the same
 //! chunks (612 chunks in five regions). Every square whose inputs match the
-//! game's is bit-exact (99926 of 101056 squares); the rest have different
-//! objects because `pz-world` does not run B42 world generation (biome
-//! vegetation), and 65 more buffers differ only in their level range
-//! because `pz-world` does not run `loadInMainThread`'s cross-chunk
-//! `EnsureSurroundNotNull`. Details are in that example's module doc.
+//! game's is bit-exact (99926 of 101056 squares, 512 of 612 chunk buffers
+//! byte-identical); the rest have different objects because `pz-world` does
+//! not run B42 world generation (biome vegetation) yet. Details are in that
+//! example's module doc.
 
 use pz_world::chunk::{IsoChunk, IsoGridSquare};
 use pz_world::objects::{IsoObject, IsoThumpable, ObjectKind};

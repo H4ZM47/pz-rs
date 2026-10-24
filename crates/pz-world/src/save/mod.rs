@@ -39,14 +39,33 @@ pub struct SaveTables {
 }
 
 impl SaveTables {
-    /// Reads the tables from the installed game's `projectzomboid.jar`.
-    ///
-    /// LOADER STUB: to be wired to the `pz-classfile` class-file reader
-    /// (the `IsoObjectFactory` constructor arguments in
-    /// `IsoObject.initFactory` and the constant count of
-    /// `zombie.characterTextures.BloodBodyPartType`).
-    pub fn from_game_jar(_jar: &std::path::Path) -> Result<Self, String> {
-        Err("SaveTables::from_game_jar is not wired to pz-classfile yet".into())
+    /// Reads the tables from the installed game's `projectzomboid.jar`
+    /// (see [`SaveTables::from_jar`]).
+    pub fn from_game_jar(jar: &std::path::Path) -> Result<Self, String> {
+        let jar = pz_classfile::Jar::open(jar).map_err(|e| format!("{}: {e}", jar.display()))?;
+        Self::from_jar(&jar)
+    }
+
+    /// Reads the tables from an open game jar: the `(classId, objectName)`
+    /// constructor arguments of the factories `IsoObject.initFactory`
+    /// passes to `addIsoObjectFactory`, in call order, and the ordinal of
+    /// `zombie.characterTextures.BloodBodyPartType.MAX`.
+    pub fn from_jar(jar: &pz_classfile::Jar) -> Result<Self, String> {
+        const BLOOD: &str = "zombie/characterTextures/BloodBodyPartType";
+        let parts =
+            pz_classfile::enum_constants(jar, BLOOD).map_err(|e| format!("{BLOOD}: {e}"))?;
+        let blood_body_parts = parts
+            .iter()
+            .position(|n| n == "MAX")
+            .ok_or_else(|| format!("{BLOOD} has no MAX"))?;
+        let t = SaveTables {
+            factory: init_factory_calls(jar)?,
+            blood_body_parts,
+        };
+        if t.class_name(0) != Some("IsoObject") {
+            return Err("factory table has no IsoObject at 0".into());
+        }
+        Ok(t)
     }
 
     /// Reads `id:name` lines and a `bloodBodyParts=<n>` line.
@@ -69,6 +88,16 @@ impl SaveTables {
             return Err("factory table has no IsoObject at 0".into());
         }
         Ok(t)
+    }
+
+    /// The tables in the [`SaveTables::from_text`] format.
+    pub fn to_text(&self) -> String {
+        let mut s = String::new();
+        for (id, name) in &self.factory {
+            s.push_str(&format!("{id}:{name}\n"));
+        }
+        s.push_str(&format!("bloodBodyParts={}\n", self.blood_body_parts));
+        s
     }
 
     /// `IsoObject.factoryGetClassID(name)`: matched by `String.hashCode`,
@@ -147,6 +176,107 @@ impl SaveTables {
             blood_body_parts: 7,
         }
     }
+}
+
+/// The `(classId, objectName)` pairs of `IsoObject.initFactory()`: a run of
+/// `addIsoObjectFactory(new IsoObject$N(id, "name"))` calls (`new`, `dup`,
+/// an int push, `ldc`, `invokespecial <init>(BLjava/lang/String;)V`,
+/// `invokestatic addIsoObjectFactory`, then `pop` or `putstatic`). Any other
+/// instruction is an error, so a changed method is reported rather than
+/// misread.
+fn init_factory_calls(jar: &pz_classfile::Jar) -> Result<Vec<(i8, String)>, String> {
+    let cf = pz_classfile::load_class(jar, "zombie/iso/IsoObject")
+        .map_err(|e| format!("zombie/iso/IsoObject: {e}"))?;
+    factory_calls(&cf)
+}
+
+fn factory_calls(cf: &pz_classfile::ClassFile) -> Result<Vec<(i8, String)>, String> {
+    use pz_classfile::class::Constant;
+    const CLASS: &str = "zombie/iso/IsoObject";
+    let e = |e: pz_classfile::Error| format!("{CLASS}.initFactory: {e}");
+    let code = cf
+        .method("initFactory")
+        .and_then(|m| m.code.as_deref())
+        .ok_or_else(|| format!("{CLASS} has no initFactory"))?;
+    let u16_at = |pc: usize| -> Result<u16, String> {
+        code.get(pc + 1..pc + 3)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]))
+            .ok_or_else(|| format!("{CLASS}.initFactory: truncated"))
+    };
+    let mut out = Vec::new();
+    let (mut int, mut string, mut pending) = (None, None, None);
+    let mut pc = 0;
+    while pc < code.len() {
+        let op = code[pc];
+        let len = match op {
+            0xbb | 0xb3 => 3, // new, putstatic
+            0x59 | 0x57 => 1, // dup, pop
+            0x02..=0x08 => {
+                int = Some(op as i64 - 3);
+                1
+            }
+            0x10 => {
+                int = Some(*code.get(pc + 1).ok_or("truncated")? as i8 as i64);
+                2
+            }
+            0x11 => {
+                int = Some(u16_at(pc)? as i16 as i64);
+                3
+            }
+            0x12 | 0x13 => {
+                let idx = if op == 0x12 {
+                    *code.get(pc + 1).ok_or("truncated")? as u16
+                } else {
+                    u16_at(pc)?
+                };
+                string = match cf.constant(idx).map_err(e)? {
+                    Constant::String(s) => Some(cf.utf8(*s).map_err(e)?.to_string()),
+                    other => return Err(format!("{CLASS}.initFactory: ldc {other:?}")),
+                };
+                if op == 0x12 {
+                    2
+                } else {
+                    3
+                }
+            }
+            0xb7 => {
+                let r = cf.member_ref(u16_at(pc)?).map_err(e)?;
+                if r.name != "<init>" || r.descriptor != "(BLjava/lang/String;)V" {
+                    return Err(format!(
+                        "{CLASS}.initFactory: calls {}.{}{}",
+                        r.class, r.name, r.descriptor
+                    ));
+                }
+                let id = int.take().ok_or("factory id is not a constant")?;
+                let id = i8::try_from(id).map_err(|_| format!("factory id {id}"))?;
+                pending = Some((id, string.take().ok_or("factory name is not a constant")?));
+                3
+            }
+            0xb8 => {
+                let r = cf.member_ref(u16_at(pc)?).map_err(e)?;
+                if r.name != "addIsoObjectFactory" {
+                    return Err(format!("{CLASS}.initFactory: calls {}.{}", r.class, r.name));
+                }
+                out.push(
+                    pending
+                        .take()
+                        .ok_or("addIsoObjectFactory without a factory")?,
+                );
+                3
+            }
+            0xb1 => break, // return
+            _ => {
+                return Err(format!(
+                    "{CLASS}.initFactory: unexpected opcode {op:#04x} at {pc}"
+                ))
+            }
+        };
+        pc += len;
+    }
+    if out.is_empty() {
+        return Err(format!("{CLASS}.initFactory adds no factories"));
+    }
+    Ok(out)
 }
 
 /// Game state loading and saving read.
