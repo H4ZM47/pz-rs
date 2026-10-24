@@ -14,6 +14,7 @@
 pub mod cell;
 pub mod chunk;
 pub mod color;
+pub mod cutaways;
 pub mod frame;
 pub mod occlusion;
 pub mod sprite;
@@ -22,6 +23,7 @@ pub mod world;
 
 pub use cell::ChunkRenderer;
 pub use chunk::ChunkTexture;
+pub use cutaways::{CutawayPlayer, CutawayState, CutawayWorld, Cutaways};
 pub use world::{DepthMaps, DepthPreset, ObjectKind, RenderObject, RenderSquare, SpriteFlags, SpriteInfo, TileType};
 
 use pz_render::iso::fastfloor;
