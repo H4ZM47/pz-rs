@@ -87,6 +87,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-lighting"
+version = "0.1.0"
+
+[[package]]
 name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
