@@ -144,7 +144,7 @@ pub struct AnimalGene {
 }
 
 impl AnimalAllele {
-    fn load(r: &mut Reader<'_>) -> SaveResult<Self> {
+    pub fn load(r: &mut Reader<'_>) -> SaveResult<Self> {
         Ok(AnimalAllele {
             name: r.string()?,
             current_value: r.f32()?,
@@ -154,7 +154,7 @@ impl AnimalAllele {
         })
     }
 
-    fn save(&self, w: &mut Writer) {
+    pub fn save(&self, w: &mut Writer) {
         w.string(&self.name);
         w.f32(self.current_value);
         w.f32(self.true_ratio_value);
@@ -164,7 +164,7 @@ impl AnimalAllele {
 }
 
 impl AnimalGene {
-    fn load(r: &mut Reader<'_>) -> SaveResult<Self> {
+    pub fn load(r: &mut Reader<'_>) -> SaveResult<Self> {
         Ok(AnimalGene {
             id: r.i32()?,
             name: r.string()?,
@@ -173,7 +173,7 @@ impl AnimalGene {
         })
     }
 
-    fn save(&self, w: &mut Writer) {
+    pub fn save(&self, w: &mut Writer) {
         w.i32(self.id);
         w.string(&self.name);
         self.allele1.save(w);

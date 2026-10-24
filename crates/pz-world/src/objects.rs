@@ -368,6 +368,10 @@ pub struct IsoFeedingTrough {
     pub linked_x: i32,
     pub linked_y: i32,
     pub north: bool,
+    /// `maxWater` and `maxFeed` from `FeedingTroughDef` (not saved; 0 when
+    /// the definition is unknown or the trough is a slave).
+    pub max_water: f32,
+    pub max_feed: i32,
 }
 
 /// `IsoBarricade` (saved without the `IsoObject` fields).
@@ -385,6 +389,8 @@ pub struct IsoBarricade {
 pub struct NestBox {
     /// Eggs (`Food` items).
     pub eggs: Vec<ItemBlob>,
+    /// The animal laying in it.
+    pub animal: Option<crate::save::animal::IsoAnimal>,
 }
 
 /// `IsoHutch` state saved by the master square.
@@ -396,9 +402,9 @@ pub struct HutchMaster {
     pub saved_x: i32,
     pub saved_y: i32,
     pub saved_z: i32,
-    /// The length-delimited animal block: count byte and `IsoAnimal`
-    /// records, kept as bytes.
-    pub animals: Vec<u8>,
+    /// `animalInside`: hutch position and animal, in insertion order (saved
+    /// in `HashMap<Integer, IsoAnimal>` order).
+    pub animals: Vec<(i32, crate::save::animal::IsoAnimal)>,
     pub hutch_dirt: f32,
     pub nest_box_dirt: f32,
     pub nest_boxes: Vec<NestBox>,

@@ -86,9 +86,10 @@ impl ComponentCodec for OpaqueComponents {}
 /// [`ComponentCodec`] backed by `pz-entity`: every component block is
 /// decoded into its component and encoded back, so items whose components
 /// do not decode cleanly stay raw records. Storage stays [`ComponentBlob`]s
-/// (re-encoded bytes). `factory_components` still adds none: building them
-/// needs `pz_entity::factory::create_from_script` with the game's `Rand`
-/// and scripts dictionary (not wired yet).
+/// (re-encoded bytes); components the entity already has load in place.
+/// `factory_components` still adds none: building them needs
+/// `pz_entity::factory::create_from_script` with the game's `Rand` and
+/// scripts dictionary (not wired yet).
 pub struct EntityCodec<'a> {
     pub ctx: &'a dyn pz_entity::EntityContext,
 }
@@ -100,30 +101,56 @@ impl ComponentCodec for EntityCodec<'_> {
         world_version: i32,
         components: &mut Vec<ComponentBlob>,
     ) -> SaveResult<Vec<i16>> {
+        let e = |e: pz_entity::EntityError| crate::io::SaveError(format!("entity: {e:?}"));
         let rest = &r.buf[r.pos..];
-        let n = pz_entity::entity::entity_len(rest)
-            .map_err(|e| crate::io::SaveError(format!("entity: {e:?}")))?;
-        let (decoded, info) =
-            pz_entity::entity::load_components(&rest[..n], world_version, self.ctx)
-                .map_err(|e| crate::io::SaveError(format!("entity: {e:?}")))?;
+        let n = pz_entity::entity::entity_len(rest).map_err(e)?;
+        // Components the entity already has (its constructor's) load in
+        // place, keeping what their `load` does not reset.
+        let mut comps = if components.is_empty() {
+            pz_entity::Components::new()
+        } else {
+            let mut w = Writer::new();
+            OpaqueComponents.save_entity(&mut w, components)?;
+            let (c, info) =
+                pz_entity::entity::load_components(&w.buf, BLOB_WORLD_VERSION, self.ctx)
+                    .map_err(e)?;
+            if !info.issues.is_empty() {
+                return err(format!("entity issues: {:?}", info.issues));
+            }
+            c
+        };
+        let info = pz_entity::entity::load_components_into(
+            &mut comps,
+            &rest[..n],
+            world_version,
+            self.ctx,
+        )
+        .map_err(e)?;
         if !info.issues.is_empty() || info.consumed != n {
             return err(format!("entity issues: {:?}", info.issues));
         }
         r.bytes(n)?;
         // Re-encode and split into blocks.
-        let bytes = pz_entity::entity::save_components(&decoded);
+        let bytes = pz_entity::entity::save_components(&comps);
         let mut blobs = Vec::new();
-        let loaded =
-            OpaqueComponents.load_entity(&mut Reader::new(&bytes), world_version, &mut blobs)?;
-        // An existing component of the type loads in place.
-        let mut out = std::mem::take(components);
-        for b in blobs {
-            match out.iter_mut().find(|e| e.type_id == b.type_id) {
-                Some(e) => *e = b,
-                None => out.push(b),
-            }
-        }
-        *components = out;
-        Ok(loaded)
+        OpaqueComponents.load_entity(&mut Reader::new(&bytes), BLOB_WORLD_VERSION, &mut blobs)?;
+        *components = blobs;
+        Ok(info.loaded.iter().map(|t| t.id()).collect())
     }
+}
+
+/// The world version [`ComponentBlob`] payloads are encoded at (saving
+/// always writes the current format).
+pub const BLOB_WORLD_VERSION: i32 = 249;
+
+/// One component's saved form, as [`ComponentBlob`].
+pub fn encode_component(c: pz_entity::Component) -> ComponentBlob {
+    let mut comps = pz_entity::Components::new();
+    comps.add(c);
+    let bytes = pz_entity::entity::save_components(&comps);
+    let mut blobs = Vec::new();
+    OpaqueComponents
+        .load_entity(&mut Reader::new(&bytes), BLOB_WORLD_VERSION, &mut blobs)
+        .expect("saved component block");
+    blobs.remove(0)
 }
