@@ -82,3 +82,48 @@ pub trait ComponentCodec {
 /// [`ComponentCodec`] keeping components as bytes.
 pub struct OpaqueComponents;
 impl ComponentCodec for OpaqueComponents {}
+
+/// [`ComponentCodec`] backed by `pz-entity`: every component block is
+/// decoded into its component and encoded back, so items whose components
+/// do not decode cleanly stay raw records. Storage stays [`ComponentBlob`]s
+/// (re-encoded bytes). `factory_components` still adds none: building them
+/// needs `pz_entity::factory::create_from_script` with the game's `Rand`
+/// and scripts dictionary (not wired yet).
+pub struct EntityCodec<'a> {
+    pub ctx: &'a dyn pz_entity::EntityContext,
+}
+
+impl ComponentCodec for EntityCodec<'_> {
+    fn load_entity(
+        &self,
+        r: &mut Reader<'_>,
+        world_version: i32,
+        components: &mut Vec<ComponentBlob>,
+    ) -> SaveResult<Vec<i16>> {
+        let rest = &r.buf[r.pos..];
+        let n = pz_entity::entity::entity_len(rest)
+            .map_err(|e| crate::io::SaveError(format!("entity: {e:?}")))?;
+        let (decoded, info) =
+            pz_entity::entity::load_components(&rest[..n], world_version, self.ctx)
+                .map_err(|e| crate::io::SaveError(format!("entity: {e:?}")))?;
+        if !info.issues.is_empty() || info.consumed != n {
+            return err(format!("entity issues: {:?}", info.issues));
+        }
+        r.bytes(n)?;
+        // Re-encode and split into blocks.
+        let bytes = pz_entity::entity::save_components(&decoded);
+        let mut blobs = Vec::new();
+        let loaded =
+            OpaqueComponents.load_entity(&mut Reader::new(&bytes), world_version, &mut blobs)?;
+        // An existing component of the type loads in place.
+        let mut out = std::mem::take(components);
+        for b in blobs {
+            match out.iter_mut().find(|e| e.type_id == b.type_id) {
+                Some(e) => *e = b,
+                None => out.push(b),
+            }
+        }
+        *components = out;
+        Ok(loaded)
+    }
+}

@@ -249,6 +249,17 @@ fn main() {
     let mut env = ScriptItems::new(&sm, dict, &names);
     env.blood_body_parts = save_tables.blood_body_parts;
     env.world_sprites = pz_world::save::items::moveable_sprites(&sprites);
+    // Component blocks through pz-entity (set ITEM_COMPONENTS=opaque to keep bytes).
+    if std::env::var("ITEM_COMPONENTS").as_deref() != Ok("opaque") {
+        let jar = pz_classfile::Jar::open(game.join("projectzomboid.jar")).unwrap();
+        let ctx = pz_entity::BasicContext {
+            attributes: pz_entity::AttributeTypes::from_jar(&jar).unwrap(),
+            fluids: Some(pz_entity::FluidRegistry::from_scripts(&jar, &sm).unwrap()),
+            ..Default::default()
+        };
+        let ctx: &'static pz_entity::BasicContext = Box::leak(Box::new(ctx));
+        env.components = Box::new(pz_inventory::component::EntityCodec { ctx });
+    }
     let world_age: f64 = a
         .get(6)
         .map(|s| s.parse().unwrap())
