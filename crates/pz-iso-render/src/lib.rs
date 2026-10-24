@@ -17,6 +17,7 @@ pub mod color;
 pub mod frame;
 pub mod sprite;
 pub mod texd;
+pub mod trees;
 pub mod world;
 
 pub use cell::ChunkRenderer;

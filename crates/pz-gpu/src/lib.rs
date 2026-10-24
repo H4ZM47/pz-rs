@@ -116,6 +116,8 @@ enum Tex2 {
     Chunk(u64, bool),
     /// The offscreen buffer's colour, in group 1.
     Offscreen,
+    /// The batch texture sampled GL_NEAREST.
+    Nearest,
 }
 
 /// Where a pass draws.
@@ -194,6 +196,9 @@ pub struct Gpu {
     chunk_depth_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
     chunks: HashMap<u64, ChunkTarget>,
+    /// Texture views by id, and bind groups sampling them GL_NEAREST.
+    views: HashMap<u32, wgpu::TextureView>,
+    nearest: HashMap<u32, wgpu::BindGroup>,
     offscreen: Option<OffscreenTarget>,
     textures: HashMap<u32, wgpu::BindGroup>,
     samplers: HashMap<Filter, wgpu::Sampler>,
@@ -328,6 +333,8 @@ impl Gpu {
             chunk_depth_layout,
             pipelines: HashMap::new(),
             chunks: HashMap::new(),
+            views: HashMap::new(),
+            nearest: HashMap::new(),
             offscreen: None,
             textures: HashMap::new(),
             samplers: HashMap::new(),
@@ -448,6 +455,9 @@ impl Gpu {
             if let Tex2::Texture(id) = f.batches[i].tex2 {
                 self.ensure_texture(id, textures);
             }
+            if let (Tex2::Nearest, Some(id)) = (f.batches[i].tex2, f.batches[i].texture) {
+                self.ensure_nearest(id);
+            }
             self.ensure_pipeline(f.batches[i].key);
         }
         let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, .. } = f;
@@ -553,6 +563,10 @@ impl Gpu {
                         pass.set_bind_group(2, t2, &[]);
                         b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white)
                     }
+                    Tex2::Nearest => match b.texture.and_then(|id| self.nearest.get(&id)) {
+                        Some(bg) => bg,
+                        None => continue,
+                    },
                     Tex2::Offscreen => match self.offscreen.as_ref() {
                         Some(o) => &o.bind,
                         None => continue,
@@ -660,6 +674,20 @@ impl Gpu {
                 f.target = PassTarget::Offscreen;
             }
             DrawCmd::OffscreenEnd => f.target = PassTarget::Main,
+            DrawCmd::ProjectedQuad { texture, pos, uv, color, nearest } => {
+                let Some(id) = texture.id else { return };
+                // The corners are already in normalised device coordinates.
+                let g = {
+                    let m = f.mvp;
+                    f.mvp = IDENTITY;
+                    let mm = f.mvp_for_target();
+                    f.mvp = m;
+                    f.globals(&self.state, mm, 0.5)
+                };
+                let v: [Vertex; 4] = std::array::from_fn(|i| Vertex { pos: [pos[i][0], pos[i][1]], uv: uv[i], color: *color, uv1: [0.0; 2], uv2: [pos[i][2], 0.0] });
+                let key = self.key(f, Program::Projected);
+                f.push(key, Some(id), if *nearest { Tex2::Nearest } else { Tex2::None }, &self.state, g, v);
+            }
             DrawCmd::ScreenPass { x, y, w, h, tex, params } => {
                 let Some(o) = self.offscreen.as_ref() else { return };
                 let (tw, th) = (o.width as f32, o.height as f32);
@@ -793,8 +821,9 @@ impl Gpu {
         let one = d.width == 1 && d.height == 1;
         let filter = (d.min_nearest() || one, d.mag_nearest() || one, d.mipmaps() && !one, d.clamp_to_edge());
         let pixels: Vec<Vec<u8>> = levels.iter().map(|l| l.pixels.clone()).collect();
-        let bind_group = self.create_texture_bind_group(levels[0].width as u32, levels[0].height as u32, &pixels, filter);
+        let (bind_group, view) = self.create_texture(levels[0].width as u32, levels[0].height as u32, &pixels, filter);
         self.textures.insert(id, bind_group);
+        self.views.insert(id, view);
         // The original frees the CPU copy once uploaded.
         if let Some(d) = textures.data_mut(id) {
             d.image = None;
@@ -824,6 +853,28 @@ impl Gpu {
     }
 
     fn create_texture_bind_group(&mut self, width: u32, height: u32, levels: &[Vec<u8>], filter: Filter) -> wgpu::BindGroup {
+        self.create_texture(width, height, levels, filter).0
+    }
+
+    /// The bind group sampling texture `id` with `GL_NEAREST` both ways.
+    fn ensure_nearest(&mut self, id: u32) {
+        if self.nearest.contains_key(&id) {
+            return;
+        }
+        let Some(view) = self.views.get(&id).cloned() else { return };
+        let sampler = self.sampler((true, true, false, false));
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        self.nearest.insert(id, bg);
+    }
+
+    fn create_texture(&mut self, width: u32, height: u32, levels: &[Vec<u8>], filter: Filter) -> (wgpu::BindGroup, wgpu::TextureView) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -848,14 +899,15 @@ impl Gpu {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = self.sampler(filter);
         let device = &self.device;
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.texture_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
-        })
+        });
+        (bg, view)
     }
 }
 

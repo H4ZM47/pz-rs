@@ -57,3 +57,14 @@ fn fs_default(in: VsOut) -> @location(0) vec4<f32> {
     return c;
 }
 
+
+// `vboRenderer_PositionColorUV`: colour times texel, nearly transparent
+// texels discarded, no premultiplication.
+@fragment
+fn fs_projected(in: VsOut) -> @location(0) vec4<f32> {
+    let texel = textureSample(diffuse, diffuse_sampler, in.uv);
+    if (texel.a < 0.01) {
+        discard;
+    }
+    return in.col * texel;
+}

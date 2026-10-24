@@ -45,7 +45,7 @@ fn floor_tiles_land_where_the_original_draws_them() {
     let cam = Camera::centred(4.0, 4.0, 0.0, 256, 128, 1.0);
     assert_eq!((cam.off_x, cam.off_y), (-128, 192));
     let maps = Maps(depth.clone(), depth);
-    let r = ChunkRenderer { cam, depth_maps: &maps };
+    let r = ChunkRenderer::new(cam, &maps, (256, 128));
     let tex = ChunkTexture::new(0, 0, 0, 0, 0);
     let mut level = [None; 64];
     for sq in &squares {
@@ -96,7 +96,7 @@ fn open_door_is_drawn_translucent_over_the_floor() {
     sq.objects.push(RenderObject::new(ObjectKind::Door { open: true }, Some(door)));
     let cam = Camera::centred(4.0, 4.0, 0.0, 256, 128, 1.0);
     let maps = Maps(depth.clone(), depth);
-    let r = ChunkRenderer { cam, depth_maps: &maps };
+    let r = ChunkRenderer::new(cam, &maps, (256, 128));
     let tex = ChunkTexture::new(0, 0, 0, 0, 0);
     let mut level = [None; 64];
     level[36] = Some(&sq);
@@ -135,7 +135,7 @@ fn world_frame_reaches_the_screen() {
     sq.objects.push(RenderObject::new(ObjectKind::Plain, Some(floor)));
     let cam = Camera::centred(4.0, 4.0, 0.0, 256, 128, 1.0);
     let maps = Maps(depth.clone(), depth);
-    let r = ChunkRenderer { cam, depth_maps: &maps };
+    let r = ChunkRenderer::new(cam, &maps, (256, 128));
     let mut level = [None; 64];
     level[36] = Some(&sq);
     let chunks = [pz_iso_render::frame::ChunkLevels { texture: ChunkTexture::new(0, 0, 0, 0, 0), levels: vec![(0, level)], dirty: true }];

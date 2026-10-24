@@ -112,6 +112,16 @@ pub fn render_layer(square: &RenderSquare, obj: &RenderObject) -> Layer {
 pub struct ChunkRenderer<'a> {
     pub cam: Camera,
     pub depth_maps: &'a dyn DepthMaps,
+    /// The screen size, for the tree camera.
+    pub view_size: (u32, u32),
+    /// This frame's trees (`FBORenderTrees`, with its depth stagger).
+    pub trees: std::cell::RefCell<crate::trees::Trees>,
+}
+
+impl<'a> ChunkRenderer<'a> {
+    pub fn new(cam: Camera, depth_maps: &'a dyn DepthMaps, view_size: (u32, u32)) -> Self {
+        ChunkRenderer { cam, depth_maps, view_size, trees: Default::default() }
+    }
 }
 
 /// The squares of one chunk level, `[x + y * 8]`.
@@ -195,21 +205,29 @@ impl ChunkRenderer<'_> {
                 render_translucent(&mut ctx, sq, obj);
             }
         }
-        // Translucent objects, sorted by x + y * worldRight.
+        // Translucent objects, sorted by x + y * worldRight. Trees are
+        // collected and drawn (FBORenderTrees) before the next other
+        // object and at the end.
         let mut sorted: Vec<&RenderSquare> = at_level.iter().copied().filter(|s| has(s, &[Layer::Translucent, Layer::TranslucentSE])).collect();
         sorted.sort_by_key(|s| (s.y, s.x));
+        let mut trees = self.trees.borrow_mut();
+        let (vw, vh) = (self.view_size.0 as f32 * self.cam.zoom, self.view_size.1 as f32 * self.cam.zoom);
         for sq in sorted {
             begin(&mut ctx);
             for layer in [Layer::Translucent, Layer::TranslucentSE] {
                 for obj in sq.objects.iter().filter(|o| render_layer(sq, o) == layer) {
                     if obj.kind == ObjectKind::Tree {
-                        // FBORenderTrees is not ported yet.
+                        add_tree(&mut trees, sq, obj);
                         continue;
+                    }
+                    if !trees.trees.is_empty() {
+                        flush_trees(&mut trees, &self.cam, vw, vh, ctx.out);
                     }
                     render_translucent(&mut ctx, sq, obj);
                 }
             }
         }
+        flush_trees(&mut trees, &self.cam, vw, vh, ctx.out);
         ctx.out.push(DrawCmd::DepthMask(false));
         ctx.out.push(DrawCmd::DepthFunc(gl::ALWAYS));
     }
@@ -311,6 +329,28 @@ fn render_attached(ctx: &mut SpriteCtx<'_>, obj: &RenderObject, x: f32, y: f32, 
         );
     }
     ctx.out.push(DrawCmd::DepthMask(true));
+}
+
+/// `IsoTree.render` in the per-frame pass: the trunk/base texture and the
+/// first attached sprite's (foliage) texture as one billboard, lit by the
+/// square.
+fn add_tree(trees: &mut crate::trees::Trees, sq: &RenderSquare, obj: &RenderObject) {
+    let base = obj.sprite.as_ref().and_then(|s| s.texture.clone());
+    let foliage = obj.attached.first().and_then(|a| a.sprite.texture.clone());
+    let c = sq.light_info;
+    trees.add(base, foliage, sq.x as f32, sq.y as f32, sq.z as f32, [c.r, c.g, c.b, c.a], false, 1.0, obj.alpha);
+}
+
+/// `SpriteRenderer.drawGeneric(FBORenderTrees.current)`, then the GL state
+/// the following draws expect.
+fn flush_trees(trees: &mut crate::trees::Trees, cam: &Camera, w: f32, h: f32, out: &mut Vec<DrawCmd>) {
+    if trees.trees.is_empty() {
+        return;
+    }
+    trees.render(cam, w, h, out);
+    trees.trees.clear();
+    out.push(DrawCmd::DepthMask(false));
+    out.push(DrawCmd::BlendFunc(gl::ONE, gl::ONE_MINUS_SRC_ALPHA));
 }
 
 /// `FBORenderCell.renderTranslucent(object)`: with the default blend, the

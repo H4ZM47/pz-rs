@@ -223,6 +223,12 @@ pub enum DrawCmd {
     /// quad `x, y, w, h` from its texel rectangle `tex` (x, y, w, h) with
     /// the `screen` shader.
     ScreenPass { x: f32, y: f32, w: f32, h: f32, tex: [f32; 4], params: ScreenParams },
+    /// A `VBORenderer` quad already projected: corners in GL normalised
+    /// device coordinates with window depth (`vboRenderer_PositionColorUV`
+    /// after its `userDepth` adjustment), texture coordinates and colour.
+    /// Texels with alpha below 0.01 are discarded; `nearest` forces
+    /// `GL_NEAREST` sampling (`setMinMagFilters`).
+    ProjectedQuad { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32, nearest: bool },
 }
 
 /// The `WeatherShader` uniforms the screen pass reads.
