@@ -78,20 +78,42 @@
 //!   31 up (including the farming-plant bit) counts as a tall west fence.
 //! * Door, window and fence crossings rerouted through a vehicle's crawl
 //!   nodes are also marked target-only.
+//!
+//! # The Java layer around it
+//!
+//! * [`mover`]: what `PathFindBehavior2`, `PathFindRequest.init`,
+//!   `PathRequestTask` and `PathfindNative.findPath` read and call on the
+//!   moving character ([`mover::PathMover`]), implemented by the character
+//!   port.
+//! * [`service`]: `PathfindNative` and `PathfindNativeThread` (task and
+//!   request queues, priorities, cancel, delivery), single-threaded.
+//! * [`main_thread`]: `LineClearCollideMain` (`PolygonalMap2.canStandAt`,
+//!   `lineClearCollide`, ...) on live `pz-world` squares, using
+//!   `pz-world`'s square queries and `LosUtil.lineClear`.
+//! * [`game_vehicle`]: what that code reads from `BaseVehicle`.
+//! * [`behavior`]: `PathFindBehavior2`, the per-frame path follower.
+//! * [`host`]: [`host::PathHost`], the service plus one behaviour per
+//!   character, with the calls the character states make on the world.
 
 // Loops index squares and nodes by position to keep the native iteration
 // order visible.
 #![allow(clippy::needless_range_loop)]
 
 pub mod astar;
+pub mod behavior;
 pub mod bytes;
 mod clip;
+pub mod game_vehicle;
 pub mod high_level;
+pub mod host;
 pub mod line_clear_collide;
+pub mod main_thread;
+pub mod mover;
 pub mod path;
 pub mod polygonal_map2;
 pub mod pool;
 pub mod request;
+pub mod service;
 pub mod square;
 pub mod square_bits;
 pub mod util;

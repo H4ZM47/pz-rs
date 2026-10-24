@@ -48,6 +48,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `finish_chunk_load` (it also gets `chunk_unloaded`); `main_timer(day,
       month, year)` on GameTimes ten-minute tick; bind `bind_erosion::
       set_instance` for Lua (#42).
+- [ ] Pathfinding: one `PathfindService::new(meta min_x, min_y, width, height, is_server)` in a
+      `pz_pathfind::host::PathHost` per world. On chunk load/unload
+      `add_chunk_to_world(chunk, load_id, &SquareBits)` /
+      `remove_chunk_from_world`, `square_changed` on square edits (SquareBits
+      over the cell with `pz_world::ObjectHooks`); per frame, before characters
+      update, `update_thread()` (game runs it every ~50 ms while there is work)
+      then `update_main(vehicles, seating, movers)`; `remove(id)` when a
+      character leaves; postupdate calls `PathHost::resolve_collision(_radius)`
+      on the same host (#60).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
 

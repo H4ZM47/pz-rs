@@ -1,4 +1,5 @@
-//! Barricade, thumpable, door, power and light-item queries of
+//! Barricade, thumpable, door, vision (`testVisionAdjacent`, `canReachTo`,
+//! `LosUtil.lineClear`), power and light-item queries of
 //! [`pz_world::WorldState`] over every chunk of a save, against the same
 //! queries evaluated by the original game on the same files (made by a
 //! local harness on a machine with the game installed; no game data is
@@ -20,11 +21,14 @@ use std::path::Path;
 use pz_inventory::dictionary::WorldDictionary;
 use pz_inventory::factory::ScriptItems;
 use pz_inventory::item::{InventoryItem, ItemKind};
+use pz_world::los::line_clear;
 use pz_world::objects::{IsoBarricade, ItemContainer, ObjectKind};
 use pz_world::save::chunk_file::{chunk_path, load_chunk};
 use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables};
+use pz_world::square::VisionEnv;
 use pz_world::{
-    EdgeFacing, IsoCell, IsoMetaGrid, IsoSpriteManager, PowerSettings, SpriteTables, WorldState,
+    EdgeFacing, IsoCell, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, PowerSettings, SpriteTables,
+    WorldState,
 };
 
 fn fx(f: f32) -> String {
@@ -76,6 +80,49 @@ fn light_item(out: &mut String, p: &str, it: &InventoryItem, depth: usize, i: us
             light_items(out, &format!("{p}/{depth}.{i}"), &c.container, depth + 1);
         }
     }
+}
+
+/// `testVisionAdjacent` to the eight neighbours (plain, ignoring doors,
+/// special diagonal), `canReachTo` the four edge neighbours and
+/// `LosUtil.lineClear` along a few lines (with and without doors).
+fn vision_line(
+    out: &mut String,
+    at: &str,
+    sq: &IsoGridSquare,
+    env: &VisionEnv<'_, IsoCell>,
+    m: &IsoSpriteManager,
+    cell: &IsoCell,
+    ws: &WorldState<'_>,
+) {
+    write!(out, "vis {at} tva=").unwrap();
+    for dy in -1..=1 {
+        for dx in -1..=1 {
+            if dx == 0 && dy == 0 {
+                continue;
+            }
+            for vm in 0..3 {
+                let r = sq.test_vision_adjacent(dx, dy, 0, vm == 2, vm == 1, env);
+                write!(out, "{}", r as u8).unwrap();
+            }
+            out.push('/');
+        }
+    }
+    out.push_str(" reach=");
+    for (dx, dy) in [(0, -1), (-1, 0), (0, 1), (1, 0)] {
+        out.push(match cell.get_grid_square(sq.x + dx, sq.y + dy, sq.z) {
+            None => '-',
+            Some(o2) if sq.can_reach_to(o2, m, cell, ws) => 'R',
+            Some(_) => '.',
+        });
+    }
+    out.push_str(" los=");
+    for (dx, dy) in [(5, 0), (-5, 0), (0, 5), (0, -5), (4, 3), (-3, -4), (2, -6)] {
+        for ig in [false, true] {
+            let r = line_clear(env, sq.x, sq.y, sq.z, sq.x + dx, sq.y + dy, sq.z, ig);
+            write!(out, "{}", r as u8).unwrap();
+        }
+    }
+    out.push('\n');
 }
 
 fn main() {
@@ -189,6 +236,11 @@ fn main() {
     }
     let meta = IsoMetaGrid::empty();
     let ws = WorldState::new(&cell, &meta, &sprites, power);
+    // The original ran its queries as the server (`GameServer.server`).
+    let env = VisionEnv {
+        is_server: true,
+        ..VisionEnv::new(&cell, &sprites, &ws)
+    };
     let mut out = java.lines().next().unwrap().to_string();
     out.push('\n');
     for &(wx, wy) in &order {
@@ -220,6 +272,19 @@ fn main() {
                     }
                     if elec || bl.contains('D') || bl.contains('W') {
                         writeln!(out, "sq {at} elec={} blocked={bl}", elec as u8).unwrap();
+                    }
+                    if sq.objects.iter().any(|o| {
+                        matches!(
+                            o.kind,
+                            ObjectKind::Door(_)
+                                | ObjectKind::Window(_)
+                                | ObjectKind::Thumpable(_)
+                                | ObjectKind::Barricade(_)
+                                | ObjectKind::Fire(_)
+                                | ObjectKind::Curtain(_)
+                        )
+                    }) {
+                        vision_line(&mut out, &at, sq, &env, &sprites, &cell, &ws);
                     }
                     for (oi, o) in sq.objects.iter().enumerate() {
                         let p = format!(" {at} {oi}");

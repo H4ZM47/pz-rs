@@ -9,7 +9,8 @@ use pz_world::objects::IsoBarricade;
 use pz_world::{IsoGridSquare, IsoObject, SquareHooks, WorldState};
 
 /// World state outside pz-world's squares. Extends pz-world's
-/// [`SquareHooks`] (barricades and thumpables in the square queries).
+/// [`SquareHooks`] (barricades, thumpables and door curtains in the square
+/// queries).
 pub trait WorldHooks: SquareHooks {
     /// Special objects of `sq` lighting sees that pz-world does not model,
     /// appended after the square's own (doors, windows, curtains,
@@ -26,11 +27,6 @@ pub trait WorldHooks: SquareHooks {
         _obj: &IsoObject,
     ) -> (Option<Barricade>, Option<Barricade>) {
         (None, None)
-    }
-
-    /// `IsoDoor.HasCurtains()`: `Some(curtainOpen)` when the door has one.
-    fn door_curtain(&self, _sq: &IsoGridSquare, _obj: &IsoObject) -> Option<bool> {
-        None
     }
 
     /// `!IsoWorld.isHydroPowerOn()`: the grid has been shut off.
@@ -86,10 +82,6 @@ impl WorldHooks for WorldState<'_> {
         };
         let (a, b) = self.barricades_for(sq, north);
         (a.map(lighting_barricade), b.map(lighting_barricade))
-    }
-
-    fn door_curtain(&self, _sq: &IsoGridSquare, obj: &IsoObject) -> Option<bool> {
-        WorldState::door_curtain(self, obj)
     }
 
     fn hydro_power_off(&self) -> bool {

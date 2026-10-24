@@ -5,9 +5,10 @@ use std::rc::Rc;
 
 use super::*;
 use crate::defs::BuildingIdx;
-use crate::objects::{IsoDoor, IsoWindow};
+use crate::los::{line_clear, TestResults};
+use crate::objects::{IsoDoor, IsoFire, IsoWindow};
 use crate::sprite::{test_tables, PropertyValueMap};
-use crate::square::NoSquareHooks;
+use crate::square::{NoSquareHooks, VisionEnv};
 use crate::IsoChunk;
 use pz_inventory::item::ItemKind;
 use pz_inventory::template::{ItemClass, ItemTemplate};
@@ -19,6 +20,8 @@ const SPRITES: &[(&str, &[&str])] = &[
     ("thump_wall", &["collideN"]),
     ("thump_window", &["WindowN"]),
     ("switch", &[]),
+    ("hop_n", &["HoppableN"]),
+    ("door_trans", &["doorTrans"]),
 ];
 
 fn manager() -> IsoSpriteManager {
@@ -36,6 +39,7 @@ fn manager() -> IsoSpriteManager {
         "lightB",
         "ItemHeight",
         "Surface",
+        "doorTrans",
     ] {
         map.entry(k);
     }
@@ -475,4 +479,297 @@ fn weapon_light_part() {
     assert!(!gun.is_emitting_light());
     gun.activated = true;
     assert!(gun.is_emitting_light());
+}
+
+fn fire() -> ObjectKind {
+    ObjectKind::Fire(IsoFire {
+        life: 100,
+        spread_delay: 0,
+        life_stage: 0,
+        life_stage_timer: 0,
+        life_stage_duration: 0,
+        energy: 0,
+        num_flame_particles: 0,
+        spread_timer: 0,
+        age: 0,
+        perm: false,
+        light_radius: 0,
+        smoke: false,
+        saved_update_time: 0,
+    })
+}
+
+fn thump(f: impl FnOnce(&mut IsoThumpable)) -> ObjectKind {
+    let mut t = IsoThumpable::default();
+    f(&mut t);
+    ObjectKind::Thumpable(Box::new(t))
+}
+
+#[test]
+fn special_objects_from_the_real_objects() {
+    let mut w = World::new();
+    w.put(10, 10, 0, true);
+    w.add(
+        10,
+        10,
+        0,
+        "thump_wall",
+        thump(|t| {
+            t.north = true;
+            t.open = true;
+            t.is_door = true;
+            t.can_pass_through = true;
+        }),
+    );
+    // `isHoppable()` from the field, from the sprite, and from the closed
+    // sprite of a closed door (which wins over the current sprite).
+    w.add(10, 10, 0, "thump_wall", thump(|t| t.is_hoppable = true));
+    w.add(10, 10, 0, "hop_n", thump(|_| {}));
+    let closed = w.m.named_map["thump_wall"];
+    w.add(
+        10,
+        10,
+        0,
+        "hop_n",
+        thump(|t| {
+            t.is_door = true;
+            t.closed_sprite = Some(closed);
+        }),
+    );
+    let hop = w.m.named_map["hop_n"];
+    w.add(
+        10,
+        10,
+        0,
+        "thump_wall",
+        thump(|t| {
+            t.is_door = true;
+            t.closed_sprite = Some(hop);
+        }),
+    );
+    w.barricade(10, 10, 0, IsoDirections::S, &[1, 1, 1]);
+    w.barricade(10, 10, 0, IsoDirections::E, &[1, 1]);
+    w.add(10, 10, 0, "floor", fire());
+    w.add(10, 10, 0, "door_n", door(true, false));
+    let ws = w.state();
+    let sq = w.sq(10, 10, 0);
+    let got: Vec<_> = sq
+        .objects
+        .iter()
+        .map(|o| SquareHooks::special_object(&ws, sq, o))
+        .collect();
+    let th = |north, open, is_door, is_hoppable, can_pass_through| {
+        Some(SpecialObject::Thumpable(ThumpableInfo {
+            north,
+            open,
+            is_door,
+            is_hoppable,
+            can_pass_through,
+        }))
+    };
+    assert_eq!(
+        got,
+        vec![
+            None,
+            th(true, true, true, false, true),
+            th(false, false, false, true, false),
+            th(false, false, false, true, false),
+            th(false, false, true, false, false),
+            th(false, false, true, true, false),
+            Some(SpecialObject::Barricade {
+                dir: IsoDirections::S,
+                blocks_vision: true
+            }),
+            Some(SpecialObject::Barricade {
+                dir: IsoDirections::E,
+                blocks_vision: false
+            }),
+            Some(SpecialObject::Fire),
+            None,
+        ]
+    );
+    assert_eq!(SquareHooks::door_curtain(&ws, sq, &sq.objects[9]), None);
+}
+
+/// A row of squares y = 10, x 8..=14, with `kind` on the west edge of
+/// (11, 10), as seen by `LosUtil.lineClear` from (9, 10) to (13, 10).
+fn line_across(sprite: &str, kind: ObjectKind, ignore_doors: bool) -> TestResults {
+    let mut w = World::new();
+    for x in 8..=14 {
+        w.put(x, 10, 0, true);
+    }
+    w.add(11, 10, 0, sprite, kind);
+    let ws = w.state();
+    let env = VisionEnv::new(&w.cell, &w.m, &ws);
+    line_clear(&env, 9, 10, 0, 13, 10, 0, ignore_doors)
+}
+
+#[test]
+fn line_of_sight_through_special_objects() {
+    use TestResults::*;
+    let door_w = |open| {
+        thump(|t| {
+            t.is_door = true;
+            t.open = open;
+        })
+    };
+    // A closed thumpable door blocks unless doors are ignored; an open one
+    // swings onto the other edge.
+    assert_eq!(line_across("thump_wall", door_w(false), false), Blocked);
+    assert_eq!(line_across("thump_wall", door_w(false), true), Clear);
+    assert_eq!(line_across("thump_wall", door_w(true), false), Clear);
+    // `doorTrans` lets the closed thumpable door be seen through.
+    assert_eq!(
+        line_across("door_trans", door_w(false), false),
+        ClearThroughOpenDoor
+    );
+    // `canPassThrough` never affects vision.
+    let pass = thump(|t| {
+        t.is_door = true;
+        t.can_pass_through = true;
+    });
+    assert_eq!(line_across("thump_wall", pass, false), Clear);
+    // A thumpable that is a window by its sprite is seen through.
+    assert_eq!(line_across("thump_window", thump(|_| {}), false), Clear);
+
+    // A barricade facing west blocks with more than two planks, even when
+    // doors are ignored.
+    let barricade = |planks: [i32; 4], metal| {
+        ObjectKind::Barricade(IsoBarricade {
+            dir: IsoDirections::W as i8,
+            plank_health: planks,
+            metal_health: metal,
+            metal_bar_health: 0,
+        })
+    };
+    assert_eq!(
+        line_across("floor", barricade([5, 5, 5, 0], 0), true),
+        Blocked
+    );
+    assert_eq!(
+        line_across("floor", barricade([5, 5, 0, 0], 0), false),
+        Clear
+    );
+    assert_eq!(line_across("floor", barricade([0; 4], 30), false), Blocked);
+    // Fire has no effect.
+    assert_eq!(line_across("floor", fire(), false), Clear);
+
+    // A closed `doorTrans` door is seen through unless its curtain is
+    // drawn.
+    let curtain = |curtain_open| {
+        ObjectKind::Door(IsoDoor {
+            has_curtain: true,
+            curtain_open,
+            ..Default::default()
+        })
+    };
+    assert_eq!(
+        line_across("door_trans", door(false, false), false),
+        ClearThroughClosedDoor
+    );
+    assert_eq!(
+        line_across("door_trans", curtain(true), false),
+        ClearThroughClosedDoor
+    );
+    assert_eq!(line_across("door_trans", curtain(false), false), Blocked);
+    assert_eq!(line_across("door_trans", curtain(false), true), Clear);
+}
+
+#[test]
+fn adjacent_queries_see_thumpables_and_barricades() {
+    let mut w = World::new();
+    for (x, y) in [(10, 10), (11, 10), (10, 9), (13, 10), (13, 9)] {
+        w.put(x, y, 0, true);
+    }
+    // A closed west thumpable door on (11, 10), a hoppable north thumpable
+    // on (10, 10) and a barricaded north thumpable window on (13, 10).
+    w.add(11, 10, 0, "thump_wall", thump(|t| t.is_door = true));
+    w.add(
+        10,
+        10,
+        0,
+        "thump_wall",
+        thump(|t| {
+            t.north = true;
+            t.is_hoppable = true;
+        }),
+    );
+    w.add(13, 10, 0, "thump_window", thump(|t| t.north = true));
+    w.barricade(13, 10, 0, IsoDirections::N, &[5, 5, 5]);
+    let ws = w.state();
+    let (m, g) = (&w.m, &w.cell);
+    let (a, b) = (w.sq(10, 10, 0), w.sq(11, 10, 0));
+    assert!(b.has_blocked_door(EdgeFacing::EastWest, &ws));
+    assert!(!a.can_reach_to(b, m, g, &ws));
+    assert!(a.can_reach_to(b, m, g, &NoSquareHooks));
+    assert!(b
+        .get_door_facing(EdgeFacing::EastWest, &ws)
+        .is_some_and(|o| matches!(o.kind, ObjectKind::Thumpable(_))));
+    assert!(b
+        .get_door_facing(EdgeFacing::EastWest, &NoSquareHooks)
+        .is_none());
+    assert!(a
+        .get_hoppable_thumpable_facing(EdgeFacing::NorthSouth, &ws)
+        .is_some());
+    assert!(a
+        .get_hoppable_thumpable_facing(EdgeFacing::EastWest, &ws)
+        .is_none());
+    let c = w.sq(13, 10, 0);
+    assert!(c
+        .get_thumpable_window_facing(EdgeFacing::NorthSouth, m, &ws)
+        .is_some());
+    // The barricade blocks vision north from (13, 10).
+    let env = VisionEnv::new(g, m, &ws);
+    assert_eq!(
+        c.test_vision_adjacent(0, -1, 0, false, false, &env),
+        TestResults::Blocked
+    );
+    assert_eq!(
+        w.sq(13, 9, 0)
+            .test_vision_adjacent(0, 1, 0, false, true, &env),
+        TestResults::Blocked
+    );
+    let env = VisionEnv::new(g, m, &NoSquareHooks);
+    assert_eq!(
+        c.test_vision_adjacent(0, -1, 0, false, false, &env),
+        TestResults::Clear
+    );
+}
+
+#[test]
+fn object_hooks_without_world_state() {
+    let mut w = World::new();
+    w.put(12, 12, 0, true);
+    w.put(12, 11, 0, true);
+    w.add(
+        12,
+        12,
+        0,
+        "thump_wall",
+        thump(|t| {
+            t.north = true;
+            t.is_door = true;
+            t.open = true;
+        }),
+    );
+    w.barricade(12, 11, 0, IsoDirections::S, &[50, 50, 50]);
+    let oh = ObjectHooks::new(&w.cell, &w.m);
+    let (sq, north) = (w.sq(12, 12, 0), w.sq(12, 11, 0));
+    // Open, but barricaded from the opposite square.
+    assert!(oh.is_barricaded(sq, &sq.objects[1]));
+    assert!(oh.has_blocked_thumpable_door(sq, EdgeFacing::NorthSouth));
+    assert!(!sq.can_reach_to(north, &w.m, &w.cell, &oh));
+    assert_eq!(
+        oh.special_object(north, &north.objects[1]),
+        Some(SpecialObject::Barricade {
+            dir: IsoDirections::S,
+            blocks_vision: true
+        })
+    );
+    // Through one chunk only, the opposite square (same chunk here) is
+    // still found.
+    let ch = &w.cell.chunks[&(1, 1)];
+    let getter = crate::square::ChunkGetter(ch);
+    let oh = ObjectHooks::new(&getter, &w.m);
+    assert!(oh.is_barricaded(sq, &sq.objects[1]));
 }
