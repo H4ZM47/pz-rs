@@ -9,6 +9,7 @@
 
 pub mod bind_core;
 pub mod bind_globals;
+pub mod bind_input;
 pub mod bind_ui;
 pub mod bind_fs;
 pub mod bind_java_util;
@@ -30,5 +31,6 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_ui::install_event_sink(mgr.events.clone());
     bind_fs::register(mgr);
     bind_mods::register(mgr);
+    bind_input::register(mgr);
     bind_render::register(mgr);
 }

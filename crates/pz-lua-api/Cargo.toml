@@ -11,3 +11,5 @@ pz-render.workspace = true
 pz-text.workspace = true
 pz-ui.workspace = true
 indexmap.workspace = true
+pz-input.workspace = true
+pz-classfile.workspace = true
