@@ -24,10 +24,12 @@
 
 pub mod assignments;
 pub mod clamp;
+pub mod geometry;
 pub mod manager;
 pub mod modifier;
 pub mod texture;
 
+pub use geometry::{TileGeometryManager, TileGeometryProperties};
 pub use assignments::{TileDepthTextureAssignmentManager, TileDepthTextureAssignments};
 pub use manager::{split_tile_name, ModData, TileDepthPreset, TileDepthTextureManager, TileDepthTextures};
 pub use modifier::{depth_uv1, wall_preset, TileDepthModifier, WallDirection, WallFlags};
