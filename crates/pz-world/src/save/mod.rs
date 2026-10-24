@@ -11,6 +11,7 @@
 //! both, so they are read and written exactly without the item or entity
 //! systems.
 
+pub mod animal;
 pub mod chunk_file;
 pub mod io;
 pub mod items;
@@ -192,12 +193,12 @@ impl SaveSettings {
 }
 
 /// Hooks into systems outside this crate. The defaults behave like a game
-/// with no animal definitions loaded.
+/// with no animal or Lua definitions loaded and no animal zones.
 pub trait SaveHooks {
-    /// Components the class's `(IsoCell)` constructor adds before `load`
-    /// (`IsoFeedingTrough` creates a `FluidContainer`), as their saved
-    /// bytes. A loaded component of the same type replaces one in place.
-    /// The ECS components are not ported, so the default adds none.
+    /// Components the class's `(IsoCell)` constructor adds before `load`,
+    /// as their saved bytes, besides the ones this crate builds itself
+    /// (the `IsoFeedingTrough` fluid container). A loaded component of the
+    /// same type loads in place. The default adds none.
     fn factory_components(&self, _object_name: &str) -> Vec<crate::objects::ComponentBlob> {
         Vec::new()
     }
@@ -206,6 +207,40 @@ pub trait SaveHooks {
     /// is known: nest boxes past it are dropped on load.
     fn hutch_max_nest_box(&self, _sprite_name: &str) -> Option<i32> {
         None
+    }
+
+    /// `IsoHutch.getMaxAnimals()` for the hutch sprite. Needed only when a
+    /// loaded animal has to draw a new place in the hutch.
+    fn hutch_max_animals(&self, _sprite_name: &str) -> Option<i32> {
+        None
+    }
+
+    /// `FeedingTroughDef` for a trough sprite (`IsoFeedingTrough.initWithDef`):
+    /// `maxWater` and `maxFeed`.
+    fn feeding_trough_def(&self, _sprite_name: &str) -> Option<(f32, i32)> {
+        None
+    }
+
+    /// `AnimalDefinitions.getDef(type)`. Loading an animal without its
+    /// definition fails, as in the original.
+    fn animal_definition(&self, _animal_type: &str) -> Option<&animal::AnimalDefinition> {
+        None
+    }
+
+    /// Whether `animalZoneHandler.getZone(uuid)` finds the animal's zone.
+    fn animal_zone_exists(&self, _msb: i64, _lsb: i64) -> bool {
+        false
+    }
+
+    /// `Rand.Next(min, max)` for ints (`max` exclusive). The game's
+    /// generator is not seeded here; the default returns `min`.
+    fn rand_next(&self, min: i32, _max: i32) -> i32 {
+        min
+    }
+
+    /// `Rand.Next(min, max)` for floats. The default returns `min`.
+    fn rand_next_float(&self, min: f32, _max: f32) -> f32 {
+        min
     }
 }
 
@@ -242,5 +277,7 @@ impl SaveCtx<'_> {
     }
 }
 
+#[cfg(test)]
+mod animal_tests;
 #[cfg(test)]
 mod tests;
