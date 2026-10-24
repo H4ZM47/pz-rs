@@ -18,10 +18,21 @@ pub enum Value {
     Call { class: String, name: String, descriptor: String, args: Vec<Value> },
     /// `new class(args)`.
     New { class: String, args: Vec<Value> },
+    /// A new array with the elements stored into it so far.
+    Array(Vec<Value>),
     Unknown,
 }
 
 impl Value {
+    /// The string elements of an array value (`None` if any element is not
+    /// a string).
+    pub fn as_str_array(&self) -> Option<Vec<&str>> {
+        match self {
+            Value::Array(a) => a.iter().map(Value::as_str).collect(),
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Value::Str(s) => Some(s),
@@ -163,6 +174,25 @@ pub fn static_inits(class: &ClassFile) -> Result<Vec<StaticInit>> {
                     }
                     if returns {
                         stack.push(Value::Call { class: r.class, name: r.name, descriptor: r.descriptor, args });
+                    }
+                }
+            }
+            0xbc | 0xbd => {
+                let len = match pop(&mut stack) {
+                    Value::Int(n) if (0..=1 << 20).contains(&n) => n as usize,
+                    _ => 0,
+                };
+                stack.push(Value::Array(vec![Value::Unknown; len]));
+            }
+            // iastore..sastore: the array reference below is a `dup` of the
+            // one that stays on the stack, so store into that one.
+            0x4f..=0x56 => {
+                let value = pop(&mut stack);
+                let index = pop(&mut stack);
+                pop(&mut stack);
+                if let (Some(Value::Array(a)), Value::Int(i)) = (stack.last_mut(), index) {
+                    if let Some(slot) = usize::try_from(i).ok().and_then(|i| a.get_mut(i)) {
+                        *slot = value;
                     }
                 }
             }
