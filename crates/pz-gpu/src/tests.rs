@@ -317,3 +317,55 @@ fn skybox_renders_into_its_reflection_texture() {
         assert_eq!(px(&p, 64, 1, 1), [0, 0, 0, 255], "{hires}");
     }
 }
+
+/// `WeatherFxMask`'s compositing: particles drawn into one weather
+/// texture, the mask texture subtracted from them with
+/// `GL_FUNC_REVERSE_SUBTRACT`, the result blended over the screen.
+#[test]
+fn weather_fx_mask_subtracts_from_particles() {
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    let gl_uv = |tex: &pz_render::Texture, dl: &mut DrawList| {
+        // Texture.rendershader2's coordinates: v from the top (1) down.
+        dl.render_uv(Some(tex), 0.0, 0.0, 16.0, 8.0, Rgba(1.0, 1.0, 1.0, 1.0), [0.0, 1.0, 1.0, 0.0], [1.0, 1.0, 0.0, 0.0]);
+    };
+    dl.cmds.push(DrawCmd::WeatherFxBegin { index: 0, width: 16, height: 8 });
+    dl.render_rect(0, 0, 8, 8, Rgba(1.0, 1.0, 1.0, 1.0));
+    dl.cmds.push(DrawCmd::WeatherFxEnd);
+    dl.cmds.push(DrawCmd::WeatherFxBegin { index: 1, width: 16, height: 8 });
+    dl.cmds.push(DrawCmd::BlendFuncSeparate(gl::ONE, gl::ONE_MINUS_SRC_ALPHA, gl::ONE, gl::ONE_MINUS_SRC_ALPHA));
+    dl.render_rect(0, 0, 16, 4, Rgba(1.0, 0.0, 0.0, 1.0));
+    dl.render_rect(0, 4, 16, 4, Rgba(0.0, 1.0, 0.0, 1.0));
+    dl.cmds.push(DrawCmd::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
+    dl.cmds.push(DrawCmd::BlendEquation(gl::FUNC_REVERSE_SUBTRACT));
+    gl_uv(&pz_render::weather_fx_texture(0, 16, 8), &mut dl);
+    dl.cmds.push(DrawCmd::BlendEquation(gl::FUNC_ADD));
+    dl.cmds.push(DrawCmd::WeatherFxEnd);
+    gl_uv(&pz_render::weather_fx_texture(1, 16, 8), &mut dl);
+    g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+    let p = g.read_pixels();
+    // Masked on the left, red over green on the right, the right way up.
+    assert_eq!(px(&p, 16, 2, 2), [0, 0, 0, 255]);
+    assert_eq!(px(&p, 16, 2, 6), [0, 0, 0, 255]);
+    assert!(near_rgb(px(&p, 16, 12, 1), [255, 0, 0]), "{:?}", px(&p, 16, 12, 1));
+    assert!(near_rgb(px(&p, 16, 12, 6), [0, 255, 0]), "{:?}", px(&p, 16, 12, 6));
+}
+
+/// The `fogCircle` program draws through its own screen-space projection,
+/// whatever the zoomed world projection is.
+#[test]
+fn fog_circle_uses_its_own_projection() {
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::Ortho { left: 0.0, right: 32.0, bottom: 16.0, top: 0.0, width: 16, height: 8 });
+    let mut q = DrawList::default();
+    q.render_rect(8, 0, 8, 8, Rgba(1.0, 1.0, 1.0, 0.5));
+    let DrawCmd::Sprite(s) = q.cmds.remove(0) else { panic!() };
+    dl.cmds.push(DrawCmd::FogCircle { sprite: s, width: 16.0, height: 8.0 });
+    g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+    let p = g.read_pixels();
+    assert_eq!(px(&p, 16, 4, 4), [0, 0, 0, 255]);
+    assert!(near_rgb(px(&p, 16, 12, 4), [127, 127, 127]), "{:?}", px(&p, 16, 12, 4));
+}

@@ -64,3 +64,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 fn fs_clear(in: VsOut) -> @location(0) vec4<f32> {
     return in.col;
 }
+
+// Port of `fogCircle.frag`: texture times vertex colour, nothing discarded
+// but by the (compatibility-profile) alpha test.
+@fragment
+fn fs_fog_circle(in: VsOut) -> @location(0) vec4<f32> {
+    let c = textureSample(diffuse, diffuse_sampler, in.uv) * in.col;
+    if (!alpha_pass(c.a)) {
+        discard;
+    }
+    return c;
+}

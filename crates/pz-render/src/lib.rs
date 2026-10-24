@@ -243,6 +243,39 @@ pub enum DrawCmd {
     /// 512x512 reflection textures ([`skybox_texture`]) with the `skybox` or
     /// `skybox_hires` shader.
     SkyBox(Box<SkyBoxDraw>),
+    /// `glBlendEquation` (`gl::FUNC_ADD`, `gl::FUNC_REVERSE_SUBTRACT`, ...).
+    BlendEquation(u32),
+    /// `WeatherFxMask`'s `glBuffer(4)`/`glBuffer(6)`: following draws go to
+    /// weather texture `index` (0 `fboMask`, 1 `fboParticles`; see
+    /// [`weather_fx_texture`]), screen-sized, created at this size if
+    /// needed and cleared to transparent black (`startDrawing(true, true)`).
+    WeatherFxBegin { index: usize, width: u32, height: u32 },
+    /// `glBuffer(5)`/`glBuffer(7)`: back to the target bound before
+    /// `WeatherFxBegin`.
+    WeatherFxEnd,
+    /// A quad drawn with the `fogCircle` shader (`IsoWeatherFX.renderFogCircle`):
+    /// texture times colour, positions through its own `u_mvp`,
+    /// `ortho(0, width, height, 0)`.
+    FogCircle { sprite: Sprite, width: f32, height: f32 },
+}
+
+/// The ids of `WeatherFxMask`'s two screen-sized render textures
+/// (`fboMask`, `fboParticles`), reserved like [`SKYBOX_TEXTURE_IDS`] so
+/// draws can sample them.
+pub const WEATHER_FX_TEXTURE_IDS: [u32; 2] = [0xFFFF_FE10, 0xFFFF_FE11];
+
+/// A [`Texture`] naming weather texture `index` at `width` x `height`
+/// (`new Texture(w, h, 16)`: its power-of-two size is its own).
+pub fn weather_fx_texture(index: usize, width: u32, height: u32) -> Texture {
+    let mut t = Texture::empty(if index == 0 { "WeatherFxMask.fboMask" } else { "WeatherFxMask.fboParticles" });
+    t.id = Some(WEATHER_FX_TEXTURE_IDS[index.min(1)]);
+    t.width = width;
+    t.height = height;
+    t.width_hw = width as i32;
+    t.height_hw = height as i32;
+    t.uv = [0.0, 0.0, width as f32, height as f32];
+    t.ready = true;
+    t
 }
 
 /// The ids of `SkyBox`'s two render textures (`textureFboA`/`B`), reserved
