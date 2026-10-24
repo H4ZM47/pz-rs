@@ -37,9 +37,7 @@ struct DefaultHost {
 
 impl MapGroupsHost for DefaultHost {
     fn maps_dir(&self) -> PathBuf {
-        self.fs
-            .resolve("media/maps")
-            .unwrap_or_else(|| self.fs.base.join("media").join("maps"))
+        (self.maps_dir)()
     }
     fn active_mods(&self, _v: &Value) -> ActiveModsView {
         ActiveModsView::default()
