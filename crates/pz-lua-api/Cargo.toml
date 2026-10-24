@@ -17,3 +17,5 @@ pz-text.workspace = true
 pz-ui.workspace = true
 pz-input.workspace = true
 pz-classfile.workspace = true
+pz-popman.workspace = true
+pz-world.workspace = true

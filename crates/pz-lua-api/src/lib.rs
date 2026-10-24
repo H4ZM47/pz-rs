@@ -25,6 +25,7 @@ pub mod bind_iso_enums;
 pub mod bind_java_util;
 pub mod bind_mods;
 pub mod bind_nutrition;
+pub mod bind_popman;
 pub mod bind_registry;
 pub mod bind_render;
 pub mod bind_save;
@@ -84,4 +85,5 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_mods::register(mgr);
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
+    bind_popman::register(&mut mgr.thread);
 }
