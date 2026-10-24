@@ -208,10 +208,8 @@ impl AiMat4 {
     /// `aiMatrix4x4(const aiMatrix3x3&)`.
     pub fn from_3x3(r: &[[f32; 3]; 3]) -> AiMat4 {
         let mut m = Self::IDENTITY;
-        for i in 0..3 {
-            for j in 0..3 {
-                m.m[i][j] = r[i][j];
-            }
+        for (dst, src) in m.m.iter_mut().zip(r) {
+            dst[..3].copy_from_slice(src);
         }
         m
     }

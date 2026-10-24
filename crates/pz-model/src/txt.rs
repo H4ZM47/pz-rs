@@ -233,13 +233,13 @@ pub fn load_txt(
                     if !is_static {
                         line = need(r.read())?;
                         let s = jsplit(&line);
-                        for k in 0..4 {
-                            w[k] = pf(field(&s, k)?)?;
+                        for (k, wk) in w.iter_mut().enumerate() {
+                            *wk = pf(field(&s, k)?)?;
                         }
                         line = need(r.read())?;
                         let s = jsplit(&line);
-                        for k in 0..4 {
-                            bi[k] = pi(field(&s, k)?.trim())?;
+                        for (k, bk) in bi.iter_mut().enumerate() {
+                            *bk = pi(field(&s, k)?.trim())?;
                         }
                     }
                     line = r.read().unwrap_or_default();
@@ -292,7 +292,7 @@ pub fn load_txt(
                 }
                 mode = 11;
             }
-            11 | 12 | 13 => {
+            11..=13 => {
                 for _ in 0..num_bones {
                     let l1 = need(r.read())?;
                     let l2 = need(r.read())?;

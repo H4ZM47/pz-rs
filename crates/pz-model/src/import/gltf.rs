@@ -10,6 +10,10 @@ use super::aimath::{AiMat4, AiQuat};
 use super::scene::*;
 use super::ImportError;
 
+/// An animation sampler: key times, per-key output values, and whether the
+/// interpolation is `CUBICSPLINE`.
+type SamplerData = (Vec<f32>, Vec<Vec<f32>>, bool);
+
 fn err<T>(m: impl Into<String>) -> Result<T, ImportError> {
     Err(ImportError(format!("GLTF: {}", m.into())))
 }
@@ -53,8 +57,10 @@ impl<'b> Accessor<'b> {
             .extract(n * 4, remap)?
             .into_iter()
             .map(|e| {
-                e.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                e.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c))
                     .collect()
             })
             .collect())
@@ -228,7 +234,10 @@ pub(crate) fn libcxx_unordered_order(keys: &[u32]) -> Vec<u32> {
     fn next_prime(n: usize) -> usize {
         let mut p = n.max(2);
         loop {
-            if (2..).take_while(|d| d * d <= p).all(|d| p % d != 0) {
+            if (2..)
+                .take_while(|d| d * d <= p)
+                .all(|d| !p.is_multiple_of(d))
+            {
                 return p;
             }
             p += 1;
@@ -752,24 +761,23 @@ pub fn import(data: &[u8]) -> Result<AiScene, ImportError> {
                 _ => {}
             }
         }
-        let read =
-            |si: usize, comps: usize| -> Result<(Vec<f32>, Vec<Vec<f32>>, bool), ImportError> {
-                let s = &samplers[si];
-                let times = g
-                    .accessor(s["input"].as_u64().unwrap_or(0))?
-                    .floats(1, None)?
-                    .into_iter()
-                    .map(|v| v[0])
-                    .collect();
-                let vals = g
-                    .accessor(s["output"].as_u64().unwrap_or(0))?
-                    .floats(comps, None)?;
-                Ok((
-                    times,
-                    vals,
-                    s["interpolation"].as_str() == Some("CUBICSPLINE"),
-                ))
-            };
+        let read = |si: usize, comps: usize| -> Result<SamplerData, ImportError> {
+            let s = &samplers[si];
+            let times = g
+                .accessor(s["input"].as_u64().unwrap_or(0))?
+                .floats(1, None)?
+                .into_iter()
+                .map(|v| v[0])
+                .collect();
+            let vals = g
+                .accessor(s["output"].as_u64().unwrap_or(0))?
+                .floats(comps, None)?;
+            Ok((
+                times,
+                vals,
+                s["interpolation"].as_str() == Some("CUBICSPLINE"),
+            ))
+        };
         let mut na = AiAnimation {
             name: anim["name"].as_str().unwrap_or("").to_string(),
             ..Default::default()

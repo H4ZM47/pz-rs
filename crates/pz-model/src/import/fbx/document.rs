@@ -377,6 +377,9 @@ pub struct AnimationStack {
 
 #[derive(Debug)]
 #[allow(dead_code)]
+// Objects are built once per document and only borrowed afterwards; boxing
+// `Geometry` buys nothing measurable here.
+#[allow(clippy::large_enum_variant)]
 pub enum ObjectKind {
     Model(Model),
     Geometry(Geometry),
@@ -887,7 +890,7 @@ impl<'a, 'd> Document<'a, 'd> {
         let verts_el = required_element(sc, "Vertices")?;
         let pvi_el = required_element(sc, "PolygonVertexIndex")?;
         let tv = read_float_tuples(verts_el, 3)?;
-        let temp_verts: Vec<[f32; 3]> = tv.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+        let temp_verts: Vec<[f32; 3]> = tv.as_chunks::<3>().0.to_vec();
         let temp_faces = read_ints(pvi_el)?;
         let mut m = MeshGeometry::default();
         let vc = temp_verts.len();

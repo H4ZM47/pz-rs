@@ -212,7 +212,7 @@ impl Default for ModelScriptInfo {
 }
 
 fn blank(s: &Option<String>) -> bool {
-    s.as_deref().map_or(true, |s| s.trim().is_empty())
+    s.as_deref().is_none_or(|s| s.trim().is_empty())
 }
 
 impl ModelScriptInfo {

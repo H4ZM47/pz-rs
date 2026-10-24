@@ -191,10 +191,8 @@ fn preprocess_mesh(mesh: &mut AiMesh) {
                 p[2] = 0.0;
                 p[1] = 0.0
             }),
-            3 => {
-                if uv.iter().take(n).all(|p| p[2] == 0.0) {
-                    mesh.num_uv_components[i] = 2;
-                }
+            3 if uv.iter().take(n).all(|p| p[2] == 0.0) => {
+                mesh.num_uv_components[i] = 2;
             }
             _ => {}
         }
@@ -209,9 +207,7 @@ fn preprocess_mesh(mesh: &mut AiMesh) {
             };
         }
     }
-    if mesh.tangents.is_some() && mesh.normals.is_some() && mesh.bitangents.is_none() {
-        let n = mesh.normals.as_ref().unwrap();
-        let t = mesh.tangents.as_ref().unwrap();
+    if let (Some(n), Some(t), None) = (&mesh.normals, &mesh.tangents, &mesh.bitangents) {
         let b = n
             .iter()
             .zip(t.iter())
@@ -302,11 +298,11 @@ pub fn make_left_handed(scene: &mut AiScene) {
                 v[2] *= -1.0;
             }
         }
-        if m.tangents.is_some() && m.bitangents.is_some() {
-            for v in m.tangents.as_mut().unwrap().iter_mut() {
+        if let (Some(ts), Some(bs)) = (m.tangents.as_mut(), m.bitangents.as_mut()) {
+            for v in ts.iter_mut() {
                 v[2] *= -1.0;
             }
-            for v in m.bitangents.as_mut().unwrap().iter_mut() {
+            for v in bs.iter_mut() {
                 v[2] *= -1.0;
             }
         }
@@ -319,16 +315,16 @@ pub fn make_left_handed(scene: &mut AiScene) {
             o[2][1] = -o[2][1];
             o[2][3] = -o[2][3];
         }
-        if m.tangents.is_some() && m.bitangents.is_some() {
-            for v in m.bitangents.as_mut().unwrap().iter_mut() {
-                *v = [v[0] * -1.0, v[1] * -1.0, v[2] * -1.0];
+        if let (Some(_), Some(bs)) = (&m.tangents, m.bitangents.as_mut()) {
+            for v in bs.iter_mut() {
+                *v = [-v[0], -v[1], -v[2]];
             }
         }
     }
     for mat in scene.materials.iter_mut() {
         for p in mat.properties.iter_mut() {
             if p.key == "$tex.mapaxis" && p.data.len() >= 12 {
-                let z = f32::from_le_bytes(p.data[8..12].try_into().unwrap()) * -1.0;
+                let z = -f32::from_le_bytes(p.data[8..12].try_into().unwrap());
                 p.data[8..12].copy_from_slice(&z.to_le_bytes());
             }
         }
@@ -479,8 +475,8 @@ fn mesh_hash(m: &AiMesh) -> u64 {
     let nv = m.vertices.len() as u32;
     let nf = m.faces.len() as u32;
     (f << 32)
-        | (((nb << 16) ^ nv ^ (nf << 4) ^ (m.material_index << 15) ^ (m.primitive_types << 28))
-            & 0xffffffff) as u64
+        | ((nb << 16) ^ nv ^ (nf << 4) ^ (m.material_index << 15) ^ (m.primitive_types << 28))
+            as u64
 }
 
 fn array_bounds(v: &[[f32; 3]]) -> ([f32; 3], [f32; 3]) {
@@ -1004,7 +1000,7 @@ fn merge_meshes(list: Vec<AiMesh>) -> AiMesh {
             for m in &list {
                 match &m.normals {
                     Some(n) => v.extend_from_slice(n),
-                    None => v.extend(std::iter::repeat([0.0; 3]).take(m.vertices.len())),
+                    None => v.extend(std::iter::repeat_n([0.0; 3], m.vertices.len())),
                 }
             }
             out.normals = Some(v);
@@ -1019,8 +1015,8 @@ fn merge_meshes(list: Vec<AiMesh>) -> AiMesh {
                         b.extend_from_slice(c);
                     }
                     _ => {
-                        t.extend(std::iter::repeat([0.0; 3]).take(m.vertices.len()));
-                        b.extend(std::iter::repeat([0.0; 3]).take(m.vertices.len()));
+                        t.extend(std::iter::repeat_n([0.0; 3], m.vertices.len()));
+                        b.extend(std::iter::repeat_n([0.0; 3], m.vertices.len()));
                     }
                 }
             }
@@ -1034,7 +1030,7 @@ fn merge_meshes(list: Vec<AiMesh>) -> AiMesh {
             for m in &list {
                 match &m.uvs[n] {
                     Some(u) => v.extend_from_slice(u),
-                    None => v.extend(std::iter::repeat([0.0; 3]).take(m.vertices.len())),
+                    None => v.extend(std::iter::repeat_n([0.0; 3], m.vertices.len())),
                 }
             }
             out.uvs[n] = Some(v);
@@ -1046,7 +1042,7 @@ fn merge_meshes(list: Vec<AiMesh>) -> AiMesh {
             for m in &list {
                 match &m.colors[n] {
                     Some(u) => v.extend_from_slice(u),
-                    None => v.extend(std::iter::repeat([0.0; 4]).take(m.vertices.len())),
+                    None => v.extend(std::iter::repeat_n([0.0; 4], m.vertices.len())),
                 }
             }
             out.colors[n] = Some(v);

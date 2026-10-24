@@ -109,7 +109,7 @@ fn rotation_matrix(mode: i32, rot: [f32; 3]) -> AiMat4 {
     let eps = f32::EPSILON;
     let mut is_id = [true; 3];
     let mut temp = [AiMat4::IDENTITY; 3];
-    let d2r = |x: f32| x * 0.017_453_292_5_f32;
+    let d2r = |x: f32| x * 0.017_453_292_f32;
     if rot[2].abs() > eps {
         temp[2] = AiMat4::rotation_z(d2r(rot[2]));
         is_id[2] = false;
@@ -644,12 +644,12 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
                     ts.push(mesh.tangents[ic]);
                     bs.push(b[ic]);
                 }
-                for j in 0..num_uvs {
-                    let v = mesh.uvs[j][ic];
-                    uvs[j].push([v[0], v[1], 0.0]);
+                for (dst, src) in uvs.iter_mut().zip(&mesh.uvs).take(num_uvs) {
+                    let v = src[ic];
+                    dst.push([v[0], v[1], 0.0]);
                 }
-                for j in 0..num_vcs {
-                    cols[j].push(mesh.colors[j][ic]);
+                for (dst, src) in cols.iter_mut().zip(&mesh.colors).take(num_vcs) {
+                    dst.push(src[ic]);
                 }
                 cursor += 1;
                 in_cursor += 1;
@@ -1322,7 +1322,7 @@ impl<'a, 'd, 'b> Converter<'a, 'd, 'b> {
         na.position_keys = self.interpolate_vec(&keys, &inputs, [0.0; 3], max_time, min_time);
         if inverse {
             for k in na.position_keys.iter_mut() {
-                k.value = [k.value[0] * -1.0, k.value[1] * -1.0, k.value[2] * -1.0];
+                k.value = [-k.value[0], -k.value[1], -k.value[2]];
             }
         }
         na.scaling_keys = vec![AiVectorKey {

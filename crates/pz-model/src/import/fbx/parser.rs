@@ -856,12 +856,16 @@ pub fn read_floats(el: &Element) -> Result<Vec<f32>, ImportError> {
         }
         return match ty {
             b'd' => Ok(buf
-                .chunks_exact(8)
-                .map(|c| f64::from_le_bytes(c.try_into().unwrap()) as f32)
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|c| f64::from_le_bytes(*c) as f32)
                 .collect()),
             b'f' => Ok(buf
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect()),
             _ => err("expected float or double array (binary)"),
         };
@@ -893,8 +897,10 @@ pub fn read_ints(el: &Element) -> Result<Vec<i32>, ImportError> {
             return err("expected int array (binary)");
         }
         return Ok(buf
-            .chunks_exact(4)
-            .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| i32::from_le_bytes(*c))
             .collect());
     }
     ascii_values(el)?.iter().map(parse_int).collect()
@@ -914,8 +920,10 @@ pub fn read_int64s(el: &Element) -> Result<Vec<i64>, ImportError> {
             return err("expected long array (binary)");
         }
         return Ok(buf
-            .chunks_exact(8)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| i64::from_le_bytes(*c))
             .collect());
     }
     ascii_values(el)?.iter().map(parse_int64).collect()

@@ -514,9 +514,9 @@ fn imported_static_mesh(scene: &AiScene, mi: usize) -> ImportedStaticMesh {
     };
     for i in 0..n {
         let p = mesh.vertices[i];
-        for k in 0..3 {
-            out.min_xyz[k] = java_min(out.min_xyz[k], p[k]);
-            out.max_xyz[k] = java_max(out.max_xyz[k], p[k]);
+        for (k, &pk) in p.iter().enumerate() {
+            out.min_xyz[k] = java_min(out.min_xyz[k], pk);
+            out.max_xyz[k] = java_max(out.max_xyz[k], pk);
         }
         let v = &mut out.vertices[i * stride..(i + 1) * stride];
         v[0..3].copy_from_slice(&p);
@@ -813,7 +813,7 @@ impl ImportedSkeleton {
                 .chain(ch.scaling_keys.iter().map(|k| k.time as f32))
             {
                 // TFloatArrayList.contains compares with ==.
-                if !ft.iter().any(|&x| x == t) {
+                if !ft.contains(&t) {
                     ft.push(t);
                 }
             }
