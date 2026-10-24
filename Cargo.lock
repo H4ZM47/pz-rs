@@ -188,12 +188,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-scripts"
+version = "0.1.0"
+dependencies = [
+ "pz-fs",
+]
+
+[[package]]
 name = "pz-text"
 version = "0.1.0"
+dependencies = [
+ "pz-render",
+]
 
 [[package]]
 name = "pz-ui"
 version = "0.1.0"
+dependencies = [
+ "pz-kahlua",
+ "pz-render",
+ "pz-text",
+]
+
+[[package]]
+name = "pz-world"
+version = "0.1.0"
+dependencies = [
+ "pz-fs",
+]
 
 [[package]]
 name = "regex"
