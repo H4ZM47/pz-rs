@@ -22,7 +22,7 @@ use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_scripts::math::{Vector2, Vector3};
 use pz_scripts::objects::definitions::{
     ActionSoundTime, Color, EnergyDefinitionScript, EnergyType, FluidCategory, FluidDefinitionScript,
-    FluidFilterScript, FluidType, Metabolics, PoisonEffect, TimedActionScript,
+    FluidFilterScript, FluidType, PoisonEffect, TimedActionScript,
 };
 use pz_scripts::objects::entity::item_config::ItemConfig;
 use pz_scripts::objects::items::ItemFilterScript;
@@ -207,7 +207,7 @@ fn action_sound_time_name(t: ActionSoundTime) -> &'static str {
     }
 }
 
-fn register_enums(thread: &mut Thread) {
+fn register_enums(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let names = ActionSoundTime::ALL.iter().map(|t| action_sound_time_name(*t)).collect();
     if let Some(b) = enum_once(thread, ACTION_SOUND_TIME_CLASS, names) {
         b.method("toString", |c| {
@@ -221,7 +221,15 @@ fn register_enums(thread: &mut Thread) {
             Ok(c.push(id.into_lua()))
         });
     }
-    enum_once(thread, METABOLICS_CLASS, Metabolics::ALL.iter().map(|m| m.name()).collect());
+    // The constants are game data read from the jar.
+    let mets: Vec<&'static str> = sm
+        .builtin_tables
+        .borrow()
+        .metabolics
+        .iter()
+        .map(|(n, _)| &*Box::leak(n.clone().into_boxed_str()))
+        .collect();
+    enum_once(thread, METABOLICS_CLASS, mets);
     enum_once(thread, FLUID_TYPE_CLASS, FluidType::ALL.iter().map(|m| m.name()).collect());
     enum_once(thread, FLUID_CATEGORY_CLASS, FluidCategory::ALL.iter().map(|m| m.name()).collect());
     enum_once(thread, POISON_EFFECT_CLASS, PoisonEffect::ALL.iter().map(|m| m.name()).collect());
@@ -495,9 +503,9 @@ fn register_model_script(thread: &mut Thread) {
     });
 }
 
-pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
+pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     register_values(thread);
-    register_enums(thread);
+    register_enums(thread, sm);
     register_attachment(thread);
     register_model_script(thread);
 
@@ -589,7 +597,7 @@ pub fn register(thread: &mut Thread, _sm: &Rc<ScriptManager>) {
     get(&b, "getSoundTime", |t: &TimedActionScript| {
         enum_value(ACTION_SOUND_TIME_CLASS, action_sound_time_name(t.sound_time()))
     });
-    get(&b, "getMetabolics", |t: &TimedActionScript| enum_value(METABOLICS_CLASS, t.metabolics().name()));
+    get(&b, "getMetabolics", |t: &TimedActionScript| enum_value(METABOLICS_CLASS, t.metabolics()));
 
     let b =
         expose_class(thread, "zombie.scripting.objects.FluidDefinitionScript", Some(super::BASE_SCRIPT_OBJECT_CLASS));
