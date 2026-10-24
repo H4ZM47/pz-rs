@@ -33,5 +33,5 @@ pub use lighting::{
 pub use render_world::{
     building_id, cutaway_info, render_square, seam_neighbours, wall_type, RenderWorld, WorldView,
 };
-pub use settings::{NoonSettings, RenderSettingsSource};
+pub use settings::{ClimateInput, ClimateSettings, NoonSettings, PlayerRenderInput, RenderSettingsSource};
 pub use sprites::{GameTextures, NoTextures, SpriteCache, SpriteTextures};
