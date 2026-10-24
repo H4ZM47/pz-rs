@@ -11,6 +11,7 @@
 //! crate fills; lighting comes in as each square's light colour and eight
 //! vertex lights, as `LightingJNI` produces them.
 
+pub mod alpha;
 pub mod cell;
 pub mod chunk;
 pub mod color;
@@ -22,6 +23,7 @@ pub mod texd;
 pub mod world;
 
 pub use cell::ChunkRenderer;
+pub use alpha::CutawayView;
 pub use chunk::ChunkTexture;
 pub use cutaways::{CutawayPlayer, CutawayState, CutawayWorld, Cutaways};
 pub use world::{DepthMaps, DepthPreset, ObjectKind, RenderObject, RenderSquare, SpriteFlags, SpriteInfo, TileType};

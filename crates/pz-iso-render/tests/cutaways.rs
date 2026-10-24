@@ -3,9 +3,11 @@
 
 use std::rc::Rc;
 
+use pz_iso_render::alpha::{WallDraw, WallSide};
+use pz_iso_render::cell::Layer;
 use pz_iso_render::cutaways::{BuildingDef, GridWorld, CUTAWAY_N, CUTAWAY_W};
 use pz_iso_render::world::{BuildingId, SpriteFlags, TileType};
-use pz_iso_render::{CutawayPlayer, Cutaways, ObjectKind, RenderObject, RenderSquare, SpriteInfo};
+use pz_iso_render::{CutawayPlayer, CutawayView, Cutaways, ObjectKind, RenderObject, RenderSquare, SpriteInfo};
 
 fn sprite(f: impl FnOnce(&mut SpriteInfo)) -> Rc<SpriteInfo> {
     let mut s = SpriteInfo { tint_mod: [1.0; 3], ..Default::default() };
@@ -233,6 +235,49 @@ fn floors_above_occlude_the_squares_they_cover() {
     assert!(st.is_visible(3, 3, 0));
     let mut no_occlusion = Cutaways { occlusion_enabled: false };
     assert!(no_occlusion.update(&w, &player).is_visible(9, 9, 0));
+}
+
+#[test]
+fn cut_doors_and_windows_fade() {
+    let mut w = two_rooms();
+    let door = RenderObject::new(
+        ObjectKind::Door { open: false },
+        Some(sprite(|s| {
+            s.tile_type = TileType::DoorN;
+            s.cut_n = true;
+        })),
+    );
+    w.square_mut(2, 5, 0).objects.push(door);
+    let window = RenderObject::new(ObjectKind::Window { north: true }, Some(sprite(|s| s.flags.window_n = true)));
+    w.square_mut(4, 5, 0).objects.push(window);
+    let table = RenderObject::new(ObjectKind::Plain, Some(sprite(|_| {})));
+    w.square_mut(5, 5, 0).objects.push(table);
+    let mut player = CutawayPlayer::at(3.5, 2.5, 0.0);
+    player.forward = [0.0, 1.0];
+    let st = Cutaways::new().update(&w, &player);
+    let cv = CutawayView { state: &st, world: &w };
+    let sq = w.squares.get(&(2, 5, 0)).unwrap();
+    let door = sq.objects.last().unwrap();
+    assert_eq!(cv.target_alpha(sq, door, Layer::MinusFloor), 0.4);
+    assert_eq!(cv.render_layer(sq, door), Layer::Translucent);
+    let c = cv.wall_cutaway(sq, door);
+    assert!(c.has_seen_door_n);
+    assert_eq!(cv.wall_draw(sq, door, WallSide::N, &c), WallDraw::Normal { no_wall_lighting: true });
+    // The plain wall of the same square is cut with the cutaway shader.
+    let wall = &sq.objects[1];
+    assert_eq!(cv.target_alpha(sq, wall, Layer::MinusFloor), 1.0);
+    assert_eq!(cv.wall_draw(sq, wall, WallSide::N, &c), WallDraw::Cutaway);
+    // The window fades with the player's squared distance to its centre:
+    // (3.5, 2.5) to (4.5, 5.5) is 1 + 9.
+    let sq = w.squares.get(&(4, 5, 0)).unwrap();
+    let a = cv.target_alpha(sq, sq.objects.last().unwrap(), Layer::Translucent);
+    assert!((a - (0.1 + 0.65 * (1.0 - 10.0 / 25.0))).abs() < 1e-6, "{a}");
+    // Furniture on a cut square, outside the player's room: 0.25.
+    let sq = w.squares.get(&(5, 5, 0)).unwrap();
+    assert_eq!(cv.target_alpha(sq, sq.objects.last().unwrap(), Layer::MinusFloor), 0.25);
+    // An open door is 0.6 regardless.
+    let open = RenderObject::new(ObjectKind::Door { open: true }, Some(sprite(|s| s.tile_type = TileType::DoorW)));
+    assert_eq!(cv.target_alpha(sq, &open, Layer::MinusFloor), 0.6);
 }
 
 #[test]
