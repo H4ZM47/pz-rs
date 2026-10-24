@@ -6,26 +6,6 @@ use crate::model::{fastfloor, flags, open, Character};
 use crate::state::LightingState;
 use crate::world::{nb, SqId};
 
-/// Arguments of one `CalculateColor` call: the diagonal and the two
-/// cardinal neighbours sharing the corner, and the four corner indices.
-type ColorCall = (Option<SqId>, Option<SqId>, Option<SqId>, [usize; 4]);
-
-/// `0xFF000000 | b << 16 | g << 8 | r`.
-#[inline]
-fn pack(c: [u32; 3]) -> u32 {
-    c[0] | (c[1] << 8) | (c[2] << 16) | 0xff00_0000
-}
-
-#[inline]
-fn unpack(v: u32) -> [u32; 3] {
-    [v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff]
-}
-
-#[inline]
-fn max3(a: [u32; 3], b: [u32; 3]) -> [u32; 3] {
-    [a[0].max(b[0]), a[1].max(b[1]), a[2].max(b[2])]
-}
-
 impl LightingState {
     /// `LightingSquare::CalcLightInfo`: darkMulti from the target values of
     /// the square and its visible cardinal neighbours, and the light colour
@@ -161,8 +141,9 @@ impl LightingState {
         s.max_up = hi;
     }
 
-    /// The eight neighbours used by the vertex stages, in slot order,
-    /// filtered by the vision flags (diagonals) and open edges (cardinals).
+    /// The eight neighbours used by the vertex stages, in slot order
+    /// (NW, N, NE, E, SE, S, SW, W), filtered by the vision flags
+    /// (diagonals) and open edges (cardinals).
     fn vert_neighbours(&self, id: SqId) -> [Option<SqId>; 8] {
         let s = self.sq(id);
         let f = s.flags;
@@ -180,29 +161,34 @@ impl LightingState {
         ]
     }
 
+    /// Own (level, index) and the vertex neighbours' (level, index).
+    fn vert_slots(&self, id: SqId) -> (Slot, [Option<Slot>; 8]) {
+        let at = |o: SqId| {
+            let s = self.sq(o);
+            (s.z as usize & 63, s.idx as usize)
+        };
+        (at(id), self.vert_neighbours(id).map(|o| o.map(at)))
+    }
+
     /// `LightingState::CalculateMaxVertLight1`: corner maxima of the
     /// below/above maxima of the four squares sharing each corner.
     pub(crate) fn calculate_max_vert_light1(&mut self, id: SqId) {
         let (w, h) = (self.w, self.h);
-        let [nw, n, ne, e, se, s, sw, wst] = self.vert_neighbours(id);
-        let lo = |o: Option<SqId>| o.map(|o| self.sq(o).max_down.map(u32::from));
-        let hi = |o: Option<SqId>| o.map(|o| self.sq(o).max_up.map(u32::from));
+        let nbs = self.vert_neighbours(id);
         let me = self.sq(id);
-        let own_lo = me.max_down.map(u32::from);
-        let own_hi = me.max_up.map(u32::from);
-        let corners: [[Option<SqId>; 3]; 4] = [[nw, n, wst], [ne, n, e], [se, s, e], [sw, s, wst]];
         let mut out = [0u32; 8];
-        for (k, c) in corners.iter().enumerate() {
-            let mut acc = [0u32; 3];
-            for v in c.iter().filter_map(|&o| lo(o)) {
-                acc = max3(acc, v);
+        for (k, c) in CORNERS.iter().enumerate() {
+            let mut lo = bytes(me.max_down);
+            let mut hi = bytes(me.max_up);
+            for &slot in c {
+                if let Some(o) = nbs[slot] {
+                    let os = self.sq(o);
+                    lo = bmax(lo, bytes(os.max_down));
+                    hi = bmax(hi, bytes(os.max_up));
+                }
             }
-            out[k] = pack(max3(acc, own_lo));
-            let mut acc = [0u32; 3];
-            for v in c.iter().filter_map(|&o| hi(o)) {
-                acc = max3(acc, v);
-            }
-            out[k + 4] = pack(max3(acc, own_hi));
+            out[k] = lo | 0xff00_0000;
+            out[k + 4] = hi | 0xff00_0000;
         }
         let (zi, i) = (me.z as usize & 63, me.idx as usize);
         let d = self.back[zi].data_mut(w, h);
@@ -216,73 +202,83 @@ impl LightingState {
     /// matters).
     pub(crate) fn calculate_max_vert_light2(&mut self, id: SqId) {
         let (w, h) = (self.w, self.h);
-        let [nw, n, ne, e, se, s, sw, wst] = self.vert_neighbours(id);
-        // (diagonal, cardinal a, cardinal b) and the corner each of them
-        // contributes, for corners 0..3; the upper set is the same + 4.
-        let plan: [[(Option<SqId>, usize); 3]; 4] = [
-            [(nw, 2), (n, 3), (wst, 1)],
-            [(ne, 3), (n, 2), (e, 0)],
-            [(se, 0), (s, 1), (e, 3)],
-            [(sw, 1), (s, 0), (wst, 2)],
-        ];
-        let me = self.sq(id);
-        let (zi, i) = (me.z as usize & 63, me.idx as usize);
+        let ((zi, i), nbs) = self.vert_slots(id);
         for upper in [0usize, 4] {
-            for (k, row) in plan.iter().enumerate() {
-                let mut acc = unpack(self.back[zi].data_mut(w, h).inter[k + upper][i]);
-                for &(o, corner) in row {
-                    let Some(o) = o else { continue };
-                    let (oz, oi) = {
-                        let os = self.sq(o);
-                        (os.z as usize & 63, os.idx as usize)
-                    };
-                    let v = self.back[oz].data_mut(w, h).inter[corner + upper][oi];
-                    acc = max3(acc, unpack(v));
+            for (k, row) in BLEND.iter().enumerate() {
+                let mut acc = self.back[zi].data_mut(w, h).inter[k + upper][i];
+                for &(slot, corner) in row {
+                    if let Some((oz, oi)) = nbs[slot] {
+                        acc = bmax(acc, self.back[oz].data_mut(w, h).inter[corner + upper][oi]);
+                    }
                 }
-                self.back[zi].data_mut(w, h).inter[k + upper][i] = pack(acc);
+                self.back[zi].data_mut(w, h).inter[k + upper][i] = acc | 0xff00_0000;
             }
         }
     }
 
-    /// `LightingState::CalculateVertColoursForTile`.
+    /// `LightingState::CalculateVertColoursForTile`: eight
+    /// `CalculateColor` calls, the floor corners then the wall tops.
     pub(crate) fn calculate_vert_colours_for_tile(&mut self, id: SqId) {
-        let [nw, n, ne, e, se, s, sw, wst] = self.vert_neighbours(id);
-        let calls: [ColorCall; 4] = [
-            (nw, n, wst, [2, 3, 1, 0]),
-            (ne, n, e, [3, 2, 0, 1]),
-            (se, s, e, [0, 1, 3, 2]),
-            (sw, s, wst, [1, 0, 2, 3]),
-        ];
+        let (w, h) = (self.w, self.h);
+        let ((zi, i), nbs) = self.vert_slots(id);
         for upper in [0usize, 4] {
-            for &(a, b, c, k) in &calls {
-                self.calculate_color(a, b, c, id, k.map(|v| v + upper));
+            for (slots, k) in COLOR_CALLS {
+                // `CalculateColor`: the final colour of one vertex.
+                let mut acc = 0u32;
+                for (slot, corner) in slots.into_iter().zip(k) {
+                    if let Some((oz, oi)) = nbs[slot] {
+                        acc = bmax(acc, self.back[oz].data_mut(w, h).inter[corner + upper][oi]);
+                    }
+                }
+                let kk = k[3] + upper;
+                let d = self.back[zi].data_mut(w, h);
+                let v = bmax(acc, d.inter[kk][i]) | 0xff00_0000;
+                let s = &mut self.squares[id as usize];
+                if s.prev_vert[kk] != v {
+                    d.set_dirty(w, i);
+                }
+                s.prev_vert[kk] = v;
+                d.vert[kk][i] = v;
             }
         }
     }
+}
 
-    /// `LightingState::CalculateColor`: the final colour of one vertex.
-    fn calculate_color(&mut self, a: Option<SqId>, b: Option<SqId>, c: Option<SqId>, id: SqId, k: [usize; 4]) {
-        let (w, h) = (self.w, self.h);
-        let mut acc = [0u32; 3];
-        for (o, corner) in [(a, k[0]), (b, k[1]), (c, k[2])] {
-            let Some(o) = o else { continue };
-            let (oz, oi) = {
-                let os = self.sq(o);
-                (os.z as usize & 63, os.idx as usize)
-            };
-            acc = max3(acc, unpack(self.back[oz].data_mut(w, h).inter[corner][oi]));
-        }
-        let (zi, i) = {
-            let s = self.sq(id);
-            (s.z as usize & 63, s.idx as usize)
-        };
-        let d = self.back[zi].data_mut(w, h);
-        let v = pack(max3(acc, unpack(d.inter[k[3]][i])));
-        let s = &mut self.squares[id as usize];
-        if s.prev_vert[k[3]] != v {
-            d.set_dirty(w, i);
-        }
-        s.prev_vert[k[3]] = v;
-        d.vert[k[3]][i] = v;
-    }
+/// A square's result arrays: (level, index).
+type Slot = (usize, usize);
+
+/// Neighbour slots sharing each floor corner (NW, NE, SE, SW).
+const CORNERS: [[usize; 3]; 4] = [[0, 1, 7], [2, 1, 3], [4, 5, 3], [6, 5, 7]];
+
+/// For each corner: the neighbour slots and the corner of theirs that
+/// coincides with it (`CalculateMaxVertLight2`).
+const BLEND: [[(usize, usize); 3]; 4] = [
+    [(0, 2), (1, 3), (7, 1)],
+    [(2, 3), (1, 2), (3, 0)],
+    [(4, 0), (5, 1), (3, 3)],
+    [(6, 1), (5, 0), (7, 2)],
+];
+
+/// `CalculateColor` arguments: diagonal, cardinal, cardinal (slots), and
+/// the corners of those three and of the square itself.
+const COLOR_CALLS: [([usize; 3], [usize; 4]); 4] = [
+    ([0, 1, 7], [2, 3, 1, 0]),
+    ([2, 1, 3], [3, 2, 0, 1]),
+    ([4, 5, 3], [0, 1, 3, 2]),
+    ([6, 5, 7], [1, 0, 2, 3]),
+];
+
+/// RGB bytes as `r | g << 8 | b << 16`.
+#[inline]
+fn bytes(c: [u8; 3]) -> u32 {
+    u32::from(c[0]) | (u32::from(c[1]) << 8) | (u32::from(c[2]) << 16)
+}
+
+/// Channel-wise maximum of the low three bytes (the alpha byte is dropped).
+#[inline]
+fn bmax(a: u32, b: u32) -> u32 {
+    let r = (a & 0xff).max(b & 0xff);
+    let g = (a & 0xff00).max(b & 0xff00);
+    let bl = (a & 0xff_0000).max(b & 0xff_0000);
+    r | g | bl
 }
