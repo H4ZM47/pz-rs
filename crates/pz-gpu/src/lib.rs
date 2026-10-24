@@ -13,6 +13,14 @@
 //!
 //! Textures are uploaded on first use from [`TextureManager`] with the
 //! original filter, wrap and mip settings.
+//!
+//! The world is drawn as the build-42 renderer draws it: tiles are recorded
+//! into per-chunk colour + 16-bit depth textures with the depth-texture
+//! shaders (`DrawCmd::ChunkBegin`..`ChunkEnd`), then composited into the
+//! main target with `chunkShader`, the depth buffer resolving overlap.
+//! Texture targets are drawn with clip-space y flipped, so texture
+//! coordinates address them the way GL's bottom-up framebuffers are
+//! addressed.
 
 mod gl;
 mod state;
@@ -21,11 +29,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use pz_render::{DrawCmd, DrawList, Texture, TextureManager};
+use pz_render::{DrawCmd, DrawList, TextureManager, WorldShader};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub use state::GlState;
-use state::PipeKey;
+use state::{PipeKey, Program, TargetKind};
 
 /// One `Core.DoStartFrameStuff` call and what was drawn after it.
 #[derive(Clone, Copy, Debug)]
@@ -64,8 +72,9 @@ impl std::fmt::Display for GpuError {
 
 impl std::error::Error for GpuError {}
 
-/// Vertex as `SpriteRenderer` packs it (36 bytes): position, texture 0
-/// coordinates, ABGR colour, texture 1 and 2 coordinates.
+/// Vertex as `SpriteRenderer` packs it (position, texture 0 coordinates,
+/// ABGR colour, texture 1 and 2 coordinates), plus the per-quad depth
+/// values the world shaders take as uniforms in the original.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct Vertex {
@@ -74,6 +83,7 @@ pub struct Vertex {
     pub color: u32,
     pub uv1: [f32; 2],
     pub uv2: [f32; 2],
+    pub depth: [f32; 2],
 }
 
 #[repr(C)]
@@ -82,7 +92,11 @@ struct Globals {
     mvp: [[f32; 4]; 4],
     alpha_func: u32,
     alpha_ref: f32,
-    _pad: [u32; 2],
+    clip_z: f32,
+    /// A per-program uniform (CircleStencil's `discardValue`).
+    extra: f32,
+    /// The screen pass's uniforms (see screen.wgsl).
+    screen: [[f32; 4]; 2],
 }
 
 /// Uniform blocks are bound at 256-byte aligned offsets.
@@ -95,14 +109,85 @@ enum Target {
     Headless { texture: wgpu::Texture },
 }
 
+/// The second texture a batch binds (group 2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Tex2 {
+    None,
+    /// A depth map, for the depth-texture shaders.
+    Texture(u32),
+    /// A chunk texture: colour in group 1 and depth in group 2.
+    Chunk(u64, bool),
+    /// The offscreen buffer's colour, in group 1.
+    Offscreen,
+    /// The batch texture sampled GL_NEAREST.
+    Nearest,
+}
+
+/// Where a pass draws.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PassTarget {
+    Main,
+    Chunk(u64),
+    Offscreen,
+}
+
+impl PassTarget {
+    fn kind(self) -> TargetKind {
+        match self {
+            PassTarget::Main => TargetKind::Main,
+            PassTarget::Chunk(_) => TargetKind::Chunk,
+            PassTarget::Offscreen => TargetKind::Offscreen,
+        }
+    }
+}
+
+/// `MultiTextureFBO2`'s offscreen world buffer.
+struct OffscreenTarget {
+    width: u32,
+    height: u32,
+    color: wgpu::TextureView,
+    depth_stencil: wgpu::TextureView,
+    /// Sampled with `Core.screenFilter` (GL_NEAREST).
+    bind: wgpu::BindGroup,
+}
+
+struct PassDesc {
+    target: PassTarget,
+    /// Chunk passes: generate the mip chain afterwards (`endRenderThread`).
+    mipmaps: bool,
+    /// Chunk passes: clear colour to 0 and depth to 1 first.
+    clear: bool,
+    batches: std::ops::Range<usize>,
+}
+
 /// A run of indices drawn with one state.
 struct Batch {
     key: PipeKey,
     texture: Option<u32>,
+    tex2: Tex2,
+    /// The seam mask (group 3).
+    tex3: Option<u32>,
     stencil_ref: u32,
     scissor: Option<[u32; 4]>,
     globals: u32,
+    viewport: (u32, u32),
     indices: std::ops::Range<u32>,
+}
+
+/// A chunk's colour and depth textures (`FBORenderChunk.tex`/`depth`).
+struct ChunkTarget {
+    width: u32,
+    height: u32,
+    /// The colour texture with its mip chain, and views of each level.
+    color_texture: wgpu::Texture,
+    levels: Vec<wgpu::TextureView>,
+    /// Level 0, rendered into.
+    color: wgpu::TextureView,
+    depth: wgpu::TextureView,
+    /// Colour bind groups for compositing, with nearest and linear
+    /// magnification.
+    composite: [wgpu::BindGroup; 2],
+    depth_bind: wgpu::BindGroup,
 }
 
 /// Sampler choice: min nearest, mag nearest, mip-mapped, clamp to edge.
@@ -115,12 +200,21 @@ pub struct Gpu {
     format: wgpu::TextureFormat,
     width: u32,
     height: u32,
-    stencil: wgpu::TextureView,
-    shader: wgpu::ShaderModule,
+    depth_stencil: wgpu::TextureView,
+    programs: state::Programs,
     globals_layout: wgpu::BindGroupLayout,
     texture_layout: wgpu::BindGroupLayout,
-    pipeline_layout: wgpu::PipelineLayout,
+    chunk_depth_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
+    chunks: HashMap<u64, ChunkTarget>,
+    /// glGenerateMipmap's downsampling pipeline and its source layout.
+    mip_pipeline: wgpu::RenderPipeline,
+    mip_layout: wgpu::BindGroupLayout,
+    mip_sampler: wgpu::Sampler,
+    /// Texture views by id, and bind groups sampling them GL_NEAREST.
+    views: HashMap<u32, wgpu::TextureView>,
+    nearest: HashMap<u32, wgpu::BindGroup>,
+    offscreen: Option<OffscreenTarget>,
     textures: HashMap<u32, wgpu::BindGroup>,
     samplers: HashMap<Filter, wgpu::Sampler>,
     /// Bound for untextured quads; samples as 1.0 like `useTexture = 0`.
@@ -180,10 +274,12 @@ impl Gpu {
     }
 
     fn build(device: wgpu::Device, queue: wgpu::Queue, target: Target, format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("default"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        });
+        let module = |label: &str, src: String| device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) });
+        let sprite = module("default", include_str!("shader.wgsl").to_string());
+        let world = include_str!("world.wgsl");
+        let world_tile = module("tileWithDepth", format!("{world}\n{}", include_str!("world_tile.wgsl")));
+        let world_composite = module("chunkShader", format!("{world}\n{}", include_str!("world_composite.wgsl")));
+        let screen = module("screen", include_str!("screen.wgsl").to_string());
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -218,12 +314,63 @@ impl Gpu {
                 },
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("sprite"),
-            bind_group_layouts: &[Some(&globals_layout), Some(&texture_layout)],
-            immediate_size: 0,
+        let chunk_depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("chunk depth"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Depth, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            }],
         });
-        let stencil = stencil_view(&device, width, height);
+        let layout = |groups: &[Option<&wgpu::BindGroupLayout>]| device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: groups, immediate_size: 0 });
+        let programs = state::Programs {
+            sprite_layout: layout(&[Some(&globals_layout), Some(&texture_layout)]),
+            tile_layout: layout(&[Some(&globals_layout), Some(&texture_layout), Some(&texture_layout)]),
+            composite_layout: layout(&[Some(&globals_layout), Some(&texture_layout), Some(&chunk_depth_layout)]),
+            seam_layout: layout(&[Some(&globals_layout), Some(&texture_layout), Some(&texture_layout), Some(&texture_layout)]),
+            sprite,
+            world_tile,
+            world_composite,
+            screen,
+        };
+        let depth_stencil = depth_stencil_view(&device, width, height);
+        let mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("mip source"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
+        let mip_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("mipmap"), source: wgpu::ShaderSource::Wgsl(include_str!("mipmap.wgsl").into()) });
+        let mip_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("mipmap"),
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&mip_layout)], immediate_size: 0 })),
+            vertex: wgpu::VertexState { module: &mip_module, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &mip_module,
+                entry_point: Some("fs_down"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: state::CHUNK_COLOR_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let mip_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            ..Default::default()
+        });
         let mut gpu = Gpu {
             device,
             queue,
@@ -231,12 +378,19 @@ impl Gpu {
             format,
             width,
             height,
-            stencil,
-            shader,
+            depth_stencil,
+            programs,
             globals_layout,
             texture_layout,
-            pipeline_layout,
+            chunk_depth_layout,
             pipelines: HashMap::new(),
+            chunks: HashMap::new(),
+            mip_pipeline,
+            mip_layout,
+            mip_sampler,
+            views: HashMap::new(),
+            nearest: HashMap::new(),
+            offscreen: None,
             textures: HashMap::new(),
             samplers: HashMap::new(),
             white: None,
@@ -263,7 +417,7 @@ impl Gpu {
             }
             Target::Headless { texture } => *texture = headless_texture(&self.device, self.format, width, height),
         }
-        self.stencil = stencil_view(&self.device, width, height);
+        self.depth_stencil = depth_stencil_view(&self.device, width, height);
     }
 
     /// `Core.OptionVSync`.
@@ -329,35 +483,42 @@ impl Gpu {
     // ---- frame building ---------------------------------------------------
 
     fn draw(&mut self, segments: &[(FrameParams, &DrawList)], textures: &mut TextureManager, view: &wgpu::TextureView) {
-        let mut f = FrameBuilder::default();
-        let mut viewports = Vec::new();
+        let mut f = FrameBuilder { viewport: (self.width, self.height), ..Default::default() };
         let mut clear_first: Option<[f64; 4]> = None;
         for (i, (params, list)) in segments.iter().enumerate() {
-            let first = f.batches.len();
+            f.viewport = (params.width.min(self.width), params.height.min(self.height));
             if let Some(c) = params.clear {
                 if i == 0 {
                     clear_first = Some(c);
                 } else {
-                    let g = f.globals(&self.state, IDENTITY);
+                    let g = f.globals(&self.state, IDENTITY, 0.5);
                     f.clear(&self.state, g, gl::COLOR_BUFFER_BIT, c);
                 }
             }
             // `DoStartFrameStuff`: blending on, new projection and viewport.
             self.state.blend = true;
             let (w, h) = (params.width as f32 * params.zoom, params.height as f32 * params.zoom);
-            let mvp = gl::ortho2d(0.0, w, h, 0.0);
+            f.mvp = gl::ortho2d(0.0, w, h, 0.0);
             for cmd in &list.cmds {
-                self.record(&mut f, cmd, mvp);
+                self.record(&mut f, cmd);
             }
-            viewports.push((first..f.batches.len(), params.width, params.height));
         }
         for i in 0..f.batches.len() {
             if let Some(id) = f.batches[i].texture {
                 self.ensure_texture(id, textures);
             }
+            if let Tex2::Texture(id) = f.batches[i].tex2 {
+                self.ensure_texture(id, textures);
+            }
+            if let Some(id) = f.batches[i].tex3 {
+                self.ensure_texture(id, textures);
+            }
+            if let (Tex2::Nearest, Some(id)) = (f.batches[i].tex2, f.batches[i].texture) {
+                self.ensure_nearest(id);
+            }
             self.ensure_pipeline(f.batches[i].key);
         }
-        let FrameBuilder { mut vertices, mut indices, mut globals, batches } = f;
+        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, .. } = f;
         if vertices.is_empty() {
             vertices.push(Vertex::zeroed());
         }
@@ -389,24 +550,49 @@ impl Gpu {
         });
 
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        {
-            let load = match clear_first {
-                Some(c) => wgpu::LoadOp::Clear(wgpu::Color { r: c[0], g: c[1], b: c[2], a: c[3] }),
-                None => wgpu::LoadOp::Load,
+        // The main target is cleared (if asked) by its first pass, even
+        // when that pass is empty.
+        let mut passes = passes;
+        if !passes.iter().any(|p| p.target == PassTarget::Main) {
+            passes.push(PassDesc { target: PassTarget::Main, clear: false, mipmaps: false, batches: 0..0 });
+        }
+        let mut main_cleared = false;
+        for pass_desc in &passes {
+            let (color_view, depth_view, load, depth_ops, stencil_ops, tw, th) = match pass_desc.target {
+                PassTarget::Main => {
+                    let load = match clear_first.filter(|_| !main_cleared) {
+                        Some(c) => wgpu::LoadOp::Clear(wgpu::Color { r: c[0], g: c[1], b: c[2], a: c[3] }),
+                        None => wgpu::LoadOp::Load,
+                    };
+                    main_cleared = true;
+                    let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
+                    (view, &self.depth_stencil, load, Some(keep), Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), self.width, self.height)
+                }
+                PassTarget::Chunk(id) => {
+                    let Some(c) = self.chunks.get(&id) else { continue };
+                    let (load, dload) = if pass_desc.clear {
+                        (wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), wgpu::LoadOp::Clear(1.0))
+                    } else {
+                        (wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+                    };
+                    (&c.color, &c.depth, load, Some(wgpu::Operations { load: dload, store: wgpu::StoreOp::Store }), None, c.width, c.height)
+                }
+                PassTarget::Offscreen => {
+                    let Some(o) = self.offscreen.as_ref() else { continue };
+                    let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
+                    let keep_s = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
+                    (&o.color, &o.depth_stencil, wgpu::LoadOp::Load, Some(keep), Some(keep_s), o.width, o.height)
+                }
             };
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("sprites"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: color_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
                 })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.stencil,
-                    depth_ops: None,
-                    stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                }),
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: depth_view, depth_ops, stencil_ops }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -414,52 +600,327 @@ impl Gpu {
             pass.set_vertex_buffer(0, vbuf.slice(..));
             pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
             let white = self.white.as_ref().expect("white texture");
-            for (range, vw, vh) in viewports {
-                pass.set_viewport(0.0, 0.0, vw.min(self.width) as f32, vh.min(self.height) as f32, 0.0, 1.0);
-                for b in &batches[range] {
-                    let [sx, sy, sw, sh] = match b.scissor {
-                        Some(s) => clip_scissor(s, self.width, self.height),
-                        None => [0, 0, self.width, self.height],
-                    };
-                    if sw == 0 || sh == 0 {
-                        continue;
-                    }
-                    pass.set_pipeline(&self.pipelines[&b.key]);
-                    pass.set_bind_group(0, &gbind, &[b.globals * GLOBALS_STRIDE as u32]);
-                    let tex = b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white);
-                    pass.set_bind_group(1, tex, &[]);
-                    pass.set_stencil_reference(b.stencil_ref);
-                    pass.set_scissor_rect(sx, sy, sw, sh);
-                    pass.draw_indexed(b.indices.clone(), 0, 0..1);
+            for b in &batches[pass_desc.batches.clone()] {
+                let [sx, sy, sw, sh] = match b.scissor {
+                    Some(s) if !matches!(pass_desc.target, PassTarget::Chunk(_)) => clip_scissor(s, tw, th),
+                    _ => [0, 0, tw, th],
+                };
+                if sw == 0 || sh == 0 {
+                    continue;
                 }
+                let tex = match b.tex2 {
+                    Tex2::Chunk(id, linear) => match self.chunks.get(&id) {
+                        Some(c) => {
+                            pass.set_bind_group(2, &c.depth_bind, &[]);
+                            &c.composite[usize::from(linear)]
+                        }
+                        None => continue,
+                    },
+                    Tex2::Texture(id) => {
+                        let Some(t2) = self.textures.get(&id) else { continue };
+                        pass.set_bind_group(2, t2, &[]);
+                        b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white)
+                    }
+                    Tex2::Nearest => match b.texture.and_then(|id| self.nearest.get(&id)) {
+                        Some(bg) => bg,
+                        None => continue,
+                    },
+                    Tex2::Offscreen => match self.offscreen.as_ref() {
+                        Some(o) => &o.bind,
+                        None => continue,
+                    },
+                    Tex2::None => b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white),
+                };
+                if let Some(id) = b.tex3 {
+                    let Some(t3) = self.textures.get(&id) else { continue };
+                    pass.set_bind_group(3, t3, &[]);
+                }
+                pass.set_viewport(0.0, 0.0, b.viewport.0.min(tw) as f32, b.viewport.1.min(th) as f32, 0.0, 1.0);
+                pass.set_pipeline(&self.pipelines[&b.key]);
+                pass.set_bind_group(0, &gbind, &[b.globals * GLOBALS_STRIDE as u32]);
+                pass.set_bind_group(1, tex, &[]);
+                pass.set_stencil_reference(b.stencil_ref);
+                pass.set_scissor_rect(sx, sy, sw, sh);
+                pass.draw_indexed(b.indices.clone(), 0, 0..1);
+            }
+            drop(pass);
+            if let (true, PassTarget::Chunk(id)) = (pass_desc.mipmaps, pass_desc.target) {
+                self.generate_mips(&mut enc, id);
             }
         }
         self.queue.submit([enc.finish()]);
+        for id in freed {
+            self.chunks.remove(&id);
+        }
     }
 
-    fn record(&mut self, f: &mut FrameBuilder, cmd: &DrawCmd, mvp: [[f32; 4]; 4]) {
+    fn record(&mut self, f: &mut FrameBuilder, cmd: &DrawCmd) {
         match cmd {
             DrawCmd::Sprite(s) => {
-                let g = f.globals(&self.state, mvp);
-                f.quad(&self.state, g, s.texture.as_ref(), sprite_vertices(s));
+                let g = f.globals(&self.state, f.mvp_for_target(), 0.5);
+                let key = self.key(f, Program::Default);
+                f.push(key, s.texture.as_ref().and_then(|t| t.id), Tex2::None, &self.state, g, sprite_vertices(s));
+            }
+            DrawCmd::WorldSprite(s, shader) => {
+                let mut g = f.globals(&self.state, f.mvp_for_target(), 0.5);
+                let mut v = sprite_vertices(s);
+                let (program, tex2) = match shader {
+                    WorldShader::Default { z } => {
+                        // GL clip z (-1..1) to window depth.
+                        let wz = (z + 1.0) * 0.5;
+                        v.iter_mut().for_each(|v| v.depth = [wz, 0.0]);
+                        (Program::WorldDefault, Tex2::None)
+                    }
+                    WorldShader::TileDepth { depth, uv1, front, far, opaque } => {
+                        for (vx, uv) in v.iter_mut().zip(uv1) {
+                            vx.uv1 = *uv;
+                            vx.depth = [*front, *far];
+                        }
+                        let Some(id) = depth.id else { return };
+                        (if *opaque { Program::OpaqueDepth } else { Program::TileDepth }, Tex2::Texture(id))
+                    }
+                    WorldShader::Cutaway { depth, uv1, stencil, uv2, front, far, discard_value } => {
+                        for ((vx, a), b) in v.iter_mut().zip(uv1).zip(uv2) {
+                            vx.uv1 = *a;
+                            vx.uv2 = *b;
+                            vx.depth = [*front, *far];
+                        }
+                        let (Some(id), Some(sid)) = (depth.id, stencil.id) else { return };
+                        f.tex3 = Some(sid);
+                        let mut gl = f.globals[g as usize];
+                        gl.extra = *discard_value;
+                        g = f.push_globals(gl);
+                        (Program::Cutaway, Tex2::Texture(id))
+                    }
+                    WorldShader::Seam { depth, uv1, mask, uv2, front, far } => {
+                        for ((vx, a), b) in v.iter_mut().zip(uv1).zip(uv2) {
+                            vx.uv1 = *a;
+                            vx.uv2 = *b;
+                            vx.depth = [*front, *far];
+                        }
+                        let (Some(id), Some(mid)) = (depth.id, mask.id) else { return };
+                        f.tex3 = Some(mid);
+                        (Program::Seam, Tex2::Texture(id))
+                    }
+                };
+                let key = self.key(f, program);
+                f.push(key, s.texture.as_ref().and_then(|t| t.id), tex2, &self.state, g, v);
+                f.tex3 = None;
             }
             DrawCmd::Quad { texture, x, y, w, h, color } => {
                 let mut dl = DrawList::default();
                 dl.render(texture.as_ref(), *x, *y, *w, *h, *color);
                 for c in &dl.cmds {
-                    self.record(f, c, mvp);
+                    self.record(f, c);
                 }
             }
             DrawCmd::Clear(mask) => {
-                let g = f.globals(&self.state, IDENTITY);
-                for bit in [gl::STENCIL_BUFFER_BIT, gl::COLOR_BUFFER_BIT] {
+                let g = f.globals(&self.state, IDENTITY, 1.0);
+                for bit in [gl::STENCIL_BUFFER_BIT, gl::DEPTH_BUFFER_BIT, gl::COLOR_BUFFER_BIT] {
                     if mask & bit != 0 {
                         f.clear(&self.state, g, bit, self.state.clear_color);
                     }
                 }
             }
+            DrawCmd::Ortho { left, right, bottom, top, width, height } => {
+                f.mvp = gl::ortho2d(*left, *right, *bottom, *top);
+                f.viewport = (*width, *height);
+            }
+            DrawCmd::ChunkBegin { id, width, height, clear } => {
+                self.ensure_chunk(*id, *width, *height);
+                // TextureFBO.startDrawing remembers the bound buffer.
+                if !matches!(f.target, PassTarget::Chunk(_)) {
+                    f.chunk_return = f.target;
+                }
+                f.target = PassTarget::Chunk(*id);
+                f.passes.push(PassDesc { target: f.target, clear: *clear, mipmaps: false, batches: f.batches.len()..f.batches.len() });
+            }
+            DrawCmd::ChunkEnd => {
+                // FBORenderChunk.endRenderThread: glGenerateMipmap.
+                let t = f.target;
+                if let Some(p) = f.passes.iter_mut().rev().find(|p| p.target == t) {
+                    p.mipmaps = true;
+                }
+                f.target = f.chunk_return;
+            }
+            DrawCmd::ChunkComposite { id, x, y, w, h, color, chunk_depth, mag_linear } => {
+                if !self.chunks.contains_key(id) {
+                    return;
+                }
+                let g = f.globals(&self.state, f.mvp_for_target(), 0.5);
+                let s = pz_render::Sprite {
+                    texture: None,
+                    x: [*x, x + w, x + w, *x],
+                    y: [*y, *y, y + h, y + h],
+                    u: [0.0, 1.0, 1.0, 0.0],
+                    v: [0.0, 0.0, 1.0, 1.0],
+                    color: [*color; 4],
+                    flipped: false,
+                };
+                let mut v = sprite_vertices(&s);
+                for (vx, (u, vv)) in v.iter_mut().zip(s.u.iter().zip(s.v)) {
+                    vx.uv = [*u, vv];
+                    vx.depth = [*chunk_depth, 0.0];
+                }
+                let key = self.key(f, Program::Composite);
+                f.push(key, None, Tex2::Chunk(*id, *mag_linear), &self.state, g, v);
+            }
+            DrawCmd::ChunkFree(id) => f.freed.push(*id),
+            DrawCmd::OffscreenBegin { width, height } => {
+                self.ensure_offscreen(*width, *height);
+                f.target = PassTarget::Offscreen;
+            }
+            DrawCmd::OffscreenEnd => f.target = PassTarget::Main,
+            DrawCmd::ProjectedQuad { texture, pos, uv, color, nearest } => {
+                let Some(id) = texture.id else { return };
+                // The corners are already in normalised device coordinates.
+                let g = {
+                    let m = f.mvp;
+                    f.mvp = IDENTITY;
+                    let mm = f.mvp_for_target();
+                    f.mvp = m;
+                    f.globals(&self.state, mm, 0.5)
+                };
+                let v: [Vertex; 4] = std::array::from_fn(|i| Vertex { pos: [pos[i][0], pos[i][1]], uv: uv[i], color: *color, uv1: [0.0; 2], uv2: [0.0; 2], depth: [pos[i][2], 0.0] });
+                let key = self.key(f, Program::Projected);
+                f.push(key, Some(id), if *nearest { Tex2::Nearest } else { Tex2::None }, &self.state, g, v);
+            }
+            DrawCmd::ScreenPass { x, y, w, h, tex, params } => {
+                let Some(o) = self.offscreen.as_ref() else { return };
+                let (tw, th) = (o.width as f32, o.height as f32);
+                // Texture.rendershader2: v runs bottom-up in the buffer.
+                let (u0, u1) = (tex[0] / tw, (tex[0] + tex[2]) / tw);
+                let (v_top, v_bottom) = ((tex[1] + tex[3]) / th, tex[1] / th);
+                let mut g = Globals::zeroed();
+                g.mvp = f.mvp_for_target();
+                g.alpha_func = 8;
+                g.clip_z = 0.5;
+                g.screen = [[params.desaturation, params.timer, f.viewport.0 as f32, f.viewport.1 as f32], [tw, th, 0.0, 0.0]];
+                let gi = f.push_globals(g);
+                let corner = |px: f32, py: f32, u: f32, v: f32| Vertex { pos: [px, py], uv: [u, v], color: 0xFFFF_FFFF, uv1: [0.0; 2], uv2: [0.0; 2], depth: [0.0; 2] };
+                let v = [corner(*x, *y, u0, v_top), corner(x + w, *y, u1, v_top), corner(x + w, y + h, u1, v_bottom), corner(*x, y + h, u0, v_bottom)];
+                let key = PipeKey { blend: None, ..self.key(f, Program::Screen) };
+                f.push(key, None, Tex2::Offscreen, &self.state, gi, v);
+            }
             other => self.state.apply(other),
         }
+    }
+
+    fn key(&self, f: &FrameBuilder, program: Program) -> PipeKey {
+        PipeKey { program, target: f.target.kind(), ..self.state.pipe_key() }
+    }
+
+    /// `glGenerateMipmap` for chunk texture `id`: each level the box filter
+    /// of the one above.
+    fn generate_mips(&self, enc: &mut wgpu::CommandEncoder, id: u64) {
+        let Some(c) = self.chunks.get(&id) else { return };
+        let _ = &c.color_texture;
+        for l in 1..c.levels.len() {
+            let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.mip_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&c.levels[l - 1]) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.mip_sampler) },
+                ],
+            });
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mipmap"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &c.levels[l],
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.mip_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
+    /// `MultiTextureFBO2.create`: the offscreen buffer, with a
+    /// `GL_DEPTH24_STENCIL8` renderbuffer.
+    fn ensure_offscreen(&mut self, width: u32, height: u32) {
+        if self.offscreen.as_ref().is_some_and(|o| o.width == width && o.height == height) {
+            return;
+        }
+        let tex = |format, usage, label| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let color = tex(state::OFFSCREEN_COLOR_FORMAT, usage, "offscreen").create_view(&Default::default());
+        let depth_stencil = tex(state::DEPTH_STENCIL_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT, "offscreen depth").create_view(&Default::default());
+        let sampler = self.sampler((true, true, false, true));
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        self.offscreen = Some(OffscreenTarget { width, height, color, depth_stencil, bind });
+    }
+
+    /// `FBORenderChunk.init`: colour and 16-bit depth textures of the
+    /// given size.
+    fn ensure_chunk(&mut self, id: u64, width: u32, height: u32) {
+        if self.chunks.get(&id).is_some_and(|c| c.width == width && c.height == height) {
+            return;
+        }
+        let mips = 32 - width.max(height).max(1).leading_zeros();
+        let tex = |format, label, mips| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: mips,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+        };
+        let color_texture = tex(state::CHUNK_COLOR_FORMAT, "FBORenderChunk.tex", mips);
+        let levels: Vec<wgpu::TextureView> = (0..mips)
+            .map(|l| color_texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: l, mip_level_count: Some(1), ..Default::default() }))
+            .collect();
+        let color = levels[0].clone();
+        let all = color_texture.create_view(&Default::default());
+        let depth = tex(state::CHUNK_DEPTH_FORMAT, "FBORenderChunk.depth", 1).create_view(&Default::default());
+        // Minification GL_LINEAR_MIPMAP_LINEAR over the generated levels,
+        // magnification GL_NEAREST or GL_LINEAR.
+        let composite = [true, false].map(|mag_nearest| {
+            let sampler = self.sampler((false, mag_nearest, true, true));
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &self.texture_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&all) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                ],
+            })
+        });
+        let depth_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.chunk_depth_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&depth) }],
+        });
+        self.chunks.insert(id, ChunkTarget { width, height, color_texture, levels, color, depth, composite, depth_bind });
     }
 
     fn buffer(&self, data: &[u8], usage: wgpu::BufferUsages) -> wgpu::Buffer {
@@ -473,7 +934,7 @@ impl Gpu {
 
     fn ensure_pipeline(&mut self, key: PipeKey) {
         if !self.pipelines.contains_key(&key) {
-            let p = state::create_pipeline(&self.device, &self.pipeline_layout, &self.shader, self.format, key);
+            let p = state::create_pipeline(&self.device, &self.programs, self.format, key);
             self.pipelines.insert(key, p);
         }
     }
@@ -496,15 +957,60 @@ impl Gpu {
         let one = d.width == 1 && d.height == 1;
         let filter = (d.min_nearest() || one, d.mag_nearest() || one, d.mipmaps() && !one, d.clamp_to_edge());
         let pixels: Vec<Vec<u8>> = levels.iter().map(|l| l.pixels.clone()).collect();
-        let bind_group = self.create_texture_bind_group(levels[0].width as u32, levels[0].height as u32, &pixels, filter);
+        let (bind_group, view) = self.create_texture(levels[0].width as u32, levels[0].height as u32, &pixels, filter);
         self.textures.insert(id, bind_group);
+        self.views.insert(id, view);
         // The original frees the CPU copy once uploaded.
         if let Some(d) = textures.data_mut(id) {
             d.image = None;
         }
     }
 
+    fn sampler(&mut self, filter: Filter) -> wgpu::Sampler {
+        let device = &self.device;
+        self.samplers
+            .entry(filter)
+            .or_insert_with(|| {
+                let (min_nearest, mag_nearest, mips, clamp) = filter;
+                let wrap = if clamp { wgpu::AddressMode::ClampToEdge } else { wgpu::AddressMode::Repeat };
+                let f = |nearest: bool| if nearest { wgpu::FilterMode::Nearest } else { wgpu::FilterMode::Linear };
+                device.create_sampler(&wgpu::SamplerDescriptor {
+                    address_mode_u: wrap,
+                    address_mode_v: wrap,
+                    mag_filter: f(mag_nearest),
+                    // GL_LINEAR_MIPMAP_LINEAR for mip-mapped textures.
+                    min_filter: if mips { wgpu::FilterMode::Linear } else { f(min_nearest) },
+                    mipmap_filter: if mips { wgpu::MipmapFilterMode::Linear } else { wgpu::MipmapFilterMode::Nearest },
+                    lod_max_clamp: if mips { 32.0 } else { 0.0 },
+                    ..Default::default()
+                })
+            })
+            .clone()
+    }
+
     fn create_texture_bind_group(&mut self, width: u32, height: u32, levels: &[Vec<u8>], filter: Filter) -> wgpu::BindGroup {
+        self.create_texture(width, height, levels, filter).0
+    }
+
+    /// The bind group sampling texture `id` with `GL_NEAREST` both ways.
+    fn ensure_nearest(&mut self, id: u32) {
+        if self.nearest.contains_key(&id) {
+            return;
+        }
+        let Some(view) = self.views.get(&id).cloned() else { return };
+        let sampler = self.sampler((true, true, false, false));
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        self.nearest.insert(id, bg);
+    }
+
+    fn create_texture(&mut self, width: u32, height: u32, levels: &[Vec<u8>], filter: Filter) -> (wgpu::BindGroup, wgpu::TextureView) {
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -527,46 +1033,75 @@ impl Gpu {
             h = (h / 2).max(1);
         }
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = self.sampler(filter);
         let device = &self.device;
-        let sampler = self.samplers.entry(filter).or_insert_with(|| {
-            let (min_nearest, mag_nearest, mips, clamp) = filter;
-            let wrap = if clamp { wgpu::AddressMode::ClampToEdge } else { wgpu::AddressMode::Repeat };
-            let f = |nearest: bool| if nearest { wgpu::FilterMode::Nearest } else { wgpu::FilterMode::Linear };
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                address_mode_u: wrap,
-                address_mode_v: wrap,
-                mag_filter: f(mag_nearest),
-                // GL_LINEAR_MIPMAP_LINEAR for mip-mapped textures.
-                min_filter: if mips { wgpu::FilterMode::Linear } else { f(min_nearest) },
-                mipmap_filter: if mips { wgpu::MipmapFilterMode::Linear } else { wgpu::MipmapFilterMode::Nearest },
-                lod_max_clamp: if mips { 32.0 } else { 0.0 },
-                ..Default::default()
-            })
-        });
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &self.texture_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
             ],
-        })
+        });
+        (bg, view)
     }
 }
 
-/// Vertices, indices, uniform blocks and draw runs of one frame.
-#[derive(Default)]
+/// Vertices, indices, uniform blocks, draw runs and passes of one frame.
 struct FrameBuilder {
     vertices: Vec<Vertex>,
     indices: Vec<u32>,
     globals: Vec<Globals>,
     batches: Vec<Batch>,
+    passes: Vec<PassDesc>,
+    /// Chunk textures released once the frame is drawn.
+    freed: Vec<u64>,
+    target: PassTarget,
+    /// The target a chunk texture's `ChunkEnd` returns to.
+    chunk_return: PassTarget,
+    /// The seam mask of the quad being pushed.
+    tex3: Option<u32>,
+    mvp: [[f32; 4]; 4],
+    viewport: (u32, u32),
+}
+
+impl Default for FrameBuilder {
+    fn default() -> Self {
+        FrameBuilder {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            globals: Vec::new(),
+            batches: Vec::new(),
+            passes: Vec::new(),
+            freed: Vec::new(),
+            target: PassTarget::Main,
+            chunk_return: PassTarget::Main,
+            tex3: None,
+            mvp: IDENTITY,
+            viewport: (1, 1),
+        }
+    }
 }
 
 impl FrameBuilder {
-    fn globals(&mut self, st: &GlState, mvp: [[f32; 4]; 4]) -> u32 {
+    /// The projection, with y flipped when drawing into a texture.
+    fn mvp_for_target(&self) -> [[f32; 4]; 4] {
+        let mut m = self.mvp;
+        if self.target != PassTarget::Main {
+            for col in &mut m {
+                col[1] = -col[1];
+            }
+        }
+        m
+    }
+
+    fn globals(&mut self, st: &GlState, mvp: [[f32; 4]; 4], clip_z: f32) -> u32 {
         let (alpha_func, alpha_ref) = if st.alpha_test { (st.alpha_func.wrapping_sub(gl::NEVER), st.alpha_ref) } else { (8, 0.0) };
-        let g = Globals { mvp, alpha_func, alpha_ref, _pad: [0; 2] };
+        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, extra: 0.0, screen: [[0.0; 4]; 2] };
+        self.push_globals(g)
+    }
+
+    fn push_globals(&mut self, g: Globals) -> u32 {
         if let Some(i) = self.globals.iter().position(|x| bytemuck::bytes_of(x) == bytemuck::bytes_of(&g)) {
             return i as u32;
         }
@@ -574,30 +1109,53 @@ impl FrameBuilder {
         (self.globals.len() - 1) as u32
     }
 
-    fn push(&mut self, key: PipeKey, texture: Option<u32>, stencil_ref: u32, scissor: Option<[u32; 4]>, globals: u32, verts: [Vertex; 4]) {
+    fn push(&mut self, key: PipeKey, texture: Option<u32>, tex2: Tex2, st: &GlState, globals: u32, verts: [Vertex; 4]) {
+        if self.passes.last().is_none_or(|p| p.target != self.target) {
+            let at = self.batches.len();
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
+        }
+        let (stencil_ref, scissor) = (st.stencil_ref, st.scissor_box());
+        let viewport = self.viewport;
+        let tex3 = self.tex3;
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&verts);
         let start = self.indices.len() as u32;
         self.indices.extend_from_slice(&quad_indices(base, verts[0].color, verts[2].color));
         let end = self.indices.len() as u32;
+        let pass = self.passes.last_mut().expect("pass");
         match self.batches.last_mut() {
-            Some(b) if b.key == key && b.texture == texture && b.stencil_ref == stencil_ref && b.scissor == scissor && b.globals == globals && b.indices.end == start => {
+            Some(b)
+                if pass.batches.end > pass.batches.start
+                    && b.key == key
+                    && b.texture == texture
+                    && b.tex2 == tex2
+                    && b.tex3 == tex3
+                    && b.stencil_ref == stencil_ref
+                    && b.scissor == scissor
+                    && b.globals == globals
+                    && b.viewport == viewport
+                    && b.indices.end == start =>
+            {
                 b.indices.end = end
             }
-            _ => self.batches.push(Batch { key, texture, stencil_ref, scissor, globals, indices: start..end }),
+            _ => {
+                self.batches.push(Batch { key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, indices: start..end });
+                pass.batches.end = self.batches.len();
+            }
         }
     }
 
-    fn quad(&mut self, st: &GlState, g: u32, tex: Option<&Texture>, verts: [Vertex; 4]) {
-        self.push(st.pipe_key(), tex.and_then(|t| t.id), st.stencil_ref, st.scissor_box(), g, verts);
-    }
-
     /// `glClear` through the render queue: a viewport quad that honours the
-    /// scissor box and the colour/stencil write masks.
+    /// scissor box and the colour/stencil/depth write masks. Depth clears
+    /// write the quad's depth, 1.
     fn clear(&mut self, st: &GlState, g: u32, bit: u32, color: [f64; 4]) {
         let c = pz_render::color_to_abgr(color[0] as f32, color[1] as f32, color[2] as f32, color[3] as f32);
-        let verts = [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)].map(|(x, y)| Vertex { pos: [x, y], uv: [0.0; 2], color: c, uv1: [0.0; 2], uv2: [0.0; 2] });
-        self.push(st.clear_key(bit), None, st.clear_stencil, st.scissor_box(), g, verts);
+        let verts = [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)].map(|(x, y)| Vertex { pos: [x, y], uv: [0.0; 2], color: c, uv1: [0.0; 2], uv2: [0.0; 2], depth: [0.0; 2] });
+        let key = PipeKey { target: self.target.kind(), ..st.clear_key(bit) };
+        let stencil = if bit == gl::STENCIL_BUFFER_BIT { st.clear_stencil } else { st.stencil_ref };
+        let mut st2 = st.clone();
+        st2.stencil_ref = stencil;
+        self.push(key, None, Tex2::None, &st2, g, verts);
     }
 }
 
@@ -624,15 +1182,15 @@ fn headless_texture(device: &wgpu::Device, format: wgpu::TextureFormat, width: u
     })
 }
 
-fn stencil_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
+fn depth_stencil_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {
-            label: Some("stencil"),
+            label: Some("depth stencil"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: state::STENCIL_FORMAT,
+            format: state::DEPTH_STENCIL_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         })
@@ -656,7 +1214,7 @@ pub fn sprite_vertices(s: &pz_render::Sprite) -> [Vertex; 4] {
     std::array::from_fn(|i| {
         let ui = if s.flipped { flip[i] } else { i };
         let uv = if s.texture.is_some() { [s.u[ui], s.v[i]] } else { [0.0, 0.0] };
-        Vertex { pos: [s.x[i], s.y[i]], uv, color: s.color[i], uv1: [0.0; 2], uv2: [0.0; 2] }
+        Vertex { pos: [s.x[i], s.y[i]], uv, color: s.color[i], uv1: [0.0; 2], uv2: [0.0; 2], depth: [0.0; 2] }
     })
 }
 

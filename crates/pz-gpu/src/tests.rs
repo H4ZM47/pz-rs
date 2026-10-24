@@ -1,5 +1,5 @@
 use super::*;
-use pz_render::Rgba;
+use pz_render::{Rgba, WorldShader};
 
 fn gpu(w: u32, h: u32) -> Option<Gpu> {
     match Gpu::new_headless(w, h) {
@@ -123,4 +123,96 @@ fn triangle_split_and_projection() {
     let m = gl::ortho2d(0.0, 100.0, 50.0, 0.0);
     // Screen (0, 0) is the top-left of clip space.
     assert_eq!((m[3][0], m[3][1]), (-1.0, 1.0));
+}
+
+/// A chunk texture holds two overlapping depth tiles; the nearer wins
+/// whatever the draw order, the composite carries depth into the main
+/// target, and texture rows keep GL's orientation.
+#[test]
+fn chunk_texture_depth_and_composite() {
+    let Some(mut g) = gpu(8, 8) else { return };
+    let mut tm = TextureManager::new();
+    let red = tm.texture_from_pixels("red", 4, 4, [255, 0, 0, 255].repeat(16), 0);
+    let green = tm.texture_from_pixels("green", 4, 4, [0, 255, 0, 255].repeat(16), 0);
+    let blue = tm.texture_from_pixels("blue", 4, 4, [0, 0, 255, 255].repeat(16), 0);
+    // Depth 0.5 everywhere except a transparent (depth 0) left column.
+    let mut dpx = [128, 128, 128, 255].repeat(16);
+    for y in 0..4 {
+        dpx[y * 16..y * 16 + 4].copy_from_slice(&[0, 0, 0, 0]);
+    }
+    // Depth textures are sampled GL_NEAREST (`TileDepthTexture.updateGPUTexture`).
+    let nearest = pz_render::flags::FILTER_MIN_NEAREST | pz_render::flags::FILTER_MAG_NEAREST;
+    let depth = tm.texture_from_pixels("depth", 4, 4, dpx, nearest);
+    let uv1 = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let tile = |tex: &pz_render::Texture, y: f32, h: f32, front: f32, far: f32| {
+        let mut dl = DrawList::default();
+        dl.render(Some(tex), 0.0, y, 8.0, h, Rgba(1.0, 1.0, 1.0, 1.0));
+        let DrawCmd::Sprite(s) = dl.cmds.pop().unwrap() else { unreachable!() };
+        DrawCmd::WorldSprite(s, WorldShader::TileDepth { depth: depth.clone(), uv1, front, far, opaque: false })
+    };
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::ChunkBegin { id: 7, width: 8, height: 8, clear: true });
+    // `StartFrameFlipY`: ortho (0, w, 0, h).
+    dl.cmds.push(DrawCmd::Ortho { left: 0.0, right: 8.0, bottom: 0.0, top: 8.0, width: 8, height: 8 });
+    dl.cmds.push(DrawCmd::BlendFuncSeparate(gl::ONE, gl::ONE_MINUS_SRC_ALPHA, gl::ONE_MINUS_DST_ALPHA, gl::ONE));
+    dl.cmds.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
+    dl.cmds.push(DrawCmd::DepthFunc(gl::LEQUAL));
+    dl.cmds.push(DrawCmd::DepthMask(true));
+    // Green (further) over the whole chunk, red (nearer) on the top half
+    // drawn first: red must stay on top where both are.
+    dl.cmds.push(tile(&red, 0.0, 4.0, 0.1, 0.2));
+    dl.cmds.push(tile(&green, 0.0, 8.0, 0.3, 0.4));
+    dl.cmds.push(DrawCmd::ChunkEnd);
+    dl.cmds.push(DrawCmd::Ortho { left: 0.0, right: 8.0, bottom: 8.0, top: 0.0, width: 8, height: 8 });
+    dl.cmds.push(DrawCmd::Clear(gl::DEPTH_BUFFER_BIT));
+    dl.cmds.push(DrawCmd::ChunkComposite { id: 7, x: 0.0, y: 0.0, w: 8.0, h: 8.0, color: 0xFFFF_FFFF, chunk_depth: 0.0, mag_linear: false });
+    // A `default` sprite at window depth 0.25 hides green (0.35) but not
+    // red (0.15).
+    dl.cmds.push(DrawCmd::BlendFuncSeparate(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA, gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
+    let mut b = DrawList::default();
+    b.render(Some(&blue), 0.0, 0.0, 8.0, 8.0, Rgba(1.0, 1.0, 1.0, 1.0));
+    let DrawCmd::Sprite(s) = b.cmds.pop().unwrap() else { unreachable!() };
+    dl.cmds.push(DrawCmd::WorldSprite(s, WorldShader::Default { z: -0.5 }));
+    dl.cmds.push(DrawCmd::GlDisable(gl::DEPTH_TEST));
+    g.render_frame(&[(opaque_black(8, 8), &dl)], &mut tm);
+    let p = g.read_pixels();
+    assert_eq!(px(&p, 8, 4, 1), [255, 0, 0, 255], "red stays in front, top rows");
+    assert_eq!(px(&p, 8, 4, 6), [0, 0, 255, 255], "blue hides green");
+    // The depth-0 column was discarded in the chunk; the composite there
+    // carries the cleared depth, which clamps to 1, so blue covers it.
+    assert_eq!(px(&p, 8, 0, 1), [0, 0, 255, 255]);
+}
+
+/// The offscreen world buffer drawn with the `screen` shader: a flat
+/// colour comes back graded (desaturate 0.1, contrast 1.2 about 0.4).
+#[test]
+fn screen_pass_grades_the_offscreen_buffer() {
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::OffscreenBegin { width: 16, height: 8 });
+    dl.render_rect(0, 0, 16, 8, Rgba(0.6, 0.4, 0.2, 1.0));
+    dl.cmds.push(DrawCmd::OffscreenEnd);
+    dl.cmds.push(DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: 16.0, h: 8.0, tex: [0.0, 0.0, 16.0, 8.0], params: pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 } });
+    g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+    let p = g.read_pixels();
+    let got = px(&p, 16, 8, 4);
+    assert!(near_rgb(got, [158, 103, 48]), "{got:?}");
+}
+
+#[test]
+fn screen_pass_keeps_orientation() {
+    let Some(mut g) = gpu(16, 16) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::OffscreenBegin { width: 16, height: 16 });
+    dl.render_rect(0, 0, 16, 8, Rgba(1.0, 0.0, 0.0, 1.0));
+    dl.render_rect(0, 8, 16, 8, Rgba(0.0, 0.0, 1.0, 1.0));
+    dl.cmds.push(DrawCmd::OffscreenEnd);
+    dl.cmds.push(DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: 16.0, h: 16.0, tex: [0.0, 0.0, 16.0, 16.0], params: pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 } });
+    g.render_frame(&[(opaque_black(16, 16), &dl)], &mut tm);
+    let p = g.read_pixels();
+    let (top, bottom) = (px(&p, 16, 8, 2), px(&p, 16, 8, 13));
+    assert!(top[0] > 200 && top[2] < 50, "{top:?}");
+    assert!(bottom[2] > 200 && bottom[0] < 50, "{bottom:?}");
 }

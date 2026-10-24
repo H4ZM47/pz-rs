@@ -1591,6 +1591,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-iso-render"
+version = "0.1.0"
+dependencies = [
+ "pz-gpu",
+ "pz-render",
+]
+
+[[package]]
 name = "pz-kahlua"
 version = "0.1.0"
 dependencies = [
