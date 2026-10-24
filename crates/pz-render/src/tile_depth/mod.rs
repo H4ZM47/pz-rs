@@ -22,4 +22,14 @@
 //! `TileSeamModifier`/`TileSeamManager` (floor/wall seam masks drawn with a
 //! third texture), `CutawayAttachedModifier`, and saving.
 
+pub mod assignments;
 pub mod clamp;
+pub mod manager;
+pub mod texture;
+
+pub use assignments::{TileDepthTextureAssignmentManager, TileDepthTextureAssignments};
+pub use manager::{split_tile_name, ModData, TileDepthPreset, TileDepthTextureManager, TileDepthTextures};
+pub use texture::{depth_bytes, DepthBytes, TileDepthTexture, TilesetDepthTexture, DEPTH_TEXTURE_FLAGS};
+
+#[cfg(test)]
+mod tests;
