@@ -226,7 +226,12 @@ impl IsoMetaGrid {
 
     /// `IsoMetaCell.getChunk(i)`: creates the chunk on first use, seeding its
     /// zombie intensity from the lot headers.
-    fn meta_chunk_mut(&mut self, cell_x: i32, cell_y: i32, i: usize) -> Option<&mut IsoMetaChunk> {
+    pub fn meta_chunk_mut(
+        &mut self,
+        cell_x: i32,
+        cell_y: i32,
+        i: usize,
+    ) -> Option<&mut IsoMetaChunk> {
         let exists = self.get_cell_data(cell_x, cell_y)?.chunk_map[i].is_some();
         if !exists {
             let info = self.get_cell_data(cell_x, cell_y)?.info.clone();

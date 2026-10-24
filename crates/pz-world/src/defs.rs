@@ -277,6 +277,12 @@ impl BuildingDef {
         self.min_level
     }
 
+    /// `resetMinMaxLevel()`.
+    pub fn reset_min_max_level(&mut self) {
+        self.min_level = 100;
+        self.max_level = -100;
+    }
+
     pub fn get_max_level(&mut self, rooms: &[RoomDef]) -> i32 {
         if self.max_level != -100 {
             return self.max_level;

@@ -15,6 +15,7 @@ pub mod bind_text;
 pub mod bind_fs;
 pub mod bind_java_util;
 pub mod bind_render;
+pub mod bind_world;
 pub mod events;
 pub mod expose;
 pub mod lua_manager;
@@ -31,6 +32,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_render::register(mgr);
     bind_text::register(&mut mgr.thread);
     bind_debug::register(&mut mgr.thread);
+    bind_world::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }

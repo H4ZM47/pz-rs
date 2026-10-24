@@ -11,3 +11,4 @@ pz-render.workspace = true
 pz-text.workspace = true
 pz-ui.workspace = true
 indexmap.workspace = true
+pz-world.workspace = true
