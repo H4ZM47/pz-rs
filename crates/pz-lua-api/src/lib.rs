@@ -25,6 +25,7 @@ pub mod bind_map_groups;
 pub mod bind_registry;
 pub mod bind_save;
 pub mod bind_skills;
+pub mod bind_scripts;
 pub mod bind_ui;
 pub mod bind_world;
 pub mod events;
@@ -58,6 +59,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     }
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());
+    bind_scripts::register(&mut mgr.thread, bind_registry::shared_script_manager());
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
