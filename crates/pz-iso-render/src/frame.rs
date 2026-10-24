@@ -17,6 +17,39 @@ pub struct ChunkLevels<'s> {
     pub dirty: bool,
 }
 
+/// A loaded chunk: its level range and squares by level.
+pub struct ChunkInput<'s> {
+    pub wx: i32,
+    pub wy: i32,
+    pub min_level: i32,
+    pub max_level: i32,
+    pub levels: Vec<(i32, LevelSquares<'s>)>,
+}
+
+/// `FBORenderCell.performRenderTiles`' chunk loop with the texture cache:
+/// for each chunk (in `checkNewlyOnScreenChunks` order) and level pair on
+/// screen, the texture, recorded when the cache says so; pairs off screen
+/// or gone are freed into `out`.
+pub fn plan_chunks<'s>(cache: &mut crate::cache::ChunkCache, cam: &crate::Camera, size: FrameSize, chunks: &[ChunkInput<'s>], out: &mut Vec<DrawCmd>) -> Vec<ChunkLevels<'s>> {
+    let mut plan = Vec::new();
+    let mut keep = Vec::new();
+    for c in chunks {
+        let mut z = pz_render::iso::calculate_min_level(c.min_level);
+        while z <= c.max_level {
+            let level = z.max(c.min_level);
+            if crate::cache::level_on_screen(cam, size.width, size.height, c.wx, c.wy, level) {
+                let (texture, dirty) = cache.begin_level(c.wx, c.wy, level, c.min_level, c.max_level);
+                keep.push((c.wx, c.wy, pz_render::iso::calculate_min_level(level)));
+                let levels = c.levels.iter().filter(|(l, _)| *l >= texture.min_level && *l <= texture.top_level).cloned().collect();
+                plan.push(ChunkLevels { texture, levels, dirty });
+            }
+            z += 2;
+        }
+    }
+    cache.free_except(&keep, out);
+    plan
+}
+
 /// The screen-size parameters of a frame.
 #[derive(Clone, Copy, Debug)]
 pub struct FrameSize {
@@ -35,10 +68,15 @@ impl FrameSize {
 /// dirty, composited always) drawn into the offscreen buffer, which is
 /// then drawn to the screen.
 pub fn world_frame(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], screen: ScreenParams) -> Vec<DrawCmd> {
+    world_frame_into(r, size, chunks, screen, Vec::new())
+}
+
+/// [`world_frame`] appended to `out` (which may hold texture frees).
+pub fn world_frame_into(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], screen: ScreenParams, mut out: Vec<DrawCmd>) -> Vec<DrawCmd> {
     let (ow, oh) = size.offscreen();
     let (w, h) = (size.width, size.height);
     let z = r.cam.zoom;
-    let mut out = vec![
+    out.extend([
         DrawCmd::OffscreenBegin { width: ow, height: oh },
         // glDoStartFrame: blending, depth func ALWAYS, zoomed projection.
         DrawCmd::GlEnable(gl::BLEND),
@@ -48,7 +86,7 @@ pub fn world_frame(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels
         DrawCmd::DepthMask(true),
         DrawCmd::StencilMask(0xFF),
         DrawCmd::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT | gl::STENCIL_BUFFER_BIT),
-    ];
+    ]);
     let mut recorded = Vec::new();
     for c in chunks {
         if c.dirty {
@@ -58,7 +96,8 @@ pub fn world_frame(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels
         recorded.push(c.texture);
     }
     r.composite(&recorded, w, h, &mut out);
-    // performRenderTiles' per-level translucent passes.
+    // performRenderTiles' per-level translucent passes, over every
+    // on-screen square (recorded this frame or not).
     let squares: Vec<&crate::world::RenderSquare> = chunks.iter().flat_map(|c| c.levels.iter().flat_map(|(_, l)| l.iter().flatten().copied())).collect();
     if let (Some(lo), Some(hi)) = (squares.iter().map(|s| s.z).min(), squares.iter().map(|s| s.z).max()) {
         for z in lo..=hi {

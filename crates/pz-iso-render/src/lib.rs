@@ -11,6 +11,7 @@
 //! crate fills; lighting comes in as each square's light colour and eight
 //! vertex lights, as `LightingJNI` produces them.
 
+pub mod cache;
 pub mod cell;
 pub mod chunk;
 pub mod color;
