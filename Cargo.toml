@@ -12,6 +12,7 @@ pz-kahlua = { path = "crates/pz-kahlua" }
 pz-fs = { path = "crates/pz-fs" }
 pz-classfile = { path = "crates/pz-classfile" }
 pz-sandbox = { path = "crates/pz-sandbox" }
+pz-server-settings = { path = "crates/pz-server-settings" }
 pz-render = { path = "crates/pz-render" }
 pz-text = { path = "crates/pz-text" }
 pz-ui = { path = "crates/pz-ui" }

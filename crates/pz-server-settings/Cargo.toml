@@ -1,0 +1,11 @@
+[package]
+name = "pz-server-settings"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-classfile.workspace = true
+pz-core.workspace = true
+pz-kahlua.workspace = true
+pz-sandbox.workspace = true
+pz-text.workspace = true

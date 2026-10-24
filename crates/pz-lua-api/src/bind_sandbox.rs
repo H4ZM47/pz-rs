@@ -21,7 +21,7 @@ use std::rc::Rc;
 
 const CLASS: &str = "zombie.SandboxOptions";
 
-type Shared = Rc<RefCell<SandboxOptions>>;
+pub(crate) type Shared = Rc<RefCell<SandboxOptions>>;
 
 struct Env {
     fs: Rc<RefCell<GameFs>>,
@@ -132,7 +132,7 @@ fn media_file(fs: &GameFs, sub: &str) -> PathBuf {
 }
 
 /// `new SandboxOptions()`.
-fn construct(thread: &mut Thread) -> LuaResult<Shared> {
+pub(crate) fn construct(thread: &mut Thread) -> LuaResult<Shared> {
     let (fs, loader, defs) = ENV.with(|e| -> LuaResult<_> {
         let mut e = e.borrow_mut();
         let env = e.as_mut().ok_or_else(|| {
