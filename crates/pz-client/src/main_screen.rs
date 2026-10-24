@@ -37,6 +37,8 @@ pub fn run_headless(game_dir: &Path, frames: u32) -> Result<(), String> {
     for _ in 0..frames {
         // MainScreenState.update
         mgr.trigger_event("OnFETick", &[0.0.into()]);
+        // UIManager.update starts with UITransition.UpdateAll().
+        pz_lua_api::bind_misc::ui_transition_update_all();
         UIManager::update(&mut mgr.thread);
         // MainScreenState.render
         UIManager::render(&mut mgr.thread);

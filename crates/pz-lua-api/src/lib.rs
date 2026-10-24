@@ -12,6 +12,7 @@ pub mod bind_debug;
 pub mod bind_fs;
 pub mod bind_globals;
 pub mod bind_java_util;
+pub mod bind_misc;
 pub mod bind_render;
 pub mod bind_text;
 pub mod bind_map_groups;
@@ -36,6 +37,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_debug::register(&mut mgr.thread);
     bind_world::register(&mut mgr.thread);
     bind_map_groups::register(&mut mgr.thread, move || fs.borrow().media_file("maps"));
+    bind_misc::register(&mut mgr.thread, mgr.fs.clone(), mgr.events.clone());
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }
