@@ -182,3 +182,37 @@ fn chunk_texture_depth_and_composite() {
     // carries the cleared depth, which clamps to 1, so blue covers it.
     assert_eq!(px(&p, 8, 0, 1), [0, 0, 255, 255]);
 }
+
+/// The offscreen world buffer drawn with the `screen` shader: a flat
+/// colour comes back graded (desaturate 0.1, contrast 1.2 about 0.4).
+#[test]
+fn screen_pass_grades_the_offscreen_buffer() {
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::OffscreenBegin { width: 16, height: 8 });
+    dl.render_rect(0, 0, 16, 8, Rgba(0.6, 0.4, 0.2, 1.0));
+    dl.cmds.push(DrawCmd::OffscreenEnd);
+    dl.cmds.push(DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: 16.0, h: 8.0, tex: [0.0, 0.0, 16.0, 8.0], params: pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 } });
+    g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+    let p = g.read_pixels();
+    let got = px(&p, 16, 8, 4);
+    assert!(near_rgb(got, [158, 103, 48]), "{got:?}");
+}
+
+#[test]
+fn screen_pass_keeps_orientation() {
+    let Some(mut g) = gpu(16, 16) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::OffscreenBegin { width: 16, height: 16 });
+    dl.render_rect(0, 0, 16, 8, Rgba(1.0, 0.0, 0.0, 1.0));
+    dl.render_rect(0, 8, 16, 8, Rgba(0.0, 0.0, 1.0, 1.0));
+    dl.cmds.push(DrawCmd::OffscreenEnd);
+    dl.cmds.push(DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: 16.0, h: 16.0, tex: [0.0, 0.0, 16.0, 16.0], params: pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 } });
+    g.render_frame(&[(opaque_black(16, 16), &dl)], &mut tm);
+    let p = g.read_pixels();
+    let (top, bottom) = (px(&p, 16, 8, 2), px(&p, 16, 8, 13));
+    assert!(top[0] > 200 && top[2] < 50, "{top:?}");
+    assert!(bottom[2] > 200 && bottom[0] < 50, "{bottom:?}");
+}

@@ -27,6 +27,8 @@ pub enum Program {
     OpaqueDepth,
     /// `chunkShader`.
     Composite,
+    /// `screen` (`WeatherShader`).
+    Screen,
 }
 
 impl Program {
@@ -102,9 +104,20 @@ pub struct PipeKey {
     pub program: Program,
     /// Depth compare and write when the depth test is on.
     pub depth: Option<(u32, bool)>,
-    /// Drawing into a chunk texture rather than the main target.
-    pub chunk: bool,
+    /// The kind of target drawn into.
+    pub target: TargetKind,
 }
+
+/// Render target kinds, which fix colour and depth formats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TargetKind {
+    Main,
+    Chunk,
+    Offscreen,
+}
+
+/// The offscreen world buffer's colour format.
+pub const OFFSCREEN_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 impl GlState {
     /// Applies a state command (`IndieGL` call) from the draw list.
@@ -170,14 +183,14 @@ impl GlState {
             ]),
             program: Program::Default,
             depth: self.depth_test.then_some((self.depth_func, self.depth_mask)),
-            chunk: false,
+            target: TargetKind::Main,
         }
     }
 
     /// `glClear(bit)`: colour clears write through the colour mask without
     /// blending; stencil clears replace through the stencil write mask.
     pub fn clear_key(&self, bit: u32) -> PipeKey {
-        let base = PipeKey { blend: None, color_mask: 0, stencil: None, program: Program::Clear, depth: None, chunk: false };
+        let base = PipeKey { blend: None, color_mask: 0, stencil: None, program: Program::Clear, depth: None, target: TargetKind::Main };
         match bit {
             gl::STENCIL_BUFFER_BIT => PipeKey { stencil: Some([gl::ALWAYS, 0xFF, self.stencil_write_mask & 0xFF, gl::REPLACE, gl::REPLACE, gl::REPLACE]), ..base },
             gl::DEPTH_BUFFER_BIT => PipeKey { depth: Some((gl::ALWAYS, self.depth_mask)), ..base },
@@ -193,6 +206,7 @@ pub struct Programs {
     pub world_tile: wgpu::ShaderModule,
     /// `world.wgsl` with `world_composite.wgsl`.
     pub world_composite: wgpu::ShaderModule,
+    pub screen: wgpu::ShaderModule,
     pub sprite_layout: wgpu::PipelineLayout,
     pub tile_layout: wgpu::PipelineLayout,
     pub composite_layout: wgpu::PipelineLayout,
@@ -211,7 +225,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
     }
     let stencil = match key.stencil {
         // Chunk textures have no stencil buffer.
-        Some([func, read, write, sfail, dpfail, dppass]) if !key.chunk => {
+        Some([func, read, write, sfail, dpfail, dppass]) if key.target != TargetKind::Chunk => {
             let face = wgpu::StencilFaceState {
                 compare: gl::compare(func),
                 fail_op: gl::stencil_op(sfail),
@@ -233,6 +247,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::Composite => (&programs.world_composite, &programs.composite_layout),
         Program::WorldDefault => (&programs.world_tile, &programs.sprite_layout),
         Program::Default | Program::Clear => (&programs.sprite, &programs.sprite_layout),
+        Program::Screen => (&programs.screen, &programs.sprite_layout),
     };
     let (vs, fs) = match key.program {
         Program::Default => ("vs_main", "fs_main"),
@@ -241,13 +256,18 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::TileDepth => ("vs_world", "fs_tile"),
         Program::OpaqueDepth => ("vs_world", "fs_opaque"),
         Program::Composite => ("vs_world", "fs_composite"),
+        Program::Screen => ("vs_screen", "fs_screen"),
     };
     let attributes: &[wgpu::VertexAttribute] = if world {
         &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32x2, 4 => Float32x2]
     } else {
         &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4]
     };
-    let (format, depth_format) = if key.chunk { (CHUNK_COLOR_FORMAT, CHUNK_DEPTH_FORMAT) } else { (format, DEPTH_STENCIL_FORMAT) };
+    let (format, depth_format) = match key.target {
+        TargetKind::Chunk => (CHUNK_COLOR_FORMAT, CHUNK_DEPTH_FORMAT),
+        TargetKind::Offscreen => (OFFSCREEN_COLOR_FORMAT, DEPTH_STENCIL_FORMAT),
+        TargetKind::Main => (format, DEPTH_STENCIL_FORMAT),
+    };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("sprite"),
         layout: Some(layout),

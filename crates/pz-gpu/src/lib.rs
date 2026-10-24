@@ -33,7 +33,7 @@ use pz_render::{DrawCmd, DrawList, TextureManager, WorldShader};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
 pub use state::GlState;
-use state::{PipeKey, Program};
+use state::{PipeKey, Program, TargetKind};
 
 /// One `Core.DoStartFrameStuff` call and what was drawn after it.
 #[derive(Clone, Copy, Debug)]
@@ -92,6 +92,8 @@ struct Globals {
     alpha_ref: f32,
     clip_z: f32,
     _pad: u32,
+    /// The screen pass's uniforms (see screen.wgsl).
+    screen: [[f32; 4]; 2],
 }
 
 /// Uniform blocks are bound at 256-byte aligned offsets.
@@ -112,6 +114,8 @@ enum Tex2 {
     Texture(u32),
     /// A chunk texture: colour in group 1 and depth in group 2.
     Chunk(u64, bool),
+    /// The offscreen buffer's colour, in group 1.
+    Offscreen,
 }
 
 /// Where a pass draws.
@@ -119,6 +123,27 @@ enum Tex2 {
 enum PassTarget {
     Main,
     Chunk(u64),
+    Offscreen,
+}
+
+impl PassTarget {
+    fn kind(self) -> TargetKind {
+        match self {
+            PassTarget::Main => TargetKind::Main,
+            PassTarget::Chunk(_) => TargetKind::Chunk,
+            PassTarget::Offscreen => TargetKind::Offscreen,
+        }
+    }
+}
+
+/// `MultiTextureFBO2`'s offscreen world buffer.
+struct OffscreenTarget {
+    width: u32,
+    height: u32,
+    color: wgpu::TextureView,
+    depth_stencil: wgpu::TextureView,
+    /// Sampled with `Core.screenFilter` (GL_NEAREST).
+    bind: wgpu::BindGroup,
 }
 
 struct PassDesc {
@@ -169,6 +194,7 @@ pub struct Gpu {
     chunk_depth_layout: wgpu::BindGroupLayout,
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
     chunks: HashMap<u64, ChunkTarget>,
+    offscreen: Option<OffscreenTarget>,
     textures: HashMap<u32, wgpu::BindGroup>,
     samplers: HashMap<Filter, wgpu::Sampler>,
     /// Bound for untextured quads; samples as 1.0 like `useTexture = 0`.
@@ -233,6 +259,7 @@ impl Gpu {
         let world = include_str!("world.wgsl");
         let world_tile = module("tileWithDepth", format!("{world}\n{}", include_str!("world_tile.wgsl")));
         let world_composite = module("chunkShader", format!("{world}\n{}", include_str!("world_composite.wgsl")));
+        let screen = module("screen", include_str!("screen.wgsl").to_string());
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -284,6 +311,7 @@ impl Gpu {
             sprite,
             world_tile,
             world_composite,
+            screen,
         };
         let depth_stencil = depth_stencil_view(&device, width, height);
         let mut gpu = Gpu {
@@ -300,6 +328,7 @@ impl Gpu {
             chunk_depth_layout,
             pipelines: HashMap::new(),
             chunks: HashMap::new(),
+            offscreen: None,
             textures: HashMap::new(),
             samplers: HashMap::new(),
             white: None,
@@ -480,6 +509,12 @@ impl Gpu {
                     };
                     (&c.color, &c.depth, load, Some(wgpu::Operations { load: dload, store: wgpu::StoreOp::Store }), None, c.width, c.height)
                 }
+                PassTarget::Offscreen => {
+                    let Some(o) = self.offscreen.as_ref() else { continue };
+                    let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
+                    let keep_s = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
+                    (&o.color, &o.depth_stencil, wgpu::LoadOp::Load, Some(keep), Some(keep_s), o.width, o.height)
+                }
             };
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("sprites"),
@@ -499,7 +534,7 @@ impl Gpu {
             let white = self.white.as_ref().expect("white texture");
             for b in &batches[pass_desc.batches.clone()] {
                 let [sx, sy, sw, sh] = match b.scissor {
-                    Some(s) if pass_desc.target == PassTarget::Main => clip_scissor(s, tw, th),
+                    Some(s) if !matches!(pass_desc.target, PassTarget::Chunk(_)) => clip_scissor(s, tw, th),
                     _ => [0, 0, tw, th],
                 };
                 if sw == 0 || sh == 0 {
@@ -518,6 +553,10 @@ impl Gpu {
                         pass.set_bind_group(2, t2, &[]);
                         b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white)
                     }
+                    Tex2::Offscreen => match self.offscreen.as_ref() {
+                        Some(o) => &o.bind,
+                        None => continue,
+                    },
                     Tex2::None => b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white),
                 };
                 pass.set_viewport(0.0, 0.0, b.viewport.0.min(tw) as f32, b.viewport.1.min(th) as f32, 0.0, 1.0);
@@ -612,12 +651,67 @@ impl Gpu {
                 f.push(key, None, Tex2::Chunk(*id, *mag_linear), &self.state, g, v);
             }
             DrawCmd::ChunkFree(id) => f.freed.push(*id),
+            DrawCmd::OffscreenBegin { width, height } => {
+                self.ensure_offscreen(*width, *height);
+                f.target = PassTarget::Offscreen;
+            }
+            DrawCmd::OffscreenEnd => f.target = PassTarget::Main,
+            DrawCmd::ScreenPass { x, y, w, h, tex, params } => {
+                let Some(o) = self.offscreen.as_ref() else { return };
+                let (tw, th) = (o.width as f32, o.height as f32);
+                // Texture.rendershader2: v runs bottom-up in the buffer.
+                let (u0, u1) = (tex[0] / tw, (tex[0] + tex[2]) / tw);
+                let (v_top, v_bottom) = ((tex[1] + tex[3]) / th, tex[1] / th);
+                let mut g = Globals::zeroed();
+                g.mvp = f.mvp_for_target();
+                g.alpha_func = 8;
+                g.clip_z = 0.5;
+                g.screen = [[params.desaturation, params.timer, f.viewport.0 as f32, f.viewport.1 as f32], [tw, th, 0.0, 0.0]];
+                let gi = f.push_globals(g);
+                let corner = |px: f32, py: f32, u: f32, v: f32| Vertex { pos: [px, py], uv: [u, v], color: 0xFFFF_FFFF, uv1: [0.0; 2], uv2: [0.0; 2] };
+                let v = [corner(*x, *y, u0, v_top), corner(x + w, *y, u1, v_top), corner(x + w, y + h, u1, v_bottom), corner(*x, y + h, u0, v_bottom)];
+                let key = PipeKey { blend: None, ..self.key(f, Program::Screen) };
+                f.push(key, None, Tex2::Offscreen, &self.state, gi, v);
+            }
             other => self.state.apply(other),
         }
     }
 
     fn key(&self, f: &FrameBuilder, program: Program) -> PipeKey {
-        PipeKey { program, chunk: f.target != PassTarget::Main, ..self.state.pipe_key() }
+        PipeKey { program, target: f.target.kind(), ..self.state.pipe_key() }
+    }
+
+    /// `MultiTextureFBO2.create`: the offscreen buffer, with a
+    /// `GL_DEPTH24_STENCIL8` renderbuffer.
+    fn ensure_offscreen(&mut self, width: u32, height: u32) {
+        if self.offscreen.as_ref().is_some_and(|o| o.width == width && o.height == height) {
+            return;
+        }
+        let tex = |format, usage, label| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let color = tex(state::OFFSCREEN_COLOR_FORMAT, usage, "offscreen").create_view(&Default::default());
+        let depth_stencil = tex(state::DEPTH_STENCIL_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT, "offscreen depth").create_view(&Default::default());
+        let sampler = self.sampler((true, true, false, true));
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        self.offscreen = Some(OffscreenTarget { width, height, color, depth_stencil, bind });
     }
 
     /// `FBORenderChunk.init`: colour and 16-bit depth textures of the
@@ -805,7 +899,11 @@ impl FrameBuilder {
 
     fn globals(&mut self, st: &GlState, mvp: [[f32; 4]; 4], clip_z: f32) -> u32 {
         let (alpha_func, alpha_ref) = if st.alpha_test { (st.alpha_func.wrapping_sub(gl::NEVER), st.alpha_ref) } else { (8, 0.0) };
-        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, _pad: 0 };
+        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, _pad: 0, screen: [[0.0; 4]; 2] };
+        self.push_globals(g)
+    }
+
+    fn push_globals(&mut self, g: Globals) -> u32 {
         if let Some(i) = self.globals.iter().position(|x| bytemuck::bytes_of(x) == bytemuck::bytes_of(&g)) {
             return i as u32;
         }
@@ -853,7 +951,7 @@ impl FrameBuilder {
     fn clear(&mut self, st: &GlState, g: u32, bit: u32, color: [f64; 4]) {
         let c = pz_render::color_to_abgr(color[0] as f32, color[1] as f32, color[2] as f32, color[3] as f32);
         let verts = [(-1.0, 1.0), (1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)].map(|(x, y)| Vertex { pos: [x, y], uv: [0.0; 2], color: c, uv1: [0.0; 2], uv2: [0.0; 2] });
-        let key = PipeKey { chunk: self.target != PassTarget::Main, ..st.clear_key(bit) };
+        let key = PipeKey { target: self.target.kind(), ..st.clear_key(bit) };
         let stencil = if bit == gl::STENCIL_BUFFER_BIT { st.clear_stencil } else { st.stencil_ref };
         let mut st2 = st.clone();
         st2.stencil_ref = stencil;

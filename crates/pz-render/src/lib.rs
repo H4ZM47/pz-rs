@@ -211,6 +211,25 @@ pub enum DrawCmd {
     ChunkComposite { id: u64, x: f32, y: f32, w: f32, h: f32, color: u32, chunk_depth: f32, mag_linear: bool },
     /// Releases chunk texture `id` (`FBORenderChunk.destroy`).
     ChunkFree(u64),
+    /// `Core.StartFrame`'s `glBuffer(1)`: following draws go to the
+    /// offscreen world buffer (`MultiTextureFBO2`), a texture of this size
+    /// with depth and stencil, created if needed.
+    OffscreenBegin { width: u32, height: u32 },
+    /// Back to the main target.
+    OffscreenEnd,
+    /// `MultiTextureFBO2.render`: the offscreen buffer drawn to the screen
+    /// quad `x, y, w, h` from its texel rectangle `tex` (x, y, w, h) with
+    /// the `screen` shader.
+    ScreenPass { x: f32, y: f32, w: f32, h: f32, tex: [f32; 4], params: ScreenParams },
+}
+
+/// The `WeatherShader` uniforms the screen pass reads.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenParams {
+    /// `DesaturationVal` (`PlayerRenderSettings.getDesaturation`).
+    pub desaturation: f32,
+    /// `timer`: the frame counter that animates the grain.
+    pub timer: f32,
 }
 
 /// The shader a [`DrawCmd::WorldSprite`] is drawn with.
