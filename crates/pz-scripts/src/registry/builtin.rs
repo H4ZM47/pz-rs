@@ -434,6 +434,59 @@ fn level_up_levels(jar: &Jar) -> ScriptResult<Vec<i32>> {
     }
 }
 
+const ISO_ZOMBIE_CLASS: &str = "zombie/characters/IsoZombie";
+
+/// `IsoZombie.temporaryMapCloseSneakBonusDir` and
+/// `temporaryMapCloseSneakBonusValue`: (sprite, directions, value), in
+/// the `Map.ofEntries` order of the directions map.
+fn zombie_close_sneak_bonus(jar: &Jar) -> ScriptResult<Vec<(String, String, f32)>> {
+    fn entries(v: Option<Value>) -> Option<Vec<(String, Value)>> {
+        let Value::Call { name, args, .. } = v? else { return None };
+        if name != "ofEntries" {
+            return None;
+        }
+        let Some(Value::Array(items)) = args.into_iter().next() else { return None };
+        items
+            .into_iter()
+            .map(|e| match e {
+                Value::Call { name, mut args, .. } if name == "entry" && args.len() == 2 => {
+                    let v = args.pop()?;
+                    match args.pop()? {
+                        Value::Str(k) => Some((k, v)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect()
+    }
+    let bad = || ScriptError::new("IsoZombie.temporaryMapCloseSneakBonus: unreadable");
+    let dirs = entries(pz_classfile::static_value(jar, ISO_ZOMBIE_CLASS, "temporaryMapCloseSneakBonusDir").map_err(class_error)?)
+        .ok_or_else(bad)?;
+    let values =
+        entries(pz_classfile::static_value(jar, ISO_ZOMBIE_CLASS, "temporaryMapCloseSneakBonusValue").map_err(class_error)?)
+            .ok_or_else(bad)?;
+    let value_of = |k: &str| -> Option<f32> {
+        let (_, v) = values.iter().find(|(n, _)| n == k)?;
+        match v {
+            Value::Float(f) => Some(*f as f32),
+            Value::Call { args, .. } => match args.first() {
+                Some(Value::Float(f)) => Some(*f as f32),
+                Some(Value::Int(i)) => Some(*i as f32),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    dirs.into_iter()
+        .map(|(k, d)| match d {
+            Value::Str(d) => value_of(&k).map(|v| (k, d, v)),
+            _ => None,
+        })
+        .collect::<Option<_>>()
+        .ok_or_else(bad)
+}
+
 /// Built-in name tables the original defines in code, read from the jar.
 #[derive(Clone, Debug, Default)]
 pub struct BuiltinTables {
@@ -466,6 +519,8 @@ pub struct BuiltinTables {
     pub level_up_levels: Vec<i32>,
     /// `CheatType` constants in declaration order.
     pub cheat_types: Vec<String>,
+    /// `IsoZombie`'s close-sneak-bonus sprites: (sprite, directions, value).
+    pub zombie_close_sneak_bonus: Vec<(String, String, f32)>,
 }
 
 impl BuiltinTables {
@@ -545,6 +600,7 @@ impl BuiltinTables {
             moodle_stats: moodle_stats(jar)?,
             level_up_levels: level_up_levels(jar)?,
             cheat_types: pz_classfile::enum_constants(jar, CHEAT_TYPE_CLASS).map_err(class_error)?,
+            zombie_close_sneak_bonus: zombie_close_sneak_bonus(jar)?,
         })
     }
 }

@@ -148,12 +148,20 @@ impl<I: 'static> PathMover for GameCharacter<I> {
             None
         }
     }
-    /// TODO(zombie port): `ZombieMover` for zombies.
+    /// `ZombieMover` for zombies (`zombie::mover`).
     fn as_zombie(&self) -> Option<&dyn ZombieMover> {
-        None
+        if self.is_zombie() {
+            Some(self)
+        } else {
+            None
+        }
     }
     fn as_zombie_mut(&mut self) -> Option<&mut dyn ZombieMover> {
-        None
+        if self.is_zombie() {
+            Some(self)
+        } else {
+            None
+        }
     }
     /// TODO(animal port).
     fn as_animal(&self) -> Option<&dyn AnimalMover> {

@@ -12,6 +12,9 @@ use crate::Characters;
 
 pub use pz_pathfind::behavior::BehaviorResult;
 use pz_pathfind::mover::PathMover;
+use pz_pathfind::behavior::PathFindBehavior2;
+
+use pz_audio::world_sound::{SoundWorld, WorldSoundManager};
 
 /// What the states read about a square (`IsoGridSquare`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -25,6 +28,10 @@ pub struct SquareInfo {
     pub solid_floor: bool,
     /// `HasStairs()`.
     pub has_stairs: bool,
+    /// `HasStairsNorth()`.
+    pub has_stairs_north: bool,
+    /// `HasStairsWest()`.
+    pub has_stairs_west: bool,
 }
 
 /// The world as the states see it. Characters other than the one being
@@ -80,6 +87,261 @@ pub trait StateWorld<I> {
     fn line_clear(&self, _x0: f32, _y0: f32, _x1: f32, _y1: f32, _z: i32) -> bool {
         true
     }
+
+    // ---- what zombies read and do (`IsoZombie`, the zombie states) ----
+
+    /// `WorldSoundManager.instance` (`pz_audio::world_sound`) and the cell
+    /// it reads.
+    fn world_sounds(&self) -> Option<(&WorldSoundManager, &dyn SoundWorld)> {
+        None
+    }
+    /// `(r + g + b) / 3` of `square.lighting[playerIndex].lightInfo()`
+    /// (pz-lighting's).
+    fn square_light(&self, _sq: (i32, i32, i32), _player_index: i32) -> f32 {
+        1.0
+    }
+    /// `square.getLightLevel(playerIndex)`.
+    fn square_light_level(&self, _sq: (i32, i32, i32), _player_index: i32) -> f32 {
+        1.0
+    }
+    /// `RenderSettings.getInstance().getAmbientForPlayer(playerIndex)`.
+    fn ambient_for_player(&self, _player_index: i32) -> f32 {
+        1.0
+    }
+    /// `square.getRoom()` by id.
+    fn square_room(&self, _sq: (i32, i32, i32)) -> Option<i64> {
+        None
+    }
+    /// `square.getBuilding()` by id.
+    fn square_building(&self, _sq: (i32, i32, i32)) -> Option<i64> {
+        None
+    }
+    /// `square.getProperties().has(IsoFlagType.smoke)`.
+    fn square_smoke(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `square.isCanSee(playerIndex)`.
+    fn square_can_see(&self, _sq: (i32, i32, i32), _player_index: i32) -> bool {
+        false
+    }
+    /// `square.isCouldSee(playerIndex)`.
+    fn square_could_see(&self, _sq: (i32, i32, i32), _player_index: i32) -> bool {
+        false
+    }
+    /// The sprite names of `square.getObjects()` in order.
+    fn square_sprite_names(&self, _sq: (i32, i32, i32)) -> Vec<String> {
+        Vec::new()
+    }
+    /// `square.getGridSneakModifier(onlySolidTrans)`.
+    fn grid_sneak_modifier(&self, _sq: (i32, i32, i32), _only_solid_trans: bool) -> f32 {
+        1.0
+    }
+    /// `square.isSomethingTo(other)`.
+    fn is_something_to(&self, _a: (i32, i32, i32), _b: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `square.isFree(true)`.
+    fn square_is_free(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `square.isSameStaircase(x, y, z)`.
+    fn same_staircase(&self, _sq: (i32, i32, i32), _x: i32, _y: i32, _z: i32) -> bool {
+        false
+    }
+    /// `BaseVehicle.getIntersectPoint` of any vehicle on the segment
+    /// (`IsoZombie.isVehicleBetween`).
+    fn vehicle_between(&self, _from: (f32, f32, f32), _to: (f32, f32, f32)) -> bool {
+        false
+    }
+    /// `DistToSquared(vehicle)` from `(x, y)` (the closest point of the
+    /// vehicle's polygon).
+    fn vehicle_dist_squared(&self, _vehicle: i16, _x: f32, _y: f32) -> f32 {
+        f32::MAX
+    }
+    /// `IsoWorld.instance.currentCell.getChunk(wx, wy) != null`.
+    fn chunk_loaded(&self, _wx: i32, _wy: i32) -> bool {
+        true
+    }
+    /// `PolygonalMap2.lineClearCollide(x0, y0, x1, y1, z, ignore, flags)`:
+    /// true when something is in the way.
+    #[allow(clippy::too_many_arguments)]
+    fn line_clear_collide(&self, _x0: f32, _y0: f32, _x1: f32, _y1: f32, _z: i32, _ignore: Option<i32>, _flags: i32) -> bool {
+        false
+    }
+    /// `LosUtil.lineClear(cell, from, to, ignoreDoors)`.
+    fn los_line_clear(&self, _from: (i32, i32, i32), _to: (i32, i32, i32), _ignore_doors: bool) -> LosResult {
+        LosResult::Clear
+    }
+    /// `LosUtil.lineClearCollide(x0, y0, z0, x1, y1, z1, ignoreDoors)`:
+    /// true when blocked.
+    fn los_line_clear_collide(&self, _from: (i32, i32, i32), _to: (i32, i32, i32), _ignore_doors: bool) -> bool {
+        false
+    }
+    /// `PolygonalMap2.canStandAt(x, y, z, null, false, true)`.
+    fn can_stand_at(&self, _x: f32, _y: f32, _z: i32) -> bool {
+        true
+    }
+    /// The character's `PathFindBehavior2` (read only).
+    fn path_behavior(&self, _id: i32) -> Option<&PathFindBehavior2> {
+        None
+    }
+    /// `getPathFindBehavior2().pathToSound(x, y, z)`.
+    fn path_to_sound(&mut self, _chr: &mut dyn PathMover, _x: i32, _y: i32, _z: i32) {}
+    /// `getPathFindBehavior2().pathToLocationF(x, y, z)`.
+    fn path_to_location_f(&mut self, _chr: &mut dyn PathMover, _x: f32, _y: f32, _z: f32) {}
+    /// `getPathFindBehavior2().walkingOnTheSpot.reset(x, y)`.
+    fn walking_on_the_spot_reset(&mut self, _id: i32, _x: f32, _y: f32) {}
+    /// `getPathFindBehavior2().walkingOnTheSpot.check(x, y)`.
+    fn walking_on_the_spot_check(&mut self, _id: i32, _x: f32, _y: f32) -> bool {
+        false
+    }
+    /// `current.testCollideSpecialObjects(feeler)`: the door, window,
+    /// window frame or thumpable between two squares.
+    fn special_object_between(&self, _from: (i32, i32, i32), _to: (i32, i32, i32)) -> Option<ThumpTarget> {
+        None
+    }
+    /// What the zombie code reads about a thump target, as `chr` sees it.
+    fn thump_info(&self, _target: ThumpTarget, _chr: i32) -> Option<ThumpInfo> {
+        None
+    }
+    /// `target.Thump(chr)`: the object's damage and sounds (the object's
+    /// code; it may clear `chr`'s thump target).
+    fn thump(&mut self, _target: ThumpTarget, _chr: &mut GameCharacter<I>) {}
+    /// The square has a sheet rope (`climbSheet*` flag and `getSheetRope()`).
+    fn has_sheet_rope(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `sheetRope.sheetRopeHealth -= damage` and the sprite damage.
+    fn damage_sheet_rope(&mut self, _sq: (i32, i32, i32), _damage: f32) {}
+    /// `square.hasFarmingPlant()`.
+    fn has_farming_plant(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `square.destroyFarmingPlant()`.
+    fn destroy_farming_plant(&mut self, _sq: (i32, i32, i32)) {}
+    /// `square.hasLitCampfire()`.
+    fn has_lit_campfire(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `square.putOutCampfire()`.
+    fn put_out_campfire(&mut self, _sq: (i32, i32, i32)) {}
+    /// The non-ghost players standing on `sq` (`getMovingObjects()`).
+    fn players_on_square(&self, _sq: (i32, i32, i32)) -> Vec<i32> {
+        Vec::new()
+    }
+    /// `square.getDeadBody()` for the corpse search.
+    fn dead_body_at(&self, _sq: (i32, i32, i32)) -> Option<CorpseInfo> {
+        None
+    }
+    /// A corpse by id (`IsoDeadBody`).
+    fn dead_body(&self, _id: i64) -> Option<CorpseInfo> {
+        None
+    }
+    /// `getEatingZombies()` of a corpse or character: add or remove `zombie`.
+    fn set_eating(&mut self, _target: EatTarget, _zombie: i32, _eating: bool) {}
+    /// `getEatingZombies().size()`.
+    fn eating_count(&self, _target: EatTarget) -> usize {
+        0
+    }
+}
+
+/// `LosUtil.TestResults`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LosResult {
+    Clear,
+    ClearThroughOpenDoor,
+    ClearThroughWindow,
+    Blocked,
+    ClearThroughClosedDoor,
+}
+
+/// A `Thumpable`: an object on a square or a vehicle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThumpTarget {
+    Object(pz_pathfind::mover::ObjectRef),
+    Vehicle(i16),
+}
+
+/// The class of a thumpable.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThumpKind {
+    Door,
+    Window,
+    WindowFrame,
+    Thumpable,
+    Barricade,
+    Vehicle,
+    #[default]
+    Other,
+}
+
+/// What the zombie code reads about a thump target.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ThumpInfo {
+    pub kind: ThumpKind,
+    /// `getSquare()`.
+    pub square: Option<(i32, i32, i32)>,
+    /// `getNorth()` (or a barricade's N/S direction).
+    pub north: bool,
+    pub destroyed: bool,
+    /// `IsoDoor.isOpen()` / `IsoThumpable.open`.
+    pub open: bool,
+    /// `IsoThumpable.isDoor()`.
+    pub is_door: bool,
+    pub hoppable: bool,
+    pub tall_hoppable: bool,
+    /// `canClimbThrough(chr)`.
+    pub can_climb_through: bool,
+    /// `getThumpableFor(chr)`.
+    pub thumpable_for: Option<ThumpTarget>,
+    /// The kind of `getThumpableFor(chr)`.
+    pub thumpable_for_kind: ThumpKind,
+    /// `getThumpableFor(chr).getThumpCondition()`.
+    pub thump_condition: f32,
+    /// The thumpable's thump sound (`IsoDoor/IsoThumpable.getThumpSound()`,
+    /// a sprite's `ThumpSound`, else generic).
+    pub thump_sound: String,
+    /// `getSoundPrefix()`.
+    pub sound_prefix: String,
+    /// `IsoThumpable.isBlockAllTheSquare()`.
+    pub block_all_the_square: bool,
+    /// The barricade (`getThumpableFor`) is metal or metal bars.
+    pub barricade_metal: bool,
+    /// The barricade's plank count.
+    pub barricade_planks: i32,
+    /// The barricade is the one `IsoBarricade.GetBarricadeForCharacter`
+    /// gives for this target.
+    pub barricade_for_character: bool,
+    /// `getOppositeSquare()` (doors).
+    pub opposite_square: Option<(i32, i32, i32)>,
+    /// `getObjectIndex() != -1` (or a vehicle's moving index).
+    pub in_world: bool,
+    /// `getFacingPosition()`.
+    pub facing_position: (f32, f32),
+}
+
+/// What the corpse search reads about an `IsoDeadBody`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CorpseInfo {
+    pub id: i64,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub skeleton: bool,
+    pub zombie: bool,
+    pub animal: bool,
+    pub animal_skeleton: bool,
+    /// `getStaticMovingObjectIndex() != -1`.
+    pub in_world: bool,
+    /// `getEatingZombies().size()`.
+    pub eating: usize,
+}
+
+/// What a zombie eats: a corpse or a character.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EatTarget {
+    Body(i64),
+    Character(i32),
 }
 
 /// A world with nothing in it.

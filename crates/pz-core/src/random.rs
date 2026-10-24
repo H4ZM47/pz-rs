@@ -54,6 +54,13 @@ impl JavaRandom {
         self.next(32)
     }
 
+    /// `nextDouble()`.
+    pub fn next_double(&self) -> f64 {
+        let hi = (self.next(26) as i64) << 27;
+        let lo = self.next(27) as i64;
+        (hi + lo) as f64 * (1.0f64 / (1u64 << 53) as f64)
+    }
+
     /// `nextFloat()`.
     pub fn next_float(&self) -> f32 {
         self.next(24) as f32 / (1 << 24) as f32

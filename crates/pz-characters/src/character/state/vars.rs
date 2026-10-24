@@ -459,6 +459,8 @@ enum Scope {
     Living,
     /// `IsoPlayer` (players and animals).
     Player,
+    /// `IsoZombie` (registered last, so it replaces the others).
+    Zombie,
 }
 
 macro_rules! char_vars {
@@ -634,6 +636,51 @@ char_vars! {
     AttackVariationX = "AttackVariationX", Player, Float;
     AttackVariationY = "AttackVariationY", Player, Float;
     SneakLimpSpeedScale = "sneakLimpSpeedScale", Player, Float;
+    ZClient = "bClient", Zombie, Boolean;
+    ZMultiplayer = "bMultiplayer", Zombie, Boolean;
+    ZMovingNetwork = "bMovingNetwork", Zombie, Boolean;
+    ZHitHeadType = "hitHeadType", Zombie, Int;
+    ZRealState = "realState", Zombie, String;
+    ZReanimatedForGrappleOnly = "bIsReanimatedForGrappleOnly", Zombie, Boolean;
+    ZAttack = "battack", Zombie, Boolean;
+    ZIsFacingTarget = "isFacingTarget", Zombie, Boolean;
+    ZTargetSeenTime = "targetSeenTime", Zombie, Float;
+    ZAttackVehicle = "battackvehicle", Zombie, Boolean;
+    ZEatBodyTarget = "beatbodytarget", Zombie, Boolean;
+    ZBecomeCrawler = "bbecomecrawler", Zombie, Boolean;
+    ZFakeDead = "bfakedead", Zombie, Boolean;
+    ZHasTarget = "bHasTarget", Zombie, Boolean;
+    ZCanSeeTarget = "bCanSeeTarget", Zombie, Boolean;
+    ZShouldSprint = "shouldSprint", Zombie, Boolean;
+    ZKnockedDown = "bknockeddown", Zombie, Boolean;
+    ZLunge = "blunge", Zombie, Boolean;
+    ZStopLunging = "bstoplunging", Zombie, Boolean;
+    ZPassengerExposed = "bpassengerexposed", Zombie, Boolean;
+    ZTargetIsSmallVehicle = "bistargetissmallvehicle", Zombie, Boolean;
+    ZReanimate = "breanimate", Zombie, Boolean;
+    ZStaggerBack = "bstaggerback", Zombie, Boolean;
+    ZUnbalancedLevel = "unbalancedLevel", Zombie, Float;
+    ZThump = "bthump", Zombie, Boolean;
+    ZUnderVehicle = "bundervehicle", Zombie, Boolean;
+    ZBeingSteppedOn = "bBeingSteppedOn", Zombie, Boolean;
+    ZDistanceToTarget = "distancetotarget", Zombie, Float;
+    ZLastTargetSeen = "lasttargetseen", Zombie, Boolean;
+    ZLungeTimer = "lungetimer", Zombie, Float;
+    ZReanimateTimer = "reanimatetimer", Zombie, Float;
+    ZTurnDirection = "turndirection", Zombie, String;
+    ZAlerted = "alerted", Zombie, Boolean;
+    ZWalkType = "zombiewalktype", Zombie, String;
+    ZCrawlerType = "crawlertype", Zombie, Int;
+    ZGetUpFromCrawl = "bGetUpFromCrawl", Zombie, Boolean;
+    ZPlayerAttackPosition = "playerattackposition", Zombie, String;
+    ZEatSpeed = "eatspeed", Zombie, Float;
+    ZIsSitting = "issitting", Zombie, Boolean;
+    ZKnifeDeath = "bKnifeDeath", Zombie, Boolean;
+    ZJawStabAttach = "bJawStabAttach", Zombie, Boolean;
+    ZPathFindPrediction = "bPathFindPrediction", Zombie, Boolean;
+    ZCrawling = "bCrawling", Zombie, Boolean;
+    ZAttackDidDamage = "AttackDidDamage", Zombie, Boolean;
+    ZAttackOutcome = "AttackOutcome", Zombie, String;
 }
 
 /// Per handle index: the slot for (non-living characters, living
@@ -674,6 +721,7 @@ impl CharVar {
                             e[2] = Some(var);
                         }
                         Scope::Player => e[2] = Some(var),
+                        Scope::Zombie => e[0] = Some(var),
                     }
                 }
                 m
@@ -711,6 +759,9 @@ impl CharVar {
 
     /// The getter.
     pub fn get<I>(self, c: &GameCharacter<I>) -> VariableValue {
+        if let Some(v) = crate::character::zombie::vars::get(self, c) {
+            return v;
+        }
         use VariableValue::{Bool as B, Float as F, Int, String as S};
         let v = &c.vars;
         match self {
@@ -865,6 +916,7 @@ impl CharVar {
             CharVar::AttackVariationX => F(v.attack_variation_x),
             CharVar::AttackVariationY => F(v.attack_variation_y),
             CharVar::SneakLimpSpeedScale => F(v.sneak_limp_speed_scale),
+            _ => B(false),
         }
     }
 
@@ -872,6 +924,9 @@ impl CharVar {
     /// for a read-only slot (the original warns and ignores it).
     pub fn set<I>(self, c: &mut GameCharacter<I>, value: VariableValue) -> bool {
         let value = value.converted_to(self.kind());
+        if let Some(done) = crate::character::zombie::vars::set(self, c, &value) {
+            return done;
+        }
         let b = || value.as_bool();
         let f = || value.as_float();
         let s = || value.as_string();
@@ -956,6 +1011,9 @@ impl CharVar {
 
     /// Whether the slot has no setter.
     pub fn is_read_only(self) -> bool {
+        if let Some(ro) = crate::character::zombie::vars::is_read_only(self) {
+            return ro;
+        }
         matches!(
             self,
             CharVar::StateEventDelayTimer

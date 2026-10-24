@@ -44,8 +44,10 @@ pub mod params;
 pub mod vars;
 
 pub use cx::{
-    BehaviorResult, NullWorld, SquareInfo, StateCx, StateWorld,
+    BehaviorResult, CorpseInfo, EatTarget, LosResult, NullWorld, SquareInfo, StateCx, StateWorld, ThumpInfo, ThumpKind,
+    ThumpTarget,
 };
+pub use action::ActionGroups;
 pub use machine::{StateMachine, StateMachineComponent, SubstateSlot};
 pub use params::{Param, StateParams};
 pub use vars::{CharVar, CharacterVars};

@@ -48,6 +48,7 @@ pub mod stats;
 pub mod thermoregulator;
 pub mod update;
 pub mod xp;
+pub mod zombie;
 
 use std::rc::Rc;
 
@@ -87,6 +88,9 @@ pub struct SimStatics {
     pub cheat_types: Vec<String>,
     /// `BodyPartType`'s constants.
     pub body_part_types: BodyPartTypes,
+    /// `IsoZombie.temporaryMapCloseSneakBonusDir`/`Value`: (sprite,
+    /// directions, value).
+    pub zombie_close_sneak_bonus: Vec<(String, String, f32)>,
 }
 
 impl SimStatics {
@@ -97,6 +101,7 @@ impl SimStatics {
             level_up_levels: tables.level_up_levels.clone(),
             cheat_types: tables.cheat_types.clone(),
             body_part_types: BodyPartTypes::from_tables(tables),
+            zombie_close_sneak_bonus: tables.zombie_close_sneak_bonus.clone(),
         })
     }
 }
@@ -288,6 +293,10 @@ pub struct GameCharacter<I: 'static> {
     pub attack_vars: states::swipe::AttackVars,
     /// `IsoLivingCharacter.bareHands` (`Base.BareHands`), when created.
     pub bare_hands: Option<pz_inventory::InventoryItem>,
+    /// `IsoZombie`'s fields (defaults for other characters).
+    pub zombie: Box<zombie::ZombieFields>,
+    /// The fields zombies read and write on the characters they hunt.
+    pub seen: zombie::SeenFields,
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -365,6 +374,8 @@ impl<I: 'static> GameCharacter<I> {
             path: path_mover::PathMoverState::default(),
             attack_vars: states::swipe::AttackVars::default(),
             bare_hands: None,
+            zombie: Box::default(),
+            seen: zombie::SeenFields::default(),
         }
     }
 

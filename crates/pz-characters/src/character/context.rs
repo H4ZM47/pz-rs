@@ -463,8 +463,150 @@ pub trait SimContext {
     fn flies_max_corpse_count(&self) -> i32 {
         25
     }
+    // ---- zombie lore (`SandboxOptions.instance.lore`) and the clock ----
+    /// `lore.speed` (1 sprinters, 2 fast shamblers, 3 shamblers, 4 random).
+    fn lore_speed(&self) -> i32 {
+        2
+    }
+    /// `lore.sprinterPercentage`.
+    fn lore_sprinter_percentage(&self) -> i32 {
+        33
+    }
+    /// `lore.cognition` (1 navigate and use doors, 2 navigate, 3 basic
+    /// navigation, 4 random).
+    fn lore_cognition(&self) -> i32 {
+        3
+    }
+    /// `lore.doorOpeningPercentage`.
+    fn lore_door_opening_percentage(&self) -> i32 {
+        33
+    }
+    /// `lore.crawlUnderVehicle` (1 never .. 7 always).
+    fn lore_crawl_under_vehicle(&self) -> i32 {
+        5
+    }
+    /// `lore.memory` (1 long .. 4 none, 5 random, 6 random between normal
+    /// and none).
+    fn lore_memory(&self) -> i32 {
+        2
+    }
+    /// `lore.sight` (1 eagle, 2 normal, 3 poor, 4 random, 5 random between
+    /// normal and poor).
+    fn lore_sight(&self) -> i32 {
+        2
+    }
+    /// `lore.hearing` (1 pinpoint, 2 normal, 3 poor, 4 random, 5 random
+    /// between normal and poor).
+    fn lore_hearing(&self) -> i32 {
+        2
+    }
+    /// `lore.reanimate`.
+    fn lore_reanimate(&self) -> i32 {
+        3
+    }
+    /// `lore.spottedLogic`.
+    fn lore_spotted_logic(&self) -> bool {
+        true
+    }
+    /// `lore.thumpNoChasing`.
+    fn lore_thump_no_chasing(&self) -> bool {
+        false
+    }
+    /// `lore.thumpOnConstruction`.
+    fn lore_thump_on_construction(&self) -> bool {
+        true
+    }
+    /// `lore.activeOnly` (1 both, 2 night, 3 day).
+    fn lore_active_only(&self) -> i32 {
+        1
+    }
+    /// `lore.zombiesFenceLunge`.
+    fn lore_zombies_fence_lunge(&self) -> bool {
+        true
+    }
+    /// `lore.zombiesFallDamage`.
+    fn lore_zombies_fall_damage(&self) -> f64 {
+        1.0
+    }
+    /// `lore.disableFakeDead` (1 world zombies, 2 world and combat, 3 never).
+    fn lore_disable_fake_dead(&self) -> i32 {
+        1
+    }
+    /// `GameTime.isNight()` (for `activeOnly`).
+    fn is_night(&self) -> bool {
+        false
+    }
+    /// `GameTime.isZombieInactivityPhase()`.
+    fn is_zombie_inactivity_phase(&self) -> bool {
+        let active = match self.lore_active_only() {
+            1 => true,
+            2 => self.is_night(),
+            3 => !self.is_night(),
+            _ => false,
+        };
+        !active
+    }
+    /// `GameTime.getViewDist()`: the climate's view distance.
+    fn view_dist(&self) -> f32 {
+        self.climate().map_or(42.0, |c| c.get_view_distance())
+    }
+    /// `GameTime.getViewDistMax()`.
+    fn view_dist_max(&self) -> f32 {
+        42.0
+    }
+    /// `GameTime.getRealworldSecondsSinceLastUpdate()`.
+    fn realworld_seconds_since_last_update(&self) -> f32 {
+        0.016_666_668 * self.multiplier()
+    }
+    /// `GameTime.getTrueMultiplier()`.
+    fn true_multiplier(&self) -> f32 {
+        self.multiplier()
+    }
+    /// `ClimateManager.getInstance().getFogIntensity()`.
+    fn fog_intensity(&self) -> f32 {
+        self.climate().map_or(0.0, |c| c.get_fog_intensity())
+    }
+    /// `ClimateManager.getInstance().getDayLightStrength()`.
+    fn day_light_strength(&self) -> f32 {
+        self.climate().map_or(0.0, |c| c.get_day_light_strength())
+    }
+    /// `ClimateManager.getInstance().getAmbient()`.
+    fn ambient(&self) -> f32 {
+        self.climate().map_or(0.0, |c| c.get_ambient())
+    }
+    /// `Core.lastStand`.
+    fn is_last_stand(&self) -> bool {
+        self.game_mode() == "LastStand"
+    }
+    /// `Core.tutorial`.
+    fn is_tutorial(&self) -> bool {
+        self.game_mode() == "Tutorial"
+    }
+    /// `SystemDisabler.zombiesDontAttack`.
+    fn zombies_dont_attack(&self) -> bool {
+        false
+    }
+    /// `java.lang.Math.random()`.
+    fn math_random(&self) -> f64 {
+        math_random()
+    }
+    /// `System.currentTimeMillis()`.
+    fn current_time_millis(&self) -> i64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    }
     /// Receives the side effects (Lua events, sounds, UI).
     fn event(&self, _event: SimEvent) {}
+}
+
+/// `java.lang.Math.random()`: one `java.util.Random` seeded from the clock
+/// (the original's `RandomNumberGeneratorHolder`).
+pub fn math_random() -> f64 {
+    thread_local! {
+        static R: pz_core::random::JavaRandom = pz_core::random::JavaRandom::new(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as i64).unwrap_or(0),
+        );
+    }
+    R.with(|r| r.next_double())
 }
 
 /// A [`SimContext`] with every default.
@@ -554,6 +696,8 @@ pub struct CharacterEnvironment {
     /// `getCharacterActions().get(0).caloriesModifier`; `None` when there
     /// is no action.
     pub first_action_calories_modifier: Option<f32>,
+    /// `isNearSirenVehicle()`.
+    pub near_siren_vehicle: bool,
 }
 
 impl Default for CharacterEnvironment {
@@ -593,6 +737,7 @@ impl Default for CharacterEnvironment {
             attacking_weapon_type: None,
             climbing_state: false,
             first_action_calories_modifier: None,
+            near_siren_vehicle: false,
         }
     }
 }
