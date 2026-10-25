@@ -13,7 +13,9 @@
 //! creates the missing squares: [`load_chunk`] belongs between
 //! [`crate::save::chunk_file::load_chunk`] (or
 //! [`crate::chunk::load_brand_new`]) and
-//! [`crate::save::chunk_file::finish_chunk_load`].
+//! [`crate::save::chunk_file::finish_chunk_load`]. The world streamer
+//! does this for every chunk it serves when its
+//! [`crate::streamer::StreamCtx::vehicles_db`] is set.
 
 use std::collections::BTreeSet;
 

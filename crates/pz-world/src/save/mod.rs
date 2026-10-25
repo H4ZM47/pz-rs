@@ -450,4 +450,4 @@ mod animal_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod movers_tests;
+pub(crate) mod movers_tests;
