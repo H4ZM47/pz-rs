@@ -182,6 +182,11 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert!(sql_id > 0, "local player has no persistent database id");
 
     lua_check(app.lua.as_mut().unwrap(), r#"
+        local data = getPlayer():getModData()
+        data.rustSessionRegression = { revision = 7, nested = { value = "saved from Lua" } }
+        local retained = data.rustSessionRegression.nested
+        retained.value = "retained nested mutation"
+        assert(getPlayer():getModData() == data)
         rustSessionSaveCount, rustSessionPostSaveCount = 0, 0
         Events.OnSave.Add(function() rustSessionSaveCount = rustSessionSaveCount + 1 end)
         Events.OnPostSave.Add(function() rustSessionPostSaveCount = rustSessionPostSaveCount + 1 end)
@@ -249,7 +254,25 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert!((loaded_position.1 - after.1).abs() < 0.0001, "reloaded y differs: {} versus {}", loaded_position.1, after.1);
     assert!((loaded_position.2 - after.2).abs() < 0.0001, "reloaded z differs: {} versus {}", loaded_position.2, after.2);
     assert_eq!(reloaded.lua.as_ref().unwrap().thread.globals().get_str("rustSessionReloadNewGameCount").as_num(), Some(0.0), "saved session started a new game");
+    lua_check(reloaded.lua.as_mut().unwrap(), r#"
+        local saved = getPlayer():getModData().rustSessionRegression
+        assert(saved.revision == 7)
+        assert(saved.nested.value == "retained nested mutation")
+        rustSessionOldEnvironment = true
+        rustSessionOldMenuCount = 0
+        Events.OnMainMenuEnter.Add(function() rustSessionOldMenuCount = rustSessionOldMenuCount + 1 end)
+    "#);
     movement_diagnostics(&mut reloaded, "reloaded");
+    let old_scripts = pz_lua_api::bind_registry::shared_script_manager();
+    let old_globals = reloaded.lua.as_ref().unwrap().thread.globals().clone();
+    reloaded.core.borrow_mut().exiting = true;
+    run_frames(&mut reloaded, 1);
+    assert_eq!(reloaded.current_state(), Some("zombie.gameStates.MainScreenState"), "quit did not return to the main menu");
+    assert!(reloaded.world.is_none(), "menu return retained the old world");
+    assert!(!Rc::ptr_eq(&old_scripts, &pz_lua_api::bind_registry::shared_script_manager()), "menu retained the old script definitions");
+    assert!(reloaded.lua.as_ref().unwrap().thread.globals().get_str("rustSessionOldEnvironment").is_nil(), "menu retained old Lua globals");
+    assert_eq!(old_globals.get_str("rustSessionOldMenuCount").as_num(), Some(0.0), "old menu callback ran after reset");
+    assert!(matches!(reloaded.launch.start, Start::MainMenu), "startup game settings leaked into future menu loads");
     reloaded.close();
     assert!(reloaded.world.is_none(), "native close retained the reloaded world");
     assert_eq!(reloaded.current_state(), None);

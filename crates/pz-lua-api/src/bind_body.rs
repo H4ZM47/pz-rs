@@ -74,6 +74,10 @@ thread_local! {
     static HANDLES: RefCell<HashMap<(bool, usize, usize), Value>> = RefCell::new(HashMap::new());
 }
 
+pub(crate) fn reset_session_handles() {
+    HANDLES.with(|h| h.borrow_mut().clear());
+}
+
 /// The canonical `BodyDamage` object of `chr`.
 pub fn body_damage_value(chr: &LuaGameCharacterRef) -> Value {
     HANDLES.with(|h| {

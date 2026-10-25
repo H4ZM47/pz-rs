@@ -63,7 +63,7 @@ fn dressed(sm: &ScriptManager, chars: &mut Characters, ctx: &Recorder, locs: &[R
     c.vars.dir = pz_world::square::IsoDirections::SW;
     let mut t = LuaTable::default();
     t.rawset(LuaKey::Str("k".into()), Some(LuaValue::Num(2.5)));
-    c.mod_data = Some(t);
+    c.load_mod_data(&t).unwrap();
     {
         let mut d = c.descriptor.as_ref().unwrap().borrow_mut();
         d.forename = Some("Ann".into());
@@ -141,6 +141,81 @@ fn load(sm: &ScriptManager, chars: &mut Characters, ctx: &Recorder, data: &[u8])
 }
 
 #[test]
+fn player_mod_data_live_nested_round_trip_preserves_load_target_identity() {
+    use pz_kahlua::{TableRef, Value};
+
+    let (sm, mut chars, locs) = setup();
+    let ctx = Recorder::default();
+    let mut source = dressed(&sm, &mut chars, &ctx, &locs);
+    let retained = source.get_mod_data();
+    let nested = TableRef::new();
+    nested.set_str("label", Value::str("éclair"));
+    nested.set_int(1, true);
+    retained.set_str("nested", Value::Table(nested.clone()));
+    assert!(retained.ptr_eq(&source.get_mod_data()));
+    // Both references may be retained by Lua between getter calls and saves.
+    retained.set_str("strengthUpTimer", -12345.0);
+    nested.set_str("fitnessMod", 2.5);
+    let bytes = save(&sm, &chars, &ctx, &mut source);
+
+    let mut loaded = player(&sm, &mut chars);
+    let loaded_ref = loaded.get_mod_data();
+    loaded_ref.set_str("stale", true);
+    assert!(!retained.ptr_eq(&loaded_ref));
+    let tables = tables();
+    let env = SaveEnv { items: &Env, tables: &tables };
+    loaded.load_player(&sm, &mut chars, &ctx, &env, &mut Reader::new(&bytes), 249, &mut |_| panic!("not on fire")).unwrap();
+    assert!(loaded_ref.ptr_eq(&loaded.get_mod_data()));
+    assert!(loaded_ref.get_str("stale").is_nil());
+    assert_eq!(loaded_ref.get_str("strengthUpTimer").as_num(), Some(-12345.0));
+    let Value::Table(loaded_nested) = loaded_ref.get_str("nested") else { panic!("nested mod data was not loaded") };
+    assert_eq!(loaded_nested.get_str("label").as_str(), Some("éclair"));
+    assert!(matches!(loaded_nested.get_int(1), Value::Bool(true)));
+    assert_eq!(loaded_nested.get_str("fitnessMod").as_num(), Some(2.5));
+    loaded_nested.set_str("fitnessMod", 3.5);
+    assert_eq!(nested.get_str("fitnessMod").as_num(), Some(2.5), "separate characters shared a loaded table");
+    let saved_again = save(&sm, &chars, &ctx, &mut loaded);
+    let again = load(&sm, &mut chars, &ctx, &saved_again);
+    assert_eq!(again.saved_mod_data().unwrap(), loaded.saved_mod_data().unwrap());
+
+    // A record without a table flag leaves an already allocated table
+    // alone; IsoMovingObject.load only calls table.load when flagged.
+    source.mod_data = None;
+    let no_table = save(&sm, &chars, &ctx, &mut source);
+    loaded.load_player(&sm, &mut chars, &ctx, &env, &mut Reader::new(&no_table), 249, &mut |_| panic!("not on fire")).unwrap();
+    assert!(loaded_ref.ptr_eq(&loaded.get_mod_data()));
+    assert_eq!(loaded_nested.get_str("fitnessMod").as_num(), Some(3.5));
+}
+
+#[test]
+fn player_mod_data_preserves_presence_when_all_entries_are_unsaveable() {
+    use pz_kahlua::Value;
+
+    let (sm, mut chars, locs) = setup();
+    let ctx = Recorder::default();
+    let mut source = dressed(&sm, &mut chars, &ctx, &locs);
+    source.mod_data = None;
+    let table = source.get_mod_data();
+    assert!(!source.has_mod_data());
+    let empty = save(&sm, &chars, &ctx, &mut source);
+    let read_base = |bytes: &[u8]| {
+        let mut r = Reader::new(bytes);
+        r.i8().unwrap();
+        r.i8().unwrap();
+        pz_world::save::visual::MovingBase::load(&mut r, 249, (0.0, 0.0)).unwrap()
+    };
+    assert!(read_base(&empty).mod_data.is_none());
+
+    table.rawset(Value::Bool(true), Value::Num(7.0));
+    table.set_str("callback", Value::Native(pz_kahlua::NativeFunction::new("unused", |_| Ok(0))));
+    assert!(source.has_mod_data());
+    let bytes = save(&sm, &chars, &ctx, &mut source);
+    assert!(read_base(&bytes).mod_data.unwrap().is_empty(), "nonempty live table lost its presence flag");
+    assert_eq!(table.size(), 2, "saving erased live unsupported values");
+    assert!(table.ptr_eq(&source.get_mod_data()));
+}
+
+#[test]
 fn player_record_round_trips() {
     let (sm, mut chars, locs) = setup();
     let ctx = Recorder { debug: true, ..Default::default() };
@@ -151,7 +226,7 @@ fn player_record_round_trips() {
     let mut back = load(&sm, &mut chars, &ctx, &data);
     assert_eq!((back.vars.x, back.vars.y), (10_123.5, 9_876.25));
     assert_eq!(back.vars.dir, pz_world::square::IsoDirections::SW);
-    assert_eq!(back.mod_data, c.mod_data);
+    assert_eq!(back.saved_mod_data().unwrap(), c.saved_mod_data().unwrap());
     {
         let d = back.descriptor.as_ref().unwrap().borrow();
         assert_eq!((d.forename.as_deref(), d.surname.as_deref()), (Some("Ann"), Some("Bee")));

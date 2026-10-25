@@ -360,8 +360,8 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         self.vars.dir = dir;
         let (fx, fy) = super::zombie::math::vector_from_direction(dir);
         self.set_forward_direction(fx, fy);
-        if base.mod_data.is_some() {
-            self.mod_data = base.mod_data;
+        if let Some(mod_data) = base.mod_data.as_ref() {
+            self.load_mod_data(mod_data)?;
         }
         if e(r.bool())? {
             let mut d = SurvivorDesc::new_unregistered(chars, sm)?;
@@ -572,11 +572,11 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             y: self.vars.y,
             z: self.vars.z,
             dir: self.vars.dir as i32,
-            mod_data: self.mod_data.clone(),
+            mod_data: None,
         };
         // `IsoObject.factoryGetClassID(getObjectName())`.
         let name = if self.is_zombie() { "Zombie" } else { "Player" };
-        base.save(w, env.tables.class_id(name));
+        base.save_with_mod_data_bytes(w, env.tables.class_id(name), self.mod_data_bytes()?.as_deref());
         match &self.descriptor {
             Some(d) => {
                 w.i8(1);

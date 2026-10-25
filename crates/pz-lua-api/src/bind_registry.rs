@@ -65,6 +65,12 @@ thread_local! {
     static KEYS: RefCell<HashMap<*const RegistryKey, Value>> = RefCell::new(HashMap::new());
 }
 
+/// Drop canonical keys belonging to the previous Lua environment. The
+/// shared ScriptManager is replaced explicitly by the engine bootstrap.
+pub(crate) fn reset_session_handles() {
+    KEYS.with(|k| k.borrow_mut().clear());
+}
+
 /// Make `sm` the instance `register_all` binds.
 pub fn install_script_manager(sm: Rc<ScriptManager>) {
     SHARED.with(|s| *s.borrow_mut() = Some(sm));

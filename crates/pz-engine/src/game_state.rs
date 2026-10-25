@@ -38,6 +38,12 @@ pub struct StateCx<'a> {
     pub time_delta: f32,
     /// `IsoWorld.instance` (`None` until a game loads).
     pub world: &'a mut Option<IsoWorld>,
+    /// A native window close disposes the session without rebuilding the
+    /// script/Lua environment for a return to the main menu.
+    pub shutdown: bool,
+    /// A failed environment rebuild stops state transitions. The window
+    /// or headless caller reports the error after owners are retired.
+    pub error: &'a mut Option<String>,
     /// Models retired at the actual state-exit boundary. The window
     /// releases their GPU resources after returning from the state call.
     pub retired_models: &'a mut Vec<crate::world_models::WorldModels>,
@@ -126,6 +132,7 @@ impl GameStateMachine {
 
     /// `update()`.
     pub fn update(&mut self, cx: &mut StateCx<'_>) {
+        if self.stop_on_error(cx) { return; }
         if self.states.is_empty() {
             let Some(f) = self.force_next.take() else { return };
             self.states.push(f);
@@ -157,6 +164,7 @@ impl GameStateMachine {
         if let Some(f) = self.force_next.take() {
             println!("STATE: exit {}", current.borrow().class_name());
             current.borrow_mut().exit(cx);
+            if self.stop_on_error(cx) { return; }
             next = Some(f);
         } else {
             let action = current.borrow_mut().update(cx);
@@ -164,6 +172,7 @@ impl GameStateMachine {
                 StateAction::Continue => {
                     println!("STATE: exit {}", current.borrow().class_name());
                     current.borrow_mut().exit(cx);
+                    if self.stop_on_error(cx) { return; }
                     if let Some(y) = self.yield_stack.pop() {
                         println!("STATE: reenter {}", y.borrow().class_name());
                         self.current = Some(y.clone());
@@ -194,6 +203,15 @@ impl GameStateMachine {
             return;
         }
         self.current = None;
+    }
+
+    fn stop_on_error(&mut self, cx: &StateCx<'_>) -> bool {
+        if cx.error.is_none() { return false; }
+        self.current = None;
+        self.force_next = None;
+        self.yield_stack.clear();
+        self.looping = false;
+        true
     }
 }
 
@@ -248,7 +266,8 @@ mod tests {
         let launch = Launch { game_dir: std::env::temp_dir(), cache_dir: std::env::temp_dir(), start: Default::default() };
         let mut world = None;
         let mut retired_models = Vec::new();
-        let mut cx = StateCx { lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1, multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world, retired_models: &mut retired_models };
+        let mut error = None;
+        let mut cx = StateCx { lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1, multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world, shutdown: false, error: &mut error, retired_models: &mut retired_models };
         f(&mut cx);
     }
 
@@ -273,7 +292,10 @@ mod tests {
             states.update(cx);
             assert!(cx.world.is_none());
             assert_eq!(cx.retired_models.len(), 1);
-            assert_eq!(states.current_name(), Some("zombie.gameStates.MainScreenState"));
+            // This authored fixture has no installed scripts to rebuild.
+            // Retirement must still complete before the failure is reported.
+            assert_eq!(states.current_name(), None);
+            assert!(cx.error.is_some());
         });
     }
 

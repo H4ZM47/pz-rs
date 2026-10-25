@@ -94,6 +94,16 @@ thread_local! {
     static FLOOR: RefCell<Option<FloorWorldRef>> = const { RefCell::new(None) };
 }
 
+/// Drop the old environment's character handles and callback sink at an
+/// explicit session reset. A fresh Lua registration installs its own sink.
+pub(crate) fn reset_session_handles() {
+    HANDLES.with(|h| h.borrow_mut().clear());
+    COLORS.with(|c| c.borrow_mut().clear());
+    SINK.with(|s| *s.borrow_mut() = None);
+    FLOOR.with(|f| *f.borrow_mut() = None);
+    CONTEXT.with(|c| *c.borrow_mut() = Rc::new(DefaultSimContext));
+}
+
 /// The world the bound characters' items fall into.
 pub type FloorWorldRef = Rc<RefCell<dyn FloorWorld>>;
 
@@ -1294,6 +1304,23 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     for class in [ISO_PLAYER_CLASS, ISO_SURVIVOR_CLASS, ISO_ZOMBIE_CLASS, ISO_ANIMAL_CLASS] {
         expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
     }
+    b.method("getModData", |c| {
+        let table = chr_of(c)?.borrow_mut().get_mod_data();
+        Ok(c.push(table))
+    });
+    b.method("hasModData", |c| {
+        let has_data = chr_of(c)?.borrow().has_mod_data();
+        Ok(c.push(has_data))
+    });
+    b.method("setModData", |c| {
+        let table = match c.arg(1) {
+            Value::Nil => None,
+            Value::Table(table) => Some(table),
+            _ => return Err(LuaError::runtime("Expected a KahluaTable")),
+        };
+        chr_of(c)?.borrow_mut().mod_data = table;
+        Ok(0)
+    });
     b.method("getX", |c| {
         let v = chr_of(c)?.borrow().vars.x;
         Ok(c.push(float_value(v)))
@@ -1667,6 +1694,51 @@ mod tests {
             l.borrow_mut().push(format!("{name} {}", rest.join(" ")));
         }));
         (t, chr, log)
+    }
+
+    #[test]
+    fn mod_data_is_live_per_character_and_survives_save_table_import() {
+        let (mut thread, player, _) = setup();
+        let other = Rc::new(RefCell::new(GameCharacter::new(&shared_script_manager(), CharacterKind::Zombie)));
+        thread.globals().set_str("other", character_value(&other));
+        thread.globals().set_str("alias", character_value(&player));
+        run(&mut thread, r#"
+            assert(not player:hasModData())
+            held = player:getModData()
+            heldNested = { fitnessMod = 2.5, [1] = true }
+            held.nested = heldNested
+            held.strengthUpTimer = -50000
+            assert(held == player:getModData() and held == alias:getModData())
+            assert(player:hasModData())
+            otherHeld = other:getModData()
+            assert(held ~= otherHeld and not other:hasModData())
+            heldNested.fitnessMod = 3.5
+        "#).unwrap();
+        let owned = player.borrow_mut().get_mod_data();
+        owned.set_str("fromRust", Value::str("live"));
+        let snapshot = player.borrow().saved_mod_data().unwrap().unwrap();
+        other.borrow_mut().load_mod_data(&snapshot).unwrap();
+        run(&mut thread, r#"
+            assert(held.fromRust == 'live')
+            assert(otherHeld == other:getModData())
+            assert(otherHeld.strengthUpTimer == -50000)
+            assert(otherHeld.nested.fitnessMod == 3.5 and otherHeld.nested[1] == true)
+            assert(otherHeld.nested ~= heldNested)
+            heldNested.fitnessMod = 4.5
+            assert(player:getModData().nested.fitnessMod == 4.5)
+            assert(other:getModData().nested.fitnessMod == 3.5)
+            replacement = { flag = true }
+            player:setModData(replacement)
+            assert(player:getModData() == replacement and held ~= replacement)
+            replacement.flag = nil
+            assert(not player:hasModData())
+            player:setModData(nil)
+            assert(not player:hasModData())
+            assert(player:getModData() ~= replacement)
+            local ok = pcall(function() player:setModData(12) end)
+            assert(not ok)
+            assert(heldNested.fitnessMod == 4.5)
+        "#).unwrap();
     }
 
     /// A script manager with an invented item, loaded from a unique temp

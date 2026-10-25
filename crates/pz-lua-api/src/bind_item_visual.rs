@@ -50,6 +50,13 @@ thread_local! {
     static VISUALS: RefCell<VisualObjects> = RefCell::new(HashMap::new());
 }
 
+/// Item visuals and cloned clothing assets belong to the retired Lua
+/// environment. Clear them before loading a new set of item assets.
+pub(crate) fn reset_session_handles() {
+    CLOTHING.with(|items| items.borrow_mut().clear());
+    VISUALS.with(|visuals| visuals.borrow_mut().clear());
+}
+
 fn npe() -> LuaError {
     LuaError::Runtime {
         message: String::new(),
@@ -850,6 +857,36 @@ mod tests {
         crate::bind_misc_classes::register(&mut t, None);
         register(&mut t);
         t
+    }
+
+    #[test]
+    fn session_reset_reloads_same_name_clothing_and_releases_old_visual_items() {
+        reset_session_handles();
+        let mut thread = setup(17);
+        let mut first_asset = ClothingItem::new("SessionResetClothing");
+        first_asset.male_model = Some("ModelA".into());
+        let first = clothing_item_value(Some(&first_asset));
+        thread.globals().set_str("firstClothing", first.clone());
+        let item = crate::bind_items::create_item("Base.Tshirt_Test", 1.0).unwrap();
+        let weak_item = Rc::downgrade(&item);
+        let visual = get_visual(&item);
+        assert!(matches!(visual, Value::Object(_)));
+        drop(visual);
+        drop(item);
+        assert!(weak_item.upgrade().is_some(), "fixture did not retain an item through the visual cache");
+
+        crate::session_reset::reset_session_bindings();
+        assert!(weak_item.upgrade().is_none(), "session reset retained an old visual's item");
+        let mut second_asset = ClothingItem::new("SessionResetClothing");
+        second_asset.male_model = Some("ModelB".into());
+        let second = clothing_item_value(Some(&second_asset));
+        assert!(!first.raw_equals(&second), "new assets reused an old clothing wrapper");
+        thread.globals().set_str("secondClothing", second);
+        run(&mut thread, r#"
+            assert(firstClothing ~= secondClothing)
+            assert(firstClothing:getMaleModel() == 'ModelA')
+            assert(secondClothing:getMaleModel() == 'ModelB')
+        "#).unwrap();
     }
 
     #[test]

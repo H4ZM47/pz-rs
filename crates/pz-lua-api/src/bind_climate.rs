@@ -156,6 +156,15 @@ pub fn install_event_sink(sink: EventSink) {
     SINK.with(|s| *s.borrow_mut() = Some(sink));
 }
 
+/// Retire Lua wrappers and callbacks without changing GameTime or the
+/// climate's simulation/mod-data state. The original exit resets climate
+/// date stamps but keeps the GameTime singleton until the next load.
+pub(crate) fn reset_session_handles() {
+    HANDLES.with(|handles| handles.borrow_mut().clear());
+    COLORS.with(|colors| colors.borrow_mut().clear());
+    SINK.with(|sink| *sink.borrow_mut() = None);
+}
+
 /// The context the bound climate runs in: [`ClimateSettings`], the shared
 /// `Core`, the global `Rand`; events are collected and fired afterwards.
 #[derive(Default)]

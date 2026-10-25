@@ -96,6 +96,7 @@ struct App {
     states: GameStateMachine,
     /// `IsoWorld.instance` once a game loads.
     world: Option<IsoWorld>,
+    error: Option<String>,
     retired_models: Vec<crate::world_models::WorldModels>,
     last_frame: Instant,
     /// `Controllers` backend (gilrs); `None` when unavailable.
@@ -124,13 +125,15 @@ pub fn run(launch: Launch) -> Result<(), String> {
         core,
         states: GameStateMachine::default(),
         world: None,
+        error: None,
         retired_models: Vec::new(),
         last_frame: Instant::now(),
         gamepads: None,
         audio: None,
         ui_models: None,
     };
-    event_loop.run_app(&mut app).map_err(|e| e.to_string())
+    event_loop.run_app(&mut app).map_err(|e| e.to_string())?;
+    app.error.take().map_or(Ok(()), Err)
 }
 
 impl App {
@@ -150,6 +153,8 @@ impl App {
             current.borrow_mut().exit(&mut StateCx {
                 lua, launch: &self.launch, screen_w, screen_h,
                 multiplier: 0.0, time_delta: 0.0, world: &mut self.world,
+                shutdown: true,
+                error: &mut self.error,
                 retired_models: &mut self.retired_models,
             });
         }
@@ -239,6 +244,7 @@ impl App {
     }
 
     fn frame(&mut self) {
+        if self.error.is_some() { return; }
         let Some(lua) = self.lua.as_mut() else { return };
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
@@ -278,9 +284,16 @@ impl App {
                 multiplier,
                 time_delta: dt,
                 world: &mut self.world,
+                shutdown: false,
+                error: &mut self.error,
                 retired_models: &mut self.retired_models,
             };
             self.states.update(&mut cx);
+        }
+        // Direct game entry is a startup request. Once a session returns
+        // to the menu, future loads use the choices made by the menu.
+        if self.world.is_none() && self.states.current_name() == Some("zombie.gameStates.MainScreenState") {
+            self.launch.start = Start::MainMenu;
         }
         for mut models in self.retired_models.drain(..) {
             models.clear();
@@ -289,6 +302,7 @@ impl App {
                 gpu.clear_character_mesh_cache();
             }
         }
+        if self.error.is_some() { return; }
         // SoundManager.instance.Update() (GameWindow.logic, "Sound").
         let toggle_music = pz_lua_api::bind_input::is_key_down_named("Toggle Music") && !pz_lua_api::bind_input::was_key_down_named("Toggle Music");
         pz_lua_api::bind_audio::sound_system().borrow_mut().with(|m, ctx| m.update(toggle_music, ctx));
@@ -318,6 +332,8 @@ impl App {
                 multiplier,
                 time_delta: dt,
                 world: &mut self.world,
+                shutdown: false,
+                error: &mut self.error,
                 retired_models: &mut self.retired_models,
             };
             self.states.render(&mut cx, &mut dl);
@@ -364,7 +380,7 @@ impl ApplicationHandler for App {
         }
         self.window = Some(window);
         if let Err(e) = self.boot() {
-            eprintln!("{e}");
+            self.error = Some(e);
             el.exit();
         }
     }
@@ -385,6 +401,10 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 self.frame();
+                if self.error.is_some() {
+                    el.exit();
+                    return;
+                }
                 if let Some(w) = &self.window {
                     w.request_redraw();
                 }
@@ -441,6 +461,7 @@ pub fn run_headless(launch: Launch, frames: u32) -> Result<Option<&'static str>,
     app.boot()?;
     run_headless_lua(&mut app)?;
     run_frames(&mut app, frames);
+    if let Some(error) = app.error.take() { return Err(error); }
     Ok(app.current_state())
 }
 
@@ -459,6 +480,7 @@ fn headless_app(launch: Launch) -> Result<App, String> {
         core,
         states: GameStateMachine::default(),
         world: None,
+        error: None,
         retired_models: Vec::new(),
         last_frame: Instant::now(),
         gamepads: None,
@@ -484,6 +506,7 @@ fn run_headless_lua(app: &mut App) -> Result<(), String> {
 
 fn run_frames(app: &mut App, frames: u32) {
     for _ in 0..frames {
+        if app.error.is_some() { break; }
         app.last_frame = Instant::now() - Duration::from_millis(33);
         app.frame();
     }
@@ -498,6 +521,7 @@ fn headless(launch: Launch, frames: u32, gpu: bool) -> Result<(u32, u32, Option<
     app.boot()?;
     run_headless_lua(&mut app)?;
     run_frames(&mut app, frames);
+    if let Some(error) = app.error.take() { return Err(error); }
     let px = app.gpu.as_ref().map(|g| g.read_pixels());
     Ok((w as u32, h as u32, px))
 }

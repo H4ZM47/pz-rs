@@ -61,6 +61,17 @@ fn player(n: usize) -> Option<pz_lua_api::bind_character_sim::LuaGameCharacterRe
     pz_lua_api::bind_players::player(n)
 }
 
+/// Rebuilding Lua can retire shared hosts before a later step fails.
+/// Record that failure so the state machine cannot enter the old menu.
+pub(crate) fn rebuild_main_menu_with(
+    cx: &mut StateCx<'_>,
+    rebuild: impl FnOnce(&mut LuaManager, &crate::game_window::Launch) -> Result<(), String>,
+) {
+    if let Err(error) = rebuild(cx.lua, cx.launch) {
+        *cx.error = Some(format!("Unable to rebuild main menu: {error}"));
+    }
+}
+
 impl IngameState {
     /// `UpdateStuff()`.
     fn update_stuff(&mut self, cx: &mut StateCx<'_>) {
@@ -333,6 +344,13 @@ impl GameState for IngameState {
         pz_lua_api::bind_world::set_cell(None);
         *cx.world = None;
         pz_lua_api::bind_misc::set_ingame_state(false);
+        // The original rebuilds scripts and Lua before redirecting to the
+        // menu. Registry ids cannot carry across worlds whose dictionary
+        // assigns a different id to the same type. Native shutdown skips
+        // the menu rebuild, retaining the just-completed save events.
+        if !cx.shutdown {
+            rebuild_main_menu_with(cx, crate::boot::reload_main_menu_environment);
+        }
     }
 
     fn redirect_state(&mut self, _cx: &mut StateCx<'_>) -> Option<StateRef> {

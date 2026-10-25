@@ -50,6 +50,7 @@ pub mod fitness;
 pub mod item_owner;
 pub mod items;
 pub mod metabolics;
+pub mod mod_data;
 pub mod moodles;
 pub mod nutrition;
 pub mod path_mover;
@@ -358,7 +359,7 @@ pub struct GameCharacter<I: 'static> {
     /// The fields zombies read and write on the characters they hunt.
     pub seen: zombie::SeenFields,
     /// `IsoMovingObject.table` (the mod data).
-    pub mod_data: Option<pz_inventory::lua_table::LuaTable>,
+    pub mod_data: Option<pz_kahlua::TableRef>,
     /// `getVisual()` (`IsoPlayer.humanVisual`) as saved; `None` until loaded.
     pub human_visual: Option<pz_world::save::visual::HumanVisual>,
     /// `savedInventoryItems`: the list saved indices refer to, as the ids of

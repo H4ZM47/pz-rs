@@ -80,6 +80,13 @@ thread_local! {
     static INSTANCES: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::new());
 }
 
+/// Canonical descriptors and their character instances belong to one
+/// Lua environment; fresh character statics are installed by bootstrap.
+pub(crate) fn reset_session_handles() {
+    HANDLES.with(|h| h.borrow_mut().clear());
+    INSTANCES.with(|i| i.borrow_mut().clear());
+}
+
 /// `SurvivorDesc.HairCommonColors`: a live `ArrayList<ImmutableColor>`.
 fn hair_common_colors_value(chars: &Rc<RefCell<Characters>>) -> Value {
     let (r, w) = (chars.clone(), chars.clone());

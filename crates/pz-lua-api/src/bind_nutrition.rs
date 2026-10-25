@@ -42,6 +42,10 @@ thread_local! {
     static HANDLES: RefCell<HashMap<(u8, usize, usize), Value>> = RefCell::new(HashMap::new());
 }
 
+pub(crate) fn reset_session_handles() {
+    HANDLES.with(|h| h.borrow_mut().clear());
+}
+
 /// One Lua object per (kind, character, member), so Lua `==` is identity.
 fn canonical(id: (u8, usize, usize), make: impl FnOnce() -> Value) -> Value {
     HANDLES.with(|h| h.borrow_mut().entry(id).or_insert_with(make).clone())

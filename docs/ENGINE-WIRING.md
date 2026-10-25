@@ -26,6 +26,14 @@ The platform workflow builds the native client and runs workspace tests on
 Windows, Linux, Apple Silicon and Intel Mac runners. Installed game assets
 are excluded, so a green source check alone cannot establish gameplay parity.
 
+Returning to the menu rebuilds script/Lua/UI owners before menu entry;
+native shutdown skips that rebuild. A failed rebuild stops the client
+instead of entering a menu with mixed owners. Character `getModData`
+exposes a live table and saves retained nested mutations. Lua cycles that
+retain character userdata or closures still require VM cycle collection.
+The SQLite writer rejects auto-vacuum files before changing them; writing
+that format needs pointer-map/root relocation support and remains pending.
+
 Known integration gaps include action-context/turning phase timing, timed
 actions, character visibility fading, split-screen viewports, weather and
 sky/water effects, animals/ragdoll rendering, basement save persistence,

@@ -62,6 +62,13 @@ pub fn install_state_world(world: SharedWorld) {
     WORLD.with(|w| *w.borrow_mut() = world);
 }
 
+/// Retire the installed world and the old environment's state wrappers.
+/// The actual state registry remains the engine's existing singleton set.
+pub(crate) fn reset_session_handles() {
+    WORLD.with(|w| *w.borrow_mut() = Rc::new(RefCell::new(NullWorld)));
+    OBJECTS.with(|o| o.borrow_mut().clear());
+}
+
 /// Runs `f` with the state singletons the bound characters use, for the
 /// engine's character updates (`IsoGameCharacter.update` enters the same
 /// `instance()` objects Lua compares against). `f` must not call into Lua.

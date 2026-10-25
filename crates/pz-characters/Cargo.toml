@@ -7,6 +7,7 @@ edition.workspace = true
 pz-core.workspace = true
 pz-scripts.workspace = true
 pz-inventory.workspace = true
+pz-kahlua.workspace = true
 pz-fs.workspace = true
 quick-xml.workspace = true
 pz-anim.workspace = true

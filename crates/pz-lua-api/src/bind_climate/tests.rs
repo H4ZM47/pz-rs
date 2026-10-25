@@ -46,6 +46,34 @@ fn run(t: &mut Thread, src: &str) -> Vec<Value> {
 }
 
 #[test]
+fn session_reset_retires_climate_wrappers_without_replacing_game_time() {
+    let _thread = setup();
+    let game_time = shared_game_time();
+    let table = game_time.borrow_mut().mod_data();
+    table.set_str("clockData", 42.0);
+    let old_handle = handle(Obj::GameTime);
+    let color = Rc::new(RefCell::new(ClimateColorInfo::default()));
+    let color_weak = Rc::downgrade(&color);
+    let wrapped_color = color_value(&color);
+    drop(wrapped_color);
+    drop(color);
+    assert!(color_weak.upgrade().is_some());
+    let sink_owner = Rc::new(());
+    let sink_weak = Rc::downgrade(&sink_owner);
+    install_event_sink(Rc::new(move |_, _, _| {
+        let _keep_alive = sink_owner.clone();
+    }));
+
+    crate::session_reset::reset_session_bindings();
+    assert!(sink_weak.upgrade().is_none());
+    assert!(color_weak.upgrade().is_none(), "old climate color wrapper survived reset");
+    assert!(!old_handle.raw_equals(&handle(Obj::GameTime)));
+    assert!(Rc::ptr_eq(&game_time, &shared_game_time()), "reset replaced simulation time");
+    assert!(table.ptr_eq(&game_time.borrow_mut().mod_data()));
+    assert_eq!(table.get_str("clockData").as_num(), Some(42.0));
+}
+
+#[test]
 fn clock_and_climate_from_lua() {
     let mut t = setup();
     for _ in 0..400 {

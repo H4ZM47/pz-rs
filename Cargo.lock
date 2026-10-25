@@ -1885,6 +1885,7 @@ dependencies = [
  "pz-core",
  "pz-fs",
  "pz-inventory",
+ "pz-kahlua",
  "pz-model",
  "pz-pathfind",
  "pz-popman",

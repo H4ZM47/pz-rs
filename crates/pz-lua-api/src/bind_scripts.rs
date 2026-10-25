@@ -95,6 +95,13 @@ thread_local! {
     static MODULES: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::new());
 }
 
+/// Retire the previous Lua environment's canonical script/module objects
+/// before the engine installs a new ScriptManager and environment.
+pub(crate) fn reset_session_handles() {
+    HANDLES.with(|h| h.borrow_mut().clear());
+    MODULES.with(|m| m.borrow_mut().clear());
+}
+
 // ---- handles ----
 
 type Get = Rc<dyn for<'a> Fn(&'a dyn Any) -> Option<&'a dyn Any>>;

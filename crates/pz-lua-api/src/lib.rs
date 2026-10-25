@@ -83,10 +83,12 @@ pub mod global_objects_save;
 pub mod lua_manager;
 pub mod player_db;
 pub mod savefile;
+pub mod session_reset;
 pub mod world_save;
 pub mod worldmap;
 
 pub use lua_manager::LuaManager;
+pub use session_reset::reset_session_bindings;
 
 use std::rc::Rc;
 
