@@ -316,6 +316,8 @@ pub struct DataCell {
     data_chunks: HashMap<i32, ChunkIdx>,
     /// Insertion order of `data_chunks` (see [`DataRoot::get_all_chunks`]).
     order: Vec<i32>,
+    /// `data_chunks`' Java `HashMap` iteration order.
+    java_order: crate::java::JavaIntHashMap,
 }
 
 impl DataCell {
@@ -325,6 +327,7 @@ impl DataCell {
     fn put(&mut self, id: i32, c: ChunkIdx) {
         if self.data_chunks.insert(id, c).is_none() {
             self.order.push(id);
+            self.java_order.insert(id);
         }
     }
 }
@@ -358,7 +361,8 @@ pub struct DataRoot {
     pub region_manager: IsoRegionManager,
     dirty_chunks: Vec<ChunkIdx>,
     /// `changedCells`: cells whose world regions changed, for
-    /// `WorldRegionToMetaGrid.clientProcessBuildings` (not ported).
+    /// `WorldRegionToMetaGrid.clientProcessBuildings` (see
+    /// [`super::metagrid`]).
     pub changed_cells: Vec<(i32, i32)>,
     /// `recalcs`, `floodFills`, `merges` of the last `processDirtyChunks`.
     pub recalcs: i32,
@@ -512,8 +516,8 @@ impl DataRoot {
         let Some(cell) = self.cell_map.get(&hash(cell_x, cell_y)) else {
             return out;
         };
-        for id in &cell.order {
-            let c = self.chunk(cell.data_chunks[id]);
+        for id in cell.java_order.order() {
+            let c = self.chunk(cell.data_chunks[&id]);
             for z in 0..32 {
                 for &cr in c.chunk_regions(z) {
                     if let Some(w) = self.region_manager.chunk_region(cr).iso_world_region() {
@@ -657,9 +661,7 @@ impl DataRoot {
         self.merges = 0;
         let dirty = self.dirty_chunks.clone();
         for &c in &dirty {
-            // `clearBuildingDefs`: regions never get a `BuildingDef` here
-            // (`WorldRegionToMetaGrid` is not ported), so only the cell is
-            // recorded.
+            self.clear_building_defs(c);
             let cell = (self.chunk(c).cell_x(), self.chunk(c).cell_y());
             if !self.changed_cells.contains(&cell) {
                 self.changed_cells.push(cell);
@@ -721,6 +723,51 @@ impl DataRoot {
             self.region_manager.dirty_iso_world_regions.clear();
         }
         self.dirty_chunks.clear();
+    }
+
+    /// `DataChunk.clearBuildingDefs(changedCells)`: the world regions of the
+    /// chunk's dirty levels and everything connected to them through
+    /// neighbours drop their `BuildingDef`, recording their chunks' cells.
+    fn clear_building_defs(&mut self, c: ChunkIdx) {
+        let mut done: HashSet<WorldRegionRef> = HashSet::new();
+        let hz = self.chunk(c).highest_z.min(31);
+        for z in 0..=hz {
+            let ch = self.chunk(c);
+            if !ch.dirty_z_layers[z as usize] || !ch.active_z_layers[z as usize] {
+                continue;
+            }
+            let regions = ch.chunk_regions(z).to_vec();
+            for &cr in regions.iter().rev() {
+                // A chunk region without a world region would throw
+                // upstream; there are none after a recalculation.
+                if let Some(w) = self.region_manager.chunk_region(cr).iso_world_region() {
+                    self.clear_building_defs_of(w, &mut done);
+                }
+            }
+        }
+    }
+
+    fn clear_building_defs_of(&mut self, w: WorldRegionRef, done: &mut HashSet<WorldRegionRef>) {
+        if !done.insert(w) {
+            return;
+        }
+        if self.region_manager.world_region(w).building_def().is_some() {
+            self.region_manager.set_building_def(w, None);
+            let crs = self.region_manager.world_region(w).chunk_regions().to_vec();
+            for cr in crs {
+                let Some(dc) = self.region_manager.chunk_region(cr).data_chunk() else {
+                    continue;
+                };
+                let cell = (self.chunk(dc).cell_x(), self.chunk(dc).cell_y());
+                if !self.changed_cells.contains(&cell) {
+                    self.changed_cells.push(cell);
+                }
+            }
+        }
+        let ns = self.region_manager.world_region(w).neighbors().to_vec();
+        for n in ns {
+            self.clear_building_defs_of(n, done);
+        }
     }
 
     /// `IsoWorldRegion.getCellX/Y()` (`None` where the original throws for

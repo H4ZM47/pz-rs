@@ -994,7 +994,7 @@ fn set_random_channel(d: &mut DeviceData, rand: &mut dyn GameRand) {
 }
 
 /// `IsoObject.createContainersFromSpriteProperties()`.
-fn create_containers_from_sprite_properties(
+pub(crate) fn create_containers_from_sprite_properties(
     m: &IsoSpriteManager,
     o: &mut IsoObject,
 ) -> JavaResult<()> {

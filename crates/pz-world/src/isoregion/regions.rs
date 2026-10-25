@@ -162,6 +162,9 @@ pub struct IsoWorldRegion {
     is_dirty_enclosed: Cell<bool>,
     is_dirty_roofed: bool,
     neighbors: Vec<WorldRegionRef>,
+    /// `buildingDef`: the meta-grid building `WorldRegionToMetaGrid` made
+    /// from this region (see [`super::metagrid`]).
+    building_def: Option<crate::defs::BuildingIdx>,
 }
 
 impl IsoWorldRegion {
@@ -176,7 +179,13 @@ impl IsoWorldRegion {
             is_dirty_enclosed: Cell::new(false),
             is_dirty_roofed: false,
             neighbors: Vec::new(),
+            building_def: None,
         }
+    }
+
+    /// `getBuildingDef()`.
+    pub fn building_def(&self) -> Option<crate::defs::BuildingIdx> {
+        self.building_def
     }
     /// `getID()`.
     pub fn id(&self) -> i32 {
@@ -369,6 +378,12 @@ impl IsoRegionManager {
                 self.cr(c).iso_world_region = None;
             }
         }
+        self.wr(r).building_def = None;
+    }
+
+    /// `IsoWorldRegion.setBuildingDef(def)`.
+    pub fn set_building_def(&mut self, r: WorldRegionRef, def: Option<crate::defs::BuildingIdx>) {
+        self.wr(r).building_def = def;
     }
 
     /// `allocIsoChunkRegion(dataChunk, zLayer)`.

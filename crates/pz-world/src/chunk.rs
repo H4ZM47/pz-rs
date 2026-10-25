@@ -2,7 +2,8 @@
 //! (`IsoCell.PlaceLot`, `CellLoader.LoadCellBinaryChunk`).
 //!
 //! Objects are created by [`crate::cell_loader::do_tile_object_creation`].
-//! World regions and pathfinding hooks are not ported.
+//! Object changes after loading (`AddTileObject`, `RemoveTileObject`,
+//! `addFloor`, ...) are [`crate::square_mutation`].
 
 use std::collections::HashMap;
 
@@ -81,6 +82,11 @@ pub struct IsoGridSquare {
     pub have_roof: bool,
     /// `burntOut`.
     pub burnt_out: bool,
+    /// `solidFloorCached` / `solidFloor`: `TreatAsSolidFloor()`'s cached
+    /// answer. Only `RecalcAllWithNeighbours` and `ReCalculateAll` drop it,
+    /// so it can be stale after property changes made without them
+    /// (`RemoveTileObjectErosionNoRecalc`), as upstream.
+    pub solid_floor_cache: std::cell::Cell<Option<bool>>,
     /// `properties.initSurface()` values of the merged properties.
     pub surface: SurfaceInfo,
     /// `properties.getSlopedSurfaceDirection()`.
@@ -119,6 +125,7 @@ impl IsoGridSquare {
             has_tree: false,
             have_roof: false,
             burnt_out: false,
+            solid_floor_cache: std::cell::Cell::new(None),
             surface: SurfaceInfo::default(),
             sloped_surface_direction: None,
             collide_matrix: 0x7FF_FFFF,

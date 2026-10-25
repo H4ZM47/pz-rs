@@ -22,6 +22,7 @@ pub mod objects;
 pub mod save;
 pub mod sprite;
 pub mod square;
+pub mod square_mutation;
 pub mod meta_save;
 pub mod meta_zones;
 pub mod streamer;

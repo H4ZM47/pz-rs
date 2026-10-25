@@ -348,6 +348,8 @@ pub(crate) fn test_tables() -> SpriteTables {
             "noStart",
             "forceRender",
             "burntOut",
+            "waterPiped",
+            "climbSheetN",
         ]),
         s(&[
             "normal",
