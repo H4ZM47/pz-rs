@@ -19,7 +19,10 @@
 //!   geometry a square loses (`clearWater`);
 //! * once per frame, before the lighting frames and the chunk recording
 //!   (where the original would read the squares), [`PendingRender::apply`]
-//!   rebuilds the snapshots of the squares and chunks that changed.
+//!   rebuilds the snapshots of the squares and chunks that changed, and
+//!   re-initialises the puddle geometry of the squares whose properties
+//!   were recalculated (the original's `getPuddles().recalc = true`, run
+//!   by `recalcIfNeeded` when the square's puddles are next drawn).
 //!
 //! After every local player's lighting frame, [`check_changed_buildings`]
 //! runs the second half of `LightingJNI.update`'s
@@ -31,15 +34,16 @@
 //! `ChunkLevelsData.invalidateAll` forces `recreateLevel`;
 //! [`pz_iso_render::Cutaways::update`] recomputes all of it) and
 //! `IsoGridOcclusionData` (its `objectEpochCount`, kept as
-//! [`PendingRender::grid_occlusion_epoch`]). `VisibilityPolygon2`, puddle
-//! geometry and chunk physics are not built in this crate: their dirty
-//! sets ([`PendingRender::vispoly`], [`PendingRender::puddles`],
-//! [`PendingRender::physics`]) are left for their owners to drain.
+//! [`PendingRender::grid_occlusion_epoch`]). `VisibilityPolygon2` and
+//! chunk physics are not built in this crate: their dirty sets
+//! ([`PendingRender::vispoly`], [`PendingRender::physics`]) are left for
+//! their owners to drain.
 
 use std::collections::BTreeSet;
 
 use pz_iso_render::cache::ChunkCache;
 use pz_iso_render::chunk::dirty;
+use pz_world::isoregion::IsoRegions;
 use pz_world::sprite::IsoFlagType;
 use pz_world::square_mutation::{RenderSquareHooks, SquarePos};
 use pz_world::IsoGridSquare;
@@ -56,6 +60,15 @@ pub const CHUNK_BUILDINGS_CHANGED: u64 = dirty::OBJECT_ADD | dirty::CUTAWAYS;
 /// `checkChangedBuildings`' `invalidateAll(18496)` (`OBJECT_ADD | CUTAWAYS
 /// | REDO_CUTAWAYS`).
 pub const BUILDINGS_CHANGED: u64 = dirty::OBJECT_ADD | dirty::CUTAWAYS | dirty::REDO_CUTAWAYS;
+
+/// What [`PendingRender::apply`] re-initialises puddle geometry with.
+#[derive(Clone, Copy)]
+pub struct PuddleInputs<'a> {
+    /// The world regions (`isInARoom()` counts player-built rooms).
+    pub regions: &'a IsoRegions,
+    /// `Core.getPerfPuddles()`.
+    pub perf_puddles: i32,
+}
 
 /// The square edits waiting for the next frame, and the dirty state of
 /// the systems this crate does not own.
@@ -74,7 +87,7 @@ pub struct PendingRender {
     /// are rebuilt (`updatePhysicsForLevel`).
     pub physics: BTreeSet<(i32, i32, i32)>,
     /// `getPuddles().recalc = true`: squares whose puddle geometry is
-    /// re-initialised before it is next drawn.
+    /// re-initialised by the next [`PendingRender::apply`].
     pub puddles: BTreeSet<SquarePos>,
     /// `FBORenderCutaways.squareChanged` or `ChunkLevelsData.invalidateAll`
     /// since the last [`PendingRender::apply`] (the cutaways are recomputed
@@ -97,7 +110,15 @@ impl PendingRender {
     /// Rebuilds the render squares and lighting inputs of what changed
     /// since the last call; run once per frame before the lighting frames
     /// and chunk recording. Chunks with changed squares rescan their light
-    /// switches. Clears [`PendingRender::cutaways_changed`].
+    /// switches. Then the queued squares' puddle geometry is
+    /// re-initialised from the world (`IsoPuddlesGeometry.recalcIfNeeded`,
+    /// which the original runs when the square's puddles are next drawn,
+    /// within this frame's chunk recording or puddle pass, reading its
+    /// neighbours as they are then). Only the square itself: neighbours
+    /// keep their geometry, and no chunk level is invalidated (the edit
+    /// that recalculated the properties invalidated what it changed).
+    /// Clears [`PendingRender::cutaways_changed`].
+    #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &mut self,
         w: &WorldView<'_>,
@@ -106,6 +127,7 @@ impl PendingRender {
         hooks: &dyn WorldHooks,
         cache: &mut SpriteCache,
         tex: &mut dyn SpriteTextures,
+        puddles: PuddleInputs<'_>,
     ) {
         if std::mem::take(&mut self.buildings) {
             render.set_buildings(w.meta);
@@ -138,6 +160,9 @@ impl PendingRender {
         }
         for (wx, wy) in touched {
             lighting.sync_chunk_lights(w, wx, wy);
+        }
+        for p in std::mem::take(&mut self.puddles) {
+            render.init_puddles(w, puddles.regions, p, puddles.perf_puddles);
         }
         self.cutaways_changed = false;
     }
@@ -241,7 +266,8 @@ impl RenderSquareHooks for RenderInvalidation<'_> {
         self.pending.grid_occlusion_square_changed();
     }
 
-    /// `RecalcProperties`' tail: puddles recalculated, the square's level
+    /// `RecalcProperties`' tail: puddles recalculated (next
+    /// [`PendingRender::apply`]), the square's level
     /// flagged for lighting (and its snapshot rebuilt next frame), physics
     /// rebuilt, and water geometry dropped from a square that lost `water`.
     /// (`chunk.collision.clear()` is the collision code's own cache.)

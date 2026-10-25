@@ -41,13 +41,14 @@ pub mod weather_mask;
 
 pub use fire_lights::LightLink;
 pub use hooks::{NoWorldHooks, WorldHooks};
-pub use invalidate::{check_changed_buildings, PendingRender, RenderInvalidation};
+pub use invalidate::{check_changed_buildings, PendingRender, PuddleInputs, RenderInvalidation};
 pub use lighting::{
     default_player, grid_square, CellLight, LightingFrame, LightingSquares, PlayerFrameInput,
     WorldLighting,
 };
 pub use render_world::{
-    building_id, cutaway_info, render_square, seam_neighbours, wall_type, RenderWorld, WorldView,
+    building_id, cutaway_info, puddle_square, render_square, seam_neighbours, wall_type,
+    RenderWorld, WorldView,
 };
 pub use settings::{
     ClimateInput, ClimateSettings, NoonSettings, PlayerRenderInput, RenderSettingsSource,

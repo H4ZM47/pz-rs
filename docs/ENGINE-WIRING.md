@@ -87,11 +87,14 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       &mut world_lighting, &mut per_player_chunk_caches, &mut pending,
       sprites.tables.flag.water, num_players)`; each frame, before the
       lighting frames and chunk recording, `pending.apply(view,
-      render_world, lighting, world_hooks, sprite_cache, textures)`, and
-      after every player's lighting frame `check_changed_buildings(lighting,
-      caches, pending, num_players)`; `pending.vispoly` / `physics` /
-      `puddles` are drained by `VisibilityPolygon2`, chunk physics
-      (`updatePhysicsForLevel`) and puddle init (#99).
+      render_world, lighting, world_hooks, sprite_cache, textures,
+      PuddleInputs { regions, perf_puddles: Core.getPerfPuddles() })`
+      (which also re-inits `pending.puddles`' geometry), and after every
+      player's lighting frame `check_changed_buildings(lighting, caches,
+      pending, num_players)`; `pending.vispoly` / `physics` are drained by
+      `VisibilityPolygon2` and chunk physics (`updatePhysicsForLevel`)
+      (#99). Initial puddle geometry of freshly built chunks is not built
+      yet (`RenderWorld::init_puddles` per square on load).
 - [ ] Engine implements `SquareMutationHooks`: Lua `OnObjectAboutToBeRemoved`
       / `OnTileRemoved` / `OnContainerUpdate`, the `WorldCall` registries of
       `addToWorld` / `removeFromWorld` (entities, process lists, lampposts,

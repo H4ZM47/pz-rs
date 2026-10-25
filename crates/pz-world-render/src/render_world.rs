@@ -7,10 +7,12 @@ use std::collections::{HashMap, HashSet};
 use pz_iso_render::cell::LevelSquares;
 use pz_iso_render::cutaways::BuildingDef;
 use pz_iso_render::frame::ChunkInput;
+use pz_iso_render::puddles::{puddles_dir, PuddleSquare, PuddlesGeometry};
 use pz_iso_render::world::{
     AttachedSprite, BuildingId, SeamNeighbours, SlopeDir, SquareCutawayInfo,
 };
 use pz_iso_render::{CutawayWorld, ObjectKind, RenderObject, RenderSquare};
+use pz_world::isoregion::IsoRegions;
 use pz_world::sprite::IsoFlagType;
 use pz_world::square::IsoDirections;
 use pz_world::{BuildingIdx, GetSquare, IsoCell, IsoGridSquare, IsoMetaGrid, IsoSpriteManager};
@@ -98,6 +100,28 @@ pub fn cutaway_info(w: &WorldView<'_>, sq: &IsoGridSquare) -> SquareCutawayInfo 
     // `getPlayerBuiltFloor()` and `getStairPillar()` need player
     // construction and stair geometry pz-world does not have: false.
     c
+}
+
+/// What `IsoPuddlesGeometry` reads from world square `sq`: its
+/// `exterior`, `water`, `collideW` and `collideN` flags,
+/// `hasSlopedSurface()` and `getPuddlesDir()` (`isInARoom()` and the
+/// attached sprites' names).
+pub fn puddle_square(w: &WorldView<'_>, regions: &IsoRegions, sq: &IsoGridSquare) -> PuddleSquare {
+    let f = &w.sprites.tables.flag;
+    let names = sq
+        .objects
+        .iter()
+        .filter_map(|o| o.attached_anim_sprite.as_ref())
+        .flatten()
+        .filter_map(|a| w.sprites.sprites[a.sprite].name.as_deref());
+    PuddleSquare {
+        exterior: sq.has(f.exterior),
+        water: sq.has(f.water),
+        collide_w: sq.has(f.collideW),
+        collide_n: sq.has(f.collideN),
+        sloped: sq.has_sloped_surface(),
+        puddles_dir: puddles_dir(sq.is_in_a_room(w.meta, regions), names),
+    }
 }
 
 /// `getWallType()`: 1 north wall, 4 west wall (5 for `WallNW`), 8 the east
@@ -259,6 +283,36 @@ impl RenderWorld {
                 rs.seam = seam_neighbours(w, sq);
             }
         }
+    }
+
+    /// `IsoPuddlesGeometry.recalcIfNeeded()` for the render square at
+    /// `(x, y, z)`: its puddle geometry re-initialised from the world
+    /// square and its eight neighbours on the level (`init`, then
+    /// `shouldRender`'s puddles leaking into rooms). `perf_puddles` is
+    /// `Core.getPerfPuddles()`. Does nothing without both squares.
+    pub fn init_puddles(
+        &mut self,
+        w: &WorldView<'_>,
+        regions: &IsoRegions,
+        (x, y, z): (i32, i32, i32),
+        perf_puddles: i32,
+    ) {
+        let (Some(sq), Some(rs)) = (
+            w.cell.get_grid_square(x, y, z),
+            self.squares.get_mut(&(x, y, z)),
+        ) else {
+            return;
+        };
+        let at = |dx: i32, dy: i32| {
+            w.cell
+                .get_grid_square(x + dx, y + dy, z)
+                .map(|n| puddle_square(w, regions, n))
+        };
+        rs.puddles = Some(PuddlesGeometry::init(
+            &puddle_square(w, regions, sq),
+            perf_puddles,
+            at,
+        ));
     }
 
     /// Drops chunk `(wx, wy)`'s squares.
