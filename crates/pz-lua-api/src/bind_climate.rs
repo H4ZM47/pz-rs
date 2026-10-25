@@ -395,6 +395,11 @@ pub fn init_climate_manager(thread: &mut Thread, bounds: Option<(i32, i32, i32, 
     true
 }
 
+/// `GameTime.getInstance().getTimeDelta()` of the shared instance.
+pub fn game_time_delta() -> f32 {
+    shared_game_time().borrow().get_time_delta(&LuaClimateContext::new())
+}
+
 fn with_gt<R>(c: &mut NativeCall<'_>, f: impl FnOnce(&mut GameTime, &mut LuaClimateContext) -> R) -> LuaResult<R> {
     let gt = shared_game_time();
     let mut ctx = LuaClimateContext::new();

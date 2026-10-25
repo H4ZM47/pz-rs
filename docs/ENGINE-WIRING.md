@@ -899,12 +899,38 @@ registered):
       not ported yet: `isShaderEnabled`, `getShaderBlur/Radius/
       GradientWidth/Desat/Darkness` by the player's square being outside a
       room); `offscreen_left/top` = `IsoCamera.getOffscreenLeft/Top`,
+      `light`/`light_intensity` (`getBlendColor`/`getBlendIntensity`),
+      `desaturation` (after `*= 1 - darkness`), `night_value`
+      (`getDarkness` = 1 - day light strength; 0.25 in Last Stand),
+      `exterior` from `RenderSettings.PlayerRenderSettings`
+      (`updateRenderSettings`; pz-world-render's `ClimateSettings`
+      computes the lighting half of it); `night_vision_goggles` =
+      `isWearingNightVisionGoggles()`, `drunk_factor` = intoxication / 100,
+      player); `search` from the `SearchMode` port (see the next item:
+      `isShaderEnabled`, `getShaderBlur/Radius/GradientWidth/Desat/
+      Darkness` by the player's square being outside a room); `offscreen_left/top` = `IsoCamera.getOffscreenLeft/Top`,
       `offscreen_width/height` = pz-core `Core` offscreen width/height,
       `right_click` = the player camera's `rightClickX/Y`, `zoom` =
       `Core.getZoom(player)`, `tile_width` = 64 at `Core.tileScale` 2 else
       32. Save thumbnail (#173, not in integration yet): pass
       `params.thumbnail(256, 256, 1.0)` (`startThumbnail`) to
       `capture_thumbnail`.
+- [ ] Screen shader player inputs and `SearchMode` (#188): in
+      `IngameState.UpdateStuff` (after `WorldMapVisited.update`) call
+      `pz_lua_api::bind_search_mode::update(GameTime.getTimeDelta())`; in
+      `IngameState.exit` call `bind_search_mode::reset()`. Keep one
+      `PlayerRenderInputs` per player slot for the session; each frame,
+      where `RenderSettings.updateRenderSettings` runs for player `i`, call
+      `bind_search_mode::update_render_inputs(i, &mut inputs[i])`, then
+      build the screen pass's params with
+      `bind_search_mode::apply_screen_inputs(params, i, &inputs[i])`
+      (fills `night_vision_goggles`, `drunk_factor`, `blur_factor` and the
+      `search` group; the latter picks exterior/interior values from
+      `IsoPlayer.players[i]`'s `environment.has_current_square` /
+      `square_in_room`, which the world must keep filled). On
+      `OnClothingUpdated` for a player call `chr.update_vision_effects(sm)`
+      (the blur target from glasses and `SHORT_SIGHTED`); the per-frame
+      `updateVisionEffectTargets` already runs in `update_player`.
 - [ ] GPU faults: check `Gpu::error()` after `render_frame` (a lost
       device stops drawing; out-of-memory chunk/atlas textures are left
       out) and stop or rebuild the `Gpu` with a clear message (#120).

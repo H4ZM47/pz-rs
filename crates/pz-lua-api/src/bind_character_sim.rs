@@ -343,6 +343,47 @@ fn fire_equip(c: &mut NativeCall<'_>, event: &str, chr: &Value, item: Value) {
     }
 }
 
+/// The vision effects: `getBlurFactor`, `isWearingGlasses`,
+/// `isWearingVisualAid`, `updateVisionEffects`,
+/// `updateVisionEffectTargets` and `IsoPlayer`'s night-vision goggles
+/// flag (what the screen shader reads).
+fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
+    let b = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
+    b.method("getBlurFactor", |c| {
+        let v = chr_of(c)?.borrow().blur_factor();
+        Ok(c.push(float_value(v)))
+    });
+    let s = sm.clone();
+    b.method("isWearingGlasses", move |c| {
+        let v = chr_of(c)?.borrow().is_wearing_glasses(&s);
+        Ok(c.push(v))
+    });
+    let s = sm.clone();
+    b.method("isWearingVisualAid", move |c| {
+        let v = chr_of(c)?.borrow().is_wearing_visual_aid(&s);
+        Ok(c.push(v))
+    });
+    let s = sm.clone();
+    b.method("updateVisionEffects", move |c| {
+        chr_of(c)?.borrow_mut().update_vision_effects(&s).map_err(java_error)?;
+        Ok(0)
+    });
+    b.method("updateVisionEffectTargets", |c| {
+        chr_of(c)?.borrow_mut().update_vision_effect_targets();
+        Ok(0)
+    });
+    let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    p.method("isWearingNightVisionGoggles", |c| {
+        let v = chr_of(c)?.borrow().is_wearing_night_vision_goggles();
+        Ok(c.push(v))
+    });
+    p.method("setWearingNightVisionGoggles", |c| {
+        let v = bool_arg(c, 1);
+        chr_of(c)?.borrow_mut().set_wearing_night_vision_goggles(v);
+        Ok(0)
+    });
+}
+
 /// The character's inventory members: `getInventory`, the hand items,
 /// `removeFromHands`, `isUnlimitedCarry` and `IsoPlayer.isGhostMode`
 /// (what `ItemContainer` calls on its character parent).
@@ -712,6 +753,7 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
     register_character(thread, &sm, &chars);
     register_inventory(thread, &sm);
     register_clothing(thread, &sm);
+    register_vision(thread, &sm);
 }
 
 /// `register` on the shared ScriptManager and Characters.

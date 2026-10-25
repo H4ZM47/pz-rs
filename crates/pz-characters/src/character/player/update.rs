@@ -140,10 +140,7 @@ impl<I: 'static> GameCharacter<I> {
         out.events.push(PlayerEvent::ReticleMode { reticle });
         self.vars.precision_aim_key_down = self.player.input.is_precision_aim_key_down(input, self.input_owner());
         self.update_nutrition_and_fitness(sm, chars, ctx)?;
-        // updateVisionEffectTargets.
-        let p = &mut self.player;
-        let r = if p.blur_factor < p.blur_factor_target { 0.1 } else { 0.01 };
-        p.blur_factor = crate::character::zombie::math::lerp(p.blur_factor, p.blur_factor_target, r);
+        self.update_vision_effect_targets();
         // updateSoundListener, SafetySystemManager.update: sound / MP.
         if self.player.death_finished {
             return Ok(false);
