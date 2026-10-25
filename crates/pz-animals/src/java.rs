@@ -114,6 +114,57 @@ pub fn entries(t: &TableRef) -> Vec<(Value, Value)> {
     t.entries()
 }
 
+/// `Math.max(float, float)`.
+pub fn fmax(a: f32, b: f32) -> f32 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && a.to_bits() == (-0.0f32).to_bits() {
+        return b;
+    }
+    if a >= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `Math.min(float, float)`.
+pub fn fmin(a: f32, b: f32) -> f32 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && b.to_bits() == (-0.0f32).to_bits() {
+        return b;
+    }
+    if a <= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `PZMath.clamp(float, float, float)`.
+pub fn clamp(v: f32, min: f32, max: f32) -> f32 {
+    if v < min {
+        min
+    } else if v > max {
+        max
+    } else {
+        v
+    }
+}
+
+/// `StringUtils.isNullOrEmpty(s)`.
+pub fn is_null_or_empty(s: Option<&str>) -> bool {
+    s.is_none_or(str::is_empty)
+}
+
+/// `java.lang.NullPointerException`.
+pub fn npe<T>(what: &str) -> JResult<T> {
+    Err(JavaException(format!("NullPointerException: {what}")))
+}
+
 /// A `java.util.HashMap<String, V>` that is only ever added to: lookups by
 /// key, and iteration in the original's bucket order.
 #[derive(Clone, Debug, PartialEq)]
