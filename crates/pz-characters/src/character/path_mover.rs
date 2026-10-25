@@ -87,11 +87,14 @@ impl std::fmt::Debug for DoorHook {
 
 impl<I: 'static> GameCharacter<I> {
     /// Performs the climbs `PathFindBehavior2.update()` asked for
-    /// (`climbOverFence`, `climbThroughWindow`, `climbThroughWindowFrame`),
+    /// (`climbOverFence`, `climbThroughWindow`, `climbThroughWindowFrame`,
+    /// `IsoPlayer.climbOverWall`),
     /// oldest first; the other requests stay queued. Call it after each
     /// `StateWorld::path_update` of the character.
     pub fn run_path_requests(&mut self, cx: &mut super::state::StateCx<'_, I>) {
-        if !self.path.requests.iter().any(|r| matches!(r, PathMoverRequest::ClimbOverFence(_) | PathMoverRequest::ClimbThroughWindow(_) | PathMoverRequest::ClimbThroughWindowFrame(_))) {
+        if !self.path.requests.iter().any(|r| {
+            matches!(r, PathMoverRequest::ClimbOverFence(_) | PathMoverRequest::ClimbThroughWindow(_) | PathMoverRequest::ClimbThroughWindowFrame(_) | PathMoverRequest::ClimbOverWall(_))
+        }) {
             return;
         }
         let all = std::mem::take(&mut self.path.requests);
@@ -101,6 +104,9 @@ impl<I: 'static> GameCharacter<I> {
                 PathMoverRequest::ClimbOverFence(d) => self.do_climb_over_fence(d, cx),
                 PathMoverRequest::ClimbThroughWindow(w) => self.climb_through_window(w, cx),
                 PathMoverRequest::ClimbThroughWindowFrame(f) => self.climb_through_window_frame(f, cx),
+                PathMoverRequest::ClimbOverWall(d) => {
+                    self.climb_over_wall(d, cx);
+                }
                 other => rest.push(other),
             }
         }

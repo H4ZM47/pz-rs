@@ -178,6 +178,11 @@ pub struct CharacterVars {
     pub ignore_stagger_back: bool,
     pub damaged_by_vehicle: bool,
     pub climbing: bool,
+    /// `climbRopeTime`.
+    pub climb_rope_time: f32,
+    /// `getClimbData()` (`ClimbSheetRopeState.ClimbData`, made on the
+    /// first rope climb).
+    pub climb_data: Option<crate::character::states::sheet_rope::ClimbData>,
     pub on_kill_done: bool,
     /// `getAttackedBy()` (by character id).
     pub attacked_by: Option<i32>,
@@ -417,6 +422,8 @@ impl Default for CharacterVars {
             ignore_stagger_back: false,
             damaged_by_vehicle: false,
             climbing: false,
+            climb_rope_time: 0.0,
+            climb_data: None,
             on_kill_done: false,
             attacked_by: None,
             on_fire: false,

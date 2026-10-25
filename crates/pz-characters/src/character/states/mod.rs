@@ -8,14 +8,17 @@
 use super::state::{Param, StateId, StateRef};
 
 pub mod climb_fence;
+pub mod climb_wall;
 pub mod climb_window;
 pub mod generic_default;
 pub mod idle;
 pub mod player;
 pub mod player_ai;
 pub mod player_movement;
+pub mod sheet_rope;
 pub mod stagger_back;
 pub mod swipe;
+pub mod window;
 pub mod zombie;
 
 /// Every `zombie.ai.states` class (the jar's names).
@@ -127,6 +130,12 @@ pub fn all<I: 'static>() -> Vec<StateRef<I>> {
         player_movement::instance(),
         climb_fence::climb_over_fence(),
         climb_window::climb_through_window(),
+        climb_wall::climb_over_wall(),
+        sheet_rope::climb_sheet_rope(),
+        sheet_rope::climb_down_sheet_rope(),
+        window::open_window(),
+        window::close_window(),
+        window::smash_window(),
     ]
     .into_iter()
     .chain(zombie::all())

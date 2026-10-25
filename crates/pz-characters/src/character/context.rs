@@ -590,6 +590,10 @@ pub trait SimContext {
     fn lore_zombies_fall_damage(&self) -> f64 {
         1.0
     }
+    /// `SandboxOptions.easyClimbing`.
+    fn easy_climbing(&self) -> bool {
+        false
+    }
     /// `lore.disableFakeDead` (1 world zombies, 2 world and combat, 3 never).
     fn lore_disable_fake_dead(&self) -> i32 {
         1

@@ -1236,7 +1236,9 @@ impl<I: 'static> GameCharacter<I> {
         }
         // sx/sy, alarms (AmbientStreamManager), updateSeenVisibility: world.
         // updateMovementStatistics: TODO(statistics).
-        // climbRopeTime: TODO(sheet ropes).
+        if self.vars.climb_rope_time != 0.0 && !self.is_climbing_rope() {
+            self.vars.climb_rope_time = 0.0;
+        }
         self.vars.last_x = self.vars.x;
         self.vars.last_y = self.vars.y;
         self.vars.last_z = self.vars.z;
