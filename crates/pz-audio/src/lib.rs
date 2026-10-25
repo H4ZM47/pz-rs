@@ -7,10 +7,14 @@
 //! bank) and decodes their Vorbis samples without any FMOD code.
 
 pub mod bank;
+pub mod dsp;
 pub mod fsb5;
+#[cfg(feature = "output")]
+pub mod output;
 pub mod reader;
 pub mod riff;
 pub mod strings;
+pub mod studio;
 pub mod vorbis;
 pub mod vorbis_setup;
 pub mod world_sound;
