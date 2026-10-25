@@ -8,6 +8,7 @@ publish.workspace = true
 pz-core = { path = "../pz-core" }
 pz-render = { path = "../pz-render" }
 pz-kahlua = { path = "../pz-kahlua" }
+pz-world.workspace = true
 
 [dev-dependencies]
 pz-gpu = { path = "../pz-gpu" }

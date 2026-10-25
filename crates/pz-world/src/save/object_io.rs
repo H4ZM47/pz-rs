@@ -1388,39 +1388,29 @@ fn load_special(
         "Fire" => {
             o.sprite = None;
             o.sprite_id_override = None;
-            let mut f = IsoFire {
-                life: r.i32()?,
-                spread_delay: r.i32()?,
-                life_stage: r.i32()?,
-                life_stage_timer: r.i32()?,
-                life_stage_duration: r.i32()?,
-                energy: r.i32()?,
-                num_flame_particles: r.i32()?,
-                spread_timer: r.i32()?,
-                age: r.i32()?,
-                perm: r.bool()?,
-                light_radius: (r.i8()? as u8) as i32,
-                smoke: r.bool()?,
-                saved_update_time: 0,
+            let mut life = || r.i32();
+            let mut s = crate::fire::FireSave {
+                life: life()?,
+                spread_delay: life()?,
+                life_stage: life()?,
+                life_stage_timer: life()?,
+                life_stage_duration: life()?,
+                energy: life()?,
+                num_flame_particles: life()?,
+                spread_timer: life()?,
+                age: life()?,
+                ..Default::default()
             };
+            s.perm = r.bool()?;
+            s.light_radius = (r.i8()? as u8) as i32;
+            s.smoke = r.bool()?;
             if wv >= 242 {
-                f.saved_update_time = r.i64()?;
+                s.saved_update_time = Some(r.i64()?);
             }
-            if !f.perm {
-                if f.num_flame_particles == 0 {
-                    f.num_flame_particles = 1;
-                }
-                let d = f.life_stage_duration;
-                match f.life_stage {
-                    -1 => f.life_stage = 0,
-                    0 => (f.life_stage, f.life_stage_timer) = (1, d),
-                    1 => (f.life_stage, f.life_stage_timer) = (2, d),
-                    2 => (f.life_stage, f.life_stage_timer) = (3, d / 3),
-                    3 => (f.life_stage, f.life_stage_timer) = (4, d / 3),
-                    4 => (f.life_stage, f.life_stage_timer) = (5, d / 3),
-                    _ => {}
-                }
-            }
+            // The animations IsoFire.load attaches draw from Rand; chunk
+            // loading leaves them to the fire's owner
+            // (IsoFire::attach_loaded_anims).
+            let f = IsoFire::from_save(&s);
             ObjectKind::Fire(f)
         }
         _ => unreachable!(),

@@ -270,13 +270,13 @@ fn a_fire_stands_on_its_square() {
     let mut depth = solid(&mut tm, "depth", 128, 256, [128, 128, 128, 255]);
     depth.width_orig = 128;
     depth.height_orig = 256;
-    let mut fire = FireState::new_fire(FireSquare::default(), 100, 1000, &pz_core::random::Rand::new(1));
+    let mut fire = FireState::new_fire(FireSquare::default(), 100, 1000, &mut pz_iso_render::fire::rand(&pz_core::random::Rand::new(1)));
     // Stage 2: smoke, then flames.
     fire.life_stage = 1;
     fire.life_stage_timer = 1;
-    fire.update_from_timer(1.5, &pz_core::random::Rand::new(2));
+    fire.update_from_timer(1.5, &mut pz_iso_render::fire::rand(&pz_core::random::Rand::new(2)));
     assert_eq!(fire.life_stage, 2);
-    let obj = fire.render_object(false, &|n: &str| if n.starts_with("Fire") { Some(flame.clone()) } else { Some(smoke.clone()) });
+    let obj = pz_iso_render::fire::render_object(&fire, false, &|n: &str| if n.starts_with("Fire") { Some(flame.clone()) } else { Some(smoke.clone()) });
     let mut sq = RenderSquare::new(4, 4, 0);
     sq.light_info = pz_iso_render::color::ColorInfo { r: 1.0, g: 0.5, b: 1.0, a: 1.0 };
     sq.objects.push(obj);

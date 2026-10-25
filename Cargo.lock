@@ -1992,6 +1992,7 @@ dependencies = [
  "pz-gpu",
  "pz-kahlua",
  "pz-render",
+ "pz-world",
 ]
 
 [[package]]

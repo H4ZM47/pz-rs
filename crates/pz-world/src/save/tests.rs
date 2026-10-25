@@ -96,6 +96,7 @@ fn body(parts: usize) -> IsoDeadBody {
         crawling: false,
         fake_dead: false,
         ragdoll: None,
+        burn_timer: 0.0,
     }
 }
 

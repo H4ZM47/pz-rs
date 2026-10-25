@@ -18,7 +18,7 @@ use pz_render::{gl, DrawCmd, Texture};
 
 use crate::color::ColorInfo;
 use crate::fire::{
-    AnimKind, FireAnim, FireLight, RandSource, FIRE_ANIM_DELAY, FIRE_COLOR, FIRE_TINT_MOD,
+    AnimKind, FireAnim, FireLight, RandAdapter, RandSource, FIRE_ANIM_DELAY, FIRE_COLOR, FIRE_TINT_MOD,
     SMOKE_ANIM_DELAY,
 };
 use crate::sprite::{self, Dir, Modifier, SpriteCtx, SpriteDraw};
@@ -227,7 +227,7 @@ impl FireplaceState {
                 oy * ts,
                 FIRE_TINT_MOD,
                 false,
-                rand,
+                &mut RandAdapter(rand),
             ))
         };
         let name = input.sprite_name;

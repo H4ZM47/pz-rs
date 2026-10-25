@@ -303,6 +303,8 @@ pub struct IsoDeadBody {
     pub crawling: bool,
     pub fake_dead: bool,
     pub ragdoll: Option<Vec<BoneTransform>>,
+    /// `burnTimer`: seconds burnt on a burning square (not saved).
+    pub burn_timer: f32,
 }
 
 impl IsoDeadBody {
@@ -461,6 +463,7 @@ impl IsoDeadBody {
             crawling,
             fake_dead,
             ragdoll,
+            burn_timer: 0.0,
         })
     }
 
