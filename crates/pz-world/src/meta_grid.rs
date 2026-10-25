@@ -1475,7 +1475,7 @@ impl IsoMetaGrid {
                 d.error(
                     DebugType::General,
                     None,
-                    "duplicate RoomDef.ID for room at x=%d, y=%d, level=%d",
+                    "duplicate RoomDef.ID for room at %d,%d,%d",
                     &[rx.into(), ry.into(), level.into()],
                 )
             });
@@ -1487,7 +1487,7 @@ impl IsoMetaGrid {
                 d.error(
                     DebugType::General,
                     None,
-                    "duplicate RoomDef.metaID for room at x=%d, y=%d, level=%d",
+                    "duplicate RoomDef.metaID for room at %d,%d,%d",
                     &[rx.into(), ry.into(), level.into()],
                 )
             });

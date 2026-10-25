@@ -38,3 +38,6 @@ pz-lighting.workspace = true
 pz-text.workspace = true
 pz-clipper.workspace = true
 winit = "0.30"
+
+[dev-dependencies]
+pz-world = { workspace = true, features = ["test-util"] }

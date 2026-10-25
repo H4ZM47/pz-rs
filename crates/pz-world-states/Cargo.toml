@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 pz-world.workspace = true
 pz-characters.workspace = true
+pz-anim.workspace = true
 pz-pathfind.workspace = true
 pz-world-popman.workspace = true
 pz-vehicles.workspace = true

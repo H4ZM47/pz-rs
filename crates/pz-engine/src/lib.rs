@@ -13,6 +13,7 @@ pub mod sound;
 pub mod ui_models;
 pub mod world_dictionary;
 pub mod world_hud;
+pub mod world_models;
 pub mod world_render;
 pub mod world_update;
 pub mod zone_clipper;

@@ -1,7 +1,26 @@
 # Engine wiring checklist
 
 Hooks that subsystem crates expose and the game loop (`pz-engine`,
-`pz-client`) must call. Tick each item when it is wired on main.
+`pz-client`) must call. Checkboxes record implemented connections; runtime
+parity requires separate verification. Current continuation is on
+`codex/gameplay-continuation`, based on Claude's `ws/integration` and
+`ws/ingame-loop`; the older `main` checkout is not the current engine.
+
+The October 25 continuation connects live player/zombie models and the same
+animation rigs to state-world root motion, thump timing and turn targets.
+It also restores the pending world-Lua registries, fixes population chunk
+lookup overflow, and saves active sessions on native window close. Quit-save
+Lua events run between borrow-scoped phases, so their clock/world mutations
+reach the saved files. These changes still need complete gameplay and
+platform parity checks.
+
+Known integration gaps include action-context/turning phase timing, timed
+actions, character visibility fading, split-screen viewports, weather and
+sky/water effects, animals/ragdoll rendering, basement save persistence,
+overlay and broken-fence mutations, key spawning/naming, and missing Lua/UI
+bindings. The installed-asset session regression is opt-in and writes only a
+fresh isolated cache. A successful ordinary workspace suite does not exercise
+all installed assets, render paths or foreign platforms.
 
 ## Boot (`GameWindow.init`)
 - [ ] Mods (only when Core's mods option is on): `bind_mods::read_default`,
@@ -178,10 +197,38 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [x] The sprite manager is `Rc<RefCell<IsoSpriteManager>>`, installed with
       `bind_sprites::install_sprite_manager` (`IsoSpriteManager.instance`);
       `ErosionMain` is shared through `bind_erosion::set_instance` (#224).
-- [ ] `Basements.beforeLoadMetaGrid`: build `pz_worldgen::basements::Basements`
+- [x] `Basements.beforeLoadMetaGrid`: build `pz_worldgen::basements::Basements`
       from `bind_basements::take_per_map()` (what `basements.lua` and the
       `Basement` zones registered), then load headers, placements and the
-      meta-grid buildings (#224).
+      meta-grid buildings (#224); `IsoWorld::before_load_meta_grid`, handed
+      to `WorldGenHook.basements` for `onNewChunkLoaded` (Claude handoff).
+- [x] Lua new-world registries: tile/container overlays, `BrokenFences`,
+      `KeyNamer`, `WorldGenUtils.INSTANCE` and the randomized-world clutter
+      lists are registered before server Lua loads (Claude handoff).
+- [x] Character Lua world handles: `getCurrentSquare` / `getSquare` read
+      the character's live current square and return the world's canonical
+      handle; `getCell` returns the installed cell. `getJoypadBind` reads
+      the player's input component. Unloaded squares/cells return `nil`.
+- [ ] `Basements.loadSavefile` / `writeSavefile` (`map_basements.bin`): a
+      loaded world recomputes its placements.
+- [ ] `TileOverlays.updateTileOverlaySprite(obj)` when a square's objects
+      are created or loaded: `bind_tile_overlays::shared_tile_overlays()`
+      `.pick_overlay(..)` puts the sprite first in `attachedAnimSprite`;
+      `ContainerOverlays.updateContainerOverlaySprite` from
+      `shared_container_overlays()` sets the overlay sprite;
+      `fixTableTopOverlays(square)` after moving objects; both `Reset()` on
+      world unload.
+- [ ] `BrokenFences.destroyFence(obj, dir)` (thumping, vehicles): the engine's
+      `StatesEngine::destroy_fence` / `is_breakable_fence` /
+      `broken_fence_items` read `bind_broken_fences::shared_broken_fences()`
+      (`update_sprite_name`, `debris_sprite`, `adjacent_damage`,
+      `destroy_adjacent_dirs`, `add_items` drawing `Rand`), then do the
+      square changes, sound and recalculation; `Reset()` on unload.
+- [ ] `ItemPickerJava.KeyNamer.nameKey(item, square)` when keys spawn:
+      `bind_key_namer::key_namer().key_name_translation(&square)` with a
+      `pz_inventory::key_namer::KeySquare` over the square.
+- [ ] Story clutter: `RandomizedWorldBase.get*ClutterItem()` reads
+      `bind_randomized_world::clutter(field)`.
 - [ ] `MapObjects.newGridSquare` / `loadGridSquare` on brand-new / loaded
       squares: call `bind_map_objects::on_new_callbacks(sprite)` /
       `on_load_callbacks(sprite)` with each object (needs an `IsoObject`

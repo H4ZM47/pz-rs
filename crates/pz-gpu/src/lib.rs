@@ -359,6 +359,13 @@ pub struct Gpu {
 }
 
 impl Gpu {
+    /// Retire cached character meshes when the owning world unloads.
+    /// Live UI meshes are uploaded again on their next draw. Pipelines and
+    /// textures remain available across the transition.
+    pub fn clear_character_mesh_cache(&mut self) {
+        self.models.meshes.clear();
+    }
+
     /// Renders into `window`'s surface.
     pub fn new<W>(window: Arc<W>, width: u32, height: u32) -> Result<Self, GpuError>
     where

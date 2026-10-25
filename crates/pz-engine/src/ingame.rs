@@ -202,6 +202,8 @@ impl IngameState {
             zoom,
             climate,
             screen,
+            tick: self.tick_count as i64,
+            multiplier: FrameSim::capture().multiplier,
         };
         // `IsoCamera`: the player's camera, for the HUD and the player's
         // input. TODO(port): `PlayerCamera` (deferred movement, the
@@ -221,7 +223,7 @@ impl IngameState {
         // `RenderSettings.legacyPostRender`.
         let fs = cx.lua.fs.clone();
         let tm = pz_lua_api::bind_render::textures();
-        w.render(&mut view, &mut fs.borrow_mut(), &mut tm.borrow_mut(), &mut out.cmds);
+        w.render(&mut view, &mut fs.borrow_mut(), &tm, &mut out.cmds);
         cx.lua.trigger_event("OnPostRender", &[]);
         // TODO(port): `LineDrawer.clear`, the animation debug key.
     }
@@ -388,7 +390,8 @@ impl GameState for IngameState {
             // TODO(port): `ObjectAmbientEmitters.update`.
             self.number_ticks += 1;
         }
-        // TODO(port): `ModelManager.instance.update()`, `FPSGraph`.
+        // Live character animation advances from postupdate. TODO(port):
+        // the remaining `ModelManager.instance.update()` work, `FPSGraph`.
         StateAction::Remain
     }
 

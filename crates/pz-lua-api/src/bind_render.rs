@@ -32,6 +32,28 @@ thread_local! {
     static OBJECTS: RefCell<HashMap<TextureKey, Value>> = RefCell::new(HashMap::new());
 }
 
+thread_local! {
+    /// The file system `register` was given, for [`try_get_texture`].
+    static FS: RefCell<Option<Rc<RefCell<GameFs>>>> = const { RefCell::new(None) };
+}
+
+/// `Texture.trygetTexture(name)` outside a Lua call (`None` before
+/// `register`).
+pub fn try_get_texture(name: &str) -> Option<Texture> {
+    let fs = FS.with(|f| f.borrow().clone())?;
+    let fs = fs.borrow();
+    let t = textures().borrow_mut().try_get_texture(&fs, name);
+    t
+}
+
+/// `Texture.getSharedTexture(name)` outside a Lua call.
+pub fn get_shared_texture(name: &str) -> Option<Texture> {
+    let fs = FS.with(|f| f.borrow().clone())?;
+    let fs = fs.borrow();
+    let t = textures().borrow_mut().shared_texture(&fs, name);
+    t
+}
+
 /// The texture tables shared by Lua and the renderer.
 pub fn textures() -> Rc<RefCell<TextureManager>> {
     TEXTURES.with(Rc::clone)
@@ -57,6 +79,7 @@ fn get<R>(c: &NativeCall<'_>, f: impl FnOnce(&Texture) -> R) -> pz_kahlua::LuaRe
 
 pub fn register(mgr: &mut LuaManager) {
     let fs = mgr.fs.clone();
+    FS.with(|f| *f.borrow_mut() = Some(fs.clone()));
     let f = fs.clone();
     pz_render::install_shared_texture_loader(move |name| textures().borrow_mut().shared_texture(&f.borrow(), name));
     let thread = &mut mgr.thread;

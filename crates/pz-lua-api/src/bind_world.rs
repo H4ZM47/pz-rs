@@ -1648,7 +1648,9 @@ fn self_cell(c: &NativeCall<'_>) -> LuaResult<()> {
     }
 }
 
-fn current_cell() -> Value {
+/// The canonical Lua handle for the current world cell, or `nil` before
+/// a cell is installed and after it is unloaded.
+pub fn current_cell() -> Value {
     let has = WORLD.with(|w| w.borrow().cell.is_some());
     opt(has.then_some(Key::Cell))
 }

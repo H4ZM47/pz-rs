@@ -31,6 +31,7 @@ pub mod sprite;
 pub mod square;
 pub mod square_mutation;
 pub mod streamer;
+pub mod tile_overlays;
 pub mod tiledef;
 pub mod world_state;
 pub mod zone_save;

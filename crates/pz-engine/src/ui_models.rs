@@ -24,6 +24,7 @@ use pz_character_model::data::{
 };
 use pz_character_model::items::EquippedModels;
 use pz_character_model::model_tree::{CharacterModelInput, ModelSlot, TextureSource};
+use pz_character_model::render::{LoadedMesh, ModelResources};
 use pz_character_model::resources::{MediaModelResources, TextureLoader};
 use pz_character_model::texture_creator::{create_textures, SmartTextureJob, TextureCreatorInput};
 use pz_character_model::ui_model::{ui_model_draws, AvatarAnimation, UiModelCamera};
@@ -81,16 +82,51 @@ struct Avatar {
 }
 
 /// The loaded assets.
-struct Assets {
+pub(crate) struct Assets {
     game_dir: PathBuf,
-    media: &'static MediaIndex,
-    res: MediaModelResources<'static>,
-    pop: Population,
+    media: Rc<MediaIndex>,
+    pub(crate) res: AssetResources,
+    pub(crate) pop: Population,
     actions: ActionGroups,
     sets: HashMap<String, Rc<AnimationSet>>,
     /// Body skeleton with the clips, per sex.
-    skeletons: HashMap<bool, Rc<SkinningData>>,
+    skeletons: HashMap<(bool, String), Rc<SkinningData>>,
     clothing: HashMap<String, Option<Rc<ClothingItem>>>,
+}
+
+/// Own the index and file cache together without a self-referential
+/// borrow or leaked application resources. A temporary loader performs
+/// each first mesh import; this owner retains the imported mesh.
+pub(crate) struct AssetResources {
+    media: Rc<MediaIndex>,
+    files: Files,
+    meshes: RefCell<HashMap<(String, bool), Option<LoadedMesh>>>,
+}
+
+impl ModelResources for AssetResources {
+    fn mesh(&self, name: &str, is_static: bool) -> Option<LoadedMesh> {
+        let key = (name.to_lowercase(), is_static);
+        if let Some(m) = self.meshes.borrow().get(&key) {
+            return m.clone();
+        }
+        let loaded = MediaModelResources::new(&self.media, &self.files).mesh(name, is_static);
+        let loaded = loaded.map(|mut m| {
+            // Engine model assets share one GPU cache with each other.
+            // Allocate ids across UI/world owners and world reloads.
+            static NEXT_MESH: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(1 << 60);
+            if let Some(mesh) = Rc::get_mut(&mut m.mesh) {
+                mesh.id = NEXT_MESH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            m
+        });
+        self.meshes.borrow_mut().insert(key, loaded.clone());
+        loaded
+    }
+
+    fn texture(&self, source: &TextureSource) -> Option<Texture> {
+        MediaModelResources::new(&self.media, &self.files).texture(source)
+    }
 }
 
 /// All `UI3DModel`s' models.
@@ -118,24 +154,7 @@ impl UiModels {
 
     fn assets(&mut self) -> Option<&mut Assets> {
         if self.assets.is_none() {
-            let media: &'static MediaIndex =
-                Box::leak(Box::new(MediaIndex::scan(&self.game_dir).ok()?));
-            let files: &'static Files = Box::leak(Box::new(Files {
-                tm: self.tm.clone(),
-                cache: RefCell::default(),
-            }));
-            let mut pop = Population::default();
-            pop.init(&mut self.fs.borrow_mut());
-            self.assets = Some(Assets {
-                game_dir: self.game_dir.clone(),
-                media,
-                res: MediaModelResources::new(media, files),
-                pop,
-                actions: ActionGroups::from_media(self.game_dir.join("media")),
-                sets: HashMap::new(),
-                skeletons: HashMap::new(),
-                clothing: HashMap::new(),
-            });
+            self.assets = Some(Assets::load(&self.game_dir, &self.fs, &self.tm)?);
         }
         self.assets.as_mut()
     }
@@ -171,8 +190,36 @@ impl UiModels {
 }
 
 impl Assets {
+    pub(crate) fn load(
+        game_dir: &Path,
+        fs: &Rc<RefCell<GameFs>>,
+        tm: &Rc<RefCell<TextureManager>>,
+    ) -> Option<Self> {
+        let media = Rc::new(MediaIndex::scan(game_dir).ok()?);
+        let files = Files {
+            tm: tm.clone(),
+            cache: RefCell::default(),
+        };
+        let mut pop = Population::default();
+        pop.init(&mut fs.borrow_mut());
+        Some(Assets {
+            game_dir: game_dir.to_path_buf(),
+            media: media.clone(),
+            res: AssetResources {
+                media,
+                files,
+                meshes: RefCell::default(),
+            },
+            pop,
+            actions: ActionGroups::from_media(game_dir.join("media")),
+            sets: HashMap::new(),
+            skeletons: HashMap::new(),
+            clothing: HashMap::new(),
+        })
+    }
+
     /// `AnimationSet.GetAnimationSet(name)`: `media/AnimSets/<name>`.
-    fn anim_set(&mut self, name: &str) -> Rc<AnimationSet> {
+    pub(crate) fn anim_set(&mut self, name: &str) -> Rc<AnimationSet> {
         let dir = self.game_dir.join("media").join("AnimSets").join(name);
         self.sets
             .entry(name.to_lowercase())
@@ -182,8 +229,13 @@ impl Assets {
 
     /// The body's skeleton (`HumanVisual.getModel()`) with every clip the
     /// anim set's nodes name.
-    fn skeleton(&mut self, female: bool, set: &AnimationSet) -> Option<Rc<SkinningData>> {
-        if let Some(s) = self.skeletons.get(&female) {
+    pub(crate) fn skeleton(
+        &mut self,
+        female: bool,
+        set: &AnimationSet,
+    ) -> Option<Rc<SkinningData>> {
+        let key = (female, set.name.to_lowercase());
+        if let Some(s) = self.skeletons.get(&key) {
             return Some(s.clone());
         }
         let body = if female {
@@ -191,7 +243,7 @@ impl Assets {
         } else {
             "Skinned/MaleBody"
         };
-        let (path, ty) = resolve_model_file(self.media, body, AssetKind::Mesh)?;
+        let (path, ty) = resolve_model_file(&self.media, body, AssetKind::Mesh)?;
         let scene = load_mesh(
             &std::fs::read(path).ok()?,
             ty.import_format()?,
@@ -209,8 +261,13 @@ impl Assets {
         names.sort_unstable();
         names.dedup();
         for name in names.into_iter().filter(|n| !n.trim().is_empty()) {
-            let found = ["Bob", "Kate"].iter().find_map(|f| {
-                resolve_model_file(self.media, &format!("{f}/{name}"), AssetKind::Animation)
+            let folders = if set.name.to_lowercase().starts_with("zombie") {
+                &["Zombie", "Bob", "Kate"][..]
+            } else {
+                &["Bob", "Kate"][..]
+            };
+            let found = folders.iter().find_map(|f| {
+                resolve_model_file(&self.media, &format!("{f}/{name}"), AssetKind::Animation)
             });
             let Some((p, ty)) = found else { continue };
             let (Ok(data), Some(fmt)) = (std::fs::read(&p), ty.import_format()) else {
@@ -221,13 +278,13 @@ impl Assets {
             }
         }
         let sd = Rc::new(sd);
-        self.skeletons.insert(female, sd.clone());
+        self.skeletons.insert(key, sd.clone());
         Some(sd)
     }
 
     /// `OutfitManager.getClothingItem(name)` from
     /// `media/clothing/clothingItems/<name>.xml`.
-    fn clothing_item(&mut self, name: &str) -> Option<Rc<ClothingItem>> {
+    pub(crate) fn clothing_item(&mut self, name: &str) -> Option<Rc<ClothingItem>> {
         if name.trim().is_empty() {
             return None;
         }

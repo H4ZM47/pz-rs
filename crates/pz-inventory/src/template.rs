@@ -123,6 +123,8 @@ pub struct ItemTemplate {
     /// `displayName`: the item's `originalName`.
     pub display_name: String,
     pub icon: Option<String>,
+    /// `IconsForTexture`.
+    pub icons_for_texture: Option<Vec<String>>,
     pub condition_max: i32,
     /// `Item.spriteName` (`Clothing.spriteName` at creation).
     pub sprite_name: Option<String>,
@@ -384,6 +386,7 @@ impl ItemTemplate {
             type_: type_.into(),
             display_name: type_.into(),
             icon: None,
+            icons_for_texture: None,
             condition_max: 10,
             sprite_name: None,
             weapon_sprite: None,
@@ -550,6 +553,7 @@ impl ItemTemplate {
             type_: type_.to_string(),
             display_name: item.display_name.clone().unwrap_or_default(),
             icon: item.icon.clone(),
+            icons_for_texture: item.icons_for_texture.clone(),
             condition_max: item.condition_max,
             sprite_name: item.sprite_name.clone(),
             weapon_sprite: item.weapon_sprite.clone(),

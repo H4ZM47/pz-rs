@@ -410,6 +410,15 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let v = chr_of(c)?.borrow().player.player_index;
         Ok(c.push(v))
     });
+    p.method("getJoypadBind", |c| {
+        let v = chr_of(c)?.borrow().player.input.joypad_bind;
+        Ok(c.push(v))
+    });
+    p.method("isLocalPlayer", |c| {
+        let ctx = current_sim_context();
+        let v = chr_of(c)?.borrow().is_local_player(ctx.as_ref());
+        Ok(c.push(v))
+    });
     p.method("isWearingNightVisionGoggles", |c| {
         let v = chr_of(c)?.borrow().is_wearing_night_vision_goggles();
         Ok(c.push(v))
@@ -1285,6 +1294,31 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     for class in [ISO_PLAYER_CLASS, ISO_SURVIVOR_CLASS, ISO_ZOMBIE_CLASS, ISO_ANIMAL_CLASS] {
         expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
     }
+    b.method("getX", |c| {
+        let v = chr_of(c)?.borrow().vars.x;
+        Ok(c.push(float_value(v)))
+    });
+    b.method("getY", |c| {
+        let v = chr_of(c)?.borrow().vars.y;
+        Ok(c.push(float_value(v)))
+    });
+    b.method("getZ", |c| {
+        let v = chr_of(c)?.borrow().vars.z;
+        Ok(c.push(float_value(v)))
+    });
+    // The character holds its current square's coordinates; return the
+    // same handle the world exposes, including `nil` for an unloaded square.
+    for name in ["getCurrentSquare", "getSquare"] {
+        b.method(name, |c| {
+            let square = chr_of(c)?.borrow().current_square_xyz();
+            let value = square.map_or(Value::Nil, |(x, y, z)| crate::bind_world::square_value(x, y, z));
+            Ok(c.push(value))
+        });
+    }
+    b.method("getCell", |c| {
+        chr_of(c)?;
+        Ok(c.push(crate::bind_world::current_cell()))
+    });
     // `new IsoSurvivor(desc, cell, x, y, z)` (character creation's avatar):
     // `GameCharacter::new_survivor`, `desc.setInstance(this)`, then the
     // `OnCreateSurvivor` and `OnCreateLivingCharacter` events.
@@ -2026,12 +2060,87 @@ mod tests {
             r#"
             assert(player:getPlayerNum() == 2 and player:getIndex() == 2)
             assert(player:getVehicle() == nil)
+            assert(player:getJoypadBind() == -1)
             "#,
         )
         .unwrap();
         // A vehicle id the manager does not know reads as no vehicle.
         chr.borrow_mut().path.vehicle = Some(i16::MAX);
         run(&mut t, "assert(player:getVehicle() == nil)").unwrap();
+        chr.borrow_mut().player.input.joypad_bind = 3;
+        run(&mut t, "assert(player:getJoypadBind() == 3)").unwrap();
+    }
+
+    #[test]
+    fn character_coordinates_and_local_player_membership_from_lua() {
+        struct Restore {
+            context: Rc<dyn SimContext>,
+            slot: Option<LuaGameCharacterRef>,
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                install_sim_context(self.context.clone());
+                crate::bind_players::set_player(0, self.slot.clone());
+            }
+        }
+        struct Server;
+        impl SimContext for Server {
+            fn is_server(&self) -> bool { true }
+        }
+        let _restore = Restore {
+            context: current_sim_context(),
+            slot: crate::bind_players::player(0),
+        };
+        let (mut t, chr, _) = setup();
+        {
+            let mut c = chr.borrow_mut();
+            (c.vars.x, c.vars.y, c.vars.z) = (12.5, -7.75, 3.125);
+        }
+        run(&mut t, "assert(player:getX() == 12.5 and player:getY() == -7.75 and player:getZ() == 3.125)").unwrap();
+        {
+            let mut c = chr.borrow_mut();
+            (c.vars.x, c.vars.y, c.vars.z) = (-22.25, 14.0, -1.0);
+        }
+        run(&mut t, "assert(player:getX() == -22.25 and player:getY() == 14 and player:getZ() == -1)").unwrap();
+
+        install_sim_context(Rc::new(DefaultSimContext));
+        crate::bind_players::set_player(0, Some(chr.clone()));
+        run(&mut t, "assert(player:isLocalPlayer())").unwrap();
+        crate::bind_players::set_player(0, None);
+        run(&mut t, "assert(not player:isLocalPlayer())").unwrap();
+        crate::bind_players::set_player(0, Some(chr));
+        install_sim_context(Rc::new(Server));
+        run(&mut t, "assert(not player:isLocalPlayer())").unwrap();
+    }
+
+    #[test]
+    fn character_world_handles_follow_loaded_cell() {
+        let (mut t, chr, _) = setup();
+        crate::bind_world::register(&mut t);
+        crate::bind_world::set_cell(None);
+        run(&mut t, "assert(player:getCurrentSquare() == nil and player:getCell() == nil)").unwrap();
+
+        let mut cell = pz_world::IsoCell::default();
+        let mut chunk = pz_world::IsoChunk::new(0, 0);
+        chunk.set_square(1, 2, 0, Some(pz_world::IsoGridSquare::new(1, 2, 0)));
+        cell.chunks.insert((0, 0), chunk);
+        crate::bind_world::set_cell(Some(cell));
+        chr.borrow_mut().path.current_square = Some((1, 2, 0));
+        run(
+            &mut t,
+            r#"
+            local cell = IsoWorld.instance:getCell()
+            local square = cell:getGridSquare(1, 2, 0)
+            assert(player:getCell() == cell)
+            assert(player:getCurrentSquare() == square and player:getSquare() == square)
+            "#,
+        )
+        .unwrap();
+        // A coordinate outside the loaded cell does not create a square.
+        chr.borrow_mut().path.current_square = Some((100, 100, 0));
+        run(&mut t, "assert(player:getCurrentSquare() == nil)").unwrap();
+        crate::bind_world::set_cell(None);
+        run(&mut t, "assert(player:getCell() == nil)").unwrap();
     }
 
     #[test]

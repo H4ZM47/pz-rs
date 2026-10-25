@@ -132,6 +132,37 @@ pub fn run(launch: Launch) -> Result<(), String> {
 }
 
 impl App {
+    /// A native window close saves an active session through the same
+    /// quit path as the menu, then stops its owners before the GPU goes.
+    fn close(&mut self) {
+        let current = self.states.current.take();
+        let in_game = current.as_ref().is_some_and(|s| s.borrow().class_name() == "zombie.gameStates.IngameState");
+        let (screen_w, screen_h) = self.screen_size();
+        let Some(lua) = self.lua.as_mut() else { return };
+        if in_game {
+            if let Some(world) = self.world.as_mut() {
+                world.save_on_quit(lua);
+            }
+        }
+        let models = self.world.as_mut().and_then(|w| w.models.take());
+        if let Some(current) = current {
+            current.borrow_mut().exit(&mut StateCx {
+                lua, launch: &self.launch, screen_w, screen_h,
+                multiplier: 0.0, time_delta: 0.0, world: &mut self.world,
+            });
+        }
+        // A partially loaded world may have no current IngameState yet.
+        if let Some(world) = self.world.as_mut() { world.stop(); }
+        self.world = None;
+        if let Some(mut models) = models {
+            models.clear();
+            if let Some(gpu) = self.gpu.as_mut() {
+                models.prepare(gpu);
+                gpu.clear_character_mesh_cache();
+            }
+        }
+    }
+
     fn boot(&mut self) -> Result<(), String> {
         let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&self.launch.game_dir)));
         fs.borrow_mut().set_cache_dir(&self.launch.cache_dir);
@@ -229,6 +260,9 @@ impl App {
             let no_save = self.core.borrow().is_no_save();
             world.update_game_state(no_save, false);
         }
+        let retiring_models = if self.core.borrow().exiting || self.states.force_next.is_some() {
+            self.world.as_mut().and_then(|w| w.models.take())
+        } else { None };
         {
             let mut cx = StateCx {
                 lua: &mut *lua,
@@ -240,6 +274,13 @@ impl App {
                 world: &mut self.world,
             };
             self.states.update(&mut cx);
+        }
+        if let Some(mut models) = retiring_models {
+            models.clear();
+            if let Some(gpu) = self.gpu.as_mut() {
+                models.prepare(gpu);
+                gpu.clear_character_mesh_cache();
+            }
         }
         // SoundManager.instance.Update() (GameWindow.logic, "Sound").
         let toggle_music = pz_lua_api::bind_input::is_key_down_named("Toggle Music") && !pz_lua_api::bind_input::was_key_down_named("Toggle Music");
@@ -255,6 +296,11 @@ impl App {
             }
         }
         // GameWindow.render: states.render.
+        if let (Some(world), Some(gpu)) = (self.world.as_mut(), self.gpu.as_mut()) {
+            if let Some(models) = world.models.as_mut() {
+                models.prepare(gpu);
+            }
+        }
         let mut dl = pz_render::DrawList::default();
         {
             let mut cx = StateCx {
@@ -319,7 +365,10 @@ impl ApplicationHandler for App {
         // GLFW's key, char, cursor, button and scroll callbacks.
         pz_input::with_input(|i| pz_input::winit::handle(i, &event));
         match event {
-            WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::CloseRequested => {
+                self.close();
+                el.exit();
+            }
             WindowEvent::Resized(size) => {
                 if let Some(g) = self.gpu.as_mut() {
                     g.resize(size.width.max(1), size.height.max(1));
@@ -443,3 +492,6 @@ fn headless(launch: Launch, frames: u32, gpu: bool) -> Result<(u32, u32, Option<
     let px = app.gpu.as_ref().map(|g| g.read_pixels());
     Ok((w as u32, h as u32, px))
 }
+
+#[cfg(test)]
+mod session_tests;

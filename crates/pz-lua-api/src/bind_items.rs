@@ -520,6 +520,37 @@ pub fn item_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<ItemRef> {
     }
 }
 
+/// `InventoryItem.getTexture()`.
+pub fn item_texture(item: &ItemRef) -> Option<pz_render::Texture> {
+    use pz_inventory::naming::{ItemTexture, QUESTION_TEXTURE};
+    let custom = item.borrow().custom_inventory_icon().map(str::to_string);
+    if let Some(t) = custom.and_then(|n| crate::bind_render::get_shared_texture(&n)) {
+        return Some(t);
+    }
+    let base_textures = {
+        let i = item.borrow();
+        let bag_or_clothing = matches!(
+            i.kind,
+            ItemKind::Clothing(_) | ItemKind::AlarmClockClothing(..) | ItemKind::Container(_)
+        );
+        if bag_or_clothing && i.visual.is_some() {
+            drop(i);
+            let e = env();
+            let owner = e.owner(item);
+            let i = item.borrow();
+            i.get_clothing_item(e.context().assets(), owner.as_ref()).map(|c| c.base_textures.len())
+        } else {
+            None
+        }
+    };
+    let t = item.borrow().texture(base_textures)?;
+    match t {
+        ItemTexture::Shared(n) => crate::bind_render::get_shared_texture(&n),
+        ItemTexture::Try { name, fallback } => crate::bind_render::try_get_texture(&name)
+            .or_else(|| fallback.then(|| crate::bind_render::get_shared_texture(QUESTION_TEXTURE)).flatten()),
+    }
+}
+
 fn this(c: &NativeCall<'_>) -> LuaResult<ItemRef> {
     item_arg(c, 0)
 }
@@ -626,6 +657,52 @@ fn register_inventory_item(thread: &mut Thread) {
         crate::bind_item_name::item_name(&i, env().as_ref())
     ));
     get!(b, "getID", |i| Value::from(i.id));
+    // `getTexture()` / `getIcon()`: the `customInventoryIcon` mod-data
+    // texture when it exists, else `texture`.
+    for name in ["getTexture", "getIcon"] {
+        b.method(name, |c| {
+            let item = this(c)?;
+            Ok(c.push(crate::bind_render::texture_value(item_texture(&item))))
+        });
+    }
+    // `nameAfterDescriptor(SurvivorDesc)` / `monogramAfterDescriptor`.
+    for (name, mono) in [("nameAfterDescriptor", false), ("monogramAfterDescriptor", true)] {
+        b.method(name, move |c| {
+            let item = this(c)?;
+            if c.arg(1).is_nil() {
+                return Ok(0);
+            }
+            let d = crate::bind_characters::desc_arg(c, 1)?;
+            let (fore, sur) = {
+                let d = d.borrow();
+                (d.forename.clone(), d.surname.clone())
+            };
+            let full = item.borrow().get_full_type();
+            let display = script_display_name(&full).ok_or_else(|| LuaError::Runtime {
+                message: String::new(),
+                class: "java.lang.NullPointerException",
+            })?;
+            let display = crate::bind_text::translate(&display);
+            let mut i = item.borrow_mut();
+            if mono {
+                i.monogram_after_descriptor(&display, fore.as_deref(), sur.as_deref())
+                    .map_err(|class| LuaError::Runtime { message: String::new(), class })?;
+            } else {
+                i.name_after_descriptor(&display, fore.as_deref(), sur.as_deref());
+            }
+            Ok(0)
+        });
+    }
+    b.method("setName", |c| {
+        let item = this(c)?;
+        let name = str_arg(c, 1).ok_or_else(|| LuaError::Runtime {
+            message: String::new(),
+            class: "java.lang.NullPointerException",
+        })?;
+        item.borrow_mut().set_name(&name);
+        Ok(0)
+    });
+
     get!(b, "getCondition", |i| Value::from(i.condition));
     get!(b, "getConditionMax", |i| Value::from(i.condition_max));
     get!(b, "getCurrentCondition", |i| f(i.get_current_condition()));

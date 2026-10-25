@@ -96,6 +96,9 @@ pub struct IsoWorld {
     pub world_xa: (i32, i32, i32),
     pub world_gen_params: pz_worldgen::WorldGenParams,
     pub world_gen: Option<pz_worldgen::WorldGenHook>,
+    /// `Basements.getInstance()` after `beforeLoadMetaGrid`, handed to the
+    /// world generator (`onNewChunkLoaded`).
+    pub basements: Option<pz_worldgen::basements::Basements>,
     /// `IsoSpriteManager.instance`.
     /// `IsoSpriteManager.instance`, shared with its Lua object.
     pub sprites: Option<Rc<RefCell<IsoSpriteManager>>>,
@@ -163,6 +166,8 @@ pub struct IsoWorld {
     /// The world renderer (`IsoCell.render`'s state), made on the first
     /// rendered frame.
     pub render: Option<crate::world_render::WorldRender>,
+    /// Live character models and animation players for this world.
+    pub models: Option<crate::world_models::WorldModels>,
     /// Errors of steps that failed without stopping the load (the
     /// original's `ExceptionLogger.logException` calls).
     pub errors: Vec<String>,
@@ -217,6 +222,7 @@ impl IsoWorld {
             world_xa: (0, 0, 0),
             world_gen_params: pz_worldgen::WorldGenParams::new(""),
             world_gen: None,
+            basements: None,
             sprites: None,
             object_tables: None,
             save_tables: None,
@@ -253,6 +259,7 @@ impl IsoWorld {
             key_spawn_chance_d100: 0.0,
             render_chunks: RenderChunkEvents::default(),
             render: None,
+            models: None,
             errors: Vec::new(),
         }
     }
@@ -547,9 +554,11 @@ impl IsoWorld {
         // `StashSystem.init`.
         pz_lua_api::bind_basements::before_on_load_map_zones();
         lua.trigger_event("OnLoadMapZones", &[]);
-        // TODO(port): `Basements.beforeLoadMetaGrid`/`afterLoadMetaGrid`
-        // (`pz_worldgen::load_basements`), `BuildingRoomsEditor.load`.
+        self.before_load_meta_grid();
+        // TODO(port): `BuildingRoomsEditor.load`.
         self.load_meta_grid_files();
+        // `Basements.afterLoadMetaGrid()` releases the spawn locations and
+        // headers; the port keeps the headers for `onNewChunkLoaded`.
         println!("triggerEvent OnLoadedMapZones");
         lua.trigger_event("OnLoadedMapZones", &[]);
         // TODO(port): `ItemConfigurator.Preprocess()`.
@@ -592,6 +601,9 @@ impl IsoWorld {
         // `CellLoader.LoadCellBinaryChunk`: the world generator for
         // brand-new chunks, then player 0's chunk map around (worldX, worldY).
         self.world_gen = self.load_world_gen(lua, &sb, &game_map);
+        if let Some(g) = self.world_gen.as_mut() {
+            g.basements = self.basements.take();
+        }
         self.streamer = Some(ChunkStreamer::new(1, chunk_grid_width));
         set_cell(Some(IsoCell::default()));
         let (wx, wy) = (self.world_x, self.world_y);
@@ -894,6 +906,31 @@ impl IsoWorld {
 
     /// `new WorldGenChunk(seed)`, the biome map and the map's `WorldGen`
     /// zones (`IsoChunk.LoadBrandNew`'s world generation).
+    /// `Basements.beforeLoadMetaGrid()` for a world without
+    /// `map_basements.bin`: the definitions `basements.lua` and the
+    /// `Basement` zones registered on `OnLoadMapZones`, their `.pzby`
+    /// headers, the placements (seeded by the world-generation seed) and
+    /// their buildings in the lot headers and the meta grid.
+    fn before_load_meta_grid(&mut self) {
+        // TODO(port): `loadSavefile()` / `writeSavefile()`
+        // (`map_basements.bin`): a loaded world recomputes the placements.
+        let mut b = pz_worldgen::basements::Basements::new(Rc::new(pz_fs::GameFs::new(&self.game_dir)));
+        b.per_map = pz_lua_api::bind_basements::take_per_map();
+        b.load_headers(&mut self.rand);
+        let seed = self.world_gen_params.seed();
+        let rand = &mut self.rand;
+        with_world(|w| {
+            if let Some(meta) = w.meta_grid.as_mut() {
+                b.calculate_placements(meta, seed);
+                b.meta_buildings = b.add_buildings_to_meta_grid(meta, rand);
+            }
+        });
+        for e in std::mem::take(&mut b.errors) {
+            self.log_error(format!("Basements: {e}"));
+        }
+        self.basements = Some(b);
+    }
+
     fn load_world_gen(
         &mut self,
         lua: &LuaManager,
@@ -958,7 +995,7 @@ impl IsoWorld {
         let chr = match pz_lua_api::bind_players::player_instance() {
             Some(p) => p,
             None => {
-                let chr = Rc::new(RefCell::new(Self::new_iso_player(&sm, &mut chars.borrow_mut())?));
+                let chr = Rc::new(RefCell::new(self.new_iso_player(&sm, &mut chars.borrow_mut())?));
                 pz_lua_api::bind_players::set_player_instance(Some(chr.clone()));
                 pz_lua_api::bind_players::set_player(0, Some(chr.clone()));
                 chr
@@ -1032,8 +1069,11 @@ impl IsoWorld {
     /// character with a `new SurvivorDesc()` and `initWornItems("Human")`.
     /// TODO(port): the rest of the constructor (sprite parts, the state
     /// machine and action context, the speak colour's draws).
-    fn new_iso_player(sm: &pz_scripts::ScriptManager, chars: &mut pz_characters::Characters) -> Result<LuaGameCharacter, String> {
+    fn new_iso_player(&mut self, sm: &pz_scripts::ScriptManager, chars: &mut pz_characters::Characters) -> Result<LuaGameCharacter, String> {
         let mut chr = LuaGameCharacter::new(sm, CharacterKind::Player);
+        self.next_object_id += 1;
+        chr.id = self.next_object_id;
+        chr.human_visual = Some(pz_world::save::visual::HumanVisual::new(pz_characters::character::items::blood_part::MAX));
         let desc = LuaSurvivorDesc::new(chars, sm).map_err(|e| format!("new SurvivorDesc(): {e:?}"))?;
         chr.descriptor = Some(Rc::new(RefCell::new(desc)));
         let group = chars.body_locations.get_group("Human").map_err(|e| format!("initWornItems: {e:?}"))?;
@@ -1043,6 +1083,12 @@ impl IsoWorld {
 
     /// `IsoPlayer.players[0] = player`, `IsoPlayer.setInstance(player)`.
     fn place_player(&mut self, chr: LuaGameCharacterRef) {
+        // Share the world's moving-object identity allocation with real
+        // zombies; model/state lookups must never alias another player.
+        if chr.borrow().id == 0 {
+            self.next_object_id += 1;
+            chr.borrow_mut().id = self.next_object_id;
+        }
         pz_lua_api::bind_players::set_player(0, Some(chr.clone()));
         pz_lua_api::bind_players::set_player_instance(Some(chr));
         // TODO(port): `IsoCamera.setCameraCharacter(player)`.
@@ -1068,6 +1114,7 @@ impl IsoWorld {
             // the rest of the IsoPlayer constructor (sprite, state machine,
             // inventory setup, chat element).
             let mut chr = LuaGameCharacter::new(sm, CharacterKind::Player);
+            chr.human_visual = Some(pz_world::save::visual::HumanVisual::new(pz_characters::character::items::blood_part::MAX));
             let group = desc.borrow().worn_items.body_location_group().clone();
             chr.descriptor = Some(desc);
             chr.init_worn_items(sm, group);

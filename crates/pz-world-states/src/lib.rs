@@ -28,6 +28,7 @@
 //! [`SittingChecks`]: pz_world_popman::SittingChecks
 
 mod bent_fences;
+mod broken_fences;
 mod climb;
 mod collide;
 pub mod population;
@@ -37,8 +38,11 @@ mod vehicles;
 mod windows;
 
 pub use bent_fences::{BentFenceEntry, BentFences, FenceTileDef, ThumpData};
-pub use population::{population_host, population_view, real_zombie_on_square};
+pub use broken_fences::{
+    AdjacentDamage, BrokenFences, BrokenTile, DebrisItem, FenceRand, UnknownTile,
+};
 pub use collide::{CollideMoverInfo, NewRenderEffect, RenderEffectType, StatesFire, WorldView};
+pub use population::{population_host, population_view, real_zombie_on_square};
 pub use query::Env;
 pub use vehicles::{VehicleBox, VehicleGeometry};
 
@@ -176,6 +180,34 @@ pub struct WorldSoundRequest {
 pub trait StatesEngine {
     /// `Rand` (`zombie.core.random.Rand`): the game's random source.
     fn rand(&mut self) -> &mut dyn GameRand;
+
+    // ---- the live character animation owner ----
+    fn thumps_this_frame(&mut self, _chr: i32) -> i32 {
+        0
+    }
+    fn turn_alerted_enter(&mut self, _chr: i32, _target_angle: f32) {}
+    fn deferred_movement_step(
+        &mut self,
+        _chr: i32,
+        _input: &pz_anim::DeferredMovementInput,
+    ) -> Option<(f32, f32)> {
+        None
+    }
+    fn deferred_movement_length_sq(&self, _chr: i32) -> f32 {
+        0.0
+    }
+    fn contains_any_idle_nodes(&self, _chr: i32) -> bool {
+        false
+    }
+    fn animation_player_ready(&self, _chr: i32) -> bool {
+        false
+    }
+    fn rendered_angle(&self, _chr: i32) -> Option<f32> {
+        None
+    }
+    fn primary_hand_model_ready(&self, _chr: i32) -> bool {
+        false
+    }
 
     // ---- characters (pz-characters' owner) ----
 
@@ -634,13 +666,42 @@ pub fn corpse_pos(id: i64) -> (i32, i32, i32, usize) {
 }
 
 impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
+    fn thumps_this_frame(&mut self, chr: i32) -> i32 {
+        self.engine.thumps_this_frame(chr)
+    }
+    fn turn_alerted_enter(&mut self, chr: i32, target_angle: f32) {
+        self.engine.turn_alerted_enter(chr, target_angle);
+    }
+    fn deferred_movement_step(
+        &mut self,
+        chr: i32,
+        input: &pz_anim::DeferredMovementInput,
+    ) -> Option<(f32, f32)> {
+        self.engine.deferred_movement_step(chr, input)
+    }
+    fn deferred_movement_length_sq(&self, chr: i32) -> f32 {
+        self.engine.deferred_movement_length_sq(chr)
+    }
+    fn contains_any_idle_nodes(&self, chr: i32) -> bool {
+        self.engine.contains_any_idle_nodes(chr)
+    }
+    fn animation_player_ready(&self, chr: i32) -> bool {
+        self.engine.animation_player_ready(chr)
+    }
+    fn rendered_angle(&self, chr: i32) -> Option<f32> {
+        self.engine.rendered_angle(chr)
+    }
+    fn primary_hand_model_ready(&self, chr: i32) -> bool {
+        self.engine.primary_hand_model_ready(chr)
+    }
     fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
         let sq = self.cell.get_grid_square(x, y, z)?;
         Some(self.square_info(sq))
     }
 
     fn sloped_surface_height(&self, sq: (i32, i32, i32), dx: f32, dy: f32) -> f32 {
-        self.at(sq).map_or(0.0, |s| s.get_sloped_surface_height_at(dx, dy))
+        self.at(sq)
+            .map_or(0.0, |s| s.get_sloped_surface_height_at(dx, dy))
     }
 
     fn wall_type(&self, sq: (i32, i32, i32)) -> i32 {
@@ -688,7 +749,8 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     }
 
     fn reroute_collide(&self, obj: ObjectRef) -> bool {
-        self.find(obj).is_some_and(|(_, o)| o.reroute_collide.is_some())
+        self.find(obj)
+            .is_some_and(|(_, o)| o.reroute_collide.is_some())
     }
 
     fn has_broken_glass(&self, sq: (i32, i32, i32)) -> bool {
@@ -1093,7 +1155,8 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     }
 
     fn square_is_outside(&self, sq: (i32, i32, i32)) -> bool {
-        self.at(sq).is_some_and(|s| self.env().sq_has(s, "exterior"))
+        self.at(sq)
+            .is_some_and(|s| self.env().sq_has(s, "exterior"))
     }
 
     // ---- windows, sheet ropes and walls ----
@@ -1135,7 +1198,12 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         self.chunk_levels_at(sq)
     }
 
-    fn sheet_rope_exit(&mut self, chr: &GameCharacter<I>, target: (i32, i32, i32), dir: IsoDirections) -> SheetRopeExit {
+    fn sheet_rope_exit(
+        &mut self,
+        chr: &GameCharacter<I>,
+        target: (i32, i32, i32),
+        dir: IsoDirections,
+    ) -> SheetRopeExit {
         let t = Thumper::of(chr);
         self.sheet_rope_exit_for(&t, target, dir)
     }
@@ -1144,7 +1212,12 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         self.can_climb_over_wall_for(&Thumper::of(chr), dir)
     }
 
-    fn climb_wall_fence_type(&self, start: (i32, i32, i32), end: (i32, i32), dir: IsoDirections) -> Option<i32> {
+    fn climb_wall_fence_type(
+        &self,
+        start: (i32, i32, i32),
+        end: (i32, i32),
+        dir: IsoDirections,
+    ) -> Option<i32> {
         self.climb_wall_fence_type_at(start, end, dir)
     }
 

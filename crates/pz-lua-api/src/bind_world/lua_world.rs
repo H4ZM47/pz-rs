@@ -134,14 +134,11 @@ fn zone_args(c: &NativeCall<'_>) -> (String, String, i32, i32, i32, i32, i32) {
 pub fn lot_directories(fs: &GameFs) -> LuaResult<Vec<String>> {
     // `GameClient.client` / `GameServer.server` replace `Core.gameMap`;
     // neither runs here.
-    let map = crate::bind_core::shared_core().borrow().game_map.clone();
-    if map == "DEFAULT" {
-        // TODO(port): `MapGroups.createGroups()` / `setWorld(0)` for a
-        // `DEFAULT` game map.
-        return Err(LuaError::runtime(
-            "TODO(port): IsoMetaGrid.getLotDirectories with Core.gameMap DEFAULT (MapGroups)",
-        ));
+    let is_default = crate::bind_core::shared_core().borrow().game_map == "DEFAULT";
+    if is_default {
+        crate::bind_map_groups::set_default_world()?;
     }
+    let map = crate::bind_core::shared_core().borrow().game_map.clone();
     Ok(pz_world::map_files::lot_directories(fs, &map))
 }
 

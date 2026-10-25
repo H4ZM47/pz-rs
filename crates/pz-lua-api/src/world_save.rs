@@ -238,6 +238,23 @@ fn write(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
 /// `map_sand.bin` failures end it (`IOException`); the rest is logged in
 /// [`SaveReport::errors`] as the original logs it.
 pub fn save_game(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks) -> io::Result<SaveReport> {
+    let mut report = save_game_before_event(g)?;
+    if report.saved {
+        hooks.on_save();
+        save_game_cell(g, hooks, &mut report);
+        save_game_finish(g, hooks, &mut report);
+    }
+    Ok(report)
+}
+
+/// The writes before `OnSave`. A game loop can release its shared world,
+/// `Core` and `GameTime` borrows after this returns, deliver the Lua event,
+/// then build a fresh [`SaveGame`] for [`save_game_cell`]. This keeps the
+/// event's changes visible to the cell and global-object saves.
+///
+/// A skipped save returns `saved == false`; an I/O error ends the save.
+/// Neither case fires `OnSave` or runs the later phases.
+pub fn save_game_before_event(g: &SaveGame<'_>) -> io::Result<SaveReport> {
     let mut report = SaveReport::default();
     if g.no_save || !g.has_cell || g.game_mode == "LastStand" || g.game_mode == "Tutorial" {
         return Ok(report);
@@ -281,12 +298,29 @@ pub fn save_game(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks) -> io::Res
         "StatisticsManager.save",
         g.statistics.save_file(dir, g.no_save),
     );
-    hooks.on_save();
+    Ok(report)
+}
+
+/// After a successful [`save_game_before_event`] and delivery of `OnSave`,
+/// capture the thumbnail and save the cell. The supplied state must be
+/// read again after the event, since its handlers can change the clock,
+/// world and global objects. A skipped prelude remains a skipped save.
+pub fn save_game_cell(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks, report: &mut SaveReport) {
+    if !report.saved {
+        return;
+    }
+    let dir = g.save_dir;
+    let log = |r: &mut SaveReport, what: &str, e: io::Result<()>| {
+        if let Err(e) = e {
+            eprintln!("ERROR: {what}: {e}");
+            r.errors.push(format!("{what}: {e}"));
+        }
+    };
     if g.on_game_thread {
         if let Some(player) = thumbnail::thumbnail_player(g.local_players) {
             if let Some(t) = hooks.capture_thumbnail(player) {
                 log(
-                    &mut report,
+                    report,
                     "SavefileThumbnail.create",
                     thumbnail::save_thumbnail(dir, &t),
                 );
@@ -298,29 +332,40 @@ pub fn save_game(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks) -> io::Res
     hooks.save_chunks(g.meta);
     let header = write(dir, "map.bin", &map_bin_bytes(CELL_SIZE));
     let header_ok = header.is_ok();
-    log(&mut report, "map.bin", header);
+    log(report, "map.bin", header);
     // An exception in `IsoCell.save` skips the rest of it.
     if header_ok {
         let gt = game_time_save::save_map_t_file(g.game_time, g.core, dir);
         let gt_ok = gt.is_ok();
-        log(&mut report, "map_t.bin", gt);
+        log(report, "map_t.bin", gt);
         if gt_ok {
-            save_meta_grid(g, &mut report);
+            save_meta_grid(g, report);
             if g.players.is_some() && g.can_save_players {
                 report.force_save_players = true;
             }
             if let Some(zombies) = g.reanimated {
                 let r = write(dir, "reanimated.bin", &reanimated_bytes(zombies));
-                log(&mut report, "reanimated.bin", r);
+                log(report, "reanimated.bin", r);
             }
         }
     }
+}
+
+/// The remaining systems after [`save_game_cell`]: animals, population,
+/// global objects, then the other systems. This separate phase lets the
+/// engine run its population save without holding the shared cell's
+/// borrow. `OnPostSave` belongs to the quit caller and follows this phase.
+pub fn save_game_finish(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks, report: &mut SaveReport) {
+    if !report.saved {
+        return;
+    }
     hooks.save_animals();
     hooks.save_population();
-    let r = global_objects_save::save_all(dir, g.no_save, false);
-    log(&mut report, "SGlobalObjects.save", r);
+    if let Err(e) = global_objects_save::save_all(g.save_dir, g.no_save, false) {
+        eprintln!("ERROR: SGlobalObjects.save: {e}");
+        report.errors.push(format!("SGlobalObjects.save: {e}"));
+    }
     hooks.save_other_systems();
-    Ok(report)
 }
 
 /// `IsoMetaGrid.save()`: `map_meta.bin`, `map_zone.bin`, `map_animals.bin`,

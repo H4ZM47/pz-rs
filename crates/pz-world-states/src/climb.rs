@@ -6,7 +6,9 @@
 //!
 //! [`StateWorld`]: pz_characters::character::state::StateWorld
 
-use pz_characters::character::state::{FenceClimb, FenceInfo, SquareInfo, StairsPieces, ThumpKind, WindowClimb};
+use pz_characters::character::state::{
+    FenceClimb, FenceInfo, SquareInfo, StairsPieces, ThumpKind, WindowClimb,
+};
 use pz_pathfind::mover::ObjectRef;
 use pz_world::objects::{IsoObject, ObjectKind, ObjectName};
 use pz_world::{IsoDirections, IsoGridSquare};
@@ -53,7 +55,10 @@ impl StatesWorldAdapter<'_> {
 
     /// `square.has(flag)` for a flag the tables may lack.
     fn sq_flag(&self, sq: &IsoGridSquare, name: &str) -> bool {
-        self.sprites.tables.flag_from_string(name).is_some_and(|f| sq.has(f))
+        self.sprites
+            .tables
+            .flag_from_string(name)
+            .is_some_and(|f| sq.has(f))
     }
 
     /// `square.getWallType()`.
@@ -101,7 +106,9 @@ impl StatesWorldAdapter<'_> {
             IsoDirections::E => (1, 0),
             _ => return false,
         };
-        let Some(sq) = self.cell.get_grid_square(at.0 + dx, at.1 + dy, at.2) else { return false };
+        let Some(sq) = self.cell.get_grid_square(at.0 + dx, at.1 + dy, at.2) else {
+            return false;
+        };
         let m = &*self.sprites;
         if sq.has(m.tables.flag.water) {
             return false;
@@ -156,10 +163,16 @@ impl StatesWorldAdapter<'_> {
             dir = D::E;
             vault = true;
         }
-        if !vault || !self.is_player_able_to_hop_wall_to(cur, dir, feeler) || !self.is_safe_to_climb_over(at, dir) {
+        if !vault
+            || !self.is_player_able_to_hop_wall_to(cur, dir, feeler)
+            || !self.is_safe_to_climb_over(at, dir)
+        {
             return None;
         }
-        Some((dir, self.fence_opposite(cur.get_adjacent_square(dir, self.cell))))
+        Some((
+            dir,
+            self.fence_opposite(cur.get_adjacent_square(dir, self.cell)),
+        ))
     }
 
     // ---- windows ----
@@ -175,7 +188,9 @@ impl StatesWorldAdapter<'_> {
     fn is_obstacle_square(&self, sq: Option<&IsoGridSquare>) -> bool {
         let m = &*self.sprites;
         let f = &m.tables.flag;
-        sq.is_some_and(|s| s.treat_as_solid_floor(m) && !s.has(f.solid) && s.has(f.solidtrans) && !s.has(f.water))
+        sq.is_some_and(|s| {
+            s.treat_as_solid_floor(m) && !s.has(f.solid) && s.has(f.solidtrans) && !s.has(f.water)
+        })
     }
 
     /// Nothing between `a` and `b` stops a counter climb: no wall, window or
@@ -184,11 +199,16 @@ impl StatesWorldAdapter<'_> {
         let hooks = self.env().hooks();
         !self.env().is_something_to(a, b)
             && a.get_window_frame_to(Some(b), self.cell).is_none()
-            && a.get_window_thumpable_to(Some(b), self.sprites, self.cell, &hooks).is_none()
+            && a.get_window_thumpable_to(Some(b), self.sprites, self.cell, &hooks)
+                .is_none()
     }
 
     /// `getFreeSquareAfterObstacles(square, dir)`.
-    fn free_square_after_obstacles<'s>(&'s self, mut sq: &'s IsoGridSquare, dir: IsoDirections) -> Option<&'s IsoGridSquare> {
+    fn free_square_after_obstacles<'s>(
+        &'s self,
+        mut sq: &'s IsoGridSquare,
+        dir: IsoDirections,
+    ) -> Option<&'s IsoGridSquare> {
         loop {
             let next = sq.get_adjacent_square(dir, self.cell)?;
             if !self.open_between(sq, next) {
@@ -221,7 +241,14 @@ impl StatesWorldAdapter<'_> {
         let (portal, can_climb, portal_can_climb, north, broken_glass, barbed) = match &o.kind {
             ObjectKind::Window(w) => {
                 let c = self.window_can_climb_through(sq, o, Some(t));
-                (ThumpKind::Window, c, c, w.north, w.destroyed && !w.glass_removed, false)
+                (
+                    ThumpKind::Window,
+                    c,
+                    c,
+                    w.north,
+                    w.destroyed && !w.glass_removed,
+                    false,
+                )
             }
             ObjectKind::Thumpable(th) => {
                 let c = self.thumpable_can_climb_through(sq, o, Some(t));
@@ -261,7 +288,9 @@ impl StatesWorldAdapter<'_> {
             if t.zombie {
                 let next = os.get_adjacent_square(dir, self.cell);
                 match next {
-                    Some(n) if self.is_free_square(Some(n)) && self.open_between(os, n) => end = (n.x, n.y),
+                    Some(n) if self.is_free_square(Some(n)) && self.open_between(os, n) => {
+                        end = (n.x, n.y)
+                    }
                     _ => counter = false,
                 }
             } else {
@@ -292,7 +321,11 @@ impl StatesWorldAdapter<'_> {
 
     /// `startSq.getWindowTo(endSq)`, `getWindowThumpableTo`, then
     /// `getHoppableTo`.
-    pub fn window_between_squares(&self, start: (i32, i32, i32), end: (i32, i32, i32)) -> Option<(ObjectRef, ThumpKind)> {
+    pub fn window_between_squares(
+        &self,
+        start: (i32, i32, i32),
+        end: (i32, i32, i32),
+    ) -> Option<(ObjectRef, ThumpKind)> {
         let a = self.cell.get_grid_square(start.0, start.1, start.2)?;
         let b = self.cell.get_grid_square(end.0, end.1, end.2)?;
         let hooks = self.env().hooks();
@@ -305,7 +338,12 @@ impl StatesWorldAdapter<'_> {
             .or_else(|| {
                 self.collide_env()
                     .get_hoppable_to(a, Some(b))
-                    .map(|(s, id)| ObjectRef { x: s.x, y: s.y, z: s.z, id })
+                    .map(|(s, id)| ObjectRef {
+                        x: s.x,
+                        y: s.y,
+                        z: s.z,
+                        id,
+                    })
             })?;
         let (_, o) = self.find(found)?;
         Some((found, Self::kind_of(o)))
@@ -313,15 +351,18 @@ impl StatesWorldAdapter<'_> {
 
     /// `square.getBrokenGlass() != null`.
     pub fn broken_glass_at(&self, p: (i32, i32, i32)) -> bool {
-        self.cell
-            .get_grid_square(p.0, p.1, p.2)
-            .is_some_and(|s| s.get_special_objects().any(|o| matches!(o.kind, ObjectKind::BrokenGlass)))
+        self.cell.get_grid_square(p.0, p.1, p.2).is_some_and(|s| {
+            s.get_special_objects()
+                .any(|o| matches!(o.kind, ObjectKind::BrokenGlass))
+        })
     }
 
     /// `IsoThumpable.health -= damage`, `destroy()` at 0 or below.
     pub fn damage_thumpable_at(&mut self, r: ObjectRef, damage: i32) {
         let Some(o) = self.find_mut(r) else { return };
-        let ObjectKind::Thumpable(t) = &mut o.kind else { return };
+        let ObjectKind::Thumpable(t) = &mut o.kind else {
+            return;
+        };
         t.health -= damage;
         if t.health <= 0 {
             self.destroy_thumpable(r);
@@ -331,19 +372,31 @@ impl StatesWorldAdapter<'_> {
     // ---- fences ----
 
     /// `startSq.getHoppableTo(endSq)`.
-    pub fn hoppable_between_squares(&self, start: (i32, i32, i32), end: (i32, i32, i32)) -> Option<ObjectRef> {
+    pub fn hoppable_between_squares(
+        &self,
+        start: (i32, i32, i32),
+        end: (i32, i32, i32),
+    ) -> Option<ObjectRef> {
         let a = self.cell.get_grid_square(start.0, start.1, start.2)?;
         let b = self.cell.get_grid_square(end.0, end.1, end.2)?;
         self.collide_env()
             .get_hoppable_to(a, Some(b))
-            .map(|(s, id)| ObjectRef { x: s.x, y: s.y, z: s.z, id })
+            .map(|(s, id)| ObjectRef {
+                x: s.x,
+                y: s.y,
+                z: s.z,
+                id,
+            })
     }
 
     /// `ClimbOverFenceState.isMetalFence(fence)`.
     fn is_metal_fence(&self, o: &IsoObject) -> bool {
         let env = self.env();
         let mats = ["Material", "Material2", "Material3"].map(|k| env.obj_prop(o, k));
-        if mats.iter().any(|m| matches!(m, Some("MetalBars") | Some("MetalWire"))) {
+        if mats
+            .iter()
+            .any(|m| matches!(m, Some("MetalBars") | Some("MetalWire")))
+        {
             return true;
         }
         if let ObjectKind::Thumpable(t) = &o.kind {
@@ -366,7 +419,11 @@ impl StatesWorldAdapter<'_> {
             return (WOOD, WOOD);
         }
         if let Some(low) = env.obj_prop(o, "FenceTypeLow") {
-            if low == "Sandbag" && self.object_name(o).is_some_and(|n| n.to_lowercase().contains("gravel")) {
+            if low == "Sandbag"
+                && self
+                    .object_name(o)
+                    .is_some_and(|n| n.to_lowercase().contains("gravel"))
+            {
                 return (3, 3);
             }
             let fence = match low {
@@ -432,7 +489,13 @@ impl StatesWorldAdapter<'_> {
     /// sprite has `solidfloor`.
     pub fn floor_sprite_name_at(&self, p: (i32, i32, i32)) -> Option<String> {
         let sq = self.cell.get_grid_square(p.0, p.1, p.2)?;
-        let floor = sq.objects.iter().find(|o| o.sprite.is_some_and(|s| self.sprites.sprites[s].properties.has(self.sprites.tables.flag.solidfloor)))?;
+        let floor = sq.objects.iter().find(|o| {
+            o.sprite.is_some_and(|s| {
+                self.sprites.sprites[s]
+                    .properties
+                    .has(self.sprites.tables.flag.solidfloor)
+            })
+        })?;
         self.env().sprite_name(floor).map(str::to_string)
     }
 }
