@@ -33,6 +33,9 @@ pub enum TextureSource {
     File(String),
     /// The result of a [`crate::texture_creator::SmartTextureJob`].
     Smart(usize),
+    /// A combined texture already made (an equipped item's
+    /// `ItemSmartTexture`, see [`crate::item_texture`]).
+    Combined(pz_render::Texture),
 }
 
 /// What part of the character an instance is.
@@ -78,6 +81,8 @@ pub struct ModelInstance {
     /// `setTextureInitializer`: the item values its equipped texture is
     /// built from ([`crate::texture_creator::equipped_texture_job`]).
     pub texture_init: Option<ItemTextureInit>,
+    /// The initializer's render state and texture.
+    pub equipped_texture: crate::item_texture::EquippedTextureState,
     pub sub: Vec<usize>,
 }
 
@@ -111,6 +116,7 @@ impl ModelInstance {
             item_visual: None,
             mask_variable_value: None,
             texture_init: None,
+            equipped_texture: Default::default(),
             sub: Vec::new(),
         }
     }
@@ -376,7 +382,8 @@ impl ModelSlot {
                 let s = s.borrow();
                 (
                     s.mesh_name.clone().unwrap_or_default(),
-                    s.texture_name.clone(),
+                    // getTextureName(): the mesh name without a texture.
+                    s.texture_name().map(str::to_string),
                     s.shader_name.clone(),
                 )
             }
@@ -423,7 +430,8 @@ impl ModelSlot {
                 let s = s.borrow();
                 (
                     s.mesh_name.clone().unwrap_or_default(),
-                    s.texture_name.clone(),
+                    // getTextureName(): the mesh name without a texture.
+                    s.texture_name().map(str::to_string),
                     s.shader_name.clone(),
                 )
             }

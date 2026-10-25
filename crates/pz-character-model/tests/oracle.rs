@@ -145,6 +145,7 @@ fn inst() -> ModelInstance {
         item_visual: None,
         mask_variable_value: None,
         texture_init: None,
+        equipped_texture: Default::default(),
         sub: Vec::new(),
     }
 }

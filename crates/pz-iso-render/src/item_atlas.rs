@@ -80,9 +80,16 @@ pub struct ItemParams {
     pub fluid_level: f32,
     /// `fluidTint` red, blue, green bytes as the key writes them.
     pub fluid_tint: [u8; 3],
-    /// A `TINT` mask texture exists: the tint goes into the smart texture,
-    /// the shader tint is white.
-    pub tint_mask: bool,
+    /// `fluidTint` itself (the fluid overlay's colour).
+    pub fluid_color: [f32; 3],
+    /// `tintMask`: the model texture's `TINT` mask, when it exists; the
+    /// tint then goes into the smart texture and the shader tint is white.
+    pub tint_mask: Option<String>,
+    /// `modelTextureName` (`media/textures/...png`).
+    pub model_texture_name: Option<String>,
+    /// `fluidTextureMask`: the `FLUIDTINT` mask, when the container has
+    /// fluid and the mask exists.
+    pub fluid_texture_mask: Option<String>,
 }
 
 impl ItemParams {
@@ -105,7 +112,10 @@ impl ItemParams {
             blood_level: 0.0,
             fluid_level: 0.0,
             fluid_tint: [255; 3],
-            tint_mask: false,
+            fluid_color: [1.0; 3],
+            tint_mask: None,
+            model_texture_name: None,
+            fluid_texture_mask: None,
         }
     }
 
@@ -232,6 +242,7 @@ fn model_draw(
     p: &Matrix4f,
     mv: &Matrix4f,
     fold: &Matrix4f,
+    smart: Option<Texture>,
 ) -> ModelDraw {
     let inv = params.transform.invert_affine();
     let mvp = fold.mul(p).mul(&mv.mul(&inv));
@@ -258,7 +269,7 @@ fn model_draw(
     );
     ModelDraw {
         mesh: model.mesh.clone(),
-        texture: model.texture.clone(),
+        texture: smart.or_else(|| model.texture.clone()),
         mvp: mvp.m,
         transform: transform.m,
         palette: Rc::new(Vec::new()),
@@ -267,7 +278,7 @@ fn model_draw(
         uv_scale: [1.0, 1.0],
         lights,
         ambient: [a[0] * 0.4, a[1] * 0.4, a[2] * 0.4],
-        tint: if params.tint_mask {
+        tint: if params.tint_mask.is_some() {
             [1.0; 3]
         } else {
             params.tint
@@ -328,8 +339,17 @@ impl WorldItemAtlas {
     }
 
     /// `render()`: runs the queued jobs (`RenderJob.render`), drawing each
-    /// item into its atlas entry.
+    /// item into its atlas entry with the model's own texture.
     pub fn render(&mut self, out: &mut Vec<DrawCmd>) {
+        self.render_with(out, &mut |_| None);
+    }
+
+    /// [`render`](Self::render) with `checkSmartTexture`: `smart` gives
+    /// the item model's combined texture (tint mask, blood, fluid) when it
+    /// needs one. The original releases that texture to the combiner right
+    /// after the draw; here the draw runs with the frame, so the caller
+    /// keeps it until the frame is drawn.
+    pub fn render_with(&mut self, out: &mut Vec<DrawCmd>, smart: &mut dyn FnMut(&ItemParams) -> Option<Texture>) {
         for (key, params) in std::mem::take(&mut self.jobs) {
             let b = params.bounds();
             let (ox, oy) = entry_offset(b);
@@ -364,6 +384,7 @@ impl WorldItemAtlas {
             let vy = -(oy as i32) - (MATRIX_SIZE - e.h) / 2 + ATLAS_SIZE - (e.y + e.h);
             let fold = viewport_fold(vx, vy);
             let (p, mv) = params.matrices(0.0, 0.0);
+            let texture = smart(&params);
             out.push(DrawCmd::Model(Box::new(model_draw(
                 &params,
                 &params.model,
@@ -371,6 +392,7 @@ impl WorldItemAtlas {
                 &p,
                 &mv,
                 &fold,
+                texture,
             ))));
             for part in &params.weapon_parts {
                 out.push(DrawCmd::Model(Box::new(model_draw(
@@ -380,6 +402,7 @@ impl WorldItemAtlas {
                     &p,
                     &mv,
                     &fold,
+                    None,
                 ))));
             }
             out.push(DrawCmd::AtlasEnd);

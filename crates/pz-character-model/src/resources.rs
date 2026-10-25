@@ -102,6 +102,7 @@ impl ModelResources for MediaModelResources<'_> {
             TextureSource::None => None,
             TextureSource::File(name) => self.textures.file(&self.texture_file(name)?),
             TextureSource::Smart(job) => self.textures.smart(*job),
+            TextureSource::Combined(t) => Some(t.clone()),
         }
     }
 }
