@@ -119,9 +119,10 @@ pub fn vehicle(id: i16) -> Option<VehicleRef> {
 /// module. The argument is the path of the pz-pathfind crate.
 ///
 /// `chooseBestAttackPosition` goes through the target vehicle's
-/// `SurroundVehicle`; the attacker's floor, death and reuse state are not on
-/// pz-pathfind's mover traits and count as false (the vehicle's own
-/// `update` reads them through `VehicleWorld::surround_zombie`).
+/// `SurroundVehicle`, with the attacker's floor and death state from
+/// `CharacterView`; `VirtualZombieManager.isReused` is not on the mover and
+/// counts as false (the vehicle's own `update` reads zombies through
+/// `VehicleWorld::surround_zombie`).
 #[macro_export]
 macro_rules! pathfind_adapter {
     ($pf:path) => {
@@ -219,10 +220,10 @@ macro_rules! pathfind_adapter {
                     x: attacker.x(),
                     y: attacker.y(),
                     z: attacker.z(),
-                    // pz-pathfind's mover does not expose these.
-                    on_floor: false,
+                    on_floor: attacker.is_on_floor(),
                     can_walk: attacker.as_zombie().map_or(true, |z| z.is_can_walk()),
-                    dead: false,
+                    dead: attacker.is_dead(),
+                    // `VirtualZombieManager.isReused` is not on the mover.
                     reused: false,
                     target: Some($crate::surround::SurroundTarget {
                         x: target.x(),

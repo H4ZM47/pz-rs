@@ -1653,6 +1653,7 @@ dependencies = [
  "pz-fs",
  "pz-inventory",
  "pz-kahlua",
+ "pz-pathfind",
  "pz-scripts",
  "pz-world",
 ]
