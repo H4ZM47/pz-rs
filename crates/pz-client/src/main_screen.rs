@@ -55,6 +55,16 @@ pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<()
     mgr.trigger_event("OnGameBoot", &[]);
     // MainScreenState.enter
     mgr.trigger_event("OnMainMenuEnter", &[]);
+    // Development harness, as for `--png`: `PZ_HEADLESS_LUA=<file>` runs a
+    // Lua file before the frames (e.g. to open a screen).
+    if let Some(path) = std::env::var_os("PZ_HEADLESS_LUA") {
+        let src = std::fs::read_to_string(&path).map_err(|e| format!("PZ_HEADLESS_LUA: {e}"))?;
+        let f = pz_kahlua::stdlib::load_string(&src, Some("headless"), mgr.thread.globals().clone())
+            .map_err(|e| format!("PZ_HEADLESS_LUA: {e:?}"))?;
+        if let Err((e, tr)) = mgr.thread.pcall(&f, &[]) {
+            eprintln!("PZ_HEADLESS_LUA: {e:?}\n{tr}");
+        }
+    }
     for _ in 0..frames {
         // MainScreenState.update
         mgr.trigger_event("OnFETick", &[0.0.into()]);
