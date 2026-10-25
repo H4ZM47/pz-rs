@@ -48,6 +48,7 @@ pub mod bind_survival_guide;
 pub mod bind_states;
 pub mod bind_zombie;
 pub mod bind_zombie_outfits;
+pub mod chat;
 pub mod bind_text;
 pub mod bind_ui;
 pub mod hud;
@@ -147,7 +148,9 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_uitextbox2::register(&mut mgr.thread);
     bind_voice::register(&mut mgr.thread);
     bind_voice::register_input_globals(&mut mgr.thread);
+    chat::lua::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
     bind_character_sim::install_event_sink(sink.clone());
+    chat::install_event_sink(sink.clone());
     bind_climate::install_event_sink(sink);
 }

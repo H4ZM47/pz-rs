@@ -234,6 +234,19 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `ensure_chat_backdrop()`; `HudPlayers::player_index`
       (`IsoPlayer.getPlayerIndex()`; characters thread) tags batched draws
       (#174).
+- [ ] Chat (SP): characters thread implements `chat::ChatPlayer` and
+      `chat::ChatElementOwner` for IsoPlayer (and installs `chat::ChatPlayers`
+      for `IsoPlayer.players`/`getInstance`), gives each `IsoGameCharacter` a
+      `ChatElement::new(weak_self, 1, Some("character"))` (5 lines in
+      `initTextObjects` for players), calls its `update()` in
+      `IsoGameCharacter.update` and `ChatElement::render_batched` from
+      `renderlast`, and routes `Say`/`SayShout`/`SayRadio`/`addLineChatElement`/
+      `SayDebug` to it and `with_chat_manager`; `GameLoadingState` calls
+      `chat::set_allowed_chat_icons(..)` (`Texture.collectAllIcons`) then
+      `with_chat_manager(|m| m.init(true, player))`; `IngameState.renderframeui`
+      calls `ChatElement::render_batch(player)` right after
+      `text_draw::render_batch`; Rust callers of the chat fire its queued Lua
+      events with `chat::fire_pending_events(thread)` (#TBD-chat).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).

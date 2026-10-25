@@ -312,6 +312,11 @@ fn with_tm<R>(f: impl FnOnce(&TextManager) -> R) -> Option<R> {
     state().map(|s| f(&s.text_manager.borrow()))
 }
 
+/// `TextManager.instance.getFontFromEnum(font).chars.length`.
+pub(crate) fn font_char_count(font: UIFont) -> Option<usize> {
+    with_tm(|tm| tm.get_font_from_enum(Some(font)).map(|f| f.chars.len())).flatten()
+}
+
 fn key(c: &NativeCall<'_>, i: usize) -> String {
     str_arg(c, i).map(|s| s.to_string()).unwrap_or_default()
 }
