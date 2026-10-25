@@ -226,8 +226,14 @@ pub fn register(env: &TableRef) {
     reg(env, "collectgarbage", |c| {
         let option = if c.nargs() > 0 { c.arg(0) } else { Value::Nil };
         match option.as_str() {
-            None if option.is_nil() => Ok(0),
-            Some("step") | Some("collect") => Ok(0),
+            None if option.is_nil() => {
+                crate::gc::request_collection();
+                Ok(0)
+            }
+            Some("step") | Some("collect") => {
+                crate::gc::request_collection();
+                Ok(0)
+            }
             Some("count") => {
                 // Memory statistics in KiB: used, free, total.
                 c.set_top(3)?;

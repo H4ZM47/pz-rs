@@ -71,6 +71,13 @@ jobs:
           rustc --version
           cargo --version
 
+      - name: Cache Rust dependencies
+        # Cache only Rust build inputs/artifacts; game assets are absent.
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.runner }}
+          cache-on-failure: true
+
       - name: Build the native client
         run: cargo build --locked -p pz-client
 

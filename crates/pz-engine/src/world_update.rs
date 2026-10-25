@@ -1211,6 +1211,7 @@ impl IsoWorld {
                 let has_cell = w.cell.is_some();
                 let meta = w.meta_grid.as_mut()?;
                 let (gt, core) = (gt.borrow(), core.borrow());
+                let world_gen_params = world.world_gen_params.borrow();
                 let players: Vec<bool> = local_players().iter().map(Option::is_some).collect();
                 let mut g = SaveGame {
                     save_dir: &world.save_dir,
@@ -1229,7 +1230,7 @@ impl IsoWorld {
                     // `saveLocalPlayersForce` below already queued them.
                     can_save_players: false,
                     reanimated: None,
-                    world_gen: &world.world_gen_params,
+                    world_gen: &world_gen_params,
                     instance_tracker: &world.instance_tracker,
                     cache_dir: Some(&world.cache_dir),
                     meta_tracker: &world.meta_tracker,

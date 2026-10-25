@@ -5,6 +5,7 @@
 
 pub mod compiler;
 pub mod exec;
+pub mod gc;
 pub mod java_io;
 pub mod number;
 pub mod stdlib;

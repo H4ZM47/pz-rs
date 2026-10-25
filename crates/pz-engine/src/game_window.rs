@@ -349,6 +349,9 @@ impl App {
         }
         // Core.DoFrameReady -> Core.updateKeyboard: focused text entry.
         pz_lua_api::bind_uitextbox2::update_keyboard(&mut lua.thread);
+        // Requests from Lua are drained after the frame's callbacks and
+        // table borrows have returned to the host.
+        let _ = pz_kahlua::gc::collect_pending();
     }
 }
 

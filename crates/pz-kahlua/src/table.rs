@@ -13,12 +13,20 @@ use std::rc::Rc;
 
 #[derive(Default)]
 pub struct Table {
-    map: IndexMap<Key, Value>,
-    meta: Option<TableRef>,
+    pub(crate) map: IndexMap<Key, Value>,
+    pub(crate) meta: Option<TableRef>,
 }
 
-#[derive(Clone, Default)]
-pub struct TableRef(Rc<RefCell<Table>>);
+#[derive(Clone)]
+pub struct TableRef(pub(crate) Rc<RefCell<Table>>);
+
+impl Default for TableRef {
+    fn default() -> Self {
+        let table = Rc::new(RefCell::new(Table::default()));
+        crate::gc::register_table(Rc::downgrade(&table));
+        Self(table)
+    }
+}
 
 impl std::fmt::Debug for TableRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

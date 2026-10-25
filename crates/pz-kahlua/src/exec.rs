@@ -188,6 +188,7 @@ impl Thread {
         let n = self.call_at(base, args.len())?;
         let out = self.stack[base..base + n].to_vec();
         self.set_top(base)?;
+        self.collect_pending_at_host_boundary();
         Ok(out)
     }
 
@@ -217,8 +218,18 @@ impl Thread {
                     trace.push_str(&frame_trace(&fr));
                 }
                 let _ = self.set_top(base);
-                Err((e.pcall_message(), trace, e))
+                let error = (e.pcall_message(), trace, e);
+                self.collect_pending_at_host_boundary();
+                Err(error)
             }
+        }
+    }
+
+    // Native callbacks can nest calls even without a Lua execute loop. All
+    // three conditions are required before draining a queued GC request.
+    fn collect_pending_at_host_boundary(&self) {
+        if self.top == 0 && self.frames.is_empty() && self.exec_level == 0 {
+            crate::gc::collect_pending();
         }
     }
 

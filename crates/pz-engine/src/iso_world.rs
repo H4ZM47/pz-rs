@@ -94,7 +94,7 @@ pub struct IsoWorld {
     pub world_y: i32,
     /// `IsoChunkMap.worldXa/Ya/Za`.
     pub world_xa: (i32, i32, i32),
-    pub world_gen_params: pz_worldgen::WorldGenParams,
+    pub world_gen_params: pz_lua_api::bind_world_gen_params::WorldGenParamsRef,
     pub world_gen: Option<pz_worldgen::WorldGenHook>,
     /// `Basements.getInstance()` after `beforeLoadMetaGrid`, handed to the
     /// world generator (`onNewChunkLoaded`).
@@ -220,7 +220,7 @@ impl IsoWorld {
             world_x: 0,
             world_y: 0,
             world_xa: (0, 0, 0),
-            world_gen_params: pz_worldgen::WorldGenParams::new(""),
+            world_gen_params: pz_lua_api::bind_world_gen_params::shared_world_gen_params(),
             world_gen: None,
             basements: None,
             sprites: None,
@@ -355,6 +355,17 @@ impl IsoWorld {
         }
     }
 
+    /// The menu and direct-game entry update the same static parameters;
+    /// a saved world's file then overwrites them in place.
+    fn load_world_gen_params(&mut self) {
+        let mut params = self.world_gen_params.borrow_mut();
+        if let Some(setup) = &self.new_game_setup {
+            params.seed_string = setup.seed.clone();
+            params.seed = pz_worldgen::java::string_hash(&setup.seed);
+        }
+        let _ = params.load_file(&self.save_dir);
+    }
+
     /// `IsoWorld.init()` on the loader (`GameLoadingState`'s
     /// `runInner`, between `IsoWorld.instance = new IsoWorld()` and
     /// `OnGameTimeLoaded`). Returns `Err` where the original throws out of
@@ -383,17 +394,17 @@ impl IsoWorld {
         // `ImportantAreaManager.load` (`important_area_data.bin`).
         // `WorldGenParams.INSTANCE.load()`; a new single-player world keeps
         // the seed the menu set (`MapSpawnSelect.saveGenParams`).
-        if let Some(setup) = &self.new_game_setup {
-            self.world_gen_params = pz_worldgen::WorldGenParams::new(&setup.seed);
-        }
-        let _ = self.world_gen_params.load_file(&self.save_dir);
+        self.load_world_gen_params();
         // `metaGrid.CreateStep1()`.
         let game_map = core_rc.borrow().game_map.clone();
-        let wg = WorldGenBounds {
-            min_x: self.world_gen_params.min_x_cell,
-            min_y: self.world_gen_params.min_y_cell,
-            max_x: self.world_gen_params.max_x_cell,
-            max_y: self.world_gen_params.max_y_cell,
+        let wg = {
+            let params = self.world_gen_params.borrow();
+            WorldGenBounds {
+                min_x: params.min_x_cell,
+                min_y: params.min_y_cell,
+                max_x: params.max_x_cell,
+                max_y: params.max_y_cell,
+            }
         };
         let meta = {
             let fs = lua.fs.borrow();
@@ -816,7 +827,7 @@ impl IsoWorld {
             year,
             core_debug: pz_lua_api::bind_core::shared_core().borrow().debug,
             no_save,
-            world_seed: self.world_gen_params.seed,
+            world_seed: self.world_gen_params.borrow().seed,
             save_config: Some(self.file_in_save("erosion.ini")),
             cache_config: Some(self.cache_dir.join("erosion.ini")),
             media_config: Some(self.game_dir.join("media/data/erosion.ini")),
@@ -918,7 +929,7 @@ impl IsoWorld {
         let mut b = pz_worldgen::basements::Basements::new(Rc::new(pz_fs::GameFs::new(&self.game_dir)));
         b.per_map = pz_lua_api::bind_basements::take_per_map();
         b.load_headers(&mut self.rand);
-        let seed = self.world_gen_params.seed();
+        let seed = self.world_gen_params.borrow().seed();
         let rand = &mut self.rand;
         with_world(|w| {
             if let Some(meta) = w.meta_grid.as_mut() {
@@ -955,7 +966,7 @@ impl IsoWorld {
         };
         let s = sb.borrow();
         let lookup = |k: &str| s.option_by_name(k).and_then(|o| o.config.get_value_as_string().parse::<f64>().ok());
-        let seed = self.world_gen_params.seed_string.clone();
+        let seed = self.world_gen_params.borrow().seed_string.clone();
         let r = pz_worldgen::load(&pz_worldgen::WorldGenSetup {
             fs,
             jar: &jar,
@@ -1151,5 +1162,50 @@ impl IsoWorld {
         println!("triggerEvent OnNewGame");
         lua.trigger_event("OnNewGame", &[pv, sv]);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod world_gen_params_tests {
+    use super::*;
+
+    #[test]
+    fn worlds_reuse_menu_parameters_and_load_saved_seed_and_bounds_in_place() {
+        let shared = pz_lua_api::bind_world_gen_params::shared_world_gen_params();
+        struct Restore(pz_lua_api::bind_world_gen_params::WorldGenParamsRef, pz_worldgen::WorldGenParams);
+        impl Drop for Restore {
+            fn drop(&mut self) { *self.0.borrow_mut() = self.1.clone(); }
+        }
+        let _restore = Restore(shared.clone(), shared.borrow().clone());
+        *shared.borrow_mut() = pz_worldgen::WorldGenParams::new("from menu");
+        shared.borrow_mut().min_x_cell = -21;
+        shared.borrow_mut().max_y_cell = 33;
+        let temp = std::env::temp_dir().join(format!(
+            "pz-worldgen-owner-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir(&temp).unwrap();
+        let mut world = IsoWorld::new(&temp, &temp, temp.clone());
+        assert!(Rc::ptr_eq(&world.world_gen_params, &shared));
+        world.load_world_gen_params();
+        assert_eq!(shared.borrow().seed_string, "from menu");
+        assert_eq!(shared.borrow().min_x_cell, -21);
+        world.new_game_setup = Some(NewGameSetup { spawn: None, seed: "direct entry".into() });
+        world.load_world_gen_params();
+        assert_eq!(shared.borrow().seed_string, "direct entry");
+        assert_eq!(shared.borrow().seed, pz_worldgen::java::string_hash("direct entry"));
+        assert_eq!(shared.borrow().min_x_cell, -21, "direct entry discarded menu bounds");
+        let mut saved = pz_worldgen::WorldGenParams::new("loaded world");
+        saved.min_x_cell = -12;
+        saved.max_y_cell = 24;
+        saved.save_file(&temp, false).unwrap();
+        world.load_world_gen_params();
+        assert!(Rc::ptr_eq(&world.world_gen_params, &shared));
+        assert_eq!(*shared.borrow(), saved, "loaded seed/bounds did not reach the menu owner");
+        drop(world);
+        let next = IsoWorld::new(&temp, &temp, temp.clone());
+        assert!(Rc::ptr_eq(&next.world_gen_params, &shared));
+        assert_eq!(*next.world_gen_params.borrow(), saved, "new world reset the static parameters");
+        std::fs::remove_dir_all(temp).unwrap();
     }
 }

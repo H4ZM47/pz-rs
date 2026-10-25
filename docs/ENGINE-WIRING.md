@@ -30,9 +30,17 @@ Returning to the menu rebuilds script/Lua/UI owners before menu entry;
 native shutdown skips that rebuild. A failed rebuild stops the client
 instead of entering a menu with mixed owners. Character `getModData`
 exposes a live table and saves retained nested mutations. Lua cycles that
-retain character userdata or closures still require VM cycle collection.
+retain character userdata or closures still require tracing support. The
+conservative collector handles unreachable table/key/metatable cycles;
+opaque host references stay rooted and heap statistics remain unported.
 The SQLite writer rejects auto-vacuum files before changing them; writing
 that format needs pointer-map/root relocation support and remains pending.
+
+`WorldGenParams.INSTANCE` now shares the engine's seed and cell bounds.
+Menu changes, saved-file loading and world initialization use that same
+owner. The binding covers the shipped menu's seed/bounds operations; the
+remaining API and post-initialization generator seed updates need parity
+work. Installed compiler string-literal quirks are preserved and tested.
 
 Known integration gaps include action-context/turning phase timing, timed
 actions, character visibility fading, split-screen viewports, weather and
