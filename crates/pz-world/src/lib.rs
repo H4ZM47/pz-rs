@@ -10,6 +10,7 @@ pub mod cell_loader;
 pub mod chunk;
 pub mod defs;
 pub mod erosion_data;
+pub mod fire;
 pub mod fix2x;
 pub mod iso_lot;
 pub mod java;

@@ -464,23 +464,7 @@ pub struct IsoCarBatteryCharger {
     pub charge_rate: f32,
 }
 
-/// `IsoFire`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct IsoFire {
-    pub life: i32,
-    pub spread_delay: i32,
-    pub life_stage: i32,
-    pub life_stage_timer: i32,
-    pub life_stage_duration: i32,
-    pub energy: i32,
-    pub num_flame_particles: i32,
-    pub spread_timer: i32,
-    pub age: i32,
-    pub perm: bool,
-    pub light_radius: i32,
-    pub smoke: bool,
-    pub saved_update_time: i64,
-}
+pub use crate::fire::IsoFire;
 
 /// `IsoMannequin`.
 #[derive(Clone, Debug, PartialEq)]
