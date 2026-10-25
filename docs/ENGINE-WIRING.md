@@ -17,7 +17,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       (`ItemVisual.getDecal`, `getAllDecalNamesForItem`) also need the meta
       population line below (`ClothingDecals`). A character simulation
       that installs its own `ItemLuaEnv` must return these assets from
-      its context (#PRNUM).
+      its context (#130).
 - [ ] Real `MapGroupsHost` via `bind_map_groups::install_host` (#17/#24).
 - [ ] Gamepads: `Gamepads::new(game_dir, cache_dir, c)` (#32).
 - [ ] Sound: build `pz_audio::studio::Studio` from
