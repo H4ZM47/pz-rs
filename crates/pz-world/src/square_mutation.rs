@@ -175,6 +175,10 @@ pub trait RenderSquareHooks {
     /// `invalidateRenderChunkLevels(2112)`, `getCutawayData().invalidateAll()`
     /// and `checkLightingLater_AllPlayers_AllLevels()`.
     fn chunk_buildings_changed(&mut self, _wx: i32, _wy: i32) {}
+
+    /// `IsoGridSquare.setHasFlies` changed the square's flies (after the
+    /// chunk level's invalidation): the render snapshot's flag.
+    fn flies_changed(&mut self, _pos: SquarePos, _flies: bool) {}
 }
 
 /// A Lua event fired by the mutations (`LuaEventManager.triggerEvent`).
@@ -259,15 +263,28 @@ pub trait SquareMutationHooks {
     /// cell and the lighting.
     fn iso_room_removed(&mut self, _room_id: i64) {}
 
-    /// `IsoDeadBody.addToWorld()` (`addCorpse`): `IsoObject.addToWorld`'s
-    /// registries, `CorpseCount` / `FliesSound.corpseAdded`,
-    /// `ObjectIDManager.addObject`, the animal designation zone, the
-    /// reanimation updater and the `deathTime` clamp to the world age.
+    /// `IsoDeadBody.addToWorld()` (`addCorpse`, chunk loading): the parts
+    /// outside pz-world, after `CorpseCount.corpseAdded` and before
+    /// `ObjectIDManager.addObject`, the reanimation updater and the
+    /// `deathTime` clamp ([`crate::dead_body::add_to_world`]):
+    /// `IsoObject.addToWorld`'s registries, `FliesSound.corpseAdded`
+    /// ([`crate::dead_body::flies_sound::FliesSound::corpse_added`]) and
+    /// the animal designation zone.
     fn corpse_added_to_world(&mut self, _pos: SquarePos, _body: &mut IsoDeadBody) {}
 
-    /// `IsoDeadBody.removeFromWorld()` (`removeCorpse`): the reverse of
-    /// [`SquareMutationHooks::corpse_added_to_world`].
+    /// `IsoDeadBody.removeFromWorld()` (`removeCorpse`, corpse rot,
+    /// reanimation, chunk unloading): the reverse of
+    /// [`SquareMutationHooks::corpse_added_to_world`]
+    /// (`FliesSound.corpseRemoved`, the designation zone, the
+    /// `IsoObject.removeFromWorld` registries), after
+    /// `CorpseCount.corpseRemoved` and before `ObjectIDManager.remove`.
     fn corpse_removed_from_world(&mut self, _pos: SquarePos, _body: &mut IsoDeadBody) {}
+
+    /// `GameTime.getWorldAgeHours()`, which `IsoDeadBody.addToWorld`
+    /// clamps the death time to; `None` leaves the death time alone.
+    fn world_age_hours(&self) -> Option<f64> {
+        None
+    }
 
     // ---- `AddWorldInventoryItem` ----
 
@@ -958,7 +975,9 @@ impl MutationEnv<'_> {
         Some(id)
     }
 
-    /// `addCorpse(body, false)` in single player.
+    /// `addCorpse(body, false)` in single player: the body joins the
+    /// square (unless already there) and the world
+    /// ([`crate::dead_body::add_to_world`]).
     pub fn add_corpse(&mut self, pos: SquarePos, body: IsoDeadBody) {
         let burnt = self.sprites.tables.flag.burntOut;
         let Some(sq) = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2) else {
@@ -966,26 +985,24 @@ impl MutationEnv<'_> {
         };
         sq.static_moving.push(body);
         let i = sq.static_moving.len() - 1;
-        self.world
-            .corpse_added_to_world(pos, &mut sq.static_moving[i]);
+        crate::dead_body::add_to_world(self, pos, i);
+        let sq = self.cell.get_grid_square_mut(pos.0, pos.1, pos.2).unwrap();
         sq.burnt_out = false;
         sq.properties.unset_flag(burnt);
         self.invalidate_render(pos, dirty::CORPSE_ADDED);
     }
 
     /// `removeCorpse(body, false)` in single player: the corpse at
-    /// `staticMovingObjects[index]` leaves the world and the square.
+    /// `staticMovingObjects[index]` leaves the world and the square
+    /// ([`crate::dead_body::remove_from_world_and_square`]).
     pub fn remove_corpse(&mut self, pos: SquarePos, index: usize) -> Option<IsoDeadBody> {
         let sq = self.sq_mut(pos)?;
         if index >= sq.static_moving.len() {
             return None;
         }
         self.invalidate_render(pos, dirty::CORPSE_REMOVED);
-        let sq = self.sq_mut(pos).unwrap();
-        let mut body = sq.static_moving.remove(index);
-        self.world.corpse_removed_from_world(pos, &mut body);
-        let sq = self.cell.get_grid_square(pos.0, pos.1, pos.2).unwrap();
-        self.world.lua_event(sq, LuaEvent::ContainerUpdate);
+        let body = crate::dead_body::remove_from_world_and_square(self, pos, index)?;
+        crate::dead_body::container_update(self, pos);
         Some(body)
     }
 

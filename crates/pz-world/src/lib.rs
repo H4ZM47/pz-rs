@@ -11,6 +11,7 @@ pub mod cell_loader;
 pub mod chunk;
 pub mod chunk_data;
 pub mod chunk_vehicles;
+pub mod dead_body;
 pub mod defs;
 pub mod erosion_data;
 pub mod fire;

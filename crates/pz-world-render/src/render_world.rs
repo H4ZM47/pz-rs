@@ -59,6 +59,7 @@ pub fn render_square(
 ) -> RenderSquare {
     let mut rs = RenderSquare::new(sq.x, sq.y, sq.z);
     rs.cut = cutaway_info(w, sq);
+    rs.flies = sq.has_flies;
     for o in &sq.objects {
         let kind = match &o.kind {
             pz_world::ObjectKind::Door(d) => ObjectKind::Door { open: d.open },

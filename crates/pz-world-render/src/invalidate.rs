@@ -285,6 +285,13 @@ impl RenderSquareHooks for RenderInvalidation<'_> {
         self.pending.squares.insert(p);
     }
 
+    /// `setHasFlies`: the render square's `hasFlies()`.
+    fn flies_changed(&mut self, pos: SquarePos, flies: bool) {
+        if let Some(rs) = self.render.squares.get_mut(&pos) {
+            rs.flies = flies;
+        }
+    }
+
     fn clear_water(&mut self, sq: &IsoGridSquare) {
         if let Some(rs) = self.render.squares.get_mut(&(sq.x, sq.y, sq.z)) {
             rs.water = None;

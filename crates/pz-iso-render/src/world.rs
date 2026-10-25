@@ -332,8 +332,10 @@ pub struct RenderSquare {
     /// `getPuddles()`, initialised (`IsoPuddlesGeometry.init`); `None`
     /// draws no puddles.
     pub puddles: Option<crate::puddles::PuddlesGeometry>,
-    /// `hasFlies()`: a rotting corpse lies here (owner: the corpse
-    /// simulation, `IsoDeadBody`'s `setHasFlies` on its square).
+    /// `hasFlies()`: `FliesSound` plays its corpse flies here (owner:
+    /// pz-world's `IsoGridSquare::has_flies`, set by
+    /// `dead_body::flies_sound`; pz-world-render copies it into the
+    /// snapshot).
     pub flies: bool,
 }
 
