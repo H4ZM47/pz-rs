@@ -7,6 +7,9 @@
 //!   draw);
 //! - `vdb_parts.txt`: the part items and part containers of every
 //!   `vehicles.db` row (`BaseVehicle.updateTotalMass` inputs);
+//! - `vdb_draws.txt`: the `Rand` draws (`next(bits)` calls) each row's
+//!   load makes (after the constructor's two), and `vdb_seq.txt` the
+//!   bounds and values in order;
 //! - `vzones.txt`: the vehicle zones of a map directory's `objects.lua` /
 //!   `regions.lua` per cell, and `getVehicleZoneAt` at random points.
 //!
@@ -37,11 +40,21 @@ use pz_world::{IsoMetaGrid, IsoSpriteManager, SpriteTables};
 /// `java.util.Random`.
 struct JavaRandom(u64);
 
+/// `next(bits)` calls since the last reset (the harness counts the same).
+static DRAWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+thread_local! {
+    /// The `nextInt(bound)` / `nextFloat()` calls of a row's load, as the
+    /// harness lists them (`vdb_seq.txt`).
+    static SEQ: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 impl JavaRandom {
     fn new(seed: i64) -> Self {
         JavaRandom((seed as u64 ^ 0x5DEECE66D) & ((1 << 48) - 1))
     }
     fn bits(&mut self, bits: u32) -> i32 {
+        DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.0 = (self.0.wrapping_mul(0x5DEECE66D).wrapping_add(0xB)) & ((1 << 48) - 1);
         (self.0 >> (48 - bits)) as i64 as i32
     }
@@ -67,14 +80,20 @@ impl JavaRandom {
 
 impl FactoryRng for JavaRandom {
     fn next_int(&mut self, bound: i32) -> i32 {
-        JavaRandom::next_int(self, bound)
+        let v = JavaRandom::next_int(self, bound);
+        if bound > 0 {
+            SEQ.with(|q| q.borrow_mut().push(format!("i{bound} {v}")));
+        }
+        v
     }
     fn next_float(&mut self, min: f32, max: f32) -> f32 {
         if max == min {
             return min;
         }
         let (min, max) = if min > max { (max, min) } else { (min, max) };
-        min + (self.bits(24) as f32 / (1 << 24) as f32) * (max - min)
+        let u = self.bits(24) as f32 / (1 << 24) as f32;
+        SEQ.with(|q| q.borrow_mut().push(format!("f {u:?}")));
+        min + u * (max - min)
     }
 }
 
@@ -477,6 +496,8 @@ fn main() {
         .find_map(|l| l.strip_prefix("#tileScale\t"))
         .map_or(2.0, |t| t.parse().unwrap());
     let mut parts = String::new();
+    let mut draws = String::new();
+    let mut draws_seq = String::new();
     let rows = std::fs::read_to_string(vdb_dir.join("rows.tsv")).unwrap_or_default();
     for line in rows.lines().filter(|l| !l.is_empty()) {
         let t: Vec<&str> = line.split('\t').collect();
@@ -491,7 +512,20 @@ fn main() {
             data: std::fs::read(vdb_dir.join(format!("rows/{}.bin", t[0]))).unwrap(),
         };
         *env.rand.borrow_mut() = Some(Box::new(JavaRandom::new(row.id as i64)));
-        let v = match row.load(class, (32.0 * ts, 96.0 * ts), &env) {
+        DRAWS.store(0, std::sync::atomic::Ordering::Relaxed);
+        SEQ.with(|q| q.borrow_mut().clear());
+        env.raw_counts.borrow_mut().clear();
+        // `new BaseVehicle(cell)` before the load: `setKeyId(Rand.Next(100000000))`
+        // and `rust = Rand.Next(0, 2)` (pz-vehicles' constructor makes the same).
+        let _ = pz_inventory::env::ItemEnv::rand_next(&env, 100_000_000);
+        let _ = pz_inventory::env::ItemEnv::rand_next(&env, 2);
+        let loaded = row.load(class, (32.0 * ts, 96.0 * ts), &env);
+        let drawn = DRAWS.load(std::sync::atomic::Ordering::Relaxed);
+        let seq = SEQ.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        if !env.raw_counts.borrow().is_empty() {
+            eprintln!("row {} raw items {:?}", t[0], env.raw_counts.borrow());
+        }
+        let v = match loaded {
             Ok(Some(v)) => v,
             Ok(None) => continue,
             Err(e) => {
@@ -527,6 +561,12 @@ fn main() {
             parts.push('\n');
         }
         writeln!(parts, "vehicle {} plus={}", row.id, f(plus)).unwrap();
+        writeln!(draws, "draws {} n={drawn}", row.id).unwrap();
+        for q in seq {
+            writeln!(draws_seq, "seq {} {q}", row.id).unwrap();
+        }
     }
     std::fs::write(out_dir.join("vdb_parts.txt"), parts).unwrap();
+    std::fs::write(out_dir.join("vdb_draws.txt"), draws).unwrap();
+    std::fs::write(out_dir.join("vdb_seq.txt"), draws_seq).unwrap();
 }

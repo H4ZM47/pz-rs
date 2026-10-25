@@ -1979,12 +1979,18 @@ impl IsoCell {
         ensure_squares(ch, meta);
         let (min, max) = (ch.min_level, ch.max_level);
         for z in min..=max {
+            let mut any = false;
             for y in 0..8 {
                 for x in 0..8 {
                     if let Some(sq) = ch.get_grid_square_mut(x, y, z) {
                         sq.recalc_properties(m);
+                        any = true;
                     }
                 }
+            }
+            // `RecalcProperties` ends with `chunk.checkPhysicsLater(z)`.
+            if any {
+                ch.check_physics_later(z);
             }
         }
         for y in 0..8 {
@@ -2341,6 +2347,9 @@ impl IsoCell {
             return;
         };
         sq.recalc_properties(m);
+        if let Some(ch) = self.chunks.get_mut(&(x.div_euclid(8), y.div_euclid(8))) {
+            ch.check_physics_later(z);
+        }
         let mut bits = Vec::new();
         if let Some(sq) = self.get_grid_square(x, y, z) {
             recalc_all_with_neighbours(sq, meta, m, self, &mut bits);
