@@ -7,6 +7,7 @@
 //! Each exposed class gets a global table (statics, `new`, `class`) and a
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
+pub mod bind_appearance;
 pub mod bind_attached_items;
 pub mod bind_body;
 pub mod bind_body_damage;
@@ -86,6 +87,8 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_body::register_shared(&mut mgr.thread);
     bind_nutrition::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
+    bind_appearance::register(&mut mgr.thread);
+    bind_climate::register(mgr);
     bind_mods::register(mgr);
     bind_input::register(mgr);
     bind_map_symbols::register(mgr);
@@ -102,7 +105,6 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
     bind_joypad::register(mgr);
-    bind_climate::register(mgr);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
     bind_character_sim::install_event_sink(sink.clone());

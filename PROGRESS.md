@@ -38,6 +38,11 @@ Status of the Rust port. Update this file with every merged change.
   `IsoWorld.LoadTileDefinitions` property pass; all 61,229 sprites match the
   original loader locally. Enum and lookup tables are runtime data
   (`SpriteTables`, `ObjectTables`); the jar loader awaits `pz-classfile`.
+  Meta-grid zones (`Zone` and the vehicle/mannequin/world-gen/animal
+  subclasses, chunk zone arrays, Lua-facing registration, lot-priority
+  removal) match the original `IsoMetaGrid` on randomized registrations;
+  the native clipper is an injected trait and the zone tables are runtime
+  input.
 - Chunk save files (`pz_world::save`): `map/<wx>/<wy>.bin` load and save
   (`IsoChunk`, `IsoGridSquare`, `IsoObject` and the object classes chunks
   hold, corpses, containers, mod data, erosion data). Items and ECS
@@ -142,6 +147,16 @@ Status of the Rust port. Update this file with every merged change.
   removal) match the original `IsoMetaGrid` on randomized registrations;
   the native clipper is an injected trait and the zone tables are runtime
   input.
+- `pz-entity`: `GameEntity` component storage and `saveEntity`/`loadEntity`
+  (`ByteBlock` framing, load-in-place), the saved state of every component
+  type found in Build 42 saves (FluidContainer with fluids/filters,
+  Attributes, Durability, SpriteConfig, SpriteOverlayConfig, UiConfig,
+  Script, CraftBench, CraftLogic/DryingCraftLogic, Resources, MetaTag and
+  the data-less ones), meta entities (`entity_data.bin`), and
+  `GameEntityFactory` components from scripts. Checked locally on 7 saves:
+  all 148,039 component blocks (objects, items, meta entities) decode and
+  re-encode byte-identically with fields matching the original's loaded
+  objects.
 - Climate and clock (`pz-core::weather`, `GameTime`): `ClimateManager`
   with its float/colour/bool layers, `ClimateValues`, `WeatherPeriod`,
   `ThunderStorm`, `ClimateForecaster`, `ClimateMoon`, `ErosionSeason`,
@@ -345,6 +360,50 @@ Status of the Rust port. Update this file with every merged change.
   earcut.hpp and the game's `PZClipper` wrapper) in pure Rust. Local
   differential run against the shipped arm64 library: 1.15 million random
   cases bit-identical.
+
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
+
+- Appearance tables and outfit draws (`pz-characters::population`):
+  `ClothingDecals`, `HairStyles`, `BeardStyles`, `VoiceStyles` (JAXB
+  binding rules, mod overrides), `PopTemplateManager` skin lists,
+  `HairOutfitDefinitions`, `OutfitRNG`/`LocationRNG` (`pz-core`),
+  `OutfitManager`/`Outfit`/`ClothingItemReference` with `Randomize`, the
+  random outfit picks and `dressInOutfit`'s clothing choices,
+  `DefaultClothing`, and a `HumanStyles` for `HumanVisual`. Lua bindings
+  (`bind_appearance`). Loaded lists and seeded draws match the original on
+  the installed media (every outfit randomized and dressed on three seeds)
+  and on invented edge-case XML (checked locally).
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
