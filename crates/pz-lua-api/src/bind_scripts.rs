@@ -1405,7 +1405,9 @@ mod tests {
     use pz_kahlua::TableRef;
 
     fn load(tag: &str, files: &[(&str, &str)]) -> Rc<ScriptManager> {
-        let dir = std::env::temp_dir().join(format!("pz-bind-scripts-{}-{tag}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("pz-bind-scripts-{}-{tag}-{n}", std::process::id()));
         for (path, text) in files {
             let p = dir.join(path);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();

@@ -8,7 +8,7 @@ use crate::math::{Vector2, Vector3};
 
 /// Loads `text` as the game's only script file.
 fn load(tag: &str, text: &str) -> ScriptManager {
-    let dir: PathBuf = std::env::temp_dir().join(format!("pz-scripts-vehicles-{tag}-{}", std::process::id()));
+    let dir: PathBuf = unique_temp_dir(&format!("pz-scripts-vehicles-{tag}"));
     let scripts = dir.join("media").join("scripts");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&scripts).unwrap();
@@ -206,4 +206,12 @@ fn templates_copy_into_vehicles_and_loaded_scales() {
     let ts = t.borrow().script.clone().unwrap();
     assert_eq!(ts.borrow().part_count(), 1);
     assert_eq!(ts.borrow().area(0).x, 1.0);
+}
+
+/// A temp dir unique to this call (per-process counter), so parallel tests
+/// never share one.
+fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id()))
 }
