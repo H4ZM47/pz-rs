@@ -18,6 +18,8 @@ use crate::bind_items::LuaInventoryItem;
 use crate::bind_ui::{element_of, UIELEMENT};
 use crate::expose::{bool_arg, enum_value, expose_class, num_arg, str_arg, JavaEnum};
 use pz_anim::{AnimationVariableHandle, AnimationVariableSource, MapVariableSource, VariableValue};
+use pz_characters::population::dress_in_named_outfit;
+use pz_inventory::visual::human::{HumanStyles, HumanVisualOwner};
 use pz_inventory::visual::{HumanVisual, ItemVisual};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -68,7 +70,8 @@ pub struct ModelVisual {
 /// What Lua sets on a `UI3DModel`'s `AnimatedModel`.
 pub struct AnimatedModel {
     pub anim_set_name: String,
-    /// `setOutfitName`: dressed at the next update (`initOutfit`).
+    /// `outfitName`: `setOutfitName` dresses `visual` at once (the
+    /// original's `initOutfit`), so this stays `None`.
     pub outfit_name: Option<String>,
     pub female: bool,
     pub zombie: bool,
@@ -355,10 +358,35 @@ fn worn_item_visual(v: &Value) -> Option<ItemVisual> {
     Some(vis)
 }
 
-/// `setSurvivorDesc`'s copies of the desc's visual and worn items.
-pub fn model_visual_of(desc: &LuaSurvivorDesc) -> ModelVisual {
+/// `AnimatedModel` as its visual's owner (`IHumanVisual`).
+struct ModelOwner {
+    female: bool,
+    zombie: bool,
+    skeleton: bool,
+}
+
+impl HumanVisualOwner for ModelOwner {
+    fn is_female(&self) -> bool {
+        self.female
+    }
+    fn is_zombie(&self) -> bool {
+        self.zombie
+    }
+    fn is_skeleton(&self) -> bool {
+        self.skeleton
+    }
+}
+
+/// `setSurvivorDesc`: the model's visual `copyFrom` the desc's (which
+/// first settles the desc's lazy hair, beard and skin texture, changing
+/// the desc as in the original) and the worn items' visuals.
+pub fn model_visual_of(desc: &mut LuaSurvivorDesc, styles: &dyn HumanStyles) -> ModelVisual {
+    let mut src = std::mem::replace(&mut desc.human_visual, HumanVisual::new(0));
+    let mut human = HumanVisual::new(src.blood.len());
+    human.copy_from(&mut src, desc, styles);
+    desc.human_visual = src;
     ModelVisual {
-        human: desc.human_visual.clone(),
+        human,
         items: desc
             .worn_items
             .items()
@@ -447,11 +475,35 @@ pub fn register(thread: &mut Thread) {
     b.method("setOutfitName", |c| {
         let name = str_arg(c, 1).map(|s| s.to_string());
         let (female, zombie) = (bool_arg(c, 2), bool_arg(c, 3));
+        // `initOutfit` (run at the model's next update in the original):
+        // the model's visual `dressInNamedOutfit`. A model with no visual
+        // yet starts from a fresh one (the original's would be null).
+        let mut visual = model(c, |m| m.visual.take())?.unwrap_or_else(|| ModelVisual {
+            human: HumanVisual::new(pz_characters::character::items::blood_part::MAX),
+            items: Vec::new(),
+            female,
+            zombie,
+            skeleton: false,
+        });
+        visual.female = female;
+        visual.zombie = zombie;
+        let owner = ModelOwner { female, zombie, skeleton: visual.skeleton };
+        let r = crate::bind_appearance::with_dress_context(c.thread, |ctx| {
+            dress_in_named_outfit(&mut visual.human, owner.is_female(), name.as_deref(), &mut visual.items, ctx)
+        });
+        if r.is_none() {
+            visual.items.clear();
+        }
         model(c, |m| {
-            m.outfit_name = name;
+            m.outfit_name = None;
             m.female = female;
             m.zombie = zombie;
+            m.visual = Some(visual);
+            m.model_serial += 1;
         })?;
+        if let Some(Err(e)) = r {
+            return Err(LuaError::runtime(e));
+        }
         Ok(0)
     });
     b.method("setCharacter", |c| {
@@ -475,7 +527,7 @@ pub fn register(thread: &mut Thread) {
             Value::Nil => return Err(npe()),
             _ => desc_arg(c, 1)?,
         };
-        let v = model_visual_of(&desc.borrow());
+        let v = crate::bind_appearance::with_styles(c.thread, |s| model_visual_of(&mut desc.borrow_mut(), s));
         model(c, |m| {
             m.outfit_name = None;
             m.female = v.female;

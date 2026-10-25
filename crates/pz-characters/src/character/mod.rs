@@ -384,6 +384,12 @@ pub struct GameCharacter<I: 'static> {
     pub hit_info_list: Vec<states::swipe::HitInfo>,
     /// `wornClothingCanRagdoll` (no worn item has the `NO_RAGDOLL` tag).
     pub worn_clothing_can_ragdoll: bool,
+    /// `patience` (drawn in `[patienceMin, patienceMax)` by the constructor).
+    pub patience: i32,
+    /// `speakColour` (RGBA).
+    pub speak_colour: [f32; 4],
+    /// `IsoSurvivor.neightbourUpdate`.
+    pub neightbour_update: i32,
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -483,7 +489,34 @@ impl<I: 'static> GameCharacter<I> {
             ragdoll: Default::default(),
             hit_info_list: Vec::new(),
             worn_clothing_can_ragdoll: true,
+            patience: 20,
+            speak_colour: [1.0; 4],
+            neightbour_update: 20,
         }
+    }
+
+    /// `IsoGameCharacter.patienceMin` / `patienceMax`.
+    pub const PATIENCE_MIN: i32 = 20;
+    pub const PATIENCE_MAX: i32 = 150;
+
+    /// `new IsoSurvivor(desc, cell, x, y, z)`'s non-world part, in the
+    /// original's `Rand` order: the `IsoGameCharacter` constructor's
+    /// patience, then `speakColour` and `neightbourUpdate`, with the
+    /// descriptor set (the `setFemale` before it is a no-op: it writes
+    /// through the still-null descriptor). `Dressup` finds no `wornItems`
+    /// yet (they are made after it) and does nothing; `initWornItems` /
+    /// `initAttachedItems` leave both empty. TODO(world, render): the cell,
+    /// position and moving-object list, sprite parts, path finder, chat
+    /// element and state machine.
+    pub fn new_survivor(sm: &ScriptManager, desc: SurvivorDescRef<I>) -> Self {
+        let mut c = Self::new(sm, CharacterKind::Survivor);
+        c.patience = pz_core::random::next_range(Self::PATIENCE_MIN, Self::PATIENCE_MAX);
+        c.descriptor = Some(desc);
+        let ch = || (pz_core::random::next(200) + 55) as f32 / 255.0;
+        let (r, g, b) = (ch(), ch(), ch());
+        c.speak_colour = [r, g, b, 1.0];
+        c.neightbour_update = pz_core::random::next(20);
+        c
     }
 
     /// `instanceof IsoPlayer`.

@@ -11,7 +11,7 @@ use pz_inventory::io::{Reader, Writer};
 use pz_scripts::registry::{RegistryKey, ResourceLocation};
 use pz_scripts::{ScriptManager, ScriptResult};
 
-use pz_inventory::visual::human::{HumanStyles, HumanVisualOwner};
+use pz_inventory::visual::human::HumanVisualOwner;
 use pz_inventory::visual::HumanVisual;
 
 use crate::character::items::blood_part;
@@ -225,21 +225,6 @@ impl<I> HumanVisualOwner for SurvivorDesc<I> {
     }
     fn is_skeleton(&self) -> bool {
         false
-    }
-}
-
-/// STUB [`HumanStyles`] until `HairStyles`, `BeardStyles`,
-/// `HairOutfitDefinitions`, `PopTemplateManager` and `OutfitRNG` are
-/// ported: a set hair or beard style counts as known (so the getters keep
-/// it), an unset one stays unset, and no skins, colours or draws exist.
-pub struct UnportedStyles;
-
-impl HumanStyles for UnportedStyles {
-    fn has_hair_style(&self, _female: bool, name: Option<&str>) -> bool {
-        name.is_some()
-    }
-    fn has_beard_style(&self, name: Option<&str>) -> bool {
-        name.is_some()
     }
 }
 

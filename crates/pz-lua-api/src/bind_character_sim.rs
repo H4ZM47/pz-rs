@@ -25,7 +25,7 @@
 //! TODO(saves).
 
 use crate::bind_characters::{
-    adopt_survivor_desc_value, desc_arg, shared_characters, survivor_desc_value, trait_def_arg, LuaItem,
+    adopt_survivor_desc_value, desc_arg, set_survivor_desc_instance, shared_characters, survivor_desc_value, trait_def_arg, LuaItem,
 };
 use crate::bind_java_util::{class_cast, JavaList, JavaMap};
 use crate::bind_registry::{java_error, key_arg, key_value, shared_script_manager, MOODLE_TYPE_CLASS};
@@ -896,19 +896,23 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     for class in [ISO_PLAYER_CLASS, ISO_SURVIVOR_CLASS, ISO_ZOMBIE_CLASS, ISO_ANIMAL_CLASS] {
         expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
     }
-    // `new IsoSurvivor(desc, cell, x, y, z)` (character creation's avatar),
-    // the simulation part only: the descriptor is set. TODO(world): the
-    // cell and position, `setFemale`, `desc.setInstance`, sprite parts,
-    // `Dressup`, worn/attached item init and the `OnCreateSurvivor` /
-    // `OnCreateLivingCharacter` events.
+    // `new IsoSurvivor(desc, cell, x, y, z)` (character creation's avatar):
+    // `GameCharacter::new_survivor`, `desc.setInstance(this)`, then the
+    // `OnCreateSurvivor` and `OnCreateLivingCharacter` events.
     {
         let sm = sm.clone();
         expose_class(thread, ISO_SURVIVOR_CLASS, Some(ISO_GAME_CHARACTER_CLASS)).ctor(move |c| {
             let d = desc_arg(c, 0)?;
-            adopt_survivor_desc_value(&c.arg(0));
-            let mut chr = LuaGameCharacter::new(&sm, CharacterKind::Survivor);
-            chr.descriptor = Some(d);
-            Ok(c.push(character_value(&Rc::new(RefCell::new(chr)))))
+            let desc_value = c.arg(0);
+            adopt_survivor_desc_value(&desc_value);
+            let chr = Rc::new(RefCell::new(LuaGameCharacter::new_survivor(&sm, d.clone())));
+            let v = character_value(&chr);
+            set_survivor_desc_instance(&d, v.clone());
+            if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
+                sink(c.thread, "OnCreateSurvivor", std::slice::from_ref(&v));
+                sink(c.thread, "OnCreateLivingCharacter", &[v.clone(), desc_value]);
+            }
+            Ok(c.push(v))
         });
     }
     b.method("getStats", |c| {

@@ -21,11 +21,18 @@
 //! Not exposed yet: textures, `HashMap`/
 //! `LinkedHashMap` statics (`characterTraitDefinitions`, `observationMap`,
 //! `CharacterTraits.getTraits`), boxed-number constants of
-//! `CharacterTraits`, colour objects (`ImmutableColor`, `Color`), outfits and
-//! item visuals, Java arrays (`CreateFamily`, `CreateSurvivorGroup`), saving
-//! and loading. TODO(Texture, ImmutableColor, Outfits, saves).
+//! `CharacterTraits`, `HumanVisual`'s outfit and `ItemVisual` returns,
+//! Java arrays (`CreateFamily`, `CreateSurvivorGroup`), saving and loading.
+//! TODO(Texture, saves).
+//!
+//! `HumanVisual`'s lazy getters (hair/beard models and colours, skin
+//! texture and colour) use the shared population tables
+//! ([`crate::bind_appearance::with_styles`]); `SurvivorDesc.HairCommonColors`
+//! and `TrouserCommonColors` are live lists of `ImmutableColor` / `Color`.
 
 use crate::bind_core::LuaColorInfo;
+use crate::bind_item_visual::{ImmutableColor, IMMUTABLE_COLOR_CLASS};
+use crate::bind_misc_classes::{immutable_color_arg, immutable_color_value};
 use crate::bind_java_util::{class_cast, JavaList};
 use crate::bind_registry::{
     java_error, key_arg, key_value, shared_script_manager, CHARACTER_PROFESSION_CLASS, CHARACTER_TRAIT_CLASS,
@@ -69,6 +76,44 @@ pub const CHARACTER_GENDER_CLASS: &str = "zombie.characters.CharacterGender";
 thread_local! {
     static SHARED: RefCell<Option<Rc<RefCell<Characters>>>> = const { RefCell::new(None) };
     static HANDLES: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::new());
+    /// `SurvivorDesc.instance` (the character object), by descriptor.
+    static INSTANCES: RefCell<HashMap<usize, Value>> = RefCell::new(HashMap::new());
+}
+
+/// `SurvivorDesc.HairCommonColors`: a live `ArrayList<ImmutableColor>`.
+fn hair_common_colors_value(chars: &Rc<RefCell<Characters>>) -> Value {
+    let (r, w) = (chars.clone(), chars.clone());
+    let list = JavaList::live(
+        move || {
+            let chars = r.borrow();
+            chars
+                .survivor_desc
+                .hair_common_colors
+                .iter()
+                .map(|k| immutable_color_value(ImmutableColor { r: k.r, g: k.g, b: k.b, a: k.a }))
+                .collect()
+        },
+        Some(Box::new(move |v: Vec<Value>| -> LuaResult<()> {
+            let cols = v
+                .iter()
+                .map(|x| match x {
+                    Value::Object(o) => o.as_any().downcast_ref::<ImmutableColor>().copied(),
+                    _ => None,
+                }
+                .ok_or_else(|| class_cast(x, IMMUTABLE_COLOR_CLASS)))
+                .collect::<LuaResult<Vec<_>>>()?;
+            w.borrow_mut().survivor_desc.hair_common_colors =
+                cols.into_iter().map(|k| pz_characters::ImmutableColor { r: k.r, g: k.g, b: k.b, a: k.a }).collect();
+            Ok(())
+        })),
+    );
+    Value::Object(Rc::new(list))
+}
+
+/// `SurvivorDesc.setInstance(instance)` from Rust (the `IsoSurvivor`
+/// constructor).
+pub fn set_survivor_desc_instance(desc: &Rc<RefCell<LuaSurvivorDesc>>, instance: Value) {
+    INSTANCES.with(|m| m.borrow_mut().insert(Rc::as_ptr(desc) as usize, instance));
 }
 
 /// Make `chars` the state `register_all` binds.
@@ -964,6 +1009,67 @@ fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &R
         ch.borrow_mut().add_hair_color(ci.r, ci.g, ci.b, ci.a);
         Ok(0)
     });
+    // The final `HairCommonColors` / `TrouserCommonColors` lists (filled by
+    // Lua's `addHairColor` / `addTrouserColor`); `getCommonHairColor`
+    // returns the same list.
+    let hair = hair_common_colors_value(chars);
+    b.field("HairCommonColors", hair.clone());
+    let (r, w) = (chars.clone(), chars.clone());
+    let trousers = JavaList::live(
+        move || {
+            let chars = r.borrow();
+            chars.survivor_desc.trouser_common_colors.iter().map(|k| crate::bind_misc_classes::color_value_of(k.r, k.g, k.b, k.a)).collect()
+        },
+        Some(Box::new(move |v: Vec<Value>| -> LuaResult<()> {
+            let cols = v
+                .iter()
+                .map(|x| crate::bind_misc_classes::color_of(x).ok_or_else(|| class_cast(x, "zombie.core.Color")))
+                .collect::<LuaResult<Vec<_>>>()?;
+            w.borrow_mut().survivor_desc.trouser_common_colors =
+                cols.into_iter().map(|[r, g, b, a]| pz_characters::Color { r, g, b, a }).collect();
+            Ok(())
+        })),
+    );
+    b.field("TrouserCommonColors", Value::Object(Rc::new(trousers)));
+    b.method("getCommonHairColor", move |c| Ok(c.push(hair.clone())));
+    b.static_fn("getRandomSkinColor", |c| {
+        let [r, g, bl] = pz_characters::population::random_skin_color();
+        Ok(c.push(crate::bind_misc_classes::color_value_of(r, g, bl, 1.0)))
+    });
+    b.method("setInstance", |c| {
+        let (d, v) = (dobj(c, |o| o.desc.clone())?, c.arg(1));
+        INSTANCES.with(|m| {
+            let id = Rc::as_ptr(&d) as usize;
+            if v.is_nil() {
+                m.borrow_mut().remove(&id);
+            } else {
+                m.borrow_mut().insert(id, v);
+            }
+        });
+        Ok(0)
+    });
+    b.method("getInstance", |c| {
+        let d = dobj(c, |o| o.desc.clone())?;
+        let v = INSTANCES.with(|m| m.borrow().get(&(Rc::as_ptr(&d) as usize)).cloned());
+        Ok(c.push(v.unwrap_or_default()))
+    });
+    b.method("dressInNamedOutfit", |c| {
+        let d = dobj(c, |o| o.desc.clone())?;
+        let name = opt_string(c, 1);
+        let visuals = crate::bind_appearance::with_dress_context(c.thread, |ctx| {
+            let mut desc = d.borrow_mut();
+            let female = desc.is_female();
+            let mut hv = std::mem::replace(&mut desc.human_visual, pz_inventory::visual::HumanVisual::new(0));
+            let mut v = Vec::new();
+            let r = pz_characters::population::dress_in_named_outfit(&mut hv, female, name.as_deref(), &mut v, ctx);
+            desc.human_visual = hv;
+            r.map(|()| v)
+        })
+        .unwrap_or_else(|| Ok(Vec::new()))
+        .map_err(LuaError::runtime)?;
+        crate::bind_item_visual::set_worn_items_from_item_visuals(&mut d.borrow_mut(), &visuals).map_err(java_error)?;
+        Ok(0)
+    });
     let (s, ch) = (sm.clone(), chars.clone());
     b.ctor(move |c| {
         let mut chars = ch.borrow_mut();
@@ -1206,11 +1312,37 @@ fn visual<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut LuaSurvivorDesc) -> R) -> L
     with_this::<HumanVisualObject, _>(c, |o| f(&mut o.0.borrow_mut()))
 }
 
+/// Runs `f` on the visual of a `HumanVisual` object with its owner (the
+/// descriptor) and the real style lookups ([`crate::bind_appearance::with_styles`]).
+fn visual_styled<R>(
+    c: &NativeCall<'_>,
+    f: impl FnOnce(&mut pz_inventory::visual::HumanVisual, &LuaSurvivorDesc, &dyn pz_inventory::visual::human::HumanStyles) -> R,
+) -> LuaResult<R> {
+    let desc = with_this::<HumanVisualObject, _>(c, |o| o.0.clone())?;
+    Ok(crate::bind_appearance::with_styles(c.thread, |styles| {
+        let mut d = desc.borrow_mut();
+        let mut hv = std::mem::replace(&mut d.human_visual, pz_inventory::visual::HumanVisual::new(0));
+        let r = f(&mut hv, &d, styles);
+        d.human_visual = hv;
+        r
+    }))
+}
+
+fn rgb_value(c: Option<pz_inventory::visual::Rgb>) -> Value {
+    c.map_or(Value::Nil, |[r, g, b]| immutable_color_value(ImmutableColor { r, g, b, a: 1.0 }))
+}
+
+/// An `ImmutableColor` argument as the visual's RGB (`null` stays unset).
+fn rgb_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<pz_inventory::visual::Rgb>> {
+    match c.arg(i) {
+        Value::Nil => Ok(None),
+        v => immutable_color_arg(c, i).map(|k| Some([k.r, k.g, k.b])).ok_or_else(|| class_cast(&v, IMMUTABLE_COLOR_CLASS)),
+    }
+}
+
 fn register_human_visual(thread: &mut Thread) {
     use pz_inventory::visual::human::HumanVisualOwner;
     use pz_inventory::visual::HumanVisual;
-    // STUB(HairStyles, BeardStyles, PopTemplateManager): see `UnportedStyles`.
-    let styles = &pz_characters::UnportedStyles;
     let b = expose_class(thread, HUMAN_VISUAL_CLASS, None);
     // `HumanVisual.isFemale()` etc. ask the owner (`IHumanVisual`).
     b.method("isFemale", |c| {
@@ -1234,6 +1366,24 @@ fn register_human_visual(thread: &mut Thread) {
         visual(c, |d| d.human_visual.set_skin_texture_index(v))?;
         Ok(0)
     });
+    b.method("getSkinTexture", |c| {
+        let name = visual_styled(c, |hv, d, s| hv.get_skin_texture(d, s))?;
+        // `textures.get(skinTexture)` on an empty skin list throws.
+        let name = name.ok_or_else(|| LuaError::Runtime {
+            message: "Index 0 out of bounds for length 0".into(),
+            class: "java.lang.IndexOutOfBoundsException",
+        })?;
+        Ok(c.push(name))
+    });
+    b.method("getSkinColor", |c| {
+        let v = visual_styled(c, |hv, _, s| hv.get_skin_color(s))?;
+        Ok(c.push(rgb_value(Some(v))))
+    });
+    b.method("setSkinColor", |c| {
+        let v = rgb_arg(c, 1)?;
+        visual(c, |d| d.human_visual.set_skin_color(v))?;
+        Ok(0)
+    });
     b.method("getBodyHairIndex", |c| {
         let v = visual(c, |d| d.human_visual.get_body_hair_index())?;
         Ok(c.push(v))
@@ -1248,14 +1398,28 @@ fn register_human_visual(thread: &mut Thread) {
         visual(c, |d| d.human_visual.set_skin_texture_name(v.as_deref()))?;
         Ok(0)
     });
+    type GetColor = fn(&mut HumanVisual, &dyn pz_inventory::visual::human::HumanStyles) -> Option<pz_inventory::visual::Rgb>;
+    type SetColor = fn(&mut HumanVisual, Option<pz_inventory::visual::Rgb>);
+    let colors: [(&str, GetColor, &str, SetColor); 4] = [
+        ("getHairColor", |v, s| v.get_hair_color(s), "setHairColor", HumanVisual::set_hair_color),
+        ("getBeardColor", |v, s| v.get_beard_color(s), "setBeardColor", HumanVisual::set_beard_color),
+        ("getNaturalHairColor", |v, s| v.get_natural_hair_color(s), "setNaturalHairColor", HumanVisual::set_natural_hair_color),
+        ("getNaturalBeardColor", |v, s| v.get_natural_beard_color(s), "setNaturalBeardColor", HumanVisual::set_natural_beard_color),
+    ];
+    for (get, g, set, st) in colors {
+        b.method(get, move |c| {
+            let v = visual_styled(c, |hv, _, s| g(hv, s))?;
+            Ok(c.push(rgb_value(v)))
+        });
+        b.method(set, move |c| {
+            let v = rgb_arg(c, 1)?;
+            visual(c, |d| st(&mut d.human_visual, v))?;
+            Ok(0)
+        });
+    }
     b.method("getHairModel", |c| {
-        let v = visual(c, |d| {
-            let mut hv = std::mem::replace(&mut d.human_visual, HumanVisual::new(0));
-            let m = hv.get_hair_model(d, styles);
-            d.human_visual = hv;
-            opt_value(m.as_deref())
-        })?;
-        Ok(c.push(v))
+        let v = visual_styled(c, |hv, d, s| hv.get_hair_model(d, s))?;
+        Ok(c.push(opt_value(v.as_deref())))
     });
     b.method("setHairModel", |c| {
         let v = opt_string(c, 1);
@@ -1263,13 +1427,8 @@ fn register_human_visual(thread: &mut Thread) {
         Ok(0)
     });
     b.method("getBeardModel", |c| {
-        let v = visual(c, |d| {
-            let mut hv = std::mem::replace(&mut d.human_visual, HumanVisual::new(0));
-            let m = hv.get_beard_model(d, styles);
-            d.human_visual = hv;
-            opt_value(m.as_deref())
-        })?;
-        Ok(c.push(v))
+        let v = visual_styled(c, |hv, d, s| hv.get_beard_model(d, s))?;
+        Ok(c.push(opt_value(v.as_deref())))
     });
     b.method("setBeardModel", |c| {
         let v = opt_string(c, 1);
@@ -1303,12 +1462,59 @@ fn register_human_visual(thread: &mut Thread) {
         let v = visual(c, |d| d.human_visual.has_body_visual_from_item_type(&t))?;
         Ok(c.push(v))
     });
-    // TODO(ItemVisual Lua object): returns the removed `ItemVisual`.
+    // TODO(ItemVisual Lua object): the body visual methods return the
+    // `ItemVisual` (nil here).
     b.method("removeBodyVisualFromItemType", |c| {
         let t = opt_string(c, 1).ok_or_else(npe)?;
         visual(c, |d| d.human_visual.remove_body_visual_from_item_type(&t))?;
         Ok(c.push(Value::Nil))
     });
+    b.method("addBodyVisualFromItemType", |c| {
+        let t = opt_string(c, 1).ok_or_else(npe)?;
+        let sm = shared_script_manager();
+        let name = defs::find_item(&sm, &t).and_then(|i| i.borrow().clothing_item.clone());
+        add_body_visual(c, name)
+    });
+    for name in ["addBodyVisualFromClothingItemName", "addBodyVisual"] {
+        b.method(name, |c| add_body_visual(c, opt_string(c, 1)));
+    }
+}
+
+/// `addBodyVisualFromClothingItemName`: the script item for the clothing
+/// item, its ready asset, no body visual of that name yet; then a
+/// randomized `ClothingItemReference` synched into the new visual.
+fn add_body_visual(c: &mut NativeCall<'_>, clothing_name: Option<String>) -> LuaResult<usize> {
+    let Some(name) = clothing_name.filter(|n| !n.trim().is_empty()) else {
+        return Ok(c.push(Value::Nil));
+    };
+    let desc = with_this::<HumanVisualObject, _>(c, |o| o.0.clone())?;
+    let sm = shared_script_manager();
+    let Some(script) = defs::get_item_for_clothing_item(&sm, &name) else {
+        return Ok(c.push(Value::Nil));
+    };
+    let (full_type, asset) = {
+        let s = script.borrow();
+        (s.full_name(), s.clothing_item.clone())
+    };
+    let r = crate::bind_appearance::with_dress_context(c.thread, |ctx| {
+        let Some(item) = asset.as_deref().and_then(|a| ctx.clothing.get(a)) else {
+            return Ok(false);
+        };
+        let mut d = desc.borrow_mut();
+        if d.human_visual.body_visuals.iter().any(|v| v.clothing_item_name == name) {
+            return Ok(false);
+        }
+        let mut r = pz_characters::population::ClothingItemReference { item_guid: Some(item.guid.clone()), ..Default::default() };
+        r.randomize(ctx.outfit)?;
+        let mut v = pz_inventory::visual::ItemVisual::new(&full_type);
+        pz_characters::population::dress::synch_with_outfit(&mut v, &r, item);
+        d.human_visual.body_visuals.push(v);
+        Ok::<bool, String>(true)
+    });
+    match r {
+        Some(Err(e)) => Err(LuaError::runtime(e)),
+        _ => Ok(c.push(Value::Nil)),
+    }
 }
 
 fn worn<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut LuaSurvivorDesc) -> R) -> LuaResult<R> {
