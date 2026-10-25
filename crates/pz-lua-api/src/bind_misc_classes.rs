@@ -1493,6 +1493,7 @@ pub fn register(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
     register_system_disabler(thread);
     register_color(thread, jar);
     register_immutable_color(thread, jar);
+    crate::bind_colors::register(thread, jar);
     register_vector2(thread);
     register_vector3f(thread);
     register_capability(thread, jar);
