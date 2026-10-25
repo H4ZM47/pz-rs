@@ -146,6 +146,21 @@ pub struct ModelOutlines {
     behind_player: bool,
     /// `setPlayerRenderData`: the local player's meshes.
     player: Option<Vec<ModelDraw>>,
+    /// The player's part of the screen in GL window coordinates
+    /// (`IsoCamera.getScreenLeft/Top/Width/Height`), the viewport of the
+    /// thickening and blit passes; `None` for the whole screen.
+    pub view: Option<[u32; 4]>,
+}
+
+/// `IsoCamera.getScreenLeft/Top/Width/Height(playerIndex)` for a split
+/// screen of `num_players` on a `width` x `height` window. The top is used
+/// as GL's `glViewport` y, as `ModelOutlines.endFrame` uses it.
+pub fn player_screen(player: u32, num_players: u32, width: u32, height: u32) -> [u32; 4] {
+    let left = if player == 1 || player == 3 { width / 2 } else { 0 };
+    let top = if player == 2 || player == 3 { height / 2 } else { 0 };
+    let w = if num_players > 1 { width / 2 } else { width };
+    let h = if num_players > 2 { height / 2 } else { height };
+    [left, top, w, h]
 }
 
 impl ModelOutlines {
@@ -158,6 +173,7 @@ impl ModelOutlines {
             color: [0.0; 4],
             behind_player: false,
             player: None,
+            view: None,
         }
     }
 
@@ -229,6 +245,10 @@ impl ModelOutlines {
     pub fn end_frame(&mut self, out: &mut Vec<DrawCmd>) {
         if !self.dirty {
             return;
+        }
+        // glViewport(viewX, viewY, viewW, viewH) for every pass.
+        if let Some([x, y, width, height]) = self.view {
+            out.push(DrawCmd::Viewport { x, y, width, height });
         }
         out.push(DrawCmd::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
         out.push(DrawCmd::OutlineThicken {

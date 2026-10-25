@@ -67,11 +67,13 @@ pub struct DeadBody {
     pub alpha: f32,
     /// `IsoAnimal` size (1 for people).
     pub animal_size: f32,
+    /// `animalAnimSet`: an animal's anim set (`pig`, `cow`, ...).
+    pub animal_anim_set: Option<String>,
 }
 
 impl DeadBody {
     /// `BodyParams.init(IsoDeadBody)`'s anim set, state and track time.
-    pub fn anim_state(&self) -> (&'static str, &'static str, f32) {
+    pub fn anim_state(&self) -> (&str, &'static str, f32) {
         let mut set = "zombie";
         let mut state = if self.being_grappled {
             "grappled"
@@ -89,6 +91,10 @@ impl DeadBody {
             set = "player";
             state = "deadbody";
             track_time = 1.0;
+        }
+        if self.animal {
+            set = self.animal_anim_set.as_deref().unwrap_or("");
+            state = "deadbody";
         }
         (set, state, track_time)
     }
@@ -124,6 +130,12 @@ pub struct BodyVisualKey {
 /// `getBodyKey` for a human body.
 pub fn body_key(b: &DeadBody, v: &BodyVisualKey) -> String {
     let (set, state, track_time) = b.anim_state();
+    posed_body_key(b, v, set, state, track_time, false)
+}
+
+/// `getBodyKey` of `BodyParams` posed with `set`/`state` at `track_time`,
+/// standing or not (`init(IsoMannequin)` stands).
+pub fn posed_body_key(b: &DeadBody, v: &BodyVisualKey, set: &str, state: &str, track_time: f32, standing: bool) -> String {
     let mut c = Checksummer::default();
     c.byte(b.dir);
     c.int(
@@ -157,10 +169,54 @@ pub fn body_key(b: &DeadBody, v: &BodyVisualKey) -> String {
         c.int((blood * 100.0) as i32);
     }
     c.bool(b.fall_on_front);
-    c.bool(false);
+    c.bool(standing);
     c.bool(b.outside);
     c.bool(b.room);
     // initAmbient: always white for the atlas.
+    for _ in 0..3 {
+        c.unit(((1.0f32 * 10.0) as i32) as f32 / 10.0);
+    }
+    c.int(track_time as i32);
+    for l in &b.lights {
+        if l.radius <= 0 {
+            continue;
+        }
+        c.int((l.x as f32 - b.x) as i32);
+        c.int((l.y as f32 - b.y) as i32);
+        c.int((l.z as f32 - b.z) as i32);
+        l.rgb.iter().for_each(|&x| c.unit(x));
+        c.byte(l.radius as u8);
+    }
+    c.finish()
+}
+
+/// `getBodyKey` for an animal body (`AnimalVisual`): the model's name,
+/// size and skin texture instead of the human visual and clothing.
+pub fn animal_body_key(b: &DeadBody, model_name: Option<&str>, skin_texture: Option<&str>, attached: &[AttachedKey]) -> String {
+    let (set, state, track_time) = b.anim_state();
+    let mut c = Checksummer::default();
+    c.byte(b.dir);
+    c.int(
+        (pz_anim::math::pzmath::wrap_range(b.angle, 0.0, std::f32::consts::PI * 2.0) * 57.295_776)
+            as i32,
+    );
+    c.str(model_name);
+    c.bool(b.female);
+    c.bool(b.skeleton);
+    c.str(Some(set));
+    c.str(Some(state));
+    c.int((b.animal_size * 100.0) as i32);
+    c.str(skin_texture);
+    for (s, p, m, blood) in attached {
+        c.str(s.as_deref());
+        c.str(p.as_deref());
+        c.str(m.as_deref());
+        c.int((blood * 100.0) as i32);
+    }
+    c.bool(b.fall_on_front);
+    c.bool(false);
+    c.bool(b.outside);
+    c.bool(b.room);
     for _ in 0..3 {
         c.unit(((1.0f32 * 10.0) as i32) as f32 / 10.0);
     }

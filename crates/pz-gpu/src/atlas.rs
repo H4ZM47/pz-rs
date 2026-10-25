@@ -95,9 +95,10 @@ impl Gpu {
             } => {
                 self.ensure_atlas(*id, *width, *height);
                 f.atlas_stack
-                    .push((f.target, f.mvp, f.viewport, self.state.clone()));
+                    .push((f.target, f.mvp, f.viewport, f.origin, self.state.clone()));
                 f.target = PassTarget::Atlas(*id);
                 f.viewport = (*width, *height);
+                f.origin = (0, 0);
                 f.passes.push(PassDesc {
                     target: f.target,
                     clear: *clear,
@@ -106,10 +107,11 @@ impl Gpu {
                 });
             }
             DrawCmd::AtlasEnd => {
-                if let Some((target, mvp, viewport, st)) = f.atlas_stack.pop() {
+                if let Some((target, mvp, viewport, origin, st)) = f.atlas_stack.pop() {
                     f.target = target;
                     f.mvp = mvp;
                     f.viewport = viewport;
+                    f.origin = origin;
                     self.state = st;
                 }
             }
