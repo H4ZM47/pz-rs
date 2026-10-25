@@ -2,7 +2,7 @@
 //! sprites, seam neighbours, cutaway and occlusion inputs, plus a
 //! [`CutawayWorld`] over the result.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use pz_iso_render::cell::LevelSquares;
 use pz_iso_render::cutaways::BuildingDef;
@@ -41,6 +41,12 @@ pub struct RenderWorld {
     /// `perPlayerData.onScreenChunks` for cutaways; every loaded chunk
     /// when empty.
     pub on_screen: Vec<(i32, i32)>,
+    /// Squares built here whose puddle geometry was never initialised: a
+    /// new square's `getPuddles()` starts with `recalc = true`, and
+    /// `recalcIfNeeded` inits it on first use. Resolved by
+    /// [`crate::PendingRender::apply`] (via [`RenderWorld::init_puddles`])
+    /// before the frame draws.
+    pub puddles_recalc: BTreeSet<(i32, i32, i32)>,
 }
 
 /// The render square of world square `sq`: its objects and the cutaway
@@ -232,6 +238,7 @@ impl RenderWorld {
         for sq in ch.squares() {
             self.squares
                 .insert((sq.x, sq.y, sq.z), render_square(w, sq, cache, tex));
+            self.puddles_recalc.insert((sq.x, sq.y, sq.z));
         }
         self.refresh_seams(w, wx, wy);
         (ch.min_level..=ch.max_level).map(|z| (wx, wy, z)).collect()
@@ -272,6 +279,8 @@ impl RenderWorld {
             rs.cut.dark_multi = old.cut.dark_multi;
             rs.water = old.water;
             rs.puddles = old.puddles;
+        } else {
+            self.puddles_recalc.insert((x, y, z));
         }
         rs.seam = seam_neighbours(w, sq);
         self.squares.insert((x, y, z), rs);
@@ -322,6 +331,8 @@ impl RenderWorld {
         }
         self.squares
             .retain(|&(x, y, _), _| (x.div_euclid(8), y.div_euclid(8)) != (wx, wy));
+        self.puddles_recalc
+            .retain(|&(x, y, _)| (x.div_euclid(8), y.div_euclid(8)) != (wx, wy));
     }
 
     /// Recomputes [`SeamNeighbours`] for chunk `(wx, wy)` and for the

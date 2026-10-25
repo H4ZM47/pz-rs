@@ -276,8 +276,10 @@ registered):
       player's lighting frame `check_changed_buildings(lighting, caches,
       pending, num_players)`; `pending.vispoly` / `physics` are drained by
       `VisibilityPolygon2` and chunk physics (`updatePhysicsForLevel`)
-      (#99). Initial puddle geometry of freshly built chunks is not built
-      yet (`RenderWorld::init_puddles` per square on load).
+      (#99). Squares built on chunk load (`build_chunk`, new squares in
+      `rebuild_square`) queue in `render_world.puddles_recalc` and get
+      their puddle geometry in the next `apply` (`recalc = true` on a new
+      `getPuddles()`).
 - [ ] Engine implements `SquareMutationHooks`: Lua `OnObjectAboutToBeRemoved`
       / `OnTileRemoved` / `OnContainerUpdate`, the `WorldCall` registries of
       `addToWorld` / `removeFromWorld` (entities, process lists, lampposts,

@@ -110,7 +110,8 @@ impl PendingRender {
     /// Rebuilds the render squares and lighting inputs of what changed
     /// since the last call; run once per frame before the lighting frames
     /// and chunk recording. Chunks with changed squares rescan their light
-    /// switches. Then the queued squares' puddle geometry is
+    /// switches. Then the queued squares' puddle geometry, and that of
+    /// squares newly built in `render` ([`RenderWorld::puddles_recalc`]), is
     /// re-initialised from the world (`IsoPuddlesGeometry.recalcIfNeeded`,
     /// which the original runs when the square's puddles are next drawn,
     /// within this frame's chunk recording or puddle pass, reading its
@@ -161,7 +162,9 @@ impl PendingRender {
         for (wx, wy) in touched {
             lighting.sync_chunk_lights(w, wx, wy);
         }
-        for p in std::mem::take(&mut self.puddles) {
+        let mut recalc = std::mem::take(&mut self.puddles);
+        recalc.append(&mut render.puddles_recalc);
+        for p in recalc {
             render.init_puddles(w, puddles.regions, p, puddles.perf_puddles);
         }
         self.cutaways_changed = false;
