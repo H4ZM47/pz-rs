@@ -1229,3 +1229,7 @@ registered):
       default `meta_grid` (`host::WorldMetaGrid`) already reads the grid
       installed with `bind_world::set_meta_grid`; pass it when installing
       players (#223).
+- [ ] Map cell priority: `WorldMapHost.map_files` implementing
+      `pz_worldmap::triangulate::MapFilesInfo` over the current
+      `MapFiles` (directory names in priority order, `hasCell300`), so
+      lower-priority map directories' cells are clipped (#NEW4).
