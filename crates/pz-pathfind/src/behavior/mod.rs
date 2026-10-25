@@ -314,7 +314,8 @@ pub fn closest_point_on_path<G: GetSquare>(
                         let env = with_cell.as_ref().unwrap();
                         let view = MoverCollideView(&*m);
                         let sq = env.sq(s1.x, s1.y, s1.z).unwrap_or(s1);
-                        env.test_collide_adjacent(sq, Some(&view), dx, dy, 0).blocked
+                        env.test_collide_adjacent(sq, Some(&view), dx, dy, 0)
+                            .blocked
                     }
                     Some(m) => {
                         // Movers need the IsoCell for doors, windows and
