@@ -2052,6 +2052,7 @@ dependencies = [
  "pz-text",
  "pz-ui",
  "pz-vehicles",
+ "pz-video",
  "pz-world",
  "regex",
 ]
@@ -2206,6 +2207,10 @@ dependencies = [
  "pz-scripts",
  "pz-world",
 ]
+
+[[package]]
+name = "pz-video"
+version = "0.1.0"
 
 [[package]]
 name = "pz-world"

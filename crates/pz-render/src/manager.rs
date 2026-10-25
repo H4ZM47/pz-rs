@@ -32,6 +32,9 @@ pub struct TextureData {
     pub image: Option<ImageData>,
     pub mask: Option<Rc<BooleanGrid>>,
     pub ready: bool,
+    /// Bumped when the pixels are respecified after creation
+    /// ([`TextureManager::tex_image`]); a backend re-uploads on change.
+    pub version: u32,
 }
 
 impl TextureData {
@@ -293,6 +296,57 @@ impl TextureManager {
         self.whole_texture(id, name)
     }
 
+    /// `new VideoTexture(file, width, height)`: `Texture(width, height, 0)`
+    /// (a blank power-of-two image) with texture coordinates 0..1, since
+    /// every frame respecifies the image at exactly `width` x `height`
+    /// ([`Self::tex_image`]). `path` must be unique.
+    pub fn video_texture(&mut self, path: &str, width: i32, height: i32) -> Texture {
+        let img = ImageData::new(width, height);
+        let id = self.add_data(Self::data_from_image(path, Some(img), 0));
+        let mut t = self.whole_texture(id, "");
+        t.x_start = 0.0;
+        t.y_start = 0.0;
+        t.x_end = 1.0;
+        t.y_end = 1.0;
+        t
+    }
+
+    /// `glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, ...,
+    /// GL_UNSIGNED_BYTE, rgba)` on texture `id` after `GL_NEAREST`
+    /// filtering and clamping were set: replaces the image with `rgba`
+    /// (`width * height * 4` bytes, rows of `width` pixels).
+    pub fn tex_image(&mut self, id: u32, width: i32, height: i32, rgba: Vec<u8>) {
+        let Some(d) = self.data.get_mut(id as usize) else { return };
+        let img = ImageData {
+            width,
+            height,
+            width_hw: width,
+            height_hw: height,
+            solid: true,
+            data: MipLevel { width, height, pixels: rgba },
+            mask: None,
+            preserve_transparent_color: false,
+        };
+        d.flags = (d.flags | flags::FILTER_MIN_NEAREST | flags::FILTER_MAG_NEAREST | flags::CLAMP_TO_EDGE) & !flags::MIPMAPS;
+        d.width = width;
+        d.height = height;
+        d.width_hw = width;
+        d.height_hw = height;
+        d.image = Some(img);
+        d.ready = true;
+        d.version = d.version.wrapping_add(1);
+    }
+
+    /// `TextureID.destroy()`: frees the image; the texture draws nothing
+    /// afterwards.
+    pub fn destroy_data(&mut self, id: u32) {
+        if let Some(d) = self.data.get_mut(id as usize) {
+            d.image = None;
+            d.ready = false;
+            d.version = d.version.wrapping_add(1);
+        }
+    }
+
     /// `Texture.getWhite()`: a 32x32 white texture, also registered as
     /// `white.png`, `media/white.png` and `media/ui/white.png`.
     pub fn white(&mut self) -> Texture {
@@ -359,8 +413,21 @@ impl TextureManager {
                 mask: img.mask.take().map(Rc::new),
                 image: Some(img),
                 ready: true,
+                version: 0,
             },
-            None => TextureData { path: path.to_string(), flags, width: 0, height: 0, width_hw: 0, height_hw: 0, solid: true, image: None, mask: None, ready: false },
+            None => TextureData {
+                path: path.to_string(),
+                flags,
+                width: 0,
+                height: 0,
+                width_hw: 0,
+                height_hw: 0,
+                solid: true,
+                image: None,
+                mask: None,
+                ready: false,
+                version: 0,
+            },
         }
     }
 

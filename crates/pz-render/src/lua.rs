@@ -9,15 +9,23 @@ use pz_kahlua::LuaObject;
 use crate::Texture;
 
 pub const TEXTURE_CLASS: &str = "zombie.core.textures.Texture";
+pub const VIDEO_TEXTURE_CLASS: &str = "zombie.core.textures.VideoTexture";
 
 /// A [`Texture`] as Lua sees it. Setters such as `setOffsetX` mutate it in
-/// place, as on the Java object.
+/// place, as on the Java object. The second field is the Java class:
+/// [`TEXTURE_CLASS`], or a subclass such as [`VIDEO_TEXTURE_CLASS`] that
+/// adds methods of its own and inherits the `Texture` ones.
 #[derive(Debug)]
-pub struct LuaTexture(pub RefCell<Texture>);
+pub struct LuaTexture(pub RefCell<Texture>, pub &'static str);
 
 impl LuaTexture {
     pub fn new(t: Texture) -> Self {
-        LuaTexture(RefCell::new(t))
+        LuaTexture(RefCell::new(t), TEXTURE_CLASS)
+    }
+
+    /// A texture object of a `Texture` subclass.
+    pub fn with_class(t: Texture, class: &'static str) -> Self {
+        LuaTexture(RefCell::new(t), class)
     }
 
     /// A copy of the texture.
@@ -28,7 +36,7 @@ impl LuaTexture {
 
 impl LuaObject for LuaTexture {
     fn class_name(&self) -> &str {
-        TEXTURE_CLASS
+        self.1
     }
     fn to_lua_string(&self) -> String {
         // `Texture.toString()`.
@@ -39,7 +47,11 @@ impl LuaObject for LuaTexture {
         self
     }
     fn super_classes(&self) -> &[&'static str] {
-        &["zombie.asset.Asset"]
+        if self.1 == TEXTURE_CLASS {
+            &["zombie.asset.Asset"]
+        } else {
+            &[TEXTURE_CLASS, "zombie.asset.Asset"]
+        }
     }
 }
 

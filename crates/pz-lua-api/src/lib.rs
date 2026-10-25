@@ -54,6 +54,7 @@ pub mod bind_server;
 pub mod bind_map_groups;
 pub mod bind_world;
 pub mod bind_vehicles;
+pub mod bind_video;
 pub mod events;
 pub mod expose;
 pub mod global_objects;
@@ -86,6 +87,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     );
     bind_fs::register(mgr);
     bind_render::register(mgr);
+    bind_video::register(mgr);
     bind_save::register(mgr);
     // Text before UI: bind_text's UIFont is canonical.
     bind_text::register(&mut mgr.thread);
