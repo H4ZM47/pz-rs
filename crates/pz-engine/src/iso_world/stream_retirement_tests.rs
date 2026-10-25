@@ -96,7 +96,10 @@ impl Fixture {
                 )),
                 None,
             )));
-        square.world_objects.push(1);
+        square
+            .world_objects
+            .borrow_mut()
+            .push_object(&square.objects[0].ref_handle());
         let mut chunk = IsoChunk::new(10, 10);
         chunk.set_square(0, 0, 0, Some((square).into()));
         // Discard construction pins while membership still owns the object, so
@@ -295,6 +298,15 @@ fn whole_object_retirement_releases_parents_only_at_stream_or_frame_boundaries()
 }
 
 fn retire_object_path(cell: &mut IsoCell, operation: &str) {
+    if matches!(operation, "remove" | "replace" | "clear") {
+        // The raw world list independently owns its entries. These probes
+        // exercise final-owner cleanup, so remove that membership while main
+        // membership still pins the object, before retiring its main slot.
+        let square = cell.get_grid_square(80, 80, 0).unwrap();
+        let world = square.borrow().world_objects.clone();
+        let entries = world.borrow_mut().take_entries();
+        drop(entries);
+    }
     match operation {
         "remove" => drop(
             cell.get_grid_square_mut(80, 80, 0)
@@ -366,7 +378,9 @@ fn whole_square_retirement_keeps_retained_payload_and_releases_after_both_guards
                             (square.x, square.y, square.z, square.room_id),
                             (80, 80, 0, 932)
                         );
-                        assert_eq!(square.world_objects, [1]);
+                        let world = square.world_objects.borrow();
+                        assert_eq!(world.len(), 1);
+                        assert!(world.contains_object(&square.objects[0].ref_handle()));
                         assert_eq!(
                             square.objects.len(),
                             1,
@@ -435,6 +449,10 @@ fn stopped_chunk_keeps_borrowed_square_cleanup_queued_while_user_retains_it() {
         let square = with_world(|w| w.cell.as_ref().unwrap().get_grid_square(80, 80, 0).unwrap());
         // The item now lives only in the square's pending host cleanup. A
         // retained square must not keep that queue stranded after chunk stop.
+        let world = square.borrow().world_objects.clone();
+        let entries = world.borrow_mut().take_entries();
+        drop(entries); // Main membership still owns the object here.
+        drop(world);
         drop(square.borrow_mut().remove_object_slot(0));
         if mutable {
             let held = square.borrow_mut();
@@ -465,7 +483,7 @@ fn stopped_chunk_keeps_borrowed_square_cleanup_queued_while_user_retains_it() {
             .unwrap();
         assert_eq!(drops.get(), 1);
         assert!(weak_item.upgrade().is_none());
-        assert_eq!(square.borrow().world_objects, [1]);
+        assert!(square.borrow().world_objects.borrow().is_empty());
         assert!(square.borrow().objects.is_empty());
     }
 }

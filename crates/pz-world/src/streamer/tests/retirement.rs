@@ -53,7 +53,10 @@ fn bag_chunk(
         ))
         .into(),
     );
-    square.world_objects.push(1);
+    square
+        .world_objects
+        .borrow_mut()
+        .push_object(&square.objects[0].ref_handle());
     let mut chunk = IsoChunk::new(wx, wy);
     chunk.set_square(0, 0, 0, Some((square).into()));
     (chunk, weak)

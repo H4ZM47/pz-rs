@@ -885,8 +885,16 @@ fn main() {
                 }
                 _ => {
                     drop(o);
-                    let id = sq.borrow_mut().remove_object_slot(i).borrow().id;
-                    sq.borrow_mut().world_objects.retain(|&w| w != id);
+                    let removed = sq.borrow_mut().remove_object_slot(i);
+                    let id = removed.borrow().id;
+                    let entry = sq
+                        .borrow()
+                        .world_objects
+                        .borrow_mut()
+                        .remove_first_object(&o_owner);
+                    if let Some(pz_world::WorldObjectEntry::Object(owner)) = entry {
+                        sq.borrow_mut().retire_object(ObjectSlot::retain(&owner));
+                    }
                     sq.borrow_mut().special_objects.retain(|&w| w != id);
                     aligned.1 += 1;
                 }

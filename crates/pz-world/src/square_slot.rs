@@ -46,6 +46,12 @@ impl SquareSlot {
     pub fn try_archive_copy(&self) -> Result<Self, crate::SquareArchiveError> {
         crate::try_archive_copy_square(&self.square)
     }
+    pub fn try_archive_copy_with_policy(
+        &self,
+        policy: crate::archive::ForeignArchivePolicy,
+    ) -> Result<Self, crate::SquareArchiveError> {
+        crate::try_archive_copy_square_with_policy(&self.square, policy)
+    }
 }
 impl From<IsoGridSquare> for SquareSlot {
     fn from(square: IsoGridSquare) -> Self {

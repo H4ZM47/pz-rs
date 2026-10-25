@@ -89,8 +89,12 @@ fn retained_floor_object_survives_removal_moves_drop_and_same_id_replacement() {
     let actual = handle(&original);
     let weak = Rc::downgrade(&actual);
     let mut square = IsoGridSquare::new(0, 0, 0);
-    square.objects.push((original).into());
-    square.world_objects.push(1);
+    let slot = crate::ObjectSlot::new(original);
+    square
+        .world_objects
+        .borrow_mut()
+        .push_object(&slot.ref_handle());
+    square.objects.push(slot);
     let mut chunk = IsoChunk::new(0, 0);
     chunk.set_square(0, 0, 0, Some((square).into()));
     let mut chunks = vec![chunk];
@@ -128,8 +132,12 @@ fn retained_floor_object_survives_removal_moves_drop_and_same_id_replacement() {
 #[test]
 fn archive_square_copies_in_distinct_chunks_have_independent_floor_allocations() {
     let mut square = IsoGridSquare::new(0, 0, 0);
-    square.objects.push((object(1)).into());
-    square.world_objects.push(1);
+    let slot = crate::ObjectSlot::new(object(1));
+    square
+        .world_objects
+        .borrow_mut()
+        .push_object(&slot.ref_handle());
+    square.objects.push(slot);
     let original = handle(&square.objects[0].borrow());
     let copy_square = square.try_archive_copy().unwrap();
     let copy = handle(&copy_square.objects[0].borrow());

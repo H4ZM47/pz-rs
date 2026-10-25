@@ -21,6 +21,7 @@ use crate::objects::{IsoObject, IsoWorldInventoryObject, ObjectKind, ObjectName}
 use crate::save::object_io::UNREGISTERED_SPRITE_ID;
 use crate::sprite::IsoSpriteManager;
 use crate::square::IsoDirections;
+use crate::world_objects::{WorldObjectEntry, WorldObjectsReadError};
 
 /// `IsoChunk.invalidateRenderChunkLevel` flags of `AddWorldInventoryItem`.
 pub const WORLD_ITEM_ADDED: u64 = 68;
@@ -79,31 +80,57 @@ impl IsoGridSquare {
     /// `getTotalWeightOfItemsOnFloor()`: the sum of `getUnequippedWeight()`
     /// (`weight`, given the world object, which holds a dropped item's
     /// fluid container: `ItemOwner::world_item_fluid_amount`) of the items
-    /// of `worldObjects`. `weight` is a synchronous Rust calculation;
-    /// release the item guard before invoking Lua through an `item_ref`.
+    /// of the independent `worldObjects` list, including duplicate and detached
+    /// objects. Each iteration reads the live list's current size and entry.
+    /// `weight` is a synchronous Rust calculation, never a Lua callback: the
+    /// object and item read guards cover it, but no list or floor guard does.
     pub fn get_total_weight_of_items_on_floor(
         &self,
         weight: impl Fn(&IsoObject, &InventoryItem) -> f32,
-    ) -> f32 {
+    ) -> Result<f32, WorldObjectsReadError> {
         let mut total = 0.0f32;
-        for id in &self.world_objects {
-            let Some(o) = self
-                .objects
-                .iter()
-                .map(ObjectSlot::borrow)
-                .find(|o| o.id == *id)
-            else {
-                continue;
-            };
-            if let ObjectKind::WorldInventory(w) = &o.kind {
-                let w = w.borrow();
-                let item = w.item.borrow_item();
-                if let Some(i) = item {
-                    total += weight(&o, &i);
+        let mut index = 0;
+        loop {
+            let entry = {
+                let list = self
+                    .world_objects
+                    .try_borrow()
+                    .map_err(|_| WorldObjectsReadError::BorrowedList { index })?;
+                if index >= list.len() {
+                    break;
                 }
+                list.entry(index).expect("entry below current list size")
+            };
+            let owner = match entry {
+                WorldObjectEntry::Object(owner) => owner,
+                WorldObjectEntry::Foreign(pz_kahlua::Value::Nil) => {
+                    return Err(WorldObjectsReadError::NullEntry { index });
+                }
+                WorldObjectEntry::Foreign(_) => {
+                    return Err(WorldObjectsReadError::WrongType { index });
+                }
+            };
+            let object = owner
+                .try_borrow()
+                .map_err(|_| WorldObjectsReadError::BorrowedObject { index })?;
+            let ObjectKind::WorldInventory(floor) = &object.kind else {
+                return Err(WorldObjectsReadError::WrongType { index });
+            };
+            let floor_owner = floor.ref_handle();
+            let item = floor_owner
+                .try_borrow()
+                .map_err(|_| WorldObjectsReadError::BorrowedFloor { index })?
+                .item
+                .item_ref();
+            if let Some(item) = item {
+                let item = item
+                    .try_borrow()
+                    .map_err(|_| WorldObjectsReadError::BorrowedItem { index })?;
+                total += weight(&object, &item);
             }
+            index += 1;
         }
-        total
+        Ok(total)
     }
 }
 
@@ -288,23 +315,14 @@ impl MutationEnv<'_> {
         let mut sq = sq_owner.borrow_mut();
         obj.id = sq.new_object_id();
         let id = obj.id;
-        sq.objects.push((ObjectSlot::new(obj)).into());
-        sq.world_objects.push(id);
+        let slot = ObjectSlot::new(obj);
+        let object = slot.ref_handle();
+        sq.objects.push(slot);
+        sq.world_objects.borrow_mut().push_object(&object);
         drop(sq);
         let r = ObjectRef { pos, id };
-        super::lifecycle::add_to_world(self, r);
-        {
-            let MutationEnv { cell, world, .. } = self;
-            if let Some(o) = cell.get_grid_square(pos.0, pos.1, pos.2).and_then(|sq| {
-                sq.borrow()
-                    .objects
-                    .iter()
-                    .find(|o| o.borrow().id == id)
-                    .map(ObjectSlot::ref_handle)
-            }) {
-                world.designation_zone_item_on_ground(r, o);
-            }
-        }
+        super::lifecycle::add_to_world_handle(self, r, &object);
+        self.world.designation_zone_item_on_ground(r, object);
         if let Some(rs) = render_square(self.cell, pos) {
             self.invalidate_render(rs, WORLD_ITEM_ADDED);
         }

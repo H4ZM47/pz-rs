@@ -197,8 +197,11 @@ fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
         None,
     );
     o.sprite_id_override = Some(object_io::UNREGISTERED_SPRITE_ID);
-    sq.world_objects.push(o.id);
-    sq.objects.push((o).into());
+    let slot = ObjectSlot::new(o);
+    sq.world_objects
+        .borrow_mut()
+        .push_object(&slot.ref_handle());
+    sq.objects.push(slot);
     let tree = IsoTree {
         size: 1,
         log_yield: 3,
@@ -285,7 +288,11 @@ fn chunk_round_trip() {
     assert_eq!(sq.objects[1].borrow().key_id, 77);
     let sq1_owner = back.get_grid_square(1, 0, 0).unwrap();
     let sq1 = sq1_owner.borrow();
-    assert_eq!(sq1.world_objects.len(), 1);
+    assert_eq!(sq1.world_objects.borrow().len(), 1);
+    assert!(sq1
+        .world_objects
+        .borrow()
+        .contains_object(&sq1.objects[0].ref_handle()));
     assert_eq!(sq1.static_moving.len(), 1);
     assert_eq!(
         sq1.static_moving[0]
@@ -376,8 +383,11 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
         None,
     );
     obj.sprite_id_override = Some(object_io::UNREGISTERED_SPRITE_ID);
-    sq.objects.push((obj).into());
-    sq.world_objects.push(id);
+    let slot = ObjectSlot::new(obj);
+    sq.world_objects
+        .borrow_mut()
+        .push_object(&slot.ref_handle());
+    sq.objects.push(slot);
     chunk.set_square(0, 0, 0, Some((sq).into()));
     let live = floor(&chunk);
     let mut snapshot = IsoChunk::new(10, 20);
@@ -534,6 +544,7 @@ fn load_transforms() {
             .unwrap()
             .borrow()
             .world_objects
+            .borrow()
             .len(),
         1
     );
@@ -552,7 +563,7 @@ fn load_transforms() {
     let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
     let sq1_owner = back.get_grid_square(1, 0, 0).unwrap();
     let sq1 = sq1_owner.borrow();
-    assert!(sq1.world_objects.is_empty());
+    assert!(sq1.world_objects.borrow().is_empty());
     assert!(!sq1
         .objects
         .iter()
@@ -1166,4 +1177,110 @@ fn whole_object_owner_live_base_changes_save_and_archive_snapshot_is_independent
     assert_eq!(back.mod_data, actual.borrow().mod_data);
     assert_ne!(archive.objects[0].borrow().key_id, 991);
     assert_ne!(archive.objects[0].borrow().components[0].data, [4, 5, 6]);
+}
+
+#[test]
+fn world_membership_save_uses_actual_owners_and_fresh_load_normalizes_raw_list() {
+    use crate::world_objects::WorldObjectEntry;
+    use std::rc::Rc;
+
+    let m = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let context = ctx(&m, &tables, &settings, &AllItems);
+    let floor = |xoff, item_id| {
+        // Equal numeric object IDs are deliberately distinct allocations.
+        let mut object = IsoObject::new(
+            7,
+            ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+                IsoWorldInventoryObject {
+                    xoff,
+                    yoff: 0.5,
+                    zoff: 0.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    item: blob(4, item_id, &[]).into(),
+                    drop_time: 0.0,
+                    ignore_remove_sandbox: false,
+                    extended_placement: false,
+                },
+            )),
+            None,
+        );
+        object.sprite_id_override = Some(object_io::UNREGISTERED_SPRITE_ID);
+        ObjectSlot::new(object)
+    };
+    let a = floor(0.25, 11);
+    let b = floor(0.75, 22);
+    let detached = floor(0.5, 33);
+    let actual_a = a.ref_handle();
+    let actual_b = b.ref_handle();
+    let detached_owner = detached.ref_handle();
+    assert!(!Rc::ptr_eq(&actual_a, &actual_b));
+    let mut square = IsoGridSquare::new(80, 160, 0);
+    square.objects.push(a);
+    square.objects.push(b);
+    square.objects.push(ObjectSlot::retain(&actual_a));
+    {
+        let mut world = square.world_objects.borrow_mut();
+        world.push_object(&detached_owner);
+        world.push_entry(WorldObjectEntry::Foreign(pz_kahlua::Value::Nil));
+        world.push_object(&actual_a);
+        world.push_entry(WorldObjectEntry::Foreign(pz_kahlua::Value::Num(123.0)));
+        world.push_object(&actual_a);
+        world.push_object(&actual_a);
+        assert_eq!(world.len(), 6);
+        assert!(!world.contains_object(&actual_b));
+    }
+
+    let mut raw_bytes = Writer::new();
+    chunk_file::save_square(&mut raw_bytes, &context, &square).unwrap();
+    assert_eq!(square.world_objects.borrow().len(), 6);
+    let raw_entries = square.world_objects.borrow_mut().take_entries();
+    square.world_objects.borrow_mut().push_object(&actual_a);
+    let mut clean_bytes = Writer::new();
+    chunk_file::save_square(&mut clean_bytes, &context, &square).unwrap();
+    assert_eq!(raw_bytes.buf, clean_bytes.buf);
+    let clean_entries = square.world_objects.borrow_mut().take_entries();
+    drop(clean_entries);
+    for entry in raw_entries {
+        square.world_objects.borrow_mut().push_entry(entry);
+    }
+
+    // Only the main list produces records, in main order. The distinct same-ID
+    // B gets no world flag; A's duplicate main occurrence gets its own record.
+    let mut records = Reader::new(&raw_bytes.buf);
+    ErosionSquareData::load(&mut records).unwrap();
+    assert_eq!(records.i8().unwrap(), 1 | 4);
+    for (id, flag) in [(1, 4), (2, 0), (3, 4)] {
+        assert_eq!(records.i8().unwrap(), flag);
+        assert!(load_object(&mut records, &context, WORLD_VERSION, id)
+            .unwrap()
+            .is_some());
+    }
+
+    let mut loaded = IsoGridSquare::new(80, 160, 0);
+    let mut reader = Reader::new(&raw_bytes.buf);
+    chunk_file::load_square(&mut reader, &context, WORLD_VERSION, &mut loaded).unwrap();
+    assert_eq!(reader.pos, raw_bytes.buf.len());
+    assert_eq!(loaded.objects.len(), 3);
+    let world = loaded.world_objects.borrow();
+    assert_eq!(world.len(), 2);
+    for (world_index, main_index) in [(0, 0), (1, 2)] {
+        let Some(WorldObjectEntry::Object(actual)) = world.entry(world_index) else {
+            panic!("fresh load kept a foreign/null world entry")
+        };
+        assert!(Rc::ptr_eq(
+            &actual,
+            &loaded.objects[main_index].ref_handle()
+        ));
+        assert!(!Rc::ptr_eq(&actual, &actual_a));
+        assert!(!Rc::ptr_eq(&actual, &detached_owner));
+    }
+    assert!(!world.contains_object(&loaded.objects[1].ref_handle()));
+    assert!(!loaded.objects[0].ptr_eq_ref(&loaded.objects[2].ref_handle()));
+    drop(world);
+    let mut round_trip = Writer::new();
+    chunk_file::save_square(&mut round_trip, &context, &loaded).unwrap();
+    assert_eq!(round_trip.buf, raw_bytes.buf);
 }

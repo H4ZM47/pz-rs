@@ -560,6 +560,15 @@ pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
         add_to_world_on(env, &r);
     }
 }
+pub(super) fn add_to_world_handle(env: &mut MutationEnv<'_>, r: ObjectRef, object: &IsoObjectRef) {
+    add_to_world_on(
+        env,
+        &Receiver {
+            location: r,
+            object: object.clone(),
+        },
+    );
+}
 pub(super) fn remove_from_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
     if let Some(r) = receiver(env, r) {
         remove_from_world_on(env, &r);
@@ -605,8 +614,9 @@ pub(super) fn remove_from_square_handle(
     let sq_owner = env.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)?;
     let mut sq = sq_owner.borrow_mut();
     if world_item.0 {
-        if let Some(i) = sq.world_objects.iter().position(|&w| w == r.id) {
-            sq.world_objects.remove(i);
+        let removed = sq.world_objects.borrow_mut().remove_first_object(object);
+        if let Some(crate::world_objects::WorldObjectEntry::Object(owner)) = removed {
+            sq.retire_object(ObjectSlot::retain(&owner));
         }
     }
     let removed = sq

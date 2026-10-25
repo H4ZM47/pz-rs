@@ -344,7 +344,9 @@ pub fn load_square(
                     }
                 }
                 let is_world_item = matches!(obj.kind, ObjectKind::WorldInventory(_));
-                sq.objects.push((ObjectSlot::new(obj)).into());
+                let slot = ObjectSlot::new(obj);
+                let actual = slot.ref_handle();
+                sq.objects.push(slot);
                 if special {
                     sq.special_objects.push(id);
                 }
@@ -354,7 +356,7 @@ pub fn load_square(
                     if !is_world_item {
                         return err("ClassCastException: world object flag on a non-item");
                     }
-                    sq.world_objects.push(id);
+                    sq.world_objects.borrow_mut().push_object(&actual);
                 }
             }
         }
@@ -497,12 +499,14 @@ pub fn save_square(w: &mut Writer, ctx: &SaveCtx<'_>, sq: &IsoGridSquare) -> Sav
         if n >= 4 {
             w.i16(n as i16);
         }
-        for o in sq.objects.iter().map(ObjectSlot::borrow) {
+        for slot in &sq.objects {
+            let actual = slot.ref_handle();
+            let o = actual.borrow();
             let mut f = 0i8;
             if sq.special_objects.contains(&o.id) {
                 f |= 2;
             }
-            if sq.world_objects.contains(&o.id) {
+            if sq.world_objects.borrow().contains_object(&actual) {
                 f |= 4;
             }
             w.i8(f);

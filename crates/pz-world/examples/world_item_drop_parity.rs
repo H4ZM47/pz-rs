@@ -333,8 +333,17 @@ fn main() {
                 }
                 _ => {
                     drop(o);
-                    let id = sq.borrow_mut().remove_object_slot(i).borrow().id;
-                    sq.borrow_mut().world_objects.retain(|&w| w != id);
+                    let removed = sq.borrow_mut().remove_object_slot(i);
+                    let id = removed.borrow().id;
+                    let entry = sq
+                        .borrow()
+                        .world_objects
+                        .borrow_mut()
+                        .remove_first_object(&o_owner);
+                    if let Some(pz_world::WorldObjectEntry::Object(owner)) = entry {
+                        sq.borrow_mut()
+                            .retire_object(pz_world::ObjectSlot::retain(&owner));
+                    }
                     sq.borrow_mut().special_objects.retain(|&w| w != id);
                 }
             }
@@ -495,9 +504,20 @@ fn main() {
         write!(s, " inv={}", inv.borrow().items.len()).unwrap();
         if let Some(dp) = drop_sq {
             let sq = cell.get_grid_square(dp.0, dp.1, dp.2).unwrap();
-            let id = *sq.borrow().world_objects.last().unwrap();
-            let idx = sq.borrow().object_index(id).unwrap();
-            let o_owner = sq.borrow().objects[idx].ref_handle();
+            let list = sq.borrow().world_objects.clone();
+            let entry = {
+                let list = list.borrow();
+                list.entry(list.len() - 1).unwrap()
+            };
+            let pz_world::WorldObjectEntry::Object(o_owner) = entry else {
+                panic!("placed item must be an actual world object");
+            };
+            let idx = sq
+                .borrow()
+                .objects
+                .iter()
+                .position(|o| o.ptr_eq_ref(&o_owner))
+                .unwrap();
             let o = o_owner.borrow();
             let ObjectKind::WorldInventory(wi) = &o.kind else {
                 panic!()
@@ -543,9 +563,11 @@ fn main() {
                 " objFluid={} itemFluid={item_comps} idx={idx}/{} world={} special={} floorW={}",
                 o.has_components,
                 sq.borrow().objects.len(),
-                sq.borrow().world_objects.len(),
+                sq.borrow().world_objects.borrow().len(),
                 sq.borrow().special_objects.len(),
-                h(sq.borrow().get_total_weight_of_items_on_floor(weight))
+                h(sq.borrow()
+                    .get_total_weight_of_items_on_floor(weight)
+                    .unwrap())
             )
             .unwrap();
         }

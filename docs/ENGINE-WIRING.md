@@ -129,12 +129,33 @@ Square copies now use the explicit fallible `try_archive_copy` operation;
 `Clone` and value equality are no longer offered for live square slots/bodies.
 The copy checks item, bag, attachment and codec-table trees before allocation,
 reports borrowed owners or cycles, and bounds recursive depth and occurrences.
-Repeated main-list references map to one copied object; equal IDs and equal
-bodies do not merge distinct owners. Item/container leaves keep their existing
+Repeated main-list and independent world-list references map to one copied
+object, including detached entries; equal IDs and equal bodies do not merge
+distinct owners. Item/container leaves keep their existing
 per-object value-copy policy, including omitted opaque parent/source-grid links;
 cross-object child sharing is not remapped. Pending host roots are excluded.
-This internal synchronous operation does not implement native save/reload,
-arbitrary Lua graph cloning, or independent heterogeneous world lists.
+Foreign list values are rejected by default; explicit
+`RetainForeignHandles` preserves their exact source VM referents without
+rewriting references hidden inside them. This internal synchronous operation
+does not implement native save/reload or arbitrary Lua graph cloning.
+Each square now owns an independent heterogeneous `worldObjects` allocation.
+Native entries retain entire actual objects; raw entries can preserve null,
+foreign values, duplicates, detached objects and non-floor objects. Raw list
+changes do not repair main/special membership or backlinks. Placement inserts
+the same owner into main and world lists. Floor removal through the mutation
+lifecycle removes only the first matching actual world entry before the first
+main entry. Other high-level adapters still have virtual-dispatch gaps. Weight reads
+the live list in order, counts duplicates/detached items and reports cast/null
+failures instead of skipping malformed members. Save still walks only main
+records and writes actual-pointer world-membership flags; special membership
+still uses legacy numeric IDs. Fresh reload normalizes raw world-list anomalies
+through those records. Direct-load partial mutations remain intact.
+Mutators return removed and rejected owners for destruction outside enclosing
+host guards. A capture-free descriptor traces each actual stored slot once,
+moves entries out while collector guards are held, and defers their destruction
+until every graph borrow ends. Unregistered owners remain
+conservative. Production Lua list userdata/caches and registration retries
+still need their bridge, together with actual retained Lua square/body owners.
 The streamer retains removed chunk payloads until both world and sprite-manager
 borrows have ended, including queued-save errors and shutdown. Failed unload
 callbacks retain the removed payload without publishing a partial pending save.

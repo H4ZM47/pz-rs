@@ -61,8 +61,9 @@ pub struct IsoGridSquare {
     /// `erosion` (`ErosionData.Square`, created on first use), saved first
     /// in the square record; `None` saves as uninitialised.
     pub erosion: Option<ErosionSquareData>,
-    /// `worldObjects` (the `IsoWorldInventoryObject`s), by identity.
-    pub world_objects: Vec<ObjectId>,
+    /// The independent stored `worldObjects` ArrayList. Raw membership need
+    /// not agree with the main objects list or item/object backlinks.
+    pub world_objects: crate::WorldObjectsRef,
     /// `staticMovingObjects`: corpses.
     pub static_moving: Vec<IsoDeadBody>,
     /// `table` (square mod data).
@@ -110,7 +111,16 @@ impl IsoGridSquare {
     /// graphs are rejected without changing the source. This operation runs
     /// synchronously without callbacks; it is not a native save/reload clone.
     pub fn try_archive_copy(&self) -> Result<Self, crate::SquareArchiveError> {
-        let objects = crate::archive::copy_objects(self)?;
+        self.try_archive_copy_with_policy(crate::archive::ForeignArchivePolicy::RejectForeign)
+    }
+
+    /// Explicitly retaining foreign handles can share opaque VM state with the
+    /// source. It does not rewrite references hidden inside foreign values.
+    pub fn try_archive_copy_with_policy(
+        &self,
+        policy: crate::archive::ForeignArchivePolicy,
+    ) -> Result<Self, crate::SquareArchiveError> {
+        let copied = crate::archive::copy_objects(self, policy)?;
         Ok(Self {
             x: self.x,
             y: self.y,
@@ -120,12 +130,12 @@ impl IsoGridSquare {
             associated_building: self.associated_building,
             has_set_iso_world_region: self.has_set_iso_world_region.clone(),
             iso_world_region: self.iso_world_region.clone(),
-            objects,
+            objects: copied.objects,
             retired_objects: Default::default(),
             special_objects: self.special_objects.clone(),
             next_object_id: self.next_object_id,
             erosion: self.erosion.clone(),
-            world_objects: self.world_objects.clone(),
+            world_objects: copied.world_objects,
             static_moving: self.static_moving.clone(),
             mod_data: self.mod_data.clone(),
             overlay_done: self.overlay_done,
@@ -161,7 +171,7 @@ impl IsoGridSquare {
             special_objects: Vec::new(),
             next_object_id: 0,
             erosion: None,
-            world_objects: Vec::new(),
+            world_objects: crate::WorldObjects::new_ref(),
             static_moving: Vec::new(),
             mod_data: None,
             overlay_done: false,

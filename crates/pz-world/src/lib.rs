@@ -40,11 +40,15 @@ pub mod square_slot;
 pub mod streamer;
 pub mod tile_overlays;
 pub mod tiledef;
+pub mod world_objects;
 pub mod world_state;
 pub mod zone_save;
 pub mod zones;
 
-pub use archive::{try_archive_copy_square, ArchiveLocation, SquareArchiveError};
+pub use archive::{
+    try_archive_copy_square, try_archive_copy_square_with_policy, ArchiveLocation,
+    ForeignArchivePolicy, SquareArchiveError,
+};
 pub use chunk::{
     ChunkGenerationStatus, ChunkGenerationStatusSet, ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare,
 };
@@ -66,6 +70,7 @@ pub use square::{
     SpecialObject, SquareHooks, SquareOwnerQueries, ThumpableInfo, VisionEnv, VisionResult,
 };
 pub use square_slot::{RetiredWorldOwners, SquareRef, SquareSlot};
+pub use world_objects::{WorldObjectEntry, WorldObjects, WorldObjectsReadError, WorldObjectsRef};
 pub use world_state::{ObjectHooks, PowerSettings, WorldState};
 pub use zones::{
     ClipperOps, PropValue, RoomTone, VehicleZone, Zone, ZoneError, ZoneGeometryType, ZoneId,

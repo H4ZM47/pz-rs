@@ -43,7 +43,11 @@ fn archive_maps_duplicate_whole_objects_without_merging_equal_distinct_owners() 
     square.objects.push(ObjectSlot::retain(&actual));
     // Same values and ID, but an independent actual object allocation.
     square.objects.push(floor(&bag));
-    square.world_objects.extend([7, 7]);
+    square.world_objects.borrow_mut().push_object(&actual);
+    square.world_objects.borrow_mut().push_object(&actual);
+    let detached = floor(&bag).ref_handle();
+    square.world_objects.borrow_mut().push_object(&detached);
+    square.world_objects.borrow_mut().push_object(&actual);
     let square = SquareSlot::new(square);
     let copy = square.try_archive_copy().unwrap();
     let copy_body = copy.borrow();
@@ -51,7 +55,26 @@ fn archive_maps_duplicate_whole_objects_without_merging_equal_distinct_owners() 
     assert!(copy_body.objects[0].ptr_eq(&copy_body.objects[1]));
     assert!(!copy_body.objects[0].ptr_eq(&copy_body.objects[2]));
     assert!(!copy_body.objects[0].ptr_eq_ref(&actual));
-    assert_eq!(copy_body.world_objects, [7, 7]);
+    assert!(!Rc::ptr_eq(
+        &square.borrow().world_objects,
+        &copy_body.world_objects
+    ));
+    for index in [0, 1, 3] {
+        let Some(crate::WorldObjectEntry::Object(owner)) =
+            copy_body.world_objects.borrow().entry(index)
+        else {
+            panic!()
+        };
+        assert!(copy_body.objects[0].ptr_eq_ref(&owner));
+    }
+    let Some(crate::WorldObjectEntry::Object(detached_copy)) =
+        copy_body.world_objects.borrow().entry(2)
+    else {
+        panic!()
+    };
+    assert!(!Rc::ptr_eq(&detached, &detached_copy));
+    assert!(!copy_body.objects[0].ptr_eq_ref(&detached_copy));
+    assert!(!copy_body.objects[2].ptr_eq_ref(&detached_copy));
     let copied = copy_body.objects[0].borrow();
     let ObjectKind::WorldInventory(copied_floor) = &copied.kind else {
         panic!()
@@ -63,6 +86,150 @@ fn archive_maps_duplicate_whole_objects_without_merging_equal_distinct_owners() 
     child.borrow_mut().key_id = 999;
     assert_ne!(copied_inventory.borrow().items[0].borrow().key_id, 999);
     assert!(copy_body.objects[0].ptr_eq(&copy_body.objects[1]));
+}
+
+struct OriginalObject(crate::IsoObjectRef);
+impl pz_kahlua::LuaObject for OriginalObject {
+    fn class_name(&self) -> &str {
+        panic!("archive must not invoke foreign methods")
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        panic!("archive must not inspect foreign payloads")
+    }
+}
+
+#[test]
+fn default_archive_rejects_first_foreign_index_without_mutating_any_memberships() {
+    use pz_kahlua::{TableRef, Value};
+    let mut square = IsoGridSquare::new(0, 0, 0);
+    let actual = floor(&item(ItemClass::Key)).ref_handle();
+    square.objects.push(ObjectSlot::retain(&actual));
+    let foreign = Rc::new(OriginalObject(actual.clone()));
+    for value in [
+        Value::Nil,
+        Value::Num(3.0),
+        Value::Table(TableRef::new()),
+        Value::Object(foreign.clone()),
+    ] {
+        let kind = value.type_name();
+        square.world_objects.borrow_mut().push_object(&actual);
+        square
+            .world_objects
+            .borrow_mut()
+            .push_entry(crate::WorldObjectEntry::Foreign(value));
+        square.world_objects.borrow_mut().push_object(&actual);
+        assert_eq!(
+            square.try_archive_copy().unwrap_err(),
+            SquareArchiveError::UnsupportedForeign { index: 1, kind }
+        );
+        assert_eq!(square.objects.len(), 1);
+        assert!(square.objects[0].ptr_eq_ref(&actual));
+        assert_eq!(square.world_objects.borrow().len(), 3);
+        let removed = square.world_objects.borrow_mut().take_entries();
+        drop(removed);
+    }
+    assert!(Rc::ptr_eq(&foreign.0, &actual));
+}
+
+#[test]
+fn explicit_foreign_retention_shares_exact_vm_referents_but_not_native_owners_or_list() {
+    use pz_kahlua::{TableRef, Value};
+    let mut source = IsoGridSquare::new(0, 0, 0);
+    let actual = floor(&item(ItemClass::Key)).ref_handle();
+    source.objects.push(ObjectSlot::retain(&actual));
+    let original = Rc::new(OriginalObject(actual.clone()));
+    let table = TableRef::new();
+    table.set_str("original", Value::Object(original.clone()));
+    source.world_objects.borrow_mut().push_object(&actual);
+    source
+        .world_objects
+        .borrow_mut()
+        .push_entry(crate::WorldObjectEntry::Foreign(Value::Table(
+            table.clone(),
+        )));
+    source
+        .world_objects
+        .borrow_mut()
+        .push_entry(crate::WorldObjectEntry::Foreign(Value::Object(
+            original.clone(),
+        )));
+    source
+        .world_objects
+        .borrow_mut()
+        .push_entry(crate::WorldObjectEntry::Foreign(Value::Nil));
+    let copy = source
+        .try_archive_copy_with_policy(ForeignArchivePolicy::RetainForeignHandles)
+        .unwrap();
+    assert!(!Rc::ptr_eq(&source.world_objects, &copy.world_objects));
+    assert!(!copy.objects[0].ptr_eq_ref(&actual));
+    let Some(crate::WorldObjectEntry::Object(mapped)) = copy.world_objects.borrow().entry(0) else {
+        panic!()
+    };
+    assert!(copy.objects[0].ptr_eq_ref(&mapped));
+    let Some(crate::WorldObjectEntry::Foreign(Value::Table(retained))) =
+        copy.world_objects.borrow().entry(1)
+    else {
+        panic!()
+    };
+    assert!(retained.ptr_eq(&table));
+    retained.set_str("shared", 91);
+    assert_eq!(table.get_str("shared").as_num(), Some(91.0));
+    let Value::Object(inside) = retained.get_str("original") else {
+        panic!()
+    };
+    let expected: Rc<dyn pz_kahlua::LuaObject> = original.clone();
+    assert!(Rc::ptr_eq(&inside, &expected));
+    let Some(crate::WorldObjectEntry::Foreign(Value::Object(opaque))) =
+        copy.world_objects.borrow().entry(2)
+    else {
+        panic!()
+    };
+    assert!(Rc::ptr_eq(&opaque, &expected));
+    assert!(Rc::ptr_eq(&original.0, &actual));
+    let removed = copy.world_objects.borrow_mut().take_entries();
+    drop(removed);
+    assert_eq!(source.world_objects.borrow().len(), 4);
+}
+
+#[test]
+fn archive_checks_borrowed_and_cyclic_detached_native_members() {
+    let source = IsoGridSquare::new(0, 0, 0);
+    let bag = item(ItemClass::Container);
+    let inventory = shared::inventory_of(&bag.borrow()).unwrap();
+    let detached = floor(&bag).ref_handle();
+    source.world_objects.borrow_mut().push_object(&detached);
+    let list_guard = source.world_objects.borrow_mut();
+    assert_eq!(
+        source.try_archive_copy().unwrap_err(),
+        SquareArchiveError::BorrowedWorldObjects
+    );
+    drop(list_guard);
+    let guard = detached.borrow_mut();
+    assert_eq!(
+        source.try_archive_copy().unwrap_err(),
+        SquareArchiveError::BorrowedWorldObject(0)
+    );
+    drop(guard);
+    let guard = inventory.borrow_mut();
+    assert_eq!(
+        source.try_archive_copy().unwrap_err(),
+        SquareArchiveError::Inventory {
+            location: ArchiveLocation::WorldObject(0),
+            cause: ArchiveCopyError::BorrowedContainer,
+        }
+    );
+    drop(guard);
+    inventory.borrow_mut().items.push(bag.clone());
+    assert_eq!(
+        source.try_archive_copy().unwrap_err(),
+        SquareArchiveError::Inventory {
+            location: ArchiveLocation::WorldObject(0),
+            cause: ArchiveCopyError::CyclicContainer,
+        }
+    );
+    inventory.borrow_mut().items.clear();
+    assert!(source.try_archive_copy().is_ok());
+    assert!(source.objects.is_empty());
 }
 
 #[test]

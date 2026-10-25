@@ -26,7 +26,8 @@ fn nonfloor_world_flag_keeps_partial_receiver_and_stops_after_its_record() {
         }
         // Raw native membership can flag a non-floor main object. Its save
         // succeeds; the floor cast happens only while loading that membership.
-        source.world_objects.push(bad_id);
+        let bad_owner = source.objects[1].ref_handle();
+        source.world_objects.borrow_mut().push_object(&bad_owner);
         let mut serialized = Writer::new();
         save_square(&mut serialized, &context, &source).unwrap();
 
@@ -71,7 +72,7 @@ fn nonfloor_world_flag_keeps_partial_receiver_and_stops_after_its_record() {
         let retained = existing.ref_handle();
         receiver.objects.push(existing);
         receiver.special_objects.push(existing_id);
-        receiver.world_objects.push(existing_id);
+        receiver.world_objects.borrow_mut().push_object(&retained);
         receiver.overlay_done = true;
         receiver.have_roof = true;
 
@@ -92,7 +93,15 @@ fn nonfloor_world_flag_keeps_partial_receiver_and_stops_after_its_record() {
             expected_special.push(bad.id);
         }
         assert_eq!(receiver.special_objects, expected_special);
-        assert_eq!(receiver.world_objects, [existing_id]);
+        let world = receiver.world_objects.borrow();
+        assert_eq!(world.len(), 1);
+        let Some(crate::world_objects::WorldObjectEntry::Object(existing_world)) = world.entry(0)
+        else {
+            panic!("existing world membership was replaced")
+        };
+        assert!(Rc::ptr_eq(&existing_world, &retained));
+        assert!(!world.contains_object(&receiver.objects[1].ref_handle()));
+        assert!(!world.contains_object(&receiver.objects[2].ref_handle()));
         // Header fields after the record loop have not been processed.
         assert!(receiver.overlay_done && receiver.have_roof);
         let ObjectKind::WorldInventory(floor) = &retained.borrow().kind else {

@@ -617,6 +617,383 @@ fn world_item(ty: &str, id: i32) -> pz_inventory::shared::ItemRef {
     Rc::new(RefCell::new(i))
 }
 
+fn floor_owner(id: u32, item: crate::floor_item::FloorItem) -> IsoObjectRef {
+    ObjectSlot::new(IsoObject::new(
+        id,
+        ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+            crate::objects::IsoWorldInventoryObject {
+                xoff: 0.0,
+                yoff: 0.0,
+                zoff: 0.0,
+                offset_x: 0.0,
+                offset_y: 0.0,
+                item,
+                drop_time: 0.0,
+                ignore_remove_sandbox: false,
+                extended_placement: false,
+            },
+        )),
+        None,
+    ))
+    .ref_handle()
+}
+
+#[test]
+fn floor_weight_reads_independent_actual_members_duplicates_and_raw_items() {
+    let sq = IsoGridSquare::new(0, 0, 0);
+    let a = world_item("A", 1);
+    let b = world_item("B", 2);
+    a.borrow_mut().actual_weight = 3.0;
+    b.borrow_mut().actual_weight = 4.0;
+    // Equal local IDs do not merge distinct allocations. Neither belongs to main.
+    let ao = floor_owner(7, crate::floor_item::FloorItem::retain(&a));
+    let bo = floor_owner(7, crate::floor_item::FloorItem::retain(&b));
+    let raw = floor_owner(
+        8,
+        crate::floor_item::FloorItem::from_saved(pz_inventory::saved::SavedItem::Raw(vec![
+            0, 1, 0,
+        ])),
+    );
+    {
+        let mut list = sq.world_objects.borrow_mut();
+        list.push_object(&ao);
+        list.push_object(&raw);
+        list.push_object(&bo);
+        list.push_object(&ao);
+    }
+    let visits = RefCell::new(Vec::new());
+    assert_eq!(
+        sq.get_total_weight_of_items_on_floor(|_, item| {
+            visits.borrow_mut().push(item.id);
+            item.actual_weight
+        }),
+        Ok(10.0)
+    );
+    assert_eq!(*visits.borrow(), [1, 2, 1]);
+    assert!(sq.objects.is_empty());
+    a.borrow_mut().actual_weight = 5.0;
+    assert_eq!(
+        sq.get_total_weight_of_items_on_floor(|_, i| i.actual_weight),
+        Ok(14.0)
+    );
+}
+
+#[test]
+fn floor_weight_reports_first_bad_entry_after_prior_calculations() {
+    use crate::world_objects::{WorldObjectEntry as Entry, WorldObjectsReadError as Error};
+    use pz_kahlua::Value;
+    let sq = IsoGridSquare::new(0, 0, 0);
+    let item = world_item("A", 1);
+    let actual = floor_owner(7, crate::floor_item::FloorItem::retain(&item));
+    let non_floor = ObjectSlot::new(IsoObject::new(7, ObjectKind::Object, None)).ref_handle();
+    for (entry, expected) in [
+        (Entry::Foreign(Value::Nil), Error::NullEntry { index: 1 }),
+        (
+            Entry::Foreign(Value::str("foreign")),
+            Error::WrongType { index: 1 },
+        ),
+        (Entry::Object(non_floor), Error::WrongType { index: 1 }),
+    ] {
+        let old = sq.world_objects.borrow_mut().take_entries();
+        drop(old);
+        {
+            let mut list = sq.world_objects.borrow_mut();
+            list.push_object(&actual);
+            list.push_entry(entry);
+            list.push_object(&actual);
+        }
+        let visits = std::cell::Cell::new(0);
+        assert_eq!(
+            sq.get_total_weight_of_items_on_floor(|_, _| {
+                visits.set(visits.get() + 1);
+                1.0
+            }),
+            Err(expected)
+        );
+        assert_eq!(visits.get(), 1);
+        assert_eq!(sq.world_objects.borrow().len(), 3);
+    }
+}
+
+#[test]
+fn floor_weight_releases_list_and_floor_guards_and_reads_live_size() {
+    let sq = IsoGridSquare::new(0, 0, 0);
+    let a = world_item("A", 1);
+    let b = world_item("B", 2);
+    let ao = floor_owner(7, crate::floor_item::FloorItem::retain(&a));
+    let bo = floor_owner(8, crate::floor_item::FloorItem::retain(&b));
+    let floor = match &ao.borrow().kind {
+        ObjectKind::WorldInventory(floor) => floor.ref_handle(),
+        _ => unreachable!(),
+    };
+    sq.world_objects.borrow_mut().push_object(&ao);
+    let visits = RefCell::new(Vec::new());
+    assert_eq!(
+        sq.get_total_weight_of_items_on_floor(|_, item| {
+            visits.borrow_mut().push(item.id);
+            if item.id == 1 {
+                // A pure Rust calculator can reach these independent owners. The
+                // list/floor guards must already be gone; the next index is live.
+                floor.borrow_mut().drop_time = 42.0;
+                sq.world_objects.borrow_mut().push_object(&bo);
+            }
+            1.0
+        }),
+        Ok(2.0)
+    );
+    assert_eq!(*visits.borrow(), [1, 2]);
+    assert_eq!(floor.borrow().drop_time, 42.0);
+}
+
+#[test]
+fn floor_weight_host_borrows_are_distinct_from_native_null_and_cast_errors() {
+    use crate::world_objects::WorldObjectsReadError as Error;
+    let sq = IsoGridSquare::new(0, 0, 0);
+    let item = world_item("A", 1);
+    let actual = floor_owner(7, crate::floor_item::FloorItem::retain(&item));
+    let floor = match &actual.borrow().kind {
+        ObjectKind::WorldInventory(floor) => floor.ref_handle(),
+        _ => unreachable!(),
+    };
+    sq.world_objects.borrow_mut().push_object(&actual);
+    let calculate = || sq.get_total_weight_of_items_on_floor(|_, i| i.actual_weight);
+    let list_guard = sq.world_objects.borrow_mut();
+    assert_eq!(calculate(), Err(Error::BorrowedList { index: 0 }));
+    drop(list_guard);
+    let object_guard = actual.borrow_mut();
+    assert_eq!(calculate(), Err(Error::BorrowedObject { index: 0 }));
+    drop(object_guard);
+    let floor_guard = floor.borrow_mut();
+    assert_eq!(calculate(), Err(Error::BorrowedFloor { index: 0 }));
+    drop(floor_guard);
+    let item_guard = item.borrow_mut();
+    assert_eq!(calculate(), Err(Error::BorrowedItem { index: 0 }));
+    drop(item_guard);
+    assert_eq!(calculate(), Ok(20.0));
+    assert!(sq.world_objects.borrow().contains_object(&actual));
+}
+
+#[test]
+fn floor_placement_callbacks_keep_original_receiver_after_same_id_replacement() {
+    struct Calls {
+        square: crate::SquareRef,
+        actual: Option<IsoObjectRef>,
+        replacement: Option<IsoObjectRef>,
+        calls: usize,
+        designated: bool,
+    }
+    impl SquareMutationHooks for Calls {
+        fn world_call(
+            &mut self,
+            _: ObjectRef,
+            actual: IsoObjectRef,
+            _: &mut dyn GameRand,
+            _: WorldCall,
+        ) {
+            if let Some(first) = &self.actual {
+                assert!(Rc::ptr_eq(first, &actual));
+            } else {
+                let copy = ObjectSlot::new(actual.borrow().clone());
+                self.replacement = Some(copy.ref_handle());
+                let mut sq = self.square.borrow_mut();
+                let index = sq
+                    .objects
+                    .iter()
+                    .position(|o| o.ptr_eq_ref(&actual))
+                    .unwrap();
+                sq.replace_object_slot(index, copy);
+                self.actual = Some(actual.clone());
+            }
+            actual.borrow_mut().key_id += 1;
+            self.calls += 1;
+        }
+        fn designation_zone_item_on_ground(&mut self, _: ObjectRef, actual: IsoObjectRef) {
+            assert!(Rc::ptr_eq(self.actual.as_ref().unwrap(), &actual));
+            actual.borrow_mut().name = Some(ObjectName::Str("original receiver".into()));
+            self.designated = true;
+        }
+    }
+    let mut w = World::new();
+    let p = (2, 2, 0);
+    let sq = w.sq(p);
+    let mut calls = Calls {
+        square: sq.clone(),
+        actual: None,
+        replacement: None,
+        calls: 0,
+        designated: false,
+    };
+    let item = world_item("A", 1);
+    {
+        let mut env = w.env();
+        env.world = &mut calls;
+        assert!(matches!(
+            env.add_world_inventory_item(p, &item, 0.5, 0.5, 0.0, 0.0),
+            WorldItemPlaced::Object(_)
+        ));
+    }
+    assert!(calls.calls > 1 && calls.designated);
+    let original = calls.actual.as_ref().unwrap();
+    let replacement = calls.replacement.as_ref().unwrap();
+    assert_eq!(original.borrow().id, replacement.borrow().id);
+    assert!(sq.borrow().world_objects.borrow().contains_object(original));
+    assert!(!sq
+        .borrow()
+        .world_objects
+        .borrow()
+        .contains_object(replacement));
+    assert!(sq
+        .borrow()
+        .objects
+        .iter()
+        .any(|o| o.ptr_eq_ref(replacement)));
+    assert!(!sq.borrow().objects.iter().any(|o| o.ptr_eq_ref(original)));
+    assert_eq!(
+        original.borrow().name,
+        Some(ObjectName::Str("original receiver".into()))
+    );
+}
+
+#[test]
+fn floor_removal_transfers_fluid_then_removes_only_first_actual_membership() {
+    use crate::world_objects::WorldObjectEntry as Entry;
+    struct Calls {
+        square: crate::SquareRef,
+        actual: IsoObjectRef,
+        transferred: bool,
+    }
+    impl SquareMutationHooks for Calls {
+        fn world_call(
+            &mut self,
+            _: ObjectRef,
+            actual: IsoObjectRef,
+            _: &mut dyn GameRand,
+            call: WorldCall,
+        ) {
+            assert_eq!(call, WorldCall::WorldItemTransferFluid);
+            assert!(Rc::ptr_eq(&actual, &self.actual));
+            assert_eq!(self.square.borrow().world_objects.borrow().len(), 4);
+            assert_eq!(
+                self.square
+                    .borrow()
+                    .objects
+                    .iter()
+                    .filter(|o| o.ptr_eq_ref(&actual))
+                    .count(),
+                2
+            );
+            actual.borrow_mut().key_id = 555;
+            self.transferred = true;
+        }
+    }
+    let mut w = World::new();
+    let p = (2, 2, 0);
+    let item = world_item("A", 1);
+    let actual = floor_owner(700, crate::floor_item::FloorItem::retain(&item));
+    actual.borrow_mut().has_components = true;
+    let replacement = ObjectSlot::new(actual.borrow().clone());
+    let replacement_owner = replacement.ref_handle();
+    let sq = w.sq(p);
+    {
+        let mut sq = sq.borrow_mut();
+        sq.objects.push(ObjectSlot::retain(&actual));
+        sq.objects.push(replacement);
+        sq.objects.push(ObjectSlot::retain(&actual));
+        sq.special_objects.push(700);
+        let mut list = sq.world_objects.borrow_mut();
+        list.push_object(&actual);
+        list.push_entry(Entry::Foreign(pz_kahlua::Value::Nil));
+        list.push_object(&replacement_owner);
+        list.push_object(&actual);
+    }
+    let mut calls = Calls {
+        square: sq.clone(),
+        actual: actual.clone(),
+        transferred: false,
+    };
+    let removed = {
+        let mut env = w.env();
+        env.world = &mut calls;
+        super::lifecycle::remove_from_square_handle(
+            &mut env,
+            ObjectRef { pos: p, id: 700 },
+            &actual,
+        )
+    }
+    .unwrap();
+    assert!(calls.transferred && removed.ptr_eq_ref(&actual));
+    let sq = sq.borrow();
+    assert_eq!(
+        sq.objects.iter().filter(|o| o.ptr_eq_ref(&actual)).count(),
+        1
+    );
+    assert!(sq.objects.iter().any(|o| o.ptr_eq_ref(&replacement_owner)));
+    assert!(sq.special_objects.is_empty());
+    let list = sq.world_objects.borrow();
+    assert_eq!(list.len(), 3);
+    assert!(matches!(
+        list.entry(0),
+        Some(Entry::Foreign(pz_kahlua::Value::Nil))
+    ));
+    assert!(matches!(list.entry(1), Some(Entry::Object(o)) if Rc::ptr_eq(&o, &replacement_owner)));
+    assert!(matches!(list.entry(2), Some(Entry::Object(o)) if Rc::ptr_eq(&o, &actual)));
+}
+
+#[test]
+fn detached_floor_list_removal_retires_final_owner_until_guards_end() {
+    struct Probe {
+        square: std::rc::Weak<RefCell<IsoGridSquare>>,
+        list: std::rc::Weak<RefCell<crate::world_objects::WorldObjects>>,
+        drops: Rc<std::cell::Cell<usize>>,
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            let square = self.square.upgrade().unwrap();
+            let list = self.list.upgrade().unwrap();
+            assert!(square.try_borrow_mut().is_ok());
+            assert!(list.try_borrow_mut().is_ok());
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+    let mut w = World::new();
+    let p = (2, 2, 0);
+    let square = w.sq(p);
+    let list = square.borrow().world_objects.clone();
+    let drops = Rc::new(std::cell::Cell::new(0));
+    let template =
+        pz_inventory::ItemTemplate::new(pz_inventory::ItemClass::Container, "Base", "Bag");
+    let bag = Rc::new(RefCell::new(InventoryItem::create(Rc::new(template), 1)));
+    let inventory = pz_inventory::shared::inventory_of(&bag.borrow()).unwrap();
+    inventory.borrow_mut().parent = Some(Rc::new(Probe {
+        square: Rc::downgrade(&square),
+        list: Rc::downgrade(&list),
+        drops: drops.clone(),
+    }));
+    let actual = floor_owner(700, crate::floor_item::FloorItem::retain(&bag));
+    let weak = Rc::downgrade(&actual);
+    list.borrow_mut().push_object(&actual);
+    drop(inventory);
+    drop(bag);
+    // Deliberately absent from main: retiring only remove_object_slot's return
+    // would miss this independent list's last native reference.
+    assert!(super::lifecycle::remove_from_square_handle(
+        &mut w.env(),
+        ObjectRef { pos: p, id: 700 },
+        &actual
+    )
+    .is_none());
+    drop(actual);
+    assert!(list.borrow().is_empty());
+    assert!(weak.upgrade().is_some());
+    assert_eq!(drops.get(), 0);
+    let retired = square.borrow_mut().take_retired_objects();
+    assert_eq!(retired.len(), 1);
+    assert_eq!(drops.get(), 0);
+    drop(retired);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(drops.get(), 1);
+}
+
 #[test]
 fn world_item_joins_the_square() {
     let mut w = World::new();
@@ -642,8 +1019,9 @@ fn world_item_joins_the_square() {
     assert_eq!(w.rand.0, [360, 1000]);
     let sq = w.sq(p);
     assert_eq!(sq.borrow().objects.len(), before + 1);
-    assert_eq!(sq.borrow().world_objects, [r.id]);
     let o_owner = sq.borrow().objects.last().unwrap().ref_handle();
+    assert_eq!(sq.borrow().world_objects.borrow().len(), 1);
+    assert!(sq.borrow().world_objects.borrow().contains_object(&o_owner));
     let o = o_owner.borrow();
     assert_eq!(o.id, r.id);
     assert_eq!(o.name, Some(ObjectName::Str("Hammer name".into())));
@@ -682,18 +1060,20 @@ fn world_item_joins_the_square() {
     w.env()
         .add_world_inventory_item(p, &item2, 0.3, 0.4, 0.0, 1.0);
     assert!(w.rand.0.is_empty());
-    assert_eq!(w.sq(p).borrow().world_objects.len(), 2);
+    assert_eq!(w.sq(p).borrow().world_objects.borrow().len(), 2);
     let total = w
         .sq(p)
         .borrow()
-        .get_total_weight_of_items_on_floor(|_, i| i.template.actual_weight);
+        .get_total_weight_of_items_on_floor(|_, i| i.template.actual_weight)
+        .unwrap();
     assert_eq!(total, 40.0);
     item.borrow_mut().actual_weight = 3.0;
     item2.borrow_mut().actual_weight = 7.0;
     assert_eq!(
         w.sq(p)
             .borrow()
-            .get_total_weight_of_items_on_floor(|_, i| i.actual_weight),
+            .get_total_weight_of_items_on_floor(|_, i| i.actual_weight)
+            .unwrap(),
         10.0
     );
     // Cloning a square for an archive/pure hook keeps value-copy semantics;
@@ -749,7 +1129,7 @@ fn corpses_generators_and_animals_go_to_hooks() {
             .add_world_inventory_item(p, &animal, 0.5, 0.5, 0.0, 0.0),
         WorldItemPlaced::Animal
     );
-    assert!(w.sq(p).borrow().world_objects.is_empty());
+    assert!(w.sq(p).borrow().world_objects.borrow().is_empty());
 }
 
 #[test]

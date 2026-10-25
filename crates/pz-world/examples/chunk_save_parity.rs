@@ -412,7 +412,7 @@ fn digest(ctx: &SaveCtx<'_>, ch: &IsoChunk, out: &mut String) {
                 writeln!(
                     out,
                     " sq {},{},{} objs={} special={} world={} moving={} table={} overlay={} roof={} burnt={} rope={} seen={}",
-                    sq.borrow().x, sq.borrow().y, sq.borrow().z, sq.borrow().objects.len(), sq.borrow().special_objects.len(), sq.borrow().world_objects.len(),
+                    sq.borrow().x, sq.borrow().y, sq.borrow().z, sq.borrow().objects.len(), sq.borrow().special_objects.len(), sq.borrow().world_objects.borrow().len(),
                     sq.borrow().static_moving.len(), sq.borrow().mod_data.as_ref().is_some_and(|t| !t.is_empty()) as u8,
                     sq.borrow().overlay_done as u8, sq.borrow().have_roof as u8, sq.borrow().burnt_out as u8, sq.borrow().have_sheet_rope as u8, seen
                 )
