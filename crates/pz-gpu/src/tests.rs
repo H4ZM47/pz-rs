@@ -216,3 +216,39 @@ fn screen_pass_keeps_orientation() {
     assert!(top[0] > 200 && top[2] < 50, "{top:?}");
     assert!(bottom[2] > 200 && bottom[0] < 50, "{bottom:?}");
 }
+
+/// A chunk texture the device cannot create (larger than its limits) is
+/// reported instead of failing silently: its pass and composite are
+/// skipped, the rest of the frame draws, and the error stays readable.
+#[test]
+fn failed_chunk_allocation_is_reported_and_skipped() {
+    let Some(mut g) = gpu(8, 8) else { return };
+    let mut tm = TextureManager::new();
+    assert_eq!(g.error(), None);
+    let too_big = g.device.limits().max_texture_dimension_2d + 1;
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::ChunkBegin { id: 9, width: too_big, height: 8, clear: true });
+    dl.cmds.push(DrawCmd::ChunkEnd);
+    dl.cmds.push(DrawCmd::ChunkComposite { id: 9, x: 0.0, y: 0.0, w: 8.0, h: 8.0, color: 0xFFFF_FFFF, chunk_depth: 0.0, mag_linear: false });
+    dl.render(None, 0.0, 0.0, 4.0, 8.0, Rgba(1.0, 0.0, 0.0, 1.0));
+    g.render_frame(&[(opaque_black(8, 8), &dl)], &mut tm);
+    assert!(matches!(g.error(), Some(GpuError::Allocation(ref m)) if m.contains("chunk texture 9")), "{:?}", g.error());
+    let p = g.try_read_pixels().expect("the device survives");
+    assert_eq!(px(&p, 8, 1, 4), [255, 0, 0, 255]);
+    assert_eq!(px(&p, 8, 6, 4), [0, 0, 0, 255]);
+}
+
+/// A lost device is reported: frames are no longer drawn and reads fail
+/// with the loss instead of returning nothing.
+#[test]
+fn device_loss_is_reported() {
+    let Some(mut g) = gpu(8, 8) else { return };
+    let mut tm = TextureManager::new();
+    g.device.destroy();
+    let _ = g.device.poll(wgpu::PollType::wait_indefinitely());
+    assert!(matches!(g.error(), Some(GpuError::DeviceLost(_))), "{:?}", g.error());
+    let mut dl = DrawList::default();
+    dl.render(None, 0.0, 0.0, 8.0, 8.0, Rgba(1.0, 0.0, 0.0, 1.0));
+    g.render_frame(&[(opaque_black(8, 8), &dl)], &mut tm);
+    assert!(matches!(g.try_read_pixels(), Err(GpuError::DeviceLost(_))));
+}
