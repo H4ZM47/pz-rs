@@ -160,6 +160,8 @@ enum PassTarget {
     /// A sky render (`RenderSkyBox`) into texture `id` with uniform block
     /// `index` of the frame's sky uniforms.
     Sky(u32, usize),
+    /// One of `WeatherFxMask`'s render textures.
+    WeatherFx(usize),
 }
 
 impl PassTarget {
@@ -167,7 +169,7 @@ impl PassTarget {
         match self {
             PassTarget::Main => TargetKind::Main,
             PassTarget::Chunk(_) | PassTarget::Atlas(_) => TargetKind::Chunk,
-            PassTarget::Offscreen | PassTarget::Outline(_) | PassTarget::Sky(..) => TargetKind::Offscreen,
+            PassTarget::Offscreen | PassTarget::Outline(_) | PassTarget::Sky(..) | PassTarget::WeatherFx(_) => TargetKind::Offscreen,
         }
     }
 }
@@ -266,6 +268,8 @@ pub struct Gpu {
     views: HashMap<u32, wgpu::TextureView>,
     nearest: HashMap<u32, wgpu::BindGroup>,
     offscreen: Option<OffscreenTarget>,
+    /// `WeatherFxMask.fboMask` and `fboParticles`.
+    weather: [Option<OffscreenTarget>; 2],
     textures: HashMap<u32, wgpu::BindGroup>,
     samplers: HashMap<Filter, wgpu::Sampler>,
     /// Bound for untextured quads; samples as 1.0 like `useTexture = 0`.
@@ -274,6 +278,8 @@ pub struct Gpu {
     pub state: GlState,
     /// `TextureCombiner`.
     combiner: combiner::CombinerState,
+    /// `glPushAttrib`'s saved states.
+    state_stack: Vec<GlState>,
 }
 
 impl Gpu {
@@ -485,11 +491,13 @@ impl Gpu {
             views: HashMap::new(),
             nearest: HashMap::new(),
             offscreen: None,
+            weather: [None, None],
             textures: HashMap::new(),
             samplers: HashMap::new(),
             white: None,
             state: GlState::default(),
             combiner,
+            state_stack: Vec::new(),
         };
         gpu.white = Some(gpu.create_texture_bind_group(1, 1, &[vec![0xFF; 4]], (true, true, false, false)));
         gpu
@@ -783,6 +791,16 @@ impl Gpu {
                 }
                 PassTarget::Outline(_) => continue,
                 PassTarget::Sky(..) => continue,
+                PassTarget::WeatherFx(i) => {
+                    let Some(o) = self.weather[i].as_ref() else { continue };
+                    let (load, dload) = if pass_desc.clear {
+                        (wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), wgpu::LoadOp::Clear(1.0))
+                    } else {
+                        (wgpu::LoadOp::Load, wgpu::LoadOp::Load)
+                    };
+                    let keep_s = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
+                    (&o.color, &o.depth_stencil, load, Some(wgpu::Operations { load: dload, store: wgpu::StoreOp::Store }), Some(keep_s), o.width, o.height)
+                }
                 PassTarget::Offscreen => {
                     let Some(o) = self.offscreen.as_ref() else { continue };
                     let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
@@ -949,6 +967,14 @@ impl Gpu {
                         g = f.push_globals(gl);
                         (Program::Cutaway, Tex2::Texture(id))
                     }
+                    WorldShader::CutawayNoDepth { stencil, uv2 } => {
+                        for (vx, b) in v.iter_mut().zip(uv2) {
+                            vx.uv2 = *b;
+                        }
+                        let Some(sid) = stencil.id else { return };
+                        f.tex3 = Some(sid);
+                        (Program::CutawayNoDepth, Tex2::Texture(sid))
+                    }
                     WorldShader::Seam { depth, uv1, mask, uv2, front, far } => {
                         for ((vx, a), b) in v.iter_mut().zip(uv1).zip(uv2) {
                             vx.uv1 = *a;
@@ -1029,6 +1055,29 @@ impl Gpu {
                 f.target = PassTarget::Offscreen;
             }
             DrawCmd::OffscreenEnd => f.target = PassTarget::Main,
+            DrawCmd::WeatherFxBegin { index, width, height } => {
+                let i = (*index).min(1);
+                self.ensure_weather(i, *width, *height);
+                // TextureFBO.startDrawing remembers the bound buffer.
+                if !matches!(f.target, PassTarget::WeatherFx(_)) {
+                    f.fx_return = f.target;
+                }
+                f.target = PassTarget::WeatherFx(i);
+                f.passes.push(PassDesc { target: f.target, clear: true, mipmaps: false, batches: f.batches.len()..f.batches.len() });
+            }
+            DrawCmd::WeatherFxEnd => f.target = f.fx_return,
+            DrawCmd::FogCircle { sprite, width, height } => {
+                // The shader's own u_mvp, flipped like any texture target's.
+                let mut m = gl::ortho2d(0.0, *width, *height, 0.0);
+                if f.target != PassTarget::Main {
+                    for col in &mut m {
+                        col[1] = -col[1];
+                    }
+                }
+                let g = f.globals(&self.state, m, 0.5);
+                let key = self.key(f, Program::FogCircle);
+                f.push(key, sprite.texture.as_ref().and_then(|t| t.id), Tex2::None, &self.state, g, sprite_vertices(sprite));
+            }
             DrawCmd::Model(d) => {
                 if d.alpha < 0.01 {
                     return;
@@ -1246,6 +1295,27 @@ impl Gpu {
                 let key = PipeKey { blend: None, ..self.key(f, Program::Screen) };
                 f.push(key, None, Tex2::Offscreen, &self.state, gi, v);
             }
+            DrawCmd::ProjectedQuadF32 { texture, pos, uv, color, nearest } => {
+                let Some(id) = texture.id else { return };
+                let g = {
+                    let m = f.mvp;
+                    f.mvp = IDENTITY;
+                    let mm = f.mvp_for_target();
+                    f.mvp = m;
+                    f.globals(&self.state, mm, 0.5)
+                };
+                // The float colour rides in uv1/uv2, which the
+                // `ProjectedF32` vertex layout reads as one vec4.
+                let v: [Vertex; 4] = std::array::from_fn(|i| Vertex { pos: [pos[i][0], pos[i][1]], uv: uv[i], color: 0, uv1: [color[0], color[1]], uv2: [color[2], color[3]], depth: [pos[i][2], 0.0] });
+                let key = self.key(f, Program::ProjectedF32);
+                f.push(key, Some(id), if *nearest { Tex2::Nearest } else { Tex2::None }, &self.state, g, v);
+            }
+            DrawCmd::PushAttrib => self.state_stack.push(self.state.clone()),
+            DrawCmd::PopAttrib => {
+                if let Some(s) = self.state_stack.pop() {
+                    self.state = s;
+                }
+            }
             other => self.state.apply(other),
         }
     }
@@ -1378,6 +1448,44 @@ impl Gpu {
             ],
         });
         self.offscreen = Some(OffscreenTarget { width, height, color, depth_stencil, bind });
+    }
+
+    /// `WeatherFxMask.checkFbos`: weather texture `i` (`new Texture(w, h,
+    /// 16)` in a `TextureFBO`), sampled linearly by its reserved id.
+    fn ensure_weather(&mut self, i: usize, width: u32, height: u32) {
+        let (width, height) = (width.max(1), height.max(1));
+        if self.weather[i].as_ref().is_some_and(|o| o.width == width && o.height == height) {
+            return;
+        }
+        let tex = |format, usage, label| {
+            self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let color = tex(state::OFFSCREEN_COLOR_FORMAT, usage, "weather fx").create_view(&Default::default());
+        let depth_stencil = tex(state::DEPTH_STENCIL_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT, "weather fx depth").create_view(&Default::default());
+        let sampler = self.sampler((false, false, false, true));
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        let id = pz_render::WEATHER_FX_TEXTURE_IDS[i];
+        self.textures.insert(id, bind.clone());
+        self.views.insert(id, color.clone());
+        self.nearest.remove(&id);
+        self.weather[i] = Some(OffscreenTarget { width, height, color, depth_stencil, bind });
     }
 
     /// `FBORenderChunk.init`: colour and 16-bit depth textures of the
@@ -1598,6 +1706,8 @@ struct FrameBuilder {
     target: PassTarget,
     /// The target a chunk texture's `ChunkEnd` returns to.
     chunk_return: PassTarget,
+    /// The target bound before `WeatherFxBegin`.
+    fx_return: PassTarget,
     /// The seam mask of the quad being pushed.
     tex3: Option<u32>,
     model_uniforms: Vec<model::ModelUniforms>,
@@ -1624,6 +1734,7 @@ impl Default for FrameBuilder {
             freed: Vec::new(),
             target: PassTarget::Main,
             chunk_return: PassTarget::Main,
+            fx_return: PassTarget::Main,
             tex3: None,
             model_uniforms: Vec::new(),
             vehicle_uniforms: Vec::new(),

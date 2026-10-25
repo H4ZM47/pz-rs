@@ -258,6 +258,16 @@ pub enum DrawCmd {
     /// fragment depth `depth[0] + (depth[1] - depth[0]) * d` from the
     /// atlas depth `d`; texels with `alpha * d == 0` are discarded.
     AtlasQuad { id: u64, pos: [[f32; 2]; 4], uv: [[f32; 2]; 4], color: u32, depth: [f32; 2] },
+    /// [`DrawCmd::ProjectedQuad`] with a float colour, as `VBORenderer`'s
+    /// `formatPositionColorUv` carries it (`WeatherParticleDrawer`): faint
+    /// colours are not rounded to 8 bits before the texel is multiplied.
+    ProjectedQuadF32 { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: [f32; 4], nearest: bool },
+    /// `glPushAttrib(GL_ALL_ATTRIB_BITS)`: the fixed-function state
+    /// (blending, alpha, depth, stencil, colour mask, scissor) saved.
+    PushAttrib,
+    /// `glPopAttrib()`: the state saved by the matching
+    /// [`DrawCmd::PushAttrib`] restored.
+    PopAttrib,
     /// A 3D model draw (`basicEffect`), depth-tested against the world.
     Model(Box<model::ModelDraw>),
     /// A vehicle mesh (`Model.DrawVehicle` with a vehicle shader).
@@ -300,6 +310,20 @@ pub enum DrawCmd {
     /// `ModelManager.RenderParticles`' instanced draw with the `fire` or
     /// `smoke` shader (`ParticlesFire`).
     Particles(Box<ParticlesDraw>),
+    /// `glBlendEquation` (`gl::FUNC_ADD`, `gl::FUNC_REVERSE_SUBTRACT`, ...).
+    BlendEquation(u32),
+    /// `WeatherFxMask`'s `glBuffer(4)`/`glBuffer(6)`: following draws go to
+    /// weather texture `index` (0 `fboMask`, 1 `fboParticles`; see
+    /// [`weather_fx_texture`]), screen-sized, created at this size if
+    /// needed and cleared to transparent black (`startDrawing(true, true)`).
+    WeatherFxBegin { index: usize, width: u32, height: u32 },
+    /// `glBuffer(5)`/`glBuffer(7)`: back to the target bound before
+    /// `WeatherFxBegin`.
+    WeatherFxEnd,
+    /// A quad drawn with the `fogCircle` shader (`IsoWeatherFX.renderFogCircle`):
+    /// texture times colour, positions through its own `u_mvp`,
+    /// `ortho(0, width, height, 0)`.
+    FogCircle { sprite: Sprite, width: f32, height: f32 },
 }
 
 /// The shader of a [`ParticlesDraw`].
@@ -331,6 +355,25 @@ pub struct ParticlesDraw {
     /// `glBlendFunc(src, dst)`.
     pub blend_func: [u32; 2],
     pub viewport: (u32, u32),
+}
+
+/// The ids of `WeatherFxMask`'s two screen-sized render textures
+/// (`fboMask`, `fboParticles`), reserved like [`SKYBOX_TEXTURE_IDS`] so
+/// draws can sample them.
+pub const WEATHER_FX_TEXTURE_IDS: [u32; 2] = [0xFFFF_FE10, 0xFFFF_FE11];
+
+/// A [`Texture`] naming weather texture `index` at `width` x `height`
+/// (`new Texture(w, h, 16)`: its power-of-two size is its own).
+pub fn weather_fx_texture(index: usize, width: u32, height: u32) -> Texture {
+    let mut t = Texture::empty(if index == 0 { "WeatherFxMask.fboMask" } else { "WeatherFxMask.fboParticles" });
+    t.id = Some(WEATHER_FX_TEXTURE_IDS[index.min(1)]);
+    t.width = width;
+    t.height = height;
+    t.width_hw = width as i32;
+    t.height_hw = height as i32;
+    t.uv = [0.0, 0.0, width as f32, height as f32];
+    t.ready = true;
+    t
 }
 
 /// The ids of `SkyBox`'s two render textures (`textureFboA`/`B`), reserved
@@ -480,6 +523,12 @@ pub enum WorldShader {
     /// window-frame outlines), the stencil's channels shape alpha and add
     /// the edge highlight, and depth comes from `depth`.
     Cutaway { depth: Texture, uv1: [[f32; 2]; 4], stencil: Texture, uv2: [[f32; 2]; 4], front: f32, far: f32, discard_value: f32 },
+    /// `CutawayNoDepth` (`DoCutawayShaderSprite`, the weather mask's
+    /// walls): texels where the stencil (texture coordinates `uv2`) has
+    /// green or blue are discarded, the rest multiplied by the vertex
+    /// colour's rgb and the stencil's `rrra`, with the same edge terms as
+    /// `CircleStencil`; no depth is written.
+    CutawayNoDepth { stencil: Texture, uv2: [[f32; 2]; 4] },
 }
 
 #[derive(Default)]
