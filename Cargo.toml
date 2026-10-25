@@ -40,6 +40,7 @@ pz-clipper6 = { path = "crates/pz-clipper6" }
 pz-pathfind = { path = "crates/pz-pathfind" }
 pz-bullet = { path = "crates/pz-bullet" }
 pz-player-input = { path = "crates/pz-player-input" }
+pz-ragdoll = { path = "crates/pz-ragdoll" }
 indexmap = "2"
 jiff = "0.2"
 macroquad = { version = "0.4", default-features = false }

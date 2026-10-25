@@ -1,0 +1,12 @@
+[package]
+name = "pz-ragdoll"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "The Java side of Project Zomboid's ragdolls: RagdollScript, RagdollBuilder and RagdollController driving pz-bullet and pz-anim"
+
+[dependencies]
+pz-anim = { path = "../pz-anim" }
+pz-bullet.workspace = true
+pz-model = { path = "../pz-model" }
+pz-scripts.workspace = true

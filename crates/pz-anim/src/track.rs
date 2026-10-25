@@ -302,9 +302,9 @@ impl AnimationTrack {
         self.current_clip.as_ref().is_some_and(|c| c.is_ragdoll)
     }
 
-    /// Ragdoll simulation is not ported; a ragdoll clip is never simulating.
+    /// `isRagdollSimulationActive`.
     pub fn is_ragdoll_simulation_active(&self) -> bool {
-        false
+        self.is_ragdoll() && self.current_clip.as_ref().is_some_and(|c| c.is_ragdoll_simulation_active())
     }
 
     pub fn is_ragdoll_first_frame(&self) -> bool {
@@ -678,6 +678,14 @@ impl AnimationTrack {
         }
         self.update_pose();
         self.update_deferred_values();
+    }
+
+    /// The end of `initRagdollTransforms`, once the player has written the
+    /// transforms into the clip: clears the first-frame flag and samples the
+    /// pose again.
+    pub(crate) fn finish_init_ragdoll_transforms(&mut self) {
+        self.is_ragdoll_first_frame = false;
+        self.update_pose();
     }
 
     fn update_pose(&mut self) {
