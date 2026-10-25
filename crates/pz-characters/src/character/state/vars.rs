@@ -271,6 +271,15 @@ pub struct CharacterVars {
     pub last_collided_n: bool,
     // ---- IsoZombie (read and written by the shared combat code) ----
     pub crawling: bool,
+    /// `onFire`.
+    pub on_fire: bool,
+    /// `fireKillRate`.
+    pub fire_kill_rate: f32,
+    /// `fireSpreadProbability`.
+    pub fire_spread_probability: i32,
+    /// The `AttachAnim("Fire", ...)` sprite's random offsets while
+    /// burning (the renderer draws it).
+    pub fire_anim: Option<(i32, i32)>,
     pub sit_against_wall: bool,
     /// `lastHitPart` (`BodyPartType` index).
     pub last_hit_part: i32,
@@ -403,6 +412,10 @@ impl Default for CharacterVars {
             climbing: false,
             on_kill_done: false,
             attacked_by: None,
+            on_fire: false,
+            fire_kill_rate: 0.0038,
+            fire_spread_probability: 6,
+            fire_anim: None,
             last_hit_character: None,
             do_shove: false,
             do_grapple: false,

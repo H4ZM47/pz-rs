@@ -13,6 +13,16 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Gamepads: `Gamepads::new(game_dir, cache_dir, c)` (#32).
 - [ ] Event and hook names read from the jar via pz-classfile instead of
       `events.rs` constants (#7).
+- [ ] Character simulation context: `bind_character_sim::install_sim_context`
+      with the engine's `SimContext` (lore, climate, `Rand`, events) (#41).
+- [ ] Game time and climate: `bind_climate::install_game_time` and
+      `set_climate_settings` from the sandbox options (#49).
+- [ ] Meta population: `install_population` with
+      `shared_population().init(fs)` (#67); popman's
+      `bind_popman::install_population` (#73).
+- [ ] World sounds: `bind_zombie::install_world_sounds` (#75).
+- [ ] States world: `bind_states::install_state_world` (#74).
+- [ ] Perks: `PerkFactory::init` before Lua runs (#26).
 
 ## Per frame (`GameWindow.logic` / `render`)
 - [ ] Input: every winit event → `pz_input::winit::handle`; before
@@ -21,6 +31,17 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `bind_input::take_window_requests()`; `gp.poll(c)` first (#30/#32).
 - [ ] `UITransition.UpdateAll` → `bind_misc::ui_transition_update_all()` (#20).
 - [ ] Vsync from Core options; `FrameParams` size from Core screen size.
+- [ ] `GameTime::update` / `update_game_time(thread)` once per frame
+      before the world (#49).
+- [ ] Pathfinding: PathHost `update_thread` then `update_main` before the
+      characters update; `host.remove(id)` when a character leaves (#74).
+- [ ] Characters, in game order: `preupdate_zombie` (players: their
+      preupdate), `update_zombie` (the state machine, then `update_fire`),
+      `postupdate_zombie` / `moving_postupdate` (with
+      `slide_head_away_from_walls`) (#41/#74/#75).
+- [ ] `ZombiePopulationManager::update_main` with PopulationHost and
+      `ZombieOps` (`RealZombies`) (#73/#77).
+- [ ] `WorldSoundManager::update` once per frame (#75).
 
 ## World (`GameLoadingState` / `IngameState`)
 - [ ] `ChunkStreamer::new(players, calc_chunk_width(w, h))`, `load_world`,
@@ -37,6 +58,14 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
 - [ ] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
+- [ ] `StateWorld` impl owners: characters by id, squares, PathHost
+      (`path_*`, `resolve_collision`, `resolve_collision_radius`,
+      `test_collide_adjacent`), LOS, world sounds, corpses, thumpables
+      (#74/#75).
+- [ ] Character fire: `StateWorld::character_fire` runs
+      `pz_characters::character::fire::update_character_fire` with the
+      world's `IsoFireManager`/`FireWorld` (#89).
+- [ ] `SimContext` climate values from `ClimateManager` (#49).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
 
@@ -50,6 +79,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `ClimateRenderValues` (#81); FxMask character hook replays #79
       ObjectRender draws without shadows.
 - [ ] Feed corpses, world items and fireplace state from pz-world (#87, #76).
+- [ ] Lighting pass reads `ClimateManager::render_values` (#49).
 
 ## Cleanups
 - [ ] Fold bind_vehicles' item subset into the full item bindings (#86).

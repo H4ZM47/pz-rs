@@ -10,14 +10,14 @@
 //! lookups go through [`StateWorld`]. Not ported here (the world's):
 //! stairs and sloped surfaces (`doStairs`, `handleSlopedSurface`),
 //! `checkHitWall` and the hoppable checks (reported through
-//! [`StateWorld::collided_with_hoppables`]), `slideHeadAwayFromWalls`, and
-//! zombie virtualization at the edge of the loaded area
+//! [`StateWorld::collided_with_hoppables`]), and zombie virtualization at the edge of the loaded area
 //! ([`StateWorld::virtualize_if_unloaded`]).
 //!
 //! [`StateWorld`]: super::state::StateWorld
 //! [`StateWorld::resolve_collision`]: super::state::StateWorld::resolve_collision
 //! [`StateWorld::collided_with_hoppables`]: super::state::StateWorld::collided_with_hoppables
 //! [`StateWorld::virtualize_if_unloaded`]: super::state::StateWorld::virtualize_if_unloaded
+//! [`StateWorld::resolve_collision_radius`]: super::state::StateWorld::resolve_collision_radius
 
 use super::state::StateCx;
 use super::states::ids;
@@ -311,6 +311,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoMovingObject.postupdate()`'s movement and collision (see the
     /// module doc for what stays with the world).
     pub fn moving_postupdate(&mut self, cx: &mut StateCx<'_, I>) {
+        self.slide_head_away_from_walls(true, cx);
         if self.seen.last_targetted_by.is_some_and(|z| cx.world.character_mut(z).is_none_or(|z| z.is_dead())) {
             self.seen.last_targetted_by = None;
         }
@@ -448,6 +449,131 @@ impl<I: 'static> GameCharacter<I> {
     }
 }
 
+impl<I: 'static> GameCharacter<I> {
+    /// `IsoZombie.shouldSlideHeadAwayFromWalls()` (other characters:
+    /// never).
+    fn should_slide_head_away_from_walls(&self) -> bool {
+        if !self.is_zombie() {
+            return false;
+        }
+        let v = &self.vars;
+        let idle_or_staggering = self.is_current_state_id(ids::STAGGER_BACK) || self.is_current_state_id(ids::ZOMBIE_IDLE);
+        if ((!v.on_floor && !v.knocked_down) || v.sit_against_wall) && !idle_or_staggering {
+            return false;
+        }
+        if v.crawling && (self.path.path2.is_some() || v.moving) {
+            return false;
+        }
+        !self.is_current_state_id(ids::CLIMB_OVER_FENCE) && !self.is_current_state_id(ids::CLIMB_THROUGH_WINDOW)
+    }
+
+    /// `IsoZombie.slideHeadAwayFromWalls(instant)`: a zombie on the floor
+    /// keeps its head 0.15 from the walls.
+    pub fn slide_head_away_from_walls(&mut self, instant: bool, cx: &mut StateCx<'_, I>) {
+        if self.path.current_square.is_none() || !self.should_slide_head_away_from_walls() {
+            return;
+        }
+        self.slide_away_from_walls(0.15, instant, false, cx);
+    }
+
+    /// `IsoGameCharacter.slideAwayFromWalls(radius, instant,
+    /// includePolyCollisions)` (`onRagdollSimulationStarted` uses 0.5,
+    /// true, true; `onHitByVehicle` 0.25, false, true).
+    pub fn slide_away_from_walls(&mut self, radius: f32, instant: bool, include_poly_collisions: bool, cx: &mut StateCx<'_, I>) {
+        let mut new_pos = (0.0, 0.0);
+        let mut collided = false;
+        if include_poly_collisions {
+            let (hit, at) = cx.world.resolve_collision_radius(&*self, radius);
+            collided = hit;
+            new_pos = at;
+        }
+        // `newPos` is written once the circle reaches past the square,
+        // collided or not.
+        if let Some((hit, at)) = self.resolve_collision_with_neighboring_squares(radius, cx) {
+            new_pos = at;
+            collided |= hit;
+        }
+        if collided {
+            self.slide_away_to_collision_pos(new_pos.0, new_pos.1, instant);
+        }
+    }
+
+    /// `resolveCollisionWithNeighboringSquares(radius, newPos)`: the next
+    /// position pushed `radius` back from the current square's blocked
+    /// edges, when a circle there would cross one. `None` before `newPos`
+    /// is written; otherwise whether it collided and `newPos`.
+    fn resolve_collision_with_neighboring_squares(&self, radius: f32, cx: &StateCx<'_, I>) -> Option<(bool, (f32, f32))> {
+        let (x, y, z) = (self.vars.x, self.vars.y, self.vars.z);
+        let (nx, ny) = (self.vars.next_x, self.vars.next_y);
+        let (sx, sy, sz) = (ff(x), ff(y), ff(z));
+        let sign_x = sign(nx - (0.5 + sx as f32));
+        let sign_y = sign(ny - (0.5 + sy as f32));
+        let x2 = nx + radius * sign_x as f32;
+        let y2 = ny + radius * sign_y as f32;
+        if ff(x2) == sx && ff(y2) == sy {
+            return None;
+        }
+        cx.world.square(sx, sy, sz)?;
+        let mover = pz_pathfind::mover::PathMover::mover_id(self);
+        let from = (sx, sy, sz);
+        let mut collided = false;
+        let mut at = (nx, ny);
+        if sign_x != 0 && cx.world.test_collide_adjacent(mover, from, sign_x, 0, 0) {
+            collided = true;
+            at.0 = if sign_x == -1 { sx as f32 + radius } else { sx as f32 + 1.0 - radius };
+        }
+        if sign_y != 0 && cx.world.test_collide_adjacent(mover, from, 0, sign_y, 0) {
+            collided = true;
+            at.1 = if sign_y == -1 { sy as f32 + radius } else { sy as f32 + 1.0 - radius };
+        }
+        Some((collided, at))
+    }
+
+    /// `IsoMovingObject.slideAwayToCollisionPos(x, y, instant)`: along each
+    /// axis the move keeps its direction and takes the longer of the two
+    /// offsets.
+    pub fn slide_away_to_collision_pos(&mut self, cx_: f32, cy: f32, instant: bool) {
+        let (x1, y1) = (self.vars.x, self.vars.y);
+        let (ovx, ovy) = (self.vars.next_x - x1, self.vars.next_y - y1);
+        let (osx, osy) = (sign(ovx), sign(ovy));
+        let (mut px, mut py) = (cx_, cy);
+        let (cvx, cvy) = (cx_ - x1, cy - y1);
+        let (csx, csy) = (sign(cvx), sign(cvy));
+        if osx == csx {
+            px = x1 + fmax(ovx * osx as f32, cvx * csx as f32) * osx as f32;
+        }
+        if osy == csy {
+            py = y1 + fmax(ovy * osy as f32, cvy * csy as f32) * osy as f32;
+        }
+        self.vars.next_x = px;
+        self.vars.next_y = py;
+        if instant {
+            self.vars.x = px;
+            self.vars.y = py;
+        }
+    }
+}
+
+/// `PZMath.max(float, float)`.
+fn fmax(a: f32, b: f32) -> f32 {
+    if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `PZMath.sign(float)`.
+fn sign(v: f32) -> i32 {
+    if v > 0.0 {
+        1
+    } else if v < 0.0 {
+        -1
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +637,29 @@ mod tests {
             0,
             0
         ));
+    }
+
+    #[test]
+    fn a_zombie_on_the_floor_keeps_its_head_off_the_wall() {
+        let (sm, chars) = fixture();
+        let ctx = Recorder::default();
+        let mut w = Walled;
+        let mut z = GameCharacter::<()>::new(&sm, crate::character::CharacterKind::Zombie);
+        z.vars.on_floor = true;
+        z.vars.x = 4.9;
+        z.vars.y = 3.5;
+        z.vars.next_x = 4.95;
+        z.vars.next_y = 3.5;
+        z.path.current_square = Some((4, 3, 0));
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        z.slide_head_away_from_walls(true, &mut cx);
+        assert_eq!((z.vars.x, z.vars.next_x), (4.0 + 1.0 - 0.15, 4.0 + 1.0 - 0.15));
+        assert_eq!(z.vars.y, 3.5);
+        // Standing up: no slide.
+        z.vars.on_floor = false;
+        z.vars.x = 4.9;
+        z.vars.next_x = 4.95;
+        z.slide_head_away_from_walls(true, &mut cx);
+        assert_eq!(z.vars.x, 4.9);
     }
 }

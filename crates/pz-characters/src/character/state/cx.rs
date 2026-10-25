@@ -230,6 +230,25 @@ pub trait StateWorld<I> {
     fn resolve_collision(&mut self, _chr: &dyn pz_pathfind::mover::CharacterView, nx: f32, ny: f32) -> (f32, f32) {
         (nx, ny)
     }
+    /// `PolygonalMap2.instance.resolveCollision(chr, radius, finalPos)`
+    /// (pz-pathfind's `PathHost::resolve_collision_radius`), for
+    /// `slideAwayFromWalls` with `includePolyCollisions`: whether `chr`
+    /// with `radius` overlaps a vehicle obstacle, and `finalPos`.
+    fn resolve_collision_radius(&mut self, chr: &dyn pz_pathfind::mover::CharacterView, _radius: f32) -> (bool, (f32, f32)) {
+        (false, (chr.x(), chr.y()))
+    }
+    /// `FireCheck()`, `SpreadFire()` and `ReduceHealthWhenBurning()` in
+    /// that order, as `IsoGameCharacter.update` calls them: the world owns
+    /// `IsoFireManager` and the squares, so it runs
+    /// [`crate::character::fire::update_character_fire`] (or the three
+    /// `pz_world::fire::character` functions) over `chr` with `rand`.
+    fn character_fire(
+        &mut self,
+        _chr: &mut dyn pz_world::fire::character::FireCharacter,
+        _frame: pz_world::fire::character::CharacterFireFrame,
+        _rand: &mut dyn pz_world::java::GameRand,
+    ) {
+    }
     /// `square.testCollideAdjacent(mover, dx, dy, dz)` from `from`.
     fn test_collide_adjacent(&self, _mover: MoverId, _from: (i32, i32, i32), _dx: i32, _dy: i32, _dz: i32) -> bool {
         false

@@ -466,8 +466,9 @@ impl<I: 'static> GameCharacter<I> {
                 }
             }
         }
-        // super.update(): the state machine.
+        // super.update(): the state machine, then fire.
         self.state_machine_update(cx);
+        self.update_fire(cx);
         if [ids::CLIMB_THROUGH_WINDOW, ids::CLIMB_OVER_FENCE, ids::CRAWLING_ZOMBIE_TURN].iter().any(|s| self.is_current_state_id(*s)) {
             return Ok(());
         }
