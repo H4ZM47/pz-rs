@@ -384,10 +384,7 @@ fn the_frame_draws_the_flames() {
             height: 600,
         },
         &chunks,
-        pz_render::ScreenParams {
-            desaturation: 0.0,
-            timer: 0.0,
-        },
+        pz_render::ScreenParams::default(),
     );
     let mut alone = Vec::new();
     r.render_animated_attachments(&[&sq], &mut alone);

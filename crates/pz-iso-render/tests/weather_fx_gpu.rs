@@ -735,7 +735,7 @@ fn game_building_with_cut_walls_in_rain() {
         let mw = GameWorld { w: &w, st: state };
         let mut mask = WeatherFxMask::default();
         mask.init_mask(&mw, FxMaskPlayer { square: Some(player), building: Some(BuildingId(1)), z: 0.0, master_region: None }, true);
-        let cmds = pz_iso_render::frame::world_frame_into_with(&r, size, &chunks, pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 }, Vec::new(), &mut |out| {
+        let cmds = pz_iso_render::frame::world_frame_into_with(&r, size, &chunks, pz_render::ScreenParams::default(), Vec::new(), &mut |out| {
             if rain {
                 render_weather_fx(&mut fx, &mut mask, &mw, &mask_sprites, &view, &FxMaskFrame::default(), out);
             }

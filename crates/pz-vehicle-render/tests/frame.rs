@@ -509,10 +509,7 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
             &chunks,
             &objects,
             shadow_tex.clone(),
-            pz_render::ScreenParams {
-                desaturation: 0.0,
-                timer: 0.0,
-            },
+            pz_render::ScreenParams::default(),
             Vec::new(),
         );
         let list = pz_render::DrawList { cmds };
