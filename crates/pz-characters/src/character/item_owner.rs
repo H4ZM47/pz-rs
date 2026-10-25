@@ -10,7 +10,8 @@
 //! worn items are ids of those); an item inside a bag in the inventory has
 //! a container without a parent.
 
-use std::rc::Rc;
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
 
 use pz_inventory::context::{ItemPlace, ItemOwner};
 use pz_inventory::env::ItemEnv;
@@ -31,10 +32,10 @@ fn in_bag(i: &pz_inventory::InventoryItem, id: i32) -> bool {
         return false;
     };
     let inner = b.container.borrow();
-    inner.items.iter().any(|r| {
-        let r = r.borrow();
-        r.id == id || in_bag(&r, id)
-    })
+    inner
+        .items
+        .iter()
+        .any(|r| r.try_borrow().is_ok_and(|r| r.id == id || in_bag(&r, id)))
 }
 
 impl CharacterItems {
@@ -46,10 +47,27 @@ impl CharacterItems {
 
     /// The item is in `inventory` or a bag in it.
     pub fn holds(&self, id: i32) -> bool {
-        self.inventory.borrow().items.iter().any(|i| {
-            let i = i.borrow();
-            i.id == id || in_bag(&i, id)
-        })
+        self.inventory
+            .borrow()
+            .items
+            .iter()
+            .any(|i| i.try_borrow().is_ok_and(|i| i.id == id || in_bag(&i, id)))
+    }
+
+    /// [`Self::holds_directly`] for an item value: the item object itself
+    /// (by address, so an item that is being changed through its object
+    /// is not borrowed again) or one with its id.
+    pub fn holds_item(&self, item: &InventoryItem) -> bool {
+        self.inventory
+            .borrow()
+            .items
+            .iter()
+            .any(|r| std::ptr::eq(r.as_ptr(), item) || r.try_borrow().is_ok_and(|r| r.id == item.id))
+    }
+
+    /// [`Self::holds`] for an item value.
+    fn holds_anywhere(&self, item: &InventoryItem) -> bool {
+        self.holds_item(item) || self.holds(item.id)
     }
 }
 
@@ -76,34 +94,34 @@ impl<I> ItemOwner for GameCharacter<I> {
     /// `isEquipped()`: in the inventory and `chr.isEquipped(item)` (worn
     /// or in a hand).
     fn is_equipped(&self, item: &InventoryItem) -> bool {
-        self.items.holds_directly(item.id) && self.items.is_equipped(item.id)
+        self.items.holds_item(item) && self.items.is_equipped(item.id)
     }
     fn is_primary_hand_item(&self, item: &InventoryItem) -> bool {
-        self.items.primary_hand_item == Some(item.id) && self.items.holds_directly(item.id)
+        self.items.primary_hand_item == Some(item.id) && self.items.holds_item(item)
     }
     fn is_secondary_hand_item(&self, item: &InventoryItem) -> bool {
-        self.items.secondary_hand_item == Some(item.id) && self.items.holds_directly(item.id)
+        self.items.secondary_hand_item == Some(item.id) && self.items.holds_item(item)
     }
     /// `Clothing.isWorn()`.
     fn is_worn(&self, item: &InventoryItem) -> bool {
-        self.items.holds_directly(item.id) && self.items.is_worn(item.id)
+        self.items.holds_item(item) && self.items.is_worn(item.id)
     }
     /// `isInPlayerInventory()`: the outermost container is an
     /// `IsoPlayer`'s inventory.
     fn is_in_player_inventory(&self, item: &InventoryItem) -> bool {
-        self.is_player() && self.items.holds(item.id)
+        self.is_player() && self.items.holds_anywhere(item)
     }
     /// `getOutermostContainer() == getContainer()` (both null for an item
     /// the character does not hold).
     fn is_in_outermost_container(&self, item: &InventoryItem) -> bool {
-        !self.items.holds(item.id) || self.items.holds_directly(item.id)
+        !self.items.holds_anywhere(item) || self.items.holds_item(item)
     }
     fn has_container(&self, item: &InventoryItem) -> bool {
-        self.items.holds(item.id)
+        self.items.holds_anywhere(item)
     }
     /// `Clothing.getWetDryState()`'s view of the item's container.
     fn place(&self, item: &InventoryItem) -> ItemPlace {
-        if self.items.holds_directly(item.id) {
+        if self.items.holds_item(item) {
             let env = &self.environment;
             ItemPlace::Character {
                 sheltered_square: env
@@ -118,7 +136,7 @@ impl<I> ItemOwner for GameCharacter<I> {
                     && env.vehicle_has_roof
                     && !env.vehicle_windshield_destroyed,
             }
-        } else if self.items.holds(item.id) {
+        } else if self.items.holds_anywhere(item) {
             ItemPlace::NoParent
         } else {
             ItemPlace::Nowhere
@@ -128,6 +146,61 @@ impl<I> ItemOwner for GameCharacter<I> {
     /// custom temperature, not a fridge or stove).
     fn container_temperature(&self) -> f32 {
         1.0
+    }
+}
+
+/// A shared character as the [`ItemOwner`] of its inventory's parent
+/// (what `item.getContainer().getParent()` answers for when that parent
+/// is the character): every query borrows the character and asks
+/// [`GameCharacter`]'s own [`ItemOwner`]. It holds the character weakly
+/// (the inventory is the character's, so a strong link would be a
+/// cycle); a dropped or currently mutably borrowed character answers as
+/// a container without a parent.
+pub struct CharacterItemOwner<I: 'static>(pub Weak<RefCell<GameCharacter<I>>>);
+
+impl<I: 'static> CharacterItemOwner<I> {
+    pub fn new(chr: &Rc<RefCell<GameCharacter<I>>>) -> Self {
+        CharacterItemOwner(Rc::downgrade(chr))
+    }
+
+    fn ask<R>(&self, default: R, f: impl FnOnce(&GameCharacter<I>) -> R) -> R {
+        match self.0.upgrade() {
+            Some(c) => match c.try_borrow() {
+                Ok(c) => f(&c),
+                Err(_) => default,
+            },
+            None => default,
+        }
+    }
+}
+
+impl<I: 'static> ItemOwner for CharacterItemOwner<I> {
+    fn is_equipped(&self, item: &InventoryItem) -> bool {
+        self.ask(false, |c| ItemOwner::is_equipped(c, item))
+    }
+    fn is_primary_hand_item(&self, item: &InventoryItem) -> bool {
+        self.ask(false, |c| c.is_primary_hand_item(item))
+    }
+    fn is_secondary_hand_item(&self, item: &InventoryItem) -> bool {
+        self.ask(false, |c| c.is_secondary_hand_item(item))
+    }
+    fn is_worn(&self, item: &InventoryItem) -> bool {
+        self.ask(false, |c| ItemOwner::is_worn(c, item))
+    }
+    fn is_in_player_inventory(&self, item: &InventoryItem) -> bool {
+        self.ask(false, |c| c.is_in_player_inventory(item))
+    }
+    fn is_in_outermost_container(&self, item: &InventoryItem) -> bool {
+        self.ask(true, |c| c.is_in_outermost_container(item))
+    }
+    fn has_container(&self, item: &InventoryItem) -> bool {
+        self.ask(true, |c| c.has_container(item))
+    }
+    fn place(&self, item: &InventoryItem) -> ItemPlace {
+        self.ask(ItemPlace::NoParent, |c| c.place(item))
+    }
+    fn container_temperature(&self) -> f32 {
+        self.ask(1.0, <GameCharacter<I> as ItemOwner>::container_temperature)
     }
 }
 
