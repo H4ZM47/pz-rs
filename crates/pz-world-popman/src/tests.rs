@@ -176,11 +176,11 @@ impl ZombieOps for Zombies {
         dir: IsoDirections,
         persistent_id: i32,
         square: (i32, i32, i32),
-    ) -> Option<u32> {
+    ) -> Result<Option<u32>, String> {
         self.ops
             .push(Op::Create(outfit, dir, persistent_id, square));
         self.next += 1;
-        Some(self.next)
+        Ok(Some(self.next))
     }
     fn real_zombie_info(&self, _z: u32) -> Option<RealZombieInfo<u32>> {
         None
@@ -394,6 +394,7 @@ fn zombie_ops_and_rand_are_forwarded() {
         assert_eq!(h.rand().next(9), 5);
         let z = h
             .create_real_zombie(4, IsoDirections::SW, 99, (1, 2, 0))
+            .unwrap()
             .unwrap();
         h.set_position(z, 1.5, 2.5);
         h.sit_against_wall(z, 1.5, 2.5, Some(IsoDirections::N));
@@ -500,7 +501,7 @@ fn manager_sits_a_zombie_against_a_wall_of_the_cell() {
             WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut zs);
         let mut tick = |m: &mut ZombiePopulationManager<u32>| {
             clock.set(clock.get() + 50);
-            m.update_main(&mut host, 1.0, 10.0, &[(0, 0)], 10, &[]);
+            m.update_main(&mut host, 1.0, 10.0, &[(0, 0)], 10, &[]).unwrap();
             m.thread_step();
         };
         for _ in 0..3 {

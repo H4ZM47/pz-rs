@@ -164,8 +164,8 @@ impl ZombieOps for NoZombies {
         _: IsoDirections,
         _: i32,
         _: (i32, i32, i32),
-    ) -> Option<u32> {
-        None
+    ) -> Result<Option<u32>, String> {
+        Ok(None)
     }
     fn real_zombie_info(&self, _: u32) -> Option<pz_world_popman::RealZombieInfo<u32>> {
         None

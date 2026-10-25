@@ -210,18 +210,20 @@ impl<H: Copy + Eq> WorldPopulation<H> {
     /// `MapCollisionData.startGame()`: `updateMain`, the population's
     /// `updateMain`, `n_update`, `updateThread`, `updateMain` and the
     /// population's `updateMain` again, then the thread starts.
-    pub fn start_game<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, frame: &PopulationFrame<'_, H>) {
+    /// `Err` is the exception creating a real zombie threw.
+    pub fn start_game<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, frame: &PopulationFrame<'_, H>) -> Result<(), String> {
         if self.manager.client {
-            return;
+            return Ok(());
         }
-        self.main_update(host, frame);
+        self.main_update(host, frame)?;
         let pm = &mut self.manager;
         pm.mcd.thread_update(&mut pm.native);
         pm.update_thread();
-        self.main_update(host, frame);
+        self.main_update(host, frame)?;
         self.worker.started = true;
         self.manager.mcd.thread_alive = true;
         self.worker.next_pass_ms = self.now();
+        Ok(())
     }
 
     /// `MapCollisionData.updateGameState()`: `paused` is
@@ -231,29 +233,32 @@ impl<H: Copy + Eq> WorldPopulation<H> {
         pm.mcd.update_game_state(&mut pm.native, no_save, paused);
     }
 
-    fn main_update<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, frame: &PopulationFrame<'_, H>) {
+    fn main_update<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, frame: &PopulationFrame<'_, H>) -> Result<(), String> {
         let now = self.now();
         let pm = &mut self.manager;
         if pm.mcd.update_main(now) {
             self.worker.notify();
         }
         let maps = frame.chunk_maps;
-        if pm.update_main(host, frame.multiplier, frame.world_age_hours, &maps.origins, maps.width, frame.real_zombies) {
+        if pm.update_main(host, frame.multiplier, frame.world_age_hours, &maps.origins, maps.width, frame.real_zombies)? {
             self.worker.notify();
         }
+        Ok(())
     }
 
     /// One frame of `IngameState.update`: `MapCollisionData.updateMain()`
     /// then `ZombiePopulationManager.updateMain()` (zombies the library
     /// hands over become real through `host`), then the worker thread's
-    /// pass if it is due.
-    pub fn update<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, frame: &PopulationFrame<'_, H>) {
+    /// pass if it is due. `Err` is the exception creating a real zombie
+    /// threw (the frame's remaining population work is skipped).
+    pub fn update<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, frame: &PopulationFrame<'_, H>) -> Result<(), String> {
         if self.manager.client {
-            return;
+            return Ok(());
         }
-        self.main_update(host, frame);
+        self.main_update(host, frame)?;
         let now = self.now();
         self.worker.run(&mut self.manager, now);
+        Ok(())
     }
 
     /// `MapCollisionData.save()` (the game's periodic and quit saves):

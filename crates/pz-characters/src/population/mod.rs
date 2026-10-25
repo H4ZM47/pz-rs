@@ -148,6 +148,19 @@ pub fn random_skin_color() -> Rgb {
     [r, g, b]
 }
 
+/// [`HumanStyles`] drawing from [`outfit_rng`] without style tables (what
+/// `randomBlood()` / `randomDirt()` read).
+pub struct OutfitRngStyles;
+
+impl HumanStyles for OutfitRngStyles {
+    fn next(&self, bound: i32) -> i32 {
+        outfit_rng::next(bound)
+    }
+    fn next_unit(&self) -> f32 {
+        outfit_rng::next_float(0.0, 1.0)
+    }
+}
+
 /// The statics of the population classes.
 #[derive(Default)]
 pub struct Population {

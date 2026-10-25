@@ -28,7 +28,8 @@ pub struct RealZombie<I: 'static> {
 /// `VirtualZombieManager.createRealZombieAlways(dir, bDead, outfitID,
 /// persistentId)` with a new `IsoZombie` (`zombie.persistentId` stays 0:
 /// `ZombiePopulationManager.registerZombie` is the caller's). `water`
-/// answers `isWaterSquare()`.
+/// answers `isWaterSquare()`. `Err` is the exception the constructor threw
+/// (`SurvivorFactory.CreateSurvivor()` with empty name lists).
 #[allow(clippy::too_many_arguments)]
 pub fn create_real_zombie_always<I: 'static>(
     sm: &ScriptManager,
@@ -40,15 +41,15 @@ pub fn create_real_zombie_always<I: 'static>(
     outfit_id: i32,
     key_spawn_chance_d100: f32,
     spawn: ZombieSpawn<'_, I>,
-) -> Option<RealZombie<I>> {
+) -> pz_scripts::ScriptResult<Option<RealZombie<I>>> {
     if choices.is_empty() {
-        return None;
+        return Ok(None);
     }
     let choice = choices[ctx.rand_next(choices.len() as i32) as usize];
     if water(choice) {
-        return None;
+        return Ok(None);
     }
-    let mut z = GameCharacter::new_zombie(sm, ctx, spawn);
+    let mut z = GameCharacter::new_zombie(sm, ctx, spawn)?;
     z.zombie.dress_in_random_outfit = outfit_id == 0;
     z.zombie.persistent_outfit_id = outfit_id;
     z.zombie.persistent_id = 0;
@@ -84,14 +85,14 @@ pub fn create_real_zombie_always<I: 'static>(
         z.set_forward_iso_direction(d);
         z.set_fake_dead(ctx, false);
         z.health = 0.0;
-        return Some(RealZombie { zombie: z, square: choice, spawn_building_key: false });
+        return Ok(Some(RealZombie { zombie: z, square: choice, spawn_building_key: false }));
     }
     if ctx.is_client() {
         z.zombie.remote = true;
     }
     let roll = ctx.rand_next(100).min(ctx.rand_next(100));
     let key = (roll as f32) < key_spawn_chance_d100;
-    Some(RealZombie { zombie: z, square: choice, spawn_building_key: key })
+    Ok(Some(RealZombie { zombie: z, square: choice, spawn_building_key: key }))
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -212,10 +213,8 @@ pub struct RealZombies<'a, I: 'static> {
     pub zombies: &'a mut Vec<GameCharacter<I>>,
     /// The next `IsoMovingObject` id.
     pub next_id: &'a mut i32,
-    /// `SurvivorFactory.CreateSurvivor()`.
-    pub create_survivor: &'a mut dyn FnMut() -> SurvivorDescRef<I>,
-    /// `humanVisual.randomBlood()`.
-    pub random_blood: &'a mut dyn FnMut(),
+    /// `SurvivorFactory.CreateSurvivor()` (`Err`: the exception it threw).
+    pub create_survivor: &'a mut dyn FnMut() -> pz_scripts::ScriptResult<SurvivorDescRef<I>>,
     /// `isWaterSquare()`.
     pub water: &'a dyn Fn((i32, i32, i32)) -> bool,
     /// `getKeySpawnChanceD100()`.
@@ -284,9 +283,14 @@ impl<I: 'static> pz_world_popman::ZombieOps for RealZombies<'_, I> {
     /// `choices = [square]` (the outfit id is the outfit system's; 0 dresses
     /// in a random outfit). `persistentId` goes to `registerZombie`, which
     /// the population manager calls next ([`Self::set_persistent_id`]).
-    fn create_real_zombie(&mut self, outfit: i32, dir: IsoDirections, _persistent_id: i32, square: (i32, i32, i32)) -> Option<i32> {
-        let spawn = ZombieSpawn { descriptor: None, create_survivor: &mut *self.create_survivor, random_blood: &mut *self.random_blood };
-        let r = create_real_zombie_always(self.sm, self.ctx, &[square], self.water, dir, false, outfit, self.key_spawn_chance_d100, spawn)?;
+    /// `Err` is the Java exception the constructor threw.
+    fn create_real_zombie(&mut self, outfit: i32, dir: IsoDirections, _persistent_id: i32, square: (i32, i32, i32)) -> Result<Option<i32>, String> {
+        let spawn = ZombieSpawn { descriptor: None, create_survivor: &mut *self.create_survivor };
+        let r = create_real_zombie_always(self.sm, self.ctx, &[square], self.water, dir, false, outfit, self.key_spawn_chance_d100, spawn)
+            .map_err(|e| e.to_string())?;
+        let Some(r) = r else {
+            return Ok(None);
+        };
         let mut z = r.zombie;
         *self.next_id += 1;
         z.id = *self.next_id;
@@ -295,7 +299,7 @@ impl<I: 'static> pz_world_popman::ZombieOps for RealZombies<'_, I> {
         }
         let id = z.id;
         self.zombies.push(z);
-        Some(id)
+        Ok(Some(id))
     }
     fn real_zombie_info(&self, z: i32) -> Option<RealZombieInfo<i32>> {
         let z = self.zombies.iter().find(|c| c.id == z)?;

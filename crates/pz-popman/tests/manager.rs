@@ -50,10 +50,10 @@ impl PopulationHost for Host {
         &mut self.rand
     }
 
-    fn create_real_zombie(&mut self, outfit: i32, _dir: IsoDirections, persistent_id: i32, square: (i32, i32, i32)) -> Option<u32> {
+    fn create_real_zombie(&mut self, outfit: i32, _dir: IsoDirections, persistent_id: i32, square: (i32, i32, i32)) -> Result<Option<u32>, String> {
         self.created.push((outfit, persistent_id, square));
         self.next += 1;
-        Some(self.next)
+        Ok(Some(self.next))
     }
 
     fn real_zombie_info(&self, z: u32) -> Option<RealZombieInfo<u32>> {
@@ -156,7 +156,7 @@ fn chunk_load_makes_zombies_real_and_unload_stores_them() {
     m.native.n_add_zombie(28.5, 29.5, 0.0, 4, 0, state, i32::MIN, i32::MIN, 0);
     let tick = |m: &mut ZombiePopulationManager<u32>, host: &mut Host| {
         clock.set(clock.get() + 50);
-        m.update_main(host, 1.0, 10.0, &[(0, 0)], 10, &reals);
+        m.update_main(host, 1.0, 10.0, &[(0, 0)], 10, &reals).unwrap();
         m.thread_step();
     };
     for _ in 0..3 {

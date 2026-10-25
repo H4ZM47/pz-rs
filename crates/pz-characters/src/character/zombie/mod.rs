@@ -431,10 +431,9 @@ pub struct ZombieSpawn<'a, I: 'static> {
     /// `create_survivor` (`SurvivorFactory.CreateSurvivor()`) and draws the
     /// palette.
     pub descriptor: Option<(SurvivorDescRef<I>, i32)>,
-    /// `SurvivorFactory.CreateSurvivor()`.
-    pub create_survivor: &'a mut dyn FnMut() -> SurvivorDescRef<I>,
-    /// `humanVisual.randomBlood()` (the visual's draws).
-    pub random_blood: &'a mut dyn FnMut(),
+    /// `SurvivorFactory.CreateSurvivor()`; `Err` is the exception it
+    /// throws (an empty name list: `IndexOutOfBoundsException`).
+    pub create_survivor: &'a mut dyn FnMut() -> pz_scripts::ScriptResult<SurvivorDescRef<I>>,
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -444,20 +443,25 @@ impl<I: 'static> GameCharacter<I> {
     /// speed, `initCanCrawlUnderVehicle`). The action group is the
     /// caller's (`ActionGroup.getActionGroup("zombie")`);
     /// [`Self::initialize_zombie_states`] registers the states.
-    pub fn new_zombie(sm: &ScriptManager, ctx: &dyn SimContext, spawn: ZombieSpawn<'_, I>) -> Self {
+    ///
+    /// The zombie gets its `HumanVisual` (`randomBlood()` draws from
+    /// `OutfitRNG`). `Err` is the exception `CreateSurvivor()` threw.
+    pub fn new_zombie(sm: &ScriptManager, ctx: &dyn SimContext, spawn: ZombieSpawn<'_, I>) -> pz_scripts::ScriptResult<Self> {
         let mut z = GameCharacter::new(sm, CharacterKind::Zombie);
         z.health = 1.8 + ctx.rand_next_float(0.0, 0.3);
         z.zombie.weight = 0.7;
         let dir = IsoDirections::ALL[ctx.rand_next(8) as usize];
         z.set_forward_iso_direction(dir);
-        (spawn.random_blood)();
+        let mut hv = pz_inventory::visual::HumanVisual::new(crate::character::items::blood_part::MAX);
+        hv.random_blood(&crate::population::OutfitRngStyles);
+        z.human_visual = Some(hv);
         match spawn.descriptor {
             Some((d, palette)) => {
                 z.descriptor = Some(d);
                 z.zombie.palette = palette;
             }
             None => {
-                z.descriptor = Some((spawn.create_survivor)());
+                z.descriptor = Some((spawn.create_survivor)()?);
                 z.zombie.palette = ctx.rand_next(3) + 1;
             }
         }
@@ -484,7 +488,7 @@ impl<I: 'static> GameCharacter<I> {
         z.zombie.width = 0.3;
         z.zombie.hurt_sound = format!("{}Hurt", z.voice_prefix());
         z.clear_aggro_list();
-        z
+        Ok(z)
     }
 
     /// `getDescriptor().getVoicePrefix()`.

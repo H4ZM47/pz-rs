@@ -318,6 +318,10 @@ impl GameTime {
     pub fn get_delta_minutes_per_day(&self) -> f32 {
         30.0 / self.minutes_per_day
     }
+    /// `getNight()`: the climate's night strength.
+    pub fn get_night(&self) -> f32 {
+        self.climate.get_night_strength()
+    }
     pub fn get_night_min(&self) -> f32 {
         1.0 - self.night_min
     }
