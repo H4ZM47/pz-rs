@@ -34,6 +34,7 @@ pz-pathfind = { path = "crates/pz-pathfind" }
 pz-worldgen = { path = "crates/pz-worldgen" }
 pz-audio = { path = "crates/pz-audio" }
 pz-world-sound = { path = "crates/pz-world-sound" }
+pz-popman = { path = "crates/pz-popman" }
 indexmap = "2"
 jiff = "0.2"
 macroquad = { version = "0.4", default-features = false }

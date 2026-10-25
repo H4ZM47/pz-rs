@@ -23,24 +23,25 @@ pub mod bind_joypad;
 pub mod bind_items;
 pub mod bind_iso_enums;
 pub mod bind_java_util;
+pub mod bind_misc;
+pub mod bind_misc_classes;
 pub mod bind_mods;
 pub mod bind_nutrition;
+pub mod bind_popman;
 pub mod bind_registry;
+pub mod bind_render;
+pub mod bind_sandbox;
+pub mod bind_save;
 pub mod bind_scripts;
 pub mod bind_skills;
 pub mod bind_states;
 pub mod bind_ui;
 pub mod bind_fs;
 pub mod bind_global_objects;
-pub mod bind_misc;
-pub mod bind_misc_classes;
 pub mod bind_map_symbols;
-pub mod bind_render;
-pub mod bind_sandbox;
 pub mod bind_server;
 pub mod bind_text;
 pub mod bind_map_groups;
-pub mod bind_save;
 pub mod bind_world;
 pub mod bind_climate;
 pub mod events;
@@ -75,6 +76,12 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_debug::register(&mut mgr.thread);
     bind_erosion::register(&mut mgr.thread);
     bind_items::register(&mut mgr.thread);
+    bind_misc::register(&mut mgr.thread, mgr.fs.clone(), mgr.events.clone());
+    bind_sandbox::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
+    {
+        let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
+        bind_misc_classes::register(&mut mgr.thread, jar.as_ref());
+    }
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());
     // Before bind_scripts, whose enum fallbacks skip classes registered here.
@@ -94,17 +101,12 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_map_symbols::register(mgr);
     bind_world::register(&mut mgr.thread);
     bind_map_groups::register(&mut mgr.thread, move || fs.borrow().media_file("maps"));
-    bind_misc::register(&mut mgr.thread, mgr.fs.clone(), mgr.events.clone());
-    bind_sandbox::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
     bind_server::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());
-    {
-        let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
-        bind_misc_classes::register(&mut mgr.thread, jar.as_ref());
-    }
     bind_audio::register(&mut mgr.thread);
     bind_joypad::register(mgr);
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
+    bind_popman::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
     bind_character_sim::install_event_sink(sink.clone());

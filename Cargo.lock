@@ -1775,6 +1775,7 @@ dependencies = [
  "pz-input",
  "pz-inventory",
  "pz-kahlua",
+ "pz-popman",
  "pz-render",
  "pz-sandbox",
  "pz-scripts",
@@ -1802,6 +1803,15 @@ dependencies = [
  "pz-classfile",
  "pz-clipper6",
  "pz-fs",
+ "pz-world",
+]
+
+[[package]]
+name = "pz-popman"
+version = "0.1.0"
+dependencies = [
+ "pz-fs",
+ "pz-sandbox",
  "pz-world",
 ]
 
