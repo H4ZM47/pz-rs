@@ -419,8 +419,8 @@ impl Bullet {
         fixed_time_step: f32,
         cb: &mut dyn JavaCallbacks,
     ) {
-        let mut real = BULLET
-            .with(|b| std::mem::replace(&mut *b.borrow_mut(), Box::new(Deferring::default())));
+        let mut real =
+            BULLET.with(|b| std::mem::replace(&mut *b.borrow_mut(), Box::new(Deferring)));
         let r = real.step_simulation(time_step, max_sub_steps, fixed_time_step, cb);
         let queued = BULLET.with(|b| std::mem::replace(&mut *b.borrow_mut(), real));
         if let Err(e) = r {

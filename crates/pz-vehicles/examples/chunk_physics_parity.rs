@@ -22,6 +22,9 @@ use pz_world::{
     ObjectTables, SpriteTables, WorldGenBounds,
 };
 
+/// A `ToBullet` record: `(wx, wy, level)` and the buffer.
+type Record = ((i32, i32, i32), Vec<u8>);
+
 struct Rand(JavaRandom);
 impl GameRand for Rand {
     fn next(&mut self, max: i32) -> i32 {
@@ -96,35 +99,6 @@ fn main() {
     }
     println!("chunks whose level range differs={level_diffs}");
 
-    if std::env::var_os("CP_DEBUG").is_some() {
-        let v: Vec<usize> = std::env::var("CP_DEBUG")
-            .unwrap()
-            .split(',')
-            .map(|s| s.parse().unwrap())
-            .collect();
-        let (wx, wy) = chunks[v[0]];
-        let sq = cell.chunks[&(wx, wy)]
-            .get_grid_square(v[1] as i32, v[2] as i32, 0)
-            .unwrap();
-        let m = &sprites;
-        println!(
-            "dbg tree_type={} move={} tree_prop={:?} wind={:?}",
-            sq.has_type(m.tables.ty.tree),
-            sq.has_type(m.tables.ty.isMoveAbleObject),
-            sq.properties.get(&m.alias, "tree"),
-            sq.properties.get(&m.alias, "WindType")
-        );
-        for o in &sq.objects {
-            let s = o.sprite.map(|i| &m.sprites[i]);
-            println!(
-                "  obj {:?} {:?} tree={:?} wind={:?}",
-                s.and_then(|s| s.name.clone()),
-                s.map(|s| m.tables.object_type_name(s.tile_type)),
-                s.and_then(|s| m.prop(s, "tree")),
-                s.and_then(|s| m.prop(s, "WindType"))
-            );
-        }
-    }
     let data = std::fs::read(region.join("tobullet.bin")).unwrap();
     let mut expect = Vec::new();
     let mut p = 0;
@@ -195,7 +169,7 @@ fn main() {
     let Ok(objs) = std::fs::read_to_string(region.join("objects.txt")) else {
         return;
     };
-    let shapes_of = |recs: &[((i32, i32, i32), Vec<u8>)]| {
+    let shapes_of = |recs: &[Record]| {
         let mut m = std::collections::HashMap::new();
         for ((wx, wy, z), b) in recs {
             let mut q = 11;

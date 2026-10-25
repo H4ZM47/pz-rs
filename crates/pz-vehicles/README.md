@@ -6,8 +6,12 @@ Project Zomboid's vehicle runtime (`zombie.vehicles`, the vehicle side of
 - `vehicle`, `part`, `engine`, `geometry`, `poly`: `BaseVehicle`,
   `VehiclePart`, `VehicleEngine`, polygons, areas, passenger positions.
 - `controller`, `world_sim`, `physics`: `CarController`, `WorldSimulation`
-  and the `VehiclePhysics` trait (one method per Bullet native);
+  and the `VehiclePhysics` trait (one method per Bullet native, with the
+  natives' Java exceptions and the `stepSimulation` callbacks);
+  `physics::bullet` implements it on `pz_bullet::PzBullet`,
   `physics::replay` answers calls from a recorded log.
+- `chunk_physics`: `IsoChunk.updatePhysicsForLevel` / `calcPhysics` (the
+  `ToBullet` chunk shapes) and the `physicsCheck` flags.
 - `manager`, `vehicle_type`, `spawn`: the vehicle id map and cell lists,
   `VehicleType`, `IsoChunk.AddVehicles` (`SpawnWorld`, `CellSpawnWorld`).
 - `cell_link`: runtime vehicles in pz-world's `IsoChunk.vehicles`.
@@ -25,8 +29,11 @@ Project Zomboid's vehicle runtime (`zombie.vehicles`, the vehicle side of
 runs (a local JVM harness with a recording Bullet stand-in, fake clock and
 scripted driving; nothing from it is in the repository) and compares every
 per-frame dump field and Bullet call. Modes: saved `vehicles.db` rows, one
-new vehicle per script (`--scripts`), single-zone spawning (`--spawn`) and
-`AddVehicles` end to end (`--dispatch`).
+new vehicle per script (`--scripts`), single-zone spawning (`--spawn`),
+`AddVehicles` end to end (`--dispatch`) and `--e2e`: the original with the
+real libPZBullet in the JVM against this crate on pz-bullet, on a
+Muldraugh region's chunk shapes. `examples/chunk_physics_parity.rs`
+compares the chunk shapes with the original's buffers.
 
 | Track | Result |
 |---|---|
@@ -34,3 +41,5 @@ new vehicle per script (`--scripts`), single-zone spawning (`--spawn`) and
 | Vehicle scripts | 241/241 exact |
 | Spawn helpers | 3,000/3,000 |
 | `AddVehicles` | 2,000/2,000 |
+| End to end on pz-bullet vs libPZBullet, 241 scripts, 400 frames | 240/241 exact; 1 matches up to the harness's missing world-sound native |
+| Chunk shapes, 4 regions | 114,529/114,529 squares that load the same objects |

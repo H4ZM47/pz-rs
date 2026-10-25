@@ -495,8 +495,8 @@ mod tests {
     fn replay_answers_and_flags_mismatches() {
         let mut p =
             ReplayPhysics::from_log("B getVehicleCount = i2\nB controlVehicle i1 f0 f0 f0\n");
-        assert_eq!(p.get_vehicle_count(), 2);
-        p.control_vehicle(1, 1.0, 0.0, 0.0);
+        assert_eq!(p.get_vehicle_count(), Ok(2));
+        p.control_vehicle(1, 1.0, 0.0, 0.0).unwrap();
         assert_eq!(p.mismatches().len(), 1);
         assert_eq!(p.remaining(), 0);
     }

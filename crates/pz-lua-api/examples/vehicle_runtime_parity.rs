@@ -635,7 +635,8 @@ fn main() {
         script: Option<String>,
     }
     let mut cases = Vec::new();
-    if a[5] == "--scripts" {
+    let e2e = a[5] == "--e2e";
+    if a[5] == "--scripts" || e2e {
         let mut i = 1;
         while oracle.join(format!("s{i}")).exists() {
             let dir = oracle.join(format!("s{i}"));
@@ -648,7 +649,11 @@ fn main() {
                 cases.push(Case {
                     id: i,
                     dir,
-                    chunk: (1250 + i % 7, 1100 + i / 7),
+                    chunk: if e2e {
+                        (1348 + i % 8, 1203 + (i / 8) % 8)
+                    } else {
+                        (1250 + i % 7, 1100 + i / 7)
+                    },
                     saved: None,
                     bounds: Vec::new(),
                     script,
@@ -696,13 +701,29 @@ fn main() {
             });
         }
     }
+    // `--e2e`: pz-bullet with the region's chunk shapes instead of the
+    // recorded calls (the harness ran the original's libPZBullet).
+    let region_bufs: Vec<Vec<u8>> = if e2e {
+        let region = std::env::var("E2E_REGION").expect("E2E_REGION");
+        let data = std::fs::read(Path::new(&region).join("tobullet.bin")).unwrap();
+        let mut out = Vec::new();
+        let mut p = 0;
+        while p < data.len() {
+            let n = i32::from_le_bytes(data[p + 12..p + 16].try_into().unwrap()) as usize;
+            out.push(data[p + 16..p + 16 + n].to_vec());
+            p += 16 + n;
+        }
+        out
+    } else {
+        Vec::new()
+    };
     let mut totals = (0usize, 0usize, 0usize, 0usize, 0usize);
     for case in cases {
         let id = case.id;
         let Ok(java_dump) = std::fs::read_to_string(case.dir.join("dump.txt")) else {
             continue;
         };
-        let blog = std::fs::read_to_string(case.dir.join("bullet.log")).unwrap();
+        let blog = std::fs::read_to_string(case.dir.join("bullet.log")).unwrap_or_default();
         let java_lines: Vec<&str> = java_dump
             .lines()
             .filter(|l| l.starts_with('V') || l.starts_with('E') || l.starts_with("D loadDraws"))
@@ -718,12 +739,37 @@ fn main() {
         let times: Vec<&str> = java_dump.lines().filter(|l| l.starts_with("F ")).collect();
         let mut rust_lines: Vec<String> = Vec::new();
         let replay = ReplayPhysics::from_log(&blog);
-        Bullet::install(Box::new(replay.clone()));
+        if e2e {
+            let script = case.script.clone().unwrap_or_default();
+            let params = pz_vehicles::vehicle::find_vehicle_script(&script)
+                .and_then(|s| s.borrow().bullet_params().map(|p| p.to_vec()));
+            // Each case ends by installing `NoPhysics`: a new PzBullet per
+            // case (the scripts the case uses are defined below).
+            Bullet::install(Box::new(pz_bullet::api::PzBullet::new()));
+            Bullet::call(|b| {
+                b.destroy_world();
+                b.init_world(-250, -250, 250, 250, -64000, -64000, false)?;
+                b.activate_chunk_map(0, 1345, 1200, 15)?;
+                for buf in &region_bufs {
+                    b.to_bullet(buf);
+                }
+                if let Some(p) = &params {
+                    b.define_vehicle_script(&script, p)?;
+                }
+                Ok(())
+            });
+        } else {
+            Bullet::install(Box::new(replay.clone()));
+        }
         let frames = times.len() as i32 - 1;
         pz_vehicles::lua::with_thread(&mut lua.thread, || {
             manager::reset();
             world_sim::reset();
-            world_sim::set_created(0.0, 0.0);
+            if e2e {
+                world_sim::set_created(-64000.0, -64000.0);
+            } else {
+                world_sim::set_created(0.0, 0.0);
+            }
             rand::seed_standard(id as i64);
             rand::seed_lua(id as i64 * 31 + 7);
             apply_time(times[0]);
@@ -822,7 +868,11 @@ fn main() {
             v.remove_from_world();
         });
         Bullet::install(Box::new(pz_vehicles::physics::NoPhysics));
-        let (mism, remaining) = (replay.mismatches(), replay.remaining());
+        let (mism, remaining) = if e2e {
+            (Vec::new(), 0)
+        } else {
+            (replay.mismatches(), replay.remaining())
+        };
         let rust_draws = rust_lines
             .iter()
             .find(|l| l.starts_with("D loadDraws"))
@@ -891,6 +941,9 @@ fn main() {
             remaining,
             pz_vehicles::lua::take_errors().len()
         );
+        for e in pz_vehicles::physics::take_exceptions().iter().take(3) {
+            println!("  physics exception: {e}");
+        }
         for e in pz_vehicles::lua::take_errors().iter().take(2) {
             println!("  lua: {}", e.lines().next().unwrap_or(""));
         }

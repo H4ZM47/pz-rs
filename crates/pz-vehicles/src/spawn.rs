@@ -942,6 +942,6 @@ mod tests {
             points: vec![0, 0, 3, 4, 3, 10],
             polyline_width: 0,
         };
-        assert_eq!(polyline_length(&z), 11.0);
+        assert_eq!(super::polyline_length(&z), 11.0);
     }
 }

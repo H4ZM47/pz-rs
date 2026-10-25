@@ -99,6 +99,13 @@ Status of the Rust port. Update this file with every merged change.
   headless; all 241 vanilla vehicle scripts as new vehicles are
   bit-exact; 3,000 single-zone spawns and 2,000 `AddVehicles` runs on
   synthetic zone lists give the original's vehicles and `Rand` state.
+  End to end on pz-bullet (`VehiclePhysics` for `PzBullet`, with the
+  natives' exceptions and step callbacks), against the original running
+  the real libPZBullet on a Muldraugh region's chunk shapes: 240 of 241
+  vehicle scripts are bit-exact for 400 driven frames (the other matches
+  until the harness lacks a world-sound native). `IsoChunk
+  .updatePhysicsForLevel` gives the original's `ToBullet` shapes for every
+  one of 114,529 squares of four regions that load the same objects.
   Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
