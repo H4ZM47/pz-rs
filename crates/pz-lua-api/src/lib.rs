@@ -44,6 +44,7 @@ pub mod bind_sandbox;
 pub mod bind_save;
 pub mod bind_scripts;
 pub mod bind_skills;
+pub mod bind_survival_guide;
 pub mod bind_states;
 pub mod bind_zombie;
 pub mod bind_zombie_outfits;
@@ -111,6 +112,10 @@ pub fn register_all(mgr: &mut LuaManager) {
     }
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());
+    {
+        let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
+        bind_survival_guide::register(&mut mgr.thread, jar.as_ref());
+    }
     // Before bind_scripts, whose enum fallbacks skip classes registered here.
     bind_body_damage::register_shared(&mut mgr.thread);
     bind_states::register_shared(&mut mgr.thread);
