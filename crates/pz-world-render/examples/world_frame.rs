@@ -224,10 +224,7 @@ fn main() {
             height: h,
         },
         &chunks,
-        pz_render::ScreenParams {
-            desaturation: 0.0,
-            timer: 0.0,
-        },
+        pz_render::ScreenParams::default(),
     );
     let list = pz_render::DrawList { cmds };
     let mut gpu = pz_gpu::Gpu::new_headless(w, h).expect("gpu");

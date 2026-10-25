@@ -193,7 +193,7 @@ fn screen_pass_grades_the_offscreen_buffer() {
     dl.cmds.push(DrawCmd::OffscreenBegin { width: 16, height: 8 });
     dl.render_rect(0, 0, 16, 8, Rgba(0.6, 0.4, 0.2, 1.0));
     dl.cmds.push(DrawCmd::OffscreenEnd);
-    dl.cmds.push(DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: 16.0, h: 8.0, tex: [0.0, 0.0, 16.0, 8.0], params: pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 } });
+    dl.cmds.push(DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: 16.0, h: 8.0, tex: [0.0, 0.0, 16.0, 8.0], params: pz_render::ScreenParams::default() });
     g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
     let p = g.read_pixels();
     let got = px(&p, 16, 8, 4);
@@ -209,7 +209,7 @@ fn screen_pass_keeps_orientation() {
     dl.render_rect(0, 0, 16, 8, Rgba(1.0, 0.0, 0.0, 1.0));
     dl.render_rect(0, 8, 16, 8, Rgba(0.0, 0.0, 1.0, 1.0));
     dl.cmds.push(DrawCmd::OffscreenEnd);
-    dl.cmds.push(DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: 16.0, h: 16.0, tex: [0.0, 0.0, 16.0, 16.0], params: pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 } });
+    dl.cmds.push(DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: 16.0, h: 16.0, tex: [0.0, 0.0, 16.0, 16.0], params: pz_render::ScreenParams::default() });
     g.render_frame(&[(opaque_black(16, 16), &dl)], &mut tm);
     let p = g.read_pixels();
     let (top, bottom) = (px(&p, 16, 8, 2), px(&p, 16, 8, 13));

@@ -259,7 +259,7 @@ fn viewport_offsets_place_a_players_quarter() {
         // Core.RenderOffScreenBuffer over the whole screen.
         DrawCmd::Viewport { x: 0, y: 0, width: n, height: n },
         DrawCmd::Ortho { left: 0.0, right: n as f32, bottom: n as f32, top: 0.0, width: n, height: n },
-        DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: n as f32, h: n as f32, tex: [0.0, 0.0, n as f32, n as f32], params: pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 } },
+        DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: n as f32, h: n as f32, tex: [0.0, 0.0, n as f32, n as f32], params: pz_render::ScreenParams::default() },
     ]);
     g.render_frame(&[(FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..FrameParams::ui(n, n) }, &dl)], &mut tm);
     let px = g.read_pixels();

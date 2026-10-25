@@ -409,10 +409,7 @@ fn player_frame(game: &Path, damaged: bool) {
             &chunks,
             &objects,
             shadow_tex.clone(),
-            pz_render::ScreenParams {
-                desaturation: 0.0,
-                timer: 0.0,
-            },
+            pz_render::ScreenParams::default(),
             Vec::new(),
         );
         let list = pz_render::DrawList { cmds };
@@ -714,7 +711,7 @@ fn corpse_and_floor_items() {
             &chunks,
             &objects,
             shadow_tex.clone(),
-            pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 },
+            pz_render::ScreenParams::default(),
             pre,
         );
         let list = pz_render::DrawList { cmds };
@@ -1051,7 +1048,7 @@ fn ragdolled_corpse_beside_death_anim_corpse() {
             &chunks,
             &objects,
             shadow_tex.clone(),
-            pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 },
+            pz_render::ScreenParams::default(),
             pre,
         );
         let list = pz_render::DrawList { cmds };
@@ -1306,7 +1303,7 @@ fn outlines_bloody_knife_and_mug_with_liquid() {
         let objects = FrameObjects { players: vec![me], items, moving: vec![za, zb], ..Default::default() };
         let r = ChunkRenderer::new(cam, &depth_maps, (w, h));
         let chunks = [ChunkLevels { texture: ChunkTexture::new(1, 1, 0, 0, 0), levels: vec![(0, level)], dirty: true }];
-        let cmds = world_frame_with_objects(&r, FrameSize { width: w, height: h }, &chunks, &objects, shadow_tex.clone(), pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 }, pre);
+        let cmds = world_frame_with_objects(&r, FrameSize { width: w, height: h }, &chunks, &objects, shadow_tex.clone(), pz_render::ScreenParams::default(), pre);
         assert!(cmds.iter().any(|c| matches!(c, pz_render::DrawCmd::OutlineBlit)));
         let list = pz_render::DrawList { cmds };
         gpu.render_frame(&[(pz_gpu::FrameParams::ui(w, h), &list)], &mut loader.tm.borrow_mut());
@@ -1495,9 +1492,12 @@ fn mannequin_animal_corpse_and_object_outlines() {
         let objects = FrameObjects { corpse_shadows, mannequins, corpses, items, object_outlines, chunk_models, ..Default::default() };
         let r = ChunkRenderer::new(cam, &depth_maps, (vw, vh));
         let chunks = [ChunkLevels { texture: chunk, levels: vec![(0, level)], dirty: true }];
-        let cmds = world_frame_for_player(&r, FrameSize { width: vw, height: vh }, view, &chunks, &objects, shadow_tex.clone(), pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 }, pre);
+        let cmds = world_frame_for_player(&r, FrameSize { width: vw, height: vh }, view, &chunks, &objects, shadow_tex.clone(), pz_render::ScreenParams::default(), pre);
         let list = pz_render::DrawList { cmds };
-        gpu.render_frame(&[(pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(w, h) }, &list)], &mut loader.tm.borrow_mut());
+        // Each player's screen pass draws only its half: the second keeps
+        // the first's.
+        let clear = if view.is_some_and(|v| v.player > 0) { None } else { Some([0.0, 0.0, 0.0, 1.0]) };
+        gpu.render_frame(&[(pz_gpu::FrameParams { clear, ..pz_gpu::FrameParams::ui(w, h) }, &list)], &mut loader.tm.borrow_mut());
         assert_eq!(gpu.error(), None);
         if name.is_empty() {
             continue;

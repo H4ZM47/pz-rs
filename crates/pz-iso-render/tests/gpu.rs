@@ -139,7 +139,7 @@ fn world_frame_reaches_the_screen() {
     let mut level = [None; 64];
     level[36] = Some(&sq);
     let chunks = [pz_iso_render::frame::ChunkLevels { texture: ChunkTexture::new(0, 0, 0, 0, 0), levels: vec![(0, level)], dirty: true }];
-    let cmds = pz_iso_render::frame::world_frame(&r, pz_iso_render::frame::FrameSize { width: 256, height: 128 }, &chunks, pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 });
+    let cmds = pz_iso_render::frame::world_frame(&r, pz_iso_render::frame::FrameSize { width: 256, height: 128 }, &chunks, pz_render::ScreenParams::default());
     let list = pz_render::DrawList { cmds };
     gpu.render_frame(&[(pz_gpu::FrameParams::ui(256, 128), &list)], &mut tm);
     let p = gpu.read_pixels();

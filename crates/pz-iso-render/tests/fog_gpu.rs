@@ -171,10 +171,7 @@ fn render(
         &FrameObjects::default(),
         None,
         &mut extras,
-        pz_render::ScreenParams {
-            desaturation: 0.0,
-            timer: 0.0,
-        },
+        pz_render::ScreenParams::default(),
         Vec::new(),
         &mut |_| {},
     );

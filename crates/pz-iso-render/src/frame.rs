@@ -149,13 +149,26 @@ impl PlayerView {
         let oh = if self.num_players > 2 { sh / 2 } else { sh };
         [ow * (self.player % 2), if self.player >= 2 { oh } else { 0 }, ow, oh]
     }
+
+    /// `IsoCamera.getScreenLeft/Top/Width/Height(player)`: the player's
+    /// part of the window, top-down (left half the window for players 1
+    /// and 3, top half for 2 and 3, whatever the player count).
+    pub fn screen_rect(&self) -> [u32; 4] {
+        let (sw, sh) = self.screen;
+        let left = if self.player == 1 || self.player == 3 { sw / 2 } else { 0 };
+        let top = if self.player == 2 || self.player == 3 { sh / 2 } else { 0 };
+        let w = if self.num_players > 1 { sw / 2 } else { sw };
+        let h = if self.num_players > 2 { sh / 2 } else { sh };
+        [left, top, w, h]
+    }
 }
 
 /// [`world_frame_with_objects`] for one player of a split screen (`size`
 /// is the player's part of the screen): the world draws inside the
 /// player's viewport of the shared offscreen buffer (as large as the whole
-/// screen), the outline passes inside its screen rectangle, and the whole
-/// buffer then goes to the screen.
+/// screen), the outline passes inside its screen rectangle, and the
+/// screen pass draws that rectangle of the buffer with the player's
+/// `screen` values (`MultiTextureFBO2.render`'s per-player loop).
 #[allow(clippy::too_many_arguments)]
 pub fn world_frame_for_player(r: &ChunkRenderer<'_>, size: FrameSize, view: Option<PlayerView>, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, out: Vec<DrawCmd>) -> Vec<DrawCmd> {
     world_frame_for_player_with(r, size, view, chunks, objects, drop_shadow, screen, out, &mut |_| {})
@@ -353,7 +366,11 @@ pub fn world_frame_for_player_extras(r: &ChunkRenderer<'_>, size: FrameSize, vie
         out.push(DrawCmd::Viewport { x: 0, y: 0, width: w, height: h });
     }
     out.push(DrawCmd::Ortho { left: 0.0, right: w as f32, bottom: h as f32, top: 0.0, width: w, height: h });
-    out.push(DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: w as f32, h: h as f32, tex: [0.0, 0.0, w as f32, h as f32], params: screen });
+    // MultiTextureFBO2.render: each player's screen rectangle from the
+    // same texels (`rendershader2(sx, sy, sw, sh, sx, sy, sw, sh)`) with
+    // that player's WeatherShader values.
+    let [sx, sy, sw, sh] = view.map_or([0, 0, w, h], |v| v.screen_rect()).map(|v| v as f32);
+    out.push(DrawCmd::ScreenPass { x: sx, y: sy, w: sw, h: sh, tex: [sx, sy, sw, sh], params: screen });
     out.push(DrawCmd::GlEnable(gl::BLEND));
     out
 }
@@ -377,6 +394,33 @@ mod tests {
         }
     }
 
+    /// `IsoCamera.getScreenLeft/Top/Width/Height` per player.
+    #[test]
+    fn player_screen_rects() {
+        let v = |player, num_players| PlayerView { player, num_players, screen: (1280, 720) }.screen_rect();
+        assert_eq!(v(0, 1), [0, 0, 1280, 720]);
+        assert_eq!([v(0, 2), v(1, 2)], [[0, 0, 640, 720], [640, 0, 640, 720]]);
+        assert_eq!([v(2, 4), v(3, 4)], [[0, 360, 640, 360], [640, 360, 640, 360]]);
+        // Player 2 of three: the bottom-left quarter.
+        assert_eq!(v(2, 3), [0, 360, 640, 360]);
+    }
+
+    /// Each player's screen pass covers its own rectangle, from the same
+    /// texels, with its own values.
+    #[test]
+    fn split_screen_pass_covers_the_player_rectangle() {
+        let view = PlayerView { player: 1, num_players: 2, screen: (640, 480) };
+        let cam = Camera::player(10.5, 10.5, 0.0, 320, 480, 1.0);
+        let r = ChunkRenderer::new(cam, &NoMaps, (320, 480));
+        let screen = ScreenParams { desaturation: 0.25, offscreen_left: 320.0, ..ScreenParams::default() };
+        let cmds = world_frame_for_player(&r, FrameSize { width: 320, height: 480 }, Some(view), &[], &FrameObjects::default(), None, screen, Vec::new());
+        let pass = cmds.iter().find_map(|c| match c {
+            DrawCmd::ScreenPass { x, y, w, h, tex, params } => Some(([*x, *y, *w, *h], *tex, *params)),
+            _ => None,
+        });
+        assert_eq!(pass, Some(([320.0, 0.0, 320.0, 480.0], [320.0, 0.0, 320.0, 480.0], screen)));
+    }
+
     /// The object pass follows the composite; each level's shadows come
     /// after the translucent floors and before the end of the frame.
     #[test]
@@ -388,7 +432,7 @@ mod tests {
         let objects = FrameObjects { players: vec![ObjectRender { shadow: Some(shadow), draws: vec![marker], ..Default::default() }], ..Default::default() };
         let mut tex = Texture::empty("NewShadow");
         tex.id = Some(1);
-        let cmds = world_frame_with_objects(&r, FrameSize { width: 640, height: 480 }, &[], &objects, Some(tex), ScreenParams { desaturation: 0.0, timer: 0.0 }, Vec::new());
+        let cmds = world_frame_with_objects(&r, FrameSize { width: 640, height: 480 }, &[], &objects, Some(tex), ScreenParams::default(), Vec::new());
         let pos = |f: &dyn Fn(&DrawCmd) -> bool| cmds.iter().position(f).unwrap();
         let clear = pos(&|c| matches!(c, DrawCmd::Clear(_)));
         let model = pos(&|c| matches!(c, DrawCmd::StencilMask(0x5A)));
@@ -396,7 +440,7 @@ mod tests {
         let end = pos(&|c| matches!(c, DrawCmd::OffscreenEnd));
         assert!(clear < model && model < quad && quad < end);
         // Without the drop-shadow texture there are no shadows.
-        let cmds = world_frame_with_objects(&r, FrameSize { width: 640, height: 480 }, &[], &objects, None, ScreenParams { desaturation: 0.0, timer: 0.0 }, Vec::new());
+        let cmds = world_frame_with_objects(&r, FrameSize { width: 640, height: 480 }, &[], &objects, None, ScreenParams::default(), Vec::new());
         assert!(!cmds.iter().any(|c| matches!(c, DrawCmd::ProjectedDepthQuad { .. })));
     }
 
@@ -485,7 +529,7 @@ mod tests {
         let mut drop_shadow = Texture::empty("NewShadow");
         drop_shadow.id = Some(1);
         let size = FrameSize { width: 800, height: 600 };
-        let screen = ScreenParams { desaturation: 0.0, timer: 0.0 };
+        let screen = ScreenParams::default();
         let cmds = world_frame_full(&r, size, &chunks, &objects, Some(drop_shadow), screen, Vec::new(), &mut |out| out.push(mark(0x59)));
 
         let mut alone = Vec::new();
@@ -577,7 +621,7 @@ mod tests {
             }),
         };
         let size = FrameSize { width: 800, height: 600 };
-        let cmds = world_frame_extras(&r, size, &chunks, &objects, None, &mut extras, ScreenParams { desaturation: 0.0, timer: 0.0 }, Vec::new(), &mut |out| out.push(mark(0x59)));
+        let cmds = world_frame_extras(&r, size, &chunks, &objects, None, &mut extras, ScreenParams::default(), Vec::new(), &mut |out| out.push(mark(0x59)));
         let sprite_of = |c: &DrawCmd, id: u32| matches!(c, DrawCmd::WorldSprite(s, _) if s.texture.as_ref().and_then(|t| t.id) == Some(id));
         let quad_of = |c: &DrawCmd, id: u32| matches!(c, DrawCmd::ProjectedDepthQuad { texture, .. } if texture.id == Some(id));
         let pos = |what: &str, f: &dyn Fn(&DrawCmd) -> bool| cmds.iter().position(f).unwrap_or_else(|| panic!("no {what}"));

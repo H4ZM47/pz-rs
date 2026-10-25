@@ -758,8 +758,34 @@ registered):
       player, num_players, screen }), ..)` per player into the shared
       offscreen buffer (each draws in its `glViewport` quarter, outline
       passes in `IsoCamera.getScreenLeft/Top/Width/Height`), the camera
-      sized to the player's view; the last call's screen pass shows all
-      of them (#125).
+      sized to the player's view; each call's screen pass draws that
+      player's screen rectangle with its own `ScreenParams` (#125, #PRN).
+      `MultiTextureFBO2.render` also covers slots up to the highest player
+      index without a player with a black `renderi(null, sx, sy, sw, sh)`;
+      draw that rectangle black for such slots (#PRN).
+- [ ] Screen shader (`WeatherShader`) inputs (#PRN): per player and frame
+      build `pz_render::ScreenParams` and run it through one
+      `ScreenTimer` kept for the session (`timer.apply(params,
+      PerformanceSettings.lockFps)`, once per player screen pass and once
+      per save thumbnail, in that order):
+      `light`/`light_intensity` (`getBlendColor`/`getBlendIntensity`),
+      `desaturation` (after `*= 1 - darkness`), `night_value`
+      (`getDarkness` = 1 - day light strength; 0.25 in Last Stand),
+      `exterior` from `RenderSettings.PlayerRenderSettings`
+      (`updateRenderSettings`; pz-world-render's `ClimateSettings`
+      computes the lighting half of it); `night_vision_goggles` =
+      `isWearingNightVisionGoggles()`, `drunk_factor` = intoxication / 100,
+      `blur_factor` = `IsoPlayer.getBlurFactor()` (not updated for a dead
+      player); `search` from the `SearchMode` port (characters/gameplay,
+      not ported yet: `isShaderEnabled`, `getShaderBlur/Radius/
+      GradientWidth/Desat/Darkness` by the player's square being outside a
+      room); `offscreen_left/top` = `IsoCamera.getOffscreenLeft/Top`,
+      `offscreen_width/height` = pz-core `Core` offscreen width/height,
+      `right_click` = the player camera's `rightClickX/Y`, `zoom` =
+      `Core.getZoom(player)`, `tile_width` = 64 at `Core.tileScale` 2 else
+      32. Save thumbnail (#173, not in integration yet): pass
+      `params.thumbnail(256, 256, 1.0)` (`startThumbnail`) to
+      `capture_thumbnail`.
 - [ ] GPU faults: check `Gpu::error()` after `render_frame` (a lost
       device stops drawing; out-of-memory chunk/atlas textures are left
       out) and stop or rebuild the `Gpu` with a clear message (#120).

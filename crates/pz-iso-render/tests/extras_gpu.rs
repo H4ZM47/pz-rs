@@ -282,10 +282,7 @@ fn extras_draw_in_the_world_frame() {
             &FrameObjects::default(),
             None,
             &mut extras,
-            ScreenParams {
-                desaturation: 0.0,
-                timer: 0.0,
-            },
+            ScreenParams::default(),
             Vec::new(),
             &mut |_| {},
         );

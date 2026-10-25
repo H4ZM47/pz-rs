@@ -166,6 +166,8 @@ struct Globals {
     screen: [[f32; 4]; 2],
     /// The water and puddles uniforms (see surface.wgsl).
     surface: [[f32; 4]; 5],
+    /// The rest of the screen pass's uniforms (see screen.wgsl).
+    screen_ext: [[f32; 4]; 2],
 }
 
 /// `sky.wgsl`'s uniform block.
@@ -1607,7 +1609,19 @@ impl Gpu {
                 g.mvp = f.mvp_for_target();
                 g.alpha_func = 8;
                 g.clip_z = 0.5;
-                g.screen = [[params.desaturation, params.timer, f.viewport.0 as f32, f.viewport.1 as f32], [tw, th, 0.0, 0.0]];
+                // WeatherShader.startRenderThread's uniforms; a zero
+                // offscreen size stands for the viewport.
+                let mut p = *params;
+                if p.offscreen_width <= 0.0 || p.offscreen_height <= 0.0 {
+                    (p.offscreen_width, p.offscreen_height) = (f.viewport.0 as f32, f.viewport.1 as f32);
+                }
+                let u = p.uniforms([tw, th]);
+                // gl_FragCoord counts rows up from the bottom of the window;
+                // texture targets are already stored bottom row first.
+                g.extra = if f.target == PassTarget::Main { self.height as f32 } else { 0.0 };
+                g.screen = [[u.desaturation_val, u.timer, u.bgl_rendered_texture_width, u.bgl_rendered_texture_height], [u.texture_size[0], u.texture_size[1], u.timer_wrap, u.night_value]];
+                g.surface = [u.search_mode, u.screen_info, u.param_info, u.var_info, [u.night_vision_goggles, u.drunk_factor, u.blur_factor, u.zoom]];
+                g.screen_ext = [[u.light[0], u.light[1], u.light[2], u.light_intensity], [u.exterior, 0.0, 0.0, 0.0]];
                 let gi = f.push_globals(g);
                 let corner = |px: f32, py: f32, u: f32, v: f32| Vertex { pos: [px, py], uv: [u, v], color: 0xFFFF_FFFF, uv1: [0.0; 2], uv2: [0.0; 2], depth: [0.0; 2] };
                 let v = [corner(*x, *y, u0, v_top), corner(x + w, *y, u1, v_top), corner(x + w, y + h, u1, v_bottom), corner(*x, y + h, u0, v_bottom)];
@@ -2124,7 +2138,7 @@ impl FrameBuilder {
 
     fn globals(&mut self, st: &GlState, mvp: [[f32; 4]; 4], clip_z: f32) -> u32 {
         let (alpha_func, alpha_ref) = if st.alpha_test { (st.alpha_func.wrapping_sub(gl::NEVER), st.alpha_ref) } else { (8, 0.0) };
-        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, extra: 0.0, screen: [[0.0; 4]; 2], surface: [[0.0; 4]; 5] };
+        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, extra: 0.0, screen: [[0.0; 4]; 2], surface: [[0.0; 4]; 5], screen_ext: [[0.0; 4]; 2] };
         self.push_globals(g)
     }
 
@@ -2385,3 +2399,7 @@ pub fn quad_indices(base: u32, c0: u32, c2: u32) -> [u32; 6] {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "screen_tests.rs"]
+mod screen_tests;

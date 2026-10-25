@@ -14,6 +14,7 @@ pub mod lua;
 pub mod manager;
 pub mod model;
 pub mod png;
+pub mod screen;
 pub mod tile_depth;
 
 use std::rc::Rc;
@@ -21,6 +22,7 @@ use std::rc::Rc;
 pub use image::{ImageData, Mask, MipLevel};
 pub use lua::{get_shared_texture, install_shared_texture_loader, LuaTexture};
 pub use manager::{SharedTextures, TextureData, TextureManager};
+pub use screen::{ScreenParams, ScreenTimer, ScreenUniforms, SearchModeShader};
 
 /// `TextureFlags`.
 pub mod flags {
@@ -628,15 +630,6 @@ pub struct SurfaceDraw {
     pub reflection: [Option<Texture>; 2],
     pub depth_func: u32,
     pub blend_func: [u32; 4],
-}
-
-/// The `WeatherShader` uniforms the screen pass reads.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ScreenParams {
-    /// `DesaturationVal` (`PlayerRenderSettings.getDesaturation`).
-    pub desaturation: f32,
-    /// `timer`: the frame counter that animates the grain.
-    pub timer: f32,
 }
 
 /// The shader a [`DrawCmd::WorldSprite`] is drawn with.

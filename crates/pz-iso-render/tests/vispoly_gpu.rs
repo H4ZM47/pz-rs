@@ -203,10 +203,7 @@ fn the_vision_cone_darkens_outside_the_cone_and_behind_walls() {
             &FrameObjects::default(),
             None,
             &mut extras,
-            ScreenParams {
-                desaturation: 0.0,
-                timer: 0.0,
-            },
+            ScreenParams::default(),
             Vec::new(),
             &mut |_| {},
         );
