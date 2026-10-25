@@ -12,6 +12,7 @@
 //! vertex lights, as `LightingJNI` produces them.
 
 pub mod alpha;
+pub mod area_highlights;
 pub mod atlas;
 pub mod body_atlas;
 pub mod blood;
@@ -21,10 +22,14 @@ pub mod chunk;
 pub mod color;
 pub mod cutaways;
 pub mod fire;
+pub mod flies;
+pub mod fog;
 pub mod frame;
 pub mod item_atlas;
 pub mod joml;
+pub mod markers;
 pub mod hearth;
+pub mod highlight;
 pub mod models;
 pub mod objects;
 pub mod obscuring;
@@ -40,6 +45,7 @@ pub mod splashes;
 pub mod sprite;
 pub mod texd;
 pub mod trees;
+pub mod vispoly;
 pub mod water;
 pub mod water_flow;
 pub mod weather;

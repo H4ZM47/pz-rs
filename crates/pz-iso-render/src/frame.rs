@@ -124,7 +124,44 @@ pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: 
 
 /// [`world_frame_with_objects`] and [`world_frame_into_with`] together.
 #[allow(clippy::too_many_arguments)]
-pub fn world_frame_full(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, mut out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
+pub fn world_frame_full(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
+    world_frame_extras(r, size, chunks, objects, drop_shadow, &mut FrameExtras::default(), screen, out, late)
+}
+
+/// The rest of what `performRenderTiles` and `IsoWorld.renderInternal`
+/// draw into a player's offscreen buffer, each from its gameplay inputs;
+/// `None` (the default) draws none of it.
+#[derive(Default)]
+pub struct FrameExtras<'a> {
+    /// `renderFlies`: the corpse flies over rotting corpses
+    /// (`RenderSquare::flies`) with `CorpseFlies`' animation frame.
+    pub flies: Option<crate::flies::CorpseFlies>,
+    /// `FBORenderObjectHighlight.render`: the objects whose
+    /// [`crate::world::RenderObject::highlight`] is set, drawn over the
+    /// chunk textures in their highlight colour.
+    pub highlight: Option<crate::highlight::HighlightFrame>,
+    /// `renderOpaqueObjectsEvent`: Lua's `RenderOpaqueObjectsInWorld`
+    /// handlers (build ghosts, fishing bobbers), called with the square
+    /// under the cursor (or the player, on a joypad) before the moving
+    /// objects draw.
+    pub opaque_event: Option<crate::markers::OpaqueObjectsEvent<'a>>,
+    /// `VisibilityPolygon2.renderMain`: the vision cone, drawn on the
+    /// camera character's level.
+    pub vision: Option<crate::vispoly::VisionFrame>,
+    /// `WorldMarkers.renderGridSquareMarkers` (`FBORenderWorldMarkers`)
+    /// and `IsoMarkers.renderIsoMarkers`, per level.
+    pub markers: Option<crate::markers::MarkersFrame>,
+    /// `renderFog`: `ImprovedFog` over levels 0 and 1.
+    pub fog: Option<crate::fog::FogFrame>,
+    /// `FBORenderAreaHighlights.render` (after the weather) and
+    /// `LineDrawer.render`'s lines.
+    pub area_highlights: Option<crate::area_highlights::AreaHighlightsFrame>,
+}
+
+/// [`world_frame_full`] with the [`FrameExtras`] passes, each at its place
+/// in `performRenderTiles` / `IsoWorld.renderInternal`.
+#[allow(clippy::too_many_arguments)]
+pub fn world_frame_extras(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, extras: &mut FrameExtras<'_>, screen: ScreenParams, mut out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
     let (ow, oh) = size.offscreen();
     let (w, h) = (size.width, size.height);
     let z = r.cam.zoom;
@@ -153,8 +190,10 @@ pub fn world_frame_full(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkL
     // (FBORenderChunkManager.endFrame), in its order:
     // FBORenderShadows.clear; renderPlayers, renderCorpseShadows,
     // renderMannequinShadows, renderCorpsesInWorld, renderItemsInWorld;
-    // renderPuddles (quality 0 and 1); renderMovingObjects; renderWater;
-    // renderAnimatedAttachments; then the per-level translucent passes.
+    // renderPuddles (quality 0 and 1); renderOpaqueObjectsEvent;
+    // renderMovingObjects; renderWater; renderAnimatedAttachments;
+    // renderFlies; FBORenderObjectHighlight.render; then the per-level
+    // translucent passes and renderFog.
     let model_cam = ModelCamera::new(&r.cam, w as f32 * z, h as f32 * z);
     let mut shadows = Shadows::default();
     shadows.clear(drop_shadow);
@@ -167,17 +206,37 @@ pub fn world_frame_full(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkL
             crate::puddles::render_puddles(r, s, &squares, &mut out);
         }
     }
+    if let Some(e) = extras.opaque_event.as_mut() {
+        e.trigger(&r.cam, &mut out);
+    }
     objects.render_outlined_moving(&model_cam, &mut shadows, &mut outlines, &mut out);
     if let Some(s) = r.surfaces.as_ref() {
         crate::water::render_water(r, s, &squares, &mut out);
     }
     render_animated_attachments(r, chunks, &mut out);
+    if let Some(f) = extras.flies.as_ref() {
+        crate::flies::render_flies(r, f, chunks, &mut out);
+    }
+    if let Some(hl) = extras.highlight.as_ref() {
+        crate::highlight::render(r, hl, &squares, &mut out);
+    }
     // The per-level translucent passes, over every on-screen square
     // (recorded this frame or not): translucent floors, puddles on them,
-    // shores (from level 0), shadows, then translucent objects.
-    let levels = squares.iter().map(|s| s.z).chain(shadows.shadows.iter().map(|s| pz_render::iso::fastfloor(s.oz)));
-    if let (Some(lo), Some(hi)) = (levels.clone().min(), levels.max()) {
-        let (lo, hi) = if r.surfaces.is_some() { (lo.min(0), hi.max(0)) } else { (lo, hi) };
+    // shores (from level 0), shadows, the vision cone (on the camera
+    // character's level), the grid-square and iso markers, then
+    // translucent objects.
+    let cam_level = pz_render::iso::fastfloor(r.cam.z);
+    let mut levels: Vec<i32> = squares.iter().map(|s| s.z).chain(shadows.shadows.iter().map(|s| pz_render::iso::fastfloor(s.oz))).collect();
+    if r.surfaces.is_some() {
+        levels.push(0);
+    }
+    if extras.vision.is_some() {
+        levels.push(cam_level);
+    }
+    if let Some(m) = extras.markers.as_ref() {
+        levels.extend(m.levels());
+    }
+    if let (Some(&lo), Some(&hi)) = (levels.iter().min(), levels.iter().max()) {
         for z in lo..=hi {
             r.render_translucent_floors(&squares, z, &mut out);
             if let Some(s) = r.surfaces.as_ref() {
@@ -196,13 +255,32 @@ pub fn world_frame_full(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkL
                 }
             }
             shadows.render_main(z, &model_cam, &mut out);
+            if z == cam_level {
+                if let Some(v) = extras.vision.as_ref() {
+                    crate::vispoly::render_main(r, v, size, &mut out);
+                }
+            }
+            if let Some(m) = extras.markers.as_mut() {
+                m.render_level(r, &model_cam, z, &mut out);
+            }
             r.render_translucent_objects(&squares, z, &mut out);
         }
     }
     shadows.end_render();
-    outlines.end_frame(&mut out);
+    if let Some(f) = extras.fog.as_ref() {
+        crate::fog::render_fog(r, f, chunks, size, &mut out);
+    }
     out.push(DrawCmd::Ortho { left: 0.0, right: w as f32 * z, bottom: h as f32 * z, top: 0.0, width: w, height: h });
+    // IsoWorld.renderInternal after the cell: the weather
+    // (renderWeatherFX), FBORenderAreaHighlights.render, LineDrawer.render;
+    // then IngameState's ModelOutlines.endFrameMain.
     late(&mut out);
+    let mut lines = extras.markers.as_mut().map(|m| std::mem::take(&mut m.lines)).unwrap_or_default();
+    if let Some(a) = extras.area_highlights.as_ref() {
+        a.render(&r.cam, &model_cam, &mut lines, &mut out);
+    }
+    crate::area_highlights::render_lines(&r.cam, &lines, &mut out);
+    outlines.end_frame(&mut out);
     out.push(DrawCmd::GlDisable(gl::DEPTH_TEST));
     out.push(DrawCmd::OffscreenEnd);
     // Core.RenderOffScreenBuffer: 1:1 screen projection, no blending.
