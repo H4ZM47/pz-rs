@@ -48,9 +48,12 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `pz_vehicle_render::lights::cell_torches(cell vehicles)`
       (`LightingJNI.checkLights`; pz-lighting's `check_lights` sends
       z + 32 and removes stale torches). Per vehicle a
-      `lights::LightbarWorldLights::new` (`createParts`), `update(v, &mut
-      WorldLighting)` from `BaseVehicle.update` (`updateWorldLights`) and
-      `remove` on `removeFromWorld`; it adds/removes lampposts through
+      `lights::LightbarWorldLights::new` (`createParts`); the engine's
+      `pz_vehicles::env::VehicleEvents` impl forwards
+      `lightbar_world_lights(vehicle, state)` (`updateWorldLights`, from
+      `BaseVehicle.update`) to that vehicle's `LightbarWorldLights::apply(
+      vehicle, state, &mut cell's WorldLighting)`, and calls `remove` on
+      `removeFromWorld`; it adds/removes lampposts through
       `WorldLighting::add_lamppost`/`remove_lamppost` (#90).
 - [ ] Vehicles: `world_sim::set_world_bounds` + `create()` at world load
       (`destroy()` on exit) with a `VehiclePhysics` impl (pz-bullet once it

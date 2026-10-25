@@ -7,8 +7,9 @@ mod common;
 
 use common::night::*;
 use pz_lighting::jni::IsoDirection;
-use pz_vehicle_render::lights::LightbarWorldLights;
-use pz_world_render::{RenderWorld, WorldHooks, WorldView};
+use pz_vehicle_render::lights::{lightbar_state, LightbarWorldLights};
+use pz_vehicles::env::LightbarState;
+use pz_world_render::{RenderWorld, WorldHooks, WorldLighting, WorldView};
 
 #[test]
 fn headlights_light_the_squares_in_front() {
@@ -188,4 +189,90 @@ fn lightbar_adds_and_removes_a_lamppost() {
     let after = light(&view, &mut lighting, &hooks, 12);
     assert_eq!(lighting.lampposts().count(), 0);
     assert!((near(&after) - near(&off)).abs() < 0.01);
+}
+
+/// `updateWorldLights` driven by the state pz-vehicles reports through
+/// `VehicleEvents::lightbar_world_lights` (no game data needed).
+#[test]
+fn lightbar_applies_the_reported_state() {
+    let v = pz_vehicles::BaseVehicle::new();
+    let place = |x: f32, y: f32| {
+        v.set_position(x, y, 0.0);
+        v.st_mut().jni_transform.origin = pz_vehicles::jmath::Vector3f::new(x, 0.0, y);
+    };
+    place(10.5, 20.5);
+    let mut cell = WorldLighting::new();
+    let mut bar = LightbarWorldLights::new(&v);
+    let on = |light| LightbarState {
+        has_lightbar: true,
+        enabled: true,
+        light,
+    };
+    // `update` reads the same state off the vehicle: no script, no lightbar.
+    assert!(!lightbar_state(&v).has_lightbar);
+    bar.update(&v, &mut cell);
+    assert_eq!(cell.lampposts().count(), 0);
+
+    // No lightbar / off / light index 0: nothing is added.
+    for s in [
+        LightbarState {
+            has_lightbar: false,
+            ..on(1)
+        },
+        LightbarState {
+            enabled: false,
+            ..on(1)
+        },
+        on(0),
+    ] {
+        bar.apply(&v, s, &mut cell);
+        assert_eq!(bar.keys(), (None, None));
+        assert_eq!(cell.lampposts().count(), 0);
+    }
+
+    // Left lamp at `getWorldPos(0.4, 0, 0)`'s square, first light object.
+    bar.apply(&v, on(1), &mut cell);
+    let key = bar.keys().0.expect("left lamppost");
+    assert_eq!((bar.left_index, bar.right_index), (1, -1));
+    let p = v.world_pos(0.4, 0.0, 0.0);
+    let (_, lamp, dead) = cell.lampposts().next().unwrap();
+    assert!(!dead && lamp.radius == 8);
+    assert_eq!(
+        (lamp.x, lamp.y, lamp.z),
+        (p.x.floor() as i32, p.y.floor() as i32, 0)
+    );
+    // Same square: kept.
+    bar.apply(&v, on(1), &mut cell);
+    assert_eq!(bar.keys().0, Some(key));
+    assert_eq!(bar.left_index, 1);
+
+    // Moved: the other light object takes over, the old one dies.
+    place(12.5, 20.5);
+    bar.apply(&v, on(1), &mut cell);
+    let moved = bar.keys().0.expect("moved lamppost");
+    assert_ne!(moved, key);
+    assert_eq!(bar.left_index, 2);
+    assert!(cell.lampposts().any(|(k, _, dead)| k == key && dead));
+    assert!(cell.lampposts().any(|(k, _, dead)| k == moved && !dead));
+
+    // Right lamp's turn: the left one goes.
+    bar.apply(&v, on(2), &mut cell);
+    let (l, r) = bar.keys();
+    assert!(l.is_none() && r.is_some());
+    assert_eq!((bar.left_index, bar.right_index), (-1, 1));
+    let rp = v.world_pos(-0.4, 0.0, 0.0);
+    let (_, lamp, _) = cell.lampposts().find(|&(k, _, _)| Some(k) == r).unwrap();
+    assert_eq!((lamp.x, lamp.y), (rp.x.floor() as i32, rp.y.floor() as i32));
+
+    // Battery flat: removed.
+    bar.apply(
+        &v,
+        LightbarState {
+            enabled: false,
+            ..on(2)
+        },
+        &mut cell,
+    );
+    assert_eq!(bar.keys(), (None, None));
+    assert!(cell.lampposts().all(|(_, _, dead)| dead));
 }
