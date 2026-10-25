@@ -58,6 +58,17 @@ pub fn set_cell(cell: Option<IsoCell>) {
     });
 }
 
+/// `IsoWorld.instance.getMetaGrid()`'s `(minX, minY, maxX, maxY)` in cells,
+/// `None` without a meta grid.
+pub fn meta_grid_cell_bounds() -> Option<(i32, i32, i32, i32)> {
+    WORLD.with(|w| {
+        w.borrow()
+            .meta_grid
+            .as_ref()
+            .map(|g| (g.min_x, g.min_y, g.max_x, g.max_y))
+    })
+}
+
 /// Access the world state (e.g. to load chunks into the cell). Must not be
 /// called from inside a bound method.
 pub fn with_world<R>(f: impl FnOnce(&mut WorldState) -> R) -> R {

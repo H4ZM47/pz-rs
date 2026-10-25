@@ -24,15 +24,21 @@ pub trait WorldMapPlayers {
 /// `IsoWorld.instance.getMetaGrid()`'s cell bounds for
 /// `setBoundsFromWorld`. Owner: the world workstream (pz-world).
 pub trait WorldMapMetaGrid {
-    /// `(minX, minY, maxX, maxY)` in 256-square cells.
-    fn cell_bounds(&self) -> (i32, i32, i32, i32) {
-        (0, 0, 0, 0)
-    }
+    /// `(minX, minY, maxX, maxY)` in 256-square cells; `None` when there is
+    /// no meta grid (the original NPEs).
+    fn cell_bounds(&self) -> Option<(i32, i32, i32, i32)>;
 }
 
 struct NoHost;
 impl WorldMapPlayers for NoHost {}
-impl WorldMapMetaGrid for NoHost {}
+
+/// The meta grid Lua sees through `IsoWorld` (`bind_world`).
+pub struct WorldMetaGrid;
+impl WorldMapMetaGrid for WorldMetaGrid {
+    fn cell_bounds(&self) -> Option<(i32, i32, i32, i32)> {
+        crate::bind_world::meta_grid_cell_bounds()
+    }
+}
 
 /// The installed inputs.
 pub struct WorldMapHost {
@@ -44,7 +50,7 @@ impl Default for WorldMapHost {
     fn default() -> Self {
         WorldMapHost {
             players: Box::new(NoHost),
-            meta_grid: Box::new(NoHost),
+            meta_grid: Box::new(WorldMetaGrid),
         }
     }
 }

@@ -1225,4 +1225,7 @@ registered):
 - [ ] Map inputs: `pz_lua_api::worldmap::host::install(WorldMapHost {
       players, meta_grid })` with the live local players (position, or
       the vehicle's; username) for the map's player dots, and
-      `IsoMetaGrid`'s cell bounds for `setBoundsFromWorld` (#213).
+      `IsoMetaGrid`'s cell bounds for `setBoundsFromWorld` (#213). The
+      default `meta_grid` (`host::WorldMetaGrid`) already reads the grid
+      installed with `bind_world::set_meta_grid`; pass it when installing
+      players (#223).
