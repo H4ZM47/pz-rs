@@ -76,6 +76,31 @@ impl ChunkCache {
         }
     }
 
+    /// `FBORenderCell.invalidateAll`: every level pair of every chunk.
+    pub fn invalidate_all(&mut self, flags: u64) {
+        for p in self.pairs.values_mut() {
+            p.dirty |= flags;
+        }
+    }
+
+    /// Applies a frame's [`crate::weather::SurfaceChecks`] result: water
+    /// quality changes redraw the on-screen chunks' level 0
+    /// (`checkWaterQualityOption`, `REDRAW`), the low-quality puddle and
+    /// snow checks every texture (`invalidateAll(CUTAWAYS)`). Re-initialising
+    /// the puddles (`reinit_puddles`) is the caller's.
+    pub fn apply_surface_checks(&mut self, inv: &crate::weather::SurfaceInvalidation) {
+        if inv.level_zero {
+            for ((_, _, l), p) in self.pairs.iter_mut() {
+                if *l == 0 {
+                    p.dirty |= dirty::REDRAW;
+                }
+            }
+        }
+        if inv.all {
+            self.invalidate_all(dirty::CUTAWAYS);
+        }
+    }
+
     /// For one on-screen level pair: the texture to use and whether it must
     /// be recorded this frame (new, resized or dirty). Clears its dirty
     /// flags.
@@ -123,6 +148,19 @@ mod tests {
         let mut out = Vec::new();
         c.free_except(&[], &mut out);
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn surface_checks_redraw_the_textures() {
+        let mut c = ChunkCache::default();
+        c.begin_level(0, 0, 0, 0, 3);
+        c.begin_level(0, 0, 2, 0, 3);
+        c.apply_surface_checks(&crate::weather::SurfaceInvalidation { level_zero: true, ..Default::default() });
+        assert!(c.begin_level(0, 0, 0, 0, 3).1);
+        assert!(!c.begin_level(0, 0, 2, 0, 3).1);
+        c.apply_surface_checks(&crate::weather::SurfaceInvalidation { all: true, ..Default::default() });
+        assert!(c.begin_level(0, 0, 0, 0, 3).1);
+        assert!(c.begin_level(0, 0, 2, 0, 3).1);
     }
 
     #[test]

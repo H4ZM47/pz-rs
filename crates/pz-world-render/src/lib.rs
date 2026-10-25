@@ -8,6 +8,8 @@
 //! - [`lighting`]: the `LightingWorld` adapter, lamp and room-light sync and
 //!   the per-frame lighting driver that writes results back into the render
 //!   squares.
+//! - [`fire_lights`]: fires' and fireplaces' light sources in the cell's
+//!   light list ([`WorldLighting::add_lamppost`] and friends).
 //! - [`hooks`] and [`settings`]: inputs owned by other systems (thumpables,
 //!   barricades, power, torches; `RenderSettings`/`ClimateManager`).
 //! - [`state_light`]: the light the character states read
@@ -23,6 +25,7 @@
 //! player, [`WorldLighting::apply`] into the [`RenderWorld`], and invalidate
 //! the chunk textures of the returned dirty levels.
 
+pub mod fire_lights;
 pub mod hooks;
 pub mod lighting;
 pub mod render_world;
@@ -30,9 +33,10 @@ pub mod settings;
 pub mod sprites;
 pub mod state_light;
 
+pub use fire_lights::{fireplace_input, FireLightLinks, HearthLink, LightLink};
 pub use hooks::{NoWorldHooks, WorldHooks};
 pub use lighting::{
-    default_player, grid_square, LightingFrame, LightingSquares, PlayerFrameInput, WorldLighting,
+    default_player, grid_square, CellLight, LightingFrame, LightingSquares, PlayerFrameInput, WorldLighting,
 };
 pub use render_world::{
     building_id, cutaway_info, render_square, seam_neighbours, wall_type, RenderWorld, WorldView,

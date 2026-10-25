@@ -233,3 +233,72 @@ fn model_lands_on_its_square_and_depth_tests_against_tiles() {
     assert!(!red_rows.is_empty(), "the near model is drawn");
     assert!(*red_rows.first().unwrap() > 64, "{red_rows:?}");
 }
+
+/// Depth maps with a billboard depth texture, as fire sprites use.
+struct BillboardMaps(Texture);
+
+impl DepthMaps for BillboardMaps {
+    fn preset(&self, _: DepthPreset) -> Option<Texture> {
+        Some(self.0.clone())
+    }
+    fn default_texture(&self) -> Option<Texture> {
+        Some(self.0.clone())
+    }
+    fn billboard(&self) -> Option<Texture> {
+        Some(self.0.clone())
+    }
+}
+
+/// A fire's flame frame stands on the middle of its square, drawn
+/// unlit in the translucent pass with the billboard depth texture; its
+/// smoke is drawn in the square's light at half tint.
+#[test]
+fn a_fire_stands_on_its_square() {
+    use pz_iso_render::fire::{FireSquare, FireState};
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else { return };
+    let mut tm = TextureManager::new();
+    let mut flame = solid(&mut tm, "flame", 64, 64, [255, 0, 0, 255]);
+    flame.offset_x = 32.0;
+    flame.offset_y = 192.0;
+    flame.width_orig = 128;
+    flame.height_orig = 256;
+    let mut smoke = solid(&mut tm, "smoke", 32, 32, [200, 200, 200, 255]);
+    smoke.offset_x = 48.0;
+    smoke.offset_y = 140.0;
+    smoke.width_orig = 128;
+    smoke.height_orig = 256;
+    let mut depth = solid(&mut tm, "depth", 128, 256, [128, 128, 128, 255]);
+    depth.width_orig = 128;
+    depth.height_orig = 256;
+    let mut fire = FireState::new_fire(FireSquare::default(), 100, 1000, &mut pz_iso_render::fire::rand(&pz_core::random::Rand::new(1)));
+    // Stage 2: smoke, then flames.
+    fire.life_stage = 1;
+    fire.life_stage_timer = 1;
+    fire.update_from_timer(1.5, &mut pz_iso_render::fire::rand(&pz_core::random::Rand::new(2)));
+    assert_eq!(fire.life_stage, 2);
+    let obj = pz_iso_render::fire::render_object(&fire, false, &|n: &str| if n.starts_with("Fire") { Some(flame.clone()) } else { Some(smoke.clone()) });
+    let mut sq = RenderSquare::new(4, 4, 0);
+    sq.light_info = pz_iso_render::color::ColorInfo { r: 1.0, g: 0.5, b: 1.0, a: 1.0 };
+    sq.objects.push(obj);
+    let cam = Camera::centred(4.0, 4.0, 0.0, 256, 128, 1.0);
+    let maps = BillboardMaps(depth);
+    let r = ChunkRenderer::new(cam, &maps, (256, 128));
+    let mut cmds = vec![DrawCmd::DepthMask(true), DrawCmd::Clear(pz_render::gl::DEPTH_BUFFER_BIT)];
+    r.render_translucent(&[&sq], 0, &mut cmds);
+    let list = pz_render::DrawList { cmds };
+    let params = pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(256, 128) };
+    gpu.render_frame(&[(params, &list)], &mut tm);
+    let p = gpu.read_pixels();
+    let px = |x: usize, y: usize| p[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].to_vec();
+    // The square's top corner is at (128, 64), its centre 32 lower: the
+    // flame's 64x64 covers x 96..160, y 32..96.
+    assert_eq!(px(128, 60), vec![255, 0, 0, 255]);
+    assert_eq!(px(100, 34), vec![255, 0, 0, 255]);
+    assert_eq!(px(90, 60), vec![0, 0, 0, 255]);
+    assert_eq!(px(128, 100), vec![0, 0, 0, 255]);
+    // The smoke (x 112..144, rows -20..12) in the light times 0.5.
+    let s = px(128, 5);
+    let want = [100, 50, 100];
+    assert!(s.iter().zip(want).all(|(a, b)| (i32::from(*a) - b).abs() <= 2), "{s:?}");
+    assert_eq!(px(108, 5), vec![0, 0, 0, 255]);
+}

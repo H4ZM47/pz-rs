@@ -11,6 +11,7 @@ pub mod chunk;
 pub mod chunk_data;
 pub mod defs;
 pub mod erosion_data;
+pub mod fire;
 pub mod fix2x;
 pub mod iso_lot;
 pub mod java;
