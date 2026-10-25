@@ -346,6 +346,13 @@ pub enum DrawCmd {
     /// `GL_LESS` without depth writes, each corner's window depth written
     /// as the fragment depth. The GL state is restored afterwards.
     ImprovedFog(Box<FogDraw>),
+    /// `VisibilityPolygon2.Drawer.renderNew`: the vision cone's shadow
+    /// triangles drawn into the blur target (`visBlur`, a red-only
+    /// `GL_R8` texture of `blur_size` with a 16-bit depth texture, both
+    /// cleared) with `visPolygon` under the current projection, then the
+    /// `visibilityBlur` pass over the current target. See
+    /// [`VisibilityPolygonDraw`].
+    VisibilityPolygon(Box<VisibilityPolygonDraw>),
 }
 
 /// The uniforms and rectangles of one `ImprovedFogDrawer` frame.
@@ -427,6 +434,33 @@ impl FogDraw {
             camera_info: [self.camera[0], self.camera[1], self.camera[2], r.offset],
         }
     }
+}
+
+/// One [`DrawCmd::VisibilityPolygon`].
+///
+/// The polygon pass: viewport `0, 0, blur_size`, blending (ONE, ZERO),
+/// depth test `LEQUAL` with writes, no culling; each vertex is `x, y, z`
+/// in the current projection, `aDist` and `aDepth` (`visPolygon.vert`).
+/// The blur pass: viewport `screen` (left, top, width, height) of the
+/// current target, blending (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), depth test
+/// `LEQUAL` without writes against the fragment depth read from the blur
+/// depth texture; the uniforms are `visibilityBlur.frag`'s.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisibilityPolygonDraw {
+    /// Triangle list: `x, y, z, aDist, aDepth` per vertex.
+    pub vertices: Vec<[f32; 5]>,
+    /// `Core.width / downscale`, `Core.height / downscale` (the blur
+    /// textures are allocated at the next powers of two).
+    pub blur_size: [u32; 2],
+    /// `IsoCamera.getScreenLeft/Top/Width/Height`.
+    pub screen: [i32; 4],
+    /// `displaySize`: the offscreen buffer's size over the split-screen
+    /// divisor.
+    pub display_size: [f32; 2],
+    /// `zoom`.
+    pub zoom: f32,
+    /// `opacityScale` (`PerformanceSettings.viewConeOpacity`).
+    pub opacity_scale: i32,
 }
 
 /// The shader of a [`ParticlesDraw`].
