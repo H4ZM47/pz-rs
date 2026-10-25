@@ -271,6 +271,11 @@ pub enum SimEvent {
     /// `target.setReanimateTimer(...)`'s target and value (another
     /// character than the one updating, by id).
     ReanimateTimer { chr: i32, value: f32 },
+    /// `LuaEventManager.triggerEvent("OnContainerUpdate")` (an item fell
+    /// out of the character's hands to the floor).
+    ContainerUpdate,
+    /// `LuaEventManager.triggerEvent("onItemFall", item)`.
+    ItemFall(pz_inventory::shared::ItemRef),
 }
 
 /// The singletons the simulation reads. Every method has the default a

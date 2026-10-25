@@ -454,7 +454,7 @@ fn set_worn_item_follows_the_group() {
     let mut c = player(&sm, &mut chars);
     // No `wornItems` yet: the original's NullPointerException; clearing is a no-op.
     assert!(c.worn_item(Some(&hat)).is_err());
-    assert!(c.set_worn_item(&sm, None, Some(hat.clone()), Some(1), true).is_err());
+    assert!(c.set_worn_item(&sm, None, Some(hat.clone()), Some(1), true, None).is_err());
     c.clear_worn_items(&sm);
     let g = chars.body_locations.get_group("Human").unwrap();
     for k in [&hat, &full_hat, &tee, &coat] {
@@ -467,22 +467,22 @@ fn set_worn_item_follows_the_group() {
     c.human_visual = Some(v);
     c.clothing_wetness.as_mut().unwrap().changed = false;
 
-    assert!(c.set_worn_item(&sm, None, Some(tee.clone()), Some(3), true).unwrap());
+    assert!(c.set_worn_item(&sm, None, Some(tee.clone()), Some(3), true, None).unwrap());
     assert_eq!(c.human_visual.as_ref().unwrap().hair_model.as_deref(), Some("Mohawk"));
     assert!(c.clothing_wetness.as_ref().unwrap().changed);
-    assert!(c.set_worn_item(&sm, None, Some(full_hat.clone()), Some(2), true).unwrap());
+    assert!(c.set_worn_item(&sm, None, Some(full_hat.clone()), Some(2), true, None).unwrap());
     assert_eq!(c.human_visual.as_ref().unwrap().hair_model.as_deref(), Some("MohawkFlat"));
     assert_eq!(c.items.worn_ids(), [2, 3]);
     // The same item again: nothing changes.
-    assert!(!c.set_worn_item(&sm, None, Some(full_hat.clone()), Some(2), true).unwrap());
+    assert!(!c.set_worn_item(&sm, None, Some(full_hat.clone()), Some(2), true, None).unwrap());
     // An exclusive location drops the other item.
-    c.set_worn_item(&sm, None, Some(coat.clone()), Some(4), true).unwrap();
+    c.set_worn_item(&sm, None, Some(coat.clone()), Some(4), true, None).unwrap();
     assert_eq!(c.items.worn_ids(), [2, 4]);
     assert_eq!(c.worn_item(Some(&tee)).unwrap(), None);
     assert!(c.is_equipped_clothing(Some(4)).unwrap() && !c.is_equipped_clothing(Some(3)).unwrap());
     // removeWornItem: by location, a no-op for an item not worn.
-    assert!(c.remove_worn_item(&sm, None, Some(2), true).unwrap());
-    assert!(!c.remove_worn_item(&sm, None, Some(2), true).unwrap());
+    assert!(c.remove_worn_item(&sm, None, Some(2), true, None).unwrap());
+    assert!(!c.remove_worn_item(&sm, None, Some(2), true, None).unwrap());
     assert_eq!(c.items.worn_ids(), [4]);
     assert!(Rc::ptr_eq(&c.items.worn_location(4).unwrap(), &coat));
     c.clear_worn_items(&sm);

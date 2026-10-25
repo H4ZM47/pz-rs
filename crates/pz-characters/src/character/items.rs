@@ -30,6 +30,7 @@ use pz_scripts::registry::RegistryKey;
 use pz_scripts::{ScriptManager, ScriptResult};
 
 use super::context::SimContext;
+use super::floor_drop::FloorCx;
 use super::item_owner::CharacterItemContext;
 use super::GameCharacter;
 use crate::worn_items::{BodyLocationGroup, BodyLocationGroupRef, WornItems};
@@ -631,9 +632,13 @@ impl<I> GameCharacter<I> {
         (primary, secondary)
     }
 
-    /// `getInventory().getCapacityWeight()`: `getInventoryWeight()` (the
-    /// unlimited-carry and ghost-mode cheats are not modelled).
+    /// `getInventory().getCapacityWeight()`: 0 for a player in ghost mode
+    /// under `Core.debug` or with unlimited carry, else
+    /// `getInventoryWeight()`.
     pub fn capacity_weight(&self, sm: &ScriptManager, ctx: &dyn SimContext) -> f32 {
+        if self.is_player() && (ctx.is_debug() && self.is_ghost_mode(ctx) || self.is_unlimited_carry(ctx)) {
+            return 0.0;
+        }
         self.inventory_weight(sm, ctx)
     }
 
@@ -721,9 +726,14 @@ impl<I> GameCharacter<I> {
     /// `styles` are the hair style tables `getHairModel()` checks the
     /// stored model against (`None`: the stored model is read as it is).
     ///
-    /// STUB: the cell's process-item lists, the model reset, the network
-    /// syncs and `forceDropTooHeavy` (an `IsoPlayer` with no room for the
-    /// replaced item drops it on the square: TODO(world)) are not modelled.
+    ///
+    /// Right after `wornItems.setItem`, `forceDropTooHeavy`: a player
+    /// with no room in its inventory for the replaced item drops it on the
+    /// floor under it ([`GameCharacter::force_drop_too_heavy`]) when
+    /// `floor` gives the world; without one nothing drops.
+    ///
+    /// STUB: the cell's process-item lists, the model reset and the
+    /// network syncs are not modelled.
     pub fn set_worn_item(
         &mut self,
         sm: &ScriptManager,
@@ -731,14 +741,17 @@ impl<I> GameCharacter<I> {
         location: Option<Rc<RegistryKey>>,
         id: Option<i32>,
         force_drop_too_heavy: bool,
+        floor: Option<FloorCx<'_>>,
     ) -> ScriptResult<bool> {
-        let _ = force_drop_too_heavy;
         let current = self.worn_item(location.as_ref())?;
         if id == current {
             return Ok(false);
         }
         let worn = self.items.worn_items.as_mut().ok_or_else(crate::npe)?;
         worn.set_item(location.clone(), id)?;
+        if let Some(cx) = floor {
+            self.force_drop_too_heavy(sm, cx, force_drop_too_heavy, current);
+        }
         if self.is_player() {
             let hat = |f| body_location_key(sm, f).is_some_and(|k| location.as_ref().is_some_and(|l| l.location == k.location));
             if let Some(mut hv) = self.human_visual.take() {
@@ -768,10 +781,11 @@ impl<I> GameCharacter<I> {
         styles: Option<&dyn HumanStyles>,
         id: Option<i32>,
         force_drop_too_heavy: bool,
+        floor: Option<FloorCx<'_>>,
     ) -> ScriptResult<bool> {
         let worn = self.worn_items_or_npe()?;
         let location = id.and_then(|id| worn.location(&id));
-        self.set_worn_item(sm, styles, location, None, force_drop_too_heavy)
+        self.set_worn_item(sm, styles, location, None, force_drop_too_heavy, floor)
     }
 
     /// `clearWornItems()`: nothing without `wornItems`.

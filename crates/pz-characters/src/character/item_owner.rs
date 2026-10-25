@@ -292,9 +292,10 @@ impl<I> GameCharacter<I> {
     /// from the inventory. Returns the new item's id.
     pub fn apply_use_outcome(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, id: i32, out: &mut UseOutcome) -> Option<i32> {
         if out.unwear && self.items.is_worn(id) {
-            // `removeWornItem(this)` (no hair styles: see `set_worn_item`),
-            // then `OnClothingUpdated` for a player.
-            if self.remove_worn_item(sm, None, Some(id), true).is_ok() && self.is_player() {
+            // `removeWornItem(this)` (no hair styles: see `set_worn_item`;
+            // no world, so no `forceDropTooHeavy` drop: TODO(world)), then
+            // `OnClothingUpdated` for a player.
+            if self.remove_worn_item(sm, None, Some(id), true, None).is_ok() && self.is_player() {
                 ctx.event(SimEvent::ClothingUpdated);
             }
         }

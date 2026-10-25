@@ -641,17 +641,28 @@ registered):
       (`loadCorpseFromByteData`), `generator_from_item` (`IsoGenerator`),
       `animal_dropped` (`IsoAnimal`), `process_items_remove`,
       `designation_zone_item_on_ground` (#186).
-- [ ] Character item drops: the characters' `setWornItem` /
-      `removeWornItem` (with `forceDropTooHeavy`, true by default) call
-      `pz_inventory::floor_drop::force_drop_too_heavy(chr, world, force,
-      item_cur)` right after `wornItems.setItem`; `climbOverWall`,
-      `climbThroughWindow*`, `climbDownSheetRope` and friends call
-      `drop_heavy_items`, and death/knockdown paths `drop_hand_items`. The
-      character implements `floor_drop::DropCharacter` (inventory, hands,
-      square, `getCapacityWeight`, `getUnequippedWeight`, the
-      `OnContainerUpdate` / `onItemFall` Lua events and the drop sound);
-      the world is `square_mutation::FloorDropEnv::new(&mut env,
-      world_age_hours)` (#186).
+- [ ] Character item drops (#186, characters side #189): the characters
+      implement `floor_drop::DropCharacter` through
+      `pz_characters::character::CharacterDrop` and take the world as a
+      `FloorCx { ctx, floor }`. Wired: `set_worn_item` / `remove_worn_item`
+      (`forceDropTooHeavy` right after `wornItems.setItem`),
+      `climbThroughWindow` / `climbThroughWindowFrame` (`dropHeavyItems`)
+      and `ClimbOverFenceState`'s `VaultSprintFallLanded`
+      (`dropHandItems`). The engine must:
+      - return its `square_mutation::FloorDropEnv::new(&mut env,
+        world_age_hours)` from `StateWorld::floor()` for the states;
+      - `bind_character_sim::install_floor_world(Some(..))` with a
+        `FloorWorld` that builds a `FloorDropEnv` per call, for Lua's
+        `setWornItem` / `removeWornItem` / `setClothingItem_*` and the new
+        `dropHandItems` / `dropHeavyItems` (without one nothing drops);
+      - call `GameCharacter::drop_heavy_items(sm, FloorCx)` from
+        `climbSheetRope`, `climbDownSheetRope` and `IsoPlayer.climbOverWall`
+        (the `PathMoverRequest::ClimbOverWall` handler), and
+        `drop_hand_items` from `handleLandingImpact`, `fallenOnKnees` and
+        `IsoPlayer.OnDeath`, as those are ported (not yet in
+        `pz-characters`);
+      - `Use`'s `Unwear` (`apply_use_outcome`) passes no world yet, so a
+        used-up worn item never drops (#189).
 - [ ] Collision code fills `IsoChunk::collision` through
       `ChunkCollision::init(z, build)` (`CollideWithObstaclesPoly` /
       `LineClearCollide`) and drops levels with `take` on vehicle moves; the
