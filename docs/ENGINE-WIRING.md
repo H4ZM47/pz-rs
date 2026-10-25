@@ -274,9 +274,9 @@ registered):
       PuddleInputs { regions, perf_puddles: Core.getPerfPuddles() })`
       (which also re-inits `pending.puddles`' geometry), and after every
       player's lighting frame `check_changed_buildings(lighting, caches,
-      pending, num_players)`; `pending.vispoly` / `physics` are drained by
-      `VisibilityPolygon2` and chunk physics (`updatePhysicsForLevel`)
-      (#99). Squares built on chunk load (`build_chunk`, new squares in
+      pending, num_players)`; `pending.vispoly` is drained by
+      `VisibilityPolygon2` (chunk physics reads `IsoChunk`'s own
+      `physicsCheck`) (#99). Squares built on chunk load (`build_chunk`, new squares in
       `rebuild_square`) queue in `render_world.puddles_recalc` and get
       their puddle geometry in the next `apply` (`recalc = true` on a new
       `getPuddles()`).

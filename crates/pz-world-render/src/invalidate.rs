@@ -34,10 +34,10 @@
 //! `ChunkLevelsData.invalidateAll` forces `recreateLevel`;
 //! [`pz_iso_render::Cutaways::update`] recomputes all of it) and
 //! `IsoGridOcclusionData` (its `objectEpochCount`, kept as
-//! [`PendingRender::grid_occlusion_epoch`]). `VisibilityPolygon2` and
-//! chunk physics are not built in this crate: their dirty sets
-//! ([`PendingRender::vispoly`], [`PendingRender::physics`]) are left for
-//! their owners to drain.
+//! [`PendingRender::grid_occlusion_epoch`]). `VisibilityPolygon2` is not
+//! built in this crate: its dirty set ([`PendingRender::vispoly`]) is left
+//! for its owner to drain. Chunk physics (`checkPhysicsLater`) is kept by
+//! pz-world's `IsoChunk` itself.
 
 use std::collections::BTreeSet;
 
@@ -83,9 +83,6 @@ pub struct PendingRender {
     /// `IsoChunk.invalidateVispolyChunkLevel`: `VisibilityPolygon2` chunk
     /// levels to rebuild.
     pub vispoly: BTreeSet<(i32, i32, i32)>,
-    /// `IsoChunk.checkPhysicsLater(z)`: chunk levels whose physics shapes
-    /// are rebuilt (`updatePhysicsForLevel`).
-    pub physics: BTreeSet<(i32, i32, i32)>,
     /// `getPuddles().recalc = true`: squares whose puddle geometry is
     /// re-initialised by the next [`PendingRender::apply`].
     pub puddles: BTreeSet<SquarePos>,
@@ -271,15 +268,15 @@ impl RenderSquareHooks for RenderInvalidation<'_> {
 
     /// `RecalcProperties`' tail: puddles recalculated (next
     /// [`PendingRender::apply`]), the square's level
-    /// flagged for lighting (and its snapshot rebuilt next frame), physics
-    /// rebuilt, and water geometry dropped from a square that lost `water`.
-    /// (`chunk.collision.clear()` is the collision code's own cache.)
+    /// flagged for lighting (and its snapshot rebuilt next frame), and
+    /// water geometry dropped from a square that lost `water`.
+    /// (`chunk.checkPhysicsLater` and `chunk.collision.clear()` are
+    /// pz-world's own.)
     fn properties_recalculated(&mut self, sq: &IsoGridSquare) {
         let p = (sq.x, sq.y, sq.z);
         let (wx, wy) = chunk_of(sq.x, sq.y);
         self.pending.puddles.insert(p);
         self.lighting.mark_level(wx, wy, sq.z);
-        self.pending.physics.insert((wx, wy, sq.z));
         if let Some(rs) = self.render.squares.get_mut(&p) {
             if rs.water.is_some_and(|g| g.is_valid()) && !sq.has(self.water_flag) {
                 rs.water = None;

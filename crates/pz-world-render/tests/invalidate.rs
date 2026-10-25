@@ -288,7 +288,7 @@ fn lighting_flags_are_set_at_once() {
 }
 
 #[test]
-fn recalculated_properties_flag_lighting_puddles_physics_and_water() {
+fn recalculated_properties_flag_lighting_puddles_and_water() {
     let mut s = Scene::new();
     s.settle();
     assert_eq!(s.lighting.light_check(2, 1, 0, 0), Some((false, false)));
@@ -310,8 +310,6 @@ fn recalculated_properties_flag_lighting_puddles_physics_and_water() {
     assert_eq!(s.render.squares[&(17, 9, 0)].water, None);
     assert_eq!(s.render.squares[&(9, 9, 0)].water, Some(geom));
     assert!(s.pending.puddles.contains(&(17, 9, 0)));
-    assert!(s.pending.physics.contains(&(2, 1, 0)));
-    assert!(s.pending.physics.contains(&(1, 1, 0)));
     assert!(s.pending.has_rebuilds());
     // The next frame sends the level.
     s.frame();
