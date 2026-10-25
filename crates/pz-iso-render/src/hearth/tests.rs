@@ -5,7 +5,7 @@ use crate::Camera;
 use pz_core::random::Rand;
 use pz_render::{Sprite, WorldShader};
 
-fn tex(name: &str, w: u32, h: u32, id: u32) -> Texture {
+pub(crate) fn tex(name: &str, w: u32, h: u32, id: u32) -> Texture {
     let mut t = Texture::empty(name);
     t.id = Some(id);
     t.width = w;
@@ -20,7 +20,7 @@ fn tex(name: &str, w: u32, h: u32, id: u32) -> Texture {
     t
 }
 
-struct Maps;
+pub(crate) struct Maps;
 
 impl DepthMaps for Maps {
     fn preset(&self, _: DepthPreset) -> Option<Texture> {
@@ -193,7 +193,7 @@ fn campfires_and_drums_swap_their_overlay() {
     assert_eq!(f.overlay.as_deref(), Some("crafted_02_43"));
 }
 
-fn sprites(out: &[DrawCmd]) -> Vec<(&Sprite, &WorldShader)> {
+pub(crate) fn sprites(out: &[DrawCmd]) -> Vec<(&Sprite, &WorldShader)> {
     out.iter()
         .filter_map(|c| match c {
             DrawCmd::WorldSprite(s, w) => Some((s, w)),
@@ -202,7 +202,7 @@ fn sprites(out: &[DrawCmd]) -> Vec<(&Sprite, &WorldShader)> {
         .collect()
 }
 
-fn fireplace_square(depth: Option<Texture>) -> RenderSquare {
+pub(crate) fn fireplace_square(depth: Option<Texture>) -> RenderSquare {
     let r = Rand::new(8);
     let mut f = FireplaceState::new();
     f.update(&wall_fireplace(true, 30), 0.0, &r, &frame_size);
