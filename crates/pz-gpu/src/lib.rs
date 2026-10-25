@@ -31,7 +31,7 @@ mod vehicle;
 mod state;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use bytemuck::{Pod, Zeroable};
 use pz_render::{DrawCmd, DrawList, TextureManager, WorldShader};
@@ -58,11 +58,20 @@ impl FrameParams {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum GpuError {
     NoAdapter(String),
     Device(String),
     Surface(String),
+    /// The device ran out of memory (a texture allocation, or reported by
+    /// the driver later): what GL reports as `GL_OUT_OF_MEMORY`, after
+    /// which the original's `TextureFBO` finds its framebuffer incomplete
+    /// and throws.
+    OutOfMemory(String),
+    /// A texture the device cannot create (larger than its limits).
+    Allocation(String),
+    /// The device was lost; nothing more can be drawn or read with it.
+    DeviceLost(String),
 }
 
 impl std::fmt::Display for GpuError {
@@ -71,11 +80,63 @@ impl std::fmt::Display for GpuError {
             GpuError::NoAdapter(e) => write!(f, "no graphics adapter: {e}"),
             GpuError::Device(e) => write!(f, "device: {e}"),
             GpuError::Surface(e) => write!(f, "surface: {e}"),
+            GpuError::OutOfMemory(e) => write!(f, "out of GPU memory: {e}"),
+            GpuError::Allocation(e) => write!(f, "texture allocation failed: {e}"),
+            GpuError::DeviceLost(e) => write!(f, "GPU device lost: {e}"),
         }
     }
 }
 
+/// What the device reported outside the calls that check for errors: its
+/// loss (`set_device_lost_callback`) and out-of-memory or internal errors
+/// (`on_uncaptured_error`). The first one sticks.
+#[derive(Clone, Default)]
+struct Faults {
+    first: Arc<Mutex<Option<GpuError>>>,
+    /// Set while the `Gpu` is dropped, when losing the device is expected.
+    closing: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Faults {
+    fn watch(device: &wgpu::Device) -> Self {
+        let faults = Faults::default();
+        let lost = faults.clone();
+        device.set_device_lost_callback(move |reason, msg| {
+            if !lost.closing.load(std::sync::atomic::Ordering::Relaxed) {
+                lost.record(GpuError::DeviceLost(format!("{reason:?} {msg}").trim_end().to_string()));
+            }
+        });
+        let errors = faults.clone();
+        device.on_uncaptured_error(Arc::new(move |e: wgpu::Error| match e {
+            wgpu::Error::OutOfMemory { source } => errors.record(GpuError::OutOfMemory(source.to_string())),
+            wgpu::Error::Internal { description, .. } => errors.record(GpuError::Device(description)),
+            // A validation error is a bug in the draw code: fail loudly, as
+            // wgpu's default handler does.
+            e => panic!("wgpu: {e}"),
+        }));
+        faults
+    }
+
+    fn record(&self, e: GpuError) {
+        let mut f = self.first.lock().unwrap_or_else(|p| p.into_inner());
+        if f.is_none() {
+            eprintln!("pz-gpu: {e}");
+            *f = Some(e);
+        }
+    }
+
+    fn get(&self) -> Option<GpuError> {
+        self.first.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
 impl std::error::Error for GpuError {}
+
+impl Drop for Gpu {
+    fn drop(&mut self) {
+        self.faults.closing.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 /// Vertex as `SpriteRenderer` packs it (position, texture 0 coordinates,
 /// ABGR colour, texture 1 and 2 coordinates), plus the per-quad depth
@@ -280,6 +341,7 @@ pub struct Gpu {
     state_stack: Vec<GlState>,
     /// `TextureCombiner`.
     combiner: combiner::CombinerState,
+    faults: Faults,
 }
 
 impl Gpu {
@@ -333,6 +395,7 @@ impl Gpu {
     }
 
     fn build(device: wgpu::Device, queue: wgpu::Queue, target: Target, format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
+        let faults = Faults::watch(&device);
         let module = |label: &str, src: String| device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(src.into()) });
         let sprite = module("default", include_str!("shader.wgsl").to_string());
         let world = include_str!("world.wgsl");
@@ -498,6 +561,7 @@ impl Gpu {
             state: GlState::default(),
             state_stack: Vec::new(),
             combiner,
+            faults,
         };
         gpu.white = Some(gpu.create_texture_bind_group(1, 1, &[vec![0xFF; 4]], (true, true, false, false)));
         gpu
@@ -531,8 +595,47 @@ impl Gpu {
         }
     }
 
-    /// Draws one frame and presents it.
+    /// The first device loss or out-of-memory error, or a texture target
+    /// that could not be allocated (its draws are skipped). After a loss
+    /// frames are no longer drawn and [`Gpu::try_read_pixels`] fails.
+    pub fn error(&self) -> Option<GpuError> {
+        self.faults.get()
+    }
+
+    fn lost(&self) -> bool {
+        matches!(self.faults.get(), Some(GpuError::DeviceLost(_)))
+    }
+
+    /// Runs `create` (which allocates GPU memory) inside out-of-memory and
+    /// validation error scopes; a failure is recorded (see [`Gpu::error`])
+    /// and `None` returned, so the caller skips that target instead of
+    /// drawing into a texture that does not exist.
+    fn allocate<T>(&self, what: &str, create: impl FnOnce(&wgpu::Device) -> T) -> Option<T> {
+        if self.lost() {
+            return None;
+        }
+        let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let invalid = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let t = create(&self.device);
+        let invalid = pollster::block_on(invalid.pop());
+        let oom = pollster::block_on(oom.pop());
+        if let Some(e) = oom {
+            self.faults.record(GpuError::OutOfMemory(format!("{what}: {e}")));
+            return None;
+        }
+        if let Some(e) = invalid {
+            self.faults.record(GpuError::Allocation(format!("{what}: {e}")));
+            return None;
+        }
+        Some(t)
+    }
+
+    /// Draws one frame and presents it. Nothing is drawn once the device
+    /// is lost; check [`Gpu::error`].
     pub fn render_frame(&mut self, segments: &[(FrameParams, &DrawList)], textures: &mut TextureManager) {
+        if self.lost() {
+            return;
+        }
         let (frame, view) = match &self.target {
             Target::Surface { surface, .. } => {
                 let st = match surface.get_current_texture() {
@@ -550,9 +653,20 @@ impl Gpu {
         }
     }
 
-    /// The headless target's pixels, RGBA, top row first.
+    /// The headless target's pixels, RGBA, top row first. Panics with the
+    /// device's error if it was lost or the read failed; see
+    /// [`Gpu::try_read_pixels`].
     pub fn read_pixels(&self) -> Vec<u8> {
-        let Target::Headless { texture } = &self.target else { return Vec::new() };
+        self.try_read_pixels().unwrap_or_else(|e| panic!("pz-gpu read_pixels: {e}"))
+    }
+
+    /// The headless target's pixels (empty for a window surface), or why
+    /// they could not be read.
+    pub fn try_read_pixels(&self) -> Result<Vec<u8>, GpuError> {
+        if let Some(e @ GpuError::DeviceLost(_)) = self.faults.get() {
+            return Err(e);
+        }
+        let Target::Headless { texture } = &self.target else { return Ok(Vec::new()) };
         let (w, h) = (self.width, self.height);
         let row = (w * 4).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -572,15 +686,24 @@ impl Gpu {
         );
         self.queue.submit([enc.finish()]);
         let slice = buf.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-        let Ok(data) = slice.get_mapped_range() else { return Vec::new() };
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        let polled = self.device.poll(wgpu::PollType::wait_indefinitely());
+        let lost = |why: String| self.faults.get().unwrap_or(GpuError::DeviceLost(why));
+        match rx.try_recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(lost(format!("readback map: {e}"))),
+            Err(_) => return Err(lost(format!("readback never mapped ({polled:?})"))),
+        }
+        let data = slice.get_mapped_range().map_err(|e| lost(format!("readback range: {e:?}")))?;
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..h {
             let start = (y * row) as usize;
             out.extend_from_slice(&data[start..start + (w * 4) as usize]);
         }
-        out
+        Ok(out)
     }
 
     // ---- frame building ---------------------------------------------------
@@ -1423,8 +1546,8 @@ impl Gpu {
         if self.offscreen.as_ref().is_some_and(|o| o.width == width && o.height == height) {
             return;
         }
-        let tex = |format, usage, label| {
-            self.device.create_texture(&wgpu::TextureDescriptor {
+        let tex = |device: &wgpu::Device, format, usage, label| {
+            device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                 mip_level_count: 1,
@@ -1436,8 +1559,14 @@ impl Gpu {
             })
         };
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let color = tex(state::OFFSCREEN_COLOR_FORMAT, usage, "offscreen").create_view(&Default::default());
-        let depth_stencil = tex(state::DEPTH_STENCIL_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT, "offscreen depth").create_view(&Default::default());
+        let Some((color, depth_stencil)) = self.allocate(&format!("offscreen buffer {width}x{height}"), |d| {
+            (tex(d, state::OFFSCREEN_COLOR_FORMAT, usage, "offscreen"), tex(d, state::DEPTH_STENCIL_FORMAT, wgpu::TextureUsages::RENDER_ATTACHMENT, "offscreen depth"))
+        }) else {
+            self.offscreen = None;
+            return;
+        };
+        let color = color.create_view(&Default::default());
+        let depth_stencil = depth_stencil.create_view(&Default::default());
         let sampler = self.sampler((true, true, false, true));
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -1495,8 +1624,8 @@ impl Gpu {
             return;
         }
         let mips = 32 - width.max(height).max(1).leading_zeros();
-        let tex = |format, label, mips| {
-            self.device.create_texture(&wgpu::TextureDescriptor {
+        let tex = |device: &wgpu::Device, format, label, mips| {
+            device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
                 mip_level_count: mips,
@@ -1507,13 +1636,20 @@ impl Gpu {
                 view_formats: &[],
             })
         };
-        let color_texture = tex(state::CHUNK_COLOR_FORMAT, "FBORenderChunk.tex", mips);
+        // A target that cannot be allocated is left out (an old one of
+        // another size freed): its passes and composites are skipped.
+        let Some((color_texture, depth_texture)) = self.allocate(&format!("chunk texture {id} {width}x{height}"), |d| {
+            (tex(d, state::CHUNK_COLOR_FORMAT, "FBORenderChunk.tex", mips), tex(d, state::CHUNK_DEPTH_FORMAT, "FBORenderChunk.depth", 1))
+        }) else {
+            self.chunks.remove(&id);
+            return;
+        };
         let levels: Vec<wgpu::TextureView> = (0..mips)
             .map(|l| color_texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: l, mip_level_count: Some(1), ..Default::default() }))
             .collect();
         let color = levels[0].clone();
         let all = color_texture.create_view(&Default::default());
-        let depth = tex(state::CHUNK_DEPTH_FORMAT, "FBORenderChunk.depth", 1).create_view(&Default::default());
+        let depth = depth_texture.create_view(&Default::default());
         // Minification GL_LINEAR_MIPMAP_LINEAR over the generated levels,
         // magnification GL_NEAREST or GL_LINEAR.
         let composite = [true, false].map(|mag_nearest| {

@@ -19,8 +19,8 @@ impl Gpu {
         {
             return;
         }
-        let tex = |format, label| {
-            self.device.create_texture(&wgpu::TextureDescriptor {
+        let tex = |device: &wgpu::Device, format, label| {
+            device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
                     width,
@@ -36,9 +36,16 @@ impl Gpu {
                 view_formats: &[],
             })
         };
-        let color_texture = tex(state::CHUNK_COLOR_FORMAT, "atlas");
+        // An atlas that cannot be allocated is reported and left out; its
+        // draws are skipped.
+        let Some((color_texture, depth_texture)) = self.allocate(&format!("atlas texture {id} {width}x{height}"), |d| {
+            (tex(d, state::CHUNK_COLOR_FORMAT, "atlas"), tex(d, state::CHUNK_DEPTH_FORMAT, "atlas depth"))
+        }) else {
+            self.chunks.remove(&id);
+            return;
+        };
         let color = color_texture.create_view(&Default::default());
-        let depth = tex(state::CHUNK_DEPTH_FORMAT, "atlas depth").create_view(&Default::default());
+        let depth = depth_texture.create_view(&Default::default());
         let sampler = self.sampler((false, false, false, false));
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
