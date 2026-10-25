@@ -486,7 +486,12 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
 
 /// `register` on the shared ScriptManager and Characters.
 pub fn register_shared(thread: &mut Thread) {
-    register(thread, shared_script_manager(), shared_characters());
+    let chars = shared_characters();
+    // `Translator.getText` for the name lists (the translator once booted).
+    chars.borrow_mut().translator = Some(Rc::new(|k: &str| {
+        crate::bind_text::with_translator(|t| t.get_text(k, &[])).unwrap_or_else(|| k.to_string())
+    }));
+    register(thread, shared_script_manager(), chars);
 }
 
 fn tdef(c: &NativeCall<'_>) -> LuaResult<CharacterTraitDefinitionRef> {
@@ -1850,6 +1855,15 @@ mod tests {
     #[test]
     fn traits_observations_and_survivors() {
         let (mut t, chars) = setup();
+        // `getHairModel` keeps a known style (invented table).
+        let pop = pz_characters::population::Population {
+            hair_styles: Some(
+                pz_characters::population::HairStyles::from_xml(b"<hairStyles><male><name>Bald</name><model/></male></hairStyles>")
+                    .unwrap(),
+            ),
+            ..Default::default()
+        };
+        crate::bind_appearance::install_population(Rc::new(RefCell::new(pop)));
         run(
             &mut t,
             r#"
@@ -1886,7 +1900,8 @@ mod tests {
             m:getHumanVisual():setHairModel("Bald")
             assert(m:getHumanVisual():getHairModel() == "Bald")
             m:getHumanVisual():clear()
-            assert(m:getHumanVisual():getHairModel() == nil and m:getHumanVisual():getBodyHairIndex() == -1)
+            -- Cleared: the lazy getter draws a style again (the only one).
+            assert(m:getHumanVisual():getHairModel() == "Bald" and m:getHumanVisual():getBodyHairIndex() == -1)
             assert(m:getWornItems():isEmpty())
             m:setCharacterProfession(CharacterProfession.BAKER)
             assert(m:isCharacterProfession(CharacterProfession.BAKER))
@@ -1941,5 +1956,47 @@ mod tests {
         assert!(e.contains("NullPointerException"), "{e}");
         let e = run(&mut t, "BodyLocations.getGroup('')").unwrap_err();
         assert!(e.contains("id is empty"), "{e}");
+    }
+
+    #[test]
+    fn common_hair_colours_and_lazy_visual() {
+        let (mut t, chars) = setup();
+        install_characters(chars.clone());
+        crate::bind_misc_classes::register(&mut t, None);
+        let mut pop = pz_characters::population::Population::default();
+        pop.pop_template.female_skins = vec!["SkinA".into(), "SkinB".into(), "SkinC".into()];
+        crate::bind_appearance::install_population(Rc::new(RefCell::new(pop)));
+        pz_core::random::outfit_rng::set_seed(77);
+        let (colour, skin) = (pz_core::random::outfit_rng::next(2), pz_core::random::outfit_rng::next(3));
+        pz_core::random::outfit_rng::set_seed(77);
+        run(
+            &mut t,
+            &format!(
+                r#"
+            SurvivorDesc.addHairColor(ColorInfo.new(0.5, 0.25, 0.125, 1))
+            SurvivorDesc.addHairColor(ColorInfo.new(0.75, 1.5, 0, 1))
+            local d = SurvivorDesc.new()
+            d:setFemale(true)
+            local l = d:getCommonHairColor()
+            assert(l == SurvivorDesc.HairCommonColors and l:size() == 2)
+            assert(l:get(0):getGreenFloat() == 0.25 and l:get(1):getGreenFloat() == 1)
+            local hv = d:getHumanVisual()
+            assert(hv:getSkinTextureIndex() == -1)
+            local c = hv:getHairColor()
+            assert(c:getRedFloat() == l:get({colour}):getRedFloat())
+            assert(hv:getNaturalBeardColor():getBlueFloat() == c:getBlueFloat())
+            assert(hv:getSkinTexture() == ({{"SkinA", "SkinB", "SkinC"}})[{skin} + 1])
+            assert(hv:getSkinTextureIndex() == {skin})
+            hv:setHairColor(ImmutableColor.new(0.1, 0.2, 0.3, 1))
+            assert(hv:getHairColor():getGreenFloat() == hv:getHairColor():getGreenFloat())
+            assert(tostring(ImmutableColor.new(2, 0.5, -1)) == "ImmutableColor (1.0,0.5,0.0,1.0)")
+            assert(ImmutableColor.new(0.5, 0.5, 0.5, 1):scale(4):getRedFloat() == 1)
+            SurvivorFactory.Reset()
+            assert(l:size() == 0)
+            "#
+            ),
+        )
+        .unwrap();
+        assert!(chars.borrow().survivor_desc.hair_common_colors.is_empty());
     }
 }

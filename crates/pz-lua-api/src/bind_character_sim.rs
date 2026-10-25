@@ -905,7 +905,9 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
             let d = desc_arg(c, 0)?;
             let desc_value = c.arg(0);
             adopt_survivor_desc_value(&desc_value);
-            let chr = Rc::new(RefCell::new(LuaGameCharacter::new_survivor(&sm, d.clone())));
+            let chr = Rc::new(RefCell::new(LuaGameCharacter::new_survivor(&sm, d.clone(), || {
+                crate::bind_items::create_item("Base.BareHands", 1.0).map(|i| i.borrow().clone())
+            })));
             let v = character_value(&chr);
             set_survivor_desc_instance(&d, v.clone());
             if let Some(sink) = SINK.with(|s| s.borrow().clone()) {

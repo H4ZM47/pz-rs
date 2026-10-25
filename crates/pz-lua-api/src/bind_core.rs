@@ -2128,14 +2128,10 @@ mod tests {
 
     #[test]
     fn save_options_from_lua() {
-        let dir = std::env::temp_dir().join(format!(
-            "pz-lua-api-core-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // One directory per call: tests run in parallel.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("pz-lua-api-core-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut c = Core::new();
         c.set_cache_dir(&dir);

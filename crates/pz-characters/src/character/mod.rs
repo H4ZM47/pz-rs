@@ -501,16 +501,23 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `new IsoSurvivor(desc, cell, x, y, z)`'s non-world part, in the
     /// original's `Rand` order: the `IsoGameCharacter` constructor's
-    /// patience, then `speakColour` and `neightbourUpdate`, with the
+    /// patience, `IsoLivingCharacter.bareHands`
+    /// (`InventoryItemFactory.CreateItem("Base.BareHands")`, made by
+    /// `bare_hands`), then `speakColour` and `neightbourUpdate`, with the
     /// descriptor set (the `setFemale` before it is a no-op: it writes
     /// through the still-null descriptor). `Dressup` finds no `wornItems`
     /// yet (they are made after it) and does nothing; `initWornItems` /
     /// `initAttachedItems` leave both empty. TODO(world, render): the cell,
     /// position and moving-object list, sprite parts, path finder, chat
     /// element and state machine.
-    pub fn new_survivor(sm: &ScriptManager, desc: SurvivorDescRef<I>) -> Self {
+    pub fn new_survivor(
+        sm: &ScriptManager,
+        desc: SurvivorDescRef<I>,
+        bare_hands: impl FnOnce() -> Option<pz_inventory::InventoryItem>,
+    ) -> Self {
         let mut c = Self::new(sm, CharacterKind::Survivor);
         c.patience = pz_core::random::next_range(Self::PATIENCE_MIN, Self::PATIENCE_MAX);
+        c.bare_hands = bare_hands();
         c.descriptor = Some(desc);
         let ch = || (pz_core::random::next(200) + 55) as f32 / 255.0;
         let (r, g, b) = (ch(), ch(), ch());

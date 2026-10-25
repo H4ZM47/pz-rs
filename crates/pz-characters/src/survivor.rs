@@ -100,10 +100,14 @@ fn random_entry(list: &[String]) -> ScriptResult<String> {
 }
 
 impl Characters {
-    /// `Translator.getText(key)`. TODO(Translator): translation tables are
-    /// not loaded; the key is returned as for a missing translation.
+    /// `Translator.getText(key)` through the installed
+    /// [`Characters::translator`]; without one the key is returned, as for
+    /// a missing translation.
     pub fn get_text(&self, key: &str) -> String {
-        Self::translate(key)
+        match &self.translator {
+            Some(t) => t(key),
+            None => Self::translate(key),
+        }
     }
 
     /// [`Characters::get_text`] without a borrow of the statics.
