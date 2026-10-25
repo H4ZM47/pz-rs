@@ -32,6 +32,7 @@ use std::path::Path;
 use pz_core::core::Core;
 use pz_core::game_time::GameTime;
 use pz_core::game_time_save;
+use pz_core::save_trackers::{InstanceTracker, MetaTracker, Statistics};
 use pz_kahlua::{TableRef, Value};
 use pz_lua_api::global_objects::{init_lookup, reset, GlobalObjectSystem, GridBounds, Side};
 use pz_lua_api::global_objects_save::load_system_bytes;
@@ -146,6 +147,20 @@ fn line(e: &StreamEvent) -> Option<String> {
             format!("# VU {wx},{wy} saved={saved:?} errors={errs:?}")
         }
         StreamEvent::HotSave => "# HOT".into(),
+        StreamEvent::VehiclesToMeta {
+            wx,
+            wy,
+            ids,
+            errors,
+        } => {
+            let errs: Vec<&str> = errors.iter().map(|e| e.1.as_str()).collect();
+            format!("# VM {wx},{wy} ids={ids:?} errors={errs:?}")
+        }
+        StreamEvent::GenAnimalsPath { .. } => return None,
+        StreamEvent::VehiclesUpdated { saved, errors } => {
+            let errs: Vec<&str> = errors.iter().map(|e| e.1.as_str()).collect();
+            format!("# VQ saved={saved:?} errors={errs:?}")
+        }
         StreamEvent::VehiclesLoaded { .. } => return None,
     })
 }
@@ -333,6 +348,8 @@ impl Env {
             vehicle_saver: saver
                 .as_ref()
                 .map(|s| s as &dyn pz_world::save::vehicles_db::ChunkVehicleSaver),
+            vehicle_meta: None,
+            vehicle_ids: None,
         };
         f(&mut ctx);
     }
@@ -374,6 +391,11 @@ fn main() {
             "map_meta.bin",
             "map_zone.bin",
             "map_sand.bin",
+            "map_animals.bin",
+            "map_worldgen.bin",
+            "iTrack.bin",
+            "metadata.bin",
+            "statistics.bin",
         ];
         if wanted.contains(&n.as_str()) || (n.starts_with("gos_") && n.ends_with(".bin")) {
             std::fs::copy(save.join(&n), work.join(&n)).unwrap();
@@ -382,6 +404,10 @@ fn main() {
     if save.join("isoregiondata").is_dir() {
         copy_dir(&save.join("isoregiondata"), &work.join("isoregiondata"));
     }
+    if save.join("metagrid").is_dir() {
+        copy_dir(&save.join("metagrid"), &work.join("metagrid"));
+    }
+    world_save::ensure_subdirectories_exist(work).unwrap();
     let jar = game.join("projectzomboid.jar");
     let mut sprites = IsoSpriteManager::load_tile_definitions_from(
         SpriteTables::from_game_jar(&jar).unwrap(),
@@ -423,6 +449,20 @@ fn main() {
         &mut spawned,
         &mut uuids,
     );
+    // `IsoWorld.init`: the meta cells and animal zones after `map_zone.bin`;
+    // the trackers and world-gen parameters.
+    let errors = world_save::load_meta_grid_extras(&mut meta, work);
+    assert!(errors.is_empty(), "{errors:?}");
+    let mut world_gen = pz_worldgen::params::WorldGenParams::new("");
+    world_gen.load_file(work);
+    let mut instance_tracker = InstanceTracker::default();
+    instance_tracker.load_file(work, false).expect("iTrack.bin");
+    let mut meta_tracker = MetaTracker::default();
+    meta_tracker
+        .load_file(work, false, false)
+        .expect("metadata.bin");
+    let mut statistics = Statistics::default();
+    statistics.load_file(work, false).expect("statistics.bin");
     let jarf = pz_classfile::Jar::open(&jar).unwrap();
     let defs = pz_sandbox::defs::builtin_options(&jarf).unwrap();
     let mut sandbox = pz_sandbox::SandboxOptions::new(&defs);
@@ -510,6 +550,13 @@ fn main() {
                     players: None,
                     can_save_players: true,
                     reanimated: &[],
+                    world_gen: &world_gen,
+                    instance_tracker: &instance_tracker,
+                    cache_dir: Some(work),
+                    meta_tracker: &meta_tracker,
+                    statistics: &statistics,
+                    local_players: &[false],
+                    on_game_thread: true,
                 };
                 let mut hooks = Hooks {
                     env: &mut env,
@@ -520,7 +567,9 @@ fn main() {
                 let r = world_save::save_on_quit(&mut g, &mut [], &mut hooks);
                 out.push_str(&format!("# save {r:?}\n"));
                 env.run(work, |ctx| s.stop(&mut cell, ctx));
-                world_save::close_stores(None, &mut env.vehicles);
+                let pending = s.take_vehicle_queue();
+                let r = world_save::close_stores(None, &mut env.vehicles, pending);
+                out.push_str(&format!("# reset {r:?}\n"));
             }
             _ => panic!("bad script line {l}"),
         }

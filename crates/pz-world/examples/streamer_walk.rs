@@ -96,6 +96,16 @@ fn line(e: &StreamEvent) -> String {
             error,
             ..
         } => format!("# vehicles {wx},{wy} removed={removed:?} error={error:?}"),
+        StreamEvent::VehiclesToMeta {
+            wx,
+            wy,
+            ids,
+            errors,
+        } => format!("# vehicles to meta {wx},{wy} ids={ids:?} errors={errors:?}"),
+        StreamEvent::VehiclesUpdated { saved, errors } => {
+            format!("# vehicle rows saved={saved:?} errors={errors:?}")
+        }
+        StreamEvent::GenAnimalsPath { wx, wy } => format!("# animal paths {wx},{wy}"),
     }
 }
 
@@ -174,6 +184,8 @@ fn main() {
             no_save: false,
             vehicles_db: vehicles_db.as_mut(),
             vehicle_saver: None,
+            vehicle_meta: None,
+            vehicle_ids: None,
         };
         match t[0] {
             "load" => {

@@ -12,3 +12,5 @@ pub mod weather;
 pub mod map_symbols;
 pub mod game_time;
 pub mod game_time_save;
+pub mod save_trackers;
+pub mod thumbnail;

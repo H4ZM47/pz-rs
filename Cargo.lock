@@ -1921,6 +1921,7 @@ name = "pz-core"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "png",
  "pz-kahlua",
 ]
 
@@ -2054,6 +2055,7 @@ dependencies = [
  "pz-vehicles",
  "pz-video",
  "pz-world",
+ "pz-worldgen",
  "regex",
 ]
 
@@ -2205,6 +2207,7 @@ dependencies = [
  "pz-kahlua",
  "pz-pathfind",
  "pz-scripts",
+ "pz-sqlite",
  "pz-world",
 ]
 

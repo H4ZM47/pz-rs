@@ -215,7 +215,7 @@ impl VehiclePart {
     }
 
     /// `VehiclePart.save`.
-    fn save(&self, w: &mut Writer, items: &dyn ItemRegistry) -> SaveResult<()> {
+    pub fn save(&self, w: &mut Writer, items: &dyn ItemRegistry) -> SaveResult<()> {
         w.string(self.id());
         w.bool(self.created);
         w.f32(self.last_updated);

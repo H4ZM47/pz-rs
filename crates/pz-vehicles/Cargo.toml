@@ -12,5 +12,7 @@ pz-inventory.workspace = true
 pz-world.workspace = true
 
 [dev-dependencies]
+pz-world = { workspace = true, features = ["test-util"] }
+pz-sqlite = { workspace = true, features = ["writer"] }
 pz-pathfind.workspace = true
 pz-fs.workspace = true

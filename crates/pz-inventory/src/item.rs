@@ -518,7 +518,8 @@ impl InventoryItem {
             color_green: 1.0,
             color_blue: 1.0,
             worker: None,
-            wet_cooldown: -1.0,
+            // `item.setWetCooldown(this.wetCooldown)`.
+            wet_cooldown: t.wet_cooldown,
             favorite: false,
             stash_map: None,
             zombie_infected: false,

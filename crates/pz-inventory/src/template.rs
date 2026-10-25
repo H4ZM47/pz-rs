@@ -196,6 +196,9 @@ pub struct ItemTemplate {
     pub windresist: f32,
     pub waterresist: f32,
     pub weight_wet: f32,
+    /// `wetCooldown` (`WetCooldown`; 0 when the script has none), which
+    /// `InstanceItem` gives every new item.
+    pub wet_cooldown: f32,
     pub capacity: i32,
     pub weight_reduction: i32,
     pub use_delta: f32,
@@ -419,6 +422,7 @@ impl ItemTemplate {
             windresist: 0.0,
             waterresist: 0.0,
             weight_wet: 0.0,
+            wet_cooldown: 0.0,
             capacity: 0,
             weight_reduction: 0,
             use_delta: 0.03125,
@@ -576,6 +580,7 @@ impl ItemTemplate {
             windresist: item.windresist,
             waterresist: item.waterresist,
             weight_wet: item.weight_wet,
+            wet_cooldown: item.wet_cooldown,
             capacity: item.capacity,
             weight_reduction: item.weight_reduction,
             use_delta: item.use_delta,
