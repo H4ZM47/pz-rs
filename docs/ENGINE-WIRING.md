@@ -1203,4 +1203,4 @@ registered):
       `IsoMetaGrid`'s cell bounds for `setBoundsFromWorld` (#213). The
       default `meta_grid` (`host::WorldMetaGrid`) already reads the grid
       installed with `bind_world::set_meta_grid`; pass it when installing
-      players (#PRNUM).
+      players (#223).
