@@ -603,6 +603,9 @@ impl<W: PickWorld> HudPicking for WorldPicking<W> {
             square: c.tile.square_value.clone(),
         })
     }
+    fn square_coords(&self, square: &Value) -> Option<(i32, i32, i32)> {
+        crate::bind_world::square_coords(square)
+    }
 }
 
 #[cfg(test)]

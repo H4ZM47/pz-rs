@@ -249,6 +249,15 @@ fn building_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<usize> {
     }
 }
 
+/// The x, y, z of an `IsoGridSquare` Lua object; `None` for anything else
+/// (or a square from replaced world data).
+pub fn square_coords(v: &Value) -> Option<(i32, i32, i32)> {
+    match key_of(v) {
+        Ok(Key::Square(x, y, z)) => Some((x, y, z)),
+        _ => None,
+    }
+}
+
 fn square_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<(i32, i32, i32)> {
     match key_of(&c.arg(i))? {
         Key::Square(x, y, z) => Ok((x, y, z)),
@@ -1972,6 +1981,22 @@ mod tests {
         .expect("compile");
         t.call(&f, &[])
             .unwrap_or_else(|e| panic!("runtime error: {e}"))
+    }
+
+    #[test]
+    fn square_coords_of_lua_values() {
+        let _dir = load_world("sqcoords");
+        let mut t = thread();
+        let out = run(
+            &mut t,
+            "local w = IsoWorld.instance return w:getCell():getGridSquare(259, 260, 1), w:getMetaGrid()",
+        );
+        assert_eq!(square_coords(&out[0]), Some((259, 260, 1)));
+        assert_eq!(square_coords(&out[1]), None);
+        assert_eq!(square_coords(&Value::Nil), None);
+        // A square from world data that was replaced since.
+        set_cell(Some(IsoCell::default()));
+        assert_eq!(square_coords(&out[0]), None);
     }
 
     #[test]
