@@ -402,7 +402,7 @@ registered):
       `character::save::reanimated_players_to_save(sm, chars, ctx, &env,
       &mut tracked, &mut cell_zombies, &|z| stairs_at(z))` (the manager's
       list, then the cell's live reanimated players); on `Err` log it and
-      pass `None` (no `reanimated.bin`) (#170).
+      pass `None` (no `reanimated.bin`) (#178).
 - [ ] `IsoWorld.init` (`ReanimatedPlayers.loadReanimatedPlayers`): read
       `reanimated.bin` (missing: none) into the tracked list with
       `character::save::load_reanimated_players(.., new_zombie, set_on_fire,
@@ -411,7 +411,7 @@ registered):
       `set_default_state(cx)` once the world exists. Not ported yet:
       `addReanimatedPlayersToChunk` (chunk load moves a tracked zombie into
       the cell's zombie list) and `removeReanimatedPlayerFromWorld` (chunk
-      unload moves it back) (#170).
+      unload moves it back) (#178).
 - [ ] `IsoWorld.init`, after `VehiclesDB2.init` and before
       `WorldStreamer.create` / the cell load:
       `let regions = IsoRegions::init_world(save_dir, chunk_grid_width,
