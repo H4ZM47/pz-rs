@@ -2065,6 +2065,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-player-input"
+version = "0.1.0"
+dependencies = [
+ "pz-characters",
+ "pz-core",
+ "pz-input",
+ "pz-lua-api",
+ "pz-render",
+ "pz-ui",
+]
+
+[[package]]
 name = "pz-popman"
 version = "0.1.0"
 dependencies = [

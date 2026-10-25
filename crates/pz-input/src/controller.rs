@@ -168,7 +168,8 @@ pub enum ControllerEvent {
 }
 
 /// `zombie.core.input.Input`'s controller part (game-thread copy).
-#[derive(Debug, Default)]
+/// `Clone` lets readers outside Lua take a per-frame snapshot.
+#[derive(Clone, Debug, Default)]
 pub struct Input {
     pub controllers: [Option<Controller>; MAX_CONTROLLERS],
     pressed: [[bool; MAX_BUTTONS]; MAX_CONTROLLERS],
@@ -353,7 +354,9 @@ pub struct Joypad {
 }
 
 impl Joypad {
-    fn new(id: usize, guid: &str, name: &str) -> Self {
+    /// `new Joypad()` with the default assignments (public so readers can
+    /// build joypad states without a config file, e.g. in tests).
+    pub fn new(id: usize, guid: &str, name: &str) -> Self {
         Joypad {
             guid: guid.to_string(),
             name: name.to_string(),
@@ -407,8 +410,8 @@ pub enum JoypadEvent {
     Deactivated(usize),
 }
 
-/// `zombie.input.JoypadManager`.
-#[derive(Debug, Default)]
+/// `zombie.input.JoypadManager`. `Clone` as for [`Input`].
+#[derive(Clone, Debug, Default)]
 pub struct JoypadManager {
     /// `joypads`: per player.
     pub joypads: [Option<usize>; 4],
