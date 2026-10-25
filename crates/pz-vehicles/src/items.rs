@@ -3,8 +3,9 @@
 //! (`brakeForce`, `wheelFriction`, ...), drainable uses
 //! (`DrainableComboItem`), condition and weights.
 
-use pz_inventory::item::ItemKind;
-use pz_inventory::{InventoryItem, ItemClass, ItemContainer, SavedItem};
+use pz_inventory::context::NoOwner;
+use pz_inventory::template::VehiclePartStats;
+use pz_inventory::{InventoryItem, ItemClass, ItemContainer};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -12,46 +13,10 @@ use std::rc::Rc;
 /// pz-lua-api's `bind_items::ItemRef`).
 pub type ItemRef = Rc<RefCell<InventoryItem>>;
 
-/// The vehicle-part values of an item script (`InventoryItem` fields set
-/// by `Item.InstanceItem`).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ItemStats {
-    pub brake_force: f32,
-    pub wheel_friction: f32,
-    pub suspension_damping: f32,
-    pub suspension_compression: f32,
-    pub engine_loudness: f32,
-    pub durability: f32,
-    pub chance_to_spawn_damaged: i32,
-    pub condition_lower_normal: f32,
-    pub condition_lower_offroad: f32,
-    pub condition_affects_capacity: bool,
-    /// `ReplaceOnDeplete` / `WeightEmpty` (`DrainableComboItem.updateWeight`).
-    pub weight_empty: f32,
-}
-
-impl ItemStats {
-    /// The values of a pz-scripts item.
-    pub fn from_script(item: &pz_scripts::objects::items::Item) -> Self {
-        ItemStats {
-            brake_force: item.brake_force,
-            wheel_friction: item.wheel_friction,
-            suspension_damping: item.suspension_damping,
-            suspension_compression: item.suspension_compression,
-            engine_loudness: item.engine_loudness,
-            durability: item.durability,
-            chance_to_spawn_damaged: item.chance_to_spawn_damaged,
-            condition_lower_normal: item.condition_lower_normal,
-            condition_lower_offroad: item.condition_lower_offroad,
-            condition_affects_capacity: item.condition_affects_capacity,
-            weight_empty: item.weight_empty,
-        }
-    }
-}
-
-/// The vehicle-part values of an item.
-pub fn stats(item: &InventoryItem) -> ItemStats {
-    crate::env::items().stats(&item.get_full_type())
+/// The vehicle-part values `Item.InstanceItem` copied from the script
+/// (`brakeForce`, `wheelFriction`, ...).
+pub fn stats(item: &InventoryItem) -> VehiclePartStats {
+    item.vehicle_part.clone()
 }
 
 /// `instanceof DrainableComboItem`.
@@ -94,12 +59,11 @@ pub fn set_current_uses_float(item: &mut InventoryItem, f: f32) {
 /// `DrainableComboItem.updateWeight` for items with `WeightEmpty`
 /// (`ReplaceOnDeplete` items are not vehicle parts).
 pub fn update_weight(item: &mut InventoryItem) {
-    let s = stats(item);
-    if s.weight_empty != 0.0 {
+    let empty = item.template.weight_empty;
+    if empty != 0.0 {
         item.custom_weight = true;
         let full = item.template.actual_weight;
-        item.actual_weight =
-            ((full - s.weight_empty) * current_uses_float(item) + s.weight_empty).max(0.0);
+        item.actual_weight = ((full - empty) * current_uses_float(item) + empty).max(0.0);
     }
 }
 
@@ -111,42 +75,18 @@ pub fn set_condition(item: &mut InventoryItem, condition: i32) {
 
 /// `getWeight()`.
 pub fn weight(item: &InventoryItem) -> f32 {
-    item.weight.max(0.0)
+    item.get_weight_with(crate::env::items().context())
 }
 
-/// `getActualWeight()`: 0 for items whose display name is their full type.
-pub fn actual_weight(item: &InventoryItem) -> f32 {
-    if item.name == item.get_full_type() {
-        return 0.0;
-    }
-    item.actual_weight.max(0.0)
-}
-
-/// `getUnequippedWeight()` (`getActualWeight() + getContentsWeight()`;
-/// fluid and ammo contents are not modelled).
+/// `getUnequippedWeight()` (the fluid, ammo and bag contents included).
 pub fn unequipped_weight(item: &InventoryItem) -> f32 {
-    let contents = match &item.kind {
-        ItemKind::Container(c) => contents_weight(&c.container),
-        _ => 0.0,
-    };
-    actual_weight(item) + contents
-}
-
-/// `ItemContainer.getContentsWeight()` (raw item records weigh nothing).
-pub fn contents_weight(c: &ItemContainer) -> f32 {
-    let mut total = 0.0f32;
-    for i in &c.items {
-        if let SavedItem::Item(item) = i {
-            total += unequipped_weight(item);
-        }
-    }
-    total
+    item.get_unequipped_weight(crate::env::items().context(), &NoOwner)
 }
 
 /// `getCapacityWeight()` of a vehicle part container (its parent is the
-/// vehicle).
+/// vehicle, so it is the contents weight).
 pub fn capacity_weight(c: &ItemContainer) -> f32 {
-    contents_weight(c)
+    c.get_contents_weight_with(crate::env::items().context())
 }
 
 /// `ItemContainer.getCapacity()` of a vehicle part container.

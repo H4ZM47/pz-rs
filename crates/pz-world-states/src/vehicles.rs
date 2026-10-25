@@ -198,7 +198,8 @@ fn closest_point_on_segment(a: (f32, f32), b: (f32, f32), px: f32, py: f32) -> f
 
 fn for_each_vehicle(cell: &IsoCell, f: &mut dyn FnMut(&BaseVehicle) -> bool) {
     for ch in cell.chunks.values() {
-        for v in &ch.saved.vehicles {
+        // The chunk list as loading filled it (`IsoChunk.vehicles`, #90).
+        for v in ch.vehicles.loaded() {
             if f(&v.vehicle) {
                 return;
             }

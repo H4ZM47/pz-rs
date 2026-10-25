@@ -91,9 +91,9 @@ pub fn create() {
     let oy = (min_y * 256) as f32;
     env::set_offset(ox, oy);
     let (wx, wy, w) = CHUNK_MAP.with(|c| c.get());
-    Bullet::with(|b| {
-        b.init_world(min_x, min_y, max_x, max_y, ox as i32, oy as i32, false);
-        b.activate_chunk_map(0, wx, wy, w);
+    Bullet::call(|b| {
+        b.init_world(min_x, min_y, max_x, max_y, ox as i32, oy as i32, false)?;
+        b.activate_chunk_map(0, wx, wy, w)
     });
     SIM.with(|s| {
         let mut s = s.borrow_mut();
@@ -105,6 +105,52 @@ pub fn create() {
 /// `destroy()`.
 pub fn destroy() {
     Bullet::with(|b| b.destroy_world());
+}
+
+/// What the natives call back during `stepSimulation`.
+struct StepCallbacks;
+
+impl crate::physics::JavaCallbacks for StepCallbacks {
+    /// `Bullet.updatePhysicsForLevelIfNeeded(wx, wy, level)`.
+    fn update_physics_for_level_if_needed(
+        &mut self,
+        wx: i32,
+        wy: i32,
+        level: i32,
+        to_bullet: &mut Vec<Vec<u8>>,
+    ) -> bool {
+        env::world().update_physics_for_level_if_needed(wx, wy, level, to_bullet)
+    }
+    /// `Bullet.onVehicleConstraintImpulse(constraintID, vidA, vidB, impulse)`.
+    fn on_vehicle_constraint_impulse(&mut self, c: i32, a: i32, b: i32, impulse: f32) {
+        on_vehicle_constraint_impulse(c, a, b, impulse);
+    }
+}
+
+/// `Bullet.onVehicleConstraintImpulse` (single player): a towing
+/// constraint pulled harder than 1500 (both upright) or 500 breaks, unless
+/// it changed in the last 2 s.
+pub fn on_vehicle_constraint_impulse(constraint_id: i32, vid_a: i32, vid_b: i32, impulse: f32) {
+    let (Some(va), Some(vb)) = (
+        crate::manager::vehicle_by_id(vid_a as i16),
+        crate::manager::vehicle_by_id(vid_b as i16),
+    ) else {
+        return;
+    };
+    let break_impulse = if va.up_vector_dot() > 0.8 && vb.up_vector_dot() > 0.8 {
+        1500.0
+    } else {
+        500.0
+    };
+    if impulse < break_impulse {
+        return;
+    }
+    let recently = va.st().constraint_changed_time + 2000 > env::now_ms();
+    if va.st().constraint_towing != constraint_id || recently {
+        return;
+    }
+    va.break_constraint(true, false);
+    env::events().play_sound("BreakMetalItem");
 }
 
 /// `updatePhysic()`.
@@ -125,7 +171,7 @@ fn update_physic() {
                 v.apply_all_impulses_from_prone_characters();
                 v.check_surrounding_chunks();
             }
-            Bullet::with(|b| b.step_simulation(fixed, 0, 0.0));
+            Bullet::step_simulation(fixed, 0, 0.0, &mut StepCallbacks);
         }
         SIM.with(|s| {
             let mut s = s.borrow_mut();
@@ -164,10 +210,10 @@ pub fn update() {
     }
     update_physic();
     let mut ff = vec![0.0f32; 8192];
-    let total = Bullet::with(|b| b.get_vehicle_count());
+    let total = Bullet::call(|b| b.get_vehicle_count());
     let mut offset = 0;
     while offset < total {
-        let n = Bullet::with(|b| b.get_vehicle_physics(offset, &mut ff));
+        let n = Bullet::call(|b| b.get_vehicle_physics(offset, &mut ff));
         if n <= 0 {
             break;
         }
@@ -220,5 +266,5 @@ pub fn update() {
     }
     // Physics objects (`physicsObjectMap`) are not vehicles; the call is
     // made for the replay order.
-    Bullet::with(|b| b.get_object_physics(&mut ff));
+    Bullet::call(|b| b.get_object_physics(&mut ff));
 }

@@ -10,8 +10,8 @@ use crate::java::{fastfloor, java_equals_ignore_case};
 use crate::meta_grid::{IsoMetaCell, IsoMetaChunk, IsoMetaGrid};
 use crate::zones::{
     calculate_polyline_outline_bounds, prop_string, world_gen_rocks, AnimalZoneData, ClipperOps,
-    MannequinZoneData, PropValue, RoomTone, VehicleZoneData, Zone, ZoneError, ZoneGeometryType,
-    ZoneId, ZoneKind, ZoneProps, ANY_Z,
+    MannequinZoneData, PropValue, RoomTone, VehicleZone, VehicleZoneData, Zone, ZoneError,
+    ZoneGeometryType, ZoneId, ZoneKind, ZoneProps, ANY_Z,
 };
 
 impl IsoMetaChunk {
@@ -330,6 +330,24 @@ impl IsoMetaGrid {
             .iter()
             .copied()
             .find(|&id| self.zone(id).contains(x, y, z))
+    }
+
+    /// `getVehicleZoneAt(x, y, z)` as a [`VehicleZone`] view.
+    pub fn vehicle_zone_at(&self, x: i32, y: i32, z: i32) -> Option<VehicleZone> {
+        self.get_vehicle_zone_at(x, y, z)
+            .and_then(|id| VehicleZone::from_zone(self.zone(id)))
+    }
+
+    /// `getCellData(cellX, cellY).vehicleZones` (absolute cell coordinates)
+    /// as [`VehicleZone`] views, in list order; empty without the cell.
+    pub fn cell_vehicle_zones(&self, cell_x: i32, cell_y: i32) -> Vec<VehicleZone> {
+        let Some(cell) = self.get_cell_data(cell_x, cell_y) else {
+            return Vec::new();
+        };
+        cell.vehicle_zones
+            .iter()
+            .filter_map(|&id| VehicleZone::from_zone(self.zone(id)))
+            .collect()
     }
 
     /// `isZoneAbove(zone1, zone2, x, y, z)`.

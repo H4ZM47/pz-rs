@@ -33,6 +33,11 @@ Status of the Rust port. Update this file with every merged change.
   square, field and `Rand` draw on 10,240 Muldraugh chunks, checked locally.
   Header and lotpack decoding match the original loader on 163
   cells (Muldraugh sample plus six challenge maps), checked locally.
+  Meta-grid zones (`Zone` and the vehicle/mannequin/world-gen/animal
+  subclasses, chunk zone arrays, Lua-facing registration, lot-priority
+  removal) match the original `IsoMetaGrid` on randomized registrations;
+  the native clipper is an injected trait and the zone tables are runtime
+  input.
   Tile definitions (`pz_world::sprite`): `IsoSpriteManager`,
   `PropertyContainer`, `TilePropertyAliasMap` and the full
   `IsoWorld.LoadTileDefinitions` property pass; all 61,229 sprites match the
@@ -85,6 +90,14 @@ Status of the Rust port. Update this file with every merged change.
   re-save byte-identically except one wild animal (`setWild(true)` draws a
   random stress), and the original loads the chunks written here with the
   same animal fields. Checked locally.
+  New items carry the vehicle-part values, `ItemCapacity`/`MaxCapacity`,
+  radio `DeviceData` with presets and channel, and random map ids, with
+  the original's `Rand` draws (channel lists and map definitions are
+  runtime input); weights count fluid contents. Of 5,092 created script
+  items, all match the original's draws, ids and vehicle values and 5,081
+  every compared field (11 moveables differ in sprite-derived weight), and
+  the part items of 242 `vehicles.db` vehicles match the original's
+  weights and totals. Checked locally.
 - Vehicles and moving objects in saves (`pz_world::save::vehicle`,
   `save::movers`): `BaseVehicle.save`/`load` with `VehiclePart`,
   `VehicleEngine`, lights, doors, windows, device data, part items and
@@ -124,6 +137,34 @@ Status of the Rust port. Update this file with every merged change.
   windows, electricity), 5,570 barricades, 7,358 doors, 8,895 windows,
   157 thumpables, 17,055 light switches and 378 light items per sandbox
   setting. Checked locally.
+  `IsoChunk.vehicles` is a real list (chunk-file and `vehicles.db` loads,
+  chunk moves, removal) and `IsoMetaCell.vehicleZones` is readable as
+  `VehicleZone` views: the 9,693 Muldraugh vehicle zones per cell and
+  `getVehicleZoneAt` match the original. Checked locally.
+- `pz-vehicles`: the vehicle runtime. `BaseVehicle` with parts (script
+  binding, the vehicle Lua `Create`/`Init`/`Update` called by name),
+  engine and transmission, fuel, battery, keys, alarm, lightbar, hotwire,
+  polygons, areas and passenger positions, damage; `CarController` and
+  `WorldSimulation` over a `VehiclePhysics` trait mirroring the Bullet
+  natives; the offline vehicle id map; `VehicleType`; `IsoChunk.AddVehicles`
+  spawning; chunk vehicle lists on pz-world's cell; a pathfinding view
+  with a `pathfind_adapter!` for pz-pathfind; Lua bindings in
+  `pz-lua-api::bind_vehicles`. Against the original with a recording
+  Bullet stand-in, a fake clock and scripted driving (400 frames, every
+  dump field and Bullet call): 241 of 243 saved `vehicles.db` vehicles are
+  bit-exact, one matches up to the original's own crash (a broken window
+  with no square) and one holds a trailer animal the original cannot run
+  headless; all 241 vanilla vehicle scripts as new vehicles are
+  bit-exact; 3,000 single-zone spawns and 2,000 `AddVehicles` runs on
+  synthetic zone lists give the original's vehicles and `Rand` state.
+  End to end on pz-bullet (`VehiclePhysics` for `PzBullet`, with the
+  natives' exceptions and step callbacks), against the original running
+  the real libPZBullet on a Muldraugh region's chunk shapes: 240 of 241
+  vehicle scripts are bit-exact for 400 driven frames (the other matches
+  until the harness lacks a world-sound native). `IsoChunk
+  .updatePhysicsForLevel` gives the original's `ToBullet` shapes for every
+  one of 114,529 squares of four regions that load the same objects.
+  Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all
@@ -1066,6 +1107,75 @@ Status of the Rust port. Update this file with every merged change.
   locally). Spotting, the zombie states' world interplay, ragdolls,
   vehicles and the network states are not yet checked against the
   original; the movement code (`IsoGameCharacter.update`) is TODO.
+
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
+
+- Appearance tables and outfit draws (`pz-characters::population`):
+  `ClothingDecals`, `HairStyles`, `BeardStyles`, `VoiceStyles` (JAXB
+  binding rules, mod overrides), `PopTemplateManager` skin lists,
+  `HairOutfitDefinitions`, `OutfitRNG`/`LocationRNG` (`pz-core`),
+  `OutfitManager`/`Outfit`/`ClothingItemReference` with `Randomize`, the
+  random outfit picks and `dressInOutfit`'s clothing choices,
+  `DefaultClothing`, and a `HumanStyles` for `HumanVisual`. Lua bindings
+  (`bind_appearance`). Loaded lists and seeded draws match the original on
+  the installed media (every outfit randomized and dressed on three seeds)
+  and on invented edge-case XML (checked locally).
+
+- Vehicles in the iso world (`pz-vehicle-render`, vehicle shaders in
+  `pz-gpu`): `VehicleModelInstance` (skin textures; `updateLights`,
+  `doDamageOverlay`, `doBloodOverlay` enable matrices),
+  `ModelManager.addVehicle`'s body and part models (legacy `.txt` wheels
+  included) with `playPartAnim`/`updateAnimationPlayer` door and hood
+  poses, `BaseVehicle.updateTransform` (wheel suspension, steering and
+  spin; attached part models), `ModelSlotRenderData`'s vehicle branch and
+  `Model.DrawVehicle` as `DrawCmd::VehicleModel` (WGSL ports of `vehicle`,
+  `vehicle_multiuv`, `vehicle_norandom_multiuv` with and without
+  `_noreflect`, and `vehiclewheel`), `renderShadow` into
+  `FBORenderShadows`, vehicles in `renderMovingObjects`, and headlight
+  torches / lightbar lampposts for the lighting system. On SportsCar_ez,
+  CarNormal, PickUpTruck and Van the render, vehicle and part-model
+  transforms, all twelve enable matrices, rust/reflection/paint values,
+  the vehicle camera, centre-of-mass offset and `targetDepth`, the shadow
+  polygon and the headlight torches match the original's bit for bit
+  (131 values, local harness). Headlights reach pz-lighting as torches
+  (`checkLights`' vehicle loop) and the lightbar's alternating lights as
+  cell lampposts (`updateWorldLights`); on a night floor the squares in a
+  car's beams light up and the lightbar lamppost comes and goes (tests
+  need the game's scripts). Not yet: the sky box reflection textures
+  (the reflective programs run with whatever textures are passed), the
+  square's result lights on the vehicle model, sloped-surface shadow
+  height, `renderToTexture`.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.

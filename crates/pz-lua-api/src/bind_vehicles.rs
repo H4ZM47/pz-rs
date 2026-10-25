@@ -984,19 +984,24 @@ fn register_items(thread: &mut Thread) {
             d.channel = ch;
         }
     });
-    // `generatePresets` / `addEmergencyChannel` read the channel lists of
-    // `ZomboidRadio`, which is not loaded here: the presets stay empty.
-    dset!("generatePresets", |d, _a| d.presets.presets.clear());
-    dset!("addEmergencyChannel", |_d, _a| ());
-    dset!("setRandomChannel", |d, _a| {
-        if !d.presets.presets.is_empty() {
-            let r = pz_vehicles::rand::next_range(0, d.presets.presets.len() as i32);
-            d.channel = d.presets.presets[r as usize].frequency;
-        } else {
-            let ch = pz_vehicles::rand::next_range(d.min_channel_range, d.max_channel_range);
-            d.channel = ch - ch % 200;
+    // The channel lists come from `ZomboidRadio` through the item factory.
+    dset!("generatePresets", |d, _a| {
+        let items = pz_vehicles::env::items();
+        d.generate_presets(items.channel_lists(), &mut pz_vehicles::rand::next);
+    });
+    dset!("addEmergencyChannel", |d, _a| {
+        if d.is_television {
+            return;
+        }
+        let items = pz_vehicles::env::items();
+        if let Some(list) = items.channel_lists().channel_list("Emergency") {
+            for (k, v) in list {
+                d.presets.add_preset(&v, k);
+            }
         }
     });
+    dset!("setRandomChannel", |d, _a| d
+        .set_random_channel(&mut pz_vehicles::rand::next));
 }
 
 pub const VEHICLE_TYPE_CLASS: &str = "zombie.vehicles.VehicleType";

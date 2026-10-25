@@ -207,6 +207,10 @@ pub struct IsoChunk {
     /// `addZombies`: set by `LoadBrandNew`; `doLoadGridsquare` then adds
     /// vehicles, zone stories and zombies.
     pub add_zombies: bool,
+    /// `vehicles`: filled from the chunk file's vehicle list (saving writes
+    /// an empty list; the original keeps vehicles in `vehicles.db`) and by
+    /// [`IsoChunk::vehicle_loaded`].
+    pub vehicles: crate::chunk_vehicles::ChunkVehicles,
 }
 
 /// `IsoFloorBloodSplat` (positions quantised to 1/255 of a chunk).
@@ -240,9 +244,6 @@ pub struct ChunkSaveData {
     pub generators: Option<Vec<(i32, i32, i8)>>,
     pub loot_respawn_hour: i32,
     pub spawned_rooms: Vec<i64>,
-    /// `vehicles` read from the chunk file's vehicle list. Saving writes an
-    /// empty list (the original moves them to `vehicles.db`).
-    pub vehicles: Vec<crate::save::vehicle::ChunkVehicle>,
 }
 
 impl Default for ChunkSaveData {
@@ -261,7 +262,6 @@ impl Default for ChunkSaveData {
             generators: None,
             loot_respawn_hour: -1,
             spawned_rooms: Vec::new(),
-            vehicles: Vec::new(),
         }
     }
 }
@@ -296,7 +296,30 @@ impl IsoChunk {
             saved: ChunkSaveData::default(),
             erosion: None,
             add_zombies: false,
+            vehicles: Default::default(),
         }
+    }
+
+    /// `VehiclesDB2.WorldStreamerThread.vehicleLoaded`: a vehicle of a
+    /// `vehicles.db` row of this chunk, given the square at its position
+    /// (`(int)(x - wx*8)`, `(int)(y - wy*8)`, level 0), joins the list.
+    /// Returns its handle.
+    pub fn vehicle_loaded(
+        &mut self,
+        row: &crate::save::vehicle::VehicleRow,
+        vehicle: crate::save::vehicle::BaseVehicle,
+    ) -> crate::chunk_vehicles::VehicleHandle {
+        let lx = (row.x - (self.wx * CHUNK_WIDTH) as f32) as i32;
+        let ly = (row.y - (self.wy * CHUNK_WIDTH) as f32) as i32;
+        let square = self.get_grid_square(lx, ly, 0).map(|s| (s.x, s.y, s.z));
+        let h: crate::chunk_vehicles::VehicleHandle =
+            std::rc::Rc::new(crate::chunk_vehicles::LoadedVehicle {
+                origin: crate::chunk_vehicles::VehicleOrigin::Database { sql_id: row.id },
+                square,
+                vehicle,
+            });
+        self.vehicles.add(h.clone());
+        h
     }
 
     pub fn is_valid_level(&self, z: i32) -> bool {
@@ -691,6 +714,50 @@ pub struct IsoCell {
 }
 
 impl IsoCell {
+    /// The `vehicles` of loaded chunk `(wx, wy)`.
+    pub fn chunk_vehicles(
+        &self,
+        wx: i32,
+        wy: i32,
+    ) -> Option<&crate::chunk_vehicles::ChunkVehicles> {
+        self.chunks.get(&(wx, wy)).map(|c| &c.vehicles)
+    }
+
+    /// `BaseVehicle.update`'s chunk change: when the vehicle's current
+    /// square is in loaded chunk `to` and that is not its chunk `from`,
+    /// it leaves `from.vehicles` and joins `to.vehicles`. Returns whether
+    /// it moved (the caller then sets `chunk` and calls
+    /// `addFromCheckedVehicles`).
+    pub fn update_vehicle_chunk(
+        &mut self,
+        v: &crate::chunk_vehicles::VehicleHandle,
+        from: (i32, i32),
+        to: (i32, i32),
+    ) -> bool {
+        if from == to || !self.chunks.contains_key(&to) {
+            return false;
+        }
+        if let Some(c) = self.chunks.get_mut(&from) {
+            c.vehicles.remove(v);
+        }
+        if let Some(c) = self.chunks.get_mut(&to) {
+            c.vehicles.add(v.clone());
+        }
+        true
+    }
+
+    /// `this.chunk.vehicles.remove(this)` (`BaseVehicle.permanentlyRemove`
+    /// and the meta hand-off of `IsoChunk.removeFromWorld`).
+    pub fn remove_vehicle_from_chunk(
+        &mut self,
+        v: &crate::chunk_vehicles::VehicleHandle,
+        chunk: (i32, i32),
+    ) -> bool {
+        self.chunks
+            .get_mut(&chunk)
+            .is_some_and(|c| c.vehicles.remove(v))
+    }
+
     /// Remove chunk `(wx, wy)` from the cell (`IsoChunk.removeFromWorld`
     /// for the parts ported so far) and tell `hook` it is gone.
     pub fn unload_chunk(

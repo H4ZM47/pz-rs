@@ -270,6 +270,8 @@ pub enum DrawCmd {
     AtlasQuad { id: u64, pos: [[f32; 2]; 4], uv: [[f32; 2]; 4], color: u32, depth: [f32; 2] },
     /// A 3D model draw (`basicEffect`), depth-tested against the world.
     Model(Box<model::ModelDraw>),
+    /// A vehicle mesh (`Model.DrawVehicle` with a vehicle shader).
+    VehicleModel(Box<model::VehicleDraw>),
     /// An `IsoWater`/`IsoPuddles` vertex-buffer draw (`ModelManager.RenderWater`,
     /// `RenderPuddles`, `IsoPuddles.RenderToChunkTexture`) with the water or
     /// puddles shader.

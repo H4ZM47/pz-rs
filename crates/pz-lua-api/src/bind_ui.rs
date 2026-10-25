@@ -11,7 +11,9 @@
 //! (class `zombie.ui.UIElementList`, an `ArrayList` stand-in with `size`,
 //! `get`, `isEmpty`, `contains`, `indexOf`).
 
-use crate::expose::{bool_arg, expose_class, expose_enum, int_arg, num_arg, str_arg, this, JavaEnum};
+use crate::expose::{
+    bool_arg, expose_class, expose_enum, int_arg, num_arg, str_arg, this, JavaEnum,
+};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, NativeFunction, TableRef, Thread, Value};
 use pz_render::Rgba;
@@ -28,11 +30,40 @@ const LIST: &str = "zombie.ui.UIElementList";
 
 /// `zombie.ui.UIFont` constants in ordinal order (Build 42).
 pub const UIFONT_NAMES: &[&str] = &[
-    "Small", "Medium", "Large", "Massive", "MainMenu1", "MainMenu2", "Cred1", "Cred2", "NewSmall", "NewMedium",
-    "NewLarge", "Code", "CodeSmall", "CodeMedium", "CodeLarge", "MediumNew", "AutoNormSmall", "AutoNormMedium",
-    "AutoNormLarge", "Dialogue", "Intro", "Handwritten", "DebugConsole", "Title", "SdfRegular", "SdfBold",
-    "SdfItalic", "SdfBoldItalic", "SdfOldRegular", "SdfOldBold", "SdfOldItalic", "SdfOldBoldItalic",
-    "SdfRobertoSans", "SdfCaveat",
+    "Small",
+    "Medium",
+    "Large",
+    "Massive",
+    "MainMenu1",
+    "MainMenu2",
+    "Cred1",
+    "Cred2",
+    "NewSmall",
+    "NewMedium",
+    "NewLarge",
+    "Code",
+    "CodeSmall",
+    "CodeMedium",
+    "CodeLarge",
+    "MediumNew",
+    "AutoNormSmall",
+    "AutoNormMedium",
+    "AutoNormLarge",
+    "Dialogue",
+    "Intro",
+    "Handwritten",
+    "DebugConsole",
+    "Title",
+    "SdfRegular",
+    "SdfBold",
+    "SdfItalic",
+    "SdfBoldItalic",
+    "SdfOldRegular",
+    "SdfOldBold",
+    "SdfOldItalic",
+    "SdfOldBoldItalic",
+    "SdfRobertoSans",
+    "SdfCaveat",
 ];
 
 /// Map a Java `UIFont` name onto `pz_text::UIFont` (`UIFont.valueOf`).
@@ -56,7 +87,10 @@ pub fn element_of(v: &Value) -> Option<Rc<UIElement>> {
 
 fn el_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Rc<UIElement>> {
     element_of(&c.arg(i)).ok_or_else(|| LuaError::Runtime {
-        message: format!("Expected UIElement but got {}", pz_kahlua::stdlib::java_class_name(&c.arg(i))),
+        message: format!(
+            "Expected UIElement but got {}",
+            pz_kahlua::stdlib::java_class_name(&c.arg(i))
+        ),
         class: "java.lang.IllegalArgumentException",
     })
 }
@@ -70,14 +104,22 @@ fn tex_arg(c: &NativeCall<'_>, i: usize) -> Option<Texture> {
 
 fn font_arg(c: &NativeCall<'_>, i: usize) -> Option<UIFont> {
     match c.arg(i) {
-        Value::Object(o) => o.as_any().downcast_ref::<JavaEnum>().filter(|e| e.class == UIFONT).and_then(|e| ui_font_from_name(e.name)),
+        Value::Object(o) => o
+            .as_any()
+            .downcast_ref::<JavaEnum>()
+            .filter(|e| e.class == UIFONT)
+            .and_then(|e| ui_font_from_name(e.name)),
         _ => None,
     }
 }
 
 fn color_arg(c: &NativeCall<'_>, i: usize) -> Rgba {
     match c.arg(i) {
-        Value::Object(o) => o.as_any().downcast_ref::<ColorObject>().map(|c| c.rgba.get()).unwrap_or(Rgba(1.0, 1.0, 1.0, 1.0)),
+        Value::Object(o) => o
+            .as_any()
+            .downcast_ref::<ColorObject>()
+            .map(|c| c.rgba.get())
+            .unwrap_or(Rgba(1.0, 1.0, 1.0, 1.0)),
         _ => Rgba(1.0, 1.0, 1.0, 1.0),
     }
 }
@@ -91,7 +133,8 @@ fn opt_str(s: Option<Rc<str>>) -> Value {
 }
 
 fn opt_el(e: Option<Rc<UIElement>>) -> Value {
-    e.map(|e| Value::Object(e as Rc<dyn LuaObject>)).unwrap_or_default()
+    e.map(|e| Value::Object(e as Rc<dyn LuaObject>))
+        .unwrap_or_default()
 }
 
 fn args(c: &NativeCall<'_>) -> usize {
@@ -138,7 +181,10 @@ fn list_this(c: &NativeCall<'_>) -> LuaResult<Vec<Rc<UIElement>>> {
 
 fn index_of(items: &[Rc<UIElement>], v: &Value) -> i32 {
     match element_of(v) {
-        Some(e) => items.iter().position(|x| Rc::ptr_eq(x, &e)).map_or(-1, |i| i as i32),
+        Some(e) => items
+            .iter()
+            .position(|x| Rc::ptr_eq(x, &e))
+            .map_or(-1, |i| i as i32),
         None => -1,
     }
 }
@@ -197,9 +243,11 @@ pub fn register(thread: &mut Thread) {
 
 /// Route `UIManager`'s `LuaEventManager.triggerEvent` calls to `events`.
 pub fn install_event_sink(events: crate::events::EventManager) {
-    UIManager::set_event_sink(Some(Rc::new(move |t: &mut Thread, name: &str, a: &[Value]| {
-        events.trigger(t, name, a);
-    })));
+    UIManager::set_event_sink(Some(Rc::new(
+        move |t: &mut Thread, name: &str, a: &[Value]| {
+            events.trigger(t, name, a);
+        },
+    )));
 }
 
 macro_rules! get {
@@ -335,14 +383,28 @@ fn register_element(thread: &mut Thread) {
         if let Value::Str(text) = c.arg(1) {
             // (String, x, y, [w, h,] r, g, b, a): default font.
             let [x, y] = nums::<2>(c, 2);
-            let col = if args(c) >= 9 { nums::<4>(c, 6) } else { nums::<4>(c, 4) };
+            let col = if args(c) >= 9 {
+                nums::<4>(c, 6)
+            } else {
+                nums::<4>(c, 4)
+            };
             e.draw_text_default(&text, x, y, col[0], col[1], col[2], col[3]);
         } else {
             let font = font_arg(c, 1);
             let text = str_arg(c, 2);
             if args(c) >= 9 {
                 let [x, y, z, r, g, bb, a] = nums::<7>(c, 3);
-                e.draw_text_zoom(font, text.as_deref().unwrap_or("null"), x, y, z, r, g, bb, a);
+                e.draw_text_zoom(
+                    font,
+                    text.as_deref().unwrap_or("null"),
+                    x,
+                    y,
+                    z,
+                    r,
+                    g,
+                    bb,
+                    a,
+                );
             } else {
                 let [x, y, r, g, bb, a] = nums::<6>(c, 3);
                 e.draw_text(font, text.as_deref(), x, y, r, g, bb, a);
@@ -360,7 +422,11 @@ fn register_element(thread: &mut Thread) {
     fn font_text(c: &NativeCall<'_>) -> (Option<UIFont>, Rc<str>, usize) {
         match c.arg(1) {
             Value::Str(s) => (None, s, 2),
-            _ => (font_arg(c, 1), str_arg(c, 2).unwrap_or_else(|| Rc::from("null")), 3),
+            _ => (
+                font_arg(c, 1),
+                str_arg(c, 2).unwrap_or_else(|| Rc::from("null")),
+                3,
+            ),
         }
     }
     b.method("DrawTextCentre", |c| {
@@ -381,7 +447,16 @@ fn register_element(thread: &mut Thread) {
         let e = el(c)?;
         let text = str_arg(c, 2).unwrap_or_else(|| Rc::from("null"));
         let [x, y, r, g, bb, a, px, py, br, bg, bbb, ba] = nums::<12>(c, 3);
-        e.draw_text_with_background(font_arg(c, 1), &text, x, y, [r, g, bb, a], px, py, [br, bg, bbb, ba]);
+        e.draw_text_with_background(
+            font_arg(c, 1),
+            &text,
+            x,
+            y,
+            [r, g, bb, a],
+            px,
+            py,
+            [br, bg, bbb, ba],
+        );
         Ok(0)
     });
 
@@ -390,7 +465,11 @@ fn register_element(thread: &mut Thread) {
         let e = el(c)?;
         let t = tex_arg(c, 1);
         let [x, y, ang] = nums::<3>(c, 2);
-        let col = if args(c) >= 8 { nums::<4>(c, 5) } else { [1.0; 4] };
+        let col = if args(c) >= 8 {
+            nums::<4>(c, 5)
+        } else {
+            [1.0; 4]
+        };
         e.draw_texture_angle(t.as_ref(), x, y, ang, col[0], col[1], col[2], col[3]);
         Ok(0)
     });
@@ -471,7 +550,11 @@ fn register_element(thread: &mut Thread) {
     draw9!(b, "DrawTextureIcon", draw_texture_icon);
     draw10!(b, "DrawTextureIconMask", draw_texture_icon_mask);
     draw10!(b, "DrawTexturePercentage", draw_texture_percentage);
-    draw10!(b, "DrawTexturePercentageBottomUp", draw_texture_percentage_bottom_up);
+    draw10!(
+        b,
+        "DrawTexturePercentageBottomUp",
+        draw_texture_percentage_bottom_up
+    );
     b.method("DrawSubTextureRGBA", |c| {
         let e = el(c)?;
         let t = tex_arg(c, 1);
@@ -488,7 +571,14 @@ fn register_element(thread: &mut Thread) {
         let e = el(c)?;
         let t = tex_arg(c, 1);
         let [x, y] = nums::<2>(c, 2);
-        e.draw_texture_ignore_offset(t.as_ref(), x, y, int_arg(c, 4), int_arg(c, 5), color_arg(c, 6));
+        e.draw_texture_ignore_offset(
+            t.as_ref(),
+            x,
+            y,
+            int_arg(c, 4),
+            int_arg(c, 5),
+            color_arg(c, 6),
+        );
         Ok(0)
     });
     for name in ["DrawTexture_FlippedX", "DrawTexture_FlippedXIgnoreOffset"] {
@@ -496,7 +586,14 @@ fn register_element(thread: &mut Thread) {
             let e = el(c)?;
             let t = tex_arg(c, 1);
             let [x, y] = nums::<2>(c, 2);
-            e.draw_texture_flipped_x(t.as_ref(), x, y, int_arg(c, 4), int_arg(c, 5), color_arg(c, 6));
+            e.draw_texture_flipped_x(
+                t.as_ref(),
+                x,
+                y,
+                int_arg(c, 4),
+                int_arg(c, 5),
+                color_arg(c, 6),
+            );
             Ok(0)
         });
     }
@@ -525,11 +622,16 @@ fn register_element(thread: &mut Thread) {
     set_bool!(b, "setIgnoreLossControl", set_ignore_loss_control);
     b.method("getControls", |c| {
         let e = el(c)?;
-        Ok(c.push(Value::Object(Rc::new(UIElementList { src: ListSrc::Controls(e) }))))
+        Ok(c.push(Value::Object(Rc::new(UIElementList {
+            src: ListSrc::Controls(e),
+        }))))
     });
     b.method("setControls", |_c| {
         // The original calls itself forever.
-        Err(LuaError::Runtime { message: "null".into(), class: "java.lang.StackOverflowError" })
+        Err(LuaError::Runtime {
+            message: "null".into(),
+            class: "java.lang.StackOverflowError",
+        })
     });
     get!(b, "isDefaultDraw", is_default_draw);
     set_bool!(b, "setDefaultDraw", set_default_draw);
@@ -827,7 +929,9 @@ fn register_manager(thread: &mut Thread) {
         UIManager::update_before_fade_out();
         Ok(0)
     });
-    b.static_fn("getUI", |c| Ok(c.push(Value::Object(Rc::new(UIElementList { src: ListSrc::Ui })))));
+    b.static_fn("getUI", |c| {
+        Ok(c.push(Value::Object(Rc::new(UIElementList { src: ListSrc::Ui }))))
+    });
     b.static_fn("init", |_c| {
         UIManager::init();
         Ok(0)
@@ -846,9 +950,15 @@ fn register_manager(thread: &mut Thread) {
     });
     b.static_fn("DrawTexture", |c| {
         let Some(t) = tex_arg(c, 0) else {
-            return Err(LuaError::Runtime { message: "null".into(), class: "java.lang.NullPointerException" });
+            return Err(LuaError::Runtime {
+                message: "null".into(),
+                class: "java.lang.NullPointerException",
+            });
         };
-        let (x, y) = (num_arg(c, 1) + t.offset_x as f64, num_arg(c, 2) + t.offset_y as f64);
+        let (x, y) = (
+            num_arg(c, 1) + t.offset_x as f64,
+            num_arg(c, 2) + t.offset_y as f64,
+        );
         let (w, h, a) = if c.nargs() >= 6 {
             (num_arg(c, 3) as i32, num_arg(c, 4) as i32, num_arg(c, 5))
         } else {
@@ -899,7 +1009,8 @@ fn register_manager(thread: &mut Thread) {
     });
     s_set!("setFadeAlpha", |m, c| m.set_fade_alpha(num_arg(c, 0)));
     s_get!("getFadeInTimeMax", |m| m.fade_in_time_max);
-    s_set!("setFadeInTimeMax", |m, c| m.fade_in_time_max = num_arg(c, 0) as i32);
+    s_set!("setFadeInTimeMax", |m, c| m.fade_in_time_max =
+        num_arg(c, 0) as i32);
     s_get!("getFadeInTime", |m| m.fade_in_time);
     s_set!("setFadeInTime", |m, c| m.set_fade_in_time(num_arg(c, 0)));
     s_get!("isFadingOut", |m| m.fading_out);
@@ -922,8 +1033,10 @@ fn register_manager(thread: &mut Thread) {
     });
     s_get!("getLastMouseX", |m| m.last_mouse_x);
     s_get!("getLastMouseY", |m| m.last_mouse_y);
-    s_set!("setLastMouseX", |m, c| m.last_mouse_x = num_arg(c, 0) as i32);
-    s_set!("setLastMouseY", |m, c| m.last_mouse_y = num_arg(c, 0) as i32);
+    s_set!("setLastMouseX", |m, c| m.last_mouse_x =
+        num_arg(c, 0) as i32);
+    s_set!("setLastMouseY", |m, c| m.last_mouse_y =
+        num_arg(c, 0) as i32);
     s_get!("getLastOffX", |m| m.last_off_x as f64);
     s_get!("getLastOffY", |m| m.last_off_y as f64);
     s_set!("setLastOffX", |m, c| m.last_off_x = num_arg(c, 0) as f32);
@@ -941,7 +1054,8 @@ fn register_manager(thread: &mut Thread) {
     s_get!("getMouseGrab", |m| m.mouse_grab.clone());
     s_set!("setMouseGrab", |m, c| m.mouse_grab = c.arg(0));
     s_get!("getLastMouseTexture", |m| m.last_mouse_texture.clone());
-    s_set!("setLastMouseTexture", |m, c| m.last_mouse_texture = c.arg(0));
+    s_set!("setLastMouseTexture", |m, c| m.last_mouse_texture =
+        c.arg(0));
     b.static_fn("getModal", |c| {
         let v = opt_el(with_ui(|m| m.modal.clone()));
         Ok(c.push(v))
@@ -952,19 +1066,32 @@ fn register_manager(thread: &mut Thread) {
         Ok(0)
     });
     s_get!("isShowPausedMessage", |m| m.show_paused_message);
-    s_set!("setShowPausedMessage", |m, c| m.show_paused_message = bool_arg(c, 0));
+    s_set!("setShowPausedMessage", |m, c| m.show_paused_message =
+        bool_arg(c, 0));
     s_get!("isShowLuaDebuggerOnError", |m| m.show_lua_debugger_on_error);
-    s_set!("setShowLuaDebuggerOnError", |m, c| m.show_lua_debugger_on_error = bool_arg(c, 0));
+    s_set!("setShowLuaDebuggerOnError", |m, c| m
+        .show_lua_debugger_on_error =
+        bool_arg(c, 0));
     s_set!("setVisibleAllUI", |m, c| m.visible_all_ui = bool_arg(c, 0));
     s_get!("isFBOActive", |m| m.use_ui_fbo);
-    s_get!("getMillisSinceLastUpdate", |m| m.ui_update_interval_ms as f64);
-    s_get!("getSecondsSinceLastUpdate", |m| m.ui_update_interval_ms as f64 / 1000.0);
-    s_get!("getMillisSinceLastRender", |m| m.ui_render_interval_ms as f64);
-    s_get!("getSecondsSinceLastRender", |m| m.ui_render_interval_ms as f64 / 1000.0);
+    s_get!("getMillisSinceLastUpdate", |m| m.ui_update_interval_ms
+        as f64);
+    s_get!("getSecondsSinceLastUpdate", |m| m.ui_update_interval_ms
+        as f64
+        / 1000.0);
+    s_get!("getMillisSinceLastRender", |m| m.ui_render_interval_ms
+        as f64);
+    s_get!("getSecondsSinceLastRender", |m| m.ui_render_interval_ms
+        as f64
+        / 1000.0);
     s_get!("isRendering", |m| m.rendering);
     s_get!("isUpdating", |m| m.updating);
-    b.static_fn("getDoubleClickInterval", |c| Ok(c.push(UIManager::get_double_click_interval())));
-    b.static_fn("getDoubleClickDist", |c| Ok(c.push(UIManager::get_double_click_dist())));
+    b.static_fn("getDoubleClickInterval", |c| {
+        Ok(c.push(UIManager::get_double_click_interval()))
+    });
+    b.static_fn("getDoubleClickDist", |c| {
+        Ok(c.push(UIManager::get_double_click_dist()))
+    });
     b.static_fn("isDoubleClick", |c| {
         let [x1, y1, x2, y2, t] = nums::<5>(c, 0);
         Ok(c.push(UIManager::is_double_click(x1, y1, x2, y2, t)))
@@ -989,9 +1116,15 @@ fn register_manager(thread: &mut Thread) {
         }
         Ok(0)
     });
-    b.static_fn("isMouseOverInventory", |c| Ok(c.push(UIManager::is_mouse_over_inventory())));
-    b.static_fn("isForceCursorVisible", |c| Ok(c.push(UIManager::is_force_cursor_visible())));
-    b.static_fn("isModalVisible", |c| Ok(c.push(UIManager::is_modal_visible())));
+    b.static_fn("isMouseOverInventory", |c| {
+        Ok(c.push(UIManager::is_mouse_over_inventory()))
+    });
+    b.static_fn("isForceCursorVisible", |c| {
+        Ok(c.push(UIManager::is_force_cursor_visible()))
+    });
+    b.static_fn("isModalVisible", |c| {
+        Ok(c.push(UIManager::is_modal_visible()))
+    });
     b.static_fn("onKeyPress", |c| {
         let k = int_arg(c, 0);
         let r = UIManager::on_key_press(c.thread, k);
@@ -1017,23 +1150,51 @@ fn register_manager(thread: &mut Thread) {
         };
         Ok(c.push(v))
     });
-    b.static_fn("getBlinkAlpha", |c| Ok(c.push(UIManager::get_blink_alpha(int_arg(c, 0)) as f64)));
-    b.static_fn("getSyncedIconIndex", |c| Ok(c.push(UIManager::get_synced_icon_index(int_arg(c, 1)))));
+    b.static_fn("getBlinkAlpha", |c| {
+        Ok(c.push(UIManager::get_blink_alpha(int_arg(c, 0)) as f64))
+    });
+    b.static_fn("getSyncedIconIndex", |c| {
+        Ok(c.push(UIManager::get_synced_icon_index(int_arg(c, 1))))
+    });
     b.static_fn("resetSyncedIconIndex", |c| {
         with_ui(|m| m.player_blink_info[0].synced_icon_index = 0);
         Ok(c.push(0))
     });
     b.static_fn("trySetProgressBarValue", |c| Ok(c.push(false))); // TODO(world): ActionProgressBar
-    // TODO(world): world objects and Java-side widgets not ported yet.
+                                                                  // TODO(world): world objects and Java-side widgets not ported yet.
     s_nil!(
-        "getSpeedControls", "getClock", "getToolTip", "getDebugConsole", "getMoodleUI", "getProgressBar",
-        "getPicked", "getLastPicked", "getPickedTile", "getPickedTileLocal", "getRightDownObject",
-        "getTileFromMouse", "getDoneTutorials", "getDefaultThread"
+        "getSpeedControls",
+        "getClock",
+        "getToolTip",
+        "getDebugConsole",
+        "getMoodleUI",
+        "getProgressBar",
+        "getPicked",
+        "getLastPicked",
+        "getPickedTile",
+        "getPickedTileLocal",
+        "getRightDownObject",
+        "getTileFromMouse",
+        "getDoneTutorials",
+        "getDefaultThread"
     );
     s_noop!(
-        "closeContainers", "CloseContainers", "CreateFBO", "setPicked", "setLastPicked", "setClock",
-        "setToolTip", "setSpeedControls", "setDebugConsole", "setMoodleUI", "setProgressBar",
-        "setPickedTile", "setPickedTileLocal", "setRightDownObject", "setDoneTutorials", "setUI",
+        "closeContainers",
+        "CloseContainers",
+        "CreateFBO",
+        "setPicked",
+        "setLastPicked",
+        "setClock",
+        "setToolTip",
+        "setSpeedControls",
+        "setDebugConsole",
+        "setMoodleUI",
+        "setProgressBar",
+        "setPickedTile",
+        "setPickedTileLocal",
+        "setRightDownObject",
+        "setDoneTutorials",
+        "setUI",
         "debugBreakpoint"
     );
 }
@@ -1104,7 +1265,10 @@ mod tests {
 
     fn run(t: &mut Thread, src: &str) {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
         if let Err((e, tr)) = t.pcall(&f, &[]) {
             panic!("lua error: {e:?}\n{tr}");
         }
@@ -1113,7 +1277,9 @@ mod tests {
     fn log(t: &Thread) -> Vec<String> {
         let l = t.globals().get_str("log");
         let l = l.as_table().unwrap();
-        (1..=l.len()).map(|i| l.get_int(i).as_str().unwrap().to_string()).collect()
+        (1..=l.len())
+            .map(|i| l.get_int(i).as_str().unwrap().to_string())
+            .collect()
     }
 
     fn clear_log(t: &mut Thread) {
@@ -1148,25 +1314,65 @@ mod tests {
         assert_eq!(log(&t), ["update root", "update a", "update b"]);
         clear_log(&mut t);
         UIManager::render(&mut t);
-        assert_eq!(log(&t), ["prerender root", "prerender a", "render a", "prerender b", "render b", "render root"]);
+        assert_eq!(
+            log(&t),
+            [
+                "prerender root",
+                "prerender a",
+                "render a",
+                "prerender b",
+                "render b",
+                "render root"
+            ]
+        );
         // Absolute positions in the draw list: root at (10,20), a at (15,25).
         let quads: Vec<(f32, f32)> = with_ui(|m| {
-            m.sprite.cmds.iter().filter_map(|c| match c {
-                UiDrawCmd::Quad { x, y, .. } => Some((*x, *y)),
-                _ => None,
-            }).collect()
+            m.sprite
+                .cmds
+                .iter()
+                .filter_map(|c| match c {
+                    UiDrawCmd::Quad { x, y, .. } => Some((*x, *y)),
+                    _ => None,
+                })
+                .collect()
         });
         assert_eq!(quads, [(16.0, 27.0), (71.0, 27.0), (11.0, 22.0)]);
         let texts: Vec<(String, f32, f32, Option<UIFont>, TextAlign)> = with_ui(|m| {
-            m.sprite.cmds.iter().filter_map(|c| match c {
-                UiDrawCmd::Text { text, x, y, font, align, .. } => Some((text.to_string(), *x, *y, *font, *align)),
-                _ => None,
-            }).collect()
+            m.sprite
+                .cmds
+                .iter()
+                .filter_map(|c| match c {
+                    UiDrawCmd::Text {
+                        text,
+                        x,
+                        y,
+                        font,
+                        align,
+                        ..
+                    } => Some((text.to_string(), *x, *y, *font, *align)),
+                    _ => None,
+                })
+                .collect()
         });
-        assert_eq!(texts[0], ("a".to_string(), 15.0, 25.0, Some(UIFont::Medium), TextAlign::Left));
-        assert_eq!(eval(&mut t, "a.javaObject:getAbsoluteX()").as_num(), Some(15.0));
+        assert_eq!(
+            texts[0],
+            (
+                "a".to_string(),
+                15.0,
+                25.0,
+                Some(UIFont::Medium),
+                TextAlign::Left
+            )
+        );
+        assert_eq!(
+            eval(&mut t, "a.javaObject:getAbsoluteX()").as_num(),
+            Some(15.0)
+        );
         assert!(eval(&mut t, "a.javaObject:getParent() == root.javaObject").truthy());
-        assert_eq!(eval(&mut t, "root.javaObject:getControls():size()").as_num(), Some(2.0));
+        assert_eq!(
+            eval(&mut t, "root.javaObject:getControls():size()").as_num(),
+            Some(2.0)
+        );
         assert!(eval(&mut t, "UIManager.getUI():contains(root.javaObject)").truthy());
         assert!(eval(&mut t, "a.javaObject:isReallyVisible()").truthy());
     }
@@ -1174,7 +1380,10 @@ mod tests {
     #[test]
     fn update_lua_only_on_ticks() {
         let mut t = setup();
-        run(&mut t, r#"w = Widget:new("w", 0, 0, 10, 10); w:addToUIManager()"#);
+        run(
+            &mut t,
+            r#"w = Widget:new("w", 0, 0, 10, 10); w:addToUIManager()"#,
+        );
         tick(&mut t, 1_000_000);
         tick(&mut t, 1_000_050);
         tick(&mut t, 1_000_100);
@@ -1206,12 +1415,19 @@ mod tests {
         // so front gets onMouseDownOutside and back is not reached.
         let l = log(&t);
         assert!(l.contains(&"move front 115 125".to_string()), "{l:?}");
-        let downs: Vec<_> = l.iter().filter(|s| s.contains("down") || s.contains("Outside")).cloned().collect();
+        let downs: Vec<_> = l
+            .iter()
+            .filter(|s| s.contains("down") || s.contains("Outside"))
+            .cloned()
+            .collect();
         assert_eq!(downs, ["down child 5 5", "downOutside front"]);
         clear_log(&mut t);
         with_ui(|m| m.mouse.down[0] = false);
         tick(&mut t, 1_000_020);
-        let ups: Vec<_> = log(&t).into_iter().filter(|s| s.starts_with("up")).collect();
+        let ups: Vec<_> = log(&t)
+            .into_iter()
+            .filter(|s| s.starts_with("up"))
+            .collect();
         assert_eq!(ups, ["up child 5 5"]);
     }
 
@@ -1233,7 +1449,10 @@ mod tests {
             m.mouse.down[0] = true;
         });
         tick(&mut t, 1_000_010);
-        let downs: Vec<_> = log(&t).into_iter().filter(|s| s.starts_with("down")).collect();
+        let downs: Vec<_> = log(&t)
+            .into_iter()
+            .filter(|s| s.starts_with("down"))
+            .collect();
         assert_eq!(downs, ["downOutside b", "down a 300 300"]);
     }
 

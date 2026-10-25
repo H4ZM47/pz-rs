@@ -9,20 +9,10 @@
 
 use pz_render::model::ModelLight;
 
-/// `IsoGridSquare.ResultLight`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ResultLight {
-    pub id: i32,
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
-    pub radius: i32,
-    pub r: f32,
-    pub g: f32,
-    pub b: f32,
-    /// `RLF_ROOMLIGHT` = 1, `RLF_TORCH` = 2.
-    pub flags: i32,
-}
+/// `IsoGridSquare.ResultLight`, as `LightingJNI.JNILighting` decodes it
+/// from `getSquareLighting` (pz-lighting's
+/// [`pz_lighting::jni::SquareLight::lights`]).
+pub use pz_lighting::jni::ResultLightInfo as ResultLight;
 
 pub const RLF_ROOMLIGHT: i32 = 1;
 pub const RLF_TORCH: i32 = 2;

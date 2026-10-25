@@ -31,9 +31,13 @@ pz-vehicles.workspace = true
 [dev-dependencies]
 pz-sqlite = { workspace = true, features = ["writer"] }
 pz-popman.workspace = true
-pz-world.workspace = true
-pz-vehicles.workspace = true
 
 pz-scripts.workspace = true
-pz-entity.workspace = true
 pz-classfile.workspace = true
+pz-inventory.workspace = true
+pz-input.workspace = true
+pz-vehicles.workspace = true
+
+pz-bullet.workspace = true
+pz-world.workspace = true
+pz-entity.workspace = true

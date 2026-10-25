@@ -26,6 +26,7 @@ mod atlas;
 mod combiner;
 mod gl;
 mod model;
+mod vehicle;
 mod state;
 
 use std::collections::HashMap;
@@ -196,6 +197,8 @@ struct Batch {
     tex3: Option<u32>,
     /// A model draw: its pipeline, mesh and uniform block.
     model: Option<(model::ModelKey, u64, u32)>,
+    /// A vehicle draw: its pipeline, mesh, uniform block and textures.
+    vehicle: Option<(vehicle::VehicleKey, u64, u32, [u32; 10])>,
     stencil_ref: u32,
     scissor: Option<[u32; 4]>,
     globals: u32,
@@ -219,6 +222,9 @@ struct ChunkTarget {
     depth_bind: wgpu::BindGroup,
 }
 
+/// The texture id the vehicle bind groups use for an unset texture unit.
+const NO_TEXTURE: u32 = u32::MAX;
+
 /// Sampler choice: min nearest, mag nearest, mip-mapped, clamp to edge.
 type Filter = (bool, bool, bool, bool);
 
@@ -237,6 +243,9 @@ pub struct Gpu {
     pipelines: HashMap<PipeKey, wgpu::RenderPipeline>,
     chunks: HashMap<u64, ChunkTarget>,
     models: model::ModelPipelines,
+    vehicles: vehicle::VehiclePipelines,
+    /// Each uploaded texture's sampler state.
+    filters: HashMap<u32, Filter>,
     /// glGenerateMipmap's downsampling pipeline and its source layout.
     mip_pipeline: wgpu::RenderPipeline,
     mip_layout: wgpu::BindGroupLayout,
@@ -381,6 +390,7 @@ impl Gpu {
         };
         let depth_stencil = depth_stencil_view(&device, width, height);
         let models = model::ModelPipelines::new(&device, &texture_layout);
+        let vehicles = vehicle::VehiclePipelines::new(&device);
         let mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mip source"),
             entries: &[
@@ -459,6 +469,8 @@ impl Gpu {
             pipelines: HashMap::new(),
             chunks: HashMap::new(),
             models,
+            vehicles,
+            filters: HashMap::new(),
             mip_pipeline,
             mip_layout,
             mip_sampler,
@@ -596,12 +608,34 @@ impl Gpu {
             if let (Tex2::Nearest, Some(id)) = (f.batches[i].tex2, f.batches[i].texture) {
                 self.ensure_nearest(id);
             }
+            if let Some((key, _, _, ids)) = f.batches[i].vehicle {
+                for id in ids.into_iter().filter(|&id| id != NO_TEXTURE) {
+                    self.ensure_texture(id, textures);
+                }
+                self.vehicles.ensure(&self.device, self.format, key);
+                self.ensure_vehicle_textures(ids);
+                continue;
+            }
             match f.batches[i].model {
                 Some((key, _, _)) => self.models.ensure(&self.device, self.format, key),
                 None => self.ensure_pipeline(f.batches[i].key),
             }
         }
-        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, sky, .. } = f;
+        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, sky, vehicle_uniforms, .. } = f;
+        let mut vbytes = vec![0u8; vehicle_uniforms.len().max(1) * vehicle::VEHICLE_STRIDE as usize];
+        for (i, u) in vehicle_uniforms.iter().enumerate() {
+            let at = i * vehicle::VEHICLE_STRIDE as usize;
+            vbytes[at..at + std::mem::size_of::<vehicle::VehicleUniforms>()].copy_from_slice(bytemuck::bytes_of(u));
+        }
+        let vehbuf = self.buffer(&vbytes, wgpu::BufferUsages::UNIFORM);
+        let vehbind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("vehicles"),
+            layout: &self.vehicles.uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &vehbuf, offset: 0, size: wgpu::BufferSize::new(std::mem::size_of::<vehicle::VehicleUniforms>() as u64) }),
+            }],
+        });
         let mut mbytes = vec![0u8; model_uniforms.len().max(1) * model::MODEL_STRIDE as usize];
         for (i, u) in model_uniforms.iter().enumerate() {
             let at = i * model::MODEL_STRIDE as usize;
@@ -718,6 +752,20 @@ impl Gpu {
                     _ => [0, 0, tw, th],
                 };
                 if sw == 0 || sh == 0 {
+                    continue;
+                }
+                if let Some((key, mesh, u, ids)) = b.vehicle {
+                    let (Some(p), Some(m), Some(tex)) = (self.vehicles.pipelines.get(&key), self.vehicles.meshes.get(&mesh), self.vehicles.bind_groups.get(&ids)) else { continue };
+                    pass.set_viewport(0.0, 0.0, b.viewport.0.min(tw) as f32, b.viewport.1.min(th) as f32, 0.0, 1.0);
+                    pass.set_scissor_rect(sx, sy, sw, sh);
+                    pass.set_pipeline(p);
+                    pass.set_bind_group(0, &vehbind, &[u * vehicle::VEHICLE_STRIDE as u32]);
+                    pass.set_bind_group(1, tex, &[]);
+                    pass.set_vertex_buffer(0, m.vertices.slice(..));
+                    pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..m.count, 0, 0..1);
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     continue;
                 }
                 if let Some((key, mesh, u)) = b.model {
@@ -1035,6 +1083,24 @@ impl Gpu {
                 });
                 let at = f.batches.len();
                 f.passes.push(PassDesc { target: PassTarget::Sky(id, f.sky.len() - 1), clear: true, mipmaps: false, batches: at..at });
+            }
+            DrawCmd::VehicleModel(d) => {
+                if !self.vehicles.meshes.contains_key(&d.base.mesh.id) {
+                    let m = vehicle::upload(&self.device, &self.queue, &d.base.mesh);
+                    self.vehicles.meshes.insert(d.base.mesh.id, m);
+                }
+                let flip = f.target != PassTarget::Main;
+                f.vehicle_uniforms.push(vehicle::VehicleUniforms::new(d, flip));
+                let u = (f.vehicle_uniforms.len() - 1) as u32;
+                let key = vehicle::VehicleKey {
+                    kind: vehicle::layout_kind(d.base.mesh.kind),
+                    shader: d.shader,
+                    reflect: !d.noreflect,
+                    invert_x: d.invert_x,
+                    target: f.target.kind(),
+                };
+                let ids = std::array::from_fn(|i| d.textures[i].as_ref().and_then(|t| t.id).unwrap_or(NO_TEXTURE));
+                f.push_vehicle(key, d.base.mesh.id, u, ids, &self.state);
             }
             DrawCmd::ProjectedQuad { texture, pos, uv, color, nearest } => {
                 let Some(id) = texture.id else { return };
@@ -1356,11 +1422,43 @@ impl Gpu {
         let pixels: Vec<Vec<u8>> = levels.iter().map(|l| l.pixels.clone()).collect();
         let (bind_group, view) = self.create_texture(levels[0].width as u32, levels[0].height as u32, &pixels, filter);
         self.textures.insert(id, bind_group);
+        self.filters.insert(id, filter);
         self.views.insert(id, view);
         // The original frees the CPU copy once uploaded.
         if let Some(d) = textures.data_mut(id) {
             d.image = None;
         }
+    }
+
+    /// The vehicle shaders' texture bind group for texture ids `ids`
+    /// (missing textures sample transparent black, like an empty unit).
+    fn ensure_vehicle_textures(&mut self, ids: [u32; 10]) {
+        if self.vehicles.bind_groups.contains_key(&ids) {
+            return;
+        }
+        if !self.views.contains_key(&NO_TEXTURE) {
+            let (_, view) = self.create_texture(1, 1, &[vec![0; 4]], (true, true, false, false));
+            self.views.insert(NO_TEXTURE, view);
+        }
+        let mut views = Vec::new();
+        let mut samplers = Vec::new();
+        for id in ids {
+            let (view, filter) = match (self.views.get(&id), self.filters.get(&id)) {
+                (Some(v), Some(f)) => (v.clone(), *f),
+                _ => (self.views[&NO_TEXTURE].clone(), (true, true, false, false)),
+            };
+            views.push(view);
+            samplers.push(self.sampler(filter));
+        }
+        let mut entries = Vec::new();
+        for (i, v) in views.iter().enumerate() {
+            entries.push(wgpu::BindGroupEntry { binding: i as u32, resource: wgpu::BindingResource::TextureView(v) });
+        }
+        for (i, s) in samplers.iter().enumerate() {
+            entries.push(wgpu::BindGroupEntry { binding: 10 + i as u32, resource: wgpu::BindingResource::Sampler(s) });
+        }
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("vehicle textures"), layout: &self.vehicles.texture_layout, entries: &entries });
+        self.vehicles.bind_groups.insert(ids, bg);
     }
 
     fn sampler(&mut self, filter: Filter) -> wgpu::Sampler {
@@ -1466,6 +1564,7 @@ struct FrameBuilder {
     model_uniforms: Vec<model::ModelUniforms>,
     /// The frame's sky renders' uniforms.
     sky: Vec<SkyUniforms>,
+    vehicle_uniforms: Vec<vehicle::VehicleUniforms>,
     mvp: [[f32; 4]; 4],
     viewport: (u32, u32),
     /// What `AtlasBegin` saved: target, projection, viewport, GL state.
@@ -1487,6 +1586,7 @@ impl Default for FrameBuilder {
             tex3: None,
             model_uniforms: Vec::new(),
             sky: Vec::new(),
+            vehicle_uniforms: Vec::new(),
             mvp: IDENTITY,
             viewport: (1, 1),
             atlas_stack: Vec::new(),
@@ -1520,6 +1620,29 @@ impl FrameBuilder {
         (self.globals.len() - 1) as u32
     }
 
+    /// A vehicle draw as its own batch.
+    fn push_vehicle(&mut self, key: vehicle::VehicleKey, mesh: u64, uniform: u32, textures: [u32; 10], st: &GlState) {
+        if self.passes.last().is_none_or(|p| p.target != self.target) {
+            let at = self.batches.len();
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
+        }
+        let at = self.indices.len() as u32;
+        self.batches.push(Batch {
+            key: st.pipe_key(),
+            texture: None,
+            tex2: Tex2::None,
+            tex3: None,
+            model: None,
+            vehicle: Some((key, mesh, uniform, textures)),
+            stencil_ref: st.stencil_ref,
+            scissor: st.scissor_box(),
+            globals: 0,
+            viewport: self.viewport,
+            indices: at..at,
+        });
+        self.passes.last_mut().expect("pass").batches.end = self.batches.len();
+    }
+
     /// A model draw as its own batch.
     fn push_model(&mut self, key: model::ModelKey, mesh: u64, uniform: u32, texture: Option<u32>, st: &GlState) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
@@ -1533,6 +1656,7 @@ impl FrameBuilder {
             tex2: Tex2::None,
             tex3: None,
             model: Some((key, mesh, uniform)),
+            vehicle: None,
             stencil_ref: st.stencil_ref,
             scissor: st.scissor_box(),
             globals: 0,
@@ -1581,7 +1705,7 @@ impl FrameBuilder {
                 b.indices.end = end
             }
             _ => {
-                self.batches.push(Batch { model: None, key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, indices: start..end });
+                self.batches.push(Batch { model: None, vehicle: None, key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, indices: start..end });
                 pass.batches.end = self.batches.len();
             }
         }

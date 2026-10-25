@@ -11,7 +11,7 @@
 //! hour and the spawned rooms. There is no compression.
 //!
 //! Older files may hold vehicles in that list; they are loaded into
-//! [`crate::chunk::ChunkSaveData::vehicles`] and, like the original, not
+//! [`crate::chunk::IsoChunk::vehicles`] and, like the original, not
 //! written back (vehicles are saved to `vehicles.db`).
 
 use std::path::{Path, PathBuf};
@@ -19,10 +19,11 @@ use std::path::{Path, PathBuf};
 use super::io::{crc32, err, has, BitHeaderWrite, Reader, SaveResult, Writer};
 use super::lua_table::LuaTable;
 use super::object_io::{load_object, save_object};
-use super::vehicle::{BaseVehicle, ChunkVehicle};
+use super::vehicle::BaseVehicle;
 use super::visual::IsoDeadBody;
 use super::{SaveCtx, WORLD_VERSION};
 use crate::chunk::{FloorBloodSplat, IsoChunk, IsoGridSquare};
+use crate::chunk_vehicles::{LoadedVehicle, VehicleOrigin};
 use crate::erosion_data::{ErosionChunkData, ErosionSquareData};
 use crate::java::fastfloor;
 use crate::objects::ObjectKind;
@@ -216,6 +217,7 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
         let g = (r.i32()?, r.i32()?, r.i8()?);
         ch.saved.generators.as_mut().unwrap().push(g);
     }
+    ch.vehicles.clear();
     let vehicles = r.i16()?;
     for _ in 0..vehicles.max(0) {
         let (x, y, z) = (r.i8()?, r.i8()?, r.i8()?);
@@ -233,7 +235,14 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
         }
         let ts = ctx.settings.tile_scale as f32;
         let vehicle = BaseVehicle::load(&mut r, wv, (32.0 * ts, 96.0 * ts), ctx.items)?;
-        ch.saved.vehicles.push(ChunkVehicle { x, y, z, vehicle });
+        let square = ch
+            .get_grid_square(x as i32, y as i32, z as i32)
+            .map(|s| (s.x, s.y, s.z));
+        ch.vehicles.add(std::rc::Rc::new(LoadedVehicle {
+            origin: VehicleOrigin::ChunkFile { x, y, z },
+            square,
+            vehicle,
+        }));
     }
     ch.saved.loot_respawn_hour = r.i32()?;
     if wv >= 206 {

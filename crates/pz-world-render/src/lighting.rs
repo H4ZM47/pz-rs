@@ -8,8 +8,8 @@ use pz_iso_render::color::ColorInfo as RenderColor;
 use pz_lighting::jni::{
     detection_range, effective_fatigue, luma_inverted, update_player, ChunkInfo, ChunkLevelLight,
     Curtain, CurtainType, DecodePlayer, Door, FrameParams, GridSquare, IsoDirection, LightSource,
-    LightSync, LightingWorld, PlayerFrame, PlayerInput, RoomLightSource, SpecialObject,
-    SquareLight, Thumpable, VisionCone, VisionConeInput, Window,
+    LightSync, LightingWorld, PlayerFrame, PlayerInput, ResultLightInfo, RoomLightSource,
+    SpecialObject, SquareLight, Thumpable, VisionCone, VisionConeInput, Window,
 };
 use pz_lighting::{LightingError, LightingSession};
 use pz_world::{IsoGridSquare, ObjectKind};
@@ -33,6 +33,14 @@ impl LightingWorld for LightingSquares {
 }
 
 /// `getBuildingDef().getID()` of the square's room.
+/// The players that had seen `sq` when it was loaded, as a bit mask.
+fn loaded_seen_by(sq: &IsoGridSquare) -> u8 {
+    sq.seen
+        .iter()
+        .enumerate()
+        .fold(0, |m, (i, &s)| if s { m | 1 << i } else { m })
+}
+
 fn building_def_id(w: &WorldView<'_>, sq: &IsoGridSquare) -> Option<i64> {
     let room = sq.room_def(w.meta)?;
     Some(w.meta.building_defs[room.building?.0 as usize].id)
@@ -324,11 +332,14 @@ impl WorldLighting {
         };
         for sq in ch.squares() {
             let p = (sq.x, sq.y, sq.z);
+            // A square new to lighting starts with the `seen` flags it
+            // was loaded with (`IsoGridSquare.load` sets `lighting[i].bSeen`
+            // from the saved `vis` byte, and `updateChunk` sends them).
             let (ll, seen) = self
                 .squares
                 .0
                 .get(&p)
-                .map_or((0, 0), |g| (g.light_level, g.seen_by));
+                .map_or((0, loaded_seen_by(sq)), |g| (g.light_level, g.seen_by));
             self.squares
                 .0
                 .insert(p, grid_square(w, sq, hooks, ll, seen));
@@ -667,6 +678,15 @@ impl WorldLighting {
             .levels
             .get(&(player, x.div_euclid(8), y.div_euclid(8), z))?;
         Some(&lvl.squares[(x.rem_euclid(8) + y.rem_euclid(8) * 8) as usize])
+    }
+
+    /// `square.lighting[player].getResultLight(0..resultLightCount())`:
+    /// the square's result lights (at most five), as `JNILighting`
+    /// decoded them from `getSquareLighting` the last time the square was
+    /// dirty. Empty for a square without results.
+    pub fn result_lights(&self, player: i32, x: i32, y: i32, z: i32) -> &[ResultLightInfo] {
+        self.square_light(player, x, y, z)
+            .map_or(&[], |l| &l.lights[..])
     }
 
     /// One frame for one player: `checkLights`, `calculateVisionCone`,

@@ -239,6 +239,27 @@ fn noon_lights_what_the_player_sees() {
     assert_eq!(behind.light_level, 0.0);
 }
 
+#[test]
+fn squares_seen_before_loading_stay_seen() {
+    let (mut cell, m, meta) = scene();
+    // Behind the wall, out of sight: the save marks it seen by player 0.
+    let ch = cell.chunks.get_mut(&(3, 1)).unwrap();
+    ch.get_grid_square_mut(0, 7, 0).unwrap().seen[0] = true;
+    let view = WorldView {
+        cell: &cell,
+        meta: &meta,
+        sprites: &m,
+    };
+    let (mut world, mut lighting) = build(&view);
+    let mut settings = NoonSettings::default();
+    run(&view, &mut lighting, &mut settings, 12, IsoDirection::E);
+    lighting.apply(0, &mut world);
+    let loaded = &world.squares[&(24, 15, 0)];
+    assert!(loaded.cut.seen && !loaded.cut.can_see);
+    let other = &world.squares[&(25, 15, 0)];
+    assert!(!other.cut.seen);
+}
+
 struct Night;
 
 impl RenderSettingsSource for Night {

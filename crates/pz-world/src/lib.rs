@@ -9,6 +9,7 @@ pub mod bra;
 pub mod cell_loader;
 pub mod chunk;
 pub mod chunk_data;
+pub mod chunk_vehicles;
 pub mod defs;
 pub mod erosion_data;
 pub mod fire;
@@ -47,7 +48,7 @@ pub use objects::{
 };
 pub use sprite::{IsoSpriteManager, SpriteTables};
 pub use zones::{
-    ClipperOps, PropValue, RoomTone, Zone, ZoneError, ZoneGeometryType, ZoneId, ZoneKind,
+    ClipperOps, PropValue, RoomTone, VehicleZone, Zone, ZoneError, ZoneGeometryType, ZoneId, ZoneKind,
     ZoneProps, ZoneTables,
 };
 pub use square::{

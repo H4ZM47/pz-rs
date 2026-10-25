@@ -247,6 +247,111 @@ pub struct ItemTemplate {
     pub torch_cone: bool,
     pub light_distance: i32,
     pub torch_dot: f32,
+    /// `itemCapacity` (`setItemCapacity` at creation).
+    pub item_capacity: i32,
+    /// `maxCapacity` (`setMaxCapacity` at creation).
+    pub max_capacity: i32,
+    /// `conditionAffectsCapacity` (read through `getScriptItem()`).
+    pub condition_affects_capacity: bool,
+    /// The vehicle-part values `InstanceItem` copies to every item.
+    pub vehicle_part: VehiclePartStats,
+    /// The `DeviceData` values `InstanceItem` sets on a `Radio`.
+    pub radio: RadioScript,
+    /// `map` (`MapItem.setMapID`; a random map definition when blank).
+    pub map: Option<String>,
+}
+
+/// `InventoryItem` fields `Item.InstanceItem` sets for vehicle parts
+/// (`setBrakeForce`, `setDurability`, ...). They are not saved: a loaded
+/// item keeps the values of the item `CreateItem` made.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VehiclePartStats {
+    pub brake_force: f32,
+    pub durability: f32,
+    pub chance_to_spawn_damaged: i32,
+    pub condition_lower_normal: f32,
+    pub condition_lower_offroad: f32,
+    pub wheel_friction: f32,
+    pub suspension_compression: f32,
+    pub engine_loudness: f32,
+    pub suspension_damping: f32,
+}
+
+impl VehiclePartStats {
+    /// The values of an item script.
+    pub fn from_script(item: &Item) -> Self {
+        VehiclePartStats {
+            brake_force: item.brake_force,
+            durability: item.durability,
+            chance_to_spawn_damaged: item.chance_to_spawn_damaged,
+            condition_lower_normal: item.condition_lower_normal,
+            condition_lower_offroad: item.condition_lower_offroad,
+            wheel_friction: item.wheel_friction,
+            suspension_compression: item.suspension_compression,
+            engine_loudness: item.engine_loudness,
+            suspension_damping: item.suspension_damping,
+        }
+    }
+}
+
+/// Item script values `Item.InstanceItem` gives a `Radio`'s `DeviceData`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RadioScript {
+    pub two_way: bool,
+    pub transmit_range: i32,
+    pub mic_range: i32,
+    pub base_volume_range: f32,
+    pub is_portable: bool,
+    pub is_television: bool,
+    pub min_channel: i32,
+    pub max_channel: i32,
+    pub uses_battery: bool,
+    pub is_high_tier: bool,
+    pub use_delta: f32,
+    pub accept_media_type: i8,
+    pub no_transmit: bool,
+}
+
+impl Default for RadioScript {
+    /// The `Item` field defaults.
+    fn default() -> Self {
+        RadioScript {
+            two_way: false,
+            transmit_range: 0,
+            mic_range: 0,
+            base_volume_range: 0.0,
+            is_portable: false,
+            is_television: false,
+            min_channel: 88000,
+            max_channel: 108000,
+            uses_battery: false,
+            is_high_tier: false,
+            use_delta: 0.03125,
+            accept_media_type: -1,
+            no_transmit: false,
+        }
+    }
+}
+
+impl RadioScript {
+    /// The values of an item script.
+    pub fn from_script(item: &Item) -> Self {
+        RadioScript {
+            two_way: item.two_way,
+            transmit_range: item.transmit_range,
+            mic_range: item.mic_range,
+            base_volume_range: item.base_volume_range,
+            is_portable: item.is_portable,
+            is_television: item.is_television,
+            min_channel: item.min_channel,
+            max_channel: item.max_channel,
+            uses_battery: item.uses_battery,
+            is_high_tier: item.is_high_tier,
+            use_delta: item.use_delta,
+            accept_media_type: item.accept_media_type,
+            no_transmit: item.no_transmit,
+        }
+    }
 }
 
 impl ItemTemplate {
@@ -349,6 +454,12 @@ impl ItemTemplate {
             torch_cone: false,
             light_distance: 0,
             torch_dot: 0.96,
+            item_capacity: -1,
+            max_capacity: -1,
+            condition_affects_capacity: false,
+            vehicle_part: VehiclePartStats::default(),
+            radio: RadioScript::default(),
+            map: None,
         }
     }
 
@@ -504,6 +615,12 @@ impl ItemTemplate {
             torch_cone: item.torch_cone,
             light_distance: item.light_distance,
             torch_dot: item.torch_dot,
+            item_capacity: item.item_capacity,
+            max_capacity: item.max_capacity,
+            condition_affects_capacity: item.condition_affects_capacity,
+            vehicle_part: VehiclePartStats::from_script(item),
+            radio: RadioScript::from_script(item),
+            map: item.map.clone(),
         }))
     }
 }

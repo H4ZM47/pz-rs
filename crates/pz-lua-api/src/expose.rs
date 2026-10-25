@@ -32,7 +32,11 @@ pub fn simple_name(fqn: &str) -> &str {
 
 /// Create (or fetch) the exposure tables for class `fqn` with superclass
 /// `superclass` (whose exposure must already exist if given).
-pub fn expose_class(thread: &mut Thread, fqn: &'static str, superclass: Option<&str>) -> ClassBuilder {
+pub fn expose_class(
+    thread: &mut Thread,
+    fqn: &'static str,
+    superclass: Option<&str>,
+) -> ClassBuilder {
     let env = thread.globals().clone();
     // Metatable with __index method table.
     let meta = match thread.class_metatables.get_str(fqn) {
@@ -56,7 +60,11 @@ pub fn expose_class(thread: &mut Thread, fqn: &'static str, superclass: Option<&
     };
     let methods = meta.get_str("__index").as_table().cloned().unwrap();
     // Package tables: a.b.C (with '$' nesting split into tables too).
-    let parts: Vec<String> = fqn.replace('$', ".").split('.').map(str::to_string).collect();
+    let parts: Vec<String> = fqn
+        .replace('$', ".")
+        .split('.')
+        .map(str::to_string)
+        .collect();
     let mut container = env.clone();
     for p in &parts {
         let next = match container.get_own(&Value::str(p)) {
@@ -74,18 +82,32 @@ pub fn expose_class(thread: &mut Thread, fqn: &'static str, superclass: Option<&
     if env.get_own(&Value::str(simple)).is_nil() {
         env.set_str(simple, container.clone());
     }
-    ClassBuilder { fqn, statics: container, methods }
+    ClassBuilder {
+        fqn,
+        statics: container,
+        methods,
+    }
 }
 
 impl ClassBuilder {
     /// Instance method, called as `obj:name(...)`; argument 0 is `self`.
-    pub fn method(&self, name: &str, f: impl Fn(&mut NativeCall<'_>) -> LuaResult<usize> + 'static) -> &Self {
-        self.methods.set_str(name, Value::Native(NativeFunction::new(name, f)));
+    pub fn method(
+        &self,
+        name: &str,
+        f: impl Fn(&mut NativeCall<'_>) -> LuaResult<usize> + 'static,
+    ) -> &Self {
+        self.methods
+            .set_str(name, Value::Native(NativeFunction::new(name, f)));
         self
     }
     /// Static method, called as `Class.name(...)`.
-    pub fn static_fn(&self, name: &str, f: impl Fn(&mut NativeCall<'_>) -> LuaResult<usize> + 'static) -> &Self {
-        self.statics.set_str(name, Value::Native(NativeFunction::new(name, f)));
+    pub fn static_fn(
+        &self,
+        name: &str,
+        f: impl Fn(&mut NativeCall<'_>) -> LuaResult<usize> + 'static,
+    ) -> &Self {
+        self.statics
+            .set_str(name, Value::Native(NativeFunction::new(name, f)));
         self
     }
     /// Public static field value (copied at exposure time, like Kahlua).
@@ -97,14 +119,21 @@ impl ClassBuilder {
     }
     /// Public constructor(s), exposed as `Class.new(...)`.
     pub fn ctor(&self, f: impl Fn(&mut NativeCall<'_>) -> LuaResult<usize> + 'static) -> &Self {
-        self.statics.set_str("new", Value::Native(NativeFunction::new("new", f)));
+        self.statics
+            .set_str("new", Value::Native(NativeFunction::new("new", f)));
         self
     }
 }
 
 /// Register a global function (`@LuaMethod(global = true)`).
-pub fn global(thread: &mut Thread, name: &str, f: impl Fn(&mut NativeCall<'_>) -> LuaResult<usize> + 'static) {
-    thread.globals().set_str(name, Value::Native(NativeFunction::new(name, f)));
+pub fn global(
+    thread: &mut Thread,
+    name: &str,
+    f: impl Fn(&mut NativeCall<'_>) -> LuaResult<usize> + 'static,
+) {
+    thread
+        .globals()
+        .set_str(name, Value::Native(NativeFunction::new(name, f)));
 }
 
 /// Downcast `self` (argument 0) of a method call.
@@ -365,13 +394,23 @@ thread_local! {
 
 /// Expose an enum: constants become static fields; instances get
 /// `name()`, `toString()`, `ordinal()` (from `java.lang.Enum`).
-pub fn expose_enum(thread: &mut Thread, fqn: &'static str, constants: &[&'static str]) -> ClassBuilder {
+pub fn expose_enum(
+    thread: &mut Thread,
+    fqn: &'static str,
+    constants: &[&'static str],
+) -> ClassBuilder {
     ensure_enum_base(thread);
     let b = expose_class(thread, fqn, Some("java.lang.Enum"));
     let vals: Vec<Value> = constants
         .iter()
         .enumerate()
-        .map(|(i, n)| Value::Object(Rc::new(JavaEnum { class: fqn, name: n, ordinal: i as i32 })))
+        .map(|(i, n)| {
+            Value::Object(Rc::new(JavaEnum {
+                class: fqn,
+                name: n,
+                ordinal: i as i32,
+            }))
+        })
         .collect();
     for (n, v) in constants.iter().zip(&vals) {
         b.field(n, v.clone());
@@ -390,12 +429,18 @@ pub fn expose_enum(thread: &mut Thread, fqn: &'static str, constants: &[&'static
         let name = str_arg(c, 0).unwrap_or_else(|| Rc::from(""));
         for v in &values {
             if let Value::Object(o) = v {
-                if o.as_any().downcast_ref::<JavaEnum>().is_some_and(|e| *e.name == *name) {
+                if o.as_any()
+                    .downcast_ref::<JavaEnum>()
+                    .is_some_and(|e| *e.name == *name)
+                {
                     return Ok(c.push(v.clone()));
                 }
             }
         }
-        Err(LuaError::Runtime { message: format!("No enum constant {fqn}.{name}"), class: "java.lang.IllegalArgumentException" })
+        Err(LuaError::Runtime {
+            message: format!("No enum constant {fqn}.{name}"),
+            class: "java.lang.IllegalArgumentException",
+        })
     });
     b
 }
@@ -407,7 +452,10 @@ pub fn enum_value(fqn: &str, name: &str) -> Value {
             .get(fqn)
             .and_then(|vals| {
                 vals.iter().find(|v| match v {
-                    Value::Object(o) => o.as_any().downcast_ref::<JavaEnum>().is_some_and(|e| e.name == name),
+                    Value::Object(o) => o
+                        .as_any()
+                        .downcast_ref::<JavaEnum>()
+                        .is_some_and(|e| e.name == name),
                     _ => false,
                 })
             })

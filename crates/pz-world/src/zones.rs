@@ -144,6 +144,77 @@ impl VehicleZoneData {
     pub const VZF_FACE_DIRECTION: i16 = 1;
 }
 
+/// A `VehicleZone` as the vehicle code reads it (`IsoChunk.AddVehicles`,
+/// `BaseVehicle`): the `Zone` fields plus `dir` and the face-direction
+/// flag. A copy of the zone at the time it was taken.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VehicleZone {
+    pub name: String,
+    pub zone_type: String,
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub w: i32,
+    pub h: i32,
+    /// `dir` (the `Direction` property).
+    pub dir: Option<crate::IsoDirections>,
+    /// `VZF_FaceDirection`.
+    pub face_direction: bool,
+    pub geometry_type: ZoneGeometryType,
+    /// Polyline or polygon points (x, y pairs); empty for a rectangle.
+    pub points: Vec<i32>,
+    pub polyline_width: i32,
+}
+
+impl VehicleZone {
+    /// The view of `zone`, `None` unless it is a `VehicleZone`.
+    pub fn from_zone(zone: &Zone) -> Option<VehicleZone> {
+        let v = zone.vehicle()?;
+        Some(VehicleZone {
+            name: zone.name.clone(),
+            zone_type: zone.zone_type.clone(),
+            x: zone.x,
+            y: zone.y,
+            z: zone.z,
+            w: zone.w,
+            h: zone.h,
+            dir: v
+                .dir
+                .and_then(|d| crate::IsoDirections::ALL.get(d).copied()),
+            face_direction: zone.is_face_direction(),
+            geometry_type: zone.geometry_type,
+            points: zone.points.clone(),
+            polyline_width: zone.polyline_width,
+        })
+    }
+
+    /// `isPolyline()`.
+    pub fn is_polyline(&self) -> bool {
+        self.geometry_type == ZoneGeometryType::Polyline
+    }
+
+    /// `isRectangle()`.
+    pub fn is_rectangle(&self) -> bool {
+        self.geometry_type == ZoneGeometryType::Invalid
+    }
+
+    /// `getPolylineLength()`.
+    pub fn polyline_length(&self) -> f32 {
+        if !self.is_polyline() || self.points.is_empty() {
+            return 0.0;
+        }
+        let mut length = 0.0f32;
+        let mut i = 0usize;
+        while (i as i32) < self.points.len() as i32 - 2 {
+            let dx = self.points[i + 2].wrapping_sub(self.points[i]) as f32;
+            let dy = self.points[i + 3].wrapping_sub(self.points[i + 1]) as f32;
+            length += vec_length(dx, dy);
+            i += 2;
+        }
+        length
+    }
+}
+
 /// `IsoMannequin.MannequinZone` extra fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MannequinZoneData {

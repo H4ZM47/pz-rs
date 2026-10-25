@@ -30,11 +30,12 @@ pub enum ShadowRequest {
         slope: Option<SlopedSurface>,
     },
     /// The explicit-quad form (vehicles; corners front-left, front-right,
-    /// back-right, back-left).
+    /// back-right, back-left) with its texture (`None`: the drop shadow).
     Quad {
         origin: [f32; 3],
         corners: [[f32; 2]; 4],
         rgba: [f32; 4],
+        texture: Option<pz_render::Texture>,
         vehicle: bool,
         slope: Option<SlopedSurface>,
     },
@@ -67,10 +68,11 @@ impl ShadowRequest {
                 origin,
                 corners,
                 rgba,
+                texture,
                 vehicle,
                 slope,
             } => {
-                if let Some(t) = shadows.drop_shadow.clone() {
+                if let Some(t) = texture.clone().or_else(|| shadows.drop_shadow.clone()) {
                     shadows.add_shadow(cam, *origin, *corners, *rgba, t, *vehicle, slope.as_ref());
                 }
             }

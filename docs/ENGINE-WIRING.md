@@ -105,6 +105,28 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] `SimContext` climate values from `ClimateManager` (#49).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
+- [ ] Vehicle models: `VehicleModelSet::create` when a vehicle is added to
+      the world (`ModelManager.addVehicle`), `sync` after part model
+      visibility changes, `update_animations(unmoddedMultiplier)` in
+      `postupdate` (#90).
+- [ ] Vehicle lights → lighting: `WorldHooks::torches` returns the
+      players' light-item torches, then
+      `pz_vehicle_render::lights::cell_torches(cell vehicles)`
+      (`LightingJNI.checkLights`; pz-lighting's `check_lights` sends
+      z + 32 and removes stale torches). Per vehicle a
+      `lights::LightbarWorldLights::new` (`createParts`); the engine's
+      `pz_vehicles::env::VehicleEvents` impl forwards
+      `lightbar_world_lights(vehicle, state)` (`updateWorldLights`, from
+      `BaseVehicle.update`) to that vehicle's `LightbarWorldLights::apply(
+      vehicle, state, &mut cell's WorldLighting)`, and calls `remove` on
+      `removeFromWorld`; it adds/removes lampposts through
+      `WorldLighting::add_lamppost`/`remove_lamppost` (#90).
+- [ ] Vehicles: `world_sim::set_world_bounds` + `create()` at world load
+      (`destroy()` on exit) with a `VehiclePhysics` impl (pz-bullet once it
+      lands; `NoPhysics` until then); `manager::process_add_vehicles()` and
+      `update_frame()` per frame; `spawn` (`IsoChunk.AddVehicles`) from the
+      chunk loader through a `SpawnWorld` impl fed by the meta cell vehicle
+      zones; `bind_vehicles::register` (#86).
 
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
@@ -119,6 +141,24 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       ObjectRender draws without shadows.
 - [ ] Feed corpses, world items and fireplace state from pz-world (#87, #76).
 - [ ] Lighting pass reads `ClimateManager::render_values` (#49).
+- [ ] Vehicles in `FrameObjects.moving` (cell object-list order): per
+      vehicle `update_transform`, `instance.update_lights`,
+      `instance.do_damage_overlay` (when `doDamageOverlay` is flagged or the
+      blood-decal option changes), then `render_vehicle_object` with a
+      `VehicleFrame` (alpha, `interpolateLight` ambient, the square's
+      result lights as `SquareLight::from_result_lights(
+      WorldLighting::result_lights(player, x, y, z))`, square light/seen,
+      sky box textures + shift, `media/vehicleShadow.png`) (#90).
+- [ ] Character model lights: per character and player
+      `PlayerLightData::update(&LightContext { result_lights:
+      WorldLighting::result_lights(player, square).to_vec(), .. })`
+      (`ModelInstance.updateLights`), then `effect_lights_main` /
+      `current_ambient` into `CharacterFrame` (#90).
+- [ ] Vehicle reflections: the reflective vehicle shaders need
+      `VehicleFrame`'s sky-box textures and shift from #53's `SkyBox`
+      (pz-iso-render `skybox.rs`, on a separate stack). Until that is
+      wired, load vehicle models with `reflections: false` (the
+      `_noreflect` shader variants, as with `bPerfReflections` off) (#90).
 
 ## Cleanups
 - [ ] Fold bind_vehicles' item subset into the full item bindings (#86).
