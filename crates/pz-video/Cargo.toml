@@ -1,0 +1,6 @@
+[package]
+name = "pz-video"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
