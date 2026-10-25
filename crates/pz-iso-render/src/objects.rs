@@ -93,6 +93,11 @@ pub struct ObjectRender {
     /// drawn without an outline, it masks outlines behind it
     /// (`ModelOutlines.setPlayerRenderData`).
     pub local_player: bool,
+    /// The object's position (`getX`, `getY`, `getZ`), for the weather
+    /// mask's `IsoGridSquare.renderCharacters` on its current square
+    /// ([`FrameObjects::render_characters`]). `None` (vehicles, whose
+    /// `sprite` is null, and anything not on a square) keeps it out.
+    pub pos: Option<[f32; 3]>,
 }
 
 impl ObjectRender {
@@ -170,6 +175,16 @@ impl FrameObjects {
     /// [`render`](Self::render) with the frame's `ModelOutlines`: outlined
     /// characters draw into its mask as they render.
     pub fn render_outlined(&self, cam: &ModelCamera, shadows: &mut Shadows, outlines: &mut ModelOutlines, out: &mut Vec<DrawCmd>) {
+        self.render_outlined_until_moving(cam, shadows, outlines, out);
+        self.render_outlined_moving(cam, shadows, outlines, out);
+    }
+
+    /// The first half of [`render_outlined`](Self::render_outlined):
+    /// `renderPlayers`, `renderCorpseShadows`, `renderMannequinShadows`,
+    /// `renderCorpsesInWorld` and `renderItemsInWorld`. `performRenderTiles`
+    /// draws the puddles between this and
+    /// [`render_outlined_moving`](Self::render_outlined_moving).
+    pub fn render_outlined_until_moving(&self, cam: &ModelCamera, shadows: &mut Shadows, outlines: &mut ModelOutlines, out: &mut Vec<DrawCmd>) {
         for p in &self.players {
             p.render(cam, shadows, outlines, out);
         }
@@ -181,8 +196,39 @@ impl FrameObjects {
         }
         out.extend(self.corpses.iter().cloned());
         out.extend(self.items.iter().cloned());
+    }
+
+    /// The second half of [`render_outlined`](Self::render_outlined):
+    /// `renderMovingObjects`.
+    pub fn render_outlined_moving(&self, cam: &ModelCamera, shadows: &mut Shadows, outlines: &mut ModelOutlines, out: &mut Vec<DrawCmd>) {
         for m in &self.moving {
             m.render(cam, shadows, outlines, out);
+        }
+    }
+
+    /// `IsoGridSquare.renderCharacters(z + 1, false, false)` on square
+    /// `(x, y, z)` as `WeatherFxMask` calls it: the players and moving
+    /// objects standing there (not vehicles, whose `sprite` is null),
+    /// sorted by screen y (`compareToY`, a stable sort over the players
+    /// then the other moving objects), each drawing its ordinary
+    /// [`ObjectRender::draws`] without its shadow or outline. Prone
+    /// zombies and dead bodies (the `corpses` atlas draws) lie on the floor
+    /// and are skipped, as `deadRender == false` skips them.
+    pub fn render_characters(&self, x: i32, y: i32, z: i32, out: &mut Vec<DrawCmd>) {
+        let mut here: Vec<(f32, &ObjectRender)> = self
+            .players
+            .iter()
+            .chain(&self.moving)
+            .filter(|o| !o.draws.iter().any(|c| matches!(c, DrawCmd::VehicleModel(_))))
+            .filter_map(|o| {
+                let p = o.pos?;
+                let on = [p[0], p[1], p[2]].map(pz_render::iso::fastfloor) == [x, y, z];
+                on.then(|| (pz_render::iso::y_to_screen(p[0], p[1], p[2], 0), o))
+            })
+            .collect();
+        here.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        for (_, o) in here {
+            out.extend(o.draws.iter().cloned());
         }
     }
 }

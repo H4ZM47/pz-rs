@@ -240,7 +240,7 @@ pub fn render_character_object(
         .into_iter()
         .map(|d| DrawCmd::Model(Box::new(d)))
         .collect();
-    ObjectRender { shadow, draws, ..Default::default() }
+    ObjectRender { shadow, draws, pos: Some([frame.x, frame.y, frame.z]), ..Default::default() }
 }
 
 #[cfg(test)]
