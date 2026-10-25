@@ -296,6 +296,10 @@ pub struct ZombieFields {
     pub turn_alerted_value: String,
     /// Getter side effects not yet applied (`setTarget(null)` from the
     /// `bHasTarget`/`battack`/`blunge` slots).
+    /// The `bthump` slot found the thump target gone (or the thump timer
+    /// running): `setThumpTarget(null)`, applied with the other getter
+    /// effects.
+    pub(crate) thump_clear_requested: std::cell::Cell<bool>,
     pub(crate) clear_target_requested: std::cell::Cell<bool>,
     /// `lungeTimer = 0` from the `blunge` slot.
     pub(crate) lunge_timer_reset_requested: std::cell::Cell<bool>,
@@ -410,6 +414,7 @@ impl Default for ZombieFields {
             being_stepped_on: false,
             turn_alerted_value: String::new(),
             clear_target_requested: std::cell::Cell::new(false),
+            thump_clear_requested: std::cell::Cell::new(false),
             lunge_timer_reset_requested: std::cell::Cell::new(false),
             target_view: vars::TargetView::default(),
         }

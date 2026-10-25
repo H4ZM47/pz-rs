@@ -18,7 +18,6 @@
 use pz_pathfind::mover::{ObjectRef, PathMover};
 use pz_world::square::{CollideMover, CollidedFlags, HoppableAction, IsoDirections, MoverKind, MoverStates};
 
-use super::path_mover::PathMoverRequest;
 use super::state::{StateCx, ThumpKind, ThumpTarget};
 use super::states::{climb_fence, ids};
 use super::{CharacterKind, GameCharacter};
@@ -117,9 +116,14 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoZombie.collideWith(obj)`: climb through an open window (or a
     /// window frame, or a climbable thumpable) the zombie is moving into,
     /// else take a thumpable in the way as the thump target while chasing.
-    /// TODO(objects): `rerouteCollide`.
+    /// An object with a `rerouteCollide` (a wall a window was built on)
+    /// becomes the zombie's own `rerouteCollide`, which is null: nothing
+    /// happens.
     fn zombie_collide_with(&mut self, obj: ObjectRef, cx: &mut StateCx<'_, I>) {
         if self.zombie.ghost {
+            return;
+        }
+        if cx.world.reroute_collide(obj) {
             return;
         }
         let Some(i) = cx.world.thump_info(ThumpTarget::Object(obj), self.id) else { return };
@@ -133,7 +137,7 @@ impl<I: 'static> GameCharacter<I> {
                 return;
             }
             if !path_find && !crawling {
-                self.path.requests.push(PathMoverRequest::ClimbThroughWindow(obj));
+                self.climb_through_window(obj, cx);
             }
             return;
         }
@@ -142,13 +146,13 @@ impl<I: 'static> GameCharacter<I> {
                 return;
             }
             if !path_find {
-                self.path.requests.push(PathMoverRequest::ClimbThroughWindowFrame(obj));
+                self.climb_through_window_frame(obj, cx);
             }
             return;
         }
         if i.kind == ThumpKind::Thumpable && i.can_climb_through && moving {
             if !path_find && !crawling {
-                self.path.requests.push(PathMoverRequest::ClimbThroughWindow(obj));
+                self.climb_through_window(obj, cx);
             }
             return;
         }

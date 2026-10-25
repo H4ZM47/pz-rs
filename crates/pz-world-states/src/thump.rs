@@ -52,7 +52,7 @@ impl StatesWorldAdapter<'_> {
         Some((sq, &sq.objects[i]))
     }
 
-    fn find_mut(&mut self, r: ObjectRef) -> Option<&mut IsoObject> {
+    pub(crate) fn find_mut(&mut self, r: ObjectRef) -> Option<&mut IsoObject> {
         let sq = self.cell.get_grid_square_mut(r.x, r.y, r.z)?;
         let i = sq.object_index(r.id)?;
         Some(&mut sq.objects[i])
@@ -230,7 +230,7 @@ impl StatesWorldAdapter<'_> {
         true
     }
 
-    fn window_can_climb_through(
+    pub(crate) fn window_can_climb_through(
         &self,
         sq: &IsoGridSquare,
         o: &IsoObject,
@@ -261,7 +261,7 @@ impl StatesWorldAdapter<'_> {
         sq.get_window_facing(EdgeFacing::of_north(north))
     }
 
-    fn frame_can_climb_through(
+    pub(crate) fn frame_can_climb_through(
         &self,
         sq: &IsoGridSquare,
         north: bool,
@@ -291,7 +291,7 @@ impl StatesWorldAdapter<'_> {
         true
     }
 
-    fn thumpable_can_climb_through(
+    pub(crate) fn thumpable_can_climb_through(
         &self,
         sq: &IsoGridSquare,
         o: &IsoObject,
@@ -352,7 +352,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoObject.damage` of a plain object.
-    fn object_damage(&self, r: ObjectRef) -> i32 {
+    pub(crate) fn object_damage(&self, r: ObjectRef) -> i32 {
         *self.runtime.object_damage.get(&r).unwrap_or(&100)
     }
 
@@ -466,7 +466,7 @@ impl StatesWorldAdapter<'_> {
         }
     }
 
-    fn kind_of(o: &IsoObject) -> ThumpKind {
+    pub(crate) fn kind_of(o: &IsoObject) -> ThumpKind {
         match &o.kind {
             ObjectKind::Door(_) => ThumpKind::Door,
             ObjectKind::Window(_) => ThumpKind::Window,
@@ -1240,7 +1240,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoThumpable.destroy()`.
-    fn destroy_thumpable(&mut self, r: ObjectRef) {
+    pub(crate) fn destroy_thumpable(&mut self, r: ObjectRef) {
         let Some((_, o)) = self.find(r) else { return };
         let o = o.clone();
         self.engine.dump_contents((r.x, r.y, r.z), &o);

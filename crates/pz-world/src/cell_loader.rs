@@ -477,6 +477,18 @@ pub fn do_tile_object_creation(
             w.glass_removed = false;
             sprite = w.smashed_sprite;
         }
+        // `gridSquare.getWall(north).rerouteCollide = this`.
+        let m = &*env.sprites;
+        let wall_se = m.tables.flag.WallSE;
+        let wall = sq.objects.iter().position(|o| {
+            o.sprite.is_some_and(|s| {
+                let sp = &m.sprites[s];
+                !sp.properties.has(wall_se) && (sp.cut_n && north || sp.cut_w && !north)
+            })
+        });
+        if let Some(i) = wall {
+            sq.objects[i].reroute_collide = Some(id);
+        }
         let obj = IsoObject::new(id, ObjectKind::Window(w), sprite);
         obj_index = Some(add_object(sq, env, obj, true));
     } else if props.has(f.WindowW) || props.has(f.WindowN) {

@@ -4,9 +4,9 @@
 //!
 //! The obstacle calls (`climbOverFence`, `climbThroughWindow`,
 //! `ToggleDoor`, ...) need the world's objects; they are queued in
-//! [`PathMoverState::requests`] for the owner of the world, which performs
-//! them with the states. TODO(world): run them here once the objects are
-//! reachable from the character.
+//! [`PathMoverState::requests`]. The climbs run right after the path
+//! update that asked for them ([`GameCharacter::run_path_requests`]); the
+//! rest is for the owner of the world.
 
 use pz_pathfind::mover::{
     AnimalMover, CharacterState, CharacterView, FaceTarget, MoverId, ObjectRef, PathFindProgress, PathMover, PlayerMover,
@@ -60,6 +60,19 @@ pub struct PathMoverState {
     pub requests: Vec<PathMoverRequest>,
     /// Toggles a door and answers whether it is open afterwards.
     pub door_hook: Option<DoorHook>,
+    /// A world hook for `IsoWindow.canClimbThrough(chr)`
+    /// (`checkDoorHoppableWindow`).
+    pub window_hook: Option<WindowHook>,
+}
+
+/// A world hook for `IsoWindow.canClimbThrough(chr)` of this character.
+#[derive(Clone)]
+pub struct WindowHook(pub std::rc::Rc<dyn Fn(ObjectRef) -> bool>);
+
+impl std::fmt::Debug for WindowHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WindowHook")
+    }
 }
 
 /// A world hook for `IsoDoor`/`IsoThumpable.ToggleDoor(chr)` + `isOpen()`.
@@ -69,6 +82,30 @@ pub struct DoorHook(pub std::rc::Rc<dyn Fn(ObjectRef) -> bool>);
 impl std::fmt::Debug for DoorHook {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("DoorHook")
+    }
+}
+
+impl<I: 'static> GameCharacter<I> {
+    /// Performs the climbs `PathFindBehavior2.update()` asked for
+    /// (`climbOverFence`, `climbThroughWindow`, `climbThroughWindowFrame`),
+    /// oldest first; the other requests stay queued. Call it after each
+    /// `StateWorld::path_update` of the character.
+    pub fn run_path_requests(&mut self, cx: &mut super::state::StateCx<'_, I>) {
+        if !self.path.requests.iter().any(|r| matches!(r, PathMoverRequest::ClimbOverFence(_) | PathMoverRequest::ClimbThroughWindow(_) | PathMoverRequest::ClimbThroughWindowFrame(_))) {
+            return;
+        }
+        let all = std::mem::take(&mut self.path.requests);
+        let mut rest = Vec::new();
+        for r in all {
+            match r {
+                PathMoverRequest::ClimbOverFence(d) => self.do_climb_over_fence(d, cx),
+                PathMoverRequest::ClimbThroughWindow(w) => self.climb_through_window(w, cx),
+                PathMoverRequest::ClimbThroughWindowFrame(f) => self.climb_through_window_frame(f, cx),
+                other => rest.push(other),
+            }
+        }
+        rest.append(&mut self.path.requests);
+        self.path.requests = rest;
     }
 }
 
@@ -306,9 +343,10 @@ impl<I: 'static> PathMover for GameCharacter<I> {
     fn climb_through_window_frame(&mut self, frame: ObjectRef) {
         self.path.requests.push(PathMoverRequest::ClimbThroughWindowFrame(frame));
     }
-    /// TODO(world objects): `IsoWindow.canClimbThrough(chr)`.
-    fn can_climb_through_window(&self, _window: ObjectRef) -> bool {
-        false
+    /// `IsoWindow.canClimbThrough(chr)` through the world's window hook
+    /// (the trait gives no world); without a hook no window is climbable.
+    fn can_climb_through_window(&self, window: ObjectRef) -> bool {
+        self.path.window_hook.as_ref().is_some_and(|h| (h.0)(window))
     }
     /// TODO(world objects): `couldBeOpen(chr)`.
     fn could_open_door(&self, _door: ObjectRef) -> bool {

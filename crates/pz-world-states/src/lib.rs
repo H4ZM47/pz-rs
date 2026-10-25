@@ -21,11 +21,14 @@
 //! path-finding, lighting and audio methods of [`StateWorld`] keep their
 //! defaults; the engine wraps this adapter for those.
 
+mod bent_fences;
+mod climb;
 mod collide;
 mod query;
 mod thump;
 mod vehicles;
 
+pub use bent_fences::{BentFenceEntry, BentFences, FenceTileDef, ThumpData};
 pub use collide::{CollideMoverInfo, NewRenderEffect, RenderEffectType, StatesFire, WorldView};
 pub use query::Env;
 pub use vehicles::{VehicleBox, VehicleGeometry};
@@ -194,6 +197,34 @@ pub trait StatesEngine {
     fn window_closing_success(&self, _window: ObjectRef) -> bool {
         false
     }
+    /// The zombies among `square.getMovingObjects()` (the squares'
+    /// moving-object lists are the character owner's), in list order.
+    fn zombies_on_square(&self, _sq: (i32, i32, i32)) -> Vec<i32> {
+        Vec::new()
+    }
+    /// `WorldDictionary.getObjectNameFromID(id)` for an object name stored
+    /// as a dictionary id.
+    fn dict_object_name(&self, _id: i8) -> Option<String> {
+        None
+    }
+    /// The ids of `square.getMovingObjects()` (characters), in list order.
+    fn moving_objects_on_square(&self, _sq: (i32, i32, i32)) -> Vec<i32> {
+        Vec::new()
+    }
+    /// `BentFences.getInstance()` with the Lua-registered tiles; `None`:
+    /// no bendable fences.
+    fn bent_fences(&self) -> Option<std::rc::Rc<BentFences>> {
+        None
+    }
+    /// `BrokenFences.getInstance().addItems(obj, square)` (the debris items
+    /// of a removed fence piece; draws `Rand`).
+    fn broken_fence_items(&mut self, _sq: (i32, i32, i32), _obj: &IsoObject) {}
+    /// `BentFences.collapse`'s characters: the zombies in `trip` that are
+    /// not behind `fence` fall on their front (`setOnFloor`,
+    /// `setFallOnFront`, hit reaction `Floor`); in `crush`, zombies fall
+    /// (on their front when behind it) and players bump and fall
+    /// (`pushedBehind` / `pushedFront`).
+    fn fence_collapsed(&mut self, _fence: ObjectRef, _trip: &[i32], _crush: &[i32]) {}
 
     // ---- lighting (pz-lighting) ----
 
@@ -580,17 +611,86 @@ pub fn corpse_pos(id: i64) -> (i32, i32, i32, usize) {
 impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
         let sq = self.cell.get_grid_square(x, y, z)?;
-        let m = &*self.sprites;
-        Some(SquareInfo {
-            x,
-            y,
-            z,
-            in_room: sq.room_id != -1,
-            solid_floor: sq.treat_as_solid_floor(m),
-            has_stairs: sq.has_stairs(m),
-            has_stairs_north: sq.has_stairs_north(m),
-            has_stairs_west: sq.has_stairs_west(m),
-        })
+        Some(self.square_info(sq))
+    }
+
+    fn sloped_surface_height(&self, sq: (i32, i32, i32), dx: f32, dy: f32) -> f32 {
+        self.at(sq).map_or(0.0, |s| s.get_sloped_surface_height_at(dx, dy))
+    }
+
+    fn wall_type(&self, sq: (i32, i32, i32)) -> i32 {
+        self.at(sq).map_or(0, |s| self.wall_type_of(s))
+    }
+
+    fn vault_over(
+        &self,
+        current: (i32, i32, i32),
+        at: (i32, i32, i32),
+        dir: IsoDirections,
+        collided: (bool, bool, bool, bool),
+    ) -> Option<(IsoDirections, pz_characters::character::state::FenceClimb)> {
+        self.vault_over_for(current, at, dir, collided)
+    }
+
+    fn window_climb(
+        &self,
+        chr: &dyn CharacterView,
+        kind: pz_world::square::MoverKind,
+        window: ObjectRef,
+    ) -> Option<pz_characters::character::state::WindowClimb> {
+        let t = Thumper {
+            x: chr.x(),
+            y: chr.y(),
+            z: chr.z(),
+            current_square: chr.current_square(),
+            zombie: kind == pz_world::square::MoverKind::Zombie,
+            animal: kind == pz_world::square::MoverKind::Animal,
+            ..Default::default()
+        };
+        self.window_climb_for(&t, window)
+    }
+
+    fn window_between(
+        &self,
+        start: (i32, i32, i32),
+        end: (i32, i32, i32),
+    ) -> Option<(ObjectRef, pz_characters::character::state::ThumpKind)> {
+        self.window_between_squares(start, end)
+    }
+
+    fn window_closing(&self, window: ObjectRef) -> bool {
+        self.engine.window_closing_success(window)
+    }
+
+    fn reroute_collide(&self, obj: ObjectRef) -> bool {
+        self.find(obj).is_some_and(|(_, o)| o.reroute_collide.is_some())
+    }
+
+    fn has_broken_glass(&self, sq: (i32, i32, i32)) -> bool {
+        self.broken_glass_at(sq)
+    }
+
+    fn zombies_on_square(&self, sq: (i32, i32, i32)) -> Vec<i32> {
+        if self.at(sq).is_none() {
+            return Vec::new();
+        }
+        self.engine.zombies_on_square(sq)
+    }
+
+    fn damage_thumpable(&mut self, obj: ObjectRef, damage: i32) {
+        self.damage_thumpable_at(obj, damage);
+    }
+
+    fn hoppable_between(&self, start: (i32, i32, i32), end: (i32, i32, i32)) -> Option<ObjectRef> {
+        self.hoppable_between_squares(start, end)
+    }
+
+    fn fence_info(&self, fence: ObjectRef) -> Option<pz_characters::character::state::FenceInfo> {
+        self.fence_info_of(fence)
+    }
+
+    fn damage_fence(&mut self, fence: ObjectRef, damage: i32, dir: IsoDirections) {
+        self.damage_fence_at(fence, damage, dir);
     }
 
     fn square_room(&self, sq: (i32, i32, i32)) -> Option<i64> {
@@ -805,7 +905,16 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             zombie,
             ..Default::default()
         };
-        self.fence_climb_for(&t, from, dir)
+        let climb = self.fence_climb_for(&t, from, dir)?;
+        if !zombie {
+            return Some(climb);
+        }
+        // BentFences.checkDamageHoppableFence, then setParams reads the
+        // square beyond.
+        let (dx, dy) = dir.delta();
+        let opp = (from.0 + dx, from.1 + dy, from.2);
+        self.check_damage_hoppable_fence(from, opp);
+        Some(self.fence_opposite(self.at(opp)))
     }
 
     /// `checkBreakHoppable()`, `checkHitHoppable()` and

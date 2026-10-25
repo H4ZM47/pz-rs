@@ -178,6 +178,13 @@ pub enum SimEvent {
     /// headless original's dummy emitter draws `Rand.Next(Integer.MAX_VALUE)`
     /// for the sound id).
     EmitterPlaySound(String),
+    /// `getEmitter().playSoundImpl(name, null)` then
+    /// `setParameterValueByName(instance, parameter, value)` (the climb
+    /// states' fence, trip and window sounds); `movement_speed` also sets
+    /// the player's `ParameterCharacterMovementSpeed` on the instance. The
+    /// headless original's dummy emitter draws `Rand.Next(Long.MAX_VALUE)`
+    /// for the instance.
+    ObstacleSound { name: String, parameter: &'static str, value: f32, movement_speed: bool },
     /// `playWeaponHitArmourSound(part, bullet)`.
     WeaponHitArmourSound { part: i32, bullet: bool },
     /// `WorldSoundManager.instance.addSound(chr, x, y, z, radius, volume,
@@ -376,6 +383,11 @@ pub trait SimContext {
     /// `Rand.Next(float min, float max)`.
     fn rand_next_float(&self, min: f32, max: f32) -> f32 {
         pz_core::random::next_float(min, max)
+    }
+    /// `SoundManager.instance.isListenerInRange(x, y, range)` (a headless
+    /// game's `DummySoundManager` answers `false`).
+    fn is_listener_in_range(&self, _x: f32, _y: f32, _range: f32) -> bool {
+        false
     }
     /// `PerformanceSettings.getLockFPS()`.
     fn lock_fps(&self) -> i32 {

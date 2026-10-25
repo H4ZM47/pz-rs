@@ -34,6 +34,65 @@ pub struct SquareInfo {
     pub has_stairs_north: bool,
     /// `HasStairsWest()`.
     pub has_stairs_west: bool,
+    /// `has(IsoObjectType.stairsTN)` and the other stair pieces.
+    pub stairs: StairsPieces,
+    /// `has(IsoFlagType.WallN)`.
+    pub wall_n: bool,
+    /// `has(IsoFlagType.WallW)`.
+    pub wall_w: bool,
+    /// `hasSlopedSurface()`.
+    pub sloped_surface: bool,
+    /// `getSlopedSurfaceHeightMax()`.
+    pub sloped_surface_height_max: f32,
+}
+
+/// The stair pieces of a square (`IsoObjectType.stairsTN` ... `stairsBW`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StairsPieces {
+    pub tn: bool,
+    pub tw: bool,
+    pub mn: bool,
+    pub mw: bool,
+    pub bn: bool,
+    pub bw: bool,
+}
+
+impl StairsPieces {
+    /// The top piece of a staircase (`stairsTN` or `stairsTW`).
+    pub fn top(&self) -> bool {
+        self.tn || self.tw
+    }
+}
+
+impl SquareInfo {
+    /// `getApparentZ(dx, dy)` with `PerformanceSettings.fboRenderChunk`
+    /// (always on outside a debug toggle): the stairs' height, else the
+    /// sloped surface's (`sloped`, the world's
+    /// `getSlopedSurfaceHeight(dx, dy)`).
+    pub fn apparent_z(&self, dx: f32, dy: f32, sloped: impl FnOnce(f32, f32) -> f32) -> f32 {
+        let clamp = |v: f32| v.clamp(0.0, 1.0);
+        let (dx, dy) = (clamp(dx), clamp(dy));
+        let fudge = 0.1f32;
+        // PZMath.lerp(a, b, t): a + (b - a) * t.
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let z = self.z as f32;
+        let s = &self.stairs;
+        if s.tn {
+            z + lerp(0.6666 + fudge, 1.0, 1.0 - dy)
+        } else if s.tw {
+            z + lerp(0.6666 + fudge, 1.0, 1.0 - dx)
+        } else if s.mn {
+            z + lerp(0.3333 + fudge, 0.6666 + fudge, 1.0 - dy)
+        } else if s.mw {
+            z + lerp(0.3333 + fudge, 0.6666 + fudge, 1.0 - dx)
+        } else if s.bn {
+            z + lerp(0.01, 0.3333 + fudge, 1.0 - dy)
+        } else if s.bw {
+            z + lerp(0.01, 0.3333 + fudge, 1.0 - dx)
+        } else {
+            z + sloped(dx, dy)
+        }
+    }
 }
 
 /// The world as the states see it. Characters other than the one being
@@ -345,6 +404,79 @@ pub trait StateWorld<I> {
     fn eating_count(&self, _target: EatTarget) -> usize {
         0
     }
+
+    // ---- stairs, slopes and walls (`IsoMovingObject.postupdate`) ----
+
+    /// `square.getSlopedSurfaceHeight(dx, dy)` (0 without a slope).
+    fn sloped_surface_height(&self, _sq: (i32, i32, i32), _dx: f32, _dy: f32) -> f32 {
+        0.0
+    }
+    /// `square.getWallType()`.
+    fn wall_type(&self, _sq: (i32, i32, i32)) -> i32 {
+        0
+    }
+    /// `IsoMovingObject.checkVaultOver()`'s world part for a player on
+    /// `current` (at the square `at` of its position) facing `dir` with the
+    /// collided flags `(n, s, w, e)`: the direction it vaults in
+    /// (`isPlayerAbleToHopWallTo` and `isSafeToClimbOver` passed) and what
+    /// `ClimbOverFenceState.setParams` reads of the square beyond. `None`
+    /// when it does not vault.
+    fn vault_over(&self, _current: (i32, i32, i32), _at: (i32, i32, i32), _dir: IsoDirections, _collided: (bool, bool, bool, bool)) -> Option<(IsoDirections, FenceClimb)> {
+        None
+    }
+
+    // ---- windows (`ClimbThroughWindowState`, `climbThroughWindow`) ----
+
+    /// `ClimbThroughWindowState.getClimbThroughWindowPositioningParams(chr,
+    /// window, params)`'s world part for `chr` (of kind `kind`) and the
+    /// window, window thumpable or window frame `window`. `None` when the
+    /// object is none of these (`windowObject` stays null).
+    fn window_climb(&self, _chr: &dyn pz_pathfind::mover::CharacterView, _kind: pz_world::square::MoverKind, _window: pz_pathfind::mover::ObjectRef) -> Option<WindowClimb> {
+        None
+    }
+    /// `startSq.getWindowTo(endSq)`, else `getWindowThumpableTo`, else
+    /// `getHoppableTo` (`ClimbThroughWindowState.getWindow`), with its
+    /// class.
+    fn window_between(&self, _start: (i32, i32, i32), _end: (i32, i32, i32)) -> Option<(pz_pathfind::mover::ObjectRef, ThumpKind)> {
+        None
+    }
+    /// `window.getFirstCharacterClosing()` is closing it with
+    /// `CloseWindowOutcome` `success`.
+    fn window_closing(&self, _window: pz_pathfind::mover::ObjectRef) -> bool {
+        false
+    }
+    /// `obj.rerouteCollide != null` (set on a square's wall when a window
+    /// is created on it from the map).
+    fn reroute_collide(&self, _obj: pz_pathfind::mover::ObjectRef) -> bool {
+        false
+    }
+    /// `square.getBrokenGlass() != null`.
+    fn has_broken_glass(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// The zombies among `square.getMovingObjects()`, in list order (the
+    /// character being updated included when it is there).
+    fn zombies_on_square(&self, _sq: (i32, i32, i32)) -> Vec<i32> {
+        Vec::new()
+    }
+    /// `IsoThumpable.health -= damage`, then `destroy()` at 0 or below
+    /// (`ClimbThroughWindowState`'s `OnFloor`).
+    fn damage_thumpable(&mut self, _obj: pz_pathfind::mover::ObjectRef, _damage: i32) {}
+
+    // ---- fences (`ClimbOverFenceState`) ----
+
+    /// `startSq.getHoppableTo(endSq)` (`ClimbOverFenceState.getFence`).
+    fn hoppable_between(&self, _start: (i32, i32, i32), _end: (i32, i32, i32)) -> Option<pz_pathfind::mover::ObjectRef> {
+        None
+    }
+    /// What the fence code reads about a hoppable object.
+    fn fence_info(&self, _fence: pz_pathfind::mover::ObjectRef) -> Option<FenceInfo> {
+        None
+    }
+    /// `fence.damage = (short)(fence.damage - damage)`, then
+    /// `fence.destroyFence(dir)` at 0 or below (two zombies climbing over
+    /// it at once, `ClimbOverFenceState`'s `OnFloor`).
+    fn damage_fence(&mut self, _fence: pz_pathfind::mover::ObjectRef, _damage: i32, _dir: IsoDirections) {}
 }
 
 /// A `Thumpable`: an object on a square or a vehicle.
@@ -365,6 +497,49 @@ pub struct FenceClimb {
     pub solid_floor: bool,
     /// `canClimbDownSheetRope(oppositeSq)`.
     pub sheet_rope: bool,
+}
+
+/// What `getClimbThroughWindowPositioningParams` reads of the world.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WindowClimb {
+    pub portal: ThumpKind,
+    /// `canClimbThrough(chr)` of the window or thumpable (`true` for a
+    /// frame: the positioning params do not ask it).
+    pub can_climb: bool,
+    /// `IsoWindowFrame.canClimbThrough(chr)` for a frame
+    /// (`climbThroughWindowFrame`), else `can_climb`.
+    pub portal_can_climb: bool,
+    /// `IsoWindow`: `isDestroyed() && !isGlassRemoved()` (a player may be
+    /// scratched).
+    pub broken_glass: bool,
+    /// `IsoThumpable`: `getName().equals("Barbed Fence")`.
+    pub barbed: bool,
+    pub north: bool,
+    /// The object's square.
+    pub square: (i32, i32, i32),
+    pub climb_dir: IsoDirections,
+    pub start: (i32, i32),
+    pub opposite: (i32, i32),
+    pub end: (i32, i32),
+    pub z: i32,
+    pub counter: bool,
+    pub floor: bool,
+    pub sheet_rope: bool,
+}
+
+/// What `ClimbOverFenceState` reads of a hoppable.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FenceInfo {
+    /// The fence's square.
+    pub square: (i32, i32, i32),
+    /// `getProperties().has(HoppableN)`.
+    pub hoppable_n: bool,
+    /// `isMetalFence(fence)`.
+    pub metal: bool,
+    /// `ParameterFenceTypeLow.FenceType` value of `getFenceType(fence)`.
+    pub fence_type_low: i32,
+    /// `ParameterTripObstacleType.ObstacleType` value of `getTripType(fence)`.
+    pub trip_type: i32,
 }
 
 /// The class of a thumpable.
