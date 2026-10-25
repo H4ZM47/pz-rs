@@ -648,7 +648,7 @@ mod tests {
         assert!(c.vars.collided_w);
         assert_eq!(c.vars.x, 0.2);
         assert!(path_crosses_square(
-            &pz_pathfind::Path { nodes: vec![pz_pathfind::PathNode { x: 0.5, y: 0.5, z: 32.0, flags: 0 }, pz_pathfind::PathNode { x: 2.5, y: 0.5, z: 32.0, flags: 0 }] },
+            &pz_pathfind::Path { nodes: vec![pz_pathfind::PathNode { x: 0.5, y: 0.5, z: 0.0, flags: 0 }, pz_pathfind::PathNode { x: 2.5, y: 0.5, z: 0.0, flags: 0 }] },
             1,
             0,
             0
