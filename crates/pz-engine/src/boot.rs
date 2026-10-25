@@ -4,10 +4,13 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
-/// The `Registries` bootstrap, `PerkFactory.init()` and
-/// `ScriptManager.instance.Load()` of `GameWindow.init`, shared with the Lua
-/// API. TODO: mod script folders, `CustomPerks`.
-pub fn load_scripts(game_dir: &Path, fs: &pz_fs::GameFs) -> Result<(), String> {
+/// The `Registries` bootstrap, `PerkFactory.init()`,
+/// `ScriptManager.instance.Load()` and the clothing loads after it
+/// (`ClothingDecals`, `BeardStyles`, `HairStyles`, `OutfitManager`,
+/// `VoiceStyles`, with `ModelManager`'s `PopTemplateManager.init`) of
+/// `GameWindow.initShared`, shared with the Lua API; then the `ClothingItem`
+/// assets item visuals read. TODO: mod script folders, `CustomPerks`.
+pub fn load_scripts(game_dir: &Path, fs: &mut pz_fs::GameFs) -> Result<(), String> {
     let sm = pz_scripts::ScriptManager::new();
     sm.load_builtin_registries(&game_dir.join("projectzomboid.jar"))
         .map_err(|e| format!("built-in registries: {e}"))?;
@@ -21,6 +24,9 @@ pub fn load_scripts(game_dir: &Path, fs: &pz_fs::GameFs) -> Result<(), String> {
     pz_lua_api::bind_characters::install_characters(Rc::new(RefCell::new(chars)));
     sm.load(fs, &[]).map_err(|e| format!("ScriptManager.Load failed: {e}"))?;
     pz_lua_api::bind_registry::install_script_manager(Rc::new(sm));
+    let mut pop = pz_characters::population::Population::default();
+    pop.init(fs);
+    pz_lua_api::bind_appearance::install_population(Rc::new(RefCell::new(pop)));
     // The `ClothingItem` assets item visuals read (`instanceItem`).
     match pz_inventory::ItemAssets::load(game_dir) {
         Ok(a) => pz_lua_api::bind_items::install_item_assets(a),

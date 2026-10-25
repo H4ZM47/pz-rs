@@ -3,7 +3,8 @@
 //! `InventoryItem` methods that reach the visual (`getVisual`,
 //! `getClothingItem`, `allowRandomTint`, `synchWithVisual`,
 //! `canBeEquipped`), and the classes they return: `ItemVisual`,
-//! `ClothingItem` and `ImmutableColor`. Character creation dresses its
+//! `ClothingItem`, and the `ImmutableColor` value type (its class is
+//! registered in [`crate::bind_misc_classes`]). Character creation dresses its
 //! avatar with these (`CharacterCreationMain`).
 //!
 //! Items come from the installed [`crate::bind_items::ItemLuaEnv`] (its
@@ -270,82 +271,6 @@ fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<ImmutableColor>> 
             pz_kahlua::stdlib::java_class_name(&other)
         ))),
     }
-}
-
-fn register_immutable_color(thread: &mut Thread) {
-    let b = expose_class(thread, IMMUTABLE_COLOR_CLASS, None);
-    // Kahlua passes Lua numbers to the float constructors.
-    b.ctor(|c| {
-        let f = |i| num_arg(c, i) as f32;
-        let col = match c.nargs() {
-            1 => match color_arg(c, 0)? {
-                Some(k) => k,
-                None => ImmutableColor {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 1.0,
-                },
-            },
-            3 => ImmutableColor::rgb(f(0), f(1), f(2)),
-            _ => ImmutableColor::rgba(f(0), f(1), f(2), f(3)),
-        };
-        Ok(c.push(col.value()))
-    });
-    for (name, col) in [
-        ("white", ImmutableColor::rgba(1.0, 1.0, 1.0, 1.0)),
-        ("black", ImmutableColor::rgba(0.0, 0.0, 0.0, 1.0)),
-        ("red", ImmutableColor::rgba(1.0, 0.0, 0.0, 1.0)),
-        ("green", ImmutableColor::rgba(0.0, 1.0, 0.0, 1.0)),
-        ("blue", ImmutableColor::rgba(0.0, 0.0, 1.0, 1.0)),
-        ("gray", ImmutableColor::rgba(0.5, 0.5, 0.5, 1.0)),
-        ("transparent", ImmutableColor::rgba(0.0, 0.0, 0.0, 0.0)),
-    ] {
-        b.field(name, col.value());
-    }
-    fn col<R>(c: &NativeCall<'_>, f: impl FnOnce(&ImmutableColor) -> R) -> LuaResult<R> {
-        with_this::<ImmutableColor, _>(c, f)
-    }
-    type Get = fn(&ImmutableColor) -> f32;
-    let channels: [(&str, Get); 4] = [
-        ("Red", |k| k.r),
-        ("Green", |k| k.g),
-        ("Blue", |k| k.b),
-        ("Alpha", |k| k.a),
-    ];
-    for (n, g) in channels {
-        b.method(&format!("get{n}Float"), move |c| {
-            let v = col(c, g)?;
-            Ok(c.push(v as f64))
-        });
-        b.method(&format!("get{n}Int"), move |c| {
-            let v = col(c, |k| (g(k) * 255.0) as i32)?;
-            Ok(c.push(v))
-        });
-        b.method(&format!("get{n}Byte"), move |c| {
-            let v = col(c, |k| ((g(k) * 255.0) as i32 & 0xFF) as u8 as i8 as i32)?;
-            Ok(c.push(v))
-        });
-    }
-    b.method("equals", |c| {
-        let other = match c.arg(1) {
-            Value::Object(o) => o.as_any().downcast_ref::<ImmutableColor>().copied(),
-            _ => None,
-        };
-        let v = col(c, |k| other.is_some_and(|o| o == *k))?;
-        Ok(c.push(v))
-    });
-    b.method("toString", |c| {
-        let v = col(c, |k| k.to_lua_string())?;
-        Ok(c.push(v))
-    });
-    b.method("scale", |c| {
-        let s = num_arg(c, 1) as f32;
-        let v = col(c, |k| {
-            ImmutableColor::rgba(k.r * s, k.g * s, k.b * s, k.a * s)
-        })?;
-        Ok(c.push(v.value()))
-    });
 }
 
 // ---- ItemVisual ----
@@ -835,7 +760,6 @@ fn copy_visual_from(
 
 pub fn register(thread: &mut Thread) {
     register_clothing_item(thread);
-    register_immutable_color(thread);
     register_item_visual(thread);
     register_item_methods(thread);
     global(thread, "instanceItem", instance_item);
@@ -859,7 +783,7 @@ mod tests {
     }";
 
     fn scripts() -> Rc<ScriptManager> {
-        // Unique per call: tests in this process run in parallel.
+        // One directory per call: tests run in parallel.
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("pz-bind-item-visual-{}-{n}", std::process::id()));
@@ -923,6 +847,7 @@ mod tests {
         crate::bind_globals::register(&mut t);
         crate::bind_registry::register(&mut t, sm);
         crate::bind_items::register(&mut t);
+        crate::bind_misc_classes::register(&mut t, None);
         register(&mut t);
         t
     }

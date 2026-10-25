@@ -33,10 +33,12 @@ pub use skills::{Perk, PerkFactory, PerkRef};
 pub use survivor::{CharacterGender, SurvivorDesc, SurvivorDescRef, SurvivorDescStatics, SurvivorFactory, SurvivorType};
 pub use traits::CharacterTraits;
 pub use color::{Color, ImmutableColor};
-pub use survivor::UnportedStyles;
 pub use worn_items::{BodyLocation, BodyLocationGroup, BodyLocationGroupRef, BodyLocationRef, BodyLocations, ItemIdentity, WornItem, WornItems};
 
 use pz_scripts::ScriptError;
+
+/// `Translator.getText(key)`.
+pub type Translate = std::rc::Rc<dyn Fn(&str) -> String>;
 
 /// The static state of the classes in this crate.
 #[derive(Default)]
@@ -58,6 +60,9 @@ pub struct Characters {
     pub sim: character::SimStatics,
     /// `CombatManager`'s mutable state and the ragdoll statics.
     pub combat: std::cell::RefCell<character::firearm::CombatManagerState>,
+    /// `Translator.getText(key)` for [`Characters::get_text`] (the engine's
+    /// translator; `None` returns keys).
+    pub translator: Option<Translate>,
 }
 
 pub(crate) fn npe() -> ScriptError {

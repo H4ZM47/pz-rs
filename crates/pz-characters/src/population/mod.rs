@@ -22,6 +22,7 @@
 pub mod beard_styles;
 pub mod clothing_decals;
 pub mod default_clothing;
+pub mod dress;
 pub mod hair_outfit_definitions;
 pub mod hair_styles;
 pub mod outfit;
@@ -32,6 +33,7 @@ pub mod xml;
 
 pub use beard_styles::{BeardStyle, BeardStyles};
 pub use clothing_decals::{ClothingDecal, ClothingDecalGroup, ClothingDecals};
+pub use dress::{dress_in_named_outfit, DressContext};
 pub use default_clothing::{DefaultClothing, DefaultClothingLists};
 pub use hair_outfit_definitions::{
     HairOutfitDefinitions, HaircutDefinition, HaircutOutfitDefinition, StringChance,

@@ -104,6 +104,12 @@ impl Rand {
         self.rand.next_int(max.wrapping_sub(min)) + min
     }
 
+    /// Reseeds the generator (`rand.setSeed(seed)`; the original's
+    /// `RandStandard` only seeds at `init`; for seeded parity runs).
+    pub fn set_seed(&self, seed: i64) {
+        self.rand.set_seed(seed);
+    }
+
     /// The generator's own `nextInt()` (no range handling).
     pub fn next_raw_int(&self) -> i32 {
         self.rand.next_int_unbounded()
@@ -131,6 +137,11 @@ thread_local! {
 /// shared sequence in the game.
 pub fn with_standard<R>(f: impl FnOnce(&Rand) -> R) -> R {
     STANDARD.with(f)
+}
+
+/// Reseeds `RandStandard.INSTANCE` (see [`Rand::set_seed`]).
+pub fn set_seed(seed: i64) {
+    STANDARD.with(|r| r.set_seed(seed))
 }
 
 /// `Rand.Next(int max)` on `RandStandard.INSTANCE`.

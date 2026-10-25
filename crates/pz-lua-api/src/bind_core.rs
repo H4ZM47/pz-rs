@@ -441,7 +441,7 @@ fn key_binding_for(core: &Core, name: Option<String>) -> KeyBinding {
     }
 }
 
-pub(crate) fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<ColorInfo> {
+fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<ColorInfo> {
     match c.arg(i) {
         Value::Object(o) => match o.as_any().downcast_ref::<LuaColorInfo>() {
             Some(ci) => Ok(ci.c.get()),
@@ -620,10 +620,7 @@ fn register_statics(b: &ClassBuilder, cx: &Rc<Ctx>) {
     sdef(b, cx, "getMyDocumentFolder", |cx, _| {
         Ok(cx.core().get_my_document_folder().into())
     });
-    sdef(b, cx, "UnfocusActiveTextEntryBox", |cx, c| {
-        // The box itself (setDoingTextEntry(false), its frame colour,
-        // onLostFocus) lives with UITextBox2; Core's mirror follows.
-        crate::bind_uitextbox2::unfocus_active_text_entry_box(c.thread);
+    sdef(b, cx, "UnfocusActiveTextEntryBox", |cx, _| {
         cx.core_mut().unfocus_active_text_entry_box();
         Ok(Ret::Void)
     });
@@ -1386,13 +1383,16 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             };
             Ok(c.push(Value::Object(LuaColorInfo::new(ci))))
         });
-        // `new Color(r, g, b, a)`, whose constructor clamps to 0..1.
+        // `toColor()` / `toImmutableColor()`: the four-float constructors.
         b.method("toColor", |c| {
-            let ci = with_color(c, |ci| ci.c.get())?;
-            #[allow(clippy::manual_clamp)]
-            let cl = |v: f32| if v < 0.0 { 0.0 } else if v > 1.0 { 1.0 } else { v };
-            let col = crate::bind_misc_classes::Color::rgba(cl(ci.r), cl(ci.g), cl(ci.b), cl(ci.a));
-            Ok(c.push(Value::Object(Rc::new(col))))
+            let k = with_color(c, |ci| ci.c.get())?;
+            let f = crate::bind_misc_classes::clamp01;
+            Ok(c.push(crate::bind_misc_classes::color_value_of(f(k.r), f(k.g), f(k.b), f(k.a))))
+        });
+        b.method("toImmutableColor", |c| {
+            let k = with_color(c, |ci| ci.c.get())?;
+            let v = crate::bind_item_visual::ImmutableColor::rgba(k.r, k.g, k.b, k.a);
+            Ok(c.push(crate::bind_misc_classes::immutable_color_value(v)))
         });
         b.method("getR", |c| {
             let v = with_color(c, |ci| ci.c.get().r)?;
@@ -2128,14 +2128,10 @@ mod tests {
 
     #[test]
     fn save_options_from_lua() {
-        let dir = std::env::temp_dir().join(format!(
-            "pz-lua-api-core-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // One directory per call: tests run in parallel.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("pz-lua-api-core-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut c = Core::new();
         c.set_cache_dir(&dir);

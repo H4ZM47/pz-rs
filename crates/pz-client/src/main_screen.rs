@@ -15,11 +15,10 @@ pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<()
     // Never fall back to the original game's ~/Zomboid.
     fs.borrow_mut().set_cache_dir(cache_dir);
     pz_lua_api::bind_core::shared_core().borrow_mut().set_cache_dir(cache_dir);
-    pz_engine::boot::load_scripts(game_dir, &fs.borrow())?;
     let errors: Rc<RefCell<BTreeMap<String, usize>>> = Rc::default();
     // GameWindow.init: the UI texture packs, then the pack lookup.
     pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
-    pz_engine::boot::load_scripts(game_dir, &fs.borrow())?;
+    pz_engine::boot::load_scripts(game_dir, &mut fs.borrow_mut())?;
     let mut mgr = LuaManager::init(fs).map_err(|e| format!("LuaManager.init failed: {e}"))?;
     let e2 = errors.clone();
     mgr.thread.log = Box::new(move |s| {
@@ -56,6 +55,16 @@ pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<()
     mgr.trigger_event("OnGameBoot", &[]);
     // MainScreenState.enter
     mgr.trigger_event("OnMainMenuEnter", &[]);
+    // Development harness, as for `--png`: `PZ_HEADLESS_LUA=<file>` runs a
+    // Lua file before the frames (e.g. to open a screen).
+    if let Some(path) = std::env::var_os("PZ_HEADLESS_LUA") {
+        let src = std::fs::read_to_string(&path).map_err(|e| format!("PZ_HEADLESS_LUA: {e}"))?;
+        let f = pz_kahlua::stdlib::load_string(&src, Some("headless"), mgr.thread.globals().clone())
+            .map_err(|e| format!("PZ_HEADLESS_LUA: {e:?}"))?;
+        if let Err((e, tr)) = mgr.thread.pcall(&f, &[]) {
+            eprintln!("PZ_HEADLESS_LUA: {e:?}\n{tr}");
+        }
+    }
     for _ in 0..frames {
         // MainScreenState.update
         mgr.trigger_event("OnFETick", &[0.0.into()]);

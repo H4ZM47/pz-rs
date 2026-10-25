@@ -2,6 +2,7 @@
 //! `zombie.SystemDisabler`, `zombie.core.Color`, `zombie.iso.Vector2`,
 //! `org.joml.Vector3f` and the `zombie.characters.Capability` enum.
 
+use crate::bind_item_visual::{ImmutableColor, IMMUTABLE_COLOR_CLASS};
 use crate::expose::{bool_arg, expose_class, expose_enum, num_arg, str_arg, with_this};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -160,7 +161,7 @@ impl LuaObject for Color {
 
 /// `PZMath.clamp(v, 0, 1)` (NaN passes through).
 #[allow(clippy::manual_clamp)]
-fn clamp01(v: f32) -> f32 {
+pub(crate) fn clamp01(v: f32) -> f32 {
     if v < 0.0 {
         0.0
     } else if v > 1.0 {
@@ -224,6 +225,19 @@ fn channel(v: i32, shift: u32) -> f32 {
 
 fn abgr_channels(v: i32) -> [f32; 4] {
     [channel(v, 0), channel(v, 8), channel(v, 16), channel(v, 24)]
+}
+
+/// A `zombie.core.Color` Lua object.
+pub fn color_value_of(r: f32, g: f32, b: f32, a: f32) -> Value {
+    color_value(Color::rgba(r, g, b, a))
+}
+
+/// The components of a `zombie.core.Color` value.
+pub fn color_of(v: &Value) -> Option<[f32; 4]> {
+    match v {
+        Value::Object(o) => o.as_any().downcast_ref::<Color>().map(Color::get),
+        _ => None,
+    }
 }
 
 fn color_value(c: Color) -> Value {
@@ -659,6 +673,194 @@ fn register_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
             x.b.set(bl as f32 / 255.0);
         })?;
         Ok(0)
+    });
+}
+
+// ---- zombie.core.ImmutableColor --------------------------------------------------------------
+
+fn imm(r: f32, g: f32, b: f32, a: f32) -> ImmutableColor {
+    ImmutableColor { r, g, b, a }
+}
+
+/// `new ImmutableColor(float r, float g, float b)`: clamped, opaque.
+fn imm_rgb(r: f32, g: f32, b: f32) -> ImmutableColor {
+    imm(clamp01(r), clamp01(g), clamp01(b), 1.0)
+}
+
+/// `new ImmutableColor(int r, int g, int b, int a)`.
+fn imm_ints(r: i32, g: i32, b: i32, a: i32) -> ImmutableColor {
+    imm(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0)
+}
+
+/// `new ImmutableColor(int value)`: ABGR with alpha 0 read as 255.
+fn imm_from_int(v: i32) -> ImmutableColor {
+    let col = Color::default();
+    col.set_from_int(v);
+    let [r, g, b, a] = col.get();
+    imm(r, g, b, a)
+}
+
+/// An `ImmutableColor` Lua object.
+pub fn immutable_color_value(c: ImmutableColor) -> Value {
+    Value::Object(Rc::new(c))
+}
+
+/// The `ImmutableColor` argument `i`; `None` for `null` or another class.
+pub fn immutable_color_arg(c: &NativeCall<'_>, i: usize) -> Option<ImmutableColor> {
+    match c.arg(i) {
+        Value::Object(o) => o.as_any().downcast_ref::<ImmutableColor>().copied(),
+        _ => None,
+    }
+}
+
+fn this_imm(c: &NativeCall<'_>) -> LuaResult<ImmutableColor> {
+    with_this::<ImmutableColor, _>(c, |x| *x)
+}
+
+fn register_immutable_color(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
+    let b = expose_class(thread, IMMUTABLE_COLOR_CLASS, None);
+    // Named colours: read from ImmutableColor.<clinit> in the installed jar.
+    if let Some(jar) = jar {
+        if let Ok(ctors) = pz_classfile::self_constructed_constants(jar, "zombie/core/ImmutableColor") {
+            for (name, args) in ctors {
+                let ints: Option<Vec<i32>> = args
+                    .iter()
+                    .map(|a| match a {
+                        pz_classfile::Value::Int(i) => Some(*i as i32),
+                        _ => None,
+                    })
+                    .collect();
+                let floats: Option<Vec<f32>> = args
+                    .iter()
+                    .map(|a| match a {
+                        pz_classfile::Value::Float(f) => Some(*f as f32),
+                        _ => None,
+                    })
+                    .collect();
+                let col = match (ints.as_deref(), floats.as_deref()) {
+                    (Some(&[r, g, bl, a]), _) => imm_ints(r, g, bl, a),
+                    (Some(&[r, g, bl]), _) => imm_ints(r, g, bl, 255),
+                    (Some(&[v]), _) => imm_from_int(v),
+                    (_, Some(&[r, g, bl, a])) => imm(r.min(1.0), g.min(1.0), bl.min(1.0), a.min(1.0)),
+                    (_, Some(&[r, g, bl])) => imm_rgb(r, g, bl),
+                    _ => continue,
+                };
+                b.field(&name, immutable_color_value(col));
+            }
+        }
+    }
+    // As for `Color`: plain numbers reach the float constructors (one
+    // number, the `int` one).
+    b.ctor(|c| {
+        let col = match c.nargs() {
+            1 => match c.arg(0) {
+                Value::Num(_) => imm_from_int(int_of(c, 0)),
+                // `new ImmutableColor((ImmutableColor) null)`: opaque black.
+                Value::Nil => imm(0.0, 0.0, 0.0, 1.0),
+                Value::Object(o) => match (o.as_any().downcast_ref::<ImmutableColor>(), o.as_any().downcast_ref::<Color>()) {
+                    (Some(x), _) => *x,
+                    (_, Some(x)) => {
+                        let [r, g, bl, a] = x.get();
+                        imm(r, g, bl, a)
+                    }
+                    _ => return Err(no_method("ImmutableColor.new")),
+                },
+                _ => return Err(no_method("ImmutableColor.new")),
+            },
+            3 if is_num(&c.arg(0)) => imm_rgb(f32_arg(c, 0), f32_arg(c, 1), f32_arg(c, 2)),
+            3 => {
+                let (a, b2) = (color_arg(c, 0).ok_or_else(npe)?, color_arg(c, 1).ok_or_else(npe)?);
+                let d = f32_arg(c, 2);
+                let l = |i: usize| a[i] + (b2[i] - a[i]) * d;
+                imm(l(0), l(1), l(2), l(3))
+            }
+            4 => imm(
+                f32_arg(c, 0).min(1.0),
+                f32_arg(c, 1).min(1.0),
+                f32_arg(c, 2).min(1.0),
+                f32_arg(c, 3).min(1.0),
+            ),
+            _ => return Err(no_method("ImmutableColor.new")),
+        };
+        Ok(c.push(immutable_color_value(col)))
+    });
+    b.static_fn("random", |_c| {
+        let h = pz_core::random::next_float(0.0, 1.0);
+        let s = pz_core::random::next_float(0.0, 0.6);
+        let v = pz_core::random::next_float(0.0, 0.9);
+        let [r, g, bl] = hsb_to_rgb(h, s, v);
+        // `new ImmutableColor(Color.HSBtoRGB(...))` (`new Color(int, int, int)`).
+        Ok(_c.push(immutable_color_value(imm_ints(r, g, bl, 255))))
+    });
+    b.static_fn("decode", |c| {
+        let s = str_arg(c, 0).ok_or_else(npe)?;
+        let v = integer_decode(&s).ok_or_else(|| LuaError::Runtime {
+            message: format!("For input string: \"{s}\""),
+            class: "java.lang.NumberFormatException",
+        })?;
+        Ok(c.push(immutable_color_value(imm_from_int(v))))
+    });
+    macro_rules! getter {
+        ($name:literal, $e:expr) => {
+            b.method($name, |c| {
+                let x = this_imm(c)?;
+                let f: fn(ImmutableColor) -> f64 = $e;
+                Ok(c.push(f(x)))
+            });
+        };
+    }
+    getter!("getRedFloat", |x| x.r as f64);
+    getter!("getGreenFloat", |x| x.g as f64);
+    getter!("getBlueFloat", |x| x.b as f64);
+    getter!("getAlphaFloat", |x| x.a as f64);
+    getter!("getRedInt", |x| (x.r * 255.0) as i32 as f64);
+    getter!("getGreenInt", |x| (x.g * 255.0) as i32 as f64);
+    getter!("getBlueInt", |x| (x.b * 255.0) as i32 as f64);
+    getter!("getAlphaInt", |x| (x.a * 255.0) as i32 as f64);
+    getter!("getRedByte", |x| ((x.r * 255.0) as i32 & 0xFF) as i8 as f64);
+    getter!("getGreenByte", |x| ((x.g * 255.0) as i32 & 0xFF) as i8 as f64);
+    getter!("getBlueByte", |x| ((x.b * 255.0) as i32 & 0xFF) as i8 as f64);
+    getter!("getAlphaByte", |x| ((x.a * 255.0) as i32 & 0xFF) as i8 as f64);
+    getter!("hashCode", |x| ((x.r + x.g + x.b + x.a) as i32).wrapping_mul(255) as f64);
+    b.method("toString", |c| {
+        let v = with_this::<ImmutableColor, _>(c, |x| x.to_lua_string())?;
+        Ok(c.push(v))
+    });
+    b.method("equals", |c| {
+        let (x, o) = (this_imm(c)?, immutable_color_arg(c, 1));
+        Ok(c.push(o.is_some_and(|o| o == x)))
+    });
+    b.method("toMutableColor", |c| {
+        let x = this_imm(c)?;
+        Ok(c.push(color_value(Color::rgba(x.r, x.g, x.b, x.a))))
+    });
+    b.method("add", |c| {
+        let (x, o) = (this_imm(c)?, immutable_color_arg(c, 1).ok_or_else(npe)?);
+        let v = imm((x.r + o.r).min(1.0), (x.g + o.g).min(1.0), (x.b + o.b).min(1.0), (x.a + o.a).min(1.0));
+        Ok(c.push(immutable_color_value(v)))
+    });
+    for (name, default, sign) in [("brighter", 0.2f32, 1.0f32), ("darker", 0.5, -1.0)] {
+        b.method(name, move |c| {
+            let x = this_imm(c)?;
+            let d = if c.nargs() > 1 { f32_arg(c, 1) } else { default } * sign;
+            Ok(c.push(immutable_color_value(imm_rgb(x.r + d, x.g + d, x.b + d))))
+        });
+    }
+    b.method("multiply", |c| {
+        let (x, o) = (this_imm(c)?, color_arg(c, 1).ok_or_else(npe)?);
+        let v = imm((x.r * o[0]).min(1.0), (x.g * o[1]).min(1.0), (x.b * o[2]).min(1.0), (x.a * o[3]).min(1.0));
+        Ok(c.push(immutable_color_value(v)))
+    });
+    b.method("scale", |c| {
+        let (x, k) = (this_imm(c)?, f32_arg(c, 1));
+        let v = imm((x.r * k).min(1.0), (x.g * k).min(1.0), (x.b * k).min(1.0), (x.a * k).min(1.0));
+        Ok(c.push(immutable_color_value(v)))
+    });
+    b.method("interp", |c| {
+        let (x, to, d) = (this_imm(c)?, immutable_color_arg(c, 1).ok_or_else(npe)?, f32_arg(c, 2));
+        let l = |a: f32, b: f32| (a + (b - a) * d).min(1.0);
+        let v = imm(l(x.r, to.r), l(x.g, to.g), l(x.b, to.b), l(x.a, to.a));
+        Ok(c.push(immutable_color_value(v)))
     });
 }
 
@@ -1290,6 +1492,7 @@ fn register_capability(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
 pub fn register(thread: &mut Thread, jar: Option<&pz_classfile::Jar>) {
     register_system_disabler(thread);
     register_color(thread, jar);
+    register_immutable_color(thread, jar);
     register_vector2(thread);
     register_vector3f(thread);
     register_capability(thread, jar);

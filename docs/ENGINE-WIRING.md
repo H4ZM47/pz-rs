@@ -14,6 +14,9 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       (`ClothingItem` XMLs + `BloodClothingType`; without it items made from
       Lua have no `ItemVisual`). Wired in `pz_engine::boot::load_scripts`,
       used by every client mode. Decals
+- [ ] Item assets for `instanceItem`: after the ScriptManager,
+      Lua have no `ItemVisual`). Wired in `pz_engine::boot::load_scripts`
+      (both client modes). Decals
       (`ItemVisual.getDecal`, `getAllDecalNamesForItem`) also need the meta
       population line below (`ClothingDecals`). A character simulation
       that installs its own `ItemLuaEnv` must return these assets from
@@ -40,8 +43,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `PersistentOutfits.getOutfitNames()` (not ported yet: the outfit ids in
       `zpop` records reach `RealZombies` unmapped, i.e. without
       `PersistentOutfits.getOutfit`'s variant re-roll).
-- [ ] Meta population: `install_population` with
-      `shared_population().init(fs)` (#67); popman's
+- [ ] Meta population: `bind_appearance::install_population` of a
+      `Population::init(fs)` (`ClothingDecals`, `BeardStyles`, `HairStyles`,
+      `OutfitManager`, `VoiceStyles`, `PopTemplateManager`) right after
+      `ScriptManager.Load`, in `GameWindow.initShared`'s order (#67; wired in
+      `pz_engine::boot::load_scripts`). HumanVisual's lazy hair/beard/skin
+      getters, `UI3DModel.setSurvivorDesc`/`setOutfitName` and
+      `SurvivorDesc:dressInNamedOutfit` read it. Still open: popman's
       `bind_popman::install_population` (#73).
 - [ ] World sounds: `bind_zombie::install_world_sounds` (#75).
 - [ ] States world: `bind_states::install_state_world` (#74).

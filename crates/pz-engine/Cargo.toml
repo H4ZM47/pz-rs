@@ -15,6 +15,7 @@ pz-character-model = { path = "../pz-character-model" }
 pz-model = { path = "../pz-model" }
 pz-anim.workspace = true
 pz-characters.workspace = true
+pz-inventory.workspace = true
 pz-scripts.workspace = true
 pz-inventory.workspace = true
 winit = "0.30"

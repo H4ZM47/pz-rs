@@ -11,7 +11,7 @@ use pz_inventory::io::{Reader, Writer};
 use pz_scripts::registry::{RegistryKey, ResourceLocation};
 use pz_scripts::{ScriptManager, ScriptResult};
 
-use pz_inventory::visual::human::{HumanStyles, HumanVisualOwner};
+use pz_inventory::visual::human::HumanVisualOwner;
 use pz_inventory::visual::HumanVisual;
 
 use crate::character::items::blood_part;
@@ -100,10 +100,14 @@ fn random_entry(list: &[String]) -> ScriptResult<String> {
 }
 
 impl Characters {
-    /// `Translator.getText(key)`. TODO(Translator): translation tables are
-    /// not loaded; the key is returned as for a missing translation.
+    /// `Translator.getText(key)` through the installed
+    /// [`Characters::translator`]; without one the key is returned, as for
+    /// a missing translation.
     pub fn get_text(&self, key: &str) -> String {
-        Self::translate(key)
+        match &self.translator {
+            Some(t) => t(key),
+            None => Self::translate(key),
+        }
     }
 
     /// [`Characters::get_text`] without a borrow of the statics.
@@ -225,21 +229,6 @@ impl<I> HumanVisualOwner for SurvivorDesc<I> {
     }
     fn is_skeleton(&self) -> bool {
         false
-    }
-}
-
-/// STUB [`HumanStyles`] until `HairStyles`, `BeardStyles`,
-/// `HairOutfitDefinitions`, `PopTemplateManager` and `OutfitRNG` are
-/// ported: a set hair or beard style counts as known (so the getters keep
-/// it), an unset one stays unset, and no skins, colours or draws exist.
-pub struct UnportedStyles;
-
-impl HumanStyles for UnportedStyles {
-    fn has_hair_style(&self, _female: bool, name: Option<&str>) -> bool {
-        name.is_some()
-    }
-    fn has_beard_style(&self, name: Option<&str>) -> bool {
-        name.is_some()
     }
 }
 
