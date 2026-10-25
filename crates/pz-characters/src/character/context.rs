@@ -366,6 +366,23 @@ pub trait SimContext {
     fn world_age_hours(&self) -> f64 {
         0.0
     }
+    /// `GameTime.instance.getTimeOfDay()` (9.0 in a fresh game).
+    fn time_of_day(&self) -> f32 {
+        9.0
+    }
+    /// `GameTime.instance.getMonth()` (0-based; 7 in a fresh game).
+    fn month(&self) -> i32 {
+        7
+    }
+    /// `SandboxOptions.instance.getTimeSinceApo()`.
+    fn time_since_apo(&self) -> i32 {
+        1
+    }
+    /// The animal sandbox and server options (`SandboxOptions.animal*`,
+    /// `ServerOptions.ultraSpeedDoesnotAffectToAnimals`).
+    fn animal_sandbox(&self) -> pz_animals::AnimalSandbox {
+        pz_animals::AnimalSandbox::default()
+    }
     /// `IsoPlayer.allPlayersAsleep()`.
     fn all_players_asleep(&self) -> bool {
         false

@@ -377,6 +377,20 @@ pub trait StateWorld<I> {
     fn virtualize_if_unloaded(&mut self, _chr: i32, _next_x: i32, _next_y: i32) -> bool {
         false
     }
+    /// An animal in `AnimalZoneState` walking toward an unloaded square
+    /// outside a building is virtualized
+    /// (`AnimalPopulationManager.virtualizeAnimal`, `IsoMovingObject.postupdate`);
+    /// true when that happened.
+    fn virtualize_animal_if_unloaded(&mut self, _chr: i32, _next_x: i32, _next_y: i32) -> bool {
+        false
+    }
+    /// The animal port's view of the world for the animal `chr`: the
+    /// definitions and pz-animals' `AnimalWorld` bound to that animal.
+    /// `None` (the default) leaves the animal logic out of an animal's
+    /// update; the character part still runs.
+    fn animal_host(&mut self, _chr: i32) -> Option<crate::character::animal::AnimalHost<'_>> {
+        None
+    }
     // ---- the character's animation (`pz_anim::StateAnimHooks` on the
     // world's animator and player for `chr`) ----
 

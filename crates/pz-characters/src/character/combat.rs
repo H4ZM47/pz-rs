@@ -798,6 +798,13 @@ impl<I: 'static> GameCharacter<I> {
         cx: &mut StateCx<'_, I>,
     ) -> ScriptResult {
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
+        if self.is_animal() && self.animal.is_some() {
+            // IsoAnimal.hitConsequences replaces the character's.
+            let aiming = wielder.perk_level(chars.perks.constant("Aiming").as_ref());
+            let id = self.id;
+            let mut host = cx.world.animal_host(id);
+            return self.animal_hit_consequences(wielder, aiming, ignore_damage, damage, ctx, host.as_mut());
+        }
         match self.kind {
             CharacterKind::Player | CharacterKind::Animal => {
                 let hit_reaction = wielder.get_variable_string("ZombieHitReaction");

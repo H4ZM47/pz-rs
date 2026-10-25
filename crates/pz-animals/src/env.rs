@@ -62,6 +62,24 @@ pub struct AnimalSandbox {
     pub ultra_speed_doesnot_affect_to_animals: bool,
 }
 
+impl Default for AnimalSandbox {
+    /// The options' defaults (`SandboxOptions`' `newEnumOption` /
+    /// `newBooleanOption` values, `ServerOptions`' initialiser).
+    fn default() -> Self {
+        AnimalSandbox {
+            animal_stats_modifier: 4,
+            animal_meta_stats_modifier: 4,
+            animal_pregnancy_time: 2,
+            animal_age_modifier: 3,
+            animal_milk_inc_modifier: 3,
+            animal_wool_inc_modifier: 3,
+            animal_meta_predator: false,
+            animal_mating_season: true,
+            ultra_speed_doesnot_affect_to_animals: false,
+        }
+    }
+}
+
 impl AnimalSandbox {
     /// The options by their Java names (`AnimalStatsModifier`, ...,
     /// `UltraSpeedDoesnotAffectToAnimals`), from any option store. `None`
@@ -645,6 +663,32 @@ pub trait AnimalWorld {
     fn new_animal_blocked(&mut self) -> bool {
         false
     }
+
+    // --- the live animal in the world (the character side's IsoAnimal) ---
+    /// `getVehicle().getCurrentSpeedKmHour()`, `None` outside a vehicle.
+    fn vehicle_speed_kmh(&self) -> Option<f32> {
+        None
+    }
+    /// `getSquare() != null && !getSquare().haveRoof` (rain reaches the
+    /// animal).
+    fn under_open_sky(&self) -> bool {
+        false
+    }
+    /// `getData().getAttachedPlayer().removeAttachedAnimal(this)` (the
+    /// leash), from `removeFromWorld`.
+    fn detach_from_player(&mut self) {}
+    /// `IsoAnimal.addToWorld`'s world part (the cell's object list; the
+    /// population's own bookkeeping).
+    fn added_to_world(&mut self) {}
+    /// `removeFromWorld`'s world part: the cell's remove list and object
+    /// list, the hutch's animal list and `AnimalManagerMain.removeFromWorld`.
+    fn removed_from_world(&mut self) {}
+    /// `AnimalPopulationManager.addToRecentlyRemoved(this)` (end of
+    /// `removeFromWorld`).
+    fn add_to_recently_removed(&mut self) {}
+    /// `AnimalInstanceManager.getInstance().update(this)` (the online-id
+    /// map; `IsoPlayer.updateInternal1` for an animal).
+    fn instance_manager_update(&mut self) {}
 }
 
 /// A world with nothing in it ([`AnimalWorld`]'s defaults).
