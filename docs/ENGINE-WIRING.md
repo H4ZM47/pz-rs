@@ -108,6 +108,9 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       window's key/char events are queued (#119).
 
 ## World (`GameLoadingState` / `IngameState`)
+- [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
+      provider to the zombie state machines each frame, not
+      `NullWorld`/`NoSittingObstacles` (found in the e2e run).
 World load, in the original's order (`GameLoadingState.enter` loads the
 server Lua first, so `ClimateMain.lua`'s `OnClimateManagerInit` handler is
 registered):
