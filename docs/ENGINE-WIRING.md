@@ -37,6 +37,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
 - [ ] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
+- [ ] Erosion: `ErosionMain::new(tables from jar, ErosionSettings from
+      sandbox/GameTime, sprites, None = host time zone, OnInitSeasons hook)` at
+      world load; pass `ErosionChunkHook { main, hooks: &ObjectHooks,
+      dictionary: Some(&WorldDictionary), rand, logs_per_size }` to
+      `finish_chunk_load` (it also gets `chunk_unloaded`); `main_timer(day,
+      month, year)` on GameTimes ten-minute tick; bind `bind_erosion::
+      set_instance` for Lua (#42).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
 
