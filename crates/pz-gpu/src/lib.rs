@@ -254,6 +254,8 @@ pub struct Gpu {
     white: Option<wgpu::BindGroup>,
     /// GL state carried across frames, like `GLState`.
     pub state: GlState,
+    /// `glPushAttrib`'s saved states.
+    state_stack: Vec<GlState>,
 }
 
 impl Gpu {
@@ -462,6 +464,7 @@ impl Gpu {
             samplers: HashMap::new(),
             white: None,
             state: GlState::default(),
+            state_stack: Vec::new(),
         };
         gpu.white = Some(gpu.create_texture_bind_group(1, 1, &[vec![0xFF; 4]], (true, true, false, false)));
         gpu
@@ -811,6 +814,14 @@ impl Gpu {
                         g = f.push_globals(gl);
                         (Program::Cutaway, Tex2::Texture(id))
                     }
+                    WorldShader::CutawayNoDepth { stencil, uv2 } => {
+                        for (vx, b) in v.iter_mut().zip(uv2) {
+                            vx.uv2 = *b;
+                        }
+                        let Some(sid) = stencil.id else { return };
+                        f.tex3 = Some(sid);
+                        (Program::CutawayNoDepth, Tex2::Texture(sid))
+                    }
                     WorldShader::Seam { depth, uv1, mask, uv2, front, far } => {
                         for ((vx, a), b) in v.iter_mut().zip(uv1).zip(uv2) {
                             vx.uv1 = *a;
@@ -1009,6 +1020,27 @@ impl Gpu {
                 let v = [corner(*x, *y, u0, v_top), corner(x + w, *y, u1, v_top), corner(x + w, y + h, u1, v_bottom), corner(*x, y + h, u0, v_bottom)];
                 let key = PipeKey { blend: None, ..self.key(f, Program::Screen) };
                 f.push(key, None, Tex2::Offscreen, &self.state, gi, v);
+            }
+            DrawCmd::ProjectedQuadF32 { texture, pos, uv, color, nearest } => {
+                let Some(id) = texture.id else { return };
+                let g = {
+                    let m = f.mvp;
+                    f.mvp = IDENTITY;
+                    let mm = f.mvp_for_target();
+                    f.mvp = m;
+                    f.globals(&self.state, mm, 0.5)
+                };
+                // The float colour rides in uv1/uv2, which the
+                // `ProjectedF32` vertex layout reads as one vec4.
+                let v: [Vertex; 4] = std::array::from_fn(|i| Vertex { pos: [pos[i][0], pos[i][1]], uv: uv[i], color: 0, uv1: [color[0], color[1]], uv2: [color[2], color[3]], depth: [pos[i][2], 0.0] });
+                let key = self.key(f, Program::ProjectedF32);
+                f.push(key, Some(id), if *nearest { Tex2::Nearest } else { Tex2::None }, &self.state, g, v);
+            }
+            DrawCmd::PushAttrib => self.state_stack.push(self.state.clone()),
+            DrawCmd::PopAttrib => {
+                if let Some(s) = self.state_stack.pop() {
+                    self.state = s;
+                }
             }
             other => self.state.apply(other),
         }

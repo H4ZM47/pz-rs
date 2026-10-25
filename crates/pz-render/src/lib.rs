@@ -233,6 +233,16 @@ pub enum DrawCmd {
     /// Texels with alpha below 0.01 are discarded; `nearest` forces
     /// `GL_NEAREST` sampling (`setMinMagFilters`).
     ProjectedQuad { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32, nearest: bool },
+    /// [`DrawCmd::ProjectedQuad`] with a float colour, as `VBORenderer`'s
+    /// `formatPositionColorUv` carries it (`WeatherParticleDrawer`): faint
+    /// colours are not rounded to 8 bits before the texel is multiplied.
+    ProjectedQuadF32 { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: [f32; 4], nearest: bool },
+    /// `glPushAttrib(GL_ALL_ATTRIB_BITS)`: the fixed-function state
+    /// (blending, alpha, depth, stencil, colour mask, scissor) saved.
+    PushAttrib,
+    /// `glPopAttrib()`: the state saved by the matching
+    /// [`DrawCmd::PushAttrib`] restored.
+    PopAttrib,
     /// A 3D model draw (`basicEffect`), depth-tested against the world.
     Model(Box<model::ModelDraw>),
     /// An `IsoWater`/`IsoPuddles` vertex-buffer draw (`ModelManager.RenderWater`,
@@ -425,6 +435,12 @@ pub enum WorldShader {
     /// window-frame outlines), the stencil's channels shape alpha and add
     /// the edge highlight, and depth comes from `depth`.
     Cutaway { depth: Texture, uv1: [[f32; 2]; 4], stencil: Texture, uv2: [[f32; 2]; 4], front: f32, far: f32, discard_value: f32 },
+    /// `CutawayNoDepth` (`DoCutawayShaderSprite`, the weather mask's
+    /// walls): texels where the stencil (texture coordinates `uv2`) has
+    /// green or blue are discarded, the rest multiplied by the vertex
+    /// colour's rgb and the stencil's `rrra`, with the same edge terms as
+    /// `CircleStencil`; no depth is written.
+    CutawayNoDepth { stencil: Texture, uv2: [[f32; 2]; 4] },
 }
 
 #[derive(Default)]

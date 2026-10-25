@@ -52,8 +52,10 @@ Status of the Rust port. Update this file with every merged change.
   (mask and particle render textures in `pz-gpu`, `fogCircle` shader).
   Particle state and drawer quads over 600-900 frames match the original
   bit for bit but for last-ulp rain rotations; `RasterizeBounds` and
-  `Rasterize.scanTriangle` match exactly (checked locally). Mask walls are
-  drawn without cutaways and characters are not in the mask yet.
+  `Rasterize.scanTriangle` match exactly (checked locally). Mask walls go
+  through `CutawayNoDepth` with the player's cutaway flags, particles
+  carry float colours, and characters reach the mask through an
+  `FxMaskWorld` hook that nothing fills until the character pass lands.
 - World save files: `map_t.bin` (`GameTime` + climate, in `pz-core`),
   `map_meta.bin` (room/building state, safehouses, factions, designation
   zones, stashes), `map_zone.bin` and `gos_*.bin` (global-object systems)

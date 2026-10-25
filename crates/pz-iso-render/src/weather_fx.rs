@@ -16,7 +16,7 @@
 
 use pz_core::random::Rand;
 use pz_core::weather::ClimateRenderValues;
-use pz_render::{color_to_abgr, DrawCmd, Rgba, Texture};
+use pz_render::{DrawCmd, Rgba, Texture};
 
 /// `SteppedUpdateFloat`: a value that moves towards its target by a fixed
 /// step per update tick.
@@ -604,12 +604,14 @@ impl WeatherParticleDrawer {
     }
 
     /// `endFrame()` then the drawer's `render()`: the quads through the
-    /// `vboRenderer_PositionColorUV` shader with the alpha test off, in a
-    /// view of `width` x `height` units (`ortho2D(0, w, h, 0)`).
+    /// `vboRenderer_PositionColorUV` shader with float colours, the alpha
+    /// test off between `glPushAttrib` and `glPopAttrib`, in a view of
+    /// `width` x `height` units (`ortho2D(0, w, h, 0)`).
     pub fn end_frame(&self, width: f32, height: f32, out: &mut Vec<DrawCmd>) {
         if self.is_empty() {
             return;
         }
+        out.push(DrawCmd::PushAttrib);
         out.push(DrawCmd::GlDisable(pz_render::gl::ALPHA_TEST));
         for (tex, quads) in self.textures.iter().zip(&self.by_texture) {
             // A missing texture would have thrown in the original.
@@ -624,16 +626,16 @@ impl WeatherParticleDrawer {
                 let pos = std::array::from_fn(|i| {
                     [2.0 * q.x[i] / width - 1.0, 1.0 - 2.0 * q.y[i] / height, 0.5]
                 });
-                let [r, g, b, a] = q.rgba;
-                out.push(DrawCmd::ProjectedQuad {
+                out.push(DrawCmd::ProjectedQuadF32 {
                     texture: t.clone(),
                     pos,
                     uv,
-                    color: color_to_abgr(r, g, b, a),
+                    color: q.rgba,
                     nearest: false,
                 });
             }
         }
+        out.push(DrawCmd::PopAttrib);
     }
 }
 
@@ -1394,7 +1396,7 @@ mod tests {
         let projected: Vec<_> = out
             .iter()
             .filter_map(|c| {
-                if let DrawCmd::ProjectedQuad { pos, texture, .. } = c {
+                if let DrawCmd::ProjectedQuadF32 { pos, texture, .. } = c {
                     Some((pos, texture))
                 } else {
                     None

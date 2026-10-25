@@ -35,6 +35,11 @@ pub enum Program {
     Seam,
     /// `CircleStencil` (cut-away walls).
     Cutaway,
+    /// `CutawayNoDepth` (`DoCutawayShaderSprite`, the weather mask's walls).
+    CutawayNoDepth,
+    /// `vboRenderer_PositionColorUV` with float vertex colours
+    /// ([`pz_render::DrawCmd::ProjectedQuadF32`]).
+    ProjectedF32,
     /// `water`/`water_hq`/`puddles_*` (`IsoWater`, `IsoPuddles`).
     Surface(pz_render::SurfaceProgram),
     /// `fogCircle` (`IsoWeatherFX.renderFogCircle`).
@@ -43,7 +48,7 @@ pub enum Program {
 
 impl Program {
     pub fn uses_world_shader(self) -> bool {
-        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::Seam | Program::Cutaway | Program::Surface(_))
+        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::Seam | Program::Cutaway | Program::CutawayNoDepth | Program::ProjectedF32 | Program::Surface(_))
     }
 }
 
@@ -268,9 +273,9 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
     let (module, layout) = match key.program {
         Program::TileDepth | Program::OpaqueDepth => (&programs.world_tile, &programs.tile_layout),
         Program::Composite => (&programs.world_composite, &programs.composite_layout),
-        Program::Seam | Program::Cutaway => (&programs.world_tile, &programs.seam_layout),
+        Program::Seam | Program::Cutaway | Program::CutawayNoDepth => (&programs.world_tile, &programs.seam_layout),
         Program::Surface(_) => (&programs.surface, &programs.seam_layout),
-        Program::WorldDefault | Program::Projected => (&programs.world_tile, &programs.sprite_layout),
+        Program::WorldDefault | Program::Projected | Program::ProjectedF32 => (&programs.world_tile, &programs.sprite_layout),
         Program::Default | Program::Clear | Program::FogCircle => (&programs.sprite, &programs.sprite_layout),
         Program::Screen => (&programs.screen, &programs.sprite_layout),
     };
@@ -286,6 +291,8 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::Projected => ("vs_world", "fs_projected"),
         Program::Seam => ("vs_world", "fs_seam"),
         Program::Cutaway => ("vs_world", "fs_cutaway"),
+        Program::CutawayNoDepth => ("vs_world", "fs_cutaway_nodepth"),
+        Program::ProjectedF32 => ("vs_world", "fs_projected"),
         Program::Surface(p) => (
             "vs_surface",
             match p {
@@ -297,7 +304,19 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
             },
         ),
     };
-    let attributes: &[wgpu::VertexAttribute] = if world {
+    // ProjectedF32 reads its float colour from the uv1/uv2 slots (offset
+    // 20, after pos, uv and the packed colour).
+    let f32_colour = [
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 0 },
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 8, shader_location: 1 },
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 20, shader_location: 2 },
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 20, shader_location: 3 },
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 28, shader_location: 4 },
+        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 36, shader_location: 5 },
+    ];
+    let attributes: &[wgpu::VertexAttribute] = if key.program == Program::ProjectedF32 {
+        &f32_colour
+    } else if world {
         &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x2]
     } else {
         &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4]

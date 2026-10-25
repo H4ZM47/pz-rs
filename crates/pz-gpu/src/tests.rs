@@ -369,3 +369,77 @@ fn fog_circle_uses_its_own_projection() {
     assert_eq!(px(&p, 16, 4, 4), [0, 0, 0, 255]);
     assert!(near_rgb(px(&p, 16, 12, 4), [127, 127, 127]), "{:?}", px(&p, 16, 12, 4));
 }
+
+/// `CutawayNoDepth` drops the texels the stencil marks with blue (the cut
+/// part of a `wallcutaways` cell), keeps the rest times the vertex
+/// colour, and draws into a weather texture without depth.
+#[test]
+fn cutaway_no_depth_cuts_by_the_stencil() {
+    let Some(mut g) = gpu(8, 4) else { return };
+    let mut tm = TextureManager::new();
+    let nearest = pz_render::flags::FILTER_MIN_NEAREST | pz_render::flags::FILTER_MAG_NEAREST;
+    let wall = tm.texture_from_pixels("wall", 4, 4, [255, 255, 255, 255].repeat(16), nearest);
+    // Stencil: kept (red) on the left, cut (blue, transparent) on the right.
+    let mut spx = Vec::new();
+    for _ in 0..4 {
+        spx.extend([255, 0, 0, 255].repeat(2));
+        spx.extend([0, 0, 255, 0].repeat(2));
+    }
+    let stencil = tm.texture_from_pixels("stencil", 4, 4, spx, nearest);
+    let mut q = DrawList::default();
+    q.render(Some(&wall), 0.0, 0.0, 8.0, 4.0, Rgba(0.5, 1.0, 1.0, 1.0));
+    let DrawCmd::Sprite(s) = q.cmds.pop().unwrap() else { unreachable!() };
+    let uv2 = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::WeatherFxBegin { index: 0, width: 8, height: 4 });
+    dl.cmds.push(DrawCmd::Ortho { left: 0.0, right: 8.0, bottom: 4.0, top: 0.0, width: 8, height: 4 });
+    dl.cmds.push(DrawCmd::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
+    dl.cmds.push(DrawCmd::WorldSprite(s, WorldShader::CutawayNoDepth { stencil: stencil.clone(), uv2 }));
+    dl.cmds.push(DrawCmd::WeatherFxEnd);
+    dl.render_uv(Some(&pz_render::weather_fx_texture(0, 8, 4)), 0.0, 0.0, 8.0, 4.0, Rgba(1.0, 1.0, 1.0, 1.0), [0.0, 1.0, 1.0, 0.0], [1.0, 1.0, 0.0, 0.0]);
+    g.render_frame(&[(opaque_black(8, 4), &dl)], &mut tm);
+    let p = g.read_pixels();
+    assert!(near_rgb(px(&p, 8, 1, 1), [127, 255, 255]), "{:?}", px(&p, 8, 1, 1));
+    assert_eq!(px(&p, 8, 6, 2), [0, 0, 0, 255]);
+}
+
+/// Float vertex colours (`VBORenderer`'s `formatPositionColorUv`) keep a
+/// colour too faint for a byte: 0.0035 is 0 packed, but lands as 1/255 in
+/// the target when the float reaches the fragment.
+#[test]
+fn float_colour_quads_keep_faint_colours() {
+    let Some(mut g) = gpu(8, 4) else { return };
+    let mut tm = TextureManager::new();
+    let white = tm.white();
+    let pos = |x0: f32, x1: f32| [[x0, 1.0, 0.5], [x1, 1.0, 0.5], [x1, -1.0, 0.5], [x0, -1.0, 0.5]];
+    let uv = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let c = 0.0035;
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::BlendFunc(gl::ONE, gl::ONE));
+    dl.cmds.push(DrawCmd::ProjectedQuad { texture: white.clone(), pos: pos(-1.0, 0.0), uv, color: pz_render::color_to_abgr(c, c, c, 1.0), nearest: true });
+    dl.cmds.push(DrawCmd::ProjectedQuadF32 { texture: white, pos: pos(0.0, 1.0), uv, color: [c, c, c, 1.0], nearest: true });
+    g.render_frame(&[(opaque_black(8, 4), &dl)], &mut tm);
+    let p = g.read_pixels();
+    let (packed, float) = (px(&p, 8, 1, 2)[0], px(&p, 8, 6, 2)[0]);
+    assert_eq!(packed, 0);
+    assert!(float > packed, "{float}");
+}
+
+/// `glPushAttrib`/`glPopAttrib` save and restore the fixed-function state.
+#[test]
+fn push_and_pop_attrib_restore_the_state() {
+    let Some(mut g) = gpu(4, 4) else { return };
+    let mut tm = TextureManager::new();
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::GlEnable(gl::ALPHA_TEST));
+    dl.cmds.push(DrawCmd::AlphaFunc(gl::GREATER, 0.02));
+    dl.cmds.push(DrawCmd::PushAttrib);
+    dl.cmds.push(DrawCmd::GlDisable(gl::ALPHA_TEST));
+    dl.cmds.push(DrawCmd::AlphaFunc(gl::ALWAYS, 0.0));
+    dl.cmds.push(DrawCmd::BlendFunc(gl::ONE, gl::ONE));
+    dl.cmds.push(DrawCmd::PopAttrib);
+    g.render_frame(&[(opaque_black(4, 4), &dl)], &mut tm);
+    assert!(g.state.alpha_test);
+    assert_eq!((g.state.alpha_func, g.state.alpha_ref), (gl::GREATER, 0.02));
+    assert_eq!(g.state.blend_func[..2], [gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA]);
+}

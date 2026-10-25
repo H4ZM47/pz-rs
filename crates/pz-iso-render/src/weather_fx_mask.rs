@@ -9,7 +9,11 @@
 //! (`renderFxMask`) the mask is drawn into one screen-sized texture
 //! (`fboMask`): floor and wall stand-in sprites blended in, walls of the
 //! squares outside the building cut back out (`glBlendFunc(0, 0)` with a
-//! reverse-subtract equation). Every weather layer is then drawn into a
+//! reverse-subtract equation). Wall stand-ins and cut walls among the
+//! objects go through `DoCutawayShaderSprite` (`CutawayNoDepth`), so the
+//! walls the player's cutaway opens drop out of the mask as they do from
+//! the world; characters on the edge squares are drawn in through
+//! [`FxMaskWorld::render_characters`]. Every weather layer is then drawn into a
 //! second texture (`fboParticles`), the mask subtracted from it, and the
 //! result blended over the world. Outside, the layers are drawn straight
 //! into the world (`IsoWeatherFX.render`).
@@ -63,10 +67,28 @@ pub trait FxMaskWorld {
     fn region_neighbors(&self, _r: RegionId) -> Vec<RegionId> {
         Vec::new()
     }
+    /// `getPlayerCutawayFlag(playerIndex, now)`: the square's cutaway
+    /// flags (`CUTAWAY_N` 1, `CUTAWAY_W` 2), as
+    /// [`crate::cutaways::CutawayState::cutaway_flags`] holds them. The mask
+    /// cuts its walls with them; none by default.
+    fn cutaway_flags(&self, _x: i32, _y: i32, _z: i32) -> u8 {
+        0
+    }
     /// `IsoGridSquare.renderCharacters(maxZ, false, false)` into the mask:
-    /// the square's characters drawn in white. The renderer has no
-    /// characters, so nothing by default.
-    fn render_characters(&self, _sq: &RenderSquare, _max_z: i32, _out: &mut Vec<DrawCmd>) {}
+    /// the draws the world pass makes for the square's characters, in the
+    /// same order, made again into the mask texture (projection
+    /// [`WeatherFxView`]'s offscreen size, depth test off). The original
+    /// calls each moving object's ordinary `render` (static moving objects
+    /// other than corpses off stairs, then moving objects not lying on the
+    /// floor), so a character's lit model or sprite, not a white
+    /// silhouette, lands in the mask and keeps the weather off it. With
+    /// #79's frame objects this is the `draws` of the square's
+    /// `ObjectRender`s (without their shadows). Blend function changes in
+    /// what is pushed are dropped (`SpriteRenderer.glBlendfuncEnabled` is
+    /// off while the mask draws); `maxZ` is the square's level + 1, so the
+    /// level check never skips. The renderer has no characters here, so
+    /// nothing by default.
+    fn render_characters(&self, _sq: &RenderSquare, _view: &WeatherFxView, _out: &mut Vec<DrawCmd>) {}
 }
 
 /// The player `PlayerFxMask.initMask` reads.
@@ -617,6 +639,15 @@ pub struct FxMaskSprites {
     pub wall_nw: Option<Rc<SpriteInfo>>,
     pub wall_se: Option<Rc<SpriteInfo>>,
     pub white: Option<Texture>,
+    /// `media/wallcutaways.png` (flags 3), the `CutawayNoDepth` stencil.
+    /// Without it no wall is drawn into the mask, as in the original.
+    pub wall_cutaways: Option<Texture>,
+    /// The `WWall`, `NWWall` and `SEWall` depth presets
+    /// (`setCutawayTexture2`): only their extents matter, clipping the
+    /// wall quads.
+    pub depth_w: Option<Texture>,
+    pub depth_nw: Option<Texture>,
+    pub depth_se: Option<Texture>,
 }
 
 impl FxMaskSprites {
@@ -629,6 +660,17 @@ impl FxMaskSprites {
         "walls_interior_house_01_23",
     ];
     pub const WHITE: &'static str = "media/textures/weather/fogwhite.png";
+
+    /// The cutaway stencil and wall depth presets from the world's depth
+    /// maps.
+    pub fn with_depth_maps(mut self, maps: &dyn crate::world::DepthMaps) -> Self {
+        use crate::world::DepthPreset;
+        self.wall_cutaways = maps.cutaway_stencil(0);
+        self.depth_w = maps.preset(DepthPreset::WWall);
+        self.depth_nw = maps.preset(DepthPreset::NWWall);
+        self.depth_se = maps.preset(DepthPreset::SEWall);
+        self
+    }
 }
 
 /// The frame values `renderFxMask` reads beyond the view.
@@ -661,12 +703,14 @@ impl Default for FxMaskFrame {
     }
 }
 
-/// `IsoSprite.render(null|obj, x, y, z, ...)` while the mask renders: the
-/// old placement (no chunk texture), the quad snapped outwards to whole
-/// pixels, no depth.
+/// `IsoSprite.render(null|obj, x, y, z, ...)` up to `Texture.render`
+/// while the mask renders: the old placement (no chunk texture), the
+/// quad's left, top, width and height before `SpriteRenderer.render`
+/// snaps it.
 #[allow(clippy::too_many_arguments)]
-fn mask_sprite(
+fn mask_sprite_rect(
     sprite: &SpriteInfo,
+    tex: &Texture,
     x: f32,
     y: f32,
     z: f32,
@@ -674,11 +718,7 @@ fn mask_sprite(
     offset_y: f32,
     view: &WeatherFxView,
     f: &FxMaskFrame,
-    out: &mut Vec<DrawCmd>,
-) {
-    let Some(tex) = sprite.texture.as_ref() else {
-        return;
-    };
+) -> [f32; 4] {
     let mut sx = x_to_screen(x, y) - offset_x - view.off_x + sprite.soff_x as f32;
     let mut sy = y_to_screen(x, y, z, 0) - offset_y - view.off_y + sprite.soff_y as f32;
     sx += f.fix_jiggly[0] * view.zoom;
@@ -695,9 +735,29 @@ fn mask_sprite(
         sy += tex.offset_y * (scale - 1.0);
         h *= scale;
     }
-    // Texture.render adds the trim offset; SpriteRenderer.render snaps
-    // while the mask renders.
-    let (px, py) = (sx + tex.offset_x, sy + tex.offset_y);
+    // Texture.render adds the trim offset.
+    [sx + tex.offset_x, sy + tex.offset_y, w, h]
+}
+
+/// `IsoSprite.render(null|obj, x, y, z, ...)` while the mask renders: the
+/// quad snapped outwards to whole pixels (`SpriteRenderer.render` while
+/// `isRenderingMask`), no depth.
+#[allow(clippy::too_many_arguments)]
+fn mask_sprite(
+    sprite: &SpriteInfo,
+    x: f32,
+    y: f32,
+    z: f32,
+    offset_x: f32,
+    offset_y: f32,
+    view: &WeatherFxView,
+    f: &FxMaskFrame,
+    out: &mut Vec<DrawCmd>,
+) {
+    let Some(tex) = sprite.texture.as_ref() else {
+        return;
+    };
+    let [px, py, w, h] = mask_sprite_rect(sprite, tex, x, y, z, offset_x, offset_y, view, f);
     let (x1, y1) = (px.floor(), py.floor());
     let (x2, y2) = ((px + w).ceil(), (py + h).ceil());
     let mut dl = DrawList::default();
@@ -712,6 +772,156 @@ fn mask_sprite(
     out.extend(dl.cmds);
 }
 
+/// The wall direction `DoCutawayShaderSprite` is called with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaskWallDir {
+    N,
+    W,
+    NW,
+    SE,
+}
+
+/// `DoCutawayShaderSprite`'s per-sprite x shift of the stencil cell.
+fn cutaway_sprite_x_offset(name: &str) -> i32 {
+    let id = || name.rsplit('_').next().and_then(|n| n.parse::<i32>().ok());
+    if name.contains("fencing_01_11") || name.contains("carpentry_02_80") {
+        1
+    } else if name.contains("spiffos_01_71") {
+        -24
+    } else if name.contains("location_community_medical") {
+        match id() {
+            Some(45..=47 | 147..=149) => -3,
+            _ => 0,
+        }
+    } else if name.contains("walls_exterior_roofs") {
+        match id() {
+            Some(4) => -60,
+            Some(17) => -46,
+            Some(28) if !name.contains("03") => -60,
+            Some(41) => -46,
+            _ => 0,
+        }
+    } else {
+        0
+    }
+}
+
+/// `IsoGridSquare.DoCutawayShaderSprite(sprite, dir, ...)`: `sprite` drawn
+/// at the square with the mask's offsets and `CutawayNoDepth`, cut by
+/// `media/wallcutaways.png` where the player's cutaway flags open the
+/// wall, coloured by the square's vertex lights (`WallShaperWhole`).
+#[allow(clippy::too_many_arguments)]
+pub fn do_cutaway_shader_sprite(
+    world: &dyn FxMaskWorld,
+    s: &FxMaskSprites,
+    sq: &RenderSquare,
+    sprite: &SpriteInfo,
+    dir: MaskWallDir,
+    view: &WeatherFxView,
+    f: &FxMaskFrame,
+    out: &mut Vec<DrawCmd>,
+) {
+    use crate::cell::has_cutaway_capable_wall as capable;
+    use crate::sprite::WallTexRender;
+    let Some(stencil) = s.wall_cutaways.as_ref().filter(|t| t.id.is_some()) else {
+        return;
+    };
+    let Some(tex) = sprite.texture.as_ref() else {
+        return;
+    };
+    let (x, y, z) = (sq.x, sq.y, sq.z);
+    let flags = |dx: i32, dy: i32| {
+        if world.square(x + dx, y + dy, z).is_some() {
+            world.cutaway_flags(x + dx, y + dy, z)
+        } else {
+            0
+        }
+    };
+    let (c_self, c_n, c_s, c_w, c_e) = (flags(0, 0), flags(0, -1), flags(0, 1), flags(-1, 0), flags(1, 0));
+    let at = |dx: i32, dy: i32| world.square(x + dx, y + dy, z);
+    let (sq_n, sq_s, sq_w, sq_e) = (at(0, -1), at(0, 1), at(-1, 0), at(1, 0));
+    let tile_scale = 2 / TILE_SCALE;
+    let x_offset = cutaway_sprite_x_offset(&sprite.name);
+    let trim_y = tex.offset_y as i32;
+    let wall_se = sprite.flags.wall_se;
+    let mut w_offset = 0;
+    let mut h_offset = 226 - tex.height as i32 * tile_scale;
+    if dir != MaskWallDir::NW {
+        w_offset = 66 - tex.width as i32 * tile_scale;
+    }
+    if wall_se {
+        w_offset = 6 - tex.width as i32 * tile_scale;
+        h_offset = 196 - tex.height as i32 * tile_scale;
+    }
+    let se_region = |sex: i32| [sex + x_offset, trim_y, 6 - w_offset, 196 - h_offset];
+    let v = &sq.vert_lights;
+    // The snapped draw position, less the trim offset (the cutaway branch
+    // of GenericSpriteRenderState.render ignores the width).
+    let [px, py, _, _] = mask_sprite_rect(sprite, tex, x as f32, y as f32, z as f32, offset_x(), offset_y(), view, f);
+    let (left, top) = (px.floor() - tex.offset_x, py.floor() - tex.offset_y);
+    let mut draw = |region: [i32; 4], depth: Option<&Texture>, tex_render: WallTexRender, col: [u32; 4]| {
+        let q = crate::sprite::cutaway_quad(tex, stencil, region, depth, tex_render, left, top, 0xFFFF_FFFF);
+        let mut d = crate::texd::TexDraw { sprite: q.sprite, tex1: None, uv1: [[0.0; 2]; 4], tex2: None, uv2: [[0.0; 2]; 4] };
+        crate::texd::WallShaper { col, tint: 0, part: crate::texd::WallPart::Whole }.accept(&mut d);
+        out.push(DrawCmd::WorldSprite(
+            d.sprite,
+            pz_render::WorldShader::CutawayNoDepth { stencil: stencil.clone(), uv2: q.uv_stencil },
+        ));
+    };
+    if matches!(dir, MaskWallDir::N | MaskWallDir::NW) {
+        let mut nx = 700;
+        let sex;
+        if c_self & 1 == 0 {
+            nx = 828;
+            sex = 1212;
+        } else {
+            sex = 1212;
+            if c_e & 1 == 0 && capable(sq_e, true) {
+                nx = 444;
+            }
+            if (c_w & 1 == 0 && capable(sq_w, true)) || (c_n & 2 == 0 && capable(sq_n, false)) {
+                nx = 956;
+            }
+        }
+        let region = if wall_se { se_region(sex) } else { [nx + x_offset, trim_y, 66 - w_offset, 226 - h_offset] };
+        let tr = if dir == MaskWallDir::N { WallTexRender::All } else { WallTexRender::RightOnly };
+        draw(region, None, tr, [v[4], v[5], v[1], v[0]]);
+    }
+    if matches!(dir, MaskWallDir::W | MaskWallDir::NW) {
+        let mut wx = 512;
+        let mut sex = 1084;
+        if c_self & 2 == 0 {
+            wx = 896;
+            sex = 1212;
+        } else if c_s & 2 != 0 {
+            if (c_n & 2 == 0 && capable(sq_n, false)) || (c_w & 1 == 0 && capable(sq_w, true)) {
+                wx = 768;
+                sex = 1212;
+            }
+        } else if c_n & 2 == 0 && capable(sq_n, false) {
+            wx = 768;
+        } else if capable(sq_s, false) {
+            wx = 256;
+        }
+        let region = if wall_se { se_region(sex) } else { [wx + x_offset, trim_y, 66 - w_offset, 226 - h_offset] };
+        // setCutawayTexture2: the W or NW preset, SEWall for a
+        // south-east sprite.
+        let depth = if wall_se {
+            s.depth_se.as_ref()
+        } else if dir == MaskWallDir::W {
+            s.depth_w.as_ref()
+        } else {
+            s.depth_nw.as_ref()
+        };
+        let tr = if dir == MaskWallDir::W { WallTexRender::All } else { WallTexRender::LeftOnly };
+        draw(region, depth, tr, [v[7], v[4], v[0], v[3]]);
+    }
+    if dir == MaskWallDir::SE {
+        let sex = if (c_w & 1 == 0 && capable(sq_w, true)) || (c_n & 2 == 0 && capable(sq_n, false)) { 1212 } else { 1084 };
+        draw(se_region(sex), s.depth_se.as_ref(), WallTexRender::All, [v[7], v[4], v[0], v[3]]);
+    }
+}
+
 fn offset_x() -> f32 {
     (32 * TILE_SCALE) as f32
 }
@@ -720,35 +930,27 @@ fn offset_y() -> f32 {
     (96 * TILE_SCALE) as f32
 }
 
-/// `renderMaskWall`/`renderMaskWallNoCuts`: the wall stand-in for the
-/// sides given.
+/// `renderMaskWall`: the wall stand-in for the sides given, cut like the
+/// square's walls.
+#[allow(clippy::too_many_arguments)]
 fn mask_wall(
+    world: &dyn FxMaskWorld,
     s: &FxMaskSprites,
-    m: &FxMask,
+    sq: &RenderSquare,
     n: bool,
     w: bool,
     view: &WeatherFxView,
     f: &FxMaskFrame,
     out: &mut Vec<DrawCmd>,
 ) {
-    let sprite = match (n, w) {
-        (true, true) => &s.wall_nw,
-        (true, false) => &s.wall_n,
-        (false, true) => &s.wall_w,
-        _ => &s.wall_se,
+    let (sprite, dir) = match (n, w) {
+        (true, true) => (&s.wall_nw, MaskWallDir::NW),
+        (true, false) => (&s.wall_n, MaskWallDir::N),
+        (false, true) => (&s.wall_w, MaskWallDir::W),
+        _ => (&s.wall_se, MaskWallDir::SE),
     };
     if let Some(sp) = sprite {
-        mask_sprite(
-            sp,
-            m.x as f32,
-            m.y as f32,
-            m.z as f32,
-            offset_x(),
-            offset_y(),
-            view,
-            f,
-            out,
-        );
+        do_cutaway_shader_sprite(world, s, sq, sp, dir, view, f, out);
     }
 }
 
@@ -772,7 +974,10 @@ fn object_fx_mask(
 
 /// `IsoGridSquare.RenderMinusFloorFxMask(maxZ, false, false)`: the
 /// square's objects other than floors and south/east wall attachments.
+#[allow(clippy::too_many_arguments)]
 fn render_minus_floor_fx_mask(
+    world: &dyn FxMaskWorld,
+    s: &FxMaskSprites,
     sq: &RenderSquare,
     max_z: i32,
     cam_z: f32,
@@ -798,9 +1003,18 @@ fn render_minus_floor_fx_mask(
             doit = false;
         }
         if doit {
-            // Walls cut away near the player go through DoCutawayShaderSprite
-            // in the original; here they are drawn whole.
-            object_fx_mask(obj, sq, view, f, out);
+            if sp.cut_n || sp.cut_w {
+                // Walls go through DoCutawayShaderSprite: the sprite alone
+                // (no overlay), at the mask's offsets.
+                let dir = match (sp.cut_n, sp.cut_w) {
+                    (true, true) => MaskWallDir::NW,
+                    (true, false) => MaskWallDir::N,
+                    _ => MaskWallDir::W,
+                };
+                do_cutaway_shader_sprite(world, s, sq, sp, dir, view, f, out);
+            } else {
+                object_fx_mask(obj, sq, view, f, out);
+            }
         }
     }
 }
@@ -862,8 +1076,14 @@ pub fn draw_fx_mask(
     out: &mut Vec<DrawCmd>,
 ) {
     begin_fx(0, view, out);
-    // IsoCell.drawStencilMask leaves the alpha test on, passing everything;
-    // its stencil marks nothing the mask draws read.
+    // IsoCell.drawStencilMask: clears depth and stencil, then writes
+    // stencil 128 under media/mask_transparency_player.png (and the
+    // cursor mask while aiming) with colour writes off, leaving the
+    // stencil test on with GL_ALWAYS / GL_KEEP and the alpha test on with
+    // GL_ALWAYS. Nothing the mask, the particles or the composites draw
+    // tests the stencil (their func stays GL_ALWAYS) and the colour mask
+    // was off, so only the alpha state reaches the output: that is what
+    // is kept here.
     out.push(DrawCmd::GlEnable(gl::ALPHA_TEST));
     out.push(DrawCmd::AlphaFunc(gl::ALWAYS, 0.0));
     out.push(DrawCmd::DepthMask(false));
@@ -880,8 +1100,8 @@ pub fn draw_fx_mask(
             out.push(DrawCmd::BlendEquation(gl::FUNC_REVERSE_SUBTRACT));
             out.push(DrawCmd::GlEnable(gl::ALPHA_TEST));
             out.push(DrawCmd::AlphaFunc(gl::GREATER, 0.02));
-            if gs.is_some() {
-                mask_wall(sprites, m, wn, ww, view, f, out);
+            if let Some(sq) = gs {
+                mask_wall(world, sprites, sq, wn, ww, view, f, out);
             }
             out.push(DrawCmd::BlendEquation(gl::FUNC_ADD));
             if let (true, Some(sq)) = (m.flags & BIT_DOOR != 0, gs) {
@@ -906,18 +1126,23 @@ pub fn draw_fx_mask(
         }
         let objects = m.flags & BIT_OBJECTS != 0;
         let chars = m.flags & BIT_CHARS != 0;
-        if !objects && gs.is_some() {
+        if let (false, Some(sq)) = (objects, gs) {
             if wn || ww {
-                mask_wall(sprites, m, wn, ww, view, f, out);
+                mask_wall(world, sprites, sq, wn, ww, view, f, out);
             } else if m.flags & BIT_WALL_SE != 0 {
-                mask_wall(sprites, m, false, false, view, f, out);
+                mask_wall(world, sprites, sq, false, false, view, f, out);
             }
         }
         if let (true, Some(sq)) = (objects, gs) {
-            render_minus_floor_fx_mask(sq, m.z + 1, f.cam_character_z, view, f, out);
+            render_minus_floor_fx_mask(world, sprites, sq, m.z + 1, f.cam_character_z, view, f, out);
         }
         if let (true, Some(sq)) = (chars, gs) {
-            world.render_characters(sq, m.z + 1, out);
+            // renderCharacters(z + 1, ..) never skips the square's level.
+            let mut chars = Vec::new();
+            world.render_characters(sq, view, &mut chars);
+            out.extend(chars.into_iter().filter(|c| {
+                !matches!(c, DrawCmd::BlendFunc(..) | DrawCmd::BlendFuncSeparate(..) | DrawCmd::SetBlend(_))
+            }));
             out.push(DrawCmd::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
         }
     }
@@ -970,10 +1195,9 @@ pub fn draw_fx_layered(
         );
         out.extend(dl.cmds);
     } else {
-        fx.render_layered(clouds, fog, precip, view, out);
         // The particle drawer pushes and pops the GL state around its
-        // draw: the alpha test the mask pass left on comes back.
-        out.push(DrawCmd::GlEnable(gl::ALPHA_TEST));
+        // draw, so the alpha test the mask pass left on comes back.
+        fx.render_layered(clouds, fog, precip, view, out);
     }
     let fbo_w = sw.max(1) as f32;
     let fbo_h = sh.max(1) as f32;
@@ -1058,9 +1282,12 @@ pub fn render_weather_fx(
     if view.render_precipitation == 1 && fx.has_precipitation_to_render() {
         draw_fx_layered(fx, mask, sprites, false, false, true, view, f, out);
     }
-    // The original leaves the mask's alpha test on for whatever follows;
-    // the world pass here expects it off.
-    out.push(DrawCmd::GlDisable(gl::ALPHA_TEST));
+    // As in the original, the alpha test stays on (drawStencilMask enabled
+    // it; the particle drawer restores it): GREATER 0 from the last
+    // glDoStartFrameFx, or the mask's own func when no layer drew. What
+    // follows in IsoWorld.render (area highlights, LineDrawer, the sky
+    // into its own targets) sets its own state, and the screen pass
+    // ignores it.
 }
 
 #[cfg(test)]
@@ -1322,5 +1549,102 @@ mod tests {
         assert!(!out
             .iter()
             .any(|c| matches!(c, DrawCmd::WeatherFxBegin { .. })));
+    }
+
+    /// The room with cutaway flags and a character on one square.
+    struct CutRoom {
+        room: Room,
+        flags: HashMap<(i32, i32), u8>,
+    }
+
+    impl FxMaskWorld for CutRoom {
+        fn square(&self, x: i32, y: i32, z: i32) -> Option<&RenderSquare> {
+            self.room.square(x, y, z)
+        }
+        fn cutaway_flags(&self, x: i32, y: i32, _z: i32) -> u8 {
+            self.flags.get(&(x, y)).copied().unwrap_or(0)
+        }
+        fn render_characters(&self, sq: &RenderSquare, _view: &WeatherFxView, out: &mut Vec<DrawCmd>) {
+            if (sq.x, sq.y) == (12, 10) {
+                out.push(DrawCmd::BlendFunc(gl::ZERO, gl::ONE));
+                out.push(DrawCmd::StencilMask(0x5A));
+            }
+        }
+    }
+
+    fn tex(w: u32, h: u32, ox: f32, oy: f32) -> Texture {
+        let mut t = Texture::empty("t");
+        t.id = Some(1);
+        t.ready = true;
+        t.width = w;
+        t.height = h;
+        t.width_hw = w.next_power_of_two() as i32;
+        t.height_hw = h.next_power_of_two() as i32;
+        t.x_end = w as f32 / t.width_hw as f32;
+        t.y_end = h as f32 / t.height_hw as f32;
+        t.offset_x = ox;
+        t.offset_y = oy;
+        t
+    }
+
+    /// The stencil cell's left edge (in stencil pixels) of each cut wall
+    /// drawn into the mask.
+    fn cells(out: &[DrawCmd]) -> Vec<i32> {
+        out.iter()
+            .filter_map(|c| match c {
+                DrawCmd::WorldSprite(_, pz_render::WorldShader::CutawayNoDepth { uv2, .. }) => Some((uv2[0][0] * 1024.0).round() as i32),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cut_walls_take_the_stencil_cell_of_the_players_cutaway() {
+        let mut w = CutRoom { room: Room::new(), flags: HashMap::new() };
+        let wall = Rc::new(SpriteInfo { texture: Some(tex(66, 226, 0.0, 30.0)), ..Default::default() });
+        let sprites = FxMaskSprites { wall_w: Some(wall), wall_cutaways: Some(tex(1024, 2048, 0.0, 0.0)), ..Default::default() };
+        let view = WeatherFxView::new(0.0, 0.0, 640, 360, 1.0);
+        let draw = |w: &CutRoom| {
+            let mut m = WeatherFxMask::default();
+            m.init_mask(w, inside_player(), true);
+            m.add_mask_location(w, 15, 12, 0);
+            let mut out = Vec::new();
+            draw_fx_mask(&m, w, &sprites, &view, &FxMaskFrame::default(), &mut out);
+            out
+        };
+        // The east wall (a west wall on the square beyond the room): whole
+        // (896) until the player's cutaway opens it (512).
+        assert_eq!(cells(&draw(&w)), [896]);
+        w.flags.insert((15, 12), crate::cutaways::CUTAWAY_W);
+        w.flags.insert((15, 13), crate::cutaways::CUTAWAY_W);
+        assert_eq!(cells(&draw(&w)), [512]);
+        // No stencil texture: no wall, as in the original.
+        let bare = FxMaskSprites { wall_cutaways: None, ..sprites.clone() };
+        let mut m = WeatherFxMask::default();
+        m.init_mask(&w, inside_player(), true);
+        m.add_mask_location(&w, 15, 12, 0);
+        let mut out = Vec::new();
+        draw_fx_mask(&m, &w, &bare, &view, &FxMaskFrame::default(), &mut out);
+        assert!(cells(&out).is_empty());
+    }
+
+    #[test]
+    fn characters_draw_into_the_mask_without_their_blend_changes() {
+        // The room's north side open, so its edge squares mask characters.
+        let mut w = CutRoom { room: Room::new(), flags: HashMap::new() };
+        for x in 10..15 {
+            let s = Rc::new(SpriteInfo { flags: SpriteFlags { solidfloor: true, ..Default::default() }, ..Default::default() });
+            w.room.0.get_mut(&(x, 10, 0)).unwrap().objects[0] = RenderObject::new(ObjectKind::Plain, Some(s));
+        }
+        let mut m = WeatherFxMask::default();
+        m.init_mask(&w, inside_player(), true);
+        for x in 10..15 {
+            m.add_mask_location(&w, x, 10, 0);
+        }
+        let view = WeatherFxView::new(0.0, 0.0, 640, 360, 1.0);
+        let mut out = Vec::new();
+        draw_fx_mask(&m, &w, &FxMaskSprites::default(), &view, &FxMaskFrame::default(), &mut out);
+        assert!(out.iter().any(|c| matches!(c, DrawCmd::StencilMask(0x5A))));
+        assert!(!out.iter().any(|c| matches!(c, DrawCmd::BlendFunc(gl::ZERO, gl::ONE))));
     }
 }
