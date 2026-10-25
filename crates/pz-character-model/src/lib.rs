@@ -24,6 +24,7 @@ pub mod external;
 pub mod item_texture;
 pub mod items;
 pub mod lights;
+pub mod mannequin;
 pub mod mask;
 pub mod model_tree;
 pub mod render;

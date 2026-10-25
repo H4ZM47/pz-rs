@@ -984,3 +984,195 @@ fn outlines_bloody_knife_and_mug_with_liquid() {
         }
     }
 }
+
+/// ws/render-gaps: a mannequin drawn into its chunk texture
+/// (`FBORenderCorpses` + `FBORenderChunkCamera`), a dead pig through
+/// `DeadBodyAtlas`, and outlines on a corpse, the mannequin and a placed
+/// item (`FBORenderObjectOutline`); then the same scene as player 2 of a
+/// two-player split screen. Frames go to `PZ_GAPS_FRAME_OUT` (default: the
+/// system temp directory).
+#[test]
+fn mannequin_animal_corpse_and_object_outlines() {
+    use pz_character_model::corpse::{animal_body_key, body_key, corpse_shadow, corpse_world_draw, pose, posed_body_key, BodyVisualKey, DeadBody, DeadBodyAtlas};
+    use pz_character_model::mannequin::{self, Mannequin};
+    use pz_character_model::world_item::item_params;
+    use pz_inventory::{InventoryItem, ItemClass, ItemTemplate};
+    use pz_iso_render::frame::{world_frame_for_player, PlayerView};
+    use pz_iso_render::item_atlas::{item_world_draw, max_zoom_is_one, ItemPlacement, WorldItemAtlas};
+    use pz_iso_render::object_outline::ObjectOutline;
+    use pz_iso_render::objects::ObjectRender;
+
+    let Some(game) = game_dir() else { return };
+    let (w, h) = (640u32, 480u32);
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(w, h) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let out_dir = std::env::var_os("PZ_GAPS_FRAME_OUT").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let cache = std::env::temp_dir().join("pz-character-model-frame-test");
+    let mut fs = pz_fs::GameFs::new(&game);
+    fs.set_cache_dir(&cache);
+    let media = MediaIndex::scan(&game).unwrap();
+    let rig = |mesh: &str, anims: &[&str]| {
+        let (p, ty) = resolve_model_file(&media, mesh, AssetKind::Mesh).unwrap();
+        let m = load_mesh(&std::fs::read(p).unwrap(), ty.import_format().unwrap(), &MeshParams::default()).unwrap();
+        let mut sd = m.skeleton.clone().unwrap();
+        for a in anims {
+            let (p, ty) = resolve_model_file(&media, a, AssetKind::Animation).unwrap();
+            let clips = load_animation(&std::fs::read(p).unwrap(), ty.import_format().unwrap(), Some(&sd)).unwrap();
+            sd.animation_clips.extend(clips);
+        }
+        Rc::new(sd)
+    };
+    let male = rig("Skinned/MaleBody", &["Zombie/Zombie_Idle_FloorOnBack"]);
+    let female = rig("Skinned/FemaleBody", &["Kate/Kate_Mannequin01"]);
+    let pig = rig("Skinned/FarmPig_SowBody", &["Pig/FarmPig_Dead"]);
+
+    let mut pop = Population::default();
+    pop.init(&mut fs);
+    let groups = BodyLocationGroup::new("Human").unwrap();
+    let scripts: HashMap<String, ModelScriptRef> = HashMap::new();
+    let mut tm = TextureManager::new();
+    let mut smart: Vec<Option<Texture>> = Vec::new();
+    let model_flags = flags::COMPRESS | flags::LIMIT_TEXTURE_SIZE_1;
+    // The dead zombie (outlined red).
+    let dead = DeadBody { x: 11.9, y: 10.2, z: 0.0, angle: 2.2, dir: 3, zombie: true, outside: true, alpha: 1.0, animal_size: 1.0, ..Default::default() };
+    let mut corpse_player = AnimationPlayer::new(male.clone());
+    pose(&mut corpse_player, Rc::new(pz_anim::AnimationSet::load_states("zombie", &game.join("media/AnimSets/zombie"), &["onground"])), &dead);
+    let corpse_slot = {
+        let mut hv = HumanVisual::new(BLOOD_PARTS);
+        hv.skin_texture_name = Some("MaleBody02a".into());
+        hv.hair_model = Some("Bob".into());
+        hv.hair_color = Some([0.35, 0.22, 0.12]);
+        let visuals: Vec<ResolvedItemVisual> = ["Tshirt_DefaultTEXTURE", "Trousers_Denim"].iter().map(|n| clothing(&game, n)).collect();
+        let human = HumanModel::resolve(&mut hv, false, false, false, &pop.styles(&[], 0.0), &[]);
+        let bone_index = |n: &str| corpse_player.skinning_bone_index(n, -1);
+        let mut slot = ModelSlot::build(&CharacterModelInput { human: &human, item_visuals: &visuals, equipped: &EquippedModels::default(), body_locations: &groups, hair_styles: pop.hair_styles.as_ref(), beard_styles: pop.beard_styles.as_ref(), scripts: &scripts, body_model_script: None, bone_index: &bone_index });
+        let jobs = create_textures(&mut slot, &TextureCreatorInput { human: &human, item_visuals: &visuals, body_locations: &groups, decals: &|_| None, simple_clothing_textures: false });
+        let mut file = |tm: &mut TextureManager, p: &str| tm.shared_texture_flags(&fs, p, model_flags);
+        smart.extend(run_jobs(&jobs.jobs, &mut file, &mut gpu, &mut tm));
+        slot
+    };
+    // A dead sow (animal corpse, `pig` anim set's deadbody state).
+    let sow = DeadBody { x: 9.6, y: 12.4, z: 0.0, angle: 0.6, dir: 5, animal: true, animal_anim_set: Some("pig".into()), outside: true, alpha: 1.0, animal_size: 1.0, ..Default::default() };
+    let mut sow_player = AnimationPlayer::new(pig.clone());
+    pose(&mut sow_player, Rc::new(pz_anim::AnimationSet::load_states("pig", &game.join("media/AnimSets/pig"), &["deadbody"])), &sow);
+    assert_eq!(sow_player.tracks()[0].name(), "FarmPig_Dead");
+    let sow_slot = ModelSlot::single_body("Skinned/FarmPig_SowBody", "Body/FarmPig", Some("animalEffect"));
+    // A black female mannequin facing south-east on square (9, 9), naked
+    // (its skin texture as the body texture; `HumanVisual` clothing would
+    // come from the outfit).
+    let mq = Mannequin { x: 9, y: 9, z: 0, dir: 5, female: true, anim_set: "mannequin".into(), anim_state: "female".into(), pose: "pose01".into(), surfaces_below: vec![], surfaces_all: vec![], outside: true, room: false, ambient: [0.8; 3], tint: [1.0; 3], alpha: 1.0 };
+    let mq_set = Rc::new(pz_anim::AnimationSet::load_states("mannequin", &game.join("media/AnimSets/mannequin"), &["female"]));
+    let mut mq_player = AnimationPlayer::new(female.clone());
+    mannequin::pose(&mut mq_player, mq_set.clone(), &mq);
+    assert_eq!(mq_player.tracks()[0].name(), "Kate_Mannequin01");
+    let mq_slot = ModelSlot::single_body("Skinned/FemaleBody", "Body/F_Mannequin_Black", None);
+    // The atlas pose of the mannequin (standing, white ambient, no lights).
+    let mut mq_atlas_player = AnimationPlayer::new(female.clone());
+    mannequin::pose(&mut mq_atlas_player, mq_set, &Mannequin { ambient: [1.0; 3], ..mq.clone() });
+
+    // A mug on the floor (outlined green).
+    let sm = pz_scripts::ScriptManager::new();
+    let items_txt = game.join("media/scripts/generated/models_items.txt");
+    let item_scripts: HashMap<String, ModelScriptRef> = [("Mug".to_string(), model_script(&sm, &items_txt, "Mug"))].into();
+    let mut mug_t = ItemTemplate::new(ItemClass::Normal, "Base", "Mugl");
+    mug_t.world_static_model = Some("Mug".into());
+    let mug = InventoryItem::create(Rc::new(mug_t), 0);
+
+    tm.load_texture_pack(&fs, "Tiles2x.floor", 0, None);
+    tm.set_texture_pack_lookup(&[]);
+    let grass = tm.try_get_texture(&fs, "blends_natural_01_16").expect("grass tile");
+    let depth_maps = pz_render::tile_depth::TileDepthTextureManager::init(&mut fs, &mut tm);
+    let floor = Rc::new(SpriteInfo { texture: Some(grass), flags: SpriteFlags { solidfloor: true, ..Default::default() }, tint_mod: [1.0; 3], ..Default::default() });
+    let squares: Vec<RenderSquare> = (8..14)
+        .flat_map(|y| (8..14).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let mut sq = RenderSquare::new(x, y, 0);
+            sq.objects.push(RenderObject::new(ObjectKind::Plain, Some(floor.clone())));
+            sq
+        })
+        .collect();
+    let mut level = [None; 64];
+    for sq in &squares {
+        level[((sq.x - 8) + (sq.y - 8) * 8) as usize] = Some(sq);
+    }
+    let shadow_tex = tm.shared_texture(&fs, "media/textures/NewShadow.png");
+
+    let loader = Loader { tm: RefCell::new(tm), files: RefCell::new(HashMap::new()), smart: RefCell::new(smart) };
+    let res = MediaModelResources::new(&media, &loader);
+    let mut bodies = DeadBodyAtlas::new(1 << 40);
+    let mut item_atlas = WorldItemAtlas::new(1 << 41);
+    let (px, py, pz) = (10.5f32, 10.5f32, 0.0f32);
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let cyan = [0.0, 1.0, 1.0, 0.65];
+    let green = [0.0, 1.0, 0.0, 1.0];
+    for (zoom, view, name) in [
+        (1.0f32, None, "gaps_frame_zoom1.png"),
+        (0.5, None, "gaps_frame_zoom05.png"),
+        // Split screen: player 1's frame, then player 2's into the same
+        // offscreen buffer (each clears and draws only its own half).
+        (1.0, Some(PlayerView { player: 0, num_players: 2, screen: (w, h) }), ""),
+        (1.0, Some(PlayerView { player: 1, num_players: 2, screen: (w, h) }), "gaps_frame_splitscreen.png"),
+    ] {
+        let (vw, vh) = view.map_or((w, h), |v: PlayerView| (v.viewport()[2], v.viewport()[3]));
+        let cam = Camera::player(px, py, pz, vw as i32, vh as i32, zoom);
+        let mut pre = Vec::new();
+        let light = [0.8, 0.8, 0.8, 1.0];
+        // The zombie corpse and the sow through the atlas.
+        let body_tex = bodies.body_texture(&body_key(&dead, &BodyVisualKey::default()), &dead, &corpse_slot, &corpse_player, &res, &mut pre).clone();
+        let sow_tex = bodies.body_texture(&animal_body_key(&sow, Some("FarmPig_SowBody"), Some("FarmPig"), &[]), &sow, &sow_slot, &sow_player, &res, &mut pre).clone();
+        let mut corpses = corpse_world_draw(&body_tex, &cam, &dead, light);
+        corpses.extend(corpse_world_draw(&sow_tex, &cam, &sow, light));
+        let corpse_shadows = vec![corpse_shadow(&dead, Some(&body_tex), [0.8; 3]), corpse_shadow(&sow, Some(&sow_tex), [0.8; 3])];
+        // The mannequin: chunk-texture draw, shadow, atlas entry for its
+        // outline.
+        let mq_body = mq.atlas_body();
+        let (set, state) = (mq.anim_set.as_str(), mq.anim_state.as_str());
+        let mq_tex = bodies.body_texture(&posed_body_key(&mq_body, &BodyVisualKey::default(), set, state, 0.0, true), &mq_body, &mq_slot, &mq_atlas_player, &res, &mut pre).clone();
+        let chunk = ChunkTexture::new(1, 1, 0, 0, 0);
+        let chunk_models = vec![mannequin::chunk_models(&mq, &mq_slot, &mq_player, &res, chunk, [px, py])];
+        let mannequins = vec![ObjectRender { shadow: Some(mq.shadow([0.8, 0.8, 0.8, 0.8])), ..Default::default() }];
+        // The mug.
+        let mz1 = max_zoom_is_one(true, zoom);
+        let p = item_params(&mug, &item_scripts, &res, mz1).expect("item model");
+        let k = item_atlas.item_texture(&p);
+        item_atlas.render(&mut pre);
+        let mug_tex = item_atlas.textures[&k].clone();
+        let mug_at = [10.3f32, 11.6, 0.0];
+        let items = item_world_draw(&mug_tex, &cam, &ItemPlacement { x: mug_at[0], y: mug_at[1], z: 0.0, carpet: false, rgb: [0.8; 3], alpha: 1.0 });
+        // FBORenderObjectOutline's highlighted objects.
+        let object_outlines = vec![
+            ObjectOutline::corpse(&body_tex.entry.unwrap(), &cam, [dead.x, dead.y, dead.z], red),
+            ObjectOutline::mannequin(&mq_tex.entry.unwrap(), &cam, mq.model_position(), 0.0, 0.0, cyan),
+            ObjectOutline::world_item_atlas(&mug_tex.entry.unwrap(), mug_tex.max_zoom_is_one, &cam, mug_at, green),
+        ];
+        let objects = FrameObjects { corpse_shadows, mannequins, corpses, items, object_outlines, chunk_models, ..Default::default() };
+        let r = ChunkRenderer::new(cam, &depth_maps, (vw, vh));
+        let chunks = [ChunkLevels { texture: chunk, levels: vec![(0, level)], dirty: true }];
+        let cmds = world_frame_for_player(&r, FrameSize { width: vw, height: vh }, view, &chunks, &objects, shadow_tex.clone(), pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 }, pre);
+        let list = pz_render::DrawList { cmds };
+        gpu.render_frame(&[(pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(w, h) }, &list)], &mut loader.tm.borrow_mut());
+        assert_eq!(gpu.error(), None);
+        if name.is_empty() {
+            continue;
+        }
+        let pixels = gpu.read_pixels();
+        let path = out_dir.join(name);
+        write_png(&path, w, h, &pixels);
+        eprintln!("wrote {}", path.display());
+        let count = |f: &dyn Fn(&[u8]) -> bool| pixels.chunks(4).filter(|p| f(p)).count();
+        // Each outline colour shows (the ring around its object).
+        assert!(count(&|p| p[0] > 200 && p[1] < 60 && p[2] < 60) > 20, "red corpse outline");
+        assert!(count(&|p| p[0] < 60 && p[1] > 200 && p[2] < 60) > 10, "green item outline");
+        if view.is_some() {
+            // Both halves show the corpse's red outline, each centred on
+            // its own player.
+            let red_in = |x0: u32, x1: u32| (0..h).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| {
+                let p = &pixels[((y * w + x) * 4) as usize..][..3];
+                p[0] > 200 && p[1] < 60 && p[2] < 60
+            }).count();
+            assert!(red_in(0, w / 2) > 20 && red_in(w / 2, w) > 20, "{} {}", red_in(0, w / 2), red_in(w / 2, w));
+        }
+    }
+}
