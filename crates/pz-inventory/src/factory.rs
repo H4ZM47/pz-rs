@@ -364,7 +364,8 @@ pub fn create_item_by_type(
         c.display_name = n;
         t = Rc::new(c);
     }
-    let mut item = crate::env::create_from_template(env, t, 0);
+    let registry_id = script.borrow().entity.registry_id();
+    let mut item = crate::env::create_from_template(env, t, registry_id);
     if use_delta != 1.0
         && matches!(
             item.template.class,
@@ -380,6 +381,28 @@ pub fn create_item_by_type(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn string_factory_keeps_the_loaded_script_dictionary_id() {
+        let sm = ScriptManager::new();
+        sm.registries.get("item_type").unwrap().borrow_mut().register_id("test:normal", true).unwrap();
+        sm.statics.items.borrow_mut().constants.insert("item_type", "NORMAL", "test:normal");
+        sm.parse_script(pz_scripts::ScriptLoadMode::Init,
+            "module Base { item TestMarble { ItemType = test:normal, Weight = 0.1, } }")
+            .unwrap();
+        sm.get_module("Base").unwrap().bucket(pz_scripts::ScriptType::Item)
+            .load_scripts(&sm, pz_scripts::ScriptLoadMode::Init);
+        let script = sm.find_item("Base.TestMarble", false).unwrap()
+            .downcast::<pz_scripts::objects::items::Item>().unwrap();
+        script.borrow_mut().entity.set_registry_id(73).unwrap();
+        struct Env;
+        impl ItemEnv for Env {}
+        for ty in ["Base.TestMarble", "TestMarble"] {
+            let item = create_item_by_type(&Env, &sm, ty, 1.0, true, &|_| None).unwrap();
+            assert_eq!(item.registry_id, 73, "string factory discarded WorldDictionary registration");
+            assert_eq!(item.get_full_type(), "Base.TestMarble");
+        }
+    }
 
     #[test]
     fn item_names() {

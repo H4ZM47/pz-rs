@@ -37,10 +37,24 @@ pub fn absolute(path: &str, cwd: &str) -> String {
     let n = normalize(path);
     if Path::new(&n).is_absolute() {
         n
+    } else if cfg!(windows) && n.starts_with('\\') {
+        windows_rooted_absolute(&n, cwd)
     } else if n.is_empty() {
         cwd.to_string()
     } else {
         format!("{}{SEP}{n}", cwd.trim_end_matches(SEP))
+    }
+}
+
+/// Windows `File.getAbsolutePath` resolves a rooted path without a drive
+/// against user.dir's drive, rather than underneath user.dir. When user.dir
+/// is a UNC path, Java instead appends the rooted path to that directory.
+fn windows_rooted_absolute(path: &str, cwd: &str) -> String {
+    let bytes = cwd.as_bytes();
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\' {
+        format!("{}{path}", &cwd[..2])
+    } else {
+        format!("{cwd}{path}")
     }
 }
 
@@ -127,6 +141,25 @@ mod tests {
         assert_eq!(normalize("/"), "/");
         assert_eq!(absolute("media/x", "/base"), "/base/media/x");
         assert_eq!(absolute("/abs//y/", "/base"), "/abs/y");
+    }
+
+    #[test]
+    fn windows_rooted_paths_resolve_from_the_drive_not_the_working_directory() {
+        assert_eq!(windows_rooted_absolute(r"\etc\passwd", r"C:\game"), r"C:\etc\passwd");
+        assert_eq!(windows_rooted_absolute(r"\elsewhere\X.png", r"d:\game"), r"d:\elsewhere\X.png");
+        assert_eq!(windows_rooted_absolute(r"\", r"C:\game"), r"C:\");
+        assert_eq!(windows_rooted_absolute(r"\media\x", r"\\server\share\game"), r"\\server\share\game\media\x");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_rules() {
+        assert_eq!(normalize("media//ui/"), r"media\ui");
+        assert_eq!(absolute("media/ui", r"C:\game"), r"C:\game\media\ui");
+        assert_eq!(absolute("/etc/passwd", r"C:\game"), r"C:\etc\passwd");
+        assert_eq!(absolute(r"\elsewhere\X.png", r"C:\game"), r"C:\elsewhere\X.png");
+        assert_eq!(absolute(r"D:\elsewhere\X.png", r"C:\game"), r"D:\elsewhere\X.png");
+        assert_eq!(absolute(r"\\server\share\X.png", r"C:\game"), r"\\server\share\X.png");
     }
 
     #[test]

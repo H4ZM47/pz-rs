@@ -61,6 +61,10 @@ fn file_map_lookups() {
     let town = fs.directory_lookup("media/maps/Town, KY").unwrap();
     assert!(town.ends_with(SEP), "{town}");
     assert!(fs.is_known_file(icon));
+    let outside = s.0.join("elsewhere/X.png").to_string_lossy().into_owned();
+    assert_eq!(fs.relative_file(&outside), outside);
+    // A rooted Windows path is drive-root-relative, not install-relative.
+    // POSIX uses its filesystem root for the same spelling.
     assert_eq!(fs.relative_file("/elsewhere/X.png"), "/elsewhere/X.png");
 }
 
@@ -131,5 +135,13 @@ fn prefix_validation() {
     assert!(fs.validate_prefix("media/ui/Icon.png"));
     assert!(fs.validate_prefix(&s.0.join("user/mods/x.png").to_string_lossy()));
     assert!(!fs.validate_prefix("media/../../outside.png"));
+    assert!(!fs.validate_prefix(&s.0.join("outside.png").to_string_lossy()));
     assert!(!fs.validate_prefix("/etc/passwd"));
+    #[cfg(windows)]
+    {
+        let base = fs.base.to_string_lossy();
+        let other_drive = if base.as_bytes()[0].eq_ignore_ascii_case(&b'C') { 'D' } else { 'C' };
+        let same_path_on_another_drive = format!("{other_drive}{}", &base[1..]);
+        assert!(!fs.validate_prefix(&same_path_on_another_drive));
+    }
 }

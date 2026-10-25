@@ -82,7 +82,7 @@ jobs:
         run: cargo build --locked -p pz-client
 
       - name: Test the workspace
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace --no-fail-fast
 
       - name: Record verification scope
         if: always()

@@ -42,6 +42,14 @@ owner. The binding covers the shipped menu's seed/bounds operations; the
 remaining API and post-initialization generator seed updates need parity
 work. Installed compiler string-literal quirks are preserved and tested.
 
+Starting-item scripts can create a named key ring through the normal item
+factory and inventory, including the original chance of a house key from
+the actual meta-room's building. String-based item creation retains its
+script dictionary ID, so nested items can reload with their correct types.
+The player-screen Lua globals read the current Core size and player count;
+this supplies inventory layout geometry but does not implement split-screen
+world rendering.
+
 Known integration gaps include action-context/turning phase timing, timed
 actions, character visibility fading, split-screen viewports, weather and
 sky/water effects, animals/ragdoll rendering, basement save persistence,

@@ -82,6 +82,31 @@ fn movement_diagnostics(app: &mut super::App, label: &str) {
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct InventoryRecord {
+    full_type: String,
+    name: String,
+    item_id: i32,
+    registry_id: i16,
+    key_id: i32,
+    contents: Vec<InventoryRecord>,
+}
+
+fn inventory_records(container: &pz_inventory::shared::ContainerRef) -> Vec<InventoryRecord> {
+    container.borrow().items.iter().map(|item| {
+        let item = item.borrow();
+        InventoryRecord {
+            full_type: item.get_full_type(),
+            name: item.get_name().to_string(),
+            item_id: item.id,
+            registry_id: item.registry_id,
+            key_id: item.get_key_id(),
+            contents: pz_inventory::shared::inventory_of(&item)
+                .map_or_else(Vec::new, |bag| inventory_records(&bag)),
+        }
+    }).collect()
+}
+
 #[test]
 #[ignore = "requires PZ_GAME_DIR; boots installed media in the Rust engine, saves, and reloads a fresh test world"]
 fn installed_assets_new_game_moves_animates_and_saves_on_close() {
@@ -125,6 +150,11 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         let p = player.borrow();
         (p.id, (p.vars.x, p.vars.y, p.vars.z))
     };
+    let starting_inventory = inventory_records(&player.borrow().items.inventory);
+    assert!(
+        starting_inventory.iter().any(|item| item.full_type.starts_with("Base.KeyRing")),
+        "shipped OnNewGame starting-item script did not create a key ring: {starting_inventory:?}"
+    );
 
     // Keyboard scan code 17 is W. It enters the same input queue as the
     // native window; no character coordinate or movement flag is set here.
@@ -250,6 +280,10 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     let loaded_world = reloaded.world.as_ref().expect("saved session has a live gameplay world");
     assert_eq!(loaded_world.save_dir, save_dir, "saved session opened another world");
     assert_eq!(loaded_world.player_sql_ids[0], sql_id, "saved session did not decode the persisted player");
+    assert_eq!(
+        inventory_records(&loaded_player.borrow().items.inventory), starting_inventory,
+        "starting items or their nested contents/IDs changed across native close and reload"
+    );
     assert!((loaded_position.0 - after.0).abs() < 0.0001, "reloaded x differs: {} versus {}", loaded_position.0, after.0);
     assert!((loaded_position.1 - after.1).abs() < 0.0001, "reloaded y differs: {} versus {}", loaded_position.1, after.1);
     assert!((loaded_position.2 - after.2).abs() < 0.0001, "reloaded z differs: {} versus {}", loaded_position.2, after.2);

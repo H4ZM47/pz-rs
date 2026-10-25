@@ -374,6 +374,19 @@ pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
     Some(pz_inventory::shared::new_item(item))
 }
 
+/// `InventoryItem.setKeyId`, including `Key`'s own field and -1 RNG.
+pub(crate) fn set_key_id(item: &ItemRef, key_id: i32) {
+    let e = env();
+    let sm = crate::bind_registry::shared_script_manager();
+    let ce = CreateEnv {
+        lua: Some(e.as_ref()),
+        ctx: e.context(),
+        sm: &sm,
+        codec: None,
+    };
+    item.borrow_mut().set_key_id(key_id, &ce);
+}
+
 /// Installs a [`GameItemEnv`] with the `ClothingItem` assets
 /// (`ItemAssets::load(game_dir)`), so items made from Lua have visuals.
 pub fn install_item_assets(assets: ItemAssets) {
@@ -742,6 +755,11 @@ fn register_inventory_item(thread: &mut Thread) {
         ItemKind::Key { key_id, .. } => *key_id,
         _ => i.key_id,
     }));
+    b.method("setKeyId", |c| {
+        let item = this(c)?;
+        set_key_id(&item, int_arg(c, 1));
+        Ok(0)
+    });
     get!(b, "getModelIndex", |i| Value::from(i.model_index));
     get!(b, "getCurrentAmmoCount", |i| Value::from(
         i.current_ammo_count

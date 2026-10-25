@@ -1092,7 +1092,7 @@ impl InventoryItem {
 
     /// `setKeyId` (`Key` overrides it: its own field, and -1 draws a
     /// random id).
-    fn set_key_id(&mut self, k: i32, env: &dyn ItemEnv) {
+    pub fn set_key_id(&mut self, k: i32, env: &dyn ItemEnv) {
         match &mut self.kind {
             ItemKind::Key { key_id, .. } => {
                 *key_id = if k == -1 {

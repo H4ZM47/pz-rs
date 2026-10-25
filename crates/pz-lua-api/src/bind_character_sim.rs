@@ -66,6 +66,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+mod key_ring;
+
 pub const ISO_GAME_CHARACTER_CLASS: &str = "zombie.characters.IsoGameCharacter";
 pub const ISO_PLAYER_CLASS: &str = "zombie.characters.IsoPlayer";
 pub const ISO_SURVIVOR_CLASS: &str = "zombie.characters.IsoSurvivor";
@@ -1304,6 +1306,7 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     for class in [ISO_PLAYER_CLASS, ISO_SURVIVOR_CLASS, ISO_ZOMBIE_CLASS, ISO_ANIMAL_CLASS] {
         expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
     }
+    b.method("createKeyRing", key_ring::create_key_ring);
     b.method("getModData", |c| {
         let table = chr_of(c)?.borrow_mut().get_mod_data();
         Ok(c.push(table))
@@ -1606,7 +1609,7 @@ mod tests {
     use pz_kahlua::TableRef;
     use pz_scripts::registry::builtin::{BuiltinTables, CharacterStatDecl, MoodleStatDecl, PerkDecl, PerkInit};
 
-    fn run(t: &mut Thread, src: &str) -> Result<(), String> {
+    pub(super) fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
         let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
         t.pcall(&f, &[]).map(|_| ()).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
@@ -1617,7 +1620,7 @@ mod tests {
         setup_with(ScriptManager::new())
     }
 
-    fn setup_with(sm: ScriptManager) -> (Thread, LuaGameCharacterRef, Rc<RefCell<Vec<String>>>) {
+    pub(super) fn setup_with(sm: ScriptManager) -> (Thread, LuaGameCharacterRef, Rc<RefCell<Vec<String>>>) {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end")

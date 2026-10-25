@@ -214,7 +214,7 @@ impl GameFs {
     pub fn validate_prefix(&self, input: &str) -> bool {
         let norm = |p: &str| -> Vec<String> {
             let abs = jfile::absolute(p, &self.base_str);
-            let uri = jfile::uri_normalize(&abs.replace(SEP, "/"));
+            let uri = jfile::uri_normalize(&jfile::uri_path(&abs));
             java::lower(&uri).split('/').filter(|c| !c.is_empty()).map(str::to_string).collect()
         };
         let input = norm(input);
