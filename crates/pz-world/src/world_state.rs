@@ -56,6 +56,31 @@ impl IsoBarricade {
         !self.is_metal() && self.num_planks() < 4 && !self.is_metal_bar()
     }
 
+    /// The sprite name `chooseSprite()` picks (metal sheet, metal bars, or
+    /// the plank count's carpentry tile), `None` for an invalid direction.
+    pub fn sprite_name(&self) -> Option<String> {
+        let dir = self.forward_dir();
+        let pick = |w: i32, n: i32, e: i32, s: i32| match dir {
+            IsoDirections::W => Some(w),
+            IsoDirections::N => Some(n),
+            IsoDirections::E => Some(e),
+            IsoDirections::S => Some(s),
+            _ => None,
+        };
+        if self.metal_health > 0 {
+            let dmg = if self.metal_health <= 2500 { 2 } else { 0 };
+            return pick(24, 25, 28, 29).map(|b| format!("constructedobjects_01_{}", b + dmg));
+        }
+        if self.metal_bar_health > 0 {
+            return pick(55, 53, 52, 54).map(|b| format!("constructedobjects_01_{b}"));
+        }
+        let planks = self.num_planks();
+        if planks <= 0 {
+            return Some("media/ui/missing-tile.png".into());
+        }
+        pick(8, 9, 0, 1).map(|b| format!("carpentry_01_{}", b + (planks - 1) * 2))
+    }
+
     /// `getLightTransmission()`.
     pub fn light_transmission(&self) -> f32 {
         if self.is_metal() {

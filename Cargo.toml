@@ -27,10 +27,6 @@ pz-clipper = { path = "crates/pz-clipper" }
 pz-sqlite = { path = "crates/pz-sqlite" }
 pz-core = { path = "crates/pz-core" }
 pz-inventory = { path = "crates/pz-inventory" }
-pz-characters = { path = "crates/pz-characters" }
-pz-anim = { path = "crates/pz-anim" }
-pz-clipper6 = { path = "crates/pz-clipper6" }
-pz-pathfind = { path = "crates/pz-pathfind" }
 pz-worldgen = { path = "crates/pz-worldgen" }
 pz-audio = { path = "crates/pz-audio" }
 pz-world-sound = { path = "crates/pz-world-sound" }
@@ -38,6 +34,10 @@ pz-popman = { path = "crates/pz-popman" }
 pz-lighting = { path = "crates/pz-lighting" }
 pz-world-popman = { path = "crates/pz-world-popman" }
 pz-vehicles = { path = "crates/pz-vehicles" }
+pz-characters = { path = "crates/pz-characters" }
+pz-anim = { path = "crates/pz-anim" }
+pz-clipper6 = { path = "crates/pz-clipper6" }
+pz-pathfind = { path = "crates/pz-pathfind" }
 indexmap = "2"
 jiff = "0.2"
 macroquad = { version = "0.4", default-features = false }

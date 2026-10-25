@@ -2192,6 +2192,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-world-states"
+version = "0.1.0"
+dependencies = [
+ "pz-characters",
+ "pz-classfile",
+ "pz-entity",
+ "pz-fs",
+ "pz-inventory",
+ "pz-pathfind",
+ "pz-scripts",
+ "pz-world",
+]
+
+[[package]]
 name = "pz-worldgen"
 version = "0.1.0"
 dependencies = [
