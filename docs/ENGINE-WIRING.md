@@ -1201,3 +1201,7 @@ registered):
       players, meta_grid })` with the live local players (position, or
       the vehicle's; username) for the map's player dots, and
       `IsoMetaGrid`'s cell bounds for `setBoundsFromWorld` (#213).
+- [ ] Map cell priority: `WorldMapHost.map_files` implementing
+      `pz_worldmap::triangulate::MapFilesInfo` over the current
+      `MapFiles` (directory names in priority order, `hasCell300`), so
+      lower-priority map directories' cells are clipped (#227).
