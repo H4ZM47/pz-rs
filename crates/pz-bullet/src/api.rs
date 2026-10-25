@@ -8,7 +8,8 @@
 //! with mode 0. Where the original throws a Java exception the method
 //! returns [`JniError`] with the same class and message.
 //!
-//! The ragdoll and ballistics natives are not ported.
+//! The ragdoll natives are in `api_ragdoll`; the ballistics natives are not
+//! ported.
 
 use crate::bt::dynamics::generic_6dof::Generic6DofConstraint;
 use crate::bt::dynamics::hinge::HingeConstraint;
@@ -94,6 +95,8 @@ pub struct PzBullet {
     /// `hack_vehicles`: vehicle ids, as `getVehicleCount` saw them.
     pub hack_vehicles: Vec<i32>,
     initialized: bool,
+    /// `RagdollBuilder::instance`.
+    pub ragdoll_builder: crate::pz::ragdoll_builder::RagdollBuilder,
 }
 
 fn quat_basis(qx: f32, qy: f32, qz: f32, qw: f32) -> Mat3 {
@@ -154,6 +157,7 @@ impl PzBullet {
         self.world = Some(Box::new(WorldSimulation::new(
             min_x, min_y, max_x, max_y, off_x, off_y, is_server,
         )));
+        self.ragdoll_builder.initialize();
         Ok(())
     }
 
@@ -974,19 +978,15 @@ impl PzBullet {
         Ok(())
     }
 
-    /// `checkWheelCollision(vehicleId, ragdollId, bodyPart)`: tests the
-    /// wheels against a ragdoll body part. Ragdolls are not ported, so this
-    /// is always `false` (as the original without ragdolls).
+    /// `checkWheelCollision(vehicleId, ragdollId, bodyPart)`: whether a
+    /// wheel of the vehicle is within 0.5 of the ragdoll body part.
     pub fn check_wheel_collision(
         &mut self,
-        _id: i32,
-        _ragdoll: i32,
-        _part: i32,
+        id: i32,
+        ragdoll: i32,
+        part: i32,
     ) -> Result<bool, JniError> {
-        if self.world.is_none() {
-            return Err(JniError::NullPointer(NULL_INSTANCE));
-        }
-        Ok(false)
+        self.check_wheel_collision_ragdoll(id, ragdoll, part)
     }
 }
 

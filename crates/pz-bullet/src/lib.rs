@@ -5,7 +5,9 @@
 //! [`PzBullet`] mirrors the JNI surface of `zombie.core.physics.Bullet`.
 
 pub mod api;
+pub mod api_ragdoll;
 pub mod bt;
 pub mod pz;
 
 pub use api::{JavaCallbacks, JniError, NoCallbacks, PzBullet};
+pub use pz::ragdoll_skeleton::SkeletonBoneCallbacks;
