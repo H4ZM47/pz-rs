@@ -827,3 +827,90 @@ fn light_switch_load_creates_light() {
     };
     assert!(e.0.starts_with("NumberFormatException"), "{}", e.0);
 }
+
+/// Answers the `SpriteConfigs` register: id 7 is `Base.Window`.
+struct SpriteConfigDictionary;
+impl ItemRegistry for SpriteConfigDictionary {
+    fn script_dictionary_name(&self, register: &str, id: i16) -> Option<Option<String>> {
+        assert_eq!(register, "SpriteConfigs");
+        Some((id == 7).then(|| "Base.Window".to_string()))
+    }
+}
+
+/// A `SpriteConfig` block: the script reference (`id`), version -1 and
+/// the saved master flag.
+fn sprite_config(id: Option<i16>, master: bool) -> ComponentBlob {
+    let mut data = vec![1];
+    match id {
+        Some(id) => {
+            data.push(1);
+            data.extend_from_slice(&id.to_be_bytes());
+        }
+        None => data.push(0),
+    }
+    data.extend_from_slice(&(-1i64).to_be_bytes());
+    data.push(master as u8);
+    ComponentBlob { type_id: 3, data }
+}
+
+#[test]
+fn sprite_config_master_follows_the_object_sprite() {
+    use crate::sprite::EntitySpriteConfig;
+    let mut m = sprites();
+    let window = EntitySpriteConfig {
+        entity_name: "Base.Window".into(),
+        config_name: "Window".into(),
+        valid: true,
+        tile_names: vec!["window_0".into(), "door_0".into()],
+        // Face N: window_0 (the master), then door_0.
+        faces: vec![vec!["window_0".into(), "door_0".into()]],
+        faces_out_of_bounds: false,
+    };
+    assert!(!m.post_tile_definitions(&[window]));
+    assert!(m.is_multi_square_master("Window", Some("window_0")));
+    assert!(!m.is_multi_square_master("Window", Some("door_0")));
+    assert!(!m.is_multi_square_master("Window", Some("door_1")));
+    let t = SaveTables::for_tests();
+    let s = SaveSettings::default();
+    let c = ctx(&m, &t, &s, &SpriteConfigDictionary);
+    let idx = |n: &str| m.named_map[n];
+    let resave = |sprite: &str, blob: ComponentBlob| {
+        let mut o = IsoObject::new(1, ObjectKind::Object, Some(idx(sprite)));
+        o.components.push(blob);
+        o.has_components = true;
+        let mut w = Writer::new();
+        save_object(&mut w, &c, &o).unwrap();
+        let back = load_object(&mut Reader::new(&w.buf), &c, WORLD_VERSION, 1)
+            .unwrap()
+            .unwrap();
+        back.components[0].data.clone()
+    };
+    // The master tile writes 1, another tile of the face and a sprite
+    // outside the faces (an open window) write 0.
+    assert_eq!(
+        resave("window_0", sprite_config(Some(7), false)),
+        sprite_config(Some(7), true).data
+    );
+    assert_eq!(
+        resave("door_0", sprite_config(Some(7), true)),
+        sprite_config(Some(7), false).data
+    );
+    assert_eq!(
+        resave("door_1", sprite_config(Some(7), true)),
+        sprite_config(Some(7), false).data
+    );
+    // An unknown script or no id: no script, saved as a single 0.
+    assert_eq!(resave("window_0", sprite_config(Some(8), true)), vec![0]);
+    assert_eq!(resave("window_0", sprite_config(None, true)), vec![0]);
+    // Without a dictionary the bytes stay.
+    let plain = ctx(&m, &t, &s, &AllItems);
+    let mut o = IsoObject::new(1, ObjectKind::Object, Some(idx("door_1")));
+    o.components.push(sprite_config(Some(7), true));
+    o.has_components = true;
+    let mut w = Writer::new();
+    save_object(&mut w, &plain, &o).unwrap();
+    let back = load_object(&mut Reader::new(&w.buf), &plain, WORLD_VERSION, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(back.components[0], sprite_config(Some(7), true));
+}

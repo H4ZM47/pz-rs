@@ -129,11 +129,64 @@ fn load_entity(
     wv: i32,
     obj: &mut IsoObject,
 ) -> SaveResult<()> {
-    ctx.items
+    let loaded = ctx
+        .items
         .components()
         .load_entity(r, wv, &mut obj.components)?;
+    if loaded.contains(&SPRITE_CONFIG_ID) {
+        sprite_config_added(ctx, obj);
+    }
     obj.has_components = !obj.components.is_empty();
     Ok(())
+}
+
+/// `ComponentType.SpriteConfig`.
+const SPRITE_CONFIG_ID: i16 = 3;
+
+/// `SpriteConfig.load`, then `onAddedToOwner` (`initObjectInfo`) on the
+/// object: what `save` writes after the script (`isMultiSquareMaster()`)
+/// is the tile info of the object's sprite in the script's
+/// `SpriteConfigManager` entry, not the saved flag. A script reference the
+/// dictionary does not resolve leaves no script (saved as a single 0).
+/// Without a script dictionary the bytes stay as loaded.
+fn sprite_config_added(ctx: &SaveCtx<'_>, obj: &mut IsoObject) {
+    let Some(c) = obj
+        .components
+        .iter_mut()
+        .find(|c| c.type_id == SPRITE_CONFIG_ID)
+    else {
+        return;
+    };
+    // [has script] [has id, id] [script version] [master]
+    let d = &c.data;
+    if d.first().is_none_or(|&b| b == 0) {
+        return;
+    }
+    let (id, master_at) = match d.get(1) {
+        Some(0) => (None, 10),
+        Some(_) if d.len() >= 4 => (Some(i16::from_be_bytes([d[2], d[3]])), 12),
+        _ => return,
+    };
+    if d.len() != master_at + 1 {
+        return;
+    }
+    let script = match id {
+        // `loadScript` reads no id: no script.
+        None => None,
+        Some(id) => match ctx.items.script_dictionary_name("SpriteConfigs", id) {
+            None => return,
+            Some(name) => name.and_then(|n| ctx.sprites.sprite_config_scripts.get(&n)),
+        },
+    };
+    let Some(config) = script else {
+        // `configScript` stays null: `save` writes only the flag.
+        c.data = vec![0];
+        return;
+    };
+    let sprite = obj
+        .sprite
+        .and_then(|s| ctx.sprites.sprites[s].name.as_deref());
+    c.data[master_at] = ctx.sprites.is_multi_square_master(config, sprite) as u8;
 }
 
 fn save_entity(w: &mut Writer, obj: &IsoObject) -> SaveResult<()> {

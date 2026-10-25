@@ -177,6 +177,28 @@ pub struct IsoSpriteManager {
     /// `CellLoader.smashedWindowSpriteMap`: smashed window sprite to its
     /// intact window sprite.
     pub smashed_window_sprites: HashMap<SpriteIdx, SpriteIdx>,
+    /// `SpriteConfigManager.objectInfos` (filled by
+    /// [`IsoSpriteManager::post_tile_definitions`]).
+    pub sprite_configs: HashMap<String, SpriteConfigInfo>,
+    /// The `SpriteConfig` script of each game entity script that has one:
+    /// the entity's full type (what `ScriptsDictionary.spriteConfigs` names
+    /// the script by) to the config's `getName()` (the `objectInfos` key).
+    pub sprite_config_scripts: HashMap<String, String>,
+}
+
+/// `SpriteConfigManager.ObjectInfo`: per face (in face-id order), the
+/// face's tile sprites and whether each is the face's master tile.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpriteConfigInfo {
+    pub faces: Vec<HashMap<String, bool>>,
+}
+
+impl SpriteConfigInfo {
+    /// `getFaceForSprite(sprite)` then `getTileInfoForSprite(sprite)`:
+    /// the tile's `isMaster()`, `None` when no face has the sprite.
+    pub fn tile_is_master(&self, sprite: &str) -> Option<bool> {
+        self.faces.iter().find_map(|f| f.get(sprite).copied())
+    }
 }
 
 impl IsoSpriteManager {
@@ -198,7 +220,21 @@ impl IsoSpriteManager {
             int_map: HashMap::new(),
             glass_removed_window_sprites: HashMap::new(),
             smashed_window_sprites: HashMap::new(),
+            sprite_configs: HashMap::new(),
+            sprite_config_scripts: HashMap::new(),
         }
+    }
+
+    /// `SpriteConfig.isMultiSquareMaster()` of a sprite config whose script
+    /// is the config named `config_name`, once the component is on an
+    /// `IsoObject` whose sprite is `sprite` (`initObjectInfo`): the object
+    /// info, the face holding the sprite and its tile must exist, and the
+    /// tile must be the face's master.
+    pub fn is_multi_square_master(&self, config_name: &str, sprite: Option<&str>) -> bool {
+        let (Some(info), Some(sprite)) = (self.sprite_configs.get(config_name), sprite) else {
+            return false;
+        };
+        info.tile_is_master(sprite).unwrap_or(false)
     }
 
     fn new_sprite(&mut self) -> SpriteIdx {

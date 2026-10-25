@@ -13,7 +13,8 @@ mod types;
 
 pub use loader::{load_property_strings, set_custom_property_values, EntitySpriteConfig};
 pub use manager::{
-    GridIdx, IsoSprite, IsoSpriteGrid, IsoSpriteManager, SpriteIdx, DEFAULT_SPRITE_ID,
+    GridIdx, IsoSprite, IsoSpriteGrid, IsoSpriteManager, SpriteConfigInfo, SpriteIdx,
+    DEFAULT_SPRITE_ID,
 };
 pub use properties::{
     PropertyContainer, PropertyValueMap, SurfaceInfo, TileProperty, TilePropertyAliasMap,

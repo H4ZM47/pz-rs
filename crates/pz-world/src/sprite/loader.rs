@@ -14,7 +14,7 @@ use std::path::Path;
 
 use pz_core::debug::{self, JulLevel, StackElement};
 
-use super::manager::{GridIdx, IsoSpriteGrid, IsoSpriteManager, SpriteIdx};
+use super::manager::{GridIdx, IsoSpriteGrid, IsoSpriteManager, SpriteConfigInfo, SpriteIdx};
 use super::properties::{PropertyValueMap, TilePropertyAliasMap};
 use super::types::SpriteTables;
 use super::{is_null_or_whitespace, java_split, parse_int, try_parse_int};
@@ -170,6 +170,75 @@ pub struct EntitySpriteConfig {
     /// `SpriteConfigScript.getAllTileNames()`: every face's tiles in face,
     /// layer, row and column order, without duplicates.
     pub tile_names: Vec<String>,
+    /// The faces `parseSpriteConfigScript` builds, in face-id order
+    /// (`getFace(0..6)`; only face 0 for a single-face config): each face's
+    /// tile names in layer, row and column order (empty cells left out),
+    /// so the first is the face's master tile.
+    pub faces: Vec<Vec<String>>,
+    /// A row or layer reaches past the face's total size or layer count:
+    /// `parseSpriteConfigScript` throws on it.
+    pub faces_out_of_bounds: bool,
+}
+
+impl EntitySpriteConfig {
+    /// The entries for every game entity script with a `SpriteConfig`
+    /// component, in `ScriptManager.getAllGameEntities()` order.
+    pub fn from_scripts(sm: &pz_scripts::ScriptManager) -> Vec<EntitySpriteConfig> {
+        use pz_scripts::objects::entity::components::spriteconfig::SpriteConfigScript;
+        use pz_scripts::objects::entity::{ComponentType, GameEntityScript};
+        let mut out = Vec::new();
+        for e in sm.get_all::<GameEntityScript>(pz_scripts::ScriptType::Entity) {
+            let e = e.borrow();
+            let Some(c) = e.component::<SpriteConfigScript>(ComponentType::SpriteConfig) else {
+                continue;
+            };
+            let Ok(entity_name) = e.full_name() else {
+                continue;
+            };
+            let mut faces = Vec::new();
+            let mut out_of_bounds = false;
+            for id in 0..6 {
+                let face = match c.face(id) {
+                    Some(f) if !(c.is_single_face() && id != 0) => f,
+                    _ => continue,
+                };
+                let (w, h) = (
+                    face.total_width().max(0) as usize,
+                    face.total_height().max(0) as usize,
+                );
+                let mut tiles = Vec::new();
+                for z in 0..face.z_layers() {
+                    let Some(layer) = face.layer(z) else {
+                        continue;
+                    };
+                    for y in 0..layer.height() {
+                        let Some(row) = layer.row(y) else {
+                            continue;
+                        };
+                        for x in 0..row.width() {
+                            if x >= w || y >= h {
+                                out_of_bounds = true;
+                            }
+                            let tile = row.tile(x).unwrap();
+                            if let (false, Some(n)) = (tile.is_empty_space(), tile.tile_name()) {
+                                tiles.push(n.to_string());
+                            }
+                        }
+                    }
+                }
+                faces.push(tiles);
+            }
+            out.push(EntitySpriteConfig {
+                entity_name,
+                config_name: e.base.script_object_name().to_string(),
+                valid: c.is_valid(),
+                tile_names: c.all_tile_names().to_vec(),
+                faces,
+                faces_out_of_bounds: out_of_bounds,
+            });
+        }
+        out
+    }
 }
 
 impl IsoSpriteManager {
@@ -247,15 +316,40 @@ impl IsoSpriteManager {
     /// `SpriteConfigManager.HasLoadErrors()`.
     pub fn post_tile_definitions(&mut self, entities: &[EntitySpriteConfig]) -> bool {
         let mut has_load_errors = false;
-        let mut object_infos = std::collections::HashSet::new();
+        // `Reset()`.
+        self.sprite_configs.clear();
+        self.sprite_config_scripts.clear();
         let mut registered = std::collections::HashSet::new();
         let flag = self.tables.flag.EntityScript;
         for e in entities {
+            self.sprite_config_scripts
+                .entry(e.entity_name.clone())
+                .or_insert_with(|| e.config_name.clone());
             // `parseEntityScript`: `isValid()`, then `parseSpriteConfigScript`.
-            if !e.valid || !object_infos.insert(e.config_name.as_str()) {
+            if !e.valid || self.sprite_configs.contains_key(&e.config_name) {
                 has_load_errors = true;
                 continue;
             }
+            // The faces: the first tile of each is its master; a sprite twice
+            // in one face ("double entry for sprite in face map") or a cell
+            // outside the face fails the parse.
+            let mut info = SpriteConfigInfo::default();
+            let mut parsed = !e.faces_out_of_bounds;
+            for tiles in &e.faces {
+                let mut face = HashMap::new();
+                for (i, t) in tiles.iter().enumerate() {
+                    self.get_sprite_named(t);
+                    if face.insert(t.clone(), i == 0).is_some() {
+                        parsed = false;
+                    }
+                }
+                info.faces.push(face);
+            }
+            if !parsed {
+                has_load_errors = true;
+                continue;
+            }
+            self.sprite_configs.insert(e.config_name.clone(), info);
             // `parseSpriteConfigScript` looks every tile up.
             let sprites: Vec<SpriteIdx> = e
                 .tile_names

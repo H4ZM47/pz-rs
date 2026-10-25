@@ -274,6 +274,8 @@ fn post_tile_definitions_entity_sprites() {
         config_name: config.into(),
         valid,
         tile_names: tiles.iter().map(|s| s.to_string()).collect(),
+        faces: vec![tiles.iter().map(|s| s.to_string()).collect()],
+        faces_out_of_bounds: false,
     };
     let errors = m.post_tile_definitions(&[
         cfg("Bench", "Bench", true, &["bench_0", "bench_1", "new_0"]),
@@ -303,6 +305,22 @@ fn post_tile_definitions_entity_sprites() {
     assert_eq!(script(&m, "new_0"), (true, Some("Bench".into())));
     assert_eq!(script(&m, "bench_2"), (false, None));
     assert_eq!(script(&m, "other_0"), (false, None));
+    // The first tile of a face is its master.
+    assert!(m.is_multi_square_master("Bench", Some("bench_0")));
+    assert!(!m.is_multi_square_master("Bench", Some("bench_1")));
+    // "Copy" parsed (its entry is put) before its duplicate tile threw.
+    assert!(m.is_multi_square_master("Copy", Some("bench_2")));
+    // A sprite twice in one face fails the parse: no entry, no flags.
+    let twice = EntitySpriteConfig {
+        faces: vec![vec!["dup_0".into(), "dup_0".into()]],
+        ..cfg("Dup", "Dup", true, &["dup_0"])
+    };
+    assert!(m.post_tile_definitions(&[twice]));
+    assert!(!m.sprite_configs.contains_key("Dup"));
+    assert_eq!(
+        m.sprite_config_scripts.get("Dup").map(String::as_str),
+        Some("Dup")
+    );
     assert!(!m.post_tile_definitions(&[cfg("Late", "Late", true, &["other_0"])]));
     assert_eq!(script(&m, "other_0"), (true, Some("Late".into())));
 }

@@ -176,6 +176,15 @@ impl ItemEnv for ScriptItems {
         self.templates.get(&registry_id).cloned()
     }
 
+    fn script_dictionary_name(&self, register: &str, id: i16) -> Option<Option<String>> {
+        Some(
+            self.dictionary
+                .script_register(register)
+                .and_then(|r| r.name_of(id))
+                .map(str::to_string),
+        )
+    }
+
     fn exists(&self, registry_id: i16) -> bool {
         self.templates.contains_key(&registry_id)
     }
