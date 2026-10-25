@@ -206,3 +206,73 @@ fn rooms_reach_adjacent_cells() {
     assert_eq!(grid.get_associated_building_at(248, 9).unwrap(), None);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn squares_loaded_from_a_save_get_their_associated_building() {
+    use pz_world::chunk::{IsoChunk, IsoGridSquare};
+    use pz_world::save::chunk_file::{load_chunk, save_chunk};
+    use pz_world::save::items::AllItems;
+    use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables};
+    let root = std::env::temp_dir().join(format!("pz-world-synthetic-save-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    write_map(&root);
+    let grid = IsoMetaGrid::create(
+        &GameFs::new(&root),
+        CreateParams {
+            game_map: "Test",
+            world_gen: WorldGenBounds::default(),
+            rand: &mut Zero,
+            voronois: Vec::new(),
+        },
+    )
+    .unwrap();
+    // Chunk 32,64 is the north-west chunk of cell 1,2; the room covers
+    // cell-local (3..=4, 4..=5).
+    let (wx, wy) = (32, 64);
+    let mut ch = IsoChunk::new(wx, wy);
+    for x in 0..8 {
+        for y in 0..8 {
+            ch.set_square(x, y, 0, Some(IsoGridSquare::new(wx * 8 + x, wy * 8 + y, 0)));
+        }
+    }
+    let sprites = sprites();
+    let tables = SaveTables::from_text("0:IsoObject\nbloodBodyParts=7\n").unwrap();
+    let settings = SaveSettings::default();
+    let mut ctx = SaveCtx {
+        sprites: &sprites,
+        tables: &tables,
+        settings: &settings,
+        items: &AllItems,
+        hooks: &NoSaveHooks,
+        meta: None,
+    };
+    let bytes = save_chunk(&ch, &ctx).unwrap();
+    let no_meta = load_chunk(&bytes, wx, wy, &ctx).unwrap().chunk;
+    assert!(no_meta.squares().all(|s| s.associated_building.is_none()));
+    ctx.meta = Some(&grid);
+    let loaded = load_chunk(&bytes, wx, wy, &ctx).unwrap().chunk;
+    let mut n = 0;
+    for sq in loaded.squares() {
+        assert_eq!(
+            sq.associated_building,
+            grid.get_associated_building_at(sq.x, sq.y).unwrap(),
+            "{},{},{}",
+            sq.x,
+            sq.y,
+            sq.z
+        );
+        n += sq.associated_building.is_some() as usize;
+    }
+    // The room's rect grown by one tile to the north and west: (2..=5, 3..=6).
+    assert_eq!(n, 16);
+    let b = Some(grid.buildings[0]);
+    assert_eq!(
+        loaded.get_grid_square(2, 3, 0).unwrap().associated_building,
+        b
+    );
+    assert_eq!(
+        loaded.get_grid_square(6, 6, 0).unwrap().associated_building,
+        None
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
