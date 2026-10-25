@@ -261,7 +261,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       camCharacter == chr)` at `getNameCoords` (above the name tag,
       progress bar and halo note). `GameLoadingState`'s
       `ChatManager.init(true, player)` takes `bind_players::player_instance()`
-      as the `Rc<dyn ChatPlayer>` (#TBD-chatchar).
+      as the `Rc<dyn ChatPlayer>` (#195).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
