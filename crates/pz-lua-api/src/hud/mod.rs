@@ -18,6 +18,7 @@ pub mod radial_progress_bar;
 pub mod scroll_bar;
 pub mod speed_controls;
 pub mod tooltip;
+pub mod vehicle_gauge;
 
 use crate::bind_ui::{element_of, UIELEMENT, UIMANAGER};
 use crate::expose::{expose_class, int_arg, num_arg};
@@ -311,6 +312,7 @@ pub fn register(thread: &mut Thread) {
     register_health(thread);
     debug_console::register(thread);
     register_radial(thread);
+    register_vehicle_gauge(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
     mu.method("wiggle", |c| {
@@ -415,6 +417,45 @@ pub fn register(thread: &mut Thread) {
         let e = speed_controls(c)?;
         let v = e.ext::<SpeedControls>().unwrap().is_paused();
         Ok(c.push(v))
+    });
+}
+
+fn register_vehicle_gauge(thread: &mut Thread) {
+    use vehicle_gauge::{VehicleGauge, VEHICLE_GAUGE};
+    let b = expose_class(thread, VEHICLE_GAUGE, Some(UIELEMENT));
+    fn gauge(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
+        let e = element_of(&c.arg(0)).ok_or_else(|| LuaError::runtime("Expected VehicleGauge"))?;
+        if e.ext::<VehicleGauge>().is_none() {
+            return Err(LuaError::runtime("Expected VehicleGauge"));
+        }
+        Ok(e)
+    }
+    fn tex(v: Value) -> Option<pz_render::Texture> {
+        match v {
+            Value::Object(o) => o.as_any().downcast_ref::<pz_render::LuaTexture>().map(pz_render::LuaTexture::get),
+            _ => None,
+        }
+    }
+    b.ctor(|c| {
+        // texture.getWidth() on null throws in the original.
+        let t = tex(c.arg(0)).ok_or(LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" })?;
+        let e = VehicleGauge::create(t, int_arg(c, 1), int_arg(c, 2), num_arg(c, 3) as f32, num_arg(c, 4) as f32);
+        Ok(c.push(Value::Object(e as Rc<dyn LuaObject>)))
+    });
+    b.method("setNeedleWidth", |c| {
+        let e = gauge(c)?;
+        e.ext::<VehicleGauge>().unwrap().set_needle_width(int_arg(c, 1));
+        Ok(0)
+    });
+    b.method("setValue", |c| {
+        let e = gauge(c)?;
+        e.ext::<VehicleGauge>().unwrap().set_value(num_arg(c, 1) as f32);
+        Ok(0)
+    });
+    b.method("setTexture", |c| {
+        let e = gauge(c)?;
+        e.ext::<VehicleGauge>().unwrap().set_texture(tex(c.arg(1)));
+        Ok(0)
     });
 }
 
