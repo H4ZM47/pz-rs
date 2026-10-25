@@ -250,15 +250,16 @@ impl<H: Copy + Eq> WorldPopulation<H> {
     /// then `ZombiePopulationManager.updateMain()` (zombies the library
     /// hands over become real through `host`), then the worker thread's
     /// pass if it is due. `Err` is the exception creating a real zombie
-    /// threw (the frame's remaining population work is skipped).
+    /// threw: the rest of `updateMain` is skipped, but the worker pass still
+    /// runs, because in the original it is a separate thread.
     pub fn update<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, frame: &PopulationFrame<'_, H>) -> Result<(), String> {
         if self.manager.client {
             return Ok(());
         }
-        self.main_update(host, frame)?;
+        let main = self.main_update(host, frame);
         let now = self.now();
         self.worker.run(&mut self.manager, now);
-        Ok(())
+        main
     }
 
     /// `MapCollisionData.save()` (the game's periodic and quit saves):

@@ -99,7 +99,10 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `ZombieOps` (`RealZombies`) (#73/#77; `RealZombies::create_survivor`
       returns `CreateSurvivor`'s `ScriptResult`, and `WorldPopulation::update`
       / `start_game` return `Err(java exception text)` when creating a real
-      zombie threw (#147): log it as the frame's uncaught exception): `GameWindow.logic` calls
+      zombie threw (#147): `IngameState.update` has try/finally with no
+      catch (IngameState.java:640–650), so an `Err` aborts the rest of that
+      frame's `IngameState.update` and is logged via `ExceptionLogger`; the
+      popman worker pass has already run, as its own thread would): `GameWindow.logic` calls
       `WorldPopulation::update_game_state(no_save, paused)`; `IngameState.update`
       (after `VirtualZombieManager.update`) calls `WorldPopulation::update(&mut
       WorldPopulationHost::from_state(.., &mut RealZombies { .. }),
