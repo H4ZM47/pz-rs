@@ -16,8 +16,10 @@
 //! The original only reads chunks into the region data in three places,
 //! and this port has the same three entry points:
 //!
-//! * [`IsoRegions::init`] (`IsoWorld.init`) loads the region data the save
-//!   holds (`isoregiondata/datachunk_<x>_<y>.bin`, `RegionHeader.bin`);
+//! * [`IsoRegions::init`] (`IsoWorld.init`; [`IsoRegions::init_world`] is
+//!   the world-load entry) loads the region data the save holds
+//!   (`isoregiondata/datachunk_<x>_<y>.bin`, `RegionHeader.bin`), visible
+//!   to the game from the first [`IsoRegions::update`];
 //! * [`IsoRegions::square_changed`] (`IsoGridSquare.AddTileObject`,
 //!   `RemoveTileObject`, `AddSpecialObject`, `addFloor`, ...): a changed
 //!   square of a chunk seen before updates that square; otherwise the
@@ -394,6 +396,30 @@ impl IsoRegions {
             r.dir = Some(dir);
         }
         r.load_save_map();
+        r
+    }
+
+    /// The world-load entry: `IsoWorld.init` → `IsoRegions.init()` for
+    /// the save being loaded (single player; after the tile definitions and
+    /// `VehiclesDB2.init`, before `WorldStreamer.create` and the cell load).
+    /// Reads every `isoregiondata/datachunk_*.bin` and `RegionHeader.bin`
+    /// at once and queues them (see [`IsoRegions::init`]); `no_save` is
+    /// `Core.getInstance().isNoSave()`, which stops the worker writing
+    /// region files.
+    ///
+    /// The saved regions reach the root the game reads at the first
+    /// [`IsoRegions::update_with_buildings`] (or [`IsoRegions::update`]),
+    /// which the engine calls once per frame from `IsoWorld.updateWorld`,
+    /// right after `IsoCell.update`. The original's worker thread applies
+    /// the queued files to its own root as soon as `init` starts it, but
+    /// the swap to the game's root waits for the main thread's first
+    /// `IsoRegions.update`, so while the world loads (the streamer serving
+    /// and handing off the first chunks) the game's root is still empty,
+    /// and from the first frame on it holds the saved regions, before
+    /// anything renders. Chunk loading itself does not touch the regions.
+    pub fn init_world(save_dir: &Path, chunk_grid_width: i32, no_save: bool) -> Self {
+        let mut r = Self::init(Some(save_dir), chunk_grid_width);
+        r.no_save = no_save;
         r
     }
 

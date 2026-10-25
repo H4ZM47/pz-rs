@@ -70,6 +70,8 @@ struct Fixture {
     gen: Gen,
     log: Log,
     no_save: bool,
+    /// `vehicles.db`, when a test made one.
+    vehicles: Option<pz_sqlite::Connection>,
 }
 
 static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
@@ -99,6 +101,7 @@ impl Fixture {
             gen: Gen::default(),
             log: Log::default(),
             no_save: false,
+            vehicles: None,
         }
     }
 
@@ -119,6 +122,7 @@ impl Fixture {
             brand_new: Some(&mut self.gen),
             chunk_hook: Some(&mut self.log),
             no_save: self.no_save,
+            vehicles_db: self.vehicles.as_mut(),
         }
     }
 
@@ -186,6 +190,13 @@ fn short(events: &[StreamEvent]) -> Vec<String> {
                 format!("W {wx},{wy}{}", if *written { "" } else { " -" })
             }
             StreamEvent::SaveFailed { wx, wy, error } => format!("F {wx},{wy} {error}"),
+            StreamEvent::VehiclesLoaded {
+                wx,
+                wy,
+                added,
+                removed,
+                error,
+            } => format!("V {wx},{wy} {added} -{} {error:?}", removed.len()),
         })
         .collect()
 }
@@ -468,4 +479,110 @@ fn comparator_ties_and_direction() {
     assert_eq!(compare_chunks(&t, (1, 1), (0, 0)), Greater);
     let none = [(-1.0, -1.0); 4];
     assert_eq!(compare_chunks(&none, (0, 0), (5, 5)), Equal);
+}
+
+/// A `vehicles.db` in the fixture's save directory with one good vehicle
+/// row per `(id, x, y)`, in the chunk the position is in.
+fn vehicles_db(f: &mut Fixture, rows: &[(i64, f64, f64)]) {
+    use pz_sqlite::Value;
+    let mut c = pz_sqlite::Connection::open(f.dir.join("vehicles.db")).unwrap();
+    c.execute("CREATE TABLE vehicles (id   INTEGER PRIMARY KEY NOT NULL,wx    INTEGER,wy    INTEGER,x    FLOAT,y    FLOAT,inMeta BOOLEAN NULL DEFAULT FALSE,worldversion    INTEGER,data BLOB);").unwrap();
+    let mut w = crate::save::io::Writer::new();
+    crate::save::movers_tests::vehicle()
+        .save(
+            &mut w,
+            f.save_tables.class_id("Vehicle"),
+            None,
+            None,
+            &AllItems,
+        )
+        .unwrap();
+    for &(id, x, y) in rows {
+        c.insert(
+            "vehicles",
+            &[
+                ("id", Value::Integer(id)),
+                ("wx", Value::Integer((x / 8.0) as i64)),
+                ("wy", Value::Integer((y / 8.0) as i64)),
+                ("x", Value::Real(x)),
+                ("y", Value::Real(y)),
+                ("inMeta", Value::Integer(0)),
+                (
+                    "worldversion",
+                    Value::Integer(i64::from(crate::save::WORLD_VERSION)),
+                ),
+                ("data", Value::Blob(w.buf.clone())),
+            ],
+        )
+        .unwrap();
+    }
+    c.set_autocommit(false).unwrap();
+    f.vehicles = Some(c);
+}
+
+/// A loaded vehicle's row id and square.
+type VehicleAt = (i32, Option<(i32, i32, i32)>);
+
+fn vehicle_ids(cell: &IsoCell, wx: i32, wy: i32) -> Vec<VehicleAt> {
+    cell.chunks[&(wx, wy)]
+        .vehicles
+        .loaded()
+        .map(|v| match v.origin {
+            crate::chunk_vehicles::VehicleOrigin::Database { sql_id } => (sql_id, v.square),
+            _ => (-1, v.square),
+        })
+        .collect()
+}
+
+#[test]
+fn served_chunks_load_their_vehicles_before_the_missing_squares_exist() {
+    let mut f = Fixture::new();
+    f.write_chunk(9, 10, 100);
+    // Two in the saved chunk (9,10), one in the brand-new chunk (11,11),
+    // one outside the grid.
+    vehicles_db(
+        &mut f,
+        &[
+            (4, 75.5, 82.5),
+            (2, 73.0, 87.9),
+            (7, 90.5, 91.0),
+            (5, 200.0, 200.0),
+        ],
+    );
+    let mut s = ChunkStreamer::new(1, 3);
+    let mut cell = IsoCell::default();
+    s.load_world(10, 10, &mut cell, &mut f.ctx());
+    let ev = short(&s.take_events());
+    // `VehiclesDB2.loadChunk` right after each `LoadChunk`, before the
+    // chunk is queued for hand-off.
+    let i = ev.iter().position(|e| e == "S 9,10 d").unwrap();
+    assert_eq!(ev[i + 1], "V 9,10 2 -0 None");
+    assert_eq!(only(&ev, "V ").len(), 9);
+    assert!(ev.contains(&"V 11,11 1 -0 None".to_string()));
+    assert!(ev.contains(&"V 10,10 0 -0 None".to_string()));
+    // Rows come in id order, on the saved squares they are over.
+    assert_eq!(
+        vehicle_ids(&cell, 9, 10),
+        [(2, Some((73, 87, 0))), (4, Some((75, 82, 0)))]
+    );
+    // A brand-new chunk without lots has no squares yet when its vehicles
+    // load (`loadInWorldStreamerThread` makes them later).
+    assert_eq!(vehicle_ids(&cell, 11, 11), [(7, None)]);
+    assert!(cell.chunks[&(11, 11)].get_grid_square(2, 3, 0).is_some());
+    assert!(vehicle_ids(&cell, 10, 10).is_empty());
+}
+
+#[test]
+fn without_a_vehicle_store_no_vehicles_load() {
+    let mut f = Fixture::new();
+    f.write_chunk(9, 10, 100);
+    vehicles_db(&mut f, &[(4, 75.5, 82.5)]);
+    let conn = f.vehicles.take();
+    let mut s = ChunkStreamer::new(1, 3);
+    let mut cell = IsoCell::default();
+    s.load_world(10, 10, &mut cell, &mut f.ctx());
+    let ev = short(&s.take_events());
+    assert!(only(&ev, "V ").is_empty());
+    assert!(vehicle_ids(&cell, 9, 10).is_empty());
+    drop(conn);
 }
