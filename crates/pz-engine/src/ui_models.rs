@@ -81,6 +81,25 @@ struct Avatar {
     jobs: Option<Vec<SmartTextureJob>>,
 }
 
+/// Every clip the animator can start from this set, including blend-field
+/// tracks and transition tracks. Abstract nodes can still supply inherited
+/// transition clips even though they have no primary animation.
+fn animation_clip_names(set: &AnimationSet) -> Vec<&str> {
+    let mut names = Vec::new();
+    for state in set.states.values() {
+        for node in state.nodes.iter().chain(&state.abstract_nodes) {
+            names.push(node.anim_name.as_str());
+            names.extend(node.alternate_anims.iter().map(String::as_str));
+            names.extend(node.blends2d.iter().map(|blend| blend.anim_name.as_str()));
+            names.extend(node.transitions.iter().filter_map(|transition| transition.anim_name.as_deref()));
+        }
+    }
+    names.retain(|name| !name.trim().is_empty());
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 /// The loaded assets.
 pub(crate) struct Assets {
     game_dir: PathBuf,
@@ -251,16 +270,7 @@ impl Assets {
         )
         .ok()?;
         let mut sd = scene.skeleton.clone()?;
-        let mut names: Vec<&str> = Vec::new();
-        for st in set.states.values() {
-            for n in st.nodes.iter().chain(&st.abstract_nodes) {
-                names.push(&n.anim_name);
-                names.extend(n.alternate_anims.iter().map(String::as_str));
-            }
-        }
-        names.sort_unstable();
-        names.dedup();
-        for name in names.into_iter().filter(|n| !n.trim().is_empty()) {
+        for name in animation_clip_names(set) {
             let folders = if set.name.to_lowercase().starts_with("zombie") {
                 &["Zombie", "Bob", "Kate"][..]
             } else {
@@ -434,4 +444,32 @@ pub fn install(game_dir: &Path, fs: Rc<RefCell<GameFs>>) -> Rc<RefCell<UiModels>
     let u = Rc::new(RefCell::new(UiModels::new(game_dir, fs, tm)));
     pz_lua_api::bind_ui3d::install_renderer(Some(Box::new(SharedUiModels(u.clone()))));
     u
+}
+
+#[cfg(test)]
+mod clip_reference_tests {
+    use super::*;
+
+    #[test]
+    fn collects_primary_alternate_blend_and_abstract_transition_clips() {
+        let mut state = pz_anim::AnimState::new("synthetic");
+        for xml in [
+            "<animNode><m_Name>Live</m_Name><m_AnimName>Primary</m_AnimName>\
+             <m_AlternateAnims>Alternate</m_AlternateAnims><m_AlternateAnims>Primary</m_AlternateAnims>\
+             <m_2DBlends><m_AnimName>BlendOnly</m_AnimName></m_2DBlends>\
+             <m_2DBlends><m_AnimName>Primary</m_AnimName></m_2DBlends>\
+             <m_Transitions><m_AnimName>TransitionOnly</m_AnimName></m_Transitions>\
+             <m_Transitions><m_Target>NoClip</m_Target></m_Transitions></animNode>",
+            "<animNode><m_Name>Abstract</m_Name><m_AnimName> </m_AnimName>\
+             <m_Transitions><m_AnimName>AbstractTransition</m_AnimName></m_Transitions>\
+             <m_Transitions><m_AnimName>TransitionOnly</m_AnimName></m_Transitions></animNode>",
+        ] {
+            state.add_node(pz_anim::AnimNode::from_element(&pz_anim::xml::parse(xml).unwrap()));
+        }
+        assert_eq!(state.nodes.len(), 1);
+        assert_eq!(state.abstract_nodes.len(), 1);
+        let mut set = AnimationSet::default();
+        set.add_state(state);
+        assert_eq!(animation_clip_names(&set), ["AbstractTransition", "Alternate", "BlendOnly", "Primary", "TransitionOnly"]);
+    }
 }

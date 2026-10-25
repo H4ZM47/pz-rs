@@ -38,6 +38,9 @@ pub struct StateCx<'a> {
     pub time_delta: f32,
     /// `IsoWorld.instance` (`None` until a game loads).
     pub world: &'a mut Option<IsoWorld>,
+    /// Models retired at the actual state-exit boundary. The window
+    /// releases their GPU resources after returning from the state call.
+    pub retired_models: &'a mut Vec<crate::world_models::WorldModels>,
 }
 
 /// `zombie.gameStates.GameState`; every method defaults to the base
@@ -244,8 +247,34 @@ mod tests {
         let mut lua = LuaManager::init(fs).unwrap();
         let launch = Launch { game_dir: std::env::temp_dir(), cache_dir: std::env::temp_dir(), start: Default::default() };
         let mut world = None;
-        let mut cx = StateCx { lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1, multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world };
+        let mut retired_models = Vec::new();
+        let mut cx = StateCx { lua: &mut lua, launch: &launch, screen_w: 1, screen_h: 1, multiplier: 1.0, time_delta: 1.0 / 30.0, world: &mut world, retired_models: &mut retired_models };
         f(&mut cx);
+    }
+
+    #[test]
+    fn a_quit_requested_during_the_tick_retires_the_actual_world_models() {
+        with_cx(|cx| {
+            let mut world = IsoWorld::new(&cx.launch.game_dir, &cx.launch.cache_dir, cx.launch.cache_dir.join("pz-rs-retire-test"));
+            world.models = Some(crate::world_models::WorldModels::new(
+                &cx.launch.game_dir, cx.lua.fs.clone(), pz_lua_api::bind_render::textures(),
+            ));
+            *cx.world = Some(world);
+            let f = pz_kahlua::stdlib::load_string(
+                "Events.OnTickEvenPaused.Add(function() getCore():exitToMenu() end)",
+                Some("quit-during-tick"), cx.lua.thread.globals().clone(),
+            ).unwrap();
+            cx.lua.thread.call(&f, &[]).unwrap();
+            let ingame = state(crate::ingame::IngameState::default());
+            let mut states = GameStateMachine {
+                firstrun: false, states: vec![ingame.clone()], current: Some(ingame),
+                ..Default::default()
+            };
+            states.update(cx);
+            assert!(cx.world.is_none());
+            assert_eq!(cx.retired_models.len(), 1);
+            assert_eq!(states.current_name(), Some("zombie.gameStates.MainScreenState"));
+        });
     }
 
     #[test]

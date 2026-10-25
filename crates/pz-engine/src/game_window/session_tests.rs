@@ -4,6 +4,8 @@
 use super::{headless_app, run_frames, DevGame, Launch, NewGameSetup, Start};
 use pz_core::core::Core;
 use pz_lua_api::{bind_core, bind_players, player_db::PlayerDb, LuaManager};
+use pz_characters::character::player::PlayerInput;
+use pz_anim::AnimationVariableSource;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -56,6 +58,30 @@ fn save_counts(lua: &LuaManager) -> (Option<f64>, Option<f64>) {
     )
 }
 
+fn movement_diagnostics(app: &mut super::App, label: &str) {
+    let input = pz_player_input::EnginePlayerInput::capture();
+    let binding = app.core.borrow().get_key_binding("Forward");
+    let raw = pz_lua_api::bind_input::is_key_down_raw(17);
+    eprintln!("movement {label}: Forward={binding:?}, rawW={raw}, namedForward={}, textEntry={}, luaKeys={}",
+        input.is_key_down("Forward"), input.is_doing_text_entry(), input.do_lua_key_pressed());
+    let Some(player) = bind_players::player(0) else { return };
+    let p = player.borrow();
+    eprintln!("movement {label}: id={}, position=({},{},{}), action={}, children={:?}, moving={}, pressedMovement={}, isMoving={}, blockMovement={}, ignoreMovement={}, deferredEnabled={}, moveDelta={}",
+        p.id, p.vars.x, p.vars.y, p.vars.z, p.state.action_context.current_state_name(),
+        p.state.action_context.child_states().iter().map(|s| s.name()).collect::<Vec<_>>(),
+        p.player_moving, p.get_variable_boolean("pressedMovement"), p.get_variable_boolean("isMoving"),
+        p.vars.block_movement, p.vars.ignore_movement, p.vars.deferred_movement_enabled, p.vars.move_delta);
+    if let Some(models) = app.world.as_mut().and_then(|w| w.models.as_mut()) {
+        if let Some((animation, animator)) = models.animation_mut(p.id) {
+            let root = animation.deferred_movement(false);
+            let tracks: Vec<_> = animation.tracks().iter().map(|t| (t.name(), t.current_track_time(), t.blend_weight(), t.deferred_movement_bone_idx(), t.use_deferred_movement(), t.deferred_movement_diff())).collect();
+            eprintln!("movement {label}: animState={:?}, root=({},{}), tracks={tracks:?}", animator.current_state_name(), root.x, root.y);
+        } else {
+            eprintln!("movement {label}: no live character animation");
+        }
+    }
+}
+
 #[test]
 #[ignore = "requires PZ_GAME_DIR; boots installed media in the Rust engine and writes a fresh test save"]
 fn installed_assets_new_game_moves_animates_and_saves_on_close() {
@@ -82,6 +108,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     .expect("create Rust session");
     app.core.borrow_mut().set_no_save(false);
     app.boot().expect("boot Rust session from installed media");
+    movement_diagnostics(&mut app, "boot");
 
     // Use the real loading/state-machine path, including population startup.
     for _ in 0..1100 {
@@ -92,6 +119,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     }
     assert_eq!(app.current_state(), Some(INGAME), "session never entered gameplay; cache: {}", cache_dir.display());
     run_frames(&mut app, 4);
+    movement_diagnostics(&mut app, "before W");
     let player = bind_players::player(0).expect("new session created local player 0");
     let (player_id, before) = {
         let p = player.borrow();
@@ -101,7 +129,36 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     // Keyboard scan code 17 is W. It enters the same input queue as the
     // native window; no character coordinate or movement flag is set here.
     pz_input::with_input(|i| i.key(17, 1));
-    run_frames(&mut app, 10);
+    let mut late_start = None;
+    for frame in 1..=60 {
+        run_frames(&mut app, 1);
+        if frame <= 5 || frame >= 56 || [10, 20, 40].contains(&frame) {
+            movement_diagnostics(&mut app, &format!("W frame {frame}"));
+        }
+        if frame == 10 || frame == 40 {
+            let p = player.borrow();
+            let position = (p.vars.x, p.vars.y, p.vars.z);
+            if frame == 10 {
+                assert!(
+                    (position.0 - before.0).abs() + (position.1 - before.1).abs() > 0.0001,
+                    "real W input did not move the player during its first ten frames: {before:?} -> {position:?}; cache: {}",
+                    cache_dir.display()
+                );
+            } else {
+                late_start = Some(position);
+            }
+        }
+    }
+    let late_start = late_start.expect("captured held-W frame 40");
+    let held_end = {
+        let p = player.borrow();
+        (p.vars.x, p.vars.y, p.vars.z)
+    };
+    assert!(
+        (held_end.0 - late_start.0).abs() + (held_end.1 - late_start.1).abs() > 0.0001,
+        "held W stopped moving the player during frames 41-60: {late_start:?} -> {held_end:?}; cache: {}",
+        cache_dir.display()
+    );
     pz_input::with_input(|i| i.key(17, 0));
     run_frames(&mut app, 1);
     let after = {

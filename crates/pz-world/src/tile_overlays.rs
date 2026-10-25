@@ -11,7 +11,34 @@
 //! the object that gets the sprite stays with the caller.
 
 use pz_core::random::location_rng;
+use pz_kahlua::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
+
+/// The actual mutable `ArrayList` allocation returned to Lua. Its
+/// elements are erased Java values: Lua may add a number or null as well
+/// as a sprite name. Clearing the registry drops its reference to a list;
+/// callers retaining that list continue to own its original contents.
+pub type UnderlyingSpriteNames = Rc<RefCell<Vec<Value>>>;
+
+fn add_underlying_name(list: &UnderlyingSpriteNames, name: &str) {
+    let name = Value::str(name);
+    let mut list = list.borrow_mut();
+    if !list.iter().any(|v| v.raw_equals(&name)) {
+        list.push(name);
+    }
+}
+
+fn string_names(list: &UnderlyingSpriteNames) -> Vec<String> {
+    list.borrow()
+        .iter()
+        .filter_map(|v| match v {
+            Value::Str(s) => Some(s.to_string()),
+            _ => None,
+        })
+        .collect()
+}
 
 /// One room entry of an overlay table: `{ name = .., chance = ..,
 /// usage = .., tiles = {..} }` (tiles) or `{ name = .., tiles = {many, few} }`
@@ -96,14 +123,16 @@ fn parse_int(s: &str) -> Result<i32, OverlayError> {
     if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
         return Err(OverlayError::NumberFormat(s.to_string()));
     }
-    s.parse::<i32>().map_err(|_| OverlayError::NumberFormat(s.to_string()))
+    s.parse::<i32>()
+        .map_err(|_| OverlayError::NumberFormat(s.to_string()))
 }
 
 /// `Float.parseFloat` (leading/trailing whitespace allowed, as in Java).
 fn parse_float(s: &str) -> Result<f32, OverlayError> {
     let t = java_trim(s);
     let t = t.strip_suffix(['f', 'F', 'd', 'D']).unwrap_or(t);
-    t.parse::<f32>().map_err(|_| OverlayError::NumberFormat(s.to_string()))
+    t.parse::<f32>()
+        .map_err(|_| OverlayError::NumberFormat(s.to_string()))
 }
 
 impl TileOverlayUsage {
@@ -217,7 +246,7 @@ pub struct TileOverlays {
     pub overlay_map: HashMap<String, TileOverlay>,
     /// `overlayNameToUnderlyingName`: each overlay sprite's underlying
     /// sprites, in registration order.
-    pub overlay_name_to_underlying_name: HashMap<String, Vec<String>>,
+    pub overlay_name_to_underlying_name: HashMap<String, UnderlyingSpriteNames>,
 }
 
 impl TileOverlays {
@@ -251,13 +280,18 @@ impl TileOverlays {
                 o.entries.push(e);
             }
             let tile = o.tile.clone();
-            let names: Vec<String> = o.entries.iter().flat_map(|e| e.tiles.iter().cloned()).collect();
+            let names: Vec<String> = o
+                .entries
+                .iter()
+                .flat_map(|e| e.tiles.iter().cloned())
+                .collect();
             self.overlay_map.insert(tile.clone(), o);
             for name in names {
-                let list = self.overlay_name_to_underlying_name.entry(name).or_default();
-                if !list.contains(&tile) {
-                    list.push(tile.clone());
-                }
+                let list = self
+                    .overlay_name_to_underlying_name
+                    .entry(name)
+                    .or_default();
+                add_underlying_name(list, &tile);
             }
         }
         Ok(())
@@ -269,8 +303,19 @@ impl TileOverlays {
     }
 
     /// `getUnderlyingSpriteNames(overlayName)`.
-    pub fn get_underlying_sprite_names(&self, overlay_name: &str) -> Option<&[String]> {
-        self.overlay_name_to_underlying_name.get(overlay_name).map(Vec::as_slice)
+    pub fn get_underlying_sprite_names(&self, overlay_name: &str) -> Option<Vec<String>> {
+        self.overlay_name_to_underlying_name
+            .get(overlay_name)
+            .map(string_names)
+    }
+
+    /// The backing collection, preserving its identity and all element
+    /// types for the Java-facing getter. The string getter above is a
+    /// snapshot for Rust consumers that need sprite names.
+    pub fn underlying_sprite_names(&self, overlay_name: &str) -> Option<UnderlyingSpriteNames> {
+        self.overlay_name_to_underlying_name
+            .get(overlay_name)
+            .cloned()
     }
 
     /// `updateTileOverlaySprite(obj)`'s choice: the overlay sprite for an
@@ -294,7 +339,11 @@ impl TileOverlays {
         if entry.usage.table_top && has_object_on_top() {
             return None;
         }
-        let name = entry.pick_random(sq.x.wrapping_abs(), sq.y.wrapping_abs(), sq.z.wrapping_abs());
+        let name = entry.pick_random(
+            sq.x.wrapping_abs(),
+            sq.y.wrapping_abs(),
+            sq.z.wrapping_abs(),
+        );
         let tint = (entry.usage.alpha >= 0.0).then_some([1.0, 1.0, 1.0, entry.usage.alpha]);
         let name = name.filter(|n| !null_or_whitespace(Some(n)))?;
         if !server && !texture_exists(name) {
@@ -344,9 +393,18 @@ pub struct ContainerOverlay {
 
 impl ContainerOverlay {
     /// `pickRandom(room, x, y, z)`.
-    pub fn pick_random(&self, room: &str, x: i32, y: i32, z: i32) -> Option<&ContainerOverlayEntry> {
-        let entries: Vec<&ContainerOverlayEntry> =
-            self.entries.iter().filter(|e| e.room.eq_ignore_ascii_case(room)).collect();
+    pub fn pick_random(
+        &self,
+        room: &str,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Option<&ContainerOverlayEntry> {
+        let entries: Vec<&ContainerOverlayEntry> = self
+            .entries
+            .iter()
+            .filter(|e| e.room.eq_ignore_ascii_case(room))
+            .collect();
         if entries.is_empty() {
             return None;
         }
@@ -367,7 +425,7 @@ pub struct ContainerOverlayV0Entry {
 #[derive(Clone, Debug, Default)]
 pub struct ContainerOverlays {
     pub overlay_map: HashMap<String, ContainerOverlay>,
-    pub overlay_name_to_underlying_name: HashMap<String, Vec<String>>,
+    pub overlay_name_to_underlying_name: HashMap<String, UnderlyingSpriteNames>,
 }
 
 impl ContainerOverlays {
@@ -393,7 +451,13 @@ impl ContainerOverlays {
     /// `parseContainerOverlayMapV1`: each entry's `tiles` are
     /// `{manyItems, fewItems}` (`OverlayEntryDef::tiles[0..2]`, `None` for a
     /// missing index; "none" or blank is no sprite).
-    pub fn add_overlays_v1(&mut self, defs: &[(String, Vec<(Option<String>, Option<String>, Option<String>)>)]) {
+    pub fn add_overlays_v1(
+        &mut self,
+        defs: &[(
+            String,
+            Vec<(Option<String>, Option<String>, Option<String>)>,
+        )],
+    ) {
         for (key, entries) in defs {
             if key.eq_ignore_ascii_case("VERSION") {
                 continue;
@@ -421,10 +485,11 @@ impl ContainerOverlays {
                 .collect();
             self.overlay_map.insert(key.clone(), o);
             for name in names {
-                let list = self.overlay_name_to_underlying_name.entry(name).or_default();
-                if !list.contains(key) {
-                    list.push(key.clone());
-                }
+                let list = self
+                    .overlay_name_to_underlying_name
+                    .entry(name)
+                    .or_default();
+                add_underlying_name(list, key);
             }
         }
     }
@@ -435,8 +500,16 @@ impl ContainerOverlays {
     }
 
     /// `getUnderlyingSpriteNames(overlayName)`.
-    pub fn get_underlying_sprite_names(&self, overlay_name: &str) -> Option<&[String]> {
-        self.overlay_name_to_underlying_name.get(overlay_name).map(Vec::as_slice)
+    pub fn get_underlying_sprite_names(&self, overlay_name: &str) -> Option<Vec<String>> {
+        self.overlay_name_to_underlying_name
+            .get(overlay_name)
+            .map(string_names)
+    }
+
+    pub fn underlying_sprite_names(&self, overlay_name: &str) -> Option<UnderlyingSpriteNames> {
+        self.overlay_name_to_underlying_name
+            .get(overlay_name)
+            .cloned()
     }
 
     /// `updateContainerOverlaySprite(obj)`'s choice for an object (not a
@@ -522,8 +595,14 @@ mod tests {
         ])
         .unwrap();
         assert!(!t.overlay_map.contains_key("VERSION"));
-        assert_eq!(t.overlay_map["base_0"].entries[0].tiles, vec!["ov_0", "", "ov_1"]);
-        assert_eq!(t.get_underlying_sprite_names("ov_0").unwrap(), ["base_0", "base_1"]);
+        assert_eq!(
+            t.overlay_map["base_0"].entries[0].tiles,
+            vec!["ov_0", "", "ov_1"]
+        );
+        assert_eq!(
+            t.get_underlying_sprite_names("ov_0").unwrap(),
+            ["base_0", "base_1"]
+        );
         assert_eq!(t.get_underlying_sprite_names("").unwrap(), ["base_0"]);
         // chance 1: nextInt(1) is always 0, so a tile is always picked.
         let sq = OverlaySquare {
@@ -532,13 +611,25 @@ mod tests {
             z: 0,
             room: Some("Kitchen"),
         };
-        let p = t.pick_overlay(Some("base_1"), sq, false, || false, |_| true).unwrap();
+        let p = t
+            .pick_overlay(Some("base_1"), sq, false, || false, |_| true)
+            .unwrap();
         assert_eq!(p.sprite, "ov_0");
         assert_eq!(p.tint, Some([1.0, 1.0, 1.0, 0.5]));
         // No texture: nothing.
-        assert!(t.pick_overlay(Some("base_1"), sq, false, || false, |_| false).is_none());
+        assert!(t
+            .pick_overlay(Some("base_1"), sq, false, || false, |_| false)
+            .is_none());
         // The room has no entry: falls back to "other".
-        assert!(t.pick_overlay(Some("base_1"), OverlaySquare { room: None, ..sq }, true, || false, |_| true).is_none());
+        assert!(t
+            .pick_overlay(
+                Some("base_1"),
+                OverlaySquare { room: None, ..sq },
+                true,
+                || false,
+                |_| true
+            )
+            .is_none());
         let missing = OverlayDef {
             tile: "x".into(),
             entries: vec![OverlayEntryDef {
@@ -557,20 +648,30 @@ mod tests {
         c.add_overlays_v1(&[(
             "fridge_0".into(),
             vec![
-                (Some("other".into()), Some("food_0".into()), Some("food_1".into())),
+                (
+                    Some("other".into()),
+                    Some("food_0".into()),
+                    Some("food_1".into()),
+                ),
                 (Some("other".into()), Some("none".into()), None),
             ],
         )]);
         let o = &c.overlay_map["fridge_0"];
         assert_eq!(o.entries[1].many_items, None);
-        assert_eq!(c.get_underlying_sprite_names("food_1").unwrap(), ["fridge_0"]);
+        assert_eq!(
+            c.get_underlying_sprite_names("food_1").unwrap(),
+            ["fridge_0"]
+        );
         let sq = OverlaySquare {
             x: 3,
             y: 4,
             z: 0,
             room: None,
         };
-        assert_eq!(c.pick_overlay(Some("fridge_0"), Some(0), sq, true, |_| true), None);
+        assert_eq!(
+            c.pick_overlay(Some("fridge_0"), Some(0), sq, true, |_| true),
+            None
+        );
         let picked = c.pick_overlay(Some("fridge_0"), Some(10), sq, true, |_| true);
         let n = location_rng::with_instance(|r| r.next_int_at(2, 3, 4, 0));
         assert_eq!(picked, if n == 0 { Some("food_0".into()) } else { None });

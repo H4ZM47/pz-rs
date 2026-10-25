@@ -4,6 +4,23 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+/// The development game entry skips `MainScreen.create`, which normally
+/// runs `MainOptions.loadKeys` before a game can start. Run that same Lua
+/// loader so defaults, the user's saved bindings and keyboard layout are
+/// applied before the first gameplay input snapshot.
+pub fn load_key_bindings(lua: &mut pz_lua_api::LuaManager) -> Result<(), String> {
+    let options = lua.thread.globals().get_str("MainOptions");
+    let options = options.as_table().ok_or("MainOptions is unavailable while loading key bindings")?;
+    let load = options.get_str("loadKeys");
+    if load.is_nil() {
+        return Err("MainOptions.loadKeys is unavailable while loading key bindings".into());
+    }
+    lua.thread
+        .pcall(&load, &[])
+        .map(|_| ())
+        .map_err(|(error, trace)| format!("MainOptions.loadKeys: {error:?}\n{trace}"))
+}
+
 /// The `Registries` bootstrap, `PerkFactory.init()`,
 /// `ScriptManager.instance.Load()` and the clothing loads after it
 /// (`ClothingDecals`, `BeardStyles`, `HairStyles`, `OutfitManager`,

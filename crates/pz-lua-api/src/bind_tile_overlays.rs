@@ -9,16 +9,18 @@
 //! `updateContainerOverlaySprite` and `fixTableTopOverlays(IsoGridSquare)`
 //! take world objects, which have no Lua binding here.
 
-use crate::bind_java_util::{class_cast, list_value};
+use crate::bind_java_util::{class_cast, JavaList};
 use crate::expose::{expose_class, global, str_arg};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, TableRef, Thread, Value};
 use pz_world::tile_overlays::{
-    ContainerOverlayV0Entry, ContainerOverlays, OverlayDef, OverlayEntryDef, OverlayError, TileOverlays,
+    ContainerOverlayV0Entry, ContainerOverlays, OverlayDef, OverlayEntryDef, OverlayError,
+    TileOverlays, UnderlyingSpriteNames,
 };
 use std::any::Any;
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
 
 const TILE_CLASS: &str = "zombie.iso.TileOverlays";
 const CONTAINER_CLASS: &str = "zombie.iso.ContainerOverlays";
@@ -27,6 +29,10 @@ const TABLE_CLASS: &str = "se.krka.kahlua.j2se.KahluaTableImpl";
 thread_local! {
     static TILES: Rc<RefCell<TileOverlays>> = Rc::default();
     static CONTAINERS: Rc<RefCell<ContainerOverlays>> = Rc::default();
+    /// A retained Java list owns its backing cell through its callbacks,
+    /// so this weak cache cannot confuse a recycled allocation with a
+    /// still-live list. Old lists remain valid after registry Reset.
+    static NAME_LISTS: RefCell<HashMap<usize, Weak<JavaList>>> = RefCell::default();
 }
 
 /// `TileOverlays.instance`.
@@ -189,8 +195,28 @@ pub fn add_container_overlays(c: &mut ContainerOverlays, map: &TableRef) -> LuaR
     Ok(())
 }
 
-fn names_value(names: Option<&[String]>) -> Value {
-    names.map_or(Value::Nil, |n| list_value(n.iter().map(|s| Value::str(s)).collect()))
+fn names_value(names: Option<UnderlyingSpriteNames>) -> Value {
+    let Some(names) = names else {
+        return Value::Nil;
+    };
+    let key = Rc::as_ptr(&names) as usize;
+    NAME_LISTS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.retain(|_, list| list.strong_count() != 0);
+        if let Some(list) = cache.get(&key).and_then(Weak::upgrade) {
+            return Value::Object(list);
+        }
+        let read = names.clone();
+        let list = Rc::new(JavaList::live(
+            move || read.borrow().clone(),
+            Some(Box::new(move |values| {
+                *names.borrow_mut() = values;
+                Ok(())
+            })),
+        ));
+        cache.insert(key, Rc::downgrade(&list));
+        Value::Object(list)
+    })
 }
 
 pub fn register(thread: &mut Thread) {
@@ -203,7 +229,9 @@ pub fn register(thread: &mut Thread) {
         // keeps the overlays before it.
         for (k, v) in map.entries() {
             if let Some(d) = tile_overlay_def(&k, v)? {
-                TILES.with(|t| t.borrow_mut().add_overlays(&[d])).map_err(overlay_err)?;
+                TILES
+                    .with(|t| t.borrow_mut().add_overlays(&[d]))
+                    .map_err(overlay_err)?;
             }
         }
         Ok(0)
@@ -213,7 +241,7 @@ pub fn register(thread: &mut Thread) {
         let name = str_arg(c, 1);
         let v = TILES.with(|t| {
             let t = t.borrow();
-            names_value(name.as_deref().and_then(|n| t.get_underlying_sprite_names(n)))
+            names_value(name.as_deref().and_then(|n| t.underlying_sprite_names(n)))
         });
         Ok(c.push(v))
     });
@@ -235,7 +263,7 @@ pub fn register(thread: &mut Thread) {
         let name = str_arg(c, 1);
         let v = CONTAINERS.with(|k| {
             let k = k.borrow();
-            names_value(name.as_deref().and_then(|n| k.get_underlying_sprite_names(n)))
+            names_value(name.as_deref().and_then(|n| k.underlying_sprite_names(n)))
         });
         Ok(c.push(v))
     });
@@ -267,7 +295,9 @@ mod tests {
     fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         // assert belongs to the installed stdlib.lua, absent from this
         // invented fixture; keep every assertion active with a local check.
-        let src = format!("local function assert(c) if not c then error('assertion failed') end end\n{src}");
+        let src = format!(
+            "local function assert(c) if not c then error('assertion failed') end end\n{src}"
+        );
         let f = pz_kahlua::stdlib::load_string(&src, Some("test"), t.globals().clone()).unwrap();
         // Runtime exceptions may deliberately have an empty message;
         // retain their class when checking the fixture's error contract.
@@ -298,7 +328,11 @@ mod tests {
         assert_eq!(o.overlay_map["base_0"].entries[0].usage.z_only, 0);
         assert_eq!(o.overlay_map["base_1"].entries[1].room, "other");
         drop(o);
-        let e = run(&mut t, r#"getTileOverlays():addOverlays({ x = {{ name = "other", tiles = {} }} })"#).unwrap_err();
+        let e = run(
+            &mut t,
+            r#"getTileOverlays():addOverlays({ x = {{ name = "other", tiles = {} }} })"#,
+        )
+        .unwrap_err();
         assert!(e.contains("NullPointerException"), "{e}");
     }
 
@@ -321,10 +355,141 @@ mod tests {
         assert_eq!(o.entries[0].few_items.as_deref(), Some("food_1"));
         assert_eq!(o.entries[1].many_items, None);
         drop(c2);
-        let e = run(&mut t, r#"getContainerOverlays():addOverlays({ VERSION = 2 })"#).unwrap_err();
+        let e = run(
+            &mut t,
+            r#"getContainerOverlays():addOverlays({ VERSION = 2 })"#,
+        )
+        .unwrap_err();
         assert!(e.contains("unknown overlayMap.VERSION 2"), "{e}");
         // Version 0: rooms are keys.
-        run(&mut t, r#"getContainerOverlays():addOverlays({ crate_0 = { other = {"a", "b"} } })"#).unwrap();
-        assert_eq!(c.borrow().overlay_map["crate_0"].entries[0].few_items.as_deref(), Some("b"));
+        run(
+            &mut t,
+            r#"getContainerOverlays():addOverlays({ crate_0 = { other = {"a", "b"} } })"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.borrow().overlay_map["crate_0"].entries[0]
+                .few_items
+                .as_deref(),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn underlying_lists_keep_identity_mutations_and_retired_allocations() {
+        for container in [false, true] {
+            let mut t = thread();
+            let target = if container {
+                Value::Object(Rc::new(LuaContainerOverlays))
+            } else {
+                Value::Object(Rc::new(LuaTileOverlays))
+            };
+            t.globals().set_str("target", target);
+            run(
+                &mut t,
+                r#"
+                target:Reset()
+                target:addOverlays({ VERSION = 1, base_a = {
+                    { name = "other", chance = 1, usage = "", tiles = { "overlay_a" } }
+                } })
+                retained = target:getUnderlyingSpriteNames("overlay_a")
+                assert(retained == target:getUnderlyingSpriteNames("overlay_a"))
+                retained:add("from_mod")
+                assert(target:getUnderlyingSpriteNames("overlay_a"):get(1) == "from_mod")
+            "#,
+            )
+            .unwrap();
+            let rust_names = if container {
+                shared_container_overlays()
+                    .borrow()
+                    .get_underlying_sprite_names("overlay_a")
+            } else {
+                shared_tile_overlays()
+                    .borrow()
+                    .get_underlying_sprite_names("overlay_a")
+            };
+            assert_eq!(rust_names.unwrap(), ["base_a", "from_mod"]);
+
+            // A registration made by the Rust owner must reach a Lua
+            // reference obtained before that registration.
+            if container {
+                shared_container_overlays().borrow_mut().add_overlays_v1(&[(
+                    "base_b".into(),
+                    vec![(Some("other".into()), Some("overlay_a".into()), None)],
+                )]);
+            } else {
+                shared_tile_overlays()
+                    .borrow_mut()
+                    .add_overlays(&[OverlayDef {
+                        tile: "base_b".into(),
+                        entries: vec![OverlayEntryDef {
+                            room: Some("other".into()),
+                            chance: 1,
+                            usage: Some(String::new()),
+                            tiles: vec!["overlay_a".into()],
+                        }],
+                    }])
+                    .unwrap();
+            }
+            run(
+                &mut t,
+                r#"
+                assert(retained:size() == 3 and retained:get(2) == "base_b")
+                retained:clear()
+                retained:add(42)
+                retained:add(nil)
+                assert(retained:size() == 2)
+                assert(retained:get(0) == 42 and retained:get(1) == nil)
+            "#,
+            )
+            .unwrap();
+            let backing = if container {
+                shared_container_overlays()
+                    .borrow()
+                    .underlying_sprite_names("overlay_a")
+            } else {
+                shared_tile_overlays()
+                    .borrow()
+                    .underlying_sprite_names("overlay_a")
+            }
+            .unwrap();
+            assert_eq!(backing.borrow().len(), 2);
+            assert_eq!(backing.borrow()[0].as_num(), Some(42.0));
+            assert!(backing.borrow()[1].is_nil());
+
+            // Reset clears the map, not an ArrayList still retained by
+            // Lua. Re-registering the same name creates a new list.
+            run(
+                &mut t,
+                r#"
+                target:Reset()
+                assert(target:getUnderlyingSpriteNames("overlay_a") == nil)
+                assert(retained:size() == 2 and retained:get(0) == 42)
+                target:addOverlays({ VERSION = 1, base_new = {
+                    { name = "other", chance = 1, usage = "", tiles = { "overlay_a" } }
+                } })
+                replacement = target:getUnderlyingSpriteNames("overlay_a")
+                assert(replacement ~= retained)
+                assert(replacement == target:getUnderlyingSpriteNames("overlay_a"))
+                retained:add("retired_only")
+                assert(retained:size() == 3)
+                assert(replacement:size() == 1 and replacement:get(0) == "base_new")
+            "#,
+            )
+            .unwrap();
+            let current = if container {
+                shared_container_overlays()
+                    .borrow()
+                    .underlying_sprite_names("overlay_a")
+            } else {
+                shared_tile_overlays()
+                    .borrow()
+                    .underlying_sprite_names("overlay_a")
+            }
+            .unwrap();
+            assert!(!Rc::ptr_eq(&backing, &current));
+            assert_eq!(backing.borrow().len(), 3);
+            assert_eq!(current.borrow().len(), 1);
+        }
     }
 }

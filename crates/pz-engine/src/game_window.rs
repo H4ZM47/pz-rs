@@ -96,6 +96,7 @@ struct App {
     states: GameStateMachine,
     /// `IsoWorld.instance` once a game loads.
     world: Option<IsoWorld>,
+    retired_models: Vec<crate::world_models::WorldModels>,
     last_frame: Instant,
     /// `Controllers` backend (gilrs); `None` when unavailable.
     gamepads: Option<pz_input::gamepads::Gamepads>,
@@ -123,6 +124,7 @@ pub fn run(launch: Launch) -> Result<(), String> {
         core,
         states: GameStateMachine::default(),
         world: None,
+        retired_models: Vec::new(),
         last_frame: Instant::now(),
         gamepads: None,
         audio: None,
@@ -144,17 +146,20 @@ impl App {
                 world.save_on_quit(lua);
             }
         }
-        let models = self.world.as_mut().and_then(|w| w.models.take());
         if let Some(current) = current {
             current.borrow_mut().exit(&mut StateCx {
                 lua, launch: &self.launch, screen_w, screen_h,
                 multiplier: 0.0, time_delta: 0.0, world: &mut self.world,
+                retired_models: &mut self.retired_models,
             });
         }
         // A partially loaded world may have no current IngameState yet.
-        if let Some(world) = self.world.as_mut() { world.stop(); }
+        if let Some(world) = self.world.as_mut() {
+            if let Some(models) = world.models.take() { self.retired_models.push(models); }
+            world.stop();
+        }
         self.world = None;
-        if let Some(mut models) = models {
+        for mut models in self.retired_models.drain(..) {
             models.clear();
             if let Some(gpu) = self.gpu.as_mut() {
                 models.prepare(gpu);
@@ -200,6 +205,10 @@ impl App {
                 self.states.states.push(state(MainScreenState::default()));
             }
             Start::Game(g) => {
+                // The main menu normally registers the shipped/default
+                // and saved key bindings through MainOptions.loadKeys.
+                // Development game entry bypasses that screen.
+                crate::boot::load_key_bindings(self.lua.as_mut().ok_or("no Lua")?)?;
                 {
                     let mut c = self.core.borrow_mut();
                     c.set_game_mode(&g.game_mode);
@@ -260,9 +269,6 @@ impl App {
             let no_save = self.core.borrow().is_no_save();
             world.update_game_state(no_save, false);
         }
-        let retiring_models = if self.core.borrow().exiting || self.states.force_next.is_some() {
-            self.world.as_mut().and_then(|w| w.models.take())
-        } else { None };
         {
             let mut cx = StateCx {
                 lua: &mut *lua,
@@ -272,10 +278,11 @@ impl App {
                 multiplier,
                 time_delta: dt,
                 world: &mut self.world,
+                retired_models: &mut self.retired_models,
             };
             self.states.update(&mut cx);
         }
-        if let Some(mut models) = retiring_models {
+        for mut models in self.retired_models.drain(..) {
             models.clear();
             if let Some(gpu) = self.gpu.as_mut() {
                 models.prepare(gpu);
@@ -311,6 +318,7 @@ impl App {
                 multiplier,
                 time_delta: dt,
                 world: &mut self.world,
+                retired_models: &mut self.retired_models,
             };
             self.states.render(&mut cx, &mut dl);
         }
@@ -451,6 +459,7 @@ fn headless_app(launch: Launch) -> Result<App, String> {
         core,
         states: GameStateMachine::default(),
         world: None,
+        retired_models: Vec::new(),
         last_frame: Instant::now(),
         gamepads: None,
         audio: None,
