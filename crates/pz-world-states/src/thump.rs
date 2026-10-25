@@ -1083,40 +1083,8 @@ impl StatesWorldAdapter<'_> {
         let Some(ObjectKind::Barricade(b)) = self.find(r).map(|(_, o)| &o.kind) else {
             return;
         };
-        let dir = b.forward_dir();
-        let name = if b.metal_health > 0 {
-            let dmg = if b.metal_health <= 2500 { 2 } else { 0 };
-            let base = match dir {
-                IsoDirections::W => 24,
-                IsoDirections::N => 25,
-                IsoDirections::E => 28,
-                IsoDirections::S => 29,
-                _ => return,
-            };
-            format!("constructedobjects_01_{}", base + dmg)
-        } else if b.metal_bar_health > 0 {
-            let n = match dir {
-                IsoDirections::W => 55,
-                IsoDirections::N => 53,
-                IsoDirections::E => 52,
-                IsoDirections::S => 54,
-                _ => return,
-            };
-            format!("constructedobjects_01_{n}")
-        } else {
-            let planks = b.num_planks();
-            if planks <= 0 {
-                "media/ui/missing-tile.png".into()
-            } else {
-                let base = match dir {
-                    IsoDirections::W => 8,
-                    IsoDirections::N => 9,
-                    IsoDirections::E => 0,
-                    IsoDirections::S => 1,
-                    _ => return,
-                };
-                format!("carpentry_01_{}", base + (planks - 1) * 2)
-            }
+        let Some(name) = b.sprite_name() else {
+            return;
         };
         let s = self.sprites.named_map.get(&name).copied();
         if let Some(o) = self.find_mut(r) {

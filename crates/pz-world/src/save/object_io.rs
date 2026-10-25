@@ -1162,12 +1162,17 @@ fn load_special(
                     *p = h as i32;
                 }
             }
-            o.kind = ObjectKind::Barricade(IsoBarricade {
+            let b = IsoBarricade {
                 dir,
                 plank_health,
                 metal_health: r.i16()? as i32,
                 metal_bar_health: r.i16()? as i32,
-            });
+            };
+            // `chooseSprite()`.
+            if let Some(n) = b.sprite_name() {
+                o.sprite = ctx.sprites.named_map.get(&n).copied();
+            }
+            o.kind = ObjectKind::Barricade(b);
             return Ok(());
         }
         _ => {}
