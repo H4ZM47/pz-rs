@@ -1168,10 +1168,14 @@ fn load_special(
                 metal_health: r.i16()? as i32,
                 metal_bar_health: r.i16()? as i32,
             };
-            // `chooseSprite()`.
-            if let Some(n) = b.sprite_name() {
-                o.sprite = ctx.sprites.named_map.get(&n).copied();
-            }
+            // `chooseSprite()`. `getSprite(name)` adds a sprite for a name it
+            // does not know; the tiles it picks are all defined. A diagonal
+            // direction leaves the sprite null and the original's
+            // `LoadFramesNoDirPageSimple` throws.
+            let Some(n) = b.sprite_name() else {
+                return err("NullPointerException: IsoBarricade.chooseSprite with no sprite");
+            };
+            o.sprite = ctx.sprites.named_map.get(&n).copied();
             o.kind = ObjectKind::Barricade(b);
             return Ok(());
         }
