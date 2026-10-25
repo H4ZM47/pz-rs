@@ -64,6 +64,9 @@ pub struct SpriteCtx<'a> {
     pub chunk: Option<ChunkTexture>,
     pub depth_maps: &'a dyn DepthMaps,
     pub out: &'a mut Vec<DrawCmd>,
+    /// `FBORenderObjectHighlight.isRendering()`: the highlight pass, whose
+    /// sprites sit just in front of the chunk textures' copies.
+    pub highlight_pass: bool,
 }
 
 /// One sprite draw: `IsoSprite.render(inst, obj, x, y, z, dir, offsetX,
@@ -122,6 +125,10 @@ fn tile_depths(ctx: &SpriteCtx<'_>, mut x: f32, mut y: f32, z: f32, z2: f32) -> 
         front -= (z2 - z) * iso::LEVEL_DEPTH;
     }
     if ctx.chunk.is_none() {
+        if ctx.highlight_pass {
+            front -= 5.0e-5;
+            far -= 5.0e-5;
+        }
         return (front, far);
     }
     let chunk_depth = iso::chunk_depth_data(ctx.cam.chunk_x(), ctx.cam.chunk_y(), fastfloor(x / 8.0), fastfloor(y / 8.0), fastfloor(z)).depth_start;
@@ -308,7 +315,7 @@ fn render_inst(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, inst_scale: Option<f
             let (mut front, mut far) = tile_depths(ctx, d.x - back, d.y - back, d.z, z2);
             // In the per-frame passes a fireplace's attached sprites sit
             // just in front of the fireplace.
-            if ctx.chunk.is_none() && !d.main && matches!(d.obj.and_then(|o| o.hearth), Some(HearthRender::Fireplace { .. })) {
+            if ctx.chunk.is_none() && !ctx.highlight_pass && !d.main && matches!(d.obj.and_then(|o| o.hearth), Some(HearthRender::Fireplace { .. })) {
                 front -= 5.0e-5;
                 far -= 5.0e-5;
             }

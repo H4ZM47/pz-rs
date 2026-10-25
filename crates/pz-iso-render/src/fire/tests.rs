@@ -368,6 +368,7 @@ fn flames_and_smoke_stand_on_the_square_centre() {
         chunk: None,
         depth_maps: &maps,
         out: &mut out,
+        highlight_pass: false,
     };
     let mut obj = sq.objects[0].clone();
     obj.alpha = 0.9;
@@ -410,6 +411,7 @@ fn campfires_are_smaller_and_fires_use_the_billboard_depth() {
         chunk: None,
         depth_maps: &maps,
         out: &mut out,
+        highlight_pass: false,
     };
     render_animated_attachments(&mut ctx, &sq, &sq.objects[0]);
     let s = sprites(&out);
