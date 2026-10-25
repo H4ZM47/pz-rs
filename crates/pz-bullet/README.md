@@ -40,23 +40,28 @@ modifications. The game changes Bullet only from the outside:
 
 ### Ported Bullet subset
 
-* **Shapes:** box, sphere, convex hull, and compound (with its child tree).
+* **Shapes:** box, sphere, capsule (Y, X and Z; the game's
+  `PZCapsuleShape` overrides nothing), convex hull, and compound (with its
+  child tree).
 * **Narrowphase:** the Voronoi simplex solver, the GJK pair detector,
   GJK-EPA, the subsimplex, GJK and continuous convex casts, and the box-box
   detector.
 * **Broadphase:** `btDbvt`, `btDbvtBroadphase`, the hashed and hashed-simple
   pair caches, and union-find.
 * **Collision dispatch:** the dispatcher with the 2.82 dispatch table,
-  manifold result, the convex-convex, compound, compound-compound, box-box,
-  sphere-sphere and empty algorithms, ray tests and convex sweeps, and
-  simulation islands.
+  manifold result, the convex-convex (with its capsule-capsule collider),
+  compound, compound-compound, box-box, sphere-sphere and empty algorithms,
+  ray tests (closest and all hits) and convex sweeps, and simulation
+  islands.
 * **Dynamics:** rigid body, the sequential-impulse solver,
-  point-to-point, hinge and generic 6-DOF constraints, the discrete dynamics
+  point-to-point, hinge, cone-twist and generic 6-DOF constraints, the
+  discrete dynamics
   world (predictive contacts, CCD and solver batching included), and the
   raycast vehicle.
 
-Concave, triangle and plane shapes, continuous dispatch, cone-twist and
-serialization are not ported, because nothing the game calls reaches them.
+Concave, triangle and plane shapes, continuous dispatch, the cone-twist
+motor and obsolete solver, and serialization are not ported, because
+nothing the game calls reaches them.
 
 ## Exactness
 
@@ -67,6 +72,10 @@ The arm64 library was compiled by clang with `-ffp-contract=on`.
   checked first, so `a*b + c*d` becomes `fma(a, b, c*d)`. Separate
   statements and inline-function boundaries never fuse. Each fused
   operation is written out as `linear_math::fma` (`f64::mul_add`).
+* **Folded negations.** In `btConeTwistConstraint::calcAngleInfo2` clang
+  folded a few negations of fused results into the fused instruction
+  (`fnmadd`), which turns an exact `-0` into `+0`. The port writes those
+  expressions out the same way.
 * **Float and double.** Where the glue computes in `float` before
   converting (for example `x - (float)offsetX`), the port does the same.
 * **libm.** `sin`, `cos`, `acos`, `asin`, `atan2`, `fmod` and `pow` are
@@ -91,6 +100,9 @@ dumps bit for bit.
 | Broadphase, `btDbvt` and pair caches | ~273,000 steps | 0 |
 | Solver and constraints | 22,000 scenes (55,249 solver steps) | 0 |
 | Raycast vehicle | 160,199 `updateVehicle` calls (635,582 wheel rays) | 0 |
+| Capsules (support, AABB, inertia, margins, scaling; GJK, EPA and casts against boxes, spheres, hulls and capsules) | 200,000 cases (117,000 capsules) | 0 |
+| Cone-twist and frame-hinge `getInfo1`/`getInfo2` rows and limit state | 500,000 constraints | 0 |
+| Ragdoll worlds (chains of compound capsule, box and sphere parts joined by cone-twist and hinge joints, damping, sleeping thresholds, rolling friction, impulses, `setMassProps` re-adds, closest and all-hits rays, per-child `rayTestSingle`, capsule sweeps) | 60 seeds, 90,000 steps, 154,717 compared state lines | 0 |
 | Whole worlds (statics, compound stairs, vehicles, loose bodies with CCD, all constraint types, rays and sweeps) | 244 seeds, ~545,000 compared state lines | 0 |
 
 The whole-world runs include one stray difference, and it comes from

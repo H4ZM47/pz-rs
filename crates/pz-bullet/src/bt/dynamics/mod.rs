@@ -1,6 +1,7 @@
 //! BulletDynamics: rigid bodies, the sequential impulse solver and the
 //! constraints the game uses.
 
+pub mod cone_twist;
 pub mod generic_6dof;
 pub mod hinge;
 pub mod point2point;
