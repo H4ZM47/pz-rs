@@ -50,9 +50,12 @@ use crate::objects::{IsoObject, ObjectId, ObjectKind};
 use crate::save::visual::IsoDeadBody;
 use crate::sprite::{IsoSpriteManager, SpriteIdx};
 use crate::square::{set_matrix_bit, IsoDirections};
+use pz_inventory::InventoryItem;
 
 mod lifecycle;
+mod world_item;
 pub use lifecycle::{AmbientEmitterKind, WorldCall};
+pub use world_item::{render_square, FloorDropEnv, WorldItemPlaced, WORLD_ITEM_ADDED};
 
 #[cfg(test)]
 mod tests;
@@ -265,6 +268,44 @@ pub trait SquareMutationHooks {
     /// `IsoDeadBody.removeFromWorld()` (`removeCorpse`): the reverse of
     /// [`SquareMutationHooks::corpse_added_to_world`].
     fn corpse_removed_from_world(&mut self, _pos: SquarePos, _body: &mut IsoDeadBody) {}
+
+    // ---- `AddWorldInventoryItem` ----
+
+    /// `item.loadCorpseFromByteData(null)` of a corpse item
+    /// (`isHumanCorpse()` / `isAnimalCorpse()`) put down at `pos`: its
+    /// dead body (the saved one, else `createDefaultDeadBody`). The
+    /// position is set and the body added with `addCorpse` afterwards.
+    /// `None` leaves the item unplaced.
+    fn corpse_from_item(&mut self, _pos: SquarePos, _item: &InventoryItem) -> Option<IsoDeadBody> {
+        None
+    }
+
+    /// `new IsoGenerator(item, cell, sq)`: the generator object (the
+    /// script's `WorldObjectSprite`, `setInfoFromItem`), which is then
+    /// added with `AddSpecialObject`. `None` leaves the item unplaced.
+    fn generator_from_item(&mut self, _pos: SquarePos, _item: &InventoryItem) -> Option<IsoObject> {
+        None
+    }
+
+    /// An `AnimalInventoryItem` put down at `pos`: `new IsoAnimal` copied
+    /// from the item's animal joins the world on the square (with its
+    /// `put_down` sound and idle/stressed sound timers).
+    fn animal_dropped(&mut self, _pos: SquarePos, _item: &InventoryItem) {}
+
+    /// `item.getName()` for the world object's name: the display name
+    /// (the fluid's UI name, the bloody / broken / worn prefixes, a food's
+    /// freshness, a moveable's or clothing's own; translated). `None`
+    /// takes the item's stored `name`.
+    fn item_display_name(&mut self, _item: &InventoryItem) -> Option<String> {
+        None
+    }
+
+    /// `IsoCell.addToProcessItemsRemove(item)`.
+    fn process_items_remove(&mut self, _item: &InventoryItem) {}
+
+    /// `DesignationZoneAnimal.addItemOnGround(obj, sq)`: food, dung and
+    /// feathers counted by the animal zone at the square.
+    fn designation_zone_item_on_ground(&mut self, _obj: ObjectRef, _object: &IsoObject) {}
 }
 
 /// Every hook a no-op: no other systems.
