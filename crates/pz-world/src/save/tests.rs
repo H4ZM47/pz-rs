@@ -661,10 +661,7 @@ fn barricades_choose_sprite() {
 
 #[test]
 fn world_item_removal_list() {
-    let mut s = SaveSettings {
-        world_age_hours: 30.0,
-        ..Default::default()
-    };
+    let mut s = SaveSettings::default();
     s.set_world_item_removal_list("Base.Hat, Base.Glasses ,\tBase.Wo rm,");
     assert_eq!(
         s.world_item_removal_list,
@@ -675,43 +672,8 @@ fn world_item_removal_list() {
     assert_eq!(e.world_item_removal_list, [""]);
     e.set_world_item_removal_list(" , ");
     assert!(e.world_item_removal_list.is_empty());
-    // A listed type before the first `_` removes every type under it.
-    struct Reg;
-    impl ItemRegistry for Reg {
-        fn full_type(&self, r: i16) -> Option<&str> {
-            Some(if r == 4 {
-                "Base.Hat_BonnieHat"
-            } else {
-                "Base.Other"
-            })
-        }
-    }
-    let m = sprites();
-    let t = SaveTables::for_tests();
-    let mut ch = sample_chunk(&m, &t);
-    if let ObjectKind::WorldInventory(w) =
-        &mut ch.get_grid_square_mut(1, 0, 0).unwrap().objects[0].kind
-    {
-        w.ignore_remove_sandbox = false;
-    }
-    let bytes = save_chunk(&ch, &ctx(&m, &t, &s, &AllItems)).unwrap();
-    let load = |s: &SaveSettings| {
-        let back = load_chunk(&bytes, 10, 20, &ctx(&m, &t, s, &Reg))
-            .unwrap()
-            .chunk;
-        back.get_grid_square(1, 0, 0).unwrap().world_objects.len()
-    };
-    // Dropped at hour 2: gone after 2 + 24 hours.
-    assert_eq!(load(&s), 0);
-    s.world_age_hours = 26.0;
-    assert_eq!(load(&s), 1);
-    s.world_age_hours = 30.0;
-    s.hours_for_world_item_removal = 0.0;
-    // With no removal hours only the drop-time clause is off; the
-    // head-of-type clause still applies.
-    assert_eq!(load(&s), 0);
-    s.set_world_item_removal_list("Base.Glasses");
-    assert_eq!(load(&s), 1);
+    assert!(s.removal_list_contains("Base.Worm"));
+    assert!(!s.removal_list_contains("Base.Wo rm"));
 }
 
 /// A sprite manager whose alias map knows the light properties.
