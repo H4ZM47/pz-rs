@@ -996,7 +996,7 @@ impl StatesWorldAdapter<'_> {
             .named_map
             .get(&format!("brokenglass_1_{n}"))
             .copied();
-        let sprites = self.sprites;
+        let sprites = &*self.sprites;
         let Some(sq) = self.cell.get_grid_square_mut(p.0, p.1, p.2) else {
             return;
         };
@@ -1478,7 +1478,7 @@ impl StatesWorldAdapter<'_> {
             }
             z += 1;
         }
-        let sprites = self.sprites;
+        let sprites = &*self.sprites;
         if let Some(sq) = self.cell.get_grid_square_mut(p.0, p.1, p.2) {
             sq.recalc_properties(sprites);
         }

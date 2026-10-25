@@ -5,11 +5,12 @@ use std::collections::HashMap;
 
 use pz_characters::character::state::{StateWorld, ThumpKind, ThumpTarget};
 use pz_characters::{CharacterKind, GameCharacter};
-use pz_pathfind::mover::ObjectRef;
+use pz_pathfind::mover::{CharacterView, MoverId, ObjectRef, PathMover};
 use pz_scripts::ScriptManager;
 use pz_world::java::GameRand;
 use pz_world::objects::{IsoBarricade, IsoDoor, IsoObject, IsoThumpable, IsoWindow, ObjectKind};
 use pz_world::sprite::PropertyValueMap;
+use pz_world::square::{CollidedFlags, HoppableAction, MoverKind, SquareObject};
 use pz_world::{
     IsoCell, IsoChunk, IsoDirections, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, SpriteTables,
 };
@@ -144,6 +145,14 @@ const SPRITES: &[Spec] = &[
     ("stairs_tn", "stairsTN", &[]),
     ("stairs_mn", "stairsMN", &[]),
     ("stairs_bn", "stairsBN", &[]),
+    ("fence_n", "normal", &[("collideN", ""), ("HoppableN", "")]),
+    (
+        "tall_fence_w",
+        "normal",
+        &[("collideW", ""), ("HoppableW", ""), ("TallHoppableW", "")],
+    ),
+    ("tree_a", "tree", &[]),
+    ("shrub", "normal", &[("Bush", "")]),
 ];
 
 fn manager() -> IsoSpriteManager {
@@ -160,6 +169,7 @@ fn manager() -> IsoSpriteManager {
         "lightB",
         "ItemHeight",
         "Surface",
+        "Bush",
     ] {
         map.entry(k);
     }
@@ -210,6 +220,11 @@ struct Engine {
     played: Vec<String>,
     items: Vec<String>,
     removed: Vec<(String, bool)>,
+    movers: HashMap<i32, CollideMoverInfo>,
+    hop: Vec<(i32, Vec<HoppableAction>)>,
+    effects: Vec<(ObjectRef, NewRenderEffect)>,
+    noises: Vec<(i32, (i32, i32, i32))>,
+    cancelled: Vec<MoverId>,
 }
 
 impl StatesEngine for Engine {
@@ -240,6 +255,35 @@ impl StatesEngine for Engine {
     }
     fn object_removed(&mut self, _sq: (i32, i32, i32), obj: &IsoObject, destroyed: bool) {
         self.removed.push((obj.kind.class_name().into(), destroyed));
+    }
+    fn collide_mover(&self, id: i32) -> Option<CollideMoverInfo> {
+        self.movers.get(&id).copied()
+    }
+    fn hoppable_actions(&mut self, chr: i32, actions: &[HoppableAction]) {
+        self.hop.push((chr, actions.to_vec()));
+    }
+    fn has_render_effect(&self, obj: ObjectRef) -> bool {
+        self.effects.iter().any(|(r, _)| *r == obj)
+    }
+    fn set_render_effect(&mut self, obj: ObjectRef, effect: NewRenderEffect) {
+        self.effects.push((obj, effect));
+    }
+    fn do_tree_noises(&mut self, chr: i32, sq: (i32, i32, i32)) {
+        self.noises.push((chr, sq));
+    }
+    fn path_cancel_request(&mut self, mover: MoverId) {
+        self.cancelled.push(mover);
+    }
+    fn resolve_collision_radius(
+        &mut self,
+        world: WorldView<'_>,
+        _chr: &dyn CharacterView,
+        radius: f32,
+    ) -> (bool, (f32, f32)) {
+        (
+            world.cell.get_grid_square(8, 8, 0).is_some(),
+            (radius, radius),
+        )
     }
 }
 
@@ -317,7 +361,7 @@ impl World {
         StatesWorldAdapter::new(
             &mut self.cell,
             &self.meta,
-            &self.m,
+            &mut self.m,
             self.settings,
             &mut self.rt,
             &mut self.engine,
@@ -706,4 +750,347 @@ fn vehicle_box_and_polygon() {
     assert!(!g.intersects((23.0, 15.0, 0.1), (23.0, 25.0, 0.1)));
     let d = g.closest_dist_sq(20.0, 25.0);
     assert!((d - 16.0).abs() < 1e-3, "{d}");
+}
+
+/// Recalculates every square's matrices (`RecalcAllWithNeighbours(true)`).
+fn recalc(w: &mut World) {
+    for x in 8..24 {
+        for y in 8..16 {
+            w.cell.recalc_all_with_neighbours(x, y, 0, &w.meta, &w.m);
+        }
+    }
+}
+
+fn mover_info(id: i32, kind: MoverKind) -> CollideMoverInfo {
+    CollideMoverInfo {
+        id,
+        kind,
+        ..Default::default()
+    }
+}
+
+fn zombie_mover(id: i32) -> MoverId {
+    MoverId((3 << 32) | id as u64)
+}
+
+#[test]
+fn collide_adjacent_with_the_mover() {
+    let mut w = World::new();
+    // Squares are valid only inside the meta grid's cells.
+    w.meta.max_x = 1;
+    w.meta.max_y = 1;
+    let d = w.add(12, 12, "door_n", door(true, 500), true);
+    recalc(&mut w);
+    w.engine.movers.insert(3, mover_info(3, MoverKind::Zombie));
+    let mut noclip = mover_info(4, MoverKind::Player);
+    noclip.no_clip = true;
+    let a = w.adapter();
+    // A zombie walking north into the closed door hits it.
+    let z = mover_info(3, MoverKind::Zombie);
+    let r = a
+        .test_collide_adjacent_mover(&z, (12, 12, 0), (0, -1, 0))
+        .unwrap();
+    assert!(r.blocked);
+    let sp = r.special.unwrap();
+    assert!(sp.door);
+    assert_eq!(
+        sp.object,
+        SquareObject {
+            x: 12,
+            y: 12,
+            z: 0,
+            id: d.id
+        }
+    );
+    // From the north side it is the same door, through the collide matrix
+    // path too.
+    let r = a
+        .test_collide_adjacent_mover(&z, (12, 11, 0), (0, 1, 0))
+        .unwrap();
+    assert_eq!(r.special.map(|s| s.object.id), Some(d.id));
+    // No mover: only the matrix bit (the door blocks it).
+    let env = a.collide_env();
+    let sq = a.cell.get_grid_square(12, 12, 0).unwrap();
+    let r = env.test_collide_adjacent(sq, None, 0, -1, 0);
+    assert!(r.blocked && r.special.is_none() && !r.recalc);
+    // Open floor: nothing; a player gets no recalculation for a clear bit.
+    let p = mover_info(4, MoverKind::Player);
+    let r = a
+        .test_collide_adjacent_mover(&p, (14, 12, 0), (1, 0, 0))
+        .unwrap();
+    assert_eq!(r, Default::default());
+    // No clip walks through the door.
+    let r = a
+        .test_collide_adjacent_mover(&noclip, (12, 12, 0), (0, -1, 0))
+        .unwrap();
+    assert!(!r.blocked);
+    // Out of range and other levels are blocked.
+    assert!(
+        a.test_collide_adjacent_mover(&z, (12, 12, 0), (2, 0, 0))
+            .unwrap()
+            .blocked
+    );
+    // Ignoring the target square (sitting on furniture there) lets it pass.
+    let mut sit = z;
+    sit.sit_on_square = Some((12, 11, 0));
+    assert!(
+        !a.test_collide_adjacent_mover(&sit, (12, 12, 0), (0, -1, 0))
+            .unwrap()
+            .blocked
+    );
+    // Through the StateWorld hook, by MoverId.
+    assert!(StateWorld::<()>::test_collide_adjacent(
+        &a,
+        zombie_mover(3),
+        (12, 12, 0),
+        0,
+        -1,
+        0
+    ));
+    assert!(!StateWorld::<()>::test_collide_adjacent(
+        &a,
+        zombie_mover(3),
+        (14, 12, 0),
+        0,
+        -1,
+        0
+    ));
+    // Outside the meta grid every move is blocked.
+    assert!(StateWorld::<()>::test_collide_adjacent(
+        &a,
+        zombie_mover(3),
+        (15, 15, 0),
+        1,
+        1,
+        0
+    ));
+}
+
+#[test]
+fn hoppable_edges() {
+    let mut w = World::new();
+    let f = w.add(10, 10, "fence_n", ObjectKind::Object, false);
+    let t = w.add(14, 10, "tall_fence_w", ObjectKind::Object, false);
+    let a = w.adapter();
+    let env = a.collide_env();
+    let sq = |x, y| a.cell.get_grid_square(x, y, 0);
+    let (s10, s9, s11) = (sq(10, 10).unwrap(), sq(10, 9).unwrap(), sq(10, 11).unwrap());
+    assert!(env.is_hoppable_to(s10, Some(s9)));
+    assert!(env.is_hoppable_to(s9, Some(s10)));
+    assert!(!env.is_hoppable_to(s10, Some(s11)));
+    // Diagonal is never hoppable, but getHoppableTo still finds the edge.
+    assert!(!env.is_hoppable_to(s11, sq(9, 9)));
+    assert_eq!(
+        env.get_hoppable_to(s9, Some(s10)).map(|(_, id)| id),
+        Some(f.id)
+    );
+    assert_eq!(env.get_hoppable(s10, true), Some(f.id));
+    assert_eq!(env.get_hoppable(s10, false), None);
+    let o = &s10.objects[s10.object_index(f.id).unwrap()];
+    assert!(o.is_hoppable(a.sprites) && !o.is_tall_hoppable(a.sprites));
+    assert!(o.is_north_hoppable(a.sprites));
+    let s14 = sq(14, 10).unwrap();
+    let o = &s14.objects[s14.object_index(t.id).unwrap()];
+    assert!(o.is_hoppable(a.sprites) && o.is_tall_hoppable(a.sprites));
+    assert!(env.is_hoppable_to(s14, sq(13, 10)));
+    assert!(!s10.have_door());
+}
+
+#[test]
+fn doors_hop_only_when_closed_with_a_hoppable_closed_sprite() {
+    let mut w = World::new();
+    let fence = w.m.named_map["fence_n"];
+    let mut k = door(true, 500);
+    if let ObjectKind::Door(d) = &mut k {
+        d.closed_sprite = Some(fence);
+    }
+    let d = w.add(12, 12, "door_n", k, true);
+    let a = w.adapter();
+    let sq = a.cell.get_grid_square(12, 12, 0).unwrap();
+    assert!(sq.have_door());
+    let o = &sq.objects[sq.object_index(d.id).unwrap()];
+    assert!(o.is_hoppable(a.sprites));
+    let mut open = o.clone();
+    if let ObjectKind::Door(d) = &mut open.kind {
+        d.open = true;
+    }
+    assert!(!open.is_hoppable(a.sprites));
+}
+
+#[test]
+fn zombies_climb_or_break_fences_they_collide_with() {
+    let mut w = World::new();
+    w.add(10, 10, "fence_n", ObjectKind::Object, false);
+    let ht = w.add(
+        12,
+        10,
+        "fence_n",
+        ObjectKind::Thumpable(Box::new(IsoThumpable {
+            north: true,
+            is_hoppable: true,
+            ..Default::default()
+        })),
+        true,
+    );
+    let north = CollidedFlags {
+        n: true,
+        ..Default::default()
+    };
+    let mut z = mover_info(3, MoverKind::Zombie);
+    z.collided = north;
+    w.engine.movers.insert(3, z);
+    let mut crawler = z;
+    crawler.id = 5;
+    crawler.crawling = true;
+    w.engine.movers.insert(5, crawler);
+    let mut a = w.adapter();
+    // A standing zombie that hit the fence from the south climbs it.
+    assert_eq!(
+        a.hoppable_actions_for(&z, (10, 10, 0)),
+        vec![HoppableAction::ClimbOverFence(IsoDirections::N)]
+    );
+    // Not while attacking, nor going east (no fence there).
+    let mut busy = z;
+    busy.states.attack = true;
+    assert!(a.hoppable_actions_for(&busy, (10, 10, 0)).is_empty());
+    let mut east = z;
+    east.collided = CollidedFlags {
+        e: true,
+        ..Default::default()
+    };
+    assert!(a.hoppable_actions_for(&east, (10, 10, 0)).is_empty());
+    // Two edges at once: no single direction, nothing.
+    let mut corner = z;
+    corner.collided.w = true;
+    assert!(a.hoppable_actions_for(&corner, (10, 10, 0)).is_empty());
+    // A crawler thumps a hoppable thumpable that is not itself thumpable.
+    assert_eq!(
+        a.hoppable_actions_for(&crawler, (12, 10, 0)),
+        vec![HoppableAction::ThumpTarget(SquareObject {
+            x: 12,
+            y: 10,
+            z: 0,
+            id: ht.id
+        })]
+    );
+    // Through the StateWorld hook the engine gets the actions.
+    StateWorld::<()>::collided_with_hoppables(&mut a, 3, Some((10, 10, 0)));
+    StateWorld::<()>::collided_with_hoppables(&mut a, 9, Some((10, 10, 0)));
+    assert_eq!(
+        w.engine.hop,
+        vec![(3, vec![HoppableAction::ClimbOverFence(IsoDirections::N)])]
+    );
+}
+
+#[test]
+fn animals_climb_fences_they_can() {
+    let mut w = World::new();
+    w.add(10, 11, "fence_n", ObjectKind::Object, false);
+    let a = w.adapter();
+    let mut an = mover_info(7, MoverKind::Animal);
+    an.collided = CollidedFlags {
+        s: true,
+        ..Default::default()
+    };
+    assert!(a.hoppable_actions_for(&an, (10, 10, 0)).is_empty());
+    an.can_climb_fences = true;
+    assert_eq!(
+        a.hoppable_actions_for(&an, (10, 10, 0)),
+        vec![HoppableAction::ClimbOverFence(IsoDirections::S)]
+    );
+    an.states.animal_climb_over_fence = true;
+    assert!(a.hoppable_actions_for(&an, (10, 10, 0)).is_empty());
+}
+
+/// A context whose `Rand.Next(float, float)` returns `min + 1` and counts.
+#[derive(Default)]
+struct DrawCtx(std::cell::Cell<i32>);
+
+impl pz_characters::character::SimContext for DrawCtx {
+    fn rand_next_float(&self, min: f32, _max: f32) -> f32 {
+        self.0.set(self.0.get() + 1);
+        min + 1.0
+    }
+}
+
+#[test]
+fn vegetation_rustles_past_the_first_object() {
+    let mut w = World::new();
+    let tree = w.add(
+        10,
+        10,
+        "tree_a",
+        ObjectKind::Tree(pz_world::objects::IsoTree {
+            size: 5,
+            log_yield: 1,
+            damage: 0,
+        }),
+        false,
+    );
+    let bush = w.add(10, 10, "shrub", ObjectKind::Object, false);
+    // A bush as the first object makes noise but rustles nothing.
+    {
+        let spr = w.m.named_map["shrub"];
+        let sq = w.cell.get_grid_square_mut(11, 10, 0).unwrap();
+        sq.objects[0].sprite = Some(spr);
+        sq.recalc_properties(&w.m);
+    }
+    let ctx = DrawCtx::default();
+    let mut a = w.adapter();
+    StateWorld::<()>::rustle_vegetation(&mut a, 3, (10, 10, 0), &ctx);
+    // An effect already running draws nothing.
+    StateWorld::<()>::rustle_vegetation(&mut a, 3, (10, 10, 0), &ctx);
+    StateWorld::<()>::rustle_vegetation(&mut a, 3, (11, 10, 0), &ctx);
+    StateWorld::<()>::rustle_vegetation(&mut a, 3, (12, 12, 0), &ctx);
+    assert_eq!(ctx.0.get(), 2);
+    assert_eq!(
+        w.engine.effects,
+        vec![
+            (
+                tree,
+                NewRenderEffect {
+                    kind: RenderEffectType::VegetationRustle,
+                    total_max_time: 46.0,
+                    is_tree: true,
+                    is_big: true,
+                }
+            ),
+            (
+                bush,
+                NewRenderEffect {
+                    kind: RenderEffectType::VegetationRustle,
+                    total_max_time: 46.0,
+                    is_tree: false,
+                    is_big: false,
+                }
+            ),
+        ]
+    );
+    assert_eq!(
+        w.engine.noises,
+        vec![(3, (10, 10, 0)), (3, (10, 10, 0)), (3, (11, 10, 0))]
+    );
+    // A server has no render effects or tree noises.
+    w.settings.server = true;
+    let mut a = w.adapter();
+    StateWorld::<()>::rustle_vegetation(&mut a, 3, (10, 10, 0), &ctx);
+    assert_eq!(ctx.0.get(), 2);
+    assert_eq!(w.engine.noises.len(), 3);
+}
+
+#[test]
+fn path_host_hooks_go_to_the_engine() {
+    let mut w = World::new();
+    let mut z = zombie(10.5, 10.5, 2);
+    let mut a = w.adapter();
+    StateWorld::<()>::path_cancel_request(&mut a, &mut z);
+    let r = StateWorld::<()>::resolve_collision_radius(&mut a, &z, 0.3);
+    assert_eq!(r, (true, (0.3, 0.3)));
+    // The default keeps the position.
+    assert_eq!(
+        StateWorld::<()>::resolve_collision(&mut a, &z, 1.0, 2.0),
+        (1.0, 2.0)
+    );
+    assert_eq!(w.engine.cancelled, vec![z.mover_id()]);
+    // Without an engine fire simulation, character fire does nothing.
 }
