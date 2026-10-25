@@ -72,16 +72,16 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       (composite; players, corpse/mannequin shadows, corpses, items;
       puddles; moving objects; water; animated attachments; per-level
       translucent floors/puddles/shore/splashes/shadows/objects; outlines
-      end; then `late`) (ws/render-join).
+      end; then `late`) (#96).
 - [x] `render_animated_attachments` per chunk between water and
-      translucent passes (#76) — done by the frame itself (ws/render-join).
+      translucent passes (#76) — done by the frame itself (#96).
 - [ ] `render_weather_fx` as `world_frame_full`'s `late`, driven by
       `ClimateRenderValues` (#81); pass `weather_fx_mask::FxMaskCharacters
       { world, objects: &frame_objects }` as its `FxMaskWorld` so the mask's
       `renderCharacters` replays #79's `ObjectRender` draws without shadows.
       Every character's `ObjectRender.pos` must be set
       (`render_character_object` does; set it on hand-built zombies and
-      animals) (ws/render-join).
+      animals) (#96).
 - [ ] Feed corpses, world items and fireplace state from pz-world (#87, #76).
 - [ ] Vehicles in `FrameObjects.moving` (cell object-list order): per
       vehicle `update_transform`, `instance.update_lights`,
@@ -98,7 +98,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `current_ambient` into `CharacterFrame` (#90).
 - [ ] Vehicle reflections: the reflective vehicle shaders need
       `VehicleFrame`'s sky-box textures and shift from #53's `SkyBox`
-      (pz-iso-render `skybox.rs`, now on the same stack (ws/render-join)).
+      (pz-iso-render `skybox.rs`, now on the same stack (#96)).
       Until that is wired, load vehicle models with `reflections: false` (the
       `_noreflect` shader variants, as with `bPerfReflections` off) (#90).
 - [ ] Character outlines: per character, `ObjectRender.outline =
