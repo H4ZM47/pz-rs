@@ -25,6 +25,7 @@ pub mod manager;
 pub mod sprite;
 pub mod text;
 pub mod texture;
+pub mod tooltip;
 
 pub use element::UIElement;
 pub use ext::UIElementExt;
