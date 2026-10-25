@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 pz-world.workspace = true
 pz-popman.workspace = true
+pz-sandbox.workspace = true
 
 [dev-dependencies]
 pz-fs.workspace = true
-pz-sandbox.workspace = true
