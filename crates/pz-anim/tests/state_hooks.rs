@@ -69,8 +69,12 @@ fn player_with(clips: &[AnimationClip]) -> AnimationPlayer {
     AnimationPlayer::new(Rc::new(sd))
 }
 
+/// A fresh directory per call: tests run in parallel and each removes its
+/// own directory once the set is loaded.
 fn temp_dir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("pz-anim-hooks-{tag}-{}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("pz-anim-hooks-{tag}-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
