@@ -91,7 +91,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       after every player's lighting frame `check_changed_buildings(lighting,
       caches, pending, num_players)`; `pending.vispoly` / `physics` /
       `puddles` are drained by `VisibilityPolygon2`, chunk physics
-      (`updatePhysicsForLevel`) and puddle init (ws/render-invalidate).
+      (`updatePhysicsForLevel`) and puddle init (#99).
 - [ ] Engine implements `SquareMutationHooks`: Lua `OnObjectAboutToBeRemoved`
       / `OnTileRemoved` / `OnContainerUpdate`, the `WorldCall` registries of
       `addToWorld` / `removeFromWorld` (entities, process lists, lampposts,
