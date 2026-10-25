@@ -497,21 +497,12 @@ fn a_square_going_indoors_re_initialises_its_puddles_next_frame() {
     // `Core.getPerfPuddles()` 1: no puddles leaking into rooms.
     s.perf_puddles = 1;
     s.settle();
-    assert_eq!(s.render.squares[&(13, 13, 0)].puddles, None);
-    let (open, wet) = (s.sq(13, 13).clone(), s.sq(9, 9).clone());
-    s.hooks().properties_recalculated(&open);
-    s.hooks().properties_recalculated(&wet);
-    s.frame();
-    assert!(s.pending.puddles.is_empty());
     // Outdoors, open ground all round: puddles everywhere.
     let out = s.render.squares[&(13, 13, 0)].puddles.unwrap();
     assert!(out.render);
     assert_eq!(out.pda, [1.0; 4]);
     assert_eq!(out.pnon, [0.0; 4]);
-    // Water has none.
-    assert!(!s.render.squares[&(9, 9, 0)].puddles.unwrap().render);
-    // Only the queued squares.
-    assert_eq!(s.render.squares[&(14, 13, 0)].puddles, None);
+    let neighbour = s.render.squares[&(14, 13, 0)].puddles;
 
     // A roof over (13, 13): RecalcProperties drops `exterior`.
     s.cell.get_grid_square_mut(13, 13, 0).unwrap().have_roof = true;
@@ -553,7 +544,7 @@ fn a_square_going_indoors_re_initialises_its_puddles_next_frame() {
     assert!(!inside.render);
     assert_eq!(inside.pda, [0.0; 4]);
     // The neighbours keep theirs (no `recalc` on them).
-    assert_eq!(s.render.squares[&(14, 13, 0)].puddles, None);
+    assert_eq!(s.render.squares[&(14, 13, 0)].puddles, neighbour);
 
     // With puddles leaking into rooms (perf 0) the roofed square, open on
     // every side, takes puddles in from its exterior neighbours.
@@ -563,4 +554,34 @@ fn a_square_going_indoors_re_initialises_its_puddles_next_frame() {
     let leak = s.render.squares[&(13, 13, 0)].puddles.unwrap();
     assert!(leak.render);
     assert_eq!(leak.pda, [1.0; 4]);
+}
+
+#[test]
+fn loaded_squares_get_puddles_on_the_first_frame() {
+    // Built in `Scene::new` (chunk load): no geometry until a frame runs.
+    let mut s = Scene::new();
+    assert!(s.render.squares.values().all(|sq| sq.puddles.is_none()));
+    assert_eq!(s.render.puddles_recalc.len(), 24 * 24);
+    s.frame();
+    assert!(s.render.puddles_recalc.is_empty());
+    // Every square has its geometry; outdoor ground has puddles, water none.
+    assert!(s.render.squares.values().all(|sq| sq.puddles.is_some()));
+    let open = s.render.squares[&(20, 20, 0)].puddles.unwrap();
+    assert!(open.render);
+    assert_eq!(open.pda, [1.0; 4]);
+    assert!(!s.render.squares[&(9, 9, 0)].puddles.unwrap().render);
+
+    // A chunk loaded again later: its squares start over, the rest keep
+    // theirs.
+    let view = WorldView {
+        cell: &s.cell,
+        meta: &s.meta,
+        sprites: &s.m,
+    };
+    s.render
+        .build_chunk(&view, 2, 2, &mut s.sprite_cache, &mut NoTextures);
+    assert_eq!(s.render.squares[&(20, 20, 0)].puddles, None);
+    assert_eq!(s.render.puddles_recalc.len(), 64);
+    s.frame();
+    assert_eq!(s.render.squares[&(20, 20, 0)].puddles, Some(open));
 }
