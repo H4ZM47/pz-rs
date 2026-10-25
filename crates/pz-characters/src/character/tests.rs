@@ -188,6 +188,7 @@ impl SimContext for Recorder {
                 format!("LevelPerk {} {level} {increased}", perk.borrow().id())
             }
             SimEvent::AddXp { perk, amount } => format!("AddXP {} {amount}", perk.borrow().id()),
+            SimEvent::LogLevelPerk { perk, level } => format!("LogLevelPerk {} {level}", perk.borrow().id()),
             other => format!("{other:?}"),
         };
         self.events.borrow_mut().push(s);

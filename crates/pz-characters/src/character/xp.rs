@@ -15,7 +15,10 @@ use pz_scripts::objects::items::{character_trait_definition, CharacterTraitDefin
 use pz_scripts::registry::RegistryKey;
 use pz_scripts::{ScriptError, ScriptManager, ScriptResult};
 
+use pz_inventory::io::{Reader, Writer};
+
 use super::context::{HaloText, SimContext, SimEvent};
+use super::save::io_error;
 use super::GameCharacter;
 use crate::skills::PerkRef;
 use crate::survivor::java_float_string;
@@ -251,6 +254,91 @@ impl<I: 'static> GameCharacter<I> {
         }
         let last = *l.last().ok_or_else(|| index_error(-1, 0))?;
         Ok(((last.wrapping_add((level - n + 1).wrapping_mul(400))) as f32 * self.level_up_multiplier) as i32)
+    }
+
+    // ---- save ------------------------------------------------------------
+
+    /// `XP.loadPerk`: `Perks.FromString`, `null` for `Perks.MAX`.
+    fn load_perk(chars: &Characters, r: &mut Reader<'_>) -> ScriptResult<Option<PerkRef>> {
+        let name = r.string().map_err(io_error)?;
+        let perk = chars.perks.from_string(&name);
+        let max = chars.perks.max();
+        Ok(perk.filter(|p| !max.as_ref().is_some_and(|m| Rc::ptr_eq(m, p))))
+    }
+
+    /// `XP.load`: the traits, the XP, the perk levels (a `LogLevelPerk`
+    /// event for each level that differs from the one before) and the
+    /// multipliers; a total above the next level's XP drops to the
+    /// current level's.
+    pub fn load_xp(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, r: &mut Reader<'_>, _world_version: i32) -> ScriptResult {
+        self.character_traits.load(sm, r)?;
+        self.xp.total_xp = r.f32().map_err(io_error)?;
+        self.xp.level = r.i32().map_err(io_error)?;
+        self.xp.lastlevel = r.i32().map_err(io_error)?;
+        self.xp.xp_map.clear();
+        let n = r.i32().map_err(io_error)?;
+        for _ in 0..n {
+            let perk = Self::load_perk(chars, r)?;
+            let xp = r.f32().map_err(io_error)?;
+            if let Some(perk) = perk {
+                self.xp.put_xp(&perk, xp);
+            }
+        }
+        let old: Vec<PerkInfo> = std::mem::take(&mut self.perk_list);
+        let n = r.i32().map_err(io_error)?;
+        for _ in 0..n {
+            let perk = Self::load_perk(chars, r)?;
+            let level = r.i32().map_err(io_error)?;
+            let Some(perk) = perk else { continue };
+            self.perk_list.push(PerkInfo { level, perk: perk.clone() });
+            let old_level = old.iter().find(|i| Rc::ptr_eq(&i.perk, &perk)).map_or(0, |i| i.level);
+            if old_level != level {
+                ctx.event(SimEvent::LogLevelPerk { perk, level });
+            }
+        }
+        self.xp.xp_map_multiplier.clear();
+        let n = r.i32().map_err(io_error)?;
+        for _ in 0..n {
+            let perk = Self::load_perk(chars, r)?;
+            let multiplier = r.f32().map_err(io_error)?;
+            let min_level = r.i8().map_err(io_error)? as i32;
+            let max_level = r.i8().map_err(io_error)? as i32;
+            if let Some(perk) = perk {
+                self.xp.add_xp_multiplier(&perk, multiplier, min_level, max_level);
+            }
+        }
+        if self.xp.total_xp > self.xp_for_level(chars, self.xp.level + 1)? as f32 {
+            let xp = self.xp_for_level(chars, self.xp.level)? as f32;
+            self.xp.set_total_xp(xp);
+        }
+        // TODO(network): `getNetworkCharacterAI().updateXpChecker()`.
+        Ok(())
+    }
+
+    /// `XP.save` (the maps in their insertion order; the original's are
+    /// identity-hashed).
+    pub fn save_xp(&self, w: &mut Writer) {
+        self.character_traits.save(w);
+        w.f32(self.xp.total_xp);
+        w.i32(self.xp.level);
+        w.i32(self.xp.lastlevel);
+        w.i32(self.xp.xp_map.len() as i32);
+        for (p, v) in &self.xp.xp_map {
+            w.string(p.borrow().id());
+            w.f32(*v);
+        }
+        w.i32(self.perk_list.len() as i32);
+        for i in &self.perk_list {
+            w.string(i.perk.borrow().id());
+            w.i32(i.level);
+        }
+        w.i32(self.xp.xp_map_multiplier.len() as i32);
+        for (p, m) in &self.xp.xp_map_multiplier {
+            w.string(p.borrow().id());
+            w.f32(m.multiplier);
+            w.i8(m.min_level as i8);
+            w.i8(m.max_level as i8);
+        }
     }
 
     // ---- XP --------------------------------------------------------------

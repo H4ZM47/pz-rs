@@ -18,10 +18,11 @@
 //! the worn item visuals change (checked against a cache shared by all
 //! characters) and reads each item's live insulation, wetness, condition
 //! and holes every update; this rebuilds the lists from the owner's
-//! `getItemVisuals` every update, which gives the same lists. TODO(saves): `save`/`load`.
+//! `getItemVisuals` every update, which gives the same lists.
 
 use std::cell::Cell;
 
+use pz_inventory::io::{Reader, SaveResult, Writer};
 use pz_inventory::InventoryItem;
 use pz_scripts::{ScriptError, ScriptManager, ScriptResult};
 
@@ -449,6 +450,84 @@ impl Thermoregulator {
             node.secondary_delta = 0.0;
             node.skin_celcius = 33.0;
             node.heat_delta = 0.0;
+        }
+        Ok(())
+    }
+
+    /// `save`.
+    pub fn save(&self, w: &mut Writer) {
+        for f in [
+            self.set_point,
+            self.metabolic_rate,
+            self.metabolic_rate_real,
+            self.metabolic_target,
+            self.body_heat_delta,
+            self.core_heat_delta,
+            self.thermal_damage,
+            self.damage_counter,
+            self.thermal_duration,
+        ] {
+            w.f32(f);
+        }
+        w.i32(self.nodes.len() as i32);
+        for n in &self.nodes {
+            w.i32(n.body_part_index as i32);
+            for f in [
+                n.celcius,
+                n.skin_celcius,
+                n.heat_delta,
+                n.primary_delta,
+                n.secondary_delta,
+                n.insulation,
+                n.windresist,
+                n.body_wetness,
+                n.clothing_wetness,
+            ] {
+                w.f32(f);
+            }
+        }
+    }
+
+    /// `load`: the saved nodes go to the node of their `BodyPartType`
+    /// index (others are logged and dropped in the original).
+    pub fn load(&mut self, r: &mut Reader<'_>, world_version: i32) -> SaveResult<()> {
+        self.set_point = r.f32()?;
+        self.metabolic_rate = r.f32()?;
+        if world_version >= 243 {
+            self.metabolic_rate_real = r.f32()?;
+        }
+        self.metabolic_target = r.f32()?;
+        self.body_heat_delta = r.f32()?;
+        self.core_heat_delta = r.f32()?;
+        self.thermal_damage = r.f32()?;
+        self.damage_counter = r.f32()?;
+        if world_version >= 249 {
+            self.thermal_duration = r.f32()?;
+        }
+        let count = r.i32()?;
+        for _ in 0..count {
+            let node_index = r.i32()?;
+            let celcius = r.f32()?;
+            let skin_celcius = r.f32()?;
+            let heat_delta = r.f32()?;
+            let primary = r.f32()?;
+            let secondary = r.f32()?;
+            let insulation = if world_version >= 241 { r.f32()? } else { 0.0 };
+            let (windresist, body_wetness, clothing_wetness) =
+                if world_version >= 243 { (r.f32()?, r.f32()?, r.f32()?) } else { (0.0, 0.0, 0.0) };
+            let Some(i) = usize::try_from(node_index).ok().and_then(|i| self.node_index_for_type(i)) else {
+                continue;
+            };
+            let node = &mut self.nodes[i];
+            node.celcius = celcius;
+            node.skin_celcius = skin_celcius;
+            node.heat_delta = heat_delta;
+            node.primary_delta = primary;
+            node.secondary_delta = secondary;
+            node.insulation = insulation;
+            node.windresist = windresist;
+            node.body_wetness = body_wetness;
+            node.clothing_wetness = clothing_wetness;
         }
         Ok(())
     }

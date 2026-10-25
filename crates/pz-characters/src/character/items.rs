@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 use pz_inventory::{InventoryItem, ItemContainer, ItemKind};
 use pz_scripts::objects::items::{get_item, Item, ItemBodyLocation, ItemTag};
+use pz_scripts::registry::RegistryKey;
 use pz_scripts::{ScriptManager, ScriptResult};
 
 use super::context::SimContext;
@@ -291,6 +292,9 @@ pub struct CharacterItems {
     pub secondary_hand_item: Option<i32>,
     /// `wornItems`, in order: ids of items in `inventory`.
     pub worn_items: Vec<i32>,
+    /// The `ItemBodyLocation` of worn items, by item id (`WornItem.location`;
+    /// set when the worn items are loaded).
+    pub worn_locations: Vec<(i32, Rc<RegistryKey>)>,
 }
 
 impl Default for CharacterItems {
@@ -300,6 +304,7 @@ impl Default for CharacterItems {
             primary_hand_item: None,
             secondary_hand_item: None,
             worn_items: Vec::new(),
+            worn_locations: Vec::new(),
         }
     }
 }
@@ -323,6 +328,11 @@ impl CharacterItems {
     /// `getSecondaryHandItem()`.
     pub fn secondary_hand_item(&self) -> Option<&InventoryItem> {
         self.secondary_hand_item.and_then(|id| self.item(id))
+    }
+
+    /// `wornItems.getLocation(item)` for the worn item `id`.
+    pub fn worn_location(&self, id: i32) -> Option<&Rc<RegistryKey>> {
+        self.worn_locations.iter().find(|(i, _)| *i == id).map(|(_, l)| l)
     }
 
     /// `getWornItems()` items, in order.
@@ -675,6 +685,7 @@ impl CharacterItems {
                 }
             }
             self.worn_items.retain(|w| *w != id);
+            self.worn_locations.retain(|(w, _)| *w != id);
             // `i` keeps pointing past the removed slot.
         }
         removed

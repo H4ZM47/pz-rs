@@ -22,6 +22,8 @@
 //!   `BodyPartLast`, `BodyPartContacts`), [`nutrition`],
 //!   [`thermoregulator`] (inside `BodyDamage`, as in the original) and
 //!   [`fitness`], with [`metabolics`] (the jar's `Metabolics` table).
+//! * [`save`]: `IsoPlayer.load`/`save` (the `players.db` record) with the
+//!   `IsoGameCharacter`/`IsoMovingObject` parts.
 //!
 //! The original's statics the simulation needs (`CharacterStat.REGISTRY`,
 //! `MoodleStat`'s thresholds, `LevelUpLevels`, `CheatType`) are in
@@ -45,6 +47,7 @@ pub mod metabolics;
 pub mod moodles;
 pub mod nutrition;
 pub mod path_mover;
+pub mod save;
 pub mod state;
 pub mod states;
 pub mod stats;
@@ -145,6 +148,41 @@ impl PlayerCheats {
     /// `clear`.
     pub fn clear(&mut self) {
         self.cheats.clear();
+    }
+
+    /// The set cheats (by `CheatType` name), whether allowed or not.
+    pub fn names(&self) -> &[String] {
+        &self.cheats
+    }
+
+    /// `load`: adds each saved `CheatType` (by ordinal into `cheat_types`,
+    /// `CheatType.values()`), bypassing `isCheatAllowed`; nothing is
+    /// cleared first.
+    pub fn load(&mut self, cheat_types: &[String], r: &mut pz_inventory::io::Reader<'_>) -> ScriptResult {
+        let n = r.i32().map_err(save::io_error)?;
+        for _ in 0..n {
+            let id = r.i8().map_err(save::io_error)?;
+            let name = usize::try_from(id).ok().and_then(|i| cheat_types.get(i)).ok_or_else(|| {
+                pz_scripts::ScriptError::new(format!(
+                    "java.lang.ArrayIndexOutOfBoundsException: Index {id} out of bounds for length {}",
+                    cheat_types.len()
+                ))
+            })?;
+            if !self.cheats.contains(name) {
+                self.cheats.push(name.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// `save`: the set cheats' ordinals in `EnumSet` (ordinal) order.
+    pub fn save(&self, cheat_types: &[String], w: &mut pz_inventory::io::Writer) {
+        let mut ids: Vec<usize> = self.cheats.iter().filter_map(|c| cheat_types.iter().position(|t| t == c)).collect();
+        ids.sort_unstable();
+        w.i32(ids.len() as i32);
+        for i in ids {
+            w.i8(i as i8);
+        }
     }
 }
 
@@ -303,6 +341,36 @@ pub struct GameCharacter<I: 'static> {
     pub zombie: Box<zombie::ZombieFields>,
     /// The fields zombies read and write on the characters they hunt.
     pub seen: zombie::SeenFields,
+    /// `IsoMovingObject.table` (the mod data).
+    pub mod_data: Option<pz_inventory::lua_table::LuaTable>,
+    /// `getVisual()` (`IsoPlayer.humanVisual`) as saved; `None` until loaded.
+    pub human_visual: Option<pz_world::save::visual::HumanVisual>,
+    /// `savedInventoryItems`: the list saved indices refer to, as the ids of
+    /// the inventory's items (`None` for an item that could not be loaded).
+    pub saved_inventory_items: Vec<Option<i32>>,
+    /// `readBooks`.
+    pub read_books: Vec<save::ReadBook>,
+    /// `lastHourSleeped`.
+    pub last_hour_sleeped: i32,
+    /// `beardGrowTiming`.
+    pub beard_grow_timing: f32,
+    /// `hairGrowTiming`.
+    pub hair_grow_timing: f32,
+    /// `deathDragDown`.
+    pub death_drag_down: bool,
+    /// `readLiterature`: title -> day read.
+    pub read_literature: pz_scripts::java::JHashMap<i32>,
+    /// `readPrintMedia` (a `HashSet`).
+    pub read_print_media: pz_scripts::java::JHashMap<()>,
+    /// `lastAnimalPet`.
+    pub last_animal_pet: i64,
+    /// `knownMediaLines` (a `HashSet`).
+    pub known_media_lines: pz_scripts::java::JHashMap<()>,
+    /// `savedVehicleX`/`Y`/`Seat`/`Running`: the vehicle a loaded player
+    /// sat in (`None`: seat -1).
+    pub saved_vehicle: Option<save::SavedVehicle>,
+    /// `IsoPlayer`'s saved fields not kept elsewhere.
+    pub player_fields: Box<save::PlayerFields>,
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -383,6 +451,20 @@ impl<I: 'static> GameCharacter<I> {
             bare_hands: None,
             zombie: Box::default(),
             seen: zombie::SeenFields::default(),
+            mod_data: None,
+            human_visual: None,
+            saved_inventory_items: Vec::new(),
+            read_books: Vec::new(),
+            last_hour_sleeped: 0,
+            beard_grow_timing: -1.0,
+            hair_grow_timing: -1.0,
+            death_drag_down: false,
+            read_literature: pz_scripts::java::JHashMap::new(),
+            read_print_media: pz_scripts::java::JHashMap::new(),
+            last_animal_pet: 0,
+            known_media_lines: pz_scripts::java::JHashMap::new(),
+            saved_vehicle: None,
+            player_fields: Box::default(),
         }
     }
 

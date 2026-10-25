@@ -10,8 +10,8 @@
 //! `getHealthReductionFromSevereBadMoodles() * multiplier` and fires
 //! `OnPlayerGetDamage(player, "LOWWEIGHT", damage)`; the weight is clamped
 //! but the damage is not applied yet.
-//! TODO(saves): `save`/`load`.
 
+use pz_inventory::io::{Reader, SaveResult, Writer};
 use pz_scripts::objects::items::CharacterTrait;
 use pz_scripts::{ScriptManager, ScriptResult};
 
@@ -96,6 +96,25 @@ impl Nutrition {
     pub fn set_calories(&mut self, v: f32) {
         self.calories = clamp_f32(v, -2200.0, 3700.0);
     }
+    /// `save`.
+    pub fn save(&self, w: &mut Writer) {
+        w.f32(self.calories);
+        w.f32(self.proteins);
+        w.f32(self.lipids);
+        w.f32(self.carbohydrates);
+        w.f32(self.weight as f32);
+    }
+
+    /// `load` through the setters. Returns [`Nutrition::set_weight`]'s
+    /// result (the owner's low-weight damage, see the module TODO).
+    pub fn load(&mut self, r: &mut Reader<'_>) -> SaveResult<bool> {
+        self.set_calories(r.f32()?);
+        self.set_proteins(r.f32()?);
+        self.set_lipids(r.f32()?);
+        self.set_carbohydrates(r.f32()?);
+        Ok(self.set_weight(r.f32()? as f64))
+    }
+
     /// `getWeight`.
     pub fn weight(&self) -> f64 {
         self.weight

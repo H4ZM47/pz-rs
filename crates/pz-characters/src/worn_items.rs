@@ -252,6 +252,14 @@ pub trait ItemIdentity: Clone {
     fn same(&self, other: &Self) -> bool;
 }
 
+/// Item ids (`InventoryItem.id`): the character code refers to the items
+/// of an inventory by id.
+impl ItemIdentity for i32 {
+    fn same(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 /// `WornItem`.
 #[derive(Clone, Debug)]
 pub struct WornItem<I> {
