@@ -20,10 +20,15 @@ impl Dir {
     fn new() -> Self {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // SystemTime's Debug text contains ':' on Windows. Numeric time
+        // keeps the unique directory name valid on every supported OS.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let p = std::env::temp_dir().join(format!(
-            "pz-world-animal-zones-{}-{n}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now()
+            "pz-world-animal-zones-{}-{n}-{stamp}",
+            std::process::id()
         ));
         std::fs::create_dir_all(&p).unwrap();
         Dir(p)

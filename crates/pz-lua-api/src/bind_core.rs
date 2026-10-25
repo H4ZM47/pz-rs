@@ -2150,8 +2150,8 @@ mod tests {
             "#,
         );
         let text = std::fs::read_to_string(dir.join("options.ini")).unwrap();
-        assert!(text.contains("\nsoundVolume=4\n"));
-        assert!(text.contains("\ncodeFontSize=Small\n"));
+        assert!(text.lines().any(|line| line == "soundVolume=4"));
+        assert!(text.lines().any(|line| line == "codeFontSize=Small"));
         let mut c2 = Core::new();
         c2.set_cache_dir(&dir);
         assert!(c2.load_options().unwrap());
