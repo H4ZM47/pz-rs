@@ -2,7 +2,7 @@
 //! and `zombie.modding.ActiveModsFile` (`mods/default.txt`).
 
 use crate::java;
-use crate::script_parser;
+use pz_script_parser as script_parser;
 
 /// `zombie.core.GameVersion`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -356,22 +356,22 @@ pub struct ActiveMods {
 pub fn active_mods_from_string(contents: &str) -> ActiveMods {
     let mut out = ActiveMods::default();
     let block = script_parser::parse(&script_parser::strip_comments(contents));
-    let version = block.value("VERSION").map_or(-1, |v| java::try_parse_int(v.value(), -1));
+    let version = block.get_value("VERSION").map_or(-1, |v| java::try_parse_int(v.get_value(), -1));
     if version != 1 {
         return out;
     }
-    if let Some(mods) = block.block("mods", None) {
+    if let Some(mods) = block.get_block("mods", None) {
         for v in &mods.values {
-            let id = java::trim(v.value()).replace('\\', "");
-            if java::trim(v.key()).eq_ignore_ascii_case("mod") && !java::is_null_or_whitespace(&id) {
+            let id = java::trim(v.get_value()).replace('\\', "");
+            if java::trim(v.get_key()).eq_ignore_ascii_case("mod") && !java::is_null_or_whitespace(&id) {
                 out.mods.push(id);
             }
         }
     }
-    if let Some(maps) = block.block("maps", None) {
+    if let Some(maps) = block.get_block("maps", None) {
         for v in &maps.values {
-            let map = java::trim(v.value());
-            if java::trim(v.key()).eq_ignore_ascii_case("map") && !java::is_null_or_whitespace(map) {
+            let map = java::trim(v.get_value());
+            if java::trim(v.get_key()).eq_ignore_ascii_case("map") && !java::is_null_or_whitespace(map) {
                 out.map_order.push(map.to_string());
             }
         }

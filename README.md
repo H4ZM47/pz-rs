@@ -20,6 +20,7 @@ to retain game and mod behavior. Full compatibility is still in progress.
 | `pz-text` | `zombie.core.Translator`, `zombie.ui.TextManager`, `AngelCodeFont` |
 | `pz-ui` | `zombie.ui.UIElement`, `UIManager` |
 | `pz-scripts` | `zombie.scripting` (`ScriptParser`, `ScriptManager`, script objects) |
+| `pz-script-parser` | `zombie.scripting.ScriptParser` (shared by `pz-scripts`, `pz-fs`, `pz-text`, `pz-render`) |
 | `pz-world` | `zombie.iso` map files, `IsoMetaGrid`, `IsoCell`/`IsoChunk`/`IsoGridSquare` |
 | `pz-classfile` | reads built-in constants from the installed `projectzomboid.jar` (no JVM) |
 | `pz-inventory` | `zombie.inventory` items, `ItemContainer`, `zombie.world.WorldDictionary` |

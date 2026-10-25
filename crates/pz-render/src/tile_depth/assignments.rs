@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use pz_fs::java;
-use pz_fs::script_parser;
+use pz_script_parser as script_parser;
 use pz_fs::GameFs;
 
 /// `TileDepthTextureAssignments.VERSION_LATEST`.
@@ -83,15 +83,15 @@ impl TileDepthTextureAssignments {
     pub fn parse(&mut self, text: &str) -> io::Result<()> {
         let root = script_parser::parse(text);
         let block = root.children.first().ok_or_else(|| invalid("no block in tileDepthTextureAssignments.txt".into()))?;
-        let value = block.value("VERSION").ok_or_else(|| invalid("missing VERSION in tileGeometry.txt".into()))?;
-        let v = java::trim(value.value());
+        let value = block.get_value("VERSION").ok_or_else(|| invalid("missing VERSION in tileGeometry.txt".into()))?;
+        let v = java::trim(value.get_value());
         self.version = java::try_parse_int(v, -1);
         if self.version < 1 || self.version > VERSION_LATEST {
             return Err(invalid(format!("unknown tileGeometry.txt VERSION \"{v}\"")));
         }
         for value in &block.values {
-            let assign_to = java::trim(value.key());
-            let other_tile = java::trim(value.value());
+            let assign_to = java::trim(value.get_key());
+            let other_tile = java::trim(value.get_value());
             if java::is_null_or_whitespace(assign_to) || java::is_null_or_whitespace(other_tile) {
                 continue;
             }

@@ -2001,6 +2001,9 @@ dependencies = [
 [[package]]
 name = "pz-fs"
 version = "0.1.0"
+dependencies = [
+ "pz-script-parser",
+]
 
 [[package]]
 name = "pz-gpu"
@@ -2181,6 +2184,7 @@ dependencies = [
  "png",
  "pz-fs",
  "pz-kahlua",
+ "pz-script-parser",
 ]
 
 [[package]]
@@ -2194,12 +2198,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-script-parser"
+version = "0.1.0"
+
+[[package]]
 name = "pz-scripts"
 version = "0.1.0"
 dependencies = [
  "pz-classfile",
  "pz-fs",
  "pz-render",
+ "pz-script-parser",
 ]
 
 [[package]]
@@ -2231,6 +2240,7 @@ name = "pz-text"
 version = "0.1.0"
 dependencies = [
  "pz-render",
+ "pz-script-parser",
 ]
 
 [[package]]

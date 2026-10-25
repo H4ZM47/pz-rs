@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use pz_fs::script_parser;
+use pz_script_parser as script_parser;
 
 /// `IsoSprite.depthFlags` bits.
 pub mod depth_flags {
@@ -35,18 +35,18 @@ impl TileGeometryProperties {
         let mut out = TileGeometryProperties::default();
         let root = script_parser::parse(&script_parser::strip_comments(text));
         let Some(file) = root.children.first() else { return out };
-        for tileset in file.children.iter().filter(|b| b.kind == "tileset") {
-            let Some(name) = tileset.value("name").map(|v| v.value().trim().to_string()) else { continue };
-            for tile in tileset.children.iter().filter(|b| b.kind == "tile") {
-                let Some((col, row)) = tile.value("xy").and_then(|v| {
-                    let (c, r) = v.value().trim().split_once('x')?;
+        for tileset in file.children.iter().filter(|b| b.type_str() == "tileset") {
+            let Some(name) = tileset.get_value("name").map(|v| v.get_value().trim().to_string()) else { continue };
+            for tile in tileset.children.iter().filter(|b| b.type_str() == "tile") {
+                let Some((col, row)) = tile.get_value("xy").and_then(|v| {
+                    let (c, r) = v.get_value().trim().split_once('x')?;
                     Some((c.trim().parse::<i32>().ok()?, r.trim().parse::<i32>().ok()?))
                 }) else {
                     continue;
                 };
-                for props in tile.children.iter().filter(|b| b.kind == "properties") {
+                for props in tile.children.iter().filter(|b| b.type_str() == "properties") {
                     let map: HashMap<String, String> =
-                        props.values.iter().filter(|v| !v.key().trim().is_empty()).map(|v| (v.key().trim().to_string(), v.value().trim().to_string())).collect();
+                        props.values.iter().filter(|v| !v.get_key().trim().is_empty()).map(|v| (v.get_key().trim().to_string(), v.get_value().trim().to_string())).collect();
                     if !map.is_empty() {
                         out.tiles.insert(format!("{name}_{}", col + row * 8), map);
                     }
