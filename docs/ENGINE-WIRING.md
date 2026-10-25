@@ -160,6 +160,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `ensure_chat_backdrop()`; `HudPlayers::player_index`
       (`IsoPlayer.getPlayerIndex()`; characters thread) tags batched draws
       (#174).
+- [ ] WorldMarkers: `with_markers(WorldMarkers::init)` when the game starts
+      (`IngameState.enter`) and `reset()` on exit; `hud::world_markers::render`
+      per player in `IngameState.renderframeui` (before `render_batch`); the
+      FBO chunk renderer draws `fbo_markers(z)` per level
+      (`FBORenderWorldMarkers`: chunk-map culling, depth, VBO). Inputs:
+      `HudCamera::camera_offset` / `frame_player_index` (world-render thread),
+      `HudPlayers::player_square` / `player_index_of` and
+      `HudClimate::fog_intensity` (characters thread),
+      `HudPicking::square_coords` (world thread) (#193).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).

@@ -33,6 +33,15 @@ pub trait HudPlayers {
     fn player_index(&self) -> i32 {
         0
     }
+    /// `IsoPlayer.players[i].getSquare()`'s x, y, z (`None`: no player or
+    /// no square).
+    fn player_square(&self, _i: usize) -> Option<(i32, i32, i32)> {
+        None
+    }
+    /// `player.playerIndex` of a Lua `IsoPlayer`.
+    fn player_index_of(&self, _player: &pz_kahlua::Value) -> Option<usize> {
+        None
+    }
     fn player_dead(&self, _i: usize) -> bool {
         false
     }
@@ -64,6 +73,16 @@ pub trait HudCamera {
     /// `Core.getZoom(player)`.
     fn zoom(&self, _player: usize) -> f32 {
         1.0
+    }
+    /// `IsoCamera.cameras[player].getOffX()` / `getOffY()` (already
+    /// truncated to whole pixels, as `PlayerCamera` returns them).
+    fn camera_offset(&self, _player: usize) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+    /// `IsoCamera.frameState.playerIndex`: the player whose frame is being
+    /// updated or rendered.
+    fn frame_player_index(&self) -> usize {
+        0
     }
 }
 
@@ -102,6 +121,10 @@ pub trait HudGameTime {
 pub trait HudClimate {
     /// `getAirTemperatureForCharacter(players[player], false)` (Celsius).
     fn air_temperature_for_character(&self, _player: usize) -> f32 {
+        0.0
+    }
+    /// `ClimateManager.getInstance().getFogIntensity()`.
+    fn fog_intensity(&self) -> f32 {
         0.0
     }
 }
@@ -181,6 +204,10 @@ pub trait HudMoodles {
 pub trait HudPicking {
     /// The picked tile object, if any.
     fn picked_tile(&self) -> Option<pz_ui::tooltip::TooltipObject> {
+        None
+    }
+    /// An `IsoGridSquare` Lua object's x, y, z.
+    fn square_coords(&self, _square: &pz_kahlua::Value) -> Option<(i32, i32, i32)> {
         None
     }
 }

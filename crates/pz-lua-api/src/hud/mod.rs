@@ -20,6 +20,7 @@ pub mod speed_controls;
 pub mod text_draw;
 pub mod tooltip;
 pub mod vehicle_gauge;
+pub mod world_markers;
 
 use crate::bind_ui::{element_of, UIELEMENT, UIMANAGER};
 use crate::expose::{expose_class, int_arg, num_arg};
@@ -315,6 +316,7 @@ pub fn register(thread: &mut Thread) {
     register_radial(thread);
     register_radial_menu(thread);
     text_draw::register(thread);
+    world_markers::register(thread);
     register_vehicle_gauge(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
