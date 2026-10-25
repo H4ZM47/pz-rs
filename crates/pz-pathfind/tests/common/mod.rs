@@ -300,6 +300,12 @@ pub struct Chr {
     pub player: Option<Plr>,
     pub door_opens: bool,
     pub stuck: bool,
+    /// `is_on_floor()`.
+    pub on_floor: bool,
+    /// `is_dead()`.
+    pub dead: bool,
+    /// `is_reanimated_for_grappling()`.
+    pub reanimated_for_grappling: bool,
 }
 
 #[derive(Default)]
@@ -330,6 +336,15 @@ impl CharacterView for Chr {
     }
     fn sit_on_furniture_direction(&self) -> Option<IsoDirections> {
         None
+    }
+    fn is_on_floor(&self) -> bool {
+        self.on_floor
+    }
+    fn is_dead(&self) -> bool {
+        self.dead
+    }
+    fn is_reanimated_for_grappling(&self) -> bool {
+        self.reanimated_for_grappling
     }
 }
 
