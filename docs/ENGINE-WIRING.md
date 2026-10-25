@@ -176,17 +176,12 @@ registered):
       Needs: loaded rows taken over with `cell_link::adopt_loaded(..,
       save::from_save)` (sets `sqlId`, `square`/`current` and the saved
       `IsoObject` fields); `sqlId` for new vehicles from
-      `VehiclesDB2.setVehicleLoaded` (`allocateID` over `init_used_ids`) in
-      `addToWorld` (not ported; an id < 1 is written as is, like the
-      shipped game with asserts off); and `IsoChunk.removeFromWorld` before
-      the chunk save is queued: per vehicle on its squares
-      `remove_from_world`, clear `square`/`current` (the save then does not
-      clamp the position), and when `vehicles_db::should_update_in_meta` is
-      `Ok(true)` take it off the list and write
-      `update_vehicle(vehicle_buffer(v))` (`VehiclesDB2.updateVehicle`, then
-      `VirtualVehicleManager.addToMeta`). The quit save's
-      `updateVehicleAndTrailer` uses the same `vehicle_buffer`
-      (ws/vehicles-db-save).
+      `VehiclesDB2.setVehicleLoaded` in `addToWorld` (with the ids
+      installed, see below; without them an id < 1 is written as is, like
+      the shipped game with asserts off); and `IsoChunk.removeFromWorld`
+      before the chunk save is queued, which the streamer does (next
+      entry). The quit save's `updateVehicleAndTrailer` uses the same
+      `vehicle_buffer` (ws/vehicles-db-save).
 - [ ] Vehicles leaving with their chunk (`IsoChunk.removeFromWorld`,
       unload and quit) are done by the streamer: with
       `RuntimeVehicleSaver` as `StreamCtx::vehicle_saver`, each vehicle
@@ -202,6 +197,50 @@ registered):
       pass it as `StreamCtx::vehicle_ids`, and call
       `ids.set_vehicle_loaded(sql_id)` from the runtime's `addToWorld`
       (store the returned id) (#167).
+- [ ] Vehicle ids and the meta, filled from pz-vehicles (ws/vehicle-meta):
+      at `VehiclesDB2.init` make `let ids = Rc::new(RefCell::new(
+      VehicleIds::init(conn)?))` (`VehicleIds::default()` without a store)
+      and `pz_vehicles::env::set_vehicle_ids(Some(ids.clone()))`;
+      `BaseVehicle::add_to_world` then calls `set_vehicle_loaded` (a new
+      vehicle's `sqlId` is allocated there) and
+      `VirtualVehicleManager.removeFromMeta`, `remove_from_world` calls
+      `set_vehicle_unloaded`. Each streamer call fills `StreamCtx` with
+      `vehicle_saver: Some(&pz_vehicles::vehicles_db::RuntimeVehicleSaver::default())`,
+      `vehicle_meta: Some(&mut pz_vehicles::virtual_vehicle::VirtualVehicleMeta::default())`
+      (stateless; its `skipped` counts entries that were not runtime
+      vehicles) and `vehicle_ids: Some(&mut ids.borrow_mut())`. Keep that
+      borrow only for the streamer call: after it, for each vehicle that
+      was on an unloaded chunk (`StreamEvent::VehiclesToMeta` ids and the
+      chunk's remaining runtime vehicles) call the runtime's
+      `remove_from_world()` (physics, id map, cell list, sounds, lights;
+      it borrows the ids again and unloads the id once more, which is a
+      no-op), so it must not run while the streamer holds `&mut ids`. A
+      vehicle sent to the meta already left its chunk list and its
+      square/current (`VirtualVehicle.set`). The vehicle runtime no longer
+      has `VehicleEvents::vehicle_unloaded`; `vehicle_removed_from_database`
+      (`permanentlyRemove`) stays an event: forward it to
+      `vehicles_db::remove_vehicle(conn, sql_id)` on the streamer's store.
+- [ ] `VirtualVehicleManager` (single player only): per frame in
+      `IngameState.update`, after the vehicle manager, `let rows =
+      pz_vehicles::virtual_vehicle::with_manager(|m| { m.update(Some(&mut
+      ids.borrow_mut()), &save_ctx); m.take_queued() })` (records whose
+      alarm, siren and engine stopped give the vehicle its state back and
+      queue their row at a chunk of their position); on the game save
+      (`GameWindow.save`, after `GameEntityManager.Save`) `m.save(..)`
+      then `m.take_queued()`. Pass the `Ok` rows to
+      `streamer.queue_vehicle_updates(rows)` (`VehiclesDB2.updateVehicle`;
+      the streamer's idle loop writes them) and log the `Err`s as the
+      original's `ExceptionLogger`. `save_ctx` is the streamer's `SaveCtx`
+      (sprites, save tables/settings, items). `m.reset()` on
+      `IngameState.exit`.
+- [ ] `VehiclesDB2.loadVehiclesInMeta` (`IngameState.enter`, single
+      player, after `chunkMap[0].update()`): `let r =
+      vehicles_db::load_vehicles_in_meta(vehicle_store.conn.as_mut(),
+      &save_ctx)` (rows saved with `inMeta`), then
+      `pz_vehicles::virtual_vehicle::add_loaded_vehicles_to_meta(&r.loaded,
+      |lv| Some(pz_vehicles::save::from_save(&lv.vehicle)))`: each vehicle
+      not already in the world goes through `addToWorld`,
+      `removeFromWorld` and `addToMeta`.
 - [ ] Animal paths: on `StreamEvent::GenAnimalsPath { wx, wy }` run
       `ZoneGenerator.genAnimalsPath` (not ported); it calls
       `meta.add_cell_to_save(cell_x, cell_y)` unless the sandbox's

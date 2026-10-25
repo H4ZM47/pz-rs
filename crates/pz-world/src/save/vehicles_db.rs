@@ -271,6 +271,93 @@ pub fn load_chunk(
     out
 }
 
+/// What [`load_vehicles_in_meta`] did.
+#[derive(Debug, Default)]
+pub struct VehiclesInMetaLoaded {
+    /// The loaded vehicles, in row order: origin `Database { sql_id }`,
+    /// square the statement's dummy square (`x - wx * 8`, `y - wy * 8`,
+    /// level 0, as the original sets it).
+    pub loaded: Vec<LoadedVehicle>,
+    /// Rows whose `BaseVehicle.load` failed, deleted from the database.
+    pub removed: Vec<(i32, String)>,
+    /// The error that ended the statement loop (logged by the original).
+    pub error: Option<String>,
+}
+
+/// `VehiclesDB2.loadVehiclesInMeta()` (`IngameState.enter`, single
+/// player), the store side: `SQLStore.loadVehiclesInMeta` (`SELECT id, wx,
+/// wy, x, y, data, worldversion FROM vehicles WHERE inMeta=TRUE`, in id
+/// order) → `QueueLoadVehiclesInMeta.vehicleLoaded`. A blob without the
+/// serialise flag and vehicle class id is skipped; a row that fails to load
+/// is deleted. The main-thread side (`processMain`: each vehicle not loaded
+/// yet goes through `addToWorld`, `removeFromWorld` and
+/// `VirtualVehicleManager.addToMeta`) is the vehicle runtime's. `conn` is
+/// `None` without a store (`Core.isNoSave`).
+pub fn load_vehicles_in_meta(
+    conn: Option<&mut Connection>,
+    ctx: &SaveCtx<'_>,
+) -> VehiclesInMetaLoaded {
+    let mut out = VehiclesInMetaLoaded::default();
+    let Some(conn) = conn else {
+        return out;
+    };
+    let rows = (|| -> pz_sqlite::Result<Vec<(VehicleRow, bool)>> {
+        let t = conn.table("vehicles")?;
+        let (cm, cx, cy) = (t.column("inMeta")?, t.column("wx")?, t.column("wy")?);
+        let mut rows = Vec::new();
+        for r in conn.rows(&t)? {
+            if !int_eq(&r.get(&t, cm), 1) {
+                continue;
+            }
+            let (wx, wy) = (r.get(&t, cx).as_i32(), r.get(&t, cy).as_i32());
+            rows.push(chunk_row(&t, &r, wx, wy)?);
+        }
+        Ok(rows)
+    })();
+    let rows = match rows {
+        Ok(r) => r,
+        Err(e) => {
+            out.error = Some(e.to_string());
+            return out;
+        }
+    };
+    let class = ctx.tables.class_id("Vehicle");
+    let ts = ctx.settings.tile_scale as f32;
+    for (row, has_data) in rows {
+        // `setBytes(null)` and `bb.get()` on a short blob throw; the loop
+        // ends there.
+        if !has_data {
+            out.error = Some("java.lang.NullPointerException".into());
+            return out;
+        }
+        if row.data.len() < 2 {
+            out.error = Some("java.nio.BufferUnderflowException".into());
+            return out;
+        }
+        match row.load(class, (32.0 * ts, 96.0 * ts), ctx.items) {
+            Ok(Some(v)) => out.loaded.push(LoadedVehicle {
+                origin: VehicleOrigin::Database { sql_id: row.id },
+                square: Some((
+                    crate::java::fastfloor(row.x - (row.wx * 8) as f32),
+                    crate::java::fastfloor(row.y - (row.wy * 8) as f32),
+                    0,
+                )),
+                vehicle: v,
+            }),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!(
+                    "ERROR: vehicle {} is being deleted because an error occurred loading it: {}",
+                    row.id, e.0
+                );
+                remove_vehicle(conn, row.id);
+                out.removed.push((row.id, e.0));
+            }
+        }
+    }
+    out
+}
+
 // ---- VehiclesDB2.unloadChunk ------------------------------------------------
 
 /// `pstmt.setFloat`: the `float` widened to the `REAL` sqlite stores.

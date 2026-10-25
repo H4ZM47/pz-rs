@@ -750,6 +750,54 @@ fn main() {
             });
         }
     }
+    // `VP_META`: the oracle's `runMeta` (chunk unload -> `VirtualVehicleManager`,
+    // `VehiclesDB2` id allocation) replayed with the same decisions.
+    if std::env::var_os("VP_META").is_some() {
+        let save_ctx = pz_world::save::SaveCtx {
+            sprites: &sprites,
+            tables: &save_tables,
+            settings: &pz_world::save::SaveSettings {
+                tile_scale,
+                ..Default::default()
+            },
+            items: registry,
+            hooks: &pz_world::save::NoSaveHooks,
+            meta: None,
+        };
+        pz_vehicles::lua::with_thread(&mut lua.thread, || {
+            let row_ids: Vec<i32> = cases.iter().map(|c| c.id).collect();
+            run_meta(oracle, &save_ctx, &row_ids, &mut |id| {
+                let case = cases.iter().find(|c| c.id == id)?;
+                // The items are written back: load them at the oracle's
+                // world age (clothing's `lastWetnessUpdate`).
+                let saved = case.row.as_ref()?.load(
+                    class,
+                    offsets,
+                    &DrawingItems {
+                        inner: registry,
+                        live: false,
+                        bounds: Default::default(),
+                        world_age: Some(env::time().world_age_hours),
+                    },
+                );
+                let saved = saved.ok().flatten()?;
+                rand::seed_standard(id as i64);
+                let v = pz_vehicles::save::from_save_with(&saved, || {
+                    let live = DrawingItems {
+                        inner: registry,
+                        live: true,
+                        bounds: Default::default(),
+                        world_age: None,
+                    };
+                    if let Some(row) = &case.row {
+                        let _ = row.load(class, offsets, &live);
+                    }
+                });
+                Some((v, case.chunk))
+            })
+        });
+        return;
+    }
     // `--e2e`: pz-bullet with the region's chunk shapes instead of the
     // recorded calls (the harness ran the original's libPZBullet).
     let region_bufs: Vec<Vec<u8>> = if e2e {
@@ -1627,4 +1675,286 @@ fn run_surround(oracle: &std::path::Path) {
         ok += 1;
     }
     println!("surround cases={cases} ok={ok} bad={bad}");
+}
+
+fn fnv(data: &[u8]) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in data {
+        h ^= *b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
+}
+
+thread_local! {
+    static META_SEQ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn row_line(tag: &str, r: &Result<VehicleRow, String>) -> String {
+    if let (Some(d), Ok(r)) = (std::env::var_os("VP_META_BYTES"), r) {
+        let n = META_SEQ.with(|c| {
+            let n = c.get();
+            c.set(n + 1);
+            n
+        });
+        let _ = std::fs::write(Path::new(&d).join(format!("r{n}.bin")), &r.data);
+    }
+    match r {
+        Ok(r) => format!(
+            "{tag} {} {} {} {} {} {} {} {:x}",
+            r.id,
+            r.wx,
+            r.wy,
+            fh(r.x),
+            fh(r.y),
+            r.in_meta,
+            r.data.len(),
+            fnv(&r.data)
+        ),
+        Err(e) => format!("{tag} error {e}"),
+    }
+}
+
+fn meta_line(vv: &pz_vehicles::virtual_vehicle::VirtualVehicle) -> String {
+    let v = &vv.vehicle;
+    let run = v.is_engine_running() as i32;
+    let st = v.st();
+    format!(
+        "M {} {} {} {} {} {} hl={} alarm={},{},{} siren={},{} run={} meta={} sq={},{}",
+        vv.sql_id,
+        vv.vehicle_id,
+        fh(vv.x),
+        fh(vv.y),
+        fh(vv.z),
+        vv.script_name,
+        vv.headlights_on as i32,
+        dh(st.alarm.start_time),
+        st.alarm.sound_on as i32,
+        st.alarm.lights_on as i32,
+        st.lightbar_siren_mode,
+        dh(vv.siren_start_time),
+        run,
+        vv.should_update_in_meta() as i32,
+        st.square.is_some(),
+        st.current.is_some()
+    )
+}
+
+/// The oracle's `runMeta` replayed: `load` makes the vehicle of a row
+/// (seeded and loaded as the oracle does) and its chunk.
+fn run_meta(
+    oracle: &Path,
+    ctx: &pz_world::save::SaveCtx<'_>,
+    row_ids: &[i32],
+    load: &mut dyn FnMut(i32) -> Option<(pz_vehicles::VehicleRef, (i32, i32))>,
+) {
+    use pz_vehicles::virtual_vehicle::{with_manager, VirtualVehicleMeta};
+    use pz_world::save::vehicles_db::{VehicleIds, VehicleMetaHook};
+    let java = std::fs::read_to_string(oracle.join("meta.txt")).expect("meta.txt");
+    let java: Vec<&str> = java.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    Bullet::install(Box::new(pz_vehicles::physics::NoPhysics));
+    manager::reset();
+    world_sim::reset();
+    world_sim::set_created(0.0, 0.0);
+    rand::seed_lua(17);
+    with_manager(|m| m.reset());
+    let ids = Rc::new(std::cell::RefCell::new(VehicleIds::default()));
+    env::set_vehicle_ids(Some(ids.clone()));
+    let mut hook = VirtualVehicleMeta::default();
+    let mut vs: std::collections::BTreeMap<i32, pz_vehicles::VehicleRef> = Default::default();
+    let mut freed = std::collections::BTreeSet::new();
+    let mut frames_started = false;
+    let mut first_c = true;
+    for line in &java {
+        let t: Vec<&str> = line.split(' ').collect();
+        match t[0] {
+            "I" => {
+                freed.insert(t[2].parse::<i32>().unwrap());
+                out.push(line.to_string());
+            }
+            "F" if t[1] == "-1" => {
+                apply_time(line);
+                out.push(line.to_string());
+            }
+            "C" => {
+                if first_c {
+                    // `VehiclesDB2.init`: the rows the oracle did not free.
+                    first_c = false;
+                    ids.borrow_mut().used = row_ids
+                        .iter()
+                        .copied()
+                        .filter(|i| !freed.contains(i))
+                        .collect();
+                }
+                out.push(line.to_string());
+                let id: i32 = t[1].parse().unwrap();
+                if t[2] == "load-failed" {
+                    continue;
+                }
+                let (fresh, mode, sm) = (
+                    t[2] == "true",
+                    t[3].parse::<i32>().unwrap(),
+                    t[4].parse::<i32>().unwrap(),
+                );
+                let Some((v, chunk)) = load(id) else {
+                    out.push(format!("C {id} rust-load-failed"));
+                    continue;
+                };
+                rand::seed_standard(id as i64 + 1_000_003);
+                {
+                    let mut st = v.st_mut();
+                    st.chunk = Some(chunk);
+                    st.sql_id = if fresh { -1 } else { id };
+                }
+                v.add_to_world();
+                manager::process_add_vehicles();
+                if mode == 1 && v.engine_part().is_some() {
+                    v.engine_do_running();
+                }
+                if mode == 2 {
+                    v.set_alarmed(true);
+                    v.trigger_alarm();
+                }
+                if mode == 3 && v.has_lightbar() {
+                    v.set_lightbar_siren_mode(sm);
+                    v.st_mut().siren_start_time = env::time().world_age_hours;
+                }
+                let m = pz_vehicles::vehicles_db::should_update_in_meta(&v);
+                out.push(format!(
+                    "A {id} {} {}",
+                    v.st().sql_id,
+                    m.map_or_else(|e| e, |b| b.to_string())
+                ));
+                vs.insert(id, v);
+            }
+            "K" => out.push(line.to_string()),
+            "X" => {
+                out.push(line.to_string());
+                let id: i32 = t[1].parse().unwrap();
+                let v = vs[&id].clone();
+                // `IsoChunk.removeFromWorld`: `removeFromWorld`,
+                // `removeFromSquare`, `setSquare(null)`, then the meta.
+                v.remove_from_world();
+                v.st_mut().square = None;
+                let m = pz_vehicles::vehicles_db::should_update_in_meta(&v).unwrap_or(false);
+                let mut row = None;
+                if m {
+                    if v.st().sql_id == -1 {
+                        let n = ids.borrow_mut().allocate_id();
+                        v.st_mut().sql_id = n;
+                    }
+                    row = Some(pz_vehicles::vehicles_db::vehicle_buffer(&v, ctx));
+                    hook.add_to_meta(pz_vehicles::cell_link::handle(&v));
+                }
+                out.push(format!(
+                    "U {id} {} {m} loaded={}",
+                    v.st().sql_id,
+                    ids.borrow().is_vehicle_loaded(v.st().sql_id)
+                ));
+                if let Some(r) = row {
+                    out.push(row_line("Q", &r));
+                }
+            }
+            "F" => {
+                if !frames_started {
+                    frames_started = true;
+                    rand::seed_standard(99991);
+                }
+                apply_time(line);
+                out.push(line.to_string());
+                let frame: i32 = t[1].parse().unwrap();
+                // The oracle's `R` lines follow this frame's `F` line.
+                let i = java.iter().position(|l| std::ptr::eq(*l, *line)).unwrap();
+                for l in java[i + 1..].iter().take_while(|l| l.starts_with('R')) {
+                    if let Some(id) = l.strip_prefix("R ").and_then(|s| s.parse::<i32>().ok()) {
+                        out.push(l.to_string());
+                        let v = with_manager(|m| {
+                            m.vehicles
+                                .iter()
+                                .find(|vv| vv.sql_id == id)
+                                .map(|vv| vv.vehicle.clone())
+                        });
+                        let Some(v) = v else { continue };
+                        v.add_to_world();
+                        out.push(format!(
+                            "RA {} {} loaded={}",
+                            v.st().sql_id,
+                            v.st().headlights_on as i32,
+                            ids.borrow().is_vehicle_loaded(v.st().sql_id)
+                        ));
+                    }
+                }
+                let queued = with_manager(|m| {
+                    m.update(Some(&mut ids.borrow_mut()), ctx);
+                    m.take_queued()
+                });
+                for r in &queued {
+                    out.push(row_line("Q", r));
+                }
+                let lines = with_manager(|m| {
+                    m.vehicles
+                        .iter()
+                        .flat_map(|vv| [meta_line(vv), vdump(&vv.vehicle, frame)])
+                        .collect::<Vec<_>>()
+                });
+                out.extend(lines);
+            }
+            _ => {}
+        }
+    }
+    let queued = with_manager(|m| {
+        m.save(Some(&mut ids.borrow_mut()), ctx);
+        m.take_queued()
+    });
+    for r in &queued {
+        out.push(row_line("S", r));
+    }
+    out.push(format!(
+        "N {} used={} loaded={}",
+        with_manager(|m| m.vehicles.len()),
+        ids.borrow().used.len(),
+        ids.borrow().loaded.len()
+    ));
+    // Compare.
+    let mut ndiff = 0;
+    let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut shown = 0;
+    for (i, (j, r)) in java.iter().zip(out.iter()).enumerate() {
+        if *j != r.as_str() {
+            ndiff += 1;
+            let k = j.split(' ').next().unwrap_or("").to_string();
+            *kinds.entry(k).or_insert(0) += 1;
+            if shown < 6 {
+                shown += 1;
+                println!(
+                    "diff at {i}:\n  J {}\n  R {}",
+                    &j[..j.len().min(400)],
+                    &r[..r.len().min(400)]
+                );
+                for (k, (jw, rw)) in j.split(' ').zip(r.split(' ')).enumerate() {
+                    if jw != rw {
+                        println!("  field {k}: J {jw}\n           R {rw}");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let count = |p: &str| java.iter().filter(|l| l.starts_with(p)).count();
+    println!(
+        "meta: lines={} rust_lines={} diffs={} {:?} (A={} U={} Q={} M={} RA={} S={}) skipped={}",
+        java.len(),
+        out.len(),
+        ndiff,
+        kinds,
+        count("A "),
+        count("U "),
+        count("Q "),
+        count("M "),
+        count("RA "),
+        count("S "),
+        hook.skipped
+    );
+    env::set_vehicle_ids(None);
 }
