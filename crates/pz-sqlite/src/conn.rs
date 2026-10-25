@@ -43,6 +43,9 @@ pub struct Connection {
     autocommit: bool,
 }
 
+/// SQLite's table of AUTOINCREMENT high-water marks.
+const SEQUENCE: &str = "sqlite_sequence";
+
 fn eq_name(a: &str, b: &str) -> bool {
     a.eq_ignore_ascii_case(b)
 }
@@ -411,6 +414,11 @@ impl Connection {
                 })
                 .collect();
             Self::check_not_null(t, &vals)?;
+            let seq = if t.def.autoincrement {
+                c.sequence(&t.name)?
+            } else {
+                None
+            };
             let bt = BTree::new(Kind::Table, &c.pager);
             let rowid = match rowid {
                 Some(r) => {
@@ -419,17 +427,63 @@ impl Connection {
                     }
                     r
                 }
-                None => match bt.table_max_rowid(&mut c.pager, t.root)? {
-                    None => 1,
-                    Some(i64::MAX) => {
-                        return Err(Error::Unsupported("rowid space exhausted".into()))
+                None => {
+                    let max = bt.table_max_rowid(&mut c.pager, t.root)?;
+                    let max = match (max, seq) {
+                        (Some(m), Some((_, s))) => Some(m.max(s)),
+                        (m, s) => m.or(s.map(|s| s.1)),
+                    };
+                    match max {
+                        None => 1,
+                        Some(i64::MAX) => {
+                            return Err(Error::Unsupported("rowid space exhausted".into()))
+                        }
+                        Some(m) => m.max(0) + 1,
                     }
-                    Some(m) => m.max(0) + 1,
-                },
+                }
             };
             c.put_row(&tg, rowid, &vals)?;
+            if t.def.autoincrement {
+                c.set_sequence(&t.name, seq, rowid)?;
+            }
             Ok(rowid)
         })
+    }
+
+    /// The `sqlite_sequence` row of `table`: (its rowid, seq).
+    fn sequence(&mut self, table: &str) -> Result<Option<(i64, i64)>> {
+        let rows = self.schema_rows()?;
+        let Ok(seq) = Self::table_from(&rows, SEQUENCE) else {
+            return Ok(None);
+        };
+        Ok(self
+            .rows(&seq)?
+            .iter()
+            .find_map(|r| match (r.values.first(), r.values.get(1)) {
+                (Some(Value::Text(n)), Some(v)) if eq_name(n, table) => Some((r.rowid, v.as_i64())),
+                _ => None,
+            }))
+    }
+
+    /// After an insert at `rowid`: raise `table`'s sequence to it.
+    fn set_sequence(&mut self, table: &str, old: Option<(i64, i64)>, rowid: i64) -> Result<()> {
+        let tg = self.target(SEQUENCE)?;
+        let vals = [Value::Text(table.into()), Value::Integer(rowid)];
+        match old {
+            Some((_, s)) if s >= rowid => Ok(()),
+            Some((id, s)) => {
+                self.remove_row(&tg, id, &[Value::Text(table.into()), Value::Integer(s)])?;
+                self.put_row(&tg, id, &vals)
+            }
+            None => {
+                let bt = BTree::new(Kind::Table, &self.pager);
+                let id = bt
+                    .table_max_rowid(&mut self.pager, tg.table.root)?
+                    .unwrap_or(0)
+                    + 1;
+                self.put_row(&tg, id, &vals)
+            }
+        }
     }
 
     /// `UPDATE table SET col=?... WHERE rowid=?`: `false` when no row
@@ -575,6 +629,18 @@ impl Connection {
                     Value::Integer(i64::from(root)),
                     Value::Text(sql),
                 ])?;
+                // The first AUTOINCREMENT table brings sqlite_sequence, right after it.
+                if def.autoincrement && !rows.iter().any(|(_, e)| eq_name(&e.name, SEQUENCE)) {
+                    let root = self.pager.allocate()?;
+                    BTree::new(Kind::Table, &self.pager).init_root(&mut self.pager, root)?;
+                    self.add_schema_row([
+                        Value::Text("table".into()),
+                        Value::Text(SEQUENCE.into()),
+                        Value::Text(SEQUENCE.into()),
+                        Value::Integer(i64::from(root)),
+                        Value::Text(format!("CREATE TABLE {SEQUENCE}(name,seq)")),
+                    ])?;
+                }
                 self.bump_cookie()
             }
             Ddl::CreateIndex {

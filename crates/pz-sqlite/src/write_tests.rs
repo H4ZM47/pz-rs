@@ -575,3 +575,38 @@ fn stress_512() {
 fn stress_1024() {
     stress(1024, 3000, 777);
 }
+
+#[test]
+fn autoincrement_keeps_sqlite_sequence() {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (_t, p) = tmp(&format!("autoinc-{n}"));
+    let mut c = Connection::open(&p).unwrap();
+    c.execute("CREATE TABLE IF NOT EXISTS server (\n id INTEGER PRIMARY KEY AUTOINCREMENT,\n name TEXT NOT NULL\n);").unwrap();
+    c.execute("CREATE TABLE IF NOT EXISTS account (\n id INTEGER PRIMARY KEY AUTOINCREMENT,\n serverId INTEGER NOT NULL,\n FOREIGN KEY (serverId) REFERENCES server (id)\n);").unwrap();
+    let ins = |c: &mut Connection, id: Option<i64>, name: &str| {
+        let mut v = vec![("name", Value::Text(name.into()))];
+        if let Some(id) = id {
+            v.push(("id", Value::Integer(id)));
+        }
+        c.insert("server", &v).unwrap()
+    };
+    assert_eq!(ins(&mut c, None, "a"), 1);
+    assert_eq!(ins(&mut c, Some(10), "b"), 10);
+    assert!(c.delete("server", 10).unwrap());
+    // The deleted 10 is never reused.
+    assert_eq!(ins(&mut c, None, "c"), 11);
+    assert_eq!(ins(&mut c, Some(5), "d"), 5);
+    assert_eq!(
+        c.insert("account", &[("serverId", Value::Integer(1))])
+            .unwrap(),
+        1
+    );
+    drop(c);
+    if let Some(out) = sqlite3(&p, "SELECT name, type, rootpage FROM sqlite_schema; SELECT rowid, * FROM sqlite_sequence; SELECT id FROM server;") {
+        assert_eq!(
+            out,
+            "server|table|2\nsqlite_sequence|table|3\naccount|table|4\n1|server|11\n2|account|1\n1\n5\n11"
+        );
+    }
+}

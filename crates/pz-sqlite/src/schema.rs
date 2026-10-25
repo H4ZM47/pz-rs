@@ -93,6 +93,9 @@ pub struct TableDef {
     /// A `UNIQUE` or non-rowid `PRIMARY KEY` constraint, which SQLite
     /// backs with an automatic index.
     pub autoindex: bool,
+    /// `INTEGER PRIMARY KEY AUTOINCREMENT`: new rowids also pass the
+    /// largest ever used, kept in `sqlite_sequence`.
+    pub autoincrement: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -300,6 +303,7 @@ pub fn parse_create_table(sql: &str) -> Result<TableDef> {
     let mut alias = None;
     let mut table_pk: Option<Vec<String>> = None;
     let mut table_unique = false;
+    let mut autoincrement = false;
     for def in defs {
         let Some(first) = def.first() else {
             return Err(unsupported("empty column definition"));
@@ -342,6 +346,7 @@ pub fn parse_create_table(sql: &str) -> Result<TableDef> {
             let desc = cons.get(p + 2).is_some_and(|t| is_kw(t, "DESC"));
             if decl_type.eq_ignore_ascii_case("INTEGER") && !desc {
                 alias = Some(columns.len());
+                autoincrement = cons.iter().any(|t| is_kw(t, "AUTOINCREMENT"));
             }
         }
         let not_null = cons
@@ -383,6 +388,7 @@ pub fn parse_create_table(sql: &str) -> Result<TableDef> {
         columns,
         rowid_alias: alias,
         autoindex,
+        autoincrement,
     })
 }
 
