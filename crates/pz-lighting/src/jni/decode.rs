@@ -29,6 +29,44 @@ pub struct ColorInfo {
     pub a: f32,
 }
 
+impl ColorInfo {
+    /// `new ColorInfo()`: opaque white.
+    pub const WHITE: ColorInfo = ColorInfo { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+
+    /// The square colour word of `getSquareLighting` (`lightInts[1]`:
+    /// red in byte 0, green in byte 1, blue in byte 2), alpha 1.
+    pub fn from_packed(c: i32) -> ColorInfo {
+        ColorInfo {
+            r: (c & 0xff) as f32 / 255.0,
+            g: ((c >> 8) & 0xff) as f32 / 255.0,
+            b: ((c >> 16) & 0xff) as f32 / 255.0,
+            a: 1.0,
+        }
+    }
+
+    /// `(r + g + b) / 3.0f`: how `IsoZombie.spottedNew` / `spottedOld` read
+    /// a square's `lighting[playerIndex].lightInfo()`.
+    pub fn mean_rgb(&self) -> f32 {
+        (self.r + self.g + self.b) / 3.0
+    }
+
+    /// `PZMath.max(r, g, b)` (`max(a, b) = a > b ? a : b`, nested as
+    /// `max(r, max(g, b))`): `IsoGridSquare.getLightLevel`.
+    pub fn max_rgb(&self) -> f32 {
+        let max = |a: f32, b: f32| if a > b { a } else { b };
+        max(self.r, max(self.g, self.b))
+    }
+}
+
+/// `IsoGridSquare.getLightLevel2()` (`getLightLevel(-1)`): a fresh
+/// `JNILighting(-1, square)` skips the native call and decodes whatever
+/// `LightingJNI`'s static `lightInts` buffer last held, so the answer is the
+/// brightest channel of `lightInts[1]` from the last `getSquareLighting`
+/// (0 before any call: the buffer starts zeroed).
+pub fn light_level2(shared_light_ints_1: i32) -> f32 {
+    ColorInfo::from_packed(shared_light_ints_1).max_rgb()
+}
+
 /// `IsoGridSquare.ResultLight`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ResultLightInfo {
@@ -133,6 +171,20 @@ impl SquareLight {
         self.vis & 4 != 0
     }
 
+    /// `(lightInfo().r + lightInfo().g + lightInfo().b) / 3.0f`, the value
+    /// the zombie senses read (`IsoZombie.spottedNew` / `spottedOld`).
+    /// A cache never filled (`updateCounter == -1`) still holds the
+    /// constructor's white and gives 1.
+    pub fn light_mean(&self) -> f32 {
+        self.light_info.mean_rgb()
+    }
+
+    /// `IsoGridSquare.getLightLevel(playerIndex)` for a player index
+    /// (`PZMath.max(r, g, b)` of `lightInfo()`).
+    pub fn light_level_value(&self) -> f32 {
+        self.light_info.max_rgb()
+    }
+
     /// `bSeen(boolean)`, the only setter Java allows.
     pub fn set_seen(&mut self, seen: bool) {
         self.vis = if seen { self.vis | 1 } else { self.vis & 0xfe };
@@ -190,13 +242,7 @@ impl SquareLight {
 
     fn read_head(&mut self, ints: &[i32; 49]) {
         self.vis = (ints[0] & 7) as u8;
-        let c = ints[1];
-        self.light_info = ColorInfo {
-            r: (c & 0xff) as f32 / 255.0,
-            g: ((c >> 8) & 0xff) as f32 / 255.0,
-            b: ((c >> 16) & 0xff) as f32 / 255.0,
-            a: 1.0,
-        };
+        self.light_info = ColorInfo::from_packed(ints[1]);
         self.dark_multi = ints[2] as f32 / 100000.0;
         self.target_dark_multi = ints[3] as f32 / 100000.0;
         self.light_level = ints[4];
