@@ -655,6 +655,22 @@ impl DrawList {
         self.push_corners(tex, x, y, [col; 4]);
     }
 
+    /// `SpriteRenderer.renderPoly(tex, x1..y4, r, g, b, a, u1..v4)`: the
+    /// texture coordinates replace the texture's own (a null texture keeps
+    /// the defaults).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_poly_uv(&mut self, tex: Option<&Texture>, x: [f32; 4], y: [f32; 4], c: Rgba, u: [f32; 4], v: [f32; 4]) {
+        if tex.is_some_and(|t| !t.ready) {
+            return;
+        }
+        let col = color_to_abgr(c.0, c.1, c.2, c.3);
+        if tex.is_none() {
+            self.push_corners(tex, x, y, [col; 4]);
+        } else {
+            self.push_uv(tex, x, y, u, v, [col; 4]);
+        }
+    }
+
     /// `SpriteRenderer.render(tex, x1, y1, ..., x4, y4, r, g, b, a)`: four
     /// free corners, drawn even when the texture is not ready.
     pub fn render4(&mut self, tex: Option<&Texture>, x: [f32; 4], y: [f32; 4], c: Rgba) {

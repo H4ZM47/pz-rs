@@ -13,6 +13,7 @@ pub mod host;
 pub mod moodles;
 pub mod new_window;
 pub mod progress_bar;
+pub mod radial_progress_bar;
 pub mod scroll_bar;
 pub mod speed_controls;
 pub mod tooltip;
@@ -308,6 +309,7 @@ pub fn register(thread: &mut Thread) {
 
     register_health(thread);
     debug_console::register(thread);
+    register_radial(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
     mu.method("wiggle", |c| {
@@ -415,6 +417,55 @@ pub fn register(thread: &mut Thread) {
     });
 }
 
+fn register_radial(thread: &mut Thread) {
+    use radial_progress_bar::{RadialProgressBar, RADIAL_PROGRESS_BAR};
+    let b = expose_class(thread, RADIAL_PROGRESS_BAR, Some(UIELEMENT));
+    fn bar(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
+        let e = element_of(&c.arg(0)).ok_or_else(|| LuaError::runtime("Expected RadialProgressBar"))?;
+        if e.ext::<RadialProgressBar>().is_none() {
+            return Err(LuaError::runtime("Expected RadialProgressBar"));
+        }
+        Ok(e)
+    }
+    fn tex(v: Value) -> Option<pz_render::Texture> {
+        match v {
+            Value::Object(o) => o.as_any().downcast_ref::<pz_render::LuaTexture>().map(pz_render::LuaTexture::get),
+            _ => None,
+        }
+    }
+    b.ctor(|c| {
+        let table = match c.arg(0) {
+            Value::Table(t) => Some(t),
+            _ => None,
+        };
+        let e = RadialProgressBar::create(table, tex(c.arg(1)));
+        Ok(c.push(Value::Object(e as Rc<dyn LuaObject>)))
+    });
+    b.method("setValue", |c| {
+        let e = bar(c)?;
+        e.ext::<RadialProgressBar>().unwrap().set_value(num_arg(c, 1) as f32);
+        Ok(0)
+    });
+    b.method("getValue", |c| {
+        let e = bar(c)?;
+        Ok(c.push(e.ext::<RadialProgressBar>().unwrap().get_value() as f64))
+    });
+    b.method("setTexture", |c| {
+        let e = bar(c)?;
+        e.ext::<RadialProgressBar>().unwrap().set_texture(tex(c.arg(1)));
+        Ok(0)
+    });
+    b.method("getTexture", |c| {
+        let e = bar(c)?;
+        Ok(c.push(crate::bind_render::texture_value(e.ext::<RadialProgressBar>().unwrap().get_texture())))
+    });
+    b.method("setColor", |c| {
+        let e = bar(c)?;
+        e.ext::<RadialProgressBar>().unwrap().set_color_value(c.arg(1));
+        Ok(0)
+    });
+}
+
 fn register_health(thread: &mut Thread) {
     use health::{NewHealthPanel, NEW_HEALTH_PANEL};
     // NewWindow isn't exposed itself; its public methods are inherited.
@@ -484,9 +535,23 @@ pub(crate) mod test_util {
 
     /// As [`install_textures`] with draw offsets (`offsetX`, `offsetY`).
     pub fn install_textures_ex(sizes: &[(String, i32, i32, f32, f32)]) {
-        let sizes: HashMap<String, (i32, i32, f32, f32)> = sizes
+        let v: Vec<_> = sizes
             .iter()
-            .map(|(n, w, h, x, y)| (n.clone(), (*w, *h, *x, *y)))
+            .map(|(n, w, h, x, y)| (n.clone(), *w, *h, *x, *y, [0.0, 0.0, 1.0, 1.0]))
+            .collect();
+        install_textures_uv(&v);
+    }
+
+    /// A texture: name, size, draw offsets, atlas rectangle.
+    pub type TexSpec = (String, i32, i32, f32, f32, [f32; 4]);
+
+    /// As [`install_textures_ex`] with the texture's atlas rectangle
+    /// (`xStart`, `yStart`, `xEnd`, `yEnd`).
+    pub fn install_textures_uv(sizes: &[TexSpec]) {
+        type Spec = (i32, i32, f32, f32, [f32; 4]);
+        let sizes: HashMap<String, Spec> = sizes
+            .iter()
+            .map(|(n, w, h, x, y, uv)| (n.clone(), (*w, *h, *x, *y, *uv)))
             .collect();
         let tm = Rc::new(RefCell::new(TextureManager::new()));
         let cache: RefCell<HashMap<String, Texture>> = RefCell::default();
@@ -494,7 +559,10 @@ pub(crate) mod test_util {
             if let Some(t) = cache.borrow().get(name) {
                 return Some(t.clone());
             }
-            let (w, h, ox, oy) = sizes.get(name).copied().unwrap_or((24, 24, 0.0, 0.0));
+            let (w, h, ox, oy, uv) = sizes
+                .get(name)
+                .copied()
+                .unwrap_or((24, 24, 0.0, 0.0, [0.0, 0.0, 1.0, 1.0]));
             let px = vec![
                 255;
                 ((w.max(1) as u32).next_power_of_two() * (h.max(1) as u32).next_power_of_two() * 4)
@@ -507,8 +575,8 @@ pub(crate) mod test_util {
             t.height = h as u32;
             t.offset_x = ox;
             t.offset_y = oy;
-            // The oracles' textures cover their whole image.
-            (t.x_start, t.y_start, t.x_end, t.y_end) = (0.0, 0.0, 1.0, 1.0);
+            // The oracles' textures cover their whole image unless given.
+            (t.x_start, t.y_start, t.x_end, t.y_end) = (uv[0], uv[1], uv[2], uv[3]);
             cache.borrow_mut().insert(name.to_string(), t.clone());
             Some(t)
         });
