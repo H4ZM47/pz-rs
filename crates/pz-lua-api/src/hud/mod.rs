@@ -240,6 +240,17 @@ pub fn register(thread: &mut Thread) {
     m.static_fn("getSpeedControls", |c| {
         Ok(c.push(el_value(with_ui(|m| m.speed_controls.clone()))))
     });
+    // `setGameSpeed(newSpeed)`: `UIManager.getSpeedControls()
+    // .SetCurrentGameSpeed(newSpeed)`, nothing without speed controls.
+    crate::expose::global(thread, "setGameSpeed", |c| {
+        let speed = int_arg(c, 0);
+        if let Some(e) = with_ui(|m| m.speed_controls.clone()) {
+            if let Some(sc) = e.ext::<SpeedControls>() {
+                sc.set_current_game_speed(&e, speed);
+            }
+        }
+        Ok(0)
+    });
     m.static_fn("setSpeedControls", |c| {
         let e = element_of(&c.arg(0));
         with_ui(|m| m.speed_controls = e);

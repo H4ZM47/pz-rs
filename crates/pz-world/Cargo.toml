@@ -16,6 +16,7 @@ pz-classfile.workspace = true
 pz-entity.workspace = true
 pz-scripts.workspace = true
 pz-sqlite.workspace = true
+quick-xml.workspace = true
 
 [dev-dependencies]
 pz-sqlite = { workspace = true, features = ["writer"] }

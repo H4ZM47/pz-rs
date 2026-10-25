@@ -26,6 +26,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
+pub mod lua_world;
+
 /// `IsoWorld.instance.metaGrid` and `IsoWorld.instance.currentCell`.
 #[derive(Default)]
 pub struct WorldState {
@@ -92,6 +94,40 @@ enum Key {
     RoomRect(u32, u32),
     Chunk(i32, i32),
     Square(i32, i32, i32),
+    /// A meta-grid zone (arena index) and its Java class.
+    Zone(u32, ZoneClass),
+}
+
+/// The class of a zone object (`Zone` or the subclass map loading made).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ZoneClass {
+    Zone,
+    Vehicle,
+    Mannequin,
+    WorldGen,
+    Animal,
+}
+
+impl ZoneClass {
+    fn of(kind: &pz_world::zones::ZoneKind) -> ZoneClass {
+        use pz_world::zones::ZoneKind as K;
+        match kind {
+            K::Zone => ZoneClass::Zone,
+            K::Vehicle(_) => ZoneClass::Vehicle,
+            K::Mannequin(_) => ZoneClass::Mannequin,
+            K::WorldGen { .. } => ZoneClass::WorldGen,
+            K::Animal(_) => ZoneClass::Animal,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            ZoneClass::Zone => "zombie.iso.zones.Zone",
+            ZoneClass::Vehicle => "zombie.iso.zones.VehicleZone",
+            ZoneClass::Mannequin => "zombie.iso.objects.IsoMannequin$MannequinZone",
+            ZoneClass::WorldGen => "zombie.iso.worldgen.zones.WorldGenZone",
+            ZoneClass::Animal => "zombie.characters.animals.AnimalZone",
+        }
+    }
 }
 
 impl Key {
@@ -105,6 +141,7 @@ impl Key {
                 | Key::Building(_)
                 | Key::MetaObject(..)
                 | Key::RoomRect(..)
+                | Key::Zone(..)
         )
     }
     fn generation(&self) -> u64 {
@@ -127,6 +164,7 @@ impl Key {
             Key::RoomRect(..) => RECT_CLASS,
             Key::Chunk(..) => "zombie.iso.IsoChunk",
             Key::Square(..) => "zombie.iso.IsoGridSquare",
+            Key::Zone(_, c) => c.name(),
         }
     }
 }
@@ -391,6 +429,7 @@ pub fn register(thread: &mut Thread) {
     register_iso_chunk(thread);
     register_grid_square(thread);
     register_iso_world(thread);
+    lua_world::register_zone(thread);
 }
 
 /// Instance metatable for the lists getters return, unless another module
@@ -2163,5 +2202,78 @@ mod tests {
             t.call(&f, &[r[0].clone()]).is_err(),
             "stale handle must not read new data"
         );
+    }
+
+    #[test]
+    fn get_world_and_zone_registration() {
+        let dir = load_world("lua-world");
+        let maps = dir.0.join("media/maps/Test");
+        std::fs::write(
+            maps.join("streets.xml"),
+            r#"<streets version="1">
+                <street name="Main St" width="6"><points><point x="260" y="300"/><point x="460" y="300"/></points></street>
+                <street name="Old Railroad" width="4"><points><point x="260" y="310"/><point x="300" y="310"/></points></street>
+                <street name="Diag Rd" width="3"><points><point x="260" y="320"/><point x="270" y="330"/><point x="280" y="340"/></points></street>
+            </streets>"#,
+        )
+        .unwrap();
+        crate::bind_core::shared_core().borrow_mut().game_map = "Test".into();
+        lua_world::set_railroad_strings(vec!["Railroad".into(), "Branch Line".into()]);
+        let fs = Rc::new(RefCell::new(GameFs::new(&dir.0)));
+        // `java.util.ArrayList` from bind_java_util, as in the game.
+        let mut t = Thread::new(TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        crate::bind_java_util::register(&mut t);
+        register(&mut t);
+        lua_world::register(&mut t, fs);
+        run(
+            &mut t,
+            r#"
+            local w = getWorld()
+            check(w == IsoWorld.instance)
+            local dirs = getLotDirectories()
+            check(dirs:size() == 1 and dirs:get(0) == "Test")
+            check(w:getMetaGrid():getLotDirectories():get(0) == "Test")
+            check(fileExists("media/maps/Test/map.info") and not fileExists("media/maps/Test/nope.lua"))
+            local z = w:registerZone("n", "TownZone", 260, 260, 0, 10, 10)
+            check(z:getType() == "TownZone" and z:getName() == "n" and z:getWidth() == 10)
+            check(w:registerVehiclesZone("v", "TownZone", 260, 260, 0, 5, 5, {}) == nil)
+            local v = w:registerVehiclesZone("v", "ParkingStall", 270, 270, 0, 5, 5, {})
+            check(v ~= nil and v:getType() == "ParkingStall")
+            local g = w:getMetaGrid():registerGeometryZone("p", "Forest", 0, "polygon", { 260, 260, 270, 260, 270, 270 }, nil)
+            check(g:isPolygon())
+            check(not pcall(function() w:getMetaGrid():registerGeometryZone("p", "Forest", 0, "circle", { 1, 2 }, nil) end))
+            check(not pcall(function() w:getMetaGrid():registerGeometryZone("p", "Forest", 0, "point", { 1 }, nil) end))
+            check(w:getMetaGrid():registerWorldGenZone("g", "Other", 260, 260, 0, 5, 5, {}) == nil)
+            w:registerSpawnOrigin(1, 2, 3, 4, nil)
+            w:registerSpawnOrigin(-1, 2, 3, 4, nil)
+            w:registerWaterFlow(1, 2, 90, 0.5)
+            w:registerWaterZone(0, 0, 10, 10, 1.0, 0.0)
+            w:registerNavZones()
+            w:checkVehiclesZones()
+            w:setLuaPosX(300); w:setLuaPosY(-5)
+            check(w:getLuaPosX() == 300 and w:getLuaSpawnCellX() == 44 and w:getLuaSpawnCellY() == 251)
+            w:setWorld("  save  "); check(w:getWorld() == "save")
+            w:setGameMode("LastStand"); check(w:getGameMode() == "LastStand")
+            "#,
+        );
+        assert_eq!(lua_world::take_spawn_origins(), vec![(1, 2, 3, 4)]);
+        assert!(lua_world::take_spawn_origins().is_empty());
+        assert_eq!(lua_world::shared_water_flow().borrow().zones.len(), 1);
+        assert!(crate::bind_core::shared_core().borrow().last_stand);
+        with_world(|w| {
+            let g = w.meta_grid.as_ref().unwrap();
+            let nav: Vec<_> = g
+                .zone_defs
+                .iter()
+                .filter(|z| z.zone_type == "Nav")
+                .collect();
+            // Main St: one 200x6 rectangle; the railroad nothing; Diag Rd
+            // one polyline.
+            assert_eq!(nav.len(), 2, "{nav:?}");
+            assert_eq!((nav[0].x, nav[0].y, nav[0].w, nav[0].h), (260, 297, 200, 6));
+            assert!(nav[1].is_polyline());
+            assert_eq!(nav[1].points, vec![260, 320, 270, 330, 270, 330, 280, 340]);
+        });
     }
 }

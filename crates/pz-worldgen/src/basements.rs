@@ -75,6 +75,58 @@ pub struct BasementsPerMap {
     pub spawn_locations: Vec<BasementSpawnLocation>,
 }
 
+impl BasementsPerMap {
+    /// `BasementsV1.addAccessDefinitions(mapID, table)` on this map.
+    pub fn add_access_definitions(&mut self, t: &TableRef) -> Result<(), String> {
+        for d in parse_definitions(t)? {
+            self.access_by_name
+                .insert(d.name.clone(), self.access_definitions.len());
+            self.access_definitions.push(d);
+        }
+        Ok(())
+    }
+
+    /// `BasementsV1.addBasementDefinitions(mapID, table)` on this map.
+    pub fn add_basement_definitions(&mut self, t: &TableRef) -> Result<(), String> {
+        for d in parse_definitions(t)? {
+            self.definition_by_name
+                .insert(d.name.clone(), self.definitions.len());
+            self.definitions.push(d);
+        }
+        Ok(())
+    }
+
+    /// `BasementsV1.addSpawnLocations(mapID, table)` on this map.
+    pub fn add_spawn_locations(&mut self, t: &TableRef) -> Result<(), String> {
+        let spawns = parse_spawn_locations(t)?;
+        self.spawn_locations.extend(spawns);
+        Ok(())
+    }
+}
+
+/// `Basements.getOrCreatePerMap(mapID)` over a per-map list: `None` for a
+/// blank id (`IllegalArgumentException`).
+pub fn get_or_create_per_map<'a>(
+    per_map: &'a mut Vec<BasementsPerMap>,
+    map_id: &str,
+) -> Option<&'a mut BasementsPerMap> {
+    let id = map_id.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let i = match per_map.iter().position(|p| p.map_id == id) {
+        Some(i) => i,
+        None => {
+            per_map.push(BasementsPerMap {
+                map_id: id.to_string(),
+                ..Default::default()
+            });
+            per_map.len() - 1
+        }
+    };
+    Some(&mut per_map[i])
+}
+
 /// One call of the Lua API (`Basements.getAPIv1()`).
 enum ApiCall {
     Access(String, TableRef),
@@ -176,28 +228,11 @@ impl Basements {
         let calls = std::mem::take(&mut *calls.borrow_mut());
         for call in calls {
             match call {
-                ApiCall::Access(map, t) => {
-                    let defs = parse_definitions(&t)?;
-                    let pm = self.per_map_mut(&map);
-                    for d in defs {
-                        pm.access_by_name
-                            .insert(d.name.clone(), pm.access_definitions.len());
-                        pm.access_definitions.push(d);
-                    }
-                }
+                ApiCall::Access(map, t) => self.per_map_mut(&map).add_access_definitions(&t)?,
                 ApiCall::Basements(map, t) => {
-                    let defs = parse_definitions(&t)?;
-                    let pm = self.per_map_mut(&map);
-                    for d in defs {
-                        pm.definition_by_name
-                            .insert(d.name.clone(), pm.definitions.len());
-                        pm.definitions.push(d);
-                    }
+                    self.per_map_mut(&map).add_basement_definitions(&t)?
                 }
-                ApiCall::Spawns(map, t) => {
-                    let spawns = parse_spawn_locations(&t)?;
-                    self.per_map_mut(&map).spawn_locations.extend(spawns);
-                }
+                ApiCall::Spawns(map, t) => self.per_map_mut(&map).add_spawn_locations(&t)?,
             }
         }
         Ok(())
@@ -531,16 +566,37 @@ fn parse_spawn_locations(t: &TableRef) -> Result<Vec<BasementSpawnLocation>, Str
 /// A `Basement` zone of `objects.lua` (`registerBasementSpawnLocation`).
 pub fn spawn_location_from_zone(t: &TableRef) -> BasementSpawnLocation {
     let n = |k: &str| t.get_str(k).as_num().unwrap_or(0.0) as i32;
+    let props = t.get_str("properties").as_table().cloned();
+    spawn_location_from_properties(
+        n("x"),
+        n("y"),
+        n("z"),
+        n("width"),
+        n("height"),
+        props.as_ref(),
+    )
+}
+
+/// `BasementsV1.registerBasementSpawnLocation(mapID, name, type, x, y, z,
+/// width, height, properties)`: the location it adds.
+pub fn spawn_location_from_properties(
+    x: i32,
+    y: i32,
+    z: i32,
+    w: i32,
+    h: i32,
+    properties: Option<&TableRef>,
+) -> BasementSpawnLocation {
     let mut loc = BasementSpawnLocation {
-        x: n("x"),
-        y: n("y"),
-        z: n("z"),
-        w: n("width"),
-        h: n("height"),
+        x,
+        y,
+        z,
+        w,
+        h,
         north: true,
         ..Default::default()
     };
-    if let Some(p) = t.get_str("properties").as_table() {
+    if let Some(p) = properties {
         if let Some(v) = p.get_str("StairX").as_num() {
             loc.stair_x = v as i32;
         }

@@ -1944,6 +1944,7 @@ dependencies = [
  "pz-character-model",
  "pz-characters",
  "pz-classfile",
+ "pz-clipper",
  "pz-core",
  "pz-entity",
  "pz-erosion",
@@ -2066,12 +2067,14 @@ dependencies = [
  "pz-bullet",
  "pz-characters",
  "pz-classfile",
+ "pz-clipper",
  "pz-core",
  "pz-entity",
  "pz-erosion",
  "pz-fs",
  "pz-input",
  "pz-inventory",
+ "pz-iso-render",
  "pz-joml",
  "pz-kahlua",
  "pz-network",
@@ -2087,6 +2090,7 @@ dependencies = [
  "pz-vehicles",
  "pz-video",
  "pz-world",
+ "pz-world-states",
  "pz-worldgen",
  "pz-worldmap",
  "regex",
@@ -2277,6 +2281,7 @@ dependencies = [
  "pz-kahlua",
  "pz-scripts",
  "pz-sqlite",
+ "quick-xml",
 ]
 
 [[package]]

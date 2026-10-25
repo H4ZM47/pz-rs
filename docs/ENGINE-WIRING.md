@@ -164,6 +164,33 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       window's key/char events are queued (#119).
 
 ## World (`GameLoadingState` / `IngameState`)
+- [x] `IsoWorld.init`, after `IsoMetaGrid::create`: `meta.zone_tables =
+      ZoneTables::load_from_game_jar(jar)?` and `meta.clipper =
+      Some(Box::new(zone_clipper::ZoneClipperOps::default()))` (polyline
+      outlines, polygon clipping) (#224).
+- [x] `IsoWorld.init`, before `OnLoadMapZones`:
+      `bind_basements::before_on_load_map_zones()`; the bent-fence sandbox
+      values on `bind_bent_fences::shared_bent_fences()`
+      (`ZombieLore.FenceThumpersRequired` / `FenceDamageMultiplier`);
+      `ZombiePopulationManager.init` through
+      `WorldPopulation::init_with_spawn_origins(.., &lua_world::take_spawn_origins())`
+      (#224).
+- [x] The sprite manager is `Rc<RefCell<IsoSpriteManager>>`, installed with
+      `bind_sprites::install_sprite_manager` (`IsoSpriteManager.instance`);
+      `ErosionMain` is shared through `bind_erosion::set_instance` (#224).
+- [ ] `Basements.beforeLoadMetaGrid`: build `pz_worldgen::basements::Basements`
+      from `bind_basements::take_per_map()` (what `basements.lua` and the
+      `Basement` zones registered), then load headers, placements and the
+      meta-grid buildings (#224).
+- [ ] `MapObjects.newGridSquare` / `loadGridSquare` on brand-new / loaded
+      squares: call `bind_map_objects::on_new_callbacks(sprite)` /
+      `on_load_callbacks(sprite)` with each object (needs an `IsoObject`
+      Lua binding); `MapObjects.Reset` on world unload (#224).
+- [ ] Fence bending (`pz-world-states`) reads its `BentFences` from
+      `bind_bent_fences::shared_bent_fences()` (#224).
+- [ ] Water rendering reads `IsoWaterFlow` from
+      `lua_world::shared_water_flow()`; `IsoWaterFlow.Reset` on world
+      unload (#224).
 - [ ] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
       over `LuaManager.env` once shared Lua is loaded, as `IsoWorld.init`
       calls `AnimalDefinitions.getAnimalDefs()` (which loads the genome

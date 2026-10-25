@@ -1325,6 +1325,24 @@ fn register_vehicle_part_methods(thread: &mut Thread) {
 
 pub fn register(thread: &mut Thread) {
     register_inventory_item(thread);
+    // `instanceItem(String)` / `instanceItem(String, float useDelta)`:
+    // `InventoryItemFactory.CreateItem` (useDelta 1 by default).
+    // TODO(port): the `Item` / `ItemKey` overloads.
+    crate::expose::global(thread, "instanceItem", |c| {
+        let Some(t) = str_arg(c, 0) else {
+            return Err(LuaError::runtime(format!(
+                "TODO(port): instanceItem({})",
+                pz_kahlua::stdlib::java_class_name(&c.arg(0))
+            )));
+        };
+        let delta = if c.nargs() > 1 {
+            num_arg(c, 1) as f32
+        } else {
+            1.0
+        };
+        let v = create_item(&t, delta).map_or(Value::Nil, |i| item_value(&i));
+        Ok(c.push(v))
+    });
     crate::item_tooltip::register(thread);
     register_vehicle_part_methods(thread);
     register_clothing(thread);

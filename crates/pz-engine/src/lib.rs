@@ -12,5 +12,6 @@ pub mod sound;
 pub mod ui_models;
 pub mod world_dictionary;
 pub mod world_hud;
+pub mod zone_clipper;
 
 pub use pz_core::core;
