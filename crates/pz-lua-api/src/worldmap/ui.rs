@@ -6,6 +6,7 @@ use crate::bind_ui::UIELEMENT;
 use pz_kahlua::Thread;
 use pz_text::UIFont;
 use pz_ui::{with_ui, UIElement, UIElementExt};
+use pz_worldmap::style::WorldMapStyle;
 use pz_worldmap::{WorldMap, WorldMapRenderer};
 use std::any::Any;
 use std::cell::{Ref, RefCell, RefMut};
@@ -18,6 +19,7 @@ const SUPERS: &[&str] = &[UIELEMENT];
 pub struct MapState {
     pub world_map: WorldMap,
     pub renderer: WorldMapRenderer,
+    pub style: WorldMapStyle,
     /// `color`: the background, `RGBAf(0.85882354, 0.84313726, 0.7529412, 1)`.
     pub color: [f32; 4],
     pub do_stencil: bool,
@@ -30,6 +32,9 @@ pub struct UIWorldMap {
     /// `apiV1`, `apiV2`, `apiV3`, made on first use (they point back at
     /// the element weakly).
     pub(super) apis: RefCell<[Option<Rc<dyn pz_kahlua::value::LuaObject>>; 3]>,
+    /// `getStyleAPI()` of V1 (`WorldMapStyleV1`) and of V3
+    /// (`WorldMapStyleV2`).
+    pub(super) style_apis: RefCell<[Option<Rc<dyn pz_kahlua::value::LuaObject>>; 2]>,
 }
 
 impl UIWorldMap {
@@ -41,11 +46,13 @@ impl UIWorldMap {
                 st: RefCell::new(MapState {
                     world_map: WorldMap::new(),
                     renderer: WorldMapRenderer::new(),
+                    style: WorldMapStyle::new(),
                     color: [0.858_823_54, 0.843_137_26, 0.752_941_2, 1.0],
                     do_stencil: true,
                     map_editor: false,
                 }),
                 apis: RefCell::new([None, None, None]),
+                style_apis: RefCell::new([None, None]),
             }),
         )
     }

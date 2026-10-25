@@ -8,3 +8,5 @@ publish.workspace = true
 pz-joml.workspace = true
 pz-core.workspace = true
 quick-xml.workspace = true
+pz-render.workspace = true
+pz-text.workspace = true

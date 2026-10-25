@@ -8,6 +8,7 @@ pub mod binary;
 pub mod data;
 pub mod projection;
 pub mod renderer;
+pub mod style;
 pub mod world_map;
 pub mod xml;
 
