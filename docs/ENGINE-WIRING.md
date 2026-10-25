@@ -89,19 +89,19 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       Lua); `local_player = true` on the viewing player's object;
       `renderlast` clears the highlight. `world_frame_with_objects` runs
       `startFrameMain`/`endFrameMain` around the object and translucent
-      passes (ws/outlines).
+      passes (#94).
 - [ ] Held/attached item textures: once the slot is built (and each frame
       before drawing it) `item_texture::render_equipped_textures_with(slot,
       exists, file, gpu, tm)` renders the dirty initializers (tint/TINT
       mask, weapon blood, fluid); on `postUpdateEquippedTextures` (blood or
       fluid changed) call `inst.refresh_texture_init(held.texture_init())`
-      on the hand models; build `HeldItem`s `with_fluid(ctx)` (ws/outlines).
+      on the hand models; build `HeldItem`s `with_fluid(ctx)` (#94).
 - [ ] Placed items: `world_item::item_params_with_fluid` with
       `item.get_fluid_container(ctx)` (else the world item's) for the
       `_Fluid` model and the fluid overlay; draw the atlas jobs with
       `WorldItemAtlas::render_with(out, |p| world_item::atlas_smart_texture(..))`
       and hand the returned textures to `Combiner::release` after
-      `render_frame` (ws/outlines).
+      `render_frame` (#94).
 
 ## Cleanups
 - [ ] Fold bind_vehicles' item subset into the full item bindings (#86).
