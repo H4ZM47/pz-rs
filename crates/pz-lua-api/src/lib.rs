@@ -8,6 +8,7 @@
 //! metatable in `Thread::class_metatables` keyed by its Java class name.
 
 pub mod bind_appearance;
+pub mod bind_game_window;
 pub mod bind_attached_items;
 pub mod bind_body;
 pub mod bind_body_damage;
@@ -167,6 +168,11 @@ pub fn register_all(mgr: &mut LuaManager) {
     {
         let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
         chat::characters::set_static_sounds(jar.as_ref().map(chat::characters::static_sounds_from_jar).unwrap_or_default());
+    }
+    {
+        let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
+        let cache = mgr.fs.borrow().cache_dir().to_path_buf();
+        bind_game_window::register(&mut mgr.thread, jar.as_ref(), &cache);
     }
     bind_ui::install_event_sink(mgr.events.clone());
     bind_character_sim::install_event_sink(sink.clone());

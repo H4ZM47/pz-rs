@@ -273,6 +273,10 @@ impl App {
             let params = pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(w as u32, h as u32) };
             gpu.render_frame(&[(params, &dl)], &mut tm.borrow_mut());
         }
+        // `if (doRenderEvent) onRender()`: OnRenderTick after the frame.
+        if pz_lua_api::bind_game_window::render_event_enabled() {
+            lua.trigger_event("OnRenderTick", &[]);
+        }
         // Core.DoFrameReady -> Core.updateKeyboard: focused text entry.
         pz_lua_api::bind_uitextbox2::update_keyboard(&mut lua.thread);
     }

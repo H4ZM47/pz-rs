@@ -668,6 +668,11 @@ thread_local! {
     static INGAME_STATE: Cell<bool> = const { Cell::new(false) };
 }
 
+/// `GameWindow.isIngameState()`.
+pub fn is_ingame_state() -> bool {
+    INGAME_STATE.with(Cell::get)
+}
+
 /// Sets what `isIngameState()` answers: the engine calls it when
 /// `IngameState` becomes (or stops being) the current or a listed state.
 pub fn set_ingame_state(ingame: bool) {
