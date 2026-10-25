@@ -269,8 +269,9 @@ impl UIElementExt for UIWorldMap {
             renderer.set_map(ax, ay, w, h);
             renderer.update_view(world_map, now, since);
         }
-        // TODO(worldmap): renderer.render, markers, visited, streets,
-        // WorldGenDebug roads, AnimalZones and virtual vehicles.
+        self.draw_map();
+        // TODO(worldmap): markers, visited, streets, WorldGenDebug roads,
+        // AnimalZones and virtual vehicles.
         self.render_local_players(el);
         let (players, zoom_f, player_model) = {
             let s = self.st.borrow();
@@ -313,6 +314,28 @@ impl UIElementExt for UIWorldMap {
 }
 
 impl UIWorldMap {
+    /// `renderer.render(this)`: the drawer's frame, queued like
+    /// `SpriteRenderer.drawGeneric`.
+    fn draw_map(&self) {
+        let draw = {
+            let s = self.st.borrow();
+            if !s.renderer.has_map() {
+                return;
+            }
+            with_host(|h| {
+                let inp = pz_worldmap::draw::DrawInputs {
+                    map: &s.world_map,
+                    style: &s.style,
+                    fill: s.color,
+                    files: &*h.map_files,
+                    debug: core_debug(),
+                };
+                pz_worldmap::draw::Drawer::new(&s.renderer, &inp).render()
+            })
+        };
+        super::present::submit(&draw);
+    }
+
     /// `HitTest`: the outline of the last data feature under the mouse.
     fn render_hit_test(&self, el: &UIElement) {
         let (wx, wy) = (self.mouse_to_world_x(el), self.mouse_to_world_y(el));

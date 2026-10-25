@@ -1,4 +1,5 @@
 use super::*;
+use crate::bind_ui::element_of;
 use pz_kahlua::TableRef;
 
 fn thread() -> Thread {
@@ -236,4 +237,46 @@ fn style_api() {
     // V1 wraps a pyramid layer in the base class, which has no fill API.
     run(&mut t, "local p = jo:getAPIv3():getStyleAPI():newPyramidLayer('x') ok = pcall(function() v1:getLayerByName('x'):addFill(0,0,0,0,0) end)");
     assert!(!eval(&mut t, "ok").truthy());
+}
+
+/// `render()` draws the background, the styled features and the bounds
+/// into the UI draw list.
+#[test]
+fn render_draws_features() {
+    let dir = temp_map();
+    let mut t = thread();
+    t.globals().set_str(
+        "file",
+        dir.join("worldmap.xml").to_string_lossy().to_string(),
+    );
+    run(
+        &mut t,
+        r#"
+        jo = UIWorldMap.new({})
+        api = jo:getAPIv3()
+        jo:setWidth(400) jo:setHeight(300)
+        api:setBoolean("Isometric", false)
+        api:addData(file)
+        api:setBoundsFromData()
+        api:resetView()
+        api:centerOn(517, 773)
+        api:setZoom(18)
+        local l = api:getStyleAPI():newPolygonLayer("b")
+        l:setFilter("building", "yes")
+        l:addFill(0, 255, 0, 0, 255)
+        "#,
+    );
+    let el = element_of(&eval(&mut t, "jo")).unwrap();
+    pz_ui::with_ui(|m| m.sprite.clear());
+    el.render(&mut t);
+    let red = pz_ui::with_ui(|m| {
+        m.sprite
+            .cmds
+            .iter()
+            .filter(|c| matches!(c, pz_ui::UiDrawCmd::Render(pz_render::DrawCmd::Sprite(s)) if s.color[0] == pz_render::color_to_abgr(1.0, 0.0, 0.0, 1.0)))
+            .count()
+    });
+    // The 10x10 square, as two triangles.
+    assert_eq!(red, 2);
+    let _ = std::fs::remove_dir_all(&dir);
 }
