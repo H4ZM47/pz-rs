@@ -1882,6 +1882,7 @@ name = "pz-characters"
 version = "0.1.0"
 dependencies = [
  "pz-anim",
+ "pz-animals",
  "pz-audio",
  "pz-bullet",
  "pz-core",

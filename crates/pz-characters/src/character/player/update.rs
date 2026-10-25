@@ -69,13 +69,15 @@ impl<I: 'static> GameCharacter<I> {
         cx: &mut StateCx<'_, I>,
     ) -> ScriptResult<PlayerUpdate> {
         let mut out = PlayerUpdate::default();
+        if self.is_animal() {
+            // IsoAnimal.update() overrides IsoPlayer.update(): no input.
+            self.update_animal(registry, &mut out, cx)?;
+            return Ok(out);
+        }
         self.player.now_ms = input.current_time_ms();
         let owner = self.input_owner();
         self.vars.melee_button_down = self.player.input.is_melee_button_down(input, owner);
         self.vars.manual_floor_attack_button_down = self.player.input.is_manual_floor_atk_button_down(input, owner);
-        if self.is_animal() {
-            return Ok(out);
-        }
         if self.update_internal2(input, registry, groups, &mut out, cx)? {
             // updateLOS: the spotting of other characters is the world's
             // (TODO(los): IsoPlayer.updateLOS).
@@ -1211,13 +1213,15 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoGameCharacter.updateInternal()` for a player (after
     /// `updateInternal2`), in the original order; the parts other systems
     /// own are noted.
-    fn update_character_internal(&mut self, out: &mut PlayerUpdate, cx: &mut StateCx<'_, I>) -> ScriptResult {
+    pub(crate) fn update_character_internal(&mut self, out: &mut PlayerUpdate, cx: &mut StateCx<'_, I>) -> ScriptResult {
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         if self.current_square_xyz().is_none() {
             return Ok(());
         }
         // updateAlpha: rendering.
-        self.update_ballistics_target(ctx, &mut *cx.world);
+        if !self.is_animal() {
+            self.update_ballistics_target(ctx, &mut *cx.world);
+        }
         // TODO(grappling): LetGoOfGrappled when not in a grappler state.
         if self.is_dead() {
             return Ok(());

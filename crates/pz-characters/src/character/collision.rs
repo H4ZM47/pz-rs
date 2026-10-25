@@ -339,6 +339,13 @@ impl<I: 'static> GameCharacter<I> {
         {
             return;
         }
+        if self.is_animal()
+            && ff(self.vars.z) == 0
+            && self.is_current_state_id(ids::ANIMAL_ZONE)
+            && cx.world.virtualize_animal_if_unloaded(self.id, ff(self.vars.next_x), ff(self.vars.next_y))
+        {
+            return;
+        }
         self.vars.collided_with_vehicle = false;
         if !self.vars.on_floor && self.path.vehicle.is_none() && self.path.collidable && !self.vars.no_clip {
             let from = (ff(self.vars.x), ff(self.vars.y), ff(self.vars.z));

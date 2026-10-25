@@ -177,6 +177,20 @@ Line references are to the decompiled sources (`zombie/...`).
 
 ### (a) IsoAnimal on pz-characters' `GameCharacter` (for the characters thread)
 
+**Status (step 2b, `pz-characters/src/character/animal/`).** Items 1, 3,
+4 and 5 below are in place: `GameCharacter::animal` (`AnimalFields`),
+`AnimalCharacter` on `GameCharacter`, `CtxClock` and
+`SimContext::animal_sandbox`, `update_animal` (behaviour left out), the
+override methods as `animal_*` branches, `AnimalMover`, the twelve states
+as no-op stand-ins (`states/animal.rs`), and `load_animal`/`save_animal`.
+Checked against the original: construction, `init` and 150 updates of
+every breed (63 animals, 9192 ticks), and load + save of the 95 `apop`
+animals of the save copies, with every `Rand` draw in place. Left for
+step 3: `BaseAnimalBehavior` (its update, `spotted` from
+`AnimalFields::spotted`, `killed`, `goAttack`), the state bodies, the tree,
+hook, mother, sound, luring and thump checks of `updateInternal`, and
+`testCollideWithVehicles`. Items 2 and 7 are the characters thread's.
+
 `IsoAnimal extends IsoPlayer`. `pz-characters` already has
 `CharacterKind::Animal` (`character/mod.rs`), `is_animal()`, mover kind 4,
 `as_player()` returning `Some` for animals, and partial animal branches in

@@ -33,6 +33,7 @@
 //! Code names game constants by their Java field (`"FITNESS"`,
 //! `"FAST_LEARNER"`, `"Fitness"`); the ids behind them come from the jar.
 
+pub mod animal;
 pub mod body_damage;
 pub mod body_part;
 pub mod chat;
@@ -398,6 +399,8 @@ pub struct GameCharacter<I: 'static> {
     pub neightbour_update: i32,
     /// The speech fields and the chat element ([`chat`]).
     pub chat: chat::CharacterChat,
+    /// `IsoAnimal`'s fields (animals only; [`animal`]).
+    pub animal: Option<Box<animal::AnimalFields>>,
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -505,6 +508,7 @@ impl<I: 'static> GameCharacter<I> {
                 username: player.then(|| chat::DEFAULT_USERNAME.to_string()),
                 ..Default::default()
             },
+            animal: None,
         }
     }
 

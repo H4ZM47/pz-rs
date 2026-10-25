@@ -209,12 +209,20 @@ impl<I: 'static> PathMover for GameCharacter<I> {
             None
         }
     }
-    /// TODO(animal port).
+    /// `IsoAnimal` ([`super::animal`]).
     fn as_animal(&self) -> Option<&dyn AnimalMover> {
-        None
+        if self.is_animal() && self.animal.is_some() {
+            Some(self)
+        } else {
+            None
+        }
     }
     fn as_animal_mut(&mut self) -> Option<&mut dyn AnimalMover> {
-        None
+        if self.is_animal() && self.animal.is_some() {
+            Some(self)
+        } else {
+            None
+        }
     }
     fn is_animal(&self) -> bool {
         self.kind == CharacterKind::Animal

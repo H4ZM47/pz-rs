@@ -168,6 +168,20 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       calls `AnimalDefinitions.getAnimalDefs()` (which loads the genome
       definitions); tracks reload where `IsoWorld` calls
       `loadTracksDefinitions` (#191).
+- [ ] Live animals (`ws/animals-characters`): implement
+      `StateWorld::animal_host(chr)` (the definition tables and a
+      `pz_animals::AnimalWorld` bound to that animal: rain, vehicle speed,
+      roof, zones, `instance_manager_update`, `added_to_world` /
+      `removed_from_world` / `add_to_recently_removed`) and
+      `virtualize_animal_if_unloaded`; give `SimContext` the real
+      `time_of_day`, `month`, `time_since_apo` and `animal_sandbox`.
+      Animals are made with `GameCharacter::new_animal` (+ `init_animal`,
+      or `load_animal` for an `IsoAnimal` record), updated through
+      `update_player` (which runs `update_animal`), and never put in
+      `bind_players`' slots or the HUD players. Call
+      `animal_add_to_world` / `animal_remove_from_world` where the world
+      adds and removes them, and `animal_on_anim_player_created` when an
+      animal's animation player is made.
 - [ ] `GameLoadingState.enter`: `bind_video::release_all_video_textures()`
       (`LuaManager.releaseAllVideoTextures`, after `WorldMapImages.Reset` /
       `WorldMapVisited.Reset`) closes and destroys every texture `getVideo`
