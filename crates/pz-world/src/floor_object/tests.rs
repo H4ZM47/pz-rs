@@ -131,7 +131,7 @@ fn archive_square_copies_in_distinct_chunks_have_independent_floor_allocations()
     square.objects.push((object(1)).into());
     square.world_objects.push(1);
     let original = handle(&square.objects[0].borrow());
-    let copy_square = square.clone();
+    let copy_square = square.try_archive_copy().unwrap();
     let copy = handle(&copy_square.objects[0].borrow());
     assert!(!Rc::ptr_eq(&original, &copy));
     let mut chunk = IsoChunk::new(0, 0);
@@ -148,7 +148,8 @@ fn archive_square_copies_in_distinct_chunks_have_independent_floor_allocations()
                 .get_grid_square(0, 0, 0)
                 .unwrap()
                 .borrow()
-                .clone()
+                .try_archive_copy()
+                .unwrap()
                 .into(),
         ),
     );

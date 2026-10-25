@@ -615,7 +615,12 @@ fn loaded_windows_make_their_walls_cut() {
     let mut ch = IsoChunk::new(0, 0);
     ch.set_square(1, 1, 0, Some((sq).into()));
     crate::save::chunk_file::apply_loaded_window_sprites(&ch, &mut m);
-    let mut sq = ch.get_grid_square(1, 1, 0).unwrap().borrow().clone();
+    let mut sq = ch
+        .get_grid_square(1, 1, 0)
+        .unwrap()
+        .borrow()
+        .try_archive_copy()
+        .unwrap();
     sq.recalc_properties(&m);
     // The open sprite now has the closed sprite's flags and tile type.
     assert_eq!(

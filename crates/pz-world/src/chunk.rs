@@ -35,7 +35,7 @@ pub const MIN_LEVEL: i32 = -32;
 pub const MAX_LEVEL: i32 = 31;
 
 /// `IsoGridSquare` (map-loading fields).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct IsoGridSquare {
     pub x: i32,
     pub y: i32,
@@ -103,6 +103,49 @@ pub struct IsoGridSquare {
 }
 
 impl IsoGridSquare {
+    /// An explicit internal value copy, distinct from retaining this square.
+    /// Repeated main-list references share one copied object. Leaf item/bag
+    /// copies retain their existing per-object value-tree policy; cross-object
+    /// child sharing is not preserved. Borrowed, cyclic, deep or large item
+    /// graphs are rejected without changing the source. This operation runs
+    /// synchronously without callbacks; it is not a native save/reload clone.
+    pub fn try_archive_copy(&self) -> Result<Self, crate::SquareArchiveError> {
+        let objects = crate::archive::copy_objects(self)?;
+        Ok(Self {
+            x: self.x,
+            y: self.y,
+            z: self.z,
+            room_id: self.room_id,
+            roof_hide_building: self.roof_hide_building,
+            associated_building: self.associated_building,
+            has_set_iso_world_region: self.has_set_iso_world_region.clone(),
+            iso_world_region: self.iso_world_region.clone(),
+            objects,
+            retired_objects: Default::default(),
+            special_objects: self.special_objects.clone(),
+            next_object_id: self.next_object_id,
+            erosion: self.erosion.clone(),
+            world_objects: self.world_objects.clone(),
+            static_moving: self.static_moving.clone(),
+            mod_data: self.mod_data.clone(),
+            overlay_done: self.overlay_done,
+            have_sheet_rope: self.have_sheet_rope,
+            seen: self.seen,
+            trap_position: self.trap_position,
+            properties: self.properties.clone(),
+            has_types: self.has_types,
+            has_tree: self.has_tree,
+            have_roof: self.have_roof,
+            burnt_out: self.burnt_out,
+            solid_floor_cache: self.solid_floor_cache.clone(),
+            surface: self.surface.clone(),
+            sloped_surface_direction: self.sloped_surface_direction,
+            collide_matrix: self.collide_matrix,
+            path_matrix: self.path_matrix,
+            vision_matrix: self.vision_matrix,
+        })
+    }
+
     pub fn new(x: i32, y: i32, z: i32) -> Self {
         IsoGridSquare {
             x,
@@ -452,7 +495,7 @@ impl IsoChunk {
             wy,
             min_level: 0,
             max_level: 0,
-            squares: vec![vec![None; 64]],
+            squares: vec![(0..64).map(|_| None).collect()],
             retired_objects: Vec::new(),
             retired_squares: Vec::new(),
             lotheader: None,
@@ -537,7 +580,7 @@ impl IsoChunk {
                 levels.push(std::mem::take(&mut self.squares[i]));
                 physics.push(self.physics_check[i]);
             } else {
-                levels.push(vec![None; 64]);
+                levels.push((0..64).map(|_| None).collect());
                 physics.push(false);
             }
         }

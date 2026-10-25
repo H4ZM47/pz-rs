@@ -1,7 +1,7 @@
 //! Canonical runtime allocation for an entire grid square.
 //!
-//! Retaining a receiver is explicit. `Clone` makes an independent archive
-//! allocation, including independent object slots, without pending host roots.
+//! Retaining a receiver is explicit. `try_archive_copy` makes a checked,
+//! independent archive allocation without pending host roots.
 use crate::{IsoGridSquare, ObjectSlot};
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
@@ -43,20 +43,13 @@ impl SquareSlot {
     pub fn ptr_eq_ref(&self, other: &SquareRef) -> bool {
         Rc::ptr_eq(&self.square, other)
     }
+    pub fn try_archive_copy(&self) -> Result<Self, crate::SquareArchiveError> {
+        crate::try_archive_copy_square(&self.square)
+    }
 }
 impl From<IsoGridSquare> for SquareSlot {
     fn from(square: IsoGridSquare) -> Self {
         Self::new(square)
-    }
-}
-impl Clone for SquareSlot {
-    fn clone(&self) -> Self {
-        Self::new(self.borrow().clone())
-    }
-}
-impl PartialEq for SquareSlot {
-    fn eq(&self, other: &Self) -> bool {
-        *self.borrow() == *other.borrow()
     }
 }
 

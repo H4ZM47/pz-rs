@@ -125,6 +125,16 @@ copies make independent square and object allocations. Replacing a coordinate
 does not retarget a retained receiver. Detached squares keep their contents
 until the native clear/reuse lifecycle is implemented. Borrowed retirement
 owners wait for a later safe drain instead of losing their pending cleanup.
+Square copies now use the explicit fallible `try_archive_copy` operation;
+`Clone` and value equality are no longer offered for live square slots/bodies.
+The copy checks item, bag, attachment and codec-table trees before allocation,
+reports borrowed owners or cycles, and bounds recursive depth and occurrences.
+Repeated main-list references map to one copied object; equal IDs and equal
+bodies do not merge distinct owners. Item/container leaves keep their existing
+per-object value-copy policy, including omitted opaque parent/source-grid links;
+cross-object child sharing is not remapped. Pending host roots are excluded.
+This internal synchronous operation does not implement native save/reload,
+arbitrary Lua graph cloning, or independent heterogeneous world lists.
 The streamer retains removed chunk payloads until both world and sprite-manager
 borrows have ended, including queued-save errors and shutdown. Failed unload
 callbacks retain the removed payload without publishing a partial pending save.

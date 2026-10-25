@@ -329,7 +329,8 @@ impl StatesEngine for Engine {
             let mut replacement = sq
                 .try_borrow_mut()
                 .expect("square guard survived into ToggleWindow")
-                .clone();
+                .try_archive_copy()
+                .unwrap();
             for object in &replacement.objects {
                 let mut object = object.borrow_mut();
                 if object.id == window.id {

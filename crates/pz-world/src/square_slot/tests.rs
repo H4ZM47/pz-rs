@@ -53,7 +53,7 @@ fn square_archive_copy_has_independent_objects_and_no_pending_roots() {
     let old = ObjectSlot::new(IsoObject::new(9, ObjectKind::Object, None));
     let weak = Rc::downgrade(&old.ref_handle());
     actual.borrow_mut().retire_object(old);
-    let copy = slot.clone();
+    let copy = slot.try_archive_copy().unwrap();
     assert!(!slot.ptr_eq(&copy));
     assert!(!slot.borrow().objects[0].ptr_eq(&copy.borrow().objects[0]));
     assert!(copy.borrow_mut().take_retired_objects().is_empty());

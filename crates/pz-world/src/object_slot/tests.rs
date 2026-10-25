@@ -21,7 +21,7 @@ fn square_move_remove_and_same_id_replacement_do_not_retarget_handles() {
     let actual = slot.ref_handle();
     let mut square = IsoGridSquare::new(1, 2, 0);
     square.objects.push((slot).into());
-    let archive = square.clone();
+    let archive = square.try_archive_copy().unwrap();
     assert!(!archive.objects[0].ptr_eq_ref(&actual));
     let removed = square.objects.remove(0);
     square
@@ -78,7 +78,7 @@ fn discarded_objects_retire_through_square_chunk_and_cell_without_entering_archi
                     "clear" => square.clear_objects(),
                     _ => unreachable!(),
                 }
-                let mut archive = square.clone();
+                let mut archive = square.try_archive_copy().unwrap();
                 assert!(archive.take_retired_objects().is_empty());
             }
         }

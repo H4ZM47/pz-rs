@@ -698,7 +698,7 @@ fn world_item_joins_the_square() {
     );
     // Cloning a square for an archive/pure hook keeps value-copy semantics;
     // the lifecycle hook snapshots did not replace the canonical item.
-    let snapshot = w.sq(p).borrow().clone();
+    let snapshot = w.sq(p).borrow().try_archive_copy().unwrap();
     let ObjectKind::WorldInventory(copied) = &snapshot.objects.last().unwrap().borrow().kind else {
         panic!()
     };

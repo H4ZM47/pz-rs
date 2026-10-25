@@ -6,6 +6,7 @@
 //! crate contains no game data.
 
 pub mod animal_zone_save;
+pub mod archive;
 pub mod bra;
 pub mod cell_drag;
 pub mod cell_loader;
@@ -43,6 +44,7 @@ pub mod world_state;
 pub mod zone_save;
 pub mod zones;
 
+pub use archive::{try_archive_copy_square, ArchiveLocation, SquareArchiveError};
 pub use chunk::{
     ChunkGenerationStatus, ChunkGenerationStatusSet, ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare,
 };

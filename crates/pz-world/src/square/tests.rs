@@ -987,7 +987,7 @@ fn physics_check_flags() {
 fn window_vision_distinguishes_same_coordinate_archive_from_actual_square() {
     let owner = crate::SquareSlot::new(IsoGridSquare::new(4, 4, 0)).ref_handle();
     let alias = owner.clone();
-    let snapshot = owner.borrow().clone();
+    let snapshot = owner.borrow().try_archive_copy().unwrap();
     let north = IsoGridSquare::new(4, 3, 0);
     let window = IsoObject::new(
         7,

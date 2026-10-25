@@ -6,6 +6,7 @@
 
 pub mod alarm;
 pub mod api;
+pub mod archive;
 pub mod assets;
 pub mod component;
 pub mod container;
@@ -18,8 +19,8 @@ pub mod floor_drop;
 pub mod gameplay;
 pub mod io;
 pub mod item;
-pub mod key_namer;
 pub mod java;
+pub mod key_namer;
 pub mod light;
 pub mod lua_table;
 pub mod model;

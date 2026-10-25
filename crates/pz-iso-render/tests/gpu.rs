@@ -1,10 +1,29 @@
 //! A tiny synthetic scene recorded into a chunk texture, composited and
 //! read back through pz-gpu.
 
+use std::io::Write;
 use std::rc::Rc;
+use std::sync::{Mutex, MutexGuard};
 
 use pz_iso_render::{world::AttachedSprite, Camera, ChunkRenderer, ChunkTexture, DepthMaps, DepthPreset, ObjectKind, RenderObject, RenderSquare, SpriteFlags, SpriteInfo};
 use pz_render::{flags, DrawCmd, Texture, TextureManager};
+
+// Keep each native context isolated through resource destruction. This removes
+// concurrent device creation as a variable in the Windows crash investigation.
+static GPU_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+fn gpu_test_stage(name: &str, stage: &str) {
+    // Direct stderr survives native process termination; libtest's captured
+    // eprintln output may never be emitted when the process access-violates.
+    let _ = writeln!(std::io::stderr().lock(), "GPU test {name}: {stage}");
+}
+
+fn serialized_gpu_test(name: &str) -> MutexGuard<'static, ()> {
+    // Continue the other real fixtures after a Rust assertion poisons the lock.
+    let guard = GPU_TEST_MUTEX.lock().unwrap_or_else(|poison| poison.into_inner());
+    gpu_test_stage(name, "creating headless GPU");
+    guard
+}
 
 /// Depth maps: one for the presets, one as the default texture.
 struct Maps(Texture, Texture);
@@ -24,7 +43,12 @@ fn solid(tm: &mut TextureManager, name: &str, w: i32, h: i32, rgba: [u8; 4]) -> 
 
 #[test]
 fn floor_tiles_land_where_the_original_draws_them() {
-    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else { return };
+    let _gpu_test_guard = serialized_gpu_test("floor_tiles_land_where_the_original_draws_them");
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else {
+        gpu_test_stage("floor_tiles_land_where_the_original_draws_them", "headless GPU unavailable; test skipped");
+        return;
+    };
+    gpu_test_stage("floor_tiles_land_where_the_original_draws_them", "created headless GPU");
     let mut tm = TextureManager::new();
     // A floor tile: the bottom 64 rows of a 128x256 frame.
     let mut floor_tex = solid(&mut tm, "floor", 128, 64, [200, 100, 50, 255]);
@@ -60,7 +84,9 @@ fn floor_tiles_land_where_the_original_draws_them() {
     let list = pz_render::DrawList { cmds };
     let params = pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(256, 128) };
     gpu.render_frame(&[(params, &list)], &mut tm);
+    gpu_test_stage("floor_tiles_land_where_the_original_draws_them", "reading pixels");
     let p = gpu.read_pixels();
+    gpu_test_stage("floor_tiles_land_where_the_original_draws_them", "read pixels");
     let px = |x: usize, y: usize| p[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].to_vec();
     // Square (4, 4) spans x 64..192, y 64..128 on screen; (5, 4) is 64 to
     // the right and 32 lower.
@@ -73,7 +99,12 @@ fn floor_tiles_land_where_the_original_draws_them() {
 /// composited floor, depth-tested against it.
 #[test]
 fn open_door_is_drawn_translucent_over_the_floor() {
-    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else { return };
+    let _gpu_test_guard = serialized_gpu_test("open_door_is_drawn_translucent_over_the_floor");
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else {
+        gpu_test_stage("open_door_is_drawn_translucent_over_the_floor", "headless GPU unavailable; test skipped");
+        return;
+    };
+    gpu_test_stage("open_door_is_drawn_translucent_over_the_floor", "created headless GPU");
     let mut tm = TextureManager::new();
     let mut floor_tex = solid(&mut tm, "floor", 128, 64, [200, 100, 50, 255]);
     floor_tex.offset_y = 192.0;
@@ -107,7 +138,9 @@ fn open_door_is_drawn_translucent_over_the_floor() {
     let list = pz_render::DrawList { cmds };
     let params = pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(256, 128) };
     gpu.render_frame(&[(params, &list)], &mut tm);
+    gpu_test_stage("open_door_is_drawn_translucent_over_the_floor", "reading pixels");
     let p = gpu.read_pixels();
+    gpu_test_stage("open_door_is_drawn_translucent_over_the_floor", "read pixels");
     let px = |x: usize, y: usize| p[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].to_vec();
     // Floor (200, 100, 50) * 0.4 + premultiplied blue * 0.6.
     let got = px(128, 100);
@@ -121,7 +154,12 @@ fn open_door_is_drawn_translucent_over_the_floor() {
 /// The whole frame: offscreen buffer, chunk composite and screen pass.
 #[test]
 fn world_frame_reaches_the_screen() {
-    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else { return };
+    let _gpu_test_guard = serialized_gpu_test("world_frame_reaches_the_screen");
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else {
+        gpu_test_stage("world_frame_reaches_the_screen", "headless GPU unavailable; test skipped");
+        return;
+    };
+    gpu_test_stage("world_frame_reaches_the_screen", "created headless GPU");
     let mut tm = TextureManager::new();
     let mut floor_tex = solid(&mut tm, "floor", 128, 64, [200, 100, 50, 255]);
     floor_tex.offset_y = 192.0;
@@ -142,7 +180,9 @@ fn world_frame_reaches_the_screen() {
     let cmds = pz_iso_render::frame::world_frame(&r, pz_iso_render::frame::FrameSize { width: 256, height: 128 }, &chunks, pz_render::ScreenParams::default());
     let list = pz_render::DrawList { cmds };
     gpu.render_frame(&[(pz_gpu::FrameParams::ui(256, 128), &list)], &mut tm);
+    gpu_test_stage("world_frame_reaches_the_screen", "reading pixels");
     let p = gpu.read_pixels();
+    gpu_test_stage("world_frame_reaches_the_screen", "read pixels");
     let px = |x: usize, y: usize| p[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].to_vec();
     let got = px(128, 96);
     assert!(got[0] > 150 && got[2] < 100, "{got:?}");
@@ -175,9 +215,14 @@ fn cube(id: u64, h: f32) -> pz_render::model::MeshData {
 /// is hidden by world sprites nearer than its square.
 #[test]
 fn model_lands_on_its_square_and_depth_tests_against_tiles() {
+    let _gpu_test_guard = serialized_gpu_test("model_lands_on_its_square_and_depth_tests_against_tiles");
     use pz_iso_render::models::{fill_lights, ModelBasis, ModelCamera};
     use pz_render::model::{ModelDraw, ModelPass};
-    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else { return };
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else {
+        gpu_test_stage("model_lands_on_its_square_and_depth_tests_against_tiles", "headless GPU unavailable; test skipped");
+        return;
+    };
+    gpu_test_stage("model_lands_on_its_square_and_depth_tests_against_tiles", "created headless GPU");
     let mut tm = TextureManager::new();
     let white = tm.white();
     let cam = Camera::centred(4.0, 4.0, 0.0, 256, 128, 1.0);
@@ -224,7 +269,9 @@ fn model_lands_on_its_square_and_depth_tests_against_tiles() {
     cmds.push(draw(6.5, 6.5));
     let list = pz_render::DrawList { cmds };
     gpu.render_frame(&[(pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(256, 128) }, &list)], &mut tm);
+    gpu_test_stage("model_lands_on_its_square_and_depth_tests_against_tiles", "reading pixels");
     let p = gpu.read_pixels();
+    gpu_test_stage("model_lands_on_its_square_and_depth_tests_against_tiles", "read pixels");
     let px = |x: usize, y: usize| p[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].to_vec();
     // Square (4.5, 4.5) projects to the view centre; (6.5, 6.5) is 128
     // pixels lower, off screen at y 128; check its top instead.
@@ -254,8 +301,13 @@ impl DepthMaps for BillboardMaps {
 /// smoke is drawn in the square's light at half tint.
 #[test]
 fn a_fire_stands_on_its_square() {
+    let _gpu_test_guard = serialized_gpu_test("a_fire_stands_on_its_square");
     use pz_iso_render::fire::{FireSquare, FireState};
-    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else { return };
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 128) else {
+        gpu_test_stage("a_fire_stands_on_its_square", "headless GPU unavailable; test skipped");
+        return;
+    };
+    gpu_test_stage("a_fire_stands_on_its_square", "created headless GPU");
     let mut tm = TextureManager::new();
     let mut flame = solid(&mut tm, "flame", 64, 64, [255, 0, 0, 255]);
     flame.offset_x = 32.0;
@@ -288,7 +340,9 @@ fn a_fire_stands_on_its_square() {
     let list = pz_render::DrawList { cmds };
     let params = pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(256, 128) };
     gpu.render_frame(&[(params, &list)], &mut tm);
+    gpu_test_stage("a_fire_stands_on_its_square", "reading pixels");
     let p = gpu.read_pixels();
+    gpu_test_stage("a_fire_stands_on_its_square", "read pixels");
     let px = |x: usize, y: usize| p[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].to_vec();
     // The square's top corner is at (128, 64), its centre 32 lower: the
     // flame's 64x64 covers x 96..160, y 32..96.
@@ -313,10 +367,15 @@ fn a_fire_stands_on_its_square() {
 /// (drawn later, depth-tested) showed holes as light specks.
 #[test]
 fn body_atlas_keeps_coverage_alpha() {
+    let _gpu_test_guard = serialized_gpu_test("body_atlas_keeps_coverage_alpha");
     use pz_iso_render::atlas::AtlasEntry;
     use pz_iso_render::body_atlas::to_body_atlas;
     use pz_render::model::{ModelDraw, ModelLight, ModelPass};
-    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 256) else { return };
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 256) else {
+        gpu_test_stage("body_atlas_keeps_coverage_alpha", "headless GPU unavailable; test skipped");
+        return;
+    };
+    gpu_test_stage("body_atlas_keeps_coverage_alpha", "created headless GPU");
     let mut tm = TextureManager::new();
     let white = tm.white();
     let none = ModelLight { direction: [0.0, 1.0, 0.0], colour: [0.0; 3] };
@@ -365,7 +424,9 @@ fn body_atlas_keeps_coverage_alpha() {
     ]);
     let list = pz_render::DrawList { cmds };
     gpu.render_frame(&[(pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 0.0]), ..pz_gpu::FrameParams::ui(256, 256) }, &list)], &mut tm);
+    gpu_test_stage("body_atlas_keeps_coverage_alpha", "reading pixels");
     let p = gpu.read_pixels();
+    gpu_test_stage("body_atlas_keeps_coverage_alpha", "read pixels");
     let px = |x: usize, y: usize| p[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].to_vec();
     // The bitmap's [-1, 1] maps to the cell's 256 pixels: x -0.5 is
     // column 64, 0.5 column 192.

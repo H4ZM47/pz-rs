@@ -390,7 +390,8 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
                 .get_grid_square(0, 0, 0)
                 .unwrap()
                 .borrow()
-                .clone()
+                .try_archive_copy()
+                .unwrap()
                 .into(),
         ),
     );
@@ -647,7 +648,7 @@ fn finish_chunk_load_recalculates_before_hook() {
                 .is_some();
             let sq_owner = c.get_grid_square(x, y, z).unwrap();
             let sq = sq_owner.borrow();
-            let mut fresh = sq.clone();
+            let mut fresh = sq.try_archive_copy().unwrap();
             fresh.recalc_properties(ctx.sprites);
             self.0
                 .push(format!("{:?}", fresh.properties) == format!("{:?}", sq.properties));
@@ -1133,7 +1134,7 @@ fn whole_object_owner_live_base_changes_save_and_archive_snapshot_is_independent
     let square_owner = chunk.get_grid_square(0, 0, 0).unwrap();
     let square = square_owner.borrow();
     let actual = square.objects[0].ref_handle();
-    let archive = square.clone();
+    let archive = square.try_archive_copy().unwrap();
     assert!(!archive.objects[0].ptr_eq_ref(&actual));
     {
         let mut object = actual.borrow_mut();
