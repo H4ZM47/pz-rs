@@ -908,7 +908,7 @@ registered):
       `unregister_device`; DeviceData preset generation takes the radio
       as its `ChannelLists` (#200).
 
-- [ ] Windows, sheet ropes and walls (#PRNUM): `StatesEngine::player_input`
+- [ ] Windows, sheet ropes and walls (#208): `StatesEngine::player_input`
       returns the local player's frame `PlayerInput` (Open/Close/Smash
       window states read `pressedMovement` / `pressedCancelAction` from
       it); `toggle_window` must run `IsoWindow.ToggleWindow` (also used by
