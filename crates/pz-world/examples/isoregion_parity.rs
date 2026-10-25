@@ -7,7 +7,8 @@
 //! isoregion_parity <game dir> <sprite tables> <save tables> <save dir> <oracle dir> <out dir>
 //! ```
 //!
-//! The steps, as the harness does them: `RecalcProperties` on every square;
+//! The steps, as the harness does them: all chunks loaded (with the window
+//! sprite changes of `IsoWindow.load`), `RecalcProperties` on every square;
 //! the save's `isoregiondata` copied to `<out dir>/isoregiondata` and
 //! loaded (`init`), one worker loop (dump `d0`); `readSurroundingChunks`
 //! (7x7, apply) around each loaded chunk with a worker loop after each
@@ -22,7 +23,7 @@ use std::path::Path;
 use pz_inventory::dictionary::WorldDictionary;
 use pz_inventory::factory::ScriptItems;
 use pz_world::isoregion::{ChunkRegionRef, IsoRegions, WorldRegionRef};
-use pz_world::save::chunk_file::{chunk_path, load_chunk};
+use pz_world::save::chunk_file::{apply_loaded_window_sprites, chunk_path, load_chunk};
 use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables};
 use pz_world::{IsoCell, IsoSpriteManager, SpriteTables};
 
@@ -219,6 +220,11 @@ fn main() {
             Err(e) => eprintln!("load {wx},{wy}: {e}"),
         }
     }
+    drop(registry);
+    // `IsoWindow.load` changes the shared window sprites as each chunk loads.
+    for &(wx, wy) in &order {
+        apply_loaded_window_sprites(&cell.chunks[&(wx, wy)], &mut sprites);
+    }
     for &(wx, wy) in &order {
         let ch = cell.chunks.get_mut(&(wx, wy)).unwrap();
         for z in ch.min_level..=ch.max_level {
@@ -230,6 +236,32 @@ fn main() {
                 }
             }
         }
+    }
+    // `SHOW_SQUARE=x,y,z`: print that square's objects and flags and stop.
+    if let Ok(q) = std::env::var("SHOW_SQUARE") {
+        let v: Vec<i32> = q.split(',').map(|x| x.parse().unwrap()).collect();
+        if let Some(sq) = cell.get_grid_square(v[0], v[1], v[2]) {
+            for o in &sq.objects {
+                let sp = o.sprite.map(|s| &sprites.sprites[s]);
+                let f = &sprites.tables.flag;
+                eprintln!(
+                    "obj {:?} sprite={:?} kind={:?} cutW={:?} WindowW={:?} cut_n={:?}",
+                    o.sprite,
+                    sp.and_then(|s| s.name.clone()),
+                    std::mem::discriminant(&o.kind),
+                    sp.map(|s| s.properties.has(f.cutW)),
+                    sp.map(|s| s.properties.has(f.WindowW)),
+                    sp.map(|s| s.cut_n)
+                );
+            }
+            eprintln!(
+                "sq cutW={} WindowW={} flags={}",
+                sq.has(sprites.tables.flag.cutW),
+                sq.has(sprites.tables.flag.WindowW),
+                pz_world::isoregion::calculate_square_flags(Some(sq), &sprites)
+            );
+        }
+        return;
     }
     let region_dir = out_dir.join("isoregiondata");
     let _ = std::fs::remove_dir_all(&region_dir);

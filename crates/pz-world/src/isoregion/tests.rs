@@ -554,3 +554,37 @@ fn debug_load_follows_the_player() {
     r.update(&cell, &m, Some((3.5, 3.5)));
     assert!(r.get_iso_world_region(3, 3, 0).is_some());
 }
+
+#[test]
+fn loaded_windows_make_their_walls_cut() {
+    // A saved window whose closed sprite has no cut flag of its own: the
+    // `IsoWindow.load` changes make its square a west wall with a window.
+    let mut m = manager();
+    let spr = m.named_map["floor"];
+    let open = m.named_map["stairs"];
+    let mut sq = IsoGridSquare::new(1, 1, 0);
+    let id = sq.new_object_id();
+    sq.objects.push(IsoObject::new(
+        id,
+        ObjectKind::Window(crate::objects::IsoWindow {
+            closed_sprite: Some(spr),
+            open_sprite: Some(open),
+            ..Default::default()
+        }),
+        Some(spr),
+    ));
+    sq.recalc_properties(&m);
+    assert_eq!(calculate_square_flags(Some(&sq), &m), F);
+    let mut ch = IsoChunk::new(0, 0);
+    ch.set_square(1, 1, 0, Some(sq));
+    crate::save::chunk_file::apply_loaded_window_sprites(&ch, &mut m);
+    let mut sq = ch.get_grid_square(1, 1, 0).unwrap().clone();
+    sq.recalc_properties(&m);
+    // The open sprite now has the closed sprite's flags and tile type.
+    assert_eq!(
+        calculate_square_flags(Some(&sq), &m),
+        F | BIT_WALL_W | data::BIT_PATH_WALL_W
+    );
+    assert!(m.sprites[open].properties.has(m.tables.flag.cutW));
+    assert_eq!(m.sprites[open].tile_type, m.sprites[spr].tile_type);
+}

@@ -90,6 +90,14 @@ Status of the Rust port. Update this file with every merged change.
   windows, electricity), 5,570 barricades, 7,358 doors, 8,895 windows,
   157 thumpables, 17,055 light switches and 378 light items per sandbox
   setting. Checked locally.
+- World regions (`pz_world::isoregion`): `IsoRegions` square flags, chunk
+  and world regions, enclosure, roofs, neighbours, square updates, the
+  worker's job batching and `isoregiondata` files; `IsoWindow.load`'s
+  sprite changes on chunk load; the weather mask reads them through
+  `pz_world_render::WorldFxMask`. On 7 local saves (14,894 chunks) the
+  region dumps match the original's after loading the saved regions,
+  reading every chunk, 300 square changes and a reload (232,555 lines),
+  and all 14,901 written region files are byte-identical. Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all
