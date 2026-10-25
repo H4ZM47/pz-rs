@@ -16,7 +16,7 @@
 
 use crate::chunk::IsoCell;
 use crate::fire::{
-    FireCallbacks, FireEvent, FireLight, FireOscillators, FireSquare, IsoFire, MAX_FIRE_OBJECTS,
+    FireCallbacks, FireEvent, FireOscillators, FireSquare, IsoFire, MAX_FIRE_OBJECTS,
 };
 use crate::java::GameRand;
 use crate::meta_grid::IsoMetaGrid;
@@ -108,10 +108,14 @@ pub trait FireHooks {
     /// `SoundManager.PlayWorldSound(name, square, 0, radius, maxGain,
     /// false)` (`"BurnedObjectExploded"`).
     fn play_world_sound(&mut self, name: &str, x: i32, y: i32, z: i32, radius: f32, gain: f32) {}
-    /// The fire at `(x, y, z)` added or replaced its light
-    /// (`addLamppost`, `setLightRadius`; `Some`) or removed it
-    /// (`removeLamppost`; `None`).
-    fn fire_light(&mut self, x: i32, y: i32, z: i32, light: Option<FireLight>) {}
+    /// After a fire's `update()` (or the creation of a new one): its
+    /// `lightSource` may have been added (`addLamppost`), recoloured
+    /// (stage 5) or replaced (`setLightRadius`). The renderer's
+    /// `LightLink::sync_fire` belongs here.
+    fn fire_updated(&mut self, r: FireRef, fire: &IsoFire) {}
+    /// `IsoFire.removeFromWorld()`: the light (`removeLamppost`) and sound
+    /// go (`LightLink::remove`).
+    fn fire_removed(&mut self, r: FireRef) {}
     /// `IsoFireManager.updateSound(fire)` (the fire wants a sound slot
     /// this frame) / `stopSound(fire)`.
     fn fire_sound(&mut self, x: i32, y: i32, z: i32, fire: Option<&IsoFire>) {}
@@ -296,7 +300,8 @@ impl IsoFireManager {
         }
     }
 
-    fn fire_mut(cell: &mut IsoCell, r: FireRef) -> Option<&mut IsoFire> {
+    /// The fire `r` refers to, mutably.
+    pub fn fire_mut(cell: &mut IsoCell, r: FireRef) -> Option<&mut IsoFire> {
         let sq = cell.get_grid_square_mut(r.x, r.y, r.z)?;
         let i = sq.object_index(r.id)?;
         match &mut sq.objects[i].kind {
@@ -338,9 +343,8 @@ impl IsoFireManager {
             self.remove(r);
         }
         w.hooks.fire_sound(r.x, r.y, r.z, None);
-        if fire.light.take().is_some() {
-            w.hooks.fire_light(r.x, r.y, r.z, None);
-        }
+        fire.light = None;
+        w.hooks.fire_removed(r);
     }
 
     /// `Remove(fire)`.
@@ -692,8 +696,9 @@ impl IsoFireManager {
             rand,
             &mut step,
         );
-        if !step.gone {
+        if !step.gone && step.mgr.fire(step.w.cell, r).is_some() {
             Self::sync(step.w.cell, r, &fire);
+            step.w.hooks.fire_updated(r, &fire);
         }
     }
 
@@ -737,7 +742,8 @@ impl FireCallbacks for Step<'_, '_, '_> {
                 self.mgr.extinct(self.w, r, fire);
                 self.gone = true;
             }
-            FireEvent::LightChanged => self.w.hooks.fire_light(r.x, r.y, r.z, fire.light),
+            // The new light is read after the update (FireHooks::fire_updated).
+            FireEvent::LightChanged => {}
         }
     }
 }

@@ -41,7 +41,7 @@ fn names(f: &FireState) -> Vec<String> {
 #[test]
 fn a_new_fire_draws_rand_in_the_constructors_order() {
     let r = Rand::new(5);
-    let f = FireState::new_fire(FireSquare::default(), 100, 0, &r);
+    let f = FireState::new_fire(FireSquare::default(), 100, 0, &mut rand(&r));
     // Same calls on a twin generator: the random frame, the life, the
     // spread delay.
     let t = Rand::new(5);
@@ -81,7 +81,7 @@ fn a_new_fire_draws_rand_in_the_constructors_order() {
         },
         10,
         0,
-        &r,
+        &mut rand(&r),
     );
     assert!((300..600).contains(&f.life), "{}", f.life);
     let f = FireState::new_fire(
@@ -92,7 +92,7 @@ fn a_new_fire_draws_rand_in_the_constructors_order() {
         },
         10,
         1000,
-        &r,
+        &mut rand(&r),
     );
     assert_eq!((f.life, f.energy), (1000, 60));
 }
@@ -100,10 +100,10 @@ fn a_new_fire_draws_rand_in_the_constructors_order() {
 #[test]
 fn the_life_stages_swap_flames_and_smoke() {
     let r = Rand::new(1);
-    let mut f = FireState::new_fire(FireSquare::default(), 1000, 1000, &r);
+    let mut f = FireState::new_fire(FireSquare::default(), 1000, 1000, &mut rand(&r));
     assert_eq!(f.life_stage_duration, 200);
     // The light appears on the first update.
-    let ev = f.update(0.0, 0.0, 0, 1.0, &r);
+    let ev = f.update(0.0, 0.0, 0, 1.0, &mut rand(&r));
     assert!(ev.is_empty());
     assert_eq!(
         f.light,
@@ -117,7 +117,7 @@ fn the_life_stages_swap_flames_and_smoke() {
     let mut stages = Vec::new();
     let mut all = Vec::new();
     for _ in 0..1100 {
-        let ev = f.update_from_timer(1.0001, &r);
+        let ev = f.update_from_timer(1.0001, &mut rand(&r));
         if stages.last().map(|(s, _)| *s) != Some(f.life_stage) {
             stages.push((f.life_stage, names(&f)));
         }
@@ -151,7 +151,7 @@ fn the_life_stages_swap_flames_and_smoke() {
     let l = f.light.unwrap();
     assert_eq!((l.r, l.g, l.b, l.radius), (0.51, 0.27, 0.18, 1));
     // In stage 5 the light follows the object's alpha.
-    f.update(0.0, 0.0, 0, 0.5, &r);
+    f.update(0.0, 0.0, 0, 0.5, &mut rand(&r));
     assert_eq!(f.light.unwrap().r, 0.61 * 0.5);
 }
 
@@ -194,7 +194,7 @@ fn loading_attaches_the_next_stages_animations() {
         (4, false, 5, 30, &["Smoke01"]),
     ];
     for (saved, smoke, stage, timer, anims) in cases {
-        let f = FireState::load(&save(saved, smoke), &r);
+        let f = FireState::load(&save(saved, smoke), TILE_SCALE, &mut rand(&r));
         assert_eq!(
             (f.life_stage, f.life_stage_timer, names(&f)),
             (
@@ -212,7 +212,8 @@ fn loading_attaches_the_next_stages_animations() {
             light_radius: 3,
             ..Default::default()
         },
-        &r,
+        TILE_SCALE,
+        &mut rand(&r),
     );
     assert_eq!(
         (p.anims.len(), p.anims[0].soff_x, p.anims[0].soff_y),
@@ -244,7 +245,7 @@ fn loading_attaches_the_next_stages_animations() {
 #[test]
 fn smoke_fires_and_permanent_fires() {
     let r = Rand::new(4);
-    let s = FireState::new_smoke(5, 0, true, &r);
+    let s = FireState::new_smoke(5, 0, true, &mut rand(&r));
     assert_eq!(
         (s.life_stage, names(&s), s.anims[0].frame),
         (4, vec!["Smoke03".to_string()], 0.0)
@@ -252,14 +253,14 @@ fn smoke_fires_and_permanent_fires() {
     assert_eq!(s.life_stage_duration, s.life / 4);
     assert!(!s.burning());
     let mut s = s;
-    s.update(1.0, 0.0, 0, 1.0, &r);
+    s.update(1.0, 0.0, 0, 1.0, &mut rand(&r));
     assert_eq!(s.light, None);
 
     let mut p = FireState::permanent();
     p.light_radius = 8;
-    p.set_life_stage(2, &r);
+    p.set_life_stage(2, &mut rand(&r));
     assert_eq!(names(&p), ["Smoke03", "Fire03"]);
-    p.update(1.0, 50.0, 0, 1.0, &r);
+    p.update(1.0, 50.0, 0, 1.0, &mut rand(&r));
     assert_eq!((p.light.unwrap().radius, p.life), (8, 0));
 }
 
@@ -276,12 +277,13 @@ fn saved_time_catches_up_once() {
             saved_update_time: Some(1000),
             ..Default::default()
         },
-        &r,
+        TILE_SCALE,
+        &mut rand(&r),
     );
     // 3000 ms away: 100 ticks, entering stage 1.
-    let ev = f.update(0.0, 0.0, 4000, 1.0, &r);
+    let ev = f.update(0.0, 0.0, 4000, 1.0, &mut rand(&r));
     assert_eq!(f.age, 99);
-    f.update(0.0, 0.0, 4000, 1.0, &r);
+    f.update(0.0, 0.0, 4000, 1.0, &mut rand(&r));
     assert_eq!(f.age, 99);
     assert!(ev.is_empty());
 }
@@ -318,7 +320,7 @@ fn sprites(out: &[DrawCmd]) -> Vec<(&Sprite, &WorldShader)> {
 
 fn fire_square(campfire: bool) -> RenderSquare {
     let r = Rand::new(11);
-    let mut f = FireState::new_fire(FireSquare::default(), 100, 1000, &r);
+    let mut f = FireState::new_fire(FireSquare::default(), 100, 1000, &mut rand(&r));
     f.anims = vec![
         FireAnim {
             kind: AnimKind::Smoke,
@@ -339,7 +341,7 @@ fn fire_square(campfire: bool) -> RenderSquare {
             tint: FIRE_TINT_MOD,
         },
     ];
-    let o = f.render_object(campfire, &|n| match n {
+    let o = render_object(&f, campfire, &|n| match n {
         "Smoke_02_3" => Some(tex(n, 107, 205, 18.0, 51.0)),
         "Fire_02_5" => Some(tex(n, 77, 114, 30.0, 142.0)),
         _ => None,

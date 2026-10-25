@@ -29,7 +29,7 @@ pub mod render_world;
 pub mod settings;
 pub mod sprites;
 
-pub use fire_lights::LightLink;
+pub use fire_lights::{fireplace_input, FireLightLinks, HearthLink, LightLink};
 pub use hooks::{NoWorldHooks, WorldHooks};
 pub use lighting::{
     default_player, grid_square, CellLight, LightingFrame, LightingSquares, PlayerFrameInput, WorldLighting,

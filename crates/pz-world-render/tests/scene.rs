@@ -477,11 +477,11 @@ fn a_fire_lights_its_neighbours_through_its_stages() {
 
     let (_, mut lighting) = build(&view);
     let r = Rand::new(21);
-    let mut fire = FireState::new_fire(FireSquare::default(), 1000, 1000, &r);
+    let mut fire = FireState::new_fire(FireSquare::default(), 1000, 1000, &mut pz_iso_render::fire::rand(&r));
     let mut link = LightLink::new();
     let (fx, fy) = (13, 15);
     // The first update adds the light (radius 5, LIGHT_R/G/B).
-    fire.update(0.0, 0.0, 0, 1.0, &r);
+    fire.update(0.0, 0.0, 0, 1.0, &mut pz_iso_render::fire::rand(&r));
     link.sync_fire(&mut lighting, &fire, fx, fy, 0);
     let first = link.key.unwrap();
     let ls: Vec<_> = lighting.lampposts().map(|(k, l, d)| (k, *l, d)).collect();
@@ -500,7 +500,7 @@ fn a_fire_lights_its_neighbours_through_its_stages() {
     // fireColor.
     let mut changed = 0;
     while fire.life_stage < 2 {
-        let ev = fire.update_from_timer(1.0001, &r);
+        let ev = fire.update_from_timer(1.0001, &mut pz_iso_render::fire::rand(&r));
         changed += ev.iter().filter(|e| **e == FireEvent::LightChanged).count();
         link.sync_fire(&mut lighting, &fire, fx, fy, 0);
     }
@@ -521,12 +521,12 @@ fn a_fire_lights_its_neighbours_through_its_stages() {
     // Through stage 5 (radius 1); its fade scales the light's colour in
     // place.
     while fire.life_stage < 5 {
-        fire.update_from_timer(1.0001, &r);
+        fire.update_from_timer(1.0001, &mut pz_iso_render::fire::rand(&r));
         link.sync_fire(&mut lighting, &fire, fx, fy, 0);
     }
     let last = link.key.unwrap();
     assert_eq!(lighting.lamppost_mut(last).unwrap().radius, 1);
-    fire.update(0.0, 0.0, 0, 0.5, &r);
+    fire.update(0.0, 0.0, 0, 0.5, &mut pz_iso_render::fire::rand(&r));
     link.sync_fire(&mut lighting, &fire, fx, fy, 0);
     assert_eq!(link.key, Some(last));
     let l = *lighting.lamppost_mut(last).unwrap();

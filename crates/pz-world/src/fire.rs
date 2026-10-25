@@ -14,6 +14,7 @@
 
 pub mod burn;
 pub mod character;
+pub mod hearth;
 pub mod manager;
 
 use crate::java::GameRand;
@@ -193,8 +194,7 @@ pub enum FireEvent {
     Spread,
     /// `extinctFire()`: remove the fire.
     Extinct,
-    /// The light source was created (`addLamppost`) or replaced
-    /// (`setLightRadius`); relight.
+    /// The light source was replaced (`setLightRadius`); relight.
     LightChanged,
 }
 
@@ -564,7 +564,6 @@ impl IsoFire {
                     LIGHT_RADIUS_LOW
                 },
             });
-            cb.on_event(self, FireEvent::LightChanged, rand);
         }
         if let (Some(l), 5) = (self.light.as_mut(), self.life_stage) {
             l.r = LIGHT_RGB[0] * alpha;
@@ -759,8 +758,7 @@ impl IsoFire {
         }
     }
 
-    /// `getSquaresEnergyRequirement` is the manager's
-    /// ([`manager::squares_energy_requirement`]).
+    /// `isPermanent()`.
     pub fn is_permanent(&self) -> bool {
         self.perm
     }

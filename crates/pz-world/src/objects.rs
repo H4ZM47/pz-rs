@@ -139,6 +139,10 @@ pub struct IsoBarbecue {
     pub lit: bool,
     pub last_update_time: f32,
     pub minutes_since_extinguished: i32,
+    /// `isSmouldering` (not saved).
+    pub smouldering: bool,
+    /// `minuteAccumulator` (not saved).
+    pub minute_accumulator: f32,
 }
 
 impl Default for IsoBarbecue {
@@ -151,6 +155,8 @@ impl Default for IsoBarbecue {
             lit: false,
             last_update_time: -1.0,
             minutes_since_extinguished: -1,
+            smouldering: false,
+            minute_accumulator: 0.0,
         }
     }
 }
@@ -162,6 +168,10 @@ pub struct IsoFireplace {
     pub lit: bool,
     pub last_update_time: f32,
     pub minutes_since_extinguished: i32,
+    /// `smouldering` (not saved).
+    pub smouldering: bool,
+    /// `minuteAccumulator` (not saved).
+    pub minute_accumulator: f32,
 }
 
 impl Default for IsoFireplace {
@@ -171,6 +181,8 @@ impl Default for IsoFireplace {
             lit: false,
             last_update_time: -1.0,
             minutes_since_extinguished: -1,
+            smouldering: false,
+            minute_accumulator: 0.0,
         }
     }
 }
