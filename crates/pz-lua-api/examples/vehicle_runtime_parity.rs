@@ -1009,9 +1009,12 @@ fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
             h: n(7),
             dir: pz_world::IsoDirections::from_name(t[8]),
             face_direction: t[9] == "true",
-            ..Default::default()
+            geometry_type: pz_world::ZoneGeometryType::Invalid,
+            points: Vec::new(),
+            polyline_width: 0,
         };
         if kind == 1 || kind == 3 {
+            zone.geometry_type = pz_world::ZoneGeometryType::Polyline;
             zone.points = t[11].split(',').map(|v| v.parse().unwrap()).collect();
             zone.polyline_width = n(10);
         }

@@ -2763,8 +2763,16 @@ impl BaseVehicle {
                     crate::jmath::coorddivision(cx, 8),
                     crate::jmath::coorddivision(cy, 8),
                 );
-                if self.st().chunk != Some(chunk) {
+                let old = self.st().chunk;
+                if old != Some(chunk) {
                     self.st_mut().chunk = Some(chunk);
+                    let me = self.rc();
+                    if let Some(from) = old {
+                        w.vehicle_chunk_changed(&me, from, chunk);
+                    } else {
+                        w.add_vehicle_to_chunk(&me, chunk);
+                    }
+                    crate::spawn::add_from_checked_vehicles(&me);
                 }
             }
             let current_velocity = self.st().jni_linear_velocity;

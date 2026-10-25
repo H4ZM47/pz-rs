@@ -118,6 +118,18 @@ pub trait VehicleWorld {
     fn is_raining(&self) -> bool {
         false
     }
+    /// `chunk.vehicles` of a chunk in the cell (runtime vehicles, in list
+    /// order); `None` when the chunk is not loaded. See
+    /// [`crate::cell_link::chunk_vehicles`].
+    fn chunk_vehicles(&self, _wx: i32, _wy: i32) -> Option<Vec<crate::VehicleRef>> {
+        None
+    }
+    /// `addToWorld`: `chunk.vehicles.add(this)` unless already there.
+    fn add_vehicle_to_chunk(&self, _v: &crate::VehicleRef, _chunk: (i32, i32)) {}
+    /// `update`: the vehicle moved from chunk `from` to `to`.
+    fn vehicle_chunk_changed(&self, _v: &crate::VehicleRef, _from: (i32, i32), _to: (i32, i32)) {}
+    /// `permanentlyRemove`: `chunk.vehicles.remove(this)`.
+    fn remove_vehicle_from_chunk(&self, _v: &crate::VehicleRef, _chunk: (i32, i32)) {}
 }
 
 /// A flat world of loaded chunks without floors.

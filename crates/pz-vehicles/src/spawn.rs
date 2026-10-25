@@ -19,46 +19,23 @@ use pz_world::IsoDirections;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// `zombie.iso.zones.VehicleZone` (and the `Zone` fields used here).
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct VehicleZone {
-    pub name: String,
-    pub zone_type: String,
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
-    pub w: i32,
-    pub h: i32,
-    /// `dir` (the `Direction` property).
-    pub dir: Option<IsoDirections>,
-    /// `VZF_FaceDirection`.
-    pub face_direction: bool,
-    /// Polyline points (x, y pairs); empty for a rectangle.
-    pub points: Vec<i32>,
-    pub polyline_width: i32,
-}
+/// `zombie.iso.zones.VehicleZone` (pz-world's view of a meta-grid zone).
+pub use pz_world::VehicleZone;
 
-impl VehicleZone {
-    /// `isPolyline()`.
-    pub fn is_polyline(&self) -> bool {
-        !self.points.is_empty()
+/// `Zone.getPolylineLength()`.
+pub fn polyline_length(zone: &VehicleZone) -> f32 {
+    if !zone.is_polyline() || zone.points.is_empty() {
+        return 0.0;
     }
-
-    /// `getPolylineLength()`.
-    pub fn polyline_length(&self) -> f32 {
-        if !self.is_polyline() {
-            return 0.0;
-        }
-        let mut length = 0.0f32;
-        let mut i = 0;
-        while i + 2 < self.points.len() {
-            let dx = (self.points[i + 2] - self.points[i]) as f32;
-            let dy = (self.points[i + 3] - self.points[i + 1]) as f32;
-            length += jsqrt(dx * dx + dy * dy);
-            i += 2;
-        }
-        length
+    let mut length = 0.0f32;
+    let mut i = 0;
+    while i + 2 < zone.points.len() {
+        let dx = (zone.points[i + 2] - zone.points[i]) as f32;
+        let dy = (zone.points[i + 3] - zone.points[i + 1]) as f32;
+        length += jsqrt(dx * dx + dy * dy);
+        i += 2;
     }
+    length
 }
 
 /// The sandbox options `AddVehicles` reads.
@@ -110,6 +87,33 @@ pub trait SpawnWorld {
     /// called with the vehicles spawned so far (it does nothing when that
     /// list is not empty).
     fn random_car_crash(&self, _wx: i32, _wy: i32, _vehicles: &mut Vec<VehicleRef>) {}
+}
+
+/// A [`SpawnWorld`] on pz-world's cell, sprite tables and meta grid.
+pub struct CellSpawnWorld<'a> {
+    pub cell: &'a pz_world::IsoCell,
+    pub sprites: &'a pz_world::IsoSpriteManager,
+    pub meta: &'a pz_world::IsoMetaGrid,
+}
+
+impl SpawnWorld for CellSpawnWorld<'_> {
+    fn square_exists(&self, x: i32, y: i32, z: i32) -> bool {
+        self.cell.get_grid_square(x, y, z).is_some()
+    }
+    fn is_outside(&self, x: i32, y: i32, z: i32) -> bool {
+        self.cell
+            .get_grid_square(x, y, z)
+            .is_some_and(|s| s.is_exterior(self.sprites))
+    }
+    fn vehicle_zone_at(&self, x: i32, y: i32, z: i32) -> bool {
+        self.meta.vehicle_zone_at(x, y, z).is_some()
+    }
+    fn vehicle_zones(&self, cell_x: i32, cell_y: i32) -> Vec<VehicleZone> {
+        self.meta.cell_vehicle_zones(cell_x, cell_y)
+    }
+    fn chunk_vehicles(&self, wx: i32, wy: i32) -> Option<Vec<VehicleRef>> {
+        crate::cell_link::chunk_vehicles(self.cell, wx, wy)
+    }
 }
 
 thread_local! {
@@ -752,7 +756,7 @@ impl<'a> ChunkSpawner<'a> {
 
     /// `AddVehicles_TrafficJam_Polyline(zone, zoneName)`.
     pub fn traffic_jam_polyline(&mut self, zone: &VehicleZone, zone_name: &str) {
-        let zone_length = zone.polyline_length();
+        let zone_length = polyline_length(zone);
         let mut to_segment_start = 0.0f32;
         let half_width = zone.polyline_width as f32 / 2.0;
         let mut i = 0;
@@ -920,9 +924,19 @@ mod tests {
     #[test]
     fn polyline_length() {
         let z = VehicleZone {
+            name: String::new(),
+            zone_type: String::new(),
+            x: 0,
+            y: 0,
+            z: 0,
+            w: 0,
+            h: 0,
+            dir: None,
+            face_direction: false,
+            geometry_type: pz_world::ZoneGeometryType::Polyline,
             points: vec![0, 0, 3, 4, 3, 10],
-            ..Default::default()
+            polyline_width: 0,
         };
-        assert_eq!(z.polyline_length(), 11.0);
+        assert_eq!(polyline_length(&z), 11.0);
     }
 }

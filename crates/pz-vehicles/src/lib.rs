@@ -16,6 +16,7 @@
     clippy::type_complexity
 )]
 
+pub mod cell_link;
 pub mod controller;
 pub mod engine;
 pub mod env;
