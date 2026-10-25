@@ -186,9 +186,9 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `isAimingFirearmEquipped()`.
     pub fn is_aiming_firearm_equipped(&self) -> bool {
-        let aimed = |id: Option<i32>| id.and_then(|i| self.items.item(i)).is_some_and(|i| i.is_aimed_firearm());
+        let aimed = |id: Option<i32>| id.and_then(|i| self.items.item(i)).is_some_and(|i| i.borrow().is_aimed_firearm());
         !self.is_unarmed() && aimed(self.vars.use_hand_weapon)
-            || self.items.primary_hand_item().is_some_and(|i| crate::character::items::is_hand_weapon(i) && i.is_aimed_firearm())
+            || self.items.primary_hand_item().is_some_and(|i| crate::character::items::is_hand_weapon(&i.borrow()) && i.borrow().is_aimed_firearm())
     }
 
     /// `IsoPlayer.isAiming()`: also while a throw animation runs.

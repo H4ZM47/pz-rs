@@ -413,6 +413,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `WeaponType.getWeaponType(chr)` without the variable side effect.
     pub fn weapon_type_of(&self, sm: &ScriptManager) -> WeaponType {
         let Some(item) = self.items.primary_hand_item() else { return WeaponType::Unarmed };
+        let item = &*item.borrow();
         let Some(w) = WeaponStats::of(sm, item) else { return WeaponType::Unarmed };
         let swing = w.swing_anim.as_str();
         if swing.eq_ignore_ascii_case("Stab") {
@@ -447,7 +448,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `getWeaponLevel()`.
     pub fn weapon_level(&self, sm: &ScriptManager, chars: &Characters) -> i32 {
         let wt = self.weapon_type_of(sm);
-        let Some(w) = self.items.primary_hand_item().and_then(|i| WeaponStats::of(sm, i)) else { return 0 };
+        let Some(w) = self.items.primary_hand_item().and_then(|i| WeaponStats::of(sm, &i.borrow())) else { return 0 };
         let mut level = -1;
         if wt != WeaponType::Unarmed {
             if w.is_of_category(sm, "AXE") {
@@ -586,6 +587,7 @@ impl<I: 'static> GameCharacter<I> {
             return base as i32;
         }
         let Some(item) = self.items.primary_hand_item() else { return 0 };
+        let item = &*item.borrow();
         let Some(w) = WeaponStats::of(sm, item) else { return 0 };
         let mut base = w.critical_chance;
         if w.always_knockdown {
@@ -989,8 +991,8 @@ impl<I: 'static> GameCharacter<I> {
         }
         if self.vars.aim_at_floor && self.vars.do_shove {
             damage_split = ctx.rand_next_float(0.7, 1.0) + self.perk(chars, "Strength") as f32 * 0.2;
-            let shoes = self.items.worn().find(|i| super::items::is_body_location(sm, i, "SHOES"));
-            damage_split = match shoes.and_then(|s| script_item(sm, s)) {
+            let shoes = self.items.worn().find(|i| super::items::is_body_location(sm, &i.borrow(), "SHOES"));
+            damage_split = match shoes.and_then(|s| script_item(sm, &s.borrow())) {
                 Some(s) => damage_split * s.borrow().stomp_power,
                 None => damage_split * 0.5,
             };
@@ -1120,13 +1122,13 @@ impl<I: 'static> GameCharacter<I> {
         if !(self.vars.aim_at_floor && self.vars.do_shove) {
             return Ok(());
         }
-        let shoes_id = self.items.worn().find(|i| super::items::is_body_location(sm, i, "SHOES")).map(|i| i.id);
+        let shoes_id = self.items.worn().find(|i| super::items::is_body_location(sm, &i.borrow(), "SHOES")).map(|i| i.borrow().id);
         let mut rand_foot = 10;
         let mut reduce = false;
         match shoes_id.and_then(|id| self.items.item(id)) {
             None => rand_foot = 3,
             Some(shoes) => {
-                let clc = script_item(sm, shoes).map_or(0, |s| s.borrow().condition_lower_chance);
+                let clc = script_item(sm, &shoes.borrow()).map_or(0, |s| s.borrow().condition_lower_chance);
                 rand_foot += clc / 2;
                 if ctx.rand_next(clc) == 0 {
                     reduce = true;
@@ -1136,8 +1138,8 @@ impl<I: 'static> GameCharacter<I> {
         if reduce {
             // TODO(items): `Clothing.reduceCondition` (the condition loss
             // and its holes).
-            if let Some(s) = shoes_id.and_then(|id| self.items.item_mut(id)) {
-                s.condition -= 1;
+            if let Some(s) = shoes_id.and_then(|id| self.items.item(id)) {
+                s.borrow_mut().condition -= 1;
             }
         }
         if ctx.rand_next(rand_foot) == 0 {

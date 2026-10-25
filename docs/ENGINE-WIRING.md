@@ -169,6 +169,16 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `UIManager.getMoodleUI(i).setCharacter`); `HudMoodles` (a player's
       `Moodles`: refresh flag, levels, good/bad, display and description
       strings; characters thread) (#148).
+- [x] Character inventories: `CharacterItems::inventory` is a
+      `pz_inventory::ContainerRef` (loaded in place with
+      `shared::load_into`, saved via `to_container`);
+      `bind_character_sim::character_value` sets the character's Lua object
+      as its parent once and `getInventory()` returns
+      `bind_item_container::container_value(&inv)`, so Lua and the
+      simulation share the container and items. Characters handed to Lua
+      must go through `character_value` (#143, char-inventory PR).
+- [ ] World containers need their `IsoObject` parent set with
+      `bind_item_container::set_parent` the same way (#143).
 - [ ] Shared tooltip: `HudPicking::picked_tile` (`UIManager.getPicked().tile`
       as a `pz_ui::tooltip::TooltipObject`: identity, `haveSpecialTooltip`,
       its square's Lua object; world thread); the tooltip font option and
@@ -178,6 +188,9 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `getBodyDamageRemote()` for another MP player; characters thread) and
       `HudDebug::ui_render_outline` (`Core.debug` plus the debug option)
       feed `NewHealthPanel`/`UI_BodyPart`, built by `ISNewHealthPanel` (#155).
+      `HudBodyDamage` for local characters is `CharacterBodyDamage`
+      (installed by `install_character_hud_hosts`); the remote path is
+      TODO(network).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
@@ -250,9 +263,32 @@ registered):
       serves, from disk or brand new (`WorldStreamer.DoChunkAlways`), and
       reports `StreamEvent::VehiclesLoaded`. `None` (no store,
       `Core.isNoSave`) loads none. The streamer passes `meta: Some(grid)`
-      in `SaveCtx`, so squares get `associatedBuilding` (#100). Not ported:
-      `VehiclesDB2.unloadChunk` writing a chunk's vehicles back when it
-      unloads.
+      in `SaveCtx`, so squares get `associatedBuilding` (#100).
+- [ ] Chunk vehicles on save: every `IsoChunk.Save` the streamer does
+      writes the chunk's vehicles (`VehiclesDB2.unloadChunk`,
+      `StreamEvent::VehiclesUnloaded`). Set `StreamCtx::vehicle_saver` to
+      a saver that knows the attached scripts (`LoadedVehicleSaver {
+      scripts }`), later to the vehicle runtime's own saver for vehicles
+      in the world; the default writes none (null script, as the original
+      for a vehicle never added to the world) (#150).
+- [ ] Hot save: on `StreamEvent::HotSave` (main thread, after the
+      streamer step) call `world_save::hot_save_ancillary(&mut HotSave {
+      .. })` and set `PlayerDB.forceSavePlayers` when `canSavePlayers`
+      (#150).
+- [ ] Game save (`GameWindow.save(true)`: sleep, menu save, quit):
+      `world_save::save_game(&mut SaveGame { .. }, &mut hooks)`; the
+      engine's `SaveGameHooks::save_chunks(meta)` builds its `StreamCtx`
+      and calls `streamer.wait_for_saves(ctx)` then
+      `streamer.save_chunk_maps(&cell, ctx)`; `save_population` calls
+      `WorldPopulation::save`; `on_save` fires Lua `OnSave`. Supply
+      `sandbox: &sandbox.save_bin(world_version, preset)`, and from the
+      characters side the local players' `IsoPlayer.save` bytes and the
+      reanimated zombies' `IsoZombie.save` bytes (#150).
+- [ ] Quit (`Core.exiting`): `world_save::save_on_quit(&mut g,
+      &mut local_players, &mut hooks)` (`on_post_save` fires `OnPostSave`),
+      then `IngameState.exit`: `streamer.stop(&mut cell, ctx)`, the other
+      stops, `world_save::close_stores(Some(&mut player_db), &mut
+      vehicle_store)` (#150).
 - [ ] `IsoWorld.init`, after `VehiclesDB2.init` and before
       `WorldStreamer.create` / the cell load:
       `let regions = IsoRegions::init_world(save_dir, chunk_grid_width,
@@ -476,12 +512,16 @@ registered):
       (#114).
 - [ ] Per frame, ragdolls: before the animation update call
       `update_ragdoll_variables(ctx)` (the `canRagdoll` variable the death
-      and shot nodes test); once pz-ragdoll (#142) lands, its
-      `RagdollCharacter` reads `can_ragdoll_uncapped`, the fall flags and
-      `take_ragdoll_hit(sm, attacker position)` (the shot impulse from the
-      ballistics target's combat data and `PhysicsHitReactionScript`), and
-      after the update the controller state goes into `chr.ragdoll`
-      (`RagdollTracking`) (#114).
+      and shot nodes test); pass
+      `firearm::CharacterRagdoll::new(&mut chr, StateCx)` (pz-characters'
+      `bullet` feature) as `RagdollEnv::character` (it reads
+      `can_ragdoll_uncapped`, writes the fall flags, `onFloor` and the
+      deferred movement, slides away from walls on start and takes the
+      pending shot with the attacker's position from
+      `StateWorld::character_mut`); after the update call
+      `CharacterRagdoll::track(&mut chr, &player, controller)` so
+      `chr.ragdoll` (`RagdollTracking`) and `isRagdollSimulationActive`
+      follow the controller (#114, char-ragdoll PR).
 - [ ] Per frame, PlayerInput adapter: once per frame the rendering side
       implements `pz_characters::character::player::PlayerInput` over
       `pz_input` (`InputState`, `Core::get_key`/`get_key_binding`, the
@@ -526,9 +566,8 @@ registered):
       `update_with_ragdoll(dt, vars, &mut RagdollFrame { env: RagdollEnv {
       bullet, globals, builder, character, bullet_frame_no:
       WorldSimulation's frame number, time_delta, debug }, controller,
-      multiplier })` instead of `update`; implement `RagdollCharacter` on
-      the character (`canRagdoll`, fall flags, `setOnFloor`,
-      `doDeferredMovementFromRagdoll`, ballistics hits). Before `stopAll`
+      multiplier })` instead of `update`, with `CharacterRagdoll` as the
+      character (see the per-frame ragdoll line above). Before `stopAll`
       or releasing the player call `release_ragdoll_controller(Some(host))`
       so the ragdoll leaves the world; `vehicle_collision` from
       `IsoZombie`'s vehicle contact (#142).

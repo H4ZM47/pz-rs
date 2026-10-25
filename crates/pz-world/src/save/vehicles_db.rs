@@ -1,6 +1,7 @@
-//! The reading side of `VehiclesDB2.SQLStore` on a save's `vehicles.db`:
-//! `initUsedIDs`, and `loadChunk` with `WorldStreamerThread.vehicleLoaded`,
-//! which puts a loaded chunk's vehicles into [`IsoChunk::vehicles`].
+//! `VehiclesDB2.SQLStore` on a save's `vehicles.db`: `initUsedIDs`;
+//! `loadChunk` with `WorldStreamerThread.vehicleLoaded`, which puts a loaded
+//! chunk's vehicles into [`IsoChunk::vehicles`]; and `unloadChunk` with
+//! `updateVehicle`, which writes them back when the chunk is saved.
 //!
 //! The connection is the store's own (`VehiclesDB2.SQLStore.conn`, opened
 //! by `SQLStore.create`); these functions take it from the caller so the
@@ -21,10 +22,14 @@ use std::collections::BTreeSet;
 
 use pz_sqlite::{Connection, Row, Table, Value};
 
-use super::vehicle::VehicleRow;
+use pz_inventory::template::ItemClass;
+
+use super::io::Writer;
+use super::items::ItemBlob;
+use super::vehicle::{AlarmSounds, BaseVehicle, VehicleRow};
 use super::SaveCtx;
 use crate::chunk::IsoChunk;
-use crate::chunk_vehicles::VehicleHandle;
+use crate::chunk_vehicles::{LoadedVehicle, VehicleHandle, VehicleOrigin};
 
 /// `rs.getFloat`: `(float) sqlite3_column_double`.
 fn get_float(v: &Value) -> f32 {
@@ -195,6 +200,257 @@ pub fn load_chunk(
     }
     if !complete {
         out.error = Some("java.lang.NullPointerException".into());
+    }
+    out
+}
+
+// ---- VehiclesDB2.unloadChunk ------------------------------------------------
+
+/// `pstmt.setFloat`: the `float` widened to the `REAL` sqlite stores.
+fn real(v: f32) -> Value {
+    Value::Real(f64::from(v))
+}
+
+/// `SQLStore.isInDB(id)`: `SELECT 1 FROM vehicles WHERE id=?`.
+pub fn is_in_db(conn: &mut Connection, id: i32) -> pz_sqlite::Result<bool> {
+    let t = conn.table("vehicles")?;
+    Ok(conn.row(&t, i64::from(id))?.is_some())
+}
+
+/// The columns `addToDB`/`updateDB` bind, in their statements' order
+/// (`wx, wy, x, y, worldversion, inMeta, data`).
+fn row_values(v: &VehicleRow) -> Vec<(&'static str, Value)> {
+    vec![
+        ("wx", Value::Integer(i64::from(v.wx))),
+        ("wy", Value::Integer(i64::from(v.wy))),
+        ("x", real(v.x)),
+        ("y", real(v.y)),
+        ("worldversion", Value::Integer(i64::from(v.world_version))),
+        ("inMeta", Value::Integer(i64::from(v.in_meta))),
+        ("data", Value::Blob(v.data.clone())),
+    ]
+}
+
+/// `SQLStore.addToDB`: `INSERT INTO vehicles(wx,wy,x,y,worldversion,inMeta,data,id)`,
+/// committed; rolled back on failure.
+pub fn add_to_db(conn: &mut Connection, v: &VehicleRow) -> pz_sqlite::Result<()> {
+    let mut vals = row_values(v);
+    vals.push(("id", Value::Integer(i64::from(v.id))));
+    let r = conn.insert("vehicles", &vals).and_then(|_| conn.commit());
+    if r.is_err() {
+        conn.rollback();
+    }
+    r
+}
+
+/// `SQLStore.updateDB`: `UPDATE vehicles SET wx = ?, wy = ?, x = ?, y = ?,
+/// worldversion = ?, inMeta = ?, data = ? WHERE id=?`, committed; rolled
+/// back on failure.
+pub fn update_db(conn: &mut Connection, v: &VehicleRow) -> pz_sqlite::Result<()> {
+    let vals = row_values(v);
+    let r = conn
+        .update("vehicles", i64::from(v.id), &vals)
+        .and_then(|_| conn.commit());
+    if r.is_err() {
+        conn.rollback();
+    }
+    r
+}
+
+/// `SQLStore.updateVehicle(vehicleBuffer)`: update the row when the id is in
+/// the table, else insert it. A failure is rolled back and returned (the
+/// original logs it and carries on).
+pub fn update_vehicle(conn: &mut Connection, v: &VehicleRow) -> pz_sqlite::Result<()> {
+    let r = is_in_db(conn, v.id).and_then(|inside| {
+        if inside {
+            update_db(conn, v)
+        } else {
+            add_to_db(conn, v)
+        }
+    });
+    if r.is_err() {
+        conn.rollback();
+    }
+    r
+}
+
+/// What `BaseVehicle.getScript()` tells `shouldUpdateInMeta` and `save`
+/// about a vehicle's `VehicleScript` (`script.getSounds()`,
+/// `script.getLightbar()`).
+pub struct VehicleScriptFacts<'a> {
+    /// `sounds.alarmEnable`, `sounds.alarm`, `sounds.alarmLoop`.
+    pub sounds: AlarmSounds<'a>,
+    /// `lightbar.enable` (`hasSiren`).
+    pub lightbar_enable: bool,
+}
+
+/// The `VehicleScript` attached to a vehicle (`BaseVehicle.script`).
+pub trait VehicleScripts {
+    /// `None`: no script is attached. `BaseVehicle.load` only reads the
+    /// script name; the script is attached by `setScript`, which runs when
+    /// the vehicle is added to the world (`createPhysics`).
+    fn script(&self, script_name: &str) -> Option<VehicleScriptFacts<'_>>;
+}
+
+/// No vehicle has a script attached: every vehicle is as `BaseVehicle.load`
+/// left it, never added to the world.
+pub struct NoVehicleScripts;
+
+impl VehicleScripts for NoVehicleScripts {
+    fn script(&self, _script_name: &str) -> Option<VehicleScriptFacts<'_>> {
+        None
+    }
+}
+
+/// `BaseVehicle.getBatteryCharge()`: the current uses of the item in the
+/// part with id `Battery` when it is a `DrainableComboItem`, else 0. An
+/// item kept as bytes cannot be asked (error).
+pub fn battery_charge(v: &BaseVehicle) -> Result<f32, String> {
+    // `VehicleParts.add` keeps the last part with that id as `battery`.
+    let Some(part) = v.parts.iter().rev().find(|p| p.id() == "Battery") else {
+        return Ok(0.0);
+    };
+    match &part.item {
+        None => Ok(0.0),
+        Some(ItemBlob::Item(i)) => Ok(match i.template.class {
+            ItemClass::Drainable => i.get_current_uses_float(),
+            _ => 0.0,
+        }),
+        Some(ItemBlob::Raw(_)) => Err("the battery item was kept as bytes".into()),
+    }
+}
+
+/// `BaseVehicle.shouldUpdateInMeta()`: `isAlarmActive() || isSirenActive()
+/// || isEngineRunning()`, evaluated in that order. Without a script,
+/// `hasAlarm()` dereferences the null script
+/// (`java.lang.NullPointerException`).
+pub fn should_update_in_meta(
+    v: &BaseVehicle,
+    script: Option<&VehicleScriptFacts<'_>>,
+) -> Result<bool, String> {
+    let Some(s) = script else {
+        return Err("java.lang.NullPointerException".into());
+    };
+    // `hasAlarm() && vehicleAlarm.isActive() && getBatteryCharge() > 0`.
+    if s.sounds.alarm_enable && v.alarm_start_time > 0.0 && battery_charge(v)? > 0.0 {
+        return Ok(true);
+    }
+    // `hasSiren() && lightbarSirenMode.isEnable() && getBatteryCharge() > 0`.
+    if s.lightbar_enable && v.lightbar_siren_mode != 0 && battery_charge(v)? > 0.0 {
+        return Ok(true);
+    }
+    // `getEngine() != null && getVehicleEngine().isRunning()`.
+    Ok(v.engine.as_ref().is_some_and(|e| e.running))
+}
+
+/// `VehiclesDB2.VehicleBuffer.set(vehicle)` for one entry of
+/// [`IsoChunk::vehicles`]: the row `unloadChunk` stores.
+pub trait ChunkVehicleSaver {
+    /// The row for `vehicle`, standing in `chunk` (`vehicle.chunk`), or the
+    /// exception `set` throws (`unloadChunk` logs it and goes on to the
+    /// next vehicle).
+    fn vehicle_buffer(
+        &self,
+        vehicle: &VehicleHandle,
+        chunk: &IsoChunk,
+        ctx: &SaveCtx<'_>,
+    ) -> Result<VehicleRow, String>;
+}
+
+/// [`ChunkVehicleSaver`] for the vehicles chunk loading put in the list
+/// ([`LoadedVehicle`]), with the scripts `scripts` says are attached.
+///
+/// A vehicle the vehicle runtime replaced with its own object is not a
+/// [`LoadedVehicle`]; the runtime saves those with its own saver.
+pub struct LoadedVehicleSaver<'a> {
+    pub scripts: &'a dyn VehicleScripts,
+}
+
+impl ChunkVehicleSaver for LoadedVehicleSaver<'_> {
+    fn vehicle_buffer(
+        &self,
+        vehicle: &VehicleHandle,
+        chunk: &IsoChunk,
+        ctx: &SaveCtx<'_>,
+    ) -> Result<VehicleRow, String> {
+        let Ok(lv) = vehicle.clone().downcast::<LoadedVehicle>() else {
+            return Err("not a vehicle chunk loading made (no saver)".into());
+        };
+        // `sqlId`: rows carry theirs; a vehicle from an old chunk file's
+        // vehicle list gets one from `VehiclesDB2.addVehicle` when it is
+        // added to the world (`doLoadGridsquare`), which is not ported.
+        let VehicleOrigin::Database { sql_id } = lv.origin else {
+            return Err("java.lang.AssertionError: vehicle.sqlId >= 1".into());
+        };
+        let v = &lv.vehicle;
+        let script = self.scripts.script(&v.script_name);
+        let in_meta = should_update_in_meta(v, script.as_ref())?;
+        let mut w = Writer::new();
+        let class = ctx.tables.class_id("Vehicle");
+        let square = lv.square.map(|(x, y, _)| (x, y));
+        v.save(
+            &mut w,
+            class,
+            square,
+            script.as_ref().map(|s| &s.sounds),
+            ctx.items,
+        )
+        .map_err(|e| e.0)?;
+        Ok(VehicleRow {
+            id: sql_id,
+            wx: chunk.wx,
+            wy: chunk.wy,
+            x: v.base.x,
+            y: v.base.y,
+            world_version: super::WORLD_VERSION,
+            in_meta,
+            data: w.buf,
+        })
+    }
+}
+
+/// What [`unload_chunk`] did.
+#[derive(Debug, Default, PartialEq)]
+pub struct ChunkVehiclesUnloaded {
+    /// The ids of the rows written, in list order.
+    pub saved: Vec<i32>,
+    /// The vehicles that were not written: their index in the list and the
+    /// exception (`VehicleBuffer.set` or the statement).
+    pub errors: Vec<(usize, String)>,
+}
+
+/// `VehiclesDB2.unloadChunk(chunk)` → `WorldStreamerThread.unloadChunk`:
+/// every vehicle in the chunk's list is written with
+/// `SQLStore.updateVehicle` ([`update_vehicle`]). `IsoChunk.Save` calls it
+/// for every save that is not a hot save, after the squares and erosion
+/// data are written and before the chunk file. `conn` is `None` when the
+/// store has no connection (`Core.isNoSave`), which writes nothing.
+pub fn unload_chunk(
+    conn: Option<&mut Connection>,
+    chunk: &IsoChunk,
+    ctx: &SaveCtx<'_>,
+    saver: &dyn ChunkVehicleSaver,
+) -> ChunkVehiclesUnloaded {
+    let mut out = ChunkVehiclesUnloaded::default();
+    let Some(conn) = conn else {
+        return out;
+    };
+    for (i, v) in chunk.vehicles.iter().enumerate() {
+        let row = match saver.vehicle_buffer(v, chunk, ctx) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("ERROR: VehiclesDB2.unloadChunk: {e}");
+                out.errors.push((i, e));
+                continue;
+            }
+        };
+        match update_vehicle(conn, &row) {
+            Ok(()) => out.saved.push(row.id),
+            Err(e) => {
+                eprintln!("ERROR: vehicles.db: {e}");
+                out.errors.push((i, e.to_string()));
+            }
+        }
     }
     out
 }

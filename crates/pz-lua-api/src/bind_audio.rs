@@ -69,6 +69,25 @@ impl LuaObject for SoundManagerObject {
     }
 }
 
+/// [`crate::hud::host::HudSound`] over the shared sound system, the same
+/// `SoundManager.instance` that `getSoundManager()` returns.
+pub struct SharedHudSound;
+
+impl crate::hud::host::HudSound for SharedHudSound {
+    fn pause_sound_and_music(&mut self, keep_music: bool) {
+        sound_system().borrow_mut().with(|m, ctx| m.pause_sound_and_music(keep_music, false, ctx));
+    }
+    fn resume_sound_and_music(&mut self) {
+        sound_system().borrow_mut().with(|m, ctx| m.resume_sound_and_music(ctx));
+    }
+    fn set_music_state(&mut self, state: &str) {
+        sound_system().borrow().manager.set_music_state(state);
+    }
+    fn play_ui_sound(&mut self, name: &str) {
+        sound_system().borrow_mut().with(|m, ctx| m.play_ui_sound(name, None, ctx));
+    }
+}
+
 /// A Lua handle to an `FMODSoundEmitter` owned by the sound system.
 pub enum SoundEmitterObject {
     /// `SoundManager.getUIEmitter()`.
@@ -1248,6 +1267,17 @@ mod tests {
         assert_eq!(log[..2], ["create", "start 42"], "{log:?}");
         assert!(log.contains(&"param 42 (7, 9) 1.25".to_string()), "{log:?}");
         assert!(log.contains(&"stop 42".to_string()), "{log:?}");
+    }
+
+    #[test]
+    fn hud_sound_defaults_to_the_shared_sound_manager() {
+        crate::hud::host::with_host(|h| h.sound.set_music_state("InGame"));
+        assert_eq!(sound_system().borrow().manager.music_state(), pz_sound::sound_manager::MusicState::InGame);
+        crate::hud::host::with_host(|h| {
+            h.sound.pause_sound_and_music(true);
+            h.sound.resume_sound_and_music();
+            h.sound.play_ui_sound("UIPauseMenuEnter");
+        });
     }
 
     #[test]
