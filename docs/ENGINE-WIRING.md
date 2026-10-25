@@ -14,6 +14,10 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Event and hook names read from the jar via pz-classfile instead of
       `events.rs` constants (#7).
 
+- [ ] Perks initialised before Lua loads (#26).
+- [ ] BodyLocations.lua runs at boot so the "Human" body-location group and
+      clothing hide/alt rules exist (#26).
+
 ## Per frame (`GameWindow.logic` / `render`)
 - [ ] Input: every winit event → `pz_input::winit::handle`; before
       `UIManager::update` call `bind_input::update(&mut mgr, secs)`, after it
@@ -41,6 +45,8 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       (#86).
 
 ## World render pass
+- [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
+      allocating every loaded chunk exhausts the GPU device.
 - [ ] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
       `SurfaceChecks::run` + `apply_surface_checks` before `plan_chunks`;
       water flow from lot directories; splash state (#53).
