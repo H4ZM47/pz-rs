@@ -163,6 +163,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       window's key/char events are queued (#119).
 
 ## World (`GameLoadingState` / `IngameState`)
+- [ ] Animal definitions: `pz_animals::AnimalDefinitionTables::load(&env)`
+      over `LuaManager.env` once shared Lua is loaded, as `IsoWorld.init`
+      calls `AnimalDefinitions.getAnimalDefs()` (which loads the genome
+      definitions); tracks reload where `IsoWorld` calls
+      `loadTracksDefinitions` (#191).
 - [ ] `GameLoadingState.enter`: `bind_video::release_all_video_textures()`
       (`LuaManager.releaseAllVideoTextures`, after `WorldMapImages.Reset` /
       `WorldMapVisited.Reset`) closes and destroys every texture `getVideo`
