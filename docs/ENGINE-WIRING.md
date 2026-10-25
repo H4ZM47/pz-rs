@@ -43,7 +43,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `PersistentOutfits.getOutfitNames()`, what
       `bind_zombie_outfits::init_persistent_outfits` returns (see the
       world-load list). The outfit ids in `zpop` records reach `RealZombies`
-      as `persistent_outfit_id`; dressing resolves them.
+      as `persistent_outfit_id`; dressing resolves them (#147).
 - [ ] Meta population: `bind_appearance::install_population` of a
       `Population::init(fs)` (`ClothingDecals`, `BeardStyles`, `HairStyles`,
       `OutfitManager`, `VoiceStyles`, `PopTemplateManager`) right after
@@ -94,7 +94,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `ZombieOps` (`RealZombies`) (#73/#77; `RealZombies::create_survivor`
       returns `CreateSurvivor`'s `ScriptResult`, and `WorldPopulation::update`
       / `start_game` return `Err(java exception text)` when creating a real
-      zombie threw: log it as the frame's uncaught exception): `GameWindow.logic` calls
+      zombie threw (#147): log it as the frame's uncaught exception): `GameWindow.logic` calls
       `WorldPopulation::update_game_state(no_save, paused)`; `IngameState.update`
       (after `VirtualZombieManager.update`) calls `WorldPopulation::update(&mut
       WorldPopulationHost::from_state(.., &mut RealZombies { .. }),
@@ -132,7 +132,7 @@ registered):
       `bind_zombie_outfits::init_persistent_outfits(thread,
       Some((&save_dir.join("z_outfits.bin"), core.no_save)))` (Lua's
       `ZombiesZoneDefinition` must have run); keep the returned outfit names
-      for `WorldPopulation::init`.
+      for `WorldPopulation::init` (#147).
 - [ ] `IsoWorld.init`, after `OnLoadedMapZones` and before the cell load:
       `pz_world_popman::WorldPopulation::init(native, &meta,
       &save_game_state(save_dir) + sandbox/mode fields, &ZombieConfig,
@@ -150,7 +150,7 @@ registered):
       `SnowEffects`: `IsoCell.setSnowTarget(target)` (0 unless sandbox
       `EnableSnowOnGround`) and `ErosionIceQueen::set_snow(ice_queen)`. The
       climate update's own snow effects collect in the same slot: apply
-      `bind_climate::take_snow_effects()` after `update_game_time` each frame.
+      `bind_climate::take_snow_effects()` after `update_game_time` each frame (#147).
 - [ ] Zombie dressing (`ModelManager.Add`/`Reset` call
       `ModelManager.dressInRandomOutfit`): when a zombie gets its model,
       `GameCharacter::model_manager_dress_in_random_outfit(&mut
@@ -160,7 +160,7 @@ registered):
       create_item (`bind_items::create_item`), loot_modifier,
       chance_of_attached_weapon (sandbox) }, settings (sandbox
       `ClothingDegradation`, `RemoveZombieLoot`, game mode, world age) })`;
-      it fills `human_visual`, `zombie.item_visuals` and attached weapons.
+      it fills `human_visual`, `zombie.item_visuals` and attached weapons (#147).
 - [ ] `IngameState.enter`, world loaded: `WorldPopulation::start_game(&mut
       host, &frame)` (`MapCollisionData.startGame`).
 - [ ] Quit: `WorldPopulation::save(&reals)` with the world save, then
