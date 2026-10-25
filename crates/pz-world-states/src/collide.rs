@@ -392,6 +392,13 @@ impl StatesWorldAdapter<'_> {
             return Vec::new();
         };
         let mut thumper = self.engine.character(chr);
+        if thumper.is_none() {
+            // A real game always has the colliding character registered; a
+            // missing one means the engine hook is not wired.
+            warn_once(&MISSING_CHARACTER, || {
+                format!("hoppable_actions_dyn: engine has no character {chr}; using a default thumper")
+            });
+        }
         if thumper.is_none() && mover.mover_kind() == MoverKind::Zombie {
             thumper = Some(Thumper {
                 id: chr,
@@ -403,5 +410,14 @@ impl StatesWorldAdapter<'_> {
         }
         let hooks = AdapterHoppableHooks { adapter: self, thumper };
         self.collide_env().hoppable_actions(mover, sq, &hooks)
+    }
+}
+
+static MISSING_CHARACTER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Logs `msg` once per flag in debug builds.
+fn warn_once(flag: &std::sync::atomic::AtomicBool, msg: impl FnOnce() -> String) {
+    if cfg!(debug_assertions) && !flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("warning: {}", msg());
     }
 }
