@@ -33,6 +33,7 @@ pub mod bind_misc;
 pub mod bind_misc_classes;
 pub mod bind_mods;
 pub mod bind_nutrition;
+pub mod bind_players;
 pub mod bind_popman;
 pub mod bind_registry;
 pub mod bind_render;
@@ -76,6 +77,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     let sink: bind_climate::EventSink = Rc::new(sink);
     bind_java_util::register(&mut mgr.thread);
     bind_globals::register(&mut mgr.thread);
+    bind_players::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
     bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
     bind_core::register(
@@ -128,6 +130,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_vehicles::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
+    hud::characters::install_character_hud_hosts();
     bind_ui3d::register(&mut mgr.thread);
     bind_uitextbox2::register(&mut mgr.thread);
     bind_voice::register(&mut mgr.thread);

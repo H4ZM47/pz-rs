@@ -78,6 +78,18 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       characters thread), `HudGameTime` (characters thread; defaults to the
       shared Lua `GameTime`), `HudSound` (`SoundManager`, audio thread),
       `HudNetwork` (`GameClient`/`GameServer`) (#144).
+- [x] HUD players, game time, climate and moodles:
+      `hud::characters::install_character_hud_hosts()` (run by
+      `register_all`) reads `bind_players` (`IsoPlayer.players`,
+      `numPlayers`, `getInstance`), the shared `GameTime`/`ClimateManager`
+      and the players' `Moodles`.
+- [ ] Local players: when a player is created / loaded (`IsoPlayer`
+      constructor, `GameLoadingState`) call `bind_players::set_player(i,
+      Some(chr))`, `set_player_instance`, `set_num_players`; each frame for
+      the local player (`IsoPlayer.updateInternal1`)
+      `hud::set_moodles_character(i, Some(i))`; `bind_players::reset()` when
+      leaving the game. Then `UIManager.init` (`hud::init_ui`) builds the
+      in-game HUD.
 
 ## Per frame (`GameWindow.logic` / `render`)
 - [ ] Input: every winit event → `pz_input::winit::handle`; before

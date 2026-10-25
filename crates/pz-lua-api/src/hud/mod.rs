@@ -6,6 +6,7 @@
 //! [`init_ui`] is `UIManager.init()` (call it instead of
 //! `pz_ui::UIManager::init` once Lua is up).
 
+pub mod characters;
 pub mod clock;
 pub mod host;
 pub mod moodles;
