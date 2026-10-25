@@ -11,7 +11,8 @@ use crate::character::{GameCharacter, SimContext};
 use crate::Characters;
 
 pub use pz_pathfind::behavior::BehaviorResult;
-use pz_pathfind::mover::PathMover;
+use pz_pathfind::mover::{MoverId, PathMover};
+pub use pz_world::los::TestResults;
 
 /// What the states read about a square (`IsoGridSquare`).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -60,11 +61,13 @@ pub trait StateWorld<I> {
 
     /// `getPathFindBehavior2().pathToLocation(x, y, z)` for `chr` (the
     /// world owns each character's `pz_pathfind::behavior::PathFindBehavior2`
-    /// and the `PathfindService`).
+    /// and the `PathfindService`, keyed by `chr.mover_id()`, which carries
+    /// the character's kind and id: see [`GameCharacter::mover_id_of`]).
     fn path_to_location(&mut self, _chr: &mut dyn PathMover, _x: i32, _y: i32, _z: i32) {}
 
-    /// `getPathFindBehavior2().pathToCharacter(target)`.
-    fn path_to_character(&mut self, _chr: &mut dyn PathMover, _target: i32) {}
+    /// `getPathFindBehavior2().pathToCharacter(target)`; `target` is the
+    /// target's `PathMover::mover_id()` (kind and id).
+    fn path_to_character(&mut self, _chr: &mut dyn PathMover, _target: MoverId) {}
 
     /// `getPathFindBehavior2().update()`.
     fn path_update(&mut self, _chr: &mut dyn PathMover) -> BehaviorResult {
@@ -74,11 +77,11 @@ pub trait StateWorld<I> {
     /// `getPathFindBehavior2().cancel()`.
     fn path_cancel(&mut self, _chr: &mut dyn PathMover) {}
 
-    /// `LosUtil.lineClear` / `PolygonalMap2.lineClearCollide` between two
-    /// points on one level (`pz_pathfind::main_thread::los_util` over the
-    /// world's squares).
-    fn line_clear(&self, _x0: f32, _y0: f32, _x1: f32, _y1: f32, _z: i32) -> bool {
-        true
+    /// `LosUtil.lineClear(cell, x0, y0, z0, x1, y1, z1, ignoreDoors)`
+    /// between two squares (`pz_world::los::line_clear` over the world's
+    /// squares).
+    fn los_line_clear(&self, _from: (i32, i32, i32), _to: (i32, i32, i32), _ignore_doors: bool) -> TestResults {
+        TestResults::Clear
     }
 }
 
