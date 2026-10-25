@@ -549,7 +549,7 @@ fn main() {
                     uuids: &mut uuids,
                     players: None,
                     can_save_players: true,
-                    reanimated: &[],
+                    reanimated: Some(&[]),
                     world_gen: &world_gen,
                     instance_tracker: &instance_tracker,
                     cache_dir: Some(work),

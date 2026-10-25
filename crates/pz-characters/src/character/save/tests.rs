@@ -53,7 +53,7 @@ fn setup() -> (ScriptManager, Characters, Vec<Rc<pz_scripts::registry::RegistryK
 }
 
 fn tables() -> SaveTables {
-    SaveTables { factory: vec![(0, "IsoObject".into()), (1, "Player".into())], blood_body_parts: 18, character_stats: Vec::new() }
+    SaveTables { factory: vec![(0, "IsoObject".into()), (1, "Player".into()), (2, "Zombie".into())], blood_body_parts: 18, character_stats: Vec::new() }
 }
 
 /// A player with something in every saved field.
@@ -297,3 +297,160 @@ fn burning_player_is_set_on_fire_during_load() {
     assert_eq!(fired, Some(true));
 }
 
+
+/// A reanimated player: the dead player's descriptor, inventory and worn
+/// items on a zombie.
+fn reanimated(sm: &ScriptManager, chars: &mut Characters, ctx: &Recorder, locs: &[Rc<pz_scripts::registry::RegistryKey>]) -> GameCharacter<()> {
+    let p = dressed(sm, chars, ctx, locs);
+    let mut z = GameCharacter::new(sm, CharacterKind::Zombie);
+    (z.vars.x, z.vars.y, z.vars.z) = (p.vars.x, p.vars.y, p.vars.z);
+    z.vars.dir = p.vars.dir;
+    z.mod_data = p.mod_data.clone();
+    z.descriptor = p.descriptor.clone();
+    z.human_visual = p.human_visual.clone();
+    // The dead player's items (decoded and raw records) as the zombie's
+    // own container's.
+    pz_inventory::shared::load_into(&z.items.inventory, p.items.inventory.borrow().to_container());
+    z.items.worn_items = p.items.worn_items.clone();
+    z.items.worn_locations = p.items.worn_locations.clone();
+    z.read_books = p.read_books.clone();
+    z.last_animal_pet = 7;
+    z.vars.time_since_seen_flesh = 12.75;
+    z.vars.crawling = true;
+    z.zombie.can_walk = false;
+    z.zombie.reanimated_for_grapple_only = true;
+    z.zombie.reanimated_player = true;
+    z
+}
+
+fn save_zombie(sm: &ScriptManager, chars: &Characters, ctx: &Recorder, z: &mut GameCharacter<()>) -> Vec<u8> {
+    let (items, tables) = (Env, tables());
+    let env = SaveEnv { items: &items, tables: &tables };
+    let mut w = Writer::new();
+    z.save_zombie(sm, chars, ctx, &env, false, &mut w).unwrap();
+    w.buf
+}
+
+#[test]
+fn zombie_record_round_trips() {
+    let (sm, mut chars, locs) = setup();
+    let ctx = Recorder::default();
+    let mut z = reanimated(&sm, &mut chars, &ctx, &locs);
+    let data = save_zombie(&sm, &chars, &ctx, &mut z);
+    // The serialise byte and the Zombie class id.
+    assert_eq!(&data[..2], [1, 2]);
+    // The zombie's part: version 1, (int) timeSinceSeenFlesh, the state
+    // flags (Initialized | Crawling | CanCrawlUnderVehicle |
+    // ReanimatedForGrappleOnly) and the two worn items.
+    let mut tail = Writer::new();
+    tail.i32(1);
+    tail.i32(12);
+    tail.i32(1 | 2 | 16 | 32);
+    tail.i8(2);
+    for (loc, index) in [(&locs[0], 0i16), (&locs[2], 3)] {
+        tail.string(&loc.location.id());
+        tail.i16(index);
+    }
+    assert!(data.ends_with(&tail.buf));
+    // No stats, body damage, XP or hand items: a player record of the same
+    // character is longer.
+    let mut p = dressed(&sm, &mut chars, &ctx, &locs);
+    assert!(save(&sm, &chars, &ctx, &mut p).len() > data.len());
+
+    let (items, tables) = (Env, tables());
+    let env = SaveEnv { items: &items, tables: &tables };
+    let mut back: GameCharacter<()> = GameCharacter::new(&sm, CharacterKind::Zombie);
+    back.zombie.palette = 2;
+    let mut r = Reader::new(&data[2..]);
+    back.load_zombie(&sm, &mut chars, &ctx, &env, &mut r, 249, &mut |_| panic!("not on fire")).unwrap();
+    assert_eq!(r.remaining(), 0);
+    assert_eq!((back.vars.x, back.vars.y, back.vars.dir), (z.vars.x, z.vars.y, z.vars.dir));
+    assert_eq!(back.vars.time_since_seen_flesh, 12.0);
+    assert!(back.vars.crawling && !back.zombie.can_walk && back.zombie.reanimated_for_grapple_only);
+    assert!(back.vars.on_floor && back.environment.fall_on_front);
+    let female = back.descriptor.as_ref().unwrap().borrow().is_female();
+    assert_eq!(back.zombie.female, female);
+    assert_eq!(back.zombie.sprite_name, if female { "KateZ2" } else { "BobZ2" });
+    assert_eq!(back.zombie.hurt_sound, format!("{}Hurt", z.voice_prefix()));
+    assert_eq!(back.items.worn_items, [101, 104]);
+    assert_eq!(back.read_books, z.read_books);
+    assert_eq!(back.last_animal_pet, 7);
+    assert_eq!(back.default_state().map(|s| s.name()), Some("ZombieIdleState"));
+    // Saving the loaded zombie gives the same record.
+    back.vars.time_since_seen_flesh = 12.75;
+    assert_eq!(save_zombie(&sm, &chars, &ctx, &mut back), data);
+}
+
+#[test]
+fn fake_dead_wins_over_crawling_and_stairs_clear_it() {
+    let (sm, mut chars, locs) = setup();
+    let ctx = Recorder::default();
+    let mut z = reanimated(&sm, &mut chars, &ctx, &locs);
+    z.zombie.fake_dead = true;
+    assert_eq!(z.zombie_state_flags(&ctx, false), 1 | 2 | 8 | 16 | 32);
+    // isFakeDead() on stairs clears the flag for good.
+    assert_eq!(z.zombie_state_flags(&ctx, true), 1 | 2 | 16 | 32);
+    assert!(!z.zombie.fake_dead);
+    z.zombie.fake_dead = true;
+    let data = save_zombie(&sm, &chars, &ctx, &mut z);
+    let (items, tables) = (Env, tables());
+    let env = SaveEnv { items: &items, tables: &tables };
+    let mut back: GameCharacter<()> = GameCharacter::new(&sm, CharacterKind::Zombie);
+    back.load_zombie(&sm, &mut chars, &ctx, &env, &mut Reader::new(&data[2..]), 249, &mut |_| {}).unwrap();
+    assert!(back.zombie.fake_dead && !back.vars.crawling);
+}
+
+#[test]
+fn reanimated_file_keeps_tracked_then_live_cell_zombies() {
+    let (sm, mut chars, locs) = setup();
+    let ctx = Recorder::default();
+    let (items, tables) = (Env, tables());
+    let env = SaveEnv { items: &items, tables: &tables };
+    let mut tracked = vec![reanimated(&sm, &mut chars, &ctx, &locs)];
+    tracked[0].id = 1;
+    let mut cell = Vec::new();
+    for (id, reanimated_player, health) in [(2, true, 1.0), (3, false, 1.0), (4, true, 0.0), (5, true, 1.0)] {
+        let mut z = reanimated(&sm, &mut chars, &ctx, &locs);
+        z.id = id;
+        z.zombie.reanimated_player = reanimated_player;
+        z.health = health;
+        z.vars.x = id as f32;
+        cell.push(z);
+    }
+    let saved = reanimated_players_to_save(&sm, &chars, &ctx, &env, &mut tracked, &mut cell, &|_| false).unwrap();
+    assert_eq!(saved.len(), 3);
+    let mut file = Writer::new();
+    file.i32(249);
+    file.i32(saved.len() as i32);
+    for z in &saved {
+        file.buf.extend_from_slice(z);
+    }
+    let mut back: Vec<GameCharacter<()>> = Vec::new();
+    let mut made = 0;
+    load_reanimated_players(
+        &sm,
+        &mut chars,
+        &ctx,
+        &env,
+        &file.buf,
+        &mut |_| {
+            made += 1;
+            Ok(GameCharacter::new(&sm, CharacterKind::Zombie))
+        },
+        &mut |_| {},
+        &mut back,
+    )
+    .unwrap();
+    assert_eq!(made, 3);
+    let xs: Vec<f32> = back.iter().map(|z| z.vars.x).collect();
+    assert_eq!(xs, [tracked[0].vars.x, 2.0, 5.0]);
+    assert!(back.iter().all(|z| z.zombie.reanimated_player && z.descriptor.as_ref().unwrap().borrow().id == 0));
+    // A record of another class stops the load; the zombies before it stay.
+    let mut bad = file.buf[..8].to_vec();
+    bad[7] = 2;
+    bad.extend_from_slice(&saved[0]);
+    bad.extend_from_slice(&[1, 1]);
+    let e = load_reanimated_players(&sm, &mut chars, &ctx, &env, &bad, &mut |_| Ok(GameCharacter::new(&sm, CharacterKind::Zombie)), &mut |_| {}, &mut back);
+    assert_eq!(e.unwrap_err().to_string(), "java.lang.RuntimeException: expected IsoZombie here");
+    assert_eq!(back.len(), 1);
+}

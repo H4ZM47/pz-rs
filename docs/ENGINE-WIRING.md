@@ -393,6 +393,25 @@ registered):
       then `IngameState.exit`: `streamer.stop(&mut cell, ctx)`, the other
       stops, `world_save::close_stores(Some(&mut player_db), &mut
       vehicle_store)` (#150).
+- [ ] Session save, characters side: for each local player build its row
+      with `world_save::local_player_data(&mut player, sql_id, sm, chars,
+      ctx, &SaveEnv { .. })` (`PlayerData.set`: `IsoPlayer.save` bytes from
+      `GameCharacter::save_player`) and pass them to `save_on_quit`; keep the
+      `sql_id` `PlayerDb::save_player` gives a new player. For
+      `SaveGame::reanimated` call
+      `character::save::reanimated_players_to_save(sm, chars, ctx, &env,
+      &mut tracked, &mut cell_zombies, &|z| stairs_at(z))` (the manager's
+      list, then the cell's live reanimated players); on `Err` log it and
+      pass `None` (no `reanimated.bin`) (#178).
+- [ ] `IsoWorld.init` (`ReanimatedPlayers.loadReanimatedPlayers`): read
+      `reanimated.bin` (missing: none) into the tracked list with
+      `character::save::load_reanimated_players(.., new_zombie, set_on_fire,
+      &mut tracked)`; `new_zombie` is `new IsoZombie(cell)`
+      (`GameCharacter::new_zombie` with no descriptor). Call each zombie's
+      `set_default_state(cx)` once the world exists. Not ported yet:
+      `addReanimatedPlayersToChunk` (chunk load moves a tracked zombie into
+      the cell's zombie list) and `removeReanimatedPlayerFromWorld` (chunk
+      unload moves it back) (#178).
 - [ ] `IsoWorld.init`, after `VehiclesDB2.init` and before
       `WorldStreamer.create` / the cell load:
       `let regions = IsoRegions::init_world(save_dir, chunk_grid_width,
