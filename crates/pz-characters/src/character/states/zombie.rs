@@ -56,6 +56,8 @@ singleton!(FakeDeadZombieState, ids::FAKE_DEAD_ZOMBIE, fake_dead);
 singleton!(ZombieTurnAlerted, ids::ZOMBIE_TURN_ALERTED, turn_alerted);
 singleton!(ZombieGetUpFromCrawlState, ids::ZOMBIE_GET_UP_FROM_CRAWL, get_up_from_crawl);
 singleton!(ZombieFallingState, ids::ZOMBIE_FALLING, falling);
+singleton!(ZombieHitReactionState, ids::ZOMBIE_HIT_REACTION, hit_reaction);
+singleton!(FakeDeadAttackState, ids::FAKE_DEAD_ATTACK, fake_dead_attack);
 
 /// Every zombie state ported here.
 pub fn all<I: 'static>() -> Vec<StateRef<I>> {
@@ -80,6 +82,8 @@ pub fn all<I: 'static>() -> Vec<StateRef<I>> {
         turn_alerted(),
         get_up_from_crawl(),
         falling(),
+        hit_reaction(),
+        fake_dead_attack(),
     ]
 }
 
@@ -1373,6 +1377,146 @@ impl<I: 'static> State<I> for ZombieFallingState {
     fn anim_event(&self, owner: &mut GameCharacter<I>, _cx: &mut StateCx<'_, I>, e: &AnimEventRecord) {
         if is(e, "FallOnFront") {
             owner.environment.fall_on_front = parse_boolean(e.event.parameter_value.as_deref());
+        }
+    }
+}
+
+/// `ZombieHitReactionState.TURN_TO_PLAYER`, `HIT_REACTION_TIMER`.
+pub const HIT_TURN_TO_PLAYER: Param<bool> = Param::new(ids::ZOMBIE_HIT_REACTION, "turn_to_player", || false);
+pub const HIT_REACTION_TIMER: Param<f32> = Param::new(ids::ZOMBIE_HIT_REACTION, "hit_reaction_timer", || 0.0);
+
+impl<I: 'static> State<I> for ZombieHitReactionState {
+    fn id(&self) -> StateId {
+        Self::ID
+    }
+    fn enter(&self, owner: &mut GameCharacter<I>, _cx: &mut StateCx<'_, I>) {
+        owner.zombie.collide_while_hit = true;
+        HIT_TURN_TO_PLAYER.set(&mut owner.state.params, false);
+        HIT_REACTION_TIMER.set(&mut owner.state.params, 0.0);
+        owner.clear_var("onknees");
+        if owner.vars.sit_against_wall {
+            owner.vars.hit_reaction = String::new();
+        }
+    }
+    fn execute(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
+        let t = HIT_REACTION_TIMER.get(&mut owner.state.params) + cx.ctx.multiplier();
+        HIT_REACTION_TIMER.set(&mut owner.state.params, t);
+        if HIT_TURN_TO_PLAYER.get(&mut owner.state.params) {
+            let d = crate::character::state::vars::iso_direction_from_angle(owner.vars.hit_dir_x, owner.vars.hit_dir_y);
+            owner.vars.dir = if owner.vars.hit_from_behind { d } else { d.rot180() };
+        }
+    }
+    fn exit(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
+        owner.zombie.collide_while_hit = true;
+        if owner.vars.target.is_some() {
+            owner.zombie.allow_repath_delay = 0.0;
+        }
+        owner.vars.stagger_back = false;
+        if !owner.is_dead() {
+            owner.vars.hit_reaction = String::new();
+        }
+        owner.set_eat_body_target(None, false, cx);
+        owner.vars.sit_against_wall = false;
+        owner.vars.shootable = true;
+    }
+    fn anim_event(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>, e: &AnimEventRecord) {
+        let param = parse_boolean(e.event.parameter_value.as_deref());
+        if is(e, "DoDeath") && param && !owner.is_dead() {
+            let by = owner.vars.attacked_by;
+            owner.kill_by(by, cx);
+            if let Some(a) = by.and_then(|a| cx.world.character_mut(a)) {
+                a.zombie_kills += 1;
+            }
+        }
+        if is(e, "PlayDeathSound") {
+            cx.ctx.event(SimEvent::PlaySound("PlayDeathSound".into()));
+        }
+        if is(e, "FallOnFront") {
+            owner.environment.fall_on_front = param;
+        }
+        if is(e, "Collide") && owner.zombie.speed_type == 1 {
+            owner.zombie.collide_while_hit = false;
+        }
+        if is(e, "ZombieTurnToPlayer") {
+            HIT_TURN_TO_PLAYER.set(&mut owner.state.params, param);
+        }
+        if is(e, "CancelKnockDown") && param {
+            owner.vars.knocked_down = false;
+        }
+        if is(e, "KnockDown") {
+            owner.vars.on_floor = true;
+            owner.vars.knocked_down = true;
+        }
+        if is(e, "SplatBlood") {
+            let ctx = cx.ctx;
+            for _ in 0..3 {
+                ctx.event(SimEvent::AddBlood { part: -1, scratched: true, bitten: false, all_layers: false });
+            }
+            for _ in 0..10 {
+                ctx.rand_next_float(-0.5, 0.5);
+                ctx.rand_next_float(-0.5, 0.5);
+                let kind = ctx.rand_next(8);
+                ctx.event(SimEvent::AddBloodSplat { kind });
+                ctx.rand_next(5);
+                ctx.rand_next_float(-0.2, 0.2);
+                ctx.rand_next_float(-0.2, 0.2);
+            }
+        }
+        if is(e, "SetState") && !owner.is_dead() {
+            owner.zombie.sound_state = "Hit";
+        }
+    }
+}
+
+impl<I: 'static> State<I> for FakeDeadAttackState {
+    fn id(&self) -> StateId {
+        Self::ID
+    }
+    fn enter(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
+        let (vx, vy) = owner.zombie.vector_to_target;
+        owner.vars.dir = crate::character::state::vars::iso_direction_from_angle(vx, vy);
+        let (fx, fy) = owner.vars.dir.delta();
+        owner.set_forward_direction(fx as f32, fy as f32);
+        owner.set_fake_dead(cx.ctx, false);
+        owner.path.collidable = true;
+        cx.ctx.event(SimEvent::EmitterPlaySound(format!("{}Attack", owner.voice_prefix())));
+        if let Some(t) = owner.vars.target {
+            let (sm, chars) = (cx.sm, cx.chars);
+            if let Some(p) = cx.world.character_mut(t) {
+                if p.is_player() && !p.has_trait(sm, "DESENSITIZED").unwrap_or(false) {
+                    if let Ok(panic) = chars.sim.character_stats.field("PANIC") {
+                        let v = p.body_damage.panic_increase_value * 3.0;
+                        p.stats.add(&panic, v);
+                    }
+                }
+            }
+        }
+    }
+    fn anim_event(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>, e: &AnimEventRecord) {
+        if is(e, "AttackCollisionCheck") && !owner.is_dead() {
+            let tpos = owner.vars.target.and_then(|t| pos_of(cx, t)).map(|(x, y, _)| (x, y));
+            if owner.is_target_in_cone(tpos, 1.5, 0.9) {
+                if let Some(t) = owner.vars.target {
+                    // TODO(vehicles): `couldCrawlerAttackPassenger`.
+                    let in_vehicle = cx.world.character_mut(t).is_some_and(|c| c.path.vehicle.is_some());
+                    if !in_vehicle {
+                        let attack = owner.zombie_attack_for(t, "", cx);
+                        let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
+                        if let Some(tc) = cx.world.character_mut(t) {
+                            if let Ok(out) = tc.body_damage_add_random_damage_from_zombie(sm, chars, ctx, &attack) {
+                                owner.zombie.voice_choice = attack.bite_voice.voice_choice.get();
+                                owner.apply_zombie_attack_outcome(&out);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if is(e, "FallOnFront") {
+            owner.environment.fall_on_front = parse_boolean(e.event.parameter_value.as_deref());
+        }
+        if is(e, "ActiveAnimFinishing") {
+            owner.vars.crawling = true;
         }
     }
 }

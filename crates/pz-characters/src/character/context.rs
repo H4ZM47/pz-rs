@@ -167,6 +167,10 @@ pub enum SimEvent {
     AddHoleFromZombieAttacks { part: i32, scratch_or_bite: bool },
     /// `playSound(name)` / `getEmitter().playSoundImpl(name, null)`.
     PlaySound(String),
+    /// `getEmitter().playSound(name)` (the emitter's own path; the
+    /// headless original's dummy emitter draws `Rand.Next(Integer.MAX_VALUE)`
+    /// for the sound id).
+    EmitterPlaySound(String),
     /// `playWeaponHitArmourSound(part, bullet)`.
     WeaponHitArmourSound { part: i32, bullet: bool },
     /// `WorldSoundManager.instance.addSound(chr, x, y, z, radius, volume,
