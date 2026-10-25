@@ -11,7 +11,8 @@
 use std::cell::RefCell;
 use std::path::Path;
 
-use pz_input::controller::{set_dead_zone, trigger_value, ControllerEvent, Input, Joypad, JoypadEvent, JoypadManager};
+use pz_input::controller::{set_dead_zone, ControllerEvent, Input, Joypad, JoypadEvent, JoypadManager};
+use pz_input::joypad_eval::{self, pressed, Button as Btn};
 use pz_input::with_controllers;
 use pz_kahlua::{LuaError, NativeCall, Thread, Value};
 
@@ -45,100 +46,29 @@ fn joypad(input: &mut Input, jm: &mut JoypadManager, index: i32) -> Option<Joypa
     jm.check(input, index).and_then(|s| jm.by_controller[s].clone())
 }
 
-/// `checkOrAnyJoypad`: index < 0 means any active joypad.
-fn check_or_any(index: i32, any: bool, f: impl Fn(&Input, &Joypad) -> bool) -> bool {
+/// Runs `f` on the live state after `checkJoypad(c)` (which creates the
+/// joypad on first use); the evaluation itself is `pz_input::joypad_eval`.
+fn eval<R>(c: i32, f: impl FnOnce(&Input, &JoypadManager) -> R) -> R {
     with(|input, jm| {
-        if index < 0 && any {
-            return jm.list.iter().filter_map(|&s| jm.by_controller[s].as_ref()).any(|j| f(input, j));
-        }
-        joypad(input, jm, index).is_some_and(|j| f(input, &j))
+        jm.check(input, c);
+        f(input, jm)
     })
 }
 
-#[derive(Clone, Copy)]
-enum Btn {
-    A,
-    B,
-    X,
-    Y,
-    LB,
-    RB,
-    L3,
-    R3,
-    Back,
-    Start,
-    Guide,
-    Up,
-    Down,
-    Left,
-    Right,
-}
-
-/// `Joypad.is<Button>Pressed()`.
-fn pressed(input: &Input, j: &Joypad, b: Btn) -> bool {
-    let id = j.id as i32;
-    let dpad = |n: i32, d: &dyn Fn(i32) -> bool| if n != -1 { input.is_button_pressed_d(n, id) } else { d(id) };
-    match b {
-        Btn::A => input.is_button_pressed_d(j.a_button, id),
-        Btn::B => input.is_button_pressed_d(j.b_button, id),
-        Btn::X => input.is_button_pressed_d(j.x_button, id),
-        Btn::Y => input.is_button_pressed_d(j.y_button, id),
-        Btn::LB => input.is_button_pressed_d(j.bumper_left, id),
-        Btn::RB => input.is_button_pressed_d(j.bumper_right, id),
-        Btn::L3 => input.is_button_pressed_d(j.left_stick_button, id),
-        Btn::R3 => input.is_button_pressed_d(j.right_stick_button, id),
-        Btn::Back => input.is_button_pressed_d(j.back, id),
-        Btn::Start => input.is_button_pressed_d(j.start, id),
-        Btn::Guide => input.is_button_pressed_d(j.guide, id),
-        Btn::Up => dpad(j.dpad_up, &|i| input.is_controller_up_d(i)),
-        Btn::Down => dpad(j.dpad_down, &|i| input.is_controller_down_d(i)),
-        Btn::Left => dpad(j.dpad_left, &|i| input.is_controller_left_d(i)),
-        Btn::Right => dpad(j.dpad_right, &|i| input.is_controller_right_d(i)),
-    }
-}
-
-/// `JoypadManager.is<Button>Pressed(c)`: the d-pad and bumpers check one
-/// joypad; the face, stick, trigger and menu buttons accept -1 for any.
 fn jm_pressed(c: i32, b: Btn) -> bool {
-    let any = !matches!(b, Btn::Up | Btn::Down | Btn::Left | Btn::Right | Btn::LB | Btn::RB);
-    check_or_any(c, any, |input, j| pressed(input, j, b))
+    eval(c, |input, jm| joypad_eval::button_pressed(input, jm, c, b))
 }
 
 fn jm_trigger_pressed(c: i32, left: bool) -> bool {
-    check_or_any(c, true, |input, j| trigger_value(input, j, left) > 0.7)
+    eval(c, |input, jm| joypad_eval::trigger_pressed(input, jm, c, left))
 }
 
-fn jm_trigger_value(c: i32, left: bool) -> f32 {
-    with(|input, jm| joypad(input, jm, c).map_or(0.0, |j| trigger_value(input, &j, left)))
-}
-
-/// `Joypad.isMovementInsideDeadZone` / `isAimingInsideDeadZone`.
-fn is_applied(input: &Input, jm: &JoypadManager, j: &Joypad, movement: bool) -> bool {
-    let stick = if movement { j.movement() } else { j.aiming() };
-    let (x, y) = (stick.value(input, j.id as i32, true), stick.value(input, j.id as i32, false));
-    let (ax, ay) = if movement { (j.movement_axis_x, j.movement_axis_y) } else { (j.aiming_axis_x, j.aiming_axis_y) };
-    let (dx, dy) = (jm.joypad_dead_zone(input, j, ax), jm.joypad_dead_zone(input, j, ay));
-    // The movement check multiplies the two dead zones; the aiming check
-    // sums their squares, as in the original.
-    let dz = if movement { dx * dy } else { dx * dx + dy * dy };
-    x * x + y * y >= dz
-}
-
-/// `JoypadManager.getMovementAxisX/Y` and `getAimingAxisX/Y`: zero unless
-/// the stick is outside its dead zone.
 fn jm_stick(c: i32, movement: bool, want_x: bool) -> f32 {
-    with(|input, jm| {
-        let Some(j) = joypad(input, jm, c) else { return 0.0 };
-        if !is_applied(input, jm, &j, movement) {
-            return 0.0;
-        }
-        let stick = if movement { j.movement() } else { j.aiming() };
-        stick.value(input, j.id as i32, want_x)
-    })
+    eval(c, |input, jm| joypad_eval::stick(input, jm, c, movement, want_x))
 }
 
 fn jm_applied(c: i32, movement: bool) -> bool {
-    with(|input, jm| joypad(input, jm, c).is_some_and(|j| is_applied(input, jm, &j, movement)))
+    eval(c, |input, jm| joypad_eval::stick_applied(input, jm, c, movement))
 }
 
 /// The axis behind a `JoypadAxis1d` dead zone.
@@ -154,34 +84,11 @@ fn dead_zone_axis(j: &Joypad, which: &str) -> i32 {
 }
 
 fn axis1d_value(name: &str, c: i32) -> f32 {
-    match name {
-        "LeftTrigger" => jm_trigger_value(c, true),
-        "RightTrigger" => jm_trigger_value(c, false),
-        "LeftStickX" => jm_stick(c, true, true),
-        "LeftStickY" => jm_stick(c, true, false),
-        "RightStickX" => jm_stick(c, false, true),
-        _ => jm_stick(c, false, false),
-    }
+    eval(c, |input, jm| joypad_eval::axis1d(input, jm, name, c))
 }
 
 fn button_down(name: &str, c: i32) -> bool {
-    match name {
-        "A" => jm_pressed(c, Btn::A),
-        "B" => jm_pressed(c, Btn::B),
-        "X" => jm_pressed(c, Btn::X),
-        "Y" => jm_pressed(c, Btn::Y),
-        "LeftStick" => jm_pressed(c, Btn::L3),
-        "RightStick" => jm_pressed(c, Btn::R3),
-        "LeftBump" => jm_pressed(c, Btn::LB),
-        "RightBump" => jm_pressed(c, Btn::RB),
-        "Back" => jm_pressed(c, Btn::Back),
-        "Start" => jm_pressed(c, Btn::Start),
-        "Guide" => jm_pressed(c, Btn::Guide),
-        "DPadLeft" => jm_pressed(c, Btn::Left),
-        "DPadRight" => jm_pressed(c, Btn::Right),
-        "DPadUp" => jm_pressed(c, Btn::Up),
-        _ => jm_pressed(c, Btn::Down),
-    }
+    eval(c, |input, jm| joypad_eval::button_down(input, jm, name, c))
 }
 
 // ---- per tick ---------------------------------------------------------------------
@@ -503,6 +410,16 @@ pub fn activated_joypad() -> Option<usize> {
     ST.with(|s| s.borrow().activated)
 }
 
+/// A copy of the game-thread controller state (`GameWindow.GameInput`) and
+/// `JoypadManager.instance`, for readers outside Lua that evaluate joypad
+/// bindings over one frame (`pz-player-input`).
+pub fn joypad_snapshot() -> (Input, JoypadManager) {
+    ST.with(|s| {
+        let s = s.borrow();
+        (s.input.clone(), s.jm.clone())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,21 +583,18 @@ fn init_bindings(base: &Path, cache: &Path) {
     });
 }
 
+/// A copy of the current `CharacterJoypadButtonBinding` and
+/// `CharacterJoypadAxis2dBinding` bindings (`pz-player-input`).
+pub fn character_bindings() -> (Vec<ButtonBinding>, Vec<Axis2dBinding>) {
+    BINDINGS.with(|b| {
+        let b = b.borrow();
+        (b.buttons.clone(), b.axes.clone())
+    })
+}
+
 /// `IsDownBinding.isDown(joypadBind)`.
 fn is_down(b: &IsDown, bind: i32) -> bool {
-    match b {
-        IsDown::Button(n) => button_down(n, bind),
-        IsDown::Axis1d(a, min, max) => {
-            let v = axis1d_value(a, bind);
-            v >= *min && v < *max
-        }
-        IsDown::Axis2d(a, min, max) => {
-            let movement = a == "LeftStick";
-            let (x, y) = (jm_stick(bind, movement, true), jm_stick(bind, movement, false));
-            let v = (x * x + y * y).sqrt();
-            v >= *min && v < *max
-        }
-    }
+    eval(bind, |input, jm| joypad_eval::is_down(input, jm, b, bind))
 }
 
 /// A Lua enum argument of `class`: its constant name.
