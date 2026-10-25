@@ -47,6 +47,7 @@ compares the chunk shapes with the original's buffers.
 | Vehicle scripts | 241/241 exact |
 | Spawn helpers | 3,000/3,000 |
 | `AddVehicles` | 2,000/2,000 |
+| `AddVehicles` on real map chunks and zones (`examples/spawn_map_parity.rs`): 26 regions of Muldraugh, West Point, Louisville and traffic jams | 1,664/1,664 chunks (347 vehicles); pz-world's vehicle zones identical for all 563 cells |
 | `SurroundVehicle`, 2,000 sequences (110,463 `getPositionForZombie` calls, `update` between) | 2,000/2,000 |
 | End to end on pz-bullet vs libPZBullet, 241 scripts, 400 frames | 240/241 exact; 1 matches up to the harness's missing world-sound native |
 | Chunk shapes, 4 regions | 114,529/114,529 squares that load the same objects |

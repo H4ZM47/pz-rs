@@ -108,7 +108,11 @@ Status of the Rust port. Update this file with every merged change.
   original cannot run headless; the load draws match for all 242 loadable
   vehicles; all 241 vanilla vehicle scripts as new vehicles are
   bit-exact; 3,000 single-zone spawns and 2,000 `AddVehicles` runs on
-  synthetic zone lists give the original's vehicles and `Rand` state.
+  synthetic zone lists give the original's vehicles and `Rand` state;
+  on real map chunks with pz-world's vehicle zones (identical to the
+  original's in all 563 cells), `AddVehicles` gives the original's vehicles
+  and next draw in 1,664 of 1,664 chunks of 26 street, parking-lot and
+  traffic-jam regions (347 vehicles).
   End to end on pz-bullet (`VehiclePhysics` for `PzBullet`, with the
   natives' exceptions and step callbacks), against the original running
   the real libPZBullet on a Muldraugh region's chunk shapes: 240 of 241
