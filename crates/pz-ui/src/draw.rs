@@ -636,7 +636,17 @@ impl UIElement {
         let (sx, sy) = self.scrolls();
         let px = dx as f32 + (sx as i32) as f32;
         let py = dy as f32 + (sy as i32) as f32;
-        let uv = [xs0 as f32, ys0 as f32, xe as f32, ye as f32];
+        // The texture coordinates in the texture's own space, truncated to
+        // 1/1000 as the original does, then back relative to the texture.
+        let (xs, ys, xe0, ye0) = (t.x_start as f64, t.y_start as f64, t.x_end as f64, t.y_end as f64);
+        let (xtot, ytot) = (xe0 - xs, ye0 - ys);
+        let trunc = |v: f64| ((v * 1000.0) as i32) as f32 / 1000.0;
+        let us = trunc(xs + xs0 * xtot);
+        let vs = trunc(ys + ys0 * ytot);
+        let ue = trunc(xe0 - (1.0 - xe) * xtot);
+        let ve = trunc(ye0 - (1.0 - ye) * ytot);
+        let rel = |v: f32, start: f64, tot: f64| if tot == 0.0 { 0.0 } else { ((v as f64 - start) / tot) as f32 };
+        let uv = [rel(us, xs, xtot), rel(vs, ys, ytot), rel(ue, xs, xtot), rel(ve, ys, ytot)];
         sprite(|s| s.render(Some(t), px, py, (x2 - dx) as f32, (y2 - dy) as f32, col, Some(uv)));
     }
 

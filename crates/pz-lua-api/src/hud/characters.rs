@@ -1,17 +1,20 @@
 //! The HUD inputs the characters thread owns ([`HudPlayers`],
-//! [`HudClimate`], [`HudMoodles`]; [`HudGameTime`] is
+//! [`HudClimate`], [`HudMoodles`], [`HudBodyDamage`]; [`HudGameTime`] is
 //! [`SharedGameTime`]) over the bound characters: the local players in
 //! [`crate::bind_players`], their [`Moodles`](pz_characters::character::Moodles)
-//! and the shared `GameTime` / `ClimateManager`
+//! and `BodyDamage`, and the shared `GameTime` / `ClimateManager`
 //! ([`crate::bind_climate::shared_game_time`]).
 //!
 //! [`install_character_hud_hosts`] puts them in the [`super::host`] slots
 //! (`register_all` does, after `hud::register`).
 
-use super::host::{with_host, HudClimate, HudMoodles, HudPlayers, PlayerScreen, SharedGameTime};
-use crate::bind_character_sim::{with_sim_context, LuaGameCharacterRef};
+use super::host::{
+    with_host, BodyPartView, HudBodyDamage, HudClimate, HudMoodles, HudPlayers, PlayerScreen, SharedGameTime,
+};
+use crate::bind_character_sim::{with_sim_context, CharacterObject, LuaGameCharacterRef};
 use crate::bind_players;
 use pz_scripts::objects::items::MoodleType;
+use pz_kahlua::Value;
 use pz_scripts::registry::RegistryKey;
 use std::rc::Rc;
 
@@ -126,14 +129,67 @@ impl HudMoodles for CharacterMoodles {
     }
 }
 
-/// Installs [`CharacterPlayers`], [`SharedGameTime`], [`CharacterClimate`]
-/// and [`CharacterMoodles`], keeping the other threads' inputs.
+/// A character Lua object's `BodyDamage` (the health panel's
+/// `chr.getBodyDamage()`).
+///
+/// TODO(network): a remote MP player's panel reads
+/// `getBodyDamageRemote()`; offline every character is local.
+pub struct CharacterBodyDamage;
+
+fn character_of(chr: &Value) -> Option<LuaGameCharacterRef> {
+    match chr {
+        Value::Object(o) => o.as_any().downcast_ref::<CharacterObject>().map(|o| o.0.clone()),
+        _ => None,
+    }
+}
+
+impl HudBodyDamage for CharacterBodyDamage {
+    fn is_female(&self, chr: &Value) -> bool {
+        // `getCharacterGender()`: FEMALE without a descriptor.
+        character_of(chr).is_none_or(|c| c.borrow().descriptor.as_ref().is_none_or(|d| d.borrow().is_female()))
+    }
+    fn health(&self, chr: &Value) -> f32 {
+        character_of(chr).map_or(100.0, |c| c.borrow().body_damage.health())
+    }
+    fn body_part(&self, chr: &Value, index: usize) -> BodyPartView {
+        let Some(c) = character_of(chr) else {
+            return BodyPartView::default();
+        };
+        let c = c.borrow();
+        let Some(p) = c.body_damage.body_part(index) else {
+            return BodyPartView::default();
+        };
+        BodyPartView {
+            bandaged: p.bandaged,
+            bandage_life: p.bandage_life,
+            wound_infection_level: p.wound_infection_level,
+            scratched: p.scratched,
+            scratch_time: p.scratch_time,
+            cut_time: p.cut_time,
+            bitten: p.bitten,
+            bite_time: p.bite_time,
+            deep_wounded: p.deep_wounded,
+            deep_wound_time: p.deep_wound_time,
+            stitched: p.stitched,
+            fracture_time: p.fracture_time,
+            splint_factor: p.splint_factor,
+            have_glass: p.have_glass,
+            have_bullet: p.have_bullet,
+            burn_time: p.burn_time,
+        }
+    }
+}
+
+/// Installs [`CharacterPlayers`], [`SharedGameTime`], [`CharacterClimate`],
+/// [`CharacterMoodles`] and [`CharacterBodyDamage`], keeping the other
+/// threads' inputs.
 pub fn install_character_hud_hosts() {
     with_host(|h| {
         h.players = Box::new(CharacterPlayers);
         h.game_time = Box::new(SharedGameTime);
         h.climate = Box::new(CharacterClimate);
         h.moodles = Box::new(CharacterMoodles);
+        h.body_damage = Box::new(CharacterBodyDamage);
     });
 }
 
@@ -427,5 +483,68 @@ mod tests {
         }
         ui.update(&mut t);
         assert_eq!(ui.ext::<MoodlesUI>().unwrap().data("Panic").unwrap().level, 3);
+    }
+
+    #[test]
+    fn body_damage_drives_the_health_panel() {
+        install_textures(&[]);
+        let (sm, _) = setup();
+        let mut t = fresh();
+        let p0 = new_player(&sm, 0.0, 0.0);
+        {
+            let mut p = p0.borrow_mut();
+            let decl = |f: &str| pz_scripts::registry::builtin::BodyPartDecl {
+                field: f.into(),
+                name: f.into(),
+                ..Default::default()
+            };
+            p.body_damage.parts = vec![
+                pz_characters::character::BodyPart::new(&decl("Hand_L"), 0),
+                pz_characters::character::BodyPart::new(&decl("Hand_R"), 1),
+            ];
+            let hand = &mut p.body_damage.parts[1];
+            hand.bandaged = true;
+            hand.bandage_life = 2.5;
+            hand.scratched = true;
+            hand.scratch_time = 12.0;
+            hand.fracture_time = 30.0;
+            hand.splint_factor = 1.5;
+            hand.have_glass = true;
+            p.body_damage.overall_body_health = 55.0;
+        }
+        bind_players::set_player(0, Some(p0.clone()));
+        bind_players::set_player_instance(Some(p0.clone()));
+        let chr = crate::bind_character_sim::character_value(&p0);
+        // No descriptor: FEMALE (`getCharacterGender`).
+        assert!(with_host(|h| h.body_damage.is_female(&chr)));
+        let part = with_host(|h| h.body_damage.body_part(&chr, 1));
+        assert_eq!(
+            part,
+            BodyPartView {
+                bandaged: true,
+                bandage_life: 2.5,
+                scratched: true,
+                scratch_time: 12.0,
+                fracture_time: 30.0,
+                splint_factor: 1.5,
+                have_glass: true,
+                ..BodyPartView::default()
+            }
+        );
+        assert_eq!(with_host(|h| h.body_damage.body_part(&chr, 5)), BodyPartView::default());
+        // Not a character: the defaults.
+        assert_eq!(with_host(|h| h.body_damage.health(&Value::Num(1.0))), 100.0);
+
+        // ISNewHealthPanel's NewHealthPanel.new(x, y, getPlayer()).
+        run(&mut t, "p = NewHealthPanel.new(0, 0, getPlayer())");
+        assert_eq!(
+            eval(&mut t, "p:getDamageStatusString()").as_str(),
+            Some(crate::bind_text::translate("IGUI_health_Severe_damage").as_str())
+        );
+        p0.borrow_mut().body_damage.overall_body_health = 100.0;
+        assert_eq!(
+            eval(&mut t, "p:getDamageStatusString()").as_str(),
+            Some(crate::bind_text::translate("IGUI_health_ok").as_str())
+        );
     }
 }

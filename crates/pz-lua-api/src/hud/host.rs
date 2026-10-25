@@ -171,10 +171,69 @@ pub trait HudMoodles {
     }
 }
 
+/// The object under the mouse (`UIManager.getPicked().tile`). Owner: world
+/// thread (picking).
+pub trait HudPicking {
+    /// The picked tile object, if any.
+    fn picked_tile(&self) -> Option<pz_ui::tooltip::TooltipObject> {
+        None
+    }
+}
+
+/// One `BodyPart` as `UI_BodyPart` reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BodyPartView {
+    /// `bandaged()` (also `BodyDamage.IsBandaged(type)`).
+    pub bandaged: bool,
+    pub bandage_life: f32,
+    pub wound_infection_level: f32,
+    /// `scratched()`.
+    pub scratched: bool,
+    pub scratch_time: f32,
+    /// `getCutTime()` (`IsCut` is `cutTime > 0`).
+    pub cut_time: f32,
+    /// `bitten()`.
+    pub bitten: bool,
+    pub bite_time: f32,
+    /// `deepWounded()`.
+    pub deep_wounded: bool,
+    pub deep_wound_time: f32,
+    /// `stitched()`.
+    pub stitched: bool,
+    pub fracture_time: f32,
+    pub splint_factor: f32,
+    pub have_glass: bool,
+    pub have_bullet: bool,
+    pub burn_time: f32,
+}
+
+/// A character's `BodyDamage` as the health panel reads it; the character
+/// is its Lua object (`IsoGameCharacter`). Implementations pick
+/// `getBodyDamageRemote()` for a remote MP player. Owner: characters
+/// thread.
+pub trait HudBodyDamage {
+    /// `isFemale()`.
+    fn is_female(&self, _chr: &pz_kahlua::Value) -> bool {
+        false
+    }
+    /// `getBodyDamage().getHealth()`.
+    fn health(&self, _chr: &pz_kahlua::Value) -> f32 {
+        100.0
+    }
+    /// `getBodyDamage().getBodyPart(type)` by `BodyPartType.ToIndex`.
+    fn body_part(&self, _chr: &pz_kahlua::Value, _index: usize) -> BodyPartView {
+        BodyPartView::default()
+    }
+}
+
 /// `DebugOptions` the HUD reads. Owner: us (debug options).
 pub trait HudDebug {
     /// `DebugOptions.instance.cheat.clock.visible`.
     fn cheat_clock_visible(&self) -> bool {
+        false
+    }
+    /// `Core.debug && DebugOptions.instance.uiRenderOutline`.
+    fn ui_render_outline(&self) -> bool {
         false
     }
 }
@@ -218,6 +277,8 @@ impl HudClimate for NoHud {}
 impl HudAlarmClocks for NoHud {}
 impl HudDebug for NoHud {}
 impl HudMoodles for NoHud {}
+impl HudPicking for NoHud {}
+impl HudBodyDamage for NoHud {}
 impl HudSound for NoHud {}
 impl HudNetwork for NoHud {}
 
@@ -279,6 +340,8 @@ pub struct HudHost {
     pub alarm_clocks: Box<dyn HudAlarmClocks>,
     pub debug: Box<dyn HudDebug>,
     pub moodles: Box<dyn HudMoodles>,
+    pub picking: Box<dyn HudPicking>,
+    pub body_damage: Box<dyn HudBodyDamage>,
 }
 
 impl Default for HudHost {
@@ -293,6 +356,8 @@ impl Default for HudHost {
             alarm_clocks: Box::new(NoHud),
             debug: Box::new(NoHud),
             moodles: Box::new(NoHud),
+            picking: Box::new(NoHud),
+            body_damage: Box::new(NoHud),
         }
     }
 }

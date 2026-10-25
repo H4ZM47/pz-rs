@@ -8,10 +8,13 @@
 
 pub mod characters;
 pub mod clock;
+pub mod health;
 pub mod host;
 pub mod moodles;
+pub mod new_window;
 pub mod progress_bar;
 pub mod speed_controls;
+pub mod tooltip;
 
 use crate::bind_ui::{element_of, UIELEMENT, UIMANAGER};
 use crate::expose::{expose_class, int_arg, num_arg};
@@ -51,7 +54,11 @@ pub fn init_ui(t: &mut Thread) {
     if with_host(|h| h.network.is_server()) {
         return;
     }
-    // TODO(ui): UIManager.setToolTip(new ObjectTooltip()) (its own PR).
+    let tip = tooltip::create_tooltip();
+    with_ui(|m| {
+        m.tool_tip = Some(tip.clone());
+        m.update_tooltip_hook = Some(Rc::new(tooltip::update_tooltip));
+    });
     let (clock_size, offscreen_w) = {
         let core = crate::bind_core::shared_core();
         let c = core.borrow();
@@ -62,7 +69,8 @@ pub fn init_ui(t: &mut Thread) {
     if game_mode != "LastStand" {
         with_ui(|m| m.ui.push(clock.clone()));
     }
-    // TODO(ui): UI.add(toolTip); UIDebugConsole (their own PRs).
+    with_ui(|m| m.ui.push(tip.clone()));
+    // TODO(ui): UIDebugConsole (its own PR).
     for i in 0..4 {
         let ui = MoodlesUI::create();
         with_ui(|m| m.moodle_ui[i] = Some(ui.clone()));
@@ -209,6 +217,7 @@ fn speed_controls(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
 /// Register the HUD classes and the `UIManager` getters (after
 /// `bind_ui::register`).
 pub fn register(thread: &mut Thread) {
+    tooltip::register(thread);
     let m = expose_class(thread, UIMANAGER, None);
     m.static_fn("init", |c| {
         init_ui(c.thread);
@@ -291,6 +300,7 @@ pub fn register(thread: &mut Thread) {
         Ok(0)
     });
 
+    register_health(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
     mu.method("wiggle", |c| {
@@ -398,6 +408,49 @@ pub fn register(thread: &mut Thread) {
     });
 }
 
+fn register_health(thread: &mut Thread) {
+    use health::{NewHealthPanel, NEW_HEALTH_PANEL};
+    // NewWindow isn't exposed itself; its public methods are inherited.
+    let b = expose_class(thread, NEW_HEALTH_PANEL, Some(UIELEMENT));
+    fn panel(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
+        let e = element_of(&c.arg(0)).ok_or_else(|| LuaError::runtime("Expected NewHealthPanel"))?;
+        if e.ext::<NewHealthPanel>().is_none() {
+            return Err(LuaError::runtime(format!("Expected NewHealthPanel but got {}", e.class_name())));
+        }
+        Ok(e)
+    }
+    b.ctor(|c| {
+        let chr = c.arg(2);
+        if chr.is_nil() {
+            return Err(LuaError::Runtime { message: "parentCharacter is null".into(), class: "java.lang.NullPointerException" });
+        }
+        let e = NewHealthPanel::create(int_arg(c, 0), int_arg(c, 1), chr);
+        Ok(c.push(Value::Object(e as Rc<dyn LuaObject>)))
+    });
+    b.method("SetCharacter", |c| {
+        let e = panel(c)?;
+        e.ext::<NewHealthPanel>().unwrap().set_character(c.arg(1));
+        Ok(0)
+    });
+    b.method("getDamageStatusString", |c| {
+        let e = panel(c)?;
+        let s = e.ext::<NewHealthPanel>().unwrap().damage_status_string();
+        Ok(c.push(Value::str(&s)))
+    });
+    b.method("setMovable", |c| {
+        let e = panel(c)?;
+        e.ext::<NewHealthPanel>().unwrap().core.movable.set(crate::expose::bool_arg(c, 1));
+        Ok(0)
+    });
+    b.method("Nest", |c| {
+        let e = panel(c)?;
+        let child = element_of(&c.arg(1)).ok_or_else(|| LuaError::runtime("Expected UIElement"))?;
+        let (t, r, bt, l) = (int_arg(c, 2), int_arg(c, 3), int_arg(c, 4), int_arg(c, 5));
+        e.ext::<NewHealthPanel>().unwrap().core.nest(&e, &child, c.thread, t, r, bt, l);
+        Ok(0)
+    });
+}
+
 fn index_error(i: i32) -> LuaError {
     LuaError::Runtime {
         message: format!("Index {i} out of bounds for length 4"),
@@ -447,6 +500,8 @@ pub(crate) mod test_util {
             t.height = h as u32;
             t.offset_x = ox;
             t.offset_y = oy;
+            // The oracles' textures cover their whole image.
+            (t.x_start, t.y_start, t.x_end, t.y_end) = (0.0, 0.0, 1.0, 1.0);
             cache.borrow_mut().insert(name.to_string(), t.clone());
             Some(t)
         });
@@ -512,6 +567,7 @@ pub(crate) mod test_util {
 
     /// Line-by-line comparison where numeric tokens may differ by `tol`
     /// (the original truncates texture coordinates to 1/1000).
+    #[allow(dead_code)]
     pub fn assert_lines_close(got: &[String], want: &[String], tol: f32) {
         assert_eq!(
             got.len(),
@@ -970,8 +1026,8 @@ mod tests {
             assert!(!b.is_visible() && b.get_render_this_player_only() == i as i32);
             assert_eq!(b.ext::<ActionProgressBar>().unwrap().get_value(), 1.0);
         }
-        // Speed controls, clock, four moodle columns and the four bars.
-        assert_eq!(with_ui(|m| m.ui.len()), 10);
+        // Speed controls, clock, tooltip, four moodle columns, four bars.
+        assert_eq!(with_ui(|m| m.ui.len()), 11);
         assert!(eval(&mut t, "UIManager.trySetProgressBarValue(1, 0.5)").truthy());
         assert_eq!(
             eval(&mut t, "UIManager.getProgressBar(1):getValue()").as_num(),
@@ -1003,7 +1059,8 @@ mod tests {
 
     /// Parity with the original `ActionProgressBar` (oracle
     /// `progress.txt`): render at values 0..1 and scales 1 and 2, the
-    /// show/hide countdown with the screen position, the infinite sweep.
+    /// show/hide countdown with the screen position, the infinite sweep
+    /// (texture coordinates included, truncated to 1/1000 as the original).
     #[test]
     fn matches_progress_bar_oracle() {
         let Some(text) = oracle("progress.txt") else {
@@ -1070,7 +1127,7 @@ mod tests {
             .filter(|l| !l.starts_with("tex ") && !l.starts_with("fake "))
             .map(normalise_oracle)
             .collect();
-        assert_lines_close(&got, &want, 1.5e-3);
+        assert_eq!(got, want);
     }
 
     use std::cell::Cell;
@@ -1426,7 +1483,7 @@ mod tests {
             .filter(|l| !l.starts_with("tex ") && !l.starts_with("fake "))
             .map(normalise_oracle)
             .collect();
-        assert_lines_close(&got, &want, 1e-4);
+        assert_eq!(got, want);
     }
 
     #[test]
@@ -1474,5 +1531,166 @@ mod tests {
         );
         assert!(d.slots_pos > 400.0 && d.slots_pos < 500.0);
         set_mood("Panic", None);
+    }
+
+    /// Parity with the original `ObjectTooltip` lifecycle (oracle
+    /// `tooltip_life.txt`): show delay, fade in to 0.5, fades to lower
+    /// targets, mouse follow, hide.
+    #[test]
+    fn matches_tooltip_lifecycle_oracle() {
+        let Some(text) = oracle("tooltip_life.txt") else {
+            eprintln!("PZ_HUD_ORACLE_DIR not set; skipping");
+            return;
+        };
+        install_textures(&[]);
+        install(HudHost::default());
+        let mut t = thread();
+        let e = tooltip::create_tooltip();
+        let tt = pz_ui::tooltip::ObjectTooltip::of(&e).unwrap();
+        e.set_visible(false);
+        let obj = pz_ui::tooltip::TooltipObject {
+            id: 1,
+            have_special_tooltip: false,
+            square: Value::Nil,
+        };
+        tt.show_object(&e, obj, 300.0, 200.0);
+        let st = |l: &str| {
+            let life = tt.life.borrow();
+            format!(
+                "{l} visible {} alpha {} target {} delay {} pos {} {}",
+                e.is_visible(),
+                jf(life.alpha),
+                jf(life.target_alpha),
+                life.show_delay,
+                jf(e.get_x() as f32),
+                jf(e.get_y() as f32)
+            )
+        };
+        let mut got = vec![st("show")];
+        for i in 0..22 {
+            e.update(&mut t);
+            got.push(st(&format!("update {i}")));
+        }
+        tt.life.borrow_mut().target_alpha = 0.2;
+        for i in 0..4 {
+            e.update(&mut t);
+            got.push(st(&format!("fade {i}")));
+        }
+        tt.life.borrow_mut().target_alpha = 0.0;
+        for i in 0..3 {
+            e.update(&mut t);
+            got.push(st(&format!("out {i}")));
+        }
+        e.on_mouse_move(&mut t, 5.0, -3.0);
+        got.push(st("move"));
+        e.on_mouse_move_outside(&mut t, -2.0, 4.0);
+        got.push(st("moveout"));
+        tt.hide(&e);
+        got.push(st("hide"));
+        e.update(&mut t);
+        got.push(st("after"));
+        let want: Vec<String> = text.lines().map(str::to_string).collect();
+        assert_eq!(got, want);
+    }
+
+    thread_local! {
+        static PICKED: RefCell<Option<pz_ui::tooltip::TooltipObject>> = const { RefCell::new(None) };
+    }
+    struct FakePicking;
+    impl host::HudPicking for FakePicking {
+        fn picked_tile(&self) -> Option<pz_ui::tooltip::TooltipObject> {
+            PICKED.with(|p| p.borrow().clone())
+        }
+    }
+
+    /// The shared tooltip: built by init, follows a picked object with a
+    /// special tooltip, filled by `DoSpecialTooltip` handlers through the
+    /// Lua layout classes, hidden when nothing is drawn or nothing picked.
+    #[test]
+    fn shared_tooltip_over_picked_objects() {
+        install_textures(&[]);
+        install(HudHost {
+            players: Box::new(OnePlayer),
+            picking: Box::new(FakePicking),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        // DoSpecialTooltip goes to a Lua global handler.
+        pz_ui::UIManager::set_event_sink(Some(Rc::new(
+            |t: &mut Thread, name: &str, args: &[Value]| {
+                if name == "DoSpecialTooltip" {
+                    let f = t.globals().get_str("onSpecial");
+                    if !f.is_nil() {
+                        t.call(&f, args).unwrap();
+                    }
+                }
+            },
+        )));
+        run(
+            &mut t,
+            r#"
+            drawn = 0
+            function onSpecial(tooltip, square)
+                if square ~= "farm" then return end
+                local layout = tooltip:beginLayout()
+                local item = layout:addItem()
+                item:setLabel("Water:", 1, 1, 1, 1)
+                item:setProgress(0.5, 0, 0, 1, 1)
+                local y = layout:render(tooltip.padLeft or 5, 5, tooltip)
+                tooltip:endLayout(layout)
+                tooltip:setHeight(y + 5)
+                drawn = drawn + 1
+            end
+        "#,
+        );
+        init_ui(&mut t);
+        let tip = with_ui(|m| m.tool_tip.clone()).unwrap();
+        let tt = pz_ui::tooltip::ObjectTooltip::of(&tip).unwrap();
+        assert!(eval(&mut t, "UIManager.getToolTip() ~= nil").truthy());
+        with_ui(|m| {
+            m.mouse.x = 400;
+            m.mouse.y = 300;
+        });
+        // A plant with a special tooltip under the mouse.
+        PICKED.with(|p| {
+            *p.borrow_mut() = Some(pz_ui::tooltip::TooltipObject {
+                id: 7,
+                have_special_tooltip: true,
+                square: Value::str("farm"),
+            })
+        });
+        tooltip::update_tooltip(&mut t, 400, 300);
+        assert_eq!(tt.life.borrow().object.as_ref().map(|o| o.id), Some(7));
+        assert_eq!((tip.get_x(), tip.get_y()), (424.0, 324.0));
+        // 15 updates of delay, then it shows and fades in.
+        for _ in 0..16 {
+            tip.update(&mut t);
+            tooltip::update_tooltip(&mut t, 400, 300);
+        }
+        assert!(tip.is_visible() && tt.life.borrow().alpha > 0.0);
+        UIManager::render(&mut t);
+        assert_eq!(eval(&mut t, "drawn").as_num(), Some(1.0));
+        // (No text renderer here: rows measure 0 high.)
+        assert_eq!(tip.get_height(), 5.0 + 5.0);
+        // A special object whose handler draws nothing: hidden.
+        PICKED.with(|p| {
+            *p.borrow_mut() = Some(pz_ui::tooltip::TooltipObject {
+                id: 8,
+                have_special_tooltip: true,
+                square: Value::str("other"),
+            })
+        });
+        tooltip::update_tooltip(&mut t, 400, 300);
+        for _ in 0..16 {
+            tip.update(&mut t);
+        }
+        tt.life.borrow_mut().alpha = 0.5;
+        UIManager::render(&mut t);
+        assert!(!tip.is_visible());
+        // Nothing picked: hidden.
+        PICKED.with(|p| *p.borrow_mut() = None);
+        tip.set_visible(true);
+        tooltip::update_tooltip(&mut t, 400, 300);
+        assert!(!tip.is_visible());
     }
 }
