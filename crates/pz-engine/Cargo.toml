@@ -17,5 +17,4 @@ pz-anim.workspace = true
 pz-characters.workspace = true
 pz-inventory.workspace = true
 pz-scripts.workspace = true
-pz-inventory.workspace = true
 winit = "0.30"
