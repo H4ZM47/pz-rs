@@ -90,3 +90,31 @@ fn view_methods() {
         Some(2560.0)
     );
 }
+
+/// `setBoundsFromWorld` reads `IsoWorld.instance.getMetaGrid()`'s cell
+/// bounds and NPEs without a meta grid.
+#[test]
+fn bounds_from_world_meta_grid() {
+    let mut t = thread();
+    crate::bind_world::set_meta_grid(None);
+    run(
+        &mut t,
+        r#"
+        jo = UIWorldMap.new({})
+        api = jo:getAPIv3()
+        ok = pcall(function() api:setBoundsFromWorld() end)
+        "#,
+    );
+    assert!(matches!(t.globals().get_str("ok"), Value::Bool(false)));
+    crate::bind_world::set_meta_grid(Some(pz_world::meta_grid::IsoMetaGrid::with_bounds(
+        2, 3, 40, 50,
+    )));
+    run(&mut t, "api:setBoundsFromWorld()");
+    assert_eq!(
+        crate::bind_world::meta_grid_cell_bounds(),
+        Some((2, 3, 40, 50))
+    );
+    let v = eval(&mut t, "api:getMinXInCells() .. ',' .. api:getMinYInCells() .. ',' .. api:getMaxXInCells() .. ',' .. api:getMaxYInCells()");
+    assert_eq!(pz_kahlua::exec::java_value_of(&v), "2,3,40,50");
+    crate::bind_world::set_meta_grid(None);
+}

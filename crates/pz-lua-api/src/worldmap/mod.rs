@@ -269,7 +269,11 @@ fn register_api(thread: &mut Thread) {
         Ok(0)
     });
     b.method("setBoundsFromWorld", |c| {
-        let (x0, y0, x1, y1) = host::with_host(|h| h.meta_grid.cell_bounds());
+        let (x0, y0, x1, y1) = host::with_host(|h| h.meta_grid.cell_bounds())
+            .ok_or(LuaError::Runtime {
+                message: String::new(),
+                class: "java.lang.NullPointerException",
+            })?;
         with_map(c, |_, m| {
             m.st_mut().world_map.set_bounds_from_world(x0, y0, x1, y1)
         })?;
