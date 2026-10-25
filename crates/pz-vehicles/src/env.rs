@@ -152,8 +152,22 @@ impl VehicleWorld for OpenWorld {
 
 /// Side effects the vehicle code has outside the vehicle (sounds, world
 /// sounds, Lua events, music events). The default ignores them.
+/// What `updateWorldLights` reads for the lightbar's two world lights.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LightbarState {
+    /// The vehicle has a lightbar part.
+    pub has_lightbar: bool,
+    /// `lightbarLightsMode.isEnable() && getBatteryCharge() > 0`.
+    pub enabled: bool,
+    /// `lightbarLightsMode.getLightTexIndex()` (0: both lights off).
+    pub light: i32,
+}
+
 pub trait VehicleEvents {
     fn event(&self, _what: &str) {}
+    /// `updateWorldLights()`: rendering places or removes the lightbar's
+    /// world lights from this state.
+    fn lightbar_world_lights(&self, _vehicle: &crate::BaseVehicle, _state: LightbarState) {}
     /// `getEmitter().playSoundImpl(name, null)`: the sound's handle (0 when
     /// sound is disabled, as with `DummySoundEmitter`).
     fn play_sound(&self, _name: &str) -> i64 {

@@ -351,8 +351,6 @@ pub struct VehicleState {
     pub impulses_from_squished_bodies: [Option<VehicleImpulse>; 4],
     pub impulses_from_hit_objects: Vec<VehicleImpulse>,
     pub create_physics_recursion: i32,
-    pub lightbar_left_light_index: i32,
-    pub lightbar_right_light_index: i32,
 }
 
 /// `BaseVehicle`.
@@ -538,8 +536,6 @@ impl BaseVehicle {
             impulses_from_squished_bodies: [None; 4],
             impulses_from_hit_objects: Vec::new(),
             create_physics_recursion: 0,
-            lightbar_left_light_index: -1,
-            lightbar_right_light_index: -1,
         };
         let v = Rc::new_cyclic(|me| BaseVehicle {
             me: me.clone(),
@@ -2912,15 +2908,24 @@ impl BaseVehicle {
 
     /// `updateWorldLights()`: the lightbar's world light sources (only the
     /// index state is kept; light sources belong to the lighting port).
+    /// `updateWorldLights()`: the lightbar's world lights belong to
+    /// rendering (`pz_vehicle_render::lights::LightbarWorldLights`); the
+    /// vehicle reports the lightbar state through
+    /// [`env::VehicleEvents::lightbar_world_lights`].
     fn update_world_lights(&self) {
-        let lb = self.has_lightbar();
-        let enabled = self.st().lightbar_lights_mode.is_enable() && self.battery_charge() > 0.0;
-        let tex = self.st().lightbar_lights_mode.light;
-        if !lb || !enabled || tex == 0 {
-            let mut st = self.st_mut();
-            st.lightbar_left_light_index = -1;
-            st.lightbar_right_light_index = -1;
-        }
+        let (mode_on, light) = {
+            let st = self.st();
+            (
+                st.lightbar_lights_mode.is_enable(),
+                st.lightbar_lights_mode.light,
+            )
+        };
+        let state = env::LightbarState {
+            has_lightbar: self.has_lightbar(),
+            enabled: mode_on && self.battery_charge() > 0.0,
+            light,
+        };
+        env::events().lightbar_world_lights(self, state);
     }
 
     // ---- damage -------------------------------------------------------------

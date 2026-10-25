@@ -615,6 +615,10 @@ fn main() {
         println!("lua load: {}", e.lines().next().unwrap_or(""));
     }
 
+    if a[5] == "--dispatch" {
+        pz_vehicles::lua::with_thread(&mut lua.thread, || run_dispatch(oracle, &sandbox_lines));
+        return;
+    }
     if a[5] == "--spawn" {
         pz_vehicles::lua::with_thread(&mut lua.thread, || run_spawn(oracle, &sandbox_lines));
         return;
@@ -940,8 +944,7 @@ impl pz_vehicles::spawn::SpawnWorld for SpawnTestWorld {
 
 /// `--spawn`: the `IsoChunk.AddVehicles` helpers on the harness's zones,
 /// compared with `spawn.txt`.
-fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
-    use pz_vehicles::spawn::{self, ChunkSpawner, SpawnOptions, VehicleZone};
+fn spawn_options(sandbox_lines: &[String]) -> pz_vehicles::spawn::SpawnOptions {
     let opt = |k: &str| {
         sandbox_lines.iter().find_map(|l| {
             let (a, b) = l.split_once(' ')?;
@@ -955,7 +958,7 @@ fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
             }
         })
     };
-    let mut options = SpawnOptions::default();
+    let mut options = pz_vehicles::spawn::SpawnOptions::default();
     if let Some(v) = opt("CarSpawnRate") {
         options.car_spawn_rate = v as i32;
     }
@@ -968,6 +971,12 @@ fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
     if let Some(v) = opt("EnableVehicles") {
         options.enable_vehicles = v != 0.0;
     }
+    options
+}
+
+fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
+    use pz_vehicles::spawn::{self, ChunkSpawner, VehicleZone};
+    let options = spawn_options(sandbox_lines);
     world_sim::set_created(0.0, 0.0);
     if std::env::var_os("SPAWN_DEBUG").is_some() {
         let t = pz_vehicles::vehicle_type::type_from_name("parkingstall");
@@ -1023,7 +1032,9 @@ fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
         let mut sp = ChunkSpawner::new(wx, wy, &world, options.clone());
         match kind {
             0 => sp.on_zone(&zone, name),
-            1 => sp.on_zone_polyline(&zone, name),
+            1 => {
+                sp.on_zone_polyline(&zone, name);
+            }
             3 => sp.traffic_jam_polyline(&zone, name),
             _ => {
                 let d = match name {
@@ -1083,5 +1094,165 @@ fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
     println!(
         "spawn cases={} ok={ok} bad={bad} vehicles={vehicles}",
         java.len()
+    );
+}
+
+/// The harness's spawned-vehicle line.
+fn spawn_line(v: &pz_vehicles::VehicleRef) -> String {
+    let st = v.st();
+    let q = st.saved_rot;
+    let o = st.jni_transform.origin;
+    format!(
+        "V {} skin={} type={} zone={} pos={},{},{} rot={},{},{},{} o={},{},{} rust={} alarm={} key={} color={}",
+        st.script_name,
+        st.skin_index,
+        st.vehicle_type,
+        st.respawn_zone,
+        fh(st.x),
+        fh(st.y),
+        fh(st.z),
+        fh(q.x),
+        fh(q.y),
+        fh(q.z),
+        fh(q.w),
+        fh(o.x),
+        fh(o.y),
+        fh(o.z),
+        fh(st.rust),
+        st.alarmed,
+        st.key_id,
+        st.do_color
+    )
+}
+
+/// The synthetic chunk map with one meta cell holding the case's zones.
+struct DispatchWorld {
+    zones: Vec<pz_vehicles::spawn::VehicleZone>,
+}
+
+impl pz_vehicles::spawn::SpawnWorld for DispatchWorld {
+    fn square_exists(&self, x: i32, y: i32, z: i32) -> bool {
+        SpawnTestWorld.square_exists(x, y, z)
+    }
+    fn is_outside(&self, x: i32, y: i32, z: i32) -> bool {
+        SpawnTestWorld.is_outside(x, y, z)
+    }
+    /// `Zone.contains` for rectangles; the harness's polylines have no
+    /// width, so they contain nothing.
+    fn vehicle_zone_at(&self, x: i32, y: i32, z: i32) -> bool {
+        self.zones.iter().any(|zn| {
+            z == zn.z
+                && x >= zn.x
+                && x < zn.x + zn.w
+                && y >= zn.y
+                && y < zn.y + zn.h
+                && !zn.is_polyline()
+        })
+    }
+    fn vehicle_zones(&self, _cx: i32, _cy: i32) -> Vec<pz_vehicles::spawn::VehicleZone> {
+        self.zones.clone()
+    }
+    fn chunk_vehicles(&self, _wx: i32, _wy: i32) -> Option<Vec<pz_vehicles::VehicleRef>> {
+        Some(Vec::new())
+    }
+}
+
+/// `--dispatch`: `IsoChunk.AddVehicles` end to end on `dispatch.txt`'s
+/// zone lists.
+fn run_dispatch(oracle: &std::path::Path, sandbox_lines: &[String]) {
+    use pz_vehicles::spawn::{self, ChunkSpawner, VehicleZone};
+    world_sim::set_created(0.0, 0.0);
+    let options = spawn_options(sandbox_lines);
+    let text = std::fs::read_to_string(oracle.join("dispatch.txt")).unwrap();
+    let mut lines = text.lines();
+    let head: Vec<i32> = lines
+        .next()
+        .unwrap()
+        .split(' ')
+        .skip(1)
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let (wx, wy) = (head[0], head[1]);
+    struct Case {
+        id: i64,
+        zones: Vec<VehicleZone>,
+        expect: Vec<String>,
+    }
+    let mut cases: Vec<Case> = Vec::new();
+    for l in lines {
+        let t: Vec<&str> = l.split(' ').collect();
+        if t[0] == "C" {
+            cases.push(Case {
+                id: t[1].parse().unwrap(),
+                zones: Vec::new(),
+                expect: Vec::new(),
+            });
+        } else if t[0] == "Z" {
+            let n = |k: usize| t[k].parse::<i32>().unwrap();
+            let poly = t[8] != "-";
+            cases.last_mut().unwrap().zones.push(VehicleZone {
+                name: if t[1] == "-" {
+                    String::new()
+                } else {
+                    t[1].to_string()
+                },
+                zone_type: "parkingstall".to_string(),
+                x: n(2),
+                y: n(3),
+                z: 0,
+                w: n(4),
+                h: n(5),
+                dir: pz_world::IsoDirections::from_name(t[6]),
+                face_direction: t[7] == "true",
+                geometry_type: if poly {
+                    pz_world::ZoneGeometryType::Polyline
+                } else {
+                    pz_world::ZoneGeometryType::Invalid
+                },
+                points: if poly {
+                    t[8].split(',').map(|v| v.parse().unwrap()).collect()
+                } else {
+                    Vec::new()
+                },
+                polyline_width: 0,
+            });
+        } else if t[0] != "E" {
+            cases.last_mut().unwrap().expect.push(l.to_string());
+        }
+    }
+    let (mut ok, mut bad, mut vehicles) = (0, 0, 0);
+    for c in &cases {
+        let world = DispatchWorld {
+            zones: c.zones.clone(),
+        };
+        spawn::reset_checked_vehicles();
+        rand::seed_standard(9000 + c.id);
+        let mut sp = ChunkSpawner::new(wx, wy, &world, options.clone());
+        sp.add_vehicles();
+        let mut got: Vec<String> = sp.vehicles.iter().map(spawn_line).collect();
+        vehicles += got.len();
+        got.push(format!("R {}", rand::next(1_000_000_000)));
+        if got == c.expect {
+            ok += 1;
+        } else {
+            bad += 1;
+            if bad <= 4 {
+                println!(
+                    "case {}: {:?}",
+                    c.id,
+                    c.zones.iter().map(|z| &z.name).collect::<Vec<_>>()
+                );
+                for l in &c.expect {
+                    println!("  J {l}");
+                }
+                for l in &got {
+                    println!("  R {l}");
+                }
+            }
+        }
+    }
+    println!(
+        "dispatch cases={} ok={ok} bad={bad} vehicles={vehicles}",
+        cases.len()
     );
 }

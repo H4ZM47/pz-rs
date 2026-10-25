@@ -300,7 +300,9 @@ impl<'a> ChunkSpawner<'a> {
                 continue;
             }
             if zone.is_polyline() {
-                self.on_zone_polyline(zone, &name);
+                if !self.on_zone_polyline(zone, &name) {
+                    return;
+                }
             } else {
                 self.on_zone(zone, &name);
             }
@@ -544,8 +546,10 @@ impl<'a> ChunkSpawner<'a> {
         }
     }
 
-    /// `AddVehicles_OnZonePolyline(zone, zoneName)`.
-    pub fn on_zone_polyline(&mut self, zone: &VehicleZone, zone_name: &str) {
+    /// `AddVehicles_OnZonePolyline(zone, zoneName)`. `false` when the
+    /// original would throw (a spawn point on a missing square), which
+    /// ends `AddVehicles`.
+    pub fn on_zone_polyline(&mut self, zone: &VehicleZone, zone_name: &str) -> bool {
         let n = zone.points.len();
         let mut i = 0;
         while i + 2 < n {
@@ -569,7 +573,7 @@ impl<'a> ChunkSpawner<'a> {
                     continue;
                 }
                 let Some(t) = vehicle_type::random_vehicle_type(zone_name, true) else {
-                    return;
+                    return true;
                 };
                 let v = BaseVehicle::new();
                 v.st_mut().respawn_zone = zone_name.to_string();
@@ -578,7 +582,7 @@ impl<'a> ChunkSpawner<'a> {
                     v.st_mut().do_color = false;
                 }
                 if !self.randomize_model(&v, &t) {
-                    return;
+                    return true;
                 }
                 if rand::next(100) < alarm_chance(&self.options) {
                     v.set_alarmed(true);
@@ -597,7 +601,7 @@ impl<'a> ChunkSpawner<'a> {
                 let Some(sq) =
                     self.square(fastfloor(vx) - self.wx * 8, fastfloor(vy) - self.wy * 8, 0)
                 else {
-                    return;
+                    return false;
                 };
                 (vx, vy) = clamp_to_square(vx, vy, sq);
                 set_xy(&v, vx, vy);
@@ -614,6 +618,7 @@ impl<'a> ChunkSpawner<'a> {
                 }
             }
         }
+        true
     }
 
     /// `spawnVehicleRandomAngle(sq, zone, zoneName)`.

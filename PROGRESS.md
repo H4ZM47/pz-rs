@@ -83,6 +83,23 @@ Status of the Rust port. Update this file with every merged change.
   chunk moves, removal) and `IsoMetaCell.vehicleZones` is readable as
   `VehicleZone` views: the 9,693 Muldraugh vehicle zones per cell and
   `getVehicleZoneAt` match the original. Checked locally.
+- `pz-vehicles`: the vehicle runtime. `BaseVehicle` with parts (script
+  binding, the vehicle Lua `Create`/`Init`/`Update` called by name),
+  engine and transmission, fuel, battery, keys, alarm, lightbar, hotwire,
+  polygons, areas and passenger positions, damage; `CarController` and
+  `WorldSimulation` over a `VehiclePhysics` trait mirroring the Bullet
+  natives; the offline vehicle id map; `VehicleType`; `IsoChunk.AddVehicles`
+  spawning; chunk vehicle lists on pz-world's cell; a pathfinding view
+  with a `pathfind_adapter!` for pz-pathfind; Lua bindings in
+  `pz-lua-api::bind_vehicles`. Against the original with a recording
+  Bullet stand-in, a fake clock and scripted driving (400 frames, every
+  dump field and Bullet call): 241 of 243 saved `vehicles.db` vehicles are
+  bit-exact, one matches up to the original's own crash (a broken window
+  with no square) and one holds a trailer animal the original cannot run
+  headless; all 241 vanilla vehicle scripts as new vehicles are
+  bit-exact; 3,000 single-zone spawns and 2,000 `AddVehicles` runs on
+  synthetic zone lists give the original's vehicles and `Rand` state.
+  Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all
