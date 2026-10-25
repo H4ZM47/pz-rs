@@ -317,6 +317,13 @@ pub fn closest_point_on_path<G: GetSquare>(
                         env.test_collide_adjacent(sq, Some(&view), dx, dy, 0).blocked
                     }
                     Some(m) => {
+                        // Movers need the IsoCell for doors, windows and
+                        // hoppables; any other GetSquare loses them.
+                        if cfg!(debug_assertions)
+                            && !NO_CELL_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed)
+                        {
+                            eprintln!("warning: closestPointOnPath: map is not an IsoCell; mover-less collision");
+                        }
                         if let Some(zm) = m.as_zombie_mut() {
                             let ghost = zm.is_ghost();
                             zm.set_ghost(true);
@@ -1797,3 +1804,5 @@ impl PathFindBehavior2 {
 fn is_point_in_square(x: f32, y: f32, sx: i32, sy: i32) -> bool {
     x >= sx as f32 && x < sx as f32 + 1.0 && y >= sy as f32 && y < (sy + 1) as f32
 }
+
+static NO_CELL_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
