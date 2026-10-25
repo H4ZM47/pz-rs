@@ -131,6 +131,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `HudPlayers::player_dead`, `HudDebug::cheat_clock_visible`. Call
       `UIManager::resize()` when a player's clocks change (the original
       re-runs `resize` from its callers) (#146).
+- [ ] Moodles: `hud::set_moodles_character(i, Some(player_index))` when a
+      player is created or removed (`IsoPlayer` sets
+      `UIManager.getMoodleUI(i).setCharacter`); `HudMoodles` (a player's
+      `Moodles`: refresh flag, levels, good/bad, display and description
+      strings; characters thread) (#PR4).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).

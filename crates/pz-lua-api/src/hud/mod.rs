@@ -8,6 +8,7 @@
 
 pub mod clock;
 pub mod host;
+pub mod moodles;
 pub mod progress_bar;
 pub mod speed_controls;
 
@@ -15,6 +16,7 @@ use crate::bind_ui::{element_of, UIELEMENT, UIMANAGER};
 use crate::expose::{expose_class, int_arg, num_arg};
 use clock::{Clock, CLOCK};
 use host::with_host;
+use moodles::{MoodlesUI, MOODLES_UI, MOODLE_TYPES};
 use progress_bar::{ActionProgressBar, ACTION_PROGRESS_BAR};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -59,8 +61,13 @@ pub fn init_ui(t: &mut Thread) {
     if game_mode != "LastStand" {
         with_ui(|m| m.ui.push(clock.clone()));
     }
-    // TODO(ui): the tooltip and UIDebugConsole join the UI here; MoodlesUI
-    // (its own PR).
+    // TODO(ui): UI.add(toolTip); UIDebugConsole (their own PRs).
+    for i in 0..4 {
+        let ui = MoodlesUI::create();
+        with_ui(|m| m.moodle_ui[i] = Some(ui.clone()));
+        ui.set_visible(true);
+        with_ui(|m| m.ui.push(ui.clone()));
+    }
     with_ui(|m| m.resize_hook = Some(Rc::new(resize_hud)));
     UIManager::resize();
     for i in 0..4 {
@@ -144,6 +151,14 @@ pub fn resize_hud() {
         sc.set_y(clock.get_y() + clock.get_height() + 10.0);
     }
     sc.set_visible(visible_all && !all_dead);
+}
+
+/// `UIManager.getMoodleUI(n).setCharacter(player)` (the engine calls this
+/// when a player is added or removed; `player` is its index).
+pub fn set_moodles_character(n: usize, player: Option<usize>) {
+    if let Some(m) = with_ui(|m| m.moodle_ui.get(n).cloned().flatten()) {
+        m.ext::<MoodlesUI>().unwrap().set_character(player);
+    }
 }
 
 /// `UIManager.getProgressBar(n)`.
@@ -272,6 +287,33 @@ pub fn register(thread: &mut Thread) {
     k.method("resize", |c| {
         let e = clock_arg(c)?;
         e.ext::<Clock>().unwrap().resize(&e);
+        Ok(0)
+    });
+
+    let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
+    mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
+    mu.method("wiggle", |c| {
+        let e = element_of(&c.arg(0))
+            .filter(|e| e.ext::<MoodlesUI>().is_some())
+            .ok_or_else(|| LuaError::runtime("Expected MoodlesUI"))?;
+        let key = crate::bind_registry::key_arg(c, 1)?.ok_or_else(|| LuaError::Runtime {
+            message: "moodleType is null".into(),
+            class: "java.lang.NullPointerException",
+        })?;
+        let name = MOODLE_TYPES
+            .iter()
+            .map(|(n, _)| *n)
+            .find(|n| n.eq_ignore_ascii_case(key.path()));
+        match name {
+            Some(n) => e.ext::<MoodlesUI>().unwrap().wiggle(n),
+            // `moodleUiState.get(type)` is null for an unknown type.
+            None => {
+                return Err(LuaError::Runtime {
+                    message: "moodle UI data is null".into(),
+                    class: "java.lang.NullPointerException",
+                })
+            }
+        }
         Ok(0)
     });
 
@@ -927,8 +969,8 @@ mod tests {
             assert!(!b.is_visible() && b.get_render_this_player_only() == i as i32);
             assert_eq!(b.ext::<ActionProgressBar>().unwrap().get_value(), 1.0);
         }
-        // Speed controls, clock and the four bars.
-        assert_eq!(with_ui(|m| m.ui.len()), 6);
+        // Speed controls, clock, four moodle columns and the four bars.
+        assert_eq!(with_ui(|m| m.ui.len()), 10);
         assert!(eval(&mut t, "UIManager.trySetProgressBarValue(1, 0.5)").truthy());
         assert_eq!(
             eval(&mut t, "UIManager.getProgressBar(1):getValue()").as_num(),
@@ -1247,5 +1289,189 @@ mod tests {
             CLOCKS.with(|c| c.borrow().2.clone()),
             ["set 0 Inventory(0) false"]
         );
+    }
+
+    type MoodState = (std::collections::HashMap<String, (i32, i32)>, bool);
+    thread_local! {
+        /// Moodle levels (level, good/bad) and the state-changed flag.
+        static MOODS: RefCell<MoodState> = RefCell::default();
+    }
+    struct FakeMoodles;
+    impl host::HudMoodles for FakeMoodles {
+        fn ui_refresh_needed(&mut self, _p: usize) -> bool {
+            MOODS.with(|m| std::mem::take(&mut m.borrow_mut().1))
+        }
+        fn set_moodles_state_changed(&mut self, _p: usize, c: bool) {
+            MOODS.with(|m| m.borrow_mut().1 = c);
+        }
+        fn moodle_level(&self, _p: usize, n: &str) -> i32 {
+            MOODS.with(|m| m.borrow().0.get(n).map_or(0, |v| v.0))
+        }
+        fn good_bad_neutral(&self, _p: usize, n: &str) -> i32 {
+            MOODS.with(|m| m.borrow().0.get(n).map_or(0, |v| v.1))
+        }
+    }
+
+    fn set_mood(n: &str, v: Option<(i32, i32)>) {
+        MOODS.with(|m| match v {
+            Some(v) => {
+                m.borrow_mut().0.insert(n.into(), v);
+            }
+            None => {
+                m.borrow_mut().0.remove(n);
+            }
+        });
+    }
+
+    /// Parity with the original `MoodlesUI` (oracle `moodles.txt`): slot
+    /// layout and the slide-in, levels and good/bad colours, FoodEaten's
+    /// threshold, a moodle leaving, wiggle and its decay, a size change,
+    /// the draw list per frame. The original's slot order follows identity
+    /// hashes; the test takes the order that run printed.
+    #[test]
+    fn matches_moodles_oracle() {
+        let Some(text) = oracle("moodles.txt") else {
+            eprintln!("PZ_HUD_ORACLE_DIR not set; skipping");
+            return;
+        };
+        install_textures_ex(&oracle_textures_ex(&text));
+        install(HudHost {
+            moodles: Box::new(FakeMoodles),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        let core = crate::bind_core::shared_core();
+        {
+            let mut c = core.borrow_mut();
+            c.set_screen_size(1280, 720);
+            c.set_option_moodle_size(1);
+        }
+        with_ui(|m| {
+            m.lock_fps = 30;
+            m.ui_render_interval_ms = 33;
+        });
+        let e = MoodlesUI::create();
+        let ui = e.ext::<MoodlesUI>().unwrap();
+        let mut got = vec![format!(
+            "pos {} {} {} {}",
+            jf(e.get_x() as f32),
+            jf(e.get_y() as f32),
+            jf(e.get_width() as f32),
+            jf(e.get_height() as f32)
+        )];
+        let order_line = text
+            .lines()
+            .find(|l| l.starts_with("order "))
+            .unwrap()
+            .to_string();
+        let order: Vec<&'static str> = order_line[6..]
+            .split(' ')
+            .map(|p| {
+                MOODLE_TYPES
+                    .iter()
+                    .map(|(n, _)| *n)
+                    .find(|n| n.eq_ignore_ascii_case(p))
+                    .unwrap()
+            })
+            .collect();
+        ui.set_slot_order(&order);
+        got.push(order_line.clone());
+        got.push("tostring base:endurance".into());
+        e.set_x(1200.0);
+        e.set_y(64.0);
+        set_mood("Hungry", Some((2, 2)));
+        set_mood("Endurance", Some((1, 2)));
+        set_mood("Drunk", Some((4, 1)));
+        set_mood("FoodEaten", Some((2, 1)));
+        ui.set_character(Some(0));
+        for f in 0..14 {
+            if f == 6 {
+                set_mood("Hungry", Some((3, 2)));
+                set_mood("FoodEaten", Some((3, 1)));
+                set_mood("Endurance", None);
+                MOODS.with(|m| m.borrow_mut().1 = true);
+            }
+            if f == 9 {
+                ui.wiggle("Drunk");
+            }
+            if f == 11 {
+                core.borrow_mut().set_option_moodle_size(3);
+            }
+            e.update(&mut t);
+            let mut line = format!("frame {f}");
+            for n in &order {
+                let d = ui.data(n).unwrap();
+                if d.slots_pos == 10000.0 && d.slots_desired_pos == 10000.0 {
+                    continue;
+                }
+                line.push_str(&format!(
+                    " {}:{}/{}/{}/{}/{}",
+                    n.to_lowercase(),
+                    jf(d.slots_pos),
+                    jf(d.slots_desired_pos),
+                    jf(d.oscillation_level),
+                    d.level,
+                    d.good_bad_neutral
+                ));
+            }
+            got.push(line);
+            with_ui(|m| m.sprite.clear());
+            e.render(&mut t);
+            got.push(format!("case frame {f}"));
+            got.extend(draw_lines());
+        }
+        let want: Vec<String> = text
+            .lines()
+            .filter(|l| !l.starts_with("tex ") && !l.starts_with("fake "))
+            .map(normalise_oracle)
+            .collect();
+        assert_lines_close(&got, &want, 1e-4);
+    }
+
+    #[test]
+    fn moodles_from_init_layout_and_instance() {
+        install_textures(&[]);
+        install(HudHost {
+            players: Box::new(OnePlayer),
+            moodles: Box::new(FakeMoodles),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        {
+            let core = crate::bind_core::shared_core();
+            let mut c = core.borrow_mut();
+            c.set_screen_size(1280, 720);
+            c.set_option_moodle_size(1);
+        }
+        init_ui(&mut t);
+        // Four columns; resize puts each 10 px from the right edge (the
+        // third player's half screen's for column 2) and shows only
+        // existing players'.
+        for i in 0..4 {
+            let m = with_ui(|m| m.moodle_ui[i].clone()).unwrap();
+            let right = if i == 2 { 640.0 } else { 1280.0 };
+            assert_eq!(m.get_x(), right - 10.0 - 32.0);
+            assert_eq!(m.is_visible(), i == 0);
+        }
+        // getInstance() is the last one built (index 3), as in the original.
+        let last = with_ui(|m| m.moodle_ui[3].clone()).unwrap();
+        assert!(Rc::ptr_eq(&moodles::instance().unwrap(), &last));
+        assert!(eval(
+            &mut t,
+            "MoodlesUI.getInstance() == UIManager.getMoodleUI(3)"
+        )
+        .truthy());
+        // A character with a moodle: it slides in from 500 px below.
+        set_mood("Panic", Some((2, 2)));
+        set_moodles_character(0, Some(0));
+        let m0 = with_ui(|m| m.moodle_ui[0].clone()).unwrap();
+        m0.update(&mut t);
+        let d = m0.ext::<MoodlesUI>().unwrap().data("Panic").unwrap();
+        assert_eq!(
+            (d.slots_desired_pos, d.level, d.good_bad_neutral),
+            (0.0, 2, 2)
+        );
+        assert!(d.slots_pos > 400.0 && d.slots_pos < 500.0);
+        set_mood("Panic", None);
     }
 }
