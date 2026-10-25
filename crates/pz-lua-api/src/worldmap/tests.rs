@@ -90,3 +90,87 @@ fn view_methods() {
         Some(2560.0)
     );
 }
+
+/// A one-cell `.bin` (cell (2, 3), one polygon) in a fresh temp dir.
+fn temp_map() -> std::path::PathBuf {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "pz-worldmap-test-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut b = b"IGMB".to_vec();
+    for v in [2i32, 256, 1, 1] {
+        b.extend(v.to_le_bytes());
+    }
+    let strings = ["Polygon", "building", "yes"];
+    b.extend((strings.len() as i32).to_le_bytes());
+    for s in strings {
+        b.extend((s.len() as i16).to_le_bytes());
+        b.extend(s.as_bytes());
+    }
+    for v in [2i32, 3, 1] {
+        b.extend(v.to_le_bytes());
+    }
+    b.extend(0i16.to_le_bytes());
+    b.push(1);
+    b.extend(4i16.to_le_bytes());
+    for (x, y) in [(0i16, 0i16), (10, 0), (10, 10), (0, 10)] {
+        b.extend(x.to_le_bytes());
+        b.extend(y.to_le_bytes());
+    }
+    b.push(1);
+    b.extend(1i16.to_le_bytes());
+    b.extend(2i16.to_le_bytes());
+    let xml = dir.join("worldmap.xml");
+    std::fs::write(&xml, "<world/>").unwrap();
+    std::fs::write(dir.join("worldmap.xml.bin"), b).unwrap();
+    dir
+}
+
+/// `addData` loads the `.bin` beside the named file, sets the data
+/// bounds and resets the view once the element has a size.
+#[test]
+fn add_data() {
+    let dir = temp_map();
+    let mut t = thread();
+    t.globals().set_str(
+        "file",
+        dir.join("worldmap.xml").to_string_lossy().to_string(),
+    );
+    run(
+        &mut t,
+        r#"
+        jo = UIWorldMap.new({})
+        api = jo:getAPIv3()
+        jo:setWidth(400) jo:setHeight(300)
+        api:addData(file)
+        api:addData(file)
+        api:addData("")
+        api:addData(file .. ".missing")
+        api:endDirectoryData()
+        api:setBoundsFromData()
+        "#,
+    );
+    assert_eq!(eval(&mut t, "api:getDataCount()").as_num(), Some(1.0));
+    assert!(eval(&mut t, "api:getDataFileByIndex(0) == file").truthy());
+    assert!(eval(&mut t, "api:isDataLoaded()").truthy());
+    assert_eq!(
+        eval(&mut t, "api:getDataWidthInCells()").as_num(),
+        Some(1.0)
+    );
+    assert_eq!(eval(&mut t, "api:getMinXInSquares()").as_num(), Some(512.0));
+    assert_eq!(
+        eval(&mut t, "api:getMaxYInSquares()").as_num(),
+        Some(1023.0)
+    );
+    // The view was reset around the bounds at the time of the first add
+    // (all 0 squares): centre 0.5.
+    assert_eq!(eval(&mut t, "api:getCenterWorldX()").as_num(), Some(0.5));
+    run(&mut t, "api:resetView()");
+    assert_eq!(eval(&mut t, "api:getCenterWorldX()").as_num(), Some(640.0));
+    run(&mut t, "api:clearData()");
+    assert_eq!(eval(&mut t, "api:getDataCount()").as_num(), Some(0.0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
