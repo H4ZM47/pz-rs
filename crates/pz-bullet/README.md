@@ -220,10 +220,23 @@ These logs cover tens of thousands of `getBallisticsTargets`,
   * Body-part hit flags are never cleared, so `getTargetedBodyPart`
     reports the lowest part ever hit.
   * `getBallisticsTargets` returns at most one hit and ignores its count.
-* **`rand()`.** Spread rays use C `rand()`. The library never calls
-  `srand`, so the port reproduces Apple libc's generator (Park–Miller,
-  seed 1). Other platforms' `rand()` differ, so the spread patterns there
-  would not match the macOS game.
+* **`rand()`.** Spread rays use C `rand()`, which the library never seeds.
+  Parity is per platform, so `CRand` reproduces, in pure Rust and selected
+  by `cfg`, the libc `rand()` each platform's game build links:
+  * **macOS:** Apple libc (Park–Miller, seed 1, `RAND_MAX` 2³¹−1). Checked
+    against the shipped arm64 library (the ballistics corpus) and libc
+    (50M values).
+  * **Windows:** the MSVC CRT linear congruential generator
+    (`214013·s + 2531011`, bits 16–30, seed 1, `RAND_MAX` 32767; state per
+    thread).
+  * **Linux:** glibc `random()` `TYPE_3` (seed 1, `RAND_MAX` 2³¹−1).
+
+  The Windows and Linux variants are checked only against their documented
+  algorithms (first outputs from seed 1), because the game's Windows and
+  Linux libraries can't be run here. The spread code divides by `RAND_MAX`
+  and `RAND_MAX + 1`. In the macOS binary those are the constants 2147483647
+  and 2147483648, and the other builds are assumed to compile in their own
+  `RAND_MAX`, which is unverified.
 * **NaN signs.** When `updateRagdollSkeletonPreviousTransforms` is given
   the NaN-terminated velocities Java actually sends, the port matches
   except for NaN sign bits (2,287 values in one test log). The main corpus
