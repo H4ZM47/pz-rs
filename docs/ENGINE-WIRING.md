@@ -206,12 +206,12 @@ registered):
       `transmit_remove_item_from_square`, `add_floor`,
       `remove_tile_object_erosion_no_recalc`, `add_corpse` / `remove_corpse`,
       `create_new_grid_square`) with `num_players` and
-      `DoorTables::from_jar` (#PR).
+      `DoorTables::from_jar` (#97).
 - [ ] Pathfinding thread implements `PathfindSquareHooks`: `square_changed`
       (PathfindNative square tasks for the square and `adjacent`),
       `add_chunk_to_world`, `map_collision_square_changed` (popman
       `MapCollisionData` bits), `uses_native_code` from the debug option
-      (#PR).
+      (#97).
 - [ ] Render side implements `RenderSquareHooks`: render-chunk / vispoly
       invalidation, `FBORenderCutaways.squareChanged`,
       `LosUtil.cachecleared`, `recalcLightTime`, `Core.dirtyGlobalLightsCount`,
@@ -219,17 +219,17 @@ registered):
       `properties_recalculated` (puddles, `checkLightingLater`,
       `checkPhysicsLater`, collision cache, water), `clear_water`,
       `buildings_changed` (`LightingJNI.buildingsChanged`),
-      `chunk_buildings_changed` (#PR).
+      `chunk_buildings_changed` (#97).
 - [ ] Engine implements `SquareMutationHooks`: Lua `OnObjectAboutToBeRemoved`
       / `OnTileRemoved` / `OnContainerUpdate`, the `WorldCall` registries of
       `addToWorld` / `removeFromWorld` (entities, process lists, lampposts,
       emitters, fire manager, generators, radio, hutches, mannequins, world
       items), the power / fluid / piped-fuel / sprite-config queries,
       `FMODAmbientWalls`, `DesignationZoneAnimal.addNewRoof`, corpse
-      registries, room lights, `IsoRoom.clear` (#PR).
+      registries, room lights, `IsoRoom.clear` (#97).
 - [ ] Regions: call `IsoRegions::update_with_buildings(BuildingCtx { .. })`
       once per frame instead of `update`, so player rooms become meta-grid
-      buildings (`WorldRegionToMetaGrid`) (#PR).
+      buildings (`WorldRegionToMetaGrid`) (#97).
 
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
