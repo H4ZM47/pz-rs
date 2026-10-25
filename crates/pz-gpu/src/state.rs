@@ -49,11 +49,13 @@ pub enum Program {
     Particles(pz_render::ParticleProgram),
     /// `fogCircle` (`IsoWeatherFX.renderFogCircle`).
     FogCircle,
+    /// `DeadBodyAtlas`: an atlas texture with its own depth.
+    DepthAtlas,
 }
 
 impl Program {
     pub fn uses_world_shader(self) -> bool {
-        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::ProjectedDepth | Program::Seam | Program::Cutaway | Program::CutawayNoDepth | Program::ProjectedF32 | Program::Surface(_) | Program::Particles(_))
+        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::ProjectedDepth | Program::Seam | Program::Cutaway | Program::DepthAtlas | Program::CutawayNoDepth | Program::ProjectedF32 | Program::Surface(_) | Program::Particles(_))
     }
 }
 
@@ -279,7 +281,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
     let world = key.program.uses_world_shader();
     let (module, layout) = match key.program {
         Program::TileDepth | Program::OpaqueDepth => (&programs.world_tile, &programs.tile_layout),
-        Program::Composite => (&programs.world_composite, &programs.composite_layout),
+        Program::Composite | Program::DepthAtlas => (&programs.world_composite, &programs.composite_layout),
         Program::Seam | Program::Cutaway | Program::CutawayNoDepth => (&programs.world_tile, &programs.seam_layout),
         Program::Surface(_) => (&programs.surface, &programs.seam_layout),
         Program::Particles(_) => (&programs.particles, &programs.sprite_layout),
@@ -314,6 +316,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
                 pz_render::SurfaceProgram::PuddlesLq => "fs_puddles_lq",
             },
         ),
+        Program::DepthAtlas => ("vs_atlas", "fs_atlas"),
     };
     // ProjectedF32 reads its float colour from the uv1/uv2 slots (offset
     // 20, after pos, uv and the packed colour).

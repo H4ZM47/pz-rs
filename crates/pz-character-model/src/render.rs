@@ -26,6 +26,9 @@ pub struct LoadedMesh {
     pub transform: Option<Mat4>,
     /// The mesh's own skeleton (`model.tag`), for skinned meshes.
     pub skeleton: Option<Rc<Skeleton>>,
+    /// `ModelMesh.minXyz` / `maxXyz`.
+    pub min_xyz: [f32; 3],
+    pub max_xyz: [f32; 3],
 }
 
 /// Meshes and textures by name (the model and texture asset managers).
@@ -275,7 +278,44 @@ pub fn render_character(
         frame.ambient[1] * 0.45,
         frame.ambient[2] * 0.45,
     ];
-    for d in init_render_data(slot, frame.player, res) {
+    let u = SlotUniforms {
+        mvp: mvp.0,
+        target_depth,
+        lights,
+        ambient,
+        tint: [1.0; 3],
+        alpha: frame.alpha,
+        final_scale: frame.final_scale,
+    };
+    draws.extend(render_slot(slot, frame.player, &u, res));
+    draws
+}
+
+/// The per-character uniforms of a slot's draws.
+#[derive(Clone, Copy, Debug)]
+pub struct SlotUniforms {
+    /// `ModelViewProjection` (column-major).
+    pub mvp: [[f32; 4]; 4],
+    pub target_depth: f32,
+    pub lights: [ModelLight; 5],
+    /// The `AmbientColour` uniform.
+    pub ambient: [f32; 3],
+    /// The state tint (`stateInfo.tintR..`), times each instance's tint.
+    pub tint: [f32; 3],
+    pub alpha: f32,
+    pub final_scale: f32,
+}
+
+/// `Model.DrawChar` for each of a slot's instances (body first, then
+/// depth-first) with shared uniforms.
+pub fn render_slot(
+    slot: &ModelSlot,
+    player: &AnimationPlayer,
+    u: &SlotUniforms,
+    res: &dyn ModelResources,
+) -> Vec<ModelDraw> {
+    let mut draws = Vec::new();
+    for d in init_render_data(slot, player, res) {
         let inst = slot.instance(d.instance);
         if inst.tex == TextureSource::None && inst.model_texture.is_none() {
             continue;
@@ -292,17 +332,17 @@ pub fn render_character(
         draws.push(ModelDraw {
             mesh: d.mesh.mesh.clone(),
             texture,
-            mvp: mvp.0,
+            mvp: u.mvp,
             transform: if inst.is_static { d.xfrm } else { IDENT },
             palette: d.palette.clone().unwrap_or_default(),
-            target_depth,
-            final_scale: frame.final_scale,
+            target_depth: u.target_depth,
+            final_scale: u.final_scale,
             uv_scale: [1.0, 1.0],
-            lights,
-            ambient,
-            tint: inst.tint,
+            lights: u.lights,
+            ambient: u.ambient,
+            tint: [inst.tint[0] * u.tint[0], inst.tint[1] * u.tint[1], inst.tint[2] * u.tint[2]],
             hue: inst.hue,
-            alpha: frame.alpha,
+            alpha: u.alpha,
             pass: ModelPass::Character { cull },
         });
     }

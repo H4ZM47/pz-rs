@@ -18,6 +18,7 @@
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
 pub mod combine;
+pub mod corpse;
 pub mod data;
 pub mod external;
 pub mod items;
@@ -28,6 +29,7 @@ pub mod render;
 pub mod resources;
 pub mod scene;
 pub mod texture_creator;
+pub mod world_item;
 
 pub use data::{
     BeardStyles, BodyLocationGroup, BodyLocationKey, ClothingDecal, ClothingDecals, ClothingItem,

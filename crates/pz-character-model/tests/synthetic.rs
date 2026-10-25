@@ -320,6 +320,8 @@ impl ModelResources for Res {
             }),
             transform: None,
             skeleton: None,
+            min_xyz: [0.0; 3],
+            max_xyz: [0.0; 3],
         })
     }
 

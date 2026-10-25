@@ -13,6 +13,8 @@
 
 pub mod alpha;
 pub mod blood;
+pub mod atlas;
+pub mod body_atlas;
 pub mod cache;
 pub mod cell;
 pub mod chunk;
@@ -21,6 +23,8 @@ pub mod cutaways;
 pub mod fire;
 pub mod frame;
 pub mod hearth;
+pub mod item_atlas;
+pub mod joml;
 pub mod models;
 pub mod objects;
 pub mod obscuring;
