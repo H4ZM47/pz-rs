@@ -241,11 +241,17 @@ fn identical_items_group_by_type() {
 #[test]
 fn containers_nest_and_unknown_items_drop() {
     let e = env();
+    // No wetCooldown (-1), so neither item writes the extra-fields block
+    // (whose load puts the name in the mod data) and the bag compares
+    // equal after the round trip.
     let mut bag = new_item(&e, 7);
+    bag.wet_cooldown = -1.0;
+    let mut inner = new_item(&e, 1);
+    inner.wet_cooldown = -1.0;
     if let ItemKind::Container(c) = &mut bag.kind {
         c.container.borrow_mut().kind = "Bag".into();
         c.container.borrow_mut().id = 55;
-        crate::shared::add_item(&c.container, &crate::shared::new_item(new_item(&e, 1)));
+        crate::shared::add_item(&c.container, &crate::shared::new_item(inner));
     }
     let back = round_trip(&bag, &e);
     let ItemKind::Container(c) = &back.kind else {
