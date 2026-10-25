@@ -16,6 +16,7 @@ pub mod bind_climate;
 pub mod bind_combat;
 pub mod bind_core;
 pub mod bind_debug;
+pub mod bind_items;
 pub mod bind_fs;
 pub mod bind_global_objects;
 pub mod bind_globals;
@@ -57,6 +58,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     // Text before UI: bind_text's UIFont is canonical.
     bind_text::register(&mut mgr.thread);
     bind_debug::register(&mut mgr.thread);
+    bind_items::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());

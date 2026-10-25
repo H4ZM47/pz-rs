@@ -17,6 +17,7 @@ use crate::io::{err, has, read_header, BitHeaderWrite, Reader, SaveError, SaveRe
 use crate::lua_table::{present, LuaKey, LuaTable, LuaValue};
 use crate::template::{ItemClass, ItemTemplate};
 use crate::visual::ItemVisual;
+use pz_scripts::objects::items::ModelWeaponPart;
 
 /// `Color` (`col`): the item's custom colour.
 pub type Rgba = [f32; 4];
@@ -236,6 +237,10 @@ pub struct FoodData {
     pub stress_change: f32,
     pub milk_qty: i32,
     pub milk_type: Option<String>,
+    /// `fertilized`: set by a load that read egg data (or `setFertilized`).
+    pub fertilized: bool,
+    /// The egg fields (`timeToHatch`, `fertilizedTime`, `eggGenome`, ...),
+    /// saved while `fertilized`.
     pub egg: Option<EggData>,
     /// `isTainted` (runtime, not saved).
     pub tainted: bool,
@@ -267,6 +272,12 @@ pub struct WeaponData {
     pub weapon_sprite: Option<String>,
     pub min_sight_range: f32,
     pub max_sight_range: f32,
+    /// `originalWeaponSprite` (the script's, not saved).
+    pub original_weapon_sprite: Option<String>,
+    /// `weaponSpritesByIndex` (the script's list, not saved).
+    pub weapon_sprites_by_index: Option<Rc<Vec<String>>>,
+    /// `modelWeaponPart` (the script's list, not saved).
+    pub model_weapon_part: Option<Rc<Vec<ModelWeaponPart>>>,
 }
 
 /// `Literature`.
@@ -388,12 +399,23 @@ pub struct InventoryItem {
     pub recorded_media_index: i16,
     pub world_scale: f32,
     pub is_initialised: bool,
-    /// ECS components in entity order (see [`crate::component`]).
+    /// ECS components in entity order (see [`crate::component`]), as
+    /// saved.
     pub components: Vec<ComponentBlob>,
+    /// The decoded components of a newly made item (or one changed through
+    /// [`set_components`](InventoryItem::set_components)), kept beside the
+    /// blobs: in memory the original keeps values the save rounds (fluid
+    /// colours are saved as bytes). `None` after a load, whose blobs decode
+    /// exactly. Code that edits `components` directly must clear it.
+    pub component_cache: Option<Box<pz_entity::Components>>,
     pub animal_tracks: Option<AnimalTracks>,
     /// A texture name saved because it differs from the script icon.
     pub texture_override: Option<String>,
     pub model_index: i32,
+    /// `staticModelsByIndex` / `worldStaticModelsByIndex`: the script's
+    /// lists when not empty (`Item.InstanceItem`), not saved.
+    pub static_models_by_index: Option<Rc<Vec<String>>>,
+    pub world_static_models_by_index: Option<Rc<Vec<String>>>,
     pub world_x_rotation: f32,
     pub world_y_rotation: f32,
     pub world_z_rotation: f32,
@@ -403,6 +425,9 @@ pub struct InventoryItem {
     pub light_strength: f32,
     pub torch_cone: bool,
     pub light_distance: i32,
+    /// `brakeForce`, `durability`, ... (from the script at creation; not
+    /// saved).
+    pub vehicle_part: crate::template::VehiclePartStats,
     pub kind: ItemKind,
 }
 
@@ -470,7 +495,7 @@ impl InventoryItem {
             visual: None,
             custom_color: false,
             col: WHITE,
-            item_capacity: -1.0,
+            item_capacity: t.item_capacity as f32,
             table: None,
             activated: false,
             have_been_repaired: 0,
@@ -497,14 +522,20 @@ impl InventoryItem {
             attached_slot: -1,
             attached_slot_type: None,
             attached_to_model: None,
-            max_capacity: -1,
+            max_capacity: t.max_capacity,
             recorded_media_index: -1,
             world_scale: 1.0,
             is_initialised: false,
             components: Vec::new(),
+            component_cache: None,
             animal_tracks: None,
             texture_override: None,
             model_index: -1,
+            static_models_by_index: t.static_models_by_index.clone().filter(|l| !l.is_empty()),
+            world_static_models_by_index: t
+                .world_static_models_by_index
+                .clone()
+                .filter(|l| !l.is_empty()),
             world_x_rotation: 0.0,
             world_y_rotation: 0.0,
             world_z_rotation: -1.0,
@@ -512,6 +543,7 @@ impl InventoryItem {
             light_strength: t.light_strength,
             torch_cone: t.torch_cone,
             light_distance: t.light_distance,
+            vehicle_part: t.vehicle_part.clone(),
             kind,
             template,
         }
@@ -767,7 +799,7 @@ impl InventoryItem {
         }
         self.id = r.i32()?;
         let header = read_header(r, 1)?;
-        self.set_current_uses_loading(1);
+        self.set_current_uses_loading(1, env);
         self.name = self.original_name.clone();
         self.condition = self.condition_max;
         self.custom_color = false;
@@ -802,12 +834,12 @@ impl InventoryItem {
             if wv >= 220 {
                 if has(header, 1) {
                     let u = r.i32()?;
-                    self.set_current_uses_loading(u);
+                    self.set_current_uses_loading(u, env);
                 }
             } else {
                 if has(header, 1) {
                     let u = r.i16()? as i32;
-                    self.set_current_uses_loading(u);
+                    self.set_current_uses_loading(u, env);
                 }
                 if has(header, 2) {
                     r.i8()?;
@@ -938,8 +970,15 @@ impl InventoryItem {
                 if has(bits, 0x4000000) {
                     let loaded = env.components().load_entity(r, wv, &mut self.components)?;
                     // Components the factory made that the file does not hold
-                    // are removed.
-                    self.components.retain(|c| loaded.contains(&c.type_id));
+                    // are removed, last to first, from the component list (an
+                    // unordered `Array`: the last component takes the removed
+                    // one's place).
+                    for i in (0..self.components.len()).rev() {
+                        if !loaded.contains(&self.components[i].type_id) {
+                            self.components.swap_remove(i);
+                        }
+                    }
+                    self.component_cache = None;
                 }
                 if has(bits, 0x8000000) {
                     self.animal_tracks = Some(AnimalTracks::load(r)?);
@@ -963,18 +1002,27 @@ impl InventoryItem {
                 }
             }
         }
-        self.load_kind(r, wv, env)
+        // The end of `InventoryItem.load`: `synchWithVisual` (its model
+        // index draw; the visual part runs after the subclass fields here).
+        self.pick_model_index(&mut |m| env.rand_next(m));
+        self.load_kind(r, wv, env)?;
+        if let Some(a) = env.assets() {
+            self.synch_with_visual(Some(a), &crate::context::NoOwner, env.visual_rng());
+        }
+        Ok(())
     }
 
     /// `setCurrentUses` while `InventoryItem.load` runs: `Food` with a
     /// base hunger (still the script's here) consumes hunger instead, which
     /// `Food.load` then overwrites, so only the uses of other items change.
-    fn set_current_uses_loading(&mut self, v: i32) {
+    fn set_current_uses_loading(&mut self, v: i32, env: &dyn ItemEnv) {
         match &self.kind {
             ItemKind::Food(f) if f.base_hunger != 0.0 => {}
             ItemKind::Food(_) => self.uses = v.max(0),
             _ => self.uses = v,
         }
+        // DrainableComboItem.setCurrentUses -> updateWeight.
+        self.update_weight_by(|n| env.script_actual_weight(n));
     }
 
     /// `getVisual().setTint(new ImmutableColor(colorRed, colorGreen,
@@ -1088,8 +1136,8 @@ impl InventoryItem {
     }
 
     /// `Moveable.ReadFromWorldSprite`: the item state the sprite's
-    /// properties give (textures and the flatpack colour, drawn from
-    /// `Rand`, are not modelled).
+    /// properties give, with the flatpack colour of a multi-tile sprite
+    /// drawn from `Rand` (textures are not modelled).
     pub fn read_from_world_sprite(&mut self, sprite: &str, env: &dyn ItemEnv) -> bool {
         let (ItemKind::Moveable(m) | ItemKind::Radio(m, _)) = &mut self.kind else {
             return false;
@@ -1121,6 +1169,11 @@ impl InventoryItem {
             _ => "Moveable Object".to_string(),
         };
         if let Some((index, count)) = info.sprite_grid {
+            // `setColor(new Color(Rand.Next(0.7f, 1.0f), ...))`, r, g, b.
+            let r = env.rand_float(0.7, 1.0);
+            let g = env.rand_float(0.7, 1.0);
+            let b = env.rand_float(0.7, 1.0);
+            self.col = [r, g, b, 1.0];
             name = if info.force_single_item {
                 format!("{name} (1/1)")
             } else {
@@ -1279,6 +1332,7 @@ impl FoodData {
             stress_change: t.stress_change / 100.0,
             milk_qty: 0,
             milk_type: None,
+            fertilized: false,
             egg: None,
             tainted: false,
         }
@@ -1417,7 +1471,7 @@ impl FoodData {
             w.i32(self.milk_qty);
             w.opt_string(self.milk_type.as_deref());
         }
-        if let Some(e) = &self.egg {
+        if let Some(e) = self.egg.as_ref().filter(|_| self.fertilized) {
             bits.add(0x8000000);
             w.i32(e.time_to_hatch);
             w.i32(e.fertilized_time);
@@ -1606,6 +1660,7 @@ impl FoodData {
                 genome,
                 mother_id: r.i32()?,
             });
+            self.fertilized = true;
         }
         if has(bits, 0x10000000) {
             self.stress_change = r.f32()?;
@@ -1643,6 +1698,9 @@ impl WeaponData {
             weapon_sprite: t.weapon_sprite.clone(),
             min_sight_range: t.min_sight_range,
             max_sight_range: t.max_sight_range,
+            original_weapon_sprite: t.weapon_sprite.clone(),
+            weapon_sprites_by_index: t.weapon_sprites_by_index.clone(),
+            model_weapon_part: t.model_weapon_part.clone(),
         }
     }
 

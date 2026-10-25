@@ -1,5 +1,5 @@
-//! The vehicle geometry the zombie code reads, from the chunks' saved
-//! `BaseVehicle`s: `getIntersectPoint(start, end)` (`IsoZombie
+//! The vehicle geometry the zombie code reads, from the chunks' loaded
+//! `BaseVehicle`s (`IsoChunk.vehicles`): `getIntersectPoint(start, end)` (`IsoZombie
 //! .isVehicleBetween`) and `getClosestPointOnPoly` through `getPoly()`
 //! (`DistToSquared(vehicle)`).
 //!
@@ -196,9 +196,12 @@ fn closest_point_on_segment(a: (f32, f32), b: (f32, f32), px: f32, py: f32) -> f
     d2(a.0 as f64 + u * dx, a.1 as f64 + u * dy)
 }
 
+/// The vehicles chunk loading put in `IsoChunk.vehicles` (chunk files and
+/// `vehicles.db` rows); entries the vehicle runtime has replaced with its
+/// own objects are not seen here.
 fn for_each_vehicle(cell: &IsoCell, f: &mut dyn FnMut(&BaseVehicle) -> bool) {
     for ch in cell.chunks.values() {
-        for v in &ch.saved.vehicles {
+        for v in ch.vehicles.loaded() {
             if f(&v.vehicle) {
                 return;
             }

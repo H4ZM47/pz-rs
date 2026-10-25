@@ -282,3 +282,89 @@ fn records_that_do_not_decode_stay_raw() {
         SavedItem::Raw(_)
     ));
 }
+
+/// `Item.InstanceItem` for a moveable: the weight is the moveable's after
+/// `ReadFromWorldSprite`, so a sprite that is not a moveable leaves the
+/// default 1.0 rather than the script's `Weight`.
+#[test]
+fn created_moveable_weight_follows_world_sprite() {
+    struct MovEnv(HashMap<i16, Rc<ItemTemplate>>);
+    impl ItemEnv for MovEnv {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
+            self.0.get(&id).cloned()
+        }
+        fn rand_next(&self, _bound: i32) -> i32 {
+            7
+        }
+        fn world_sprite(&self, name: &str) -> Option<crate::env::WorldSpriteInfo> {
+            (name == "fixtures_01_0").then(|| crate::env::WorldSpriteInfo {
+                pick_up_weight: Some(150.0),
+                custom_name: Some("Table".into()),
+                ..Default::default()
+            })
+        }
+    }
+    let mut templates = HashMap::new();
+    for (id, ty, sprite) in [
+        (1, "Anvil", Some("crafted_01_35")),
+        (2, "Table", Some("fixtures_01_0")),
+        (3, "Moveable", None),
+    ] {
+        let mut t = ItemTemplate::new(ItemClass::Moveable, "Base", ty);
+        t.display_name = format!("{ty} name");
+        t.actual_weight = 40.0;
+        t.world_object_sprite = sprite.map(str::to_string);
+        templates.insert(id, Rc::new(t));
+    }
+    let e = MovEnv(templates);
+    let weights = |id| {
+        let i = crate::env::create_item(&e, id).unwrap();
+        (i.weight, i.actual_weight)
+    };
+    assert_eq!(weights(1), (1.0, 1.0));
+    assert_eq!(weights(2), (15.0, 15.0));
+    assert_eq!(weights(3), (1.0, 1.0));
+}
+
+/// `CompressIdenticalItems.load` loads every copy of a run again from the
+/// record, so each copy makes its own `CreateItem` draws (the `OutfitRNG`
+/// seed and the item id here), and a run of 0 still loads its item once.
+#[test]
+fn identical_copies_load_with_their_own_draws() {
+    struct Counting(Env, std::cell::Cell<i32>);
+    impl ItemEnv for Counting {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
+            self.0.template(id)
+        }
+        fn rand_next(&self, _bound: i32) -> i32 {
+            self.1.set(self.1.get() + 1);
+            self.1.get()
+        }
+    }
+    let e = Counting(env(), std::cell::Cell::new(0));
+    let rock = |id| {
+        let mut i = crate::env::create_item(&e, 1).unwrap();
+        i.id = id;
+        SavedItem::Item(Box::new(i))
+    };
+    let mut w = Writer::new();
+    save_items(&mut w, &[rock(6), rock(7), rock(8)], &e).unwrap();
+    let mut r = Reader::new(&w.buf);
+    assert_eq!(r.i16().unwrap(), 1);
+    assert_eq!(r.i32().unwrap(), 3);
+    e.1.set(0);
+    let back = load_items(&mut Reader::new(&w.buf), 249, &e).unwrap();
+    assert_eq!(e.1.get(), 6);
+    let ids: Vec<i32> = back.iter().map(SavedItem::id).collect();
+    assert_eq!(ids, vec![6, 7, 8]);
+
+    // The same run saved with a count of 0: one load, nothing added, no ids.
+    let mut zero = w.buf.clone();
+    zero[2..6].copy_from_slice(&0i32.to_be_bytes());
+    let rec_end = 6 + 4 + i32::from_be_bytes(zero[6..10].try_into().unwrap()) as usize;
+    zero.truncate(rec_end);
+    e.1.set(0);
+    let back = load_items(&mut Reader::new(&zero), 249, &e).unwrap();
+    assert!(back.is_empty());
+    assert_eq!(e.1.get(), 2);
+}
