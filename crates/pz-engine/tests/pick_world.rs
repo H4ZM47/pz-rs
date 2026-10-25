@@ -1,10 +1,11 @@
 //! Object picking over what the chunk renderer recorded: a chunk level
 //! recorded and composited, the translucent pass, then
-//! `FBORenderObjectPicker.ContextPick` through [`WorldPick`]. Hand-built
+//! `FBORenderObjectPicker.ContextPick` through `EnginePick` over pz-world-render's `WorldPick`. Hand-built
 //! scene (authored test data, not game data).
 
 use std::rc::Rc;
 
+use pz_engine::world_hud::{EnginePick, PickHooks};
 use pz_iso_render::cell::Layer;
 use pz_iso_render::chunk::ChunkTexture;
 use pz_iso_render::render_info::ObjectSlot;
@@ -18,7 +19,7 @@ use pz_world::{
     IsoCell, IsoChunk, IsoGridSquare, IsoMetaGrid, IsoObject, IsoSpriteManager, ObjectKind,
     SpriteTables,
 };
-use pz_world_render::{PickHooks, RenderWorld, SpriteCache, SpriteTextures, WorldPick, WorldView};
+use pz_world_render::{RenderWorld, SpriteCache, SpriteTextures, WorldPick, WorldView};
 
 fn tables() -> SpriteTables {
     let flags = "collideW,collideN,exterior,NoWallLighting,doorW,doorN,transparentW,\
@@ -223,16 +224,19 @@ impl Scene {
         }
     }
 
-    fn pick(&self) -> WorldPick<'_, Player> {
-        WorldPick {
-            view: WorldView {
-                cell: &self.cell,
-                meta: &self.meta,
-                sprites: &self.m,
+    fn pick(&self) -> EnginePick<'_, Player> {
+        EnginePick {
+            world: WorldPick {
+                view: WorldView {
+                    cell: &self.cell,
+                    meta: &self.meta,
+                    sprites: &self.m,
+                },
+                render: &self.render,
+                infos: &self.infos,
+                player: 0,
+                camera: self.cam,
             },
-            render: &self.render,
-            infos: &self.infos,
-            camera: self.cam,
             hooks: Player(PickPlayer {
                 x: 11.5,
                 y: 11.5,
@@ -366,6 +370,6 @@ fn cutaway_and_hidden_objects_are_not_picked() {
     // Another object now at that index reads a fresh info.
     let fresh = RenderInfos::new();
     let mut p = s.pick();
-    p.infos = &fresh;
+    p.world.infos = &fresh;
     assert!(context_pick(&p, x, y).is_none());
 }

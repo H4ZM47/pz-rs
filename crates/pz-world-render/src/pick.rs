@@ -1,93 +1,105 @@
-//! [`PickWorld`] over the world: `FBORenderObjectPicker.ContextPick`'s
-//! reads of the squares under the mouse, each object's
-//! `getRenderInfo(0)` (recorded by the chunk renderer into
-//! [`RenderInfos`]), the sprites' click masks (`IsoObject.isMaskClicked`)
-//! and the chunk textures' composite positions.
+//! What `FBORenderObjectPicker.ContextPick` reads from the world and the
+//! renderer, as plain data: the objects of a square with their
+//! `getRenderInfo(player)` (recorded by the chunk renderer into
+//! [`RenderInfos`]), the class and sprite properties the picker tests,
+//! the click masks (`IsoObject.isMaskClicked`), and the chunk textures'
+//! composite positions.
 //!
-//! What the picker needs from systems this crate does not own (the
-//! player, corpses, square Lua objects, door adjacency, entity UIs) comes
-//! through [`PickHooks`].
+//! The HUD's `PickWorld` (pz-lua-api) is implemented over [`WorldPick`]
+//! by the engine, which also supplies the inputs other systems own (the
+//! player, corpses, square Lua objects, door adjacency, entity UIs).
 
 use std::rc::Rc;
 
-use pz_iso_render::cell::Layer;
-use pz_iso_render::{Camera, RenderInfos};
-use pz_kahlua::Value;
-use pz_lua_api::hud::picking::{
-    MaskFn, PickKind, PickObject, PickPlayer, PickWorld, RenderInfo, RenderLayer, SpriteFlags,
-};
+use pz_iso_render::{Camera, ObjectRenderInfo, RenderInfos};
 use pz_render::Texture;
 use pz_world::square::EdgeFacing;
 use pz_world::{IsoGridSquare, IsoObject, ObjectKind};
 
 use crate::render_world::{RenderWorld, WorldView};
 
-/// The picker's inputs owned by other systems (world thread).
-pub trait PickHooks {
-    /// `IsoPlayer.players[0]`; `None` picks nothing.
-    fn player0(&self) -> Option<PickPlayer>;
-    /// The square's Lua object, for the tooltip.
-    fn square_value(&self, _sq: &IsoGridSquare) -> Value {
-        Value::Nil
-    }
-    /// `IsoDoor` / door `IsoThumpable`: `isAdjacentToSquare(player's
-    /// current square)` for the object at `index` on `sq`.
-    fn adjacent_to_player(&self, _sq: &IsoGridSquare, _index: usize) -> bool {
-        false
-    }
-    /// `ClickObject.isInteractiveEntity` (the entity's `UiConfig`, through
-    /// the multi-square master) for the object at `index` on `sq`.
-    fn interactive_entity(&self, _sq: &IsoGridSquare, _index: usize) -> bool {
-        false
-    }
-    /// The `IsoDeadBody`s among the square's `getStaticMovingObjects()`,
-    /// with their `isMouseOver`.
-    fn corpses(&self, _x: i32, _y: i32, _z: i32) -> Vec<PickObject> {
-        Vec::new()
-    }
-    /// `DebugOptions.instance.fboRenderChunk.combinedFbo`.
-    fn combined_fbo(&self) -> bool {
-        false
-    }
+/// The `IsoObject` subclass facts the picker's filters and score test.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PickClass {
+    #[default]
+    Object,
+    Door,
+    /// `IsoThumpable`: `isDoor()`, `isWindow()`, the square's window on
+    /// its facing edge, `getLightSource() != null`.
+    Thumpable {
+        door: bool,
+        window: bool,
+        square_window_on_edge: bool,
+        light_source: bool,
+    },
+    Window,
+    /// `IsoWindowFrame` and `hasWindow()`.
+    WindowFrame {
+        has_window: bool,
+    },
+    Curtain,
+    LightSwitch,
+    Generator,
+    /// `IsoWaveSignal` (radios, televisions).
+    WaveSignal,
 }
 
-/// No player: nothing is picked.
-pub struct NoPickHooks;
-
-impl PickHooks for NoPickHooks {
-    fn player0(&self) -> Option<PickPlayer> {
-        None
-    }
+/// The sprite properties the picker tests.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PickSpriteFlags {
+    pub cut_w: bool,
+    pub cut_n: bool,
+    pub water: bool,
+    pub bed: bool,
+    pub water_piped: bool,
+    pub solid_floor: bool,
+    /// `getTileType()` is `WestRoofB`, `WestRoofM` or `WestRoofT`.
+    pub west_roof: bool,
 }
 
-/// The world as player 0's picker sees it this frame.
-pub struct WorldPick<'a, H: PickHooks> {
+/// `isMaskClicked(x, y, flip)`.
+pub type ClickMask = Rc<dyn Fn(i32, i32, bool) -> bool>;
+
+/// One object on a square as the picker reads it.
+#[derive(Clone)]
+pub struct ObjectPick {
+    pub square: [i32; 3],
+    /// `getObjectIndex()`.
+    pub index: usize,
+    /// `IsoObject.id`.
+    pub id: u32,
+    pub class: PickClass,
+    /// `sprite != null` and its properties.
+    pub sprite: Option<PickSpriteFlags>,
+    /// `getContainer() != null`.
+    pub has_container: bool,
+    /// `offsetX` / `offsetY`.
+    pub offset_x: f32,
+    pub offset_y: f32,
+    /// `getRenderInfo(player)`.
+    pub render: ObjectRenderInfo,
+    pub mask: Option<ClickMask>,
+    /// `haveSpecialTooltip()`.
+    pub have_special_tooltip: bool,
+    /// The square's room (`getRoom()`, `None` outside).
+    pub room: Option<i64>,
+}
+
+/// The world and one player's recorded render state.
+pub struct WorldPick<'a> {
     pub view: WorldView<'a>,
     pub render: &'a RenderWorld,
     pub infos: &'a RenderInfos,
-    /// Player 0's camera this frame (`Core.getZoom(0)`,
-    /// `IsoCamera.getOffX(0)/getOffY(0)`).
+    /// The player whose render info is read (0 for `ContextPick`).
+    pub player: usize,
+    /// That player's camera this frame (`Core.getZoom(player)`,
+    /// `IsoCamera.getOffX(player)/getOffY(player)`).
     pub camera: Camera,
-    pub hooks: H,
-}
-
-fn layer(l: Layer) -> RenderLayer {
-    match l {
-        Layer::None => RenderLayer::None,
-        Layer::WorldInventoryObject => RenderLayer::WorldInventoryObject,
-        Layer::TranslucentFloor => RenderLayer::TranslucentFloor,
-        Layer::Floor => RenderLayer::Floor,
-        Layer::Vegetation => RenderLayer::Vegetation,
-        Layer::MinusFloor => RenderLayer::MinusFloor,
-        Layer::MinusFloorSE => RenderLayer::MinusFloorSE,
-        Layer::Translucent => RenderLayer::Translucent,
-        Layer::TranslucentSE => RenderLayer::TranslucentSE,
-    }
 }
 
 /// `IsoSprite.isMaskClicked(dir, x, y, flip)` on the sprite's current
 /// texture.
-fn texture_mask_clicked(t: &Texture, x: i32, y: i32, flip: bool) -> bool {
+pub fn texture_mask_clicked(t: &Texture, x: i32, y: i32, flip: bool) -> bool {
     let Some(mask) = t.mask.as_ref() else {
         return false;
     };
@@ -109,8 +121,43 @@ fn texture_mask_clicked(t: &Texture, x: i32, y: i32, flip: bool) -> bool {
     mask.get(x, y)
 }
 
-impl<H: PickHooks> WorldPick<'_, H> {
-    fn sprite_flags(&self, o: &IsoObject) -> Option<SpriteFlags> {
+impl WorldPick<'_> {
+    /// `Core.getZoom(player)`.
+    pub fn zoom(&self) -> f32 {
+        self.camera.zoom
+    }
+
+    /// `IsoCamera.getOffX(player)` / `getOffY(player)`.
+    pub fn camera_offset(&self) -> (f32, f32) {
+        (self.camera.off_x as f32, self.camera.off_y as f32)
+    }
+
+    /// The square at `x, y, z`.
+    pub fn square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
+        self.view.cell.get_grid_square(x, y, z)
+    }
+
+    /// `square.getObjects()` of the square at `x, y, z`, in order; `None`
+    /// without a square.
+    pub fn objects(&self, x: i32, y: i32, z: i32) -> Option<Vec<ObjectPick>> {
+        let sq = self.square(x, y, z)?;
+        Some(
+            sq.objects
+                .iter()
+                .enumerate()
+                .map(|(i, o)| self.object(sq, i, o))
+                .collect(),
+        )
+    }
+
+    /// `renderLevels.getFBOForLevel(z, zoom)`'s `renderX`, `renderY` for
+    /// the chunk texture holding `square`.
+    pub fn chunk_render_xy(&self, square: [i32; 3]) -> Option<(f32, f32)> {
+        self.infos
+            .chunk_render_xy(self.player, square[0], square[1], square[2])
+    }
+
+    fn sprite_flags(&self, o: &IsoObject) -> Option<PickSpriteFlags> {
         let sp = &self.view.sprites.sprites[o.sprite?];
         let t = &self.view.sprites.tables;
         let p = &sp.properties;
@@ -118,7 +165,7 @@ impl<H: PickHooks> WorldPick<'_, H> {
         let named_type =
             |n: &str| Some(t.object_type_from_string(n)).filter(|&o| o != t.object_type_max());
         let tt = Some(sp.tile_type);
-        Some(SpriteFlags {
+        Some(PickSpriteFlags {
             cut_w: p.has(t.flag.cutW),
             cut_n: p.has(t.flag.cutN),
             water: named("water"),
@@ -131,24 +178,24 @@ impl<H: PickHooks> WorldPick<'_, H> {
         })
     }
 
-    fn kind(&self, sq: &IsoGridSquare, o: &IsoObject) -> PickKind {
+    fn class(&self, sq: &IsoGridSquare, o: &IsoObject) -> PickClass {
         match &o.kind {
-            ObjectKind::Door(_) => PickKind::Door,
-            ObjectKind::Window(_) => PickKind::Window,
-            ObjectKind::WindowFrame { north } => PickKind::WindowFrame {
+            ObjectKind::Door(_) => PickClass::Door,
+            ObjectKind::Window(_) => PickClass::Window,
+            ObjectKind::WindowFrame { north } => PickClass::WindowFrame {
                 has_window: sq.get_window_facing(EdgeFacing::of_north(*north)).is_some(),
             },
-            ObjectKind::Curtain(_) => PickKind::Curtain,
-            ObjectKind::LightSwitch(_) => PickKind::LightSwitch,
-            ObjectKind::Generator(_) => PickKind::Generator,
-            ObjectKind::Radio(_) | ObjectKind::Television(_) => PickKind::WaveSignal,
+            ObjectKind::Curtain(_) => PickClass::Curtain,
+            ObjectKind::LightSwitch(_) => PickClass::LightSwitch,
+            ObjectKind::Generator(_) => PickClass::Generator,
+            ObjectKind::Radio(_) | ObjectKind::Television(_) => PickClass::WaveSignal,
             ObjectKind::Thumpable(t) => {
-                let t_ = &self.view.sprites.tables;
+                let f = &self.view.sprites.tables.flag;
                 let window = o.sprite.is_some_and(|s| {
                     let p = &self.view.sprites.sprites[s].properties;
-                    [t_.flag.WindowN, t_.flag.WindowW].iter().any(|&f| p.has(f))
+                    p.has(f.WindowN) || p.has(f.WindowW)
                 });
-                PickKind::Thumpable {
+                PickClass::Thumpable {
                     door: t.is_door,
                     window,
                     square_window_on_edge: sq
@@ -159,35 +206,12 @@ impl<H: PickHooks> WorldPick<'_, H> {
                     light_source: t.light_source_radius > 0,
                 }
             }
-            _ => PickKind::Object,
+            _ => PickClass::Object,
         }
     }
 
-    /// The click mask of the object at `index` on `sq` (its overlay
-    /// sprite, then its sprite), from the render square's textures.
-    fn mask(&self, sq: &IsoGridSquare, index: usize, id: u32) -> Option<MaskFn> {
-        let ro = self
-            .render
-            .squares
-            .get(&(sq.x, sq.y, sq.z))
-            .and_then(|rs| rs.objects.get(index))
-            .filter(|ro| ro.id == id)?;
-        let main = ro.sprite.as_ref().and_then(|s| s.texture.clone());
-        let overlay = ro.overlay.as_ref().and_then(|o| o.sprite.texture.clone());
-        Some(Rc::new(move |x, y, flip| {
-            if overlay
-                .as_ref()
-                .is_some_and(|t| texture_mask_clicked(t, x, y, flip))
-            {
-                return true;
-            }
-            main.as_ref()
-                .is_some_and(|t| texture_mask_clicked(t, x, y, flip))
-        }))
-    }
-
-    fn pick_object(&self, sq: &IsoGridSquare, index: usize, o: &IsoObject) -> PickObject {
-        let ri = self.infos.get(0, [sq.x, sq.y, sq.z], index, o.id);
+    fn object(&self, sq: &IsoGridSquare, index: usize, o: &IsoObject) -> ObjectPick {
+        let square = [sq.x, sq.y, sq.z];
         let ro = self
             .render
             .squares
@@ -195,80 +219,33 @@ impl<H: PickHooks> WorldPick<'_, H> {
             .and_then(|rs| rs.objects.get(index))
             .filter(|ro| ro.id == o.id);
         let (offset_x, offset_y) = ro.map_or((64.0, 192.0), |ro| (ro.offset_x, ro.offset_y));
-        PickObject {
-            id: (u64::from(sq.x as u32) << 40)
-                ^ (u64::from(sq.y as u32) << 16)
-                ^ (u64::from(sq.z as u8) << 56)
-                ^ u64::from(o.id),
-            square: [sq.x, sq.y, sq.z],
-            object_index: index as i32,
-            kind: self.kind(sq, o),
+        // isMaskClicked: the overlay sprite, then the sprite.
+        let mask = ro.filter(|_| o.sprite.is_some()).map(|ro| {
+            let main = ro.sprite.as_ref().and_then(|s| s.texture.clone());
+            let overlay = ro.overlay.as_ref().and_then(|o| o.sprite.texture.clone());
+            Rc::new(move |x, y, flip| {
+                overlay
+                    .as_ref()
+                    .is_some_and(|t| texture_mask_clicked(t, x, y, flip))
+                    || main
+                        .as_ref()
+                        .is_some_and(|t| texture_mask_clicked(t, x, y, flip))
+            }) as ClickMask
+        });
+        ObjectPick {
+            square,
+            index,
+            id: o.id,
+            class: self.class(sq, o),
             sprite: self.sprite_flags(o),
             has_container: o.container.is_some(),
-            interactive_entity: self.hooks.interactive_entity(sq, index),
-            adjacent_to_player: self.hooks.adjacent_to_player(sq, index),
             offset_x,
             offset_y,
-            render: RenderInfo {
-                layer: layer(ri.layer),
-                target_alpha: ri.target_alpha,
-                cutaway: ri.cutaway,
-                render_x: ri.render_x,
-                render_y: ri.render_y,
-                render_width: ri.render_width,
-                render_height: ri.render_height,
-                render_scale_x: ri.render_scale_x,
-                render_scale_y: ri.render_scale_y,
-            },
-            mask: if o.sprite.is_some() {
-                self.mask(sq, index, o.id)
-            } else {
-                None
-            },
-            reroute_mask: None,
+            render: self.infos.get(self.player, square, index, o.id),
+            mask,
             have_special_tooltip: o.special_tooltip,
-            square_value: self.hooks.square_value(sq),
             room: (sq.room_id != -1 && sq.room_def(self.view.meta).is_some()).then_some(sq.room_id),
-            mouse_over: None,
         }
-    }
-}
-
-impl<H: PickHooks> PickWorld for WorldPick<'_, H> {
-    fn player0(&self) -> Option<PickPlayer> {
-        self.hooks.player0()
-    }
-
-    fn zoom(&self) -> f32 {
-        self.camera.zoom
-    }
-
-    fn camera_offset(&self) -> (f32, f32) {
-        (self.camera.off_x as f32, self.camera.off_y as f32)
-    }
-
-    fn objects(&self, x: i32, y: i32, z: i32) -> Option<Vec<PickObject>> {
-        let sq = self.view.cell.get_grid_square(x, y, z)?;
-        Some(
-            sq.objects
-                .iter()
-                .enumerate()
-                .map(|(i, o)| self.pick_object(sq, i, o))
-                .collect(),
-        )
-    }
-
-    fn corpses(&self, x: i32, y: i32, z: i32) -> Vec<PickObject> {
-        self.hooks.corpses(x, y, z)
-    }
-
-    fn chunk_render_xy(&self, square: [i32; 3]) -> Option<(f32, f32)> {
-        self.infos
-            .chunk_render_xy(0, square[0], square[1], square[2])
-    }
-
-    fn combined_fbo(&self) -> bool {
-        self.hooks.combined_fbo()
     }
 }
 

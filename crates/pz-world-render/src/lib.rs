@@ -17,9 +17,9 @@
 //!   per-frame rebuild of the squares they changed.
 //! - [`hooks`] and [`settings`]: inputs owned by other systems (thumpables,
 //!   barricades, power, torches; `RenderSettings`/`ClimateManager`).
-//! - [`hud_camera`]: the HUD's `HudCamera` over the frame's iso cameras.
-//! - [`pick`]: `PickWorld` for `FBORenderObjectPicker.ContextPick` over
-//!   the world squares and the chunk renderer's `ObjectRenderInfo`s.
+//! - [`hud_camera`]: the frame's iso cameras as the HUD reads them.
+//! - [`pick`]: what `FBORenderObjectPicker.ContextPick` reads from the
+//!   world squares and the chunk renderer's `ObjectRenderInfo`s.
 //! - [`state_light`]: the light the character states read
 //!   (`StateWorld::square_light`, `square_light_level`,
 //!   `ambient_for_player`).
@@ -54,8 +54,8 @@ pub use invalidate::{check_changed_buildings, PendingRender, PuddleInputs, Rende
 pub use lighting::{
     default_player, grid_square, CellLight, LightingFrame, LightingSquares, PlayerFrameInput, WorldLighting,
 };
-pub use hud_camera::{install_hud_camera, CameraFrame, SharedCameraFrame, WorldHudCamera};
-pub use pick::{NoPickHooks, PickHooks, WorldPick};
+pub use hud_camera::{CameraFrame, SharedCameraFrame};
+pub use pick::{ObjectPick, PickClass, PickSpriteFlags, WorldPick};
 pub use render_world::{
     building_id, cutaway_info, puddle_square, render_square, seam_neighbours, wall_type,
     RenderWorld, WorldView,

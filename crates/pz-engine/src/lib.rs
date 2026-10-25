@@ -6,5 +6,6 @@ pub mod game_window;
 pub mod main_screen;
 pub mod sound;
 pub mod ui_models;
+pub mod world_hud;
 
 pub use pz_core::core;
