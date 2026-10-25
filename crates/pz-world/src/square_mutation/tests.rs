@@ -84,14 +84,18 @@ impl H {
 }
 
 impl PathfindSquareHooks for H {
-    fn square_changed(&mut self, sq: &IsoGridSquare, adjacent: [Option<&IsoGridSquare>; 8]) {
-        let n = adjacent.iter().flatten().count();
-        self.push(format!("pathfind {},{},{} +{n}", sq.x, sq.y, sq.z));
+    fn square_changed(&mut self, cell: &IsoCell, sq: SquarePos) {
+        // What the pathfinder reads at the call: the square and its
+        // neighbours.
+        assert!(cell.get_grid_square(sq.0, sq.1, sq.2).is_some());
+        let n = adjacent_squares(cell, sq).iter().flatten().count();
+        self.push(format!("pathfind {},{},{} +{n}", sq.0, sq.1, sq.2));
     }
     fn map_collision_square_changed(&mut self, sq: &IsoGridSquare) {
         self.push(format!("collision {},{}", sq.x, sq.y));
     }
-    fn add_chunk_to_world(&mut self, wx: i32, wy: i32) {
+    fn add_chunk_to_world(&mut self, cell: &IsoCell, wx: i32, wy: i32) {
+        assert!(cell.chunks.contains_key(&(wx, wy)));
         self.push(format!("addChunk {wx},{wy}"));
     }
 }

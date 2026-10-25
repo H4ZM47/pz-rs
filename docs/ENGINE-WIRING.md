@@ -46,9 +46,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `remove_tile_object_erosion_no_recalc`, `add_corpse` / `remove_corpse`,
       `create_new_grid_square`) with `num_players` and
       `DoorTables::from_jar` (#97).
-- [ ] Pathfinding thread implements `PathfindSquareHooks`: `square_changed`
-      (PathfindNative square tasks for the square and `adjacent`),
-      `add_chunk_to_world`, `map_collision_square_changed` (popman
+- [ ] Pathfinding thread implements `PathfindSquareHooks`:
+      `square_changed(cell, pos)` (PathfindNative square tasks for the
+      square and its neighbours, bits read from `cell` at the call),
+      `add_chunk_to_world(cell, wx, wy)` (ChunkUpdateTask buffer built from
+      `cell`), `map_collision_square_changed` (popman
       `MapCollisionData` bits), `uses_native_code` from the debug option
       (#97).
 - [ ] Render side implements `RenderSquareHooks`: render-chunk / vispoly
