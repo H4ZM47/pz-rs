@@ -118,8 +118,10 @@ pub fn vehicle(id: i16) -> Option<VehicleRef> {
 /// Implements pz-pathfind's vehicle traits over this crate in the calling
 /// module. The argument is the path of the pz-pathfind crate.
 ///
-/// `chooseBestAttackPosition` needs `SurroundVehicle`, which is not ported:
-/// the adapter answers `None`.
+/// `chooseBestAttackPosition` goes through the target vehicle's
+/// `SurroundVehicle`; the attacker's floor, death and reuse state are not on
+/// pz-pathfind's mover traits and count as false (the vehicle's own
+/// `update` reads them through `VehicleWorld::surround_zombie`).
 #[macro_export]
 macro_rules! pathfind_adapter {
     ($pf:path) => {
@@ -206,11 +208,29 @@ macro_rules! pathfind_adapter {
             }
             fn choose_best_attack_position(
                 &self,
-                _id: i16,
-                _target: &dyn __pz_pf::mover::CharacterView,
-                _attacker: &dyn __pz_pf::mover::PathMover,
+                id: i16,
+                target: &dyn __pz_pf::mover::CharacterView,
+                attacker: &dyn __pz_pf::mover::PathMover,
             ) -> Option<(f32, f32, f32)> {
-                None
+                let v = $crate::pathfind_view::vehicle(id)?;
+                let tv = $crate::pathfind_view::vehicle(target.vehicle()?)?;
+                let z = $crate::surround::SurroundZombie {
+                    key: attacker.mover_id().0,
+                    x: attacker.x(),
+                    y: attacker.y(),
+                    z: attacker.z(),
+                    // pz-pathfind's mover does not expose these.
+                    on_floor: false,
+                    can_walk: attacker.as_zombie().map_or(true, |z| z.is_can_walk()),
+                    dead: false,
+                    reused: false,
+                    target: Some($crate::surround::SurroundTarget {
+                        x: target.x(),
+                        y: target.y(),
+                        seat: 0,
+                    }),
+                };
+                v.choose_best_attack_position(&tv, &z, attacker.is_animal())
             }
             fn extents(&self, id: i16) -> (f32, f32, f32) {
                 $crate::pathfind_view::vehicle(id)

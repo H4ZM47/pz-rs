@@ -319,6 +319,18 @@ fn register_vehicle(thread: &mut Thread) {
         Value::Nil
     });
     vmethod!(b, "getSquare", |_v, c| Value::Nil);
+    vmethod!(b, "permanentlyRemove", |v, c| {
+        run(c, || v.permanently_remove());
+        Value::Nil
+    });
+    vmethod!(b, "removeFromWorld", |v, c| {
+        run(c, || v.remove_from_world());
+        Value::Nil
+    });
+    vmethod!(b, "setAddThumpWorldSound", |v, c| {
+        v.set_add_thump_world_sound(bool_arg(c, 1));
+        Value::Nil
+    });
     vmethod!(b, "windowsOpen", |v, c| Value::Num(v.windows_open() as f64));
     vmethod!(b, "setTireRemoved", |v, c| {
         v.set_tire_removed(int_arg(c, 1), bool_arg(c, 2));

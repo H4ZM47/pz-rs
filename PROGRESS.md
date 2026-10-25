@@ -106,6 +106,10 @@ Status of the Rust port. Update this file with every merged change.
   until the harness lacks a world-sound native). `IsoChunk
   .updatePhysicsForLevel` gives the original's `ToBullet` shapes for every
   one of 114,529 squares of four regions that load the same objects.
+  `SurroundVehicle` (zombie attack spots, `chooseBestAttackPosition`)
+  matches the original's slot assignments and spot states over 2,000
+  sequences of zombie, target and vehicle moves, clock steps and
+  `update` calls; `permanentlyRemove` and the removal paths are ported.
   Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java

@@ -64,6 +64,10 @@ impl VehicleWorld for OracleWorld {
     fn chunk_grid_width(&self) -> i32 {
         self.grid_width
     }
+    /// No map data: `PolygonalMap2.canStandAt` finds no square.
+    fn can_stand_at(&self, _x: f32, _y: f32, _z: i32, _v: &BaseVehicle) -> bool {
+        false
+    }
 }
 
 struct Items {
@@ -615,6 +619,10 @@ fn main() {
         println!("lua load: {}", e.lines().next().unwrap_or(""));
     }
 
+    if a[5] == "--surround" {
+        pz_vehicles::lua::with_thread(&mut lua.thread, || run_surround(oracle));
+        return;
+    }
     if a[5] == "--dispatch" {
         pz_vehicles::lua::with_thread(&mut lua.thread, || run_dispatch(oracle, &sandbox_lines));
         return;
@@ -1308,4 +1316,151 @@ fn run_dispatch(oracle: &std::path::Path, sandbox_lines: &[String]) {
         "dispatch cases={} ok={ok} bad={bad} vehicles={vehicles}",
         cases.len()
     );
+}
+
+/// `--surround`: `SurroundVehicle` over the harness's call sequences
+/// (`surround.txt`): zombie, target and vehicle moves, clock steps,
+/// `update()` and `getPositionForZombie` in the recorded order.
+fn run_surround(oracle: &std::path::Path) {
+    use pz_vehicles::surround::{SurroundTarget, SurroundZombie};
+    let text = std::fs::read_to_string(oracle.join("surround.txt")).unwrap();
+    let hx = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+    #[derive(Clone, Copy)]
+    struct Z {
+        x: f32,
+        y: f32,
+        z: f32,
+        on_floor: bool,
+        can_walk: bool,
+        dead: bool,
+        has_target: bool,
+    }
+    let mut v: Option<pz_vehicles::VehicleRef> = None;
+    let mut zs: std::collections::HashMap<u64, Z> = Default::default();
+    let mut target = (0.0f32, 0.0f32, false);
+    let (mut ok, mut bad, mut cases) = (0, 0, 0);
+    let mut case_bad = false;
+    let place = |v: &BaseVehicle, x: f32, y: f32, a: f32| {
+        let (ox, oy) = env::offset();
+        v.set_position(x, y, 0.0);
+        let q = pz_vehicles::jmath::Quaternionf::angle_axis(a, 0.0, 1.0, 0.0);
+        let mut st = v.st_mut();
+        st.saved_rot = q;
+        st.jni_transform.set_rotation(&q);
+        st.jni_transform.origin = pz_vehicles::jmath::Vector3f::new(x - ox, 0.0, y - oy);
+        st.poly_dirty = true;
+    };
+    world_sim::set_created(0.0, 0.0);
+    for line in text.lines() {
+        let t: Vec<&str> = line.split(' ').collect();
+        let snapshot = |key: u64, z: &Z, target: (f32, f32, bool)| SurroundZombie {
+            key,
+            x: z.x,
+            y: z.y,
+            z: z.z,
+            on_floor: z.on_floor,
+            can_walk: z.can_walk,
+            dead: z.dead,
+            reused: false,
+            target: z.has_target.then_some(SurroundTarget {
+                x: target.0,
+                y: target.1,
+                seat: if target.2 { 0 } else { -1 },
+            }),
+        };
+        match t[0] {
+            "C" => {
+                if case_bad {
+                    bad += 1;
+                } else if cases > 0 {
+                    ok += 1;
+                }
+                case_bad = false;
+                cases += 1;
+                manager::reset();
+                let nv = BaseVehicle::new();
+                nv.set_script_name(t[2]);
+                nv.set_script(t[2]);
+                place(&nv, hx(t[3]), hx(t[4]), hx(t[5]));
+                zs.clear();
+                v = Some(nv);
+            }
+            "T" => {
+                target = (hx(t[1]), hx(t[2]), t[3] == "true");
+                let vv = v.as_ref().unwrap();
+                if target.2 && vv.character(0).is_none() {
+                    vv.set_passenger(0, Some(Rc::new(Driver)), Default::default());
+                }
+            }
+            "Z" => {
+                zs.insert(
+                    t[1].parse().unwrap(),
+                    Z {
+                        x: hx(t[2]),
+                        y: hx(t[3]),
+                        z: hx(t[4]),
+                        on_floor: t[5] == "true",
+                        can_walk: t[6] == "true",
+                        dead: t[7] == "true",
+                        has_target: t[8] == "true",
+                    },
+                );
+            }
+            "M" => place(v.as_ref().unwrap(), hx(t[1]), hx(t[2]), hx(t[3])),
+            "K" => env::set_now_ms(t[1].parse().unwrap()),
+            "U" => {
+                let vv = v.as_ref().unwrap();
+                let lookup = |k: u64| zs.get(&k).map(|z| snapshot(k, z, target));
+                let mut s = std::mem::take(&mut vv.st_mut().surround);
+                s.update(vv, &lookup);
+                vv.st_mut().surround = s;
+            }
+            "P" => {
+                let vv = v.as_ref().unwrap();
+                let k: u64 = t[1].parse().unwrap();
+                let lookup = |k: u64| zs.get(&k).map(|z| snapshot(k, z, target));
+                let me = snapshot(k, &zs[&k], target);
+                let r = vv.surround_position_for_zombie(&me, &lookup);
+                let got = match r {
+                    Some((x, y)) => format!("P {k} {},{}", fh(x), fh(y)),
+                    None => format!("P {k} null"),
+                };
+                if got != line {
+                    if !case_bad && bad < 5 {
+                        println!("case {}: J {line} R {got}", cases - 1);
+                    }
+                    case_bad = true;
+                }
+            }
+            "S" => {
+                let vv = v.as_ref().unwrap();
+                let st = vv.st();
+                let mut out = format!("S n={}", st.surround.positions.len());
+                for p in &st.surround.positions {
+                    write!(
+                        out,
+                        " {},{}{}{}",
+                        fh(p.pos_world.x),
+                        fh(p.pos_world.y),
+                        if p.blocked { "b" } else { "" },
+                        p.zombie.map(|z| format!(":{z}")).unwrap_or_default()
+                    )
+                    .unwrap();
+                }
+                if out != line {
+                    if !case_bad && bad < 5 {
+                        println!("case {}: J {line}\n         R {out}", cases - 1);
+                    }
+                    case_bad = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    if case_bad {
+        bad += 1;
+    } else if cases > 0 {
+        ok += 1;
+    }
+    println!("surround cases={cases} ok={ok} bad={bad}");
 }

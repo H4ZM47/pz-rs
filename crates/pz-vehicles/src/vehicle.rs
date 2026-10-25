@@ -60,6 +60,13 @@ pub trait VehicleCharacter {
     }
     /// `setX/setY/setZ` while seated.
     fn set_position(&self, _x: f32, _y: f32, _z: f32) {}
+    /// `instanceof IsoPlayer` (one of `IsoPlayer.players`).
+    fn is_player(&self) -> bool {
+        false
+    }
+    /// `exit`: `setVehicle(null)`, `savedVehicleSeat = -1`,
+    /// `setCollidable(true)`.
+    fn exited_vehicle(&self) {}
 }
 
 pub type CharRef = Rc<dyn VehicleCharacter>;
@@ -326,6 +333,8 @@ pub struct VehicleState {
     pub constraint_changed_time: i64,
     pub specific_distribution_id: Option<String>,
     pub add_thump_world_sound: bool,
+    /// `surroundVehicle`.
+    pub surround: crate::surround::SurroundVehicle,
     pub regulator: bool,
     pub regulator_speed: f32,
     /// `bloodIntensity` (insertion order; saved in `HashMap` order).
@@ -513,6 +522,7 @@ impl BaseVehicle {
             constraint_changed_time: -1,
             specific_distribution_id: None,
             add_thump_world_sound: false,
+            surround: Default::default(),
             regulator: false,
             regulator_speed: 0.0,
             blood_intensity: Vec::new(),
@@ -1345,6 +1355,7 @@ impl BaseVehicle {
         if !loaded || (h == 0.0 && s == 0.0 && v == 0.0) {
             self.do_vehicle_color();
         }
+        self.st_mut().surround.reset();
         self.choose_alarm_sound();
     }
 
@@ -2853,8 +2864,10 @@ impl BaseVehicle {
                 gas.set_container_content_amount(cap as f32, false, false);
             }
         }
-        // surroundVehicle.update / checkForIntersectingCrops: zombie attack
-        // slots and farming (not ported).
+        if self.st().passengers.iter().any(|p| p.character.is_some()) {
+            self.update_surround();
+        }
+        // checkForIntersectingCrops: farming (not ported).
         if self.st().ctrl.is_some() {
             let (id, m) = (self.id() as i32, self.fudged_mass());
             Bullet::call(|b| b.set_vehicle_mass(id, m));
@@ -3206,6 +3219,17 @@ impl BaseVehicle {
     /// `removeFromWorld()` (single player).
     pub fn remove_from_world(&self) {
         self.break_constraint(false, false);
+        env::events().vehicle_unloaded(self);
+        // A local player's vehicle stays.
+        if self
+            .st()
+            .passengers
+            .iter()
+            .any(|p| p.character.as_ref().is_some_and(|c| c.is_player()))
+        {
+            return;
+        }
+        crate::spawn::remove_from_checked_vehicles(self);
         if self.st().removed_from_world {
             return;
         }
@@ -3214,6 +3238,8 @@ impl BaseVehicle {
             st.removed_from_world = true;
             st.added_to_world = false;
         }
+        // `parts.removeFromWorld()`, `removeVehicleSounds`, the emitter.
+        env::events().event("removeVehicleSounds");
         if self.st().ctrl.is_some() {
             let id = self.id() as i32;
             Bullet::call(|b| b.remove_vehicle(id));
@@ -3224,6 +3250,106 @@ impl BaseVehicle {
             crate::manager::id_map_remove(id);
         }
         crate::manager::cell_remove(self);
+        // `PathfindNative.removeVehicle` / `PolygonalMap2.removeVehicleFromWorld`.
+        env::events().event("pathfindRemoveVehicle");
+        self.st_mut().surround.reset();
+        // `removeWorldLights()`.
+        env::events().lightbar_world_lights(self, env::LightbarState::default());
+    }
+
+    /// `exit(chr)`.
+    pub fn exit(&self, chr: &CharRef) -> bool {
+        let seat = self.seat_of(chr);
+        if seat == -1 {
+            return false;
+        }
+        if !self.clear_passenger(seat) {
+            return false;
+        }
+        chr.exited_vehicle();
+        if self.driver().is_none() && self.st().sound_horn_on {
+            self.st_mut().sound_horn_on = false;
+        }
+        let mut st = self.st_mut();
+        st.poly_garage_check = true;
+        st.poly_dirty = true;
+        true
+    }
+
+    /// `permanentlyRemove()`: everyone out, the tow link broken, out of the
+    /// world, off its square and chunk, and out of `vehicles.db`.
+    pub fn permanently_remove(&self) {
+        for seat in 0..self.max_passengers() {
+            if let Some(chr) = self.character(seat) {
+                self.exit(&chr);
+            }
+        }
+        self.break_constraint(true, false);
+        self.remove_from_world();
+        // `removeFromSquare()`.
+        self.st_mut().current = None;
+        if let Some(chunk) = self.st().chunk {
+            env::world().remove_vehicle_from_chunk(&self.rc(), chunk);
+        }
+        env::events().vehicle_removed_from_database(self);
+    }
+
+    /// `setAddThumpWorldSound(add)` (a zombie hit the bodywork).
+    pub fn set_add_thump_world_sound(&self, add: bool) {
+        self.st_mut().add_thump_world_sound = add;
+    }
+
+    /// `getNearestBodyworkPart(chr)`: the first door or bodywork part with
+    /// condition left whose area holds `(x, y)` (the character's position).
+    pub fn nearest_bodywork_part(&self, x: f32, y: f32) -> Option<crate::PartRef> {
+        self.parts().into_iter().find(|p| {
+            let cat = p.st().category.clone();
+            let ok = matches!(cat.as_deref(), Some("door") | Some("bodywork"));
+            ok && p.area().is_some_and(|a| self.is_in_area(&a, x, y)) && p.condition() > 0
+        })
+    }
+
+    /// `transmitPartCondition(part)` / `transmitPartItem(part)`: server
+    /// sync only (nothing in single player).
+    pub fn transmit_part_condition(&self, _part: &crate::PartRef) {}
+    pub fn transmit_part_item(&self, _part: &crate::PartRef) {}
+
+    /// `chooseBestAttackPosition(target, attacker, out)`: `target_vehicle`
+    /// is `target.getVehicle()`; animals get `None`.
+    pub fn choose_best_attack_position(
+        &self,
+        target_vehicle: &BaseVehicle,
+        attacker: &crate::surround::SurroundZombie,
+        attacker_is_animal: bool,
+    ) -> Option<(f32, f32, f32)> {
+        if attacker_is_animal {
+            return None;
+        }
+        let w = env::world();
+        let lookup = |k: u64| w.surround_zombie(k);
+        let (x, y) = target_vehicle.surround_position_for_zombie(attacker, &lookup)?;
+        Some((x, y, self.z()))
+    }
+
+    /// `getSurroundVehicle().getPositionForZombie(zombie, out)`.
+    pub fn surround_position_for_zombie(
+        &self,
+        z: &crate::surround::SurroundZombie,
+        lookup: &dyn Fn(u64) -> Option<crate::surround::SurroundZombie>,
+    ) -> Option<(f32, f32)> {
+        let mut s = std::mem::take(&mut self.st_mut().surround);
+        let r = s.position_for_zombie(self, z, lookup);
+        self.st_mut().surround = s;
+        r
+    }
+
+    /// `getSurroundVehicle().update()`.
+    pub fn update_surround(&self) {
+        let w = env::world();
+        let lookup = |k: u64| w.surround_zombie(k);
+        let mut s = std::mem::take(&mut self.st_mut().surround);
+        s.update(self, &lookup);
+        self.st_mut().surround = s;
     }
 }
 
@@ -3309,5 +3435,50 @@ impl BaseVehicle {
     pub fn set_tire_inflation(&self, wheel_index: i32, inflation: f32) {
         let id = self.id() as i32;
         Bullet::call(|b| b.set_tire_inflation(id, wheel_index, inflation));
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct World(RefCell<Vec<(i32, i32)>>);
+    impl env::VehicleWorld for World {
+        fn square(&self, _: i32, _: i32, _: i32) -> Option<env::SquareInfo> {
+            None
+        }
+        fn is_valid_chunk(&self, _: i32, _: i32) -> bool {
+            false
+        }
+        fn chunk_loaded(&self, _: i32, _: i32) -> bool {
+            false
+        }
+        fn remove_vehicle_from_chunk(&self, _v: &VehicleRef, chunk: (i32, i32)) {
+            self.0.borrow_mut().push(chunk);
+        }
+    }
+
+    #[test]
+    fn permanently_remove_leaves_world_and_chunk() {
+        let w = Rc::new(World(RefCell::new(Vec::new())));
+        env::set_world(w.clone());
+        let v = BaseVehicle::new();
+        {
+            let mut st = v.st_mut();
+            st.added_to_world = true;
+            st.chunk = Some((3, 4));
+            st.current = Some((24, 32, 0));
+        }
+        crate::manager::add_to_world(&v);
+        v.permanently_remove();
+        assert!(v.st().removed_from_world);
+        assert!(!v.st().added_to_world);
+        assert!(v.st().current.is_none());
+        assert_eq!(*w.0.borrow(), vec![(3, 4)]);
+        assert!(!crate::manager::cell_vehicles()
+            .iter()
+            .any(|o| Rc::ptr_eq(o, &v)));
+        env::set_world(Rc::new(env::OpenWorld));
     }
 }
