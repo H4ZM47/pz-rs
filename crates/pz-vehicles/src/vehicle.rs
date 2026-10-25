@@ -1204,22 +1204,51 @@ impl BaseVehicle {
         false
     }
 
-    /// `VehiclePart.updateSignalDevice()` without the radio simulation
-    /// (`DeviceData.update`, chat), which belongs to the radio port.
+    /// `VehiclePart.updateSignalDevice()`: the radio simulation runs
+    /// through the installed [`env::VehicleDevices`]; without a device env
+    /// only the uninstalled check is made. The device data is taken out of
+    /// the part while it updates.
     fn update_signal_device(&self, part: &PartRef) {
-        let turned_on = part
-            .st()
-            .device_data
-            .as_ref()
-            .is_some_and(|d| d.is_turned_on);
-        if turned_on && part.is_inventory_item_uninstalled() {
-            if let Some(d) = part.st_mut().device_data.as_mut() {
-                d.is_turned_on = false;
+        if part.st().device_data.is_none() {
+            return;
+        }
+        let devices = env::devices();
+        let Some(mut inner) = devices.device_env(self, part) else {
+            let turned_on = part
+                .st()
+                .device_data
+                .as_ref()
+                .is_some_and(|d| d.is_turned_on);
+            if turned_on && part.is_inventory_item_uninstalled() {
+                if let Some(d) = part.st_mut().device_data.as_mut() {
+                    d.is_turned_on = false;
+                }
             }
-        }
-        if part.st().device_data.is_some() {
             part.st_mut().has_player_in_range = false;
-        }
+            return;
+        };
+        let Some(mut dd) = part.st_mut().device_data.take() else {
+            return;
+        };
+        let uninstalled = part.is_inventory_item_uninstalled();
+        let mut penv = crate::devices::PartDeviceEnv {
+            inner: &mut *inner,
+            uninstalled,
+            has_power: self.battery_charge() > 0.0,
+            pos: [self.x(), self.y(), self.z()],
+        };
+        let in_range = part.st().has_player_in_range;
+        let players = devices.local_players();
+        let r = pz_inventory::device_sim::update_vehicle_part_device(
+            &mut dd,
+            &mut penv,
+            uninstalled,
+            in_range,
+            &players,
+        );
+        let mut st = part.st_mut();
+        st.has_player_in_range = r;
+        st.device_data = Some(dd);
     }
 
     /// `VehicleParts.update()`.
@@ -3529,4 +3558,96 @@ mod removal_tests {
             .any(|o| Rc::ptr_eq(o, &v)));
         env::set_world(Rc::new(env::OpenWorld));
     }
+}
+
+#[cfg(test)]
+mod signal_device_tests {
+    use super::*;
+    use pz_inventory::device::DeviceData;
+    use pz_inventory::device_sim::{
+        DeviceEnv, DeviceEvent, IsoObjectPos, MainsPower, MediaLine, ParentKind,
+    };
+    use std::cell::RefCell;
+
+    type Log = Rc<RefCell<Vec<DeviceEvent>>>;
+
+    struct World(Log);
+    impl DeviceEnv for World {
+        fn minutes_stamp(&self) -> i64 {
+            60
+        }
+        fn multiplier(&self) -> f32 {
+            1.0
+        }
+        fn parent(&self) -> ParentKind {
+            ParentKind::None
+        }
+        fn next_int(&mut self, _bound: i32) -> i32 {
+            0
+        }
+        fn next_float(&mut self) -> f32 {
+            0.0
+        }
+        fn mains_power(&self) -> MainsPower {
+            MainsPower::Square(None)
+        }
+        fn channel_list(&self, _c: &str) -> Option<Vec<(i32, String)>> {
+            None
+        }
+        fn media_exists(&self, _i: i16) -> bool {
+            false
+        }
+        fn media_line(&self, _i: i16, _l: i32) -> Option<MediaLine> {
+            None
+        }
+        fn iso_object(&self) -> Option<IsoObjectPos> {
+            None
+        }
+        fn closest_listener_distance_sq(&self, _x: f32, _y: f32, _z: f32) -> f32 {
+            f32::MAX
+        }
+        fn parent_pos(&self) -> [f32; 3] {
+            [0.0; 3]
+        }
+        fn event(&mut self, e: DeviceEvent) {
+            self.0.borrow_mut().push(e);
+        }
+    }
+
+    struct Devices(Log);
+    impl env::VehicleDevices for Devices {
+        fn device_env(&self, _v: &BaseVehicle, _p: &PartRef) -> Option<Box<dyn DeviceEnv>> {
+            Some(Box::new(World(self.0.clone())))
+        }
+    }
+
+    #[test]
+    fn unpowered_vehicle_radio_turns_off() {
+        let log: Log = Rc::default();
+        env::set_devices(Rc::new(Devices(log.clone())));
+        let v = BaseVehicle::new();
+        let part = crate::part::VehiclePart::new(&v);
+        part.st_mut().device_data = Some(DeviceData {
+            is_turned_on: true,
+            is_battery_powered: false,
+            ..Default::default()
+        });
+        v.update_signal_device(&part);
+        let d = part.st().device_data.clone().unwrap();
+        assert!(!d.is_turned_on);
+        assert_eq!(d.last_minute_stamp, -1);
+        assert!(!part.st().has_player_in_range);
+        // Installed (no item type), so `update` turns it off without
+        // `setIsTurnedOn`; the chat element still updates.
+        assert_eq!(
+            *log.borrow(),
+            vec![DeviceEvent::ChatUpdate {
+                history_range: 0.6 * 20.0
+            }]
+        );
+        env::set_devices(Rc::new(NoDevicesForTest));
+    }
+
+    struct NoDevicesForTest;
+    impl env::VehicleDevices for NoDevicesForTest {}
 }

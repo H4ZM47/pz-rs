@@ -85,6 +85,7 @@ pub mod bind_world_gen_params;
 pub mod bind_randomized_world;
 pub mod bind_sprites;
 pub mod bind_vehicles;
+pub mod bind_radio;
 pub mod bind_video;
 pub mod events;
 pub mod expose;
@@ -270,6 +271,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_popman::register(&mut mgr.thread);
     bind_zombie::register_shared(&mut mgr.thread);
     bind_vehicles::register(&mut mgr.thread);
+    bind_radio::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
     worldmap::register(&mut mgr.thread);

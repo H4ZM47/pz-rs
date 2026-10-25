@@ -27,6 +27,68 @@ impl Default for DevicePresets {
 }
 
 impl DevicePresets {
+    /// `removePreset(id)`.
+    pub fn remove_preset(&mut self, id: i32) {
+        if id >= 0 && (id as usize) < self.presets.len() {
+            self.presets.remove(id as usize);
+        }
+    }
+
+    /// `getPresetName(id)` (`""` out of range).
+    pub fn preset_name(&self, id: i32) -> String {
+        usize::try_from(id)
+            .ok()
+            .and_then(|i| self.presets.get(i))
+            .map(|p| p.name.clone())
+            .unwrap_or_default()
+    }
+
+    /// `getPresetFreq(id)` (-1 out of range).
+    pub fn preset_freq(&self, id: i32) -> i32 {
+        usize::try_from(id)
+            .ok()
+            .and_then(|i| self.presets.get(i))
+            .map_or(-1, |p| p.frequency)
+    }
+
+    /// `setPresetName(id, name)` (a null name is `"name-is-null"`).
+    pub fn set_preset_name(&mut self, id: i32, name: Option<&str>) {
+        let name = name.unwrap_or("name-is-null");
+        if let Some(p) = usize::try_from(id)
+            .ok()
+            .and_then(|i| self.presets.get_mut(i))
+        {
+            p.name = name.to_string();
+        }
+    }
+
+    /// `setPresetFreq(id, frequency)`.
+    pub fn set_preset_freq(&mut self, id: i32, frequency: i32) {
+        if let Some(p) = usize::try_from(id)
+            .ok()
+            .and_then(|i| self.presets.get_mut(i))
+        {
+            p.frequency = frequency;
+        }
+    }
+
+    /// `setPreset(id, name, frequency)`.
+    pub fn set_preset(&mut self, id: i32, name: Option<&str>, frequency: i32) {
+        let name = name.unwrap_or("name-is-null");
+        if let Some(p) = usize::try_from(id)
+            .ok()
+            .and_then(|i| self.presets.get_mut(i))
+        {
+            p.name = name.to_string();
+            p.frequency = frequency;
+        }
+    }
+
+    /// `clearPresets()`.
+    pub fn clear_presets(&mut self) {
+        self.presets.clear();
+    }
+
     /// `addPreset`: skipped when the frequency or the name is present, or
     /// when full.
     pub fn add_preset(&mut self, name: &str, frequency: i32) {
@@ -46,7 +108,8 @@ impl DevicePresets {
     }
 }
 
-/// `DeviceData` (state fields; sound and media playback are not ported).
+/// `DeviceData`: the saved state fields plus the runtime state of the
+/// device simulation (`crate::device_sim`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeviceData {
     pub device_name: String,
@@ -74,6 +137,9 @@ pub struct DeviceData {
     pub no_transmit: bool,
     pub last_minute_stamp: i64,
     pub media_item: Option<String>,
+    /// The fields that are not saved (counters, media playback, the
+    /// emitter); see [`crate::device_sim`].
+    pub runtime: crate::device_sim::DeviceRuntime,
 }
 
 impl Default for DeviceData {
@@ -105,6 +171,7 @@ impl Default for DeviceData {
             no_transmit: false,
             last_minute_stamp: -1,
             media_item: None,
+            runtime: Default::default(),
         }
     }
 }
