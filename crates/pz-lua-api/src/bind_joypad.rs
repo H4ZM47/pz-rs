@@ -503,6 +503,16 @@ pub fn activated_joypad() -> Option<usize> {
     ST.with(|s| s.borrow().activated)
 }
 
+/// A copy of the game-thread controller state (`GameWindow.GameInput`) and
+/// `JoypadManager.instance`, for readers outside Lua that evaluate joypad
+/// bindings over one frame (`pz-player-input`).
+pub fn joypad_snapshot() -> (Input, JoypadManager) {
+    ST.with(|s| {
+        let s = s.borrow();
+        (s.input.clone(), s.jm.clone())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +674,15 @@ fn init_bindings(base: &Path, cache: &Path) {
             dir: cache.join("InputBindings"),
         }
     });
+}
+
+/// A copy of the current `CharacterJoypadButtonBinding` and
+/// `CharacterJoypadAxis2dBinding` bindings (`pz-player-input`).
+pub fn character_bindings() -> (Vec<ButtonBinding>, Vec<Axis2dBinding>) {
+    BINDINGS.with(|b| {
+        let b = b.borrow();
+        (b.buttons.clone(), b.axes.clone())
+    })
 }
 
 /// `IsDownBinding.isDown(joypadBind)`.
