@@ -595,11 +595,13 @@ registered):
       `IsoRegions` to the region readers (puddles, weather mask, square
       edits through `set_previous_flags` / `square_changed`). Quit:
       `IngameState` calls `IsoRegions.reset()`; drop it.
-- [ ] Local player at world init: `VehicleStore::create` (`VehiclesDB2.init`),
+- [x] Local player at world init: `VehicleStore::create` (`VehiclesDB2.init`),
       `savefile::is_player_alive`, `PlayerDb::new`; `load_player_for_info`
       gives `SWorldX/SWorldY` for the chunk map; later `load_local_player_1`
       (decode with `load_player`, health 0 when `is_dead`, set `sqlId`) and
-      `chunkMap.worldX/Y = local_player_chunk_map_pos(x, y, offset)` (#100).
+      `chunkMap.worldX/Y = local_player_chunk_map_pos(x, y, offset)` (#100;
+      wired in `IsoWorld::load_player`, #209/#212). Left: `player.sqlId`
+      (no field on `GameCharacter` yet) and `map_p.bin` saves (#212).
 - [ ] CGlobalObjects `initSystems` and update pumps (#31).
 - [ ] Popman: `pz_world_states::population_host` (#210; was
       `WorldPopulationHost::from_state`), `update_main` with
@@ -739,7 +741,7 @@ registered):
       `update_frame()` per frame; `spawn` (`IsoChunk.AddVehicles`) from the
       chunk loader through a `SpawnWorld` impl fed by the meta cell vehicle
       zones; `bind_vehicles::register` (#86).
-- [ ] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
+- [x] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
       `PlayerDb::load_local_player(sql_id)` (#100) go to
       `GameCharacter::load_player(sm, chars, ctx, SaveEnv { items:
       ScriptItems over the save's WorldDictionary, tables }, reader,
@@ -747,7 +749,22 @@ registered):
       with a descriptor; `set_on_fire` runs `pz_world::fire::character::set_on_fire`
       with the world's fire manager. Then, for an `isDead` row,
       `setOverallBodyHealth(0)`/`setHealth(0)`; `saved_vehicle` seats the
-      player; save with `save_player` (#101).
+      player; save with `save_player` (#101). Wired in
+      `IsoWorld::load_player` over the save's `ScriptItems` (#212). Left:
+      `set_on_fire` is only logged (no `IsoFireManager` on `IsoWorld`),
+      `saved_vehicle` seating, and saving through `save_player` (#212).
+- [ ] `WorldDictionary.init()` (#212): `world_dictionary::init` ports
+      `DictionaryData.load()` only. Still to port: `collectObjectNames`,
+      `collectStrings`, `parseInfoLoadList`/`parseCurrentInfoSet` (ids for
+      scripts new since the save, removed or mod-changed items, new games),
+      `parseObjectNameLoadList`, the `StringDictionary`/`ScriptsDictionary`
+      registers, `getDictionaryMods`, `backupCurrentDataSet`, `save()`,
+      `saveAsText("WorldDictionaryReadable.lua")`, `WorldDictionaryLogger`
+      and `createErrorBackups`; then `ScriptManager.PostWorldDictionaryInit`
+      and `WorldDictionary.onWorldLoaded`. A new game has no registry until
+      then (chunk items load raw). `world_dictionary::script_items` still
+      needs `recorded_media` (`ZomboidRadio.getRecordedMedia()`),
+      `channels` and `map_definitions` (#212).
 - [ ] Square mutations: every object change after load goes through
       `pz_world::square_mutation::MutationEnv` (`add_tile_object`,
       `add_special_object`, `remove_tile_object`,

@@ -220,6 +220,8 @@ impl GameLoadingState {
         let mut world = IsoWorld::new(&cx.launch.game_dir, &cx.launch.cache_dir, Self::current_save_dir(cx));
         world.spawn_region = spawn_region;
         world.new_game_setup = cx.launch.start.new_game_setup();
+        // `WorldDictionary.setIsNewGame(newGame)` from `enter`.
+        world.dictionary_new_game = self.new_game;
         let r = world.init(cx.lua);
         *cx.world = Some(world);
         r?;
@@ -410,8 +412,9 @@ impl GameState for GameLoadingState {
             self.stage = -1;
             // TODO(port): `screenFader.startFadeFromBlack()`.
         }
-        // TODO(port): `WorldDictionary.setIsNewGame(newGame)`,
-        // `GameKeyboard.noEventsWhileLoading = true`.
+        // `WorldDictionary.setIsNewGame(newGame)`: the loader hands
+        // `newGame` to `IsoWorld` (`dictionary_new_game`).
+        // TODO(port): `GameKeyboard.noEventsWhileLoading = true`.
         // `loader.start()`: `runInner` waits on `assetLock1` first.
         self.wait_for_asset_loading_to_finish1 = true;
         self.loader = Loader::WaitAssets1;
