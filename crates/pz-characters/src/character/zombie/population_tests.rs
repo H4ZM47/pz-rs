@@ -75,9 +75,6 @@ fn meta() -> IsoMetaGrid {
     g
 }
 
-fn room(index: i64) -> i64 {
-    room_id::make_id(0, 0, index as i32)
-}
 
 struct World {
     cell: IsoCell,
@@ -122,9 +119,6 @@ impl World {
         self.cell.get_grid_square_mut(x, y, z).unwrap()
     }
 
-    fn sq(&self, x: i32, y: i32, z: i32) -> &IsoGridSquare {
-        self.cell.get_grid_square(x, y, z).unwrap()
-    }
 }
 
 /// [`SittingChecks`] with movers on listed squares, blocked lines to listed
