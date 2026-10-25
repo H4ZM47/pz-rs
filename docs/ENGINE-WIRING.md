@@ -123,7 +123,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       and `hud::render_progress_bar(&mut thread, n)` after the player's
       game-world UI; `HudPlayers::player_screen` (characters thread) and
       `HudCamera` (`IsoCamera.getOffX/Y`, `Core.getZoom`; world-render
-      thread) feed its position (#PR2).
+      thread) feed its position (#145).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
