@@ -12,6 +12,14 @@
 //! `<rows dir>` holds `rows.tsv` and `rows/<id>.bin` (a `vehicles.db`);
 //! `<item list dir>` the harness's `items.txt`; `<oracle dir>` the
 //! harness's `sandbox.txt` and `v<id>/dump.txt` + `v<id>/bullet.log`.
+//!
+//! With `VDB_DB=<vehicles.db>` (a copy of the save's database), each
+//! vehicle is then written to that database the way the harness's
+//! `VehiclesDB2.unloadChunk` writes it (pz-vehicles'
+//! `RuntimeVehicleSaver` through pz-world's `unload_chunk`): every third
+//! id has the row loaded but never added to the world (no script) first in
+//! the chunk's list as id + 100000, and every even id stands on the square
+//! east of its own, which clamps the saved position.
 
 use pz_inventory::dictionary::WorldDictionary;
 use pz_inventory::factory::ScriptItems;
@@ -145,6 +153,9 @@ struct DrawingItems<'a> {
     inner: &'a ScriptItems,
     /// Draw from the vehicle `Rand` stream (else record and answer 0/min).
     live: bool,
+    /// `GameTime.getWorldAgeHours()` at the load (clothing's
+    /// `lastWetnessUpdate`); `None`: the registry's.
+    world_age: Option<f64>,
     bounds: std::cell::RefCell<Vec<i32>>,
 }
 
@@ -162,7 +173,8 @@ impl pz_inventory::ItemEnv for DrawingItems<'_> {
         self.inner.obsolete(t)
     }
     fn world_age_hours(&self) -> f64 {
-        self.inner.world_age_hours()
+        self.world_age
+            .unwrap_or_else(|| self.inner.world_age_hours())
     }
     fn blood_body_parts(&self) -> usize {
         self.inner.blood_body_parts()
@@ -612,7 +624,9 @@ fn main() {
     world_sim::set_air_temperature(parse_hex_f(&at("airTemperature")));
 
     // Lua: the same files as the harness, on pz-kahlua.
-    let fs = Rc::new(std::cell::RefCell::new(pz_fs::GameFs::new(game.to_str().unwrap())));
+    let fs = Rc::new(std::cell::RefCell::new(pz_fs::GameFs::new(
+        game.to_str().unwrap(),
+    )));
     let mut lua = LuaManager::init(fs).expect("lua");
     install_globals(&mut lua, &sandbox_lines);
     for f in [
@@ -701,6 +715,7 @@ fn main() {
                 inner: registry,
                 live: false,
                 bounds: Default::default(),
+                world_age: None,
             };
             let saved = match row.load(class, offsets, &drawing) {
                 Ok(Some(v)) => v,
@@ -750,6 +765,15 @@ fn main() {
         out
     } else {
         Vec::new()
+    };
+    let mut vdb = std::env::var_os("VDB_DB").map(|p| {
+        let mut c = pz_sqlite::Connection::open(p).expect("VDB_DB");
+        c.set_autocommit(false).unwrap();
+        c
+    });
+    let save_settings = pz_world::save::SaveSettings {
+        tile_scale,
+        ..Default::default()
     };
     let mut totals = (0usize, 0usize, 0usize, 0usize, 0usize);
     for case in cases {
@@ -809,7 +833,25 @@ fn main() {
             apply_time(times[0]);
             let bounds = case.bounds.clone();
             let live_draws = std::cell::RefCell::new(0usize);
-            let v = match &case.saved {
+            // With `VDB_DB` the saved items are written back: load them at
+            // the harness's world age (clothing's `lastWetnessUpdate`).
+            let saved = match (&case.row, vdb.is_some()) {
+                (Some(row), true) => row
+                    .load(
+                        class,
+                        offsets,
+                        &DrawingItems {
+                            inner: registry,
+                            live: false,
+                            bounds: Default::default(),
+                            world_age: Some(env::time().world_age_hours),
+                        },
+                    )
+                    .ok()
+                    .flatten(),
+                _ => case.saved.clone(),
+            };
+            let v = match &saved {
                 Some(saved) => pz_vehicles::save::from_save_with(saved, || {
                     // The load's item draws, live on the vehicle stream
                     // (the loaded fields come from the first load).
@@ -817,6 +859,7 @@ fn main() {
                         inner: registry,
                         live: true,
                         bounds: Default::default(),
+                        world_age: None,
                     };
                     if let Some(row) = &case.row {
                         let _ = row.load(class, offsets, &live);
@@ -908,6 +951,24 @@ fn main() {
                 }
                 v.update();
                 rust_lines.push(vdump(&v, frame));
+            }
+            if let Some(conn) = vdb.as_mut() {
+                vdb_unload(
+                    conn,
+                    &v,
+                    case.chunk,
+                    id,
+                    case.row.as_ref(),
+                    registry,
+                    &pz_world::save::SaveCtx {
+                        sprites: &sprites,
+                        tables: &save_tables,
+                        settings: &save_settings,
+                        items: registry,
+                        hooks: &pz_world::save::NoSaveHooks,
+                        meta: None,
+                    },
+                );
             }
             v.remove_from_world();
         });
@@ -1021,6 +1082,66 @@ fn main() {
     println!(
         "vehicles={} lines={} line_diffs={} bullet_mismatches={} bullet_left={}",
         totals.0, totals.1, totals.2, totals.3, totals.4
+    );
+}
+
+/// The harness's `vdbUnload`: `VehiclesDB2.unloadChunk` on a chunk holding
+/// the vehicle (see the module docs).
+fn vdb_unload(
+    conn: &mut pz_sqlite::Connection,
+    v: &Rc<BaseVehicle>,
+    (wx, wy): (i32, i32),
+    id: i32,
+    row: Option<&VehicleRow>,
+    items: &ScriptItems,
+    ctx: &pz_world::save::SaveCtx<'_>,
+) {
+    use pz_world::chunk_vehicles::{LoadedVehicle, VehicleOrigin};
+    use pz_world::save::vehicles_db::{self, LoadedVehicleSaver, NoVehicleScripts};
+    let mut chunk = pz_world::IsoChunk::new(wx, wy);
+    if let Some(row) = row.filter(|_| id % 3 == 0) {
+        let class = ctx.tables.class_id("Vehicle");
+        let ts = ctx.settings.tile_scale as f32;
+        // Its item draws are left out: the harness reseeds after it.
+        let drawing = DrawingItems {
+            inner: items,
+            live: false,
+            bounds: Default::default(),
+            world_age: None,
+        };
+        if let Ok(Some(saved)) = row.load(class, (32.0 * ts, 96.0 * ts), &drawing) {
+            let lv = LoadedVehicle {
+                origin: VehicleOrigin::Database {
+                    sql_id: id + 100_000,
+                },
+                square: None,
+                vehicle: saved,
+            };
+            chunk.vehicles.add(Rc::new(lv));
+        }
+    }
+    rand::seed_standard(id as i64 + 2_000_003);
+    {
+        let mut st = v.st_mut();
+        st.sql_id = id;
+        st.chunk = Some((wx, wy));
+        if id % 2 == 0 {
+            st.square = Some((st.x.floor() as i32 + 1, st.y.floor() as i32, 0));
+        }
+    }
+    chunk.vehicles.add(pz_vehicles::cell_link::handle(v));
+    let others = LoadedVehicleSaver {
+        scripts: &NoVehicleScripts,
+    };
+    let saver = pz_vehicles::vehicles_db::RuntimeVehicleSaver { others: &others };
+    let r = vehicles_db::unload_chunk(Some(conn), &chunk, ctx, &saver);
+    v.st_mut().square = None;
+    println!(
+        "vdb v{id} unloaded n={} saved={:?} errors={:?} R {}",
+        chunk.vehicles.len(),
+        r.saved,
+        r.errors,
+        rand::next(1_000_000)
     );
 }
 

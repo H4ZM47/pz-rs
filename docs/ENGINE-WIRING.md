@@ -166,6 +166,27 @@ registered):
       scripts }`), later to the vehicle runtime's own saver for vehicles
       in the world; the default writes none (null script, as the original
       for a vehicle never added to the world) (#150).
+- [ ] Runtime vehicles on save: `StreamCtx::vehicle_saver =
+      Some(&pz_vehicles::vehicles_db::RuntimeVehicleSaver::default())`
+      writes the runtime `BaseVehicle`s of a saved chunk's list
+      (`VehicleBuffer.set` + `BaseVehicle.save`: `vehicles_db::vehicle_buffer`),
+      and hands entries the runtime has not taken over to
+      `LoadedVehicleSaver { NoVehicleScripts }`. A vehicle without a script
+      or chunk is skipped with the original's NPE; the rest still save.
+      Needs: loaded rows taken over with `cell_link::adopt_loaded(..,
+      save::from_save)` (sets `sqlId`, `square`/`current` and the saved
+      `IsoObject` fields); `sqlId` for new vehicles from
+      `VehiclesDB2.setVehicleLoaded` (`allocateID` over `init_used_ids`) in
+      `addToWorld` (not ported; an id < 1 is written as is, like the
+      shipped game with asserts off); and `IsoChunk.removeFromWorld` before
+      the chunk save is queued: per vehicle on its squares
+      `remove_from_world`, clear `square`/`current` (the save then does not
+      clamp the position), and when `vehicles_db::should_update_in_meta` is
+      `Ok(true)` take it off the list and write
+      `update_vehicle(vehicle_buffer(v))` (`VehiclesDB2.updateVehicle`, then
+      `VirtualVehicleManager.addToMeta`). The quit save's
+      `updateVehicleAndTrailer` uses the same `vehicle_buffer`
+      (ws/vehicles-db-save).
 - [ ] Hot save: on `StreamEvent::HotSave` (main thread, after the
       streamer step) call `world_save::hot_save_ancillary(&mut HotSave {
       .. })` and set `PlayerDB.forceSavePlayers` when `canSavePlayers`
