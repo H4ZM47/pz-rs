@@ -1566,4 +1566,205 @@ mod tests {
         assert!(matches!(cmds.last(), Some(UiDrawCmd::Render(pz_render::DrawCmd::Clear(1280)))));
         assert_eq!(eval(&mut t, "tostring(s.javaObject:getUIName())").as_str(), Some("Widget: s"));
     }
+
+    // ---- Java subclasses through the pz-ui extension slot ----
+
+    use pz_ui::UIElementExt;
+    use std::cell::RefCell;
+
+    const TEST_SUB: &str = "zombie.ui.TestSubclass";
+    const TEST_SUPERS: &[&str] = &[UIELEMENT, "zombie.ui.ITestListener"];
+
+    /// A subclass overriding `render` (calling `super.render()` in the
+    /// middle, touching the element and re-entering Lua around it) and
+    /// `onMouseDown` (no super call) when `override_render`; everything
+    /// else falls back.
+    struct TestSub {
+        log: RefCell<Vec<String>>,
+        override_render: bool,
+    }
+
+    impl UIElementExt for TestSub {
+        fn class_name(&self) -> &'static str {
+            TEST_SUB
+        }
+        fn super_classes(&self) -> &'static [&'static str] {
+            TEST_SUPERS
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn render(&self, el: &UIElement, t: &mut Thread) {
+            if !self.override_render {
+                return el.render_base(t);
+            }
+            self.log.borrow_mut().push("hook before".into());
+            // The element's state is free while the hook runs.
+            el.set_width(el.get_width() + 1.0);
+            let f = t.globals().get_str("onSubRender");
+            if !f.is_nil() {
+                t.call(&f, &[el.to_value()]).unwrap();
+            }
+            el.render_base(t);
+            self.log.borrow_mut().push("hook after".into());
+        }
+        fn on_mouse_down(&self, el: &UIElement, t: &mut Thread, x: f64, y: f64) -> bool {
+            if !self.override_render {
+                return el.on_mouse_down_base(t, x, y);
+            }
+            self.log.borrow_mut().push(format!("hook down {x} {y}"));
+            true
+        }
+    }
+
+    fn setup_sub() -> Thread {
+        let mut t = setup();
+        let b = expose_class(&mut t, TEST_SUB, Some(UIELEMENT));
+        b.ctor(|c| {
+            let table = c.arg(0).as_table().cloned();
+            let override_render = c.arg(1).truthy();
+            let e = UIElement::new_ext(table, Box::new(TestSub { log: RefCell::default(), override_render }));
+            Ok(c.push(Value::Object(e as Rc<dyn LuaObject>)))
+        });
+        b.method("subOnly", |c| {
+            let e = el(c)?;
+            let n = e.ext::<TestSub>().map_or(-1.0, |s| s.log.borrow().len() as f64);
+            Ok(c.push(n))
+        });
+        // `instanceof` (bind_globals also defines `log`, so the test
+        // classes are loaded again after it).
+        crate::bind_globals::register(&mut t);
+        run(&mut t, "UIManager = zombie.ui.UIManager");
+        run(&mut t, CLASS);
+        run(
+            &mut t,
+            r#"
+            Sub = setmetatable({}, {__index = Widget})
+            Sub.__index = Sub
+            function Sub:instantiate()
+                self.javaObject = TestSubclass.new(self, self.override)
+                self.javaObject:setX(self.x)
+                self.javaObject:setY(self.y)
+                self.javaObject:setWidth(self.width)
+                self.javaObject:setHeight(self.height)
+            end
+        "#,
+        );
+        t
+    }
+
+    fn sub_log(t: &mut Thread, var: &str) -> Vec<String> {
+        let v = eval(t, &format!("{var}.javaObject"));
+        let e = element_of(&v).unwrap();
+        let l = e.ext::<TestSub>().unwrap().log.borrow().clone();
+        l
+    }
+
+    /// The identity Lua sees is the subclass; it inherits UIElement's
+    /// methods, keeps its own, and AddChild/AddUI accept it.
+    #[test]
+    fn subclass_identity_inheritance_and_add_child() {
+        let mut t = setup_sub();
+        run(
+            &mut t,
+            r#"
+            root = Widget:new("root", 0, 0, 300, 300)
+            s = Sub:new("s", 10, 10, 50, 50); s.override = true
+            root:addChild(s)
+            root:addToUIManager()
+            s2 = Sub:new("s2", 0, 0, 10, 10); s2:addToUIManager()
+        "#,
+        );
+        // AddUI takes effect at the next update.
+        tick(&mut t, 1_000_000);
+        let v = eval(&mut t, "s.javaObject");
+        let Value::Object(o) = &v else { panic!() };
+        assert_eq!(o.class_name(), TEST_SUB);
+        assert_eq!(o.super_classes(), TEST_SUPERS);
+        assert!(eval(&mut t, "instanceof(s.javaObject, 'UIElement')").truthy());
+        assert!(eval(&mut t, "instanceof(s.javaObject, 'TestSubclass')").truthy());
+        assert!(eval(&mut t, "instanceof(s.javaObject, 'ITestListener')").truthy());
+        assert!(!eval(&mut t, "instanceof(root.javaObject, 'TestSubclass')").truthy());
+        // Inherited (UIElement) and own methods on one object.
+        assert_eq!(eval(&mut t, "s.javaObject:getX()").as_num(), Some(10.0));
+        assert_eq!(eval(&mut t, "s.javaObject:subOnly()").as_num(), Some(0.0));
+        // In the child list and the UI list as the same object.
+        assert!(eval(&mut t, "root.javaObject:getControls():get(0) == s.javaObject").truthy());
+        assert!(eval(&mut t, "UIManager.getUI():contains(s2.javaObject)").truthy());
+        assert!(eval(&mut t, "tostring(s.javaObject)").as_str().is_some());
+    }
+
+    /// Overridden hooks run in place of the base and may call it
+    /// (`super.render()`); hooks left alone fall back to the base.
+    #[test]
+    fn subclass_hooks_override_and_fall_back() {
+        let mut t = setup_sub();
+        run(
+            &mut t,
+            r#"
+            root = Widget:new("root", 0, 0, 300, 300)
+            s = Sub:new("s", 10, 10, 50, 50); s.override = true
+            plain = Sub:new("plain", 100, 10, 50, 50); plain.override = false
+            root:addChild(s); root:addChild(plain)
+            root:addToUIManager()
+        "#,
+        );
+        tick(&mut t, 1_000_000);
+        clear_log(&mut t);
+        UIManager::render(&mut t);
+        assert_eq!(
+            log(&t),
+            ["prerender root", "prerender s", "render s", "prerender plain", "render plain", "render root"]
+        );
+        assert_eq!(sub_log(&mut t, "s"), ["hook before", "hook after"]);
+        assert!(sub_log(&mut t, "plain").is_empty());
+        // update has no override: the base runs the Lua update.
+        clear_log(&mut t);
+        tick(&mut t, 1_000_200);
+        assert_eq!(log(&t), ["update root", "update s", "update plain"]);
+        // onMouseDown: the override replaces the base (no Lua callback for
+        // `s`), the fallback reaches Lua for `plain`.
+        clear_log(&mut t);
+        let r = eval(&mut t, "root.javaObject");
+        let root = element_of(&r).unwrap();
+        root.on_mouse_down(&mut t, 20.0, 20.0);
+        assert_eq!(sub_log(&mut t, "s").last().map(String::as_str), Some("hook down 10 10"));
+        root.on_mouse_down(&mut t, 120.0, 20.0);
+        assert!(log(&t).contains(&"down plain 20 10".to_string()), "{:?}", log(&t));
+    }
+
+    /// No element borrow is held while a hook runs: the hook mutates the
+    /// element and calls Lua, which re-enters the element (setters,
+    /// AddChild, RemoveChild, bringToTop) before the base render.
+    #[test]
+    fn subclass_hook_reentry_holds_no_borrow() {
+        let mut t = setup_sub();
+        run(
+            &mut t,
+            r#"
+            root = Widget:new("root", 0, 0, 300, 300)
+            s = Sub:new("s", 10, 10, 50, 50); s.override = true
+            root:addChild(s)
+            root:addToUIManager()
+            extra = Widget:new("extra", 1, 1, 5, 5); extra:instantiate()
+            function onSubRender(jo)
+                jo:setX(jo:getX() + 1)
+                jo:setHeight(jo:getHeight() + 1)
+                jo:AddChild(extra.javaObject)
+                jo:RemoveChild(extra.javaObject)
+                jo:AddChild(extra.javaObject)
+                jo:bringToTop()
+                L2 = jo:getControls():size()
+            end
+        "#,
+        );
+        tick(&mut t, 1_000_000);
+        UIManager::render(&mut t);
+        assert_eq!(eval(&mut t, "s.javaObject:getX()").as_num(), Some(11.0));
+        assert_eq!(eval(&mut t, "s.javaObject:getWidth()").as_num(), Some(51.0));
+        assert_eq!(eval(&mut t, "L2").as_num(), Some(1.0));
+        // The base render then drew the child added from inside the hook.
+        assert!(log(&t).contains(&"render extra".to_string()), "{:?}", log(&t));
+    }
+
 }

@@ -32,6 +32,8 @@ struct App {
     mouse_down: [bool; 5],
     mouse_pos: (i32, i32),
     wheel: i32,
+    /// `UI3DModel` avatars (installed at boot).
+    ui_models: Option<Rc<RefCell<crate::ui_models::UiModels>>>,
 }
 
 /// Boot (`GameWindow.init`) and run the main menu until the window closes.
@@ -55,6 +57,7 @@ pub fn run(launch: Launch) -> Result<(), String> {
         mouse_down: [false; 5],
         mouse_pos: (0, 0),
         wheel: 0,
+        ui_models: None,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
@@ -65,7 +68,10 @@ impl App {
         let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&self.launch.game_dir)));
         fs.borrow_mut().set_cache_dir(&self.launch.cache_dir);
         pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
+        self.ui_models = Some(crate::ui_models::install(&self.launch.game_dir, fs.clone()));
         let mut lua = LuaManager::init(fs).map_err(|e| format!("LuaManager.init: {e}"))?;
+        // GameWindow.init: Translator.loadFiles and TextManager.Init.
+        pz_lua_api::bind_text::boot(&lua.fs.borrow(), &self.core.borrow()).map_err(|e| format!("text init: {e}"))?;
         UIManager::init();
         lua.load_all_client();
         lua.trigger_event("OnGameBoot", &[]);
@@ -105,6 +111,15 @@ impl App {
         UIManager::update(&mut lua.thread);
         self.state.update(lua, multiplier);
         pz_ui::with_ui(|m| m.mouse.end_frame());
+        // The avatars' texture jobs (ModelInstanceTextureCreator) before
+        // the UI draws them.
+        if let Some(u) = self.ui_models.as_ref() {
+            // GameTime.getTimeDelta(): the 30 FPS multiplier over 30.
+            u.borrow_mut().set_time_delta(multiplier / 30.0);
+            if let Some(gpu) = self.gpu.as_mut() {
+                u.borrow_mut().prepare(gpu);
+            }
+        }
         // GameWindow.render: states.render.
         let mut dl = pz_render::DrawList::default();
         self.state.render(lua, &mut dl, w, h, multiplier);
@@ -222,10 +237,22 @@ pub fn render_headless(launch: Launch, frames: u32) -> Result<(u32, u32, Vec<u8>
         mouse_down: [false; 5],
         mouse_pos: (0, 0),
         wheel: 0,
+        ui_models: None,
     };
     let (w, h) = app.screen_size();
     app.gpu = Some(pz_gpu::Gpu::new_headless(w as u32, h as u32).map_err(|e| e.to_string())?);
     app.boot()?;
+    // Development harness: `PZ_HEADLESS_LUA=<file>` runs a Lua file after
+    // boot (e.g. to open a screen before the frames).
+    if let Some(path) = std::env::var_os("PZ_HEADLESS_LUA") {
+        let src = std::fs::read_to_string(&path).map_err(|e| format!("PZ_HEADLESS_LUA: {e}"))?;
+        let lua = app.lua.as_mut().ok_or("no Lua")?;
+        let f = pz_kahlua::stdlib::load_string(&src, Some("headless"), lua.thread.globals().clone())
+            .map_err(|e| format!("PZ_HEADLESS_LUA: {e:?}"))?;
+        if let Err((e, tr)) = lua.thread.pcall(&f, &[]) {
+            eprintln!("PZ_HEADLESS_LUA: {e:?}\n{tr}");
+        }
+    }
     for _ in 0..frames {
         app.last_frame = Instant::now() - Duration::from_millis(33);
         app.frame();

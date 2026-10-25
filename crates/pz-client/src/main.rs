@@ -61,6 +61,14 @@ fn main() {
     let _ = std::fs::create_dir_all(&cache_dir);
     if let (Some(out), Some(frames)) = (png_out.clone(), headless_frames) {
         let cache = cache_dir.clone();
+        // GameWindow.init's script loading, as the Lua-only harness does.
+        {
+            let mut fs = pz_fs::GameFs::new(&dir);
+            fs.set_cache_dir(&cache);
+            if let Err(e) = main_screen::load_scripts(&dir, &fs) {
+                eprintln!("{e}");
+            }
+        }
         match pz_engine::game_window::render_headless(pz_engine::game_window::Launch { game_dir: dir, cache_dir: cache }, frames) {
             Ok((w, h, px)) => {
                 let f = std::fs::File::create(&out).expect("png");

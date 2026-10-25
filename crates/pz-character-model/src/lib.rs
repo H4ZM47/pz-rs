@@ -30,6 +30,7 @@ pub mod render;
 pub mod resources;
 pub mod scene;
 pub mod texture_creator;
+pub mod ui_model;
 pub mod world_item;
 
 pub use data::{

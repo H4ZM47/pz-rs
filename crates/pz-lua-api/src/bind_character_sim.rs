@@ -896,6 +896,21 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     for class in [ISO_PLAYER_CLASS, ISO_SURVIVOR_CLASS, ISO_ZOMBIE_CLASS, ISO_ANIMAL_CLASS] {
         expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
     }
+    // `new IsoSurvivor(desc, cell, x, y, z)` (character creation's avatar),
+    // the simulation part only: the descriptor is set. TODO(world): the
+    // cell and position, `setFemale`, `desc.setInstance`, sprite parts,
+    // `Dressup`, worn/attached item init and the `OnCreateSurvivor` /
+    // `OnCreateLivingCharacter` events.
+    {
+        let sm = sm.clone();
+        expose_class(thread, ISO_SURVIVOR_CLASS, Some(ISO_GAME_CHARACTER_CLASS)).ctor(move |c| {
+            let d = desc_arg(c, 0)?;
+            adopt_survivor_desc_value(&c.arg(0));
+            let mut chr = LuaGameCharacter::new(&sm, CharacterKind::Survivor);
+            chr.descriptor = Some(d);
+            Ok(c.push(character_value(&Rc::new(RefCell::new(chr)))))
+        });
+    }
     b.method("getStats", |c| {
         let chr = chr_of(c)?;
         let v = canonical((Handle::Stats, Rc::as_ptr(&chr) as usize, 0), || {

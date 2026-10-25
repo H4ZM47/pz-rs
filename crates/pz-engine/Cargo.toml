@@ -11,4 +11,8 @@ pz-ui.workspace = true
 pz-fs.workspace = true
 pz-render.workspace = true
 pz-gpu = { path = "../pz-gpu" }
+pz-character-model = { path = "../pz-character-model" }
+pz-model = { path = "../pz-model" }
+pz-anim.workspace = true
+pz-characters.workspace = true
 winit = "0.30"
