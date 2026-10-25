@@ -28,6 +28,7 @@ use crate::color::{self, ColorInfo};
 use crate::sprite::{self, Dir, Modifier, SpriteCtx, SpriteDraw};
 use crate::texd::{FloorShaper, WallPart, WallShaper};
 use crate::world::{DepthMaps, ObjectKind, RenderObject, RenderSquare, TileType};
+use crate::render_info::{ObjectSlot, Recording, RenderInfos};
 use crate::Camera;
 
 /// `ObjectRenderLayer`.
@@ -144,11 +145,14 @@ pub struct ChunkRenderer<'a> {
     pub trees: std::cell::RefCell<crate::trees::Trees>,
     /// Water, puddles, snow and blood; `None` draws none of them.
     pub surfaces: Option<crate::weather::Surfaces<'a>>,
+    /// Where each drawn object's `ObjectRenderInfo` goes, and the player
+    /// the frame is for; `None` records nothing.
+    pub render_infos: Option<(&'a RenderInfos, usize)>,
 }
 
 impl<'a> ChunkRenderer<'a> {
     pub fn new(cam: Camera, depth_maps: &'a dyn DepthMaps, view_size: (u32, u32)) -> Self {
-        ChunkRenderer { cam, depth_maps, view_size, trees: Default::default(), cutaways: None, surfaces: None }
+        ChunkRenderer { cam, depth_maps, view_size, trees: Default::default(), cutaways: None, surfaces: None, render_infos: None }
     }
 
     /// This renderer with this frame's water, puddles, snow and blood.
@@ -159,6 +163,16 @@ impl<'a> ChunkRenderer<'a> {
     /// This renderer with this frame's cutaways.
     pub fn with_cutaways(self, cutaways: Option<CutawayView<'a>>) -> Self {
         ChunkRenderer { cutaways, ..self }
+    }
+
+    /// This renderer recording each drawn object's render info for
+    /// `player` into `infos` (for the object picker).
+    pub fn with_render_infos(self, infos: &'a RenderInfos, player: usize) -> Self {
+        ChunkRenderer { render_infos: Some((infos, player)), ..self }
+    }
+
+    fn recording(&self) -> Option<Recording<'a>> {
+        self.render_infos.map(|(infos, player)| Recording { infos, player, current: None })
     }
 }
 
@@ -188,11 +202,13 @@ impl ChunkRenderer<'_> {
         let cv = self.cutaways.as_ref();
         for sq in squares.iter().flatten() {
             if cv.is_some_and(|cv| !cv.is_visible(sq)) {
+                self.set_not_rendered(sq);
                 continue;
             }
             if sq.objects.is_empty() {
                 continue;
             }
+            self.calculate_object_render_info(sq);
             let mut flags = 0;
             for obj in &sq.objects {
                 match alpha::render_layer(cv, sq, obj) {
@@ -209,7 +225,7 @@ impl ChunkRenderer<'_> {
                 minus_floor.push(*sq);
             }
         }
-        let mut ctx = SpriteCtx { cam: &self.cam, chunk: Some(tex), depth_maps: self.depth_maps, out, highlight_pass: false };
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: Some(tex), depth_maps: self.depth_maps, out, highlight_pass: false, record: self.recording() };
         for sq in &solid_floor {
             for (i, obj) in sq.objects.iter().enumerate() {
                 if alpha::render_layer(cv, sq, obj) == Layer::Floor {
@@ -227,8 +243,9 @@ impl ChunkRenderer<'_> {
         }
         for sq in &minus_floor {
             for layer in [Layer::MinusFloor, Layer::MinusFloorSE] {
-                for obj in &sq.objects {
+                for (i, obj) in sq.objects.iter().enumerate() {
                     if alpha::render_layer(cv, sq, obj) == layer && !(layer == Layer::MinusFloor && alpha::skip_on_force_render_square(cv, sq, obj)) {
+                        ctx.begin_object(sq, i);
                         render_minus_floor(&mut ctx, sq, obj, cv);
                     }
                 }
@@ -250,14 +267,15 @@ impl ChunkRenderer<'_> {
 
     /// `renderTranslucentFloorObjects` for level `z`.
     pub fn render_translucent_floors(&self, squares: &[&RenderSquare], z: i32, out: &mut Vec<DrawCmd>) {
-        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out, highlight_pass: false };
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out, highlight_pass: false, record: self.recording() };
         let cv = self.cutaways.as_ref();
         let at_level: Vec<&RenderSquare> = squares.iter().copied().filter(|s| s.z == z && cv.is_none_or(|cv| cv.is_visible(s))).collect();
         let has = |sq: &RenderSquare, l: &[Layer]| sq.objects.iter().any(|o| l.contains(&alpha::render_layer(cv, sq, o)));
         // Translucent floors, in chunk-cache order.
         for sq in at_level.iter().filter(|s| has(s, &[Layer::TranslucentFloor])) {
             begin_translucent(&mut ctx);
-            for obj in sq.objects.iter().filter(|o| alpha::render_layer(cv, sq, o) == Layer::TranslucentFloor) {
+            for (i, obj) in sq.objects.iter().enumerate().filter(|(_, o)| alpha::render_layer(cv, sq, o) == Layer::TranslucentFloor) {
+                ctx.begin_object(sq, i);
                 render_translucent(&mut ctx, sq, obj, cv);
             }
         }
@@ -267,7 +285,7 @@ impl ChunkRenderer<'_> {
 
     /// `renderTranslucentObjects` for level `z`.
     pub fn render_translucent_objects(&self, squares: &[&RenderSquare], z: i32, out: &mut Vec<DrawCmd>) {
-        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out, highlight_pass: false };
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out, highlight_pass: false, record: self.recording() };
         let cv = self.cutaways.as_ref();
         let at_level: Vec<&RenderSquare> = squares.iter().copied().filter(|s| s.z == z && cv.is_none_or(|cv| cv.is_visible(s))).collect();
         let has = |sq: &RenderSquare, l: &[Layer]| sq.objects.iter().any(|o| l.contains(&alpha::render_layer(cv, sq, o)));
@@ -282,7 +300,7 @@ impl ChunkRenderer<'_> {
         for sq in sorted {
             begin(&mut ctx);
             for layer in [Layer::Translucent, Layer::TranslucentSE] {
-                for obj in sq.objects.iter().filter(|o| alpha::render_layer(cv, sq, o) == layer) {
+                for (i, obj) in sq.objects.iter().enumerate().filter(|(_, o)| alpha::render_layer(cv, sq, o) == layer) {
                     if obj.kind == ObjectKind::Tree {
                         add_tree(&mut trees, sq, obj);
                         continue;
@@ -290,6 +308,7 @@ impl ChunkRenderer<'_> {
                     if !trees.trees.is_empty() {
                         flush_trees(&mut trees, &self.cam, vw, vh, ctx.out);
                     }
+                    ctx.begin_object(sq, i);
                     render_translucent(&mut ctx, sq, obj, cv);
                 }
             }
@@ -304,7 +323,7 @@ impl ChunkRenderer<'_> {
     /// squares, levels ascending) whose objects are not drawn in the
     /// translucent pass (those draw theirs there).
     pub fn render_animated_attachments(&self, squares: &[&RenderSquare], out: &mut Vec<DrawCmd>) {
-        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out, highlight_pass: false };
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out, highlight_pass: false, record: None };
         let cv = self.cutaways.as_ref();
         ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
         ctx.out.push(DrawCmd::DepthFunc(gl::LEQUAL));
@@ -332,11 +351,52 @@ impl ChunkRenderer<'_> {
         out.push(DrawCmd::Ortho { left: 0.0, right: width as f32, bottom: height as f32, top: 0.0, width, height });
         out.push(DrawCmd::GlEnable(gl::BLEND));
         out.push(DrawCmd::DepthFunc(gl::ALWAYS));
+        if let Some((infos, player)) = self.render_infos {
+            infos.clear_chunks(player);
+        }
         for t in textures {
             out.extend(t.composite(&self.cam));
+            if let Some((infos, player)) = self.render_infos {
+                infos.set_chunk(player, t.wx, t.wy, t.min_level, t.render_xy(&self.cam));
+            }
         }
         let z = self.cam.zoom;
         out.push(DrawCmd::Ortho { left: 0.0, right: width as f32 * z, bottom: height as f32 * z, top: 0.0, width, height });
+    }
+}
+
+impl ChunkRenderer<'_> {
+    /// `FBORenderCell.setNotRendered`: a square cut away or occluded.
+    fn set_not_rendered(&self, sq: &RenderSquare) {
+        let Some((infos, player)) = self.render_infos else { return };
+        for (index, obj) in sq.objects.iter().enumerate() {
+            infos.update(player, ObjectSlot { square: [sq.x, sq.y, sq.z], index, id: obj.id }, |i| {
+                i.layer = Layer::None;
+                i.target_alpha = 0.0;
+            });
+        }
+        infos.truncate(player, [sq.x, sq.y, sq.z], sq.objects.len());
+    }
+
+    /// `FBORenderCell.calculateObjectRenderInfo(square)` for the square's
+    /// objects: the layer and target alpha, not cut away, nothing drawn yet.
+    fn calculate_object_render_info(&self, sq: &RenderSquare) {
+        let Some((infos, player)) = self.render_infos else { return };
+        let cv = self.cutaways.as_ref();
+        for (index, obj) in sq.objects.iter().enumerate() {
+            let layer = alpha::render_layer(cv, sq, obj);
+            let target = alpha::target_alpha(cv, sq, obj);
+            infos.update(player, ObjectSlot { square: [sq.x, sq.y, sq.z], index, id: obj.id }, |i| {
+                i.layer = layer;
+                i.target_alpha = target;
+                i.render_alpha = 0.0;
+                i.cutaway_outline = false;
+                i.cutaway = false;
+                i.render_width = 0.0;
+                i.render_height = 0.0;
+            });
+        }
+        infos.truncate(player, [sq.x, sq.y, sq.z], sq.objects.len());
     }
 }
 
@@ -393,6 +453,7 @@ fn prepare_color(ctx: &SpriteCtx<'_>, obj: &RenderObject, col: ColorInfo) -> Col
 pub(crate) fn render_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, index: usize) {
     let obj = &sq.objects[index];
     let Some(sprite) = obj.sprite.as_deref() else { return };
+    ctx.begin_object(sq, index);
     ctx.out.push(DrawCmd::AlphaFunc(gl::GREATER, 0.0));
     ctx.out.push(DrawCmd::DepthMask(true));
     let v = &sq.vert_lights;
@@ -591,6 +652,12 @@ pub(crate) fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj
     let mut o = obj.clone();
     o.alpha = alpha::target_alpha(cv, sq, obj);
     let t = o.tile_type();
+    // renderTranslucent: `getRenderInfo(playerIndex).targetAlpha`, past
+    // the doors and door frames (drawn without it).
+    if !matches!(o.kind, ObjectKind::Door { .. }) && !matches!(t, TileType::DoorFrW | TileType::DoorFrN) {
+        let target = o.alpha;
+        ctx.update_info(|i| i.target_alpha = target);
+    }
     let wallish = matches!(o.kind, ObjectKind::Door { .. }) || matches!(t, TileType::DoorFrW | TileType::DoorFrN) || o.sprite.as_ref().is_some_and(|s| s.cut_n || s.cut_w);
     ctx.out.push(DrawCmd::AlphaFunc(gl::GREATER, 0.0));
     if o.sprite.is_some() && wallish {
@@ -727,6 +794,9 @@ enum CutDir {
 /// (W, NW) or the south-east post. Attached sprites on cut walls
 /// (`DoCutawayShaderAttached`) are not ported.
 fn do_cutaway_shader(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, dir: CutDir, wc: &crate::alpha::WallCutaway, cv: &CutawayView<'_>) {
+    // `obj.getRenderInfo(playerIndex).cutaway = true` (past the shared
+    // texture checks).
+    ctx.update_info(|i| i.cutaway = true);
     let parts: &[(WallSide, sprite::WallTexRender)] = match dir {
         CutDir::N => &[(WallSide::N, sprite::WallTexRender::All)],
         CutDir::W => &[(WallSide::W, sprite::WallTexRender::All)],

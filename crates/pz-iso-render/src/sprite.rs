@@ -67,6 +67,53 @@ pub struct SpriteCtx<'a> {
     /// `FBORenderObjectHighlight.isRendering()`: the highlight pass, whose
     /// sprites sit just in front of the chunk textures' copies.
     pub highlight_pass: bool,
+    /// The per-object render info being recorded, and the object drawn
+    /// (`ObjectRenderInfo` for the picker); `None` records nothing.
+    pub record: Option<crate::render_info::Recording<'a>>,
+}
+
+impl SpriteCtx<'_> {
+    /// Sets the object whose sprites are drawn next (its render info takes
+    /// their rectangles).
+    pub(crate) fn begin_object(&mut self, sq: &crate::world::RenderSquare, index: usize) {
+        if let Some(r) = self.record.as_mut() {
+            r.current = Some(crate::render_info::ObjectSlot { square: [sq.x, sq.y, sq.z], index, id: sq.objects[index].id });
+        }
+    }
+
+    /// Changes the render info of the object being drawn.
+    pub(crate) fn update_info(&self, f: impl FnOnce(&mut crate::render_info::ObjectRenderInfo)) {
+        if let Some(r) = self.record.as_ref() {
+            if let Some(slot) = r.current {
+                r.infos.update(r.player, slot, f);
+            }
+        }
+    }
+
+    /// The end of `IsoSprite.performRenderWithLayers` with fboRenderChunk:
+    /// a main sprite drawn at `obj.sx, obj.sy` (`sx`, `sy`: before the
+    /// global offset and `soffX/Y`) stores its rectangle for the picker,
+    /// chunk-texture relative while recording (`sx + getXOffset()`), screen
+    /// relative in the translucent pass (`sx - offX`). The highlight pass
+    /// and invisible draws (alpha 0) store nothing.
+    fn record_draw(&self, d: &SpriteDraw<'_>, sx: f32, sy: f32, tex: &Texture, scale: f32) {
+        if !d.main || d.obj.is_none() || self.highlight_pass || d.alpha == 0.0 {
+            return;
+        }
+        let (gx, gy) = match self.chunk {
+            Some(c) => c.record_offset(),
+            None => (-self.cam.off_x as f32, -self.cam.off_y as f32),
+        };
+        self.update_info(|i| {
+            i.render_x = sx + gx;
+            i.render_y = sy + gy;
+            i.render_width = tex.width_orig() as f32 * scale;
+            i.render_height = tex.height_orig() as f32 * scale;
+            i.render_scale_x = scale;
+            i.render_scale_y = scale;
+            i.render_alpha = d.alpha;
+        });
+    }
 }
 
 /// One sprite draw: `IsoSprite.render(inst, obj, x, y, z, dir, offsetX,
@@ -246,10 +293,6 @@ pub fn render_scaled(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, scale: f32) {
 
 fn render_inst(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, inst_scale: Option<f32>) {
     let s = d.sprite;
-    // performRenderFrame skips shore blends the water shader replaces.
-    if s.hide_for_water_render {
-        return;
-    }
     let Some(tex) = s.texture.as_ref() else { return };
     let mut info = d.col;
     if s.flags.unlit {
@@ -267,6 +310,17 @@ fn render_inst(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, inst_scale: Option<f
     let mut sy = y_to_screen(lx, ly, d.z, 0);
     sx -= d.offset_x;
     sy -= d.offset_y;
+    // `obj.sx`, `obj.sy`.
+    let (osx, osy) = (sx, sy);
+    // performRenderFrame skips shore blends the water shader replaces
+    // (still recording the rectangle).
+    if s.hide_for_water_render {
+        let scale = inst_scale.map_or_else(|| instance_scale(tex), |i| frame_scale(tex, i));
+        if scale > 0.0 {
+            ctx.record_draw(d, osx, osy, tex, scale);
+        }
+        return;
+    }
     sx += gox;
     sy += goy;
     sx += s.soff_x as f32;
@@ -292,6 +346,7 @@ fn render_inst(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, inst_scale: Option<f
     }
 
     if let Some((tile, col)) = d.seam {
+        ctx.record_draw(d, osx, osy, tex, instance_scale(tex));
         render_seam(ctx, d, tex, tile, col, info, sx, sy);
         return;
     }
@@ -355,6 +410,7 @@ fn render_inst(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, inst_scale: Option<f
     if scale <= 0.0 {
         return;
     }
+    ctx.record_draw(d, osx, osy, tex, scale);
     let (mut w, mut h) = (tex.width as f32, tex.height as f32);
     let (mut tx, mut ty) = (sx, sy);
     if scale != 1.0 {
@@ -474,8 +530,10 @@ pub fn render_cutaway(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, shaper: &Wall
         Some(ch) => (ch.record_offset(), coordmodulof(d.x, 8), coordmodulof(d.y, 8)),
         None => ((-ctx.cam.off_x as f32, -ctx.cam.off_y as f32), d.x, d.y),
     };
-    let sx = x_to_screen(lx, ly) - d.offset_x + gox + s.soff_x as f32;
-    let sy = y_to_screen(lx, ly, d.z, 0) - d.offset_y + goy + s.soff_y as f32;
+    let (osx, osy) = (x_to_screen(lx, ly) - d.offset_x, y_to_screen(lx, ly, d.z, 0) - d.offset_y);
+    let sx = osx + gox + s.soff_x as f32;
+    let sy = osy + goy + s.soff_y as f32;
+    ctx.record_draw(d, osx, osy, tex0, instance_scale(tex0));
     let (front, far) = tile_depths(ctx, d.x, d.y, d.z, d.z);
     let (t1, t2) = (&c.stencil, &c.depth);
     let col = crate::color::to_abgr(info.r, info.g, info.b, info.a);

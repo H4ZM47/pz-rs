@@ -2277,7 +2277,9 @@ dependencies = [
  "pz-gpu",
  "pz-inventory",
  "pz-iso-render",
+ "pz-kahlua",
  "pz-lighting",
+ "pz-lua-api",
  "pz-render",
  "pz-world",
 ]

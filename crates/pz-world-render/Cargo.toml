@@ -11,6 +11,8 @@ pz-lighting.workspace = true
 pz-render.workspace = true
 pz-fs.workspace = true
 pz-iso-render = { path = "../pz-iso-render" }
+pz-lua-api.workspace = true
+pz-kahlua.workspace = true
 
 [dev-dependencies]
 pz-inventory.workspace = true
