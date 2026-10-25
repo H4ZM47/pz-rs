@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
+use crate::objects::ObjectName;
 use crate::objects::{IsoDoor, IsoTree};
 use crate::sprite::{test_tables, PropertyValueMap};
 use crate::IsoChunk;
@@ -28,6 +29,7 @@ const SPRITES: &[Spec] = &[
     ("tree", "tree", &[]),
     ("sink", "normal", &[("waterPiped", "")]),
     ("rope", "normal", &[("climbSheetN", "")]),
+    ("stairs_tn", "stairsTN", &[]),
 ];
 
 fn manager() -> IsoSpriteManager {
@@ -572,4 +574,211 @@ fn recalculating_properties_clears_the_chunk_collision_data() {
     ch.collision.init(0, || 1u8);
     assert!(!w.cell.chunks.contains_key(&(1, 0)));
     assert_eq!(ch.collision.get::<u8>(0), Some(&1));
+}
+
+// ---- AddWorldInventoryItem and the floor drops ----
+
+fn world_item(ty: &str, id: i32) -> pz_inventory::shared::ItemRef {
+    let mut t = pz_inventory::ItemTemplate::new(pz_inventory::ItemClass::Normal, "Base", ty);
+    t.display_name = format!("{ty} name");
+    t.actual_weight = 20.0;
+    let mut i = InventoryItem::create(Rc::new(t), 1);
+    i.id = id;
+    i.name = format!("{ty} name");
+    i.key_id = 77;
+    Rc::new(RefCell::new(i))
+}
+
+#[test]
+fn world_item_joins_the_square() {
+    let mut w = World::new();
+    let p = (2, 7, 0);
+    let item = world_item("Hammer", 9);
+    let inv = pz_inventory::SharedContainer::default().into_ref();
+    pz_inventory::shared::add_item(&inv, &item);
+    pz_inventory::shared::remove_item(&inv, &item);
+    item.borrow_mut()
+        .components
+        .push(pz_inventory::ComponentBlob {
+            type_id: pz_entity::ComponentType::FluidContainer.id(),
+            data: vec![1, 2],
+        });
+    let before = w.sq(p).objects.len();
+    let placed = w
+        .env()
+        .add_world_inventory_item(p, &item, 0.0, 0.5, 0.25, 123.5);
+    let WorldItemPlaced::Object(r) = placed else {
+        panic!("{placed:?}");
+    };
+    // z rotation, then the x offset (y is not 0).
+    assert_eq!(w.rand.0, [360, 1000]);
+    let sq = w.sq(p);
+    assert_eq!(sq.objects.len(), before + 1);
+    assert_eq!(sq.world_objects, [r.id]);
+    let o = sq.objects.last().unwrap();
+    assert_eq!(o.id, r.id);
+    assert_eq!(o.name, Some(ObjectName::Str("Hammer name".into())));
+    assert_eq!(o.key_id, 77);
+    assert!(o.outline_on_mouseover && o.has_components);
+    assert_eq!(o.components.len(), 1);
+    let ObjectKind::WorldInventory(wi) = &o.kind else {
+        panic!()
+    };
+    assert_eq!(
+        (wi.xoff, wi.yoff, wi.zoff, wi.drop_time),
+        (0.0, 0.5, 0.25, 123.5)
+    );
+    let copy = wi.item.as_item().unwrap();
+    assert_eq!(copy.id, 9);
+    assert_eq!(copy.world_z_rotation, 0.0);
+    assert!(item.borrow().components.is_empty());
+    assert_eq!(item.borrow().world_z_rotation, 0.0);
+    let log = w.take_log();
+    // (2, 7) is chunk-local (2, 7): its own square renders it.
+    assert_eq!(log.first().map(String::as_str), Some("render 0,0,0 68"));
+    assert_eq!(log.last().map(String::as_str), Some("render 0,0,0 68"));
+    assert!(log
+        .iter()
+        .any(|l| l.contains("ProcessWorldItems { add: true }")));
+    assert!(!log
+        .iter()
+        .any(|l| l.starts_with("pathfind") || l.starts_with("collision")));
+    // A second item: no draws for set offsets and rotation.
+    w.rand.0.clear();
+    let item2 = world_item("Nail", 10);
+    item2.borrow_mut().world_z_rotation = 90.0;
+    w.env()
+        .add_world_inventory_item(p, &item2, 0.3, 0.4, 0.0, 1.0);
+    assert!(w.rand.0.is_empty());
+    assert_eq!(w.sq(p).world_objects.len(), 2);
+    let total = w
+        .sq(p)
+        .get_total_weight_of_items_on_floor(|_, i| i.template.actual_weight);
+    assert_eq!(total, 40.0);
+}
+
+#[test]
+fn render_square_of_chunk_corners() {
+    let w = World::new();
+    assert_eq!(render_square(&w.cell, (0, 7, 0)), None, "no square south");
+    assert_eq!(render_square(&w.cell, (7, 0, 0)), Some((8, 0, 0)));
+    assert_eq!(render_square(&w.cell, (3, 3, 0)), Some((3, 3, 0)));
+}
+
+#[test]
+fn corpses_generators_and_animals_go_to_hooks() {
+    let mut w = World::new();
+    let p = (3, 3, 0);
+    let corpse = world_item("CorpseMale", 1);
+    assert_eq!(
+        w.env()
+            .add_world_inventory_item(p, &corpse, 0.5, 0.5, 0.0, 0.0),
+        WorldItemPlaced::NotPlaced
+    );
+    let gen = world_item("Generator", 2);
+    assert_eq!(
+        w.env()
+            .add_world_inventory_item(p, &gen, 0.5, 0.5, 0.0, 0.0),
+        WorldItemPlaced::NotPlaced
+    );
+    let mut t = (*gen.borrow().template).clone();
+    t.class = pz_inventory::ItemClass::Animal;
+    t.type_ = "Animal".into();
+    let animal = Rc::new(RefCell::new(InventoryItem::create(Rc::new(t), 1)));
+    assert_eq!(
+        w.env()
+            .add_world_inventory_item(p, &animal, 0.5, 0.5, 0.0, 0.0),
+        WorldItemPlaced::Animal
+    );
+    assert!(w.sq(p).world_objects.is_empty());
+}
+
+#[test]
+fn solid_floor_and_apparent_z() {
+    let mut w = World::new();
+    w.env().create_new_grid_square((4, 4, 1), true);
+    // Level 1 has no floor: level 0's.
+    assert_eq!(w.cell.get_solid_floor_at(4, 4, 1, &w.m), Some((4, 4, 0)));
+    assert_eq!(w.cell.get_solid_floor_at(4, 4, 3, &w.m), Some((4, 4, 0)));
+    assert_eq!(w.cell.get_solid_floor_at(40, 4, 0, &w.m), None);
+    let p = (5, 5, 0);
+    let o = w.obj("stairs_tn");
+    w.env().add_tile_object(p, o, -1);
+    let sq = w.sq(p);
+    assert!(sq.has_type(w.m.tables.ty.stairsTN));
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    assert_eq!(
+        sq.get_apparent_z(0.5, 0.25, &w.m, true),
+        lerp(0.7666, 1.0, 0.75)
+    );
+    assert_eq!(sq.get_apparent_z(0.5, 2.0, &w.m, false), 0.6666);
+    assert_eq!(w.sq((6, 6, 0)).get_apparent_z(0.5, 0.5, &w.m, true), 0.0);
+}
+
+/// A player holding `items` on (3, 3, 1) with a 50 capacity.
+struct Carrier {
+    inv: pz_inventory::ContainerRef,
+}
+
+impl pz_inventory::floor_drop::DropCharacter for Carrier {
+    fn inventory(&self) -> pz_inventory::ContainerRef {
+        self.inv.clone()
+    }
+    fn is_player(&self) -> bool {
+        true
+    }
+    fn is_in_vehicle(&self) -> bool {
+        false
+    }
+    fn current_square(&self) -> Option<SquarePos> {
+        Some((3, 3, 1))
+    }
+    fn capacity_weight(&self) -> f32 {
+        self.inv
+            .borrow()
+            .items
+            .iter()
+            .map(|i| i.borrow().template.actual_weight)
+            .sum()
+    }
+    fn unequipped_weight(&self, item: &pz_inventory::shared::ItemRef) -> f32 {
+        item.borrow().template.actual_weight
+    }
+    fn primary_hand_item(&self) -> Option<pz_inventory::shared::ItemRef> {
+        None
+    }
+    fn secondary_hand_item(&self) -> Option<pz_inventory::shared::ItemRef> {
+        None
+    }
+    fn set_primary_hand_item(&mut self, _: Option<&pz_inventory::shared::ItemRef>) {}
+    fn set_secondary_hand_item(&mut self, _: Option<&pz_inventory::shared::ItemRef>) {}
+}
+
+#[test]
+fn too_heavy_worn_item_drops_to_the_floor_below() {
+    let mut w = World::new();
+    w.env().create_new_grid_square((3, 3, 1), true);
+    let coat = world_item("Coat", 1);
+    let rock = world_item("Rock", 2);
+    let anvil = world_item("Anvil", 3);
+    let inv = pz_inventory::SharedContainer::default().into_ref();
+    for i in [&coat, &rock, &anvil] {
+        pz_inventory::shared::add_item(&inv, i);
+    }
+    let mut chr = Carrier { inv };
+    let mut env = w.env();
+    let mut floor = FloorDropEnv::new(&mut env, 10.0);
+    let d = pz_inventory::floor_drop::force_drop_too_heavy(&mut chr, &mut floor, true, Some(&coat))
+        .unwrap();
+    // `Rand.Next(0.1f, 0.9f)` with a generator answering 0.
+    assert_eq!((d.square, d.x, d.y, d.z), ((3, 3, 0), 0.1, 0.1, 0.0));
+    let placed = floor.placed;
+    assert!(matches!(placed[..], [WorldItemPlaced::Object(r)] if r.pos == (3, 3, 0)));
+    assert_eq!(chr.inv.borrow().items.len(), 2);
+    let sq = w.sq((3, 3, 0));
+    let ObjectKind::WorldInventory(wi) = &sq.objects.last().unwrap().kind else {
+        panic!()
+    };
+    assert_eq!((wi.xoff, wi.yoff, wi.drop_time), (0.1, 0.1, 10.0));
+    assert_eq!(wi.item.as_item().unwrap().id, 1);
 }
