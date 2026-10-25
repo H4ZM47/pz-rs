@@ -14,7 +14,7 @@
 //! float array (bits in hex, empty array `a`). Return values use the same
 //! tags; outputs are the written prefix of the output array as hex bits.
 
-use super::VehiclePhysics;
+use super::{JavaCallbacks, PhysicsResult, VehiclePhysics};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -197,7 +197,16 @@ impl ReplayPhysics {
 }
 
 impl VehiclePhysics for ReplayPhysics {
-    fn init_world(&mut self, a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, s: bool) {
+    fn init_world(
+        &mut self,
+        a: i32,
+        b: i32,
+        c: i32,
+        d: i32,
+        e: i32,
+        f: i32,
+        s: bool,
+    ) -> PhysicsResult<()> {
         self.take(
             "initWorld",
             vec![
@@ -210,30 +219,50 @@ impl VehiclePhysics for ReplayPhysics {
                 enc_z(s),
             ],
         );
+        Ok(())
     }
     fn destroy_world(&mut self) {
         self.take("destroyWorld", vec![]);
     }
-    fn activate_chunk_map(&mut self, p: i32, wx: i32, wy: i32, w: i32) {
+    fn activate_chunk_map(&mut self, p: i32, wx: i32, wy: i32, w: i32) -> PhysicsResult<()> {
         self.take(
             "activateChunkMap",
             vec![enc_i(p), enc_i(wx), enc_i(wy), enc_i(w)],
         );
+        Ok(())
     }
-    fn deactivate_chunk_map(&mut self, p: i32) {
+    fn deactivate_chunk_map(&mut self, p: i32) -> PhysicsResult<()> {
         self.take("deactivateChunkMap", vec![enc_i(p)]);
+        Ok(())
     }
-    fn scroll_chunk_map(&mut self, p: i32, dir: i32) {
+    fn scroll_chunk_map(&mut self, p: i32, dir: i32) -> PhysicsResult<()> {
         self.take("scrollChunkMap", vec![enc_i(p), enc_i(dir)]);
+        Ok(())
     }
-    fn define_vehicle_script(&mut self, name: &str, params: &[f32]) {
+    fn set_chunk_min_max_level(&mut self, wx: i32, wy: i32, a: i32, b: i32) -> PhysicsResult<()> {
+        self.take(
+            "setChunkMinMaxLevel",
+            vec![enc_i(wx), enc_i(wy), enc_i(a), enc_i(b)],
+        );
+        Ok(())
+    }
+    /// `ToBullet` buffers are not part of the recordings.
+    fn to_bullet(&mut self, _buf: &[u8]) {}
+    fn define_vehicle_script(&mut self, name: &str, params: &[f32]) -> PhysicsResult<()> {
         self.take("defineVehicleScript", vec![enc_s(name), enc_a(params)]);
+        Ok(())
     }
-    fn define_vehicle_physics_mesh(&mut self, name: &str, i: i32, pts: &[f32]) {
+    fn define_vehicle_physics_mesh(
+        &mut self,
+        name: &str,
+        i: i32,
+        pts: &[f32],
+    ) -> PhysicsResult<()> {
         self.take(
             "defineVehiclePhysicsMesh",
             vec![enc_s(name), enc_i(i), enc_a(pts)],
         );
+        Ok(())
     }
     fn add_vehicle(
         &mut self,
@@ -246,7 +275,7 @@ impl VehiclePhysics for ReplayPhysics {
         qz: f32,
         qw: f32,
         script: &str,
-    ) {
+    ) -> PhysicsResult<()> {
         self.take(
             "addVehicle",
             vec![
@@ -261,34 +290,47 @@ impl VehiclePhysics for ReplayPhysics {
                 enc_s(script),
             ],
         );
+        Ok(())
     }
-    fn remove_vehicle(&mut self, id: i32) {
+    fn remove_vehicle(&mut self, id: i32) -> PhysicsResult<()> {
         self.take("removeVehicle", vec![enc_i(id)]);
+        Ok(())
     }
-    fn control_vehicle(&mut self, id: i32, e: f32, b: f32, s: f32) {
+    fn control_vehicle(&mut self, id: i32, e: f32, b: f32, s: f32) -> PhysicsResult<()> {
         self.take(
             "controlVehicle",
             vec![enc_i(id), enc_f(e), enc_f(b), enc_f(s)],
         );
+        Ok(())
     }
-    fn set_vehicle_active(&mut self, id: i32, a: bool) {
+    fn set_vehicle_active(&mut self, id: i32, a: bool) -> PhysicsResult<()> {
         self.take("setVehicleActive", vec![enc_i(id), enc_z(a)]);
+        Ok(())
     }
-    fn set_vehicle_static(&mut self, id: i32, s: bool) -> i32 {
-        self.take("setVehicleStatic", vec![enc_i(id), enc_z(s)])
-            .ret_i()
+    fn set_vehicle_static(&mut self, id: i32, s: bool) -> PhysicsResult<i32> {
+        Ok(self
+            .take("setVehicleStatic", vec![enc_i(id), enc_z(s)])
+            .ret_i())
     }
-    fn apply_central_force_to_vehicle(&mut self, id: i32, x: f32, y: f32, z: f32) {
+    fn apply_central_force_to_vehicle(
+        &mut self,
+        id: i32,
+        x: f32,
+        y: f32,
+        z: f32,
+    ) -> PhysicsResult<()> {
         self.take(
             "applyCentralForceToVehicle",
             vec![enc_i(id), enc_f(x), enc_f(y), enc_f(z)],
         );
+        Ok(())
     }
-    fn apply_torque_to_vehicle(&mut self, id: i32, x: f32, y: f32, z: f32) {
+    fn apply_torque_to_vehicle(&mut self, id: i32, x: f32, y: f32, z: f32) -> PhysicsResult<()> {
         self.take(
             "applyTorqueToVehicle",
             vec![enc_i(id), enc_f(x), enc_f(y), enc_f(z)],
         );
+        Ok(())
     }
     fn teleport_vehicle(
         &mut self,
@@ -300,7 +342,7 @@ impl VehiclePhysics for ReplayPhysics {
         qy: f32,
         qz: f32,
         qw: f32,
-    ) {
+    ) -> PhysicsResult<()> {
         self.take(
             "teleportVehicle",
             vec![
@@ -314,62 +356,86 @@ impl VehiclePhysics for ReplayPhysics {
                 enc_f(qw),
             ],
         );
+        Ok(())
     }
-    fn set_tire_inflation(&mut self, id: i32, w: i32, v: f32) {
+    fn set_tire_inflation(&mut self, id: i32, w: i32, v: f32) -> PhysicsResult<()> {
         self.take("setTireInflation", vec![enc_i(id), enc_i(w), enc_f(v)]);
+        Ok(())
     }
-    fn set_tire_removed(&mut self, id: i32, w: i32, r: bool) {
+    fn set_tire_removed(&mut self, id: i32, w: i32, r: bool) -> PhysicsResult<()> {
         self.take("setTireRemoved", vec![enc_i(id), enc_i(w), enc_z(r)]);
+        Ok(())
     }
-    fn step_simulation(&mut self, t: f32, n: i32, f: f32) {
+    fn step_simulation(
+        &mut self,
+        t: f32,
+        n: i32,
+        f: f32,
+        _cb: &mut dyn JavaCallbacks,
+    ) -> PhysicsResult<()> {
         self.take("stepSimulation", vec![enc_f(t), enc_i(n), enc_f(f)]);
+        Ok(())
     }
-    fn get_vehicle_count(&mut self) -> i32 {
-        self.take("getVehicleCount", vec![]).ret_i()
+    fn get_vehicle_count(&mut self) -> PhysicsResult<i32> {
+        Ok(self.take("getVehicleCount", vec![]).ret_i())
     }
-    fn get_vehicle_physics(&mut self, offset: i32, out: &mut [f32]) -> i32 {
+    fn get_vehicle_physics(&mut self, offset: i32, out: &mut [f32]) -> PhysicsResult<i32> {
         let c = self.take("getVehiclePhysics", vec![enc_i(offset)]);
         let n = c.out.len().min(out.len());
         out[..n].copy_from_slice(&c.out[..n]);
-        c.ret_i()
+        Ok(c.ret_i())
     }
-    fn get_own_vehicle_physics(&mut self, id: i32, out: &mut [f32]) -> i32 {
+    fn get_own_vehicle_physics(&mut self, id: i32, out: &mut [f32]) -> PhysicsResult<i32> {
         let c = self.take("getOwnVehiclePhysics", vec![enc_i(id)]);
         let n = c.out.len().min(out.len());
         out[..n].copy_from_slice(&c.out[..n]);
-        c.ret_i()
+        Ok(c.ret_i())
     }
-    fn set_own_vehicle_physics(&mut self, id: i32, p: &[f32], force: bool) -> i32 {
-        self.take(
-            "setOwnVehiclePhysics",
-            vec![enc_i(id), enc_a(p), enc_z(force)],
-        )
-        .ret_i()
+    fn set_own_vehicle_physics(
+        &mut self,
+        id: i32,
+        p: &mut [f32],
+        force: bool,
+    ) -> PhysicsResult<i32> {
+        Ok(self
+            .take(
+                "setOwnVehiclePhysics",
+                vec![enc_i(id), enc_a(p), enc_z(force)],
+            )
+            .ret_i())
     }
-    fn set_vehicle_params(&mut self, id: i32, p: &[f32]) -> i32 {
-        self.take("setVehicleParams", vec![enc_i(id), enc_a(p)])
-            .ret_i()
+    fn set_vehicle_params(&mut self, id: i32, p: &mut [f32]) -> PhysicsResult<i32> {
+        Ok(self
+            .take("setVehicleParams", vec![enc_i(id), enc_a(p)])
+            .ret_i())
     }
-    fn set_vehicle_mass(&mut self, id: i32, m: f32) -> i32 {
-        self.take("setVehicleMass", vec![enc_i(id), enc_f(m)])
-            .ret_i()
+    fn set_vehicle_mass(&mut self, id: i32, m: f32) -> PhysicsResult<i32> {
+        Ok(self
+            .take("setVehicleMass", vec![enc_i(id), enc_f(m)])
+            .ret_i())
     }
-    fn get_object_physics(&mut self, out: &mut [f32]) -> i32 {
+    fn get_object_physics(&mut self, out: &mut [f32]) -> PhysicsResult<i32> {
         let c = self.take("getObjectPhysics", vec![]);
         let n = c.out.len().min(out.len());
         out[..n].copy_from_slice(&c.out[..n]);
-        c.ret_i()
+        Ok(c.ret_i())
     }
-    fn set_vehicle_velocity_multiplier(&mut self, id: i32, max: f32, mul: f32) {
+    fn set_vehicle_velocity_multiplier(
+        &mut self,
+        id: i32,
+        max: f32,
+        mul: f32,
+    ) -> PhysicsResult<()> {
         self.take(
             "setVehicleVelocityMultiplier",
             vec![enc_i(id), enc_f(max), enc_f(mul)],
         );
+        Ok(())
     }
-    fn add_6dof_constraint(&mut self, a: i32, b: i32, p: [f32; 18]) -> i32 {
+    fn add_6dof_constraint(&mut self, a: i32, b: i32, p: &[f32; 18]) -> PhysicsResult<i32> {
         let mut args = vec![enc_i(a), enc_i(b)];
         args.extend(p.iter().map(|f| enc_f(*f)));
-        self.take("add6DofConstraint", args).ret_i()
+        Ok(self.take("add6DofConstraint", args).ret_i())
     }
     fn add_rope_constraint(
         &mut self,
@@ -382,28 +448,31 @@ impl VehiclePhysics for ReplayPhysics {
         by: f32,
         bz: f32,
         d: f32,
-    ) -> i32 {
-        self.take(
-            "addRopeConstraint",
-            vec![
-                enc_i(a),
-                enc_i(b),
-                enc_f(ax),
-                enc_f(ay),
-                enc_f(az),
-                enc_f(bx),
-                enc_f(by),
-                enc_f(bz),
-                enc_f(d),
-            ],
-        )
-        .ret_i()
+    ) -> PhysicsResult<i32> {
+        Ok(self
+            .take(
+                "addRopeConstraint",
+                vec![
+                    enc_i(a),
+                    enc_i(b),
+                    enc_f(ax),
+                    enc_f(ay),
+                    enc_f(az),
+                    enc_f(bx),
+                    enc_f(by),
+                    enc_f(bz),
+                    enc_f(d),
+                ],
+            )
+            .ret_i())
     }
-    fn set_constraint_erp(&mut self, c: i32, erp: f32, axis: i32) {
+    fn set_constraint_erp(&mut self, c: i32, erp: f32, axis: i32) -> PhysicsResult<()> {
         self.take("setConstraintERP", vec![enc_i(c), enc_f(erp), enc_i(axis)]);
+        Ok(())
     }
-    fn remove_constraint(&mut self, c: i32) {
+    fn remove_constraint(&mut self, c: i32) -> PhysicsResult<()> {
         self.take("removeConstraint", vec![enc_i(c)]);
+        Ok(())
     }
 }
 

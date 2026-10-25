@@ -124,6 +124,19 @@ pub trait VehicleWorld {
     fn chunk_vehicles(&self, _wx: i32, _wy: i32) -> Option<Vec<crate::VehicleRef>> {
         None
     }
+    /// `Bullet.updatePhysicsForLevelIfNeeded(wx, wy, level)`: when the
+    /// chunk level is marked for a physics check, clear the mark, build its
+    /// `ToBullet` buffers (`IsoChunk.updatePhysicsForLevel`, see
+    /// [`crate::chunk_physics`]) into `to_bullet` and answer `true`.
+    fn update_physics_for_level_if_needed(
+        &self,
+        _wx: i32,
+        _wy: i32,
+        _level: i32,
+        _to_bullet: &mut Vec<Vec<u8>>,
+    ) -> bool {
+        false
+    }
     /// `addToWorld`: `chunk.vehicles.add(this)` unless already there.
     fn add_vehicle_to_chunk(&self, _v: &crate::VehicleRef, _chunk: (i32, i32)) {}
     /// `update`: the vehicle moved from chunk `from` to `to`.

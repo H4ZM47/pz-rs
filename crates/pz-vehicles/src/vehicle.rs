@@ -1582,7 +1582,7 @@ impl BaseVehicle {
             self.st_mut().saved_rot = q;
             self.break_constraint(false, false);
             let id = self.id() as i32;
-            Bullet::with(|b| b.remove_vehicle(id));
+            Bullet::call(|b| b.remove_vehicle(id));
             self.st_mut().ctrl = None;
         }
         self.st_mut().created_model = false;
@@ -2184,7 +2184,7 @@ impl BaseVehicle {
         self.st_mut().mass = m;
         if self.st().ctrl.is_some() {
             let (id, m) = (self.id() as i32, self.mass());
-            Bullet::with(|b| b.set_vehicle_mass(id, m));
+            Bullet::call(|b| b.set_vehicle_mass(id, m));
         }
     }
 
@@ -2384,8 +2384,7 @@ impl BaseVehicle {
             for (i, v) in data.iter().enumerate().take(wheels.len().min(4) * 6) {
                 wp[i] = *v;
             }
-            let params = *wp;
-            Bullet::with(|b| b.set_vehicle_params(id, &params));
+            Bullet::call(|b| b.set_vehicle_params(id, &mut wp[..]));
         });
     }
 
@@ -2448,11 +2447,11 @@ impl BaseVehicle {
         let id = self.id() as i32;
         if set_static && self.st().is_static == active {
             self.st_mut().is_static = !active;
-            Bullet::with(|b| b.set_vehicle_static(id, !active));
+            Bullet::call(|b| b.set_vehicle_static(id, !active));
         }
         if self.st().is_active != active {
             self.st_mut().is_active = active;
-            Bullet::with(|b| b.set_vehicle_active(id, active));
+            Bullet::call(|b| b.set_vehicle_active(id, active));
         }
         if active {
             self.st_mut().physic_active_check = env::now_ms() + 3000;
@@ -2556,7 +2555,7 @@ impl BaseVehicle {
         let q = t.rotation();
         let (ox, oy) = env::offset();
         let id = self.id() as i32;
-        Bullet::with(|b| {
+        Bullet::call(|b| {
             b.teleport_vehicle(
                 id,
                 t.origin.x + ox,
@@ -2696,14 +2695,14 @@ impl BaseVehicle {
                 self.st_mut().impulse_from_server.enable = false;
                 let id = self.id() as i32;
                 let t = imp.rel_pos.cross(&imp.impulse);
-                Bullet::with(|b| {
+                Bullet::call(|b| {
                     b.apply_central_force_to_vehicle(
                         id,
                         imp.impulse.x,
                         imp.impulse.y,
                         imp.impulse.z,
-                    );
-                    b.apply_torque_to_vehicle(id, t.x, t.y, t.z);
+                    )?;
+                    b.apply_torque_to_vehicle(id, t.x, t.y, t.z)
                 });
             }
             if self.engine_part().is_some() {
@@ -2858,7 +2857,7 @@ impl BaseVehicle {
         // slots and farming (not ported).
         if self.st().ctrl.is_some() {
             let (id, m) = (self.id() as i32, self.fudged_mass());
-            Bullet::with(|b| b.set_vehicle_mass(id, m));
+            Bullet::call(|b| b.set_vehicle_mass(id, m));
         }
         self.update_velocity_multiplier();
         self.check_trailer_vertical_alignment();
@@ -2887,7 +2886,7 @@ impl BaseVehicle {
             mul = 0.1;
         }
         let id = self.id() as i32;
-        Bullet::with(|b| b.set_vehicle_velocity_multiplier(id, max_speed, mul));
+        Bullet::call(|b| b.set_vehicle_velocity_multiplier(id, max_speed, mul));
     }
 
     /// `breakingObjects()`: the vehicle hitting world objects and
@@ -3093,7 +3092,7 @@ impl BaseVehicle {
         if c == -1 {
             return;
         }
-        Bullet::with(|b| b.remove_constraint(c));
+        Bullet::call(|b| b.remove_constraint(c));
         self.st_mut().constraint_towing = -1;
         if let Some(t) = self.vehicle_towing() {
             t.st_mut().vehicle_towed_by = None;
@@ -3163,10 +3162,11 @@ impl BaseVehicle {
             return;
         }
         if begin + 2000 <= env::now_ms() {
-            Bullet::with(|b| {
+            Bullet::call(|b| {
                 for axis in 0..6 {
-                    b.set_constraint_erp(c, 0.2, axis);
+                    b.set_constraint_erp(c, 0.2, axis)?;
                 }
+                Ok(())
             });
             self.st_mut().begin_attach_trailer_ms = 0;
         }
@@ -3216,7 +3216,7 @@ impl BaseVehicle {
         }
         if self.st().ctrl.is_some() {
             let id = self.id() as i32;
-            Bullet::with(|b| b.remove_vehicle(id));
+            Bullet::call(|b| b.remove_vehicle(id));
             self.st_mut().ctrl = None;
         }
         let id = self.id();
@@ -3248,9 +3248,9 @@ impl BaseVehicle {
             torque.mul(s);
         }
         let id = self.id() as i32;
-        Bullet::with(|b| {
-            b.apply_central_force_to_vehicle(id, force.x * 30.0, force.y * 30.0, force.z * 30.0);
-            b.apply_torque_to_vehicle(id, torque.x * 30.0, torque.y * 30.0, torque.z * 30.0);
+        Bullet::call(|b| {
+            b.apply_central_force_to_vehicle(id, force.x * 30.0, force.y * 30.0, force.z * 30.0)?;
+            b.apply_torque_to_vehicle(id, torque.x * 30.0, torque.y * 30.0, torque.z * 30.0)
         });
     }
 
@@ -3287,14 +3287,14 @@ impl BaseVehicle {
                 force.mul(limit / force.length());
             }
             let id = self.id() as i32;
-            Bullet::with(|b| {
+            Bullet::call(|b| {
                 b.apply_central_force_to_vehicle(
                     id,
                     force.x * 30.0,
                     force.y * 30.0,
                     force.z * 30.0,
-                );
-                b.apply_torque_to_vehicle(id, torque.x * 30.0, torque.y * 30.0, torque.z * 30.0);
+                )?;
+                b.apply_torque_to_vehicle(id, torque.x * 30.0, torque.y * 30.0, torque.z * 30.0)
             });
         }
     }
@@ -3302,12 +3302,12 @@ impl BaseVehicle {
     /// `setTireRemoved(wheelIndex, removed)`.
     pub fn set_tire_removed(&self, wheel_index: i32, removed: bool) {
         let id = self.id() as i32;
-        Bullet::with(|b| b.set_tire_removed(id, wheel_index, removed));
+        Bullet::call(|b| b.set_tire_removed(id, wheel_index, removed));
     }
 
     /// `setTireInflation(wheelIndex, inflation)`.
     pub fn set_tire_inflation(&self, wheel_index: i32, inflation: f32) {
         let id = self.id() as i32;
-        Bullet::with(|b| b.set_tire_inflation(id, wheel_index, inflation));
+        Bullet::call(|b| b.set_tire_inflation(id, wheel_index, inflation));
     }
 }

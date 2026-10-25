@@ -126,6 +126,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-bullet"
+version = "0.1.0"
+
+[[package]]
 name = "pz-classfile"
 version = "0.1.0"
 dependencies = [
@@ -243,6 +247,7 @@ dependencies = [
 name = "pz-vehicles"
 version = "0.1.0"
 dependencies = [
+ "pz-bullet",
  "pz-fs",
  "pz-inventory",
  "pz-kahlua",

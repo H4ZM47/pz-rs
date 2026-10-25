@@ -93,7 +93,7 @@ impl CarController {
             let st = v.st();
             (st.vehicle_id as i32, st.x, st.y, st.saved_rot)
         };
-        Bullet::with(|b| b.add_vehicle(id, x, y, physics_z, q.x, q.y, q.z, q.w, &full));
+        Bullet::call(|b| b.add_vehicle(id, x, y, physics_z, q.x, q.y, q.z, q.w, &full));
         CarController {
             client_force: 0.0,
             engine_force: 0.0,
@@ -344,7 +344,7 @@ impl BaseVehicle {
         self.controller_check_should_be_active();
         let c = self.ctrl();
         let id = self.id() as i32;
-        Bullet::with(|b| {
+        Bullet::call(|b| {
             b.control_vehicle(id, c.engine_force, c.braking_force, c.vehicle_steering)
         });
         if c.engine_force > 0.0
@@ -367,7 +367,7 @@ impl BaseVehicle {
             let wheels = script.borrow().wheel_count();
             if self.current_speed_kmh() > 5.0 && wheels > 0 {
                 let c = self.ctrl();
-                Bullet::with(|b| b.control_vehicle(id, 0.0, c.braking_force, c.vehicle_steering));
+                Bullet::call(|b| b.control_vehicle(id, 0.0, c.braking_force, c.vehicle_steering));
             } else {
                 self.controller_park();
             }
@@ -411,7 +411,7 @@ impl BaseVehicle {
         }
         let c = self.ctrl();
         let id = self.id() as i32;
-        Bullet::with(|b| {
+        Bullet::call(|b| {
             b.control_vehicle(id, c.engine_force, c.braking_force, c.vehicle_steering)
         });
     }
@@ -750,7 +750,7 @@ impl BaseVehicle {
         if self.script().is_some_and(|s| s.borrow().wheel_count() > 0) {
             let id = self.id() as i32;
             let bf = self.braking_force();
-            Bullet::with(|b| b.control_vehicle(id, 0.0, bf, 0.0));
+            Bullet::call(|b| b.control_vehicle(id, 0.0, bf, 0.0));
         }
         self.ctrl_mut(|c| {
             c.was_gas = false;
