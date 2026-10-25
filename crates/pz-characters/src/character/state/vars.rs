@@ -235,8 +235,6 @@ pub struct CharacterVars {
     pub manual_floor_attack_button_down: bool,
     /// `clickSound`.
     pub click_sound: Option<String>,
-    pub force_run: bool,
-    pub force_sprint: bool,
     /// `isShootable()`.
     pub shootable: bool,
     pub deferred_movement_enabled: bool,
@@ -461,8 +459,6 @@ impl Default for CharacterVars {
             melee_button_down: false,
             manual_floor_attack_button_down: false,
             click_sound: None,
-            force_run: false,
-            force_sprint: false,
             shootable: true,
             deferred_movement_enabled: true,
             player_attack_position: None,

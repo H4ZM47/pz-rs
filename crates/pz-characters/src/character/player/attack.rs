@@ -6,7 +6,7 @@
 use pz_anim::AnimationVariableSource;
 use pz_scripts::ScriptResult;
 
-use super::{PlayerEvent, PlayerUpdate};
+use super::PlayerUpdate;
 use crate::character::body_part::BodyPart;
 use crate::character::combat::{config, WeaponStats, WeaponType};
 use crate::character::state::StateCx;
@@ -236,7 +236,7 @@ impl<I: 'static> GameCharacter<I> {
         if !self.player.authorize_hand_to_hand_action {
             return Ok(false);
         }
-        self.player.click_sound = None;
+        self.vars.click_sound = None;
         self.pressed_attack(out, cx)?;
         Ok(false)
     }
@@ -401,12 +401,16 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     /// `isWeaponReady()`: no timed action overrides the hand models, the
-    /// primary hand model is ready ([`StateWorld::primary_hand_model_ready`])
+    /// primary hand model is ready (the bare hands always are, else
+    /// [`StateWorld::primary_hand_model_ready`])
     /// and an aimed firearm has its muzzle attachment.
     ///
     /// [`StateWorld::primary_hand_model_ready`]: crate::character::state::StateWorld::primary_hand_model_ready
     pub fn is_weapon_ready(&self, cx: &StateCx<'_, I>) -> bool {
-        let ready = cx.world.primary_hand_model_ready(self.id);
+        // IsoLivingCharacter.isPrimaryHandModelReady: the bare hands (no
+        // useHandWeapon) are always ready.
+        let bare = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_none_or(|i| i.type_.as_str() == "BareHands");
+        let ready = bare || cx.world.primary_hand_model_ready(self.id);
         if !ready {
             return false;
         }
@@ -452,10 +456,4 @@ impl<I: 'static> GameCharacter<I> {
         !self.items.primary_hand_item().is_some_and(crate::character::items::is_hand_weapon)
     }
 
-    /// `PlayerEvent::ClickSound` for `DoAttack(delta, clickSound)`.
-    pub fn report_click_sound(&self, out: &mut PlayerUpdate) {
-        if let Some(s) = &self.player.click_sound {
-            out.events.push(PlayerEvent::ClickSound(s.clone()));
-        }
-    }
 }

@@ -61,10 +61,10 @@ pub struct PlayerControl {
     /// `pressContext`, `timePressedContext`.
     pub press_context: bool,
     pub time_pressed_context: f32,
-    /// `isCharging`, `isChargingLT`, `chargeTime`, `useChargeTime`.
+    /// `isCharging`, `isChargingLT`, `useChargeTime` (`chargeTime` is
+    /// [`crate::character::state::CharacterVars::charge_time`]).
     pub is_charging: bool,
     pub is_charging_lt: bool,
-    pub charge_time: f32,
     pub use_charge_time: f32,
     /// `pressedRun`, `pressedRunTimer` (the double-tap sprint).
     pub pressed_run: bool,
@@ -114,8 +114,6 @@ pub struct PlayerControl {
     /// `seenThisFrame`, `couldBeSeenThisFrame`.
     pub seen_this_frame: bool,
     pub could_be_seen_this_frame: bool,
-    /// `clickSound` (`DoAttack`).
-    pub click_sound: Option<String>,
     /// `characterActions.get(0).blockMovementEtc` (the Lua timed action
     /// queue is the engine's).
     pub action_blocks_movement: bool,
@@ -162,7 +160,6 @@ impl Default for PlayerControl {
             time_pressed_context: 0.0,
             is_charging: false,
             is_charging_lt: false,
-            charge_time: 0.0,
             use_charge_time: 0.0,
             pressed_run: false,
             pressed_run_timer: 0.0,
@@ -192,7 +189,6 @@ impl Default for PlayerControl {
             collidable: true,
             seen_this_frame: false,
             could_be_seen_this_frame: false,
-            click_sound: None,
             action_blocks_movement: false,
             action_overrides_animation: false,
             has_actions: false,
@@ -211,9 +207,6 @@ impl Default for PlayerControl {
 /// [`PlayerUpdate::events`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerEvent {
-    /// `UIManager.speedControls.SetCurrentGameSpeed(speed)` (which also sets
-    /// `GameTime.multiplier = 1`).
-    SetGameSpeed(i32),
     /// `LuaEventManager.triggerEvent(name, player)`: `OnPlayerMove`,
     /// `OnPlayerUpdate`.
     LuaEvent(&'static str),
@@ -234,10 +227,6 @@ pub enum PlayerEvent {
     StopActionQueue(&'static str),
     /// `Mouse.setCursorVisible(false)` (`updateCursorVisibility`).
     HideCursor,
-    /// `LuaHookManager.TriggerHook("Attack", chr, chargeDelta, weapon)`
-    /// is asked through [`super::SimContext::trigger_hook`]; this reports
-    /// `DoAttack`'s click sound.
-    ClickSound(String),
 }
 
 /// The events of one `update_player`.

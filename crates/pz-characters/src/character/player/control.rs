@@ -339,7 +339,7 @@ impl CharacterInput {
 
     /// `isInputMoveAxisApplied()` (`PZMath.equal(rate, 0)` is `|rate| < 1e-7`).
     pub fn is_input_move_axis_applied(&self, input: &dyn PlayerInput, owner: InputOwner) -> bool {
-        !(self.input_movement_rate(input, owner).abs() < 1.0e-7)
+        self.input_movement_rate(input, owner).abs() >= 1.0e-7
     }
 
     /// `getJoypadAimVector(out)`.

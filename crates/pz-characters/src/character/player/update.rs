@@ -70,6 +70,9 @@ impl<I: 'static> GameCharacter<I> {
     ) -> ScriptResult<PlayerUpdate> {
         let mut out = PlayerUpdate::default();
         self.player.now_ms = input.current_time_ms();
+        let owner = self.input_owner();
+        self.vars.melee_button_down = self.player.input.is_melee_button_down(input, owner);
+        self.vars.manual_floor_attack_button_down = self.player.input.is_manual_floor_atk_button_down(input, owner);
         if self.is_animal() {
             return Ok(out);
         }
@@ -110,7 +113,7 @@ impl<I: 'static> GameCharacter<I> {
     ) -> ScriptResult<bool> {
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         if (self.vars.falling || self.vars.fall_time > 0.0 || self.vars.on_fire) && cx.world.game_speed() > 1 {
-            out.events.push(PlayerEvent::SetGameSpeed(1));
+            cx.ctx.event(crate::character::SimEvent::SetGameSpeed(1));
         }
         // TODO(grappling): let go of the grappled while falling.
         if !self.vars.attack_started {
@@ -155,7 +158,7 @@ impl<I: 'static> GameCharacter<I> {
         let endurance = Self::stat_ref_pub(chars, "ENDURANCE")?;
         if self.player.just_moved && !self.player.npc && self.path.path2.is_none() && !self.is_current_action_pathfinding() {
             if cx.world.game_speed() > 1 {
-                out.events.push(PlayerEvent::SetGameSpeed(1));
+                cx.ctx.event(crate::character::SimEvent::SetGameSpeed(1));
             }
         } else if self.stats.get(&endurance) < 0.25 && ctx.rand_next((300.0 * ctx.inv_multiplier()) as i32) == 0 {
             self.add_xp(sm, chars, chars.perks.constant("Fitness").as_ref(), 1.0, ctx)?;
@@ -239,10 +242,10 @@ impl<I: 'static> GameCharacter<I> {
         let mut b_grapple = false;
         self.running = false;
         self.environment.sprinting = false;
-        self.player.use_charge_time = self.player.charge_time;
+        self.player.use_charge_time = self.vars.charge_time;
         if !self.vars.block_movement && !self.player.npc {
-            self.player.charge_time =
-                if self.player.is_charging || self.player.is_charging_lt { self.player.charge_time + 1.0 * m } else { 0.0 };
+            self.vars.charge_time =
+                if self.player.is_charging || self.player.is_charging_lt { self.vars.charge_time + 1.0 * m } else { 0.0 };
             let st = self.update_input_state(input, ctx);
             b_melee = st.melee;
             b_grapple = st.grapple;
@@ -288,7 +291,7 @@ impl<I: 'static> GameCharacter<I> {
         }
         self.player.just_moved = false;
         let mut mv = MoveVars::default();
-        self.update_movement_from_input(input, &mut mv, out, cx);
+        self.update_movement_from_input(input, &mut mv, cx);
         if !self.player.just_moved && self.path.path2.is_some() && cx.world.path_should_be_moving(self.id) {
             self.player.just_moved = true;
         }
@@ -354,7 +357,7 @@ impl<I: 'static> GameCharacter<I> {
                 let c = self.player.use_charge_time;
                 self.attempt_attack(c, out, cx)?;
                 self.player.use_charge_time = 0.0;
-                self.player.charge_time = 0.0;
+                self.vars.charge_time = 0.0;
             }
         } else if b_grapple {
             if !self.player.last_attack_was_hand_to_hand {
@@ -363,7 +366,7 @@ impl<I: 'static> GameCharacter<I> {
             if !self.vars.banned_attacking && self.player.authorize_hand_to_hand && self.can_attack(cx) && self.vars.melee_delay <= 0.0 {
                 // TODO(grappling): grab / let go.
                 self.player.use_charge_time = 0.0;
-                self.player.charge_time = 0.0;
+                self.vars.charge_time = 0.0;
             }
         } else if self.is_player_aiming() && self.can_attack(cx) {
             // TODO(grappling): drop the dragged character.
@@ -377,7 +380,7 @@ impl<I: 'static> GameCharacter<I> {
                     self.attempt_attack(c, out, cx)?;
                 }
                 self.player.use_charge_time = 0.0;
-                self.player.charge_time = 0.0;
+                self.vars.charge_time = 0.0;
             }
         } else if self.vars.head_look_around {
             // TODO(anim bones): the head look-around twist reads the head bone.
@@ -842,7 +845,7 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     /// `updateMovementFromInput(moveVars)`.
-    fn update_movement_from_input(&mut self, input: &dyn PlayerInput, mv: &mut MoveVars, out: &mut PlayerUpdate, cx: &mut StateCx<'_, I>) {
+    fn update_movement_from_input(&mut self, input: &dyn PlayerInput, mv: &mut MoveVars, cx: &mut StateCx<'_, I>) {
         *mv = MoveVars { new_facing: Some(self.vars.dir), ..Default::default() };
         // TutorialManager.stealControl: TODO(tutorial).
         if self.vars.block_movement || self.player.npc {
@@ -895,7 +898,7 @@ impl<I: 'static> GameCharacter<I> {
             }
         }
         if self.player.just_moved {
-            out.events.push(PlayerEvent::SetGameSpeed(1));
+            cx.ctx.event(crate::character::SimEvent::SetGameSpeed(1));
         }
     }
 
@@ -1342,18 +1345,21 @@ impl<I: 'static> GameCharacter<I> {
             let g = sq.map(|s| cx.world.ground_info(s)).unwrap_or_default();
             let puddle = g.puddles_in_ground;
             let muddy = sq.is_some_and(|s| cx.world.square_is_outside(s)) && g.natural_floor && ctx.wet_ground_final_value() > 0.5;
-            if puddle > 0.09 && next_bool(ctx, adjust_for_framerate(ctx, 1500)) {
-                n += 1;
-            } else if muddy && next_bool(ctx, adjust_for_framerate(ctx, 3000)) {
+            // `if (puddle) ++n; else if (muddy) ++n;` (the draws in that order).
+            if puddle > 0.09 && next_bool(ctx, adjust_for_framerate(ctx, 1500))
+                || muddy && next_bool(ctx, adjust_for_framerate(ctx, 3000))
+            {
                 n += 1;
             }
             if n > 0 {
+                self.add_dirt(sm, ctx, n, true);
                 out.events.push(PlayerEvent::AddDirt { count: n, all_layers: true });
             }
             n = 0;
-            if puddle > 0.09 && next_bool(ctx, adjust_for_framerate(ctx, 1500)) {
-                n += 1;
-            } else if muddy && next_bool(ctx, adjust_for_framerate(ctx, 3000)) {
+            // `if (puddle) ++n; else if (muddy) ++n;` (the draws in that order).
+            if puddle > 0.09 && next_bool(ctx, adjust_for_framerate(ctx, 1500))
+                || muddy && next_bool(ctx, adjust_for_framerate(ctx, 3000))
+            {
                 n += 1;
             }
             let in_trees = sq.is_some_and(|s| cx.world.square_trees(s).0);
@@ -1361,10 +1367,79 @@ impl<I: 'static> GameCharacter<I> {
                 n += 1;
             }
             if n > 0 {
+                self.add_dirt(sm, ctx, n, false);
                 out.events.push(PlayerEvent::AddDirt { count: n, all_layers: false });
             }
         }
         Ok(())
+    }
+
+    /// `addDirt(null, count, allLayers)`: random parts (`OutfitRNG`) of the
+    /// human visual and the worn items covering them get dirtier
+    /// (`BloodClothingType.addDirt`).
+    pub fn add_dirt(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, count: i32, all_layers: bool) {
+        use pz_core::random::outfit_rng;
+        // `BloodBodyPartType.MAX.index()`.
+        const MAX: usize = 17;
+        let ids = self.items.item_visual_ids();
+        for _ in 0..count {
+            let part = outfit_rng::next_range(0, MAX as i32) as usize;
+            let intensity = match ctx.clothing_degradation() {
+                2 => outfit_rng::next_float(0.001, 0.01),
+                3 => outfit_rng::next_float(0.05, 0.1),
+                4 => outfit_rng::next_float(0.01, 0.05),
+                _ => 0.0,
+            };
+            let covers = |c: &Self, id: i32| {
+                c.items.item(id).is_some_and(|i| {
+                    crate::character::items::covered_parts(sm, i).is_some_and(|p| p.contains(&part))
+                        && crate::character::items::visual_hole(i, part) == 0.0
+                })
+            };
+            if !all_layers {
+                let hit = ids.iter().rev().copied().find(|&id| covers(self, id));
+                match hit {
+                    Some(id) => {
+                        if intensity > 0.0 {
+                            if let Some(v) = self.items.item_mut(id).and_then(|i| i.visual.as_mut()) {
+                                let d = v.get_dirt(part);
+                                v.set_dirt(part, d + intensity, MAX);
+                            }
+                            // TODO(items): calcTotalDirtLevel for clothing.
+                        }
+                    }
+                    None => {
+                        if let Some(h) = self.human_visual.as_mut() {
+                            let d = h.get_dirt(part);
+                            h.set_dirt(part, d + 0.05);
+                        }
+                    }
+                }
+                continue;
+            }
+            let Some(h) = self.human_visual.as_mut() else { continue };
+            let d = h.get_dirt(part);
+            h.set_dirt(part, d + 0.05);
+            let mut current = h.get_dirt(part);
+            if next_bool(ctx, ((current * 100.0) as i32 - 100).abs()) {
+                continue;
+            }
+            for &id in &ids {
+                if !covers(self, id) {
+                    continue;
+                }
+                if intensity > 0.0 {
+                    if let Some(v) = self.items.item_mut(id).and_then(|i| i.visual.as_mut()) {
+                        let d = v.get_dirt(part);
+                        v.set_dirt(part, d + intensity, MAX);
+                        current = v.get_dirt(part);
+                    }
+                }
+                if next_bool(ctx, ((current * 100.0) as i32 - 100).abs()) {
+                    break;
+                }
+            }
+        }
     }
 
     /// `IsoPlayer.postupdate()`: `IsoGameCharacter.postupdate` (the move
