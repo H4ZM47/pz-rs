@@ -16,6 +16,7 @@ pub mod defs;
 pub mod erosion_data;
 pub mod fire;
 pub mod fix2x;
+pub mod floor_item;
 pub mod iso_lot;
 pub mod isoregion;
 pub mod java;

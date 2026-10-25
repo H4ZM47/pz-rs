@@ -19,6 +19,7 @@ use std::path::Path;
 use pz_inventory::dictionary::WorldDictionary;
 use pz_inventory::factory::ScriptItems;
 use pz_world::chunk::IsoChunk;
+use pz_world::floor_item::FloorItem;
 use pz_world::objects::{IsoObject, ItemContainer, ObjectKind, ObjectName, SpriteName};
 use pz_world::save::animal::{AnimalBreedDef, AnimalDefinition, CharacterStatDecl, IsoAnimal};
 use pz_world::save::chunk_file::{chunk_path, load_chunk, save_chunk};
@@ -419,11 +420,34 @@ fn digest(ctx: &SaveCtx<'_>, ch: &IsoChunk, out: &mut String) {
     }
 }
 
+/// The archive harness can deliberately replace a floor record, without
+/// turning a read-only inspection into a replacement of its live owner.
+enum ItemRecordMut<'a> {
+    Saved(&'a mut ItemBlob),
+    Floor(&'a mut FloorItem),
+}
+
+impl ItemRecordMut<'_> {
+    fn record(&self, env: &dyn ItemRegistry) -> pz_inventory::io::SaveResult<Vec<u8>> {
+        match self {
+            Self::Saved(item) => item.record(env),
+            Self::Floor(item) => item.record(env),
+        }
+    }
+
+    fn replace_raw(&mut self, bytes: Vec<u8>) {
+        match self {
+            Self::Saved(item) => **item = ItemBlob::Raw(bytes),
+            Self::Floor(item) => **item = FloorItem::from_saved(ItemBlob::Raw(bytes)),
+        }
+    }
+}
+
 /// Every item record of the chunk (for comparing with item bodies masked).
-fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(&mut ItemBlob)) {
-    fn cont(c: &mut ItemContainer, f: &mut dyn FnMut(&mut ItemBlob)) {
+fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(ItemRecordMut<'_>)) {
+    fn cont(c: &mut ItemContainer, f: &mut dyn FnMut(ItemRecordMut<'_>)) {
         for r in &mut c.items {
-            f(r);
+            f(ItemRecordMut::Saved(r));
         }
     }
     for x in 0..8 {
@@ -440,7 +464,7 @@ fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(&mut ItemBlob)) {
                         cont(c, f);
                     }
                     match &mut o.kind {
-                        ObjectKind::WorldInventory(w) => f(&mut w.item),
+                        ObjectKind::WorldInventory(w) => f(ItemRecordMut::Floor(&mut w.item)),
                         ObjectKind::Mannequin(Some(m)) => {
                             if let Some(c) = &mut m.container {
                                 cont(c, f);
@@ -448,18 +472,18 @@ fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(&mut ItemBlob)) {
                         }
                         ObjectKind::Trap(t) => {
                             if let Some(i) = &mut t.weapon {
-                                f(i);
+                                f(ItemRecordMut::Saved(i));
                             }
                         }
                         ObjectKind::CarBatteryCharger(c) => {
                             for i in [&mut c.item, &mut c.battery].into_iter().flatten() {
-                                f(i);
+                                f(ItemRecordMut::Saved(i));
                             }
                         }
                         ObjectKind::Hutch(h) => {
                             for nb in h.master.iter_mut().flat_map(|m| m.nest_boxes.iter_mut()) {
                                 for e in &mut nb.eggs {
-                                    f(e);
+                                    f(ItemRecordMut::Saved(e));
                                 }
                             }
                         }
@@ -478,10 +502,10 @@ fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(&mut ItemBlob)) {
 
 fn mask_items(ch: &mut IsoChunk) {
     let env = AllItems;
-    for_each_item(ch, &mut |i| {
+    for_each_item(ch, &mut |mut i| {
         let mut rec = i.record(&env).unwrap_or_default();
         rec.truncate(7);
-        *i = ItemBlob::Raw(rec);
+        i.replace_raw(rec);
     });
 }
 

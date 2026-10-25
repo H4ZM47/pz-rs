@@ -258,7 +258,7 @@ pub struct IsoWorldInventoryObject {
     pub zoff: f32,
     pub offset_x: f32,
     pub offset_y: f32,
-    pub item: ItemBlob,
+    pub item: crate::floor_item::FloorItem,
     pub drop_time: f64,
     pub ignore_remove_sandbox: bool,
     pub extended_placement: bool,

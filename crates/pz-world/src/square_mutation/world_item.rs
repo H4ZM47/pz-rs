@@ -5,9 +5,8 @@
 //! character's items drop into (`setWornItem`'s `forceDropTooHeavy`,
 //! `dropHeavyItems`, `dropHandItems`).
 //!
-//! The world object holds a copy of the item ([`ItemBlob::Item`]); the
-//! caller's shared item gets the same changes (rotations, the fluid
-//! container moving to the object), so both agree. Single player: the
+//! The world object retains the caller's shared item, including changes
+//! to its rotations and the fluid container moving to the object. Single player: the
 //! server's `transmitCompleteItemToClients` is not made.
 
 use pz_inventory::floor_drop::FloorWorld;
@@ -16,8 +15,8 @@ use pz_inventory::{InventoryItem, ItemClass};
 
 use super::{MutationEnv, ObjectRef, SquarePos};
 use crate::chunk::{IsoCell, IsoGridSquare};
+use crate::floor_item::FloorItem;
 use crate::objects::{IsoObject, IsoWorldInventoryObject, ObjectKind, ObjectName};
-use crate::save::items::ItemBlob;
 use crate::save::object_io::UNREGISTERED_SPRITE_ID;
 use crate::sprite::IsoSpriteManager;
 use crate::square::IsoDirections;
@@ -79,7 +78,8 @@ impl IsoGridSquare {
     /// `getTotalWeightOfItemsOnFloor()`: the sum of `getUnequippedWeight()`
     /// (`weight`, given the world object, which holds a dropped item's
     /// fluid container: `ItemOwner::world_item_fluid_amount`) of the items
-    /// of `worldObjects`.
+    /// of `worldObjects`. `weight` is a synchronous Rust calculation;
+    /// release the item guard before invoking Lua through an `item_ref`.
     pub fn get_total_weight_of_items_on_floor(
         &self,
         weight: impl Fn(&IsoObject, &InventoryItem) -> f32,
@@ -90,8 +90,8 @@ impl IsoGridSquare {
                 continue;
             };
             if let ObjectKind::WorldInventory(w) = &o.kind {
-                if let Some(i) = w.item.as_item() {
-                    total += weight(o, i);
+                if let Some(i) = w.item.borrow_item() {
+                    total += weight(o, &i);
                 }
             }
         }
@@ -243,13 +243,13 @@ impl MutationEnv<'_> {
                 i.component_cache = None;
             }
         }
-        let (name, key_id, copy) = {
+        let (name, key_id) = {
             let i = item.borrow();
             let name = self
                 .world
                 .item_display_name(&i)
                 .unwrap_or_else(|| i.get_name().to_string());
-            (name, i.get_key_id(), i.clone())
+            (name, i.get_key_id())
         };
         let mut obj = IsoObject::new(
             0,
@@ -259,7 +259,7 @@ impl MutationEnv<'_> {
                 zoff: height,
                 offset_x: 0.0,
                 offset_y: 0.0,
-                item: ItemBlob::Item(Box::new(copy)),
+                item: FloorItem::retain(item),
                 drop_time: world_age_hours,
                 ignore_remove_sandbox: false,
                 extended_placement: false,

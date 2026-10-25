@@ -310,40 +310,47 @@ impl IsoWorld {
         else {
             return None;
         };
-        let mut sprites = sprites.borrow_mut();
-        let sprites = &mut *sprites;
-        with_world(|w| {
-            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else { return None };
-            let mut object_hooks = NoHooks;
-            let mut ctx = StreamCtx {
-                save_dir,
-                meta,
-                sprites,
-                fix2x,
-                rand,
-                object_tables,
-                object_settings: ObjectLoadSettings::default(),
-                object_hooks: &mut object_hooks,
-                save_tables,
-                save_settings,
-                // The save's `WorldDictionary`; without one (a new game, see
-                // `world_dictionary::init`) items load raw.
-                items,
-                save_hooks: &NoSaveHooks,
-                brand_new: world_gen.as_mut().map(|h| h as &mut dyn pz_world::chunk::BrandNewHook),
-                // TODO(port): `ErosionChunkHook` wrapped in
-                // `ClearSoundsOnUnload` (erosion and world sounds on load).
-                chunk_hook: None,
-                no_save,
-                vehicles_db: vehicles.conn.as_mut(),
-                // TODO(port): the vehicle runtime's savers, meta and ids
-                // (`RuntimeVehicleSaver`, `VirtualVehicleMeta`, `VehicleIds`).
-                vehicle_saver: None,
-                vehicle_meta: None,
-                vehicle_ids: None,
-            };
-            Some(f(streamer, cell, &mut ctx))
-        })
+        let (result, retired) = {
+            let mut sprites = sprites.borrow_mut();
+            let result = with_world(|w| {
+                let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else { return None };
+                let mut object_hooks = NoHooks;
+                let mut ctx = StreamCtx {
+                    save_dir,
+                    meta,
+                    sprites: &mut sprites,
+                    fix2x,
+                    rand,
+                    object_tables,
+                    object_settings: ObjectLoadSettings::default(),
+                    object_hooks: &mut object_hooks,
+                    save_tables,
+                    save_settings,
+                    // The save's `WorldDictionary`; without one (a new game, see
+                    // `world_dictionary::init`) items load raw.
+                    items,
+                    save_hooks: &NoSaveHooks,
+                    brand_new: world_gen.as_mut().map(|h| h as &mut dyn pz_world::chunk::BrandNewHook),
+                    // TODO(port): `ErosionChunkHook` wrapped in
+                    // `ClearSoundsOnUnload` (erosion and world sounds on load).
+                    chunk_hook: None,
+                    no_save,
+                    vehicles_db: vehicles.conn.as_mut(),
+                    // TODO(port): the vehicle runtime's savers, meta and ids
+                    // (`RuntimeVehicleSaver`, `VirtualVehicleMeta`, `VehicleIds`).
+                    vehicle_saver: None,
+                    vehicle_meta: None,
+                    vehicle_ids: None,
+                };
+                Some(f(streamer, cell, &mut ctx))
+            });
+            (result, streamer.take_retired_chunks())
+        };
+        // A queued floor item may be the last owner of a bag's opaque Lua
+        // parent. Its destructor can reenter WORLD and the sprite manager.
+        // Both guards above must end before these payloads are destroyed.
+        drop(retired);
+        result
     }
 
     /// `readWorldVersion()` (single player: `map_ver.bin`'s first int,
@@ -1216,3 +1223,6 @@ mod world_gen_params_tests {
         std::fs::remove_dir_all(temp).unwrap();
     }
 }
+
+#[cfg(test)]
+mod stream_retirement_tests;

@@ -1188,7 +1188,7 @@ fn load_special(
                 zoff,
                 offset_x: 0.0,
                 offset_y: 0.0,
-                item,
+                item: crate::floor_item::FloorItem::from_saved(item),
                 drop_time,
                 ignore_remove_sandbox: exists && has(bits, 1),
                 extended_placement: exists && has(bits, 4),

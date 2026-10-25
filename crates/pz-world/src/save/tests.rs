@@ -176,7 +176,7 @@ fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
         zoff: 0.0,
         offset_x: 0.0,
         offset_y: 0.0,
-        item: blob(4, 11, &[]),
+        item: blob(4, 11, &[]).into(),
         drop_time: 2.0,
         ignore_remove_sandbox: true,
         extended_placement: false,
@@ -305,6 +305,95 @@ fn chunk_round_trip() {
         chunk_path(std::path::Path::new("s"), 10, 20),
         std::path::Path::new("s/map/10/20.bin")
     );
+}
+
+#[test]
+fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
+    use pz_inventory::shared;
+    use pz_inventory::{InventoryItem, ItemClass, ItemTemplate};
+    use std::rc::Rc;
+
+    struct Reg([Rc<ItemTemplate>; 2]);
+    impl ItemRegistry for Reg {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
+            match id {
+                1 => Some(self.0[0].clone()),
+                2 => Some(self.0[1].clone()),
+                _ => None,
+            }
+        }
+        fn rand_next(&self, _: i32) -> i32 {
+            17
+        }
+    }
+    fn floor(ch: &IsoChunk) -> &crate::floor_item::FloorItem {
+        let ObjectKind::WorldInventory(wi) = &ch.get_grid_square(0, 0, 0).unwrap().objects[0].kind
+        else {
+            panic!()
+        };
+        &wi.item
+    }
+
+    let reg = Reg([
+        Rc::new(ItemTemplate::new(ItemClass::Container, "Base", "Bag")),
+        Rc::new(ItemTemplate::new(ItemClass::Key, "Base", "Key1")),
+    ]);
+    let m = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let ctx = ctx(&m, &tables, &settings, &reg);
+    let bag = shared::new_item(InventoryItem::create(reg.0[0].clone(), 1));
+    let key = shared::new_item(InventoryItem::create(reg.0[1].clone(), 2));
+    shared::add_item(&shared::inventory_of(&bag.borrow()).unwrap(), &key);
+    let mut chunk = IsoChunk::new(10, 20);
+    let mut sq = IsoGridSquare::new(80, 160, 0);
+    let id = sq.new_object_id();
+    let mut obj = IsoObject::new(
+        id,
+        ObjectKind::WorldInventory(Box::new(IsoWorldInventoryObject {
+            xoff: 0.25,
+            yoff: 0.5,
+            zoff: 0.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            item: crate::floor_item::FloorItem::retain(&bag),
+            drop_time: 0.0,
+            ignore_remove_sandbox: false,
+            extended_placement: false,
+        })),
+        None,
+    );
+    obj.sprite_id_override = Some(object_io::UNREGISTERED_SPRITE_ID);
+    sq.objects.push(obj);
+    sq.world_objects.push(id);
+    chunk.set_square(0, 0, 0, Some(sq));
+    key.borrow_mut().set_key_id(913, &reg);
+    bag.borrow_mut().favorite = true;
+    let bytes = save_chunk(&chunk, &ctx).unwrap();
+    let loaded = load_chunk(&bytes, 10, 20, &ctx).unwrap().chunk;
+    let actual = floor(&loaded).item_ref().unwrap();
+    assert!(!Rc::ptr_eq(&actual, &bag));
+    assert!(actual.borrow().favorite);
+    let contents = shared::inventory_of(&actual.borrow()).unwrap();
+    assert!(Rc::ptr_eq(
+        &contents
+            .borrow()
+            .containing_item
+            .as_ref()
+            .unwrap()
+            .upgrade()
+            .unwrap(),
+        &actual
+    ));
+    let loaded_key = contents.borrow().items[0].clone();
+    assert_eq!(loaded_key.borrow().get_key_id(), 913);
+    loaded_key.borrow_mut().set_key_id(707, &reg);
+    let reloaded = load_chunk(&save_chunk(&loaded, &ctx).unwrap(), 10, 20, &ctx)
+        .unwrap()
+        .chunk;
+    let latest = shared::inventory_of(&floor(&reloaded).borrow_item().unwrap()).unwrap();
+    assert_eq!(latest.borrow().items[0].borrow().get_key_id(), 707);
+    assert_eq!(key.borrow().get_key_id(), 913);
 }
 
 #[test]

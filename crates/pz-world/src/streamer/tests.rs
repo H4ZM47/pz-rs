@@ -1,5 +1,7 @@
 //! A player walking over hand-made save directories.
 
+mod retirement;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

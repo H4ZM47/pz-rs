@@ -437,11 +437,15 @@ fn mutations(ctx: &Ctx, full: &str, o: &mut String) {
 fn collect(items: &[SavedItem], out: &mut Vec<InventoryItem>) {
     for it in items {
         if let SavedItem::Item(i) = it {
-            out.push((**i).clone());
-            if let ItemKind::Container(c) = &i.kind {
-                collect(&c.container.borrow().to_container().items, out);
-            }
+            collect_item(i, out);
         }
+    }
+}
+
+fn collect_item(i: &InventoryItem, out: &mut Vec<InventoryItem>) {
+    out.push(i.clone());
+    if let ItemKind::Container(c) = &i.kind {
+        collect(&c.container.borrow().to_container().items, out);
     }
 }
 
@@ -598,7 +602,9 @@ fn main() {
                     }
                 }
                 if let ObjectKind::WorldInventory(w) = &o.kind {
-                    collect(std::slice::from_ref(&w.item), &mut items);
+                    if let Some(item) = w.item.borrow_item() {
+                        collect_item(&item, &mut items);
+                    }
                 }
             }
             for bd in &sq.static_moving {

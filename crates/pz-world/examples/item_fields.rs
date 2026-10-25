@@ -217,13 +217,17 @@ fn dump(items: &[SavedItem], out: &mut Vec<String>, raw: &mut usize) {
         match it {
             SavedItem::Raw(_) => *raw += 1,
             SavedItem::Item(i) => {
-                if let ItemKind::Container(c) = &i.kind {
-                    dump(&c.container.borrow().to_container().items, out, raw);
-                }
-                out.push(line(i));
+                dump_item(i, out, raw);
             }
         }
     }
+}
+
+fn dump_item(i: &InventoryItem, out: &mut Vec<String>, raw: &mut usize) {
+    if let ItemKind::Container(c) = &i.kind {
+        dump(&c.container.borrow().to_container().items, out, raw);
+    }
+    out.push(line(i));
 }
 
 fn main() {
@@ -315,7 +319,11 @@ fn main() {
                     dump(&c.items, &mut lines, &mut raw);
                 }
                 if let ObjectKind::WorldInventory(w) = &o.kind {
-                    dump(std::slice::from_ref(&w.item), &mut lines, &mut raw);
+                    if let Some(item) = w.item.borrow_item() {
+                        dump_item(&item, &mut lines, &mut raw);
+                    } else {
+                        raw += 1;
+                    }
                 }
             }
             for bd in &sq.static_moving {

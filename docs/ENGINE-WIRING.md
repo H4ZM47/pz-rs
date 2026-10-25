@@ -96,9 +96,16 @@ prevent complete inventory screen setup and interaction.
 
 The global `getCell()` entry now returns that same live cell. Square
 `canReachTo` uses the actual door, window and barricade owners together with
-the live nullable sprite-exclusion list. World-object lists and floor-item
-identity still need a canonical runtime owner bridge; getter-time copies or
-empty arrays would not implement the original inventory behavior.
+the live nullable sprite-exclusion list. Decoded floor items now become shared
+runtime items once, and placement retains the supplied item. Saving reads that
+same owner, including later nested bag mutations; explicit archive copies keep
+their independent value semantics. Raw undecodable records keep their bytes.
+The streamer retains removed chunk payloads until both world and sprite-manager
+borrows have ended, including queued-save errors and shutdown. Failed unload
+callbacks retain the removed payload without publishing a partial pending save.
+World-object lists, stable object/body handles, reciprocal world-item links and
+non-floor containers still need their runtime owner bridge. Getter-time copies
+or empty arrays would not implement the original inventory behavior.
 
 Puddles now have a shared live singleton and indexed float controls. A real
 cell-owned WeatherFX object initializes at world init; the climate updates

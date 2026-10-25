@@ -628,9 +628,9 @@ fn world_item_joins_the_square() {
         (wi.xoff, wi.yoff, wi.zoff, wi.drop_time),
         (0.0, 0.5, 0.25, 123.5)
     );
-    let copy = wi.item.as_item().unwrap();
-    assert_eq!(copy.id, 9);
-    assert_eq!(copy.world_z_rotation, 0.0);
+    assert!(Rc::ptr_eq(&wi.item.item_ref().unwrap(), &item));
+    assert_eq!(wi.item.borrow_item().unwrap().id, 9);
+    assert_eq!(wi.item.borrow_item().unwrap().world_z_rotation, 0.0);
     assert!(item.borrow().components.is_empty());
     assert_eq!(item.borrow().world_z_rotation, 0.0);
     let log = w.take_log();
@@ -655,6 +655,27 @@ fn world_item_joins_the_square() {
         .sq(p)
         .get_total_weight_of_items_on_floor(|_, i| i.template.actual_weight);
     assert_eq!(total, 40.0);
+    item.borrow_mut().actual_weight = 3.0;
+    item2.borrow_mut().actual_weight = 7.0;
+    assert_eq!(
+        w.sq(p)
+            .get_total_weight_of_items_on_floor(|_, i| i.actual_weight),
+        10.0
+    );
+    // Cloning a square for an archive/pure hook keeps value-copy semantics;
+    // the lifecycle hook snapshots did not replace the canonical item.
+    let snapshot = w.sq(p).clone();
+    let ObjectKind::WorldInventory(copied) = &snapshot.objects.last().unwrap().kind else {
+        panic!()
+    };
+    assert!(!Rc::ptr_eq(&copied.item.item_ref().unwrap(), &item2));
+    let ObjectKind::WorldInventory(live) = &w.sq(p).objects.last().unwrap().kind else {
+        panic!()
+    };
+    assert!(Rc::ptr_eq(&live.item.item_ref().unwrap(), &item2));
+    live.item.borrow_item_mut().unwrap().actual_weight = 11.0;
+    assert_eq!(item2.borrow().actual_weight, 11.0);
+    assert_eq!(copied.item.borrow_item().unwrap().actual_weight, 7.0);
 }
 
 #[test]
@@ -780,5 +801,6 @@ fn too_heavy_worn_item_drops_to_the_floor_below() {
         panic!()
     };
     assert_eq!((wi.xoff, wi.yoff, wi.drop_time), (0.1, 0.1, 10.0));
-    assert_eq!(wi.item.as_item().unwrap().id, 1);
+    assert!(Rc::ptr_eq(&wi.item.item_ref().unwrap(), &coat));
+    assert_eq!(wi.item.borrow_item().unwrap().id, 1);
 }
