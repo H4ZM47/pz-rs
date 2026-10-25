@@ -150,10 +150,11 @@ pub trait RenderSquareHooks {
     /// The tail of `IsoGridSquare.RecalcProperties()` for `sq`, after its
     /// properties were rebuilt: `getPuddles().recalc = true`,
     /// `chunk.checkLightingLater_AllPlayers_OneLevel(z)`,
-    /// `chunk.checkPhysicsLater(z)`, `chunk.collision.clear()`, and
-    /// `clearWater()` when the square has valid water geometry but no
-    /// `water` flag any more. Called for every `RecalcProperties`,
-    /// including the many `RecalcAllWithNeighbours` makes.
+    /// `chunk.checkPhysicsLater(z)`, and `clearWater()` when the square
+    /// has valid water geometry but no `water` flag any more. Called for
+    /// every `RecalcProperties`, including the many `RecalcAllWithNeighbours`
+    /// makes; the chunk's collision data (`chunk.collision.clear()`, between
+    /// the physics and water parts upstream) is cleared right after it.
     fn properties_recalculated(&mut self, _sq: &IsoGridSquare) {}
 
     /// `IsoGridSquare.clearWater()` (`addFloor`): the square's water
@@ -370,6 +371,13 @@ impl MutationEnv<'_> {
         };
         sq.recalc_properties(&*self.sprites);
         self.render.properties_recalculated(&*sq);
+        // `this.chunk.collision.clear()`, right after `checkPhysicsLater`
+        // (the hook's lighting and physics parts); only the hook's water
+        // part comes after it upstream, and neither reads the other.
+        let (wx, wy) = chunk_of(pos);
+        if let Some(ch) = self.cell.chunks.get_mut(&(wx, wy)) {
+            ch.collision.clear();
+        }
     }
 
     /// `ReCalculateCollide` / `ReCalculatePathFind` /

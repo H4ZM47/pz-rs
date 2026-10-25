@@ -1993,6 +1993,7 @@ impl IsoCell {
                 for x in 0..8 {
                     if let Some(sq) = ch.get_grid_square_mut(x, y, z) {
                         sq.recalc_properties(m);
+                        ch.collision.clear();
                     }
                 }
             }
@@ -2347,10 +2348,10 @@ impl IsoCell {
         meta: &IsoMetaGrid,
         m: &IsoSpriteManager,
     ) {
-        let Some(sq) = self.get_grid_square_mut(x, y, z) else {
+        if self.get_grid_square(x, y, z).is_none() {
             return;
-        };
-        sq.recalc_properties(m);
+        }
+        self.recalc_square_properties(x, y, z, m);
         let mut bits = Vec::new();
         if let Some(sq) = self.get_grid_square(x, y, z) {
             recalc_all_with_neighbours(sq, meta, m, self, &mut bits);
