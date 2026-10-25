@@ -6,7 +6,9 @@
 //!
 //! [`StateWorld`]: pz_characters::character::state::StateWorld
 
-use pz_characters::character::state::{FenceClimb, FenceInfo, SquareInfo, StairsPieces, ThumpKind, WindowClimb};
+use pz_characters::character::state::{
+    ClimbStatus, FenceClimb, FenceInfo, RopeClimbOutcome, RopeSquare, SquareInfo, StairsPieces, ThumpKind, WindowClimb,
+};
 use pz_pathfind::mover::ObjectRef;
 use pz_world::objects::{IsoObject, ObjectKind, ObjectName};
 use pz_world::{IsoDirections, IsoGridSquare};
@@ -422,5 +424,190 @@ impl StatesWorldAdapter<'_> {
         if d <= 0 {
             self.engine.destroy_fence(self.cell, r, dir);
         }
+    }
+}
+
+// ---- walls and sheet ropes ----
+
+impl StatesWorldAdapter<'_> {
+    /// `IsoGridSquare.HasSlopedRoof()`: `HasSlopedRoofWest()` or
+    /// `HasSlopedRoofNorth()`, which in the original also test the west
+    /// roof types.
+    fn has_sloped_roof(&self, sq: &IsoGridSquare) -> bool {
+        let t = &self.sprites.tables;
+        ["WestRoofB", "WestRoofM", "WestRoofT"].into_iter().any(|n| {
+            let ty = t.object_type_from_string(n);
+            ty != t.object_type_max() && sq.has_type(ty)
+        })
+    }
+
+    /// `HasSlopedRoof() && !HasEave()` of the square above `sq`.
+    fn sloped_roof_above(&self, sq: &IsoGridSquare) -> bool {
+        self.cell
+            .get_grid_square(sq.x, sq.y, sq.z + 1)
+            .is_some_and(|a| self.has_sloped_roof(a) && !self.sq_flag(a, "isEave"))
+    }
+
+    /// The world's part of `IsoPlayer.canClimbOverWall(dir)` for a player
+    /// on `at`.
+    pub fn can_climb_over_wall_at(&self, at: (i32, i32, i32), dir: IsoDirections) -> bool {
+        if !self.is_safe_to_climb_over(at, dir) {
+            return false;
+        }
+        let Some(cur) = self.cell.get_grid_square(at.0, at.1, at.2) else { return false };
+        if cur.have_roof || self.square_building_idx(cur).is_some() || self.sloped_roof_above(cur) {
+            return false;
+        }
+        // The original dereferences the adjacent square.
+        let Some(square) = cur.get_adjacent_square(dir, self.cell) else { return false };
+        let m = &*self.sprites;
+        if square.have_roof || square.is_solid(m) || square.is_solid_trans(m) || self.square_building_idx(square).is_some() {
+            return false;
+        }
+        if self.sloped_roof_above(square) {
+            return false;
+        }
+        let above = |s: &IsoGridSquare| self.cell.get_grid_square(s.x, s.y, s.z + 1);
+        let wall = |s: &IsoGridSquare, collide: &str, hoppable: &str| {
+            !self.sq_flag(s, "CantClimb")
+                && s.has_type(m.tables.ty.wall)
+                && self.sq_flag(s, collide)
+                && !self.sq_flag(s, hoppable)
+                && !above(s).is_some_and(|a| self.sq_flag(a, collide))
+        };
+        match dir {
+            IsoDirections::N => wall(cur, "collideN", "HoppableN"),
+            IsoDirections::S => wall(square, "collideN", "HoppableN"),
+            IsoDirections::W => wall(cur, "collideW", "HoppableW"),
+            IsoDirections::E => wall(square, "collideW", "HoppableW"),
+            _ => false,
+        }
+    }
+
+    /// `ClimbOverWallState.getClimbableWallN/W(square)`: the first wall
+    /// object along that edge that can be climbed.
+    fn climbable_wall<'s>(&self, sq: &'s IsoGridSquare, north: bool) -> Option<&'s IsoObject> {
+        let env = self.env();
+        let (collide, hoppable) = if north { ("collideN", "HoppableN") } else { ("collideW", "HoppableW") };
+        sq.objects.iter().find(|o| {
+            let Some(s) = o.sprite else { return false };
+            !env.obj_has_flag(o, "CantClimb")
+                && self.sprites.sprites[s].tile_type == self.sprites.tables.ty.wall
+                && env.obj_has_flag(o, collide)
+                && !env.obj_has_flag(o, hoppable)
+        })
+    }
+
+    /// `ClimbOverWallState.getFence(owner)` and `getFenceType(fence)`.
+    pub fn climbable_wall_fence_type_at(&self, start: (i32, i32, i32), end: (i32, i32, i32), dir: IsoDirections) -> Option<i32> {
+        let s = self.cell.get_grid_square(start.0, start.1, start.2)?;
+        let e = self.cell.get_grid_square(end.0, end.1, end.2)?;
+        let wall = match dir {
+            IsoDirections::N => self.climbable_wall(s, true),
+            IsoDirections::E => self.climbable_wall(e, false),
+            IsoDirections::W => self.climbable_wall(s, false),
+            IsoDirections::S => self.climbable_wall(e, true),
+            _ => None,
+        }?;
+        // ParameterFenceTypeHigh: WOOD 0, METAL 1, METAL_BARS 2.
+        Some(match self.env().obj_prop(wall, "FenceTypeHigh") {
+            Some("Metal") => 1,
+            Some("MetalGate") => 2,
+            _ => 0,
+        })
+    }
+
+    /// What the sheet-rope climbs read of the square `(x, y, z)`.
+    pub fn rope_square_at(&self, x: i32, y: i32, z: i32) -> Option<RopeSquare> {
+        let sq = self.cell.get_grid_square(x, y, z)?;
+        let env = self.env();
+        let f = |n: &str| self.sq_flag(sq, n);
+        let chunk = self.cell.chunks.get(&(x.div_euclid(8), y.div_euclid(8)));
+        Some(RopeSquare {
+            sheet_rope: env.is_sheet_rope_here(sq),
+            top_of_sheet_rope: f("climbSheetTopN") || f("climbSheetTopS") || f("climbSheetTopW") || f("climbSheetTopE"),
+            can_climb_here: env.can_climb_here(sq),
+            solid_floor: sq.treat_as_solid_floor(self.sprites),
+            solid_trans: sq.has(self.sprites.tables.flag.solidtrans),
+            sheet_n: f("climbSheetN") || f("climbSheetTopN"),
+            sheet_s: f("climbSheetS") || f("climbSheetTopS"),
+            sheet_w: f("climbSheetW") || f("climbSheetTopW"),
+            sheet_e: f("climbSheetE") || f("climbSheetTopE"),
+            chunk_min_level: chunk.map_or(0, |c| c.min_level),
+            chunk_max_level: chunk.map_or(0, |c| c.max_level),
+        })
+    }
+
+    /// `ClimbSheetRopeState.calculateClimbOutcome(chr)` from the top of
+    /// the rope `top`, facing `dir`.
+    pub fn rope_climb_outcome_for(&mut self, t: &Thumper, top: (i32, i32, i32), dir: IsoDirections) -> RopeClimbOutcome {
+        let blocked = RopeClimbOutcome { status: ClimbStatus::Blocked, target: None };
+        let Some(sq) = self.cell.get_grid_square(top.0, top.1, top.2) else { return RopeClimbOutcome::default() };
+        // The original dereferences the exit square.
+        let Some(exit) = sq.get_adjacent_square(dir, self.cell) else { return RopeClimbOutcome::default() };
+        let exit_p = (exit.x, exit.y, exit.z);
+        if !exit.treat_as_solid_floor(self.sprites) {
+            return blocked;
+        }
+        let in_sq = |o: &IsoObject| sq.objects.iter().any(|x| std::ptr::eq(x, o));
+        let window = sq.get_window_to(Some(exit), self.cell).map(|o| oref(if in_sq(o) { sq } else { exit }, o));
+        if let Some(w) = window {
+            let open = self.find(w).is_some_and(|(_, o)| matches!(&o.kind, ObjectKind::Window(win) if win.open));
+            if !open {
+                self.engine.toggle_window(self.cell, w, t.id);
+            }
+            let can = self.find(w).is_some_and(|(s, o)| self.window_can_climb_through(s, o, Some(t)));
+            if !can {
+                return blocked;
+            }
+            return RopeClimbOutcome { status: ClimbStatus::OpenWindow, target: Some(w) };
+        }
+        let sq = self.cell.get_grid_square(top.0, top.1, top.2).expect("top square");
+        let exit = self.cell.get_grid_square(exit_p.0, exit_p.1, exit_p.2);
+        let hooks = self.env().hooks();
+        if let Some((s, o)) = sq.get_window_thumpable_to(exit, self.sprites, self.cell, &hooks) {
+            if !self.thumpable_can_climb_through(s, o, Some(t)) {
+                return blocked;
+            }
+            return RopeClimbOutcome { status: ClimbStatus::OpenWindow, target: Some(oref(s, o)) };
+        }
+        let north = matches!(dir, IsoDirections::N | IsoDirections::S);
+        let m = &*self.sprites;
+        let hoppable_thumpable = sq.get_edge_element_to(exit, self.cell, &|s: &IsoGridSquare, facing| {
+            s.get_special_objects()
+                .find(|o| matches!(&o.kind, ObjectKind::Thumpable(th) if o.is_hoppable(m) && pz_world::square::EdgeFacing::of_north(th.north) == facing))
+                .map(|_| ())
+        });
+        if hoppable_thumpable.is_some() {
+            if !self.can_climb_through_helper(t, sq, exit, north) {
+                return blocked;
+            }
+            return RopeClimbOutcome { status: ClimbStatus::Fence, target: None };
+        }
+        if let Some((s, o)) = sq.get_window_frame_to(exit, self.cell) {
+            let ObjectKind::WindowFrame { north: frame_north } = o.kind else { return RopeClimbOutcome::default() };
+            if !self.frame_can_climb_through(s, frame_north, Some(t)) {
+                return blocked;
+            }
+            return RopeClimbOutcome { status: ClimbStatus::WindowFrame, target: Some(oref(s, o)) };
+        }
+        let wall_hoppable = sq.get_edge_element_to(exit, self.cell, &|s: &IsoGridSquare, facing| {
+            s.objects.iter().find(|o| o.get_hoppable_direction(m) == Some(facing)).map(|_| ())
+        });
+        if wall_hoppable.is_some() {
+            if !self.can_climb_through_helper(t, sq, exit, north) {
+                return blocked;
+            }
+            return RopeClimbOutcome { status: ClimbStatus::Fence, target: None };
+        }
+        RopeClimbOutcome::default()
+    }
+
+    /// `sq.getFloor().getSprite().getName()`: the first object whose
+    /// sprite has `solidfloor`.
+    pub fn floor_sprite_name_at(&self, p: (i32, i32, i32)) -> Option<String> {
+        let sq = self.cell.get_grid_square(p.0, p.1, p.2)?;
+        let floor = sq.objects.iter().find(|o| o.sprite.is_some_and(|s| self.sprites.sprites[s].properties.has(self.sprites.tables.flag.solidfloor)))?;
+        self.env().sprite_name(floor).map(str::to_string)
     }
 }

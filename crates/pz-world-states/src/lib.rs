@@ -1024,6 +1024,43 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         self.engine.resolve_collision_radius(view, chr, radius)
     }
 
+    fn can_climb_over_wall(&self, current: (i32, i32, i32), dir: IsoDirections) -> bool {
+        self.can_climb_over_wall_at(current, dir)
+    }
+
+    fn climbable_wall_fence_type(&self, start: (i32, i32, i32), end: (i32, i32, i32), dir: IsoDirections) -> Option<i32> {
+        self.climbable_wall_fence_type_at(start, end, dir)
+    }
+
+    fn rope_square(&self, x: i32, y: i32, z: i32) -> Option<pz_characters::character::state::RopeSquare> {
+        self.rope_square_at(x, y, z)
+    }
+
+    fn rope_climb_outcome(
+        &mut self,
+        id: i32,
+        chr: &dyn CharacterView,
+        kind: pz_world::square::MoverKind,
+        top: (i32, i32, i32),
+        dir: IsoDirections,
+    ) -> pz_characters::character::state::RopeClimbOutcome {
+        let t = Thumper {
+            id,
+            x: chr.x(),
+            y: chr.y(),
+            z: chr.z(),
+            current_square: chr.current_square(),
+            zombie: kind == pz_world::square::MoverKind::Zombie,
+            animal: kind == pz_world::square::MoverKind::Animal,
+            ..Default::default()
+        };
+        self.rope_climb_outcome_for(&t, top, dir)
+    }
+
+    fn floor_sprite_name(&self, sq: (i32, i32, i32)) -> Option<String> {
+        self.floor_sprite_name_at(sq)
+    }
+
     fn path_cancel_request(&mut self, chr: &mut dyn pz_pathfind::mover::PathMover) {
         self.engine.path_cancel_request(chr.mover_id());
     }

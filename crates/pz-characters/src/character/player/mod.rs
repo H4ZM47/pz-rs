@@ -111,6 +111,9 @@ pub struct PlayerControl {
     pub death_finished: bool,
     /// `collidable` (`setCollidable`).
     pub collidable: bool,
+    /// `climbOverWallStruggle`, `climbOverWallSuccess`.
+    pub climb_over_wall_struggle: bool,
+    pub climb_over_wall_success: bool,
     /// `seenThisFrame`, `couldBeSeenThisFrame`.
     pub seen_this_frame: bool,
     pub could_be_seen_this_frame: bool,
@@ -169,6 +172,8 @@ impl Default for PlayerControl {
             last_targeted: 1e8,
             targeted_by_zombie: false,
             dirty_recalc_grid_stack_time: 2.0,
+            climb_over_wall_struggle: false,
+            climb_over_wall_success: false,
             ext_update_count: 0.0,
             auto_walk: false,
             auto_walk_direction: (0.0, 0.0),

@@ -144,6 +144,9 @@ pub trait StateWorld<I> {
     /// `getPathFindBehavior2().cancel()`.
     fn path_cancel(&mut self, _chr: &mut dyn PathMover) {}
 
+    /// `getPathFindBehavior2().reset()`.
+    fn path_reset(&mut self, _chr: &mut dyn PathMover) {}
+
     /// `PathfindNative.instance.cancelRequest(chr)`: drops `chr`'s pending
     /// request (`PathfindService::cancel_request(chr.mover_id())`); its
     /// `PathFindBehavior2` is left as it is.
@@ -619,6 +622,96 @@ pub trait StateWorld<I> {
     /// `fence.destroyFence(dir)` at 0 or below (two zombies climbing over
     /// it at once, `ClimbOverFenceState`'s `OnFloor`).
     fn damage_fence(&mut self, _fence: pz_pathfind::mover::ObjectRef, _damage: i32, _dir: IsoDirections) {}
+
+    // ---- walls (`IsoPlayer.climbOverWall`, `ClimbOverWallState`) ----
+
+    /// The world's part of `IsoPlayer.canClimbOverWall(dir)` for a player
+    /// on `current`: `isSafeToClimbOver(dir)`, no roof or building on
+    /// either side, no sloped roof without an eave above them, a free
+    /// square beyond and a climbable wall between (everything but
+    /// `isSprinting()`).
+    fn can_climb_over_wall(&self, _current: (i32, i32, i32), _dir: IsoDirections) -> bool {
+        false
+    }
+    /// `ClimbOverWallState.getFence(owner)` then `getFenceType(fence)`:
+    /// the `FenceTypeHigh` parameter value (0 wood, 1 metal, 2 metal
+    /// bars) of the climbable wall between `start` and `end` climbing
+    /// `dir`, `None` without one.
+    fn climbable_wall_fence_type(&self, _start: (i32, i32, i32), _end: (i32, i32, i32), _dir: IsoDirections) -> Option<i32> {
+        None
+    }
+
+    // ---- sheet ropes (`ClimbSheetRopeState`, `ClimbDownSheetRopeState`) ----
+
+    /// What the sheet-rope climbs read of a square (`None` without one).
+    fn rope_square(&self, _x: i32, _y: i32, _z: i32) -> Option<RopeSquare> {
+        None
+    }
+    /// `ClimbSheetRopeState.calculateClimbOutcome`: what lies beyond the
+    /// top of the rope (`top`) in the climber's (character `id`) forward
+    /// direction `dir`. A closed window there is opened
+    /// (`ToggleWindow(chr)`).
+    fn rope_climb_outcome(
+        &mut self,
+        _id: i32,
+        _chr: &dyn pz_pathfind::mover::CharacterView,
+        _kind: pz_world::square::MoverKind,
+        _top: (i32, i32, i32),
+        _dir: IsoDirections,
+    ) -> RopeClimbOutcome {
+        RopeClimbOutcome::default()
+    }
+
+    // ---- falls (`handleLandingImpact`) ----
+
+    /// `sq.getFloor().getSprite().getName()`.
+    fn floor_sprite_name(&self, _sq: (i32, i32, i32)) -> Option<String> {
+        None
+    }
+}
+
+/// What the sheet-rope climbs read of a square.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RopeSquare {
+    /// `IsoWindow.isSheetRopeHere(sq)`.
+    pub sheet_rope: bool,
+    /// `IsoWindow.isTopOfSheetRopeHere(sq)`.
+    pub top_of_sheet_rope: bool,
+    /// `IsoWindow.canClimbHere(sq)`.
+    pub can_climb_here: bool,
+    /// `TreatAsSolidFloor()`.
+    pub solid_floor: bool,
+    /// `has(IsoFlagType.solidtrans)`.
+    pub solid_trans: bool,
+    /// `getProperties().has(climbSheetN) || has(climbSheetTopN)`, and the
+    /// same for S, W and E (`ClimbSheetRopeState.setIdealDirection`).
+    pub sheet_n: bool,
+    pub sheet_s: bool,
+    pub sheet_w: bool,
+    pub sheet_e: bool,
+    /// `getChunk().getMinLevel()` / `getMaxLevel()`.
+    pub chunk_min_level: i32,
+    pub chunk_max_level: i32,
+}
+
+/// `ClimbSheetRopeState.ClimbStatus`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClimbStatus {
+    #[default]
+    Undefined,
+    Blocked,
+    OpenWindow,
+    WindowFrame,
+    Fence,
+}
+
+/// `calculateClimbOutcome`'s result: the status and
+/// `climbData.climbTargetIsoObject` (the window, window thumpable or
+/// frame climbed through at the top).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RopeClimbOutcome {
+    pub status: ClimbStatus,
+    pub target: Option<pz_pathfind::mover::ObjectRef>,
 }
 
 /// The ground of a square (`hasNaturalFloor`, `hasSand`,

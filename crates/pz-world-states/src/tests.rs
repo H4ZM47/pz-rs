@@ -153,6 +153,9 @@ const SPRITES: &[Spec] = &[
     ),
     ("tree_a", "tree", &[]),
     ("shrub", "normal", &[("Bush", "")]),
+    ("wall_n_metal", "wall", &[("collideN", ""), ("FenceTypeHigh", "Metal")]),
+    ("wall_n_cant", "wall", &[("collideN", ""), ("CantClimb", "")]),
+    ("rope_n", "normal", &[("climbSheetN", "")]),
 ];
 
 fn manager() -> IsoSpriteManager {
@@ -1113,4 +1116,38 @@ fn loaded_windows_share_their_closed_sprite_properties() {
     assert!(w.m.sprites[closed].properties.has(w.m.tables.flag.cutW));
     let sq = w.cell.get_grid_square(12, 12, 0).unwrap();
     assert_eq!(sq.object_index(r.id), Some(1));
+}
+
+#[test]
+fn a_bare_wall_can_be_climbed_and_sounds_its_fence_type() {
+    let mut w = World::new();
+    w.add(10, 10, "wall_n_metal", ObjectKind::Object, false);
+    w.add(12, 10, "wall_n_cant", ObjectKind::Object, false);
+    let a = w.adapter();
+    // North over the wall on (10, 10); not south (no wall on (10, 11)),
+    // not west, not where it says it cannot be climbed.
+    assert!(a.can_climb_over_wall_at((10, 10, 0), IsoDirections::N));
+    assert!(!a.can_climb_over_wall_at((10, 10, 0), IsoDirections::W));
+    assert!(!a.can_climb_over_wall_at((10, 11, 0), IsoDirections::N));
+    assert!(!a.can_climb_over_wall_at((12, 10, 0), IsoDirections::N));
+    // From (10, 9) going south the wall is on the end square (10, 10).
+    assert!(a.can_climb_over_wall_at((10, 9, 0), IsoDirections::S));
+    assert_eq!(a.climbable_wall_fence_type_at((10, 10, 0), (10, 9, 0), IsoDirections::N), Some(1));
+    assert_eq!(a.climbable_wall_fence_type_at((10, 9, 0), (10, 10, 0), IsoDirections::S), Some(1));
+    assert_eq!(a.climbable_wall_fence_type_at((12, 10, 0), (12, 9, 0), IsoDirections::N), None);
+    assert_eq!(a.floor_sprite_name_at((10, 10, 0)).as_deref(), Some("floor"));
+    assert_eq!(a.floor_sprite_name_at((40, 40, 0)), None);
+}
+
+#[test]
+fn a_rope_square_reports_its_sheet_and_chunk() {
+    let mut w = World::new();
+    w.add(10, 10, "rope_n", ObjectKind::Object, false);
+    w.cell.chunks.get_mut(&(1, 1)).unwrap().max_level = 3;
+    let a = w.adapter();
+    let r = a.rope_square_at(10, 10, 0).unwrap();
+    assert!(r.sheet_n && !r.sheet_s && !r.top_of_sheet_rope && r.solid_floor);
+    assert_eq!((r.chunk_min_level, r.chunk_max_level), (0, 3));
+    assert!(!a.rope_square_at(11, 10, 0).unwrap().sheet_n);
+    assert!(a.rope_square_at(40, 40, 0).is_none());
 }

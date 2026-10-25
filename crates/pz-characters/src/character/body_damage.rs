@@ -776,7 +776,7 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     /// `addStiffness(type, stiffness)` on the part named `field`.
-    fn add_stiffness_to(&mut self, chars: &Characters, field: &str, v: f32) -> ScriptResult {
+    pub(crate) fn add_stiffness_to(&mut self, chars: &Characters, field: &str, v: f32) -> ScriptResult {
         let i = chars.sim.body_part_types.index(field)?;
         if let Some(p) = self.body_damage.parts.get_mut(i) {
             p.add_stiffness(v);

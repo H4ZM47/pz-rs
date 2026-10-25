@@ -276,6 +276,26 @@ pub enum SimEvent {
     ContainerUpdate,
     /// `LuaEventManager.triggerEvent("onItemFall", item)`.
     ItemFall(pz_inventory::shared::ItemRef),
+    /// `IsoPlayer.triggerMusicIntensityEvent(name)` (a local player).
+    MusicIntensityEvent(&'static str),
+    /// `createFallingItem(item)`: a worn item that fell off
+    /// (`helmetFall`), already out of the inventory and the worn items.
+    FallingItem(pz_inventory::shared::ItemRef),
+    /// `PersistentOutfits.instance.setFallenHat(chr, true)`.
+    FallenHat,
+    /// `IsoPlayer.stopPlayerVoiceSound(name)`.
+    StopPlayerVoiceSound(&'static str),
+    /// `LuaEventManager.triggerEvent("OnCharacterDeath", chr)`.
+    CharacterDeath,
+    /// `UIManager.FadeIn(playerIndex, seconds)` (a sleeping player that
+    /// dies).
+    FadeIn(f64),
+    /// The rest of `IsoPlayer.OnDeath()` after `dropHandItems()`, the
+    /// engine's: the death music once all players are dead,
+    /// `OnPlayerDeath` and leaving the vehicle for a local player,
+    /// `removeSaveFile()`, `forceAwake()` for one that becomes a zombie,
+    /// `getMoodles().Update()` and `getCell().setDrag(null, index)`.
+    PlayerDeath { local: bool },
 }
 
 /// The singletons the simulation reads. Every method has the default a
@@ -722,6 +742,14 @@ pub trait SimContext {
     }
     /// `DebugOptions.instance.character.debug.alwaysHitTarget`.
     fn debug_always_hit_target(&self) -> bool {
+        false
+    }
+    /// `SandboxOptions.instance.easyClimbing.getValue()`.
+    fn easy_climbing(&self) -> bool {
+        false
+    }
+    /// `DebugOptions.instance.character.debug.alwaysTripOverFence`.
+    fn debug_always_trip_over_fence(&self) -> bool {
         false
     }
 }

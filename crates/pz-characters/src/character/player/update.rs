@@ -1239,7 +1239,9 @@ impl<I: 'static> GameCharacter<I> {
         }
         // sx/sy, alarms (AmbientStreamManager), updateSeenVisibility: world.
         // updateMovementStatistics: TODO(statistics).
-        // climbRopeTime: TODO(sheet ropes).
+        if self.climb_rope_time != 0.0 && !self.is_climbing_rope() {
+            self.climb_rope_time = 0.0;
+        }
         self.vars.last_x = self.vars.x;
         self.vars.last_y = self.vars.y;
         self.vars.last_z = self.vars.z;
@@ -1379,12 +1381,22 @@ impl<I: 'static> GameCharacter<I> {
     /// human visual and the worn items covering them get dirtier
     /// (`BloodClothingType.addDirt`).
     pub fn add_dirt(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, count: i32, all_layers: bool) {
+        self.add_dirt_part(sm, ctx, None, count, all_layers);
+    }
+
+    /// `addDirt(part, count, allLayers)`'s dirt: `part` (`None`: a random
+    /// part per dirt, `OutfitRNG`) of the human visual and the worn items
+    /// covering it get dirtier (`BloodClothingType.addDirt`).
+    pub fn add_dirt_part(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, fixed_part: Option<usize>, count: i32, all_layers: bool) {
         use pz_core::random::outfit_rng;
         // `BloodBodyPartType.MAX.index()`.
         const MAX: usize = 17;
         let ids = self.items.item_visual_ids();
         for _ in 0..count {
-            let part = outfit_rng::next_range(0, MAX as i32) as usize;
+            let part = match fixed_part {
+                Some(p) => p,
+                None => outfit_rng::next_range(0, MAX as i32) as usize,
+            };
             let intensity = match ctx.clothing_degradation() {
                 2 => outfit_rng::next_float(0.001, 0.01),
                 3 => outfit_rng::next_float(0.05, 0.1),
