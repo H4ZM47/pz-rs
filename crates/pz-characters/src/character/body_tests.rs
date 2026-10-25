@@ -191,7 +191,7 @@ fn thermoregulator_nodes_and_cold() {
     // A hat (no covered parts) goes on the head.
     let hat = item_constant(&sm, ItemBodyLocation::REGISTRY, "HAT");
     give_item(&sm, &mut c, ItemClass::Clothing, "Hat", 7, |t| t.insulation = 0.5, |s| s.body_location = Some(hat));
-    c.items.worn_items = vec![7];
+    c.items.wear_in_order(&[7]);
     // Without a visual (no clothing asset) it is not in the item visuals.
     c.thermoregulator_update(&sm, &chars, &ctx).unwrap();
     assert_eq!(c.body_damage.thermoregulator().unwrap().nodes().iter().map(|n| n.insulation()).sum::<f32>(), 0.0);
@@ -380,7 +380,7 @@ fn worn_clothing_defends_and_weighs() {
     give_item(&sm, &mut c, ItemClass::Clothing, "Mittens", 11, |t| t.scratch_defense = 40.0, |s| {
         s.blood_clothing_type = Some(vec!["Hand_L".into()])
     });
-    c.items.worn_items = vec![10, 11];
+    c.items.wear_in_order(&[10, 11]);
     // No visuals yet: nothing is worn as far as the visuals go.
     assert_eq!(c.items.body_part_clothing_defense(&sm, 0, false, false), 0.0);
     for id in [10, 11] {
@@ -451,7 +451,7 @@ fn rain_wets_the_outer_layer() {
     let ctx = HalfRand { rec: Recorder { globals: g, ..Default::default() } };
     give_item(&sm, &mut c, ItemClass::Clothing, "Coat", 1, |_| {}, |s| s.blood_clothing_type = Some(vec!["Jacket".into()]));
     give_item(&sm, &mut c, ItemClass::Clothing, "Tee", 2, |_| {}, |s| s.blood_clothing_type = Some(vec!["ShirtNoSleeves".into()]));
-    c.items.worn_items = vec![2, 1];
+    c.items.wear_in_order(&[2, 1]);
     for id in [1, 2] {
         c.items.item(id).unwrap().borrow_mut().visual = Some(visual(18));
     }

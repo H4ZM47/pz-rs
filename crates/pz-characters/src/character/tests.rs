@@ -445,3 +445,45 @@ fn survivor_constructor_rand_order() {
     assert_eq!(c.kind, CharacterKind::Survivor);
     assert!(c.descriptor.as_ref().is_some_and(|d| Rc::ptr_eq(d, &desc)));
 }
+
+#[test]
+fn set_worn_item_follows_the_group() {
+    let (sm, mut chars) = fixture();
+    let [hat, full_hat, tee, coat] = ["HAT", "FULL_HAT", "TSHIRT", "JACKET"].map(|f| item_constant(&sm, "item_body_location", f));
+    let mut c = player(&sm, &mut chars);
+    // No `wornItems` yet: the original's NullPointerException; clearing is a no-op.
+    assert!(c.worn_item(Some(&hat)).is_err());
+    assert!(c.set_worn_item(&sm, None, Some(hat.clone()), Some(1), true).is_err());
+    c.clear_worn_items(&sm);
+    let g = chars.body_locations.get_group("Human").unwrap();
+    for k in [&hat, &full_hat, &tee, &coat] {
+        g.borrow_mut().get_or_create_location(Some(k.clone())).unwrap();
+    }
+    g.borrow_mut().set_exclusive(Some(tee.clone()), Some(coat.clone())).unwrap();
+    c.init_worn_items(&sm, g);
+    let mut v = pz_inventory::visual::HumanVisual::new(18);
+    v.hair_model = Some("Mohawk".into());
+    c.human_visual = Some(v);
+    c.clothing_wetness.as_mut().unwrap().changed = false;
+
+    assert!(c.set_worn_item(&sm, None, Some(tee.clone()), Some(3), true).unwrap());
+    assert_eq!(c.human_visual.as_ref().unwrap().hair_model.as_deref(), Some("Mohawk"));
+    assert!(c.clothing_wetness.as_ref().unwrap().changed);
+    assert!(c.set_worn_item(&sm, None, Some(full_hat.clone()), Some(2), true).unwrap());
+    assert_eq!(c.human_visual.as_ref().unwrap().hair_model.as_deref(), Some("MohawkFlat"));
+    assert_eq!(c.items.worn_ids(), [2, 3]);
+    // The same item again: nothing changes.
+    assert!(!c.set_worn_item(&sm, None, Some(full_hat.clone()), Some(2), true).unwrap());
+    // An exclusive location drops the other item.
+    c.set_worn_item(&sm, None, Some(coat.clone()), Some(4), true).unwrap();
+    assert_eq!(c.items.worn_ids(), [2, 4]);
+    assert_eq!(c.worn_item(Some(&tee)).unwrap(), None);
+    assert!(c.is_equipped_clothing(Some(4)).unwrap() && !c.is_equipped_clothing(Some(3)).unwrap());
+    // removeWornItem: by location, a no-op for an item not worn.
+    assert!(c.remove_worn_item(&sm, None, Some(2), true).unwrap());
+    assert!(!c.remove_worn_item(&sm, None, Some(2), true).unwrap());
+    assert_eq!(c.items.worn_ids(), [4]);
+    assert!(Rc::ptr_eq(&c.items.worn_location(4).unwrap(), &coat));
+    c.clear_worn_items(&sm);
+    assert!(c.items.worn_ids().is_empty() && c.worn_clothing_can_ragdoll);
+}

@@ -20,7 +20,7 @@ use pz_inventory::{InventoryItem, ItemContainer, ItemContext, ItemKind, ItemTemp
 use pz_scripts::objects::items::find_item;
 use pz_scripts::ScriptManager;
 
-use super::context::SimContext;
+use super::context::{SimContext, SimEvent};
 use super::items::CharacterItems;
 use super::{CharacterKind, GameCharacter};
 use crate::survivor::CharacterGender;
@@ -85,7 +85,7 @@ impl<I> ItemOwner for GameCharacter<I> {
     }
     /// `Clothing.isWorn()`.
     fn is_worn(&self, item: &InventoryItem) -> bool {
-        self.items.holds_directly(item.id) && self.items.worn_items.contains(&item.id)
+        self.items.holds_directly(item.id) && self.items.is_worn(item.id)
     }
     /// `isInPlayerInventory()`: the outermost container is an
     /// `IsoPlayer`'s inventory.
@@ -216,11 +216,15 @@ impl<I> GameCharacter<I> {
     /// `ReplaceOnUse`/`ReplaceOnDeplete` item added (taking the used
     /// item's hands for a drainable), `removeFromHands` and the removal
     /// from the inventory. Returns the new item's id.
-    pub fn apply_use_outcome(&mut self, id: i32, out: &mut UseOutcome) -> Option<i32> {
-        let items = &mut self.items;
-        if out.unwear {
-            items.worn_items.retain(|&w| w != id);
+    pub fn apply_use_outcome(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, id: i32, out: &mut UseOutcome) -> Option<i32> {
+        if out.unwear && self.items.is_worn(id) {
+            // `removeWornItem(this)` (no hair styles: see `set_worn_item`),
+            // then `OnClothingUpdated` for a player.
+            if self.remove_worn_item(sm, None, Some(id), true).is_ok() && self.is_player() {
+                ctx.event(SimEvent::ClothingUpdated);
+            }
         }
+        let items = &mut self.items;
         let new_id = out.added.as_ref().filter(|a| a.item.is_some()).map(|a| (a.item.as_ref().unwrap().id, a.takes_hands));
         if let Some((new_id, true)) = new_id {
             if items.primary_hand_item == Some(id) {
@@ -259,7 +263,7 @@ impl<I> GameCharacter<I> {
         let mut out = self.with_held_item(id, |item, owner| {
             item.use_with(crafting, in_container, need_sync, owner, &ictx)
         })?;
-        self.apply_use_outcome(id, &mut out);
+        self.apply_use_outcome(sm, ctx, id, &mut out);
         Some(out)
     }
 }

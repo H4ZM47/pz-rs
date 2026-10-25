@@ -24,9 +24,20 @@
 //! items are held by item id, so a hand item that is not in the inventory
 //! reads back as `nil` (the original holds any object).
 //!
-//! Not exposed yet: `getWornItems`, `getWornItem`, `setWornItem` and the
-//! `getClothingItem_*` getters (the character's worn items are ids with
-//! locations, not a `WornItems` object), `setInventory`, `getCharacterTraits` (the character's `CharacterTraits`
+//!
+//! The worn items are the character's `WornItems` of item ids
+//! ([`pz_characters::character::CharacterItems::worn_items`]);
+//! `getWornItems()` is one `WornItems` object over them (the class
+//! `SurvivorDesc.getWornItems()` also returns), whose items read back as
+//! the inventory's items. `setWornItem` follows the original (no hand or
+//! `OnClothingUpdated` handling: the Lua actions do that); the
+//! `getHairModel()` it reads uses the shared population's hair styles.
+//! An item's own `isEquipped()`/`isWorn()` do not see the character yet
+//! (the Lua item environment gives items no owner).
+//!
+//! Not exposed yet: `setWornItems`, `hasWornTag`, the attached items
+//! (`getAttachedItems`, `getAttachedItem`, ...: characters hold no
+//! `AttachedItems`), `setInventory`, `getCharacterTraits` (the character's `CharacterTraits`
 //! is not shared with the Lua object of that class), `Stats.load/save`,
 //! `CharacterStat.REGISTRY` and `ORDERED_STATS`, `XP.load/save`.
 //! TODO(saves).
@@ -278,6 +289,7 @@ enum Handle {
     Moodle,
     Xp,
     PerkInfo,
+    WornItems,
 }
 
 /// One Lua object per (kind, owner, member), so Lua `==` is identity.
@@ -385,6 +397,136 @@ fn register_inventory(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let v = chr_of(c)?.borrow().is_ghost_mode(&*ctx);
         Ok(c.push(v))
     });
+}
+
+/// A character's worn items as a `WornItems` object's backing: item ids,
+/// read back as the inventory's items (`nil` for an id that is not one).
+pub(crate) struct CharacterWorn(pub LuaGameCharacterRef);
+
+impl crate::bind_characters::WornBacking for CharacterWorn {
+    type Item = i32;
+    fn with<R>(&self, f: impl FnOnce(&mut pz_characters::WornItems<i32>) -> R) -> LuaResult<R> {
+        let mut chr = self.0.borrow_mut();
+        Ok(f(chr.items.worn_items.as_mut().ok_or_else(npe)?))
+    }
+    fn value(&self, item: Option<i32>) -> Value {
+        worn_item_value(&self.0, item)
+    }
+    fn item_arg(&self, c: &NativeCall<'_>, i: usize) -> LuaResult<Option<i32>> {
+        opt_item_id(c, i)
+    }
+}
+
+/// The Lua object of the character's inventory item `id`.
+fn worn_item_value(chr: &LuaGameCharacterRef, id: Option<i32>) -> Value {
+    let item = id.and_then(|id| chr.borrow().items.item(id));
+    item.as_ref().map_or(Value::Nil, crate::bind_items::item_value)
+}
+
+/// `setWornItem(location, item, forceDropTooHeavy)` from Lua: the hair
+/// styles are the shared population's; the container holding the new
+/// item gets the character as its parent (`item.getContainer().parent =
+/// this`).
+fn set_worn_item(
+    c: &mut NativeCall<'_>,
+    sm: &ScriptManager,
+    chr: &LuaGameCharacterRef,
+    location: Option<Rc<pz_scripts::registry::RegistryKey>>,
+    item: usize,
+    force_drop_too_heavy: bool,
+) -> LuaResult<()> {
+    let id = opt_item_id(c, item)?;
+    let changed = crate::bind_appearance::with_styles(c.thread, |st| {
+        chr.borrow_mut().set_worn_item(sm, Some(st), location, id, force_drop_too_heavy)
+    })
+    .map_err(java_error)?;
+    if changed && id.is_some() {
+        let item = crate::bind_items::item_arg(c, item)?;
+        if let Some(container) = pz_inventory::shared::container_of(&item) {
+            crate::bind_item_container::set_parent(&container, character_value(chr));
+        }
+    }
+    Ok(())
+}
+
+/// The character's clothing members: `getWornItems` (the canonical
+/// `WornItems` object over the character's worn items, `nil` without),
+/// `getWornItem`, `setWornItem`, `removeWornItem`, `clearWornItems`,
+/// `getBodyLocationGroup`, `isEquippedClothing`, `isEquipped` and the
+/// `getClothingItem_*` / `setClothingItem_*` pairs.
+fn register_clothing(thread: &mut Thread, sm: &Rc<ScriptManager>) {
+    use crate::bind_characters::WornItemsObject;
+    let b = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
+    b.method("getWornItems", |c| {
+        let chr = chr_of(c)?;
+        if chr.borrow().items.worn_items.is_none() {
+            return Ok(c.push(Value::Nil));
+        }
+        let v = canonical((Handle::WornItems, Rc::as_ptr(&chr) as usize, 0), || {
+            Value::Object(Rc::new(WornItemsObject::Character(chr.clone())))
+        });
+        Ok(c.push(v))
+    });
+    b.method("getWornItem", |c| {
+        let chr = chr_of(c)?;
+        let loc = key_arg(c, 1)?;
+        let id = chr.borrow().worn_item(loc.as_ref()).map_err(java_error)?;
+        Ok(c.push(worn_item_value(&chr, id)))
+    });
+    let s = sm.clone();
+    b.method("setWornItem", move |c| {
+        let chr = chr_of(c)?;
+        let loc = key_arg(c, 1)?;
+        let force = c.nargs() <= 3 || bool_arg(c, 3);
+        set_worn_item(c, &s, &chr, loc, 2, force)?;
+        Ok(0)
+    });
+    let s = sm.clone();
+    b.method("removeWornItem", move |c| {
+        let chr = chr_of(c)?;
+        let id = opt_item_id(c, 1)?;
+        let force = c.nargs() <= 2 || bool_arg(c, 2);
+        crate::bind_appearance::with_styles(c.thread, |st| chr.borrow_mut().remove_worn_item(&s, Some(st), id, force))
+            .map_err(java_error)?;
+        Ok(0)
+    });
+    let s = sm.clone();
+    b.method("clearWornItems", move |c| {
+        chr_of(c)?.borrow_mut().clear_worn_items(&s);
+        Ok(0)
+    });
+    b.method("getBodyLocationGroup", |c| {
+        let g = chr_of(c)?.borrow().items.worn_items.as_ref().map(|w| w.body_location_group().clone());
+        Ok(c.push(g.as_ref().map_or(Value::Nil, crate::bind_characters::group_value)))
+    });
+    b.method("isEquippedClothing", |c| {
+        let id = opt_item_id(c, 1)?;
+        let v = chr_of(c)?.borrow().is_equipped_clothing(id).map_err(java_error)?;
+        Ok(c.push(v))
+    });
+    b.method("isEquipped", |c| {
+        let id = opt_item_id(c, 1)?;
+        let chr = chr_of(c)?;
+        let chr = chr.borrow();
+        let hand = id.is_some() && (chr.items.primary_hand_item == id || chr.items.secondary_hand_item == id);
+        let v = chr.is_equipped_clothing(id).map_err(java_error)? || hand;
+        Ok(c.push(v))
+    });
+    for (suffix, field) in pz_characters::character::CLOTHING_ITEM_LOCATIONS {
+        let s = sm.clone();
+        b.method(&format!("getClothingItem_{suffix}"), move |c| {
+            let chr = chr_of(c)?;
+            let id = chr.borrow().clothing_item(&s, field).map_err(java_error)?;
+            Ok(c.push(worn_item_value(&chr, id)))
+        });
+        let s = sm.clone();
+        b.method(&format!("setClothingItem_{suffix}"), move |c| {
+            let chr = chr_of(c)?;
+            let loc = pz_scripts::objects::items::ItemBodyLocation::constant(&s, field);
+            set_worn_item(c, &s, &chr, loc, 1, true)?;
+            Ok(0)
+        });
+    }
 }
 
 /// A character's `Stats`, or a free-standing `new Stats()`.
@@ -550,6 +692,7 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
     register_xp(thread, &sm, &chars);
     register_character(thread, &sm, &chars);
     register_inventory(thread, &sm);
+    register_clothing(thread, &sm);
 }
 
 /// `register` on the shared ScriptManager and Characters.
@@ -1428,6 +1571,134 @@ mod tests {
         assert!(chr.borrow().items.item(id).is_none() && chr.borrow().items.primary_hand_item.is_none());
         assert!(log.borrow().iter().any(|l| l.starts_with("OnEquipPrimary")));
         assert_eq!(log.borrow().iter().filter(|l| l.starts_with("OnEquipPrimary")).count(), 2);
+    }
+
+    /// A script manager with invented clothing (`t:` body locations and
+    /// tags), loaded from a unique temp dir.
+    fn clothing_scripts() -> ScriptManager {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("pz-bind-character-worn-{}-{n}", std::process::id()));
+        let p = dir.join("media/scripts/test.txt");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let item = |name: &str, loc: &str, extra: &str| {
+            format!("item {name} {{ DisplayCategory = Clothing, ItemType = t:clothing, Weight = 1, BodyLocation = {loc}, {extra} }}")
+        };
+        let src = format!(
+            "module Base {{ {} {} {} {} }}",
+            item("TestCap", "t:hat", "Tags = t:noragdoll,"),
+            item("TestTee", "t:tee", ""),
+            item("TestCoat", "t:coat", ""),
+            item("TestBoots", "t:boots", ""),
+        );
+        std::fs::write(&p, src).unwrap();
+        let sm = ScriptManager::new();
+        for (reg, id, field) in [
+            ("item_type", "t:clothing", "CLOTHING"),
+            ("item_body_location", "t:hat", "HAT"),
+            ("item_body_location", "t:tee", "TSHIRT"),
+            ("item_body_location", "t:coat", "JACKET"),
+            ("item_body_location", "t:boots", "SHOES"),
+            ("item_body_location", "t:ring", "RIGHT_RING_FINGER"),
+            ("item_tag", "t:noragdoll", "NO_RAGDOLL"),
+        ] {
+            sm.registries.get(reg).unwrap().borrow_mut().register_id(id, true).unwrap();
+            sm.statics.items.borrow_mut().constants.insert(reg, field, id);
+        }
+        sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        sm
+    }
+
+    #[test]
+    fn worn_items_from_lua() {
+        let (mut t, player, _log) = setup_with(clothing_scripts());
+        let mut env = crate::bind_items::GameItemEnv::new(None);
+        env.rand = Some(pz_core::random::Rand::new(7));
+        crate::bind_items::install_item_env(Rc::new(env));
+        crate::bind_items::register(&mut t);
+        crate::bind_item_container::register(&mut t);
+        crate::bind_item_visual::register(&mut t);
+        let desc = player.borrow().descriptor.clone().unwrap();
+        t.globals().set_str("desc", survivor_desc_value(&desc));
+        run(
+            &mut t,
+            r#"
+            local L = ItemBodyLocation
+            local g = BodyLocations.getGroup("Human")
+            local ls = {L.HAT, L.TSHIRT, L.JACKET, L.SHOES}
+            for i = 1, #ls do g:getOrCreateLocation(ls[i]) end
+            g:setExclusive(L.TSHIRT, L.JACKET)
+            s = IsoSurvivor.new(desc, nil, 0, 0, 0)
+            local inv = s:getInventory()
+            w = s:getWornItems()
+            assert(w ~= nil and w == s:getWornItems() and w:size() == 0 and w:isEmpty())
+            assert(w:getBodyLocationGroup() == g and s:getBodyLocationGroup() == g)
+            cap = inv:AddItem("Base.TestCap")
+            tee = inv:AddItem("Base.TestTee")
+            coat = inv:AddItem("Base.TestCoat")
+            boots = inv:AddItem("Base.TestBoots")
+            assert(cap:getBodyLocation() == L.HAT)
+
+            -- ISWearClothing: setWornItem(item:getBodyLocation(), item), in group order.
+            s:setWornItem(tee:getBodyLocation(), tee)
+            s:setWornItem(cap:getBodyLocation(), cap)
+            assert(w:size() == 2 and w:get(0):getItem() == cap and w:get(1):getItem() == tee)
+            assert(w:get(0):getLocation() == L.HAT and w:getItemByIndex(1) == tee)
+            assert(s:getWornItem(L.HAT) == cap and s:getClothingItem_Head() == cap and s:getClothingItem_Torso() == tee)
+            assert(w:getItem(L.TSHIRT) == tee and w:contains(cap) and w:getLocation(tee) == L.TSHIRT)
+            assert(s:getClothingItem_Feet() == nil and s:getClothingItem_Back() == nil)
+            assert(s:isEquippedClothing(cap) and s:isEquipped(cap))
+            assert(not s:isEquippedClothing(coat) and not s:isEquipped(coat) and not s:isEquippedClothing(nil))
+            -- ISUnequipAction / getItemFromType(type, chr, notEquipped, ...) skip worn items.
+            assert(inv:getItemFromType("Base.TestCap", s, true, false, false) == nil)
+            assert(inv:getItemFromType("Base.TestCap", s, false, false, false) == cap)
+
+            -- An exclusive location drops the other item.
+            s:setWornItem(L.JACKET, coat)
+            assert(w:size() == 2 and not w:contains(tee) and s:getWornItem(L.TSHIRT) == nil)
+            s:setClothingItem_Feet(boots)
+            assert(s:getClothingItem_Feet() == boots and w:get(2):getItem() == boots)
+            -- The same item again changes nothing; a location outside the group throws.
+            s:setWornItem(L.JACKET, coat)
+            assert(w:size() == 3)
+            assert(not pcall(function() s:setWornItem(L.RIGHT_RING_FINGER, tee) end))
+
+            s:removeWornItem(cap)
+            assert(s:getClothingItem_Head() == nil and not s:isEquippedClothing(cap) and w:size() == 2)
+            s:removeWornItem(cap)
+            s:removeWornItem(cap, false)
+            assert(w:size() == 2)
+
+            -- isEquipped: worn or in a hand.
+            s:setPrimaryHandItem(cap)
+            assert(s:isEquipped(cap) and not s:isEquippedClothing(cap))
+
+            -- The WornItems object writes through to the character.
+            w:remove(coat)
+            assert(not s:isEquippedClothing(coat) and s:getWornItem(L.JACKET) == nil)
+            w:setItem(L.HAT, cap)
+            assert(s:getClothingItem_Head() == cap)
+            "#,
+        )
+        .unwrap();
+        let Value::Object(o) = t.globals().get_str("s") else { panic!("no survivor") };
+        let chr = o.as_any().downcast_ref::<CharacterObject>().unwrap().0.clone();
+        let cap = chr.borrow().items.inventory_items().iter().find(|i| i.borrow().get_type() == "TestCap").unwrap().borrow().id;
+        assert!(chr.borrow().items.is_worn(cap));
+        // `onWornItemsChanged` reads the worn tags (the raw `WornItems.setItem` does not run it).
+        run(&mut t, "s:clearWornItems() assert(w:size() == 0) s:setWornItem(ItemBodyLocation.HAT, cap)").unwrap();
+        assert!(!chr.borrow().worn_clothing_can_ragdoll);
+        // A worn item taken out of the inventory reads back as nil.
+        run(&mut t, "s:getInventory():Remove(cap) assert(w:size() == 1 and w:get(0):getItem() == nil and s:getClothingItem_Head() == nil)")
+            .unwrap();
+        run(&mut t, "s:clearWornItems() assert(w:isEmpty())").unwrap();
+        assert!(chr.borrow().worn_clothing_can_ragdoll);
+        // Without worn items (a character made without `initWornItems`).
+        run(&mut t, "assert(player:getWornItems() == nil and player:getBodyLocationGroup() == nil)").unwrap();
+        assert!(run(&mut t, "player:getWornItem(ItemBodyLocation.HAT)").is_err());
+        assert!(run(&mut t, "player:isEquippedClothing(nil)").is_err());
+        run(&mut t, "player:clearWornItems()").unwrap();
     }
 
     #[test]
