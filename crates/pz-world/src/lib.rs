@@ -8,6 +8,7 @@
 pub mod animal_zone_save;
 pub mod bra;
 pub mod cell_loader;
+pub mod cell_drag;
 pub mod chunk;
 pub mod chunk_data;
 pub mod chunk_vehicles;
@@ -26,6 +27,7 @@ pub mod meta_save;
 pub mod meta_zones;
 pub mod nav_streets;
 pub mod objects;
+pub mod process_items;
 pub mod save;
 pub mod sprite;
 pub mod square;

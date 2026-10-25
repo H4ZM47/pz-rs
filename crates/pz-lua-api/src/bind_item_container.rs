@@ -22,7 +22,7 @@
 //!
 //! Not ported: vehicle part containers (`vehiclePart` is never set, so
 //! the vehicle methods answer as for a container outside a vehicle), the
-//! world (`IsoCell.addToProcessItems`, `DirtySlice`, `flagForHotSave`),
+//! world (`DirtySlice`, `flagForHotSave`),
 //! networking (offline: `requestSync`, `requestServerItemsForContainer`,
 //! `SynchSpawn` and `removeItemOnServer` do nothing), and
 //! `Food.updateAge` / `Radio.deviceData` in `OnAddedToContainer`.
@@ -39,8 +39,7 @@
 //! (`FindAndReturnStack`, `getBestWeapon`, `getTotalWeaponScore`,
 //! `isEmptyOrUnwanted`, `getAllFoodsForAnimals`, `getItems4Admin`,
 //! `getAllItems`, `reset`, `getAnimalInventoryItem`, `hasRecipe`,
-//! `getRecipeItem`), the world (`addItemsToProcessItems`,
-//! `removeItemsFromProcessItems`, `getWorldPosition`, `isShop`), `save`/
+//! `getRecipeItem`), the world (`getWorldPosition`, `isShop`), `save`/
 //! `load` (use [`SharedContainer::to_container`]/`from_container`) and
 //! `getClass`/`notifyAll`.
 
@@ -3470,6 +3469,14 @@ pub fn register(thread: &mut Thread) {
     register_parent(&b);
     register_weights(&b);
     register_items(&b);
+    b.method("addItemsToProcessItems", |c| {
+        crate::bind_process_items::add_container_items(&this(c)?)?;
+        Ok(0)
+    });
+    b.method("removeItemsFromProcessItems", |c| {
+        crate::bind_process_items::remove_container_items(&this(c)?)?;
+        Ok(0)
+    });
     register_queries(&b);
     register_fluids(&b);
     // `InventoryItem.getContainer()`.

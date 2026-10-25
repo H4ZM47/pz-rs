@@ -170,6 +170,8 @@ struct Live<R, W> {
 pub struct JavaList {
     pub items: RefCell<Vec<Value>>,
     live: Option<Live<ListRead, ListWrite>>,
+    transient_snapshot: bool,
+    snapshot_depth: Cell<usize>,
 }
 
 /// `java.util.HashMap` / `LinkedHashMap` (and, without values, `HashSet`).
@@ -181,6 +183,43 @@ pub struct JavaMap {
     capacity: Cell<usize>,
     initial: usize,
     live: Option<Live<MapRead, MapWrite>>,
+    transient_snapshot: bool,
+    snapshot_depth: Cell<usize>,
+}
+
+/// A queue live view only borrows a mirror while a collection operation
+/// runs. Nested operations share that mirror until the outer commit ends.
+enum SnapshotScope<'a> { List(&'a JavaList), Map(&'a JavaMap) }
+
+impl Drop for SnapshotScope<'_> {
+    fn drop(&mut self) {
+        match self {
+            Self::List(list) if list.transient_snapshot => {
+                list.snapshot_depth.set(list.snapshot_depth.get() - 1);
+                if list.snapshot_depth.get() == 0 {
+                    // A caller can hold the public mirror's Ref across a
+                    // failed refresh. Never double-panic during unwinding;
+                    // that externally borrowed mirror retires next scope.
+                    let retired = match list.items.try_borrow_mut() {
+                        Ok(mut items) => std::mem::take(&mut *items),
+                        Err(_) => return,
+                    };
+                    drop(retired);
+                }
+            }
+            Self::Map(map) if map.transient_snapshot => {
+                map.snapshot_depth.set(map.snapshot_depth.get() - 1);
+                if map.snapshot_depth.get() == 0 {
+                    let retired = match map.entries.try_borrow_mut() {
+                        Ok(mut entries) => std::mem::take(&mut *entries),
+                        Err(_) => return,
+                    };
+                    drop(retired);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// `java.lang.Integer`: a boxed int that reaches Lua without Kahlua's
@@ -245,7 +284,7 @@ pub fn integer_value(i: i32) -> Value {
 
 impl JavaList {
     pub fn new(items: Vec<Value>) -> Self {
-        JavaList { items: RefCell::new(items), live: None }
+        JavaList { items: RefCell::new(items), live: None, transient_snapshot: false, snapshot_depth: Cell::new(0) }
     }
 
     /// A live view of an owner's list; `write` stores a mutated list back
@@ -254,7 +293,23 @@ impl JavaList {
         read: impl Fn() -> Vec<Value> + 'static,
         write: Option<ListWrite>,
     ) -> Self {
-        JavaList { items: RefCell::new(Vec::new()), live: Some(Live { read: Box::new(read), write }) }
+        JavaList { live: Some(Live { read: Box::new(read), write }), ..Self::new(Vec::new()) }
+    }
+
+    /// Opt a live queue view into operation-scoped mirrors. Ordinary live
+    /// adapters retain their existing buffered API behavior.
+    pub fn with_transient_snapshots(mut self) -> Self {
+        assert!(self.live.is_some());
+        self.transient_snapshot = true;
+        self
+    }
+
+    fn snapshot_scope(&self) -> SnapshotScope<'_> {
+        let refresh = !self.transient_snapshot || self.snapshot_depth.get() == 0;
+        if self.transient_snapshot { self.snapshot_depth.set(self.snapshot_depth.get() + 1); }
+        let scope = SnapshotScope::List(self);
+        if refresh { self.refresh(); }
+        scope
     }
 
     /// Reload a live list from its owner.
@@ -267,22 +322,24 @@ impl JavaList {
 
     /// The current elements.
     pub fn snapshot(&self) -> Vec<Value> {
-        self.refresh();
-        self.items.borrow().clone()
+        let _scope = self.snapshot_scope();
+        let values = self.items.borrow().clone();
+        values
     }
 
     /// `add(v)` from the engine (a result list passed in from Lua).
     pub fn push(&self, v: Value) -> LuaResult<()> {
-        self.refresh();
         self.check_writable()?;
+        let _scope = self.snapshot_scope();
         self.items.borrow_mut().push(v);
         self.commit()
     }
 
     /// `size()`.
     pub fn len(&self) -> usize {
-        self.refresh();
-        self.items.borrow().len()
+        let _scope = self.snapshot_scope();
+        let len = self.items.borrow().len();
+        len
     }
 
     /// `isEmpty()`.
@@ -307,7 +364,7 @@ impl JavaList {
     }
 
     fn java_string(&self) -> String {
-        self.refresh();
+        let _scope = self.snapshot_scope();
         let parts: Vec<String> = self.items.borrow().iter().map(java_to_string).collect();
         format!("[{}]", parts.join(", "))
     }
@@ -327,6 +384,8 @@ impl JavaMap {
             capacity: Cell::new(0),
             initial: table_size_for(initial_capacity),
             live: None,
+            transient_snapshot: false,
+            snapshot_depth: Cell::new(0),
         }
     }
 
@@ -338,6 +397,33 @@ impl JavaMap {
         write: Option<MapWrite>,
     ) -> Self {
         JavaMap { live: Some(Live { read: Box::new(read), write }), ..Self::with_class(HASH_MAP, 16) }
+    }
+
+    /// A live `HashSet`, whose keys are the owner's actual elements.
+    pub fn live_set(
+        read: impl Fn() -> Vec<Value> + 'static,
+        write: Option<ListWrite>,
+    ) -> Self {
+        let read = Box::new(move || read().into_iter().map(|v| (v, Value::Nil)).collect());
+        let write = write.map(|write| Box::new(move |entries: Vec<(Value, Value)>| {
+            write(entries.into_iter().map(|(key, _)| key).collect())
+        }) as MapWrite);
+        JavaMap { live: Some(Live { read, write }), ..Self::with_class(HASH_SET, 16) }
+    }
+
+    /// See `JavaList::with_transient_snapshots`.
+    pub fn with_transient_snapshots(mut self) -> Self {
+        assert!(self.live.is_some());
+        self.transient_snapshot = true;
+        self
+    }
+
+    fn snapshot_scope(&self) -> SnapshotScope<'_> {
+        let refresh = !self.transient_snapshot || self.snapshot_depth.get() == 0;
+        if self.transient_snapshot { self.snapshot_depth.set(self.snapshot_depth.get() + 1); }
+        let scope = SnapshotScope::Map(self);
+        if refresh { self.refresh(); }
+        scope
     }
 
     /// Reload a live map from its owner.
@@ -431,7 +517,7 @@ impl JavaMap {
 
     /// Entries in Java iteration order (a live map's in its owner's).
     pub fn ordered(&self) -> Vec<(Value, Value)> {
-        self.refresh();
+        let _scope = self.snapshot_scope();
         let e = self.entries.borrow();
         let mut v: Vec<(Value, Value)> = e.values().cloned().collect();
         if !self.linked && self.live.is_none() {
@@ -503,7 +589,7 @@ fn iterator_value(items: Vec<Value>) -> Value {
 fn list<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaList) -> R) -> LuaResult<R> {
     let o = this::<JavaList>(c)?;
     let l = o.as_any().downcast_ref::<JavaList>().unwrap();
-    l.refresh();
+    let _scope = l.snapshot_scope();
     Ok(f(l))
 }
 
@@ -512,7 +598,7 @@ fn list_mut<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaList) -> R) -> LuaResult<
     let o = this::<JavaList>(c)?;
     let l = o.as_any().downcast_ref::<JavaList>().unwrap();
     l.check_writable()?;
-    l.refresh();
+    let _scope = l.snapshot_scope();
     let r = f(l);
     l.commit()?;
     Ok(r)
@@ -528,7 +614,7 @@ fn map_obj(c: &NativeCall<'_>) -> LuaResult<Rc<dyn LuaObject>> {
 fn map<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaMap) -> R) -> LuaResult<R> {
     let o = map_obj(c)?;
     let m = o.as_any().downcast_ref::<JavaMap>().unwrap();
-    m.refresh();
+    let _scope = m.snapshot_scope();
     Ok(f(m))
 }
 
@@ -537,7 +623,7 @@ fn map_mut<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaMap) -> R) -> LuaResult<R>
     let o = map_obj(c)?;
     let m = o.as_any().downcast_ref::<JavaMap>().unwrap();
     m.check_writable()?;
-    m.refresh();
+    let _scope = m.snapshot_scope();
     let r = f(m);
     m.commit()?;
     Ok(r)
@@ -1008,6 +1094,70 @@ fn register_views(thread: &mut Thread) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transient_live_snapshots_clear_after_error_and_panic() {
+        let list = JavaList::live(|| vec![Value::str("owner")], Some(Box::new(|_| Err(LuaError::runtime("write failed"))))).with_transient_snapshots();
+        assert!(list.push(Value::str("new")).is_err());
+        assert!(list.items.borrow().is_empty());
+        assert_eq!(list.snapshot_depth.get(), 0);
+        let list = JavaList::live(|| vec![Value::str("owner")], Some(Box::new(|_| panic!("write panic")))).with_transient_snapshots();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| list.push(Value::Nil))).is_err());
+        assert!(list.items.borrow().is_empty());
+        assert_eq!(list.snapshot_depth.get(), 0);
+        let map = JavaMap::live_set(|| vec![Value::str("owner")], Some(Box::new(|_| panic!("set write panic")))).with_transient_snapshots();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _outer = map.snapshot_scope();
+            map.put(Value::str("new"), Value::Nil);
+            map.commit()
+        })).is_err());
+        assert!(map.entries.borrow().is_empty());
+        assert_eq!(map.snapshot_depth.get(), 0);
+    }
+
+    #[test]
+    fn transient_nested_read_keeps_outer_mutation_until_commit() {
+        let owner = Rc::new(RefCell::new(vec![Value::str("old")]));
+        let reader = owner.clone();
+        let writer = owner.clone();
+        let map = JavaMap::live_set(move || reader.borrow().clone(), Some(Box::new(move |values| {
+            *writer.borrow_mut() = values;
+            Ok(())
+        }))).with_transient_snapshots();
+        let returned;
+        {
+            let _outer = map.snapshot_scope();
+            map.put(Value::str("new"), Value::Nil);
+            returned = map.ordered();
+            assert_eq!(returned.len(), 2, "nested read must not refresh away uncommitted mutation");
+            assert_eq!(map.entries.borrow().len(), 2, "nested read must not clear outer snapshot");
+            map.commit().unwrap();
+        }
+        assert_eq!(owner.borrow().len(), 2);
+        assert_eq!(returned.len(), 2);
+        assert!(map.entries.borrow().is_empty());
+        let ordinary = JavaList::live(|| vec![Value::str("ordinary")], None);
+        assert_eq!(ordinary.len(), 1);
+        assert_eq!(ordinary.items.borrow().len(), 1, "ordinary adapter remains buffered");
+    }
+
+    #[test]
+    fn transient_failed_refresh_with_external_borrow_does_not_double_panic() {
+        let list = JavaList::live(|| vec![Value::str("owner")], None).with_transient_snapshots();
+        let held = list.items.borrow();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| list.len())).is_err());
+        assert_eq!(list.snapshot_depth.get(), 0);
+        drop(held);
+        assert_eq!(list.len(), 1);
+        assert!(list.items.borrow().is_empty());
+        let map = JavaMap::live_set(|| vec![Value::str("owner")], None).with_transient_snapshots();
+        let held = map.entries.borrow();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| map.ordered())).is_err());
+        assert_eq!(map.snapshot_depth.get(), 0);
+        drop(held);
+        assert_eq!(map.ordered().len(), 1);
+        assert!(map.entries.borrow().is_empty());
+    }
 
     #[test]
     fn hash_map_iterates_in_java_bucket_order() {

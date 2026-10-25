@@ -170,7 +170,7 @@ impl<I: 'static> GameCharacter<I> {
         let Some(my_sq) = self.current_square_xyz() else { return Ok(None) };
         let Some(o) = self.other_of(other, cx)? else { return Ok(None) };
         let Some(o_sq) = o.square else { return Ok(None) };
-        if self.zombie.reanimated_for_grapple_only || self.zombie.useless || cx.world.square_smoke(my_sq) {
+        if self.zombie.is_reanimated_for_grapple_only() || self.zombie.useless || cx.world.square_smoke(my_sq) {
             self.set_zombie_target(None);
             self.zombie.spotted_last = None;
             return Ok(None);

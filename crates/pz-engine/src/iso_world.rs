@@ -371,6 +371,8 @@ impl IsoWorld {
     /// `OnGameTimeLoaded`). Returns `Err` where the original throws out of
     /// the loader (`unexpectedError`).
     pub fn init(&mut self, lua: &mut LuaManager) -> Result<(), String> {
+        // Server-system registration loads gos_*.bin from this actual world.
+        pz_lua_api::global_objects_save::set_save_dir(Some(self.save_dir.clone()));
         let core_rc = pz_lua_api::bind_core::shared_core();
         let (tutorial, no_save, last_stand, game_mode) = {
             let c = core_rc.borrow();
@@ -607,8 +609,12 @@ impl IsoWorld {
         let pf = with_world(|w| w.meta_grid.as_ref().map(|g| (g.min_x, g.min_y, g.width, g.height)));
         if let Some((x, y, wd, h)) = pf {
             self.pathfind = Some(pz_pathfind::host::PathHost::new(pz_pathfind::service::PathfindService::new(x, y, wd, h, false)));
+            // GlobalObjectLookup.init(metaGrid), before the cell is loaded.
+            pz_lua_api::global_objects::init_lookup(pz_lua_api::global_objects::GridBounds {
+                min_x: x, min_y: y, width: wd, height: h,
+            });
         }
-        // TODO(port): `GlobalObjectLookup.init`, `SpawnPoints.initSinglePlayer`.
+        // TODO(port): `SpawnPoints.initSinglePlayer`.
         // `WorldStreamer.instance.create()` and
         // `CellLoader.LoadCellBinaryChunk`: the world generator for
         // brand-new chunks, then player 0's chunk map around (worldX, worldY).

@@ -215,14 +215,14 @@ impl<I: 'static> State<I> for ZombieIdleState {
             }
             return;
         }
-        if !owner.zombie.reanimated_for_grapple_only {
+        if !owner.zombie.is_reanimated_for_grapple_only() {
             owner.vars.on_floor = owner.vars.crawling;
         }
         tick(owner, IDLE_TICK_COUNT, "Idle");
         if owner.zombie.indoor_zombie || owner.zombie.useless {
             return;
         }
-        if !owner.zombie.reanimated_for_grapple_only && owner.vars.state_event_delay_timer <= 0.0 {
+        if !owner.zombie.is_reanimated_for_grapple_only() && owner.vars.state_event_delay_timer <= 0.0 {
             owner.vars.state_event_delay_timer = pick_random_wander_interval(cx.ctx);
             let x = fastfloor(owner.vars.x) + cx.ctx.rand_next(8) - 4;
             let y = fastfloor(owner.vars.y) + cx.ctx.rand_next(8) - 4;
@@ -1116,7 +1116,7 @@ impl<I: 'static> State<I> for ZombieOnGroundState {
             die(owner, cx);
             return;
         }
-        if owner.zombie.reanimated_for_grapple_only {
+        if owner.zombie.is_reanimated_for_grapple_only() {
             die(owner, cx);
             return;
         }

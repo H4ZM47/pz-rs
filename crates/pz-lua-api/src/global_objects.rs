@@ -273,7 +273,7 @@ impl GlobalObjectSystem {
     /// `rawget(modData, name)` as a method of this system; the original
     /// throws when a callback is missing.
     fn callback(&self, name: &str) -> LuaResult<Value> {
-        let f = self.mod_data.get_own(&Value::str(name));
+        let f = self.mod_data.rawget(&Value::str(name));
         if f.is_nil() {
             return Err(illegal_state(format!(
                 "{name} method undefined for system '{}'",
@@ -717,6 +717,15 @@ pub fn reset(side: Side) {
     }
 }
 
+/// `SinglePlayerClient.Reset()` / `SinglePlayerServer.Reset()` for this
+/// transport's pending packets. IngameState.exit calls these separately
+/// from the global-object registry resets.
+pub fn reset_single_player_packets() {
+    // Drop captured Lua values after releasing the queue borrow.
+    let pending = PENDING.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    drop(pending);
+}
+
 /// `CGlobalObjects.receiveServerCommand(systemName, command, args)`.
 pub fn client_receive_server_command(
     thread: &mut Thread,
@@ -807,7 +816,13 @@ fn warn_unsendable(what: &str, args: &TableRef) {
 /// the client (`saveInitialStateForClient` / `loadInitialState`). Errors in
 /// the hand-over are logged and drop it, like the original's catch.
 pub fn init_server_systems(thread: &mut Thread, events: &crate::events::EventManager) {
+    if crate::bind_core::shared_core().borrow().is_client {
+        return;
+    }
     events.trigger(thread, "OnSGlobalObjectSystemInit", &[]);
+    if crate::bind_core::shared_core().borrow().is_server {
+        return;
+    }
     match initial_states_for_client(thread) {
         Ok(states) => CLIENT.with(|c| c.borrow_mut().initial_state.extend(states)),
         Err(e) => log_error(thread, &e),
@@ -989,6 +1004,9 @@ fn log_error(thread: &mut Thread, e: &LuaError) {
 /// `SinglePlayerServer.update()` for global-object packets: deliver what the
 /// client sent since the last call.
 pub fn update_server(thread: &mut Thread) {
+    if crate::bind_core::shared_core().borrow().is_client {
+        return;
+    }
     let packets = PENDING.with(|q| std::mem::take(&mut q.borrow_mut().to_server));
     for p in packets {
         if let Packet::ClientCommand {
@@ -1013,6 +1031,9 @@ pub fn update_server(thread: &mut Thread) {
 
 /// `SinglePlayerClient.update()` for global-object packets.
 pub fn update_client(thread: &mut Thread) {
+    if crate::bind_core::shared_core().borrow().is_client {
+        return;
+    }
     let packets = PENDING.with(|q| std::mem::take(&mut q.borrow_mut().to_client));
     for p in packets {
         let r = match p {
@@ -1060,3 +1081,6 @@ pub fn update_client(thread: &mut Thread) {
         }
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests;

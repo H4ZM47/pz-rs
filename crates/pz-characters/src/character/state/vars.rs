@@ -192,7 +192,6 @@ pub struct CharacterVars {
     pub last_hit_character: Option<i32>,
     // ---- IsoLivingCharacter ----
     pub do_shove: bool,
-    pub do_grapple: bool,
     pub target_on_ground: Option<i32>,
     // ---- IsoPlayer ----
     pub combat_speed: f32,
@@ -435,7 +434,6 @@ impl Default for CharacterVars {
             fire_anim: None,
             last_hit_character: None,
             do_shove: false,
-            do_grapple: false,
             target_on_ground: None,
             combat_speed: 1.0,
             player_turn_delta: 0.0,
@@ -899,18 +897,20 @@ impl CharVar {
             CharVar::ShoutType => S(v.shout_type.clone()),
             CharVar::ShoutItemModel => S(v.shout_item_model.clone()),
             CharVar::IsAnimatingBackwards => B(v.animating_backwards),
-            CharVar::DoGrapple => B(v.do_grapple),
-            CharVar::DoContinueGrapple | CharVar::IsGrappling | CharVar::BeingGrappled | CharVar::GrappleAnim => B(false),
-            CharVar::GrappleResult
-            | CharVar::SharedGrappleType
-            | CharVar::SharedGrappleAnimNode
-            | CharVar::GrappledBy
-            | CharVar::GrappledByType => S(String::new()),
-            CharVar::GrappleOffsetBehaviour => S("NONE".into()),
-            CharVar::SharedGrappleTime
-            | CharVar::SharedGrappleFraction
-            | CharVar::GrappleOffsetForward
-            | CharVar::BearingToGrappledTarget => F(0.0),
+            CharVar::DoGrapple => B(c.is_do_grapple()),
+            CharVar::DoContinueGrapple => B(c.is_do_continue_grapple()),
+            CharVar::IsGrappling => B(c.is_grappling()),
+            CharVar::BeingGrappled => B(c.is_being_grappled()),
+            CharVar::GrappleAnim => B(false),
+            CharVar::GrappleResult => S(c.grapple_result().unwrap_or_default()),
+            CharVar::SharedGrappleType => S(c.shared_grapple_type().unwrap_or_default()),
+            CharVar::SharedGrappleAnimNode => S(c.shared_grapple_anim_node()),
+            CharVar::GrappledBy | CharVar::GrappledByType => S(String::new()),
+            CharVar::GrappleOffsetBehaviour => S(c.grapple_offset_behaviour()),
+            CharVar::SharedGrappleTime => F(c.shared_grapple_time()),
+            CharVar::SharedGrappleFraction => F(c.shared_grapple_fraction()),
+            CharVar::GrappleOffsetForward => F(c.grapple_offset_forward()),
+            CharVar::BearingToGrappledTarget => F(0.0),
             CharVar::GrappleGrabAnim => B(v.performing_grapple_grab_animation),
             CharVar::AnyGrappleAnim => B(v.performing_grapple_grab_animation),
             CharVar::GrappleThrowOutWindow => B(v.grapple_throw_out_window),
@@ -981,7 +981,7 @@ impl CharVar {
             CharVar::Remote => B(v.remote),
             CharVar::IsPerformingAnAction => B(v.performing_an_action),
             CharVar::ShoveAiming => B(c.is_aiming() && v.do_shove),
-            CharVar::GrappleAiming => B(c.is_aiming() && v.do_grapple),
+            CharVar::GrappleAiming => B(c.is_aiming() && c.is_do_grapple()),
             CharVar::AttackVariationX => F(v.attack_variation_x),
             CharVar::AttackVariationY => F(v.attack_variation_y),
             CharVar::SneakLimpSpeedScale => F(v.sneak_limp_speed_scale),

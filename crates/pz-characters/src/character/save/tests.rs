@@ -395,7 +395,7 @@ fn reanimated(sm: &ScriptManager, chars: &mut Characters, ctx: &Recorder, locs: 
     z.vars.time_since_seen_flesh = 12.75;
     z.vars.crawling = true;
     z.zombie.can_walk = false;
-    z.zombie.reanimated_for_grapple_only = true;
+    z.zombie.set_reanimated_for_grapple_only(true);
     z.zombie.reanimated_player = true;
     z
 }
@@ -413,6 +413,10 @@ fn zombie_record_round_trips() {
     let (sm, mut chars, locs) = setup();
     let ctx = Recorder::default();
     let mut z = reanimated(&sm, &mut chars, &ctx, &locs);
+    let grappler: GameCharacter<()> = GameCharacter::new(&sm, CharacterKind::Player);
+    grappler.set_grappling_target(Some(&z), Some("authored transient target"));
+    z.set_grappling_target(Some(&grappler), Some("authored transient target"));
+    assert!(grappler.is_dragging_corpse());
     let data = save_zombie(&sm, &chars, &ctx, &mut z);
     // The serialise byte and the Zombie class id.
     assert_eq!(&data[..2], [1, 2]);
@@ -443,7 +447,11 @@ fn zombie_record_round_trips() {
     assert_eq!(r.remaining(), 0);
     assert_eq!((back.vars.x, back.vars.y, back.vars.dir), (z.vars.x, z.vars.y, z.vars.dir));
     assert_eq!(back.vars.time_since_seen_flesh, 12.0);
-    assert!(back.vars.crawling && !back.zombie.can_walk && back.zombie.reanimated_for_grapple_only);
+    assert!(back.vars.crawling && !back.zombie.can_walk && back.zombie.is_reanimated_for_grapple_only());
+    assert!(!back.is_grappling(), "transient grapple links were serialized");
+    assert!(!grappler.is_grappling_target(Some(&back)), "fresh load reused another character's endpoint");
+    grappler.set_grappling_target(Some(&back), Some("authored restored target"));
+    assert!(grappler.is_dragging_corpse(), "loaded flag did not reach the fresh endpoint");
     assert!(back.vars.on_floor && back.environment.fall_on_front);
     let female = back.descriptor.as_ref().unwrap().borrow().is_female();
     assert_eq!(back.zombie.female, female);

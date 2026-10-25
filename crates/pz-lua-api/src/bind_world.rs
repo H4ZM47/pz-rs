@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 pub mod lua_world;
+mod cell_drag;
 
 /// `IsoWorld.instance.metaGrid` and `IsoWorld.instance.currentCell`.
 #[derive(Default)]
@@ -55,16 +56,21 @@ pub fn set_meta_grid(grid: Option<IsoMetaGrid>) {
 
 /// Install (or clear) `IsoWorld.instance.currentCell`.
 pub fn set_cell(cell: Option<IsoCell>) {
-    WORLD.with(|w| {
+    let retired = WORLD.with(|w| {
         let mut w = w.borrow_mut();
-        w.weather_fx = None;
-        w.cell = cell;
+        let weather = w.weather_fx.take();
+        let cell = std::mem::replace(&mut w.cell, cell);
+        (weather, cell)
     });
     CELL_GEN.with(|g| g.set(g.get() + 1));
     HANDLES.with(|h| {
         h.borrow_mut()
             .retain(|k, _| k.is_meta() || *k == Key::World)
     });
+    // Live process queues can be the final owners of items carrying Lua
+    // parents. Their destructors must observe the new cell without an
+    // outstanding WORLD borrow.
+    drop(retired);
 }
 
 /// `IsoWorld.instance.getMetaGrid()`'s `(minX, minY, maxX, maxY)` in cells,
@@ -424,6 +430,16 @@ fn building_get(b: &ClassBuilder, name: &str, f: impl Fn(&BuildingDef) -> Value 
 }
 
 pub fn register(thread: &mut Thread) {
+    register_world(thread, None);
+}
+
+/// Expose the world and connect cursor mutation to the actual Lua session's
+/// registered SetDragItem event. Standalone read-only exposure needs no sink.
+pub fn register_with_events(thread: &mut Thread, events: crate::events::EventManager) {
+    register_world(thread, Some(events.add_event("SetDragItem")));
+}
+
+fn register_world(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::events::Event>>>) {
     register_array_list(thread);
     register_room_def(thread);
     register_room_rect(thread);
@@ -432,7 +448,7 @@ pub fn register(thread: &mut Thread) {
     register_meta_chunk(thread);
     register_meta_cell(thread);
     register_meta_grid(thread);
-    register_iso_cell(thread);
+    register_iso_cell(thread, drag_event);
     register_iso_chunk(thread);
     register_grid_square(thread);
     register_iso_world(thread);
@@ -1662,8 +1678,43 @@ pub fn current_cell() -> Value {
     opt(has.then_some(Key::Cell))
 }
 
-fn register_iso_cell(thread: &mut Thread) {
+fn register_iso_cell(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::events::Event>>>) {
     let b = expose_class(thread, "zombie.iso.IsoCell", Some("java.lang.Object"));
+    cell_drag::register(&b, drag_event);
+    for (name, remove) in [("addToProcessItems", false), ("addToProcessItemsRemove", true)] {
+        void(&b, name, move |c| {
+            self_cell(c)?;
+            let items = crate::bind_process_items::argument_values(&c.arg(1));
+            let client = crate::bind_core::shared_core().borrow().is_client;
+            cell(|cl| {
+                if !remove && client {
+                    return Ok(());
+                }
+                for value in items {
+                    // The original casts each ArrayList element inside its
+                    // loop. A later bad element preserves earlier changes.
+                    let item = crate::bind_process_items::decode(&value)?;
+                    if remove {
+                        cl.process_items.queue_remove(item);
+                    } else {
+                        cl.process_items.add(item, client);
+                    }
+                }
+                Ok(())
+            })
+        });
+    }
+    for (name, remove) in [("getProcessItems", false), ("getProcessItemsRemove", true)] {
+        get(&b, name, move |c| {
+            self_cell(c)?;
+            let entries = cell(|cl| Ok(if remove {
+                cl.process_items.remove.clone()
+            } else {
+                cl.process_items.items.clone()
+            }))?;
+            Ok(crate::bind_process_items::queue_value(&entries, remove))
+        });
+    }
     static_get(&b, "getInstance", |_| Ok(current_cell()));
     static_get(&b, "getCellSizeInChunks", |_| Ok(32.into()));
     static_get(&b, "getCellSizeInSquares", |_| Ok(256.into()));

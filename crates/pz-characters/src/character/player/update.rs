@@ -432,11 +432,11 @@ impl<I: 'static> GameCharacter<I> {
         self.vars.melee_pressed = b_melee;
         self.vars.grapple_pressed = b_grapple;
         if !self.vars.grapple_pressed {
-            self.vars.do_grapple = false;
+            self.set_do_grapple(false);
             self.vars.can_let_go_of_grappled = true;
         }
         if !self.player.press_context && self.player.let_go_after_context_is_released {
-            self.vars.do_grapple = false;
+            self.set_do_grapple(false);
             // TODO(grappling): setDoGrappleLetGo.
         }
         if b_melee {
@@ -449,7 +449,7 @@ impl<I: 'static> GameCharacter<I> {
                 && self.vars.melee_delay <= 0.0
             {
                 self.vars.do_shove = true;
-                self.vars.do_grapple = false;
+                self.set_do_grapple(false);
                 if !self.player.is_charging && !self.player.is_charging_lt {
                     self.vars.is_aiming = false;
                 }
@@ -1252,7 +1252,7 @@ impl<I: 'static> GameCharacter<I> {
             d
         };
         let modv = if self.trait_on(sm, "ASTHMATIC") { 1.0f32 } else { 0.7 };
-        let dragging = self.environment.dragging_corpse;
+        let dragging = self.is_dragging_corpse();
         if speed > 0.0 && (self.run_or_sprint(sm, ctx) || dragging) {
             let mut reduce = g.running_endurance_reduce;
             if self.is_sprinting(sm, ctx) || dragging {

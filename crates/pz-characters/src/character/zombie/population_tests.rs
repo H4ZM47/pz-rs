@@ -263,7 +263,7 @@ fn population_tick_creates_a_sitting_real_zombie() {
     assert_eq!((z.vars.x, z.vars.y), (26.5, 28.5));
     assert_eq!(z.vars.dir, pz_world::square::IsoDirections::W);
     assert!(!z.zombie.can_crawl_under_vehicle);
-    assert!(!z.zombie.reanimated_for_grapple_only);
+    assert!(!z.zombie.is_reanimated_for_grapple_only());
 }
 
 /// `zpop_X_Y.bin` version 7 (`DataOutputStream`, big-endian) for cell

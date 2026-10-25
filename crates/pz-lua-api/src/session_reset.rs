@@ -12,9 +12,11 @@ pub fn reset_session_bindings() {
     crate::bind_uitextbox2::set_current(None);
     pz_ui::UIManager::reset();
     crate::bind_map_objects::reset();
+    crate::global_objects::reset_single_player_packets();
     for side in [crate::global_objects::Side::Client, crate::global_objects::Side::Server] {
         crate::global_objects::reset(side);
     }
+    crate::global_objects_save::set_save_dir(None);
 
     crate::bind_players::reset();
     crate::bind_character_sim::reset_session_handles();

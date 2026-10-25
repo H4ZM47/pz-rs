@@ -14,3 +14,4 @@ pub mod sound_manager;
 #[cfg(feature = "studio")]
 pub mod studio_backend;
 pub mod system;
+pub mod world_emitters;

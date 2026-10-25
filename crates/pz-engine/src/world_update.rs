@@ -423,12 +423,21 @@ impl IsoWorld {
             }
         });
         self.hand_off_events();
-        // TODO(port): `ProcessRemoveItems`, `ProcessItems` (with the alarm
-        // clocks), `ProcessIsoObject`.
+        self.process_remove_items();
+        // TODO(port): `ProcessItems`: dispatch real item update/finishupdate
+        // and world-item updates. Saved codec items are not runtime ItemRefs.
+        self.process_remove_items();
+        // TODO(port): `ProcessIsoObject`.
         self.update_characters(lua, sim);
         // TODO(port): `ProcessStaticUpdaters`, `ObjectDeletionAddition`,
         // `IsoDeadBody.updateBodies`, `FishSchoolManager.update`, the rain
         // scroll and `updateWeatherFx`.
+    }
+
+    /// `IsoCell.ProcessRemoveItems`, before and after its item-update phase.
+    fn process_remove_items(&mut self) {
+        let removed = with_world(|w| w.cell.as_ref().map(|cell| cell.process_items.drain_remove()));
+        drop(removed);
     }
 
     /// `ProcessObjects` through `MovingObjectUpdateScheduler.update`: each
@@ -1405,6 +1414,13 @@ impl IsoWorld {
             self.log_update_error(format!("VehiclesDB2.Reset: {e}"));
         }
         self.regions = None;
+        // IngameState.exit retires both global-object registries. Native
+        // close also takes this path without rebuilding the Lua environment.
+        pz_lua_api::global_objects::reset_single_player_packets();
+        for side in [pz_lua_api::global_objects::Side::Client, pz_lua_api::global_objects::Side::Server] {
+            pz_lua_api::global_objects::reset(side);
+        }
+        pz_lua_api::global_objects_save::set_save_dir(None);
     }
 
     /// `MapCollisionData.instance.updateGameState()` (`GameWindow.logic`).

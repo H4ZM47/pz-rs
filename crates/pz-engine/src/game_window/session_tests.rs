@@ -1,6 +1,9 @@
 //! Opt-in regression through the actual Rust session owners. Installed
 //! media is read at runtime; saves always go into a fresh test cache.
 
+mod queue;
+mod cell_drag;
+
 use super::{headless_app, run_frames, DevGame, Launch, NewGameSetup, Start};
 use pz_core::core::Core;
 use pz_lua_api::{bind_core, bind_players, player_db::PlayerDb, LuaManager};
@@ -75,6 +78,37 @@ fn inventory_ui_check(lua: &mut LuaManager) {
             end
         end
         assert(foundKeyRing, "starting key ring is missing from the actual inventory rows")
+    "#);
+}
+
+fn global_systems_check(lua: &mut LuaManager, saved_world: bool) {
+    lua.thread.globals().set_str("rustSessionLoadedGlobalSystems", saved_world);
+    lua_check(lua, r#"
+        local systems = {
+            {SCampfireSystem, 'campfire', CCampfireSystem},
+            {SFarmingSystem, 'farming', CFarmingSystem},
+            {STrapSystem, 'trap', CTrapSystem},
+            {SRainBarrelSystem, 'rainbarrel', CRainBarrelSystem},
+        }
+        for _, entry in ipairs(systems) do
+            local class, name = entry[1], entry[2]
+            assert(class and class.instance, name .. ' Lua system was not initialized')
+            local system = SGlobalObjects.getSystemByName(name)
+            assert(system and class.instance.system == system,
+                name .. ' Lua system does not retain the live native system')
+            assert(system:getModData() == class.instance,
+                name .. ' Lua/native mod-data identity changed')
+            local version = system:loadedWorldVersion()
+            assert(version == (rustSessionLoadedGlobalSystems and 249 or -1),
+                name .. ' did not follow the new/saved global-system lifecycle')
+            local clientClass, client = entry[3], CGlobalObjects.getSystemByName(name)
+            assert(clientClass and clientClass.instance and client,
+                name .. ' client system was not initialized')
+            assert(clientClass.instance.system == client and client:getModData() == clientClass.instance,
+                name .. ' client Lua/native system identity changed')
+            assert(client:getObjectCount() == system:getObjectCount(),
+                name .. ' client did not receive the initial objects')
+        end
     "#);
 }
 
@@ -184,23 +218,51 @@ fn paused_window_frames_keep_ui_callbacks_but_skip_state_updates_until_next_fram
     app.states.states = vec![probe.clone()];
     app.states.current = Some(probe);
     let context = pz_lua_api::bind_climate::LuaClimateContext::new();
+    let sm = pz_lua_api::bind_registry::shared_script_manager();
+    let packet_player = Rc::new(RefCell::new(pz_lua_api::bind_character_sim::LuaGameCharacter::new(
+        &sm, pz_characters::CharacterKind::Player,
+    )));
+    app.lua.as_mut().unwrap().thread.globals().set_str(
+        "packetPlayer", pz_lua_api::bind_character_sim::character_value(&packet_player),
+    );
     lua_check(app.lua.as_mut().unwrap(), r#"
         -- This authored fixture has no installed stdlib.lua.
         function assert(value, message)
             if not value then error(message or "assertion failed") end
             return value
         end
+        pumpOrder = {}
+        local server = SGlobalObjects.registerSystem('paused-frame-probe')
+        server:getModData().OnClientCommand = function(self, command, player, args)
+            assert(command == 'ping' and player == packetPlayer and args.value == 7)
+            table.insert(pumpOrder, 'server')
+            packetClock = getGameTime():getRealworldSecondsSinceLastUpdate()
+            server:sendCommand('reply', {value=args.value})
+        end
+        local client = CGlobalObjects.registerSystem('paused-frame-probe')
+        client:getModData().OnServerCommand = function(self, command, args)
+            assert(command == 'reply' and args.value == 7)
+            table.insert(pumpOrder, 'client')
+        end
+        client:sendCommand('ping', packetPlayer, {value=7})
         pausedEvents = 0
         Events.OnTickEvenPaused.Add(function(tick)
             assert(tick == 0)
+            table.insert(pumpOrder, 'tick')
             pausedEvents = pausedEvents + 1
             if resumeDuringPausedEvent then setGameSpeed(1) end
         end)
         setGameSpeed(0)
     "#);
     assert!(context.is_game_paused(), "a retained context must read current speed controls");
+    // A prior-frame value must be replaced before packet Lua observes time.
+    pz_lua_api::bind_climate::shared_game_time().borrow_mut().fps_multiplier = 0.0;
     app.frame();
     assert_eq!(updates.get(), 0);
+    lua_check(app.lua.as_mut().unwrap(), "assert(table.concat(pumpOrder, ',') == 'server,client,tick')");
+    let current_clock = pz_lua_api::bind_climate::shared_game_time().borrow().realworld_seconds_since_last_update();
+    assert!(current_clock > 0.0);
+    assert_eq!(app.lua.as_ref().unwrap().thread.globals().get_str("packetClock").as_num(), Some(current_clock as f64));
     lua_check(app.lua.as_mut().unwrap(), "assert(pausedEvents == 1); resumeDuringPausedEvent = true");
     app.frame();
     assert_eq!(updates.get(), 0, "unpause callback must not replay state update in this frame");
@@ -217,6 +279,10 @@ fn paused_window_frames_keep_ui_callbacks_but_skip_state_updates_until_next_fram
     app.frame();
     assert_eq!(updates.get(), 2);
     assert!(app.error.is_none());
+    pz_lua_api::global_objects::reset_single_player_packets();
+    for side in [pz_lua_api::global_objects::Side::Client, pz_lua_api::global_objects::Side::Server] {
+        pz_lua_api::global_objects::reset(side);
+    }
 }
 
 #[test]
@@ -268,6 +334,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         "shipped OnNewGame starting-item script did not create a key ring: {starting_inventory:?}"
     );
     inventory_ui_check(app.lua.as_mut().unwrap());
+    global_systems_check(app.lua.as_mut().unwrap(), false);
 
     // The shipped guide pauses through the real speed controls. Held input
     // must not advance simulation until its actual close handler resumes it.
@@ -329,6 +396,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     );
     pz_input::with_input(|i| i.key(17, 0));
     run_frames(&mut app, 1);
+    queue::wait_for_idle(&mut app);
     let after = {
         let p = player.borrow();
         (p.vars.x, p.vars.y, p.vars.z)
@@ -349,6 +417,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert!(save_dir.starts_with(&cache_dir), "session save escaped its fresh cache");
     assert!(sql_id > 0, "local player has no persistent database id");
 
+    queue::check(&mut app);
     lua_check(app.lua.as_mut().unwrap(), r#"
         local data = getPlayer():getModData()
         data.rustSessionRegression = { revision = 7, nested = { value = "saved from Lua" } }
@@ -379,6 +448,11 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     db.close();
     drop(db);
     assert!(save_dir.join("WorldDictionary.bin").is_file(), "new world has no persistent item dictionary; cache: {}", cache_dir.display());
+    for name in ["campfire", "farming", "trap", "rainbarrel"] {
+        assert!(pz_lua_api::global_objects_save::file_name(&save_dir, name).is_file(),
+            "native close did not save the real {name} global system");
+    }
+    assert!(pz_lua_api::global_objects_save::save_dir().is_none(), "native close retained the global-system save directory");
     assert!(bind_players::player(0).is_none(), "native close retained player 0");
     drop(app);
 
@@ -423,6 +497,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         "starting items or their nested contents/IDs changed across native close and reload"
     );
     inventory_ui_check(reloaded.lua.as_mut().unwrap());
+    global_systems_check(reloaded.lua.as_mut().unwrap(), true);
     close_survival_guide(reloaded.lua.as_mut().unwrap());
     assert!((loaded_position.0 - after.0).abs() < 0.0001, "reloaded x differs: {} versus {}", loaded_position.0, after.0);
     assert!((loaded_position.1 - after.1).abs() < 0.0001, "reloaded y differs: {} versus {}", loaded_position.1, after.1);

@@ -164,6 +164,9 @@ impl App {
             world.stop();
         }
         self.world = None;
+        // A close during loading does not pass through IngameState.KillCell.
+        // Retire the in-process host's current cell after its owners stop.
+        pz_lua_api::bind_world::set_cell(None);
         for mut models in self.retired_models.drain(..) {
             models.clear();
             if let Some(gpu) = self.gpu.as_mut() {
@@ -253,6 +256,10 @@ impl App {
         let multiplier = (dt * 30.0).clamp(0.0, 5.0);
         // FPSTracking.frameStep: GameTime.fpsMultiplier = 60 / fps, at most 5.
         pz_lua_api::bind_climate::shared_game_time().borrow_mut().fps_multiplier = (dt * 60.0).min(5.0);
+        // GameWindow.logic pumps the single-player server then client after
+        // frame timing, before input/UI and pause capture, even while paused.
+        pz_lua_api::global_objects::update_server(&mut lua.thread);
+        pz_lua_api::global_objects::update_client(&mut lua.thread);
         let (w, h) = {
             let c = self.core.borrow();
             (c.get_screen_width().max(1), c.get_screen_height().max(1))

@@ -402,30 +402,7 @@ impl EventManager {
                 return false;
             }
         };
-        if e.borrow().callbacks.is_empty() {
-            return false;
-        }
-        // Event.trigger: index-based loop that tolerates callbacks removing
-        // themselves during the call.
-        let mut n = 0;
-        loop {
-            let cb = match e.borrow().callbacks.get(n) {
-                Some(cb) => cb.clone(),
-                None => break,
-            };
-            if let Err((msg, trace)) = thread.pcall(&Value::Closure(cb.clone()), params) {
-                (thread.log)(&format!(
-                    "{}\n{}",
-                    pz_kahlua::exec::java_value_of(&msg),
-                    trace
-                ));
-            }
-            if !e.borrow().callbacks.iter().any(|x| Rc::ptr_eq(x, &cb)) {
-                continue;
-            }
-            n += 1;
-        }
-        true
+        trigger_registered_event(thread, &e, params)
     }
 
     pub fn callbacks(&self, name: &str) -> usize {
@@ -435,6 +412,39 @@ impl EventManager {
             .get(name)
             .map_or(0, |e| e.borrow().callbacks.len())
     }
+}
+
+/// Trigger an already registered event without capturing its entire registry
+/// in a native binding. The caller can trace this event's actual owning slot.
+pub(crate) fn trigger_registered_event(
+    thread: &mut Thread,
+    e: &Rc<RefCell<Event>>,
+    params: &[Value],
+) -> bool {
+    if e.borrow().callbacks.is_empty() {
+        return false;
+    }
+    // Event.trigger: index-based loop that tolerates callbacks removing
+    // themselves during the call.
+    let mut n = 0;
+    loop {
+        let cb = match e.borrow().callbacks.get(n) {
+            Some(cb) => cb.clone(),
+            None => break,
+        };
+        if let Err((msg, trace)) = thread.pcall(&Value::Closure(cb.clone()), params) {
+            (thread.log)(&format!(
+                "{}\n{}",
+                pz_kahlua::exec::java_value_of(&msg),
+                trace
+            ));
+        }
+        if !e.borrow().callbacks.iter().any(|x| Rc::ptr_eq(x, &cb)) {
+            continue;
+        }
+        n += 1;
+    }
+    true
 }
 
 #[cfg(test)]

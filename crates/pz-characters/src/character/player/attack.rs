@@ -208,7 +208,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoPlayer.clearHandToHandAttack()`.
     pub fn clear_hand_to_hand_attack(&mut self) {
         self.vars.do_shove = false;
-        self.vars.do_grapple = false;
+        self.set_do_grapple(false);
         self.vars.initiate_attack = false;
         self.vars.attack_started = false;
         self.vars.attack_type = String::new();
@@ -216,7 +216,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `isDoHandToHandAttack()`.
     pub fn is_do_hand_to_hand_attack(&self) -> bool {
-        self.vars.do_shove || self.vars.do_grapple
+        self.vars.do_shove || self.is_do_grapple()
     }
 
     /// `IsoLivingCharacter.AttemptAttack(chargeDelta)` then
@@ -227,7 +227,7 @@ impl<I: 'static> GameCharacter<I> {
             self.calculate_attack_vars(cx);
             self.vars.do_shove = self.attack_vars.do_shove;
             // TODO(grappling): attackVars.doGrapple.
-            self.vars.do_grapple = false;
+            self.set_do_grapple(false);
             if cx.ctx.trigger_hook("Attack") {
                 return Ok(false);
             }
@@ -324,7 +324,7 @@ impl<I: 'static> GameCharacter<I> {
                 self.vars.do_shove = false;
             }
             if self.is_player_aiming() && !self.vars.grapple_pressed && !bare {
-                self.vars.do_grapple = false;
+                self.set_do_grapple(false);
             }
             self.player.last_attack_was_hand_to_hand = self.is_do_hand_to_hand_attack();
             if can_miss(wt) && !self.vars.aim_at_floor {

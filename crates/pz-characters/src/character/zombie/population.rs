@@ -190,7 +190,7 @@ pub fn real_zombie_info<I: 'static>(z: &GameCharacter<I>, ctx: &dyn SimContext, 
             can_walk: z.zombie.can_walk,
             fake_dead: z.zombie.fake_dead && ctx.lore_disable_fake_dead() != 3,
             can_crawl_under_vehicle: z.zombie.can_crawl_under_vehicle,
-            reanimated_for_grapple_only: z.zombie.reanimated_for_grapple_only,
+            reanimated_for_grapple_only: z.zombie.is_reanimated_for_grapple_only(),
         },
         path_target_x: px,
         path_target_y: py,
@@ -348,7 +348,7 @@ impl<I: 'static, W: crate::character::state::StateWorld<I>> pz_world_popman::Zom
     }
     fn set_reanimated_for_grapple_only(&mut self, z: i32, v: bool) {
         if let Some(i) = self.find(z) {
-            self.zombies[i].zombie.reanimated_for_grapple_only = v;
+            self.zombies[i].zombie.set_reanimated_for_grapple_only(v);
         }
     }
     fn path_to(&mut self, z: i32, x: i32, y: i32) {

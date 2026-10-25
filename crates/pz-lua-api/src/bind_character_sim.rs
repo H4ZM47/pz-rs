@@ -73,6 +73,12 @@ mod sneaking_tests;
 mod timed_actions_tests;
 #[cfg(test)]
 mod timed_action_phases_tests;
+#[cfg(test)]
+mod running_tests;
+#[cfg(test)]
+mod grapple_tests;
+#[cfg(test)]
+mod direction_tests;
 
 pub const ISO_GAME_CHARACTER_CLASS: &str = "zombie.characters.IsoGameCharacter";
 pub const ISO_PLAYER_CLASS: &str = "zombie.characters.IsoPlayer";
@@ -419,6 +425,7 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         Ok(c.push(v.map_or(Value::Nil, |v| pz_vehicles::lua::vehicle_value(&v))))
     });
     let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    p.method("IsRunning", running_query);
     // getIndex() and getPlayerNum() (which calls it): `playerIndex`.
     p.method("getIndex", |c| {
         let v = chr_of(c)?.borrow().player.player_index;
@@ -1307,6 +1314,27 @@ fn perk_info_value(chr: &LuaGameCharacterRef, perk: &PerkRef) -> Value {
     canonical(id, || Value::Object(Rc::new(PerkInfoObject { chr: chr.clone(), perk: perk.clone() })))
 }
 
+fn running_query(c: &mut NativeCall<'_>) -> LuaResult<usize> {
+    let sm = shared_script_manager();
+    let running = chr_of(c)?.borrow().is_running(&sm);
+    Ok(c.push(running))
+}
+
+fn sprint_query(c: &mut NativeCall<'_>, can_sprint: bool) -> LuaResult<usize> {
+    // canSprint's only context read is Core.gameMode. Resolve it at this
+    // call, so Lua changes are visible even with an older FrameSim installed.
+    struct SprintMode(String);
+    impl SimContext for SprintMode {
+        fn game_mode(&self) -> &str { &self.0 }
+    }
+    let mode = SprintMode(crate::bind_core::shared_core().borrow().get_game_mode());
+    let sm = shared_script_manager();
+    let chr = chr_of(c)?;
+    let chr = chr.borrow();
+    let value = if can_sprint { chr.can_sprint(&sm, &mode) } else { chr.is_sprinting(&sm, &mode) };
+    Ok(c.push(value))
+}
+
 fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
     let b = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
     for class in [ISO_PLAYER_CLASS, ISO_SURVIVOR_CLASS, ISO_ZOMBIE_CLASS, ISO_ANIMAL_CLASS] {
@@ -1509,6 +1537,24 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let v = chr_of(c)?.borrow().is_sneaking();
         Ok(c.push(v))
     });
+    b.method("isRunning", running_query);
+    // IsoObject.getDir delegates to the virtual getForwardIsoDirection;
+    // characters inherit its read of the current dir field.
+    for name in ["getDir", "getForwardIsoDirection"] {
+        b.method(name, |c| {
+            let direction = chr_of(c)?.borrow().vars.dir;
+            Ok(c.push(crate::expose::enum_value(
+                crate::bind_iso_enums::ISO_DIRECTIONS,
+                &format!("{direction:?}"),
+            )))
+        });
+    }
+    b.method("isDraggingCorpse", |c| {
+        let value = chr_of(c)?.borrow().is_dragging_corpse();
+        Ok(c.push(value))
+    });
+    b.method("isSprinting", |c| sprint_query(c, false));
+    b.method("canSprint", |c| sprint_query(c, true));
     b.method("setSneaking", |c| {
         let v = bool_arg(c, 1);
         chr_of(c)?.borrow_mut().environment.sneaking = v;

@@ -71,10 +71,28 @@ are removed by identity. Movement modifiers, animation events, progress and
 hand models use the live action. Aiming and walking/running cancellation
 callbacks now run inline between released host borrows, preserving already
 computed locals and reading live player clocks after resume. Other player
-events retain wider phase gaps; normal vanilla queue entrance still needs
-genuine grapple ownership for `isDraggingCorpse`. Remaining action APIs, network and
-voice audio also need work. Sneaking uses the existing input/save field;
+events retain wider phase gaps. A stable character grapple owner now supplies
+`isDraggingCorpse` from the actual target's live zombie state; full grapple
+acceptance, corpse conversion and target userdata remain pending. Running,
+sprinting and direction queries read the existing character rules and fields.
+Remaining action APIs, network and voice audio also need work. Sneaking uses the existing input/save field;
 farming exposes its actual transient player flag.
+
+Global-object lookup uses the actual meta grid and save directory. After
+`OnGameTimeLoaded`, server systems initialize before client systems; inherited
+Lua callbacks work, and single-player command delivery runs after current frame
+timing even while paused. Shutdown retires transport separately from public
+registry reset. Multiplayer transport and world-object mutation hooks remain
+incomplete.
+
+Cells now own live shared-item processing and removal queues. Inventory
+registration and removal use actual item references, and paused frames preserve
+the queues. Item sounds have a separate emitter owner with delayed stop and
+reuse; per-item simulation, saved-world identity bridging, positioned sounds,
+limiters and disabled-sound emitter parity remain pending. Cell drag cursors
+use four real Lua table slots, original event/deactivation ordering and traced
+ownership across callbacks. Broader inventory and world-object APIs still
+prevent complete inventory screen setup and interaction.
 
 Puddles now have a shared live singleton and indexed float controls. A real
 cell-owned WeatherFX object initializes at world init; the climate updates
@@ -742,7 +760,9 @@ registered):
       `chunkMap.worldX/Y = local_player_chunk_map_pos(x, y, offset)` (#100;
       wired in `IsoWorld::load_player`, #209/#212). Left: `player.sqlId`
       (no field on `GameCharacter` yet) and `map_p.bin` saves (#212).
-- [ ] CGlobalObjects `initSystems` and update pumps (#31).
+- [x] Single-player SGlobalObjects/CGlobalObjects `initSystems`, actual
+      lookup/save owner and command pumps (#31). Multiplayer transport and
+      world-object mutation hooks remain pending.
 - [x] Popman: `pz_world_states::population_host` (#210; was
       `WorldPopulationHost::from_state`), `update_main` with
       `player_chunk_maps(&streamer)`; SittingChecks is the

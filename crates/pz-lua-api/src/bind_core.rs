@@ -506,6 +506,14 @@ pub fn register(
     register_methods(&b, &cx);
     let obj = object;
     global(thread, "getCore", move |c| Ok(c.push(obj.clone())));
+    // GlobalObject.getDebug's single-player branch reads the same live Core
+    // flag. Its additional GameServer.server && GameServer.debug branch
+    // requires the still-unported server-debug owner.
+    let debug_core = cx.core.clone();
+    global(thread, "getDebug", move |c| {
+        let debug = debug_core.borrow().get_debug();
+        Ok(c.push(debug))
+    });
     cx
 }
 
@@ -1948,6 +1956,17 @@ mod tests {
             assert(getCore() == core)
             "#,
         );
+    }
+
+    #[test]
+    fn global_debug_reads_the_same_live_single_player_core() {
+        let core = Rc::new(RefCell::new(Core::new()));
+        let mut t = setup(core.clone());
+        run(&mut t, "assert(getDebug() == false and getDebug() == getCore():getDebug())");
+        core.borrow_mut().debug = true;
+        run(&mut t, "assert(getDebug() == true and getDebug() == getCore():getDebug())");
+        core.borrow_mut().debug = false;
+        run(&mut t, "assert(getDebug() == false and getDebug() == getCore():getDebug())");
     }
 
     #[test]

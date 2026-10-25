@@ -800,8 +800,6 @@ pub struct CharacterEnvironment {
     /// `Temperature.getWindChillAmountForPlayer(player)` when no climate
     /// runs ([`SimContext::climate`] is `None`).
     pub wind_chill_amount: f32,
-    /// `isDraggingCorpse()`.
-    pub dragging_corpse: bool,
     /// `isFallOnFront()`.
     pub fall_on_front: bool,
     /// `getCurrentSquare().haveRoof`.
@@ -881,7 +879,6 @@ impl Default for CharacterEnvironment {
             total_blood: 0.0,
             building_toxic: false,
             wind_chill_amount: 0.0,
-            dragging_corpse: false,
             fall_on_front: false,
             square_have_roof: false,
             vehicle_has_roof: false,

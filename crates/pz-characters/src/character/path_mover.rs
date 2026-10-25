@@ -161,7 +161,7 @@ impl<I: 'static> CharacterView for GameCharacter<I> {
         GameCharacter::is_dead(self)
     }
     fn is_reanimated_for_grappling(&self) -> bool {
-        self.is_zombie() && self.zombie.reanimated_for_grapple_only
+        self.is_zombie() && self.zombie.is_reanimated_for_grapple_only()
     }
     fn x(&self) -> f32 {
         self.vars.x

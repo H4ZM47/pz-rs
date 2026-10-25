@@ -870,6 +870,8 @@ pub fn load_cell_binary_chunk(
 #[derive(Default)]
 pub struct IsoCell {
     pub chunks: HashMap<(i32, i32), IsoChunk>,
+    pub drag: crate::cell_drag::CellDrag,
+    pub process_items: crate::process_items::ProcessItemQueues,
     cache: LotCache,
 }
 

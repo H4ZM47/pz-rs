@@ -61,6 +61,7 @@ pub mod states;
 pub mod stats;
 pub mod thermoregulator;
 pub mod timed_action;
+pub mod grapple;
 pub mod update;
 pub mod xp;
 pub mod zombie;
@@ -216,6 +217,8 @@ pub enum CharacterKind {
 
 /// `IsoGameCharacter`'s simulation state.
 pub struct GameCharacter<I: 'static> {
+    /// Stable BaseGrappleable identity, independent of Vec relocation.
+    grapple: Rc<std::cell::RefCell<grapple::GrappleState>>,
     /// The real `Stack<BaseAction>`, distinct from Lua's pending-action queue.
     pub character_actions: Rc<std::cell::RefCell<Vec<timed_action::ActionRef>>>,
     pub character_actions_handle: Option<pz_kahlua::Value>,
@@ -426,7 +429,10 @@ impl<I: 'static> GameCharacter<I> {
     pub fn new(sm: &ScriptManager, kind: CharacterKind) -> Self {
         let player = kind == CharacterKind::Player;
         let body_damage = BodyDamage::new(sm, player);
+        let zombie = Box::<zombie::ZombieFields>::default();
+        let grapple = grapple::GrappleState::new(kind, zombie.reanimated_for_grapple_only.shared());
         GameCharacter {
+            grapple,
             character_actions: Rc::default(),
             character_actions_handle: None,
             timed_action_to_retrigger: None,
@@ -500,7 +506,7 @@ impl<I: 'static> GameCharacter<I> {
             path: path_mover::PathMoverState::default(),
             attack_vars: states::swipe::AttackVars::default(),
             bare_hands: None,
-            zombie: Box::default(),
+            zombie,
             seen: zombie::SeenFields::default(),
             mod_data: None,
             human_visual: None,

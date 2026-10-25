@@ -127,9 +127,10 @@ impl IngameState {
             }
             // TODO(port): `LootRespawn.update`, the vehicle sound
             // `Manager`, `AnimEventEmulator`, `BodyDamageSync`,
-            // `VirtualVehicleManager.update`, `ItemSoundManager`,
+            // `VirtualVehicleManager.update`,
             // `LoopedRangedWeaponSounds`, `FliesSound`, `CorpseFlies`,
             // `WorldMapVisited.update`.
+            pz_lua_api::item_sound::update();
         }
         pz_lua_api::bind_search_mode::update(pz_lua_api::bind_climate::game_time_delta());
         // `RenderSettings.getInstance().update()`: the settings are
@@ -275,9 +276,14 @@ impl GameState for IngameState {
         pz_lua_api::bind_misc::set_ingame_state(true);
         // TODO(port): `UIManager.useUiFbo`, `SceneShaderStore.weatherShader`,
         // `GameSounds.fix3DListenerPosition(false)`; the player's
-        // `updateUsername`, `setSceneCulled(false)` and
-        // `getInventory().addItemsToProcessItems()`;
+        // `updateUsername`, `setSceneCulled(false)`;
         // `ZombieSpawnRecorder.instance.init()`.
+        if let Some(player) = pz_lua_api::bind_players::player_instance() {
+            let inventory = player.borrow().items.inventory.clone();
+            if let Err(e) = pz_lua_api::bind_process_items::add_container_items(&inventory) {
+                eprintln!("[IngameState.enter] addItemsToProcessItems: {e}");
+            }
+        }
         if let Some(w) = cx.world.as_mut() {
             // `chunkMap[0].processAllLoadGridSquare()` then `chunkMap[0].update()`.
             w.with_stream(|s, cell, ctx| {
@@ -338,11 +344,16 @@ impl GameState for IngameState {
         // `GameEntityManager.Reset`, `SpriteConfigManager.Reset`,
         // `Fluid`/`Energy`/`CraftRecipeManager`/`ErosionGlobals.Reset`,
         // `IsoGenerator`, `StashSystem`, `LootRespawn`, `VehicleCache`,
-        // `VehicleIDMap`, `ItemSoundManager`, `IsoChunk`, `ChunkChecksum`,
+        // `VehicleIDMap`, `IsoChunk`, `ChunkChecksum`,
         // the atlases and `FBORenderChunkManager.Reset`.
         // `IsoWorld.instance.KillCell()`: the cell and the world's state go.
         pz_lua_api::bind_world::set_cell(None);
         *cx.world = None;
+        let retired_emitters = pz_lua_api::bind_audio::sound_system().borrow_mut().world_emitters.reset();
+        drop(retired_emitters);
+        pz_lua_api::item_sound::reset();
+        // `BaseSoundManager.stop`, before the new menu environment starts.
+        pz_lua_api::bind_audio::sound_system().borrow_mut().with(|manager, ctx| manager.stop(ctx));
         pz_lua_api::bind_misc::set_ingame_state(false);
         // The original rebuilds scripts and Lua before redirecting to the
         // menu. Registry ids cannot carry across worlds whose dictionary
@@ -440,3 +451,6 @@ impl GameState for IngameState {
         self.renderframeui(cx, out);
     }
 }
+
+#[cfg(test)]
+mod process_items_tests;
