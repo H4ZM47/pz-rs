@@ -592,23 +592,50 @@ registered):
       `pz_characters::character::CharacterDrop` and take the world as a
       `FloorCx { ctx, floor }`. Wired: `set_worn_item` / `remove_worn_item`
       (`forceDropTooHeavy` right after `wornItems.setItem`),
-      `climbThroughWindow` / `climbThroughWindowFrame` (`dropHeavyItems`)
-      and `ClimbOverFenceState`'s `VaultSprintFallLanded`
-      (`dropHandItems`). The engine must:
+      `climbThroughWindow` / `climbThroughWindowFrame`, `climbSheetRope`,
+      `climbDownSheetRope` and `IsoPlayer.climbOverWall` (`dropHeavyItems`),
+      `ClimbOverFenceState`'s `VaultSprintFallLanded`, `fallenOnKnees`,
+      `handleLandingImpact` and `IsoPlayer.OnDeath` (`dropHandItems`)
+      (#CWR). The engine must:
       - return its `square_mutation::FloorDropEnv::new(&mut env,
         world_age_hours)` from `StateWorld::floor()` for the states;
       - `bind_character_sim::install_floor_world(Some(..))` with a
         `FloorWorld` that builds a `FloorDropEnv` per call, for Lua's
         `setWornItem` / `removeWornItem` / `setClothingItem_*` and the new
         `dropHandItems` / `dropHeavyItems` (without one nothing drops);
-      - call `GameCharacter::drop_heavy_items(sm, FloorCx)` from
-        `climbSheetRope`, `climbDownSheetRope` and `IsoPlayer.climbOverWall`
-        (the `PathMoverRequest::ClimbOverWall` handler), and
-        `drop_hand_items` from `handleLandingImpact`, `fallenOnKnees` and
-        `IsoPlayer.OnDeath`, as those are ported (not yet in
-        `pz-characters`);
       - `Use`'s `Unwear` (`apply_use_outcome`) passes no world yet, so a
         used-up worn item never drops (#189).
+- [ ] Wall and sheet-rope climbs, landings and player death (#CWR, on
+      #189): `pz-world-states` implements the new `StateWorld` hooks
+      `can_climb_over_wall` (the world's part of
+      `IsoPlayer.canClimbOverWall`), `climbable_wall_fence_type`
+      (`ClimbOverWallState`'s `FenceTypeHigh` sound parameter),
+      `rope_square`, `rope_climb_outcome` (`calculateClimbOutcome`; opens a
+      closed window at the top through `StatesEngine::toggle_window`) and
+      `floor_sprite_name`. The engine must:
+      - implement `StateWorld::path_reset` (`PathFindBehavior2.reset()`, a
+        failed wall climb; `pz-world-states` leaves the no-op default, as
+        for `path_cancel`);
+      - start the climbs: `GameCharacter::climb_over_wall(dir, cx)` from
+        the player's wall-climb input (the `PathMoverRequest::ClimbOverWall`
+        handler in `run_path_requests` already calls it),
+        `climb_sheet_rope` / `climb_down_sheet_rope` from the rope input,
+        and `fall_from_rope` where the original lets go;
+      - call `GameCharacter::do_land(impact_iso_speed, cx)` when a falling
+        character lands (`IsoGameCharacter.updateFalling`, not yet ported)
+        and `player_on_death(cx)` from `IsoPlayer.OnDeath`;
+      - answer `SimContext::easy_climbing` (`SandboxOptions.easyClimbing`)
+        and `debug_always_trip_over_fence` (`DebugOptions`);
+      - handle `SimEvent::MusicIntensityEvent`, `FallingItem`
+        (`createFallingItem`), `FallenHat`
+        (`PersistentOutfits.setFallenHat`), `StopPlayerVoiceSound`,
+        `CharacterDeath` (`OnCharacterDeath`), `FadeIn` and `PlayerDeath`
+        (the rest of `IsoPlayer.OnDeath`: death music, `OnPlayerDeath`,
+        leaving the vehicle, `removeSaveFile`, `setDrag`);
+      - bind the new calls to Lua (`climbSheetRope`, `canClimbSheetRope`,
+        `canClimbOverWall`, `climbOverWall`, `isClimbingRope`,
+        `fallFromRope`, `getClimbingFailChanceInt`, `fallenOnKnees`, ...)
+        where the Lua API needs them; none is bound yet.
 - [ ] Collision code fills `IsoChunk::collision` through
       `ChunkCollision::init(z, build)` (`CollideWithObstaclesPoly` /
       `LineClearCollide`) and drops levels with `take` on vehicle moves; the
