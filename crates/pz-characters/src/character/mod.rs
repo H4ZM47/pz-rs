@@ -34,6 +34,7 @@
 pub mod body_damage;
 pub mod body_part;
 pub mod clothing_wetness;
+pub mod collide;
 pub mod collision;
 pub mod combat;
 pub mod context;

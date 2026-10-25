@@ -14,6 +14,7 @@ pub use pz_pathfind::behavior::BehaviorResult;
 use pz_pathfind::mover::{MoverId, PathMover};
 use pz_pathfind::behavior::PathFindBehavior2;
 pub use pz_world::los::TestResults;
+pub use pz_world::square::{CollideAdjacent, CollideMover, HoppableAction, IsoDirections};
 
 use pz_audio::world_sound::{SoundWorld, WorldSoundManager};
 
@@ -265,8 +266,46 @@ pub trait StateWorld<I> {
         false
     }
     /// `checkBreakHoppable()`, `checkHitHoppable()` and
-    /// `checkBreakBendableFence(current)` after a square-edge collision.
+    /// `checkBreakBendableFence(current)` after a square-edge collision,
+    /// done by the world. The character code asks
+    /// [`Self::hoppable_actions`] instead and acts on the answer; this stays
+    /// for worlds that drive characters they own.
     fn collided_with_hoppables(&mut self, _chr: i32, _current: Option<(i32, i32, i32)>) {}
+    /// `square.testCollideAdjacent(mover, dx, dy, dz)` from `from` with the
+    /// mover (pz-world's `CollideEnv::test_collide_adjacent`): the special
+    /// object it hits comes back for the mover's `collideWith(obj)`,
+    /// `setCollidedWithDoor` and `setCollidedObject`. The default is the
+    /// mover-blind [`Self::test_collide_adjacent`].
+    #[allow(clippy::too_many_arguments)]
+    fn test_collide_adjacent_mover(
+        &self,
+        mover: &dyn CollideMover,
+        id: MoverId,
+        from: (i32, i32, i32),
+        dx: i32,
+        dy: i32,
+        dz: i32,
+    ) -> CollideAdjacent {
+        let _ = mover;
+        CollideAdjacent { blocked: self.test_collide_adjacent(id, from, dx, dy, dz), ..Default::default() }
+    }
+    /// `checkBreakHoppable()`, `checkHitHoppable()` and
+    /// `checkBreakBendableFence(current)` of `mover` (character `chr`) after
+    /// a square-edge collision from `last` (pz-world's
+    /// `CollideEnv::hoppable_actions`): the thump targets and fence climbs
+    /// the character then does.
+    fn hoppable_actions(&self, _mover: &dyn CollideMover, _chr: i32, _last: (i32, i32, i32)) -> Vec<HoppableAction> {
+        Vec::new()
+    }
+    /// `climbOverFence(dir)`'s world checks from the character's square
+    /// `from`: `IsoWindow.canClimbThroughHelper(chr, current, opposite,
+    /// north)`, `current.isPlayerAbleToHopWallTo(dir, opposite)` and
+    /// `BentFences.checkDamageHoppableFence` (which may damage the fence),
+    /// then what `ClimbOverFenceState.setParams` reads of the opposite
+    /// square. `None` when the climb is refused.
+    fn fence_climb(&mut self, _chr: &dyn pz_pathfind::mover::CharacterView, _zombie: bool, _from: (i32, i32, i32), _dir: IsoDirections) -> Option<FenceClimb> {
+        None
+    }
     /// A zombie path finding toward an unloaded square outside a building
     /// is virtualized (`ZombiePopulationManager.virtualizeZombie`); true
     /// when that happened.
@@ -313,6 +352,19 @@ pub trait StateWorld<I> {
 pub enum ThumpTarget {
     Object(pz_pathfind::mover::ObjectRef),
     Vehicle(i16),
+}
+
+/// What `ClimbOverFenceState.setParams` reads of the square beyond the
+/// fence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FenceClimb {
+    /// `oppositeSq.has(solidtrans)` (`COUNTER`: the climb ends on a
+    /// counter).
+    pub counter: bool,
+    /// `oppositeSq.TreatAsSolidFloor()`.
+    pub solid_floor: bool,
+    /// `canClimbDownSheetRope(oppositeSq)`.
+    pub sheet_rope: bool,
 }
 
 /// The class of a thumpable.

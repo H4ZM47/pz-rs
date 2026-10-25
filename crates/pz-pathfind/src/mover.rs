@@ -106,6 +106,19 @@ pub trait CharacterView {
     fn is_sitting_on_furniture(&self) -> bool;
     /// `IsoGameCharacter.getSitOnFurnitureDirection()`.
     fn sit_on_furniture_direction(&self) -> Option<IsoDirections>;
+    /// `IsoMovingObject.isOnFloor()`.
+    fn is_on_floor(&self) -> bool {
+        false
+    }
+    /// `IsoGameCharacter.isDead()`.
+    fn is_dead(&self) -> bool {
+        false
+    }
+    /// `IsoZombie.isReanimatedForGrappleOnly()` (a reanimated corpse being
+    /// dragged; `false` for other characters).
+    fn is_reanimated_for_grappling(&self) -> bool {
+        false
+    }
 }
 
 /// The moving character (`IsoGameCharacter` as a `Mover`).
@@ -415,5 +428,43 @@ impl MoverSnapshot {
             }
         }
         s
+    }
+}
+
+#[cfg(test)]
+mod character_view_tests {
+    use super::*;
+
+    struct Bare;
+    impl CharacterView for Bare {
+        fn x(&self) -> f32 {
+            0.0
+        }
+        fn y(&self) -> f32 {
+            0.0
+        }
+        fn z(&self) -> f32 {
+            0.0
+        }
+        fn current_square(&self) -> Option<(i32, i32, i32)> {
+            None
+        }
+        fn vehicle(&self) -> Option<i16> {
+            None
+        }
+        fn is_sitting_on_furniture(&self) -> bool {
+            false
+        }
+        fn sit_on_furniture_direction(&self) -> Option<IsoDirections> {
+            None
+        }
+    }
+
+    #[test]
+    fn state_accessors_default_to_false() {
+        let b = Bare;
+        assert!(!b.is_on_floor());
+        assert!(!b.is_dead());
+        assert!(!b.is_reanimated_for_grappling());
     }
 }

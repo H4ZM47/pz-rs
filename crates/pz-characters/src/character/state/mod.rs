@@ -44,7 +44,7 @@ pub mod params;
 pub mod vars;
 
 pub use cx::{
-    BehaviorResult, CorpseInfo, EatTarget, NullWorld, SquareInfo, StateCx, StateWorld, TestResults, ThumpInfo,
+    BehaviorResult, CorpseInfo, EatTarget, FenceClimb, NullWorld, SquareInfo, StateCx, StateWorld, TestResults, ThumpInfo,
     ThumpKind, ThumpTarget,
 };
 pub use action::ActionGroups;

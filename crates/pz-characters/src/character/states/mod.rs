@@ -7,6 +7,7 @@
 
 use super::state::{Param, StateId, StateRef};
 
+pub mod climb_fence;
 pub mod generic_default;
 pub mod idle;
 pub mod player;
@@ -121,6 +122,7 @@ pub fn all<I: 'static>() -> Vec<StateRef<I>> {
         player::collide_with_wall(),
         player::aim(),
         player::strafe(),
+        climb_fence::climb_over_fence(),
     ]
     .into_iter()
     .chain(zombie::all())

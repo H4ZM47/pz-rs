@@ -105,6 +105,15 @@ fn state_id_of(s: CharacterState) -> Option<StateId> {
 }
 
 impl<I: 'static> CharacterView for GameCharacter<I> {
+    fn is_on_floor(&self) -> bool {
+        self.vars.on_floor
+    }
+    fn is_dead(&self) -> bool {
+        GameCharacter::is_dead(self)
+    }
+    fn is_reanimated_for_grappling(&self) -> bool {
+        self.is_zombie() && self.zombie.reanimated_for_grapple_only
+    }
     fn x(&self) -> f32 {
         self.vars.x
     }
