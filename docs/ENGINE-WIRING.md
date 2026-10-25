@@ -167,6 +167,11 @@ registered):
       `has_render_effect` / `set_render_effect` (ObjectRenderEffects) and
       `do_tree_noises` (tree sound manager); `ThumpSettings::server`.
 - [ ] `SimContext` climate values from `ClimateManager` (#49).
+- [ ] Square edits → pathfinding: `pz_pathfind::pathfind_square_hooks!(pz_world)`
+      in the engine crate, and pass `PathfindSquareHooksImpl(PathfindMutationHooks { service:
+      host.service_mut(), sprites, meta, bits_hooks: &ObjectHooks })` as
+      `MutationEnv`'s `PathfindSquareHooks`; compile-checked against #97
+      d844ab0 (#60, #97).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
 - [ ] Vehicle models: `VehicleModelSet::create` when a vehicle is added to
