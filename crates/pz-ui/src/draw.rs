@@ -80,6 +80,11 @@ pub fn measure_string_y(font: Option<UIFont>, s: &str) -> i32 {
     with_ui(|m| m.text.clone()).map_or(0, |t| t.measure_y(font, s))
 }
 
+/// `TextManager.getFontFromEnum(font).getWidth(s, start, end, xadvance)`.
+pub fn font_width_range(font: Option<UIFont>, s: &str, start: i32, end: i32, xadvance: bool) -> i32 {
+    with_ui(|m| m.text.clone()).map_or(0, |t| t.width_range(font, s, start, end, xadvance))
+}
+
 /// `TextManager.getFontHeight`.
 pub fn font_height(font: Option<UIFont>) -> i32 {
     with_ui(|m| m.text.clone()).map_or(0, |t| t.font_height(font))

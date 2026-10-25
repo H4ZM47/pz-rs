@@ -818,7 +818,7 @@ impl UIElement {
     pub fn on_right_mouse_down_outside(&self, t: &mut Thread, x: f64, y: f64) {
         self.outside_recursive(t, "onRightMouseDownOutside", x, y, true, UIElement::on_right_mouse_down_outside);
     }
-    pub fn on_mouse_up_outside(&self, t: &mut Thread, x: f64, y: f64) {
+    pub fn on_mouse_up_outside_base(&self, t: &mut Thread, x: f64, y: f64) {
         self.outside_recursive(t, "onMouseUpOutside", x, y, true, UIElement::on_mouse_up_outside);
     }
     /// Children get `x - (int)ui.getX()` here (not the scrolled position),
@@ -1325,6 +1325,16 @@ impl UIElement {
         match &self.ext {
             Some(hook) => hook.update(self, t),
             None => self.update_base(t),
+        }
+    }
+
+
+    /// `on_mouse_up_outside` as the Java virtual call: the subclass hook,
+    /// else the base.
+    pub fn on_mouse_up_outside(&self, t: &mut Thread, x: f64, y: f64) {
+        match &self.ext {
+            Some(hook) => hook.on_mouse_up_outside(self, t, x, y),
+            None => self.on_mouse_up_outside_base(t, x, y),
         }
     }
 

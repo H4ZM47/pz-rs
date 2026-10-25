@@ -26,6 +26,9 @@ use std::rc::Rc;
 /// `LuaEventManager.triggerEvent(name, args...)`, supplied by pz-lua-api.
 pub type EventSink = Rc<dyn Fn(&mut Thread, &str, &[Value])>;
 
+/// `Core.UnfocusActiveTextEntryBox()`, supplied by pz-lua-api.
+pub type UnfocusHook = Rc<dyn Fn(&mut Thread)>;
+
 /// `zombie.input.Mouse` as the UI reads it. The engine writes `x`, `y`,
 /// `down` and `wheel` each frame and calls [`MouseState::end_frame`] after
 /// the UI update.
@@ -210,6 +213,9 @@ pub struct UIManager {
     pub text: Option<Rc<dyn TextRenderer>>,
     /// `LuaEventManager.triggerEvent`.
     pub events: Option<EventSink>,
+    /// `Core.UnfocusActiveTextEntryBox()`, supplied by the text entry
+    /// binding (`Core.currentTextEntryBox` lives there).
+    pub unfocus_text_entry: Option<UnfocusHook>,
     /// Fixed clock for tests (`System.currentTimeMillis`).
     pub time_override_ms: Option<i64>,
 }
@@ -264,6 +270,7 @@ impl Default for UIManager {
             sprite: SpriteRenderer::default(),
             text: None,
             events: None,
+            unfocus_text_entry: None,
             time_override_ms: None,
         }
     }
@@ -317,7 +324,8 @@ impl UIManager {
         with_ui(|m| m.events = s);
     }
 
-    fn trigger(t: &mut Thread, name: &str, args: &[Value]) {
+    /// `LuaEventManager.triggerEvent(name, args...)` through the sink.
+    pub fn trigger(t: &mut Thread, name: &str, args: &[Value]) {
         if let Some(sink) = with_ui(|m| m.events.clone()) {
             sink(t, name, args);
         }
@@ -551,7 +559,11 @@ impl UIManager {
             let pressed = mouse.is_button_pressed(btn);
             let released = !pressed && mouse.is_button_released(btn);
             if pressed || released {
-                // TODO: btn 0 press calls Core.UnfocusActiveTextEntryBox().
+                if pressed && btn == 0 {
+                    if let Some(f) = with_ui(|m| m.unfocus_text_entry.clone()) {
+                        f(t);
+                    }
+                }
                 let uis = Self::get_ui();
                 let mut i = uis.len() as isize - 1;
                 while i >= 0 && !consumed {
