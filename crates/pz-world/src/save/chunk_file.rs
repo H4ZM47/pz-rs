@@ -196,6 +196,14 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
                         .and_then(|d| d.building);
                 }
                 sq.reset_iso_world_region();
+                // `setSquare` (before `gs.load`): `associatedBuilding` from
+                // the meta grid, for every square set. The meta grid's NPE
+                // (a room without a building) fails the load as it does
+                // `LoadFromDiskOrBuffer`.
+                if let Some(meta) = ctx.meta {
+                    sq.associated_building =
+                        meta.get_associated_building_at(sq.x, sq.y).or_else(err)?;
+                }
                 load_square(&mut r, ctx, wv, &mut sq)?;
                 sq.fix_stackable_objects(ctx.sprites);
                 ch.set_square(x, y, z, Some(sq));
