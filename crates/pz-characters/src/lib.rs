@@ -56,6 +56,8 @@ pub struct Characters {
     /// The character simulation's statics (`CharacterStat`, `MoodleStat`,
     /// `LevelUpLevels`, `CheatType`).
     pub sim: character::SimStatics,
+    /// `CombatManager`'s mutable state and the ragdoll statics.
+    pub combat: std::cell::RefCell<character::firearm::CombatManagerState>,
 }
 
 pub(crate) fn npe() -> ScriptError {

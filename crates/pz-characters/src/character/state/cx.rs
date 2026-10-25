@@ -345,6 +345,51 @@ pub trait StateWorld<I> {
     fn eating_count(&self, _target: EatTarget) -> usize {
         0
     }
+
+    // ---- firearms and ragdolls ----
+
+    /// The physics world (`WorldSimulation` / the Bullet natives), owned by
+    /// the world or engine.
+    fn physics(&mut self) -> Option<&mut dyn crate::character::firearm::PhysicsWorld> {
+        None
+    }
+    /// `chr.primaryHandModel.getAttachmentWorldPosition(MUZZLE)`: `None`
+    /// without a hand model, its script or a muzzle attachment.
+    fn muzzle_attachment(&self, _chr: i32) -> Option<crate::character::firearm::MuzzleAttachment> {
+        None
+    }
+    /// `IsoUtils.XToIso/YToIso(AimingReticle.getX/Y(playerIndex), 0)`: the
+    /// aiming reticle on the floor, iso.
+    fn aim_reticle_iso(&self, _chr: i32) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+    /// The animation player's bone transforms for a ballistics target;
+    /// `None` without an animation player or bone transforms.
+    fn ballistics_skeleton(&self, _chr: i32) -> Option<crate::character::firearm::TargetSkeleton> {
+        None
+    }
+    /// `LosUtil.getFirstBlockingIsoGridSquare(cell, x0, y0, z0, x1, y1, z1,
+    /// false)`.
+    fn first_blocking_square(&self, _from: (i32, i32, i32), _to: (i32, i32, i32)) -> crate::character::firearm::BlockingSquare {
+        crate::character::firearm::BlockingSquare::default()
+    }
+    /// The shooter's vehicle for the drive-by hit chance (`None`: on foot).
+    fn vehicle_aim(&self, _chr: i32) -> Option<crate::character::firearm::VehicleAim> {
+        None
+    }
+    /// `square.isOutside()`.
+    fn square_is_outside(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// The physics world and `chr`'s animation player (the ragdoll clip and
+    /// bones) together, for the ragdoll controller.
+    #[allow(clippy::type_complexity)]
+    fn ragdoll_io(
+        &mut self,
+        _chr: i32,
+    ) -> (Option<&mut dyn crate::character::firearm::PhysicsWorld>, Option<&mut dyn crate::character::firearm::RagdollAnim>) {
+        (self.physics(), None)
+    }
 }
 
 /// A `Thumpable`: an object on a square or a vehicle.

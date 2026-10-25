@@ -9,7 +9,7 @@
 //! the wielder's inventory).
 //!
 //! Ranged combat (ballistics, `calculateHitChanceData`, hit reactions by
-//! shot direction) is TODO(ballistics).
+//! shot direction) is in [`super::firearm`].
 
 use pz_anim::AnimationVariableSource;
 use pz_inventory::InventoryItem;
@@ -42,6 +42,50 @@ pub mod config {
     pub const ENDURANCE_LOSS_BASE_SCALE: f32 = 0.28;
     pub const ENDURANCE_LOSS_WEIGHT_MODIFIER: f32 = 0.3;
     pub const ENDURANCE_LOSS_FINAL_MULTIPLIER: f32 = 0.04;
+    // ---- FIREARM ----
+    pub const POINT_BLANK_DISTANCE: f32 = 3.5;
+    pub const LOW_LIGHT_THRESHOLD: f32 = 0.75;
+    pub const LOW_LIGHT_TO_HIT_MAXIMUM_PENALTY: f32 = 50.0;
+    pub const POINT_BLANK_TO_HIT_MAXIMUM_BONUS: f32 = 40.0;
+    pub const POINT_BLANK_DROP_OFF_TO_HIT_PENALTY: f32 = 0.7;
+    pub const POST_SHOT_AIMING_DELAY_RECOIL_MODIFIER: f32 = 0.25;
+    pub const POST_SHOT_AIMING_DELAY_AIMING_MODIFIER: f32 = 0.05;
+    pub const OPTIMAL_RANGE_TO_HIT_MAXIMUM_BONUS: f32 = 15.0;
+    pub const OPTIMAL_RANGE_DROP_OFF_TO_HIT_PENALTY: f32 = 4.0;
+    pub const OPTIMAL_RANGE_DROP_OFF_TO_HIT_PENALTY_INCREMENT: f32 = 0.3;
+    pub const MINIMUM_TO_HIT_CHANCE: f32 = 5.0;
+    pub const MAXIMUM_START_TO_HIT_CHANCE: f32 = 95.0;
+    pub const MAXIMUM_TO_HIT_CHANCE: f32 = 100.0;
+    pub const MOVING_TO_HIT_PENALTY: f32 = 5.0;
+    pub const RUNNING_TO_HIT_PENALTY: f32 = 15.0;
+    pub const SPRINTING_TO_HIT_PENALTY: f32 = 25.0;
+    pub const MARKSMAN_TRAIT_TO_HIT_BONUS: f32 = 20.0;
+    pub const ARM_PAIN_TO_HIT_MODIFIER: f32 = 0.1;
+    pub const PANIC_TO_HIT_BASE_PENALTY: f32 = 4.0;
+    pub const PANIC_TO_HIT_DISTANCE_MODIFIER: f32 = 0.5;
+    pub const STRESS_TO_HIT_BASE_PENALTY: f32 = 4.0;
+    pub const STRESS_TO_HIT_DISTANCE_MODIFIER: f32 = 0.5;
+    pub const TIRED_TO_HIT_BASE_PENALTY: f32 = 2.5;
+    pub const ENDURANCE_TO_HIT_BASE_PENALTY: f32 = 2.5;
+    pub const DRUNK_TO_HIT_BASE_PENALTY: f32 = 4.0;
+    pub const DRUNK_TO_HIT_DISTANCE_MODIFIER: f32 = 0.5;
+    pub const WIND_INTENSITY_TO_HIT_PENALTY: f32 = 6.0;
+    pub const WIND_INTENSITY_TO_HIT_AIMING_MODIFIER: f32 = 0.2;
+    pub const WIND_INTENSITY_TO_HIT_MINIMUM_MARKSMAN_MODIFIER: f32 = 0.6;
+    pub const WIND_INTENSITY_TO_HIT_MAXIMUM_MARKSMAN_MODIFIER: f32 = 1.0;
+    pub const RAIN_INTENSITY_TO_HIT_DISTANCE_MODIFIER: f32 = 0.5;
+    pub const FOG_INTENSITY_DISTANCE_MODIFIER: f32 = 10.0;
+    pub const POINT_BLANK_MAXIMUM_DISTANCE_MODIFIER: f32 = 1.0;
+    pub const SIGHTLESS_TO_HIT_BASE_DISTANCE: f32 = 15.0;
+    pub const SIGHTLESS_TO_HIT_PRONE_MODIFIER: f32 = 2.0;
+    pub const SIGHTLESS_AIM_DELAY_TO_HIT_DISTANCE_MODIFIER: f32 = 0.1;
+    pub const PIERCING_BULLET_DAMAGE_REDUCTION: f32 = 5.0;
+    pub const FIREARM_RECOIL_MUSCLE_STRAIN_MODIFIER: f32 = 0.05;
+    pub const DRIVEBY_DOT_OPTIMAL_ANGLE: f32 = -0.7;
+    pub const DRIVEBY_DOT_MAXIMUM_ANGLE: f32 = -0.1;
+    pub const DRIVEBY_DOT_TO_HIT_MAXIMUM_PENALTY: f32 = 40.0;
+    // ---- BALLISTICS ----
+    pub const BALLISTICS_CONTROLLER_DISTANCE_THRESHOLD: f32 = 2.75;
 }
 
 /// `zombie.inventory.types.WeaponType`.
@@ -512,9 +556,22 @@ impl<I: 'static> GameCharacter<I> {
         tx * fx + ty * fy > 0.6
     }
 
-    /// `IsoPlayer.calculateCritChance(target)` for melee and shoves.
-    /// TODO(ballistics): the ranged branch.
+    /// `IsoPlayer.calculateCritChance(target)` without the world (a ranged
+    /// weapon's weather penalty reads no square).
     pub fn calculate_crit_chance(&self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, target: &GameCharacter<I>) -> i32 {
+        self.calculate_crit_chance_in(sm, chars, ctx, None, target)
+    }
+
+    /// `IsoPlayer.calculateCritChance(target)`; the world gives the ranged
+    /// weather penalty its square.
+    pub fn calculate_crit_chance_in(
+        &self,
+        sm: &ScriptManager,
+        chars: &Characters,
+        ctx: &dyn SimContext,
+        world: Option<&dyn super::state::StateWorld<I>>,
+        target: &GameCharacter<I>,
+    ) -> i32 {
         if self.vars.do_shove {
             let mut base = 35.0f32;
             if target.is_player() {
@@ -526,12 +583,34 @@ impl<I: 'static> GameCharacter<I> {
             base += (self.perk(chars, "Strength") * 2) as f32;
             return base as i32;
         }
-        let Some(w) = self.items.primary_hand_item().and_then(|i| WeaponStats::of(sm, i)) else { return 0 };
+        let Some(item) = self.items.primary_hand_item() else { return 0 };
+        let Some(w) = WeaponStats::of(sm, item) else { return 0 };
         let mut base = w.critical_chance;
         if w.always_knockdown {
             return 100;
         }
-        if !self.weapon_type_of(sm).is_ranged() {
+        if self.weapon_type_of(sm).is_ranged() {
+            use super::firearm::hit_chance as hc;
+            let f = super::firearm::FirearmStats::of(sm, item).expect("a hand weapon");
+            base += (f.aiming_perk_crit_modifier * self.perk(chars, "Aiming")) as f32;
+            let dist_sq = super::firearm::ranged::iso_dist_sq3((self.vars.x, self.vars.y, 0.0), (target.vars.x, target.vars.y, 0.0));
+            let dist = (dist_sq as f64).sqrt() as f32;
+            let max = self.firearm_max_sight_range(sm, chars, &f);
+            let min = self.firearm_min_sight_range(chars, &f);
+            let delay = 0.0f32.max(self.vars.aiming_delay);
+            base += (hc::distance_modifier_sightless(dist, false) - hc::aim_delay_penalty_sightless(delay, dist))
+                .max(hc::distance_modifier(dist, min, max, false) - hc::aim_delay_penalty(delay, dist, min, max));
+            base -= self.moodles_penalty(sm, ctx, dist);
+            let square = world.and_then(|wd| {
+                let sq = target.square_xyz();
+                wd.square(sq.0, sq.1, sq.2).map(|_| sq)
+            });
+            base -= self.weather_penalty(sm, chars, ctx, world, &f, square, dist);
+            base -= self.move_penalty(chars, dist);
+            if self.has_trait(sm, "MARKSMAN").unwrap_or(false) {
+                base += 10.0;
+            }
+        } else {
             if w.two_hand && !self.is_item_in_both_hands(w.id) {
                 base -= base / 3.0;
             }
@@ -767,7 +846,8 @@ impl<I: 'static> GameCharacter<I> {
                 self.base_hit_consequences(w, wielder, ignore_damage, damage, cx)?;
                 if self.is_zombie() {
                     self.state.action_context.report_event(None, "wasHit");
-                    self.process_melee_hit_reaction(wielder);
+                    let hw = super::firearm::HitWeapon::of(cx.sm, weapon_item);
+                    self.process_hit(&hw, wielder, cx);
                     self.vars.target = Some(wielder.id);
                     self.vars.knocked_down = wielder.vars.critical_hit || self.vars.on_floor || self.vars.always_knocked_down;
                     if self.should_become_crawler(cx.ctx, wielder) {
@@ -825,19 +905,6 @@ impl<I: 'static> GameCharacter<I> {
         self.health -= damage;
         if self.health < 0.0 {
             self.health = 0.0;
-        }
-    }
-
-    /// `CombatManager.processHit`'s melee part: the wielder's
-    /// `ZombieHitReaction` becomes the hit reaction (none: stagger back).
-    /// TODO(ballistics): shot reactions by direction, blood.
-    fn process_melee_hit_reaction(&mut self, wielder: &GameCharacter<I>) {
-        let reaction = wielder.get_variable_string("ZombieHitReaction");
-        if !reaction.is_empty() {
-            self.vars.hit_reaction = reaction;
-        } else {
-            self.vars.stagger_back = true;
-            self.vars.hit_reaction = String::new();
         }
     }
 
