@@ -10,6 +10,8 @@
 //!   squares.
 //! - [`fire_lights`]: fires' and fireplaces' light sources in the cell's
 //!   light list ([`WorldLighting::add_lamppost`] and friends).
+//! - [`weather_mask`]: the weather mask's `FxMaskWorld` over the render
+//!   squares and `pz_world::isoregion` world regions.
 //! - [`hooks`] and [`settings`]: inputs owned by other systems (thumpables,
 //!   barricades, power, torches; `RenderSettings`/`ClimateManager`).
 //!
@@ -28,6 +30,7 @@ pub mod lighting;
 pub mod render_world;
 pub mod settings;
 pub mod sprites;
+pub mod weather_mask;
 
 pub use fire_lights::LightLink;
 pub use hooks::{NoWorldHooks, WorldHooks};
@@ -42,3 +45,4 @@ pub use settings::{
     ClimateInput, ClimateSettings, NoonSettings, PlayerRenderInput, RenderSettingsSource,
 };
 pub use sprites::{GameTextures, NoTextures, SpriteCache, SpriteTextures};
+pub use weather_mask::{master_region, WorldFxMask};

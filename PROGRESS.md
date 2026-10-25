@@ -112,6 +112,38 @@ Status of the Rust port. Update this file with every merged change.
   .updatePhysicsForLevel` gives the original's `ToBullet` shapes for every
   one of 114,529 squares of four regions that load the same objects.
   Checked locally.
+- Feeding troughs and hutch animals in chunk files: the `IsoFeedingTrough`
+  constructor's fluid container (components the constructor makes load in
+  place), `initWithDef`, and `IsoAnimal.save`/`load` as hutches and nest
+  boxes store animals (stats, genome, `AnimalData` fields) with their
+  load-time changes and `addAnimalInside`. 14,870 of 14,894 re-saves are
+  byte-identical to the original's; all 60 troughs load with the original's
+  fields. Test hutches filled with 34 animals by the original's own classes
+  re-save byte-identically except one wild animal (`setWild(true)` draws a
+  random stress), and the original loads the chunks written here with the
+  same animal fields. Checked locally.
+- World hooks (`pz_world::WorldState`, `SquareHooks` and the renderer's
+  `WorldHooks`): `IsoBarricade` queries (barricades on both sides of door,
+  window and thumpable edges, planks, metal, vision, light transmission),
+  `IsoThumpable` blocked doors and windows, `IsoDoor` curtains,
+  `haveElectricity` from the chunks' generator lists, `hasGridPower`,
+  `IsoLightSwitch.canSwitchLight`, and light items (`isEmittingLight`, the
+  light getters, `HandWeapon`'s weapon light) as player torches; sandbox
+  and world power values are runtime input. On 7 local saves and on 3
+  copies barricaded, curtained and powered by the original's own classes
+  (with the grid on and shut off), every compared line matches the
+  original's queries: 14,723 + 751,347 square lines (blocked doors and
+  windows, electricity), 5,570 barricades, 7,358 doors, 8,895 windows,
+  157 thumpables, 17,055 light switches and 378 light items per sandbox
+  setting. Checked locally.
+- World regions (`pz_world::isoregion`): `IsoRegions` square flags, chunk
+  and world regions, enclosure, roofs, neighbours, square updates, the
+  worker's job batching and `isoregiondata` files; `IsoWindow.load`'s
+  sprite changes on chunk load; the weather mask reads them through
+  `pz_world_render::WorldFxMask`. On 7 local saves (14,894 chunks) the
+  region dumps match the original's after loading the saved regions,
+  reading every chunk, 300 square changes and a reload (232,555 lines),
+  and all 14,901 written region files are byte-identical. Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all

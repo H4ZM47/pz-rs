@@ -2,7 +2,8 @@
 //! (`IsoCell.PlaceLot`, `CellLoader.LoadCellBinaryChunk`).
 //!
 //! Objects are created by [`crate::cell_loader::do_tile_object_creation`].
-//! World regions and pathfinding hooks are not ported.
+//! Object changes after loading (`AddTileObject`, `RemoveTileObject`,
+//! `addFloor`, ...) are [`crate::square_mutation`].
 
 use std::collections::HashMap;
 
@@ -21,6 +22,11 @@ use crate::sprite::IsoSpriteManager;
 use crate::sprite::{PropertyContainer, SurfaceInfo};
 use crate::square::IsoDirections;
 
+mod brand_new;
+pub use brand_new::{
+    get_corner_of_generation, load_brand_new, load_brand_new_cached, BrandNewHook, ChunksCache,
+};
+
 pub const CHUNK_WIDTH: i32 = 8;
 pub const MIN_LEVEL: i32 = -32;
 pub const MAX_LEVEL: i32 = 31;
@@ -37,8 +43,11 @@ pub struct IsoGridSquare {
     /// `associatedBuilding` (`IsoMetaGrid.getAssociatedBuildingAt`, set
     /// when the square is put in its chunk).
     pub associated_building: Option<BuildingIdx>,
-    /// `hasSetIsoWorldRegion` (world regions are not ported).
-    pub has_set_iso_world_region: bool,
+    /// `hasSetIsoWorldRegion`: whether `isoWorldRegion` holds the lookup.
+    pub has_set_iso_world_region: std::cell::Cell<bool>,
+    /// `isoWorldRegion`: the cached `IsoRegions.getIsoWorldRegion` result
+    /// (see [`IsoGridSquare::get_iso_world_region`]).
+    pub iso_world_region: std::cell::Cell<Option<crate::isoregion::WorldRegionRef>>,
     pub objects: Vec<IsoObject>,
     /// `specialObjects`, by object identity. Like the original, clearing
     /// `objects` leaves this list alone; identities no longer in `objects`
@@ -73,6 +82,11 @@ pub struct IsoGridSquare {
     pub have_roof: bool,
     /// `burntOut`.
     pub burnt_out: bool,
+    /// `solidFloorCached` / `solidFloor`: `TreatAsSolidFloor()`'s cached
+    /// answer. Only `RecalcAllWithNeighbours` and `ReCalculateAll` drop it,
+    /// so it can be stale after property changes made without them
+    /// (`RemoveTileObjectErosionNoRecalc`), as upstream.
+    pub solid_floor_cache: std::cell::Cell<Option<bool>>,
     /// `properties.initSurface()` values of the merged properties.
     pub surface: SurfaceInfo,
     /// `properties.getSlopedSurfaceDirection()`.
@@ -93,7 +107,8 @@ impl IsoGridSquare {
             room_id: -1,
             roof_hide_building: None,
             associated_building: None,
-            has_set_iso_world_region: false,
+            has_set_iso_world_region: std::cell::Cell::new(false),
+            iso_world_region: std::cell::Cell::new(None),
             objects: Vec::new(),
             special_objects: Vec::new(),
             next_object_id: 0,
@@ -110,6 +125,7 @@ impl IsoGridSquare {
             has_tree: false,
             have_roof: false,
             burnt_out: false,
+            solid_floor_cache: std::cell::Cell::new(None),
             surface: SurfaceInfo::default(),
             sloped_surface_direction: None,
             collide_matrix: 0x7FF_FFFF,
@@ -118,10 +134,52 @@ impl IsoGridSquare {
         }
     }
 
-    /// `ResetIsoWorldRegion()`. World regions are not ported; this clears
-    /// the flag that makes the region be looked up again.
-    pub fn reset_iso_world_region(&mut self) {
-        self.has_set_iso_world_region = false;
+    /// `ResetIsoWorldRegion()`: drop the cached world region, so the next
+    /// [`IsoGridSquare::get_iso_world_region`] looks it up again.
+    pub fn reset_iso_world_region(&self) {
+        self.iso_world_region.set(None);
+        self.has_set_iso_world_region.set(false);
+    }
+
+    /// `setIsoWorldRegion(mr)`.
+    pub fn set_iso_world_region(&self, mr: Option<crate::isoregion::WorldRegionRef>) {
+        self.has_set_iso_world_region.set(mr.is_some());
+        self.iso_world_region.set(mr);
+    }
+
+    /// `getIsoWorldRegion()` (single player: the lookup is cached until
+    /// reset; levels below 0 have none).
+    pub fn get_iso_world_region(
+        &self,
+        regions: &crate::isoregion::IsoRegions,
+    ) -> Option<crate::isoregion::WorldRegionRef> {
+        if self.z < 0 {
+            return None;
+        }
+        if !self.has_set_iso_world_region.get() {
+            self.iso_world_region
+                .set(regions.get_iso_world_region(self.x, self.y, self.z));
+            self.has_set_iso_world_region.set(true);
+        }
+        self.iso_world_region.get()
+    }
+
+    /// `isInARoom()`: a meta-grid room, or a player room region.
+    pub fn is_in_a_room(&self, meta: &IsoMetaGrid, regions: &crate::isoregion::IsoRegions) -> bool {
+        self.room_def(meta).is_some()
+            || self
+                .get_iso_world_region(regions)
+                .is_some_and(|r| regions.is_player_room(r))
+    }
+
+    /// `getRoomSize()` for a player room region (`None` for meta-grid rooms,
+    /// whose squares come from `IsoRoom`, and where the original returns
+    /// -1).
+    pub fn player_room_size(&self, regions: &crate::isoregion::IsoRegions) -> Option<i32> {
+        let r = self.get_iso_world_region(regions)?;
+        regions
+            .is_player_room(r)
+            .then(|| regions.world_region(r).square_size())
     }
 
     /// `getRoom().def`: the room this square's `roomID` names.
@@ -130,6 +188,46 @@ impl IsoGridSquare {
             return None;
         }
         meta.get_room_def_by_id(self.room_id)
+    }
+}
+
+/// `zombie.iso.enums.ChunkGenerationStatus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChunkGenerationStatus {
+    Core,
+    Modded,
+    Worldgen,
+}
+
+/// `EnumSet<ChunkGenerationStatus>`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChunkGenerationStatusSet(u8);
+
+impl ChunkGenerationStatusSet {
+    fn bit(s: ChunkGenerationStatus) -> u8 {
+        1 << s as u8
+    }
+    pub fn contains(&self, s: ChunkGenerationStatus) -> bool {
+        self.0 & Self::bit(s) != 0
+    }
+    pub fn add(&mut self, s: ChunkGenerationStatus) {
+        self.0 |= Self::bit(s);
+    }
+    pub fn remove(&mut self, s: ChunkGenerationStatus) {
+        self.0 &= !Self::bit(s);
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+    /// Members in ordinal order, as `EnumSet` iterates.
+    pub fn iter(&self) -> impl Iterator<Item = ChunkGenerationStatus> + '_ {
+        [
+            ChunkGenerationStatus::Core,
+            ChunkGenerationStatus::Modded,
+            ChunkGenerationStatus::Worldgen,
+        ]
+        .into_iter()
+        .filter(|s| self.contains(*s))
     }
 }
 
@@ -144,7 +242,13 @@ pub struct IsoChunk {
     /// `lotheader`: header file name, set when the lot came from the
     /// top-level header.
     pub lotheader: Option<String>,
+    /// True when any lot placed into the chunk came from a modded map
+    /// folder (kept alongside `generation_status` for existing callers).
     pub modded: bool,
+    /// `chunkGenerationStatus` (`isModded()` / `addModded` / `rmModded`):
+    /// `CORE` or `MODDED` from each placed lot's map folder, `WORLDGEN`
+    /// when world generation ran on the chunk.
+    pub generation_status: ChunkGenerationStatusSet,
     /// The chunk-level fields of the chunk file; see
     /// [`crate::save::chunk_file`].
     pub saved: ChunkSaveData,
@@ -155,6 +259,9 @@ pub struct IsoChunk {
     /// an empty list; the original keeps vehicles in `vehicles.db`) and by
     /// [`IsoChunk::vehicle_loaded`].
     pub vehicles: crate::chunk_vehicles::ChunkVehicles,
+    /// `addZombies`: set by `LoadBrandNew`; `doLoadGridsquare` then adds
+    /// vehicles, zone stories and zombies.
+    pub add_zombies: bool,
 }
 
 /// `IsoFloorBloodSplat` (positions quantised to 1/255 of a chunk).
@@ -211,6 +318,22 @@ impl Default for ChunkSaveData {
 }
 
 impl IsoChunk {
+    /// `addModded(status)`.
+    pub fn add_modded(&mut self, status: ChunkGenerationStatus) {
+        self.generation_status.add(status);
+        if status == ChunkGenerationStatus::Modded {
+            self.modded = true;
+        }
+    }
+
+    /// `rmModded(status)`.
+    pub fn rm_modded(&mut self, status: ChunkGenerationStatus) {
+        self.generation_status.remove(status);
+        if status == ChunkGenerationStatus::Modded {
+            self.modded = false;
+        }
+    }
+
     pub fn new(wx: i32, wy: i32) -> Self {
         IsoChunk {
             wx,
@@ -220,9 +343,11 @@ impl IsoChunk {
             squares: vec![vec![None; 64]],
             lotheader: None,
             modded: false,
+            generation_status: ChunkGenerationStatusSet::default(),
             saved: ChunkSaveData::default(),
             erosion: None,
             vehicles: Default::default(),
+            add_zombies: false,
         }
     }
 
@@ -570,11 +695,16 @@ pub fn load_cell_binary_chunk(
         env,
     );
     if count > 0 {
-        chunk.modded |= meta.map_files[mf]
+        let modded = meta.map_files[mf]
             .info_file_modded
             .get(&pack)
             .copied()
             .unwrap_or(false);
+        chunk.add_modded(if modded {
+            ChunkGenerationStatus::Modded
+        } else {
+            ChunkGenerationStatus::Core
+        });
     }
     if count == 64 {
         return true;
@@ -598,11 +728,16 @@ pub fn load_cell_binary_chunk(
             env,
         );
         if count > 0 {
-            chunk.modded |= meta.map_files[i]
+            let modded = meta.map_files[i]
                 .info_file_modded
                 .get(&pack)
                 .copied()
                 .unwrap_or(false);
+            chunk.add_modded(if modded {
+                ChunkGenerationStatus::Modded
+            } else {
+                ChunkGenerationStatus::Core
+            });
         }
         if count == 64 {
             break;
@@ -702,5 +837,27 @@ impl IsoCell {
         self.chunks
             .get(&(wx, wy))?
             .get_grid_square(x - wx * 8, y - wy * 8, z)
+    }
+}
+
+#[cfg(test)]
+mod generation_status_tests {
+    use super::*;
+
+    #[test]
+    fn add_and_remove() {
+        let mut ch = IsoChunk::new(0, 0);
+        assert!(ch.generation_status.is_empty());
+        ch.add_modded(ChunkGenerationStatus::Worldgen);
+        ch.add_modded(ChunkGenerationStatus::Core);
+        let v: Vec<_> = ch.generation_status.iter().collect();
+        assert_eq!(
+            v,
+            vec![ChunkGenerationStatus::Core, ChunkGenerationStatus::Worldgen]
+        );
+        ch.add_modded(ChunkGenerationStatus::Modded);
+        assert!(ch.modded);
+        ch.rm_modded(ChunkGenerationStatus::Modded);
+        assert!(!ch.modded && !ch.generation_status.contains(ChunkGenerationStatus::Modded));
     }
 }

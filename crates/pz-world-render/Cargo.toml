@@ -14,5 +14,6 @@ pz-iso-render = { path = "../pz-iso-render" }
 
 [dev-dependencies]
 pz-core = { path = "../pz-core" }
+pz-inventory.workspace = true
 pz-gpu = { path = "../pz-gpu" }
 png.workspace = true

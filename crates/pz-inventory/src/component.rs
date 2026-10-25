@@ -209,3 +209,19 @@ impl FactoryRng for EnvRng<'_> {
         self.0.rand_float(min, max)
     }
 }
+
+/// The world version [`ComponentBlob`] payloads are encoded at (saving
+/// always writes the current format).
+pub const BLOB_WORLD_VERSION: i32 = 249;
+
+/// One component's saved form, as [`ComponentBlob`].
+pub fn encode_component(c: pz_entity::Component) -> ComponentBlob {
+    let mut comps = pz_entity::Components::new();
+    comps.add(c);
+    let bytes = pz_entity::entity::save_components(&comps);
+    let mut blobs = Vec::new();
+    OpaqueComponents
+        .load_entity(&mut Reader::new(&bytes), BLOB_WORLD_VERSION, &mut blobs)
+        .expect("saved component block");
+    blobs.remove(0)
+}

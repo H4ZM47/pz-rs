@@ -1834,6 +1834,7 @@ dependencies = [
  "pz-core",
  "pz-fs",
  "pz-gpu",
+ "pz-inventory",
  "pz-iso-render",
  "pz-lighting",
  "pz-render",

@@ -251,6 +251,14 @@ pub struct ItemTemplate {
     pub radio: RadioScript,
     /// `map` (`MapItem.setMapID`; a random map definition when blank).
     pub map: Option<String>,
+    /// `activatedItem` (`InventoryItem.canBeActivated` at creation).
+    pub activated_item: bool,
+    /// `lightStrength`, `torchCone`, `lightDistance` (copied to the item at
+    /// creation) and `torchDot` (read through the script).
+    pub light_strength: f32,
+    pub torch_cone: bool,
+    pub light_distance: i32,
+    pub torch_dot: f32,
 }
 
 /// `InventoryItem` fields `Item.InstanceItem` sets for vehicle parts
@@ -447,6 +455,11 @@ impl ItemTemplate {
             vehicle_part: VehiclePartStats::default(),
             radio: RadioScript::default(),
             map: None,
+            activated_item: false,
+            light_strength: 0.0,
+            torch_cone: false,
+            light_distance: 0,
+            torch_dot: 0.96,
         }
     }
 
@@ -603,6 +616,11 @@ impl ItemTemplate {
             vehicle_part: VehiclePartStats::from_script(item),
             radio: RadioScript::from_script(item),
             map: item.map.clone(),
+            activated_item: item.activated_item,
+            light_strength: item.light_strength,
+            torch_cone: item.torch_cone,
+            light_distance: item.light_distance,
+            torch_dot: item.torch_dot,
         }))
     }
 }

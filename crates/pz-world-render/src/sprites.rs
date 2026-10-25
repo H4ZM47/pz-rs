@@ -169,6 +169,7 @@ fn build(
     };
     let flags = SpriteFlags {
         solidfloor: has(f.solidfloor),
+        vegitation: has(f.vegitation),
         floor_overlay: has(f.FloorOverlay),
         diamond_floor: has(f.diamondFloor),
         water: opt(named.water),
@@ -206,7 +207,6 @@ fn build(
         transparent_n: has(f.transparentN),
         transparent_w: has(f.transparentW),
         exterior: has(f.exterior),
-        vegitation: has(f.vegitation),
     };
     let name = sp.name().to_string();
     let grid = sp.sprite_grid.map(|g| &sprites.grids[g]);
