@@ -394,7 +394,22 @@ fn register_vision(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         chr_of(c)?.borrow_mut().update_vision_effect_targets();
         Ok(0)
     });
+    // getVehicle(): the `vehicle` field, by id through the vehicle manager.
+    b.method("getVehicle", |c| {
+        let id = chr_of(c)?.borrow().path.vehicle;
+        let v = id.and_then(pz_vehicles::manager::vehicle_by_id);
+        Ok(c.push(v.map_or(Value::Nil, |v| pz_vehicles::lua::vehicle_value(&v))))
+    });
     let p = expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
+    // getIndex() and getPlayerNum() (which calls it): `playerIndex`.
+    p.method("getIndex", |c| {
+        let v = chr_of(c)?.borrow().player.player_index;
+        Ok(c.push(v))
+    });
+    p.method("getPlayerNum", |c| {
+        let v = chr_of(c)?.borrow().player.player_index;
+        Ok(c.push(v))
+    });
     p.method("isWearingNightVisionGoggles", |c| {
         let v = chr_of(c)?.borrow().is_wearing_night_vision_goggles();
         Ok(c.push(v))
@@ -2000,6 +2015,23 @@ mod tests {
             "#,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn player_num_and_vehicle_from_lua() {
+        let (mut t, chr, _) = setup();
+        chr.borrow_mut().player.player_index = 2;
+        run(
+            &mut t,
+            r#"
+            assert(player:getPlayerNum() == 2 and player:getIndex() == 2)
+            assert(player:getVehicle() == nil)
+            "#,
+        )
+        .unwrap();
+        // A vehicle id the manager does not know reads as no vehicle.
+        chr.borrow_mut().path.vehicle = Some(i16::MAX);
+        run(&mut t, "assert(player:getVehicle() == nil)").unwrap();
     }
 
     #[test]
