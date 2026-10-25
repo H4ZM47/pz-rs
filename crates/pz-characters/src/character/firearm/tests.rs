@@ -11,7 +11,7 @@ use pz_inventory::ItemClass;
 use super::hit_chance::*;
 use super::physics::{PhysicsWorld, RagdollBodyPart};
 use super::reaction::{body_part_for, calculate_shot_direction, resolve_hit_reaction, HitReaction, ShotDirection};
-use super::{FirearmStats, MuzzleAttachment, TargetSkeleton};
+use super::{CharacterRagdoll, FirearmStats, MuzzleAttachment, TargetSkeleton};
 use crate::character::state::{SquareInfo, StateCx, StateWorld};
 use crate::character::tests::{give_item, player};
 use crate::character::thermoregulator::body_tests::body_fixture;
@@ -341,4 +341,228 @@ fn the_ragdoll_takes_a_pending_shot_once() {
     t.combat_damage_data_processed = false;
     assert!(z.take_ragdoll_hit(&sm, None).is_none());
     assert!(z.ballistics_target.as_ref().unwrap().combat_damage_data_processed);
+}
+
+/// Invented ragdoll definitions over pz-ragdoll's 35 skeleton bones, and a
+/// made-up skeleton with a T-pose and a standing clip.
+fn ragdoll_setup() -> (std::rc::Rc<pz_model::SkinningData>, pz_ragdoll::RagdollScripts) {
+    use pz_model::{AnimationClip, Keyframe, Quat, SkinningData};
+    use pz_ragdoll::script::{RagdollAnchor, RagdollBodyDynamics, RagdollBodyPartInfo, RagdollConstraint};
+    use pz_ragdoll::skeleton_bone::SKELETON_BONES;
+    let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+    let n = SKELETON_BONES.len();
+    let mut sd = SkinningData {
+        bind_pose: vec![identity; n],
+        inverse_bind_pose: vec![identity; n],
+        bone_offset: vec![identity; n],
+        skeleton_hierarchy: (0..n as i32).map(|i| if i == 0 { -1 } else { (i - 1) / 2 }).collect(),
+        ..Default::default()
+    };
+    let mut keyframes = Vec::new();
+    for (i, b) in SKELETON_BONES.iter().enumerate() {
+        sd.bone_indices.insert(b.to_string(), i as i32);
+        for t in [0.0, 0.5, 1.0] {
+            keyframes.push(Keyframe {
+                bone: i as i32,
+                time: t,
+                position: [0.0, if i == 0 { 0.0 } else { 0.1 }, 0.02 * (i % 3) as f32],
+                rotation: Quat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 },
+                scale: [1.0; 3],
+                bone_name: b.to_string(),
+            });
+        }
+    }
+    for name in ["Bob_TPose", "Stand"] {
+        let clip = AnimationClip { name: name.into(), duration: 1.0, keyframes: keyframes.clone(), ..Default::default() };
+        sd.animation_clips.insert(name.into(), clip);
+    }
+    let mut s = pz_ragdoll::RagdollScripts::default();
+    for part in 0..11 {
+        s.body_part_infos.push(RagdollBodyPartInfo {
+            part,
+            calculate_length: part % 2 == 0,
+            radius: 0.05,
+            height: 0.2,
+            gap: 0.01,
+            shape: part % 3,
+            mass: 0.09,
+            offset: [0.0, 0.01, 0.0],
+        });
+        s.body_dynamics.push(RagdollBodyDynamics {
+            part,
+            linear_damping: 0.05,
+            angular_damping: 0.8,
+            deactivation_time: 0.8,
+            linear_sleeping_threshold: 1.6,
+            angular_sleeping_threshold: 2.5,
+            friction: 1.5,
+            rolling_friction: 0.5,
+        });
+    }
+    for j in 0..10 {
+        s.constraints.push(RagdollConstraint {
+            joint: j,
+            constraint_type: if j % 3 == 0 { 4 } else { 5 },
+            part_a: j / 2,
+            part_b: j + 1,
+            axis_a: [0.0, 1.5, 0.0],
+            axis_b: [0.0, 1.5, 0.0],
+            position_offset_a: [0.0, 0.05, 0.0],
+            position_offset_b: [0.0, -0.05, 0.0],
+            limit: [0.7, 0.5, 0.3],
+            limit_extended: [0.0; 3],
+        });
+    }
+    for bone in 0..35 {
+        s.anchors.push(RagdollAnchor { bone, body_part: bone % 11, reverse: bone % 2 == 1, original: bone % 5 == 0, enabled: true });
+    }
+    (std::rc::Rc::new(sd), s)
+}
+
+#[test]
+fn the_character_drives_its_ragdoll() {
+    use pz_anim::{AnimationPlayer, RagdollHost};
+    use pz_ragdoll::{RagdollBuilder, RagdollController, RagdollDebugOptions, RagdollEnv, RagdollFrame, RagdollGlobals};
+    let (sm, chars) = body_fixture();
+    let (sd, scripts) = ragdoll_setup();
+    let mut bullet = PzBullet::new();
+    bullet.init_pz_bullet();
+    scripts.to_bullet(&mut bullet, false);
+    bullet.init_world(-1, -1, 1, 1, -256, -256, false).unwrap();
+    let mut player = AnimationPlayer::new(sd.clone());
+    let tpose = (*player.clip("Bob_TPose").unwrap()).clone();
+    let builder = RagdollBuilder::initialize(&mut bullet, player.skeleton(), &tpose, &scripts.body_dynamics);
+
+    // The shooter (in the world) and the zombie it shot with an explosive
+    // (no hit reaction scripts: 80 forward, 40 up).
+    let mut shooter: GameCharacter<()> = GameCharacter::new(&sm, CharacterKind::Player);
+    shooter.id = 1;
+    shooter.vars.x = 8.0;
+    shooter.vars.y = 12.0;
+    let muzzle = MuzzleAttachment { position: [0.0; 3], direction: [1.0, 0.0, 0.0] };
+    let mut world = Range { chars: vec![shooter], bullet: synthetic_bullet(), muzzle };
+    let ctx = Seeded { rand: pz_core::random::Rand::new(3), events: RefCell::new(Vec::new()) };
+    let mut z: GameCharacter<()> = GameCharacter::new(&sm, CharacterKind::Zombie);
+    z.id = 7;
+    z.set_x(10.0);
+    z.set_y(12.0);
+    z.set_z(3.0);
+    z.set_forward_direction(-1.0, 0.0);
+    {
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+        z.change_state(Some(crate::character::states::zombie::idle()), &mut cx);
+    }
+    z.vars.hit_reaction = "ShotChest".into();
+    let t = z.ensure_ballistics_target();
+    t.combat_damage_data = super::CombatDamageData {
+        attacker: 1,
+        body_part: RagdollBodyPart::Spine,
+        weapon_explosive: true,
+        ..Default::default()
+    };
+    t.combat_damage_data_processed = false;
+    assert!(z.can_ragdoll_uncapped(&ctx));
+
+    // Not ragdolling yet: no deferred movement.
+    {
+        use pz_ragdoll::RagdollCharacter;
+        let cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+        let mut character = CharacterRagdoll::new(&mut z, cx);
+        character.do_deferred_movement_from_ragdoll(&player, pz_ragdoll::Vec3::new(1.0, 1.0, 0.0));
+        // The shot's impulse: from the shooter's position now towards the
+        // zombie (taken by the controller below, so put back).
+        let h = character.take_ragdoll_hit().unwrap();
+        assert_eq!((h.attacker, h.target), (pz_ragdoll::Vec3::new(8.0, 12.0, 0.0), pz_ragdoll::Vec3::new(10.0, 12.0, 3.0)));
+        assert_eq!((h.body_part, h.impulse, h.upward_impulse), (1, 80.0, 40.0));
+    }
+    assert_eq!((z.vars.x, z.vars.y), (10.0, 12.0));
+    z.vars.hit_reaction = "ShotChest".into();
+    z.ballistics_target.as_mut().unwrap().combat_damage_data_processed = false;
+    let mut globals = RagdollGlobals::default();
+    let mut slot: Option<RagdollController> = None;
+    let stand = player.play("Stand", true, false, -1.0).unwrap();
+    player.track_mut(stand).unwrap().set_blend_weight(1.0);
+    let mut frame_no = -1;
+    for f in 0..120 {
+        if f == 2 {
+            let r = player.play("Ragdoll", false, true, 5.0).unwrap();
+            player.track_mut(r).unwrap().set_blend_weight(1.0);
+            player.track_mut(stand).unwrap().set_blend_weight(0.0);
+        }
+        if f > 0 {
+            bullet.step_simulation(0.01, 0, 0.0, &mut pz_bullet::NoCallbacks).unwrap();
+            bullet.step_simulation(0.01, 0, 0.0, &mut pz_bullet::NoCallbacks).unwrap();
+            frame_no += 1;
+        }
+        z.update_ragdoll_variables(&ctx);
+        {
+            let cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+            let mut character = CharacterRagdoll::new(&mut z, cx);
+            let mut host = RagdollFrame {
+                env: RagdollEnv {
+                    bullet: &mut bullet,
+                    globals: &mut globals,
+                    builder: &builder,
+                    character: &mut character,
+                    bullet_frame_no: frame_no,
+                    time_delta: 1.0 / 60.0,
+                    debug: RagdollDebugOptions::default(),
+                },
+                controller: &mut slot,
+                multiplier: 0.8,
+            };
+            player.update_with_ragdoll(1.0 / 60.0, None, &mut host);
+        }
+        CharacterRagdoll::track(&mut z, &player, slot.as_ref());
+    }
+    // The ragdoll took the pending shot once: processed, hit reaction
+    // cleared.
+    let t = z.ballistics_target.as_ref().unwrap();
+    assert!(t.combat_damage_data_processed);
+    assert_eq!(z.vars.hit_reaction, "");
+    // The controller's state is the character's.
+    assert_eq!(globals.number_of_active_simulations, 1);
+    assert!(z.ragdoll.has_controller && z.ragdoll.is_ragdolling);
+    assert!(z.vars.ragdoll_fall, "the simulation direction was calculated");
+    assert_eq!(z.vars.ragdoll_simulation_active, player.is_ragdoll_simulation_active());
+    assert_eq!(z.vars.on_floor, !z.ragdoll.upright);
+    assert_eq!(z.environment.fall_on_front, !z.ragdoll.on_back);
+    // `doDeferredMovementFromRagdoll` while ragdolling: `moveUnmoddedInternal`,
+    // then the position follows the next position.
+    let (x, y, zz) = (z.vars.x, z.vars.y, z.vars.z);
+    {
+        use pz_ragdoll::RagdollCharacter;
+        let cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+        let mut character = CharacterRagdoll::new(&mut z, cx);
+        character.do_deferred_movement_from_ragdoll(&player, pz_ragdoll::Vec3::new(0.25, -0.5, 0.125));
+        assert_eq!(character.take_ragdoll_hit(), None, "the shot was taken once");
+    }
+    assert_eq!((z.vars.x, z.vars.y, z.vars.z), (x + 0.25, y - 0.5, zz + 0.125));
+    assert_eq!((z.vars.next_x, z.vars.next_y), (z.vars.x, z.vars.y));
+    assert_eq!(z.vars.req_movement, (0.25, -0.5));
+
+    // Releasing the controller takes it out of the world and clears the
+    // fall.
+    {
+        let cx = StateCx::new(&sm, &chars, &ctx, &mut world);
+        let mut character = CharacterRagdoll::new(&mut z, cx);
+        let mut host = RagdollFrame {
+            env: RagdollEnv {
+                bullet: &mut bullet,
+                globals: &mut globals,
+                builder: &builder,
+                character: &mut character,
+                bullet_frame_no: frame_no,
+                time_delta: 1.0 / 60.0,
+                debug: RagdollDebugOptions::default(),
+            },
+            controller: &mut slot,
+            multiplier: 0.8,
+        };
+        player.release_ragdoll_controller(Some(&mut host as &mut dyn RagdollHost));
+    }
+    CharacterRagdoll::track(&mut z, &player, slot.as_ref());
+    assert!(slot.is_none() && !z.ragdoll.has_controller);
+    assert_eq!(globals.number_of_active_simulations, 0);
+    assert!(!z.vars.ragdoll_fall && !z.vars.use_physic_hit_reaction);
 }

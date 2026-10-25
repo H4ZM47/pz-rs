@@ -488,12 +488,16 @@ registered):
       (#114).
 - [ ] Per frame, ragdolls: before the animation update call
       `update_ragdoll_variables(ctx)` (the `canRagdoll` variable the death
-      and shot nodes test); once pz-ragdoll (#142) lands, its
-      `RagdollCharacter` reads `can_ragdoll_uncapped`, the fall flags and
-      `take_ragdoll_hit(sm, attacker position)` (the shot impulse from the
-      ballistics target's combat data and `PhysicsHitReactionScript`), and
-      after the update the controller state goes into `chr.ragdoll`
-      (`RagdollTracking`) (#114).
+      and shot nodes test); pass
+      `firearm::CharacterRagdoll::new(&mut chr, StateCx)` (pz-characters'
+      `bullet` feature) as `RagdollEnv::character` (it reads
+      `can_ragdoll_uncapped`, writes the fall flags, `onFloor` and the
+      deferred movement, slides away from walls on start and takes the
+      pending shot with the attacker's position from
+      `StateWorld::character_mut`); after the update call
+      `CharacterRagdoll::track(&mut chr, &player, controller)` so
+      `chr.ragdoll` (`RagdollTracking`) and `isRagdollSimulationActive`
+      follow the controller (#114, char-ragdoll PR).
 - [ ] Per frame, PlayerInput adapter: once per frame the rendering side
       implements `pz_characters::character::player::PlayerInput` over
       `pz_input` (`InputState`, `Core::get_key`/`get_key_binding`, the
@@ -538,9 +542,8 @@ registered):
       `update_with_ragdoll(dt, vars, &mut RagdollFrame { env: RagdollEnv {
       bullet, globals, builder, character, bullet_frame_no:
       WorldSimulation's frame number, time_delta, debug }, controller,
-      multiplier })` instead of `update`; implement `RagdollCharacter` on
-      the character (`canRagdoll`, fall flags, `setOnFloor`,
-      `doDeferredMovementFromRagdoll`, ballistics hits). Before `stopAll`
+      multiplier })` instead of `update`, with `CharacterRagdoll` as the
+      character (see the per-frame ragdoll line above). Before `stopAll`
       or releasing the player call `release_ragdoll_controller(Some(host))`
       so the ragdoll leaves the world; `vehicle_collision` from
       `IsoZombie`'s vehicle contact (#142).
