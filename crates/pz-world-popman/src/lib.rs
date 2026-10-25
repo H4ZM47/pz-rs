@@ -5,9 +5,13 @@
 //!   `getSquareForSittingZombie`'s square test come from an [`IsoCell`],
 //!   random draws from the game's [`GameRand`], and everything done to a
 //!   real `IsoZombie` goes to a [`ZombieOps`] the characters side supplies.
+//!   The world is borrowed next to the ops, or read through them
+//!   ([`WorldSource::FromOps`]) when the ops hold it mutably (the real
+//!   `StatesWorldAdapter` inside `RealZombies`).
 //! - [`SittingChecks`] is what that square test needs from outside the
 //!   cell: the characters standing on a square (`movingObjects`) and
-//!   `PolygonalMap2.lineClearCollide` from the pathfinder.
+//!   `PolygonalMap2.lineClearCollide` from the pathfinder. The game's is
+//!   `pz-world-states`' `StatesWorldAdapter`.
 //! - [`player_chunk_maps`] reads the local players' chunk map origins from a
 //!   [`ChunkStreamer`] for `ZombiePopulationManager::update_main`
 //!   (`LoadedAreas.set`).
@@ -82,7 +86,7 @@ pub trait SittingChecks {
     /// blocked**. `pz-pathfind`'s `LineClearCollideMain::line_clear_collide`
     /// (over the same cell, with `pz_world::ObjectHooks` answering for
     /// thumpables, barricades and doors) is the implementation; pass
-    /// `ignore_vehicle = None`.
+    /// `ignore_vehicle = None` (`pz-world-states` does).
     #[allow(clippy::too_many_arguments)]
     fn line_clear_collide(
         &self,
@@ -248,13 +252,38 @@ pub fn player_chunk_maps(streamer: &ChunkStreamer) -> PlayerChunkMaps {
     }
 }
 
+/// What [`WorldPopulationHost`] reads of the loaded world: the cell, the
+/// meta grid, the sprites and the [`SittingChecks`] over them.
+#[derive(Clone, Copy)]
+pub struct PopulationView<'w> {
+    pub cell: &'w IsoCell,
+    pub meta: &'w IsoMetaGrid,
+    pub sprites: &'w IsoSpriteManager,
+    /// Movers on squares and `lineClearCollide`.
+    pub checks: &'w dyn SittingChecks,
+}
+
+/// Where [`WorldPopulationHost`] reads the world from.
+pub enum WorldSource<'a, Z> {
+    /// Borrowed for the whole pass, next to the zombie ops.
+    Borrowed(PopulationView<'a>),
+    /// Read through the zombie ops, for ops that hold the world mutably
+    /// (`RealZombies` over a `StatesWorldAdapter`). `view` is called for
+    /// each read, never while a zombie method runs.
+    FromOps {
+        view: for<'z> fn(&'z Z) -> PopulationView<'z>,
+        /// Characters the ops hold that stand on a square without being in
+        /// `view`'s [`SittingChecks::has_moving_objects`] (the real zombie
+        /// list lent to the ops: a zombie created in this pass is on its
+        /// square's `movingObjects` at once). `None`: no such characters.
+        movers: Option<for<'z> fn(&'z Z, i32, i32, i32) -> bool>,
+    },
+}
+
 /// [`PopulationHost`] over the loaded cell.
 pub struct WorldPopulationHost<'a, Z: ZombieOps> {
-    pub cell: &'a IsoCell,
-    pub meta: &'a IsoMetaGrid,
-    pub sprites: &'a IsoSpriteManager,
-    /// Movers on squares and `lineClearCollide`.
-    pub checks: &'a dyn SittingChecks,
+    /// The cell, meta grid, sprites and sitting checks.
+    pub source: WorldSource<'a, Z>,
     /// The game's `Rand`.
     pub rand: &'a mut dyn GameRand,
     /// The real zombies.
@@ -272,10 +301,12 @@ impl<'a, Z: ZombieOps> WorldPopulationHost<'a, Z> {
         zombies: &'a mut Z,
     ) -> Self {
         WorldPopulationHost {
-            cell,
-            meta,
-            sprites,
-            checks,
+            source: WorldSource::Borrowed(PopulationView {
+                cell,
+                meta,
+                sprites,
+                checks,
+            }),
             rand,
             zombies,
             wall_flags: WallFlags::new(sprites),
@@ -292,15 +323,52 @@ impl<'a, Z: ZombieOps> WorldPopulationHost<'a, Z> {
         Self::new(state.cell, state.meta, state.sprites, checks, rand, zombies)
     }
 
+    /// The host over a world `zombies` holds ([`WorldSource::FromOps`]).
+    pub fn from_ops(
+        view: for<'z> fn(&'z Z) -> PopulationView<'z>,
+        movers: Option<for<'z> fn(&'z Z, i32, i32, i32) -> bool>,
+        rand: &'a mut dyn GameRand,
+        zombies: &'a mut Z,
+    ) -> Self {
+        let wall_flags = WallFlags::new(view(&*zombies).sprites);
+        WorldPopulationHost {
+            source: WorldSource::FromOps { view, movers },
+            rand,
+            zombies,
+            wall_flags,
+        }
+    }
+
+    /// The world as it is now.
+    pub fn view(&self) -> PopulationView<'_> {
+        match &self.source {
+            WorldSource::Borrowed(v) => *v,
+            WorldSource::FromOps { view, .. } => view(&*self.zombies),
+        }
+    }
+
+    /// `!square.movingObjects.isEmpty()`.
+    fn has_moving_objects(&self, v: &PopulationView<'_>, x: i32, y: i32, z: i32) -> bool {
+        if v.checks.has_moving_objects(x, y, z) {
+            return true;
+        }
+        match &self.source {
+            WorldSource::FromOps {
+                movers: Some(f), ..
+            } => f(&*self.zombies, x, y, z),
+            _ => false,
+        }
+    }
+
     /// `square.isFree(true)`.
     pub fn is_free(&self, sq: &IsoGridSquare) -> bool {
-        !self.checks.has_moving_objects(sq.x, sq.y, sq.z)
-            && is_free_ignoring_movers(sq, self.sprites)
+        let v = self.view();
+        !self.has_moving_objects(&v, sq.x, sq.y, sq.z) && is_free_ignoring_movers(sq, v.sprites)
     }
 
     /// `square.getWallType()`.
     pub fn wall_type(&self, sq: &IsoGridSquare) -> i32 {
-        wall_type(sq, self.cell, &self.wall_flags)
+        wall_type(sq, self.view().cell, &self.wall_flags)
     }
 }
 
@@ -308,14 +376,16 @@ impl<Z: ZombieOps> PopulationHost for WorldPopulationHost<'_, Z> {
     type Zombie = Z::Zombie;
 
     fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
-        let sq = self.cell.get_grid_square(x, y, z)?;
-        Some(square_info(sq, self.meta, self.sprites))
+        let v = self.view();
+        let sq = v.cell.get_grid_square(x, y, z)?;
+        Some(square_info(sq, v.meta, v.sprites))
     }
 
     /// The test in `getSquareForSittingZombie`, in the original's order.
     fn sitting_wall_type(&self, x: i32, y: i32, z: i32, from_x: f32, from_y: f32) -> Option<i32> {
-        let sq = self.cell.get_grid_square(x, y, z)?;
-        if !self.is_free(sq) || square_place(sq, self.meta).building.is_some() {
+        let v = self.view();
+        let sq = v.cell.get_grid_square(x, y, z)?;
+        if !self.is_free(sq) || square_place(sq, v.meta).building.is_some() {
             return None;
         }
         let wall = self.wall_type(sq);
@@ -323,7 +393,7 @@ impl<Z: ZombieOps> PopulationHost for WorldPopulationHost<'_, Z> {
             return None;
         }
         let (to_x, to_y) = (sq.x as f32 + 0.5, sq.y as f32 + 0.5);
-        if self
+        if v
             .checks
             .line_clear_collide(from_x, from_y, to_x, to_y, sq.z, false, true)
         {

@@ -225,6 +225,7 @@ struct Engine {
     effects: Vec<(ObjectRef, NewRenderEffect)>,
     noises: Vec<(i32, (i32, i32, i32))>,
     cancelled: Vec<MoverId>,
+    moving: Vec<(i32, i32, i32)>,
 }
 
 impl StatesEngine for Engine {
@@ -273,6 +274,9 @@ impl StatesEngine for Engine {
     }
     fn path_cancel_request(&mut self, mover: MoverId) {
         self.cancelled.push(mover);
+    }
+    fn has_moving_objects(&self, sq: (i32, i32, i32)) -> bool {
+        self.moving.contains(&sq)
     }
     fn resolve_collision_radius(
         &mut self,
@@ -1113,4 +1117,69 @@ fn loaded_windows_share_their_closed_sprite_properties() {
     assert!(w.m.sprites[closed].properties.has(w.m.tables.flag.cutW));
     let sq = w.cell.get_grid_square(12, 12, 0).unwrap();
     assert_eq!(sq.object_index(r.id), Some(1));
+}
+
+#[test]
+fn sitting_checks_on_the_adapter() {
+    use pz_world_popman::SittingChecks;
+    let mut w = World::new();
+    w.add(12, 12, "door_n", door(true, 500), true);
+    w.engine.moving.push((9, 9, 0));
+    let a = w.adapter();
+    assert!(a.has_moving_objects(9, 9, 0));
+    assert!(!a.has_moving_objects(9, 10, 0));
+    // Open floor; then through the closed door's north edge.
+    assert!(!a.line_clear_collide(14.5, 13.5, 14.5, 10.5, 0, false, true));
+    assert!(a.line_clear_collide(12.5, 13.5, 12.5, 10.5, 0, false, true));
+}
+
+#[test]
+fn population_host_reads_the_adapter_real_zombies_hold() {
+    use pz_characters::character::zombie::population::RealZombies;
+    use pz_characters::character::DefaultSimContext;
+    use pz_characters::survivor::SurvivorDescRef;
+    use pz_popman::manager::PopulationHost;
+
+    let mut w = World::new();
+    w.add(10, 9, "crate", ObjectKind::Object, false);
+    w.engine.moving.push((9, 9, 0));
+    let sm = ScriptManager::new();
+    let chars = pz_characters::Characters::default();
+    let ctx = DefaultSimContext;
+    let mut zombies = vec![zombie(11.5, 9.5, 1)];
+    let mut next_id = 10;
+    let mut survivor =
+        || -> pz_scripts::ScriptResult<SurvivorDescRef<()>> { unreachable!("no zombie is created") };
+    let water = |_: (i32, i32, i32)| false;
+    let mut adapter = w.adapter();
+    let mut ops = RealZombies {
+        sm: &sm,
+        chars: &chars,
+        ctx: &ctx,
+        world: &mut adapter,
+        zombies: &mut zombies,
+        next_id: &mut next_id,
+        create_survivor: &mut survivor,
+        water: &water,
+        key_spawn_chance_d100: 0.0,
+        building_keys: Vec::new(),
+        removed: Vec::new(),
+    };
+    let mut rand = Seq(vec![4]);
+    let mut host = population_host(&mut rand, &mut ops);
+    assert!(host.square(8, 8, 0).unwrap().solid_floor);
+    assert!(host.square(30, 8, 0).is_none());
+    let free = |h: &pz_world_popman::WorldPopulationHost<'_, _>, x, y| {
+        let v = h.view();
+        h.is_free(v.cell.get_grid_square(x, y, 0).unwrap())
+    };
+    assert!(free(&host, 8, 8));
+    // The crate; a character the engine knows; a real zombie of the list.
+    assert!(!free(&host, 10, 9));
+    assert!(!free(&host, 9, 9));
+    assert!(!free(&host, 11, 9));
+    assert_eq!(host.rand().next(9), 4);
+    host.set_position(3, 12.5, 12.5);
+    drop(host);
+    assert_eq!((zombies[0].vars.x, zombies[0].vars.y), (12.5, 12.5));
 }

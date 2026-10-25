@@ -7,8 +7,11 @@ edition.workspace = true
 pz-world.workspace = true
 pz-characters.workspace = true
 pz-pathfind.workspace = true
+pz-world-popman.workspace = true
+pz-vehicles.workspace = true
 
 [dev-dependencies]
+pz-popman.workspace = true
 pz-scripts.workspace = true
 pz-classfile.workspace = true
 pz-fs.workspace = true
