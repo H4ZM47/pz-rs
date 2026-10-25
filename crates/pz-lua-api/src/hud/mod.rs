@@ -446,6 +446,8 @@ pub(crate) mod test_util {
             t.height = h as u32;
             t.offset_x = ox;
             t.offset_y = oy;
+            // The oracles' textures cover their whole image.
+            (t.x_start, t.y_start, t.x_end, t.y_end) = (0.0, 0.0, 1.0, 1.0);
             cache.borrow_mut().insert(name.to_string(), t.clone());
             Some(t)
         });
@@ -511,6 +513,7 @@ pub(crate) mod test_util {
 
     /// Line-by-line comparison where numeric tokens may differ by `tol`
     /// (the original truncates texture coordinates to 1/1000).
+    #[allow(dead_code)]
     pub fn assert_lines_close(got: &[String], want: &[String], tol: f32) {
         assert_eq!(
             got.len(),
@@ -1002,7 +1005,8 @@ mod tests {
 
     /// Parity with the original `ActionProgressBar` (oracle
     /// `progress.txt`): render at values 0..1 and scales 1 and 2, the
-    /// show/hide countdown with the screen position, the infinite sweep.
+    /// show/hide countdown with the screen position, the infinite sweep
+    /// (texture coordinates included, truncated to 1/1000 as the original).
     #[test]
     fn matches_progress_bar_oracle() {
         let Some(text) = oracle("progress.txt") else {
@@ -1069,7 +1073,7 @@ mod tests {
             .filter(|l| !l.starts_with("tex ") && !l.starts_with("fake "))
             .map(normalise_oracle)
             .collect();
-        assert_lines_close(&got, &want, 1.5e-3);
+        assert_eq!(got, want);
     }
 
     use std::cell::Cell;
