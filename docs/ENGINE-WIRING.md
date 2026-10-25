@@ -1191,6 +1191,15 @@ registered):
       writes `thumb.png`, then the renderer reloads that texture.
       `map_animals.bin` and the queued `metagrid/metacell_*.bin` are
       written with `map_zone.bin` (#167).
+      `capture_thumbnail(player)`: set the player's zoom and target zoom
+      to 1 (camera zoom, offscreen size), centre the camera, render that
+      player's world frame into the offscreen buffer (no screen pass, no
+      UI) and submit it, then return
+      `pz_engine::save_thumbnail::capture_thumbnail(gpu, PlayerScreen
+      {screen left/top/width/height of player}, PlayerScreen{.. of player
+      0}, ScreenParams{player's desaturation, timer})`; restore the old
+      zoom and centre again; the next frame redraws screen and UI, and
+      reload the `thumb.png` texture after `save_game` writes it (#173).
 - [x] Game load (`IsoWorld.init`): `world_gen.load_file(save_dir)`
       where `WorldGenParams.INSTANCE.load()` runs; after
       `GlobalModData.init`, `instance_tracker.load_file(save_dir,
