@@ -190,7 +190,7 @@ fn main() {
         let a = StatesWorldAdapter::new(
             &mut cell,
             &meta,
-            &sprites,
+            &mut sprites,
             ThumpSettings::default(),
             &mut rt,
             &mut engine,
@@ -307,7 +307,7 @@ fn main() {
     let mut a = StatesWorldAdapter::new(
         &mut cell,
         &meta,
-        &sprites,
+        &mut sprites,
         ThumpSettings::default(),
         &mut rt,
         &mut engine,

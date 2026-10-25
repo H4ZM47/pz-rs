@@ -2421,5 +2421,11 @@ fn ensure_squares(ch: &mut IsoChunk, meta: &IsoMetaGrid) {
     }
 }
 
+mod collide_mover;
+pub use collide_mover::{
+    window_load_sprites, CollideAdjacent, CollideEnv, CollideMover, CollidedFlags, HoppableAction,
+    HoppableHooks, MoverKind, MoverStates, NoHoppableHooks, SpecialCollide, SquareObject,
+};
+
 #[cfg(test)]
 mod tests;

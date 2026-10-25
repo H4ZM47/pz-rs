@@ -21,10 +21,12 @@
 //! path-finding, lighting and audio methods of [`StateWorld`] keep their
 //! defaults; the engine wraps this adapter for those.
 
+mod collide;
 mod query;
 mod thump;
 mod vehicles;
 
+pub use collide::{CollideMoverInfo, NewRenderEffect, RenderEffectType, StatesFire, WorldView};
 pub use query::Env;
 pub use vehicles::{VehicleBox, VehicleGeometry};
 
@@ -34,10 +36,11 @@ use pz_characters::character::state::{
     CorpseInfo, EatTarget, SquareInfo, StateWorld, ThumpInfo, ThumpTarget,
 };
 use pz_characters::GameCharacter;
-use pz_pathfind::mover::ObjectRef;
+use pz_pathfind::mover::{CharacterView, MoverId, ObjectRef};
 use pz_world::java::{fastfloor, GameRand};
 use pz_world::los::{self, TestResults};
 use pz_world::objects::IsoObject;
+use pz_world::square::{EdgeFacing, HoppableAction};
 use pz_world::{
     BuildingIdx, IsoCell, IsoDirections, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, VisionEnv,
 };
@@ -98,6 +101,8 @@ pub struct ThumpSettings {
     /// `GameClient.client`: thumps are only reported
     /// ([`StatesEngine::client_thump_hit`]).
     pub client: bool,
+    /// `GameServer.server`: no render effects.
+    pub server: bool,
 }
 
 impl Default for ThumpSettings {
@@ -109,6 +114,7 @@ impl Default for ThumpSettings {
             last_stand: false,
             tutorial: false,
             client: false,
+            server: false,
         }
     }
 }
@@ -280,6 +286,73 @@ pub trait StatesEngine {
     /// `GameClient.connection.thumpHits.put(zombie, thumpable)`.
     fn client_thump_hit(&mut self, _zombie: i32, _target: ThumpTarget) {}
 
+    // ---- collision, hoppables and fire (the character owner) ----
+
+    /// The mover-aware collision view of a character (its collided flags,
+    /// states and `shouldIgnoreCollisionWithSquare` squares, made with
+    /// [`CollideMoverInfo::of`]). `None` falls back to [`Self::character`]
+    /// and the kind in the `MoverId`.
+    fn collide_mover(&self, _id: i32) -> Option<CollideMoverInfo> {
+        None
+    }
+    /// Apply what `checkBreakHoppable`, `checkHitHoppable` and
+    /// `checkBreakBendableFence` ask of `chr`, in order
+    /// (`setThumpTarget(obj)`, `climbOverFence(dir)`).
+    fn hoppable_actions(&mut self, _chr: i32, _actions: &[HoppableAction]) {}
+    /// `BentFences.getInstance().isEnabled()`.
+    fn bent_fences_enabled(&self) -> bool {
+        false
+    }
+    /// `BentFences.getInstance().isUnbentObject(obj, facing)` (the sprite
+    /// lists Lua registers).
+    fn is_unbent_fence(&self, _sprite_name: &str, _facing: EdgeFacing) -> bool {
+        false
+    }
+    /// `IsoFireManager` and the fire hooks for `StateWorld::character_fire`
+    /// (`None`: no fire simulation).
+    fn fire(&mut self) -> Option<StatesFire<'_>> {
+        None
+    }
+
+    // ---- render effects and tree sounds (the renderer, pz-audio) ----
+
+    /// `doTreeNoises()` of `chr` on its current square (`treeSoundMgr
+    /// .addSquare` when the listener is within 20; no draws).
+    fn do_tree_noises(&mut self, _chr: i32, _sq: (i32, i32, i32)) {}
+    /// `getRenderEffectMaster().objectRenderEffects != null`.
+    fn has_render_effect(&self, _obj: ObjectRef) -> bool {
+        false
+    }
+    /// `objectRenderEffects = ObjectRenderEffects.getNew(obj, type, false)`.
+    fn set_render_effect(&mut self, _obj: ObjectRef, _effect: NewRenderEffect) {}
+
+    // ---- path finding host (pz-pathfind's `PathHost`) ----
+
+    /// `PolygonalMap2.instance.resolveCollision(chr, nx, ny)`
+    /// (`PathHost::resolve_collision` over `world`).
+    fn resolve_collision(
+        &mut self,
+        _world: WorldView<'_>,
+        _chr: &dyn CharacterView,
+        nx: f32,
+        ny: f32,
+    ) -> (f32, f32) {
+        (nx, ny)
+    }
+    /// `PolygonalMap2.instance.resolveCollision(chr, radius, finalPos)`
+    /// (`PathHost::resolve_collision_radius` over `world`).
+    fn resolve_collision_radius(
+        &mut self,
+        _world: WorldView<'_>,
+        chr: &dyn CharacterView,
+        _radius: f32,
+    ) -> (bool, (f32, f32)) {
+        (false, (chr.x(), chr.y()))
+    }
+    /// `PathfindNative.cancelRequest(mover)`
+    /// (`PathfindService::cancel_request`).
+    fn path_cancel_request(&mut self, _mover: MoverId) {}
+
     // ---- vehicles (the vehicle simulation) ----
 
     /// The script box of a vehicle script (`getExtents()`,
@@ -299,7 +372,7 @@ pub trait StatesEngine {
 pub struct StatesWorldAdapter<'a> {
     pub cell: &'a mut IsoCell,
     pub meta: &'a IsoMetaGrid,
-    pub sprites: &'a IsoSpriteManager,
+    pub sprites: &'a mut IsoSpriteManager,
     pub settings: ThumpSettings,
     pub runtime: &'a mut StatesRuntime,
     pub engine: &'a mut dyn StatesEngine,
@@ -309,7 +382,7 @@ impl<'a> StatesWorldAdapter<'a> {
     pub fn new(
         cell: &'a mut IsoCell,
         meta: &'a IsoMetaGrid,
-        sprites: &'a IsoSpriteManager,
+        sprites: &'a mut IsoSpriteManager,
         settings: ThumpSettings,
         runtime: &'a mut StatesRuntime,
         engine: &'a mut dyn StatesEngine,
@@ -504,20 +577,10 @@ pub fn corpse_pos(id: i64) -> (i32, i32, i32, usize) {
     )
 }
 
-fn los_result(r: TestResults) -> TestResults {
-    match r {
-        TestResults::Clear => TestResults::Clear,
-        TestResults::ClearThroughOpenDoor => TestResults::ClearThroughOpenDoor,
-        TestResults::ClearThroughWindow => TestResults::ClearThroughWindow,
-        TestResults::Blocked => TestResults::Blocked,
-        TestResults::ClearThroughClosedDoor => TestResults::ClearThroughClosedDoor,
-    }
-}
-
 impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
         let sq = self.cell.get_grid_square(x, y, z)?;
-        let m = self.sprites;
+        let m = &*self.sprites;
         Some(SquareInfo {
             x,
             y,
@@ -605,7 +668,7 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         to: (i32, i32, i32),
         ignore_doors: bool,
     ) -> TestResults {
-        los_result(self.vision_line(from, to, ignore_doors))
+        self.vision_line(from, to, ignore_doors)
     }
 
     fn los_line_clear_collide(
@@ -680,6 +743,133 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         if self.at(sq).is_some() {
             self.engine.put_out_campfire(sq);
         }
+    }
+
+    /// `square.testCollideAdjacent(mover, dx, dy, dz)` with the mover from
+    /// [`StatesEngine::collide_mover`]; the special object it hits is
+    /// `special_object_between(from, from + d)` (mover independent).
+    fn test_collide_adjacent(
+        &self,
+        mover: MoverId,
+        from: (i32, i32, i32),
+        dx: i32,
+        dy: i32,
+        dz: i32,
+    ) -> bool {
+        let m = self.collide_mover_info(mover);
+        self.test_collide_adjacent_mover(&m, from, (dx, dy, dz))
+            .is_none_or(|r| r.blocked)
+    }
+
+    /// `checkBreakHoppable()`, `checkHitHoppable()` and
+    /// `checkBreakBendableFence(current)`, handed to
+    /// [`StatesEngine::hoppable_actions`].
+    fn collided_with_hoppables(&mut self, chr: i32, current: Option<(i32, i32, i32)>) {
+        let Some(last) = current else { return };
+        let Some(m) = self.engine.collide_mover(chr) else {
+            return;
+        };
+        let actions = self.hoppable_actions_for(&m, last);
+        if !actions.is_empty() {
+            self.engine.hoppable_actions(chr, &actions);
+        }
+    }
+
+    /// `doTreeNoises()` and `setRenderEffect(Vegetation_Rustle)` on the
+    /// square's trees and bushes past its first object; a new effect draws
+    /// `Rand.Next(45f, 60f)`.
+    fn rustle_vegetation(
+        &mut self,
+        chr: i32,
+        sq: (i32, i32, i32),
+        ctx: &dyn pz_characters::character::SimContext,
+    ) {
+        let targets = self.rustle_targets(sq);
+        let has_tree_or_bush = !targets.is_empty() || {
+            // A tree or bush that is the square's first object still makes
+            // the noise.
+            let env = self.env();
+            env.at(sq).is_some_and(|s| {
+                s.has_type(self.sprites.tables.ty.tree)
+                    || s.objects.iter().any(|o| {
+                        o.sprite.is_some_and(|i| {
+                            let spr = &self.sprites.sprites[i];
+                            spr.tileset_name.as_deref() == Some("f_bushes_1")
+                                || spr.properties.get(&self.sprites.alias, "Bush").is_some()
+                        })
+                    })
+            })
+        };
+        if !has_tree_or_bush {
+            return;
+        }
+        if !self.settings.server {
+            self.engine.do_tree_noises(chr, sq);
+        }
+        if self.settings.server {
+            return;
+        }
+        for (r, is_tree, is_big) in targets {
+            if self.engine.has_render_effect(r) {
+                continue;
+            }
+            let total_max_time = ctx.rand_next_float(45.0, 60.0);
+            self.engine.set_render_effect(
+                r,
+                NewRenderEffect {
+                    kind: RenderEffectType::VegetationRustle,
+                    total_max_time,
+                    is_tree,
+                    is_big: is_tree && is_big,
+                },
+            );
+        }
+    }
+
+    /// `FireCheck()`, `SpreadFire()`, `ReduceHealthWhenBurning()` with the
+    /// engine's `IsoFireManager` ([`StatesEngine::fire`]) on this cell.
+    fn character_fire(
+        &mut self,
+        chr: &mut dyn pz_world::fire::character::FireCharacter,
+        frame: pz_world::fire::character::CharacterFireFrame,
+        rand: &mut dyn GameRand,
+    ) {
+        let Some(f) = self.engine.fire() else { return };
+        let mut w = pz_world::fire::manager::FireWorld {
+            cell: &mut *self.cell,
+            meta: self.meta,
+            sprites: &mut *self.sprites,
+            flags: f.flags,
+            settings: f.settings,
+            hooks: f.hooks,
+        };
+        pz_characters::character::fire::update_character_fire(f.manager, &mut w, chr, frame, rand);
+    }
+
+    fn resolve_collision(&mut self, chr: &dyn CharacterView, nx: f32, ny: f32) -> (f32, f32) {
+        let view = WorldView {
+            cell: &*self.cell,
+            meta: self.meta,
+            sprites: &*self.sprites,
+        };
+        self.engine.resolve_collision(view, chr, nx, ny)
+    }
+
+    fn resolve_collision_radius(
+        &mut self,
+        chr: &dyn CharacterView,
+        radius: f32,
+    ) -> (bool, (f32, f32)) {
+        let view = WorldView {
+            cell: &*self.cell,
+            meta: self.meta,
+            sprites: &*self.sprites,
+        };
+        self.engine.resolve_collision_radius(view, chr, radius)
+    }
+
+    fn path_cancel_request(&mut self, chr: &mut dyn pz_pathfind::mover::PathMover) {
+        self.engine.path_cancel_request(chr.mover_id());
     }
 
     fn players_on_square(&self, sq: (i32, i32, i32)) -> Vec<i32> {

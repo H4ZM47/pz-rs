@@ -72,7 +72,7 @@ pub fn path_crosses_square(path: &pz_pathfind::Path, x: i32, y: i32, z: i32) -> 
     let n = &path.nodes;
     for i in 0..n.len().saturating_sub(1) {
         let (a, b) = (&n[i], &n[i + 1]);
-        if ff(a.level()) != z && ff(b.level()) != z {
+        if ff(a.z) != z && ff(b.z) != z {
             continue;
         }
         let (ax, ay, bx, by) = (a.x as f64, a.y as f64, b.x as f64, b.y as f64);
@@ -648,7 +648,7 @@ mod tests {
         assert!(c.vars.collided_w);
         assert_eq!(c.vars.x, 0.2);
         assert!(path_crosses_square(
-            &pz_pathfind::Path { nodes: vec![pz_pathfind::PathNode { x: 0.5, y: 0.5, z: 32.0, flags: 0 }, pz_pathfind::PathNode { x: 2.5, y: 0.5, z: 32.0, flags: 0 }] },
+            &pz_pathfind::Path { nodes: vec![pz_pathfind::PathNode { x: 0.5, y: 0.5, z: 0.0, flags: 0 }, pz_pathfind::PathNode { x: 2.5, y: 0.5, z: 0.0, flags: 0 }] },
             1,
             0,
             0

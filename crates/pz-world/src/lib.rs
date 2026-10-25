@@ -29,9 +29,9 @@ pub mod sprite;
 pub mod square;
 pub mod streamer;
 pub mod tiledef;
+pub mod world_state;
 pub mod zone_save;
 pub mod zones;
-pub mod world_state;
 
 pub use chunk::{
     ChunkGenerationStatus, ChunkGenerationStatusSet, ChunkLoadEnv, IsoCell, IsoChunk, IsoGridSquare,

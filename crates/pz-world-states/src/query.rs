@@ -1,12 +1,13 @@
-//! Read-only `IsoGridSquare` queries the states need that `pz-world` does
-//! not have yet: `isBlockedTo`, `getSpecialWall`, `getSpecialSolid`,
-//! `testCollideSpecialObjects`, `isFree`, `isSameStaircase`,
-//! `getGridSneakModifier` and the sheet-rope tests.
+//! Read-only `IsoGridSquare` queries the states need: `isFree`,
+//! `isSameStaircase`, `getGridSneakModifier` and the sheet-rope tests, and
+//! `isBlockedTo`, `getSpecialWall`, `getSpecialSolid` and
+//! `testCollideSpecialObjects` through pz-world's `CollideEnv`.
 
 use pz_world::java::{fastfloor, parse_int};
-use pz_world::objects::{IsoObject, IsoThumpable, ObjectId, ObjectKind};
+use pz_world::objects::{IsoObject, IsoThumpable, ObjectId};
 use pz_world::sprite::IsoFlagType;
-use pz_world::square::{EdgeFacing, GetSquare};
+use pz_world::square::CollideEnv;
+use pz_world::square::GetSquare;
 use pz_world::{IsoCell, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, ObjectHooks};
 
 /// The loaded cell and the tables its queries read.
@@ -83,29 +84,20 @@ impl<'a> Env<'a> {
             .and_then(|s| self.sprites.sprites[s].name.as_deref())
     }
 
-    /// `HasStairTopNorth()`.
-    fn stair_top_north(&self, sq: &IsoGridSquare) -> bool {
-        sq.has_type(self.sprites.tables.ty.stairsTN)
-    }
-
-    /// `HasStairTopWest()`.
-    fn stair_top_west(&self, sq: &IsoGridSquare) -> bool {
-        sq.has_type(self.sprites.tables.ty.stairsTW)
+    /// The mover-aware collision queries over the same cell
+    /// (`pz_world::square::CollideEnv`).
+    pub fn collide(&self) -> CollideEnv<'a> {
+        CollideEnv::new(self.cell, self.sprites, self.meta)
     }
 
     /// `isStairBlockedTo(other)`.
     pub fn is_stair_blocked_to(&self, a: &IsoGridSquare, b: Option<&IsoGridSquare>) -> bool {
-        let Some(b) = b else { return false };
-        a.x > b.x && self.stair_top_west(a) || a.y > b.y && self.stair_top_north(a)
+        self.collide().is_stair_blocked_to(a, b)
     }
 
     /// `isBlockedTo(other)`.
     pub fn is_blocked_to(&self, a: &IsoGridSquare, b: Option<&IsoGridSquare>) -> bool {
-        let h = self.hooks();
-        a.is_wall_to(b, self.sprites, self.cell)
-            || a.is_window_blocked_to(b, self.cell, &h)
-            || a.is_door_blocked_to(b, self.cell, &h)
-            || self.is_stair_blocked_to(a, b)
+        self.collide().is_blocked_to(a, b)
     }
 
     /// `isSomethingTo(other)`.
@@ -122,7 +114,7 @@ impl<'a> Env<'a> {
         obj: &IsoObject,
         t: &IsoThumpable,
     ) -> bool {
-        self.hooks().object_barricaded(sq, obj) || t.is_thumpable
+        self.collide().thumpable_is_thumpable(sq, obj, t)
     }
 
     /// `IsoObject.isWindow()` (the sprite's `WindowN`/`WindowW`).
@@ -133,79 +125,13 @@ impl<'a> Env<'a> {
     /// `getSpecialWall(north)`: the closed door, window, thumpable or window
     /// frame on the square's north or west edge.
     pub fn get_special_wall(&self, sq: &IsoGridSquare, north: bool) -> Option<ObjectId> {
-        for &id in sq.special_objects.iter().rev() {
-            let Some(i) = sq.object_index(id) else {
-                continue;
-            };
-            let o = &sq.objects[i];
-            match &o.kind {
-                ObjectKind::Thumpable(t) => {
-                    let skip = t.is_stairs
-                        || !self.thumpable_is_thumpable(sq, o, t)
-                            && !self.is_window(o)
-                            && !t.is_door
-                        || t.is_door && t.open
-                        || t.block_all_the_square
-                        || t.can_pass_through
-                            && self.props(o).is_some()
-                            && o.container.is_some()
-                            && self.obj_has_prop(o, "IsHigh");
-                    if !skip && north == t.north && !t.is_corner {
-                        return Some(o.id);
-                    }
-                }
-                ObjectKind::Window(w) if north == w.north => return Some(o.id),
-                ObjectKind::Door(d) if north == d.north && !d.open => return Some(o.id),
-                _ => {}
-            }
-        }
-        let f = &self.sprites.tables.flag;
-        if north && !sq.has(f.WindowN) || !north && !sq.has(f.WindowW) {
-            return None;
-        }
-        sq.get_window_frame_facing(EdgeFacing::of_north(north))
-            .map(|o| o.id)
-    }
-
-    /// `isAdjacentToWindow() || isAdjacentToHoppable()`.
-    fn adjacent_to_window_or_hoppable(&self, sq: &IsoGridSquare) -> bool {
-        let h = self.hooks();
-        sq.is_adjacent_to_window(self.sprites, self.cell, &h)
-            || sq.is_adjacent_to_hoppable(self.sprites, self.cell, &h)
+        self.collide().get_special_wall(sq, north)
     }
 
     /// `getSpecialSolid()`: a thumpable that blocks the whole square, or a
     /// moved thumpable object.
     pub fn get_special_solid(&self, sq: &IsoGridSquare) -> Option<ObjectId> {
-        let f = &self.sprites.tables.flag;
-        for &id in &sq.special_objects {
-            let Some(i) = sq.object_index(id) else {
-                continue;
-            };
-            let o = &sq.objects[i];
-            let ObjectKind::Thumpable(t) = &o.kind else {
-                continue;
-            };
-            if t.is_stairs || !self.thumpable_is_thumpable(sq, o, t) || !t.block_all_the_square {
-                continue;
-            }
-            if self.props(o).is_some_and(|p| p.has(f.solidtrans))
-                && self.adjacent_to_window_or_hoppable(sq)
-            {
-                return None;
-            }
-            return Some(o.id);
-        }
-        for o in &sq.objects {
-            if !o.moved_thumpable {
-                continue;
-            }
-            if self.adjacent_to_window_or_hoppable(sq) {
-                return None;
-            }
-            return Some(o.id);
-        }
-        None
+        self.collide().get_special_solid(sq)
     }
 
     /// `this.testCollideSpecialObjects(next)`: the door, window, window
@@ -216,196 +142,7 @@ impl<'a> Env<'a> {
         this: &'a IsoGridSquare,
         next: Option<&'a IsoGridSquare>,
     ) -> Option<(&'a IsoGridSquare, ObjectId)> {
-        let next = next?;
-        if (next.x, next.y, next.z) == (this.x, this.y, this.z) {
-            return None;
-        }
-        let ty = &self.sprites.tables.ty;
-        let wall =
-            |s: &'a IsoGridSquare, north: bool| self.get_special_wall(s, north).map(|o| (s, o));
-        let solid = |s: &'a IsoGridSquare| self.get_special_solid(s).map(|o| (s, o));
-        let blocked = |a: &IsoGridSquare, b: &IsoGridSquare| self.is_blocked_to(a, Some(b));
-        let (x, y, z) = (this.x, this.y, this.z);
-        if next.x < x && next.y == y {
-            if next.z == z && this.has_type(ty.stairsTW) {
-                return None;
-            }
-            if next.z == z && this.has_sloped_surface_to_level_above(pz_world::IsoDirections::W) {
-                return None;
-            }
-            if let Some(o) = wall(this, false) {
-                return Some(o);
-            }
-            if blocked(this, next) {
-                return None;
-            }
-            return solid(next);
-        }
-        if next.x == x && next.y < y {
-            if next.z == z && this.has_type(ty.stairsTN) {
-                return None;
-            }
-            if next.z == z && this.has_sloped_surface_to_level_above(pz_world::IsoDirections::N) {
-                return None;
-            }
-            if let Some(o) = wall(this, true) {
-                return Some(o);
-            }
-            if blocked(this, next) {
-                return None;
-            }
-            return solid(next);
-        }
-        if next.x > x && next.y == y {
-            if let Some(o) = wall(next, false) {
-                return Some(o);
-            }
-            if blocked(this, next) {
-                return None;
-            }
-            return solid(next);
-        }
-        if next.x == x && next.y > y {
-            if let Some(o) = wall(next, true) {
-                return Some(o);
-            }
-            if blocked(this, next) {
-                return None;
-            }
-            return solid(next);
-        }
-        if next.x < x && next.y < y {
-            if let Some(o) = wall(this, true).or_else(|| wall(this, false)) {
-                return Some(o);
-            }
-            let a = self.sq(x, y - 1, z);
-            if let Some(a) = a.filter(|a| !blocked(this, a)) {
-                if let Some(o) = solid(a).or_else(|| wall(a, false)) {
-                    return Some(o);
-                }
-            }
-            let b = self.sq(x - 1, y, z);
-            if let Some(b) = b.filter(|b| !blocked(this, b)) {
-                if let Some(o) = solid(b).or_else(|| wall(b, true)) {
-                    return Some(o);
-                }
-            }
-            let (Some(a), Some(b)) = (a, b) else {
-                return None;
-            };
-            if blocked(this, a) || blocked(this, b) || blocked(a, next) || blocked(b, next) {
-                return None;
-            }
-            return solid(next);
-        }
-        if next.x > x && next.y < y {
-            if let Some(o) = wall(this, true) {
-                return Some(o);
-            }
-            let a = self.sq(x, y - 1, z);
-            if let Some(a) = a.filter(|a| !blocked(this, a)) {
-                if let Some(o) = solid(a) {
-                    return Some(o);
-                }
-            }
-            let b = self.sq(x + 1, y, z);
-            if let Some(b) = b {
-                if let Some(o) = wall(b, false) {
-                    return Some(o);
-                }
-                if !blocked(this, b) {
-                    if let Some(o) = solid(b).or_else(|| wall(b, true)) {
-                        return Some(o);
-                    }
-                }
-            }
-            let (Some(a), Some(b)) = (a, b) else {
-                return None;
-            };
-            if blocked(this, a) || blocked(this, b) {
-                return None;
-            }
-            if let Some(o) = wall(next, false) {
-                return Some(o);
-            }
-            if blocked(a, next) || blocked(b, next) {
-                return None;
-            }
-            return solid(next);
-        }
-        if next.x > x && next.y > y {
-            let a = self.sq(x, y + 1, z);
-            if let Some(a) = a {
-                if let Some(o) = wall(a, true) {
-                    return Some(o);
-                }
-                if !blocked(this, a) {
-                    if let Some(o) = solid(a) {
-                        return Some(o);
-                    }
-                }
-            }
-            let b = self.sq(x + 1, y, z);
-            if let Some(b) = b {
-                if let Some(o) = wall(b, false) {
-                    return Some(o);
-                }
-                if !blocked(this, b) {
-                    if let Some(o) = solid(b) {
-                        return Some(o);
-                    }
-                }
-            }
-            let (Some(a), Some(b)) = (a, b) else {
-                return None;
-            };
-            if blocked(this, a) || blocked(this, b) {
-                return None;
-            }
-            if let Some(o) = wall(next, false).or_else(|| wall(next, true)) {
-                return Some(o);
-            }
-            if blocked(a, next) || blocked(b, next) {
-                return None;
-            }
-            return solid(next);
-        }
-        if next.x < x && next.y > y {
-            if let Some(o) = wall(this, false) {
-                return Some(o);
-            }
-            let a = self.sq(x, y + 1, z);
-            if let Some(a) = a {
-                if let Some(o) = wall(a, true) {
-                    return Some(o);
-                }
-                if !blocked(this, a) {
-                    if let Some(o) = solid(a) {
-                        return Some(o);
-                    }
-                }
-            }
-            let b = self.sq(x - 1, y, z);
-            if let Some(b) = b.filter(|b| !blocked(this, b)) {
-                if let Some(o) = solid(b) {
-                    return Some(o);
-                }
-            }
-            let (Some(a), Some(b)) = (a, b) else {
-                return None;
-            };
-            if blocked(this, a) || blocked(this, b) {
-                return None;
-            }
-            if let Some(o) = wall(next, true) {
-                return Some(o);
-            }
-            if blocked(a, next) || blocked(b, next) {
-                return None;
-            }
-            return solid(next);
-        }
-        None
+        self.collide().test_collide_special_objects(this, next)
     }
 
     /// `isFree(false)` (without the cache): no solid object or tree, a
