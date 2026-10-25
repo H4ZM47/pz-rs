@@ -779,7 +779,8 @@ pub struct CharacterEnvironment {
     pub vehicle_speed_kmh: f32,
     /// `getBed() != null && getBed().getSprite() != null && getBed().isTent()`.
     pub bed_is_tent: bool,
-    /// `IsSpeaking()`.
+    /// `IsSpeaking()` (`chatElement.IsSpeaking()`; set from the chat
+    /// element by [`super::GameCharacter::after_chat_element_update`]).
     pub speaking: bool,
     /// `callOut`.
     pub call_out: bool,
@@ -822,6 +823,13 @@ pub struct CharacterEnvironment {
     /// `getCurrentSquare().getChunk() != null` (blood splats draw `Rand`
     /// only then).
     pub square_has_chunk: bool,
+    /// `getCurrentSquare().getCanSee(0)` (`updateTextObjects`' sleep
+    /// speech).
+    pub square_can_see: bool,
+    /// `getCurrentSquare().getBuilding()` and `.getRoom()` as opaque
+    /// identities (the chat's hearing range compares them).
+    pub square_building: Option<u64>,
+    pub square_room: Option<u64>,
 }
 
 impl Default for CharacterEnvironment {
@@ -847,6 +855,9 @@ impl Default for CharacterEnvironment {
             bed_is_tent: false,
             speaking: false,
             call_out: false,
+            square_can_see: false,
+            square_building: None,
+            square_room: None,
             busy_with_action: false,
             corpse_count: 0,
             air_temperature: 0.0,

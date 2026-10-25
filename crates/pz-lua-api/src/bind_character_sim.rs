@@ -300,6 +300,7 @@ fn canonical(id: (Handle, usize, usize), make: impl FnOnce() -> Value) -> Value 
 /// the character's inventory (`inventory.parent = this`), so the
 /// container's Lua methods call back into this object.
 pub fn character_value(chr: &LuaGameCharacterRef) -> Value {
+    crate::chat::characters::attach_chat_element(chr);
     canonical((Handle::Character, Rc::as_ptr(chr) as usize, 0), || {
         let v = Value::Object(Rc::new(CharacterObject(chr.clone())));
         let inv = chr.borrow().items.inventory.clone();

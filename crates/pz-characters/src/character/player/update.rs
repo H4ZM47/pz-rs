@@ -1267,8 +1267,10 @@ impl<I: 'static> GameCharacter<I> {
         self.state_machine_update(cx);
         // ensureOnTile, RainManager: world.
         self.update_fire(cx);
-        // updateTextObjects, blood impact position, recursiveItemUpdater,
-        // attachedAnimSprite: rendering / items.
+        // updateTextObjects (the chat element's part is queued).
+        self.update_text_objects(cx.ctx);
+        // Blood impact position, recursiveItemUpdater, attachedAnimSprite:
+        // rendering / items.
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         if self.is_god_mod(ctx) {
             for s in ["FATIGUE", "ENDURANCE", "TEMPERATURE", "HUNGER"] {

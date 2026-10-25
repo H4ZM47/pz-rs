@@ -149,6 +149,12 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_voice::register(&mut mgr.thread);
     bind_voice::register_input_globals(&mut mgr.thread);
     chat::lua::register(&mut mgr.thread);
+    chat::characters::register(&mut mgr.thread);
+    chat::characters::install_character_chat_players();
+    {
+        let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
+        chat::characters::set_static_sounds(jar.as_ref().map(chat::characters::static_sounds_from_jar).unwrap_or_default());
+    }
     bind_ui::install_event_sink(mgr.events.clone());
     bind_character_sim::install_event_sink(sink.clone());
     chat::install_event_sink(sink.clone());

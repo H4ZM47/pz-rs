@@ -20,6 +20,7 @@
 //! [`fire_pending_events`] (the Lua bindings call it after each call).
 
 pub mod base;
+pub mod characters;
 pub mod element;
 pub mod lua;
 pub mod manager;

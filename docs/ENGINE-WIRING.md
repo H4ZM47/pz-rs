@@ -247,6 +247,21 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       calls `ChatElement::render_batch(player)` right after
       `text_draw::render_batch`; Rust callers of the chat fire its queued Lua
       events with `chat::fire_pending_events(thread)` (#TBD-chat).
+- [ ] Chat, characters side (`pz_lua_api::chat::characters`): create each
+      character's chat element with `attach_chat_element(&chr)` when the
+      character is made (the constructor's `chatElement`;
+      `character_value` and `bind_players::set_player` also attach). After
+      every character update (`update_player`, the zombie update) call
+      `flush_chat(&chr)` and then `chat::fire_pending_events(thread)`: it
+      runs the `Say`s, `setMaxChatLines(5)` and the chat element update
+      that `updateTextObjects` queued (every tick, or the queue grows).
+      Fill `CharacterEnvironment::square_can_see` (`getCurrentSquare()
+      .getCanSee(0)`), `square_building` and `square_room` (opaque ids).
+      `IsoGameCharacter.renderlast`: `render_last(&chr, x, y, isInvisible,
+      camCharacter == chr)` at `getNameCoords` (above the name tag,
+      progress bar and halo note). `GameLoadingState`'s
+      `ChatManager.init(true, player)` takes `bind_players::player_instance()`
+      as the `Rc<dyn ChatPlayer>` (#TBD-chatchar).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
