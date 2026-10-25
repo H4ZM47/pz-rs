@@ -811,7 +811,7 @@ impl VehiclePart {
             let t = types[rand::next(types.len() as i32) as usize].clone();
             if !t.is_empty() {
                 if let Some(item) = env::items().create_item(&t) {
-                    let item = Rc::new(RefCell::new(item));
+                    let item = pz_inventory::shared::new_item(item);
                     self.set_inventory_item(Some(PartItem::Item(item.clone())), 0);
                     let mc = item.borrow().max_capacity;
                     if mc > 0 {

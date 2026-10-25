@@ -57,7 +57,7 @@ pub fn lua_to_mod_data(t: &TableRef) -> LuaTable {
 
 fn part_item(i: &SavedItem) -> PartItem {
     match i {
-        SavedItem::Item(item) => PartItem::Item(Rc::new(RefCell::new((**item).clone()))),
+        SavedItem::Item(item) => PartItem::Item(pz_inventory::shared::new_item((**item).clone())),
         raw => PartItem::Raw(raw.clone()),
     }
 }

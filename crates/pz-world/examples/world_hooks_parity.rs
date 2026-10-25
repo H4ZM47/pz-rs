@@ -77,7 +77,12 @@ fn light_item(out: &mut String, p: &str, it: &InventoryItem, depth: usize, i: us
     }
     if depth < 8 {
         if let ItemKind::Container(c) = &it.kind {
-            light_items(out, &format!("{p}/{depth}.{i}"), &c.container, depth + 1);
+            light_items(
+                out,
+                &format!("{p}/{depth}.{i}"),
+                &c.container.borrow().to_container(),
+                depth + 1,
+            );
         }
     }
 }

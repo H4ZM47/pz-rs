@@ -570,6 +570,13 @@ impl ItemContainer {
     }
 }
 
+impl crate::shared::SharedContainer {
+    /// [`ItemContainer::get_contents_weight`] of a shared container.
+    pub fn get_contents_weight(&self) -> f32 {
+        self.get_contents_weight_with(&Offline)
+    }
+}
+
 /// `zombie.inventory.types.WeaponType`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WeaponType {

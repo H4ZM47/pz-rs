@@ -8,14 +8,16 @@
 //! object per item while that object lives, so Lua `==` is Java identity.
 //! Methods that read the holder or the game state (weights, `isEquipped`,
 //! wetness, `getVisual`, `Use`) go through the installed [`ItemLuaEnv`]
-//! ([`install_item_env`]); without one they see an item in a container
-//! without a parent, the shared scripts, no `ClothingItem` assets and zero
-//! globals ([`GameItemEnv`]). `instanceItem` ([`create_item`]) creates
+//! ([`install_item_env`]); without one they see the item's own container
+//! and its parent ([`crate::bind_item_container::container_owner`]), the
+//! shared scripts, no `ClothingItem` assets and zero globals
+//! ([`GameItemEnv`]). `instanceItem` ([`create_item`]) creates
 //! items through it; see [`crate::bind_item_visual`].
 //!
 //! Not exposed yet: methods returning or taking objects that have no Lua
-//! binding here (`getScriptItem`, `getModData`, `getContainer`,
-//! `getWorldItem`, `getInventory`, `getTags`), the registry-object
+//! binding here (`getScriptItem`, `getModData`, `getWorldItem`,
+//! `getTags`; `getContainer` and `InventoryContainer.getInventory` are in
+//! [`crate::bind_item_container`]), the registry-object
 //! returns (`getBloodClothingType` a list of names, `hasTag` takes ids or
 //! objects whose `tostring` is the id). `getVisual`, `getClothingItem`
 //! and `canBeEquipped` live in [`crate::bind_item_visual`].
@@ -23,7 +25,6 @@
 use crate::bind_java_util::JavaList;
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg};
 use pz_inventory::api::Offline;
-use pz_inventory::context::NoOwner;
 use pz_inventory::gameplay::{ConditionOutcome, ItemError, UseOutcome};
 use pz_inventory::item::ItemKind;
 use pz_inventory::visual::VisualRng;
@@ -99,6 +100,9 @@ pub struct GameItemEnv {
     pub rand: Option<pz_core::random::Rand>,
     /// The entity registries ([`ItemLuaEnv::entity`]).
     pub entity: Option<Rc<pz_entity::BasicContext>>,
+    /// `ZomboidGlobals.equippedOrWornEncumbranceMultiplier` once
+    /// `ZomboidGlobals.Load` read it (the offline default otherwise).
+    pub encumbrance_multiplier: Option<f64>,
 }
 
 impl GameItemEnv {
@@ -107,6 +111,7 @@ impl GameItemEnv {
             assets,
             rand: None,
             entity: None,
+            encumbrance_multiplier: None,
         }
     }
 }
@@ -144,7 +149,8 @@ impl ItemContext for GameItemEnv {
         Offline.is_raining()
     }
     fn equipped_or_worn_encumbrance_multiplier(&self) -> f64 {
-        Offline.equipped_or_worn_encumbrance_multiplier()
+        self.encumbrance_multiplier
+            .unwrap_or_else(|| Offline.equipped_or_worn_encumbrance_multiplier())
     }
     fn basic_mask_defense(&self) -> f32 {
         Offline.basic_mask_defense()
@@ -184,8 +190,10 @@ impl ItemLuaEnv for GameItemEnv {
     fn context(&self) -> &dyn ItemContext {
         self
     }
-    fn owner(&self, _item: &ItemRef) -> Rc<dyn ItemOwner> {
-        Rc::new(NoOwner)
+    /// The item's holder through its container
+    /// ([`crate::bind_item_container::container_owner`]).
+    fn owner(&self, item: &ItemRef) -> Rc<dyn ItemOwner> {
+        crate::bind_item_container::container_owner(item)
     }
     fn rand_next(&self, bound: i32) -> i32 {
         match &self.rand {
@@ -331,7 +339,7 @@ pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
         true,
         &translated_name,
     )?;
-    Some(Rc::new(RefCell::new(item)))
+    Some(pz_inventory::shared::new_item(item))
 }
 
 /// Installs a [`GameItemEnv`] with the `ClothingItem` assets
@@ -771,6 +779,9 @@ fn register_inventory_item(thread: &mut Thread) {
     envd!(b, "isFakeEquipped", |r, e, _ctx, o, _c| Ok(Value::from(
         r.borrow().is_fake_equipped(o.as_ref())
     )));
+    envd!(b, "isInPlayerInventory", |r, e, _ctx, o, _c| Ok(Value::from(
+        o.is_in_player_inventory(&r.borrow())
+    )));
     envd!(b, "isWorn", |r, e, _ctx, o, _c| {
         let i = r.borrow();
         let clothing = matches!(
@@ -1147,35 +1158,29 @@ fn register_container(thread: &mut Thread) {
         ItemKind::Container(c) => c.weight_reduction,
         _ => 0,
     }));
-    get!(b, "getCapacity", |i| Value::from(match &i.kind {
-        ItemKind::Container(c) => c.container.capacity,
-        _ => 0,
-    }));
-    get!(b, "isEmpty", |i| Value::from(match &i.kind {
-        ItemKind::Container(c) => c.container.items.is_empty(),
-        _ => true,
-    }));
     envd!(b, "getInventoryWeight", |r, e, ctx, o, _c| {
-        // InventoryContainer.getInventoryWeight.
-        let i = r.borrow();
-        let equipped = i.is_equipped(o.as_ref()) || i.is_fake_equipped(o.as_ref());
-        let inner = NoOwner;
-        let total = match &i.kind {
-            ItemKind::Container(c) => {
-                c.container
-                    .items
-                    .iter()
-                    .filter_map(|s| s.as_item())
-                    .fold(0.0f32, |a, it| {
-                        a + if equipped {
-                            it.get_equipped_weight(ctx, &inner)
-                        } else {
-                            it.get_unequipped_weight(ctx, &inner)
-                        }
-                    })
-            }
-            _ => 0.0,
+        // InventoryContainer.getInventoryWeight: the bag's items, equipped
+        // weights when the bag is (fake-)equipped.
+        let (equipped, inner) = {
+            let i = r.borrow();
+            (
+                i.is_equipped(o.as_ref()) || i.is_fake_equipped(o.as_ref()),
+                pz_inventory::shared::inventory_of(&i),
+            )
         };
+        let mut total = 0.0f32;
+        if let Some(inner) = inner {
+            let list = inner.borrow().items.clone();
+            for it in &list {
+                let io = e.owner(it);
+                let i = it.borrow();
+                total += if equipped {
+                    i.get_equipped_weight(ctx, io.as_ref())
+                } else {
+                    i.get_unequipped_weight(ctx, io.as_ref())
+                };
+            }
+        }
         Ok(f(total))
     });
 }

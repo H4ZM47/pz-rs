@@ -27,12 +27,18 @@ use crate::survivor::CharacterGender;
 
 /// Whether the item `id` is somewhere in `c` (directly or in a bag).
 fn contains_anywhere(c: &ItemContainer, id: i32) -> bool {
-    c.items.iter().filter_map(|i| i.as_item()).any(|i| {
-        i.id == id
-            || match &i.kind {
-                ItemKind::Container(b) => contains_anywhere(&b.container, id),
-                _ => false,
-            }
+    c.items.iter().filter_map(|i| i.as_item()).any(|i| i.id == id || in_bag(i, id))
+}
+
+/// Whether the item `id` is somewhere in the bag `i`'s inventory.
+fn in_bag(i: &pz_inventory::InventoryItem, id: i32) -> bool {
+    let ItemKind::Container(b) = &i.kind else {
+        return false;
+    };
+    let inner = b.container.borrow();
+    inner.items.iter().any(|r| {
+        let r = r.borrow();
+        r.id == id || in_bag(&r, id)
     })
 }
 

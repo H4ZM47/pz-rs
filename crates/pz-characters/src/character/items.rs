@@ -232,7 +232,7 @@ pub fn flush_wetness(item: &mut InventoryItem) {
 /// `getContentsWeight()` (`InventoryContainer`: its container's).
 fn contents_weight(item: &InventoryItem) -> f32 {
     match &item.kind {
-        ItemKind::Container(c) => c.container.get_contents_weight(),
+        ItemKind::Container(c) => c.container.borrow().get_contents_weight(),
         _ => 0.0,
     }
 }

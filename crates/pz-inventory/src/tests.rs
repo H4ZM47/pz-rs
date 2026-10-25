@@ -243,18 +243,17 @@ fn containers_nest_and_unknown_items_drop() {
     let e = env();
     let mut bag = new_item(&e, 7);
     if let ItemKind::Container(c) = &mut bag.kind {
-        c.container.kind = Some("Bag".into());
-        c.container.id = 55;
-        c.container
-            .items
-            .push(SavedItem::Item(Box::new(new_item(&e, 1))));
+        c.container.borrow_mut().kind = "Bag".into();
+        c.container.borrow_mut().id = 55;
+        crate::shared::add_item(&c.container, &crate::shared::new_item(new_item(&e, 1)));
     }
     let back = round_trip(&bag, &e);
     let ItemKind::Container(c) = &back.kind else {
         panic!()
     };
-    assert_eq!(c.container.id, 55);
-    assert_eq!(c.container.items.len(), 1);
+    assert_eq!(c.container.borrow().id, 55);
+    assert_eq!(c.container.borrow().items.len(), 1);
+    assert_eq!(back, bag);
 
     let mut cont = ItemContainer::new(Some("crate"));
     let mut unknown = Writer::new();

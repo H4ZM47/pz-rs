@@ -532,7 +532,7 @@ impl InventoryItem {
                 c + base()
             }
             ItemKind::Container(c) => {
-                let mut w = c.container.get_contents_weight_with(ctx);
+                let mut w = c.container.borrow().get_contents_weight_with(ctx);
                 if let Some(a) = ctx.fluid_amount(self) {
                     w += a;
                 }
