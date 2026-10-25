@@ -8,10 +8,11 @@
 //! frames go to (default: the system temp directory). Without the game
 //! (or a GPU adapter) this test does nothing.
 //!
-//! The body and clothing textures are smart-texture jobs the GPU texture
-//! combiner is not ported for yet; here they are approximated on the CPU
-//! (blits and tinted body masks composited with their blend functions;
-//! blood, dirt, holes and patches left out).
+//! The body and clothing textures are the smart-texture jobs of
+//! `ModelInstanceTextureCreator`, run by the GPU texture combiner. A second
+//! frame shows the player with blood and dirt on the body and clothing, a
+//! hole in the jacket and the jeans, and a denim patch; the combined body,
+//! jacket and jeans textures are saved next to the frames.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -19,20 +20,21 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use pz_anim::AnimationPlayer;
+use pz_character_model::combine::run_jobs;
 use pz_character_model::data::{
     BodyLocationGroup, ClothingItem, HumanModel, HumanVisual, ModelScriptRef, Population,
     ResolvedItemVisual,
 };
 use pz_character_model::items::EquippedModels;
 use pz_character_model::lights::EffectLight;
+use pz_character_model::mask::BloodBodyPartType;
 use pz_character_model::mask::BLOOD_PARTS;
+use pz_character_model::model_tree::TextureSource;
 use pz_character_model::model_tree::{CharacterModelInput, ModelSlot};
 use pz_character_model::render::{CharacterFrame, ModelResources};
 use pz_character_model::resources::{MediaModelResources, TextureLoader};
 use pz_character_model::scene::{character_shadow, render_character_object, ShadowInput};
-use pz_character_model::texture_creator::{
-    create_textures, SmartShader, SmartTextureJob, TexRef, TextureCreatorInput,
-};
+use pz_character_model::texture_creator::{create_textures, TextureCreatorInput};
 use pz_iso_render::frame::{world_frame_with_objects, ChunkLevels, FrameSize};
 use pz_iso_render::models::ModelCamera;
 use pz_iso_render::objects::FrameObjects;
@@ -43,7 +45,7 @@ use pz_iso_render::{
 use pz_model::assets::{resolve_model_file, AssetKind, MediaIndex};
 use pz_model::loader::{load_animation, load_mesh, MeshParams};
 use pz_render::image::ImageData;
-use pz_render::{Texture, TextureManager};
+use pz_render::{flags, Texture, TextureManager};
 
 fn game_dir() -> Option<PathBuf> {
     let game = std::env::var_os("PZ_GAME_DIR")
@@ -103,108 +105,6 @@ impl TextureLoader for Loader {
     }
 }
 
-fn param(job: &pz_character_model::texture_creator::CombinerCommand, name: &str) -> Option<f32> {
-    job.params.iter().find(|p| p.name == name).map(|p| p.min)
-}
-
-/// `glBlendFuncSeparate` on one texel.
-fn blend(src: [f32; 4], dst: [f32; 4], f: [u32; 4]) -> [f32; 4] {
-    let factor = |k: u32, alpha: bool| -> [f32; 4] {
-        let v = match k {
-            0 => [0.0; 4],
-            1 => [1.0; 4],
-            768 => src,
-            769 => src.map(|c| 1.0 - c),
-            770 => [src[3]; 4],
-            771 => [1.0 - src[3]; 4],
-            772 => [dst[3]; 4],
-            773 => [1.0 - dst[3]; 4],
-            774 => dst,
-            775 => dst.map(|c| 1.0 - c),
-            _ => [1.0; 4],
-        };
-        if alpha {
-            [v[3]; 4]
-        } else {
-            v
-        }
-    };
-    let (sc, dc, sa, da) = (
-        factor(f[0], false),
-        factor(f[1], false),
-        factor(f[2], true),
-        factor(f[3], true),
-    );
-    let mut o = [0.0; 4];
-    for i in 0..3 {
-        o[i] = (src[i] * sc[i] + dst[i] * dc[i]).clamp(0.0, 1.0);
-    }
-    o[3] = (src[3] * sa[3] + dst[3] * da[3]).clamp(0.0, 1.0);
-    o
-}
-
-/// The CPU stand-in for `TextureCombiner.combine`: each command's texture
-/// (tinted by its `TintColour`) blended over the result; body masks gate
-/// the texel by the mask's alpha. Overlay (blood/dirt) and hole commands
-/// are skipped.
-fn combine(game: &Path, job: &SmartTextureJob, done: &[Rgba]) -> Option<Rgba> {
-    let file = |r: &TexRef| -> Option<Rgba> {
-        match r {
-            TexRef::File(p) => load_png(&game.join(p)),
-            TexRef::Job(i) => done.get(*i).cloned(),
-        }
-    };
-    let inputs: Vec<Option<Rgba>> = job.commands.iter().map(|c| file(&c.tex)).collect();
-    let w = pz_render::image::pow2(inputs.iter().flatten().map(|r| r.w).max()?);
-    let h = pz_render::image::pow2(inputs.iter().flatten().map(|r| r.h).max()?);
-    let mut out = vec![[0.0f32; 4]; (w * h) as usize];
-    let sample = |r: &Rgba, x: i32, y: i32| -> [f32; 4] {
-        let (sx, sy) = (x * r.w / w, y * r.h / h);
-        let i = ((sy * r.img.width_hw + sx) * 4) as usize;
-        std::array::from_fn(|k| r.img.data.pixels[i + k] as f32 / 255.0)
-    };
-    for (c, input) in job.commands.iter().zip(&inputs) {
-        let Some(src) = input else { continue };
-        match c.shader {
-            SmartShader::OverlayMask
-            | SmartShader::DirtMask
-            | SmartShader::AddHole
-            | SmartShader::RemoveHole => continue,
-            _ => {}
-        }
-        let mask = c.mask.as_ref().and_then(file);
-        let tint = ["R", "G", "B"].map(|_| 1.0f32);
-        let tint = match (param(c, "R"), param(c, "G"), param(c, "B")) {
-            (Some(r), Some(g), Some(b)) => [r, g, b],
-            _ => tint,
-        };
-        let [rx, ry, rw, rh] = c.rect.unwrap_or([0, 0, w, h]);
-        for y in ry.max(0)..(ry + rh).min(h) {
-            for x in rx.max(0)..(rx + rw).min(w) {
-                let (u, v) = if c.rect.is_some() {
-                    ((x - rx) * w / rw.max(1), (y - ry) * h / rh.max(1))
-                } else {
-                    (x, y)
-                };
-                let mut s = sample(src, u, v);
-                for k in 0..3 {
-                    s[k] *= tint[k];
-                }
-                if let Some(m) = &mask {
-                    s[3] *= sample(m, x, y)[3];
-                }
-                let i = (y * w + x) as usize;
-                out[i] = blend(s, out[i], c.blend);
-            }
-        }
-    }
-    let mut img = ImageData::new(w, h);
-    for (d, c) in img.data.pixels.iter_mut().zip(out.iter().flatten()) {
-        *d = (c * 255.0).round() as u8;
-    }
-    Some(Rgba { w, h, img })
-}
-
 fn clothing(game: &Path, name: &str) -> ResolvedItemVisual {
     let xml =
         std::fs::read_to_string(game.join(format!("media/clothing/clothingItems/{name}.xml")))
@@ -229,6 +129,54 @@ fn write_png(path: &Path, w: u32, h: u32, data: &[u8]) {
 #[test]
 fn dressed_player_on_a_tile() {
     let Some(game) = game_dir() else { return };
+    player_frame(&game, false);
+}
+
+#[test]
+fn bloodied_player_on_a_tile() {
+    let Some(game) = game_dir() else { return };
+    player_frame(&game, true);
+}
+
+/// Blood, dirt, holes and patches (`ItemVisual`/`HumanVisual` levels).
+fn damage(hv: &mut HumanVisual, visuals: &mut [ResolvedItemVisual]) {
+    use BloodBodyPartType as B;
+    let n = BLOOD_PARTS;
+    for (p, b, d) in [
+        (B::Head, 0.8, 0.0),
+        (B::HandL, 1.0, 0.6),
+        (B::HandR, 0.5, 0.9),
+        (B::Neck, 0.6, 0.3),
+    ] {
+        hv.set_blood(p.index(), b);
+        hv.set_dirt(p.index(), d);
+    }
+    for v in visuals.iter_mut() {
+        let name = v.visual.full_type.clone();
+        let vis = &mut v.visual;
+        match name.as_str() {
+            "Base.Jacket_Padded" => {
+                vis.set_blood(B::TorsoUpper.index(), 1.0, n);
+                vis.set_blood(B::UpperArmL.index(), 0.7, n);
+                vis.set_dirt(B::ForeArmR.index(), 1.0, n);
+                vis.set_dirt(B::TorsoLower.index(), 0.6, n);
+                vis.set_hole(B::TorsoLower.index(), n);
+                vis.set_basic_patch(B::UpperArmR.index(), n);
+            }
+            "Base.Trousers_Denim" => {
+                vis.set_hole(B::UpperLegL.index(), n);
+                vis.set_denim_patch(B::UpperLegR.index(), n);
+                vis.set_blood(B::LowerLegL.index(), 0.9, n);
+                vis.set_dirt(B::LowerLegR.index(), 1.0, n);
+            }
+            "Base.Tshirt_DefaultTEXTURE" => vis.set_blood(B::TorsoUpper.index(), 0.5, n),
+            _ => {}
+        }
+    }
+}
+
+fn player_frame(game: &Path, damaged: bool) {
+    let game = game.to_path_buf();
     let (w, h) = (640u32, 480u32);
     let Ok(mut gpu) = pz_gpu::Gpu::new_headless(w, h) else {
         eprintln!("no GPU adapter; skipping");
@@ -280,7 +228,7 @@ fn dressed_player_on_a_tile() {
     hv.beard_model = Some("Chops".into());
     hv.hair_color = Some([0.35, 0.22, 0.12]);
     hv.beard_color = Some([0.35, 0.22, 0.12]);
-    let visuals: Vec<ResolvedItemVisual> = [
+    let mut visuals: Vec<ResolvedItemVisual> = [
         "Tshirt_DefaultTEXTURE",
         "Shoes_Black",
         "Trousers_Denim",
@@ -290,6 +238,9 @@ fn dressed_player_on_a_tile() {
     .iter()
     .map(|n| clothing(&game, n))
     .collect();
+    if damaged {
+        damage(&mut hv, &mut visuals);
+    }
     let human = HumanModel::resolve(&mut hv, false, false, false, &pop.styles(&[], 0.0), &[]);
     let groups = BodyLocationGroup::new("Human").unwrap();
     let scripts: HashMap<String, ModelScriptRef> = HashMap::new();
@@ -322,23 +273,26 @@ fn dressed_player_on_a_tile() {
         );
     }
 
+    // TextureCombiner on the GPU; files with ModelManager.getTextureFlags.
     let mut tm = TextureManager::new();
-    let mut done: Vec<Rgba> = Vec::new();
-    let mut smart = Vec::new();
-    for (i, job) in jobs.jobs.iter().enumerate() {
-        let r = combine(&game, job, &done).unwrap_or_else(|| Rgba {
-            w: 1,
-            h: 1,
-            img: ImageData::new(1, 1),
-        });
-        smart.push(Some(tm.texture_from_pixels(
-            &format!("smart{i}"),
-            r.w,
-            r.h,
-            r.img.data.pixels.clone(),
-            0,
-        )));
-        done.push(r);
+    let model_flags = flags::COMPRESS | flags::LIMIT_TEXTURE_SIZE_1;
+    let mut file = |tm: &mut TextureManager, p: &str| tm.shared_texture_flags(&fs, p, model_flags);
+    let smart = run_jobs(&jobs.jobs, &mut file, &mut gpu, &mut tm);
+    let prefix = if damaged {
+        "charrender_damaged"
+    } else {
+        "charrender_frame"
+    };
+    for inst in &slot.instances {
+        let TextureSource::Smart(job) = inst.tex else {
+            continue;
+        };
+        let Some(t) = &smart[job] else { continue };
+        let px = gpu.read_combined(t).expect("combined texture");
+        let name = inst.mesh_name.rsplit(['/', '\\']).next().unwrap_or("tex");
+        let path = out_dir.join(format!("{prefix}_tex_{name}.png"));
+        write_png(&path, t.width, t.height, &px);
+        eprintln!("wrote {}", path.display());
     }
 
     // The tiles: a 6x6 grass patch in chunk (1, 1).
@@ -389,8 +343,8 @@ fn dressed_player_on_a_tile() {
 
     let (px, py, pz) = (10.5f32, 10.5f32, 0.0f32);
     for (zoom, name) in [
-        (1.0f32, "charrender_frame_zoom1.png"),
-        (0.5, "charrender_frame_zoom05.png"),
+        (1.0f32, format!("{prefix}_zoom1.png")),
+        (0.5, format!("{prefix}_zoom05.png")),
     ] {
         let cam = Camera::player(px, py, pz, w as i32, h as i32, zoom);
         let mc = ModelCamera::new(&cam, w as f32 * zoom, h as f32 * zoom);
@@ -459,7 +413,7 @@ fn dressed_player_on_a_tile() {
             &mut loader.tm.borrow_mut(),
         );
         let pixels = gpu.read_pixels();
-        let path = out_dir.join(name);
+        let path = out_dir.join(&name);
         write_png(&path, w, h, &pixels);
         eprintln!("wrote {}", path.display());
         // The grey jacket shows in the screen's centre column, grass at
@@ -582,9 +536,9 @@ fn corpse_and_floor_items() {
     let groups = BodyLocationGroup::new("Human").unwrap();
     let scripts: HashMap<String, ModelScriptRef> = HashMap::new();
     let mut tm = TextureManager::new();
-    let mut done: Vec<Rgba> = Vec::new();
-    let mut smart = Vec::new();
-    let mut slot_for = |hair: &str, skin: &str, clothes: &[&str], player: &AnimationPlayer, tm: &mut TextureManager| {
+    let mut smart: Vec<Option<Texture>> = Vec::new();
+    let model_flags = flags::COMPRESS | flags::LIMIT_TEXTURE_SIZE_1;
+    let mut slot_for = |hair: &str, skin: &str, clothes: &[&str], player: &AnimationPlayer, tm: &mut TextureManager, gpu: &mut pz_gpu::Gpu| {
         let mut hv = HumanVisual::new(BLOOD_PARTS);
         hv.skin_texture_name = Some(skin.into());
         hv.hair_model = Some(hair.into());
@@ -613,13 +567,10 @@ fn corpse_and_floor_items() {
                 simple_clothing_textures: false,
             },
         );
-        // Smart-texture jobs index into one shared list.
+        // TextureCombiner on the GPU; the jobs index into one shared list.
         let base = smart.len();
-        for job in &jobs.jobs {
-            let r = combine(&game, job, &done[base..]).unwrap_or_else(|| Rgba { w: 1, h: 1, img: ImageData::new(1, 1) });
-            smart.push(Some(tm.texture_from_pixels(&format!("smart{}", smart.len()), r.w, r.h, r.img.data.pixels.clone(), 0)));
-            done.push(r);
-        }
+        let mut file = |tm: &mut TextureManager, p: &str| tm.shared_texture_flags(&fs, p, model_flags);
+        smart.extend(run_jobs(&jobs.jobs, &mut file, gpu, tm));
         for inst in &mut slot.instances {
             if let pz_character_model::TextureSource::Smart(j) = &mut inst.tex {
                 *j += base;
@@ -627,7 +578,7 @@ fn corpse_and_floor_items() {
         }
         slot
     };
-    let slot = slot_for("CrewCut", "MaleBody01a", &["Tshirt_DefaultTEXTURE", "Shoes_Black", "Trousers_Denim", "Jacket_Padded"], &player, &mut tm);
+    let slot = slot_for("CrewCut", "MaleBody01a", &["Tshirt_DefaultTEXTURE", "Shoes_Black", "Trousers_Denim", "Jacket_Padded"], &player, &mut tm, &mut gpu);
 
     // The dead zombie: the zombie set's onground state on its back.
     let dead = DeadBody {
@@ -646,7 +597,7 @@ fn corpse_and_floor_items() {
     let zombie_set = Rc::new(pz_anim::AnimationSet::load_states("zombie", &game.join("media/AnimSets/zombie"), &["onground"]));
     pose(&mut corpse_player, zombie_set, &dead);
     assert_eq!(corpse_player.tracks()[0].name(), "Zombie_Idle_FloorOnBack");
-    let corpse_slot = slot_for("Bob", "MaleBody02a", &["Tshirt_DefaultTEXTURE", "Trousers_Denim"], &corpse_player, &mut tm);
+    let corpse_slot = slot_for("Bob", "MaleBody02a", &["Tshirt_DefaultTEXTURE", "Trousers_Denim"], &corpse_player, &mut tm, &mut gpu);
 
     // Placed items.
     let sm = pz_scripts::ScriptManager::new();

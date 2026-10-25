@@ -17,6 +17,7 @@
 
 #![allow(clippy::too_many_arguments, clippy::needless_range_loop)]
 
+pub mod combine;
 pub mod corpse;
 pub mod data;
 pub mod external;

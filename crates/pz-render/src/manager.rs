@@ -282,6 +282,17 @@ impl TextureManager {
         self.texture_from_image(name, name, img, flags)
     }
 
+    /// `new Texture(w, h, flags)` with no pixels: a texture a backend draws
+    /// into (an FBO target), registered under `name`. Its image lives only
+    /// on the GPU.
+    pub fn render_texture(&mut self, name: &str, width: i32, height: i32, flags: i32) -> Texture {
+        let img = ImageData::new(width, height);
+        let mut d = Self::data_from_image(name, Some(img), flags);
+        d.image = None;
+        let id = self.add_data(d);
+        self.whole_texture(id, name)
+    }
+
     /// `Texture.getWhite()`: a 32x32 white texture, also registered as
     /// `white.png`, `media/white.png` and `media/ui/white.png`.
     pub fn white(&mut self) -> Texture {

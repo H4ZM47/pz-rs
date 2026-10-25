@@ -23,6 +23,7 @@
 //! addressed.
 
 mod atlas;
+mod combiner;
 mod gl;
 mod model;
 mod state;
@@ -228,6 +229,8 @@ pub struct Gpu {
     white: Option<wgpu::BindGroup>,
     /// GL state carried across frames, like `GLState`.
     pub state: GlState,
+    /// `TextureCombiner`.
+    combiner: combiner::CombinerState,
 }
 
 impl Gpu {
@@ -379,6 +382,7 @@ impl Gpu {
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             ..Default::default()
         });
+        let combiner = combiner::CombinerState::new(&device, &texture_layout);
         let mut gpu = Gpu {
             device,
             queue,
@@ -404,6 +408,7 @@ impl Gpu {
             samplers: HashMap::new(),
             white: None,
             state: GlState::default(),
+            combiner,
         };
         gpu.white = Some(gpu.create_texture_bind_group(1, 1, &[vec![0xFF; 4]], (true, true, false, false)));
         gpu
