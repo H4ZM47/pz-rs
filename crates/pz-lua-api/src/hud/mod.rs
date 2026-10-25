@@ -1135,10 +1135,17 @@ mod tests {
         static FAKE_TIME: Cell<(f32, i32, i32)> = const { Cell::new((9.0, 0, 0)) };
         static FAKE_TEMP: Cell<f32> = const { Cell::new(0.0) };
     }
+    thread_local! {
+        /// `serverTimeOfDay` while fast-forwarding (`None`: not).
+        static FAKE_SERVER_TIME: Cell<Option<f32>> = const { Cell::new(None) };
+    }
     struct FakeTime;
     impl host::HudGameTime for FakeTime {
         fn time_of_day(&self) -> f32 {
             FAKE_TIME.with(|t| t.get().0)
+        }
+        fn digits_time_of_day(&self) -> f32 {
+            FAKE_SERVER_TIME.with(|s| s.get()).unwrap_or_else(|| self.time_of_day())
         }
         fn day(&self) -> i32 {
             FAKE_TIME.with(|t| t.get().1)
@@ -1231,6 +1238,59 @@ mod tests {
             .map(normalise_oracle)
             .collect();
         assert_eq!(got, want);
+    }
+
+    /// While an MP client fast-forwards, the digits show the server's
+    /// time but the AM/PM indicator still reads the local time of day
+    /// (`Clock.timeDigits` vs `Clock.render`'s `getTimeOfDay() < 12`).
+    #[test]
+    fn clock_fast_forward_digits_and_am_pm() {
+        install_textures(&[]);
+        install(HudHost {
+            game_time: Box::new(FakeTime),
+            climate: Box::new(FakeClimate),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        {
+            let core = crate::bind_core::shared_core();
+            let mut c = core.borrow_mut();
+            c.set_option_clock_size(1);
+            c.set_option_clock24_hour(false);
+        }
+        let e = Clock::create(500, 10);
+        let clock = e.ext::<Clock>().unwrap();
+        clock.set_state(true, None, false, false);
+        e.set_visible(true);
+        let drawn = |t: &mut Thread| {
+            with_ui(|m| m.sprite.clear());
+            e.render(t);
+            draw_lines()
+                .iter()
+                .filter_map(|l| l.split(' ').nth(1).map(|n| n.rsplit('/').next().unwrap().to_string()))
+                .collect::<Vec<_>>()
+        };
+        // The ghost display draws "88:88", AM and PM first; then the time.
+        let count = |v: &[String], p: &str| v.iter().filter(|n| n.starts_with(p)).count();
+        let time = |v: &[String]| -> String {
+            v.iter()
+                .filter_map(|n| n.strip_prefix("ClockDigitsMedium"))
+                .skip(4)
+                .take(4)
+                .map(|n| n.chars().next().unwrap())
+                .collect()
+        };
+        // Local 14:30 (PM), the server at 09:15 (AM).
+        FAKE_TIME.with(|f| f.set((14.5, 0, 0)));
+        FAKE_SERVER_TIME.with(|s| s.set(Some(9.25)));
+        let ff = drawn(&mut t);
+        assert_eq!((count(&ff, "ClockAm"), count(&ff, "ClockPm")), (1, 2), "{ff:?}");
+        // The server's 09:1x (the clock shows minutes in tens).
+        assert_eq!(time(&ff), "0910");
+        FAKE_SERVER_TIME.with(|s| s.set(None));
+        let local = drawn(&mut t);
+        assert_eq!((count(&local, "ClockAm"), count(&local, "ClockPm")), (1, 2));
+        assert_eq!(time(&local), "0230");
     }
 
     thread_local! {

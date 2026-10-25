@@ -160,10 +160,12 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Clock inputs: `HudAlarmClocks` (players' worn and inventory
       `AlarmClock`/`AlarmClockClothing`, stop/set alarm; world thread),
       `HudClimate::air_temperature_for_character` and
-      `HudGameTime::time_of_day/day/month` (characters thread),
+      `HudGameTime::time_of_day/day/month` and `digits_time_of_day` (the
+      digits' `serverTimeOfDay` swap while an MP client fast-forwards)
+      (characters thread),
       `HudPlayers::player_dead`, `HudDebug::cheat_clock_visible`. Call
       `UIManager::resize()` when a player's clocks change (the original
-      re-runs `resize` from its callers) (#146).
+      re-runs `resize` from its callers) (#146; digits split #164).
 - [ ] Moodles: `hud::set_moodles_character(i, Some(player_index))` when a
       player is created or removed (`IsoPlayer` sets
       `UIManager.getMoodleUI(i).setCharacter`); `HudMoodles` (a player's
