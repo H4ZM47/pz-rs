@@ -1,7 +1,7 @@
 //! Main-thread collision queries on the live world: `zombie.pathfind
 //! .LineClearCollideMain` behind `PolygonalMap2.canStandAt`,
-//! `lineClearCollide` and `getCollidepoint`, plus
-//! `PolygonalMap2.getApparentZ` and `intersectLineWithVehicle`.
+//! `lineClearCollide` and `getCollidepoint`, `CollideWithObstacles` behind
+//! `PolygonalMap2.resolveCollision`, plus `PolygonalMap2.getApparentZ` and `intersectLineWithVehicle`.
 //!
 //! The `IsoGridSquare` queries and `LosUtil.lineClear` they rest on are
 //! `pz-world`'s ([`pz_world::los`], [`pz_world::square`]), with
@@ -28,6 +28,7 @@
 //!
 //! [`ObjectRef`]: crate::mover::ObjectRef
 
+pub mod collide_with_obstacles;
 pub mod line_clear_collide;
 pub mod los;
 pub mod square;
@@ -39,6 +40,7 @@ use pz_world::{GetSquare, IsoSpriteManager, ObjectHooks};
 use crate::game_vehicle::VehicleSource;
 use crate::square_bits::SquareBits;
 
+pub use collide_with_obstacles::CollideWithObstacles;
 pub use line_clear_collide::LineClearCollideMain;
 pub use los::los_line_clear_collide;
 pub use pz_world::los::{line_clear, line_clear_range, TestResults};

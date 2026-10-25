@@ -137,10 +137,11 @@ use crate::behavior::{
 };
 use crate::game_vehicle::VehicleSource;
 use crate::main_thread::line_clear_collide::{FLAG_CLOSE_TO_WALLS, FLAG_IGNORE_DOORS};
+use crate::main_thread::CollideWithObstacles;
 use crate::main_thread::{
     fastfloor, line_clear, los_line_clear_collide, LineClearCollideMain, MainThreadMap, TestResults,
 };
-use crate::mover::{MoverId, PathMover, PathWorldHooks};
+use crate::mover::{CharacterView, MoverId, PathMover, PathWorldHooks};
 use crate::path::Path;
 use crate::service::{FinderId, PathfindService, ThreadPass};
 
@@ -233,6 +234,9 @@ impl Slots {
 pub struct PathHost {
     service: PathfindService,
     slots: Slots,
+    /// `PolygonalMap2.instance.collideWithObstacles` (it keeps state from
+    /// call to call).
+    collide: CollideWithObstacles,
 }
 
 impl PathHost {
@@ -245,6 +249,7 @@ impl PathHost {
                 finders: HashMap::new(),
                 next_finder: 1,
             },
+            collide: CollideWithObstacles::new(),
         }
     }
 
@@ -553,6 +558,38 @@ impl PathHost {
         ignore_doors: bool,
     ) -> bool {
         los_line_clear_collide(map, from.0, from.1, from.2, to.0, to.1, to.2, ignore_doors)
+    }
+
+    /// `PolygonalMap2.resolveCollision(chr, nx, ny, finalPos)`
+    /// (`CollideWithObstacles`), as `IsoMovingObject.postupdate` calls it:
+    /// where `chr`, moving from its position to `(nx, ny)`, ends up against
+    /// the vehicles near it (and the walls next to them). The game sets
+    /// `collidedWithVehicle` and the next position when the answer differs
+    /// from `(nx, ny)`. Not for a client's `isSkipResolveCollision()`
+    /// characters, which keep `(nx, ny)`.
+    pub fn resolve_collision<G: GetSquare>(
+        &mut self,
+        map: &MainThreadMap<'_, '_, G>,
+        chr: &dyn CharacterView,
+        nx: f32,
+        ny: f32,
+    ) -> (f32, f32) {
+        self.collide.resolve_collision(map, chr, nx, ny)
+    }
+
+    /// `PolygonalMap2.resolveCollision(chr, radius, finalPos)`
+    /// (`CollideWithObstacles`), as `IsoGameCharacter.slideAwayFromWalls`
+    /// calls it with `includePolyCollisions`: whether `chr` with `radius`
+    /// overlaps a vehicle obstacle, and `finalPos` (the point to slide to
+    /// when it does, the character's position otherwise). Not for a
+    /// client's `isSkipResolveCollision()` characters (`false`).
+    pub fn resolve_collision_radius<G: GetSquare>(
+        &mut self,
+        map: &MainThreadMap<'_, '_, G>,
+        chr: &dyn CharacterView,
+        radius: f32,
+    ) -> (bool, (f32, f32)) {
+        self.collide.resolve_collision_radius(map, chr, radius)
     }
 
     /// `PolygonalMap2.canStandAt(x, y, z, null, false, true)`.

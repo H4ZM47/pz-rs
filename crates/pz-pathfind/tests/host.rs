@@ -319,3 +319,107 @@ fn collision_queries() {
     );
     assert!(PathHost::line_clear(&mtm, 2.5, 2.5, 20.5, 3.5, 0));
 }
+
+/// A vehicle standing still (`getPolyPlusRadius()` as given).
+struct Parked(pz_pathfind::visibility::VehiclePoly);
+
+impl pz_pathfind::game_vehicle::GameVehicle for Parked {
+    fn vehicle_id(&self) -> i16 {
+        1
+    }
+    fn poly(&self) -> pz_pathfind::visibility::VehiclePoly {
+        self.0
+    }
+    fn poly_plus_radius(&self) -> pz_pathfind::visibility::VehiclePoly {
+        self.0
+    }
+    fn up_vector_dot(&self) -> f32 {
+        1.0
+    }
+    fn crawl_offsets(&self) -> Vec<f32> {
+        Vec::new()
+    }
+    fn z(&self) -> f32 {
+        0.0
+    }
+    fn added_to_world(&self) -> bool {
+        true
+    }
+    fn has_script(&self) -> bool {
+        true
+    }
+}
+
+/// One vehicle in chunk (0, 0).
+struct OneCar(Parked);
+
+impl pz_pathfind::game_vehicle::VehicleSource for OneCar {
+    fn for_each_vehicle(&self, f: &mut dyn FnMut(&dyn pz_pathfind::game_vehicle::GameVehicle)) {
+        f(&self.0);
+    }
+    fn for_each_vehicle_in_chunk(
+        &self,
+        wx: i32,
+        wy: i32,
+        f: &mut dyn FnMut(&dyn pz_pathfind::game_vehicle::GameVehicle) -> bool,
+    ) {
+        if (wx, wy) == (0, 0) {
+            f(&self.0);
+        }
+    }
+}
+
+#[test]
+fn resolve_collision_against_a_vehicle() {
+    let mut map = Map::new();
+    let mut host = PathHost::new(map.service());
+    // Without vehicles nothing is in the way.
+    {
+        let bits = SquareBits::new(&map.m, &map.meta, &map.cell, &DefaultBitsHooks).unwrap();
+        let mtm = MainThreadMap::new(&bits, &NoVehicles);
+        let c = chr(1, 4.5, 6.0);
+        assert_eq!(host.resolve_collision(&mtm, &c, 5.2, 6.0), (5.2, 6.0));
+        assert_eq!(
+            host.resolve_collision_radius(&mtm, &c, 0.3),
+            (false, (4.5, 6.0))
+        );
+    }
+    // A car over x 5..7, y 4..9, corners in `VehiclePoly.init`'s winding
+    // (outward edge normals).
+    let car = OneCar(Parked(pz_pathfind::visibility::VehiclePoly {
+        x1: 5.0,
+        y1: 4.0,
+        x2: 5.0,
+        y2: 9.0,
+        x3: 7.0,
+        y3: 9.0,
+        x4: 7.0,
+        y4: 4.0,
+        z: 0.0,
+    }));
+    let bits = SquareBits::new(&map.m, &map.meta, &map.cell, &DefaultBitsHooks).unwrap();
+    let mtm = MainThreadMap::new(&bits, &car);
+    // Walking into its west side stops on the side.
+    let c = chr(1, 4.5, 6.0);
+    assert_eq!(host.resolve_collision(&mtm, &c, 5.2, 6.0), (5.0, 6.0));
+    // Walking away, or alongside, is not changed.
+    assert_eq!(host.resolve_collision(&mtm, &c, 4.2, 6.1), (4.2, 6.1));
+    assert_eq!(host.resolve_collision(&mtm, &c, 4.5, 6.4), (4.5, 6.4));
+    // Standing just inside the side, the radius query pushes the character
+    // out by the radius.
+    let inside = chr(1, 5.1, 6.0);
+    let (hit, (x, y)) = host.resolve_collision_radius(&mtm, &inside, 0.3);
+    assert!(hit);
+    assert_eq!((x, y), (5.0f32 - 0.3, 6.0));
+    // Far from the side (squared distance over the radius): no push.
+    let deep = chr(1, 6.0, 6.5);
+    assert_eq!(
+        host.resolve_collision_radius(&mtm, &deep, 0.3),
+        (false, (6.0, 6.5))
+    );
+    // A non-positive radius never collides.
+    assert_eq!(
+        host.resolve_collision_radius(&mtm, &inside, 0.0),
+        (false, (5.1, 6.0))
+    );
+}
