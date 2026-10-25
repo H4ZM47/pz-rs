@@ -1874,6 +1874,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-worldgen"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "pz-classfile",
+ "pz-fs",
+ "pz-kahlua",
+ "pz-world",
+ "regex",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
