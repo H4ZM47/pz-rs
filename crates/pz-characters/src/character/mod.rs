@@ -42,6 +42,7 @@ pub mod combat;
 pub mod context;
 pub mod fire;
 pub mod firearm;
+pub mod floor_drop;
 pub mod fitness;
 pub mod item_owner;
 pub mod items;
@@ -67,6 +68,7 @@ use pz_scripts::{ScriptManager, ScriptResult};
 
 pub use body_damage::{BodyDamage, WeaponUser, ZombieAttack, ZombieAttackOutcome};
 pub use clothing_wetness::ClothingWetness;
+pub use floor_drop::{CharacterDrop, FloorCx};
 pub use item_owner::CharacterItemContext;
 pub use items::{CharacterItems, CLOTHING_ITEM_LOCATIONS};
 pub use body_part::{BodyPart, BodyPartContacts, BodyPartLast, BodyPartTypes, InjuryEnv};

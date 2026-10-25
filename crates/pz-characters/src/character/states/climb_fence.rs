@@ -3,9 +3,9 @@
 //! fence and trip sounds (`PlayFenceSound`, `PlayTripSound`).
 //!
 //! Not here: `CheckAttack` (`attackFromWindowsLunge` needs the animation
-//! player's bones), `FallenOnKnees` / `VaultSprintFallLanded`
-//! (`fallenOnKnees`, `dropHandItems`), a player's music intensity event
-//! and the multiplayer paths.
+//! player's bones), `fallenOnKnees` (the `FallenOnKnees` event and the
+//! end of `VaultSprintFallLanded`, whose `dropHandItems` is here), a
+//! player's music intensity event and the multiplayer paths.
 
 use pz_world::square::IsoDirections;
 
@@ -368,6 +368,10 @@ impl<I: 'static> State<I> for ClimbOverFenceState {
             let Some(info) = get_fence(owner, cx).and_then(|f| cx.world.fence_info(f)) else { return };
             // The original casts the owner to IsoPlayer here.
             cx.ctx.event(SimEvent::ObstacleSound { name: param.to_string(), parameter: "TripObstacleType", value: info.trip_type as f32, movement_speed: true });
+        } else if name.eq_ignore_ascii_case("VaultSprintFallLanded") {
+            // `dropHandItems()`, then `fallenOnKnees()` (TODO(world): not
+            // ported, as for the `FallenOnKnees` event).
+            owner.drop_hand_items_in(cx);
         } else if name.eq_ignore_ascii_case("PlayerVoiceSound") {
             if owner.get_variable_boolean("PlayerVoiceSound") || !owner.is_player() {
                 return;

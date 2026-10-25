@@ -17,7 +17,7 @@ use pz_world::square::{IsoDirections, MoverKind};
 
 use crate::character::state::{MoveDeltaModifiers, Param, State, StateCx, StateId, StateRef, ThumpKind, WindowClimb};
 use crate::character::zombie::math::{fastfloor, normalize};
-use crate::character::{GameCharacter, SimEvent};
+use crate::character::{FloorCx, GameCharacter, SimEvent};
 use pz_anim::{AnimEventRecord, AnimationVariableSource};
 
 use super::ids;
@@ -115,7 +115,7 @@ impl<I: 'static> GameCharacter<I> {
         if !matches!(w.portal, ThumpKind::Window | ThumpKind::Thumpable) || !w.portal_can_climb {
             return;
         }
-        self.drop_heavy_items();
+        self.drop_heavy_items_in(cx);
         let ox = self.vars.x - fastfloor(self.vars.x) as f32;
         let oy = self.vars.y - fastfloor(self.vars.y) as f32;
         let (wx, wy) = (w.square.0 as f32, w.square.1 as f32);
@@ -133,15 +133,30 @@ impl<I: 'static> GameCharacter<I> {
         if w.portal != ThumpKind::WindowFrame || !w.portal_can_climb {
             return;
         }
-        self.drop_heavy_items();
+        self.drop_heavy_items_in(cx);
         set_params(self, frame, cx);
         self.report_event("EventClimbWindow");
     }
 
-    /// `dropHeavyItems()`: nothing for a character with empty hands.
-    /// TODO(items): a player's heavy hand items onto the floor
-    /// (`AddWorldInventoryItem` at `Rand.Next(0.1f, 0.9f)` twice).
-    pub fn drop_heavy_items(&mut self) {}
+    /// `dropHeavyItems()` into the states' world ([`crate::character::state::StateWorld::floor`];
+    /// nothing drops without one). `climbThroughWindow*`,
+    /// `climbThroughWindowFrame`, `climbSheetRope`, `climbDownSheetRope`
+    /// and `IsoPlayer.climbOverWall` run it first.
+    pub fn drop_heavy_items_in(&mut self, cx: &mut StateCx<'_, I>) {
+        let (sm, ctx) = (cx.sm, cx.ctx);
+        if let Some(floor) = cx.world.floor() {
+            self.drop_heavy_items(sm, FloorCx::new(ctx, floor));
+        }
+    }
+
+    /// `dropHandItems()` into the states' world ([`crate::character::state::StateWorld::floor`];
+    /// nothing drops without one).
+    pub fn drop_hand_items_in(&mut self, cx: &mut StateCx<'_, I>) {
+        let (sm, ctx) = (cx.sm, cx.ctx);
+        if let Some(floor) = cx.world.floor() {
+            self.drop_hand_items(sm, FloorCx::new(ctx, floor));
+        }
+    }
 }
 
 fn positioning<I: 'static>(owner: &GameCharacter<I>) -> Option<Positioning> {
@@ -564,6 +579,7 @@ mod tests {
         others: Vec<GameCharacter<()>>,
         thumpable: bool,
         damaged: Vec<i32>,
+        floor: crate::character::floor_drop::tests::TestFloor,
     }
 
     impl StateWorld<()> for Windowed {
@@ -603,6 +619,9 @@ mod tests {
         }
         fn damage_thumpable(&mut self, _o: ObjectRef, d: i32) {
             self.damaged.push(d);
+        }
+        fn floor(&mut self) -> Option<&mut dyn pz_inventory::floor_drop::FloorWorld> {
+            Some(&mut self.floor)
         }
     }
 
@@ -678,5 +697,29 @@ mod tests {
         assert_eq!(z.vars.y, 5.0 + (4.4 - 4.0) - 1.0);
         let p = positioning(&z).unwrap();
         assert_eq!((p.climb_dir, p.start_y, p.end_y), (IsoDirections::S, 4, 5));
+    }
+
+    #[test]
+    fn climbing_through_a_window_drops_heavy_hand_items() {
+        use crate::character::tests::{give_item, player};
+        use pz_inventory::ItemClass;
+        let (sm, mut chars) = fixture();
+        let ctx = Recorder::default();
+        let mut w = Windowed::default();
+        let mut p = player(&sm, &mut chars);
+        (p.vars.x, p.vars.y) = (5.3, 5.6);
+        p.path.current_square = Some((5, 5, 0));
+        give_item(&sm, &mut p, ItemClass::Container, "Duffel", 1, |_| {}, |_| {});
+        give_item(&sm, &mut p, ItemClass::Normal, "Spoon", 2, |_| {}, |_| {});
+        p.set_primary_hand_item(&sm, Some(2));
+        p.set_secondary_hand_item(&sm, Some(1));
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        p.climb_through_window(WIN, &mut cx);
+        assert!(positioning(&p).is_some());
+        let _ = cx;
+        // The bag falls on the square the climb starts from; the spoon stays.
+        assert_eq!(w.floor.put.iter().map(|d| (d.0, d.1)).collect::<Vec<_>>(), [((5, 5, 0), 1)]);
+        assert_eq!((p.items.primary_hand_item, p.items.secondary_hand_item), (Some(2), None));
+        assert!(p.items.item(1).is_none());
     }
 }

@@ -50,6 +50,8 @@ use crate::bind_registry::{java_error, key_arg, key_value, shared_script_manager
 use crate::bind_skills::{perk_arg, perk_value};
 use crate::expose::{bool_arg, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this};
 use pz_characters::character::item_owner::CharacterItemOwner;
+use pz_characters::character::FloorCx;
+use pz_inventory::floor_drop::FloorWorld;
 use pz_characters::character::{CharacterStatRef, CharacterStats};
 use pz_characters::character::{
     ChevronColor, DefaultSimContext, GameCharacter, MoodleLevel, Moodles, SimContext, SimEvent, Stats,
@@ -89,6 +91,23 @@ thread_local! {
     static SINK: RefCell<Option<EventSink>> = const { RefCell::new(None) };
     static HANDLES: RefCell<HashMap<(Handle, usize, usize), Value>> = RefCell::new(HashMap::new());
     static COLORS: RefCell<HashMap<usize, (Rc<Color>, Value)>> = RefCell::new(HashMap::new());
+    static FLOOR: RefCell<Option<FloorWorldRef>> = const { RefCell::new(None) };
+}
+
+/// The world the bound characters' items fall into.
+pub type FloorWorldRef = Rc<RefCell<dyn FloorWorld>>;
+
+/// Makes `floor` the world the bound characters' items drop into
+/// (`setWornItem`'s `forceDropTooHeavy`, `dropHandItems`,
+/// `dropHeavyItems`): the engine's wrapper that runs
+/// `pz_world::square_mutation::FloorDropEnv::new(&mut env, world_age_hours)`
+/// for each call. `None` (the default): nothing drops.
+pub fn install_floor_world(floor: Option<FloorWorldRef>) {
+    FLOOR.with(|f| *f.borrow_mut() = floor);
+}
+
+fn floor_world() -> Option<FloorWorldRef> {
+    FLOOR.with(|f| f.borrow().clone())
 }
 
 /// Makes `ctx` the singletons the bound characters read.
@@ -243,6 +262,8 @@ pub(crate) fn with_ctx<R>(
                 SimEvent::PlayerGetDamage { kind, amount } => {
                     ("OnPlayerGetDamage", vec![chr.clone(), Value::str(kind), Value::Num(f64::from(amount))])
                 }
+                SimEvent::ContainerUpdate => ("OnContainerUpdate", vec![]),
+                SimEvent::ItemFall(item) => ("onItemFall", vec![crate::bind_items::item_value(&item)]),
                 _ => continue,
             };
             sink(c.thread, name, &args);
@@ -455,8 +476,12 @@ fn set_worn_item(
     force_drop_too_heavy: bool,
 ) -> LuaResult<()> {
     let id = opt_item_id(c, item)?;
+    let floor = floor_world();
     let changed = crate::bind_appearance::with_styles(c.thread, |st| {
-        chr.borrow_mut().set_worn_item(sm, Some(st), location, id, force_drop_too_heavy)
+        let ctx = current_sim_context();
+        let mut f = floor.as_ref().map(|f| f.borrow_mut());
+        let cx = f.as_deref_mut().map(|f| FloorCx::new(&*ctx, f));
+        chr.borrow_mut().set_worn_item(sm, Some(st), location, id, force_drop_too_heavy, cx)
     })
     .map_err(java_error)?;
     if changed && id.is_some() {
@@ -505,10 +530,39 @@ fn register_clothing(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let chr = chr_of(c)?;
         let id = opt_item_id(c, 1)?;
         let force = c.nargs() <= 2 || bool_arg(c, 2);
-        crate::bind_appearance::with_styles(c.thread, |st| chr.borrow_mut().remove_worn_item(&s, Some(st), id, force))
-            .map_err(java_error)?;
+        let floor = floor_world();
+        crate::bind_appearance::with_styles(c.thread, |st| {
+            let ctx = current_sim_context();
+            let mut f = floor.as_ref().map(|f| f.borrow_mut());
+            let cx = f.as_deref_mut().map(|f| FloorCx::new(&*ctx, f));
+            chr.borrow_mut().remove_worn_item(&s, Some(st), id, force, cx)
+        })
+        .map_err(java_error)?;
         Ok(0)
     });
+    // `dropHandItems()` / `dropHeavyItems()` into the installed floor
+    // world (nothing drops without one), firing `OnContainerUpdate` and
+    // `onItemFall`.
+    for (name, hand) in [("dropHandItems", true), ("dropHeavyItems", false)] {
+        let s = sm.clone();
+        b.method(name, move |c| {
+            let chr = chr_of(c)?;
+            let Some(floor) = floor_world() else { return Ok(0) };
+            let v = character_value(&chr);
+            with_ctx(c, &v, |ctx| {
+                let mut f = floor.borrow_mut();
+                let cx = FloorCx::new(ctx, &mut *f);
+                let mut chr = chr.borrow_mut();
+                if hand {
+                    chr.drop_hand_items(&s, cx);
+                } else {
+                    chr.drop_heavy_items(&s, cx);
+                }
+                Ok(())
+            })?;
+            Ok(0)
+        });
+    }
     let s = sm.clone();
     b.method("clearWornItems", move |c| {
         chr_of(c)?.borrow_mut().clear_worn_items(&s);
@@ -1517,7 +1571,7 @@ mod tests {
         let log: Rc<RefCell<Vec<String>>> = Rc::default();
         let l = log.clone();
         install_event_sink(Rc::new(move |_t: &mut Thread, name: &str, args: &[Value]| {
-            let rest: Vec<String> = args[1..].iter().map(pz_kahlua::exec::java_value_of).collect();
+            let rest: Vec<String> = args.iter().skip(1).map(pz_kahlua::exec::java_value_of).collect();
             l.borrow_mut().push(format!("{name} {}", rest.join(" ")));
         }));
         (t, chr, log)
@@ -1718,6 +1772,103 @@ mod tests {
         assert!(run(&mut t, "player:getWornItem(ItemBodyLocation.HAT)").is_err());
         assert!(run(&mut t, "player:isEquippedClothing(nil)").is_err());
         run(&mut t, "player:clearWornItems()").unwrap();
+    }
+
+    /// A floor that records the ids put down and where.
+    #[derive(Default)]
+    struct RecFloor(Vec<((i32, i32, i32), i32)>);
+
+    impl FloorWorld for RecFloor {
+        fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<(i32, i32, i32)> {
+            Some((x, y, z))
+        }
+        fn apparent_z(&self, sq: (i32, i32, i32), _dx: f32, _dy: f32) -> f32 {
+            sq.2 as f32
+        }
+        fn rand_float(&mut self, min: f32, _max: f32) -> f32 {
+            min
+        }
+        fn add_world_inventory_item(&mut self, sq: (i32, i32, i32), item: &pz_inventory::shared::ItemRef, _x: f32, _y: f32, _h: f32) {
+            self.0.push((sq, item.borrow().id));
+        }
+    }
+
+    /// `setWornItem`'s `forceDropTooHeavy` and `dropHandItems` from Lua
+    /// drop into the installed floor world.
+    #[test]
+    fn worn_swap_and_hand_items_drop_to_the_installed_floor() {
+        let (mut t, player, log) = setup_with(clothing_scripts());
+        let mut env = crate::bind_items::GameItemEnv::new(None);
+        env.rand = Some(pz_core::random::Rand::new(7));
+        crate::bind_items::install_item_env(Rc::new(env));
+        crate::bind_items::register(&mut t);
+        crate::bind_item_container::register(&mut t);
+        crate::bind_item_visual::register(&mut t);
+        let group = pz_characters::BodyLocationGroup::new("Human").unwrap();
+        {
+            let mut p = player.borrow_mut();
+            p.init_worn_items(&shared_script_manager(), Rc::new(RefCell::new(group)));
+            p.path.current_square = Some((4, 6, 0));
+            p.items.inventory.borrow_mut().capacity = 1;
+        }
+        // Without a floor world nothing drops.
+        install_floor_world(None);
+        run(
+            &mut t,
+            r#"
+            local L = ItemBodyLocation
+            player:getBodyLocationGroup():getOrCreateLocation(L.JACKET)
+            local inv = player:getInventory()
+            coat = inv:AddItem("Base.TestCoat")
+            tee = inv:AddItem("Base.TestTee")
+            player:setWornItem(L.JACKET, coat)
+            player:setWornItem(L.JACKET, tee)
+            assert(coat:getContainer() == inv)
+            player:setWornItem(L.JACKET, coat)
+            "#,
+        )
+        .unwrap();
+        // A name of their own, so the items weigh their script weight (an
+        // item named by its full type weighs 0, as in the original).
+        for i in player.borrow().items.inventory_items() {
+            i.borrow_mut().name = "Invented".into();
+        }
+        let floor = Rc::new(RefCell::new(RecFloor::default()));
+        install_floor_world(Some(floor.clone()));
+        // The swap leaves the coat unequipped (1; the worn tee weighs 0 with
+        // this context's multiplier): no room for another 1 in a capacity
+        // of 1, so it drops; with forceDropTooHeavy false it stays.
+        run(
+            &mut t,
+            r#"
+            local L = ItemBodyLocation
+            local inv = player:getInventory()
+            player:setWornItem(L.JACKET, tee, false)
+            assert(coat:getContainer() == inv)
+            player:setWornItem(L.JACKET, coat, false)
+            player:setWornItem(L.JACKET, tee)
+            assert(coat:getContainer() == nil and player:getWornItem(L.JACKET) == tee)
+            boots = inv:AddItem("Base.TestBoots")
+            player:setPrimaryHandItem(boots)
+            player:dropHandItems()
+            assert(player:getPrimaryHandItem() == nil and boots:getContainer() == nil)
+            "#,
+        )
+        .unwrap();
+        install_floor_world(None);
+        let ids: Vec<i32> = floor.borrow().0.iter().map(|d| d.1).collect();
+        let (coat, boots) = {
+            let id = |n: &str| match t.globals().get_str(n) {
+                Value::Object(o) => o.as_any().downcast_ref::<crate::bind_items::LuaInventoryItem>().map(|i| i.item.borrow().id),
+                _ => None,
+            };
+            (id("coat"), id("boots"))
+        };
+        assert_eq!(ids.into_iter().map(Some).collect::<Vec<_>>(), [coat, boots]);
+        assert!(floor.borrow().0.iter().all(|d| d.0 == (4, 6, 0)));
+        let log = log.borrow();
+        assert!(log.iter().any(|l| l.starts_with("OnContainerUpdate")));
+        assert!(log.iter().any(|l| l.starts_with("onItemFall")));
     }
 
     /// Item-side `isEquipped()`/`isWorn()`/`isInPlayerInventory()` reach

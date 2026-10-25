@@ -412,6 +412,15 @@ pub trait StateWorld<I> {
     fn physics(&mut self) -> Option<&mut dyn crate::character::firearm::PhysicsWorld> {
         None
     }
+
+    // ---- items on the floor ----
+
+    /// The world a character's items fall into (`getSolidFloorAt`,
+    /// `getApparentZ`, `Rand`, `AddWorldInventoryItem`): `pz-world`'s
+    /// `square_mutation::FloorDropEnv`. `None`: nothing drops.
+    fn floor(&mut self) -> Option<&mut dyn pz_inventory::floor_drop::FloorWorld> {
+        None
+    }
     /// `chr.primaryHandModel.getAttachmentWorldPosition(MUZZLE)`: `None`
     /// without a hand model, its script or a muzzle attachment.
     fn muzzle_attachment(&self, _chr: i32) -> Option<crate::character::firearm::MuzzleAttachment> {
