@@ -239,6 +239,17 @@ pub(crate) fn with_ctx<R>(
     r.map_err(java_error)
 }
 
+/// Runs `f` with the installed context and the shared `ClimateManager`,
+/// for reads outside a Lua call (the HUD); events are dropped.
+pub(crate) fn with_sim_context<R>(f: impl FnOnce(&dyn SimContext) -> R) -> R {
+    let ctx = CallContext {
+        base: CONTEXT.with(|c| c.borrow().clone()),
+        events: RefCell::default(),
+        game_time: crate::bind_climate::shared_game_time(),
+    };
+    f(&ctx)
+}
+
 // ---- objects ------------------------------------------------------------
 
 /// A character (`IsoGameCharacter` and its subclasses).

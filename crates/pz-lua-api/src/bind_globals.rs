@@ -2,7 +2,7 @@
 //! ported subsystem yet. Subsystem-specific globals live in their bind_*
 //! modules.
 
-use crate::expose::{global, int_arg, str_arg};
+use crate::expose::{global, str_arg};
 use pz_kahlua::{TableRef, Thread, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -138,12 +138,7 @@ pub fn register(thread: &mut Thread) {
     });
     // Only returns a trace in debug mode with DebugType.ISUIStackTrace on.
     global(thread, "getISUIStackTrace", |c| Ok(c.push(Value::Nil)));
-    global(thread, "getNumActivePlayers", |c| Ok(c.push(0.0)));
-    global(thread, "getPlayer", |c| Ok(c.push(Value::Nil)));
-    global(thread, "getSpecificPlayer", |c| {
-        let _ = int_arg(c, 0);
-        Ok(c.push(Value::Nil))
-    });
+    // getPlayer, getSpecificPlayer, getNumActivePlayers: bind_players.
 }
 
 #[cfg(test)]

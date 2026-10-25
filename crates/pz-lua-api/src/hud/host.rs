@@ -304,6 +304,29 @@ impl HudGameTime for SharedGameTime {
             .borrow()
             .get_true_multiplier()
     }
+    fn realworld_seconds_since_last_update(&self) -> f32 {
+        crate::bind_climate::shared_game_time()
+            .borrow()
+            .realworld_seconds_since_last_update()
+    }
+    fn time_of_day(&self) -> f32 {
+        use pz_core::game_time::GameTimeContext;
+        let ctx = crate::bind_climate::LuaClimateContext::new();
+        let client = crate::bind_core::shared_core().borrow().is_client;
+        let gt = crate::bind_climate::shared_game_time();
+        let g = gt.borrow();
+        if client && ctx.fast_forward() {
+            g.server_time_of_day
+        } else {
+            g.time_of_day
+        }
+    }
+    fn day(&self) -> i32 {
+        crate::bind_climate::shared_game_time().borrow().day
+    }
+    fn month(&self) -> i32 {
+        crate::bind_climate::shared_game_time().borrow().month
+    }
 }
 
 /// The installed inputs.
