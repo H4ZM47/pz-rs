@@ -19,10 +19,8 @@ use pz_inventory::InventoryItem;
 use pz_kahlua::{NativeFunction, TableRef, Value};
 use pz_lua_api::lua_manager::run_lua;
 use pz_lua_api::LuaManager;
-use pz_scripts::objects::items::Item;
 use pz_scripts::script_type::ScriptType;
 use pz_vehicles::env::{self, GameTimeState, SandboxVehicle, SquareInfo, VehicleWorld};
-use pz_vehicles::items::ItemStats;
 use pz_vehicles::part::PartItem;
 use pz_vehicles::physics::replay::ReplayPhysics;
 use pz_vehicles::physics::Bullet;
@@ -69,75 +67,71 @@ impl VehicleWorld for OracleWorld {
 }
 
 struct Items {
-    sm: Rc<pz_scripts::ScriptManager>,
     registry: &'static ScriptItems,
+    ctx: ItemCtx,
 }
 
-/// The `Rand` draws `Item.InstanceItem` makes before the id: a radio's
-/// `setRandomChannel` (no presets headless) and the `OutfitRNG` seed.
-fn instance_draw_bounds(
-    sm: &pz_scripts::ScriptManager,
-    t: &pz_inventory::ItemTemplate,
-) -> Vec<i32> {
-    let mut b = Vec::new();
-    if t.class == pz_inventory::ItemClass::Radio {
-        if let Some(i) = sm
-            .find_item(&t.full_type(), true)
-            .and_then(|s| s.downcast::<Item>())
-        {
-            let i = i.borrow();
-            let min = if (200..=1_000_000).contains(&i.min_channel) {
-                i.min_channel
-            } else {
-                200
-            };
-            let max = if (200..=1_000_000).contains(&i.max_channel) {
-                i.max_channel
-            } else {
-                1_000_000
-            };
-            b.push(-(max - min));
-        }
+/// `Rand` for the item factory (`InventoryItemFactory.CreateItem`).
+struct VehicleRand;
+impl pz_inventory::component::FactoryRng for VehicleRand {
+    fn next_int(&mut self, max: i32) -> i32 {
+        rand::next(max)
     }
-    b.push(i32::MAX);
-    b
+    fn next_float(&mut self, min: f32, max: f32) -> f32 {
+        rand::next_float(min, max)
+    }
 }
 
 impl env::ItemFactory for Items {
-    /// `InventoryItemFactory.CreateItem(fullType)` with the original's
-    /// `Rand` draws.
+    /// `InventoryItemFactory.CreateItem(fullType)` (the factory makes the
+    /// original's `Rand` draws).
     fn create_item(&self, full_type: &str) -> Option<InventoryItem> {
-        use pz_inventory::ItemEnv as _;
         let id = self.registry.dictionary.item_id(full_type)?;
-        let t = self.registry.template(id)?;
-        for b in instance_draw_bounds(&self.sm, &t) {
-            if b < 0 {
-                rand::next_range(0, -b);
-            } else {
-                rand::next(b);
-            }
-        }
-        let mut item = pz_inventory::env::create_item(self.registry, id)?;
-        // `Item.InstanceItem` copies these from the script; the item
-        // templates do not carry them yet.
-        if let Some(s) = self
-            .sm
-            .find_item(full_type, true)
-            .and_then(|s| s.downcast::<Item>())
-        {
-            let s = s.borrow();
-            item.max_capacity = s.max_capacity;
-            item.item_capacity = s.item_capacity as f32;
-        }
-        item.id = rand::next(2_146_250_223) + 1_233_423;
-        Some(item)
+        pz_inventory::env::create_item(self.registry, id)
     }
-    fn stats(&self, full_type: &str) -> ItemStats {
-        self.sm
-            .find_item(full_type, true)
-            .and_then(|s| s.downcast::<Item>())
-            .map(|i| ItemStats::from_script(&i.borrow()))
-            .unwrap_or_default()
+    fn context(&self) -> &dyn pz_inventory::ItemContext {
+        &self.ctx
+    }
+}
+
+/// Weights read item scripts (ammo) and decode fluid containers.
+struct ItemCtx {
+    registry: &'static ScriptItems,
+}
+impl pz_inventory::ItemContext for ItemCtx {
+    fn world_age_hours(&self) -> f64 {
+        0.0
+    }
+    fn multiplier(&self) -> f32 {
+        1.0
+    }
+    fn rain_intensity(&self) -> f32 {
+        0.0
+    }
+    fn is_raining(&self) -> bool {
+        false
+    }
+    fn equipped_or_worn_encumbrance_multiplier(&self) -> f64 {
+        1.0
+    }
+    fn basic_mask_defense(&self) -> f32 {
+        0.0
+    }
+    fn improvised_gas_mask_defense(&self) -> f32 {
+        0.0
+    }
+    fn standard_gas_mask_defense(&self) -> f32 {
+        0.0
+    }
+    fn script(&self, name: &str) -> Option<Rc<pz_inventory::ItemTemplate>> {
+        use pz_inventory::ItemEnv as _;
+        let full = if name.contains('.') {
+            name.to_string()
+        } else {
+            format!("Base.{name}")
+        };
+        let id = self.registry.dictionary.item_id(&full)?;
+        self.registry.template(id)
     }
 }
 
@@ -145,7 +139,6 @@ impl env::ItemFactory for Items {
 /// `InventoryItemFactory.CreateItem` makes for every loaded item (its id).
 struct DrawingItems<'a> {
     inner: &'a ScriptItems,
-    sm: &'a pz_scripts::ScriptManager,
     bounds: std::cell::RefCell<Vec<i32>>,
 }
 
@@ -154,17 +147,7 @@ impl pz_inventory::ItemEnv for DrawingItems<'_> {
         self.inner.template(id)
     }
     fn exists(&self, id: i16) -> bool {
-        let e = self.inner.exists(id);
-        if e {
-            let t = self.inner.template(id);
-            let mut b = self.bounds.borrow_mut();
-            match &t {
-                Some(t) => b.extend(instance_draw_bounds(self.sm, t)),
-                None => b.push(i32::MAX),
-            }
-            b.push(2_146_250_223);
-        }
-        e
+        self.inner.exists(id)
     }
     fn full_type(&self, id: i16) -> Option<String> {
         self.inner.full_type(id)
@@ -202,6 +185,10 @@ impl pz_inventory::ItemEnv for DrawingItems<'_> {
     fn rand_next(&self, bound: i32) -> i32 {
         self.bounds.borrow_mut().push(bound);
         0
+    }
+    fn rand_float(&self, min: f32, _max: f32) -> f32 {
+        self.bounds.borrow_mut().push(i32::MIN);
+        min
     }
 }
 
@@ -552,7 +539,9 @@ fn main() {
     );
     let mut registry = ScriptItems::new(&sm, dict, &names);
     registry.blood_body_parts = save_tables.blood_body_parts;
-    registry.world_sprites = pz_world::save::items::moveable_sprites(&sprites);
+    registry.rand = std::cell::RefCell::new(Some(Box::new(VehicleRand)));
+    // The harness runs without tile definitions (`IsoSpriteManager.namedMap`
+    // is empty), so `Moveable.ReadFromWorldSprite` finds no sprite there.
     let jar = pz_classfile::Jar::open(game.join("projectzomboid.jar")).unwrap();
     let ectx = pz_entity::BasicContext {
         attributes: pz_entity::AttributeTypes::from_jar(&jar).unwrap(),
@@ -569,8 +558,8 @@ fn main() {
     pz_vehicles::vehicle::set_script_manager(sm.clone());
     let registry: &'static ScriptItems = Box::leak(Box::new(registry));
     env::set_items(Rc::new(Items {
-        sm: sm.clone(),
         registry,
+        ctx: ItemCtx { registry },
     }));
     env::set_events(Rc::new(NoSound));
     let sandbox_lines: Vec<String> = std::fs::read_to_string(oracle.join("sandbox.txt"))
@@ -626,6 +615,10 @@ fn main() {
         println!("lua load: {}", e.lines().next().unwrap_or(""));
     }
 
+    if a[5] == "--dispatch" {
+        pz_vehicles::lua::with_thread(&mut lua.thread, || run_dispatch(oracle, &sandbox_lines));
+        return;
+    }
     if a[5] == "--spawn" {
         pz_vehicles::lua::with_thread(&mut lua.thread, || run_spawn(oracle, &sandbox_lines));
         return;
@@ -642,7 +635,8 @@ fn main() {
         script: Option<String>,
     }
     let mut cases = Vec::new();
-    if a[5] == "--scripts" {
+    let e2e = a[5] == "--e2e";
+    if a[5] == "--scripts" || e2e {
         let mut i = 1;
         while oracle.join(format!("s{i}")).exists() {
             let dir = oracle.join(format!("s{i}"));
@@ -655,7 +649,11 @@ fn main() {
                 cases.push(Case {
                     id: i,
                     dir,
-                    chunk: (1250 + i % 7, 1100 + i / 7),
+                    chunk: if e2e {
+                        (1348 + i % 8, 1203 + (i / 8) % 8)
+                    } else {
+                        (1250 + i % 7, 1100 + i / 7)
+                    },
                     saved: None,
                     bounds: Vec::new(),
                     script,
@@ -683,7 +681,6 @@ fn main() {
             };
             let drawing = DrawingItems {
                 inner: registry,
-                sm: &sm,
                 bounds: Default::default(),
             };
             let saved = match row.load(class, offsets, &drawing) {
@@ -704,13 +701,29 @@ fn main() {
             });
         }
     }
+    // `--e2e`: pz-bullet with the region's chunk shapes instead of the
+    // recorded calls (the harness ran the original's libPZBullet).
+    let region_bufs: Vec<Vec<u8>> = if e2e {
+        let region = std::env::var("E2E_REGION").expect("E2E_REGION");
+        let data = std::fs::read(Path::new(&region).join("tobullet.bin")).unwrap();
+        let mut out = Vec::new();
+        let mut p = 0;
+        while p < data.len() {
+            let n = i32::from_le_bytes(data[p + 12..p + 16].try_into().unwrap()) as usize;
+            out.push(data[p + 16..p + 16 + n].to_vec());
+            p += 16 + n;
+        }
+        out
+    } else {
+        Vec::new()
+    };
     let mut totals = (0usize, 0usize, 0usize, 0usize, 0usize);
     for case in cases {
         let id = case.id;
         let Ok(java_dump) = std::fs::read_to_string(case.dir.join("dump.txt")) else {
             continue;
         };
-        let blog = std::fs::read_to_string(case.dir.join("bullet.log")).unwrap();
+        let blog = std::fs::read_to_string(case.dir.join("bullet.log")).unwrap_or_default();
         let java_lines: Vec<&str> = java_dump
             .lines()
             .filter(|l| l.starts_with('V') || l.starts_with('E') || l.starts_with("D loadDraws"))
@@ -726,12 +739,37 @@ fn main() {
         let times: Vec<&str> = java_dump.lines().filter(|l| l.starts_with("F ")).collect();
         let mut rust_lines: Vec<String> = Vec::new();
         let replay = ReplayPhysics::from_log(&blog);
-        Bullet::install(Box::new(replay.clone()));
+        if e2e {
+            let script = case.script.clone().unwrap_or_default();
+            let params = pz_vehicles::vehicle::find_vehicle_script(&script)
+                .and_then(|s| s.borrow().bullet_params().map(|p| p.to_vec()));
+            // Each case ends by installing `NoPhysics`: a new PzBullet per
+            // case (the scripts the case uses are defined below).
+            Bullet::install(Box::new(pz_bullet::api::PzBullet::new()));
+            Bullet::call(|b| {
+                b.destroy_world();
+                b.init_world(-250, -250, 250, 250, -64000, -64000, false)?;
+                b.activate_chunk_map(0, 1345, 1200, 15)?;
+                for buf in &region_bufs {
+                    b.to_bullet(buf);
+                }
+                if let Some(p) = &params {
+                    b.define_vehicle_script(&script, p)?;
+                }
+                Ok(())
+            });
+        } else {
+            Bullet::install(Box::new(replay.clone()));
+        }
         let frames = times.len() as i32 - 1;
         pz_vehicles::lua::with_thread(&mut lua.thread, || {
             manager::reset();
             world_sim::reset();
-            world_sim::set_created(0.0, 0.0);
+            if e2e {
+                world_sim::set_created(-64000.0, -64000.0);
+            } else {
+                world_sim::set_created(0.0, 0.0);
+            }
             rand::seed_standard(id as i64);
             rand::seed_lua(id as i64 * 31 + 7);
             apply_time(times[0]);
@@ -739,7 +777,9 @@ fn main() {
             let v = match &case.saved {
                 Some(saved) => pz_vehicles::save::from_save_with(saved, || {
                     for b in &bounds {
-                        if *b < 0 {
+                        if *b == i32::MIN {
+                            rand::next_float(0.0, 1.0);
+                        } else if *b < 0 {
                             rand::next_range(0, -*b);
                         } else {
                             rand::next(*b);
@@ -828,7 +868,11 @@ fn main() {
             v.remove_from_world();
         });
         Bullet::install(Box::new(pz_vehicles::physics::NoPhysics));
-        let (mism, remaining) = (replay.mismatches(), replay.remaining());
+        let (mism, remaining) = if e2e {
+            (Vec::new(), 0)
+        } else {
+            (replay.mismatches(), replay.remaining())
+        };
         let rust_draws = rust_lines
             .iter()
             .find(|l| l.starts_with("D loadDraws"))
@@ -897,6 +941,9 @@ fn main() {
             remaining,
             pz_vehicles::lua::take_errors().len()
         );
+        for e in pz_vehicles::physics::take_exceptions().iter().take(3) {
+            println!("  physics exception: {e}");
+        }
         for e in pz_vehicles::lua::take_errors().iter().take(2) {
             println!("  lua: {}", e.lines().next().unwrap_or(""));
         }
@@ -950,8 +997,7 @@ impl pz_vehicles::spawn::SpawnWorld for SpawnTestWorld {
 
 /// `--spawn`: the `IsoChunk.AddVehicles` helpers on the harness's zones,
 /// compared with `spawn.txt`.
-fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
-    use pz_vehicles::spawn::{self, ChunkSpawner, SpawnOptions, VehicleZone};
+fn spawn_options(sandbox_lines: &[String]) -> pz_vehicles::spawn::SpawnOptions {
     let opt = |k: &str| {
         sandbox_lines.iter().find_map(|l| {
             let (a, b) = l.split_once(' ')?;
@@ -965,7 +1011,7 @@ fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
             }
         })
     };
-    let mut options = SpawnOptions::default();
+    let mut options = pz_vehicles::spawn::SpawnOptions::default();
     if let Some(v) = opt("CarSpawnRate") {
         options.car_spawn_rate = v as i32;
     }
@@ -978,6 +1024,12 @@ fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
     if let Some(v) = opt("EnableVehicles") {
         options.enable_vehicles = v != 0.0;
     }
+    options
+}
+
+fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
+    use pz_vehicles::spawn::{self, ChunkSpawner, VehicleZone};
+    let options = spawn_options(sandbox_lines);
     world_sim::set_created(0.0, 0.0);
     if std::env::var_os("SPAWN_DEBUG").is_some() {
         let t = pz_vehicles::vehicle_type::type_from_name("parkingstall");
@@ -1019,9 +1071,12 @@ fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
             h: n(7),
             dir: pz_world::IsoDirections::from_name(t[8]),
             face_direction: t[9] == "true",
-            ..Default::default()
+            geometry_type: pz_world::ZoneGeometryType::Invalid,
+            points: Vec::new(),
+            polyline_width: 0,
         };
         if kind == 1 || kind == 3 {
+            zone.geometry_type = pz_world::ZoneGeometryType::Polyline;
             zone.points = t[11].split(',').map(|v| v.parse().unwrap()).collect();
             zone.polyline_width = n(10);
         }
@@ -1030,7 +1085,9 @@ fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
         let mut sp = ChunkSpawner::new(wx, wy, &world, options.clone());
         match kind {
             0 => sp.on_zone(&zone, name),
-            1 => sp.on_zone_polyline(&zone, name),
+            1 => {
+                sp.on_zone_polyline(&zone, name);
+            }
             3 => sp.traffic_jam_polyline(&zone, name),
             _ => {
                 let d = match name {
@@ -1090,5 +1147,165 @@ fn run_spawn(oracle: &std::path::Path, sandbox_lines: &[String]) {
     println!(
         "spawn cases={} ok={ok} bad={bad} vehicles={vehicles}",
         java.len()
+    );
+}
+
+/// The harness's spawned-vehicle line.
+fn spawn_line(v: &pz_vehicles::VehicleRef) -> String {
+    let st = v.st();
+    let q = st.saved_rot;
+    let o = st.jni_transform.origin;
+    format!(
+        "V {} skin={} type={} zone={} pos={},{},{} rot={},{},{},{} o={},{},{} rust={} alarm={} key={} color={}",
+        st.script_name,
+        st.skin_index,
+        st.vehicle_type,
+        st.respawn_zone,
+        fh(st.x),
+        fh(st.y),
+        fh(st.z),
+        fh(q.x),
+        fh(q.y),
+        fh(q.z),
+        fh(q.w),
+        fh(o.x),
+        fh(o.y),
+        fh(o.z),
+        fh(st.rust),
+        st.alarmed,
+        st.key_id,
+        st.do_color
+    )
+}
+
+/// The synthetic chunk map with one meta cell holding the case's zones.
+struct DispatchWorld {
+    zones: Vec<pz_vehicles::spawn::VehicleZone>,
+}
+
+impl pz_vehicles::spawn::SpawnWorld for DispatchWorld {
+    fn square_exists(&self, x: i32, y: i32, z: i32) -> bool {
+        SpawnTestWorld.square_exists(x, y, z)
+    }
+    fn is_outside(&self, x: i32, y: i32, z: i32) -> bool {
+        SpawnTestWorld.is_outside(x, y, z)
+    }
+    /// `Zone.contains` for rectangles; the harness's polylines have no
+    /// width, so they contain nothing.
+    fn vehicle_zone_at(&self, x: i32, y: i32, z: i32) -> bool {
+        self.zones.iter().any(|zn| {
+            z == zn.z
+                && x >= zn.x
+                && x < zn.x + zn.w
+                && y >= zn.y
+                && y < zn.y + zn.h
+                && !zn.is_polyline()
+        })
+    }
+    fn vehicle_zones(&self, _cx: i32, _cy: i32) -> Vec<pz_vehicles::spawn::VehicleZone> {
+        self.zones.clone()
+    }
+    fn chunk_vehicles(&self, _wx: i32, _wy: i32) -> Option<Vec<pz_vehicles::VehicleRef>> {
+        Some(Vec::new())
+    }
+}
+
+/// `--dispatch`: `IsoChunk.AddVehicles` end to end on `dispatch.txt`'s
+/// zone lists.
+fn run_dispatch(oracle: &std::path::Path, sandbox_lines: &[String]) {
+    use pz_vehicles::spawn::{self, ChunkSpawner, VehicleZone};
+    world_sim::set_created(0.0, 0.0);
+    let options = spawn_options(sandbox_lines);
+    let text = std::fs::read_to_string(oracle.join("dispatch.txt")).unwrap();
+    let mut lines = text.lines();
+    let head: Vec<i32> = lines
+        .next()
+        .unwrap()
+        .split(' ')
+        .skip(1)
+        .map(|v| v.parse().unwrap())
+        .collect();
+    let (wx, wy) = (head[0], head[1]);
+    struct Case {
+        id: i64,
+        zones: Vec<VehicleZone>,
+        expect: Vec<String>,
+    }
+    let mut cases: Vec<Case> = Vec::new();
+    for l in lines {
+        let t: Vec<&str> = l.split(' ').collect();
+        if t[0] == "C" {
+            cases.push(Case {
+                id: t[1].parse().unwrap(),
+                zones: Vec::new(),
+                expect: Vec::new(),
+            });
+        } else if t[0] == "Z" {
+            let n = |k: usize| t[k].parse::<i32>().unwrap();
+            let poly = t[8] != "-";
+            cases.last_mut().unwrap().zones.push(VehicleZone {
+                name: if t[1] == "-" {
+                    String::new()
+                } else {
+                    t[1].to_string()
+                },
+                zone_type: "parkingstall".to_string(),
+                x: n(2),
+                y: n(3),
+                z: 0,
+                w: n(4),
+                h: n(5),
+                dir: pz_world::IsoDirections::from_name(t[6]),
+                face_direction: t[7] == "true",
+                geometry_type: if poly {
+                    pz_world::ZoneGeometryType::Polyline
+                } else {
+                    pz_world::ZoneGeometryType::Invalid
+                },
+                points: if poly {
+                    t[8].split(',').map(|v| v.parse().unwrap()).collect()
+                } else {
+                    Vec::new()
+                },
+                polyline_width: 0,
+            });
+        } else if t[0] != "E" {
+            cases.last_mut().unwrap().expect.push(l.to_string());
+        }
+    }
+    let (mut ok, mut bad, mut vehicles) = (0, 0, 0);
+    for c in &cases {
+        let world = DispatchWorld {
+            zones: c.zones.clone(),
+        };
+        spawn::reset_checked_vehicles();
+        rand::seed_standard(9000 + c.id);
+        let mut sp = ChunkSpawner::new(wx, wy, &world, options.clone());
+        sp.add_vehicles();
+        let mut got: Vec<String> = sp.vehicles.iter().map(spawn_line).collect();
+        vehicles += got.len();
+        got.push(format!("R {}", rand::next(1_000_000_000)));
+        if got == c.expect {
+            ok += 1;
+        } else {
+            bad += 1;
+            if bad <= 4 {
+                println!(
+                    "case {}: {:?}",
+                    c.id,
+                    c.zones.iter().map(|z| &z.name).collect::<Vec<_>>()
+                );
+                for l in &c.expect {
+                    println!("  J {l}");
+                }
+                for l in &got {
+                    println!("  R {l}");
+                }
+            }
+        }
+    }
+    println!(
+        "dispatch cases={} ok={ok} bad={bad} vehicles={vehicles}",
+        cases.len()
     );
 }

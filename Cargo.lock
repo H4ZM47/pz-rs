@@ -1573,6 +1573,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-bullet"
+version = "0.1.0"
+
+[[package]]
 name = "pz-character-model"
 version = "0.1.0"
 dependencies = [
@@ -1715,6 +1719,7 @@ name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "pz-bullet",
  "pz-characters",
  "pz-classfile",
  "pz-core",
@@ -1798,6 +1803,7 @@ dependencies = [
 name = "pz-vehicles"
 version = "0.1.0"
 dependencies = [
+ "pz-bullet",
  "pz-fs",
  "pz-inventory",
  "pz-kahlua",

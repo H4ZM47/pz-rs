@@ -469,7 +469,8 @@ impl FoodData {
 
 impl ItemContainer {
     /// Port of `ItemContainer.getContentsWeight()` without script lookups
-    /// or fluids (no ammo or fluid weight):
+    /// (no ammo weight; fluids count through the default
+    /// [`ItemContext::fluid_amount`]):
     /// [`Self::get_contents_weight_with`] is the whole method; the
     /// equipped and worn rules (`getInventoryWeight`) are the character's.
     pub fn get_contents_weight(&self) -> f32 {

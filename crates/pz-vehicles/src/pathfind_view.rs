@@ -8,7 +8,6 @@
 //! `PathfindVehicle` (a `GameVehicle`) and `PathfindVehicles` (a
 //! `VehicleSource` and `VehicleScripts`) in the calling module.
 
-use crate::jmath::fastfloor;
 use crate::manager;
 use crate::vehicle::{BaseVehicle, VehicleRef};
 
@@ -102,16 +101,13 @@ pub fn cell_vehicles() -> Vec<VehicleRef> {
     manager::cell_vehicles()
 }
 
-/// The cell's vehicles standing in chunk `(wx, wy)` (what `chunk.vehicles`
-/// holds for a loaded chunk), in cell order.
+/// `chunk.vehicles` of chunk `(wx, wy)` (through
+/// [`VehicleWorld::chunk_vehicles`](crate::env::VehicleWorld::chunk_vehicles));
+/// empty when the chunk is not loaded.
 pub fn chunk_vehicles(wx: i32, wy: i32) -> Vec<VehicleRef> {
-    manager::cell_vehicles()
-        .into_iter()
-        .filter(|v| {
-            let st = v.st();
-            fastfloor(st.x).div_euclid(8) == wx && fastfloor(st.y).div_euclid(8) == wy
-        })
-        .collect()
+    crate::env::world()
+        .chunk_vehicles(wx, wy)
+        .unwrap_or_default()
 }
 
 /// A registered vehicle by `vehicleId`.

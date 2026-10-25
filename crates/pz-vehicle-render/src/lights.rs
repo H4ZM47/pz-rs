@@ -7,9 +7,11 @@
 //! Wiring: `LightingJNI.checkLights` sends the players' light items, then
 //! [`cell_torches`]; with pz-world-render that is the tail of
 //! `WorldHooks::torches`. Each vehicle's [`LightbarWorldLights`] is
-//! updated from `BaseVehicle.update` and removed with the vehicle, against
-//! the cell's light list on [`WorldLighting`].
+//! applied from the state `BaseVehicle.update` reports through
+//! `VehicleEvents::lightbar_world_lights` and removed with the vehicle,
+//! against the cell's light list on [`WorldLighting`].
 
+use pz_vehicles::env::LightbarState;
 use pz_vehicles::jmath::{fastfloor, Vector3f};
 use pz_vehicles::{BaseVehicle, PartRef};
 use pz_world_render::{CellLight, WorldLighting};
@@ -78,39 +80,15 @@ pub fn cell_torches<'a>(vehicles: impl IntoIterator<Item = &'a BaseVehicle>) -> 
     vehicles.into_iter().flat_map(vehicle_torches).collect()
 }
 
-/// A lightbar lamppost (`leftLight1/2`, `rightLight1/2`): radius 8 at a
-/// square.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LightbarLamp {
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
-    pub radius: i32,
-    /// Left (`getWorldPos(0.4, 0, 0)`) or right (`-0.4`).
-    pub left: bool,
-}
-
-/// The lamppost `updateWorldLights` keeps in the cell this frame, if any
-/// (which of the two alternating light objects carries it does not change
-/// what is lit).
-pub fn lightbar_lamp(v: &BaseVehicle) -> Option<LightbarLamp> {
-    let script = v.script()?;
-    if !script.borrow().lightbar().enable {
-        return None;
-    }
+/// What `BaseVehicle.updateWorldLights` reports for the lightbar, built
+/// as pz-vehicles builds it for `VehicleEvents::lightbar_world_lights`.
+pub fn lightbar_state(v: &BaseVehicle) -> LightbarState {
     let mode = v.st().lightbar_lights_mode;
-    if !mode.is_enable() || v.battery_charge() <= 0.0 || mode.light == 0 {
-        return None;
+    LightbarState {
+        has_lightbar: v.has_lightbar(),
+        enabled: mode.is_enable() && v.battery_charge() > 0.0,
+        light: mode.light,
     }
-    let left = mode.light == 1;
-    let p = v.world_pos(if left { 0.4 } else { -0.4 }, 0.0, 0.0);
-    Some(LightbarLamp {
-        x: fastfloor(p.x),
-        y: fastfloor(p.y),
-        z: fastfloor(v.z()),
-        radius: 8,
-        left,
-    })
 }
 
 /// One of `BaseVehicle`'s four lightbar `IsoLightSource`s: its fields and,
@@ -178,18 +156,26 @@ impl LightbarWorldLights {
         )
     }
 
-    /// `BaseVehicle.updateWorldLights()`.
+    /// `BaseVehicle.updateWorldLights()` from the vehicle's current state
+    /// ([`lightbar_state`]).
     pub fn update(&mut self, v: &BaseVehicle, cell: &mut WorldLighting) {
-        let enabled = v.script().is_some_and(|s| s.borrow().lightbar().enable);
-        let mode = v.st().lightbar_lights_mode;
-        if !enabled || !mode.is_enable() || v.battery_charge() <= 0.0 || mode.light == 0 {
+        self.apply(v, lightbar_state(v), cell);
+    }
+
+    /// `BaseVehicle.updateWorldLights()` from the state pz-vehicles reports
+    /// through `VehicleEvents::lightbar_world_lights`: no lightbar, lights
+    /// off, a flat battery or light index 0 removes the lampposts; otherwise
+    /// the lit side's lamppost moves to the vehicle's square, alternating
+    /// between that side's two light objects.
+    pub fn apply(&mut self, v: &BaseVehicle, state: LightbarState, cell: &mut WorldLighting) {
+        if !state.has_lightbar || !state.enabled || state.light == 0 {
             self.remove(cell);
             return;
         }
         for b in self.left.iter_mut().chain(self.right.iter_mut()) {
             b.light.radius = 8;
         }
-        let left = mode.light == 1;
+        let left = state.light == 1;
         let p = v.world_pos(if left { 0.4 } else { -0.4 }, 0.0, 0.0);
         let (lx, ly, lz) = (fastfloor(p.x), fastfloor(p.y), fastfloor(v.z()));
         let old = if left {

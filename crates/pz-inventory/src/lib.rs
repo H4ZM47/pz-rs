@@ -36,3 +36,5 @@ pub use template::{ItemClass, ItemTemplate};
 mod gameplay_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod vehicle_tests;

@@ -118,6 +118,31 @@ pub trait VehicleWorld {
     fn is_raining(&self) -> bool {
         false
     }
+    /// `chunk.vehicles` of a chunk in the cell (runtime vehicles, in list
+    /// order); `None` when the chunk is not loaded. See
+    /// [`crate::cell_link::chunk_vehicles`].
+    fn chunk_vehicles(&self, _wx: i32, _wy: i32) -> Option<Vec<crate::VehicleRef>> {
+        None
+    }
+    /// `Bullet.updatePhysicsForLevelIfNeeded(wx, wy, level)`: when the
+    /// chunk level is marked for a physics check, clear the mark, build its
+    /// `ToBullet` buffers (`IsoChunk.updatePhysicsForLevel`, see
+    /// [`crate::chunk_physics`]) into `to_bullet` and answer `true`.
+    fn update_physics_for_level_if_needed(
+        &self,
+        _wx: i32,
+        _wy: i32,
+        _level: i32,
+        _to_bullet: &mut Vec<Vec<u8>>,
+    ) -> bool {
+        false
+    }
+    /// `addToWorld`: `chunk.vehicles.add(this)` unless already there.
+    fn add_vehicle_to_chunk(&self, _v: &crate::VehicleRef, _chunk: (i32, i32)) {}
+    /// `update`: the vehicle moved from chunk `from` to `to`.
+    fn vehicle_chunk_changed(&self, _v: &crate::VehicleRef, _from: (i32, i32), _to: (i32, i32)) {}
+    /// `permanentlyRemove`: `chunk.vehicles.remove(this)`.
+    fn remove_vehicle_from_chunk(&self, _v: &crate::VehicleRef, _chunk: (i32, i32)) {}
 }
 
 /// A flat world of loaded chunks without floors.
@@ -140,8 +165,22 @@ impl VehicleWorld for OpenWorld {
 
 /// Side effects the vehicle code has outside the vehicle (sounds, world
 /// sounds, Lua events, music events). The default ignores them.
+/// What `updateWorldLights` reads for the lightbar's two world lights.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LightbarState {
+    /// The vehicle has a lightbar part.
+    pub has_lightbar: bool,
+    /// `lightbarLightsMode.isEnable() && getBatteryCharge() > 0`.
+    pub enabled: bool,
+    /// `lightbarLightsMode.getLightTexIndex()` (0: both lights off).
+    pub light: i32,
+}
+
 pub trait VehicleEvents {
     fn event(&self, _what: &str) {}
+    /// `updateWorldLights()`: rendering places or removes the lightbar's
+    /// world lights from this state.
+    fn lightbar_world_lights(&self, _vehicle: &crate::BaseVehicle, _state: LightbarState) {}
     /// `getEmitter().playSoundImpl(name, null)`: the sound's handle (0 when
     /// sound is disabled, as with `DummySoundEmitter`).
     fn play_sound(&self, _name: &str) -> i64 {
@@ -157,17 +196,20 @@ impl VehicleEvents for NoEvents {}
 pub trait ItemFactory {
     /// Creates an item (drawing its id from `Rand` like the original).
     fn create_item(&self, full_type: &str) -> Option<InventoryItem>;
-    /// The vehicle-part values of the item's script.
-    fn stats(&self, full_type: &str) -> crate::items::ItemStats;
+    /// The item context weights and scripts are read through.
+    fn context(&self) -> &dyn pz_inventory::ItemContext {
+        &pz_inventory::api::Offline
+    }
+    /// `ZomboidRadio.GetChannelList(category)`.
+    fn channel_lists(&self) -> &dyn pz_inventory::device::ChannelLists {
+        &pz_inventory::device::NoChannels
+    }
 }
 
 struct NoItems;
 impl ItemFactory for NoItems {
     fn create_item(&self, _full_type: &str) -> Option<InventoryItem> {
         None
-    }
-    fn stats(&self, _full_type: &str) -> crate::items::ItemStats {
-        crate::items::ItemStats::default()
     }
 }
 

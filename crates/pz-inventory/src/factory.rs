@@ -41,6 +41,11 @@ pub struct ScriptItems {
     obsolete: HashMap<String, bool>,
     /// The game's `Rand` (`None`: every draw is 0, or `min` for floats).
     pub rand: RefCell<Option<Box<dyn crate::component::FactoryRng>>>,
+    /// `ZomboidRadio`'s channel lists (runtime input; `None`: no radio
+    /// data, as when `ZomboidRadio` is not loaded).
+    pub channels: Option<Box<dyn crate::device::ChannelLists>>,
+    /// `MapDefinitions.definitions` (runtime input from Lua `LootMaps`).
+    pub map_definitions: Vec<String>,
 }
 
 /// `ScriptManager.FindItem(type, false)` with `createItemInternal`'s
@@ -151,6 +156,8 @@ impl ScriptItems {
             obsolete,
             assets: None,
             rand: RefCell::new(None),
+            channels: None,
+            map_definitions: Vec::new(),
         }
     }
 }
@@ -226,6 +233,17 @@ impl ItemEnv for ScriptItems {
             Some(r) => r.next_float(min, max),
             None => min,
         }
+    }
+
+    fn channel_lists(&self) -> &dyn crate::device::ChannelLists {
+        match &self.channels {
+            Some(c) => c.as_ref(),
+            None => &crate::device::NoChannels,
+        }
+    }
+
+    fn map_definitions(&self) -> Vec<String> {
+        self.map_definitions.clone()
     }
 
     fn note_raw(&self, _registry_id: i16, reason: &str) {

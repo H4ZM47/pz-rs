@@ -19,5 +19,6 @@ pz-input.workspace = true
 pz-vehicles.workspace = true
 
 [dev-dependencies]
+pz-bullet.workspace = true
 pz-world.workspace = true
 pz-entity.workspace = true
