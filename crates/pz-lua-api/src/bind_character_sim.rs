@@ -49,6 +49,7 @@ use crate::bind_java_util::{class_cast, JavaList, JavaMap};
 use crate::bind_registry::{java_error, key_arg, key_value, shared_script_manager, MOODLE_TYPE_CLASS};
 use crate::bind_skills::{perk_arg, perk_value};
 use crate::expose::{bool_arg, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this};
+use pz_characters::character::item_owner::CharacterItemOwner;
 use pz_characters::character::{CharacterStatRef, CharacterStats};
 use pz_characters::character::{
     ChevronColor, DefaultSimContext, GameCharacter, MoodleLevel, Moodles, SimContext, SimEvent, Stats,
@@ -315,9 +316,16 @@ pub fn character_value(chr: &LuaGameCharacterRef) -> Value {
     canonical((Handle::Character, Rc::as_ptr(chr) as usize, 0), || {
         let v = Value::Object(Rc::new(CharacterObject(chr.clone())));
         let inv = chr.borrow().items.inventory.clone();
-        crate::bind_item_container::set_parent(&inv, v.clone());
+        set_character_parent(&inv, chr, v.clone());
         v
     })
+}
+
+/// `container.parent = chr` with the character answering for the items
+/// directly in `container` (`isEquipped`, `isWorn`, the hands and their
+/// place) through [`CharacterItemOwner`].
+fn set_character_parent(container: &pz_inventory::ContainerRef, chr: &LuaGameCharacterRef, v: Value) {
+    crate::bind_item_container::set_parent_with_owner(container, v, Rc::new(CharacterItemOwner::new(chr)));
 }
 
 /// An `InventoryItem` argument as its id (`null` is `None`).
@@ -454,7 +462,7 @@ fn set_worn_item(
     if changed && id.is_some() {
         let item = crate::bind_items::item_arg(c, item)?;
         if let Some(container) = pz_inventory::shared::container_of(&item) {
-            crate::bind_item_container::set_parent(&container, character_value(chr));
+            set_character_parent(&container, chr, character_value(chr));
         }
     }
     Ok(())
@@ -1710,6 +1718,70 @@ mod tests {
         assert!(run(&mut t, "player:getWornItem(ItemBodyLocation.HAT)").is_err());
         assert!(run(&mut t, "player:isEquippedClothing(nil)").is_err());
         run(&mut t, "player:clearWornItems()").unwrap();
+    }
+
+    /// Item-side `isEquipped()`/`isWorn()`/`isInPlayerInventory()` reach
+    /// the character through its inventory's parent
+    /// ([`CharacterItemOwner`]).
+    #[test]
+    fn item_equipped_and_worn_through_character_from_lua() {
+        let (mut t, player, _log) = setup_with(clothing_scripts());
+        let mut env = crate::bind_items::GameItemEnv::new(None);
+        env.rand = Some(pz_core::random::Rand::new(7));
+        crate::bind_items::install_item_env(Rc::new(env));
+        crate::bind_items::register(&mut t);
+        crate::bind_item_container::register(&mut t);
+        crate::bind_item_visual::register(&mut t);
+        let desc = player.borrow().descriptor.clone().unwrap();
+        t.globals().set_str("desc", survivor_desc_value(&desc));
+        run(
+            &mut t,
+            r#"
+            local L = ItemBodyLocation
+            local g = BodyLocations.getGroup("Human")
+            local ls = {L.HAT, L.TSHIRT, L.JACKET, L.SHOES}
+            for i = 1, #ls do g:getOrCreateLocation(ls[i]) end
+            s = IsoSurvivor.new(desc, nil, 0, 0, 0)
+            local inv = s:getInventory()
+            local tee = inv:AddItem("Base.TestTee")
+            local coat = inv:AddItem("Base.TestCoat")
+            local boots = inv:AddItem("Base.TestBoots")
+            assert(not tee:isWorn() and not tee:isEquipped())
+
+            s:setWornItem(tee:getBodyLocation(), tee)
+            assert(tee:isWorn() and tee:isEquipped())
+            assert(not coat:isWorn() and not coat:isEquipped())
+            -- Held, not worn.
+            s:setPrimaryHandItem(boots)
+            assert(boots:isEquipped() and not boots:isWorn())
+            -- A survivor is not an IsoPlayer.
+            assert(not tee:isInPlayerInventory())
+            -- The same answers while the item changes through its object.
+            tee:setCondition(tee:getCondition())
+            assert(tee:isWorn())
+
+            -- Taken out of the inventory: no container, no character.
+            inv:Remove(tee)
+            assert(tee:getContainer() == nil and not tee:isWorn() and not tee:isEquipped())
+            inv:Remove(boots)
+            assert(not boots:isEquipped())
+            -- Unworn while still in the inventory.
+            s:setWornItem(coat:getBodyLocation(), coat)
+            assert(coat:isWorn())
+            s:removeWornItem(coat)
+            assert(coat:getContainer() == inv and not coat:isWorn() and not coat:isEquipped())
+
+            -- A player's held item is in a player inventory.
+            local pinv = player:getInventory()
+            local cap = pinv:AddItem("Base.TestCap")
+            assert(cap:isInPlayerInventory() and not cap:isEquipped())
+            player:setPrimaryHandItem(cap)
+            assert(cap:isEquipped() and not cap:isWorn())
+            pinv:Remove(cap)
+            assert(not cap:isInPlayerInventory() and not cap:isEquipped())
+            "#,
+        )
+        .unwrap();
     }
 
     #[test]
