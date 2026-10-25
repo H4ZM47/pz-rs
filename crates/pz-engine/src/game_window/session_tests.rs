@@ -83,7 +83,7 @@ fn movement_diagnostics(app: &mut super::App, label: &str) {
 }
 
 #[test]
-#[ignore = "requires PZ_GAME_DIR; boots installed media in the Rust engine and writes a fresh test save"]
+#[ignore = "requires PZ_GAME_DIR; boots installed media in the Rust engine, saves, and reloads a fresh test world"]
 fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     let game_dir = PathBuf::from(std::env::var_os("PZ_GAME_DIR").expect("set PZ_GAME_DIR to installed game assets"))
         .canonicalize()
@@ -96,7 +96,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     let _restore_core = RestoreCore(bind_core::shared_core());
     bind_core::install_core(Rc::new(RefCell::new(Core::default())));
     let mut app = headless_app(Launch {
-        game_dir,
+        game_dir: game_dir.clone(),
         cache_dir: cache_dir.clone(),
         start: Start::Game(DevGame {
             game_mode: "Sandbox".into(),
@@ -203,5 +203,56 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     assert!((saved.x - after.0).abs() < 0.0001, "saved x differs: {} versus {}", saved.x, after.0);
     assert!((saved.y - after.1).abs() < 0.0001, "saved y differs: {} versus {}", saved.y, after.1);
     assert!((saved.z - after.2).abs() < 0.0001, "saved z differs: {} versus {}", saved.z, after.2);
-    eprintln!("session-check passed: {before:?} -> {after:?}; save: {}", db_path.display());
+    db.close();
+    drop(db);
+    assert!(save_dir.join("WorldDictionary.bin").is_file(), "new world has no persistent item dictionary; cache: {}", cache_dir.display());
+    assert!(bind_players::player(0).is_none(), "native close retained player 0");
+    drop(app);
+
+    // A row readback cannot establish that a session is loadable. Reboot
+    // from the same files with fresh App/Core owners and no new-game setup.
+    bind_core::install_core(Rc::new(RefCell::new(Core::default())));
+    let mut reloaded = headless_app(Launch {
+        game_dir,
+        cache_dir: cache_dir.clone(),
+        start: Start::Game(DevGame {
+            game_mode: "Sandbox".into(),
+            world: "rust-session-regression".into(),
+            new_game: None,
+            map: "Muldraugh, KY".into(),
+        }),
+    })
+    .expect("create Rust saved session");
+    reloaded.core.borrow_mut().set_no_save(false);
+    reloaded.boot().expect("boot Rust saved session from installed media");
+    lua_check(reloaded.lua.as_mut().unwrap(), r#"
+        rustSessionReloadNewGameCount = 0
+        Events.OnNewGame.Add(function() rustSessionReloadNewGameCount = rustSessionReloadNewGameCount + 1 end)
+    "#);
+    for _ in 0..1100 {
+        run_frames(&mut reloaded, 1);
+        if reloaded.current_state() == Some(INGAME) {
+            break;
+        }
+    }
+    assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
+    let loaded_player = bind_players::player(0).expect("saved session reconstructed local player 0");
+    assert!(!Rc::ptr_eq(&player, &loaded_player), "saved session reused the closed session's player");
+    let loaded_position = {
+        let p = loaded_player.borrow();
+        (p.vars.x, p.vars.y, p.vars.z)
+    };
+    let loaded_world = reloaded.world.as_ref().expect("saved session has a live gameplay world");
+    assert_eq!(loaded_world.save_dir, save_dir, "saved session opened another world");
+    assert_eq!(loaded_world.player_sql_ids[0], sql_id, "saved session did not decode the persisted player");
+    assert!((loaded_position.0 - after.0).abs() < 0.0001, "reloaded x differs: {} versus {}", loaded_position.0, after.0);
+    assert!((loaded_position.1 - after.1).abs() < 0.0001, "reloaded y differs: {} versus {}", loaded_position.1, after.1);
+    assert!((loaded_position.2 - after.2).abs() < 0.0001, "reloaded z differs: {} versus {}", loaded_position.2, after.2);
+    assert_eq!(reloaded.lua.as_ref().unwrap().thread.globals().get_str("rustSessionReloadNewGameCount").as_num(), Some(0.0), "saved session started a new game");
+    movement_diagnostics(&mut reloaded, "reloaded");
+    reloaded.close();
+    assert!(reloaded.world.is_none(), "native close retained the reloaded world");
+    assert_eq!(reloaded.current_state(), None);
+    assert!(bind_players::player(0).is_none(), "native close retained the reloaded player");
+    eprintln!("session-check passed: {before:?} -> {after:?} -> reloaded {loaded_position:?}; save: {}", db_path.display());
 }

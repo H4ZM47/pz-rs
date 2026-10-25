@@ -511,8 +511,9 @@ impl IsoWorld {
         self.boot_erosion(lua, &sb, no_save);
         // `WorldDictionary.init()`: the save's item registry.
         println!("WorldDictionary.init() start");
-        let dictionary = crate::world_dictionary::init(&self.save_dir, no_save, self.dictionary_new_game)?;
-        // TODO(port): `ScriptManager.PostWorldDictionaryInit()`.
+        let object_names = self.erosion.as_ref().map(|e| e.borrow().world.get_object_names()).unwrap_or_default();
+        let dictionary = crate::world_dictionary::init(&self.save_dir, no_save, self.dictionary_new_game, &sm, &object_names)?;
+        sm.post_world_dictionary_init();
         println!("WorldDictionary.init() end");
         self.items = match (dictionary, self.save_tables.as_ref()) {
             (Some(d), Some(tables)) => {

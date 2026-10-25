@@ -155,6 +155,13 @@ impl ScriptBucket {
         self.inner.borrow().script_map.values()
     }
 
+    /// Definitions encountered during script loading, including obsolete
+    /// or disabled scripts omitted from the runtime map. WorldDictionary
+    /// receives its callbacks before those filters run.
+    pub fn loaded_definitions(&self) -> Vec<ScriptRef> {
+        self.inner.borrow().load_data.values().map(|data| data.script.clone()).collect()
+    }
+
     pub fn script_map_get(&self, name: &str) -> Option<ScriptRef> {
         self.inner.borrow().script_map.get(name).cloned()
     }

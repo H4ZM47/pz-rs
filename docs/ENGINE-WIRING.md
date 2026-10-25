@@ -14,6 +14,18 @@ Lua events run between borrow-scoped phases, so their clock/world mutations
 reach the saved files. These changes still need complete gameplay and
 platform parity checks.
 
+New worlds now build and save `WorldDictionary.bin` before loading players
+and chunks. Item/entity IDs share the original counter, saved and removed
+entries retain their IDs, erosion object names are registered, and the
+script manager runs `PostWorldDictionaryInit`. New string/script register
+population and version hashing remain incomplete. The installed session
+regression now reboots the saved world and checks the reconstructed player;
+its result must be recorded separately from ordinary unit tests.
+
+The platform workflow builds the native client and runs workspace tests on
+Windows, Linux, Apple Silicon and Intel Mac runners. Installed game assets
+are excluded, so a green source check alone cannot establish gameplay parity.
+
 Known integration gaps include action-context/turning phase timing, timed
 actions, character visibility fading, split-screen viewports, weather and
 sky/water effects, animals/ragdoll rendering, basement save persistence,
