@@ -374,6 +374,8 @@ pub struct GameCharacter<I: 'static> {
     pub saved_vehicle: Option<save::SavedVehicle>,
     /// `IsoPlayer`'s saved fields not kept elsewhere.
     pub player_fields: Box<save::PlayerFields>,
+    /// `IsoPlayer`'s control-loop state (players; defaults otherwise).
+    pub player: Box<player::PlayerControl>,
     /// `ballisticsController` (a shooter aiming a firearm).
     pub ballistics_controller: Option<Box<firearm::BallisticsController>>,
     /// `ballisticsTarget` (a character a ballistics query may hit).
@@ -479,6 +481,7 @@ impl<I: 'static> GameCharacter<I> {
             known_media_lines: pz_scripts::java::JHashMap::new(),
             saved_vehicle: None,
             player_fields: Box::default(),
+            player: Box::default(),
             ballistics_controller: None,
             ballistics_target: None,
             ragdoll: Default::default(),

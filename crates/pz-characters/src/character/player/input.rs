@@ -152,6 +152,16 @@ pub trait PlayerInput {
     fn screen_to_iso(&self, _player_index: i32, _sx: i32, _sy: i32, _z: f32) -> (f32, f32) {
         (0.0, 0.0)
     }
+    /// `IsoCamera.getScreenWidth/getScreenHeight(playerIndex)` (the
+    /// player's view in pixels).
+    fn screen_size(&self, _player_index: i32) -> (i32, i32) {
+        (0, 0)
+    }
+    /// `PlayerCamera.XToScreenExact/YToScreenExact(x, y, z, 0)`: a world
+    /// point to the player's screen (zoomed pixels).
+    fn iso_to_screen(&self, _player_index: i32, _x: f32, _y: f32, _z: f32) -> (f32, f32) {
+        (0.0, 0.0)
+    }
     /// `System.currentTimeMillis()` for `TimedInputHandler` clicks.
     fn current_time_ms(&self) -> i64 {
         0

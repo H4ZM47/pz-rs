@@ -641,6 +641,10 @@ pub trait SimContext {
     fn wind_intensity(&self) -> f32 {
         0.0
     }
+    /// `IsoPuddles.getInstance().getWetGroundFinalValue()`.
+    fn wet_ground_final_value(&self) -> f32 {
+        0.0
+    }
     /// `SandboxOptions.firearmUseDamageChance` (1 none, 2 zombies, 3 all).
     fn firearm_use_damage_chance(&self) -> i32 {
         2
