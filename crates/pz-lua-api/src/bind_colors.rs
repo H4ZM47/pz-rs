@@ -266,6 +266,13 @@ fn with<R>(f: impl FnOnce(&mut Colors) -> R) -> Option<R> {
     STATE.with(|s| s.borrow_mut().as_mut().map(f))
 }
 
+/// `Colors.ColorExists(name) ? Colors.GetColorByName(name) : null` for Rust
+/// callers (`None` when the tables are not loaded).
+pub(crate) fn named_color(name: &str) -> Option<Rc<Color>> {
+    let name = lower(name);
+    with(|s| s.main.set.contains(&name).then(|| s.main.color_map.get(&name).cloned()).flatten()).flatten()
+}
+
 fn color_value(c: &Rc<Color>) -> Value {
     Value::Object(c.clone())
 }

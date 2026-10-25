@@ -186,6 +186,18 @@ fn instance() -> LuaResult<Value> {
     Ok(v)
 }
 
+/// `ServerOptions.getInstance()` for Rust callers; `None` until the
+/// option definitions can be read from the jar.
+pub(crate) fn shared_instance() -> Option<SharedOptions> {
+    match instance().ok()? {
+        Value::Object(o) => o
+            .as_any()
+            .downcast_ref::<ServerOptionsObj>()
+            .map(|s| s.0.clone()),
+        _ => None,
+    }
+}
+
 fn this_options(c: &NativeCall<'_>) -> LuaResult<SharedOptions> {
     with_this::<ServerOptionsObj, _>(c, |s| s.0.clone())
 }
