@@ -154,6 +154,12 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       host; network thread); `HudConsoleMethods` (GlobalObject's declared
       methods and each return type's public methods, for suggestions;
       ours, from the exposure tables) (#160).
+- [ ] TextDrawObject: `IngameState.renderframeui` calls
+      `hud::text_draw::render_batch(player)` after `WorldMarkers`/`IsoMarkers`
+      (`DebugChunkState` calls `no_render`); `ChatElement`'s constructor calls
+      `ensure_chat_backdrop()`; `HudPlayers::player_index`
+      (`IsoPlayer.getPlayerIndex()`; characters thread) tags batched draws
+      (#174).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).

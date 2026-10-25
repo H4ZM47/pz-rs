@@ -28,6 +28,11 @@ pub trait HudPlayers {
         None
     }
     /// `IsoPlayer.players[i].isDead()`.
+    /// `IsoPlayer.getPlayerIndex()`: the player being updated or
+    /// rendered.
+    fn player_index(&self) -> i32 {
+        0
+    }
     fn player_dead(&self, _i: usize) -> bool {
         false
     }
