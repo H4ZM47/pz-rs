@@ -24,6 +24,7 @@ pub mod bind_joypad;
 pub mod bind_fs;
 pub mod bind_global_objects;
 pub mod bind_globals;
+pub mod bind_item_visual;
 pub mod bind_items;
 pub mod bind_iso_enums;
 pub mod bind_java_util;
@@ -106,6 +107,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_nutrition::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
     bind_appearance::register(&mut mgr.thread);
+    bind_item_visual::register(&mut mgr.thread);
     bind_climate::register(mgr);
     bind_mods::register(mgr);
     bind_map_symbols::register(mgr);

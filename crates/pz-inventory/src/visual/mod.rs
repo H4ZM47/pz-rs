@@ -160,6 +160,13 @@ pub trait VisualRng {
     fn random_decal(&self, _group: &str) -> Option<String> {
         None
     }
+    /// `OutfitRNG.setSeed(seed)` (item creation seeds it from `Rand`
+    /// around `synchWithVisual`). The default ignores it.
+    fn set_seed(&self, _seed: i64) {}
+    /// `OutfitRNG.getSeed()`.
+    fn get_seed(&self) -> i64 {
+        0
+    }
 }
 
 /// [`VisualRng`] with every default.
