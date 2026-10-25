@@ -162,12 +162,18 @@ Status of the Rust port. Update this file with every merged change.
   with a `pathfind_adapter!` for pz-pathfind; Lua bindings in
   `pz-lua-api::bind_vehicles`. Against the original with a recording
   Bullet stand-in, a fake clock and scripted driving (400 frames, every
-  dump field and Bullet call): 241 of 243 saved `vehicles.db` vehicles are
-  bit-exact, one matches up to the original's own crash (a broken window
-  with no square) and one holds a trailer animal the original cannot run
-  headless; all 241 vanilla vehicle scripts as new vehicles are
+  dump field and Bullet call, the item load draws made on the vehicle's
+  own `Rand` stream as the original does): 240 of 243 saved `vehicles.db`
+  vehicles are bit-exact, two match up to the original's own crash (a
+  broken window with no square) and one holds a trailer animal the
+  original cannot run headless; the load draws match for all 242 loadable
+  vehicles; all 241 vanilla vehicle scripts as new vehicles are
   bit-exact; 3,000 single-zone spawns and 2,000 `AddVehicles` runs on
-  synthetic zone lists give the original's vehicles and `Rand` state.
+  synthetic zone lists give the original's vehicles and `Rand` state;
+  on real map chunks with pz-world's vehicle zones (identical to the
+  original's in all 563 cells), `AddVehicles` gives the original's vehicles
+  and next draw in 1,664 of 1,664 chunks of 26 street, parking-lot and
+  traffic-jam regions (347 vehicles).
   End to end on pz-bullet (`VehiclePhysics` for `PzBullet`, with the
   natives' exceptions and step callbacks), against the original running
   the real libPZBullet on a Muldraugh region's chunk shapes: 240 of 241
@@ -175,6 +181,10 @@ Status of the Rust port. Update this file with every merged change.
   until the harness lacks a world-sound native). `IsoChunk
   .updatePhysicsForLevel` gives the original's `ToBullet` shapes for every
   one of 114,529 squares of four regions that load the same objects.
+  `SurroundVehicle` (zombie attack spots, `chooseBestAttackPosition`)
+  matches the original's slot assignments and spot states over 2,000
+  sequences of zombie, target and vehicle moves, clock steps and
+  `update` calls; `permanentlyRemove` and the removal paths are ported.
   Checked locally.
 - World regions (`pz_world::isoregion`): `IsoRegions` square flags, chunk
   and world regions, enclosure, roofs, neighbours, square updates, the

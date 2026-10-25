@@ -272,36 +272,38 @@ pub fn update_physics_for_level_in(
     )
 }
 
-/// `IsoChunkLevel.physicsCheck` flags and `Bullet.physicsShapeNameToIndex`,
-/// with `Bullet.updatePhysicsForLevelIfNeeded` on top (pz-world keeps no
-/// physics flags of its own).
+/// `Bullet.physicsShapeNameToIndex` and `Bullet.updatePhysicsForLevelIfNeeded`
+/// over pz-world's chunks (whose `IsoChunk::check_physics_later` /
+/// `take_physics_check` hold `IsoChunkLevel.physicsCheck`).
 #[derive(Clone, Debug, Default)]
 pub struct ChunkPhysics {
-    pending: std::collections::HashSet<(i32, i32, i32)>,
     /// `Bullet.physicsShapeNameToIndex` (`Module.Name` to mesh index).
     pub mesh_index: std::collections::HashMap<String, i32>,
 }
 
 impl ChunkPhysics {
-    /// `IsoChunk.checkPhysicsLater(level)`.
-    pub fn check_physics_later(&mut self, wx: i32, wy: i32, level: i32) {
-        self.pending.insert((wx, wy, level));
-    }
-
-    /// `checkPhysicsLater` for every level of a chunk (as chunk loading
-    /// does).
-    pub fn check_chunk_later(&mut self, chunk: &IsoChunk) {
-        for z in chunk.min_level..=chunk.max_level {
-            self.check_physics_later(chunk.wx, chunk.wy, z);
+    /// `IsoChunk.checkPhysicsLater(z)` for each chunk level square edits
+    /// marked (the world renderer's `PendingRender::physics`, drained once
+    /// per frame): the next `updatePhysicsForLevelIfNeeded` for that level
+    /// rebuilds its shapes. Chunks the cell no longer holds are skipped.
+    pub fn mark_physics_dirty(
+        cell: &mut pz_world::IsoCell,
+        levels: impl IntoIterator<Item = (i32, i32, i32)>,
+    ) {
+        for (wx, wy, z) in levels {
+            if let Some(chunk) = cell.chunks.get_mut(&(wx, wy)) {
+                chunk.check_physics_later(z);
+            }
         }
     }
 
     /// `Bullet.updatePhysicsForLevelIfNeeded(wx, wy, level)`: `valid_chunk`
-    /// is `metaGrid.isValidChunk(wx, wy)`; the buffer goes to `to_bullet`.
+    /// is `metaGrid.isValidChunk(wx, wy)`; the level's flag is taken and the
+    /// buffer goes to `to_bullet`.
     #[allow(clippy::too_many_arguments)]
     pub fn update_if_needed(
-        &mut self,
-        cell: &pz_world::IsoCell,
+        &self,
+        cell: &mut pz_world::IsoCell,
         valid_chunk: bool,
         m: &IsoSpriteManager,
         wx: i32,
@@ -312,13 +314,13 @@ impl ChunkPhysics {
         if !valid_chunk {
             return false;
         }
-        let Some(chunk) = cell.chunks.get(&(wx, wy)) else {
+        let Some(chunk) = cell.chunks.get_mut(&(wx, wy)) else {
             return false;
         };
         if !(chunk.min_level..=chunk.max_level).contains(&level) {
             return false;
         }
-        if !self.pending.remove(&(wx, wy, level)) {
+        if !chunk.take_physics_check(level) {
             return false;
         }
         let index = &self.mesh_index;
@@ -326,5 +328,21 @@ impl ChunkPhysics {
             to_bullet.push(b);
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod dirty_tests {
+    use super::ChunkPhysics;
+
+    #[test]
+    fn marked_levels_wait_for_the_next_update() {
+        let mut cell = pz_world::IsoCell::default();
+        cell.chunks.insert((1, 2), pz_world::IsoChunk::new(1, 2));
+        ChunkPhysics::mark_physics_dirty(&mut cell, [(1, 2, 0), (9, 9, 0)]);
+        let chunk = cell.chunks.get_mut(&(1, 2)).unwrap();
+        assert!(chunk.physics_check(0));
+        assert!(chunk.take_physics_check(0));
+        assert!(!chunk.physics_check(0));
     }
 }

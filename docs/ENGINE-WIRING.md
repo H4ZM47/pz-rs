@@ -119,6 +119,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `has_render_effect` / `set_render_effect` (ObjectRenderEffects) and
       `do_tree_noises` (tree sound manager); `ThumpSettings::server`.
 - [ ] `SimContext` climate values from `ClimateManager` (#49).
+- [ ] Chunk physics after square edits: once per frame, drain the world
+      renderer's `PendingRender::physics` into
+      `pz_vehicles::chunk_physics::ChunkPhysics::mark_physics_dirty(cell, ..)`
+      (`IsoChunk.checkPhysicsLater`); `ChunkPhysics::update_if_needed` then
+      rebuilds them from Bullet's step callback (#86, #99).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
 - [ ] Vehicle models: `VehicleModelSet::create` when a vehicle is added to
