@@ -4,6 +4,7 @@
 //! `ItemContainer` with `CompressIdenticalItems`, and the item ids of
 //! `WorldDictionary`.
 
+pub mod alarm;
 pub mod api;
 pub mod assets;
 pub mod component;

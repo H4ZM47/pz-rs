@@ -136,6 +136,12 @@ pub trait EntityContext {
         None
     }
 
+    /// `Attribute.TypeFromId(id)`'s registration (name, kind, UI
+    /// display), when the context knows it.
+    fn attribute_type(&self, _id: i16) -> Option<crate::tables::AttributeTypeInfo> {
+        None
+    }
+
     /// `Fluid.Get(FluidType.FromId(id))`.
     fn fluid_by_id(&self, _id: i8) -> Lookup<FluidInfo> {
         Lookup::Unknown
@@ -205,6 +211,10 @@ impl EntityContext for BasicContext {
 
     fn attribute_type_by_name(&self, name: &str) -> Option<crate::tables::AttributeTypeInfo> {
         self.attributes.by_name(name).cloned()
+    }
+
+    fn attribute_type(&self, id: i16) -> Option<crate::tables::AttributeTypeInfo> {
+        self.attributes.get(id).cloned()
     }
 
     fn fluid_by_id(&self, id: i8) -> Lookup<FluidInfo> {

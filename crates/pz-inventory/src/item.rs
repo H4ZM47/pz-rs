@@ -92,24 +92,41 @@ pub struct ClothingData {
     pub spiked_behind: bool,
 }
 
-/// `AlarmClock` / `AlarmClockClothing` alarm fields.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// `AlarmClock` / `AlarmClockClothing` alarm fields (see
+/// [`crate::alarm`] for their methods).
+#[derive(Clone, Debug, PartialEq)]
 pub struct AlarmData {
     pub alarm_hour: i32,
     pub alarm_minutes: i32,
     pub alarm_set: bool,
-    pub ring_since: f32,
+    /// `ringSince` (a double in memory, saved as a float): the world age
+    /// in hours the alarm started ringing, -1 when silent.
+    pub ring_since: f64,
     pub force_dont_ring: i32,
+}
+
+impl Default for AlarmData {
+    /// The field initializers (`alarmHour = -1`, `ringSince = -1.0`, ...).
+    fn default() -> Self {
+        AlarmData {
+            alarm_hour: -1,
+            alarm_minutes: -1,
+            alarm_set: false,
+            ring_since: -1.0,
+            force_dont_ring: -1,
+        }
+    }
 }
 
 impl AlarmData {
     fn load(r: &mut Reader<'_>, wv: i32) -> SaveResult<Self> {
+        // `forceDontRing` keeps the new item's -1 before world version 205.
         let mut a = AlarmData {
             alarm_hour: r.i32()?,
             alarm_minutes: r.i32()?,
             alarm_set: r.bool()?,
-            ring_since: r.f32()?,
-            force_dont_ring: 0,
+            ring_since: r.f32()? as f64,
+            force_dont_ring: -1,
         };
         if wv >= 205 {
             a.force_dont_ring = r.i32()?;
@@ -121,7 +138,7 @@ impl AlarmData {
         w.i32(self.alarm_hour);
         w.i32(self.alarm_minutes);
         w.bool(self.alarm_set);
-        w.f32(self.ring_since);
+        w.f32(self.ring_since as f32);
         w.i32(self.force_dont_ring);
     }
 }
@@ -481,7 +498,7 @@ impl InventoryItem {
             ),
             ItemClass::Weapon => ItemKind::Weapon(Box::new(WeaponData::from_template(t))),
             ItemClass::Literature => ItemKind::Literature(Box::new(LiteratureData {
-                number_of_pages: -1,
+                number_of_pages: t.number_of_pages,
                 already_read_pages: 0,
                 can_be_write: false,
                 custom_pages: None,
@@ -1339,10 +1356,10 @@ impl FoodData {
         FoodData {
             age: 0.0,
             last_aged: -1.0,
-            calories: 0.0,
-            proteins: 0.0,
-            lipids: 0.0,
-            carbohydrates: 0.0,
+            calories: t.calories,
+            proteins: t.proteins,
+            lipids: t.lipids,
+            carbohydrates: t.carbohydrates,
             hung_change: t.hunger_change / 100.0,
             base_hunger: t.hunger_change / 100.0,
             unhappy_change: t.unhappy_change,

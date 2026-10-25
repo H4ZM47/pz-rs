@@ -203,6 +203,36 @@ fn load_game_file(
     }
 }
 
+/// A boolean option of `SandboxOptions.instance` by name, when the
+/// instance exists (it is not created here).
+pub fn current_bool(name: &str) -> Option<bool> {
+    let v = INSTANCE.with(|i| i.borrow().clone())?;
+    let Value::Object(o) = v else {
+        return None;
+    };
+    let s = o.as_any().downcast_ref::<SandboxObj>()?;
+    let opts = s.0.borrow();
+    match opts.option_by_name(name)?.config.get_value_as_object() {
+        pz_core::config::ConfigObject::Bool(b) => Some(b),
+        _ => None,
+    }
+}
+
+/// A double option of `SandboxOptions.instance` by name, when the
+/// instance exists.
+pub fn current_double(name: &str) -> Option<f64> {
+    let v = INSTANCE.with(|i| i.borrow().clone())?;
+    let Value::Object(o) = v else {
+        return None;
+    };
+    let s = o.as_any().downcast_ref::<SandboxObj>()?;
+    let opts = s.0.borrow();
+    match opts.option_by_name(name)?.config.get_value_as_object() {
+        pz_core::config::ConfigObject::Double(d) => Some(d),
+        _ => None,
+    }
+}
+
 /// `SandboxOptions.instance`.
 pub fn instance(thread: &mut Thread) -> LuaResult<Value> {
     if let Some(v) = INSTANCE.with(|i| i.borrow().clone()) {

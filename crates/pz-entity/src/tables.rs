@@ -24,6 +24,8 @@ pub struct AttributeTypeInfo {
     pub kind: AttributeKind,
     /// The constructor's initial value for numeric, string and bool kinds.
     pub initial: Option<InitialValue>,
+    /// `isHiddenUI()`: constructed with `Attribute.UI.Display.Hidden`.
+    pub hidden_ui: bool,
 }
 
 /// A constant constructor argument.
@@ -74,11 +76,16 @@ impl AttributeTypes {
                 (_, Some(Value::Str(v))) => Some(InitialValue::Str(v.clone())),
                 _ => None,
             };
+            let hidden_ui = args.iter().any(|a| {
+                matches!(a, Value::Static { class, name }
+                    if class.ends_with("Attribute$UI$Display") && name == "Hidden")
+            });
             out.insert(AttributeTypeInfo {
                 id: *id as i16,
                 name: n.clone(),
                 kind,
                 initial,
+                hidden_ui,
             });
         }
         if out.by_id.is_empty() {

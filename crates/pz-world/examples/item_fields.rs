@@ -94,7 +94,7 @@ fn line(i: &InventoryItem) -> String {
         sub.push(("alarmHour", a.alarm_hour.to_string()));
         sub.push(("alarmMinutes", a.alarm_minutes.to_string()));
         sub.push(("alarmSet", b(a.alarm_set).into()));
-        sub.push(("ringSince", f(a.ring_since)));
+        sub.push(("ringSince", f(a.ring_since as f32)));
         sub.push(("forceDontRing", a.force_dont_ring.to_string()));
     };
     match &i.kind {
