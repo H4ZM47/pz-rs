@@ -151,7 +151,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       with a descriptor; `set_on_fire` runs `pz_world::fire::character::set_on_fire`
       with the world's fire manager. Then, for an `isDead` row,
       `setOverallBodyHealth(0)`/`setHealth(0)`; `saved_vehicle` seats the
-      player; save with `save_player` (#ws/player-load).
+      player; save with `save_player` (#101).
 
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
