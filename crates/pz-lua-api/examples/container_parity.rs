@@ -56,6 +56,30 @@ function runContainer(c, types, tags)
     for w = 0, c:getItems():size() - 1 do
         q("itemWeight " .. w, function() return c:getItems():get(w):getUnequippedWeight() end)
     end
+    q("waterContainerCount", function() return c:getWaterContainerCount() end)
+    q("findWaterSource", function() return idx(c, c:FindWaterSource()) end)
+    q("findAndReturnWaterItem0", function() return idx(c, c:FindAndReturnWaterItem(0)) end)
+    q("findAndReturnWaterItem3", function() return idx(c, c:FindAndReturnWaterItem(3)) end)
+    q("allWaterFillables", function() return c:getAllWaterFillables():size() end)
+    q("allWaterFluidSources", function() return c:getAllWaterFluidSources(false):size() end)
+    q("allWaterFluidSourcesT", function() return c:getAllWaterFluidSources(true):size() end)
+    q("firstWaterFluidSources", function() return idx(c, c:getFirstWaterFluidSources(false)) end)
+    q("firstWaterFluidSourcesT", function() return idx(c, c:getFirstWaterFluidSources(true)) end)
+    q("firstWaterFluidSourcesTP", function() return idx(c, c:getFirstWaterFluidSources(true, true)) end)
+    q("allCleaningFluidSources", function() return c:getAllCleaningFluidSources():size() end)
+    q("firstCleaningFluidSources", function() return idx(c, c:getFirstCleaningFluidSources()) end)
+    q("soapList", function() return c:getSoapList(nil, false):size() end)
+    q("soapListLiquid", function() return c:getSoapList(nil, true):size() end)
+    local fls = {"null", "", "Water", "TaintedWater", "Bleach", "CleaningLiquid", "Petrol", "Beer", "water"}
+    for n = 1, #fls do
+        local fl = fls[n]
+        local a = fl
+        if fl == "null" then a = nil end
+        q("firstFluidContainer " .. fl, function() return idx(c, c:getFirstFluidContainer(a)) end)
+        q("availableFluidContainer " .. fl, function() return c:getAvailableFluidContainer(a):size() end)
+        q("availableFluidContainersCapacity " .. fl, function() return c:getAvailableFluidContainersCapacity(a) end)
+        q("firstAvailableFluidContainer " .. fl, function() return idx(c, c:getFirstAvailableFluidContainer(a)) end)
+    end
     q("isItemAllowed0", function() return c:isItemAllowed(c:getItems():get(0)) end)
     for n = 1, #types do
         local t = types[n]
@@ -109,8 +133,9 @@ end
 "#;
 
 /// Queries the harness prints as `Float.floatToIntBits` hex.
-const FLOATS: [&str; 7] = [
+const FLOATS: [&str; 8] = [
     "itemWeight",
+    "availableFluidContainersCapacity",
     "contentsWeight",
     "capacityWeight",
     "maxWeight",
@@ -155,6 +180,10 @@ fn main() -> Result<(), String> {
         .borrow_mut()
         .init(&mut fs);
     let assets = pz_inventory::ItemAssets::load(&game)?;
+    let entity = Rc::new(pz_lua_api::bind_items::item_entity_context(
+        &game.join("projectzomboid.jar"),
+        &sm,
+    )?);
 
     let mut plans: Vec<Plan> = Vec::new();
     for l in plan_text.lines() {
@@ -205,6 +234,7 @@ fn main() -> Result<(), String> {
         for (kind, ty) in &plan.items {
             let mut env = GameItemEnv::new(Some(assets.clone()));
             env.rand = Some(pz_core::random::Rand::new(1000 + seed));
+            env.entity = Some(entity.clone());
             seed += 1;
             install_item_env(Rc::new(env));
             let item = create_item(ty, 1.0);

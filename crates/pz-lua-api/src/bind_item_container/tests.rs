@@ -384,3 +384,54 @@ fn shared_container_round_trip() {
     assert!(container_of(&i).is_some_and(|o| Rc::ptr_eq(&o, &s)));
     assert_eq!(s.borrow().to_container(), c);
 }
+
+fn with_fluid(ty: &str, id: i32, fluid: Option<(i8, f32)>, capacity: f32) -> ItemRef {
+    let mut i = item(ItemClass::Normal, ty, 0.5, &[], id);
+    let mut fc = pz_entity::FluidContainer {
+        capacity,
+        ..Default::default()
+    };
+    if let Some((f, amount)) = fluid {
+        fc.fluids.push(pz_entity::FluidInstance::new(
+            pz_entity::FluidRef::Type(f),
+            amount,
+        ));
+        fc.recalculate_caches(true);
+    }
+    i.set_fluid_container(fc);
+    shared(i)
+}
+
+#[test]
+fn fluid_queries() {
+    let mut t = setup();
+    let inv = SharedContainer::new(-1, "none").into_ref();
+    shared::add_item(&inv, &shared(item(ItemClass::Normal, "Rock", 2.0, &[], 1)));
+    // Water 1, TaintedWater 4, Bleach 11.
+    shared::add_item(&inv, &with_fluid("Bottle", 2, None, 1.0));
+    shared::add_item(&inv, &with_fluid("Bottle", 3, Some((4, 0.5)), 1.0));
+    shared::add_item(&inv, &with_fluid("Bottle", 4, Some((1, 1.0)), 1.0));
+    shared::add_item(&inv, &with_fluid("Bleach", 5, Some((11, 0.25)), 0.5));
+    t.globals().set_str("inv", container_value(&inv));
+    ok(
+        &mut t,
+        r#"
+        local function id(it) return it and it:getID() or -1 end
+        assert(inv:getWaterContainerCount() == 4)
+        assert(id(inv:FindWaterSource()) == 3)
+        assert(inv:getAllWaterFillables():size() == 1 and inv:getAllWaterFillables() == inv:getAllWaterFillables())
+        assert(inv:getAllWaterFluidSources(false):size() == 1 and inv:getAllWaterFluidSources(true):size() == 2)
+        assert(id(inv:getFirstWaterFluidSources(true)) == 3 and id(inv:getFirstWaterFluidSources(false)) == 4)
+        assert(id(inv:getFirstWaterFluidSources(true, true)) == 3)
+        assert(id(inv:getFirstCleaningFluidSources()) == 5 and inv:getAllCleaningFluidSources():size() == 1)
+        assert(id(inv:getFirstFluidContainer("Water")) == 2 and id(inv:getFirstFluidContainer(nil)) == 2)
+        -- Empty ones, then not-full ones of the type (case-insensitive).
+        assert(inv:getAvailableFluidContainer("taintedwater"):size() == 2)
+        assert(inv:getAvailableFluidContainer("Water"):size() == 1)
+        assert(math.abs(inv:getAvailableFluidContainersCapacity("TaintedWater") - 1.5) < 1e-6)
+        assert(id(inv:getFirstAvailableFluidContainer("Bleach")) == 2)
+        assert(inv:FindAndReturnWaterItem(0) == nil)
+        assert(inv:getSoapList(nil, false):size() == 0)
+        "#,
+    );
+}

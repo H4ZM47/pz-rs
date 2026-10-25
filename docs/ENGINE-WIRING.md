@@ -21,6 +21,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       population line below (`ClothingDecals`). A character simulation
       that installs its own `ItemLuaEnv` must return these assets from
       its context (#130).
+- [x] Item entity registries: `bind_items::install_item_runtime(assets,
+      item_entity_context(jar, sm))`, so items made from Lua get their
+      factory components (`FluidContainer`); wired in
+      `pz_engine::boot::load_scripts`. A character simulation's own
+      `ItemLuaEnv` must return them from `entity()` (#143).
 - [ ] Real `MapGroupsHost` via `bind_map_groups::install_host` (#17/#24).
 - [ ] Gamepads: `Gamepads::new(game_dir, cache_dir, c)` (#32).
 - [ ] Sound: build `pz_audio::studio::Studio` from
