@@ -1,5 +1,7 @@
 //! Chunk files built from hand-made chunks: save, load, save again.
 
+mod load_order;
+
 use super::chunk_file::{
     chunk_path, do_load_gridsquare, load_chunk, save_chunk, ChunkLoadHook, HookCtx,
 };

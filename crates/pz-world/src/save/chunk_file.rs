@@ -343,14 +343,17 @@ pub fn load_square(
                         continue;
                     }
                 }
-                if world && !matches!(obj.kind, ObjectKind::WorldInventory(_)) {
-                    return err("ClassCastException: world object flag on a non-item");
-                }
+                let is_world_item = matches!(obj.kind, ObjectKind::WorldInventory(_));
                 sq.objects.push((ObjectSlot::new(obj)).into());
                 if special {
                     sq.special_objects.push(id);
                 }
                 if world {
+                    // Native load appends the main and special entries before
+                    // casting for worldObjects; failure keeps those mutations.
+                    if !is_world_item {
+                        return err("ClassCastException: world object flag on a non-item");
+                    }
                     sq.world_objects.push(id);
                 }
             }
