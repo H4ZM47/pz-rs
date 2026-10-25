@@ -86,6 +86,17 @@ impl Mat4 {
         self.mul(&r)
     }
 
+    /// `rotate(angle, 0, 0, 1)`.
+    pub fn rotate_z(&self, a: f32) -> Self {
+        let (s, c) = ((a as f64).sin() as f32, (a as f64).cos() as f32);
+        let mut r = Mat4::identity();
+        r.0[0][0] = c;
+        r.0[0][1] = s;
+        r.0[1][0] = -s;
+        r.0[1][1] = c;
+        self.mul(&r)
+    }
+
     /// `translate(x, y, z)`.
     pub fn translate(&self, x: f32, y: f32, z: f32) -> Self {
         let mut t = Mat4::identity();

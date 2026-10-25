@@ -992,6 +992,19 @@ impl Gpu {
                 let key = self.key(f, Program::Projected);
                 f.push(key, Some(id), if *nearest { Tex2::Nearest } else { Tex2::None }, &self.state, g, v);
             }
+            DrawCmd::ProjectedDepthQuad { texture, pos, uv, color } => {
+                let Some(id) = texture.id else { return };
+                let g = {
+                    let m = f.mvp;
+                    f.mvp = IDENTITY;
+                    let mm = f.mvp_for_target();
+                    f.mvp = m;
+                    f.globals(&self.state, mm, 0.5)
+                };
+                let v: [Vertex; 4] = std::array::from_fn(|i| Vertex { pos: [pos[i][0], pos[i][1]], uv: uv[i], color: *color, uv1: [0.0; 2], uv2: [0.0; 2], depth: [pos[i][2], 0.0] });
+                let key = self.key(f, Program::ProjectedDepth);
+                f.push(key, Some(id), Tex2::None, &self.state, g, v);
+            }
             DrawCmd::ScreenPass { x, y, w, h, tex, params } => {
                 let Some(o) = self.offscreen.as_ref() else { return };
                 let (tw, th) = (o.width as f32, o.height as f32);

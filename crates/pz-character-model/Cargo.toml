@@ -16,3 +16,5 @@ pz-scripts.workspace = true
 
 [dev-dependencies]
 pz-fs.workspace = true
+pz-gpu = { path = "../pz-gpu" }
+png.workspace = true

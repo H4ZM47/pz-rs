@@ -4,7 +4,8 @@
 //! (`ModelInstanceTextureCreator`, as GPU [`texture_creator::SmartTextureJob`]s);
 //! the per-frame lights (`ModelInstance.updateLights`); and the frame's
 //! draw list (`ModelSlotRenderData`) as [`pz_render::model::ModelDraw`]s in
-//! the original's order.
+//! the original's order; and, in [`scene`], the character's drop shadow and
+//! draws as one object of the iso frame's object pass.
 //!
 //! Item visuals and clothing items come from pz-inventory, the human
 //! visual from pz-inventory, body-location groups and attached items from
@@ -24,6 +25,7 @@ pub mod mask;
 pub mod model_tree;
 pub mod render;
 pub mod resources;
+pub mod scene;
 pub mod texture_creator;
 
 pub use data::{
@@ -38,6 +40,7 @@ pub use model_tree::{
 };
 pub use render::{render_character, CharacterFrame, LoadedMesh, ModelResources};
 pub use resources::MediaModelResources;
+pub use scene::{character_shadow, render_character_object, shadow_params, ShadowInput, ShadowSmoothing};
 pub use texture_creator::{
     create_textures, SmartTextureJob, TextureCreatorInput, TextureCreatorOutput,
 };

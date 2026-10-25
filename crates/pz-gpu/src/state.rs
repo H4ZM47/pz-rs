@@ -31,6 +31,9 @@ pub enum Program {
     Screen,
     /// `vboRenderer_PositionColorUV` for projected quads.
     Projected,
+    /// `vboRenderer_PositionColorUVDepth` for projected quads with
+    /// per-corner depth.
+    ProjectedDepth,
     /// `seamFix2` (`TileSeamShader`).
     Seam,
     /// `CircleStencil` (cut-away walls).
@@ -43,7 +46,7 @@ pub enum Program {
 
 impl Program {
     pub fn uses_world_shader(self) -> bool {
-        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::Seam | Program::Cutaway | Program::Surface(_) | Program::Particles(_))
+        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::ProjectedDepth | Program::Seam | Program::Cutaway | Program::Surface(_) | Program::Particles(_))
     }
 }
 
@@ -263,7 +266,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::Seam | Program::Cutaway => (&programs.world_tile, &programs.seam_layout),
         Program::Surface(_) => (&programs.surface, &programs.seam_layout),
         Program::Particles(_) => (&programs.particles, &programs.sprite_layout),
-        Program::WorldDefault | Program::Projected => (&programs.world_tile, &programs.sprite_layout),
+        Program::WorldDefault | Program::Projected | Program::ProjectedDepth => (&programs.world_tile, &programs.sprite_layout),
         Program::Default | Program::Clear => (&programs.sprite, &programs.sprite_layout),
         Program::Screen => (&programs.screen, &programs.sprite_layout),
     };
@@ -276,6 +279,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::Composite => ("vs_world", "fs_composite"),
         Program::Screen => ("vs_screen", "fs_screen"),
         Program::Projected => ("vs_world", "fs_projected"),
+        Program::ProjectedDepth => ("vs_world", "fs_projected_depth"),
         Program::Seam => ("vs_world", "fs_seam"),
         Program::Cutaway => ("vs_world", "fs_cutaway"),
         Program::Particles(pz_render::ParticleProgram::Fire) => ("vs_fire", "fs_fire"),

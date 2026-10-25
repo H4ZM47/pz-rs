@@ -22,6 +22,7 @@ pub mod fire;
 pub mod frame;
 pub mod hearth;
 pub mod models;
+pub mod objects;
 pub mod obscuring;
 pub mod occlusion;
 pub mod particles_fire;
@@ -30,6 +31,7 @@ pub mod seam;
 pub mod skybox;
 pub mod snow;
 pub mod splashes;
+pub mod shadows;
 pub mod sprite;
 pub mod texd;
 pub mod trees;
@@ -45,6 +47,11 @@ pub use cutaways::{CutawayPlayer, CutawayState, CutawayWorld, Cutaways};
 pub use world::{DepthMaps, DepthPreset, ObjectKind, RenderObject, RenderSquare, SpriteFlags, SpriteInfo, TileType};
 
 use pz_render::iso::fastfloor;
+
+/// `IsoCamera.playerOffsetX`.
+pub const PLAYER_OFFSET_X: i32 = 0;
+/// `IsoCamera.playerOffsetY`: `-56 / (2 / Core.tileScale)`.
+pub const PLAYER_OFFSET_Y: i32 = -56 / (2 / pz_render::iso::TILE_SCALE);
 
 /// `IsoCamera.frameState` and the player camera values the renderer reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -85,6 +92,18 @@ impl Camera {
             fix_jiggly_square_x: 0.0,
             fix_jiggly_square_y: 0.0,
         }
+    }
+
+    /// `PlayerCamera.center` for a camera character at `(x, y, z)` with
+    /// no deferred movement or offset: [`Camera::centred`] moved by
+    /// `IsoCamera.playerOffsetY` (-56 pixels at tile scale 2), which
+    /// lines tiles up with the model camera's `-0.48` foot offset.
+    pub fn player(x: f32, y: f32, z: f32, width: i32, height: i32, zoom: f32) -> Self {
+        let w = width as f32 * zoom;
+        let h = height as f32 * zoom;
+        let off_x = pz_render::iso::x_to_screen(x, y) - w / 2.0 + PLAYER_OFFSET_X as f32;
+        let off_y = pz_render::iso::y_to_screen(x, y, z, 0) - h / 2.0 + PLAYER_OFFSET_Y as f32;
+        Camera { off_x: off_x as i32, off_y: off_y as i32, ..Camera::centred(x, y, z, width, height, zoom) }
     }
 
     /// The camera character's chunk.

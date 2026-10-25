@@ -233,6 +233,12 @@ pub enum DrawCmd {
     /// Texels with alpha below 0.01 are discarded; `nearest` forces
     /// `GL_NEAREST` sampling (`setMinMagFilters`).
     ProjectedQuad { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32, nearest: bool },
+    /// A `VBORenderer` quad with per-vertex depth
+    /// (`formatPositionColorUvDepth`, `vboRenderer_PositionColorUVDepth`):
+    /// corners in normalised device coordinates with each corner's window
+    /// depth written as the fragment depth (interpolated), colour times
+    /// texel with no discard. `FBORenderShadows` draws drop shadows so.
+    ProjectedDepthQuad { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32 },
     /// A 3D model draw (`basicEffect`), depth-tested against the world.
     Model(Box<model::ModelDraw>),
     /// An `IsoWater`/`IsoPuddles` vertex-buffer draw (`ModelManager.RenderWater`,

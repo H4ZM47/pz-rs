@@ -1610,10 +1610,12 @@ dependencies = [
 name = "pz-character-model"
 version = "0.1.0"
 dependencies = [
+ "png",
  "pz-anim",
  "pz-characters",
  "pz-entity",
  "pz-fs",
+ "pz-gpu",
  "pz-inventory",
  "pz-iso-render",
  "pz-model",
