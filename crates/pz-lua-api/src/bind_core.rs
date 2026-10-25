@@ -1383,6 +1383,17 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             };
             Ok(c.push(Value::Object(LuaColorInfo::new(ci))))
         });
+        // `toColor()` / `toImmutableColor()`: the four-float constructors.
+        b.method("toColor", |c| {
+            let k = with_color(c, |ci| ci.c.get())?;
+            let f = crate::bind_misc_classes::clamp01;
+            Ok(c.push(crate::bind_misc_classes::color_value_of(f(k.r), f(k.g), f(k.b), f(k.a))))
+        });
+        b.method("toImmutableColor", |c| {
+            let k = with_color(c, |ci| ci.c.get())?;
+            let v = crate::bind_item_visual::ImmutableColor::rgba(k.r, k.g, k.b, k.a);
+            Ok(c.push(crate::bind_misc_classes::immutable_color_value(v)))
+        });
         b.method("getR", |c| {
             let v = with_color(c, |ci| ci.c.get().r)?;
             Ok(c.push(v as f64))

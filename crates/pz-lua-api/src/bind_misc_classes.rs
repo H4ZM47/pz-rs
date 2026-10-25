@@ -161,7 +161,7 @@ impl LuaObject for Color {
 
 /// `PZMath.clamp(v, 0, 1)` (NaN passes through).
 #[allow(clippy::manual_clamp)]
-fn clamp01(v: f32) -> f32 {
+pub(crate) fn clamp01(v: f32) -> f32 {
     if v < 0.0 {
         0.0
     } else if v > 1.0 {
