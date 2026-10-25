@@ -823,6 +823,15 @@ impl ClimateManager {
             self.f(FLOAT_NIGHT_STRENGTH)
         }
     }
+
+    /// `postCellLoadSetSnow()` (after the world's cell load):
+    /// `IsoWorld.currentCell.setSnowTarget((int)(snowFracNow * 100))` and
+    /// `ErosionIceQueen.setSnow(canDoWinterSprites && snowFracNow > 0.2)`,
+    /// as [`ClimateEvent::SnowTarget`] and [`ClimateEvent::IceQueenSnow`].
+    pub fn post_cell_load_set_snow(&self, ctx: &mut dyn ClimateContext) {
+        ctx.event(ClimateEvent::SnowTarget((self.snow_frac_now * 100.0) as i32));
+        ctx.event(ClimateEvent::IceQueenSnow(self.can_do_winter_sprites && self.snow_frac_now > 0.2));
+    }
     /// `getDayMeanTemperature()` (0 before the first update; the original
     /// throws).
     pub fn get_day_mean_temperature(&self) -> f32 {

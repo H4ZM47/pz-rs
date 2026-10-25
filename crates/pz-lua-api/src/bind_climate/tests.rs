@@ -249,3 +249,25 @@ fn climate_manager_init_runs_the_lua_season_colours() {
     assert_eq!(g.climate.climate_forecaster.forecasts.len(), 40);
     assert_eq!(g.climate.col_night_no_moon.borrow().exterior, [0.25, 0.25, 0.25, 0.8]);
 }
+
+#[test]
+fn post_cell_load_snow_and_night() {
+    let mut t = setup();
+    update_game_time(&mut t);
+    take_snow_effects();
+    {
+        let gt = shared_game_time();
+        let mut g = gt.borrow_mut();
+        g.climate.snow_frac_now = 0.57;
+        g.climate.can_do_winter_sprites = true;
+    }
+    let e = post_cell_load_set_snow(&mut t);
+    assert_eq!(e, SnowEffects { target: Some(57), ice_queen: Some(true) });
+    assert_eq!(take_snow_effects(), SnowEffects::default());
+    shared_game_time().borrow_mut().climate.snow_frac_now = 0.2;
+    let r = run(&mut t, "getClimateManager():postCellLoadSetSnow(); return getGameTime():getNight(), getClimateManager():getNightStrength()");
+    assert_eq!(take_snow_effects(), SnowEffects { target: Some(20), ice_queen: Some(false) });
+    assert_eq!(r[0].as_num(), r[1].as_num());
+    let night = shared_game_time().borrow().get_night();
+    assert_eq!(r[0].as_num(), Some(f64::from(night)));
+}

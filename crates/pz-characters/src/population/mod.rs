@@ -20,6 +20,7 @@
 //! logged here.
 
 pub mod beard_styles;
+pub mod blood_visuals;
 pub mod clothing_decals;
 pub mod default_clothing;
 pub mod dress;
@@ -27,13 +28,16 @@ pub mod hair_outfit_definitions;
 pub mod hair_styles;
 pub mod outfit;
 pub mod outfit_manager;
+pub mod persistent_outfits;
 pub mod pop_template;
 pub mod voice_styles;
 pub mod xml;
+pub mod zombie_defs;
 
 pub use beard_styles::{BeardStyle, BeardStyles};
 pub use clothing_decals::{ClothingDecal, ClothingDecalGroup, ClothingDecals};
-pub use dress::{dress_in_named_outfit, DressContext};
+pub use dress::{dress_in_named_outfit, dress_in_named_outfit_keep, DressContext};
+pub use persistent_outfits::{Outfitter, PersistentOutfits};
 pub use default_clothing::{DefaultClothing, DefaultClothingLists};
 pub use hair_outfit_definitions::{
     HairOutfitDefinitions, HaircutDefinition, HaircutOutfitDefinition, StringChance,
@@ -146,6 +150,19 @@ pub fn random_skin_color() -> Rgb {
     let g = outfit_rng::next_float(0.75, 0.88);
     let b = outfit_rng::next_float(0.45, 0.58);
     [r, g, b]
+}
+
+/// [`HumanStyles`] drawing from [`outfit_rng`] without style tables (what
+/// `randomBlood()` / `randomDirt()` read).
+pub struct OutfitRngStyles;
+
+impl HumanStyles for OutfitRngStyles {
+    fn next(&self, bound: i32) -> i32 {
+        outfit_rng::next(bound)
+    }
+    fn next_unit(&self) -> f32 {
+        outfit_rng::next_float(0.0, 1.0)
+    }
 }
 
 /// The statics of the population classes.

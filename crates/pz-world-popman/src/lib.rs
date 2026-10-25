@@ -34,14 +34,15 @@ pub trait ZombieOps {
     type Zombie: Copy + Eq;
 
     /// `VirtualZombieManager.createRealZombieAlways(outfit, dir, false,
-    /// persistentId)` with `choices = [square]`.
+    /// persistentId)` with `choices = [square]`; `Err` is the Java
+    /// exception it threw.
     fn create_real_zombie(
         &mut self,
         outfit: i32,
         dir: IsoDirections,
         persistent_id: i32,
         square: (i32, i32, i32),
-    ) -> Option<Self::Zombie>;
+    ) -> Result<Option<Self::Zombie>, String>;
     /// The zombie as `ZombiePopulationManager.registerZombie` reads it at
     /// the end of `createRealZombieAlways`.
     fn real_zombie_info(&self, z: Self::Zombie) -> Option<RealZombieInfo<Self::Zombie>>;
@@ -341,7 +342,7 @@ impl<Z: ZombieOps> PopulationHost for WorldPopulationHost<'_, Z> {
         dir: IsoDirections,
         persistent_id: i32,
         square: (i32, i32, i32),
-    ) -> Option<Self::Zombie> {
+    ) -> Result<Option<Self::Zombie>, String> {
         self.zombies
             .create_real_zombie(outfit, dir, persistent_id, square)
     }

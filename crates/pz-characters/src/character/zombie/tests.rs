@@ -1,6 +1,6 @@
 //! Zombie simulation with invented worlds, lore settings and seeds.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use pz_audio::world_sound::{RoomAt, SoundWorld, WorldSoundManager};
@@ -129,17 +129,17 @@ fn desc(sm: &pz_scripts::ScriptManager, chars: &mut crate::Characters, female: b
 
 fn zombie(sm: &pz_scripts::ScriptManager, chars: &mut crate::Characters, ctx: &Lore) -> GameCharacter<()> {
     let d = desc(sm, chars, true);
-    let blood = Cell::new(0);
     let mut z = GameCharacter::new_zombie(
         sm,
         ctx,
         super::ZombieSpawn {
             descriptor: None,
-            create_survivor: &mut || d.clone(),
-            random_blood: &mut || blood.set(blood.get() + 1),
+            create_survivor: &mut || Ok(d.clone()),
         },
-    );
-    assert_eq!(blood.get(), 1);
+    )
+    .unwrap();
+    // `humanVisual.randomBlood()` (an unseeded `OutfitRNG` draws zeros).
+    assert_eq!(z.human_visual.as_ref().map(|v| v.blood.len()), Some(18));
     z.id = 7;
     z
 }
@@ -389,8 +389,9 @@ fn population_creates_a_real_zombie() {
         false,
         0,
         100.0,
-        super::ZombieSpawn { descriptor: Some((d, 1)), create_survivor: &mut || unreachable!(), random_blood: &mut || {} },
+        super::ZombieSpawn { descriptor: Some((d, 1)), create_survivor: &mut || unreachable!() },
     )
+    .unwrap()
     .unwrap();
     let z = &r.zombie;
     assert!(r.spawn_building_key);
@@ -403,4 +404,30 @@ fn population_creates_a_real_zombie() {
     assert!(z.vars.crawling && !z.zombie.can_walk && z.vars.on_floor);
     z.pop_sit_against_wall(1.5, 2.5, Some(pz_world::square::IsoDirections::W));
     assert!(z.vars.sit_against_wall);
+}
+
+#[test]
+fn creating_a_zombie_without_names_throws() {
+    // `SurvivorFactory.CreateSurvivor()` before any `addFemaleForename` /
+    // `addMaleForename`: `Rand.Next(0)` is 0 and `get(0)` on the empty list
+    // throws, out of the `IsoZombie` constructor.
+    let (sm, mut chars) = fixture();
+    let ctx = Lore::new(4);
+    let chars_cell = RefCell::new(std::mem::take(&mut chars));
+    let mut create = || chars_cell.borrow_mut().create_survivor::<()>(&sm).map(|d| Rc::new(RefCell::new(d)));
+    let r = super::population::create_real_zombie_always(
+        &sm,
+        &ctx,
+        &[(10, 12, 0)],
+        &|_| false,
+        pz_world::square::IsoDirections::S,
+        false,
+        0,
+        100.0,
+        super::ZombieSpawn { descriptor: None, create_survivor: &mut create },
+    );
+    assert_eq!(
+        r.err().map(|e| e.to_string()).as_deref(),
+        Some("java.lang.IndexOutOfBoundsException: Index 0 out of bounds for length 0")
+    );
 }

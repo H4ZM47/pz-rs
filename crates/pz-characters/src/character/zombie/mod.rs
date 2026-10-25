@@ -19,6 +19,7 @@
 
 pub mod math;
 pub mod mover;
+pub mod dress;
 pub mod population;
 pub mod senses;
 pub mod update;
@@ -224,6 +225,21 @@ pub struct ZombieFields {
     pub walk_type: Option<String>,
     pub footstep_volume: f32,
     pub dress_in_random_outfit: bool,
+    /// `persistentOutfitInit`.
+    pub persistent_outfit_init: bool,
+    /// `doDirtBloodEtc`.
+    pub do_dirt_blood_etc: bool,
+    /// `itemVisuals`: the outfit's clothing (what a zombie wears until it
+    /// dies; `wornItems` is filled from it then).
+    pub item_visuals: Vec<pz_inventory::visual::ItemVisual>,
+    /// `getHumanVisual().getOutfit()`: the randomized outfit it dressed in
+    /// (`human_visual.outfit` is its name).
+    pub human_outfit: Option<crate::population::Outfit>,
+    /// `attachedItems`: location and item, in the `Human` attached
+    /// location group's order.
+    pub attached_items: Vec<(String, pz_inventory::InventoryItem)>,
+    /// `itemsToSpawnAtDeath`.
+    pub items_to_spawn_at_death: Vec<pz_inventory::InventoryItem>,
     pub pending_outfit_name: Option<String>,
     /// The outfit name (`getHumanVisual().getOutfit().name`), set by the
     /// outfit system.
@@ -362,6 +378,12 @@ impl Default for ZombieFields {
             walk_type: None,
             footstep_volume: 1.0,
             dress_in_random_outfit: false,
+            persistent_outfit_init: false,
+            do_dirt_blood_etc: true,
+            item_visuals: Vec::new(),
+            human_outfit: None,
+            attached_items: Vec::new(),
+            items_to_spawn_at_death: Vec::new(),
             pending_outfit_name: None,
             outfit_name: None,
             crawler_type: 0,
@@ -431,10 +453,9 @@ pub struct ZombieSpawn<'a, I: 'static> {
     /// `create_survivor` (`SurvivorFactory.CreateSurvivor()`) and draws the
     /// palette.
     pub descriptor: Option<(SurvivorDescRef<I>, i32)>,
-    /// `SurvivorFactory.CreateSurvivor()`.
-    pub create_survivor: &'a mut dyn FnMut() -> SurvivorDescRef<I>,
-    /// `humanVisual.randomBlood()` (the visual's draws).
-    pub random_blood: &'a mut dyn FnMut(),
+    /// `SurvivorFactory.CreateSurvivor()`; `Err` is the exception it
+    /// throws (an empty name list: `IndexOutOfBoundsException`).
+    pub create_survivor: &'a mut dyn FnMut() -> pz_scripts::ScriptResult<SurvivorDescRef<I>>,
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -444,20 +465,25 @@ impl<I: 'static> GameCharacter<I> {
     /// speed, `initCanCrawlUnderVehicle`). The action group is the
     /// caller's (`ActionGroup.getActionGroup("zombie")`);
     /// [`Self::initialize_zombie_states`] registers the states.
-    pub fn new_zombie(sm: &ScriptManager, ctx: &dyn SimContext, spawn: ZombieSpawn<'_, I>) -> Self {
+    ///
+    /// The zombie gets its `HumanVisual` (`randomBlood()` draws from
+    /// `OutfitRNG`). `Err` is the exception `CreateSurvivor()` threw.
+    pub fn new_zombie(sm: &ScriptManager, ctx: &dyn SimContext, spawn: ZombieSpawn<'_, I>) -> pz_scripts::ScriptResult<Self> {
         let mut z = GameCharacter::new(sm, CharacterKind::Zombie);
         z.health = 1.8 + ctx.rand_next_float(0.0, 0.3);
         z.zombie.weight = 0.7;
         let dir = IsoDirections::ALL[ctx.rand_next(8) as usize];
         z.set_forward_iso_direction(dir);
-        (spawn.random_blood)();
+        let mut hv = pz_inventory::visual::HumanVisual::new(crate::character::items::blood_part::MAX);
+        hv.random_blood(&crate::population::OutfitRngStyles);
+        z.human_visual = Some(hv);
         match spawn.descriptor {
             Some((d, palette)) => {
                 z.descriptor = Some(d);
                 z.zombie.palette = palette;
             }
             None => {
-                z.descriptor = Some((spawn.create_survivor)());
+                z.descriptor = Some((spawn.create_survivor)()?);
                 z.zombie.palette = ctx.rand_next(3) + 1;
             }
         }
@@ -484,7 +510,7 @@ impl<I: 'static> GameCharacter<I> {
         z.zombie.width = 0.3;
         z.zombie.hurt_sound = format!("{}Hurt", z.voice_prefix());
         z.clear_aggro_list();
-        z
+        Ok(z)
     }
 
     /// `getDescriptor().getVoicePrefix()`.

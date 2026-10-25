@@ -219,8 +219,7 @@ fn population_tick_creates_a_sitting_real_zombie() {
     let mut zombies: Vec<GameCharacter<()>> = Vec::new();
     let mut next_id = 100;
     let mut nw = NullWorld;
-    let mut blood = || {};
-    let mut survivor = || desc.clone();
+    let mut survivor = || Ok(desc.clone());
     let water = |_: (i32, i32, i32)| false;
     let mut ops = RealZombies {
         sm: &sm,
@@ -230,7 +229,6 @@ fn population_tick_creates_a_sitting_real_zombie() {
         zombies: &mut zombies,
         next_id: &mut next_id,
         create_survivor: &mut survivor,
-        random_blood: &mut blood,
         water: &water,
         key_spawn_chance_d100: 0.0,
         building_keys: Vec::new(),
@@ -242,7 +240,7 @@ fn population_tick_creates_a_sitting_real_zombie() {
         let mut host = WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut ops);
         let mut tick = |m: &mut ZombiePopulationManager<i32>| {
             clock.set(clock.get() + 50);
-            m.update_main(&mut host, 1.0, 10.0, &[(0, 0)], 10, &[]);
+            m.update_main(&mut host, 1.0, 10.0, &[(0, 0)], 10, &[]).unwrap();
             m.thread_step();
         };
         for _ in 0..3 {
@@ -340,8 +338,7 @@ fn loaded_world_zpop_zombies_become_real() {
     let mut zombies: Vec<GameCharacter<()>> = Vec::new();
     let mut next_id = 100;
     let mut nw = NullWorld;
-    let mut blood = || {};
-    let mut survivor = || desc.clone();
+    let mut survivor = || Ok(desc.clone());
     let water = |_: (i32, i32, i32)| false;
     let mut ops = RealZombies {
         sm: &sm,
@@ -351,7 +348,6 @@ fn loaded_world_zpop_zombies_become_real() {
         zombies: &mut zombies,
         next_id: &mut next_id,
         create_survivor: &mut survivor,
-        random_blood: &mut blood,
         water: &water,
         key_spawn_chance_d100: 0.0,
         building_keys: Vec::new(),
@@ -365,10 +361,10 @@ fn loaded_world_zpop_zombies_become_real() {
         let f = PopulationFrame { multiplier: 1.0, world_age_hours: 10.0, chunk_maps: &maps, real_zombies: &reals };
         let mut host = WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, ops);
         if start {
-            pop.start_game(&mut host, &f);
+            pop.start_game(&mut host, &f).unwrap();
         } else {
             pop.update_game_state(false, false);
-            pop.update(&mut host, &f);
+            pop.update(&mut host, &f).unwrap();
         }
         clock.set(clock.get() + 33);
     };

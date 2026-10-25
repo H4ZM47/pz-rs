@@ -42,6 +42,7 @@ pub mod bind_scripts;
 pub mod bind_skills;
 pub mod bind_states;
 pub mod bind_zombie;
+pub mod bind_zombie_outfits;
 pub mod bind_text;
 pub mod bind_ui;
 pub mod bind_ui3d;

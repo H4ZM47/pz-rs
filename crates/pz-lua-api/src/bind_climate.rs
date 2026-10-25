@@ -114,6 +114,23 @@ thread_local! {
     static SINK: RefCell<Option<EventSink>> = const { RefCell::new(None) };
     static HANDLES: RefCell<HashMap<Obj, Value>> = RefCell::new(HashMap::new());
     static COLORS: RefCell<HashMap<usize, (ColorRef, Value)>> = RefCell::new(HashMap::new());
+    static SNOW: RefCell<SnowEffects> = const { RefCell::new(SnowEffects { target: None, ice_queen: None }) };
+}
+
+/// The latest climate effects on the world that Lua calls and the climate
+/// updates produced and the engine has not applied yet:
+/// `IsoWorld.currentCell.setSnowTarget(target)` (before its
+/// `enableSnowOnGround` check) and `ErosionIceQueen.instance.setSnow(b)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SnowEffects {
+    pub target: Option<i32>,
+    pub ice_queen: Option<bool>,
+}
+
+/// Takes the pending [`SnowEffects`] (the engine applies them to the cell
+/// and the ice queen).
+pub fn take_snow_effects() -> SnowEffects {
+    SNOW.with(|s| std::mem::take(&mut *s.borrow_mut()))
 }
 
 /// Makes `gt` the `GameTime.instance` Lua sees.
@@ -230,6 +247,16 @@ fn npe() -> LuaError {
 
 /// Fires collected events through the installed sink.
 pub fn fire_events(thread: &mut Thread, ctx: LuaClimateContext) {
+    SNOW.with(|s| {
+        let mut s = s.borrow_mut();
+        for e in &ctx.events {
+            match *e {
+                ClimateEvent::SnowTarget(t) => s.target = Some(t),
+                ClimateEvent::IceQueenSnow(b) => s.ice_queen = Some(b),
+                _ => {}
+            }
+        }
+    });
     let Some(sink) = SINK.with(|s| s.borrow().clone()) else { return };
     for e in ctx.events {
         let (name, args): (&str, Vec<Value>) = match e {
@@ -302,7 +329,7 @@ pub fn update_game_time(thread: &mut Thread) {
 //    (`ErosionMain.start`: [`start_erosion_season`], `OnInitSeasons`), ...,
 //    `metaGrid.CreateStep2()`, `ClimateManager.init(metaGrid)`
 //    ([`init_climate_manager`]), ..., the cell load, then
-//    `ClimateManager.postCellLoadSetSnow()`.
+//    `ClimateManager.postCellLoadSetSnow()` ([`post_cell_load_set_snow`]).
 
 /// `ClimateManager.setInstance(new ClimateManager())`: a new climate in the
 /// shared `GameTime` (simplex offsets drawn from `Rand`, every season colour
@@ -335,6 +362,18 @@ pub fn start_erosion_season(thread: &mut Thread, cfg: &SeasonConfig, temperature
     if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
         sink(thread, "OnInitSeasons", &[handle(Obj::Season(SeasonRef::Erosion))]);
     }
+}
+
+/// `ClimateManager.getInstance().postCellLoadSetSnow()` on the shared
+/// `GameTime` (`IsoWorld.init`, right after the cell load): the snow target
+/// and the ice queen's state, returned for the engine to apply (also left
+/// in [`take_snow_effects`]'s slot until taken).
+pub fn post_cell_load_set_snow(thread: &mut Thread) -> SnowEffects {
+    let gt = shared_game_time();
+    let mut ctx = LuaClimateContext::new();
+    gt.borrow().climate.post_cell_load_set_snow(&mut ctx);
+    fire_events(thread, ctx);
+    take_snow_effects()
 }
 
 /// `ClimateManager.getInstance().init(metaGrid)` on the shared `GameTime`:
@@ -1077,13 +1116,16 @@ fn register_climate_manager(thread: &mut Thread) {
         "transmitTriggerTropical",
         "transmitTriggerBlizzard",
         "transmitGenerateWeather",
-        "postCellLoadSetSnow",
         "updateEveryTenMins",
         "launchFlare",
         "execute_Simulation",
     ] {
         b.method(name, |_| Ok(0));
     }
+    b.method("postCellLoadSetSnow", |c| {
+        with_gt(c, |g, ctx| g.climate.post_cell_load_set_snow(ctx))?;
+        Ok(0)
+    });
     b.static_fn("ToKph", |c| Ok(c.push(fv(farg(c, 0) * 120.0))));
     b.static_fn("ToMph", |c| Ok(c.push(fv(farg(c, 0) * 74.5645))));
     b.static_fn("clamp01", |c| Ok(c.push(fv(pz_core::weather::clamp01(farg(c, 0))))));

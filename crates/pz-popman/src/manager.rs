@@ -321,8 +321,9 @@ pub trait PopulationHost {
     /// The game's `Rand`.
     fn rand(&mut self) -> &mut dyn GameRand;
     /// `VirtualZombieManager.createRealZombieAlways(outfit, dir, false,
-    /// persistentId)` with `choices = [square]`.
-    fn create_real_zombie(&mut self, outfit: i32, dir: IsoDirections, persistent_id: i32, square: (i32, i32, i32)) -> Option<Self::Zombie>;
+    /// persistentId)` with `choices = [square]`. `Err` is the exception
+    /// it threw (the Java exception's text), which ends `updateMain`.
+    fn create_real_zombie(&mut self, outfit: i32, dir: IsoDirections, persistent_id: i32, square: (i32, i32, i32)) -> Result<Option<Self::Zombie>, String>;
     /// The zombie as `registerZombie` reads it at the end of
     /// `createRealZombieAlways` (its position in the chosen square, its
     /// fresh state flags and `getPersistentOutfitID()`).
@@ -684,7 +685,8 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
     /// `IsoChunkMap.chunkGridWidth`; `real_zombies` is the cell's zombie
     /// list, packed when due. Returns whether it notified the worker
     /// thread (`MapCollisionData.notifyThread()`: the library or the
-    /// collision grid has data for it).
+    /// collision grid has data for it); `Err` is an exception creating a
+    /// real zombie threw, which leaves the rest of the method undone.
     pub fn update_main<P: PopulationHost<Zombie = H>>(
         &mut self,
         host: &mut P,
@@ -693,9 +695,9 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
         chunk_maps: &[(i32, i32)],
         chunk_grid_width: i32,
         real_zombies: &[RealZombieInfo<H>],
-    ) -> bool {
+    ) -> Result<bool, String> {
         if self.client {
-            return false;
+            return Ok(false);
         }
         let now = self.now();
         self.native.n_update_main(multiplier, world_age_hours);
@@ -719,10 +721,10 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
                     path = (INVALID_PATH_XY, INVALID_PATH_XY);
                 }
                 if path.0 == INVALID_PATH_XY {
-                    self.add_zombie_standing(host, &r, dir, state);
+                    self.add_zombie_standing(host, &r, dir, state)?;
                     standing += 1;
                 } else {
-                    self.add_zombie_moving(host, &r, dir, state, path);
+                    self.add_zombie_moving(host, &r, dir, state, path)?;
                     moving += 1;
                 }
             }
@@ -754,7 +756,7 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
         let d1 = self.native.n_has_data_for_thread();
         let d2 = self.mcd.has_data_for_thread(&mut self.native);
         self.player_spawns.update(now);
-        d1 || d2
+        Ok(d1 || d2)
     }
 
     fn is_stale_record(&mut self, persistent_id: i32) -> bool {
@@ -786,9 +788,9 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
         Some(sq)
     }
 
-    fn add_zombie_standing<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, r: &Zombie, dir: IsoDirections, state: ZombieStateFlags) {
+    fn add_zombie_standing<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, r: &Zombie, dir: IsoDirections, state: ZombieStateFlags) -> Result<(), String> {
         let Some(sq) = self.real_square(host, r, (INVALID_PATH_XY, INVALID_PATH_XY), "real -> unloaded") else {
-            return;
+            return Ok(());
         };
         let fz = fastfloor(r.z);
         let mut wall = None;
@@ -799,8 +801,8 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
             Some((wx, wy, _)) => (wx, wy, fz),
             None => (sq.place.x, sq.place.y, fz),
         };
-        let Some(z) = host.create_real_zombie(r.outfit, dir, r.id as i32, square) else {
-            return;
+        let Some(z) = host.create_real_zombie(r.outfit, dir, r.id as i32, square)? else {
+            return Ok(());
         };
         self.register_created(host, z, r.id as i32);
         match wall {
@@ -820,6 +822,7 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
             host.set_can_crawl_under_vehicle(z, state.is_can_crawl_under_vehicle());
         }
         host.set_reanimated_for_grapple_only(z, state.is_reanimated_for_grapple_only());
+        Ok(())
     }
 
     /// `getSquareForSittingZombie(x, y, z)`: `(x, y, wallType)`.
@@ -885,14 +888,14 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
         dir: IsoDirections,
         state: ZombieStateFlags,
         path: (i32, i32),
-    ) {
+    ) -> Result<(), String> {
         let what = format!("real -> virtual {},{}", r.x, r.y);
         let Some(sq) = self.real_square(host, r, path, &what) else {
-            return;
+            return Ok(());
         };
         let square = (sq.place.x, sq.place.y, fastfloor(r.z));
-        let Some(z) = host.create_real_zombie(r.outfit, dir, r.id as i32, square) else {
-            return;
+        let Some(z) = host.create_real_zombie(r.outfit, dir, r.id as i32, square)? else {
+            return Ok(());
         };
         self.register_created(host, z, r.id as i32);
         host.set_position(z, r.x, r.y);
@@ -906,6 +909,7 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
             host.path_to(z, path.0, path.1);
         }
         host.set_reanimated_for_grapple_only(z, state.is_reanimated_for_grapple_only());
+        Ok(())
     }
 
     /// `updateLoadedAreas()` (single player areas).

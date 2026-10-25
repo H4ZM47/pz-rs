@@ -166,8 +166,11 @@ fn run_lua_internal(thread: &mut Thread, loader: &Rc<RefCell<Loader>>, filename:
         }
     };
     let f = Value::Closure(LuaClosure::new(Rc::new(proto), thread.globals().clone()));
-    // `DefaultClothing.instance.dirty = true; HairOutfitDefinitions.instance.dirty = true;`
+    // `AttachedWeaponDefinitions.instance.dirty = true; DefaultClothing.instance.dirty = true;
+    // HairOutfitDefinitions.instance.dirty = true; UnderwearDefinition.instance.dirty = true;
+    // ZombiesZoneDefinition.dirty = true;`
     crate::bind_appearance::mark_lua_definitions_dirty();
+    crate::bind_zombie_outfits::mark_dirty();
     let ret = match thread.pcall(&f, &[]) {
         Ok(v) => v.into_iter().next().unwrap_or_default(),
         Err((msg, trace)) => {
