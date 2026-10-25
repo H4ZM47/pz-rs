@@ -701,6 +701,12 @@ impl DrawList {
 pub trait TextureLoader {
     /// `Texture.getSharedTexture(path)`: loose image file or pack sub-texture.
     fn shared_texture(&mut self, path: &str) -> Option<Texture>;
+
+    /// Width and height of the backing image (`TextureID`) `id`, when the
+    /// loader knows it.
+    fn image_size(&self, _id: u32) -> Option<(i32, i32)> {
+        None
+    }
 }
 
 #[cfg(test)]
