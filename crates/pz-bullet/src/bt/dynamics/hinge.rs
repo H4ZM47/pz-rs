@@ -52,20 +52,9 @@ pub struct HingeConstraint {
 }
 
 impl HingeConstraint {
-    /// `btHingeConstraint(rbA, rbB, pivotInA, pivotInB, axisInA, axisInB,
-    /// useReferenceFrameA)`. `rb_a_transform` is rbA's world transform.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_typed(
-        rb_a: ObjId,
-        rb_b: ObjId,
-        rb_a_transform: &Transform,
-        pivot_in_a: Vec3,
-        pivot_in_b: Vec3,
-        axis_in_a: Vec3,
-        axis_in_b: Vec3,
-        use_reference_frame_a: bool,
-    ) -> TypedConstraint {
-        let mut h = HingeConstraint {
+    /// The member initialisation shared by the constructors.
+    fn blank(use_reference_frame_a: bool) -> HingeConstraint {
+        HingeConstraint {
             rb_a_frame: Transform::default(),
             rb_b_frame: Transform::default(),
             motor_target_velocity: 0.0,
@@ -85,7 +74,47 @@ impl HingeConstraint {
             normal_cfm: 0.0,
             stop_cfm: 0.0,
             stop_erp: 0.0,
+        }
+    }
+
+    /// `btHingeConstraint(rbA, rbB, rbAFrame, rbBFrame, useReferenceFrameA)`.
+    pub fn new_typed_frames(
+        rb_a: ObjId,
+        rb_b: ObjId,
+        rb_a_frame: Transform,
+        rb_b_frame: Transform,
+        use_reference_frame_a: bool,
+    ) -> TypedConstraint {
+        let mut h = HingeConstraint::blank(use_reference_frame_a);
+        h.rb_a_frame = rb_a_frame;
+        h.rb_b_frame = rb_b_frame;
+        h.reference_sign = if use_reference_frame_a {
+            flt(-1.0)
+        } else {
+            flt(1.0)
         };
+        TypedConstraint::new(
+            HINGE_CONSTRAINT_TYPE,
+            Some(rb_a),
+            Some(rb_b),
+            ConstraintKind::Hinge(Box::new(h)),
+        )
+    }
+
+    /// `btHingeConstraint(rbA, rbB, pivotInA, pivotInB, axisInA, axisInB,
+    /// useReferenceFrameA)`. `rb_a_transform` is rbA's world transform.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_typed(
+        rb_a: ObjId,
+        rb_b: ObjId,
+        rb_a_transform: &Transform,
+        pivot_in_a: Vec3,
+        pivot_in_b: Vec3,
+        axis_in_a: Vec3,
+        axis_in_b: Vec3,
+        use_reference_frame_a: bool,
+    ) -> TypedConstraint {
+        let mut h = HingeConstraint::blank(use_reference_frame_a);
         h.rb_a_frame.origin = pivot_in_a;
         let b = &rb_a_transform.basis;
         let mut rb_axis_a1 = b.get_column(0);
