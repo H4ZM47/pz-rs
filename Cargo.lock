@@ -242,6 +242,7 @@ dependencies = [
  "pz-entity",
  "pz-fs",
  "pz-inventory",
+ "pz-kahlua",
  "pz-scripts",
 ]
 

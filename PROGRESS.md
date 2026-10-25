@@ -56,6 +56,13 @@ Status of the Rust port. Update this file with every merged change.
   original's field values (the 14 others are those random key ids), and
   the original loads the chunks written here with the same item fields.
   `AnimalInventoryItem` stays raw bytes. Checked locally.
+  New items carry the vehicle-part values, `ItemCapacity`/`MaxCapacity`,
+  radio `DeviceData` with presets and channel, and random map ids, with
+  the original's `Rand` draws (channel lists and map definitions are
+  runtime input); weights count fluid contents. All 5,092 created script
+  items match the original's draws, ids and vehicle values (30 moveables
+  differ in sprite-derived weight), and the part items of 242 `vehicles.db`
+  vehicles match the original's weights and totals. Checked locally.
 - Vehicles and moving objects in saves (`pz_world::save::vehicle`,
   `save::movers`): `BaseVehicle.save`/`load` with `VehiclePart`,
   `VehicleEngine`, lights, doors, windows, device data, part items and
@@ -71,6 +78,10 @@ Status of the Rust port. Update this file with every merged change.
   re-derives); on 1,400 synthetic chunk files built with the original's
   classes, 1,248 chunk-list vehicles, 1,869 pushables, 1,862 wheelie bins
   and 1,869 animal tracks decode and re-save identically. Checked locally.
+  `IsoChunk.vehicles` is a real list (chunk-file and `vehicles.db` loads,
+  chunk moves, removal) and `IsoMetaCell.vehicleZones` is readable as
+  `VehicleZone` views: the 9,693 Muldraugh vehicle zones per cell and
+  `getVehicleZoneAt` match the original. Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all
