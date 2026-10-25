@@ -1311,3 +1311,11 @@ fn population_host_reads_the_adapter_real_zombies_hold() {
     host.set_position(3, 12.5, 12.5);
     assert_eq!((zombies[0].vars.x, zombies[0].vars.y), (12.5, 12.5));
 }
+
+#[test]
+fn the_floor_sprite_name_is_the_solid_floor_object() {
+    let mut w = World::new();
+    let a = w.adapter();
+    assert_eq!(a.floor_sprite_name_at((10, 10, 0)).as_deref(), Some("floor"));
+    assert_eq!(a.floor_sprite_name_at((40, 40, 0)), None);
+}

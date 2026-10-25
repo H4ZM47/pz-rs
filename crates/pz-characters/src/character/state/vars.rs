@@ -39,6 +39,8 @@ pub struct CharacterVars {
     pub last_x: f32,
     pub last_y: f32,
     pub last_z: f32,
+    /// `llz` (`setLlz`).
+    pub llz: f32,
     /// `onFloor`.
     pub on_floor: bool,
     /// `closeKilled`.
@@ -317,6 +319,7 @@ impl Default for CharacterVars {
             last_x: 0.0,
             last_y: 0.0,
             last_z: 0.0,
+            llz: 0.0,
             on_floor: false,
             close_killed: false,
             hit_from_angle: 0.0,

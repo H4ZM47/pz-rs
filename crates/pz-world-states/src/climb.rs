@@ -424,3 +424,15 @@ impl StatesWorldAdapter<'_> {
         }
     }
 }
+
+// ---- landings ----
+
+impl StatesWorldAdapter<'_> {
+    /// `sq.getFloor().getSprite().getName()`: the first object whose
+    /// sprite has `solidfloor`.
+    pub fn floor_sprite_name_at(&self, p: (i32, i32, i32)) -> Option<String> {
+        let sq = self.cell.get_grid_square(p.0, p.1, p.2)?;
+        let floor = sq.objects.iter().find(|o| o.sprite.is_some_and(|s| self.sprites.sprites[s].properties.has(self.sprites.tables.flag.solidfloor)))?;
+        self.env().sprite_name(floor).map(str::to_string)
+    }
+}
