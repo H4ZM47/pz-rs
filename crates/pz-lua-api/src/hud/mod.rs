@@ -7,8 +7,10 @@
 //! `pz_ui::UIManager::init` once Lua is up).
 
 pub mod clock;
+pub mod health;
 pub mod host;
 pub mod moodles;
+pub mod new_window;
 pub mod progress_bar;
 pub mod speed_controls;
 pub mod tooltip;
@@ -297,6 +299,7 @@ pub fn register(thread: &mut Thread) {
         Ok(0)
     });
 
+    register_health(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
     mu.method("wiggle", |c| {
@@ -401,6 +404,49 @@ pub fn register(thread: &mut Thread) {
         let e = speed_controls(c)?;
         let v = e.ext::<SpeedControls>().unwrap().is_paused();
         Ok(c.push(v))
+    });
+}
+
+fn register_health(thread: &mut Thread) {
+    use health::{NewHealthPanel, NEW_HEALTH_PANEL};
+    // NewWindow isn't exposed itself; its public methods are inherited.
+    let b = expose_class(thread, NEW_HEALTH_PANEL, Some(UIELEMENT));
+    fn panel(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
+        let e = element_of(&c.arg(0)).ok_or_else(|| LuaError::runtime("Expected NewHealthPanel"))?;
+        if e.ext::<NewHealthPanel>().is_none() {
+            return Err(LuaError::runtime(format!("Expected NewHealthPanel but got {}", e.class_name())));
+        }
+        Ok(e)
+    }
+    b.ctor(|c| {
+        let chr = c.arg(2);
+        if chr.is_nil() {
+            return Err(LuaError::Runtime { message: "parentCharacter is null".into(), class: "java.lang.NullPointerException" });
+        }
+        let e = NewHealthPanel::create(int_arg(c, 0), int_arg(c, 1), chr);
+        Ok(c.push(Value::Object(e as Rc<dyn LuaObject>)))
+    });
+    b.method("SetCharacter", |c| {
+        let e = panel(c)?;
+        e.ext::<NewHealthPanel>().unwrap().set_character(c.arg(1));
+        Ok(0)
+    });
+    b.method("getDamageStatusString", |c| {
+        let e = panel(c)?;
+        let s = e.ext::<NewHealthPanel>().unwrap().damage_status_string();
+        Ok(c.push(Value::str(&s)))
+    });
+    b.method("setMovable", |c| {
+        let e = panel(c)?;
+        e.ext::<NewHealthPanel>().unwrap().core.movable.set(crate::expose::bool_arg(c, 1));
+        Ok(0)
+    });
+    b.method("Nest", |c| {
+        let e = panel(c)?;
+        let child = element_of(&c.arg(1)).ok_or_else(|| LuaError::runtime("Expected UIElement"))?;
+        let (t, r, bt, l) = (int_arg(c, 2), int_arg(c, 3), int_arg(c, 4), int_arg(c, 5));
+        e.ext::<NewHealthPanel>().unwrap().core.nest(&e, &child, c.thread, t, r, bt, l);
+        Ok(0)
     });
 }
 

@@ -171,6 +171,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       as a `pz_ui::tooltip::TooltipObject`: identity, `haveSpecialTooltip`,
       its square's Lua object; world thread); the tooltip font option and
       highlight colours come from `Core` (#153).
+- [ ] Health panel: `HudBodyDamage` (`isFemale`, `getBodyDamage().getHealth()`,
+      each `BodyPart`'s wound state as a `BodyPartView`; the remote
+      `getBodyDamageRemote()` for another MP player; characters thread) and
+      `HudDebug::ui_render_outline` (`Core.debug` plus the debug option)
+      feed `NewHealthPanel`/`UI_BodyPart`, built by `ISNewHealthPanel` (#155).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
