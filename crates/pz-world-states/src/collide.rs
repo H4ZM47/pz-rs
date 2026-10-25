@@ -9,7 +9,7 @@ use pz_characters::character::states::ids;
 use pz_characters::{CharacterKind, GameCharacter};
 use pz_pathfind::behavior::PathFindBehavior2;
 use pz_pathfind::mover::{MoverId, ObjectRef};
-use pz_world::fire::manager::{FireFlags, FireHooks, FireSettings, IsoFireManager};
+use pz_world::fire::manager::{FireFlags, FireHooks, FireMutation, FireSettings, IsoFireManager};
 use pz_world::objects::{IsoObject, ObjectKind};
 use pz_world::square::{
     CollideAdjacent, CollideEnv, CollideMover, CollidedFlags, EdgeFacing, HoppableAction,
@@ -33,6 +33,8 @@ pub struct WorldView<'w> {
 pub struct StatesFire<'e> {
     pub manager: &'e mut IsoFireManager,
     pub hooks: &'e mut dyn FireHooks,
+    /// The square mutations a fire started by a character can lead to.
+    pub mutation: FireMutation<'e>,
     pub flags: FireFlags,
     pub settings: FireSettings,
 }

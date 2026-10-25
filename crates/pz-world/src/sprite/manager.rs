@@ -242,6 +242,12 @@ impl IsoSpriteManager {
         self.sprites.len() - 1
     }
 
+    /// `IsoSprite.CreateSprite(manager)`: a new sprite in neither map (no
+    /// `name`; `LoadFramesNoDirPageSimple` gives it its frames).
+    pub fn create_sprite(&mut self) -> SpriteIdx {
+        self.new_sprite()
+    }
+
     /// `AddSprite(tex)`: a new sprite under `tex` in `namedMap`.
     pub fn add_sprite_named(&mut self, tex: &str) -> SpriteIdx {
         let s = self.new_sprite();

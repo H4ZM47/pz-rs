@@ -1020,6 +1020,7 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             cell: &mut *self.cell,
             meta: self.meta,
             sprites: &mut *self.sprites,
+            mutation: f.mutation,
             flags: f.flags,
             settings: f.settings,
             hooks: f.hooks,

@@ -7,21 +7,30 @@
 //! `IngameState` calls `IsoFireManager.Update()`) with a [`FireWorld`] over
 //! the loaded cell, the frame's timing ([`FireFrame`]) and the game's
 //! `Rand`. Sandbox and weather values are runtime input
-//! ([`FireSettings`]); sound, light, Lua events, render invalidation and
-//! pathfinding updates go out through [`FireHooks`].
+//! ([`FireSettings`]); sound, light, heat and fire-only Lua events go out
+//! through [`FireHooks`], and everything the square mutations call
+//! (`RemoveTileObject`, `removeFromWorld`, render invalidation, collision
+//! and pathfinding updates) through the [`MutationEnv`] parts in
+//! [`FireMutation`].
 //!
 //! Multiplayer (packets, `ServerOptions.NoFire`, safehouses) is not ported:
 //! this is the single-player game, where `GameServer.server` and
 //! `GameClient.client` are false.
 
 use crate::chunk::IsoCell;
+use crate::fire::sound::{FireSoundHooks, FireSoundInfo, FireSounds};
 use crate::fire::{
     FireCallbacks, FireEvent, FireOscillators, FireSquare, IsoFire, MAX_FIRE_OBJECTS,
 };
+use crate::isoregion::IsoRegions;
 use crate::java::GameRand;
 use crate::meta_grid::IsoMetaGrid;
 use crate::objects::{IsoObject, ObjectId, ObjectKind, ObjectName};
 use crate::sprite::{IsoFlagType, IsoSpriteManager, SpriteTables};
+use crate::square_mutation::{
+    dirty, DoorTables, MutationEnv, ObjectRef, PathfindSquareHooks, RenderSquareHooks,
+    SquareMutationHooks,
+};
 use crate::IsoGridSquare;
 
 /// The `IsoFlagType`s fire reads and sets that the sprite loader does not
@@ -41,6 +50,9 @@ pub struct FireFlags {
     pub WallN: Option<IsoFlagType>,
     pub WallW: Option<IsoFlagType>,
     pub WallNW: Option<IsoFlagType>,
+    /// `climbSheetTop{N,S,W,E}` and `climbSheet{N,S,W,E}` (sheet ropes).
+    pub climbSheetTop: [Option<IsoFlagType>; 4],
+    pub climbSheet: [Option<IsoFlagType>; 4],
 }
 
 impl FireFlags {
@@ -62,6 +74,9 @@ impl FireFlags {
             WallN: t.flag_from_string("WallN"),
             WallW: t.flag_from_string("WallW"),
             WallNW: t.flag_from_string("WallNW"),
+            climbSheetTop: ["N", "S", "W", "E"]
+                .map(|d| t.flag_from_string(&format!("climbSheetTop{d}"))),
+            climbSheet: ["N", "S", "W", "E"].map(|d| t.flag_from_string(&format!("climbSheet{d}"))),
         })
     }
 }
@@ -101,7 +116,7 @@ pub struct FireFrame {
 /// Where the fire's effects leave the world model. Every method defaults
 /// to doing nothing.
 #[allow(unused_variables)]
-pub trait FireHooks {
+pub trait FireHooks: FireSoundHooks {
     /// `WorldSoundManager.addSound(fire, x, y, z, radius, volume)` (a new
     /// fire, one time in five: zombies hear it).
     fn world_sound(&mut self, x: i32, y: i32, z: i32, radius: i32, volume: i32) {}
@@ -110,43 +125,33 @@ pub trait FireHooks {
     fn play_world_sound(&mut self, name: &str, x: i32, y: i32, z: i32, radius: f32, gain: f32) {}
     /// After a fire's `update()` (or the creation of a new one): its
     /// `lightSource` may have been added (`addLamppost`), recoloured
-    /// (stage 5) or replaced (`setLightRadius`). The renderer's
-    /// `LightLink::sync_fire` belongs here.
+    /// (stage 5) or replaced (`setLightRadius`), and a permanent fire's
+    /// `heatSource` added or resized ([`IsoFire::heat_source`]). The
+    /// renderer's `LightLink::sync_fire` belongs here.
     fn fire_updated(&mut self, r: FireRef, fire: &IsoFire) {}
-    /// `IsoFire.removeFromWorld()`: the light (`removeLamppost`) and sound
-    /// go (`LightLink::remove`).
+    /// `IsoFire.removeFromWorld()`: the light (`removeLamppost`) and heat
+    /// source (`removeHeatSource`) go (`LightLink::remove`).
     fn fire_removed(&mut self, r: FireRef) {}
-    /// `IsoFireManager.updateSound(fire)` (the fire wants a sound slot
-    /// this frame) / `stopSound(fire)`.
-    fn fire_sound(&mut self, x: i32, y: i32, z: i32, fire: Option<&IsoFire>) {}
+    /// `FMODParameterUtils.getClosestListenerDistanceSquared(x, y, z)`
+    /// (the fire sound slots go to the nearest fires).
+    fn listener_distance_sq(&self, x: f32, y: f32, z: i32) -> f32 {
+        0.0
+    }
     /// `getAlpha(IsoCamera.frameState.playerIndex)` of the fire (the
     /// renderer's stage-5 fade).
     fn fire_alpha(&self, x: i32, y: i32, z: i32) -> f32 {
         1.0
     }
-    /// `LuaEventManager.triggerEvent(name, square or object)`:
-    /// `OnNewFire`, `OnGridBurnt`, `OnObjectAboutToBeRemoved`,
-    /// `OnTileRemoved`, `OnContainerUpdate`.
+    /// `LuaEventManager.triggerEvent(name, square or fire)`: `OnNewFire`
+    /// and `OnGridBurnt` (the mutations' own events go through
+    /// [`SquareMutationHooks::lua_event`]).
     fn lua_event(&mut self, name: &str, x: i32, y: i32, z: i32) {}
-    /// `invalidateRenderChunkLevel(flags)` of the square.
-    fn invalidate_render_chunk_level(&mut self, x: i32, y: i32, z: i32, flags: u64) {}
-    /// `MapCollisionData.squareChanged` / `PolygonalMap2.squareChanged`.
-    fn square_changed(&mut self, x: i32, y: i32, z: i32) {}
-    /// `removeFromWorld()` of an object fire took off its square (or
-    /// replaced), already gone from `objects`.
-    fn object_removed(&mut self, x: i32, y: i32, z: i32, obj: &IsoObject) {}
     /// `IsoGenerator.setSurroundingElectricity()` after a burning generator
     /// was switched off.
     fn generator_switched_off(&mut self, x: i32, y: i32, z: i32) {}
-    /// `handleBurning()` of the object at `index` (hutches and feeding
-    /// troughs remove their other parts and burn their squares): the
-    /// squares to `BurnWalls(true, false)`.
-    fn handle_burning(&mut self, x: i32, y: i32, z: i32, obj: &IsoObject) -> Vec<(i32, i32, i32)> {
-        Vec::new()
-    }
-    /// A corpse burnt away (`removeCorpse(body, true)`), already gone from
-    /// `staticMovingObjects`.
-    fn corpse_burnt(&mut self, x: i32, y: i32, z: i32) {}
+    /// `IsoHutch.removeHutchObject(hutch)`'s `releaseAllAnimals()` and
+    /// `dropAllEggs()` of the hutch object `r`, before it leaves the world.
+    fn hutch_release_contents(&mut self, r: ObjectRef) {}
     /// The name of `WorldDictionary` object-name id `id`
     /// (`ObjectName::Dict`).
     fn dict_object_name(&self, id: i8) -> Option<String> {
@@ -157,19 +162,63 @@ pub trait FireHooks {
 /// [`FireHooks`] that do nothing.
 pub struct NoFireHooks;
 
+impl FireSoundHooks for NoFireHooks {}
 impl FireHooks for NoFireHooks {}
+
+/// The [`MutationEnv`] parts besides the cell, meta grid and sprites.
+pub struct FireMutation<'a> {
+    pub regions: &'a mut IsoRegions,
+    pub doors: &'a DoorTables,
+    pub world: &'a mut dyn SquareMutationHooks,
+    pub pathfind: &'a mut dyn PathfindSquareHooks,
+    pub render: &'a mut dyn RenderSquareHooks,
+    /// `IsoPlayer.numPlayers`.
+    pub num_players: i32,
+}
 
 /// The world a fire burns in.
 pub struct FireWorld<'a> {
     pub cell: &'a mut IsoCell,
     pub meta: &'a IsoMetaGrid,
     pub sprites: &'a mut IsoSpriteManager,
+    pub mutation: FireMutation<'a>,
     pub flags: FireFlags,
     pub settings: FireSettings,
     pub hooks: &'a mut dyn FireHooks,
 }
 
 impl FireWorld<'_> {
+    /// The square mutations over this world, drawing from `rand`.
+    pub fn env<'s>(&'s mut self, rand: &'s mut dyn GameRand) -> MutationEnv<'s> {
+        let m = &mut self.mutation;
+        MutationEnv {
+            cell: &mut *self.cell,
+            meta: self.meta,
+            sprites: &mut *self.sprites,
+            regions: &mut *m.regions,
+            rand,
+            doors: m.doors,
+            world: &mut *m.world,
+            pathfind: &mut *m.pathfind,
+            render: &mut *m.render,
+            num_players: m.num_players,
+        }
+    }
+
+    /// `IsoFire.isCampfire()` of the fire at `r`: an object after the
+    /// first on its square, not a world item, named `Campfire`.
+    pub fn is_campfire(&self, r: FireRef) -> bool {
+        let Some(sq) = self.sq(r.x, r.y, r.z) else {
+            return false;
+        };
+        sq.objects.iter().skip(1).any(|o| {
+            !matches!(o.kind, ObjectKind::WorldInventory(_))
+                && self
+                    .object_name(o)
+                    .is_some_and(|n| n.eq_ignore_ascii_case("Campfire"))
+        })
+    }
+
     /// `getObjectName`-free `IsoObject.getName()`.
     pub fn object_name(&self, o: &IsoObject) -> Option<String> {
         match &o.name {
@@ -272,6 +321,8 @@ pub struct IsoFireManager {
     pub oscillators: FireOscillators,
     /// `fireRecalc` (counts down from `fireRecalcDelay`, 25).
     pub fire_recalc: i32,
+    /// `fireSounds`.
+    pub sounds: FireSounds,
 }
 
 /// `IsoFireManager.fireRecalcDelay`.
@@ -286,9 +337,10 @@ impl IsoFireManager {
     }
 
     /// `Reset()`.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self, hooks: &mut dyn FireHooks) {
         self.fire_stack.clear();
         self.burning_characters.clear();
+        self.sounds.reset(hooks);
     }
 
     /// The fire `r` refers to, if it is still on its square.
@@ -324,7 +376,8 @@ impl IsoFireManager {
         }
     }
 
-    /// `addCharacterOnFire` / `deleteCharacterOnFire`.
+    /// `addCharacterOnFire` / `deleteCharacterOnFire` (only a server's
+    /// `setOnFire` calls them).
     pub fn set_character_on_fire(&mut self, c: CharacterId, on: bool) {
         let at = self.characters_on_fire.iter().position(|&x| x == c);
         match (on, at) {
@@ -336,14 +389,16 @@ impl IsoFireManager {
         }
     }
 
-    /// `removeFromWorld()` of a fire: out of `FireStack`, its sound and
-    /// light gone.
-    fn remove_from_world(&mut self, w: &mut FireWorld<'_>, r: FireRef, fire: &mut IsoFire) {
+    /// `IsoFire.removeFromWorld()`'s own part: out of `FireStack`, its
+    /// sound slot, light and heat source gone (`IsoObject.removeFromWorld`
+    /// follows).
+    fn fire_remove_from_world(&mut self, w: &mut FireWorld<'_>, r: FireRef, fire: &mut IsoFire) {
         if !fire.perm {
             self.remove(r);
         }
-        w.hooks.fire_sound(r.x, r.y, r.z, None);
+        self.sounds.remove_fire(r);
         fire.light = None;
+        fire.heat_source = None;
         w.hooks.fire_removed(r);
     }
 
@@ -356,7 +411,7 @@ impl IsoFireManager {
 
     /// `Add(fire)`: at `MAX_FIRE_OBJECTS` fires the oldest one (largest
     /// `age` above 0) is taken off its square first.
-    pub fn add(&mut self, w: &mut FireWorld<'_>, r: FireRef) {
+    pub fn add(&mut self, w: &mut FireWorld<'_>, rand: &mut dyn GameRand, r: FireRef) {
         if self.fire_stack.contains(&r) {
             return;
         }
@@ -371,28 +426,44 @@ impl IsoFireManager {
                 }
             }
             if let Some(o) = oldest {
-                let flags = w.flags;
-                let removed = w.sq_mut(o.x, o.y, o.z).and_then(|sq| {
-                    sq.properties.unset_flag(flags.burning);
-                    sq.properties.unset_flag(flags.smoke);
-                    let i = sq.object_index(o.id)?;
-                    Some(sq.objects.remove(i))
-                });
-                // RemoveAttachedAnims, removeFromWorld, removeFromSquare.
-                if let Some(mut obj) = removed {
-                    if let ObjectKind::Fire(f) = &mut obj.kind {
-                        f.anims.clear();
-                        self.remove_from_world(w, o, f);
-                    }
-                    if let Some(sq) = w.sq_mut(o.x, o.y, o.z) {
-                        sq.special_objects.retain(|&id| id != o.id);
-                    }
-                } else {
-                    self.remove(o);
-                }
+                self.evict(w, rand, o);
             }
         }
         self.fire_stack.push(r);
+    }
+
+    /// `Add`'s removal of the oldest fire: the square's flags,
+    /// `RemoveAttachedAnims`, `removeFromWorld`, `removeFromSquare`.
+    fn evict(&mut self, w: &mut FireWorld<'_>, rand: &mut dyn GameRand, o: FireRef) {
+        let flags = w.flags;
+        let Some(sq) = w.sq_mut(o.x, o.y, o.z) else {
+            // No square: removeFromWorld is not reached.
+            return;
+        };
+        sq.properties.unset_flag(flags.burning);
+        sq.properties.unset_flag(flags.smoke);
+        let Some(mut fire) = self.fire(w.cell, o).cloned() else {
+            // getSquare() is still set but the fire left the objects:
+            // removeFromWorld runs on the copy in FireStack.
+            self.remove(o);
+            self.sounds.remove_fire(o);
+            w.hooks.fire_removed(o);
+            return;
+        };
+        fire.anims.clear();
+        self.fire_remove_from_world(w, o, &mut fire);
+        Self::sync(w.cell, o, &fire);
+        let or = ObjectRef {
+            pos: (o.x, o.y, o.z),
+            id: o.id,
+        };
+        w.env(rand).base_remove_from_world(or);
+        if let Some(sq) = w.sq_mut(o.x, o.y, o.z) {
+            if let Some(i) = sq.object_index(o.id) {
+                sq.objects.remove(i);
+            }
+            sq.special_objects.retain(|&id| id != o.id);
+        }
     }
 
     /// Puts `fire` on its square as a new object (a fire loaded with the
@@ -446,14 +517,15 @@ impl IsoFireManager {
         // the new fire: it is not in FireStack yet).
         let id = w.sq_mut(x, y, z)?.new_object_id();
         let r = FireRef { x, y, z, id };
-        self.add(w, r);
+        self.add(w, rand, r);
         let sq = w.sq_mut(x, y, z)?;
         sq.objects
             .push(IsoObject::new(id, ObjectKind::Fire(fire), None));
         if rand.next(5) == 0 {
             w.hooks.world_sound(x, y, z, 20, 20);
         }
-        w.hooks.invalidate_render_chunk_level(x, y, z, 64);
+        w.env(rand)
+            .invalidate_render((x, y, z), dirty::OBJECT_ADDED);
         Some(r)
     }
 
@@ -492,17 +564,18 @@ impl IsoFireManager {
         let fire = IsoFire::new_smoke(energy, life, true, rand);
         let id = w.sq_mut(x, y, z)?.new_object_id();
         let r = FireRef { x, y, z, id };
-        self.add(w, r);
+        self.add(w, rand, r);
         w.sq_mut(x, y, z)?
             .objects
             .push(IsoObject::new(id, ObjectKind::Fire(fire), None));
-        w.hooks.invalidate_render_chunk_level(x, y, z, 64);
+        w.env(rand)
+            .invalidate_render((x, y, z), dirty::OBJECT_ADDED);
         Some(r)
     }
 
     /// Registers a fire loaded with its square (`IsoFire.addToWorld` for a
     /// non-permanent fire) and sets the square flag `IsoFire.load` sets.
-    pub fn add_loaded(&mut self, w: &mut FireWorld<'_>, r: FireRef) {
+    pub fn add_loaded(&mut self, w: &mut FireWorld<'_>, rand: &mut dyn GameRand, r: FireRef) {
         let Some(f) = self.fire(w.cell, r) else {
             return;
         };
@@ -516,7 +589,7 @@ impl IsoFireManager {
             sq.properties.set_flag(flag);
         }
         if !perm {
-            self.add(w, r);
+            self.add(w, rand, r);
         }
     }
 
@@ -527,9 +600,9 @@ impl IsoFireManager {
         rand: &mut dyn GameRand,
         (gx, gy, gz): (i32, i32, i32),
         power: i32,
-    ) {
+    ) -> Result<(), String> {
         if w.sq(gx, gy, gz).is_none() {
-            return;
+            return Ok(());
         }
         self.fire_recalc = 1;
         for x in -2..=2 {
@@ -544,14 +617,20 @@ impl IsoFireManager {
                     }
                     let energy = rand.next_range(100, 250 + power);
                     self.start_fire(w, rand, at.0, at.1, at.2, true, energy, 0);
-                    super::burn::burn_walls(self, w, rand, at, true, true);
+                    super::burn::burn_walls(self, w, rand, at, true, true)?;
                 }
             }
         }
+        Ok(())
     }
 
     /// `RemoveAllOn(square)`: puts out every fire there (last first).
-    pub fn remove_all_on(&mut self, w: &mut FireWorld<'_>, (x, y, z): (i32, i32, i32)) {
+    pub fn remove_all_on(
+        &mut self,
+        w: &mut FireWorld<'_>,
+        rand: &mut dyn GameRand,
+        (x, y, z): (i32, i32, i32),
+    ) {
         for n in (0..self.fire_stack.len()).rev() {
             let Some(&r) = self.fire_stack.get(n) else {
                 continue;
@@ -564,13 +643,18 @@ impl IsoFireManager {
                 self.remove(r);
                 continue;
             };
-            self.extinct(w, r, &mut f);
+            self.extinct(w, rand, r, &mut f);
         }
     }
 
     /// `IsoGridSquare.stopFire()`.
-    pub fn stop_fire(&mut self, w: &mut FireWorld<'_>, at: (i32, i32, i32)) {
-        self.remove_all_on(w, at);
+    pub fn stop_fire(
+        &mut self,
+        w: &mut FireWorld<'_>,
+        rand: &mut dyn GameRand,
+        at: (i32, i32, i32),
+    ) {
+        self.remove_all_on(w, rand, at);
         let (burnt, burning) = (w.sprites.tables.flag.burntOut, w.flags.burning);
         if let Some(sq) = w.sq_mut(at.0, at.1, at.2) {
             sq.properties.set_flag(burnt);
@@ -579,22 +663,42 @@ impl IsoFireManager {
         }
     }
 
-    /// `extinctFire()`.
-    fn extinct(&mut self, w: &mut FireWorld<'_>, r: FireRef, fire: &mut IsoFire) {
+    /// `extinctFire()`: the square's flags, `RemoveAttachedAnims`, out of
+    /// the objects, `RemoveTileObject` (which finds nothing left to remove
+    /// but still tells collision, Lua, pathfinding and regions),
+    /// `setLife(0)`, `removeFromWorld()`.
+    fn extinct(
+        &mut self,
+        w: &mut FireWorld<'_>,
+        rand: &mut dyn GameRand,
+        r: FireRef,
+        fire: &mut IsoFire,
+    ) {
         let flags = w.flags;
         if let Some(sq) = w.sq_mut(r.x, r.y, r.z) {
             sq.properties.unset_flag(flags.burning);
             sq.properties.unset_flag(flags.smoke);
         }
         fire.anims.clear();
+        let mut obj = None;
         if let Some(sq) = w.sq_mut(r.x, r.y, r.z) {
             if let Some(i) = sq.object_index(r.id) {
-                sq.objects.remove(i);
+                obj = Some(sq.objects.remove(i));
             }
-            sq.special_objects.retain(|&id| id != r.id);
         }
+        // A fire is never multi-square, so either branch of
+        // RemoveTileObject(obj) ends in RemoveTileObject(obj, false).
+        w.env(rand)
+            .remove_tile_object_with((r.x, r.y, r.z), r.id, false);
         fire.life = 0;
-        self.remove_from_world(w, r, fire);
+        self.fire_remove_from_world(w, r, fire);
+        let mut obj = obj.unwrap_or_else(|| IsoObject::new(r.id, ObjectKind::Object, None));
+        obj.kind = ObjectKind::Fire(fire.clone());
+        let or = ObjectRef {
+            pos: (r.x, r.y, r.z),
+            id: r.id,
+        };
+        w.env(rand).base_remove_from_world_detached(or, &mut obj);
     }
 
     /// `IsoFire.Spread()`.
@@ -661,18 +765,20 @@ impl IsoFireManager {
         }
     }
 
-    /// `IsoFire.update()` of one fire in `FireStack`.
+    /// `IsoFire.update()` of one fire in `FireStack`. On `Err` the fire
+    /// keeps the state it had when the original threw (it was written
+    /// back before the burn).
     fn update_fire(
         &mut self,
         w: &mut FireWorld<'_>,
         rand: &mut dyn GameRand,
         frame: FireFrame,
         r: FireRef,
-    ) {
+    ) -> Result<(), String> {
         let Some(mut fire) = self.fire(w.cell, r).cloned() else {
-            return;
+            return Ok(());
         };
-        w.hooks.fire_sound(r.x, r.y, r.z, Some(&fire));
+        self.sounds.add_fire(r);
         let flag = if fire.life_stage < 4 {
             w.flags.burning
         } else {
@@ -692,7 +798,7 @@ impl IsoFireManager {
             r,
             gone: false,
         };
-        fire.update_with(
+        let res = fire.update_with(
             dt,
             frame.thirty_fps,
             frame.now_millis,
@@ -700,27 +806,76 @@ impl IsoFireManager {
             rand,
             &mut step,
         );
+        if res.is_err() {
+            if let Some(f) = step.mgr.fire(step.w.cell, r).cloned() {
+                step.w.hooks.fire_updated(r, &f);
+            }
+            return res;
+        }
         if !step.gone && step.mgr.fire(step.w.cell, r).is_some() {
             Self::sync(step.w.cell, r, &fire);
             step.w.hooks.fire_updated(r, &fire);
         }
+        Ok(())
     }
 
     /// `IsoFireManager.Update()`: every fire in `FireStack` (as it was when
     /// the frame began, skipping fires removed meanwhile) updates once.
-    pub fn update(&mut self, w: &mut FireWorld<'_>, rand: &mut dyn GameRand, frame: FireFrame) {
+    ///
+    /// `Err` is an exception a fire's update threw (its `toString()`
+    /// text): `Update` stops there, without the later fires, `fireRecalc`
+    /// or the sounds, and nothing on the way to `IngameState.update`
+    /// catches it, so the engine skips the rest of that frame's
+    /// `IngameState.update` and logs it with `ExceptionLogger`.
+    pub fn update(
+        &mut self,
+        w: &mut FireWorld<'_>,
+        rand: &mut dyn GameRand,
+        frame: FireFrame,
+    ) -> Result<(), String> {
         self.oscillators.update();
         let stack = self.fire_stack.clone();
         for r in stack {
             if self.fire(w.cell, r).is_none() || !self.fire_stack.contains(&r) {
                 continue;
             }
-            self.update_fire(w, rand, frame, r);
+            self.update_fire(w, rand, frame, r)?;
         }
         self.fire_recalc -= 1;
         if self.fire_recalc < 0 {
             self.fire_recalc = FIRE_RECALC_DELAY;
         }
+        self.update_sounds(w);
+        Ok(())
+    }
+
+    /// `fireSounds.update()`.
+    pub fn update_sounds(&mut self, w: &mut FireWorld<'_>) {
+        let mut sounds = std::mem::take(&mut self.sounds);
+        let info = |r: FireRef| {
+            let f = self.fire(w.cell, r);
+            FireSoundInfo {
+                on_square: f.is_some(),
+                smoke: f.is_some_and(|f| f.smoke),
+                life_stage: f.map_or(0, |f| f.life_stage),
+                campfire: w.is_campfire(r),
+                listener_distance_sq: w.hooks.listener_distance_sq(
+                    r.x as f32 + 0.5,
+                    r.y as f32 + 0.5,
+                    r.z,
+                ),
+            }
+        };
+        let infos: Vec<(FireRef, FireSoundInfo)> =
+            sounds.fires.iter().map(|&r| (r, info(r))).collect();
+        sounds.update(&mut *w.hooks, |r| {
+            infos
+                .iter()
+                .find(|(f, _)| *f == r)
+                .map(|(_, i)| *i)
+                .unwrap()
+        });
+        self.sounds = sounds;
     }
 }
 
@@ -734,20 +889,26 @@ struct Step<'m, 'w, 'a> {
 }
 
 impl FireCallbacks for Step<'_, '_, '_> {
-    fn on_event(&mut self, fire: &mut IsoFire, event: FireEvent, rand: &mut dyn GameRand) {
+    fn on_event(
+        &mut self,
+        fire: &mut IsoFire,
+        event: FireEvent,
+        rand: &mut dyn GameRand,
+    ) -> Result<(), String> {
         let r = self.r;
         match event {
             FireEvent::Burn => {
                 IsoFireManager::sync(self.w.cell, r, fire);
-                super::burn::burn(self.mgr, self.w, rand, (r.x, r.y, r.z));
+                super::burn::burn(self.mgr, self.w, rand, (r.x, r.y, r.z))?;
             }
             FireEvent::Spread => self.mgr.spread(self.w, rand, r, fire),
             FireEvent::Extinct => {
-                self.mgr.extinct(self.w, r, fire);
+                self.mgr.extinct(self.w, rand, r, fire);
                 self.gone = true;
             }
             // The new light is read after the update (FireHooks::fire_updated).
             FireEvent::LightChanged => {}
         }
+        Ok(())
     }
 }

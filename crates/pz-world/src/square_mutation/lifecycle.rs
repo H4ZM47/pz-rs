@@ -575,3 +575,58 @@ pub(super) fn remove_from_square(env: &mut MutationEnv<'_>, r: ObjectRef) -> Opt
     }
     removed
 }
+
+/// The `removeFromWorld` entry points the fire code uses (`BurnWalls`
+/// replacing an object, `IsoFire.removeFromWorld` and the feeding
+/// trough's `handleBurning`).
+impl MutationEnv<'_> {
+    /// `obj.removeFromWorld()` of `r`, which is on its square, for its
+    /// class.
+    pub(crate) fn object_remove_from_world(&mut self, r: ObjectRef) {
+        remove_from_world(self, r);
+    }
+
+    /// `IsoObject.removeFromWorld()` (the base class part) of `r`, which is
+    /// on its square.
+    pub(crate) fn base_remove_from_world(&mut self, r: ObjectRef) {
+        base_remove(self, r);
+    }
+
+    /// One [`WorldCall`] for `obj`, which need not be on a square any
+    /// more (`r` is where it was).
+    pub(crate) fn world_call_on(&mut self, r: ObjectRef, obj: &mut IsoObject, c: WorldCall) {
+        let MutationEnv { world, rand, .. } = self;
+        world.world_call(r, obj, &mut **rand, c);
+    }
+
+    /// `IsoObject.removeFromWorld()` (the base class part) of `obj`, which
+    /// already left square `r.pos` (`IsoFire.extinctFire` takes the fire
+    /// off the square before `removeFromWorld`).
+    pub(crate) fn base_remove_from_world_detached(&mut self, r: ObjectRef, obj: &mut IsoObject) {
+        self.world_call_on(r, obj, WorldCall::UnregisterEntity);
+        self.world_call_on(r, obj, WorldCall::ProcessIsoObjectRemove);
+        self.world_call_on(r, obj, WorldCall::StaticUpdater { add: false });
+        for i in 0..obj.container_count() {
+            self.world_call_on(
+                r,
+                obj,
+                WorldCall::ProcessItems {
+                    container: i,
+                    add: false,
+                },
+            );
+        }
+        self.world_call_on(r, obj, WorldCall::StopEmitter);
+        self.world_call_on(r, obj, WorldCall::RemoveAmbientEmitters);
+        self.world_call_on(r, obj, WorldCall::LightSource { add: false });
+        self.world_call_on(r, obj, WorldCall::ClearOnOverlay);
+        if self.render.fbo_render_chunk() {
+            self.world_call_on(r, obj, WorldCall::UnregisterHighlight);
+        }
+        let powered = self.world.piped_fuel_amount(r, obj) > 0 || fridge_index(obj).is_some();
+        if powered {
+            self.world_call_on(r, obj, WorldCall::PoweredByGenerator { add: false });
+        }
+        self.world_call_on(r, obj, WorldCall::FlagForHotSave);
+    }
+}

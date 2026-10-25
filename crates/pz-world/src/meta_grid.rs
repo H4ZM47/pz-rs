@@ -599,11 +599,14 @@ impl IsoMetaGrid {
             && y < (self.max_y + 1) * 256
     }
 
+    /// `isValidSquare(x, y)`, with Java's `int` overflow: a grid with no
+    /// cells yet (`minX = 10000000`, `maxX = -10000000`) wraps around and
+    /// takes every square.
     pub fn is_valid_square(&self, x: i32, y: i32) -> bool {
-        x >= self.min_x * 256
-            && x < (self.max_x + 1) * 256
-            && y >= self.min_y * 256
-            && y < (self.max_y + 1) * 256
+        x >= self.min_x.wrapping_mul(256)
+            && x < self.max_x.wrapping_add(1).wrapping_mul(256)
+            && y >= self.min_y.wrapping_mul(256)
+            && y < self.max_y.wrapping_add(1).wrapping_mul(256)
     }
 
     /// `IsoMetaCell.addRoom(room, cellX*256, cellY*256)`.

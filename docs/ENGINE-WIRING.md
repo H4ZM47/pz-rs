@@ -611,6 +611,32 @@ registered):
 - [ ] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
+      (#FIRE-REST) `update` returns `Err(java exception text)` when a
+      burn threw (`IsoWindow.removeSheet` on a window outside rooms whose
+      inside square does not exist): like the population `Err` above,
+      nothing up to `IngameState.update` catches it, so the rest of that
+      frame's `IngameState.update` is skipped and the text is logged via
+      `ExceptionLogger`.
+- [ ] Fire world parts (#FIRE-REST): `FireWorld.mutation` (`FireMutation`:
+      the regions, door tables and the `SquareMutationHooks` /
+      `PathfindSquareHooks` / `RenderSquareHooks` the square mutations
+      use), also in `StatesFire.mutation`. `WorldCall::FireManager` /
+      `FireStopSound` from a fire removed by other code (Lua, mutations)
+      go to `IsoFireManager::remove` / `sounds.remove_fire`.
+- [ ] Fire sound slots (#FIRE-REST): `FireSoundHooks::fire_slot_play` /
+      `fire_slot_stop` drive 20 emitters (`FMODSoundEmitter` +
+      `ParameterFireSize`); `FireHooks::listener_distance_sq` is
+      `FMODParameterUtils.getClosestListenerDistanceSquared`.
+- [ ] Heat sources (#FIRE-REST): add/resize/remove the cell's
+      `IsoHeatSource`s from `IsoFire::heat_source` (permanent fires, in
+      `fire_updated` / `fire_removed`), `IsoFireplace::heat_source()` and
+      `IsoBarbecue::heat_source()` after each hearth update; their
+      `running_sound()` loops on the object's emitter.
+- [ ] Hutch burning (#FIRE-REST): `FireHooks::hutch_release_contents`
+      runs `releaseAllAnimals` + `dropAllEggs` of the hutch object.
+- [ ] Fire fighting (#FIRE-REST): the put-out action uses
+      `fire::fighting::{get_square_to_extinguish, get_extinguisher}` with
+      an `ExtinguisherItem` view of the inventory items.
 - [ ] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
 - [ ] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`)
       read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime
