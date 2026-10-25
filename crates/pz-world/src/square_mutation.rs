@@ -92,11 +92,13 @@ pub trait PathfindSquareHooks {
     }
 
     /// `PathfindNative.squareChanged(sq)` (or `PolygonalMap2`'s own task
-    /// queueing when not native): an update task for each existing
-    /// neighbour (`getAdjacentSquare(dir)` in `IsoDirections` order, given
-    /// as `adjacent`) and then for `sq`. The native side skips chunks it
-    /// has not been given (`loadedBits & 2`).
-    fn square_changed(&mut self, _sq: &IsoGridSquare, _adjacent: [Option<&IsoGridSquare>; 8]) {}
+    /// queueing when not native) for the square at `sq`: an update task for
+    /// each existing neighbour (`getAdjacentSquare(dir)` in `IsoDirections`
+    /// order, see [`adjacent_squares`]) and then for the square, each built
+    /// from `cell` as it is at the call (`getBits` reads the neighbours, the
+    /// square above and its doors and windows). The native side skips
+    /// chunks it has not been given (`loadedBits & 2`).
+    fn square_changed(&mut self, _cell: &IsoCell, _sq: SquarePos) {}
 
     /// `MapCollisionData.instance.squareChanged(sq)`: the population
     /// thread's collision bits (solid, blocked N/W, water, room) of `sq`.
@@ -104,8 +106,9 @@ pub trait PathfindSquareHooks {
 
     /// `PathfindNative.instance.addChunkToWorld(chunk)` (or
     /// `PolygonalMap2`'s): `IsoChunk.setSquare` on the game thread put a
-    /// square on a level the chunk did not have.
-    fn add_chunk_to_world(&mut self, _wx: i32, _wy: i32) {}
+    /// square on a level the chunk did not have. `ChunkUpdateTask` builds
+    /// its buffer from chunk `(wx, wy)` of `cell` here.
+    fn add_chunk_to_world(&mut self, _cell: &IsoCell, _wx: i32, _wy: i32) {}
 }
 
 /// What the render and lighting side is told about square changes.
@@ -503,7 +506,7 @@ impl MutationEnv<'_> {
         sq.associated_building = associated;
         ch.set_square(pos.0 - wx * 8, pos.1 - wy * 8, pos.2, Some(sq));
         if new_level {
-            self.pathfind.add_chunk_to_world(wx, wy);
+            self.pathfind.add_chunk_to_world(self.cell, wx, wy);
         }
         true
     }
@@ -595,15 +598,14 @@ impl MutationEnv<'_> {
             return;
         };
         let (wx, wy) = chunk_of(pos);
-        let adjacent = adjacent_squares(self.cell, pos);
         if !native {
-            self.pathfind.square_changed(sq, adjacent);
+            self.pathfind.square_changed(self.cell, pos);
         }
         self.render.invalidate_vispoly_chunk_level(wx, wy, pos.2);
         self.render.cutaways_square_changed(Some(pos));
         self.world.ambient_walls_square_changed(sq);
         if native {
-            self.pathfind.square_changed(sq, adjacent);
+            self.pathfind.square_changed(self.cell, pos);
         }
     }
 

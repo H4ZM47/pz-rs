@@ -682,16 +682,15 @@ impl WorldRegionToMetaGrid {
                 ctx.render.properties_recalculated(sq);
                 let sq = ctx.cell.get_grid_square(x, y, z).unwrap();
                 // `PolygonalMap2.instance.squareChanged(square)`.
-                let adjacent = crate::square_mutation::adjacent_squares(ctx.cell, (x, y, z));
                 let native = ctx.pathfind.uses_native_code();
                 if !native {
-                    ctx.pathfind.square_changed(sq, adjacent);
+                    ctx.pathfind.square_changed(ctx.cell, (x, y, z));
                 }
                 ctx.render.invalidate_vispoly_chunk_level(c.0, c.1, z);
                 ctx.render.cutaways_square_changed(Some((x, y, z)));
                 ctx.world.ambient_walls_square_changed(sq);
                 if native {
-                    ctx.pathfind.square_changed(sq, adjacent);
+                    ctx.pathfind.square_changed(ctx.cell, (x, y, z));
                 }
             }
         }

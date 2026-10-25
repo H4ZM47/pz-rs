@@ -34,8 +34,8 @@ use pz_world::objects::ObjectId;
 use pz_world::save::chunk_file::{apply_loaded_window_sprites, chunk_path, load_chunk};
 use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables};
 use pz_world::square_mutation::{
-    DoorTables, LuaEvent, MutationEnv, ObjectRef, PathfindSquareHooks, RenderSquareHooks,
-    SquareMutationHooks, SquarePos, WorldCall,
+    adjacent_squares, DoorTables, LuaEvent, MutationEnv, ObjectRef, PathfindSquareHooks,
+    RenderSquareHooks, SquareMutationHooks, SquarePos, WorldCall,
 };
 use pz_world::{
     BuildingIdx, GameRand, IsoCell, IsoGridSquare, IsoMetaGrid, IsoObject, IsoSpriteManager,
@@ -121,17 +121,17 @@ impl Rec {
 struct H(Rc<RefCell<Rec>>);
 
 impl PathfindSquareHooks for H {
-    fn square_changed(&mut self, sq: &IsoGridSquare, adjacent: [Option<&IsoGridSquare>; 8]) {
+    fn square_changed(&mut self, cell: &IsoCell, sq: SquarePos) {
         let mut r = self.0.borrow_mut();
-        for a in adjacent.into_iter().flatten() {
+        for a in adjacent_squares(cell, sq).into_iter().flatten() {
             r.pathfind.push((a.x, a.y, a.z));
         }
-        r.pathfind.push((sq.x, sq.y, sq.z));
+        r.pathfind.push(sq);
     }
     fn map_collision_square_changed(&mut self, sq: &IsoGridSquare) {
         self.0.borrow_mut().collision.push((sq.x, sq.y));
     }
-    fn add_chunk_to_world(&mut self, wx: i32, wy: i32) {
+    fn add_chunk_to_world(&mut self, _: &IsoCell, wx: i32, wy: i32) {
         self.0.borrow_mut().chunks.push((wx, wy));
     }
 }
