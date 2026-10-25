@@ -87,8 +87,41 @@ pub fn world_frame_into(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkL
 /// (adding their shadows), and each level's shadows draw between its
 /// translucent floors and translucent objects. `drop_shadow` is
 /// `media/textures/NewShadow.png`; without it no shadows are drawn.
-pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, mut out: Vec<DrawCmd>) -> Vec<DrawCmd> {
-    let (ow, oh) = size.offscreen();
+pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, out: Vec<DrawCmd>) -> Vec<DrawCmd> {
+    world_frame_for_player(r, size, None, chunks, objects, drop_shadow, screen, out)
+}
+
+/// One player of a split screen: `player` of `num_players` on a window of
+/// `screen` pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerView {
+    pub player: u32,
+    pub num_players: u32,
+    pub screen: (u32, u32),
+}
+
+impl PlayerView {
+    /// `DoStartFrameStuff(w, h, zoom, player)`'s viewport in GL window
+    /// coordinates: `ow * (player % 2)`, and `oh` up for players 2 and 3,
+    /// `ow` x `oh` being the screen halved per axis as the player count
+    /// needs.
+    pub fn viewport(&self) -> [u32; 4] {
+        let (sw, sh) = self.screen;
+        let ow = if self.num_players > 1 { sw / 2 } else { sw };
+        let oh = if self.num_players > 2 { sh / 2 } else { sh };
+        [ow * (self.player % 2), if self.player >= 2 { oh } else { 0 }, ow, oh]
+    }
+}
+
+/// [`world_frame_with_objects`] for one player of a split screen (`size`
+/// is the player's part of the screen): the world draws inside the
+/// player's viewport of the shared offscreen buffer (as large as the whole
+/// screen), the outline passes inside its screen rectangle, and the whole
+/// buffer then goes to the screen.
+#[allow(clippy::too_many_arguments)]
+pub fn world_frame_for_player(r: &ChunkRenderer<'_>, size: FrameSize, view: Option<PlayerView>, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, mut out: Vec<DrawCmd>) -> Vec<DrawCmd> {
+    let full = view.map_or(size, |v| FrameSize { width: v.screen.0, height: v.screen.1 });
+    let (ow, oh) = full.offscreen();
     let (w, h) = (size.width, size.height);
     let z = r.cam.zoom;
     out.extend([
@@ -97,6 +130,12 @@ pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: 
         DrawCmd::GlEnable(gl::BLEND),
         DrawCmd::DepthFunc(gl::ALWAYS),
         DrawCmd::Ortho { left: 0.0, right: w as f32 * z, bottom: h as f32 * z, top: 0.0, width: w, height: h },
+    ]);
+    if let Some(v) = view {
+        let [x, y, width, height] = v.viewport();
+        out.push(DrawCmd::Viewport { x, y, width, height });
+    }
+    out.extend([
         DrawCmd::ColorMask(true, true, true, true),
         DrawCmd::DepthMask(true),
         DrawCmd::StencilMask(0xFF),
@@ -110,13 +149,22 @@ pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: 
         }
         recorded.push(c.texture);
     }
+    // FBORenderCorpses.update: each job into its chunk texture (not
+    // cleared), then the screen frame again.
+    for job in &objects.chunk_models {
+        out.extend(job.texture.begin(false));
+        out.extend(job.draws.iter().cloned());
+        out.push(DrawCmd::ChunkEnd);
+        out.push(DrawCmd::Ortho { left: 0.0, right: w as f32 * z, bottom: h as f32 * z, top: 0.0, width: w, height: h });
+    }
     r.composite(&recorded, w, h, &mut out);
     // FBORenderShadows.clear, then renderPlayers .. renderMovingObjects.
     let model_cam = ModelCamera::new(&r.cam, w as f32 * z, h as f32 * z);
     let mut shadows = Shadows::default();
     shadows.clear(drop_shadow);
     // ModelOutlines.startFrameMain .. endFrameMain around IsoWorld.render.
-    let mut outlines = ModelOutlines::new(w, h, z);
+    let mut outlines = ModelOutlines::new(full.width, full.height, z);
+    outlines.view = view.map(|v| crate::outlines::player_screen(v.player, v.num_players, v.screen.0, v.screen.1));
     outlines.start_frame();
     objects.render_outlined(&model_cam, &mut shadows, &mut outlines, &mut out);
     // performRenderTiles' per-level translucent passes, over every
@@ -132,10 +180,17 @@ pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: 
         }
     }
     shadows.end_render();
+    // FBORenderObjectOutline.render, after the fog.
+    crate::object_outline::render_object_outlines(&objects.object_outlines, &mut outlines, &mut out);
     outlines.end_frame(&mut out);
     out.push(DrawCmd::GlDisable(gl::DEPTH_TEST));
     out.push(DrawCmd::OffscreenEnd);
-    // Core.RenderOffScreenBuffer: 1:1 screen projection, no blending.
+    // Core.RenderOffScreenBuffer: 1:1 screen projection over the whole
+    // screen, no blending.
+    let (w, h) = (full.width, full.height);
+    if view.is_some() {
+        out.push(DrawCmd::Viewport { x: 0, y: 0, width: w, height: h });
+    }
     out.push(DrawCmd::Ortho { left: 0.0, right: w as f32, bottom: h as f32, top: 0.0, width: w, height: h });
     out.push(DrawCmd::ScreenPass { x: 0.0, y: 0.0, w: w as f32, h: h as f32, tex: [0.0, 0.0, w as f32, h as f32], params: screen });
     out.push(DrawCmd::GlEnable(gl::BLEND));

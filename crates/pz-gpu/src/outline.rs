@@ -40,6 +40,16 @@ pub enum Op {
     Thicken { vertical: bool, uniform: u32 },
     /// `aim_outline_blit` into a target of the given kind.
     Blit { target: TargetKind },
+    /// `vboRenderer_SpriteOutline` into the mask: a quad of the frame's
+    /// vertices with its globals block, sampling a texture or an atlas.
+    Sprite { texture: SpriteSource, globals: u32 },
+}
+
+/// What a sprite outline samples.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SpriteSource {
+    Texture(u32),
+    Atlas(u64),
 }
 
 /// `fboA`, `fboB`, `fboC`: textures as large as the next powers of two of
@@ -68,6 +78,8 @@ pub struct OutlinePipelines {
     pub thicken: Option<[wgpu::RenderPipeline; 2]>,
     pub blit: HashMap<(TargetKind, wgpu::TextureFormat), wgpu::RenderPipeline>,
     pub targets: Option<OutlineTargets>,
+    /// `vboRenderer_SpriteOutline` into the mask.
+    pub sprite: wgpu::RenderPipeline,
 }
 
 fn alpha_blend() -> wgpu::BlendState {
@@ -84,6 +96,7 @@ impl OutlinePipelines {
         device: &wgpu::Device,
         model_uniform_layout: &wgpu::BindGroupLayout,
         texture_layout: &wgpu::BindGroupLayout,
+        globals_layout: &wgpu::BindGroupLayout,
     ) -> Self {
         let module = |label: &str, src: &str| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -123,7 +136,43 @@ impl OutlinePipelines {
             ],
             immediate_size: 0,
         });
+        let sprite_module = module("vboRenderer_SpriteOutline", include_str!("outline_sprite.wgsl"));
+        let sprite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("outline sprite"),
+            bind_group_layouts: &[Some(globals_layout), Some(texture_layout)],
+            immediate_size: 0,
+        });
+        let sprite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("vboRenderer_SpriteOutline"),
+            layout: Some(&sprite_layout),
+            vertex: wgpu::VertexState {
+                module: &sprite_module,
+                entry_point: Some("vs_sprite_outline"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<crate::Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4],
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &sprite_module,
+                entry_point: Some("fs_sprite_outline"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: OUTLINE_FORMAT,
+                    blend: Some(alpha_blend()),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         OutlinePipelines {
+            sprite,
             solid_module,
             pass_module,
             pass_uniform_layout,

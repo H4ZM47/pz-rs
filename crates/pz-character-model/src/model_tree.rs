@@ -191,6 +191,17 @@ impl ModelSlot {
         self.instances.len() - 1
     }
 
+    /// A slot of one skinned body model with its own texture, as
+    /// `AnimatedModel.setModelData` builds it for an `AnimalVisual` (the
+    /// breed's model script mesh and skin texture, `animalEffect`).
+    pub fn single_body(mesh: &str, texture: &str, shader: Option<&str>) -> ModelSlot {
+        let mut slot = ModelSlot::default();
+        let body = slot.push(ModelInstance::new(InstanceKind::Body, mesh, Some(texture), false, shader));
+        slot.model = body;
+        slot.sub.push(body);
+        slot
+    }
+
     /// `ModelManager.Add` / `Reset` for a human character: body model, then
     /// `DoCharacterModelParts`.
     pub fn build(input: &CharacterModelInput) -> ModelSlot {

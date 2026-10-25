@@ -125,6 +125,13 @@ impl ObjectRender {
     }
 }
 
+/// Model draws for one chunk texture (`FBORenderCorpses.RenderJob`s).
+#[derive(Clone, Debug)]
+pub struct ChunkModels {
+    pub texture: crate::chunk::ChunkTexture,
+    pub draws: Vec<DrawCmd>,
+}
+
 /// Everything drawn after the chunk composite, in `performRenderTiles`'
 /// groups.
 #[derive(Clone, Debug, Default)]
@@ -142,6 +149,14 @@ pub struct FrameObjects {
     /// `renderMovingObjects`: every other moving object (zombies, animals,
     /// vehicles, ...), in the cell's object-list order.
     pub moving: Vec<ObjectRender>,
+    /// `FBORenderObjectOutline`'s highlighted objects (world items,
+    /// corpses, mannequins, sprite objects), drawn into the outline mask
+    /// after the translucent passes.
+    pub object_outlines: Vec<crate::object_outline::ObjectOutline>,
+    /// `FBORenderCorpses.update`: models drawn straight into chunk
+    /// textures (mannequins) after the chunks are recorded and before they
+    /// are composited.
+    pub chunk_models: Vec<ChunkModels>,
 }
 
 impl FrameObjects {
@@ -210,6 +225,8 @@ mod tests {
                 draws: vec![mark(4)],
                 ..Default::default()
             }],
+            object_outlines: vec![],
+            chunk_models: vec![],
         };
         let mut shadows = Shadows::default();
         let mut tex = Texture::empty("NewShadow");

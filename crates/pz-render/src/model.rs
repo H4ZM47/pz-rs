@@ -70,6 +70,9 @@ pub enum ModelPass {
     /// target's alpha accumulates coverage and layers drawn over an opaque
     /// body leave it opaque.
     AnimatedModel { cull: bool },
+    /// [`ModelPass::AnimatedModel`] with `setCullFace(GL_BACK)`, as
+    /// `FBORenderCorpses` draws mannequins into chunk textures.
+    AnimatedModelCullBack,
     /// Items and placed models: premultiplied blend
     /// (ONE, ONE_MINUS_SRC_ALPHA, ONE_MINUS_DST_ALPHA, ONE), depth LEQUAL
     /// with writes.

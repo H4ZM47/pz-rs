@@ -111,6 +111,41 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `WorldItemAtlas::render_with(out, |p| world_item::atlas_smart_texture(..))`
       and hand the returned textures to `Combiner::release` after
       `render_frame` (#94).
+- [ ] Object outlines: per highlighted non-character object
+      (`IsoObject.isOutlineHighlight(player)`, colour from
+      `getOutlineHighlightCol`, alpha times `Core.blinkAlpha` when
+      blinking) push an `ObjectOutline` into `FrameObjects.object_outlines`:
+      `corpse(entry)` with the corpse's `BodyTexture` entry,
+      `mannequin(entry, ..)` with the mannequin's atlas entry
+      (`DeadBodyAtlas::body_texture` of `Mannequin::atlas_body()` keyed by
+      `posed_body_key(.., standing)`), `world_item_atlas` /
+      `world_item_sprite` for placed items, `sprites(..)` for other sprite
+      objects (sprite, then overlay and attached sprites when
+      `isOutlineHlAttached`). Objects with a sprite model are skipped, as
+      are objects whose render layer is none or alpha 0 (ws/render-gaps).
+- [ ] Mannequins: from each `IsoMannequin` (script anim set, state,
+      validated pose, direction, surfaces below/on its square, outside /
+      room, interpolated light, highlight tint) build a `Mannequin`, pose an
+      `AnimationPlayer` on the body skeleton with `mannequin::pose`, build
+      its `ModelSlot` (skin texture `Body/<script texture>` plus the
+      outfit's clothing), and the frame its chunk texture is recorded push
+      `mannequin::chunk_models(.., chunk texture, camera square)` into
+      `FrameObjects.chunk_models`; every frame `mannequins` gets an
+      `ObjectRender` with `Mannequin::shadow(lightInfo)` (ws/render-gaps).
+- [ ] Animal corpses: `DeadBody { animal: true, animal_anim_set:
+      animalAnimSet, animal_size }`, a slot from
+      `ModelSlot::single_body(model script mesh, Body/<skin texture>,
+      animalEffect)` for the breed's `AnimalVisual`, the anim set's
+      `deadbody` state, keyed with `animal_body_key` (ws/render-gaps).
+- [ ] Split screen: one `world_frame_for_player(.., Some(PlayerView {
+      player, num_players, screen }), ..)` per player into the shared
+      offscreen buffer (each draws in its `glViewport` quarter, outline
+      passes in `IsoCamera.getScreenLeft/Top/Width/Height`), the camera
+      sized to the player's view; the last call's screen pass shows all
+      of them (ws/render-gaps).
+- [ ] GPU faults: check `Gpu::error()` after `render_frame` (a lost
+      device stops drawing; out-of-memory chunk/atlas textures are left
+      out) and stop or rebuild the `Gpu` with a clear message (ws/iso-render).
 
 ## Cleanups
 - [ ] Fold bind_vehicles' item subset into the full item bindings (#86).
