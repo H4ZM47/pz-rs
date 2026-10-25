@@ -360,7 +360,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
-- [ ] Popman over the real world (#PRNUM): build the population host with
+- [ ] Popman over the real world (#210): build the population host with
       `pz_world_states::population_host(rand, &mut RealZombies { world:
       &mut StatesWorldAdapter::new(..), .. })` (the host reads the cell,
       meta grid, sprites and sitting checks through the adapter between
@@ -601,10 +601,10 @@ registered):
       (decode with `load_player`, health 0 when `is_dead`, set `sqlId`) and
       `chunkMap.worldX/Y = local_player_chunk_map_pos(x, y, offset)` (#100).
 - [ ] CGlobalObjects `initSystems` and update pumps (#31).
-- [ ] Popman: `pz_world_states::population_host` (#PRNUM; was
+- [ ] Popman: `pz_world_states::population_host` (#210; was
       `WorldPopulationHost::from_state`), `update_main` with
       `player_chunk_maps(&streamer)`; SittingChecks is the
-      `StatesWorldAdapter` (#77, #60, #PRNUM). Driven through
+      `StatesWorldAdapter` (#77, #60, #210). Driven through
       `WorldPopulation` (see the world-load list above).
 - [ ] World sound: `WorldSoundAdapter::from_state`; engine `SoundEffects`
       (OnWorldSound, fish noise, popman) (#71).
