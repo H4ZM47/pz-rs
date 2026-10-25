@@ -173,7 +173,7 @@ impl Entry {
 
     fn build(&self, lib: &[u8], (delta, mask): (i64, u64)) -> Option<Vec<u8>> {
         let at = |ptr: u64, len: usize| -> Option<&[u8]> {
-            let off = usize::try_from((ptr & mask) as i64 - delta).ok()?;
+            let off = usize::try_from(((ptr & mask) as i64).checked_sub(delta)?).ok()?;
             lib.get(off..off.checked_add(len)?)
         };
         let first = at(
