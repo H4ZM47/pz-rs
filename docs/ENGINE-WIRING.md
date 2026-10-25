@@ -242,6 +242,32 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       as a `pz_ui::tooltip::TooltipObject`: identity, `haveSpecialTooltip`,
       its square's Lua object; world thread); the tooltip font option and
       highlight colours come from `Core` (#153).
+- [x] Item tooltips: `item:DoTooltip(tooltip)` / `DoTooltipEmbedded` are
+      bound with the item classes (`bind_items::register` →
+      `item_tooltip::register`); the tooltip's `setCharacter` gives the
+      rows their character (queried through its Lua binding) (#192).
+- [ ] Item tooltip debug rows: `item_tooltip::set_debug_options` from
+      `DebugOptions.tooltipInfo` / `tooltipAttributes` when the debug UI
+      changes them (#192).
+- [x] HUD alarm clocks: `hud::alarm_clocks::install_alarm_clock_host()`
+      (in `register_all`) puts `PlayerAlarmClocks` in `HudAlarmClocks`
+      (#192).
+- [ ] Alarm clock updates: call
+      `hud::alarm_clocks::update_player_alarm_clocks(GameTime.getWorldAgeHours())`
+      each tick (the cell's `processItems`) and apply each
+      `AlarmEffects`: `WorldSoundManager.addSoundRepeating` at the player's
+      square (`soundRadius`, 3), `ItemSoundManager` add/remove (the ring
+      loop, "AlarmClockRingingStop" for `AlarmClock`), MP syncs (world,
+      sound, network threads). Clocks on the ground run
+      `AlarmData::update` from the cell's process list with their square
+      (world thread) (#192).
+- [ ] Object picking: implement `hud::picking::PickWorld` over the chunk
+      renderer's per-object `ObjectRenderInfo` for player 0 (layer, target
+      alpha, cutaway, `renderX/Y/Width/Height/ScaleX/ScaleY`, the sprite
+      mask) and the chunk textures' `renderX/Y`, then install
+      `with_host(|h| h.picking = Box::new(WorldPicking { world }))`; use
+      `picking::context_pick` for `UIManager.setPicked` on mouse events
+      (world-render thread) (#192).
 - [ ] Health panel: `HudBodyDamage` (`isFemale`, `getBodyDamage().getHealth()`,
       each `BodyPart`'s wound state as a `BodyPartView`; the remote
       `getBodyDamageRemote()` for another MP player; characters thread) and
