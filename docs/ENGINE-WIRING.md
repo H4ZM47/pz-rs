@@ -733,7 +733,7 @@ registered):
       `climbDownSheetRope` and `IsoPlayer.climbOverWall` (`dropHeavyItems`),
       `ClimbOverFenceState`'s `VaultSprintFallLanded`, `fallenOnKnees`,
       `handleLandingImpact` and `IsoPlayer.OnDeath` (`dropHandItems`)
-      (#CWR). The engine must:
+      (#214). The engine must:
       - return its `square_mutation::FloorDropEnv::new(&mut env,
         world_age_hours)` from `StateWorld::floor()` for the states;
       - `bind_character_sim::install_floor_world(Some(..))` with a
@@ -742,7 +742,7 @@ registered):
         `dropHandItems` / `dropHeavyItems` (without one nothing drops);
       - `Use`'s `Unwear` (`apply_use_outcome`) passes no world yet, so a
         used-up worn item never drops (#189).
-- [ ] Wall and sheet-rope climbs, landings and player death (#CWR, on
+- [ ] Wall and sheet-rope climbs, landings and player death (#214, on
       #208): the climb states read the world through #208's hooks
       (`sheet_rope_square`, `chunk_levels`, `sheet_rope_exit`,
       `can_climb_over_wall`, `climb_wall_fence_type`); `pz-world-states`
