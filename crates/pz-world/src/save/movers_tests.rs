@@ -546,3 +546,106 @@ fn chunk_vehicle_list_from_rows_and_moves() {
     assert!(!cell.remove_vehicle_from_chunk(&r, (11, 20)));
     assert!(cell.chunk_vehicles(11, 20).unwrap().is_empty());
 }
+
+#[test]
+fn vehicles_db_load_chunk() {
+    use super::vehicles_db::{init_used_ids, load_chunk};
+    use crate::chunk_vehicles::{LoadedVehicle, VehicleOrigin};
+    use pz_sqlite::{Connection, Value};
+    let dir = std::env::temp_dir().join(format!("pz-world-vdb-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut c = Connection::open(dir.join("vehicles.db")).unwrap();
+    c.execute("CREATE TABLE vehicles (id   INTEGER PRIMARY KEY NOT NULL,wx    INTEGER,wy    INTEGER,x    FLOAT,y    FLOAT,inMeta BOOLEAN NULL DEFAULT FALSE,worldversion    INTEGER,data BLOB);").unwrap();
+    c.execute("CREATE INDEX ivwx ON vehicles (wx);").unwrap();
+    c.execute("CREATE INDEX ivwy ON vehicles (wy);").unwrap();
+    let t = SaveTables::for_tests();
+    let mut w = Writer::new();
+    vehicle()
+        .save(&mut w, t.class_id("Vehicle"), None, None, &AllItems)
+        .unwrap();
+    let good = w.buf;
+    let mut off = good.clone();
+    off[0] = 0;
+    // A vehicle header followed by a truncated body.
+    let broken = good[..20].to_vec();
+    let rows: [(i64, i64, f64, Value); 8] = [
+        (9, 10, 81.5, Value::Blob(good.clone())),
+        (3, 10, 83.5, Value::Blob(good.clone())),
+        (2, 11, 90.0, Value::Blob(good.clone())),
+        (6, 10, 84.0, Value::Blob(broken)),
+        (5, 10, 85.0, Value::Blob(off)),
+        (1, 10, 70.0, Value::Blob(good.clone())),
+        (11, 12, 97.0, Value::Null),
+        (10, 12, 96.0, Value::Blob(good.clone())),
+    ];
+    for (id, wx, x, data) in rows {
+        c.insert(
+            "vehicles",
+            &[
+                ("id", Value::Integer(id)),
+                ("wx", Value::Integer(wx)),
+                ("wy", Value::Integer(20)),
+                ("x", Value::Real(x)),
+                ("y", Value::Real(161.5)),
+                ("inMeta", Value::Integer(0)),
+                ("worldversion", Value::Integer(i64::from(WORLD_VERSION))),
+                ("data", data),
+            ],
+        )
+        .unwrap();
+    }
+    let (used, seen) = init_used_ids(&mut c).unwrap();
+    assert_eq!(
+        used.into_iter().collect::<Vec<_>>(),
+        [1, 2, 3, 5, 6, 9, 10, 11]
+    );
+    assert_eq!(
+        seen.into_iter().collect::<Vec<_>>(),
+        [20 << 16 | 10, 20 << 16 | 11, 20 << 16 | 12]
+    );
+
+    let m = sprites();
+    let s = SaveSettings::default();
+    let ctx = SaveCtx {
+        sprites: &m,
+        tables: &t,
+        settings: &s,
+        items: &AllItems,
+        hooks: &NoSaveHooks,
+        meta: None,
+    };
+    let mut ch = IsoChunk::new(10, 20);
+    ch.set_square(3, 1, 0, Some(IsoGridSquare::new(83, 161, 0)));
+    let r = load_chunk(Some(&mut c), &mut ch, &ctx);
+    // In id order; serialise off is skipped, the broken row is deleted.
+    let ids: Vec<_> = ch
+        .vehicles
+        .loaded()
+        .map(|v| match v.origin {
+            VehicleOrigin::Database { sql_id } => sql_id,
+            _ => -1,
+        })
+        .collect();
+    assert_eq!(ids, [1, 3, 9]);
+    assert_eq!(r.added.len(), 3);
+    assert_eq!(r.removed.iter().map(|r| r.0).collect::<Vec<_>>(), [6]);
+    assert!(r.error.is_none());
+    let l: Vec<std::rc::Rc<LoadedVehicle>> = ch.vehicles.loaded().collect();
+    assert_eq!(l[1].square, Some((83, 161, 0)));
+    assert_eq!(l[0].square, None);
+    assert_eq!(l[0].vehicle.script_name, "Base.CarNormal");
+    let (used, _) = init_used_ids(&mut c).unwrap();
+    assert!(!used.contains(&6) && used.contains(&5));
+
+    // A NULL blob ends the loop after the rows before it.
+    let mut ch = IsoChunk::new(12, 20);
+    let r = load_chunk(Some(&mut c), &mut ch, &ctx);
+    assert_eq!(ch.vehicles.len(), 1);
+    assert_eq!(r.error.as_deref(), Some("java.lang.NullPointerException"));
+    // No connection (no save): nothing.
+    let mut ch = IsoChunk::new(10, 20);
+    assert!(load_chunk(None, &mut ch, &ctx).added.is_empty() && ch.vehicles.is_empty());
+    drop(c);
+    let _ = std::fs::remove_dir_all(&dir);
+}

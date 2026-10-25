@@ -2190,6 +2190,7 @@ dependencies = [
  "pz-inventory",
  "pz-kahlua",
  "pz-scripts",
+ "pz-sqlite",
 ]
 
 [[package]]
