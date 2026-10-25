@@ -205,11 +205,14 @@ pub fn create_from_template(
     }
     // `OutfitRNG.setSeed(Rand.Next(Integer.MAX_VALUE))` around
     // `synchWithVisual` (the visual draws come from `visual_rng`).
-    let _ = env.rand_next(i32::MAX);
+    let rng = env.visual_rng();
+    let saved_seed = rng.get_seed();
+    rng.set_seed(env.rand_next(i32::MAX) as i64);
     item.pick_model_index(&mut |m| env.rand_next(m));
     if let Some(a) = env.assets() {
-        item.synch_with_visual(Some(a), &crate::context::Loose, env.visual_rng());
+        item.synch_with_visual(Some(a), &crate::context::Loose, rng);
     }
+    rng.set_seed(saved_seed);
     // createItemInternal: a `<type>Empty` fluid container starts empty.
     if t.empty_fluid_container {
         let ctx = env.components().entity_context();

@@ -1897,6 +1897,7 @@ dependencies = [
  "pz-characters",
  "pz-engine",
  "pz-fs",
+ "pz-inventory",
  "pz-kahlua",
  "pz-lua-api",
  "pz-scripts",

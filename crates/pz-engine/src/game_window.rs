@@ -68,7 +68,7 @@ impl App {
         let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&self.launch.game_dir)));
         fs.borrow_mut().set_cache_dir(&self.launch.cache_dir);
         pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
-        crate::boot::load_scripts(&self.launch.game_dir, &fs.borrow())?;
+        crate::boot::load_scripts(&self.launch.game_dir, &mut fs.borrow_mut())?;
         self.ui_models = Some(crate::ui_models::install(&self.launch.game_dir, fs.clone()));
         let mut lua = LuaManager::init(fs).map_err(|e| format!("LuaManager.init: {e}"))?;
         // GameWindow.init: Translator.loadFiles and TextManager.Init.

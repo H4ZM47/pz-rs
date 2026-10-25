@@ -15,11 +15,10 @@ pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<()
     // Never fall back to the original game's ~/Zomboid.
     fs.borrow_mut().set_cache_dir(cache_dir);
     pz_lua_api::bind_core::shared_core().borrow_mut().set_cache_dir(cache_dir);
-    pz_engine::boot::load_scripts(game_dir, &fs.borrow())?;
     let errors: Rc<RefCell<BTreeMap<String, usize>>> = Rc::default();
     // GameWindow.init: the UI texture packs, then the pack lookup.
     pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
-    pz_engine::boot::load_scripts(game_dir, &fs.borrow())?;
+    pz_engine::boot::load_scripts(game_dir, &mut fs.borrow_mut())?;
     let mut mgr = LuaManager::init(fs).map_err(|e| format!("LuaManager.init failed: {e}"))?;
     let e2 = errors.clone();
     mgr.thread.log = Box::new(move |s| {
