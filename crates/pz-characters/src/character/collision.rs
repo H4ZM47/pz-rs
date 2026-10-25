@@ -248,21 +248,7 @@ impl<I: 'static> GameCharacter<I> {
         if self.sitting_on_furniture {
             return false;
         }
-        // `getFeelerTile(feelersize)`.
-        let (fx, fy) = {
-            let (vx, vy) = (self.vars.next_x - self.vars.last_x, self.vars.next_y - self.vars.last_y);
-            let len_sq = vx * vx + vy * vy;
-            let (ux, uy) = if (1.0 - len_sq).abs() < 1.0e-5 {
-                (vx, vy)
-            } else if len_sq == 0.0 {
-                (0.0, 0.0)
-            } else {
-                let l = (len_sq as f64).sqrt() as f32;
-                (vx / l, vy / l)
-            };
-            (ux * 0.5, uy * 0.5)
-        };
-        let fsq = (ff(self.vars.x + fx), ff(self.vars.y + fy), ff(self.vars.z));
+        let fsq = self.feeler_tile();
         let mut feeler = cx.world.square(fsq.0, fsq.1, fsq.2).map(|s| (s.x, s.y, s.z));
         if self.vars.climbing {
             feeler = Some(cur);
@@ -402,19 +388,7 @@ impl<I: 'static> GameCharacter<I> {
         }
         let mut dx = self.vars.next_x - self.vars.x;
         let mut dy = self.vars.next_y - self.vars.y;
-        // `getGlobalMovementMod()`: 0.75 on stairs (the vegetation rustle
-        // and tree noises are the world's); ghosts and no-clip players 1.
-        let movement_mod = if dx.abs() > 0.0 || dy.abs() > 0.0 {
-            let ghost = self.is_player() && (self.is_ghost_mode(cx.ctx) || self.vars.no_clip);
-            let stairs = self.path.current_square.and_then(|c| cx.world.square(c.0, c.1, c.2)).is_some_and(|s| s.has_stairs);
-            if !ghost && stairs {
-                0.75
-            } else {
-                1.0
-            }
-        } else {
-            0.0
-        };
+        let movement_mod = if dx.abs() > 0.0 || dy.abs() > 0.0 { self.global_movement_mod(cx) } else { 0.0 };
         if dx.abs() > 0.01 || dy.abs() > 0.01 {
             dx *= movement_mod;
             dy *= movement_mod;
@@ -550,6 +524,48 @@ impl<I: 'static> GameCharacter<I> {
         if instant {
             self.vars.x = px;
             self.vars.y = py;
+        }
+    }
+}
+
+impl<I: 'static> GameCharacter<I> {
+    /// `getFeelerTile(feelersize)`'s coordinates: half a square from the
+    /// position along the move from the last position.
+    fn feeler_tile(&self) -> (i32, i32, i32) {
+        let (vx, vy) = (self.vars.next_x - self.vars.last_x, self.vars.next_y - self.vars.last_y);
+        let (ux, uy) = crate::character::zombie::math::normalize(vx, vy);
+        (ff(self.vars.x + ux * 0.5), ff(self.vars.y + uy * 0.5), ff(self.vars.z))
+    }
+
+    /// `getGlobalMovementMod(true)`: 1 while climbing (and for ghost or
+    /// no-clip players); otherwise the vegetation on the square and the
+    /// feeler square rustles ([`StateWorld::rustle_vegetation`]) and stairs
+    /// slow to 0.75.
+    ///
+    /// [`StateWorld::rustle_vegetation`]: super::state::StateWorld::rustle_vegetation
+    fn global_movement_mod(&mut self, cx: &mut StateCx<'_, I>) -> f32 {
+        if [ids::CLIMB_OVER_FENCE, ids::CLIMB_THROUGH_WINDOW, ids::CLIMB_OVER_WALL].iter().any(|s| self.is_current_state_id(*s)) {
+            return 1.0;
+        }
+        if self.is_player() && (self.is_ghost_mode(cx.ctx) || self.vars.no_clip) {
+            return 1.0;
+        }
+        let cur = self.path.current_square;
+        if let Some(c) = cur {
+            if self.vars.z - (ff(self.vars.z) as f32) < 0.5 {
+                cx.world.rustle_vegetation(self.id, c, cx.ctx);
+                let f = self.feeler_tile();
+                if let Some(f) = cx.world.square(f.0, f.1, f.2).map(|s| (s.x, s.y, s.z)) {
+                    if f != c {
+                        cx.world.rustle_vegetation(self.id, f, cx.ctx);
+                    }
+                }
+            }
+        }
+        if cur.and_then(|c| cx.world.square(c.0, c.1, c.2)).is_some_and(|s| s.has_stairs) {
+            0.75
+        } else {
+            1.0
         }
     }
 }

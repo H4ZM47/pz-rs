@@ -436,7 +436,7 @@ impl<I: 'static> State<I> for PathFindState {
         owner.set_var_bool("bPathfind", false);
         owner.set_var_bool("bMoving", false);
         owner.set_var_bool("ShouldBeCrawling", false);
-        cx.world.path_cancel(owner);
+        cx.world.path_cancel_request(owner);
         owner.path.progress = pz_pathfind::mover::PathFindProgress::NotRunning;
         owner.clear_path2();
     }

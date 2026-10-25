@@ -59,8 +59,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
 - [ ] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
 - [ ] `StateWorld` impl owners: characters by id, squares, PathHost
-      (`path_*`, `resolve_collision`, `resolve_collision_radius`,
-      `test_collide_adjacent`), LOS, world sounds, corpses, thumpables
+      (`path_*`, `path_cancel_request` → `PathfindService::cancel_request`,
+      `resolve_collision`, `resolve_collision_radius`,
+      `test_collide_adjacent` with the special objects), LOS, world sounds,
+      corpses, thumpables, `rustle_vegetation` (render effects, draws
+      `Rand`), hoppables (`collided_with_hoppables`: fence climbing)
       (#74/#75).
 - [ ] Character fire: `StateWorld::character_fire` runs
       `pz_characters::character::fire::update_character_fire` with the

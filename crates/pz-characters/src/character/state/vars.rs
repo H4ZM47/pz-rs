@@ -1322,14 +1322,13 @@ impl<I: 'static> GameCharacter<I> {
     /// (`IsoDirections.fromAngle`). A zero vector is left unnormalized (the
     /// original throws).
     pub fn set_forward_direction(&mut self, x: f32, y: f32) {
-        let len = ((x * x + y * y) as f64).sqrt() as f32;
-        if len == 0.0 {
+        if x * x + y * y == 0.0 {
             self.vars.forward_x = x;
             self.vars.forward_y = y;
             return;
         }
-        self.vars.forward_x = x / len;
-        self.vars.forward_y = y / len;
+        // `Vector2.normalize()`: a length already within 1e-5 of 1 stays.
+        (self.vars.forward_x, self.vars.forward_y) = crate::character::zombie::math::normalize(x, y);
         self.vars.dir = iso_direction_from_angle(x, y);
     }
 

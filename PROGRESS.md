@@ -254,9 +254,16 @@ Status of the Rust port. Update this file with every merged change.
   (`FireCharacter`, the `FireCheck`/`SpreadFire`/`ReduceHealthWhenBurning`
   step after the state machine): 60 `SetOnFire` runs with 16361 ticks of
   burning damage on players and zombies match the original with the
-  `Rand` stream. Lunges and paths (the original's path finder is native),
-  ragdolls, vehicles and the network states are not checked against the
-  original; stairs and slopes are TODO.
+  `Rand` stream. A zombie chasing a player on real westpoint chunks (40
+  runs of 400 ticks: path requests answered by the original's native
+  library on one side and pz-pathfind's `PathHost` on the other, path
+  following, walk toward, lunge, face target and attack, collisions and
+  head sliding against the real squares) matches the original bit for bit
+  with the `Rand` stream in 35 runs; the other 5 match until the zombie
+  reaches a door or a fence (thumping and fence climbing need the world's
+  mover-aware `testCollideAdjacent` and hoppable checks). Ragdolls,
+  vehicles and the network states are not checked against the original;
+  stairs and slopes are TODO.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.

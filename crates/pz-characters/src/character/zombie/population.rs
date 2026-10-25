@@ -149,7 +149,11 @@ impl<I: 'static> GameCharacter<I> {
     pub fn zombie_remove_from_world(&mut self, cx: &mut StateCx<'_, I>) {
         self.clear_aggro_list();
         self.clear_path2();
-        cx.world.path_cancel(self);
+        cx.world.path_cancel_request(self);
+        use pz_pathfind::mover::PathFindProgress;
+        if !matches!(self.path.progress, PathFindProgress::NotRunning | PathFindProgress::Found) {
+            self.path.progress = PathFindProgress::NotRunning;
+        }
         self.set_eat_body_target(None, false, cx);
     }
 }

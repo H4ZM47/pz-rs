@@ -84,6 +84,11 @@ pub trait StateWorld<I> {
     /// `getPathFindBehavior2().cancel()`.
     fn path_cancel(&mut self, _chr: &mut dyn PathMover) {}
 
+    /// `PathfindNative.instance.cancelRequest(chr)`: drops `chr`'s pending
+    /// request (`PathfindService::cancel_request(chr.mover_id())`); its
+    /// `PathFindBehavior2` is left as it is.
+    fn path_cancel_request(&mut self, _chr: &mut dyn PathMover) {}
+
     /// `LosUtil.lineClear(cell, x0, y0, z0, x1, y1, z1, ignoreDoors)`
     /// between two squares (`pz_world::los::line_clear` over the world's
     /// squares).
@@ -249,6 +254,12 @@ pub trait StateWorld<I> {
         _rand: &mut dyn pz_world::java::GameRand,
     ) {
     }
+    /// `getGlobalMovementMod(true)`'s vegetation part for one square (the
+    /// character's, then its feeler square): when it has a tree or a bush,
+    /// `doTreeNoises()` and `setRenderEffect(Vegetation_Rustle)` on each of
+    /// its trees and bushes past the first object; a new effect draws
+    /// `Rand.Next(45f, 60f)` (`ObjectRenderEffects.getNew`).
+    fn rustle_vegetation(&mut self, _chr: i32, _sq: (i32, i32, i32), _ctx: &dyn crate::character::SimContext) {}
     /// `square.testCollideAdjacent(mover, dx, dy, dz)` from `from`.
     fn test_collide_adjacent(&self, _mover: MoverId, _from: (i32, i32, i32), _dx: i32, _dy: i32, _dz: i32) -> bool {
         false
