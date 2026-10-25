@@ -156,6 +156,10 @@ impl MutationEnv<'_> {
     /// and `worldObjects` without the recalculation `AddTileObject` makes,
     /// then joins the world.
     ///
+    /// The name is `item.getName()`, the display name, from
+    /// [`super::SquareMutationHooks::item_display_name`] (the stored name
+    /// without it).
+    ///
     /// STUB: `updateSprite()` (the world texture and scale; render state).
     pub fn add_world_inventory_item(
         &mut self,
@@ -241,7 +245,11 @@ impl MutationEnv<'_> {
         }
         let (name, key_id, copy) = {
             let i = item.borrow();
-            (i.get_name().to_string(), i.get_key_id(), i.clone())
+            let name = self
+                .world
+                .item_display_name(&i)
+                .unwrap_or_else(|| i.get_name().to_string());
+            (name, i.get_key_id(), i.clone())
         };
         let mut obj = IsoObject::new(
             0,

@@ -292,6 +292,14 @@ pub trait SquareMutationHooks {
     /// `put_down` sound and idle/stressed sound timers).
     fn animal_dropped(&mut self, _pos: SquarePos, _item: &InventoryItem) {}
 
+    /// `item.getName()` for the world object's name: the display name
+    /// (the fluid's UI name, the bloody / broken / worn prefixes, a food's
+    /// freshness, a moveable's or clothing's own; translated). `None`
+    /// takes the item's stored `name`.
+    fn item_display_name(&mut self, _item: &InventoryItem) -> Option<String> {
+        None
+    }
+
     /// `IsoCell.addToProcessItemsRemove(item)`.
     fn process_items_remove(&mut self, _item: &InventoryItem) {}
 

@@ -550,6 +550,59 @@ fn main() {
     }
     std::fs::create_dir_all(out_dir).unwrap();
     std::fs::write(out_dir.join("rust_drops.txt"), &out).unwrap();
+    // `getSolidFloorAt` from every candidate, `getApparentZ` on stairs and
+    // slopes (`apparent.txt` next to the oracle steps).
+    let pts = [
+        (0.0, 0.0),
+        (0.5, 0.5),
+        (0.25, 0.75),
+        (1.0, 0.3),
+        (-0.5, 1.5),
+        (0.9, 0.1),
+    ];
+    let mut app = String::new();
+    for &p in &cand {
+        let f = cell.get_solid_floor_at(p.0, p.1, p.2, &sprites);
+        write!(
+            app,
+            "{},{},{} floor={}",
+            p.0,
+            p.1,
+            p.2,
+            f.map_or("none".to_string(), |f| f.2.to_string())
+        )
+        .unwrap();
+        if let Some(q) = cell.get_grid_square(p.0, p.1, p.2) {
+            if q.has_stairs(&sprites) || q.has_sloped_surface() {
+                app.push_str(" z=");
+                for (dx, dy) in pts {
+                    write!(app, "{};", h(q.get_apparent_z(dx, dy, &sprites, true))).unwrap();
+                }
+            }
+        }
+        app.push('\n');
+    }
+    std::fs::write(out_dir.join("rust_apparent.txt"), &app).unwrap();
+    let java_app = std::fs::read_to_string(Path::new(&a[5]).with_file_name("apparent.txt"))
+        .unwrap_or_default();
+    let (mut same_a, mut diff_a, mut sloped) = (0, 0, 0);
+    for (j, r) in java_app.lines().zip(app.lines()) {
+        if r.contains(" z=") {
+            sloped += 1;
+        }
+        if j == r {
+            same_a += 1;
+        } else {
+            if diff_a == 0 {
+                println!("apparent java: {j}\napparent rust: {r}");
+            }
+            diff_a += 1;
+        }
+    }
+    println!(
+        "apparent lines={} same={same_a} diff={diff_a} stairs/slopes={sloped}",
+        app.lines().count()
+    );
     let (mut same, mut diff, mut first) = (0, 0, None);
     for (j, r) in oracle.lines().zip(out.lines()) {
         if j == r {
