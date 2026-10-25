@@ -1,0 +1,9 @@
+[package]
+name = "pz-worldmap"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+pz-joml.workspace = true
+pz-core.workspace = true

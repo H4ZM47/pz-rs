@@ -2079,6 +2079,7 @@ dependencies = [
  "pz-video",
  "pz-world",
  "pz-worldgen",
+ "pz-worldmap",
  "regex",
 ]
 
@@ -2326,6 +2327,14 @@ dependencies = [
  "pz-kahlua",
  "pz-world",
  "regex",
+]
+
+[[package]]
+name = "pz-worldmap"
+version = "0.1.0"
+dependencies = [
+ "pz-core",
+ "pz-joml",
 ]
 
 [[package]]
