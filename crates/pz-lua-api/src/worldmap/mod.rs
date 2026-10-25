@@ -5,6 +5,7 @@
 //! Inputs from other workstreams come through the traits in [`host`].
 
 pub mod host;
+pub mod present;
 pub mod style;
 pub mod ui;
 
@@ -116,6 +117,8 @@ fn f32_arg(c: &NativeCall<'_>, i: usize) -> f32 {
 }
 
 thread_local! {
+    /// The colours `setUnvisitedRGBA` and `setUnvisitedGridRGBA` set.
+    static UNVISITED: std::cell::RefCell<[[f32; 4]; 2]> = const { std::cell::RefCell::new([[0.0; 4]; 2]) };
     /// `ZomboidFileSystem.instance` for resolving data file names.
     static FS: std::cell::RefCell<Option<Rc<std::cell::RefCell<pz_fs::GameFs>>>> = const { std::cell::RefCell::new(None) };
 }
@@ -138,6 +141,15 @@ pub fn register(thread: &mut Thread) {
     register_api(thread);
     register_option(thread);
     style::register(thread);
+    // `LuaManager.GlobalObject.fileExists`, which `MapUtils` checks the
+    // data files with (registered here unless another binding has it).
+    if thread.globals().get_str("fileExists").is_nil() {
+        crate::expose::global(thread, "fileExists", |c| {
+            let name = str_arg(c, 0).unwrap_or_default();
+            let path = fs_get_string(&name.replace('\\', "/"));
+            Ok(c.push(std::path::Path::new(&path).exists()))
+        });
+    }
 }
 
 fn register_element(thread: &mut Thread) {
@@ -249,6 +261,22 @@ fn register_api(thread: &mut Thread) {
                 m.st_mut().world_map.add_data(data, &name);
             }
             if !has_data && el.get_width() > 0.0 && el.get_height() > 0.0 {
+                m.set_map_from(el);
+                reset_view(m);
+            }
+        })?;
+        Ok(0)
+    });
+    b.method("addImages", |c| {
+        let dir = str_arg(c, 1);
+        with_map(c, |el, m| {
+            let has_images = m.st().world_map.has_images();
+            if let Some(dir) = dir.filter(|d| !d.trim().is_empty()) {
+                let zip = fs_get_string(&format!("{dir}/pyramid.zip"));
+                let forest = fs_get_string(&format!("{dir}/forest.pyramid.zip"));
+                m.st_mut().world_map.add_images(&zip, &forest);
+            }
+            if !has_images && el.get_width() > 0.0 && el.get_height() > 0.0 {
                 m.set_map_from(el);
                 reset_view(m);
             }
@@ -468,6 +496,16 @@ fn register_api(thread: &mut Thread) {
         with_map(c, |_, m| m.st_mut().renderer.set_drop_shadow_width(w))?;
         Ok(0)
     });
+    // WorldMapVisited.getInstance().setUnvisitedRGBA / GridRGBA.
+    // TODO(worldmap visited): the fog of war's colours.
+    for (name, grid) in [("setUnvisitedRGBA", false), ("setUnvisitedGridRGBA", true)] {
+        b.method(name, move |c| {
+            map_el(c)?;
+            let col = [f32_arg(c, 1), f32_arg(c, 2), f32_arg(c, 3), f32_arg(c, 4)];
+            UNVISITED.with(|u| u.borrow_mut()[grid as usize] = col);
+            Ok(0)
+        });
+    }
     b.method("getOptionCount", |c| {
         let v = with_map(c, |_, m| m.st().renderer.get_option_count())?;
         Ok(c.push(v as f64))

@@ -160,6 +160,25 @@ impl WorldMap {
         !self.data.is_empty()
     }
 
+    /// `addImages(directory)` once resolved: the directory's
+    /// `pyramid.zip` and `forest.pyramid.zip` (absolute paths), each added
+    /// when it exists and is not there yet.
+    pub fn add_images(&mut self, pyramid_zip: &str, forest_zip: &str) {
+        for p in [pyramid_zip, forest_zip] {
+            self.add_image_pyramid(p);
+        }
+    }
+
+    /// `addImagePyramid(absolutePath)`.
+    pub fn add_image_pyramid(&mut self, path: &str) {
+        if path.trim().is_empty() || !std::path::Path::new(path).exists() {
+            return;
+        }
+        if !self.images.iter().any(|i| &**i == path) {
+            self.images.push(path.into());
+        }
+    }
+
     pub fn has_images(&self) -> bool {
         !self.images.is_empty()
     }

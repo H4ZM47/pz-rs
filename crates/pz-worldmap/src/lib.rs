@@ -6,9 +6,13 @@
 
 pub mod binary;
 pub mod data;
+pub mod draw;
 pub mod projection;
+pub mod rasterize;
 pub mod renderer;
 pub mod style;
+pub mod triangulate;
+pub mod vbo;
 pub mod world_map;
 pub mod xml;
 
@@ -17,3 +21,5 @@ pub use renderer::WorldMapRenderer;
 pub use world_map::WorldMap;
 #[cfg(test)]
 mod data_tests;
+#[cfg(test)]
+mod draw_tests;

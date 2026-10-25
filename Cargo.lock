@@ -2345,6 +2345,7 @@ dependencies = [
 name = "pz-worldmap"
 version = "0.1.0"
 dependencies = [
+ "pz-clipper",
  "pz-core",
  "pz-joml",
  "pz-render",
