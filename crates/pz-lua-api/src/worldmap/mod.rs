@@ -5,6 +5,7 @@
 //! Inputs from other workstreams come through the traits in [`host`].
 
 pub mod host;
+pub mod style;
 pub mod ui;
 
 use crate::bind_ui::{element_of, UIELEMENT};
@@ -136,6 +137,7 @@ pub fn register(thread: &mut Thread) {
     register_element(thread);
     register_api(thread);
     register_option(thread);
+    style::register(thread);
 }
 
 fn register_element(thread: &mut Thread) {
@@ -516,6 +518,13 @@ fn register_api(thread: &mut Thread) {
             name.map_or(d, |n| m.st().renderer.get_double(&n, d))
         })?;
         Ok(c.push(v))
+    });
+
+    b.method("getStyleAPI", |c| {
+        let el = map_el(c)?;
+        // UIWorldMapV3 overrides it with WorldMapStyleV2.
+        let v3 = matches!(c.arg(0), Value::Object(ref o) if o.as_any().downcast_ref::<WorldMapApi>().is_some_and(|a| a.version == 2));
+        Ok(c.push(style::style_api_value(&el, v3)))
     });
 
     let b = expose_class(thread, UIWORLDMAP_V2, Some(UIWORLDMAP_V1));
