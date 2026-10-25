@@ -251,7 +251,10 @@ fn starting_a_fire_draws_rand_like_the_constructor() {
     let at = mgr
         .start_fire(&mut w.fw(&mut log), &mut r, 2, 2, 0, false, 20, 0)
         .unwrap();
-    assert_eq!(r.calls, ["float(0,30)", "next(2200)", "next(900)", "next(5)"]);
+    assert_eq!(
+        r.calls,
+        ["float(0,30)", "next(2200)", "next(900)", "next(5)"]
+    );
     assert_eq!(log.0, ["OnNewFire 2,2", "sound 2,2 20/20"]);
     let f = mgr.fire(&w.cell, at).unwrap();
     // Vegetation adds 50 energy; the grass floor needs nothing.
@@ -300,7 +303,12 @@ fn a_poor_floor_shortens_the_fire_and_takes_energy() {
 #[test]
 fn burning_turns_walls_and_furniture_to_burnt_tiles() {
     let mut w = World::new();
-    w.put(2, 2, true, &["carpet", "wall_w", "bench", "table", "tree", "immune"]);
+    w.put(
+        2,
+        2,
+        true,
+        &["carpet", "wall_w", "bench", "table", "tree", "immune"],
+    );
     w.add(2, 2, "door", ObjectKind::Door(IsoDoor::default()));
     let mut mgr = IsoFireManager::new();
     let mut log = Log::default();
@@ -316,7 +324,11 @@ fn burning_turns_walls_and_furniture_to_burnt_tiles() {
         w.sprite_names(2, 2),
         ["", "walls_burnt_01_0", "", "table_burnt", "", "immune"]
     );
-    for n in ["floors_burnt_01_0", "floors_burnt_01_1", "fencing_burnt_01_18"] {
+    for n in [
+        "floors_burnt_01_0",
+        "floors_burnt_01_1",
+        "fencing_burnt_01_18",
+    ] {
         assert!(w.m.named_map.contains_key(n), "{n}");
     }
     let sq = w.sq(2, 2);
@@ -432,7 +444,11 @@ fn rain_spends_the_energy_without_spreading() {
         thirty_fps: 1.5,
         now_millis: 0,
     };
-    mgr.update(&mut w.fw(&mut NoFireHooks), &mut Script::new(&[0, 1, 0]), frame);
+    mgr.update(
+        &mut w.fw(&mut NoFireHooks),
+        &mut Script::new(&[0, 1, 0]),
+        frame,
+    );
     assert_eq!(mgr.fire_stack.len(), 1);
     assert_eq!(mgr.fire(&w.cell, at).unwrap().energy, 5);
     // With FireSpread off nothing is spent.

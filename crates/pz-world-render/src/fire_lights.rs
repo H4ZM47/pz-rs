@@ -164,9 +164,8 @@ pub fn fireplace_input<'a>(
         lit: fp.lit,
         fuel_amount: fp.fuel_amount(),
         sprite_name: sp.map_or("", |s| s.name()),
-        metal_drum: sp.is_some_and(|s| {
-            s.properties.get(&sprites.alias, "CustomName") == Some("Metal Drum")
-        }),
+        metal_drum: sp
+            .is_some_and(|s| s.properties.get(&sprites.alias, "CustomName") == Some("Metal Drum")),
         container_type: obj.container.as_ref().and_then(|c| c.kind.as_deref()),
         collide_w: has(f.collideW),
         collide_n: has(f.collideN),
@@ -225,9 +224,11 @@ impl HearthLink {
         world_age_hours: f64,
         dt: f32,
     ) {
-        let propane = obj
-            .sprite
-            .is_some_and(|s| sprites.sprites[s].properties.has_name(&sprites.alias, "PropaneTank"));
+        let propane = obj.sprite.is_some_and(|s| {
+            sprites.sprites[s]
+                .properties
+                .has_name(&sprites.alias, "PropaneTank")
+        });
         let pz_world::ObjectKind::Barbecue(b) = &mut obj.kind else {
             return;
         };

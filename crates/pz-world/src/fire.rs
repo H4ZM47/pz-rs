@@ -456,7 +456,12 @@ impl IsoFire {
     /// `IsoFire.load`'s `AttachAnim` calls for a fire made by
     /// [`IsoFire::from_save`] from a save with `saved_stage`; `tile_scale`
     /// is `Core.tileScale` (a permanent fire's offset).
-    pub fn attach_loaded_anims(&mut self, saved_stage: i32, tile_scale: i32, rand: &mut dyn GameRand) {
+    pub fn attach_loaded_anims(
+        &mut self,
+        saved_stage: i32,
+        tile_scale: i32,
+        rand: &mut dyn GameRand,
+    ) {
         if self.perm {
             let ts = tile_scale;
             self.anims.push(FireAnim::attach(

@@ -507,7 +507,11 @@ impl IsoFireManager {
             return;
         };
         let (perm, burning) = (f.perm, f.burning());
-        let flag = if burning { w.flags.burning } else { w.flags.smoke };
+        let flag = if burning {
+            w.flags.burning
+        } else {
+            w.flags.smoke
+        };
         if let Some(sq) = w.sq_mut(r.x, r.y, r.z) {
             sq.properties.set_flag(flag);
         }

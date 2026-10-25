@@ -30,10 +30,10 @@ use crate::sprite::{self, Dir, Modifier, SpriteCtx, SpriteDraw};
 use crate::world::{AttachedSprite, ObjectKind, RenderObject, RenderSquare, SpriteInfo};
 
 pub use pz_world::fire::{
-    fire_to_evict, AnimKind, FireAnim, FireEvent, FireLight, FireOscillators, FireSave,
-    FireSquare, IsoFire, FIRE_ANIM_DELAY, FIRE_COLOR, FIRE_TINT_MOD, LIGHT_RADIUS_HIGH,
-    LIGHT_RADIUS_LOW, LIGHT_RADIUS_MEDIUM, LIGHT_RADIUS_MINIMUM, LIGHT_RGB, MAX_FIRE_OBJECTS,
-    MAX_LIFE, MIN_LIFE, NUM_FRAMES_FIRE, NUM_FRAMES_SMOKE, SMOKE_ANIM_DELAY, SMOKE_TINT_MOD,
+    fire_to_evict, AnimKind, FireAnim, FireEvent, FireLight, FireOscillators, FireSave, FireSquare,
+    IsoFire, FIRE_ANIM_DELAY, FIRE_COLOR, FIRE_TINT_MOD, LIGHT_RADIUS_HIGH, LIGHT_RADIUS_LOW,
+    LIGHT_RADIUS_MEDIUM, LIGHT_RADIUS_MINIMUM, LIGHT_RGB, MAX_FIRE_OBJECTS, MAX_LIFE, MIN_LIFE,
+    NUM_FRAMES_FIRE, NUM_FRAMES_SMOKE, SMOKE_ANIM_DELAY, SMOKE_TINT_MOD,
 };
 
 /// An `IsoFire`'s state, as drawing it goes (the world's `IsoFire`).
@@ -108,7 +108,7 @@ pub fn rand(r: &dyn RandSource) -> RandAdapter<'_> {
 /// (a `Campfire` object on the square), `texture` looks a frame
 /// texture up by name (`Texture.getSharedTexture`).
 pub fn render_object(
-fire: &FireState,
+    fire: &FireState,
     campfire: bool,
     texture: &dyn Fn(&str) -> Option<Texture>,
 ) -> RenderObject {

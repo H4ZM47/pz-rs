@@ -58,7 +58,8 @@ pub fn remove_tile_object(w: &mut FireWorld<'_>, at: At, index: usize) -> Option
     sq.special_objects.retain(|&id| id != obj.id);
     sq.world_objects.retain(|&id| id != obj.id);
     w.hooks.object_removed(x, y, z, &obj);
-    w.cell.recalc_all_with_neighbours(x, y, z, w.meta, w.sprites);
+    w.cell
+        .recalc_all_with_neighbours(x, y, z, w.meta, w.sprites);
     w.hooks.square_changed(x, y, z);
     w.hooks.lua_event("OnTileRemoved", x, y, z);
     Some(obj)
@@ -280,9 +281,9 @@ pub fn burn_walls(
 
 fn barricade_id(sq: &crate::IsoGridSquare, dir: IsoDirections) -> Option<u32> {
     sq.special_objects.iter().copied().find(|&id| {
-        sq.object_index(id).is_some_and(|i| {
-            matches!(&sq.objects[i].kind, ObjectKind::Barricade(b) if b.forward_dir() == dir)
-        })
+        sq.object_index(id).is_some_and(
+            |i| matches!(&sq.objects[i].kind, ObjectKind::Barricade(b) if b.forward_dir() == dir),
+        )
     })
 }
 
@@ -293,7 +294,10 @@ fn replace(w: &mut FireWorld<'_>, at: At, i: usize, s: Option<usize>) {
         return;
     };
     let id = sq.new_object_id();
-    let old = std::mem::replace(&mut sq.objects[i], IsoObject::new(id, ObjectKind::Object, s));
+    let old = std::mem::replace(
+        &mut sq.objects[i],
+        IsoObject::new(id, ObjectKind::Object, s),
+    );
     sq.special_objects.retain(|&x| x != old.id);
     w.hooks.object_removed(at.0, at.1, at.2, &old);
 }
@@ -380,8 +384,7 @@ fn burn_object(
         }
         _ => {}
     }
-    if w
-        .object_name(obj)
+    if w.object_name(obj)
         .is_some_and(|n| n.eq_ignore_ascii_case("Campfire"))
     {
         return Outcome::Skip;
@@ -449,7 +452,8 @@ fn burn_object(
         } else if let Some(c) = &obj.container {
             for it in &c.items {
                 let Some(it) = it.as_item() else { continue };
-                let fuel = (matches!(it.kind, pz_inventory::item::ItemKind::Food(_)) && it.is_alcoholic())
+                let fuel = (matches!(it.kind, pz_inventory::item::ItemKind::Food(_))
+                    && it.is_alcoholic())
                     || it.get_type() == "PetrolCan"
                     || it.get_type() == "Bleach";
                 if !fuel {
