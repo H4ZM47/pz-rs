@@ -9,8 +9,8 @@ without native code.
 | Module | Origin | License |
 | --- | --- | --- |
 | `bt` | A Rust translation of [Bullet Physics](https://github.com/bulletphysics/bullet3) **2.82**, double precision, scalar code paths. It covers only the parts the game reaches (listed below). | zlib (`LICENSE-ZLIB`) |
-| `pz` | The game's glue (`PZBullet.cpp`): `WorldSimulation`, the chunk maps and their static-body pools, server cells, `PZVehicle`, `PZVehicleScript`, physics objects, constraints and the collision/tick hooks. It is reconstructed from the shipped library. | original code |
-| `api` | `PzBullet`, with one method per in-scope `Bullet` native. Each method is documented with the native's name, keeps its argument order, and uses the same float-array layouts and `ToBullet` byte buffer. | original code |
+| `pz` | The game's glue (`PZBullet.cpp`): `WorldSimulation`, the chunk maps and their static-body pools, server cells, `PZVehicle`, `PZVehicleScript`, physics objects, constraints, the collision/tick hooks, ragdolls (`Skeleton`, `SkeletonPose`, `RagdollBuilder`, `Ragdoll`, `PZRagdoll`, `PZRagdollScript`) and ballistics (`PZBallistics`, `PZBallisticsTarget`). It is reconstructed from the shipped library. | original code |
+| `api`, `api_ragdoll`, `api_ballistics` | `PzBullet`, with one method per `Bullet` native. Each method is documented with the native's name, keeps its argument order, and uses the same float-array layouts and `ToBullet` byte buffer. | original code |
 
 Each ported Bullet file keeps Bullet's copyright notice and is marked as
 altered.
@@ -149,6 +149,44 @@ mass and velocity-multiplier changes; static and active toggles;
 `getOwnVehiclePhysics`; and `getVehiclePhysics` and `getObjectPhysics`
 readback as `WorldSimulation.update` does it.
 
+**Ragdolls** (`examples/ragdoll_replay.rs`). The inputs are real: the
+`defineRagdoll*` arrays from `RagdollScript.toBullet`, the skeleton and
+T-pose from `RagdollBuilder.Initialize()` on `Skinned/MaleBody.x` with
+`Bob_TPose`, and per-frame bone transforms from an `AnimationPlayer`
+playing seven clips (walks, idles, deaths, hit reactions), packed as
+`RagdollController` packs them.
+
+| Family | Logs | Calls | Steps | Mismatches |
+| --- | --- | --- | --- | --- |
+| falls on synthetic floors and Muldraugh | 4 | 85,598 | 12,000 | 0 |
+| West Point stairs | 2 | 42,796 | 6,000 | 0 |
+| Louisville walls | 2 | 42,746 | 6,000 | 0 |
+| crowds of 8–12 ragdolls, synthetic and Riverside | 2 | 439,338 | 6,000 | 0 |
+| lifecycle: remove/re-add, pool reuse, duplicate ids, active toggles, detach, re-pose, reset, network physics | 3 | 64,332 | 9,000 | 0 |
+| dynamics: live redefinition, mass, set/reset body dynamics | 3 | 64,080 | 9,000 | 0 |
+| updates applied to pooled ragdolls | 3 | 63,813 | 9,000 | 0 |
+| moving vehicles and `checkWheelCollision` | 4 | 483,197 | 12,000 | 0 |
+| argument and error paths | 1 | 15,434 | 3,000 | 0 |
+| **total** | **24** | **1,301,334** | **72,000** | **0** |
+
+**Ballistics** (`examples/ballistics_replay.rs`). Targets are animated with
+real bone transforms (eleven clips of zombie and player animations).
+Weapon ranges, spreads and projectile counts come from 22 real firearms.
+The shooters and targets move among vehicles on the real chunk regions.
+
+| Family | Logs | Calls | Steps | Mismatches |
+| --- | --- | --- | --- | --- |
+| crowds of 10–24 targets | 6 | 1,492,493 | 18,000 | 0 |
+| shotguns (multi-projectile spread) | 4 | 621,229 | 12,000 | 0 |
+| reticle updates and live body-part edits | 3 | 391,489 | 9,000 | 0 |
+| no vehicles | 2 | 235,648 | 6,000 | 0 |
+| small world coordinates, finer `f32` output resolution | 7 | 1,187,224 | 21,000 | 0 |
+| **total** | **22** | **3,928,083** | **66,000** | **0** |
+
+These logs cover tens of thousands of `getBallisticsTargets`,
+`getBallisticsTargetsSpreadData` (47,500 spread rays),
+`getBallisticsCameraTargets` and `getTargetedBodyPart` queries.
+
 ## Known differences and quirks
 
 * **Crashes the port avoids.** In these cases the original crashes or
@@ -166,8 +204,40 @@ readback as `WorldSimulation.update` does it.
   * re-activating a chunk map leaks the old one;
   * `ToBullet` ignores records for levels outside the chunk's range and
     skips any byte other than `8` (update chunk) or `0xff` (end).
-* **Not ported.** The ragdoll and ballistics natives have no methods yet.
-  `checkWheelCollision` only sees ragdolls, so it always returns `false`.
+* **Ragdoll quirks kept:**
+  * `addRagdoll` ignores its position; bodies are placed by
+    `updateRagdoll` and the skeleton updates.
+  * `setRagdollMass` gives every body the whole mass.
+  * A live `defineRagdollBodyPartInfo`/`BodyDynamics` re-places every
+    ragdoll's bodies in ragdoll-local space.
+  * The first failing `simulateRagdoll*` call returns -1 because the
+    error log clears the pending exception; later calls throw.
+  * The ragdoll pool is LIFO, and a reused ragdoll keeps its state.
+* **Ballistics quirks kept:**
+  * Ballistics rays use group 1 / mask -1, so static geometry
+    (mask 14) never blocks them.
+  * Every camera target gets the ray's first hit point.
+  * Body-part hit flags are never cleared, so `getTargetedBodyPart`
+    reports the lowest part ever hit.
+  * `getBallisticsTargets` returns at most one hit and ignores its count.
+* **`rand()`.** Spread rays use C `rand()`. The library never calls
+  `srand`, so the port reproduces Apple libc's generator (Park–Miller,
+  seed 1). Other platforms' `rand()` differ, so the spread patterns there
+  would not match the macOS game.
+* **NaN signs.** When `updateRagdollSkeletonPreviousTransforms` is given
+  the NaN-terminated velocities Java actually sends, the port matches
+  except for NaN sign bits (2,287 values in one test log). The main corpus
+  sends finite velocities.
+* **More crashes the port avoids:**
+  * `destroyWorld` with ragdolls or ballistics targets still present;
+  * ragdoll or ballistics natives called without a world;
+  * `initializeRagdollPose` freeing shapes that live ragdolls still use.
+* **Not ported** (unreachable through JNI):
+  * `PZBallistics::raycastAllWithCompoundSupport`;
+  * the mangled `getBallisticsTargetsSpread`;
+  * the isometric target AABB (`useIsometricAabb` is never set).
+
+  The debug-draw natives only set renderer flags, which are stored.
 * **Platform.** Matching was verified only for the arm64 macOS build. The
   trigonometric and `pow` results come from the platform libm, as in the
   original. Other libms, or x86-64 builds of the original without FMA

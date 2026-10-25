@@ -136,6 +136,8 @@ pub struct WorldSimulation {
     pub stairs_origin_x: f64,
     /// `+0xb8`: ragdolls by id and the ragdoll pool.
     pub ragdoll: super::ragdoll::RagdollWorld,
+    /// `+0x100` / `+0x148`: ballistics shooters and targets (`pz::ballistics`).
+    pub ballistics: super::ballistics::BallisticsWorld,
 }
 
 /// The world's callbacks into the glue for one step: `tickCallback`
@@ -330,6 +332,7 @@ impl WorldSimulation {
             ],
             stairs_origin_x: 0.0,
             ragdoll: Default::default(),
+            ballistics: Default::default(),
         }
     }
 
