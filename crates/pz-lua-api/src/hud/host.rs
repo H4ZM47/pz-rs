@@ -27,6 +27,10 @@ pub trait HudPlayers {
     fn player_screen(&self, _i: usize) -> Option<PlayerScreen> {
         None
     }
+    /// `IsoPlayer.players[i].isDead()`.
+    fn player_dead(&self, _i: usize) -> bool {
+        false
+    }
 }
 
 /// What `ActionProgressBar.updateScreenPos` reads from a player.
@@ -74,6 +78,76 @@ pub trait HudGameTime {
     fn realworld_seconds_since_last_update(&self) -> f32 {
         1.0 / 60.0
     }
+    /// `getTimeOfDay()` (or `serverTimeOfDay` for an MP client while the
+    /// server fast-forwards: `GameClient.fastForward`).
+    fn time_of_day(&self) -> f32 {
+        9.0
+    }
+    /// `getDay()` (0-based).
+    fn day(&self) -> i32 {
+        0
+    }
+    /// `getMonth()` (0-based).
+    fn month(&self) -> i32 {
+        0
+    }
+}
+
+/// `ClimateManager` as the HUD reads it. Owner: characters thread.
+pub trait HudClimate {
+    /// `getAirTemperatureForCharacter(players[player], false)` (Celsius).
+    fn air_temperature_for_character(&self, _player: usize) -> f32 {
+        0.0
+    }
+}
+
+/// An `AlarmClock` / `AlarmClockClothing` item as `Clock` reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AlarmClockItem {
+    /// `AlarmClockClothing` (else `AlarmClock`).
+    pub clothing: bool,
+    /// `hasTag(ItemTag.DIGITAL)`.
+    pub digital_tag: bool,
+    /// `isDigital()`.
+    pub is_digital: bool,
+    pub alarm_set: bool,
+    pub ringing: bool,
+    /// `isWorn()` / `isEquipped()` (inventory items).
+    pub worn: bool,
+    pub equipped: bool,
+}
+
+/// Where an alarm clock is: in `getWornItems()` or `getInventory().getItems()`,
+/// by its index among that list's alarm clocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlarmClockRef {
+    Worn(usize),
+    Inventory(usize),
+}
+
+/// A player's alarm clocks. Owner: world thread (items).
+pub trait HudAlarmClocks {
+    /// The alarm clocks among `players[player].getWornItems()`, in order.
+    fn worn_clocks(&self, _player: usize) -> Vec<AlarmClockItem> {
+        Vec::new()
+    }
+    /// The alarm clocks among `players[player].getInventory().getItems()`,
+    /// in order.
+    fn inventory_clocks(&self, _player: usize) -> Vec<AlarmClockItem> {
+        Vec::new()
+    }
+    /// `stopRinging()`.
+    fn stop_ringing(&mut self, _player: usize, _item: AlarmClockRef) {}
+    /// `setAlarmSet(set)` then `syncAlarmClock()`.
+    fn set_alarm_set(&mut self, _player: usize, _item: AlarmClockRef, _set: bool) {}
+}
+
+/// `DebugOptions` the HUD reads. Owner: us (debug options).
+pub trait HudDebug {
+    /// `DebugOptions.instance.cheat.clock.visible`.
+    fn cheat_clock_visible(&self) -> bool {
+        false
+    }
 }
 
 /// `SoundManager.instance` calls the HUD makes. Owner: audio thread.
@@ -98,6 +172,9 @@ pub trait HudNetwork {
 pub struct NoHud;
 impl HudPlayers for NoHud {}
 impl HudCamera for NoHud {}
+impl HudClimate for NoHud {}
+impl HudAlarmClocks for NoHud {}
+impl HudDebug for NoHud {}
 impl HudSound for NoHud {}
 impl HudNetwork for NoHud {}
 
@@ -132,6 +209,9 @@ pub struct HudHost {
     pub sound: Box<dyn HudSound>,
     pub network: Box<dyn HudNetwork>,
     pub camera: Box<dyn HudCamera>,
+    pub climate: Box<dyn HudClimate>,
+    pub alarm_clocks: Box<dyn HudAlarmClocks>,
+    pub debug: Box<dyn HudDebug>,
 }
 
 impl Default for HudHost {
@@ -142,6 +222,9 @@ impl Default for HudHost {
             sound: Box::new(NoHud),
             network: Box::new(NoHud),
             camera: Box::new(NoHud),
+            climate: Box::new(NoHud),
+            alarm_clocks: Box::new(NoHud),
+            debug: Box::new(NoHud),
         }
     }
 }

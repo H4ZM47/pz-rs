@@ -145,6 +145,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       game-world UI; `HudPlayers::player_screen` (characters thread) and
       `HudCamera` (`IsoCamera.getOffX/Y`, `Core.getZoom`; world-render
       thread) feed its position (#145).
+- [ ] Clock inputs: `HudAlarmClocks` (players' worn and inventory
+      `AlarmClock`/`AlarmClockClothing`, stop/set alarm; world thread),
+      `HudClimate::air_temperature_for_character` and
+      `HudGameTime::time_of_day/day/month` (characters thread),
+      `HudPlayers::player_dead`, `HudDebug::cheat_clock_visible`. Call
+      `UIManager::resize()` when a player's clocks change (the original
+      re-runs `resize` from its callers) (#146).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
