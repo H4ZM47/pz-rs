@@ -17,7 +17,8 @@ use pz_world::{
 use pz_world_render::invalidate::{BUILDINGS_CHANGED, CHUNK_BUILDINGS_CHANGED};
 use pz_world_render::{
     check_changed_buildings, default_player, NoTextures, NoWorldHooks, NoonSettings, PendingRender,
-    PlayerFrameInput, RenderInvalidation, RenderWorld, SpriteCache, WorldLighting, WorldView,
+    PlayerFrameInput, PuddleInputs, RenderInvalidation, RenderWorld, SpriteCache, WorldLighting,
+    WorldView,
 };
 
 fn tables() -> SpriteTables {
@@ -93,6 +94,8 @@ struct Scene {
     pending: PendingRender,
     sprite_cache: SpriteCache,
     frame: u64,
+    regions: IsoRegions,
+    perf_puddles: i32,
 }
 
 impl Scene {
@@ -136,6 +139,8 @@ impl Scene {
             pending: PendingRender::new(),
             sprite_cache: SpriteCache::new(),
             frame: 0,
+            regions: IsoRegions::new(3),
+            perf_puddles: 0,
         };
         let view = WorldView {
             cell: &s.cell,
@@ -188,6 +193,10 @@ impl Scene {
             &NoWorldHooks,
             &mut self.sprite_cache,
             &mut NoTextures,
+            PuddleInputs {
+                regions: &self.regions,
+                perf_puddles: self.perf_puddles,
+            },
         );
         let input = PlayerFrameInput {
             index: 0,
@@ -480,4 +489,78 @@ fn adding_a_wall_re_records_its_chunk_level_and_relights() {
     assert!(!behind.cut.can_see, "still visible behind the wall");
     let near = &s.render.squares[&(16, 15, 0)];
     assert!(near.cut.can_see);
+}
+
+#[test]
+fn a_square_going_indoors_re_initialises_its_puddles_next_frame() {
+    let mut s = Scene::new();
+    // `Core.getPerfPuddles()` 1: no puddles leaking into rooms.
+    s.perf_puddles = 1;
+    s.settle();
+    assert_eq!(s.render.squares[&(13, 13, 0)].puddles, None);
+    let (open, wet) = (s.sq(13, 13).clone(), s.sq(9, 9).clone());
+    s.hooks().properties_recalculated(&open);
+    s.hooks().properties_recalculated(&wet);
+    s.frame();
+    assert!(s.pending.puddles.is_empty());
+    // Outdoors, open ground all round: puddles everywhere.
+    let out = s.render.squares[&(13, 13, 0)].puddles.unwrap();
+    assert!(out.render);
+    assert_eq!(out.pda, [1.0; 4]);
+    assert_eq!(out.pnon, [0.0; 4]);
+    // Water has none.
+    assert!(!s.render.squares[&(9, 9, 0)].puddles.unwrap().render);
+    // Only the queued squares.
+    assert_eq!(s.render.squares[&(14, 13, 0)].puddles, None);
+
+    // A roof over (13, 13): RecalcProperties drops `exterior`.
+    s.cell.get_grid_square_mut(13, 13, 0).unwrap().have_roof = true;
+    let doors = DoorTables {
+        x_offset: [[[0; 4]; 2]; 2],
+        y_offset: [[[0; 4]; 2]; 2],
+    };
+    let water = s.m.tables.flag.water;
+    let mut regions = IsoRegions::new(3);
+    {
+        let mut render = RenderInvalidation::new(
+            &mut s.render,
+            &mut s.lighting,
+            &mut s.caches,
+            &mut s.pending,
+            water,
+            1,
+        );
+        let mut env = MutationEnv {
+            cell: &mut s.cell,
+            meta: &s.meta,
+            sprites: &mut s.m,
+            regions: &mut regions,
+            rand: &mut Zero,
+            doors: &doors,
+            world: &mut NoMutationHooks,
+            pathfind: &mut NoMutationHooks,
+            render: &mut render,
+            num_players: 1,
+        };
+        env.recalc_properties((13, 13, 0));
+    }
+    assert!(!s.sq(13, 13).has(s.m.tables.flag.exterior));
+    assert!(s.pending.puddles.contains(&(13, 13, 0)));
+    // Unchanged until the frame re-initialises it.
+    assert_eq!(s.render.squares[&(13, 13, 0)].puddles, Some(out));
+    s.frame();
+    let inside = s.render.squares[&(13, 13, 0)].puddles.unwrap();
+    assert!(!inside.render);
+    assert_eq!(inside.pda, [0.0; 4]);
+    // The neighbours keep theirs (no `recalc` on them).
+    assert_eq!(s.render.squares[&(14, 13, 0)].puddles, None);
+
+    // With puddles leaking into rooms (perf 0) the roofed square, open on
+    // every side, takes puddles in from its exterior neighbours.
+    s.perf_puddles = 0;
+    s.pending.puddles.insert((13, 13, 0));
+    s.frame();
+    let leak = s.render.squares[&(13, 13, 0)].puddles.unwrap();
+    assert!(leak.render);
+    assert_eq!(leak.pda, [1.0; 4]);
 }
