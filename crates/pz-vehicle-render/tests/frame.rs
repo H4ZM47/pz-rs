@@ -413,7 +413,7 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
                 room_light_ids: Vec::new(),
                 player_index: Some(0),
                 torch_strength: 0.0,
-                forward: [0.7071, 0.7071],
+                forward: [std::f32::consts::FRAC_1_SQRT_2; 2],
                 multiplier: 1.0,
             };
             eprintln!("player square result lights {:?}", ctx.result_lights);
