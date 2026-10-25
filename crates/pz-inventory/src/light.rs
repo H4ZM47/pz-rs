@@ -56,6 +56,17 @@ impl InventoryItem {
         }
     }
 
+    /// Port of `setActivated(activated)` (`HandWeapon`: its active light
+    /// part too). The client's equip events are not modelled.
+    pub fn set_activated(&mut self, activated: bool) {
+        if let ItemKind::Weapon(w) = &mut self.kind {
+            if let Some(l) = w.attachments.iter_mut().find(|p| p.is_torch_cone()) {
+                l.activated = activated;
+            }
+        }
+        self.activated = activated;
+    }
+
     /// Port of `isActivated()`.
     pub fn is_activated(&self) -> bool {
         self.activated

@@ -26,6 +26,7 @@ pub mod bind_fs;
 pub mod bind_global_objects;
 pub mod bind_globals;
 pub mod bind_item_container;
+pub mod bind_item_name;
 pub mod bind_item_visual;
 pub mod bind_items;
 pub mod bind_iso_enums;

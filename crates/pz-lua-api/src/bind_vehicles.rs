@@ -28,6 +28,7 @@ use std::rc::Rc;
 
 pub const INVENTORY_ITEM_CLASS: &str = "zombie.inventory.InventoryItem";
 pub const DRAINABLE_CLASS: &str = "zombie.inventory.types.DrainableComboItem";
+pub const RADIO_CLASS: &str = "zombie.inventory.types.Radio";
 pub const DEVICE_DATA_CLASS: &str = "zombie.radio.devices.DeviceData";
 pub const ARRAY_LIST_CLASS: &str = "java.util.ArrayList";
 pub const HASH_MAP_CLASS: &str = "java.util.HashMap";
@@ -776,7 +777,8 @@ fn register_script(thread: &mut Thread) {
 fn register_items(thread: &mut Thread) {
     // The vehicle part item methods are bind_items' (registered there);
     // only `Radio.getDeviceData` needs this module's `DeviceData` object.
-    let b = expose_class(thread, INVENTORY_ITEM_CLASS, None);
+    // It is `Radio`'s own method, so other items have no `getDeviceData`.
+    let b = expose_class(thread, RADIO_CLASS, Some("zombie.inventory.types.Moveable"));
     b.method("getDeviceData", |c| {
         let item = with_this::<crate::bind_items::LuaInventoryItem, _>(c, |i| i.item.clone())?;
         let v = if matches!(item.borrow().kind, ItemKind::Radio(..)) {
@@ -1042,7 +1044,7 @@ mod item_binding_tests {
         let f = pz_kahlua::stdlib::load_string(
             "item:setMaxCapacity(7)\n\
              return item:getFullType(), item:getCondition(), item:getBrakeForce(),\n\
-             item:getMaxCapacity(), item == same, item:getDeviceData()",
+             item:getMaxCapacity(), item == same, item.getDeviceData",
             Some("test"),
             t.globals().clone(),
         )
@@ -1056,6 +1058,7 @@ mod item_binding_tests {
         assert!(matches!(r[2], Value::Num(n) if n == 2.5));
         assert!(matches!(r[3], Value::Num(n) if n == 7.0));
         assert!(matches!(r[4], Value::Bool(true)));
+        // `getDeviceData` is `Radio`'s, not `ComboItem`'s.
         assert!(matches!(r[5], Value::Nil));
         assert_eq!(
             super::item_of(&super::item_value(&item)).map(|i| Rc::ptr_eq(&i, &item)),
