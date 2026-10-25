@@ -238,3 +238,71 @@ fn helpers() {
     assert!(!is_null_or_whitespace(Some("\u{A0}")));
     assert!(equals_ignore_case("Container", "cONTAINER"));
 }
+
+#[test]
+fn post_tile_definitions_entity_sprites() {
+    let mut map = PropertyValueMap::default();
+    for k in [
+        "WindowN",
+        "WindowW",
+        "DoorWallN",
+        "DoorWallW",
+        "WallSE",
+        "tree",
+        "lightR",
+        "lightG",
+        "lightB",
+        "ItemHeight",
+        "Surface",
+    ] {
+        map.entry(k);
+    }
+    let names: Vec<String> = ["Bench", "Bad", "Copy", "Late"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let mut m = IsoSpriteManager::new(test_tables());
+    m.generate_alias_map(map, &names).unwrap();
+    for (i, n) in ["bench_0", "bench_1", "bench_2", "other_0"]
+        .iter()
+        .enumerate()
+    {
+        m.add_sprite(n, 10 + i as i32);
+    }
+    let cfg = |name: &str, config: &str, valid: bool, tiles: &[&str]| EntitySpriteConfig {
+        entity_name: name.into(),
+        config_name: config.into(),
+        valid,
+        tile_names: tiles.iter().map(|s| s.to_string()).collect(),
+    };
+    let errors = m.post_tile_definitions(&[
+        cfg("Bench", "Bench", true, &["bench_0", "bench_1", "new_0"]),
+        // Invalid: skipped, and its name stays free.
+        cfg("Bad", "Copy", false, &["other_0"]),
+        // `bench_2` is registered before the duplicate `bench_1` throws.
+        cfg("Copy", "Copy", true, &["bench_2", "bench_1"]),
+        // A second config named "Bench" is a double entry.
+        cfg("Late", "Bench", true, &["other_0"]),
+        // `bench_2` was registered by the failed "Copy" entity.
+        cfg("Late", "Late", true, &["other_0", "bench_2"]),
+    ]);
+    assert!(errors);
+    let f = m.tables.flag.EntityScript;
+    let script = |m: &IsoSpriteManager, n: &str| {
+        let s = &m.sprites[m.named_map[n]];
+        (
+            s.properties.has(f),
+            s.properties
+                .get(&m.alias, "EntityScriptName")
+                .map(str::to_string),
+        )
+    };
+    assert_eq!(script(&m, "bench_0"), (true, Some("Bench".into())));
+    assert_eq!(script(&m, "bench_1"), (true, Some("Bench".into())));
+    // `getSprite` added the unknown tile, and it gets the properties.
+    assert_eq!(script(&m, "new_0"), (true, Some("Bench".into())));
+    assert_eq!(script(&m, "bench_2"), (false, None));
+    assert_eq!(script(&m, "other_0"), (false, None));
+    assert!(!m.post_tile_definitions(&[cfg("Late", "Late", true, &["other_0"])]));
+    assert_eq!(script(&m, "other_0"), (true, Some("Late".into())));
+}
