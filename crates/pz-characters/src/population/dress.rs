@@ -170,13 +170,29 @@ pub fn dress_in_named_outfit(
     visuals: &mut Vec<ItemVisual>,
     ctx: &DressContext<'_>,
 ) -> Result<(), String> {
-    visuals.clear();
+    dress_in_named_outfit_keep(human, female, outfit_name, visuals, ctx, true).map(|_| ())
+}
+
+/// `HumanVisual.dressInNamedOutfit(outfitName, itemVisuals, clear)`, with
+/// the randomized outfit it dressed in (`HumanVisual.getOutfit()`, whose
+/// random data `synchWithOutfit` reads); `None` when nothing was dressed.
+pub fn dress_in_named_outfit_keep(
+    human: &mut HumanVisual,
+    female: bool,
+    outfit_name: Option<&str>,
+    visuals: &mut Vec<ItemVisual>,
+    ctx: &DressContext<'_>,
+    clear: bool,
+) -> Result<Option<super::Outfit>, String> {
+    if clear {
+        visuals.clear();
+    }
     let Some(name) = outfit_name.filter(|n| !is_null_or_whitespace(n)) else {
-        return Ok(());
+        return Ok(None);
     };
     let source = if female { ctx.outfits.find_female_outfit(name) } else { ctx.outfits.find_male_outfit(name) };
     let Some(source) = source else {
-        return Ok(());
+        return Ok(None);
     };
     let mut outfit = source.clone_outfit();
     outfit.randomize(ctx.outfit)?;
@@ -233,5 +249,46 @@ pub fn dress_in_named_outfit(
             }
         }
     }
-    Ok(())
+    // `dressInOutfit`'s end.
+    outfit.pants = false;
+    outfit.top = false;
+    outfit.random_data.top_texture = None;
+    outfit.random_data.pants_texture = None;
+    Ok(Some(outfit))
+}
+
+/// The public `HumanVisual.addClothingItem(itemVisuals, scriptItem)`: the
+/// script item's clothing item (ready) added with a fresh randomized
+/// reference. The index of the added visual.
+pub fn add_clothing_item_for_script(
+    ctx: &DressContext<'_>,
+    visuals: &mut Vec<ItemVisual>,
+    script: &pz_scripts::objects::items::Item,
+) -> Result<Option<usize>, String> {
+    let Some(clothing) = script.clothing_item.as_deref().and_then(|n| ctx.clothing.get(n)) else {
+        return Ok(None);
+    };
+    let mut locations = item_visual_locations(ctx, visuals);
+    add_clothing_item(ctx, visuals, &mut locations, Some(&clothing.name), None)
+}
+
+/// `HumanVisual.synchWithOutfit(outfit)`: hair colour (also the beard's),
+/// the hair and beard models the outfit drew for the owner's sex, then
+/// `getSkinTexture()`.
+pub fn synch_human_with_outfit(
+    human: &mut HumanVisual,
+    outfit: Option<&super::Outfit>,
+    owner: &dyn pz_inventory::visual::human::HumanVisualOwner,
+    styles: &dyn pz_inventory::visual::human::HumanStyles,
+) {
+    let Some(outfit) = outfit else {
+        return;
+    };
+    let r = &outfit.random_data;
+    human.hair_color = r.hair_color;
+    human.beard_color = r.hair_color;
+    let female = owner.is_female();
+    human.hair_model = if female { r.female_hair_name.clone() } else { r.male_hair_name.clone() };
+    human.beard_model = if female { None } else { r.beard_name.clone() };
+    human.get_skin_texture(owner, styles);
 }

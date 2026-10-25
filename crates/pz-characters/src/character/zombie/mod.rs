@@ -19,6 +19,7 @@
 
 pub mod math;
 pub mod mover;
+pub mod dress;
 pub mod population;
 pub mod senses;
 pub mod update;
@@ -224,6 +225,21 @@ pub struct ZombieFields {
     pub walk_type: Option<String>,
     pub footstep_volume: f32,
     pub dress_in_random_outfit: bool,
+    /// `persistentOutfitInit`.
+    pub persistent_outfit_init: bool,
+    /// `doDirtBloodEtc`.
+    pub do_dirt_blood_etc: bool,
+    /// `itemVisuals`: the outfit's clothing (what a zombie wears until it
+    /// dies; `wornItems` is filled from it then).
+    pub item_visuals: Vec<pz_inventory::visual::ItemVisual>,
+    /// `getHumanVisual().getOutfit()`: the randomized outfit it dressed in
+    /// (`human_visual.outfit` is its name).
+    pub human_outfit: Option<crate::population::Outfit>,
+    /// `attachedItems`: location and item, in the `Human` attached
+    /// location group's order.
+    pub attached_items: Vec<(String, pz_inventory::InventoryItem)>,
+    /// `itemsToSpawnAtDeath`.
+    pub items_to_spawn_at_death: Vec<pz_inventory::InventoryItem>,
     pub pending_outfit_name: Option<String>,
     /// The outfit name (`getHumanVisual().getOutfit().name`), set by the
     /// outfit system.
@@ -362,6 +378,12 @@ impl Default for ZombieFields {
             walk_type: None,
             footstep_volume: 1.0,
             dress_in_random_outfit: false,
+            persistent_outfit_init: false,
+            do_dirt_blood_etc: true,
+            item_visuals: Vec::new(),
+            human_outfit: None,
+            attached_items: Vec::new(),
+            items_to_spawn_at_death: Vec::new(),
             pending_outfit_name: None,
             outfit_name: None,
             crawler_type: 0,

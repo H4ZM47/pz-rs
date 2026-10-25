@@ -20,6 +20,7 @@
 //! logged here.
 
 pub mod beard_styles;
+pub mod blood_visuals;
 pub mod clothing_decals;
 pub mod default_clothing;
 pub mod dress;
@@ -27,13 +28,16 @@ pub mod hair_outfit_definitions;
 pub mod hair_styles;
 pub mod outfit;
 pub mod outfit_manager;
+pub mod persistent_outfits;
 pub mod pop_template;
 pub mod voice_styles;
 pub mod xml;
+pub mod zombie_defs;
 
 pub use beard_styles::{BeardStyle, BeardStyles};
 pub use clothing_decals::{ClothingDecal, ClothingDecalGroup, ClothingDecals};
-pub use dress::{dress_in_named_outfit, DressContext};
+pub use dress::{dress_in_named_outfit, dress_in_named_outfit_keep, DressContext};
+pub use persistent_outfits::{Outfitter, PersistentOutfits};
 pub use default_clothing::{DefaultClothing, DefaultClothingLists};
 pub use hair_outfit_definitions::{
     HairOutfitDefinitions, HaircutDefinition, HaircutOutfitDefinition, StringChance,
