@@ -268,6 +268,25 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `with_host(|h| h.picking = Box::new(WorldPicking { world }))`; use
       `picking::context_pick` for `UIManager.setPicked` on mouse events
       (world-render thread) (#192).
+- [ ] Object picking render side: keep a `pz_iso_render::RenderInfos`
+      next to the chunk caches, build each player's `ChunkRenderer` with
+      `.with_render_infos(&infos, player)` (chunk recording, composite and
+      translucent passes record `ObjectRenderInfo`), call
+      `infos.forget_chunk(wx, wy)` when a chunk unloads, and give the HUD a
+      `PickWorld` built per frame as `pz_engine::world_hud::EnginePick {
+      world: pz_world_render::WorldPick { view, render, infos, player: 0,
+      camera: player 0's camera }, hooks }`; `world_hud::PickHooks`
+      supplies `IsoPlayer.players[0]` (characters thread), the square Lua
+      objects, door adjacency, entity UIs and corpses (`isMouseOver`).
+      Sprite models (`renderModel` → `updateRenderInfoForObjectPicker`) are
+      not recorded yet (world-render thread) (#198).
+- [ ] HUD camera: create one `pz_world_render::SharedCameraFrame`, call
+      `pz_engine::world_hud::install_hud_camera(frame.clone())` after the
+      HUD host is installed,
+      and each frame set `cameras[i]` to each player's `Camera`,
+      `player_index` (`IsoPlayer.getPlayerIndex()`) and
+      `frame_player_index` (`IsoCamera.frameState.playerIndex`) before the
+      HUD updates and renders (world-render thread) (#198).
 - [ ] Health panel: `HudBodyDamage` (`isFemale`, `getBodyDamage().getHealth()`,
       each `BodyPart`'s wound state as a `BodyPartView`; the remote
       `getBodyDamageRemote()` for another MP player; characters thread) and

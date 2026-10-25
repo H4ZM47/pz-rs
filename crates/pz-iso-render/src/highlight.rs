@@ -54,6 +54,7 @@ pub fn render(
         depth_maps: r.depth_maps,
         out,
         highlight_pass: true,
+        record: None,
     };
     for sq in squares {
         for (index, obj) in sq.objects.iter().enumerate() {

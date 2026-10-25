@@ -213,6 +213,9 @@ pub struct AttachedSprite {
 /// An `IsoObject` as the renderer needs it.
 #[derive(Clone, Debug)]
 pub struct RenderObject {
+    /// The world object's id within its square (`IsoObject.id`), for the
+    /// per-object render info ([`crate::render_info`]).
+    pub id: u32,
     pub kind: ObjectKind,
     pub sprite: Option<Rc<SpriteInfo>>,
     pub attached: Vec<AttachedSprite>,
@@ -271,6 +274,7 @@ pub struct GarageDoorSpan {
 impl RenderObject {
     pub fn new(kind: ObjectKind, sprite: Option<Rc<SpriteInfo>>) -> Self {
         RenderObject {
+            id: 0,
             kind,
             sprite,
             attached: Vec::new(),

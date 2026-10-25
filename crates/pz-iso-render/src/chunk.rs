@@ -152,17 +152,14 @@ impl ChunkTexture {
         ]
     }
 
-    /// `FBORenderChunk.renderInWorldMainThread`: the composite into the
-    /// offscreen buffer under a screen-pixel projection.
-    pub fn composite(&self, cam: &crate::Camera) -> Vec<DrawCmd> {
-        let r = iso::chunk_depth_data(cam.chunk_x(), cam.chunk_y(), self.wx, self.wy, self.min_level);
-        let mut depth = ((r.index_x + r.index_y) as f32 - cam.fix_jiggly_square_x - cam.fix_jiggly_square_y) / 8.0 / 40.0;
-        depth *= 0.461_873_35;
-        depth -= calculate_min_level(self.min_level) as f32 * iso::LEVEL_DEPTH;
+    /// Where [`ChunkTexture::composite`] draws the texture's top-left
+    /// corner (`FBORenderChunk.renderX/renderY`, in unzoomed screen
+    /// pixels).
+    pub fn render_xy(&self, cam: &crate::Camera) -> (f32, f32) {
         let (bx, by) = ((self.wx * 8) as f32, (self.wy * 8) as f32);
         let mut x = x_to_screen(bx, by);
         let mut y = y_to_screen(bx, by, self.min_level as f32, 0);
-        let (mut w, mut h) = (self.width() as f32, self.height() as f32);
+        let mut w = self.width() as f32;
         y -= (PIXELS_PER_LEVEL * (self.top_level - self.min_level + 1)) as f32;
         y -= extra_height_for_jumbo_trees(self.min_level, self.top_level) as f32;
         x -= cam.off_x as f32;
@@ -170,10 +167,21 @@ impl ChunkTexture {
         x /= cam.zoom;
         y /= cam.zoom;
         w /= cam.zoom;
-        h /= cam.zoom;
         x -= w / 2.0;
         x += cam.fix_jiggly_x;
         y += cam.fix_jiggly_y;
+        (x, y)
+    }
+
+    /// `FBORenderChunk.renderInWorldMainThread`: the composite into the
+    /// offscreen buffer under a screen-pixel projection.
+    pub fn composite(&self, cam: &crate::Camera) -> Vec<DrawCmd> {
+        let r = iso::chunk_depth_data(cam.chunk_x(), cam.chunk_y(), self.wx, self.wy, self.min_level);
+        let mut depth = ((r.index_x + r.index_y) as f32 - cam.fix_jiggly_square_x - cam.fix_jiggly_square_y) / 8.0 / 40.0;
+        depth *= 0.461_873_35;
+        depth -= calculate_min_level(self.min_level) as f32 * iso::LEVEL_DEPTH;
+        let (x, y) = self.render_xy(cam);
+        let (w, h) = (self.width() as f32 / cam.zoom, self.height() as f32 / cam.zoom);
         vec![
             DrawCmd::BlendFuncSeparate(pz_render::gl::ONE, pz_render::gl::ONE_MINUS_SRC_ALPHA, pz_render::gl::ONE_MINUS_DST_ALPHA, pz_render::gl::ONE),
             DrawCmd::DepthFunc(pz_render::gl::LEQUAL),

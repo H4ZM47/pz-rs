@@ -1948,6 +1948,7 @@ dependencies = [
  "pz-gpu",
  "pz-input",
  "pz-inventory",
+ "pz-iso-render",
  "pz-kahlua",
  "pz-lua-api",
  "pz-model",
@@ -1955,6 +1956,8 @@ dependencies = [
  "pz-scripts",
  "pz-sound",
  "pz-ui",
+ "pz-world",
+ "pz-world-render",
  "winit",
 ]
 

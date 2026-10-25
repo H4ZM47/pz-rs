@@ -203,7 +203,7 @@ fn has_water_attached(cv: Option<&CutawayView<'_>>, sq: &RenderSquare) -> bool {
 /// with `renderTranslucentOnly`).
 fn render_water_attached(r: &ChunkRenderer<'_>, squares: &[&RenderSquare], out: &mut Vec<DrawCmd>) {
     let cv = r.cutaways.as_ref();
-    let mut ctx = SpriteCtx { cam: &r.cam, chunk: None, depth_maps: r.depth_maps, out, highlight_pass: false };
+    let mut ctx = SpriteCtx { cam: &r.cam, chunk: None, depth_maps: r.depth_maps, out, highlight_pass: false, record: None };
     for sq in squares {
         for obj in sq.objects.iter().filter(|o| crate::alpha::render_layer(cv, sq, o) == Layer::None && !o.attached.is_empty()) {
             let col: ColorInfo = sq.light_info;

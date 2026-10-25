@@ -67,6 +67,7 @@ pub fn render_square(
             _ => ObjectKind::Plain,
         };
         let mut ro = RenderObject::new(kind, o.sprite.map(|s| cache.get(w.sprites, s, tex)));
+        ro.id = o.id;
         ro.render_y_offset = o.render_y_offset;
         ro.tint = [o.tint_r, o.tint_g, o.tint_b];
         ro.container_count = u32::from(o.container.is_some()) + o.secondary_containers.len() as u32;

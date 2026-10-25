@@ -40,6 +40,7 @@ pub mod occlusion;
 pub mod outlines;
 pub mod particles_fire;
 pub mod puddles;
+pub mod render_info;
 pub mod seam;
 pub mod shadows;
 pub mod skybox;
@@ -59,6 +60,7 @@ pub mod world;
 pub use cell::ChunkRenderer;
 pub use alpha::CutawayView;
 pub use chunk::ChunkTexture;
+pub use render_info::{ObjectRenderInfo, RenderInfos};
 pub use cutaways::{CutawayPlayer, CutawayState, CutawayWorld, Cutaways};
 pub use world::{DepthMaps, DepthPreset, ObjectKind, RenderObject, RenderSquare, SpriteFlags, SpriteInfo, TileType};
 
