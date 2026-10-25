@@ -31,6 +31,8 @@ pub use ballistics::{BallisticsController, BallisticsTarget, CombatDamageData, M
 pub use hit_chance::{HitChanceData, TargetInfo, VehicleAim};
 pub use physics::{PhysicsWorld, RagdollBodyPart, BULLET_Z_SCALE, SKELETON_BONE_COUNT};
 pub use ragdoll::RagdollTracking;
+#[cfg(any(feature = "bullet", test))]
+pub use ragdoll::CharacterRagdoll;
 pub use reaction::{HitReaction, HitWeapon, ShotDirection};
 pub use weapon::FirearmStats;
 

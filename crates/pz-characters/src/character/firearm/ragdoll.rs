@@ -5,8 +5,10 @@
 //! ragdolling state, and the shot it reacts to with the impulse
 //! `PhysicsHitReactionScript` gives for the weapon
 //! ([`GameCharacter::take_ragdoll_hit`], `simulateHitReaction`'s first
-//! half). TODO(#102): the `pz_ragdoll::RagdollCharacter` impl over these
-//! (`CharacterRagdoll`) lands with pz-ragdoll.
+//! half). [`CharacterRagdoll`] (behind the `bullet` feature) is the
+//! character as pz-ragdoll's `RagdollCharacter`, and
+//! [`CharacterRagdoll::track`] copies the controller's state back after the
+//! animation update.
 //!
 //! The ragdoll starts the way the original's does: the animation state
 //! machine picks a ragdoll node (death and hit-reaction nodes test
@@ -103,6 +105,105 @@ impl<I: 'static> GameCharacter<I> {
             upward_impulse,
             target: [self.vars.x, self.vars.y, self.vars.z],
             attacker: attacker.unwrap_or(data.attacker_position),
+        })
+    }
+}
+
+/// A character as pz-ragdoll's `RagdollCharacter`, for one animation
+/// update (`RagdollEnv::character`): what `RagdollController` reads and
+/// writes on its `IsoGameCharacter`, with the world the character's
+/// methods need.
+#[cfg(any(feature = "bullet", test))]
+pub struct CharacterRagdoll<'a, 'w, I: 'static> {
+    pub chr: &'a mut GameCharacter<I>,
+    pub cx: crate::character::state::StateCx<'w, I>,
+}
+
+#[cfg(any(feature = "bullet", test))]
+impl<'a, 'w, I: 'static> CharacterRagdoll<'a, 'w, I> {
+    pub fn new(chr: &'a mut GameCharacter<I>, cx: crate::character::state::StateCx<'w, I>) -> Self {
+        CharacterRagdoll { chr, cx }
+    }
+
+    /// After the animation update: what the character tracks of its
+    /// controller (`getRagdollController() != null`, `isRagdoll`,
+    /// `isUpright`, `isOnBack`) and `isRagdollSimulationActive()`
+    /// (`animPlayer.isRagdollSimulationActive() && canRagdoll()`, with the
+    /// `canRagdoll` computed for this frame).
+    pub fn track(chr: &mut GameCharacter<I>, player: &pz_anim::AnimationPlayer, controller: Option<&pz_ragdoll::RagdollController>) {
+        chr.ragdoll.has_controller = controller.is_some();
+        chr.ragdoll.is_ragdolling = player.is_ragdolling();
+        chr.ragdoll.upright = controller.is_some_and(|c| c.is_upright());
+        chr.ragdoll.on_back = controller.is_some_and(|c| c.is_on_back());
+        chr.vars.ragdoll_simulation_active = player.is_ragdoll_simulation_active() && chr.ragdoll.can_ragdoll;
+    }
+}
+
+#[cfg(any(feature = "bullet", test))]
+impl<I: 'static> pz_ragdoll::RagdollCharacter for CharacterRagdoll<'_, '_, I> {
+    fn id(&self) -> i32 {
+        self.chr.id
+    }
+    fn position(&self) -> pz_ragdoll::Vec3 {
+        pz_ragdoll::Vec3::new(self.chr.vars.x, self.chr.vars.y, self.chr.vars.z)
+    }
+    fn forward_direction_angle(&self) -> f32 {
+        self.chr.direction_angle_radians()
+    }
+    fn can_ragdoll(&self) -> bool {
+        self.chr.can_ragdoll_uncapped(self.cx.ctx)
+    }
+    /// `onRagdollSimulationStarted()`: `slideAwayFromWalls(0.5f, true,
+    /// true)`.
+    fn on_ragdoll_simulation_started(&mut self) {
+        self.chr.slide_away_from_walls(0.5, true, true, &mut self.cx);
+    }
+    fn set_ragdoll_fall(&mut self, v: bool) {
+        self.chr.vars.ragdoll_fall = v;
+    }
+    fn set_use_physic_hit_reaction(&mut self, v: bool) {
+        self.chr.vars.use_physic_hit_reaction = v;
+    }
+    fn is_fall_on_front(&self) -> bool {
+        self.chr.environment.fall_on_front
+    }
+    fn set_fall_on_front(&mut self, v: bool) {
+        self.chr.environment.fall_on_front = v;
+    }
+    fn set_on_floor(&mut self, v: bool) {
+        self.chr.vars.on_floor = v;
+    }
+    /// `doDeferredMovementFromRagdoll(dMovement)`: only while ragdolling
+    /// (the animation is updating: this is called from its update);
+    /// `moveUnmoddedInternal`, then `setX(getNextX())`, `setY(getNextY())`,
+    /// `setZ(getZ() + dz)`.
+    fn do_deferred_movement_from_ragdoll(&mut self, player: &pz_anim::AnimationPlayer, m: pz_ragdoll::Vec3) {
+        if !player.is_ragdolling() {
+            return;
+        }
+        let c = &mut *self.chr;
+        c.vars.next_x += m.x;
+        c.vars.next_y += m.y;
+        c.vars.req_movement = (m.x, m.y);
+        c.set_x(c.vars.next_x);
+        c.set_y(c.vars.next_y);
+        c.set_z(c.vars.z + m.z);
+    }
+    /// `simulateHitReaction`'s character part ([`GameCharacter::take_ragdoll_hit`]),
+    /// with the attacker's position now (the hit's when the attacker is
+    /// not in the world). STUB: an explosive's `getAttackTargetSquare` is
+    /// not modelled; its attacker position is used.
+    fn take_ragdoll_hit(&mut self) -> Option<pz_ragdoll::RagdollHit> {
+        let attacker_id = self.chr.ballistics_target.as_ref()?.combat_damage_data.attacker;
+        let attacker = self.cx.world.character_mut(attacker_id).map(|a| [a.vars.x, a.vars.y, a.vars.z]);
+        let h = self.chr.take_ragdoll_hit(self.cx.sm, attacker)?;
+        let v = |p: [f32; 3]| pz_ragdoll::Vec3::new(p[0], p[1], p[2]);
+        Some(pz_ragdoll::RagdollHit {
+            body_part: h.body_part,
+            impulse: h.impulse,
+            upward_impulse: h.upward_impulse,
+            target: v(h.target),
+            attacker: v(h.attacker),
         })
     }
 }
