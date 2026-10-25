@@ -8,9 +8,8 @@
 //! `ZombieGetUpFromCrawlState` and `ZombieFallingState`.
 //!
 //! `parameterZombieState.setState(...)` is the zombie's `sound_state`.
-//! The animation-player calls (`setTargetAngle`, the thump track) are
-//! TODO(anim): `ThumpState` counts the `ThumpFrame` events the animation
-//! reports instead of scanning the track.
+//! The animation-player calls (`setTargetAngle`, the thump track) go to
+//! the world's `pz_anim::StateAnimHooks` through `StateWorld`.
 
 use pz_anim::{AnimEventRecord, AnimationVariableSource};
 
@@ -111,9 +110,6 @@ pub const GET_DOWN_START_Y: Param<f32> = Param::new(ids::ZOMBIE_GET_DOWN, "start
 pub const TURN_ALERTED_TARGET_ANGLE: Param<f32> = Param::new(ids::ZOMBIE_TURN_ALERTED, "target_angle", || 0.0);
 /// `ZombieGetUpFromCrawlState.STATE`.
 pub const GET_UP_FROM_CRAWL_STATE: Param<Option<StateId>> = Param::new(ids::ZOMBIE_GET_UP_FROM_CRAWL, "state", || None);
-/// The `ThumpFrame` events the animation reported this tick (TODO(anim):
-/// `ThumpAnimations.countThumpEventsBetween`).
-pub const THUMP_FRAMES: Param<i32> = Param::new(ids::THUMP, "thump_frames", || 0);
 
 fn is(e: &AnimEventRecord, name: &str) -> bool {
     e.event.event_name.eq_ignore_ascii_case(name)
@@ -321,11 +317,11 @@ impl<I: 'static> State<I> for WalkTowardState {
                 _ => {}
             }
         }
-        let mut collided_vehicle = owner.zombie.collided_with_vehicle;
+        let mut collided_vehicle = owner.vars.collided_with_vehicle;
         if target_vehicle.is_some() && owner.zombie.target_view.vehicle_adjacent {
             collided_vehicle = false;
         }
-        let mut collided = owner.zombie.collided_this_frame;
+        let mut collided = owner.vars.collided_this_frame;
         if collided && WALK_IGNORE_OFFSET.get(&mut owner.state.params) == Some(false) {
             WALK_IGNORE_OFFSET.set(&mut owner.state.params, Some(true));
             WALK_IGNORE_TIME.set(&mut owner.state.params, cx.ctx.current_time_millis());
@@ -355,8 +351,8 @@ impl<I: 'static> State<I> for WalkTowardState {
         if dist < 0.25 {
             owner.vars.x = tx;
             owner.vars.y = ty;
-            owner.zombie.next_x = tx;
-            owner.zombie.next_y = ty;
+            owner.vars.next_x = tx;
+            owner.vars.next_y = ty;
             dist = 0.0;
         }
         if dist < 0.025 {
@@ -786,8 +782,7 @@ impl<I: 'static> State<I> for ThumpState {
         if let Some(i) = &info {
             slide_away_from_edge(owner, thump, i);
         }
-        let count = THUMP_FRAMES.get(&mut owner.state.params);
-        THUMP_FRAMES.set(&mut owner.state.params, 0);
+        let count = cx.world.thumps_this_frame(owner.id);
         for _ in 0..count {
             owner.state.action_context.clear_event("ThumpFrame");
             owner.zombie.time_thumping += 1;
@@ -853,12 +848,6 @@ impl<I: 'static> State<I> for ThumpState {
         owner.zombie.thump_target = None;
         owner.zombie.thump_timer = 200;
     }
-    fn anim_event(&self, owner: &mut GameCharacter<I>, _cx: &mut StateCx<'_, I>, e: &AnimEventRecord) {
-        if is(e, "ThumpFrame") {
-            let n = THUMP_FRAMES.get(&mut owner.state.params);
-            THUMP_FRAMES.set(&mut owner.state.params, n + 1);
-        }
-    }
 }
 
 /// The `THUMP_FLAG_*` for a thump sound.
@@ -918,22 +907,22 @@ fn slide_away_from_edge<I: 'static>(owner: &mut GameCharacter<I>, t: ThumpTarget
     let (x, y) = (owner.vars.x, owner.vars.y);
     let n = |o: &mut GameCharacter<I>, sy: i32| {
         if y > sy as f32 - dist {
-            o.zombie.next_y = sy as f32 - dist;
+            o.vars.next_y = sy as f32 - dist;
         }
     };
     let s = |o: &mut GameCharacter<I>, sy: i32| {
         if y < sy as f32 + dist {
-            o.zombie.next_y = sy as f32 + dist;
+            o.vars.next_y = sy as f32 + dist;
         }
     };
     let w = |o: &mut GameCharacter<I>, sx: i32| {
         if x > sx as f32 - dist {
-            o.zombie.next_x = sx as f32 - dist;
+            o.vars.next_x = sx as f32 - dist;
         }
     };
     let e = |o: &mut GameCharacter<I>, sx: i32| {
         if x < sx as f32 + dist {
-            o.zombie.next_x = sx as f32 + dist;
+            o.vars.next_x = sx as f32 + dist;
         }
     };
     if solid {
@@ -1334,8 +1323,11 @@ impl<I: 'static> State<I> for ZombieTurnAlerted {
     fn id(&self) -> StateId {
         Self::ID
     }
-    /// `getAnimationPlayer().setTargetAngle(TARGET_ANGLE)` (TODO(anim)).
-    fn enter(&self, _owner: &mut GameCharacter<I>, _cx: &mut StateCx<'_, I>) {}
+    /// `getAnimationPlayer().setTargetAngle(TARGET_ANGLE)`.
+    fn enter(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
+        let angle = TURN_ALERTED_TARGET_ANGLE.get(&mut owner.state.params);
+        cx.world.turn_alerted_enter(owner.id, angle);
+    }
     fn exit(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
         let (x, y, z) = owner.path_target(cx);
         owner.zombie_path_to_sound(x, y, z, cx);

@@ -290,12 +290,6 @@ pub struct ZombieFields {
     /// legacy sprite animation the speed code still scales).
     pub anim_frame_increase: f32,
     pub frame_speed_per_frame: f32,
-    /// `getNextX()`/`getNextY()` (the movement code's).
-    pub next_x: f32,
-    pub next_y: f32,
-    /// `isCollidedThisFrame()`, `isCollidedWithVehicle()` (movement).
-    pub collided_this_frame: bool,
-    pub collided_with_vehicle: bool,
     /// `isBeingSteppedOn()`, `isUnderVehicle()` inputs.
     pub being_stepped_on: bool,
     /// The `turnalertedvalue` direction set by `setTurnAlertedValues`.
@@ -413,10 +407,6 @@ impl Default for ZombieFields {
             sound_state: "Idle",
             anim_frame_increase: 1.0,
             frame_speed_per_frame: 0.0,
-            next_x: 0.0,
-            next_y: 0.0,
-            collided_this_frame: false,
-            collided_with_vehicle: false,
             being_stepped_on: false,
             turn_alerted_value: String::new(),
             clear_target_requested: std::cell::Cell::new(false),

@@ -204,7 +204,7 @@ impl<I: 'static> GameCharacter<I> {
             return false;
         }
         let feeler = square.or_else(|| {
-            let (vx, vy) = set_length(self.zombie.next_x - self.vars.last_x, self.zombie.next_y - self.vars.last_y, 0.5);
+            let (vx, vy) = set_length(self.vars.next_x - self.vars.last_x, self.vars.next_y - self.vars.last_y, 0.5);
             let sq = (fastfloor(self.vars.x + vx), fastfloor(self.vars.y + vy), fastfloor(self.vars.z));
             cx.world.square(sq.0, sq.1, sq.2).map(|_| sq)
         });
@@ -422,6 +422,7 @@ impl<I: 'static> GameCharacter<I> {
         if self.zombie.thump_timer > 0 {
             self.zombie.thump_timer -= 1;
         }
+        self.do_deferred_movement(cx);
         if self.zombie.spot_sound_delay > 0 {
             self.zombie.spot_sound_delay -= 1;
         }
@@ -482,7 +483,7 @@ impl<I: 'static> GameCharacter<I> {
                 // `def.animFrameIncrease` for the legacy idle animation.
                 self.zombie.anim_frame_increase = (0.08 + ctx.rand_next(1000) as f32 / 8000.0) * 0.5;
             }
-        } else if cur != Some(ids::ATTACK) && (self.zombie.next_x != self.vars.x || self.zombie.next_y != self.vars.y) {
+        } else if cur != Some(ids::ATTACK) && (self.vars.next_x != self.vars.x || self.vars.next_y != self.vars.y) {
             if self.zombie.walk_variant_use.is_none() || cur != Some(ids::LUNGE) && cur != Some(ids::LUNGE_NETWORK) {
                 self.zombie.walk_variant_use = Some(self.zombie.walk_variant.clone());
             }
@@ -551,6 +552,33 @@ impl<I: 'static> GameCharacter<I> {
         Ok(())
     }
 
+    /// `IsoGameCharacter.doDeferredMovement()`: the animation's root motion
+    /// becomes the next position (`moveUnmodded`).
+    pub fn do_deferred_movement(&mut self, cx: &mut StateCx<'_, I>) {
+        let climbing = self.is_current_state_id(ids::CLIMB_OVER_FENCE) || self.is_current_state_id(ids::CLIMB_THROUGH_WINDOW);
+        let walk = self.is_current_state_id(ids::WALK_TOWARD);
+        let path2_blocks = self.path.path2.is_some() && !climbing;
+        let walk_toward = (walk && !path2_blocks).then(|| {
+            let (tx, ty, _) = self.path_target_f(cx);
+            (tx - self.vars.x, ty - self.vars.y)
+        });
+        let input = pz_anim::DeferredMovementInput {
+            server: cx.ctx.is_server(),
+            animation_updating_this_frame: true,
+            path2_blocks,
+            walk_toward,
+            grapple_offset: None,
+            deferred_movement_enabled: self.vars.deferred_movement_enabled,
+        };
+        let step = cx.world.deferred_movement_step(self.id, &input);
+        if path2_blocks && walk {
+            self.clear_path2();
+        }
+        if let Some((dx, dy)) = step {
+            self.move_unmodded_step(dx, dy, cx);
+        }
+    }
+
     /// `IsoZombie.postupdate()`: the chasing count, the action context
     /// (with the zombie variable snapshot), balance and `canSeeTarget`.
     pub fn postupdate_zombie(&mut self, cx: &mut StateCx<'_, I>) {
@@ -561,6 +589,9 @@ impl<I: 'static> GameCharacter<I> {
                 }
             }
         }
+        // super.postupdate(): the move and its collisions, then the
+        // action context (`postUpdateAnimating`).
+        self.moving_postupdate(cx);
         self.update_eat_body_target(cx);
         self.refresh_zombie_view(cx);
         self.update_action_context(cx);
@@ -573,6 +604,13 @@ impl<I: 'static> GameCharacter<I> {
         if self.zombie.target_seen_time > 0.0 && !self.zombie.can_see_target {
             self.zombie.target_seen_time = 0.0;
         }
+    }
+
+    /// `IsoZombie.preupdate()` (single player): `followCount = 0`, then the
+    /// next position starts at the position.
+    pub fn preupdate_zombie(&mut self) {
+        self.zombie.follow_count = 0;
+        self.moving_preupdate();
     }
 
     /// `IsoZombie.OnAnimEvent_IsAlmostUp`: also stops sitting.

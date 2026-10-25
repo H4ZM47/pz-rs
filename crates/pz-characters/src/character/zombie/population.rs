@@ -73,8 +73,8 @@ pub fn create_real_zombie_always<I: 'static>(
     z.vars.z = choice.2 as f32;
     z.vars.last_x = z.vars.x;
     z.vars.last_y = z.vars.y;
-    z.zombie.next_x = z.vars.x;
-    z.zombie.next_y = z.vars.y;
+    z.vars.next_x = z.vars.x;
+    z.vars.next_y = z.vars.y;
     if dead {
         let d = IsoDirections::ALL[ctx.rand_next(8) as usize];
         z.set_forward_iso_direction(d);
@@ -97,8 +97,8 @@ impl<I: 'static> GameCharacter<I> {
         self.vars.y = y;
         self.vars.last_x = x;
         self.vars.last_y = y;
-        self.zombie.next_x = x;
-        self.zombie.next_y = y;
+        self.vars.next_x = x;
+        self.vars.next_y = y;
     }
 
     /// `sitAgainstWall`'s effect: position, `setSitAgainstWall(true)` and

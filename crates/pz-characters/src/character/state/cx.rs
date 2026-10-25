@@ -224,6 +224,40 @@ pub trait StateWorld<I> {
     }
     /// `square.putOutCampfire()`.
     fn put_out_campfire(&mut self, _sq: (i32, i32, i32)) {}
+    /// `PolygonalMap2.instance.resolveCollision(chr, nx, ny)`: the obstacle
+    /// clip of the next position (pz-pathfind's `PathHost::resolve_collision`,
+    /// one `CollideWithObstacles` per world, called in game order).
+    fn resolve_collision(&mut self, _chr: &dyn pz_pathfind::mover::CharacterView, nx: f32, ny: f32) -> (f32, f32) {
+        (nx, ny)
+    }
+    /// `square.testCollideAdjacent(mover, dx, dy, dz)` from `from`.
+    fn test_collide_adjacent(&self, _mover: MoverId, _from: (i32, i32, i32), _dx: i32, _dy: i32, _dz: i32) -> bool {
+        false
+    }
+    /// `checkBreakHoppable()`, `checkHitHoppable()` and
+    /// `checkBreakBendableFence(current)` after a square-edge collision.
+    fn collided_with_hoppables(&mut self, _chr: i32, _current: Option<(i32, i32, i32)>) {}
+    /// A zombie path finding toward an unloaded square outside a building
+    /// is virtualized (`ZombiePopulationManager.virtualizeZombie`); true
+    /// when that happened.
+    fn virtualize_if_unloaded(&mut self, _chr: i32, _next_x: i32, _next_y: i32) -> bool {
+        false
+    }
+    // ---- the character's animation (`pz_anim::StateAnimHooks` on the
+    // world's animator and player for `chr`) ----
+
+    /// `ThumpState.execute`'s thump count this frame
+    /// (`StateAnimHooks::thumps_this_frame` with the character's
+    /// `isAnimationUpdatingThisFrame()` and `getAnimationTimeDelta()`).
+    fn thumps_this_frame(&mut self, _chr: i32) -> i32 {
+        0
+    }
+    /// `ZombieTurnAlerted.enter`: `StateAnimHooks::turn_alerted_enter`.
+    fn turn_alerted_enter(&mut self, _chr: i32, _target_angle: f32) {}
+    /// `doDeferredMovement`'s step: `StateAnimHooks::deferred_movement_step`.
+    fn deferred_movement_step(&mut self, _chr: i32, _input: &pz_anim::DeferredMovementInput) -> Option<(f32, f32)> {
+        None
+    }
     /// The non-ghost players standing on `sq` (`getMovingObjects()`).
     fn players_on_square(&self, _sq: (i32, i32, i32)) -> Vec<i32> {
         Vec::new()
