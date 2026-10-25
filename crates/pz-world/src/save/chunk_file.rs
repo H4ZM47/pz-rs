@@ -202,6 +202,14 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
                         .and_then(|d| d.building);
                 }
                 sq.reset_iso_world_region();
+                // `setSquare` (before `gs.load`): `associatedBuilding` from
+                // the meta grid, for every square set. The meta grid's NPE
+                // (a room without a building) fails the load as it does
+                // `LoadFromDiskOrBuffer`.
+                if let Some(meta) = ctx.meta {
+                    sq.associated_building =
+                        meta.get_associated_building_at(sq.x, sq.y).or_else(err)?;
+                }
                 load_square(&mut r, ctx, wv, &mut sq)?;
                 sq.fix_stackable_objects(ctx.sprites);
                 ch.set_square(x, y, z, Some(sq));
@@ -390,17 +398,76 @@ pub fn load_square(
     for (i, s) in sq.seen.iter_mut().enumerate() {
         *s = vis & (1 << i) != 0;
     }
-    // IsoLightSwitch.load: a room light takes the room's state.
-    if let Some(meta) = ctx.meta {
-        let room = sq.room_def(meta);
-        for o in &mut sq.objects {
-            if let (ObjectKind::LightSwitch(s), Some(room)) = (&mut o.kind, room) {
-                if s.light_room {
-                    s.activated = room.lights_active.get();
-                }
-            }
+    // The end of `IsoLightSwitch.load`: a room light takes the room's state
+    // (`room.lightSwitches` is the engine's), any other switch gets its
+    // light source.
+    let room = ctx.meta.and_then(|meta| sq.room_def(meta));
+    let (x, y, z) = (sq.x, sq.y, sq.z);
+    for o in &mut sq.objects {
+        let ObjectKind::LightSwitch(s) = &mut o.kind else {
+            continue;
+        };
+        match room {
+            Some(room) if s.light_room => s.activated = room.lights_active.get(),
+            _ => load_light_source(ctx, o.sprite, s, (x, y, z))?,
         }
     }
+    Ok(())
+}
+
+/// The `else` branch of `IsoLightSwitch.load`: the light's colour (the
+/// sprite's `lightR` / `lightG` / `lightB`, or the saved primary colour of a
+/// switch that can be modified; warm white without them), then
+/// `createLightSource(r, g, b)`. `IsoCell.addLamppost` in `addToWorld` is
+/// the engine's; it reads [`IsoLightSwitch::lights`].
+fn load_light_source(
+    ctx: &SaveCtx<'_>,
+    sprite: Option<crate::sprite::SpriteIdx>,
+    s: &mut crate::objects::IsoLightSwitch,
+    (x, y, z): (i32, i32, i32),
+) -> SaveResult<()> {
+    let m = ctx.sprites;
+    let prop = |name: &str| sprite.and_then(|sp| m.prop(&m.sprites[sp], name));
+    let float = |name: &str| -> SaveResult<f32> {
+        let v = prop(name).ok_or_else(|| super::io::SaveError("NullPointerException".into()))?;
+        crate::java::parse_float(v)
+            .ok_or_else(|| super::io::SaveError(format!("NumberFormatException: {v}")))
+    };
+    let (mut r, mut g, mut b) = (0.9, 0.8, 0.7);
+    if prop("lightR").is_some() {
+        if s.can_be_modified {
+            (r, g, b) = (s.primary_r, s.primary_g, s.primary_b);
+        } else {
+            r = float("lightR")? / 255.0;
+            g = float("lightG")? / 255.0;
+            b = float("lightB")? / 255.0;
+            (s.primary_r, s.primary_g, s.primary_b) = (r, g, b);
+        }
+    }
+    // `createLightSource(r, g, b)`.
+    let Some(sp) = sprite else {
+        return err("NullPointerException: IsoLightSwitch.createLightSource with no sprite");
+    };
+    let mut radius = 8;
+    if let Some(v) = m.prop(&m.sprites[sp], "LightRadius") {
+        let n = crate::java::parse_int(v)
+            .ok_or_else(|| super::io::SaveError(format!("NumberFormatException: {v}")))?;
+        if n > 0 {
+            radius = n;
+        }
+    }
+    s.lights.clear();
+    s.lights.push(crate::objects::IsoLightSource {
+        x,
+        y,
+        z,
+        r,
+        g,
+        b,
+        radius,
+        active: s.activated,
+        hydro_powered: true,
+    });
     Ok(())
 }
 

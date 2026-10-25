@@ -12,7 +12,7 @@ use super::*;
 use crate::chunk::{FloorBloodSplat, IsoChunk, IsoGridSquare};
 use crate::erosion_data::ErosionSquareData;
 use crate::objects::*;
-use crate::sprite::test_tables;
+use crate::sprite::{test_tables, PropertyValueMap};
 
 fn sprites() -> IsoSpriteManager {
     let mut m = IsoSpriteManager::new(test_tables());
@@ -24,6 +24,7 @@ fn sprites() -> IsoSpriteManager {
         "tree_0",
         "overlay_blood_0",
         "wall_0",
+        "carpentry_01_8",
     ]
     .iter()
     .enumerate()
@@ -601,4 +602,228 @@ fn reads_init_factory_calls() {
             .to_text(),
         o.to_text()
     );
+}
+
+#[test]
+fn barricades_choose_sprite() {
+    let b = |dir: i8, planks: usize, metal: i32, bars: i32| {
+        let mut plank_health = [0; 4];
+        plank_health[..planks].fill(1000);
+        IsoBarricade {
+            dir,
+            plank_health,
+            metal_health: metal,
+            metal_bar_health: bars,
+        }
+        .sprite_name()
+    };
+    // N, W, S, E with one to four planks.
+    assert_eq!(b(0, 1, 0, 0).as_deref(), Some("carpentry_01_9"));
+    assert_eq!(b(2, 2, 0, 0).as_deref(), Some("carpentry_01_10"));
+    assert_eq!(b(4, 3, 0, 0).as_deref(), Some("carpentry_01_5"));
+    assert_eq!(b(6, 4, 0, 0).as_deref(), Some("carpentry_01_6"));
+    // The metal sheet wins over planks; at 2500 health it is damaged.
+    assert_eq!(
+        b(2, 2, 5000, 0).as_deref(),
+        Some("constructedobjects_01_24")
+    );
+    assert_eq!(
+        b(4, 0, 2500, 0).as_deref(),
+        Some("constructedobjects_01_31")
+    );
+    assert_eq!(b(0, 0, 0, 1).as_deref(), Some("constructedobjects_01_53"));
+    assert_eq!(b(6, 3, 0, 1).as_deref(), Some("constructedobjects_01_52"));
+    assert_eq!(b(6, 0, 0, 0).as_deref(), Some("media/ui/missing-tile.png"));
+    // Diagonals have no tile.
+    assert_eq!(b(1, 1, 0, 0), None);
+    assert_eq!(b(5, 0, 0, 1), None);
+    assert_eq!(b(3, 0, 0, 0).as_deref(), Some("media/ui/missing-tile.png"));
+    // The sample chunk's one-plank west barricade loads with its tile.
+    let m = sprites();
+    let t = SaveTables::for_tests();
+    let s = SaveSettings {
+        world_age_hours: 50.0,
+        ..Default::default()
+    };
+    let c = ctx(&m, &t, &s, &AllItems);
+    let bytes = save_chunk(&sample_chunk(&m, &t), &c).unwrap();
+    let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
+    let sq1 = back.get_grid_square(1, 0, 0).unwrap();
+    let bar = sq1
+        .objects
+        .iter()
+        .find(|o| matches!(o.kind, ObjectKind::Barricade(_)))
+        .unwrap();
+    assert_eq!(bar.sprite, Some(m.named_map["carpentry_01_8"]));
+    // The sprite is not saved: the bytes come back the same.
+    assert_eq!(save_chunk(&back, &c).unwrap(), bytes);
+}
+
+#[test]
+fn world_item_removal_list() {
+    let mut s = SaveSettings::default();
+    s.set_world_item_removal_list("Base.Hat, Base.Glasses ,\tBase.Wo rm,");
+    assert_eq!(
+        s.world_item_removal_list,
+        ["Base.Hat", "Base.Glasses", "Base.Worm"]
+    );
+    let mut e = SaveSettings::default();
+    e.set_world_item_removal_list("");
+    assert_eq!(e.world_item_removal_list, [""]);
+    e.set_world_item_removal_list(" , ");
+    assert!(e.world_item_removal_list.is_empty());
+    assert!(s.removal_list_contains("Base.Worm"));
+    assert!(!s.removal_list_contains("Base.Wo rm"));
+}
+
+/// A sprite manager whose alias map knows the light properties.
+fn light_sprites() -> IsoSpriteManager {
+    let mut map = PropertyValueMap::default();
+    // Keys `SetCustomPropertyValues` expects.
+    for k in [
+        "WindowN",
+        "WindowW",
+        "DoorWallN",
+        "DoorWallW",
+        "WallSE",
+        "tree",
+        "ItemHeight",
+        "Surface",
+    ] {
+        map.entry(k);
+    }
+    let props: [(&str, &[&str]); 5] = [
+        ("lightR", &["255", "x"]),
+        ("lightG", &["0"]),
+        ("lightB", &["51"]),
+        ("LightRadius", &["3", "0"]),
+        ("streetlight", &[""]),
+    ];
+    for (k, vs) in props {
+        let e = map.entry(k);
+        for v in vs {
+            e.push(v.to_string());
+        }
+    }
+    let mut m = IsoSpriteManager::new(test_tables());
+    m.generate_alias_map(map, &[]).unwrap();
+    let specs: [(&str, &[(&str, &str)]); 5] = [
+        ("floor_0", &[]),
+        ("switch_0", &[]),
+        (
+            "lamp_0",
+            &[("lightR", "255"), ("lightG", "0"), ("lightB", "51")],
+        ),
+        (
+            "lamp_1",
+            &[
+                ("lightR", "255"),
+                ("lightG", "0"),
+                ("lightB", "51"),
+                ("LightRadius", "3"),
+                ("streetlight", ""),
+            ],
+        ),
+        (
+            "bad_0",
+            &[("lightR", "x"), ("lightG", "0"), ("lightB", "51")],
+        ),
+    ];
+    for (i, (n, ps)) in specs.iter().enumerate() {
+        let s = m.add_sprite(n, 100 + i as i32);
+        m.sprites[s].name = Some(n.to_string());
+        let (tables, alias) = (m.tables.clone(), m.alias.clone());
+        for (k, v) in *ps {
+            m.sprites[s].properties.set(&tables, &alias, k, v, false);
+        }
+    }
+    m
+}
+
+#[test]
+fn light_switch_load_creates_light() {
+    let m = light_sprites();
+    let t = SaveTables::for_tests();
+    let s = SaveSettings::default();
+    let c = ctx(&m, &t, &s, &AllItems);
+    let mut ch = IsoChunk::new(10, 20);
+    for x in 0..8 {
+        for y in 0..8 {
+            ch.set_square(x, y, 0, Some(IsoGridSquare::new(80 + x, 160 + y, 0)));
+        }
+    }
+    let sq = ch.get_grid_square_mut(2, 3, 0).unwrap();
+    let switches = [
+        // A room switch with no room (no meta grid): warm white, radius 8.
+        ("switch_0", true, false, true),
+        // Sprite colours, the default radius.
+        ("lamp_0", false, false, false),
+        // A modifiable switch keeps its saved colour; LightRadius 3.
+        ("lamp_1", false, true, true),
+    ];
+    for (n, light_room, can_be_modified, activated) in switches {
+        let sw = IsoLightSwitch {
+            light_room,
+            can_be_modified,
+            activated,
+            primary_r: 0.25,
+            primary_g: 0.5,
+            primary_b: 0.75,
+            ..Default::default()
+        };
+        let id = sq.new_object_id();
+        sq.objects.push(IsoObject::new(
+            id,
+            ObjectKind::LightSwitch(sw),
+            Some(m.named_map[n]),
+        ));
+    }
+    let bytes = save_chunk(&ch, &c).unwrap();
+    let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
+    let sq = back.get_grid_square(2, 3, 0).unwrap();
+    let sw = |i: usize| {
+        let ObjectKind::LightSwitch(s) = &sq.objects[i].kind else {
+            panic!()
+        };
+        s
+    };
+    let l = &sw(0).lights;
+    assert_eq!(l.len(), 1);
+    assert_eq!((l[0].x, l[0].y, l[0].z), (82, 163, 0));
+    assert_eq!((l[0].r, l[0].g, l[0].b, l[0].radius), (0.9, 0.8, 0.7, 8));
+    assert!(l[0].active && l[0].hydro_powered);
+    // `primaryR/G/B` take the sprite colour of a switch that cannot be
+    // modified.
+    let s1 = sw(1);
+    assert_eq!((s1.primary_r, s1.primary_g, s1.primary_b), (1.0, 0.0, 0.2));
+    let l = &s1.lights[0];
+    assert_eq!(
+        (l.r, l.g, l.b, l.radius, l.active),
+        (1.0, 0.0, 0.2, 8, false)
+    );
+    let s2 = sw(2);
+    assert!(s2.street_light);
+    let l = &s2.lights[0];
+    assert_eq!((l.r, l.g, l.b, l.radius), (0.25, 0.5, 0.75, 3));
+    // Lights are not saved.
+    assert_eq!(save_chunk(&back, &c).unwrap(), bytes);
+    // A colour that does not parse fails the load, as upstream.
+    let mut ch2 = IsoChunk::new(10, 20);
+    for x in 0..8 {
+        for y in 0..8 {
+            ch2.set_square(x, y, 0, Some(IsoGridSquare::new(80 + x, 160 + y, 0)));
+        }
+    }
+    let sq = ch2.get_grid_square_mut(0, 0, 0).unwrap();
+    let id = sq.new_object_id();
+    sq.objects.push(IsoObject::new(
+        id,
+        ObjectKind::LightSwitch(IsoLightSwitch::default()),
+        Some(m.named_map["bad_0"]),
+    ));
+    let bytes = save_chunk(&ch2, &c).unwrap();
+    let Err(e) = load_chunk(&bytes, 10, 20, &c) else {
+        panic!("loaded")
+    };
+    assert!(e.0.starts_with("NumberFormatException"), "{}", e.0);
 }
