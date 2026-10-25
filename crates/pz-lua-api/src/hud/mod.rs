@@ -18,6 +18,7 @@ pub mod radial_menu;
 pub mod radial_progress_bar;
 pub mod scroll_bar;
 pub mod speed_controls;
+pub mod text_draw;
 pub mod tooltip;
 pub mod vehicle_gauge;
 
@@ -314,6 +315,7 @@ pub fn register(thread: &mut Thread) {
     debug_console::register(thread);
     register_radial(thread);
     register_radial_menu(thread);
+    text_draw::register(thread);
     register_vehicle_gauge(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
@@ -654,6 +656,19 @@ pub(crate) mod test_util {
     /// As [`install_textures_ex`] with the texture's atlas rectangle
     /// (`xStart`, `yStart`, `xEnd`, `yEnd`).
     pub fn install_textures_uv(sizes: &[TexSpec]) {
+        install_textures_impl(sizes, true);
+    }
+
+    /// As [`install_textures_ex`], but any other name is missing (`null`).
+    pub fn install_textures_only(sizes: &[(String, i32, i32, f32, f32)]) {
+        let v: Vec<_> = sizes
+            .iter()
+            .map(|(n, w, h, x, y)| (n.clone(), *w, *h, *x, *y, [0.0, 0.0, 1.0, 1.0]))
+            .collect();
+        install_textures_impl(&v, false);
+    }
+
+    fn install_textures_impl(sizes: &[TexSpec], others: bool) {
         type Spec = (i32, i32, f32, f32, [f32; 4]);
         let sizes: HashMap<String, Spec> = sizes
             .iter()
@@ -664,6 +679,9 @@ pub(crate) mod test_util {
         pz_render::install_shared_texture_loader(move |name| {
             if let Some(t) = cache.borrow().get(name) {
                 return Some(t.clone());
+            }
+            if !others && !sizes.contains_key(name) {
+                return None;
             }
             let (w, h, ox, oy, uv) = sizes
                 .get(name)
