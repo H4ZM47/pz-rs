@@ -128,7 +128,7 @@ pub struct FireAnim {
 impl FireAnim {
     /// `AttachAnim`: `random_frame` starts at `Rand.Next(0, frameCount)`.
     #[allow(clippy::too_many_arguments)]
-    fn attach(
+    pub(crate) fn attach(
         kind: AnimKind,
         anim: u8,
         frame_increase: f32,

@@ -11,6 +11,7 @@ use crate::chunk::ChunkTexture;
 use crate::color::ColorInfo;
 use crate::texd::{self, FloorShaper, TexDraw, WallPart, WallShaper};
 use crate::seam::{SeamModifier, SeamTile};
+use crate::hearth::HearthRender;
 use crate::world::{DepthMaps, DepthPreset, ObjectKind, RenderObject, SpriteInfo};
 use crate::Camera;
 
@@ -170,6 +171,10 @@ fn setup_tile_depth(ctx: &SpriteCtx<'_>, d: &SpriteDraw<'_>) -> Option<Texture> 
             ObjectKind::Fire if !d.main => return ctx.depth_maps.billboard(),
             _ => {}
         }
+        // A barbecue's smoke: the plain shader.
+        if !d.main && obj.sprite.is_some() && matches!(obj.hearth, Some(HearthRender::Barbecue)) {
+            return None;
+        }
     }
     let s = d.sprite;
     let f = &s.flags;
@@ -194,6 +199,12 @@ fn setup_tile_depth(ctx: &SpriteCtx<'_>, d: &SpriteDraw<'_>) -> Option<Texture> 
     }
     if f.wall_overlay && f.attached_n {
         return wall_depth(ctx, s, Dir::N);
+    }
+    // A fireplace's flames and logs take the fireplace's depth texture.
+    if let Some(obj) = d.obj.filter(|_| !d.main) {
+        if let (Some(HearthRender::Fireplace { uses_our_depth: true, .. }), Some(t)) = (obj.hearth, obj.sprite.as_ref().and_then(|s| s.depth_texture.as_ref())) {
+            return Some(t.clone());
+        }
     }
     ctx.depth_maps.default_texture()
 }
@@ -294,7 +305,13 @@ fn render_inst(ctx: &mut SpriteCtx<'_>, d: &SpriteDraw<'_>, inst_scale: Option<f
             // Fire animations take the billboard's depth half a square
             // back (`startTileDepthShader(obj, x - 0.5, y - 0.5, …)`).
             let back = if !d.main && matches!(d.obj.map(|o| o.kind), Some(ObjectKind::Fire)) { 0.5 } else { 0.0 };
-            let (front, far) = tile_depths(ctx, d.x - back, d.y - back, d.z, z2);
+            let (mut front, mut far) = tile_depths(ctx, d.x - back, d.y - back, d.z, z2);
+            // In the per-frame passes a fireplace's attached sprites sit
+            // just in front of the fireplace.
+            if ctx.chunk.is_none() && !d.main && matches!(d.obj.and_then(|o| o.hearth), Some(HearthRender::Fireplace { .. })) {
+                front -= 5.0e-5;
+                far -= 5.0e-5;
+            }
             // TileDepthModifier.setSpriteScale(def.scaleX, def.scaleY),
             // before performRenderFrame adjusts the instance.
             let sc = inst_scale.unwrap_or_else(|| instance_scale(tex));

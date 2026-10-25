@@ -20,6 +20,7 @@ pub mod color;
 pub mod cutaways;
 pub mod fire;
 pub mod frame;
+pub mod hearth;
 pub mod models;
 pub mod obscuring;
 pub mod occlusion;
