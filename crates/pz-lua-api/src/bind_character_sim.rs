@@ -19,7 +19,14 @@
 //! `Nutrition`, `Thermoregulator` and `Fitness` are in
 //! [`crate::bind_nutrition`].
 //!
-//! Not exposed yet: `getCharacterTraits` (the character's `CharacterTraits`
+//! The inventory (`getInventory`) is the character's shared container
+//! ([`pz_characters::character::CharacterItems::inventory`]); the hand
+//! items are held by item id, so a hand item that is not in the inventory
+//! reads back as `nil` (the original holds any object).
+//!
+//! Not exposed yet: `getWornItems`, `getWornItem`, `setWornItem` and the
+//! `getClothingItem_*` getters (the character's worn items are ids with
+//! locations, not a `WornItems` object), `setInventory`, `getCharacterTraits` (the character's `CharacterTraits`
 //! is not shared with the Lua object of that class), `Stats.load/save`,
 //! `CharacterStat.REGISTRY` and `ORDERED_STATS`, `XP.load/save`.
 //! TODO(saves).
@@ -246,6 +253,16 @@ impl LuaObject for CharacterObject {
             CharacterKind::Animal => ISO_ANIMAL_CLASS,
         }
     }
+    fn super_classes(&self) -> &[&'static str] {
+        const LIVING: &str = "zombie.characters.IsoLivingCharacter";
+        const MOVING: &str = "zombie.iso.IsoMovingObject";
+        const OBJECT: &str = "zombie.iso.IsoObject";
+        match self.0.borrow().kind {
+            CharacterKind::Player | CharacterKind::Survivor => &[LIVING, ISO_GAME_CHARACTER_CLASS, MOVING, OBJECT],
+            CharacterKind::Zombie => &[ISO_GAME_CHARACTER_CLASS, MOVING, OBJECT],
+            CharacterKind::Animal => &[ISO_PLAYER_CLASS, LIVING, ISO_GAME_CHARACTER_CLASS, MOVING, OBJECT],
+        }
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -268,9 +285,106 @@ fn canonical(id: (Handle, usize, usize), make: impl FnOnce() -> Value) -> Value 
     HANDLES.with(|h| h.borrow_mut().entry(id).or_insert_with(make).clone())
 }
 
-/// The canonical Lua object of `chr`.
+/// The canonical Lua object of `chr`. Making it makes it the parent of
+/// the character's inventory (`inventory.parent = this`), so the
+/// container's Lua methods call back into this object.
 pub fn character_value(chr: &LuaGameCharacterRef) -> Value {
-    canonical((Handle::Character, Rc::as_ptr(chr) as usize, 0), || Value::Object(Rc::new(CharacterObject(chr.clone()))))
+    canonical((Handle::Character, Rc::as_ptr(chr) as usize, 0), || {
+        let v = Value::Object(Rc::new(CharacterObject(chr.clone())));
+        let inv = chr.borrow().items.inventory.clone();
+        crate::bind_item_container::set_parent(&inv, v.clone());
+        v
+    })
+}
+
+/// An `InventoryItem` argument as its id (`null` is `None`).
+fn opt_item_id(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<i32>> {
+    if c.arg(i).is_nil() {
+        return Ok(None);
+    }
+    Ok(Some(crate::bind_items::item_arg(c, i)?.borrow().id))
+}
+
+/// Fires `event(chr, item)` (`OnEquipPrimary`/`OnEquipSecondary`).
+fn fire_equip(c: &mut NativeCall<'_>, event: &str, chr: &Value, item: Value) {
+    if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
+        sink(c.thread, event, &[chr.clone(), item]);
+    }
+}
+
+/// The character's inventory members: `getInventory`, the hand items,
+/// `removeFromHands`, `isUnlimitedCarry` and `IsoPlayer.isGhostMode`
+/// (what `ItemContainer` calls on its character parent).
+fn register_inventory(thread: &mut Thread, sm: &Rc<ScriptManager>) {
+    let b = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
+    b.method("getInventory", |c| {
+        let chr = chr_of(c)?;
+        let inv = chr.borrow().items.inventory.clone();
+        Ok(c.push(crate::bind_item_container::container_value(&inv)))
+    });
+    b.method("getPrimaryHandItem", |c| {
+        let i = chr_of(c)?.borrow().items.primary_hand_item();
+        Ok(c.push(i.as_ref().map_or(Value::Nil, crate::bind_items::item_value)))
+    });
+    b.method("getSecondaryHandItem", |c| {
+        let i = chr_of(c)?.borrow().items.secondary_hand_item();
+        Ok(c.push(i.as_ref().map_or(Value::Nil, crate::bind_items::item_value)))
+    });
+    let s = sm.clone();
+    b.method("setPrimaryHandItem", move |c| {
+        let chr = chr_of(c)?;
+        let id = opt_item_id(c, 1)?;
+        if chr.borrow_mut().set_primary_hand_item(&s, id) {
+            let (v, item) = (character_value(&chr), c.arg(1));
+            fire_equip(c, "OnEquipPrimary", &v, item);
+        }
+        Ok(0)
+    });
+    let s = sm.clone();
+    b.method("setSecondaryHandItem", move |c| {
+        let chr = chr_of(c)?;
+        let id = opt_item_id(c, 1)?;
+        if chr.borrow_mut().set_secondary_hand_item(&s, id) {
+            let (v, item) = (character_value(&chr), c.arg(1));
+            fire_equip(c, "OnEquipSecondary", &v, item);
+        }
+        Ok(0)
+    });
+    b.method("isPrimaryHandItem", |c| {
+        let id = opt_item_id(c, 1)?;
+        let v = id.is_some() && chr_of(c)?.borrow().items.primary_hand_item == id;
+        Ok(c.push(v))
+    });
+    b.method("isSecondaryHandItem", |c| {
+        let id = opt_item_id(c, 1)?;
+        let v = id.is_some() && chr_of(c)?.borrow().items.secondary_hand_item == id;
+        Ok(c.push(v))
+    });
+    let s = sm.clone();
+    b.method("removeFromHands", move |c| {
+        let chr = chr_of(c)?;
+        if let Some(id) = opt_item_id(c, 1)? {
+            let (primary, secondary) = chr.borrow_mut().remove_from_hands(&s, id);
+            let v = character_value(&chr);
+            if primary {
+                fire_equip(c, "OnEquipPrimary", &v, Value::Nil);
+            }
+            if secondary {
+                fire_equip(c, "OnEquipSecondary", &v, Value::Nil);
+            }
+        }
+        Ok(c.push(true))
+    });
+    b.method("isUnlimitedCarry", |c| {
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        let v = chr_of(c)?.borrow().is_unlimited_carry(&*ctx);
+        Ok(c.push(v))
+    });
+    expose_class(thread, ISO_PLAYER_CLASS, Some(ISO_GAME_CHARACTER_CLASS)).method("isGhostMode", |c| {
+        let ctx = CONTEXT.with(|c| c.borrow().clone());
+        let v = chr_of(c)?.borrow().is_ghost_mode(&*ctx);
+        Ok(c.push(v))
+    });
 }
 
 /// A character's `Stats`, or a free-standing `new Stats()`.
@@ -435,6 +549,7 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
     register_moodles(thread, &sm, &chars);
     register_xp(thread, &sm, &chars);
     register_character(thread, &sm, &chars);
+    register_inventory(thread, &sm);
 }
 
 /// `register` on the shared ScriptManager and Characters.
@@ -1164,12 +1279,17 @@ mod tests {
 
     /// Invented stats, moodle types, traits and perks.
     fn setup() -> (Thread, LuaGameCharacterRef, Rc<RefCell<Vec<String>>>) {
+        setup_with(ScriptManager::new())
+    }
+
+    fn setup_with(sm: ScriptManager) -> (Thread, LuaGameCharacterRef, Rc<RefCell<Vec<String>>>) {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end")
             .unwrap();
         crate::bind_java_util::register(&mut t);
-        let sm = Rc::new(ScriptManager::new());
+        let sm = Rc::new(sm);
+        crate::bind_registry::install_script_manager(sm.clone());
         {
             let mut st = sm.statics.items.borrow_mut();
             for (reg, field, id) in [
@@ -1239,6 +1359,75 @@ mod tests {
             l.borrow_mut().push(format!("{name} {}", rest.join(" ")));
         }));
         (t, chr, log)
+    }
+
+    /// A script manager with an invented item, loaded from a unique temp
+    /// dir.
+    fn item_scripts() -> ScriptManager {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("pz-bind-character-inv-{}-{n}", std::process::id()));
+        let p = dir.join("media/scripts/test.txt");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "module Base { item TestBrick { DisplayName = Test Brick, ItemType = base:normal, Weight = 2.5, } }").unwrap();
+        let sm = ScriptManager::new();
+        sm.registries.get("item_type").unwrap().borrow_mut().register_id("base:normal", true).unwrap();
+        sm.statics.items.borrow_mut().constants.insert("item_type", "NORMAL", "base:normal");
+        sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        sm
+    }
+
+    #[test]
+    fn survivor_inventory_is_shared_with_lua() {
+        let (mut t, player, log) = setup_with(item_scripts());
+        let mut env = crate::bind_items::GameItemEnv::new(None);
+        env.rand = Some(pz_core::random::Rand::new(7));
+        crate::bind_items::install_item_env(Rc::new(env));
+        crate::bind_items::register(&mut t);
+        crate::bind_item_container::register(&mut t);
+        // `getInventoryWeight` (the item scripts are all it reads).
+        crate::bind_body::register(&mut t, shared_script_manager(), Rc::default());
+        let desc = player.borrow().descriptor.clone().unwrap();
+        t.globals().set_str("desc", survivor_desc_value(&desc));
+        run(
+            &mut t,
+            r#"
+            s = IsoSurvivor.new(desc, nil, 0, 0, 0)
+            local inv = s:getInventory()
+            assert(inv == s:getInventory() and inv:getParent() == s and inv:getCharacter() == s)
+            assert(inv:isExplored())
+            brick = inv:AddItem("Base.TestBrick")
+            assert(brick ~= nil and brick:getContainer() == inv and inv:getItems():size() == 1)
+            assert(inv:getCapacityWeight() == 2.5 and s:getInventoryWeight() == 2.5)
+            s:setPrimaryHandItem(brick)
+            assert(s:getPrimaryHandItem() == brick and s:isPrimaryHandItem(brick))
+            assert(s:getSecondaryHandItem() == nil)
+            heldWeight = s:getInventoryWeight()
+            "#,
+        )
+        .unwrap();
+        // The Rust side sees the same container and item.
+        let Value::Object(o) = t.globals().get_str("s") else { panic!("no survivor") };
+        let chr = o.as_any().downcast_ref::<CharacterObject>().unwrap().0.clone();
+        let (id, weight) = {
+            let c = chr.borrow();
+            let i = c.items.primary_hand_item().expect("held brick");
+            let ctx = current_sim_context();
+            let i = i.borrow();
+            (i.id, c.inventory_weight(&shared_script_manager(), &*ctx))
+        };
+        assert_eq!(chr.borrow().items.inventory_items().len(), 1);
+        // Held: `getEquippedWeight`, the same from Lua and Rust.
+        let mult = current_sim_context().zomboid_globals().equipped_or_worn_encumbrance_multiplier as f32;
+        assert_eq!(weight, 2.5 * mult);
+        assert!(t.globals().get_str("heldWeight").raw_equals(&float_value(weight)));
+        // Removing the item from Lua takes it out of the hand (`removeFromHands`).
+        run(&mut t, "s:getInventory():Remove(brick) assert(s:getPrimaryHandItem() == nil and brick:getContainer() == nil)")
+            .unwrap();
+        assert!(chr.borrow().items.item(id).is_none() && chr.borrow().items.primary_hand_item.is_none());
+        assert!(log.borrow().iter().any(|l| l.starts_with("OnEquipPrimary")));
+        assert_eq!(log.borrow().iter().filter(|l| l.starts_with("OnEquipPrimary")).count(), 2);
     }
 
     #[test]

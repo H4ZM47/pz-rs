@@ -148,7 +148,7 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     fn primary_weapon(&self, sm: &pz_scripts::ScriptManager) -> Option<WeaponStats> {
-        self.items.primary_hand_item().and_then(|i| WeaponStats::of(sm, i))
+        self.items.primary_hand_item().and_then(|i| WeaponStats::of(sm, &i.borrow()))
     }
 
     fn perk_lvl(&self, chars: &crate::Characters, f: &str) -> i32 {
@@ -163,11 +163,11 @@ impl<I: 'static> GameCharacter<I> {
     pub fn calculate_combat_speed(&self, sm: &pz_scripts::ScriptManager, chars: &crate::Characters, ctx: &dyn crate::character::SimContext) -> ScriptResult<f32> {
         let mut s = 0.8f32;
         let weapon = self.primary_weapon(sm);
-        if let Some(item) = self.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(i)) {
-            s *= crate::character::items::script_item(sm, item).map_or(1.0, |i| i.borrow().base_speed);
+        if let Some(item) = self.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(&i.borrow())) {
+            s *= crate::character::items::script_item(sm, &item.borrow()).map_or(1.0, |i| i.borrow().base_speed);
         }
         let wt = self.weapon_type_of(sm);
-        let secondary = self.items.secondary_hand_item().map(|i| i.id);
+        let secondary = self.items.secondary_hand_item().map(|i| i.borrow().id);
         if let Some(w) = &weapon {
             if w.two_hand && secondary != Some(w.id) {
                 s *= 0.77;
@@ -180,7 +180,7 @@ impl<I: 'static> GameCharacter<I> {
         s -= self.moodle_lv(sm, "HEAVY_LOAD") as f32 * 0.07;
         s += self.weapon_level(sm, chars) as f32 * 0.03;
         s += self.perk_lvl(chars, "Fitness") as f32 * 0.02;
-        if self.items.secondary_hand_item().is_some_and(|i| matches!(i.kind, pz_inventory::ItemKind::Container(_))) {
+        if self.items.secondary_hand_item().is_some_and(|i| matches!(i.borrow().kind, pz_inventory::ItemKind::Container(_))) {
             s *= 0.95;
         }
         s *= ctx.rand_next_float(1.1, 1.2);
@@ -223,7 +223,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoPlayer.DoAttack(chargeDelta)`.
     pub fn attempt_attack(&mut self, charge_delta: f32, out: &mut PlayerUpdate, cx: &mut StateCx<'_, I>) -> ScriptResult<bool> {
         let _ = charge_delta;
-        if self.items.primary_hand_item().is_some_and(crate::character::items::is_hand_weapon) {
+        if self.items.primary_hand_item().is_some_and(|i| crate::character::items::is_hand_weapon(&i.borrow())) {
             self.calculate_attack_vars(cx);
             self.vars.do_shove = self.attack_vars.do_shove;
             // TODO(grappling): attackVars.doGrapple.
@@ -299,7 +299,7 @@ impl<I: 'static> GameCharacter<I> {
         self.vars.target_on_ground = self.attack_vars.target_on_ground;
         let firearm = weapon_id
             .and_then(|id| self.items.item(id))
-            .and_then(|i| crate::character::firearm::FirearmStats::of(sm, i));
+            .and_then(|i| crate::character::firearm::FirearmStats::of(sm, &i.borrow()));
         if let Some(f) = firearm.as_ref().filter(|_| wt.is_ranged()) {
             self.vars.recoil_delay = self.firearm_recoil_delay(chars, f) as f32;
             // TODO(network): PlayerEmptyShot for an empty magazine.
@@ -357,7 +357,7 @@ impl<I: 'static> GameCharacter<I> {
         let dist = crate::character::zombie::math::distance_to(t.vars.x, t.vars.y, self.vars.x, self.vars.y);
         self.set_var_float("TargetDist", dist);
         let mut crit = self.calculate_crit_chance_in(sm, chars, ctx, Some(&*cx.world), t) as f32;
-        let fake_spear = |c: &Self| c.items.primary_hand_item().is_none_or(|i| crate::character::items::has_tag(sm, i, "FAKE_SPEAR"));
+        let fake_spear = |c: &Self| c.items.primary_hand_item().is_none_or(|i| crate::character::items::has_tag(sm, &i.borrow(), "FAKE_SPEAR"));
         if !self.attack_vars.aim_at_floor && dist > 1.25 && wt == WeaponType::Spear {
             // TODO(world): getClosestTo(target) (no other character is closer).
             self.vars.attack_type = "overhead".into();
@@ -373,11 +373,11 @@ impl<I: 'static> GameCharacter<I> {
             }
         }
         if t.is_player() && wt.is_ranged() && !self.is_do_hand_to_hand_attack() {
-            if let Some(f) = self.attack_vars.weapon.and_then(|id| self.items.item(id)).and_then(|i| crate::character::firearm::FirearmStats::of(sm, i)) {
+            if let Some(f) = self.attack_vars.weapon.and_then(|id| self.items.item(id)).and_then(|i| crate::character::firearm::FirearmStats::of(sm, &i.borrow())) {
                 crit = f.stop_power * (1.0 + self.perk_lvl(chars, "Aiming") as f32 / 15.0);
             }
         }
-        let no_crit = self.items.primary_hand_item().is_some_and(|i| crate::character::items::has_tag(sm, i, "NO_CRITICALS"));
+        let no_crit = self.items.primary_hand_item().is_some_and(|i| crate::character::items::has_tag(sm, &i.borrow(), "NO_CRITICALS"));
         if no_crit {
             crit = 0.0;
         }
@@ -409,12 +409,12 @@ impl<I: 'static> GameCharacter<I> {
     pub fn is_weapon_ready(&self, cx: &StateCx<'_, I>) -> bool {
         // IsoLivingCharacter.isPrimaryHandModelReady: the bare hands (no
         // useHandWeapon) are always ready.
-        let bare = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_none_or(|i| i.type_.as_str() == "BareHands");
+        let bare = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_none_or(|i| i.borrow().type_.as_str() == "BareHands");
         let ready = bare || cx.world.primary_hand_model_ready(self.id);
         if !ready {
             return false;
         }
-        let aimed = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_some_and(|i| i.is_aimed_firearm());
+        let aimed = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_some_and(|i| i.borrow().is_aimed_firearm());
         !aimed || cx.world.muzzle_attachment(self.id).is_some()
     }
 
@@ -432,12 +432,14 @@ impl<I: 'static> GameCharacter<I> {
         }
         let sm = cx.sm;
         if let Some(item) = self.items.primary_hand_item() {
+            let item = &*item.borrow();
             if crate::character::items::is_hand_weapon(item) && WeaponStats::of(sm, item).is_some_and(|w| !w.swing_anim.is_empty()) {
                 self.vars.use_hand_weapon = Some(item.id);
             }
         }
         let Some(id) = self.vars.use_hand_weapon else { return true };
         let Some(item) = self.items.item(id) else { return true };
+        let item = &*item.borrow();
         if item.condition <= 0 {
             // TODO(items): drop the broken weapon from the hands.
             self.vars.use_hand_weapon = None;
@@ -453,7 +455,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `AttemptAttack`'s `bareHands` test: no hand weapon in the primary
     /// hand.
     pub fn primary_is_bare_hands(&self) -> bool {
-        !self.items.primary_hand_item().is_some_and(crate::character::items::is_hand_weapon)
+        !self.items.primary_hand_item().is_some_and(|i| crate::character::items::is_hand_weapon(&i.borrow()))
     }
 
 }

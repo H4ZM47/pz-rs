@@ -966,6 +966,7 @@ impl Thermoregulator {
         let head = self.nodes.iter().find(|n| n.body_part_type == "Head").map(|n| n.body_part_index);
         let n = self.nodes.len();
         for (i, item) in chr.items.item_visuals().into_iter().enumerate() {
+            let item = &*item.borrow();
             if !is_clothing(item) || !(item.get_insulation() > 0.0) && !(item.get_windresistance() > 0.0) {
                 continue;
             }
@@ -1019,6 +1020,8 @@ impl Thermoregulator {
         let max_met = self.met("MAX")?;
         let mut nodes_total_heat = 0.0f32;
         let worn = chr.items.item_visuals();
+        let worn: Vec<_> = worn.iter().map(|i| i.borrow()).collect();
+        let worn: Vec<&InventoryItem> = worn.iter().map(|i| &**i).collect();
         for node in &mut self.nodes {
             node.calculate_insulation(chr.body_damage.body_part_wetness(node.body_part_index), &worn);
             let mut external_temp = self.air_temperature;

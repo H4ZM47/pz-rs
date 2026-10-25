@@ -157,6 +157,16 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `UIManager.getMoodleUI(i).setCharacter`); `HudMoodles` (a player's
       `Moodles`: refresh flag, levels, good/bad, display and description
       strings; characters thread) (#148).
+- [x] Character inventories: `CharacterItems::inventory` is a
+      `pz_inventory::ContainerRef` (loaded in place with
+      `shared::load_into`, saved via `to_container`);
+      `bind_character_sim::character_value` sets the character's Lua object
+      as its parent once and `getInventory()` returns
+      `bind_item_container::container_value(&inv)`, so Lua and the
+      simulation share the container and items. Characters handed to Lua
+      must go through `character_value` (#143, char-inventory PR).
+- [ ] World containers need their `IsoObject` parent set with
+      `bind_item_container::set_parent` the same way (#143).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).

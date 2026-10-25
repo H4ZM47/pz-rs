@@ -136,7 +136,8 @@ fn pistol(sm: &pz_scripts::ScriptManager, c: &mut GameCharacter<()>, id: i32, am
             s.hit_sound = Some("PopHit".into());
         },
     );
-    let it = c.items.item_mut(id).unwrap();
+    let it = c.items.item(id).unwrap();
+    let mut it = it.borrow_mut();
     if let Some(w) = it.weapon_data_mut() {
         w.min_damage = 0.8;
         w.max_damage = 1.0;
@@ -145,6 +146,7 @@ fn pistol(sm: &pz_scripts::ScriptManager, c: &mut GameCharacter<()>, id: i32, am
     }
     it.set_current_ammo_count(ammo);
     it.set_round_chambered(true, true);
+    drop(it);
     c.items.primary_hand_item = Some(id);
     c.vars.use_hand_weapon = Some(id);
 }
@@ -154,7 +156,7 @@ fn perk_scaled_recoil_ammo_and_jams() {
     let (sm, mut chars) = body_fixture();
     let mut p = player(&sm, &mut chars);
     pistol(&sm, &mut p, 7, 2);
-    let f = FirearmStats::of(&sm, p.items.item(7).unwrap()).unwrap();
+    let f = FirearmStats::of(&sm, &p.items.item(7).unwrap().borrow()).unwrap();
     assert!(f.ranged && f.aimed_firearm && f.have_chamber);
     // Aiming 0, Strength 0: 12 * 1 * (1 - (-10 / 40)) = 15.
     assert_eq!(p.firearm_recoil_delay(&chars, &f), 15);
@@ -163,8 +165,10 @@ fn perk_scaled_recoil_ammo_and_jams() {
     // default (multiplier 0).
     p.on_shoot_ammo(&sm, &chars, &High, 7);
     let w = p.items.item(7).unwrap();
+    let w = w.borrow();
     assert_eq!(w.get_current_ammo_count(), 1);
     assert!(w.is_round_chambered() && !w.is_spent_round_chambered() && !w.is_jammed());
+    drop(w);
     // A roll under the chance jams the gun; the unjam roll at 0 clears it.
     assert!(p.check_jam(&sm, &chars, &Low, 7, false));
     assert!(!p.check_unjam(&sm, &chars, &Low, 7));
@@ -276,7 +280,7 @@ fn a_shot_hits_the_zombie_in_front() {
     let muzzle = MuzzleAttachment { position: [0.4, 0.0, 0.6 / 2.44949], direction: [1.0, 0.0, 0.0] };
     let mut world = Range { chars: vec![z], bullet: synthetic_bullet(), muzzle };
     let ctx = Seeded { rand: pz_core::random::Rand::new(11), events: RefCell::new(Vec::new()) };
-    let item = p.items.item(7).unwrap().clone();
+    let item = p.items.item(7).unwrap().borrow().clone();
     let f = FirearmStats::of(&sm, &item).unwrap();
     // Aiming frames (the reticle's hit list adds the target), then the shot.
     for _ in 0..3 {

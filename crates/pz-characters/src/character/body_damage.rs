@@ -650,7 +650,7 @@ pub struct ZombieAttackOutcome {
     pub helmet_fall: Option<bool>,
     /// The worn items `helmetFall` took off (`createFallingItem` is the
     /// world's).
-    pub fallen_items: Vec<pz_inventory::InventoryItem>,
+    pub fallen_items: Vec<pz_inventory::shared::ItemRef>,
     /// `zombie.spikePart(type)` calls (`BodyPartType` constant names).
     pub zombie_spiked: Vec<&'static str>,
     /// `zombie.Kill(null)`.
@@ -1162,7 +1162,7 @@ impl<I: 'static> GameCharacter<I> {
         ctx: &dyn SimContext,
         id: i32,
     ) -> ScriptResult<Option<UseOutcome>> {
-        let Some(pill) = self.items.item(id).cloned() else { return Ok(None) };
+        let Some(pill) = self.items.item(id).map(|i| i.borrow().clone()) else { return Ok(None) };
         self.pill_effects(chars, ctx, &pill)?;
         Ok(self.use_held_item(sm, ctx, id, false, false, ctx.is_server()))
     }
