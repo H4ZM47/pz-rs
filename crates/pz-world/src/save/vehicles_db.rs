@@ -301,26 +301,29 @@ pub fn load_vehicles_in_meta(
     let Some(conn) = conn else {
         return out;
     };
-    let rows = (|| -> pz_sqlite::Result<Vec<(VehicleRow, bool)>> {
+    // `ResultSet.next()` steps row by row: rows before a failing one are
+    // loaded, and the failure ends the loop.
+    let (rows, scan_error) = (|| {
         let t = conn.table("vehicles")?;
         let (cm, cx, cy) = (t.column("inMeta")?, t.column("wx")?, t.column("wy")?);
+        let (raw, mut error) = conn.rows_until_error(&t);
         let mut rows = Vec::new();
-        for r in conn.rows(&t)? {
+        for r in raw {
             if !int_eq(&r.get(&t, cm), 1) {
                 continue;
             }
             let (wx, wy) = (r.get(&t, cx).as_i32(), r.get(&t, cy).as_i32());
-            rows.push(chunk_row(&t, &r, wx, wy)?);
+            match chunk_row(&t, &r, wx, wy) {
+                Ok(row) => rows.push(row),
+                Err(e) => {
+                    error = Some(e);
+                    break;
+                }
+            }
         }
-        Ok(rows)
-    })();
-    let rows = match rows {
-        Ok(r) => r,
-        Err(e) => {
-            out.error = Some(e.to_string());
-            return out;
-        }
-    };
+        pz_sqlite::Result::Ok((rows, error))
+    })()
+    .unwrap_or_else(|e| (Vec::new(), Some(e)));
     let class = ctx.tables.class_id("Vehicle");
     let ts = ctx.settings.tile_scale as f32;
     for (row, has_data) in rows {
@@ -354,6 +357,9 @@ pub fn load_vehicles_in_meta(
                 out.removed.push((row.id, e.0));
             }
         }
+    }
+    if let Some(e) = scan_error {
+        out.error = Some(e.to_string());
     }
     out
 }

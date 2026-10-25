@@ -272,6 +272,26 @@ impl Connection {
             .collect()
     }
 
+    /// Rows of `table` in rowid order as a statement steps through them:
+    /// the rows read before a corrupt page or record, and that error
+    /// (`ResultSet.next()` throwing part-way).
+    pub fn rows_until_error(&mut self, table: &Table) -> (Vec<Row>, Option<Error>) {
+        let bt = BTree::new(Kind::Table, &self.pager);
+        let mut raw = Vec::new();
+        let scan = bt.table_scan(&mut self.pager, table.root, &mut |id, p| {
+            raw.push((id, p));
+            Ok(())
+        });
+        let mut rows = Vec::new();
+        for (id, p) in raw {
+            match self.decode_row(id, &p) {
+                Ok(r) => rows.push(r),
+                Err(e) => return (rows, Some(e)),
+            }
+        }
+        (rows, scan.err())
+    }
+
     /// The row with `rowid`.
     pub fn row(&mut self, table: &Table, rowid: i64) -> Result<Option<Row>> {
         let bt = BTree::new(Kind::Table, &self.pager);

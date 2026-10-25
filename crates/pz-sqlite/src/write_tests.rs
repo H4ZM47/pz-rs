@@ -575,3 +575,39 @@ fn stress_512() {
 fn stress_1024() {
     stress(1024, 3000, 777);
 }
+
+#[test]
+fn rows_until_error_keeps_the_rows_before_a_bad_record() {
+    let (_t, path) = tmp("rows-until-error");
+    {
+        let mut c = Connection::open(&path).unwrap();
+        c.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, data BLOB);")
+            .unwrap();
+        for i in 1..=3u8 {
+            let mark = [
+                b'M',
+                b'A',
+                b'R',
+                b'K',
+                b'0' + i,
+                b'M',
+                b'A',
+                b'R',
+                b'K',
+                b'0' + i,
+            ];
+            c.insert("t", &[("data", Value::Blob(mark.to_vec()))])
+                .unwrap();
+        }
+    }
+    // Break the third record's header size (the byte three before its blob).
+    let mut bytes = std::fs::read(&path).unwrap();
+    let at = bytes.windows(10).position(|w| w == b"MARK3MARK3").unwrap();
+    bytes[at - 3] = 0x7f;
+    std::fs::write(&path, &bytes).unwrap();
+    let mut c = Connection::open(&path).unwrap();
+    let t = c.table("t").unwrap();
+    let (rows, err) = c.rows_until_error(&t);
+    assert_eq!(rows.len(), 2);
+    assert!(err.is_some());
+}
