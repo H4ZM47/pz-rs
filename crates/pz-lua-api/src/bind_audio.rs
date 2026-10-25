@@ -14,6 +14,8 @@
 //! with the engine's before Lua starts; without one a silent system is used
 //! (the original's `DummySoundManager` when sound is off). Methods that need
 //! the world (`PlaySound`, `PlayWorldSound*`) return nil until it is ported.
+//! `getUIEmitter()` returns the manager's `fmod.fmod.FMODSoundEmitter`, the
+//! same one `playUISound` plays on, with the `BaseSoundEmitter` methods.
 //!
 //! Character-dependent parts (`checkHealthPanelVisible`,
 //! `restoreToFullHealth`, `MusicThreatStatuses.update`) only act on an
@@ -34,10 +36,13 @@ pub const THREAT_STATUS_CLASS: &str = "zombie.audio.MusicThreatStatus";
 pub const THREAT_STATUSES_CLASS: &str = "zombie.audio.MusicThreatStatuses";
 pub const SOUND_MANAGER_CLASS: &str = "zombie.SoundManager";
 pub const BASE_SOUND_MANAGER_CLASS: &str = "zombie.BaseSoundManager";
+pub const BASE_SOUND_EMITTER_CLASS: &str = "zombie.audio.BaseSoundEmitter";
+pub const FMOD_SOUND_EMITTER_CLASS: &str = "fmod.fmod.FMODSoundEmitter";
 
 thread_local! {
     static SOUND: RefCell<Option<Rc<RefCell<pz_sound::system::SoundSystem>>>> = const { RefCell::new(None) };
     static SOUND_HANDLE: Rc<SoundManagerObject> = Rc::new(SoundManagerObject);
+    static UI_EMITTER_HANDLE: Rc<SoundEmitterObject> = Rc::new(SoundEmitterObject::Ui);
 }
 
 /// Make `system` the one `getSoundManager()` drives.
@@ -58,6 +63,21 @@ pub struct SoundManagerObject;
 impl LuaObject for SoundManagerObject {
     fn class_name(&self) -> &str {
         SOUND_MANAGER_CLASS
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// A Lua handle to an `FMODSoundEmitter` owned by the sound system.
+pub enum SoundEmitterObject {
+    /// `SoundManager.getUIEmitter()`.
+    Ui,
+}
+
+impl LuaObject for SoundEmitterObject {
+    fn class_name(&self) -> &str {
+        FMOD_SOUND_EMITTER_CLASS
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -484,6 +504,11 @@ fn register_sound_manager(thread: &mut Thread) {
         let h: Rc<dyn LuaObject> = SOUND_HANDLE.with(|h| h.clone());
         Ok(c.push(Value::Object(h)))
     });
+    b.method("getUIEmitter", |c| {
+        sm_this(c)?;
+        let h: Rc<dyn LuaObject> = UI_EMITTER_HANDLE.with(|h| h.clone());
+        Ok(c.push(Value::Object(h)))
+    });
     b.method("playUISound", |c| {
         sm_this(c)?;
         let name = str_arg(c, 1).unwrap_or_else(|| Rc::from(""));
@@ -627,8 +652,208 @@ fn register_sound_manager(thread: &mut Thread) {
     }
 }
 
+/// Run `f` on the emitter `self` (argument 0) refers to.
+fn with_emitter<R>(
+    c: &NativeCall<'_>,
+    f: impl FnOnce(&mut pz_sound::emitter::FmodSoundEmitter, &mut pz_sound::emitter::Ctx) -> R,
+) -> LuaResult<R> {
+    let o = obj::<SoundEmitterObject>(c, 0)?;
+    let target = down::<SoundEmitterObject>(&o);
+    Ok(sound_system().borrow_mut().with(|m, ctx| match target {
+        SoundEmitterObject::Ui => f(m.ui_emitter(), ctx),
+    }))
+}
+
+/// A sound name argument; nil finds no sound.
+fn name_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Rc<str>> {
+    Ok(str_arg(c, i).unwrap_or_else(|| Rc::from("")))
+}
+
+fn register_sound_emitter(thread: &mut Thread) {
+    use pz_sound::emitter::ParentObject;
+    expose_class(thread, BASE_SOUND_EMITTER_CLASS, None);
+    let b = expose_class(thread, FMOD_SOUND_EMITTER_CLASS, Some(BASE_SOUND_EMITTER_CLASS));
+    // `void` methods.
+    macro_rules! void {
+        ($name:literal, |$c:ident, $e:ident, $ctx:ident| $body:expr) => {
+            b.method($name, |$c| {
+                with_emitter($c, |$e, $ctx| {
+                    let _ = &$ctx;
+                    $body;
+                })?;
+                Ok(0)
+            });
+        };
+    }
+    macro_rules! boolean {
+        ($name:literal, |$c:ident, $e:ident, $ctx:ident| $body:expr) => {
+            b.method($name, |$c| {
+                let v = with_emitter($c, |$e, $ctx| {
+                    let _ = &$ctx;
+                    $body
+                })?;
+                Ok($c.push(v))
+            });
+        };
+    }
+    fn reference(c: &NativeCall<'_>) -> i64 {
+        num_arg(c, 1) as i64
+    }
+    fn flag(c: &NativeCall<'_>, i: usize) -> bool {
+        matches!(c.arg(i), Value::Bool(true))
+    }
+
+    // Empty in FMODSoundEmitter.
+    b.method("randomStart", |c| {
+        obj::<SoundEmitterObject>(c, 0)?;
+        Ok(0)
+    });
+    b.method("setPos", |c| {
+        let (x, y, z) = (num_arg(c, 1) as f32, num_arg(c, 2) as f32, num_arg(c, 3) as f32);
+        with_emitter(c, |e, _| e.set_pos(x, y, z))?;
+        Ok(0)
+    });
+    b.method("stopSound", |c| {
+        let r = reference(c);
+        let v = with_emitter(c, |e, ctx| e.stop_sound(r, ctx))?;
+        Ok(num(c, v as f64))
+    });
+    b.method("stopSoundDelayRelease", |c| {
+        let r = reference(c);
+        let v = with_emitter(c, |e, ctx| e.stop_sound_delay_release(r, ctx))?;
+        Ok(num(c, v as f64))
+    });
+    b.method("stopSoundLocal", |c| {
+        let r = reference(c);
+        with_emitter(c, |e, ctx| e.stop_sound_local(r, ctx))?;
+        Ok(0)
+    });
+    b.method("stopOrTriggerSoundLocal", |c| {
+        let r = reference(c);
+        with_emitter(c, |e, ctx| e.stop_or_trigger_sound_local(r, ctx))?;
+        Ok(0)
+    });
+    b.method("stopOrTriggerSound", |c| {
+        let r = reference(c);
+        with_emitter(c, |e, ctx| e.stop_or_trigger_sound(r, ctx))?;
+        Ok(0)
+    });
+    b.method("stopSoundByName", |c| {
+        let name = name_arg(c, 1)?;
+        let v = with_emitter(c, |e, ctx| e.stop_sound_by_name(&name, ctx))?;
+        Ok(num(c, v as f64))
+    });
+    b.method("stopOrTriggerSoundByName", |c| {
+        let name = name_arg(c, 1)?;
+        with_emitter(c, |e, ctx| e.stop_or_trigger_sound_by_name(&name, ctx))?;
+        Ok(0)
+    });
+    b.method("setVolume", |c| {
+        let (r, v) = (reference(c), num_arg(c, 2) as f32);
+        with_emitter(c, |e, _| e.set_volume(r, v))?;
+        Ok(0)
+    });
+    b.method("setPitch", |c| {
+        let (r, v) = (reference(c), num_arg(c, 2) as f32);
+        with_emitter(c, |e, _| e.set_pitch(r, v))?;
+        Ok(0)
+    });
+    boolean!("hasSustainPoints", |c, e, ctx| e.has_sustain_points(reference(c), ctx.sounds));
+    b.method("setParameterValueByName", |c| {
+        let r = reference(c);
+        let name = str_arg(c, 2).unwrap_or_else(|| Rc::from(""));
+        let v = num_arg(c, 3) as f32;
+        with_emitter(c, |e, ctx| e.set_parameter_value_by_name(r, &name, v, ctx))?;
+        Ok(0)
+    });
+    b.method("isUsingParameter", |c| {
+        let r = reference(c);
+        let name = str_arg(c, 2).unwrap_or_else(|| Rc::from(""));
+        let v = with_emitter(c, |e, ctx| e.is_using_parameter(r, &name, ctx))?;
+        Ok(c.push(v))
+    });
+    b.method("setTimelinePosition", |c| {
+        let r = reference(c);
+        let name = str_arg(c, 2).unwrap_or_else(|| Rc::from(""));
+        with_emitter(c, |e, ctx| e.set_timeline_position(r, &name, ctx))?;
+        Ok(0)
+    });
+    void!("triggerCue", |c, e, ctx| e.trigger_cue(reference(c), ctx));
+    b.method("setVolumeAll", |c| {
+        let v = num_arg(c, 1) as f32;
+        with_emitter(c, |e, _| e.set_volume_all(v))?;
+        Ok(0)
+    });
+    void!("stopAll", |c, e, ctx| e.stop_all(ctx));
+    // The IsoGameCharacter/IsoGridSquare/IsoObject overloads have no parent
+    // object to follow until those classes are bound.
+    b.method("playSound", |c| {
+        let name = name_arg(c, 1)?;
+        let v = match (c.arg(2), c.arg(3), c.arg(4)) {
+            (Value::Num(x), Value::Num(y), Value::Num(z)) => {
+                let (x, y, z) = (x as i32, y as i32, z as i32);
+                with_emitter(c, |e, ctx| e.play_sound_at(&name, x, y, z, ctx))?
+            }
+            (Value::Bool(_), _, _) => with_emitter(c, |e, ctx| e.play_sound(&name, ctx))?,
+            _ => with_emitter(c, |e, ctx| e.play_sound(&name, ctx))?,
+        };
+        Ok(num(c, v as f64))
+    });
+    b.method("playSoundImpl", |c| {
+        let name = name_arg(c, 1)?;
+        let v = with_emitter(c, |e, ctx| e.play_sound_impl(&name, ParentObject::None, ctx))?;
+        Ok(num(c, v as f64))
+    });
+    for m in ["playSoundLooped", "playSoundLoopedImpl"] {
+        b.method(m, |c| {
+            let name = name_arg(c, 1)?;
+            let v = with_emitter(c, |e, ctx| e.play_sound_looped_impl(&name, ctx))?;
+            Ok(num(c, v as f64))
+        });
+    }
+    b.method("playAmbientSound", |c| {
+        let name = name_arg(c, 1)?;
+        let v = with_emitter(c, |e, ctx| e.play_ambient_sound(&name, ctx))?;
+        Ok(num(c, v as f64))
+    });
+    b.method("playAmbientLoopedImpl", |c| {
+        let name = name_arg(c, 1)?;
+        let v = with_emitter(c, |e, ctx| e.play_ambient_looped_impl(&name, ctx))?;
+        Ok(num(c, v as f64))
+    });
+    b.method("set3D", |c| {
+        let (r, on) = (reference(c), flag(c, 2));
+        with_emitter(c, |e, ctx| e.set_3d(r, on, ctx))?;
+        Ok(0)
+    });
+    void!("tick", |c, e, ctx| e.tick(ctx));
+    boolean!("hasSoundsToStart", |c, e, ctx| e.has_sounds_to_start());
+    boolean!("isEmpty", |c, e, ctx| e.is_empty());
+    b.method("isPlaying", |c| {
+        let v = match c.arg(1) {
+            Value::Str(s) => with_emitter(c, |e, _| e.is_playing_name(&s))?,
+            _ => {
+                let r = reference(c);
+                with_emitter(c, |e, _| e.is_playing(r))?
+            }
+        };
+        Ok(c.push(v))
+    });
+    b.method("restart", |c| {
+        let r = reference(c);
+        let v = with_emitter(c, |e, ctx| e.restart(r, ctx))?;
+        Ok(c.push(v))
+    });
+    b.method("setPlayRemoteEvents", |c| {
+        let on = flag(c, 1);
+        with_emitter(c, |e, _| e.set_play_remote_events(on))?;
+        Ok(0)
+    });
+}
+
 pub fn register(thread: &mut Thread) {
     register_sound_manager(thread);
+    register_sound_emitter(thread);
     let b = expose_class(thread, INTENSITY_CONFIG_CLASS, None);
     b.static_fn("getInstance", |c| {
         let h: Rc<dyn LuaObject> = INTENSITY_HANDLE.with(|h| h.clone());
@@ -922,6 +1147,107 @@ mod tests {
         .unwrap();
         // The default system is silent: nothing plays.
         assert_eq!(strs(&r), ["true", "0.0", "true", "0.5", "1.0", "false", "userdata", "null"]);
+    }
+
+    /// Records the engine calls of the character-creation voice preview.
+    struct VoiceBackend(Rc<RefCell<Vec<String>>>);
+
+    impl pz_sound::backend::AudioBackend for VoiceBackend {
+        fn event_description(&mut self, path: &str) -> Option<Rc<pz_sound::backend::EventDescription>> {
+            (path == "event:/VoiceMaleShoutHey").then(|| {
+                Rc::new(pz_sound::backend::EventDescription {
+                    address: 1,
+                    path: path.into(),
+                    length_ms: 900,
+                    is_3d: false,
+                    is_oneshot: true,
+                    has_sustain_points: false,
+                    max_distance: 20.0,
+                    parameters: vec![self.parameter_description("CharacterVoicePitch").unwrap()],
+                })
+            })
+        }
+        fn parameter_description(&mut self, name: &str) -> Option<pz_sound::backend::ParameterDescription> {
+            (name == "CharacterVoicePitch").then(|| pz_sound::backend::ParameterDescription {
+                name: name.into(),
+                id: (7, 9),
+                minimum: 0.0,
+                maximum: 2.0,
+                default: 1.0,
+                kind: 0,
+                flags: 0,
+                global_index: 0,
+            })
+        }
+        fn create_event_instance(&mut self, _desc: &pz_sound::backend::EventDescription) -> i64 {
+            self.0.borrow_mut().push("create".into());
+            42
+        }
+        fn instance_set_volume(&mut self, _inst: i64, _volume: f32) {}
+        fn instance_set_parameter_by_name(&mut self, _inst: i64, _name: &str, _value: f32) {}
+        fn instance_set_parameter_by_id(&mut self, inst: i64, id: (u32, u32), value: f32) {
+            self.0.borrow_mut().push(format!("param {inst} {id:?} {value}"));
+        }
+        fn instance_start(&mut self, inst: i64) {
+            self.0.borrow_mut().push(format!("start {inst}"));
+        }
+        fn instance_stop(&mut self, inst: i64, _immediate: bool) {
+            self.0.borrow_mut().push(format!("stop {inst}"));
+        }
+        fn instance_release(&mut self, _inst: i64) {}
+        fn instance_playback_state(&mut self, _inst: i64) -> pz_sound::backend::PlaybackState {
+            pz_sound::backend::PlaybackState::Playing
+        }
+        fn listener_3d(&mut self, _i: i32, _p: [f32; 3], _v: [f32; 3], _f: [f32; 3], _u: [f32; 3]) {}
+        fn load_sound(&mut self, _path: &str, _looped: bool) -> u64 {
+            0
+        }
+        fn play_sound(&mut self, _sound: u64, _paused: bool) -> u64 {
+            0
+        }
+        fn channel_set_volume(&mut self, _ch: u64, _volume: f32) {}
+        fn channel_set_pitch(&mut self, _ch: u64, _pitch: f32) {}
+        fn channel_set_mode(&mut self, _ch: u64, _mode: u64) {}
+        fn channel_set_paused(&mut self, _ch: u64, _paused: bool) {}
+        fn channel_is_playing(&mut self, _ch: u64) -> bool {
+            false
+        }
+        fn channel_stop(&mut self, _ch: u64) {}
+        fn master_channel_group_set_volume(&mut self, _volume: f32) {}
+    }
+
+    #[test]
+    fn ui_emitter_drives_the_voice_preview() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let system = pz_sound::system::SoundSystem::new(
+            Box::new(VoiceBackend(log.clone())),
+            pz_sound::game_sounds::SoundEnv::default(),
+            1,
+        );
+        install_sound_system(Rc::new(RefCell::new(system)));
+        let mut t = setup();
+        // CharacterCreationMain's PLAYDEMOVOICE handler.
+        let r = run(
+            &mut t,
+            r#"
+            local sm = getSoundManager()
+            local player = sm:getUIEmitter()
+            local ref = sm:playUISound("VoiceMaleShoutHey")
+            player:setPos(0, 0, 0)
+            player:setParameterValueByName(ref, "CharacterVoicePitch", 1.25)
+            player:tick()
+            local playing = player:isPlaying(ref)
+            local same = player == sm:getUIEmitter()
+            local stopped = player:stopSound(ref)
+            return ref, playing, same, player:isPlaying(ref), type(player), sm:getUIEmitter():playSound("Missing")
+            "#,
+        )
+        .unwrap();
+        assert_eq!(strs(&r), ["42.0", "true", "true", "false", "userdata", "0.0"]);
+        let log = log.borrow();
+        assert_eq!(log[..2], ["create", "start 42"], "{log:?}");
+        assert!(log.contains(&"param 42 (7, 9) 1.25".to_string()), "{log:?}");
+        assert!(log.contains(&"stop 42".to_string()), "{log:?}");
     }
 
     #[test]
