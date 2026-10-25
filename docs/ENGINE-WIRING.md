@@ -587,7 +587,7 @@ registered):
       (`loadCorpseFromByteData`), `generator_from_item` (`IsoGenerator`),
       `animal_dropped` (`IsoAnimal`), `process_items_remove`,
       `designation_zone_item_on_ground` (#186).
-- [ ] Character item drops (#186, characters side #FDC): the characters
+- [ ] Character item drops (#186, characters side #189): the characters
       implement `floor_drop::DropCharacter` through
       `pz_characters::character::CharacterDrop` and take the world as a
       `FloorCx { ctx, floor }`. Wired: `set_worn_item` / `remove_worn_item`
@@ -608,7 +608,7 @@ registered):
         `IsoPlayer.OnDeath`, as those are ported (not yet in
         `pz-characters`);
       - `Use`'s `Unwear` (`apply_use_outcome`) passes no world yet, so a
-        used-up worn item never drops (#FDC).
+        used-up worn item never drops (#189).
 - [ ] Collision code fills `IsoChunk::collision` through
       `ChunkCollision::init(z, build)` (`CollideWithObstaclesPoly` /
       `LineClearCollide`) and drops levels with `take` on vehicle moves; the
