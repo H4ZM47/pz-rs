@@ -906,4 +906,54 @@ mod tests {
         assert_eq!(c.path.current_square, Some((2, 3, 0)));
         assert!(c.vars.z > 0.9, "z {}", c.vars.z);
     }
+
+    /// The wall between x = 4 and x = 5 is the east wall of (4, y).
+    struct WalledType;
+    impl StateWorld<()> for WalledType {
+        fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
+            Walled.square(x, y, z)
+        }
+        fn test_collide_adjacent(&self, m: MoverId, from: (i32, i32, i32), dx: i32, dy: i32, dz: i32) -> bool {
+            StateWorld::<()>::test_collide_adjacent(&Walled, m, from, dx, dy, dz)
+        }
+        fn wall_type(&self, sq: (i32, i32, i32)) -> i32 {
+            if sq.0 == 4 {
+                8
+            } else {
+                0
+            }
+        }
+    }
+
+    #[test]
+    fn a_sprinting_player_hits_the_wall_it_faces() {
+        let (sm, mut chars) = fixture();
+        let ctx = Recorder::default();
+        let mut w = WalledType;
+        let mut c = player(&sm, &mut chars);
+        c.path.collidable = true;
+        c.environment.sprinting = true;
+        c.vars.dir = pz_world::square::IsoDirections::E;
+        c.vars.x = 4.8;
+        c.vars.y = 3.5;
+        c.vars.last_x = 4.8;
+        c.vars.last_y = 3.5;
+        c.path.current_square = Some((4, 3, 0));
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        c.moving_preupdate();
+        c.vars.next_x += 0.3;
+        c.moving_postupdate(&mut cx);
+        assert!(c.vars.collided_e);
+        assert_eq!(c.vars.collide_type, "wall");
+        assert_eq!(c.vars.last_collide_time, 70.0);
+        // Facing away from the wall: no hit.
+        c.vars.collide_type.clear();
+        c.vars.last_collide_time = 0.0;
+        c.vars.dir = pz_world::square::IsoDirections::N;
+        c.moving_preupdate();
+        c.vars.next_x += 0.3;
+        c.moving_postupdate(&mut cx);
+        assert!(c.vars.collided_e);
+        assert_eq!(c.vars.collide_type, "");
+    }
 }
