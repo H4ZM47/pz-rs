@@ -1681,16 +1681,16 @@ mod tests {
         let Value::Object(o) = &v else { panic!() };
         assert_eq!(o.class_name(), TEST_SUB);
         assert_eq!(o.super_classes(), TEST_SUPERS);
-        assert_eq!(eval(&mut t, "instanceof(s.javaObject, 'UIElement')").truthy(), true);
-        assert_eq!(eval(&mut t, "instanceof(s.javaObject, 'TestSubclass')").truthy(), true);
-        assert_eq!(eval(&mut t, "instanceof(s.javaObject, 'ITestListener')").truthy(), true);
-        assert_eq!(eval(&mut t, "instanceof(root.javaObject, 'TestSubclass')").truthy(), false);
+        assert!(eval(&mut t, "instanceof(s.javaObject, 'UIElement')").truthy());
+        assert!(eval(&mut t, "instanceof(s.javaObject, 'TestSubclass')").truthy());
+        assert!(eval(&mut t, "instanceof(s.javaObject, 'ITestListener')").truthy());
+        assert!(!eval(&mut t, "instanceof(root.javaObject, 'TestSubclass')").truthy());
         // Inherited (UIElement) and own methods on one object.
         assert_eq!(eval(&mut t, "s.javaObject:getX()").as_num(), Some(10.0));
         assert_eq!(eval(&mut t, "s.javaObject:subOnly()").as_num(), Some(0.0));
         // In the child list and the UI list as the same object.
-        assert_eq!(eval(&mut t, "root.javaObject:getControls():get(0) == s.javaObject").truthy(), true);
-        assert_eq!(eval(&mut t, "UIManager.getUI():contains(s2.javaObject)").truthy(), true);
+        assert!(eval(&mut t, "root.javaObject:getControls():get(0) == s.javaObject").truthy());
+        assert!(eval(&mut t, "UIManager.getUI():contains(s2.javaObject)").truthy());
         assert!(eval(&mut t, "tostring(s.javaObject)").as_str().is_some());
     }
 

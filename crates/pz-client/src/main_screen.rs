@@ -10,7 +10,7 @@ use std::rc::Rc;
 /// The `Registries` bootstrap, `PerkFactory.init()` and
 /// `ScriptManager.instance.Load()` of `GameWindow.init`, shared with the Lua
 /// API. TODO: mod script folders, `CustomPerks`.
-fn load_scripts(game_dir: &Path, fs: &pz_fs::GameFs) -> Result<(), String> {
+pub fn load_scripts(game_dir: &Path, fs: &pz_fs::GameFs) -> Result<(), String> {
     let sm = pz_scripts::ScriptManager::new();
     sm.load_builtin_registries(&game_dir.join("projectzomboid.jar"))
         .map_err(|e| format!("built-in registries: {e}"))?;

@@ -58,8 +58,8 @@ impl UiModelCamera {
         let p = p.scale(-f, f, f);
         let mv = if self.isometric {
             Matrix4f::identity()
-                .rotate(0.523_598_8, 1.0, 0.0, 0.0)
-                .rotate(self.anim_player_angle + 0.785_398_2, 0.0, 1.0, 0.0)
+                .rotate(std::f32::consts::FRAC_PI_6, 1.0, 0.0, 0.0)
+                .rotate(self.anim_player_angle + std::f32::consts::FRAC_PI_4, 0.0, 1.0, 0.0)
         } else {
             Matrix4f::identity().rotate(self.anim_player_angle, 0.0, 1.0, 0.0)
         };
@@ -278,7 +278,9 @@ mod tests {
     use super::*;
 
     fn close(a: &[f32], b: &[f32]) -> bool {
-        a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1e-5 * x.abs().max(y.abs()).max(1.0))
+        a.iter()
+            .zip(b)
+            .all(|(x, y)| (x - y).abs() <= 1e-5 * x.abs().max(y.abs()).max(1.0))
     }
 
     /// A point projected through the folded MVP over the whole target

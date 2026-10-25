@@ -13,8 +13,8 @@
 //! `render()`, as `SpriteRenderer.drawGeneric` queues the drawer.
 
 use crate::bind_characters::{desc_arg, LuaSurvivorDesc};
-use crate::bind_items::LuaInventoryItem;
 use crate::bind_iso_enums::ISO_DIRECTIONS;
+use crate::bind_items::LuaInventoryItem;
 use crate::bind_ui::{element_of, UIELEMENT};
 use crate::expose::{bool_arg, enum_value, expose_class, num_arg, str_arg, JavaEnum};
 use pz_anim::{AnimationVariableHandle, AnimationVariableSource, MapVariableSource, VariableValue};
@@ -28,11 +28,22 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 pub const UI3DMODEL: &str = "zombie.ui.UI3DModel";
-const SUPERS: &[&str] = &[UIELEMENT, "zombie.core.skinnedmodel.population.IClothingItemListener"];
+const SUPERS: &[&str] = &[
+    UIELEMENT,
+    "zombie.core.skinnedmodel.population.IClothingItemListener",
+];
 
 /// `IsoDirections` constants in ordinal order with their `(dx, dy)`.
-const DIRECTIONS: [(&str, i32, i32); 8] =
-    [("N", 0, -1), ("NW", -1, -1), ("W", -1, 0), ("SW", -1, 1), ("S", 0, 1), ("SE", 1, 1), ("E", 1, 0), ("NE", 1, -1)];
+const DIRECTIONS: [(&str, i32, i32); 8] = [
+    ("N", 0, -1),
+    ("NW", -1, -1),
+    ("W", -1, 0),
+    ("SW", -1, 1),
+    ("S", 0, 1),
+    ("SE", 1, 1),
+    ("E", 1, 0),
+    ("NE", 1, -1),
+];
 
 /// `IsoDirections.ToVector()`: the normalised `(dx, dy)` (`Vector2.normalize`).
 pub fn direction_vector(name: &str) -> Option<[f32; 2]> {
@@ -205,7 +216,14 @@ impl UI3DModel {
     /// The `Drawer.init` / `Drawer.render` view for an element at absolute
     /// `(abs_x, abs_y)` of `w` x `h` on a `screen`: sets the model offset
     /// and returns the `DoRender` arguments.
-    pub fn drawer_view(&self, abs_x: i32, abs_y: i32, w: f64, h: f64, screen: (i32, i32)) -> UIModelView {
+    pub fn drawer_view(
+        &self,
+        abs_x: i32,
+        abs_y: i32,
+        w: f64,
+        h: f64,
+        screen: (i32, i32),
+    ) -> UIModelView {
         let mut s = self.st.borrow_mut();
         let mut y_off = if s.model.isometric { -0.45 } else { -0.5 };
         if s.y_offset != 0.0 {
@@ -232,7 +250,9 @@ impl UI3DModel {
         if s.next_ext < now {
             s.model.events.push("EventDoExt".into());
             let ext = pz_core::random::next_range(0, 6) + 1;
-            s.model.vars.set_variable("Ext", VariableValue::Float(ext as f32));
+            s.model
+                .vars
+                .set_variable("Ext", VariableValue::Float(ext as f32));
             s.next_ext = -1;
         }
     }
@@ -313,7 +333,10 @@ fn model<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut AnimatedModel) -> R) -> LuaR
 }
 
 fn npe() -> LuaError {
-    LuaError::Runtime { message: "null".into(), class: "java.lang.NullPointerException" }
+    LuaError::Runtime {
+        message: "null".into(),
+        class: "java.lang.NullPointerException",
+    }
 }
 
 /// The item visual a worn item contributes (`InventoryItem.getVisual()`;
@@ -336,7 +359,12 @@ fn worn_item_visual(v: &Value) -> Option<ItemVisual> {
 pub fn model_visual_of(desc: &LuaSurvivorDesc) -> ModelVisual {
     ModelVisual {
         human: desc.human_visual.clone(),
-        items: desc.worn_items.items().iter().filter_map(|w| worn_item_visual(&w.item.0)).collect(),
+        items: desc
+            .worn_items
+            .items()
+            .iter()
+            .filter_map(|w| worn_item_visual(&w.item.0))
+            .collect(),
         female: desc.is_female(),
         zombie: false,
         skeleton: false,
@@ -365,7 +393,11 @@ pub fn register(thread: &mut Thread) {
     });
     b.method("setDirection", |c| {
         let dir = match c.arg(1) {
-            Value::Object(o) => o.as_any().downcast_ref::<JavaEnum>().filter(|e| e.class == ISO_DIRECTIONS).map(|e| e.name),
+            Value::Object(o) => o
+                .as_any()
+                .downcast_ref::<JavaEnum>()
+                .filter(|e| e.class == ISO_DIRECTIONS)
+                .map(|e| e.name),
             _ => None,
         };
         ui3d(c, |m| {
@@ -379,7 +411,10 @@ pub fn register(thread: &mut Thread) {
     });
     b.method("getDirection", |c| {
         let dir = ui3d(c, |m| m.st.borrow().dir)?;
-        Ok(c.push(dir.map(|d| enum_value(ISO_DIRECTIONS, d)).unwrap_or_default()))
+        Ok(c.push(
+            dir.map(|d| enum_value(ISO_DIRECTIONS, d))
+                .unwrap_or_default(),
+        ))
     });
     b.method("setAnimate", |c| {
         let v = bool_arg(c, 1);
@@ -387,12 +422,15 @@ pub fn register(thread: &mut Thread) {
         Ok(0)
     });
     b.method("setAnimSetName", |c| {
-        let name = str_arg(c, 1).filter(|s| !s.trim().is_empty()).ok_or_else(|| {
-            LuaError::Runtime {
-                message: format!("invalid AnimSet \"{}\"", str_arg(c, 1).as_deref().unwrap_or("null")),
+        let name = str_arg(c, 1)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| LuaError::Runtime {
+                message: format!(
+                    "invalid AnimSet \"{}\"",
+                    str_arg(c, 1).as_deref().unwrap_or("null")
+                ),
                 class: "java.lang.IllegalArgumentException",
-            }
-        })?;
+            })?;
         model(c, |m| m.anim_set_name = name.to_string())?;
         Ok(0)
     });
@@ -457,7 +495,9 @@ pub fn register(thread: &mut Thread) {
         Ok(c.push(s.map(|s| Value::str(&s)).unwrap_or_default()))
     });
     b.method("setVariable", |c| {
-        let Some(key) = str_arg(c, 1) else { return Ok(0) };
+        let Some(key) = str_arg(c, 1) else {
+            return Ok(0);
+        };
         let v = match c.arg(2) {
             Value::Bool(b) => VariableValue::Bool(b),
             Value::Num(n) => VariableValue::Float(n as f32),
@@ -468,12 +508,18 @@ pub fn register(thread: &mut Thread) {
         Ok(0)
     });
     b.method("getVariable", |c| {
-        let Some(key) = str_arg(c, 1) else { return Ok(c.push(Value::Nil)) };
-        let v = model(c, |m| AnimationVariableHandle::alloc(&key).and_then(|h| m.vars.get_variable(&h)))?;
+        let Some(key) = str_arg(c, 1) else {
+            return Ok(c.push(Value::Nil));
+        };
+        let v = model(c, |m| {
+            AnimationVariableHandle::alloc(&key).and_then(|h| m.vars.get_variable(&h))
+        })?;
         Ok(c.push(v.map(variable_to_value).unwrap_or_default()))
     });
     b.method("clearVariable", |c| {
-        let Some(key) = str_arg(c, 1) else { return Ok(0) };
+        let Some(key) = str_arg(c, 1) else {
+            return Ok(0);
+        };
         model(c, |m| m.vars.clear_variable(&key))?;
         Ok(0)
     });
@@ -482,7 +528,9 @@ pub fn register(thread: &mut Thread) {
         Ok(0)
     });
     b.method("reportEvent", |c| {
-        let Some(ev) = str_arg(c, 1).filter(|s| !s.trim().is_empty()) else { return Ok(0) };
+        let Some(ev) = str_arg(c, 1).filter(|s| !s.trim().is_empty()) else {
+            return Ok(0);
+        };
         model(c, |m| m.events.push(ev.to_string()))?;
         Ok(0)
     });
@@ -514,13 +562,18 @@ mod tests {
     use pz_kahlua::TableRef;
     use pz_ui::UIManager;
 
+    /// One render call: key, view, offset, angle, events, state.
+    type Call = (u64, UIModelView, [f32; 3], [f32; 2], Vec<String>, Option<String>);
+
     /// Records each render call.
-    struct Recorder(Rc<RefCell<Vec<(u64, UIModelView, [f32; 3], [f32; 2], Vec<String>, Option<String>)>>>);
+    struct Recorder(Rc<RefCell<Vec<Call>>>);
 
     impl UIModelRenderer for Recorder {
         fn render(&mut self, key: u64, m: &mut AnimatedModel, view: &UIModelView) -> Vec<DrawCmd> {
             let events = std::mem::take(&mut m.events);
-            self.0.borrow_mut().push((key, *view, m.offset, m.angle, events, m.state.clone()));
+            self.0
+                .borrow_mut()
+                .push((key, *view, m.offset, m.angle, events, m.state.clone()));
             vec![DrawCmd::Clear(256)]
         }
     }
@@ -539,7 +592,10 @@ mod tests {
 
     fn run(t: &mut Thread, src: &str) {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
         if let Err((e, tr)) = t.pcall(&f, &[]) {
             panic!("lua error: {e:?}\n{tr}");
         }
@@ -584,27 +640,56 @@ mod tests {
         let Value::Object(o) = &v else { panic!() };
         assert_eq!(o.class_name(), UI3DMODEL);
         assert!(o.super_classes().contains(&UIELEMENT));
-        assert_eq!(eval(&mut t, "parent.javaObject:getControls():get(0) == avatar.javaObject").truthy(), true);
-        assert_eq!(eval(&mut t, "avatar.javaObject:getDirection() == IsoDirections.S").truthy(), true);
-        assert_eq!(eval(&mut t, "avatar.javaObject:getState()").as_str(), Some("idle"));
-        assert_eq!(eval(&mut t, "avatar.javaObject:getVariable('Female')").truthy(), true);
-        assert_eq!(eval(&mut t, "avatar.javaObject:getVariable('speed')").as_num(), Some(0.5));
-        assert_eq!(eval(&mut t, "avatar.javaObject:getVariable('Name')").as_str(), Some("x"));
+        assert!(eval(
+                &mut t,
+                "parent.javaObject:getControls():get(0) == avatar.javaObject"
+            )
+            .truthy());
+        assert!(eval(
+                &mut t,
+                "avatar.javaObject:getDirection() == IsoDirections.S"
+            )
+            .truthy());
+        assert_eq!(
+            eval(&mut t, "avatar.javaObject:getState()").as_str(),
+            Some("idle")
+        );
+        assert!(eval(&mut t, "avatar.javaObject:getVariable('Female')").truthy());
+        assert_eq!(
+            eval(&mut t, "avatar.javaObject:getVariable('speed')").as_num(),
+            Some(0.5)
+        );
+        assert_eq!(
+            eval(&mut t, "avatar.javaObject:getVariable('Name')").as_str(),
+            Some("x")
+        );
         run(&mut t, "avatar.javaObject:clearVariable('Name')");
-        assert_eq!(eval(&mut t, "avatar.javaObject:getVariable('Name')").as_str(), Some(""));
+        assert_eq!(
+            eval(&mut t, "avatar.javaObject:getVariable('Name')").as_str(),
+            Some("")
+        );
         run(&mut t, "avatar.javaObject:clearVariables()");
         assert!(eval(&mut t, "avatar.javaObject:getVariable('Female')").is_nil());
         // UIElement methods still work on it.
-        assert_eq!(eval(&mut t, "avatar.javaObject:getWidth()").as_num(), Some(200.0));
+        assert_eq!(
+            eval(&mut t, "avatar.javaObject:getWidth()").as_num(),
+            Some(200.0)
+        );
         // setAnimSetName rejects blank names; setState(nil) clears.
-        run(&mut t, "ok = pcall(function() avatar.javaObject:setAnimSetName(' ') end)");
-        assert_eq!(eval(&mut t, "ok").truthy(), false);
+        run(
+            &mut t,
+            "ok = pcall(function() avatar.javaObject:setAnimSetName(' ') end)",
+        );
+        assert!(!eval(&mut t, "ok").truthy());
         run(&mut t, "avatar.javaObject:setState(nil)");
         assert!(eval(&mut t, "avatar.javaObject:getState()").is_nil());
         // Direction vector: S is (0, 1); NE normalised.
         assert_eq!(direction_vector("S"), Some([0.0, 1.0]));
         let ne = direction_vector("NE").unwrap();
-        assert!((ne[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-7 && (ne[1] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-7);
+        assert!(
+            (ne[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-7
+                && (ne[1] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-7
+        );
     }
 
     /// `render()`: the base render, then the drawer's `DoRender` view
@@ -619,7 +704,10 @@ mod tests {
         let log = Rc::new(RefCell::new(Vec::new()));
         install_renderer(Some(Box::new(Recorder(log.clone()))));
         run(&mut t, SCRIPT);
-        run(&mut t, "avatar.javaObject:reportEvent('EventWalk'); avatar.javaObject:reportEvent(' ')");
+        run(
+            &mut t,
+            "avatar.javaObject:reportEvent('EventWalk'); avatar.javaObject:reportEvent(' ')",
+        );
         with_ui(|m| m.time_override_ms = Some(1_000_000));
         UIManager::update(&mut t);
         UIManager::render(&mut t);
@@ -635,7 +723,10 @@ mod tests {
             assert_eq!(events, &["EventWalk"]);
             assert_eq!(state.as_deref(), Some("idle"));
         }
-        assert!(with_ui(|m| matches!(m.sprite.cmds.last(), Some(UiDrawCmd::Render(DrawCmd::Clear(256))))));
+        assert!(with_ui(|m| matches!(
+            m.sprite.cmds.last(),
+            Some(UiDrawCmd::Render(DrawCmd::Clear(256)))
+        )));
         // Isometric with a y offset and zoom: 22 - zoom, the set offset.
         run(&mut t, "avatar.javaObject:setIsometric(true); avatar.javaObject:setZoom(14); avatar.javaObject:setYOffset(-0.85); avatar.javaObject:setXOffset(0.25)");
         UIManager::render(&mut t);
@@ -654,7 +745,9 @@ mod tests {
         with_ui(|m| m.time_override_ms = Some(1_010_001));
         UIManager::render(&mut t);
         assert_eq!(log.borrow()[3].4, ["EventDoExt"]);
-        let ext = eval(&mut t, "avatar.javaObject:getVariable('Ext')").as_num().unwrap();
+        let ext = eval(&mut t, "avatar.javaObject:getVariable('Ext')")
+            .as_num()
+            .unwrap();
         assert!((1.0..=6.0).contains(&ext), "{ext}");
         // Hidden: nothing rendered.
         run(&mut t, "avatar.javaObject:setVisible(false)");
