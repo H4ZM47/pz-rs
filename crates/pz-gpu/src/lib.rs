@@ -1018,7 +1018,7 @@ impl Gpu {
                 f.model_uniforms.push(u);
                 let uniform = (f.model_uniforms.len() - 1) as u32;
                 let cull = match draw.pass {
-                    pz_render::model::ModelPass::Character { cull } | pz_render::model::ModelPass::Item { cull } => cull,
+                    pz_render::model::ModelPass::Character { cull } | pz_render::model::ModelPass::AnimatedModel { cull } | pz_render::model::ModelPass::Item { cull } => cull,
                 };
                 let op = outline::Op::Solid { kind: draw.mesh.kind, cull, mesh: draw.mesh.id, uniform, texture: draw.texture.as_ref().and_then(|t| t.id) };
                 f.push_outline(op, &self.state);
