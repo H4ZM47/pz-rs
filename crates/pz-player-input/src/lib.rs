@@ -18,7 +18,10 @@
 //! - the camera and aiming reticle: there is no `IsoCamera` or
 //!   `AimingReticle` global in the port, so the engine publishes them each
 //!   frame with [`set_camera_info`] (after the camera update) and
-//!   [`set_aiming_position`] (after `AimingReticle.update`);
+//!   [`set_aiming_position`] (each gamepad player's
+//!   `GameCharacter::update_aiming_reticle` result);
+//! - `Core`'s screen size and `IsoPlayer.numPlayers` for the split-screen
+//!   views (`IsoCamera.getScreenWidth/getScreenHeight`);
 //! - `System.currentTimeMillis()` at capture time.
 //!
 //! Everything `IsoPlayer.update` reads is fixed for the frame in the
@@ -86,7 +89,10 @@ pub fn set_camera_info(player_index: usize, info: CameraInfo) {
 }
 
 /// Sets `AimingReticle.aimingPositions[player_index]` (screen pixels,
-/// unscaled) for this frame (after `AimingReticle.update`).
+/// unscaled) for this frame: the engine passes what
+/// `GameCharacter::update_aiming_reticle(input, multiplier)` returned (the
+/// character keeps its own copy in `player.aiming_position`, which the
+/// reticle reads; this one serves [`PlayerInput::joypad_aiming_position`]).
 pub fn set_aiming_position(player_index: usize, x: f32, y: f32) {
     VIEW.with(|v| {
         if let Some(a) = v.borrow_mut().aiming.get_mut(player_index) {
@@ -196,8 +202,13 @@ pub struct EnginePlayerInput {
     pub zoom: [f32; 4],
     /// `IsoCamera.cameras`.
     pub cameras: [CameraInfo; 4],
-    /// `AimingReticle.aimingPositions`.
+    /// `AimingReticle.aimingPositions` (see [`set_aiming_position`]).
     pub aiming_positions: [(f32, f32); 4],
+    /// `Core.getScreenWidth()` / `getScreenHeight()`.
+    pub screen_width: i32,
+    pub screen_height: i32,
+    /// `IsoPlayer.numPlayers`.
+    pub num_players: i32,
     /// `System.currentTimeMillis()`.
     pub time_ms: i64,
     /// Mouse buttons a UI-checked query saw released (bit per button):
@@ -241,6 +252,9 @@ impl EnginePlayerInput {
             zoom: std::array::from_fn(|i| core.get_zoom(i as i32)),
             cameras: view.cameras,
             aiming_positions: view.aiming,
+            screen_width: core.get_screen_width(),
+            screen_height: core.get_screen_height(),
+            num_players: core.num_players,
             time_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis() as i64),
@@ -459,6 +473,32 @@ impl PlayerInput for EnginePlayerInput {
             pz_render::iso::x_to_iso(px, py, z),
             pz_render::iso::y_to_iso(px, py, z),
         )
+    }
+
+    /// `IsoCamera.getScreenWidth/getScreenHeight(playerIndex)`: half the
+    /// width with more than one player, half the height with more than two.
+    fn screen_size(&self, _player_index: i32) -> (i32, i32) {
+        let w = if self.num_players > 1 {
+            self.screen_width / 2
+        } else {
+            self.screen_width
+        };
+        let h = if self.num_players > 2 {
+            self.screen_height / 2
+        } else {
+            self.screen_height
+        };
+        (w, h)
+    }
+
+    /// `PlayerCamera.XToScreenExact/YToScreenExact(x, y, z, 0)`:
+    /// `IsoUtils.XToScreen/YToScreen` minus the camera offset, in zoomed
+    /// pixels (the inverse of [`screen_to_iso`](PlayerInput::screen_to_iso)).
+    fn iso_to_screen(&self, player_index: i32, x: f32, y: f32, z: f32) -> (f32, f32) {
+        let cam = player_slot(player_index).map_or_else(CameraInfo::default, |p| self.cameras[p]);
+        let sx = pz_render::iso::x_to_screen(x, y) - cam.get_off_x();
+        let sy = pz_render::iso::y_to_screen(x, y, z, 0) - cam.get_off_y();
+        (sx, sy)
     }
 
     fn current_time_ms(&self) -> i64 {

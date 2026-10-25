@@ -441,3 +441,56 @@ fn joypad_axis_follows_the_character_binding() {
     assert_eq!(i.joypad_axis(0, JoypadAxis2dBinding::Aiming), (0.0, 0.0));
     assert!(!i.joypad_axis_applied(0, JoypadAxis2dBinding::Aiming));
 }
+
+#[test]
+fn screen_size_is_split_screen_aware() {
+    let mut i = EnginePlayerInput {
+        screen_width: 1920,
+        screen_height: 1081,
+        num_players: 1,
+        ..Default::default()
+    };
+    assert_eq!(i.screen_size(0), (1920, 1081));
+    i.num_players = 2;
+    assert_eq!(i.screen_size(1), (960, 1081));
+    i.num_players = 3;
+    assert_eq!(i.screen_size(2), (960, 540));
+    i.num_players = 4;
+    assert_eq!(i.screen_size(3), (960, 540));
+}
+
+#[test]
+fn capture_reads_screen_size_and_players() {
+    {
+        let core = pz_lua_api::bind_core::shared_core();
+        let mut c = core.borrow_mut();
+        c.set_screen_size(1280, 720);
+        c.num_players = 2;
+    }
+    let i = EnginePlayerInput::capture();
+    assert_eq!(i.screen_size(0), (640, 720));
+}
+
+#[test]
+fn iso_to_screen_matches_iso_utils() {
+    let mut i = EnginePlayerInput::default();
+    i.cameras[0] = CameraInfo {
+        off_x: 100.4,
+        off_y: 50.9,
+        right_click_x: 0.3,
+        right_click_y: 0.0,
+    };
+    // XToScreen(5, 3) = 5 * 64 - 3 * 64 = 128; YToScreen(5, 3, 1, 0) =
+    // 3 * 32 + 5 * 32 + (0 - 1) * 192 = 64; minus the offsets (100, 50).
+    assert_eq!(i.iso_to_screen(0, 5.0, 3.0, 1.0), (28.0, 14.0));
+    // The inverse of screen_to_iso on whole pixels.
+    assert_eq!(i.screen_to_iso(0, 28, 14, 1.0), (5.0, 3.0));
+    // Player 2, camera (64, 0): world (0.5, -0.5, 0) is the screen origin.
+    i.cameras[2] = CameraInfo {
+        off_x: 64.0,
+        ..Default::default()
+    };
+    assert_eq!(i.iso_to_screen(2, 0.5, -0.5, 0.0), (0.0, 0.0));
+    // Height raises the point: z = 0.5 is 96 pixels up.
+    assert_eq!(i.iso_to_screen(2, 0.5, -0.5, 0.5), (0.0, -96.0));
+}
