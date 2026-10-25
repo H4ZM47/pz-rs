@@ -5,15 +5,20 @@
 //!
 //! Bodies use the death animation's pose: the `zombie` anim set's
 //! `onground` state (or the player set's `deadbody`) at track time 0 (1
-//! when killed by a fall), with `FallOnFront`/`KilledByFall` set. Ragdoll
-//! death poses (`diedBoneTransforms`) are not ported.
+//! when killed by a fall), with `FallOnFront`/`KilledByFall` set. A body
+//! that died ragdolling keeps the pose the ragdoll settled in
+//! (`diedBoneTransforms`, see [`pz_ragdoll::corpse`]): the render job plays
+//! it as the `DeathPose` ragdoll track over the state's animation, and
+//! measures it with `calcModelBounds`' ragdoll branch.
 
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use pz_anim::bone_transform::BoneTransform;
+use pz_anim::math::{Matrix4f, Vector3f};
 use pz_anim::{AdvancedAnimator, AnimationPlayer, AnimationSet, MapVariableSource, VariableValue};
 use pz_iso_render::atlas::{AtlasEntry, Atlases, Checksummer};
-use pz_iso_render::body_atlas::{self, ATLAS_SIZE, BITMAP_SIZE};
+use pz_iso_render::body_atlas::{self, BodyBones, ATLAS_SIZE, BITMAP_SIZE};
 use pz_iso_render::models::encode_light;
 use pz_iso_render::objects::ShadowRequest;
 use pz_iso_render::shadows::ShadowParams;
@@ -67,6 +72,11 @@ pub struct DeadBody {
     pub alpha: f32,
     /// `IsoAnimal` size (1 for people).
     pub animal_size: f32,
+    /// `ragdollFall`: the character died ragdolling.
+    pub ragdoll_fall: bool,
+    /// `getDiedBoneTransforms()`: every bone's local transform when the
+    /// ragdolled character died (empty otherwise).
+    pub died_bone_transforms: Vec<BoneTransform>,
 }
 
 impl DeadBody {
@@ -193,6 +203,8 @@ pub fn pose(player: &mut AnimationPlayer, set: Rc<AnimationSet>, body: &DeadBody
     animator.set_state(player, &mut vars, state, &[]);
     // The blends' times are scaled by fpsMultiplier = 100.
     animator.update(player, &mut vars, 100.0);
+    // setDeathPose, between setModelData's update and update().
+    pz_ragdoll::corpse::set_death_pose(player, &body.died_bone_transforms);
     animator.update(player, &mut vars, 100.0);
     if track_time > 0.0 {
         if let Some(id) = player.tracks().first().map(|t| t.id) {
@@ -261,17 +273,24 @@ impl DeadBodyAtlas {
         let scale = body.animal_size;
         // renderMain.
         let angle = player.rendered_angle();
-        let shadow = shadow_params(Some(player), scale, false);
-        // calcModelOffset: the bones' model-space positions.
-        let skip = player.skinning_bone_index("Translation_Data", -1);
-        let bones: Vec<[f32; 3]> = (0..player.num_bones())
-            .filter(|&i| i as i32 != skip)
-            .map(|i| {
-                let m = player.model_transform(i);
-                [m.m03, m.m13, m.m23]
-            })
-            .collect();
-        let pl = body_atlas::placement(angle, scale, &bones);
+        let ragdoll = pz_ragdoll::corpse::use_ragdoll_pose(body.ragdoll_fall, &body.died_bone_transforms, player);
+        let shadow = shadow_params(Some(player), scale, ragdoll);
+        // calcModelOffset: the bones' model-space positions, or the ragdoll
+        // pose's own points.
+        let pl = match ragdoll_bone_points(player, body) {
+            Some((bones, pelvis)) => body_atlas::placement_of(angle, scale, BodyBones::Ragdoll(&bones, pelvis)),
+            None => {
+                let skip = player.skinning_bone_index("Translation_Data", -1);
+                let bones: Vec<[f32; 3]> = (0..player.num_bones())
+                    .filter(|&i| i as i32 != skip)
+                    .map(|i| {
+                        let m = player.model_transform(i);
+                        [m.m03, m.m13, m.m23]
+                    })
+                    .collect();
+                body_atlas::placement(angle, scale, &bones)
+            }
+        };
         // AnimatedModel.DoRender(0, 0, 1024, 1024, SIZE_V, angle) into the
         // cleared bitmap.
         let (p, mv) = body_atlas::bitmap_camera(angle, pl.offset);
@@ -313,6 +332,62 @@ impl DeadBodyAtlas {
             shadow,
         }
     }
+}
+
+/// `calcModelBounds`' ragdoll branch (`useRagdollPose` and a pelvis bone):
+/// the frozen pose composed from the pelvis down, skipping the bones under
+/// `Dummy01`/`Bip01` and their children's links to them, each point turned
+/// a quarter turn about x and half a turn about y; and the pelvis point the
+/// bounds are measured from. `None` when the body has no ragdoll pose.
+pub fn ragdoll_bone_points(player: &AnimationPlayer, body: &DeadBody) -> Option<(Vec<[f32; 3]>, [f32; 3])> {
+    let died = &body.died_bone_transforms;
+    let pelvis = player.skinning_bone_index("Bip01_Pelvis", -1);
+    if !pz_ragdoll::corpse::use_ragdoll_pose(body.ragdoll_fall, died, player) || pelvis == -1 {
+        return None;
+    }
+    let dummy01 = player.skinning_bone_index("Dummy01", -1);
+    let bip01 = player.skinning_bone_index("Bip01", -1);
+    let translation = player.skinning_bone_index("Translation_Data", -1);
+    let (bip01u, pelvisu) = (bip01 as usize, pelvis as usize);
+    let n = died.len();
+    let mut ws = vec![Matrix4f::IDENTITY; n];
+    let mut ignore = vec![false; n];
+    let m = |i: usize| {
+        let mut b = died[i];
+        b.matrix()
+    };
+    ws[bip01u] = m(bip01u);
+    ws[pelvisu] = Matrix4f::mul(&m(pelvisu), &ws[bip01u]);
+    let skeleton = player.skeleton();
+    for i in 0..n {
+        ignore[i] = true;
+        let ii = i as i32;
+        if ii == dummy01 || ii == bip01 || ii == pelvis || ii == translation {
+            continue;
+        }
+        let Some(parent) = skeleton.parent(i) else { continue };
+        if parent as i32 == dummy01 || parent as i32 == bip01 {
+            continue;
+        }
+        ignore[i] = false;
+        ws[i] = Matrix4f::mul(&m(i), &ws[parent]);
+    }
+    for i in 0..n {
+        if ignore[i] {
+            continue;
+        }
+        ws[i].rotate(1.570_796_4, Vector3f::new(1.0, 0.0, 0.0));
+        ws[i].rotate(std::f64::consts::PI as f32, Vector3f::new(0.0, 1.0, 0.0));
+    }
+    let points = (0..player.num_bones())
+        .filter(|&i| {
+            let ii = i as i32;
+            !(ignore[i] || ii == dummy01 || ii == bip01 || ii == pelvis || ii == translation)
+        })
+        .map(|i| [ws[i].m03, ws[i].m13, ws[i].m23])
+        .collect();
+    let p = &ws[pelvisu];
+    Some((points, [p.m03, p.m13, p.m23]))
 }
 
 /// `DrawCharSingular`'s lights for the atlas render: the square's result
