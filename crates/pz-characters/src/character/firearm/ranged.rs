@@ -55,7 +55,9 @@ pub fn closest_vector3(a: [f32; 3], b: [f32; 3], p: [f32; 3]) -> [f32; 3] {
     let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
     let d_apab = ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2];
     let d_abab = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-    let t = (d_apab / d_abab).min(1.0).max(0.0);
+    // `Math.max(0, Math.min(1, t))`: NaN stays NaN.
+    let q = d_apab / d_abab;
+    let t = if q.is_nan() { q } else { q.clamp(0.0, 1.0) };
     [a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]]
 }
 
@@ -331,8 +333,8 @@ impl<I: 'static> GameCharacter<I> {
         let z_of = |cx: &mut StateCx<'_, I>, h: &HitInfo| cx.world.character_mut(h.target).map_or(h.z, |t| t.vars.z);
         let mut min = f32::MAX;
         let mut best: Option<usize> = None;
-        for i in 0..list.len() {
-            let dz = (z_of(cx, &list[i]) - owner_z).abs();
+        for (i, h) in list.iter().enumerate() {
+            let dz = (z_of(cx, h) - owner_z).abs();
             if dz < min {
                 min = dz;
                 best = Some(i);

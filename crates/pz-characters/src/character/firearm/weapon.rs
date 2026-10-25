@@ -175,7 +175,16 @@ impl<I: 'static> GameCharacter<I> {
     /// draws `Rand.Next(0f, 1f)` unless the chance is 0; returns
     /// `isJammed()`.
     pub fn check_jam(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, id: i32, racking: bool) -> bool {
-        let Some(w) = self.items.item(id).and_then(|i| FirearmStats::of(sm, i)) else { return false };
+        let Some(mut item) = self.items.item(id).cloned() else { return false };
+        let r = self.check_jam_item(sm, chars, ctx, &mut item, racking);
+        *self.items.item_mut(id).expect("weapon present above") = item;
+        r
+    }
+
+    /// [`Self::check_jam`] on a weapon item the character fires (`self` is
+    /// the player argument).
+    pub fn check_jam_item(&self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, item: &mut InventoryItem, racking: bool) -> bool {
+        let Some(w) = FirearmStats::of(sm, item) else { return false };
         let mut chance = (w.jam_gun_chance as f64 * ctx.firearm_jam_multiplier()) as f32;
         if chance == 0.0 {
             return false;
@@ -186,16 +195,24 @@ impl<I: 'static> GameCharacter<I> {
         let modifier = 8.0 * (w.condition as f32 / w.condition_max as f32);
         chance = (chance + if limp { 0.5 } else { 0.0 } + (w.condition_max - w.condition) as f32 / modifier) * 0.01;
         let roll = ctx.rand_next_float(0.0, 1.0);
-        let item = self.items.item_mut(id).expect("weapon present above");
         if roll < chance {
             item.set_jammed(true);
         }
         item.is_jammed()
     }
 
-    /// `HandWeapon.checkUnJam(player)`; returns `isJammed()`.
+    /// `HandWeapon.checkUnJam(player)` on the weapon item `id`; returns
+    /// `isJammed()`.
     pub fn check_unjam(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, id: i32) -> bool {
-        let Some(w) = self.items.item(id).and_then(|i| FirearmStats::of(sm, i)) else { return false };
+        let Some(mut item) = self.items.item(id).cloned() else { return false };
+        let r = self.check_unjam_item(sm, chars, ctx, &mut item);
+        *self.items.item_mut(id).expect("weapon present above") = item;
+        r
+    }
+
+    /// [`Self::check_unjam`] on a weapon item.
+    pub fn check_unjam_item(&self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, item: &mut InventoryItem) -> bool {
+        let Some(w) = FirearmStats::of(sm, item) else { return false };
         let modifier = 8.0 * (w.condition as f32 / w.condition_max as f32);
         let moodles = self.moodles.moodle_level_of(sm, "PANIC").unwrap_or(0)
             + self.moodles.moodle_level_of(sm, "STRESS").unwrap_or(0)
@@ -206,7 +223,6 @@ impl<I: 'static> GameCharacter<I> {
         chance = chance.max(1.0);
         chance = 1.0 - (chance + (w.condition_max - w.condition) as f32 / modifier) * 0.01;
         let roll = ctx.rand_next_float(0.0, 1.0);
-        let item = self.items.item_mut(id).expect("weapon present above");
         if roll < chance {
             item.set_jammed(false);
             if let Some(s) = w.shell_fall_sound {

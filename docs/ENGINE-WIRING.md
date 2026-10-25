@@ -215,6 +215,46 @@ registered):
       with the world's fire manager. Then, for an `isDead` row,
       `setOverallBodyHealth(0)`/`setHealth(0)`; `saved_vehicle` seats the
       player; save with `save_player` (#101).
+- [ ] Bullet world ownership: the world/engine owns the one `PzBullet`
+      (`WorldSimulation`) and counts its steps (`getBulletFrameNo`); the
+      characters reach it through `StateWorld::physics()` (`PzBullet`
+      implements `pz_characters::character::firearm::PhysicsWorld` with
+      the `bullet` feature) and the ragdoll driver through `RagdollEnv`
+      (#ws/firearms).
+- [ ] Firearm hooks on `StateWorld`: `muzzle_attachment(chr)` (the
+      primary hand model's MUZZLE attachment world position/direction),
+      `aim_reticle_iso(chr)` (`AimingReticle` x/y through `XToIso/YToIso`),
+      `ballistics_skeleton(chr)` (bone count, `getAngle()`, packed bone
+      transforms), `first_blocking_square` (`LosUtil` for tracers),
+      `square_is_outside`, `vehicle_aim`, `ragdoll_pelvis(chr)` (the
+      pz-ragdoll controller's pelvis); `SimContext::wind_intensity`, the
+      firearm sandbox options and `active_ragdoll_simulations`
+      (`RagdollGlobals.number_of_active_simulations`) (#ws/firearms).
+- [ ] Per frame, ballistics (`IsoGameCharacter.updateInternal` order):
+      each non-animal character `update_ballistics_target(ctx, world)`;
+      a character aiming an aimed firearm (`getUseHandWeapon`) runs
+      `setAngleFromAim` then `update_ballistics(sm, chars, ctx, world)`;
+      `CombatManager.update` for player 0 with a ready ranged weapon and
+      the reticle mode: `calculate_attack_vars` + `calculate_ranged_hit_info_list`
+      (`updateReticle`; the reticle chance comes from
+      `calculate_hit_chance_data(cx, w, None, vehicle)`); in the
+      character's postupdate `ballistics_controller.post_update()`; on
+      release `release_ballistics_controller` / `release_ballistics_target`.
+      Physics steps after the character updates (#ws/firearms).
+- [ ] Shots: the anim event `AttackCollisionCheck` runs the ranged path
+      of `attack_collision_check`; Lua's `ISReloadWeaponAction.onShoot`
+      (`OnWeaponSwingHitPoint`) spends the round through the bound
+      HandWeapon methods; `SimEvent::BulletTracer`, `MuzzleFlash`,
+      `BulletHitSound`, `CharacterAddBlood`, `CombatStatistic`,
+      `ReticleMode` go to the effects, sound, visuals and statistics
+      (#ws/firearms).
+- [ ] Per frame, ragdolls: before the animation update call
+      `update_ragdoll_variables(ctx)` (the `canRagdoll` variable the death
+      and shot nodes test); pass `CharacterRagdoll { chr, sm, ctx,
+      attacker_position }` as the `RagdollCharacter` of #102's
+      `RagdollEnv` (it takes the shot impulse from the ballistics target's
+      combat data and `PhysicsHitReactionScript`); after the update
+      `CharacterRagdoll::track(chr, player, controller)` (#ws/firearms).
 
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);

@@ -16,7 +16,7 @@
 //! `StateWorld` hooks.
 
 pub mod ballistics;
-#[cfg(feature = "bullet")]
+#[cfg(any(feature = "bullet", test))]
 pub mod bullet;
 pub mod hit_chance;
 pub mod physics;
