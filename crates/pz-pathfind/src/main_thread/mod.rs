@@ -1,28 +1,21 @@
 //! Main-thread collision queries on the live world: `zombie.pathfind
 //! .LineClearCollideMain` behind `PolygonalMap2.canStandAt`,
-//! `lineClearCollide` and `getCollidepoint`, plus
-//! `PolygonalMap2.getApparentZ` and `intersectLineWithVehicle`, and
-//! `zombie.iso.LosUtil.lineClear` (with `IsoGridSquare.testVisionAdjacent`).
+//! `lineClearCollide` and `getCollidepoint`, `CollideWithObstacles` behind
+//! `PolygonalMap2.resolveCollision`, plus `PolygonalMap2.getApparentZ` and `intersectLineWithVehicle`.
 //!
-//! These read `pz-world` squares (through the [`SquareBits`] world view, which
-//! also supplies `SquareUpdateTask.getCost` and the barricade hook) and
-//! vehicles through a [`VehicleSource`]. They are the Java code's float
-//! arithmetic, not the native library's: no fused multiply-adds, Java's
-//! `Vector2.normalize`, and the square-based `canStandAtOld` /
-//! `isNotClearOld` the shipped game uses (`isNotClear` and `canStandAt`
-//! forward to them).
+//! The `IsoGridSquare` queries and `LosUtil.lineClear` they rest on are
+//! `pz-world`'s ([`pz_world::los`], [`pz_world::square`]), with
+//! [`pz_world::ObjectHooks`] answering for the thumpables, barricades,
+//! fires and door curtains of the loaded objects. What is here on top:
+//! `LineClearCollideMain` itself and the edge-object getters as
+//! [`ObjectRef`]s.
 //!
-//! `pz-world` has no `LosUtil` yet; [`los_util`] is the port of
-//! `lineClear`. The `IsoGridSquare` queries these need and `pz-world` does
-//! not have yet (`isAdjacentToWindow`, `isAdjacentToHoppable`,
-//! `isStairsEdgeBlocked`, `getSlopedSurfaceHeight(dx, dy)`,
-//! `hasIdenticalSlopedSurface`, `testVisionAdjacent`, `TestVision` of doors,
-//! windows, thumpables, curtains and barricades, and `hasBlockedDoor`
-//! including thumpable doors) are in [`square`]; they could move into
-//! `pz-world` later.
-//!
-//! The debug-render flag (8) only draws in Java; the results are the same
-//! with or without it, so it is ignored.
+//! The arithmetic is the Java code's float arithmetic, not the native
+//! library's: no fused multiply-adds, Java's `Vector2.normalize`, and the
+//! square-based `canStandAtOld` / `isNotClearOld` the shipped game uses
+//! (`isNotClear` and `canStandAt` forward to them). The debug-render flag
+//! (8) only draws in Java; the results are the same with or without it, so
+//! it is ignored.
 //!
 //! # Parity
 //!
@@ -32,19 +25,25 @@
 //! `LosUtil.lineClear` with random inputs; `examples/line_clear_replay.rs`
 //! replays them on the same chunks loaded with `pz-world`. See that example
 //! for the numbers.
+//!
+//! [`ObjectRef`]: crate::mover::ObjectRef
 
+pub mod collide_with_obstacles;
 pub mod line_clear_collide;
-pub mod los_util;
+pub mod los;
 pub mod square;
 
 use pz_world::chunk::IsoGridSquare;
-use pz_world::GetSquare;
+use pz_world::square::{SquareHooks, VisionEnv};
+use pz_world::{GetSquare, IsoSpriteManager, ObjectHooks};
 
 use crate::game_vehicle::VehicleSource;
 use crate::square_bits::SquareBits;
 
+pub use collide_with_obstacles::CollideWithObstacles;
 pub use line_clear_collide::LineClearCollideMain;
-pub use los_util::{line_clear, TestResults};
+pub use los::los_line_clear_collide;
+pub use pz_world::los::{line_clear, line_clear_range, TestResults};
 
 /// The world the main-thread queries read.
 pub struct MainThreadMap<'w, 'a, G: GetSquare> {
@@ -55,14 +54,18 @@ pub struct MainThreadMap<'w, 'a, G: GetSquare> {
     /// `GameServer.server` (`testVisionAdjacent`'s diagonal re-check is
     /// skipped on a server).
     pub is_server: bool,
+    /// The objects `pz-world`'s square queries ask about (`IsoBarricade`,
+    /// `IsoThumpable`, `IsoFire`, door curtains).
+    pub hooks: ObjectHooks<'a>,
 }
 
-impl<'w, 'a: 'w, G: GetSquare> MainThreadMap<'w, 'a, G> {
+impl<'w, 'a: 'w, G: GetSquare + 'a> MainThreadMap<'w, 'a, G> {
     pub fn new(bits: &'w SquareBits<'a, G>, vehicles: &'w dyn VehicleSource) -> Self {
         MainThreadMap {
             bits,
             vehicles,
             is_server: false,
+            hooks: ObjectHooks::new(bits.squares, bits.sprites),
         }
     }
 
@@ -70,6 +73,34 @@ impl<'w, 'a: 'w, G: GetSquare> MainThreadMap<'w, 'a, G> {
     #[inline]
     pub fn square(&self, x: i32, y: i32, z: i32) -> Option<&'a IsoGridSquare> {
         self.bits.squares.get_grid_square(x, y, z)
+    }
+
+    /// The squares (`IsoWorld.instance.currentCell`).
+    #[inline]
+    pub fn squares(&self) -> &'a G {
+        self.bits.squares
+    }
+
+    /// The sprite manager.
+    #[inline]
+    pub fn sprites(&self) -> &'a IsoSpriteManager {
+        self.bits.sprites
+    }
+
+    /// The object hooks for `pz-world`'s square queries.
+    #[inline]
+    pub fn hooks(&self) -> &dyn SquareHooks {
+        &self.hooks
+    }
+
+    /// What `LosUtil.lineClear` reads.
+    pub fn vision_env(&self) -> VisionEnv<'_, G> {
+        VisionEnv {
+            squares: self.bits.squares,
+            sprites: self.bits.sprites,
+            hooks: &self.hooks,
+            is_server: self.is_server,
+        }
     }
 }
 

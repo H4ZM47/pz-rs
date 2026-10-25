@@ -10,7 +10,7 @@ use pz_world::square::IsoDirections;
 
 use super::math::*;
 use super::GameCharacter;
-use crate::character::state::{LosResult, StateCx};
+use crate::character::state::{TestResults, StateCx};
 use crate::character::states::ids;
 use pz_audio::world_sound::{Listener, ListenerSquare, WorldSound};
 
@@ -770,7 +770,7 @@ impl<I: 'static> GameCharacter<I> {
         {
             let (px, py, _) = self.path_target(cx);
             let d2 = self.dist_to_squared_xy(px as f32, py as f32);
-            if d2 < 16.0 && cx.world.los_line_clear(me, (px, py, me.2), false) != LosResult::Blocked && !self.environment.near_siren_vehicle {
+            if d2 < 16.0 && cx.world.los_line_clear(me, (px, py, me.2), false) != TestResults::Blocked && !self.environment.near_siren_vehicle {
                 self.set_var_bool("bPathfind", false);
                 self.set_var_bool("bMoving", false);
                 self.clear_path2();
@@ -815,7 +815,7 @@ impl<I: 'static> GameCharacter<I> {
         if let Some(s) = &sound {
             if s.repeating && s.z == fastfloor(self.vars.z) {
                 let d = self.dist_to_squared_xy(s.x as f32, s.y as f32);
-                if d < 25.0 && cx.world.los_line_clear(me, (s.x, s.y, me.2), false) != LosResult::Blocked {
+                if d < 25.0 && cx.world.los_line_clear(me, (s.x, s.y, me.2), false) != TestResults::Blocked {
                     sound = None;
                 }
             }
@@ -870,7 +870,7 @@ impl<I: 'static> GameCharacter<I> {
             self.set_turn_alerted_values(sx, sy);
         }
         let me = (fastfloor(self.vars.x), fastfloor(self.vars.y), fastfloor(self.vars.z));
-        if cx.world.los_line_clear(me, (sx, sy, sz), false) != LosResult::Blocked {
+        if cx.world.los_line_clear(me, (sx, sy, sz), false) != TestResults::Blocked {
             self.zombie_path_to_sound(sx, sy, sz, cx);
             self.zombie.last_heard_sound = self.path_target(cx);
         } else {

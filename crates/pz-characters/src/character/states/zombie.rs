@@ -17,7 +17,7 @@ use pz_anim::{AnimEventRecord, AnimationVariableSource};
 use super::ids;
 use super::stagger_back::parse_boolean;
 use crate::character::state::{
-    EatTarget, LosResult, Param, State, StateCx, StateId, StateRef, ThumpKind, ThumpTarget,
+    EatTarget, TestResults, Param, State, StateCx, StateId, StateRef, ThumpKind, ThumpTarget,
 };
 use crate::character::zombie::math::*;
 use crate::character::{GameCharacter, SimEvent};
@@ -291,8 +291,8 @@ impl<I: 'static> State<I> for WalkTowardState {
         let target_vehicle = target.and_then(|t| cx.world.character_mut(t).and_then(|c| c.path.vehicle));
         if let Some(t) = target {
             if owner.is_target_location_known() {
-                if cx.world.character_mut(t).is_some() {
-                    cx.world.path_to_character(owner, t);
+                if let Some(mid) = cx.world.character_mut(t).map(|c| c.mover_id_of()) {
+                    cx.world.path_to_character(owner, mid);
                     // TODO(vehicles): `chooseBestAttackPosition` for a target
                     // in a vehicle.
                 }
@@ -719,7 +719,7 @@ pub fn trigger_player_reaction<I: 'static>(owner: &mut GameCharacter<I>, hit_rea
     let me = (fastfloor(owner.vars.x), fastfloor(owner.vars.y), fastfloor(owner.vars.z));
     let them = (fastfloor(tx), fastfloor(ty), fastfloor(tz));
     let r = cx.world.los_line_clear(me, them, false);
-    if r == LosResult::Blocked || r == LosResult::ClearThroughClosedDoor {
+    if r == TestResults::Blocked || r == TestResults::ClearThroughClosedDoor {
         return Ok(());
     }
     let t_sq = cx.world.character_mut(t).and_then(|c| c.path.current_square);

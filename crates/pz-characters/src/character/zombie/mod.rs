@@ -1047,8 +1047,10 @@ impl<I: 'static> GameCharacter<I> {
         if self.zombie_repath_blocked() {
             return;
         }
-        let Some((tx, ty, tz)) = cx.world.character_mut(target).map(|t| (t.vars.x, t.vars.y, t.vars.z)) else { return };
-        cx.world.path_to_character(self, target);
+        let Some((tx, ty, tz, mid)) = cx.world.character_mut(target).map(|t| (t.vars.x, t.vars.y, t.vars.z, t.mover_id_of())) else {
+            return;
+        };
+        cx.world.path_to_character(self, mid);
         self.path_to_aux(tx, ty, tz, cx);
     }
 

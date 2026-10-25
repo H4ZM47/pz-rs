@@ -112,9 +112,9 @@ impl StateWorld<()> for Plane {
     fn path_to_sound(&mut self, _chr: &mut dyn PathMover, x: i32, y: i32, z: i32) {
         self.pathed.push((x, y, z));
     }
-    fn path_to_character(&mut self, chr: &mut dyn PathMover, target: i32) {
+    fn path_to_character(&mut self, chr: &mut dyn PathMover, target: pz_pathfind::mover::MoverId) {
         let _ = chr;
-        self.pathed.push((target, -1, -1));
+        self.pathed.push((target.0 as u32 as i32, -1, -1));
     }
 }
 

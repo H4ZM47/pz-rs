@@ -26,17 +26,18 @@
 //!
 //! | query | asked | compared | match |
 //! |---|---|---|---|
-//! | `canStandAt` (flags 0..3, 16) | 25000 | 13357 | 13357 (7835 free, 5522 blocked) |
-//! | `lineClearCollide` (flags 0..7) | 25000 | 10882 | 10882 (2950 clear, 7932 blocked) |
-//! | `getCollidepoint` (flags 0..7) | 10000 | 4360 | 4360 (float bits) |
+//! | `canStandAt` (flags 0..3, 16) | 25000 | 14614 | 14614 (8491 free, 6123 blocked) |
+//! | `lineClearCollide` (flags 0..7) | 25000 | 12932 | 12932 (3298 clear, 9634 blocked) |
+//! | `getCollidepoint` (flags 0..7) | 10000 | 5196 | 5196 (float bits) |
 //! | `getApparentZ` | 5000 | 3834 | 3834 (float bits, incl. stairs) |
-//! | `LosUtil.lineClear` | 15000 | 6446 | 6446 (3605 clear, 2739 blocked, 83 through a window, 19 through a closed door) |
+//! | `LosUtil.lineClear` (`pz-world`'s) | 15000 | 7737 | 7737 (4238 clear, 3361 blocked, 114 through a window, 24 through a closed door) |
 //!
-//! Skipped queries are almost all in `muldraugh` and `forest` (worldgen
-//! vegetation) and `riverside`; in `westpoint` and `louisville` most
-//! squares match and 75-95% of the queries are compared. Room ids are not
-//! compared (the port's upper-level room ids differ; they do not affect
-//! these queries, the `exterior` flag does and is compared).
+//! Chunks are loaded in the game's load order (each chunk loaded,
+//! recalculated and passed through `loadInMainThread` before the next one
+//! enters the cell). Skipped queries are almost all in `muldraugh`,
+//! `forest` and `riverside` (worldgen vegetation); in `westpoint` and
+//! `louisville` nearly every query is compared. Room ids are part of the
+//! compared inputs and match the game's on every square.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -45,7 +46,7 @@ use pz_classfile::{Jar, Value};
 use pz_fs::GameFs;
 use pz_pathfind::game_vehicle::NoVehicles;
 use pz_pathfind::main_thread::{line_clear, LineClearCollideMain, MainThreadMap};
-use pz_pathfind::square_bits::{DefaultBitsHooks, SquareBits};
+use pz_pathfind::square_bits::SquareBits;
 use pz_world::chunk::{ChunkLoadEnv, IsoCell};
 use pz_world::fix2x::Fix2xTable;
 use pz_world::{
@@ -279,11 +280,6 @@ fn differing_squares(
     let mut bad = HashSet::new();
     for (k, gi) in inputs {
         let ri = rust_inputs(cell.get_grid_square(k.0, k.1, k.2), sb, m);
-        // Room ids do not matter here (the exterior flag is compared).
-        let ri = Inputs {
-            room: gi.room.clone(),
-            ..ri
-        };
         if *gi != ri {
             if std::env::var_os("REPLAY_DEBUG").is_some() {
                 let what = if gi.null != ri.null {
@@ -389,8 +385,10 @@ fn main() {
             continue;
         }
         let inputs = oracle_inputs(&oracle.join("regions").join(region).join("squares.tsv"));
+        // The game's load order: each chunk is loaded, recalculated and
+        // passed through `loadInMainThread` before the next one enters the
+        // cell (`IsoChunkMap.processAllLoadGridSquare`).
         let mut cell = IsoCell::default();
-        let mut order = Vec::new();
         for wy in ry - 1..ry + rh + 1 {
             for wx in rx - 1..rx + rw + 1 {
                 let mut rand = JavaRandom::new(((wx as i64) << 32) ^ (wy as i64 & 0xffff_ffff));
@@ -404,13 +402,13 @@ fn main() {
                     hooks: &mut hooks,
                 };
                 cell.load_chunk(&meta, wx, wy, &mut env);
-                order.push((wx, wy));
+                cell.recalc_chunk_squares(wx, wy, &meta, &sprites);
+                cell.load_in_main_thread(wx, wy, &meta, &sprites);
             }
         }
-        for &(wx, wy) in &order {
-            cell.recalc_chunk_squares(wx, wy, &meta, &sprites);
-        }
-        let sb = SquareBits::new(&sprites, &meta, &cell, &DefaultBitsHooks).unwrap();
+        // Barricades from the loaded objects (`pz_world::ObjectHooks`).
+        let object_hooks = pz_world::ObjectHooks::new(&cell, &sprites);
+        let sb = SquareBits::new(&sprites, &meta, &cell, &object_hooks).unwrap();
         let bad = differing_squares(
             &inputs,
             &cell,
@@ -470,7 +468,7 @@ fn main() {
                 }
                 _ => {
                     let (x0, y0, z0, x1, y1, z1) = (i(1), i(2), i(3), i(4), i(5), i(6));
-                    let got = line_clear(&map, x0, y0, z0, x1, y1, z1, c[7] == "1");
+                    let got = line_clear(&map.vision_env(), x0, y0, z0, x1, y1, z1, c[7] == "1");
                     let ord = got as u8;
                     (
                         touches(&bad, x0 as f32, y0 as f32, x1 as f32, y1 as f32, z0, z1),
