@@ -308,7 +308,9 @@ fn reanimated(sm: &ScriptManager, chars: &mut Characters, ctx: &Recorder, locs: 
     z.mod_data = p.mod_data.clone();
     z.descriptor = p.descriptor.clone();
     z.human_visual = p.human_visual.clone();
-    z.items.inventory.items = p.items.inventory.items.clone();
+    // The dead player's items (decoded and raw records) as the zombie's
+    // own container's.
+    pz_inventory::shared::load_into(&z.items.inventory, p.items.inventory.borrow().to_container());
     z.items.worn_items = p.items.worn_items.clone();
     z.items.worn_locations = p.items.worn_locations.clone();
     z.read_books = p.read_books.clone();
