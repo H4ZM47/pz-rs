@@ -990,14 +990,53 @@ impl InventoryItem {
 
     // ----- Use -----
 
-    /// `getCurrentUsesFloat()`: `uses * useDelta` for `DrainableComboItem`
-    /// and `WeaponPart`, `uses / getMaxUses()` for the rest.
+    /// `getCurrentUsesFloat()` and its overrides: `uses * useDelta` for
+    /// `DrainableComboItem` and `WeaponPart`, the hunger left for `Food`
+    /// with a base hunger, the device power for `Radio`, `uses /
+    /// getMaxUses()` for the rest.
     pub fn get_current_uses_float(&self) -> f32 {
-        match self.template.class {
-            ItemClass::Drainable | ItemClass::WeaponPart => {
-                self.uses as f32 * self.template.use_delta
+        match (&self.kind, self.template.class) {
+            (_, ItemClass::Drainable | ItemClass::WeaponPart) => {
+                self.uses as f32 * self.instance_use_delta()
             }
+            (ItemKind::Food(f), _) if f.base_hunger != 0.0 => f.hung_change.abs(),
+            (ItemKind::Radio(_, d), _) => d.power_delta,
             _ => self.uses as f32 / self.get_max_uses() as f32,
+        }
+    }
+
+    /// The `useDelta` field the uses methods read: `DrainableComboItem`'s
+    /// and `WeaponPart`'s own (`Item.InstanceItem` sets them from the
+    /// script), `InventoryItem.useDelta` (0.03125, which nothing sets) for
+    /// the rest.
+    pub fn instance_use_delta(&self) -> f32 {
+        match self.template.class {
+            ItemClass::Drainable | ItemClass::WeaponPart => self.template.use_delta,
+            _ => DEFAULT_USE_DELTA,
+        }
+    }
+
+    /// `getUseDelta()`: the script's for `Clothing` (its override) and
+    /// `DrainableComboItem`, `InventoryItem.useDelta` for the rest
+    /// (`WeaponPart` does not override it, so it reads the base field,
+    /// not its own).
+    pub fn get_use_delta(&self) -> f32 {
+        match self.template.class {
+            ItemClass::Drainable => self.template.use_delta,
+            _ if is_clothing(self) => self.template.use_delta,
+            _ => DEFAULT_USE_DELTA,
+        }
+    }
+
+    /// `setCurrentUsesFloat(f)`: `uses = round(clamp(f, 0, 1) / useDelta)`
+    /// ([`Self::instance_use_delta`]); `DrainableComboItem` also updates
+    /// its weight. `DrainableComboItem.setUsedDelta` and
+    /// `WeaponPart.setUsedDelta` call it.
+    pub fn set_current_uses_float(&mut self, f: f32, ctx: Option<&dyn ItemContext>) {
+        let f = if f.is_nan() { 0.0 } else { f.clamp(0.0, 1.0) };
+        self.uses = java_round(f / self.instance_use_delta());
+        if self.template.class == ItemClass::Drainable {
+            self.update_weight(ctx);
         }
     }
 
@@ -1186,10 +1225,20 @@ impl InventoryItem {
             && other.template.class == ItemClass::Drainable
         {
             // setUsedDelta(other.getCurrentUsesFloat()) = setCurrentUsesFloat.
-            let u = other.get_current_uses_float().clamp(0.0, 1.0);
-            self.uses = (u / self.template.use_delta).round() as i32;
-            self.update_weight(Some(ctx));
+            self.set_current_uses_float(other.get_current_uses_float(), Some(ctx));
         }
+    }
+}
+
+/// `InventoryItem.useDelta`'s initial value.
+pub const DEFAULT_USE_DELTA: f32 = 0.03125;
+
+/// `Math.round(float)`.
+fn java_round(v: f32) -> i32 {
+    if v.is_nan() {
+        0
+    } else {
+        (v as f64 + 0.5).floor() as i32
     }
 }
 

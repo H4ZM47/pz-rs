@@ -310,6 +310,9 @@ pub struct MoveableLight {
     pub b: f32,
 }
 
+/// `Moveable`'s default `movableFullName` and `customNameFull`.
+pub const MOVEABLE_OBJECT: &str = "Moveable Object";
+
 /// `Moveable` (and the moveable half of `Radio`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MoveableData {
@@ -318,6 +321,11 @@ pub struct MoveableData {
     /// `customItem` (from the sprite's `CustomItem` property).
     pub custom_item: Option<String>,
     pub has_read_world_sprite: bool,
+    /// `movableFullName` (the sprite's group and custom name), which
+    /// `getName` translates.
+    pub movable_full_name: String,
+    /// `customNameFull` (with the sprite grid's `(i/n)`).
+    pub custom_name_full: String,
 }
 
 /// `InventoryContainer`.
@@ -469,6 +477,8 @@ impl InventoryItem {
                 light: None,
                 custom_item: None,
                 has_read_world_sprite: false,
+                movable_full_name: MOVEABLE_OBJECT.into(),
+                custom_name_full: MOVEABLE_OBJECT.into(),
             })),
             ItemClass::Radio => ItemKind::Radio(
                 Box::new(MoveableData {
@@ -476,6 +486,8 @@ impl InventoryItem {
                     light: None,
                     custom_item: None,
                     has_read_world_sprite: false,
+                    movable_full_name: MOVEABLE_OBJECT.into(),
+                    custom_name_full: MOVEABLE_OBJECT.into(),
                 }),
                 Box::default(),
             ),
@@ -1170,8 +1182,9 @@ impl InventoryItem {
         let mut name = match (&info.custom_name, &info.group_name) {
             (Some(c), Some(g)) => format!("{g} {c}"),
             (Some(c), None) => c.clone(),
-            _ => "Moveable Object".to_string(),
+            _ => MOVEABLE_OBJECT.to_string(),
         };
+        m.movable_full_name = name.clone();
         if let Some((index, count)) = info.sprite_grid {
             // `setColor(new Color(Rand.Next(0.7f, 1.0f), ...))`, r, g, b.
             let r = env.rand_float(0.7, 1.0);
@@ -1188,6 +1201,7 @@ impl InventoryItem {
                 Some(LuaValue::Str("true".into())),
             );
         }
+        m.custom_name_full = name.clone();
         self.name = name;
         m.has_read_world_sprite = true;
         true

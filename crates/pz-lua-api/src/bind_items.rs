@@ -280,6 +280,29 @@ impl ItemEnv for CreateEnv<'_> {
     }
 }
 
+/// The script item's `getDisplayName()` (translated at load, the full
+/// name when it has none).
+pub fn script_display_name(full_type: &str) -> Option<String> {
+    let sm = crate::bind_registry::shared_script_manager();
+    let s = sm
+        .find_item(full_type, true)?
+        .downcast::<pz_scripts::objects::items::Item>()?;
+    let s = s.borrow();
+    Some(
+        translated_name(&s.module_dot_type)
+            .or_else(|| s.display_name.clone().filter(|n| !n.is_empty()))
+            .unwrap_or_else(|| s.module_dot_type.clone()),
+    )
+}
+
+/// The script item's `vehicleType` (`getMechanicType()`), 0 without one.
+pub fn script_vehicle_type(full_type: &str) -> i32 {
+    let sm = crate::bind_registry::shared_script_manager();
+    sm.find_item(full_type, true)
+        .and_then(|s| s.downcast::<pz_scripts::objects::items::Item>())
+        .map_or(0, |s| s.borrow().vehicle_type)
+}
+
 /// `Translator.getItemNameFromFullType` when the translator is loaded.
 fn translated_name(full_type: &str) -> Option<String> {
     crate::bind_text::with_translator_mut(|t| t.get_item_name_from_full_type(full_type, |_| None))
@@ -566,8 +589,14 @@ fn register_inventory_item(thread: &mut Thread) {
     get!(b, "getType", |i| Value::from(i.get_type()));
     get!(b, "getFullType", |i| Value::from(i.get_full_type()));
     get!(b, "getModule", |i| Value::from(i.get_module()));
-    get!(b, "getDisplayName", |i| Value::from(i.get_name()));
-    get!(b, "getName", |i| Value::from(i.get_name()));
+    // `getName` and `getDisplayName` with the class overrides and state
+    // prefixes ([`crate::bind_item_name`]).
+    get!(b, "getDisplayName", |i| Value::from(
+        crate::bind_item_name::display_name(&i, env().as_ref())
+    ));
+    get!(b, "getName", |i| Value::from(
+        crate::bind_item_name::item_name(&i, env().as_ref())
+    ));
     get!(b, "getID", |i| Value::from(i.id));
     get!(b, "getCondition", |i| Value::from(i.condition));
     get!(b, "getConditionMax", |i| Value::from(i.condition_max));
@@ -592,11 +621,9 @@ fn register_inventory_item(thread: &mut Thread) {
     get!(b, "isCooked", |i| Value::from(i.is_cooked()));
     get!(b, "isBurnt", |i| Value::from(i.is_burnt()));
     get!(b, "getWetness", |i| f(i.get_wetness()));
-    get!(b, "getBloodLevel", |i| f(match &i.kind {
-        ItemKind::Weapon(w) => w.blood_level,
-        ItemKind::Clothing(c) | ItemKind::AlarmClockClothing(c, _) => c.blood_level,
-        _ => 0.0,
-    }));
+    get!(b, "getBloodLevel", |i| f(
+        crate::bind_item_name::blood_level(&i, env().context().assets())
+    ));
     get!(b, "isCustomWeight", |i| Value::from(i.custom_weight));
     get!(b, "isCustomName", |i| Value::from(i.custom_name));
     get!(b, "isFavorite", |i| Value::from(i.favorite));
@@ -616,7 +643,10 @@ fn register_inventory_item(thread: &mut Thread) {
     ));
     get!(b, "getMaxAmmo", |i| {
         let sm = crate::bind_registry::shared_script_manager();
-        Value::from(pz_characters::character::items::script_item(&sm, &i).map_or(0, |s| s.borrow().max_ammo))
+        Value::from(
+            pz_characters::character::items::script_item(&sm, &i)
+                .map_or(0, |s| s.borrow().max_ammo),
+        )
     });
     b.method("setCurrentAmmoCount", |c| {
         let n = int_arg(c, 1);
@@ -633,9 +663,9 @@ fn register_inventory_item(thread: &mut Thread) {
         .get_replace_on_use_full_type()
         .map(Value::from)
         .unwrap_or_default());
-    get!(b, "getBodyLocation", |i| crate::bind_item_visual::body_location_value(
-        i.get_body_location()
-    ));
+    get!(b, "getBodyLocation", |i| {
+        crate::bind_item_visual::body_location_value(i.get_body_location())
+    });
     get!(
         b,
         "getBloodClothingType",
@@ -675,11 +705,11 @@ fn register_inventory_item(thread: &mut Thread) {
     get!(b, "getDamagedSound", |i| opt_str(
         i.template.damaged_sound.as_deref()
     ));
-    get!(b, "getUseDelta", |i| f(i.template.use_delta));
-    get!(b, "getCurrentUsesFloat", |i| f(match i.template.class {
-        ItemClass::Drainable => i.get_current_uses_float(),
-        _ => i.get_current_uses() as f32 / i.get_max_uses() as f32,
-    }));
+    // `getUseDelta` and `getCurrentUsesFloat` dispatch on the item's
+    // class like the Java overrides (`Clothing`, `DrainableComboItem`,
+    // `Food`, `Radio`, `WeaponPart`).
+    get!(b, "getUseDelta", |i| f(i.get_use_delta()));
+    get!(b, "getCurrentUsesFloat", |i| f(i.get_current_uses_float()));
     get!(b, "IsFood", |i| Value::from(matches!(
         i.kind,
         ItemKind::Food(_)
@@ -722,8 +752,9 @@ fn register_inventory_item(thread: &mut Thread) {
     with!(b, "isBodyLocation", |i, c| Ok(Value::from(
         id_arg(c, 1).is_some_and(|l| i.is_body_location(&l))
     )));
+    // `HandWeapon.setActivated` also switches its active light part.
     with!(b, "setActivated", |i, c| {
-        i.activated = bool_arg(c, 1);
+        i.set_activated(bool_arg(c, 1));
         Ok(Value::Nil)
     });
     with!(b, "setFavorite", |i, c| {
@@ -945,7 +976,10 @@ fn food(i: &InventoryItem, g: fn(&pz_inventory::item::FoodData) -> f32) -> Value
 }
 
 /// A weapon's script values (`FirearmStats`), `nil` for other items.
-fn firearm(i: &InventoryItem, g: fn(&pz_characters::character::firearm::FirearmStats) -> Value) -> Value {
+fn firearm(
+    i: &InventoryItem,
+    g: fn(&pz_characters::character::firearm::FirearmStats) -> Value,
+) -> Value {
     let sm = crate::bind_registry::shared_script_manager();
     pz_characters::character::firearm::FirearmStats::of(&sm, i).map_or(Value::Nil, |f| g(&f))
 }
@@ -962,10 +996,16 @@ fn with_shooter<R>(
     ) -> R,
 ) -> LuaResult<R> {
     let chr = match c.arg(1) {
-        Value::Object(o) => o.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>().map(|o| o.0.clone()),
+        Value::Object(o) => o
+            .as_any()
+            .downcast_ref::<crate::bind_character_sim::CharacterObject>()
+            .map(|o| o.0.clone()),
         _ => None,
     };
-    let chr = chr.ok_or_else(|| LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" })?;
+    let chr = chr.ok_or_else(|| LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.NullPointerException",
+    })?;
     let sm = crate::bind_registry::shared_script_manager();
     let chars = crate::bind_characters::shared_characters();
     let ctx = crate::bind_character_sim::current_sim_context();
@@ -1045,14 +1085,28 @@ fn register_weapon(thread: &mut Thread) {
         x.fire_mode.as_deref()
     )));
     // The firearm state Lua's reload, rack and shoot actions use.
-    get!(b, "isSpentRoundChambered", |i| Value::from(i.is_spent_round_chambered()));
-    get!(b, "getSpentRoundCount", |i| Value::from(i.get_spent_round_count()));
+    get!(b, "isSpentRoundChambered", |i| Value::from(
+        i.is_spent_round_chambered()
+    ));
+    get!(b, "getSpentRoundCount", |i| Value::from(
+        i.get_spent_round_count()
+    ));
     get!(b, "getAmmoPerShoot", |_i| Value::from(1));
-    get!(b, "getJamGunChance", |i| firearm(&i, |w| f(w.jam_gun_chance)));
-    get!(b, "isRackAfterShoot", |i| firearm(&i, |w| Value::from(w.rack_after_shoot)));
-    get!(b, "isManuallyRemoveSpentRounds", |i| firearm(&i, |w| Value::from(w.manually_remove_spent_rounds)));
-    get!(b, "getAimingTime", |i| firearm(&i, |w| Value::from(w.aiming_time)));
-    get!(b, "getRecoilDelay", |i| firearm(&i, |w| Value::from(w.recoil_delay)));
+    get!(b, "getJamGunChance", |i| firearm(&i, |w| f(
+        w.jam_gun_chance
+    )));
+    get!(b, "isRackAfterShoot", |i| firearm(&i, |w| Value::from(
+        w.rack_after_shoot
+    )));
+    get!(b, "isManuallyRemoveSpentRounds", |i| firearm(&i, |w| {
+        Value::from(w.manually_remove_spent_rounds)
+    }));
+    get!(b, "getAimingTime", |i| firearm(&i, |w| Value::from(
+        w.aiming_time
+    )));
+    get!(b, "getRecoilDelay", |i| firearm(&i, |w| Value::from(
+        w.recoil_delay
+    )));
     b.method("setRoundChambered", |c| {
         let r = this(c)?;
         let v = bool_arg(c, 1);
@@ -1089,12 +1143,16 @@ fn register_weapon(thread: &mut Thread) {
     b.method("checkJam", |c| {
         let r = this(c)?;
         let racking = bool_arg(c, 2);
-        let v = with_shooter(c, |p, sm, chars, ctx| p.check_jam_item(sm, chars, ctx, &mut r.borrow_mut(), racking))?;
+        let v = with_shooter(c, |p, sm, chars, ctx| {
+            p.check_jam_item(sm, chars, ctx, &mut r.borrow_mut(), racking)
+        })?;
         Ok(c.push(v))
     });
     b.method("checkUnJam", |c| {
         let r = this(c)?;
-        let v = with_shooter(c, |p, sm, chars, ctx| p.check_unjam_item(sm, chars, ctx, &mut r.borrow_mut()))?;
+        let v = with_shooter(c, |p, sm, chars, ctx| {
+            p.check_unjam_item(sm, chars, ctx, &mut r.borrow_mut())
+        })?;
         Ok(c.push(v))
     });
     b.method("isOfWeaponCategory", |c| {
@@ -1128,13 +1186,32 @@ fn register_drainable(thread: &mut Thread) {
     get!(b, "isEmptyUses", |i| Value::from(
         i.get_current_uses_float() <= 0.0
     ));
-    get!(b, "isFullUses", |i| Value::from(
-        i.get_current_uses_float() >= 1.0
-    ));
+    get!(b, "isFullUses", |i| Value::from(i.uses >= i.get_max_uses()));
     envd!(b, "updateWeight", |r, e, ctx, _o, _c| {
         r.borrow_mut().update_weight(Some(ctx));
         Ok(Value::Nil)
     });
+    register_set_used_delta(&b);
+}
+
+/// `DrainableComboItem.setUsedDelta` and `WeaponPart.setUsedDelta`:
+/// `setCurrentUsesFloat(delta)` (`Clothing.setUsedDelta` is the gas mask
+/// filter in the mod data instead).
+fn register_set_used_delta(b: &crate::expose::ClassBuilder) {
+    envd!(b, "setUsedDelta", |r, e, ctx, _o, c| {
+        r.borrow_mut()
+            .set_current_uses_float(num_arg(c, 1) as f32, Some(ctx));
+        Ok(Value::Nil)
+    });
+}
+
+fn register_weapon_part(thread: &mut Thread) {
+    let b = expose_class(
+        thread,
+        "zombie.inventory.types.WeaponPart",
+        Some(INVENTORY_ITEM_CLASS),
+    );
+    register_set_used_delta(&b);
 }
 
 fn register_container(thread: &mut Thread) {
@@ -1188,12 +1265,12 @@ fn register_vehicle_part_methods(thread: &mut Thread) {
     let b = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
     get!(b, "getMaxCapacity", |i| Value::from(i.max_capacity));
     get!(b, "getItemCapacity", |i| f(i.item_capacity));
-    get!(b, "getConditionLowerNormal", |i| f(
-        i.vehicle_part.condition_lower_normal
-    ));
-    get!(b, "getConditionLowerOffroad", |i| f(
-        i.vehicle_part.condition_lower_offroad
-    ));
+    get!(b, "getConditionLowerNormal", |i| f(i
+        .vehicle_part
+        .condition_lower_normal));
+    get!(b, "getConditionLowerOffroad", |i| f(i
+        .vehicle_part
+        .condition_lower_offroad));
     get!(b, "getBrakeForce", |i| f(i.vehicle_part.brake_force));
     get!(b, "getWheelFriction", |i| f(i.vehicle_part.wheel_friction));
     get!(b, "getChanceToSpawnDamaged", |i| Value::from(
@@ -1211,10 +1288,12 @@ fn register_vehicle_part_methods(thread: &mut Thread) {
         i.item_capacity = num_arg(c, 1) as f32;
         Ok(Value::Nil)
     });
-    // `InventoryItem.setCurrentUsesFloat`, and `DrainableComboItem`'s
-    // (which also updates the weight).
-    with!(b, "setCurrentUsesFloat", |i, c| {
-        pz_vehicles::items::set_current_uses_float(&mut i, num_arg(c, 1) as f32);
+    // `InventoryItem.setCurrentUsesFloat` (over `InventoryItem.useDelta`),
+    // `WeaponPart`'s (its own `useDelta`) and `DrainableComboItem`'s
+    // (which also runs the full `updateWeight`).
+    envd!(b, "setCurrentUsesFloat", |r, e, ctx, _o, c| {
+        r.borrow_mut()
+            .set_current_uses_float(num_arg(c, 1) as f32, Some(ctx));
         Ok(Value::Nil)
     });
 }
@@ -1227,9 +1306,9 @@ pub fn register(thread: &mut Thread) {
     register_weapon(thread);
     register_drainable(thread);
     register_container(thread);
+    register_weapon_part(thread);
     for c in [
         "zombie.inventory.types.ComboItem",
-        "zombie.inventory.types.WeaponPart",
         "zombie.inventory.types.AnimalInventoryItem",
         "zombie.inventory.types.Literature",
         "zombie.inventory.types.Moveable",
@@ -1305,5 +1384,233 @@ mod tests {
         assert!(matches!(r[5], Value::Bool(true)));
         assert!(matches!(r[6], Value::Bool(true)));
         assert_eq!(item.borrow().condition, 0);
+    }
+
+    /// A Lua thread with the item bindings (and `Radio.getDeviceData`).
+    fn item_thread() -> Thread {
+        let mut thread = Thread::new(pz_kahlua::TableRef::new());
+        pz_kahlua::stdlib::install(&mut thread, None).unwrap();
+        crate::bind_java_util::register(&mut thread);
+        crate::bind_globals::register(&mut thread);
+        register(&mut thread);
+        crate::bind_vehicles::register(&mut thread);
+        thread
+    }
+
+    fn make(class: ItemClass, name: &str, edit: impl FnOnce(&mut ItemTemplate)) -> ItemRef {
+        let mut t = ItemTemplate::new(class, "Base", name);
+        t.display_name = name.into();
+        edit(&mut t);
+        Rc::new(RefCell::new(InventoryItem::create(Rc::new(t), 1)))
+    }
+
+    fn num(v: &Value) -> f64 {
+        match v {
+            Value::Num(n) => *n,
+            other => panic!("not a number: {}", pz_kahlua::exec::java_value_of(other)),
+        }
+    }
+
+    /// `DrainableComboItem.setUsedDelta(d)` is `setCurrentUsesFloat(d)`
+    /// (uses, not `Clothing`'s mod-data filter level), and `isFullUses`
+    /// compares the uses with `getMaxUses()`.
+    #[test]
+    fn battery_set_used_delta_sets_uses() {
+        let mut t = item_thread();
+        let battery = make(ItemClass::Drainable, "Battery", |t| t.use_delta = 0.1);
+        battery.borrow_mut().uses = 10;
+        t.globals().set_str("item", item_value(&battery));
+        let r = run(
+            &mut t,
+            "local full = item:isFullUses()\n\
+             item:setUsedDelta(0.37)\n\
+             return full, item:getCurrentUses(), item:getCurrentUsesFloat(), item:isFullUses(),\n\
+             item:getUseDelta(), item.getUsedDelta == nil, item.getDeviceData == nil",
+        );
+        assert!(matches!(r[0], Value::Bool(true)));
+        assert_eq!(num(&r[1]), 4.0);
+        assert_eq!(num(&r[2]) as f32, 4.0 * 0.1f32);
+        assert!(matches!(r[3], Value::Bool(false)));
+        assert_eq!(num(&r[4]) as f32, 0.1);
+        assert!(matches!(r[5], Value::Bool(true)));
+        assert!(matches!(r[6], Value::Bool(true)));
+        assert!(battery.borrow().table.is_none(), "no usedDelta mod data");
+    }
+
+    /// A gas can's `setCurrentUsesFloat` / `setUsedDelta` run the
+    /// drainable `updateWeight` (`WeightEmpty`).
+    #[test]
+    fn gas_can_set_current_uses_float_updates_weight() {
+        let mut t = item_thread();
+        let can = make(ItemClass::Drainable, "PetrolCan", |t| {
+            t.use_delta = 0.125;
+            t.actual_weight = 5.0;
+            t.weight_empty = 1.0;
+        });
+        t.globals().set_str("item", item_value(&can));
+        let r = run(
+            &mut t,
+            "item:setCurrentUsesFloat(0.5)\n\
+             local a, w = item:getCurrentUses(), item:getActualWeight()\n\
+             item:setUsedDelta(2)\n\
+             return a, w, item:getCurrentUses(), item:getActualWeight(), item:isCustomWeight()",
+        );
+        assert_eq!(num(&r[0]), 4.0);
+        assert_eq!(num(&r[1]) as f32, 3.0);
+        assert_eq!(num(&r[2]), 8.0);
+        assert_eq!(num(&r[3]) as f32, 5.0);
+        assert!(matches!(r[4], Value::Bool(true)));
+    }
+
+    /// `WeaponPart` has its own `useDelta` for its uses methods, but
+    /// `getUseDelta` is `InventoryItem`'s (0.03125).
+    #[test]
+    fn weapon_part_uses_its_own_use_delta() {
+        let mut t = item_thread();
+        let part = make(ItemClass::WeaponPart, "GunLight", |t| t.use_delta = 0.25);
+        part.borrow_mut().uses = 4;
+        t.globals().set_str("item", item_value(&part));
+        let r = run(
+            &mut t,
+            "local before = item:getCurrentUsesFloat()\n\
+             item:setUsedDelta(0.5)\n\
+             return before, item:getCurrentUses(), item:getCurrentUsesFloat(), item:getMaxUses(),\n\
+             item:getUseDelta(), item.getUsedDelta == nil",
+        );
+        assert_eq!(num(&r[0]), 1.0);
+        assert_eq!(num(&r[1]), 2.0);
+        assert_eq!(num(&r[2]), 0.5);
+        assert_eq!(num(&r[3]), 4.0);
+        assert_eq!(num(&r[4]) as f32, 0.03125);
+        assert!(matches!(r[5], Value::Bool(true)));
+    }
+
+    /// `Clothing.setUsedDelta` keeps the filter level in the mod data
+    /// (clamped at 0) and leaves the uses; `getUseDelta` is the script's.
+    #[test]
+    fn clothing_set_used_delta_is_mod_data() {
+        let mut t = item_thread();
+        let mask = make(ItemClass::Clothing, "Hat_GasMask", |t| t.use_delta = 0.2);
+        let uses = mask.borrow().uses;
+        t.globals().set_str("item", item_value(&mask));
+        let r = run(
+            &mut t,
+            "item:setUsedDelta(0.75)\n\
+             local a = item:getUsedDelta()\n\
+             item:setUsedDelta(-2)\n\
+             return a, item:getUsedDelta(), item:getCurrentUses(), item:getUseDelta()",
+        );
+        assert_eq!(num(&r[0]), 0.75);
+        assert_eq!(num(&r[1]), 0.0);
+        assert_eq!(num(&r[2]), uses as f64);
+        assert_eq!(num(&r[3]) as f32, 0.2);
+    }
+
+    /// A plain item has no `setUsedDelta` or `getDeviceData`, and
+    /// `InventoryItem.setCurrentUsesFloat` divides by
+    /// `InventoryItem.useDelta`, not the script's.
+    #[test]
+    fn combo_item_uses_the_base_use_delta() {
+        let mut t = item_thread();
+        let item = make(ItemClass::Normal, "Tire", |t| t.use_delta = 0.5);
+        t.globals().set_str("item", item_value(&item));
+        let r = run(
+            &mut t,
+            "item:setCurrentUsesFloat(0.5)\n\
+             return item.setUsedDelta == nil, item.getDeviceData == nil, item:getCurrentUses(),\n\
+             item:getUseDelta(), item:getCurrentUsesFloat()",
+        );
+        assert!(matches!(r[0], Value::Bool(true)));
+        assert!(matches!(r[1], Value::Bool(true)));
+        assert_eq!(num(&r[2]), 16.0);
+        assert_eq!(num(&r[3]) as f32, 0.03125);
+        assert_eq!(num(&r[4]), 16.0);
+    }
+
+    /// `Radio.getCurrentUsesFloat` is the device power, and only a radio
+    /// has `getDeviceData`.
+    #[test]
+    fn radio_uses_float_is_device_power() {
+        let mut t = item_thread();
+        let radio = make(ItemClass::Radio, "RadioRed", |_| {});
+        if let ItemKind::Radio(_, d) = &mut radio.borrow_mut().kind {
+            d.power_delta = 0.625;
+        }
+        t.globals().set_str("item", item_value(&radio));
+        let r = run(
+            &mut t,
+            "return item:getCurrentUsesFloat(), item:getDeviceData() ~= nil",
+        );
+        assert_eq!(num(&r[0]), 0.625);
+        assert!(matches!(r[1], Value::Bool(true)));
+    }
+
+    /// `getName` dispatches per class: the broken prefix for a plain item,
+    /// food state for food; `getDisplayName` stays the name field.
+    #[test]
+    fn get_name_dispatches_per_class() {
+        let mut t = item_thread();
+        let plain = make(ItemClass::Normal, "Plank", |_| {});
+        let food = make(ItemClass::Food, "Apple", |t| t.days_fresh = 5);
+        t.globals().set_str("plain", item_value(&plain));
+        t.globals().set_str("food", item_value(&food));
+        let r = run(
+            &mut t,
+            "local a = plain:getName()\n\
+             plain:setCondition(0)\n\
+             return a, plain:getName(), plain:getDisplayName(), food:getName(), food:getDisplayName()",
+        );
+        let s = |v: &Value| pz_kahlua::exec::java_value_of(v);
+        assert_eq!(s(&r[0]), "Plank");
+        // Without a translator `getText` gives the key.
+        assert_eq!(s(&r[1]), "IGUI_ClothingNaming");
+        assert_eq!(s(&r[2]), "Plank");
+        assert_eq!(s(&r[3]), "IGUI_FoodNaming");
+        assert_eq!(s(&r[4]), "Apple");
+    }
+
+    /// `HandWeapon.setActivated` switches its light part too.
+    #[test]
+    fn weapon_set_activated_switches_its_light() {
+        let mut t = item_thread();
+        let gun = make(ItemClass::Weapon, "Pistol", |_| {});
+        let mut light = InventoryItem::create(
+            Rc::new({
+                let mut t = ItemTemplate::new(ItemClass::WeaponPart, "Base", "GunLight");
+                t.torch_cone = true;
+                t
+            }),
+            1,
+        );
+        light.torch_cone = true;
+        if let ItemKind::Weapon(w) = &mut gun.borrow_mut().kind {
+            w.attachments.push(light);
+        }
+        t.globals().set_str("item", item_value(&gun));
+        run(&mut t, "item:setActivated(true)");
+        let g = gun.borrow();
+        let ItemKind::Weapon(w) = &g.kind else {
+            unreachable!()
+        };
+        assert!(g.activated && w.attachments[0].activated);
+    }
+
+    /// `Food.getBoredomChange` / `getUnhappyChange` add the state
+    /// penalties one at a time, so a `-0.0` change stays `-0.0`.
+    #[test]
+    fn food_negative_zero_changes_stay_negative() {
+        let mut t = item_thread();
+        let food = make(ItemClass::Food, "Gum", |_| {});
+        if let ItemKind::Food(f) = &mut food.borrow_mut().kind {
+            f.boredom_change = -0.0;
+            f.unhappy_change = -0.0;
+        }
+        t.globals().set_str("item", item_value(&food));
+        let r = run(
+            &mut t,
+            "return item:getBoredomChange(), item:getUnhappyChange()",
+        );
+        assert!(num(&r[0]) == 0.0 && num(&r[0]).is_sign_negative());
+        assert!(num(&r[1]) == 0.0 && num(&r[1]).is_sign_negative());
     }
 }

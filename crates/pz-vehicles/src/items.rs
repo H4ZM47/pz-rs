@@ -31,40 +31,23 @@ pub fn use_delta(item: &InventoryItem) -> f32 {
 
 /// `getMaxUses()`.
 pub fn max_uses(item: &InventoryItem) -> i32 {
-    if is_drainable(item) {
-        (1.0f32 / use_delta(item)).floor() as i32
-    } else {
-        1
-    }
+    item.get_max_uses()
 }
 
 /// `getCurrentUsesFloat()`.
 pub fn current_uses_float(item: &InventoryItem) -> f32 {
-    if is_drainable(item) {
-        item.uses as f32 * use_delta(item)
-    } else {
-        item.uses as f32 / max_uses(item) as f32
-    }
+    item.get_current_uses_float()
 }
 
-/// `setCurrentUsesFloat(f)` / `setUsedDelta(f)`.
+/// `setCurrentUsesFloat(f)` / `setUsedDelta(f)` (with
+/// `DrainableComboItem.updateWeight`).
 pub fn set_current_uses_float(item: &mut InventoryItem, f: f32) {
-    let f = crate::jmath::clamp(f, 0.0, 1.0);
-    item.uses = crate::jmath::java_round_f(f / use_delta(item));
-    if is_drainable(item) {
-        update_weight(item);
-    }
+    item.set_current_uses_float(f, Some(crate::env::items().context()));
 }
 
-/// `DrainableComboItem.updateWeight` for items with `WeightEmpty`
-/// (`ReplaceOnDeplete` items are not vehicle parts).
+/// `DrainableComboItem.updateWeight`.
 pub fn update_weight(item: &mut InventoryItem) {
-    let empty = item.template.weight_empty;
-    if empty != 0.0 {
-        item.custom_weight = true;
-        let full = item.template.actual_weight;
-        item.actual_weight = ((full - empty) * current_uses_float(item) + empty).max(0.0);
-    }
+    item.update_weight(Some(crate::env::items().context()));
 }
 
 /// `InventoryItem.setCondition(condition, doSound)` (without sounds).

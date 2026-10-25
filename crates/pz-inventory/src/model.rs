@@ -247,6 +247,41 @@ impl InventoryItem {
         }
     }
 
+    /// `attrib()`: the `Attributes` component's attributes.
+    pub fn get_attributes(
+        &self,
+        ctx: &dyn EntityContext,
+    ) -> Option<pz_entity::components::attributes::AttributeContainer> {
+        if let Some(c) = &self.component_cache {
+            return match c.get(ComponentType::Attributes) {
+                Some(Component::Attributes(a)) => Some(a.clone()),
+                _ => None,
+            };
+        }
+        let b = self
+            .components
+            .iter()
+            .find(|b| b.type_id == ComponentType::Attributes.id())?;
+        match decode_blobs(std::slice::from_ref(b), ctx)?.list.pop()? {
+            Component::Attributes(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    /// `attrib().getAttribute(<name>)`'s value.
+    pub fn get_attribute(
+        &self,
+        ctx: &dyn EntityContext,
+        name: &str,
+    ) -> Option<pz_entity::components::attributes::AttributeValue> {
+        let id = ctx.attribute_type_by_name(name)?.id;
+        let a = self.get_attributes(ctx)?;
+        a.attributes
+            .into_iter()
+            .find(|a| a.id == id)
+            .map(|a| a.value)
+    }
+
     /// Stores a changed `FluidContainer` back into the item's components
     /// (in place, or appended when the item had none).
     pub fn set_fluid_container(&mut self, fc: FluidContainer) {

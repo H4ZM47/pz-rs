@@ -92,12 +92,10 @@ impl InventoryItem {
         let Some(f) = self.food() else {
             return self.template.boredom_change;
         };
-        let mut r = f.boredom_change;
         if f.fertilized {
-            return r;
+            return f.boredom_change;
         }
-        r += self.food_state_penalty(f);
-        r
+        self.food_state_penalty(f, f.boredom_change)
     }
 
     /// Port of `getUnhappyChange()` (`Food` adjusts it for state).
@@ -105,11 +103,10 @@ impl InventoryItem {
         let Some(f) = self.food() else {
             return self.template.unhappy_change;
         };
-        let mut r = f.unhappy_change;
         if f.fertilized {
-            return r;
+            return f.unhappy_change;
         }
-        r += self.food_state_penalty(f);
+        let mut r = self.food_state_penalty(f, f.unhappy_change);
         let t = &self.template;
         if t.bad_cold && f.is_cookable && f.cooked && f.heat < 1.3 {
             r += 2.0;
@@ -120,9 +117,11 @@ impl InventoryItem {
         r
     }
 
-    fn food_state_penalty(&self, f: &FoodData) -> f32 {
+    /// `result` with the frozen, burnt and age penalties added one by one
+    /// (a `-0.0` change stays `-0.0` without any).
+    fn food_state_penalty(&self, f: &FoodData, result: f32) -> f32 {
         let good_frozen = self.type_ == "Icecream" || self.has_tag(tags::GOOD_FROZEN);
-        let mut r = 0.0;
+        let mut r = result;
         if f.frozen && !good_frozen {
             r += 30.0;
         }
