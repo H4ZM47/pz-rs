@@ -564,14 +564,12 @@ impl<I: 'static> State<I> for AnimalAttackState {
                     .thump_info(crate::character::state::ThumpTarget::Object(t), owner.id);
                 if info
                     .as_ref()
-                    .is_some_and(|i| i.kind == crate::character::state::ThumpKind::Door)
+                    .is_some_and(|i| i.kind == crate::character::state::ThumpKind::Door && i.open)
                 {
-                    if info.as_ref().is_some_and(|i| i.open) {
-                        owner.af_mut().thump_target = None;
-                        let (x, y, z) = owner.path_target(cx);
-                        owner.animal_path_to_location(x, y, z, cx);
-                        return;
-                    }
+                    owner.af_mut().thump_target = None;
+                    let (x, y, z) = owner.path_target(cx);
+                    owner.animal_path_to_location(x, y, z, cx);
+                    return;
                 }
                 let damage = 100.0 * owner.animal_damage();
                 cx.world.object_damage(t, damage);
@@ -746,7 +744,7 @@ impl<I: 'static> State<I> for AnimalClimbOverFenceState {
             d @ (IsoDirections::N | IsoDirections::S | IsoDirections::W | IsoDirections::E),
         ) = dir
         {
-            owner.vars.dir = d;
+            owner.set_forward_iso_direction(d);
         }
         if owner.variable_boolean("ClimbFenceStarted")
             && owner
@@ -760,7 +758,7 @@ impl<I: 'static> State<I> for AnimalClimbOverFenceState {
         owner.clear_var("ClimbFence");
         owner.clear_var("climbDown");
         if let Some(d) = DIR.get(&mut owner.state.params) {
-            owner.vars.dir = d.rot180();
+            owner.set_forward_iso_direction(d.rot180());
         }
     }
     fn anim_event(

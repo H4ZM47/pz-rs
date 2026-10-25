@@ -182,6 +182,35 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `animal_add_to_world` / `animal_remove_from_world` where the world
       adds and removes them, and `animal_on_anim_player_created` when an
       animal's animation player is made.
+- [ ] Animal behaviour (`ws/animals-behavior`, animals step 3): the
+      `AnimalWorld` behind `animal_host` answers the behaviour's lookups
+      (`zone_at`, `connected_zones`, `zone_animals(_connected)`,
+      `zone_troughs`, `zone_food_on_ground`, `zone_roof_areas`,
+      `zone_near_water_squares_connected`, `zone_hutches`, the hutch
+      queries and `hutch_toggle_door` / `hutch_add_animal_inside`, the
+      trough and world-item queries, `square_has_water_object` /
+      `_puddle_floor` / `_grass_floor`, `attach_object_at`,
+      `reattach_to_hook`, `facing_position` / `floor_facing_position`,
+      `world_item_use_fluid`, the `animal_zone_*` geometry, and
+      `animal_mut` for other animals), with squares as
+      `pz_animals::square_ref` and characters as `character_ref`. The
+      `StateWorld` answers `path_reset`, `square_is_free(_ignoring_characters)`,
+      `is_blocked_to` / `is_window_to` / `is_wall_to`, `square_have_roof`,
+      `square_has_solid_trans`, `sound_source_player` /
+      `sound_source_is_radio_or_television`, `vehicle_test_collide_animal`,
+      `vehicle_animals`, `cell_animals`, `animal_hit_player`,
+      `thumpable_animal_hit`, `object_damage` and `walking_on_the_spot_check`
+      (30 multiplier units for animals). Set `AnimalFields::exists_in_world`
+      when an animal goes onto a square's moving objects and clear it when
+      it leaves; give players `PlayerControl::online_id`,
+      `luring_animals`, `lured_animals` and `attached_animals`;
+      `SimContext::rain_manager_is_raining` / `rain_manager_intensity`
+      must agree with `AnimalWorld::is_raining`. The action groups move
+      animals between `idle`, `walk`, `pathfind`, `followwall`, `attack`,
+      `eating`, `alerted` and `climbfence` (registered by
+      `initialize_animal_states`); the states' `anim_event` takes the
+      animation events (`idleActionEnd`, `AttackConnect`,
+      `ActiveAnimFinishing`, `Climbed`, `ClimbDone`).
 - [ ] `GameLoadingState.enter`: `bind_video::release_all_video_textures()`
       (`LuaManager.releaseAllVideoTextures`, after `WorldMapImages.Reset` /
       `WorldMapVisited.Reset`) closes and destroys every texture `getVideo`

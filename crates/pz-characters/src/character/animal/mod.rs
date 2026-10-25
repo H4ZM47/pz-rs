@@ -17,11 +17,13 @@
 //! ([`AnimalHost`]): the definition tables and `pz-animals`' [`AnimalWorld`]
 //! bound to the animal.
 //!
-//! Step 3 of the animal port (`BaseAnimalBehavior` and the twelve
-//! `ai/states/animals` states) plugs into the hook points marked
-//! `Step 3`: [`GameCharacter::animal_behavior_update`], the spotted list
-//! [`AnimalFields::spotted`], and the stub states of
-//! [`crate::character::states::animal`].
+//! * [`behavior`]: `BaseAnimalBehavior` (its fields are `pz-animals`'
+//!   `AnimalBehavior` on the animal).
+//! * [`actions`]: the `IsoAnimal` methods the behaviour and the states
+//!   call (path finding, stopping, luring, tree, mother, hook, sound,
+//!   thumping, death, alerting).
+//! * The twelve `ai/states/animals` states are
+//!   [`crate::character::states::animal`].
 //!
 //! [`StateWorld::animal_host`]: crate::character::state::StateWorld::animal_host
 
@@ -403,9 +405,8 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     /// `IsoAnimal.initializeStates()`: the twelve animal states by their
-    /// names, `AnimalIdleState` as the default state. The states' bodies
-    /// are step 3; until then they are the no-op stand-ins of
-    /// [`crate::character::states::animal`].
+    /// names ([`crate::character::states::animal`]), `AnimalIdleState` as
+    /// the default state.
     pub fn initialize_animal_states(&mut self, registry: &mut StateRegistry<I>) {
         use crate::character::states::ids;
         self.clear_ai_state_map();
@@ -585,8 +586,15 @@ impl<I: 'static> GameCharacter<I> {
             let s = f.animal.stress_level + r as f32;
             f.animal.set_debug_stress(s);
         }
-        let attack_back = self.animal.as_ref().and_then(|f| f.def.as_ref()).is_some_and(|d| d.attack_back);
-        if ctx.is_server() && (wielder.is_player() || wielder.is_animal() || wielder.is_zombie()) && attack_back {
+        let attack_back = self
+            .animal
+            .as_ref()
+            .and_then(|f| f.def.as_ref())
+            .is_some_and(|d| d.attack_back);
+        if ctx.is_server()
+            && (wielder.is_player() || wielder.is_animal() || wielder.is_zombie())
+            && attack_back
+        {
             if let Some(f) = self.animal.as_mut() {
                 f.atk_target = Some(wielder.id);
             }
@@ -606,9 +614,9 @@ impl<I: 'static> GameCharacter<I> {
     /// general rule applies).
     pub fn animal_pushed_by_for_separate(&self, other: &GameCharacter<I>) -> Option<bool> {
         let blocks = |c: &GameCharacter<I>| {
-            c.animal
-                .as_ref()
-                .map(|f| !f.def.as_ref().is_some_and(|d| d.collidable) || f.animal.behavior.block_movement)
+            c.animal.as_ref().map(|f| {
+                !f.def.as_ref().is_some_and(|d| d.collidable) || f.animal.behavior.block_movement
+            })
         };
         match (blocks(self), blocks(other)) {
             (Some(true), _) | (_, Some(true)) => Some(false),
@@ -754,8 +762,10 @@ impl<I: 'static> AnimalCharacter for GameCharacter<I> {
     fn dir(&self) -> i32 {
         self.vars.dir as i32
     }
+    /// `setDir(dir)`: `setForwardIsoDirection`, which also sets the
+    /// forward vector.
     fn set_dir(&mut self, dir: i32) {
-        self.vars.dir = IsoDirections::ALL[(dir & 7) as usize];
+        self.set_forward_iso_direction(IsoDirections::ALL[(dir & 7) as usize]);
     }
     fn vehicle(&self) -> Option<ObjectRef> {
         self.path.vehicle.map(|v| v as u16 as ObjectRef)

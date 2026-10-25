@@ -297,7 +297,11 @@ fn overrides() {
     assert_eq!(c.health, 1.5);
     let p = Chr::new(&sm, CharacterKind::Player);
     assert_eq!(c.animal_pushed_by_for_separate(&p), Some(true));
-    c.animal_fields_mut().unwrap().animal.behavior.block_movement = true;
+    c.animal_fields_mut()
+        .unwrap()
+        .animal
+        .behavior
+        .block_movement = true;
     assert_eq!(c.animal_pushed_by_for_separate(&p), Some(false));
     assert_eq!(p.animal_pushed_by_for_separate(&p), None);
 }
@@ -354,4 +358,52 @@ fn hit_consequences_take_the_attacker_and_draw_the_stress() {
     assert_eq!(c.vars.attacked_by, Some(42));
     assert_eq!(c.vars.hit_reaction, "hitreact");
     assert_eq!(c.health, 1.0, "ignoreDamage");
+}
+
+#[test]
+fn the_registry_holds_the_ported_animal_states() {
+    let (_sm, _chars, mut c) = animal(10);
+    let mut registry = StateRegistry::<i32>::with_ported();
+    c.initialize_animal_states(&mut registry);
+    // Not the opaque stand-ins: the walk state reports moving.
+    assert!(c.state.ai_state_map["walk"].is_moving(&c));
+    assert!(c.state.ai_state_map["followwall"].is_moving(&c));
+    assert!(!c.state.ai_state_map["idle"].is_moving(&c));
+}
+
+#[test]
+fn checkbehavior_out_of_the_world_does_nothing() {
+    let (sm, chars, mut c) = animal(11);
+    c.animal_fields_mut().unwrap().def = Some(defs());
+    c.set_var_str("idleAction", "idle2");
+    let calls = Calls::default();
+    let mut w = world(&calls);
+    let ctx = Recorder::default();
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+    c.behavior_check_behavior(&mut cx);
+    // clearIdleAction ran; not in the world, so nothing was looked up.
+    assert_eq!(c.variable_string("idleAction"), "");
+    assert!(!c.animal_fields().unwrap().animal.behavior.is_doing_behavior);
+}
+
+#[test]
+fn fleeing_from_an_attacker_paths_away() {
+    let (sm, chars, mut c) = animal(12);
+    c.animal_fields_mut().unwrap().def = Some(defs());
+    let mut p = Chr::new(&sm, CharacterKind::Player);
+    p.id = 20;
+    p.vars.x = 3.5;
+    p.vars.y = 0.5;
+    p.path.current_square = Some((3, 0, 0));
+    c.vars.attacked_by = Some(20);
+    let ctx = Recorder::default();
+    c.animal_fields_mut().unwrap().animal.attacked_timer = ctx.calendar_time_in_millis();
+    let calls = Calls::default();
+    let mut w = world(&calls);
+    w.others = vec![p];
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+    c.behavior_update(&mut cx);
+    // attackBack is false: running away from the player.
+    assert!(c.variable_boolean("animalRunning"));
+    assert_eq!(c.vars.attacked_by, Some(20));
 }

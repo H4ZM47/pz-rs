@@ -122,7 +122,11 @@ impl<I: 'static> GameCharacter<I> {
         // updateEmitter: sound.
         self.animal_try_thump(None, cx);
         self.animal_update_los(cx);
-        if let Some(v) = self.animal.as_mut().and_then(|f| f.vehicle_for_collision_test.take()) {
+        if let Some(v) = self
+            .animal
+            .as_mut()
+            .and_then(|f| f.vehicle_for_collision_test.take())
+        {
             self.vars.vehicle_collision = self.animal_test_collide_with_vehicles(v as i16, cx);
         }
         self.animal_iso_player_update(out, cx)

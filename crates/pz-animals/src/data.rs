@@ -170,7 +170,9 @@ pub enum EatFollowUp {
     ResetBehavior,
     /// Grass: when `check`, `setDoingBehavior(false)` and
     /// `checkBehavior()`; then `resetEatingCheck()`.
-    Grass { check: bool },
+    Grass {
+        check: bool,
+    },
 }
 
 impl Animal {
@@ -1132,7 +1134,11 @@ impl Animal {
 
     /// `drinkFromGround()`: from the `IsoWorldInventoryObject` the animal
     /// eats from ([`AnimalWorld::world_item_use_fluid`](crate::env::AnimalWorld::world_item_use_fluid)).
-    pub fn data_drink_from_ground(&mut self, chr: &mut dyn AnimalCharacter, env: &mut AnimalEnv<'_>) {
+    pub fn data_drink_from_ground(
+        &mut self,
+        chr: &mut dyn AnimalCharacter,
+        env: &mut AnimalEnv<'_>,
+    ) {
         let tb = self.adef_of(env.ctx).thirst_boost;
         let Some(obj) = self.eat_from_ground else {
             return;
