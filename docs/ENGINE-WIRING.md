@@ -263,7 +263,7 @@ registered):
       zoom, screen size, wall-clock ms); for a gamepad player call
       `chr.update_aiming_reticle(input, multiplier)` first
       (`AimingReticle.update`) and feed the returned position back to the
-      renderer (#player-control).
+      renderer (#135).
 - [ ] Per frame, local player update order (`MovingObjectUpdateScheduler`):
       `preupdate_player()`, `frame_step(input)` (the input component's
       toggles), `update_player(input, registry, groups, cx)` (IsoPlayer
@@ -286,7 +286,7 @@ registered):
       `foot_injury_floor`, `vehicle_useable_part_near`,
       `context_actions_nswe`/`context_actions_corners`/`context_door_or_window`;
       `SimContext::wet_ground_final_value`, `clothing_degradation`
-      (#player-control).
+      (#135).
 
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
