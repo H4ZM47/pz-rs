@@ -60,6 +60,17 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       per-frame `update(..)`, `take_events()`, `save_now()` on quit (#64);
       wrap its ChunkLoadHook in `ClearSoundsOnUnload` (#71) and use
       `pz_worldgen::WorldGenHook` as BrandNewHook (#63).
+- [ ] Chunk vehicles: in the streamer's `DoChunk`, right after `load_chunk`
+      / `load_brand_new` succeeds and before `finish_chunk_load`, call
+      `save::vehicles_db::load_chunk(vehicle_store.conn.as_mut(), &mut chunk,
+      &save_ctx)` (`WorldStreamer.DoChunkAlways`); pass `meta: Some(grid)` in
+      `SaveCtx` for every save chunk so squares get `associatedBuilding`
+      (#100).
+- [ ] Local player at world init: `VehicleStore::create` (`VehiclesDB2.init`),
+      `savefile::is_player_alive`, `PlayerDb::new`; `load_player_for_info`
+      gives `SWorldX/SWorldY` for the chunk map; later `load_local_player_1`
+      (decode with `load_player`, health 0 when `is_dead`, set `sqlId`) and
+      `chunkMap.worldX/Y = local_player_chunk_map_pos(x, y, offset)` (#100).
 - [ ] CGlobalObjects `initSystems` and update pumps (#31).
 - [ ] Popman: `WorldPopulationHost::from_state`, `update_main` with
       `player_chunk_maps(&streamer)`; supply SittingChecks,
