@@ -154,6 +154,43 @@ pub fn parse_float(s: &str) -> Option<f32> {
     t.parse().ok()
 }
 
+/// The `Throwable` for an error the port reports by its Java simple class
+/// name (`"NullPointerException"`, `"ArrayIndexOutOfBoundsException"`, ...),
+/// as `toString()` prints it. Those are all `java.lang` exceptions; other
+/// text is kept as is.
+pub fn java_throwable(desc: &str) -> pz_core::debug::LogThrowable {
+    let bare = !desc.is_empty()
+        && desc.chars().all(|c| c.is_ascii_alphanumeric())
+        && desc.ends_with("Exception");
+    if bare {
+        pz_core::debug::LogThrowable::new(format!("java.lang.{desc}"))
+    } else {
+        pz_core::debug::LogThrowable::new(desc)
+    }
+}
+
+/// The `Throwable` an I/O error corresponds to: `FileNotFoundException` for
+/// a missing file, `EOFException` for a short read, otherwise an
+/// `IOException` with the error's message (or the Java exception the port
+/// named, see [`java_throwable`]).
+pub fn io_throwable(e: &std::io::Error) -> pz_core::debug::LogThrowable {
+    use std::io::ErrorKind;
+    match e.kind() {
+        ErrorKind::NotFound => {
+            pz_core::debug::LogThrowable::new(format!("java.io.FileNotFoundException: {e}"))
+        }
+        ErrorKind::UnexpectedEof => pz_core::debug::LogThrowable::new("java.io.EOFException"),
+        _ => {
+            let msg = e.to_string();
+            if msg.chars().all(|c| c.is_ascii_alphanumeric()) && msg.ends_with("Exception") {
+                java_throwable(&msg)
+            } else {
+                pz_core::debug::LogThrowable::new(format!("java.io.IOException: {msg}"))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

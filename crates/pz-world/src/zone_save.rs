@@ -138,7 +138,7 @@ impl IsoMetaGrid {
         let mut rep = ZoneLoadReport::default();
         if world_version == -1 {
             if r.take(4)? != MAGIC {
-                eprintln!("ERROR: expected 'ZONE' at start of map_zone.bin");
+                pz_core::debug::log("ERROR: expected 'ZONE' at start of map_zone.bin");
                 rep.bad_magic = true;
                 return Ok(rep);
             }

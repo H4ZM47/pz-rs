@@ -421,9 +421,9 @@ impl IsoMetaGrid {
         let suspicious = self.is_suspicious(x, y, z, w, h);
         let id = self.push_zone(zone);
         if suspicious {
-            eprintln!(
+            pz_core::debug::log(&format!(
                 "111ERROR: not adding suspicious zone \"{name}\" \"{zone_type}\" {x},{y},{z} {w}x{h}"
-            );
+            ));
             return id;
         }
         self.add_zone(id);

@@ -1854,6 +1854,7 @@ name = "pz-world"
 version = "0.1.0"
 dependencies = [
  "pz-classfile",
+ "pz-core",
  "pz-entity",
  "pz-fs",
  "pz-inventory",

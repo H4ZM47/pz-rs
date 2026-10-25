@@ -2722,6 +2722,8 @@ pub struct DebugLog {
     /// `ScriptManager.EnableDebug(scriptType, enable)` requests from
     /// `+Type.ScriptType` config commands.
     pub script_debug_requests: Vec<(String, bool)>,
+    /// `ExceptionLogger.exceptionCount` (the number on the error popup).
+    pub exception_count: i32,
 }
 
 impl Default for DebugLog {
@@ -2753,6 +2755,7 @@ impl DebugLog {
             debug_cfg_file_watcher_path: None,
             recording: false,
             script_debug_requests: Vec::new(),
+            exception_count: 0,
         }
     }
 
@@ -3891,6 +3894,133 @@ impl DebugLog {
 }
 
 // ===========================================================================
+// ExceptionLogger and java.util.logging
+// ===========================================================================
+
+/// A `java.util.logging.Level` (only its name and value are used).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JulLevel {
+    Severe,
+    Warning,
+    Info,
+    Config,
+    Fine,
+    Finer,
+    Finest,
+}
+
+impl JulLevel {
+    /// `Level.getName()` (the default formatter prints the localized name,
+    /// which is the same in English).
+    pub fn name(self) -> &'static str {
+        match self {
+            JulLevel::Severe => "SEVERE",
+            JulLevel::Warning => "WARNING",
+            JulLevel::Info => "INFO",
+            JulLevel::Config => "CONFIG",
+            JulLevel::Fine => "FINE",
+            JulLevel::Finer => "FINER",
+            JulLevel::Finest => "FINEST",
+        }
+    }
+    /// `Level.intValue()`.
+    pub fn value(self) -> i32 {
+        match self {
+            JulLevel::Severe => 1000,
+            JulLevel::Warning => 900,
+            JulLevel::Info => 800,
+            JulLevel::Config => 700,
+            JulLevel::Fine => 500,
+            JulLevel::Finer => 400,
+            JulLevel::Finest => 300,
+        }
+    }
+}
+
+const MONTH_ABBR: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+impl LocalTime {
+    /// `%1$tb %1$td, %1$tY %1$tl:%1$tM:%1$tS %1$Tp` (en-US), the date part of
+    /// `SimpleFormatter`'s default format.
+    pub fn jul_stamp(&self) -> String {
+        let h12 = match self.hour % 12 {
+            0 => 12,
+            h => h,
+        };
+        let ampm = if self.hour < 12 { "AM" } else { "PM" };
+        format!(
+            "{} {:02}, {} {}:{:02}:{:02} {}",
+            MONTH_ABBR[(self.month as usize).clamp(1, 12) - 1],
+            self.day,
+            self.year,
+            h12,
+            self.minute,
+            self.second,
+            ampm
+        )
+    }
+}
+
+impl DebugLog {
+    /// `ExceptionLogger.logException(ex, callerPrefix, errorMessage, out, severity)`.
+    /// `caller` is the frame that called `logException` (what
+    /// `DebugLogStream.generateCallerPrefix()` finds). The on-screen popup is
+    /// not drawn here; only its counter is kept.
+    pub fn log_exception(&mut self, ex: &LogThrowable, caller: Option<&StackElement>, message: Option<&str>, t: DebugType, sev: LogSeverity) {
+        let prefix = stack_trace_element_string(caller, self.log_trace_file_location_enabled);
+        self.print_exception(t, Some(ex), message, &prefix, sev);
+        self.exception_count += 1;
+    }
+
+    /// `Logger.getLogger(logger_name).log(level, msg[, thrown])` under the
+    /// JDK's default logging configuration (the game installs none): the root
+    /// `ConsoleHandler` at `INFO` with `SimpleFormatter`'s default format.
+    /// `source` is the inferred caller frame; without it the logger name is
+    /// printed. The handler writes bytes to `System.err`, which
+    /// `DebugLogStream` passes through unformatted, so the text goes to
+    /// stderr as is and not to the log files.
+    pub fn jul_log(&mut self, logger_name: &str, level: JulLevel, source: Option<&StackElement>, msg: Option<&str>, thrown: Option<&LogThrowable>) {
+        if level.value() < JulLevel::Info.value() {
+            return;
+        }
+        let stamp = local_now(&*self.clock).jul_stamp();
+        let source = match source {
+            Some(e) => format!("{} {}", e.class_name, e.method_name),
+            None => logger_name.to_string(),
+        };
+        let thrown = match thrown {
+            None => String::new(),
+            Some(ex) => {
+                let mut s = format!("\n{}\n", ex.description);
+                for e in &ex.stack {
+                    s.push_str(&format!("\tat {}\n", e.java_to_string()));
+                }
+                s
+            }
+        };
+        let text = format!("{stamp} {source}\n{}: {}{thrown}\n", level.name(), msg.unwrap_or("null"));
+        self.sink.console(StdStream::Err, &text);
+    }
+}
+
+/// `ExceptionLogger.logException(ex)` on this thread's log: `General`,
+/// `Error`, no message.
+pub fn log_exception(ex: &LogThrowable, caller: Option<&StackElement>) {
+    with(|d| d.log_exception(ex, caller, None, DebugType::General, LogSeverity::Error));
+}
+
+/// `DebugLog.log(str)` on this thread's log (`DebugType.General.println`).
+pub fn log(s: &str) {
+    with(|d| d.log(DebugType::General, s));
+}
+
+/// `Logger.getLogger(GameWindow.class.getName()).log(level, msg[, thrown])`
+/// on this thread's log (see [`DebugLog::jul_log`]).
+pub fn game_window_logger(level: JulLevel, source: Option<&StackElement>, msg: Option<&str>, thrown: Option<&LogThrowable>) {
+    with(|d| d.jul_log("zombie.GameWindow", level, source, msg, thrown));
+}
+
+// ===========================================================================
 // Thread-local instances
 // ===========================================================================
 
@@ -3929,6 +4059,29 @@ pub fn route_config_log() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exception_logger_and_jul() {
+        let (mut d, sink, _) = logger();
+        d.set_severity(DebugType::General, LogSeverity::General);
+        let caller = StackElement::new("zombie.iso.IsoLot", "load");
+        d.log_exception(&LogThrowable::new("java.io.IOException: bad"), Some(&caller), None, DebugType::General, LogSeverity::Error);
+        assert_eq!(d.exception_count, 1);
+        assert_eq!(
+            sink.log().stderr(),
+            "ERROR: General      f:0> IsoLot.load> Exception thrown\n\tjava.io.IOException: bad at No Stack Trace Available.\n\tStack trace:\n"
+        );
+        sink.clear();
+        let src = StackElement::new("zombie.iso.IsoCell", "PlaceLot");
+        d.jul_log("zombie.GameWindow", JulLevel::Severe, Some(&src), Some("Missing tile definition: x_0"), None);
+        assert_eq!(sink.log().stderr(), "Oct 23, 2026 11:30:04 PM zombie.iso.IsoCell PlaceLot\nSEVERE: Missing tile definition: x_0\n");
+        sink.clear();
+        d.jul_log("zombie.GameWindow", JulLevel::Severe, None, None, Some(&LogThrowable::new("java.io.IOException: e")));
+        assert_eq!(sink.log().stderr(), "Oct 23, 2026 11:30:04 PM zombie.GameWindow\nSEVERE: null\njava.io.IOException: e\n\n");
+        sink.clear();
+        d.jul_log("zombie.GameWindow", JulLevel::Fine, None, Some("x"), None);
+        assert!(sink.log().console.is_empty());
+    }
 
     fn logger() -> (DebugLog, MemorySink, Rc<FixedClock>) {
         let sink = MemorySink::new();

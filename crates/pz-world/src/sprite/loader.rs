@@ -12,11 +12,13 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
+use pz_core::debug::{self, JulLevel, StackElement};
+
 use super::manager::{GridIdx, IsoSpriteGrid, IsoSpriteManager, SpriteIdx};
 use super::properties::{PropertyValueMap, TilePropertyAliasMap};
 use super::types::SpriteTables;
 use super::{is_null_or_whitespace, java_split, parse_int, try_parse_int};
-use crate::java::{hashmap_order, java_trim};
+use crate::java::{hashmap_order, io_throwable, java_trim};
 use crate::tiledef::{read_int, read_string, sprite_id, TDEF_FILE_MAGIC, TILE_DEFINITION_FILES};
 
 const FACE_NAMES: [&str; 4] = ["N", "E", "S", "W"];
@@ -176,7 +178,16 @@ impl IsoSpriteManager {
                 )
             });
             if let Err(e) = res {
-                eprintln!("tiledef: {}: {e}", path.display());
+                // `Logger.getLogger(GameWindow.class.getName()).log(Level.SEVERE, null, ex)`.
+                debug::game_window_logger(
+                    JulLevel::Severe,
+                    Some(&StackElement::new(
+                        "zombie.iso.IsoWorld",
+                        "LoadTileDefinitionsPropertyStrings",
+                    )),
+                    None,
+                    Some(&io_throwable(&e)),
+                );
             }
         }
         let mut mgr = IsoSpriteManager::new(tables);
@@ -187,7 +198,14 @@ impl IsoSpriteManager {
                 mgr.load_tile_definitions(&mut BufReader::new(f), &path.to_string_lossy(), number)
             });
             if let Err(e) = res {
-                eprintln!("tiledef: {}: {e}", path.display());
+                // `ExceptionLogger.logException(ex)`.
+                debug::log_exception(
+                    &io_throwable(&e),
+                    Some(&StackElement::new(
+                        "zombie.iso.IsoWorld",
+                        "LoadTileDefinitions",
+                    )),
+                );
             }
         }
         mgr.register_fake_jumbo_tree(7);

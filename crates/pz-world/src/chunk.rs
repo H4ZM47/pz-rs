@@ -6,12 +6,14 @@
 
 use std::collections::HashMap;
 
+use pz_core::debug::{self, JulLevel, StackElement};
+
 use crate::cell_loader::{do_tile_object_creation, ObjectEnv};
 use crate::defs::{BuildingIdx, RoomDef};
 use crate::erosion_data::{ErosionChunkData, ErosionSquareData};
 use crate::fix2x::Fix2xTable;
 use crate::iso_lot::IsoLot;
-use crate::java::{fastfloor, GameRand};
+use crate::java::{fastfloor, java_throwable, GameRand};
 use crate::map_files::{header_name, lotpack_name};
 use crate::meta_grid::IsoMetaGrid;
 use crate::objects::{IsoObject, ObjectId, ObjectLoadHooks, ObjectLoadSettings, ObjectTables};
@@ -423,7 +425,12 @@ pub fn place_lot(
         meta, lot, sx, sy, ch, wx, wy, min_level, max_level, done, &mut count, env,
     );
     if let Err(PlaceError(e)) = result {
-        eprintln!("Failed to load chunk, blocking out area: {e}");
+        // `DebugLog.log(...)` then `ExceptionLogger.logException(ex)`.
+        debug::log("Failed to load chunk, blocking out area");
+        debug::log_exception(
+            &java_throwable(&e),
+            Some(&StackElement::new("zombie.iso.IsoCell", "PlaceLot")),
+        );
         for x in wx + sx..wx + sx + 8 {
             for y in wy + sy..wy + sy + 8 {
                 for z in min_level..=max_level {
@@ -533,7 +540,13 @@ fn place_lot_inner(
                         env.fix2x.fix2x(tile, env.rand)
                     };
                     let Some(&spr) = env.sprites.named_map.get(&tile) else {
-                        eprintln!("Missing tile definition: {tile}");
+                        // `Logger.getLogger(GameWindow.class.getName()).log(Level.SEVERE, ...)`.
+                        debug::game_window_logger(
+                            JulLevel::Severe,
+                            Some(&StackElement::new("zombie.iso.IsoCell", "PlaceLot")),
+                            Some(&format!("Missing tile definition: {tile}")),
+                            None,
+                        );
                         continue;
                     };
                     // `bClearObjects` is always true upstream (its solidfloor /
