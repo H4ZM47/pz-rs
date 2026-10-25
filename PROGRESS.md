@@ -155,6 +155,27 @@ Status of the Rust port. Update this file with every merged change.
   the installed media (every outfit randomized and dressed on three seeds)
   and on invented edge-case XML (checked locally).
 
+- Vehicles in the iso world (`pz-vehicle-render`, vehicle shaders in
+  `pz-gpu`): `VehicleModelInstance` (skin textures; `updateLights`,
+  `doDamageOverlay`, `doBloodOverlay` enable matrices),
+  `ModelManager.addVehicle`'s body and part models (legacy `.txt` wheels
+  included) with `playPartAnim`/`updateAnimationPlayer` door and hood
+  poses, `BaseVehicle.updateTransform` (wheel suspension, steering and
+  spin; attached part models), `ModelSlotRenderData`'s vehicle branch and
+  `Model.DrawVehicle` as `DrawCmd::VehicleModel` (WGSL ports of `vehicle`,
+  `vehicle_multiuv`, `vehicle_norandom_multiuv` with and without
+  `_noreflect`, and `vehiclewheel`), `renderShadow` into
+  `FBORenderShadows`, vehicles in `renderMovingObjects`, and headlight
+  torches / lightbar lampposts for the lighting system. On SportsCar_ez,
+  CarNormal, PickUpTruck and Van the render, vehicle and part-model
+  transforms, all twelve enable matrices, rust/reflection/paint values,
+  the vehicle camera, centre-of-mass offset and `targetDepth`, the shadow
+  polygon and the headlight torches match the original's bit for bit
+  (131 values, local harness). Not yet: the sky box reflection textures
+  (the reflective programs run with whatever textures are passed),
+  headlight light on the ground (needs the lighting pass), sloped-surface
+  shadow height, `renderToTexture`.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 
