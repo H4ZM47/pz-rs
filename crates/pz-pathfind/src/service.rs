@@ -318,6 +318,12 @@ impl PathfindService {
         self.loaded_chunks.remove(&(wx, wy));
     }
 
+    /// The load id the chunk at `(wx, wy)` was added with, while it is
+    /// known to the pathfinder.
+    pub fn chunk_load_id(&self, wx: i32, wy: i32) -> Option<i16> {
+        self.loaded_chunks.get(&(wx, wy)).copied()
+    }
+
     /// Whether `addChunkToWorld` was called for the chunk at `(wx, wy)`
     /// since it was last removed (`chunk.loadedBits & 2`).
     pub fn is_chunk_added(&self, wx: i32, wy: i32) -> bool {
