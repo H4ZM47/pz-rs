@@ -15,7 +15,7 @@ use pz_world::square::{
     CollideAdjacent, CollideEnv, CollideMover, CollidedFlags, EdgeFacing, HoppableAction,
     HoppableHooks, MoverKind, MoverStates,
 };
-use pz_world::{IsoCell, IsoGridSquare, IsoMetaGrid, IsoSpriteManager};
+use pz_world::{IsoCell, IsoDirections, IsoGridSquare, IsoMetaGrid, IsoSpriteManager};
 
 use crate::{StatesWorldAdapter, Thumper};
 
@@ -294,5 +294,114 @@ impl StatesWorldAdapter<'_> {
                 }
             })
             .collect()
+    }
+}
+
+impl StatesWorldAdapter<'_> {
+    /// `square.hasNonHoppableWall(isNorth)`: a window on that edge, or a
+    /// wall there that is not a hoppable or tall hoppable fence.
+    pub fn has_non_hoppable_wall(&self, sq: &IsoGridSquare, north: bool) -> bool {
+        let m = &*self.sprites;
+        let t = &m.tables;
+        for o in &sq.objects {
+            let Some(si) = o.sprite else { continue };
+            let sp = &m.sprites[si];
+            let p = &sp.properties;
+            if p.has(t.flag.WallSE) {
+                continue;
+            }
+            if let ObjectKind::Window(w) = &o.kind {
+                if w.north == north {
+                    return true;
+                }
+            }
+            let has = |n: &str| t.flag_from_string(n).is_some_and(|f| p.has(f));
+            let hit = if north {
+                (sp.cut_n || has("WallN") || has("WallNTrans")) && !has("HoppableN") && !has("TallHoppableN")
+            } else {
+                (sp.cut_w || has("WallW") || has("WallWTrans")) && !has("HoppableW") && !has("TallHoppableW")
+            };
+            if hit {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// `square.isPlayerAbleToHopWallTo(dir, oppositeSq)`.
+    pub fn is_player_able_to_hop_wall_to(&self, sq: &IsoGridSquare, dir: IsoDirections, opp: &IsoGridSquare) -> bool {
+        let adjacent = (sq.x, sq.y, sq.z) == (opp.x, opp.y, opp.z)
+            || IsoDirections::ALL
+                .iter()
+                .any(|&d| sq.get_adjacent_square(d, self.cell).is_some_and(|a| (a.x, a.y, a.z) == (opp.x, opp.y, opp.z)));
+        if !adjacent {
+            return false;
+        }
+        let m = &*self.sprites;
+        let ty = &m.tables.ty;
+        let above = |s: &IsoGridSquare| self.cell.get_grid_square(s.x, s.y, s.z + 1);
+        if sq.has_stairs(m) && sq.has_type(ty.stairsTN) || sq.has_type(ty.stairsTW) {
+            if let (Some(a), Some(oa)) = (above(sq), above(opp)) {
+                return !match dir {
+                    IsoDirections::N => self.has_non_hoppable_wall(a, true),
+                    IsoDirections::S => self.has_non_hoppable_wall(oa, true),
+                    IsoDirections::W => self.has_non_hoppable_wall(a, false),
+                    IsoDirections::E => self.has_non_hoppable_wall(oa, false),
+                    _ => false,
+                };
+            }
+            return true;
+        }
+        !match dir {
+            IsoDirections::N => self.has_non_hoppable_wall(sq, true),
+            IsoDirections::S => self.has_non_hoppable_wall(opp, true),
+            IsoDirections::W => self.has_non_hoppable_wall(sq, false),
+            IsoDirections::E => self.has_non_hoppable_wall(opp, false),
+            _ => false,
+        }
+    }
+
+    /// `climbOverFence(dir)`'s checks for a character at `t` on `from`
+    /// (`canClimbThroughHelper`, `isPlayerAbleToHopWallTo`) and what
+    /// `ClimbOverFenceState.setParams` reads of the square beyond.
+    /// TODO(bent fences): `BentFences.checkDamageHoppableFence` (only with
+    /// bent fences enabled).
+    pub fn fence_climb_for(&self, t: &Thumper, from: (i32, i32, i32), dir: IsoDirections) -> Option<pz_characters::character::state::FenceClimb> {
+        let sq = self.cell.get_grid_square(from.0, from.1, from.2)?;
+        let opp = sq.get_adjacent_square(dir, self.cell);
+        let north = matches!(dir, IsoDirections::N | IsoDirections::S);
+        if !self.can_climb_through_helper(t, sq, opp, north) {
+            return None;
+        }
+        let opp = opp?;
+        if !self.is_player_able_to_hop_wall_to(sq, dir, opp) {
+            return None;
+        }
+        let m = &*self.sprites;
+        Some(pz_characters::character::state::FenceClimb {
+            counter: opp.has(m.tables.flag.solidtrans),
+            solid_floor: opp.treat_as_solid_floor(m),
+            sheet_rope: self.env().can_climb_down_sheet_rope(Some(opp)),
+        })
+    }
+
+    /// The hoppable checks of `mover` (character `chr`) after a collision
+    /// from `last`.
+    pub fn hoppable_actions_dyn(&self, mover: &dyn CollideMover, chr: i32, last: (i32, i32, i32)) -> Vec<HoppableAction> {
+        let Some(sq) = self.cell.get_grid_square(last.0, last.1, last.2) else {
+            return Vec::new();
+        };
+        let mut thumper = self.engine.character(chr);
+        if thumper.is_none() && mover.mover_kind() == MoverKind::Zombie {
+            thumper = Some(Thumper {
+                id: chr,
+                zombie: true,
+                crawling: mover.is_crawling(),
+                current_square: Some(last),
+                ..Default::default()
+            });
+        }
+        let hooks = AdapterHoppableHooks { adapter: self, thumper };
+        self.collide_env().hoppable_actions(mover, sq, &hooks)
     }
 }

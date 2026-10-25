@@ -62,7 +62,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       (`path_*`, `path_cancel_request` → `PathfindService::cancel_request`,
       `resolve_collision`, `resolve_collision_radius`,
       `test_collide_adjacent` with the special objects), LOS, world sounds,
-      corpses, thumpables, `rustle_vegetation` (render effects, draws
+      corpses, thumpables, `test_collide_adjacent_mover`, `hoppable_actions`, `fence_climb` (pz-world-states implements all three), `rustle_vegetation` (render effects, draws
       `Rand`), hoppables (`collided_with_hoppables`: fence climbing)
       (#74/#75).
 - [ ] Character fire: `StateWorld::character_fire` runs

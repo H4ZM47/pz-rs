@@ -259,9 +259,10 @@ Status of the Rust port. Update this file with every merged change.
   library on one side and pz-pathfind's `PathHost` on the other, path
   following, walk toward, lunge, face target and attack, collisions and
   head sliding against the real squares) matches the original bit for bit
-  with the `Rand` stream in 35 runs; the other 5 match until the zombie
-  reaches a door or a fence (thumping and fence climbing need the world's
-  mover-aware `testCollideAdjacent` and hoppable checks). Ragdolls,
+  with the `Rand` stream in all 40 runs (16000 ticks), thumping doors and
+  climbing fences included (mover-aware `testCollideAdjacent` from
+  pz-world, `IsoZombie.collideWith`, the hoppable checks and
+  `ClimbOverFenceState`). Ragdolls,
   vehicles and the network states are not checked against the original;
   stairs and slopes are TODO.
 

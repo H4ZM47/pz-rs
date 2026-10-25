@@ -10,12 +10,11 @@
 //! lookups go through [`StateWorld`]. Not ported here (the world's):
 //! stairs and sloped surfaces (`doStairs`, `handleSlopedSurface`),
 //! `checkHitWall` and the hoppable checks (reported through
-//! [`StateWorld::collided_with_hoppables`]), and zombie virtualization at the edge of the loaded area
+//! the character's [`super::collide`]), and zombie virtualization at the edge of the loaded area
 //! ([`StateWorld::virtualize_if_unloaded`]).
 //!
 //! [`StateWorld`]: super::state::StateWorld
 //! [`StateWorld::resolve_collision`]: super::state::StateWorld::resolve_collision
-//! [`StateWorld::collided_with_hoppables`]: super::state::StateWorld::collided_with_hoppables
 //! [`StateWorld::virtualize_if_unloaded`]: super::state::StateWorld::virtualize_if_unloaded
 //! [`StateWorld::resolve_collision_radius`]: super::state::StateWorld::resolve_collision_radius
 
@@ -72,7 +71,7 @@ pub fn path_crosses_square(path: &pz_pathfind::Path, x: i32, y: i32, z: i32) -> 
     let n = &path.nodes;
     for i in 0..n.len().saturating_sub(1) {
         let (a, b) = (&n[i], &n[i + 1]);
-        if ff(a.level()) != z && ff(b.level()) != z {
+        if ff(a.z) != z && ff(b.z) != z {
             continue;
         }
         let (ax, ay, bx, by) = (a.x as f64, a.y as f64, b.x as f64, b.y as f64);
@@ -192,7 +191,6 @@ impl<I: 'static> GameCharacter<I> {
             }
             self.set_current_from_position(nx, ny, z, cx);
         }
-        let mover = pz_pathfind::mover::PathMover::mover_id(self);
         let (cur, last) = (self.path.current_square, self.vars.last_square);
         if let (Some(cur), Some(last)) = (cur, last) {
             if cur != last {
@@ -200,11 +198,11 @@ impl<I: 'static> GameCharacter<I> {
                     return false;
                 }
                 let (dx, dy, dz) = (cur.0 - last.0, cur.1 - last.1, cur.2 - last.2);
-                let hit = cx.world.test_collide_adjacent(mover, last, dx, dy, dz);
+                let hit = self.test_collide_adjacent_with_mover(last, (dx, dy, dz), cx);
                 if hit {
                     self.set_collided_from(last, cur);
                     self.path.current_square = Some(last);
-                    cx.world.collided_with_hoppables(self.id, Some(last));
+                    self.check_hoppables(last, cx);
                     self.collide_pass_rule(pass);
                     self.vars.collided_this_frame = true;
                     return true;
@@ -269,12 +267,12 @@ impl<I: 'static> GameCharacter<I> {
         if self.ignore_collide(cur, f) {
             return false;
         }
-        if !cx.world.test_collide_adjacent(mover, cur, f.0 - cur.0, f.1 - cur.1, f.2 - cur.2) {
+        if !self.test_collide_adjacent_with_mover(cur, (f.0 - cur.0, f.1 - cur.1, f.2 - cur.2), cx) {
             return false;
         }
         if self.vars.last_square.is_some() {
             self.set_collided_from(cur, f);
-            cx.world.collided_with_hoppables(self.id, Some(cur));
+            self.check_hoppables(cur, cx);
             self.collide_pass_rule(pass);
         }
         self.vars.collided_this_frame = true;
@@ -319,6 +317,7 @@ impl<I: 'static> GameCharacter<I> {
         v.collided_w = false;
         v.collided_e = false;
         v.collided_with_door = false;
+        v.collided_object = None;
         v.last_square = self.path.current_square;
         v.next_x += v.impulse_x;
         v.next_y += v.impulse_y;
@@ -476,7 +475,7 @@ impl<I: 'static> GameCharacter<I> {
     /// position pushed `radius` back from the current square's blocked
     /// edges, when a circle there would cross one. `None` before `newPos`
     /// is written; otherwise whether it collided and `newPos`.
-    fn resolve_collision_with_neighboring_squares(&self, radius: f32, cx: &StateCx<'_, I>) -> Option<(bool, (f32, f32))> {
+    fn resolve_collision_with_neighboring_squares(&mut self, radius: f32, cx: &mut StateCx<'_, I>) -> Option<(bool, (f32, f32))> {
         let (x, y, z) = (self.vars.x, self.vars.y, self.vars.z);
         let (nx, ny) = (self.vars.next_x, self.vars.next_y);
         let (sx, sy, sz) = (ff(x), ff(y), ff(z));
@@ -488,15 +487,14 @@ impl<I: 'static> GameCharacter<I> {
             return None;
         }
         cx.world.square(sx, sy, sz)?;
-        let mover = pz_pathfind::mover::PathMover::mover_id(self);
         let from = (sx, sy, sz);
         let mut collided = false;
         let mut at = (nx, ny);
-        if sign_x != 0 && cx.world.test_collide_adjacent(mover, from, sign_x, 0, 0) {
+        if sign_x != 0 && self.test_collide_adjacent_with_mover(from, (sign_x, 0, 0), cx) {
             collided = true;
             at.0 = if sign_x == -1 { sx as f32 + radius } else { sx as f32 + 1.0 - radius };
         }
-        if sign_y != 0 && cx.world.test_collide_adjacent(mover, from, 0, sign_y, 0) {
+        if sign_y != 0 && self.test_collide_adjacent_with_mover(from, (0, sign_y, 0), cx) {
             collided = true;
             at.1 = if sign_y == -1 { sy as f32 + radius } else { sy as f32 + 1.0 - radius };
         }
@@ -648,7 +646,7 @@ mod tests {
         assert!(c.vars.collided_w);
         assert_eq!(c.vars.x, 0.2);
         assert!(path_crosses_square(
-            &pz_pathfind::Path { nodes: vec![pz_pathfind::PathNode { x: 0.5, y: 0.5, z: 32.0, flags: 0 }, pz_pathfind::PathNode { x: 2.5, y: 0.5, z: 32.0, flags: 0 }] },
+            &pz_pathfind::Path { nodes: vec![pz_pathfind::PathNode { x: 0.5, y: 0.5, z: 0.0, flags: 0 }, pz_pathfind::PathNode { x: 2.5, y: 0.5, z: 0.0, flags: 0 }] },
             1,
             0,
             0
