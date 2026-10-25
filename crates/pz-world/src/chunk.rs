@@ -184,6 +184,9 @@ pub struct ChunkSaveData {
     pub generators: Option<Vec<(i32, i32, i8)>>,
     pub loot_respawn_hour: i32,
     pub spawned_rooms: Vec<i64>,
+    /// `vehicles` read from the chunk file's vehicle list. Saving writes an
+    /// empty list (the original moves them to `vehicles.db`).
+    pub vehicles: Vec<crate::save::vehicle::ChunkVehicle>,
 }
 
 impl Default for ChunkSaveData {
@@ -202,6 +205,7 @@ impl Default for ChunkSaveData {
             generators: None,
             loot_respawn_hour: -1,
             spawned_rooms: Vec::new(),
+            vehicles: Vec::new(),
         }
     }
 }
