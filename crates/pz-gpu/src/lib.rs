@@ -28,6 +28,7 @@ mod gl;
 mod model;
 mod outline;
 mod vehicle;
+mod vispoly;
 mod state;
 
 use std::collections::HashMap;
@@ -223,6 +224,9 @@ enum PassTarget {
     /// [`outline::THICK_H`], [`outline::THICK_V`]); only outline draws go
     /// there.
     Outline(u8),
+    /// `VisibilityPolygon2`'s blur target (`visBlur` + `visBlurDepth`);
+    /// only vision draws go there.
+    VisBlur,
 }
 
 impl PassTarget {
@@ -230,7 +234,7 @@ impl PassTarget {
         match self {
             PassTarget::Main => TargetKind::Main,
             PassTarget::Chunk(_) | PassTarget::Atlas(_) => TargetKind::Chunk,
-            PassTarget::Offscreen | PassTarget::Sky(..) | PassTarget::WeatherFx(_) | PassTarget::Outline(_) => TargetKind::Offscreen,
+            PassTarget::Offscreen | PassTarget::Outline(_) | PassTarget::Sky(..) | PassTarget::WeatherFx(_) | PassTarget::VisBlur => TargetKind::Offscreen,
         }
     }
 }
@@ -267,6 +271,8 @@ struct Batch {
     vehicle: Option<(vehicle::VehicleKey, u64, u32, [u32; 10])>,
     /// An outline draw (`ModelOutlines`).
     outline: Option<outline::Op>,
+    /// A vision-cone draw (`VisibilityPolygon2`).
+    vision: Option<vispoly::Op>,
     stencil_ref: u32,
     scissor: Option<[u32; 4]>,
     globals: u32,
@@ -316,6 +322,8 @@ pub struct Gpu {
     vehicles: vehicle::VehiclePipelines,
     /// `ModelOutlines`' textures and shaders.
     outlines: outline::OutlinePipelines,
+    /// `VisibilityPolygon2`'s blur textures and shaders.
+    vision: vispoly::VisPipelines,
     /// Each uploaded texture's sampler state.
     filters: HashMap<u32, Filter>,
     /// glGenerateMipmap's downsampling pipeline and its source layout.
@@ -406,6 +414,7 @@ impl Gpu {
         let screen = module("screen", include_str!("screen.wgsl").to_string());
         let surface = module("surface", include_str!("surface.wgsl").to_string());
         let particles = module("particles", include_str!("particles.wgsl").to_string());
+        let fog = module("fog", include_str!("fog.wgsl").to_string());
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -460,12 +469,14 @@ impl Gpu {
             world_composite,
             surface,
             particles,
+            fog,
             screen,
         };
         let depth_stencil = depth_stencil_view(&device, width, height);
         let models = model::ModelPipelines::new(&device, &texture_layout);
         let vehicles = vehicle::VehiclePipelines::new(&device);
         let outlines = outline::OutlinePipelines::new(&device, &models.uniform_layout, &texture_layout, &globals_layout);
+        let vision = vispoly::VisPipelines::new(&device, &texture_layout, &chunk_depth_layout);
         let mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mip source"),
             entries: &[
@@ -546,6 +557,7 @@ impl Gpu {
             models,
             vehicles,
             outlines,
+            vision,
             filters: HashMap::new(),
             mip_pipeline,
             mip_layout,
@@ -745,6 +757,13 @@ impl Gpu {
             if let (Tex2::Nearest, Some(id)) = (f.batches[i].tex2, f.batches[i].texture) {
                 self.ensure_nearest(id);
             }
+            if let Some(op) = f.batches[i].vision {
+                match op {
+                    vispoly::Op::Polygon { .. } => self.vision.ensure_polygon(&self.device),
+                    vispoly::Op::Blur { target, .. } => self.vision.ensure_blur(&self.device, target, self.format),
+                }
+                continue;
+            }
             if let Some(op) = f.batches[i].outline {
                 match op {
                     outline::Op::Solid { kind, cull, texture, .. } => {
@@ -773,7 +792,25 @@ impl Gpu {
                 None => self.ensure_pipeline(f.batches[i].key),
             }
         }
-        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, sky, vehicle_uniforms, outline_uniforms, .. } = f;
+        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, vehicle_uniforms, outline_uniforms, sky, mut vis_vertices, vis_uniforms, .. } = f;
+        let mut visbytes = vec![0u8; vis_uniforms.len().max(1) * vispoly::STRIDE as usize];
+        for (i, u) in vis_uniforms.iter().enumerate() {
+            let at = i * vispoly::STRIDE as usize;
+            visbytes[at..at + std::mem::size_of::<vispoly::Uniforms>()].copy_from_slice(bytemuck::bytes_of(u));
+        }
+        let visbuf = self.buffer(&visbytes, wgpu::BufferUsages::UNIFORM);
+        let visbind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("visibility"),
+            layout: &self.vision.uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &visbuf, offset: 0, size: wgpu::BufferSize::new(std::mem::size_of::<vispoly::Uniforms>() as u64) }),
+            }],
+        });
+        if vis_vertices.is_empty() {
+            vis_vertices.push([0.0; 5]);
+        }
+        let visvbuf = self.buffer(bytemuck::cast_slice(&vis_vertices), wgpu::BufferUsages::VERTEX);
         let mut obytes = vec![0u8; outline_uniforms.len().max(1) * outline::PASS_STRIDE as usize];
         for (i, u) in outline_uniforms.iter().enumerate() {
             let at = i * outline::PASS_STRIDE as usize;
@@ -911,6 +948,31 @@ impl Gpu {
                 }
                 continue;
             }
+            if pass_desc.target == PassTarget::VisBlur {
+                let Some(t) = self.vision.targets.as_ref() else { continue };
+                let (load, dload) = if pass_desc.clear { (wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), wgpu::LoadOp::Clear(1.0)) } else { (wgpu::LoadOp::Load, wgpu::LoadOp::Load) };
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("visBlur"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &t.color, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store } })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &t.depth, depth_ops: Some(wgpu::Operations { load: dload, store: wgpu::StoreOp::Store }), stencil_ops: None }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                for b in &batches[pass_desc.batches.clone()] {
+                    let Some(vispoly::Op::Polygon { start, end, uniform }) = b.vision else { continue };
+                    let Some(p) = self.vision.polygon.as_ref() else { continue };
+                    if start == end {
+                        continue;
+                    }
+                    pass.set_viewport(0.0, 0.0, t.size[0].min(t.hw[0]) as f32, t.size[1].min(t.hw[1]) as f32, 0.0, 1.0);
+                    pass.set_pipeline(p);
+                    pass.set_bind_group(0, &visbind, &[uniform * vispoly::STRIDE as u32]);
+                    pass.set_vertex_buffer(0, visvbuf.slice(..));
+                    pass.draw(start..end, 0..1);
+                }
+                continue;
+            }
             let (color_view, depth_view, load, depth_ops, stencil_ops, tw, th) = match pass_desc.target {
                 PassTarget::Main => {
                     let load = match clear_first.filter(|_| !main_cleared) {
@@ -931,6 +993,7 @@ impl Gpu {
                     (&c.color, &c.depth, load, Some(wgpu::Operations { load: dload, store: wgpu::StoreOp::Store }), None, c.width, c.height)
                 }
                 PassTarget::Sky(..) => continue,
+                PassTarget::VisBlur => continue,
                 PassTarget::WeatherFx(i) => {
                     let Some(o) = self.weather[i].as_ref() else { continue };
                     let (load, dload) = if pass_desc.clear {
@@ -971,6 +1034,32 @@ impl Gpu {
                     _ => [0, 0, tw, th],
                 };
                 if sw == 0 || sh == 0 {
+                    continue;
+                }
+                if let Some(op) = b.vision {
+                    let vispoly::Op::Blur { uniform, target, viewport } = op else { continue };
+                    let fmt = match target {
+                        TargetKind::Main => self.format,
+                        TargetKind::Offscreen => state::OFFSCREEN_COLOR_FORMAT,
+                        TargetKind::Chunk => state::CHUNK_COLOR_FORMAT,
+                    };
+                    let (Some(p), Some(t)) = (self.vision.blur.get(&(target, fmt)), self.vision.targets.as_ref()) else { continue };
+                    // glViewport(screenLeft, screenTop, ...): GL counts y
+                    // from the bottom, as texture targets store it.
+                    let [vx, vy, vw, vh] = viewport;
+                    let vy = if pass_desc.target == PassTarget::Main { th as f32 - vy - vh } else { vy };
+                    let (x0, y0) = (vx.max(0.0), vy.max(0.0));
+                    let (x1, y1) = ((vx + vw).min(tw as f32), (vy + vh).min(th as f32));
+                    if x1 <= x0 || y1 <= y0 {
+                        continue;
+                    }
+                    pass.set_viewport(vx, vy, vw, vh, 0.0, 1.0);
+                    pass.set_scissor_rect(x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32);
+                    pass.set_pipeline(p);
+                    pass.set_bind_group(0, &visbind, &[uniform * vispoly::STRIDE as u32]);
+                    pass.set_bind_group(1, &t.color_bind, &[]);
+                    pass.set_bind_group(2, &t.depth_bind, &[]);
+                    pass.draw(0..6, 0..1);
                     continue;
                 }
                 if let Some(op) = b.outline {
@@ -1227,6 +1316,39 @@ impl Gpu {
                 let key = self.key(f, Program::FogCircle);
                 f.push(key, sprite.texture.as_ref().and_then(|t| t.id), Tex2::None, &self.state, g, sprite_vertices(sprite));
             }
+            DrawCmd::ImprovedFog(d) => {
+                // ImprovedFogDrawer.render: blend 770/771, depth test LESS
+                // without writes, then GLStateRenderThread.restore.
+                let saved = self.state.clone();
+                self.state.blend = true;
+                self.state.blend_func = [gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA, gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA];
+                self.state.depth_test = true;
+                self.state.depth_func = gl::LESS;
+                self.state.depth_mask = false;
+                self.state.alpha_test = false;
+                let flip = if f.target == PassTarget::Main { f.viewport.1 as f32 } else { 0.0 };
+                let key = self.key(f, Program::Fog);
+                let tex = d.noise.as_ref().and_then(|t| t.id);
+                let color = pz_render::color_to_abgr(1.0, 1.0, 1.0, d.alpha);
+                for (i, r) in d.rects.iter().enumerate() {
+                    let u = d.uniforms(i);
+                    let mut g = Globals::zeroed();
+                    g.mvp = f.mvp_for_target();
+                    g.alpha_func = 8;
+                    g.clip_z = 0.5;
+                    g.extra = flip;
+                    g.screen = [u.screen_info, u.rectangle_info];
+                    let c = u.color_info;
+                    g.surface = [u.world_offset, u.param_info, u.camera_info, [c[0], c[1], c[2], u.texture_info[2]], [u.scaling_info[0], u.scaling_info[1], u.texture_info[0], u.texture_info[3]]];
+                    let gi = f.push_globals(g);
+                    let [sx, sy, ex, ey] = r.pos;
+                    let [u0, v0, u1, v1] = r.uv;
+                    let corner = |x: f32, y: f32, uu: f32, vv: f32, d: f32| Vertex { pos: [x, y], uv: [uu, vv], color, uv1: [0.0; 2], uv2: [0.0; 2], depth: [d, 0.0] };
+                    let v = [corner(sx, sy, u0, v0, r.depth[0]), corner(ex, sy, u1, v0, r.depth[1]), corner(ex, ey, u1, v1, r.depth[2]), corner(sx, ey, u0, v1, r.depth[3])];
+                    f.push_split(key, tex, Tex2::None, &self.state, gi, v, true);
+                }
+                self.state = saved;
+            }
             DrawCmd::Model(d) => {
                 if d.alpha < 0.01 {
                     return;
@@ -1240,6 +1362,35 @@ impl Gpu {
                 let u = (f.model_uniforms.len() - 1) as u32;
                 let key = model::ModelKey { kind: d.mesh.kind, pass: d.pass, target: f.target.kind() };
                 f.push_model(key, d.mesh.id, u, d.texture.as_ref().and_then(|t| t.id), &self.state);
+            }
+            DrawCmd::VisibilityPolygon(d) => {
+                if d.blur_size[0] == 0 || d.blur_size[1] == 0 {
+                    return;
+                }
+                // initBlur: GL_LINEAR, GL_REPEAT.
+                let sampler = self.sampler((false, false, false, false));
+                self.vision.ensure_targets(&self.device, &self.texture_layout, &self.chunk_depth_layout, &sampler, d.blur_size);
+                let hw = self.vision.targets.as_ref().expect("targets").hw;
+                let back = f.target;
+                // renderPolygons: the cleared blur target, the current
+                // projection, viewport 0, 0, blur size.
+                f.target = PassTarget::VisBlur;
+                let mvp = f.mvp_for_target();
+                let start = f.vis_vertices.len() as u32;
+                f.vis_vertices.extend_from_slice(&d.vertices);
+                let end = f.vis_vertices.len() as u32;
+                f.vis_uniforms.push(vispoly::Uniforms { mvp, a: [0.0; 4], b: [0.0; 4], c: [0.0; 4], d: [0.0; 4] });
+                let uniform = (f.vis_uniforms.len() - 1) as u32;
+                let at = f.batches.len();
+                f.passes.push(PassDesc { target: PassTarget::VisBlur, clear: true, mipmaps: false, batches: at..at });
+                f.push_vision(vispoly::Op::Polygon { start, end, uniform }, &self.state);
+                f.target = back;
+                // renderToScreen over the player's screen rectangle.
+                let main_height = (back == PassTarget::Main).then_some(self.height);
+                f.vis_uniforms.push(vispoly::blur_uniforms(d, hw, main_height));
+                let uniform = (f.vis_uniforms.len() - 1) as u32;
+                let [x, y, w, h] = d.screen;
+                f.push_vision(vispoly::Op::Blur { uniform, target: back.kind(), viewport: [x as f32, y as f32, w as f32, h as f32] }, &self.state);
             }
             DrawCmd::Surface(d) => {
                 // The original pushes and pops the GL attributes around the
@@ -1913,6 +2064,9 @@ struct FrameBuilder {
     /// The target `OutlineEnd` returns to.
     outline_return: PassTarget,
     outline_uniforms: Vec<outline::PassUniforms>,
+    /// `VisibilityPolygon2`'s polygon vertices and uniform blocks.
+    vis_vertices: Vec<[f32; 5]>,
+    vis_uniforms: Vec<vispoly::Uniforms>,
 }
 
 impl Default for FrameBuilder {
@@ -1938,6 +2092,8 @@ impl Default for FrameBuilder {
             atlas_stack: Vec::new(),
             outline_return: PassTarget::Main,
             outline_uniforms: Vec::new(),
+            vis_vertices: Vec::new(),
+            vis_uniforms: Vec::new(),
         }
     }
 }
@@ -1983,6 +2139,7 @@ impl FrameBuilder {
             model: None,
             vehicle: Some((key, mesh, uniform, textures)),
             outline: None,
+            vision: None,
             stencil_ref: st.stencil_ref,
             scissor: st.scissor_box(),
             globals: 0,
@@ -2019,6 +2176,33 @@ impl FrameBuilder {
             model: None,
             vehicle: None,
             outline: Some(op),
+            vision: None,
+            stencil_ref: st.stencil_ref,
+            scissor: st.scissor_box(),
+            globals: 0,
+            viewport: self.viewport,
+            origin: self.origin,
+            indices: at..at,
+        });
+        self.passes.last_mut().expect("pass").batches.end = self.batches.len();
+    }
+
+    /// A vision-cone draw as its own batch.
+    fn push_vision(&mut self, op: vispoly::Op, st: &GlState) {
+        if self.passes.last().is_none_or(|p| p.target != self.target) {
+            let at = self.batches.len();
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
+        }
+        let at = self.indices.len() as u32;
+        self.batches.push(Batch {
+            key: st.pipe_key(),
+            texture: None,
+            tex2: Tex2::None,
+            tex3: None,
+            model: None,
+            vehicle: None,
+            outline: None,
+            vision: Some(op),
             stencil_ref: st.stencil_ref,
             scissor: st.scissor_box(),
             globals: 0,
@@ -2044,6 +2228,7 @@ impl FrameBuilder {
             model: Some((key, mesh, uniform)),
             vehicle: None,
             outline: None,
+            vision: None,
             stencil_ref: st.stencil_ref,
             scissor: st.scissor_box(),
             globals: 0,
@@ -2086,6 +2271,7 @@ impl FrameBuilder {
                     && b.tex3 == tex3
                     && b.model.is_none()
                     && b.outline.is_none()
+                    && b.vision.is_none()
                     && b.stencil_ref == stencil_ref
                     && b.scissor == scissor
                     && b.globals == globals
@@ -2096,7 +2282,7 @@ impl FrameBuilder {
                 b.indices.end = end
             }
             _ => {
-                self.batches.push(Batch { model: None, vehicle: None, outline: None, key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, origin, indices: start..end });
+                self.batches.push(Batch { model: None, vehicle: None, outline: None, vision: None, key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, origin, indices: start..end });
                 pass.batches.end = self.batches.len();
             }
         }

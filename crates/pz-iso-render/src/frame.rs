@@ -163,7 +163,50 @@ pub fn world_frame_for_player(r: &ChunkRenderer<'_>, size: FrameSize, view: Opti
 
 /// [`world_frame_for_player`] with `late` (see [`world_frame_full`]).
 #[allow(clippy::too_many_arguments)]
-pub fn world_frame_for_player_with(r: &ChunkRenderer<'_>, size: FrameSize, view: Option<PlayerView>, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, mut out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
+pub fn world_frame_for_player_with(r: &ChunkRenderer<'_>, size: FrameSize, view: Option<PlayerView>, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
+    world_frame_for_player_extras(r, size, view, chunks, objects, drop_shadow, &mut FrameExtras::default(), screen, out, late)
+}
+
+/// The rest of what `performRenderTiles` and `IsoWorld.renderInternal`
+/// draw into a player's offscreen buffer, each from its gameplay inputs;
+/// `None` (the default) draws none of it.
+#[derive(Default)]
+pub struct FrameExtras<'a> {
+    /// `renderFlies`: the corpse flies over rotting corpses
+    /// (`RenderSquare::flies`) with `CorpseFlies`' animation frame.
+    pub flies: Option<crate::flies::CorpseFlies>,
+    /// `FBORenderObjectHighlight.render`: the objects whose
+    /// [`crate::world::RenderObject::highlight`] is set, drawn over the
+    /// chunk textures in their highlight colour.
+    pub highlight: Option<crate::highlight::HighlightFrame>,
+    /// `renderOpaqueObjectsEvent`: Lua's `RenderOpaqueObjectsInWorld`
+    /// handlers (build ghosts, fishing bobbers), called with the square
+    /// under the cursor (or the player, on a joypad) before the moving
+    /// objects draw.
+    pub opaque_event: Option<crate::markers::OpaqueObjectsEvent<'a>>,
+    /// `VisibilityPolygon2.renderMain`: the vision cone, drawn on the
+    /// camera character's level.
+    pub vision: Option<crate::vispoly::VisionFrame>,
+    /// `WorldMarkers.renderGridSquareMarkers` (`FBORenderWorldMarkers`)
+    /// and `IsoMarkers.renderIsoMarkers`, per level.
+    pub markers: Option<crate::markers::MarkersFrame>,
+    /// `renderFog`: `ImprovedFog` over levels 0 and 1.
+    pub fog: Option<crate::fog::FogFrame>,
+    /// `FBORenderAreaHighlights.render` (after the weather) and
+    /// `LineDrawer.render`'s lines.
+    pub area_highlights: Option<crate::area_highlights::AreaHighlightsFrame>,
+}
+
+/// [`world_frame_full`] with the [`FrameExtras`] passes, each at its place
+/// in `performRenderTiles` / `IsoWorld.renderInternal`.
+#[allow(clippy::too_many_arguments)]
+pub fn world_frame_extras(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, extras: &mut FrameExtras<'_>, screen: ScreenParams, out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
+    world_frame_for_player_extras(r, size, None, chunks, objects, drop_shadow, extras, screen, out, late)
+}
+
+/// [`world_frame_for_player_with`] with the [`FrameExtras`] passes.
+#[allow(clippy::too_many_arguments)]
+pub fn world_frame_for_player_extras(r: &ChunkRenderer<'_>, size: FrameSize, view: Option<PlayerView>, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, extras: &mut FrameExtras<'_>, screen: ScreenParams, mut out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
     let full = view.map_or(size, |v| FrameSize { width: v.screen.0, height: v.screen.1 });
     let (ow, oh) = full.offscreen();
     let (w, h) = (size.width, size.height);
@@ -207,8 +250,10 @@ pub fn world_frame_for_player_with(r: &ChunkRenderer<'_>, size: FrameSize, view:
     // (FBORenderChunkManager.endFrame), in its order:
     // FBORenderShadows.clear; renderPlayers, renderCorpseShadows,
     // renderMannequinShadows, renderCorpsesInWorld, renderItemsInWorld;
-    // renderPuddles (quality 0 and 1); renderMovingObjects; renderWater;
-    // renderAnimatedAttachments; then the per-level translucent passes.
+    // renderPuddles (quality 0 and 1); renderOpaqueObjectsEvent;
+    // renderMovingObjects; renderWater; renderAnimatedAttachments;
+    // renderFlies; FBORenderObjectHighlight.render; then the per-level
+    // translucent passes and renderFog.
     let model_cam = ModelCamera::new(&r.cam, w as f32 * z, h as f32 * z);
     let mut shadows = Shadows::default();
     shadows.clear(drop_shadow);
@@ -222,17 +267,37 @@ pub fn world_frame_for_player_with(r: &ChunkRenderer<'_>, size: FrameSize, view:
             crate::puddles::render_puddles(r, s, &squares, &mut out);
         }
     }
+    if let Some(e) = extras.opaque_event.as_mut() {
+        e.trigger(&r.cam, &mut out);
+    }
     objects.render_outlined_moving(&model_cam, &mut shadows, &mut outlines, &mut out);
     if let Some(s) = r.surfaces.as_ref() {
         crate::water::render_water(r, s, &squares, &mut out);
     }
     render_animated_attachments(r, chunks, &mut out);
+    if let Some(f) = extras.flies.as_ref() {
+        crate::flies::render_flies(r, f, chunks, &mut out);
+    }
+    if let Some(hl) = extras.highlight.as_ref() {
+        crate::highlight::render(r, hl, &squares, &mut out);
+    }
     // The per-level translucent passes, over every on-screen square
     // (recorded this frame or not): translucent floors, puddles on them,
-    // shores (from level 0), the level's shadows, then translucent objects.
-    let levels = squares.iter().map(|s| s.z).chain(shadows.shadows.iter().map(|s| pz_render::iso::fastfloor(s.oz)));
-    if let (Some(lo), Some(hi)) = (levels.clone().min(), levels.max()) {
-        let (lo, hi) = if r.surfaces.is_some() { (lo.min(0), hi.max(0)) } else { (lo, hi) };
+    // shores (from level 0), shadows, the vision cone (on the camera
+    // character's level), the grid-square and iso markers, then
+    // translucent objects.
+    let cam_level = pz_render::iso::fastfloor(r.cam.z);
+    let mut levels: Vec<i32> = squares.iter().map(|s| s.z).chain(shadows.shadows.iter().map(|s| pz_render::iso::fastfloor(s.oz))).collect();
+    if r.surfaces.is_some() {
+        levels.push(0);
+    }
+    if extras.vision.is_some() {
+        levels.push(cam_level);
+    }
+    if let Some(m) = extras.markers.as_ref() {
+        levels.extend(m.levels());
+    }
+    if let (Some(&lo), Some(&hi)) = (levels.iter().min(), levels.iter().max()) {
         for z in lo..=hi {
             r.render_translucent_floors(&squares, z, &mut out);
             if let Some(s) = r.surfaces.as_ref() {
@@ -251,14 +316,33 @@ pub fn world_frame_for_player_with(r: &ChunkRenderer<'_>, size: FrameSize, view:
                 }
             }
             shadows.render_main(z, &model_cam, &mut out);
+            if z == cam_level {
+                if let Some(v) = extras.vision.as_ref() {
+                    crate::vispoly::render_main(r, v, size, &mut out);
+                }
+            }
+            if let Some(m) = extras.markers.as_mut() {
+                m.render_level(r, &model_cam, z, &mut out);
+            }
             r.render_translucent_objects(&squares, z, &mut out);
         }
     }
     shadows.end_render();
+    if let Some(f) = extras.fog.as_ref() {
+        crate::fog::render_fog(r, f, chunks, size, &mut out);
+    }
     // FBORenderObjectOutline.render, after the fog.
     crate::object_outline::render_object_outlines(&objects.object_outlines, &mut outlines, &mut out);
     out.push(DrawCmd::Ortho { left: 0.0, right: w as f32 * z, bottom: h as f32 * z, top: 0.0, width: w, height: h });
+    // IsoWorld.renderInternal after the cell: the weather
+    // (renderWeatherFX), FBORenderAreaHighlights.render, LineDrawer.render;
+    // then IngameState's ModelOutlines.endFrameMain.
     late(&mut out);
+    let mut lines = extras.markers.as_mut().map(|m| std::mem::take(&mut m.lines)).unwrap_or_default();
+    if let Some(a) = extras.area_highlights.as_ref() {
+        a.render(&r.cam, &model_cam, &mut lines, &mut out);
+    }
+    crate::area_highlights::render_lines(&r.cam, &lines, &mut out);
     outlines.end_frame(&mut out);
     out.push(DrawCmd::GlDisable(gl::DEPTH_TEST));
     out.push(DrawCmd::OffscreenEnd);
@@ -419,6 +503,97 @@ mod tests {
             pos("flames", &|c| matches!(c, DrawCmd::WorldSprite(s, _) if *s == flame)),
             pos("shadow", &|c| matches!(c, DrawCmd::ProjectedDepthQuad { .. })),
             pos("weather", &|c| matches!(c, DrawCmd::StencilMask(0x59))),
+            pos("end", &|c| matches!(c, DrawCmd::OffscreenEnd)),
+        ];
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
+    }
+
+    /// The extras in `performRenderTiles`' and `IsoWorld.renderInternal`'s
+    /// order: the opaque-objects event between the items and the moving
+    /// objects; flies and the object highlight after them; on the camera
+    /// character's level the vision cone, then the grid-square markers;
+    /// the fog after the level loop; after the weather the area highlights
+    /// and the queued lines.
+    #[test]
+    fn the_extras_follow_perform_render_tiles() {
+        use crate::area_highlights::{AreaHighlight, AreaHighlightsFrame};
+        use crate::color::ColorInfo;
+        use crate::markers::{GridSquareMarker, MarkersFrame, OpaqueObjectsEvent};
+        use crate::world::{ObjectHighlight, ObjectKind, RenderObject, RenderSquare, SpriteFlags, SpriteInfo};
+        use std::rc::Rc;
+
+        let tex = |name: &str, id: u32| {
+            let mut t = Texture::empty(name);
+            t.id = Some(id);
+            t.width = 128;
+            t.height = 256;
+            t.width_hw = 128;
+            t.height_hw = 256;
+            t.ready = true;
+            t
+        };
+        let floor = Rc::new(SpriteInfo { name: "floor".into(), texture: Some(tex("floor", 40)), flags: SpriteFlags { solidfloor: true, exterior: true, ..Default::default() }, tint_mod: [1.0; 3], ..Default::default() });
+        let mut flies = RenderSquare::new(10, 6, 0);
+        flies.objects.push(RenderObject::new(ObjectKind::Plain, Some(floor.clone())));
+        flies.flies = true;
+        let mut lit = RenderSquare::new(11, 6, 0);
+        lit.objects.push(RenderObject::new(ObjectKind::Plain, Some(floor)));
+        let mut crate_ = RenderObject::new(ObjectKind::Plain, Some(Rc::new(SpriteInfo { name: "crate".into(), texture: Some(tex("crate", 41)), tint_mod: [1.0; 3], ..Default::default() })));
+        crate_.highlight = Some(ObjectHighlight { color: ColorInfo::new(1.0, 0.0, 0.0, 0.5), alpha_scale: 1.0 });
+        lit.objects.push(crate_);
+        let mut levels: LevelSquares<'_> = [None; 64];
+        levels[2 + 6 * 8] = Some(&flies);
+        levels[3 + 6 * 8] = Some(&lit);
+        let chunks = [ChunkLevels { texture: crate::chunk::ChunkTexture::new(1, 0, 0, 0, 0), levels: vec![(0, levels)], dirty: false }];
+        let cam = Camera::centred(10.0, 6.0, 0.0, 800, 600, 1.0);
+        let r = ChunkRenderer::new(cam, &NoMaps, (800, 600));
+        let mark = |n: u32| DrawCmd::StencilMask(n);
+        let objects = FrameObjects {
+            players: vec![ObjectRender { draws: vec![mark(0x51)], ..Default::default() }],
+            moving: vec![ObjectRender { draws: vec![mark(0x54)], ..Default::default() }],
+            ..Default::default()
+        };
+        let valid = |_: i32, _: i32, _: i32| true;
+        let mut handler = |_: i32, _: i32, _: i32, out: &mut Vec<DrawCmd>| out.push(DrawCmd::StencilMask(0x60));
+        let mut fog = crate::fog::ImprovedFog::default();
+        fog.init(1.0);
+        let mut extras = FrameExtras {
+            flies: Some(crate::flies::CorpseFlies { texture: Some(tex("CorpseFlies", 42)), ..Default::default() }),
+            highlight: Some(Default::default()),
+            opaque_event: Some(OpaqueObjectsEvent { joypad: true, picked_tile: None, valid_square: &valid, handler: &mut handler }),
+            vision: Some(crate::vispoly::VisionFrame { vision_cone: -0.3, look_vector: [1.0, 0.0], chunk_map: [0, 0, 32, 32], ..Default::default() }),
+            markers: Some(MarkersFrame {
+                grid_square_markers: vec![GridSquareMarker { orig: [10.0, 7.0, 0.0], z: 0.0, size: 1.0, rgb: [1.0; 3], alpha: 1.0, active: true, texture_name: "circle_center".into(), overlay_texture_name: None }],
+                circle_center: Some(tex("circle_center", 43)),
+                chunk_map: Some([0, 0, 32, 32]),
+                ..Default::default()
+            }),
+            fog: Some(crate::fog::FogFrame { fog, ..Default::default() }),
+            area_highlights: Some(AreaHighlightsFrame {
+                white: Some(tex("white", 44)),
+                chunk_map: Some([0, 0, 32, 32]),
+                user_defined: vec![(None, AreaHighlight { x1: 8, y1: 4, x2: 12, y2: 8, z: 0, rgba: [0.0, 1.0, 0.0, 0.3] })],
+                ..Default::default()
+            }),
+        };
+        let size = FrameSize { width: 800, height: 600 };
+        let cmds = world_frame_extras(&r, size, &chunks, &objects, None, &mut extras, ScreenParams { desaturation: 0.0, timer: 0.0 }, Vec::new(), &mut |out| out.push(mark(0x59)));
+        let sprite_of = |c: &DrawCmd, id: u32| matches!(c, DrawCmd::WorldSprite(s, _) if s.texture.as_ref().and_then(|t| t.id) == Some(id));
+        let quad_of = |c: &DrawCmd, id: u32| matches!(c, DrawCmd::ProjectedDepthQuad { texture, .. } if texture.id == Some(id));
+        let pos = |what: &str, f: &dyn Fn(&DrawCmd) -> bool| cmds.iter().position(f).unwrap_or_else(|| panic!("no {what}"));
+        let order = [
+            pos("composite", &|c| matches!(c, DrawCmd::Clear(_))),
+            pos("player", &|c| matches!(c, DrawCmd::StencilMask(0x51))),
+            pos("opaque event", &|c| matches!(c, DrawCmd::StencilMask(0x60))),
+            pos("moving object", &|c| matches!(c, DrawCmd::StencilMask(0x54))),
+            pos("flies", &|c| sprite_of(c, 42)),
+            pos("highlight", &|c| sprite_of(c, 41)),
+            pos("vision", &|c| matches!(c, DrawCmd::VisibilityPolygon(_))),
+            pos("grid marker", &|c| quad_of(c, 43)),
+            pos("fog", &|c| matches!(c, DrawCmd::ImprovedFog(_))),
+            pos("weather", &|c| matches!(c, DrawCmd::StencilMask(0x59))),
+            pos("area highlight", &|c| quad_of(c, 44)),
+            pos("area outline", &|c| matches!(c, DrawCmd::Sprite(_))),
             pos("end", &|c| matches!(c, DrawCmd::OffscreenEnd)),
         ];
         assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");

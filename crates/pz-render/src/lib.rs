@@ -339,6 +339,128 @@ pub enum DrawCmd {
     /// `ModelManager.RenderParticles`' instanced draw with the `fire` or
     /// `smoke` shader (`ParticlesFire`).
     Particles(Box<ParticlesDraw>),
+    /// `ImprovedFogDrawer.render` (`FBORenderCell.renderFog`): each
+    /// rectangle a `formatPositionColorUvDepth` quad in the current
+    /// projection drawn with the `fog` shader over `ImprovedFog`'s noise
+    /// texture, blended (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), depth-tested
+    /// `GL_LESS` without depth writes, each corner's window depth written
+    /// as the fragment depth. The GL state is restored afterwards.
+    ImprovedFog(Box<FogDraw>),
+    /// `VisibilityPolygon2.Drawer.renderNew`: the vision cone's shadow
+    /// triangles drawn into the blur target (`visBlur`, a red-only
+    /// `GL_R8` texture of `blur_size` with a 16-bit depth texture, both
+    /// cleared) with `visPolygon` under the current projection, then the
+    /// `visibilityBlur` pass over the current target. See
+    /// [`VisibilityPolygonDraw`].
+    VisibilityPolygon(Box<VisibilityPolygonDraw>),
+}
+
+/// The uniforms and rectangles of one `ImprovedFogDrawer` frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FogDraw {
+    /// `ImprovedFog.getNoiseTexture()` (`NoiseTexture`, unit 0).
+    pub noise: Option<Texture>,
+    /// `screenInfo1..3`: the offscreen width, height and zoom (the fourth
+    /// component is each rectangle's layer alpha).
+    pub screen: [f32; 3],
+    /// `textureInfo`: debug colours, octaves, base alpha, tile scale.
+    pub texture_info: [f32; 4],
+    /// `worldOffset`: camera offset and right-click offset.
+    pub world_offset: [f32; 4],
+    /// `scalingInfo1, 2` (wind scroll) and `scalingInfo4`; the third
+    /// component is each rectangle's level.
+    pub scaling: [f32; 3],
+    /// `colorInfo`.
+    pub color_info: [f32; 4],
+    /// `paramInfo`: top and bottom alpha heights, alpha-circle alpha and
+    /// radius.
+    pub param_info: [f32; 4],
+    /// `cameraInfo1..3`: offscreen left, top, zoom (the fourth component
+    /// is each rectangle's row offset).
+    pub camera: [f32; 3],
+    /// The quads' vertex alpha (`alpha`; white otherwise).
+    pub alpha: f32,
+    pub rects: Vec<FogRect>,
+}
+
+/// One rectangle of an [`FogDraw`] (`addRectangle`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FogRect {
+    /// `sx, sy, ex, ey` in the current projection.
+    pub pos: [f32; 4],
+    /// `u0, v0, u1, v1`.
+    pub uv: [f32; 4],
+    /// Window depth of the corners (top-left, top-right, bottom-right,
+    /// bottom-left).
+    pub depth: [f32; 4],
+    /// The row's noise offset (`cameraInfo.w`).
+    pub offset: f32,
+    /// `screenInfo.w`.
+    pub layer_alpha: f32,
+    /// `scalingInfo.z`.
+    pub z_layer: i32,
+}
+
+/// The `fog` shader's uniforms for one rectangle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FogUniforms {
+    pub screen_info: [f32; 4],
+    pub texture_info: [f32; 4],
+    pub rectangle_info: [f32; 4],
+    pub scaling_info: [f32; 4],
+    pub color_info: [f32; 4],
+    pub world_offset: [f32; 4],
+    pub param_info: [f32; 4],
+    pub camera_info: [f32; 4],
+}
+
+impl FogDraw {
+    /// The uniforms rectangle `i` is drawn with: `setScreenInfo2`,
+    /// `setRectangleInfo2` (integer-truncated), `setCameraInfo2` and
+    /// `setScalingInfo2` (whose level holds over from the previous
+    /// rectangle until it changes, the same value either way).
+    pub fn uniforms(&self, i: usize) -> FogUniforms {
+        let r = &self.rects[i];
+        let [sx, sy, ex, ey] = r.pos;
+        let t = |v: f32| v as i32 as f32;
+        FogUniforms {
+            screen_info: [self.screen[0], self.screen[1], self.screen[2], r.layer_alpha],
+            texture_info: self.texture_info,
+            rectangle_info: [t(sx), t(sy), t(ex - sx), t(ey - sy)],
+            scaling_info: [self.scaling[0], self.scaling[1], r.z_layer as f32, self.scaling[2]],
+            color_info: self.color_info,
+            world_offset: self.world_offset,
+            param_info: self.param_info,
+            camera_info: [self.camera[0], self.camera[1], self.camera[2], r.offset],
+        }
+    }
+}
+
+/// One [`DrawCmd::VisibilityPolygon`].
+///
+/// The polygon pass: viewport `0, 0, blur_size`, blending (ONE, ZERO),
+/// depth test `LEQUAL` with writes, no culling; each vertex is `x, y, z`
+/// in the current projection, `aDist` and `aDepth` (`visPolygon.vert`).
+/// The blur pass: viewport `screen` (left, top, width, height) of the
+/// current target, blending (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), depth test
+/// `LEQUAL` without writes against the fragment depth read from the blur
+/// depth texture; the uniforms are `visibilityBlur.frag`'s.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisibilityPolygonDraw {
+    /// Triangle list: `x, y, z, aDist, aDepth` per vertex.
+    pub vertices: Vec<[f32; 5]>,
+    /// `Core.width / downscale`, `Core.height / downscale` (the blur
+    /// textures are allocated at the next powers of two).
+    pub blur_size: [u32; 2],
+    /// `IsoCamera.getScreenLeft/Top/Width/Height`.
+    pub screen: [i32; 4],
+    /// `displaySize`: the offscreen buffer's size over the split-screen
+    /// divisor.
+    pub display_size: [f32; 2],
+    /// `zoom`.
+    pub zoom: f32,
+    /// `opacityScale` (`PerformanceSettings.viewConeOpacity`).
+    pub opacity_scale: i32,
 }
 
 /// The shader of a [`ParticlesDraw`].
