@@ -12,8 +12,8 @@
 //!
 //! TODO(network): the server's `sendSyncPlayerFields`/`SyncPlayerStats`
 //! packets and `GameServer.addXp` (on a server the XP is not awarded here).
-//! TODO(saves): `save`/`load`.
 
+use pz_inventory::io::{Reader, SaveResult, Writer};
 use pz_scripts::java::{split_char, JHashMap};
 use pz_scripts::objects::items::CharacterProfession;
 use pz_scripts::{ScriptError, ScriptManager, ScriptResult};
@@ -92,6 +92,60 @@ impl Default for Fitness {
             last_update: -1,
             current_exe: None,
         }
+    }
+}
+
+impl Fitness {
+    /// `save`: the maps in `HashMap` order.
+    pub fn save(&self, w: &mut Writer) {
+        w.i32(self.stiffness_inc_map.len() as i32);
+        for (k, v) in self.stiffness_inc_map.iter() {
+            w.string(k);
+            w.f32(*v);
+        }
+        w.i32(self.stiffness_timer_map.len() as i32);
+        for (k, v) in self.stiffness_timer_map.iter() {
+            w.string(k);
+            w.i32(*v);
+        }
+        w.i32(self.regularity_map.len() as i32);
+        for (k, v) in self.regularity_map.iter() {
+            w.string(k);
+            w.f32(*v);
+        }
+        w.i32(self.bodypart_to_inc_stiffness.len() as i32);
+        for b in &self.bodypart_to_inc_stiffness {
+            w.string(b);
+        }
+        w.i32(self.exe_timer.len() as i32);
+        for (k, v) in self.exe_timer.iter() {
+            w.string(k);
+            w.i64(*v);
+        }
+    }
+
+    /// `load`: puts the saved entries into the maps (nothing is cleared).
+    pub fn load(&mut self, r: &mut Reader<'_>, _world_version: i32) -> SaveResult<()> {
+        for _ in 0..r.i32()? {
+            let k = r.string()?;
+            self.stiffness_inc_map.insert(k, r.f32()?);
+        }
+        for _ in 0..r.i32()? {
+            let k = r.string()?;
+            self.stiffness_timer_map.insert(k, r.i32()?);
+        }
+        for _ in 0..r.i32()? {
+            let k = r.string()?;
+            self.regularity_map.insert(k, r.f32()?);
+        }
+        for _ in 0..r.i32()? {
+            self.bodypart_to_inc_stiffness.push(r.string()?);
+        }
+        for _ in 0..r.i32()? {
+            let k = r.string()?;
+            self.exe_timer.insert(k, r.i64()?);
+        }
+        Ok(())
     }
 }
 

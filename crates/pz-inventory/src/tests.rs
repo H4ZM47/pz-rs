@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::container::{load_items, save_items, ItemContainer};
+use crate::container::{load_items, load_items_saved, save_items, save_items_saved, ItemContainer};
 use crate::env::ItemEnv;
 use crate::io::{Reader, Writer};
 use crate::item::{InventoryItem, ItemKind};
@@ -367,4 +367,33 @@ fn identical_copies_load_with_their_own_draws() {
     let back = load_items(&mut Reader::new(&zero), 249, &e).unwrap();
     assert!(back.is_empty());
     assert_eq!(e.1.get(), 2);
+}
+
+/// `CompressIdenticalItems.save(output, items, noCompress)`: a run never
+/// starts at an equipped item, but an equipped item after the run's first
+/// item joins it; `savedItems` lists the items in written order.
+#[test]
+fn equipped_items_start_no_run() {
+    let e = env();
+    let rock = |id| {
+        let mut i = new_item(&e, 1);
+        i.id = id;
+        SavedItem::Item(Box::new(i))
+    };
+    let items = [rock(6), rock(7), rock(8)];
+    let runs = |equipped: &[i32]| {
+        let f = |i: &SavedItem| equipped.contains(&i.id());
+        let mut w = Writer::new();
+        let saved = save_items_saved(&mut w, &items, &e, Some(&f)).unwrap();
+        let (back, loaded) = load_items_saved(&mut Reader::new(&w.buf), 249, &e).unwrap();
+        let ids: Vec<i32> = back.iter().map(SavedItem::id).collect();
+        assert_eq!(ids, vec![6, 7, 8]);
+        assert_eq!(loaded, vec![Some(0), Some(1), Some(2)]);
+        (Reader::new(&w.buf).i16().unwrap(), saved)
+    };
+    assert_eq!(runs(&[]), (1, vec![0, 1, 2]));
+    // Rock 6 equipped: its own run, then 7 and 8 together.
+    assert_eq!(runs(&[6]), (2, vec![0, 1, 2]));
+    // Rock 7 equipped: it joins 6's run, and 8 follows.
+    assert_eq!(runs(&[7]), (1, vec![0, 1, 2]));
 }
