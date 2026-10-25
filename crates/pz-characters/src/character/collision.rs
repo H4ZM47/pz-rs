@@ -72,7 +72,7 @@ pub fn path_crosses_square(path: &pz_pathfind::Path, x: i32, y: i32, z: i32) -> 
     let n = &path.nodes;
     for i in 0..n.len().saturating_sub(1) {
         let (a, b) = (&n[i], &n[i + 1]);
-        if ff(a.level()) != z && ff(b.level()) != z {
+        if ff(a.z) != z && ff(b.z) != z {
             continue;
         }
         let (ax, ay, bx, by) = (a.x as f64, a.y as f64, b.x as f64, b.y as f64);
