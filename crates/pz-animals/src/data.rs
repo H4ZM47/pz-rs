@@ -158,6 +158,21 @@ fn stage_age_to_grow(animal: &Animal) -> JResult<i32> {
     }
 }
 
+/// What the character side does after [`Animal::data_eat`] (the
+/// behaviour calls of `AnimalData.eat()`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EatFollowUp {
+    None,
+    /// `setDoingBehavior(false)`, `checkBehavior()`.
+    CheckBehavior,
+    /// `setDoingBehavior(false)`, `resetBehaviorAction()` (the state event
+    /// timer is already 0).
+    ResetBehavior,
+    /// Grass: when `check`, `setDoingBehavior(false)` and
+    /// `checkBehavior()`; then `resetEatingCheck()`.
+    Grass { check: bool },
+}
+
 impl Animal {
     fn adef_of<'d>(&self, ctx: AnimalCtx<'d>) -> &'d AnimalDefinitions {
         self.adef(ctx)
@@ -753,7 +768,7 @@ impl Animal {
                     self.data.eggs_today += 1;
                     self.data.egg_time = 0;
                 } else {
-                    env.world.call_to_hutch();
+                    self.behavior_call_to_hutch(None, true, chr, env);
                 }
             } else if self.add_egg(false, chr, env)? {
                 self.data.eggs_today += 1;
@@ -965,7 +980,8 @@ impl Animal {
                     if self.eat_from_ground.is_none() {
                         break;
                     }
-                    self.data_eat(chr, env)?;
+                    let f = self.data_eat(chr, env)?;
+                    self.eat_follow_up_away(f, chr);
                     found = true;
                     break;
                 }
@@ -977,7 +993,8 @@ impl Animal {
                         continue;
                     }
                     self.eat_from_trough = Some(t);
-                    self.data_eat(chr, env)?;
+                    let f = self.data_eat(chr, env)?;
+                    self.eat_follow_up_away(f, chr);
                     found = true;
                     continue 'block1;
                 }
@@ -1114,18 +1131,13 @@ impl Animal {
     }
 
     /// `drinkFromGround()`: from the `IsoWorldInventoryObject` the animal
-    /// eats from (`useFluid`).
-    pub fn data_drink_from_ground(
-        &mut self,
-        chr: &mut dyn AnimalCharacter,
-        env: &mut AnimalEnv<'_>,
-        use_fluid: &mut dyn FnMut(ObjectRef, f32) -> bool,
-    ) {
+    /// eats from ([`AnimalWorld::world_item_use_fluid`](crate::env::AnimalWorld::world_item_use_fluid)).
+    pub fn data_drink_from_ground(&mut self, chr: &mut dyn AnimalCharacter, env: &mut AnimalEnv<'_>) {
         let tb = self.adef_of(env.ctx).thirst_boost;
         let Some(obj) = self.eat_from_ground else {
             return;
         };
-        let has_fluid = use_fluid(obj, 2.0 / tb);
+        let has_fluid = env.world.world_item_use_fluid(obj, 2.0 / tb);
         chr.remove_stat(AnimalStat::Thirst, 0.2 * tb);
         let done = chr.stat(AnimalStat::Thirst) < 0.1 || !has_fluid;
         self.after_drink(chr, done, env);
@@ -1245,46 +1257,79 @@ impl Animal {
         Ok(())
     }
 
-    /// `eat()`.
+    /// The behaviour calls of `eat()` for an animal that is away (the meta
+    /// update): it is not in the world, so `checkBehavior()` stops after
+    /// `setDoingBehavior(false)` and clearing an `idle*` idle action, and
+    /// `resetBehaviorAction()` clears the action (the turn delta and the
+    /// fighting opponent are the character's, and the character is not
+    /// updated while away).
+    fn eat_follow_up_away(&mut self, f: EatFollowUp, chr: &mut dyn AnimalCharacter) {
+        let in_vehicle = chr.vehicle().is_some();
+        let check = |a: &mut Animal, chr: &mut dyn AnimalCharacter| {
+            a.behavior.set_doing_behavior(false, in_vehicle);
+            let idle = chr.variable("idleAction");
+            if !idle.is_empty() && idle.starts_with("idle") {
+                chr.clear_variable("idleAction");
+            }
+        };
+        match f {
+            EatFollowUp::None => {}
+            EatFollowUp::CheckBehavior => check(self, chr),
+            EatFollowUp::ResetBehavior => {
+                self.behavior.set_doing_behavior(false, in_vehicle);
+                self.behavior.behavior_action = None;
+                self.behavior.behavior_object = None;
+            }
+            EatFollowUp::Grass { check: c } => {
+                if c {
+                    check(self, chr);
+                }
+                self.data_reset_eating_check(chr);
+            }
+        }
+    }
+
+    /// `eat()`. The behaviour calls it makes (`checkBehavior`,
+    /// `resetBehaviorAction`) move the animal, so they are the character
+    /// side's: the answer says which one to make, and for grass the
+    /// character side then finishes with [`Animal::data_reset_eating_check`].
     pub fn data_eat(
         &mut self,
         chr: &mut dyn AnimalCharacter,
         env: &mut AnimalEnv<'_>,
-    ) -> JResult<()> {
+    ) -> JResult<EatFollowUp> {
         let ctx = env.ctx;
         let adef = self.adef_of(ctx);
         if let Some(obj) = self.eat_from_ground {
             let Some((item, true)) = env.world.world_item(obj) else {
                 self.eat_from_ground = None;
-                return Ok(());
+                return Ok(EatFollowUp::None);
             };
             self.data_eat_item(item, true, chr, env)?;
             self.data_reset_eating_check(chr);
             if chr.stat(AnimalStat::Hunger) >= adef.thirst_hunger_trigger {
-                env.world.behavior_after_eating(true);
-            } else {
-                env.world.behavior_after_eating(false);
-                chr.set_state_event_delay_timer(0.0);
+                return Ok(EatFollowUp::CheckBehavior);
             }
-            return Ok(());
+            chr.set_state_event_delay_timer(0.0);
+            return Ok(EatFollowUp::ResetBehavior);
         }
         if let Some(t) = self.eat_from_trough {
             let Some(item) = self.data_can_eat_from_trough(t, ctx, env) else {
                 self.data_reset_eating_check(chr);
                 chr.set_state_event_delay_timer(0.0);
-                return Ok(());
+                return Ok(EatFollowUp::None);
             };
             self.data_eat_item(item, false, chr, env)?;
             if chr.stat(AnimalStat::Hunger) < 0.1 {
                 self.data_reset_eating_check(chr);
                 chr.set_state_event_delay_timer(0.0);
-                return Ok(());
+                return Ok(EatFollowUp::None);
             }
             if chr.stat(AnimalStat::Hunger) > adef.thirst_hunger_trigger {
                 self.eat_anim(chr, ctx, env.rand);
             }
             self.eat_anim(chr, ctx, env.rand);
-            return Ok(());
+            return Ok(EatFollowUp::None);
         }
         if let Some(m) = self.mother {
             let enough = env
@@ -1307,14 +1352,16 @@ impl Animal {
                     {
                         self.data_reset_eating_check(chr);
                         chr.set_state_event_delay_timer(0.0);
-                        env.world.unblock_mother_movement(m);
-                        return Ok(());
+                        if let Some((ma, _)) = env.world.animal_mut(m) {
+                            ma.behavior.block_movement = false;
+                        }
+                        return Ok(EatFollowUp::None);
                     }
                     if chr.stat(AnimalStat::Hunger) as f64 > 0.05 && enough {
                         chr.set_variable("idleAction", "eat");
                         chr.set_variable("eatingAnim", "feed");
                     }
-                    return Ok(());
+                    return Ok(EatFollowUp::None);
                 }
             }
         }
@@ -1323,12 +1370,11 @@ impl Animal {
             if let Some(sq) = chr.current_square() {
                 env.world.remove_grass(sq);
             }
-            if chr.stat(AnimalStat::Hunger) > 0.0 {
-                env.world.behavior_after_eating(true);
-            }
-            self.data_reset_eating_check(chr);
+            return Ok(EatFollowUp::Grass {
+                check: chr.stat(AnimalStat::Hunger) > 0.0,
+            });
         }
-        Ok(())
+        Ok(EatFollowUp::None)
     }
 
     // ---------------------------------------------------------------

@@ -741,6 +741,24 @@ pub trait SimContext {
     fn debug_always_hit_target(&self) -> bool {
         false
     }
+    /// The seed of a `new java.util.Random()` (the JVM's seed uniquifier
+    /// and `System.nanoTime()`; `BaseAnimalBehavior.shuffleList`).
+    fn new_random_seed(&self) -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0)
+            ^ 8_682_522_807_148_012
+    }
+    /// `RainManager.isRaining()` (what the animal code reads; it should
+    /// agree with `pz-animals`' `AnimalWorld::is_raining`).
+    fn rain_manager_is_raining(&self) -> bool {
+        self.is_raining()
+    }
+    /// `RainManager.getRainIntensity()`.
+    fn rain_manager_intensity(&self) -> f32 {
+        self.rain_intensity()
+    }
 }
 
 /// `java.lang.Math.random()`: one `java.util.Random` seeded from the clock

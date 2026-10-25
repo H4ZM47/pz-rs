@@ -96,8 +96,8 @@ pub struct Animal {
     pub last_cell_saved_to_y: i32,
     /// `getModData()`.
     pub mod_data: LuaTable,
-    /// `getBehavior().wanderMulMod`.
-    pub wander_mul_mod: f32,
+    /// `getBehavior()`: the behaviour's state.
+    pub behavior: crate::behavior::AnimalBehavior,
     /// This animal's own handle in the [`AnimalWorld`](crate::env::AnimalWorld).
     pub self_ref: ObjectRef,
 }
@@ -174,7 +174,7 @@ impl Animal {
             last_cell_saved_to_x: i32::MIN,
             last_cell_saved_to_y: i32::MIN,
             mod_data: LuaTable::default(),
-            wander_mul_mod: 0.0,
+            behavior: crate::behavior::AnimalBehavior::default(),
             self_ref: 0,
         }
     }
@@ -294,7 +294,7 @@ impl Animal {
             return Ok(false);
         };
         // initType: new BaseAnimalBehavior, new AnimalData(this, breed).
-        self.wander_mul_mod = 0.0;
+        self.behavior = crate::behavior::AnimalBehavior::default();
         self.data = AnimalData::construct(adef, breed, chr, env.rand)?;
         self.animal_id = env.rand.next(10000);
         // initAge.
@@ -394,20 +394,39 @@ impl Animal {
     /// `BaseAnimalBehavior.pickRandomWanderInterval()`.
     pub fn pick_random_wander_interval(&self, env: &mut AnimalEnv<'_>) -> JResult<f32> {
         let adef = self.adef(env.ctx);
-        let base = adef.wander_mul - self.wander_mul_mod;
-        let mut interval = env.rand.next_float_range(base, base * 5.0);
-        if env.ctx.sandbox.ultra_speed_doesnot_affect_to_animals
-            && env.ctx.clock.multiplier() > 60.0
-        {
+        let raining = env.world.is_raining();
+        Ok(self.wander_interval(
+            adef,
+            env.ctx.sandbox.ultra_speed_doesnot_affect_to_animals,
+            env.ctx.clock.multiplier(),
+            raining,
+            env.rand,
+        ))
+    }
+
+    /// `pickRandomWanderInterval()` with what it reads given: the
+    /// definition, `ServerOptions.ultraSpeedDoesnotAffectToAnimals`, the
+    /// multiplier and `RainManager.isRaining()`.
+    pub fn wander_interval(
+        &self,
+        adef: &AnimalDefinitions,
+        ultra_speed_does_not_affect: bool,
+        multiplier: f32,
+        raining: bool,
+        rand: &mut dyn GameRand,
+    ) -> f32 {
+        let base = adef.wander_mul - self.behavior.wander_mul_mod;
+        let mut interval = rand.next_float_range(base, base * 5.0);
+        if ultra_speed_does_not_affect && multiplier > 60.0 {
             interval *= 10.0;
         }
         if self.has_genetic_disorder("fidget") {
             interval /= 10.0;
         }
-        if env.world.is_raining() {
+        if raining {
             interval *= 3.0;
         }
-        Ok(interval)
+        interval
     }
 
     /// `initStress()`.
@@ -647,11 +666,16 @@ impl Animal {
 
     /// `isInMatingSeason()`.
     pub fn is_in_mating_season(&self, ctx: AnimalCtx<'_>) -> bool {
-        if !ctx.sandbox.animal_mating_season || !self.have_mating_season(ctx) {
+        Self::in_mating_season(self.adef(ctx), ctx.sandbox.animal_mating_season, ctx.clock.month())
+    }
+
+    /// `isInMatingSeason()` with the definition, the sandbox's
+    /// `AnimalMatingSeason` and `getMonth()` (0-based).
+    pub fn in_mating_season(a: &AnimalDefinitions, mating_season: bool, month: i32) -> bool {
+        if !mating_season || !(a.mating_period_start != 0 && a.mating_period_end != 0) {
             return true;
         }
-        let m = ctx.clock.month() + 1;
-        let a = self.adef(ctx);
+        let m = month + 1;
         let (start, end) = (a.mating_period_start, a.mating_period_end);
         if start < end {
             return m >= start && m < end;
@@ -661,8 +685,13 @@ impl Animal {
 
     /// `getMinAgeForBaby()`.
     pub fn min_age_for_baby(&self, ctx: AnimalCtx<'_>) -> i32 {
+        self.min_age_for_baby_of(self.adef(ctx))
+    }
+
+    /// `getMinAgeForBaby()` with the animal's definition.
+    pub fn min_age_for_baby_of(&self, adef: &AnimalDefinitions) -> i32 {
         let a = self.used_gene_value("ageToGrow").unwrap_or(1.0);
-        let base = self.adef(ctx).min_age_for_baby;
+        let base = adef.min_age_for_baby;
         let modifier = 0.25f32 - a / 4.0 + 1.0;
         (base as f32 * modifier) as i32
     }

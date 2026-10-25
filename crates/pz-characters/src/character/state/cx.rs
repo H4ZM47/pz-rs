@@ -633,6 +633,75 @@ pub trait StateWorld<I> {
     /// `fence.destroyFence(dir)` at 0 or below (two zombies climbing over
     /// it at once, `ClimbOverFenceState`'s `OnFloor`).
     fn damage_fence(&mut self, _fence: pz_pathfind::mover::ObjectRef, _damage: i32, _dir: IsoDirections) {}
+
+    // ---- what animals read and do (`IsoAnimal`, `BaseAnimalBehavior`,
+    // the `ai/states/animals` states; the animal-only world objects are
+    // `pz-animals`' `AnimalWorld` through `animal_host`) ----
+
+    /// `getPathFindBehavior2().reset()` for `chr`.
+    fn path_reset(&mut self, _chr: &mut dyn PathMover) {}
+    /// `square.isFree(false)` (the characters on it not counted).
+    fn square_is_free_ignoring_characters(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `a.isBlockedTo(b)`.
+    fn is_blocked_to(&self, _a: (i32, i32, i32), _b: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `a.isWindowTo(b)`.
+    fn is_window_to(&self, _a: (i32, i32, i32), _b: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `a.isWallTo(b)`.
+    fn is_wall_to(&self, _a: (i32, i32, i32), _b: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `square.haveRoof`.
+    fn square_have_roof(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `square.has(IsoFlagType.solidtrans)`.
+    fn square_has_solid_trans(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// The player (by character id) a world sound's source is, when it is
+    /// an `IsoPlayer` (`respondToSound`).
+    fn sound_source_player(&self, _source: &pz_audio::world_sound::SoundSource) -> Option<i32> {
+        None
+    }
+    /// The world sound's source is an `IsoRadio` or `IsoTelevision`.
+    fn sound_source_is_radio_or_television(&self, _source: &pz_audio::world_sound::SoundSource) -> bool {
+        false
+    }
+    /// `IsoAnimal.testCollideWithVehicles(vehicle, null)`'s vehicle part:
+    /// `vehicle.shouldCollideWithCharacters()`,
+    /// `testCollisionWithCharacter(animal, 0.3, pos) != null`, then
+    /// `hitAnimal(animal)` and `applyImpulseFromHitObject(animal, 1)`; true
+    /// when it hit.
+    fn vehicle_test_collide_animal(&mut self, _vehicle: i16, _animal: &mut GameCharacter<I>) -> bool {
+        false
+    }
+    /// `vehicle.getAnimals()` (character ids).
+    fn vehicle_animals(&self, _vehicle: i16) -> Vec<i32> {
+        Vec::new()
+    }
+    /// `getCell().getAnimals()` (character ids).
+    fn cell_animals(&self) -> Vec<i32> {
+        Vec::new()
+    }
+    /// `player.hitConsequences(null, animal, false, damage, false)`: an
+    /// animal's attack connecting with a player (`AnimalAttackState`).
+    fn animal_hit_player(&mut self, _player: i32, _animal: &mut GameCharacter<I>, _damage: f32) {}
+    /// `IsoThumpable.animalHit(animal)` and the thump sound
+    /// (`AnimalAttackState`); then `destroy()` when its health is at or
+    /// below 0. Answers whether it was destroyed, and whether it is a door
+    /// that is open afterwards.
+    fn thumpable_animal_hit(&mut self, _obj: pz_pathfind::mover::ObjectRef, _animal: i32) -> (bool, bool) {
+        (false, false)
+    }
+    /// `obj.Damage(damage)` and the thump sound (an animal thumping a door
+    /// or another object).
+    fn object_damage(&mut self, _obj: pz_pathfind::mover::ObjectRef, _damage: f32) {}
 }
 
 /// The ground of a square (`hasNaturalFloor`, `hasSand`,

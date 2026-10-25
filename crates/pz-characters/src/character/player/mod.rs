@@ -139,6 +139,14 @@ pub struct PlayerControl {
     pub lunge_fall_timer: f32,
     /// `isNpc()`.
     pub npc: bool,
+    /// `IsoPlayer.onlineId` (1 until the server assigns one).
+    pub online_id: i16,
+    /// `isLuringAnimals`.
+    pub luring_animals: bool,
+    /// `luredAnimals` (character ids).
+    pub lured_animals: Vec<i32>,
+    /// `getAttachedAnimals()` (character ids of the animals on a leash).
+    pub attached_animals: Vec<i32>,
 }
 
 impl Default for PlayerControl {
@@ -204,6 +212,10 @@ impl Default for PlayerControl {
             climate_wind_force_movement: 0.0,
             lunge_fall_timer: 0.0,
             npc: false,
+            online_id: 1,
+            luring_animals: false,
+            lured_animals: Vec::new(),
+            attached_animals: Vec::new(),
         }
     }
 }

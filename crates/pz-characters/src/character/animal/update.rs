@@ -25,7 +25,7 @@ impl<I: 'static> GameCharacter<I> {
             return Ok(());
         };
         if f.animal.on_hook {
-            // reattachBackToHook (the hook is the world's: step 3) and
+            self.animal_reattach_back_to_hook(cx);
             // ensureCorrectSkin (rendering).
             if cx.ctx.is_server() {
                 if let Some(h) = cx.world.animal_host(self.id) {
@@ -77,8 +77,8 @@ impl<I: 'static> GameCharacter<I> {
         if ctx.is_client() {
             self.animal_update_width();
             cx.world.separate(self);
-            // reattachToTree, BaseVehicle.updateNetworkHitByVehicle: step 3 /
-            // network.
+            self.animal_reattach_to_tree(cx);
+            // BaseVehicle.updateNetworkHitByVehicle: network.
             return self.animal_iso_player_update(out, cx);
         }
         self.animal_behavior_update(cx);
@@ -93,11 +93,13 @@ impl<I: 'static> GameCharacter<I> {
         }
         self.animal_update_width();
         cx.world.separate(self);
-        // checkTreeExists, reattachToTree: the tree is the world's (step 3).
+        self.animal_check_tree_exists(cx);
+        self.animal_reattach_to_tree(cx);
         if let Some(mut host) = cx.world.animal_host(self.id) {
             self.with_animal_env(ctx, &mut host, |a, c, env| a.check_zone(c, env));
         }
-        // reattachBackToMom, respondToSound: step 3 (BaseAnimalBehavior).
+        self.animal_reattach_back_to_mom(cx);
+        self.animal_respond_to_sound(cx);
         let m = ctx.multiplier();
         if let Some(f) = self.animal.as_mut() {
             let a = &mut f.animal;
@@ -116,12 +118,12 @@ impl<I: 'static> GameCharacter<I> {
                 a.update_stress(c, env.ctx, &mut *env.rand, raining, speed, open)
             });
         }
-        // updateLured, updateEmitter, tryThump(null): step 3 / sound.
+        self.animal_update_lured(cx);
+        // updateEmitter: sound.
+        self.animal_try_thump(None, cx);
         self.animal_update_los(cx);
-        // testCollideWithVehicles (the vehicle code): the vehicle to test is
-        // used once.
-        if let Some(f) = self.animal.as_mut() {
-            f.vehicle_for_collision_test = None;
+        if let Some(v) = self.animal.as_mut().and_then(|f| f.vehicle_for_collision_test.take()) {
+            self.vars.vehicle_collision = self.animal_test_collide_with_vehicles(v as i16, cx);
         }
         self.animal_iso_player_update(out, cx)
     }
@@ -136,14 +138,15 @@ impl<I: 'static> GameCharacter<I> {
         }
     }
 
-    /// `behavior.update()`. Step 3: `BaseAnimalBehavior` (wander, eat,
-    /// drink, hutch, follow, flee, attack) runs here.
-    pub fn animal_behavior_update(&mut self, _cx: &mut StateCx<'_, I>) {}
+    /// `behavior.update()` (`BaseAnimalBehavior`).
+    pub fn animal_behavior_update(&mut self, cx: &mut StateCx<'_, I>) {
+        self.behavior_update(cx);
+    }
 
     /// `IsoAnimal.updateLOS()`: the cell's zombies (not those reanimated
     /// only to be grappled) and visible non-animal players on a square
-    /// within one floor are `behavior.spotted(chr, false, distance)`; this
-    /// records them in [`super::AnimalFields::spotted`] for step 3.
+    /// within one floor are `behavior.spotted(chr, false, distance)`, in
+    /// order; [`super::AnimalFields::spotted`] keeps the calls.
     pub fn animal_update_los(&mut self, cx: &mut StateCx<'_, I>) {
         let (x, y, z) = (self.vars.x, self.vars.y, self.vars.z);
         let mut spotted = Vec::new();
@@ -174,7 +177,10 @@ impl<I: 'static> GameCharacter<I> {
             }
         }
         if let Some(f) = self.animal.as_mut() {
-            f.spotted = spotted;
+            f.spotted = spotted.clone();
+        }
+        for s in spotted {
+            self.behavior_spotted(s.chr, s.dist, cx);
         }
     }
 

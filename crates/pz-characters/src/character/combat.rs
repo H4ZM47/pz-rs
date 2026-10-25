@@ -801,9 +801,7 @@ impl<I: 'static> GameCharacter<I> {
         if self.is_animal() && self.animal.is_some() {
             // IsoAnimal.hitConsequences replaces the character's.
             let aiming = wielder.perk_level(chars.perks.constant("Aiming").as_ref());
-            let id = self.id;
-            let mut host = cx.world.animal_host(id);
-            return self.animal_hit_consequences(wielder, aiming, ignore_damage, damage, ctx, host.as_mut());
+            return self.animal_hit_consequences(wielder, aiming, ignore_damage, damage, cx);
         }
         match self.kind {
             CharacterKind::Player | CharacterKind::Animal => {
