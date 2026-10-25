@@ -325,3 +325,46 @@ fn created_moveable_weight_follows_world_sprite() {
     assert_eq!(weights(2), (15.0, 15.0));
     assert_eq!(weights(3), (1.0, 1.0));
 }
+
+/// `CompressIdenticalItems.load` loads every copy of a run again from the
+/// record, so each copy makes its own `CreateItem` draws (the `OutfitRNG`
+/// seed and the item id here), and a run of 0 still loads its item once.
+#[test]
+fn identical_copies_load_with_their_own_draws() {
+    struct Counting(Env, std::cell::Cell<i32>);
+    impl ItemEnv for Counting {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
+            self.0.template(id)
+        }
+        fn rand_next(&self, _bound: i32) -> i32 {
+            self.1.set(self.1.get() + 1);
+            self.1.get()
+        }
+    }
+    let e = Counting(env(), std::cell::Cell::new(0));
+    let rock = |id| {
+        let mut i = crate::env::create_item(&e, 1).unwrap();
+        i.id = id;
+        SavedItem::Item(Box::new(i))
+    };
+    let mut w = Writer::new();
+    save_items(&mut w, &[rock(6), rock(7), rock(8)], &e).unwrap();
+    let mut r = Reader::new(&w.buf);
+    assert_eq!(r.i16().unwrap(), 1);
+    assert_eq!(r.i32().unwrap(), 3);
+    e.1.set(0);
+    let back = load_items(&mut Reader::new(&w.buf), 249, &e).unwrap();
+    assert_eq!(e.1.get(), 6);
+    let ids: Vec<i32> = back.iter().map(SavedItem::id).collect();
+    assert_eq!(ids, vec![6, 7, 8]);
+
+    // The same run saved with a count of 0: one load, nothing added, no ids.
+    let mut zero = w.buf.clone();
+    zero[2..6].copy_from_slice(&0i32.to_be_bytes());
+    let rec_end = 6 + 4 + i32::from_be_bytes(zero[6..10].try_into().unwrap()) as usize;
+    zero.truncate(rec_end);
+    e.1.set(0);
+    let back = load_items(&mut Reader::new(&zero), 249, &e).unwrap();
+    assert!(back.is_empty());
+    assert_eq!(e.1.get(), 2);
+}
