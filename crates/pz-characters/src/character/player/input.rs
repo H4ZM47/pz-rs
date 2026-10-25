@@ -111,11 +111,6 @@ pub trait PlayerInput {
     fn joypad_button_down(&self, _joypad: i32, _binding: &str) -> bool {
         false
     }
-    /// `AimingReticle.aimingPositions[playerIndex]` (screen pixels, unscaled)
-    /// for a gamepad player.
-    fn joypad_aiming_position(&self, _player_index: i32) -> (f32, f32) {
-        (0.0, 0.0)
-    }
 
     // --- options (Core) -------------------------------------------------------
 
