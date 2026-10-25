@@ -891,3 +891,56 @@ impl IsoCell {
         })
     }
 }
+
+/// `IsoWindow.load`'s side effects on the shared sprites, for a window
+/// read from a save (the chunk loader holds the sprites read only): the
+/// closed sprite gets `cutN`/`windowN` (or `cutW`/`windowW`), and the
+/// smashed, open and glass-removed sprites take the closed sprite's
+/// properties (`AddProperties`) and tile type. Run it for every loaded
+/// window in load order ([`IsoChunk::apply_window_load_sprites`]) before
+/// the squares' properties are recalculated; until then smashed and open
+/// windows lack the `WindowN`/`WindowW` the hoppable and collision code
+/// reads.
+pub fn window_load_sprites(m: &mut IsoSpriteManager, w: &crate::objects::IsoWindow) {
+    let Some(closed) = w.closed_sprite else {
+        return;
+    };
+    let f = m.tables.flag;
+    let p = &mut m.sprites[closed].properties;
+    if w.north {
+        p.set_flag(f.cutN);
+        p.set_flag(f.windowN);
+    } else {
+        p.set_flag(f.cutW);
+        p.set_flag(f.windowW);
+    }
+    for other in [w.smashed_sprite, w.open_sprite, w.glass_removed_sprite] {
+        if let Some(o) = other.filter(|&o| o != closed) {
+            let props = m.sprites[closed].properties.clone();
+            let tile_type = m.sprites[closed].tile_type;
+            m.sprites[o].properties.add_properties(&props);
+            m.sprites[o].tile_type = tile_type;
+        }
+    }
+}
+
+impl crate::chunk::IsoChunk {
+    /// [`window_load_sprites`] for the chunk's windows, in the order
+    /// `IsoChunk.load` reads them (level, then square, then object).
+    pub fn apply_window_load_sprites(&self, m: &mut IsoSpriteManager) {
+        for z in self.min_level..=self.max_level {
+            for x in 0..8 {
+                for y in 0..8 {
+                    let Some(sq) = self.get_grid_square(x, y, z) else {
+                        continue;
+                    };
+                    for o in &sq.objects {
+                        if let ObjectKind::Window(w) = &o.kind {
+                            window_load_sprites(m, w);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

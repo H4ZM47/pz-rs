@@ -1094,3 +1094,23 @@ fn path_host_hooks_go_to_the_engine() {
     assert_eq!(w.engine.cancelled, vec![z.mover_id()]);
     // Without an engine fire simulation, character fire does nothing.
 }
+
+#[test]
+fn loaded_windows_share_their_closed_sprite_properties() {
+    let mut w = World::new();
+    let (closed, smashed) = (w.m.named_map["window_w"], w.m.named_map["window_w_smashed"]);
+    let win = IsoWindow {
+        north: false,
+        closed_sprite: Some(closed),
+        smashed_sprite: Some(smashed),
+        ..Default::default()
+    };
+    let r = w.add(12, 12, "window_w_smashed", ObjectKind::Window(win), true);
+    let collide_w = w.m.tables.flag.collideW;
+    assert!(!w.m.sprites[smashed].properties.has(collide_w));
+    w.cell.chunks[&(1, 1)].apply_window_load_sprites(&mut w.m);
+    assert!(w.m.sprites[smashed].properties.has(collide_w));
+    assert!(w.m.sprites[closed].properties.has(w.m.tables.flag.cutW));
+    let sq = w.cell.get_grid_square(12, 12, 0).unwrap();
+    assert_eq!(sq.object_index(r.id), Some(1));
+}

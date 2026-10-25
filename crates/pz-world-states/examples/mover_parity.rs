@@ -132,6 +132,10 @@ fn main() {
     meta.max_x = (max_wx * 8).div_euclid(256);
     meta.min_y = (min_wy * 8).div_euclid(256);
     meta.max_y = (max_wy * 8).div_euclid(256);
+    // `IsoWindow.load` changes the shared window sprites as it reads them.
+    for &(wx, wy) in &order {
+        cell.chunks[&(wx, wy)].apply_window_load_sprites(&mut sprites);
+    }
     for &(wx, wy) in &order {
         let (min, max) = {
             let ch = &cell.chunks[&(wx, wy)];
