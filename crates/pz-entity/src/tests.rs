@@ -23,6 +23,7 @@ fn ctx() -> BasicContext {
             name: name.into(),
             kind,
             initial: Some(InitialValue::Int(0)),
+            hidden_ui: true,
         });
     }
     let mut fluids = FluidRegistry::default();
@@ -338,6 +339,7 @@ fn attributes_use_id_list_or_bit_mask() {
             name: format!("A{id}"),
             kind: AttributeKind::Int,
             initial: None,
+            hidden_ui: true,
         });
     }
     let mut w = Writer::new();

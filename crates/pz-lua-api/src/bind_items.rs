@@ -89,6 +89,12 @@ pub trait ItemLuaEnv {
     fn entity(&self) -> Option<&dyn pz_entity::EntityContext> {
         None
     }
+    /// A moveable world sprite's properties (`IsoSpriteManager.namedMap`)
+    /// for `Moveable.ReadFromWorldSprite` at creation; `None` without the
+    /// sprite tables.
+    fn world_sprite(&self, _name: &str) -> Option<pz_inventory::env::WorldSpriteInfo> {
+        None
+    }
 }
 
 /// The item environment outside a game (the main menu and character
@@ -277,6 +283,9 @@ impl ItemEnv for CreateEnv<'_> {
             Some(l) => l.visual_rng(),
             None => &OutfitVisualRng,
         }
+    }
+    fn world_sprite(&self, name: &str) -> Option<pz_inventory::env::WorldSpriteInfo> {
+        self.lua?.world_sprite(name)
     }
     fn script_actual_weight(&self, name: &str) -> Option<f32> {
         let s = self
@@ -481,6 +490,17 @@ pub fn item_value(item: &ItemRef) -> Value {
         m.insert(key, Rc::downgrade(&o));
         Value::Object(o)
     })
+}
+
+/// The item behind a Lua `InventoryItem` object.
+pub fn item_arg_value(v: &Value) -> Option<ItemRef> {
+    match v {
+        Value::Object(o) => o
+            .as_any()
+            .downcast_ref::<LuaInventoryItem>()
+            .map(|l| l.item.clone()),
+        _ => None,
+    }
 }
 
 /// The item behind argument `i`.
@@ -1305,6 +1325,7 @@ fn register_vehicle_part_methods(thread: &mut Thread) {
 
 pub fn register(thread: &mut Thread) {
     register_inventory_item(thread);
+    crate::item_tooltip::register(thread);
     register_vehicle_part_methods(thread);
     register_clothing(thread);
     register_food(thread);

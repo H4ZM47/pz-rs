@@ -261,6 +261,14 @@ pub struct ItemTemplate {
     pub torch_dot: f32,
     /// `itemCapacity` (`setItemCapacity` at creation).
     pub item_capacity: i32,
+    /// `Food.setCalories` / `setProteins` / `setLipids` /
+    /// `setCarbohydrates` at creation.
+    pub calories: f32,
+    pub proteins: f32,
+    pub lipids: f32,
+    pub carbohydrates: f32,
+    /// `Literature.setNumberOfPages(numberOfPages)` at creation.
+    pub number_of_pages: i32,
     /// `maxCapacity` (`setMaxCapacity` at creation).
     pub max_capacity: i32,
     /// `conditionAffectsCapacity` (read through `getScriptItem()`).
@@ -474,6 +482,11 @@ impl ItemTemplate {
             light_distance: 0,
             torch_dot: 0.96,
             item_capacity: -1,
+            calories: 0.0,
+            proteins: 0.0,
+            lipids: 0.0,
+            carbohydrates: 0.0,
+            number_of_pages: -1,
             max_capacity: -1,
             condition_affects_capacity: false,
             vehicle_part: VehiclePartStats::default(),
@@ -642,6 +655,11 @@ impl ItemTemplate {
             light_distance: item.light_distance,
             torch_dot: item.torch_dot,
             item_capacity: item.item_capacity,
+            calories: item.calories,
+            proteins: item.proteins,
+            lipids: item.lipids,
+            carbohydrates: item.carbohydrates,
+            number_of_pages: item.number_of_pages,
             max_capacity: item.max_capacity,
             condition_affects_capacity: item.condition_affects_capacity,
             vehicle_part: VehiclePartStats::from_script(item),

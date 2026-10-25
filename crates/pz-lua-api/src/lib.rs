@@ -30,6 +30,7 @@ pub mod bind_item_container;
 pub mod bind_item_name;
 pub mod bind_item_visual;
 pub mod bind_items;
+pub mod item_tooltip;
 pub mod bind_iso_enums;
 pub mod bind_java_util;
 pub mod bind_misc;
@@ -148,6 +149,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_ui::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
     hud::characters::install_character_hud_hosts();
+    hud::alarm_clocks::install_alarm_clock_host();
     bind_ui3d::register(&mut mgr.thread);
     bind_uitextbox2::register(&mut mgr.thread);
     bind_voice::register(&mut mgr.thread);
