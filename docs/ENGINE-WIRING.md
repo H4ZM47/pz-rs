@@ -66,12 +66,12 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 
 - [x] `UIManager.init()` is `pz_lua_api::hud::init_ui(&mut thread)` (builds
       `SpeedControls`; the in-game HUD when a player exists) — boot uses it
-      (#PR1).
+      (#144).
 - [ ] HUD inputs: `pz_lua_api::hud::host::install(HudHost { players,
       game_time, sound, network })` — `HudPlayers` (IsoPlayer statics,
       characters thread), `HudGameTime` (characters thread; defaults to the
       shared Lua `GameTime`), `HudSound` (`SoundManager`, audio thread),
-      `HudNetwork` (`GameClient`/`GameServer`) (#PR1).
+      `HudNetwork` (`GameClient`/`GameServer`) (#144).
 
 ## Per frame (`GameWindow.logic` / `render`)
 - [ ] Input: every winit event → `pz_input::winit::handle`; before
@@ -118,7 +118,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 
 ## World (`GameLoadingState` / `IngameState`)
 - [ ] End of `GameLoadingState`: `hud::init_ui(&mut thread)` (the in-game
-      HUD, then `OnCreateUI`) before `OnCreatePlayer` (#PR1).
+      HUD, then `OnCreateUI`) before `OnCreatePlayer` (#144).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
