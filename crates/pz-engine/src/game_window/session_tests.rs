@@ -433,7 +433,10 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         Events.OnPostSave.Add(function() rustSessionPostSaveCount = rustSessionPostSaveCount + 1 end)
     "#);
     // This is the native CloseRequested path, not a direct save helper.
-    let expected_world_chunks = mannequin::check_live();
+    let parts = app.world.as_ref().unwrap().save_tables.as_ref().unwrap().blood_body_parts;
+    let sprites = app.world.as_ref().unwrap().sprites.as_ref().unwrap().clone();
+    mannequin::install_outfit_fixtures(app.lua.as_mut().unwrap(), &game_dir, parts, &sprites);
+    let expected_world_chunks = mannequin::check_live(true);
     let expected_mannequins = mannequin::saved_state();
     app.close();
     assert!(app.world.is_none(), "native close retained the gameplay world");
@@ -490,7 +493,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         }
     }
     assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
-    mannequin::check_live();
+    mannequin::check_live(false);
     assert_eq!(mannequin::saved_state(), expected_mannequins, "mannequin outfit/identity/pose/skin changed across close and fresh reload");
     let loaded_player = bind_players::player(0).expect("saved session reconstructed local player 0");
     assert!(!Rc::ptr_eq(&player, &loaded_player), "saved session reused the closed session's player");
