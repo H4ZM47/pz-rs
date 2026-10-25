@@ -218,8 +218,17 @@ fn alternate_model_names() {
         "Mask"
     );
     let mut g = ItemTemplate::new(ItemClass::Normal, "Base", "Glove");
-    g.replace_primary_hand = Some(Some("Glove_R".into()));
+    g.replace_primary_hand = Some(pz_scripts::objects::items::ItemReplacement {
+        clothing_item_name: Some("Glove_R".into()),
+        mask_variable_name: Some("RightHandMask".into()),
+        mask_variable_value: Some("Glove".into()),
+        attachment: None,
+    });
     let g = item(g);
+    let r = g.get_item_replacement_primary_hand().unwrap();
+    assert_eq!(r.mask_variable_name.as_deref(), Some("RightHandMask"));
+    assert_eq!(r.mask_variable_value.as_deref(), Some("Glove"));
+    assert!(g.get_item_replacement_second_hand().is_none());
     let h = Holder {
         primary: true,
         ..holder()

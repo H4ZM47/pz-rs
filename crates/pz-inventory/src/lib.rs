@@ -19,6 +19,7 @@ pub mod item;
 pub mod java;
 pub mod light;
 pub mod lua_table;
+pub mod model;
 pub mod saved;
 pub mod template;
 pub mod visual;

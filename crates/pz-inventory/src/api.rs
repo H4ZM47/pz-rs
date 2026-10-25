@@ -72,7 +72,7 @@ impl InventoryItem {
         let Some(f) = self.food() else {
             return self.template.stress_change / 100.0;
         };
-        if f.egg.is_some() {
+        if f.fertilized {
             f.stress_change
         } else if f.burnt {
             f.stress_change / 4.0
@@ -93,7 +93,7 @@ impl InventoryItem {
             return self.template.boredom_change;
         };
         let mut r = f.boredom_change;
-        if f.egg.is_some() {
+        if f.fertilized {
             return r;
         }
         r += self.food_state_penalty(f);
@@ -106,7 +106,7 @@ impl InventoryItem {
             return self.template.unhappy_change;
         };
         let mut r = f.unhappy_change;
-        if f.egg.is_some() {
+        if f.fertilized {
             return r;
         }
         r += self.food_state_penalty(f);

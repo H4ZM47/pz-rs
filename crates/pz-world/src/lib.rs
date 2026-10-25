@@ -35,8 +35,8 @@ pub use chunk::{
 };
 pub use defs::{BuildingDef, BuildingIdx, MetaObject, RoomDef, RoomIdx, RoomRect};
 pub use iso_lot::IsoLot;
-pub use java::GameRand;
 pub use los::TestResults;
+pub use java::{FactoryRand, GameRand};
 pub use map_files::{LotHeader, MapFiles, MapInfo};
 pub use meta_grid::{
     CreateParams, IsoMetaCell, IsoMetaChunk, IsoMetaGrid, WorldGenBounds, ZombieVoronoi,

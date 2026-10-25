@@ -7,8 +7,29 @@
 
 use std::rc::Rc;
 
-use pz_scripts::objects::items::Item;
+use std::cell::RefCell;
+
+use pz_scripts::objects::items::{Item, ItemReplacement, ModelWeaponPart};
 use pz_scripts::ScriptManager;
+
+/// A shared script item (`ScriptManager.FindItem`), compared by identity.
+#[derive(Clone)]
+pub struct ScriptItemRef(pub Rc<RefCell<Item>>);
+
+impl PartialEq for ScriptItemRef {
+    fn eq(&self, o: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &o.0)
+    }
+}
+
+impl std::fmt::Debug for ScriptItemRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.try_borrow() {
+            Ok(i) => write!(f, "ScriptItemRef({})", i.module_dot_type),
+            Err(_) => write!(f, "ScriptItemRef(..)"),
+        }
+    }
+}
 
 /// The `InventoryItem` subclass `Item.InstanceItem` creates for the
 /// script's `ItemType`, which decides what `save`/`load` write and read.
@@ -111,8 +132,28 @@ pub struct ItemTemplate {
     pub min_sight_range: f32,
     pub max_sight_range: f32,
     pub magazine_type: Option<String>,
-    pub weapon_sprites_by_index: bool,
-    pub static_models_by_index: bool,
+    /// `Item.getStaticModel()` / `worldStaticModel` (resolved model script
+    /// names).
+    pub static_model: Option<String>,
+    pub world_static_model: Option<String>,
+    /// `staticModelsByIndex` / `worldStaticModelsByIndex` /
+    /// `weaponSpritesByIndex` (shared with every instance, as the original
+    /// shares the script's lists).
+    pub static_models_by_index: Option<Rc<Vec<String>>>,
+    pub world_static_models_by_index: Option<Rc<Vec<String>>>,
+    pub weapon_sprites_by_index: Option<Rc<Vec<String>>>,
+    /// `modelWeaponPart` (the script's entries, in script order).
+    pub model_weapon_part: Option<Rc<Vec<ModelWeaponPart>>>,
+    /// The script item itself, for `GameEntityFactory` (set by
+    /// [`ItemTemplate::with_script`]; `None` builds no components).
+    pub script: Option<ScriptItemRef>,
+    /// `createItemInternal`'s `<type>Empty` fallback: the item is created
+    /// from the base script and its `FluidContainer` emptied.
+    pub empty_fluid_container: bool,
+    /// `padlock` (a new padlock key draws its key id).
+    pub padlock: bool,
+    /// `paletteChoices.size()` (clothing draws one at creation).
+    pub palette_choices: usize,
     pub world_object_sprite: Option<String>,
     /// For `Moveables.<sprite>` items: the sprite `InventoryItemFactory`
     /// reads (`ReadFromWorldSprite(movName)`).
@@ -163,11 +204,11 @@ pub struct ItemTemplate {
     // (`getScriptItem()`), resolved once when the template is built.
     /// `clothingItem` (the `ClothingItem` asset name).
     pub clothing_item: Option<String>,
-    /// `replacePrimaryHand.clothingItemName` (`Some(None)`: a replacement
-    /// without a clothing item).
-    pub replace_primary_hand: Option<Option<String>>,
-    /// `replaceSecondHand.clothingItemName`.
-    pub replace_second_hand: Option<Option<String>>,
+    /// `replacePrimaryHand` (clothing item name, mask variable name/value,
+    /// attachment).
+    pub replace_primary_hand: Option<ItemReplacement>,
+    /// `replaceSecondHand`.
+    pub replace_second_hand: Option<ItemReplacement>,
     /// `getWithoutDrainable()`.
     pub without_drainable: Option<String>,
     /// The `clothingItem` of the `withoutDrainable` script, if it exists.
@@ -226,8 +267,16 @@ impl ItemTemplate {
             min_sight_range: 2.0,
             max_sight_range: 6.0,
             magazine_type: None,
-            weapon_sprites_by_index: false,
-            static_models_by_index: false,
+            static_model: None,
+            world_static_model: None,
+            static_models_by_index: None,
+            world_static_models_by_index: None,
+            weapon_sprites_by_index: None,
+            model_weapon_part: None,
+            script: None,
+            empty_fluid_container: false,
+            padlock: false,
+            palette_choices: 0,
             world_object_sprite: None,
             moveable_sprite: None,
             tags: Vec::new(),
@@ -312,6 +361,15 @@ impl ItemTemplate {
         self.tags.iter().any(|t| t.eq_ignore_ascii_case(id))
     }
 
+    /// [`from_script`](Self::from_script) keeping the script item (for the
+    /// factory-made ECS components).
+    pub fn from_script_ref(sm: &ScriptManager, item: &Rc<RefCell<Item>>) -> Option<Rc<Self>> {
+        let t = Self::from_script(sm, &item.borrow())?;
+        let mut t = Rc::try_unwrap(t).unwrap_or_else(|t| (*t).clone());
+        t.script = Some(ScriptItemRef(item.clone()));
+        Some(Rc::new(t))
+    }
+
     /// Reads the values from a loaded script item.
     pub fn from_script(sm: &ScriptManager, item: &Item) -> Option<Rc<Self>> {
         const TYPES: [&str; 15] = [
@@ -357,15 +415,19 @@ impl ItemTemplate {
             min_sight_range: item.min_sight_range,
             max_sight_range: item.max_sight_range,
             magazine_type: item.magazine_type.clone(),
-            weapon_sprites_by_index: item.weapon_sprites_by_index.is_some(),
-            static_models_by_index: item
-                .static_models_by_index
+            static_model: item.static_model.clone(),
+            world_static_model: item.world_static_model.clone(),
+            static_models_by_index: item.static_models_by_index.clone().map(Rc::new),
+            world_static_models_by_index: item.world_static_models_by_index.clone().map(Rc::new),
+            weapon_sprites_by_index: item.weapon_sprites_by_index.clone().map(Rc::new),
+            model_weapon_part: item
+                .model_weapon_part
                 .as_ref()
-                .is_some_and(|v| !v.is_empty())
-                || item
-                    .world_static_models_by_index
-                    .as_ref()
-                    .is_some_and(|v| !v.is_empty()),
+                .map(|v| Rc::new(v.iter().map(|m| m.borrow().clone()).collect())),
+            script: None,
+            empty_fluid_container: false,
+            padlock: item.padlock,
+            palette_choices: item.palette_choices.len(),
             world_object_sprite: item.world_object_sprite.clone(),
             moveable_sprite: None,
             tags: keys(&item.item_tags),
@@ -408,14 +470,8 @@ impl ItemTemplate {
             use_delta: item.use_delta,
             count: item.count,
             clothing_item: item.clothing_item.clone(),
-            replace_primary_hand: item
-                .replace_primary_hand
-                .as_ref()
-                .map(|r| r.clothing_item_name.clone()),
-            replace_second_hand: item
-                .replace_second_hand
-                .as_ref()
-                .map(|r| r.clothing_item_name.clone()),
+            replace_primary_hand: item.replace_primary_hand.clone(),
+            replace_second_hand: item.replace_second_hand.clone(),
             without_drainable: item.without_drainable.clone(),
             without_drainable_clothing_item: item
                 .without_drainable
