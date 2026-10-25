@@ -114,6 +114,23 @@ fn f32_arg(c: &NativeCall<'_>, i: usize) -> f32 {
     num_arg(c, i) as f32
 }
 
+thread_local! {
+    /// `ZomboidFileSystem.instance` for resolving data file names.
+    static FS: std::cell::RefCell<Option<Rc<std::cell::RefCell<pz_fs::GameFs>>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Install the file system the map resolves `media/...` names with.
+pub fn install_fs(fs: Rc<std::cell::RefCell<pz_fs::GameFs>>) {
+    FS.with(|f| *f.borrow_mut() = Some(fs));
+}
+
+/// `ZomboidFileSystem.instance.getString(name)`: the absolute path of a
+/// game file (unchanged without a file system).
+pub fn fs_get_string(name: &str) -> String {
+    FS.with(|f| f.borrow().as_ref().map(|fs| fs.borrow().get_string(name)))
+        .unwrap_or_else(|| name.to_string())
+}
+
 /// Register the world-map classes.
 pub fn register(thread: &mut Thread) {
     register_element(thread);
@@ -219,6 +236,22 @@ fn register_api(thread: &mut Thread) {
                 "Index {i} out of bounds for length {n}"
             ))),
         }
+    });
+    b.method("addData", |c| {
+        let name = str_arg(c, 1);
+        with_map(c, |el, m| {
+            let has_data = m.st().world_map.has_data();
+            if let Some(name) = name.filter(|n| !n.trim().is_empty()) {
+                let abs = fs_get_string(&name);
+                let data = pz_worldmap::data::get_or_create_data(&abs);
+                m.st_mut().world_map.add_data(data, &name);
+            }
+            if !has_data && el.get_width() > 0.0 && el.get_height() > 0.0 {
+                m.set_map_from(el);
+                reset_view(m);
+            }
+        })?;
+        Ok(0)
     });
     b.method("clearData", |c| {
         with_map(c, |_, m| m.st_mut().world_map.clear_data())?;

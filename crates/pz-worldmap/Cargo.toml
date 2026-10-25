@@ -7,3 +7,4 @@ publish.workspace = true
 [dependencies]
 pz-joml.workspace = true
 pz-core.workspace = true
+quick-xml.workspace = true

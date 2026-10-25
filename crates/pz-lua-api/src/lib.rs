@@ -151,6 +151,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_ui::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
     worldmap::register(&mut mgr.thread);
+    worldmap::install_fs(mgr.fs.clone());
     gizmo::register(&mut mgr.thread);
     hud::characters::install_character_hud_hosts();
     hud::alarm_clocks::install_alarm_clock_host();
