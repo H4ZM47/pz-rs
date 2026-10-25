@@ -171,6 +171,15 @@ pub trait HudMoodles {
     }
 }
 
+/// The object under the mouse (`UIManager.getPicked().tile`). Owner: world
+/// thread (picking).
+pub trait HudPicking {
+    /// The picked tile object, if any.
+    fn picked_tile(&self) -> Option<pz_ui::tooltip::TooltipObject> {
+        None
+    }
+}
+
 /// `DebugOptions` the HUD reads. Owner: us (debug options).
 pub trait HudDebug {
     /// `DebugOptions.instance.cheat.clock.visible`.
@@ -205,6 +214,7 @@ impl HudClimate for NoHud {}
 impl HudAlarmClocks for NoHud {}
 impl HudDebug for NoHud {}
 impl HudMoodles for NoHud {}
+impl HudPicking for NoHud {}
 impl HudSound for NoHud {}
 impl HudNetwork for NoHud {}
 
@@ -243,6 +253,7 @@ pub struct HudHost {
     pub alarm_clocks: Box<dyn HudAlarmClocks>,
     pub debug: Box<dyn HudDebug>,
     pub moodles: Box<dyn HudMoodles>,
+    pub picking: Box<dyn HudPicking>,
 }
 
 impl Default for HudHost {
@@ -257,6 +268,7 @@ impl Default for HudHost {
             alarm_clocks: Box::new(NoHud),
             debug: Box::new(NoHud),
             moodles: Box::new(NoHud),
+            picking: Box::new(NoHud),
         }
     }
 }

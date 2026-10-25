@@ -136,6 +136,10 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `UIManager.getMoodleUI(i).setCharacter`); `HudMoodles` (a player's
       `Moodles`: refresh flag, levels, good/bad, display and description
       strings; characters thread) (#148).
+- [ ] Shared tooltip: `HudPicking::picked_tile` (`UIManager.getPicked().tile`
+      as a `pz_ui::tooltip::TooltipObject`: identity, `haveSpecialTooltip`,
+      its square's Lua object; world thread); the tooltip font option and
+      highlight colours come from `Core` (#PR5).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).

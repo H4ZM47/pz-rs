@@ -26,6 +26,9 @@ use std::rc::Rc;
 /// `LuaEventManager.triggerEvent(name, args...)`, supplied by pz-lua-api.
 pub type EventSink = Rc<dyn Fn(&mut Thread, &str, &[Value])>;
 
+/// `UIManager.updateTooltip(mx, my)`, supplied by pz-lua-api.
+pub type TooltipHook = Rc<dyn Fn(&mut Thread, i32, i32)>;
+
 /// `Core.UnfocusActiveTextEntryBox()`, supplied by pz-lua-api.
 pub type UnfocusHook = Rc<dyn Fn(&mut Thread)>;
 
@@ -231,6 +234,9 @@ pub struct UIManager {
     pub progress_bar: [Option<Rc<UIElement>>; 4],
     /// `UIManager.resize()`'s HUD layout, supplied with the HUD widgets.
     pub resize_hook: Option<Rc<dyn Fn()>>,
+    /// `UIManager.updateTooltip(mx, my)`, supplied with the shared tooltip
+    /// (it needs the world's picked object).
+    pub update_tooltip_hook: Option<TooltipHook>,
     /// Fixed clock for tests (`System.currentTimeMillis`).
     pub time_override_ms: Option<i64>,
 }
@@ -293,6 +299,7 @@ impl Default for UIManager {
             moodle_ui: Default::default(),
             progress_bar: Default::default(),
             resize_hook: None,
+            update_tooltip_hook: None,
             time_override_ms: None,
         }
     }
@@ -503,8 +510,11 @@ impl UIManager {
             m.last_mouse_y = my;
         });
         Self::update_ui_elements(t);
-        // TODO(world): updateTooltip (ObjectTooltip over picked objects),
-        // handleZoomKeys, IsoCamera last offsets.
+        // updateTooltip (the shared tooltip over picked objects).
+        if let Some(h) = with_ui(|m| m.update_tooltip_hook.clone()) {
+            h(t, mx, my);
+        }
+        // TODO(world): handleZoomKeys, IsoCamera last offsets.
         with_ui(|m| m.updating = false);
     }
 
@@ -522,9 +532,12 @@ impl UIManager {
                 continue;
             }
             if ui.is_follow_game_world() {
-                tutorial.push(ui);
+                tutorial.push(ui.clone());
             }
-            // TODO(world): ObjectTooltip instances move to the end.
+            if ui.ext::<crate::tooltip::ObjectTooltip>().is_some() {
+                let rem = self.ui.remove(i as usize);
+                self.ui.push(rem);
+            }
             i -= 1;
         }
         let mut moved = Vec::new();
@@ -765,9 +778,12 @@ impl UIManager {
             }
             el.render(t);
         }
+        with_ui(|m| m.rendering = false);
+        if let Some(tip) = with_ui(|m| m.tool_tip.clone()) {
+            tip.render(t);
+        }
         with_ui(|m| {
-            m.rendering = false;
-            // TODO(world): tooltip render, "IGUI_GamePaused" box.
+            // TODO(world): the "IGUI_GamePaused" box (GameTime.isGamePaused).
             if !m.fade_before_ui {
                 m.render_fade_overlay();
             }

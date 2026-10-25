@@ -106,8 +106,39 @@ pub fn java_float_to_string(f: f32) -> String {
     out
 }
 
+/// An `IsoObject` the tooltip is shown for (`show(obj, x, y)`), as the
+/// world supplies it.
+#[derive(Clone, Debug)]
+pub struct TooltipObject {
+    /// Identity of the object (`object == other` in the original).
+    pub id: u64,
+    /// `haveSpecialTooltip()`.
+    pub have_special_tooltip: bool,
+    /// The object's square (`object.square`), the `DoSpecialTooltip`
+    /// event's second argument.
+    pub square: Value,
+}
+
+/// `ObjectTooltip.alphaStep`.
+pub const ALPHA_STEP: f32 = 0.1;
+
+/// The show/fade state (`isItem`, `item`, `object`, `alpha`, `showDelay`,
+/// `targetAlpha`).
+#[derive(Clone, Debug, Default)]
+pub struct TooltipLife {
+    pub is_item: bool,
+    /// `item` (the Lua `InventoryItem`).
+    pub item: Option<Value>,
+    pub object: Option<TooltipObject>,
+    pub alpha: f32,
+    pub show_delay: i32,
+    pub target_alpha: f32,
+}
+
 /// `zombie.ui.ObjectTooltip`'s instance state.
 pub struct ObjectTooltip {
+    /// The show/fade state.
+    pub life: RefCell<TooltipLife>,
     pub pad_left: Cell<i32>,
     pub pad_top: Cell<i32>,
     pub pad_right: Cell<i32>,
@@ -131,6 +162,7 @@ impl ObjectTooltip {
     /// `Core.getOptionTooltipFont()`).
     pub fn create(tooltip_font: &str) -> Rc<UIElement> {
         let t = ObjectTooltip {
+            life: RefCell::default(),
             pad_left: Cell::new(5),
             pad_top: Cell::new(5),
             pad_right: Cell::new(5),
@@ -447,6 +479,77 @@ impl ObjectTooltip {
     }
 }
 
+impl ObjectTooltip {
+    /// `show(obj, x, y)`: fade in towards half alpha after 15 updates.
+    pub fn show_object(&self, el: &UIElement, obj: TooltipObject, x: f64, y: f64) {
+        {
+            let mut l = self.life.borrow_mut();
+            l.is_item = false;
+            l.object = Some(obj);
+        }
+        el.set_x(x);
+        el.set_y(y);
+        let mut l = self.life.borrow_mut();
+        l.target_alpha = 0.5;
+        l.show_delay = 15;
+        l.alpha = 0.0;
+    }
+
+    /// `show(item, x, y)` (package-private in the original): shown at once
+    /// for an item, fading in after the delay.
+    pub fn show_item(&self, el: &UIElement, item: Value) {
+        {
+            let mut l = self.life.borrow_mut();
+            l.object = None;
+            l.item = Some(item);
+            l.is_item = true;
+            l.target_alpha = 0.5;
+            l.show_delay = 15;
+            l.alpha = 0.0;
+        }
+        el.set_x(el.get_x());
+        el.set_y(el.get_y());
+        el.set_visible(true);
+    }
+
+    /// `hide()`.
+    pub fn hide(&self, el: &UIElement) {
+        {
+            let mut l = self.life.borrow_mut();
+            l.object = None;
+            l.show_delay = 0;
+        }
+        el.set_visible(false);
+    }
+
+    /// `update()` (no `super.update()`): the show delay, then the fade.
+    pub fn update_fade(&self, el: &UIElement) {
+        let mut l = self.life.borrow_mut();
+        if l.alpha <= 0.0 && l.target_alpha == 0.0 {
+            return;
+        }
+        if l.show_delay > 0 {
+            l.show_delay -= 1;
+            if l.show_delay == 0 {
+                drop(l);
+                el.set_visible(true);
+            }
+            return;
+        }
+        if l.alpha < l.target_alpha {
+            l.alpha += ALPHA_STEP;
+            if l.alpha > 0.5 {
+                l.alpha = 0.5;
+            }
+        } else if l.alpha > l.target_alpha {
+            l.alpha -= ALPHA_STEP;
+            if l.alpha < l.target_alpha {
+                l.alpha = l.target_alpha;
+            }
+        }
+    }
+}
+
 impl UIElementExt for ObjectTooltip {
     fn class_name(&self) -> &'static str {
         OBJECT_TOOLTIP
@@ -456,6 +559,52 @@ impl UIElementExt for ObjectTooltip {
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    /// `render()`: nothing while hidden or faded out; an object with a
+    /// special tooltip fills it through the `DoSpecialTooltip` event
+    /// (`IsoObject.DoSpecialTooltip`: height 0 first, hidden when no
+    /// handler drew anything); then the children.
+    fn render(&self, el: &UIElement, t: &mut pz_kahlua::Thread) {
+        if !el.is_visible() {
+            return;
+        }
+        let (alpha, special) = {
+            let l = self.life.borrow();
+            let special = if l.is_item {
+                None
+            } else {
+                l.object.clone().filter(|o| o.have_special_tooltip)
+            };
+            (l.alpha, special)
+        };
+        if alpha <= 0.0 {
+            return;
+        }
+        if let Some(obj) = special {
+            el.set_height(0.0);
+            crate::UIManager::trigger(t, "DoSpecialTooltip", &[el.to_value(), obj.square.clone()]);
+            if el.get_height() == 0.0 {
+                self.hide(el);
+            }
+        }
+        el.render_base(t);
+    }
+
+    fn update(&self, el: &UIElement, _t: &mut pz_kahlua::Thread) {
+        self.update_fade(el);
+    }
+
+    /// `onMouseMove`: follows the mouse; not consumed.
+    fn on_mouse_move(&self, el: &UIElement, _t: &mut pz_kahlua::Thread, dx: f64, dy: f64) -> bool {
+        el.set_x(el.get_x() + dx);
+        el.set_y(el.get_y() + dy);
+        false
+    }
+
+    fn on_mouse_move_outside(&self, el: &UIElement, _t: &mut pz_kahlua::Thread, dx: f64, dy: f64) {
+        el.set_x(el.get_x() + dx);
+        el.set_y(el.get_y() + dy);
     }
 }
 
