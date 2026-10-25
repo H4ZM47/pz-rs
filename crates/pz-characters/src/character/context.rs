@@ -151,6 +151,8 @@ pub enum SimEvent {
     SendPerks,
     /// `StopAllActionQueue()`.
     StopAllActionQueue,
+    /// `LuaEventManager.triggerEvent("OnClothingUpdated", chr)`.
+    ClothingUpdated,
     /// `LuaEventManager.triggerEvent("OnPlayerGetDamage", chr, kind, amount)`
     /// (`INFECTION` with the `Integer` 110 is `110.0` here).
     PlayerGetDamage { kind: &'static str, amount: f32 },

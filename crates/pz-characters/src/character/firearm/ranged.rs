@@ -834,7 +834,9 @@ impl<I: 'static> GameCharacter<I> {
             };
             if !cx.ctx.is_client() && !cx.ctx.is_server() {
                 let fallen = target.items.helmet_fall_from_worn_items(sm, cx.ctx, false);
-                let _ = fallen;
+                if !fallen.is_empty() {
+                    target.on_worn_items_changed(sm);
+                }
             }
             let on_squares = cx.world.square(fastfloor(tx), fastfloor(ty), fastfloor(tz)).is_some();
             let mut dead = false;

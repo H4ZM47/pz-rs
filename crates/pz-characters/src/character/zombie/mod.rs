@@ -488,6 +488,12 @@ impl<I: 'static> GameCharacter<I> {
             }
         }
         z.zombie.female = z.descriptor.as_ref().is_some_and(|d| d.borrow().is_female());
+        // `initWornItems("Human")` (on the descriptor's group, the same
+        // `BodyLocations.getGroup("Human")`; it draws nothing).
+        let group = z.descriptor.as_ref().map(|d| d.borrow().worn_items.body_location_group().clone());
+        if let Some(group) = group {
+            z.init_worn_items(sm, group);
+        }
         let female = z.zombie.female;
         let prefix = z.voice_prefix();
         if !prefix.contains("Zombie") {

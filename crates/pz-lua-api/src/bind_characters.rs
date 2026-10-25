@@ -42,7 +42,7 @@ use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, nu
 use pz_characters::survivor::{meet, set_torso};
 use pz_characters::{
     BodyLocationGroupRef, BodyLocationRef, CharacterGender, CharacterTraits, Characters, ItemIdentity, Observation,
-    ObservationRef, SurvivorDesc, SurvivorType,
+    ObservationRef, SurvivorDesc, SurvivorType, WornItems,
 };
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -366,8 +366,13 @@ impl LuaObject for HumanVisualObject {
     }
 }
 
-/// A `SurvivorDesc`'s `WornItems`.
-pub struct WornItemsObject(pub Rc<RefCell<LuaSurvivorDesc>>);
+/// A `WornItems`: a `SurvivorDesc`'s, or a character's (`getWornItems()`,
+/// whose items are the ids of items in its inventory).
+#[derive(Clone)]
+pub enum WornItemsObject {
+    Desc(Rc<RefCell<LuaSurvivorDesc>>),
+    Character(crate::bind_character_sim::LuaGameCharacterRef),
+}
 
 impl LuaObject for WornItemsObject {
     fn class_name(&self) -> &str {
@@ -405,7 +410,7 @@ impl LuaObject for BodyLocationGroupObject {
     }
 }
 
-fn group_value(g: &BodyLocationGroupRef) -> Value {
+pub(crate) fn group_value(g: &BodyLocationGroupRef) -> Value {
     canonical(g, || Value::Object(Rc::new(BodyLocationGroupObject(g.clone()))))
 }
 
@@ -1262,7 +1267,7 @@ fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &R
     });
     b.method("getWornItems", |c| {
         let v = dobj(c, |o| {
-            o.worn_items.borrow_mut().get_or_insert_with(|| Value::Object(Rc::new(WornItemsObject(o.desc.clone())))).clone()
+            o.worn_items.borrow_mut().get_or_insert_with(|| Value::Object(Rc::new(WornItemsObject::Desc(o.desc.clone())))).clone()
         })?;
         Ok(c.push(v))
     });
@@ -1522,8 +1527,49 @@ fn add_body_visual(c: &mut NativeCall<'_>, clothing_name: Option<String>) -> Lua
     }
 }
 
-fn worn<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut LuaSurvivorDesc) -> R) -> LuaResult<R> {
-    with_this::<WornItemsObject, _>(c, |o| f(&mut o.0.borrow_mut()))
+/// What a `WornItems` object works on: its items and the conversions
+/// between them and Lua values.
+pub(crate) trait WornBacking {
+    type Item: ItemIdentity;
+    /// Runs `f` on the worn items.
+    fn with<R>(&self, f: impl FnOnce(&mut WornItems<Self::Item>) -> R) -> LuaResult<R>;
+    /// The Lua value of an item (`nil` for `None`).
+    fn value(&self, item: Option<Self::Item>) -> Value;
+    /// Argument `i` as an item (`nil` is `None`).
+    fn item_arg(&self, c: &NativeCall<'_>, i: usize) -> LuaResult<Option<Self::Item>>;
+}
+
+/// A `SurvivorDesc`'s worn items: any Lua values.
+struct DescWorn(Rc<RefCell<LuaSurvivorDesc>>);
+
+impl WornBacking for DescWorn {
+    type Item = LuaItem;
+    fn with<R>(&self, f: impl FnOnce(&mut WornItems<LuaItem>) -> R) -> LuaResult<R> {
+        Ok(f(&mut self.0.borrow_mut().worn_items))
+    }
+    fn value(&self, item: Option<LuaItem>) -> Value {
+        item.map(|i| i.0).unwrap_or_default()
+    }
+    fn item_arg(&self, c: &NativeCall<'_>, i: usize) -> LuaResult<Option<LuaItem>> {
+        let v = c.arg(i);
+        Ok((!v.is_nil()).then_some(LuaItem(v)))
+    }
+}
+
+/// Runs `$body` with `$b` bound to the `WornItems` object's backing.
+macro_rules! with_worn {
+    ($c:expr, |$b:ident| $body:expr) => {{
+        match with_this::<WornItemsObject, _>($c, |o| o.clone())? {
+            WornItemsObject::Desc(d) => {
+                let $b = DescWorn(d);
+                $body
+            }
+            WornItemsObject::Character(chr) => {
+                let $b = crate::bind_character_sim::CharacterWorn(chr);
+                $body
+            }
+        }
+    }};
 }
 
 fn location_value(k: Option<&Rc<RegistryKey>>) -> Value {
@@ -1533,55 +1579,73 @@ fn location_value(k: Option<&Rc<RegistryKey>>) -> Value {
 fn register_worn_items(thread: &mut Thread) {
     let b = expose_class(thread, WORN_ITEMS_CLASS, None);
     b.method("size", |c| {
-        let v = worn(c, |d| d.worn_items.size() as i32)?;
+        let v = with_worn!(c, |w| w.with(|w| w.size() as i32))?;
         Ok(c.push(v))
     });
     b.method("isEmpty", |c| {
-        let v = worn(c, |d| d.worn_items.is_empty())?;
+        let v = with_worn!(c, |w| w.with(|w| w.is_empty()))?;
         Ok(c.push(v))
     });
     b.method("clear", |c| {
-        worn(c, |d| d.worn_items.clear())?;
+        with_worn!(c, |w| w.with(|w| w.clear()))?;
         Ok(0)
     });
     b.method("get", |c| {
         let i = int_arg(c, 1);
-        let w = worn(c, |d| d.worn_items.get(i).cloned())?.map_err(java_error)?;
-        Ok(c.push(Value::Object(Rc::new(WornItemObject { location: w.location, item: w.item.0 }))))
+        let v = with_worn!(c, |b| {
+            let w = b.with(|w| w.get(i).cloned())?.map_err(java_error)?;
+            WornItemObject { location: w.location, item: b.value(Some(w.item)) }
+        });
+        Ok(c.push(Value::Object(Rc::new(v))))
     });
     b.method("getItem", |c| {
         let loc = key_arg(c, 1)?;
-        let item = worn(c, |d| d.worn_items.item(loc.as_ref()))?.map_err(java_error)?;
-        Ok(c.push(item.map(|i| i.0).unwrap_or_default()))
+        let v = with_worn!(c, |b| {
+            let item = b.with(|w| w.item(loc.as_ref()))?.map_err(java_error)?;
+            b.value(item)
+        });
+        Ok(c.push(v))
     });
     b.method("getItemByIndex", |c| {
         let i = int_arg(c, 1);
-        let item = worn(c, |d| d.worn_items.item_by_index(i))?;
-        Ok(c.push(item.map(|i| i.0).unwrap_or_default()))
+        let v = with_worn!(c, |b| {
+            let item = b.with(|w| w.item_by_index(i))?;
+            b.value(item)
+        });
+        Ok(c.push(v))
     });
     b.method("setItem", |c| {
-        let (loc, item) = (key_arg(c, 1)?, c.arg(2));
-        let item = (!item.is_nil()).then_some(LuaItem(item));
-        worn(c, |d| d.worn_items.set_item(loc, item))?.map_err(java_error)?;
+        let loc = key_arg(c, 1)?;
+        with_worn!(c, |b| {
+            let item = b.item_arg(c, 2)?;
+            b.with(|w| w.set_item(loc, item))?.map_err(java_error)?;
+        });
         Ok(0)
     });
     b.method("remove", |c| {
-        let item = LuaItem(c.arg(1));
-        worn(c, |d| d.worn_items.remove(&item))?;
+        with_worn!(c, |b| {
+            if let Some(item) = b.item_arg(c, 1)? {
+                b.with(|w| w.remove(&item))?;
+            }
+        });
         Ok(0)
     });
     b.method("contains", |c| {
-        let item = LuaItem(c.arg(1));
-        let v = worn(c, |d| d.worn_items.contains(&item))?;
+        let v = with_worn!(c, |b| match b.item_arg(c, 1)? {
+            Some(item) => b.with(|w| w.contains(&item))?,
+            None => false,
+        });
         Ok(c.push(v))
     });
     b.method("getLocation", |c| {
-        let item = LuaItem(c.arg(1));
-        let k = worn(c, |d| d.worn_items.location(&item))?;
+        let k = with_worn!(c, |b| match b.item_arg(c, 1)? {
+            Some(item) => b.with(|w| w.location(&item))?,
+            None => None,
+        });
         Ok(c.push(location_value(k.as_ref())))
     });
     b.method("getBodyLocationGroup", |c| {
-        let g = worn(c, |d| d.worn_items.body_location_group().clone())?;
+        let g = with_worn!(c, |b| b.with(|w| w.body_location_group().clone())?);
         Ok(c.push(group_value(&g)))
     });
 

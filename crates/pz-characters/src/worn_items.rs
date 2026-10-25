@@ -274,7 +274,7 @@ pub struct WornItems<I> {
     items: Vec<WornItem<I>>,
 }
 
-impl<I: ItemIdentity> WornItems<I> {
+impl<I> WornItems<I> {
     pub fn new(group: BodyLocationGroupRef) -> Self {
         WornItems { group, items: Vec::new() }
     }
@@ -283,7 +283,9 @@ impl<I: ItemIdentity> WornItems<I> {
     pub fn body_location_group(&self) -> &BodyLocationGroupRef {
         &self.group
     }
+}
 
+impl<I: ItemIdentity> WornItems<I> {
     /// `copyFrom`: both must use the same group.
     pub fn copy_from(&mut self, other: &WornItems<I>) -> ScriptResult {
         if !Rc::ptr_eq(&self.group, &other.group) {
