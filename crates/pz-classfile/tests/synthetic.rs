@@ -4,7 +4,8 @@ use pz_classfile::{load_class, method_effects, method_return, static_inits, Effe
 
 /// A class `t/K` whose `<clinit>` runs `A = reg("id_a"); B = reg("id_b", t/O.X)`
 /// and whose `init()` runs `A.p = B; reg("id_a"); reg("id_b", t/O.X);`, plus
-/// a factory `static K make(String id) { return new K(id, t/O.X); }`.
+/// a factory `static K make(String id) { return new K(id, t/O.X); }`, and
+/// `static K lam() { return new K("id_a", <invokedynamic>("id_b")); }`.
 fn class_bytes() -> Vec<u8> {
     let mut pool: Vec<Vec<u8>> = Vec::new();
     let utf8 = |pool: &mut Vec<Vec<u8>>, s: &str| {
@@ -57,6 +58,16 @@ fn class_bytes() -> Vec<u8> {
     let make_name = utf8(&mut pool, "make");
     let make_desc = utf8(&mut pool, "(Ljava/lang/String;)Lt/K;");
     let ctor = member(&mut pool, 10, this_class, "<init>", "(Ljava/lang/String;Lt/O;)V");
+    let lam_name = utf8(&mut pool, "lam");
+    let lam_desc = utf8(&mut pool, "()Lt/K;");
+    let indy = {
+        let n = utf8(&mut pool, "apply");
+        let d = utf8(&mut pool, "(Ljava/lang/String;)Lt/O;");
+        pool.push([&[12u8][..], &u(n), &u(d)].concat());
+        let nt = pool.len() as u16;
+        pool.push([&[18u8][..], &u(0), &u(nt)].concat());
+        pool.len() as u16
+    };
 
     let mut code = vec![0x12, s_a as u8, 0xb8];
     code.extend(u(reg1));
@@ -93,6 +104,14 @@ fn class_bytes() -> Vec<u8> {
     make.extend(u(ctor));
     make.push(0xb0);
 
+    let mut lam = vec![0xbb];
+    lam.extend(u(this_class));
+    lam.extend([0x59, 0x12, s_a as u8, 0x12, s_b as u8, 0xba]);
+    lam.extend(u(indy));
+    lam.extend([0, 0, 0xb7]);
+    lam.extend(u(ctor));
+    lam.push(0xb0);
+
     let mut b = vec![0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 61];
     b.extend(u(pool.len() as u16 + 1));
     for c in &pool {
@@ -114,8 +133,10 @@ fn class_bytes() -> Vec<u8> {
     b.extend(u(cv_attr));
     b.extend(2u32.to_be_bytes());
     b.extend(u(s_val));
-    b.extend(u(3)); // methods
-    for (name, desc, code) in [(clinit, void, &code), (init_name, void, &init), (make_name, make_desc, &make)] {
+    b.extend(u(4)); // methods
+    for (name, desc, code) in
+        [(clinit, void, &code), (init_name, void, &init), (make_name, make_desc, &make), (lam_name, lam_desc, &lam)]
+    {
         b.extend(u(0x08));
         b.extend(u(name));
         b.extend(u(desc));
@@ -234,4 +255,14 @@ fn evaluates_factory_return_values() {
     // Without arguments the factory's effects are unchanged (none).
     assert!(method_effects(&cf, "make").unwrap().is_empty());
     assert_eq!(method_return(&cf, "missing", &[]).unwrap(), None);
+}
+
+#[test]
+fn invokedynamic_consumes_its_arguments() {
+    let jar = Jar::from_bytes(jar_bytes("t/K.class", &class_bytes())).unwrap();
+    let cf = load_class(&jar, "t/K").unwrap();
+    assert_eq!(
+        method_return(&cf, "lam", &[]).unwrap(),
+        Some(Value::New { class: "t/K".into(), args: vec![Value::Str("id_a".into()), Value::Unknown] })
+    );
 }
