@@ -205,6 +205,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `HudBodyDamage` for local characters is `CharacterBodyDamage`
       (installed by `install_character_hud_hosts`); the remote path is
       TODO(network).
+- [ ] Debug console (built in `hud::init_ui`): with `Core.debug`, the
+      `TOGGLE_LUA_CONSOLE` key toggles `UIManager.debug_console`'s visibility
+      in `GameWindow.logic`; `DebugLog`'s stream calls
+      `hud::debug_console::debug_log_write(bytes)`; `HudDebug`'s
+      `ui_debug_console_start_visible/echo_command/debug_log` options;
+      `HudNetwork::may_process_console_commands` (role capability or coop
+      host; network thread); `HudConsoleMethods` (GlobalObject's declared
+      methods and each return type's public methods, for suggestions;
+      ours, from the exposure tables) (#160).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).

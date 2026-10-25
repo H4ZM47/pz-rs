@@ -196,7 +196,7 @@ pub fn current_text_entry_box() -> Option<Rc<UIElement>> {
     CURRENT.with(|c| c.borrow().clone())
 }
 
-fn set_current(el: Option<Rc<UIElement>>) {
+pub(crate) fn set_current(el: Option<Rc<UIElement>>) {
     CURRENT.with(|c| *c.borrow_mut() = el);
     sync_core();
 }
@@ -210,7 +210,7 @@ fn is_current(el: &UIElement) -> bool {
 }
 
 /// Mirrors `Core.currentTextEntryBox` into `Core`.
-fn sync_core() {
+pub(crate) fn sync_core() {
     let info = current_text_entry_box().and_then(|e| {
         let b = e.ext::<UITextBox2>()?;
         let s = b.st.borrow();
@@ -361,51 +361,51 @@ fn chars(v: &str) -> Vec<char> {
 }
 
 /// `UITextBox2`'s fields.
-struct TextBoxState {
-    lines: Vec<Vec<char>>,
-    frame: Option<Rc<UIElement>>,
-    text: Vec<char>,
-    center_vertically: bool,
-    doing_text_entry: bool,
-    cursor: i32,
-    text_entry_max_length: i32,
-    is_editable: bool,
-    is_selectable: bool,
-    cursor_line: i32,
-    multiple_line: bool,
-    line_start: Vec<i32>,
-    to_selection: i32,
-    internal: Vec<char>,
-    mask: bool,
-    ignore_first: bool,
-    font: Option<UIFont>,
-    highlight_lines: Vec<i32>,
-    has_frame: bool,
-    num_visible_lines: i32,
-    top_line_index: i32,
-    blink_frame: f32,
-    blink_state: bool,
-    text_color: Rgba,
-    selecting_range: bool,
-    max_text_length: i32,
-    force_upper_case: bool,
-    x_offset: i32,
-    max_lines: i32,
-    only_numbers: bool,
-    only_text: bool,
-    clear_button_texture: Option<Texture>,
-    clear_button_size: i32,
-    clear_button: bool,
-    clear_button_transition: Option<Rc<UITransition>>,
-    wrap_lines: bool,
-    placeholder: Option<String>,
-    placeholder_color: Rgba,
-    always_paginate: bool,
-    text_changed: bool,
-    paginate_width: i32,
-    paginate_font: Option<Option<UIFont>>,
+pub(crate) struct TextBoxState {
+    pub(crate) lines: Vec<Vec<char>>,
+    pub(crate) frame: Option<Rc<UIElement>>,
+    pub(crate) text: Vec<char>,
+    pub(crate) center_vertically: bool,
+    pub(crate) doing_text_entry: bool,
+    pub(crate) cursor: i32,
+    pub(crate) text_entry_max_length: i32,
+    pub(crate) is_editable: bool,
+    pub(crate) is_selectable: bool,
+    pub(crate) cursor_line: i32,
+    pub(crate) multiple_line: bool,
+    pub(crate) line_start: Vec<i32>,
+    pub(crate) to_selection: i32,
+    pub(crate) internal: Vec<char>,
+    pub(crate) mask: bool,
+    pub(crate) ignore_first: bool,
+    pub(crate) font: Option<UIFont>,
+    pub(crate) highlight_lines: Vec<i32>,
+    pub(crate) has_frame: bool,
+    pub(crate) num_visible_lines: i32,
+    pub(crate) top_line_index: i32,
+    pub(crate) blink_frame: f32,
+    pub(crate) blink_state: bool,
+    pub(crate) text_color: Rgba,
+    pub(crate) selecting_range: bool,
+    pub(crate) max_text_length: i32,
+    pub(crate) force_upper_case: bool,
+    pub(crate) x_offset: i32,
+    pub(crate) max_lines: i32,
+    pub(crate) only_numbers: bool,
+    pub(crate) only_text: bool,
+    pub(crate) clear_button_texture: Option<Texture>,
+    pub(crate) clear_button_size: i32,
+    pub(crate) clear_button: bool,
+    pub(crate) clear_button_transition: Option<Rc<UITransition>>,
+    pub(crate) wrap_lines: bool,
+    pub(crate) placeholder: Option<String>,
+    pub(crate) placeholder_color: Rgba,
+    pub(crate) always_paginate: bool,
+    pub(crate) text_changed: bool,
+    pub(crate) paginate_width: i32,
+    pub(crate) paginate_font: Option<Option<UIFont>>,
     /// `now_ms` of the last `update` (for the real-world seconds).
-    last_update_ms: Option<i64>,
+    pub(crate) last_update_ms: Option<i64>,
 }
 
 const STANDARD_FRAME: (u8, u8, u8, u8) = (50, 50, 50, 212);
@@ -418,6 +418,25 @@ fn c4(c: (u8, u8, u8, u8)) -> Rgba {
 /// The `UITextBox2` part of the element.
 pub struct UITextBox2 {
     st: RefCell<TextBoxState>,
+    /// A Java subclass's overrides (`UIDebugConsole$CommandEntry`).
+    hooks: RefCell<Option<Rc<dyn TextBoxHooks>>>,
+}
+
+/// Overrides of a Java subclass of `UITextBox2`. Each returns `true` when
+/// it replaced the base method (the base calls the Lua table's function).
+pub trait TextBoxHooks {
+    fn class_name(&self) -> Option<&'static str> {
+        None
+    }
+    fn on_press_up(&self, _el: &UIElement, _t: &mut Thread) -> bool {
+        false
+    }
+    fn on_press_down(&self, _el: &UIElement, _t: &mut Thread) -> bool {
+        false
+    }
+    fn on_other_key(&self, _el: &UIElement, _t: &mut Thread, _key: i32) -> bool {
+        false
+    }
 }
 
 fn line_height(font: Option<UIFont>) -> i32 {
@@ -426,7 +445,7 @@ fn line_height(font: Option<UIFont>) -> i32 {
 }
 
 impl TextBoxState {
-    fn inset(&self) -> i32 {
+    pub(crate) fn inset(&self) -> i32 {
         if self.has_frame {
             5
         } else {
@@ -640,6 +659,7 @@ impl UITextBox2 {
             None,
             Box::new(UITextBox2 {
                 st: RefCell::new(st),
+                hooks: RefCell::new(None),
             }),
         );
         let b = el.ext::<UITextBox2>().unwrap();
@@ -722,13 +742,34 @@ impl UITextBox2 {
     pub fn on_command_entered(&self, el: &UIElement, t: &mut Thread) {
         Self::call_lua(el, t, "onCommandEntered", &[]);
     }
+    fn hooks(&self) -> Option<Rc<dyn TextBoxHooks>> {
+        self.hooks.borrow().clone()
+    }
+    /// Install a Java subclass's overrides.
+    pub fn set_hooks(&self, h: Rc<dyn TextBoxHooks>) {
+        *self.hooks.borrow_mut() = Some(h);
+    }
+    /// The state, for the Java classes that read its fields directly
+    /// (`UIDebugConsole`, `ScrollBar`). Not held across calls.
+    pub(crate) fn state(&self) -> std::cell::RefMut<'_, TextBoxState> {
+        self.st.borrow_mut()
+    }
     pub fn on_press_up(&self, el: &UIElement, t: &mut Thread) {
+        if self.hooks().is_some_and(|h| h.on_press_up(el, t)) {
+            return;
+        }
         Self::call_lua(el, t, "onPressUp", &[]);
     }
     pub fn on_press_down(&self, el: &UIElement, t: &mut Thread) {
+        if self.hooks().is_some_and(|h| h.on_press_down(el, t)) {
+            return;
+        }
         Self::call_lua(el, t, "onPressDown", &[]);
     }
     pub fn on_other_key(&self, el: &UIElement, t: &mut Thread, key: i32) {
+        if self.hooks().is_some_and(|h| h.on_other_key(el, t, key)) {
+            return;
+        }
         Self::call_lua(el, t, "onOtherKey", &[Value::Num(key as f64)]);
     }
     pub fn on_lost_focus(&self, el: &UIElement, t: &mut Thread) {
@@ -805,7 +846,7 @@ impl UITextBox2 {
     }
 
     /// `update()` (no `super.update()`).
-    fn update_box(&self, el: &UIElement, t: &mut Thread) {
+    pub(crate) fn update_box(&self, el: &UIElement, t: &mut Thread) {
         let now = pz_ui::manager::now_ms();
         let (lh, inset, frame) = {
             let mut s = self.st.borrow_mut();
@@ -864,8 +905,9 @@ impl UITextBox2 {
             } else {
                 el.set_scroll_height((lines * lh) as f64);
             }
-            // UIDebugConsole.instance is never set.
-            s.top_line_index = ((-el.get_y_scroll() + inset as f64) as i32) / lh_div;
+            if !crate::hud::debug_console::is_output_log(el) {
+                s.top_line_index = ((-el.get_y_scroll() + inset as f64) as i32) / lh_div;
+            }
             (-s.top_line_index * lh) as f64
         };
         el.set_y_scroll(t, y_scroll);
@@ -1105,8 +1147,16 @@ impl UITextBox2 {
         crate::bind_input::is_key_down_raw(42) || crate::bind_input::is_key_down_raw(54)
     }
 
-    /// `onKeyEnter()` (no debug console).
+    /// `onKeyEnter()`.
     pub fn on_key_enter(&self, el: &UIElement, t: &mut Thread) {
+        let command_entered = crate::hud::debug_console::is_command_line(el);
+        self.on_key_enter_box(el, t);
+        if command_entered && crate::hud::debug_console::may_process_commands() {
+            crate::hud::debug_console::process_command(t);
+        }
+    }
+
+    fn on_key_enter_box(&self, el: &UIElement, t: &mut Thread) {
         let multiple = self.st.borrow().multiple_line;
         if !multiple {
             return self.on_command_entered(el, t);
@@ -1427,7 +1477,7 @@ impl UITextBox2 {
 
 impl UIElementExt for UITextBox2 {
     fn class_name(&self) -> &'static str {
-        UITEXTBOX2
+        self.hooks().and_then(|h| h.class_name()).unwrap_or(UITEXTBOX2)
     }
     fn super_classes(&self) -> &'static [&'static str] {
         TEXTBOX_SUPERS

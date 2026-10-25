@@ -236,6 +236,42 @@ pub trait HudDebug {
     fn ui_render_outline(&self) -> bool {
         false
     }
+    /// `DebugOptions.instance.uiDebugConsoleStartVisible`.
+    fn ui_debug_console_start_visible(&self) -> bool {
+        false
+    }
+    /// `DebugOptions.instance.uiDebugConsoleEchoCommand`.
+    fn ui_debug_console_echo_command(&self) -> bool {
+        false
+    }
+    /// `DebugOptions.instance.uiDebugConsoleDebugLog`.
+    fn ui_debug_console_debug_log(&self) -> bool {
+        false
+    }
+}
+
+/// A Java method as the debug console's suggestion engine sees it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConsoleMethod {
+    pub name: String,
+    /// `getReturnType().toString()`: `void`, `int`, `class a.b.C`, ...
+    pub return_type: String,
+    /// `getParameterTypes().length`.
+    pub param_count: usize,
+}
+
+/// The reflection the debug console's suggestions use. Owner: us (the
+/// Lua API's exposure tables).
+pub trait HudConsoleMethods {
+    /// `LuaManager.GlobalObject.class.getDeclaredMethods()`, in that order.
+    fn global_methods(&self) -> Vec<ConsoleMethod> {
+        Vec::new()
+    }
+    /// The public declared methods of `return_type` (as
+    /// [`ConsoleMethod::return_type`]) and each superclass, class first.
+    fn public_methods_of(&self, _return_type: &str) -> Vec<ConsoleMethod> {
+        Vec::new()
+    }
 }
 
 /// `SoundManager.instance` calls the HUD makes. Owner: audio thread.
@@ -253,6 +289,12 @@ pub trait HudNetwork {
     }
     fn is_server(&self) -> bool {
         false
+    }
+    /// The debug console may run commands: `!GameClient.client`, or the
+    /// player's role has `Capability.UIManagerProcessCommands`, or the
+    /// connection is the coop host.
+    fn may_process_console_commands(&self) -> bool {
+        !self.is_client()
     }
 }
 
@@ -279,6 +321,7 @@ impl HudDebug for NoHud {}
 impl HudMoodles for NoHud {}
 impl HudPicking for NoHud {}
 impl HudBodyDamage for NoHud {}
+impl HudConsoleMethods for NoHud {}
 impl HudSound for NoHud {}
 impl HudNetwork for NoHud {}
 
@@ -342,6 +385,7 @@ pub struct HudHost {
     pub moodles: Box<dyn HudMoodles>,
     pub picking: Box<dyn HudPicking>,
     pub body_damage: Box<dyn HudBodyDamage>,
+    pub console_methods: Box<dyn HudConsoleMethods>,
 }
 
 impl Default for HudHost {
@@ -358,6 +402,7 @@ impl Default for HudHost {
             moodles: Box::new(NoHud),
             picking: Box::new(NoHud),
             body_damage: Box::new(NoHud),
+            console_methods: Box::new(NoHud),
         }
     }
 }

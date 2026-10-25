@@ -12,7 +12,7 @@ mod random;
 mod string;
 mod table;
 
-pub use base::{load_string, setmetatable};
+pub use base::{load_string, set_print_callback, setmetatable, PrintCallback};
 pub use table::{insert_at, pairs_iterator, remove_at};
 
 use crate::exec::{raw_tonumber, raw_tostring};
