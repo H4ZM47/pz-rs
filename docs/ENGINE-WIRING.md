@@ -66,11 +66,22 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
       `SurfaceChecks::run` + `apply_surface_checks` before `plan_chunks`;
       water flow from lot directories; splash state (#53).
-- [ ] `render_animated_attachments` per chunk between water and
-      translucent passes (#76).
-- [ ] `render_weather_fx` through `world_frame_into_with`, driven by
-      `ClimateRenderValues` (#81); FxMask character hook replays #79
-      ObjectRender draws without shadows.
+- [ ] One frame call: `frame::world_frame_full(r, size, chunks, objects,
+      drop_shadow, screen, out, late)` with the frame's `FrameObjects` and
+      the weather as `late`. It draws `performRenderTiles`' order itself
+      (composite; players, corpse/mannequin shadows, corpses, items;
+      puddles; moving objects; water; animated attachments; per-level
+      translucent floors/puddles/shore/splashes/shadows/objects; outlines
+      end; then `late`) (ws/render-join).
+- [x] `render_animated_attachments` per chunk between water and
+      translucent passes (#76) — done by the frame itself (ws/render-join).
+- [ ] `render_weather_fx` as `world_frame_full`'s `late`, driven by
+      `ClimateRenderValues` (#81); pass `weather_fx_mask::FxMaskCharacters
+      { world, objects: &frame_objects }` as its `FxMaskWorld` so the mask's
+      `renderCharacters` replays #79's `ObjectRender` draws without shadows.
+      Every character's `ObjectRender.pos` must be set
+      (`render_character_object` does; set it on hand-built zombies and
+      animals) (ws/render-join).
 - [ ] Feed corpses, world items and fireplace state from pz-world (#87, #76).
 - [ ] Vehicles in `FrameObjects.moving` (cell object-list order): per
       vehicle `update_transform`, `instance.update_lights`,
@@ -87,8 +98,8 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `current_ambient` into `CharacterFrame` (#90).
 - [ ] Vehicle reflections: the reflective vehicle shaders need
       `VehicleFrame`'s sky-box textures and shift from #53's `SkyBox`
-      (pz-iso-render `skybox.rs`, on a separate stack). Until that is
-      wired, load vehicle models with `reflections: false` (the
+      (pz-iso-render `skybox.rs`, now on the same stack (ws/render-join)).
+      Until that is wired, load vehicle models with `reflections: false` (the
       `_noreflect` shader variants, as with `bPerfReflections` off) (#90).
 - [ ] Character outlines: per character, `ObjectRender.outline =
       OutlineHighlight::character_request(playerIndex, x, y, isProne,

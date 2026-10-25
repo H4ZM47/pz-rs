@@ -494,4 +494,4 @@ pub fn render_animated_attachments(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, o
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

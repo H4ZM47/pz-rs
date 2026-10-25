@@ -152,8 +152,9 @@ Status of the Rust port. Update this file with every merged change.
   bit for bit but for last-ulp rain rotations; `RasterizeBounds` and
   `Rasterize.scanTriangle` match exactly (checked locally). Mask walls go
   through `CutawayNoDepth` with the player's cutaway flags, particles
-  carry float colours, and characters reach the mask through an
-  `FxMaskWorld` hook that nothing fills until the character pass lands.
+  carry float colours, and characters reach the mask through
+  `FxMaskCharacters`, which replays the frame objects' draws (no shadows)
+  on their squares (ws/render-join).
 - World save files: `map_t.bin` (`GameTime` + climate, in `pz-core`),
   `map_meta.bin` (room/building state, safehouses, factions, designation
   zones, stashes), `map_zone.bin` and `gos_*.bin` (global-object systems)
@@ -244,6 +245,16 @@ Status of the Rust port. Update this file with every merged change.
   lists match the original's (local harnesses). Not yet: sprite-object
   outlines (`FBORenderObjectOutline`, `vboRenderer_SpriteOutline`) and
   `IsoObjectModelDrawer`'s sprite-model outlines; split-screen viewports.
+
+- One world frame for both render stacks (ws/render-join):
+  `frame::world_frame_full` draws `FBORenderCell.performRenderTiles`'
+  order after the chunk composite (players, corpse and mannequin shadows,
+  corpses, items; puddles; moving objects; water; fireplace and barbecue
+  flames; per-level translucent floors, puddles, shore, rain splashes,
+  shadows and objects), then `IsoWorld.render`'s weather pass, with a test
+  asserting the order. Not yet in the frame: `renderFlies`,
+  `FBORenderObjectHighlight`, the cell's `renderFog`,
+  `VisibilityPolygon2`, markers, `FBORenderObjectOutline`.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
