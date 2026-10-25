@@ -58,6 +58,36 @@ fn save_counts(lua: &LuaManager) -> (Option<f64>, Option<f64>) {
     )
 }
 
+fn inventory_ui_check(lua: &mut LuaManager) {
+    lua_check(lua, r#"
+        local page = getPlayerInventory(0)
+        assert(page and page.inventoryPane, "shipped player inventory pane was not created")
+        local pane = page.inventoryPane
+        local before = pane.refreshContainerCount or 0
+        pane:refreshContainer()
+        assert(pane.refreshContainerCount == before + 1, "inventory refresh did not finish")
+        local foundKeyRing = false
+        for _, row in ipairs(pane.itemslist) do
+            for _, item in ipairs(row.items) do
+                if item:isItemType(ItemType.KEY_RING) or item:hasTag(ItemTag.KEY_RING) then
+                    foundKeyRing = true
+                end
+            end
+        end
+        assert(foundKeyRing, "starting key ring is missing from the actual inventory rows")
+    "#);
+}
+
+fn close_survival_guide(lua: &mut LuaManager) {
+    lua_check(lua, r#"
+        if SurvivalGuide and SurvivalGuide.instance then
+            SurvivalGuide.instance:onClose()
+        end
+        assert(UIManager.getSpeedControls():getCurrentGameSpeed() == 1,
+            "closing the actual survival guide did not resume play")
+    "#);
+}
+
 fn movement_diagnostics(app: &mut super::App, label: &str) {
     let input = pz_player_input::EnginePlayerInput::capture();
     let binding = app.core.borrow().get_key_binding("Forward");
@@ -108,6 +138,88 @@ fn inventory_records(container: &pz_inventory::shared::ContainerRef) -> Vec<Inve
 }
 
 #[test]
+fn paused_window_frames_keep_ui_callbacks_but_skip_state_updates_until_next_frame() {
+    use crate::game_state::{state, GameState, GameStateMachine, StateAction, StateCx};
+    use pz_core::game_time::GameTimeContext;
+    use std::cell::Cell;
+
+    struct Probe(&'static str, Rc<Cell<usize>>);
+    impl GameState for Probe {
+        fn class_name(&self) -> &'static str { self.0 }
+        fn update(&mut self, _: &mut StateCx<'_>) -> StateAction {
+            self.1.set(self.1.get() + 1);
+            StateAction::Remain
+        }
+    }
+    struct RestoreUi(Option<pz_ui::UIManager>);
+    impl Drop for RestoreUi {
+        fn drop(&mut self) {
+            let old = self.0.take().unwrap();
+            let retired = pz_ui::with_ui(|ui| std::mem::replace(ui, old));
+            drop(retired);
+        }
+    }
+    struct TempDir(PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let base = TempDir(std::env::temp_dir().join(format!("pz-rs-paused-frame-{}-{stamp}", std::process::id())));
+    std::fs::create_dir(&base.0).unwrap();
+    std::fs::create_dir(base.0.join("game")).unwrap();
+    std::fs::create_dir(base.0.join("cache")).unwrap();
+    let _restore_core = RestoreCore(bind_core::shared_core());
+    let _restore_ui = RestoreUi(Some(pz_ui::with_ui(std::mem::take)));
+    bind_core::install_core(Rc::new(RefCell::new(Core::default())));
+    assert!(!pz_lua_api::bind_climate::is_game_paused(), "missing speed controls must not pause");
+    let mut app = headless_app(Launch {
+        game_dir: base.0.join("game"), cache_dir: base.0.join("cache"), start: Start::MainMenu,
+    }).unwrap();
+    app.lua = Some(LuaManager::init(Rc::new(RefCell::new(pz_fs::GameFs::new(&app.launch.game_dir)))).unwrap());
+    pz_lua_api::hud::init_ui(&mut app.lua.as_mut().unwrap().thread);
+    let updates = Rc::new(Cell::new(0));
+    let probe = state(Probe(INGAME, updates.clone()));
+    app.states = GameStateMachine::default();
+    app.states.firstrun = false;
+    app.states.states = vec![probe.clone()];
+    app.states.current = Some(probe);
+    let context = pz_lua_api::bind_climate::LuaClimateContext::new();
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        -- This authored fixture has no installed stdlib.lua.
+        function assert(value, message)
+            if not value then error(message or "assertion failed") end
+            return value
+        end
+        pausedEvents = 0
+        Events.OnTickEvenPaused.Add(function(tick)
+            assert(tick == 0)
+            pausedEvents = pausedEvents + 1
+            if resumeDuringPausedEvent then setGameSpeed(1) end
+        end)
+        setGameSpeed(0)
+    "#);
+    assert!(context.is_game_paused(), "a retained context must read current speed controls");
+    app.frame();
+    assert_eq!(updates.get(), 0);
+    lua_check(app.lua.as_mut().unwrap(), "assert(pausedEvents == 1); resumeDuringPausedEvent = true");
+    app.frame();
+    assert_eq!(updates.get(), 0, "unpause callback must not replay state update in this frame");
+    assert!(!context.is_game_paused());
+    app.frame();
+    assert_eq!(updates.get(), 1);
+    lua_check(app.lua.as_mut().unwrap(), "assert(pausedEvents == 2); setGameSpeed(0)");
+    let menu = state(Probe("test.PauseMenu", updates.clone()));
+    app.states.current = Some(menu);
+    app.frame();
+    assert_eq!(updates.get(), 1);
+    lua_check(app.lua.as_mut().unwrap(), "assert(pausedEvents == 2)");
+    pz_ui::with_ui(|ui| ui.speed_controls = None);
+    app.frame();
+    assert_eq!(updates.get(), 2);
+    assert!(app.error.is_none());
+}
+
+#[test]
 #[ignore = "requires PZ_GAME_DIR; boots installed media in the Rust engine, saves, and reloads a fresh test world"]
 fn installed_assets_new_game_moves_animates_and_saves_on_close() {
     let game_dir = PathBuf::from(std::env::var_os("PZ_GAME_DIR").expect("set PZ_GAME_DIR to installed game assets"))
@@ -155,6 +267,32 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         starting_inventory.iter().any(|item| item.full_type.starts_with("Base.KeyRing")),
         "shipped OnNewGame starting-item script did not create a key ring: {starting_inventory:?}"
     );
+    inventory_ui_check(app.lua.as_mut().unwrap());
+
+    // The shipped guide pauses through the real speed controls. Held input
+    // must not advance simulation until its actual close handler resumes it.
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        setGameSpeed(0)
+        rustSessionPausedTicks = 0
+        rustSessionPausedTick = function(tick)
+            assert(tick == 0, "paused event must carry constant zero")
+            rustSessionPausedTicks = rustSessionPausedTicks + 1
+        end
+        Events.OnTickEvenPaused.Add(rustSessionPausedTick)
+    "#);
+    let paused_clock = pz_lua_api::bind_climate::shared_game_time().borrow().time_of_day;
+    let paused_world_frame = app.world.as_ref().unwrap().frame_no;
+    pz_input::with_input(|i| i.key(17, 1));
+    run_frames(&mut app, 3);
+    pz_input::with_input(|i| i.key(17, 0));
+    assert_eq!((player.borrow().vars.x, player.borrow().vars.y, player.borrow().vars.z), before);
+    assert_eq!(app.world.as_ref().unwrap().frame_no, paused_world_frame);
+    assert_eq!(pz_lua_api::bind_climate::shared_game_time().borrow().time_of_day, paused_clock);
+    lua_check(app.lua.as_mut().unwrap(), r#"
+        assert(rustSessionPausedTicks == 3)
+        Events.OnTickEvenPaused.Remove(rustSessionPausedTick)
+    "#);
+    close_survival_guide(app.lua.as_mut().unwrap());
 
     // Keyboard scan code 17 is W. It enters the same input queue as the
     // native window; no character coordinate or movement flag is set here.
@@ -284,6 +422,8 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         inventory_records(&loaded_player.borrow().items.inventory), starting_inventory,
         "starting items or their nested contents/IDs changed across native close and reload"
     );
+    inventory_ui_check(reloaded.lua.as_mut().unwrap());
+    close_survival_guide(reloaded.lua.as_mut().unwrap());
     assert!((loaded_position.0 - after.0).abs() < 0.0001, "reloaded x differs: {} versus {}", loaded_position.0, after.0);
     assert!((loaded_position.1 - after.1).abs() < 0.0001, "reloaded y differs: {} versus {}", loaded_position.1, after.1);
     assert!((loaded_position.2 - after.2).abs() < 0.0001, "reloaded z differs: {} versus {}", loaded_position.2, after.2);

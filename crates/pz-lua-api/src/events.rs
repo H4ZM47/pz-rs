@@ -2,7 +2,8 @@
 //! tables scripts register callbacks on, and their triggering.
 
 use pz_kahlua::vm::LuaClosure;
-use pz_kahlua::{NativeFunction, TableRef, Thread, Value};
+use pz_kahlua::gc::{traceable, TracePayload, TraceVisitor};
+use pz_kahlua::{LuaResult, NativeCall, NativeFunction, TableRef, Thread, Value};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -291,6 +292,50 @@ pub struct Event {
     pub callbacks: Vec<Rc<LuaClosure>>,
 }
 
+impl TracePayload for Event {
+    fn trace(&self, visitor: &mut TraceVisitor) {
+        for callback in &self.callbacks {
+            visitor.closure(callback);
+        }
+    }
+
+    fn detach(&mut self) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(std::mem::take(&mut self.callbacks)))
+    }
+}
+
+// Each Add/Remove callable owns one capture backing allocation, whose
+// physical Event Rc slot is counted independently of any other callable.
+struct EventCapture {
+    event: Rc<RefCell<Event>>,
+}
+
+impl TracePayload for EventCapture {
+    fn trace(&self, visitor: &mut TraceVisitor) {
+        visitor.owner(&self.event);
+    }
+}
+
+fn add_callback(capture: &RefCell<EventCapture>, c: &mut NativeCall<'_>) -> LuaResult<usize> {
+    let event = capture.borrow().event.clone();
+    if let Value::Closure(callback) = c.arg(0) {
+        event.borrow_mut().callbacks.push(callback);
+    }
+    Ok(0)
+}
+
+fn remove_callback(capture: &RefCell<EventCapture>, c: &mut NativeCall<'_>) -> LuaResult<usize> {
+    let event = capture.borrow().event.clone();
+    if let Value::Closure(callback) = c.arg(0) {
+        let mut event = event.borrow_mut();
+        // ArrayList.remove(Object): first equal element.
+        if let Some(index) = event.callbacks.iter().position(|value| Rc::ptr_eq(value, &callback)) {
+            event.callbacks.remove(index);
+        }
+    }
+    Ok(0)
+}
+
 /// One event table family (`Events` or `Hook`).
 #[derive(Clone)]
 pub struct EventManager {
@@ -324,39 +369,23 @@ impl EventManager {
         if let Some(e) = self.inner.borrow().map.get(name) {
             return e.clone();
         }
-        let e = Rc::new(RefCell::new(Event {
+        let e = traceable(Event {
             name: name.to_string(),
             callbacks: Vec::new(),
-        }));
+        });
         {
             let mut r = self.inner.borrow_mut();
             r.list.push(e.clone());
             r.map.insert(name.to_string(), e.clone());
         }
         let t = TableRef::new();
-        let add_e = e.clone();
         t.set_str(
             "Add",
-            Value::Native(NativeFunction::new("Add", move |c| {
-                if let Value::Closure(cl) = c.arg(0) {
-                    add_e.borrow_mut().callbacks.push(cl);
-                }
-                Ok(0)
-            })),
+            Value::Native(NativeFunction::new_traced_capture("Add", EventCapture { event: e.clone() }, add_callback)),
         );
-        let rem_e = e.clone();
         t.set_str(
             "Remove",
-            Value::Native(NativeFunction::new("Remove", move |c| {
-                if let Value::Closure(cl) = c.arg(0) {
-                    let mut ev = rem_e.borrow_mut();
-                    // ArrayList.remove(Object): first equal element.
-                    if let Some(i) = ev.callbacks.iter().position(|x| Rc::ptr_eq(x, &cl)) {
-                        ev.callbacks.remove(i);
-                    }
-                }
-                Ok(0)
-            })),
+            Value::Native(NativeFunction::new_traced_capture("Remove", EventCapture { event: e.clone() }, remove_callback)),
         );
         self.table.set_str(name, t);
         e
@@ -407,3 +436,6 @@ impl EventManager {
             .map_or(0, |e| e.borrow().callbacks.len())
     }
 }
+
+#[cfg(test)]
+mod gc_tests;

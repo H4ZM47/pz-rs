@@ -440,57 +440,68 @@ impl IsoWorld {
         let input = pz_player_input::EnginePlayerInput::capture();
         let sm = pz_lua_api::bind_registry::shared_script_manager();
         let chars = shared_characters();
+        let player_sim = sim.player_context();
         for p in local_players().into_iter().flatten() {
             if p.borrow().is_dead() {
                 continue;
             }
             pz_lua_api::bind_players::set_player_instance(Some(p.clone()));
             pz_lua_api::timed_actions::sync_flags(&p);
-            let r = {
-                let mut chr = p.borrow_mut();
-                chr.preupdate_player();
-                chr.frame_step(&input);
-                let IsoWorld {
-                    sprites,
-                    states_runtime,
-                    action_groups,
-                    models,
-                    ..
-                } = self;
-                let Some(sprites) = sprites.as_mut() else {
-                    return;
-                };
-                with_states(sprites, states_runtime, models.as_mut(), sim, |w| {
-                    fill_square_environment(&mut chr, w.cell);
-                    pz_lua_api::bind_states::with_state_registry(|reg| {
-                        let chars = chars.borrow();
-                        let mut cx = StateCx::new(&sm, &chars, sim, w);
-                        chr.update_player_before_actions(&input, reg, action_groups, &mut cx)
-                    })
-                })
-            };
-            match r {
-                Some(Ok((mut u, resume))) => {
-                    fire_player_events(lua, &p, std::mem::take(&mut u.events));
-                    self.fire_sim_events(lua, Some(&p), sim);
-                    if resume {
-                        pz_lua_api::timed_actions::update(&mut lua.thread, &p);
-                        let IsoWorld { sprites, states_runtime, models, .. } = self;
-                        if let Some(sprites) = sprites.as_mut() {
-                            let result = with_states(sprites, states_runtime, models.as_mut(), sim, |w| {
-                                pz_lua_api::bind_states::with_state_registry(|_| {
-                                    let chars = chars.borrow();
-                                    let mut cx = StateCx::new(&sm, &chars, sim, w);
-                                    p.borrow_mut().update_player_after_actions(&mut u, &mut cx)
-                                })
-                            });
-                            if let Some(Err(e)) = result { self.log_update_error(format!("IsoPlayer.update: {e}")); }
-                        }
-                        fire_player_events(lua, &p, u.events);
+            let mut phase = pz_characters::character::player::PlayerUpdatePhase::Start;
+            let mut u = pz_characters::character::player::PlayerUpdate::default();
+            let mut first_phase = true;
+            loop {
+                let r = {
+                    let mut chr = p.borrow_mut();
+                    if first_phase {
+                        chr.preupdate_player();
+                        chr.frame_step(&input);
                     }
+                    let IsoWorld { sprites, states_runtime, action_groups, models, .. } = self;
+                    let Some(sprites) = sprites.as_mut() else { return; };
+                    with_states(sprites, states_runtime, models.as_mut(), sim, |w| {
+                        if first_phase { fill_square_environment(&mut chr, w.cell); }
+                        pz_lua_api::bind_states::with_state_registry(|reg| {
+                            let chars = chars.borrow();
+                            let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
+                            chr.advance_player_update(phase, &input, reg, action_groups, &mut u, &mut cx)
+                        })
+                    })
+                };
+                first_phase = false;
+                match r {
+                    Some(Ok(step)) => {
+                        // Prior events retain their relative order before the
+                        // inline stop. No character/world/registry borrow is live.
+                        fire_player_events(lua, &p, std::mem::take(&mut u.events));
+                        self.fire_sim_events(lua, Some(&p), sim);
+                        match step {
+                            pz_characters::character::player::PlayerUpdateStep::StopActionQueue { reason, resume } => {
+                                pz_lua_api::timed_actions::cancel(&mut lua.thread, &p, reason);
+                                phase = resume;
+                            }
+                            pz_characters::character::player::PlayerUpdateStep::TimedActions => {
+                                pz_lua_api::timed_actions::update(&mut lua.thread, &p);
+                                let IsoWorld { sprites, states_runtime, models, .. } = self;
+                                if let Some(sprites) = sprites.as_mut() {
+                                    let result = with_states(sprites, states_runtime, models.as_mut(), sim, |w| {
+                                        pz_lua_api::bind_states::with_state_registry(|_| {
+                                            let chars = chars.borrow();
+                                            let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
+                                            p.borrow_mut().update_player_after_actions(&mut u, &mut cx)
+                                        })
+                                    });
+                                    if let Some(Err(e)) = result { self.log_update_error(format!("IsoPlayer.update: {e}")); }
+                                }
+                                fire_player_events(lua, &p, std::mem::take(&mut u.events));
+                                break;
+                            }
+                            pz_characters::character::player::PlayerUpdateStep::Done => break,
+                        }
+                    }
+                    Some(Err(e)) => { self.log_update_error(format!("IsoPlayer.update: {e}")); break; }
+                    None => break,
                 }
-                Some(Err(e)) => self.log_update_error(format!("IsoPlayer.update: {e}")),
-                None => {}
             }
             self.fire_sim_events(lua, Some(&p), sim);
             // `IsoGameCharacter.updateTextObjects` queued the chat element's
@@ -597,6 +608,9 @@ impl IsoWorld {
                 }
                 SimEvent::ForceStopAction if chr.is_some() => {
                     pz_lua_api::timed_actions::force_stop(chr.unwrap());
+                }
+                SimEvent::StopAllActionQueue if chr.is_some() => {
+                    pz_lua_api::timed_actions::cancel(&mut lua.thread, chr.unwrap(), "");
                 }
                 // TODO(port): the other `SimEvent`s (sounds, visuals, XP,
                 // game speed, the world's side of combat).
@@ -1477,6 +1491,37 @@ mod quit_save_tests {
         )
         .unwrap();
         lua.thread.pcall(&f, &[]).unwrap();
+    }
+
+    #[test]
+    fn queued_simulation_stop_cancels_the_actual_action_once_before_its_tick() {
+        let (_fixture, mut world, mut lua) = Fixture::new(true, "Sandbox", false);
+        let sm = pz_lua_api::bind_registry::shared_script_manager();
+        let character = Rc::new(RefCell::new(LuaGameCharacter::new(&sm, pz_characters::CharacterKind::Player)));
+        lua.thread.globals().set_str("player", character_value(&character));
+        run_lua(&mut lua, r#"
+            stopped=0; updated=0
+            T={}; T.__index=T
+            function T:isValid() return true end
+            function T:waitToStart() return false end
+            function T:start() end
+            function T:update() updated=updated+1 end
+            function T:stop()
+                stopped=stopped+1
+                check(player:getCharacterActions():contains(self.action))
+                player:setIsFarming(false)
+            end
+            a=setmetatable({maxTime=100,character=player},T)
+            a.action=LuaTimedActionNew.new(a,player)
+            player:setIsFarming(true)
+            player:StartAction(a.action)
+        "#);
+        let sim = FrameSim::capture();
+        sim.events.borrow_mut().push(SimEvent::StopAllActionQueue);
+        world.fire_sim_events(&mut lua, Some(&character), &sim);
+        pz_lua_api::timed_actions::update(&mut lua.thread, &character);
+        world.fire_sim_events(&mut lua, Some(&character), &sim);
+        run_lua(&mut lua, "check(stopped==1 and updated==0 and not player:isFarming() and player:getCharacterActions():isEmpty())");
     }
 
     #[test]

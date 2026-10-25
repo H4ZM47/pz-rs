@@ -175,7 +175,28 @@ pub struct NativeFunction {
 
 impl NativeFunction {
     pub fn new(name: &str, f: impl Fn(&mut NativeCall<'_>) -> LuaResult<usize> + 'static) -> Rc<Self> {
-        Rc::new(NativeFunction { name: Rc::from(name), f: Box::new(f) })
+        let native = Rc::new(NativeFunction { name: Rc::from(name), f: Box::new(f) });
+        crate::gc::register_native(Rc::downgrade(&native));
+        native
+    }
+
+    /// A reviewed explicit capture, held strongly by the runtime callable.
+    /// The capture-free function pointer cannot conceal additional Fn state;
+    /// collection traces its single backing Rc and that payload's own slots.
+    /// Ordinary `new` callbacks remain opaque and conservatively retained.
+    pub fn new_traced_capture<C: crate::gc::TracePayload>(
+        name: &str,
+        capture: C,
+        invoke: fn(&RefCell<C>, &mut NativeCall<'_>) -> LuaResult<usize>,
+    ) -> Rc<Self> {
+        let capture = crate::gc::traceable(capture);
+        let weak_capture = Rc::downgrade(&capture);
+        let native = Rc::new(NativeFunction {
+            name: Rc::from(name),
+            f: Box::new(move |call| invoke(&capture, call)),
+        });
+        crate::gc::register_traced_native(Rc::downgrade(&native), weak_capture);
+        native
     }
 }
 

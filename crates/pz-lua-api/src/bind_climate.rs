@@ -151,6 +151,23 @@ pub fn climate_settings() -> ClimateSettings {
     SETTINGS.with(|c| c.borrow().clone())
 }
 
+/// `GameTime.isGamePaused`: single-player reads the actual speed-control
+/// owner. Network pause state still comes from the installed network settings.
+pub fn is_game_paused() -> bool {
+    let network = {
+        let core = crate::bind_core::shared_core();
+        let core = core.borrow();
+        core.is_server || core.is_client
+    };
+    if network {
+        return climate_settings().game_paused;
+    }
+    pz_ui::with_ui(|ui| ui.speed_controls.clone())
+        .and_then(|element| element.ext::<crate::hud::speed_controls::SpeedControls>()
+            .map(|speed| speed.get_current_game_speed() == 0))
+        .unwrap_or(false)
+}
+
 /// Where climate and clock events go (`LuaEventManager.triggerEvent`).
 pub fn install_event_sink(sink: EventSink) {
     SINK.with(|s| *s.borrow_mut() = Some(sink));
@@ -233,7 +250,7 @@ impl GameTimeContext for LuaClimateContext {
         self.settings.helicopter
     }
     fn is_game_paused(&self) -> bool {
-        self.settings.game_paused
+        is_game_paused()
     }
     fn all_players_asleep(&self) -> bool {
         self.settings.all_players_asleep

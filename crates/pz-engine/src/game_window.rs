@@ -271,11 +271,20 @@ impl App {
             apply_window_requests(w, pz_lua_api::bind_input::take_window_requests());
         }
         // MapCollisionData.instance.updateGameState().
+        // GameWindow.logic snapshots this after UI/input callbacks. Paused
+        // frames still update UI/audio/rendering, but never the game states.
+        let game_paused = pz_lua_api::bind_climate::is_game_paused();
         if let Some(world) = self.world.as_mut() {
             let no_save = self.core.borrow().is_no_save();
-            world.update_game_state(no_save, false);
+            world.update_game_state(no_save, game_paused);
         }
-        {
+        if game_paused {
+            // TODO(port): IsoCamera.updateAll(). The paused event carries
+            // the original constant zero and runs only in the ingame state.
+            if self.states.current_name() == Some("zombie.gameStates.IngameState") {
+                lua.trigger_event("OnTickEvenPaused", &[pz_kahlua::Value::Num(0.0)]);
+            }
+        } else {
             let mut cx = StateCx {
                 lua: &mut *lua,
                 launch: &self.launch,

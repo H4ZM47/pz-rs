@@ -71,6 +71,8 @@ mod key_ring;
 mod sneaking_tests;
 #[cfg(test)]
 mod timed_actions_tests;
+#[cfg(test)]
+mod timed_action_phases_tests;
 
 pub const ISO_GAME_CHARACTER_CLASS: &str = "zombie.characters.IsoGameCharacter";
 pub const ISO_PLAYER_CLASS: &str = "zombie.characters.IsoPlayer";

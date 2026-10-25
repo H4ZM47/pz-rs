@@ -1,15 +1,18 @@
-//! Conservative collection of cycles through Lua tables, closures and upvalues.
+//! Conservative collection through Lua tables, closures, upvalues and reviewed
+//! explicit native/host ownership.
 //!
 //! Each participating allocation is weakly registered. At a host safe point,
 //! the collector counts owning table key/value/metatable slots, closure
-//! environments and shared upvalue slots, and closed upvalue values. Every
+//! environments and shared upvalue slots, closed upvalue values, and the
+//! physical slots of explicitly traceable native captures and host payloads. Every
 //! remaining strong reference is a root, including Rust handles, interpreter
-//! stacks, coroutine state, prototype constants, native captures and engine
+//! stacks, coroutine state, prototype constants, opaque native captures and engine
 //! objects. Rooted nodes retain their contents unchanged.
 //!
-//! Coroutines, prototypes and native/engine objects are deliberately opaque.
+//! Coroutines, prototypes, ordinary native captures and engine objects remain opaque.
 //! Their outgoing references stay external roots, so cycles passing through
-//! them can remain retained. This does not reclaim every old LuaManager or
+//! them can remain retained. Immutable host-only cycles may also remain retained.
+//! This does not reclaim every old LuaManager or
 //! a character whose mod-data or timed action points back to that character.
 //! Unregistered allocations also remain conservative roots through their
 //! outgoing references. This is not a complete Lua/JVM collector.
@@ -21,16 +24,29 @@
 
 use crate::table::Table;
 use crate::value::Value;
-use crate::vm::{LuaClosure, UpValue, UpValueRef};
+use crate::vm::{LuaClosure, NativeFunction, UpValue, UpValueRef};
+use std::any::TypeId;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
+
+mod host;
+pub use host::{traceable, TracePayload, TraceVisitor};
+
+struct NativeRecord {
+    native: Weak<NativeFunction>,
+    // Only new_traced_capture can create this record. The runtime Fn wrapper
+    // owns exactly one Rc to this backing allocation; this ID owns nothing.
+    capture: Option<NodeId>,
+}
 
 #[derive(Default)]
 struct Collector {
     tables: Vec<Weak<RefCell<Table>>>,
     closures: Vec<Weak<LuaClosure>>,
     upvalues: Vec<Weak<RefCell<UpValue>>>,
+    natives: Vec<NativeRecord>,
+    hosts: Vec<Box<dyn host::HostWeak>>,
     active: bool,
     pending: bool,
 }
@@ -39,16 +55,20 @@ thread_local! {
     static COLLECTOR: RefCell<Collector> = RefCell::new(Collector::default());
 }
 
-fn register<T>(registry: &mut Vec<Weak<T>>, node: Weak<T>) {
+fn prepare_registration<T>(registry: &mut Vec<T>, live: impl FnMut(&T) -> bool) {
     // Bound dead allocation headers without requiring a collection. If
     // pruning removes less than half the entries, grow for amortized scans.
     if registry.len() == registry.capacity() {
         let capacity = registry.capacity();
-        registry.retain(|node| node.strong_count() != 0);
+        registry.retain(live);
         if registry.len() > capacity / 2 {
             registry.reserve(capacity);
         }
     }
+}
+
+fn register<T>(registry: &mut Vec<Weak<T>>, node: Weak<T>) {
+    prepare_registration(registry, |node| node.strong_count() != 0);
     registry.push(node);
 }
 
@@ -66,11 +86,40 @@ pub(crate) fn register_upvalue(upvalue: Weak<RefCell<UpValue>>) {
     let _ = COLLECTOR.try_with(|collector| register(&mut collector.borrow_mut().upvalues, upvalue));
 }
 
+pub(crate) fn register_native(native: Weak<NativeFunction>) {
+    register_native_record(NativeRecord {
+        native,
+        capture: None,
+    });
+}
+
+pub(crate) fn register_traced_native<T: TracePayload>(
+    native: Weak<NativeFunction>,
+    capture: Weak<RefCell<T>>,
+) {
+    register_native_record(NativeRecord {
+        native,
+        capture: Some(host::owner_id::<T>(capture.as_ptr())),
+    });
+}
+
+fn register_native_record(record: NativeRecord) {
+    let _ = COLLECTOR.try_with(|collector| {
+        let mut collector = collector.borrow_mut();
+        prepare_registration(&mut collector.natives, |record| {
+            record.native.strong_count() != 0
+        });
+        collector.natives.push(record);
+    });
+}
+
 impl Collector {
     fn prune(&mut self) {
         self.tables.retain(|node| node.strong_count() != 0);
         self.closures.retain(|node| node.strong_count() != 0);
         self.upvalues.retain(|node| node.strong_count() != 0);
+        self.natives.retain(|node| node.native.strong_count() != 0);
+        self.prune_hosts();
     }
 }
 
@@ -80,7 +129,7 @@ pub fn request_collection() {
 }
 
 /// Table counts for a completed pass, not Lua/JVM heap memory statistics.
-/// Closure and upvalue bookkeeping is deliberately not reported as heap size.
+/// Native/host, closure and upvalue bookkeeping is not reported as heap size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CollectionStats {
     pub tables_scanned: usize,
@@ -122,7 +171,7 @@ impl Drop for ActivePass {
 /// No user callbacks may be executing while the host invokes this function.
 /// A borrow conflict defers the entire pass, and destructors may safely
 /// allocate nodes or request another pass: sweeping is never reentrant.
-/// First detach all white table/upvalue payloads, release every borrow, then
+/// First detach all white mutable table/upvalue/host payloads, release every borrow, then
 /// drop detached values. Unknown ownership remains an external root.
 pub fn collect_tables() -> CollectionResult {
     let started = COLLECTOR.try_with(|collector| {
@@ -158,12 +207,16 @@ enum NodeId {
     Table(usize),
     Closure(usize),
     Upvalue(usize),
+    Native(usize),
+    Host(TypeId, usize),
 }
 
 enum Node {
     Table(Rc<RefCell<Table>>),
     Closure(Rc<LuaClosure>),
     Upvalue(UpValueRef),
+    Native(Rc<NativeFunction>, Option<NodeId>),
+    Host(Box<dyn host::HostPin>),
 }
 
 impl Node {
@@ -172,6 +225,8 @@ impl Node {
             Self::Table(node) => NodeId::Table(Rc::as_ptr(node) as usize),
             Self::Closure(node) => NodeId::Closure(Rc::as_ptr(node) as usize),
             Self::Upvalue(node) => NodeId::Upvalue(Rc::as_ptr(node) as usize),
+            Self::Native(node, _) => NodeId::Native(Rc::as_ptr(node) as usize),
+            Self::Host(node) => node.id(),
         }
     }
 
@@ -180,6 +235,8 @@ impl Node {
             Self::Table(node) => Rc::strong_count(node),
             Self::Closure(node) => Rc::strong_count(node),
             Self::Upvalue(node) => Rc::strong_count(node),
+            Self::Native(node, _) => Rc::strong_count(node),
+            Self::Host(node) => node.strong_count(),
         }
     }
 }
@@ -188,7 +245,8 @@ fn value_node(value: &Value) -> Option<NodeId> {
     match value {
         Value::Table(node) => Some(NodeId::Table(node.ptr_id())),
         Value::Closure(node) => Some(NodeId::Closure(Rc::as_ptr(node) as usize)),
-        // Coroutine/native/userdata-owned references are not subtracted.
+        Value::Native(node) => Some(NodeId::Native(Rc::as_ptr(node) as usize)),
+        // Coroutine/userdata-owned references are not subtracted.
         _ => None,
     }
 }
@@ -218,6 +276,19 @@ fn collect_registered_nodes() -> Result<CollectionStats, ()> {
                 .iter()
                 .filter_map(Weak::upgrade)
                 .map(Node::Upvalue),
+        );
+        nodes.extend(collector.natives.iter().filter_map(|record| {
+            record
+                .native
+                .upgrade()
+                .map(|native| Node::Native(native, record.capture))
+        }));
+        nodes.extend(
+            collector
+                .hosts
+                .iter()
+                .filter_map(|owner| owner.upgrade())
+                .map(Node::Host),
         );
         nodes
     });
@@ -271,6 +342,21 @@ fn collect_registered_nodes() -> Result<CollectionStats, ()> {
                 // Open holds an opaque CoroutineRef. Its stack/open-upvalue
                 // slots remain external roots, including active Thread state.
             }
+            Node::Native(_, capture) => {
+                if let Some(capture) = capture {
+                    edge(*capture)?;
+                }
+                // Ordinary opaque Fn captures are not described by this
+                // record and remain additional external roots at their targets.
+            }
+            Node::Host(node) => {
+                let guard = node.borrow()?;
+                let mut visitor = TraceVisitor::default();
+                guard.trace(&mut visitor);
+                for target in visitor.targets {
+                    edge(target)?;
+                }
+            }
         }
     }
 
@@ -295,16 +381,19 @@ fn collect_registered_nodes() -> Result<CollectionStats, ()> {
 
     // Acquire every required mutable borrow before changing any payload.
     // Immutable closure fields do not need mutation: every represented cycle
-    // crosses a table or upvalue, which can be detached without changing Rc
-    // identity or rewriting a live closure's environment/prototype/upvalues.
+    // can be broken by its mutable table/upvalue/host payload. Immutable host
+    // cycles with no detachable payload remain retained. No live closure's
+    // environment/prototype/upvalues or callable capture is rewritten.
     let mut dead_tables = Vec::new();
     let mut dead_upvalues = Vec::new();
+    let mut dead_hosts = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
         if !reachable[index] {
             match node {
                 Node::Table(node) => dead_tables.push(node.try_borrow_mut().map_err(|_| ())?),
                 Node::Upvalue(node) => dead_upvalues.push(node.try_borrow_mut().map_err(|_| ())?),
-                Node::Closure(_) => {}
+                Node::Host(node) => dead_hosts.push(node.borrow()?),
+                Node::Closure(_) | Node::Native(_, _) => {}
             }
         }
     }
@@ -316,6 +405,10 @@ fn collect_registered_nodes() -> Result<CollectionStats, ()> {
         .iter_mut()
         .map(|upvalue| std::mem::replace(&mut **upvalue, UpValue::Closed(Value::Nil)))
         .collect();
+    let detached_hosts: Vec<_> = dead_hosts
+        .iter_mut()
+        .filter_map(|host| host.detach())
+        .collect();
     let stats = CollectionStats {
         tables_scanned: nodes
             .iter()
@@ -325,14 +418,19 @@ fn collect_registered_nodes() -> Result<CollectionStats, ()> {
     };
     drop(dead_tables);
     drop(dead_upvalues);
+    drop(dead_hosts);
     drop(detached_tables);
     drop(detached_upvalues);
+    drop(detached_hosts);
     drop(nodes);
     Ok(stats)
 }
 
 #[cfg(test)]
 mod closure_tests;
+
+#[cfg(test)]
+mod native_tests;
 
 #[cfg(test)]
 mod tests {
@@ -430,6 +528,17 @@ mod tests {
                     Rc::new(crate::vm::Prototype::default()),
                     table.clone(),
                     vec![upvalue.clone()],
+                );
+                struct EmptyCapture;
+                impl TracePayload for EmptyCapture {
+                    fn trace(&self, _: &mut TraceVisitor) {}
+                }
+                let native =
+                    NativeFunction::new_traced_capture("tls", EmptyCapture, |_, c| Ok(c.push(41)));
+                let mut thread = Thread::new(TableRef::new());
+                assert_eq!(
+                    thread.call(&Value::Native(native), &[]).unwrap()[0].as_num(),
+                    Some(41.0)
                 );
                 request_collection();
                 assert_eq!(collect_tables(), CollectionResult::Deferred);

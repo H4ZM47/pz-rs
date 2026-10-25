@@ -693,6 +693,16 @@ fn register_inventory_item(thread: &mut Thread) {
         });
     }
     get!(b, "getModule", |i| Value::from(i.get_module()));
+    b.method("isHidden", |c| {
+        // InventoryItem delegates to its retained scriptItem, including
+        // script mutations after item creation and a null-script failure.
+        let script = this(c)?.borrow().template.script.clone().ok_or_else(|| LuaError::Runtime {
+            message: String::new(),
+            class: "java.lang.NullPointerException",
+        })?;
+        let hidden = script.0.borrow().hidden;
+        Ok(c.push(hidden))
+    });
     // `getName` and `getDisplayName` with the class overrides and state
     // prefixes ([`crate::bind_item_name`]).
     get!(b, "getDisplayName", |i| Value::from(
@@ -1644,6 +1654,36 @@ mod tests {
             Value::Num(n) => *n,
             other => panic!("not a number: {}", pz_kahlua::exec::java_value_of(other)),
         }
+    }
+
+    #[test]
+    fn hidden_query_reads_retained_live_script_instead_of_type_lookup() {
+        let mut thread = item_thread();
+        let script = Rc::new(RefCell::new(pz_scripts::objects::items::Item::new()));
+        let first = make(ItemClass::Normal, "SameType", |t| {
+            t.script = Some(pz_inventory::template::ScriptItemRef(script.clone()));
+        });
+        let other_script = Rc::new(RefCell::new(pz_scripts::objects::items::Item::new()));
+        other_script.borrow_mut().hidden = true;
+        let second = make(ItemClass::Normal, "SameType", |t| {
+            t.script = Some(pz_inventory::template::ScriptItemRef(other_script));
+        });
+        let missing_script = make(ItemClass::Normal, "MissingScript", |_| {});
+        thread.globals().set_str("first", item_value(&first));
+        thread.globals().set_str("second", item_value(&second));
+        thread.globals().set_str("missing", item_value(&missing_script));
+        let values = run(&mut thread, "return first:isHidden(), second:isHidden()");
+        assert!(matches!(values.as_slice(), [Value::Bool(false), Value::Bool(true)]));
+        script.borrow_mut().hidden = true;
+        assert!(matches!(run(&mut thread, "return first:isHidden()")[0], Value::Bool(true)));
+        script.borrow_mut().hidden = false;
+        assert!(matches!(run(&mut thread, "return first:isHidden()")[0], Value::Bool(false)));
+        let values = run(&mut thread, r#"
+            local ok, message = pcall(function() return missing:isHidden() end)
+            return ok, message
+        "#);
+        assert!(matches!(values[0], Value::Bool(false)));
+        assert!(pz_kahlua::exec::java_value_of(&values[1]).contains("NullPointerException"));
     }
 
     /// `DrainableComboItem.setUsedDelta(d)` is `setCurrentUsesFloat(d)`

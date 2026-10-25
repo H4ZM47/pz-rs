@@ -4,6 +4,7 @@
 
 use pz_anim::AnimationVariableSource;
 use pz_scripts::{ScriptManager, ScriptResult};
+use std::ops::ControlFlow;
 
 use super::{PlayerEvent, PlayerInput, PlayerUpdate};
 use crate::character::body_part::{adjust_for_framerate, next_bool};
@@ -35,6 +36,36 @@ pub struct InputState {
     pub running: bool,
     pub sprinting: bool,
 }
+
+/// Owned JVM locals that survive the inline aiming cancellation callback.
+/// Character fields and singleton clock readings are deliberately not saved.
+#[derive(Debug)]
+pub struct AimInputLocals {
+    delta: f32,
+    d: f32,
+    is_attacking: bool,
+    melee: bool,
+    grapple: bool,
+}
+
+/// A player update's host-local continuation. It holds no character/world
+/// borrow, so the host can run protected Lua before resuming the next phase.
+#[derive(Debug, Default)]
+pub enum PlayerUpdatePhase {
+    #[default]
+    Start,
+    AfterAiming(AimInputLocals),
+    AfterMovement { strafe_x: f32, strafe_y: f32 },
+}
+
+#[derive(Debug)]
+pub enum PlayerUpdateStep {
+    StopActionQueue { reason: &'static str, resume: PlayerUpdatePhase },
+    TimedActions,
+    Done,
+}
+
+type InputStep = ControlFlow<(&'static str, PlayerUpdatePhase), bool>;
 
 impl<I: 'static> GameCharacter<I> {
     fn moodle_level(&self, sm: &ScriptManager, f: &str) -> i32 {
@@ -75,9 +106,8 @@ impl<I: 'static> GameCharacter<I> {
         Ok(out)
     }
 
-    /// Stop exactly before the base character's action callbacks. The engine
-    /// releases this character and StateCx before invoking Lua, then resumes
-    /// with `update_player_after_actions` when the returned flag is true.
+    /// Core-only compatibility driver. Hosts with Lua use
+    /// `advance_player_update` to deliver cancellation at its actual boundary.
     pub fn update_player_before_actions(
         &mut self,
         input: &dyn PlayerInput,
@@ -86,19 +116,57 @@ impl<I: 'static> GameCharacter<I> {
         cx: &mut StateCx<'_, I>,
     ) -> ScriptResult<(PlayerUpdate, bool)> {
         let mut out = PlayerUpdate::default();
-        self.player.now_ms = input.current_time_ms();
-        let owner = self.input_owner();
-        self.vars.melee_button_down = self.player.input.is_melee_button_down(input, owner);
-        self.vars.manual_floor_attack_button_down = self.player.input.is_manual_floor_atk_button_down(input, owner);
-        if self.is_animal() {
-            return Ok((out, false));
+        let mut phase = PlayerUpdatePhase::Start;
+        loop {
+            match self.advance_player_update(phase, input, registry, groups, &mut out, cx)? {
+                PlayerUpdateStep::StopActionQueue { reason, resume } => {
+                    out.events.push(PlayerEvent::StopActionQueue(reason));
+                    phase = resume;
+                }
+                PlayerUpdateStep::TimedActions => return Ok((out, true)),
+                PlayerUpdateStep::Done => return Ok((out, false)),
+            }
         }
-        let resume = if self.update_internal2(input, registry, groups, &mut out, cx)? {
-            // updateLOS: the spotting of other characters is the world's
-            // (TODO(los): IsoPlayer.updateLOS).
-            self.update_character_before_actions(cx)?
-        } else { false };
-        Ok((out, resume))
+    }
+
+    /// Advance only until the next inline action cancellation or the base
+    /// character's timed-action block. Drop every owner/StateCx borrow before
+    /// invoking Lua, then pass the owned continuation back to this method.
+    pub fn advance_player_update(
+        &mut self,
+        phase: PlayerUpdatePhase,
+        input: &dyn PlayerInput,
+        registry: &mut StateRegistry<I>,
+        groups: &mut ActionGroups,
+        out: &mut PlayerUpdate,
+        cx: &mut StateCx<'_, I>,
+    ) -> ScriptResult<PlayerUpdateStep> {
+        let step = match phase {
+            PlayerUpdatePhase::Start => {
+                self.player.now_ms = input.current_time_ms();
+                let owner = self.input_owner();
+                self.vars.melee_button_down = self.player.input.is_melee_button_down(input, owner);
+                self.vars.manual_floor_attack_button_down = self.player.input.is_manual_floor_atk_button_down(input, owner);
+                if self.is_animal() { return Ok(PlayerUpdateStep::Done); }
+                self.update_internal2(input, registry, groups, out, cx)?
+            }
+            PlayerUpdatePhase::AfterAiming(locals) => {
+                self.finish_aim_input(locals.is_attacking);
+                self.update_internal2_movement(input, locals, out, cx)?
+            }
+            PlayerUpdatePhase::AfterMovement { strafe_x, strafe_y } => {
+                self.update_internal2_tail(strafe_x, strafe_y, cx)?
+            }
+        };
+        match step {
+            ControlFlow::Break((reason, resume)) => Ok(PlayerUpdateStep::StopActionQueue { reason, resume }),
+            ControlFlow::Continue(update_base) => {
+                // updateLOS: the spotting of other characters is the world's.
+                if update_base && self.update_character_before_actions(cx)? {
+                    Ok(PlayerUpdateStep::TimedActions)
+                } else { Ok(PlayerUpdateStep::Done) }
+            }
+        }
     }
 
     /// `setBeenMovingSprinting()`.
@@ -127,7 +195,7 @@ impl<I: 'static> GameCharacter<I> {
         groups: &mut ActionGroups,
         out: &mut PlayerUpdate,
         cx: &mut StateCx<'_, I>,
-    ) -> ScriptResult<bool> {
+    ) -> ScriptResult<InputStep> {
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         if (self.vars.falling || self.vars.fall_time > 0.0 || self.vars.on_fire) && cx.world.game_speed() > 1 {
             cx.ctx.event(crate::character::SimEvent::SetGameSpeed(1));
@@ -160,7 +228,7 @@ impl<I: 'static> GameCharacter<I> {
         self.update_vision_effect_targets();
         // updateSoundListener, SafetySystemManager.update: sound / MP.
         if self.player.death_finished {
-            return Ok(false);
+            return Ok(ControlFlow::Continue(false));
         }
         // getCurrentBuildingDef().setHasBeenVisited(true) is the world's.
         let m = ctx.multiplier();
@@ -177,7 +245,7 @@ impl<I: 'static> GameCharacter<I> {
         } else if self.stats.get(&endurance) < 0.25 && ctx.rand_next((300.0 * ctx.inv_multiplier()) as i32) == 0 {
             self.add_xp(sm, chars, chars.perks.constant("Fitness").as_ref(), 1.0, ctx)?;
         }
-        let mut delta = 1.0f32;
+        let delta = 1.0f32;
         let mut d = 0.0f32;
         if self.player.just_moved && !self.player.npc {
             d = if self.run_or_sprint(sm, ctx) { 1.5 } else { 1.0 };
@@ -204,7 +272,7 @@ impl<I: 'static> GameCharacter<I> {
         let pm = self.pressed_movement(input, true);
         self.set_var_bool("pressedMovement", pm);
         if self.update_while_dead() {
-            return Ok(true);
+            return Ok(ControlFlow::Continue(true));
         }
         // updateAttackLoopSound .. updateEquippedBaggageContainer: sound.
         self.update_sneak_key(input);
@@ -220,11 +288,11 @@ impl<I: 'static> GameCharacter<I> {
         }
         if self.vars.ignore_movement || self.asleep {
             self.clear_use_key_variables();
-            return Ok(true);
+            return Ok(ControlFlow::Continue(true));
         }
         if self.player.action_blocks_movement {
             self.clear_use_key_variables();
-            return Ok(true);
+            return Ok(ControlFlow::Continue(true));
         }
         // enterExitVehicle: TODO(vehicles).
         self.check_action_group(registry, groups);
@@ -234,11 +302,11 @@ impl<I: 'static> GameCharacter<I> {
         }
         if self.player.action_blocks_movement {
             self.clear_use_key_variables();
-            return Ok(true);
+            return Ok(ControlFlow::Continue(true));
         }
         if self.environment.in_vehicle {
             // TODO(vehicles): updateWhileInVehicle.
-            return Ok(true);
+            return Ok(ControlFlow::Continue(true));
         }
         // checkVehicleContainers: TODO(vehicles).
         self.player.collidable = true;
@@ -249,7 +317,7 @@ impl<I: 'static> GameCharacter<I> {
         self.player.seen_this_frame = false;
         self.player.could_be_seen_this_frame = false;
         if self.update_use_key(input, out, cx) {
-            return Ok(true);
+            return Ok(ControlFlow::Continue(true));
         }
         let mut is_attacking = false;
         let mut b_melee = false;
@@ -281,27 +349,44 @@ impl<I: 'static> GameCharacter<I> {
             self.player.is_charging_lt = st.is_charging_lt;
             self.update_movement_rates(cx);
             if self.is_player_aiming() {
-                out.events.push(PlayerEvent::StopActionQueue("Aiming"));
+                return Ok(ControlFlow::Break(("Aiming", PlayerUpdatePhase::AfterAiming(AimInputLocals {
+                    delta, d, is_attacking, melee: b_melee, grapple: b_grapple,
+                }))));
             }
-            if is_attacking {
-                self.vars.is_aiming = true;
-            }
-            self.player.waiting = false;
-            if self.is_player_aiming() {
-                self.vars.moving = false;
-                self.running = false;
-                self.environment.sprinting = false;
-            }
-            if self.player.is_farming { self.vars.is_aiming = false; }
-            self.player.ticks_since_seen_zombie += 1;
+            self.finish_aim_input(is_attacking);
         }
+        self.update_internal2_movement(input, AimInputLocals { delta, d, is_attacking, melee: b_melee, grapple: b_grapple }, out, cx)
+    }
+
+    /// Original continuation immediately after StopAllActionQueueAiming.
+    fn finish_aim_input(&mut self, is_attacking: bool) {
+        if is_attacking { self.vars.is_aiming = true; }
+        self.player.waiting = false;
+        if self.is_player_aiming() {
+            self.vars.moving = false;
+            self.running = false;
+            self.environment.sprinting = false;
+        }
+        if self.player.is_farming { self.vars.is_aiming = false; }
+        self.player.ticks_since_seen_zombie += 1;
+    }
+
+    fn update_internal2_movement(
+        &mut self,
+        input: &dyn PlayerInput,
+        locals: AimInputLocals,
+        out: &mut PlayerUpdate,
+        cx: &mut StateCx<'_, I>,
+    ) -> ScriptResult<InputStep> {
+        let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
+        let AimInputLocals { mut delta, d, is_attacking, melee: b_melee, grapple: b_grapple } = locals;
         if self.player.player_move_dir.0 == 0.0 && self.player.player_move_dir.1 == 0.0 {
             self.player.input.force_run = false;
             self.player.input.force_sprint = false;
         }
         self.player.movement_last_frame = self.player.player_move_dir;
         if self.is_current_state_id(ids::STAGGER_BACK) || self.is_current_state_id(ids::FAKE_DEAD_ZOMBIE) {
-            return Ok(true);
+            return Ok(ControlFlow::Continue(true));
         }
         self.player.just_moved = false;
         let mut mv = MoveVars::default();
@@ -399,7 +484,7 @@ impl<I: 'static> GameCharacter<I> {
         } else if self.vars.head_look_around {
             // TODO(anim bones): the head look-around twist reads the head bone.
         }
-        if self.is_player_aiming() && !self.player.npc && !self.is_current_state_id(ids::FISHING) {
+        if self.is_player_aiming() && !self.player.npc && !self.is_current_state_id(ids::FISHING) && !self.player.is_farming {
             let (vx, vy) = self.aim_vector(input);
             if vx * vx + vy * vy > 0.0 {
                 self.set_forward_direction(vx, vy);
@@ -438,16 +523,23 @@ impl<I: 'static> GameCharacter<I> {
         if !override_anim && !self.player.force_override_anim {
             if self.path.path2.is_none() {
                 if self.environment.current_speed > 0.0 && (!self.vars.climbing || self.vars.last_fall_speed > 0.0) {
-                    out.events.push(PlayerEvent::StopActionQueue(if self.run_or_sprint(sm, ctx) { "Running" } else { "Walking" }));
+                    return Ok(ControlFlow::Break((if self.run_or_sprint(sm, ctx) { "Running" } else { "Walking" }, PlayerUpdatePhase::AfterMovement { strafe_x, strafe_y })));
                 }
             } else {
-                out.events.push(PlayerEvent::StopActionQueue("Walking"));
+                return Ok(ControlFlow::Break(("Walking", PlayerUpdatePhase::AfterMovement { strafe_x, strafe_y })));
             }
         }
+        self.update_internal2_tail(strafe_x, strafe_y, cx)
+    }
+
+    /// Original continuation after the mutually exclusive running/walking
+    /// cancellation branches. All fields and timing are read after Lua.
+    fn update_internal2_tail(&mut self, strafe_x: f32, strafe_y: f32, cx: &mut StateCx<'_, I>) -> ScriptResult<InputStep> {
+        let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         if self.player.slow_timer > 0.0 {
             self.player.slow_timer -= ctx.realworld_seconds_since_last_update();
             self.environment.current_speed *= 1.0 - self.player.slow_factor;
-            self.player.slow_factor -= m / 100.0;
+            self.player.slow_factor -= ctx.multiplier() / 100.0;
             if self.player.slow_factor < 0.0 {
                 self.player.slow_factor = 0.0;
             }
@@ -497,7 +589,7 @@ impl<I: 'static> GameCharacter<I> {
         self.vars.delta_y = strafe_y;
         self.vars.windspeed = self.player.climate_wind_speed_movement;
         self.vars.wind_force = self.player.climate_wind_force_movement;
-        Ok(true)
+        Ok(ControlFlow::Continue(true))
     }
 
     /// `CharacterStats` lookup for the player update.

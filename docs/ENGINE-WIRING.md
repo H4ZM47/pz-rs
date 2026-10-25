@@ -31,9 +31,11 @@ native shutdown skips that rebuild. A failed rebuild stops the client
 instead of entering a menu with mixed owners. Character `getModData`
 exposes a live table and saves retained nested mutations. The conservative
 collector handles registered tables, Lua closures and shared upvalues,
-including environment and recursive closure cycles. Coroutine, prototype,
-native and engine-owned references remain opaque roots; character/action
-cycles and some old LuaManager environments can remain retained. Heap
+including environment and recursive closure cycles. Reviewed Event callbacks
+and Loader caches participate through explicit strong native-capture owners.
+Other native captures, coroutines, prototypes and engine-owned references
+remain opaque roots; character/action cycles and some old LuaManager
+environments can remain retained. Heap
 statistics and a complete VM/host collector remain unported.
 The SQLite writer rejects auto-vacuum files before changing them; writing
 that format needs pointer-map/root relocation support and remains pending.
@@ -53,15 +55,24 @@ this supplies inventory layout geometry but does not implement split-screen
 world rendering. Inventory category/type queries use the real per-item
 reference and original subclass constructor behavior, including null types
 and the WeaponPart constructor's WEAPON value. `getTex` delegates to the
-same live texture lookup as `getTexture`.
+same live texture lookup as `getTexture`. `isHidden` reads the retained
+script item at use time, so the shipped inventory pane can refresh rows.
+
+The window reads the real single-player speed-control pause state after UI
+input. Paused frames skip game-state simulation while UI/audio/rendering
+continue; only in-game frames emit `OnTickEvenPaused(0)`. The survival guide
+resumes through its shipped close handler. Paused camera updates and full
+network pause ownership remain pending.
 
 The running timed-action stack now belongs to the character, separately
 from Lua's pending-action queue. Protected callbacks run between released
 character borrows, before body damage/stat processing, and completed actions
 are removed by identity. Movement modifiers, animation events, progress and
-hand models use the live action. Input cancellation still runs after
-`updateInternal2` returns; normal vanilla queue entrance still needs genuine
-grapple ownership for `isDraggingCorpse`. Remaining action APIs, network and
+hand models use the live action. Aiming and walking/running cancellation
+callbacks now run inline between released host borrows, preserving already
+computed locals and reading live player clocks after resume. Other player
+events retain wider phase gaps; normal vanilla queue entrance still needs
+genuine grapple ownership for `isDraggingCorpse`. Remaining action APIs, network and
 voice audio also need work. Sneaking uses the existing input/save field;
 farming exposes its actual transient player flag.
 

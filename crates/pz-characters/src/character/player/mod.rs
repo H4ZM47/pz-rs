@@ -21,6 +21,7 @@ pub use aiming::AimingMode;
 pub use context::{ContextualAction, ContextualActionKind};
 pub use control::{CharacterInput, CharacterInputMode, InputOwner, TimedInputHandler};
 pub use input::{JoypadAxis2dBinding, NoInput, PlayerInput};
+pub use update::{PlayerUpdatePhase, PlayerUpdateStep};
 pub use vision::PlayerRenderInputs;
 
 /// `IsoPlayer`'s control-loop fields (and the `IsoGameCharacter` ones only
