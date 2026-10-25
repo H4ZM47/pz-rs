@@ -599,6 +599,38 @@ registered):
 - [ ] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
+- [ ] Corpses (#216): in `IsoCell.update`, after the other static
+      updaters, `dead_body::process_static_updaters(env, hooks, worldAge)`,
+      then `dead_body::update_bodies(env, hooks, &CorpseSettings{..},
+      worldAge)` (sandbox `HoursForCorpseRemoval`, `MaggotSpawn`,
+      `DisableFakeDead`, `Reanimate`, ServerOptions
+      `RemovePlayerCorpsesOnCorpseRemoval`, `Core.tutorial`,
+      `ClimateManager.getSeasonName()`); stop the rest of the cell update on
+      `UpdateBodiesOutcome::NullContainer`. `CorpseHooks`: `create_item`
+      via `create_item_by_type`, process items, players and `isCanSee` for
+      fake dead, `corpse_visual_changed` drops the `DeadBodyAtlas` entry,
+      `reanimate`/`reanimated` build the zombie or animal. Set
+      `cell.dead_bodies.last_id` from `id_manager_data.bin`.
+      `SquareMutationHooks::world_age_hours` returns
+      `GameTime.getWorldAgeHours()`; `corpse_added_to_world` /
+      `corpse_removed_from_world` call `FliesSound::corpse_added/removed`
+      (body `getXi/Yi/Zi`) and `DesignationZoneAnimal`.
+- [ ] Corpse chunk load/unload (#216): in `doLoadGridsquare`,
+      `dead_body::chunk_loaded`, `FliesSound::chunk_loaded(wx, wy)`, then
+      (after `AddCorpses`) `dead_body::add_loaded_corpses_to_world`; in
+      `IsoChunk.removeFromWorld`, `dead_body::chunk_removed_from_world`
+      and `FliesSound::chunk_removed_from_world` before `unload_chunk`.
+- [ ] Flies (#216): one `FliesSound` per world; each frame
+      `FliesSound::update(FliesWorld{cell, meta, render:
+      RenderInvalidation, hooks}, players, &FliesEnv{..})`. Here
+      `FliesSoundHooks::sickness_from_corpses_rate` is
+      `GameCharacter::sickness_from_corpses_rate`, the emitters come from
+      `IsoWorld.getFreeEmitter`, and `FliesEnv` takes
+      `ZomboidGlobals.FoodSicknessDecrease` and the 30 FPS multiplier. The
+      squares' `has_flies` reaches `RenderSquare.flies` through
+      `RenderSquareHooks::flies_changed` and `render_square`.
+      `BodyDamage` environment `corpse_count`:
+      `corpse_count::get_corpse_count_at`.
 - [ ] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
 - [ ] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`)
       read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime
