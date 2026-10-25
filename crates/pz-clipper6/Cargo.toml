@@ -1,0 +1,8 @@
+[package]
+name = "pz-clipper6"
+version.workspace = true
+edition.workspace = true
+description = "Port of the polygon clipping linked into the game's native pathfinder (Clipper 6.4.2 + earcut.hpp + the PZClipper wrapper)"
+license = "BSL-1.0 AND ISC AND Apache-2.0 WITH LLVM-exception"
+
+[dependencies]

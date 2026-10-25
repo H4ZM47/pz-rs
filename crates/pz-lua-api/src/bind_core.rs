@@ -33,7 +33,7 @@
 //! registered that class first: `zombie.core.textures.ColorInfo`
 //! ([`LuaColorInfo`]), `zombie.core.GameVersion`, `zombie.core.Core$KeyBinding`,
 //! `zombie.input.KeybindId` (constants for `getCore():getKey(KeybindId.X)`),
-//! `java.util.ArrayList` (read-only, for `getDefaultZoomLevels`) and a live
+//! and a live
 //! view of `zombie.config.ConfigOption` (for `getOptionByIndex`).
 
 use crate::events::EventManager;
@@ -255,22 +255,6 @@ pub const KEYBIND_IDS: &[(&str, &str)] = &[
     ("TOGGLE_ANIMATION_TEXT", "ToggleAnimationText"),
     ("TOGGLE_OLD_RENDERER", "ToggleOldRenderer"),
 ];
-
-/// A read-only `java.util.ArrayList`.
-pub struct JavaList(pub Vec<Value>);
-
-impl LuaObject for JavaList {
-    fn class_name(&self) -> &str {
-        ARRAY_LIST_CLASS
-    }
-    fn to_lua_string(&self) -> String {
-        let parts: Vec<String> = self.0.iter().map(pz_kahlua::exec::java_value_of).collect();
-        format!("[{}]", parts.join(", "))
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 /// Live view of one of Core's options (`getOptionByIndex`).
 pub struct LuaConfigOption {
@@ -1041,13 +1025,8 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
         Ok(Ret::Void)
     });
     def(b, cx, "getDefaultZoomLevels", |cx, _| {
-        let v = cx
-            .core()
-            .get_default_zoom_levels()
-            .into_iter()
-            .map(|p| Value::Num(p as f64))
-            .collect();
-        Ok(Value::Object(Rc::new(JavaList(v))).into())
+        let v = cx.core().get_default_zoom_levels().into_iter().map(|p| Value::Num(p as f64)).collect();
+        Ok(crate::bind_java_util::list_value(v).into())
     });
 
     // ---- options with side effects ----
@@ -1707,63 +1686,6 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
         });
     }
 
-    if class_free(thread, ARRAY_LIST_CLASS) {
-        let b = expose_class(thread, ARRAY_LIST_CLASS, None);
-        fn list<R>(c: &NativeCall<'_>, f: impl FnOnce(&[Value]) -> R) -> LuaResult<R> {
-            match c.arg(0) {
-                Value::Object(o) => match o.as_any().downcast_ref::<JavaList>() {
-                    Some(l) => Ok(f(&l.0)),
-                    None => Err(LuaError::runtime(format!(
-                        "Expected ArrayList but got {}",
-                        o.class_name()
-                    ))),
-                },
-                _ => Err(LuaError::runtime("Expected ArrayList")),
-            }
-        }
-        b.method("size", |c| {
-            let n = list(c, |l| l.len())?;
-            Ok(c.push(n as f64))
-        });
-        b.method("isEmpty", |c| {
-            let e = list(c, |l| l.is_empty())?;
-            Ok(c.push(e))
-        });
-        b.method("get", |c| {
-            let i = int_arg(c, 1);
-            let (v, n) = list(c, |l| {
-                (
-                    usize::try_from(i).ok().and_then(|i| l.get(i)).cloned(),
-                    l.len(),
-                )
-            })?;
-            match v {
-                Some(v) => Ok(c.push(v)),
-                None => Err(index_error(i, n)),
-            }
-        });
-        b.method("contains", |c| {
-            let x = c.arg(1);
-            let r = list(c, |l| l.iter().any(|v| v.raw_equals(&x)))?;
-            Ok(c.push(r))
-        });
-        b.method("indexOf", |c| {
-            let x = c.arg(1);
-            let r = list(c, |l| {
-                l.iter()
-                    .position(|v| v.raw_equals(&x))
-                    .map_or(-1, |i| i as i32)
-            })?;
-            Ok(c.push(r))
-        });
-        b.method("toString", |c| {
-            let s = match c.arg(0) {
-                Value::Object(o) => o.to_lua_string(),
-                _ => String::new(),
-            };
-            Ok(c.push(s))
-        });
-    }
 
     if class_free(thread, CONFIG_OPTION_CLASS) {
         let b = expose_class(thread, CONFIG_OPTION_CLASS, None);
@@ -1962,6 +1884,7 @@ mod tests {
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         let env = t.globals().clone();
         let events = EventManager::register(&env, "Events", EVENT_NAMES);
+        crate::bind_java_util::register(&mut t);
         register(&mut t, Some(events), core);
         // `assert` lives in the game's stdlib.lua, which these tests don't load.
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end");

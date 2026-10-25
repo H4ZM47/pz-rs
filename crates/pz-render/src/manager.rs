@@ -275,6 +275,13 @@ impl TextureManager {
         Some(t)
     }
 
+    /// A texture made from RGBA pixels (`new Texture(w, h, flags)` filled
+    /// from a buffer), registered under `name`.
+    pub fn texture_from_pixels(&mut self, name: &str, width: i32, height: i32, rgba: Vec<u8>, flags: i32) -> Texture {
+        let img = ImageData::from_pixels(width, height, rgba);
+        self.texture_from_image(name, name, img, flags)
+    }
+
     /// `Texture.getWhite()`: a 32x32 white texture, also registered as
     /// `white.png`, `media/white.png` and `media/ui/white.png`.
     pub fn white(&mut self) -> Texture {

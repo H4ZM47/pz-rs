@@ -111,6 +111,30 @@ Status of the Rust port. Update this file with every merged change.
   sequences of zombie, target and vehicle moves, clock steps and
   `update` calls; `permanentlyRemove` and the removal paths are ported.
   Checked locally.
+- Feeding troughs and hutch animals in chunk files: the `IsoFeedingTrough`
+  constructor's fluid container (components the constructor makes load in
+  place), `initWithDef`, and `IsoAnimal.save`/`load` as hutches and nest
+  boxes store animals (stats, genome, `AnimalData` fields) with their
+  load-time changes and `addAnimalInside`. 14,870 of 14,894 re-saves are
+  byte-identical to the original's; all 60 troughs load with the original's
+  fields. Test hutches filled with 34 animals by the original's own classes
+  re-save byte-identically except one wild animal (`setWild(true)` draws a
+  random stress), and the original loads the chunks written here with the
+  same animal fields. Checked locally.
+- World hooks (`pz_world::WorldState`, `SquareHooks` and the renderer's
+  `WorldHooks`): `IsoBarricade` queries (barricades on both sides of door,
+  window and thumpable edges, planks, metal, vision, light transmission),
+  `IsoThumpable` blocked doors and windows, `IsoDoor` curtains,
+  `haveElectricity` from the chunks' generator lists, `hasGridPower`,
+  `IsoLightSwitch.canSwitchLight`, and light items (`isEmittingLight`, the
+  light getters, `HandWeapon`'s weapon light) as player torches; sandbox
+  and world power values are runtime input. On 7 local saves and on 3
+  copies barricaded, curtained and powered by the original's own classes
+  (with the grid on and shut off), every compared line matches the
+  original's queries: 14,723 + 751,347 square lines (blocked doors and
+  windows, electricity), 5,570 barricades, 7,358 doors, 8,895 windows,
+  157 thumpables, 17,055 light switches and 378 light items per sandbox
+  setting. Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all
@@ -137,6 +161,11 @@ Status of the Rust port. Update this file with every merged change.
 - StringLib and OsLib. Local differential run against the original Kahlua
   (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
   output; the remaining one differs only in an identity hash.
+
+- `pz-clipper6`: the polygon code of the native pathfinder (Clipper 6.4.2,
+  earcut.hpp and the game's `PZClipper` wrapper) in pure Rust. Local
+  differential run against the shipped arm64 library: 1.15 million random
+  cases bit-identical.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.

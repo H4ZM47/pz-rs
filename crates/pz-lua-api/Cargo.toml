@@ -13,10 +13,11 @@ pz-ui.workspace = true
 pz-vehicles.workspace = true
 pz-inventory.workspace = true
 indexmap.workspace = true
+pz-input.workspace = true
+pz-classfile.workspace = true
 
 [dev-dependencies]
 pz-bullet.workspace = true
 pz-world.workspace = true
 pz-scripts.workspace = true
 pz-entity.workspace = true
-pz-classfile.workspace = true

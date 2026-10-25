@@ -20,11 +20,277 @@ use pz_inventory::dictionary::WorldDictionary;
 use pz_inventory::factory::ScriptItems;
 use pz_world::chunk::IsoChunk;
 use pz_world::objects::{IsoObject, ItemContainer, ObjectKind, ObjectName, SpriteName};
+use pz_world::save::animal::{AnimalBreedDef, AnimalDefinition, IsoAnimal};
 use pz_world::save::chunk_file::{chunk_path, load_chunk, save_chunk};
 use pz_world::save::items::{AllItems, ItemBlob, ItemRegistry};
 use pz_world::save::object_io::sprite_save_id;
-use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables};
+use pz_world::save::{SaveCtx, SaveHooks, SaveSettings, SaveTables};
 use pz_world::{IsoSpriteManager, SpriteTables};
+
+/// Definitions the original read at runtime (`animal_defs.txt` of the
+/// oracle run: `AnimalDefinitions`, `FeedingTroughDef`, the calendar) and
+/// hutch definitions by sprite (`hutchdef` lines of `animals.txt`).
+#[derive(Default)]
+struct OracleHooks {
+    animals: HashMap<String, AnimalDefinition>,
+    troughs: Vec<(String, (f32, i32))>,
+    hutches: HashMap<String, (i32, i32)>,
+    calendar: Option<i64>,
+}
+
+impl SaveHooks for OracleHooks {
+    fn hutch_max_nest_box(&self, sprite: &str) -> Option<i32> {
+        self.hutches.get(sprite).map(|h| h.1)
+    }
+    fn hutch_max_animals(&self, sprite: &str) -> Option<i32> {
+        self.hutches.get(sprite).map(|h| h.0)
+    }
+    fn feeding_trough_def(&self, sprite: &str) -> Option<(f32, i32)> {
+        self.troughs.iter().find(|t| t.0 == sprite).map(|t| t.1)
+    }
+    fn animal_definition(&self, t: &str) -> Option<&AnimalDefinition> {
+        self.animals.get(t)
+    }
+}
+
+fn oracle_hooks(oracle: &Path) -> OracleHooks {
+    let mut h = OracleHooks::default();
+    let Ok(text) = std::fs::read_to_string(oracle.join("animal_defs.txt")) else {
+        return h;
+    };
+    let genome: Vec<String> = text
+        .lines()
+        .find_map(|l| l.strip_prefix("genomedefs\t"))
+        .map(|l| l.split(',').map(str::to_string).collect())
+        .unwrap_or_default();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[0] {
+            "def" => {
+                h.animals.insert(
+                    f[1].into(),
+                    AnimalDefinition {
+                        eggs_per_day: f[2].parse().unwrap(),
+                        max_wool: f[3].parse().unwrap(),
+                        min_size: f[4].parse().unwrap(),
+                        max_size: f[5].parse().unwrap(),
+                        can_be_domesticated: f[6] == "true",
+                        wild: f[7] == "true",
+                        baby: f[8] == "true",
+                        genes: (f[9] != "-").then(|| {
+                            f[9].split(',')
+                                .filter(|g| genome.contains(&g.to_lowercase()))
+                                .map(str::to_string)
+                                .collect()
+                        }),
+                        breeds: Vec::new(),
+                    },
+                );
+            }
+            "breed" => {
+                let d = h.animals.get_mut(f[1]).unwrap();
+                d.breeds.push(AnimalBreedDef {
+                    name: f[2].into(),
+                    wool_type: (f[3] != "null").then(|| f[3].to_string()),
+                    forced_genes: if f[4] == "-" {
+                        Vec::new()
+                    } else {
+                        f[4].split(',')
+                            .filter(|g| genome.contains(&g.to_lowercase()))
+                            .map(str::to_string)
+                            .collect()
+                    },
+                });
+            }
+            "troughdef" => h.troughs.push((
+                f[1].into(),
+                (f[2].parse().unwrap(), f[3].parse::<f64>().unwrap() as i32),
+            )),
+            "calendar" => h.calendar = Some(f[1].parse().unwrap()),
+            _ => {}
+        }
+    }
+    if let Ok(a) = std::fs::read_to_string(oracle.join("animals.txt")) {
+        for l in a.lines() {
+            let f: Vec<&str> = l.split(' ').collect();
+            if f[0] == "hutchdef" {
+                h.hutches
+                    .insert(f[1].into(), (f[2].parse().unwrap(), f[3].parse().unwrap()));
+            }
+        }
+    }
+    h
+}
+
+fn uuid(msb: i64, lsb: i64) -> String {
+    let (m, l) = (msb as u64, lsb as u64);
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        m >> 32,
+        (m >> 16) & 0xffff,
+        m & 0xffff,
+        l >> 48,
+        l & 0xffff_ffff_ffff
+    )
+}
+
+fn fx(f: f32) -> String {
+    format!("{:x}", f.to_bits())
+}
+
+/// `KahluaTable.len()`: the border of the array part.
+fn lua_len(t: &pz_world::save::lua_table::LuaTable) -> usize {
+    use pz_world::save::lua_table::LuaKey;
+    let mut n = 0;
+    while t.rawget(&LuaKey::Num((n + 1) as f64)).is_some() {
+        n += 1;
+    }
+    n
+}
+
+/// One loaded animal, in the oracle's `animals.txt` format.
+fn animal_line(a: &IsoAnimal) -> String {
+    let mut s = String::new();
+    write!(
+        s,
+        "zone={} pos={},{},{} dir={} stats=",
+        a.animal_zone.map_or("null".into(), |(m, l)| uuid(m, l)),
+        fx(a.x),
+        fx(a.y),
+        fx(a.z),
+        a.dir
+    )
+    .unwrap();
+    for v in a.stats.0 {
+        write!(s, "{}:", fx(v)).unwrap();
+    }
+    write!(
+        s,
+        " type={} breed={} name={} md={} item={} female={} id={} genome=",
+        a.animal_type,
+        a.breed,
+        a.custom_name.as_deref().unwrap_or("null"),
+        lua_len(&a.mod_data),
+        a.item_id,
+        a.female,
+        a.animal_id
+    )
+    .unwrap();
+    for (k, g) in &a.genome {
+        write!(s, "{k}/{}", g.id).unwrap();
+        for al in [&g.allele1, &g.allele2] {
+            write!(
+                s,
+                "/{}|{}|{}|{}|{}",
+                al.name,
+                fx(al.current_value),
+                fx(al.true_ratio_value),
+                al.dominant,
+                al.genetic_disorder
+            )
+            .unwrap();
+        }
+        s.push(';');
+    }
+    write!(
+        s,
+        " tree={},{} age={} size={} mother={}/{} preg={}/{} milk={}/{}/{}/{} hutchPos={}/{} wool={} fert={}/{} eggs={} stress={} accept=",
+        a.attach_back_to_tree_x, a.attach_back_to_tree_y, a.age, fx(a.size), a.attach_back_to_mother,
+        a.mother.is_some(), a.pregnant, a.pregnant_time, a.can_have_milk, fx(a.milk_qty),
+        fx(a.max_milk_actual), a.milk_removed, a.preferred_hutch_position, a.hutch_position,
+        fx(a.wool_qty), a.fertilized_time, a.fertilized, a.eggs_today, fx(a.stress_level)
+    )
+    .unwrap();
+    for (k, v) in &a.player_acceptance {
+        write!(s, "{k}:{};", fx(*v)).unwrap();
+    }
+    write!(
+        s,
+        " weight={} lastPreg={} lastMilk={} lastImp={} health={} virtual={:x} group={} clutch={} hook={}/{},{},{} pet={} wild={} online={}",
+        fx(a.weight), a.last_pregnancy_time, a.last_milk_timer, a.last_impregnate_time,
+        fx(a.health), a.virtual_id.to_bits(), a.migration_group.as_deref().unwrap_or("null"),
+        a.clutch_size, a.on_hook, a.attach_back_to_hook_x, a.attach_back_to_hook_y,
+        a.attach_back_to_hook_z, fx(a.pet_timer), a.wild, a.online_id
+    )
+    .unwrap();
+    s
+}
+
+/// Trough and hutch-animal lines of a loaded chunk (`animals.txt` format).
+fn field_lines(ctx: &SaveCtx<'_>, ch: &IsoChunk, hooks: &OracleHooks, out: &mut Vec<String>) {
+    for pass in 0..2 {
+        for x in 0..8 {
+            for y in 0..8 {
+                for z in ch.min_level..=ch.max_level {
+                    let Some(sq) = ch.get_grid_square(x, y, z) else {
+                        continue;
+                    };
+                    let at = format!("{},{},{}", sq.x, sq.y, sq.z);
+                    for o in sq.objects.iter().filter(|_| pass == 0) {
+                        if let ObjectKind::FeedingTrough(t) = &o.kind {
+                            let mut l = format!(
+                            "trough {at} linked={},{} north={} water={} maxWater={} maxFeed={} feeding=",
+                            t.linked_x, t.linked_y, t.north, fx(t.water), fx(t.max_water), t.max_feed
+                        );
+                            let keys: Vec<&str> =
+                                t.feeding_types.iter().map(|e| e.0.as_str()).collect();
+                            for k in pz_world::java::hashmap_order(&keys) {
+                                let v = t.feeding_types.iter().find(|e| e.0 == k).unwrap().1;
+                                write!(l, "{k}:{};", fx(v)).unwrap();
+                            }
+                            let fc = o.components.iter().find(|c| {
+                                c.type_id == pz_entity::ComponentType::FluidContainer.id()
+                            });
+                            match fc {
+                                Some(c) => {
+                                    let mut fcv = pz_entity::FluidContainer::default();
+                                    fcv.load(
+                                        &mut pz_entity::io::Reader::new(&c.data),
+                                        &pz_entity::BasicContext::default(),
+                                    )
+                                    .unwrap();
+                                    write!(l, " fc={}/{}", fx(fcv.capacity), fx(fcv.rain_catcher))
+                                        .unwrap();
+                                }
+                                None => l.push_str(" fc=null"),
+                            }
+                            match &o.container {
+                                Some(c) => write!(
+                                    l,
+                                    " cont={}/{}",
+                                    c.kind.as_deref().unwrap_or("null"),
+                                    c.items.len()
+                                )
+                                .unwrap(),
+                                None => l.push_str(" cont=null"),
+                            }
+                            out.push(l);
+                        }
+                    }
+                    for o in sq.objects.iter().filter(|_| pass == 1) {
+                        let ObjectKind::Hutch(h) = &o.kind else {
+                            continue;
+                        };
+                        let Some(m) = &h.master else { continue };
+                        let (ma, mn) = hooks.hutches.get(&m.sprite_name).copied().unwrap_or((0, 0));
+                        out.push(format!("hutchdef {} {ma} {mn}", m.sprite_name));
+                        let mut inside: Vec<&(i32, IsoAnimal)> = m.animals.iter().collect();
+                        pz_inventory::java::sort_int_hash_map(&mut inside, |e| e.0);
+                        for (k, a) in inside {
+                            out.push(format!("animal {at} inside {k} {}", animal_line(a)));
+                        }
+                        for (i, nb) in m.nest_boxes.iter().enumerate() {
+                            if let Some(a) = &nb.animal {
+                                out.push(format!("animal {at} nest {i} {}", animal_line(a)));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let _ = ctx;
+}
 
 /// Item ids the original could create (`items.txt` of the oracle run).
 struct OracleItems(HashMap<i16, (String, bool, bool)>);
@@ -340,6 +606,15 @@ fn main() {
         tile_scale,
         ..Default::default()
     };
+    let hooks = oracle_hooks(oracle);
+    let java_fields: Option<Vec<String>> = std::fs::read_to_string(oracle.join("animals.txt"))
+        .ok()
+        .map(|t| t.lines().map(str::to_string).collect());
+    let mut rust_fields: Vec<String> = Vec::new();
+    let mut settings = settings;
+    if let Some(c) = hooks.calendar {
+        settings.calendar_millis = c;
+    }
     let oracle_items = OracleItems(reg);
     let sm = pz_scripts::ScriptManager::new();
     sm.load_builtin_registries(&game.join("projectzomboid.jar"))
@@ -385,7 +660,7 @@ fn main() {
         tables: &save_tables,
         settings: &settings,
         items: &registry,
-        hooks: &NoSaveHooks,
+        hooks: &hooks,
         meta: None,
     };
     let mut files = Vec::new();
@@ -438,6 +713,7 @@ fn main() {
         }
         let mut d = String::new();
         digest(&ctx, &loaded.chunk, &mut d);
+        field_lines(&ctx, &loaded.chunk, &hooks, &mut rust_fields);
         // Dictionary names are compared through a consistent id mapping.
         let java = java_chunks.get(&(wx, wy)).cloned().unwrap_or_default();
         let same = d.lines().count() == java.lines().count()
@@ -617,6 +893,28 @@ fn main() {
     }
     for (k, v) in registry.raw_counts.borrow().iter() {
         println!("RAW {v} {k}");
+    }
+    if let Some(j) = &java_fields {
+        let same = rust_fields
+            .iter()
+            .zip(j.iter())
+            .filter(|(a, b)| a == b)
+            .count();
+        let animals = j.iter().filter(|l| l.starts_with("animal ")).count();
+        let troughs = j.iter().filter(|l| l.starts_with("trough ")).count();
+        println!(
+            "fields: {same} of {} lines equal (java {troughs} troughs, {animals} hutch animals; rust {} lines)",
+            j.len(),
+            rust_fields.len()
+        );
+        for (a, b) in rust_fields
+            .iter()
+            .zip(j.iter())
+            .filter(|(a, b)| a != b)
+            .take(4)
+        {
+            println!("FIELDDIFF\n  rust: {a}\n  java: {b}");
+        }
     }
     println!("creatable mismatches vs original: {creatable_mismatch}");
     println!("{counts:?}");

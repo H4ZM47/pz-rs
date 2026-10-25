@@ -24,6 +24,7 @@ to Rust with the original semantics and the same Lua-facing API.
 | `pz-scripts` | `zombie.scripting` (`ScriptParser`, `ScriptManager`, script objects) |
 | `pz-classfile` | reads built-in constants from the installed `projectzomboid.jar` (no JVM) |
 | `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |
+| `pz-clipper6` | `PZClipper` + Clipper 6.4.2 + earcut inside the native pathfinder (`libPZPathFind`) |
 | `pz-client` | desktop binary |
 
 See [docs/WORKSTREAMS.md](docs/WORKSTREAMS.md) for how the work is split and
