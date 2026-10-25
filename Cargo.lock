@@ -1865,6 +1865,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-sound"
+version = "0.1.0"
+dependencies = [
+ "pz-core",
+ "pz-scripts",
+]
+
+[[package]]
 name = "pz-sqlite"
 version = "0.1.0"
 
