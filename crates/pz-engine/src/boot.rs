@@ -21,5 +21,10 @@ pub fn load_scripts(game_dir: &Path, fs: &pz_fs::GameFs) -> Result<(), String> {
     pz_lua_api::bind_characters::install_characters(Rc::new(RefCell::new(chars)));
     sm.load(fs, &[]).map_err(|e| format!("ScriptManager.Load failed: {e}"))?;
     pz_lua_api::bind_registry::install_script_manager(Rc::new(sm));
+    // The `ClothingItem` assets item visuals read (`instanceItem`).
+    match pz_inventory::ItemAssets::load(game_dir) {
+        Ok(a) => pz_lua_api::bind_items::install_item_assets(a),
+        Err(e) => eprintln!("item assets: {e}"),
+    }
     Ok(())
 }

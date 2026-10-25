@@ -9,14 +9,16 @@
 //! Methods that read the holder or the game state (weights, `isEquipped`,
 //! wetness, `getVisual`, `Use`) go through the installed [`ItemLuaEnv`]
 //! ([`install_item_env`]); without one they see an item in a container
-//! without a parent, no scripts and zero globals.
+//! without a parent, the shared scripts, no `ClothingItem` assets and zero
+//! globals ([`GameItemEnv`]). `instanceItem` ([`create_item`]) creates
+//! items through it; see [`crate::bind_item_visual`].
 //!
 //! Not exposed yet: methods returning or taking objects that have no Lua
 //! binding here (`getScriptItem`, `getModData`, `getContainer`,
-//! `getWorldItem`, `getVisual`'s `ItemVisual`, `getInventory`,
-//! `getTags`), the registry-object returns (`getBodyLocation` returns the
-//! registry id string, `getBloodClothingType` a list of names, `hasTag`
-//! takes ids or objects whose `tostring` is the id).
+//! `getWorldItem`, `getInventory`, `getTags`), the registry-object
+//! returns (`getBloodClothingType` a list of names, `hasTag` takes ids or
+//! objects whose `tostring` is the id). `getVisual`, `getClothingItem`
+//! and `canBeEquipped` live in [`crate::bind_item_visual`].
 
 use crate::bind_java_util::JavaList;
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg};
@@ -24,7 +26,8 @@ use pz_inventory::api::Offline;
 use pz_inventory::context::NoOwner;
 use pz_inventory::gameplay::{ConditionOutcome, ItemError, UseOutcome};
 use pz_inventory::item::ItemKind;
-use pz_inventory::{InventoryItem, ItemClass, ItemContext, ItemOwner};
+use pz_inventory::visual::VisualRng;
+use pz_inventory::{InventoryItem, ItemAssets, ItemClass, ItemContext, ItemEnv, ItemOwner};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use std::any::Any;
@@ -67,20 +70,221 @@ pub trait ItemLuaEnv {
     /// the container or character must do (add or remove items, play
     /// sounds, call `OnBreak`).
     fn outcome(&self, _item: &ItemRef, _o: ItemOutcome) {}
+    /// `Rand.Next(bound)` (`RandStandard`), for item creation.
+    fn rand_next(&self, bound: i32) -> i32 {
+        pz_core::random::next(bound)
+    }
+    /// `Rand.Next(min, max)` for floats.
+    fn rand_float(&self, min: f32, max: f32) -> f32 {
+        pz_core::random::next_float(min, max)
+    }
+    /// `OutfitRNG` and `ClothingDecals` for item visuals.
+    fn visual_rng(&self) -> &dyn VisualRng {
+        &OutfitVisualRng
+    }
 }
 
-struct DefaultEnv;
-impl ItemLuaEnv for DefaultEnv {
+/// The item environment outside a game (the main menu and character
+/// creation): no holder, game state at its defaults, scripts from the
+/// shared `ScriptManager` and the `ClothingItem` assets it was given.
+pub struct GameItemEnv {
+    pub assets: Option<ItemAssets>,
+    /// A generator for `Rand` instead of `RandStandard` (tests, oracles).
+    pub rand: Option<pz_core::random::Rand>,
+}
+
+impl GameItemEnv {
+    pub fn new(assets: Option<ItemAssets>) -> Self {
+        GameItemEnv { assets, rand: None }
+    }
+}
+
+impl ItemContext for GameItemEnv {
+    fn world_age_hours(&self) -> f64 {
+        Offline.world_age_hours()
+    }
+    fn multiplier(&self) -> f32 {
+        Offline.multiplier()
+    }
+    fn rain_intensity(&self) -> f32 {
+        Offline.rain_intensity()
+    }
+    fn is_raining(&self) -> bool {
+        Offline.is_raining()
+    }
+    fn equipped_or_worn_encumbrance_multiplier(&self) -> f64 {
+        Offline.equipped_or_worn_encumbrance_multiplier()
+    }
+    fn basic_mask_defense(&self) -> f32 {
+        Offline.basic_mask_defense()
+    }
+    fn improvised_gas_mask_defense(&self) -> f32 {
+        Offline.improvised_gas_mask_defense()
+    }
+    fn standard_gas_mask_defense(&self) -> f32 {
+        Offline.standard_gas_mask_defense()
+    }
+    fn script(&self, name: &str) -> Option<Rc<pz_inventory::ItemTemplate>> {
+        let sm = crate::bind_registry::shared_script_manager();
+        let s = sm
+            .find_item(name, true)?
+            .downcast::<pz_scripts::objects::items::Item>()?;
+        pz_inventory::ItemTemplate::from_script_ref(&sm, &s)
+    }
+    fn create_item(&self, full_type: &str) -> Option<InventoryItem> {
+        create_item_with(self, full_type, 1.0)
+    }
+    fn assets(&self) -> Option<&ItemAssets> {
+        self.assets.as_ref()
+    }
+}
+
+impl ItemLuaEnv for GameItemEnv {
     fn context(&self) -> &dyn ItemContext {
-        &Offline
+        self
     }
     fn owner(&self, _item: &ItemRef) -> Rc<dyn ItemOwner> {
         Rc::new(NoOwner)
     }
+    fn rand_next(&self, bound: i32) -> i32 {
+        match &self.rand {
+            Some(r) => r.next(bound),
+            None => pz_core::random::next(bound),
+        }
+    }
+    fn rand_float(&self, min: f32, max: f32) -> f32 {
+        match &self.rand {
+            Some(r) => r.next_float(min, max),
+            None => pz_core::random::next_float(min, max),
+        }
+    }
+}
+
+/// `OutfitRNG` (the shared per-thread generator) and
+/// `ClothingDecals.instance` from the shared population.
+pub struct OutfitVisualRng;
+
+impl VisualRng for OutfitVisualRng {
+    fn next(&self, bound: i32) -> i32 {
+        pz_core::random::outfit_rng::next(bound)
+    }
+    fn random_color(&self) -> [f32; 3] {
+        // `randomImmutableColor()`: `SandboxOptions.noBlackClothes`
+        // (default true; the menu has no game sandbox).
+        pz_core::random::outfit_rng::random_immutable_color(true)
+    }
+    fn random_decal(&self, group: &str) -> Option<String> {
+        let pop = crate::bind_appearance::shared_population();
+        let pop = pop.borrow();
+        pop.clothing_decals.as_ref()?.get_random_decal(group)
+    }
+    fn set_seed(&self, seed: i64) {
+        pz_core::random::outfit_rng::set_seed(seed);
+    }
+    fn get_seed(&self) -> i64 {
+        pz_core::random::outfit_rng::get_seed()
+    }
+}
+
+/// What `InventoryItemFactory.CreateItem` reads, from an item environment.
+struct CreateEnv<'a> {
+    lua: Option<&'a dyn ItemLuaEnv>,
+    ctx: &'a dyn ItemContext,
+    sm: &'a pz_scripts::ScriptManager,
+}
+
+impl ItemEnv for CreateEnv<'_> {
+    fn world_age_hours(&self) -> f64 {
+        self.ctx.world_age_hours()
+    }
+    fn rand_next(&self, bound: i32) -> i32 {
+        match self.lua {
+            Some(l) => l.rand_next(bound),
+            None => pz_core::random::next(bound),
+        }
+    }
+    fn rand_float(&self, min: f32, max: f32) -> f32 {
+        match self.lua {
+            Some(l) => l.rand_float(min, max),
+            None => pz_core::random::next_float(min, max),
+        }
+    }
+    fn assets(&self) -> Option<&ItemAssets> {
+        self.ctx.assets()
+    }
+    fn visual_rng(&self) -> &dyn VisualRng {
+        match self.lua {
+            Some(l) => l.visual_rng(),
+            None => &OutfitVisualRng,
+        }
+    }
+    fn script_actual_weight(&self, name: &str) -> Option<f32> {
+        let s = self
+            .sm
+            .find_item(name, true)?
+            .downcast::<pz_scripts::objects::items::Item>()?;
+        let w = s.borrow().actual_weight;
+        Some(w)
+    }
+}
+
+/// `Translator.getItemNameFromFullType` when the translator is loaded.
+fn translated_name(full_type: &str) -> Option<String> {
+    crate::bind_text::with_translator_mut(|t| t.get_item_name_from_full_type(full_type, |_| None))
+        .filter(|n| n != full_type)
+}
+
+fn create_item_with(
+    ctx: &dyn ItemContext,
+    item_type: &str,
+    use_delta: f32,
+) -> Option<InventoryItem> {
+    let sm = crate::bind_registry::shared_script_manager();
+    let env = CreateEnv {
+        lua: None,
+        ctx,
+        sm: &sm,
+    };
+    pz_inventory::factory::create_item_by_type(
+        &env,
+        &sm,
+        item_type,
+        use_delta,
+        true,
+        &translated_name,
+    )
+}
+
+/// `InventoryItemFactory.CreateItem(itemType, useDelta)` through the
+/// installed environment (its `Rand`, `OutfitRNG` and assets) and the
+/// shared `ScriptManager`: `None` for an unknown type.
+pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
+    let e = env();
+    let sm = crate::bind_registry::shared_script_manager();
+    let ce = CreateEnv {
+        lua: Some(e.as_ref()),
+        ctx: e.context(),
+        sm: &sm,
+    };
+    let item = pz_inventory::factory::create_item_by_type(
+        &ce,
+        &sm,
+        item_type,
+        use_delta,
+        true,
+        &translated_name,
+    )?;
+    Some(Rc::new(RefCell::new(item)))
+}
+
+/// Installs a [`GameItemEnv`] with the `ClothingItem` assets
+/// (`ItemAssets::load(game_dir)`), so items made from Lua have visuals.
+pub fn install_item_assets(assets: ItemAssets) {
+    install_item_env(Rc::new(GameItemEnv::new(Some(assets))));
 }
 
 thread_local! {
-    static ENV: RefCell<Rc<dyn ItemLuaEnv>> = RefCell::new(Rc::new(DefaultEnv));
+    static ENV: RefCell<Rc<dyn ItemLuaEnv>> = RefCell::new(Rc::new(GameItemEnv::new(None)));
     static OBJECTS: RefCell<HashMap<usize, Weak<dyn LuaObject>>> = RefCell::new(HashMap::new());
 }
 
@@ -363,7 +567,9 @@ fn register_inventory_item(thread: &mut Thread) {
         .get_replace_on_use_full_type()
         .map(Value::from)
         .unwrap_or_default());
-    get!(b, "getBodyLocation", |i| opt_str(i.get_body_location()));
+    get!(b, "getBodyLocation", |i| crate::bind_item_visual::body_location_value(
+        i.get_body_location()
+    ));
     get!(
         b,
         "getBloodClothingType",
