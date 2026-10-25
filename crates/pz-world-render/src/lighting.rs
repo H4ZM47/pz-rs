@@ -33,6 +33,14 @@ impl LightingWorld for LightingSquares {
 }
 
 /// `getBuildingDef().getID()` of the square's room.
+/// The players that had seen `sq` when it was loaded, as a bit mask.
+fn loaded_seen_by(sq: &IsoGridSquare) -> u8 {
+    sq.seen
+        .iter()
+        .enumerate()
+        .fold(0, |m, (i, &s)| if s { m | 1 << i } else { m })
+}
+
 fn building_def_id(w: &WorldView<'_>, sq: &IsoGridSquare) -> Option<i64> {
     let room = sq.room_def(w.meta)?;
     Some(w.meta.building_defs[room.building?.0 as usize].id)
@@ -305,11 +313,14 @@ impl WorldLighting {
         };
         for sq in ch.squares() {
             let p = (sq.x, sq.y, sq.z);
+            // A square new to lighting starts with the `seen` flags it
+            // was loaded with (`IsoGridSquare.load` sets `lighting[i].bSeen`
+            // from the saved `vis` byte, and `updateChunk` sends them).
             let (ll, seen) = self
                 .squares
                 .0
                 .get(&p)
-                .map_or((0, 0), |g| (g.light_level, g.seen_by));
+                .map_or((0, loaded_seen_by(sq)), |g| (g.light_level, g.seen_by));
             self.squares
                 .0
                 .insert(p, grid_square(w, sq, hooks, ll, seen));

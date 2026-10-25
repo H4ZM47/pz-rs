@@ -149,7 +149,11 @@ impl ClimateSettings {
         }
         let desaturated = |s: f32| {
             let gray = blend[0] * 0.3086 + blend[1] * 0.6094 + blend[2] * 0.082;
-            [gray * s + blend[0] * (1.0 - s), gray * s + blend[1] * (1.0 - s), gray * s + blend[2] * (1.0 - s)]
+            [
+                gray * s + blend[0] * (1.0 - s),
+                gray * s + blend[1] * (1.0 - s),
+                gray * s + blend[2] * (1.0 - s),
+            ]
         };
         let (rmod, gmod, bmod);
         if c.weather_shader && p.night_vision_goggles {
@@ -166,10 +170,24 @@ impl ClimateSettings {
                 // Legacy path with goggles: no blend, no night.
                 night = 0.0;
                 ambient = 0.8;
-                return PlayerRenderSettings { rmod: 1.0, gmod: 1.0, bmod: 1.0, ambient, night, view_distance: c.view_distance };
+                return PlayerRenderSettings {
+                    rmod: 1.0,
+                    gmod: 1.0,
+                    bmod: 1.0,
+                    ambient,
+                    night,
+                    view_distance: c.view_distance,
+                };
             }
         }
-        PlayerRenderSettings { rmod, gmod, bmod, ambient, night, view_distance: c.view_distance }
+        PlayerRenderSettings {
+            rmod,
+            gmod,
+            bmod,
+            ambient,
+            night,
+            view_distance: c.view_distance,
+        }
     }
 }
 
@@ -211,7 +229,11 @@ mod climate_tests {
 
     #[test]
     fn day_settings_follow_the_global_light() {
-        let s = ClimateSettings { climate: input(), players: Default::default() }.compute(0);
+        let s = ClimateSettings {
+            climate: input(),
+            players: Default::default(),
+        }
+        .compute(0);
         assert_eq!(s.rmod, 1.0);
         assert!((s.gmod - 0.9).abs() < 1e-6 && (s.bmod - 0.8).abs() < 1e-6);
         // ambientMin 0.15 for night darkness 3: 0.15 + 0.85 * 0.5.
