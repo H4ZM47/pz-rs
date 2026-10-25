@@ -85,6 +85,14 @@ impl TextureLoader for Loader {
     }
 }
 
+/// A path under the system temp dir unique to this call (tag, process id and a
+/// per-call counter): tests run in parallel and must not share directories.
+fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()))
+}
+
 fn clothing(game: &Path, name: &str) -> ResolvedItemVisual {
     let xml =
         std::fs::read_to_string(game.join(format!("media/clothing/clothingItems/{name}.xml")))
@@ -119,7 +127,7 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
     let out_dir = std::env::var_os("PZ_VEHRENDER_FRAME_OUT")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let cache = std::env::temp_dir().join("pz-vehicle-render-frame-test");
+    let cache = unique_temp_dir("pz-vehicle-render-frame-test");
     let mut fs = pz_fs::GameFs::new(&game);
     fs.set_cache_dir(&cache);
     let media = MediaIndex::scan(&game).unwrap();

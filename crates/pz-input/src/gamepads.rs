@@ -134,7 +134,8 @@ impl Gamepads {
 fn opens_gamepads() {
     let Some(dir) = std::env::var_os("PZ_GAME_DIR") else { return };
     let mut c = Controllers::default();
-    let tmp = std::env::temp_dir();
+    let tmp = crate::tests::unique_temp_dir("pz-input-gamepads");
+    std::fs::create_dir_all(&tmp).unwrap();
     let mut g = Gamepads::new(Path::new(&dir), &tmp, &mut c).expect("gilrs");
     g.poll(&mut c);
     eprintln!("connected: {:?}", c.slots.iter().flatten().map(|c| (&c.gamepad_name, &c.guid)).collect::<Vec<_>>());

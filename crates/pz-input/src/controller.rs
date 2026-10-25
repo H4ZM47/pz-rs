@@ -870,7 +870,7 @@ mod tests {
 
     #[test]
     fn config_file_round_trip_and_dead_zones() {
-        let dir = std::env::temp_dir().join(format!("pz-input-joypad-{}", std::process::id()));
+        let dir = crate::tests::unique_temp_dir("pz-input-joypad");
         let _ = std::fs::remove_dir_all(&dir);
         let mut ctl = Controllers::default();
         let mut input = Input::default();

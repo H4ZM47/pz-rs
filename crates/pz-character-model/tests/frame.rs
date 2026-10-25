@@ -47,6 +47,14 @@ use pz_model::loader::{load_animation, load_mesh, MeshParams};
 use pz_render::image::ImageData;
 use pz_render::{flags, Texture, TextureManager};
 
+/// A path under the system temp dir unique to this call (tag, process id and a
+/// per-call counter): tests run in parallel and must not share directories.
+fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()))
+}
+
 fn game_dir() -> Option<PathBuf> {
     let game = std::env::var_os("PZ_GAME_DIR")
         .map(PathBuf::from)
@@ -185,7 +193,7 @@ fn player_frame(game: &Path, damaged: bool) {
     let out_dir = std::env::var_os("PZ_CHARRENDER_FRAME_OUT")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let cache = std::env::temp_dir().join("pz-character-model-frame-test");
+    let cache = unique_temp_dir("pz-character-model-frame-test");
     let mut fs = pz_fs::GameFs::new(&game);
     fs.set_cache_dir(&cache);
     let media = MediaIndex::scan(&game).unwrap();
@@ -504,7 +512,7 @@ fn corpse_and_floor_items() {
     let out_dir = std::env::var_os("PZ_ATLAS_FRAME_OUT")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let cache = std::env::temp_dir().join("pz-character-model-frame-test");
+    let cache = unique_temp_dir("pz-character-model-frame-test");
     let mut fs = pz_fs::GameFs::new(&game);
     fs.set_cache_dir(&cache);
     let media = MediaIndex::scan(&game).unwrap();
@@ -773,7 +781,7 @@ fn outlines_bloody_knife_and_mug_with_liquid() {
         return;
     };
     let out_dir = std::env::var_os("PZ_OUTLINE_FRAME_OUT").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    let cache = std::env::temp_dir().join("pz-character-model-frame-test");
+    let cache = unique_temp_dir("pz-character-model-frame-test");
     let mut fs = pz_fs::GameFs::new(&game);
     fs.set_cache_dir(&cache);
     let media = MediaIndex::scan(&game).unwrap();
@@ -1009,7 +1017,7 @@ fn mannequin_animal_corpse_and_object_outlines() {
         return;
     };
     let out_dir = std::env::var_os("PZ_GAPS_FRAME_OUT").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    let cache = std::env::temp_dir().join("pz-character-model-frame-test");
+    let cache = unique_temp_dir("pz-character-model-frame-test");
     let mut fs = pz_fs::GameFs::new(&game);
     fs.set_cache_dir(&cache);
     let media = MediaIndex::scan(&game).unwrap();

@@ -5,9 +5,9 @@ use super::manager::PRESET_TILESET;
 use super::*;
 use crate::{Texture, TextureManager};
 
-/// A fresh directory under the system temp dir.
+/// A fresh directory under the system temp dir, unique per call.
 fn temp_dir(tag: &str) -> PathBuf {
-    let p = std::env::temp_dir().join(format!("pz-render-tiledepth-{tag}-{}", std::process::id()));
+    let p = crate::tests::unique_temp_dir(&format!("pz-render-tiledepth-{tag}"));
     let _ = std::fs::remove_dir_all(&p);
     std::fs::create_dir_all(&p).unwrap();
     p
