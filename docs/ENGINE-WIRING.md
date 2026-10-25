@@ -187,6 +187,26 @@ registered):
       `VirtualVehicleManager.addToMeta`). The quit save's
       `updateVehicleAndTrailer` uses the same `vehicle_buffer`
       (ws/vehicles-db-save).
+- [ ] Vehicles leaving with their chunk (`IsoChunk.removeFromWorld`,
+      unload and quit) are done by the streamer: with
+      `RuntimeVehicleSaver` as `StreamCtx::vehicle_saver`, each vehicle
+      `added_to_world` on one of the chunk's squares (`current`) loses its
+      loaded id, and when `should_update_in_meta` is true leaves the list,
+      gets its row queued (off its square, `square` cleared) and goes to
+      `StreamCtx::vehicle_meta` (`VirtualVehicleManager.addToMeta`: the
+      vehicle runtime implements `vehicles_db::VehicleMetaHook`). The
+      queued rows are written by the streamer's idle loop
+      (`StreamEvent::VehiclesUpdated`) and, after `streamer.stop`, by
+      `world_save::close_stores(.., streamer.take_vehicle_queue())`.
+      Create `vehicles_db::VehicleIds::init(conn)` at `VehiclesDB2.init`,
+      pass it as `StreamCtx::vehicle_ids`, and call
+      `ids.set_vehicle_loaded(sql_id)` from the runtime's `addToWorld`
+      (store the returned id) (#167).
+- [ ] Animal paths: on `StreamEvent::GenAnimalsPath { wx, wy }` run
+      `ZoneGenerator.genAnimalsPath` (not ported); it calls
+      `meta.add_cell_to_save(cell_x, cell_y)` unless the sandbox's
+      animal path chance is "none" and registers its zones with
+      `register_animal_zone_def` (#167).
 - [ ] Hot save: on `StreamEvent::HotSave` (main thread, after the
       streamer step) call `world_save::hot_save_ancillary(&mut HotSave {
       .. })` and set `PlayerDB.forceSavePlayers` when `canSavePlayers`
@@ -200,6 +220,26 @@ registered):
       `sandbox: &sandbox.save_bin(world_version, preset)`, and from the
       characters side the local players' `IsoPlayer.save` bytes and the
       reanimated zombies' `IsoZombie.save` bytes (#150).
+      `SaveGame` also takes `world_gen` (`map_worldgen.bin`),
+      `instance_tracker` (`iTrack.bin`; `cache_dir` for
+      `ItemTracker.log`), `meta_tracker` (helicopter + ambient alarms,
+      `metadata.bin`), `statistics`, `local_players` and
+      `on_game_thread`; the renderer implements
+      `SaveGameHooks::capture_thumbnail(player)` (zoom 1, centre, render,
+      read back the 256x256 middle as bottom-up RGBA) and `save_game`
+      writes `thumb.png`, then the renderer reloads that texture.
+      `map_animals.bin` and the queued `metagrid/metacell_*.bin` are
+      written with `map_zone.bin` (#167).
+- [ ] Game load (`IsoWorld.init`): `world_gen.load_file(save_dir)`
+      where `WorldGenParams.INSTANCE.load()` runs; after
+      `GlobalModData.init`, `instance_tracker.load_file(save_dir,
+      no_save)`; after `map_zone.bin`,
+      `world_save::load_meta_grid_extras(&mut meta, save_dir)`; after
+      player 0 is placed, `meta_tracker.load_file(save_dir, no_save,
+      players[0].is_some())` then `statistics.load_file(save_dir,
+      no_save)` (achievement checks are the caller's). In
+      `GameLoadingState`, unless saving is off,
+      `world_save::ensure_subdirectories_exist(save_dir)` (#167).
 - [ ] Quit (`Core.exiting`): `world_save::save_on_quit(&mut g,
       &mut local_players, &mut hooks)` (`on_post_save` fires `OnPostSave`),
       then `IngameState.exit`: `streamer.stop(&mut cell, ctx)`, the other
