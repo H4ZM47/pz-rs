@@ -79,17 +79,19 @@ impl Fixture {
         let mut square = IsoGridSquare::new(80, 80, 0);
         square.objects.push(IsoObject::new(
             1,
-            ObjectKind::WorldInventory(Box::new(IsoWorldInventoryObject {
-                xoff: 0.0,
-                yoff: 0.0,
-                zoff: 0.0,
-                offset_x: 0.0,
-                offset_y: 0.0,
-                item: FloorItem::retain(&bag),
-                drop_time: 0.0,
-                ignore_remove_sandbox: false,
-                extended_placement: false,
-            })),
+            ObjectKind::WorldInventory(pz_world::floor_object::FloorObject::new(
+                IsoWorldInventoryObject {
+                    xoff: 0.0,
+                    yoff: 0.0,
+                    zoff: 0.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    item: FloorItem::retain(&bag),
+                    drop_time: 0.0,
+                    ignore_remove_sandbox: false,
+                    extended_placement: false,
+                },
+            )),
             None,
         ));
         square.world_objects.push(1);

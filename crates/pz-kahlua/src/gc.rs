@@ -31,7 +31,9 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 mod host;
-pub use host::{traceable, TracePayload, TraceVisitor};
+pub use host::{
+    register_existing, traceable, RegistrationError, TraceDescriptor, TracePayload, TraceVisitor,
+};
 
 struct NativeRecord {
     native: Weak<NativeFunction>,
@@ -47,6 +49,7 @@ struct Collector {
     upvalues: Vec<Weak<RefCell<UpValue>>>,
     natives: Vec<NativeRecord>,
     hosts: Vec<Box<dyn host::HostWeak>>,
+    host_indices: HashMap<NodeId, usize>,
     active: bool,
     pending: bool,
 }
@@ -252,7 +255,7 @@ fn value_node(value: &Value) -> Option<NodeId> {
 }
 
 fn collect_registered_nodes() -> Result<CollectionStats, ()> {
-    // Exactly one collector pin per allocation, registered at its constructor.
+    // Exactly one collector pin per allocation, including existing host owners.
     // No snapshots/cloned Values or Rc handles may add uncounted pins below.
     let nodes: Vec<_> = COLLECTOR.with(|collector| {
         let mut collector = collector.borrow_mut();
@@ -431,6 +434,9 @@ mod closure_tests;
 
 #[cfg(test)]
 mod native_tests;
+
+#[cfg(test)]
+mod existing_owner_tests;
 
 #[cfg(test)]
 mod tests {

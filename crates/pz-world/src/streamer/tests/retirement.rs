@@ -35,17 +35,19 @@ fn bag_chunk(
     let mut square = IsoGridSquare::new(wx * 8, wy * 8, 0);
     square.objects.push(IsoObject::new(
         1,
-        ObjectKind::WorldInventory(Box::new(IsoWorldInventoryObject {
-            xoff: 0.0,
-            yoff: 0.0,
-            zoff: 0.0,
-            offset_x: 0.0,
-            offset_y: 0.0,
-            item: FloorItem::retain(&bag),
-            drop_time: 0.0,
-            ignore_remove_sandbox: false,
-            extended_placement: false,
-        })),
+        ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+            IsoWorldInventoryObject {
+                xoff: 0.0,
+                yoff: 0.0,
+                zoff: 0.0,
+                offset_x: 0.0,
+                offset_y: 0.0,
+                item: FloorItem::retain(&bag),
+                drop_time: 0.0,
+                ignore_remove_sandbox: false,
+                extended_placement: false,
+            },
+        )),
         None,
     ));
     square.world_objects.push(1);
@@ -331,6 +333,7 @@ fn retained_bag_mutation_after_unload_is_written_by_real_pending_save() {
     let ObjectKind::WorldInventory(floor) = &object.kind else {
         panic!("saved floor item missing")
     };
+    let floor = floor.borrow();
     let saved_bag = floor.item.borrow_item().unwrap();
     assert!(saved_bag.favorite, "queue wrote a stale item snapshot");
     assert_eq!(saved_bag.condition, 2);

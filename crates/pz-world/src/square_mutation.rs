@@ -725,6 +725,7 @@ impl MutationEnv<'_> {
             let ObjectKind::WorldInventory(w) = &mut o.kind else {
                 continue;
             };
+            let mut w = w.borrow_mut();
             if w.extended_placement {
                 continue;
             }

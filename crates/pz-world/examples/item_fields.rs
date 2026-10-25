@@ -319,7 +319,9 @@ fn main() {
                     dump(&c.items, &mut lines, &mut raw);
                 }
                 if let ObjectKind::WorldInventory(w) = &o.kind {
-                    if let Some(item) = w.item.borrow_item() {
+                    let w = w.borrow();
+                    let item = w.item.borrow_item();
+                    if let Some(item) = item {
                         dump_item(&item, &mut lines, &mut raw);
                     } else {
                         raw += 1;

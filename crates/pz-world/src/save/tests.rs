@@ -183,7 +183,7 @@ fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
     };
     let mut o = IsoObject::new(
         sq.new_object_id(),
-        ObjectKind::WorldInventory(Box::new(wi)),
+        ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(wi)),
         None,
     );
     o.sprite_id_override = Some(object_io::UNREGISTERED_SPRITE_ID);
@@ -326,12 +326,12 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
             17
         }
     }
-    fn floor(ch: &IsoChunk) -> &crate::floor_item::FloorItem {
+    fn floor(ch: &IsoChunk) -> crate::floor_object::FloorObjectRef {
         let ObjectKind::WorldInventory(wi) = &ch.get_grid_square(0, 0, 0).unwrap().objects[0].kind
         else {
             panic!()
         };
-        &wi.item
+        wi.ref_handle()
     }
 
     let reg = Reg([
@@ -350,28 +350,80 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
     let id = sq.new_object_id();
     let mut obj = IsoObject::new(
         id,
-        ObjectKind::WorldInventory(Box::new(IsoWorldInventoryObject {
-            xoff: 0.25,
-            yoff: 0.5,
-            zoff: 0.0,
-            offset_x: 0.0,
-            offset_y: 0.0,
-            item: crate::floor_item::FloorItem::retain(&bag),
-            drop_time: 0.0,
-            ignore_remove_sandbox: false,
-            extended_placement: false,
-        })),
+        ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+            IsoWorldInventoryObject {
+                xoff: 0.25,
+                yoff: 0.5,
+                zoff: 0.0,
+                offset_x: 0.0,
+                offset_y: 0.0,
+                item: crate::floor_item::FloorItem::retain(&bag),
+                drop_time: 0.0,
+                ignore_remove_sandbox: false,
+                extended_placement: false,
+            },
+        )),
         None,
     );
     obj.sprite_id_override = Some(object_io::UNREGISTERED_SPRITE_ID);
     sq.objects.push(obj);
     sq.world_objects.push(id);
     chunk.set_square(0, 0, 0, Some(sq));
+    let live = floor(&chunk);
+    let mut snapshot = IsoChunk::new(10, 20);
+    snapshot.set_square(
+        0,
+        0,
+        0,
+        Some(chunk.get_grid_square(0, 0, 0).unwrap().clone()),
+    );
+    assert!(!Rc::ptr_eq(&live, &floor(&snapshot)));
+    {
+        let mut payload = live.borrow_mut();
+        payload.xoff = 0.625;
+        payload.yoff = 0.75;
+        payload.zoff = 0.125;
+        payload.offset_x = 3.0;
+        payload.offset_y = 4.0;
+        payload.drop_time = 123.5;
+        payload.ignore_remove_sandbox = true;
+        payload.extended_placement = true;
+    }
     key.borrow_mut().set_key_id(913, &reg);
     bag.borrow_mut().favorite = true;
+    // These render offsets are saved, then intentionally discarded on
+    // load by the existing native-compatible codec.
+    let mut object_bytes = Writer::new();
+    save_object(
+        &mut object_bytes,
+        &ctx,
+        &chunk.get_grid_square(0, 0, 0).unwrap().objects[0],
+    )
+    .unwrap();
+    let mut object_reader = Reader::new(&object_bytes.buf);
+    assert_eq!(object_reader.i8().unwrap(), 1);
+    assert_eq!(
+        object_reader.i8().unwrap(),
+        ctx.class_id("WorldInventoryItem").unwrap()
+    );
+    let stored_offsets: Vec<f32> = (0..5).map(|_| object_reader.f32().unwrap()).collect();
+    assert_eq!(stored_offsets, [0.625, 0.75, 0.125, 3.0, 4.0]);
     let bytes = save_chunk(&chunk, &ctx).unwrap();
     let loaded = load_chunk(&bytes, 10, 20, &ctx).unwrap().chunk;
-    let actual = floor(&loaded).item_ref().unwrap();
+    let loaded_payload = floor(&loaded);
+    assert!(Rc::ptr_eq(&loaded_payload, &floor(&loaded)));
+    assert!(!Rc::ptr_eq(&live, &loaded_payload));
+    {
+        let payload = loaded_payload.borrow();
+        assert_eq!(
+            (payload.xoff, payload.yoff, payload.zoff),
+            (0.625, 0.75, 0.125)
+        );
+        assert_eq!((payload.offset_x, payload.offset_y), (0.0, 0.0));
+        assert_eq!(payload.drop_time, 123.5);
+        assert!(payload.ignore_remove_sandbox && payload.extended_placement);
+    }
+    let actual = loaded_payload.borrow().item.item_ref().unwrap();
     assert!(!Rc::ptr_eq(&actual, &bag));
     assert!(actual.borrow().favorite);
     let contents = shared::inventory_of(&actual.borrow()).unwrap();
@@ -388,11 +440,28 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
     let loaded_key = contents.borrow().items[0].clone();
     assert_eq!(loaded_key.borrow().get_key_id(), 913);
     loaded_key.borrow_mut().set_key_id(707, &reg);
+    loaded_payload.borrow_mut().xoff = 0.875;
+    loaded_payload.borrow_mut().drop_time = 456.0;
+    loaded_payload.borrow_mut().extended_placement = false;
     let reloaded = load_chunk(&save_chunk(&loaded, &ctx).unwrap(), 10, 20, &ctx)
         .unwrap()
         .chunk;
-    let latest = shared::inventory_of(&floor(&reloaded).borrow_item().unwrap()).unwrap();
+    let latest =
+        shared::inventory_of(&floor(&reloaded).borrow().item.borrow_item().unwrap()).unwrap();
     assert_eq!(latest.borrow().items[0].borrow().get_key_id(), 707);
+    assert_eq!(floor(&reloaded).borrow().xoff, 0.875);
+    assert_eq!(floor(&reloaded).borrow().drop_time, 456.0);
+    assert!(!floor(&reloaded).borrow().extended_placement);
+    assert_eq!(floor(&snapshot).borrow().xoff, 0.25);
+    assert_eq!(floor(&snapshot).borrow().drop_time, 0.0);
+    assert!(
+        !floor(&snapshot)
+            .borrow()
+            .item
+            .borrow_item()
+            .unwrap()
+            .favorite
+    );
     assert_eq!(key.borrow().get_key_id(), 913);
 }
 
@@ -447,7 +516,7 @@ fn load_transforms() {
     if let ObjectKind::WorldInventory(w) =
         &mut ch.get_grid_square_mut(1, 0, 0).unwrap().objects[0].kind
     {
-        w.ignore_remove_sandbox = false;
+        w.borrow_mut().ignore_remove_sandbox = false;
     }
     let bytes = save_chunk(&ch, &c0).unwrap();
     let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;

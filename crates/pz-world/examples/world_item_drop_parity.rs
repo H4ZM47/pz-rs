@@ -499,6 +499,7 @@ fn main() {
             let ObjectKind::WorldInventory(wi) = &o.kind else {
                 panic!()
             };
+            let wi = wi.borrow();
             let i = item.borrow();
             write!(
                 s,

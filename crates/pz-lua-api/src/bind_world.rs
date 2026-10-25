@@ -28,6 +28,7 @@ use std::rc::{Rc, Weak};
 
 pub mod lua_world;
 mod reachability;
+mod square_queries;
 mod cell_drag;
 
 /// `IsoWorld.instance.metaGrid` and `IsoWorld.instance.currentCell`.
@@ -1856,6 +1857,7 @@ fn square_building(x: i32, y: i32, z: i32) -> LuaResult<Option<usize>> {
 fn register_grid_square(thread: &mut Thread) {
     let b = expose_class(thread, "zombie.iso.IsoGridSquare", Some("java.lang.Object"));
     reachability::register(&b);
+    square_queries::register(&b);
     static_get(&b, "getMatrixBit", |c| {
         let bit = |i| int_arg(c, i) as i8 as i32;
         let n = bit(1) + bit(2) * 3 + bit(3) * 9;

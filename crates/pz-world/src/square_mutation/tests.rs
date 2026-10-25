@@ -624,6 +624,7 @@ fn world_item_joins_the_square() {
     let ObjectKind::WorldInventory(wi) = &o.kind else {
         panic!()
     };
+    let wi = wi.borrow();
     assert_eq!(
         (wi.xoff, wi.yoff, wi.zoff, wi.drop_time),
         (0.0, 0.5, 0.25, 123.5)
@@ -633,6 +634,7 @@ fn world_item_joins_the_square() {
     assert_eq!(wi.item.borrow_item().unwrap().world_z_rotation, 0.0);
     assert!(item.borrow().components.is_empty());
     assert_eq!(item.borrow().world_z_rotation, 0.0);
+    drop(wi);
     let log = w.take_log();
     // (2, 7) is chunk-local (2, 7): its own square renders it.
     assert_eq!(log.first().map(String::as_str), Some("render 0,0,0 68"));
@@ -668,10 +670,12 @@ fn world_item_joins_the_square() {
     let ObjectKind::WorldInventory(copied) = &snapshot.objects.last().unwrap().kind else {
         panic!()
     };
+    let copied = copied.borrow();
     assert!(!Rc::ptr_eq(&copied.item.item_ref().unwrap(), &item2));
     let ObjectKind::WorldInventory(live) = &w.sq(p).objects.last().unwrap().kind else {
         panic!()
     };
+    let live = live.borrow();
     assert!(Rc::ptr_eq(&live.item.item_ref().unwrap(), &item2));
     live.item.borrow_item_mut().unwrap().actual_weight = 11.0;
     assert_eq!(item2.borrow().actual_weight, 11.0);
@@ -800,6 +804,7 @@ fn too_heavy_worn_item_drops_to_the_floor_below() {
     let ObjectKind::WorldInventory(wi) = &sq.objects.last().unwrap().kind else {
         panic!()
     };
+    let wi = wi.borrow();
     assert_eq!((wi.xoff, wi.yoff, wi.drop_time), (0.1, 0.1, 10.0));
     assert!(Rc::ptr_eq(&wi.item.item_ref().unwrap(), &coat));
     assert_eq!(wi.item.borrow_item().unwrap().id, 1);

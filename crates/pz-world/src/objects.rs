@@ -525,7 +525,7 @@ pub enum ObjectKind {
     /// does not fill it).
     Mannequin(Option<Box<IsoMannequin>>),
     Tree(IsoTree),
-    WorldInventory(Box<IsoWorldInventoryObject>),
+    WorldInventory(crate::floor_object::FloorObject),
     Thumpable(Box<IsoThumpable>),
     BrokenGlass,
     ButcherHook,

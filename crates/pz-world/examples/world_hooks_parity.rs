@@ -383,7 +383,9 @@ fn main() {
                             light_items(&mut out, &format!("item{p} c{ci}"), c, 0);
                         }
                         if let ObjectKind::WorldInventory(w) = &o.kind {
-                            if let Some(it) = w.item.borrow_item() {
+                            let w = w.borrow();
+                            let item = w.item.borrow_item();
+                            if let Some(it) = item {
                                 light_item(&mut out, &format!("item{p} w"), &it, 0, 0);
                             }
                         }

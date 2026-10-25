@@ -1182,17 +1182,19 @@ fn load_special(
             };
             let drop_time = r.f64()?;
             let bits = super::io::read_header(r, 1)?;
-            o.kind = ObjectKind::WorldInventory(Box::new(IsoWorldInventoryObject {
-                xoff,
-                yoff,
-                zoff,
-                offset_x: 0.0,
-                offset_y: 0.0,
-                item: crate::floor_item::FloorItem::from_saved(item),
-                drop_time,
-                ignore_remove_sandbox: exists && has(bits, 1),
-                extended_placement: exists && has(bits, 4),
-            }));
+            o.kind = ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+                IsoWorldInventoryObject {
+                    xoff,
+                    yoff,
+                    zoff,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    item: crate::floor_item::FloorItem::from_saved(item),
+                    drop_time,
+                    ignore_remove_sandbox: exists && has(bits, 1),
+                    extended_placement: exists && has(bits, 4),
+                },
+            ));
             if !exists {
                 // The item is null: the square drops the object. The entity
                 // block (if any) is not read, as upstream.
@@ -1484,6 +1486,7 @@ fn load_special(
 pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResult<()> {
     match &o.kind {
         ObjectKind::WorldInventory(wi) => {
+            let wi = wi.borrow();
             w.i8(1);
             w.i8(ctx.class_id("WorldInventoryItem")?);
             w.f32(wi.xoff);

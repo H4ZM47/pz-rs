@@ -330,7 +330,7 @@ pub fn load_square(
                     continue;
                 };
                 if let ObjectKind::WorldInventory(wi) = &obj.kind {
-                    if !keep_world_item(ctx, wi) {
+                    if !keep_world_item(ctx, &wi.borrow()) {
                         continue;
                     }
                 }

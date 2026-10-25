@@ -464,7 +464,9 @@ fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(ItemRecordMut<'_>)) {
                         cont(c, f);
                     }
                     match &mut o.kind {
-                        ObjectKind::WorldInventory(w) => f(ItemRecordMut::Floor(&mut w.item)),
+                        ObjectKind::WorldInventory(w) => {
+                            f(ItemRecordMut::Floor(&mut w.borrow_mut().item))
+                        }
                         ObjectKind::Mannequin(Some(m)) => {
                             if let Some(c) = &mut m.container {
                                 cont(c, f);

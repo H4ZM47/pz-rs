@@ -90,7 +90,9 @@ impl IsoGridSquare {
                 continue;
             };
             if let ObjectKind::WorldInventory(w) = &o.kind {
-                if let Some(i) = w.item.borrow_item() {
+                let w = w.borrow();
+                let item = w.item.borrow_item();
+                if let Some(i) = item {
                     total += weight(o, &i);
                 }
             }
@@ -253,17 +255,19 @@ impl MutationEnv<'_> {
         };
         let mut obj = IsoObject::new(
             0,
-            ObjectKind::WorldInventory(Box::new(IsoWorldInventoryObject {
-                xoff,
-                yoff,
-                zoff: height,
-                offset_x: 0.0,
-                offset_y: 0.0,
-                item: FloorItem::retain(item),
-                drop_time: world_age_hours,
-                ignore_remove_sandbox: false,
-                extended_placement: false,
-            })),
+            ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+                IsoWorldInventoryObject {
+                    xoff,
+                    yoff,
+                    zoff: height,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    item: FloorItem::retain(item),
+                    drop_time: world_age_hours,
+                    ignore_remove_sandbox: false,
+                    extended_placement: false,
+                },
+            )),
             None,
         );
         obj.sprite_id_override = Some(UNREGISTERED_SPRITE_ID);

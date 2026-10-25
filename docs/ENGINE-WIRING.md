@@ -33,6 +33,11 @@ exposes a live table and saves retained nested mutations. The conservative
 collector handles registered tables, Lua closures and shared upvalues,
 including environment and recursive closure cycles. Reviewed Event callbacks
 and Loader caches participate through explicit strong native-capture owners.
+Reviewed descriptors can also weakly register an existing backing allocation
+without wrapping or copying its live owner. Duplicate registration shares the
+same physical allocation record; conflicting descriptions are rejected. This
+provides a tracing prerequisite for runtime owners from other crates. Floor-item
+backlinks and Lua userdata do not participate through this protocol yet.
 Other native captures, coroutines, prototypes and engine-owned references
 remain opaque roots; character/action cycles and some old LuaManager
 environments can remain retained. Heap
@@ -99,13 +104,20 @@ The global `getCell()` entry now returns that same live cell. Square
 the live nullable sprite-exclusion list. Decoded floor items now become shared
 runtime items once, and placement retains the supplied item. Saving reads that
 same owner, including later nested bag mutations; explicit archive copies keep
-their independent value semantics. Raw undecodable records keep their bytes.
+their independent value semantics. The floor subclass payload has its own stable
+allocation: explicit handles retain its item, offsets and drop flags across
+removal and chunk moves, while archive copies get independent payloads and items.
+The enclosing base object, its fluid components and square remain separate
+ownership work. Raw undecodable records keep their bytes.
 The streamer retains removed chunk payloads until both world and sprite-manager
 borrows have ended, including queued-save errors and shutdown. Failed unload
 callbacks retain the removed payload without publishing a partial pending save.
 World-object lists, stable object/body handles, reciprocal world-item links and
 non-floor containers still need their runtime owner bridge. Getter-time copies
 or empty arrays would not implement the original inventory behavior.
+`isOutside` reads the same stored exterior property as existing square logic,
+without recalculating it from room or roof state. Existing coordinate-based
+square handles still lack the original retained-square lifetime across reload.
 
 Puddles now have a shared live singleton and indexed float controls. A real
 cell-owned WeatherFX object initializes at world init; the climate updates
