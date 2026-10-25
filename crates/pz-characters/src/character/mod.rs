@@ -35,6 +35,7 @@
 
 pub mod body_damage;
 pub mod body_part;
+pub mod chat;
 pub mod clothing_wetness;
 pub mod collide;
 pub mod collision;
@@ -395,6 +396,8 @@ pub struct GameCharacter<I: 'static> {
     pub speak_colour: [f32; 4],
     /// `IsoSurvivor.neightbourUpdate`.
     pub neightbour_update: i32,
+    /// The speech fields and the chat element ([`chat`]).
+    pub chat: chat::CharacterChat,
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -498,6 +501,10 @@ impl<I: 'static> GameCharacter<I> {
             patience: 20,
             speak_colour: [1.0; 4],
             neightbour_update: 20,
+            chat: chat::CharacterChat {
+                username: player.then(|| chat::DEFAULT_USERNAME.to_string()),
+                ..Default::default()
+            },
         }
     }
 

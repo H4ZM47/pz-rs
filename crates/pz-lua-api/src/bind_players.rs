@@ -54,10 +54,13 @@ pub fn set_player(i: usize, chr: Option<LuaGameCharacterRef>) {
                 old.borrow_mut().in_players = false;
             }
         }
-        if let Some(c) = chr {
+        if let Some(c) = &chr {
             c.borrow_mut().in_players = true;
         }
     });
+    if let Some(c) = &chr {
+        crate::chat::characters::attach_chat_element(c);
+    }
 }
 
 /// `IsoPlayer.players[i]`; `None` for an empty slot or `i >= 4`.

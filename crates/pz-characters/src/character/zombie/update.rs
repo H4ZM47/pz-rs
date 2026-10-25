@@ -469,9 +469,11 @@ impl<I: 'static> GameCharacter<I> {
                 }
             }
         }
-        // super.update(): the state machine, then fire.
+        // super.update(): the state machine, fire, then updateTextObjects
+        // (the chat element's part is queued).
         self.state_machine_update(cx);
         self.update_fire(cx);
+        self.update_text_objects(cx.ctx);
         if [ids::CLIMB_THROUGH_WINDOW, ids::CLIMB_OVER_FENCE, ids::CRAWLING_ZOMBIE_TURN].iter().any(|s| self.is_current_state_id(*s)) {
             return Ok(());
         }
