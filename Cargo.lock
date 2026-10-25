@@ -1687,6 +1687,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-lighting"
+version = "0.1.0"
+
+[[package]]
 name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
@@ -1765,6 +1769,20 @@ dependencies = [
  "pz-inventory",
  "pz-kahlua",
  "pz-scripts",
+]
+
+[[package]]
+name = "pz-world-render"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "pz-fs",
+ "pz-gpu",
+ "pz-inventory",
+ "pz-iso-render",
+ "pz-lighting",
+ "pz-render",
+ "pz-world",
 ]
 
 [[package]]

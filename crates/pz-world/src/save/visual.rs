@@ -350,6 +350,90 @@ pub struct MovingBase {
     pub mod_data: Option<LuaTable>,
 }
 
+/// `Math.max(a, b)` for floats (NaN wins, `-0.0 < 0.0`).
+pub(crate) fn java_max_f32(a: f32, b: f32) -> f32 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && a.is_sign_negative() {
+        return b;
+    }
+    if a >= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `Math.min(a, b)` for floats.
+pub(crate) fn java_min_f32(a: f32, b: f32) -> f32 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && b.is_sign_negative() {
+        return b;
+    }
+    if a <= b {
+        a
+    } else {
+        b
+    }
+}
+
+impl MovingBase {
+    /// `IsoMovingObject.load` (after the factory bytes). `offsets` are the
+    /// object's own `offsetX`/`offsetY`; the saved ones are read and
+    /// dropped. `IsoWorld.saveoffsetx`/`saveoffsety` are taken as 0.
+    pub fn load(r: &mut Reader<'_>, wv: i32, offsets: (f32, f32)) -> SaveResult<Self> {
+        let _offset_x = r.f32()?;
+        let _offset_y = r.f32()?;
+        let x = r.f32()?;
+        let y = r.f32()?;
+        // setZ: clamped to [-32, 31].
+        let z = java_min_f32(31.0, java_max_f32(-32.0, r.f32()?));
+        // IsoDirections.fromIndex.
+        let dir = r.i32()? & 7;
+        let mod_data = if r.bool()? {
+            Some(LuaTable::load(r, wv)?)
+        } else {
+            None
+        };
+        Ok(MovingBase {
+            offset_x: offsets.0,
+            offset_y: offsets.1,
+            x,
+            y,
+            z,
+            dir,
+            mod_data,
+        })
+    }
+
+    /// `IsoMovingObject.save`, including the serialise and class bytes.
+    pub fn save(&self, w: &mut Writer, class_id: i8) {
+        self.save_at(w, class_id, self.x, self.y);
+    }
+
+    /// [`MovingBase::save`] writing `(x, y)` as the position.
+    pub fn save_at(&self, w: &mut Writer, class_id: i8, x: f32, y: f32) {
+        w.i8(1);
+        w.i8(class_id);
+        w.f32(self.offset_x);
+        w.f32(self.offset_y);
+        w.f32(x);
+        w.f32(y);
+        w.f32(self.z);
+        w.i32(self.dir);
+        match self.mod_data.as_ref().filter(|t| !t.is_empty()) {
+            Some(t) => {
+                w.i8(1);
+                t.save(w);
+            }
+            None => w.i8(0),
+        }
+    }
+}
+
 /// `IsoDeadBody`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IsoDeadBody {
@@ -402,26 +486,7 @@ impl IsoDeadBody {
         offsets: (f32, f32),
         items: &dyn ItemRegistry,
     ) -> SaveResult<Self> {
-        let _offset_x = r.f32()?;
-        let _offset_y = r.f32()?;
-        let x = r.f32()?;
-        let y = r.f32()?;
-        let z = r.f32()?;
-        let dir = r.i32()? & 7;
-        let mod_data = if r.bool()? {
-            Some(LuaTable::load(r, wv)?)
-        } else {
-            None
-        };
-        let base = MovingBase {
-            offset_x: offsets.0,
-            offset_y: offsets.1,
-            x,
-            y,
-            z,
-            dir,
-            mod_data,
-        };
+        let base = MovingBase::load(r, wv, offsets)?;
         let female = r.bool()?;
         let was_zombie = r.bool()?;
         let animal = if r.bool()? {
@@ -560,22 +625,7 @@ impl IsoDeadBody {
 
     /// `IsoDeadBody.save` (including the serialise and class bytes).
     pub fn save(&self, w: &mut Writer, class_id: i8, items: &dyn ItemRegistry) -> SaveResult<()> {
-        let b = &self.base;
-        w.i8(1);
-        w.i8(class_id);
-        w.f32(b.offset_x);
-        w.f32(b.offset_y);
-        w.f32(b.x);
-        w.f32(b.y);
-        w.f32(b.z);
-        w.i32(b.dir);
-        match b.mod_data.as_ref().filter(|t| !t.is_empty()) {
-            Some(t) => {
-                w.i8(1);
-                t.save(w);
-            }
-            None => w.i8(0),
-        }
+        self.base.save(w, class_id);
         w.bool(self.female);
         w.bool(self.was_zombie);
         match &self.animal {

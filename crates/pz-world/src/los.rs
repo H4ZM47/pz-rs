@@ -1,10 +1,10 @@
 //! `zombie.iso.LosUtil.lineClear`: whether vision passes in a straight line
 //! between two squares, stepping square by square with
-//! `IsoGridSquare.testVisionAdjacent`.
+//! [`IsoGridSquare::test_vision_adjacent`].
 
-use pz_world::{GetSquare, IsoGridSquare};
-
-use super::{fastfloor, MainThreadMap};
+use crate::chunk::IsoGridSquare;
+use crate::java::fastfloor;
+use crate::square::{GetSquare, VisionEnv};
 
 /// `LosUtil.TestResults`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub enum TestResults {
 /// default `rangeTillWindows` of 10000).
 #[allow(clippy::too_many_arguments)]
 pub fn line_clear<G: GetSquare>(
-    map: &MainThreadMap<'_, '_, G>,
+    env: &VisionEnv<'_, G>,
     x0: i32,
     y0: i32,
     z0: i32,
@@ -29,14 +29,14 @@ pub fn line_clear<G: GetSquare>(
     z1: i32,
     ignore_doors: bool,
 ) -> TestResults {
-    line_clear_range(map, x0, y0, z0, x1, y1, z1, ignore_doors, 10000)
+    line_clear_range(env, x0, y0, z0, x1, y1, z1, ignore_doors, 10000)
 }
 
 /// `LosUtil.lineClear(cell, x0, y0, z0, x1, y1, z1, bIgnoreDoors,
 /// rangeTillWindows)`.
 #[allow(clippy::too_many_arguments)]
 pub fn line_clear_range<G: GetSquare>(
-    map: &MainThreadMap<'_, '_, G>,
+    env: &VisionEnv<'_, G>,
     mut x0: i32,
     mut y0: i32,
     mut z0: i32,
@@ -46,28 +46,24 @@ pub fn line_clear_range<G: GetSquare>(
     ignore_doors: bool,
     range_till_windows: i32,
 ) -> TestResults {
+    let g = env.squares;
     if z1 == z0 - 1 {
-        if let Some(sq) = map.square(x1, y1, z1) {
-            if map.has_elevated_floor(sq) {
+        if let Some(sq) = g.get_grid_square(x1, y1, z1) {
+            if sq.has_elevated_floor(env.sprites) {
                 z1 = z0;
             }
         }
     }
-    let mut test = TestResults::Clear;
+    let mut w = Walk {
+        test: TestResults::Clear,
+        b: g.get_grid_square(x0, y0, z0),
+        dist: 0,
+    };
     let mut dy = y1 - y0;
     let mut dx = x1 - x0;
     let mut dz = z1 - z0;
     let mut t = 0.5f32;
     let mut t2 = 0.5f32;
-    let mut b = map.square(x0, y0, z0);
-    let mut dist = 0;
-
-    let mut w = Walk {
-        test: &mut test,
-        b: &mut b,
-        dist: &mut dist,
-    };
-
     if dx.abs() > dy.abs() && dx.abs() > dz.abs() {
         let mut m = dy as f32 / dx as f32;
         let mut m2 = dz as f32 / dx as f32;
@@ -80,8 +76,8 @@ pub fn line_clear_range<G: GetSquare>(
             x0 += dx;
             t += m;
             t2 += m2;
-            let a = map.square(x0, fastfloor(t), fastfloor(t2));
-            if let Some(r) = w.step(map, a, ignore_doors, range_till_windows) {
+            let a = g.get_grid_square(x0, fastfloor(t), fastfloor(t2));
+            if let Some(r) = w.step(env, a, ignore_doors, range_till_windows) {
                 return r;
             }
         }
@@ -97,8 +93,8 @@ pub fn line_clear_range<G: GetSquare>(
             t += m;
             y0 += dy;
             t2 += m2;
-            let a = map.square(fastfloor(t), y0, fastfloor(t2));
-            if let Some(r) = w.step(map, a, ignore_doors, range_till_windows) {
+            let a = g.get_grid_square(fastfloor(t), y0, fastfloor(t2));
+            if let Some(r) = w.step(env, a, ignore_doors, range_till_windows) {
                 return r;
             }
         }
@@ -114,64 +110,60 @@ pub fn line_clear_range<G: GetSquare>(
             t += m;
             t2 += m2;
             z0 += dz;
-            let a = map.square(fastfloor(t), fastfloor(t2), z0);
-            if let Some(r) = w.step(map, a, ignore_doors, range_till_windows) {
+            let a = g.get_grid_square(fastfloor(t), fastfloor(t2), z0);
+            if let Some(r) = w.step(env, a, ignore_doors, range_till_windows) {
                 return r;
             }
         }
     }
-    test
+    w.test
 }
 
 /// The walk state of `lineClear`: the result so far, the previous square
 /// and the distance since the last window.
-struct Walk<'r, 's> {
-    test: &'r mut TestResults,
-    b: &'r mut Option<&'s IsoGridSquare>,
-    dist: &'r mut i32,
+struct Walk<'s> {
+    test: TestResults,
+    b: Option<&'s IsoGridSquare>,
+    dist: i32,
 }
 
-impl<'s> Walk<'_, 's> {
+impl<'s> Walk<'s> {
     /// One step onto square `a`; `Some` ends the walk with that result.
     fn step<G: GetSquare>(
         &mut self,
-        map: &MainThreadMap<'_, '_, G>,
+        env: &VisionEnv<'_, G>,
         a: Option<&'s IsoGridSquare>,
         ignore_doors: bool,
         range_till_windows: i32,
     ) -> Option<TestResults> {
-        let mut window_change = false;
-        if let (Some(a), Some(b)) = (a, *self.b) {
+        if let (Some(a), Some(b)) = (a, self.b) {
             let new_test =
-                map.test_vision_adjacent(a, b.x - a.x, b.y - a.y, b.z - a.z, true, ignore_doors);
-            if new_test == TestResults::ClearThroughWindow {
-                window_change = true;
-            }
-            let test = &mut *self.test;
+                a.test_vision_adjacent(b.x - a.x, b.y - a.y, b.z - a.z, true, ignore_doors, env);
+            let window_change = new_test == TestResults::ClearThroughWindow;
             #[allow(clippy::if_same_then_else)] // the Java branches, kept apart
             if new_test == TestResults::Blocked
-                || *test == TestResults::Clear
+                || self.test == TestResults::Clear
                 || new_test == TestResults::ClearThroughWindow
-                    && *test == TestResults::ClearThroughOpenDoor
+                    && self.test == TestResults::ClearThroughOpenDoor
             {
-                *test = new_test;
+                self.test = new_test;
             } else if new_test == TestResults::ClearThroughClosedDoor
-                && *test == TestResults::ClearThroughOpenDoor
+                && self.test == TestResults::ClearThroughOpenDoor
             {
-                *test = new_test;
+                self.test = new_test;
             }
-            if *test == TestResults::Blocked {
+            if self.test == TestResults::Blocked {
                 return Some(TestResults::Blocked);
             }
             if window_change {
-                if *self.dist > range_till_windows {
+                if self.dist > range_till_windows {
                     return Some(TestResults::Blocked);
                 }
-                *self.dist = 0;
+                self.dist = 0;
             }
         }
-        *self.b = a;
-        *self.dist += 1;
+        self.b = a;
+        self.dist += 1;
         None
     }
 }

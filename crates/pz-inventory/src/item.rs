@@ -144,7 +144,7 @@ pub struct AnimalGene {
 }
 
 impl AnimalAllele {
-    fn load(r: &mut Reader<'_>) -> SaveResult<Self> {
+    pub fn load(r: &mut Reader<'_>) -> SaveResult<Self> {
         Ok(AnimalAllele {
             name: r.string()?,
             current_value: r.f32()?,
@@ -154,7 +154,7 @@ impl AnimalAllele {
         })
     }
 
-    fn save(&self, w: &mut Writer) {
+    pub fn save(&self, w: &mut Writer) {
         w.string(&self.name);
         w.f32(self.current_value);
         w.f32(self.true_ratio_value);
@@ -164,7 +164,7 @@ impl AnimalAllele {
 }
 
 impl AnimalGene {
-    fn load(r: &mut Reader<'_>) -> SaveResult<Self> {
+    pub fn load(r: &mut Reader<'_>) -> SaveResult<Self> {
         Ok(AnimalGene {
             id: r.i32()?,
             name: r.string()?,
@@ -173,7 +173,7 @@ impl AnimalGene {
         })
     }
 
-    fn save(&self, w: &mut Writer) {
+    pub fn save(&self, w: &mut Writer) {
         w.i32(self.id);
         w.string(&self.name);
         self.allele1.save(w);
@@ -397,6 +397,12 @@ pub struct InventoryItem {
     pub world_x_rotation: f32,
     pub world_y_rotation: f32,
     pub world_z_rotation: f32,
+    /// `canBeActivated`, `lightStrength`, `isTorchCone`, `lightDistance`:
+    /// set from the script at creation (`Item.InstanceItem`), not saved.
+    pub can_be_activated: bool,
+    pub light_strength: f32,
+    pub torch_cone: bool,
+    pub light_distance: i32,
     pub kind: ItemKind,
 }
 
@@ -502,6 +508,10 @@ impl InventoryItem {
             world_x_rotation: 0.0,
             world_y_rotation: 0.0,
             world_z_rotation: -1.0,
+            can_be_activated: t.activated_item,
+            light_strength: t.light_strength,
+            torch_cone: t.torch_cone,
+            light_distance: t.light_distance,
             kind,
             template,
         }
