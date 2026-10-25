@@ -33,6 +33,7 @@ pz-video.workspace = true
 
 pz-entity.workspace = true
 pz-worldgen.workspace = true
+pz-worldmap.workspace = true
 
 [dev-dependencies]
 pz-sqlite = { workspace = true, features = ["writer"] }

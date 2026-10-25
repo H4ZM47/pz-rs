@@ -73,6 +73,7 @@ pub mod lua_manager;
 pub mod player_db;
 pub mod savefile;
 pub mod world_save;
+pub mod worldmap;
 
 pub use lua_manager::LuaManager;
 
@@ -149,6 +150,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_vehicles::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
+    worldmap::register(&mut mgr.thread);
     gizmo::register(&mut mgr.thread);
     hud::characters::install_character_hud_hosts();
     hud::alarm_clocks::install_alarm_clock_host();

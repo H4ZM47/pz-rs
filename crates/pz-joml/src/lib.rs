@@ -595,6 +595,108 @@ impl Quaternionf {
     }
 }
 
+impl Quaternionf {
+    /// `setFromUnnormalized(Matrix4fc)`: the rotation of the upper 3x3
+    /// with each column normalised.
+    pub fn set_from_unnormalized(mat: &Matrix4f) -> Self {
+        let m = &mat.m;
+        let invsqrt = |r: f32| 1.0 / ((r as f64).sqrt() as f32);
+        let len = |c: usize| invsqrt(m[c][0] * m[c][0] + m[c][1] * m[c][1] + m[c][2] * m[c][2]);
+        let (lx, ly, lz) = (len(0), len(1), len(2));
+        Self::set_from_normalized([
+            [m[0][0] * lx, m[0][1] * lx, m[0][2] * lx],
+            [m[1][0] * ly, m[1][1] * ly, m[1][2] * ly],
+            [m[2][0] * lz, m[2][1] * lz, m[2][2] * lz],
+        ])
+    }
+
+    /// `setFromNormalized(m00..m22)`.
+    fn set_from_normalized(m: [[f32; 3]; 3]) -> Self {
+        let sqrt = |r: f32| (r as f64).sqrt() as f32;
+        let (m00, m01, m02) = (m[0][0], m[0][1], m[0][2]);
+        let (m10, m11, m12) = (m[1][0], m[1][1], m[1][2]);
+        let (m20, m21, m22) = (m[2][0], m[2][1], m[2][2]);
+        let tr = m00 + m11 + m22;
+        if tr >= 0.0 {
+            let t = sqrt(tr + 1.0);
+            let w = t * 0.5;
+            let t = 0.5 / t;
+            Quaternionf { x: (m12 - m21) * t, y: (m20 - m02) * t, z: (m01 - m10) * t, w }
+        } else if m00 >= m11 && m00 >= m22 {
+            let t = sqrt(m00 - (m11 + m22) + 1.0);
+            let x = t * 0.5;
+            let t = 0.5 / t;
+            Quaternionf { x, y: (m10 + m01) * t, z: (m02 + m20) * t, w: (m12 - m21) * t }
+        } else if m11 > m22 {
+            let t = sqrt(m11 - (m22 + m00) + 1.0);
+            let y = t * 0.5;
+            let t = 0.5 / t;
+            Quaternionf { x: (m10 + m01) * t, y, z: (m21 + m12) * t, w: (m20 - m02) * t }
+        } else {
+            let t = sqrt(m22 - (m00 + m11) + 1.0);
+            let z = t * 0.5;
+            let t = 0.5 / t;
+            Quaternionf { x: (m02 + m20) * t, y: (m21 + m12) * t, z, w: (m01 - m10) * t }
+        }
+    }
+
+    /// `slerp(target, alpha, dest)`.
+    pub fn slerp(&self, t: &Quaternionf, alpha: f32) -> Self {
+        let cosom = fma(self.x, t.x, fma(self.y, t.y, fma(self.z, t.z, self.w * t.w)));
+        let abs_cosom = cosom.abs();
+        let (scale0, mut scale1);
+        if 1.0 - abs_cosom > 1.0e-6 {
+            let sin_sqr = 1.0 - abs_cosom * abs_cosom;
+            let sinom = 1.0 / ((sin_sqr as f64).sqrt() as f32);
+            let omega = ((sin_sqr * sinom) as f64).atan2(abs_cosom as f64) as f32;
+            scale0 = (((1.0 - alpha as f64) * omega as f64).sin() * sinom as f64) as f32;
+            scale1 = sin(alpha * omega) * sinom;
+        } else {
+            scale0 = 1.0 - alpha;
+            scale1 = alpha;
+        }
+        if cosom < 0.0 {
+            scale1 = -scale1;
+        }
+        Quaternionf {
+            x: fma(scale0, self.x, scale1 * t.x),
+            y: fma(scale0, self.y, scale1 * t.y),
+            z: fma(scale0, self.z, scale1 * t.z),
+            w: fma(scale0, self.w, scale1 * t.w),
+        }
+    }
+}
+
+impl Matrix4f {
+    /// `rotation(Quaternionfc)` / `set(Quaternionfc)`.
+    pub fn rotation_quat(q: &Quaternionf) -> Self {
+        let (w2, x2, y2, z2) = (q.w * q.w, q.x * q.x, q.y * q.y, q.z * q.z);
+        let zw = q.z * q.w;
+        let dzw = zw + zw;
+        let xy = q.x * q.y;
+        let dxy = xy + xy;
+        let xz = q.x * q.z;
+        let dxz = xz + xz;
+        let yw = q.y * q.w;
+        let dyw = yw + yw;
+        let yz = q.y * q.z;
+        let dyz = yz + yz;
+        let xw = q.x * q.w;
+        let dxw = xw + xw;
+        let mut o = Self::identity();
+        o.m[0][0] = w2 + x2 - z2 - y2;
+        o.m[0][1] = dxy + dzw;
+        o.m[0][2] = dxz - dyw;
+        o.m[1][0] = -dzw + dxy;
+        o.m[1][1] = y2 - z2 + w2 - x2;
+        o.m[1][2] = dyz + dxw;
+        o.m[2][0] = dyw + dxz;
+        o.m[2][1] = dyz - dxw;
+        o.m[2][2] = z2 - y2 - x2 + w2;
+        o
+    }
+}
+
 /// `Vector3f.rotateY(angle)`.
 pub fn rotate_y_vec(v: [f32; 3], angle: f32) -> [f32; 3] {
     let s = sin(angle);
