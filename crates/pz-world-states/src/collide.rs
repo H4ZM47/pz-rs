@@ -178,7 +178,10 @@ impl HoppableHooks for AdapterHoppableHooks<'_, '_> {
     fn bent_fences_enabled(&self) -> bool {
         self.adapter.engine.bent_fences_enabled()
     }
-    fn is_unbent_object(&self, obj: &IsoObject, facing: EdgeFacing) -> bool {
+    fn is_unbent_object(&self, sq: &IsoGridSquare, obj: &IsoObject, facing: EdgeFacing) -> bool {
+        if let Some(bf) = self.adapter.engine.bent_fences() {
+            return self.adapter.is_unbent_object(&bf, (sq, obj), facing);
+        }
         self.adapter
             .env()
             .sprite_name(obj)

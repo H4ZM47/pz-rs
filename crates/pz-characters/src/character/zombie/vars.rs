@@ -128,7 +128,12 @@ pub fn get<I: 'static>(var: CharVar, c: &GameCharacter<I>) -> Option<VariableVal
         CharVar::ZReanimate => B(z.reanimate),
         CharVar::ZStaggerBack => B(c.vars.stagger_back),
         CharVar::ZUnbalancedLevel => F(z.unbalanced_level),
-        CharVar::ZThump => B(z.thump_target.is_some() && !t.thump_target_gone && z.thump_timer <= 0),
+        CharVar::ZThump => {
+            if z.thump_target.is_some() && (t.thump_target_gone || z.thump_timer > 0) {
+                z.thump_clear_requested.set(true);
+            }
+            B(z.thump_target.is_some() && !z.thump_clear_requested.get())
+        }
         CharVar::ZUnderVehicle => B(t.under_vehicle),
         CharVar::ZBeingSteppedOn => B(z.being_stepped_on),
         CharVar::ZDistanceToTarget => F(if has { vlen - z.width + t.width } else { -1.0 }),
@@ -246,7 +251,7 @@ fn lunge<I: 'static>(c: &GameCharacter<I>) -> bool {
         z.clear_target_requested.set(true);
         return false;
     }
-    if t.something_between_rev && z.thump_target.is_some() && !t.unbent {
+    if t.something_between_rev && z.thump_target.is_some() && !z.thump_clear_requested.get() && !t.unbent {
         return false;
     }
     if t.side_of_staircase {
@@ -325,11 +330,7 @@ impl<I: 'static> GameCharacter<I> {
         self.zombie.target_view = t;
         self.zombie.clear_target_requested.set(false);
         self.zombie.lunge_timer_reset_requested.set(false);
-        // The `bthump` slot also drops the target it finds gone.
-        if self.zombie.target_view.thump_target_gone || self.zombie.thump_timer > 0 {
-            self.zombie.thump_target = None;
-            self.zombie.target_view.thump_target_gone = false;
-        }
+        self.zombie.thump_clear_requested.set(false);
     }
 
     /// Applies the getters' recorded side effects.
@@ -339,6 +340,11 @@ impl<I: 'static> GameCharacter<I> {
         }
         if self.zombie.lunge_timer_reset_requested.replace(false) {
             self.zombie.lunge_timer = 0.0;
+        }
+        // The `bthump` slot drops a thump target it finds gone when it is
+        // read, not before.
+        if self.zombie.thump_clear_requested.replace(false) {
+            self.zombie.thump_target = None;
         }
     }
 

@@ -1,14 +1,19 @@
-//! `ClimbOverFenceState`: hopping a low fence (players and zombies).
+//! `ClimbOverFenceState`: hopping a low fence (players and zombies), with
+//! the fence damage when two zombies climb it at once (`OnFloor`) and the
+//! fence and trip sounds (`PlayFenceSound`, `PlayTripSound`).
 //!
-//! Not here: the fence and trip sounds (`PlayFenceSound`,
-//! `PlayTripSound`), a player's voice and endurance, the fence damage when
-//! two zombies climb it at once (`OnFloor`), `CheckAttack`
-//! (`attackFromWindowsLunge`) and the multiplayer paths.
+//! Not here: `CheckAttack` (`attackFromWindowsLunge` needs the animation
+//! player's bones), `FallenOnKnees` / `VaultSprintFallLanded`
+//! (`fallenOnKnees`, `dropHandItems`), a player's music intensity event
+//! and the multiplayer paths.
 
 use pz_world::square::IsoDirections;
 
-use crate::character::state::{FenceClimb, Param, State, StateCx, StateId, StateRef};
-use crate::character::zombie::math::{distance_manhatten, fastfloor, normalize};
+use crate::character::state::{FenceClimb, MoveDeltaModifiers, Param, State, StateCx, StateId, StateRef};
+use crate::character::SimEvent;
+use pz_pathfind::mover::ObjectRef;
+use crate::character::zombie::math::fastfloor;
+use super::climb_window::{set_lunge_x_vars, should_do_fence_lunge, zombie_sound_state};
 use crate::character::GameCharacter;
 use pz_anim::{AnimEventRecord, AnimationVariableSource};
 
@@ -74,46 +79,94 @@ pub fn set_params<I: 'static>(owner: &mut GameCharacter<I>, dir: IsoDirections, 
     COLLIDABLE.set(p, false);
 }
 
-/// `IsoZombie.shouldDoFenceLunge()`.
-fn should_do_fence_lunge<I: 'static>(z: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) -> bool {
-    if !cx.ctx.lore_zombies_fence_lunge() {
-        return false;
-    }
-    if cx.ctx.rand_next(3) == 0 {
-        return false;
-    }
-    let Some(t) = z.vars.target else { return false };
-    let (zx, zy, zz) = (z.vars.x, z.vars.y, z.vars.z);
-    let Some((tx, ty, tz, veh)) = cx.world.character_mut(t).map(|c| (c.vars.x, c.vars.y, c.vars.z, c.path.vehicle)) else { return false };
-    if fastfloor(tz) != fastfloor(zz) || veh.is_some() {
-        return false;
-    }
-    distance_manhatten(zx, zy, tx, ty) < 3.9
+/// `getFence(owner)`: the hoppable between the climb's start and end
+/// squares.
+fn get_fence<I: 'static>(owner: &GameCharacter<I>, cx: &StateCx<'_, I>) -> Option<ObjectRef> {
+    let p = &owner.state.params;
+    let g = |k: Param<i32>| k.peek(p).unwrap_or(0);
+    let (start, end) = ((g(START_X), g(START_Y), g(Z)), (g(END_X), g(END_Y), g(Z)));
+    cx.world.square(start.0, start.1, start.2)?;
+    cx.world.square(end.0, end.1, end.2)?;
+    cx.world.hoppable_between(start, end)
 }
 
-/// `setLungeXVars(zombie)`.
-fn set_lunge_x_vars<I: 'static>(z: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
-    let Some(t) = z.vars.target else { return };
-    let Some((tx, ty)) = cx.world.character_mut(t).map(|c| (c.vars.x, c.vars.y)) else { return };
-    z.set_var_float("FenceLungeX", 0.0);
-    z.set_var_float("FenceLungeY", 0.0);
-    let (fx, fy) = (z.vars.forward_x, z.vars.forward_y);
-    let (x, y) = (z.vars.x, z.vars.y);
-    // PZMath.testSideOfLine
-    let d = (tx - x) * ((y + fy) - y) - (ty - y) * ((x + fx) - x);
-    // getDotWithForwardDirection: both vectors normalized.
-    let (vx, vy) = normalize(tx - x, ty - y);
-    let (lx, ly) = normalize(z.look_vector().0, z.look_vector().1);
-    let angle_rad = ((vx * lx + vy * ly) as f64).acos() as f32;
-    let angle_deg = (57.295776f32 * angle_rad).clamp(0.0, 90.0);
-    let lunge_x = if d > 0.0 {
-        -angle_deg / 90.0
-    } else if d < 0.0 {
-        angle_deg / 90.0
-    } else {
-        0.0
-    };
-    z.set_var_float("FenceLungeX", lunge_x);
+/// `countZombiesClimbingOver(fence)`: the zombies with a target climbing
+/// over `fence`, on its square and the square beyond (north or west).
+fn count_zombies_climbing_over<I: 'static>(owner: &GameCharacter<I>, fence: Option<ObjectRef>, cx: &mut StateCx<'_, I>) -> i32 {
+    let Some(fence) = fence else { return 0 };
+    let Some(info) = cx.world.fence_info(fence) else { return 0 };
+    let sq = info.square;
+    let beyond = if info.hoppable_n { (sq.0, sq.1 - 1, sq.2) } else { (sq.0 - 1, sq.1, sq.2) };
+    let mut count = 0;
+    for s in [sq, beyond] {
+        if cx.world.square(s.0, s.1, s.2).is_none() {
+            continue;
+        }
+        for id in cx.world.zombies_on_square(s) {
+            let climbing = |z: &GameCharacter<I>, cx: &StateCx<'_, I>| {
+                z.vars.target.is_some() && z.is_current_state_id(ids::CLIMB_OVER_FENCE) && get_fence(z, cx) == Some(fence)
+            };
+            let yes = if id == owner.id {
+                climbing(owner, cx)
+            } else {
+                let Some(z) = cx.world.take_character(id) else { continue };
+                let yes = climbing(&z, cx);
+                cx.world.put_character(z);
+                yes
+            };
+            if yes {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// `shouldFallAfterVaultOver(owner)`: a running or sprinting vault's trip.
+fn should_fall_after_vault_over<I: 'static>(owner: &GameCharacter<I>, cx: &StateCx<'_, I>) -> bool {
+    let mut chance = 0.0f32;
+    if owner.get_variable_boolean("VaultOverSprint") {
+        chance = 10.0;
+    }
+    let level = |m: &str| owner.moodles.moodle_level_of(cx.sm, m).unwrap_or(0);
+    chance += (level("ENDURANCE") * 10) as f32;
+    chance += (level("DRUNK") * 10) as f32;
+    chance += (level("HEAVY_LOAD") * 13) as f32;
+    chance += (level("PAIN") * 5) as f32;
+    let pain = cx
+        .chars
+        .sim
+        .body_part_types
+        .index("Torso_Lower")
+        .ok()
+        .and_then(|i| owner.part_slot(cx.chars, i as i32).ok())
+        .and_then(|i| owner.body_damage.body_part(i))
+        .map_or(0.0, |p| p.additional_pain_with(true));
+    if pain > 20.0 {
+        chance += (pain - 20.0) / 10.0;
+    }
+    let has = |t: &str| owner.has_trait(cx.sm, t).unwrap_or(false);
+    if has("CLUMSY") {
+        chance += 10.0;
+    }
+    if has("GRACEFUL") {
+        chance -= 10.0;
+    }
+    // The original checks VERY_UNDERWEIGHT twice.
+    if has("VERY_UNDERWEIGHT") {
+        chance += 20.0;
+    }
+    if has("VERY_UNDERWEIGHT") {
+        chance += 10.0;
+    }
+    if has("OBESE") {
+        chance += 20.0;
+    }
+    if has("OVERWEIGHT") {
+        chance += 10.0;
+    }
+    chance -= owner.perk_level(cx.chars.perks.constant("Fitness").as_ref()) as f32;
+    (cx.ctx.rand_next(100) as f32) < chance
 }
 
 fn slide(cur: f32, to: f32, step: f32) -> f32 {
@@ -144,11 +197,18 @@ impl<I: 'static> State<I> for ClimbOverFenceState {
         owner.set_var_float("FenceLungeX", 0.0);
         owner.set_var_float("FenceLungeY", 0.0);
         owner.vars.ignore_movement = true;
+        let endurance = cx.chars.sim.character_stats.field("ENDURANCE").ok();
+        let reduce = cx.ctx.zomboid_globals().running_endurance_reduce;
         if RUN.get(&mut owner.state.params) {
             owner.set_var_bool("VaultOverRun", true);
-            // TODO(stats): the endurance cost of a running vault.
+            if let Some(e) = &endurance {
+                owner.stats.remove(e, (reduce * 300.0) as f32);
+            }
         } else if SPRINT.get(&mut owner.state.params) {
             owner.set_var_bool("VaultOverSprint", true);
+            if let Some(e) = &endurance {
+                owner.stats.remove(e, (reduce * 700.0) as f32);
+            }
         }
         let counter = COUNTER.get(&mut owner.state.params);
         owner.set_var_bool("ClimbingFence", true);
@@ -156,7 +216,9 @@ impl<I: 'static> State<I> for ClimbOverFenceState {
         owner.set_var_bool("ClimbFenceFinished", false);
         owner.set_var_str("ClimbFenceOutcome", if counter { "obstacle" } else { "success" });
         owner.clear_var("ClimbFenceFlopped");
-        // TODO(players): shouldFallAfterVaultOver for a running vault.
+        if (owner.get_variable_boolean("VaultOverRun") || owner.get_variable_boolean("VaultOverSprint")) && should_fall_after_vault_over(owner, cx) {
+            owner.set_var_str("ClimbFenceOutcome", "fall");
+        }
         if !counter && owner.is_zombie() && should_do_fence_lunge(owner, cx) {
             owner.set_var_str("ClimbFenceOutcome", "lunge");
             set_lunge_x_vars(owner, cx);
@@ -167,8 +229,13 @@ impl<I: 'static> State<I> for ClimbOverFenceState {
         if !owner.is_zombie() && SHEET_ROPE.get(&mut owner.state.params) {
             owner.set_var_str("ClimbFenceOutcome", "rope");
         }
-        let outcome = owner.get_variable_java("ClimbFenceOutcome");
-        OUTCOME.set(&mut owner.state.params, outcome);
+        if !owner.vars.remote {
+            let outcome = owner.get_variable_java("ClimbFenceOutcome");
+            OUTCOME.set(&mut owner.state.params, outcome);
+        } else {
+            let outcome = OUTCOME.get(&mut owner.state.params);
+            owner.set_var_str("ClimbFenceOutcome", &outcome);
+        }
     }
 
     fn execute(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
@@ -227,6 +294,9 @@ impl<I: 'static> State<I> for ClimbOverFenceState {
     }
 
     fn exit(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
+        if owner.is_player() && owner.get_variable_java("ClimbFenceOutcome") == "fall" {
+            owner.environment.sprinting = false;
+        }
         for v in ["ClimbingFence", "ClimbFenceFinished", "ClimbFenceOutcome", "ClimbFenceStarted", "ClimbFenceFlopped", "PlayerVoiceSound", "VaultOverSprint", "VaultOverRun"] {
             owner.clear_var(v);
         }
@@ -273,9 +343,47 @@ impl<I: 'static> State<I> for ClimbOverFenceState {
             ZOMBIE_ON_FLOOR.set(&mut owner.state.params, down);
             if down {
                 set_lunge_x_vars(owner, cx);
-                // TODO(objects): the fence damage of two zombies at once.
+                let fence = get_fence(owner, cx);
+                if count_zombies_climbing_over(owner, fence, cx) >= 2 {
+                    if let Some((f, info)) = fence.and_then(|f| cx.world.fence_info(f).map(|i| (f, i))) {
+                        let damage = cx.ctx.rand_next_range(7, 12) / if info.metal { 2 } else { 1 };
+                        if let Some(dir) = DIR.get(&mut owner.state.params) {
+                            cx.world.damage_fence(f, damage, dir);
+                        }
+                    }
+                }
                 owner.set_var_bool("ClimbFenceFlopped", true);
             }
+        } else if name.eq_ignore_ascii_case("PlayFenceSound") {
+            if !cx.ctx.is_listener_in_range(owner.vars.x, owner.vars.y, 70.0) {
+                return;
+            }
+            let Some(info) = get_fence(owner, cx).and_then(|f| cx.world.fence_info(f)) else { return };
+            let (parameter, value) = if owner.is_zombie() { ("TripObstacleType", info.trip_type) } else { ("FenceTypeLow", info.fence_type_low) };
+            cx.ctx.event(SimEvent::ObstacleSound { name: param.to_string(), parameter, value: value as f32, movement_speed: owner.is_player() });
+        } else if name.eq_ignore_ascii_case("PlayTripSound") {
+            if !cx.ctx.is_listener_in_range(owner.vars.x, owner.vars.y, 70.0) {
+                return;
+            }
+            let Some(info) = get_fence(owner, cx).and_then(|f| cx.world.fence_info(f)) else { return };
+            // The original casts the owner to IsoPlayer here.
+            cx.ctx.event(SimEvent::ObstacleSound { name: param.to_string(), parameter: "TripObstacleType", value: info.trip_type as f32, movement_speed: true });
+        } else if name.eq_ignore_ascii_case("PlayerVoiceSound") {
+            if owner.get_variable_boolean("PlayerVoiceSound") || !owner.is_player() {
+                return;
+            }
+            owner.set_var_bool("PlayerVoiceSound", true);
+            cx.ctx.event(SimEvent::PlayerVoiceSoundNamed(param.to_string()));
+        } else if name.eq_ignore_ascii_case("SetState") && owner.is_zombie() {
+            if let Some(s) = zombie_sound_state(param) {
+                owner.zombie.sound_state = s;
+            }
+        }
+    }
+
+    fn get_delta_modifiers(&self, owner: &GameCharacter<I>, m: &mut MoveDeltaModifiers) {
+        if owner.path.path2.is_some() && owner.is_player() {
+            m.set_max_turn_delta(2.0);
         }
     }
 
@@ -300,5 +408,102 @@ impl<I: 'static> State<I> for ClimbOverFenceState {
 
     fn is_processed_on_enter(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::character::state::{FenceInfo, SquareInfo, StateWorld};
+    use crate::character::tests::{fixture, Recorder};
+    use crate::character::CharacterKind;
+
+    const FENCE: ObjectRef = ObjectRef { x: 3, y: 3, z: 0, id: 1 };
+
+    /// A west fence on (3, 3); zombies 7 and 8 on its square.
+    #[derive(Default)]
+    struct Fenced {
+        others: Vec<GameCharacter<()>>,
+        damage: Vec<(i32, IsoDirections)>,
+    }
+
+    impl StateWorld<()> for Fenced {
+        fn take_character(&mut self, id: i32) -> Option<GameCharacter<()>> {
+            let i = self.others.iter().position(|c| c.id == id)?;
+            Some(self.others.remove(i))
+        }
+        fn put_character(&mut self, c: GameCharacter<()>) {
+            self.others.push(c);
+        }
+        fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
+            Some(SquareInfo { x, y, z, solid_floor: true, ..Default::default() })
+        }
+        fn hoppable_between(&self, a: (i32, i32, i32), b: (i32, i32, i32)) -> Option<ObjectRef> {
+            let xs = [a.0, b.0];
+            (xs.contains(&3) && xs.contains(&2) && a.1 == 3 && b.1 == 3).then_some(FENCE)
+        }
+        fn fence_info(&self, f: ObjectRef) -> Option<FenceInfo> {
+            (f == FENCE).then(|| FenceInfo { square: (3, 3, 0), hoppable_n: false, metal: true, ..Default::default() })
+        }
+        fn zombies_on_square(&self, sq: (i32, i32, i32)) -> Vec<i32> {
+            if sq == (3, 3, 0) {
+                vec![7, 8]
+            } else {
+                Vec::new()
+            }
+        }
+        fn damage_fence(&mut self, f: ObjectRef, d: i32, dir: IsoDirections) {
+            assert_eq!(f, FENCE);
+            self.damage.push((d, dir));
+        }
+    }
+
+    fn climber(sm: &pz_scripts::ScriptManager, id: i32, cx: &mut StateCx<'_, ()>) -> GameCharacter<()> {
+        let mut z = GameCharacter::new(sm, CharacterKind::Zombie);
+        z.id = id;
+        z.vars.x = 3.5;
+        z.vars.y = 3.5;
+        z.vars.target = Some(1);
+        z.path.current_square = Some((3, 3, 0));
+        set_params(&mut z, IsoDirections::W, FenceClimb { counter: false, solid_floor: true, sheet_rope: false }, cx);
+        z.change_state(Some(climb_over_fence()), cx);
+        z
+    }
+
+    fn on_floor(down: bool) -> AnimEventRecord {
+        AnimEventRecord {
+            state_name: None,
+            layer_depth: -1,
+            track: None,
+            event: std::rc::Rc::new(pz_anim::AnimEvent { event_name: "OnFloor".into(), parameter_value: Some(down.to_string()), ..Default::default() }),
+        }
+    }
+
+    #[test]
+    fn two_zombies_on_a_fence_damage_it() {
+        let (sm, chars) = fixture();
+        let ctx = Recorder::default();
+        let mut w = Fenced::default();
+        let (mut z, other) = {
+            let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+            (climber(&sm, 7, &mut cx), climber(&sm, 8, &mut cx))
+        };
+        // Alone: no damage.
+        {
+            let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+            climb_over_fence::<()>().anim_event(&mut z, &mut cx, &on_floor(true));
+        }
+        assert!(w.damage.is_empty());
+        assert!(z.get_variable_boolean("ClimbFenceFlopped"));
+        w.others.push(other);
+        {
+            let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+            climb_over_fence::<()>().anim_event(&mut z, &mut cx, &on_floor(true));
+        }
+        // A metal fence takes half of Rand.Next(7, 12).
+        assert_eq!(w.damage.len(), 1);
+        assert!((3..=5).contains(&w.damage[0].0));
+        assert_eq!(w.damage[0].1, IsoDirections::W);
+        assert_eq!(w.others.len(), 1);
     }
 }

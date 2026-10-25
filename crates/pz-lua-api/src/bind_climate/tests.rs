@@ -4,8 +4,19 @@ use pz_core::weather::calendar::set_default_zone;
 use pz_core::weather::{ClimateClock, SeasonConfig};
 use pz_kahlua::TableRef;
 
-fn setup() -> Thread {
+/// The per-thread state the climate reads: the time zone, the climate
+/// settings and a fixed `Rand` sequence. `new ClimateManager()`, the
+/// forecaster and the weather draw from `RandStandard`, which is seeded
+/// from the wall clock; unseeded, about one run in twenty started a
+/// weather period that lit (or darkened) the global light the tests check.
+fn reset_climate_state() {
     set_default_zone(Some(JavaZone::utc()));
+    set_climate_settings(ClimateSettings::default());
+    pz_core::random::with_standard(|r| r.set_seed(1994));
+}
+
+fn setup() -> Thread {
+    reset_climate_state();
     let mut t = Thread::new(TableRef::new());
     pz_kahlua::stdlib::install(&mut t, None).unwrap();
     crate::bind_java_util::register(&mut t);
@@ -150,7 +161,7 @@ fn constants_from_the_jar() {
 /// A Lua state with an `Events` table like the game's (`Events.X.Add`) that
 /// the event sink dispatches to, and a fresh `GameTime` at noon.
 fn world_load_setup() -> Thread {
-    set_default_zone(Some(JavaZone::utc()));
+    reset_climate_state();
     let mut t = Thread::new(TableRef::new());
     pz_kahlua::stdlib::install(&mut t, None).unwrap();
     crate::bind_java_util::register(&mut t);

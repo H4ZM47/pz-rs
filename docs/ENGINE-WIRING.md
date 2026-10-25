@@ -213,6 +213,20 @@ registered):
       `test_collide_adjacent` hit the character runs `IsoZombie.collideWith`
       on `special_object_between(from, to)`; `bent_fences_enabled` /
       `is_unbent_fence` from BentFences.
+- [ ] Climbs, stairs and fences (#139): `StatesEngine::zombies_on_square`
+      and `moving_objects_on_square` (the squares' moving-object lists, in
+      list order), `dict_object_name` (WorldDictionary object names),
+      `bent_fences()` (a `pz_world_states::BentFences::new(lore
+      fenceThumpersRequired, fenceDamageMultiplier)` filled from
+      `BentFences.lua`'s `addFenceTiles` as `FenceTileDef`s),
+      `broken_fence_items` (`BrokenFences.addItems`) and `fence_collapsed`
+      (the trip/crush reactions of characters by id); `StatesEngine::rand`
+      must be the game's `Rand` (bent-fence damage draws). `SimContext::
+      is_listener_in_range` from `SoundManager`; `SimEvent::ObstacleSound`
+      → `playSoundImpl` + `setParameterValueByName` (and the player's
+      movement-speed parameter). Owners that drive player paths call
+      `GameCharacter::run_path_requests` after `path_update` and give
+      players a `PathMoverState::window_hook` (`IsoWindow.canClimbThrough`).
 - [ ] Saved windows: `IsoChunk::apply_window_load_sprites(&mut sprites)` for
       every chunk the streamer loads, before its squares' properties and
       matrices are recalculated (#95).

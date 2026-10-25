@@ -6,12 +6,14 @@
 //! modifier and the move itself, then the current square
 //! (`findCurrentGridSquare`).
 //!
+//! Then a sprinting player's wall hit (`checkHitWall`, with the automatic
+//! vault of `checkVaultOver`), the stairs (`doStairs`) and sloped surfaces
+//! (`handleSlopedSurface`).
+//!
 //! The squares are the world's: `testCollideAdjacent` and the square
-//! lookups go through [`StateWorld`]. Not ported here (the world's):
-//! stairs and sloped surfaces (`doStairs`, `handleSlopedSurface`),
-//! `checkHitWall` and the hoppable checks (reported through
-//! the character's [`super::collide`]), and zombie virtualization at the edge of the loaded area
-//! ([`StateWorld::virtualize_if_unloaded`]).
+//! lookups go through [`StateWorld`]. The hoppable checks are the
+//! character's [`super::collide`]; zombie virtualization at the edge of the
+//! loaded area is the world's ([`StateWorld::virtualize_if_unloaded`]).
 //!
 //! [`StateWorld`]: super::state::StateWorld
 //! [`StateWorld::resolve_collision`]: super::state::StateWorld::resolve_collision
@@ -378,6 +380,7 @@ impl<I: 'static> GameCharacter<I> {
         if self.vars.collided_this_frame {
             self.path.current_square = self.vars.last_square;
         }
+        self.check_hit_wall(cx);
         let v = &self.vars;
         if self.is_player()
             && !self.is_current_state_id(ids::COLLIDE_WITH_WALL)
@@ -392,8 +395,10 @@ impl<I: 'static> GameCharacter<I> {
             dx *= movement_mod;
             dy *= movement_mod;
         }
-        self.vars.x += dx;
-        self.vars.y += dy;
+        self.set_x(self.vars.x + dx);
+        self.set_y(self.vars.y + dy);
+        self.do_stairs(cx);
+        self.handle_sloped_surface(cx);
         // `findCurrentGridSquare()`.
         let (xi, yi, mut zi) = (ff(self.vars.x), ff(self.vars.y), ff(self.vars.z));
         let sign = zi.signum();
@@ -568,6 +573,181 @@ impl<I: 'static> GameCharacter<I> {
     }
 }
 
+impl<I: 'static> GameCharacter<I> {
+    /// `setX(x)`: the position and the next position.
+    pub fn set_x(&mut self, x: f32) {
+        self.vars.x = x;
+        self.vars.next_x = x;
+    }
+
+    /// `setY(y)`.
+    pub fn set_y(&mut self, y: f32) {
+        self.vars.y = y;
+        self.vars.next_y = y;
+    }
+
+    /// `setZ(z)`: clamped to -32..31, and the last z.
+    pub fn set_z(&mut self, z: f32) {
+        let z = z.clamp(-32.0, 31.0);
+        self.vars.z = z;
+        self.vars.last_z = z;
+    }
+
+    /// `IsoMovingObject.doStairs()`: the height on a staircase, and the
+    /// slide off its open sides at the top.
+    fn do_stairs(&mut self, cx: &mut StateCx<'_, I>) {
+        let (Some(cur), Some(last)) = (self.path.current_square, self.vars.last_square) else { return };
+        let w = &*cx.world;
+        let sq = |p: (i32, i32, i32)| w.square(p.0, p.1, p.2);
+        let Some(mut current) = sq(cur) else { return };
+        let Some(last) = sq(last) else { return };
+        if current.stairs.top() && self.vars.z - (ff(self.vars.z) as f32) < 0.1 {
+            if let Some(below) = sq((current.x, current.y, current.z - 1)).filter(|b| b.stairs.top()) {
+                current = below;
+            }
+        }
+        if last.stairs.top() {
+            self.set_z(super::xp::java_round(self.vars.z) as f32);
+        }
+        let mut z = self.vars.z;
+        if current.has_stairs {
+            let (dx, dy) = (self.vars.x - current.x as f32, self.vars.y - current.y as f32);
+            let at = (current.x, current.y, current.z);
+            z = current.apparent_z(dx, dy, |dx, dy| w.sloped_surface_height(at, dx, dy));
+        }
+        let frac = |v: f32| v as f64 - (v as f64).floor();
+        let floor = |v: f32| (v as f64).floor() as f32;
+        let above = |s: &crate::character::state::SquareInfo| sq((s.x, s.y, s.z + 1));
+        let rel = |s: &crate::character::state::SquareInfo, dx: i32, dy: i32, dz: i32| sq((s.x + dx, s.y + dy, s.z + dz));
+        if last.stairs.tn && above(&last).is_some_and(|u| u.wall_n) {
+            if frac(self.vars.x) > 0.8f32 as f64 && !rel(&last, 1, 0, 0).is_some_and(|e| e.stairs.tn) {
+                self.set_x(floor(self.vars.x) + 0.8);
+            }
+            if !current.has_stairs {
+                self.set_y(super::xp::java_round(self.vars.y) as f32);
+            }
+        }
+        if last.stairs.tw && above(&last).is_some_and(|u| u.wall_w) {
+            if frac(self.vars.y) > 0.8f32 as f64 && !rel(&last, 0, 1, 0).is_some_and(|s| s.stairs.tw) {
+                self.set_y(floor(self.vars.y) + 0.8);
+            }
+            if !current.has_stairs {
+                self.set_x(super::xp::java_round(self.vars.x) as f32);
+            }
+        }
+        if current.wall_n {
+            if let Some(d) = rel(&current, 0, 0, -1).filter(|d| d.stairs.tn) {
+                if frac(self.vars.x) > 0.8f32 as f64 && !rel(&d, 1, 0, 0).is_some_and(|e| e.stairs.tn) {
+                    self.set_x(floor(self.vars.x) + 0.8);
+                }
+                if frac(self.vars.x) < 0.2f32 as f64 && !rel(&d, -1, 0, 0).is_some_and(|w| w.stairs.tn) {
+                    self.set_x(floor(self.vars.x) + 0.2);
+                }
+            }
+        }
+        if current.wall_w {
+            if let Some(d) = rel(&current, 0, 0, -1).filter(|d| d.stairs.tw) {
+                if frac(self.vars.y) > 0.8f32 as f64 && !rel(&d, 0, 1, 0).is_some_and(|s| s.stairs.tw) {
+                    self.set_y(floor(self.vars.y) + 0.8);
+                }
+                if frac(self.vars.y) < 0.2f32 as f64 && !rel(&d, 0, -1, 0).is_some_and(|n| n.stairs.tw) {
+                    self.set_y(floor(self.vars.y) + 0.2);
+                }
+            }
+        }
+        if self.is_current_state_id(ids::CLIMB_OVER_FENCE) || self.is_current_state_id(ids::CLIMB_THROUGH_WINDOW) {
+            if current.has_stairs && self.vars.z > z {
+                let lowered = self.vars.z - 0.075 * cx.ctx.multiplier();
+                self.set_z(if z > lowered { z } else { lowered });
+            }
+            return;
+        }
+        if (z - self.vars.z).abs() < 0.95 {
+            self.set_z(z);
+        }
+    }
+
+    /// `IsoMovingObject.handleSlopedSurface()`.
+    fn handle_sloped_surface(&mut self, cx: &mut StateCx<'_, I>) {
+        let Some(cur) = self.path.current_square else { return };
+        if self.path.vehicle.is_some() {
+            return;
+        }
+        if let Some(last) = self.vars.last_square.filter(|&l| l != cur) {
+            if cx.world.square(last.0, last.1, last.2).is_some_and(|s| s.sloped_surface && s.sloped_surface_height_max == 1.0) {
+                self.set_z(super::xp::java_round(self.vars.z) as f32);
+            }
+        }
+        let dz = cx.world.sloped_surface_height(cur, self.vars.x % 1.0, self.vars.y % 1.0);
+        if dz <= 0.0 {
+            return;
+        }
+        self.set_z(cur.2 as f32 + dz);
+    }
+
+    /// `IsoMovingObject.checkHitWall()`: a sprinting local player running
+    /// into a wall it faces collides with it (or vaults a low fence there).
+    fn check_hit_wall(&mut self, cx: &mut StateCx<'_, I>) {
+        let v = &self.vars;
+        if !(v.collided_n || v.collided_s || v.collided_e || v.collided_w) {
+            return;
+        }
+        let Some(cur) = self.path.current_square else { return };
+        if !self.is_player() || !self.vars.collide_type.is_empty() {
+            return;
+        }
+        let mut valid = false;
+        let wall_type = cx.world.wall_type(cur);
+        if self.vars.collided_with_door {
+            if let Some(o) = self.vars.collided_object {
+                if let Some(i) = cx.world.thump_info(crate::character::state::ThumpTarget::Object(o), self.id).filter(|i| i.kind == crate::character::state::ThumpKind::Door) {
+                    let v = &self.vars;
+                    if i.north && (v.collided_n || v.collided_s) || !i.north && (v.collided_e || v.collided_w) {
+                        valid = true;
+                    }
+                }
+            }
+        }
+        let (v, d) = (&self.vars, self.vars.dir);
+        use pz_world::square::IsoDirections as D;
+        if wall_type & 1 != 0 && v.collided_n && d == D::N
+            || wall_type & 2 != 0 && v.collided_s && d == D::S
+            || wall_type & 4 != 0 && v.collided_w && d == D::W
+            || wall_type & 8 != 0 && v.collided_e && d == D::E
+        {
+            valid = true;
+        }
+        if self.check_vault_over(cur, cx) {
+            valid = false;
+        }
+        if valid && self.is_sprinting(cx.sm, cx.ctx) && self.is_local_player(cx.ctx) {
+            self.vars.collide_type = "wall".into();
+            self.report_event("collideWithWall");
+            self.vars.last_collide_time = 70.0;
+        }
+    }
+
+    /// `IsoMovingObject.checkVaultOver()`: a running player into a low
+    /// fence vaults it.
+    fn check_vault_over(&mut self, cur: (i32, i32, i32), cx: &mut StateCx<'_, I>) -> bool {
+        if self.is_current_state_id(ids::CLIMB_OVER_FENCE) || self.vars.ignore_auto_vault {
+            return false;
+        }
+        let remote_obstacle = !self.is_local_player(cx.ctx) && self.vars.has_obstacle_on_path;
+        if !(self.is_running(cx.sm) || self.is_sprinting(cx.sm, cx.ctx) || remote_obstacle) {
+            return false;
+        }
+        let v = &self.vars;
+        let at = (ff(v.x), ff(v.y), ff(v.z));
+        let Some((dir, f)) = cx.world.vault_over(cur, at, v.dir, (v.collided_n, v.collided_s, v.collided_w, v.collided_e)) else {
+            return false;
+        };
+        crate::character::states::climb_fence::set_params(self, dir, f, cx);
+        self.report_event("EventClimbFence");
+        true
+    }
+}
+
 /// `PZMath.max(float, float)`.
 fn fmax(a: f32, b: f32) -> f32 {
     if a > b {
@@ -675,5 +855,105 @@ mod tests {
         z.vars.next_x = 4.95;
         z.slide_head_away_from_walls(true, &mut cx);
         assert_eq!(z.vars.x, 4.9);
+    }
+
+    /// A north staircase at x = 2: bottom (2, 5), middle (2, 4), top (2, 3).
+    struct Stairs;
+    impl StateWorld<()> for Stairs {
+        fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
+            if !(0..10).contains(&x) || !(0..10).contains(&y) || !(0..2).contains(&z) {
+                return None;
+            }
+            let mut s = SquareInfo { x, y, z, solid_floor: true, ..Default::default() };
+            if z == 0 && x == 2 && (3..=5).contains(&y) {
+                s.has_stairs = true;
+                s.has_stairs_north = true;
+                s.stairs = crate::character::state::StairsPieces { bn: y == 5, mn: y == 4, tn: y == 3, ..Default::default() };
+            }
+            Some(s)
+        }
+    }
+
+    #[test]
+    fn stairs_lift_the_character() {
+        let (sm, mut chars) = fixture();
+        let ctx = Recorder::default();
+        let mut w = Stairs;
+        let mut c = player(&sm, &mut chars);
+        c.path.collidable = true;
+        c.vars.x = 2.5;
+        c.vars.y = 6.1;
+        c.vars.last_x = 2.5;
+        c.vars.last_y = 6.1;
+        c.path.current_square = Some((2, 6, 0));
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        c.moving_preupdate();
+        c.vars.next_y -= 0.3;
+        c.moving_postupdate(&mut cx);
+        // getApparentZ on stairsBN at dy = 0.8: lerp(0.01, 0.4333, 0.2).
+        assert_eq!(c.path.current_square, Some((2, 5, 0)));
+        let dy = c.vars.y - 5.0;
+        assert_eq!(c.vars.z, 0.01 + (0.3333f32 + 0.1 - 0.01) * (1.0 - dy));
+        // Up to the top piece: still level 0, almost a whole level up.
+        while c.vars.y > 3.3 {
+            c.vars.last_x = c.vars.x;
+            c.vars.last_y = c.vars.y;
+            c.moving_preupdate();
+            c.vars.next_y -= 0.25;
+            c.moving_postupdate(&mut cx);
+        }
+        // The stairs slow the move to 0.75.
+        assert_eq!(c.path.current_square, Some((2, 3, 0)));
+        assert!(c.vars.z > 0.9, "z {}", c.vars.z);
+    }
+
+    /// The wall between x = 4 and x = 5 is the east wall of (4, y).
+    struct WalledType;
+    impl StateWorld<()> for WalledType {
+        fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
+            Walled.square(x, y, z)
+        }
+        fn test_collide_adjacent(&self, m: MoverId, from: (i32, i32, i32), dx: i32, dy: i32, dz: i32) -> bool {
+            StateWorld::<()>::test_collide_adjacent(&Walled, m, from, dx, dy, dz)
+        }
+        fn wall_type(&self, sq: (i32, i32, i32)) -> i32 {
+            if sq.0 == 4 {
+                8
+            } else {
+                0
+            }
+        }
+    }
+
+    #[test]
+    fn a_sprinting_player_hits_the_wall_it_faces() {
+        let (sm, mut chars) = fixture();
+        let ctx = Recorder::default();
+        let mut w = WalledType;
+        let mut c = player(&sm, &mut chars);
+        c.path.collidable = true;
+        c.environment.sprinting = true;
+        c.vars.dir = pz_world::square::IsoDirections::E;
+        c.vars.x = 4.8;
+        c.vars.y = 3.5;
+        c.vars.last_x = 4.8;
+        c.vars.last_y = 3.5;
+        c.path.current_square = Some((4, 3, 0));
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        c.moving_preupdate();
+        c.vars.next_x += 0.3;
+        c.moving_postupdate(&mut cx);
+        assert!(c.vars.collided_e);
+        assert_eq!(c.vars.collide_type, "wall");
+        assert_eq!(c.vars.last_collide_time, 70.0);
+        // Facing away from the wall: no hit.
+        c.vars.collide_type.clear();
+        c.vars.last_collide_time = 0.0;
+        c.vars.dir = pz_world::square::IsoDirections::N;
+        c.moving_preupdate();
+        c.vars.next_x += 0.3;
+        c.moving_postupdate(&mut cx);
+        assert!(c.vars.collided_e);
+        assert_eq!(c.vars.collide_type, "");
     }
 }
