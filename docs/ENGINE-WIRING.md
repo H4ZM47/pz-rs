@@ -1229,4 +1229,4 @@ registered):
 - [ ] Map cell priority: `WorldMapHost.map_files` implementing
       `pz_worldmap::triangulate::MapFilesInfo` over the current
       `MapFiles` (directory names in priority order, `hasCell300`), so
-      lower-priority map directories' cells are clipped (#227).
+      lower-priority map directories' cells are clipped (#228).
