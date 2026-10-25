@@ -51,16 +51,25 @@ impl CharDef {
         0
     }
 
-    /// `CharDef.init`: the glyph rectangle inside its page texture.
+    /// `CharDef.init`: a `CharDefTexture` on the page's image, narrowed with
+    /// `setRegion` to the glyph rectangle (offset by the page's own
+    /// position in its image). The renderer samples `xStart..yEnd`, so the
+    /// region must go through `set_region`, not just `uv`.
     fn init(&mut self, page: &Texture) {
+        // `new Texture(TextureID, name)`: the whole image, no trim or mask.
         let mut t = page.clone();
         t.name = format!("{}_{}_{}", page.name, self.x, self.y).into();
-        t.uv = [
-            page.uv[0] + self.x as f32,
-            page.uv[1] + self.y as f32,
-            self.width as f32,
-            self.height as f32,
-        ];
+        t.offset_x = 0.0;
+        t.offset_y = 0.0;
+        t.width_orig = 0;
+        t.height_orig = 0;
+        t.mask = None;
+        t.set_region(
+            self.x as i32 + (page.x_start * page.width_hw as f32) as i32,
+            self.y as i32 + (page.y_start * page.height_hw as f32) as i32,
+            self.width as i32,
+            self.height as i32,
+        );
         self.image = Some(t);
     }
 }
@@ -554,6 +563,59 @@ kerning first=86 second=65 amount=-3\r\n";
             f.chars[65].as_ref().unwrap().kerning_second,
             Some(vec![66, 86])
         );
+    }
+
+    /// A ready page texture: `w`x`h` region at (`x`, `y`) of a 256x128
+    /// power-of-two image.
+    fn page(x: i32, y: i32, w: i32, h: i32) -> Texture {
+        let mut t = Texture::empty("t_0.png");
+        t.id = Some(0);
+        t.ready = true;
+        t.width_hw = 256;
+        t.height_hw = 128;
+        t.width = 256;
+        t.height = 128;
+        t.set_region(x, y, w, h);
+        t
+    }
+
+    /// Regression: glyph textures must carry their own texture coordinates
+    /// (`setRegion`), not the whole page's, or every glyph samples the full
+    /// font page shrunk into its quad.
+    #[test]
+    fn glyph_texture_coordinates() {
+        for (px, py) in [(0, 0), (64, 32)] {
+            let mut f = AngelCodeFont {
+                font_image: Some(page(px, py, 100, 50)),
+                ..AngelCodeFont::default()
+            };
+            f.parse_fnt(FNT, None).unwrap();
+            // char id=65 x=1 y=2 width=8 height=10
+            let a = f.chars[65].as_ref().unwrap().image.clone().unwrap();
+            let (x, y) = ((px + 1) as f32, (py + 2) as f32);
+            assert_eq!((a.width, a.height), (8, 10));
+            assert_eq!(a.uv, [x, y, 8.0, 10.0]);
+            assert_eq!(a.x_start, x / 256.0);
+            assert_eq!(a.y_start, y / 128.0);
+            assert_eq!(a.x_end, (x + 8.0) / 256.0);
+            assert_eq!(a.y_end, (y + 10.0) / 128.0);
+            assert_eq!(&*a.name, "t_0.png_1_2");
+
+            // The drawn sprite samples exactly the glyph rectangle.
+            let mut dl = DrawList::default();
+            dl.render(Some(&a), 0.0, 0.0, 8.0, 10.0, Rgba(1.0, 1.0, 1.0, 1.0));
+            let pz_render::DrawCmd::Sprite(s) = &dl.cmds[0] else {
+                panic!("expected a sprite");
+            };
+            assert_eq!(
+                s.u,
+                [x / 256.0, (x + 8.0) / 256.0, (x + 8.0) / 256.0, x / 256.0]
+            );
+            assert_eq!(
+                s.v,
+                [y / 128.0, y / 128.0, (y + 10.0) / 128.0, (y + 10.0) / 128.0]
+            );
+        }
     }
 
     #[test]
