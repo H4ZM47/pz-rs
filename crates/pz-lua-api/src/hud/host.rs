@@ -142,6 +142,35 @@ pub trait HudAlarmClocks {
     fn set_alarm_set(&mut self, _player: usize, _item: AlarmClockRef, _set: bool) {}
 }
 
+/// A player's `Moodles` as `MoodlesUI` reads them, by moodle type name
+/// (`MoodleType` registry id without namespace, e.g. `Endurance`). Owner:
+/// characters thread.
+pub trait HudMoodles {
+    /// `getMoodles().UI_RefreshNeeded()` (true once per state change; it
+    /// clears the flag).
+    fn ui_refresh_needed(&mut self, _player: usize) -> bool {
+        false
+    }
+    /// `getMoodles().setMoodlesStateChanged(changed)`.
+    fn set_moodles_state_changed(&mut self, _player: usize, _changed: bool) {}
+    /// `getMoodleLevel(type)` (0..4).
+    fn moodle_level(&self, _player: usize, _moodle: &str) -> i32 {
+        0
+    }
+    /// `getGoodBadNeutral(type)`: 0 neutral, 1 good, 2 bad.
+    fn good_bad_neutral(&self, _player: usize, _moodle: &str) -> i32 {
+        0
+    }
+    /// `getMoodleDisplayString(type)`.
+    fn display_string(&self, _player: usize, _moodle: &str) -> String {
+        String::new()
+    }
+    /// `getMoodleDescriptionString(type)`.
+    fn description_string(&self, _player: usize, _moodle: &str) -> String {
+        String::new()
+    }
+}
+
 /// `DebugOptions` the HUD reads. Owner: us (debug options).
 pub trait HudDebug {
     /// `DebugOptions.instance.cheat.clock.visible`.
@@ -175,6 +204,7 @@ impl HudCamera for NoHud {}
 impl HudClimate for NoHud {}
 impl HudAlarmClocks for NoHud {}
 impl HudDebug for NoHud {}
+impl HudMoodles for NoHud {}
 impl HudSound for NoHud {}
 impl HudNetwork for NoHud {}
 
@@ -212,6 +242,7 @@ pub struct HudHost {
     pub climate: Box<dyn HudClimate>,
     pub alarm_clocks: Box<dyn HudAlarmClocks>,
     pub debug: Box<dyn HudDebug>,
+    pub moodles: Box<dyn HudMoodles>,
 }
 
 impl Default for HudHost {
@@ -225,6 +256,7 @@ impl Default for HudHost {
             climate: Box::new(NoHud),
             alarm_clocks: Box::new(NoHud),
             debug: Box::new(NoHud),
+            moodles: Box::new(NoHud),
         }
     }
 }
