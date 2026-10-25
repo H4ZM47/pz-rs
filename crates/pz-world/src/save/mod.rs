@@ -18,6 +18,7 @@ pub mod lua_table;
 pub mod movers;
 pub mod object_io;
 pub mod vehicle;
+pub mod vehicles_db;
 pub mod visual;
 
 use crate::java::string_hash;

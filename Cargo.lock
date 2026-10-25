@@ -1382,6 +1382,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
+name = "pz-classfile"
+version = "0.1.0"
+dependencies = [
+ "miniz_oxide 0.8.9",
+]
+
+[[package]]
 name = "pz-client"
 version = "0.1.0"
 dependencies = [
@@ -1415,6 +1422,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-entity"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-scripts",
+]
+
+[[package]]
 name = "pz-fs"
 version = "0.1.0"
 
@@ -1435,6 +1450,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-inventory"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-entity",
+ "pz-scripts",
+]
+
+[[package]]
 name = "pz-kahlua"
 version = "0.1.0"
 dependencies = [
@@ -1450,6 +1474,7 @@ dependencies = [
  "indexmap",
  "pz-core",
  "pz-fs",
+ "pz-inventory",
  "pz-kahlua",
  "pz-render",
  "pz-sqlite",
@@ -1466,6 +1491,14 @@ dependencies = [
  "png",
  "pz-fs",
  "pz-kahlua",
+]
+
+[[package]]
+name = "pz-scripts"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-fs",
 ]
 
 [[package]]
@@ -1486,6 +1519,19 @@ dependencies = [
  "pz-kahlua",
  "pz-render",
  "pz-text",
+]
+
+[[package]]
+name = "pz-world"
+version = "0.1.0"
+dependencies = [
+ "pz-classfile",
+ "pz-entity",
+ "pz-fs",
+ "pz-inventory",
+ "pz-kahlua",
+ "pz-scripts",
+ "pz-sqlite",
 ]
 
 [[package]]
