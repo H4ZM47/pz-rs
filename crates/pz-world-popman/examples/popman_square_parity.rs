@@ -167,6 +167,10 @@ impl ZombieOps for NoZombies {
     ) -> Option<u32> {
         None
     }
+    fn real_zombie_info(&self, _: u32) -> Option<pz_world_popman::RealZombieInfo<u32>> {
+        None
+    }
+    fn set_persistent_id(&mut self, _: u32, _: i32) {}
     fn set_position(&mut self, _: u32, _: f32, _: f32) {}
     fn sit_against_wall(&mut self, _: u32, _: f32, _: f32, _: Option<IsoDirections>) {}
     fn make_fake_dead(&mut self, _: u32, _: f32) {}

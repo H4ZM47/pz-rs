@@ -31,6 +31,7 @@ struct Host {
     positions: Vec<(u32, f32, f32)>,
     removed: Vec<u32>,
     crawlers: Vec<(u32, bool)>,
+    registered: Vec<(u32, i32)>,
     next: u32,
 }
 
@@ -53,6 +54,29 @@ impl PopulationHost for Host {
         self.created.push((outfit, persistent_id, square));
         self.next += 1;
         Some(self.next)
+    }
+
+    fn real_zombie_info(&self, z: u32) -> Option<RealZombieInfo<u32>> {
+        let (outfit, persistent_id, (x, y, l)) = self.created[z as usize - 1];
+        Some(RealZombieInfo {
+            handle: z,
+            persistent_id,
+            x: x as f32 + 0.25,
+            y: y as f32 + 0.25,
+            z: l as f32,
+            dir: IsoDirections::S,
+            outfit,
+            state: ZombieStateSource::default(),
+            path_target_x: 0,
+            path_target_y: 0,
+            dead: false,
+            reanimated_player: false,
+            walking: false,
+        })
+    }
+
+    fn set_persistent_id(&mut self, z: u32, id: i32) {
+        self.registered.push((z, id));
     }
 
     fn set_position(&mut self, z: u32, x: f32, y: f32) {
@@ -122,6 +146,7 @@ fn chunk_load_makes_zombies_real_and_unload_stores_them() {
         positions: Vec::new(),
         removed: Vec::new(),
         crawlers: Vec::new(),
+        registered: Vec::new(),
         next: 0,
     };
     let reals: Vec<RealZombieInfo<u32>> = Vec::new();
@@ -150,7 +175,11 @@ fn chunk_load_makes_zombies_real_and_unload_stores_them() {
     assert_eq!(host.positions, vec![(1, 28.5, 29.5)]);
     assert_eq!(host.crawlers, vec![(1, false)]);
 
-    // Register it as the game does, then unload its chunk.
+    // `createRealZombieAlways` registered it under its record's id.
+    assert_eq!(host.registered, vec![(1, id)]);
+    assert!(m.real_zombies().is_live(id));
+
+    // Unload its chunk.
     let info = RealZombieInfo {
         handle: 1u32,
         persistent_id: id,
@@ -166,8 +195,6 @@ fn chunk_load_makes_zombies_real_and_unload_stores_them() {
         reanimated_player: false,
         walking: false,
     };
-    assert_eq!(m.register_zombie(&info, id), id);
-    assert!(m.real_zombies().is_live(id));
     m.remove_chunk_from_world(&mut host, 3, 3, &[ChunkZombie { info, level: 0, in_room: false }]);
     assert_eq!(host.removed, vec![1]);
     for _ in 0..3 {
