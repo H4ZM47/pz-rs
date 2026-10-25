@@ -1229,3 +1229,11 @@ fn climbing_over_walls() {
     assert!(!a.can_climb_over_wall_for(&climber(16.5, 12.5), IsoDirections::N));
     assert_eq!(a.climb_wall_fence_type_at((16, 12, 0), (16, 11), IsoDirections::N), None);
 }
+
+#[test]
+fn the_floor_sprite_name_is_the_solid_floor_object() {
+    let mut w = World::new();
+    let a = w.adapter();
+    assert_eq!(a.floor_sprite_name_at((10, 10, 0)).as_deref(), Some("floor"));
+    assert_eq!(a.floor_sprite_name_at((40, 40, 0)), None);
+}

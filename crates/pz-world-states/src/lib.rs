@@ -1041,6 +1041,10 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         self.engine.resolve_collision_radius(view, chr, radius)
     }
 
+    fn floor_sprite_name(&self, sq: (i32, i32, i32)) -> Option<String> {
+        self.floor_sprite_name_at(sq)
+    }
+
     fn path_cancel_request(&mut self, chr: &mut dyn pz_pathfind::mover::PathMover) {
         self.engine.path_cancel_request(chr.mover_id());
     }

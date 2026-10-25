@@ -262,6 +262,23 @@ fn metabolics(jar: &Jar) -> ScriptResult<Vec<(String, f32)>> {
         .collect()
 }
 
+const FALLING_WHILE_INJURED_CLASS: &str = "zombie/characters/FallingWhileInjured";
+
+/// `FallingWhileInjured` constants and their damage multipliers
+/// (`injured`, `deepInjured`, `fractured`).
+fn falling_while_injured(jar: &Jar) -> ScriptResult<Vec<(String, [f32; 3])>> {
+    pz_classfile::self_constructed_constants(jar, FALLING_WHILE_INJURED_CLASS)
+        .map_err(class_error)?
+        .into_iter()
+        // (name, ordinal, injured, deepInjured, fractured, isBodyPart)
+        .map(|(field, args)| {
+            let f = |i: usize| float(args.get(i)).ok_or_else(|| ScriptError::new(format!("FallingWhileInjured.{field}: multiplier")));
+            let m = [f(2)?, f(3)?, f(4)?];
+            Ok((field, m))
+        })
+        .collect()
+}
+
 /// `BodyPartType` constants with their constructor arguments.
 fn body_parts(jar: &Jar) -> ScriptResult<Vec<BodyPartDecl>> {
     pz_classfile::self_constructed_constants(jar, BODY_PART_TYPE_CLASS)
@@ -521,6 +538,9 @@ pub struct BuiltinTables {
     pub cheat_types: Vec<String>,
     /// `IsoZombie`'s close-sneak-bonus sprites: (sprite, directions, value).
     pub zombie_close_sneak_bonus: Vec<(String, String, f32)>,
+    /// `FallingWhileInjured` constants in declaration order, with their
+    /// `injured`, `deepInjured` and `fractured` multipliers.
+    pub falling_while_injured: Vec<(String, [f32; 3])>,
 }
 
 impl BuiltinTables {
@@ -601,6 +621,7 @@ impl BuiltinTables {
             level_up_levels: level_up_levels(jar)?,
             cheat_types: pz_classfile::enum_constants(jar, CHEAT_TYPE_CLASS).map_err(class_error)?,
             zombie_close_sneak_bonus: zombie_close_sneak_bonus(jar)?,
+            falling_while_injured: falling_while_injured(jar)?,
         })
     }
 }

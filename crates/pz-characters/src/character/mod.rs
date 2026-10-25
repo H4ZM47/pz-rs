@@ -36,11 +36,13 @@
 pub mod body_damage;
 pub mod body_part;
 pub mod chat;
+pub mod climbing;
 pub mod clothing_wetness;
 pub mod collide;
 pub mod collision;
 pub mod combat;
 pub mod context;
+pub mod fall;
 pub mod fire;
 pub mod firearm;
 pub mod floor_drop;
@@ -104,6 +106,9 @@ pub struct SimStatics {
     /// `IsoZombie.temporaryMapCloseSneakBonusDir`/`Value`: (sprite,
     /// directions, value).
     pub zombie_close_sneak_bonus: Vec<(String, String, f32)>,
+    /// `FallingWhileInjured`'s constants: (name, [injured, deepInjured,
+    /// fractured]).
+    pub falling_while_injured: Vec<(String, [f32; 3])>,
 }
 
 impl SimStatics {
@@ -115,6 +120,7 @@ impl SimStatics {
             cheat_types: tables.cheat_types.clone(),
             body_part_types: BodyPartTypes::from_tables(tables),
             zombie_close_sneak_bonus: tables.zombie_close_sneak_bonus.clone(),
+            falling_while_injured: tables.falling_while_injured.clone(),
         })
     }
 }
@@ -237,6 +243,10 @@ pub struct GameCharacter<I: 'static> {
     pub fitness: Option<Fitness>,
     /// Inputs from unported world systems.
     pub environment: CharacterEnvironment,
+    /// `fallDamage`.
+    pub fall_damage: fall::FallDamage,
+    /// `killedByFall`.
+    pub killed_by_fall: bool,
     /// `inventory`, the hand items and `wornItems`.
     pub items: CharacterItems,
     /// `clothingWetness` (players only).
@@ -424,6 +434,8 @@ impl<I: 'static> GameCharacter<I> {
             nutrition: player.then(Nutrition::default),
             fitness: player.then(Fitness::default),
             environment: CharacterEnvironment::default(),
+            fall_damage: fall::FallDamage::default(),
+            killed_by_fall: false,
             items: CharacterItems::default(),
             clothing_wetness: player.then(ClothingWetness::default),
             health: 1.0,

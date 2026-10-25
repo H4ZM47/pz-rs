@@ -144,6 +144,9 @@ pub trait StateWorld<I> {
     /// `getPathFindBehavior2().cancel()`.
     fn path_cancel(&mut self, _chr: &mut dyn PathMover) {}
 
+    /// `getPathFindBehavior2().reset()`.
+    fn path_reset(&mut self, _chr: &mut dyn PathMover) {}
+
     /// `PathfindNative.instance.cancelRequest(chr)`: drops `chr`'s pending
     /// request (`PathfindService::cancel_request(chr.mover_id())`); its
     /// `PathFindBehavior2` is left as it is.
@@ -664,6 +667,13 @@ pub trait StateWorld<I> {
     /// `ClimbOverWallState.getFenceType(getFence(owner))` (`None`: no
     /// climbable wall between the squares).
     fn climb_wall_fence_type(&self, _start: (i32, i32, i32), _end: (i32, i32), _dir: IsoDirections) -> Option<i32> {
+        None
+    }
+
+    // ---- falls (`handleLandingImpact`, #204) ----
+
+    /// `sq.getFloor().getSprite().getName()`.
+    fn floor_sprite_name(&self, _sq: (i32, i32, i32)) -> Option<String> {
         None
     }
 }
