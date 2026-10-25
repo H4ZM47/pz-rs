@@ -456,13 +456,16 @@ impl PzBullet {
     }
 
     /// `updateRagdollBodyParts(liveUpdate)`: new shapes and bodies for every
-    /// ragdoll. (The original also updates the ballistics targets.)
+    /// ragdoll, then for every ballistics target (in the map, then the pool).
     fn update_ragdoll_body_parts(&mut self, live: bool) {
         if !live {
             return;
         }
         self.ragdoll_builder.update_body_part_shapes();
         self.update_all_ragdolls(2);
+        if let Some(ws) = self.world.as_deref_mut() {
+            ws.ballistics_targets_update_body_parts(&self.ragdoll_builder);
+        }
     }
 
     /// `defineRagdollConstraints(params, liveUpdate)`: 22 floats per joint

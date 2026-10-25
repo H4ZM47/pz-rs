@@ -8,8 +8,8 @@
 //! with mode 0. Where the original throws a Java exception the method
 //! returns [`JniError`] with the same class and message.
 //!
-//! The ragdoll natives are in `api_ragdoll`; the ballistics natives are not
-//! ported.
+//! The ragdoll natives are in `api_ragdoll`, the ballistics natives in
+//! `api_ballistics`.
 
 use crate::bt::dynamics::generic_6dof::Generic6DofConstraint;
 use crate::bt::dynamics::hinge::HingeConstraint;
@@ -97,6 +97,8 @@ pub struct PzBullet {
     initialized: bool,
     /// `RagdollBuilder::instance`.
     pub ragdoll_builder: crate::pz::ragdoll_builder::RagdollBuilder,
+    /// Ballistics statics (`api_ballistics`).
+    pub ballistics: crate::api_ballistics::BallisticsGlobals,
 }
 
 fn quat_basis(qx: f32, qy: f32, qz: f32, qw: f32) -> Mat3 {
