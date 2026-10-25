@@ -68,6 +68,22 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Character fire: `StateWorld::character_fire` runs
       `pz_characters::character::fire::update_character_fire` with the
       world's `IsoFireManager`/`FireWorld` (#89).
+- [ ] States collision (#95): `StatesEngine::collide_mover` (`CollideMoverInfo::of(chr, path)`
+      plus the sit-on-furniture square and `adef.canClimbFences`),
+      `hoppable_actions` → `setThumpTarget` / `climbOverFence`; after a
+      `test_collide_adjacent` hit the character runs `IsoZombie.collideWith`
+      on `special_object_between(from, to)`; `bent_fences_enabled` /
+      `is_unbent_fence` from BentFences.
+- [ ] Saved windows: `IsoChunk::apply_window_load_sprites(&mut sprites)` for
+      every chunk the streamer loads, before its squares' properties and
+      matrices are recalculated (#95).
+- [ ] States path host hooks (#95): `StatesEngine::resolve_collision`,
+      `resolve_collision_radius` (PathHost over the `WorldView`) and
+      `path_cancel_request` (`PathfindService::cancel_request`).
+- [ ] States fire and render effects (#95): `StatesEngine::fire()` (the
+      world's `IsoFireManager`, FireHooks, flags, settings);
+      `has_render_effect` / `set_render_effect` (ObjectRenderEffects) and
+      `do_tree_noises` (tree sound manager); `ThumpSettings::server`.
 - [ ] `SimContext` climate values from `ClimateManager` (#49).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
