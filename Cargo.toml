@@ -37,6 +37,7 @@ pz-world-sound = { path = "crates/pz-world-sound" }
 pz-popman = { path = "crates/pz-popman" }
 pz-lighting = { path = "crates/pz-lighting" }
 pz-world-popman = { path = "crates/pz-world-popman" }
+pz-vehicles = { path = "crates/pz-vehicles" }
 indexmap = "2"
 jiff = "0.2"
 macroquad = { version = "0.4", default-features = false }

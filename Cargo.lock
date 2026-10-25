@@ -2017,6 +2017,7 @@ dependencies = [
  "pz-characters",
  "pz-classfile",
  "pz-core",
+ "pz-entity",
  "pz-erosion",
  "pz-fs",
  "pz-input",
@@ -2031,6 +2032,7 @@ dependencies = [
  "pz-sqlite",
  "pz-text",
  "pz-ui",
+ "pz-vehicles",
  "pz-world",
  "regex",
 ]
@@ -2129,6 +2131,17 @@ dependencies = [
  "pz-kahlua",
  "pz-render",
  "pz-text",
+]
+
+[[package]]
+name = "pz-vehicles"
+version = "0.1.0"
+dependencies = [
+ "pz-fs",
+ "pz-inventory",
+ "pz-kahlua",
+ "pz-scripts",
+ "pz-world",
 ]
 
 [[package]]
