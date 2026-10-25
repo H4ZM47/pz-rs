@@ -207,20 +207,17 @@ fn options_and_lua_key_flag() {
 }
 
 #[test]
-fn zoom_time_and_aiming_positions() {
-    let mut i = EnginePlayerInput {
+fn zoom_and_time() {
+    let i = EnginePlayerInput {
         zoom: [1.0, 1.5, 2.0, 0.5],
         time_ms: 1234,
         ..Default::default()
     };
-    i.aiming_positions[1] = (320.0, 200.0);
     assert_eq!(i.zoom(1), 1.5);
     // Core.getZoom clamps the player index.
     assert_eq!(i.zoom(-1), 1.0);
     assert_eq!(i.zoom(7), 0.5);
     assert_eq!(i.current_time_ms(), 1234);
-    assert_eq!(i.joypad_aiming_position(1), (320.0, 200.0));
-    assert_eq!(i.joypad_aiming_position(5), (0.0, 0.0));
 }
 
 #[test]
@@ -262,7 +259,6 @@ fn capture_reads_the_engine_globals() {
             ..Default::default()
         },
     );
-    set_aiming_position(1, 7.0, 8.0);
     set_camera_info(9, CameraInfo::default());
     {
         let core = pz_lua_api::bind_core::shared_core();
@@ -272,7 +268,6 @@ fn capture_reads_the_engine_globals() {
     }
     let i = EnginePlayerInput::capture();
     assert_eq!(i.cameras[1].off_x, 3.0);
-    assert_eq!(i.joypad_aiming_position(1), (7.0, 8.0));
     assert_eq!(
         i.key_bindings.by_name["Forward"],
         BoundKeys {

@@ -88,9 +88,9 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `slide_head_away_from_walls`) (#41/#74/#75).
 - [ ] Player input: after the camera update call
       `pz_player_input::set_camera_info(i, CameraInfo { off_x, off_y,
-      right_click_x, right_click_y })` per local player and, for each
-      gamepad player, `set_aiming_position(i, x, y)` with the `Some((x, y))`
-      that `chr.update_aiming_reticle(&input, multiplier)` returns; after
+      right_click_x, right_click_y })` per local player (the reticle
+      position is `chr.player.aiming_position`, set by
+      `chr.update_aiming_reticle(&input, multiplier)`); after
       `bind_input::update`/`after_ui_update` the game loop builds one
       `EnginePlayerInput::capture()` per frame, passes `&input` to each local
       player's `IsoPlayer.update`, then calls `input.write_back()` (#137).
