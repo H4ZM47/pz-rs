@@ -45,7 +45,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `postupdate`; headlights to lighting as torches via
       `pz_vehicle_render::lights::vehicle_torches` (z + 32 for the native
       call) and the lightbar via `lights::lightbar_lamp` →
-      add/remove lamppost (ws/vehicle-render).
+      add/remove lamppost (#90).
 
 ## World render pass
 - [ ] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
@@ -63,7 +63,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       blood-decal option changes), then `render_vehicle_object` with a
       `VehicleFrame` (alpha, `interpolateLight` ambient, the square's
       result lights, square light/seen, sky box textures + shift,
-      `media/vehicleShadow.png`) (ws/vehicle-render).
+      `media/vehicleShadow.png`) (#90).
 
 ## Cleanups
 - [ ] Fold bind_vehicles' item subset into the full item bindings (#86).
