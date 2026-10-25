@@ -424,3 +424,33 @@ fn door() -> IsoDoor {
         curtain_inside: false,
     }
 }
+
+/// `IsoChunkLevel.physicsCheck`: `RecalcProperties` sets it for the
+/// square's level, `updatePhysicsForLevelIfNeeded` takes it, and
+/// `setMinMaxLevel` keeps it for kept levels only.
+#[test]
+fn physics_check_flags() {
+    let mut w = World::new();
+    w.put(9, 9, 0, &["floor"]);
+    w.put(9, 9, 1, &["floor"]);
+    let ch = &w.cell.chunks[&(1, 1)];
+    assert!(!ch.physics_check(0) && !ch.physics_check(1));
+    w.recalc();
+    let ch = w.cell.chunks.get_mut(&(1, 1)).unwrap();
+    assert!(ch.physics_check(0) && ch.physics_check(1));
+    assert!(ch.take_physics_check(1));
+    assert!(!ch.take_physics_check(1));
+    assert!(!ch.take_physics_check(5));
+    ch.check_physics_later(5);
+    assert!(!ch.physics_check(5));
+
+    // A square changing objects marks its own level again.
+    w.cell.recalc_all_with_neighbours(9, 9, 1, &w.meta, &w.m);
+    let ch = w.cell.chunks.get_mut(&(1, 1)).unwrap();
+    assert!(ch.physics_check(1));
+
+    ch.set_min_max_level(-1, 0);
+    assert!(ch.physics_check(0) && !ch.physics_check(-1) && !ch.physics_check(1));
+    ch.set_min_max_level(-1, 1);
+    assert!(!ch.physics_check(1));
+}

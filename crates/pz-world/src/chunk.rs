@@ -155,6 +155,8 @@ pub struct IsoChunk {
     /// an empty list; the original keeps vehicles in `vehicles.db`) and by
     /// [`IsoChunk::vehicle_loaded`].
     pub vehicles: crate::chunk_vehicles::ChunkVehicles,
+    /// `IsoChunkLevel.physicsCheck`, per level (`[z - minLevel]`).
+    physics_check: Vec<bool>,
 }
 
 /// `IsoFloorBloodSplat` (positions quantised to 1/255 of a chunk).
@@ -223,7 +225,35 @@ impl IsoChunk {
             saved: ChunkSaveData::default(),
             erosion: None,
             vehicles: Default::default(),
+            physics_check: vec![false],
         }
+    }
+
+    /// `checkPhysicsLater(level)`: marks the level's physics shapes for
+    /// rebuilding (`IsoChunkLevel.physicsCheck = true`); nothing for a level
+    /// the chunk does not have. `RecalcProperties` on one of the chunk's
+    /// squares calls it (see [`IsoCell::recalc_chunk_squares`] and
+    /// [`IsoCell::recalc_all_with_neighbours`]).
+    pub fn check_physics_later(&mut self, level: i32) {
+        if self.is_valid_level(level) {
+            self.physics_check[(level - self.min_level) as usize] = true;
+        }
+    }
+
+    /// `getLevelData(level).physicsCheck` (`false` for a level the chunk
+    /// does not have).
+    pub fn physics_check(&self, level: i32) -> bool {
+        self.is_valid_level(level) && self.physics_check[(level - self.min_level) as usize]
+    }
+
+    /// The test-and-clear of `Bullet.updatePhysicsForLevelIfNeeded`: returns
+    /// whether the level's flag was set and clears it (the caller then runs
+    /// `updatePhysicsForLevel(level)`).
+    pub fn take_physics_check(&mut self, level: i32) -> bool {
+        if !self.is_valid_level(level) {
+            return false;
+        }
+        std::mem::take(&mut self.physics_check[(level - self.min_level) as usize])
     }
 
     /// `VehiclesDB2.WorldStreamerThread.vehicleLoaded`: a vehicle of a
@@ -256,19 +286,24 @@ impl IsoChunk {
         if min_level == self.min_level && max_level == self.max_level {
             return;
         }
+        // Kept levels keep their `IsoChunkLevel` (and flags); dropped levels
+        // are cleared and new ones come from the pool cleared.
         let mut levels = Vec::with_capacity((max_level - min_level + 1) as usize);
+        let mut physics = Vec::with_capacity(levels.capacity());
         for z in min_level..=max_level {
             if self.is_valid_level(z) {
-                levels.push(std::mem::take(
-                    &mut self.squares[(z - self.min_level) as usize],
-                ));
+                let i = (z - self.min_level) as usize;
+                levels.push(std::mem::take(&mut self.squares[i]));
+                physics.push(self.physics_check[i]);
             } else {
                 levels.push(vec![None; 64]);
+                physics.push(false);
             }
         }
         self.min_level = min_level;
         self.max_level = max_level;
         self.squares = levels;
+        self.physics_check = physics;
     }
 
     pub fn set_square(&mut self, x: i32, y: i32, z: i32, square: Option<IsoGridSquare>) {
