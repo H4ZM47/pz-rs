@@ -35,6 +35,27 @@ pub struct SquareLight {
     pub radius: i32,
 }
 
+impl SquareLight {
+    /// `ModelManager.getSquareLighting`: the vehicle square's result lights
+    /// (`square.lighting[playerIndex].getResultLight(i)`, e.g.
+    /// `WorldLighting::result_lights`), at most five, copied as they are.
+    pub fn from_result_lights(lights: &[pz_lighting::jni::ResultLightInfo]) -> Vec<SquareLight> {
+        lights
+            .iter()
+            .take(5)
+            .map(|l| SquareLight {
+                x: l.x as f32,
+                y: l.y as f32,
+                z: l.z as f32,
+                r: l.r,
+                g: l.g,
+                b: l.b,
+                radius: l.radius,
+            })
+            .collect()
+    }
+}
+
 /// What a vehicle's render needs from the world besides the vehicle.
 #[derive(Clone, Debug)]
 pub struct VehicleFrame {

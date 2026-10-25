@@ -3,6 +3,8 @@
 
 #![allow(dead_code)]
 
+pub mod night;
+
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;

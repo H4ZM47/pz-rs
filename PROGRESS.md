@@ -171,10 +171,14 @@ Status of the Rust port. Update this file with every merged change.
   transforms, all twelve enable matrices, rust/reflection/paint values,
   the vehicle camera, centre-of-mass offset and `targetDepth`, the shadow
   polygon and the headlight torches match the original's bit for bit
-  (131 values, local harness). Not yet: the sky box reflection textures
-  (the reflective programs run with whatever textures are passed),
-  headlight light on the ground (needs the lighting pass), sloped-surface
-  shadow height, `renderToTexture`.
+  (131 values, local harness). Headlights reach pz-lighting as torches
+  (`checkLights`' vehicle loop) and the lightbar's alternating lights as
+  cell lampposts (`updateWorldLights`); on a night floor the squares in a
+  car's beams light up and the lightbar lamppost comes and goes (tests
+  need the game's scripts). Not yet: the sky box reflection textures
+  (the reflective programs run with whatever textures are passed), the
+  square's result lights on the vehicle model, sloped-surface shadow
+  height, `renderToTexture`.
 
 - Character outlines and item textures: `ModelOutlines` (solid mask with
   `aim_outline_solid`, `aim_outline_h`/`_v` thickening, masked

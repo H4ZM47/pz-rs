@@ -42,10 +42,16 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Vehicle models: `VehicleModelSet::create` when a vehicle is added to
       the world (`ModelManager.addVehicle`), `sync` after part model
       visibility changes, `update_animations(unmoddedMultiplier)` in
-      `postupdate`; headlights to lighting as torches via
-      `pz_vehicle_render::lights::vehicle_torches` (z + 32 for the native
-      call) and the lightbar via `lights::lightbar_lamp` →
-      add/remove lamppost (#90).
+      `postupdate` (#90).
+- [ ] Vehicle lights → lighting: `WorldHooks::torches` returns the
+      players' light-item torches, then
+      `pz_vehicle_render::lights::cell_torches(cell vehicles)`
+      (`LightingJNI.checkLights`; pz-lighting's `check_lights` sends
+      z + 32 and removes stale torches). Per vehicle a
+      `lights::LightbarWorldLights::new` (`createParts`), `update(v, &mut
+      WorldLighting)` from `BaseVehicle.update` (`updateWorldLights`) and
+      `remove` on `removeFromWorld`; it adds/removes lampposts through
+      `WorldLighting::add_lamppost`/`remove_lamppost` (#90).
 
 ## World render pass
 - [ ] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
@@ -62,8 +68,19 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `instance.do_damage_overlay` (when `doDamageOverlay` is flagged or the
       blood-decal option changes), then `render_vehicle_object` with a
       `VehicleFrame` (alpha, `interpolateLight` ambient, the square's
-      result lights, square light/seen, sky box textures + shift,
-      `media/vehicleShadow.png`) (#90).
+      result lights as `SquareLight::from_result_lights(
+      WorldLighting::result_lights(player, x, y, z))`, square light/seen,
+      sky box textures + shift, `media/vehicleShadow.png`) (#90).
+- [ ] Character model lights: per character and player
+      `PlayerLightData::update(&LightContext { result_lights:
+      WorldLighting::result_lights(player, square).to_vec(), .. })`
+      (`ModelInstance.updateLights`), then `effect_lights_main` /
+      `current_ambient` into `CharacterFrame` (#90).
+- [ ] Vehicle reflections: the reflective vehicle shaders need
+      `VehicleFrame`'s sky-box textures and shift from #53's `SkyBox`
+      (pz-iso-render `skybox.rs`, on a separate stack). Until that is
+      wired, load vehicle models with `reflections: false` (the
+      `_noreflect` shader variants, as with `bPerfReflections` off) (#90).
 - [ ] Character outlines: per character, `ObjectRender.outline =
       OutlineHighlight::character_request(playerIndex, x, y, isProne,
       camCharacterX, camCharacterY)` from the object's highlight state
