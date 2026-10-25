@@ -484,18 +484,7 @@ fn weapon_light_part() {
 fn fire() -> ObjectKind {
     ObjectKind::Fire(IsoFire {
         life: 100,
-        spread_delay: 0,
-        life_stage: 0,
-        life_stage_timer: 0,
-        life_stage_duration: 0,
-        energy: 0,
-        num_flame_particles: 0,
-        spread_timer: 0,
-        age: 0,
-        perm: false,
-        light_radius: 0,
-        smoke: false,
-        saved_update_time: 0,
+        ..IsoFire::from_save(&Default::default())
     })
 }
 

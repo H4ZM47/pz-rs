@@ -364,6 +364,19 @@ impl InventoryItem {
         }
     }
 
+    /// The `HandWeapon` fields, for a weapon.
+    pub fn weapon_data(&self) -> Option<&WeaponData> {
+        self.weapon()
+    }
+
+    /// The `HandWeapon` fields, mutably.
+    pub fn weapon_data_mut(&mut self) -> Option<&mut WeaponData> {
+        match &mut self.kind {
+            ItemKind::Weapon(w) => Some(w),
+            _ => None,
+        }
+    }
+
     fn clothing(&self) -> Option<&ClothingData> {
         match &self.kind {
             ItemKind::Clothing(c) | ItemKind::AlarmClockClothing(c, _) => Some(c),

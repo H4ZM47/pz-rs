@@ -16,13 +16,15 @@ use pz_kahlua::number::{java_double_to_string, java_parse_double, java_parse_int
 use std::cell::RefCell;
 use std::path::Path;
 
+type LogHook = Option<Box<dyn Fn(&str)>>;
+
 thread_local! {
-    static LOG_HOOK: RefCell<Option<Box<dyn Fn(&str)>>> = const { RefCell::new(None) };
+    static LOG_HOOK: RefCell<LogHook> = const { RefCell::new(None) };
 }
 
 /// Install a sink for `DebugLog.log` messages emitted by this module and
 /// `Core` (parse errors, range errors, ...). Without one they are dropped.
-pub fn set_log_hook(hook: Option<Box<dyn Fn(&str)>>) {
+pub fn set_log_hook(hook: LogHook) {
     LOG_HOOK.with(|h| *h.borrow_mut() = hook);
 }
 
@@ -65,10 +67,18 @@ pub fn float_to_string(f: f32) -> String {
         return "NaN".into();
     }
     if f.is_infinite() {
-        return if f < 0.0 { "-Infinity".into() } else { "Infinity".into() };
+        return if f < 0.0 {
+            "-Infinity".into()
+        } else {
+            "Infinity".into()
+        };
     }
     if f == 0.0 {
-        return if f.is_sign_negative() { "-0.0".into() } else { "0.0".into() };
+        return if f.is_sign_negative() {
+            "-0.0".into()
+        } else {
+            "0.0".into()
+        };
     }
     let sci = format!("{:e}", f.abs());
     let (mantissa, exp) = sci.split_once('e').unwrap();
@@ -83,7 +93,11 @@ pub fn float_to_string(f: f32) -> String {
         } else if point as usize >= digits.len() {
             format!("{}{}.0", digits, "0".repeat(point as usize - digits.len()))
         } else {
-            format!("{}.{}", &digits[..point as usize], &digits[point as usize..])
+            format!(
+                "{}.{}",
+                &digits[..point as usize],
+                &digits[point as usize..]
+            )
         };
         format!("{sign}{s}")
     } else {
@@ -220,25 +234,61 @@ pub struct ConfigOption {
 impl ConfigOption {
     fn new(name: &str, kind: OptionKind) -> Self {
         // `ConfigOption(String)` throws IllegalArgumentException for these.
-        assert!(!name.is_empty() && !name.contains('='), "invalid ConfigOption name {name:?}");
-        ConfigOption { name: name.to_string(), kind, on_change: None, changed: false }
+        assert!(
+            !name.is_empty() && !name.contains('='),
+            "invalid ConfigOption name {name:?}"
+        );
+        ConfigOption {
+            name: name.to_string(),
+            kind,
+            on_change: None,
+            changed: false,
+        }
     }
 
     /// `new BooleanConfigOption(name, defaultValue)`.
     pub fn boolean(name: &str, default_value: bool) -> Self {
-        Self::new(name, OptionKind::Boolean(BooleanConfigOption { value: default_value, default_value }))
+        Self::new(
+            name,
+            OptionKind::Boolean(BooleanConfigOption {
+                value: default_value,
+                default_value,
+            }),
+        )
     }
 
     /// `new IntegerConfigOption(name, min, max, defaultValue)`.
     pub fn integer(name: &str, min: i32, max: i32, default_value: i32) -> Self {
-        assert!(default_value >= min && default_value <= max, "IntegerConfigOption {name}: default out of range");
-        Self::new(name, OptionKind::Integer(IntegerConfigOption { value: default_value, default_value, min, max }))
+        assert!(
+            default_value >= min && default_value <= max,
+            "IntegerConfigOption {name}: default out of range"
+        );
+        Self::new(
+            name,
+            OptionKind::Integer(IntegerConfigOption {
+                value: default_value,
+                default_value,
+                min,
+                max,
+            }),
+        )
     }
 
     /// `new DoubleConfigOption(name, min, max, defaultValue)`.
     pub fn double(name: &str, min: f64, max: f64, default_value: f64) -> Self {
-        assert!(default_value >= min && default_value <= max, "DoubleConfigOption {name}: default out of range");
-        Self::new(name, OptionKind::Double(DoubleConfigOption { value: default_value, default_value, min, max }))
+        assert!(
+            default_value >= min && default_value <= max,
+            "DoubleConfigOption {name}: default out of range"
+        );
+        Self::new(
+            name,
+            OptionKind::Double(DoubleConfigOption {
+                value: default_value,
+                default_value,
+                min,
+                max,
+            }),
+        )
     }
 
     /// `new StringConfigOption(name, defaultValue, maxLength)` (also the
@@ -258,7 +308,11 @@ impl ConfigOption {
     /// `new StringConfigOption(name, defaultValue, String[] values)`: an
     /// unknown default falls back to `values[0]`.
     pub fn string_values(name: &str, default_value: &str, values: &[&str]) -> Self {
-        let default_value = if values.contains(&default_value) { default_value } else { values[0] };
+        let default_value = if values.contains(&default_value) {
+            default_value
+        } else {
+            values[0]
+        };
         Self::new(
             name,
             OptionKind::String(StringConfigOption {
@@ -271,7 +325,12 @@ impl ConfigOption {
     }
 
     /// `new ArrayConfigOption(name, elementHandler, separator, defaultValue)`.
-    pub fn array(name: &str, element_handler: ConfigOption, separator: &str, default_value: &str) -> Self {
+    pub fn array(
+        name: &str,
+        element_handler: ConfigOption,
+        separator: &str,
+        default_value: &str,
+    ) -> Self {
         let mut o = Self::new(
             name,
             OptionKind::Array(ArrayConfigOption {
@@ -384,16 +443,25 @@ impl ConfigOption {
                 if self.is_valid_string(s) {
                     self.set_bool(s.eq_ignore_ascii_case("true") || s.eq_ignore_ascii_case("1"));
                 } else {
-                    debug_log(&format!("ERROR BooleanConfigOption.parse() \"{}\" string={}\"", self.name, s));
+                    debug_log(&format!(
+                        "ERROR BooleanConfigOption.parse() \"{}\" string={}\"",
+                        self.name, s
+                    ));
                 }
             }
             OptionKind::Integer(_) => match java_parse_double(s) {
                 Some(v) => self.set_int(v as i32),
-                None => debug_log(&format!("ERROR IntegerConfigOption.parse() \"{}\" string=\"{}\"", self.name, s)),
+                None => debug_log(&format!(
+                    "ERROR IntegerConfigOption.parse() \"{}\" string=\"{}\"",
+                    self.name, s
+                )),
             },
             OptionKind::Double(_) => match java_parse_double(s) {
                 Some(v) => self.set_double(v),
-                None => debug_log(&format!("ERROR DoubleConfigOption.parse() \"{}\" string=\"{}\"", self.name, s)),
+                None => debug_log(&format!(
+                    "ERROR DoubleConfigOption.parse() \"{}\" string=\"{}\"",
+                    self.name, s
+                )),
             },
             OptionKind::String(_) | OptionKind::Array(_) => {
                 self.set_value_from_object(&ConfigObject::Str(s.to_string()))
@@ -415,7 +483,9 @@ impl ConfigOption {
     /// `getValueAsLuaString()`.
     pub fn get_value_as_lua_string(&self) -> String {
         match &self.kind {
-            OptionKind::String(s) => format!("\"{}\"", s.value.replace('\\', "\\\\").replace('"', "\\\"")),
+            OptionKind::String(s) => {
+                format!("\"{}\"", s.value.replace('\\', "\\\\").replace('"', "\\\""))
+            }
             _ => self.get_value_as_string(),
         }
     }
@@ -492,7 +562,9 @@ impl ConfigOption {
                     ));
                     return;
                 }
-                let OptionKind::Array(a) = &mut self.kind else { unreachable!() };
+                let OptionKind::Array(a) = &mut self.kind else {
+                    unreachable!()
+                };
                 if !a.multi_line {
                     a.value.clear();
                 }
@@ -532,7 +604,9 @@ impl ConfigOption {
                     || s.eq_ignore_ascii_case("1")
                     || s.eq_ignore_ascii_case("0")
             }
-            OptionKind::Integer(i) => java_parse_int(s, 10).is_some_and(|v| v >= i.min && v <= i.max),
+            OptionKind::Integer(i) => {
+                java_parse_int(s, 10).is_some_and(|v| v >= i.min && v <= i.max)
+            }
             OptionKind::Double(d) => java_parse_double(s).is_some_and(|v| v >= d.min && v <= d.max),
             OptionKind::String(st) => match &st.values {
                 Some(values) => values.iter().any(|v| v == s),
@@ -542,7 +616,9 @@ impl ConfigOption {
                 if java_trim(s).is_empty() {
                     return true;
                 }
-                java_split(s, &a.separator).iter().all(|p| a.element_handler.is_valid_string(p))
+                java_split(s, &a.separator)
+                    .iter()
+                    .all(|p| a.element_handler.is_valid_string(p))
             }
         }
     }
@@ -590,7 +666,9 @@ impl ConfigOption {
     /// `IntegerConfigOption.setValue(int)`: out-of-range values are logged
     /// and ignored.
     pub fn set_int(&mut self, v: i32) {
-        let OptionKind::Integer(i) = &mut self.kind else { panic!("{} is not an IntegerConfigOption", self.name) };
+        let OptionKind::Integer(i) = &mut self.kind else {
+            panic!("{} is not an IntegerConfigOption", self.name)
+        };
         if v < i.min {
             debug_log(&format!(
                 "ERROR: IntegerConfigOption.setValue() \"{}\" {} is less than min={}",
@@ -621,7 +699,9 @@ impl ConfigOption {
 
     /// `DoubleConfigOption.setValue(double)`.
     pub fn set_double(&mut self, v: f64) {
-        let OptionKind::Double(d) = &mut self.kind else { panic!("{} is not a DoubleConfigOption", self.name) };
+        let OptionKind::Double(d) = &mut self.kind else {
+            panic!("{} is not a DoubleConfigOption", self.name)
+        };
         if v < d.min {
             debug_log(&format!(
                 "ERROR: DoubleConfigOption.setValue() \"{}\" {} is less than min={}",
@@ -653,7 +733,9 @@ impl ConfigOption {
 
     /// `StringConfigOption.setValue(String)` (`None` is Java `null`).
     pub fn set_string(&mut self, v: Option<&str>) {
-        let OptionKind::String(s) = &self.kind else { panic!("{} is not a StringConfigOption", self.name) };
+        let OptionKind::String(s) = &self.kind else {
+            panic!("{} is not a StringConfigOption", self.name)
+        };
         if s.values.is_some() {
             match v {
                 Some(v) if self.is_valid_string(v) => self.set_string_internal(v.to_string()),
@@ -673,7 +755,9 @@ impl ConfigOption {
     }
 
     fn set_string_internal(&mut self, v: String) {
-        let OptionKind::String(s) = &mut self.kind else { unreachable!() };
+        let OptionKind::String(s) = &mut self.kind else {
+            unreachable!()
+        };
         if s.value != v {
             s.value = v;
             self.invoke_on_change_event();
@@ -710,7 +794,11 @@ fn object_to_string(o: &ConfigObject) -> String {
 
 impl ArrayConfigOption {
     fn value_as_string(&self, value: &[ConfigOption]) -> String {
-        value.iter().map(|e| e.get_value_as_string()).collect::<Vec<_>>().join(&self.separator)
+        value
+            .iter()
+            .map(|e| e.get_value_as_string())
+            .collect::<Vec<_>>()
+            .join(&self.separator)
     }
 
     fn resized(&mut self, mut value: Vec<ConfigOption>, new_size: i32) -> Vec<ConfigOption> {
@@ -797,7 +885,12 @@ pub struct ConfigFile {
 
 impl Default for ConfigFile {
     fn default() -> Self {
-        ConfigFile { options: Vec::new(), version: 0, version_string: "Version".into(), write_tooltips: true }
+        ConfigFile {
+            options: Vec::new(),
+            version: 0,
+            version_string: "Version".into(),
+            write_tooltips: true,
+        }
     }
 }
 
@@ -836,12 +929,18 @@ impl ConfigFile {
             let ss = java_split(line, "=");
             // `ss[0]` on an empty array, or an empty option name, throws in
             // Java and aborts the whole read.
-            let Some(first) = ss.first() else { return false };
+            let Some(first) = ss.first() else {
+                return false;
+            };
             if self.version_string == *first {
                 let Some(v) = ss.get(1) else { return false };
                 match java_parse_int(v, 10) {
                     Some(v) => self.version = v,
-                    None => Self::file_error(&display, line_number, &format!("expected version number, got \"{v}\"")),
+                    None => Self::file_error(
+                        &display,
+                        line_number,
+                        &format!("expected version number, got \"{v}\""),
+                    ),
                 }
                 continue;
             }
@@ -849,7 +948,8 @@ impl ConfigFile {
                 return false;
             }
             let value = ss.get(1).copied().unwrap_or("");
-            self.options.push(ConfigOption::string_max(first, value, -1));
+            self.options
+                .push(ConfigOption::string_max(first, value, -1));
         }
         true
     }
@@ -861,18 +961,29 @@ impl ConfigFile {
         if version != 0 {
             out.push_str(&format!("{}={}{}", self.version_string, version, sep));
         }
-        let line_sep = if self.write_tooltips { format!("{sep}{sep}") } else { sep.to_string() };
+        let line_sep = if self.write_tooltips {
+            format!("{sep}{sep}")
+        } else {
+            sep.to_string()
+        };
         let count = options.len();
         for (i, option) in options.iter().enumerate() {
             if self.write_tooltips {
-                let tooltip = option.get_tooltip().replace("\\n", " ").replace("\\\"", "\"");
+                let tooltip = option
+                    .get_tooltip()
+                    .replace("\\n", " ")
+                    .replace("\\\"", "\"");
                 let tooltip = tooltip.replace('\n', &format!("{sep}# "));
                 out.push_str(&format!("# {tooltip}{sep}"));
             }
             if option.is_multi_line() {
                 let a = option.as_array();
                 for j in 0..a.size() {
-                    out.push_str(&format!("{}={}", option.name(), a.get_element(j).get_value_as_string()));
+                    out.push_str(&format!(
+                        "{}={}",
+                        option.name(),
+                        a.get_element(j).get_value_as_string()
+                    ));
                     if j >= a.size() - 1 && i >= count - 1 {
                         continue;
                     }
@@ -971,18 +1082,25 @@ mod tests {
 
     #[test]
     fn array_options() {
-        let mut o =
-            ConfigOption::array("c", ConfigOption::double("element", 0.0, 1.0, 1.0), ",", "0.5,1.0, 1.0").fixed_size(3);
+        let mut o = ConfigOption::array(
+            "c",
+            ConfigOption::double("element", 0.0, 1.0, 1.0),
+            ",",
+            "0.5,1.0, 1.0",
+        )
+        .fixed_size(3);
         assert_eq!(o.get_value_as_string(), "0.5,1.0,1.0");
         o.parse("0.1,0.2");
         assert_eq!(o.get_value_as_string(), "0.1,0.2,1.0");
         o.parse("0.1,2.0,0.3"); // invalid: element out of range
         assert_eq!(o.get_value_as_string(), "0.1,0.2,1.0");
-        let mut z = ConfigOption::array("z", ConfigOption::integer("element", 25, 250, 100), ";", "");
+        let mut z =
+            ConfigOption::array("z", ConfigOption::integer("element", 25, 250, 100), ";", "");
         assert_eq!(z.get_value_as_string(), "");
         z.parse("50;75");
         assert_eq!(z.get_value_as_string(), "50;75");
-        let b = ConfigOption::array("b", ConfigOption::boolean("element", false), ",", "").fixed_size(4);
+        let b = ConfigOption::array("b", ConfigOption::boolean("element", false), ",", "")
+            .fixed_size(4);
         assert_eq!(b.get_value_as_string(), "false,false,false,false");
     }
 
@@ -1010,9 +1128,15 @@ mod tests {
     #[test]
     fn case_insensitive_order() {
         use std::cmp::Ordering::*;
-        assert_eq!(case_insensitive_cmp("bPerfReflections", "borderless"), Greater);
+        assert_eq!(
+            case_insensitive_cmp("bPerfReflections", "borderless"),
+            Greater
+        );
         assert_eq!(case_insensitive_cmp("bPerfReflections", "celsius"), Less);
-        assert_eq!(case_insensitive_cmp("3DGroundItem", "actionProgressBarSize"), Less);
+        assert_eq!(
+            case_insensitive_cmp("3DGroundItem", "actionProgressBarSize"),
+            Less
+        );
         assert_eq!(case_insensitive_cmp("abc", "ABC"), Equal);
     }
 }

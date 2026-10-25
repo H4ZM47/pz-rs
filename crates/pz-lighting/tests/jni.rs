@@ -397,3 +397,26 @@ fn sky_light_level_packs_blue_first() {
     let r = PlayerRenderSettings { rmod: 0.5, gmod: 0.25, bmod: 0.0, ambient: 1.0, night: 0.0, view_distance: 0.0 };
     assert_eq!(r.sky_light_level(), (255 << 16) | (127 << 8));
 }
+
+#[test]
+fn light_info_values_the_states_read() {
+    // `lightInts[1]` = 0x00336699: r 0x99, g 0x66, b 0x33.
+    let c = ColorInfo::from_packed(0x0033_6699);
+    assert_eq!((c.r, c.g, c.b, c.a), (153.0 / 255.0, 102.0 / 255.0, 51.0 / 255.0, 1.0));
+    // spottedNew/spottedOld: (r + g + b) / 3.0f, summed left to right.
+    assert_eq!(c.mean_rgb(), (153.0f32 / 255.0 + 102.0 / 255.0 + 51.0 / 255.0) / 3.0);
+    assert!((c.mean_rgb() - 0.4).abs() < 1e-6);
+    // getLightLevel: PZMath.max(r, g, b).
+    assert_eq!(c.max_rgb(), 0.6);
+    assert_eq!(ColorInfo::from_packed(0x00ff_0000).max_rgb(), 1.0);
+    // The top byte (alpha in the word) is ignored.
+    assert_eq!(ColorInfo::from_packed(-1).mean_rgb(), 1.0);
+    // A fresh cache is `new ColorInfo()` (white); `reset()` makes it black.
+    let mut sl = SquareLight::new();
+    assert_eq!((sl.light_mean(), sl.light_level_value()), (1.0, 1.0));
+    sl.reset();
+    assert_eq!((sl.light_mean(), sl.light_level_value()), (0.0, 0.0));
+    // getLightLevel(-1) decodes the shared buffer (zeroed at start).
+    assert_eq!(light_level2(0), 0.0);
+    assert_eq!(light_level2(0x0033_6699), 0.6);
+}

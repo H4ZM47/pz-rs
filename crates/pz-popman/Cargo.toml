@@ -1,0 +1,10 @@
+[package]
+name = "pz-popman"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-world.workspace = true
+
+[dev-dependencies]
+pz-fs.workspace = true

@@ -90,6 +90,8 @@ pub struct GridWorld {
     /// Per-chunk level ranges; chunks not listed span their squares'
     /// levels.
     pub levels: HashMap<(i32, i32), (i32, i32)>,
+    /// Per-chunk floor blood ([`crate::weather::SurfaceWorld::chunk_blood`]).
+    pub blood: HashMap<(i32, i32), crate::blood::ChunkBlood>,
 }
 
 impl GridWorld {
@@ -99,6 +101,16 @@ impl GridWorld {
 
     pub fn square_mut(&mut self, x: i32, y: i32, z: i32) -> &mut RenderSquare {
         self.squares.entry((x, y, z)).or_insert_with(|| RenderSquare::new(x, y, z))
+    }
+}
+
+impl crate::weather::SurfaceWorld for GridWorld {
+    fn square(&self, x: i32, y: i32, z: i32) -> Option<&RenderSquare> {
+        self.squares.get(&(x, y, z))
+    }
+
+    fn chunk_blood(&self, wx: i32, wy: i32) -> Option<&crate::blood::ChunkBlood> {
+        self.blood.get(&(wx, wy))
     }
 }
 

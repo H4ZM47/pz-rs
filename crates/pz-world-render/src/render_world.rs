@@ -67,7 +67,7 @@ pub fn render_square(
                 .iter()
                 .map(|s| AttachedSprite {
                     sprite: cache.get(w.sprites, s.sprite, tex),
-                    alpha: 1.0,
+                    alpha: s.alpha,
                 })
                 .collect();
         }
