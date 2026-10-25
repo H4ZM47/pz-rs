@@ -28,12 +28,14 @@
 //! `SynchSpawn` and `removeItemOnServer` do nothing), and
 //! `Food.updateAge` / `Radio.deviceData` in `OnAddedToContainer`.
 //!
+//! The `FluidContainer` queries (`FindWaterSource`, `getSoapList`, the
+//! `*FluidContainer*`/`*FluidSources` methods, ...) read the items'
+//! `pz_entity` `FluidContainer` component, decoded against the item
+//! environment's entity registries ([`crate::bind_items::ItemLuaEnv::entity`]).
+//!
 //! Not bound: the overloads taking Java `Predicate`/`Comparator` objects
 //! (`getAll`, `getFirst`, `getSome`, `getCount`, `getBest`, `getBestType`
-//! and their `Recurse` forms, `getUsesRecurse`), the `FluidContainer`
-//! queries (`FindWaterSource`, `FindAndReturnWaterItem`, `getSoapList`,
-//! the `*FluidContainer*`/`*FluidSources`/`getAllWaterFillables`/
-//! `getWaterContainerCount` methods), `ItemType` arguments (`HasType`,
+//! and their `Recurse` forms, `getUsesRecurse`), `ItemType` arguments (`HasType`,
 //! `Find`/`Remove(ItemType)`), item behaviour pz-inventory lacks
 //! (`FindAndReturnStack`, `getBestWeapon`, `getTotalWeaponScore`,
 //! `isEmptyOrUnwanted`, `getAllFoodsForAnimals`, `getItems4Admin`,
@@ -1434,6 +1436,328 @@ fn item_from_saved(
     }
     bags.into_iter()
         .find_map(|b| item_from_saved(b, test, ignore_broken, include_inv))
+}
+
+// ---- fluids ---------------------------------------------------------------------
+
+/// `item.hasComponent(ComponentType.FluidContainer)`.
+fn has_fluid_container(i: &InventoryItem) -> bool {
+    match &i.component_cache {
+        Some(c) => c.fluid_container().is_some(),
+        None => {
+            let id = pz_scripts::objects::entity::ComponentType::FluidContainer.id();
+            i.components.iter().any(|b| b.type_id == id)
+        }
+    }
+}
+
+/// `item.getFluidContainer()` decoded against the environment's entity
+/// registries.
+fn fluid_container(i: &InventoryItem) -> Option<pz_entity::FluidContainer> {
+    let e = item_env();
+    match e.entity() {
+        Some(ctx) => i.get_fluid_container(ctx),
+        None => i.get_fluid_container(&pz_entity::BasicContext::default()),
+    }
+}
+
+/// `FluidInstance.getFluid().getFluidTypeString()` (`None`: no fluid).
+fn fluid_name(f: &pz_entity::FluidInstance) -> Option<String> {
+    use pz_entity::fluids::FluidRef;
+    use pz_entity::Lookup;
+    let e = item_env();
+    let default = pz_entity::BasicContext::default();
+    let ctx = e.entity().unwrap_or(&default);
+    match f.fluid.as_ref()? {
+        FluidRef::Type(id) => match ctx.fluid_by_id(*id) {
+            Lookup::Found(info) => Some(info.name),
+            Lookup::Missing => None,
+            Lookup::Unknown => {
+                pz_entity::fluids::fluid_type_from_id(*id).map(|t| t.name().to_string())
+            }
+        },
+        FluidRef::Modded(s) => match ctx.fluid_by_name(s) {
+            Lookup::Found(info) => Some(info.name),
+            Lookup::Missing => None,
+            Lookup::Unknown => Some(s.clone()),
+        },
+    }
+}
+
+/// `FluidContainer.getPrimaryFluid().getFluidTypeString()`: `None` when
+/// empty (or the instance has no fluid).
+fn primary_fluid(fc: &pz_entity::FluidContainer) -> Option<String> {
+    if fc.is_empty() || fc.fluids.is_empty() {
+        return None;
+    }
+    let mut primary = &fc.fluids[0];
+    for test in &fc.fluids {
+        if test.amount > primary.amount {
+            primary = test;
+        }
+    }
+    fluid_name(primary)
+}
+
+/// `FluidContainer.isWaterSource()`.
+fn fc_is_water_source(fc: &pz_entity::FluidContainer) -> bool {
+    !fc.is_empty()
+        && matches!(
+            primary_fluid(fc).as_deref(),
+            Some("Water" | "TaintedWater" | "CarbonatedWater")
+        )
+}
+
+/// `InventoryItem.isWaterSource()` (STUB: `isMultiTileMoveable` is false,
+/// moveable sprite grids are not in pz-inventory).
+fn is_water_source(i: &InventoryItem) -> bool {
+    has_fluid_container(i) && fluid_container(i).is_some_and(|fc| fc_is_water_source(&fc))
+}
+
+/// `FluidContainer.getRatioForFluid(fluid)`: the instance's share of the
+/// container's fluids (`percentage` as `recalculateCaches` sets it).
+fn ratio_for_fluid(fc: &pz_entity::FluidContainer, name: &str) -> f32 {
+    let total = fc.amount();
+    for f in &fc.fluids {
+        if fluid_name(f).as_deref() == Some(name) {
+            return if total > 0.0 { f.amount / total } else { 0.0 };
+        }
+    }
+    0.0
+}
+
+thread_local! {
+    /// `ItemContainer.tempList` (a static list the original returns from
+    /// `getAllWaterFillables` and `getAvailableFluidContainer`).
+    static TEMP_LIST: Value = list_value(Vec::new());
+}
+
+/// Refills the static `tempList` and returns it.
+fn temp_list(items: Vec<ItemRef>) -> Value {
+    TEMP_LIST.with(|v| {
+        if let Value::Object(o) = v {
+            let l = as_list(o);
+            *l.items.borrow_mut() = items.iter().map(item_value).collect();
+        }
+        v.clone()
+    })
+}
+
+fn primary_is(i: &InventoryItem, names: &[&str]) -> bool {
+    has_fluid_container(i)
+        && fluid_container(i).is_some_and(|fc| {
+            !fc.is_empty() && primary_fluid(&fc).is_some_and(|p| names.contains(&p.as_str()))
+        })
+}
+
+/// `getAllWaterFluidSources(includeTainted)`.
+fn water_fluid_sources(c: &ContainerRef, tainted: bool) -> Vec<ItemRef> {
+    let names: &[&str] = if tainted {
+        &["Water", "CarbonatedWater", "TaintedWater"]
+    } else {
+        &["Water", "CarbonatedWater"]
+    };
+    items(c)
+        .into_iter()
+        .filter(|r| primary_is(&r.borrow(), names))
+        .collect()
+}
+
+/// `getAvailableFluidContainer(type)`: empty fluid containers, and those
+/// whose primary fluid is `type` and not full (an empty one of that
+/// fluid is listed once per rule, as in the original).
+fn available_fluid_containers(c: &ContainerRef, ty: Option<&str>) -> Vec<ItemRef> {
+    let mut out = Vec::new();
+    for r in items(c) {
+        let i = r.borrow();
+        if !has_fluid_container(&i) {
+            continue;
+        }
+        let Some(fc) = fluid_container(&i) else {
+            continue;
+        };
+        if fc.is_empty() {
+            out.push(r.clone());
+        }
+        let Some(ty) = ty.filter(|t| !t.is_empty()) else {
+            continue;
+        };
+        let Some(p) = primary_fluid(&fc) else {
+            continue;
+        };
+        if p.eq_ignore_ascii_case(ty) && !fc.is_full() {
+            out.push(r.clone());
+        }
+    }
+    out
+}
+
+fn register_fluids(b: &crate::expose::ClassBuilder) {
+    b.method("getWaterContainerCount", |c| {
+        let s = this(c)?;
+        let n = items(&s)
+            .iter()
+            .filter(|r| has_fluid_container(&r.borrow()))
+            .count();
+        Ok(c.push(n as f64))
+    });
+    b.method("FindWaterSource", |c| {
+        let s = this(c)?;
+        let r = items(&s).into_iter().find(|r| {
+            let i = r.borrow();
+            is_water_source(&i) && !(is_drainable_interface(&i) && i.get_current_uses() <= 0)
+        });
+        Ok(c.push(opt_item(r)))
+    });
+    b.method("FindAndReturnWaterItem", |c| {
+        let s = this(c)?;
+        let uses = int_arg(c, 1);
+        let r = items(&s).into_iter().find(|r| {
+            let i = r.borrow();
+            is_drainable(&i) && is_water_source(&i) && i.get_current_uses() >= uses
+        });
+        Ok(c.push(opt_item(r)))
+    });
+    b.method("getAllWaterFillables", |c| {
+        let s = this(c)?;
+        let v = items(&s)
+            .into_iter()
+            .filter(|r| {
+                let i = r.borrow();
+                has_fluid_container(&i) && fluid_container(&i).is_some_and(|fc| fc.is_empty())
+            })
+            .collect();
+        Ok(c.push(temp_list(v)))
+    });
+    b.method("getAllWaterFluidSources", |c| {
+        let s = this(c)?;
+        let v = water_fluid_sources(&s, bool_arg(c, 1));
+        Ok(c.push(item_list(v)))
+    });
+    b.method("getFirstWaterFluidSources", |c| {
+        let s = this(c)?;
+        let v = water_fluid_sources(&s, bool_arg(c, 1));
+        if c.nargs() > 2 && bool_arg(c, 2) {
+            if let Some(r) = v
+                .iter()
+                .find(|r| primary_is(&r.borrow(), &["TaintedWater"]))
+            {
+                return Ok(c.push(item_value(r)));
+            }
+        }
+        Ok(c.push(opt_item(v.into_iter().next())))
+    });
+    let cleaning = |c: &ContainerRef| -> Vec<ItemRef> {
+        items(c)
+            .into_iter()
+            .filter(|r| primary_is(&r.borrow(), &["Bleach", "CleaningLiquid"]))
+            .collect()
+    };
+    b.method("getAllCleaningFluidSources", move |c| {
+        let s = this(c)?;
+        Ok(c.push(item_list(cleaning(&s))))
+    });
+    b.method("getFirstCleaningFluidSources", move |c| {
+        let s = this(c)?;
+        Ok(c.push(opt_item(cleaning(&s).into_iter().next())))
+    });
+    b.method("getFirstFluidContainer", |c| {
+        let s = this(c)?;
+        let ty = opt_str_arg(c, 1).filter(|t| !t.is_empty());
+        for r in items(&s) {
+            let i = r.borrow();
+            if !has_fluid_container(&i) {
+                continue;
+            }
+            let Some(fc) = fluid_container(&i) else {
+                continue;
+            };
+            if fc.is_empty() {
+                drop(i);
+                return Ok(c.push(item_value(&r)));
+            }
+            let (Some(ty), Some(p)) = (ty.as_deref(), primary_fluid(&fc)) else {
+                continue;
+            };
+            if p.eq_ignore_ascii_case(ty) {
+                drop(i);
+                return Ok(c.push(item_value(&r)));
+            }
+        }
+        Ok(c.push(Value::Nil))
+    });
+    b.method("getAvailableFluidContainer", |c| {
+        let s = this(c)?;
+        let v = available_fluid_containers(&s, opt_str_arg(c, 1).as_deref());
+        Ok(c.push(temp_list(v)))
+    });
+    b.method("getFirstAvailableFluidContainer", |c| {
+        let s = this(c)?;
+        let v = available_fluid_containers(&s, opt_str_arg(c, 1).as_deref());
+        temp_list(v.clone());
+        Ok(c.push(opt_item(v.into_iter().next())))
+    });
+    b.method("getAvailableFluidContainersCapacity", |c| {
+        let s = this(c)?;
+        let v = available_fluid_containers(&s, opt_str_arg(c, 1).as_deref());
+        temp_list(v.clone());
+        let mut volume = 0.0f32;
+        for r in &v {
+            if let Some(fc) = fluid_container(&r.borrow()) {
+                volume += fc.get_free_capacity();
+            }
+        }
+        Ok(c.push(volume as f64))
+    });
+    b.method("getSoapList", |c| {
+        let s = this(c)?;
+        let liquid = bool_arg(c, 2);
+        let list = match list_arg(c, 1)? {
+            Some(l) => l,
+            None => match list_value(Vec::new()) {
+                Value::Object(o) => o,
+                _ => unreachable!(),
+            },
+        };
+        // ZomboidGlobals.cleanStainCleaningFluidAmount (loaded from the
+        // Lua table of the same name).
+        let need = match c.thread.globals().get_str("ZomboidGlobals") {
+            Value::Table(t) => num(&t.get_str("CleanStainCleaningFluidAmount")),
+            _ => 0.0,
+        };
+        let e = item_env();
+        for r in items(&s) {
+            let i = r.borrow();
+            if i.get_full_type() == "Base.Soap2" {
+                as_list(&list).push(item_value(&r))?;
+            } else if liquid {
+                if let Some(fc) = fluid_container(&i) {
+                    if ratio_for_fluid(&fc, "CleaningLiquid") >= 0.499f32
+                        && fc.get_amount() as f64 >= need
+                    {
+                        as_list(&list).push(item_value(&r))?;
+                    }
+                }
+            }
+            if let Some(bag) = bag_items(&i) {
+                let equipped = i.is_equipped(e.owner(&r).as_ref());
+                if equipped
+                    && bag.iter().filter_map(SavedItem::as_item).any(|n| {
+                        n.get_full_type() == "Base.Soap2"
+                            || liquid
+                                && fluid_container(n).is_some_and(|fc| {
+                                    ratio_for_fluid(&fc, "CleaningLiquid") >= 0.499f32
+                                        && fc.get_amount() as f64 >= need
+                                })
+                    })
+                {
+                    // `bag.getSoapList(result, ...)` would add a bag's item.
+                    return Err(nested_error());
+                }
+            }
+        }
+        Ok(c.push(Value::Object(list)))
+    });
 }
 
 // ---- registration -------------------------------------------------------------
@@ -3201,6 +3525,7 @@ pub fn register(thread: &mut Thread) {
     register_weights(&b);
     register_items(&b);
     register_queries(&b);
+    register_fluids(&b);
     // `InventoryItem.getContainer()`.
     let ib = expose_class(
         thread,

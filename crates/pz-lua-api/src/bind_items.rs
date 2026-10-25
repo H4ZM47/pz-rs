@@ -82,6 +82,12 @@ pub trait ItemLuaEnv {
     fn visual_rng(&self) -> &dyn VisualRng {
         &OutfitVisualRng
     }
+    /// The entity registries (attributes, fluids) items' ECS components
+    /// resolve against: new items get their factory components
+    /// (`GameEntityFactory.CreateInventoryItemEntity`) only with one.
+    fn entity(&self) -> Option<&dyn pz_entity::EntityContext> {
+        None
+    }
 }
 
 /// The item environment outside a game (the main menu and character
@@ -91,12 +97,37 @@ pub struct GameItemEnv {
     pub assets: Option<ItemAssets>,
     /// A generator for `Rand` instead of `RandStandard` (tests, oracles).
     pub rand: Option<pz_core::random::Rand>,
+    /// The entity registries ([`ItemLuaEnv::entity`]).
+    pub entity: Option<Rc<pz_entity::BasicContext>>,
 }
 
 impl GameItemEnv {
     pub fn new(assets: Option<ItemAssets>) -> Self {
-        GameItemEnv { assets, rand: None }
+        GameItemEnv {
+            assets,
+            rand: None,
+            entity: None,
+        }
     }
+}
+
+/// The entity registries of the game (`AttributeType`s from the jar,
+/// `Fluid`s from the jar and the loaded scripts), as the item factory
+/// needs them for `FluidContainer` and other item components.
+pub fn item_entity_context(
+    jar: &std::path::Path,
+    sm: &pz_scripts::ScriptManager,
+) -> Result<pz_entity::BasicContext, String> {
+    let jar = &pz_classfile::Jar::open(jar).map_err(|e| format!("{}: {e:?}", jar.display()))?;
+    Ok(pz_entity::BasicContext {
+        attributes: pz_entity::AttributeTypes::from_jar(jar)
+            .map_err(|e| format!("attribute types: {e:?}"))?,
+        fluids: Some(
+            pz_entity::FluidRegistry::from_scripts(jar, sm)
+                .map_err(|e| format!("fluids: {e:?}"))?,
+        ),
+        ..Default::default()
+    })
 }
 
 impl ItemContext for GameItemEnv {
@@ -132,7 +163,17 @@ impl ItemContext for GameItemEnv {
         pz_inventory::ItemTemplate::from_script_ref(&sm, &s)
     }
     fn create_item(&self, full_type: &str) -> Option<InventoryItem> {
-        create_item_with(self, full_type, 1.0)
+        create_item_with(self, self.entity.as_deref().map(|e| e as _), full_type, 1.0)
+    }
+    fn fluid_amount(&self, item: &InventoryItem) -> Option<f32> {
+        match &self.entity {
+            Some(e) => pz_inventory::gameplay::fluid_container_amount(item, e.as_ref(), 0),
+            None => pz_inventory::gameplay::fluid_container_amount(
+                item,
+                &pz_entity::BasicContext::default(),
+                0,
+            ),
+        }
     }
     fn assets(&self) -> Option<&ItemAssets> {
         self.assets.as_ref()
@@ -157,6 +198,9 @@ impl ItemLuaEnv for GameItemEnv {
             Some(r) => r.next_float(min, max),
             None => pz_core::random::next_float(min, max),
         }
+    }
+    fn entity(&self) -> Option<&dyn pz_entity::EntityContext> {
+        self.entity.as_deref().map(|e| e as _)
     }
 }
 
@@ -191,9 +235,17 @@ struct CreateEnv<'a> {
     lua: Option<&'a dyn ItemLuaEnv>,
     ctx: &'a dyn ItemContext,
     sm: &'a pz_scripts::ScriptManager,
+    /// `EntityCodec` over the environment's entity registries.
+    codec: Option<pz_inventory::component::EntityCodec<'a>>,
 }
 
 impl ItemEnv for CreateEnv<'_> {
+    fn components(&self) -> &dyn pz_inventory::component::ComponentCodec {
+        match &self.codec {
+            Some(c) => c,
+            None => &pz_inventory::component::OpaqueComponents,
+        }
+    }
     fn world_age_hours(&self) -> f64 {
         self.ctx.world_age_hours()
     }
@@ -236,6 +288,7 @@ fn translated_name(full_type: &str) -> Option<String> {
 
 fn create_item_with(
     ctx: &dyn ItemContext,
+    entity: Option<&dyn pz_entity::EntityContext>,
     item_type: &str,
     use_delta: f32,
 ) -> Option<InventoryItem> {
@@ -244,6 +297,7 @@ fn create_item_with(
         lua: None,
         ctx,
         sm: &sm,
+        codec: entity.map(|ctx| pz_inventory::component::EntityCodec { ctx }),
     };
     pz_inventory::factory::create_item_by_type(
         &env,
@@ -265,6 +319,9 @@ pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
         lua: Some(e.as_ref()),
         ctx: e.context(),
         sm: &sm,
+        codec: e
+            .entity()
+            .map(|ctx| pz_inventory::component::EntityCodec { ctx }),
     };
     let item = pz_inventory::factory::create_item_by_type(
         &ce,
@@ -281,6 +338,15 @@ pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
 /// (`ItemAssets::load(game_dir)`), so items made from Lua have visuals.
 pub fn install_item_assets(assets: ItemAssets) {
     install_item_env(Rc::new(GameItemEnv::new(Some(assets))));
+}
+
+/// Installs a [`GameItemEnv`] with the `ClothingItem` assets and the entity
+/// registries ([`item_entity_context`]), so items made from Lua have
+/// visuals and their factory components (`FluidContainer`, ...).
+pub fn install_item_runtime(assets: Option<ItemAssets>, entity: Option<pz_entity::BasicContext>) {
+    let mut env = GameItemEnv::new(assets);
+    env.entity = entity.map(Rc::new);
+    install_item_env(Rc::new(env));
 }
 
 thread_local! {
