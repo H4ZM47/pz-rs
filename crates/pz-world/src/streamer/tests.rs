@@ -123,6 +123,7 @@ impl Fixture {
             chunk_hook: Some(&mut self.log),
             no_save: self.no_save,
             vehicles_db: self.vehicles.as_mut(),
+            vehicle_saver: None,
         }
     }
 
@@ -168,7 +169,8 @@ impl Drop for Fixture {
 
 /// Events as short strings: `R x,y` requested, `S x,y d|n|e` served from
 /// disk / brand new / after an error, `C` cancelled, `H` handed off, `D`
-/// discarded, `U` unloaded, `W x,y` saved (`-`: saving is off).
+/// discarded, `U` unloaded, `W x,y` saved (`-`: saving is off), `V`/`VU`
+/// vehicles loaded/unloaded, `HOT` the hot save, `X` removed at exit.
 fn short(events: &[StreamEvent]) -> Vec<String> {
     events
         .iter()
@@ -197,6 +199,17 @@ fn short(events: &[StreamEvent]) -> Vec<String> {
                 removed,
                 error,
             } => format!("V {wx},{wy} {added} -{} {error:?}", removed.len()),
+            StreamEvent::VehiclesUnloaded {
+                wx,
+                wy,
+                saved,
+                errors,
+            } => format!(
+                "VU {wx},{wy} {saved:?} {:?}",
+                errors.iter().map(|e| e.1.as_str()).collect::<Vec<_>>()
+            ),
+            StreamEvent::HotSave => "HOT".into(),
+            StreamEvent::Removed { wx, wy } => format!("X {wx},{wy}"),
         })
         .collect()
 }
@@ -306,6 +319,8 @@ fn walking_east_unloads_saves_and_loads_the_closest_first() {
             "W 8,11",
             "S 13,12 n",
             "W 8,12",
+            // The queue is empty: `HotsaveAncilliarySystems`.
+            "HOT",
             "S 13,8 n",
             // Hand-off: 1 + 5 * 3 / 5 = 4 this frame.
             "H 13,10",
@@ -361,7 +376,7 @@ fn walking_back_cancels_and_reloads_from_the_save_written_first() {
             "C 13,12", "C 13,11", "C 13,10", "C 13,9", "C 13,8",
             // The chunk about to load has its queued save written first.
             "W 8,10", "S 8,10 d", "W 8,11", "S 8,11 d", "W 8,9", "S 8,9 d", "W 8,12", "S 8,12 d",
-            "W 8,8", "S 8,8 d", "H 8,10", "H 8,11", "H 8,9", "H 8,12",
+            "W 8,8", "HOT", "S 8,8 d", "H 8,10", "H 8,11", "H 8,9", "H 8,12",
         ]
     );
 }
@@ -463,7 +478,14 @@ fn no_save_drops_unloaded_chunks() {
     let ev = short(&s.take_events());
     assert_eq!(
         ev,
-        ["U 10,10", "R 11,10", "W 10,10 -", "S 11,10 n", "H 11,10"]
+        [
+            "U 10,10",
+            "R 11,10",
+            "W 10,10 -",
+            "HOT",
+            "S 11,10 n",
+            "H 11,10"
+        ]
     );
     assert!(!chunk_path(&f.dir, 10, 10).exists());
 }
@@ -585,4 +607,205 @@ fn without_a_vehicle_store_no_vehicles_load() {
     assert!(only(&ev, "V ").is_empty());
     assert!(vehicle_ids(&cell, 9, 10).is_empty());
     drop(conn);
+}
+
+/// Every vehicle has a script without alarm or lightbar attached.
+struct PlainScripts;
+
+impl vehicles_db::VehicleScripts for PlainScripts {
+    fn script(&self, _: &str) -> Option<vehicles_db::VehicleScriptFacts<'_>> {
+        Some(vehicles_db::VehicleScriptFacts {
+            sounds: crate::save::vehicle::AlarmSounds {
+                alarm_enable: false,
+                alarm: &[],
+                alarm_loop: &[],
+            },
+            lightbar_enable: false,
+        })
+    }
+}
+
+/// `(id, wx, wy, x, y, worldversion, inMeta, data)` of every row.
+type DbRow = (i64, i64, i64, f64, f64, i64, i64, Vec<u8>);
+
+fn db_rows(c: &mut pz_sqlite::Connection) -> Vec<DbRow> {
+    let t = c.table("vehicles").unwrap();
+    let col = |n: &str| t.column(n).unwrap();
+    let real = |v: pz_sqlite::Value| match v {
+        pz_sqlite::Value::Real(r) => r,
+        v => v.as_i64() as f64,
+    };
+    c.rows(&t)
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let data = match r.get(&t, col("data")) {
+                pz_sqlite::Value::Blob(b) => b,
+                _ => Vec::new(),
+            };
+            (
+                r.get(&t, col("id")).as_i64(),
+                r.get(&t, col("wx")).as_i64(),
+                r.get(&t, col("wy")).as_i64(),
+                real(r.get(&t, col("x"))),
+                real(r.get(&t, col("y"))),
+                r.get(&t, col("worldversion")).as_i64(),
+                r.get(&t, col("inMeta")).as_i64(),
+                data,
+            )
+        })
+        .collect()
+}
+
+/// The blob `BaseVehicle.save` writes for the test vehicle on square
+/// `(x, y)`.
+fn vehicle_blob(f: &Fixture, square: (i32, i32)) -> Vec<u8> {
+    let mut row = crate::save::vehicle::VehicleRow {
+        id: 0,
+        wx: 0,
+        wy: 0,
+        x: 0.0,
+        y: 0.0,
+        world_version: crate::save::WORLD_VERSION,
+        in_meta: false,
+        data: Vec::new(),
+    };
+    let mut w = crate::save::io::Writer::new();
+    crate::save::movers_tests::vehicle()
+        .save(
+            &mut w,
+            f.save_tables.class_id("Vehicle"),
+            None,
+            None,
+            &AllItems,
+        )
+        .unwrap();
+    row.data = w.buf;
+    let class = f.save_tables.class_id("Vehicle");
+    let ts = f.save_settings.tile_scale as f32;
+    let v = row
+        .load(class, (32.0 * ts, 96.0 * ts), &AllItems)
+        .unwrap()
+        .unwrap();
+    let mut w = crate::save::io::Writer::new();
+    v.save(&mut w, class, Some(square), None, &AllItems)
+        .unwrap();
+    w.buf
+}
+
+#[test]
+fn unloaded_chunks_write_their_vehicles_before_the_chunk_file() {
+    let mut f = Fixture::new();
+    f.write_chunk(9, 10, 100);
+    vehicles_db(&mut f, &[(4, 75.5, 82.5), (2, 73.0, 87.9)]);
+    let mut s = ChunkStreamer::new(1, 3);
+    let mut cell = IsoCell::default();
+    s.load_world(10, 10, &mut cell, &mut f.ctx());
+    s.take_events();
+    // Row 4 is gone from the table: it is inserted again.
+    {
+        let c = f.vehicles.as_mut().unwrap();
+        c.delete("vehicles", 4).unwrap();
+        c.commit().unwrap();
+    }
+    let p = PlayerPos::moved(87.0, 84.0, 88.0, 84.0);
+    let scripts = PlainScripts;
+    let saver = vehicles_db::LoadedVehicleSaver { scripts: &scripts };
+    let mut ctx = f.ctx();
+    ctx.vehicle_saver = Some(&saver);
+    s.update(&[Some(p)], Serve::UntilIdle, &mut cell, &mut ctx);
+    let ev = short(&s.take_events());
+    let i = ev.iter().position(|e| e == "W 9,10").unwrap();
+    assert_eq!(ev[i - 1], "VU 9,10 [2, 4] []");
+    assert!(ev.contains(&"VU 9,9 [] []".to_string()));
+    let blob2 = vehicle_blob(&f, (73, 87));
+    let blob4 = vehicle_blob(&f, (75, 82));
+    // The row's position is the vehicle's own (`getX()`, not the row it
+    // came from); the blob clamps it into the square. The test vehicle's
+    // engine runs, so it is `inMeta`.
+    let rows = db_rows(f.vehicles.as_mut().unwrap());
+    assert_eq!(
+        rows,
+        [
+            (2, 9, 10, 100.25, 200.75, 249, 1, blob2),
+            (4, 9, 10, 100.25, 200.75, 249, 1, blob4),
+        ]
+    );
+}
+
+#[test]
+fn vehicles_without_a_script_are_not_written() {
+    let mut f = Fixture::new();
+    f.write_chunk(9, 10, 100);
+    vehicles_db(&mut f, &[(4, 75.5, 82.5)]);
+    let before = db_rows(f.vehicles.as_mut().unwrap());
+    let mut s = ChunkStreamer::new(1, 3);
+    let mut cell = IsoCell::default();
+    s.load_world(10, 10, &mut cell, &mut f.ctx());
+    let p = PlayerPos::moved(87.0, 84.0, 88.0, 84.0);
+    s.update(&[Some(p)], Serve::UntilIdle, &mut cell, &mut f.ctx());
+    let ev = short(&s.take_events());
+    // `shouldUpdateInMeta` → `hasAlarm` on the null script.
+    assert!(ev.contains(&"VU 9,10 [] [\"java.lang.NullPointerException\"]".to_string()));
+    assert_eq!(f.saved_mark(9, 10), Some(100));
+    assert_eq!(db_rows(f.vehicles.as_mut().unwrap()), before);
+}
+
+#[test]
+fn saving_the_cell_writes_every_grid_chunk_and_stop_removes_them() {
+    let mut f = Fixture::new();
+    f.write_chunk(9, 10, 100);
+    vehicles_db(&mut f, &[(4, 75.5, 82.5)]);
+    let mut s = ChunkStreamer::new(1, 3);
+    let mut cell = IsoCell::default();
+    s.load_world(10, 10, &mut cell, &mut f.ctx());
+    // One chunk unloaded and still queued when the game is saved.
+    let p = PlayerPos::moved(87.0, 84.0, 88.0, 84.0);
+    s.update(&[Some(p)], Serve::Jobs(0), &mut cell, &mut f.ctx());
+    s.take_events();
+    assert_eq!(s.pending_saves(), 3);
+    cell.chunks
+        .get_mut(&(10, 10))
+        .unwrap()
+        .saved
+        .loot_respawn_hour = 55;
+    let scripts = PlainScripts;
+    let saver = vehicles_db::LoadedVehicleSaver { scripts: &scripts };
+    {
+        let mut ctx = f.ctx();
+        ctx.vehicle_saver = Some(&saver);
+        s.wait_for_saves(&mut ctx);
+        s.save_chunk_maps(&cell, &mut ctx);
+    }
+    let ev = short(&s.take_events());
+    assert_eq!(
+        only(&ev, "W "),
+        [
+            // The queued saves, then the hot save; then the grid, x outer.
+            "9,9", "9,10", "9,11", "10,9", "10,10", "10,11", "11,9", "11,10", "11,11"
+        ]
+    );
+    assert_eq!(
+        ev[ev.iter().position(|e| e == "W 9,11").unwrap() + 1],
+        "HOT"
+    );
+    assert_eq!(ev.iter().filter(|e| *e == "HOT").count(), 1);
+    // The grid has moved east: its last column holds no chunks yet.
+    assert_eq!(grid(&s, 0)[0], [Some((10, 9)), Some((11, 9)), None]);
+    assert_eq!(f.saved_mark(10, 10), Some(55));
+    assert!(chunk_path(&f.dir, 11, 11).exists());
+    assert!(cell.chunks.contains_key(&(10, 10)));
+
+    // Quitting: nothing is saved again; every chunk leaves the world.
+    std::fs::remove_file(chunk_path(&f.dir, 10, 10)).unwrap();
+    s.stop(&mut cell, &mut f.ctx());
+    let ev = short(&s.take_events());
+    assert_eq!(
+        only(&ev, "X "),
+        ["10,9", "11,9", "10,10", "11,10", "10,11", "11,11"]
+    );
+    assert!(only(&ev, "W ").is_empty());
+    assert!(cell.chunks.is_empty());
+    assert!(!chunk_path(&f.dir, 10, 10).exists());
+    assert!(!s.is_busy());
 }

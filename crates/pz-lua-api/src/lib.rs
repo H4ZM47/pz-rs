@@ -61,6 +61,7 @@ pub mod global_objects_save;
 pub mod lua_manager;
 pub mod player_db;
 pub mod savefile;
+pub mod world_save;
 
 pub use lua_manager::LuaManager;
 
