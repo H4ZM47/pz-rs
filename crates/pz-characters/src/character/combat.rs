@@ -313,10 +313,11 @@ fn rotate(x: f32, y: f32, rad: f32) -> (f32, f32) {
     ((x as f64 * c - y as f64 * s) as f32, (x as f64 * s + y as f64 * c) as f32)
 }
 
-/// `IsoMovingObject.getVectorFromDirection(dir)`.
+/// `IsoMovingObject.getVectorFromDirection(dir)`: normalized (diagonals
+/// are `(±1, ±1) / sqrt 2` after `Vector2.normalize`).
 pub fn direction_vector(dir: pz_world::square::IsoDirections) -> (f32, f32) {
     use pz_world::square::IsoDirections as D;
-    match dir {
+    let v = match dir {
         D::S => (0.0, 1.0),
         D::N => (0.0, -1.0),
         D::E => (1.0, 0.0),
@@ -325,7 +326,8 @@ pub fn direction_vector(dir: pz_world::square::IsoDirections) -> (f32, f32) {
         D::NE => (1.0, -1.0),
         D::SW => (-1.0, 1.0),
         D::SE => (1.0, 1.0),
-    }
+    };
+    normalize(v.0, v.1)
 }
 
 /// `CombatManager.applyGlobalDamageReductionMultipliers`.

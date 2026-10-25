@@ -643,7 +643,7 @@ pub trait SimContext {
     }
     /// `SandboxOptions.firearmUseDamageChance` (1 none, 2 zombies, 3 all).
     fn firearm_use_damage_chance(&self) -> i32 {
-        3
+        2
     }
     /// `SandboxOptions.firearmMoodleMultiplier`.
     fn firearm_moodle_multiplier(&self) -> f64 {
@@ -657,9 +657,9 @@ pub trait SimContext {
     fn firearm_head_gear_effect(&self) -> bool {
         true
     }
-    /// `SandboxOptions.firearmJamMultiplier`.
+    /// `SandboxOptions.firearmJamMultiplier` (0: no jams).
     fn firearm_jam_multiplier(&self) -> f64 {
-        1.0
+        0.0
     }
     /// `SandboxOptions.bloodLevel` (1 none .. 5 ultra gore).
     fn blood_level(&self) -> i32 {

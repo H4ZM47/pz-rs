@@ -62,11 +62,16 @@ pub struct CombatManagerState {
     pub ballistics_direction_vector: [f32; 3],
     /// `ballisticsSpreadAngleScale`.
     pub ballistics_spread_angle_scale: f32,
-    /// `tempVector4f`: its `w` (the last nearest-target dot) is what a
+    /// `tempVector4f` (JOML: `w` starts at 1): its `w` (the last
+    /// nearest-target dot) is what a
     /// ranged hit info keeps as its `dot`.
     pub temp_vector4f: [f32; 4],
     /// `dotList` (piercing shots).
     pub dot_list: Vec<f32>,
+    /// `BallisticsController.controllerPool`: released controllers keep
+    /// their cached query results (`reset` clears only the live counts)
+    /// and the next `alloc` takes the last one back.
+    pub controller_pool: Vec<BallisticsController>,
 }
 
 impl Default for CombatManagerState {
@@ -76,8 +81,9 @@ impl Default for CombatManagerState {
             ballistics_end_position: [0.0; 3],
             ballistics_direction_vector: [0.0; 3],
             ballistics_spread_angle_scale: 1.0,
-            temp_vector4f: [0.0; 4],
+            temp_vector4f: [0.0, 0.0, 0.0, 1.0],
             dot_list: Vec::new(),
+            controller_pool: Vec::new(),
         }
     }
 }

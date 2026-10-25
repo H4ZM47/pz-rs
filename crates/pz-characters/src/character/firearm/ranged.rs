@@ -676,7 +676,11 @@ impl<I: 'static> GameCharacter<I> {
         self.attack_vars.do_shove = self.vars.do_shove || self.vars.performing_shove_animation;
         self.calculate_ranged_hit_info_list(cx, &w)?;
         if w.aimed_firearm {
-            cx.ctx.event(SimEvent::MuzzleFlash { chr: self.id });
+            // `EffectsManager.startMuzzleFlash(owner, 1)`: `Rand.NextBool(1)`
+            // (always true), then the flash light and model effect.
+            if crate::character::body_part::next_bool(cx.ctx, 1) {
+                cx.ctx.event(SimEvent::MuzzleFlash { chr: self.id });
+            }
             if let Some(mut c) = self.ballistics_controller.take() {
                 let pos = [self.vars.x, self.vars.y, self.vars.z];
                 let muzzle = cx.world.muzzle_attachment(self.id);

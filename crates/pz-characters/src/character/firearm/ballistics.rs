@@ -588,7 +588,10 @@ impl<I: 'static> GameCharacter<I> {
         if ctx.is_server() {
             return;
         }
-        let mut c = self.ballistics_controller.take().unwrap_or_default();
+        let mut c = match self.ballistics_controller.take() {
+            Some(c) => c,
+            None => Box::new(chars.combat.borrow_mut().controller_pool.pop().unwrap_or_default()),
+        };
         let range = self.attacking_weapon_range(sm, chars);
         let muzzle = world.muzzle_attachment(self.id);
         let reticle = world.aim_reticle_iso(self.id);
@@ -596,10 +599,11 @@ impl<I: 'static> GameCharacter<I> {
         self.ballistics_controller = Some(c);
     }
 
-    /// `releaseBallisticsController()`.
-    pub fn release_ballistics_controller(&mut self, world: &mut dyn StateWorld<I>) {
+    /// `releaseBallisticsController()`: back to the pool.
+    pub fn release_ballistics_controller(&mut self, chars: &crate::Characters, world: &mut dyn StateWorld<I>) {
         if let Some(mut c) = self.ballistics_controller.take() {
             c.release(self.id, world.physics());
+            chars.combat.borrow_mut().controller_pool.push(*c);
         }
     }
 
