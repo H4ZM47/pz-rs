@@ -312,7 +312,8 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `HudCamera::camera_offset` / `frame_player_index` (world-render thread),
       `HudPlayers::player_square` / `player_index_of` and
       `HudClimate::fog_intensity` (characters thread),
-      `HudPicking::square_coords` (world thread) (#193).
+      `HudPicking::square_coords` (world thread) (#193; `WorldPicking`
+      implements it from the square handle, #197).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
