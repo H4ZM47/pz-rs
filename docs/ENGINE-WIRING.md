@@ -78,7 +78,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       wired; the frame multiplier / 30 now) and `UiModels::prepare(gpu)`
       (texture compositing) before the UI renders (#115).
 
-- [ ] Text entry: `bind_uitextbox2::update_keyboard(&mut mgr.thread)` once
+- [x] Text entry: `bind_uitextbox2::update_keyboard(&mut mgr.thread)` once
       per frame (`Core.DoFrameReady` → `Core.updateKeyboard`), after the
       window's key/char events are queued (#119).
 

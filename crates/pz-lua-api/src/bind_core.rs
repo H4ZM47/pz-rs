@@ -1386,6 +1386,14 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             };
             Ok(c.push(Value::Object(LuaColorInfo::new(ci))))
         });
+        // `new Color(r, g, b, a)`, whose constructor clamps to 0..1.
+        b.method("toColor", |c| {
+            let ci = with_color(c, |ci| ci.c.get())?;
+            #[allow(clippy::manual_clamp)]
+            let cl = |v: f32| if v < 0.0 { 0.0 } else if v > 1.0 { 1.0 } else { v };
+            let col = crate::bind_misc_classes::Color::rgba(cl(ci.r), cl(ci.g), cl(ci.b), cl(ci.a));
+            Ok(c.push(Value::Object(Rc::new(col))))
+        });
         b.method("getR", |c| {
             let v = with_color(c, |ci| ci.c.get().r)?;
             Ok(c.push(v as f64))
