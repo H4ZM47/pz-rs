@@ -124,11 +124,25 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       wired; the frame multiplier / 30 now) and `UiModels::prepare(gpu)`
       (texture compositing) before the UI renders (#115).
 
+- [x] Title video: `MainScreenState.render_background` plays
+      `title_screen_background.bik` through `bind_video::VideoTexture`
+      (`render_frame` uploads each due frame with
+      `TextureManager::tex_image`; `pz-gpu` re-uploads on
+      `TextureData::version`). Still to wire: `MainScreenState.exit` →
+      `exit_video()`, and the `enter()` check that turns video effects off
+      below 8 GB of RAM. Headless runs that want the video to advance
+      should step `pz_video::with_manager(|m| m.set_clock(..))` with the
+      frame time (#159).
+
 - [x] Text entry: `bind_uitextbox2::update_keyboard(&mut mgr.thread)` once
       per frame (`Core.DoFrameReady` → `Core.updateKeyboard`), after the
       window's key/char events are queued (#119).
 
 ## World (`GameLoadingState` / `IngameState`)
+- [ ] `GameLoadingState.enter`: `bind_video::release_all_video_textures()`
+      (`LuaManager.releaseAllVideoTextures`, after `WorldMapImages.Reset` /
+      `WorldMapVisited.Reset`) closes and destroys every texture `getVideo`
+      returned (#159).
 - [ ] Character inventories: hold the inventory as a
       `pz_inventory::ContainerRef` (`SharedContainer::from_container` on
       load, `to_container` on save), return
