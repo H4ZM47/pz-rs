@@ -97,9 +97,16 @@ impl LuaManager {
             if !done.insert(f.clone()) {
                 continue;
             }
-            let abs = self.fs.borrow().absolute_path(&f).map(std::path::PathBuf::from);
+            let abs = self
+                .fs
+                .borrow()
+                .absolute_path(&f)
+                .map(std::path::PathBuf::from);
             let Some(abs) = abs else {
-                self.loader.borrow_mut().errors.push(format!("couldn't find \"{f}\""));
+                self.loader
+                    .borrow_mut()
+                    .errors
+                    .push(format!("couldn't find \"{f}\""));
                 continue;
             };
             let abs = abs.to_string_lossy().replace('\\', "/");

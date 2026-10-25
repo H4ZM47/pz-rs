@@ -19,10 +19,8 @@ use pz_inventory::InventoryItem;
 use pz_kahlua::{NativeFunction, TableRef, Value};
 use pz_lua_api::lua_manager::run_lua;
 use pz_lua_api::LuaManager;
-use pz_scripts::objects::items::Item;
 use pz_scripts::script_type::ScriptType;
 use pz_vehicles::env::{self, GameTimeState, SandboxVehicle, SquareInfo, VehicleWorld};
-use pz_vehicles::items::ItemStats;
 use pz_vehicles::part::PartItem;
 use pz_vehicles::physics::replay::ReplayPhysics;
 use pz_vehicles::physics::Bullet;
@@ -69,75 +67,71 @@ impl VehicleWorld for OracleWorld {
 }
 
 struct Items {
-    sm: Rc<pz_scripts::ScriptManager>,
     registry: &'static ScriptItems,
+    ctx: ItemCtx,
 }
 
-/// The `Rand` draws `Item.InstanceItem` makes before the id: a radio's
-/// `setRandomChannel` (no presets headless) and the `OutfitRNG` seed.
-fn instance_draw_bounds(
-    sm: &pz_scripts::ScriptManager,
-    t: &pz_inventory::ItemTemplate,
-) -> Vec<i32> {
-    let mut b = Vec::new();
-    if t.class == pz_inventory::ItemClass::Radio {
-        if let Some(i) = sm
-            .find_item(&t.full_type(), true)
-            .and_then(|s| s.downcast::<Item>())
-        {
-            let i = i.borrow();
-            let min = if (200..=1_000_000).contains(&i.min_channel) {
-                i.min_channel
-            } else {
-                200
-            };
-            let max = if (200..=1_000_000).contains(&i.max_channel) {
-                i.max_channel
-            } else {
-                1_000_000
-            };
-            b.push(-(max - min));
-        }
+/// `Rand` for the item factory (`InventoryItemFactory.CreateItem`).
+struct VehicleRand;
+impl pz_inventory::component::FactoryRng for VehicleRand {
+    fn next_int(&mut self, max: i32) -> i32 {
+        rand::next(max)
     }
-    b.push(i32::MAX);
-    b
+    fn next_float(&mut self, min: f32, max: f32) -> f32 {
+        rand::next_float(min, max)
+    }
 }
 
 impl env::ItemFactory for Items {
-    /// `InventoryItemFactory.CreateItem(fullType)` with the original's
-    /// `Rand` draws.
+    /// `InventoryItemFactory.CreateItem(fullType)` (the factory makes the
+    /// original's `Rand` draws).
     fn create_item(&self, full_type: &str) -> Option<InventoryItem> {
-        use pz_inventory::ItemEnv as _;
         let id = self.registry.dictionary.item_id(full_type)?;
-        let t = self.registry.template(id)?;
-        for b in instance_draw_bounds(&self.sm, &t) {
-            if b < 0 {
-                rand::next_range(0, -b);
-            } else {
-                rand::next(b);
-            }
-        }
-        let mut item = pz_inventory::env::create_item(self.registry, id)?;
-        // `Item.InstanceItem` copies these from the script; the item
-        // templates do not carry them yet.
-        if let Some(s) = self
-            .sm
-            .find_item(full_type, true)
-            .and_then(|s| s.downcast::<Item>())
-        {
-            let s = s.borrow();
-            item.max_capacity = s.max_capacity;
-            item.item_capacity = s.item_capacity as f32;
-        }
-        item.id = rand::next(2_146_250_223) + 1_233_423;
-        Some(item)
+        pz_inventory::env::create_item(self.registry, id)
     }
-    fn stats(&self, full_type: &str) -> ItemStats {
-        self.sm
-            .find_item(full_type, true)
-            .and_then(|s| s.downcast::<Item>())
-            .map(|i| ItemStats::from_script(&i.borrow()))
-            .unwrap_or_default()
+    fn context(&self) -> &dyn pz_inventory::ItemContext {
+        &self.ctx
+    }
+}
+
+/// Weights read item scripts (ammo) and decode fluid containers.
+struct ItemCtx {
+    registry: &'static ScriptItems,
+}
+impl pz_inventory::ItemContext for ItemCtx {
+    fn world_age_hours(&self) -> f64 {
+        0.0
+    }
+    fn multiplier(&self) -> f32 {
+        1.0
+    }
+    fn rain_intensity(&self) -> f32 {
+        0.0
+    }
+    fn is_raining(&self) -> bool {
+        false
+    }
+    fn equipped_or_worn_encumbrance_multiplier(&self) -> f64 {
+        1.0
+    }
+    fn basic_mask_defense(&self) -> f32 {
+        0.0
+    }
+    fn improvised_gas_mask_defense(&self) -> f32 {
+        0.0
+    }
+    fn standard_gas_mask_defense(&self) -> f32 {
+        0.0
+    }
+    fn script(&self, name: &str) -> Option<Rc<pz_inventory::ItemTemplate>> {
+        use pz_inventory::ItemEnv as _;
+        let full = if name.contains('.') {
+            name.to_string()
+        } else {
+            format!("Base.{name}")
+        };
+        let id = self.registry.dictionary.item_id(&full)?;
+        self.registry.template(id)
     }
 }
 
@@ -145,7 +139,6 @@ impl env::ItemFactory for Items {
 /// `InventoryItemFactory.CreateItem` makes for every loaded item (its id).
 struct DrawingItems<'a> {
     inner: &'a ScriptItems,
-    sm: &'a pz_scripts::ScriptManager,
     bounds: std::cell::RefCell<Vec<i32>>,
 }
 
@@ -154,17 +147,7 @@ impl pz_inventory::ItemEnv for DrawingItems<'_> {
         self.inner.template(id)
     }
     fn exists(&self, id: i16) -> bool {
-        let e = self.inner.exists(id);
-        if e {
-            let t = self.inner.template(id);
-            let mut b = self.bounds.borrow_mut();
-            match &t {
-                Some(t) => b.extend(instance_draw_bounds(self.sm, t)),
-                None => b.push(i32::MAX),
-            }
-            b.push(2_146_250_223);
-        }
-        e
+        self.inner.exists(id)
     }
     fn full_type(&self, id: i16) -> Option<String> {
         self.inner.full_type(id)
@@ -202,6 +185,10 @@ impl pz_inventory::ItemEnv for DrawingItems<'_> {
     fn rand_next(&self, bound: i32) -> i32 {
         self.bounds.borrow_mut().push(bound);
         0
+    }
+    fn rand_float(&self, min: f32, _max: f32) -> f32 {
+        self.bounds.borrow_mut().push(i32::MIN);
+        min
     }
 }
 
@@ -552,7 +539,9 @@ fn main() {
     );
     let mut registry = ScriptItems::new(&sm, dict, &names);
     registry.blood_body_parts = save_tables.blood_body_parts;
-    registry.world_sprites = pz_world::save::items::moveable_sprites(&sprites);
+    registry.rand = std::cell::RefCell::new(Some(Box::new(VehicleRand)));
+    // The harness runs without tile definitions (`IsoSpriteManager.namedMap`
+    // is empty), so `Moveable.ReadFromWorldSprite` finds no sprite there.
     let jar = pz_classfile::Jar::open(game.join("projectzomboid.jar")).unwrap();
     let ectx = pz_entity::BasicContext {
         attributes: pz_entity::AttributeTypes::from_jar(&jar).unwrap(),
@@ -569,8 +558,8 @@ fn main() {
     pz_vehicles::vehicle::set_script_manager(sm.clone());
     let registry: &'static ScriptItems = Box::leak(Box::new(registry));
     env::set_items(Rc::new(Items {
-        sm: sm.clone(),
         registry,
+        ctx: ItemCtx { registry },
     }));
     env::set_events(Rc::new(NoSound));
     let sandbox_lines: Vec<String> = std::fs::read_to_string(oracle.join("sandbox.txt"))
@@ -609,7 +598,9 @@ fn main() {
     world_sim::set_air_temperature(parse_hex_f(&at("airTemperature")));
 
     // Lua: the same files as the harness, on pz-kahlua.
-    let fs = Rc::new(std::cell::RefCell::new(pz_fs::GameFs::new(game.to_str().unwrap())));
+    let fs = Rc::new(std::cell::RefCell::new(pz_fs::GameFs::new(
+        game.to_str().unwrap(),
+    )));
     let mut lua = LuaManager::init(fs).expect("lua");
     install_globals(&mut lua, &sandbox_lines);
     for f in [
@@ -681,7 +672,6 @@ fn main() {
             };
             let drawing = DrawingItems {
                 inner: registry,
-                sm: &sm,
                 bounds: Default::default(),
             };
             let saved = match row.load(class, offsets, &drawing) {
@@ -737,7 +727,9 @@ fn main() {
             let v = match &case.saved {
                 Some(saved) => pz_vehicles::save::from_save_with(saved, || {
                     for b in &bounds {
-                        if *b < 0 {
+                        if *b == i32::MIN {
+                            rand::next_float(0.0, 1.0);
+                        } else if *b < 0 {
                             rand::next_range(0, -*b);
                         } else {
                             rand::next(*b);

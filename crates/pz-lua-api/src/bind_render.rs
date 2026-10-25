@@ -32,7 +32,10 @@ impl LuaObject for LuaTexture {
     fn to_lua_string(&self) -> String {
         // `Texture.toString()`.
         let t = self.0.borrow();
-        format!("Texture{{ name:\"{}\", w:{}, h:{} }}", t.name, t.width, t.height)
+        format!(
+            "Texture{{ name:\"{}\", w:{}, h:{} }}",
+            t.name, t.width, t.height
+        )
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -60,7 +63,12 @@ pub fn textures() -> Rc<RefCell<TextureManager>> {
 pub fn texture_value(t: Option<Texture>) -> Value {
     let Some(t) = t else { return Value::Nil };
     let key = (t.id, t.uv.map(f32::to_bits), t.name.clone());
-    OBJECTS.with(|o| o.borrow_mut().entry(key).or_insert_with(|| Value::Object(Rc::new(LuaTexture(RefCell::new(t))))).clone())
+    OBJECTS.with(|o| {
+        o.borrow_mut()
+            .entry(key)
+            .or_insert_with(|| Value::Object(Rc::new(LuaTexture(RefCell::new(t)))))
+            .clone()
+    })
 }
 
 fn shared(fs: &RefCell<GameFs>, name: &str) -> Value {
@@ -98,7 +106,9 @@ pub fn register(mgr: &mut LuaManager) {
         let name = str_arg(c, 0).unwrap_or_else(|| Rc::from(""));
         let v = if c.nargs() >= 2 {
             let tm = textures();
-            let t = tm.borrow_mut().shared_texture_flags(&f.borrow(), &name, int_arg(c, 1));
+            let t = tm
+                .borrow_mut()
+                .shared_texture_flags(&f.borrow(), &name, int_arg(c, 1));
             texture_value(t)
         } else {
             shared(&f, &name)
@@ -235,14 +245,26 @@ mod tests {
         std::fs::create_dir_all(dir.join("media")).unwrap();
         let fs = Rc::new(RefCell::new(GameFs::new(&dir)));
         let mut mgr = LuaManager::init(fs).unwrap();
-        let w = mgr.thread.globals().get_str("Texture").as_table().unwrap().get_str("getWhite");
+        let w = mgr
+            .thread
+            .globals()
+            .get_str("Texture")
+            .as_table()
+            .unwrap()
+            .get_str("getWhite");
         let a = mgr.thread.call(&w, &[]).unwrap();
         let b = mgr.thread.call(&w, &[]).unwrap();
         assert!(a[0].raw_equals(&b[0]), "same texture, same Lua object");
         let get = mgr.thread.globals().get_str("getTexture");
-        let white = mgr.thread.call(&get, &[Value::str("media/ui/white.png")]).unwrap();
+        let white = mgr
+            .thread
+            .call(&get, &[Value::str("media/ui/white.png")])
+            .unwrap();
         assert!(white[0].raw_equals(&a[0]));
-        let none = mgr.thread.call(&get, &[Value::str("media/ui/nothing.png")]).unwrap();
+        let none = mgr
+            .thread
+            .call(&get, &[Value::str("media/ui/nothing.png")])
+            .unwrap();
         assert!(none.first().is_none_or(Value::is_nil));
         std::fs::remove_dir_all(&dir).unwrap();
     }

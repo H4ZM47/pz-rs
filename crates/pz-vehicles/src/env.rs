@@ -157,17 +157,20 @@ impl VehicleEvents for NoEvents {}
 pub trait ItemFactory {
     /// Creates an item (drawing its id from `Rand` like the original).
     fn create_item(&self, full_type: &str) -> Option<InventoryItem>;
-    /// The vehicle-part values of the item's script.
-    fn stats(&self, full_type: &str) -> crate::items::ItemStats;
+    /// The item context weights and scripts are read through.
+    fn context(&self) -> &dyn pz_inventory::ItemContext {
+        &pz_inventory::api::Offline
+    }
+    /// `ZomboidRadio.GetChannelList(category)`.
+    fn channel_lists(&self) -> &dyn pz_inventory::device::ChannelLists {
+        &pz_inventory::device::NoChannels
+    }
 }
 
 struct NoItems;
 impl ItemFactory for NoItems {
     fn create_item(&self, _full_type: &str) -> Option<InventoryItem> {
         None
-    }
-    fn stats(&self, _full_type: &str) -> crate::items::ItemStats {
-        crate::items::ItemStats::default()
     }
 }
 

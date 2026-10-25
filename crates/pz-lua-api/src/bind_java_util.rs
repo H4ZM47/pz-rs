@@ -43,7 +43,11 @@ fn key_of(v: &Value) -> Key {
     match v {
         Value::Nil => Key::Null,
         Value::Bool(b) => Key::Bool(*b),
-        Value::Num(n) => Key::Num(if n.is_nan() { 0x7ff8_0000_0000_0000 } else { n.to_bits() }),
+        Value::Num(n) => Key::Num(if n.is_nan() {
+            0x7ff8_0000_0000_0000
+        } else {
+            n.to_bits()
+        }),
         Value::Str(s) => Key::Str(s.clone()),
         other => Key::Ref(other.type_name(), other.ptr_id()),
     }
@@ -66,7 +70,9 @@ fn java_hash(k: &Key) -> i32 {
             }
         }
         Key::Num(bits) => (*bits ^ (*bits >> 32)) as i32,
-        Key::Str(s) => s.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c))),
+        Key::Str(s) => s
+            .encode_utf16()
+            .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c))),
         Key::Ref(_, p) => (*p as u64 ^ (*p as u64 >> 32)) as i32,
     }
 }
@@ -79,16 +85,26 @@ fn java_to_string(v: &Value) -> String {
         Value::Num(n) => pz_kahlua::number::java_double_to_string(*n),
         Value::Str(s) => s.to_string(),
         Value::Object(o) => o.to_lua_string(),
-        other => format!("{}@{:x}", pz_kahlua::stdlib::java_class_name(other), other.ptr_id()),
+        other => format!(
+            "{}@{:x}",
+            pz_kahlua::stdlib::java_class_name(other),
+            other.ptr_id()
+        ),
     }
 }
 
 fn index_error(i: i32, len: usize) -> LuaError {
-    LuaError::Runtime { message: format!("Index {i} out of bounds for length {len}"), class: "java.lang.IndexOutOfBoundsException" }
+    LuaError::Runtime {
+        message: format!("Index {i} out of bounds for length {len}"),
+        class: "java.lang.IndexOutOfBoundsException",
+    }
 }
 
 fn no_such_element() -> LuaError {
-    LuaError::Runtime { message: "No such element".into(), class: "java.util.NoSuchElementException" }
+    LuaError::Runtime {
+        message: "No such element".into(),
+        class: "java.util.NoSuchElementException",
+    }
 }
 
 // ---- objects ------------------------------------------------------------------
@@ -146,7 +162,9 @@ lua_object!(JavaEntry, self => ENTRY, &[]);
 
 impl JavaList {
     pub fn new(items: Vec<Value>) -> Self {
-        JavaList { items: RefCell::new(items) }
+        JavaList {
+            items: RefCell::new(items),
+        }
     }
 
     fn java_string(&self) -> String {
@@ -206,11 +224,18 @@ impl JavaMap {
     }
 
     pub fn get(&self, k: &Value) -> Value {
-        self.entries.borrow().get(&key_of(k)).map(|e| e.1.clone()).unwrap_or_default()
+        self.entries
+            .borrow()
+            .get(&key_of(k))
+            .map(|e| e.1.clone())
+            .unwrap_or_default()
     }
 
     pub fn remove(&self, k: &Value) -> Option<Value> {
-        self.entries.borrow_mut().shift_remove(&key_of(k)).map(|e| e.1)
+        self.entries
+            .borrow_mut()
+            .shift_remove(&key_of(k))
+            .map(|e| e.1)
     }
 
     pub fn contains_key(&self, k: &Value) -> bool {
@@ -249,9 +274,19 @@ impl JavaMap {
         let parts: Vec<String> = self
             .ordered()
             .iter()
-            .map(|(k, v)| if self.is_set() { java_to_string(k) } else { format!("{}={}", java_to_string(k), java_to_string(v)) })
+            .map(|(k, v)| {
+                if self.is_set() {
+                    java_to_string(k)
+                } else {
+                    format!("{}={}", java_to_string(k), java_to_string(v))
+                }
+            })
             .collect();
-        if self.is_set() { format!("[{}]", parts.join(", ")) } else { format!("{{{}}}", parts.join(", ")) }
+        if self.is_set() {
+            format!("[{}]", parts.join(", "))
+        } else {
+            format!("{{{}}}", parts.join(", "))
+        }
     }
 }
 
@@ -263,7 +298,11 @@ impl JavaIterator {
 
 impl JavaEntry {
     fn java_string(&self) -> String {
-        format!("{}={}", java_to_string(&self.key), java_to_string(&self.value.borrow()))
+        format!(
+            "{}={}",
+            java_to_string(&self.key),
+            java_to_string(&self.value.borrow())
+        )
     }
 }
 
@@ -273,7 +312,10 @@ pub fn list_value(items: Vec<Value>) -> Value {
 }
 
 fn iterator_value(items: Vec<Value>) -> Value {
-    Value::Object(Rc::new(JavaIterator { items, pos: Cell::new(0) }))
+    Value::Object(Rc::new(JavaIterator {
+        items,
+        pos: Cell::new(0),
+    }))
 }
 
 // ---- bindings -------------------------------------------------------------------
@@ -285,8 +327,13 @@ fn list<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaList) -> R) -> LuaResult<R> {
 
 fn map<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaMap) -> R) -> LuaResult<R> {
     match c.arg(0) {
-        Value::Object(o) if o.as_any().is::<JavaMap>() => Ok(f(o.as_any().downcast_ref::<JavaMap>().unwrap())),
-        other => Err(LuaError::runtime(format!("Expected a map or set but got {}", pz_kahlua::stdlib::java_class_name(&other)))),
+        Value::Object(o) if o.as_any().is::<JavaMap>() => {
+            Ok(f(o.as_any().downcast_ref::<JavaMap>().unwrap()))
+        }
+        other => Err(LuaError::runtime(format!(
+            "Expected a map or set but got {}",
+            pz_kahlua::stdlib::java_class_name(&other)
+        ))),
     }
 }
 
@@ -296,12 +343,19 @@ fn collection_items(v: &Value) -> Option<Vec<Value>> {
     if let Some(l) = o.as_any().downcast_ref::<JavaList>() {
         return Some(l.items.borrow().clone());
     }
-    o.as_any().downcast_ref::<JavaMap>().filter(|m| m.is_set()).map(|m| m.ordered().into_iter().map(|e| e.0).collect())
+    o.as_any()
+        .downcast_ref::<JavaMap>()
+        .filter(|m| m.is_set())
+        .map(|m| m.ordered().into_iter().map(|e| e.0).collect())
 }
 
 fn checked_index(c: &NativeCall<'_>, arg: usize, len: usize, inclusive: bool) -> LuaResult<usize> {
     let i = int_arg(c, arg);
-    let max = if inclusive { len } else { len.saturating_sub(1) };
+    let max = if inclusive {
+        len
+    } else {
+        len.saturating_sub(1)
+    };
     if i < 0 || i as usize > max || (!inclusive && len == 0) {
         return Err(index_error(i, len));
     }
@@ -356,8 +410,13 @@ fn register_list(thread: &mut Thread) {
         Ok(c.push(true))
     });
     b.method("addAll", |c| {
-        let (at, src) = if c.nargs() >= 3 { (Some(int_arg(c, 1)), c.arg(2)) } else { (None, c.arg(1)) };
-        let items = collection_items(&src).ok_or_else(|| LuaError::runtime("addAll expects a collection"))?;
+        let (at, src) = if c.nargs() >= 3 {
+            (Some(int_arg(c, 1)), c.arg(2))
+        } else {
+            (None, c.arg(1))
+        };
+        let items = collection_items(&src)
+            .ok_or_else(|| LuaError::runtime("addAll expects a collection"))?;
         let changed = !items.is_empty();
         let len = list(c, |l| l.items.borrow().len())?;
         if let Some(i) = at {
@@ -403,12 +462,24 @@ fn register_list(thread: &mut Thread) {
     });
     b.method("indexOf", |c| {
         let t = c.arg(1);
-        let r = list(c, |l| l.items.borrow().iter().position(|x| java_equals(x, &t)).map_or(-1.0, |i| i as f64))?;
+        let r = list(c, |l| {
+            l.items
+                .borrow()
+                .iter()
+                .position(|x| java_equals(x, &t))
+                .map_or(-1.0, |i| i as f64)
+        })?;
         Ok(c.push(r))
     });
     b.method("lastIndexOf", |c| {
         let t = c.arg(1);
-        let r = list(c, |l| l.items.borrow().iter().rposition(|x| java_equals(x, &t)).map_or(-1.0, |i| i as f64))?;
+        let r = list(c, |l| {
+            l.items
+                .borrow()
+                .iter()
+                .rposition(|x| java_equals(x, &t))
+                .map_or(-1.0, |i| i as f64)
+        })?;
         Ok(c.push(r))
     });
     b.method("clear", |c| {
@@ -484,14 +555,21 @@ fn register_map_methods(b: &crate::expose::ClassBuilder) {
     });
     b.method("containsValue", |c| {
         let v = c.arg(1);
-        let r = map(c, |m| m.entries.borrow().values().any(|e| java_equals(&e.1, &v)))?;
+        let r = map(c, |m| {
+            m.entries.borrow().values().any(|e| java_equals(&e.1, &v))
+        })?;
         Ok(c.push(r))
     });
     b.method("keySet", |c| {
-        let keys = map(c, |m| m.ordered().into_iter().map(|e| e.0).collect::<Vec<_>>())?;
+        let keys = map(c, |m| {
+            m.ordered().into_iter().map(|e| e.0).collect::<Vec<_>>()
+        })?;
         let set = JavaMap::hash_set();
         // A snapshot that keeps the map's order.
-        let set = JavaMap { linked: true, ..set };
+        let set = JavaMap {
+            linked: true,
+            ..set
+        };
         for k in keys {
             set.put(k, Value::Nil);
         }
@@ -503,7 +581,15 @@ fn register_map_methods(b: &crate::expose::ClassBuilder) {
     });
     b.method("entrySet", |c| {
         let entries: Vec<Value> = map(c, |m| {
-            m.ordered().into_iter().map(|(k, v)| Value::Object(Rc::new(JavaEntry { key: k, value: RefCell::new(v) }))).collect()
+            m.ordered()
+                .into_iter()
+                .map(|(k, v)| {
+                    Value::Object(Rc::new(JavaEntry {
+                        key: k,
+                        value: RefCell::new(v),
+                    }))
+                })
+                .collect()
         })?;
         Ok(c.push(list_value(entries)))
     });
@@ -567,7 +653,10 @@ fn register_set(thread: &mut Thread) {
             Value::Num(n) => JavaMap::with_class(HASH_SET, n as usize),
             other => {
                 let items = collection_items(&other).unwrap_or_default();
-                let s = JavaMap::with_class(HASH_SET, ((items.len() as f64 / 0.75) as usize + 1).max(16));
+                let s = JavaMap::with_class(
+                    HASH_SET,
+                    ((items.len() as f64 / 0.75) as usize + 1).max(16),
+                );
                 for v in items {
                     s.put(v, Value::Nil);
                 }
@@ -630,7 +719,11 @@ fn register_views(thread: &mut Thread) {
     b.method("next", |c| {
         let o = this::<JavaIterator>(c)?;
         let it = o.as_any().downcast_ref::<JavaIterator>().unwrap();
-        let v = it.items.get(it.pos.get()).cloned().ok_or_else(no_such_element)?;
+        let v = it
+            .items
+            .get(it.pos.get())
+            .cloned()
+            .ok_or_else(no_such_element)?;
         it.pos.set(it.pos.get() + 1);
         Ok(c.push(v))
     });
@@ -642,7 +735,13 @@ fn register_views(thread: &mut Thread) {
     });
     b.method("getValue", |c| {
         let o = this::<JavaEntry>(c)?;
-        let v = o.as_any().downcast_ref::<JavaEntry>().unwrap().value.borrow().clone();
+        let v = o
+            .as_any()
+            .downcast_ref::<JavaEntry>()
+            .unwrap()
+            .value
+            .borrow()
+            .clone();
         Ok(c.push(v))
     });
 }
@@ -660,7 +759,11 @@ mod tests {
         for k in ["banana", "apple", "cherry", "date"] {
             m.put(Value::str(k), Value::Num(1.0));
         }
-        let keys: Vec<String> = m.ordered().iter().map(|e| e.0.as_str().unwrap().to_string()).collect();
+        let keys: Vec<String> = m
+            .ordered()
+            .iter()
+            .map(|e| e.0.as_str().unwrap().to_string())
+            .collect();
         let mut expect: Vec<(usize, &str)> = ["banana", "apple", "cherry", "date"]
             .iter()
             .enumerate()
@@ -697,11 +800,18 @@ mod tests {
     fn list_from_lua() {
         let mut t = Thread::new(pz_kahlua::TableRef::new());
         register(&mut t);
-        let new = t.globals().get_str("ArrayList").as_table().unwrap().get_str("new");
+        let new = t
+            .globals()
+            .get_str("ArrayList")
+            .as_table()
+            .unwrap()
+            .get_str("new");
         let l = t.call(&new, &[]).unwrap().remove(0);
         let Value::Object(o) = &l else { panic!() };
         let jl = o.as_any().downcast_ref::<JavaList>().unwrap();
-        jl.items.borrow_mut().extend([Value::str("a"), Value::Num(2.0)]);
+        jl.items
+            .borrow_mut()
+            .extend([Value::str("a"), Value::Num(2.0)]);
         assert_eq!(jl.java_string(), "[a, 2.0]");
     }
 }

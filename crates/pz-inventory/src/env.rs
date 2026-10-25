@@ -167,7 +167,24 @@ pub fn create_from_template(
     instance_draws(env, &mut item);
     // Item.InstanceItem: moveables and radios read their world sprite;
     // createItemInternal then reads the `Moveables.<sprite>` name.
-    if let Some(ws) = t
+    if t.class == ItemClass::Moveable {
+        // `new Moveable(...)` starts at the default weight; InstanceItem
+        // then takes the moveable's weight after `ReadFromWorldSprite`
+        // (`this.actualWeight = moveable.getActualWeight()`), so a sprite
+        // that is not found leaves 1.0 rather than the script weight.
+        item.weight = 1.0;
+        item.actual_weight = 1.0;
+        if let Some(ws) = t.world_object_sprite.as_deref() {
+            item.read_from_world_sprite(ws, env);
+        }
+        let w = if item.name == item.get_full_type() {
+            0.0
+        } else {
+            item.actual_weight.max(0.0)
+        };
+        item.weight = w;
+        item.actual_weight = w;
+    } else if let Some(ws) = t
         .world_object_sprite
         .as_deref()
         .filter(|s| !s.trim().is_empty())

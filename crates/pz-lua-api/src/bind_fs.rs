@@ -39,7 +39,15 @@ thread_local! {
 fn mod_value(fs: &Rc<RefCell<GameFs>>, dir: Option<String>) -> Value {
     let Some(dir) = dir else { return Value::Nil };
     MODS.with(|m| {
-        m.borrow_mut().entry(dir.clone()).or_insert_with(|| Value::Object(Rc::new(LuaMod { dir, fs: fs.clone() }))).clone()
+        m.borrow_mut()
+            .entry(dir.clone())
+            .or_insert_with(|| {
+                Value::Object(Rc::new(LuaMod {
+                    dir,
+                    fs: fs.clone(),
+                }))
+            })
+            .clone()
     })
 }
 
@@ -48,7 +56,9 @@ fn with_mod<R>(c: &NativeCall<'_>, f: impl FnOnce(&ModInfo) -> R) -> LuaResult<R
     let o = this::<LuaMod>(c)?;
     let m = o.as_any().downcast_ref::<LuaMod>().unwrap();
     let fs = m.fs.borrow();
-    let info = fs.mod_info(&m.dir).ok_or_else(|| pz_kahlua::LuaError::runtime("mod not read"))?;
+    let info = fs
+        .mod_info(&m.dir)
+        .ok_or_else(|| pz_kahlua::LuaError::runtime("mod not read"))?;
     Ok(f(info))
 }
 
@@ -82,7 +92,9 @@ pub fn register(mgr: &mut LuaManager) {
         let dir = f.borrow().cache_dir().to_string_lossy().into_owned();
         Ok(c.push(Value::str(&dir)))
     });
-    global(thread, "getFileSeparator", |c| Ok(c.push(Value::str(std::path::MAIN_SEPARATOR_STR))));
+    global(thread, "getFileSeparator", |c| {
+        Ok(c.push(Value::str(std::path::MAIN_SEPARATOR_STR)))
+    });
 
     let f = fs.clone();
     global(thread, "getModInfoByID", move |c| {
@@ -122,7 +134,10 @@ pub fn register(mgr: &mut LuaManager) {
     b.ctor(move |c| {
         // `new Mod(dir)`: an unread mod for the directory.
         let dir = str_arg(c, 0).unwrap_or_else(|| Rc::from(""));
-        Ok(c.push(Value::Object(Rc::new(LuaMod { dir: dir.to_string(), fs: f.clone() }))))
+        Ok(c.push(Value::Object(Rc::new(LuaMod {
+            dir: dir.to_string(),
+            fs: f.clone(),
+        }))))
     });
     macro_rules! getter {
         ($name:literal, |$m:ident| $e:expr) => {
@@ -139,10 +154,16 @@ pub fn register(mgr: &mut LuaManager) {
     getter!("getId", |m| Value::str(&m.id));
     getter!("getDescription", |m| Value::str(&m.description));
     getter!("getUrl", |m| Value::str(m.url.as_deref().unwrap_or("")));
-    getter!("getAuthor", |m| Value::str(m.author.as_deref().unwrap_or("")));
-    getter!("getModVersion", |m| Value::str(m.mod_version.as_deref().unwrap_or("")));
+    getter!("getAuthor", |m| Value::str(
+        m.author.as_deref().unwrap_or("")
+    ));
+    getter!("getModVersion", |m| Value::str(
+        m.mod_version.as_deref().unwrap_or("")
+    ));
     getter!("getIcon", |m| Value::str(m.icon.as_deref().unwrap_or("")));
-    getter!("getCategory", |m| Value::str(m.category.as_deref().unwrap_or("")));
+    getter!("getCategory", |m| Value::str(
+        m.category.as_deref().unwrap_or("")
+    ));
     getter!("getSource", |m| Value::str(&m.source));
     getter!("getWorkshopID", |m| Value::str(&m.workshop_id));
     getter!("getPosterCount", |m| Value::Num(m.posters.len() as f64));
@@ -152,14 +173,21 @@ pub fn register(mgr: &mut LuaManager) {
     getter!("getLoadBefore", |m| opt_list(&m.load_before));
     b.method("getPoster", |c| {
         let i = int_arg(c, 1);
-        let v = with_mod(c, |m| usize::try_from(i).ok().and_then(|i| m.posters.get(i)).map_or(Value::Nil, |p| Value::str(p)))?;
+        let v = with_mod(c, |m| {
+            usize::try_from(i)
+                .ok()
+                .and_then(|i| m.posters.get(i))
+                .map_or(Value::Nil, |p| Value::str(p))
+        })?;
         Ok(c.push(v))
     });
     b.method("isAvailableSelf", |c| {
         let o = this::<LuaMod>(c)?;
         let m = o.as_any().downcast_ref::<LuaMod>().unwrap();
         let fs = m.fs.borrow();
-        let ok = fs.mod_info(&m.dir).is_some_and(|i| i.is_available_self(&fs.game_version));
+        let ok = fs
+            .mod_info(&m.dir)
+            .is_some_and(|i| i.is_available_self(&fs.game_version));
         Ok(c.push(ok))
     });
     b.method("isAvailable", |c| {
@@ -173,10 +201,15 @@ pub fn register(mgr: &mut LuaManager) {
         // The first poster, else the white texture.
         let o = this::<LuaMod>(c)?;
         let m = o.as_any().downcast_ref::<LuaMod>().unwrap();
-        let poster = m.fs.borrow().mod_info(&m.dir).and_then(|i| i.posters.first().cloned());
+        let poster =
+            m.fs.borrow()
+                .mod_info(&m.dir)
+                .and_then(|i| i.posters.first().cloned());
         let tm = crate::bind_render::textures();
         let fs = m.fs.borrow();
-        let mut t = poster.filter(|p| !pz_fs::java::is_null_or_whitespace(p)).and_then(|p| tm.borrow_mut().shared_texture(&fs, &p));
+        let mut t = poster
+            .filter(|p| !pz_fs::java::is_null_or_whitespace(p))
+            .and_then(|p| tm.borrow_mut().shared_texture(&fs, &p));
         if t.as_ref().is_none_or(|t| !t.ready) {
             t = Some(tm.borrow_mut().white());
         }
@@ -194,23 +227,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("game/media")).unwrap();
         std::fs::create_dir_all(dir.join("user/mods/M/common")).unwrap();
-        std::fs::write(dir.join("user/mods/M/common/mod.info"), "name=My Mod\nid=M\nrequire=X,Y\n").unwrap();
+        std::fs::write(
+            dir.join("user/mods/M/common/mod.info"),
+            "name=My Mod\nid=M\nrequire=X,Y\n",
+        )
+        .unwrap();
         let mut gfs = GameFs::new(dir.join("game"));
         gfs.set_cache_dir(dir.join("user"));
         let fs = Rc::new(RefCell::new(gfs));
         let mut mgr = LuaManager::init(fs).unwrap();
         let call = |mgr: &mut LuaManager, g: &str, args: &[Value]| {
             let f = mgr.thread.globals().get_str(g);
-            mgr.thread.call(&f, args).unwrap().into_iter().next().unwrap_or_default()
+            mgr.thread
+                .call(&f, args)
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap_or_default()
         };
         let m = call(&mut mgr, "getModInfoByID", &[Value::str("M")]);
         assert!(m.raw_equals(&call(&mut mgr, "getModInfoByID", &[Value::str("M")])));
-        let meta = mgr.thread.class_metatables.get_str(MOD).as_table().unwrap().get_str("__index");
+        let meta = mgr
+            .thread
+            .class_metatables
+            .get_str(MOD)
+            .as_table()
+            .unwrap()
+            .get_str("__index");
         let get_name = meta.as_table().unwrap().get_str("getName");
-        assert_eq!(mgr.thread.call(&get_name, std::slice::from_ref(&m)).unwrap()[0].as_str(), Some("My Mod"));
+        assert_eq!(
+            mgr.thread
+                .call(&get_name, std::slice::from_ref(&m))
+                .unwrap()[0]
+                .as_str(),
+            Some("My Mod")
+        );
         assert!(!call(&mut mgr, "isModActive", &[m]).truthy());
         assert!(call(&mut mgr, "getModInfoByID", &[Value::str("Nope")]).is_nil());
-        assert_eq!(call(&mut mgr, "getModDirectoryTable", &[]).as_table().unwrap().len(), 1);
+        assert_eq!(
+            call(&mut mgr, "getModDirectoryTable", &[])
+                .as_table()
+                .unwrap()
+                .len(),
+            1
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
