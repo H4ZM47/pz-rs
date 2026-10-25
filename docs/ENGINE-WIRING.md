@@ -64,6 +64,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       preupdate), `update_zombie` (the state machine, then `update_fire`),
       `postupdate_zombie` / `moving_postupdate` (with
       `slide_head_away_from_walls`) (#41/#74/#75).
+- [ ] Player input: after the camera update call
+      `pz_player_input::set_camera_info(i, CameraInfo { off_x, off_y,
+      right_click_x, right_click_y })` per local player and, after
+      `AimingReticle.update`, `set_aiming_position(i, x, y)`; after
+      `bind_input::update`/`after_ui_update` the game loop builds one
+      `EnginePlayerInput::capture()` per frame, passes `&input` to each local
+      player's `IsoPlayer.update`, then calls `input.write_back()` (#118).
 - [ ] `ZombiePopulationManager::update_main` with PopulationHost and
       `ZombieOps` (`RealZombies`) (#73/#77): `GameWindow.logic` calls
       `WorldPopulation::update_game_state(no_save, paused)`; `IngameState.update`
