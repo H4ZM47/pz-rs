@@ -259,12 +259,7 @@ impl Side {
 
 /// `Vector2.normalize()`.
 fn normalize(x: f32, y: f32) -> (f32, f32) {
-    let len = ((x * x + y * y) as f64).sqrt() as f32;
-    if len == 0.0 {
-        (x, y)
-    } else {
-        (x / len, y / len)
-    }
+    super::zombie::math::normalize(x, y)
 }
 
 /// `Vector2.rotate(rad)`.

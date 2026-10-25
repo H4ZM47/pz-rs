@@ -1609,8 +1609,10 @@ dependencies = [
  "pz-core",
  "pz-inventory",
  "pz-pathfind",
+ "pz-popman",
  "pz-scripts",
  "pz-world",
+ "pz-world-popman",
 ]
 
 [[package]]
@@ -1708,8 +1710,12 @@ dependencies = [
 name = "pz-iso-render"
 version = "0.1.0"
 dependencies = [
+ "pz-core",
+ "pz-fs",
  "pz-gpu",
+ "pz-kahlua",
  "pz-render",
+ "pz-world",
 ]
 
 [[package]]
@@ -1818,10 +1824,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-world-popman"
+version = "0.1.0"
+dependencies = [
+ "pz-fs",
+ "pz-popman",
+ "pz-world",
+]
+
+[[package]]
 name = "pz-world-render"
 version = "0.1.0"
 dependencies = [
  "png",
+ "pz-core",
  "pz-fs",
  "pz-gpu",
  "pz-inventory",

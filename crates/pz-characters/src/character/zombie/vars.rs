@@ -65,8 +65,8 @@ pub struct TargetView {
 pub const LCC_IGNORE_DOORS: i32 = 1;
 /// Close to walls.
 pub const LCC_CLOSE_TO_WALLS: i32 = 2;
-/// Check characters' vehicles (non-zombies' `pathToAux`).
-pub const LCC_CHECK_VEHICLES: i32 = 4;
+/// `checkCost` (non-zombies' `pathToAux`).
+pub const LCC_CHECK_COST: i32 = 4;
 /// The 6-argument overload (`ignoreDoors = closeToWalls = true`).
 pub const LCC_DEFAULT: i32 = LCC_IGNORE_DOORS | LCC_CLOSE_TO_WALLS;
 

@@ -207,9 +207,14 @@ impl<I: 'static> PathMover for GameCharacter<I> {
         self.path.deferred_movement
     }
     /// `moveUnmodded(dx, dy)`: the next position (collision is the world's).
+    /// `moveUnmodded(dx, dy)`: the next position (`moveUnmoddedInternal`;
+    /// the move itself is `postupdate`'s). IsoZombie's sprinter clamp
+    /// applies in the attack states only, which move through
+    /// `doDeferredMovement` ([`GameCharacter::move_unmodded_step`]).
     fn move_unmodded(&mut self, dx: f32, dy: f32) {
-        self.vars.x += dx;
-        self.vars.y += dy;
+        self.vars.next_x += dx;
+        self.vars.next_y += dy;
+        self.vars.req_movement = (dx, dy);
     }
     fn set_moving(&mut self, moving: bool) {
         self.vars.moving = moving;
@@ -233,10 +238,8 @@ impl<I: 'static> PathMover for GameCharacter<I> {
     }
     fn normalize_forward_direction(&mut self) {
         let (x, y) = (self.vars.forward_x, self.vars.forward_y);
-        let len = ((x * x + y * y) as f64).sqrt() as f32;
-        if len != 0.0 {
-            self.vars.forward_x = x / len;
-            self.vars.forward_y = y / len;
+        if x * x + y * y != 0.0 {
+            (self.vars.forward_x, self.vars.forward_y) = super::zombie::math::normalize(x, y);
         }
     }
     /// `DirectionFromVector(v)`: `setForwardIsoDirection(fromAngle(v))`.

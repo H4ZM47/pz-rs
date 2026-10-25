@@ -35,11 +35,15 @@ pub enum Program {
     Seam,
     /// `CircleStencil` (cut-away walls).
     Cutaway,
+    /// `water`/`water_hq`/`puddles_*` (`IsoWater`, `IsoPuddles`).
+    Surface(pz_render::SurfaceProgram),
+    /// `fire`/`smoke` (`ParticlesFire`).
+    Particles(pz_render::ParticleProgram),
 }
 
 impl Program {
     pub fn uses_world_shader(self) -> bool {
-        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::Seam | Program::Cutaway)
+        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::Seam | Program::Cutaway | Program::Surface(_) | Program::Particles(_))
     }
 }
 
@@ -212,6 +216,10 @@ pub struct Programs {
     pub world_tile: wgpu::ShaderModule,
     /// `world.wgsl` with `world_composite.wgsl`.
     pub world_composite: wgpu::ShaderModule,
+    /// `surface.wgsl`: water and puddles.
+    pub surface: wgpu::ShaderModule,
+    /// `particles.wgsl`: fire and smoke particles.
+    pub particles: wgpu::ShaderModule,
     pub screen: wgpu::ShaderModule,
     pub sprite_layout: wgpu::PipelineLayout,
     pub tile_layout: wgpu::PipelineLayout,
@@ -253,6 +261,8 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::TileDepth | Program::OpaqueDepth => (&programs.world_tile, &programs.tile_layout),
         Program::Composite => (&programs.world_composite, &programs.composite_layout),
         Program::Seam | Program::Cutaway => (&programs.world_tile, &programs.seam_layout),
+        Program::Surface(_) => (&programs.surface, &programs.seam_layout),
+        Program::Particles(_) => (&programs.particles, &programs.sprite_layout),
         Program::WorldDefault | Program::Projected => (&programs.world_tile, &programs.sprite_layout),
         Program::Default | Program::Clear => (&programs.sprite, &programs.sprite_layout),
         Program::Screen => (&programs.screen, &programs.sprite_layout),
@@ -268,6 +278,18 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::Projected => ("vs_world", "fs_projected"),
         Program::Seam => ("vs_world", "fs_seam"),
         Program::Cutaway => ("vs_world", "fs_cutaway"),
+        Program::Particles(pz_render::ParticleProgram::Fire) => ("vs_fire", "fs_fire"),
+        Program::Particles(pz_render::ParticleProgram::Smoke) => ("vs_smoke", "fs_smoke"),
+        Program::Surface(p) => (
+            "vs_surface",
+            match p {
+                pz_render::SurfaceProgram::Water => "fs_water",
+                pz_render::SurfaceProgram::WaterHq => "fs_water_hq",
+                pz_render::SurfaceProgram::PuddlesHq => "fs_puddles_hq",
+                pz_render::SurfaceProgram::PuddlesMq => "fs_puddles_mq",
+                pz_render::SurfaceProgram::PuddlesLq => "fs_puddles_lq",
+            },
+        ),
     };
     let attributes: &[wgpu::VertexAttribute] = if world {
         &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x2]

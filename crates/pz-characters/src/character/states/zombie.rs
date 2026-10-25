@@ -8,16 +8,15 @@
 //! `ZombieGetUpFromCrawlState` and `ZombieFallingState`.
 //!
 //! `parameterZombieState.setState(...)` is the zombie's `sound_state`.
-//! The animation-player calls (`setTargetAngle`, the thump track) are
-//! TODO(anim): `ThumpState` counts the `ThumpFrame` events the animation
-//! reports instead of scanning the track.
+//! The animation-player calls (`setTargetAngle`, the thump track) go to
+//! the world's `pz_anim::StateAnimHooks` through `StateWorld`.
 
 use pz_anim::{AnimEventRecord, AnimationVariableSource};
 
 use super::ids;
 use super::stagger_back::parse_boolean;
 use crate::character::state::{
-    EatTarget, LosResult, Param, State, StateCx, StateId, StateRef, ThumpKind, ThumpTarget,
+    EatTarget, TestResults, Param, State, StateCx, StateId, StateRef, ThumpKind, ThumpTarget,
 };
 use crate::character::zombie::math::*;
 use crate::character::{GameCharacter, SimEvent};
@@ -56,6 +55,8 @@ singleton!(FakeDeadZombieState, ids::FAKE_DEAD_ZOMBIE, fake_dead);
 singleton!(ZombieTurnAlerted, ids::ZOMBIE_TURN_ALERTED, turn_alerted);
 singleton!(ZombieGetUpFromCrawlState, ids::ZOMBIE_GET_UP_FROM_CRAWL, get_up_from_crawl);
 singleton!(ZombieFallingState, ids::ZOMBIE_FALLING, falling);
+singleton!(ZombieHitReactionState, ids::ZOMBIE_HIT_REACTION, hit_reaction);
+singleton!(FakeDeadAttackState, ids::FAKE_DEAD_ATTACK, fake_dead_attack);
 
 /// Every zombie state ported here.
 pub fn all<I: 'static>() -> Vec<StateRef<I>> {
@@ -80,6 +81,8 @@ pub fn all<I: 'static>() -> Vec<StateRef<I>> {
         turn_alerted(),
         get_up_from_crawl(),
         falling(),
+        hit_reaction(),
+        fake_dead_attack(),
     ]
 }
 
@@ -107,9 +110,6 @@ pub const GET_DOWN_START_Y: Param<f32> = Param::new(ids::ZOMBIE_GET_DOWN, "start
 pub const TURN_ALERTED_TARGET_ANGLE: Param<f32> = Param::new(ids::ZOMBIE_TURN_ALERTED, "target_angle", || 0.0);
 /// `ZombieGetUpFromCrawlState.STATE`.
 pub const GET_UP_FROM_CRAWL_STATE: Param<Option<StateId>> = Param::new(ids::ZOMBIE_GET_UP_FROM_CRAWL, "state", || None);
-/// The `ThumpFrame` events the animation reported this tick (TODO(anim):
-/// `ThumpAnimations.countThumpEventsBetween`).
-pub const THUMP_FRAMES: Param<i32> = Param::new(ids::THUMP, "thump_frames", || 0);
 
 fn is(e: &AnimEventRecord, name: &str) -> bool {
     e.event.event_name.eq_ignore_ascii_case(name)
@@ -287,8 +287,8 @@ impl<I: 'static> State<I> for WalkTowardState {
         let target_vehicle = target.and_then(|t| cx.world.character_mut(t).and_then(|c| c.path.vehicle));
         if let Some(t) = target {
             if owner.is_target_location_known() {
-                if cx.world.character_mut(t).is_some() {
-                    cx.world.path_to_character(owner, t);
+                if let Some(mid) = cx.world.character_mut(t).map(|c| c.mover_id_of()) {
+                    cx.world.path_to_character(owner, mid);
                     // TODO(vehicles): `chooseBestAttackPosition` for a target
                     // in a vehicle.
                 }
@@ -317,11 +317,11 @@ impl<I: 'static> State<I> for WalkTowardState {
                 _ => {}
             }
         }
-        let mut collided_vehicle = owner.zombie.collided_with_vehicle;
+        let mut collided_vehicle = owner.vars.collided_with_vehicle;
         if target_vehicle.is_some() && owner.zombie.target_view.vehicle_adjacent {
             collided_vehicle = false;
         }
-        let mut collided = owner.zombie.collided_this_frame;
+        let mut collided = owner.vars.collided_this_frame;
         if collided && WALK_IGNORE_OFFSET.get(&mut owner.state.params) == Some(false) {
             WALK_IGNORE_OFFSET.set(&mut owner.state.params, Some(true));
             WALK_IGNORE_TIME.set(&mut owner.state.params, cx.ctx.current_time_millis());
@@ -351,8 +351,8 @@ impl<I: 'static> State<I> for WalkTowardState {
         if dist < 0.25 {
             owner.vars.x = tx;
             owner.vars.y = ty;
-            owner.zombie.next_x = tx;
-            owner.zombie.next_y = ty;
+            owner.vars.next_x = tx;
+            owner.vars.next_y = ty;
             dist = 0.0;
         }
         if dist < 0.025 {
@@ -436,7 +436,7 @@ impl<I: 'static> State<I> for PathFindState {
         owner.set_var_bool("bPathfind", false);
         owner.set_var_bool("bMoving", false);
         owner.set_var_bool("ShouldBeCrawling", false);
-        cx.world.path_cancel(owner);
+        cx.world.path_cancel_request(owner);
         owner.path.progress = pz_pathfind::mover::PathFindProgress::NotRunning;
         owner.clear_path2();
     }
@@ -715,7 +715,7 @@ pub fn trigger_player_reaction<I: 'static>(owner: &mut GameCharacter<I>, hit_rea
     let me = (fastfloor(owner.vars.x), fastfloor(owner.vars.y), fastfloor(owner.vars.z));
     let them = (fastfloor(tx), fastfloor(ty), fastfloor(tz));
     let r = cx.world.los_line_clear(me, them, false);
-    if r == LosResult::Blocked || r == LosResult::ClearThroughClosedDoor {
+    if r == TestResults::Blocked || r == TestResults::ClearThroughClosedDoor {
         return Ok(());
     }
     let t_sq = cx.world.character_mut(t).and_then(|c| c.path.current_square);
@@ -730,6 +730,7 @@ pub fn trigger_player_reaction<I: 'static>(owner: &mut GameCharacter<I>, hit_rea
     let Some(tc) = cx.world.character_mut(t) else { return Ok(()) };
     tc.vars.attacked_by = Some(me_id);
     let outcome = tc.body_damage_add_random_damage_from_zombie(sm, chars, ctx, &attack)?;
+    tc.body_damage_update(sm, chars, ctx)?;
     let target_dead = tc.is_dead();
     let asleep = tc.is_asleep();
     if target_dead {
@@ -737,6 +738,7 @@ pub fn trigger_player_reaction<I: 'static>(owner: &mut GameCharacter<I>, hit_rea
     } else if asleep {
         tc.asleep = false;
     }
+    owner.zombie.voice_choice = attack.bite_voice.voice_choice.get();
     owner.apply_zombie_attack_outcome(&outcome);
     owner.set_var_bool("AttackDidDamage", outcome.hit);
     if target_dead {
@@ -780,8 +782,7 @@ impl<I: 'static> State<I> for ThumpState {
         if let Some(i) = &info {
             slide_away_from_edge(owner, thump, i);
         }
-        let count = THUMP_FRAMES.get(&mut owner.state.params);
-        THUMP_FRAMES.set(&mut owner.state.params, 0);
+        let count = cx.world.thumps_this_frame(owner.id);
         for _ in 0..count {
             owner.state.action_context.clear_event("ThumpFrame");
             owner.zombie.time_thumping += 1;
@@ -847,12 +848,6 @@ impl<I: 'static> State<I> for ThumpState {
         owner.zombie.thump_target = None;
         owner.zombie.thump_timer = 200;
     }
-    fn anim_event(&self, owner: &mut GameCharacter<I>, _cx: &mut StateCx<'_, I>, e: &AnimEventRecord) {
-        if is(e, "ThumpFrame") {
-            let n = THUMP_FRAMES.get(&mut owner.state.params);
-            THUMP_FRAMES.set(&mut owner.state.params, n + 1);
-        }
-    }
 }
 
 /// The `THUMP_FLAG_*` for a thump sound.
@@ -912,22 +907,22 @@ fn slide_away_from_edge<I: 'static>(owner: &mut GameCharacter<I>, t: ThumpTarget
     let (x, y) = (owner.vars.x, owner.vars.y);
     let n = |o: &mut GameCharacter<I>, sy: i32| {
         if y > sy as f32 - dist {
-            o.zombie.next_y = sy as f32 - dist;
+            o.vars.next_y = sy as f32 - dist;
         }
     };
     let s = |o: &mut GameCharacter<I>, sy: i32| {
         if y < sy as f32 + dist {
-            o.zombie.next_y = sy as f32 + dist;
+            o.vars.next_y = sy as f32 + dist;
         }
     };
     let w = |o: &mut GameCharacter<I>, sx: i32| {
         if x > sx as f32 - dist {
-            o.zombie.next_x = sx as f32 - dist;
+            o.vars.next_x = sx as f32 - dist;
         }
     };
     let e = |o: &mut GameCharacter<I>, sx: i32| {
         if x < sx as f32 + dist {
-            o.zombie.next_x = sx as f32 + dist;
+            o.vars.next_x = sx as f32 + dist;
         }
     };
     if solid {
@@ -1187,14 +1182,16 @@ impl<I: 'static> State<I> for ZombieEatBodyState {
         }
         let ctx = cx.ctx;
         if ctx.rand_next(crate::character::body_part::adjust_for_framerate(ctx, 450)) == 0 {
-            // The blood splat and giblets (`addBloodSplat`, `IsoZombieGiblets`).
+            // `getChunk().addBloodSplat(x + Rand(-0.5, 0.5), y + Rand(-0.5, 0.5),
+            // z, Rand.Next(8))`, then the giblets (`IsoZombieGiblets`, the
+            // world's).
             ctx.rand_next_float(-0.5, 0.5);
             ctx.rand_next_float(-0.5, 0.5);
-            ctx.rand_next(8);
+            let kind = ctx.rand_next(8);
+            ctx.event(SimEvent::AddBloodSplat { kind });
             ctx.rand_next(6);
             ctx.rand_next_float(-0.2, 0.2);
             ctx.rand_next_float(-0.2, 0.2);
-            ctx.event(SimEvent::SplatBloodFloor);
             if ctx.rand_next(4) == 0 {
                 ctx.event(SimEvent::AddBlood { part: -1, scratched: true, bitten: false, all_layers: false });
             }
@@ -1326,8 +1323,11 @@ impl<I: 'static> State<I> for ZombieTurnAlerted {
     fn id(&self) -> StateId {
         Self::ID
     }
-    /// `getAnimationPlayer().setTargetAngle(TARGET_ANGLE)` (TODO(anim)).
-    fn enter(&self, _owner: &mut GameCharacter<I>, _cx: &mut StateCx<'_, I>) {}
+    /// `getAnimationPlayer().setTargetAngle(TARGET_ANGLE)`.
+    fn enter(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
+        let angle = TURN_ALERTED_TARGET_ANGLE.get(&mut owner.state.params);
+        cx.world.turn_alerted_enter(owner.id, angle);
+    }
     fn exit(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
         let (x, y, z) = owner.path_target(cx);
         owner.zombie_path_to_sound(x, y, z, cx);
@@ -1369,6 +1369,146 @@ impl<I: 'static> State<I> for ZombieFallingState {
     fn anim_event(&self, owner: &mut GameCharacter<I>, _cx: &mut StateCx<'_, I>, e: &AnimEventRecord) {
         if is(e, "FallOnFront") {
             owner.environment.fall_on_front = parse_boolean(e.event.parameter_value.as_deref());
+        }
+    }
+}
+
+/// `ZombieHitReactionState.TURN_TO_PLAYER`, `HIT_REACTION_TIMER`.
+pub const HIT_TURN_TO_PLAYER: Param<bool> = Param::new(ids::ZOMBIE_HIT_REACTION, "turn_to_player", || false);
+pub const HIT_REACTION_TIMER: Param<f32> = Param::new(ids::ZOMBIE_HIT_REACTION, "hit_reaction_timer", || 0.0);
+
+impl<I: 'static> State<I> for ZombieHitReactionState {
+    fn id(&self) -> StateId {
+        Self::ID
+    }
+    fn enter(&self, owner: &mut GameCharacter<I>, _cx: &mut StateCx<'_, I>) {
+        owner.zombie.collide_while_hit = true;
+        HIT_TURN_TO_PLAYER.set(&mut owner.state.params, false);
+        HIT_REACTION_TIMER.set(&mut owner.state.params, 0.0);
+        owner.clear_var("onknees");
+        if owner.vars.sit_against_wall {
+            owner.vars.hit_reaction = String::new();
+        }
+    }
+    fn execute(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
+        let t = HIT_REACTION_TIMER.get(&mut owner.state.params) + cx.ctx.multiplier();
+        HIT_REACTION_TIMER.set(&mut owner.state.params, t);
+        if HIT_TURN_TO_PLAYER.get(&mut owner.state.params) {
+            let d = crate::character::state::vars::iso_direction_from_angle(owner.vars.hit_dir_x, owner.vars.hit_dir_y);
+            owner.vars.dir = if owner.vars.hit_from_behind { d } else { d.rot180() };
+        }
+    }
+    fn exit(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
+        owner.zombie.collide_while_hit = true;
+        if owner.vars.target.is_some() {
+            owner.zombie.allow_repath_delay = 0.0;
+        }
+        owner.vars.stagger_back = false;
+        if !owner.is_dead() {
+            owner.vars.hit_reaction = String::new();
+        }
+        owner.set_eat_body_target(None, false, cx);
+        owner.vars.sit_against_wall = false;
+        owner.vars.shootable = true;
+    }
+    fn anim_event(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>, e: &AnimEventRecord) {
+        let param = parse_boolean(e.event.parameter_value.as_deref());
+        if is(e, "DoDeath") && param && !owner.is_dead() {
+            let by = owner.vars.attacked_by;
+            owner.kill_by(by, cx);
+            if let Some(a) = by.and_then(|a| cx.world.character_mut(a)) {
+                a.zombie_kills += 1;
+            }
+        }
+        if is(e, "PlayDeathSound") {
+            cx.ctx.event(SimEvent::PlaySound("PlayDeathSound".into()));
+        }
+        if is(e, "FallOnFront") {
+            owner.environment.fall_on_front = param;
+        }
+        if is(e, "Collide") && owner.zombie.speed_type == 1 {
+            owner.zombie.collide_while_hit = false;
+        }
+        if is(e, "ZombieTurnToPlayer") {
+            HIT_TURN_TO_PLAYER.set(&mut owner.state.params, param);
+        }
+        if is(e, "CancelKnockDown") && param {
+            owner.vars.knocked_down = false;
+        }
+        if is(e, "KnockDown") {
+            owner.vars.on_floor = true;
+            owner.vars.knocked_down = true;
+        }
+        if is(e, "SplatBlood") {
+            let ctx = cx.ctx;
+            for _ in 0..3 {
+                ctx.event(SimEvent::AddBlood { part: -1, scratched: true, bitten: false, all_layers: false });
+            }
+            for _ in 0..10 {
+                ctx.rand_next_float(-0.5, 0.5);
+                ctx.rand_next_float(-0.5, 0.5);
+                let kind = ctx.rand_next(8);
+                ctx.event(SimEvent::AddBloodSplat { kind });
+                ctx.rand_next(5);
+                ctx.rand_next_float(-0.2, 0.2);
+                ctx.rand_next_float(-0.2, 0.2);
+            }
+        }
+        if is(e, "SetState") && !owner.is_dead() {
+            owner.zombie.sound_state = "Hit";
+        }
+    }
+}
+
+impl<I: 'static> State<I> for FakeDeadAttackState {
+    fn id(&self) -> StateId {
+        Self::ID
+    }
+    fn enter(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
+        let (vx, vy) = owner.zombie.vector_to_target;
+        owner.vars.dir = crate::character::state::vars::iso_direction_from_angle(vx, vy);
+        let (fx, fy) = owner.vars.dir.delta();
+        owner.set_forward_direction(fx as f32, fy as f32);
+        owner.set_fake_dead(cx.ctx, false);
+        owner.path.collidable = true;
+        cx.ctx.event(SimEvent::EmitterPlaySound(format!("{}Attack", owner.voice_prefix())));
+        if let Some(t) = owner.vars.target {
+            let (sm, chars) = (cx.sm, cx.chars);
+            if let Some(p) = cx.world.character_mut(t) {
+                if p.is_player() && !p.has_trait(sm, "DESENSITIZED").unwrap_or(false) {
+                    if let Ok(panic) = chars.sim.character_stats.field("PANIC") {
+                        let v = p.body_damage.panic_increase_value * 3.0;
+                        p.stats.add(&panic, v);
+                    }
+                }
+            }
+        }
+    }
+    fn anim_event(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>, e: &AnimEventRecord) {
+        if is(e, "AttackCollisionCheck") && !owner.is_dead() {
+            let tpos = owner.vars.target.and_then(|t| pos_of(cx, t)).map(|(x, y, _)| (x, y));
+            if owner.is_target_in_cone(tpos, 1.5, 0.9) {
+                if let Some(t) = owner.vars.target {
+                    // TODO(vehicles): `couldCrawlerAttackPassenger`.
+                    let in_vehicle = cx.world.character_mut(t).is_some_and(|c| c.path.vehicle.is_some());
+                    if !in_vehicle {
+                        let attack = owner.zombie_attack_for(t, "", cx);
+                        let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
+                        if let Some(tc) = cx.world.character_mut(t) {
+                            if let Ok(out) = tc.body_damage_add_random_damage_from_zombie(sm, chars, ctx, &attack) {
+                                owner.zombie.voice_choice = attack.bite_voice.voice_choice.get();
+                                owner.apply_zombie_attack_outcome(&out);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if is(e, "FallOnFront") {
+            owner.environment.fall_on_front = parse_boolean(e.event.parameter_value.as_deref());
+        }
+        if is(e, "ActiveAnimFinishing") {
+            owner.vars.crawling = true;
         }
     }
 }

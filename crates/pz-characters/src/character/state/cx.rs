@@ -11,8 +11,9 @@ use crate::character::{GameCharacter, SimContext};
 use crate::Characters;
 
 pub use pz_pathfind::behavior::BehaviorResult;
-use pz_pathfind::mover::PathMover;
+use pz_pathfind::mover::{MoverId, PathMover};
 use pz_pathfind::behavior::PathFindBehavior2;
+pub use pz_world::los::TestResults;
 
 use pz_audio::world_sound::{SoundWorld, WorldSoundManager};
 
@@ -67,11 +68,13 @@ pub trait StateWorld<I> {
 
     /// `getPathFindBehavior2().pathToLocation(x, y, z)` for `chr` (the
     /// world owns each character's `pz_pathfind::behavior::PathFindBehavior2`
-    /// and the `PathfindService`).
+    /// and the `PathfindService`, keyed by `chr.mover_id()`, which carries
+    /// the character's kind and id: see [`GameCharacter::mover_id_of`]).
     fn path_to_location(&mut self, _chr: &mut dyn PathMover, _x: i32, _y: i32, _z: i32) {}
 
-    /// `getPathFindBehavior2().pathToCharacter(target)`.
-    fn path_to_character(&mut self, _chr: &mut dyn PathMover, _target: i32) {}
+    /// `getPathFindBehavior2().pathToCharacter(target)`; `target` is the
+    /// target's `PathMover::mover_id()` (kind and id).
+    fn path_to_character(&mut self, _chr: &mut dyn PathMover, _target: MoverId) {}
 
     /// `getPathFindBehavior2().update()`.
     fn path_update(&mut self, _chr: &mut dyn PathMover) -> BehaviorResult {
@@ -81,11 +84,16 @@ pub trait StateWorld<I> {
     /// `getPathFindBehavior2().cancel()`.
     fn path_cancel(&mut self, _chr: &mut dyn PathMover) {}
 
-    /// `LosUtil.lineClear` / `PolygonalMap2.lineClearCollide` between two
-    /// points on one level (`pz_pathfind::main_thread::los_util` over the
-    /// world's squares).
-    fn line_clear(&self, _x0: f32, _y0: f32, _x1: f32, _y1: f32, _z: i32) -> bool {
-        true
+    /// `PathfindNative.instance.cancelRequest(chr)`: drops `chr`'s pending
+    /// request (`PathfindService::cancel_request(chr.mover_id())`); its
+    /// `PathFindBehavior2` is left as it is.
+    fn path_cancel_request(&mut self, _chr: &mut dyn PathMover) {}
+
+    /// `LosUtil.lineClear(cell, x0, y0, z0, x1, y1, z1, ignoreDoors)`
+    /// between two squares (`pz_world::los::line_clear` over the world's
+    /// squares).
+    fn los_line_clear(&self, _from: (i32, i32, i32), _to: (i32, i32, i32), _ignore_doors: bool) -> TestResults {
+        TestResults::Clear
     }
 
     // ---- what zombies read and do (`IsoZombie`, the zombie states) ----
@@ -168,10 +176,6 @@ pub trait StateWorld<I> {
     fn line_clear_collide(&self, _x0: f32, _y0: f32, _x1: f32, _y1: f32, _z: i32, _ignore: Option<i32>, _flags: i32) -> bool {
         false
     }
-    /// `LosUtil.lineClear(cell, from, to, ignoreDoors)`.
-    fn los_line_clear(&self, _from: (i32, i32, i32), _to: (i32, i32, i32), _ignore_doors: bool) -> LosResult {
-        LosResult::Clear
-    }
     /// `LosUtil.lineClearCollide(x0, y0, z0, x1, y1, z1, ignoreDoors)`:
     /// true when blocked.
     fn los_line_clear_collide(&self, _from: (i32, i32, i32), _to: (i32, i32, i32), _ignore_doors: bool) -> bool {
@@ -225,6 +229,65 @@ pub trait StateWorld<I> {
     }
     /// `square.putOutCampfire()`.
     fn put_out_campfire(&mut self, _sq: (i32, i32, i32)) {}
+    /// `PolygonalMap2.instance.resolveCollision(chr, nx, ny)`: the obstacle
+    /// clip of the next position (pz-pathfind's `PathHost::resolve_collision`,
+    /// one `CollideWithObstacles` per world, called in game order).
+    fn resolve_collision(&mut self, _chr: &dyn pz_pathfind::mover::CharacterView, nx: f32, ny: f32) -> (f32, f32) {
+        (nx, ny)
+    }
+    /// `PolygonalMap2.instance.resolveCollision(chr, radius, finalPos)`
+    /// (pz-pathfind's `PathHost::resolve_collision_radius`), for
+    /// `slideAwayFromWalls` with `includePolyCollisions`: whether `chr`
+    /// with `radius` overlaps a vehicle obstacle, and `finalPos`.
+    fn resolve_collision_radius(&mut self, chr: &dyn pz_pathfind::mover::CharacterView, _radius: f32) -> (bool, (f32, f32)) {
+        (false, (chr.x(), chr.y()))
+    }
+    /// `FireCheck()`, `SpreadFire()` and `ReduceHealthWhenBurning()` in
+    /// that order, as `IsoGameCharacter.update` calls them: the world owns
+    /// `IsoFireManager` and the squares, so it runs
+    /// [`crate::character::fire::update_character_fire`] (or the three
+    /// `pz_world::fire::character` functions) over `chr` with `rand`.
+    fn character_fire(
+        &mut self,
+        _chr: &mut dyn pz_world::fire::character::FireCharacter,
+        _frame: pz_world::fire::character::CharacterFireFrame,
+        _rand: &mut dyn pz_world::java::GameRand,
+    ) {
+    }
+    /// `getGlobalMovementMod(true)`'s vegetation part for one square (the
+    /// character's, then its feeler square): when it has a tree or a bush,
+    /// `doTreeNoises()` and `setRenderEffect(Vegetation_Rustle)` on each of
+    /// its trees and bushes past the first object; a new effect draws
+    /// `Rand.Next(45f, 60f)` (`ObjectRenderEffects.getNew`).
+    fn rustle_vegetation(&mut self, _chr: i32, _sq: (i32, i32, i32), _ctx: &dyn crate::character::SimContext) {}
+    /// `square.testCollideAdjacent(mover, dx, dy, dz)` from `from`.
+    fn test_collide_adjacent(&self, _mover: MoverId, _from: (i32, i32, i32), _dx: i32, _dy: i32, _dz: i32) -> bool {
+        false
+    }
+    /// `checkBreakHoppable()`, `checkHitHoppable()` and
+    /// `checkBreakBendableFence(current)` after a square-edge collision.
+    fn collided_with_hoppables(&mut self, _chr: i32, _current: Option<(i32, i32, i32)>) {}
+    /// A zombie path finding toward an unloaded square outside a building
+    /// is virtualized (`ZombiePopulationManager.virtualizeZombie`); true
+    /// when that happened.
+    fn virtualize_if_unloaded(&mut self, _chr: i32, _next_x: i32, _next_y: i32) -> bool {
+        false
+    }
+    // ---- the character's animation (`pz_anim::StateAnimHooks` on the
+    // world's animator and player for `chr`) ----
+
+    /// `ThumpState.execute`'s thump count this frame
+    /// (`StateAnimHooks::thumps_this_frame` with the character's
+    /// `isAnimationUpdatingThisFrame()` and `getAnimationTimeDelta()`).
+    fn thumps_this_frame(&mut self, _chr: i32) -> i32 {
+        0
+    }
+    /// `ZombieTurnAlerted.enter`: `StateAnimHooks::turn_alerted_enter`.
+    fn turn_alerted_enter(&mut self, _chr: i32, _target_angle: f32) {}
+    /// `doDeferredMovement`'s step: `StateAnimHooks::deferred_movement_step`.
+    fn deferred_movement_step(&mut self, _chr: i32, _input: &pz_anim::DeferredMovementInput) -> Option<(f32, f32)> {
+        None
+    }
     /// The non-ghost players standing on `sq` (`getMovingObjects()`).
     fn players_on_square(&self, _sq: (i32, i32, i32)) -> Vec<i32> {
         Vec::new()
@@ -243,16 +306,6 @@ pub trait StateWorld<I> {
     fn eating_count(&self, _target: EatTarget) -> usize {
         0
     }
-}
-
-/// `LosUtil.TestResults`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LosResult {
-    Clear,
-    ClearThroughOpenDoor,
-    ClearThroughWindow,
-    Blocked,
-    ClearThroughClosedDoor,
 }
 
 /// A `Thumpable`: an object on a square or a vehicle.

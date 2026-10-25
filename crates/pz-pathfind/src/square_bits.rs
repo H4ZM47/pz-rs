@@ -12,7 +12,9 @@
 //! defaults are a fresh single-player world:
 //!
 //! * barricades: none (`isBarricaded()` is false for windows, window frames
-//!   and thumpables);
+//!   and thumpables); [`pz_world::ObjectHooks`] implements
+//!   [`SquareBitsHooks`] with the barricades of the loaded `IsoBarricade`
+//!   objects, as the game does, and every other default;
 //! * `hasLitCampfire()`: false (no campfire global objects);
 //! * `hasFarmingPlant()`: false (no farming global objects);
 //! * `BentFences.isEnabled()`: false (the default sandbox disables bent
@@ -26,11 +28,10 @@
 //! `pz-world`'s lotpack loader and compares the chunk buffers byte for byte
 //! with the ones the game's own `ChunkUpdateTask.init` produced for the same
 //! chunks (612 chunks in five regions). Every square whose inputs match the
-//! game's is bit-exact (99926 of 101056 squares); the rest have different
-//! objects because `pz-world` does not run B42 world generation (biome
-//! vegetation), and 65 more buffers differ only in their level range
-//! because `pz-world` does not run `loadInMainThread`'s cross-chunk
-//! `EnsureSurroundNotNull`. Details are in that example's module doc.
+//! game's is bit-exact (99926 of 101056 squares, 512 of 612 chunk buffers
+//! byte-identical); the rest have different objects because `pz-world` does
+//! not run B42 world generation (biome vegetation) yet. Details are in that
+//! example's module doc.
 
 use pz_world::chunk::{IsoChunk, IsoGridSquare};
 use pz_world::objects::{IsoObject, IsoThumpable, ObjectKind};
@@ -129,6 +130,14 @@ pub trait SquareBitsHooks {
 pub struct DefaultBitsHooks;
 
 impl SquareBitsHooks for DefaultBitsHooks {}
+
+/// The loaded objects' barricades (`IsoBarricade` on the object's square or
+/// the square across its edge); the other hooks keep their defaults.
+impl SquareBitsHooks for pz_world::ObjectHooks<'_> {
+    fn is_barricaded(&self, sq: &IsoGridSquare, obj: &IsoObject) -> bool {
+        self.object_barricaded(sq, obj)
+    }
+}
 
 /// The `IsoFlagType` / `IsoObjectType` constants these queries use,
 /// resolved by name from the runtime tables.

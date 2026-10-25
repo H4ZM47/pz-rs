@@ -135,6 +135,12 @@ Status of the Rust port. Update this file with every merged change.
   (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
   output; the remaining one differs only in an identity hash.
 
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup.
 - Character simulation core (`pz-characters::character`): `Stats`,
   `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
   and perk levels, `applyTraits`, `calculateStats` and the stat part of
@@ -234,10 +240,30 @@ Status of the Rust port. Update this file with every merged change.
   original (600 lore-matrix `DoZombieStats`/`makeInactive`/`toggleCrawling`
   cases with the `Rand` stream after each, 2000 `setTurnAlertedValues` and
   500 vision-radius cases, 40 rounds of `WorldSoundManager` sounds with
-  1200 zombie hearing queries and aging) matches bit for bit (checked
-  locally). Spotting, the zombie states' world interplay, ragdolls,
-  vehicles and the network states are not yet checked against the
-  original; the movement code (`IsoGameCharacter.update`) is TODO.
+  1200 zombie hearing queries and aging, plus 1280 lines on a cell with
+  rooms), 3000 spotting checks (`spottedNew`/`spottedOld` on a real cell
+  with light, rooms, sneaking, traits and distances), 392 bites and
+  scratches on dressed players (`AttackState.triggerPlayerReaction` with
+  clothing holes, helmet falls and the BodyDamage update) and 24000 ticks
+  of the zombie state machine on the real action groups match bit for bit,
+  with the `Rand` stream (checked locally). `IsoMovingObject.postupdate`'s
+  collision passes (`DoCollide`, collision flags, the obstacle clip through
+  pz-pathfind), `slideAwayFromWalls` (square edges here, vehicles through
+  pz-pathfind's `resolve_collision_radius`) and `doDeferredMovement` are
+  ported with unit tests only. Characters burn through pz-world's fire
+  (`FireCharacter`, the `FireCheck`/`SpreadFire`/`ReduceHealthWhenBurning`
+  step after the state machine): 60 `SetOnFire` runs with 16361 ticks of
+  burning damage on players and zombies match the original with the
+  `Rand` stream. A zombie chasing a player on real westpoint chunks (40
+  runs of 400 ticks: path requests answered by the original's native
+  library on one side and pz-pathfind's `PathHost` on the other, path
+  following, walk toward, lunge, face target and attack, collisions and
+  head sliding against the real squares) matches the original bit for bit
+  with the `Rand` stream in 35 runs; the other 5 match until the zombie
+  reaches a door or a fence (thumping and fence climbing need the world's
+  mover-aware `testCollideAdjacent` and hoppable checks). Ragdolls,
+  vehicles and the network states are not checked against the original;
+  stairs and slopes are TODO.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.

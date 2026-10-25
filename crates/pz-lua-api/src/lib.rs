@@ -16,13 +16,13 @@ pub mod bind_climate;
 pub mod bind_combat;
 pub mod bind_core;
 pub mod bind_debug;
-pub mod bind_input;
-pub mod bind_joypad;
 pub mod bind_fs;
 pub mod bind_global_objects;
 pub mod bind_globals;
+pub mod bind_input;
 pub mod bind_iso_enums;
 pub mod bind_java_util;
+pub mod bind_joypad;
 pub mod bind_mods;
 pub mod bind_nutrition;
 pub mod bind_popman;
@@ -52,8 +52,6 @@ pub fn register_all(mgr: &mut LuaManager) {
     // Core: binds the shared instance (`bind_core::install_core` before init).
     bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
     bind_fs::register(mgr);
-    bind_input::register(mgr);
-    bind_joypad::register(mgr);
     bind_render::register(mgr);
     bind_save::register(mgr);
     // Text before UI: bind_text's UIFont is canonical.
@@ -83,6 +81,8 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_climate::install_event_sink(sink);
     bind_climate::register(mgr);
     bind_mods::register(mgr);
+    bind_input::register(mgr);
+    bind_joypad::register(mgr);
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
     bind_popman::register(&mut mgr.thread);

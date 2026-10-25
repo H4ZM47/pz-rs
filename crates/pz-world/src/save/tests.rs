@@ -96,6 +96,7 @@ fn body(parts: usize) -> IsoDeadBody {
         crawling: false,
         fake_dead: false,
         ragdoll: None,
+        burn_timer: 0.0,
     }
 }
 
@@ -474,4 +475,130 @@ fn finish_chunk_load_recalculates_before_hook() {
     assert!(!seen.0.is_empty() && seen.0.iter().all(|&b| b));
     assert!(!seen.1);
     assert!(cell.chunks.contains_key(&(wx, wy)));
+}
+
+/// A hand-assembled `zombie/iso/IsoObject` whose `initFactory` adds the
+/// factories `(id, name)` in order, the first stored to a field as the
+/// original does, followed by `extra` code before `return`.
+fn init_factory_class(factories: &[(i8, &str)], extra: &[u8]) -> Vec<u8> {
+    let mut pool: Vec<Vec<u8>> = Vec::new();
+    let u = |n: u16| n.to_be_bytes();
+    fn utf8(pool: &mut Vec<Vec<u8>>, s: &str) -> u16 {
+        let mut v = vec![1, 0, s.len() as u8];
+        v.extend_from_slice(s.as_bytes());
+        pool.push(v);
+        pool.len() as u16
+    }
+    fn tagged(pool: &mut Vec<Vec<u8>>, tag: u8, a: u16, b: Option<u16>) -> u16 {
+        let mut v = vec![tag];
+        v.extend(a.to_be_bytes());
+        if let Some(b) = b {
+            v.extend(b.to_be_bytes());
+        }
+        pool.push(v);
+        pool.len() as u16
+    }
+    let class = |pool: &mut Vec<Vec<u8>>, name: &str| {
+        let n = utf8(pool, name);
+        tagged(pool, 7, n, None)
+    };
+    let member = |pool: &mut Vec<Vec<u8>>, tag: u8, class: u16, name: &str, desc: &str| {
+        let n = utf8(pool, name);
+        let d = utf8(pool, desc);
+        let nt = tagged(pool, 12, n, Some(d));
+        tagged(pool, tag, class, Some(nt))
+    };
+    let this = class(&mut pool, "zombie/iso/IsoObject");
+    let object = class(&mut pool, "java/lang/Object");
+    let fac_desc =
+        "(Lzombie/iso/IsoObject$IsoObjectFactory;)Lzombie/iso/IsoObject$IsoObjectFactory;";
+    let add = member(&mut pool, 10, this, "addIsoObjectFactory", fac_desc);
+    let field = member(
+        &mut pool,
+        9,
+        this,
+        "factoryIsoObject",
+        "Lzombie/iso/IsoObject$IsoObjectFactory;",
+    );
+    let mut code = Vec::new();
+    for (i, &(id, name)) in factories.iter().enumerate() {
+        let anon = class(&mut pool, &format!("zombie/iso/IsoObject${}", i + 1));
+        let init = member(&mut pool, 10, anon, "<init>", "(BLjava/lang/String;)V");
+        let n = utf8(&mut pool, name);
+        let s = tagged(&mut pool, 8, n, None);
+        code.push(0xbb);
+        code.extend(u(anon));
+        code.push(0x59);
+        if (-1..=5).contains(&id) {
+            code.push((id + 3) as u8);
+        } else {
+            code.extend([0x10, id as u8]);
+        }
+        code.push(0x13);
+        code.extend(u(s));
+        code.push(0xb7);
+        code.extend(u(init));
+        code.push(0xb8);
+        code.extend(u(add));
+        if i == 0 {
+            code.push(0xb3);
+            code.extend(u(field));
+        } else {
+            code.push(0x57);
+        }
+    }
+    code.extend(extra);
+    code.push(0xb1);
+    let method = utf8(&mut pool, "initFactory");
+    let void = utf8(&mut pool, "()V");
+    let code_attr = utf8(&mut pool, "Code");
+    let mut b = vec![0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 61];
+    b.extend(u(pool.len() as u16 + 1));
+    for c in &pool {
+        b.extend(c);
+    }
+    b.extend(u(0x21));
+    b.extend(u(this));
+    b.extend(u(object));
+    b.extend(u(0)); // interfaces
+    b.extend(u(0)); // fields
+    b.extend(u(1)); // methods
+    b.extend(u(0x0a)); // private static
+    b.extend(u(method));
+    b.extend(u(void));
+    b.extend(u(1));
+    b.extend(u(code_attr));
+    b.extend(((12 + code.len()) as u32).to_be_bytes());
+    b.extend(u(4));
+    b.extend(u(0));
+    b.extend((code.len() as u32).to_be_bytes());
+    b.extend(&code);
+    b.extend(u(0)); // exception table
+    b.extend(u(0)); // code attributes
+    b.extend(u(0)); // class attributes
+    b
+}
+
+#[test]
+fn reads_init_factory_calls() {
+    let fs = [(0, "IsoObject"), (1, "Player"), (40, "ButcherHook")];
+    let cf = pz_classfile::ClassFile::parse(&init_factory_class(&fs, &[])).unwrap();
+    let got = super::factory_calls(&cf).unwrap();
+    let want: Vec<(i8, String)> = fs.iter().map(|&(i, n)| (i, n.to_string())).collect();
+    assert_eq!(got, want);
+    // An instruction the reader does not model is an error, not a guess.
+    let cf = pz_classfile::ClassFile::parse(&init_factory_class(&fs, &[0x00])).unwrap();
+    assert!(super::factory_calls(&cf).is_err());
+    let t = SaveTables::for_tests();
+    assert_eq!(
+        SaveTables::from_text(&t.to_text()).unwrap().factory,
+        t.factory
+    );
+    let o = crate::ObjectTables::new(vec![1, 1, 2, 3, 4, 5, 6, 8], vec![(0, 0), (1, 5)]).unwrap();
+    assert_eq!(
+        crate::ObjectTables::from_text(&o.to_text())
+            .unwrap()
+            .to_text(),
+        o.to_text()
+    );
 }

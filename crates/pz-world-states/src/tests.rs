@@ -670,11 +670,11 @@ fn square_queries() {
     ));
     assert_ne!(
         StateWorld::<()>::los_line_clear(&a, (12, 14, 0), (12, 10, 0), false),
-        LosResult::Clear
+        TestResults::Clear
     );
     assert_eq!(
         StateWorld::<()>::los_line_clear(&a, (14, 14, 0), (14, 10, 0), false),
-        LosResult::Clear
+        TestResults::Clear
     );
 }
 

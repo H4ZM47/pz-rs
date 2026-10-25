@@ -34,8 +34,10 @@
 pub mod body_damage;
 pub mod body_part;
 pub mod clothing_wetness;
+pub mod collision;
 pub mod combat;
 pub mod context;
+pub mod fire;
 pub mod fitness;
 pub mod items;
 pub mod metabolics;

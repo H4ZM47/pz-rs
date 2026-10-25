@@ -36,12 +36,10 @@ fn parse_i32(e: &Element) -> Option<i32> {
     java_trim(&e.text_content()).trim_start_matches('+').parse().ok()
 }
 
+/// JAXB's `xs:boolean`: "true" or "1" (trimmed) is true, anything else
+/// false (the game data's `False` reads as false).
 fn parse_bool(e: &Element) -> Option<bool> {
-    match java_trim(&e.text_content()) {
-        "true" | "1" => Some(true),
-        "false" | "0" => Some(false),
-        _ => None,
-    }
+    Some(matches!(java_trim(&e.text_content()), "true" | "1"))
 }
 
 fn set_f32(dst: &mut f32, e: &Element) {
@@ -243,6 +241,10 @@ pub enum AnimEventTime {
     Percentage,
     Start,
     End,
+    /// An `m_Time` value that is not one of the `@XmlEnumValue`s
+    /// (`Percentage`, `Start`, `End`): JAXB leaves null and the event never
+    /// fires.
+    Invalid,
 }
 
 /// The `AnimEvent` subclasses.
@@ -280,10 +282,10 @@ impl AnimEvent {
                 "m_EventName" => ev.event_name = f.text_content(),
                 "m_Time" => {
                     ev.time = match java_trim(&f.text_content()) {
-                        "START" => AnimEventTime::Start,
-                        "END" => AnimEventTime::End,
-                        "PERCENTAGE" => AnimEventTime::Percentage,
-                        _ => ev.time,
+                        "Start" => AnimEventTime::Start,
+                        "End" => AnimEventTime::End,
+                        "Percentage" => AnimEventTime::Percentage,
+                        _ => AnimEventTime::Invalid,
                     }
                 }
                 "m_TimePc" => set_f32(&mut ev.time_pc, f),
@@ -420,6 +422,10 @@ impl Anim2DBlendPicker {
                 }
             }
         }
+        // The original collects the hull from a HashSet keyed by identity
+        // hash, so points that tie in the comparator (collinear hulls, such
+        // as the player's Idle blend) come out in an arbitrary order; here
+        // they keep first-seen edge order.
         let mut hull: Vec<usize> = Vec::new();
         for ((a, b), c) in &edges {
             if *c == 1 {
@@ -767,11 +773,11 @@ impl AnimNode {
                 "m_GrappleTweenInTime" => set_f32(&mut n.grapple_tween_in_time, f),
                 "m_GrapplerOffsetBehaviour" => {
                     n.grappler_offset_behaviour = match java_trim(&t()) {
-                        "NONE" => GrappleOffsetBehaviour::None,
-                        "GRAPPLED" => GrappleOffsetBehaviour::Grappled,
-                        "GRAPPLED_TWEEN_OUT_TO_NONE" => GrappleOffsetBehaviour::GrappledTweenOutToNone,
-                        "GRAPPLER" => GrappleOffsetBehaviour::Grappler,
-                        "NONE_TWEEN_IN_GRAPPLER" => GrappleOffsetBehaviour::NoneTweenInGrappler,
+                        "None" => GrappleOffsetBehaviour::None,
+                        "Grappled" => GrappleOffsetBehaviour::Grappled,
+                        "Grappled_TweenOutToNone" => GrappleOffsetBehaviour::GrappledTweenOutToNone,
+                        "Grappler" => GrappleOffsetBehaviour::Grappler,
+                        "None_TweenInGrappler" => GrappleOffsetBehaviour::NoneTweenInGrappler,
                         _ => n.grappler_offset_behaviour,
                     }
                 }
@@ -979,16 +985,16 @@ impl AnimNode {
             return String::new();
         }
         if empty {
-            return self.alternate_anims[rng.next_int(self.alternate_anims.len() as i32) as usize].clone();
+            return self.alternate_anims[rng.next(self.alternate_anims.len() as i32) as usize].clone();
         }
         if self.alternate_anims.is_empty() {
             return self.anim_name.clone();
         }
-        let idx = rng.next_int(1 + self.alternate_anims.len() as i32);
+        let idx = rng.next(1 + self.alternate_anims.len() as i32);
         if idx == 0 {
             self.anim_name.clone()
         } else {
-            self.alternate_anims[rng.next_int(self.alternate_anims.len() as i32) as usize].clone()
+            self.alternate_anims[rng.next(self.alternate_anims.len() as i32) as usize].clone()
         }
     }
 }

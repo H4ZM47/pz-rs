@@ -155,16 +155,16 @@ impl<I: 'static> GameCharacter<I> {
         let (w, _) = self.attack_weapon(sm);
         let range = 2.0f32.max(w.max_range * self.weapon_range_mod(sm, cx.chars, &w) + 1.0);
         let ids = cx.world.characters_near(self.vars.x, self.vars.y, self.vars.z, range);
-        let (ox, oy, oz) = (self.vars.x, self.vars.y, self.vars.z.floor() as i32);
+        let from = self.square_xyz();
         for id in ids {
             if id == self.id {
                 continue;
             }
-            let clear = {
+            let to = {
                 let Some(t) = cx.world.character_mut(id) else { continue };
-                (t.vars.x, t.vars.y)
+                t.square_xyz()
             };
-            let line = cx.world.line_clear(ox, oy, clear.0, clear.1, oz);
+            let line = los_allows_melee(cx.world.los_line_clear(from, to, false));
             let Some(t) = cx.world.character_mut(id) else { continue };
             let Some(h) = self.valid_melee_target(t, &w, range, line) else { continue };
             let (min, max) = if t.is_standing() { (w.min_angle, w.max_angle) } else { (w.min_angle / 1.5, w.max_angle) };
@@ -235,16 +235,16 @@ impl<I: 'static> GameCharacter<I> {
         let on_ground = self.attack_vars.target_on_ground;
         let mut list: Vec<HitInfo> = Vec::new();
         let ids = cx.world.characters_near(self.vars.x, self.vars.y, self.vars.z, 3.0);
-        let (ox, oy, oz) = (self.vars.x, self.vars.y, self.vars.z.floor() as i32);
+        let from = self.square_xyz();
         for id in ids {
             if id == self.id {
                 continue;
             }
-            let pos = match cx.world.character_mut(id) {
-                Some(t) => (t.vars.x, t.vars.y),
+            let to = match cx.world.character_mut(id) {
+                Some(t) => t.square_xyz(),
                 None => continue,
             };
-            let line = cx.world.line_clear(ox, oy, pos.0, pos.1, oz);
+            let line = los_allows_melee(cx.world.los_line_clear(from, to, false));
             let Some(t) = cx.world.character_mut(id) else { continue };
             let prone = t.is_prone();
             if prone && !aim_floor && !self.attack_vars.do_shove {
@@ -606,5 +606,29 @@ impl<I: 'static> State<I> for SwipeStatePlayer {
 
     fn is_attacking(&self, _owner: &GameCharacter<I>) -> bool {
         false
+    }
+}
+
+/// `CombatManager`'s line-of-sight test for a melee target: not
+/// `Blocked` and not `ClearThroughClosedDoor`.
+fn los_allows_melee(r: crate::character::state::TestResults) -> bool {
+    use crate::character::state::TestResults;
+    r != TestResults::Blocked && r != TestResults::ClearThroughClosedDoor
+}
+
+impl<I: 'static> GameCharacter<I> {
+    /// `(fastfloor(x), fastfloor(y), fastfloor(z))`.
+    pub fn square_xyz(&self) -> (i32, i32, i32) {
+        let f = |v: f32| {
+            let i = v as i32;
+            if v < i as f32 { i - 1 } else { i }
+        };
+        (f(self.vars.x), f(self.vars.y), f(self.vars.z))
+    }
+
+    /// The character's `PathMover::mover_id()` (kind and id), for the world's
+    /// path calls.
+    pub fn mover_id_of(&self) -> pz_pathfind::mover::MoverId {
+        pz_pathfind::mover::PathMover::mover_id(self)
     }
 }

@@ -31,7 +31,7 @@ pub use vehicles::{VehicleBox, VehicleGeometry};
 use std::collections::HashMap;
 
 use pz_characters::character::state::{
-    CorpseInfo, EatTarget, LosResult, SquareInfo, StateWorld, ThumpInfo, ThumpTarget,
+    CorpseInfo, EatTarget, SquareInfo, StateWorld, ThumpInfo, ThumpTarget,
 };
 use pz_characters::GameCharacter;
 use pz_pathfind::mover::ObjectRef;
@@ -504,16 +504,6 @@ pub fn corpse_pos(id: i64) -> (i32, i32, i32, usize) {
     )
 }
 
-fn los_result(r: TestResults) -> LosResult {
-    match r {
-        TestResults::Clear => LosResult::Clear,
-        TestResults::ClearThroughOpenDoor => LosResult::ClearThroughOpenDoor,
-        TestResults::ClearThroughWindow => LosResult::ClearThroughWindow,
-        TestResults::Blocked => LosResult::Blocked,
-        TestResults::ClearThroughClosedDoor => LosResult::ClearThroughClosedDoor,
-    }
-}
-
 impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
     fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
         let sq = self.cell.get_grid_square(x, y, z)?;
@@ -528,17 +518,6 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             has_stairs_north: sq.has_stairs_north(m),
             has_stairs_west: sq.has_stairs_west(m),
         })
-    }
-
-    /// `LosUtil.lineClear(cell, fastfloor(x0), fastfloor(y0), z,
-    /// fastfloor(x1), fastfloor(y1), z, false) != Blocked`.
-    fn line_clear(&self, x0: f32, y0: f32, x1: f32, y1: f32, z: i32) -> bool {
-        let r = self.vision_line(
-            (fastfloor(x0), fastfloor(y0), z),
-            (fastfloor(x1), fastfloor(y1), z),
-            false,
-        );
-        r != TestResults::Blocked
     }
 
     fn square_room(&self, sq: (i32, i32, i32)) -> Option<i64> {
@@ -615,8 +594,8 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
         from: (i32, i32, i32),
         to: (i32, i32, i32),
         ignore_doors: bool,
-    ) -> LosResult {
-        los_result(self.vision_line(from, to, ignore_doors))
+    ) -> TestResults {
+        self.vision_line(from, to, ignore_doors)
     }
 
     fn los_line_clear_collide(

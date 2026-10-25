@@ -98,6 +98,21 @@ struct Globals {
     extra: f32,
     /// The screen pass's uniforms (see screen.wgsl).
     screen: [[f32; 4]; 2],
+    /// The water and puddles uniforms (see surface.wgsl).
+    surface: [[f32; 4]; 5],
+}
+
+/// `sky.wgsl`'s uniform block.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct SkyUniforms {
+    a: [f32; 4],
+    sun_light: [f32; 4],
+    sun_colour: [f32; 4],
+    sky_h: [f32; 4],
+    sky_l: [f32; 4],
+    b: [f32; 4],
+    wind: [f32; 4],
 }
 
 /// Uniform blocks are bound at 256-byte aligned offsets.
@@ -122,6 +137,8 @@ enum Tex2 {
     Offscreen,
     /// The batch texture sampled GL_NEAREST.
     Nearest,
+    /// A surface draw's first reflection texture, white when missing.
+    Surface(Option<u32>),
 }
 
 /// Where a pass draws.
@@ -130,6 +147,9 @@ enum PassTarget {
     Main,
     Chunk(u64),
     Offscreen,
+    /// A sky render (`RenderSkyBox`) into texture `id` with uniform block
+    /// `index` of the frame's sky uniforms.
+    Sky(u32, usize),
 }
 
 impl PassTarget {
@@ -137,7 +157,7 @@ impl PassTarget {
         match self {
             PassTarget::Main => TargetKind::Main,
             PassTarget::Chunk(_) => TargetKind::Chunk,
-            PassTarget::Offscreen => TargetKind::Offscreen,
+            PassTarget::Offscreen | PassTarget::Sky(..) => TargetKind::Offscreen,
         }
     }
 }
@@ -215,6 +235,11 @@ pub struct Gpu {
     mip_pipeline: wgpu::RenderPipeline,
     mip_layout: wgpu::BindGroupLayout,
     mip_sampler: wgpu::Sampler,
+    /// The sky shaders' pipeline, its uniform layout and the two sky
+    /// render textures' views by id.
+    sky_pipeline: wgpu::RenderPipeline,
+    sky_layout: wgpu::BindGroupLayout,
+    sky_targets: HashMap<u32, wgpu::TextureView>,
     /// Texture views by id, and bind groups sampling them GL_NEAREST.
     views: HashMap<u32, wgpu::TextureView>,
     nearest: HashMap<u32, wgpu::BindGroup>,
@@ -284,6 +309,8 @@ impl Gpu {
         let world_tile = module("tileWithDepth", format!("{world}\n{}", include_str!("world_tile.wgsl")));
         let world_composite = module("chunkShader", format!("{world}\n{}", include_str!("world_composite.wgsl")));
         let screen = module("screen", include_str!("screen.wgsl").to_string());
+        let surface = module("surface", include_str!("surface.wgsl").to_string());
+        let particles = module("particles", include_str!("particles.wgsl").to_string());
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -336,6 +363,8 @@ impl Gpu {
             sprite,
             world_tile,
             world_composite,
+            surface,
+            particles,
             screen,
         };
         let depth_stencil = depth_stencil_view(&device, width, height);
@@ -369,6 +398,32 @@ impl Gpu {
             multiview_mask: None,
             cache: None,
         });
+        let sky_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("sky uniforms"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let sky_module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("skybox"), source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()) });
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("skybox"),
+            layout: Some(&device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&sky_layout)], immediate_size: 0 })),
+            vertex: wgpu::VertexState { module: &sky_module, entry_point: Some("vs_full"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &sky_module,
+                entry_point: Some("fs_sky"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format: state::OFFSCREEN_COLOR_FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
         let mip_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
@@ -394,6 +449,9 @@ impl Gpu {
             mip_pipeline,
             mip_layout,
             mip_sampler,
+            sky_pipeline,
+            sky_layout,
+            sky_targets: HashMap::new(),
             views: HashMap::new(),
             nearest: HashMap::new(),
             offscreen: None,
@@ -513,7 +571,7 @@ impl Gpu {
             if let Some(id) = f.batches[i].texture {
                 self.ensure_texture(id, textures);
             }
-            if let Tex2::Texture(id) = f.batches[i].tex2 {
+            if let Tex2::Texture(id) | Tex2::Surface(Some(id)) = f.batches[i].tex2 {
                 self.ensure_texture(id, textures);
             }
             if let Some(id) = f.batches[i].tex3 {
@@ -527,7 +585,7 @@ impl Gpu {
                 None => self.ensure_pipeline(f.batches[i].key),
             }
         }
-        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, .. } = f;
+        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, sky, .. } = f;
         let mut mbytes = vec![0u8; model_uniforms.len().max(1) * model::MODEL_STRIDE as usize];
         for (i, u) in model_uniforms.iter().enumerate() {
             let at = i * model::MODEL_STRIDE as usize;
@@ -581,6 +639,10 @@ impl Gpu {
         }
         let mut main_cleared = false;
         for pass_desc in &passes {
+            if let PassTarget::Sky(id, u) = pass_desc.target {
+                self.sky_pass(&mut enc, id, &sky[u]);
+                continue;
+            }
             let (color_view, depth_view, load, depth_ops, stencil_ops, tw, th) = match pass_desc.target {
                 PassTarget::Main => {
                     let load = match clear_first.filter(|_| !main_cleared) {
@@ -600,6 +662,7 @@ impl Gpu {
                     };
                     (&c.color, &c.depth, load, Some(wgpu::Operations { load: dload, store: wgpu::StoreOp::Store }), None, c.width, c.height)
                 }
+                PassTarget::Sky(..) => continue,
                 PassTarget::Offscreen => {
                     let Some(o) = self.offscreen.as_ref() else { continue };
                     let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
@@ -667,9 +730,14 @@ impl Gpu {
                         Some(o) => &o.bind,
                         None => continue,
                     },
+                    Tex2::Surface(id) => {
+                        pass.set_bind_group(2, id.and_then(|id| self.textures.get(&id)).unwrap_or(white), &[]);
+                        pass.set_bind_group(3, b.tex3.and_then(|id| self.textures.get(&id)).unwrap_or(white), &[]);
+                        b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white)
+                    }
                     Tex2::None => b.texture.and_then(|id| self.textures.get(&id)).unwrap_or(white),
                 };
-                if let Some(id) = b.tex3 {
+                if let (Some(id), false) = (b.tex3, matches!(b.tex2, Tex2::Surface(_))) {
                     let Some(t3) = self.textures.get(&id) else { continue };
                     pass.set_bind_group(3, t3, &[]);
                 }
@@ -823,6 +891,93 @@ impl Gpu {
                 let key = model::ModelKey { kind: d.mesh.kind, pass: d.pass, target: f.target.kind() };
                 f.push_model(key, d.mesh.id, u, d.texture.as_ref().and_then(|t| t.id), &self.state);
             }
+            DrawCmd::Surface(d) => {
+                // The original pushes and pops the GL attributes around the
+                // draw.
+                let saved = self.state.clone();
+                self.state.depth_test = true;
+                self.state.depth_func = d.depth_func;
+                self.state.depth_mask = false;
+                self.state.blend = true;
+                self.state.blend_func = d.blend_func;
+                self.state.alpha_test = false;
+                let u = &d.uniforms;
+                let flip = if f.target == PassTarget::Main { f.viewport.1 as f32 } else { 0.0 };
+                let mut g = Globals::zeroed();
+                g.mvp = f.mvp_for_target();
+                g.alpha_func = 8;
+                g.clip_z = 0.5;
+                g.surface = [[u.time, u.reflection_param, flip, 0.0], u.offset, u.viewport, u.params[0], u.params[1]];
+                let gi = f.push_globals(g);
+                let key = self.key(f, Program::Surface(d.program));
+                let tex = d.ground.as_ref().and_then(|t| t.id);
+                let refl = |i: usize| d.reflection[i].as_ref().and_then(|t| t.id);
+                f.tex3 = refl(1);
+                for q in &d.quads {
+                    let v: [Vertex; 4] = std::array::from_fn(|i| {
+                        let s = &q[i];
+                        Vertex { pos: s.pos, uv: [s.attr[0], s.attr[1]], color: s.color, uv1: [s.attr[2], s.attr[3]], uv2: [0.0; 2], depth: [s.depth, 0.0] }
+                    });
+                    // IsoWater.renderSome splits on the 0-2 diagonal when
+                    // corners 0 and 2 have the same depth; IsoPuddles always.
+                    let split02 = !d.program.is_water() || q[0].attr[0] == q[2].attr[0];
+                    f.push_split(key, tex, Tex2::Surface(refl(0)), &self.state, gi, v, split02);
+                }
+                f.tex3 = None;
+                self.state = saved;
+            }
+            DrawCmd::Particles(d) => {
+                // RenderParticles pushes and pops the GL attributes around
+                // the two draws; this port leaves the depth test off.
+                let saved = self.state.clone();
+                let saved_viewport = f.viewport;
+                self.state.depth_test = false;
+                self.state.blend = true;
+                self.state.blend_func = [d.blend_func[0], d.blend_func[1], d.blend_func[0], d.blend_func[1]];
+                self.state.alpha_test = false;
+                f.viewport = d.viewport;
+                let mut mvp = d.mvp;
+                if f.target != PassTarget::Main {
+                    for col in &mut mvp {
+                        col[1] = -col[1];
+                    }
+                }
+                let mut g = Globals::zeroed();
+                g.mvp = mvp;
+                g.alpha_func = 8;
+                g.clip_z = 0.5;
+                let col = |c: usize| [d.param[c][0], d.param[c][1], d.param[c][2], 0.0];
+                g.surface = [[d.time, 0.0, 0.0, 0.0], col(0), col(1), col(2), [0.0; 4]];
+                let gi = f.push_globals(g);
+                let key = self.key(f, Program::Particles(d.program));
+                let tex = d.texture.as_ref().and_then(|t| t.id);
+                // The strip (-1,-1), (1,-1), (-1,1), (1,1) as a quad split
+                // on its 1-3 diagonal.
+                let corners = [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
+                for p in &d.particles {
+                    let v: [Vertex; 4] = std::array::from_fn(|i| Vertex { pos: corners[i], uv: [p[0], p[1]], color: 0xFFFF_FFFF, uv1: [p[2], p[3]], uv2: [0.0; 2], depth: [0.0; 2] });
+                    f.push_split(key, tex, Tex2::None, &self.state, gi, v, false);
+                }
+                f.viewport = saved_viewport;
+                self.state = saved;
+            }
+            DrawCmd::SkyBox(d) => {
+                let id = pz_render::SKYBOX_TEXTURE_IDS[d.target.min(1)];
+                self.ensure_sky_target(id);
+                let u = &d.uniforms;
+                let v3 = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
+                f.sky.push(SkyUniforms {
+                    a: [u.time, u.cloud_count, u.cloud_size, u.fog],
+                    sun_light: v3(u.sun_light),
+                    sun_colour: v3(u.sun_colour),
+                    sky_h: v3(u.sky_h_colour),
+                    sky_l: v3(u.sky_l_colour),
+                    b: [u.cloud_light, u.stars, if d.hires { 1.0 } else { 0.0 }, 0.0],
+                    wind: v3(u.wind),
+                });
+                let at = f.batches.len();
+                f.passes.push(PassDesc { target: PassTarget::Sky(id, f.sky.len() - 1), clear: true, mipmaps: false, batches: at..at });
+            }
             DrawCmd::ProjectedQuad { texture, pos, uv, color, nearest } => {
                 let Some(id) = texture.id else { return };
                 // The corners are already in normalised device coordinates.
@@ -893,6 +1048,66 @@ impl Gpu {
             pass.set_bind_group(0, &bg, &[]);
             pass.draw(0..3, 0..1);
         }
+    }
+
+    /// `SkyBox`'s `TextureFBO`: a 512x512 colour texture, registered under
+    /// its reserved id so surface draws sample it (`GL_LINEAR` both ways).
+    fn ensure_sky_target(&mut self, id: u32) {
+        if self.sky_targets.contains_key(&id) {
+            return;
+        }
+        let n = pz_render::SKYBOX_TEXTURE_SIZE;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("SkyBox.textureFbo"),
+            size: wgpu::Extent3d { width: n, height: n, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: state::OFFSCREEN_COLOR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let sampler = self.sampler((false, false, false, true));
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+            ],
+        });
+        self.textures.insert(id, bg);
+        self.views.insert(id, view.clone());
+        self.sky_targets.insert(id, view);
+    }
+
+    /// `ModelManager.RenderSkyBox`: clear, then the sky over the whole
+    /// texture.
+    fn sky_pass(&self, enc: &mut wgpu::CommandEncoder, id: u32, u: &SkyUniforms) {
+        let Some(view) = self.sky_targets.get(&id) else { return };
+        let buf = self.buffer(bytemuck::bytes_of(u), wgpu::BufferUsages::UNIFORM);
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.sky_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],
+        });
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("skybox"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.sky_pipeline);
+        pass.set_bind_group(0, &bg, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// `MultiTextureFBO2.create`: the offscreen buffer, with a
@@ -1114,6 +1329,8 @@ struct FrameBuilder {
     /// The seam mask of the quad being pushed.
     tex3: Option<u32>,
     model_uniforms: Vec<model::ModelUniforms>,
+    /// The frame's sky renders' uniforms.
+    sky: Vec<SkyUniforms>,
     mvp: [[f32; 4]; 4],
     viewport: (u32, u32),
 }
@@ -1131,6 +1348,7 @@ impl Default for FrameBuilder {
             chunk_return: PassTarget::Main,
             tex3: None,
             model_uniforms: Vec::new(),
+            sky: Vec::new(),
             mvp: IDENTITY,
             viewport: (1, 1),
         }
@@ -1151,7 +1369,7 @@ impl FrameBuilder {
 
     fn globals(&mut self, st: &GlState, mvp: [[f32; 4]; 4], clip_z: f32) -> u32 {
         let (alpha_func, alpha_ref) = if st.alpha_test { (st.alpha_func.wrapping_sub(gl::NEVER), st.alpha_ref) } else { (8, 0.0) };
-        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, extra: 0.0, screen: [[0.0; 4]; 2] };
+        let g = Globals { mvp, alpha_func, alpha_ref, clip_z, extra: 0.0, screen: [[0.0; 4]; 2], surface: [[0.0; 4]; 5] };
         self.push_globals(g)
     }
 
@@ -1186,6 +1404,14 @@ impl FrameBuilder {
     }
 
     fn push(&mut self, key: PipeKey, texture: Option<u32>, tex2: Tex2, st: &GlState, globals: u32, verts: [Vertex; 4]) {
+        let split02 = verts[0].color == verts[2].color;
+        self.push_split(key, texture, tex2, st, globals, verts, split02);
+    }
+
+    /// [`FrameBuilder::push`] with the quad's diagonal given: 0-2 when
+    /// `split02`, else 1-3.
+    #[allow(clippy::too_many_arguments)]
+    fn push_split(&mut self, key: PipeKey, texture: Option<u32>, tex2: Tex2, st: &GlState, globals: u32, verts: [Vertex; 4], split02: bool) {
         if self.passes.last().is_none_or(|p| p.target != self.target) {
             let at = self.batches.len();
             self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
@@ -1196,7 +1422,7 @@ impl FrameBuilder {
         let base = self.vertices.len() as u32;
         self.vertices.extend_from_slice(&verts);
         let start = self.indices.len() as u32;
-        self.indices.extend_from_slice(&quad_indices(base, verts[0].color, verts[2].color));
+        self.indices.extend_from_slice(&if split02 { quad_indices(base, 0, 0) } else { quad_indices(base, 0, 1) });
         let end = self.indices.len() as u32;
         let pass = self.passes.last_mut().expect("pass");
         match self.batches.last_mut() {

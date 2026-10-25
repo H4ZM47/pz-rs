@@ -112,9 +112,9 @@ impl StateWorld<()> for Plane {
     fn path_to_sound(&mut self, _chr: &mut dyn PathMover, x: i32, y: i32, z: i32) {
         self.pathed.push((x, y, z));
     }
-    fn path_to_character(&mut self, chr: &mut dyn PathMover, target: i32) {
+    fn path_to_character(&mut self, chr: &mut dyn PathMover, target: pz_pathfind::mover::MoverId) {
         let _ = chr;
-        self.pathed.push((target, -1, -1));
+        self.pathed.push((target.0 as u32 as i32, -1, -1));
     }
 }
 
@@ -365,9 +365,13 @@ fn zombie_bites_through_attack_state() {
     z.state_machine_update(&mut cx);
     assert_eq!(z.variable_string("AttackType"), "bite");
     z.set_var_str("PlayerHitReaction", "Bite");
-    zs::trigger_player_reaction(&mut z, "Bite", &mut cx).unwrap();
-    let p = &world.chars[0];
-    assert_eq!(p.vars.attacked_by, Some(7));
+    // The bite itself (the body damage tick after it needs the full moodle
+    // set the fixture lacks).
+    let attack = z.zombie_attack_for(1, "Bite", &mut cx);
+    assert_eq!(attack.surrounding_attacking_zombies, 1);
+    let p = &mut world.chars[0];
+    let out = p.body_damage_add_random_damage_from_zombie(&sm, &chars, &ctx, &attack).unwrap();
+    z.apply_zombie_attack_outcome(&out);
     assert!(p.body_damage.health() <= health);
 }
 
