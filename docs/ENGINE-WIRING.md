@@ -66,7 +66,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       that `chr.update_aiming_reticle(&input, multiplier)` returns; after
       `bind_input::update`/`after_ui_update` the game loop builds one
       `EnginePlayerInput::capture()` per frame, passes `&input` to each local
-      player's `IsoPlayer.update`, then calls `input.write_back()` (#118).
+      player's `IsoPlayer.update`, then calls `input.write_back()` (#137).
 - [ ] `ZombiePopulationManager::update_main` with PopulationHost and
       `ZombieOps` (`RealZombies`) (#73/#77): `GameWindow.logic` calls
       `WorldPopulation::update_game_state(no_save, paused)`; `IngameState.update`
