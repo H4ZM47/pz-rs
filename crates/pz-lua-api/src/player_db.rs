@@ -466,6 +466,172 @@ impl PlayerDb {
     pub fn close(&mut self) {
         self.store.reset();
     }
+
+    /// `loadLocalPlayerInfo(sqlId)`: the row without its bytes and the
+    /// `IsoChunkMap` start position it sets. `save_offset` is
+    /// `(IsoWorld.saveoffsetx, saveoffsety)`. `None` when there is no such
+    /// row or it cannot be read (logged).
+    pub fn load_local_player_info(
+        &mut self,
+        sql_id: i32,
+        save_offset: (i32, i32),
+    ) -> Option<LocalPlayerInfo> {
+        let mut p = PlayerData {
+            sql_id,
+            ..Default::default()
+        };
+        match self.store.load_everything_except_bytes(&mut p) {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(e) => {
+                log_exception("PlayerDB", &e);
+                return None;
+            }
+        }
+        let (ox, oy) = save_offset;
+        Some(LocalPlayerInfo {
+            world_xa: fastfloor(p.x) + 256 * ox,
+            world_ya: fastfloor(p.y) + 256 * oy,
+            world_za: fastfloor(p.z),
+            s_world_x: fastfloor(p.x / 8.0) + 32 * ox,
+            s_world_y: fastfloor(p.y / 8.0) + 32 * oy,
+            player: p,
+        })
+    }
+
+    /// `loadLocalPlayer(sqlId)` up to `IsoPlayer.load`: the stored row for
+    /// the caller to decode. The original then runs
+    /// `player.load(bytes, worldVersion)`; when `is_dead` it sets the
+    /// overall body health and health to 0; it sets `player.sqlId`, and
+    /// moves the player's chunk map to [`local_player_chunk_map_pos`] of
+    /// the decoded position. A failed decode makes the load fail.
+    pub fn load_local_player(&mut self, sql_id: i32) -> Option<PlayerData> {
+        self.load_player(sql_id)
+    }
+
+    /// `importPlayersFromVehiclesDB` (`VehiclesDB2.importPlayersFromOldDB`):
+    /// the `localPlayers` rows of a save from before `players.db` are given
+    /// new ids and stored here, then the old player tables are dropped.
+    /// Nothing happens when `vehicles.db` has no `localPlayers` table.
+    pub fn import_players_from_vehicles_db(&mut self, vehicles: &mut VehicleStore) {
+        let Some(c) = vehicles.conn.as_mut() else {
+            return;
+        };
+        let t = match c.table("localPlayers") {
+            Ok(t) => t,
+            Err(Error::NoSuchTable(_)) => return,
+            Err(e) => return log_exception("vehicles.db", &e),
+        };
+        let rows = match c.rows(&t) {
+            Ok(r) => r,
+            Err(e) => {
+                log_exception("vehicles.db", &e);
+                Vec::new()
+            }
+        };
+        for r in &rows {
+            let col = |n: &str| t.column(n).map(|i| r.get(&t, i));
+            let read = || -> Result<PlayerData> {
+                let bytes = match col("data")? {
+                    // `setBytes(null)`.
+                    Value::Null => return Err(Error::Sql("java.lang.NullPointerException".into())),
+                    Value::Blob(b) => b,
+                    v => v.as_text().unwrap_or_default().into_bytes(),
+                };
+                Ok(PlayerData {
+                    sql_id: -1,
+                    x: get_float(&col("x")?),
+                    y: get_float(&col("y")?),
+                    z: get_float(&col("z")?),
+                    is_dead: col("isDead")?.as_i32() != 0,
+                    name: col("name")?.as_text(),
+                    world_version: col("worldversion")?.as_i32(),
+                    bytes,
+                })
+            };
+            let mut p = match read() {
+                Ok(p) => p,
+                // The statement loop ends at the first failure.
+                Err(e) => {
+                    log_exception("vehicles.db", &e);
+                    break;
+                }
+            };
+            p.sql_id = self.allocate_id();
+            if let Err(e) = self.store.save(&p) {
+                log_exception("PlayerDB", &e);
+            }
+        }
+        vehicles.drop_old_player_tables();
+    }
+}
+
+/// What `PlayerDB.loadLocalPlayerInfo` reads and leaves in `IsoChunkMap`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LocalPlayerInfo {
+    /// The row (`bytes` empty).
+    pub player: PlayerData,
+    /// `IsoChunkMap.worldXa/worldYa/worldZa`: the square.
+    pub world_xa: i32,
+    pub world_ya: i32,
+    pub world_za: i32,
+    /// `IsoChunkMap.SWorldX[0]/SWorldY[0]`: the chunk.
+    pub s_world_x: i32,
+    pub s_world_y: i32,
+}
+
+/// The end of `loadLocalPlayer`: the player's `chunkMap.worldX/worldY` for
+/// its decoded position `(x, y)`.
+pub fn local_player_chunk_map_pos(x: f32, y: f32, save_offset: (i32, i32)) -> (i32, i32) {
+    (
+        fastfloor(x / 8.0) + save_offset.0 * 32,
+        fastfloor(y / 8.0) + save_offset.1 * 32,
+    )
+}
+
+/// Where a single-player save keeps its player.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LocalPlayerLoad<T> {
+    /// `map_p.bin` exists (a save from before the player database): the
+    /// original reads the player from that file (path given) instead.
+    MapPBin(String),
+    /// `players.db`: the load's result.
+    Db(Option<T>),
+}
+
+fn map_p_bin(save_dir: &str) -> Option<String> {
+    let path = format!("{save_dir}{SEP}map_p.bin");
+    exists(&path).then_some(path)
+}
+
+/// `IsoWorld.LoadPlayerForInfo` in a local game: with no `map_p.bin`,
+/// `importPlayersFromVehiclesDB` then `loadLocalPlayerInfo(1)`.
+pub fn load_player_for_info(
+    db: &mut PlayerDb,
+    vehicles: &mut VehicleStore,
+    save_dir: &str,
+    save_offset: (i32, i32),
+) -> LocalPlayerLoad<LocalPlayerInfo> {
+    if let Some(p) = map_p_bin(save_dir) {
+        return LocalPlayerLoad::MapPBin(p);
+    }
+    db.import_players_from_vehicles_db(vehicles);
+    LocalPlayerLoad::Db(db.load_local_player_info(1, save_offset))
+}
+
+/// `IsoCell.LoadPlayer` in a local game: with no `map_p.bin`,
+/// `importPlayersFromVehiclesDB` then `loadLocalPlayer(1)` (see
+/// [`PlayerDb::load_local_player`] for what the caller does with it).
+pub fn load_local_player_1(
+    db: &mut PlayerDb,
+    vehicles: &mut VehicleStore,
+    save_dir: &str,
+) -> LocalPlayerLoad<PlayerData> {
+    if let Some(p) = map_p_bin(save_dir) {
+        return LocalPlayerLoad::MapPBin(p);
+    }
+    db.import_players_from_vehicles_db(vehicles);
+    LocalPlayerLoad::Db(db.load_local_player(1))
 }
 
 // ---- VehiclesDB2.SQLStore ------------------------------------------------------------
@@ -689,6 +855,80 @@ mod tests {
         assert_eq!(ids, [2, 3]);
         set_player1(true, &dir, 3).unwrap();
         assert!(set_player1(false, &format!("{dir}x"), 3).is_ok());
+        let _ = std::fs::remove_dir_all(std::path::Path::new(&dir).parent().unwrap());
+    }
+
+    #[test]
+    fn local_player_load_and_import() {
+        let dir = tmp("local");
+        let mut db = PlayerDb::new(false, &dir);
+        let mut v = VehicleStore::default();
+        v.create(&dir).unwrap();
+        // A pre-players.db save: player rows in vehicles.db.
+        let c = v.conn.as_mut().unwrap();
+        c.execute(CREATE_LOCAL_PLAYERS).unwrap();
+        c.execute(CREATE_NETWORK_PLAYERS).unwrap();
+        for (id, name, x) in [(5, "Old One", -12.5f64), (2, "Old Two", 801.0)] {
+            c.insert(
+                "localPlayers",
+                &[
+                    ("id", Value::Integer(id)),
+                    ("name", Value::Text(name.into())),
+                    ("x", Value::Real(x)),
+                    ("y", Value::Real(17.0)),
+                    ("z", Value::Real(1.5)),
+                    ("worldversion", Value::Integer(219)),
+                    ("data", Value::Blob(vec![id as u8; 40])),
+                    ("isDead", Value::Integer(i64::from(id == 2))),
+                ],
+            )
+            .unwrap();
+        }
+        c.commit().unwrap();
+        // Rows in rowid order get ids 2 and 3 (1 is reserved).
+        match load_player_for_info(&mut db, &mut v, &dir, (0, 0)) {
+            LocalPlayerLoad::Db(None) => {}
+            r => panic!("{r:?}"),
+        }
+        assert!(v.conn.as_mut().unwrap().table("localPlayers").is_err());
+        let two = db.load_local_player(2).unwrap();
+        assert_eq!(
+            (two.name.as_deref(), two.is_dead, two.bytes[0]),
+            (Some("Old Two"), true, 2)
+        );
+        let three = db.load_local_player(3).unwrap();
+        assert_eq!(
+            (three.name.as_deref(), three.x, three.world_version),
+            (Some("Old One"), -12.5, 219)
+        );
+        // Importing again finds nothing.
+        db.import_players_from_vehicles_db(&mut v);
+        assert_eq!(db.used_ids.iter().copied().collect::<Vec<_>>(), [1, 2, 3]);
+
+        set_player1(false, &dir, 3).unwrap();
+        let mut db = PlayerDb::new(false, &dir);
+        let info = db.load_local_player_info(1, (1, -1)).unwrap();
+        assert_eq!(
+            (
+                info.world_xa,
+                info.world_ya,
+                info.world_za,
+                info.s_world_x,
+                info.s_world_y
+            ),
+            (-13 + 256, 17 - 256, 1, -2 + 32, 2 - 32)
+        );
+        assert!(info.player.bytes.is_empty());
+        assert_eq!(local_player_chunk_map_pos(-0.5, 15.9, (0, 0)), (-1, 1));
+        match load_local_player_1(&mut db, &mut v, &dir) {
+            LocalPlayerLoad::Db(Some(p)) => assert_eq!(p.bytes, vec![5u8; 40]),
+            r => panic!("{r:?}"),
+        }
+        std::fs::write(format!("{dir}{SEP}map_p.bin"), b"x").unwrap();
+        assert!(matches!(
+            load_local_player_1(&mut db, &mut v, &dir),
+            LocalPlayerLoad::MapPBin(_)
+        ));
         let _ = std::fs::remove_dir_all(std::path::Path::new(&dir).parent().unwrap());
     }
 
