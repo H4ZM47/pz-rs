@@ -22,6 +22,7 @@ pz-world = { path = "crates/pz-world" }
 pz-core = { path = "crates/pz-core" }
 pz-inventory = { path = "crates/pz-inventory" }
 pz-vehicles = { path = "crates/pz-vehicles" }
+pz-bullet = { path = "crates/pz-bullet" }
 indexmap = "2"
 macroquad = { version = "0.4", default-features = false }
 png = "0.17"
