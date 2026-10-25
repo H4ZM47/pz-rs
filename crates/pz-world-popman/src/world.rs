@@ -31,10 +31,11 @@
 
 use std::path::Path;
 
-use pz_popman::manager::{ChunkZombie, RealZombieInfo, ZombieConfig};
+use pz_popman::manager::{ChunkZombie, RealZombieInfo};
 use pz_popman::map_collision::{meta_init, McdGameState, SquareFlags};
 use pz_popman::native::Native;
 use pz_popman::{PopulationHost, ZombiePopulationManager};
+use pz_sandbox::ZombieConfig;
 use pz_world::sprite::IsoSpriteManager;
 use pz_world::{IsoCell, IsoGridSquare, IsoMetaGrid};
 
