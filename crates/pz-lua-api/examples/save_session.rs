@@ -509,7 +509,7 @@ fn main() {
                     uuids: &mut uuids,
                     players: None,
                     can_save_players: true,
-                    reanimated: &[],
+                    reanimated: Some(&[]),
                 };
                 let mut hooks = Hooks {
                     env: &mut env,

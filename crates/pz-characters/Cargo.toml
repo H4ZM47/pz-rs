@@ -14,6 +14,7 @@ pz-world.workspace = true
 pz-pathfind.workspace = true
 pz-audio.workspace = true
 pz-world-popman.workspace = true
+pz-popman.workspace = true
 pz-bullet = { workspace = true, optional = true }
 
 [features]
@@ -21,6 +22,5 @@ pz-bullet = { workspace = true, optional = true }
 bullet = ["dep:pz-bullet"]
 
 [dev-dependencies]
-pz-popman.workspace = true
 pz-sandbox.workspace = true
 pz-bullet.workspace = true

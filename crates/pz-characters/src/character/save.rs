@@ -159,6 +159,51 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         usize::try_from(index).ok().and_then(|i| self.saved_inventory_items.get(i)).copied()
     }
 
+    /// `savedInventoryItems.indexOf(item)` as a short (`-1` when absent).
+    fn saved_index(&self, id: Option<i32>) -> i16 {
+        id.and_then(|id| self.saved_inventory_items.iter().position(|s| *s == Some(id))).map_or(-1, |i| i as i16)
+    }
+
+    /// The worn items of `IsoPlayer.load` and `IsoZombie.load`: a byte
+    /// count, then each item's body location and its short index into
+    /// `savedInventoryItems`. Indices out of range and locations the
+    /// `Human` group lacks are skipped; a saved item that could not be
+    /// loaded clears its location (`setItem(location, null)`).
+    fn load_worn_items(&mut self, sm: &ScriptManager, chars: &mut Characters, r: &mut Reader<'_>) -> ScriptResult {
+        let worn_count = e(r.i8())?;
+        let group = chars.body_locations.get_group("Human")?;
+        let mut worn: WornItems<i32> = WornItems::new(group.clone());
+        for _ in 0..worn_count {
+            let name = e(r.string())?;
+            let location = ItemBodyLocation::get(sm, &ResourceLocation::of(&name)?);
+            let index = e(r.i16())?;
+            let Some(item) = self.saved_item(index as i32) else { continue };
+            if group.borrow().location(location.as_ref())?.is_none() {
+                continue;
+            }
+            worn.set_item(location, item)?;
+        }
+        self.items.worn_items = worn.items().iter().map(|w| w.item).collect();
+        self.items.worn_locations =
+            worn.items().iter().filter_map(|w| w.location.clone().map(|l| (w.item, l))).collect();
+        Ok(())
+    }
+
+    /// The worn items of `IsoPlayer.save` and `IsoZombie.save` (more than
+    /// 127 is a `RuntimeException`).
+    fn save_worn_items(&self, w: &mut Writer) -> ScriptResult {
+        if self.items.worn_items.len() > 127 {
+            return Err(ScriptError::new("java.lang.RuntimeException: too many worn items"));
+        }
+        w.i8(self.items.worn_items.len() as i8);
+        for &id in &self.items.worn_items {
+            let location = self.items.worn_location(id).ok_or_else(npe)?;
+            w.string(&location.location.id());
+            w.i16(self.saved_index(Some(id)));
+        }
+        Ok(())
+    }
+
     /// `Role.hasCapability(this, capability)`: only in single-player debug
     /// mode (a player without a role has none).
     fn has_cheat_capability(ctx: &dyn SimContext) -> bool {
@@ -199,22 +244,7 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         c[3] = 1.0;
         self.player_fields.speak_colour = c;
         self.zombie_kills = e(r.i32())?;
-        let worn_count = e(r.i8())?;
-        let group = chars.body_locations.get_group("Human")?;
-        let mut worn: WornItems<i32> = WornItems::new(group.clone());
-        for _ in 0..worn_count {
-            let name = e(r.string())?;
-            let location = ItemBodyLocation::get(sm, &ResourceLocation::of(&name)?);
-            let index = e(r.i16())?;
-            let Some(item) = self.saved_item(index as i32) else { continue };
-            if group.borrow().location(location.as_ref())?.is_none() {
-                continue;
-            }
-            worn.set_item(location, item)?;
-        }
-        self.items.worn_items = worn.items().iter().map(|w| w.item).collect();
-        self.items.worn_locations =
-            worn.items().iter().filter_map(|w| w.location.clone().map(|l| (w.item, l))).collect();
+        self.load_worn_items(sm, chars, r)?;
         let index = e(r.i16())?;
         if let Some(item) = self.saved_item(index as i32) {
             self.items.primary_hand_item = item;
@@ -437,20 +467,9 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         self.save_game_character(sm, chars, ctx, env, w)?;
         w.f64(self.hours_survived);
         w.i32(self.zombie_kills);
-        if self.items.worn_items.len() > 127 {
-            return Err(ScriptError::new("java.lang.RuntimeException: too many worn items"));
-        }
-        w.i8(self.items.worn_items.len() as i8);
-        let saved_index = |id: Option<i32>| -> i16 {
-            id.and_then(|id| self.saved_inventory_items.iter().position(|s| *s == Some(id))).map_or(-1, |i| i as i16)
-        };
-        for &id in &self.items.worn_items {
-            let location = self.items.worn_location(id).ok_or_else(npe)?;
-            w.string(&location.location.id());
-            w.i16(saved_index(Some(id)));
-        }
-        w.i16(saved_index(self.items.primary_hand_item));
-        w.i16(saved_index(self.items.secondary_hand_item));
+        self.save_worn_items(w)?;
+        w.i16(self.saved_index(self.items.primary_hand_item));
+        w.i16(self.saved_index(self.items.secondary_hand_item));
         w.i32(self.survivor_kills);
         self.nutrition.as_ref().ok_or_else(npe)?.save(w);
         let p = &self.player_fields;
@@ -534,7 +553,8 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             | (set("CAN_HEAR_EVERYONE") as i8) << 5
     }
 
-    /// `IsoGameCharacter.save` with `IsoMovingObject.save`. Refreshes
+    /// `IsoGameCharacter.save` with `IsoMovingObject.save` (the class id is
+    /// `Zombie` for a zombie, `Player` otherwise). Refreshes
     /// [`GameCharacter::saved_inventory_items`] to the written order, as the
     /// original does.
     fn save_game_character(&mut self, _sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, env: &SaveEnv<'_>, w: &mut Writer) -> ScriptResult {
@@ -547,7 +567,9 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             dir: self.vars.dir as i32,
             mod_data: self.mod_data.clone(),
         };
-        base.save(w, env.tables.class_id("Player"));
+        // `IsoObject.factoryGetClassID(getObjectName())`.
+        let name = if self.is_zombie() { "Zombie" } else { "Player" };
+        base.save(w, env.tables.class_id(name));
         match &self.descriptor {
             Some(d) => {
                 w.i8(1);
@@ -559,9 +581,10 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             Some(v) => v.save(w),
             None => HumanVisual::new(env.tables.blood_body_parts).save(w),
         }
-        // `inventory.save(output, this)`: equipped items start no run.
-        let equipped = |i: &pz_inventory::saved::SavedItem| self.items.is_equipped(i.id());
-        let order = e(self.items.inventory.save_saved(w, env.items, Some(&equipped)))?;
+        // `inventory.save(output, this)`: `ItemContainer.save` passes `null`
+        // as `CompressIdenticalItems.save`'s `noCompress`, so equipped
+        // items join runs too.
+        let order = e(self.items.inventory.save_saved(w, env.items, None))?;
         let items = &self.items.inventory.items;
         self.saved_inventory_items = order.iter().map(|&i| Some(items[i].id())).collect();
         w.bool(self.asleep);
@@ -629,6 +652,9 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         Ok(())
     }
 }
+
+mod reanimated;
+pub use reanimated::{load_reanimated_players, reanimated_players_to_save, REANIMATED_FILE_VERSION};
 
 #[cfg(test)]
 mod tests;
