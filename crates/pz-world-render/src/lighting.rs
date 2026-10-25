@@ -8,8 +8,8 @@ use pz_iso_render::color::ColorInfo as RenderColor;
 use pz_lighting::jni::{
     detection_range, effective_fatigue, luma_inverted, update_player, ChunkInfo, ChunkLevelLight,
     Curtain, CurtainType, DecodePlayer, Door, FrameParams, GridSquare, IsoDirection, LightSource,
-    LightSync, LightingWorld, PlayerFrame, PlayerInput, RoomLightSource, SpecialObject,
-    SquareLight, VisionCone, VisionConeInput, Window,
+    LightSync, LightingWorld, PlayerFrame, PlayerInput, ResultLightInfo, RoomLightSource,
+    SpecialObject, SquareLight, VisionCone, VisionConeInput, Window,
 };
 use pz_lighting::{LightingError, LightingSession};
 use pz_world::{IsoGridSquare, ObjectKind};
@@ -648,6 +648,15 @@ impl WorldLighting {
             .levels
             .get(&(player, x.div_euclid(8), y.div_euclid(8), z))?;
         Some(&lvl.squares[(x.rem_euclid(8) + y.rem_euclid(8) * 8) as usize])
+    }
+
+    /// `square.lighting[player].getResultLight(0..resultLightCount())`:
+    /// the square's result lights (at most five), as `JNILighting`
+    /// decoded them from `getSquareLighting` the last time the square was
+    /// dirty. Empty for a square without results.
+    pub fn result_lights(&self, player: i32, x: i32, y: i32, z: i32) -> &[ResultLightInfo] {
+        self.square_light(player, x, y, z)
+            .map_or(&[], |l| &l.lights[..])
     }
 
     /// One frame for one player: `checkLights`, `calculateVisionCone`,

@@ -13,6 +13,7 @@ pz-characters.workspace = true
 pz-inventory.workspace = true
 pz-entity.workspace = true
 pz-scripts.workspace = true
+pz-lighting.workspace = true
 
 [dev-dependencies]
 pz-fs.workspace = true

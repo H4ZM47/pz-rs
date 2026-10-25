@@ -27,7 +27,7 @@ use pz_character_model::data::{
     ResolvedItemVisual,
 };
 use pz_character_model::items::EquippedModels;
-use pz_character_model::lights::EffectLight;
+use pz_character_model::lights::{EffectLight, LightContext, PlayerLightData};
 use pz_character_model::mask::BLOOD_PARTS;
 use pz_character_model::model_tree::{CharacterModelInput, ModelSlot};
 use pz_character_model::render::CharacterFrame;
@@ -47,7 +47,7 @@ use pz_render::image::ImageData;
 use pz_render::{flags, DrawCmd, Texture, TextureManager};
 use pz_vehicle_render::lights::vehicle_torches;
 use pz_vehicle_render::models::MediaVehicleModels;
-use pz_vehicle_render::render::{render_vehicle_object, VehicleFrame};
+use pz_vehicle_render::render::{render_vehicle_object, SquareLight, VehicleFrame};
 use pz_vehicle_render::VehicleModelSet;
 
 struct Loader {
@@ -287,6 +287,10 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
     let vehicles = [&*v];
     let hooks = night::VehicleTorches(&vehicles);
     let mut lighting = night::new_lighting(&lview, &hooks);
+    // A street lamp north of the player and the car (`IsoCell`'s
+    // lamppost list), reaching both but neither the beams' squares nor the
+    // dark square beside the car.
+    lighting.add_lamppost(pz_world_render::CellLight::new(11, 8, 0, 0.5, 0.4, 0.28, 5));
     let lit = night::light_from(
         &lview,
         &mut lighting,
@@ -360,6 +364,21 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
         .unwrap();
     assert!(set.parts[door].track.is_some(), "door posed");
 
+    // The result lights: the lamp on the player's and the car's squares,
+    // the front headlights on a square in their beams.
+    let car_lights = lighting.result_lights(0, 12, 10, 0);
+    eprintln!("car square result lights {car_lights:?}");
+    eprintln!(
+        "beam square result lights {:?}",
+        lighting.result_lights(0, ahead.0, ahead.1, 0)
+    );
+    assert!(car_lights
+        .iter()
+        .any(|l| (l.x, l.y, l.radius) == (11, 8, 5)));
+    assert!(lighting
+        .result_lights(0, ahead.0, ahead.1, 0)
+        .iter()
+        .any(|l| l.id == torches[0].id || l.id == torches[1].id));
     let res = MediaModelResources::new(&media, &loader);
     let (px, py, pz) = (10.5f32, 10.5f32, 0.0f32);
     let mut lit_sum = None;
@@ -373,15 +392,43 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
         set.instance.update_lights(&v);
         let cam = Camera::player(px, py, pz, w as i32, h as i32, zoom);
         let mc = ModelCamera::new(&cam, w as f32 * zoom, h as f32 * zoom);
-        let amb = if night {
-            night_light(px, py)[0]
-        } else {
-            0.8f32
-        };
+        // The player's model lights: by day a flat ambient with the two
+        // fill lights; at night `ModelInstance.updateLights` on the result
+        // lights of the player's square (`PlayerData`, faded in over a few
+        // frames as in the game).
         let mut lights = [EffectLight::default(); 5];
-        let fill = amb * 1.7 / 4.0;
-        lights[3].set(px - 2.0, py - 2.0, pz + 1.0, fill, fill, fill, 5000);
-        lights[4].set(px + 2.0, py + 2.0, pz + 1.0, fill, fill, fill, 5000);
+        let mut amb3 = [0.8f32; 3];
+        if night {
+            let mut pd = PlayerLightData::default();
+            let ctx = LightContext {
+                x: px,
+                y: py,
+                z: pz,
+                result_lights: lighting
+                    .result_lights(0, px.floor() as i32, py.floor() as i32, 0)
+                    .to_vec(),
+                target_ambient: night_light(px, py),
+                outside: true,
+                in_room: false,
+                room_light_ids: Vec::new(),
+                player_index: Some(0),
+                torch_strength: 0.0,
+                forward: [0.7071, 0.7071],
+                multiplier: 1.0,
+            };
+            eprintln!("player square result lights {:?}", ctx.result_lights);
+            assert!(!ctx.result_lights.is_empty(), "the lamp reaches the player");
+            for _ in 0..120 {
+                pd.update(&ctx);
+            }
+            lights = pd.effect_lights_main;
+            amb3 = pd.current_ambient;
+            eprintln!("player effect lights {lights:?}");
+        } else {
+            let fill = 0.8 * 1.7 / 4.0;
+            lights[3].set(px - 2.0, py - 2.0, pz + 1.0, fill, fill, fill, 5000);
+            lights[4].set(px + 2.0, py + 2.0, pz + 1.0, fill, fill, fill, 5000);
+        }
         let frame = CharacterFrame {
             player: &player,
             x: px,
@@ -389,7 +436,7 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
             z: pz,
             alpha: 1.0,
             effect_lights: &lights,
-            ambient: [amb; 3],
+            ambient: amb3,
             final_scale: 1.0,
         };
         let shadow = character_shadow(
@@ -411,19 +458,17 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
         let chr = render_character_object(&slot, &frame, shadow, &mc, &res);
         let vframe = VehicleFrame {
             alpha: 1.0,
-            ambient: if night {
-                night_light(12.6, 10.4)
+            ambient: if night { night_light(12.6, 10.4) } else { amb3 },
+            // `VehicleModelInstance.UpdateLights`: the car's square's
+            // result lights.
+            lights: if night {
+                SquareLight::from_result_lights(car_lights)
             } else {
-                [amb; 3]
+                Vec::new()
             },
-            lights: Vec::new(),
             sky_texture_shift: 0.0,
             sky_textures: [None, None],
-            square_light: if night {
-                night_light(12.6, 10.4)
-            } else {
-                [amb; 3]
-            },
+            square_light: if night { night_light(12.6, 10.4) } else { amb3 },
             seen: true,
             slope: None,
             default_shadow: vehicle_shadow.clone(),
