@@ -111,6 +111,36 @@ pub trait ItemEnv {
         0
     }
 
+    /// `Rand.Next(float min, float max)`. The default returns `min`.
+    fn rand_float(&self, min: f32, _max: f32) -> f32 {
+        min
+    }
+
+    /// The `ClothingItem` assets. With them, `load` and [`create_item`]
+    /// run `synchWithVisual` (visuals from the assets, blood and dirt
+    /// levels, colour); without them (the default) visuals stay as saved.
+    fn assets(&self) -> Option<&crate::assets::ItemAssets> {
+        None
+    }
+
+    /// `OutfitRNG` for new visuals.
+    fn visual_rng(&self) -> &dyn crate::visual::VisualRng {
+        &crate::visual::NoVisualRng
+    }
+
+    /// `ZomboidRadio.GetChannelList` for new radios' presets. The default
+    /// has no radio data (every list is `null`).
+    fn channel_lists(&self) -> &dyn crate::device::ChannelLists {
+        &crate::device::NoChannels
+    }
+
+    /// `MapDefinitions.definitions` (the keys of the Lua `LootMaps.Init`
+    /// table, in iteration order) for a new map item without a `Map`
+    /// value. Empty (the default) gives `"Default"`.
+    fn map_definitions(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Called when an item is kept as raw bytes, with the reason.
     fn note_raw(&self, _registry_id: i16, _reason: &str) {}
 }
@@ -118,8 +148,23 @@ pub trait ItemEnv {
 /// `InventoryItemFactory.CreateItem(registryID)`.
 pub fn create_item(env: &dyn ItemEnv, registry_id: i16) -> Option<InventoryItem> {
     let t = env.template(registry_id)?;
+    Some(create_from_template(env, t, registry_id))
+}
+
+/// `Item.InstanceItem` and `createItemInternal` for a script template.
+///
+/// `Rand` draws (through [`ItemEnv::rand_next`] / [`ItemEnv::rand_float`]),
+/// in the original's order: the components' (`GameEntityFactory`), the
+/// `OutfitRNG` seed, the model index (`synchWithVisual`), then the item id.
+/// Before those, the subclass draws of `InstanceItem` and the item
+/// constructors (see [`instance_draws`]).
+pub fn create_from_template(
+    env: &dyn ItemEnv,
+    t: Rc<ItemTemplate>,
+    registry_id: i16,
+) -> InventoryItem {
     let mut item = InventoryItem::create(t.clone(), registry_id);
-    item.components = env.components().factory_components(&t);
+    instance_draws(env, &mut item);
     // Item.InstanceItem: moveables and radios read their world sprite;
     // createItemInternal then reads the `Moveables.<sprite>` name.
     if let Some(ws) = t
@@ -129,10 +174,105 @@ pub fn create_item(env: &dyn ItemEnv, registry_id: i16) -> Option<InventoryItem>
     {
         item.read_from_world_sprite(ws, env);
     }
+    let codec = env.components();
+    match codec.factory_entity(&t, &mut crate::component::EnvRng(env)) {
+        Some(c) => item.set_components(c),
+        None => {
+            item.components = codec.factory_components(&t, &mut crate::component::EnvRng(env));
+        }
+    }
+    // `OutfitRNG.setSeed(Rand.Next(Integer.MAX_VALUE))` around
+    // `synchWithVisual` (the visual draws come from `visual_rng`).
+    let _ = env.rand_next(i32::MAX);
+    item.pick_model_index(&mut |m| env.rand_next(m));
+    if let Some(a) = env.assets() {
+        item.synch_with_visual(Some(a), &crate::context::Loose, env.visual_rng());
+    }
+    // createItemInternal: a `<type>Empty` fluid container starts empty.
+    if t.empty_fluid_container {
+        let ctx = env.components().entity_context();
+        if let Some(mut fc) = ctx.and_then(|c| item.get_fluid_container(c)) {
+            fc.empty();
+            item.set_fluid_container(fc);
+        }
+    }
+    item.id = env.rand_next(2146250223).wrapping_add(1233423);
     if let Some(ms) = &t.moveable_sprite {
         item.read_from_world_sprite(ms, env);
     }
-    Some(item)
+    // createItemInternal: a `Drainable` starts full.
+    if matches!(t.class, ItemClass::Drainable | ItemClass::WeaponPart) {
+        item.uses = item.get_max_uses();
+        item.update_weight_by(|n| env.script_actual_weight(n));
+    }
+    item
+}
+
+/// The `Rand` draws `Item.InstanceItem` and the item constructors make
+/// before the components: a padlock's key id; a clothing item's palette
+/// pick and its random `col`; an alarm clock's random alarm; a radio's
+/// presets and channel (`generatePresets`, `setRandomChannel`); a map
+/// item's random map (`MapDefinitions.pickRandom`).
+fn instance_draws(env: &dyn ItemEnv, item: &mut InventoryItem) {
+    use crate::item::ItemKind;
+    let t = item.template.clone();
+    let digital = !item.get_full_type().contains("Classic");
+    match &mut item.kind {
+        ItemKind::Key {
+            key_id,
+            number_of_key,
+        } if t.padlock => {
+            *number_of_key = 2;
+            *key_id = env.rand_next(10_000_000);
+        }
+        ItemKind::Clothing(_) | ItemKind::AlarmClockClothing(..) => {
+            if t.palette_choices > 0 {
+                let _ = env.rand_next(t.palette_choices as i32);
+            }
+            // `new Color(Rand.Next(255), Rand.Next(255), Rand.Next(255))`.
+            let mut c = [0.0f32; 4];
+            for v in c.iter_mut().take(3) {
+                *v = env.rand_next(255) as f32 / 255.0;
+            }
+            c[3] = 1.0;
+            item.col = c;
+            if let ItemKind::AlarmClockClothing(_, a) = &mut item.kind {
+                // `randomizeAlarm` (digital clocks only).
+                if digital {
+                    a.alarm_hour = env.rand_next(23);
+                    a.alarm_minutes = env.rand_next(59) / 10 * 10;
+                    a.alarm_set = env.rand_next(15) == 1;
+                }
+            }
+        }
+        ItemKind::AlarmClock(a) => {
+            a.alarm_hour = env.rand_next(23);
+            a.alarm_minutes = env.rand_next(59) / 10 * 10;
+            a.alarm_set = env.rand_next(6) == 1;
+        }
+        ItemKind::Radio(_, d) => {
+            d.instance_from_script(
+                Some(&t.display_name),
+                &t.radio,
+                env.channel_lists(),
+                &mut |b| env.rand_next(b),
+            );
+        }
+        ItemKind::Map { map_id, .. } => {
+            *map_id = match t.map.as_deref().filter(|m| !m.trim().is_empty()) {
+                Some(m) => m.to_string(),
+                None => {
+                    let defs = env.map_definitions();
+                    if defs.is_empty() {
+                        "Default".to_string()
+                    } else {
+                        defs[env.rand_next(defs.len() as i32) as usize].clone()
+                    }
+                }
+            };
+        }
+        _ => {}
+    }
 }
 
 /// [`ItemEnv`] with every default.

@@ -372,16 +372,17 @@ fn main() {
             .get(&format!("vehicle {wx},{wy}"))
             .cloned()
             .unwrap_or_default();
-        if jv.len() != ch.saved.vehicles.len() {
+        let loaded_vehicles: Vec<_> = ch.vehicles.loaded().collect();
+        if jv.len() != loaded_vehicles.len() {
             writeln!(
                 diffs,
                 "SYNTH VEHICLE COUNT {wx},{wy} rust={} java={}",
-                ch.saved.vehicles.len(),
+                loaded_vehicles.len(),
                 jv.len()
             )
             .unwrap();
         }
-        for (i, cv) in ch.saved.vehicles.iter().enumerate() {
+        for (i, cv) in loaded_vehicles.iter().enumerate() {
             c!("chunk vehicles");
             let line = format!("vehicle {wx},{wy},{i} {}", vdig(&cv.vehicle));
             if jv.get(i) == Some(&line) {
@@ -395,9 +396,7 @@ fn main() {
                 )
                 .unwrap();
             }
-            let square = ch
-                .get_grid_square(cv.x as i32, cv.y as i32, cv.z as i32)
-                .map(|s| (s.x, s.y));
+            let square = cv.square.map(|(x, y, _)| (x, y));
             let mut w = Writer::new();
             cv.vehicle
                 .save(&mut w, class, square, None, &registry)

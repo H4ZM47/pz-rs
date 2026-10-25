@@ -22,7 +22,8 @@ pub struct Loader {
 
 pub struct LuaManager {
     pub thread: Thread,
-    pub fs: Rc<GameFs>,
+    /// `ZomboidFileSystem.instance`. Never hold a borrow across a Lua call.
+    pub fs: Rc<RefCell<GameFs>>,
     pub events: EventManager,
     pub hooks: EventManager,
     pub loader: Rc<RefCell<Loader>>,
@@ -31,10 +32,11 @@ pub struct LuaManager {
 impl LuaManager {
     /// `LuaManager.init()`: fresh environment, Kahlua stdlib (including the
     /// game's `stdlib.lua`), events, hooks and the exposed game API.
-    pub fn init(fs: Rc<GameFs>) -> Result<Self, LuaError> {
+    pub fn init(fs: Rc<RefCell<GameFs>>) -> Result<Self, LuaError> {
         let env = TableRef::new();
         let mut thread = Thread::new(env.clone());
-        let stdlib_src = fs.resolve("stdlib.lua").and_then(|p| std::fs::read(p).ok());
+        let stdlib_path = fs.borrow().resolve("stdlib.lua");
+        let stdlib_src = stdlib_path.and_then(|p| std::fs::read(p).ok());
         let stdlib_src = stdlib_src.map(|b| String::from_utf8_lossy(&b).into_owned());
         stdlib::install(&mut thread, stdlib_src.as_deref())?;
         let events = EventManager::register(&env, "Events", EVENT_NAMES);
@@ -66,7 +68,8 @@ impl LuaManager {
                 }
                 let paths = loader.borrow().paths.clone();
                 for rel in paths {
-                    if let Some(abs) = fs.resolve(&format!("{rel}{name}")) {
+                    let found = fs.borrow().resolve(&format!("{rel}{name}"));
+                    if let Some(abs) = found {
                         let abs = abs.to_string_lossy().replace('\\', "/");
                         let r = run_lua(c.thread, &loader, &abs);
                         return Ok(c.push(r));
@@ -79,7 +82,7 @@ impl LuaManager {
     }
 
     /// `LoadDirBase(sub)`: run every Lua file of `media/lua/<sub>` in
-    /// case-insensitive path order. TODO: mod directories.
+    /// case-insensitive path order, then each loaded mod's files.
     pub fn load_dir_base(&mut self, sub: &str) {
         let rel = format!("media/lua/{sub}/");
         {
@@ -88,17 +91,15 @@ impl LuaManager {
                 l.paths.push(rel);
             }
         }
-        let files = self.fs.lua_files(sub);
+        let files = self.fs.borrow().lua_files(sub);
         let mut done = HashSet::new();
         for f in files {
             if !done.insert(f.clone()) {
                 continue;
             }
-            let Some(abs) = self.fs.resolve(&f) else {
-                self.loader
-                    .borrow_mut()
-                    .errors
-                    .push(format!("couldn't find \"{f}\""));
+            let abs = self.fs.borrow().absolute_path(&f).map(std::path::PathBuf::from);
+            let Some(abs) = abs else {
+                self.loader.borrow_mut().errors.push(format!("couldn't find \"{f}\""));
                 continue;
             };
             let abs = abs.to_string_lossy().replace('\\', "/");

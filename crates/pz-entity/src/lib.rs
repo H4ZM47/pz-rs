@@ -14,6 +14,7 @@
 //! Decoding then encoding reproduces the saved bytes whenever the original's
 //! load-then-save would.
 
+pub mod color;
 pub mod components;
 pub mod context;
 pub mod entity;

@@ -12,6 +12,7 @@ pz-text.workspace = true
 pz-ui.workspace = true
 pz-vehicles.workspace = true
 pz-inventory.workspace = true
+indexmap.workspace = true
 
 [dev-dependencies]
 pz-world.workspace = true

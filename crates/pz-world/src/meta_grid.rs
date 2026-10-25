@@ -14,6 +14,7 @@ use crate::java::{coordmodulo, fastfloor, java_trim, GameRand};
 use crate::map_files::{
     header_name, lot_directories, zombie_intensity_for_chunk, MapFiles, MapInfo, LOTHEADER_MAGIC,
 };
+use crate::zones::{ClipperOps, RoomTone, Zone, ZoneId, ZoneTables};
 
 /// `IsoDirections` ordinals used by `LotHeader.adjacentCells`.
 pub mod dir {
@@ -34,11 +35,13 @@ pub trait ZombieVoronoi {
     fn release_cell(&mut self, _cell_x: i32, _cell_y: i32) {}
 }
 
-/// `IsoMetaChunk` (rooms and zombie intensity; zones are not ported yet).
+/// `IsoMetaChunk` (rooms, zones and zombie intensity). Zone methods are in
+/// [`crate::meta_zones`].
 #[derive(Clone, Debug, Default)]
 pub struct IsoMetaChunk {
     zombie_intensity: u8,
     rooms: Vec<RoomIdx>,
+    pub(crate) zones: Vec<ZoneId>,
 }
 
 impl IsoMetaChunk {
@@ -124,7 +127,7 @@ impl IsoMetaChunk {
 pub struct IsoMetaCell {
     wx: i32,
     wy: i32,
-    chunk_map: Vec<Option<IsoMetaChunk>>,
+    pub(crate) chunk_map: Vec<Option<IsoMetaChunk>>,
     /// Header name of `info` within the highest-priority `MapFiles` that has it.
     pub info: Option<(usize, String)>,
     pub rooms: HashMap<i64, RoomIdx>,
@@ -135,6 +138,12 @@ pub struct IsoMetaCell {
     /// Keys of `isoBuildings`: buildings whose runtime `IsoBuilding` has been
     /// created (by [`IsoMetaGrid::get_room_by_id`]).
     pub iso_buildings: std::cell::RefCell<std::collections::HashSet<i64>>,
+    pub vehicle_zones: Vec<ZoneId>,
+    pub mannequin_zones: Vec<ZoneId>,
+    /// Lazily created upstream (`null` until the first world-gen zone).
+    pub world_gen_zones: Option<Vec<ZoneId>>,
+    pub animal_zones: Vec<ZoneId>,
+    pub room_tones: Vec<RoomTone>,
 }
 
 impl IsoMetaCell {
@@ -150,6 +159,11 @@ impl IsoMetaCell {
             buildings: Vec::new(),
             building_by_meta_id: HashMap::new(),
             iso_buildings: Default::default(),
+            vehicle_zones: Vec::new(),
+            mannequin_zones: Vec::new(),
+            world_gen_zones: None,
+            animal_zones: Vec::new(),
+            room_tones: Vec::new(),
         }
     }
     pub fn get_x(&self) -> i32 {
@@ -183,7 +197,7 @@ pub struct IsoMetaGrid {
     pub max_non_procedural_y: i32,
     pub width: i32,
     pub height: i32,
-    grid: Vec<Option<IsoMetaCell>>,
+    pub(crate) grid: Vec<Option<IsoMetaCell>>,
     /// `IsoLot.MapFiles`, by priority (index 0 is the highest).
     pub map_files: Vec<MapFiles>,
     /// `IsoLot.InfoHeaders`: header name to the highest-priority map files index.
@@ -199,6 +213,19 @@ pub struct IsoMetaGrid {
     pub building_defs: Vec<BuildingDef>,
     /// `IsoMetaGrid.buildings`.
     pub buildings: Vec<BuildingIdx>,
+    /// Zone arena; zones are never freed, removal only unlinks them.
+    pub zone_defs: Vec<Zone>,
+    /// `IsoMetaGrid.zones`.
+    pub zones: Vec<ZoneId>,
+    /// `IsoMetaGrid.vehiclesZones`.
+    pub vehicles_zones: Vec<ZoneId>,
+    /// `animalZoneHandler` contents in registration order (the original
+    /// keys them by random UUID).
+    pub animal_zones: Vec<ZoneId>,
+    /// Runtime game tables used by zones.
+    pub zone_tables: ZoneTables,
+    /// The native clipper (`Clipper` / `ClipperOffset`).
+    pub clipper: Option<Box<dyn ClipperOps + Send>>,
 }
 
 /// World generation cell bounds (`WorldGenParams.getMin/MaxXCell`).
@@ -253,6 +280,12 @@ impl IsoMetaGrid {
             room_defs: Vec::new(),
             building_defs: Vec::new(),
             buildings: Vec::new(),
+            zone_defs: Vec::new(),
+            zones: Vec::new(),
+            vehicles_zones: Vec::new(),
+            animal_zones: Vec::new(),
+            zone_tables: ZoneTables::default(),
+            clipper: None,
         }
     }
 
@@ -263,7 +296,34 @@ impl IsoMetaGrid {
         self.grid[(x * self.height + y) as usize].as_ref()
     }
 
-    fn cell_slot(&mut self, x: i32, y: i32) -> &mut Option<IsoMetaCell> {
+    /// An empty grid covering cells `min..=max` with no map files, as the
+    /// state `Create()` leaves when no lot headers exist in that range.
+    pub fn with_bounds(min_x: i32, min_y: i32, max_x: i32, max_y: i32) -> IsoMetaGrid {
+        let wg = WorldGenBounds {
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+        };
+        let mut grid =
+            Self::from_map_files_unloaded(Vec::new(), wg).expect("with_bounds needs min <= max");
+        grid.min_x = min_x;
+        grid.min_y = min_y;
+        grid.max_x = max_x;
+        grid.max_y = max_y;
+        grid.width = max_x - min_x + 1;
+        grid.height = max_y - min_y + 1;
+        grid.grid.clear();
+        grid.grid
+            .resize_with((grid.width * grid.height) as usize, || None);
+        grid.min_non_procedural_x = min_x;
+        grid.min_non_procedural_y = min_y;
+        grid.max_non_procedural_x = max_x;
+        grid.max_non_procedural_y = max_y;
+        grid
+    }
+
+    pub(crate) fn cell_slot(&mut self, x: i32, y: i32) -> &mut Option<IsoMetaCell> {
         &mut self.grid[(x * self.height + y) as usize]
     }
 
@@ -282,7 +342,12 @@ impl IsoMetaGrid {
 
     /// `IsoMetaCell.getChunk(i)`: creates the chunk on first use, seeding its
     /// zombie intensity from the lot headers.
-    fn meta_chunk_mut(&mut self, cell_x: i32, cell_y: i32, i: usize) -> Option<&mut IsoMetaChunk> {
+    pub(crate) fn meta_chunk_mut(
+        &mut self,
+        cell_x: i32,
+        cell_y: i32,
+        i: usize,
+    ) -> Option<&mut IsoMetaChunk> {
         let exists = self.get_cell_data(cell_x, cell_y)?.chunk_map[i].is_some();
         if !exists {
             let info = self.get_cell_data(cell_x, cell_y)?.info.clone();
@@ -298,6 +363,7 @@ impl IsoMetaGrid {
             let chunk = IsoMetaChunk {
                 zombie_intensity: if intensity >= 0 { intensity as u8 } else { 0 },
                 rooms: Vec::new(),
+                zones: Vec::new(),
             };
             self.get_cell_data_mut(cell_x, cell_y)?.chunk_map[i] = Some(chunk);
         }
@@ -482,6 +548,13 @@ impl IsoMetaGrid {
                 mf.post_load();
             }
         }
+        Self::from_map_files_unloaded(map_files, wg)
+    }
+
+    fn from_map_files_unloaded(
+        map_files: Vec<MapFiles>,
+        wg: WorldGenBounds,
+    ) -> io::Result<IsoMetaGrid> {
         let (mut min_x, mut min_y, mut max_x, mut max_y) =
             (10000000, 10000000, -10000000, -10000000);
         let mut info_headers = HashMap::new();
@@ -543,6 +616,12 @@ impl IsoMetaGrid {
             room_defs: Vec::new(),
             building_defs: Vec::new(),
             buildings: Vec::new(),
+            zone_defs: Vec::new(),
+            zones: Vec::new(),
+            vehicles_zones: Vec::new(),
+            animal_zones: Vec::new(),
+            zone_tables: ZoneTables::default(),
+            clipper: None,
         })
     }
 

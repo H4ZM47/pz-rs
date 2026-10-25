@@ -32,6 +32,7 @@ fn ctx() -> BasicContext {
             name: "Water".into(),
             color: [0.5, 0.5, 1.0, 1.0],
             categories: vec![FluidCategory::Water],
+            ..Default::default()
         },
     );
     fluids.insert(
@@ -40,6 +41,7 @@ fn ctx() -> BasicContext {
             name: "TaintedWater".into(),
             color: [0.5, 0.5, 1.0, 1.0],
             categories: vec![],
+            ..Default::default()
         },
     );
     fluids.insert(
@@ -48,6 +50,7 @@ fn ctx() -> BasicContext {
             name: "Cola".into(),
             color: [0.2, 0.1, 0.1, 1.0],
             categories: vec![],
+            ..Default::default()
         },
     );
     BasicContext {
@@ -269,6 +272,7 @@ fn fluid_container_forms_and_registry_checks() {
             name: "Water".into(),
             color: [1.0, 1.0, 1.0, 1.0],
             categories: vec![],
+            ..Default::default()
         },
     );
     let fi = FluidInstance::load(&mut Reader::new(&w.buf), &white).unwrap();
@@ -639,4 +643,125 @@ fn jar_tables_when_available() {
     assert!(attrs.iter().count() > 0);
     assert!(!tables::enum_fluid_names(&jar).unwrap().is_empty());
     assert!(!tables::named_colors(&jar).unwrap().is_empty());
+}
+
+#[test]
+fn fluid_amount_cache_and_ratios() {
+    let c = ctx();
+    let mut fc = FluidContainer::default();
+    fc.set_capacity(2.0);
+    assert!(fc.is_empty());
+    assert_eq!(fc.get_filled_ratio(), 0.0);
+    fc.add_fluid(FluidRef::Type(FluidType::Water.id()), None, 0.5, &c);
+    assert_eq!(fc.get_amount(), 0.5);
+    assert_eq!(fc.get_filled_ratio(), 0.25);
+    assert_eq!(fc.get_free_capacity(), 1.5);
+    // Adding more than fits clamps to the free capacity.
+    fc.add_fluid(FluidRef::Type(FluidType::Water.id()), None, 5.0, &c);
+    assert_eq!(fc.fluids.len(), 1);
+    assert_eq!(fc.fluids[0].amount, 2.0);
+    assert!(fc.is_full());
+    assert_eq!(fc.get_filled_ratio(), 1.0);
+    // Within 0.001 of the capacity the amount reads as the capacity.
+    fc.fluids[0].amount = 1.9995;
+    fc.cache_invalidated = true;
+    assert_eq!(fc.get_amount(), 2.0);
+    fc.empty();
+    assert!(fc.is_empty() && fc.fluids.is_empty());
+}
+
+#[test]
+fn fluid_color_is_the_amount_weighted_mix() {
+    let c = ctx();
+    let mut fc = FluidContainer::default();
+    fc.set_capacity(1.0);
+    assert_eq!(fc.get_color(&c), [1.0, 1.0, 1.0]);
+    fc.add_fluid(FluidRef::Type(FluidType::Water.id()), None, 0.25, &c);
+    fc.add_fluid(FluidRef::Modded("Cola".into()), None, 0.75, &c);
+    // Water (0.5, 0.5, 1.0) a quarter, Cola (0.2, 0.1, 0.1) three quarters.
+    let col = fc.get_color(&c);
+    let want = [
+        0.0f32 + 0.5 * (0.25f32 / 1.0) + 0.2 * (0.75f32 / 1.0),
+        0.0f32 + 0.5 * 0.25 + 0.1 * 0.75,
+        0.0f32 + 1.0 * 0.25 + 0.1 * 0.75,
+    ];
+    assert_eq!(col, want);
+    // A custom colour replaces the fluid's own.
+    fc.fluids[1].custom_color = Some([0.0, 0.0, 0.0]);
+    assert_eq!(fc.get_color(&c), [0.125, 0.125, 0.25]);
+}
+
+#[test]
+fn fluids_that_do_not_blend_are_refused() {
+    let mut c = ctx();
+    let mut no_cola = FluidFilter::new(false);
+    no_cola.add_fluid_string("Cola");
+    c.fluids
+        .as_mut()
+        .unwrap()
+        .set_blend_filters("Water", None, Some(no_cola));
+    let mut fc = FluidContainer::default();
+    fc.add_fluid(FluidRef::Type(FluidType::Water.id()), None, 0.25, &c);
+    assert!(!fc.can_add_fluid(&FluidRef::Modded("Cola".into()), &c));
+    fc.add_fluid(FluidRef::Modded("Cola".into()), None, 0.25, &c);
+    assert_eq!(fc.fluids.len(), 1);
+    // Tainted water blends with water.
+    fc.add_fluid(FluidRef::Type(FluidType::TaintedWater.id()), None, 0.25, &c);
+    assert_eq!(fc.fluids.len(), 2);
+    // A locked container takes nothing.
+    fc.input_locked = true;
+    assert!(!fc.can_add_fluid(&FluidRef::Type(FluidType::Water.id()), &c));
+}
+
+#[test]
+fn colors_fluids_mix_their_colour() {
+    let mut c = ctx();
+    c.fluids.as_mut().unwrap().insert(
+        Some(FluidType::Dye.id()),
+        FluidInfo {
+            name: "Dye".into(),
+            color: [1.0, 1.0, 1.0, 1.0],
+            categories: vec![FluidCategory::Colors],
+            ..Default::default()
+        },
+    );
+    let dye = FluidRef::Type(FluidType::Dye.id());
+    let mut fc = FluidContainer::default();
+    fc.add_fluid(dye.clone(), Some([1.0, 0.0, 0.0]), 0.25, &c);
+    assert_eq!(fc.fluids[0].custom_color, Some([1.0, 0.0, 0.0]));
+    // Grey on one side: an RGB lerp by the added share (0.25 of 0.5).
+    fc.add_fluid(dye.clone(), Some([0.5, 0.5, 0.5]), 0.25, &c);
+    assert_eq!(fc.fluids.len(), 1);
+    assert_eq!(fc.fluids[0].amount, 0.5);
+    assert_eq!(fc.fluids[0].custom_color, Some([0.75, 0.25, 0.25]));
+    // Water is not a colour fluid: its colour is not mixed.
+    let mut w = FluidContainer::default();
+    w.add_fluid(
+        FluidRef::Type(FluidType::Water.id()),
+        Some([0.0, 0.0, 0.0]),
+        0.25,
+        &c,
+    );
+    w.add_fluid(
+        FluidRef::Type(FluidType::Water.id()),
+        Some([1.0, 0.0, 0.0]),
+        0.25,
+        &c,
+    );
+    assert_eq!(w.fluids[0].custom_color, Some([0.0, 0.0, 0.0]));
+}
+
+#[test]
+fn loaded_container_caches_its_amount() {
+    let c = ctx();
+    let mut fc = FluidContainer::default();
+    fc.set_capacity(3.0);
+    fc.add_fluid(FluidRef::Type(FluidType::Water.id()), None, 1.0, &c);
+    let mut w = Writer::new();
+    fc.save(&mut w);
+    let mut back = FluidContainer::default();
+    back.load(&mut Reader::new(&w.buf), &c).unwrap();
+    assert!(!back.cache_invalidated);
+    assert_eq!(back.amount_cache, 1.0);
+    assert_eq!(back, fc);
 }

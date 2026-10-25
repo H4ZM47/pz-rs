@@ -7,8 +7,29 @@
 
 use std::rc::Rc;
 
-use pz_scripts::objects::items::Item;
+use std::cell::RefCell;
+
+use pz_scripts::objects::items::{Item, ItemReplacement, ModelWeaponPart};
 use pz_scripts::ScriptManager;
+
+/// A shared script item (`ScriptManager.FindItem`), compared by identity.
+#[derive(Clone)]
+pub struct ScriptItemRef(pub Rc<RefCell<Item>>);
+
+impl PartialEq for ScriptItemRef {
+    fn eq(&self, o: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &o.0)
+    }
+}
+
+impl std::fmt::Debug for ScriptItemRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0.try_borrow() {
+            Ok(i) => write!(f, "ScriptItemRef({})", i.module_dot_type),
+            Err(_) => write!(f, "ScriptItemRef(..)"),
+        }
+    }
+}
 
 /// The `InventoryItem` subclass `Item.InstanceItem` creates for the
 /// script's `ItemType`, which decides what `save`/`load` write and read.
@@ -111,8 +132,28 @@ pub struct ItemTemplate {
     pub min_sight_range: f32,
     pub max_sight_range: f32,
     pub magazine_type: Option<String>,
-    pub weapon_sprites_by_index: bool,
-    pub static_models_by_index: bool,
+    /// `Item.getStaticModel()` / `worldStaticModel` (resolved model script
+    /// names).
+    pub static_model: Option<String>,
+    pub world_static_model: Option<String>,
+    /// `staticModelsByIndex` / `worldStaticModelsByIndex` /
+    /// `weaponSpritesByIndex` (shared with every instance, as the original
+    /// shares the script's lists).
+    pub static_models_by_index: Option<Rc<Vec<String>>>,
+    pub world_static_models_by_index: Option<Rc<Vec<String>>>,
+    pub weapon_sprites_by_index: Option<Rc<Vec<String>>>,
+    /// `modelWeaponPart` (the script's entries, in script order).
+    pub model_weapon_part: Option<Rc<Vec<ModelWeaponPart>>>,
+    /// The script item itself, for `GameEntityFactory` (set by
+    /// [`ItemTemplate::with_script`]; `None` builds no components).
+    pub script: Option<ScriptItemRef>,
+    /// `createItemInternal`'s `<type>Empty` fallback: the item is created
+    /// from the base script and its `FluidContainer` emptied.
+    pub empty_fluid_container: bool,
+    /// `padlock` (a new padlock key draws its key id).
+    pub padlock: bool,
+    /// `paletteChoices.size()` (clothing draws one at creation).
+    pub palette_choices: usize,
     pub world_object_sprite: Option<String>,
     /// For `Moveables.<sprite>` items: the sprite `InventoryItemFactory`
     /// reads (`ReadFromWorldSprite(movName)`).
@@ -159,6 +200,150 @@ pub struct ItemTemplate {
     pub weight_reduction: i32,
     pub use_delta: f32,
     pub count: i32,
+    // Values the gameplay methods (`gameplay.rs`) read from the script
+    // (`getScriptItem()`), resolved once when the template is built.
+    /// `clothingItem` (the `ClothingItem` asset name).
+    pub clothing_item: Option<String>,
+    /// `replacePrimaryHand` (clothing item name, mask variable name/value,
+    /// attachment).
+    pub replace_primary_hand: Option<ItemReplacement>,
+    /// `replaceSecondHand`.
+    pub replace_second_hand: Option<ItemReplacement>,
+    /// `getWithoutDrainable()`.
+    pub without_drainable: Option<String>,
+    /// The `clothingItem` of the `withoutDrainable` script, if it exists.
+    pub without_drainable_clothing_item: Option<String>,
+    /// `bloodClothingType` names, in script order.
+    pub blood_clothing_type: Option<Vec<String>>,
+    /// `getBodyLocation()` as its registry id (`base:hat`, ...).
+    pub body_location: Option<String>,
+    pub equipped_no_sprint: bool,
+    pub protect_from_rain_when_equipped: bool,
+    pub neck_protection_modifier: f32,
+    pub disappear_on_use: bool,
+    pub replace_on_use: Option<String>,
+    pub replace_on_deplete: Option<String>,
+    pub weight_empty: f32,
+    pub swing_anim: Option<String>,
+    pub two_hand_weapon: bool,
+    pub have_chamber: bool,
+    /// `ammoType.getItemKey()`.
+    pub ammo_item: Option<String>,
+    pub cosmetic: bool,
+    pub remove_on_broken: bool,
+    pub can_have_holes: bool,
+    pub break_sound: Option<String>,
+    pub damaged_sound: Option<String>,
+    pub on_break: Option<String>,
+    /// `isItemType(ItemType.KEY_RING)`.
+    pub key_ring_type: bool,
+    /// `WeaponPart.getWeightModifier()` (`weightModifier`).
+    pub weight_modifier: f32,
+    /// `itemCapacity` (`setItemCapacity` at creation).
+    pub item_capacity: i32,
+    /// `maxCapacity` (`setMaxCapacity` at creation).
+    pub max_capacity: i32,
+    /// `conditionAffectsCapacity` (read through `getScriptItem()`).
+    pub condition_affects_capacity: bool,
+    /// The vehicle-part values `InstanceItem` copies to every item.
+    pub vehicle_part: VehiclePartStats,
+    /// The `DeviceData` values `InstanceItem` sets on a `Radio`.
+    pub radio: RadioScript,
+    /// `map` (`MapItem.setMapID`; a random map definition when blank).
+    pub map: Option<String>,
+}
+
+/// `InventoryItem` fields `Item.InstanceItem` sets for vehicle parts
+/// (`setBrakeForce`, `setDurability`, ...). They are not saved: a loaded
+/// item keeps the values of the item `CreateItem` made.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VehiclePartStats {
+    pub brake_force: f32,
+    pub durability: f32,
+    pub chance_to_spawn_damaged: i32,
+    pub condition_lower_normal: f32,
+    pub condition_lower_offroad: f32,
+    pub wheel_friction: f32,
+    pub suspension_compression: f32,
+    pub engine_loudness: f32,
+    pub suspension_damping: f32,
+}
+
+impl VehiclePartStats {
+    /// The values of an item script.
+    pub fn from_script(item: &Item) -> Self {
+        VehiclePartStats {
+            brake_force: item.brake_force,
+            durability: item.durability,
+            chance_to_spawn_damaged: item.chance_to_spawn_damaged,
+            condition_lower_normal: item.condition_lower_normal,
+            condition_lower_offroad: item.condition_lower_offroad,
+            wheel_friction: item.wheel_friction,
+            suspension_compression: item.suspension_compression,
+            engine_loudness: item.engine_loudness,
+            suspension_damping: item.suspension_damping,
+        }
+    }
+}
+
+/// Item script values `Item.InstanceItem` gives a `Radio`'s `DeviceData`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RadioScript {
+    pub two_way: bool,
+    pub transmit_range: i32,
+    pub mic_range: i32,
+    pub base_volume_range: f32,
+    pub is_portable: bool,
+    pub is_television: bool,
+    pub min_channel: i32,
+    pub max_channel: i32,
+    pub uses_battery: bool,
+    pub is_high_tier: bool,
+    pub use_delta: f32,
+    pub accept_media_type: i8,
+    pub no_transmit: bool,
+}
+
+impl Default for RadioScript {
+    /// The `Item` field defaults.
+    fn default() -> Self {
+        RadioScript {
+            two_way: false,
+            transmit_range: 0,
+            mic_range: 0,
+            base_volume_range: 0.0,
+            is_portable: false,
+            is_television: false,
+            min_channel: 88000,
+            max_channel: 108000,
+            uses_battery: false,
+            is_high_tier: false,
+            use_delta: 0.03125,
+            accept_media_type: -1,
+            no_transmit: false,
+        }
+    }
+}
+
+impl RadioScript {
+    /// The values of an item script.
+    pub fn from_script(item: &Item) -> Self {
+        RadioScript {
+            two_way: item.two_way,
+            transmit_range: item.transmit_range,
+            mic_range: item.mic_range,
+            base_volume_range: item.base_volume_range,
+            is_portable: item.is_portable,
+            is_television: item.is_television,
+            min_channel: item.min_channel,
+            max_channel: item.max_channel,
+            uses_battery: item.uses_battery,
+            is_high_tier: item.is_high_tier,
+            use_delta: item.use_delta,
+            accept_media_type: item.accept_media_type,
+            no_transmit: item.no_transmit,
+        }
+    }
 }
 
 impl ItemTemplate {
@@ -179,8 +364,16 @@ impl ItemTemplate {
             min_sight_range: 2.0,
             max_sight_range: 6.0,
             magazine_type: None,
-            weapon_sprites_by_index: false,
-            static_models_by_index: false,
+            static_model: None,
+            world_static_model: None,
+            static_models_by_index: None,
+            world_static_models_by_index: None,
+            weapon_sprites_by_index: None,
+            model_weapon_part: None,
+            script: None,
+            empty_fluid_container: false,
+            padlock: false,
+            palette_choices: 0,
             world_object_sprite: None,
             moveable_sprite: None,
             tags: Vec::new(),
@@ -222,6 +415,38 @@ impl ItemTemplate {
             weight_reduction: 0,
             use_delta: 0.03125,
             count: 1,
+            clothing_item: None,
+            replace_primary_hand: None,
+            replace_second_hand: None,
+            without_drainable: None,
+            without_drainable_clothing_item: None,
+            blood_clothing_type: None,
+            body_location: None,
+            equipped_no_sprint: false,
+            protect_from_rain_when_equipped: false,
+            neck_protection_modifier: 1.0,
+            disappear_on_use: true,
+            replace_on_use: None,
+            replace_on_deplete: None,
+            weight_empty: 0.0,
+            swing_anim: None,
+            two_hand_weapon: false,
+            have_chamber: true,
+            ammo_item: None,
+            cosmetic: false,
+            remove_on_broken: true,
+            can_have_holes: true,
+            break_sound: None,
+            damaged_sound: None,
+            on_break: None,
+            key_ring_type: false,
+            weight_modifier: 0.0,
+            item_capacity: -1,
+            max_capacity: -1,
+            condition_affects_capacity: false,
+            vehicle_part: VehiclePartStats::default(),
+            radio: RadioScript::default(),
+            map: None,
         }
     }
 
@@ -232,6 +457,15 @@ impl ItemTemplate {
     /// `hasTag(ItemTag.X)` by registry id (e.g. `base:egg`).
     pub fn has_tag(&self, id: &str) -> bool {
         self.tags.iter().any(|t| t.eq_ignore_ascii_case(id))
+    }
+
+    /// [`from_script`](Self::from_script) keeping the script item (for the
+    /// factory-made ECS components).
+    pub fn from_script_ref(sm: &ScriptManager, item: &Rc<RefCell<Item>>) -> Option<Rc<Self>> {
+        let t = Self::from_script(sm, &item.borrow())?;
+        let mut t = Rc::try_unwrap(t).unwrap_or_else(|t| (*t).clone());
+        t.script = Some(ScriptItemRef(item.clone()));
+        Some(Rc::new(t))
     }
 
     /// Reads the values from a loaded script item.
@@ -279,15 +513,19 @@ impl ItemTemplate {
             min_sight_range: item.min_sight_range,
             max_sight_range: item.max_sight_range,
             magazine_type: item.magazine_type.clone(),
-            weapon_sprites_by_index: item.weapon_sprites_by_index.is_some(),
-            static_models_by_index: item
-                .static_models_by_index
+            static_model: item.static_model.clone(),
+            world_static_model: item.world_static_model.clone(),
+            static_models_by_index: item.static_models_by_index.clone().map(Rc::new),
+            world_static_models_by_index: item.world_static_models_by_index.clone().map(Rc::new),
+            weapon_sprites_by_index: item.weapon_sprites_by_index.clone().map(Rc::new),
+            model_weapon_part: item
+                .model_weapon_part
                 .as_ref()
-                .is_some_and(|v| !v.is_empty())
-                || item
-                    .world_static_models_by_index
-                    .as_ref()
-                    .is_some_and(|v| !v.is_empty()),
+                .map(|v| Rc::new(v.iter().map(|m| m.borrow().clone()).collect())),
+            script: None,
+            empty_fluid_container: false,
+            padlock: item.padlock,
+            palette_choices: item.palette_choices.len(),
             world_object_sprite: item.world_object_sprite.clone(),
             moveable_sprite: None,
             tags: keys(&item.item_tags),
@@ -329,6 +567,42 @@ impl ItemTemplate {
             weight_reduction: item.weight_reduction,
             use_delta: item.use_delta,
             count: item.count,
+            clothing_item: item.clothing_item.clone(),
+            replace_primary_hand: item.replace_primary_hand.clone(),
+            replace_second_hand: item.replace_second_hand.clone(),
+            without_drainable: item.without_drainable.clone(),
+            without_drainable_clothing_item: item
+                .without_drainable
+                .as_deref()
+                .and_then(|n| pz_scripts::objects::items::get_item(sm, n))
+                .and_then(|i| i.borrow().clothing_item.clone()),
+            blood_clothing_type: item.blood_clothing_type.clone(),
+            body_location: item.body_location.as_ref().map(|k| k.location.to_string()),
+            equipped_no_sprint: item.equipped_no_sprint,
+            protect_from_rain_when_equipped: item.protect_from_rain_when_equipped,
+            neck_protection_modifier: item.neck_protection_modifier,
+            disappear_on_use: item.disappear_on_use,
+            replace_on_use: item.replace_on_use.clone(),
+            replace_on_deplete: item.replace_on_deplete.clone(),
+            weight_empty: item.weight_empty,
+            swing_anim: item.swing_anim.clone(),
+            two_hand_weapon: item.two_hand_weapon,
+            have_chamber: item.have_chamber,
+            ammo_item: item.ammo_type.as_ref().and_then(|k| k.item_key.clone()),
+            cosmetic: item.cosmetic,
+            remove_on_broken: item.remove_on_broken,
+            can_have_holes: item.can_have_holes,
+            break_sound: item.break_sound.clone(),
+            damaged_sound: item.damaged_sound.clone(),
+            on_break: item.on_break.clone(),
+            key_ring_type: item.is_item_type(sm, "KEY_RING"),
+            weight_modifier: item.weight_modifier,
+            item_capacity: item.item_capacity,
+            max_capacity: item.max_capacity,
+            condition_affects_capacity: item.condition_affects_capacity,
+            vehicle_part: VehiclePartStats::from_script(item),
+            radio: RadioScript::from_script(item),
+            map: item.map.clone(),
         }))
     }
 }

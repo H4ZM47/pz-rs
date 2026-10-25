@@ -609,7 +609,7 @@ fn main() {
     world_sim::set_air_temperature(parse_hex_f(&at("airTemperature")));
 
     // Lua: the same files as the harness, on pz-kahlua.
-    let fs = Rc::new(pz_fs::GameFs::new(game.to_str().unwrap()));
+    let fs = Rc::new(std::cell::RefCell::new(pz_fs::GameFs::new(game.to_str().unwrap())));
     let mut lua = LuaManager::init(fs).expect("lua");
     install_globals(&mut lua, &sandbox_lines);
     for f in [
