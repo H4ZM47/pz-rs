@@ -588,8 +588,47 @@ pub struct ZombieAttack {
     pub inactive: bool,
     /// `zombie.cantBite()`.
     pub cant_bite: bool,
-    /// `zombie.getBiteSoundName()`.
-    pub bite_sound: String,
+    /// `zombie.getBiteSoundName()`'s inputs (it draws the voice choice
+    /// when first asked).
+    pub bite_voice: BiteVoice,
+}
+
+/// What `IsoZombie.getBiteSoundName()` reads; `voice_choice` is the
+/// zombie's, updated by the call.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BiteVoice {
+    pub voice_prefix: String,
+    pub speed_type: i32,
+    pub voice_choice: std::cell::Cell<i32>,
+}
+
+impl BiteVoice {
+    /// `getVoiceChoice()`.
+    pub fn voice_choice(&self, ctx: &dyn SimContext) -> i32 {
+        if self.speed_type == -1 {
+            return 1;
+        }
+        let mut c = self.voice_choice.get();
+        if c == -1 {
+            c = ctx.rand_next(if self.speed_type == 1 { 2 } else { 3 }) + 1;
+        }
+        if self.speed_type == 1 && c == 3 {
+            c = ctx.rand_next(2) + 1;
+        }
+        self.voice_choice.set(c);
+        c
+    }
+
+    /// `getBiteSoundName()`.
+    pub fn bite_sound_name(&self, ctx: &dyn SimContext) -> String {
+        let p2 = if self.speed_type == 1 { "Sprinter" } else { "" };
+        let p4 = match self.voice_choice(ctx) {
+            2 => "B",
+            3 => "C",
+            _ => "A",
+        };
+        format!("{}{p2}Bite{p4}", self.voice_prefix)
+    }
 }
 
 /// What `AddRandomDamageFromZombie` did to the zombie and the character
@@ -607,8 +646,11 @@ pub struct ZombieAttackOutcome {
     pub laceration: bool,
     /// `zombie.parameterZombieState.setState(...)`.
     pub zombie_state: Option<&'static str>,
-    /// `helmetFall(neckOrHead)`.
+    /// `helmetFall(neckOrHead)` was called (with this argument).
     pub helmet_fall: Option<bool>,
+    /// The worn items `helmetFall` took off (`createFallingItem` is the
+    /// world's).
+    pub fallen_items: Vec<pz_inventory::InventoryItem>,
     /// `zombie.spikePart(type)` calls (`BodyPartType` constant names).
     pub zombie_spiked: Vec<&'static str>,
     /// `zombie.Kill(null)`.
@@ -624,6 +666,33 @@ fn stat(chars: &Characters, f: &str) -> ScriptResult<CharacterStatRef> {
 }
 
 impl<I: 'static> GameCharacter<I> {
+    /// `splatBloodFloorBig()`.
+    pub fn splat_blood_floor_big(&self, ctx: &dyn SimContext) {
+        if self.environment.square_has_chunk {
+            let kind = ctx.rand_next(20);
+            ctx.event(SimEvent::AddBloodSplat { kind });
+        }
+    }
+
+    /// `splatBloodFloor()`.
+    pub fn splat_blood_floor(&self, ctx: &dyn SimContext) {
+        if !self.environment.square_has_chunk {
+            return;
+        }
+        if self.is_dead() && ctx.rand_next(10) == 0 {
+            let kind = ctx.rand_next(20);
+            ctx.event(SimEvent::AddBloodSplat { kind });
+        }
+        if ctx.rand_next(14) == 0 {
+            let kind = ctx.rand_next(8);
+            ctx.event(SimEvent::AddBloodSplat { kind });
+        }
+        if ctx.rand_next(50) == 0 {
+            let kind = ctx.rand_next(20);
+            ctx.event(SimEvent::AddBloodSplat { kind });
+        }
+    }
+
     fn moodle(&self, sm: &ScriptManager, field: &str) -> ScriptResult<i32> {
         self.moodles.moodle_level_of(sm, field)
     }
@@ -1844,10 +1913,10 @@ impl<I: 'static> GameCharacter<I> {
         if n > 0 {
             let chance = 1.0 / n as f32 * 200.0 * ctx.inv_multiplier();
             if (ctx.rand_next(chance as i32) as f32) < chance * 0.3 {
-                ctx.event(SimEvent::SplatBloodFloor);
+                self.splat_blood_floor(ctx);
             }
             if ctx.rand_next(chance as i32) == 0 {
-                ctx.event(SimEvent::SplatBloodFloor);
+                self.splat_blood_floor(ctx);
             }
         }
         self.thermoregulator_update(sm, chars, ctx)?;
@@ -2224,13 +2293,15 @@ impl<I: 'static> GameCharacter<I> {
             }) {
                 ctx.event(SimEvent::AddBlood { part: part_index, scratched: true, bitten: false, all_layers: false });
             }
+            self.items.add_hole_from_zombie_attacks(sm, ctx, part_index as usize, false);
             ctx.event(SimEvent::AddHoleFromZombieAttacks { part: part_index, scratch_or_bite: false });
             ctx.event(SimEvent::WeaponHitArmourSound { part: part_index, bullet });
             return Ok(());
         }
+        self.items.add_hole(sm, ctx, part_index as usize, false);
         ctx.event(SimEvent::AddHole { part: part_index, all_layers: false });
         for _ in 0..3 {
-            ctx.event(SimEvent::SplatBloodFloorBig);
+            self.splat_blood_floor_big(ctx);
         }
         let env = self.injury_env(sm, ctx)?;
         let bd = &mut self.body_damage;
@@ -2495,7 +2566,11 @@ impl<I: 'static> GameCharacter<I> {
                 self.items.body_part_is_spiked(sm, part)
             };
             out.scratch = true;
-            out.helmet_fall = Some(part == idx("Neck")? || part == idx("Head")?);
+            let hit_head = part == idx("Neck")? || part == idx("Head")?;
+            out.helmet_fall = Some(hit_head);
+            if !ctx.is_client() {
+                out.fallen_items = self.items.helmet_fall_from_worn_items(sm, ctx, hit_head);
+            }
             if ctx.rand_next(100) > lacer {
                 out.scratch = false;
                 out.laceration = true;
@@ -2518,8 +2593,12 @@ impl<I: 'static> GameCharacter<I> {
                     out.zombie_spiked.push(hand);
                 }
                 if (ctx.rand_next(100) as f32) < defense {
+                    self.items.add_hole_from_zombie_attacks(sm, ctx, part as usize, scratch_or_bite);
                     ctx.event(SimEvent::AddHoleFromZombieAttacks { part, scratch_or_bite });
                     return Ok(out);
+                }
+                if self.items.add_hole(sm, ctx, part as usize, true) {
+                    ctx.event(SimEvent::PlaySound("ZombieRipClothing".into()));
                 }
                 ctx.event(SimEvent::AddHole { part, all_layers: true });
                 hole_done = true;
@@ -2546,16 +2625,21 @@ impl<I: 'static> GameCharacter<I> {
                 let defense = self.items.body_part_clothing_defense(sm, part, true, false);
                 out.zombie_state = Some("AttackBite");
                 if alive {
-                    let sound = if part == idx("Neck")? { "NeckBite".to_string() } else { z.bite_sound.clone() };
+                    let name = z.bite_voice.bite_sound_name(ctx);
+                    let sound = if part == idx("Neck")? { "NeckBite".to_string() } else { name };
                     ctx.event(SimEvent::PlaySound(sound));
                 }
                 if (ctx.rand_next(100) as f32) < defense {
+                    self.items.add_hole_from_zombie_attacks(sm, ctx, part as usize, scratch_or_bite);
                     ctx.event(SimEvent::AddHoleFromZombieAttacks { part, scratch_or_bite });
                     if spiked {
                         ctx.event(SimEvent::AddBlood { part, scratched: false, bitten: true, all_layers: false });
                         out.zombie_spiked.push("Head");
                     }
                     return Ok(out);
+                }
+                if self.items.add_hole(sm, ctx, part as usize, true) {
+                    ctx.event(SimEvent::PlaySound("ZombieRipClothing".into()));
                 }
                 ctx.event(SimEvent::AddHole { part, all_layers: true });
                 hole_done = true;
@@ -2581,12 +2665,12 @@ impl<I: 'static> GameCharacter<I> {
                         all_layers: false,
                     });
                     for _ in 0..3 {
-                        ctx.event(SimEvent::SplatBloodFloorBig);
+                        self.splat_blood_floor_big(ctx);
                     }
                 }
                 ctx.event(SimEvent::AddBlood { part, scratched: false, bitten: true, all_layers: true });
                 for _ in 0..3 {
-                    ctx.event(SimEvent::SplatBloodFloorBig);
+                    self.splat_blood_floor_big(ctx);
                 }
                 if spiked {
                     ctx.event(SimEvent::AddBlood { part, scratched: false, bitten: true, all_layers: false });
@@ -2596,7 +2680,8 @@ impl<I: 'static> GameCharacter<I> {
             }
         }
         if !hole_done {
-            ctx.event(SimEvent::AddHoleFromZombieAttacks { part, scratch_or_bite });
+            self.items.add_hole_from_zombie_attacks(sm, ctx, part as usize, scratch_or_bite);
+                    ctx.event(SimEvent::AddHoleFromZombieAttacks { part, scratch_or_bite });
         }
         let bd = &self.body_damage;
         let p = match pain_type {

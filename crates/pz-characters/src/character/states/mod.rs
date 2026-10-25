@@ -13,6 +13,7 @@ pub mod player;
 pub mod player_ai;
 pub mod stagger_back;
 pub mod swipe;
+pub mod zombie;
 
 /// Every `zombie.ai.states` class (the jar's names).
 pub mod ids {
@@ -121,4 +122,7 @@ pub fn all<I: 'static>() -> Vec<StateRef<I>> {
         player::aim(),
         player::strafe(),
     ]
+    .into_iter()
+    .chain(zombie::all())
+    .collect()
 }

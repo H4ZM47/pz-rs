@@ -1626,12 +1626,16 @@ name = "pz-characters"
 version = "0.1.0"
 dependencies = [
  "pz-anim",
+ "pz-audio",
  "pz-core",
  "pz-fs",
  "pz-inventory",
  "pz-pathfind",
+ "pz-popman",
+ "pz-sandbox",
  "pz-scripts",
  "pz-world",
+ "pz-world-popman",
  "quick-xml",
 ]
 
@@ -1771,6 +1775,7 @@ version = "0.1.0"
 dependencies = [
  "indexmap",
  "pz-anim",
+ "pz-audio",
  "pz-characters",
  "pz-classfile",
  "pz-core",
@@ -1889,6 +1894,16 @@ dependencies = [
  "pz-inventory",
  "pz-kahlua",
  "pz-scripts",
+]
+
+[[package]]
+name = "pz-world-popman"
+version = "0.1.0"
+dependencies = [
+ "pz-fs",
+ "pz-popman",
+ "pz-sandbox",
+ "pz-world",
 ]
 
 [[package]]

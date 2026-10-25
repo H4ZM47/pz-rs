@@ -555,3 +555,128 @@ impl<I> GameCharacter<I> {
         total
     }
 }
+
+/// `ItemVisual.setHole(part)`.
+fn set_visual_hole(item: &mut InventoryItem, part: usize) {
+    if let Some(v) = item.visual.as_mut() {
+        let a = v.arrays[2].get_or_insert_with(|| vec![0; blood_part::MAX]);
+        if part < a.len() {
+            a[part] = -1;
+        }
+    }
+}
+
+/// `InventoryItem.setCondition(c)` (clamped; the sounds are the item's).
+fn set_condition(item: &mut InventoryItem, c: i32) {
+    item.condition = c.max(0).min(item.condition_max);
+}
+
+impl CharacterItems {
+    /// `BloodClothingType.addHole(part, humanVisual, itemVisuals,
+    /// allLayers)` on the worn items (the human visual's own hole is the
+    /// renderer's). Returns `addedHole`.
+    pub fn add_hole(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, part: usize, all_layers: bool) -> bool {
+        let mut added = false;
+        for id in self.item_visual_ids().into_iter().rev() {
+            let Some(item) = self.item(id) else { continue };
+            let Some(script) = script_item(sm, item) else { continue };
+            if item.condition <= 0 {
+                continue;
+            }
+            let Some(parts) = covered_parts(sm, item) else { continue };
+            if !parts.contains(&part) || visual_hole(item, part) != 0.0 {
+                continue;
+            }
+            let clothing = is_clothing(item);
+            let (can_holes, lower_chance) = {
+                let s = script.borrow();
+                (s.can_have_holes, s.condition_lower_chance)
+            };
+            let n_parts = parts.len() as i32;
+            let item = self.item_mut(id).unwrap();
+            if clothing && can_holes {
+                set_visual_hole(item, part);
+                if let ItemKind::Clothing(c) | ItemKind::AlarmClockClothing(c, _) = &mut item.kind {
+                    if let Some(p) = &mut c.patches {
+                        p.retain(|(i, _)| *i as usize != part);
+                    }
+                }
+                let loss = 1.max(item.condition_max / n_parts.max(1)) as f32;
+                let c = (item.condition as f32 - loss) as i32;
+                set_condition(item, c);
+                added = true;
+            } else if clothing && !can_holes && super::body_part::next_bool(ctx, lower_chance) {
+                let c = item.condition - 1;
+                set_condition(item, c);
+            } else if !clothing && can_holes {
+                set_visual_hole(item, part);
+                added = true;
+            }
+            if !all_layers {
+                break;
+            }
+        }
+        added
+    }
+
+    /// `addHoleFromZombieAttacks(part, scratch)`: the outer clothing on the
+    /// part may tear.
+    pub fn add_hole_from_zombie_attacks(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, part: usize, scratch: bool) -> bool {
+        let mut hit = None;
+        for id in self.item_visual_ids().into_iter().rev() {
+            let Some(item) = self.item(id) else { continue };
+            if script_item(sm, item).is_none() {
+                continue;
+            }
+            let Some(parts) = covered_parts(sm, item) else { continue };
+            if parts.contains(&part) {
+                hit = Some(id);
+                break;
+            }
+        }
+        let mut base_def = 0.0f32;
+        if let Some(item) = hit.and_then(|id| self.item(id)) {
+            if is_clothing(item) {
+                base_def = 30.0f32.max(100.0 - def_for_part(sm, item, part, !scratch, false) / 1.5);
+            }
+        }
+        if (ctx.rand_next(100) as f32) < base_def {
+            self.add_hole(sm, ctx, part, false);
+            return true;
+        }
+        false
+    }
+
+    /// `helmetFallFromWornItems(hitHead)`: worn clothing with a chance to
+    /// fall comes off (the original's loop skips the item after a removed
+    /// one). Returns the removed items (the world makes them fall).
+    pub fn helmet_fall_from_worn_items(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, hit_head: bool) -> Vec<InventoryItem> {
+        let mut removed = Vec::new();
+        let mut i = 0;
+        while i < self.worn_items.len() {
+            let id = self.worn_items[i];
+            i += 1;
+            let Some(item) = self.item(id) else { continue };
+            if !is_clothing(item) {
+                continue;
+            }
+            let chance = script_item(sm, item).map_or(0, |s| s.borrow().chance_to_fall);
+            let mut chance_to_fall = chance;
+            if hit_head {
+                chance_to_fall += 40;
+            }
+            if chance <= 0 || ctx.rand_next(100) > chance_to_fall {
+                continue;
+            }
+            let pos = self.inventory.items.iter().position(|it| it.as_item().is_some_and(|it| it.id == id));
+            if let Some(p) = pos {
+                if let pz_inventory::SavedItem::Item(it) = self.inventory.items.remove(p) {
+                    removed.push(*it);
+                }
+            }
+            self.worn_items.retain(|w| *w != id);
+            // `i` keeps pointing past the removed slot.
+        }
+        removed
+    }
+}

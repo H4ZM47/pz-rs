@@ -568,6 +568,390 @@ Status of the Rust port. Update this file with every merged change.
   (checked locally). Climbing, window, sitting and timed-action states are
   stand-ins; ranged combat and target bones are TODO.
 
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup.
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
+- `pz-clipper6`: the polygon code of the native pathfinder (Clipper 6.4.2,
+  earcut.hpp and the game's `PZClipper` wrapper) in pure Rust. Local
+  differential run against the shipped arm64 library: 1.15 million random
+  cases bit-identical.
+
+- Character state machine (`pz-characters::character::state`, `states`,
+  `combat`): `State`/`StateMachine`/`State.Param`/`StateMachineComponent`,
+  the action system (`ActionGroup` from `media/actiongroups`,
+  `ActionState`, `ActionTransition`, the variable/event/Lua conditions,
+  `ActionContext`), the character's animation variables (game variables
+  plus the `IsoGameCharacter`/`IsoLivingCharacter`/`IsoPlayer` callback
+  slots, as `pz_anim::AnimationVariableSource`), anim-event routing
+  (`OnAnimEvent`), `pz_pathfind`'s `PathMover`/`PlayerMover` for
+  characters, the player states (`IdleState`, `SwipeStatePlayer`,
+  `StaggerBackState`, knocked down, fall down, hit reactions, get up,
+  collide, aim, strafe) and the melee combat helpers (`Hit`,
+  `processHitDamage`, `hitConsequences`, crit chance, endurance, damage
+  split), with Lua bindings (`bind_states`, `bind_combat`). A seeded run of
+  the real `player`, `zombie` and `zombie-crawler` action groups (6000
+  scripted variable/event steps plus every state's sorted transition list)
+  and 48 weapon/perk/trait setups of the combat helpers (weapon type and
+  mods, crit chance, `processHitDamage` on zombie and player targets,
+  endurance loss, a full `Hit` on a player) match the original bit for bit
+  (checked locally). Climbing, window, sitting and timed-action states are
+  stand-ins; ranged combat and target bones are TODO.
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup.
+
+- Zombie population (`pz-popman`): a pure-Rust port of the native
+  `PZPopMan` library (population cells, repopulation and redistribution,
+  virtual zombies and their wall follower, world sounds, hordes, aggro
+  targets, the collision grid and its path tasks, and the `zpop_*.bin` /
+  `chunkdata_*.bin` save files), the single-player
+  `ZombiePopulationManager` with `LoadedAreas`, `PlayerSpawns`,
+  `RealZombieMap`, `ZombieStateFlags` and `ObjectPool`, and the population
+  Lua globals (`bind_popman`). Four scripted runs of 600 to 12000 ticks
+  match the shipped library line for line and save file for save file
+  (checked locally). The comparison follows the original's allocator
+  wherever a freed world sound was reused differently. Creating real
+  zombies goes through `PopulationHost`, which waits on `IsoZombie` and
+  `VirtualZombieManager`.
+
+- Zombies (`pz-characters::character::zombie`, `states::zombie`):
+  `IsoZombie`'s simulation (construction from a descriptor, the lore-driven
+  `DoZombieStats`/speeds/`makeInactive`/`toggleCrawling`, sight
+  (`spottedNew`/`spottedOld`, vision radius, cone, light, sneaking, traits,
+  close-sneak-bonus sprites read from the jar), hearing through
+  `pz_audio::world_sound` (`RespondToSound`, `setTurnAlertedValues`),
+  memory and target selection, thumping, eating bodies, the corpse
+  search, `updateInternal`/`postupdate`), the zombie animation variable
+  slots, the zombie states (idle, walk toward, path find, lunge, attack
+  with `AddRandomDamageFromZombie`, thump, fall down, get up, on ground,
+  reanimate, eat body, face target, get down, sitting, crawler turn, fake
+  dead, turn alerted, get up from crawl, falling), `initializeStates`,
+  `pz_pathfind`'s `ZombieMover`, the `pz-popman` host's zombie side
+  (`create_real_zombie_always` and the setters) and Lua bindings
+  (`bind_zombie`: `IsoZombie` members, `getWorldSoundManager`, `addSound`).
+  The world (squares, light, rooms, doors and thumpables, corpses, sounds,
+  path behaviour) is reached through `StateWorld` hooks; lore settings are
+  `SimContext` getters with the sandbox defaults. A seeded run against the
+  original (600 lore-matrix `DoZombieStats`/`makeInactive`/`toggleCrawling`
+  cases with the `Rand` stream after each, 2000 `setTurnAlertedValues` and
+  500 vision-radius cases, 40 rounds of `WorldSoundManager` sounds with
+  1200 zombie hearing queries and aging, plus 1280 lines on a cell with
+  rooms), 3000 spotting checks (`spottedNew`/`spottedOld` on a real cell
+  with light, rooms, sneaking, traits and distances), 392 bites and
+  scratches on dressed players (`AttackState.triggerPlayerReaction` with
+  clothing holes, helmet falls and the BodyDamage update) and 24000 ticks
+  of the zombie state machine on the real action groups match bit for bit,
+  with the `Rand` stream (checked locally). `IsoMovingObject.postupdate`'s
+  collision passes (`DoCollide`, collision flags, the obstacle clip through
+  pz-pathfind) and `doDeferredMovement` are ported with unit tests only.
+  Lunges and paths (the original's path finder is native), ragdolls,
+  vehicles and the network states are not checked against the original;
+  stairs, slopes and `slideAwayFromWalls` are TODO.
+  original loader locally. Enum and lookup tables are runtime data
+  (`SpriteTables`, `ObjectTables`); the jar loader awaits `pz-classfile`.
+
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup.
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
+
+- Zombie population (`pz-popman`): a pure-Rust port of the native
+  `PZPopMan` library (population cells, repopulation and redistribution,
+  virtual zombies and their wall follower, world sounds, hordes, aggro
+  targets, the collision grid and its path tasks, and the `zpop_*.bin` /
+  `chunkdata_*.bin` save files), the single-player
+  `ZombiePopulationManager` with `LoadedAreas`, `PlayerSpawns`,
+  `RealZombieMap`, `ZombieStateFlags` and `ObjectPool`, and the population
+  Lua globals (`bind_popman`). Four scripted runs of 600 to 12000 ticks
+  match the shipped library line for line and save file for save file
+  (checked locally). The comparison follows the original's allocator
+  wherever a freed world sound was reused differently. Creating real
+  zombies goes through `PopulationHost`, which waits on `IsoZombie` and
+  `VirtualZombieManager`.
+
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup.
+
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
+
+- Appearance tables and outfit draws (`pz-characters::population`):
+  `ClothingDecals`, `HairStyles`, `BeardStyles`, `VoiceStyles` (JAXB
+  binding rules, mod overrides), `PopTemplateManager` skin lists,
+  `HairOutfitDefinitions`, `OutfitRNG`/`LocationRNG` (`pz-core`),
+  `OutfitManager`/`Outfit`/`ClothingItemReference` with `Randomize`, the
+  random outfit picks and `dressInOutfit`'s clothing choices,
+  `DefaultClothing`, and a `HumanStyles` for `HumanVisual`. Lua bindings
+  (`bind_appearance`). Loaded lists and seeded draws match the original on
+  the installed media (every outfit randomized and dressed on three seeds)
+  and on invented edge-case XML (checked locally).
+
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup.
+
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Item, zombie and weapon inputs
+  are plain data until pz-inventory lands.
+
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup. The
+  Studio object model (events, parameters, timelines, instruments, buses)
+  parses from every game bank; event lengths, distances and parameter
+  descriptions match the FMOD runtime for all 3,490 events but one unused
+  legacy event (see `crates/pz-audio/FORMAT.md`).
+
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup. The
+  Studio object model (events, parameters, timelines, instruments, buses)
+  parses from every game bank; event lengths, distances and parameter
+  descriptions match the FMOD runtime for all 3,490 events but one unused
+  legacy event (see `crates/pz-audio/FORMAT.md`).
+
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
+
+- Appearance tables and outfit draws (`pz-characters::population`):
+  `ClothingDecals`, `HairStyles`, `BeardStyles`, `VoiceStyles` (JAXB
+  binding rules, mod overrides), `PopTemplateManager` skin lists,
+  `HairOutfitDefinitions`, `OutfitRNG`/`LocationRNG` (`pz-core`),
+  `OutfitManager`/`Outfit`/`ClothingItemReference` with `Randomize`, the
+  random outfit picks and `dressInOutfit`'s clothing choices,
+  `DefaultClothing`, and a `HumanStyles` for `HumanVisual`. Lua bindings
+  (`bind_appearance`). Loaded lists and seeded draws match the original on
+  the installed media (every outfit randomized and dressed on three seeds)
+  and on invented edge-case XML (checked locally).
+
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
+
+- Appearance tables and outfit draws (`pz-characters::population`):
+  `ClothingDecals`, `HairStyles`, `BeardStyles`, `VoiceStyles` (JAXB
+  binding rules, mod overrides), `PopTemplateManager` skin lists,
+  `HairOutfitDefinitions`, `OutfitRNG`/`LocationRNG` (`pz-core`),
+  `OutfitManager`/`Outfit`/`ClothingItemReference` with `Randomize`, the
+  random outfit picks and `dressInOutfit`'s clothing choices,
+  `DefaultClothing`, and a `HumanStyles` for `HumanVisual`. Lua bindings
+  (`bind_appearance`). Loaded lists and seeded draws match the original on
+  the installed media (every outfit randomized and dressed on three seeds)
+  and on invented edge-case XML (checked locally).
+  pz-pathfind), `slideAwayFromWalls` (square edges here, vehicles through
+  pz-pathfind's `resolve_collision_radius`) and `doDeferredMovement` are
+  ported with unit tests only. Characters burn through pz-world's fire
+  (`FireCharacter`, the `FireCheck`/`SpreadFire`/`ReduceHealthWhenBurning`
+  step after the state machine): 60 `SetOnFire` runs with 16361 ticks of
+  burning damage on players and zombies match the original with the
+  `Rand` stream. A zombie chasing a player on real westpoint chunks (40
+  runs of 400 ticks: path requests answered by the original's native
+  library on one side and pz-pathfind's `PathHost` on the other, path
+  following, walk toward, lunge, face target and attack, collisions and
+  head sliding against the real squares) matches the original bit for bit
+  with the `Rand` stream in 35 runs; the other 5 match until the zombie
+  reaches a door or a fence (thumping and fence climbing need the world's
+  mover-aware `testCollideAdjacent` and hoppable checks). Ragdolls,
+  stairs and slopes are TODO.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 

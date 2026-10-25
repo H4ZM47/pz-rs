@@ -248,8 +248,38 @@ pub struct CharacterVars {
     pub collided_e: bool,
     pub collided_w: bool,
     pub last_collide_time: f32,
+    /// `IsoMovingObject.nx`, `ny` (`getNextX/Y`), `reqMovement`, `impulsex/y`.
+    pub next_x: f32,
+    pub next_y: f32,
+    pub req_movement: (f32, f32),
+    pub impulse_x: f32,
+    pub impulse_y: f32,
+    /// `altCollide`, `collidedThisFrame`, `collidedWithVehicle`,
+    /// `collidedWithDoor`.
+    pub alt_collide: bool,
+    pub collided_this_frame: bool,
+    pub collided_with_vehicle: bool,
+    pub collided_with_door: bool,
+    /// `last` (the square before this frame's move).
+    pub last_square: Option<(i32, i32, i32)>,
+    /// `isRagdollSimulationActive()`, `IsoPlayer.isNoClip()`, `destroyed`.
+    pub ragdoll_simulation_active: bool,
+    pub no_clip: bool,
+    pub destroyed: bool,
+    /// `IsoPlayer.lastCollidedW/N`.
+    pub last_collided_w: bool,
+    pub last_collided_n: bool,
     // ---- IsoZombie (read and written by the shared combat code) ----
     pub crawling: bool,
+    /// `onFire`.
+    pub on_fire: bool,
+    /// `fireKillRate`.
+    pub fire_kill_rate: f32,
+    /// `fireSpreadProbability`.
+    pub fire_spread_probability: i32,
+    /// The `AttachAnim("Fire", ...)` sprite's random offsets while
+    /// burning (the renderer draws it).
+    pub fire_anim: Option<(i32, i32)>,
     pub sit_against_wall: bool,
     /// `lastHitPart` (`BodyPartType` index).
     pub last_hit_part: i32,
@@ -382,6 +412,10 @@ impl Default for CharacterVars {
             climbing: false,
             on_kill_done: false,
             attacked_by: None,
+            on_fire: false,
+            fire_kill_rate: 0.0038,
+            fire_spread_probability: 6,
+            fire_anim: None,
             last_hit_character: None,
             do_shove: false,
             do_grapple: false,
@@ -434,6 +468,21 @@ impl Default for CharacterVars {
             collided_e: false,
             collided_w: false,
             last_collide_time: 0.0,
+            next_x: 0.0,
+            next_y: 0.0,
+            req_movement: (0.0, 0.0),
+            impulse_x: 0.0,
+            impulse_y: 0.0,
+            alt_collide: false,
+            collided_this_frame: false,
+            collided_with_vehicle: false,
+            collided_with_door: false,
+            last_square: None,
+            ragdoll_simulation_active: false,
+            no_clip: false,
+            destroyed: false,
+            last_collided_w: false,
+            last_collided_n: false,
             crawling: false,
             sit_against_wall: false,
             last_hit_part: 0,
@@ -459,6 +508,8 @@ enum Scope {
     Living,
     /// `IsoPlayer` (players and animals).
     Player,
+    /// `IsoZombie` (registered last, so it replaces the others).
+    Zombie,
 }
 
 macro_rules! char_vars {
@@ -634,6 +685,51 @@ char_vars! {
     AttackVariationX = "AttackVariationX", Player, Float;
     AttackVariationY = "AttackVariationY", Player, Float;
     SneakLimpSpeedScale = "sneakLimpSpeedScale", Player, Float;
+    ZClient = "bClient", Zombie, Boolean;
+    ZMultiplayer = "bMultiplayer", Zombie, Boolean;
+    ZMovingNetwork = "bMovingNetwork", Zombie, Boolean;
+    ZHitHeadType = "hitHeadType", Zombie, Int;
+    ZRealState = "realState", Zombie, String;
+    ZReanimatedForGrappleOnly = "bIsReanimatedForGrappleOnly", Zombie, Boolean;
+    ZAttack = "battack", Zombie, Boolean;
+    ZIsFacingTarget = "isFacingTarget", Zombie, Boolean;
+    ZTargetSeenTime = "targetSeenTime", Zombie, Float;
+    ZAttackVehicle = "battackvehicle", Zombie, Boolean;
+    ZEatBodyTarget = "beatbodytarget", Zombie, Boolean;
+    ZBecomeCrawler = "bbecomecrawler", Zombie, Boolean;
+    ZFakeDead = "bfakedead", Zombie, Boolean;
+    ZHasTarget = "bHasTarget", Zombie, Boolean;
+    ZCanSeeTarget = "bCanSeeTarget", Zombie, Boolean;
+    ZShouldSprint = "shouldSprint", Zombie, Boolean;
+    ZKnockedDown = "bknockeddown", Zombie, Boolean;
+    ZLunge = "blunge", Zombie, Boolean;
+    ZStopLunging = "bstoplunging", Zombie, Boolean;
+    ZPassengerExposed = "bpassengerexposed", Zombie, Boolean;
+    ZTargetIsSmallVehicle = "bistargetissmallvehicle", Zombie, Boolean;
+    ZReanimate = "breanimate", Zombie, Boolean;
+    ZStaggerBack = "bstaggerback", Zombie, Boolean;
+    ZUnbalancedLevel = "unbalancedLevel", Zombie, Float;
+    ZThump = "bthump", Zombie, Boolean;
+    ZUnderVehicle = "bundervehicle", Zombie, Boolean;
+    ZBeingSteppedOn = "bBeingSteppedOn", Zombie, Boolean;
+    ZDistanceToTarget = "distancetotarget", Zombie, Float;
+    ZLastTargetSeen = "lasttargetseen", Zombie, Boolean;
+    ZLungeTimer = "lungetimer", Zombie, Float;
+    ZReanimateTimer = "reanimatetimer", Zombie, Float;
+    ZTurnDirection = "turndirection", Zombie, String;
+    ZAlerted = "alerted", Zombie, Boolean;
+    ZWalkType = "zombiewalktype", Zombie, String;
+    ZCrawlerType = "crawlertype", Zombie, Int;
+    ZGetUpFromCrawl = "bGetUpFromCrawl", Zombie, Boolean;
+    ZPlayerAttackPosition = "playerattackposition", Zombie, String;
+    ZEatSpeed = "eatspeed", Zombie, Float;
+    ZIsSitting = "issitting", Zombie, Boolean;
+    ZKnifeDeath = "bKnifeDeath", Zombie, Boolean;
+    ZJawStabAttach = "bJawStabAttach", Zombie, Boolean;
+    ZPathFindPrediction = "bPathFindPrediction", Zombie, Boolean;
+    ZCrawling = "bCrawling", Zombie, Boolean;
+    ZAttackDidDamage = "AttackDidDamage", Zombie, Boolean;
+    ZAttackOutcome = "AttackOutcome", Zombie, String;
 }
 
 /// Per handle index: the slot for (non-living characters, living
@@ -674,6 +770,7 @@ impl CharVar {
                             e[2] = Some(var);
                         }
                         Scope::Player => e[2] = Some(var),
+                        Scope::Zombie => e[0] = Some(var),
                     }
                 }
                 m
@@ -711,6 +808,9 @@ impl CharVar {
 
     /// The getter.
     pub fn get<I>(self, c: &GameCharacter<I>) -> VariableValue {
+        if let Some(v) = crate::character::zombie::vars::get(self, c) {
+            return v;
+        }
         use VariableValue::{Bool as B, Float as F, Int, String as S};
         let v = &c.vars;
         match self {
@@ -865,6 +965,7 @@ impl CharVar {
             CharVar::AttackVariationX => F(v.attack_variation_x),
             CharVar::AttackVariationY => F(v.attack_variation_y),
             CharVar::SneakLimpSpeedScale => F(v.sneak_limp_speed_scale),
+            _ => B(false),
         }
     }
 
@@ -872,6 +973,9 @@ impl CharVar {
     /// for a read-only slot (the original warns and ignores it).
     pub fn set<I>(self, c: &mut GameCharacter<I>, value: VariableValue) -> bool {
         let value = value.converted_to(self.kind());
+        if let Some(done) = crate::character::zombie::vars::set(self, c, &value) {
+            return done;
+        }
         let b = || value.as_bool();
         let f = || value.as_float();
         let s = || value.as_string();
@@ -956,6 +1060,9 @@ impl CharVar {
 
     /// Whether the slot has no setter.
     pub fn is_read_only(self) -> bool {
+        if let Some(ro) = crate::character::zombie::vars::is_read_only(self) {
+            return ro;
+        }
         matches!(
             self,
             CharVar::StateEventDelayTimer
@@ -1215,14 +1322,13 @@ impl<I: 'static> GameCharacter<I> {
     /// (`IsoDirections.fromAngle`). A zero vector is left unnormalized (the
     /// original throws).
     pub fn set_forward_direction(&mut self, x: f32, y: f32) {
-        let len = ((x * x + y * y) as f64).sqrt() as f32;
-        if len == 0.0 {
+        if x * x + y * y == 0.0 {
             self.vars.forward_x = x;
             self.vars.forward_y = y;
             return;
         }
-        self.vars.forward_x = x / len;
-        self.vars.forward_y = y / len;
+        // `Vector2.normalize()`: a length already within 1e-5 of 1 stays.
+        (self.vars.forward_x, self.vars.forward_y) = crate::character::zombie::math::normalize(x, y);
         self.vars.dir = iso_direction_from_angle(x, y);
     }
 

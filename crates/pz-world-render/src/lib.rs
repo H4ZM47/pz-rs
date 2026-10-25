@@ -10,6 +10,9 @@
 //!   squares.
 //! - [`hooks`] and [`settings`]: inputs owned by other systems (thumpables,
 //!   barricades, power, torches; `RenderSettings`/`ClimateManager`).
+//! - [`state_light`]: the light the character states read
+//!   (`StateWorld::square_light`, `square_light_level`,
+//!   `ambient_for_player`).
 //!
 //! Square properties, vision and collision matrices come from pz-world
 //! (`IsoGridSquare::recalc_properties`, `IsoCell::recalc_chunk_squares`).
@@ -25,6 +28,7 @@ pub mod lighting;
 pub mod render_world;
 pub mod settings;
 pub mod sprites;
+pub mod state_light;
 
 pub use hooks::{NoWorldHooks, WorldHooks};
 pub use lighting::{
@@ -35,3 +39,4 @@ pub use render_world::{
 };
 pub use settings::{ClimateInput, ClimateSettings, NoonSettings, PlayerRenderInput, RenderSettingsSource};
 pub use sprites::{GameTextures, NoTextures, SpriteCache, SpriteTextures};
+pub use state_light::{RenderSettings, StateLighting};

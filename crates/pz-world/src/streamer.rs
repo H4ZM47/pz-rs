@@ -367,6 +367,11 @@ impl ChunkStreamer {
         }
     }
 
+    /// The number of chunk maps (`IsoPlayer.numPlayers` at creation).
+    pub fn num_players(&self) -> usize {
+        self.maps.len()
+    }
+
     pub fn chunk_map(&self, player: usize) -> &IsoChunkMap {
         &self.maps[player]
     }
