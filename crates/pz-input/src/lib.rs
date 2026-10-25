@@ -12,6 +12,7 @@ pub mod bindings;
 pub mod controller;
 #[cfg(feature = "gilrs")]
 pub mod gamepads;
+pub mod joypad_eval;
 pub mod keys;
 #[cfg(feature = "winit")]
 pub mod winit;
