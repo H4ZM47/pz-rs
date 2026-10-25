@@ -1,0 +1,18 @@
+[package]
+name = "pz-character-model"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+pz-anim = { path = "../pz-anim" }
+pz-model = { path = "../pz-model" }
+pz-render = { path = "../pz-render" }
+pz-iso-render = { path = "../pz-iso-render" }
+pz-characters.workspace = true
+pz-inventory.workspace = true
+pz-entity.workspace = true
+pz-scripts.workspace = true
+
+[dev-dependencies]
+pz-fs.workspace = true

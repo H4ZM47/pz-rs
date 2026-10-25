@@ -419,6 +419,50 @@ Status of the Rust port. Update this file with every merged change.
   output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
   table (paths to GUIDs) parses identically to FMOD's own lookup.
 
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
+
+- Appearance tables and outfit draws (`pz-characters::population`):
+  `ClothingDecals`, `HairStyles`, `BeardStyles`, `VoiceStyles` (JAXB
+  binding rules, mod overrides), `PopTemplateManager` skin lists,
+  `HairOutfitDefinitions`, `OutfitRNG`/`LocationRNG` (`pz-core`),
+  `OutfitManager`/`Outfit`/`ClothingItemReference` with `Randomize`, the
+  random outfit picks and `dressInOutfit`'s clothing choices,
+  `DefaultClothing`, and a `HumanStyles` for `HumanVisual`. Lua bindings
+  (`bind_appearance`). Loaded lists and seeded draws match the original on
+  the installed media (every outfit randomized and dressed on three seeds)
+  and on invented edge-case XML (checked locally).
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 
