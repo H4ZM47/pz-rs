@@ -23,6 +23,11 @@ Status of the Rust port. Update this file with every merged change.
   square, field and `Rand` draw on 10,240 Muldraugh chunks, checked locally.
   Header and lotpack decoding match the original loader on 163
   cells (Muldraugh sample plus six challenge maps), checked locally.
+  Meta-grid zones (`Zone` and the vehicle/mannequin/world-gen/animal
+  subclasses, chunk zone arrays, Lua-facing registration, lot-priority
+  removal) match the original `IsoMetaGrid` on randomized registrations;
+  the native clipper is an injected trait and the zone tables are runtime
+  input.
   Tile definitions (`pz_world::sprite`): `IsoSpriteManager`,
   `PropertyContainer`, `TilePropertyAliasMap` and the full
   `IsoWorld.LoadTileDefinitions` property pass; all 61,229 sprites match the
@@ -56,6 +61,14 @@ Status of the Rust port. Update this file with every merged change.
   original's field values (the 14 others are those random key ids), and
   the original loads the chunks written here with the same item fields.
   `AnimalInventoryItem` stays raw bytes. Checked locally.
+  New items carry the vehicle-part values, `ItemCapacity`/`MaxCapacity`,
+  radio `DeviceData` with presets and channel, and random map ids, with
+  the original's `Rand` draws (channel lists and map definitions are
+  runtime input); weights count fluid contents. Of 5,092 created script
+  items, all match the original's draws, ids and vehicle values and 5,081
+  every compared field (11 moveables differ in sprite-derived weight), and
+  the part items of 242 `vehicles.db` vehicles match the original's
+  weights and totals. Checked locally.
 - Vehicles and moving objects in saves (`pz_world::save::vehicle`,
   `save::movers`): `BaseVehicle.save`/`load` with `VehiclePart`,
   `VehicleEngine`, lights, doors, windows, device data, part items and
@@ -71,6 +84,34 @@ Status of the Rust port. Update this file with every merged change.
   re-derives); on 1,400 synthetic chunk files built with the original's
   classes, 1,248 chunk-list vehicles, 1,869 pushables, 1,862 wheelie bins
   and 1,869 animal tracks decode and re-save identically. Checked locally.
+  `IsoChunk.vehicles` is a real list (chunk-file and `vehicles.db` loads,
+  chunk moves, removal) and `IsoMetaCell.vehicleZones` is readable as
+  `VehicleZone` views: the 9,693 Muldraugh vehicle zones per cell and
+  `getVehicleZoneAt` match the original. Checked locally.
+- `pz-vehicles`: the vehicle runtime. `BaseVehicle` with parts (script
+  binding, the vehicle Lua `Create`/`Init`/`Update` called by name),
+  engine and transmission, fuel, battery, keys, alarm, lightbar, hotwire,
+  polygons, areas and passenger positions, damage; `CarController` and
+  `WorldSimulation` over a `VehiclePhysics` trait mirroring the Bullet
+  natives; the offline vehicle id map; `VehicleType`; `IsoChunk.AddVehicles`
+  spawning; chunk vehicle lists on pz-world's cell; a pathfinding view
+  with a `pathfind_adapter!` for pz-pathfind; Lua bindings in
+  `pz-lua-api::bind_vehicles`. Against the original with a recording
+  Bullet stand-in, a fake clock and scripted driving (400 frames, every
+  dump field and Bullet call): 241 of 243 saved `vehicles.db` vehicles are
+  bit-exact, one matches up to the original's own crash (a broken window
+  with no square) and one holds a trailer animal the original cannot run
+  headless; all 241 vanilla vehicle scripts as new vehicles are
+  bit-exact; 3,000 single-zone spawns and 2,000 `AddVehicles` runs on
+  synthetic zone lists give the original's vehicles and `Rand` state.
+  End to end on pz-bullet (`VehiclePhysics` for `PzBullet`, with the
+  natives' exceptions and step callbacks), against the original running
+  the real libPZBullet on a Muldraugh region's chunk shapes: 240 of 241
+  vehicle scripts are bit-exact for 400 driven frames (the other matches
+  until the harness lacks a world-sound native). `IsoChunk
+  .updatePhysicsForLevel` gives the original's `ToBullet` shapes for every
+  one of 114,529 squares of four regions that load the same objects.
+  Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all

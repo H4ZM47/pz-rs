@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Port of Project Zomboid's vehicle runtime (zombie.vehicles, CarController, WorldSimulation)"
 
 [dependencies]
+pz-bullet.workspace = true
 pz-kahlua.workspace = true
 pz-scripts.workspace = true
 pz-inventory.workspace = true

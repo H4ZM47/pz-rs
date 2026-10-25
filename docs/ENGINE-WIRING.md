@@ -52,6 +52,12 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       WorldLighting)` from `BaseVehicle.update` (`updateWorldLights`) and
       `remove` on `removeFromWorld`; it adds/removes lampposts through
       `WorldLighting::add_lamppost`/`remove_lamppost` (#90).
+- [ ] Vehicles: `world_sim::set_world_bounds` + `create()` at world load
+      (`destroy()` on exit) with a `VehiclePhysics` impl (pz-bullet once it
+      lands; `NoPhysics` until then); `manager::process_add_vehicles()` and
+      `update_frame()` per frame; `spawn` (`IsoChunk.AddVehicles`) from the
+      chunk loader through a `SpawnWorld` impl fed by the meta cell vehicle
+      zones; `bind_vehicles::register` (#86).
 
 ## World render pass
 - [ ] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;

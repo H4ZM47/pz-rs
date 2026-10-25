@@ -48,9 +48,11 @@ pub trait ItemContext {
         None
     }
     /// `getFluidContainer().getAmount()` of the item, `None` without a
-    /// fluid container (see [`crate::gameplay::fluid_container_amount`]).
-    fn fluid_amount(&self, _item: &InventoryItem) -> Option<f32> {
-        None
+    /// fluid container. The default decodes the item's `FluidContainer`
+    /// component (the amount needs no fluid registry); override it to
+    /// decode with the game's entity tables.
+    fn fluid_amount(&self, item: &InventoryItem) -> Option<f32> {
+        crate::gameplay::fluid_container_amount(item, &pz_entity::BasicContext::default(), 0)
     }
     /// The `ClothingItem` assets and `BloodClothingType` table; without
     /// them no item has a visual (as when the assets are not loaded).
