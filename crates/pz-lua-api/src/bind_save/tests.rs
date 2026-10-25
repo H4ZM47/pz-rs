@@ -326,3 +326,153 @@ fn save_folder_changes() {
         [(1, Some("Bob".into())), (2, None), (5, Some("Kate".into()))]
     );
 }
+
+/// A temp dir unique to this call (per-process counter), so parallel tests
+/// never share one.
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+struct LastStandEnv {
+    dir: PathBuf,
+    mgr: LuaManager,
+}
+
+impl Drop for LastStandEnv {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn last_stand_env() -> LastStandEnv {
+    let dir = unique_temp_dir("pz-bind-save-laststand");
+    std::fs::create_dir_all(dir.join("game/media")).unwrap();
+    std::fs::create_dir_all(dir.join("user")).unwrap();
+    let mut gfs = GameFs::new(dir.join("game"));
+    gfs.set_cache_dir(dir.join("user"));
+    let mut mgr = LuaManager::init(Rc::new(RefCell::new(gfs))).unwrap();
+    run(
+        &mut mgr,
+        "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end",
+    );
+    LastStandEnv { dir, mgr }
+}
+
+#[test]
+fn last_stand_file_names_create_the_folders() {
+    let mut e = last_stand_env();
+    let ls = e.dir.join("user/Lua/LastStand");
+    assert!(!e.dir.join("user/Lua").exists());
+    run(
+        &mut e.mgr,
+        r#"
+        assert(getLastStandPlayersDirectory() == "LastStand")
+        local l = getLastStandPlayerFileNames()
+        assert(l ~= nil and l:size() == 0)
+        assert(tostring(l) == "[]")
+        "#,
+    );
+    assert!(ls.is_dir());
+}
+
+#[test]
+fn last_stand_file_names_filter_and_order() {
+    let mut e = last_stand_env();
+    let ls = e.dir.join("user/Lua/LastStand");
+    std::fs::create_dir_all(&ls).unwrap();
+    for n in [
+        "playerKateSmith.txt",
+        "notes.cfg",
+        "playerBob.txt",
+        "x.TXT",
+        "player.txt.bak",
+    ] {
+        std::fs::write(ls.join(n), "VERSION=1\n").unwrap();
+    }
+    // A directory with a .txt name is skipped.
+    std::fs::create_dir_all(ls.join("dir.txt")).unwrap();
+    // The order is the directory listing's (File.listFiles is unsorted).
+    let expected: Vec<String> = std::fs::read_dir(&ls)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".txt") && !ls.join(n).is_dir())
+        .map(|n| format!("LastStand{SEP}{n}"))
+        .collect();
+    assert_eq!(expected.len(), 2);
+    let src = format!(
+        "local l = getLastStandPlayerFileNames()\nassert(l:size() == {})\n{}",
+        expected.len(),
+        expected
+            .iter()
+            .enumerate()
+            .map(|(i, n)| format!("assert(l:get({i}) == {n:?}, tostring(l:get({i})))\n"))
+            .collect::<String>()
+    );
+    run(&mut e.mgr, &src);
+    // The names feed getFileReader (relative to the Lua cache dir).
+    run(
+        &mut e.mgr,
+        r#"
+        local l = getLastStandPlayerFileNames()
+        local r = getFileReader(l:get(0), false)
+        assert(r:readLine() == "VERSION=1")
+        assert(r:readLine() == nil)
+        r:close()
+        "#,
+    );
+}
+
+#[test]
+fn delete_player_save_removes_the_player_file() {
+    let mut e = last_stand_env();
+    let ls = e.dir.join("user/Lua/LastStand");
+    std::fs::create_dir_all(&ls).unwrap();
+    std::fs::write(ls.join("playerKateSmith.txt"), "x").unwrap();
+    std::fs::write(ls.join("playernull.txt"), "x").unwrap();
+    std::fs::write(e.dir.join("user/Lua/playerEvil.txt"), "x").unwrap();
+    run(
+        &mut e.mgr,
+        r#"
+        deletePlayerSave("KateSmith")
+        deletePlayerSave("Missing")
+        deletePlayerSave("/../../Lua/playerEvil")
+        deletePlayerSave(nil)
+        "#,
+    );
+    assert!(!ls.join("playerKateSmith.txt").exists());
+    assert!(!ls.join("playernull.txt").exists());
+    assert!(e.dir.join("user/Lua/playerEvil.txt").exists());
+}
+
+#[test]
+fn all_saved_players_reads_every_entry() {
+    let mut e = last_stand_env();
+    let ls = e.dir.join("user/Lua/LastStand");
+    std::fs::create_dir_all(&ls).unwrap();
+    std::fs::write(ls.join("playerA.txt"), "VERSION=1\r\nPlayer\n").unwrap();
+    run(
+        &mut e.mgr,
+        r#"
+        local l = getAllSavedPlayers()
+        assert(l:size() == 1)
+        local r = l:get(0)
+        assert(r:readLine() == "VERSION=1")
+        assert(r:readLine() == "Player")
+        assert(r:readLine() == nil)
+        "#,
+    );
+    std::fs::create_dir_all(ls.join("sub")).unwrap();
+    run(
+        &mut e.mgr,
+        r#"
+        local ok = pcall(getAllSavedPlayers)
+        assert(not ok)
+        "#,
+    );
+}

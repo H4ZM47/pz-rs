@@ -171,6 +171,13 @@ impl LuaObject for LuaReader {
     }
 }
 
+/// A `java.io.BufferedReader` over `text` (a file read as UTF-8).
+pub(crate) fn reader_value(text: &str) -> Value {
+    Value::Object(Rc::new(LuaReader {
+        lines: RefCell::new(split_lines(text).into_iter()),
+    }))
+}
+
 /// `BufferedReader.readLine` splitting: '\n', '\r' or "\r\n".
 fn split_lines(text: &str) -> Vec<String> {
     let mut out = Vec::new();

@@ -108,6 +108,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       window's key/char events are queued (#119).
 
 ## World (`GameLoadingState` / `IngameState`)
+- [ ] Character inventories: hold the inventory as a
+      `pz_inventory::ContainerRef` (`SharedContainer::from_container` on
+      load, `to_container` on save), return
+      `bind_item_container::container_value(&inv)` from `getInventory()` and
+      call `bind_item_container::set_parent(&inv, character_lua_value)`. The
+      container then calls `getInventoryWeight`, `getMaxWeight`,
+      `isUnlimitedCarry` (`isGhostMode` in debug), `hasTrait` and
+      `removeFromHands` on that Lua object; world containers need their
+      `IsoObject` parent set the same way (#143).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
