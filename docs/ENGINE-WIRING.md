@@ -7,13 +7,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Mods (only when Core's mods option is on): `bind_mods::read_default`,
       `GameFs::load_mods`, mod texture packs via `mod_pack_files` →
       `load_texture_pack` + `set_texture_pack_lookup` (#24).
-- [ ] ScriptManager: `load_builtin_registries` + `load`, then
+- [x] ScriptManager: `load_builtin_registries` + `load`, then
       `bind_registry::install_script_manager` (#22/#27).
-- [ ] Item assets for `instanceItem`: after the ScriptManager,
+- [x] Item assets for `instanceItem`: after the ScriptManager,
       `bind_items::install_item_assets(pz_inventory::ItemAssets::load(game_dir)?)`
       (`ClothingItem` XMLs + `BloodClothingType`; without it items made from
-      Lua have no `ItemVisual`). Wired in pz-client's headless
-      `load_scripts`, not yet in pz-engine `App::boot`. Decals
+      Lua have no `ItemVisual`). Wired in `pz_engine::boot::load_scripts`,
+      used by every client mode. Decals
       (`ItemVisual.getDecal`, `getAllDecalNamesForItem`) also need the meta
       population line below (`ClothingDecals`). A character simulation
       that installs its own `ItemLuaEnv` must return these assets from
