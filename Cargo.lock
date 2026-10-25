@@ -1945,6 +1945,7 @@ dependencies = [
  "pz-core",
  "pz-fs",
  "pz-gpu",
+ "pz-input",
  "pz-inventory",
  "pz-kahlua",
  "pz-lua-api",

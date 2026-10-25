@@ -27,7 +27,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `pz_engine::boot::load_scripts`. A character simulation's own
       `ItemLuaEnv` must return them from `entity()` (#143).
 - [ ] Real `MapGroupsHost` via `bind_map_groups::install_host` (#17/#24).
-- [ ] Gamepads: `Gamepads::new(game_dir, cache_dir, c)` (#32).
+- [x] Gamepads: `Gamepads::new(game_dir, cache_dir, c)` (#32).
 - [ ] Sound: build `pz_audio::studio::Studio` from
       `SetupHeaders::from_game_dir`, load the strings, Sound, SoundMP and
       Music banks, start `pz_audio::output::Output` on it, then
@@ -104,13 +104,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `ScriptItems` answers the `SpriteConfigs` register) (window byte).
 
 ## Per frame (`GameWindow.logic` / `render`)
-- [ ] Input: every winit event → `pz_input::winit::handle`; before
+- [x] Input: every winit event → `pz_input::winit::handle`; before
       `UIManager::update` call `bind_input::update(&mut mgr, secs)`, after it
       `bind_input::after_ui_update(&mut mgr)`; apply
       `bind_input::take_window_requests()`; `gp.poll(c)` first (#30/#32).
 - [ ] Sound: `SoundManager` update and emitter ticks through
       `sound_system().with(..)`; listener from the active camera (#78/#83).
-- [ ] `UITransition.UpdateAll` → `bind_misc::ui_transition_update_all()` (#20).
+- [x] `UITransition.UpdateAll` → `bind_misc::ui_transition_update_all()` (#20).
 - [ ] Vsync from Core options; `FrameParams` size from Core screen size.
 - [ ] `GameTime::update` / `update_game_time(thread)` once per frame
       before the world (#49).

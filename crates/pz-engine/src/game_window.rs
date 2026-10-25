@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
@@ -29,9 +29,8 @@ struct App {
     core: Rc<RefCell<Core>>,
     state: MainScreenState,
     last_frame: Instant,
-    mouse_down: [bool; 5],
-    mouse_pos: (i32, i32),
-    wheel: i32,
+    /// `Controllers` backend (gilrs); `None` when unavailable.
+    gamepads: Option<pz_input::gamepads::Gamepads>,
     /// `UI3DModel` avatars (installed at boot).
     ui_models: Option<Rc<RefCell<crate::ui_models::UiModels>>>,
 }
@@ -54,9 +53,7 @@ pub fn run(launch: Launch) -> Result<(), String> {
         core,
         state: MainScreenState::default(),
         last_frame: Instant::now(),
-        mouse_down: [false; 5],
-        mouse_pos: (0, 0),
-        wheel: 0,
+        gamepads: None,
         ui_models: None,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
@@ -70,6 +67,9 @@ impl App {
         pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
         crate::boot::load_scripts(&self.launch.game_dir, &mut fs.borrow_mut())?;
         self.ui_models = Some(crate::ui_models::install(&self.launch.game_dir, fs.clone()));
+        // Controllers.create (GameWindow.init, before LuaManager.init).
+        pz_lua_api::bind_joypad::set_cache_dir(&self.launch.cache_dir);
+        self.gamepads = pz_input::with_controllers(|c| pz_input::gamepads::Gamepads::new(&self.launch.game_dir, &self.launch.cache_dir, c));
         let mut lua = LuaManager::init(fs).map_err(|e| format!("LuaManager.init: {e}"))?;
         // GameWindow.init: Translator.loadFiles and TextManager.Init.
         pz_lua_api::bind_text::boot(&lua.fs.borrow(), &self.core.borrow()).map_err(|e| format!("text init: {e}"))?;
@@ -97,19 +97,19 @@ impl App {
             let c = self.core.borrow();
             (c.get_screen_width().max(1), c.get_screen_height().max(1))
         };
-        // GameWindow.logic: input, UIManager.update, states.update.
-        let (mx, my, down, wheel) = (self.mouse_pos.0, self.mouse_pos.1, self.mouse_down, std::mem::take(&mut self.wheel));
-        pz_ui::with_ui(|m| {
-            m.mouse.x = mx;
-            m.mouse.y = my;
-            m.mouse.wheel = wheel;
-            for (i, d) in down.iter().enumerate() {
-                if i < m.mouse.down.len() {
-                    m.mouse.down[i] = *d;
-                }
-            }
-        });
+        // GameWindow.logic: Controllers poll, Mouse/GameKeyboard/GameInput
+        // updates, UIManager.update (with UITransition.UpdateAll), the
+        // blocked-button and joypad pass after it, then states.update.
+        if let Some(gp) = self.gamepads.as_mut() {
+            pz_input::with_controllers(|c| gp.poll(c));
+        }
+        pz_lua_api::bind_input::update(lua, dt);
+        pz_lua_api::bind_misc::ui_transition_update_all();
         UIManager::update(&mut lua.thread);
+        pz_lua_api::bind_input::after_ui_update(lua);
+        if let Some(w) = self.window.as_ref() {
+            apply_window_requests(w, pz_lua_api::bind_input::take_window_requests());
+        }
         self.state.update(lua, multiplier);
         pz_ui::with_ui(|m| m.mouse.end_frame());
         // The avatars' texture jobs (ModelInstanceTextureCreator) before
@@ -168,6 +168,8 @@ impl ApplicationHandler for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // GLFW's key, char, cursor, button and scroll callbacks.
+        pz_input::with_input(|i| pz_input::winit::handle(i, &event));
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(size) => {
@@ -175,26 +177,6 @@ impl ApplicationHandler for App {
                     g.resize(size.width.max(1), size.height.max(1));
                 }
                 self.core.borrow_mut().set_screen_size(size.width.max(1) as i32, size.height.max(1) as i32);
-            }
-            WindowEvent::CursorMoved { position, .. } => self.mouse_pos = (position.x as i32, position.y as i32),
-            WindowEvent::MouseInput { state, button, .. } => {
-                let i = match button {
-                    MouseButton::Left => 0,
-                    MouseButton::Right => 1,
-                    MouseButton::Middle => 2,
-                    MouseButton::Back => 3,
-                    MouseButton::Forward => 4,
-                    MouseButton::Other(_) => return,
-                };
-                self.mouse_down[i] = state == ElementState::Pressed;
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let d = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y,
-                    MouseScrollDelta::PixelDelta(p) => (p.y / 40.0) as f32,
-                };
-                // LWJGL reports wheel up as positive; the UI uses the sign.
-                self.wheel += if d > 0.0 { 1 } else if d < 0.0 { -1 } else { 0 };
             }
             WindowEvent::RedrawRequested => {
                 self.frame();
@@ -220,6 +202,26 @@ impl ApplicationHandler for App {
     }
 }
 
+/// `Mouse.setXY`, `Mouse.setCursorVisible` and grabbing, as GLFW does
+/// them on the window.
+fn apply_window_requests(w: &Window, requests: Vec<pz_input::WindowRequest>) {
+    use pz_input::WindowRequest::*;
+    for r in requests {
+        match r {
+            SetCursorPosition(x, y) => {
+                let _ = w.set_cursor_position(winit::dpi::PhysicalPosition::new(x, y));
+            }
+            SetGrabbed(g) => {
+                let mode = if g { winit::window::CursorGrabMode::Confined } else { winit::window::CursorGrabMode::None };
+                if w.set_cursor_grab(mode).is_err() && g {
+                    let _ = w.set_cursor_grab(winit::window::CursorGrabMode::Locked);
+                }
+            }
+            SetCursorVisible(v) => w.set_cursor_visible(v),
+        }
+    }
+}
+
 /// Boot headless, run `frames` main-menu frames and return the last frame
 /// as RGBA pixels (width, height, data).
 pub fn render_headless(launch: Launch, frames: u32) -> Result<(u32, u32, Vec<u8>), String> {
@@ -237,9 +239,7 @@ pub fn render_headless(launch: Launch, frames: u32) -> Result<(u32, u32, Vec<u8>
         core,
         state: MainScreenState::default(),
         last_frame: Instant::now(),
-        mouse_down: [false; 5],
-        mouse_pos: (0, 0),
-        wheel: 0,
+        gamepads: None,
         ui_models: None,
     };
     let (w, h) = app.screen_size();

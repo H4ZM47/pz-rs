@@ -17,4 +17,5 @@ pz-anim.workspace = true
 pz-characters.workspace = true
 pz-inventory.workspace = true
 pz-scripts.workspace = true
+pz-input = { workspace = true, features = ["winit", "gilrs"] }
 winit = "0.30"
