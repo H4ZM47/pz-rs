@@ -27,6 +27,21 @@
 //! networking (offline: `requestSync`, `requestServerItemsForContainer`,
 //! `SynchSpawn` and `removeItemOnServer` do nothing), and
 //! `Food.updateAge` / `Radio.deviceData` in `OnAddedToContainer`.
+//!
+//! Not bound: the overloads taking Java `Predicate`/`Comparator` objects
+//! (`getAll`, `getFirst`, `getSome`, `getCount`, `getBest`, `getBestType`
+//! and their `Recurse` forms, `getUsesRecurse`), the `FluidContainer`
+//! queries (`FindWaterSource`, `FindAndReturnWaterItem`, `getSoapList`,
+//! the `*FluidContainer*`/`*FluidSources`/`getAllWaterFillables`/
+//! `getWaterContainerCount` methods), `ItemType` arguments (`HasType`,
+//! `Find`/`Remove(ItemType)`), item behaviour pz-inventory lacks
+//! (`FindAndReturnStack`, `getBestWeapon`, `getTotalWeaponScore`,
+//! `isEmptyOrUnwanted`, `getAllFoodsForAnimals`, `getItems4Admin`,
+//! `getAllItems`, `reset`, `getAnimalInventoryItem`, `hasRecipe`,
+//! `getRecipeItem`), the world (`addItemsToProcessItems`,
+//! `removeItemsFromProcessItems`, `getWorldPosition`, `isShop`), `save`/
+//! `load` (use [`SharedContainer::to_container`]/`from_container`) and
+//! `getClass`/`notifyAll`.
 
 use crate::bind_items::{item_env, item_value, ItemRef, LuaInventoryItem};
 use crate::bind_java_util::{list_value, JavaList};
@@ -2425,12 +2440,6 @@ fn register_items(b: &crate::expose::ClassBuilder) {
         let test = move |i: &InventoryItem| i.has_tag(&tag);
         let r = item_from(c.thread, &s, &test, &chr, not_eq, ignore, inv);
         push_opt(c, r)
-    });
-    b.method("FindAndReturnWaterItem", |c| {
-        let _ = this(c)?;
-        Err(LuaError::runtime(
-            "ItemContainer.FindAndReturnWaterItem: FluidContainer is not ported",
-        ))
     });
     b.method("getBestFood", |c| {
         let s = this(c)?;
