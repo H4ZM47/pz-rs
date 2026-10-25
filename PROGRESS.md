@@ -405,6 +405,13 @@ Status of the Rust port. Update this file with every merged change.
   the installed media (every outfit randomized and dressed on three seeds)
   and on invented edge-case XML (checked locally).
 
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 

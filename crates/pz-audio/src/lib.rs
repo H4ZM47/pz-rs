@@ -13,6 +13,7 @@ pub mod riff;
 pub mod strings;
 pub mod vorbis;
 pub mod vorbis_setup;
+pub mod world_sound;
 
 #[cfg(test)]
 mod tests;
