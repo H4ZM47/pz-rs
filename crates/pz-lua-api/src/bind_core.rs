@@ -441,7 +441,7 @@ fn key_binding_for(core: &Core, name: Option<String>) -> KeyBinding {
     }
 }
 
-fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<ColorInfo> {
+pub(crate) fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<ColorInfo> {
     match c.arg(i) {
         Value::Object(o) => match o.as_any().downcast_ref::<LuaColorInfo>() {
             Some(ci) => Ok(ci.c.get()),
@@ -620,7 +620,10 @@ fn register_statics(b: &ClassBuilder, cx: &Rc<Ctx>) {
     sdef(b, cx, "getMyDocumentFolder", |cx, _| {
         Ok(cx.core().get_my_document_folder().into())
     });
-    sdef(b, cx, "UnfocusActiveTextEntryBox", |cx, _| {
+    sdef(b, cx, "UnfocusActiveTextEntryBox", |cx, c| {
+        // The box itself (setDoingTextEntry(false), its frame colour,
+        // onLostFocus) lives with UITextBox2; Core's mirror follows.
+        crate::bind_uitextbox2::unfocus_active_text_entry_box(c.thread);
         cx.core_mut().unfocus_active_text_entry_box();
         Ok(Ret::Void)
     });

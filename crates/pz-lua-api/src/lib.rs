@@ -43,6 +43,7 @@ pub mod bind_zombie;
 pub mod bind_text;
 pub mod bind_ui;
 pub mod bind_ui3d;
+pub mod bind_uitextbox2;
 pub mod bind_voice;
 pub mod bind_map_symbols;
 pub mod bind_server;
@@ -121,6 +122,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_vehicles::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     bind_ui3d::register(&mut mgr.thread);
+    bind_uitextbox2::register(&mut mgr.thread);
     bind_voice::register(&mut mgr.thread);
     bind_voice::register_input_globals(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());

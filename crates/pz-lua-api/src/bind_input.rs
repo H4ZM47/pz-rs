@@ -172,6 +172,22 @@ pub fn is_key_down(key: i32) -> bool {
     GK.with(|g| g.borrow().down.as_ref().and_then(|d| usize::try_from(key).ok().and_then(|k| d.get(k).copied())).unwrap_or(false))
 }
 
+/// `GameKeyboard.isKeyDownRaw(int)`: the state read at the last update,
+/// ignoring text entry.
+pub fn is_key_down_raw(key: i32) -> bool {
+    GK.with(|g| g.borrow().down.as_ref().and_then(|d| usize::try_from(key).ok().and_then(|k| d.get(k).copied())).unwrap_or(false))
+}
+
+/// `GameKeyboard.eatKeyPress(int)`.
+pub fn eat_key_press(key: i32) {
+    GK.with(|g| {
+        let mut g = g.borrow_mut();
+        if let Some(e) = usize::try_from(key).ok().and_then(|i| g.eat_key.get_mut(i)) {
+            *e = true;
+        }
+    });
+}
+
 /// `GameKeyboard.wasKeyDown(int)`.
 pub fn was_key_down(key: i32) -> bool {
     if key >= BTN_OFFSET {

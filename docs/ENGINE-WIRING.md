@@ -78,6 +78,10 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       wired; the frame multiplier / 30 now) and `UiModels::prepare(gpu)`
       (texture compositing) before the UI renders (#115).
 
+- [ ] Text entry: `bind_uitextbox2::update_keyboard(&mut mgr.thread)` once
+      per frame (`Core.DoFrameReady` → `Core.updateKeyboard`), after the
+      window's key/char events are queued (#UITEXTBOX2).
+
 ## World (`GameLoadingState` / `IngameState`)
 World load, in the original's order (`GameLoadingState.enter` loads the
 server Lua first, so `ClimateMain.lua`'s `OnClimateManagerInit` handler is

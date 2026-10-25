@@ -48,6 +48,10 @@ pub trait UIElementExt: Any {
     fn on_mouse_up(&self, el: &UIElement, t: &mut Thread, x: f64, y: f64) -> bool {
         el.on_mouse_up_base(t, x, y)
     }
+    /// `onMouseUpOutside(x, y)`.
+    fn on_mouse_up_outside(&self, el: &UIElement, t: &mut Thread, x: f64, y: f64) {
+        el.on_mouse_up_outside_base(t, x, y)
+    }
     /// `onRightMouseDown(x, y)`.
     fn on_right_mouse_down(&self, el: &UIElement, t: &mut Thread, x: f64, y: f64) -> bool {
         el.on_right_mouse_down_base(t, x, y)
