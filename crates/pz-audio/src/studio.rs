@@ -47,6 +47,8 @@ pub struct Studio {
     instances: Vec<EventInstance>,
     rng: u64,
     bus_buffers: HashMap<Guid, Vec<f32>>,
+    /// Paths of the loaded strings banks.
+    strings: crate::strings::StringTable,
     /// Listener position, forward and up vectors.
     listener: [[f32; 3]; 3],
     /// Global parameter values by parameter GUID.
@@ -112,6 +114,22 @@ pub struct EventInstance {
     /// Gain of the routing below the event (cached per block).
     route: f32,
     start_delay: usize,
+    /// `EventInstance::setProperty` min/max distance overrides.
+    distance_override: (Option<f32>, Option<f32>),
+    /// `EventInstance::release`: free once stopped.
+    released: bool,
+}
+
+/// What `EventDescription` queries report.
+#[derive(Debug, Clone)]
+pub struct EventInfo {
+    pub path: String,
+    pub length_ms: u32,
+    pub is_3d: bool,
+    pub is_oneshot: bool,
+    pub min_distance: f32,
+    pub max_distance: f32,
+    pub parameters: Vec<crate::bank::ParameterDescription>,
 }
 
 pub type InstanceId = usize;
@@ -128,6 +146,131 @@ impl Studio {
             listener: [[0.0; 3], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
             global_params: HashMap::new(),
             dsps: HashMap::new(),
+            strings: crate::strings::StringTable::default(),
+        }
+    }
+
+    /// `Studio::System::getEvent(path)` (case-insensitive).
+    pub fn event_by_path(&self, path: &str) -> Option<Guid> {
+        let g = self.strings.lookup(path)?;
+        self.find_event(&g).map(|_| g)
+    }
+
+    /// Every loaded event's path.
+    pub fn event_paths(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .banks
+            .iter()
+            .flat_map(|b| b.model.events.keys())
+            .filter_map(|g| self.strings.path(g).map(str::to_string))
+            .filter(|p| p.starts_with("event:/"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// `EventDescription` queries. 3D means the event's own buses run a
+    /// spatializer; one-shot means no looping instrument or loop region.
+    pub fn event_info(&self, event: &Guid) -> Option<EventInfo> {
+        let (bank, e) = self.find_event(event)?;
+        let m = &self.banks[bank].model;
+        let others: Vec<&BankModel> = self.banks.iter().map(|b| &b.model).collect();
+        let parameters = m.event_parameters(e, &others);
+        let buses = std::iter::once(e.master_bus).chain(e.tracks.iter().copied());
+        let is_3d = buses.filter_map(|b| self.find_bus(&b)).any(|(_, bus)| {
+            bus.body.effects.iter().chain(&bus.body.effects_2).any(|fx| {
+                self.banks.iter().find_map(|b| b.model.effects.get(fx)).is_some_and(|x| x.kind == crate::bank::effect_type::PAN)
+            })
+        });
+        let timeline = m.timelines.get(&e.timeline);
+        let loop_region = timeline.is_some_and(|t| t.markers.iter().any(|mk| mk.length > 0));
+        let looping = timeline
+            .map(|t| t.instruments.iter().chain(&t.instruments_2).map(|p| p.instrument).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .iter()
+            .chain(&e.instruments)
+            .filter_map(|g| self.find_instrument(g))
+            .any(|(_, i)| i.base.loop_count < 0);
+        Some(EventInfo {
+            path: self.strings.path(event).unwrap_or_default().to_string(),
+            length_ms: m.event_length_ms(e),
+            is_3d,
+            is_oneshot: !loop_region && !looping,
+            min_distance: e.min_distance,
+            max_distance: e.max_distance,
+            parameters,
+        })
+    }
+
+    /// `EventInstance::stop`. Without modelled release envelopes both
+    /// modes stop at once.
+    pub fn stop(&mut self, id: InstanceId, _immediate: bool) {
+        if let Some(i) = self.instances.get_mut(id) {
+            i.state = PlaybackState::Stopped;
+            i.voices.clear();
+        }
+    }
+
+    /// `EventInstance::release`.
+    pub fn release(&mut self, id: InstanceId) {
+        if let Some(i) = self.instances.get_mut(id) {
+            i.released = true;
+        }
+    }
+
+    /// `EventInstance::setProperty(MIN/MAX_DISTANCE)`.
+    pub fn set_distance_override(&mut self, id: InstanceId, min: Option<f32>, max: Option<f32>) {
+        if let Some(i) = self.instances.get_mut(id) {
+            if min.is_some() {
+                i.distance_override.0 = min;
+            }
+            if max.is_some() {
+                i.distance_override.1 = max;
+            }
+        }
+    }
+
+    /// Find the parameter with this ID among the events' parameter lists.
+    fn parameter_by_id(&self, id: (u32, u32)) -> Option<Guid> {
+        for b in &self.banks {
+            for e in b.model.events.values() {
+                if let Some(k) = e.parameter_ids.iter().position(|x| *x == id) {
+                    let sheet = e.parameter_sheets.get(k)?;
+                    return self.banks.iter().find_map(|b| b.model.parameter_sheets.get(sheet)).map(|s| s.parameter);
+                }
+            }
+        }
+        None
+    }
+
+    /// `EventInstance::setParameterByID`.
+    pub fn set_parameter_by_id(&mut self, id: InstanceId, pid: (u32, u32), value: f32) {
+        let Some(g) = self.parameter_by_id(pid) else { return };
+        let Some(p) = self.find_parameter(&g).cloned() else { return };
+        let v = value.clamp(p.minimum, p.maximum);
+        if p.flags & crate::bank::Parameter::GLOBAL != 0 {
+            self.global_params.insert(g, v);
+        } else if let Some(i) = self.instances.get_mut(id) {
+            i.params.insert(g, v);
+        }
+    }
+
+    /// `Studio::System::setParameterByID`.
+    pub fn set_global_parameter_by_id(&mut self, pid: (u32, u32), value: f32) {
+        let Some(g) = self.parameter_by_id(pid) else { return };
+        let Some(p) = self.find_parameter(&g).cloned() else { return };
+        self.global_params.insert(g, value.clamp(p.minimum, p.maximum));
+    }
+
+    /// `EventInstance::getTimelinePosition` (ms).
+    pub fn timeline_position_ms(&self, id: InstanceId) -> i64 {
+        self.instances.get(id).map_or(0, |i| (i.position * 1000 / SAMPLE_RATE as u64) as i64)
+    }
+
+    /// `EventInstance::setTimelinePosition` (ms).
+    pub fn set_timeline_position_ms(&mut self, id: InstanceId, ms: i32) {
+        if let Some(i) = self.instances.get_mut(id) {
+            i.position = (ms.max(0) as u64) * SAMPLE_RATE as u64 / 1000;
         }
     }
 
@@ -289,6 +432,10 @@ impl Studio {
 
     pub fn load_bank(&mut self, path: &Path) -> std::io::Result<()> {
         let file = BankFile::open(path)?;
+        if let Some(strings) = file.strings() {
+            self.strings.merge(strings);
+            return Ok(());
+        }
         let model = file
             .model()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -332,6 +479,8 @@ impl Studio {
             params: HashMap::new(),
             route: 1.0,
             start_delay: 0,
+            distance_override: (None, None),
+            released: false,
         });
         Some(self.instances.len() - 1)
     }

@@ -2106,6 +2106,7 @@ dependencies = [
 name = "pz-sound"
 version = "0.1.0"
 dependencies = [
+ "pz-audio",
  "pz-core",
  "pz-scripts",
 ]

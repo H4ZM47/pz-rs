@@ -11,4 +11,6 @@ pub mod emitter;
 pub mod game_sounds;
 pub mod params;
 pub mod sound_manager;
+#[cfg(feature = "studio")]
+pub mod studio_backend;
 pub mod system;
