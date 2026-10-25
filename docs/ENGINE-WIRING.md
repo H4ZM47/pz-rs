@@ -759,11 +759,11 @@ registered):
       offscreen buffer (each draws in its `glViewport` quarter, outline
       passes in `IsoCamera.getScreenLeft/Top/Width/Height`), the camera
       sized to the player's view; each call's screen pass draws that
-      player's screen rectangle with its own `ScreenParams` (#125, #PRN).
+      player's screen rectangle with its own `ScreenParams` (#125, #181).
       `MultiTextureFBO2.render` also covers slots up to the highest player
       index without a player with a black `renderi(null, sx, sy, sw, sh)`;
-      draw that rectangle black for such slots (#PRN).
-- [ ] Screen shader (`WeatherShader`) inputs (#PRN): per player and frame
+      draw that rectangle black for such slots (#181).
+- [ ] Screen shader (`WeatherShader`) inputs (#181): per player and frame
       build `pz_render::ScreenParams` and run it through one
       `ScreenTimer` kept for the session (`timer.apply(params,
       PerformanceSettings.lockFps)`, once per player screen pass and once
