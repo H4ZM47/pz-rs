@@ -15,6 +15,7 @@ pub mod bind_character_sim;
 pub mod bind_characters;
 pub mod bind_audio;
 pub mod bind_erosion;
+pub mod bind_colors;
 pub mod bind_core;
 pub mod bind_debug;
 pub mod bind_climate;
