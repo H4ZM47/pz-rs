@@ -217,10 +217,9 @@ registered):
       player; save with `save_player` (#101).
 - [ ] Bullet world ownership: the world/engine owns the one `PzBullet`
       (`WorldSimulation`) and counts its steps (`getBulletFrameNo`); the
-      characters reach it through `StateWorld::physics()`
-      (`pz_characters::character::firearm::PhysicsWorld`, the ballistics
-      natives; implement it over `PzBullet` once its ballistics natives
-      from ws/bullet are on this base) (#ws/firearms).
+      characters reach it through `StateWorld::physics()` (`PzBullet`
+      implements `pz_characters::character::firearm::PhysicsWorld` with
+      the `bullet` feature) (#ws/firearms).
 - [ ] Firearm hooks on `StateWorld`: `muzzle_attachment(chr)` (the
       primary hand model's MUZZLE attachment world position/direction),
       `aim_reticle_iso(chr)` (`AimingReticle` x/y through `XToIso/YToIso`),
