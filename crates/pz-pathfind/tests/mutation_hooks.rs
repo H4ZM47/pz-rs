@@ -31,21 +31,21 @@ use world::square_mutation::PathfindSquareHooks;
 fn square_edits_queue_square_and_chunk_updates() {
     let mut map = Map::new();
     let mut s = map.service();
-    let mut hooks = PathfindMutationHooks {
+    let mut hooks = PathfindSquareHooksImpl(PathfindMutationHooks {
         service: &mut s,
         sprites: &map.m,
         meta: &map.meta,
         bits_hooks: &DefaultBitsHooks,
-    };
+    });
     // An inner square: its 8 neighbours, then itself.
     PathfindSquareHooks::square_changed(&mut hooks, &map.cell, (10, 10, 0));
-    assert_eq!(hooks.service.queued_square_tasks().len(), 9);
+    assert_eq!(hooks.0.service.queued_square_tasks().len(), 9);
     // A square the cell does not have queues nothing.
     PathfindSquareHooks::square_changed(&mut hooks, &map.cell, (10, 10, 3));
-    assert_eq!(hooks.service.queued_square_tasks().len(), 9);
+    assert_eq!(hooks.0.service.queued_square_tasks().len(), 9);
     PathfindSquareHooks::add_chunk_to_world(&mut hooks, &map.cell, 1, 1);
-    assert_eq!(hooks.service.queued_chunk_tasks().len(), 1);
-    assert_eq!(hooks.service.chunk_load_id(1, 1), Some(1));
+    assert_eq!(hooks.0.service.queued_chunk_tasks().len(), 1);
+    assert_eq!(hooks.0.service.chunk_load_id(1, 1), Some(1));
     while s.has_thread_work() {
         s.update_thread();
     }

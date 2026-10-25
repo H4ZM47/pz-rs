@@ -5,11 +5,12 @@
 //!
 //! The trait lives on a pz-world branch this crate is not built against
 //! yet, so [`PathfindMutationHooks`] has the methods and
-//! [`pathfind_square_hooks!`](crate::pathfind_square_hooks) implements the
-//! trait in a crate that has both:
+//! [`pathfind_square_hooks!`](crate::pathfind_square_hooks) defines a
+//! wrapper implementing the trait in a crate that has both:
 //!
 //! ```ignore
 //! pz_pathfind::pathfind_square_hooks!(pz_world);
+//! let mut hooks = PathfindSquareHooksImpl(PathfindMutationHooks { .. });
 //! ```
 
 use pz_world::chunk::IsoCell;
@@ -58,26 +59,26 @@ impl PathfindMutationHooks<'_> {
     }
 }
 
-/// Implements `$($world)+::square_mutation::PathfindSquareHooks` for
-/// [`PathfindMutationHooks`] (`$world` is the `pz_world` crate path). The
+/// Defines `PathfindSquareHooksImpl<'a>`, a local wrapper around
+/// [`PathfindMutationHooks`], and implements
+/// `$world::square_mutation::PathfindSquareHooks` for it (`$world` is the
+/// `pz_world` crate path; the wrapper is needed because neither the trait
+/// nor `PathfindMutationHooks` is local to the invoking crate). The
 /// MapCollisionData notification is the population manager's and is left
 /// at the trait's default.
 #[macro_export]
 macro_rules! pathfind_square_hooks {
     ($($world:tt)+) => {
-        impl $($world)+::square_mutation::PathfindSquareHooks
-            for $crate::mutation_hooks::PathfindMutationHooks<'_>
-        {
-            fn square_changed(
-                &mut self,
-                cell: &$($world)+::chunk::IsoCell,
-                sq: (i32, i32, i32),
-            ) {
-                $crate::mutation_hooks::PathfindMutationHooks::square_changed(self, cell, sq)
+        /// `PathfindMutationHooks` as pz-world's `PathfindSquareHooks`.
+        pub struct PathfindSquareHooksImpl<'a>(pub $crate::mutation_hooks::PathfindMutationHooks<'a>);
+
+        impl $($world)+::square_mutation::PathfindSquareHooks for PathfindSquareHooksImpl<'_> {
+            fn square_changed(&mut self, cell: &$($world)+::chunk::IsoCell, sq: (i32, i32, i32)) {
+                self.0.square_changed(cell, sq)
             }
 
             fn add_chunk_to_world(&mut self, cell: &$($world)+::chunk::IsoCell, wx: i32, wy: i32) {
-                $crate::mutation_hooks::PathfindMutationHooks::add_chunk_to_world(self, cell, wx, wy)
+                self.0.add_chunk_to_world(cell, wx, wy)
             }
         }
     };
