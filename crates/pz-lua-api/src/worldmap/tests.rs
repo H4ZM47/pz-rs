@@ -174,3 +174,66 @@ fn add_data() {
     assert_eq!(eval(&mut t, "api:getDataCount()").as_num(), Some(0.0));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The style API as `MapUtils.initDefaultStyleV1` and the V3 text and
+/// pyramid layers use it.
+#[test]
+fn style_api() {
+    let mut t = thread();
+    run(
+        &mut t,
+        r#"
+        jo = UIWorldMap.new({})
+        v1 = jo:getAPIv1():getStyleAPI()
+        s = jo:getAPIv3():getStyleAPI()
+        sameV1 = jo:getAPIv1():getStyleAPI() == v1
+        s:clear()
+        local l = s:newPolygonLayer("forest")
+        l:setMinZoom(13.5)
+        l:setFilter("natural", "forest")
+        l:addFill(0, 189, 197, 163, 0)
+        l:addFill(15, 189, 197, 163, 255)
+        l:addTexture(0, nil)
+        l:addScale(13.5, 4.0)
+        local w = s:newPolygonLayer("water")
+        w:setFilter("water", "*")
+        local p = s:newPyramidLayer("pyr")
+        p:setPyramidFileName("pyramid.zip")
+        p:addFill(0, 1, 2, 3, 4)
+        local tx = s:newTextLayer("text-town")
+        tx:setLineHeight(80)
+        tx:setFont(UIFont.Handwritten)
+        s:moveLayer(0, 1)
+        n = s:getLayerCount()
+        first = s:getLayerByIndex(0):getId()
+        idx = s:indexOfLayer("forest")
+        fk = s:getLayerByName("forest"):getFilterKey()
+        fz = s:getLayerByName("forest"):getFillZoom(1)
+        alpha = s:getLayerByName("forest"):getFillAlpha(1)
+        ts = s:getLayerByName("forest"):getTextureStops()
+        lh = s:getLayerByName("text-town"):getLineHeight()
+        pyr = s:getLayerByName("pyr"):getPyramidFileName()
+        v1class = v1:getLayerByName("pyr"):getTypeString()
+        s:getLayerByName("water"):setId("river")
+        s:removeLayerById("pyr")
+        n2 = v1:getLayerCount()
+        hasRiver = s:indexOfLayer("river")
+        "#,
+    );
+    assert!(eval(&mut t, "sameV1").truthy());
+    assert_eq!(eval(&mut t, "n").as_num(), Some(4.0));
+    assert!(eval(&mut t, "first == 'water'").truthy());
+    assert_eq!(eval(&mut t, "idx").as_num(), Some(1.0));
+    assert!(eval(&mut t, "fk == 'natural'").truthy());
+    assert_eq!(eval(&mut t, "fz").as_num(), Some(15.0));
+    assert_eq!(eval(&mut t, "alpha").as_num(), Some(255.0));
+    assert_eq!(eval(&mut t, "ts").as_num(), Some(1.0));
+    assert_eq!(eval(&mut t, "lh").as_num(), Some(80.0));
+    assert!(eval(&mut t, "pyr == 'pyramid.zip'").truthy());
+    assert!(eval(&mut t, "v1class == 'Pyramid'").truthy());
+    assert_eq!(eval(&mut t, "n2").as_num(), Some(3.0));
+    assert_eq!(eval(&mut t, "hasRiver").as_num(), Some(0.0));
+    // V1 wraps a pyramid layer in the base class, which has no fill API.
+    run(&mut t, "local p = jo:getAPIv3():getStyleAPI():newPyramidLayer('x') ok = pcall(function() v1:getLayerByName('x'):addFill(0,0,0,0,0) end)");
+    assert!(!eval(&mut t, "ok").truthy());
+}

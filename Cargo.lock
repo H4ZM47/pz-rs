@@ -2335,6 +2335,8 @@ version = "0.1.0"
 dependencies = [
  "pz-core",
  "pz-joml",
+ "pz-render",
+ "pz-text",
  "quick-xml",
 ]
 
