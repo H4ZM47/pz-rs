@@ -18,7 +18,7 @@ use pz_iso_render::models::encode_light;
 use pz_iso_render::objects::ShadowRequest;
 use pz_iso_render::shadows::ShadowParams;
 use pz_iso_render::Camera;
-use pz_render::model::ModelLight;
+use pz_render::model::{ModelDraw, ModelLight, ModelPass};
 use pz_render::DrawCmd;
 
 use crate::model_tree::ModelSlot;
@@ -293,7 +293,7 @@ impl DeadBodyAtlas {
         out.extend(
             render_slot(slot, player, &u, res)
                 .into_iter()
-                .map(|d| DrawCmd::Model(Box::new(d))),
+                .map(|d| DrawCmd::Model(Box::new(animated_model_pass(d)))),
         );
         out.push(DrawCmd::AtlasEnd);
         // assignEntryToAtlas, toBodyAtlas.
@@ -313,6 +313,17 @@ impl DeadBodyAtlas {
             shadow,
         }
     }
+}
+
+/// A slot draw as `AnimatedModel.DoRender` blends it (`StartCharacter`'s
+/// separate alpha function): the bitmap's alpha stays 1 wherever a layer
+/// covers an opaque one, so the atlas has no see-through texels inside
+/// the body.
+pub fn animated_model_pass(mut d: ModelDraw) -> ModelDraw {
+    if let ModelPass::Character { cull } = d.pass {
+        d.pass = ModelPass::AnimatedModel { cull };
+    }
+    d
 }
 
 /// `DrawCharSingular`'s lights for the atlas render: the square's result
