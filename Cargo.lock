@@ -1877,6 +1877,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-world-sound"
+version = "0.1.0"
+dependencies = [
+ "pz-audio",
+ "pz-world",
+]
+
+[[package]]
 name = "pz-worldgen"
 version = "0.1.0"
 dependencies = [

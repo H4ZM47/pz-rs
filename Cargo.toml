@@ -23,7 +23,6 @@ pz-ui = { path = "crates/pz-ui" }
 pz-lua-api = { path = "crates/pz-lua-api" }
 pz-engine = { path = "crates/pz-engine" }
 pz-world = { path = "crates/pz-world" }
-pz-audio = { path = "crates/pz-audio" }
 pz-characters = { path = "crates/pz-characters" }
 pz-clipper = { path = "crates/pz-clipper" }
 pz-sqlite = { path = "crates/pz-sqlite" }
@@ -33,6 +32,8 @@ pz-inventory = { path = "crates/pz-inventory" }
 pz-clipper6 = { path = "crates/pz-clipper6" }
 pz-pathfind = { path = "crates/pz-pathfind" }
 pz-worldgen = { path = "crates/pz-worldgen" }
+pz-audio = { path = "crates/pz-audio" }
+pz-world-sound = { path = "crates/pz-world-sound" }
 indexmap = "2"
 jiff = "0.2"
 macroquad = { version = "0.4", default-features = false }
