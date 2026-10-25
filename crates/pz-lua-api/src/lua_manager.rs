@@ -42,7 +42,13 @@ impl LuaManager {
         let events = EventManager::register(&env, "Events", EVENT_NAMES);
         let hooks = EventManager::register(&env, "Hook", HOOK_NAMES);
         let loader = Rc::new(RefCell::new(Loader::default()));
-        let mgr = LuaManager { thread, fs, events, hooks, loader };
+        let mgr = LuaManager {
+            thread,
+            fs,
+            events,
+            hooks,
+            loader,
+        };
         mgr.register_require();
         let mut mgr = mgr;
         crate::register_all(&mut mgr);
@@ -158,7 +164,10 @@ fn run_lua_internal(thread: &mut Thread, loader: &Rc<RefCell<Loader>>, filename:
     let ret = match thread.pcall(&f, &[]) {
         Ok(v) => v.into_iter().next().unwrap_or_default(),
         Err((msg, trace)) => {
-            let m = format!("{filename}: {}\n{trace}", pz_kahlua::exec::java_value_of(&msg));
+            let m = format!(
+                "{filename}: {}\n{trace}",
+                pz_kahlua::exec::java_value_of(&msg)
+            );
             (thread.log)(&m);
             loader.borrow_mut().errors.push(m);
             Value::Nil

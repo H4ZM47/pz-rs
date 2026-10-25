@@ -1,0 +1,14 @@
+[package]
+name = "pz-vehicles"
+version.workspace = true
+edition.workspace = true
+description = "Port of Project Zomboid's vehicle runtime (zombie.vehicles, CarController, WorldSimulation)"
+
+[dependencies]
+pz-kahlua.workspace = true
+pz-scripts.workspace = true
+pz-inventory.workspace = true
+pz-world.workspace = true
+
+[dev-dependencies]
+pz-fs.workspace = true

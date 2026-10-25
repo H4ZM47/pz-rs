@@ -9,12 +9,17 @@
 //! long whose bit `z + 32` marks a saved level), erosion, generators, an
 //! empty vehicle list (vehicles live in `vehicles.db`), the loot respawn
 //! hour and the spawned rooms. There is no compression.
+//!
+//! Older files may hold vehicles in that list; they are loaded into
+//! [`crate::chunk::ChunkSaveData::vehicles`] and, like the original, not
+//! written back (vehicles are saved to `vehicles.db`).
 
 use std::path::{Path, PathBuf};
 
 use super::io::{crc32, err, has, BitHeaderWrite, Reader, SaveResult, Writer};
 use super::lua_table::LuaTable;
 use super::object_io::{load_object, save_object};
+use super::vehicle::{BaseVehicle, ChunkVehicle};
 use super::visual::IsoDeadBody;
 use super::{SaveCtx, WORLD_VERSION};
 use crate::chunk::{FloorBloodSplat, IsoChunk, IsoGridSquare};
@@ -212,8 +217,23 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
         ch.saved.generators.as_mut().unwrap().push(g);
     }
     let vehicles = r.i16()?;
-    if vehicles > 0 {
-        return err("chunk files with vehicles are not supported");
+    for _ in 0..vehicles.max(0) {
+        let (x, y, z) = (r.i8()?, r.i8()?, r.i8()?);
+        if !r.bool()? {
+            continue;
+        }
+        let class = r.i8()?;
+        if ctx.tables.class_name(class) != Some("Vehicle") {
+            // The original skips the object without reading it, losing
+            // its place in the buffer.
+            return err(format!(
+                "chunk vehicle list holds class {:?}",
+                ctx.tables.class_name(class)
+            ));
+        }
+        let ts = ctx.settings.tile_scale as f32;
+        let vehicle = BaseVehicle::load(&mut r, wv, (32.0 * ts, 96.0 * ts), ctx.items)?;
+        ch.saved.vehicles.push(ChunkVehicle { x, y, z, vehicle });
     }
     ch.saved.loot_respawn_hour = r.i32()?;
     if wv >= 206 {

@@ -25,8 +25,8 @@
 
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, global, int_arg, ClassBuilder, JavaEnum};
 use pz_core::debug::{
-    self, DebugLog, DebugType, FmtArg, JavaError, LogSeverity, LogThrowable, StackElement, DEBUG_TYPE_NAMES,
-    LOG_SEVERITY_NAMES,
+    self, DebugLog, DebugType, FmtArg, JavaError, LogSeverity, LogThrowable, StackElement,
+    DEBUG_TYPE_NAMES, LOG_SEVERITY_NAMES,
 };
 use pz_kahlua::exec::java_value_of;
 use pz_kahlua::value::LuaObject;
@@ -89,7 +89,11 @@ fn simple_class(v: &Value) -> String {
 
 fn enum_ordinal(v: &Value, class: &str) -> Option<usize> {
     match v {
-        Value::Object(o) => o.as_any().downcast_ref::<JavaEnum>().filter(|e| e.class == class).map(|e| e.ordinal as usize),
+        Value::Object(o) => o
+            .as_any()
+            .downcast_ref::<JavaEnum>()
+            .filter(|e| e.class == class)
+            .map(|e| e.ordinal as usize),
         _ => None,
     }
 }
@@ -111,11 +115,18 @@ fn sev_of(v: &Value) -> Option<LogSeverity> {
 }
 
 fn self_type(c: &NativeCall<'_>, method: &str) -> LuaResult<DebugType> {
-    type_of(&c.arg(0)).ok_or_else(|| LuaError::runtime(format!("{method}: Expected a method call but got a function call.")))
+    type_of(&c.arg(0)).ok_or_else(|| {
+        LuaError::runtime(format!(
+            "{method}: Expected a method call but got a function call."
+        ))
+    })
 }
 
 fn wrong_type(expected: &str, v: &Value) -> LuaError {
-    LuaError::runtime(format!("expected argument of type {expected}, got {}", simple_class(v)))
+    LuaError::runtime(format!(
+        "expected argument of type {expected}, got {}",
+        simple_class(v)
+    ))
 }
 
 /// A `DebugType` parameter (nil = `null`).
@@ -124,7 +135,9 @@ fn type_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<DebugType>> {
     if v.is_nil() {
         return Ok(None);
     }
-    type_of(&v).map(Some).ok_or_else(|| wrong_type("DebugType", &v))
+    type_of(&v)
+        .map(Some)
+        .ok_or_else(|| wrong_type("DebugType", &v))
 }
 
 /// A `LogSeverity` parameter (nil = `null`).
@@ -133,7 +146,9 @@ fn sev_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<LogSeverity>> {
     if v.is_nil() {
         return Ok(None);
     }
-    sev_of(&v).map(Some).ok_or_else(|| wrong_type("LogSeverity", &v))
+    sev_of(&v)
+        .map(Some)
+        .ok_or_else(|| wrong_type("LogSeverity", &v))
 }
 
 /// A `String` parameter (nil = `null`; Kahlua has no number-to-String
@@ -151,11 +166,17 @@ fn npe(what: &str) -> LuaError {
 }
 
 fn need_type(t: Option<DebugType>, method: &str) -> LuaResult<DebugType> {
-    t.ok_or_else(|| npe(&format!("Cannot invoke \"zombie.debug.DebugType.{method}\" because \"type\" is null")))
+    t.ok_or_else(|| {
+        npe(&format!(
+            "Cannot invoke \"zombie.debug.DebugType.{method}\" because \"type\" is null"
+        ))
+    })
 }
 
 fn fmt_args(c: &NativeCall<'_>, from: usize) -> Vec<FmtArg> {
-    (from..c.nargs()).map(|i| FmtArg::from_lua(&c.arg(i))).collect()
+    (from..c.nargs())
+        .map(|i| FmtArg::from_lua(&c.arg(i)))
+        .collect()
 }
 
 /// `(Object formatNoParams)` vs `(String format, Object... params)`.
@@ -182,7 +203,9 @@ fn throwable_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<LogThrowable>
 
 fn caller_prefix(c: &NativeCall<'_>) -> String {
     let el = lua_caller(c.thread);
-    debug::with(|d| debug::stack_trace_element_string(el.as_ref(), d.is_log_trace_file_location_enabled()))
+    debug::with(|d| {
+        debug::stack_trace_element_string(el.as_ref(), d.is_log_trace_file_location_enabled())
+    })
 }
 
 fn list_of(values: Vec<Value>) -> Value {
@@ -221,7 +244,8 @@ impl LuaObject for DebugLogObject {
 // DebugType
 // ---------------------------------------------------------------------------
 
-type LogFn = fn(&mut DebugLog, DebugType, Option<&StackElement>, &str, &[FmtArg]) -> Result<(), JavaError>;
+type LogFn =
+    fn(&mut DebugLog, DebugType, Option<&StackElement>, &str, &[FmtArg]) -> Result<(), JavaError>;
 
 fn reg_log(b: &ClassBuilder, name: &'static str, f: LogFn) {
     b.method(name, move |c| {
@@ -288,7 +312,9 @@ fn register_debug_type(thread: &mut Thread) {
     });
     b.method("getFormatter", |c| {
         self_type(c, "getFormatter")?;
-        Ok(c.push(Value::Object(Rc::new(Opaque("zombie.debug.IDebugLogFormatter")))))
+        Ok(c.push(Value::Object(Rc::new(Opaque(
+            "zombie.debug.IDebugLogFormatter",
+        )))))
     });
     b.method("print", |c| {
         let t = self_type(c, "print")?;
@@ -296,7 +322,10 @@ fn register_debug_type(thread: &mut Thread) {
             return Err(LuaError::runtime("expected 1 argument, got 0"));
         }
         if c.nargs() > 2 {
-            return Err(LuaError::runtime(format!("expected 1 argument, got {}", c.nargs() - 1)));
+            return Err(LuaError::runtime(format!(
+                "expected 1 argument, got {}",
+                c.nargs() - 1
+            )));
         }
         let s = java_value_of(&c.arg(1));
         debug::with(|d| d.print(t, &s));
@@ -398,7 +427,10 @@ fn register_log_severity(thread: &mut Thread) {
     let b = expose_enum(thread, LOG_SEVERITY_CLASS, LOG_SEVERITY_NAMES);
     b.field("All", severity_value(LogSeverity::ALL));
     b.static_fn("getValueList", |c| {
-        let v = LogSeverity::VALUES.iter().map(|s| severity_value(*s)).collect();
+        let v = LogSeverity::VALUES
+            .iter()
+            .map(|s| severity_value(*s))
+            .collect();
         Ok(c.push(list_of(v)))
     });
     b.method("isLogEnabled", |c| {
@@ -410,7 +442,9 @@ fn register_log_severity(thread: &mut Thread) {
         }
     });
     b.method("isName", |c| {
-        let s = sev_of(&c.arg(0)).ok_or_else(|| LuaError::runtime("isName: Expected a method call but got a function call."))?;
+        let s = sev_of(&c.arg(0)).ok_or_else(|| {
+            LuaError::runtime("isName: Expected a method call but got a function call.")
+        })?;
         let n = str_arg(c, 1)?;
         Ok(c.push(n.is_some_and(|n| s.is_name(&n))))
     });
@@ -422,7 +456,9 @@ fn register_log_severity(thread: &mut Thread) {
 
 fn register_debug_log(thread: &mut Thread) {
     let b = expose_class(thread, DEBUG_LOG_CLASS, None);
-    b.static_fn("getInstance", |c| Ok(c.push(Value::Object(Rc::new(DebugLogObject)))));
+    b.static_fn("getInstance", |c| {
+        Ok(c.push(Value::Object(Rc::new(DebugLogObject))))
+    });
     b.static_fn("setDefaultLogSeverity", |_| {
         debug::with(|d| d.set_default_log_severity());
         Ok(0)
@@ -444,7 +480,10 @@ fn register_debug_log(thread: &mut Thread) {
     b.static_fn("log", |c| {
         // log(DebugType, String) | log(String)
         let (t, s) = if c.nargs() >= 2 {
-            (need_type(type_arg(c, 0)?, "println(String)")?, str_arg(c, 1)?)
+            (
+                need_type(type_arg(c, 0)?, "println(String)")?,
+                str_arg(c, 1)?,
+            )
         } else {
             (DebugType::General, str_arg(c, 0)?)
         };
@@ -459,28 +498,37 @@ fn register_debug_log(thread: &mut Thread) {
         Ok(0)
     });
     b.static_fn("setLogEnabledFromCommandLine", |c| {
-        let s = str_arg(c, 0)?.ok_or_else(|| npe("Cannot invoke \"String.isEmpty()\" because \"token\" is null"))?;
+        let s = str_arg(c, 0)?
+            .ok_or_else(|| npe("Cannot invoke \"String.isEmpty()\" because \"token\" is null"))?;
         debug::with(|d| d.set_log_enabled_from_command_line(&s));
         Ok(0)
     });
     b.static_fn("getDebugTypes", |c| {
-        let v = DebugLog::debug_types_sorted().into_iter().map(debug_type_value).collect();
+        let v = DebugLog::debug_types_sorted()
+            .into_iter()
+            .map(debug_type_value)
+            .collect();
         Ok(c.push(list_of(v)))
     });
     b.static_fn("getSelectedProfileName", |c| {
         let n = debug::with(|d| d.selected_profile_name());
         Ok(c.push(n.map_or(Value::Nil, Value::from)))
     });
-    b.static_fn("getProfileNames", |c| Ok(c.push(str_list(debug::with(|d| d.profile_names())))));
-    b.static_fn("getProfileAliases", |c| Ok(c.push(str_list(debug::with(|d| d.profile_aliases())))));
+    b.static_fn("getProfileNames", |c| {
+        Ok(c.push(str_list(debug::with(|d| d.profile_names()))))
+    });
+    b.static_fn("getProfileAliases", |c| {
+        Ok(c.push(str_list(debug::with(|d| d.profile_aliases()))))
+    });
     b.static_fn("getLogSeverityForSelectedProfile", |c| {
         let t = need_type(type_arg(c, 0)?, "name()")?;
         let s = debug::with(|d| d.log_severity_for_selected_profile(t)).map_err(jerr)?;
         Ok(c.push(s.map_or(Value::Nil, severity_value)))
     });
     b.static_fn("invokeProfile", |c| {
-        let n = str_arg(c, 0)?
-            .ok_or_else(|| npe("Cannot invoke \"String.startsWith(String)\" because \"profileOrAlias\" is null"))?;
+        let n = str_arg(c, 0)?.ok_or_else(|| {
+            npe("Cannot invoke \"String.startsWith(String)\" because \"profileOrAlias\" is null")
+        })?;
         debug::with(|d| d.invoke_profile(&n)).map_err(jerr)?;
         Ok(0)
     });
@@ -528,20 +576,33 @@ fn register_debug_log(thread: &mut Thread) {
         debug::with(|d| d.read_config_command(&s, e));
         Ok(0)
     });
-    b.method("isLogTraceFileLocationEnabled", |c| Ok(c.push(debug::with(|d| d.is_log_trace_file_location_enabled()))));
-    b.method("shouldLogIncludeTimeMs", |c| Ok(c.push(debug::with(|d| d.should_log_include_time_ms()))));
-    b.method("shouldLogIncludeServerTime", |c| Ok(c.push(debug::with(|d| d.should_log_include_server_time()))));
-    b.method("isLogServerTimeMsEnabled", |c| Ok(c.push(debug::with(|d| d.is_log_server_time_ms_enabled()))));
+    b.method("isLogTraceFileLocationEnabled", |c| {
+        Ok(c.push(debug::with(|d| d.is_log_trace_file_location_enabled())))
+    });
+    b.method("shouldLogIncludeTimeMs", |c| {
+        Ok(c.push(debug::with(|d| d.should_log_include_time_ms())))
+    });
+    b.method("shouldLogIncludeServerTime", |c| {
+        Ok(c.push(debug::with(|d| d.should_log_include_server_time())))
+    });
+    b.method("isLogServerTimeMsEnabled", |c| {
+        Ok(c.push(debug::with(|d| d.is_log_server_time_ms_enabled())))
+    });
     b.method("setLogServerTimeMsEnabled", |c| {
         let e = bool_arg(c, 1);
         debug::with(|d| d.set_log_server_time_ms_enabled(e));
         Ok(0)
     });
-    for (name, kind) in [("formatLogStringForConsole", 0), ("formatLogStringForLogFile", 1), ("formatLogStringAnimationRecordingFile", 2)] {
+    for (name, kind) in [
+        ("formatLogStringForConsole", 0),
+        ("formatLogStringForLogFile", 1),
+        ("formatLogStringAnimationRecordingFile", 2),
+    ] {
         b.method(name, move |c| {
             let t = type_arg(c, 1)?;
-            let s = sev_arg(c, 2)?
-                .ok_or_else(|| npe("Cannot read field \"logPrefix\" because \"logSeverity\" is null"))?;
+            let s = sev_arg(c, 2)?.ok_or_else(|| {
+                npe("Cannot read field \"logPrefix\" because \"logSeverity\" is null")
+            })?;
             let affix = str_arg(c, 3)?.unwrap_or_default();
             let text = java_value_of(&c.arg(4));
             let line = debug::with(|d| match kind {
@@ -560,7 +621,9 @@ fn register_debug_log(thread: &mut Thread) {
         debug::with(|d| d.echo_to_log_files(t, s, &affix, &text));
         Ok(0)
     });
-    b.method("createLogStream", |c| Ok(c.push(Value::Object(Rc::new(Opaque(DEBUG_LOG_STREAM_CLASS))))));
+    b.method("createLogStream", |c| {
+        Ok(c.push(Value::Object(Rc::new(Opaque(DEBUG_LOG_STREAM_CLASS)))))
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -593,7 +656,10 @@ impl LuaObject for BooleanDebugOptionObject {
         self
     }
     fn super_classes(&self) -> &[&'static str] {
-        &["zombie.config.BooleanConfigOption", "zombie.config.ConfigOption"]
+        &[
+            "zombie.config.BooleanConfigOption",
+            "zombie.config.ConfigOption",
+        ]
     }
 }
 
@@ -603,8 +669,14 @@ fn option_index(c: &NativeCall<'_>, method: &str) -> LuaResult<usize> {
             .as_any()
             .downcast_ref::<BooleanDebugOptionObject>()
             .map(|b| b.0)
-            .ok_or_else(|| LuaError::runtime(format!("{method}: Expected a method call but got a function call."))),
-        _ => Err(LuaError::runtime(format!("{method}: Expected a method call but got a function call."))),
+            .ok_or_else(|| {
+                LuaError::runtime(format!(
+                    "{method}: Expected a method call but got a function call."
+                ))
+            }),
+        _ => Err(LuaError::runtime(format!(
+            "{method}: Expected a method call but got a function call."
+        ))),
     }
 }
 
@@ -789,12 +861,16 @@ pub fn register(thread: &mut Thread) {
     });
     // writeLog(loggerName, logs)
     global(thread, "writeLog", |c| {
-        let n = str_arg(c, 0)?.ok_or_else(|| npe("Cannot invoke \"String.length()\" because \"name\" is null"))?;
-        let l = str_arg(c, 1)?.ok_or_else(|| npe("Cannot invoke \"String.length()\" because \"logs\" is null"))?;
+        let n = str_arg(c, 0)?
+            .ok_or_else(|| npe("Cannot invoke \"String.length()\" because \"name\" is null"))?;
+        let l = str_arg(c, 1)?
+            .ok_or_else(|| npe("Cannot invoke \"String.length()\" because \"logs\" is null"))?;
         debug::with(|d| d.write_log(&n, &l));
         Ok(0)
     });
-    global(thread, "getDebugOptions", |c| Ok(c.push(Value::Object(Rc::new(DebugOptionsObject)))));
+    global(thread, "getDebugOptions", |c| {
+        Ok(c.push(Value::Object(Rc::new(DebugOptionsObject))))
+    });
 }
 
 #[cfg(test)]
@@ -819,7 +895,8 @@ mod tests {
     }
 
     fn run(t: &mut Thread, src: &str) -> Result<Vec<Value>, String> {
-        let f = pz_kahlua::stdlib::load_string(src, Some("test"), t.globals().clone()).map_err(|e| e.to_string())?;
+        let f = pz_kahlua::stdlib::load_string(src, Some("test"), t.globals().clone())
+            .map_err(|e| e.to_string())?;
         t.pcall(&f, &[]).map_err(|(m, _)| java_value_of(&m))
     }
 
@@ -867,15 +944,28 @@ mod tests {
              LOG  : Lua          f:0> n=3.0 b=true\n\
              LOG  : General      f:0> via DebugLog\n"
         );
-        assert_eq!(log.stderr(), "ERROR: Lua          f:0 at (UnknownStack)                      > boom 2.3\n");
+        assert_eq!(
+            log.stderr(),
+            "ERROR: Lua          f:0 at (UnknownStack)                      > boom 2.3\n"
+        );
     }
 
     #[test]
     fn caller_hook_and_format_errors() {
         let (mut t, sink) = setup();
-        set_lua_caller_hook(Some(Box::new(|_| Some(StackElement::lua("Vanilla", "corpseStorageCheck.lua", None, 1)))));
+        set_lua_caller_hook(Some(Box::new(|_| {
+            Some(StackElement::lua(
+                "Vanilla",
+                "corpseStorageCheck.lua",
+                None,
+                1,
+            ))
+        })));
         run(&mut t, "DebugType.Lua:warn('x')").unwrap();
-        assert_eq!(sink.log().stdout(), "WARN : Lua          f:0 at Lua(Vanilla).corpseStorageCheck.lua > x\n");
+        assert_eq!(
+            sink.log().stdout(),
+            "WARN : Lua          f:0 at Lua(Vanilla).corpseStorageCheck.lua > x\n"
+        );
         let e = run(&mut t, "DebugType.Lua:warn('%d', 1)").unwrap_err();
         assert_eq!(e, "java.util.IllegalFormatConversionException: d != java.lang.Double java.lang.RuntimeException");
         // Disabled types never format, so no exception.
@@ -909,20 +999,36 @@ mod tests {
         assert_eq!(r[6].as_str(), Some("Action"));
         let out = sink.log().stdout();
         assert_eq!(out.matches("DEBUG: Grapple").count(), 2, "{out}");
-        assert!(out.contains("NOISE: Grapple      f:0 at (UnknownStack)                      > n\n"));
+        assert!(
+            out.contains("NOISE: Grapple      f:0 at (UnknownStack)                      > n\n")
+        );
         debug::with(|d| d.core_debug = false);
     }
 
     #[test]
     fn stack_trace_and_profiles_from_lua() {
         let (mut t, sink) = setup();
-        set_lua_stack_hook(Some(Box::new(|_| vec![StackElement::lua("Vanilla", "f", Some("ISBaseObject.lua"), 37)])));
+        set_lua_stack_hook(Some(Box::new(|_| {
+            vec![StackElement::lua(
+                "Vanilla",
+                "f",
+                Some("ISBaseObject.lua"),
+                37,
+            )]
+        })));
         run(&mut t, "DebugType.LuaObject:setLogSeverity(LogSeverity.Warning) \
                      DebugType.LuaObject:printStackTrace(LogSeverity.Warning, 4, 'No Type found: x')").unwrap();
-        assert_eq!(sink.log().stdout(), "No Type found: x\n\tLua(Vanilla).f(ISBaseObject.lua:37)\n");
+        assert_eq!(
+            sink.log().stdout(),
+            "No Type found: x\n\tLua(Vanilla).f(ISBaseObject.lua:37)\n"
+        );
         set_lua_stack_hook(None);
 
-        let e = run(&mut t, "return DebugLog.getLogSeverityForSelectedProfile(DebugType.Lua)").unwrap_err();
+        let e = run(
+            &mut t,
+            "return DebugLog.getLogSeverityForSelectedProfile(DebugType.Lua)",
+        )
+        .unwrap_err();
         assert!(e.starts_with("java.lang.NullPointerException"), "{e}");
         debug::with(|d| d.load_debug_config(None));
         let r = run(
@@ -959,8 +1065,14 @@ mod tests {
         assert_eq!(r[2].as_str(), Some("UI.Render.Outline"));
         assert!(r[3].truthy());
         assert!(r[4].is_nil() && !r[5].truthy());
-        assert_eq!(sink.log().file_lines("admin"), ["[23-10-26 21:30:04.860] did a thing."]);
+        assert_eq!(
+            sink.log().file_lines("admin"),
+            ["[23-10-26 21:30:04.860] did a thing."]
+        );
         let e = run(&mut t, "getDebugOptions():getOptionByIndex(5)").unwrap_err();
-        assert!(e.contains("IndexOutOfBoundsException: Index 5 out of bounds for length 2"), "{e}");
+        assert!(
+            e.contains("IndexOutOfBoundsException: Index 5 out of bounds for length 2"),
+            "{e}"
+        );
     }
 }

@@ -34,6 +34,7 @@ pub mod bind_skills;
 pub mod bind_states;
 pub mod bind_text;
 pub mod bind_ui;
+pub mod bind_vehicles;
 pub mod events;
 pub mod expose;
 pub mod global_objects;
@@ -85,4 +86,5 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_joypad::register(mgr);
     bind_iso_enums::register(mgr);
     bind_global_objects::register(mgr);
+    bind_vehicles::register(&mut mgr.thread);
 }

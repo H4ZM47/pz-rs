@@ -16,3 +16,8 @@ pz-ui.workspace = true
 pz-classfile.workspace = true
 pz-inventory.workspace = true
 pz-input.workspace = true
+pz-vehicles.workspace = true
+
+[dev-dependencies]
+pz-world.workspace = true
+pz-entity.workspace = true
