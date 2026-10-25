@@ -25,9 +25,10 @@ use crate::bind_java_util::{list_value, JavaList};
 use crate::bind_text::translate;
 use crate::expose::{bool_arg, expose_class, global, str_arg, with_this};
 use pz_characters::population::{
-    BeardStyle, HairOutfitDefinitions, HairStyle, HaircutDefinition, HaircutOutfitDefinition,
-    Population, VoiceStyle,
+    BeardStyle, DressContext, HairOutfitDefinitions, HairStyle, HaircutDefinition, HaircutOutfitDefinition,
+    OutfitContext, Population, PopulationStyles, VoiceStyle,
 };
+use pz_inventory::visual::Rgb;
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, TableRef, Thread, Value};
 use pz_scripts::java::compare;
@@ -191,6 +192,50 @@ pub fn hair_outfit_definitions_from_lua(globals: &TableRef) -> HairOutfitDefinit
 
 fn world_age_days() -> f32 {
     shared_game_time().borrow().world_age_days_since_begin(1) as f32
+}
+
+/// `SurvivorDesc.HairCommonColors` as the RGB the population reads.
+fn hair_common_colors() -> Vec<Rgb> {
+    let chars = crate::bind_characters::shared_characters();
+    let chars = chars.borrow();
+    chars.survivor_desc.hair_common_colors.iter().map(|c| c.rgb()).collect()
+}
+
+/// Runs `f` with `HumanVisual`'s lookups over the shared population (Lua's
+/// `HairOutfitDefinitions` and `DefaultClothing` reloaded first if dirty,
+/// as their `checkDirty` does on use), `SurvivorDesc.HairCommonColors` and
+/// the world age.
+pub fn with_styles<R>(thread: &Thread, f: impl FnOnce(&PopulationStyles<'_>) -> R) -> R {
+    let colors = hair_common_colors();
+    let pop = shared_population();
+    check_dirty(thread, &mut pop.borrow_mut());
+    let p = pop.borrow();
+    f(&p.styles(&colors, world_age_days()))
+}
+
+/// Runs `f` with what `HumanVisual.dressInNamedOutfit` reads: the shared
+/// population and outfits, the item environment's `ClothingItem` assets,
+/// the shared `ScriptManager` and the `Human` body location group.
+/// `SandboxOptions.noBlackClothes` is its default (the menu has no game
+/// sandbox). `None` without outfits or clothing assets (nothing to dress).
+pub fn with_dress_context<R>(thread: &Thread, f: impl FnOnce(&DressContext<'_>) -> R) -> Option<R> {
+    let colors = hair_common_colors();
+    let pop = shared_population();
+    check_dirty(thread, &mut pop.borrow_mut());
+    let p = pop.borrow();
+    let outfits = p.outfit_manager.as_ref()?;
+    let env = crate::bind_items::item_env();
+    let assets = env.context().assets()?;
+    let group = crate::bind_characters::shared_characters().borrow_mut().body_locations.get_group("Human").ok()?;
+    let sm = crate::bind_registry::shared_script_manager();
+    let outfit = OutfitContext {
+        clothing_items: &assets.clothing_items,
+        population: &p,
+        hair_common_colors: &colors,
+        world_age_days: world_age_days(),
+        no_black_clothes: true,
+    };
+    Some(f(&DressContext { outfit: &outfit, outfits, clothing: &assets.clothing_items, scripts: &sm, group: &group }))
 }
 
 // ---- objects -------------------------------------------------------------

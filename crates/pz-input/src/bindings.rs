@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn create_save_reload_apply() {
-        let dir = std::env::temp_dir().join(format!("pz-input-bindings-{}", std::process::id()));
+        let dir = crate::tests::unique_temp_dir("pz-input-bindings");
         let _ = std::fs::remove_dir_all(&dir);
         let mut b = sample(&dir);
         b.reset_all_to_default();

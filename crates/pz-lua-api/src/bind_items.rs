@@ -9,14 +9,16 @@
 //! Methods that read the holder or the game state (weights, `isEquipped`,
 //! wetness, `getVisual`, `Use`) go through the installed [`ItemLuaEnv`]
 //! ([`install_item_env`]); without one they see an item in a container
-//! without a parent, no scripts and zero globals.
+//! without a parent, the shared scripts, no `ClothingItem` assets and zero
+//! globals ([`GameItemEnv`]). `instanceItem` ([`create_item`]) creates
+//! items through it; see [`crate::bind_item_visual`].
 //!
 //! Not exposed yet: methods returning or taking objects that have no Lua
 //! binding here (`getScriptItem`, `getModData`, `getContainer`,
-//! `getWorldItem`, `getVisual`'s `ItemVisual`, `getInventory`,
-//! `getTags`), the registry-object returns (`getBodyLocation` returns the
-//! registry id string, `getBloodClothingType` a list of names, `hasTag`
-//! takes ids or objects whose `tostring` is the id).
+//! `getWorldItem`, `getInventory`, `getTags`), the registry-object
+//! returns (`getBloodClothingType` a list of names, `hasTag` takes ids or
+//! objects whose `tostring` is the id). `getVisual`, `getClothingItem`
+//! and `canBeEquipped` live in [`crate::bind_item_visual`].
 
 use crate::bind_java_util::JavaList;
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg};
@@ -24,7 +26,8 @@ use pz_inventory::api::Offline;
 use pz_inventory::context::NoOwner;
 use pz_inventory::gameplay::{ConditionOutcome, ItemError, UseOutcome};
 use pz_inventory::item::ItemKind;
-use pz_inventory::{InventoryItem, ItemClass, ItemContext, ItemOwner};
+use pz_inventory::visual::VisualRng;
+use pz_inventory::{InventoryItem, ItemAssets, ItemClass, ItemContext, ItemEnv, ItemOwner};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use std::any::Any;
@@ -67,20 +70,221 @@ pub trait ItemLuaEnv {
     /// the container or character must do (add or remove items, play
     /// sounds, call `OnBreak`).
     fn outcome(&self, _item: &ItemRef, _o: ItemOutcome) {}
+    /// `Rand.Next(bound)` (`RandStandard`), for item creation.
+    fn rand_next(&self, bound: i32) -> i32 {
+        pz_core::random::next(bound)
+    }
+    /// `Rand.Next(min, max)` for floats.
+    fn rand_float(&self, min: f32, max: f32) -> f32 {
+        pz_core::random::next_float(min, max)
+    }
+    /// `OutfitRNG` and `ClothingDecals` for item visuals.
+    fn visual_rng(&self) -> &dyn VisualRng {
+        &OutfitVisualRng
+    }
 }
 
-struct DefaultEnv;
-impl ItemLuaEnv for DefaultEnv {
+/// The item environment outside a game (the main menu and character
+/// creation): no holder, game state at its defaults, scripts from the
+/// shared `ScriptManager` and the `ClothingItem` assets it was given.
+pub struct GameItemEnv {
+    pub assets: Option<ItemAssets>,
+    /// A generator for `Rand` instead of `RandStandard` (tests, oracles).
+    pub rand: Option<pz_core::random::Rand>,
+}
+
+impl GameItemEnv {
+    pub fn new(assets: Option<ItemAssets>) -> Self {
+        GameItemEnv { assets, rand: None }
+    }
+}
+
+impl ItemContext for GameItemEnv {
+    fn world_age_hours(&self) -> f64 {
+        Offline.world_age_hours()
+    }
+    fn multiplier(&self) -> f32 {
+        Offline.multiplier()
+    }
+    fn rain_intensity(&self) -> f32 {
+        Offline.rain_intensity()
+    }
+    fn is_raining(&self) -> bool {
+        Offline.is_raining()
+    }
+    fn equipped_or_worn_encumbrance_multiplier(&self) -> f64 {
+        Offline.equipped_or_worn_encumbrance_multiplier()
+    }
+    fn basic_mask_defense(&self) -> f32 {
+        Offline.basic_mask_defense()
+    }
+    fn improvised_gas_mask_defense(&self) -> f32 {
+        Offline.improvised_gas_mask_defense()
+    }
+    fn standard_gas_mask_defense(&self) -> f32 {
+        Offline.standard_gas_mask_defense()
+    }
+    fn script(&self, name: &str) -> Option<Rc<pz_inventory::ItemTemplate>> {
+        let sm = crate::bind_registry::shared_script_manager();
+        let s = sm
+            .find_item(name, true)?
+            .downcast::<pz_scripts::objects::items::Item>()?;
+        pz_inventory::ItemTemplate::from_script_ref(&sm, &s)
+    }
+    fn create_item(&self, full_type: &str) -> Option<InventoryItem> {
+        create_item_with(self, full_type, 1.0)
+    }
+    fn assets(&self) -> Option<&ItemAssets> {
+        self.assets.as_ref()
+    }
+}
+
+impl ItemLuaEnv for GameItemEnv {
     fn context(&self) -> &dyn ItemContext {
-        &Offline
+        self
     }
     fn owner(&self, _item: &ItemRef) -> Rc<dyn ItemOwner> {
         Rc::new(NoOwner)
     }
+    fn rand_next(&self, bound: i32) -> i32 {
+        match &self.rand {
+            Some(r) => r.next(bound),
+            None => pz_core::random::next(bound),
+        }
+    }
+    fn rand_float(&self, min: f32, max: f32) -> f32 {
+        match &self.rand {
+            Some(r) => r.next_float(min, max),
+            None => pz_core::random::next_float(min, max),
+        }
+    }
+}
+
+/// `OutfitRNG` (the shared per-thread generator) and
+/// `ClothingDecals.instance` from the shared population.
+pub struct OutfitVisualRng;
+
+impl VisualRng for OutfitVisualRng {
+    fn next(&self, bound: i32) -> i32 {
+        pz_core::random::outfit_rng::next(bound)
+    }
+    fn random_color(&self) -> [f32; 3] {
+        // `randomImmutableColor()`: `SandboxOptions.noBlackClothes`
+        // (default true; the menu has no game sandbox).
+        pz_core::random::outfit_rng::random_immutable_color(true)
+    }
+    fn random_decal(&self, group: &str) -> Option<String> {
+        let pop = crate::bind_appearance::shared_population();
+        let pop = pop.borrow();
+        pop.clothing_decals.as_ref()?.get_random_decal(group)
+    }
+    fn set_seed(&self, seed: i64) {
+        pz_core::random::outfit_rng::set_seed(seed);
+    }
+    fn get_seed(&self) -> i64 {
+        pz_core::random::outfit_rng::get_seed()
+    }
+}
+
+/// What `InventoryItemFactory.CreateItem` reads, from an item environment.
+struct CreateEnv<'a> {
+    lua: Option<&'a dyn ItemLuaEnv>,
+    ctx: &'a dyn ItemContext,
+    sm: &'a pz_scripts::ScriptManager,
+}
+
+impl ItemEnv for CreateEnv<'_> {
+    fn world_age_hours(&self) -> f64 {
+        self.ctx.world_age_hours()
+    }
+    fn rand_next(&self, bound: i32) -> i32 {
+        match self.lua {
+            Some(l) => l.rand_next(bound),
+            None => pz_core::random::next(bound),
+        }
+    }
+    fn rand_float(&self, min: f32, max: f32) -> f32 {
+        match self.lua {
+            Some(l) => l.rand_float(min, max),
+            None => pz_core::random::next_float(min, max),
+        }
+    }
+    fn assets(&self) -> Option<&ItemAssets> {
+        self.ctx.assets()
+    }
+    fn visual_rng(&self) -> &dyn VisualRng {
+        match self.lua {
+            Some(l) => l.visual_rng(),
+            None => &OutfitVisualRng,
+        }
+    }
+    fn script_actual_weight(&self, name: &str) -> Option<f32> {
+        let s = self
+            .sm
+            .find_item(name, true)?
+            .downcast::<pz_scripts::objects::items::Item>()?;
+        let w = s.borrow().actual_weight;
+        Some(w)
+    }
+}
+
+/// `Translator.getItemNameFromFullType` when the translator is loaded.
+fn translated_name(full_type: &str) -> Option<String> {
+    crate::bind_text::with_translator_mut(|t| t.get_item_name_from_full_type(full_type, |_| None))
+        .filter(|n| n != full_type)
+}
+
+fn create_item_with(
+    ctx: &dyn ItemContext,
+    item_type: &str,
+    use_delta: f32,
+) -> Option<InventoryItem> {
+    let sm = crate::bind_registry::shared_script_manager();
+    let env = CreateEnv {
+        lua: None,
+        ctx,
+        sm: &sm,
+    };
+    pz_inventory::factory::create_item_by_type(
+        &env,
+        &sm,
+        item_type,
+        use_delta,
+        true,
+        &translated_name,
+    )
+}
+
+/// `InventoryItemFactory.CreateItem(itemType, useDelta)` through the
+/// installed environment (its `Rand`, `OutfitRNG` and assets) and the
+/// shared `ScriptManager`: `None` for an unknown type.
+pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
+    let e = env();
+    let sm = crate::bind_registry::shared_script_manager();
+    let ce = CreateEnv {
+        lua: Some(e.as_ref()),
+        ctx: e.context(),
+        sm: &sm,
+    };
+    let item = pz_inventory::factory::create_item_by_type(
+        &ce,
+        &sm,
+        item_type,
+        use_delta,
+        true,
+        &translated_name,
+    )?;
+    Some(Rc::new(RefCell::new(item)))
+}
+
+/// Installs a [`GameItemEnv`] with the `ClothingItem` assets
+/// (`ItemAssets::load(game_dir)`), so items made from Lua have visuals.
+pub fn install_item_assets(assets: ItemAssets) {
+    install_item_env(Rc::new(GameItemEnv::new(Some(assets))));
 }
 
 thread_local! {
-    static ENV: RefCell<Rc<dyn ItemLuaEnv>> = RefCell::new(Rc::new(DefaultEnv));
+    static ENV: RefCell<Rc<dyn ItemLuaEnv>> = RefCell::new(Rc::new(GameItemEnv::new(None)));
     static OBJECTS: RefCell<HashMap<usize, Weak<dyn LuaObject>>> = RefCell::new(HashMap::new());
 }
 
@@ -344,6 +548,15 @@ fn register_inventory_item(thread: &mut Thread) {
     get!(b, "getCurrentAmmoCount", |i| Value::from(
         i.current_ammo_count
     ));
+    get!(b, "getMaxAmmo", |i| {
+        let sm = crate::bind_registry::shared_script_manager();
+        Value::from(pz_characters::character::items::script_item(&sm, &i).map_or(0, |s| s.borrow().max_ammo))
+    });
+    b.method("setCurrentAmmoCount", |c| {
+        let n = int_arg(c, 1);
+        this(c)?.borrow_mut().set_current_ammo_count(n);
+        Ok(0)
+    });
     get!(b, "getWetCooldown", |i| f(i.wet_cooldown));
     get!(b, "getCount", |i| Value::from(i.template.count));
     get!(b, "getDisplayCategory", |i| opt_str(
@@ -354,7 +567,9 @@ fn register_inventory_item(thread: &mut Thread) {
         .get_replace_on_use_full_type()
         .map(Value::from)
         .unwrap_or_default());
-    get!(b, "getBodyLocation", |i| opt_str(i.get_body_location()));
+    get!(b, "getBodyLocation", |i| crate::bind_item_visual::body_location_value(
+        i.get_body_location()
+    ));
     get!(
         b,
         "getBloodClothingType",
@@ -663,6 +878,36 @@ fn food(i: &InventoryItem, g: fn(&pz_inventory::item::FoodData) -> f32) -> Value
     }
 }
 
+/// A weapon's script values (`FirearmStats`), `nil` for other items.
+fn firearm(i: &InventoryItem, g: fn(&pz_characters::character::firearm::FirearmStats) -> Value) -> Value {
+    let sm = crate::bind_registry::shared_script_manager();
+    pz_characters::character::firearm::FirearmStats::of(&sm, i).map_or(Value::Nil, |f| g(&f))
+}
+
+/// Runs `f` with the character argument 1 (`checkJam(player, ...)`),
+/// the scripts, the character statics and the simulation context.
+fn with_shooter<R>(
+    c: &NativeCall<'_>,
+    f: impl FnOnce(
+        &crate::bind_character_sim::LuaGameCharacter,
+        &pz_scripts::ScriptManager,
+        &pz_characters::Characters,
+        &dyn pz_characters::SimContext,
+    ) -> R,
+) -> LuaResult<R> {
+    let chr = match c.arg(1) {
+        Value::Object(o) => o.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>().map(|o| o.0.clone()),
+        _ => None,
+    };
+    let chr = chr.ok_or_else(|| LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" })?;
+    let sm = crate::bind_registry::shared_script_manager();
+    let chars = crate::bind_characters::shared_characters();
+    let ctx = crate::bind_character_sim::current_sim_context();
+    let p = chr.borrow();
+    let chars = chars.borrow();
+    Ok(f(&p, &sm, &chars, &*ctx))
+}
+
 fn weapon(i: &InventoryItem, g: fn(&pz_inventory::item::WeaponData) -> Value) -> Value {
     match &i.kind {
         ItemKind::Weapon(x) => g(x),
@@ -733,6 +978,59 @@ fn register_weapon(thread: &mut Thread) {
     get!(b, "getFireMode", |i| weapon(&i, |x| opt_str(
         x.fire_mode.as_deref()
     )));
+    // The firearm state Lua's reload, rack and shoot actions use.
+    get!(b, "isSpentRoundChambered", |i| Value::from(i.is_spent_round_chambered()));
+    get!(b, "getSpentRoundCount", |i| Value::from(i.get_spent_round_count()));
+    get!(b, "getAmmoPerShoot", |_i| Value::from(1));
+    get!(b, "getJamGunChance", |i| firearm(&i, |w| f(w.jam_gun_chance)));
+    get!(b, "isRackAfterShoot", |i| firearm(&i, |w| Value::from(w.rack_after_shoot)));
+    get!(b, "isManuallyRemoveSpentRounds", |i| firearm(&i, |w| Value::from(w.manually_remove_spent_rounds)));
+    get!(b, "getAimingTime", |i| firearm(&i, |w| Value::from(w.aiming_time)));
+    get!(b, "getRecoilDelay", |i| firearm(&i, |w| Value::from(w.recoil_delay)));
+    b.method("setRoundChambered", |c| {
+        let r = this(c)?;
+        let v = bool_arg(c, 1);
+        let have = r.borrow().template.have_chamber;
+        r.borrow_mut().set_round_chambered(v, have);
+        Ok(0)
+    });
+    b.method("setSpentRoundChambered", |c| {
+        let v = bool_arg(c, 1);
+        this(c)?.borrow_mut().set_spent_round_chambered(v);
+        Ok(0)
+    });
+    b.method("setSpentRoundCount", |c| {
+        let r = this(c)?;
+        let n = int_arg(c, 1);
+        let max = firearm(&r.borrow(), |w| Value::from(w.max_ammo));
+        let max = match max {
+            Value::Num(m) => m as i32,
+            _ => 0,
+        };
+        r.borrow_mut().set_spent_round_count(n, max);
+        Ok(0)
+    });
+    b.method("setJammed", |c| {
+        let v = bool_arg(c, 1);
+        this(c)?.borrow_mut().set_jammed(v);
+        Ok(0)
+    });
+    b.method("setContainsClip", |c| {
+        let v = bool_arg(c, 1);
+        this(c)?.borrow_mut().set_contains_clip(v);
+        Ok(0)
+    });
+    b.method("checkJam", |c| {
+        let r = this(c)?;
+        let racking = bool_arg(c, 2);
+        let v = with_shooter(c, |p, sm, chars, ctx| p.check_jam_item(sm, chars, ctx, &mut r.borrow_mut(), racking))?;
+        Ok(c.push(v))
+    });
+    b.method("checkUnJam", |c| {
+        let r = this(c)?;
+        let v = with_shooter(c, |p, sm, chars, ctx| p.check_unjam_item(sm, chars, ctx, &mut r.borrow_mut()))?;
+        Ok(c.push(v))
+    });
     b.method("isOfWeaponCategory", |c| {
         let r = this(c)?;
         let id = id_arg(c, 1);

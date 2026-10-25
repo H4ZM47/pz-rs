@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn reads_both_versions() {
         for v1 in [false, true] {
-            let dir = std::env::temp_dir().join(format!("pz-fs-pack-{}-{v1}", std::process::id()));
+            let dir = crate::tests::unique_temp_dir(&format!("pz-fs-pack-{v1}"));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("T.pack");
             std::fs::write(&path, build(v1)).unwrap();

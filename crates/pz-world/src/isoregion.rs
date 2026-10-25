@@ -39,20 +39,24 @@
 //! batch to its own `DataRoot` and asks the main thread to swap that root
 //! with the one the game reads (`IsoRegions.update`), applies the batch a
 //! second time to the root it got back, and then writes the save files.
-//! Both roots therefore see every batch once, in the same order, and stay
-//! equal. Here there is one root and [`IsoRegions::update`] runs one worker
-//! loop iteration synchronously (taking every queued job, as the worker
-//! does when the main thread queued them between two of its polls), then
-//! does what the swap does on the main thread (dropping the squares'
-//! cached regions).
+//! Both roots see every batch once, in the same order, so their regions
+//! stay equal; what differs is the state `WorldRegionToMetaGrid` keeps on
+//! them (each region's `BuildingDef`, each root's `changedCells`), so both
+//! roots are kept here too. [`IsoRegions::update_with_buildings`] runs one
+//! worker loop iteration synchronously (taking every queued job, as the
+//! worker does when the main thread queued them between two of its polls);
+//! at the swap it does the main thread's side (the squares drop their
+//! cached regions, then [`metagrid::WorldRegionToMetaGrid`] turns the
+//! changed cells' player rooms into meta-grid buildings) before the
+//! worker's second cycle, the order the original gets when the main thread
+//! answers within the worker's 5 ms poll. [`IsoRegions::update`] is the
+//! same without a meta grid.
 //!
 //! Single player only: the network jobs and packets
 //! (`JobServerSendFullData`, `readServerUpdatePacket`, ...) are not ported.
-//! `WorldRegionToMetaGrid` (meta-grid buildings for player rooms, after the
-//! swap) is not ported either; [`DataRoot::changed_cells`] collects its
-//! input.
 
 pub mod data;
+pub mod metagrid;
 pub mod regions;
 
 #[cfg(test)]
@@ -325,8 +329,13 @@ pub enum RegionJob {
 /// `IsoRegions` with its `IsoRegionWorker`.
 #[derive(Debug)]
 pub struct IsoRegions {
-    /// The region data (`IsoRegions.dataRoot`).
-    pub data_root: DataRoot,
+    /// `IsoRegions.dataRoot` and the worker's `rootBuffer`: `roots[main]`
+    /// is the one the game reads. Both get every batch, one after the other,
+    /// and a buffer swap flips `main`.
+    roots: [DataRoot; 2],
+    main: usize,
+    /// `DataRoot.wrtmg` (shared by both roots).
+    wrtmg: metagrid::WorldRegionToMetaGrid,
     /// `cacheDir`: the save's `isoregiondata` directory; `None` keeps
     /// everything in memory.
     dir: Option<PathBuf>,
@@ -345,7 +354,6 @@ pub struct IsoRegions {
     last_thread_discovered_chunks_size: usize,
     job_queue: VecDeque<RegionJob>,
     job_batched_processing: Vec<RegionJob>,
-    swap_requested: bool,
 }
 
 impl IsoRegions {
@@ -353,7 +361,9 @@ impl IsoRegions {
     /// written).
     pub fn new(chunk_grid_width: i32) -> Self {
         IsoRegions {
-            data_root: DataRoot::new(),
+            roots: [DataRoot::new(), DataRoot::new()],
+            main: 0,
+            wrtmg: Default::default(),
             dir: None,
             no_save: false,
             chunk_grid_width,
@@ -367,7 +377,6 @@ impl IsoRegions {
             last_thread_discovered_chunks_size: 0,
             job_queue: VecDeque::new(),
             job_batched_processing: Vec::new(),
-            swap_requested: false,
         }
     }
 
@@ -388,6 +397,21 @@ impl IsoRegions {
         r
     }
 
+    /// `IsoRegions.getDataRoot()`: the root the game reads.
+    pub fn data_root(&self) -> &DataRoot {
+        &self.roots[self.main]
+    }
+
+    /// `IsoRegions.getDataRoot()`, mutable.
+    pub fn data_root_mut(&mut self) -> &mut DataRoot {
+        &mut self.roots[self.main]
+    }
+
+    /// The worker's root (`IsoRegionWorker.getRootBuffer()`).
+    pub fn root_buffer(&self) -> &DataRoot {
+        &self.roots[1 - self.main]
+    }
+
     /// `IsoRegions.getDirectory()`.
     pub fn directory(&self) -> Option<&Path> {
         self.dir.as_deref()
@@ -395,12 +419,12 @@ impl IsoRegions {
 
     /// The warnings `IsoRegions.warn` logged, oldest first.
     pub fn warnings(&self) -> &[String] {
-        &self.data_root.region_manager.warnings
+        &self.roots[self.main].region_manager.warnings
     }
 
     /// `regionManager`.
     pub fn manager(&self) -> &IsoRegionManager {
-        &self.data_root.region_manager
+        &self.roots[self.main].region_manager
     }
 
     /// The jobs waiting for the next [`IsoRegions::update`].
@@ -422,59 +446,66 @@ impl IsoRegions {
 
     /// `IsoRegions.getSquareFlags(x, y, z)`.
     pub fn get_square_flags(&self, x: i32, y: i32, z: i32) -> i8 {
-        self.data_root.get_square_flags(x, y, z)
+        self.roots[self.main].get_square_flags(x, y, z)
     }
 
     /// `IsoRegions.getIsoWorldRegion(x, y, z)`.
     pub fn get_iso_world_region(&self, x: i32, y: i32, z: i32) -> Option<WorldRegionRef> {
-        self.data_root.get_iso_world_region(x, y, z)
+        self.roots[self.main].get_iso_world_region(x, y, z)
     }
 
     /// `IsoRegions.getChunkRegion(x, y, z)`.
     pub fn get_chunk_region(&self, x: i32, y: i32, z: i32) -> Option<ChunkRegionRef> {
-        self.data_root.get_iso_chunk_region(x, y, z)
+        self.roots[self.main].get_iso_chunk_region(x, y, z)
     }
 
     /// `IsoRegions.getDataChunk(chunkx, chunky)`.
     pub fn get_data_chunk(&self, chunkx: i32, chunky: i32) -> Option<&DataChunk> {
-        self.data_root
-            .get_data_chunk(chunkx, chunky)
-            .map(|c| self.data_root.chunk(c))
+        let root = &self.roots[self.main];
+        root.get_data_chunk(chunkx, chunky).map(|c| root.chunk(c))
     }
 
     /// `IsoRegions.getIsoWorldRegionsInCell(cellX, cellY, list)`.
     pub fn get_iso_world_regions_in_cell(&self, cell_x: i32, cell_y: i32) -> Vec<WorldRegionRef> {
-        self.data_root.get_iso_world_regions_in_cell(cell_x, cell_y)
+        self.roots[self.main].get_iso_world_regions_in_cell(cell_x, cell_y)
     }
 
     /// The world region object `r`.
     pub fn world_region(&self, r: WorldRegionRef) -> &IsoWorldRegion {
-        self.data_root.region_manager.world_region(r)
+        self.roots[self.main].region_manager.world_region(r)
     }
 
     /// The chunk region object `r`.
     pub fn chunk_region(&self, r: ChunkRegionRef) -> &IsoChunkRegion {
-        self.data_root.region_manager.chunk_region(r)
+        self.roots[self.main].region_manager.chunk_region(r)
     }
 
     /// `IWorldRegion.isFogMask()`.
     pub fn is_fog_mask(&self, r: WorldRegionRef) -> bool {
-        self.data_root.region_manager.world_region_is_fog_mask(r)
+        self.roots[self.main]
+            .region_manager
+            .world_region_is_fog_mask(r)
     }
 
     /// `IWorldRegion.isPlayerRoom()`.
     pub fn is_player_room(&self, r: WorldRegionRef) -> bool {
-        self.data_root.region_manager.world_region_is_player_room(r)
+        self.roots[self.main]
+            .region_manager
+            .world_region_is_player_room(r)
     }
 
     /// `IsoWorldRegion.isEnclosed()`.
     pub fn is_enclosed(&self, r: WorldRegionRef) -> bool {
-        self.data_root.region_manager.world_region_is_enclosed(r)
+        self.roots[self.main]
+            .region_manager
+            .world_region_is_enclosed(r)
     }
 
     /// `IsoChunkRegion.getIsEnclosed()`.
     pub fn chunk_region_is_enclosed(&self, r: ChunkRegionRef) -> bool {
-        self.data_root.region_manager.chunk_region_is_enclosed(r)
+        self.roots[self.main]
+            .region_manager
+            .chunk_region_is_enclosed(r)
     }
 
     /// `IWorldRegion.getNeighbors()`.
@@ -604,26 +635,67 @@ impl IsoRegions {
         }
     }
 
-    /// `IsoRegions.update()`: one `IsoRegionWorker` loop iteration over
-    /// the queued jobs, then the main thread's side of the buffer swap
+    /// `IsoRegions.update()` for a game without a meta grid to build into:
+    /// one `IsoRegionWorker` loop iteration over the queued jobs, where the
+    /// main thread's side of a buffer swap drops the squares' cached regions
     /// (`clientResetCachedRegionReferences` over `cell`'s squares) and the
-    /// `debugLoadAllChunks` read around `player` (square position).
-    /// Returns whether changes were applied (the original's swap).
+    /// changed cells (no player-built buildings are made; see
+    /// [`IsoRegions::update_with_buildings`]); then the `debugLoadAllChunks`
+    /// read around `player` (square position). Returns whether a swap
+    /// happened.
     pub fn update(
         &mut self,
         cell: &IsoCell,
         m: &IsoSpriteManager,
         player: Option<(f32, f32)>,
     ) -> bool {
-        self.worker_tick();
-        self.square_change_per_tick = 0;
-        let swapped = self.swap_requested;
-        if self.swap_requested {
-            self.swap_requested = false;
+        let swapped = self.worker_tick_with(&mut |r: &mut IsoRegions| {
             client_reset_cached_region_references(cell);
-            // `clientProcessBuildings` consumes and clears these.
-            self.data_root.changed_cells.clear();
-        }
+            r.roots[r.main].changed_cells.clear();
+        });
+        self.square_change_per_tick = 0;
+        self.debug_load_around(cell, m, player);
+        swapped
+    }
+
+    /// `IsoRegions.update()`: one `IsoRegionWorker` loop iteration over the
+    /// queued jobs. At the buffer swap the main thread's side runs before
+    /// the worker's second cycle (as when the main thread answers the swap
+    /// within the worker's 5 ms poll): the squares drop their cached
+    /// regions and `DataRoot.clientProcessBuildings` turns the changed
+    /// cells' player rooms into meta-grid buildings
+    /// ([`metagrid::WorldRegionToMetaGrid`]). Then the
+    /// `debugLoadAllChunks` read around `player`. Returns whether a swap
+    /// happened.
+    pub fn update_with_buildings(
+        &mut self,
+        ctx: &mut metagrid::BuildingCtx<'_>,
+        player: Option<(f32, f32)>,
+    ) -> bool {
+        let swapped = self.worker_tick_with(&mut |r: &mut IsoRegions| {
+            client_reset_cached_region_references(ctx.cell);
+            r.client_process_buildings(ctx);
+        });
+        self.square_change_per_tick = 0;
+        self.debug_load_around(ctx.cell, ctx.sprites, player);
+        swapped
+    }
+
+    /// `DataRoot.clientProcessBuildings()` on the root the game reads: the
+    /// changed cells go to `WorldRegionToMetaGrid` and are cleared.
+    pub fn client_process_buildings(&mut self, ctx: &mut metagrid::BuildingCtx<'_>) {
+        let changed = std::mem::take(&mut self.roots[self.main].changed_cells);
+        let mut w = std::mem::take(&mut self.wrtmg);
+        w.client_process_buildings(&mut self.roots, self.main, &changed, ctx);
+        self.wrtmg = w;
+    }
+
+    fn debug_load_around(
+        &mut self,
+        cell: &IsoCell,
+        m: &IsoSpriteManager,
+        player: Option<(f32, f32)>,
+    ) {
         if self.debug_load_all_chunks {
             if let Some((px, py)) = player {
                 let cx = px.floor() as i32 / 8;
@@ -636,11 +708,20 @@ impl IsoRegions {
                 }
             }
         }
-        swapped
     }
 
-    /// `IsoRegionWorker.thread_main_loop()` once, synchronously.
-    pub fn worker_tick(&mut self) {
+    /// `IsoRegionWorker.thread_main_loop()` once, synchronously, for callers
+    /// without a main thread side: at a swap only the changed cells are
+    /// dropped. Returns whether a swap happened.
+    pub fn worker_tick(&mut self) -> bool {
+        self.worker_tick_with(&mut |r: &mut IsoRegions| r.roots[r.main].changed_cells.clear())
+    }
+
+    /// `IsoRegionWorker.thread_main_loop()` once, synchronously; `on_swap`
+    /// is the main thread's side of each buffer swap, called with the new
+    /// root in place. Returns whether a swap happened.
+    pub fn worker_tick_with(&mut self, on_swap: &mut dyn FnMut(&mut IsoRegions)) -> bool {
+        let mut swapped = false;
         let mut apply_idx = self
             .job_batched_processing
             .iter()
@@ -648,9 +729,13 @@ impl IsoRegions {
         while let Some(job) = self.job_queue.pop_front() {
             match job {
                 RegionJob::DebugResetAllData => {
-                    // Reset on both roots upstream, with a swap between.
-                    self.data_root.reset_all_data();
-                    self.swap_requested = true;
+                    let w = 1 - self.main;
+                    self.roots[w].reset_all_data();
+                    self.main = w;
+                    swapped = true;
+                    on_swap(self);
+                    let w = 1 - self.main;
+                    self.roots[w].reset_all_data();
                 }
                 RegionJob::ApplyChanges { mut save_to_disk } => {
                     if let Some(i) = apply_idx {
@@ -668,37 +753,50 @@ impl IsoRegions {
             }
         }
         if apply_idx.is_some() {
-            self.run_batched_jobs();
+            swapped |= self.run_batched_jobs(on_swap);
             self.job_batched_processing.clear();
         }
+        swapped
     }
 
-    /// `thread_run_batched_jobs()` on the one root: the jobs in order,
-    /// `processDirtyChunks` at the `ApplyChanges`, then the second cycle's
-    /// file writes.
-    fn run_batched_jobs(&mut self) {
-        let mut index = 0;
-        while index < self.job_batched_processing.len() {
-            match &self.job_batched_processing[index] {
-                RegionJob::SquareUpdate { x, y, z, flags } => {
-                    let (x, y, z, flags) = (*x, *y, *z, *flags);
-                    self.data_root.update_existing_square(x, y, z, flags);
-                }
-                RegionJob::ChunkUpdate(j) => {
-                    j.read_chunks_packet(&mut self.data_root, &mut self.thread_discovered_chunks);
-                }
-                RegionJob::ApplyChanges { save_to_disk } => {
-                    let save = *save_to_disk;
-                    self.data_root.process_dirty_chunks();
-                    self.swap_requested = true;
-                    if save {
-                        self.save_batch();
+    /// `thread_run_batched_jobs()`: two cycles over the batch, each on the
+    /// worker's root. The first cycle's `ApplyChanges` processes the dirty
+    /// chunks and swaps the roots (`on_swap`); the second's processes them
+    /// on the other root and writes the files.
+    fn run_batched_jobs(&mut self, on_swap: &mut dyn FnMut(&mut IsoRegions)) -> bool {
+        let mut swapped = false;
+        for cycle in 0..2 {
+            let mut index = 0;
+            while index < self.job_batched_processing.len() {
+                let w = 1 - self.main;
+                match &self.job_batched_processing[index] {
+                    RegionJob::SquareUpdate { x, y, z, flags } => {
+                        let (x, y, z, flags) = (*x, *y, *z, *flags);
+                        self.roots[w].update_existing_square(x, y, z, flags);
                     }
+                    RegionJob::ChunkUpdate(j) => {
+                        j.read_chunks_packet(
+                            &mut self.roots[w],
+                            &mut self.thread_discovered_chunks,
+                        );
+                    }
+                    RegionJob::ApplyChanges { save_to_disk } => {
+                        let save = *save_to_disk;
+                        self.roots[w].process_dirty_chunks();
+                        if cycle == 0 {
+                            self.main = w;
+                            swapped = true;
+                            on_swap(self);
+                        } else if save {
+                            self.save_batch();
+                        }
+                    }
+                    RegionJob::DebugResetAllData => {}
                 }
-                RegionJob::DebugResetAllData => {}
+                index += 1;
             }
-            index += 1;
         }
+        swapped
     }
 
     /// The `isSaveToDisk` part of the second cycle: each square-update or
@@ -711,9 +809,10 @@ impl IsoRegions {
             let job = match &self.job_batched_processing[i] {
                 RegionJob::SquareUpdate { x, y, z, .. } => {
                     let (x, y, z) = (*x, *y, *z);
-                    let s = self.data_root.select(x, y, z, true, false);
+                    let root = &mut self.roots[1 - self.main];
+                    let s = root.select(x, y, z, true, false);
                     let mut j = JobChunkUpdate::new();
-                    j.add_chunk_from_data_chunk(self.data_root.chunk(s.chunk.unwrap()));
+                    j.add_chunk_from_data_chunk(root.chunk(s.chunk.unwrap()));
                     j
                 }
                 RegionJob::ChunkUpdate(_) => match self.job_batched_processing.remove(i) {
@@ -796,7 +895,7 @@ impl IsoRegions {
                 if let Some(p) = header_known.iter().position(|&k| k == h) {
                     header_known.remove(p);
                 } else {
-                    self.data_root.region_manager.warnings.push(
+                    self.roots[self.main].region_manager.warnings.push(
                         "IsoRegion: A chunk save has been found that was not in header known chunks list."
                             .into(),
                     );
@@ -818,7 +917,7 @@ impl IsoRegions {
             self.apply_chunk_changes(false);
         }
         if has_read_header && !header_known.is_empty() {
-            self.data_root.region_manager.warnings.push(format!(
+            self.roots[self.main].region_manager.warnings.push(format!(
                 "IsoRegion: {} previously discovered chunks have not been loaded.",
                 header_known.len()
             ));

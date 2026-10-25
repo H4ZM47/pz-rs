@@ -32,11 +32,7 @@ fn load_item(
 /// Loads `files` (relative path, text) as a game install with a full
 /// `ScriptManager.Load`.
 fn load_game(files: &[(&str, &str)]) -> ScriptManager {
-    let dir = std::env::temp_dir().join(format!(
-        "pz-items-test-{}-{}",
-        std::process::id(),
-        files.iter().map(|f| f.1.len()).sum::<usize>()
-    ));
+    let dir = unique_temp_dir("pz-items-test");
     for (path, text) in files {
         let p = dir.join(path);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -428,4 +424,12 @@ fn create_instance_covers_group_types() {
 /// Invented perk ids standing in for the jar's `PerkFactory.Perks`.
 fn test_perks() -> Vec<String> {
     ["Axe", "Cooking", "Fitness", "Woodwork"].map(String::from).to_vec()
+}
+
+/// A temp dir unique to this call (per-process counter), so parallel tests
+/// never share one.
+fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id()))
 }

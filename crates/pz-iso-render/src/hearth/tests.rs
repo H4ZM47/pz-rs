@@ -5,7 +5,7 @@ use crate::Camera;
 use pz_core::random::Rand;
 use pz_render::{Sprite, WorldShader};
 
-fn tex(name: &str, w: u32, h: u32, id: u32) -> Texture {
+pub(crate) fn tex(name: &str, w: u32, h: u32, id: u32) -> Texture {
     let mut t = Texture::empty(name);
     t.id = Some(id);
     t.width = w;
@@ -20,7 +20,7 @@ fn tex(name: &str, w: u32, h: u32, id: u32) -> Texture {
     t
 }
 
-struct Maps;
+pub(crate) struct Maps;
 
 impl DepthMaps for Maps {
     fn preset(&self, _: DepthPreset) -> Option<Texture> {
@@ -193,7 +193,7 @@ fn campfires_and_drums_swap_their_overlay() {
     assert_eq!(f.overlay.as_deref(), Some("crafted_02_43"));
 }
 
-fn sprites(out: &[DrawCmd]) -> Vec<(&Sprite, &WorldShader)> {
+pub(crate) fn sprites(out: &[DrawCmd]) -> Vec<(&Sprite, &WorldShader)> {
     out.iter()
         .filter_map(|c| match c {
             DrawCmd::WorldSprite(s, w) => Some((s, w)),
@@ -202,7 +202,7 @@ fn sprites(out: &[DrawCmd]) -> Vec<(&Sprite, &WorldShader)> {
         .collect()
 }
 
-fn fireplace_square(depth: Option<Texture>) -> RenderSquare {
+pub(crate) fn fireplace_square(depth: Option<Texture>) -> RenderSquare {
     let r = Rand::new(8);
     let mut f = FireplaceState::new();
     f.update(&wall_fireplace(true, 30), 0.0, &r, &frame_size);
@@ -360,4 +360,43 @@ fn a_lit_barbecue_smokes_without_a_depth_texture() {
 
     b.update(false, 1.0);
     assert!(b.attached.is_empty());
+}
+
+/// The frame draws the flames after the chunk composite
+/// (`renderAnimatedAttachments`), once per chunk.
+#[test]
+fn the_frame_draws_the_flames() {
+    let cam = Camera::centred(10.0, 6.0, 0.0, 800, 600, 1.0);
+    let sq = fireplace_square(Some(tex("DEPTH_fireplace", 128, 256, 30)));
+    let maps = Maps;
+    let r = crate::ChunkRenderer::new(cam, &maps, (800, 600));
+    let mut levels: crate::cell::LevelSquares<'_> = [None; 64];
+    levels[2 + 6 * 8] = Some(&sq);
+    let chunks = [crate::frame::ChunkLevels {
+        texture: ChunkTexture::new(1, 0, 0, 0, 0),
+        levels: vec![(0, levels)],
+        dirty: false,
+    }];
+    let frame = crate::frame::world_frame(
+        &r,
+        crate::frame::FrameSize {
+            width: 800,
+            height: 600,
+        },
+        &chunks,
+        pz_render::ScreenParams {
+            desaturation: 0.0,
+            timer: 0.0,
+        },
+    );
+    let mut alone = Vec::new();
+    r.render_animated_attachments(&[&sq], &mut alone);
+    let flames = sprites(&alone);
+    assert_eq!(flames.len(), 1);
+    let drawn = sprites(&frame);
+    assert_eq!(
+        drawn.iter().filter(|s| s.0 == flames[0].0).count(),
+        1,
+        "flame drawn once"
+    );
 }

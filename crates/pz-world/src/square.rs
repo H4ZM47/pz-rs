@@ -110,11 +110,21 @@ impl EdgeFacing {
 /// `IsoGridSquare.GetSquare`.
 pub trait GetSquare {
     fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare>;
+
+    /// The whole cell behind this getter, when it is one (the queries that
+    /// look past single squares, `testCollideAdjacent` with a mover, need
+    /// it).
+    fn as_iso_cell(&self) -> Option<&IsoCell> {
+        None
+    }
 }
 
 impl GetSquare for IsoCell {
     fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
         IsoCell::get_grid_square(self, x, y, z)
+    }
+    fn as_iso_cell(&self) -> Option<&IsoCell> {
+        Some(self)
     }
 }
 
@@ -410,9 +420,16 @@ impl IsoGridSquare {
         self.sloped_surface_direction.is_some()
     }
 
-    /// `TreatAsSolidFloor()` (uncached).
+    /// `TreatAsSolidFloor()`, cached in `solidFloorCached` like the
+    /// original (see [`IsoGridSquare::solid_floor_cache`]).
     pub fn treat_as_solid_floor(&self, m: &IsoSpriteManager) -> bool {
-        self.has(m.tables.flag.solidfloor) || self.has_stairs(m) || self.has_sloped_surface()
+        if let Some(v) = self.solid_floor_cache.get() {
+            return v;
+        }
+        let v =
+            self.has(m.tables.flag.solidfloor) || self.has_stairs(m) || self.has_sloped_surface();
+        self.solid_floor_cache.set(Some(v));
+        v
     }
 
     /// `hasFloorOverWater()`.
@@ -1894,6 +1911,8 @@ fn recalc_pair(
     if is(sq, a) {
         return;
     }
+    sq.solid_floor_cache.set(None);
+    a.solid_floor_cache.set(None);
     out.push(matrix_bits(sq, a, m, g));
     if reverse {
         out.push(matrix_bits(a, sq, m, g));
@@ -1909,6 +1928,7 @@ fn recalc_all_with_neighbours(
     g: &impl GetSquare,
     out: &mut Vec<MatrixBits>,
 ) {
+    sq.solid_floor_cache.set(None);
     for x in sq.x - 1..=sq.x + 1 {
         for y in sq.y - 1..=sq.y + 1 {
             for z in sq.z - 1..=sq.z + 1 {
@@ -1985,6 +2005,7 @@ impl IsoCell {
                     if let Some(sq) = ch.get_grid_square_mut(x, y, z) {
                         sq.recalc_properties(m);
                         any = true;
+                        ch.collision.clear();
                     }
                 }
             }
@@ -2343,13 +2364,10 @@ impl IsoCell {
         meta: &IsoMetaGrid,
         m: &IsoSpriteManager,
     ) {
-        let Some(sq) = self.get_grid_square_mut(x, y, z) else {
+        if self.get_grid_square(x, y, z).is_none() {
             return;
-        };
-        sq.recalc_properties(m);
-        if let Some(ch) = self.chunks.get_mut(&(x.div_euclid(8), y.div_euclid(8))) {
-            ch.check_physics_later(z);
         }
+        self.recalc_square_properties(x, y, z, m);
         let mut bits = Vec::new();
         if let Some(sq) = self.get_grid_square(x, y, z) {
             recalc_all_with_neighbours(sq, meta, m, self, &mut bits);

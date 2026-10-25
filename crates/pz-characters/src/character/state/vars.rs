@@ -169,6 +169,8 @@ pub struct CharacterVars {
     pub melee_delay: f32,
     pub recoil_delay: f32,
     pub aiming_delay: f32,
+    /// `useHandWeapon` (by item id).
+    pub use_hand_weapon: Option<i32>,
     pub speed_mod: f32,
     pub combat_speed_modifier: f32,
     pub block_turning: bool,
@@ -233,8 +235,6 @@ pub struct CharacterVars {
     pub manual_floor_attack_button_down: bool,
     /// `clickSound`.
     pub click_sound: Option<String>,
-    pub force_run: bool,
-    pub force_sprint: bool,
     /// `isShootable()`.
     pub shootable: bool,
     pub deferred_movement_enabled: bool,
@@ -248,6 +248,10 @@ pub struct CharacterVars {
     pub collided_e: bool,
     pub collided_w: bool,
     pub last_collide_time: f32,
+    /// `IsoPlayer.ignoreAutoVault`.
+    pub ignore_auto_vault: bool,
+    /// `IsoPlayer.hasObstacleOnPath` (a remote player's).
+    pub has_obstacle_on_path: bool,
     /// `IsoMovingObject.nx`, `ny` (`getNextX/Y`), `reqMovement`, `impulsex/y`.
     pub next_x: f32,
     pub next_y: f32,
@@ -260,6 +264,8 @@ pub struct CharacterVars {
     pub collided_this_frame: bool,
     pub collided_with_vehicle: bool,
     pub collided_with_door: bool,
+    /// `collidedObject`: the special object the last collision hit.
+    pub collided_object: Option<pz_pathfind::mover::ObjectRef>,
     /// `last` (the square before this frame's move).
     pub last_square: Option<(i32, i32, i32)>,
     /// `isRagdollSimulationActive()`, `IsoPlayer.isNoClip()`, `destroyed`.
@@ -403,6 +409,7 @@ impl Default for CharacterVars {
             melee_delay: 0.0,
             recoil_delay: 0.0,
             aiming_delay: 0.0,
+            use_hand_weapon: None,
             speed_mod: 1.0,
             combat_speed_modifier: 1.0,
             block_turning: false,
@@ -456,8 +463,6 @@ impl Default for CharacterVars {
             melee_button_down: false,
             manual_floor_attack_button_down: false,
             click_sound: None,
-            force_run: false,
-            force_sprint: false,
             shootable: true,
             deferred_movement_enabled: true,
             player_attack_position: None,
@@ -468,6 +473,8 @@ impl Default for CharacterVars {
             collided_e: false,
             collided_w: false,
             last_collide_time: 0.0,
+            ignore_auto_vault: false,
+            has_obstacle_on_path: false,
             next_x: 0.0,
             next_y: 0.0,
             req_movement: (0.0, 0.0),
@@ -477,6 +484,7 @@ impl Default for CharacterVars {
             collided_this_frame: false,
             collided_with_vehicle: false,
             collided_with_door: false,
+            collided_object: None,
             last_square: None,
             ragdoll_simulation_active: false,
             no_clip: false,
@@ -898,7 +906,9 @@ impl CharVar {
             CharVar::GrappleThrowOutWindow => B(v.grapple_throw_out_window),
             CharVar::GrappleThrowOverFence => B(v.grapple_throw_over_fence),
             CharVar::GrappleThrowIntoContainer => B(v.grapple_throw_into_container),
-            CharVar::CanRagdoll | CharVar::IsRagdoll | CharVar::IsSimulationActive => B(false),
+            CharVar::CanRagdoll => B(c.ragdoll.can_ragdoll),
+            CharVar::IsRagdoll => B(c.ragdoll.is_ragdolling),
+            CharVar::IsSimulationActive => B(v.ragdoll_simulation_active),
             CharVar::IsUpright | CharVar::IsOnBack | CharVar::UseRagdollVehicleCollision => B(false),
             CharVar::IsEditingRagdoll => B(v.editing_ragdoll),
             CharVar::IsRagdollFall => B(v.ragdoll_fall),
@@ -1304,7 +1314,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `getDirectionAngleRadians()`: `Vector2.getDirection` of the forward
     /// direction.
     pub fn direction_angle_radians(&self) -> f32 {
-        (self.vars.forward_y as f64).atan2(self.vars.forward_x as f64) as f32
+        crate::character::zombie::math::direction(self.vars.forward_x, self.vars.forward_y)
     }
 
     /// `getDirectionAngle()`.
@@ -1323,8 +1333,11 @@ impl<I: 'static> GameCharacter<I> {
     /// original throws).
     pub fn set_forward_direction(&mut self, x: f32, y: f32) {
         if x * x + y * y == 0.0 {
+            // The original sets the direction from the zero vector (east)
+            // before it throws "Forward Direction cannot be zero length".
             self.vars.forward_x = x;
             self.vars.forward_y = y;
+            self.vars.dir = iso_direction_from_angle(x, y);
             return;
         }
         // `Vector2.normalize()`: a length already within 1e-5 of 1 stays.

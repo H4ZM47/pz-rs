@@ -117,6 +117,11 @@ impl ModelPipelines {
                 wgpu::CompareFunction::Less,
                 cull,
             ),
+            ModelPass::AnimatedModel { .. } | ModelPass::AnimatedModelCullBack => (
+                wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add }, alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add } },
+                wgpu::CompareFunction::Less,
+                !matches!(key.pass, ModelPass::AnimatedModel { cull: false }),
+            ),
             ModelPass::Item { cull } => (
                 wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add }, alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::OneMinusDstAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add } },
                 wgpu::CompareFunction::LessEqual,
@@ -126,7 +131,8 @@ impl ModelPipelines {
         // glCullFace(GL_FRONT) with counter-clockwise front faces; drawing
         // into a texture flips y, which flips the winding.
         let flipped = key.target != TargetKind::Main;
-        let cull_mode = cull.then_some(if flipped { wgpu::Face::Back } else { wgpu::Face::Front });
+        let back = key.pass == ModelPass::AnimatedModelCullBack;
+        let cull_mode = cull.then_some(if flipped != back { wgpu::Face::Back } else { wgpu::Face::Front });
         let (vs, attrs, stride): (&str, &[wgpu::VertexAttribute], u64) = match key.kind {
             MeshKind::Static => ("vs_static", &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2], 32),
             MeshKind::Skinned => ("vs_skinned", &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x2], 64),

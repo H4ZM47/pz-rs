@@ -182,6 +182,10 @@ impl ZombieOps for Zombies {
         self.next += 1;
         Some(self.next)
     }
+    fn real_zombie_info(&self, _z: u32) -> Option<RealZombieInfo<u32>> {
+        None
+    }
+    fn set_persistent_id(&mut self, _z: u32, _id: i32) {}
     fn set_position(&mut self, z: u32, x: f32, y: f32) {
         self.ops.push(Op::Pos(z, x, y));
     }

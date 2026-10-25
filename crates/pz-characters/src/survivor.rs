@@ -7,13 +7,15 @@ use std::rc::Rc;
 
 use pz_core::random as rand;
 use pz_scripts::objects::items::{CharacterProfession, CharacterProfessionDefinition};
-use pz_scripts::registry::RegistryKey;
+use pz_inventory::io::{Reader, Writer};
+use pz_scripts::registry::{RegistryKey, ResourceLocation};
 use pz_scripts::{ScriptManager, ScriptResult};
 
-use pz_inventory::visual::human::{HumanStyles, HumanVisualOwner};
+use pz_inventory::visual::human::HumanVisualOwner;
 use pz_inventory::visual::HumanVisual;
 
 use crate::character::items::blood_part;
+use crate::character::save::io_error;
 use crate::color::{Color, ImmutableColor};
 use crate::observation::ObservationRef;
 use crate::worn_items::{ItemIdentity, WornItems};
@@ -98,10 +100,14 @@ fn random_entry(list: &[String]) -> ScriptResult<String> {
 }
 
 impl Characters {
-    /// `Translator.getText(key)`. TODO(Translator): translation tables are
-    /// not loaded; the key is returned as for a missing translation.
+    /// `Translator.getText(key)` through the installed
+    /// [`Characters::translator`]; without one the key is returned, as for
+    /// a missing translation.
     pub fn get_text(&self, key: &str) -> String {
-        Self::translate(key)
+        match &self.translator {
+            Some(t) => t(key),
+            None => Self::translate(key),
+        }
     }
 
     /// [`Characters::get_text`] without a borrow of the statics.
@@ -223,21 +229,6 @@ impl<I> HumanVisualOwner for SurvivorDesc<I> {
     }
     fn is_skeleton(&self) -> bool {
         false
-    }
-}
-
-/// STUB [`HumanStyles`] until `HairStyles`, `BeardStyles`,
-/// `HairOutfitDefinitions`, `PopTemplateManager` and `OutfitRNG` are
-/// ported: a set hair or beard style counts as known (so the getters keep
-/// it), an unset one stays unset, and no skins, colours or draws exist.
-pub struct UnportedStyles;
-
-impl HumanStyles for UnportedStyles {
-    fn has_hair_style(&self, _female: bool, name: Option<&str>) -> bool {
-        name.is_some()
-    }
-    fn has_beard_style(&self, name: Option<&str>) -> bool {
-        name.is_some()
     }
 }
 
@@ -363,6 +354,86 @@ impl<I: ItemIdentity> SurvivorDesc<I> {
 }
 
 impl<I> SurvivorDesc<I> {
+    /// `load(input, worldVersion, chr)`: the identity (the id raises
+    /// `idCount`), `doStats`, the extras, the XP boosts (unknown perks are
+    /// dropped) and the voice. TODO(IsoWorld): the
+    /// `IsoWorld.survivorDescriptors` registration; `instance` is the
+    /// caller's.
+    pub fn load(&mut self, sm: &ScriptManager, chars: &mut Characters, r: &mut Reader<'_>, world_version: i32) -> ScriptResult {
+        self.id = r.i32().map_err(io_error)?;
+        self.forename = Some(r.string().map_err(io_error)?);
+        self.surname = Some(r.string().map_err(io_error)?);
+        self.torso = Some(r.string().map_err(io_error)?);
+        self.character_gender = if r.i32().map_err(io_error)? == 1 { CharacterGender::Female } else { CharacterGender::Male };
+        let profession = r.string().map_err(io_error)?;
+        self.character_profession = CharacterProfession::get(sm, &ResourceLocation::of(&profession)?);
+        self.do_stats();
+        if chars.survivor_desc.id_count < self.id {
+            chars.survivor_desc.id_count = self.id;
+        }
+        self.extra.clear();
+        if r.i32().map_err(io_error)? == 1 {
+            let n = r.i32().map_err(io_error)?;
+            for _ in 0..n {
+                self.extra.push(r.string().map_err(io_error)?);
+            }
+        }
+        let n = r.i32().map_err(io_error)?;
+        for _ in 0..n {
+            let name = r.string().map_err(io_error)?;
+            let level = r.i32().map_err(io_error)?;
+            // `loadPerk`: `Perks.FromString`, `null` for `Perks.MAX`.
+            let perk = chars.perks.from_string(&name);
+            let max = chars.perks.max();
+            let Some(perk) = perk.filter(|p| !max.as_ref().is_some_and(|m| Rc::ptr_eq(m, p))) else { continue };
+            let id = perk.borrow().id().to_string();
+            match self.xp_boost_map.iter_mut().find(|(k, _)| *k == id) {
+                Some(e) => e.1 = level,
+                None => self.xp_boost_map.push((id, level)),
+            }
+        }
+        if world_version >= 208 {
+            self.voice_prefix = Some(r.string().map_err(io_error)?);
+            self.voice_pitch = r.f32().map_err(io_error)?;
+            self.voice_type = r.i32().map_err(io_error)?;
+        } else {
+            self.voice_prefix = Some(format!("Voice{}", self.character_gender.gender_str()));
+            self.voice_pitch = 0.0;
+            self.voice_type = rand::next(3);
+        }
+        Ok(())
+    }
+
+    /// `save` (the XP boosts in insertion order; the original's map is
+    /// identity-hashed).
+    pub fn save(&self, w: &mut Writer) -> ScriptResult {
+        w.i32(self.id);
+        w.opt_string(self.forename.as_deref());
+        w.opt_string(self.surname.as_deref());
+        w.opt_string(self.torso.as_deref());
+        w.i32((self.character_gender == CharacterGender::Female) as i32);
+        let profession = self.character_profession.as_ref().ok_or_else(crate::npe)?;
+        w.string(&profession.location.id());
+        if self.extra.is_empty() {
+            w.i32(0);
+        } else {
+            w.i32(1);
+            w.i32(self.extra.len() as i32);
+            for e in &self.extra {
+                w.string(e);
+            }
+        }
+        w.i32(self.xp_boost_map.len() as i32);
+        for (perk, level) in &self.xp_boost_map {
+            w.string(perk);
+            w.i32(*level);
+        }
+        w.opt_string(self.voice_prefix.as_deref());
+        w.f32(self.voice_pitch);
+        w.i32(self.voice_type);
+        Ok(())
+    }
+
     /// `doStats`.
     fn do_stats(&mut self) {
         let coin = || if rand::next(2) == 0 { 10.0 } else { 0.0 };

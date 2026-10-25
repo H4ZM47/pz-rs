@@ -31,7 +31,7 @@ use pz_core::game_time::{GameTime, GameTimeContext, GameTimeEvent};
 use pz_core::weather::manager::{AirFront, FLOAT_MAX};
 use pz_core::weather::{
     temperature, ClimateColorInfo, ClimateContext, ClimateEvent, ClimateManager, ClimateValues, ColorRef,
-    ErosionSeason, PeriodId, WeatherPeriod,
+    ErosionSeason, PeriodId, SeasonConfig, WeatherPeriod,
 };
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -284,6 +284,76 @@ pub fn update_game_time(thread: &mut Thread) {
         g.apply_climate_view_dist();
     }
     fire_events(thread, ctx);
+}
+
+// ---- world load -------------------------------------------------------------
+//
+// The original's order while a world loads (`GameLoadingState`'s loader
+// thread, after `GameLoadingState.enter` ran `LuaManager.LoadDirBase
+// ("server")`, so `ClimateMain.lua` has added its handler):
+//
+// 1. `GameTime.setInstance(new GameTime())` ([`install_game_time`]);
+// 2. `ClimateManager.setInstance(new ClimateManager())`
+//    ([`new_climate_manager`]): the constructor fires
+//    `OnClimateManagerInit`, where `ClimateMain.lua` sets the night, fog,
+//    cloud and season colours;
+// 3. `IsoWorld.init`: `GameTime.init()` then `GameTime.load()` (`map_t.bin`,
+//    whose climate part leaves the colours alone), ..., `ErosionGlobals.Boot`
+//    (`ErosionMain.start`: [`start_erosion_season`], `OnInitSeasons`), ...,
+//    `metaGrid.CreateStep2()`, `ClimateManager.init(metaGrid)`
+//    ([`init_climate_manager`]), ..., the cell load, then
+//    `ClimateManager.postCellLoadSetSnow()`.
+
+/// `ClimateManager.setInstance(new ClimateManager())`: a new climate in the
+/// shared `GameTime` (simplex offsets drawn from `Rand`, every season colour
+/// black), then the constructor's `OnClimateManagerInit` with it.
+///
+/// The original fires the event from inside the constructor, before
+/// `setInstance`, so a handler that called `getClimateManager()` would see
+/// the previous instance; `ClimateMain.lua` only uses the argument.
+pub fn new_climate_manager(thread: &mut Thread) {
+    let gt = shared_game_time();
+    let mut ctx = LuaClimateContext::new();
+    let cm = ClimateManager::new(&mut ctx);
+    gt.borrow_mut().climate = cm;
+    fire_events(thread, ctx);
+}
+
+/// `ErosionMain.start()`'s season: `cfg` (`erosion.ini`'s season block)
+/// with the sandbox `Temperature` option (1 very cold .. 5 very hot), set to
+/// `GameTime.getDay()`/`getMonth()`/`getYear()`, then `OnInitSeasons` with
+/// it. The season is kept as the climate's erosion season, which
+/// [`init_climate_manager`] then takes (the original's `ClimateManager.init`
+/// takes `ErosionMain.getInstance().getSeasons()`, the same object).
+pub fn start_erosion_season(thread: &mut Thread, cfg: &SeasonConfig, temperature_modifier: i32) {
+    let gt = shared_game_time();
+    {
+        let mut g = gt.borrow_mut();
+        let s = ErosionSeason::from_config(cfg, temperature_modifier, g.day, g.month, g.year);
+        g.climate.season = Some(s);
+    }
+    if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
+        sink(thread, "OnInitSeasons", &[handle(Obj::Season(SeasonRef::Erosion))]);
+    }
+}
+
+/// `ClimateManager.getInstance().init(metaGrid)` on the shared `GameTime`:
+/// `bounds` are the meta grid's `(minX, minY, maxX, maxY)` in cells (the
+/// thunder storm's map edges), the season is the one
+/// [`start_erosion_season`] made, and the forecaster fills its days. Returns
+/// false (and does nothing) when no erosion season was started, where the
+/// original would fail on the null season.
+pub fn init_climate_manager(thread: &mut Thread, bounds: Option<(i32, i32, i32, i32)>) -> bool {
+    let gt = shared_game_time();
+    let mut ctx = LuaClimateContext::new();
+    {
+        let mut g = gt.borrow_mut();
+        let Some(season) = g.climate.season.take() else { return false };
+        let clock = g.clock(&ctx);
+        g.climate.init(season, bounds, &clock, &mut ctx);
+    }
+    fire_events(thread, ctx);
+    true
 }
 
 fn with_gt<R>(c: &mut NativeCall<'_>, f: impl FnOnce(&mut GameTime, &mut LuaClimateContext) -> R) -> LuaResult<R> {

@@ -19,6 +19,7 @@
 
 pub mod draw;
 pub mod element;
+pub mod ext;
 pub mod lua;
 pub mod manager;
 pub mod sprite;
@@ -26,6 +27,7 @@ pub mod text;
 pub mod texture;
 
 pub use element::UIElement;
+pub use ext::UIElementExt;
 pub use manager::{with_ui, MouseState, UIManager};
 pub use sprite::{SpriteRenderer, TextAlign, UiDrawCmd};
 pub use text::TextRenderer;

@@ -405,6 +405,7 @@ impl<I: 'static> State<I> for PathFindState {
     fn execute(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
         use crate::character::state::BehaviorResult;
         let result = cx.world.path_update(owner);
+        owner.run_path_requests(cx);
         match result {
             BehaviorResult::Failed => {
                 owner.set_var_bool("bPathfind", false);
@@ -830,7 +831,7 @@ impl<I: 'static> State<I> for ThumpState {
         let Some(i) = info else { return };
         if i.kind == ThumpKind::Window && i.can_climb_through {
             if let ThumpTarget::Object(o) = thump {
-                owner.path.requests.push(crate::character::path_mover::PathMoverRequest::ClimbThroughWindow(o));
+                owner.climb_through_window(o, cx);
             }
             return;
         }
@@ -867,6 +868,21 @@ pub fn thump_flag_for_sound(sound: &str) -> i32 {
 
 /// `faceThisObject(object)` for a thump target: its facing position.
 fn face_object<I: 'static>(owner: &mut GameCharacter<I>, i: &crate::character::state::ThumpInfo) {
+    use crate::character::state::ThumpKind as K;
+    use pz_world::square::IsoDirections as D;
+    // `BarricadeAble` (doors, windows, window frames, thumpables): face
+    // across its edge from either side.
+    if matches!(i.kind, K::Door | K::Window | K::WindowFrame | K::Thumpable) {
+        let cur = owner.path.current_square;
+        if cur.is_some() && cur == i.square {
+            owner.set_forward_iso_direction(if i.north { D::N } else { D::W });
+            return;
+        }
+        if cur.is_some() && cur == i.opposite_square {
+            owner.set_forward_iso_direction(if i.north { D::S } else { D::E });
+            return;
+        }
+    }
     let (dx, dy) = (i.facing_position.0 - owner.vars.x, i.facing_position.1 - owner.vars.y);
     let (nx, ny) = normalize(dx, dy);
     owner.vars.dir = crate::character::state::vars::iso_direction_from_angle(nx, ny);

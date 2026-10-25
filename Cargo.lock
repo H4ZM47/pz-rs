@@ -1869,6 +1869,7 @@ version = "0.1.0"
 dependencies = [
  "pz-anim",
  "pz-audio",
+ "pz-bullet",
  "pz-core",
  "pz-fs",
  "pz-inventory",
@@ -1896,6 +1897,7 @@ dependencies = [
  "pz-characters",
  "pz-engine",
  "pz-fs",
+ "pz-inventory",
  "pz-kahlua",
  "pz-lua-api",
  "pz-scripts",
@@ -1922,12 +1924,18 @@ dependencies = [
 name = "pz-engine"
 version = "0.1.0"
 dependencies = [
+ "pz-anim",
+ "pz-character-model",
+ "pz-characters",
  "pz-core",
  "pz-fs",
  "pz-gpu",
+ "pz-inventory",
  "pz-kahlua",
  "pz-lua-api",
+ "pz-model",
  "pz-render",
+ "pz-scripts",
  "pz-ui",
  "winit",
 ]
@@ -2064,6 +2072,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-player-input"
+version = "0.1.0"
+dependencies = [
+ "pz-characters",
+ "pz-core",
+ "pz-input",
+ "pz-lua-api",
+ "pz-render",
+ "pz-ui",
+]
+
+[[package]]
 name = "pz-popman"
 version = "0.1.0"
 dependencies = [
@@ -2168,6 +2188,7 @@ dependencies = [
  "pz-fs",
  "pz-inventory",
  "pz-kahlua",
+ "pz-pathfind",
  "pz-scripts",
  "pz-world",
 ]

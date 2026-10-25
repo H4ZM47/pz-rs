@@ -188,6 +188,7 @@ impl SimContext for Recorder {
                 format!("LevelPerk {} {level} {increased}", perk.borrow().id())
             }
             SimEvent::AddXp { perk, amount } => format!("AddXP {} {amount}", perk.borrow().id()),
+            SimEvent::LogLevelPerk { perk, level } => format!("LogLevelPerk {} {level}", perk.borrow().id()),
             other => format!("{other:?}"),
         };
         self.events.borrow_mut().push(s);
@@ -422,4 +423,26 @@ fn calculate_stats_tick() {
     c.cheats.set(&ctx, "UNLIMITED_ENDURANCE", true);
     c.calculate_stats(&sm, &chars, &ctx).unwrap();
     assert_eq!(c.stat(&chars, "ENDURANCE").unwrap(), 1.0);
+}
+
+#[test]
+fn survivor_constructor_rand_order() {
+    let sm = ScriptManager::new();
+    let mut chars = crate::Characters::default();
+    let desc = Rc::new(RefCell::new(SurvivorDesc::<i32>::new(&mut chars, &sm).unwrap()));
+    pz_core::random::set_seed(99);
+    let patience = pz_core::random::next_range(20, 150);
+    let hands = pz_core::random::next(1000);
+    let speak: Vec<f32> = (0..3).map(|_| (pz_core::random::next(200) + 55) as f32 / 255.0).collect();
+    let neighbour = pz_core::random::next(20);
+    pz_core::random::set_seed(99);
+    let c = GameCharacter::new_survivor(&sm, desc.clone(), || {
+        assert_eq!(pz_core::random::next(1000), hands);
+        None
+    });
+    assert_eq!(c.patience, patience);
+    assert_eq!(c.speak_colour, [speak[0], speak[1], speak[2], 1.0]);
+    assert_eq!(c.neightbour_update, neighbour);
+    assert_eq!(c.kind, CharacterKind::Survivor);
+    assert!(c.descriptor.as_ref().is_some_and(|d| Rc::ptr_eq(d, &desc)));
 }

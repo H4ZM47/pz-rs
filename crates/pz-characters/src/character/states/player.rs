@@ -259,8 +259,8 @@ impl<I: 'static> State<I> for PlayerGetUpState {
         owner.vars.attack_started = false;
         owner.vars.attack_type = String::new();
         owner.vars.block_movement = true;
-        owner.vars.force_run = false;
-        owner.vars.force_sprint = false;
+        owner.player.input.force_run = false;
+        owner.player.input.force_sprint = false;
         let quick = owner.get_variable_boolean("pressedRunButton");
         owner.set_variable_bool("getUpQuick", quick);
         if owner.moodles.moodle_level_of(cx.sm, "PANIC").unwrap_or(0) > 1 {

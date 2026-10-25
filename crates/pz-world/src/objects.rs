@@ -744,6 +744,9 @@ pub struct IsoObject {
     pub overlay_sprite: Option<OverlaySprite>,
     pub moved_thumpable: bool,
     pub sprite_model_name: Option<String>,
+    /// `rerouteCollide`: the window an `IsoWindow` made from the map set
+    /// on its square's wall (runtime only, not saved).
+    pub reroute_collide: Option<ObjectId>,
 }
 
 impl IsoObject {
@@ -779,6 +782,7 @@ impl IsoObject {
             overlay_sprite: None,
             moved_thumpable: false,
             sprite_model_name: None,
+            reroute_collide: None,
         }
     }
 

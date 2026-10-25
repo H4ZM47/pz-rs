@@ -31,6 +31,7 @@ use std::rc::Rc;
 use pz_render::iso::{fastfloor, x_to_iso, x_to_screen, y_to_iso, y_to_screen, TILE_SCALE};
 use pz_render::{gl, DrawCmd, DrawList, Rgba, Texture};
 
+use crate::objects::FrameObjects;
 use crate::weather_fx::{IsoWeatherFx, WeatherFxView};
 use crate::world::{BuildingId, RenderObject, RenderSquare, SpriteInfo, TileType};
 
@@ -87,8 +88,42 @@ pub trait FxMaskWorld {
     /// what is pushed are dropped (`SpriteRenderer.glBlendfuncEnabled` is
     /// off while the mask draws); `maxZ` is the square's level + 1, so the
     /// level check never skips. The renderer has no characters here, so
-    /// nothing by default.
+    /// nothing by default; [`FxMaskCharacters`] fills it from the frame's
+    /// [`FrameObjects`].
     fn render_characters(&self, _sq: &RenderSquare, _view: &WeatherFxView, _out: &mut Vec<DrawCmd>) {}
+}
+
+/// A world's [`FxMaskWorld`] with the frame's moving objects drawn into
+/// the mask: [`FxMaskWorld::render_characters`] is
+/// [`FrameObjects::render_characters`] (the characters' ordinary draws,
+/// no shadows), everything else is `world`'s.
+pub struct FxMaskCharacters<'a> {
+    pub world: &'a dyn FxMaskWorld,
+    pub objects: &'a FrameObjects,
+}
+
+impl FxMaskWorld for FxMaskCharacters<'_> {
+    fn square(&self, x: i32, y: i32, z: i32) -> Option<&RenderSquare> {
+        self.world.square(x, y, z)
+    }
+    fn is_exterior(&self, sq: &RenderSquare) -> bool {
+        self.world.is_exterior(sq)
+    }
+    fn world_region(&self, x: i32, y: i32, z: i32) -> Option<RegionId> {
+        self.world.world_region(x, y, z)
+    }
+    fn region_is_fog_mask(&self, r: RegionId) -> bool {
+        self.world.region_is_fog_mask(r)
+    }
+    fn region_neighbors(&self, r: RegionId) -> Vec<RegionId> {
+        self.world.region_neighbors(r)
+    }
+    fn cutaway_flags(&self, x: i32, y: i32, z: i32) -> u8 {
+        self.world.cutaway_flags(x, y, z)
+    }
+    fn render_characters(&self, sq: &RenderSquare, _view: &WeatherFxView, out: &mut Vec<DrawCmd>) {
+        self.objects.render_characters(sq.x, sq.y, sq.z, out);
+    }
 }
 
 /// The player `PlayerFxMask.initMask` reads.
@@ -1646,5 +1681,59 @@ mod tests {
         draw_fx_mask(&m, &w, &FxMaskSprites::default(), &view, &FxMaskFrame::default(), &mut out);
         assert!(out.iter().any(|c| matches!(c, DrawCmd::StencilMask(0x5A))));
         assert!(!out.iter().any(|c| matches!(c, DrawCmd::BlendFunc(gl::ZERO, gl::ONE))));
+    }
+
+    /// The frame's characters (#79's `ObjectRender`s) draw into the mask
+    /// on their own square, by screen y, without their shadows; vehicles
+    /// and characters elsewhere stay out.
+    #[test]
+    fn frame_objects_draw_into_the_mask() {
+        use crate::objects::{FrameObjects, ObjectRender, ShadowRequest};
+        let mut room = Room::new();
+        for x in 10..15 {
+            let s = Rc::new(SpriteInfo { flags: SpriteFlags { solidfloor: true, ..Default::default() }, ..Default::default() });
+            room.0.get_mut(&(x, 10, 0)).unwrap().objects[0] = RenderObject::new(ObjectKind::Plain, Some(s));
+        }
+        let shadow = ShadowRequest::Character {
+            pos: [12.5, 10.5, 0.0],
+            forward: [1.0, 0.0],
+            params: crate::shadows::ShadowParams::default(),
+            rgb: [1.0; 3],
+            alpha: 1.0,
+            animal: false,
+            slope: None,
+        };
+        let character = |pos: [f32; 3], mark: u32| ObjectRender { draws: vec![DrawCmd::StencilMask(mark)], pos: Some(pos), ..Default::default() };
+        let objects = FrameObjects {
+            players: vec![ObjectRender { shadow: Some(shadow), ..character([12.5, 10.5, 0.0], 0x61) }],
+            moving: vec![
+                character([12.2, 10.2, 0.0], 0x62),
+                character([3.5, 3.5, 0.0], 0x63),
+                ObjectRender { draws: vec![DrawCmd::StencilMask(0x64)], ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let w = FxMaskCharacters { world: &room, objects: &objects };
+        let mut m = WeatherFxMask::default();
+        m.init_mask(&w, inside_player(), true);
+        for x in 10..15 {
+            m.add_mask_location(&w, x, 10, 0);
+        }
+        let view = WeatherFxView::new(0.0, 0.0, 640, 360, 1.0);
+        let mut out = Vec::new();
+        draw_fx_mask(&m, &w, &FxMaskSprites::default(), &view, &FxMaskFrame::default(), &mut out);
+        let marks: Vec<u32> = out
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::StencilMask(n) if *n > 0x60 => Some(*n),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(marks, [0x62, 0x61]);
+        assert!(!out.iter().any(|c| matches!(c, DrawCmd::ProjectedDepthQuad { .. })));
+        // Objects without a position (vehicles) never reach a square.
+        let mut on_square = Vec::new();
+        objects.render_characters(12, 10, 0, &mut on_square);
+        assert_eq!(on_square.len(), 2);
     }
 }

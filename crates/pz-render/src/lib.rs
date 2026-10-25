@@ -204,6 +204,14 @@ pub enum DrawCmd {
     /// variants set: `ortho2D(left, right, bottom, top)` over a viewport of
     /// `width` x `height`.
     Ortho { left: f32, right: f32, bottom: f32, top: f32, width: u32, height: u32 },
+    /// `glViewport(x, y, width, height)` in GL window coordinates (origin
+    /// at the bottom-left of the bound framebuffer): a split-screen
+    /// player's quarter (`DoStartFrameStuff` with a player index,
+    /// `ModelOutlines.endFrame`'s `getScreenLeft`/`getScreenTop`).
+    /// [`DrawCmd::Ortho`] keeps the origin and sets only the size; texture
+    /// targets (`ChunkBegin`, `AtlasBegin`) start at the origin and the
+    /// previous origin comes back when they end.
+    Viewport { x: u32, y: u32, width: u32, height: u32 },
     /// `FBORenderChunk.beginRenderThread`: following draws go to chunk
     /// texture `id` (colour plus 16-bit depth), created at this size if
     /// needed; `clear` clears colour to 0 and depth to 1.
@@ -287,11 +295,18 @@ pub enum DrawCmd {
     /// (`color`, 1) where the texture's alpha is at least 0.5 and
     /// transparent elsewhere. No depth writes (`depthMask` false).
     OutlineModel { draw: Box<model::ModelDraw>, color: [f32; 3] },
+    /// `FBORenderObjectOutline.Drawer2`: a sprite (an object's sprite or
+    /// overlay texture, or an atlas entry when `atlas` is set) drawn into
+    /// the outline mask with `vboRenderer_SpriteOutline` under the current
+    /// projection: (`color.rgb`, `color.a` x step(0.5, texel alpha)),
+    /// blended (SRC_ALPHA, ONE_MINUS_SRC_ALPHA). Corners top-left,
+    /// top-right, bottom-right, bottom-left.
+    OutlineSprite { texture: Option<Texture>, atlas: Option<u64>, pos: [[f32; 2]; 4], uv: [[f32; 2]; 4], color: [f32; 4] },
     /// `ModelOutlines.endFrame`'s thickening: the mask's alpha blurred
     /// horizontally (`aim_outline_h`) into the second texture and that
     /// vertically (`aim_outline_v`) into the third, each cleared first and
-    /// drawn with (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) over the viewport
-    /// `0, 0, width, height`. `u_resolution` = `resolution` (the mask's
+    /// drawn with (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) over the current
+    /// viewport ([`DrawCmd::Viewport`]: the player's part of the screen). `u_resolution` = `resolution` (the mask's
     /// unpadded size), `u_radius` = `radius`, `u_color` = `color`.
     OutlineThicken { color: [f32; 4], radius: f32, resolution: [f32; 2] },
     /// `endFrame`'s blit (`aim_outline_blit`): the thickened outline drawn
@@ -686,6 +701,12 @@ impl DrawList {
 pub trait TextureLoader {
     /// `Texture.getSharedTexture(path)`: loose image file or pack sub-texture.
     fn shared_texture(&mut self, path: &str) -> Option<Texture>;
+
+    /// Width and height of the backing image (`TextureID`) `id`, when the
+    /// loader knows it.
+    fn image_size(&self, _id: u32) -> Option<(i32, i32)> {
+        None
+    }
 }
 
 #[cfg(test)]

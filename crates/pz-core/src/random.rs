@@ -79,6 +79,13 @@ impl Rand {
         Rand { id: Cell::new(0), rand: JavaRandom::new(seed) }
     }
 
+    /// Restarts the sequence from `seed` (`Rand.init`'s seeding; tests use
+    /// it on [`with_standard`] for a reproducible `RandStandard`).
+    pub fn set_seed(&self, seed: i64) {
+        self.id.set(0);
+        self.rand.set_seed(seed);
+    }
+
     fn bump(&self) {
         let id = self.id.get() + 1;
         self.id.set(if id >= 10000 { 0 } else { id });
@@ -131,6 +138,11 @@ thread_local! {
 /// shared sequence in the game.
 pub fn with_standard<R>(f: impl FnOnce(&Rand) -> R) -> R {
     STANDARD.with(f)
+}
+
+/// Reseeds `RandStandard.INSTANCE` (see [`Rand::set_seed`]).
+pub fn set_seed(seed: i64) {
+    STANDARD.with(|r| r.set_seed(seed))
 }
 
 /// `Rand.Next(int max)` on `RandStandard.INSTANCE`.

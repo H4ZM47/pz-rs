@@ -162,12 +162,18 @@ Status of the Rust port. Update this file with every merged change.
   with a `pathfind_adapter!` for pz-pathfind; Lua bindings in
   `pz-lua-api::bind_vehicles`. Against the original with a recording
   Bullet stand-in, a fake clock and scripted driving (400 frames, every
-  dump field and Bullet call): 241 of 243 saved `vehicles.db` vehicles are
-  bit-exact, one matches up to the original's own crash (a broken window
-  with no square) and one holds a trailer animal the original cannot run
-  headless; all 241 vanilla vehicle scripts as new vehicles are
+  dump field and Bullet call, the item load draws made on the vehicle's
+  own `Rand` stream as the original does): 240 of 243 saved `vehicles.db`
+  vehicles are bit-exact, two match up to the original's own crash (a
+  broken window with no square) and one holds a trailer animal the
+  original cannot run headless; the load draws match for all 242 loadable
+  vehicles; all 241 vanilla vehicle scripts as new vehicles are
   bit-exact; 3,000 single-zone spawns and 2,000 `AddVehicles` runs on
-  synthetic zone lists give the original's vehicles and `Rand` state.
+  synthetic zone lists give the original's vehicles and `Rand` state;
+  on real map chunks with pz-world's vehicle zones (identical to the
+  original's in all 563 cells), `AddVehicles` gives the original's vehicles
+  and next draw in 1,664 of 1,664 chunks of 26 street, parking-lot and
+  traffic-jam regions (347 vehicles).
   End to end on pz-bullet (`VehiclePhysics` for `PzBullet`, with the
   natives' exceptions and step callbacks), against the original running
   the real libPZBullet on a Muldraugh region's chunk shapes: 240 of 241
@@ -175,6 +181,10 @@ Status of the Rust port. Update this file with every merged change.
   until the harness lacks a world-sound native). `IsoChunk
   .updatePhysicsForLevel` gives the original's `ToBullet` shapes for every
   one of 114,529 squares of four regions that load the same objects.
+  `SurroundVehicle` (zombie attack spots, `chooseBestAttackPosition`)
+  matches the original's slot assignments and spot states over 2,000
+  sequences of zombie, target and vehicle moves, clock steps and
+  `update` calls; `permanentlyRemove` and the removal paths are ported.
   Checked locally.
 - World regions (`pz_world::isoregion`): `IsoRegions` square flags, chunk
   and world regions, enclosure, roofs, neighbours, square updates, the
@@ -234,8 +244,9 @@ Status of the Rust port. Update this file with every merged change.
   bit for bit but for last-ulp rain rotations; `RasterizeBounds` and
   `Rasterize.scanTriangle` match exactly (checked locally). Mask walls go
   through `CutawayNoDepth` with the player's cutaway flags, particles
-  carry float colours, and characters reach the mask through an
-  `FxMaskWorld` hook that nothing fills until the character pass lands.
+  carry float colours, and characters reach the mask through
+  `FxMaskCharacters`, which replays the frame objects' draws (no shadows)
+  on their squares (#124).
 - World save files: `map_t.bin` (`GameTime` + climate, in `pz-core`),
   `map_meta.bin` (room/building state, safehouses, factions, designation
   zones, stashes), `map_zone.bin` and `gos_*.bin` (global-object systems)
@@ -1304,6 +1315,16 @@ Status of the Rust port. Update this file with every merged change.
   outlines (`FBORenderObjectOutline`, `vboRenderer_SpriteOutline`) and
   `IsoObjectModelDrawer`'s sprite-model outlines; split-screen viewports.
 
+- One world frame for both render stacks (#124):
+  `frame::world_frame_full` draws `FBORenderCell.performRenderTiles`'
+  order after the chunk composite (players, corpse and mannequin shadows,
+  corpses, items; puddles; moving objects; water; fireplace and barbecue
+  flames; per-level translucent floors, puddles, shore, rain splashes,
+  shadows and objects), then `IsoWorld.render`'s weather pass, with a test
+  asserting the order. Not yet in the frame: `renderFlies`,
+  `FBORenderObjectHighlight`, the cell's `renderFog`,
+  `VisibilityPolygon2`, markers, `FBORenderObjectOutline`.
+
 - Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
   and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
   Vorbis setup headers; they are rebuilt at runtime from the FMOD library
@@ -1428,9 +1449,10 @@ Status of the Rust port. Update this file with every merged change.
   library on one side and pz-pathfind's `PathHost` on the other, path
   following, walk toward, lunge, face target and attack, collisions and
   head sliding against the real squares) matches the original bit for bit
-  with the `Rand` stream in 35 runs; the other 5 match until the zombie
-  reaches a door or a fence (thumping and fence climbing need the world's
-  mover-aware `testCollideAdjacent` and hoppable checks). Ragdolls,
+  with the `Rand` stream in all 40 runs (16000 ticks), thumping doors and
+  climbing fences included (mover-aware `testCollideAdjacent` from
+  pz-world, `IsoZombie.collideWith`, the hoppable checks and
+  `ClimbOverFenceState`). Ragdolls,
   vehicles and the network states are not checked against the original;
   stairs and slopes are TODO.
 

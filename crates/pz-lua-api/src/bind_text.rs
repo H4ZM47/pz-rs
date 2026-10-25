@@ -123,6 +123,15 @@ impl TextRenderer for UiTextRenderer {
         self.0.borrow().get_font_height(font)
     }
 
+    fn width_range(&self, font: Option<UIFont>, s: &str, start: i32, end: i32, xadvance: bool) -> i32 {
+        let u: Vec<u16> = s.encode_utf16().collect();
+        let end = end.min(u.len() as i32 - 1);
+        self.0
+            .borrow()
+            .get_font_from_enum(font)
+            .map_or(0, |f| f.get_width(&u, start.max(0), end, xadvance))
+    }
+
     fn draw(
         &self,
         out: &mut SpriteRenderer,

@@ -51,16 +51,39 @@ impl CharDef {
         0
     }
 
-    /// `CharDef.init`: the glyph rectangle inside its page texture.
-    fn init(&mut self, page: &Texture) {
+    /// `CharDef.init`: a `CharDefTexture` on the page's image, narrowed with
+    /// `setRegion` to the glyph rectangle (offset by the page's own
+    /// position in its image). The renderer samples `xStart..yEnd`, so the
+    /// region must go through `set_region`, not just `uv`.
+    ///
+    /// `image_size` is the backing image's (`TextureID`'s) width and height.
+    fn init(&mut self, page: &Texture, image_size: (i32, i32)) {
+        // `new Texture(TextureID, name)`: the whole image, no trim or mask.
+        // `setRegion` returns early for empty or out-of-range rectangles,
+        // leaving these values.
+        let (w, h) = image_size;
         let mut t = page.clone();
         t.name = format!("{}_{}_{}", page.name, self.x, self.y).into();
-        t.uv = [
-            page.uv[0] + self.x as f32,
-            page.uv[1] + self.y as f32,
-            self.width as f32,
-            self.height as f32,
-        ];
+        t.offset_x = 0.0;
+        t.offset_y = 0.0;
+        t.width_orig = 0;
+        t.height_orig = 0;
+        t.mask = None;
+        if page.ready {
+            t.width = w.max(0) as u32;
+            t.height = h.max(0) as u32;
+            t.x_start = 0.0;
+            t.y_start = 0.0;
+            t.x_end = w as f32 / page.width_hw as f32;
+            t.y_end = h as f32 / page.height_hw as f32;
+            t.uv = [0.0, 0.0, w as f32, h as f32];
+        }
+        t.set_region(
+            self.x as i32 + (page.x_start * page.width_hw as f32) as i32,
+            self.y as i32 + (page.y_start * page.height_hw as f32) as i32,
+            self.width as i32,
+            self.height as i32,
+        );
         self.image = Some(t);
     }
 }
@@ -92,6 +115,9 @@ pub struct AngelCodeFont {
     line_height: i32,
     font_image: Option<Texture>,
     pages: HashMap<i16, Texture>,
+    /// Backing image (`TextureID`) size of each page / font image, by
+    /// texture id: `CharDef.init` starts from the whole image.
+    image_sizes: HashMap<u32, (i32, i32)>,
     fnt_file: Option<PathBuf>,
     sdf: bool,
 }
@@ -175,6 +201,7 @@ impl AngelCodeFont {
         let mut font = AngelCodeFont::default();
         if let Some(img) = img_file.filter(|s| !s.chars().all(char::is_whitespace)) {
             font.font_image = loader.shared_texture(img);
+            font.record_image_size(font.font_image.clone().as_ref(), loader);
         }
         let path = normalise(fnt_file);
         let file = resolve(&path).unwrap_or_else(|| PathBuf::from(&path));
@@ -185,14 +212,21 @@ impl AngelCodeFont {
     }
 
     /// `new AngelCodeFont(fntFile, image)`: an absolute `.fnt` with an
-    /// already loaded image (page textures are not loaded).
-    pub fn from_file(fnt_file: &Path, image: Option<Texture>) -> Result<AngelCodeFont, FontError> {
+    /// already loaded image (page textures are not loaded). `image` comes
+    /// with its backing image's (`TextureData`) width and height.
+    pub fn from_file(
+        fnt_file: &Path,
+        image: Option<(Texture, (i32, i32))>,
+    ) -> Result<AngelCodeFont, FontError> {
         let bytes = std::fs::read(fnt_file)
             .map_err(|_| FontError::NotFound(fnt_file.display().to_string()))?;
-        let mut font = AngelCodeFont {
-            font_image: image,
-            ..AngelCodeFont::default()
-        };
+        let mut font = AngelCodeFont::default();
+        if let Some((tex, size)) = image {
+            if let Some(id) = tex.id {
+                font.image_sizes.insert(id, size);
+            }
+            font.font_image = Some(tex);
+        }
         font.parse_fnt(&String::from_utf8_lossy(&bytes), None)?;
         Ok(font)
     }
@@ -228,6 +262,7 @@ impl AngelCodeFont {
                 if let Some(loader) = loader.as_deref_mut() {
                     match loader.shared_texture(&file) {
                         Some(tex) => {
+                            self.record_image_size(Some(&tex), loader);
                             self.pages.insert(id, tex);
                         }
                         None => eprintln!("AngelCodeFont failed to load page {id} texture {file}"),
@@ -311,12 +346,31 @@ impl AngelCodeFont {
         def.page = t.short()?;
         let image = self.pages.get(&def.page).or(self.font_image.as_ref());
         if let Some(image) = image {
-            def.init(image);
+            let size = self.image_size(image);
+            def.init(image, size);
         }
         if def.id != 32 {
             self.line_height = self.line_height.max(def.height as i32 + def.yoffset as i32);
         }
         Ok(Some(def))
+    }
+
+    fn record_image_size(&mut self, tex: Option<&Texture>, loader: &dyn TextureLoader) {
+        let Some(id) = tex.and_then(|t| t.id) else {
+            return;
+        };
+        if let Some(size) = loader.image_size(id) {
+            self.image_sizes.insert(id, size);
+        }
+    }
+
+    /// The backing image size of `tex`; without a recorded size (a loader
+    /// that cannot report one) the texture is taken to cover its whole
+    /// image, as a loose font page does.
+    fn image_size(&self, tex: &Texture) -> (i32, i32) {
+        tex.id
+            .and_then(|id| self.image_sizes.get(&id).copied())
+            .unwrap_or((tex.width as i32, tex.height as i32))
     }
 
     fn char_def(&self, id: u16) -> Option<&CharDef> {
@@ -554,6 +608,81 @@ kerning first=86 second=65 amount=-3\r\n";
             f.chars[65].as_ref().unwrap().kerning_second,
             Some(vec![66, 86])
         );
+    }
+
+    /// A ready page texture: `w`x`h` region at (`x`, `y`) of a 256x128
+    /// power-of-two image.
+    fn page(x: i32, y: i32, w: i32, h: i32) -> Texture {
+        let mut t = Texture::empty("t_0.png");
+        t.id = Some(0);
+        t.ready = true;
+        t.width_hw = 256;
+        t.height_hw = 128;
+        t.width = 256;
+        t.height = 128;
+        t.set_region(x, y, w, h);
+        t
+    }
+
+    /// Regression: glyph textures must carry their own texture coordinates
+    /// (`setRegion`), not the whole page's, or every glyph samples the full
+    /// font page shrunk into its quad.
+    #[test]
+    fn glyph_texture_coordinates() {
+        for (px, py) in [(0, 0), (64, 32)] {
+            let mut f = AngelCodeFont {
+                font_image: Some(page(px, py, 100, 50)),
+                ..AngelCodeFont::default()
+            };
+            f.parse_fnt(FNT, None).unwrap();
+            // char id=65 x=1 y=2 width=8 height=10
+            let a = f.chars[65].as_ref().unwrap().image.clone().unwrap();
+            let (x, y) = ((px + 1) as f32, (py + 2) as f32);
+            assert_eq!((a.width, a.height), (8, 10));
+            assert_eq!(a.uv, [x, y, 8.0, 10.0]);
+            assert_eq!(a.x_start, x / 256.0);
+            assert_eq!(a.y_start, y / 128.0);
+            assert_eq!(a.x_end, (x + 8.0) / 256.0);
+            assert_eq!(a.y_end, (y + 10.0) / 128.0);
+            assert_eq!(&*a.name, "t_0.png_1_2");
+
+            // The drawn sprite samples exactly the glyph rectangle.
+            let mut dl = DrawList::default();
+            dl.render(Some(&a), 0.0, 0.0, 8.0, 10.0, Rgba(1.0, 1.0, 1.0, 1.0));
+            let pz_render::DrawCmd::Sprite(s) = &dl.cmds[0] else {
+                panic!("expected a sprite");
+            };
+            assert_eq!(
+                s.u,
+                [x / 256.0, (x + 8.0) / 256.0, (x + 8.0) / 256.0, x / 256.0]
+            );
+            assert_eq!(
+                s.v,
+                [y / 128.0, y / 128.0, (y + 10.0) / 128.0, (y + 10.0) / 128.0]
+            );
+        }
+    }
+
+    /// `new Texture(TextureID, name)` covers the whole backing image, and
+    /// `setRegion` returns early for an empty glyph (the space), so that
+    /// glyph keeps the full-image values, not its page's region.
+    #[test]
+    fn empty_glyph_keeps_whole_image() {
+        let mut f = AngelCodeFont {
+            font_image: Some(page(64, 32, 100, 50)),
+            image_sizes: HashMap::from([(0, (200, 100))]),
+            ..AngelCodeFont::default()
+        };
+        f.parse_fnt(FNT, None).unwrap();
+        // char id=32 x=0 y=0 width=0 height=0
+        let sp = f.chars[32].as_ref().unwrap().image.clone().unwrap();
+        assert_eq!((sp.width, sp.height), (200, 100));
+        assert_eq!(sp.uv, [0.0, 0.0, 200.0, 100.0]);
+        assert_eq!((sp.x_start, sp.y_start), (0.0, 0.0));
+        assert_eq!((sp.x_end, sp.y_end), (200.0 / 256.0, 100.0 / 128.0));
+        // A non-empty glyph on the same page is still narrowed.
+        let a = f.chars[65].as_ref().unwrap().image.clone().unwrap();
+        assert_eq!(a.uv, [65.0, 34.0, 8.0, 10.0]);
     }
 
     #[test]

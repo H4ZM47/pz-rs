@@ -4,8 +4,19 @@ use pz_core::weather::calendar::set_default_zone;
 use pz_core::weather::{ClimateClock, SeasonConfig};
 use pz_kahlua::TableRef;
 
-fn setup() -> Thread {
+/// The per-thread state the climate reads: the time zone, the climate
+/// settings and a fixed `Rand` sequence. `new ClimateManager()`, the
+/// forecaster and the weather draw from `RandStandard`, which is seeded
+/// from the wall clock; unseeded, about one run in twenty started a
+/// weather period that lit (or darkened) the global light the tests check.
+fn reset_climate_state() {
     set_default_zone(Some(JavaZone::utc()));
+    set_climate_settings(ClimateSettings::default());
+    pz_core::random::with_standard(|r| r.set_seed(1994));
+}
+
+fn setup() -> Thread {
+    reset_climate_state();
     let mut t = Thread::new(TableRef::new());
     pz_kahlua::stdlib::install(&mut t, None).unwrap();
     crate::bind_java_util::register(&mut t);
@@ -145,4 +156,96 @@ fn constants_from_the_jar() {
     assert_eq!(get("MAX_WINDSPEED_KPH"), Some(Some(120.0)));
     let w = class_constants(&jar, "zombie/iso/weather/WeatherPeriod");
     assert!(w.iter().any(|(k, _)| k == "STAGE_KATEBOB_STORM"));
+}
+
+/// A Lua state with an `Events` table like the game's (`Events.X.Add`) that
+/// the event sink dispatches to, and a fresh `GameTime` at noon.
+fn world_load_setup() -> Thread {
+    reset_climate_state();
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).unwrap();
+    crate::bind_java_util::register(&mut t);
+    register_with(&mut t, &[]);
+    let gt = GameTime { day: 10, month: 6, year: 1993, time_of_day: 12.0, multiplier: 20.0, helicopter_day1: -1, ..GameTime::default() };
+    install_game_time(Rc::new(RefCell::new(gt)));
+    install_event_sink(Rc::new(move |t: &mut Thread, name: &str, args: &[Value]| {
+        let f = t.globals().get_str("triggerEvent");
+        let mut a = vec![Value::from(name)];
+        a.extend_from_slice(args);
+        t.pcall(&f, &a).map_err(|(m, _)| format!("{m:?}")).unwrap();
+    }));
+    run(
+        &mut t,
+        r#"
+        function assert(v, m) if not v then error(m or 'assertion failed') end return v end
+        Events = setmetatable({}, { __index = function(t, k)
+            local e = { list = {} }
+            e.Add = function(f) table.insert(e.list, f) end
+            rawset(t, k, e)
+            return e
+        end })
+        function triggerEvent(name, ...)
+            local l = Events[name].list
+            for i = 1, #l do l[i](...) end
+        end
+        "#,
+    );
+    t
+}
+
+/// `new ClimateManager()` → `init` → frames, as a world load runs them.
+fn load_climate(t: &mut Thread) -> [f32; 4] {
+    new_climate_manager(t);
+    start_erosion_season(t, &SeasonConfig::default(), 3);
+    assert!(init_climate_manager(t, Some((0, 0, 60, 50))));
+    for _ in 0..30 {
+        update_game_time(t);
+    }
+    let v = shared_game_time().borrow().climate.render_values(0, false);
+    v.cm_global_light.exterior
+}
+
+#[test]
+fn climate_manager_init_runs_the_lua_season_colours() {
+    // Nobody sets the season colours: the global light stays (nearly)
+    // black.
+    let mut t = world_load_setup();
+    let dark = load_climate(&mut t);
+    assert!(dark[..3].iter().all(|&c| c < 0.01), "{dark:?}");
+
+    // A handler like ClimateMain.lua's (invented colours).
+    let mut t = world_load_setup();
+    run(
+        &mut t,
+        r#"
+        seasons = 0
+        Events.OnInitSeasons.Add(function(s) seasons = seasons + 1; seasonName = s:getSeasonName() end)
+        Events.OnClimateManagerInit.Add(function(clim)
+            initCalls = (initCalls or 0) + 1
+            local c = clim:getColNightNoMoon()
+            c:setExterior(0.25, 0.25, 0.25, 0.8)
+            for temp = 0, 2 do
+                for season = 0, 3 do
+                    clim:setSeasonColorDawn(temp, season, 0.5, 0.6, 0.7, 0.75, true)
+                    clim:setSeasonColorDawn(temp, season, 0.1, 0.2, 0.3, 0.3, false)
+                    clim:setSeasonColorDay(temp, season, 0.8, 0.75, 0.7, 0.8, true)
+                    clim:setSeasonColorDay(temp, season, 0.4, 0.3, 0.2, 0.2, false)
+                    clim:setSeasonColorDusk(temp, season, 0.9, 0.45, 0.2, 0.8, true)
+                    clim:setSeasonColorDusk(temp, season, 0.2, 0.1, 0.05, 0.6, false)
+                end
+            end
+        end)
+        "#,
+    );
+    let lit = load_climate(&mut t);
+    let r = run(&mut t, "return initCalls, seasons, seasonName");
+    assert_eq!(r[0].as_num(), Some(1.0));
+    assert_eq!(r[1].as_num(), Some(1.0));
+    assert_eq!(r[2].as_str(), Some("Early Summer"));
+    assert!(lit[..3].iter().all(|&c| c > 0.1), "{lit:?}");
+    let g = shared_game_time();
+    let g = g.borrow();
+    assert_eq!(g.climate.thunder_storm.map_max_x, 60 * 256 + 4000);
+    assert_eq!(g.climate.climate_forecaster.forecasts.len(), 40);
+    assert_eq!(g.climate.col_night_no_moon.borrow().exterior, [0.25, 0.25, 0.25, 0.8]);
 }

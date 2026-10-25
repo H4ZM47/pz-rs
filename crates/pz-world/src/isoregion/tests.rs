@@ -588,3 +588,146 @@ fn loaded_windows_make_their_walls_cut() {
     assert!(m.sprites[open].properties.has(m.tables.flag.cutW));
     assert_eq!(m.sprites[open].tile_type, m.sprites[spr].tile_type);
 }
+
+/// Counts `Rand` draws (answering 0).
+#[derive(Default)]
+struct Draws(Vec<i32>);
+impl crate::GameRand for Draws {
+    fn next(&mut self, max: i32) -> i32 {
+        self.0.push(max);
+        0
+    }
+}
+
+/// A cell whose chunk (0, 0) has an empty square everywhere on levels 0
+/// and 1, a meta grid with one empty cell, and the buildings pass.
+struct Town {
+    cell: IsoCell,
+    meta: crate::IsoMetaGrid,
+    m: crate::IsoSpriteManager,
+    rand: Draws,
+    hooks: crate::square_mutation::NoMutationHooks,
+    pathfind: crate::square_mutation::NoMutationHooks,
+    render: crate::square_mutation::NoMutationHooks,
+}
+
+impl Town {
+    fn new() -> Town {
+        let mut cell = IsoCell::default();
+        let mut ch = crate::IsoChunk::new(0, 0);
+        for z in 0..2 {
+            for i in 0..64 {
+                ch.set_square(i % 8, i / 8, z, Some(IsoGridSquare::new(i % 8, i / 8, z)));
+            }
+        }
+        cell.chunks.insert((0, 0), ch);
+        let mut meta = crate::IsoMetaGrid::blank(0, 0, 0, 0);
+        meta.create_cell(0, 0);
+        Town {
+            cell,
+            meta,
+            m: manager(),
+            rand: Draws::default(),
+            hooks: crate::square_mutation::NoMutationHooks,
+            pathfind: crate::square_mutation::NoMutationHooks,
+            render: crate::square_mutation::NoMutationHooks,
+        }
+    }
+
+    fn update(&mut self, r: &mut IsoRegions) -> bool {
+        let mut ctx = metagrid::BuildingCtx {
+            cell: &mut self.cell,
+            meta: &mut self.meta,
+            sprites: &self.m,
+            rand: &mut self.rand,
+            world: &mut self.hooks,
+            pathfind: &mut self.pathfind,
+            render: &mut self.render,
+        };
+        r.update_with_buildings(&mut ctx, None)
+    }
+
+    fn user_buildings(&self) -> Vec<crate::BuildingIdx> {
+        self.meta.get_cell_data(0, 0).unwrap().buildings.clone()
+    }
+}
+
+#[test]
+fn player_room_becomes_a_meta_grid_building() {
+    let mut t = Town::new();
+    let mut r = IsoRegions::new(13);
+    let mut j = JobChunkUpdate::new();
+    j.add_chunk_from_file(&block(
+        0,
+        0,
+        &[room_level(2, 2, 5, 6), roof_over(2, 2, 5, 6)],
+    ));
+    r.job_queue.push_back(RegionJob::ChunkUpdate(j));
+    r.apply_chunk_changes(false);
+    assert!(t.update(&mut r));
+    let bs = t.user_buildings();
+    assert_eq!(bs.len(), 1);
+    let b = &t.meta.building_defs[bs[0].0 as usize];
+    assert!(b.user_defined);
+    assert_eq!((b.x, b.y, b.x2, b.y2), (2, 2, 5, 6));
+    // One room, its squares in one rect, with the cell's first ids.
+    assert_eq!(b.rooms.len(), 1);
+    let room = &t.meta.room_defs[b.rooms[0].0 as usize];
+    assert_eq!(room.rects, vec![crate::RoomRect::new(2, 2, 3, 4)]);
+    assert_eq!(room.id, crate::defs::room_id::make_id(0, 0, 0));
+    assert!(room.user_defined && room.explored);
+    // The new BuildingDef's key id, then the runtime building of its room.
+    assert_eq!(t.rand.0, [100000000, 120]);
+    // The squares of the room get its id; the region knows its building.
+    assert_eq!(t.cell.get_grid_square(3, 3, 0).unwrap().room_id, room.id);
+    assert_eq!(t.cell.get_grid_square(0, 0, 0).unwrap().room_id, -1);
+    let w = r.get_iso_world_region(3, 3, 0).unwrap();
+    assert_eq!(r.world_region(w).building_def(), Some(bs[0]));
+    // Opening the room: the building goes, and its def goes back to the
+    // pool (the next building reuses it without a new key draw).
+    r.discovered_chunks.push(hash(0, 0));
+    let m = manager();
+    r.add_square_changed_job(&t.cell, &m, 3, 2, 0, true, F);
+    assert!(t.update(&mut r));
+    assert!(t.user_buildings().is_empty());
+    assert_eq!(t.cell.get_grid_square(3, 3, 0).unwrap().room_id, -1);
+    r.add_square_changed_job(&t.cell, &m, 3, 2, 0, false, F | BIT_WALL_N);
+    assert!(t.update(&mut r));
+    let bs2 = t.user_buildings();
+    assert_eq!(bs2, bs);
+    assert_eq!(t.rand.0, [100000000, 120, 120]);
+}
+
+#[test]
+fn player_rooms_next_to_map_buildings_are_dropped() {
+    let mut t = Town::new();
+    let mut rand = Draws::default();
+    let mut house = crate::RoomDef::new(0, "kitchen".into());
+    house.rects.push(crate::RoomRect::new(5, 2, 2, 2));
+    house.CalculateBounds();
+    t.meta
+        .add_building(
+            0,
+            0,
+            crate::BuildingDef::new(&mut rand),
+            vec![house],
+            vec![],
+        )
+        .unwrap();
+    let mut r = IsoRegions::new(13);
+    let mut j = JobChunkUpdate::new();
+    j.add_chunk_from_file(&block(
+        0,
+        0,
+        &[room_level(2, 2, 5, 6), roof_over(2, 2, 5, 6)],
+    ));
+    r.job_queue.push_back(RegionJob::ChunkUpdate(j));
+    r.apply_chunk_changes(false);
+    t.update(&mut r);
+    // Only the map building is left; the player room's def is pooled.
+    let bs = t.user_buildings();
+    assert_eq!(bs.len(), 1);
+    assert!(!t.meta.building_defs[bs[0].0 as usize].user_defined);
+    let w = r.get_iso_world_region(3, 3, 0).unwrap();
+    assert_eq!(r.world_region(w).building_def(), None);
+}

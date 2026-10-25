@@ -266,3 +266,145 @@ fn population_tick_creates_a_sitting_real_zombie() {
     assert!(!z.zombie.can_crawl_under_vehicle);
     assert!(!z.zombie.reanimated_for_grapple_only);
 }
+
+/// `zpop_X_Y.bin` version 7 (`DataOutputStream`, big-endian) for cell
+/// `(0, 0)` with no outfit names and the given zombies `(x, y, id)` in
+/// their chunks: standing walkers (`Initialized | CanWalk`), outfit 0,
+/// facing south.
+fn synthetic_zpop(zombies: &[(f32, f32, u32)]) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&7i16.to_be_bytes());
+    b.extend_from_slice(&0i16.to_be_bytes());
+    b.extend_from_slice(&0f32.to_be_bytes()); // lastRepop
+    b.extend_from_slice(&0f32.to_be_bytes()); // lastRedistribute
+    let state = ZombieStateFlags::from_flags(&[ZombieStateFlag::Initialized, ZombieStateFlag::CanWalk]).as_int();
+    for i in 0..1024 {
+        let (wx, wy) = (i % 32, i / 32);
+        let here: Vec<_> = zombies.iter().filter(|z| (z.0 as i32) / 8 == wx && (z.1 as i32) / 8 == wy).collect();
+        b.extend_from_slice(&0i16.to_be_bytes()); // desired
+        b.extend_from_slice(&(here.len() as i16).to_be_bytes());
+        for &&(x, y, id) in &here {
+            b.extend_from_slice(&x.to_be_bytes());
+            b.extend_from_slice(&y.to_be_bytes());
+            b.push(0); // z
+            b.push(4); // S
+            b.extend_from_slice(&state.to_be_bytes());
+            b.extend_from_slice(&0i32.to_be_bytes()); // outfit
+            b.extend_from_slice(&id.to_be_bytes());
+        }
+        b.extend_from_slice(&0f32.to_be_bytes()); // lastSeen
+        b.extend_from_slice(&0f32.to_be_bytes()); // lastRepop
+    }
+    b
+}
+
+/// A save whose `zpop_0_0.bin` holds three zombies in chunk (3, 3): the
+/// world-load path (`init`, `addChunkToWorld`, `startGame`, per-frame
+/// `updateMain`) makes them real zombies registered under their saved ids,
+/// and unloading the chunk hands them back.
+#[test]
+fn loaded_world_zpop_zombies_become_real() {
+    use pz_world_popman::world::save_game_state;
+    use pz_world_popman::{PopulationFrame, WorldPopulation};
+
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp/zombie_world_zpop");
+    let _ = std::fs::remove_dir_all(&root);
+    let save = root.join("Zomboid/Saves/Sandbox/w");
+    std::fs::create_dir_all(save.join("zpop")).unwrap();
+    let saved = [(25.5f32, 26.5f32, 501u32), (28.25, 29.75, 502), (30.5, 27.5, 503)];
+    std::fs::write(save.join("zpop/zpop_0_0.bin"), synthetic_zpop(&saved)).unwrap();
+
+    let clock = Rc::new(Cell::new(1_000_000i64));
+    let mut native = Native::new(1234);
+    let c = clock.clone();
+    native.gs.clock = Box::new(move || c.get());
+    let mut w = World::new();
+    for x in 16..40 {
+        for y in 16..40 {
+            w.put(x, y, 0, &["solidfloor"]);
+        }
+    }
+    let gs = save_game_state(&save);
+    assert_eq!(gs.game_save_world, "w");
+    let cfg = ZombieConfig { population_multiplier: 0.0, ..Default::default() };
+    let mut pop: WorldPopulation<i32> = WorldPopulation::init(native, &w.meta, &gs, &cfg, &["Generic01".to_string()]);
+    for wx in 2..=4 {
+        for wy in 2..=4 {
+            pop.add_chunk_to_world(&w.cell, &w.meta, &w.m, wx, wy);
+        }
+    }
+
+    let (sm, mut chars) = fixture();
+    let ctx = Ctx(pz_core::random::Rand::new(8));
+    let desc = Rc::new(RefCell::new(SurvivorDesc::new(&mut chars, &sm).unwrap()));
+    let mut zombies: Vec<GameCharacter<()>> = Vec::new();
+    let mut next_id = 100;
+    let mut nw = NullWorld;
+    let mut blood = || {};
+    let mut survivor = || desc.clone();
+    let water = |_: (i32, i32, i32)| false;
+    let mut ops = RealZombies {
+        sm: &sm,
+        chars: &chars,
+        ctx: &ctx,
+        world: &mut nw,
+        zombies: &mut zombies,
+        next_id: &mut next_id,
+        create_survivor: &mut survivor,
+        random_blood: &mut blood,
+        water: &water,
+        key_spawn_chance_d100: 0.0,
+        building_keys: Vec::new(),
+        removed: Vec::new(),
+    };
+    let maps = pz_world_popman::PlayerChunkMaps { origins: vec![(0, 0)], width: 10 };
+    let checks = NoObstacles;
+    let mut rand = ListRand(vec![1; 64], vec![]);
+    let mut frame = |pop: &mut WorldPopulation<i32>, ops: &mut RealZombies<'_, ()>, start: bool| {
+        let reals = ops.infos();
+        let f = PopulationFrame { multiplier: 1.0, world_age_hours: 10.0, chunk_maps: &maps, real_zombies: &reals };
+        let mut host = WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, ops);
+        if start {
+            pop.start_game(&mut host, &f);
+        } else {
+            pop.update_game_state(false, false);
+            pop.update(&mut host, &f);
+        }
+        clock.set(clock.get() + 33);
+    };
+    frame(&mut pop, &mut ops, true);
+    for _ in 0..30 {
+        frame(&mut pop, &mut ops, false);
+    }
+    assert!(pop.worker.passes > 0);
+    let mut got: Vec<(i32, (f32, f32))> = ops.zombies.iter().map(|z| (z.zombie.persistent_id, (z.vars.x, z.vars.y))).collect();
+    got.sort_by_key(|g| g.0);
+    assert_eq!(got, vec![(501, (25.5, 26.5)), (502, (28.25, 29.75)), (503, (30.5, 27.5))]);
+    for z in ops.zombies.iter() {
+        assert_eq!(z.kind, CharacterKind::Zombie);
+        assert!(pop.manager.real_zombies().is_live(z.zombie.persistent_id));
+        assert_eq!(z.forward_iso_direction(), pz_world::square::IsoDirections::S);
+    }
+
+    // The chunk unloads: its zombies go back to the library.
+    let cz = ops.chunk_zombies(3, 3, &|_| false);
+    assert_eq!(cz.len(), 3);
+    {
+        let mut host = WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut ops);
+        pop.remove_chunk_from_world(&mut host, 3, 3, &cz);
+    }
+    assert!(ops.zombies.is_empty());
+    assert_eq!(ops.removed.len(), 3);
+    pop.save(&[]);
+    pop.stop();
+}
+
+struct NoObstacles;
+impl SittingChecks for NoObstacles {
+    fn has_moving_objects(&self, _x: i32, _y: i32, _z: i32) -> bool {
+        false
+    }
+    fn line_clear_collide(&self, _: f32, _: f32, _: f32, _: f32, _: i32, _: bool, _: bool) -> bool {
+        false
+    }
+}

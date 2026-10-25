@@ -74,6 +74,14 @@ impl Combiner for Recorder<'_> {
     fn release(&mut self, _tex: Texture) {}
 }
 
+/// A path under the system temp dir unique to this call (tag, process id and a
+/// per-call counter): tests run in parallel and must not share directories.
+fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()))
+}
+
 fn mask(hidden: &[Part]) -> CharacterMask {
     let mut m = CharacterMask::default();
     m.set_all_visible(true);
@@ -168,7 +176,7 @@ fn matches_texture_combiner_oracle() {
     let r = render_textures(&chr, &[shirt, jacket, trousers]);
 
     let mut fs = pz_fs::GameFs::new(&game);
-    fs.set_cache_dir(std::env::temp_dir().join("pz-texcomb-oracle"));
+    fs.set_cache_dir(unique_temp_dir("pz-texcomb-oracle"));
     let mut tm = TextureManager::new();
     let model_flags = flags::COMPRESS | flags::LIMIT_TEXTURE_SIZE_1;
     // Named by the path asked for, as the original's shared textures are.

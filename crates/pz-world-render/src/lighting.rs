@@ -292,6 +292,13 @@ pub struct WorldLighting {
     pub dirty_global_lights: i32,
     /// `PerformanceSettings.getLockFPS()`.
     pub lock_fps: i32,
+    /// `IsoGridSquare.recalcLightTime` (only stored: build 42 reads it
+    /// through its getter alone).
+    pub recalc_light_time: f32,
+    /// `LightingJNI.updateCounter[player]` after the player's last frame.
+    update_counters: [i32; 4],
+    /// `LightingJNI.buildingsChangedCounter[player]` (-1: none pending).
+    buildings_changed_counter: [i32; 4],
 }
 
 impl Default for WorldLighting {
@@ -323,6 +330,9 @@ impl WorldLighting {
             chunk_maps: [None; 4],
             dirty_global_lights: 0,
             lock_fps: 60,
+            recalc_light_time: 0.0,
+            update_counters: [0; 4],
+            buildings_changed_counter: [0; 4],
         }
     }
 
@@ -369,6 +379,68 @@ impl WorldLighting {
                 }
             }
         }
+        self.sync_chunk_lights(w, wx, wy);
+    }
+
+    /// Rebuilds the lighting squares of chunk `(wx, wy)` alone and flags
+    /// all its levels for every player
+    /// (`checkLightingLater_AllPlayers_AllLevels`).
+    pub fn sync_chunk_squares(
+        &mut self,
+        w: &WorldView<'_>,
+        wx: i32,
+        wy: i32,
+        hooks: &dyn WorldHooks,
+    ) {
+        self.rebuild_squares(w, wx, wy, hooks);
+    }
+
+    /// Rebuilds the lighting square at `(x, y, z)` from the world (keeping
+    /// its light level and `seen` flags) and flags its level for every
+    /// player (`checkLightingLater_AllPlayers_OneLevel`). A square gone
+    /// from the world leaves the lighting squares; a chunk whose levels
+    /// changed is rebuilt whole.
+    pub fn sync_square(
+        &mut self,
+        w: &WorldView<'_>,
+        (x, y, z): (i32, i32, i32),
+        hooks: &dyn WorldHooks,
+    ) {
+        let (wx, wy) = (x.div_euclid(8), y.div_euclid(8));
+        let Some(ch) = w.cell.chunks.get(&(wx, wy)) else {
+            return;
+        };
+        let Some(st) = self.chunks.get(&(wx, wy)) else {
+            // Not given to lighting yet: `sync_chunk` sends it whole.
+            return;
+        };
+        if (st.min_level, st.max_level) != (ch.min_level, ch.max_level) {
+            self.rebuild_squares(w, wx, wy, hooks);
+            return;
+        }
+        let p = (x, y, z);
+        match w.cell.get_grid_square(x, y, z) {
+            Some(sq) => {
+                let (ll, seen) = self
+                    .squares
+                    .0
+                    .get(&p)
+                    .map_or((0, loaded_seen_by(sq)), |g| (g.light_level, g.seen_by));
+                self.squares
+                    .0
+                    .insert(p, grid_square(w, sq, hooks, ll, seen));
+            }
+            None => {
+                self.squares.0.remove(&p);
+            }
+        }
+        self.mark_level(wx, wy, z);
+    }
+
+    /// Rescans chunk `(wx, wy)`'s light switches and room switches into
+    /// its lamps and room lights (removed lamps are sent once as not
+    /// alive).
+    pub fn sync_chunk_lights(&mut self, w: &WorldView<'_>, wx: i32, wy: i32) {
         let Some(ch) = w.cell.chunks.get(&(wx, wy)) else {
             return;
         };
@@ -456,6 +528,101 @@ impl WorldLighting {
         }
     }
 
+    /// `IsoChunk.checkLightingLater_AllPlayers_AllLevels()`.
+    pub fn mark_chunk(&mut self, wx: i32, wy: i32) {
+        if let Some(st) = self.chunks.get_mut(&(wx, wy)) {
+            st.light_check = [true; 4];
+            st.level_light_check.fill([true; 4]);
+        }
+    }
+
+    /// `IsoChunk.checkLightingLater_OnePlayer_AllLevels(player)`.
+    pub fn mark_chunk_for_player(&mut self, wx: i32, wy: i32, player: i32) {
+        let pi = player as usize & 3;
+        if let Some(st) = self.chunks.get_mut(&(wx, wy)) {
+            st.light_check[pi] = true;
+            for l in &mut st.level_light_check {
+                l[pi] = true;
+            }
+        }
+    }
+
+    /// `(IsoChunk.lightCheck[player], IsoChunkLevel.lightCheck[player])`
+    /// of chunk `(wx, wy)` level `z`: whether the next frame sends them to
+    /// the lighting library. `None` for a chunk or level lighting does not
+    /// have.
+    pub fn light_check(&self, wx: i32, wy: i32, z: i32, player: i32) -> Option<(bool, bool)> {
+        let st = self.chunks.get(&(wx, wy))?;
+        let pi = player as usize & 3;
+        let l = st.level_light_check.get(usize::try_from(z - st.min_level).ok()?)?;
+        Some((st.light_check[pi], l[pi]))
+    }
+
+    /// `LosUtil.cachecleared[player]`.
+    pub fn los_cache_is_cleared(&self, player: i32) -> bool {
+        self.cache_cleared[player as usize & 3]
+    }
+
+    /// `GameTime.lightSourceUpdate` as the next frame sends it.
+    pub fn light_source_update_value(&self) -> f32 {
+        self.light_source_update
+    }
+
+    /// `LosUtil.cachecleared[player] = true`.
+    pub fn clear_los_cache(&mut self, player: i32) {
+        self.cache_cleared[player as usize & 3] = true;
+    }
+
+    /// `GameTime.instance.lightSourceUpdate = 100.0f`.
+    pub fn light_source_update(&mut self) {
+        self.light_source_update = 100.0;
+    }
+
+    /// `LightingJNI.buildingsChanged()` for `num_players` local players:
+    /// each player's buildings-changed counter is set two lighting updates
+    /// ahead, then `lightSourceUpdate = 100`, every `LosUtil.cachecleared`
+    /// and `++Core.dirtyGlobalLightsCount`.
+    pub fn buildings_changed(&mut self, num_players: i32) {
+        for p in 0..num_players.clamp(0, 4) as usize {
+            self.buildings_changed_counter[p] = self.update_counters[p] + 2;
+        }
+        self.light_source_update = 100.0;
+        self.cache_cleared = [true; 4];
+        self.dirty_global_lights += 1;
+    }
+
+    /// The first half of `LightingJNI.checkChangedBuildings()` (run after
+    /// every local player's lighting frame): for each of the `num_players`
+    /// players whose counter the lighting updates have reached, the counter
+    /// is cleared and, when the player has a chunk map, every loaded chunk
+    /// in it is flagged for that player
+    /// (`checkLightingLater_OnePlayer_AllLevels`). Returns those players
+    /// and chunks, whose render levels and cutaways the caller invalidates.
+    pub fn check_changed_buildings(&mut self, num_players: i32) -> Vec<(i32, Vec<(i32, i32)>)> {
+        let mut out = Vec::new();
+        for p in 0..num_players.clamp(0, 4) as usize {
+            let c = self.buildings_changed_counter[p];
+            if c == -1 || c > self.update_counters[p] {
+                continue;
+            }
+            self.buildings_changed_counter[p] = -1;
+            let Some((min_x, min_y, max_x, max_y)) = self.chunk_maps[p] else {
+                continue;
+            };
+            let mut chunks = Vec::new();
+            for wy in min_y / 8..max_y / 8 {
+                for wx in min_x / 8..max_x / 8 {
+                    if self.chunks.contains_key(&(wx, wy)) {
+                        self.mark_chunk_for_player(wx, wy, p as i32);
+                        chunks.push((wx, wy));
+                    }
+                }
+            }
+            out.push((p as i32, chunks));
+        }
+        out
+    }
+
     /// Flags a square's level for a lighting update (`IsoGridSquare`
     /// changes call `checkLightingLater_AllPlayers_OneLevel`).
     pub fn mark_level(&mut self, wx: i32, wy: i32, z: i32) {
@@ -505,6 +672,7 @@ impl WorldLighting {
     /// `IsoGridSquare.recalcLightTime = -1`, `++Core.dirtyGlobalLightsCount`
     /// and `GameTime.lightSourceUpdate = 100`.
     pub fn mark_lights_dirty(&mut self) {
+        self.recalc_light_time = -1.0;
         self.dirty_global_lights += 1;
         self.light_source_update = 100.0;
     }
@@ -776,6 +944,7 @@ impl WorldLighting {
         let res = update_player(&mut self.session, &self.squares, &frame, &params)?;
         self.cache_cleared[pi as usize & 3] = false;
         self.light_source_update = 0.0;
+        self.update_counters[pi as usize & 3] = res.update_counter;
         for c in &res.chunks_sent {
             if let Some(st) = self.chunks.get_mut(c) {
                 st.light_check[pi as usize & 3] = false;

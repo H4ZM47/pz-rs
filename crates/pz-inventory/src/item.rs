@@ -269,6 +269,10 @@ pub struct WeaponData {
     pub contains_clip: bool,
     pub round_chambered: bool,
     pub is_jammed: bool,
+    /// `spentRoundChambered` (runtime only: not saved).
+    pub spent_round_chambered: bool,
+    /// `spentRoundCount` (runtime only: not saved).
+    pub spent_round_count: i32,
     pub weapon_sprite: Option<String>,
     pub min_sight_range: f32,
     pub max_sight_range: f32,
@@ -1695,6 +1699,8 @@ impl WeaponData {
             contains_clip: false,
             round_chambered: false,
             is_jammed: false,
+            spent_round_chambered: false,
+            spent_round_count: 0,
             weapon_sprite: t.weapon_sprite.clone(),
             min_sight_range: t.min_sight_range,
             max_sight_range: t.max_sight_range,

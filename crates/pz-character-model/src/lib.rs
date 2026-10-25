@@ -24,12 +24,14 @@ pub mod external;
 pub mod item_texture;
 pub mod items;
 pub mod lights;
+pub mod mannequin;
 pub mod mask;
 pub mod model_tree;
 pub mod render;
 pub mod resources;
 pub mod scene;
 pub mod texture_creator;
+pub mod ui_model;
 pub mod world_item;
 
 pub use data::{

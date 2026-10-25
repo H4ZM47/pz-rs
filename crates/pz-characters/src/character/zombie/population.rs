@@ -7,9 +7,12 @@
 use pz_scripts::ScriptManager;
 use pz_world::square::IsoDirections;
 
+use pz_world_popman::{ChunkZombie, RealZombieInfo, ZombieStateSource};
+
 use super::{GameCharacter, ZombieSpawn};
 use crate::survivor::SurvivorDescRef;
-use crate::character::state::StateCx;
+use crate::character::state::{StateCx, StateWorld};
+use crate::character::states::ids;
 use crate::character::{SimContext, SimEvent};
 
 /// What `createRealZombieAlways` made.
@@ -47,6 +50,7 @@ pub fn create_real_zombie_always<I: 'static>(
     }
     let mut z = GameCharacter::new_zombie(sm, ctx, spawn);
     z.zombie.dress_in_random_outfit = outfit_id == 0;
+    z.zombie.persistent_outfit_id = outfit_id;
     z.zombie.persistent_id = 0;
     z.set_forward_iso_direction(dir);
     if dead {
@@ -158,6 +162,43 @@ impl<I: 'static> GameCharacter<I> {
     }
 }
 
+/// `z` as `ZombiePopulationManager` reads a real zombie
+/// (`registerZombie`, `packRealZombies`, `removeChunkFromWorld`):
+/// position, `getForwardIsoDirection()`, `getPersistentOutfitID()`,
+/// `ZombieStateFlags.intFromZombie`'s flags, `getPathTargetX/Y()` from the
+/// world's path behaviour, `isDead()`, `isReanimatedPlayer()` and whether
+/// the current state is `WalkTowardState` or `PathFindState`.
+///
+/// `isFakeDead()` is read without its stairs test (a fake-dead zombie is
+/// never left on stairs: `setFakeDead` refuses there).
+pub fn real_zombie_info<I: 'static>(z: &GameCharacter<I>, ctx: &dyn SimContext, world: &dyn StateWorld<I>) -> RealZombieInfo<i32> {
+    let (px, py) = world
+        .path_behavior(z.id)
+        .map_or((0, 0), |b| (pz_world::java::fastfloor(b.target_x()), pz_world::java::fastfloor(b.target_y())));
+    let state = z.current_state_id();
+    RealZombieInfo {
+        handle: z.id,
+        persistent_id: z.zombie.persistent_id,
+        x: z.vars.x,
+        y: z.vars.y,
+        z: z.vars.z,
+        dir: z.forward_iso_direction(),
+        outfit: z.zombie.persistent_outfit_id,
+        state: ZombieStateSource {
+            crawling: z.vars.crawling,
+            can_walk: z.zombie.can_walk,
+            fake_dead: z.zombie.fake_dead && ctx.lore_disable_fake_dead() != 3,
+            can_crawl_under_vehicle: z.zombie.can_crawl_under_vehicle,
+            reanimated_for_grapple_only: z.zombie.reanimated_for_grapple_only,
+        },
+        path_target_x: px,
+        path_target_y: py,
+        dead: z.is_dead(),
+        reanimated_player: z.zombie.reanimated_player,
+        walking: state == Some(ids::WALK_TOWARD) || state == Some(ids::PATH_FIND),
+    }
+}
+
 /// `pz_world_popman::ZombieOps` over real zombies: the world's zombie list
 /// and what creating, pathing and killing them needs. The zombie handle is
 /// the character id.
@@ -203,25 +244,67 @@ impl<I: 'static> RealZombies<'_, I> {
     }
 }
 
+impl<I: 'static> RealZombies<'_, I> {
+    /// The zombie list as `updateRealZombies` packs it.
+    pub fn infos(&self) -> Vec<RealZombieInfo<i32>> {
+        self.zombies.iter().map(|z| real_zombie_info(z, self.ctx, &*self.world)).collect()
+    }
+
+    /// The real zombies standing in chunk `(wx, wy)`, in
+    /// `removeChunkFromWorld`'s square order (level, then `y`, then `x`;
+    /// list order on one square). `in_room` answers `sq.getRoom() != null`
+    /// for a square.
+    pub fn chunk_zombies(&self, wx: i32, wy: i32, in_room: &dyn Fn((i32, i32, i32)) -> bool) -> Vec<ChunkZombie<i32>> {
+        let mut v: Vec<((i32, i32, i32), usize)> = Vec::new();
+        for (i, z) in self.zombies.iter().enumerate() {
+            let sq = z.path.current_square.unwrap_or((
+                pz_world::java::fastfloor(z.vars.x),
+                pz_world::java::fastfloor(z.vars.y),
+                pz_world::java::fastfloor(z.vars.z),
+            ));
+            if sq.0.div_euclid(8) == wx && sq.1.div_euclid(8) == wy {
+                v.push((sq, i));
+            }
+        }
+        v.sort_by_key(|&((x, y, l), i)| (l, y.rem_euclid(8), x.rem_euclid(8), i));
+        v.into_iter()
+            .map(|(sq, i)| ChunkZombie {
+                info: real_zombie_info(&self.zombies[i], self.ctx, &*self.world),
+                level: sq.2,
+                in_room: in_room(sq),
+            })
+            .collect()
+    }
+}
+
 impl<I: 'static> pz_world_popman::ZombieOps for RealZombies<'_, I> {
     type Zombie = i32;
 
     /// `createRealZombieAlways(outfit, dir, false, persistentId)` with
     /// `choices = [square]` (the outfit id is the outfit system's; 0 dresses
-    /// in a random outfit).
-    fn create_real_zombie(&mut self, outfit: i32, dir: IsoDirections, persistent_id: i32, square: (i32, i32, i32)) -> Option<i32> {
+    /// in a random outfit). `persistentId` goes to `registerZombie`, which
+    /// the population manager calls next ([`Self::set_persistent_id`]).
+    fn create_real_zombie(&mut self, outfit: i32, dir: IsoDirections, _persistent_id: i32, square: (i32, i32, i32)) -> Option<i32> {
         let spawn = ZombieSpawn { descriptor: None, create_survivor: &mut *self.create_survivor, random_blood: &mut *self.random_blood };
         let r = create_real_zombie_always(self.sm, self.ctx, &[square], self.water, dir, false, outfit, self.key_spawn_chance_d100, spawn)?;
         let mut z = r.zombie;
         *self.next_id += 1;
         z.id = *self.next_id;
-        z.zombie.persistent_id = persistent_id;
         if r.spawn_building_key {
             self.building_keys.push(z.id);
         }
         let id = z.id;
         self.zombies.push(z);
         Some(id)
+    }
+    fn real_zombie_info(&self, z: i32) -> Option<RealZombieInfo<i32>> {
+        let z = self.zombies.iter().find(|c| c.id == z)?;
+        Some(real_zombie_info(z, self.ctx, &*self.world))
+    }
+    fn set_persistent_id(&mut self, z: i32, id: i32) {
+        if let Some(i) = self.find(z) {
+            self.zombies[i].zombie.persistent_id = id;
+        }
     }
     fn set_position(&mut self, z: i32, x: f32, y: f32) {
         if let Some(i) = self.find(z) {

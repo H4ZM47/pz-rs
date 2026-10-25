@@ -12,6 +12,7 @@ pub mod bindings;
 pub mod controller;
 #[cfg(feature = "gilrs")]
 pub mod gamepads;
+pub mod joypad_eval;
 pub mod keys;
 #[cfg(feature = "winit")]
 pub mod winit;
@@ -291,6 +292,14 @@ pub fn with_input<R>(f: impl FnOnce(&mut InputState) -> R) -> R {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A path under the system temp dir unique to this call (tag, process id and a
+    /// per-call counter): tests run in parallel and must not share directories.
+    pub(crate) fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()))
+    }
 
     #[test]
     fn event_queue_matches_lwjglx() {

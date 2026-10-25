@@ -172,6 +172,22 @@ pub fn is_key_down(key: i32) -> bool {
     GK.with(|g| g.borrow().down.as_ref().and_then(|d| usize::try_from(key).ok().and_then(|k| d.get(k).copied())).unwrap_or(false))
 }
 
+/// `GameKeyboard.isKeyDownRaw(int)`: the state read at the last update,
+/// ignoring text entry.
+pub fn is_key_down_raw(key: i32) -> bool {
+    GK.with(|g| g.borrow().down.as_ref().and_then(|d| usize::try_from(key).ok().and_then(|k| d.get(k).copied())).unwrap_or(false))
+}
+
+/// `GameKeyboard.eatKeyPress(int)`.
+pub fn eat_key_press(key: i32) {
+    GK.with(|g| {
+        let mut g = g.borrow_mut();
+        if let Some(e) = usize::try_from(key).ok().and_then(|i| g.eat_key.get_mut(i)) {
+            *e = true;
+        }
+    });
+}
+
 /// `GameKeyboard.wasKeyDown(int)`.
 pub fn was_key_down(key: i32) -> bool {
     if key >= BTN_OFFSET {
@@ -264,6 +280,50 @@ pub fn mouse_is_button_down_ui_check(n: i32) -> bool {
         Some(true) if n == 1 => mouse_is_right_delay(),
         Some(true) => true,
     }
+}
+
+/// `GameKeyboard.down` (`None` before the first update), `lastDown` and
+/// `doLuaKeyPressed`, for readers outside Lua (`pz-player-input`).
+pub fn game_keyboard_state() -> (Option<Vec<bool>>, Vec<bool>, bool) {
+    GK.with(|g| {
+        let g = g.borrow();
+        (g.down.clone(), g.last_down.clone(), g.do_lua_key_pressed)
+    })
+}
+
+/// A copy of `zombie.input.Mouse`'s statics (see [`mouse_snapshot`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MouseSnapshot {
+    /// `getXA()` / `getYA()`.
+    pub x: i32,
+    pub y: i32,
+    /// `buttonDownStates` (`None` before the first update).
+    pub down: Option<Vec<bool>>,
+    /// `buttonPrevStates`.
+    pub prev: Vec<bool>,
+    /// `wheelDelta` (`getWheelState()`).
+    pub wheel_delta: i32,
+    /// `uiCaptured`.
+    pub ui_captured: [bool; 10],
+    /// `timeRightPressed` (seconds).
+    pub time_right_pressed: f32,
+}
+
+/// `Mouse`'s statics after this frame's update, for readers outside Lua
+/// (`pz-player-input`).
+pub fn mouse_snapshot() -> MouseSnapshot {
+    MS.with(|m| {
+        let m = m.borrow();
+        MouseSnapshot {
+            x: m.x,
+            y: m.y,
+            down: m.down.clone(),
+            prev: m.prev.clone(),
+            wheel_delta: m.wheel_delta,
+            ui_captured: m.ui_captured,
+            time_right_pressed: m.time_right_pressed,
+        }
+    })
 }
 
 // ---- per-frame updates ------------------------------------------------------------

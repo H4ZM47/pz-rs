@@ -53,7 +53,16 @@ pub struct ScriptItems {
 /// `FluidContainer` or `Durability` component). The flag is set when the
 /// fallback found a `FluidContainer` script (the new item is emptied).
 fn find_script(sm: &ScriptManager, item_type: &str) -> Option<(Rc<RefCell<Item>>, bool)> {
-    let find = |n: &str| sm.find_item(n, false)?.downcast::<Item>();
+    find_script_with(sm, item_type, false)
+}
+
+/// [`find_script`] with `FindItem`'s `moduleDefaultsToBase`.
+fn find_script_with(
+    sm: &ScriptManager,
+    item_type: &str,
+    module_defaults_to_base: bool,
+) -> Option<(Rc<RefCell<Item>>, bool)> {
+    let find = |n: &str| sm.find_item(n, module_defaults_to_base)?.downcast::<Item>();
     if let Some(i) = find(item_type) {
         return Some((i, false));
     }
@@ -175,6 +184,10 @@ impl ItemEnv for ScriptItems {
         self.dictionary.item_type(registry_id).map(str::to_string)
     }
 
+    fn registry_id(&self, full_type: &str) -> i16 {
+        self.dictionary.item_id(full_type).unwrap_or(-1)
+    }
+
     fn obsolete(&self, full_type: &str) -> bool {
         self.obsolete.get(full_type).copied().unwrap_or(false)
     }
@@ -294,6 +307,65 @@ pub fn parse_item_names(text: &str) -> HashMap<String, String> {
         }
     }
     out
+}
+
+/// `InventoryItemFactory.CreateItem(itemType, useDelta, moduleDefaultsToBase)`
+/// (`createItemInternal` for a first-time item): the script found by full
+/// type or by name (`Moveables.<sprite>` through `Moveables.Moveable`, a
+/// `<type>Empty` through its fluid-container or durability script), then
+/// `Item.InstanceItem` with its `Rand` draws in order and the item id
+/// (see [`crate::env::create_from_template`]); a drainable gets
+/// `(int)(maxUses * useDelta)` uses. `None` when no script is found.
+///
+/// `display_name` is `Translator.getItemNameFromFullType` of the script's
+/// full type (`Item.OnScriptsLoaded` sets the display name from it);
+/// `None` keeps the script's. Not modelled: the poisonous berry and
+/// mushroom of `Core` (unset until a game starts).
+pub fn create_item_by_type(
+    env: &dyn ItemEnv,
+    sm: &ScriptManager,
+    item_type: &str,
+    use_delta: f32,
+    module_defaults_to_base: bool,
+    display_name: &dyn Fn(&str) -> Option<String>,
+) -> Option<crate::item::InventoryItem> {
+    let mut item_type = item_type.to_string();
+    let mut moveable = None;
+    if let Some(name) = item_type.strip_prefix("Moveables.") {
+        if !item_type.eq_ignore_ascii_case("Moveables.Moveable") {
+            // `itemType.split("\\.")[1]`.
+            moveable = Some(name.split('.').next().unwrap_or("").to_string());
+            item_type = "Moveables.Moveable".into();
+        }
+    }
+    let (script, empty) = find_script_with(sm, &item_type, module_defaults_to_base)?;
+    let mut t = ItemTemplate::from_script_ref(sm, &script)?;
+    let full = script.borrow().full_name();
+    if empty || moveable.is_some() {
+        let mut c = (*t).clone();
+        c.empty_fluid_container = empty;
+        if let Some(m) = moveable {
+            c.type_ = m.clone();
+            c.moveable_sprite = Some(m);
+        }
+        t = Rc::new(c);
+    }
+    if let Some(n) = display_name(&full).filter(|n| *n != t.display_name) {
+        let mut c = (*t).clone();
+        c.display_name = n;
+        t = Rc::new(c);
+    }
+    let mut item = crate::env::create_from_template(env, t, 0);
+    if use_delta != 1.0
+        && matches!(
+            item.template.class,
+            crate::template::ItemClass::Drainable | crate::template::ItemClass::WeaponPart
+        )
+    {
+        item.uses = (item.get_max_uses() as f32 * use_delta) as i32;
+        item.update_weight_by(|n| env.script_actual_weight(n));
+    }
+    Some(item)
 }
 
 #[cfg(test)]

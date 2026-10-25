@@ -63,6 +63,16 @@ pub enum ModelPass {
     /// Characters and vehicles: blend (SRC_ALPHA, ONE_MINUS_SRC_ALPHA),
     /// depth LESS with writes, front faces culled (or none).
     Character { cull: bool },
+    /// `AnimatedModel.DoRender` (the dead-body atlas and UI renders): as
+    /// [`ModelPass::Character`], but `StartCharacter` blends with
+    /// `glBlendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, ONE,
+    /// ONE_MINUS_SRC_ALPHA)` (`UIManager.useUiFbo`, on by default), so the
+    /// target's alpha accumulates coverage and layers drawn over an opaque
+    /// body leave it opaque.
+    AnimatedModel { cull: bool },
+    /// [`ModelPass::AnimatedModel`] with `setCullFace(GL_BACK)`, as
+    /// `FBORenderCorpses` draws mannequins into chunk textures.
+    AnimatedModelCullBack,
     /// Items and placed models: premultiplied blend
     /// (ONE, ONE_MINUS_SRC_ALPHA, ONE_MINUS_DST_ALPHA, ONE), depth LEQUAL
     /// with writes.

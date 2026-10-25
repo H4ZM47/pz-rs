@@ -302,3 +302,81 @@ fn a_fire_stands_on_its_square() {
     assert!(s.iter().zip(want).all(|(a, b)| (i32::from(*a) - b).abs() <= 2), "{s:?}");
     assert_eq!(px(108, 5), vec![0, 0, 0, 255]);
 }
+
+/// `DeadBodyAtlas`: the corpse drawn into the bitmap the way
+/// `AnimatedModel.DoRender` blends (alpha accumulates coverage), then
+/// copied into its atlas cell under the blend state `toBodyAtlas` inherits
+/// (`ONE, ONE_MINUS_SRC_ALPHA, ONE_MINUS_DST_ALPHA, ONE`), keeps opaque
+/// texels opaque where a translucent layer covers them and a translucent
+/// texel's alpha unsquared. Squared or reduced alpha left see-through
+/// texels that still wrote the body's depth, so the corpse's drop shadow
+/// (drawn later, depth-tested) showed holes as light specks.
+#[test]
+fn body_atlas_keeps_coverage_alpha() {
+    use pz_iso_render::atlas::AtlasEntry;
+    use pz_iso_render::body_atlas::to_body_atlas;
+    use pz_render::model::{ModelDraw, ModelLight, ModelPass};
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(256, 256) else { return };
+    let mut tm = TextureManager::new();
+    let white = tm.white();
+    let none = ModelLight { direction: [0.0, 1.0, 0.0], colour: [0.0; 3] };
+    let cube = |id: u64, h: f32, z: f32, alpha: f32, tint: [f32; 3]| {
+        let mut mvp = pz_iso_render::trees::Mat4::identity().0;
+        mvp[3][2] = z;
+        DrawCmd::Model(Box::new(ModelDraw {
+            mesh: Rc::new(cube(id, h)),
+            texture: Some(white.clone()),
+            mvp,
+            transform: pz_iso_render::trees::Mat4::identity().0,
+            palette: Rc::new(Vec::new()),
+            target_depth: 0.5,
+            final_scale: 1.0,
+            uv_scale: [1.0, 1.0],
+            lights: [none; 5],
+            ambient: [1.0; 3],
+            tint,
+            hue: 0.0,
+            alpha,
+            pass: ModelPass::AnimatedModel { cull: false },
+        }))
+    };
+    let (bitmap, atlas) = (100u64, 101u64);
+    let entry = AtlasEntry { atlas, atlas_size: 1024, x: 0, y: 0, w: 256, h: 256, offset_x: 0.0, offset_y: 0.0 };
+    // Left: an opaque red cube under a half-transparent green one.
+    // Right: the half-transparent green cube alone.
+    let mut cmds = vec![DrawCmd::AtlasBegin { id: bitmap, width: 1024, height: 1024, clear: true }];
+    let shift = |c: DrawCmd, dx: f32| {
+        let DrawCmd::Model(mut d) = c else { unreachable!() };
+        d.mvp[3][0] = dx;
+        DrawCmd::Model(d)
+    };
+    cmds.push(shift(cube(1, 0.2, 0.0, 1.0, [1.0, 0.0, 0.0]), -0.5));
+    cmds.push(shift(cube(2, 0.15, -0.5, 0.5, [0.0, 1.0, 0.0]), -0.5));
+    cmds.push(shift(cube(2, 0.15, -0.5, 0.5, [0.0, 1.0, 0.0]), 0.5));
+    cmds.push(DrawCmd::AtlasEnd);
+    cmds.extend(to_body_atlas(&entry, true, false, bitmap));
+    // The cell drawn 1:1 onto the screen without blending.
+    let [u0, v0, u1, v1] = entry.uv();
+    cmds.extend([
+        DrawCmd::Ortho { left: 0.0, right: 256.0, bottom: 256.0, top: 0.0, width: 256, height: 256 },
+        DrawCmd::GlDisable(pz_render::gl::BLEND),
+        DrawCmd::GlDisable(pz_render::gl::DEPTH_TEST),
+        DrawCmd::AtlasQuad { id: atlas, pos: [[0.0, 0.0], [256.0, 0.0], [256.0, 256.0], [0.0, 256.0]], uv: [[u0, v0], [u1, v0], [u1, v1], [u0, v1]], color: 0xFFFF_FFFF, depth: [0.0, 1.0] },
+    ]);
+    let list = pz_render::DrawList { cmds };
+    gpu.render_frame(&[(pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 0.0]), ..pz_gpu::FrameParams::ui(256, 256) }, &list)], &mut tm);
+    let p = gpu.read_pixels();
+    let px = |x: usize, y: usize| p[(y * 256 + x) * 4..(y * 256 + x) * 4 + 4].to_vec();
+    // The bitmap's [-1, 1] maps to the cell's 256 pixels: x -0.5 is
+    // column 64, 0.5 column 192.
+    let (left, right) = (px(64, 128), px(192, 128));
+    assert_eq!(left[3], 255, "covered opaque texel stays opaque: {left:?}");
+    assert!(left[0] > 0 && left[1] > 0, "both layers show: {left:?}");
+    // Two faces (no culling) at alpha 0.5: coverage 1 - 0.5 * 0.5. The
+    // SRC_ALPHA alpha blend would give 0.44 in the bitmap, and squaring it
+    // again in the copy 0.19.
+    assert!((right[3] as i32 - 191).abs() <= 2, "translucent texel keeps its coverage: {right:?}");
+    assert!(right[1] > 0 && right[1] <= right[3] && right[0] == 0, "premultiplied colour: {right:?}");
+    // Outside the cubes nothing is drawn.
+    assert_eq!(px(128, 10)[3], 0);
+}

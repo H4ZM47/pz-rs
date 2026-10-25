@@ -25,7 +25,7 @@
 //! TODO(saves).
 
 use crate::bind_characters::{
-    adopt_survivor_desc_value, desc_arg, shared_characters, survivor_desc_value, trait_def_arg, LuaItem,
+    adopt_survivor_desc_value, desc_arg, set_survivor_desc_instance, shared_characters, survivor_desc_value, trait_def_arg, LuaItem,
 };
 use crate::bind_java_util::{class_cast, JavaList, JavaMap};
 use crate::bind_registry::{java_error, key_arg, key_value, shared_script_manager, MOODLE_TYPE_CLASS};
@@ -896,6 +896,27 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     for class in [ISO_PLAYER_CLASS, ISO_SURVIVOR_CLASS, ISO_ZOMBIE_CLASS, ISO_ANIMAL_CLASS] {
         expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
     }
+    // `new IsoSurvivor(desc, cell, x, y, z)` (character creation's avatar):
+    // `GameCharacter::new_survivor`, `desc.setInstance(this)`, then the
+    // `OnCreateSurvivor` and `OnCreateLivingCharacter` events.
+    {
+        let sm = sm.clone();
+        expose_class(thread, ISO_SURVIVOR_CLASS, Some(ISO_GAME_CHARACTER_CLASS)).ctor(move |c| {
+            let d = desc_arg(c, 0)?;
+            let desc_value = c.arg(0);
+            adopt_survivor_desc_value(&desc_value);
+            let chr = Rc::new(RefCell::new(LuaGameCharacter::new_survivor(&sm, d.clone(), || {
+                crate::bind_items::create_item("Base.BareHands", 1.0).map(|i| i.borrow().clone())
+            })));
+            let v = character_value(&chr);
+            set_survivor_desc_instance(&d, v.clone());
+            if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
+                sink(c.thread, "OnCreateSurvivor", std::slice::from_ref(&v));
+                sink(c.thread, "OnCreateLivingCharacter", &[v.clone(), desc_value]);
+            }
+            Ok(c.push(v))
+        });
+    }
     b.method("getStats", |c| {
         let chr = chr_of(c)?;
         let v = canonical((Handle::Stats, Rc::as_ptr(&chr) as usize, 0), || {
@@ -1218,6 +1239,30 @@ mod tests {
             l.borrow_mut().push(format!("{name} {}", rest.join(" ")));
         }));
         (t, chr, log)
+    }
+
+    #[test]
+    fn firearm_and_ragdoll_members_from_lua() {
+        let (mut t, _chr, _) = setup();
+        crate::bind_states::register(&mut t, &Rc::new(ScriptManager::new()));
+        run(
+            &mut t,
+            r#"
+            player:setAimingDelay(12.5)
+            assert(player:getAimingDelay() == 12.5)
+            player:setRecoilDelay(3)
+            assert(player:getRecoilDelay() == 3)
+            player:setBeenMovingFor(90)
+            assert(player:getBeenMovingFor() == 70)
+            player:setUsePhysicHitReaction(true)
+            assert(player:usePhysicHitReaction() and player:getVariableBoolean("usePhysicHitReaction"))
+            player:setRagdollFall(true)
+            assert(player:isRagdollFall())
+            assert(not player:isRagdoll() and not player:isUpright() and not player:isOnBack())
+            assert(not player:canRagdoll())
+            "#,
+        )
+        .unwrap();
     }
 
     #[test]
