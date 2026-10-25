@@ -59,11 +59,14 @@ Status of the Rust port. Update this file with every merged change.
   New items carry the vehicle-part values, `ItemCapacity`/`MaxCapacity`,
   radio `DeviceData` with presets and channel, and random map ids, with
   the original's `Rand` draws (channel lists and map definitions are
-  runtime input); weights count fluid contents. Of 5,092 created script
-  items, all match the original's draws, ids and vehicle values and 5,081
-  every compared field (11 moveables differ in sprite-derived weight), and
-  the part items of 242 `vehicles.db` vehicles match the original's
-  weights and totals. Checked locally.
+  runtime input); weights count fluid contents. All 5,092 created script
+  items match the original on every compared field, including
+  moveables' sprite-derived weights, and the part items of 242
+  `vehicles.db` vehicles match the original's weights and totals and
+  make the same load-time `Rand` draws in the same order (every copy of
+  an identical-item run is loaded again, as `CompressIdenticalItems`
+  does). `IsoChunk` carries the per-level `physicsCheck` flags. Checked
+  locally.
 - Vehicles and moving objects in saves (`pz_world::save::vehicle`,
   `save::movers`): `BaseVehicle.save`/`load` with `VehiclePart`,
   `VehicleEngine`, lights, doors, windows, device data, part items and
