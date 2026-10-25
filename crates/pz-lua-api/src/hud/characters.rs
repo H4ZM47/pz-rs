@@ -50,6 +50,9 @@ impl HudPlayers for CharacterPlayers {
             user_name_height: 0,
         })
     }
+    fn player_index(&self) -> i32 {
+        bind_players::player_index()
+    }
     fn player_dead(&self, i: usize) -> bool {
         bind_players::player(i).is_some_and(|p| p.borrow().is_dead())
     }
@@ -275,11 +278,20 @@ mod tests {
         assert!(with_ui(|m| m.ui.is_empty()));
         assert_eq!(eval(&mut t, "getNumActivePlayers()").as_num(), Some(1.0));
         assert!(eval(&mut t, "getPlayer()").is_nil());
+        // getPlayerIndex(): assumedPlayer without an instance.
+        assert_eq!(CharacterPlayers.player_index(), 0);
+        bind_players::set_assumed_player(2);
+        assert_eq!(CharacterPlayers.player_index(), 2);
 
         let p0 = new_player(&sm, 10.0, 20.0);
         bind_players::set_player(0, Some(p0.clone()));
         bind_players::set_player_instance(Some(p0.clone()));
         assert!(p0.borrow().in_players && p0.borrow().player_instance);
+        // ...and the instance's playerIndex with one.
+        p0.borrow_mut().player.player_index = 1;
+        assert_eq!(CharacterPlayers.player_index(), 1);
+        p0.borrow_mut().player.player_index = 0;
+        bind_players::set_assumed_player(0);
         init_ui(&mut t);
         assert!(!with_ui(|m| m.ui.is_empty()));
         let mu = |i: usize| with_ui(|m| m.moodle_ui[i].clone()).unwrap();
