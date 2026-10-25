@@ -177,6 +177,11 @@ registered):
       host.service_mut(), sprites, meta, bits_hooks: &ObjectHooks })` as
       `MutationEnv`'s `PathfindSquareHooks`; compile-checked against #97
       d844ab0 (#60, #97).
+- [ ] Chunk physics after square edits: once per frame, drain the world
+      renderer's `PendingRender::physics` into
+      `pz_vehicles::chunk_physics::ChunkPhysics::mark_physics_dirty(cell, ..)`
+      (`IsoChunk.checkPhysicsLater`); `ChunkPhysics::update_if_needed` then
+      rebuilds them from Bullet's step callback (#86, #99).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
 - [ ] Vehicle models: `VehicleModelSet::create` when a vehicle is added to

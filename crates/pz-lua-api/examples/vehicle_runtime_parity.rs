@@ -64,6 +64,10 @@ impl VehicleWorld for OracleWorld {
     fn chunk_grid_width(&self) -> i32 {
         self.grid_width
     }
+    /// No map data: `PolygonalMap2.canStandAt` finds no square.
+    fn can_stand_at(&self, _x: f32, _y: f32, _z: i32, _v: &BaseVehicle) -> bool {
+        false
+    }
 }
 
 struct Items {
@@ -139,6 +143,8 @@ impl pz_inventory::ItemContext for ItemCtx {
 /// `InventoryItemFactory.CreateItem` makes for every loaded item (its id).
 struct DrawingItems<'a> {
     inner: &'a ScriptItems,
+    /// Draw from the vehicle `Rand` stream (else record and answer 0/min).
+    live: bool,
     bounds: std::cell::RefCell<Vec<i32>>,
 }
 
@@ -184,11 +190,19 @@ impl pz_inventory::ItemEnv for DrawingItems<'_> {
     }
     fn rand_next(&self, bound: i32) -> i32 {
         self.bounds.borrow_mut().push(bound);
-        0
+        if self.live {
+            rand::next(bound)
+        } else {
+            0
+        }
     }
-    fn rand_float(&self, min: f32, _max: f32) -> f32 {
+    fn rand_float(&self, min: f32, max: f32) -> f32 {
         self.bounds.borrow_mut().push(i32::MIN);
-        min
+        if self.live {
+            rand::next_float(min, max)
+        } else {
+            min
+        }
     }
 }
 
@@ -613,6 +627,10 @@ fn main() {
         println!("lua load: {}", e.lines().next().unwrap_or(""));
     }
 
+    if a[5] == "--surround" {
+        pz_vehicles::lua::with_thread(&mut lua.thread, || run_surround(oracle));
+        return;
+    }
     if a[5] == "--dispatch" {
         pz_vehicles::lua::with_thread(&mut lua.thread, || run_dispatch(oracle, &sandbox_lines));
         return;
@@ -631,6 +649,7 @@ fn main() {
         saved: Option<pz_world::save::vehicle::BaseVehicle>,
         bounds: Vec<i32>,
         script: Option<String>,
+        row: Option<VehicleRow>,
     }
     let mut cases = Vec::new();
     let e2e = a[5] == "--e2e";
@@ -655,6 +674,7 @@ fn main() {
                     saved: None,
                     bounds: Vec::new(),
                     script,
+                    row: None,
                 });
             }
             i += 1;
@@ -679,6 +699,7 @@ fn main() {
             };
             let drawing = DrawingItems {
                 inner: registry,
+                live: false,
                 bounds: Default::default(),
             };
             let saved = match row.load(class, offsets, &drawing) {
@@ -689,6 +710,20 @@ fn main() {
                 }
             };
             let bounds = drawing.bounds.borrow().clone();
+            if std::env::var("LOAD_TRACE")
+                .ok()
+                .and_then(|v| v.parse::<i32>().ok())
+                == Some(id)
+            {
+                let mut m = std::collections::BTreeMap::new();
+                for b in &bounds {
+                    *m.entry(*b).or_insert(0) += 1;
+                }
+                println!("load draws v{id}: {m:?}");
+                for b in &bounds {
+                    println!("load draw {b}");
+                }
+            }
             cases.push(Case {
                 id,
                 dir: oracle.join(format!("v{id}")),
@@ -696,6 +731,7 @@ fn main() {
                 saved: Some(saved),
                 bounds,
                 script: None,
+                row: Some(row),
             });
         }
     }
@@ -772,17 +808,20 @@ fn main() {
             rand::seed_lua(id as i64 * 31 + 7);
             apply_time(times[0]);
             let bounds = case.bounds.clone();
+            let live_draws = std::cell::RefCell::new(0usize);
             let v = match &case.saved {
                 Some(saved) => pz_vehicles::save::from_save_with(saved, || {
-                    for b in &bounds {
-                        if *b == i32::MIN {
-                            rand::next_float(0.0, 1.0);
-                        } else if *b < 0 {
-                            rand::next_range(0, -*b);
-                        } else {
-                            rand::next(*b);
-                        }
+                    // The load's item draws, live on the vehicle stream
+                    // (the loaded fields come from the first load).
+                    let live = DrawingItems {
+                        inner: registry,
+                        live: true,
+                        bounds: Default::default(),
+                    };
+                    if let Some(row) = &case.row {
+                        let _ = row.load(class, offsets, &live);
                     }
+                    *live_draws.borrow_mut() = live.bounds.borrow().len();
                 }),
                 None => {
                     let v = BaseVehicle::new();
@@ -800,8 +839,15 @@ fn main() {
                     v
                 }
             };
-            rust_lines.push(format!("D loadDraws={}", bounds.len()));
-            rand::seed_standard(id as i64 + 1_000_003);
+            let draws = if case.row.is_some() {
+                *live_draws.borrow()
+            } else {
+                bounds.len()
+            };
+            rust_lines.push(format!("D loadDraws={}", draws));
+            if std::env::var_os("NO_RESEED").is_none() {
+                rand::seed_standard(id as i64 + 1_000_003);
+            }
             v.st_mut().chunk = Some(case.chunk);
             v.add_to_world();
             manager::process_add_vehicles();
@@ -876,7 +922,14 @@ fn main() {
             .find(|l| l.starts_with("D loadDraws"))
             .cloned();
         rust_lines.retain(|l| !l.starts_with('D'));
-        if java_draws != rust_draws {
+        // `RandAbstract.id` wraps at 10000.
+        let count = |l: &Option<String>| {
+            l.as_deref()
+                .and_then(|l| l.strip_prefix("D loadDraws="))
+                .and_then(|n| n.parse::<i32>().ok())
+                .map(|n| n.rem_euclid(10_000))
+        };
+        if count(&java_draws) != count(&rust_draws) {
             println!(
                 "v{id}: item load draws differ (item port): J {:?} R {:?}",
                 java_draws, rust_draws
@@ -1306,4 +1359,151 @@ fn run_dispatch(oracle: &std::path::Path, sandbox_lines: &[String]) {
         "dispatch cases={} ok={ok} bad={bad} vehicles={vehicles}",
         cases.len()
     );
+}
+
+/// `--surround`: `SurroundVehicle` over the harness's call sequences
+/// (`surround.txt`): zombie, target and vehicle moves, clock steps,
+/// `update()` and `getPositionForZombie` in the recorded order.
+fn run_surround(oracle: &std::path::Path) {
+    use pz_vehicles::surround::{SurroundTarget, SurroundZombie};
+    let text = std::fs::read_to_string(oracle.join("surround.txt")).unwrap();
+    let hx = |s: &str| f32::from_bits(u32::from_str_radix(s, 16).unwrap());
+    #[derive(Clone, Copy)]
+    struct Z {
+        x: f32,
+        y: f32,
+        z: f32,
+        on_floor: bool,
+        can_walk: bool,
+        dead: bool,
+        has_target: bool,
+    }
+    let mut v: Option<pz_vehicles::VehicleRef> = None;
+    let mut zs: std::collections::HashMap<u64, Z> = Default::default();
+    let mut target = (0.0f32, 0.0f32, false);
+    let (mut ok, mut bad, mut cases) = (0, 0, 0);
+    let mut case_bad = false;
+    let place = |v: &BaseVehicle, x: f32, y: f32, a: f32| {
+        let (ox, oy) = env::offset();
+        v.set_position(x, y, 0.0);
+        let q = pz_vehicles::jmath::Quaternionf::angle_axis(a, 0.0, 1.0, 0.0);
+        let mut st = v.st_mut();
+        st.saved_rot = q;
+        st.jni_transform.set_rotation(&q);
+        st.jni_transform.origin = pz_vehicles::jmath::Vector3f::new(x - ox, 0.0, y - oy);
+        st.poly_dirty = true;
+    };
+    world_sim::set_created(0.0, 0.0);
+    for line in text.lines() {
+        let t: Vec<&str> = line.split(' ').collect();
+        let snapshot = |key: u64, z: &Z, target: (f32, f32, bool)| SurroundZombie {
+            key,
+            x: z.x,
+            y: z.y,
+            z: z.z,
+            on_floor: z.on_floor,
+            can_walk: z.can_walk,
+            dead: z.dead,
+            reused: false,
+            target: z.has_target.then_some(SurroundTarget {
+                x: target.0,
+                y: target.1,
+                seat: if target.2 { 0 } else { -1 },
+            }),
+        };
+        match t[0] {
+            "C" => {
+                if case_bad {
+                    bad += 1;
+                } else if cases > 0 {
+                    ok += 1;
+                }
+                case_bad = false;
+                cases += 1;
+                manager::reset();
+                let nv = BaseVehicle::new();
+                nv.set_script_name(t[2]);
+                nv.set_script(t[2]);
+                place(&nv, hx(t[3]), hx(t[4]), hx(t[5]));
+                zs.clear();
+                v = Some(nv);
+            }
+            "T" => {
+                target = (hx(t[1]), hx(t[2]), t[3] == "true");
+                let vv = v.as_ref().unwrap();
+                if target.2 && vv.character(0).is_none() {
+                    vv.set_passenger(0, Some(Rc::new(Driver)), Default::default());
+                }
+            }
+            "Z" => {
+                zs.insert(
+                    t[1].parse().unwrap(),
+                    Z {
+                        x: hx(t[2]),
+                        y: hx(t[3]),
+                        z: hx(t[4]),
+                        on_floor: t[5] == "true",
+                        can_walk: t[6] == "true",
+                        dead: t[7] == "true",
+                        has_target: t[8] == "true",
+                    },
+                );
+            }
+            "M" => place(v.as_ref().unwrap(), hx(t[1]), hx(t[2]), hx(t[3])),
+            "K" => env::set_now_ms(t[1].parse().unwrap()),
+            "U" => {
+                let vv = v.as_ref().unwrap();
+                let lookup = |k: u64| zs.get(&k).map(|z| snapshot(k, z, target));
+                let mut s = std::mem::take(&mut vv.st_mut().surround);
+                s.update(vv, &lookup);
+                vv.st_mut().surround = s;
+            }
+            "P" => {
+                let vv = v.as_ref().unwrap();
+                let k: u64 = t[1].parse().unwrap();
+                let lookup = |k: u64| zs.get(&k).map(|z| snapshot(k, z, target));
+                let me = snapshot(k, &zs[&k], target);
+                let r = vv.surround_position_for_zombie(&me, &lookup);
+                let got = match r {
+                    Some((x, y)) => format!("P {k} {},{}", fh(x), fh(y)),
+                    None => format!("P {k} null"),
+                };
+                if got != line {
+                    if !case_bad && bad < 5 {
+                        println!("case {}: J {line} R {got}", cases - 1);
+                    }
+                    case_bad = true;
+                }
+            }
+            "S" => {
+                let vv = v.as_ref().unwrap();
+                let st = vv.st();
+                let mut out = format!("S n={}", st.surround.positions.len());
+                for p in &st.surround.positions {
+                    write!(
+                        out,
+                        " {},{}{}{}",
+                        fh(p.pos_world.x),
+                        fh(p.pos_world.y),
+                        if p.blocked { "b" } else { "" },
+                        p.zombie.map(|z| format!(":{z}")).unwrap_or_default()
+                    )
+                    .unwrap();
+                }
+                if out != line {
+                    if !case_bad && bad < 5 {
+                        println!("case {}: J {line}\n         R {out}", cases - 1);
+                    }
+                    case_bad = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    if case_bad {
+        bad += 1;
+    } else if cases > 0 {
+        ok += 1;
+    }
+    println!("surround cases={cases} ok={ok} bad={bad}");
 }
