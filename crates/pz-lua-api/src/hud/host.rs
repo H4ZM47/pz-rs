@@ -22,6 +22,40 @@ pub trait HudPlayers {
     fn all_players_dead(&self) -> bool {
         false
     }
+    /// `IsoPlayer.players[i]`'s position and draw offsets, for HUD
+    /// widgets that follow the player on screen; `None` without a player.
+    fn player_screen(&self, _i: usize) -> Option<PlayerScreen> {
+        None
+    }
+}
+
+/// What `ActionProgressBar.updateScreenPos` reads from a player.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PlayerScreen {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    /// `IsoGameCharacter.offsetX` / `offsetY`.
+    pub offset_x: f32,
+    pub offset_y: f32,
+    /// `getUserNameHeight()`.
+    pub user_name_height: i32,
+}
+
+/// `IsoCamera` / `Core` zoom as the HUD reads them. Owner: world-render
+/// thread.
+pub trait HudCamera {
+    /// `IsoCamera.getOffX()` / `getOffY()` (of the player being rendered).
+    fn off_x(&self) -> f32 {
+        0.0
+    }
+    fn off_y(&self) -> f32 {
+        0.0
+    }
+    /// `Core.getZoom(player)`.
+    fn zoom(&self, _player: usize) -> f32 {
+        1.0
+    }
 }
 
 /// `GameTime.instance` as the HUD uses it. Owner: characters thread.
@@ -35,6 +69,10 @@ pub trait HudGameTime {
     /// `getTrueMultiplier()`.
     fn get_true_multiplier(&self) -> f32 {
         1.0
+    }
+    /// `getRealworldSecondsSinceLastUpdate()`.
+    fn realworld_seconds_since_last_update(&self) -> f32 {
+        1.0 / 60.0
     }
 }
 
@@ -59,6 +97,7 @@ pub trait HudNetwork {
 /// The no-op defaults.
 pub struct NoHud;
 impl HudPlayers for NoHud {}
+impl HudCamera for NoHud {}
 impl HudSound for NoHud {}
 impl HudNetwork for NoHud {}
 
@@ -92,6 +131,7 @@ pub struct HudHost {
     pub game_time: Box<dyn HudGameTime>,
     pub sound: Box<dyn HudSound>,
     pub network: Box<dyn HudNetwork>,
+    pub camera: Box<dyn HudCamera>,
 }
 
 impl Default for HudHost {
@@ -101,6 +141,7 @@ impl Default for HudHost {
             game_time: Box::new(SharedGameTime),
             sound: Box::new(NoHud),
             network: Box::new(NoHud),
+            camera: Box::new(NoHud),
         }
     }
 }

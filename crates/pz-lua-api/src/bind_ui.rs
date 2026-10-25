@@ -1157,8 +1157,7 @@ fn register_manager(thread: &mut Thread) {
         with_ui(|m| m.player_blink_info[0].synced_icon_index = 0);
         Ok(c.push(0))
     });
-    b.static_fn("trySetProgressBarValue", |c| Ok(c.push(false))); // TODO(world): ActionProgressBar
-                                                                  // TODO(world): world objects and Java-side widgets not ported yet.
+    // TODO(world): picking and the remaining Java-side widgets.
     s_nil!(
         "getPicked",
         "getLastPicked",
