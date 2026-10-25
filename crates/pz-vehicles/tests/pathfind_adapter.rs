@@ -330,7 +330,11 @@ struct Seated;
 impl pz_vehicles::vehicle::VehicleCharacter for Seated {}
 
 fn script_manager() -> Rc<pz_scripts::ScriptManager> {
-    let root = std::env::temp_dir().join(format!("pz-vehicles-adapter-{}", std::process::id()));
+    let root = {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("pz-vehicles-adapter-{}-{n}", std::process::id()))
+    };
     let dir = root.join("media/scripts/vehicles");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("adapter_car.txt"), SCRIPT).unwrap();

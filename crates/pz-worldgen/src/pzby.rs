@@ -388,7 +388,11 @@ mod tests {
 
     #[test]
     fn header_and_chunk() {
-        let dir = std::env::temp_dir().join(format!("pzby-test-{}", std::process::id()));
+        let dir = {
+            static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::env::temp_dir().join(format!("pzby-test-{}-{n}", std::process::id()))
+        };
         std::fs::create_dir_all(&dir).unwrap();
         let mut rand = Count(0);
         let h = PzbyHeader::load(&sample(&dir), &mut rand).unwrap();
