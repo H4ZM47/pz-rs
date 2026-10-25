@@ -11,7 +11,7 @@ mod manager;
 mod properties;
 mod types;
 
-pub use loader::{load_property_strings, set_custom_property_values};
+pub use loader::{load_property_strings, set_custom_property_values, EntitySpriteConfig};
 pub use manager::{
     GridIdx, IsoSprite, IsoSpriteGrid, IsoSpriteManager, SpriteIdx, DEFAULT_SPRITE_ID,
 };

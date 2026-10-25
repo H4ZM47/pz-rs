@@ -152,6 +152,24 @@ struct GridLevel {
     xy_to_sprite: HashMap<String, SpriteIdx>,
 }
 
+/// What `SpriteConfigManager.InitScriptsPostTileDef` reads from one
+/// `GameEntityScript` with a `SpriteConfig` component, in
+/// `ScriptManager.getAllGameEntities()` order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EntitySpriteConfig {
+    /// `GameEntityScript.getName()`, stored as `EntityScriptName`.
+    pub entity_name: String,
+    /// `SpriteConfigScript.getName()` (the parent entity's script object
+    /// name): the `objectInfos` key.
+    pub config_name: String,
+    /// `SpriteConfigScript.isValid()`: at least one face and no duplicate
+    /// tile.
+    pub valid: bool,
+    /// `SpriteConfigScript.getAllTileNames()`: every face's tiles in face,
+    /// layer, row and column order, without duplicates.
+    pub tile_names: Vec<String>,
+}
+
 impl IsoSpriteManager {
     /// The full load in `IsoWorld.init` order for the base game files in
     /// `media_dir` (no mods). Per-file errors are logged and skipped as
@@ -159,6 +177,8 @@ impl IsoSpriteManager {
     ///
     /// `entity_script_names` are the `GameEntityScript` names registered as
     /// `EntityScriptName` values (empty when scripts are not loaded).
+    /// `IsoWorld.init` then runs [`IsoSpriteManager::post_tile_definitions`]
+    /// and `loadedTileDefinitions`.
     pub fn load_tile_definitions_from(
         tables: SpriteTables,
         media_dir: &Path,
@@ -193,6 +213,62 @@ impl IsoSpriteManager {
         mgr.register_fake_jumbo_tree(7);
         mgr.add_sprite_named("media/ui/missing-tile.png");
         Ok(mgr)
+    }
+
+    /// `ScriptManager.PostTileDefinitions()`, called by `IsoWorld.init` after
+    /// the tile definitions and the `missing-tile` sprite: the entity
+    /// collection's `SpriteConfigManager.InitScriptsPostTileDef()` (the other
+    /// collections only log). Every tile of each valid sprite config gets
+    /// `EntityScriptName` and the `EntityScript` flag.
+    ///
+    /// An entity is skipped (an error is logged upstream) when its config is
+    /// invalid, when an earlier config has the same name, or when one of its
+    /// tiles belongs to an earlier entity; the tiles it registered before
+    /// that duplicate stay registered. `getSprite(name)` adds a sprite for a
+    /// name not yet in `namedMap`, as here. Returns
+    /// `SpriteConfigManager.HasLoadErrors()`.
+    pub fn post_tile_definitions(&mut self, entities: &[EntitySpriteConfig]) -> bool {
+        let mut has_load_errors = false;
+        let mut object_infos = std::collections::HashSet::new();
+        let mut registered = std::collections::HashSet::new();
+        let flag = self.tables.flag.EntityScript;
+        for e in entities {
+            // `parseEntityScript`: `isValid()`, then `parseSpriteConfigScript`.
+            if !e.valid || !object_infos.insert(e.config_name.as_str()) {
+                has_load_errors = true;
+                continue;
+            }
+            // `parseSpriteConfigScript` looks every tile up.
+            let sprites: Vec<SpriteIdx> = e
+                .tile_names
+                .iter()
+                .map(|n| self.get_sprite_named(n))
+                .collect();
+            if !sprites.iter().all(|&s| registered.insert(s)) {
+                has_load_errors = true;
+                continue;
+            }
+            for &s in &sprites {
+                let props = &mut self.sprites[s].properties;
+                props.set(
+                    &self.tables,
+                    &self.alias,
+                    "EntityScriptName",
+                    &e.entity_name,
+                    true,
+                );
+                props.set_flag(flag);
+            }
+        }
+        has_load_errors
+    }
+
+    /// `getSprite(gid)`: the named sprite, or a new one (`AddSprite(gid)`).
+    fn get_sprite_named(&mut self, gid: &str) -> SpriteIdx {
+        match self.named_map.get(gid) {
+            Some(&s) => s,
+            None => self.add_sprite_named(gid),
+        }
     }
 
     /// `SetCustomPropertyValues` + `GenerateTilePropertyLookupTables`.
