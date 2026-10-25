@@ -33,6 +33,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Perks initialised before Lua loads (#26).
 - [ ] BodyLocations.lua runs at boot so the "Human" body-location group and
       clothing hide/alt rules exist (#26).
+- [x] UI avatars: `pz_engine::ui_models::install(game_dir, fs)` before Lua
+      loads (installs the `bind_ui3d::UIModelRenderer`); `TextManager` init
+      (`bind_text::boot`) in the engine boot (#115).
+- [ ] ScriptManager loading in the windowed engine boot (only the client's
+      `--png`/`--headless-frames` paths load scripts) (#115).
 
 ## Per frame (`GameWindow.logic` / `render`)
 - [ ] Input: every winit event → `pz_input::winit::handle`; before
@@ -54,6 +59,9 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] `ZombiePopulationManager::update_main` with PopulationHost and
       `ZombieOps` (`RealZombies`) (#73/#77).
 - [ ] `WorldSoundManager::update` once per frame (#75).
+- [x] UI avatars: `UiModels::set_time_delta` (from `GameTime` once it is
+      wired; the frame multiplier / 30 now) and `UiModels::prepare(gpu)`
+      (texture compositing) before the UI renders (#115).
 
 ## World (`GameLoadingState` / `IngameState`)
 - [ ] `ChunkStreamer::new(players, calc_chunk_width(w, h))`, `load_world`,
