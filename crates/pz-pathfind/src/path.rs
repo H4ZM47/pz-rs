@@ -21,8 +21,14 @@ pub struct PathNode {
 }
 
 impl PathNode {
-    /// The level in game terms (`z - 32`), as `PathfindNativeThread`
-    /// converts it.
+    /// The level in game terms (`z - 32`) of a node of a **raw native**
+    /// path, as `World::find_path*` returns it (the native side stores
+    /// levels offset by 32).
+    ///
+    /// Do not call it on paths delivered by `PathfindService` or
+    /// `PathFindBehavior2`: the service already converts their nodes to
+    /// game levels (as `PathfindNativeThread` does), so `z` is the level
+    /// there and this would be 32 too low.
     pub fn level(&self) -> f32 {
         self.z - 32.0
     }

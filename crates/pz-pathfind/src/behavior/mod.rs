@@ -230,6 +230,29 @@ fn v3_len(x: f32, y: f32, z: f32) -> f32 {
     ((x * x + y * y + z * z) as f64).sqrt() as f32
 }
 
+/// A path mover as `testCollideAdjacent` reads it.
+/// TODO(furniture): `shouldIgnoreCollisionWithSquare` (the sit-on-furniture
+/// square) and a player's no-clip.
+struct MoverCollideView<'a>(&'a dyn PathMover);
+
+impl pz_world::square::CollideMover for MoverCollideView<'_> {
+    fn mover_kind(&self) -> pz_world::square::MoverKind {
+        use pz_world::square::MoverKind;
+        if self.0.as_zombie().is_some() {
+            MoverKind::Zombie
+        } else if self.0.as_animal().is_some() {
+            MoverKind::Animal
+        } else if self.0.as_player().is_some() {
+            MoverKind::Player
+        } else {
+            MoverKind::Other
+        }
+    }
+    fn is_crawling(&self) -> bool {
+        self.0.as_zombie().is_some_and(|z| z.is_crawling())
+    }
+}
+
 /// `PathFindBehavior2.closestPointOnPath(x3, y3, z, mover, path, pop)`:
 /// the point of the path closest to `(x3, y3, z)` among segments on that
 /// level whose closest point is reachable from the mover's square (adjacent
@@ -279,7 +302,21 @@ pub fn closest_point_on_path<G: GetSquare>(
             let square2 = map.square(ffd(xu), ffd(yu), ff(z));
             if let (Some(s1), Some(_)) = (square1, square2) {
                 let from = (s1.x, s1.y, s1.z);
+                let with_cell = map.bits.squares.as_iso_cell().map(|cell| {
+                    pz_world::square::CollideEnv::new(cell, map.bits.sprites, map.bits.meta)
+                });
                 let blocked = match mover.as_deref_mut() {
+                    // `testCollideAdjacent(mover, ...)` on the cell: the
+                    // zombie's ghost flag only silences its `collideWith`,
+                    // whose effects (`collidedWithDoor`, `collidedObject`)
+                    // `postupdate` resets before reading them.
+                    Some(m) if with_cell.is_some() => {
+                        let env = with_cell.as_ref().unwrap();
+                        let view = MoverCollideView(&*m);
+                        let sq = env.sq(s1.x, s1.y, s1.z).unwrap_or(s1);
+                        env.test_collide_adjacent(sq, Some(&view), dx, dy, 0)
+                            .blocked
+                    }
                     Some(m) => {
                         if let Some(zm) = m.as_zombie_mut() {
                             let ghost = zm.is_ghost();
