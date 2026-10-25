@@ -16,7 +16,7 @@ use pz_inventory::context::{ItemPlace, ItemOwner};
 use pz_inventory::env::ItemEnv;
 use pz_inventory::gameplay::UseOutcome;
 use pz_inventory::visual::human::HumanVisualOwner;
-use pz_inventory::{InventoryItem, ItemContainer, ItemContext, ItemKind, ItemTemplate};
+use pz_inventory::{InventoryItem, ItemContext, ItemKind, ItemTemplate};
 use pz_scripts::objects::items::find_item;
 use pz_scripts::ScriptManager;
 
@@ -25,14 +25,15 @@ use super::items::CharacterItems;
 use super::{CharacterKind, GameCharacter};
 use crate::survivor::CharacterGender;
 
-/// Whether the item `id` is somewhere in `c` (directly or in a bag).
-fn contains_anywhere(c: &ItemContainer, id: i32) -> bool {
-    c.items.iter().filter_map(|i| i.as_item()).any(|i| {
-        i.id == id
-            || match &i.kind {
-                ItemKind::Container(b) => contains_anywhere(&b.container, id),
-                _ => false,
-            }
+/// Whether the item `id` is somewhere in the bag `i`'s inventory.
+fn in_bag(i: &InventoryItem, id: i32) -> bool {
+    let ItemKind::Container(b) = &i.kind else {
+        return false;
+    };
+    let inner = b.container.borrow();
+    inner.items.iter().any(|r| {
+        let r = r.borrow();
+        r.id == id || in_bag(&r, id)
     })
 }
 
@@ -47,7 +48,7 @@ impl CharacterItems {
     pub fn holds(&self, id: i32) -> bool {
         self.inventory.borrow().items.iter().any(|i| {
             let i = i.borrow();
-            i.id == id || matches!(&i.kind, ItemKind::Container(b) if contains_anywhere(&b.container, id))
+            i.id == id || in_bag(&i, id)
         })
     }
 }

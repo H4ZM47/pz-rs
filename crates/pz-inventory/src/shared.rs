@@ -17,9 +17,11 @@
 //! [`ItemContainer`] skip them), and they are saved after the decoded
 //! items.
 //!
-//! Bags (`InventoryContainer`) keep their contents in the item
-//! ([`crate::item::ItemKind::Container`]) as saved items; they are not
-//! shared objects yet.
+//! A bag (`InventoryContainer`) holds its inventory as a
+//! [`ContainerRef`] ([`crate::item::ContainerData::container`]) whose
+//! `containingItem` is the bag: [`new_item`] (the way an item becomes a
+//! shared object) links it. Cloning an item copies its bag's contents
+//! into a new container (an item value is a copy, not the object).
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -27,9 +29,11 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use crate::container::ItemContainer;
+use crate::context::ItemContext;
 use crate::gameplay::UseOutcome;
 use crate::item::{InventoryItem, ItemKind};
 use crate::saved::SavedItem;
+use crate::template::ItemTemplate;
 
 /// A shared item (the original's object identity).
 pub type ItemRef = Rc<RefCell<InventoryItem>>;
@@ -83,6 +87,38 @@ impl std::fmt::Debug for SharedContainer {
             .field("id", &self.id)
             .field("items", &self.items.len())
             .finish()
+    }
+}
+
+impl PartialEq for SharedContainer {
+    /// The values (the items by value); the owner links are not compared.
+    fn eq(&self, o: &Self) -> bool {
+        self.kind == o.kind
+            && self.capacity == o.capacity
+            && self.id == o.id
+            && self.active == o.active
+            && self.is_device == o.is_device
+            && self.age_factor == o.age_factor
+            && self.cooking_factor == o.cooking_factor
+            && self.explored == o.explored
+            && self.has_been_looted == o.has_been_looted
+            && self.custom_temperature == o.custom_temperature
+            && self.weight_reduction == o.weight_reduction
+            && self.open_sound == o.open_sound
+            && self.close_sound == o.close_sound
+            && self.put_sound == o.put_sound
+            && self.take_sound == o.take_sound
+            && self.only_accept_category == o.only_accept_category
+            && self.accept_item_function == o.accept_item_function
+            && self.container_position == o.container_position
+            && self.freezer_position == o.freezer_position
+            && self.raw_items == o.raw_items
+            && self.items.len() == o.items.len()
+            && self
+                .items
+                .iter()
+                .zip(&o.items)
+                .all(|(a, b)| Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow())
     }
 }
 
@@ -146,29 +182,121 @@ impl SharedContainer {
     /// item objects (and this container their `container`), raw records
     /// are kept. A missing `type` reads as `"none"`.
     pub fn from_container(c: ItemContainer) -> ContainerRef {
-        let mut s = SharedContainer {
-            kind: c.kind.unwrap_or_else(|| "none".to_string()),
-            capacity: c.capacity,
-            id: c.id,
-            explored: c.explored,
-            has_been_looted: c.has_been_looted,
-            container_position: c.container_position,
-            freezer_position: c.freezer_position,
-            ..Default::default()
-        };
-        let mut items = Vec::new();
-        for i in c.items {
-            match i {
-                SavedItem::Item(b) => items.push(Rc::new(RefCell::new(*b))),
-                raw => s.raw_items.push(raw),
+        let r = SharedContainer::default().into_ref();
+        Self::fill_from(&r, c);
+        r
+    }
+
+    /// Replaces the saved fields and the items of `r` with those of `c`
+    /// (the old items lose their `container`; the decoded ones become item
+    /// objects whose container is `r`).
+    pub fn fill_from(r: &ContainerRef, c: ItemContainer) {
+        let old = std::mem::take(&mut r.borrow_mut().items);
+        for i in &old {
+            if container_of(i).is_some_and(|o| Rc::ptr_eq(&o, r)) {
+                set_container(i, None);
             }
         }
-        let r = s.into_ref();
+        let mut items = Vec::new();
+        let mut raw = Vec::new();
+        for i in c.items {
+            match i {
+                SavedItem::Item(b) => items.push(new_item(*b)),
+                other => raw.push(other),
+            }
+        }
+        for i in &items {
+            set_container(i, Some(r));
+        }
+        let mut s = r.borrow_mut();
+        s.kind = c.kind.unwrap_or_else(|| "none".to_string());
+        s.capacity = c.capacity;
+        s.id = c.id;
+        s.explored = c.explored;
+        s.has_been_looted = c.has_been_looted;
+        s.container_position = c.container_position;
+        s.freezer_position = c.freezer_position;
+        s.items = items;
+        s.raw_items = raw;
+    }
+
+    /// A copy as a new container: the items are copied (bags with their
+    /// contents) and are the new container's; the owner links
+    /// (`parent`, `sourceGrid`, `containingItem`) are not copied.
+    pub fn deep_clone(&self) -> ContainerRef {
+        let r = SharedContainer {
+            kind: self.kind.clone(),
+            capacity: self.capacity,
+            id: self.id,
+            active: self.active,
+            dirty: self.dirty,
+            draw_dirty: self.draw_dirty,
+            is_device: self.is_device,
+            age_factor: self.age_factor,
+            cooking_factor: self.cooking_factor,
+            explored: self.explored,
+            has_been_looted: self.has_been_looted,
+            custom_temperature: self.custom_temperature,
+            weight_reduction: self.weight_reduction,
+            open_sound: self.open_sound.clone(),
+            close_sound: self.close_sound.clone(),
+            put_sound: self.put_sound.clone(),
+            take_sound: self.take_sound.clone(),
+            only_accept_category: self.only_accept_category.clone(),
+            accept_item_function: self.accept_item_function.clone(),
+            container_position: self.container_position.clone(),
+            freezer_position: self.freezer_position.clone(),
+            items: Vec::new(),
+            raw_items: self.raw_items.clone(),
+            containing_item: None,
+            parent: None,
+            source_grid: None,
+        }
+        .into_ref();
+        let items: Vec<ItemRef> = self
+            .items
+            .iter()
+            .map(|i| new_item(i.borrow().clone()))
+            .collect();
         for i in &items {
             set_container(i, Some(&r));
         }
         r.borrow_mut().items = items;
         r
+    }
+
+    /// `new ItemContainer()` as `InventoryContainer`'s constructor and
+    /// `Item.InstanceItem` set it up for a bag of `template`: the type is
+    /// the item type, then `setCapacity`, `setWeightReduction` and the
+    /// script's sounds and accept rules.
+    pub fn new_bag(template: &ItemTemplate) -> Self {
+        let discard = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
+        SharedContainer {
+            kind: template.type_.clone(),
+            capacity: template.capacity,
+            weight_reduction: template.weight_reduction.clamp(0, 100),
+            put_sound: template.put_in_sound.clone(),
+            close_sound: template.close_sound.clone(),
+            open_sound: template.open_sound.clone(),
+            only_accept_category: discard(&template.only_accept_category),
+            accept_item_function: discard(&template.accept_item_function),
+            ..Default::default()
+        }
+    }
+
+    /// `getContentsWeight()`: the items' `getUnequippedWeight()` (raw
+    /// records weigh nothing; the items' holder is not known here).
+    pub fn get_contents_weight_with(&self, ctx: &dyn ItemContext) -> f32 {
+        let owner = crate::context::NoOwner;
+        self.items
+            .iter()
+            .map(|i| i.borrow().get_unequipped_weight(ctx, &owner))
+            .fold(0.0, |a, w| a + w)
+    }
+
+    /// `isEmpty()` (raw records count as items).
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty() && self.raw_items.is_empty()
     }
 
     /// The saved form (a copy of the items, then the raw records).
@@ -209,6 +337,60 @@ impl SharedContainer {
     pub fn index_of(&self, item: &ItemRef) -> Option<usize> {
         self.items.iter().position(|i| Rc::ptr_eq(i, item))
     }
+}
+
+/// The item object of `item`: a bag's inventory gets the new object as
+/// its `containingItem`. Every shared item is made with this.
+pub fn new_item(item: InventoryItem) -> ItemRef {
+    let r = Rc::new(RefCell::new(item));
+    link_bag(&r);
+    r
+}
+
+/// Sets `containingItem` of `item`'s inventory (a bag) to `item`.
+pub fn link_bag(item: &ItemRef) {
+    if let Some(c) = inventory_of(&item.borrow()) {
+        c.borrow_mut().containing_item = Some(Rc::downgrade(item));
+    }
+}
+
+/// `InventoryContainer.getInventory()` (`None` for other items).
+pub fn inventory_of(item: &InventoryItem) -> Option<ContainerRef> {
+    match &item.kind {
+        ItemKind::Container(c) => Some(c.container.clone()),
+        _ => None,
+    }
+}
+
+/// `ItemContainer.containingItem`.
+pub fn containing_item(c: &ContainerRef) -> Option<ItemRef> {
+    c.borrow().containing_item.as_ref().and_then(Weak::upgrade)
+}
+
+/// `getOutermostContainer()` of a container: up through the bags that
+/// hold it.
+pub fn outermost(c: &ContainerRef) -> ContainerRef {
+    let mut c = c.clone();
+    while let Some(outer) = containing_item(&c).and_then(|b| container_of(&b)) {
+        c = outer;
+    }
+    c
+}
+
+/// `item.getOutermostContainer()`: `None` when the item has no container
+/// or lies on the floor; a bag on the floor is the outermost.
+pub fn outermost_container_of(item: &ItemRef) -> Option<ContainerRef> {
+    let mut outer = container_of(item)?;
+    if outer.borrow().kind == "floor" {
+        return None;
+    }
+    while let Some(next) = containing_item(&outer).and_then(|b| container_of(&b)) {
+        if next.borrow().kind == "floor" {
+            break;
+        }
+        outer = next;
+    }
+    Some(outer)
 }
 
 type ContainerMap = HashMap<usize, (Weak<RefCell<InventoryItem>>, Weak<RefCell<SharedContainer>>)>;
@@ -287,31 +469,7 @@ pub fn remove_item(c: &ContainerRef, item: &ItemRef) -> bool {
 /// items become those of the saved `saved`; the old items have no
 /// container after.
 pub fn load_into(c: &ContainerRef, saved: ItemContainer) {
-    let old = std::mem::take(&mut c.borrow_mut().items);
-    for i in &old {
-        set_container(i, None);
-    }
-    let mut items = Vec::new();
-    let mut raw_items = Vec::new();
-    for i in saved.items {
-        match i {
-            SavedItem::Item(b) => items.push(Rc::new(RefCell::new(*b))),
-            raw => raw_items.push(raw),
-        }
-    }
-    for i in &items {
-        set_container(i, Some(c));
-    }
-    let mut s = c.borrow_mut();
-    s.kind = saved.kind.unwrap_or_else(|| "none".to_string());
-    s.capacity = saved.capacity;
-    s.id = saved.id;
-    s.explored = saved.explored;
-    s.has_been_looted = saved.has_been_looted;
-    s.container_position = saved.container_position;
-    s.freezer_position = saved.freezer_position;
-    s.items = items;
-    s.raw_items = raw_items;
+    SharedContainer::fill_from(c, saved);
 }
 
 /// [`ItemContainer::apply_use`] on a shared container: the
@@ -326,7 +484,7 @@ pub fn apply_use(c: &ContainerRef, id: i32, out: &mut UseOutcome, temperature: f
                 f.heat = temperature;
             }
             new_id = Some(item.id);
-            add_item(c, &Rc::new(RefCell::new(item)));
+            add_item(c, &new_item(item));
         }
     }
     if out.remove {

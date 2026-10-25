@@ -69,7 +69,7 @@ impl SavedItem {
     pub fn is_nonempty_container(&self, env: &dyn ItemEnv) -> bool {
         match self {
             SavedItem::Item(i) => match &i.kind {
-                crate::item::ItemKind::Container(c) => !c.container.items.is_empty(),
+                crate::item::ItemKind::Container(c) => !c.container.borrow().is_empty(),
                 _ => false,
             },
             SavedItem::Raw(_) => env

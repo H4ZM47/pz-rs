@@ -308,9 +308,7 @@ fn weights_and_equipped() {
     b.actual_weight = 1.0;
     let mut bag = item(b);
     if let ItemKind::Container(c) = &mut bag.kind {
-        c.container
-            .items
-            .push(SavedItem::Item(Box::new(item(shirt()))));
+        crate::shared::add_item(&c.container, &crate::shared::new_item(item(shirt())));
     }
     assert_eq!(bag.get_unequipped_weight(&ctx, &o), 1.4);
     assert_eq!(bag.get_equipped_weight(&ctx, &o), 0.3 + 0.4 * 0.6);

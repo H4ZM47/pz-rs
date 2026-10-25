@@ -439,7 +439,7 @@ fn collect(items: &[SavedItem], out: &mut Vec<InventoryItem>) {
         if let SavedItem::Item(i) = it {
             out.push((**i).clone());
             if let ItemKind::Container(c) = &i.kind {
-                collect(&c.container.items, out);
+                collect(&c.container.borrow().to_container().items, out);
             }
         }
     }

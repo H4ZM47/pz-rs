@@ -243,18 +243,37 @@ fn containers_nest_and_unknown_items_drop() {
     let e = env();
     let mut bag = new_item(&e, 7);
     if let ItemKind::Container(c) = &mut bag.kind {
-        c.container.kind = Some("Bag".into());
-        c.container.id = 55;
-        c.container
-            .items
-            .push(SavedItem::Item(Box::new(new_item(&e, 1))));
+        c.container.borrow_mut().kind = "Bag".into();
+        c.container.borrow_mut().id = 55;
+        crate::shared::add_item(&c.container, &crate::shared::new_item(new_item(&e, 1)));
     }
     let back = round_trip(&bag, &e);
     let ItemKind::Container(c) = &back.kind else {
         panic!()
     };
-    assert_eq!(c.container.id, 55);
-    assert_eq!(c.container.items.len(), 1);
+    assert_eq!(c.container.borrow().id, 55);
+    assert_eq!(c.container.borrow().items.len(), 1);
+    // The script's wetCooldown (0, not the -1 `load` resets to) is saved,
+    // so the bits block is read and `setCustomName` puts the name in the
+    // mod data, as `InventoryItem.load` does (the bag and the item in it);
+    // everything else is equal.
+    let custom_name = |i: &InventoryItem| {
+        i.table
+            .as_ref()
+            .and_then(|t| t.rawget(&LuaKey::Str("customName".into())).cloned())
+    };
+    assert_eq!(bag.wet_cooldown, 0.0);
+    assert!(bag.table.is_none());
+    assert_eq!(custom_name(&back), Some(LuaValue::Str("Bag name".into())));
+    let inner = c.container.borrow().items[0].clone();
+    assert_eq!(
+        custom_name(&inner.borrow()),
+        Some(LuaValue::Str("Rock name".into()))
+    );
+    inner.borrow_mut().table = None;
+    let mut rest = back.clone();
+    rest.table = None;
+    assert_eq!(rest, bag);
 
     let mut cont = ItemContainer::new(Some("crate"));
     let mut unknown = Writer::new();

@@ -204,8 +204,8 @@ fn line(i: &InventoryItem) -> String {
         write!(
             o,
             " contId={} contItems={}",
-            c.container.id,
-            c.container.items.len()
+            c.container.borrow().id,
+            c.container.borrow().to_container().items.len()
         )
         .unwrap();
     }
@@ -218,7 +218,7 @@ fn dump(items: &[SavedItem], out: &mut Vec<String>, raw: &mut usize) {
             SavedItem::Raw(_) => *raw += 1,
             SavedItem::Item(i) => {
                 if let ItemKind::Container(c) = &i.kind {
-                    dump(&c.container.items, out, raw);
+                    dump(&c.container.borrow().to_container().items, out, raw);
                 }
                 out.push(line(i));
             }
