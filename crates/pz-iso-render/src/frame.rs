@@ -164,7 +164,7 @@ pub fn world_frame_for_player(r: &ChunkRenderer<'_>, size: FrameSize, view: Opti
 /// [`world_frame_for_player`] with `late` (see [`world_frame_full`]).
 #[allow(clippy::too_many_arguments)]
 pub fn world_frame_for_player_with(r: &ChunkRenderer<'_>, size: FrameSize, view: Option<PlayerView>, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
-    world_frame_player_extras(r, size, view, chunks, objects, drop_shadow, &mut FrameExtras::default(), screen, out, late)
+    world_frame_for_player_extras(r, size, view, chunks, objects, drop_shadow, &mut FrameExtras::default(), screen, out, late)
 }
 
 /// The rest of what `performRenderTiles` and `IsoWorld.renderInternal`
@@ -201,12 +201,12 @@ pub struct FrameExtras<'a> {
 /// in `performRenderTiles` / `IsoWorld.renderInternal`.
 #[allow(clippy::too_many_arguments)]
 pub fn world_frame_extras(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, extras: &mut FrameExtras<'_>, screen: ScreenParams, out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
-    world_frame_player_extras(r, size, None, chunks, objects, drop_shadow, extras, screen, out, late)
+    world_frame_for_player_extras(r, size, None, chunks, objects, drop_shadow, extras, screen, out, late)
 }
 
 /// [`world_frame_for_player_with`] with the [`FrameExtras`] passes.
 #[allow(clippy::too_many_arguments)]
-pub fn world_frame_player_extras(r: &ChunkRenderer<'_>, size: FrameSize, view: Option<PlayerView>, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, extras: &mut FrameExtras<'_>, screen: ScreenParams, mut out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
+pub fn world_frame_for_player_extras(r: &ChunkRenderer<'_>, size: FrameSize, view: Option<PlayerView>, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, extras: &mut FrameExtras<'_>, screen: ScreenParams, mut out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
     let full = view.map_or(size, |v| FrameSize { width: v.screen.0, height: v.screen.1 });
     let (ow, oh) = full.offscreen();
     let (w, h) = (size.width, size.height);
