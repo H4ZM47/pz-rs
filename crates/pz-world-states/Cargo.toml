@@ -1,0 +1,12 @@
+[package]
+name = "pz-world-states"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-world.workspace = true
+pz-characters.workspace = true
+pz-pathfind.workspace = true
+
+[dev-dependencies]
+pz-scripts.workspace = true
