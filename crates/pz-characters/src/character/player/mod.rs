@@ -15,11 +15,13 @@ pub mod context;
 pub mod control;
 pub mod input;
 pub mod update;
+pub mod vision;
 
 pub use aiming::AimingMode;
 pub use context::{ContextualAction, ContextualActionKind};
 pub use control::{CharacterInput, CharacterInputMode, InputOwner, TimedInputHandler};
 pub use input::{JoypadAxis2dBinding, NoInput, PlayerInput};
+pub use vision::PlayerRenderInputs;
 
 /// `IsoPlayer`'s control-loop fields (and the `IsoGameCharacter` ones only
 /// the player loop uses).
@@ -91,6 +93,9 @@ pub struct PlayerControl {
     /// `blurFactor`, `blurFactorTarget`.
     pub blur_factor: f32,
     pub blur_factor_target: f32,
+    /// `isWearingNightVisionGoggles` (only `setWearingNightVisionGoggles`
+    /// sets it).
+    pub wearing_night_vision_goggles: bool,
     /// `attackAnimThrowTimer` (ms of [`PlayerInput::current_time_ms`]).
     pub attack_anim_throw_timer: i64,
     /// The clock of the last update (`System.currentTimeMillis()`).
@@ -176,6 +181,7 @@ impl Default for PlayerControl {
             hyperthermia_cache: -1,
             blur_factor: 0.0,
             blur_factor_target: 0.0,
+            wearing_night_vision_goggles: false,
             attack_anim_throw_timer: 0,
             now_ms: 0,
             foot_injury_timer: 0.0,

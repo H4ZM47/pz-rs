@@ -18,6 +18,7 @@ pub mod character;
 pub mod color;
 pub mod observation;
 pub mod population;
+pub mod search_mode;
 pub mod skills;
 pub mod survivor;
 pub mod traits;
