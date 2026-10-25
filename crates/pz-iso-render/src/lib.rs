@@ -29,7 +29,8 @@ pub mod frame;
 pub mod hearth;
 pub mod highlight;
 pub mod item_atlas;
-pub mod joml;
+/// `org.joml` (moved to the `pz-joml` crate; re-exported here).
+pub use pz_joml as joml;
 pub mod markers;
 pub mod models;
 pub mod object_outline;

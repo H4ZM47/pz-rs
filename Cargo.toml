@@ -23,6 +23,7 @@ pz-ui = { path = "crates/pz-ui" }
 pz-lua-api = { path = "crates/pz-lua-api" }
 pz-engine = { path = "crates/pz-engine" }
 pz-world = { path = "crates/pz-world" }
+pz-joml = { path = "crates/pz-joml" }
 pz-clipper = { path = "crates/pz-clipper" }
 pz-sqlite = { path = "crates/pz-sqlite" }
 pz-network = { path = "crates/pz-network" }

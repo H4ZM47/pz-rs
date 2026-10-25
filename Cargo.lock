@@ -2018,10 +2018,15 @@ dependencies = [
  "pz-core",
  "pz-fs",
  "pz-gpu",
+ "pz-joml",
  "pz-kahlua",
  "pz-render",
  "pz-world",
 ]
+
+[[package]]
+name = "pz-joml"
+version = "0.1.0"
 
 [[package]]
 name = "pz-kahlua"
