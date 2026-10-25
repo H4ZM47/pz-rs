@@ -859,7 +859,10 @@ mod tests {
     }";
 
     fn scripts() -> Rc<ScriptManager> {
-        let dir = std::env::temp_dir().join(format!("pz-bind-item-visual-{}", std::process::id()));
+        // Unique per call: tests in this process run in parallel.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("pz-bind-item-visual-{}-{n}", std::process::id()));
         let p = dir.join("media/scripts/test.txt");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, SCRIPTS).unwrap();
