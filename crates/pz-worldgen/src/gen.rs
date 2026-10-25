@@ -1088,6 +1088,7 @@ impl WorldGen {
             .and_then(|ch| ch.get_grid_square_mut(lx, ly, 0))
             .ok_or_else(|| npe("square"))?;
         let mut oe = ObjectEnv {
+            blood_body_parts: c.env.blood_body_parts,
             sprites: &mut *c.env.sprites,
             rand: &mut *c.env.rand,
             tables: c.env.tables,

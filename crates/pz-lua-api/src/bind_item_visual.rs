@@ -29,7 +29,7 @@ use crate::bind_registry::{key_value, shared_script_manager, ITEM_BODY_LOCATION_
 use crate::expose::{expose_class, global, int_arg, num_arg, str_arg, with_this};
 use pz_inventory::item::ItemKind;
 use pz_inventory::visual::ItemVisual;
-use pz_inventory::{ClothingItem, ItemClass, ItemOwner};
+use pz_inventory::{ClothingItem, ItemOwner};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_scripts::registry::{RegistryKey, ResourceLocation};
@@ -81,18 +81,10 @@ pub fn body_location_value(id: Option<&str>) -> Value {
     )
 }
 
-/// `canBeEquipped()`: the script's location for bags and radios, `null`
+/// `canBeEquipped()`: the captured instance key for bags and radios, `null`
 /// for other items.
 pub fn can_be_equipped(item: &pz_inventory::InventoryItem) -> Option<Rc<RegistryKey>> {
-    if !matches!(item.template.class, ItemClass::Container | ItemClass::Radio) {
-        return None;
-    }
-    let sm = shared_script_manager();
-    let s = sm
-        .find_item(&item.get_full_type(), true)?
-        .downcast::<pz_scripts::objects::items::Item>()?;
-    let k = s.borrow().can_be_equipped.clone();
-    k
+    item.can_be_equipped()
 }
 
 // ---- ClothingItem ----
@@ -786,14 +778,17 @@ mod tests {
             DisplayCategory = Clothing, ItemType = base:clothing, Icon = TshirtGeneric,
             BodyLocation = base:tshirt, ClothingItem = Tshirt_Test,
         }
-        item Rock { ItemType = base:normal, Weight = 2, }
+        item Rock { ItemType = base:normal, Weight = 2, CanBeEquipped = base:back, }
+        item Bag_Test { ItemType = base:container, CanBeEquipped = base:back, }
+        item Radio_Test { ItemType = base:radio, CanBeEquipped = base:back, }
     }";
 
     fn scripts() -> Rc<ScriptManager> {
         // One directory per call: tests run in parallel.
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("pz-bind-item-visual-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pz-bind-item-visual-{}-{n}", std::process::id()));
         let p = dir.join("media/scripts/test.txt");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, SCRIPTS).unwrap();
@@ -801,7 +796,11 @@ mod tests {
         for (reg, id) in [
             ("item_type", "base:clothing"),
             ("item_type", "base:normal"),
+            ("item_type", "base:container"),
+            ("item_type", "base:radio"),
             ("item_body_location", "base:tshirt"),
+            ("item_body_location", "base:back"),
+            ("item_body_location", "base:replacement"),
         ] {
             sm.registries
                 .get(reg)
@@ -814,6 +813,9 @@ mod tests {
         st.constants
             .insert("item_type", "CLOTHING", "base:clothing");
         st.constants.insert("item_type", "NORMAL", "base:normal");
+        st.constants
+            .insert("item_type", "CONTAINER", "base:container");
+        st.constants.insert("item_type", "RADIO", "base:radio");
         drop(st);
         sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
@@ -873,20 +875,132 @@ mod tests {
         assert!(matches!(visual, Value::Object(_)));
         drop(visual);
         drop(item);
-        assert!(weak_item.upgrade().is_some(), "fixture did not retain an item through the visual cache");
+        assert!(
+            weak_item.upgrade().is_some(),
+            "fixture did not retain an item through the visual cache"
+        );
 
         crate::session_reset::reset_session_bindings();
-        assert!(weak_item.upgrade().is_none(), "session reset retained an old visual's item");
+        assert!(
+            weak_item.upgrade().is_none(),
+            "session reset retained an old visual's item"
+        );
         let mut second_asset = ClothingItem::new("SessionResetClothing");
         second_asset.male_model = Some("ModelB".into());
         let second = clothing_item_value(Some(&second_asset));
-        assert!(!first.raw_equals(&second), "new assets reused an old clothing wrapper");
+        assert!(
+            !first.raw_equals(&second),
+            "new assets reused an old clothing wrapper"
+        );
         thread.globals().set_str("secondClothing", second);
-        run(&mut thread, r#"
+        run(
+            &mut thread,
+            r#"
             assert(firstClothing ~= secondClothing)
             assert(firstClothing:getMaleModel() == 'ModelA')
             assert(secondClothing:getMaleModel() == 'ModelB')
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn factory_equipped_key_is_captured_before_protected_lua_create() {
+        let mut thread = setup(42);
+        let sm = shared_script_manager();
+        let back = body_location_key("base:back").unwrap();
+        let replacement = body_location_key("base:replacement").unwrap();
+        thread.globals().set_str(
+            "capturedKey",
+            key_value(ITEM_BODY_LOCATION_CLASS, Some(&back)),
+        );
+        run(
+            &mut thread,
+            r#"
+            creationCalls = 0
+            function EquipmentCreate(item)
+                assert(item:canBeEquipped() == capturedKey)
+                creationCalls = creationCalls + 1
+            end
+        "#,
+        )
+        .unwrap();
+        for ty in ["Base.Bag_Test", "Base.Radio_Test"] {
+            let script = sm
+                .find_item(ty, false)
+                .unwrap()
+                .downcast::<pz_scripts::objects::items::Item>()
+                .unwrap();
+            script.borrow_mut().lua_create = Some("EquipmentCreate".into());
+            let item = crate::bind_items::create_item(ty, 1.0).unwrap();
+            assert!(Rc::ptr_eq(&item.borrow().can_be_equipped().unwrap(), &back));
+            // Native InstanceItem captures this key before initialiseItem.
+            // Even the same script's later mutation cannot change the item.
+            script.borrow_mut().can_be_equipped = Some(replacement.clone());
+            crate::bind_items::initialise_item(&mut thread, &item);
+            assert!(item.borrow().is_initialised);
+            assert!(Rc::ptr_eq(&can_be_equipped(&item.borrow()).unwrap(), &back));
+        }
+        assert_eq!(
+            run(&mut thread, "return creationCalls").unwrap()[0].as_num(),
+            Some(2.0)
+        );
+        let base = crate::bind_items::create_item("Base.Rock", 1.0).unwrap();
+        assert!(base
+            .borrow()
+            .template
+            .script
+            .as_ref()
+            .unwrap()
+            .0
+            .borrow()
+            .can_be_equipped
+            .is_some());
+        assert!(
+            base.borrow().can_be_equipped().is_none(),
+            "base InventoryItem must return null despite a script key"
+        );
+    }
+
+    #[test]
+    fn equipped_query_retains_key_after_same_name_script_manager_replacement() {
+        let mut thread = setup(42);
+        let old_back = body_location_key("base:back").unwrap();
+        let bag = crate::bind_items::create_item("Base.Bag_Test", 1.0).unwrap();
+        let radio = crate::bind_items::create_item("Base.Radio_Test", 1.0).unwrap();
+        thread.globals().set_str("retainedBag", item_value(&bag));
+        thread
+            .globals()
+            .set_str("retainedRadio", item_value(&radio));
+        thread.globals().set_str(
+            "oldKey",
+            key_value(ITEM_BODY_LOCATION_CLASS, Some(&old_back)),
+        );
+        let replacement = scripts();
+        crate::bind_registry::install_script_manager(replacement);
+        let new_back = body_location_key("base:back").unwrap();
+        assert!(!Rc::ptr_eq(&old_back, &new_back));
+        run(
+            &mut thread,
+            r#"
+            assert(retainedBag:canBeEquipped() == oldKey)
+            assert(retainedRadio:canBeEquipped() == oldKey)
+        "#,
+        )
+        .unwrap();
+        assert!(Rc::ptr_eq(
+            &can_be_equipped(&bag.borrow()).unwrap(),
+            &old_back
+        ));
+        assert!(Rc::ptr_eq(
+            &can_be_equipped(&radio.borrow()).unwrap(),
+            &old_back
+        ));
+        let new_bag = crate::bind_items::create_item("Base.Bag_Test", 1.0).unwrap();
+        assert!(Rc::ptr_eq(
+            &new_bag.borrow().can_be_equipped().unwrap(),
+            &new_back
+        ));
     }
 
     #[test]

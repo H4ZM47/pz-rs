@@ -248,12 +248,14 @@ fn main() {
         a[11].parse().unwrap(),
         a[12].parse().unwrap(),
     );
+    let blood_body_parts = pz_world::save::SaveTables::from_game_jar(&game.join("projectzomboid.jar")).expect("visual body tables").blood_body_parts;
     let mut cell = IsoCell::default();
     let mut out = String::new();
     let mut counts = std::collections::BTreeMap::<&str, usize>::new();
     for wx in wx0..=wx1 {
         for wy in wy0..=wy1 {
             let mut env = ChunkLoadEnv {
+                blood_body_parts: blood_body_parts,
                 sprites: &mut sprites,
                 fix2x: &fix2x,
                 rand: &mut rand,

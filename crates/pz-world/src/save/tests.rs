@@ -598,9 +598,6 @@ fn errors_and_versions() {
         load_object(&mut Reader::new(&w.buf), &c, WORLD_VERSION, 1).unwrap(),
         None
     );
-    // A map mannequin has no saved state yet.
-    let o = IsoObject::new(1, ObjectKind::Mannequin(None), None);
-    assert!(save_object(&mut Writer::new(), &c, &o).is_err());
     assert!(SaveTables::from_text("1:Player\nbloodBodyParts=3").is_err());
     let tt = SaveTables::from_text("0:IsoObject\n5:Door\nbloodBodyParts=3").unwrap();
     assert_eq!(tt.class_id("Door"), 5);
@@ -1283,4 +1280,228 @@ fn world_membership_save_uses_actual_owners_and_fresh_load_normalizes_raw_list()
     let mut round_trip = Writer::new();
     chunk_file::save_square(&mut round_trip, &context, &loaded).unwrap();
     assert_eq!(round_trip.buf, raw_bytes.buf);
+}
+
+#[test]
+fn mannequin_native_constructor_saves_false_init_without_dressing() {
+    let m = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let context = ctx(&m, &tables, &settings, &AllItems);
+    let mannequin = IsoMannequin::new(tables.blood_body_parts);
+    let expected_visual = mannequin.human_visual.clone();
+    let object = IsoObject::new(1, ObjectKind::Mannequin(Box::new(mannequin)), None);
+    let mut bytes = Writer::new();
+    save_object(&mut bytes, &context, &object).unwrap();
+
+    // Native save writes the same base without containers, then its actual
+    // constructor fields, including false init and null/empty string counts.
+    let mut expected = Writer::new();
+    save_object(
+        &mut expected,
+        &context,
+        &IsoObject::new(1, ObjectKind::Object, None),
+    )
+    .unwrap();
+    expected.buf[1] = context.class_id("Mannequin").unwrap() as u8;
+    expected.i8(0); // Native IsoDirections.N ordinal.
+    for _ in 0..4 {
+        expected.bool(false);
+    }
+    expected.string("");
+    expected.string("");
+    expected_visual.save(&mut expected);
+    expected.i8(0); // Constructor has no container until createInventory.
+    assert_eq!(bytes.buf, expected.buf);
+    let ObjectKind::Mannequin(original) = &object.kind else {
+        panic!()
+    };
+    assert!(!original.init);
+    assert!(original.container.is_none() && original.runtime_container.is_none());
+    assert!(original.outfit.is_none() && original.item_visuals.is_empty());
+
+    let mut reader = Reader::new(&bytes.buf);
+    let loaded_object = load_object(&mut reader, &context, WORLD_VERSION, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reader.pos, bytes.buf.len());
+    let ObjectKind::Mannequin(loaded) = &loaded_object.kind else {
+        panic!()
+    };
+    assert!(!loaded.init && !loaded.female && !loaded.zombie && !loaded.skeleton);
+    assert_eq!(loaded.dir, 0);
+    assert_eq!(loaded.mannequin_script_name.as_deref(), Some(""));
+    assert_eq!(loaded.pose.as_deref(), Some(""));
+    assert_eq!(loaded.human_visual, expected_visual);
+    // Native load creates an explored mannequin container even when its
+    // serialized presence byte was zero. It does not dress here.
+    let container = loaded.container.as_ref().unwrap();
+    assert_eq!(container.kind.as_deref(), Some("mannequin"));
+    assert!(container.explored && container.items.is_empty());
+    assert!(loaded.worn_items.is_empty());
+    assert!(loaded.pending_loaded_skin_resolution);
+    assert!(loaded.texture_name.is_none());
+
+    // Native load attaches the empty container before reading the zero
+    // presence flag. Consequently the next save writes presence1 and that
+    // actual container; constructor bytes are deliberately not idempotent.
+    let mut normalized = Writer::new();
+    save_object(&mut normalized, &context, &loaded_object).unwrap();
+    let mut expected_normalized = Writer::new();
+    expected_normalized
+        .buf
+        .extend_from_slice(&bytes.buf[..bytes.buf.len() - 1]);
+    expected_normalized.i8(1);
+    expected_normalized.i32(container.id);
+    container
+        .save_saved(&mut expected_normalized, &AllItems, None)
+        .unwrap();
+    expected_normalized.i8(0); // Empty actual worn membership.
+    assert_eq!(normalized.buf, expected_normalized.buf);
+    assert_ne!(normalized.buf, bytes.buf);
+    assert!(!loaded.init && loaded.outfit.is_none());
+}
+
+#[test]
+fn mannequin_live_inventory_save_maps_actual_worn_owners_through_saved_order() {
+    use pz_inventory::worn_items::{BodyLocationGroup, WornItems};
+    use pz_inventory::{shared, InventoryItem, ItemClass, ItemTemplate};
+    use pz_scripts::registry::{RegistryKey, ResourceLocation};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    struct Reg([Rc<ItemTemplate>; 2]);
+    impl ItemRegistry for Reg {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
+            id.checked_sub(1)
+                .and_then(|i| self.0.get(i as usize))
+                .cloned()
+        }
+    }
+    let env = Reg([
+        Rc::new(ItemTemplate::new(ItemClass::Key, "Base", "MannequinA")),
+        Rc::new(ItemTemplate::new(ItemClass::Key, "Base", "MannequinB")),
+    ]);
+    let a1 = shared::new_item(InventoryItem::create(env.0[0].clone(), 1));
+    let b = shared::new_item(InventoryItem::create(env.0[1].clone(), 2));
+    let a2 = shared::new_item(InventoryItem::create(env.0[0].clone(), 1));
+    a1.borrow_mut().id = 11;
+    b.borrow_mut().id = 22;
+    a2.borrow_mut().id = 11; // Same numeric identity must not select A1.
+    a1.borrow_mut().set_key_id(100, &env);
+    b.borrow_mut().set_key_id(200, &env);
+    let actual = shared::SharedContainer::new(990, "mannequin").into_ref();
+    for item in [&a1, &b, &a2] {
+        shared::add_item(&actual, item);
+    }
+    actual.borrow_mut().explored = true;
+    let key = |s: &str| {
+        Rc::new(RegistryKey {
+            location: ResourceLocation::of(s).unwrap(),
+            name: s.into(),
+            item_key: None,
+        })
+    };
+    let mut mannequin = IsoMannequin::new(7);
+    mannequin.container = Some(ItemContainer::new(Some("obsolete-codec-value")));
+    let shirt = key("base:shirt");
+    let hat = key("base:hat");
+    let group = Rc::new(RefCell::new(BodyLocationGroup::new("Human").unwrap()));
+    for location in [&shirt, &hat] {
+        group
+            .borrow_mut()
+            .get_or_create_location(Some(location.clone()))
+            .unwrap();
+    }
+    let worn = Rc::new(RefCell::new(WornItems::new(group)));
+    worn.borrow_mut()
+        .set_item(Some(shirt), Some(b.clone()))
+        .unwrap();
+    let retired = mannequin.install_runtime_inventory(actual.clone(), worn.clone());
+    drop(retired);
+    assert!(mannequin.container.is_none() && mannequin.worn_items.is_empty());
+    mannequin.init = true;
+    mannequin.female = true;
+    mannequin.mannequin_script_name = Some("FemaleWhite03".into());
+    mannequin.pose = Some("pose03".into());
+    mannequin.human_visual.skin_texture_name = Some("F_Mannequin_White".into());
+    // A real factory/condition callback can mutate the same worn collection
+    // after installation. Saving must observe that owner's current slots.
+    worn.borrow_mut()
+        .set_item(Some(hat), Some(a2.clone()))
+        .unwrap();
+    a2.borrow_mut().set_key_id(444, &env);
+    a2.borrow_mut().favorite = true;
+    let sprites = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let context = ctx(&sprites, &tables, &settings, &env);
+    let object = IsoObject::new(1, ObjectKind::Mannequin(Box::new(mannequin)), None);
+    let mut bytes = Writer::new();
+    save_object(&mut bytes, &context, &object).unwrap();
+    let mut reader = Reader::new(&bytes.buf);
+    let loaded = load_object(&mut reader, &context, WORLD_VERSION, 2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reader.pos, bytes.buf.len());
+    let ObjectKind::Mannequin(loaded) = loaded.kind else {
+        panic!()
+    };
+    assert!(loaded.init && loaded.female);
+    assert_eq!(loaded.pose.as_deref(), Some("pose03"));
+    assert_eq!(loaded.texture_name.as_deref(), Some("F_Mannequin_White"));
+    assert!(!loaded.pending_loaded_skin_resolution);
+    let saved = loaded.container.unwrap();
+    assert_eq!(saved.id, 990);
+    // CompressIdenticalItems groups types: A1,A2,B instead of A1,B,A2.
+    assert_eq!(
+        saved.items.iter().map(|i| i.id()).collect::<Vec<_>>(),
+        [11, 11, 22]
+    );
+    assert_eq!(
+        loaded.worn_items,
+        [("base:shirt".into(), 2), ("base:hat".into(), 1)]
+    );
+    let pz_inventory::SavedItem::Item(second) = &saved.items[1] else {
+        panic!()
+    };
+    assert_eq!(second.get_key_id(), 444);
+    assert!(second.favorite);
+    let ObjectKind::Mannequin(original) = &object.kind else {
+        panic!()
+    };
+    assert!(Rc::ptr_eq(
+        original.runtime_container.as_ref().unwrap(),
+        &actual
+    ));
+    assert!(Rc::ptr_eq(
+        original.runtime_worn_items.as_ref().unwrap(),
+        &worn
+    ));
+    assert!(Rc::ptr_eq(&worn.borrow().items()[1].item, &a2));
+    let worn_guard = worn.borrow_mut();
+    assert!(save_object(&mut Writer::new(), &context, &object)
+        .unwrap_err()
+        .0
+        .contains("BorrowedWornItems"));
+    drop(worn_guard);
+    let guard = actual.borrow_mut();
+    assert!(save_object(&mut Writer::new(), &context, &object)
+        .unwrap_err()
+        .0
+        .contains("BorrowedContainer"));
+    drop(guard);
+}
+
+#[test]
+fn mannequin_save_rejects_native_worn_byte_overflow() {
+    let m = sprites();
+    let tables = SaveTables::for_tests();
+    let settings = SaveSettings::default();
+    let context = ctx(&m, &tables, &settings, &AllItems);
+    let mut mannequin = IsoMannequin::new(tables.blood_body_parts);
+    mannequin.container = Some(ItemContainer::new(Some("mannequin")));
+    mannequin.worn_items = vec![("base:authored".into(), -1); 128];
+    let object = IsoObject::new(1, ObjectKind::Mannequin(Box::new(mannequin)), None);
+    let error = save_object(&mut Writer::new(), &context, &object).unwrap_err();
+    assert_eq!(error.0, "too many worn items");
 }

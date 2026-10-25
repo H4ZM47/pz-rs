@@ -358,7 +358,7 @@ fn object_line(ctx: &SaveCtx<'_>, o: &IsoObject) -> String {
         Some(SpriteName::Dict(i)) => format!("#{i}"),
     };
     let containers: Vec<&ItemContainer> = match &o.kind {
-        ObjectKind::Mannequin(Some(m)) => m.container.iter().collect(),
+        ObjectKind::Mannequin(m) => m.container.iter().collect(),
         _ => o.containers().collect(),
     };
     format!(
@@ -481,7 +481,7 @@ fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(ItemRecordMut<'_>)) {
                         ObjectKind::WorldInventory(w) => {
                             f(ItemRecordMut::Floor(&mut w.borrow_mut().item))
                         }
-                        ObjectKind::Mannequin(Some(m)) => {
+                        ObjectKind::Mannequin(m) => {
                             if let Some(c) = &mut m.container {
                                 cont(c, f);
                             }

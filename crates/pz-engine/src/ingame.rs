@@ -290,6 +290,7 @@ impl GameState for IngameState {
                 s.process_all_load_grid_square(cell, ctx);
                 s.chunk_map_update(0, cell, ctx);
             });
+            if let Err(error) = w.activate_streamed_chunks(cx.lua) { w.errors.push(error); }
             w.hand_off_events();
             // TODO(port): `VehiclesDB2.instance.loadVehiclesInMeta()`
             // (`vehicles_db::load_vehicles_in_meta`), and
@@ -406,7 +407,7 @@ impl GameState for IngameState {
             if let Some(w) = cx.world.as_mut() {
                 // `chunkMap[n].ProcessChunkPos(player)`
                 // (`IsoWorld.doChunkMapUpdate`).
-                w.process_chunk_pos();
+                w.process_chunk_pos(cx.lua);
                 let sim = FrameSim::capture();
                 pz_lua_api::bind_character_sim::install_sim_context(std::rc::Rc::new(FrameSim::capture()));
                 w.update(cx.lua, &sim);

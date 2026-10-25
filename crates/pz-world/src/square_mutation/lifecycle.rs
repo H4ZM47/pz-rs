@@ -630,6 +630,11 @@ pub(super) fn remove_from_square_handle(
     removed
 }
 impl MutationEnv<'_> {
+    /// Invoke `addToWorld` on the selected actual receiver. Host callbacks
+    /// must be staged outside enclosing world/sprite guards by the caller.
+    pub fn object_add_to_world(&mut self, r: ObjectRef, object: &IsoObjectRef) {
+        add_to_world_handle(self, r, object);
+    }
     pub(crate) fn object_remove_from_world(&mut self, r: ObjectRef) {
         remove_from_world(self, r);
     }

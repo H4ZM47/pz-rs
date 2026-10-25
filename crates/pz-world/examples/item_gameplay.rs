@@ -591,7 +591,7 @@ fn main() {
         for sq in ch.squares() {
             for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                 match &o.kind {
-                    ObjectKind::Mannequin(Some(m)) => {
+                    ObjectKind::Mannequin(m) => {
                         for c in m.container.iter() {
                             collect(&c.items, &mut items);
                         }

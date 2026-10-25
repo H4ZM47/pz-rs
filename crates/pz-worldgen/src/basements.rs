@@ -817,6 +817,7 @@ fn add_to_iso_chunk(
                     };
                     let ty = env.sprites.sprites[spr].tile_type;
                     let mut oe = ObjectEnv {
+                        blood_body_parts: env.blood_body_parts,
                         sprites: &mut *env.sprites,
                         rand: &mut *env.rand,
                         tables: env.tables,

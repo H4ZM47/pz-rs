@@ -72,7 +72,8 @@ use crate::java::{fastfloor, GameRand};
 use crate::meta_grid::IsoMetaGrid;
 use crate::objects::{ObjectLoadHooks, ObjectLoadSettings, ObjectTables};
 use crate::save::chunk_file::{
-    chunk_path, finish_chunk_load, load_chunk, save_chunk, ChunkLoadHook,
+    chunk_path, finish_chunk_erosion, finish_chunk_load, load_chunk, prepare_chunk_load,
+    save_chunk, ChunkActivationCursor, ChunkActivationError, ChunkLoadHook,
 };
 use crate::save::items::ItemRegistry;
 use crate::save::vehicles_db;
@@ -420,6 +421,14 @@ pub struct ChunkStreamer {
     job_list: Vec<ChunkId>,
     /// `IsoChunk.loadGridSquare`: served chunks waiting for the main thread.
     load_grid_square: VecDeque<(ChunkId, IsoChunk)>,
+    /// Opt-in host coordinator: preparation stays in the cell, while the
+    /// engine performs activation/observers outside world and sprite guards.
+    deferred_world_activation: bool,
+    pending_world_activation: VecDeque<ChunkActivationCursor>,
+    deferred_activation_in_flight: bool,
+    /// A grant from processAll (MAX) or one map-update's original cap. The
+    /// guard-free engine coordinator resumes this grant, not a fresh batch.
+    deferred_handoff_budget: Option<usize>,
     /// `ChunkSaveWorker.toSaveQueue`.
     save_queue: VecDeque<QueuedSave>,
     /// `VehiclesDB2.worldStreamer.queue`: the rows `removeFromWorld` queued
@@ -447,11 +456,85 @@ impl ChunkStreamer {
             job_queue: VecDeque::new(),
             job_list: Vec::new(),
             load_grid_square: VecDeque::new(),
+            deferred_world_activation: false,
+            pending_world_activation: VecDeque::new(),
+            deferred_activation_in_flight: false,
+            deferred_handoff_budget: None,
             save_queue: VecDeque::new(),
             vehicle_queue: VecDeque::new(),
             retired_chunks: Vec::new(),
             events: Vec::new(),
         }
+    }
+
+    /// Enable before loading a world. Ordinary callers retain the historical
+    /// erosion-only finish path unless their host supplies the coordinator.
+    pub fn set_deferred_world_activation(&mut self, enabled: bool) {
+        self.deferred_world_activation = enabled;
+    }
+
+    pub fn pop_pending_world_activation(&mut self) -> Option<ChunkActivationCursor> {
+        self.pending_world_activation.pop_front()
+    }
+
+    pub fn pending_world_activations(&self) -> usize {
+        self.pending_world_activation.len()
+    }
+
+    /// Publish completion only after the engine has activated every reached
+    /// object and run each square's erosion/observers. The cursor remains
+    /// owned by the engine on errors, so no retained receiver drops here.
+    pub fn finish_deferred_world_activation(
+        &mut self,
+        cursor: &mut ChunkActivationCursor,
+        cell: &mut IsoCell,
+        ctx: &mut StreamCtx<'_>,
+    ) -> Result<(), ChunkActivationError> {
+        cursor.check_unpublished_complete()?;
+        finish_chunk_erosion(
+            cell,
+            cursor.wx,
+            cursor.wy,
+            ctx.sprites,
+            chunk_hook(&mut ctx.chunk_hook),
+        )?;
+        self.publish_hand_off(cursor.wx, cursor.wy, ctx);
+        cursor.mark_published();
+        self.deferred_activation_in_flight = false;
+        Ok(())
+    }
+
+    /// Resume at most one prepared handoff from the already granted native
+    /// batch. A queued or engine-owned cursor must finish before another
+    /// chunk's preparation, preserving cross-chunk activation ordering.
+    pub fn process_next_pending_load_grid_square(
+        &mut self,
+        cell: &mut IsoCell,
+        ctx: &mut StreamCtx<'_>,
+    ) -> bool {
+        if !self.deferred_world_activation || self.deferred_activation_in_flight {
+            return false;
+        }
+        let Some(mut remaining) = self.deferred_handoff_budget else {
+            return false;
+        };
+        while remaining != 0 {
+            let Some((id, chunk)) = self.load_grid_square.pop_front() else {
+                break;
+            };
+            if remaining != usize::MAX {
+                remaining -= 1;
+            }
+            self.deferred_handoff_budget = Some(remaining);
+            if self.hand_off(id, chunk, cell, ctx) {
+                return true;
+            }
+        }
+        self.deferred_handoff_budget = None;
+        for player in 0..self.maps.len() {
+            self.calculate_z_extents(player, cell);
+        }
+        false
     }
 
     /// The number of chunk maps (`IsoPlayer.numPlayers` at creation).
@@ -1050,6 +1133,7 @@ impl ChunkStreamer {
                     tables: ctx.object_tables,
                     settings: ctx.object_settings,
                     hooks: ctx.object_hooks,
+                    blood_body_parts: ctx.save_tables.blood_body_parts,
                 };
                 // The other three chunks of the 2x2 block go back to the
                 // chunk store.
@@ -1133,14 +1217,26 @@ impl ChunkStreamer {
         if let Some(replaced) = cell.chunks.insert((wx, wy), chunk) {
             self.retired_chunks.push(replaced);
         }
-        finish_chunk_load(
-            cell,
-            wx,
-            wy,
-            ctx.meta,
-            ctx.sprites,
-            chunk_hook(&mut ctx.chunk_hook),
-        );
+        if self.deferred_world_activation {
+            if let Some(cursor) = prepare_chunk_load(cell, wx, wy, ctx.meta, ctx.sprites) {
+                self.pending_world_activation.push_back(cursor);
+                self.deferred_activation_in_flight = true;
+            }
+        } else {
+            finish_chunk_load(
+                cell,
+                wx,
+                wy,
+                ctx.meta,
+                ctx.sprites,
+                chunk_hook(&mut ctx.chunk_hook),
+            );
+            self.publish_hand_off(wx, wy, ctx);
+        }
+        true
+    }
+
+    fn publish_hand_off(&mut self, wx: i32, wy: i32, ctx: &mut StreamCtx<'_>) {
         self.events.push(StreamEvent::HandedOff { wx, wy });
         // `doLoadGridsquare`, after `loadInMainThread`:
         // `metaCell.checkAnimalZonesGenerated(wx, wy)`.
@@ -1148,13 +1244,23 @@ impl ChunkStreamer {
         if ctx.meta.check_animal_zones_generated(cx, cy) {
             self.events.push(StreamEvent::GenAnimalsPath { wx, wy });
         }
-        true
     }
 
     /// `IsoChunkMap.update()` (`updateInternal`) for one player: hand off
     /// up to `1 + n * 3 / chunkGridWidth` of the `n` served chunks.
     /// (`IsoChunk.update`, hot saves and vehicles are not ported.)
     pub fn chunk_map_update(&mut self, m: usize, cell: &mut IsoCell, ctx: &mut StreamCtx<'_>) {
+        if self.deferred_world_activation {
+            if self.deferred_activation_in_flight || self.deferred_handoff_budget.is_some() {
+                return;
+            }
+            let count = self.load_grid_square.len();
+            if count != 0 {
+                self.deferred_handoff_budget = Some(1 + count * 3 / self.width as usize);
+                self.process_next_pending_load_grid_square(cell, ctx);
+            }
+            return;
+        }
         let mut changed = false;
         let mut count = self.load_grid_square.len() as i32;
         if count != 0 {
@@ -1178,6 +1284,13 @@ impl ChunkStreamer {
     /// `IsoChunkMap.processAllLoadGridSquare()`: hand off every served
     /// chunk.
     pub fn process_all_load_grid_square(&mut self, cell: &mut IsoCell, ctx: &mut StreamCtx<'_>) {
+        if self.deferred_world_activation {
+            if !self.deferred_activation_in_flight && self.deferred_handoff_budget.is_none() {
+                self.deferred_handoff_budget = Some(usize::MAX);
+                self.process_next_pending_load_grid_square(cell, ctx);
+            }
+            return;
+        }
         while let Some((id, chunk)) = self.load_grid_square.pop_front() {
             self.hand_off(id, chunk, cell, ctx);
         }
@@ -1486,5 +1599,7 @@ fn backup_blam(save_dir: &Path, wx: i32, wy: i32, error: &str) {
     }
 }
 
+#[cfg(test)]
+mod activation_tests;
 #[cfg(test)]
 mod tests;

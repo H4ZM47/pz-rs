@@ -29,6 +29,12 @@ use crate::erosion_data::{ErosionChunkData, ErosionSquareData};
 use crate::java::fastfloor;
 use crate::objects::ObjectKind;
 
+mod activation;
+pub use activation::{
+    finish_chunk_erosion, finish_square_erosion, ChunkActivationCursor, ChunkActivationError,
+    ChunkActivationStep,
+};
+
 /// `ChunkMapFilenames.getFilename(wx, wy)` under the save directory.
 pub fn chunk_path(save_dir: &Path, wx: i32, wy: i32) -> PathBuf {
     save_dir
@@ -717,11 +723,9 @@ pub fn finish_chunk_load(
     sprites: &mut crate::sprite::IsoSpriteManager,
     hook: Option<&mut dyn ChunkLoadHook>,
 ) {
-    if let Some(ch) = cell.chunks.get(&(wx, wy)) {
-        apply_loaded_window_sprites(ch, sprites);
+    if prepare_chunk_load(cell, wx, wy, meta, sprites).is_none() {
+        return;
     }
-    cell.recalc_chunk_squares(wx, wy, meta, sprites);
-    cell.load_in_main_thread(wx, wy, meta, sprites);
     let Some(mut ch) = cell.chunks.remove(&(wx, wy)) else {
         return;
     };
@@ -731,6 +735,24 @@ pub fn finish_chunk_load(
     };
     do_load_gridsquare(&mut ch, hook, &mut ctx);
     cell.chunks.insert((wx, wy), ch);
+}
+
+/// The preparation shared by the legacy erosion-only loader and the opt-in
+/// resumable activation path. The actual chunk remains published in the cell.
+/// No object activation, erosion, MapObjects or Lua callbacks run here.
+pub fn prepare_chunk_load(
+    cell: &mut crate::chunk::IsoCell,
+    wx: i32,
+    wy: i32,
+    meta: &crate::meta_grid::IsoMetaGrid,
+    sprites: &mut crate::sprite::IsoSpriteManager,
+) -> Option<ChunkActivationCursor> {
+    if let Some(ch) = cell.chunks.get(&(wx, wy)) {
+        apply_loaded_window_sprites(ch, sprites);
+    }
+    cell.recalc_chunk_squares(wx, wy, meta, sprites);
+    cell.load_in_main_thread(wx, wy, meta, sprites);
+    cell.chunks.get(&(wx, wy)).map(ChunkActivationCursor::new)
 }
 
 /// The sprite changes `IsoWindow.load` makes for each window of `ch`, in

@@ -110,6 +110,7 @@ impl World {
         let spr = self.m.named_map[name];
         let ty = self.m.sprites[spr].tile_type;
         let mut env = ObjectEnv {
+            blood_body_parts: 7,
             sprites: &mut self.m,
             rand: &mut self.rand,
             tables: &self.tables,

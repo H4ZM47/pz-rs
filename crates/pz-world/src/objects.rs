@@ -10,7 +10,7 @@ use crate::defs::RoomDef;
 use crate::save::items::ItemBlob;
 use crate::save::lua_table::LuaTable;
 use crate::save::movers::{AnimalTracks, IsoPushableObject};
-use crate::save::visual::HumanVisual;
+use crate::save::visual::{HumanVisual, ItemVisual};
 use crate::sprite::SpriteIdx;
 
 /// Identity of an object within its square (stands in for Java object
@@ -478,21 +478,39 @@ pub struct IsoCarBatteryCharger {
 pub use crate::fire::IsoFire;
 
 /// `IsoMannequin`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct IsoMannequin {
     pub dir: i8,
     pub init: bool,
     pub female: bool,
     pub zombie: bool,
     pub skeleton: bool,
-    pub mannequin_script_name: String,
-    pub pose: String,
+    pub mannequin_script_name: Option<String>,
+    pub pose: Option<String>,
     pub human_visual: HumanVisual,
+    /// Runtime script/model properties resolved by `initOutfit` and
+    /// `syncModel`; the chunk codec does not write these fields separately.
+    pub model_script_name: Option<String>,
+    pub texture_name: Option<String>,
+    pub anim_set: Option<String>,
+    pub anim_state: Option<String>,
+    pub outfit: Option<String>,
+    pub item_visuals: Vec<ItemVisual>,
+    /// A loaded visual without an explicit texture needs the real host skin
+    /// list/RNG getter before activation. No placeholder style is selected.
+    pub pending_loaded_skin_resolution: bool,
     /// The mannequin's container (saved after the visual, not with the
     /// `IsoObject` containers) and its worn items as
     /// `(body location, index into the saved items)`.
     pub container: Option<ItemContainer>,
     pub worn_items: Vec<(String, i16)>,
+    /// Once installed this is authoritative; legacy codec fields above are
+    /// cleared. Normal factory-created clothing keeps its actual owner.
+    pub runtime_container: Option<pz_inventory::shared::ContainerRef>,
+    /// The real host attaches its canonical Human-group worn collection.
+    /// It remains absent until that dependency is available, rather than
+    /// creating a separate body-location registry in the world codec.
+    pub runtime_worn_items: Option<pz_inventory::worn_items::InventoryWornItemsRef>,
 }
 
 /// The class of a map object and its class-specific state.
@@ -520,9 +538,9 @@ pub enum ObjectKind {
     Radio(DeviceData),
     /// `IsoTelevision` (an `IsoWaveSignal`).
     Television(DeviceData),
-    /// `IsoMannequin`; `None` until loaded or initialised (map loading
-    /// does not fill it).
-    Mannequin(Option<Box<IsoMannequin>>),
+    /// `IsoMannequin` always owns its constructor visual/worn state.
+    /// `init` distinguishes whether `initOutfit` has run.
+    Mannequin(Box<IsoMannequin>),
     Tree(IsoTree),
     WorldInventory(crate::floor_object::FloorObject),
     Thumpable(Box<IsoThumpable>),

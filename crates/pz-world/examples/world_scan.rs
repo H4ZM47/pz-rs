@@ -86,6 +86,7 @@ fn main() {
             pz_world::IsoSpriteManager::load_tile_definitions_from(tables, &media, &[])
                 .expect("tiles");
         sprites.loaded_tile_definitions(&|_| false).expect("loaded");
+        let blood_body_parts = pz_world::save::SaveTables::from_game_jar(&std::path::Path::new(&args[1]).join("projectzomboid.jar")).expect("visual body tables").blood_body_parts;
         let mut cell = pz_world::IsoCell::default();
         let t = std::time::Instant::now();
         let ch = cell.load_chunk(
@@ -93,6 +94,7 @@ fn main() {
             x.div_euclid(8),
             y.div_euclid(8),
             &mut pz_world::chunk::ChunkLoadEnv {
+                blood_body_parts: blood_body_parts,
                 sprites: &mut sprites,
                 // Muldraugh is fixed2x; other maps need the table from the jar.
                 fix2x: &pz_world::fix2x::Fix2xTable::default(),

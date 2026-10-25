@@ -70,6 +70,11 @@ impl ArchiveCopyCheck {
         Ok(())
     }
 
+    /// Validate the live container graph before an explicit value archive.
+    pub fn container_ref(&mut self, container: &ContainerRef) -> Result<(), ArchiveCopyError> {
+        self.shared_container(container, 0)
+    }
+
     pub fn table(&mut self, table: &LuaTable) -> Result<(), ArchiveCopyError> {
         self.table_at(table, 0)
     }

@@ -458,7 +458,7 @@ fn main() -> Result<(), String> {
             for o in &sq.objects {
                 let o = o.borrow();
                 match &o.kind {
-                    ObjectKind::Mannequin(Some(m)) => {
+                    ObjectKind::Mannequin(m) => {
                         for c in m.container.iter() {
                             collect(&c.items, &mut items);
                         }

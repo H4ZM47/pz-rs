@@ -89,6 +89,7 @@ pub mod player_db;
 pub mod savefile;
 pub mod session_reset;
 pub mod world_save;
+pub mod world_mannequins;
 pub mod timed_actions;
 pub mod worldmap;
 

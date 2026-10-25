@@ -1328,6 +1328,28 @@ registered):
       objects (sprite, then overlay and attached sprites when
       `isOutlineHlAttached`). Objects with a sprite model are skipped, as
       are objects whose render layer is none or alpha 0 (#125).
+- [x] Mannequin data activation: map/file factories allocate a real visual
+      with the installed blood-body-part count. `init` is an outfit flag,
+      not the presence of an entire mannequin body. Ordinary saves can write
+      constructor state without dressing it. Main-thread streaming now yields
+      actual object/square owners in live z/x/y/index order, completes one
+      chunk before preparing the next, and preserves each frame's handoff
+      budget. A failed activation retains its cursor and blocks publication.
+      The host initializes sprite/zone/script properties, dresses through real
+      population/assets and sandbox owners, creates normal dictionary-backed
+      clothing, runs field-first protected LuaCreate callbacks, validates the
+      installed animation pose, and sets persistent model/skin/visual fields.
+      `WornItems` lives in inventory with character reexports so the mannequin
+      owns the actual shared list during callbacks and saves. Save indices use
+      actual item identity and compression order; loaded clothing is retained.
+- [ ] Remaining mannequin lifecycle: attach the canonical Human worn owner at
+      constructor time; resolve loaded implicit skin at the exact file-load
+      phase; restore actual parent/source-grid userdata; execute ordinary
+      save's wearItem/syncModel reconciliation for externally edited containers;
+      retain native script/model objects and implement SoftReset's job gate.
+      Production erosion, MapObjects/LoadGridsquare and other addToWorld
+      subsystem registries still need their actual adapters. Cursor square
+      replacement errors are explicit; chunks are not yet canonical owners.
 - [ ] Mannequins: from each `IsoMannequin` (script anim set, state,
       validated pose, direction, surfaces below/on its square, outside /
       room, interpolated light, highlight tint) build a `Mannequin`, pose an

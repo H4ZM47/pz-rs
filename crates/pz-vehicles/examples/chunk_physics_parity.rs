@@ -70,12 +70,14 @@ fn main() {
         })
         .collect();
     let chunks: Vec<(i32, i32)> = levels.iter().map(|l| (l.0, l.1)).collect();
+    let blood_body_parts = pz_world::save::SaveTables::from_game_jar(&game.join("projectzomboid.jar")).expect("visual body tables").blood_body_parts;
     let mut cell = IsoCell::default();
     for &(wx, wy) in &chunks {
         let mut rand = Rand(JavaRandom::new(
             ((wx as i64) << 32) ^ (wy as i64 & 0xffff_ffff),
         ));
         let mut env = ChunkLoadEnv {
+            blood_body_parts: blood_body_parts,
             sprites: &mut sprites,
             fix2x: &fix2x,
             rand: &mut rand,

@@ -123,6 +123,7 @@ fn loads_header_rooms_and_chunk() {
         wx,
         wy,
         &mut ChunkLoadEnv {
+            blood_body_parts: 7,
             sprites: &mut sprites,
             fix2x: &Fix2xTable::default(),
             rand: &mut Zero,

@@ -693,6 +693,8 @@ pub struct ChunkLoadEnv<'a> {
     pub rand: &'a mut dyn GameRand,
     /// Game-code tables, read from the installed game.
     pub tables: &'a ObjectTables,
+    /// Installed `BloodBodyPartType.MAX.index()` for visual constructors.
+    pub blood_body_parts: usize,
     pub settings: ObjectLoadSettings,
     pub hooks: &'a mut dyn ObjectLoadHooks,
 }
@@ -703,6 +705,7 @@ impl ChunkLoadEnv<'_> {
             sprites: self.sprites,
             rand: self.rand,
             tables: self.tables,
+            blood_body_parts: self.blood_body_parts,
             settings: self.settings,
             hooks: self.hooks,
         }

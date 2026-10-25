@@ -26,6 +26,7 @@ pub enum SquareArchiveError {
     },
     BorrowedObject(usize),
     BorrowedFloor(usize),
+    BorrowedMannequinWorn(ArchiveLocation),
     Metadata(pz_inventory::archive::ArchiveCopyError),
     Inventory {
         location: ArchiveLocation,
@@ -114,9 +115,19 @@ fn check_object(
                 check.item_ref(&item).map_err(inventory_error)?;
             }
         }
-        ObjectKind::Mannequin(Some(mannequin)) => {
-            if let Some(container) = &mannequin.container {
+        ObjectKind::Mannequin(mannequin) => {
+            if let Some(container) = &mannequin.runtime_container {
+                check.container_ref(container).map_err(inventory_error)?;
+            } else if let Some(container) = &mannequin.container {
                 check.container(container).map_err(inventory_error)?;
+            }
+            if let Some(worn) = &mannequin.runtime_worn_items {
+                let worn = worn
+                    .try_borrow()
+                    .map_err(|_| SquareArchiveError::BorrowedMannequinWorn(location))?;
+                for entry in worn.items() {
+                    check.item_ref(&entry.item).map_err(inventory_error)?;
+                }
             }
         }
         ObjectKind::Trap(trap) => {
@@ -176,7 +187,6 @@ fn check_object(
         | ObjectKind::Jukebox
         | ObjectKind::Radio(_)
         | ObjectKind::Television(_)
-        | ObjectKind::Mannequin(None)
         | ObjectKind::Tree(_)
         | ObjectKind::BrokenGlass
         | ObjectKind::ButcherHook

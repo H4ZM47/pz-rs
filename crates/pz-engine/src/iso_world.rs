@@ -119,6 +119,9 @@ pub struct IsoWorld {
     pub items: Option<pz_inventory::factory::ScriptItems>,
     /// `WorldStreamer.instance` with the chunk maps.
     pub streamer: Option<ChunkStreamer>,
+    /// A failed native activation stops subsequent handoffs and retains the
+    /// actual cursor/receiver for diagnostics and an explicit load abort.
+    pub failed_chunk_activation: Option<(pz_world::save::chunk_file::ChunkActivationCursor, String)>,
     /// `IsoMetaGrid`'s part of `map_meta.bin` the grid does not keep.
     pub meta_world: MetaWorld,
     pub spawned_zones: SpawnedZombieZones,
@@ -247,6 +250,7 @@ impl IsoWorld {
             dictionary_new_game: false,
             items: None,
             streamer: None,
+            failed_chunk_activation: None,
             meta_world: MetaWorld::default(),
             spawned_zones: SpawnedZombieZones::default(),
             uuids: ClockUuids::default(),
@@ -534,6 +538,9 @@ impl IsoWorld {
         self.sprites = Some(sprites);
         self.object_tables = Some(ObjectTables::from_game_jar(&self.jar())?);
         self.save_tables = Some(SaveTables::from_game_jar(&self.jar())?);
+        self.door_tables = Some(pz_world::square_mutation::DoorTables::from_jar(
+            &pz_classfile::Jar::open(self.jar()).map_err(|e| e.to_string())?,
+        )?);
         // TODO(port): `AnimalDefinitions.getAnimalDefs()`
         // (`pz_animals::AnimalDefinitionTables::load`), `WeatherFxMask.init`,
         // `TemplateText.Initialize`.
@@ -721,9 +728,11 @@ impl IsoWorld {
             g.basements = self.basements.take();
         }
         self.streamer = Some(ChunkStreamer::new(1, chunk_grid_width));
+        self.streamer.as_mut().unwrap().set_deferred_world_activation(true);
         set_cell(Some(IsoCell::default()));
         let (wx, wy) = (self.world_x, self.world_y);
         self.with_stream(|s, cell, ctx| s.load_world(wx, wy, cell, ctx));
+        self.activate_streamed_chunks(lua)?;
         self.hand_off_events();
         // `ClimateManager.postCellLoadSetSnow()`.
         let snow = pz_lua_api::bind_climate::post_cell_load_set_snow(&mut lua.thread);

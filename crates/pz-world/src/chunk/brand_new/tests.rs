@@ -97,6 +97,7 @@ fn run(wx: i32, wy: i32, gen: Option<&mut dyn BrandNewHook>) -> (IsoChunk, Vec<I
     let fix2x = Fix2xTable::default();
     let tables = ObjectTables::new(vec![1; 8], vec![(0, 0)]).unwrap();
     let mut env = ChunkLoadEnv {
+        blood_body_parts: 7,
         sprites: &mut sprites,
         fix2x: &fix2x,
         rand: &mut NoRand,

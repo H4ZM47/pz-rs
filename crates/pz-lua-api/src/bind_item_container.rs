@@ -456,7 +456,7 @@ fn call_or(
 
 /// `LuaManager.getFunctionObject(name)`: a global function, or a dotted
 /// path through global tables (`nil` with an error log otherwise).
-fn function_object(t: &Thread, name: &str) -> Value {
+pub(crate) fn function_object(t: &Thread, name: &str) -> Value {
     if name.is_empty() {
         return Value::Nil;
     }

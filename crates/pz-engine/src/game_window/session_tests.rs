@@ -3,6 +3,7 @@
 
 mod queue;
 mod cell_drag;
+mod mannequin;
 
 use super::{headless_app, run_frames, DevGame, Launch, NewGameSetup, Start};
 use pz_core::core::Core;
@@ -307,7 +308,7 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         start: Start::Game(DevGame {
             game_mode: "Sandbox".into(),
             world: "rust-session-regression".into(),
-            new_game: Some(NewGameSetup { spawn: None, seed: "RustSessionRegression".into() }),
+            new_game: Some(NewGameSetup { spawn: Some((10695, 9383, 0)), seed: "RustSessionRegression".into() }),
             map: "Muldraugh, KY".into(),
         }),
     })
@@ -432,12 +433,15 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         Events.OnPostSave.Add(function() rustSessionPostSaveCount = rustSessionPostSaveCount + 1 end)
     "#);
     // This is the native CloseRequested path, not a direct save helper.
+    let expected_world_chunks = mannequin::check_live();
+    let expected_mannequins = mannequin::saved_state();
     app.close();
     assert!(app.world.is_none(), "native close retained the gameplay world");
     assert_eq!(app.current_state(), None);
     assert_eq!(save_counts(app.lua.as_ref().unwrap()), (Some(1.0), Some(1.0)));
     app.close();
     assert_eq!(save_counts(app.lua.as_ref().unwrap()), (Some(1.0), Some(1.0)), "second close saved twice");
+    mannequin::check_saved(&save_dir, &expected_world_chunks);
 
     let db_path = save_dir.join("players.db");
     assert!(db_path.is_file(), "native close did not create players.db");
@@ -486,6 +490,8 @@ fn installed_assets_new_game_moves_animates_and_saves_on_close() {
         }
     }
     assert_eq!(reloaded.current_state(), Some(INGAME), "saved session never entered gameplay; cache: {}", cache_dir.display());
+    mannequin::check_live();
+    assert_eq!(mannequin::saved_state(), expected_mannequins, "mannequin outfit/identity/pose/skin changed across close and fresh reload");
     let loaded_player = bind_players::player(0).expect("saved session reconstructed local player 0");
     assert!(!Rc::ptr_eq(&player, &loaded_player), "saved session reused the closed session's player");
     let loaded_position = {

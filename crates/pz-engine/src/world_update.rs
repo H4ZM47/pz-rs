@@ -350,7 +350,7 @@ impl IsoWorld {
     /// `chunkMap[n].ProcessChunkPos(player)` for each local player
     /// (`IsoWorld.doChunkMapUpdate`), then this frame's share of the
     /// `WorldStreamer` thread.
-    pub fn process_chunk_pos(&mut self) {
+    pub fn process_chunk_pos(&mut self, lua: &mut LuaManager) {
         let players = player_positions();
         self.with_stream(|s, cell, ctx| {
             for (n, p) in players.iter().enumerate().take(s.num_players()) {
@@ -362,6 +362,7 @@ impl IsoWorld {
             }
             s.serve(&players, Serve::Jobs(STREAMER_JOBS_PER_FRAME), ctx);
         });
+        if let Err(error) = self.activate_streamed_chunks(lua) { self.log_update_error(error); }
         self.hand_off_events();
     }
 
@@ -422,6 +423,7 @@ impl IsoWorld {
                 }
             }
         });
+        if let Err(error) = self.activate_streamed_chunks(lua) { self.log_update_error(error); }
         self.hand_off_events();
         self.process_remove_items();
         // TODO(port): `ProcessItems`: dispatch real item update/finishupdate

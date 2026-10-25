@@ -399,6 +399,7 @@ fn main() {
             records.iter().map(|r| r.wy).min().unwrap(),
             records.iter().map(|r| r.wy).max().unwrap(),
         );
+        let blood_body_parts = pz_world::save::SaveTables::from_game_jar(&game.join("projectzomboid.jar")).expect("visual body tables").blood_body_parts;
         let mut cell = IsoCell::default();
         // Load order (`IsoChunkMap.processAllLoadGridSquare`): each chunk is
         // loaded, recalculated and passed through `loadInMainThread` before
@@ -409,6 +410,7 @@ fn main() {
                 let mut rand = JavaRandom::new(((wx as i64) << 32) ^ (wy as i64 & 0xffff_ffff));
                 let mut hooks = NoHooks;
                 let mut env = ChunkLoadEnv {
+                    blood_body_parts: blood_body_parts,
                     sprites: &mut sprites,
                     fix2x: &fix2x,
                     rand: &mut rand,

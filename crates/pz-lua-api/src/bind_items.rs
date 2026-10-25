@@ -374,6 +374,27 @@ pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
     Some(pz_inventory::shared::new_item(item))
 }
 
+/// `initialiseItem` on a game/loading-thread factory result. Set the flag
+/// before the protected LuaCreate call, including on callback failure.
+/// The caller must not hold world, sprite, container or item guards.
+pub fn initialise_item(thread: &mut Thread, item: &ItemRef) {
+    let (full_type, script) = {
+        let mut item = item.borrow_mut();
+        if item.is_initialised { return }
+        item.is_initialised = true;
+        (item.get_full_type(), item.template.script.clone())
+    };
+    let name = script.and_then(|s| s.0.borrow().lua_create.clone());
+    if let Some(name) = name {
+        let function = crate::bind_item_container::function_object(thread, &name);
+        if !function.is_nil() {
+            if let Err((error, trace)) = thread.pcall(&function, &[item_value(item)]) {
+                eprintln!("InventoryItem.initialiseItem {full_type}: {}\n{trace}", pz_kahlua::exec::java_value_of(&error));
+            }
+        }
+    }
+}
+
 /// `InventoryItem.setKeyId`, including `Key`'s own field and -1 RNG.
 pub(crate) fn set_key_id(item: &ItemRef, key_id: i32) {
     let e = env();
@@ -1654,6 +1675,40 @@ mod tests {
             Value::Num(n) => *n,
             other => panic!("not a number: {}", pz_kahlua::exec::java_value_of(other)),
         }
+    }
+
+    #[test]
+    fn initialise_item_marks_actual_owner_before_protected_creation_callback_once() {
+        let mut thread = item_thread();
+        let script = Rc::new(RefCell::new(pz_scripts::objects::items::Item::new()));
+        script.borrow_mut().lua_create = Some("Fixture.Create".into());
+        let item = make(ItemClass::Normal, "InitialiseFixture", |t| {
+            t.script = Some(pz_inventory::template::ScriptItemRef(script));
+        });
+        let weak = Rc::downgrade(&item);
+        crate::expose::global(&mut thread, "checkActualOwner", move |call| {
+            let actual = weak.upgrade().unwrap();
+            assert!(Rc::ptr_eq(&actual, &item_arg(call, 0)?));
+            assert!(actual.borrow().is_initialised);
+            // Reentrant initialization sees the already-published flag.
+            initialise_item(call.thread, &actual);
+            Ok(call.push(Value::Bool(true)))
+        });
+        run(&mut thread, r#"
+            Fixture = {}
+            calls = 0
+            function Fixture.Create(item)
+                calls = calls + 1
+                checkActualOwner(item)
+                item:setName('created')
+                error('protected fixture failure')
+            end
+        "#);
+        initialise_item(&mut thread, &item);
+        initialise_item(&mut thread, &item);
+        assert!(item.borrow().is_initialised);
+        assert_eq!(run(&mut thread, "return calls")[0].as_num(), Some(1.0));
+        assert_eq!(item.borrow().name, "created");
     }
 
     #[test]

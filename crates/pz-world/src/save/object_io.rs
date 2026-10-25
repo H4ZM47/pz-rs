@@ -16,7 +16,7 @@ pub const UNREGISTERED_SPRITE_ID: i32 = 20_000_000;
 /// The object `IsoObject.factoryFromFileInput` creates for `name`, in its
 /// state before `load`. `Err` for classes chunk files cannot hold here
 /// (characters, vehicles, animals) or that are not ported.
-fn instantiate(name: Option<&str>) -> SaveResult<ObjectKind> {
+fn instantiate(name: Option<&str>, blood_body_parts: usize) -> SaveResult<ObjectKind> {
     Ok(match name {
         None | Some("IsoObject") => ObjectKind::Object,
         Some("Jukebox") => ObjectKind::Jukebox,
@@ -31,7 +31,7 @@ fn instantiate(name: Option<&str>) -> SaveResult<ObjectKind> {
         Some("Door") => ObjectKind::Door(IsoDoor::default()),
         Some("Thumpable") => ObjectKind::Thumpable(Box::default()),
         Some("IsoBrokenGlass") => ObjectKind::BrokenGlass,
-        Some("Mannequin") => ObjectKind::Mannequin(None),
+        Some("Mannequin") => ObjectKind::Mannequin(Box::new(IsoMannequin::new(blood_body_parts))),
         Some("Window") => ObjectKind::Window(IsoWindow::default()),
         Some("Tree") => ObjectKind::Tree(IsoTree {
             size: 1,
@@ -80,7 +80,7 @@ pub fn load_object(
     // An unknown id makes a plain IsoObject (outside debug builds).
     let name = ctx.tables.class_name(class_id);
     let mut obj = IsoObject::new(id, ObjectKind::Object, None);
-    match instantiate(name) {
+    match instantiate(name, ctx.tables.blood_body_parts) {
         Ok(kind) => {
             obj.kind = kind;
             obj.components = ctx.hooks.factory_components(name.unwrap_or("IsoObject"));
@@ -783,29 +783,42 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
             let female = r.bool()?;
             let zombie = r.bool()?;
             let skeleton = r.bool()?;
-            let mannequin_script_name = r.string()?;
-            let pose = r.string()?;
+            let mannequin_script_name = Some(r.string()?);
+            let pose = Some(r.string()?);
             let human_visual = HumanVisual::load(r, ctx.tables.blood_body_parts)?;
-            let mut container = o
-                .container
-                .take()
-                .unwrap_or_else(|| ItemContainer::new(Some("mannequin")));
-            if o.container.is_none() {
+            // The native getter resolves real skin lists/RNG when this name is
+            // absent. The host performs that pending resolution; no dummy
+            // style or random draw is introduced by the codec.
+            let texture_name = human_visual.skin_texture_name.clone();
+            let pending_loaded_skin_resolution = texture_name.is_none();
+            let mut container = o.container.take().unwrap_or_else(|| {
+                let mut container = ItemContainer::new(Some("mannequin"));
                 container.explored = true;
-            }
+                container
+            });
             container.items.clear();
             let mut worn_items = Vec::new();
             if r.bool()? {
                 let id = r.i32()?;
-                let mut c = load_container(r, wv, ctx.items)?;
+                let mut c = ItemContainer::new(None);
+                let saved_items = c.load_saved(r, wv, ctx.items)?;
                 c.id = id;
                 container = c;
                 let n = r.i8()?;
                 for _ in 0..n.max(0) {
-                    worn_items.push((r.string()?, r.i16()?));
+                    let location = r.string()?;
+                    let index = r.i16()?;
+                    if let Some(index) = usize::try_from(index)
+                        .ok()
+                        .and_then(|i| saved_items.get(i))
+                        .copied()
+                        .flatten()
+                    {
+                        worn_items.push((location, index as i16));
+                    }
                 }
             }
-            *slot = Some(Box::new(IsoMannequin {
+            *slot = Box::new(IsoMannequin {
                 dir,
                 init,
                 female,
@@ -814,9 +827,12 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
                 mannequin_script_name,
                 pose,
                 human_visual,
+                texture_name,
+                pending_loaded_skin_resolution,
                 container: Some(container),
                 worn_items,
-            }));
+                ..IsoMannequin::new(ctx.tables.blood_body_parts)
+            });
         }
         _ => unreachable!("load_tail for {}", o.kind.class_name()),
     }
@@ -1674,26 +1690,29 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
         }
         ObjectKind::Thumpable(t) => save_thumpable(w, ctx, t, o.key_id),
         ObjectKind::Mannequin(m) => {
-            let Some(m) = m else {
-                return err("IsoMannequin was never initialised (initOutfit)");
-            };
             w.i8(m.dir);
             w.bool(m.init);
             w.bool(m.female);
             w.bool(m.zombie);
             w.bool(m.skeleton);
-            w.string(&m.mannequin_script_name);
-            w.string(&m.pose);
+            w.string(m.mannequin_script_name.as_deref().unwrap_or(""));
+            w.string(m.pose.as_deref().unwrap_or(""));
             m.human_visual.save(w);
-            match &m.container {
-                Some(c) => {
+            match m.save_inventory_snapshot()? {
+                Some((c, worn)) => {
                     w.i8(1);
                     w.i32(c.id);
-                    save_container(w, c, ctx.items)?;
-                    w.i8(m.worn_items.len() as i8);
-                    for (loc, i) in &m.worn_items {
+                    let saved_items = c.save_saved(w, ctx.items, None)?;
+                    if worn.len() > i8::MAX as usize {
+                        return err("too many worn items");
+                    }
+                    w.i8(worn.len() as i8);
+                    for (loc, index) in &worn {
                         w.string(loc);
-                        w.i16(*i);
+                        let saved_index = usize::try_from(*index)
+                            .ok()
+                            .and_then(|i| saved_items.iter().position(|&entry| entry == i));
+                        w.i16(saved_index.map_or(-1, |i| i as i16));
                     }
                 }
                 None => w.i8(0),

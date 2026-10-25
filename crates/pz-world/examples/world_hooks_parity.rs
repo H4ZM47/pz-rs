@@ -397,7 +397,7 @@ fn main() {
                             _ => {}
                         }
                         let containers: Vec<&ItemContainer> = match &o.kind {
-                            ObjectKind::Mannequin(Some(m)) => m.container.iter().collect(),
+                            ObjectKind::Mannequin(m) => m.container.iter().collect(),
                             _ => o.containers().collect(),
                         };
                         for (ci, c) in containers.into_iter().enumerate() {

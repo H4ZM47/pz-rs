@@ -29,6 +29,7 @@ pub mod saved;
 pub mod shared;
 pub mod template;
 pub mod visual;
+pub mod worn_items;
 
 pub use assets::{BloodClothingTypes, ClothingItem, ClothingItems, ItemAssets};
 pub use component::{ComponentBlob, ComponentCodec, OpaqueComponents};

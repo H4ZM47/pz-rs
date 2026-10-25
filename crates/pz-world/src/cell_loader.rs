@@ -10,9 +10,9 @@ use crate::java::{parse_float, parse_int, GameRand};
 use crate::meta_grid::IsoMetaGrid;
 use crate::object_slot::{IsoObjectRef, ObjectSlot};
 use crate::objects::{
-    DeviceData, IsoBarbecue, IsoCurtain, IsoDoor, IsoLightSource, IsoLightSwitch, IsoObject,
-    IsoTree, IsoWindow, ItemContainer, ObjectId, ObjectKind, ObjectLoadHooks, ObjectLoadSettings,
-    ObjectTables,
+    DeviceData, IsoBarbecue, IsoCurtain, IsoDoor, IsoLightSource, IsoLightSwitch, IsoMannequin,
+    IsoObject, IsoTree, IsoWindow, ItemContainer, ObjectId, ObjectKind, ObjectLoadHooks,
+    ObjectLoadSettings, ObjectTables,
 };
 use crate::sprite::{IsoObjectType, IsoSprite, IsoSpriteManager, SpriteIdx};
 
@@ -46,6 +46,8 @@ pub struct ObjectEnv<'a> {
     pub sprites: &'a mut IsoSpriteManager,
     pub rand: &'a mut dyn GameRand,
     pub tables: &'a ObjectTables,
+    /// Installed `BloodBodyPartType.MAX.index()` for native visual constructors.
+    pub blood_body_parts: usize,
     pub settings: ObjectLoadSettings,
     pub hooks: &'a mut dyn ObjectLoadHooks,
 }
@@ -636,7 +638,11 @@ pub fn do_tile_object_creation(
         }
         obj_index = None;
     } else if m.prop(&m.sprites[spr], "CustomName") == Some("Mannequin") {
-        let obj = IsoObject::new(id, ObjectKind::Mannequin(None), Some(spr));
+        let obj = IsoObject::new(
+            id,
+            ObjectKind::Mannequin(Box::new(IsoMannequin::new(env.blood_body_parts))),
+            Some(spr),
+        );
         obj_index = Some(add_object(sq, env, obj, false));
     } else if ty == t.tree {
         let sname = m.sprites[spr].name.as_deref();

@@ -112,6 +112,7 @@ fn main() {
     for wx in wx0..=wx1 {
         for wy in wy0..=wy1 {
             let mut env = ChunkLoadEnv {
+                blood_body_parts: save_tables.blood_body_parts,
                 sprites: &mut sprites,
                 fix2x: &fix2x,
                 rand: &mut rand,

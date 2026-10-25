@@ -19,6 +19,7 @@ use crate::shared::{ContainerRef, SharedContainer};
 use crate::template::{ItemClass, ItemTemplate};
 use crate::visual::ItemVisual;
 use pz_scripts::objects::items::ModelWeaponPart;
+use pz_scripts::registry::RegistryKey;
 
 /// `Color` (`col`): the item's custom colour.
 pub type Rgba = [f32; 4];
@@ -409,6 +410,10 @@ pub struct InventoryItem {
     /// `itemType`: a per-instance reference, independent of later script
     /// changes. `isItemType` compares the canonical object by identity.
     pub item_type: Option<Rc<pz_scripts::registry::RegistryKey>>,
+    /// `InventoryContainer`/`Radio.canBeEquipped`: the actual registry key
+    /// copied by `Item.InstanceItem` before initialiseItem, not saved. Base
+    /// InventoryItem and all other subclasses return null from the getter.
+    equipped_location: Option<Rc<RegistryKey>>,
     /// The public `mainCategory` override, null by default and not saved.
     pub main_category: Option<String>,
     /// `getRegistry_id()`.
@@ -546,6 +551,13 @@ impl InventoryItem {
         };
         InventoryItem {
             item_type: t.item_type.clone(),
+            equipped_location: if matches!(kind, ItemKind::Container(_) | ItemKind::Radio(..)) {
+                t.script
+                    .as_ref()
+                    .and_then(|script| script.0.borrow().can_be_equipped.clone())
+            } else {
+                None
+            },
             main_category: None,
             registry_id,
             type_: t.type_.clone(),
@@ -608,6 +620,16 @@ impl InventoryItem {
             vehicle_part: t.vehicle_part.clone(),
             kind,
             template,
+        }
+    }
+
+    /// The instance `canBeEquipped()` override on bags and radios. Later
+    /// ScriptManager replacement or script edits do not rewrite this field.
+    pub fn can_be_equipped(&self) -> Option<Rc<RegistryKey>> {
+        if matches!(self.kind, ItemKind::Container(_) | ItemKind::Radio(..)) {
+            self.equipped_location.clone()
+        } else {
+            None
         }
     }
 

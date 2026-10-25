@@ -313,7 +313,7 @@ fn main() {
         for sq in ch.squares() {
             for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                 let conts: Vec<&ItemContainer> = match &o.kind {
-                    ObjectKind::Mannequin(Some(m)) => m.container.iter().collect(),
+                    ObjectKind::Mannequin(m) => m.container.iter().collect(),
                     _ => o.containers().collect(),
                 };
                 for c in conts {
