@@ -17,8 +17,9 @@ use pz_lighting::jni::{IsoDirection, VisionConeInput};
 use pz_render::tile_depth::{TileDepthTextureAssignmentManager, TileDepthTextureManager, TileGeometryManager};
 use pz_render::{DrawCmd, ScreenParams, Texture, TextureManager};
 use pz_world::square::IsoDirections;
+use pz_world::isoregion::IsoRegions;
 use pz_world_render::{
-    default_player, ClimateSettings, GameTextures, NoWorldHooks, PlayerFrameInput, RenderWorld, SpriteCache,
+    check_changed_buildings, default_player, PendingRender, PuddleInputs, RenderInvalidation, ClimateSettings, GameTextures, NoWorldHooks, PlayerFrameInput, RenderWorld, SpriteCache,
     WorldLighting, WorldView,
 };
 use std::time::Instant;
@@ -67,6 +68,8 @@ pub struct WorldRender {
     start: Instant,
     /// The lighting session failed; frames draw unlit.
     lighting_error: bool,
+    /// What the square mutations changed since the last frame.
+    pub pending: PendingRender,
 }
 
 impl WorldRender {
@@ -121,7 +124,23 @@ impl WorldRender {
             cutaways: std::array::from_fn(|_| Cutaways::new()),
             start: Instant::now(),
             lighting_error: false,
+            pending: PendingRender::new(),
         }
+    }
+
+    /// The `RenderSquareHooks` the square mutations (fire, Lua, the
+    /// states) are given: chunk texture, lighting, water and building
+    /// invalidation, rebuilt by the next frame.
+    pub fn invalidation(&mut self, water_flag: pz_world::sprite::IsoFlagType, num_players: i32) -> RenderInvalidation<'_> {
+        RenderInvalidation::new(&mut self.world, &mut self.lighting, &mut self.caches, &mut self.pending, water_flag, num_players)
+    }
+
+    /// The pending rebuilds, before the lighting frames and chunk recording
+    /// (`PendingRender::apply`).
+    fn apply_pending(&mut self, view: &WorldView<'_>, regions: &IsoRegions, fs: &GameFs, tm: &mut TextureManager) {
+        let mut tex = GameTextures { fs, textures: tm, depth: &self.depth, assignments: &self.assignments, geometry: &self.geometry };
+        let perf_puddles = pz_lua_api::bind_core::shared_core().borrow().get_perf_puddles();
+        self.pending.apply(view, &mut self.world, &mut self.lighting, &NoWorldHooks, &mut self.sprites, &mut tex, PuddleInputs { regions, perf_puddles });
     }
 
     /// The chunks that entered the cell get their render squares and
@@ -242,7 +261,16 @@ impl IsoWorld {
             let m = s.chunk_map(n);
             (!m.ignore && pz_lua_api::bind_players::player(n).is_some()).then(|| (m.world_x - s.width / 2, m.world_y - s.width / 2, s.width))
         });
-        let IsoWorld { render, render_chunks, sprites, game_dir, .. } = self;
+        let num_players = pz_lua_api::bind_players::num_players();
+        let IsoWorld { render, render_chunks, sprites, game_dir, regions, .. } = self;
+        let no_regions;
+        let regions = match regions.as_ref() {
+            Some(r) => r,
+            None => {
+                no_regions = IsoRegions::new(0);
+                &no_regions
+            }
+        };
         let Some(sprites) = sprites.as_ref() else { return };
         let r = render.get_or_insert_with(|| {
             let mut r = WorldRender::new(game_dir, fs, tm);
@@ -257,11 +285,13 @@ impl IsoWorld {
             let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_ref()) else { return };
             let wv = WorldView { cell, meta, sprites };
             r.sync_chunks(&wv, render_chunks, fs, tm);
+            r.apply_pending(&wv, regions, fs, tm);
             for (n, m) in maps.iter().enumerate() {
                 r.lighting.set_chunk_map(n as i32, *m);
             }
             // `currentCell.render()`.
             r.render_player(&wv, view, out);
+            check_changed_buildings(&mut r.lighting, &mut r.caches, &mut r.pending, num_players);
         });
         // TODO(port): `Gizmos.render`, `DrawIsoCursorHelper`, the
         // pathfinding/sound/vocals debug renders, `FBORenderAreaHighlights`,

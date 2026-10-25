@@ -358,7 +358,7 @@ fn loaded_world_zpop_zombies_become_real() {
     let maps = pz_world_popman::PlayerChunkMaps { origins: vec![(0, 0)], width: 10 };
     let checks = NoObstacles;
     let mut rand = ListRand(vec![1; 64], vec![]);
-    let mut frame = |pop: &mut WorldPopulation<i32>, ops: &mut RealZombies<'_, ()>, start: bool| {
+    let mut frame = |pop: &mut WorldPopulation<i32>, ops: &mut RealZombies<'_, (), NullWorld>, start: bool| {
         let reals = ops.infos();
         let f = PopulationFrame { multiplier: 1.0, world_age_hours: 10.0, chunk_maps: &maps, real_zombies: &reals };
         let mut host = WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, ops);

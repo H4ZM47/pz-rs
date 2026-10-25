@@ -5,13 +5,24 @@
 //! Their flames, smoke, fuel logs and light are `pz-iso-render`'s
 //! `FireplaceState` / `BarbecueState`, which read the lit flag and fuel
 //! kept here; `pz-world-render`'s `HearthLink` runs both halves of
-//! `update()` in the original's order. Heat sources and sounds are not
-//! modelled.
+//! `update()` in the original's order. `heat_source()` and
+//! `running_sound()` say what `updateHeatSource()` and `updateSound()`
+//! keep in the world, for the engine's heat sources and emitters.
 
 use crate::objects::{IsoBarbecue, IsoFireplace};
 
 /// `IsoFireplace.SmoulderMinutes` (the barbecue uses the same 10).
 pub const SMOULDER_MINUTES: i32 = 10;
+
+/// `IsoFireplace.IsoHeatSourceTemperature`.
+pub const FIREPLACE_HEAT_TEMPERATURE: i32 = 35;
+/// `IsoBarbecue.IsoHeatSourceRadius` / `IsoHeatSourceTemperature`.
+pub const BARBECUE_HEAT_RADIUS: i32 = 3;
+pub const BARBECUE_HEAT_TEMPERATURE: i32 = 25;
+
+/// The `IsoHeatSource` an `updateHeatSource()` keeps: `(radius,
+/// temperature)`, `None` when it is removed (or never added).
+pub type HeatSource = Option<(i32, i32)>;
 
 /// The fields the fuel step reads and writes.
 struct Fuel<'a> {
@@ -126,6 +137,22 @@ impl IsoFireplace {
         (1.0 + 7.0 * delta.clamp(0.0, 1.0)) as i32
     }
 
+    /// `updateHeatSource()`: lit, a heat source at the light radius
+    /// (resized when that changes); out, none.
+    pub fn heat_source(&self) -> HeatSource {
+        self.lit
+            .then(|| (self.calc_light_radius(), FIREPLACE_HEAT_TEMPERATURE))
+    }
+
+    /// `updateSound()`: the looped sound a lit fireplace plays
+    /// (`"FireplaceRunning"`, or the `CraftBenchSounds` component's
+    /// `"Running"` sound when it has one, `craft_bench_running`); `None`
+    /// stops it (`stopOrTriggerSound`).
+    pub fn running_sound<'a>(&self, craft_bench_running: Option<&'a str>) -> Option<&'a str> {
+        self.lit
+            .then(|| craft_bench_running.unwrap_or("FireplaceRunning"))
+    }
+
     /// The fuel part of `update()` (before the sprites and light), at world
     /// age `world_age_hours` (`GameTime.getWorldAgeHours()`).
     pub fn update_fuel(&mut self, world_age_hours: f64) {
@@ -216,6 +243,21 @@ impl IsoBarbecue {
         } else {
             1.0
         }
+    }
+
+    /// `updateHeatSource()`: a fixed heat source while lit.
+    pub fn heat_source(&self) -> HeatSource {
+        self.lit
+            .then_some((BARBECUE_HEAT_RADIUS, BARBECUE_HEAT_TEMPERATURE))
+    }
+
+    /// `updateSound()`: the looped sound a lit barbecue plays.
+    pub fn running_sound(&self, propane_bbq: bool) -> Option<&'static str> {
+        self.lit.then_some(if propane_bbq {
+            "BBQPropaneRunning"
+        } else {
+            "BBQRegularRunning"
+        })
     }
 
     /// The fuel part of `update()`.

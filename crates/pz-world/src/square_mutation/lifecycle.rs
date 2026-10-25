@@ -575,3 +575,78 @@ pub(super) fn remove_from_square(env: &mut MutationEnv<'_>, r: ObjectRef) -> Opt
     }
     removed
 }
+
+/// The `removeFromWorld` entry points the fire code uses (`BurnWalls`
+/// replacing an object, `IsoFire.removeFromWorld` and the feeding
+/// trough's `handleBurning`).
+impl MutationEnv<'_> {
+    /// `obj.removeFromWorld()` of `r`, which is on its square, for its
+    /// class.
+    pub(crate) fn object_remove_from_world(&mut self, r: ObjectRef) {
+        remove_from_world(self, r);
+    }
+
+    /// `obj.removeFromWorld()` for the object's class, for `obj` (id
+    /// `r.id`) taken off square `r.pos` by `removeFromSquare`, which leaves
+    /// its `square` set: the class code runs as for an object still there.
+    /// It reaches the object only by reference, never by scanning the
+    /// square, so `obj` is put back at the end of `objects` for the call
+    /// and taken off again, with what the call changed on it.
+    pub(crate) fn object_remove_from_world_detached(&mut self, r: ObjectRef, obj: &mut IsoObject) {
+        let Some(sq) = self.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2) else {
+            return;
+        };
+        debug_assert!(sq.object_index(r.id).is_none());
+        sq.objects.push(obj.clone());
+        remove_from_world(self, r);
+        if let Some(sq) = self.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2) {
+            if let Some(i) = sq.object_index(r.id) {
+                *obj = sq.objects.remove(i);
+            }
+        }
+    }
+
+    /// `IsoObject.removeFromWorld()` (the base class part) of `r`, which is
+    /// on its square.
+    pub(crate) fn base_remove_from_world(&mut self, r: ObjectRef) {
+        base_remove(self, r);
+    }
+
+    /// One [`WorldCall`] for `obj`, which need not be on a square any
+    /// more (`r` is where it was).
+    pub(crate) fn world_call_on(&mut self, r: ObjectRef, obj: &mut IsoObject, c: WorldCall) {
+        let MutationEnv { world, rand, .. } = self;
+        world.world_call(r, obj, &mut **rand, c);
+    }
+
+    /// `IsoObject.removeFromWorld()` (the base class part) of `obj`, which
+    /// already left square `r.pos` (`IsoFire.extinctFire` takes the fire
+    /// off the square before `removeFromWorld`).
+    pub(crate) fn base_remove_from_world_detached(&mut self, r: ObjectRef, obj: &mut IsoObject) {
+        self.world_call_on(r, obj, WorldCall::UnregisterEntity);
+        self.world_call_on(r, obj, WorldCall::ProcessIsoObjectRemove);
+        self.world_call_on(r, obj, WorldCall::StaticUpdater { add: false });
+        for i in 0..obj.container_count() {
+            self.world_call_on(
+                r,
+                obj,
+                WorldCall::ProcessItems {
+                    container: i,
+                    add: false,
+                },
+            );
+        }
+        self.world_call_on(r, obj, WorldCall::StopEmitter);
+        self.world_call_on(r, obj, WorldCall::RemoveAmbientEmitters);
+        self.world_call_on(r, obj, WorldCall::LightSource { add: false });
+        self.world_call_on(r, obj, WorldCall::ClearOnOverlay);
+        if self.render.fbo_render_chunk() {
+            self.world_call_on(r, obj, WorldCall::UnregisterHighlight);
+        }
+        let powered = self.world.piped_fuel_amount(r, obj) > 0 || fridge_index(obj).is_some();
+        if powered {
+            self.world_call_on(r, obj, WorldCall::PoweredByGenerator { add: false });
+        }
+        self.world_call_on(r, obj, WorldCall::FlagForHotSave);
+    }
+}

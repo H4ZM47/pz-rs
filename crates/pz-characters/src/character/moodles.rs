@@ -220,7 +220,8 @@ impl Moodle {
         self.moodle_level
     }
 
-    fn update_moodle_level(&mut self, level: i32) -> bool {
+    /// `updateMoodleLevel(level)`: the level, clamped; whether it changed.
+    pub fn update_moodle_level(&mut self, level: i32) -> bool {
         if level != self.moodle_level {
             self.moodle_level = MIN.max(level.min(MAX));
             return true;

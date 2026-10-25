@@ -97,16 +97,22 @@ impl IngameState {
             // TODO(port): `ScriptManager.instance.update()`.
             if let Some(w) = cx.world.as_mut() {
                 w.update_world_sounds(hearing);
-                // TODO(port): `RainManager.isRaining()`.
-                w.update_fire(&sim, pz_world::fire::FireSettings { fire_spread, raining: false, tutorial });
+                // TODO(port): `RainManager.isRaining()`. `UpdateStuff`
+                // wraps `IsoFireManager.Update` in its own
+                // `catch (Exception)`: an `Err` is logged (`update_fire`
+                // does) and the frame goes on.
+                let _ = w.update_fire(&sim, pz_world::fire::FireSettings { fire_spread, raining: false, tutorial });
                 // TODO(port): `RainManager.Update`, `Meta.instance.update`,
                 // `VirtualZombieManager.instance.update`.
                 // `MapCollisionData.updateMain` +
-                // `ZombiePopulationManager.updateMain`.
-                w.update_population(&sim);
-                // `PathfindNative.checkUseNativeCode` picks the Java
-                // pathfinder: `PolygonalMap2.instance.updateMain()`.
-                w.update_pathfinding();
+                // `ZombiePopulationManager.updateMain`, then
+                // `PathfindNative.checkUseNativeCode` (the Java pathfinder:
+                // `PolygonalMap2.instance.updateMain()`), in one
+                // `try { .. } catch (Throwable)`: a population `Err` (logged)
+                // skips the pathfinder's pass, `LootRespawn` and the rest go on.
+                if w.update_population(&sim).is_ok() {
+                    w.update_pathfinding();
+                }
             }
             // TODO(port): `LootRespawn.update`, the vehicle sound
             // `Manager`, `AnimEventEmulator`, `BodyDamageSync`,

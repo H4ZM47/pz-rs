@@ -634,7 +634,7 @@ impl MutationEnv<'_> {
     /// `IsoGridSquare.invalidateRenderChunkLevel(flags)` (and
     /// `IsoObject.invalidateRenderChunkLevel`, whose render square is the
     /// object's square here).
-    fn invalidate_render(&mut self, pos: SquarePos, flags: u64) {
+    pub(crate) fn invalidate_render(&mut self, pos: SquarePos, flags: u64) {
         let (wx, wy) = chunk_of(pos);
         if self.cell.chunks.contains_key(&(wx, wy)) {
             self.render
@@ -660,7 +660,7 @@ impl MutationEnv<'_> {
         }
     }
 
-    fn map_collision_square_changed(&mut self, pos: SquarePos) {
+    pub(crate) fn map_collision_square_changed(&mut self, pos: SquarePos) {
         if let Some(sq) = self.cell.get_grid_square(pos.0, pos.1, pos.2) {
             self.pathfind.map_collision_square_changed(sq);
         }

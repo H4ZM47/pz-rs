@@ -17,6 +17,7 @@ pub mod bind_audio;
 pub mod bind_erosion;
 pub mod bind_colors;
 pub mod bind_core;
+pub mod bind_date;
 pub mod bind_credits;
 pub mod bind_debug;
 pub mod bind_climate;
@@ -73,6 +74,7 @@ pub mod lua_manager;
 pub mod player_db;
 pub mod savefile;
 pub mod world_save;
+pub mod worldmap;
 
 pub use lua_manager::LuaManager;
 
@@ -103,6 +105,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_save::register(mgr);
     // Text before UI: bind_text's UIFont is canonical.
     bind_text::register(&mut mgr.thread);
+    bind_date::register(&mut mgr.thread);
     bind_credits::register(mgr);
     bind_debug::register(&mut mgr.thread);
     bind_input::register(mgr);
@@ -149,6 +152,8 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_vehicles::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
+    worldmap::register(&mut mgr.thread);
+    worldmap::install_fs(mgr.fs.clone());
     gizmo::register(&mut mgr.thread);
     hud::characters::install_character_hud_hosts();
     hud::alarm_clocks::install_alarm_clock_host();

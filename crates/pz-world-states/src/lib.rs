@@ -20,15 +20,24 @@
 //! toggling) comes from a [`StatesEngine`] the caller supplies. Character,
 //! path-finding, lighting and audio methods of [`StateWorld`] keep their
 //! defaults; the engine wraps this adapter for those.
+//!
+//! The adapter is also the population manager's [`SittingChecks`]
+//! (`pz-world-popman`), and [`population_host`] runs that manager over the
+//! adapter `RealZombies` holds ([`population`]).
+//!
+//! [`SittingChecks`]: pz_world_popman::SittingChecks
 
 mod bent_fences;
 mod climb;
 mod collide;
+pub mod population;
 mod query;
 mod thump;
 mod vehicles;
+mod windows;
 
 pub use bent_fences::{BentFenceEntry, BentFences, FenceTileDef, ThumpData};
+pub use population::{population_host, population_view, real_zombie_on_square};
 pub use collide::{CollideMoverInfo, NewRenderEffect, RenderEffectType, StatesFire, WorldView};
 pub use query::Env;
 pub use vehicles::{VehicleBox, VehicleGeometry};
@@ -36,7 +45,8 @@ pub use vehicles::{VehicleBox, VehicleGeometry};
 use std::collections::HashMap;
 
 use pz_characters::character::state::{
-    CorpseInfo, EatTarget, SquareInfo, StateWorld, ThumpInfo, ThumpTarget,
+    CorpseInfo, EatTarget, SheetRopeExit, SheetRopeSquare, SquareInfo, StateWorld, ThumpInfo,
+    ThumpTarget, WindowInfo,
 };
 use pz_characters::GameCharacter;
 use pz_pathfind::mover::{CharacterView, MoverId, ObjectRef};
@@ -307,6 +317,21 @@ pub trait StatesEngine {
     fn toggle_door(&mut self, _cell: &mut IsoCell, _door: ObjectRef, _chr: i32) {}
     /// `IsoWindow.ToggleWindow(chr)` on the cell.
     fn toggle_window(&mut self, _cell: &mut IsoCell, _window: ObjectRef, _chr: i32) {}
+    /// `LuaEventManager.triggerEvent("OnWeaponHitThumpable", chr, null,
+    /// obj)` (a bare-handed window smash).
+    fn weapon_hit_thumpable(&mut self, _chr: i32, _obj: ObjectRef) {}
+    /// `VehicleWindow.isDestroyed()` of a vehicle's part (the vehicles'
+    /// owner; `None`: no such window).
+    fn vehicle_window_destroyed(&self, _vehicle: i16, _part: &str) -> Option<bool> {
+        None
+    }
+    /// `VehicleWindow.hit(chr)`.
+    fn vehicle_window_hit(&mut self, _vehicle: i16, _part: &str, _chr: i32) {}
+    /// The local player's input this frame (`pressedMovement`,
+    /// `pressedCancelAction` in the window states).
+    fn player_input(&self) -> Option<&dyn pz_characters::character::player::PlayerInput> {
+        None
+    }
     /// `BrokenFences.getInstance().isBreakableObject(obj)` (the sprite
     /// lists Lua registers).
     fn is_breakable_fence(&self, _sprite_name: &str) -> bool {
@@ -995,6 +1020,7 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             cell: &mut *self.cell,
             meta: self.meta,
             sprites: &mut *self.sprites,
+            mutation: f.mutation,
             flags: f.flags,
             settings: f.settings,
             hooks: f.hooks,
@@ -1022,6 +1048,10 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             sprites: &*self.sprites,
         };
         self.engine.resolve_collision_radius(view, chr, radius)
+    }
+
+    fn floor_sprite_name(&self, sq: (i32, i32, i32)) -> Option<String> {
+        self.floor_sprite_name_at(sq)
     }
 
     fn path_cancel_request(&mut self, chr: &mut dyn pz_pathfind::mover::PathMover) {
@@ -1060,6 +1090,62 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             }
             EatTarget::Character(c) => self.engine.set_character_eating(c, zombie, eating),
         }
+    }
+
+    fn square_is_outside(&self, sq: (i32, i32, i32)) -> bool {
+        self.at(sq).is_some_and(|s| self.env().sq_has(s, "exterior"))
+    }
+
+    // ---- windows, sheet ropes and walls ----
+
+    fn player_input(&self) -> Option<&dyn pz_characters::character::player::PlayerInput> {
+        self.engine.player_input()
+    }
+
+    fn window_info(&self, window: ObjectRef) -> Option<WindowInfo> {
+        self.window_info_of(window)
+    }
+
+    fn toggle_window(&mut self, window: ObjectRef, chr: i32) {
+        self.engine.toggle_window(self.cell, window, chr);
+    }
+
+    fn set_window_perma_locked(&mut self, window: ObjectRef, perma: bool) {
+        self.set_window_perma_locked_at(window, perma);
+    }
+
+    fn window_weapon_hit(&mut self, window: ObjectRef, chr: &GameCharacter<I>) {
+        let t = Thumper::of(chr);
+        self.window_weapon_hit_by(window, &t, chr.is_player());
+    }
+
+    fn vehicle_window_destroyed(&self, vehicle: i16, part: &str) -> Option<bool> {
+        self.engine.vehicle_window_destroyed(vehicle, part)
+    }
+
+    fn vehicle_window_hit(&mut self, vehicle: i16, part: &str, chr: &GameCharacter<I>) {
+        self.engine.vehicle_window_hit(vehicle, part, chr.id);
+    }
+
+    fn sheet_rope_square(&self, sq: (i32, i32, i32)) -> Option<SheetRopeSquare> {
+        self.sheet_rope_square_at(sq)
+    }
+
+    fn chunk_levels(&self, sq: (i32, i32, i32)) -> (i32, i32) {
+        self.chunk_levels_at(sq)
+    }
+
+    fn sheet_rope_exit(&mut self, chr: &GameCharacter<I>, target: (i32, i32, i32), dir: IsoDirections) -> SheetRopeExit {
+        let t = Thumper::of(chr);
+        self.sheet_rope_exit_for(&t, target, dir)
+    }
+
+    fn can_climb_over_wall(&self, chr: &GameCharacter<I>, dir: IsoDirections) -> bool {
+        self.can_climb_over_wall_for(&Thumper::of(chr), dir)
+    }
+
+    fn climb_wall_fence_type(&self, start: (i32, i32, i32), end: (i32, i32), dir: IsoDirections) -> Option<i32> {
+        self.climb_wall_fence_type_at(start, end, dir)
     }
 
     fn eating_count(&self, target: EatTarget) -> usize {

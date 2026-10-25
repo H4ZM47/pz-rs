@@ -138,7 +138,8 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       popman worker pass has already run, as its own thread would): `GameWindow.logic` calls
       `WorldPopulation::update_game_state(no_save, paused)`; `IngameState.update`
       (after `VirtualZombieManager.update`) calls `WorldPopulation::update(&mut
-      WorldPopulationHost::from_state(.., &mut RealZombies { .. }),
+      pz_world_states::population_host(rand, &mut RealZombies { world: &mut
+      states_adapter, .. }),
       &PopulationFrame { multiplier, world_age_hours,
       chunk_maps: &player_chunk_maps(&streamer), real_zombies:
       &real_zombies.infos() })`; it also runs the in-line worker
@@ -356,9 +357,19 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       progress bar and halo note). `GameLoadingState`'s
       `ChatManager.init(true, player)` takes `bind_players::player_instance()`
       as the `Rc<dyn ChatPlayer>` (#195).
-- [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
+- [x] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
+- [x] Popman over the real world (#210): build the population host with
+      `pz_world_states::population_host(rand, &mut RealZombies { world:
+      &mut StatesWorldAdapter::new(..), .. })` (the host reads the cell,
+      meta grid, sprites and sitting checks through the adapter between
+      zombie calls; the adapter is the `SittingChecks`: `has_moving_objects`
+      is `StatesEngine::has_moving_objects` plus the lent zombie list,
+      `line_clear_collide` is `LineClearCollideMain` with pz-vehicles'
+      `PathfindVehicles` and `ignore_vehicle = None`). The engine's
+      `has_moving_objects` must answer for players and animals on the
+      square (the real zombie list is counted by the host).
 World load, in the original's order (`GameLoadingState.enter` loads the
 server Lua first, so `ClimateMain.lua`'s `OnClimateManagerInit` handler is
 registered):
@@ -584,21 +595,54 @@ registered):
       `IsoRegions` to the region readers (puddles, weather mask, square
       edits through `set_previous_flags` / `square_changed`). Quit:
       `IngameState` calls `IsoRegions.reset()`; drop it.
-- [ ] Local player at world init: `VehicleStore::create` (`VehiclesDB2.init`),
+- [x] Local player at world init: `VehicleStore::create` (`VehiclesDB2.init`),
       `savefile::is_player_alive`, `PlayerDb::new`; `load_player_for_info`
       gives `SWorldX/SWorldY` for the chunk map; later `load_local_player_1`
       (decode with `load_player`, health 0 when `is_dead`, set `sqlId`) and
-      `chunkMap.worldX/Y = local_player_chunk_map_pos(x, y, offset)` (#100).
+      `chunkMap.worldX/Y = local_player_chunk_map_pos(x, y, offset)` (#100;
+      wired in `IsoWorld::load_player`, #209/#212). Left: `player.sqlId`
+      (no field on `GameCharacter` yet) and `map_p.bin` saves (#212).
 - [ ] CGlobalObjects `initSystems` and update pumps (#31).
-- [ ] Popman: `WorldPopulationHost::from_state`, `update_main` with
-      `player_chunk_maps(&streamer)`; supply SittingChecks,
-      `has_moving_objects`, `line_clear_collide` (#77, #60). Driven through
+- [x] Popman: `pz_world_states::population_host` (#210; was
+      `WorldPopulationHost::from_state`), `update_main` with
+      `player_chunk_maps(&streamer)`; SittingChecks is the
+      `StatesWorldAdapter` (#77, #60, #210). Driven through
       `WorldPopulation` (see the world-load list above).
 - [ ] World sound: `WorldSoundAdapter::from_state`; engine `SoundEffects`
       (OnWorldSound, fish noise, popman) (#71).
 - [x] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
+      (#FIRE-REST) `update` returns `Err(java exception text)` when a
+      burn threw (`IsoWindow.removeSheet` on a window outside rooms whose
+      inside square does not exist): like the population `Err` above,
+      nothing up to `IngameState.update` catches it, so the rest of that
+      frame's `IngameState.update` is skipped and the text is logged via
+      `ExceptionLogger`. (Engine, #225: the decompiled `UpdateStuff` wraps
+      `IsoFireManager.Update` in its own `catch (Exception)`, and
+      `MapCollisionData.updateMain` through `PolygonalMap2.updateMain` in
+      one `catch (Throwable)`; so a fire `Err` is logged and the frame goes
+      on, a population `Err` is logged and skips the pathfinder's pass.)
+- [ ] Fire world parts (#FIRE-REST): `FireWorld.mutation` (`FireMutation`:
+      the regions, door tables and the `SquareMutationHooks` /
+      `PathfindSquareHooks` / `RenderSquareHooks` the square mutations
+      use), also in `StatesFire.mutation`. `WorldCall::FireManager` /
+      `FireStopSound` from a fire removed by other code (Lua, mutations)
+      go to `IsoFireManager::remove` / `sounds.remove_fire`.
+- [ ] Fire sound slots (#FIRE-REST): `FireSoundHooks::fire_slot_play` /
+      `fire_slot_stop` drive 20 emitters (`FMODSoundEmitter` +
+      `ParameterFireSize`); `FireHooks::listener_distance_sq` is
+      `FMODParameterUtils.getClosestListenerDistanceSquared`.
+- [ ] Heat sources (#FIRE-REST): add/resize/remove the cell's
+      `IsoHeatSource`s from `IsoFire::heat_source` (permanent fires, in
+      `fire_updated` / `fire_removed`), `IsoFireplace::heat_source()` and
+      `IsoBarbecue::heat_source()` after each hearth update; their
+      `running_sound()` loops on the object's emitter.
+- [ ] Hutch burning (#FIRE-REST): `FireHooks::hutch_release_contents`
+      runs `releaseAllAnimals` + `dropAllEggs` of the hutch object.
+- [ ] Fire fighting (#FIRE-REST): the put-out action uses
+      `fire::fighting::{get_square_to_extinguish, get_extinguisher}` with
+      an `ExtinguisherItem` view of the inventory items.
 - [x] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
 - [ ] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`)
       read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime
@@ -701,7 +745,7 @@ registered):
       `update_frame()` per frame; `spawn` (`IsoChunk.AddVehicles`) from the
       chunk loader through a `SpawnWorld` impl fed by the meta cell vehicle
       zones; `bind_vehicles::register` (#86).
-- [ ] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
+- [x] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
       `PlayerDb::load_local_player(sql_id)` (#100) go to
       `GameCharacter::load_player(sm, chars, ctx, SaveEnv { items:
       ScriptItems over the save's WorldDictionary, tables }, reader,
@@ -709,7 +753,22 @@ registered):
       with a descriptor; `set_on_fire` runs `pz_world::fire::character::set_on_fire`
       with the world's fire manager. Then, for an `isDead` row,
       `setOverallBodyHealth(0)`/`setHealth(0)`; `saved_vehicle` seats the
-      player; save with `save_player` (#101).
+      player; save with `save_player` (#101). Wired in
+      `IsoWorld::load_player` over the save's `ScriptItems` (#212). Left:
+      `set_on_fire` is only logged (no `IsoFireManager` on `IsoWorld`),
+      `saved_vehicle` seating, and saving through `save_player` (#212).
+- [ ] `WorldDictionary.init()` (#212): `world_dictionary::init` ports
+      `DictionaryData.load()` only. Still to port: `collectObjectNames`,
+      `collectStrings`, `parseInfoLoadList`/`parseCurrentInfoSet` (ids for
+      scripts new since the save, removed or mod-changed items, new games),
+      `parseObjectNameLoadList`, the `StringDictionary`/`ScriptsDictionary`
+      registers, `getDictionaryMods`, `backupCurrentDataSet`, `save()`,
+      `saveAsText("WorldDictionaryReadable.lua")`, `WorldDictionaryLogger`
+      and `createErrorBackups`; then `ScriptManager.PostWorldDictionaryInit`
+      and `WorldDictionary.onWorldLoaded`. A new game has no registry until
+      then (chunk items load raw). `world_dictionary::script_items` still
+      needs `recorded_media` (`ZomboidRadio.getRecordedMedia()`),
+      `channels` and `map_definitions` (#212).
 - [ ] Square mutations: every object change after load goes through
       `pz_world::square_mutation::MutationEnv` (`add_tile_object`,
       `add_special_object`, `remove_tile_object`,
@@ -729,23 +788,48 @@ registered):
       `pz_characters::character::CharacterDrop` and take the world as a
       `FloorCx { ctx, floor }`. Wired: `set_worn_item` / `remove_worn_item`
       (`forceDropTooHeavy` right after `wornItems.setItem`),
-      `climbThroughWindow` / `climbThroughWindowFrame` (`dropHeavyItems`)
-      and `ClimbOverFenceState`'s `VaultSprintFallLanded`
-      (`dropHandItems`). The engine must:
+      `climbThroughWindow` / `climbThroughWindowFrame`, `climbSheetRope`,
+      `climbDownSheetRope` and `IsoPlayer.climbOverWall` (`dropHeavyItems`),
+      `ClimbOverFenceState`'s `VaultSprintFallLanded`, `fallenOnKnees`,
+      `handleLandingImpact` and `IsoPlayer.OnDeath` (`dropHandItems`)
+      (#214). The engine must:
       - return its `square_mutation::FloorDropEnv::new(&mut env,
         world_age_hours)` from `StateWorld::floor()` for the states;
       - `bind_character_sim::install_floor_world(Some(..))` with a
         `FloorWorld` that builds a `FloorDropEnv` per call, for Lua's
         `setWornItem` / `removeWornItem` / `setClothingItem_*` and the new
         `dropHandItems` / `dropHeavyItems` (without one nothing drops);
-      - call `GameCharacter::drop_heavy_items(sm, FloorCx)` from
-        `climbSheetRope`, `climbDownSheetRope` and `IsoPlayer.climbOverWall`
-        (the `PathMoverRequest::ClimbOverWall` handler), and
-        `drop_hand_items` from `handleLandingImpact`, `fallenOnKnees` and
-        `IsoPlayer.OnDeath`, as those are ported (not yet in
-        `pz-characters`);
       - `Use`'s `Unwear` (`apply_use_outcome`) passes no world yet, so a
         used-up worn item never drops (#189).
+- [ ] Wall and sheet-rope climbs, landings and player death (#214, on
+      #208): the climb states read the world through #208's hooks
+      (`sheet_rope_square`, `chunk_levels`, `sheet_rope_exit`,
+      `can_climb_over_wall`, `climb_wall_fence_type`); `pz-world-states`
+      also implements the new `floor_sprite_name` (the landing's natural
+      floor). The engine must:
+      - implement `StateWorld::path_reset` (`PathFindBehavior2.reset()`, a
+        failed wall climb; `pz-world-states` leaves the no-op default, as
+        for `path_cancel`);
+      - start the climbs: `GameCharacter::climb_over_wall(dir, cx)` from
+        the player's wall-climb input (the `PathMoverRequest::ClimbOverWall`
+        handler in `run_path_requests` already calls it),
+        `climb_sheet_rope` / `climb_down_sheet_rope` from the rope input,
+        and `fall_from_rope` where the original lets go;
+      - call `GameCharacter::do_land(impact_iso_speed, cx)` when a falling
+        character lands (`IsoGameCharacter.updateFalling`, not yet ported)
+        and `player_on_death(cx)` from `IsoPlayer.OnDeath`;
+      - answer `SimContext::debug_always_trip_over_fence` (`DebugOptions`;
+        `easy_climbing` is #208's line);
+      - handle `SimEvent::MusicIntensityEvent`, `FallingItem`
+        (`createFallingItem`), `FallenHat`
+        (`PersistentOutfits.setFallenHat`), `StopPlayerVoiceSound`,
+        `CharacterDeath` (`OnCharacterDeath`), `FadeIn` and `PlayerDeath`
+        (the rest of `IsoPlayer.OnDeath`: death music, `OnPlayerDeath`,
+        leaving the vehicle, `removeSaveFile`, `setDrag`);
+      - bind the new calls to Lua (`climbSheetRope`, `canClimbSheetRope`,
+        `canClimbOverWall`, `climbOverWall`, `isClimbingRope`,
+        `fallFromRope`, `getClimbingFailChanceInt`, `fallenOnKnees`, ...)
+        where the Lua API needs them; none is bound yet.
 - [ ] Collision code fills `IsoChunk::collision` through
       `ChunkCollision::init(z, build)` (`CollideWithObstaclesPoly` /
       `LineClearCollide`) and drops levels with `take` on vehicle moves; the
@@ -907,6 +991,22 @@ registered):
       over (a static in the original). Devices call `register_device` /
       `unregister_device`; DeviceData preset generation takes the radio
       as its `ChannelLists` (#200).
+
+- [ ] Windows (#208): `StatesEngine::player_input` returns the local
+      player's frame `PlayerInput` (Open/Close/Smash window states read
+      `pressedMovement` / `pressedCancelAction` from it); `toggle_window`
+      must run `IsoWindow.ToggleWindow` (also used by `OpenWindowState`
+      and `CloseWindowState`); `weapon_hit_thumpable` fires Lua
+      `OnWeaponHitThumpable`; `vehicle_window_destroyed` /
+      `vehicle_window_hit` from pz-vehicles (`smashCarWindow`).
+      `window_closing_success` should answer from
+      `pz_characters::character::states::window::closing_window(chr)` of
+      the characters on the window's squares. `SimContext::easy_climbing`
+      = `SandboxOptions.easyClimbing`. Lua `ISOpenCloseWindow` and
+      `ISSmashWindow` call `GameCharacter::open_window`, `close_window`,
+      `smash_window`, `smash_car_window`. Not ported: the debug
+      window-unlock cheat, the `Hit_Door` render effect on a bare-handed
+      barricade hit.
 
 ## World render pass
 - [x] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
@@ -1124,3 +1224,12 @@ registered):
 - [ ] Fold bind_vehicles' item subset into the full item bindings (#86).
 - [ ] Convert remaining bare prints to DebugLog (#66 meta_grid.rs, #67
       meta_zones.rs/zone_save.rs) (#69).
+
+## World map
+- [ ] Map inputs: `pz_lua_api::worldmap::host::install(WorldMapHost {
+      players, meta_grid })` with the live local players (position, or
+      the vehicle's; username) for the map's player dots, and
+      `IsoMetaGrid`'s cell bounds for `setBoundsFromWorld` (#213). The
+      default `meta_grid` (`host::WorldMetaGrid`) already reads the grid
+      installed with `bind_world::set_meta_grid`; pass it when installing
+      players (#223).

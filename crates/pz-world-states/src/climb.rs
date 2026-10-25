@@ -93,7 +93,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoPlayer.isSafeToClimbOver(dir)` from the square `at`.
-    fn is_safe_to_climb_over(&self, at: (i32, i32, i32), dir: IsoDirections) -> bool {
+    pub(crate) fn is_safe_to_climb_over(&self, at: (i32, i32, i32), dir: IsoDirections) -> bool {
         let (dx, dy) = match dir {
             IsoDirections::N => (0, -1),
             IsoDirections::S => (0, 1),
@@ -422,5 +422,17 @@ impl StatesWorldAdapter<'_> {
         if d <= 0 {
             self.engine.destroy_fence(self.cell, r, dir);
         }
+    }
+}
+
+// ---- landings ----
+
+impl StatesWorldAdapter<'_> {
+    /// `sq.getFloor().getSprite().getName()`: the first object whose
+    /// sprite has `solidfloor`.
+    pub fn floor_sprite_name_at(&self, p: (i32, i32, i32)) -> Option<String> {
+        let sq = self.cell.get_grid_square(p.0, p.1, p.2)?;
+        let floor = sq.objects.iter().find(|o| o.sprite.is_some_and(|s| self.sprites.sprites[s].properties.has(self.sprites.tables.flag.solidfloor)))?;
+        self.env().sprite_name(floor).map(str::to_string)
     }
 }

@@ -1945,6 +1945,7 @@ dependencies = [
  "pz-characters",
  "pz-classfile",
  "pz-core",
+ "pz-entity",
  "pz-erosion",
  "pz-fs",
  "pz-gpu",
@@ -2091,6 +2092,7 @@ dependencies = [
  "pz-video",
  "pz-world",
  "pz-worldgen",
+ "pz-worldmap",
  "regex",
 ]
 
@@ -2324,8 +2326,11 @@ dependencies = [
  "pz-fs",
  "pz-inventory",
  "pz-pathfind",
+ "pz-popman",
  "pz-scripts",
+ "pz-vehicles",
  "pz-world",
+ "pz-world-popman",
 ]
 
 [[package]]
@@ -2338,6 +2343,17 @@ dependencies = [
  "pz-kahlua",
  "pz-world",
  "regex",
+]
+
+[[package]]
+name = "pz-worldmap"
+version = "0.1.0"
+dependencies = [
+ "pz-core",
+ "pz-joml",
+ "pz-render",
+ "pz-text",
+ "quick-xml",
 ]
 
 [[package]]

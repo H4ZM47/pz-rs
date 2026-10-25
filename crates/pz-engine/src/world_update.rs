@@ -12,7 +12,7 @@
 
 use crate::iso_world::{IsoWorld, StandardRand};
 use crate::sim::FrameSim;
-use pz_characters::character::state::{NullWorld, StateCx};
+use pz_characters::character::state::StateCx;
 use pz_characters::character::zombie::population::RealZombies;
 use pz_characters::character::SimEvent;
 use pz_characters::survivor::SurvivorDescRef;
@@ -23,6 +23,7 @@ use pz_lua_api::bind_world::with_world;
 use pz_lua_api::LuaManager;
 use pz_world::streamer::{PlayerPos, Serve, StreamEvent};
 use pz_world::{GameRand, IsoCell, IsoMetaGrid, IsoSpriteManager};
+use pz_world::isoregion::IsoRegions;
 use pz_world_popman::{PopulationFrame, WorldPopulation, WorldPopulationHost};
 use pz_world_states::{StatesEngine, StatesRuntime, StatesWorldAdapter, ThumpSettings};
 use std::cell::RefCell;
@@ -36,17 +37,31 @@ pub const STREAMER_JOBS_PER_FRAME: usize = 4;
 /// `IsoPlayer.MAX`.
 const MAX_PLAYERS: usize = 4;
 
-/// The engine's side of the character states: the game's `Rand`. The
-/// rest of `StatesEngine` (other characters by id, LOS, corpses, sounds,
-/// the path host) keeps its defaults: TODO(port): those owners.
+/// The engine's side of the character states: the game's `Rand` and the
+/// squares' moving objects outside the zombie list. The rest of
+/// `StatesEngine` (other characters by id, LOS, corpses, sounds, the path
+/// host) keeps its defaults: TODO(port): those owners.
 struct EngineStates {
     rand: StandardRand,
+    /// The squares the local players stand on (`getCurrentSquare()`),
+    /// taken before the frame lends any of them out. TODO(port): animals.
+    movers: Vec<(i32, i32, i32)>,
 }
 
 impl StatesEngine for EngineStates {
     fn rand(&mut self) -> &mut dyn GameRand {
         &mut self.rand
     }
+    /// `!square.getMovingObjects().isEmpty()` for the players and animals;
+    /// the population host counts the real zombies itself.
+    fn has_moving_objects(&self, sq: (i32, i32, i32)) -> bool {
+        self.movers.contains(&sq)
+    }
+}
+
+/// The local players' current squares, for [`EngineStates::movers`].
+fn player_squares() -> Vec<(i32, i32, i32)> {
+    local_players().iter().flatten().filter_map(|p| p.try_borrow().ok().and_then(|c| c.path.current_square)).collect()
 }
 
 /// The local players, `IsoPlayer.players[0..MAX]`.
@@ -71,9 +86,10 @@ fn with_states<R>(
     runtime: &mut StatesRuntime,
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
+    let movers = player_squares();
     with_world(|w| {
         let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else { return None };
-        let mut engine = EngineStates { rand: StandardRand };
+        let mut engine = EngineStates { rand: StandardRand, movers };
         let mut adapter = StatesWorldAdapter::new(cell, meta, sprites, ThumpSettings::default(), runtime, &mut engine);
         Some(f(&mut adapter))
     })
@@ -90,7 +106,7 @@ fn create_survivor(chars: &RefCell<pz_characters::Characters>) -> pz_scripts::Sc
 /// call: `(population, host, frame)`.
 type PopulationCall<'a, R> = &'a mut dyn FnMut(
     &mut WorldPopulation<i32>,
-    &mut WorldPopulationHost<'_, RealZombies<'_, LuaItem>>,
+    &mut WorldPopulationHost<'_, RealZombies<'_, LuaItem, StatesWorldAdapter<'_>>>,
     &PopulationFrame<'_, i32>,
 ) -> R;
 
@@ -303,31 +319,49 @@ impl IsoWorld {
         }
     }
 
-    /// Runs `f` with the population manager, a `PopulationHost` over the
-    /// cell's real zombies and this frame's inputs. `None` without a
-    /// population, streamer, sprites or cell.
+    /// `ExceptionLogger.logException(ex)` for an exception the original
+    /// catches and logs, kept in [`IsoWorld::errors`].
+    fn log_exception(&mut self, e: String) {
+        pz_core::debug::log_exception(&pz_core::debug::LogThrowable::new(e.clone()), None);
+        if self.errors.len() < 100 {
+            self.errors.push(e);
+        }
+    }
+
+    /// Runs `f` with the population manager, the population host over the
+    /// real world (`pz_world_states::population_host`: the zombies' world
+    /// is the `StatesWorldAdapter`, which is also the sitting checks) and
+    /// this frame's inputs. `None` without a population, streamer, sprites
+    /// or cell.
     pub fn with_population<R>(&mut self, sim: &FrameSim, f: PopulationCall<'_, R>) -> Option<R> {
-        let IsoWorld { population, streamer, sprites, zombies, next_object_id, rand, key_spawn_chance_d100, .. } = self;
-        let (Some(pop), Some(streamer), Some(sprites)) = (population.as_mut(), streamer.as_ref(), sprites.as_ref()) else {
+        let IsoWorld { population, streamer, sprites, zombies, next_object_id, rand, key_spawn_chance_d100, states_runtime, .. } = self;
+        let (Some(pop), Some(streamer), Some(sprites)) = (population.as_mut(), streamer.as_ref(), sprites.as_mut()) else {
             return None;
         };
         let maps = pz_world_popman::player_chunk_maps(streamer);
         let sm = pz_lua_api::bind_registry::shared_script_manager();
         let chars = shared_characters();
         let water_flag = sprites.tables.flag.water;
+        let movers = player_squares();
         with_world(|w| {
-            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_ref()) else { return None };
-            let water = |(x, y, z): (i32, i32, i32)| cell.get_grid_square(x, y, z).is_some_and(|s| s.has(water_flag));
+            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else { return None };
+            // `isWaterSquare()`: read before the adapter takes the cell.
+            let water_squares: std::collections::HashSet<(i32, i32, i32)> = cell
+                .chunks
+                .values()
+                .flat_map(|c| c.squares())
+                .filter(|s| s.has(water_flag))
+                .map(|s| (s.x, s.y, s.z))
+                .collect();
+            let water = |p: (i32, i32, i32)| water_squares.contains(&p);
             let mut create = || create_survivor(&chars);
-            // TODO(port): the zombies' world is `NullWorld` here (path
-            // requests, kills and removals reach no pathfinder or corpse
-            // list): the population host already holds the cell.
-            let mut nw = NullWorld;
+            let mut engine = EngineStates { rand: StandardRand, movers };
+            let mut adapter = StatesWorldAdapter::new(cell, meta, sprites, ThumpSettings::default(), states_runtime, &mut engine);
             let mut ops = RealZombies {
                 sm: &sm,
                 chars: &chars,
                 ctx: sim,
-                world: &mut nw,
+                world: &mut adapter,
                 zombies,
                 next_id: next_object_id,
                 create_survivor: &mut create,
@@ -343,11 +377,8 @@ impl IsoWorld {
                 chunk_maps: &maps,
                 real_zombies: &infos,
             };
-            // TODO(port): `SittingChecks` over the squares' moving objects
-            // and `PolygonalMap2.lineClearCollide`.
-            let checks = pz_world_popman::NoSittingObstacles;
             let r = {
-                let mut host = WorldPopulationHost::new(cell, meta, sprites, &checks, rand, &mut ops);
+                let mut host = pz_world_states::population_host(rand, &mut ops);
                 f(pop, &mut host, &frame)
             };
             // TODO(port): `checkAndSpawnZombieForBuildingKey` for
@@ -358,18 +389,24 @@ impl IsoWorld {
 
     /// `ZombiePopulationManager.instance.updateMain()` (with
     /// `MapCollisionData.updateMain` and the in-line `MCDThread` pass).
-    pub fn update_population(&mut self, sim: &FrameSim) {
+    /// `Err` is the exception it threw, already logged: the original's
+    /// `UpdateStuff` catches it around the population and pathfinder
+    /// block, so the caller skips the rest of that block.
+    pub fn update_population(&mut self, sim: &FrameSim) -> Result<(), String> {
         let r = self.with_population(sim, &mut |pop, host, frame| pop.update(host, frame));
         if let Some(Err(e)) = r {
-            self.log_update_error(format!("ZombiePopulationManager.updateMain: {e}"));
+            self.log_exception(e.clone());
+            return Err(e);
         }
+        Ok(())
     }
 
-    /// `MapCollisionData.instance.startGame()` (`IngameState.enter`).
+    /// `MapCollisionData.instance.startGame()` (`IngameState.enter`, which
+    /// logs what it throws).
     pub fn start_population(&mut self, sim: &FrameSim) {
         let r = self.with_population(sim, &mut |pop, host, frame| pop.start_game(host, frame));
         if let Some(Err(e)) = r {
-            self.log_update_error(format!("MapCollisionData.startGame: {e}"));
+            self.log_exception(e);
         }
     }
 
@@ -401,20 +438,28 @@ impl IsoWorld {
         });
     }
 
-    /// `IsoFireManager.Update()`.
-    pub fn update_fire(&mut self, sim: &FrameSim, settings: pz_world::fire::FireSettings) {
-        let IsoWorld { fire, fire_flags, sprites, rand, .. } = self;
-        let Some(sprites) = sprites.as_mut() else { return };
-        if fire_flags.is_none() {
+    /// `IsoFireManager.Update()`. `Err` is the exception a burn threw
+    /// (logged here: `UpdateStuff` catches and logs it, then goes on).
+    pub fn update_fire(&mut self, sim: &FrameSim, settings: pz_world::fire::FireSettings) -> Result<(), String> {
+        if self.fire_flags.is_none() {
+            let Some(sprites) = self.sprites.as_ref() else { return Ok(()) };
             match pz_world::fire::manager::FireFlags::resolve(&sprites.tables) {
-                Ok(f) => *fire_flags = Some(f),
+                Ok(f) => self.fire_flags = Some(f),
                 Err(e) => {
-                    eprintln!("ERROR: IsoFireManager: {e}");
-                    return;
+                    self.log_update_error(format!("IsoFireManager: {e}"));
+                    return Ok(());
                 }
             }
         }
-        let Some(flags) = *fire_flags else { return };
+        if self.door_tables.is_none() {
+            match pz_classfile::Jar::open(self.game_dir.join("projectzomboid.jar")).map_err(|e| e.to_string()).and_then(|j| pz_world::square_mutation::DoorTables::from_jar(&j)) {
+                Ok(d) => self.door_tables = Some(d),
+                Err(e) => {
+                    self.log_update_error(format!("IsoDoor tables: {e}"));
+                    return Ok(());
+                }
+            }
+        }
         let g = sim.game_time.borrow();
         let ctx = pz_lua_api::bind_climate::LuaClimateContext::new();
         let frame = pz_world::fire::FireFrame {
@@ -423,14 +468,51 @@ impl IsoWorld {
             now_millis: sim.calendar_millis,
         };
         drop(g);
-        with_world(|w| {
-            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else { return };
-            // TODO(port): `FireHooks` (world sounds, lights through
-            // `FireLightLinks`, the burning characters, Lua events).
+        let num_players = pz_lua_api::bind_players::num_players();
+        let IsoWorld { fire, fire_flags, door_tables, sprites, rand, regions, render, pathfind, .. } = self;
+        let (Some(sprites), Some(flags), Some(doors)) = (sprites.as_mut(), *fire_flags, door_tables.as_ref()) else { return Ok(()) };
+        let water = sprites.tables.flag.water;
+        let mut no_regions = None;
+        let regions = match regions.as_mut() {
+            Some(r) => r,
+            None => no_regions.get_or_insert_with(|| IsoRegions::new(0)),
+        };
+        // The pathfinder hears of the changed squares once the fire update
+        // has let go of the sprites (`PathfindNative.squareChanged` builds
+        // its tasks from the cell as it is then).
+        let mut pf = QueuedPathfind::default();
+        let r = with_world(|w| {
+            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else { return Ok(()) };
+            let mut no_hooks = pz_world::square_mutation::NoMutationHooks;
+            let mut no_render = pz_world::square_mutation::NoMutationHooks;
+            let mut inv = render.as_mut().map(|r| r.invalidation(water, num_players));
+            let render: &mut dyn pz_world::square_mutation::RenderSquareHooks = match inv.as_mut() {
+                Some(i) => i,
+                None => &mut no_render,
+            };
+            // TODO(port): the engine's `SquareMutationHooks` (Lua events,
+            // the add/remove-from-world registries) and the `FireHooks`
+            // (sounds, lights through `FireLightLinks`, burning characters,
+            // heat sources, hutches).
+            let mutation = pz_world::fire::manager::FireMutation {
+                regions,
+                doors,
+                world: &mut no_hooks,
+                pathfind: &mut pf,
+                render,
+                num_players,
+            };
             let mut hooks = pz_world::fire::manager::NoFireHooks;
-            let mut fw = pz_world::fire::FireWorld { cell, meta, sprites, flags, settings, hooks: &mut hooks };
-            fire.update(&mut fw, rand, frame);
+            let mut fw = pz_world::fire::FireWorld { cell, meta, sprites: &mut *sprites, mutation, flags, settings, hooks: &mut hooks };
+            fire.update(&mut fw, rand, frame)
         });
+        if let Some(h) = pathfind.as_mut() {
+            pf.apply(h, sprites);
+        }
+        if let Err(e) = &r {
+            self.log_exception(e.clone());
+        }
+        r
     }
 
     /// `PolygonalMap2.instance.updateMain()` (`PathfindNative.updateMain`):
@@ -538,6 +620,47 @@ fn add_chunk_to_pathfinder(
     }
 }
 
+/// `PathfindSquareHooks` that queue the square and chunk changes of a
+/// mutation for the pathfinder, applied after it with
+/// [`QueuedPathfind::apply`].
+#[derive(Default)]
+struct QueuedPathfind {
+    squares: Vec<(i32, i32, i32)>,
+    chunks: Vec<(i32, i32)>,
+}
+
+impl pz_world::square_mutation::PathfindSquareHooks for QueuedPathfind {
+    fn square_changed(&mut self, _cell: &IsoCell, sq: (i32, i32, i32)) {
+        self.squares.push(sq);
+    }
+    // TODO(port): `map_collision_square_changed` (the population's
+    // `MapCollisionData.squareChanged`).
+    fn add_chunk_to_world(&mut self, _cell: &IsoCell, wx: i32, wy: i32) {
+        self.chunks.push((wx, wy));
+    }
+}
+
+impl QueuedPathfind {
+    /// `PathfindNative.squareChanged` / `addChunkToWorld` for what was
+    /// queued, in order.
+    fn apply(self, h: &mut pz_pathfind::host::PathHost, sprites: &IsoSpriteManager) {
+        if self.squares.is_empty() && self.chunks.is_empty() {
+            return;
+        }
+        with_world(|w| {
+            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_ref()) else { return };
+            let bits_hooks = pz_world::ObjectHooks::new(cell, sprites);
+            let mut m = pz_pathfind::mutation_hooks::PathfindMutationHooks { service: h.service_mut(), sprites, meta, bits_hooks: &bits_hooks };
+            for sq in self.squares {
+                m.square_changed(cell, sq);
+            }
+            for (wx, wy) in self.chunks {
+                m.add_chunk_to_world(cell, wx, wy);
+            }
+        });
+    }
+}
+
 /// The characters a finished path request goes to.
 struct Movers<'a> {
     zombies: &'a mut Vec<LuaGameCharacter>,
@@ -624,6 +747,33 @@ impl IsoWorld {
             .and_then(|j| pz_sandbox::save_bin::world_version(&j).ok())
             .unwrap_or(crate::iso_world::WORLD_VERSION);
         let sandbox = crate::iso_world::sandbox(lua).map(|sb| sb.borrow().save_bin(world_version, &self.preset)).unwrap_or_default();
+        // `PlayerDB.saveLocalPlayersForce()`: each local player's row
+        // (`PlayerData.set`: `IsoPlayer.save`).
+        let mut rows: Vec<(usize, pz_lua_api::player_db::PlayerData)> = Vec::new();
+        {
+            let sm = pz_lua_api::bind_registry::shared_script_manager();
+            let chars = shared_characters();
+            let mut errors = Vec::new();
+            if let Some(tables) = self.save_tables.as_ref() {
+                let items: &dyn pz_inventory::env::ItemEnv = match self.items.as_ref() {
+                    Some(i) => i,
+                    None => &pz_world::save::items::AllItems,
+                };
+                let env = pz_characters::character::save::SaveEnv { items, tables };
+                for (n, p) in local_players().iter().enumerate() {
+                    let Some(p) = p else { continue };
+                    let r = pz_lua_api::world_save::local_player_data(&mut p.borrow_mut(), self.player_sql_ids[n], &sm, &chars.borrow(), &sim, &env);
+                    match r {
+                        Ok(d) => rows.push((n, d)),
+                        Err(e) => errors.push(format!("PlayerDB.saveLocalPlayersForce: IsoPlayer.save: {e}")),
+                    }
+                }
+            }
+            for e in errors {
+                self.log_exception(e);
+            }
+        }
+        let mut data: Vec<pz_lua_api::player_db::PlayerData> = rows.iter().map(|(_, d)| d.clone()).collect();
         // The meta grid leaves the shared world while the save holds it.
         let (meta, has_cell) = with_world(|w| (w.meta_grid.take(), w.cell.is_some()));
         let Some(mut meta) = meta else { return };
@@ -657,16 +807,16 @@ impl IsoWorld {
                 local_players: &local_players,
                 on_game_thread: true,
             };
-            // TODO(port): the local players' rows
-            // (`world_save::local_player_data`): `IsoPlayer.load` is not
-            // ported, so the loaded player holds only its position and
-            // saving it would replace the stored player.
             let mut hooks = QuitSaveHooks::default();
-            let r = pz_lua_api::world_save::save_on_quit(&mut g, &mut [], &mut hooks);
+            let r = pz_lua_api::world_save::save_on_quit(&mut g, &mut data, &mut hooks);
             (r, hooks)
         };
         let (report, hooks) = report;
         with_world(|w| w.meta_grid = Some(meta));
+        // A new player keeps the id its first save gave it.
+        for ((n, _), d) in rows.iter().zip(&data) {
+            self.player_sql_ids[*n] = d.sql_id;
+        }
         // `OnSave` (mid-save in the original, before the thumbnail and the
         // other systems' files, none of which read what its handlers do
         // yet) and `OnPostSave`.

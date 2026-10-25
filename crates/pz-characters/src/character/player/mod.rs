@@ -139,6 +139,9 @@ pub struct PlayerControl {
     pub lunge_fall_timer: f32,
     /// `isNpc()`.
     pub npc: bool,
+    /// `climbOverWallSuccess`, `climbOverWallStruggle`.
+    pub climb_over_wall_success: bool,
+    pub climb_over_wall_struggle: bool,
 }
 
 impl Default for PlayerControl {
@@ -204,6 +207,8 @@ impl Default for PlayerControl {
             climate_wind_force_movement: 0.0,
             lunge_fall_timer: 0.0,
             npc: false,
+            climb_over_wall_success: false,
+            climb_over_wall_struggle: false,
         }
     }
 }

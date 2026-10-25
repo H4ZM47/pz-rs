@@ -21,9 +21,11 @@ use std::path::Path;
 use pz_inventory::dictionary::WorldDictionary;
 use pz_inventory::factory::ScriptItems;
 use pz_world::fire::manager::FireFlags;
-use pz_world::fire::{FireFrame, FireHooks, FireSettings, FireWorld, IsoFireManager};
+use pz_world::fire::{FireFrame, FireHooks, FireMutation, FireSettings, FireWorld, IsoFireManager};
+use pz_world::isoregion::IsoRegions;
 use pz_world::save::chunk_file::{chunk_path, load_chunk};
 use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables};
+use pz_world::square_mutation::{DoorTables, NoMutationHooks};
 use pz_world::{GameRand, IsoCell, IsoMetaGrid, IsoSpriteManager, SpriteTables};
 
 /// `java.util.Random`, counting generator steps.
@@ -71,6 +73,7 @@ impl GameRand for JavaRandom {
 
 struct Names<'a>(&'a WorldDictionary);
 
+impl pz_world::fire::sound::FireSoundHooks for Names<'_> {}
 impl FireHooks for Names<'_> {
     fn dict_object_name(&self, id: i8) -> Option<String> {
         self.0.object_name(id).map(str::to_string)
@@ -262,7 +265,11 @@ fn main() {
         }
     }
     let flags = FireFlags::resolve(&sprites.tables).unwrap();
-    let meta = IsoMetaGrid::empty();
+    // The harness's `new IsoMetaGrid()`: no cells, so every square is
+    // valid (`isValidSquare` overflows) and RecalcAllWithNeighbours reaches
+    // all neighbours.
+    let mut meta = IsoMetaGrid::empty();
+    (meta.min_x, meta.min_y, meta.max_x, meta.max_y) = (10000000, 10000000, -10000000, -10000000);
     let seed: i64 = java
         .lines()
         .next()
@@ -284,10 +291,21 @@ fn main() {
     let mut mgr = IsoFireManager::new();
     let mut out = String::new();
     writeln!(out, "{}", java.lines().next().unwrap()).unwrap();
+    let doors = DoorTables::from_jar(&jar).unwrap();
+    let mut regions = IsoRegions::new(13);
+    let (mut mw, mut mp, mut mr) = (NoMutationHooks, NoMutationHooks, NoMutationHooks);
     let mut w = FireWorld {
         cell: &mut cell,
         meta: &meta,
         sprites: &mut sprites,
+        mutation: FireMutation {
+            regions: &mut regions,
+            doors: &doors,
+            world: &mut mw,
+            pathfind: &mut mp,
+            render: &mut mr,
+            num_players: 1,
+        },
         flags,
         settings: settings_fire,
         hooks: &mut hooks,
@@ -298,6 +316,9 @@ fn main() {
         mgr.start_fire4(&mut w, &mut rand, (p[0], p[1], p[2]), false, 100);
     }
     let mut touched = BTreeSet::new();
+    // FireRestOracle's runs also list the sound slots after every update
+    // and the special-object count of every square.
+    let sounds = java.lines().any(|l| l.starts_with("sounds"));
     let frames: Vec<(f32, f32)> = java
         .lines()
         .filter(|l| l.starts_with("step "))
@@ -346,7 +367,20 @@ fn main() {
             thirty_fps: t30,
             now_millis: 0,
         };
-        mgr.update(&mut w, &mut rand, frame);
+        // The harness stops IsoFireManager.Update's loop at an exception,
+        // as the original does, and skips fireSounds.update.
+        if let Err(e) = mgr.update(&mut w, &mut rand, frame) {
+            writeln!(out, "error {e}").unwrap();
+        }
+        if sounds {
+            let mut l = String::from("sounds");
+            for (i, slot) in mgr.sounds.slots.iter().enumerate() {
+                if let Some(r) = slot.fire {
+                    write!(l, " {i}:{},{},{}:{}", r.x, r.y, r.z, slot.playing as u8).unwrap();
+                }
+            }
+            writeln!(out, "{l}").unwrap();
+        }
     }
     let mut squares = BTreeSet::new();
     for &(wx, wy) in &order {
@@ -376,8 +410,13 @@ fn main() {
                             format!("{class}:{n}")
                         })
                         .collect();
+                    let sp = if sounds {
+                        format!(" sp={}", sq.special_objects.len())
+                    } else {
+                        String::new()
+                    };
                     squares.insert(format!(
-                        "square {},{},{} burnt={} objs={}",
+                        "square {},{},{} burnt={}{sp} objs={}",
                         sq.x,
                         sq.y,
                         sq.z,
@@ -392,10 +431,7 @@ fn main() {
         writeln!(out, "{s}").unwrap();
     }
     std::fs::write(oracle.join("rust_fire.txt"), &out).unwrap();
-    let jl: Vec<&str> = java
-        .lines()
-        .filter(|l| !l.starts_with("lamps ") && !l.starts_with("error "))
-        .collect();
+    let jl: Vec<&str> = java.lines().filter(|l| !l.starts_with("lamps ")).collect();
     let rl: Vec<&str> = out.lines().collect();
     let (mut same, mut first) = (0, None);
     for i in 0..jl.len().max(rl.len()) {
