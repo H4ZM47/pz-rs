@@ -282,6 +282,21 @@ pub struct ChunkPhysics {
 }
 
 impl ChunkPhysics {
+    /// `IsoChunk.checkPhysicsLater(z)` for each chunk level square edits
+    /// marked (the world renderer's `PendingRender::physics`, drained once
+    /// per frame): the next `updatePhysicsForLevelIfNeeded` for that level
+    /// rebuilds its shapes. Chunks the cell no longer holds are skipped.
+    pub fn mark_physics_dirty(
+        cell: &mut pz_world::IsoCell,
+        levels: impl IntoIterator<Item = (i32, i32, i32)>,
+    ) {
+        for (wx, wy, z) in levels {
+            if let Some(chunk) = cell.chunks.get_mut(&(wx, wy)) {
+                chunk.check_physics_later(z);
+            }
+        }
+    }
+
     /// `Bullet.updatePhysicsForLevelIfNeeded(wx, wy, level)`: `valid_chunk`
     /// is `metaGrid.isValidChunk(wx, wy)`; the level's flag is taken and the
     /// buffer goes to `to_bullet`.
@@ -313,5 +328,21 @@ impl ChunkPhysics {
             to_bullet.push(b);
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod dirty_tests {
+    use super::ChunkPhysics;
+
+    #[test]
+    fn marked_levels_wait_for_the_next_update() {
+        let mut cell = pz_world::IsoCell::default();
+        cell.chunks.insert((1, 2), pz_world::IsoChunk::new(1, 2));
+        ChunkPhysics::mark_physics_dirty(&mut cell, [(1, 2, 0), (9, 9, 0)]);
+        let chunk = cell.chunks.get_mut(&(1, 2)).unwrap();
+        assert!(chunk.physics_check(0));
+        assert!(chunk.take_physics_check(0));
+        assert!(!chunk.physics_check(0));
     }
 }
