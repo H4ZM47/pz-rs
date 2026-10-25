@@ -12,6 +12,9 @@
 //!   light list ([`WorldLighting::add_lamppost`] and friends).
 //! - [`weather_mask`]: the weather mask's `FxMaskWorld` over the render
 //!   squares and `pz_world::isoregion` world regions.
+//! - [`invalidate`]: the `RenderSquareHooks` square mutations are given
+//!   (chunk texture, lighting, water and building invalidation) and the
+//!   per-frame rebuild of the squares they changed.
 //! - [`hooks`] and [`settings`]: inputs owned by other systems (thumpables,
 //!   barricades, power, torches; `RenderSettings`/`ClimateManager`).
 //!
@@ -22,10 +25,14 @@
 //! `IsoCell::recalc_chunk_squares`, [`RenderWorld::build_chunk`],
 //! [`WorldLighting::sync_chunk`]; then [`WorldLighting::frame`] for each
 //! player, [`WorldLighting::apply`] into the [`RenderWorld`], and invalidate
-//! the chunk textures of the returned dirty levels.
+//! the chunk textures of the returned dirty levels. Square edits after
+//! load go through [`RenderInvalidation`]; drain its [`PendingRender`]
+//! before the lighting frames and run [`check_changed_buildings`] after
+//! them.
 
 pub mod fire_lights;
 pub mod hooks;
+pub mod invalidate;
 pub mod lighting;
 pub mod render_world;
 pub mod settings;
@@ -34,6 +41,7 @@ pub mod weather_mask;
 
 pub use fire_lights::LightLink;
 pub use hooks::{NoWorldHooks, WorldHooks};
+pub use invalidate::{check_changed_buildings, PendingRender, RenderInvalidation};
 pub use lighting::{
     default_player, grid_square, CellLight, LightingFrame, LightingSquares, PlayerFrameInput,
     WorldLighting,
