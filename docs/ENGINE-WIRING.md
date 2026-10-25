@@ -80,7 +80,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 
 - [ ] Text entry: `bind_uitextbox2::update_keyboard(&mut mgr.thread)` once
       per frame (`Core.DoFrameReady` → `Core.updateKeyboard`), after the
-      window's key/char events are queued (#UITEXTBOX2).
+      window's key/char events are queued (#119).
 
 ## World (`GameLoadingState` / `IngameState`)
 World load, in the original's order (`GameLoadingState.enter` loads the
