@@ -49,6 +49,7 @@ pub mod metabolics;
 pub mod moodles;
 pub mod nutrition;
 pub mod path_mover;
+pub mod player;
 pub mod save;
 pub mod state;
 pub mod states;
