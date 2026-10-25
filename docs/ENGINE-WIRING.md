@@ -22,7 +22,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Character simulation context: `bind_character_sim::install_sim_context`
       with the engine's `SimContext` (lore, climate, `Rand`, events) (#41).
 - [ ] Game time and climate: `bind_climate::install_game_time` and
-      `set_climate_settings` from the sandbox options (#49).
+      `set_climate_settings` from the sandbox options (#49);
+      `bind_climate::install_event_sink` routing to
+      `LuaEventManager.triggerEvent` (climate, `OnInitSeasons` and clock
+      events reach Lua only through it).
+- [ ] Zombie population: a `pz_popman::native::Native` per world (seeded,
+      wall clock) for `WorldPopulation::init`; the outfit names are
+      `PersistentOutfits.getOutfitNames()` (not ported yet: the outfit ids in
+      `zpop` records reach `RealZombies` unmapped, i.e. without
+      `PersistentOutfits.getOutfit`'s variant re-roll).
 - [ ] Meta population: `install_population` with
       `shared_population().init(fs)` (#67); popman's
       `bind_popman::install_population` (#73).
@@ -52,10 +60,49 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `postupdate_zombie` / `moving_postupdate` (with
       `slide_head_away_from_walls`) (#41/#74/#75).
 - [ ] `ZombiePopulationManager::update_main` with PopulationHost and
-      `ZombieOps` (`RealZombies`) (#73/#77).
+      `ZombieOps` (`RealZombies`) (#73/#77): `GameWindow.logic` calls
+      `WorldPopulation::update_game_state(no_save, paused)`; `IngameState.update`
+      (after `VirtualZombieManager.update`) calls `WorldPopulation::update(&mut
+      WorldPopulationHost::from_state(.., &mut RealZombies { .. }),
+      &PopulationFrame { multiplier, world_age_hours,
+      chunk_maps: &player_chunk_maps(&streamer), real_zombies:
+      &real_zombies.infos() })`; it also runs the in-line worker
+      (`MCDThread`) pass when due.
 - [ ] `WorldSoundManager::update` once per frame (#75).
 
 ## World (`GameLoadingState` / `IngameState`)
+World load, in the original's order (`GameLoadingState.enter` loads the
+server Lua first, so `ClimateMain.lua`'s `OnClimateManagerInit` handler is
+registered):
+- [ ] `GameTime.setInstance(new GameTime())`: `bind_climate::install_game_time`.
+- [ ] `ClimateManager.setInstance(new ClimateManager())`:
+      `bind_climate::new_climate_manager(thread)` (fires
+      `OnClimateManagerInit`; `ClimateMain.lua` sets the season colours, without
+      which the global light stays black).
+- [ ] `IsoWorld.init`: `GameTime.init` then `GameTime.load`
+      (`game_time_save::load_map_t_file`; the climate part keeps the colours);
+      `ErosionGlobals.Boot` → `bind_climate::start_erosion_season(thread,
+      &SeasonConfig, sandbox Temperature)` (`OnInitSeasons`); after
+      `metaGrid.CreateStep2`, `bind_climate::init_climate_manager(thread,
+      Some((meta.min_x, meta.min_y, meta.max_x, meta.max_y)))`.
+- [ ] `IsoWorld.init`, after `OnLoadedMapZones` and before the cell load:
+      `pz_world_popman::WorldPopulation::init(native, &meta,
+      &save_game_state(save_dir) + sandbox/mode fields, &ZombieConfig,
+      outfit names)` (`MapCollisionData.init` then
+      `ZombiePopulationManager.init`; reads `zpop_ids.bin`/`zpop_virtual.bin`,
+      each `zpop_X_Y.bin` when a loaded area first touches its cell).
+- [ ] Every chunk the streamer hands off (`StreamEvent::HandedOff`,
+      `doLoadGridsquare`): `WorldPopulation::add_chunk_to_world(&cell, &meta,
+      &sprites, wx, wy)`; every `StreamEvent::Unloaded`:
+      `WorldPopulation::remove_chunk_from_world(&mut host, wx, wy,
+      &real_zombies.chunk_zombies(wx, wy, in_room))` (needs the chunk's rooms:
+      decide `in_room` before the chunk leaves the cell).
+- [ ] After the cell load: `ClimateManager.postCellLoadSetSnow()`.
+- [ ] `IngameState.enter`, world loaded: `WorldPopulation::start_game(&mut
+      host, &frame)` (`MapCollisionData.startGame`).
+- [ ] Quit: `WorldPopulation::save(&reals)` with the world save, then
+      `WorldPopulation::stop()`.
+
 - [ ] `ChunkStreamer::new(players, calc_chunk_width(w, h))`, `load_world`,
       per-frame `update(..)`, `take_events()`, `save_now()` on quit (#64);
       wrap its ChunkLoadHook in `ClearSoundsOnUnload` (#71) and use
@@ -63,7 +110,8 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] CGlobalObjects `initSystems` and update pumps (#31).
 - [ ] Popman: `WorldPopulationHost::from_state`, `update_main` with
       `player_chunk_maps(&streamer)`; supply SittingChecks,
-      `has_moving_objects`, `line_clear_collide` (#77, #60).
+      `has_moving_objects`, `line_clear_collide` (#77, #60). Driven through
+      `WorldPopulation` (see the world-load list above).
 - [ ] World sound: `WorldSoundAdapter::from_state`; engine `SoundEffects`
       (OnWorldSound, fish noise, popman) (#71).
 - [ ] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
