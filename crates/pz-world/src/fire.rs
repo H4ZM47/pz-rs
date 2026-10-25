@@ -14,12 +14,16 @@
 
 pub mod burn;
 pub mod character;
+pub mod fighting;
 pub mod hearth;
 pub mod manager;
+pub mod sound;
 
 use crate::java::GameRand;
 
-pub use manager::{FireFrame, FireHooks, FireRef, FireSettings, FireWorld, IsoFireManager};
+pub use manager::{
+    FireFrame, FireHooks, FireMutation, FireRef, FireSettings, FireWorld, IsoFireManager,
+};
 
 /// `IsoFire.LIGHT_RADIUS_*`.
 pub const LIGHT_RADIUS_MINIMUM: i32 = 1;
@@ -43,6 +47,9 @@ pub const SMOKE_ANIM_DELAY: f32 = 0.5;
 /// `IsoFireManager.FIRE_TINT_MOD` / `smokeTintMod`.
 pub const FIRE_TINT_MOD: [f32; 3] = [1.0, 1.0, 1.0];
 pub const SMOKE_TINT_MOD: [f32; 3] = [0.5, 0.5, 0.5];
+/// `IsoFire`'s heat source temperature (`new IsoHeatSource(x, y, z,
+/// lightRadius, 35)`).
+pub const HEAT_SOURCE_TEMPERATURE: i32 = 35;
 /// `IsoFireManager.maxFireObjects`.
 pub const MAX_FIRE_OBJECTS: usize = 75;
 
@@ -308,6 +315,10 @@ pub struct IsoFire {
     /// `savedUpdateTime`: the calendar time of the save it was loaded
     /// from, until the first update catches up; `-1` otherwise.
     pub saved_update_time: i64,
+    /// `heatSource`'s radius: a permanent fire's `IsoHeatSource` (at
+    /// [`HEAT_SOURCE_TEMPERATURE`]), added by its first update and
+    /// resized to `lightRadius` by the later ones.
+    pub heat_source: Option<i32>,
 }
 
 impl IsoFire {
@@ -329,6 +340,7 @@ impl IsoFire {
             anims: Vec::new(),
             accum: 0.0,
             saved_update_time: -1,
+            heat_source: None,
         }
     }
 
@@ -576,6 +588,8 @@ impl IsoFire {
             l.b = LIGHT_RGB[2] * alpha;
         }
         if self.perm {
+            // addHeatSource on the first update, setRadius after.
+            self.heat_source = Some(self.light_radius);
             return;
         }
         // updateSinceLastLoaded.
