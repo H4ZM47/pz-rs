@@ -737,3 +737,250 @@ fn corpse_and_floor_items() {
         assert!(non_grass > 40, "corpse at ({cx}, {cy}): {non_grass} non-grass samples");
     }
 }
+
+/// Fluids by name only (the test's fluid has its own colour).
+struct NoFluids;
+
+impl pz_entity::EntityContext for NoFluids {
+    fn attribute_kind(&self, _id: i16) -> Option<pz_entity::AttributeKind> {
+        None
+    }
+}
+
+/// `ModelOutlines` and the item smart textures in one scene: the player
+/// holding a bloody hunting knife (its `EquippedTextureCreator` texture),
+/// a zombie behind it outlined red (the bad-highlight colour; the player
+/// masks the ring where it overlaps) and one in front outlined cyan at
+/// 0.65 (the melee debug outline), and a green mug with red liquid on the
+/// floor (the `_Fluid` model through the `WorldItemAtlas` with its
+/// `FLUIDTINT` overlay). A last frame outlines the player itself in green.
+/// Frames go to `PZ_OUTLINE_FRAME_OUT` (default: the system temp
+/// directory), with the knife's and mug's combined textures.
+#[test]
+fn outlines_bloody_knife_and_mug_with_liquid() {
+    use pz_character_model::item_texture::render_equipped_textures_with;
+    use pz_character_model::items::HeldItem;
+    use pz_character_model::world_item::{atlas_smart_texture, item_params_with_fluid};
+    use pz_entity::{FluidContainer, FluidInstance, FluidRef};
+    use pz_inventory::{InventoryItem, ItemClass, ItemKind, ItemTemplate};
+    use pz_iso_render::item_atlas::{item_world_draw, max_zoom_is_one, ItemPlacement, WorldItemAtlas};
+    use pz_iso_render::outlines::OutlineHighlight;
+
+    let Some(game) = game_dir() else { return };
+    let (w, h) = (640u32, 480u32);
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(w, h) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let out_dir = std::env::var_os("PZ_OUTLINE_FRAME_OUT").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let cache = std::env::temp_dir().join("pz-character-model-frame-test");
+    let mut fs = pz_fs::GameFs::new(&game);
+    fs.set_cache_dir(&cache);
+    let media = MediaIndex::scan(&game).unwrap();
+
+    let (mesh_path, mesh_ty) = resolve_model_file(&media, "Skinned/MaleBody", AssetKind::Mesh).unwrap();
+    let body = load_mesh(&std::fs::read(mesh_path).unwrap(), mesh_ty.import_format().unwrap(), &MeshParams::default()).unwrap();
+    let mut sd = body.skeleton.clone().unwrap();
+    for anim in ["Bob/Bob_Idle", "Zombie/Zombie_Idle"] {
+        let (p, ty) = resolve_model_file(&media, anim, AssetKind::Animation).unwrap();
+        let clips = load_animation(&std::fs::read(p).unwrap(), ty.import_format().unwrap(), Some(&sd)).unwrap();
+        sd.animation_clips.extend(clips);
+    }
+    let sd = Rc::new(sd);
+    let posed = |clip: &str, dir: (f32, f32), t: f32| {
+        let mut p = AnimationPlayer::new(sd.clone());
+        p.set_target_and_current_direction(dir.0, dir.1);
+        let tr = p.play(clip, true, false, -1.0).unwrap();
+        p.track_mut(tr).unwrap().set_blend_weight(1.0);
+        p.update(t, None);
+        p
+    };
+    let player = posed("Bob_Idle", (0.3, 1.0), 0.5);
+    let zombie_a = posed("Zombie_Idle", (0.6, 0.8), 0.3);
+    let zombie_b = posed("Zombie_Idle", (-0.7, -0.7), 0.8);
+
+    // Scripts: the knife and the mug (with its fluid variant).
+    let sm = pz_scripts::ScriptManager::new();
+    let weapons_txt = game.join("media/scripts/generated/models_weapons.txt");
+    let items_txt = game.join("media/scripts/generated/models_items.txt");
+    let scripts: HashMap<String, ModelScriptRef> = [
+        ("HuntingKnife".to_string(), model_script(&sm, &weapons_txt, "HuntingKnife")),
+        ("Mug".to_string(), model_script(&sm, &items_txt, "Mug")),
+        ("Mug_Fluid".to_string(), model_script(&sm, &items_txt, "Mug_Fluid")),
+    ]
+    .into();
+    let mut knife_t = ItemTemplate::new(ItemClass::Weapon, "Base", "HuntingKnife");
+    knife_t.weapon_sprite = Some("HuntingKnife".into());
+    let mut knife = InventoryItem::create(Rc::new(knife_t), 0);
+    if let ItemKind::Weapon(wd) = &mut knife.kind {
+        wd.blood_level = 0.8;
+    }
+    let mut mug_t = ItemTemplate::new(ItemClass::Normal, "Base", "Mugl");
+    mug_t.world_static_model = Some("Mug".into());
+    let mug = InventoryItem::create(Rc::new(mug_t), 0);
+    let mut fluid = FluidContainer::default();
+    let mut fi = FluidInstance::new(FluidRef::Modded("TestJuice".into()), 0.8);
+    fi.custom_color = Some([0.85, 0.12, 0.1]);
+    fluid.fluids.push(fi);
+    fluid.recalculate_caches(true);
+
+    let mut pop = Population::default();
+    pop.init(&mut fs);
+    let groups = BodyLocationGroup::new("Human").unwrap();
+    let mut tm = TextureManager::new();
+    let model_flags = flags::COMPRESS | flags::LIMIT_TEXTURE_SIZE_1;
+    let mut smart: Vec<Option<Texture>> = Vec::new();
+    let exists = |n: &str| game.join(n).is_file();
+    let mut build = |skin: &str, hair: &str, clothes: &[&str], anim: &AnimationPlayer, equipped: &EquippedModels, tm: &mut TextureManager, gpu: &mut pz_gpu::Gpu| {
+        let mut hv = HumanVisual::new(BLOOD_PARTS);
+        hv.skin_texture_name = Some(skin.into());
+        hv.hair_model = Some(hair.into());
+        hv.hair_color = Some([0.35, 0.22, 0.12]);
+        let visuals: Vec<ResolvedItemVisual> = clothes.iter().map(|n| clothing(&game, n)).collect();
+        let human = HumanModel::resolve(&mut hv, false, false, false, &pop.styles(&[], 0.0), &[]);
+        let bone_index = |n: &str| anim.skinning_bone_index(n, -1);
+        let mut slot = ModelSlot::build(&CharacterModelInput {
+            human: &human,
+            item_visuals: &visuals,
+            equipped,
+            body_locations: &groups,
+            hair_styles: pop.hair_styles.as_ref(),
+            beard_styles: pop.beard_styles.as_ref(),
+            scripts: &scripts,
+            body_model_script: None,
+            bone_index: &bone_index,
+        });
+        let jobs = create_textures(&mut slot, &TextureCreatorInput { human: &human, item_visuals: &visuals, body_locations: &groups, decals: &|_| None, simple_clothing_textures: false });
+        let base = smart.len();
+        let mut file = |tm: &mut TextureManager, p: &str| tm.shared_texture_flags(&fs, p, model_flags);
+        smart.extend(run_jobs(&jobs.jobs, &mut file, gpu, tm));
+        for inst in &mut slot.instances {
+            if let TextureSource::Smart(j) = &mut inst.tex {
+                *j += base;
+            }
+        }
+        // ModelInstanceTextureInitializer: the held items' textures.
+        render_equipped_textures_with(&mut slot, &exists, &mut file, gpu, tm);
+        slot
+    };
+    let equipped = EquippedModels { primary: Some(HeldItem::new(&knife)), ..Default::default() };
+    let player_slot = build("MaleBody01a", "CrewCut", &["Tshirt_DefaultTEXTURE", "Shoes_Black", "Trousers_Denim"], &player, &equipped, &mut tm, &mut gpu);
+    let zombie_a_slot = build("M_ZedBody01_level1", "Bob", &["Tshirt_DefaultTEXTURE", "Trousers_Denim"], &zombie_a, &EquippedModels::default(), &mut tm, &mut gpu);
+    let zombie_b_slot = build("M_ZedBody01_level1", "Bob", &["Shoes_Black", "Trousers_Denim"], &zombie_b, &EquippedModels::default(), &mut tm, &mut gpu);
+    let knife_inst = player_slot.instances.iter().find(|i| i.texture_init.is_some()).expect("knife instance");
+    let TextureSource::Combined(knife_tex) = &knife_inst.tex else { panic!("knife texture {:?}", knife_inst.tex) };
+    let px = gpu.read_combined(knife_tex).expect("knife texture");
+    write_png(&out_dir.join("outline_tex_knife.png"), knife_tex.width, knife_tex.height, &px);
+
+    tm.load_texture_pack(&fs, "Tiles2x.floor", 0, None);
+    tm.set_texture_pack_lookup(&[]);
+    let grass = tm.try_get_texture(&fs, "blends_natural_01_16").expect("grass tile");
+    let depth_maps = pz_render::tile_depth::TileDepthTextureManager::init(&mut fs, &mut tm);
+    let floor = Rc::new(SpriteInfo { texture: Some(grass), flags: SpriteFlags { solidfloor: true, ..Default::default() }, tint_mod: [1.0; 3], ..Default::default() });
+    let squares: Vec<RenderSquare> = (8..14)
+        .flat_map(|y| (8..14).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let mut sq = RenderSquare::new(x, y, 0);
+            sq.objects.push(RenderObject::new(ObjectKind::Plain, Some(floor.clone())));
+            sq
+        })
+        .collect();
+    let mut level = [None; 64];
+    for sq in &squares {
+        level[((sq.x - 8) + (sq.y - 8) * 8) as usize] = Some(sq);
+    }
+    let shadow_tex = tm.shared_texture(&fs, "media/textures/NewShadow.png");
+
+    let loader = Loader { tm: RefCell::new(tm), files: RefCell::new(HashMap::new()), smart: RefCell::new(smart) };
+    let res = MediaModelResources::new(&media, &loader);
+    let mut item_atlas = WorldItemAtlas::new(1 << 41);
+    let mut red = OutlineHighlight::default();
+    red.set(0, true);
+    red.set_col(0, 1.0, 0.0, 0.0, 1.0);
+    let mut cyan = OutlineHighlight::default();
+    cyan.set(0, true);
+    cyan.set_col(0, 0.0, 1.0, 1.0, 0.65);
+    let mut green = OutlineHighlight::default();
+    green.set(0, true);
+    green.set_col(0, 0.2, 1.0, 0.2, 1.0);
+
+    let (px, py, pz) = (10.5f32, 10.5f32, 0.0f32);
+    let (ax, ay) = (10.0f32, 9.7f32);
+    let (bx, by) = (11.4f32, 11.2f32);
+    let (mx, my) = (9.8f32, 11.4f32);
+    for (zoom, name, outline_player) in [(1.0f32, "outline_frame_zoom1.png", false), (0.5, "outline_frame_zoom05.png", false), (1.0, "outline_frame_player.png", true)] {
+        let cam = Camera::player(px, py, pz, w as i32, h as i32, zoom);
+        let mc = ModelCamera::new(&cam, w as f32 * zoom, h as f32 * zoom);
+        let amb = 0.8f32;
+        let object = |slot: &ModelSlot, anim: &AnimationPlayer, x: f32, y: f32| {
+            let mut lights = [EffectLight::default(); 5];
+            let fill = amb * 1.7 / 4.0;
+            lights[3].set(x - 2.0, y - 2.0, pz + 1.0, fill, fill, fill, 5000);
+            lights[4].set(x + 2.0, y + 2.0, pz + 1.0, fill, fill, fill, 5000);
+            let frame = CharacterFrame { player: anim, x, y, z: pz, alpha: 1.0, effect_lights: &lights, ambient: [amb; 3], final_scale: 1.0 };
+            let shadow = character_shadow(
+                &ShadowInput { player: Some(anim), anim_angle: anim.angle(), ragdoll_direction: None, height_above_floor: 0.0, alpha: 1.0, skeleton: false, animal_size: None, light: [1.0; 3], slope: None, hidden: false },
+                [x, y, pz],
+                None,
+            );
+            render_character_object(slot, &frame, shadow, &mc, &res)
+        };
+        let mut me = object(&player_slot, &player, px, py);
+        me.local_player = true;
+        if outline_player {
+            me.outline = green.character_request(0, px, py, false, cam.x, cam.y);
+        }
+        let mut za = object(&zombie_a_slot, &zombie_a, ax, ay);
+        za.outline = red.character_request(0, ax, ay, false, cam.x, cam.y);
+        assert!(za.outline.unwrap().behind_player);
+        let mut zb = object(&zombie_b_slot, &zombie_b, bx, by);
+        zb.outline = cyan.character_request(0, bx, by, false, cam.x, cam.y);
+        assert!(!zb.outline.unwrap().behind_player);
+
+        // The mug: its atlas job with the smart texture, then the draw.
+        let mut pre = Vec::new();
+        let p = item_params_with_fluid(&mug, Some((&fluid, &NoFluids)), &scripts, &res, max_zoom_is_one(true, zoom)).expect("mug model");
+        assert!(p.fluid_filled && p.fluid_texture_mask.is_some(), "{:?} {:?}", p.model.name, p.fluid_texture_mask);
+        let key = item_atlas.item_texture(&p);
+        let mut used = Vec::new();
+        {
+            let mut tmb = loader.tm.borrow_mut();
+            let mut file = |tm: &mut TextureManager, p: &str| tm.shared_texture_flags(&fs, p, model_flags);
+            item_atlas.render_with(&mut pre, &mut |p| {
+                let t = atlas_smart_texture(p, &exists, &mut file, &mut gpu, &mut tmb);
+                used.extend(t.clone());
+                t
+            });
+        }
+        if let Some(t) = used.first() {
+            let px = gpu.read_combined(t).expect("mug texture");
+            write_png(&out_dir.join("outline_tex_mug.png"), t.width, t.height, &px);
+        }
+        let items = item_world_draw(&item_atlas.textures[&key], &cam, &ItemPlacement { x: mx, y: my, z: 0.0, carpet: false, rgb: [amb; 3], alpha: 1.0 });
+
+        let objects = FrameObjects { players: vec![me], items, moving: vec![za, zb], ..Default::default() };
+        let r = ChunkRenderer::new(cam, &depth_maps, (w, h));
+        let chunks = [ChunkLevels { texture: ChunkTexture::new(1, 1, 0, 0, 0), levels: vec![(0, level)], dirty: true }];
+        let cmds = world_frame_with_objects(&r, FrameSize { width: w, height: h }, &chunks, &objects, shadow_tex.clone(), pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 }, pre);
+        assert!(cmds.iter().any(|c| matches!(c, pz_render::DrawCmd::OutlineBlit)));
+        let list = pz_render::DrawList { cmds };
+        gpu.render_frame(&[(pz_gpu::FrameParams::ui(w, h), &list)], &mut loader.tm.borrow_mut());
+        for t in used {
+            pz_render::combiner::Combiner::release(&mut gpu, t);
+        }
+        let pixels = gpu.read_pixels();
+        let path = out_dir.join(name);
+        write_png(&path, w, h, &pixels);
+        eprintln!("wrote {}", path.display());
+        // Pure red and cyan outline pixels around the zombies.
+        let count = |f: &dyn Fn([i32; 3]) -> bool| (0..w * h).filter(|i| f(std::array::from_fn(|k| pixels[(*i * 4) as usize + k] as i32))).count();
+        let reds = count(&|p| p[0] > 200 && p[1] < 60 && p[2] < 60);
+        let cyans = count(&|p| p[0] < 80 && p[1] > 150 && p[2] > 150);
+        assert!(reds > 50, "{reds} red outline pixels");
+        assert!(cyans > 50, "{cyans} cyan outline pixels");
+        if outline_player {
+            let greens = count(&|p| p[0] < 120 && p[1] > 200 && p[2] < 120);
+            assert!(greens > 50, "{greens} green outline pixels");
+        }
+    }
+}

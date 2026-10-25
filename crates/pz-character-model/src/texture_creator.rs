@@ -106,9 +106,9 @@ pub struct SmartTextureJob {
 }
 
 /// `SmartTexture` while it is being built.
-#[derive(Default)]
-struct SmartTexture {
-    commands: Vec<CombinerCommand>,
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SmartTexture {
+    pub(crate) commands: Vec<CombinerCommand>,
     category: HashMap<i32, Vec<usize>>,
 }
 
@@ -126,7 +126,7 @@ impl SmartTexture {
         self.category.entry(cat).or_default().push(n);
     }
 
-    fn first_from_category(&mut self, cat: i32) -> Option<&mut CombinerCommand> {
+    pub(crate) fn first_from_category(&mut self, cat: i32) -> Option<&mut CombinerCommand> {
         let i = *self.category.get(&cat)?.first()?;
         self.commands.get_mut(i)
     }
@@ -150,7 +150,7 @@ impl SmartTexture {
     }
 
     /// `add(tex)`.
-    fn add(&mut self, t: TexRef) {
+    pub(crate) fn add(&mut self, t: TexRef) {
         self.cmd(
             t,
             SmartShader::Blit,
@@ -165,7 +165,7 @@ impl SmartTexture {
         );
     }
 
-    fn add_tint(&mut self, t: TexRef, cat: i32, c: Rgb) {
+    pub(crate) fn add_tint(&mut self, t: TexRef, cat: i32, c: Rgb) {
         self.add_to_cat(cat);
         self.cmd(
             t,
@@ -213,7 +213,7 @@ impl SmartTexture {
     }
 
     /// `addOverlay(tex, mask, intensity, category)` (blood).
-    fn add_overlay(&mut self, t: &str, mask: &str, intensity: f32, cat: i32) {
+    pub(crate) fn add_overlay(&mut self, t: &str, mask: &str, intensity: f32, cat: i32) {
         self.add_to_cat(cat);
         self.cmd(
             tex(t),
@@ -355,7 +355,7 @@ impl SmartTexture {
     }
 
     /// `addTintedOverlay`.
-    fn add_tinted_overlay(&mut self, t: &str, mask: &str, intensity: f32, cat: i32, c: Rgb) {
+    pub(crate) fn add_tinted_overlay(&mut self, t: &str, mask: &str, intensity: f32, cat: i32, c: Rgb) {
         self.add_overlay(t, mask, intensity, cat);
         self.add_tint(tex(t), cat, c);
     }
@@ -832,36 +832,5 @@ pub fn equipped_texture_job(
     init: &crate::items::ItemTextureInit,
     texture_exists: &dyn Fn(&str) -> bool,
 ) -> Option<SmartTextureJob> {
-    const FULL_ALPHA: &str = "media/textures/FullAlpha.png";
-    if init.tint == WHITE && init.blood_level <= 0.0 {
-        return None;
-    }
-    let tint_mask = Some(equipped_texture_name(texture, "TINT")).filter(|m| texture_exists(m));
-    let fluid_mask = Some(equipped_texture_name(texture, "FLUIDTINT"))
-        .filter(|m| init.fluid_level > 0.0 && texture_exists(m));
-    let mut st = SmartTexture::default();
-    st.add(tex(texture));
-    if init.tint != WHITE {
-        match &tint_mask {
-            Some(m) => st.add_tinted_overlay(m, FULL_ALPHA, 1.0, 300, init.tint),
-            None => st.add_tint(tex(texture), 300, init.tint),
-        }
-    }
-    if init.blood_level > 0.0 {
-        st.add_overlay(
-            "media/textures/BloodTextures/BloodOverlayWeapon.png",
-            "media/textures/BloodTextures/BloodOverlayWeaponMask.png",
-            init.blood_level.clamp(0.0, 1.0),
-            301,
-        );
-    }
-    if let Some(m) = &fluid_mask {
-        let level = init.fluid_level.clamp(0.0, 1.0);
-        if level > 0.0 {
-            st.add_tinted_overlay(m, FULL_ALPHA, level, 302, init.fluid_tint.unwrap_or(WHITE));
-        }
-    }
-    Some(SmartTextureJob {
-        commands: st.commands,
-    })
+    crate::item_texture::equipped_job(texture, init, false, texture_exists)
 }

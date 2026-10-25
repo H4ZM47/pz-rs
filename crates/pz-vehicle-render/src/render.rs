@@ -323,5 +323,6 @@ pub fn render_vehicle_object(
     ObjectRender {
         shadow: vehicle_shadow(v, set, frame),
         draws: vehicle_draws(v, set, frame, cam),
+        ..Default::default()
     }
 }

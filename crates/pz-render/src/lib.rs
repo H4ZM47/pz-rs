@@ -272,6 +272,33 @@ pub enum DrawCmd {
     Model(Box<model::ModelDraw>),
     /// A vehicle mesh (`Model.DrawVehicle` with a vehicle shader).
     VehicleModel(Box<model::VehicleDraw>),
+    /// `ModelOutlines.fboA.startDrawing(clear, true)` (after
+    /// `checkFBOs`): following draws go to the outline mask, a
+    /// `width` x `height` texture (`Core.width`/`height`, stored at the
+    /// next powers of two) created if needed; `clear` clears it to
+    /// transparent. The projection and viewport stay as they are.
+    OutlineBegin { width: u32, height: u32, clear: bool },
+    /// `fboA.endDrawing()`: back to the target bound before.
+    OutlineEnd,
+    /// A mesh drawn into the outline mask with `aim_outline_solid`
+    /// (`aim_outline_solid_static` for static meshes): the draw's
+    /// matrices, palette and `FinalScale` (static meshes take no
+    /// `FinalScale`, neither takes `targetDepth`), `u_color` =
+    /// (`color`, 1) where the texture's alpha is at least 0.5 and
+    /// transparent elsewhere. No depth writes (`depthMask` false).
+    OutlineModel { draw: Box<model::ModelDraw>, color: [f32; 3] },
+    /// `ModelOutlines.endFrame`'s thickening: the mask's alpha blurred
+    /// horizontally (`aim_outline_h`) into the second texture and that
+    /// vertically (`aim_outline_v`) into the third, each cleared first and
+    /// drawn with (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) over the viewport
+    /// `0, 0, width, height`. `u_resolution` = `resolution` (the mask's
+    /// unpadded size), `u_radius` = `radius`, `u_color` = `color`.
+    OutlineThicken { color: [f32; 4], radius: f32, resolution: [f32; 2] },
+    /// `endFrame`'s blit (`aim_outline_blit`): the thickened outline drawn
+    /// over the current target's viewport with its alpha times one minus
+    /// the mask's alpha, blended (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), no
+    /// depth test.
+    OutlineBlit,
     /// An `IsoWater`/`IsoPuddles` vertex-buffer draw (`ModelManager.RenderWater`,
     /// `RenderPuddles`, `IsoPuddles.RenderToChunkTexture`) with the water or
     /// puddles shader.

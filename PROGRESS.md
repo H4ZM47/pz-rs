@@ -1222,6 +1222,88 @@ Status of the Rust port. Update this file with every merged change.
   square's result lights on the vehicle model, sloped-surface shadow
   height, `renderToTexture`.
 
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
+
+- Appearance tables and outfit draws (`pz-characters::population`):
+  `ClothingDecals`, `HairStyles`, `BeardStyles`, `VoiceStyles` (JAXB
+  binding rules, mod overrides), `PopTemplateManager` skin lists,
+  `HairOutfitDefinitions`, `OutfitRNG`/`LocationRNG` (`pz-core`),
+  `OutfitManager`/`Outfit`/`ClothingItemReference` with `Randomize`, the
+  random outfit picks and `dressInOutfit`'s clothing choices,
+  `DefaultClothing`, and a `HumanStyles` for `HumanVisual`. Lua bindings
+  (`bind_appearance`). Loaded lists and seeded draws match the original on
+  the installed media (every outfit randomized and dressed on three seeds)
+  and on invented edge-case XML (checked locally).
+
+- Vehicles in the iso world (`pz-vehicle-render`, vehicle shaders in
+  `pz-gpu`): `VehicleModelInstance` (skin textures; `updateLights`,
+  `doDamageOverlay`, `doBloodOverlay` enable matrices),
+  `ModelManager.addVehicle`'s body and part models (legacy `.txt` wheels
+  included) with `playPartAnim`/`updateAnimationPlayer` door and hood
+  poses, `BaseVehicle.updateTransform` (wheel suspension, steering and
+  spin; attached part models), `ModelSlotRenderData`'s vehicle branch and
+  `Model.DrawVehicle` as `DrawCmd::VehicleModel` (WGSL ports of `vehicle`,
+  `vehicle_multiuv`, `vehicle_norandom_multiuv` with and without
+  `_noreflect`, and `vehiclewheel`), `renderShadow` into
+  `FBORenderShadows`, vehicles in `renderMovingObjects`, and headlight
+  torches / lightbar lampposts for the lighting system. On SportsCar_ez,
+  CarNormal, PickUpTruck and Van the render, vehicle and part-model
+  transforms, all twelve enable matrices, rust/reflection/paint values,
+  the vehicle camera, centre-of-mass offset and `targetDepth`, the shadow
+  polygon and the headlight torches match the original's bit for bit
+  (131 values, local harness). Headlights reach pz-lighting as torches
+  (`checkLights`' vehicle loop) and the lightbar's alternating lights as
+  cell lampposts (`updateWorldLights`); on a night floor the squares in a
+  car's beams light up and the lightbar lamppost comes and goes (tests
+  need the game's scripts). Not yet: the sky box reflection textures
+  (the reflective programs run with whatever textures are passed), the
+  square's result lights on the vehicle model, sloped-surface shadow
+  height, `renderToTexture`.
+
+- Character outlines and item textures: `ModelOutlines` (solid mask with
+  `aim_outline_solid`, `aim_outline_h`/`_v` thickening, masked
+  `aim_outline_blit`, the player masking outlines behind it) in the iso
+  frame's object pass (vehicles, as in build 42, take none), and
+  `ItemSmartTexture` for held items (`ModelInstanceTextureInitializer`/`EquippedTextureCreator`: tint and
+  `TINT` masks, weapon blood, fluid) and for placed items in the
+  `WorldItemAtlas` (`_Fluid` models, `FLUIDTINT` overlays) through the GPU
+  texture combiner. The outline state machine and passes (buffers,
+  viewports, uniforms, quads at nine zooms) and the item combine command
+  lists match the original's (local harnesses). Not yet: sprite-object
+  outlines (`FBORenderObjectOutline`, `vboRenderer_SpriteOutline`) and
+  `IsoObjectModelDrawer`'s sprite-model outlines; split-screen viewports.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 

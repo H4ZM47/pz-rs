@@ -31,6 +31,7 @@ pub mod obscuring;
 pub mod occlusion;
 pub mod particles_fire;
 pub mod puddles;
+pub mod outlines;
 pub mod seam;
 pub mod skybox;
 pub mod snow;

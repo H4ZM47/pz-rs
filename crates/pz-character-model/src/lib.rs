@@ -21,6 +21,7 @@ pub mod combine;
 pub mod corpse;
 pub mod data;
 pub mod external;
+pub mod item_texture;
 pub mod items;
 pub mod lights;
 pub mod mask;

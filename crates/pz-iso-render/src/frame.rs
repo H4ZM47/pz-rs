@@ -12,6 +12,7 @@ use crate::cell::{ChunkRenderer, LevelSquares};
 use crate::chunk::{pow2, ChunkTexture};
 use crate::models::ModelCamera;
 use crate::objects::FrameObjects;
+use crate::outlines::ModelOutlines;
 use crate::shadows::Shadows;
 
 /// One chunk texture to record this frame, with its squares by level.
@@ -137,7 +138,10 @@ pub fn world_frame_full(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkL
     let model_cam = ModelCamera::new(&r.cam, w as f32 * z, h as f32 * z);
     let mut shadows = Shadows::default();
     shadows.clear(drop_shadow);
-    objects.render(&model_cam, &mut shadows, &mut out);
+    // ModelOutlines.startFrameMain .. endFrameMain around IsoWorld.render.
+    let mut outlines = ModelOutlines::new(w, h, z);
+    outlines.start_frame();
+    objects.render_outlined(&model_cam, &mut shadows, &mut outlines, &mut out);
     // The per-level translucent passes, over every on-screen square
     // (recorded this frame or not): translucent floors, puddles on them,
     // shores (from level 0), the level's shadows, then translucent objects.
@@ -168,6 +172,7 @@ pub fn world_frame_full(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkL
     shadows.end_render();
     out.push(DrawCmd::Ortho { left: 0.0, right: w as f32 * z, bottom: h as f32 * z, top: 0.0, width: w, height: h });
     late(&mut out);
+    outlines.end_frame(&mut out);
     out.push(DrawCmd::GlDisable(gl::DEPTH_TEST));
     out.push(DrawCmd::OffscreenEnd);
     // Core.RenderOffScreenBuffer: 1:1 screen projection, no blending.
@@ -204,7 +209,7 @@ mod tests {
         let r = ChunkRenderer::new(cam, &NoMaps, (640, 480));
         let marker = DrawCmd::StencilMask(0x5A);
         let shadow = ShadowRequest::Character { pos: [10.5, 10.5, 1.0], forward: [1.0, 0.0], params: ShadowParams::default(), rgb: [1.0; 3], alpha: 1.0, animal: false, slope: None };
-        let objects = FrameObjects { players: vec![ObjectRender { shadow: Some(shadow), draws: vec![marker] }], ..Default::default() };
+        let objects = FrameObjects { players: vec![ObjectRender { shadow: Some(shadow), draws: vec![marker], ..Default::default() }], ..Default::default() };
         let mut tex = Texture::empty("NewShadow");
         tex.id = Some(1);
         let cmds = world_frame_with_objects(&r, FrameSize { width: 640, height: 480 }, &[], &objects, Some(tex), ScreenParams { desaturation: 0.0, timer: 0.0 }, Vec::new());

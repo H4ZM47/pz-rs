@@ -13,6 +13,7 @@
 use pz_render::DrawCmd;
 
 use crate::models::ModelCamera;
+use crate::outlines::{ModelOutlines, OutlineRequest};
 use crate::shadows::{ShadowParams, Shadows, SlopedSurface};
 
 /// A shadow an object adds while it renders.
@@ -85,14 +86,42 @@ impl ShadowRequest {
 pub struct ObjectRender {
     pub shadow: Option<ShadowRequest>,
     pub draws: Vec<DrawCmd>,
+    /// `ModelSlotRenderData.characterOutline`: the character's meshes (its
+    /// [`DrawCmd::Model`] draws) go into the outline mask first.
+    pub outline: Option<OutlineRequest>,
+    /// The player whose view this is (`IsoPlayer.players[playerIndex]`):
+    /// drawn without an outline, it masks outlines behind it
+    /// (`ModelOutlines.setPlayerRenderData`).
+    pub local_player: bool,
 }
 
 impl ObjectRender {
-    fn render(&self, cam: &ModelCamera, shadows: &mut Shadows, out: &mut Vec<DrawCmd>) {
+    /// The character's meshes (`modelData`). Vehicle meshes never count:
+    /// a vehicle's `ModelSlotRenderData` ignores the highlight.
+    fn meshes(&self) -> Vec<pz_render::model::ModelDraw> {
+        self.draws
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Model(d) => Some((**d).clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn render(&self, cam: &ModelCamera, shadows: &mut Shadows, outlines: &mut ModelOutlines, out: &mut Vec<DrawCmd>) {
         if let Some(s) = &self.shadow {
             s.add(shadows, cam);
         }
+        // renderCharacter: the outline, the model, then the player's mask
+        // data. Vehicles (`renderVehicle`) take no outline.
+        let vehicle = self.draws.iter().any(|c| matches!(c, DrawCmd::VehicleModel(_)));
+        if let Some(o) = self.outline.as_ref().filter(|_| !vehicle) {
+            outlines.render_character_outline(&self.meshes(), o.color, o.behind_player, false, out);
+        }
         out.extend(self.draws.iter().cloned());
+        if self.local_player && self.outline.is_none() {
+            outlines.set_player_render_data(self.meshes());
+        }
     }
 }
 
@@ -117,21 +146,28 @@ pub struct FrameObjects {
 
 impl FrameObjects {
     /// The draws from `renderPlayers` to `renderMovingObjects`, adding the
-    /// shadows to `shadows` as they go.
+    /// shadows to `shadows` as they go (and dropping outlines).
     pub fn render(&self, cam: &ModelCamera, shadows: &mut Shadows, out: &mut Vec<DrawCmd>) {
+        let mut outlines = ModelOutlines::new(1, 1, 1.0);
+        self.render_outlined(cam, shadows, &mut outlines, out);
+    }
+
+    /// [`render`](Self::render) with the frame's `ModelOutlines`: outlined
+    /// characters draw into its mask as they render.
+    pub fn render_outlined(&self, cam: &ModelCamera, shadows: &mut Shadows, outlines: &mut ModelOutlines, out: &mut Vec<DrawCmd>) {
         for p in &self.players {
-            p.render(cam, shadows, out);
+            p.render(cam, shadows, outlines, out);
         }
         for s in &self.corpse_shadows {
             s.add(shadows, cam);
         }
         for m in &self.mannequins {
-            m.render(cam, shadows, out);
+            m.render(cam, shadows, outlines, out);
         }
         out.extend(self.corpses.iter().cloned());
         out.extend(self.items.iter().cloned());
         for m in &self.moving {
-            m.render(cam, shadows, out);
+            m.render(cam, shadows, outlines, out);
         }
     }
 }
@@ -163,6 +199,7 @@ mod tests {
             players: vec![ObjectRender {
                 shadow: Some(shadow(0.0)),
                 draws: vec![mark(1)],
+                ..Default::default()
             }],
             corpse_shadows: vec![shadow(1.0)],
             mannequins: vec![],
@@ -171,6 +208,7 @@ mod tests {
             moving: vec![ObjectRender {
                 shadow: Some(shadow(0.0)),
                 draws: vec![mark(4)],
+                ..Default::default()
             }],
         };
         let mut shadows = Shadows::default();
@@ -192,5 +230,45 @@ mod tests {
         assert_eq!(marks, [1, 2, 3, 4]);
         assert_eq!(shadows.shadows.len(), 3);
         assert_eq!(shadows.shadows[1].oz, 1.0);
+    }
+
+    /// A highlighted vehicle draws no outline (`renderVehicle` ignores it).
+    #[test]
+    fn vehicles_take_no_outline() {
+        use crate::outlines::{ModelOutlines, OutlineRequest};
+        use pz_render::model::{MeshData, MeshKind, ModelDraw, ModelLight, ModelPass, VehicleDraw, VehicleShader, VehicleUniforms};
+        use std::rc::Rc;
+        let ident = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let base = ModelDraw {
+            mesh: Rc::new(MeshData { id: 1, kind: MeshKind::Static, vertices: vec![], indices: vec![] }),
+            texture: None,
+            mvp: ident,
+            transform: ident,
+            palette: Rc::new(Vec::new()),
+            target_depth: 0.5,
+            final_scale: 1.0,
+            uv_scale: [1.0; 2],
+            lights: [ModelLight::default(); 5],
+            ambient: [1.0; 3],
+            tint: [1.0; 3],
+            hue: 0.0,
+            alpha: 1.0,
+            pass: ModelPass::Character { cull: true },
+        };
+        let draw = VehicleDraw { base, shader: VehicleShader::Vehicle, noreflect: false, invert_x: false, textures: Default::default(), uniforms: VehicleUniforms::default() };
+        let car = ObjectRender {
+            draws: vec![DrawCmd::VehicleModel(Box::new(draw))],
+            outline: Some(OutlineRequest { color: [1.0, 1.0, 0.0, 1.0], behind_player: false }),
+            ..Default::default()
+        };
+        let cam = Camera::player(10.5, 10.5, 0.0, 640, 480, 1.0);
+        let mc = ModelCamera::new(&cam, 640.0, 480.0);
+        let mut outlines = ModelOutlines::new(640, 480, 1.0);
+        outlines.start_frame();
+        let mut out = Vec::new();
+        FrameObjects { moving: vec![car], ..Default::default() }.render_outlined(&mc, &mut Shadows::default(), &mut outlines, &mut out);
+        outlines.end_frame(&mut out);
+        assert!(!out.iter().any(|c| matches!(c, DrawCmd::OutlineBegin { .. } | DrawCmd::OutlineThicken { .. } | DrawCmd::OutlineBlit)));
+        assert_eq!(out.len(), 1);
     }
 }
