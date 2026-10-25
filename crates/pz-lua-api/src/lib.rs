@@ -45,6 +45,7 @@ pub mod bind_zombie;
 pub mod bind_zombie_outfits;
 pub mod bind_text;
 pub mod bind_ui;
+pub mod hud;
 pub mod bind_ui3d;
 pub mod bind_uitextbox2;
 pub mod bind_voice;
@@ -126,6 +127,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_zombie::register_shared(&mut mgr.thread);
     bind_vehicles::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
+    hud::register(&mut mgr.thread);
     bind_ui3d::register(&mut mgr.thread);
     bind_uitextbox2::register(&mut mgr.thread);
     bind_voice::register(&mut mgr.thread);

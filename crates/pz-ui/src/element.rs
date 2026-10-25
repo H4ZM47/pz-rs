@@ -371,8 +371,8 @@ impl UIElement {
     pub fn set_consume_mouse_events(&self, b: bool) {
         self.st_mut().consume_mouse_events = b;
     }
-    /// `ButtonClicked(name)`.
-    pub fn button_clicked(&self, name: Option<Rc<str>>) {
+    /// `ButtonClicked(name)` of `UIElement` (`super.ButtonClicked`).
+    pub fn button_clicked_base(&self, name: Option<Rc<str>>) {
         self.set_clicked_value(name);
     }
     pub fn get_clicked_value(&self) -> Option<Rc<str>> {
@@ -1335,6 +1335,16 @@ impl UIElement {
         match &self.ext {
             Some(hook) => hook.on_mouse_up_outside(self, t, x, y),
             None => self.on_mouse_up_outside_base(t, x, y),
+        }
+    }
+
+
+    /// `ButtonClicked(name)` as the Java virtual call: the subclass hook,
+    /// else the base.
+    pub fn button_clicked(&self, name: Option<Rc<str>>) {
+        match &self.ext {
+            Some(hook) => hook.button_clicked(self, name),
+            None => self.button_clicked_base(name),
         }
     }
 

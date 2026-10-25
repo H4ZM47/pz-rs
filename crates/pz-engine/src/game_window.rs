@@ -73,7 +73,7 @@ impl App {
         let mut lua = LuaManager::init(fs).map_err(|e| format!("LuaManager.init: {e}"))?;
         // GameWindow.init: Translator.loadFiles and TextManager.Init.
         pz_lua_api::bind_text::boot(&lua.fs.borrow(), &self.core.borrow()).map_err(|e| format!("text init: {e}"))?;
-        UIManager::init();
+        pz_lua_api::hud::init_ui(&mut lua.thread);
         lua.load_all_client();
         lua.trigger_event("OnGameBoot", &[]);
         self.state.enter(&mut lua, w, h);

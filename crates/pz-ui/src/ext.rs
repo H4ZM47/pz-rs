@@ -68,6 +68,10 @@ pub trait UIElementExt: Any {
     fn on_mouse_move_outside(&self, el: &UIElement, t: &mut Thread, dx: f64, dy: f64) {
         el.on_mouse_move_outside_base(t, dx, dy)
     }
+    /// `ButtonClicked(name)`.
+    fn button_clicked(&self, el: &UIElement, name: Option<std::rc::Rc<str>>) {
+        el.button_clicked_base(name)
+    }
     /// `onMouseWheel(del)`.
     fn on_mouse_wheel(&self, el: &UIElement, t: &mut Thread, del: f64) -> bool {
         el.on_mouse_wheel_base(t, del)

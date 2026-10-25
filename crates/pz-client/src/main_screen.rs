@@ -33,7 +33,7 @@ pub fn run_headless(game_dir: &Path, cache_dir: &Path, frames: u32) -> Result<()
         pz_lua_api::bind_text::boot(&fs, &core.borrow())
             .map_err(|e| format!("text init failed: {e}"))?;
     }
-    UIManager::init();
+    pz_lua_api::hud::init_ui(&mut mgr.thread);
     mgr.load_all_client();
     let load_failures = mgr.loader.borrow().errors.len();
     mgr.thread.log = Box::new(|s| eprintln!("LUAERR: {s}"));
