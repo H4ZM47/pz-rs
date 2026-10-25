@@ -239,6 +239,24 @@ pub enum DrawCmd {
     /// depth written as the fragment depth (interpolated), colour times
     /// texel with no discard. `FBORenderShadows` draws drop shadows so.
     ProjectedDepthQuad { texture: Texture, pos: [[f32; 3]; 4], uv: [[f32; 2]; 4], color: u32 },
+    /// `TextureFBO.startDrawing` on an atlas texture (`DeadBodyAtlas`,
+    /// `WorldItemAtlas`, `ModelManager.bitmap`): following draws go to
+    /// atlas `id` (colour sampled `GL_LINEAR` without mips, 16-bit depth
+    /// sampled `GL_NEAREST`), created at this size if needed; `clear`
+    /// clears colour to 0 and depth to 1. The projection, viewport and GL
+    /// state are saved (`glPushAttrib`) and the viewport set to the
+    /// atlas. Atlas textures are addressed as GL's bottom-up framebuffers
+    /// (a scissor box's y counts from the bottom row).
+    AtlasBegin { id: u64, width: u32, height: u32, clear: bool },
+    /// `endDrawing`: back to the previous target, restoring what
+    /// `AtlasBegin` saved.
+    AtlasEnd,
+    /// A quad drawn with the `DeadBodyAtlas` shader from atlas `id`:
+    /// corners (top-left, top-right, bottom-right, bottom-left) in the
+    /// current projection, texture coordinates, colour times texel, and
+    /// fragment depth `depth[0] + (depth[1] - depth[0]) * d` from the
+    /// atlas depth `d`; texels with `alpha * d == 0` are discarded.
+    AtlasQuad { id: u64, pos: [[f32; 2]; 4], uv: [[f32; 2]; 4], color: u32, depth: [f32; 2] },
     /// A 3D model draw (`basicEffect`), depth-tested against the world.
     Model(Box<model::ModelDraw>),
 }

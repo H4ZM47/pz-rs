@@ -80,6 +80,8 @@ impl<'a> MediaModelResources<'a> {
             mesh: mm.mesh,
             transform: mm.transform,
             skeleton,
+            min_xyz: mm.min_xyz,
+            max_xyz: mm.max_xyz,
         })
     }
 }

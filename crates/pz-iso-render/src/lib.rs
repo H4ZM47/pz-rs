@@ -12,12 +12,16 @@
 //! vertex lights, as `LightingJNI` produces them.
 
 pub mod alpha;
+pub mod atlas;
+pub mod body_atlas;
 pub mod cache;
 pub mod cell;
 pub mod chunk;
 pub mod color;
 pub mod cutaways;
 pub mod frame;
+pub mod item_atlas;
+pub mod joml;
 pub mod models;
 pub mod objects;
 pub mod obscuring;

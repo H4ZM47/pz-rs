@@ -22,6 +22,7 @@
 //! coordinates address them the way GL's bottom-up framebuffers are
 //! addressed.
 
+mod atlas;
 mod gl;
 mod model;
 mod state;
@@ -130,13 +131,15 @@ enum PassTarget {
     Main,
     Chunk(u64),
     Offscreen,
+    /// An atlas texture (stored with the chunk textures; scissor honoured).
+    Atlas(u64),
 }
 
 impl PassTarget {
     fn kind(self) -> TargetKind {
         match self {
             PassTarget::Main => TargetKind::Main,
-            PassTarget::Chunk(_) => TargetKind::Chunk,
+            PassTarget::Chunk(_) | PassTarget::Atlas(_) => TargetKind::Chunk,
             PassTarget::Offscreen => TargetKind::Offscreen,
         }
     }
@@ -282,7 +285,7 @@ impl Gpu {
         let sprite = module("default", include_str!("shader.wgsl").to_string());
         let world = include_str!("world.wgsl");
         let world_tile = module("tileWithDepth", format!("{world}\n{}", include_str!("world_tile.wgsl")));
-        let world_composite = module("chunkShader", format!("{world}\n{}", include_str!("world_composite.wgsl")));
+        let world_composite = module("chunkShader", format!("{world}\n{}\n{}", include_str!("world_composite.wgsl"), include_str!("world_atlas.wgsl")));
         let screen = module("screen", include_str!("screen.wgsl").to_string());
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
@@ -591,7 +594,7 @@ impl Gpu {
                     let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
                     (view, &self.depth_stencil, load, Some(keep), Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }), self.width, self.height)
                 }
-                PassTarget::Chunk(id) => {
+                PassTarget::Chunk(id) | PassTarget::Atlas(id) => {
                     let Some(c) = self.chunks.get(&id) else { continue };
                     let (load, dload) = if pass_desc.clear {
                         (wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), wgpu::LoadOp::Clear(1.0))
@@ -804,6 +807,7 @@ impl Gpu {
                 f.push(key, None, Tex2::Chunk(*id, *mag_linear), &self.state, g, v);
             }
             DrawCmd::ChunkFree(id) => f.freed.push(*id),
+            DrawCmd::AtlasBegin { .. } | DrawCmd::AtlasEnd | DrawCmd::AtlasQuad { .. } => self.record_atlas(f, cmd),
             DrawCmd::OffscreenBegin { width, height } => {
                 self.ensure_offscreen(*width, *height);
                 f.target = PassTarget::Offscreen;
@@ -1112,6 +1116,9 @@ impl Gpu {
     }
 }
 
+/// What `AtlasBegin` saves: target, projection, viewport, GL state.
+type AtlasSave = (PassTarget, [[f32; 4]; 4], (u32, u32), GlState);
+
 /// Vertices, indices, uniform blocks, draw runs and passes of one frame.
 struct FrameBuilder {
     vertices: Vec<Vertex>,
@@ -1129,6 +1136,8 @@ struct FrameBuilder {
     model_uniforms: Vec<model::ModelUniforms>,
     mvp: [[f32; 4]; 4],
     viewport: (u32, u32),
+    /// What `AtlasBegin` saved: target, projection, viewport, GL state.
+    atlas_stack: Vec<AtlasSave>,
 }
 
 impl Default for FrameBuilder {
@@ -1146,6 +1155,7 @@ impl Default for FrameBuilder {
             model_uniforms: Vec::new(),
             mvp: IDENTITY,
             viewport: (1, 1),
+            atlas_stack: Vec::new(),
         }
     }
 }

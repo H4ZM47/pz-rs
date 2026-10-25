@@ -38,11 +38,13 @@ pub enum Program {
     Seam,
     /// `CircleStencil` (cut-away walls).
     Cutaway,
+    /// `DeadBodyAtlas`: an atlas texture with its own depth.
+    DepthAtlas,
 }
 
 impl Program {
     pub fn uses_world_shader(self) -> bool {
-        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::ProjectedDepth | Program::Seam | Program::Cutaway)
+        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::ProjectedDepth | Program::Seam | Program::Cutaway | Program::DepthAtlas)
     }
 }
 
@@ -254,7 +256,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
     let world = key.program.uses_world_shader();
     let (module, layout) = match key.program {
         Program::TileDepth | Program::OpaqueDepth => (&programs.world_tile, &programs.tile_layout),
-        Program::Composite => (&programs.world_composite, &programs.composite_layout),
+        Program::Composite | Program::DepthAtlas => (&programs.world_composite, &programs.composite_layout),
         Program::Seam | Program::Cutaway => (&programs.world_tile, &programs.seam_layout),
         Program::WorldDefault | Program::Projected | Program::ProjectedDepth => (&programs.world_tile, &programs.sprite_layout),
         Program::Default | Program::Clear => (&programs.sprite, &programs.sprite_layout),
@@ -272,6 +274,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::ProjectedDepth => ("vs_world", "fs_projected_depth"),
         Program::Seam => ("vs_world", "fs_seam"),
         Program::Cutaway => ("vs_world", "fs_cutaway"),
+        Program::DepthAtlas => ("vs_atlas", "fs_atlas"),
     };
     let attributes: &[wgpu::VertexAttribute] = if world {
         &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x2]
