@@ -406,6 +406,11 @@ pub enum ItemKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct InventoryItem {
     pub template: Rc<ItemTemplate>,
+    /// `itemType`: a per-instance reference, independent of later script
+    /// changes. `isItemType` compares the canonical object by identity.
+    pub item_type: Option<Rc<pz_scripts::registry::RegistryKey>>,
+    /// The public `mainCategory` override, null by default and not saved.
+    pub main_category: Option<String>,
     /// `getRegistry_id()`.
     pub registry_id: i16,
     /// `type` (a `Moveable` takes its world sprite name).
@@ -540,6 +545,8 @@ impl InventoryItem {
             ItemClass::Animal => ItemKind::Plain,
         };
         InventoryItem {
+            item_type: t.item_type.clone(),
+            main_category: None,
             registry_id,
             type_: t.type_.clone(),
             id: 0,

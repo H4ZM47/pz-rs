@@ -401,6 +401,40 @@ mod tests {
             let item = create_item_by_type(&Env, &sm, ty, 1.0, true, &|_| None).unwrap();
             assert_eq!(item.registry_id, 73, "string factory discarded WorldDictionary registration");
             assert_eq!(item.get_full_type(), "Base.TestMarble");
+            assert!(item.item_type.is_none(), "ComboItem constructor leaves itemType null");
+        }
+    }
+
+    #[test]
+    fn created_item_types_follow_subclass_constructor_references() {
+        use pz_scripts::objects::items::ItemType;
+        let sm = ScriptManager::new();
+        let cases = [
+            ("NORMAL", None), ("KEY", Some("KEY")), ("WEAPON_PART", Some("WEAPON")),
+            ("CONTAINER", Some("CONTAINER")), ("FOOD", Some("FOOD")),
+            ("LITERATURE", Some("LITERATURE")), ("ALARM_CLOCK", Some("ALARM_CLOCK")),
+            ("ALARM_CLOCK_CLOTHING", Some("ALARM_CLOCK_CLOTHING")), ("WEAPON", Some("WEAPON")),
+            ("CLOTHING", Some("CLOTHING")), ("DRAINABLE", None), ("RADIO", Some("RADIO")),
+            ("MOVEABLE", Some("MOVEABLE")), ("MAP", None), ("ANIMAL", Some("ANIMAL")),
+        ];
+        for (field, _) in cases {
+            let id = format!("test:{}", field.to_lowercase());
+            sm.registries.get("item_type").unwrap().borrow_mut().register_id(&id, false).unwrap();
+            sm.statics.items.borrow_mut().constants.insert("item_type", field, &id);
+            sm.parse_script(pz_scripts::ScriptLoadMode::Init, &format!(
+                "module Base {{ item Test{field} {{ ItemType = {id}, Weight = 0.1, }} }}"
+            )).unwrap();
+        }
+        sm.get_module("Base").unwrap().bucket(pz_scripts::ScriptType::Item)
+            .load_scripts(&sm, pz_scripts::ScriptLoadMode::Init);
+        struct Env;
+        impl ItemEnv for Env {}
+        for (field, expected) in cases {
+            let item = create_item_by_type(&Env, &sm, &format!("Base.Test{field}"), 1.0, true, &|_| None).unwrap();
+            match expected {
+                Some(expected) => assert!(Rc::ptr_eq(item.item_type.as_ref().unwrap(), &ItemType::constant(&sm, expected).unwrap()), "wrong constructor type for {field}"),
+                None => assert!(item.item_type.is_none(), "constructor unexpectedly assigned {field}"),
+            }
         }
     }
 

@@ -134,8 +134,15 @@ impl InventoryItem {
         }
     }
 
-    /// `getCategory()` (`mainCategory` is never set, so the class's).
-    pub fn get_category(&self) -> &'static str {
+    /// `getCategory()`: the non-null `mainCategory`, otherwise the class's.
+    pub fn get_category(&self) -> &str {
+        // AnimalInventoryItem's override ignores mainCategory entirely.
+        if self.template.class == ItemClass::Animal {
+            return "Animal";
+        }
+        if let Some(category) = &self.main_category {
+            return category;
+        }
         match self.template.class {
             ItemClass::Food => "Food",
             ItemClass::Weapon => "Weapon",
@@ -145,7 +152,6 @@ impl InventoryItem {
             ItemClass::Literature => "Literature",
             ItemClass::Key => "Key",
             ItemClass::WeaponPart => "WeaponPart",
-            ItemClass::Animal => "Animal",
             _ => "Item",
         }
     }

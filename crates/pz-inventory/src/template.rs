@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use std::cell::RefCell;
 
-use pz_scripts::objects::items::{Item, ItemReplacement, ModelWeaponPart};
+use pz_scripts::objects::items::{Item, ItemReplacement, ItemType, ModelWeaponPart};
 use pz_scripts::ScriptManager;
 
 /// A shared script item (`ScriptManager.FindItem`), compared by identity.
@@ -116,6 +116,9 @@ impl ItemClass {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemTemplate {
     pub class: ItemClass,
+    /// The subclass constructor's canonical `ItemType`, copied into each
+    /// new item. Some constructors leave it null; WeaponPart uses WEAPON.
+    pub item_type: Option<Rc<pz_scripts::registry::RegistryKey>>,
     /// `getModule().name`.
     pub module: String,
     /// `name` (the item's `type`).
@@ -382,6 +385,7 @@ impl ItemTemplate {
     pub fn new(class: ItemClass, module: &str, type_: &str) -> Self {
         ItemTemplate {
             class,
+            item_type: None,
             module: module.into(),
             type_: type_.into(),
             display_name: type_.into(),
@@ -541,6 +545,20 @@ impl ItemTemplate {
             .and_then(|f| ItemClass::from_item_type_field(f))?;
         let full = item.module_dot_type.clone();
         let (module, type_) = full.split_once('.').unwrap_or(("Base", full.as_str()));
+        let type_field = match class {
+            ItemClass::Normal | ItemClass::Drainable | ItemClass::Map => None,
+            ItemClass::WeaponPart | ItemClass::Weapon => Some("WEAPON"),
+            ItemClass::Key => Some("KEY"),
+            ItemClass::Container => Some("CONTAINER"),
+            ItemClass::Food => Some("FOOD"),
+            ItemClass::Literature => Some("LITERATURE"),
+            ItemClass::AlarmClock => Some("ALARM_CLOCK"),
+            ItemClass::AlarmClockClothing => Some("ALARM_CLOCK_CLOTHING"),
+            ItemClass::Clothing => Some("CLOTHING"),
+            ItemClass::Radio => Some("RADIO"),
+            ItemClass::Moveable => Some("MOVEABLE"),
+            ItemClass::Animal => Some("ANIMAL"),
+        };
         let keys = |k: &pz_scripts::objects::items::KeySet| {
             k.iter()
                 .flatten()
@@ -549,6 +567,7 @@ impl ItemTemplate {
         };
         Some(Rc::new(ItemTemplate {
             class,
+            item_type: type_field.and_then(|field| ItemType::constant(sm, field)),
             module: module.to_string(),
             type_: type_.to_string(),
             display_name: item.display_name.clone().unwrap_or_default(),

@@ -660,6 +660,38 @@ fn register_inventory_item(thread: &mut Thread) {
     let b = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
     get!(b, "getType", |i| Value::from(i.get_type()));
     get!(b, "getFullType", |i| Value::from(i.get_full_type()));
+    get!(b, "getCategory", |i| Value::from(i.get_category()));
+    b.method("getItemType", |c| {
+        let item = this(c)?;
+        let key = crate::bind_registry::key_value(
+            crate::bind_registry::ITEM_TYPE_CLASS, item.borrow().item_type.as_ref()
+        );
+        Ok(c.push(key))
+    });
+    for (name, set) in [("isItemType", false), ("setItemType", true)] {
+        b.method(name, move |c| {
+            let item = this(c)?;
+            let key = match c.arg(1) {
+                Value::Nil => None,
+                Value::Object(o) => match o.as_any().downcast_ref::<crate::bind_registry::KeyObject>() {
+                    Some(key) if key.class == crate::bind_registry::ITEM_TYPE_CLASS => Some(key.key.clone()),
+                    _ => return Err(crate::bind_java_util::class_cast(&Value::Object(o), crate::bind_registry::ITEM_TYPE_CLASS)),
+                },
+                other => return Err(crate::bind_java_util::class_cast(&other, crate::bind_registry::ITEM_TYPE_CLASS)),
+            };
+            if set {
+                item.borrow_mut().item_type = key;
+                Ok(0)
+            } else {
+                let matches = match (&item.borrow().item_type, key) {
+                    (None, None) => true,
+                    (Some(a), Some(b)) => Rc::ptr_eq(a, &b),
+                    _ => false,
+                };
+                Ok(c.push(matches))
+            }
+        });
+    }
     get!(b, "getModule", |i| Value::from(i.get_module()));
     // `getName` and `getDisplayName` with the class overrides and state
     // prefixes ([`crate::bind_item_name`]).
@@ -670,9 +702,9 @@ fn register_inventory_item(thread: &mut Thread) {
         crate::bind_item_name::item_name(&i, env().as_ref())
     ));
     get!(b, "getID", |i| Value::from(i.id));
-    // `getTexture()` / `getIcon()`: the `customInventoryIcon` mod-data
+    // `getTex()` / `getTexture()` / `getIcon()`: the `customInventoryIcon` mod-data
     // texture when it exists, else `texture`.
-    for name in ["getTexture", "getIcon"] {
+    for name in ["getTex", "getTexture", "getIcon"] {
         b.method(name, |c| {
             let item = this(c)?;
             Ok(c.push(crate::bind_render::texture_value(item_texture(&item))))
@@ -1541,6 +1573,70 @@ mod tests {
         t.display_name = name.into();
         edit(&mut t);
         Rc::new(RefCell::new(InventoryItem::create(Rc::new(t), 1)))
+    }
+
+    #[test]
+    fn inventory_classification_uses_live_instance_type_and_category_override() {
+        use crate::bind_registry::{key_value, ITEM_TAG_CLASS, ITEM_TYPE_CLASS};
+        use pz_scripts::registry::{RegistryKey, ResourceLocation};
+        let key = |name: &str| Rc::new(RegistryKey {
+            location: ResourceLocation::of(name).unwrap(), name: name.into(), item_key: None,
+        });
+        let container = key("test:container");
+        let other = key("test:normal");
+        // Equal spelling does not make two separately allocated Java
+        // registry objects identical to the itemType field.
+        let duplicate = key("test:container");
+        let mut thread = item_thread();
+        for (name, value) in [
+            ("containerType", key_value(ITEM_TYPE_CLASS, Some(&container))),
+            ("otherType", key_value(ITEM_TYPE_CLASS, Some(&other))),
+            ("duplicateType", key_value(ITEM_TYPE_CLASS, Some(&duplicate))),
+            ("wrongKind", key_value(ITEM_TAG_CLASS, Some(&key("test:tag")))),
+        ] {
+            thread.globals().set_str(name, value);
+        }
+        let item = make(ItemClass::Container, "AuthoredBag", |t| t.item_type = Some(container.clone()));
+        thread.globals().set_str("item", item_value(&item));
+        let values = run(&mut thread, r#"
+            return item:getCategory() == "Container",
+                item:getItemType() == containerType,
+                item:isItemType(containerType), not item:isItemType(otherType),
+                not item:isItemType(duplicateType), not item:isItemType(nil)
+        "#);
+        assert_eq!(values.len(), 6);
+        assert!(values.iter().all(|v| matches!(v, Value::Bool(true))));
+        let values = run(&mut thread, r#"
+            item:setItemType(otherType)
+            return item:getItemType() == otherType, item:isItemType(otherType),
+                not item:isItemType(containerType), item:getCategory() == "Container"
+        "#);
+        assert!(values.iter().all(|v| matches!(v, Value::Bool(true))));
+        item.borrow_mut().main_category = Some("Custom category".into());
+        assert_eq!(run(&mut thread, "return item:getCategory()")[0].as_str(), Some("Custom category"));
+        item.borrow_mut().main_category = Some(String::new());
+        assert_eq!(run(&mut thread, "return item:getCategory()")[0].as_str(), Some(""));
+        item.borrow_mut().main_category = None;
+        assert_eq!(run(&mut thread, "return item:getCategory()")[0].as_str(), Some("Container"));
+        run(&mut thread, "item:setItemType(nil)");
+        let nil = run(&mut thread, "return item:getItemType()");
+        assert_eq!(nil.len(), 1);
+        assert!(nil[0].is_nil());
+        assert!(matches!(run(&mut thread, "return item:isItemType(nil)")[0], Value::Bool(true)));
+        let rejected = run(&mut thread, r#"
+            local first = pcall(function() item:setItemType(wrongKind) end)
+            local second, message = pcall(function() item:isItemType('test:normal') end)
+            return first, second, message
+        "#);
+        assert_eq!(rejected.len(), 3);
+        assert!(matches!(rejected[0], Value::Bool(false)));
+        assert!(matches!(rejected[1], Value::Bool(false)));
+        assert!(pz_kahlua::exec::java_value_of(&rejected[2]).contains("ClassCastException"));
+        assert!(item.borrow().item_type.is_none(), "invalid type changed the field");
+        let animal = make(ItemClass::Animal, "AuthoredAnimal", |_| {});
+        animal.borrow_mut().main_category = Some("Custom category".into());
+        thread.globals().set_str("animal", item_value(&animal));
+        assert_eq!(run(&mut thread, "return animal:getCategory()")[0].as_str(), Some("Animal"));
     }
 
     fn num(v: &Value) -> f64 {
