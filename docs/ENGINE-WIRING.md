@@ -184,11 +184,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `pz-characters/src/character/item_owner.rs`). An `ItemLuaEnv` returns
       `bind_item_container::container_owner(item)` from `owner` (as
       `GameItemEnv` does), so `isEquipped`/`isWorn`/`isInPlayerInventory`
-      follow `item.container.parent` (bags).
+      follow `item.container.parent` (#185).
 - [ ] Inventories loaded into an existing container must make items with
       `pz_inventory::shared::new_item` (or `SharedContainer::fill_from`, which
       `shared::load_into` now calls) so a bag's inventory gets its
-      `containingItem` (bags).
+      `containingItem` (#185).
 - [ ] End of `GameLoadingState`: `hud::init_ui(&mut thread)` (the in-game
       HUD, then `OnCreateUI`) before `OnCreatePlayer` (#144).
 - [ ] `IngameState` per player: `hud::update_progress_bar(n)` in the update
