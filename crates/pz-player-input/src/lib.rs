@@ -15,11 +15,10 @@
 //! - joypads: `GameWindow.GameInput`, `JoypadManager` and the character
 //!   bindings (`bind_joypad::joypad_snapshot` / `character_bindings`);
 //! - `Core` options and `Core.getZoom` for the four players;
-//! - the camera and aiming reticle: there is no `IsoCamera` or
-//!   `AimingReticle` global in the port, so the engine publishes them each
-//!   frame with [`set_camera_info`] (after the camera update) and
-//!   [`set_aiming_position`] (each gamepad player's
-//!   `GameCharacter::update_aiming_reticle` result);
+//! - the camera: there is no `IsoCamera` global in the port, so the engine
+//!   publishes each player's offsets every frame with [`set_camera_info`]
+//!   (after the camera update; the aiming reticle lives on the character,
+//!   `player.aiming_position`);
 //! - `Core`'s screen size and `IsoPlayer.numPlayers` for the split-screen
 //!   views (`IsoCamera.getScreenWidth/getScreenHeight`);
 //! - `System.currentTimeMillis()` at capture time.
@@ -71,7 +70,6 @@ impl CameraInfo {
 #[derive(Clone, Copy, Debug, Default)]
 struct View {
     cameras: [CameraInfo; 4],
-    aiming: [(f32, f32); 4],
 }
 
 thread_local! {
@@ -84,19 +82,6 @@ pub fn set_camera_info(player_index: usize, info: CameraInfo) {
     VIEW.with(|v| {
         if let Some(c) = v.borrow_mut().cameras.get_mut(player_index) {
             *c = info;
-        }
-    });
-}
-
-/// Sets `AimingReticle.aimingPositions[player_index]` (screen pixels,
-/// unscaled) for this frame: the engine passes what
-/// `GameCharacter::update_aiming_reticle(input, multiplier)` returned (the
-/// character keeps its own copy in `player.aiming_position`, which the
-/// reticle reads; this one serves [`PlayerInput::joypad_aiming_position`]).
-pub fn set_aiming_position(player_index: usize, x: f32, y: f32) {
-    VIEW.with(|v| {
-        if let Some(a) = v.borrow_mut().aiming.get_mut(player_index) {
-            *a = (x, y);
         }
     });
 }
@@ -202,8 +187,6 @@ pub struct EnginePlayerInput {
     pub zoom: [f32; 4],
     /// `IsoCamera.cameras`.
     pub cameras: [CameraInfo; 4],
-    /// `AimingReticle.aimingPositions` (see [`set_aiming_position`]).
-    pub aiming_positions: [(f32, f32); 4],
     /// `Core.getScreenWidth()` / `getScreenHeight()`.
     pub screen_width: i32,
     pub screen_height: i32,
@@ -251,7 +234,6 @@ impl EnginePlayerInput {
             options: InputOptions::from_core(&core),
             zoom: std::array::from_fn(|i| core.get_zoom(i as i32)),
             cameras: view.cameras,
-            aiming_positions: view.aiming,
             screen_width: core.get_screen_width(),
             screen_height: core.get_screen_height(),
             num_players: core.num_players,
@@ -431,10 +413,6 @@ impl PlayerInput for EnginePlayerInput {
 
     fn joypad_button_down(&self, joypad: i32, binding: &str) -> bool {
         self.joypads.binding_down(binding, joypad)
-    }
-
-    fn joypad_aiming_position(&self, player_index: i32) -> (f32, f32) {
-        player_slot(player_index).map_or((0.0, 0.0), |p| self.aiming_positions[p])
     }
 
     fn toggle_to_aim(&self) -> bool {
