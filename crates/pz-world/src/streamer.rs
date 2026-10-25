@@ -1346,6 +1346,17 @@ impl ChunkStreamer {
         });
     }
 
+    /// `VehiclesDB2.updateVehicle` from the main thread (the vehicle
+    /// runtime's virtual vehicles when they stop updating in the meta, or
+    /// on a game save): the rows join the queue [`Self::update_vehicles_db`]
+    /// writes.
+    pub fn queue_vehicle_updates(
+        &mut self,
+        rows: impl IntoIterator<Item = crate::save::vehicle::VehicleRow>,
+    ) {
+        self.vehicle_queue.extend(rows);
+    }
+
     /// The vehicle rows still queued for the streamer thread, for
     /// `VehiclesDB2.Reset` once the streamer is stopped.
     pub fn take_vehicle_queue(&mut self) -> VecDeque<crate::save::vehicle::VehicleRow> {

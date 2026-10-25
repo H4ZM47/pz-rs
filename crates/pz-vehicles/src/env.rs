@@ -200,8 +200,6 @@ pub struct LightbarState {
 
 pub trait VehicleEvents {
     fn event(&self, _what: &str) {}
-    /// `VehiclesDB2.instance.setVehicleUnloaded(vehicle)` (`removeFromWorld`).
-    fn vehicle_unloaded(&self, _vehicle: &crate::BaseVehicle) {}
     /// `VehiclesDB2.instance.removeVehicle(vehicle)` (`permanentlyRemove`).
     fn vehicle_removed_from_database(&self, _vehicle: &crate::BaseVehicle) {}
     /// `updateWorldLights()`: rendering places or removes the lightbar's
@@ -324,4 +322,24 @@ pub fn check_hours(hours: f32, world_age_hours: f32) -> f32 {
 /// `GameTime.minHours(double, double)`.
 pub fn min_hours(hours: f64, world_age_hours: f64) -> f64 {
     hours.min(world_age_hours)
+}
+
+/// `VehiclesDB2`'s main-thread id sets, shared between the vehicle runtime
+/// (`addToWorld` / `removeFromWorld`) and the streamer
+/// (`StreamCtx::vehicle_ids`, borrowed while it runs).
+pub type VehicleIdsRef = Rc<RefCell<pz_world::save::vehicles_db::VehicleIds>>;
+
+thread_local! {
+    static VEHICLE_IDS: RefCell<Option<VehicleIdsRef>> = const { RefCell::new(None) };
+}
+
+/// Installs the ids `VehiclesDB2.init` made (`None`: no store, ids are not
+/// tracked and new vehicles keep `sqlId` -1).
+pub fn set_vehicle_ids(ids: Option<VehicleIdsRef>) {
+    VEHICLE_IDS.with(|v| *v.borrow_mut() = ids);
+}
+
+/// The installed ids.
+pub fn vehicle_ids() -> Option<VehicleIdsRef> {
+    VEHICLE_IDS.with(|v| v.borrow().clone())
 }

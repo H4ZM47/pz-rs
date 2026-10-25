@@ -322,6 +322,11 @@ pub struct VehicleState {
     pub need_parts_update: bool,
     pub alarmed: bool,
     pub siren_start_time: f64,
+    /// While a [`crate::virtual_vehicle::VirtualVehicle`] updates the
+    /// vehicle: the record's headlights, which the parts read
+    /// (`getOwner().getHeadlightsOn()`) and the alarm's light flashes
+    /// switch instead of the vehicle's.
+    pub meta_headlights: Option<bool>,
     pub mechanic_ui_open: bool,
     pub is_good_car: bool,
     pub current_key: Option<ItemRef>,
@@ -517,6 +522,7 @@ impl BaseVehicle {
             need_parts_update: false,
             alarmed: false,
             siren_start_time: 0.0,
+            meta_headlights: None,
             mechanic_ui_open: false,
             is_good_car: false,
             current_key: None,
@@ -683,8 +689,11 @@ impl BaseVehicle {
     pub fn set_transmission(&self, t: Transmission) {
         self.st_mut().transmission_number = t;
     }
+    /// `getHeadlightsOn()`; while a virtual record updates the vehicle
+    /// (the parts' owner is the record), the record's headlights.
     pub fn headlights_on(&self) -> bool {
-        self.st().headlights_on
+        let st = self.st();
+        st.meta_headlights.unwrap_or(st.headlights_on)
     }
     /// `setHeadlightsOn(on)`.
     pub fn set_headlights_on(&self, on: bool) {
@@ -2113,7 +2122,29 @@ impl BaseVehicle {
 
     fn alarm_lights(&self, on: bool) {
         self.st_mut().alarm.lights_on = on;
-        self.set_headlights_on(on);
+        // `onVehicleAlarmEvent(LIGHTS_ON/OFF)` of the listener: the
+        // vehicle, or its virtual record while in the meta.
+        let in_meta = self.st().meta_headlights.is_some();
+        if in_meta {
+            self.st_mut().meta_headlights = Some(on);
+        } else {
+            self.set_headlights_on(on);
+        }
+    }
+
+    /// `VirtualVehicle.update`'s `getParts().update()`.
+    pub(crate) fn update_parts_in_meta(&self) {
+        self.parts_update();
+    }
+
+    /// `VirtualVehicle.update`'s `getVehicleEngine().update()`.
+    pub(crate) fn update_engine_in_meta(&self) {
+        self.engine_update();
+    }
+
+    /// `VirtualVehicle.update`'s `vehicleAlarm.update()`.
+    pub(crate) fn update_alarm_in_meta(&self) {
+        self.alarm_update();
     }
 
     /// `triggerAlarm()`.
@@ -3202,12 +3233,19 @@ impl BaseVehicle {
         if self.st().added_to_world {
             return;
         }
+        // `VehiclesDB2.setVehicleLoaded`: a vehicle without an id gets one.
+        if let Some(ids) = env::vehicle_ids() {
+            let id = ids.borrow_mut().set_vehicle_loaded(self.st().sql_id);
+            self.st_mut().sql_id = id;
+        }
         {
             let mut st = self.st_mut();
             st.added_to_world = true;
             st.removed_from_world = false;
         }
         self.create_physics(false);
+        // `VirtualVehicleManager.removeFromMeta` (single player).
+        crate::virtual_vehicle::with_manager(|m| m.remove_from_meta(self));
         if self.st().lightbar_siren_mode != 0 {
             let m = self.st().lightbar_siren_mode;
             self.set_lightbar_siren_mode(m);
@@ -3226,7 +3264,10 @@ impl BaseVehicle {
     /// `removeFromWorld()` (single player).
     pub fn remove_from_world(&self) {
         self.break_constraint(false, false);
-        env::events().vehicle_unloaded(self);
+        // `VehiclesDB2.setVehicleUnloaded`.
+        if let Some(ids) = env::vehicle_ids() {
+            ids.borrow_mut().set_vehicle_unloaded(self.st().sql_id);
+        }
         // A local player's vehicle stays.
         if self
             .st()

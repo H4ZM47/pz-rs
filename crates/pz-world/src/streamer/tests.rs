@@ -962,3 +962,31 @@ fn vehicles_without_a_script_stay_in_the_chunk() {
     assert!(ev.contains(&"VM 9,10 [] [\"java.lang.NullPointerException\"]".to_string()));
     assert!(only(&ev, "VQ").is_empty());
 }
+
+#[test]
+fn main_thread_updates_are_written_and_meta_rows_load_back() {
+    let mut f = Fixture::new();
+    vehicles_db(&mut f, &[(4, 75.5, 82.5), (2, 73.0, 87.9), (7, 90.5, 91.0)]);
+    let (rows, _) = vehicles_db::chunk_rows(f.vehicles.as_mut().unwrap(), 9, 10).unwrap();
+    // A virtual vehicle that stopped (or a game save) queues its row from
+    // the main thread, at its position in the meta.
+    let mut r4 = rows.into_iter().find(|r| r.id == 4).unwrap();
+    (r4.wx, r4.wy, r4.x, r4.y, r4.in_meta) = (12, 13, 100.25, 110.5, true);
+    let mut s = ChunkStreamer::new(1, 3);
+    s.queue_vehicle_updates([r4]);
+    s.update_vehicles_db(&mut f.ctx());
+    assert_eq!(short(&s.take_events()), ["VQ [4] []"]);
+    let mut conn = f.vehicles.take().unwrap();
+    let r = vehicles_db::load_vehicles_in_meta(Some(&mut conn), &f.save_ctx());
+    assert!(r.removed.is_empty() && r.error.is_none());
+    assert_eq!(r.loaded.len(), 1);
+    assert_eq!(
+        r.loaded[0].origin,
+        crate::chunk_vehicles::VehicleOrigin::Database { sql_id: 4 }
+    );
+    // The original's dummy square: the position within the row's chunk.
+    assert_eq!(r.loaded[0].square, Some((4, 6, 0)));
+    assert!(vehicles_db::load_vehicles_in_meta(None, &f.save_ctx())
+        .loaded
+        .is_empty());
+}
