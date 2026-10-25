@@ -272,7 +272,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `with_chat_manager(|m| m.init(true, player))`; `IngameState.renderframeui`
       calls `ChatElement::render_batch(player)` right after
       `text_draw::render_batch`; Rust callers of the chat fire its queued Lua
-      events with `chat::fire_pending_events(thread)` (#TBD-chat).
+      events with `chat::fire_pending_events(thread)` (#190).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
