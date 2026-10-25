@@ -564,7 +564,7 @@ impl BaseVehicle {
         let tn = self.transmission();
         if tn == Transmission::N {
             self.set_transmission(target);
-        } else if tn.index() - 1 >= 0
+        } else if tn.index() > 0
             && tn.index() < target.index()
             && self.engine_speed() >= rpm_at(tn.index() - 1).gear_change as f64
             && speed >= speed_per_gear * tn.index() as f32
@@ -574,7 +574,7 @@ impl BaseVehicle {
             self.set_engine_speed(after as f64);
         }
         let tn = self.transmission();
-        if tn.index() < gear_count && tn.index() - 1 >= 0 {
+        if tn.index() < gear_count && tn.index() > 0 {
             let cap = (rpm_at(tn.index() - 1).gear_change + 100.0) as f64;
             self.set_engine_speed(self.engine_speed().min(cap));
         }
@@ -658,7 +658,7 @@ impl BaseVehicle {
                 force *= (15.0 + speed) / 10.0;
             }
         }
-        if speed < -1.0 * self.script().unwrap().borrow().max_speed_reverse {
+        if speed < -self.script().unwrap().borrow().max_speed_reverse {
             force = 0.0;
         }
         self.ctrl_mut(|c| {
@@ -725,7 +725,7 @@ impl BaseVehicle {
 
     /// `checkTire(bv)`.
     fn check_tire(&self) {
-        let missing = |id: &str| self.part_by_id(id).map_or(true, |p| !p.has_item());
+        let missing = |id: &str| self.part_by_id(id).is_none_or(|p| !p.has_item());
         let (fl, fr, rl, rr) = (
             missing("TireFrontLeft"),
             missing("TireFrontRight"),

@@ -318,7 +318,7 @@ fn register_vehicle(thread: &mut Thread) {
         v.update_total_mass();
         Value::Nil
     });
-    vmethod!(b, "getSquare", |v, c| Value::Nil);
+    vmethod!(b, "getSquare", |_v, c| Value::Nil);
     vmethod!(b, "windowsOpen", |v, c| Value::Num(v.windows_open() as f64));
     vmethod!(b, "setTireRemoved", |v, c| {
         v.set_tire_removed(int_arg(c, 1), bool_arg(c, 2));
@@ -328,7 +328,7 @@ fn register_vehicle(thread: &mut Thread) {
         v.set_tire_inflation(int_arg(c, 1), num_arg(c, 2) as f32);
         Value::Nil
     });
-    vmethod!(b, "getAnimals", |v, c| Value::Object(Rc::new(
+    vmethod!(b, "getAnimals", |_v, c| Value::Object(Rc::new(
         LuaStringList(Vec::new())
     )));
     vmethod!(b, "isGoodCar", |v, c| Value::Bool(v.is_good_car()));

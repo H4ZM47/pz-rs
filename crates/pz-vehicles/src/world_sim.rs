@@ -184,9 +184,8 @@ pub fn update() {
             f += 14;
             let mut wheels = [[0.0f32; 4]; 4];
             for w in 0..wheel_count.max(0) as usize {
-                let wv = [ff[f], ff[f + 1], ff[f + 2], ff[f + 3]];
-                if w < 4 {
-                    wheels[w] = wv;
+                if let Some(slot) = wheels.get_mut(w) {
+                    *slot = [ff[f], ff[f + 1], ff[f + 2], ff[f + 3]];
                 }
                 f += 4;
             }
@@ -206,11 +205,16 @@ pub fn update() {
             st.jni_transform = t;
             st.jni_linear_velocity = vel;
             st.jni_is_collide = is_collide > 0.5;
-            for m in 0..wheel_count.clamp(0, 4) as usize {
-                st.wheel_info[m].steering = wheels[m][0];
-                st.wheel_info[m].rotation = wheels[m][1];
-                st.wheel_info[m].skid_info = wheels[m][2];
-                st.wheel_info[m].suspension_length = wheels[m][3];
+            for (info, w) in st
+                .wheel_info
+                .iter_mut()
+                .zip(wheels.iter())
+                .take(wheel_count.clamp(0, 4) as usize)
+            {
+                info.steering = w[0];
+                info.rotation = w[1];
+                info.skid_info = w[2];
+                info.suspension_length = w[3];
             }
         }
     }

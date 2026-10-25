@@ -273,15 +273,17 @@ impl BaseVehicle {
         if self.st().removed_from_world || self.st().current.is_none() || !self.has_controller() {
             return false;
         }
-        let mut t = VehiclePoly::default();
-        t.x1 = x as f32;
-        t.x4 = x as f32;
-        t.y1 = y as f32;
-        t.y2 = y as f32;
-        t.x2 = x as f32 + 1.0;
-        t.x3 = x as f32 + 1.0;
-        t.y3 = y as f32 + 1.0;
-        t.y4 = y as f32 + 1.0;
+        let t = VehiclePoly {
+            x1: x as f32,
+            x4: x as f32,
+            y1: y as f32,
+            y2: y as f32,
+            x2: x as f32 + 1.0,
+            x3: x as f32 + 1.0,
+            y3: y as f32 + 1.0,
+            y4: y as f32 + 1.0,
+            ..Default::default()
+        };
         poly_poly_intersects(&t, &self.poly())
     }
 

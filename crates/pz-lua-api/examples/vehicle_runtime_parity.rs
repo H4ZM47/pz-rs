@@ -409,15 +409,17 @@ fn parse_hex_d(s: &str) -> f64 {
 fn apply_time(line: &str) {
     let t: Vec<&str> = line.split(' ').collect();
     env::set_now_ms(t[2].parse().unwrap());
-    let mut g = GameTimeState::default();
-    g.multiplier = parse_hex_f(t[3]);
-    g.time_delta = parse_hex_f(t[4]);
-    g.thirty_fps_multiplier = parse_hex_f(t[5]);
-    g.inv_multiplier = parse_hex_f(t[6]);
-    g.unmodded_multiplier = parse_hex_f(t[7]);
-    g.physics_seconds_since_last_update = parse_hex_f(t[8]);
-    g.world_age_hours = parse_hex_d(t[9]);
-    g.delta_minutes_per_day = parse_hex_f(t[10]);
+    let g = GameTimeState {
+        multiplier: parse_hex_f(t[3]),
+        time_delta: parse_hex_f(t[4]),
+        thirty_fps_multiplier: parse_hex_f(t[5]),
+        inv_multiplier: parse_hex_f(t[6]),
+        unmodded_multiplier: parse_hex_f(t[7]),
+        physics_seconds_since_last_update: parse_hex_f(t[8]),
+        world_age_hours: parse_hex_d(t[9]),
+        delta_minutes_per_day: parse_hex_f(t[10]),
+        ..Default::default()
+    };
     env::set_time(g);
 }
 
@@ -623,7 +625,7 @@ fn main() {
     }
 
     if a[5] == "--spawn" {
-        pz_vehicles::lua::with_thread(&mut lua.thread, || run_spawn(&oracle, &sandbox_lines));
+        pz_vehicles::lua::with_thread(&mut lua.thread, || run_spawn(oracle, &sandbox_lines));
         return;
     }
 

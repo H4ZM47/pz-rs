@@ -36,7 +36,7 @@ impl JavaRandom {
     /// `bound <= 0`.
     pub fn next_int(&self, bound: i32) -> i32 {
         assert!(bound > 0, "bound must be positive");
-        if bound & bound.wrapping_neg() == bound {
+        if (bound as u32).is_power_of_two() {
             return ((bound as i64 * self.next(31) as i64) >> 31) as i32;
         }
         loop {
