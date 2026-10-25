@@ -341,6 +341,7 @@ impl Gpu {
         let screen = module("screen", include_str!("screen.wgsl").to_string());
         let surface = module("surface", include_str!("surface.wgsl").to_string());
         let particles = module("particles", include_str!("particles.wgsl").to_string());
+        let fog = module("fog", include_str!("fog.wgsl").to_string());
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -395,6 +396,7 @@ impl Gpu {
             world_composite,
             surface,
             particles,
+            fog,
             screen,
         };
         let depth_stencil = depth_stencil_view(&device, width, height);
@@ -1077,6 +1079,39 @@ impl Gpu {
                 let g = f.globals(&self.state, m, 0.5);
                 let key = self.key(f, Program::FogCircle);
                 f.push(key, sprite.texture.as_ref().and_then(|t| t.id), Tex2::None, &self.state, g, sprite_vertices(sprite));
+            }
+            DrawCmd::ImprovedFog(d) => {
+                // ImprovedFogDrawer.render: blend 770/771, depth test LESS
+                // without writes, then GLStateRenderThread.restore.
+                let saved = self.state.clone();
+                self.state.blend = true;
+                self.state.blend_func = [gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA, gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA];
+                self.state.depth_test = true;
+                self.state.depth_func = gl::LESS;
+                self.state.depth_mask = false;
+                self.state.alpha_test = false;
+                let flip = if f.target == PassTarget::Main { f.viewport.1 as f32 } else { 0.0 };
+                let key = self.key(f, Program::Fog);
+                let tex = d.noise.as_ref().and_then(|t| t.id);
+                let color = pz_render::color_to_abgr(1.0, 1.0, 1.0, d.alpha);
+                for (i, r) in d.rects.iter().enumerate() {
+                    let u = d.uniforms(i);
+                    let mut g = Globals::zeroed();
+                    g.mvp = f.mvp_for_target();
+                    g.alpha_func = 8;
+                    g.clip_z = 0.5;
+                    g.extra = flip;
+                    g.screen = [u.screen_info, u.rectangle_info];
+                    let c = u.color_info;
+                    g.surface = [u.world_offset, u.param_info, u.camera_info, [c[0], c[1], c[2], u.texture_info[2]], [u.scaling_info[0], u.scaling_info[1], u.texture_info[0], u.texture_info[3]]];
+                    let gi = f.push_globals(g);
+                    let [sx, sy, ex, ey] = r.pos;
+                    let [u0, v0, u1, v1] = r.uv;
+                    let corner = |x: f32, y: f32, uu: f32, vv: f32, d: f32| Vertex { pos: [x, y], uv: [uu, vv], color, uv1: [0.0; 2], uv2: [0.0; 2], depth: [d, 0.0] };
+                    let v = [corner(sx, sy, u0, v0, r.depth[0]), corner(ex, sy, u1, v0, r.depth[1]), corner(ex, ey, u1, v1, r.depth[2]), corner(sx, ey, u0, v1, r.depth[3])];
+                    f.push_split(key, tex, Tex2::None, &self.state, gi, v, true);
+                }
+                self.state = saved;
             }
             DrawCmd::Model(d) => {
                 if d.alpha < 0.01 {

@@ -51,11 +51,13 @@ pub enum Program {
     ProjectedF32,
     /// `fogCircle` (`IsoWeatherFX.renderFogCircle`).
     FogCircle,
+    /// `fog` (`FogShader`, `ImprovedFogDrawer`).
+    Fog,
 }
 
 impl Program {
     pub fn uses_world_shader(self) -> bool {
-        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::ProjectedDepth | Program::Seam | Program::Cutaway | Program::DepthAtlas | Program::Surface(_) | Program::Particles(_) | Program::CutawayNoDepth | Program::ProjectedF32)
+        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::ProjectedDepth | Program::Seam | Program::Cutaway | Program::DepthAtlas | Program::Surface(_) | Program::Particles(_) | Program::CutawayNoDepth | Program::ProjectedF32 | Program::Fog)
     }
 }
 
@@ -239,6 +241,8 @@ pub struct Programs {
     pub surface: wgpu::ShaderModule,
     /// `particles.wgsl`: fire and smoke particles.
     pub particles: wgpu::ShaderModule,
+    /// `fog.wgsl`: `ImprovedFog`.
+    pub fog: wgpu::ShaderModule,
     pub screen: wgpu::ShaderModule,
     pub sprite_layout: wgpu::PipelineLayout,
     pub tile_layout: wgpu::PipelineLayout,
@@ -288,11 +292,13 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::WorldDefault | Program::Projected | Program::ProjectedDepth | Program::ProjectedF32 => (&programs.world_tile, &programs.sprite_layout),
         Program::Default | Program::Clear | Program::FogCircle => (&programs.sprite, &programs.sprite_layout),
         Program::Screen => (&programs.screen, &programs.sprite_layout),
+        Program::Fog => (&programs.fog, &programs.sprite_layout),
     };
     let (vs, fs) = match key.program {
         Program::Default => ("vs_main", "fs_main"),
         Program::Clear => ("vs_main", "fs_clear"),
         Program::FogCircle => ("vs_main", "fs_fog_circle"),
+        Program::Fog => ("vs_fog", "fs_fog"),
         Program::WorldDefault => ("vs_world", "fs_default"),
         Program::TileDepth => ("vs_world", "fs_tile"),
         Program::OpaqueDepth => ("vs_world", "fs_opaque"),
