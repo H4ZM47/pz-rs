@@ -278,13 +278,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       supplies `IsoPlayer.players[0]` (characters thread), the square Lua
       objects, door adjacency, entity UIs and corpses (`isMouseOver`).
       Sprite models (`renderModel` → `updateRenderInfoForObjectPicker`) are
-      not recorded yet (world-render thread) (#PRNUM).
+      not recorded yet (world-render thread) (#198).
 - [ ] HUD camera: create one `pz_world_render::SharedCameraFrame`, call
       `install_hud_camera(frame.clone())` after the HUD host is installed,
       and each frame set `cameras[i]` to each player's `Camera`,
       `player_index` (`IsoPlayer.getPlayerIndex()`) and
       `frame_player_index` (`IsoCamera.frameState.playerIndex`) before the
-      HUD updates and renders (world-render thread) (#PRNUM).
+      HUD updates and renders (world-render thread) (#198).
 - [ ] Health panel: `HudBodyDamage` (`isFemale`, `getBodyDamage().getHealth()`,
       each `BodyPart`'s wound state as a `BodyPartView`; the remote
       `getBodyDamageRemote()` for another MP player; characters thread) and
