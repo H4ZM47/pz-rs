@@ -310,6 +310,9 @@ impl ItemRegistry for RawOnly<'_> {
     fn blood_body_parts(&self) -> usize {
         self.0.blood_body_parts
     }
+    fn script_dictionary_name(&self, register: &str, id: i16) -> Option<Option<String>> {
+        self.0.script_dictionary_name(register, id)
+    }
 }
 
 fn conts<'a>(it: impl Iterator<Item = &'a ItemContainer>) -> String {
@@ -639,6 +642,8 @@ fn main() {
         .expect("built-in registries");
     sm.load(&pz_fs::GameFs::new(game.to_str().unwrap()), &[])
         .expect("scripts");
+    // ScriptManager.PostTileDefinitions: the SpriteConfigManager entries.
+    sprites.post_tile_definitions(&pz_world::sprite::EntitySpriteConfig::from_scripts(&sm));
     let dict = WorldDictionary::load(&std::fs::read(save_dir.join("WorldDictionary.bin")).unwrap())
         .unwrap();
     let names = pz_inventory::factory::parse_item_names(

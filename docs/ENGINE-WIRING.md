@@ -91,6 +91,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       leaving the game. Then `UIManager.init` (`hud::init_ui`) builds the
       in-game HUD.
 
+- [ ] `IsoWorld.init` → `ScriptManager.PostTileDefinitions`: after the
+      tile definitions and the scripts, call
+      `sprites.post_tile_definitions(&pz_world::sprite::EntitySpriteConfig::from_scripts(&sm))`
+      (sets `EntityScriptName` and builds the `SpriteConfigManager` entries
+      chunk loads use for `SpriteConfig`'s master flag; the save's
+      `ScriptItems` answers the `SpriteConfigs` register) (window byte).
+
 ## Per frame (`GameWindow.logic` / `render`)
 - [ ] Input: every winit event → `pz_input::winit::handle`; before
       `UIManager::update` call `bind_input::update(&mut mgr, secs)`, after it

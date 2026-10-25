@@ -110,6 +110,13 @@ pub trait ItemEnv {
         None
     }
 
+    /// The script `ScriptsDictionary.<register>.getInfoForID(id)` names
+    /// (its full type): `None` when there is no dictionary, `Some(None)`
+    /// when the id is not registered.
+    fn script_dictionary_name(&self, _register: &str, _id: i16) -> Option<Option<String>> {
+        None
+    }
+
     /// `Rand.Next(bound)`. The default returns 0; the game's generator is
     /// not seeded here.
     fn rand_next(&self, _bound: i32) -> i32 {

@@ -14,6 +14,7 @@ pz-inventory.workspace = true
 pz-kahlua.workspace = true
 pz-classfile.workspace = true
 pz-entity.workspace = true
+pz-scripts.workspace = true
 pz-sqlite.workspace = true
 
 [dev-dependencies]
