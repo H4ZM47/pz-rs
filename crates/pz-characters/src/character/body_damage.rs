@@ -623,7 +623,7 @@ fn stat(chars: &Characters, f: &str) -> ScriptResult<CharacterStatRef> {
     chars.sim.character_stats.field(f)
 }
 
-impl<I> GameCharacter<I> {
+impl<I: 'static> GameCharacter<I> {
     fn moodle(&self, sm: &ScriptManager, field: &str) -> ScriptResult<i32> {
         self.moodles.moodle_level_of(sm, field)
     }

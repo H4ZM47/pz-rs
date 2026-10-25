@@ -1136,7 +1136,7 @@ impl Thermoregulator {
     }
 }
 
-impl<I> GameCharacter<I> {
+impl<I: 'static> GameCharacter<I> {
     /// `BodyDamage.Update`'s `if (thermoregulator != null)
     /// thermoregulator.update()`.
     pub fn thermoregulator_update(
@@ -1172,4 +1172,4 @@ impl<I> GameCharacter<I> {
 
 #[cfg(test)]
 #[path = "body_tests.rs"]
-mod body_tests;
+pub(crate) mod body_tests;

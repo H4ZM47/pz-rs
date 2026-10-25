@@ -510,6 +510,64 @@ Status of the Rust port. Update this file with every merged change.
   zombies goes through `PopulationHost`, which waits on `IsoZombie` and
   `VirtualZombieManager`.
 
+- Character simulation core (`pz-characters::character`): `Stats`,
+  `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
+  and perk levels, `applyTraits`, `calculateStats` and the stat part of
+  `updateInternal`, with Lua bindings. A scripted headless run (XP with
+  boosts/traits/multipliers, `applyTraits`, stat clamps, 300 moodle ticks,
+  200 `calculateStats` ticks awake and asleep) matches the original bit for
+  bit (checked locally). BodyDamage is a stub.
+- `Nutrition`, `Thermoregulator` (thermal nodes, clothing insulation,
+  metabolic rate from the jar's `Metabolics`, cold damage) and `Fitness`
+  (regularity, stiffness, exercise XP; exercises read from Lua's
+  `FitnessExercises`), with Lua bindings. Scripted headless runs (7000
+  nutrition updates with meals, starvation and weight traits; 3000 combined
+  thermoregulator/moodle/nutrition/fitness ticks with clothing, wetness,
+  climate and exercise; 6000 extreme cold/heat ticks; profession
+  regularities and 400 repetitions) match the original bit for bit
+  (checked locally). Climate readings, worn clothing and body-part
+  wetness/stiffness are inputs until those systems are ported.
+
+- BodyDamage (`pz-characters::character::body_damage`, `body_part`):
+  `BodyDamage`, `BodyPart`, `BodyPartLast`, `BodyPartContacts` and
+  `BodyPartType`'s statics over the jar table: injuries, bandages,
+  stitches, splints, infection/zombification, bleeding, healing, pain,
+  cold, food/pill effects, save/load and `BodyDamage.Update`, with Lua
+  bindings (`getBodyDamage`, `BodyDamage`, `BodyPart`). A headless run of
+  two players over 2400 ticks of scripted injuries plus a save/load matches
+  the original bit for bit (checked locally). Food, pills, literature,
+  weapons, the worn clothing (defense, spikes, dirt/blood, insulation,
+  `ClothingWetness`), hand items (tissues, no-sprint) and the inventory
+  weight are `pz-inventory` items on the character; the zombie side of an
+  attack is still plain data. Eating, drinking, pills, clothing defense
+  queries, inventory weight and weapon hits on real game items match the
+  original's state bit for bit (checked locally).
+- `pz-clipper6`: the polygon code of the native pathfinder (Clipper 6.4.2,
+  earcut.hpp and the game's `PZClipper` wrapper) in pure Rust. Local
+  differential run against the shipped arm64 library: 1.15 million random
+  cases bit-identical.
+
+- Character state machine (`pz-characters::character::state`, `states`,
+  `combat`): `State`/`StateMachine`/`State.Param`/`StateMachineComponent`,
+  the action system (`ActionGroup` from `media/actiongroups`,
+  `ActionState`, `ActionTransition`, the variable/event/Lua conditions,
+  `ActionContext`), the character's animation variables (game variables
+  plus the `IsoGameCharacter`/`IsoLivingCharacter`/`IsoPlayer` callback
+  slots, as `pz_anim::AnimationVariableSource`), anim-event routing
+  (`OnAnimEvent`), `pz_pathfind`'s `PathMover`/`PlayerMover` for
+  characters, the player states (`IdleState`, `SwipeStatePlayer`,
+  `StaggerBackState`, knocked down, fall down, hit reactions, get up,
+  collide, aim, strafe) and the melee combat helpers (`Hit`,
+  `processHitDamage`, `hitConsequences`, crit chance, endurance, damage
+  split), with Lua bindings (`bind_states`, `bind_combat`). A seeded run of
+  the real `player`, `zombie` and `zombie-crawler` action groups (6000
+  scripted variable/event steps plus every state's sorted transition list)
+  and 48 weapon/perk/trait setups of the combat helpers (weapon type and
+  mods, crit chance, `processHitDamage` on zombie and player targets,
+  endurance loss, a full `Hit` on a player) match the original bit for bit
+  (checked locally). Climbing, window, sitting and timed-action states are
+  stand-ins; ranged combat and target bones are TODO.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 

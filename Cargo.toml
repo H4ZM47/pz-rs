@@ -23,12 +23,13 @@ pz-ui = { path = "crates/pz-ui" }
 pz-lua-api = { path = "crates/pz-lua-api" }
 pz-engine = { path = "crates/pz-engine" }
 pz-world = { path = "crates/pz-world" }
-pz-characters = { path = "crates/pz-characters" }
 pz-clipper = { path = "crates/pz-clipper" }
 pz-sqlite = { path = "crates/pz-sqlite" }
 pz-core = { path = "crates/pz-core" }
 pz-lighting = { path = "crates/pz-lighting" }
 pz-inventory = { path = "crates/pz-inventory" }
+pz-characters = { path = "crates/pz-characters" }
+pz-anim = { path = "crates/pz-anim" }
 pz-clipper6 = { path = "crates/pz-clipper6" }
 pz-pathfind = { path = "crates/pz-pathfind" }
 pz-worldgen = { path = "crates/pz-worldgen" }

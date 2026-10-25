@@ -54,6 +54,7 @@ to Rust with the original semantics and the same Lua-facing API.
 | `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |
 | `pz-clipper` | `zombie.vehicles.Clipper`/`ClipperOffset` native library (Clipper2 1.5.4, earcut.hpp; see its README for licenses) |
 | `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |
+| `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |
 | `pz-clipper6` | `PZClipper` + Clipper 6.4.2 + earcut inside the native pathfinder (`libPZPathFind`) |
 | `pz-client` | desktop binary |
 

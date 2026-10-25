@@ -113,7 +113,7 @@ impl XP {
     }
 }
 
-impl<I> GameCharacter<I> {
+impl<I: 'static> GameCharacter<I> {
     // ---- perk levels ----------------------------------------------------
 
     /// `getPerkInfo`.

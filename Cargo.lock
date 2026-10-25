@@ -1625,10 +1625,13 @@ dependencies = [
 name = "pz-characters"
 version = "0.1.0"
 dependencies = [
+ "pz-anim",
  "pz-core",
  "pz-fs",
  "pz-inventory",
+ "pz-pathfind",
  "pz-scripts",
+ "pz-world",
  "quick-xml",
 ]
 
@@ -1767,6 +1770,7 @@ name = "pz-lua-api"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "pz-anim",
  "pz-characters",
  "pz-classfile",
  "pz-core",

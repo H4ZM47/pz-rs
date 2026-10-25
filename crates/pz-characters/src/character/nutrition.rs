@@ -290,7 +290,7 @@ struct CaloriesInputs {
     asleep: bool,
 }
 
-impl<I> GameCharacter<I> {
+impl<I: 'static> GameCharacter<I> {
     /// `Nutrition.update` (players only; nothing without a `Nutrition`).
     pub fn nutrition_update(&mut self, sm: &ScriptManager, _chars: &Characters, ctx: &dyn SimContext) -> ScriptResult {
         if !ctx.nutrition_enabled() {

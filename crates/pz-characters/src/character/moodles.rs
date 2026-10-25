@@ -643,7 +643,7 @@ impl Moodles {
     }
 }
 
-impl<I> GameCharacter<I> {
+impl<I: 'static> GameCharacter<I> {
     /// `getMoodles().Update()`.
     pub fn update_moodles(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext) -> ScriptResult {
         let mut moodles = std::mem::take(&mut self.moodles.moodles);

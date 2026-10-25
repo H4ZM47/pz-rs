@@ -42,6 +42,9 @@ pub(crate) const TRAITS: &[&str] = &[
     "CLAUSTROPHOBIC",
     "IRON_GUT",
     "WEAK_STOMACH",
+    "ASTHMATIC",
+    "STRONG",
+    "WEAK",
 ];
 
 const STATS: &[&str] = &[

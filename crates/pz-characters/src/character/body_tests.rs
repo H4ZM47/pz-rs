@@ -15,7 +15,7 @@ use super::{true_insulation_value, BODY_PARTS};
 use crate::Characters;
 
 /// The fixture plus invented body parts and metabolics.
-fn body_fixture() -> (ScriptManager, Characters) {
+pub(crate) fn body_fixture() -> (ScriptManager, Characters) {
     let (sm, mut chars) = fixture();
     {
         let mut t = sm.builtin_tables.borrow_mut();
