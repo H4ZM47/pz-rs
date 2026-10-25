@@ -1933,6 +1933,7 @@ dependencies = [
  "pz-lua-api",
  "pz-model",
  "pz-render",
+ "pz-scripts",
  "pz-ui",
  "winit",
 ]
