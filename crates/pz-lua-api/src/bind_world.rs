@@ -308,6 +308,12 @@ fn square_key(x: i32, y: i32, z: i32) -> Option<Key> {
     square_exists(x, y, z).then_some(Key::Square(x, y, z))
 }
 
+/// The `IsoGridSquare` Lua object at `(x, y, z)` of the current cell
+/// (`nil` when the cell has no square there), e.g. for event arguments.
+pub fn square_value(x: i32, y: i32, z: i32) -> Value {
+    opt(square_key(x, y, z))
+}
+
 /// Method returning one value.
 fn get(
     b: &ClassBuilder,

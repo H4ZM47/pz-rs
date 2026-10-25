@@ -96,7 +96,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       (`bind_players::player_index`, the HUD's `player_index`) reads it, or
       `assumedPlayer` (`set_assumed_player`) without an instance (#177).
 
-- [ ] `IsoWorld.init` → `ScriptManager.PostTileDefinitions`: after the
+- [x] `IsoWorld.init` → `ScriptManager.PostTileDefinitions`: after the
       tile definitions and the scripts, call
       `sprites.post_tile_definitions(&pz_world::sprite::EntitySpriteConfig::from_scripts(&sm))`
       (sets `EntityScriptName` and builds the `SpriteConfigManager` entries
@@ -168,7 +168,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       calls `AnimalDefinitions.getAnimalDefs()` (which loads the genome
       definitions); tracks reload where `IsoWorld` calls
       `loadTracksDefinitions` (#191).
-- [ ] `GameLoadingState.enter`: `bind_video::release_all_video_textures()`
+- [x] `GameLoadingState.enter`: `bind_video::release_all_video_textures()`
       (`LuaManager.releaseAllVideoTextures`, after `WorldMapImages.Reset` /
       `WorldMapVisited.Reset`) closes and destroys every texture `getVideo`
       returned (#159).
@@ -197,7 +197,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `pz_inventory::shared::new_item` (or `SharedContainer::fill_from`, which
       `shared::load_into` now calls) so a bag's inventory gets its
       `containingItem` (#185).
-- [ ] End of `GameLoadingState`: `hud::init_ui(&mut thread)` (the in-game
+- [x] End of `GameLoadingState`: `hud::init_ui(&mut thread)` (the in-game
       HUD, then `OnCreateUI`) before `OnCreatePlayer` (#144).
 - [ ] `IngameState` per player: `hud::update_progress_bar(n)` in the update
       and `hud::render_progress_bar(&mut thread, n)` after the player's
@@ -362,25 +362,25 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 World load, in the original's order (`GameLoadingState.enter` loads the
 server Lua first, so `ClimateMain.lua`'s `OnClimateManagerInit` handler is
 registered):
-- [ ] `GameTime.setInstance(new GameTime())`: `bind_climate::install_game_time`.
-- [ ] `ClimateManager.setInstance(new ClimateManager())`:
+- [x] `GameTime.setInstance(new GameTime())`: `bind_climate::install_game_time`.
+- [x] `ClimateManager.setInstance(new ClimateManager())`:
       `bind_climate::new_climate_manager(thread)` (fires
       `OnClimateManagerInit`; `ClimateMain.lua` sets the season colours, without
       which the global light stays black).
-- [ ] `IsoWorld.init`: `GameTime.init` then `GameTime.load`
+- [x] `IsoWorld.init`: `GameTime.init` then `GameTime.load`
       (`game_time_save::load_map_t_file`; the climate part keeps the colours);
       `ErosionGlobals.Boot` → `bind_climate::start_erosion_season(thread,
       &SeasonConfig, sandbox Temperature)` (`OnInitSeasons`); after
       `metaGrid.CreateStep2`, `bind_climate::init_climate_manager(thread,
       Some((meta.min_x, meta.min_y, meta.max_x, meta.max_y)))`.
-- [ ] `IsoWorld.init`, after `GameEntityManager.Init` and before
+- [x] `IsoWorld.init`, after `GameEntityManager.Init` and before
       `metaGrid.CreateStep2` (between the erosion boot and
       `init_climate_manager` above): `PersistentOutfits.instance.init()` =
       `bind_zombie_outfits::init_persistent_outfits(thread,
       Some((&save_dir.join("z_outfits.bin"), core.no_save)))` (Lua's
       `ZombiesZoneDefinition` must have run); keep the returned outfit names
       for `WorldPopulation::init` (#147).
-- [ ] `IsoWorld.init`, after `OnLoadedMapZones` and before the cell load:
+- [x] `IsoWorld.init`, after `OnLoadedMapZones` and before the cell load:
       `pz_world_popman::WorldPopulation::init(native, &meta,
       &save_game_state(save_dir) + sandbox/mode fields, &ZombieConfig,
       outfit names)` (`MapCollisionData.init` then
@@ -539,7 +539,7 @@ registered):
       writes `thumb.png`, then the renderer reloads that texture.
       `map_animals.bin` and the queued `metagrid/metacell_*.bin` are
       written with `map_zone.bin` (#167).
-- [ ] Game load (`IsoWorld.init`): `world_gen.load_file(save_dir)`
+- [x] Game load (`IsoWorld.init`): `world_gen.load_file(save_dir)`
       where `WorldGenParams.INSTANCE.load()` runs; after
       `GlobalModData.init`, `instance_tracker.load_file(save_dir,
       no_save)`; after `map_zone.bin`,

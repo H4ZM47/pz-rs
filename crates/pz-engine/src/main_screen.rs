@@ -1,6 +1,7 @@
 //! `zombie.gameStates.MainScreenState`: the title screen's own drawing
 //! (background, lightning, logo) around the Lua main menu.
 
+use crate::game_state::{GameState, StateAction, StateCx};
 use pz_lua_api::bind_video::{VideoRef, VideoTexture};
 use pz_lua_api::LuaManager;
 use pz_render::{DrawList, Rgba, Texture};
@@ -193,5 +194,33 @@ impl MainScreenState {
             }
         }
         out.blend_func(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
+}
+
+impl GameState for MainScreenState {
+    fn class_name(&self) -> &'static str {
+        "zombie.gameStates.MainScreenState"
+    }
+
+    fn enter(&mut self, cx: &mut StateCx<'_>) {
+        MainScreenState::enter(self, cx.lua, cx.screen_w, cx.screen_h);
+    }
+
+    /// `exit()`: TODO(port): the blocking 250 ms fade (`fadeAlpha`, which
+    /// renders frames from inside `exit`), `ServerBrowser.Release`, and
+    /// the music stop and volume restore; then the video closes.
+    fn exit(&mut self, _cx: &mut StateCx<'_>) {
+        self.exit_video();
+    }
+
+    fn update(&mut self, cx: &mut StateCx<'_>) -> StateAction {
+        // TODO(port): `connectToServerState`, `restartDebounceClickTimer`,
+        // `DebugFileWatcher`.
+        MainScreenState::update(self, cx.lua, cx.multiplier);
+        StateAction::Remain
+    }
+
+    fn render(&mut self, cx: &mut StateCx<'_>, out: &mut DrawList) {
+        MainScreenState::render(self, cx.lua, out, cx.screen_w, cx.screen_h, cx.multiplier);
     }
 }
