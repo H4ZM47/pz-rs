@@ -891,6 +891,22 @@ registered):
       culled, has_active_model))`; from saves,
       `corpse::died_bone_transforms_from_saved(n, &ragdoll bones)` with
       pz-world's `IsoDeadBody.ragdoll` (#142).
+- [ ] Radio: keep one `pz_radio::ZomboidRadio` per world
+      (`ZomboidRadio::new(GameTime hour)`, with the game mode set) and
+      implement `RadioWorld` (GameTime hour / nightsSurvived / multiplier,
+      `SandboxOptions.timeSinceApo`, `Core.gameMode`, weather
+      interference, the current save dir or `None` for no-save, local
+      players and registered devices, `AddDeviceText`, the
+      `OnLoadRadioScripts` / `OnInitRecordedMedia` Lua events). In
+      `IsoWorld.init` call `init(savedWorldVersion or -1, &RadioSource
+      { media dir, mods, language }, translator getText, world, Rand)`;
+      call `update_scripts(hour, minute)` from `GameTime` on every
+      ten-minute change, `update` once per frame in `IngameState`, `save`
+      from `GameWindow` world saving, and drop the radio on
+      `IngameState` exit (`Reset`), carrying `louisville_obfuscation`
+      over (a static in the original). Devices call `register_device` /
+      `unregister_device`; DeviceData preset generation takes the radio
+      as its `ChannelLists` (#200).
 
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);

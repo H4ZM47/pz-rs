@@ -1,0 +1,9 @@
+[package]
+name = "pz-radio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-inventory.workspace = true
+indexmap.workspace = true
+quick-xml.workspace = true
