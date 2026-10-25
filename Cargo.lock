@@ -1833,6 +1833,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-animals"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "pz-fs",
+ "pz-kahlua",
+ "pz-world",
+]
+
+[[package]]
 name = "pz-audio"
 version = "0.1.0"
 dependencies = [
