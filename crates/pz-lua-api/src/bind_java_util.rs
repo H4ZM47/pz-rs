@@ -271,6 +271,25 @@ impl JavaList {
         self.items.borrow().clone()
     }
 
+    /// `add(v)` from the engine (a result list passed in from Lua).
+    pub fn push(&self, v: Value) -> LuaResult<()> {
+        self.refresh();
+        self.check_writable()?;
+        self.items.borrow_mut().push(v);
+        self.commit()
+    }
+
+    /// `size()`.
+    pub fn len(&self) -> usize {
+        self.refresh();
+        self.items.borrow().len()
+    }
+
+    /// `isEmpty()`.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     fn check_writable(&self) -> LuaResult<()> {
         match &self.live {
             Some(Live { write: None, .. }) => Err(unsupported()),

@@ -21,6 +21,7 @@ pub mod light;
 pub mod lua_table;
 pub mod model;
 pub mod saved;
+pub mod shared;
 pub mod template;
 pub mod visual;
 
@@ -31,6 +32,7 @@ pub use context::{ItemContext, ItemOwner, ItemPlace, WetDryState};
 pub use env::ItemEnv;
 pub use item::{InventoryItem, ItemKind};
 pub use saved::SavedItem;
+pub use shared::{ContainerRef, SharedContainer};
 pub use template::{ItemClass, ItemTemplate};
 
 #[cfg(test)]

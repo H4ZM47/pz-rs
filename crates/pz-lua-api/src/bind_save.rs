@@ -607,6 +607,107 @@ pub fn register(mgr: &mut LuaManager) {
     fs_global(mgr, "getMapInfo", map_info);
 
     register_save_changes(mgr);
+    register_last_stand(mgr);
+}
+
+/// `GlobalObject.getLastStandPlayersDirectory()`.
+const LAST_STAND_DIR: &str = "LastStand";
+
+/// `LuaManager.getLuaCacheDir()`: `<cache>/Lua`, created (one level) when
+/// missing.
+fn lua_cache_dir(fs: &RefCell<GameFs>) -> String {
+    let cache = fs.borrow().cache_dir().to_string_lossy().into_owned();
+    let dir = format!("{cache}{SEP}Lua");
+    if !std::path::Path::new(&dir).exists() {
+        let _ = std::fs::create_dir(&dir);
+    }
+    dir
+}
+
+/// `<Lua cache>/LastStand` with its separators made native, created (one
+/// level) when missing, as `getLastStandPlayerFileNames` and
+/// `getAllSavedPlayers` build it.
+fn last_stand_dir(fs: &RefCell<GameFs>) -> String {
+    let dir = format!("{}{SEP}{LAST_STAND_DIR}", lua_cache_dir(fs))
+        .replace(['/', '\\'], &SEP.to_string());
+    if !std::path::Path::new(&dir).exists() {
+        let _ = std::fs::create_dir(&dir);
+    }
+    dir
+}
+
+/// `File.listFiles()`: the entries in directory order (unsorted), or the
+/// `NullPointerException` the for-each loop over a null array throws when
+/// the path is not a readable directory.
+fn list_files(dir: &str) -> LuaResult<Vec<std::fs::DirEntry>> {
+    let rd = std::fs::read_dir(dir).map_err(|_| null_pointer())?;
+    Ok(rd.flatten().collect())
+}
+
+/// The LastStand player-file globals of `LuaManager.GlobalObject`
+/// (`LastStandPlayerSelect`, `LastStandSetup`).
+fn register_last_stand(mgr: &mut LuaManager) {
+    global(&mut mgr.thread, "getLastStandPlayersDirectory", |c| {
+        Ok(c.push(LAST_STAND_DIR))
+    });
+
+    // `LastStand/<name>` for each regular `.txt` file, in listing order.
+    fs_global(mgr, "getLastStandPlayerFileNames", |_, fs| {
+        let mut result = Vec::new();
+        for e in list_files(&last_stand_dir(fs))? {
+            let name = e.file_name().to_string_lossy().into_owned();
+            // `File.isDirectory()` follows links.
+            if e.path().is_dir() || !name.ends_with(".txt") {
+                continue;
+            }
+            result.push(Value::from(format!("{LAST_STAND_DIR}{SEP}{name}")));
+        }
+        Ok(list_value(result))
+    });
+
+    // Deprecated: a `BufferedReader` per entry (`FileReader` on a
+    // directory throws).
+    fs_global(mgr, "getAllSavedPlayers", |_, fs| {
+        let mut result = Vec::new();
+        for e in list_files(&last_stand_dir(fs))? {
+            let path = e.path();
+            let shown = path.to_string_lossy().into_owned();
+            if path.is_dir() {
+                return Err(java_error(
+                    format!("{shown} (Is a directory)"),
+                    "java.io.FileNotFoundException",
+                ));
+            }
+            let bytes = std::fs::read(&path).map_err(|e| {
+                java_error(format!("{shown} ({e})"), "java.io.FileNotFoundException")
+            })?;
+            result.push(crate::bind_misc::reader_value(&String::from_utf8_lossy(
+                &bytes,
+            )));
+        }
+        Ok(list_value(result))
+    });
+
+    // `<Lua cache>/LastStand/player<fileName>.txt` (the LastStand folder is
+    // not created here).
+    fs_global(mgr, "deletePlayerSave", |c, fs| {
+        let name = string_arg(c, 0);
+        if has_relative_path(&name) {
+            return Ok(Value::Nil);
+        }
+        let path = format!(
+            "{}{SEP}{LAST_STAND_DIR}{SEP}player{name}.txt",
+            lua_cache_dir(fs)
+        )
+        .replace(['/', '\\'], &SEP.to_string());
+        // `File.delete()` also removes an empty directory.
+        if std::path::Path::new(&path).is_dir() {
+            let _ = std::fs::remove_dir(&path);
+        } else {
+            let _ = std::fs::remove_file(&path);
+        }
+        Ok(Value::Nil)
+    });
 }
 
 fn null_pointer() -> LuaError {
