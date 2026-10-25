@@ -10,6 +10,8 @@
 //!   squares.
 //! - [`fire_lights`]: fires' and fireplaces' light sources in the cell's
 //!   light list ([`WorldLighting::add_lamppost`] and friends).
+//! - [`weather_mask`]: the weather mask's `FxMaskWorld` over the render
+//!   squares and `pz_world::isoregion` world regions.
 //! - [`hooks`] and [`settings`]: inputs owned by other systems (thumpables,
 //!   barricades, power, torches; `RenderSettings`/`ClimateManager`).
 //! - [`state_light`]: the light the character states read
@@ -32,6 +34,7 @@ pub mod render_world;
 pub mod settings;
 pub mod sprites;
 pub mod state_light;
+pub mod weather_mask;
 
 pub use fire_lights::{fireplace_input, FireLightLinks, HearthLink, LightLink};
 pub use hooks::{NoWorldHooks, WorldHooks};
@@ -46,3 +49,4 @@ pub use settings::{
 };
 pub use sprites::{GameTextures, NoTextures, SpriteCache, SpriteTextures};
 pub use state_light::{RenderSettings, StateLighting};
+pub use weather_mask::{master_region, WorldFxMask};

@@ -15,6 +15,7 @@ pub mod erosion_data;
 pub mod fire;
 pub mod fix2x;
 pub mod iso_lot;
+pub mod isoregion;
 pub mod java;
 pub mod los;
 pub mod map_files;

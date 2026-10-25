@@ -640,6 +640,9 @@ pub fn finish_chunk_load(
     sprites: &mut crate::sprite::IsoSpriteManager,
     hook: Option<&mut dyn ChunkLoadHook>,
 ) {
+    if let Some(ch) = cell.chunks.get(&(wx, wy)) {
+        apply_loaded_window_sprites(ch, sprites);
+    }
     cell.recalc_chunk_squares(wx, wy, meta, sprites);
     cell.load_in_main_thread(wx, wy, meta, sprites);
     let Some(mut ch) = cell.chunks.remove(&(wx, wy)) else {
@@ -651,6 +654,50 @@ pub fn finish_chunk_load(
     };
     do_load_gridsquare(&mut ch, hook, &mut ctx);
     cell.chunks.insert((wx, wy), ch);
+}
+
+/// The sprite changes `IsoWindow.load` makes for each window of `ch`, in
+/// square order: the closed sprite gets the window's cut and window flags
+/// (`cutN`/`windowN` or `cutW`/`windowW`), and the smashed, open and
+/// glass-removed sprites get its properties and tile type. They change the
+/// shared sprites, so every square using them sees the flags (a saved
+/// window's wall counts as a cut wall, e.g. for `IsoRegions`). [`load_chunk`]
+/// leaves the sprites alone, so [`finish_chunk_load`] applies these first.
+pub fn apply_loaded_window_sprites(ch: &IsoChunk, m: &mut crate::sprite::IsoSpriteManager) {
+    let f = m.tables.flag;
+    for z in ch.min_level..=ch.max_level {
+        for x in 0..8 {
+            for y in 0..8 {
+                let Some(sq) = ch.get_grid_square(x, y, z) else {
+                    continue;
+                };
+                for obj in &sq.objects {
+                    let ObjectKind::Window(w) = &obj.kind else {
+                        continue;
+                    };
+                    let Some(closed) = w.closed_sprite else {
+                        continue;
+                    };
+                    let p = &mut m.sprites[closed].properties;
+                    if w.north {
+                        p.set_flag(f.cutN);
+                        p.set_flag(f.windowN);
+                    } else {
+                        p.set_flag(f.cutW);
+                        p.set_flag(f.windowW);
+                    }
+                    for other in [w.smashed_sprite, w.open_sprite, w.glass_removed_sprite] {
+                        if let Some(o) = other.filter(|&o| o != closed) {
+                            let props = m.sprites[closed].properties.clone();
+                            let tile_type = m.sprites[closed].tile_type;
+                            m.sprites[o].properties.add_properties(&props);
+                            m.sprites[o].tile_type = tile_type;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The erosion part of `IsoChunk.doLoadGridsquare`: runs `hook` where the

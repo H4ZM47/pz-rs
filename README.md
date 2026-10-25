@@ -58,6 +58,11 @@ to Rust with the original semantics and the same Lua-facing API.
 | `pz-scripts` | `zombie.scripting` (`ScriptParser`, `ScriptManager`, script objects) |
 | `pz-vehicle-render` | `BaseVehicle.render`/`renderShadow`, `VehicleModelInstance`, `Model.DrawVehicle` |
 | `pz-classfile` | reads built-in constants from the installed `projectzomboid.jar` (no JVM) |
+| `pz-inventory` | `zombie.inventory` items, `ItemContainer`, `zombie.world.WorldDictionary` |
+| `pz-world` | `zombie.iso` map files, `IsoMetaGrid`, `IsoCell`/`IsoChunk`/`IsoGridSquare` |
+| `pz-scripts` | `zombie.scripting` (`ScriptParser`, `ScriptManager`, script objects) |
+| `pz-world` | `zombie.iso` map files, `IsoMetaGrid`, `IsoCell`/`IsoChunk`/`IsoGridSquare` |
+| `pz-classfile` | reads built-in constants from the installed `projectzomboid.jar` (no JVM) |
 | `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |
 | `pz-clipper` | `zombie.vehicles.Clipper`/`ClipperOffset` native library (Clipper2 1.5.4, earcut.hpp; see its README for licenses) |
 | `pz-engine` | `zombie.GameWindow`, `zombie.core.Core`, `zombie.gameStates` |

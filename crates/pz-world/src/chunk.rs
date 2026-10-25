@@ -44,8 +44,11 @@ pub struct IsoGridSquare {
     /// `associatedBuilding` (`IsoMetaGrid.getAssociatedBuildingAt`, set
     /// when the square is put in its chunk).
     pub associated_building: Option<BuildingIdx>,
-    /// `hasSetIsoWorldRegion` (world regions are not ported).
-    pub has_set_iso_world_region: bool,
+    /// `hasSetIsoWorldRegion`: whether `isoWorldRegion` holds the lookup.
+    pub has_set_iso_world_region: std::cell::Cell<bool>,
+    /// `isoWorldRegion`: the cached `IsoRegions.getIsoWorldRegion` result
+    /// (see [`IsoGridSquare::get_iso_world_region`]).
+    pub iso_world_region: std::cell::Cell<Option<crate::isoregion::WorldRegionRef>>,
     pub objects: Vec<IsoObject>,
     /// `specialObjects`, by object identity. Like the original, clearing
     /// `objects` leaves this list alone; identities no longer in `objects`
@@ -100,7 +103,8 @@ impl IsoGridSquare {
             room_id: -1,
             roof_hide_building: None,
             associated_building: None,
-            has_set_iso_world_region: false,
+            has_set_iso_world_region: std::cell::Cell::new(false),
+            iso_world_region: std::cell::Cell::new(None),
             objects: Vec::new(),
             special_objects: Vec::new(),
             next_object_id: 0,
@@ -125,10 +129,52 @@ impl IsoGridSquare {
         }
     }
 
-    /// `ResetIsoWorldRegion()`. World regions are not ported; this clears
-    /// the flag that makes the region be looked up again.
-    pub fn reset_iso_world_region(&mut self) {
-        self.has_set_iso_world_region = false;
+    /// `ResetIsoWorldRegion()`: drop the cached world region, so the next
+    /// [`IsoGridSquare::get_iso_world_region`] looks it up again.
+    pub fn reset_iso_world_region(&self) {
+        self.iso_world_region.set(None);
+        self.has_set_iso_world_region.set(false);
+    }
+
+    /// `setIsoWorldRegion(mr)`.
+    pub fn set_iso_world_region(&self, mr: Option<crate::isoregion::WorldRegionRef>) {
+        self.has_set_iso_world_region.set(mr.is_some());
+        self.iso_world_region.set(mr);
+    }
+
+    /// `getIsoWorldRegion()` (single player: the lookup is cached until
+    /// reset; levels below 0 have none).
+    pub fn get_iso_world_region(
+        &self,
+        regions: &crate::isoregion::IsoRegions,
+    ) -> Option<crate::isoregion::WorldRegionRef> {
+        if self.z < 0 {
+            return None;
+        }
+        if !self.has_set_iso_world_region.get() {
+            self.iso_world_region
+                .set(regions.get_iso_world_region(self.x, self.y, self.z));
+            self.has_set_iso_world_region.set(true);
+        }
+        self.iso_world_region.get()
+    }
+
+    /// `isInARoom()`: a meta-grid room, or a player room region.
+    pub fn is_in_a_room(&self, meta: &IsoMetaGrid, regions: &crate::isoregion::IsoRegions) -> bool {
+        self.room_def(meta).is_some()
+            || self
+                .get_iso_world_region(regions)
+                .is_some_and(|r| regions.is_player_room(r))
+    }
+
+    /// `getRoomSize()` for a player room region (`None` for meta-grid rooms,
+    /// whose squares come from `IsoRoom`, and where the original returns
+    /// -1).
+    pub fn player_room_size(&self, regions: &crate::isoregion::IsoRegions) -> Option<i32> {
+        let r = self.get_iso_world_region(regions)?;
+        regions
+            .is_player_room(r)
+            .then(|| regions.world_region(r).square_size())
     }
 
     /// `getRoom().def`: the room this square's `roomID` names.

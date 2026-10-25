@@ -176,6 +176,14 @@ Status of the Rust port. Update this file with every merged change.
   .updatePhysicsForLevel` gives the original's `ToBullet` shapes for every
   one of 114,529 squares of four regions that load the same objects.
   Checked locally.
+- World regions (`pz_world::isoregion`): `IsoRegions` square flags, chunk
+  and world regions, enclosure, roofs, neighbours, square updates, the
+  worker's job batching and `isoregiondata` files; `IsoWindow.load`'s
+  sprite changes on chunk load; the weather mask reads them through
+  `pz_world_render::WorldFxMask`. On 7 local saves (14,894 chunks) the
+  region dumps match the original's after loading the saved regions,
+  reading every chunk, 300 square changes and a reload (232,555 lines),
+  and all 14,901 written region files are byte-identical. Checked locally.
 - `pz-scripts`: ScriptParser, ScriptManager/ScriptModule/ScriptBucket loading
   of `media/scripts` (game + mods, template-first file order), with Java
   `HashMap` iteration order and script version hashes. On Build 42 all
@@ -277,6 +285,7 @@ Status of the Rust port. Update this file with every merged change.
   in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
   output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
   table (paths to GUIDs) parses identically to FMOD's own lookup.
+  cells (Muldraugh sample plus six challenge maps), checked locally.
   Meta-grid zones (`Zone` and the vehicle/mannequin/world-gen/animal
   subclasses, chunk zone arrays, Lua-facing registration, lot-priority
   removal) match the original `IsoMetaGrid` on randomized registrations;
@@ -302,6 +311,31 @@ Status of the Rust port. Update this file with every merged change.
 - `pz-clipper`: the `PZClipper` native library (Clipper2 1.5.4 + earcut.hpp
   + the game's JNI glue) in pure Rust. Local differential run against the
   shipped arm64 library: every in-contract case bit-identical.
+- Climate and clock (`pz-core::weather`, `GameTime`): `ClimateManager`
+  with its float/colour/bool layers, `ClimateValues`, `WeatherPeriod`,
+  `ThunderStorm`, `ClimateForecaster`, `ClimateMoon`, `ErosionSeason`,
+  `SimplexNoise` and `GameTime.update`, bound to Lua (`bind_climate`) and
+  feeding the character simulation's air temperature, humidity, rain and
+  wind chill. Hourly and daily dumps match the original bit for bit over
+  more than 400 simulated days across seasons, sandbox weather cycles and
+  daylight-saving changes (checked locally).
+- Weather effects (`pz-iso-render::weather_fx`, `weather_fx_mask`):
+  `IsoWeatherFX` cloud, fog, snow and rain particle layers driven by the
+  climate's render values, the fog circle, `WeatherParticleDrawer`
+  batching, and `WeatherFxMask` keeping them out of the player's building
+  (mask and particle render textures in `pz-gpu`, `fogCircle` shader).
+  Particle state and drawer quads over 600-900 frames match the original
+  bit for bit but for last-ulp rain rotations; `RasterizeBounds` and
+  `Rasterize.scanTriangle` match exactly (checked locally). Mask walls are
+  drawn without cutaways and characters are not in the mask yet.
+- World save files: `map_t.bin` (`GameTime` + climate, in `pz-core`),
+  `map_meta.bin` (room/building state, safehouses, factions, designation
+  zones, stashes), `map_zone.bin` and `gos_*.bin` (global-object systems)
+  read and write byte-identically to the original on 7 local saves
+  (checked with the original's load/save on scratch copies).
+- StringLib and OsLib. Local differential run against the original Kahlua
+  (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
+  output; the remaining one differs only in an identity hash.
 
 - Character simulation core (`pz-characters::character`): `Stats`,
   `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
