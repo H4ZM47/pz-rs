@@ -334,7 +334,7 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             d.load(sm, chars, r, world_version)?;
             self.descriptor = Some(Rc::new(std::cell::RefCell::new(d)));
         }
-        self.human_visual = Some(e(HumanVisual::load(r, env.tables))?);
+        self.human_visual = Some(e(HumanVisual::load(r, env.tables.blood_body_parts))?);
         let saved = e(self.items.inventory.load_saved(r, world_version, env.items))?;
         let items = &self.items.inventory.items;
         self.saved_inventory_items = saved.iter().map(|s| s.map(|i| items[i].id())).collect();

@@ -53,7 +53,7 @@ fn setup() -> (ScriptManager, Characters, Vec<Rc<pz_scripts::registry::RegistryK
 }
 
 fn tables() -> SaveTables {
-    SaveTables { factory: vec![(0, "IsoObject".into()), (1, "Player".into())], blood_body_parts: 18 }
+    SaveTables { factory: vec![(0, "IsoObject".into()), (1, "Player".into())], blood_body_parts: 18, character_stats: Vec::new() }
 }
 
 /// A player with something in every saved field.
