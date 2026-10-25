@@ -666,7 +666,11 @@ impl Animal {
 
     /// `isInMatingSeason()`.
     pub fn is_in_mating_season(&self, ctx: AnimalCtx<'_>) -> bool {
-        Self::in_mating_season(self.adef(ctx), ctx.sandbox.animal_mating_season, ctx.clock.month())
+        Self::in_mating_season(
+            self.adef(ctx),
+            ctx.sandbox.animal_mating_season,
+            ctx.clock.month(),
+        )
     }
 
     /// `isInMatingSeason()` with the definition, the sandbox's

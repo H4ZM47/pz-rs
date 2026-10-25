@@ -191,6 +191,28 @@ step 3: `BaseAnimalBehavior` (its update, `spotted` from
 hook, mother, sound, luring and thump checks of `updateInternal`, and
 `testCollideWithVehicles`. Items 2 and 7 are the characters thread's.
 
+**Status (step 3, `pz-characters/src/character/animal/{behavior,actions}.rs`
+and `states/animal.rs`).** `BaseAnimalBehavior` (its fields are
+`pz-animals`' `behavior::AnimalBehavior` on `Animal`, with
+`callToHutch`/`canGoToHutch`), the twelve animal states, and the step-3
+parts of `updateInternal` (tree, mother, hook, `respondToSound`,
+`updateLured`, `tryThump`, `updateLOS` into `spotted`, vehicle collision,
+`killed`, the wild animal's bleeding and drop-dead timer, `pathTo*`,
+`pathFailed`, `canGoThere`). `AnimalData.eat()` hands its behaviour call
+back (`EatFollowUp`). Checked against the original: 30 animals for 330
+ticks each of behaviour and state updates on a square grid, with a player,
+a zombie and a second animal (wandering, sitting, idle actions, hunger,
+fleeing an attacker, a leash, being spotted by players and zombies,
+alerting, holding, `goAttack` against a player and an animal, the attack
+state's hit exchange), plus `decideRotation`, `setTurnAlertedValues`,
+`animalShouldThump` and `checkSit` with recorded inputs: 21,095
+comparisons, 0 differences; the step-2b checks pass with the behaviour
+running. Not checked by the oracle (the headless game has no path finder,
+animation, sound or the world objects): the path finder's own results, the
+eating and drinking objects (troughs, food, grass, puddles, rivers), the
+hutch, the follow-wall collisions, fence climbing, `AnimalZoneState`
+(step 4 has the zones), `respondToSound`, luring and the tree.
+
 `IsoAnimal extends IsoPlayer`. `pz-characters` already has
 `CharacterKind::Animal` (`character/mod.rs`), `is_animal()`, mover kind 4,
 `as_player()` returning `Some` for animals, and partial animal branches in
@@ -360,7 +382,7 @@ seeded `Random`, a scratch HOME, `-Duser.home` and
     reflection), then diff per-hour traces.
   * Round-trip `IsoAnimal.save/load` byte for byte, including the `Rand`
     consumed by `init` during load.
-* **Step 3.**
+* **Step 3.** (Done: see the step 3 status above.)
   * Oracle the pure helpers: `pickRandomWanderInterval`, `checkSit`,
     acceptance and stress math, `calcDamage`, `getHealthLoss`,
     `canEatThis`.

@@ -265,3 +265,27 @@ mod tests {
         assert_eq!(BehaviorAction::EatGrass.name(), "EATGRASS");
     }
 }
+
+#[cfg(test)]
+mod ref_tests {
+    use crate::env::{character_ref, character_ref_id, square_ref, square_ref_xyz};
+
+    #[test]
+    fn square_and_character_refs_round_trip() {
+        for (x, y, z) in [
+            (0, 0, 0),
+            (12345, 6789, 1),
+            (-5, -7, -32),
+            (8_000_000, 20000, 31),
+        ] {
+            let r = square_ref(x, y, z);
+            assert_eq!(square_ref_xyz(r), Some((x, y, z)));
+            assert_eq!(character_ref_id(r), None);
+        }
+        for id in [0, 1, 77, i32::MAX, -1] {
+            let r = character_ref(id);
+            assert_eq!(character_ref_id(r), Some(id));
+            assert_eq!(square_ref_xyz(r), None);
+        }
+    }
+}

@@ -1819,9 +1819,9 @@ impl<I: 'static> GameCharacter<I> {
                         base /= 16.0;
                     } else if cos < -0.2 {
                         base /= 3.0;
-                    } else if cos < -0.0 {
-                        base /= 1.5;
                     } else if cos < 0.2 {
+                        // The original has a "< -0.0" and a "< 0.2" branch,
+                        // both dividing by 1.5.
                         base /= 1.5;
                     } else if cos <= 0.4 {
                         base *= 3.0;

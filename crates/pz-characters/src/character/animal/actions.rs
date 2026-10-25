@@ -1124,7 +1124,7 @@ impl<I: 'static> GameCharacter<I> {
             return;
         };
         let (nx, ny) = normalize(px - self.vars.x, py - self.vars.y);
-        self.vars.dir = dir_from_angle(nx, ny);
+        self.set_forward_iso_direction(dir_from_angle(nx, ny));
         if length(nx, ny) > 0.0 {
             self.set_forward_direction(nx, ny);
         }
@@ -1145,17 +1145,17 @@ impl<I: 'static> GameCharacter<I> {
         }
         let cur = self.path.current_square;
         if cur.is_some() && cur == info.square {
-            self.vars.dir = if info.north {
+            self.set_forward_iso_direction(if info.north {
                 IsoDirections::N
             } else {
                 IsoDirections::W
-            };
+            });
         } else if cur.is_some() && cur == info.opposite_square {
-            self.vars.dir = if info.north {
+            self.set_forward_iso_direction(if info.north {
                 IsoDirections::S
             } else {
                 IsoDirections::E
-            };
+            });
         } else {
             self.face_position(Some(info.facing_position));
         }

@@ -518,7 +518,12 @@ pub trait AnimalWorld {
         1.0
     }
     /// `zone.getJunctionsBetween(t1, t2, junctions)`.
-    fn animal_zone_junctions_between(&self, zone: (i64, i64), t1: f32, t2: f32) -> Vec<AnimalZoneJunction> {
+    fn animal_zone_junctions_between(
+        &self,
+        zone: (i64, i64),
+        t1: f32,
+        t2: f32,
+    ) -> Vec<AnimalZoneJunction> {
         Vec::new()
     }
     /// `zone.getDistanceOfPointFromStart(pointIndex)`.
@@ -804,7 +809,12 @@ pub trait AnimalWorld {
     }
     /// The facing position of a square's floor (`square.getFloor()`), as
     /// [`Self::facing_position`].
-    fn floor_facing_position(&self, square: ObjectRef, from_x: f32, from_y: f32) -> Option<(f32, f32)> {
+    fn floor_facing_position(
+        &self,
+        square: ObjectRef,
+        from_x: f32,
+        from_y: f32,
+    ) -> Option<(f32, f32)> {
         None
     }
     /// `getCurrentSquare().DistToProper(mother.getCurrentSquare())`, `None`
