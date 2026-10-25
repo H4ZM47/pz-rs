@@ -135,8 +135,40 @@ pub fn fs_get_string(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+/// Pyramid tiles as textures in the shared `TextureManager`.
+struct SharedTileTextures;
+
+impl pz_worldmap::pyramid::TileTextures for SharedTileTextures {
+    fn create(
+        &mut self,
+        name: &str,
+        w: i32,
+        h: i32,
+        pixels: Vec<u8>,
+        min_n: bool,
+        mag_n: bool,
+        clamp: bool,
+    ) -> Option<pz_render::Texture> {
+        use pz_render::flags;
+        let f = if min_n { flags::FILTER_MIN_NEAREST } else { 0 }
+            | if mag_n { flags::FILTER_MAG_NEAREST } else { 0 }
+            | if clamp { flags::CLAMP_TO_EDGE } else { 0 };
+        Some(
+            crate::bind_render::textures()
+                .borrow_mut()
+                .texture_from_pixels(name, w, h, pixels, f),
+        )
+    }
+    fn destroy(&mut self, t: &pz_render::Texture) {
+        if let Some(id) = t.id {
+            crate::bind_render::textures().borrow_mut().destroy_data(id);
+        }
+    }
+}
+
 /// Register the world-map classes.
 pub fn register(thread: &mut Thread) {
+    pz_worldmap::pyramid::install_tile_textures(Box::new(SharedTileTextures));
     register_element(thread);
     register_api(thread);
     register_option(thread);
@@ -588,6 +620,50 @@ fn register_api(thread: &mut Thread) {
         let v = with_map(c, |_, m| m.st().world_map.get_data_height_in_cells())?;
         Ok(c.push(v as f64))
     });
+    b.method("addImagePyramid", |c| {
+        let name = str_arg(c, 1);
+        with_map(c, |el, m| {
+            let Some(mut name) = name.map(|n| n.to_string()) else {
+                return;
+            };
+            if name.starts_with("media/") {
+                name = fs_get_string(&name);
+            }
+            let has_images = m.st().world_map.has_images();
+            m.st_mut().world_map.add_image_pyramid(&name);
+            if !has_images && m.st().world_map.get_width_in_squares() > 1 && el.get_width() > 0.0 {
+                m.set_map_from(el);
+                reset_view(m);
+            }
+        })?;
+        Ok(0)
+    });
+    for (name, which) in [
+        ("getImagePyramidMinX", 0),
+        ("getImagePyramidMinY", 1),
+        ("getImagePyramidMaxX", 2),
+        ("getImagePyramidMaxY", 3),
+        ("getImagePyramidWidthInSquares", 4),
+        ("getImagePyramidHeightInSquares", 5),
+    ] {
+        b.method(name, move |c| {
+            let file = str_arg(c, 1).unwrap_or_default();
+            let v = with_map(c, |_, m| {
+                let s = m.st();
+                s.world_map
+                    .get_world_map_images_by_file_name(&file)
+                    .map_or(-1, |i| match which {
+                        0 => i.get_min_x(),
+                        1 => i.get_min_y(),
+                        2 => i.get_max_x(),
+                        3 => i.get_max_y(),
+                        4 => i.get_width_in_squares(),
+                        _ => i.get_height_in_squares(),
+                    })
+            })?;
+            Ok(c.push(v as f64))
+        });
+    }
     b.method("clearImages", |c| {
         with_map(c, |_, m| m.st_mut().world_map.clear_images())?;
         Ok(0)

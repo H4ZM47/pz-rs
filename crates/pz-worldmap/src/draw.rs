@@ -10,6 +10,8 @@
 //! models) are drawn by their own parts.
 
 use crate::data::{GeometryType, WorldMapCell};
+use crate::projection;
+use crate::pyramid::WorldMapImages;
 use crate::rasterize::scan_triangle;
 use crate::renderer::{clamp, fast_floor, WorldMapRenderer};
 use crate::style::{
@@ -163,7 +165,9 @@ impl<'a> Drawer<'a> {
             m.get_max_x_in_squares(),
             m.get_max_y_in_squares(),
         );
-        // TODO(worldmap pyramids): renderImagePyramids when ImagePyramid.
+        if self.opt("ImagePyramid") {
+            self.render_image_pyramids();
+        }
         self.calculate_visible_cells();
         if self.opt("Features") {
             self.filter_features();
@@ -389,9 +393,16 @@ impl<'a> Drawer<'a> {
                     self.render_layers_for_style_layer[li] = rls;
                 }
                 LayerKind::Texture { .. } => self.render_texture_layer(&layer, None),
-                // TODO(worldmap pyramids): the pyramid layer's
-                // renderImagePyramid; text layers draw nothing here.
-                LayerKind::Pyramid { .. } | LayerKind::Text { .. } => {}
+                LayerKind::Pyramid { file_name, .. } => {
+                    let name = file_name.unwrap_or_else(|| "null".into());
+                    for i in (0..self.map().images.len()).rev() {
+                        let images = self.map().images[i].clone();
+                        if images.matches_file_name(&name) {
+                            self.render_image_pyramid(&images);
+                        }
+                    }
+                }
+                LayerKind::Text { .. } => {}
             }
         }
         Ok(())
@@ -409,9 +420,25 @@ impl<'a> Drawer<'a> {
                     continue;
                 }
                 let is_tex = matches!(l.kind, LayerKind::Texture { .. });
+                let pyramid = match &l.kind {
+                    LayerKind::Pyramid { file_name, fill } => {
+                        Some((file_name.clone(), eval_color(self.zoom_f, fill)))
+                    }
+                    _ => None,
+                };
                 drop(l);
                 if is_tex {
                     self.render_texture_layer(&layer, Some((cx, cy)));
+                }
+                if let Some((name, fill)) = pyramid {
+                    if fill.a >= 0.01 {
+                        let name = name.unwrap_or_else(|| "null".into());
+                        for images in self.map().images.clone() {
+                            if images.matches_file_name(&name) {
+                                self.draw_image_pyramid(cx, cy, &images, fill);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -982,6 +1009,507 @@ impl<'a> Drawer<'a> {
         self.vbo.line(x2, y2, x1, y2, c);
         self.vbo.line(x1, y2, x1, y1, c);
         self.vbo.end_run();
+    }
+
+    /// `getZoomAdjustedForPyramidScale(zoomF, images)`.
+    pub(crate) fn zoom_adjusted(&self, images: &WorldMapImages) -> f64 {
+        let mpp = projection::meters_per_pixel_at_zoom(
+            self.zoom_f as f64,
+            (self.height as f32 * images.get_resolution() * 2.0) as f64,
+        );
+        projection::zoom_at_meters_per_pixel(mpp, self.height as f64)
+    }
+
+    /// `findPyramidStyleLayer(images)`: the last matching pyramid layer,
+    /// or the first visible one.
+    fn find_pyramid_style_layer(&self, images: &WorldMapImages) -> Option<LayerRef> {
+        let mut found = None;
+        for layer in &self.layers {
+            let l = layer.borrow();
+            let LayerKind::Pyramid { file_name, fill } = &l.kind else {
+                continue;
+            };
+            let name = file_name.clone().unwrap_or_else(|| "null".into());
+            if !images.matches_file_name(&name) {
+                continue;
+            }
+            found = Some(layer.clone());
+            if eval_color(self.zoom_f, fill).a > 0.0 {
+                return Some(layer.clone());
+            }
+        }
+        found
+    }
+
+    /// `renderImagePyramids()`.
+    fn render_image_pyramids(&mut self) {
+        let has_layers = self
+            .layers
+            .iter()
+            .any(|l| matches!(l.borrow().kind, LayerKind::Pyramid { .. }));
+        if has_layers {
+            for images in self.map().images.clone() {
+                if self.find_pyramid_style_layer(&images).is_none() {
+                    continue;
+                }
+                self.calculate_visible_cells();
+                let ptz = images.get_zoom(self.zoom_adjusted(&images) as f32);
+                images
+                    .pyramid
+                    .borrow_mut()
+                    .calculate_required_tiles_for_cells(&self.rasterize_xy, ptz);
+            }
+            return;
+        }
+        for i in (0..self.map().images.len()).rev() {
+            let images = self.map().images[i].clone();
+            self.render_image_pyramid(&images);
+        }
+    }
+
+    /// The view's corners in pyramid tiles of `mpt` squares from the
+    /// pyramid origin.
+    fn tile_corners(&self, images: &WorldMapImages, pad: i32, mpt: f32) -> [f32; 8] {
+        self.corners(
+            pad,
+            mpt,
+            images.get_min_x() as f32,
+            images.get_min_y() as f32,
+        )
+    }
+
+    /// `calcVisiblePyramidTiles(images, ptz)`: the tiles under the view and
+    /// their bounds.
+    pub(crate) fn calc_visible_pyramid_tiles(
+        &self,
+        images: &WorldMapImages,
+        ptz: i32,
+    ) -> (Vec<i32>, [i32; 4]) {
+        let pad = if self.inp.debug && self.opt("VisibleTiles") {
+            (self.width / 20).min(200)
+        } else {
+            0
+        };
+        let mpt = images.pyramid.borrow().calculate_meters_per_tile(ptz) as f32;
+        let [x_tl, y_tl, x_tr, y_tr, x_br, y_br, x_bl, y_bl] = self.tile_corners(images, pad, mpt);
+        let m = self.map();
+        let min_tx = ((m.get_min_x_in_squares() - images.get_min_x()) as f32 / mpt) as i32 as f32;
+        let min_ty = ((m.get_min_y_in_squares() - images.get_min_y()) as f32 / mpt) as i32 as f32;
+        let max_tx = (m.get_max_x_in_squares() - images.get_min_x()) as f32 / mpt;
+        let max_ty = (m.get_max_y_in_squares() - images.get_min_y()) as f32 / mpt;
+        let mut set = HashSet::new();
+        let mut xy = Vec::new();
+        let mut cb = |x: i32, y: i32| {
+            let id = x.wrapping_add(y.wrapping_mul(1000));
+            if set.contains(&id) {
+                return;
+            }
+            if (x as f32) < min_tx || x as f32 > max_tx || (y as f32) < min_ty || y as f32 > max_ty
+            {
+                return;
+            }
+            set.insert(id);
+            xy.push(x);
+            xy.push(y);
+        };
+        scan_triangle(x_bl, y_bl, x_br, y_br, x_tr, y_tr, -1000, 1000, &mut cb);
+        scan_triangle(x_tr, y_tr, x_tl, y_tl, x_bl, y_bl, -1000, 1000, &mut cb);
+        let mut b = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+        for p in xy.chunks(2) {
+            if p.len() < 2 {
+                continue;
+            }
+            b = [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ];
+        }
+        (xy, b)
+    }
+
+    /// One textured quad of a tile (or part of one) and its optional grid
+    /// outline.
+    #[allow(clippy::too_many_arguments)]
+    fn pyramid_quad(
+        &mut self,
+        tex: Texture,
+        xs: [f64; 4],
+        ys: [f64; 4],
+        us: [f64; 4],
+        vs: [f64; 4],
+        c: [f32; 4],
+        grid: [f64; 4],
+    ) {
+        self.vbo.start_run(Prim::Quads);
+        self.vbo.set_texture(RunTexture::Texture(tex));
+        let p = std::array::from_fn(|i| [xs[i] as f32, ys[i] as f32, us[i] as f32, vs[i] as f32]);
+        self.vbo.quad4_uv(p, c);
+        self.vbo.end_run();
+        if self.opt("TileGrid") {
+            let ws = self.world_scale;
+            let (cx, cy) = (self.center_world_x as f64, self.center_world_y as f64);
+            self.vbo.start_run(Prim::Lines);
+            self.vbo.set_line_width(2.0);
+            self.vbo.rect_outline(
+                (grid[0] - cx) as f32 * ws,
+                (grid[1] - cy) as f32 * ws,
+                (grid[2] - cx) as f32 * ws,
+                (grid[3] - cy) as f32 * ws,
+                [1.0, 0.0, 0.0, 1.0],
+            );
+            self.vbo.end_run();
+        }
+    }
+
+    /// `renderImagePyramid(images)`: the visible tiles at the pyramid zoom
+    /// for the view, lower-resolution tiles where those are not loaded.
+    pub fn render_image_pyramid(&mut self, images: &Rc<WorldMapImages>) {
+        if !self.opt("ImagePyramid") {
+            return;
+        }
+        let ws = self.world_scale as f64;
+        let ptz1 = images.get_zoom(self.zoom_adjusted(images) as f32);
+        let mpt = images.pyramid.borrow().calculate_meters_per_tile(ptz1);
+        let (xy, bounds) = self.calc_visible_pyramid_tiles(images, ptz1);
+        images
+            .pyramid
+            .borrow_mut()
+            .calculate_required_tiles(&xy, ptz1);
+        let span_x = bounds[2].wrapping_sub(bounds[0]).wrapping_add(1);
+        let span_y = bounds[3].wrapping_sub(bounds[1]).wrapping_add(1);
+        let mut rendered = vec![0u8; (span_x.max(0) as usize) * (span_y.max(0) as usize)];
+        let m = self.map();
+        let clip_x1 = images
+            .get_min_x()
+            .clamp(m.get_min_x_in_squares(), m.get_max_x_in_squares()) as f64;
+        let clip_y1 = images
+            .get_min_y()
+            .clamp(m.get_min_y_in_squares(), m.get_max_y_in_squares()) as f64;
+        let clip_x2 = images
+            .get_max_x()
+            .clamp(m.get_min_x_in_squares(), m.get_max_x_in_squares() + 1)
+            as f64;
+        let clip_y2 = images
+            .get_max_y()
+            .clamp(m.get_min_y_in_squares(), m.get_max_y_in_squares() + 1)
+            as f64;
+        let mut c = [1.0f32; 4];
+        if let Some(layer) = self.find_pyramid_style_layer(images) {
+            let fill = eval_color(self.zoom_f, layer.borrow().fill());
+            if fill.a <= 0.0 {
+                return;
+            }
+            c = [fill.r, fill.g, fill.b, fill.a];
+        }
+        let (cx, cy) = (self.center_world_x as f64, self.center_world_y as f64);
+        let (ix, iy) = (images.get_min_x() as f64, images.get_min_y() as f64);
+        let clampd = |v: f64, a: f64, b: f64| {
+            if v < a {
+                a
+            } else if v > b {
+                b
+            } else {
+                v
+            }
+        };
+        for p in xy.chunks(2) {
+            if p.len() < 2 {
+                continue;
+            }
+            let (ptx, pty) = (p[0], p[1]);
+            let (lx, ly) = (ptx - bounds[0], pty - bounds[1]);
+            if !images.pyramid.borrow().is_valid_tile(ptx, pty, ptz1) {
+                continue;
+            }
+            let n = (lx + ly * span_x) as usize;
+            rendered[n] |= 1;
+            let tex = {
+                let mut pyr = images.pyramid.borrow_mut();
+                match pyr.get_texture(ptx, pty, ptz1) {
+                    Some(t) if t.is_ready() => t.texture.clone(),
+                    _ => None,
+                }
+            };
+            let Some(tex) = tex else { continue };
+            let wx1 = ix + ptx as f64 * mpt;
+            let wy1 = iy + pty as f64 * mpt;
+            let (wx2, wy2) = (wx1 + mpt, wy1 + mpt);
+            let x1c = clampd(wx1, clip_x1, clip_x2);
+            let y1c = clampd(wy1, clip_y1, clip_y2);
+            let x2c = clampd(wx2, clip_x1, clip_x2);
+            let y2c = clampd(wy2, clip_y1, clip_y2);
+            let xs = [
+                (x1c - cx) * ws,
+                (x2c - cx) * ws,
+                (x2c - cx) * ws,
+                (x1c - cx) * ws,
+            ];
+            let ys = [
+                (y1c - cy) * ws,
+                (y1c - cy) * ws,
+                (y2c - cy) * ws,
+                (y2c - cy) * ws,
+            ];
+            let us = [
+                (x1c - wx1) / mpt,
+                (x2c - wx1) / mpt,
+                (x2c - wx1) / mpt,
+                (x1c - wx1) / mpt,
+            ];
+            let vs = [
+                (y1c - wy1) / mpt,
+                (y1c - wy1) / mpt,
+                (y2c - wy1) / mpt,
+                (y2c - wy1) / mpt,
+            ];
+            self.pyramid_quad(tex, xs, ys, us, vs, c, [wx1, wy1, wx2, wy2]);
+            rendered[n] |= 2;
+        }
+        for ly in 0..span_y.max(0) {
+            for lx in 0..span_x.max(0) {
+                let f = rendered[(lx + ly * span_x) as usize];
+                if f & 1 == 0 || f & 2 != 0 {
+                    continue;
+                }
+                let (ptx, pty) = (bounds[0] + lx, bounds[1] + ly);
+                let lower = images
+                    .pyramid
+                    .borrow_mut()
+                    .get_lower_res_texture(ptx, pty, ptz1);
+                let Some((ptx1, pty1, ptz2, tex)) = lower else {
+                    continue;
+                };
+                let mpt1 = images.pyramid.borrow().calculate_meters_per_tile(ptz2);
+                let wx1 = ix + ptx1 as f64 * mpt1;
+                let wy1 = iy + pty1 as f64 * mpt1;
+                let (wx2, wy2) = (wx1 + mpt1, wy1 + mpt1);
+                let hx1 = ix + ptx as f64 * mpt;
+                let hy1 = iy + pty as f64 * mpt;
+                let x1c = clampd(clampd(wx1, clip_x1, clip_x2), hx1, hx1 + mpt);
+                let y1c = clampd(clampd(wy1, clip_y1, clip_y2), hy1, hy1 + mpt);
+                let x2c = clampd(clampd(wx2, clip_x1, clip_x2), hx1, hx1 + mpt);
+                let y2c = clampd(clampd(wy2, clip_y1, clip_y2), hy1, hy1 + mpt);
+                let (x1, y1, x2, y2) = (
+                    (x1c - cx) * ws,
+                    (y1c - cy) * ws,
+                    (x2c - cx) * ws,
+                    (y2c - cy) * ws,
+                );
+                let (u1, v1, u2, v2) = (
+                    (x1c - wx1) / mpt1,
+                    (y1c - wy1) / mpt1,
+                    (x2c - wx1) / mpt1,
+                    (y2c - wy1) / mpt1,
+                );
+                self.pyramid_quad(
+                    tex,
+                    [x1, x2, x2, x1],
+                    [y1, y1, y2, y2],
+                    [u1, u2, u2, u1],
+                    [v1, v1, v2, v2],
+                    c,
+                    [wx1, wy1, wx2, wy2],
+                );
+            }
+        }
+        if self.inp.debug && self.opt("VisibleTiles") {
+            self.render_visible_pyramid_tiles(images, ptz1, &xy);
+        }
+    }
+
+    /// `renderVisiblePyramidTiles(images, ptz)`: the debug view.
+    fn render_visible_pyramid_tiles(&mut self, images: &WorldMapImages, ptz: i32, xy: &[i32]) {
+        let pad = (self.width / 20).min(200);
+        let ws = self.world_scale;
+        let mpt = images.pyramid.borrow().calculate_meters_per_tile(ptz) as f32;
+        let [x_tl, y_tl, x_tr, y_tr, x_br, y_br, x_bl, y_bl] = self.tile_corners(images, pad, mpt);
+        let (ox, oy) = (self.render_origin_x, self.render_origin_y);
+        let (mx, my) = (
+            self.map().get_min_x_in_squares() as f32,
+            self.map().get_min_y_in_squares() as f32,
+        );
+        let p = |x: f32, y: f32| (ox + (x * mpt - mx) * ws, oy + (y * mpt - my) * ws);
+        let (bl, br, tr, tl) = (p(x_bl, y_bl), p(x_br, y_br), p(x_tr, y_tr), p(x_tl, y_tl));
+        self.vbo.start_run(Prim::Lines);
+        self.vbo.set_line_width(4.0);
+        self.vbo.line(bl.0, bl.1, br.0, br.1, [1.0, 0.0, 0.0, 1.0]);
+        self.vbo.line(br.0, br.1, tr.0, tr.1, [1.0, 0.0, 0.0, 1.0]);
+        self.vbo.line(tr.0, tr.1, bl.0, bl.1, [0.5, 0.5, 0.5, 1.0]);
+        self.vbo.line(tr.0, tr.1, tl.0, tl.1, [0.0, 0.0, 1.0, 1.0]);
+        self.vbo.line(tl.0, tl.1, bl.0, bl.1, [0.0, 0.0, 1.0, 1.0]);
+        self.vbo.end_run();
+        self.vbo.start_run(Prim::Triangles);
+        for q in xy.chunks(2) {
+            if q.len() < 2 {
+                continue;
+            }
+            let (x, y) = (q[0] as f32, q[1] as f32);
+            let x0 = ox + (x * mpt - mx) * ws;
+            let y0 = oy + (y * mpt - my) * ws;
+            let x1 = ox + ((x + 1.0) * mpt - mx) * ws;
+            let y1 = oy + ((y + 1.0) * mpt - my) * ws;
+            self.vbo
+                .triangle(x0, y0, x1, y0, x0, y1, [0.0, 1.0, 0.0, 0.2]);
+            self.vbo
+                .triangle(x1, y0, x1, y1, x0, y1, [0.0, 0.0, 1.0, 0.2]);
+        }
+        self.vbo.end_run();
+    }
+
+    /// `drawImagePyramid(cellX, cellY, images, fill)`: one cell's tiles
+    /// (the pyramid layer's `renderCell` with `Features` off).
+    pub fn draw_image_pyramid(
+        &mut self,
+        cell_x: i32,
+        cell_y: i32,
+        images: &Rc<WorldMapImages>,
+        fill: RGBAf,
+    ) {
+        if !self.opt("ImagePyramid") {
+            return;
+        }
+        let ptz1 = images.get_zoom(self.zoom_adjusted(images) as f32);
+        let Some([tx0, ty0, tx1, ty1]) = images
+            .pyramid
+            .borrow()
+            .tiles_covering_cell(cell_x, cell_y, ptz1)
+        else {
+            return;
+        };
+        let cl = |v: i32, a: i32, b: i32| v.clamp(a, b);
+        let mut cx1 = cl(images.get_min_x(), cell_x * 256, (cell_x + 1) * 256);
+        let mut cy1 = cl(images.get_min_y(), cell_y * 256, (cell_y + 1) * 256);
+        let mut cx2 = cl(images.get_max_x(), cell_x * 256, (cell_x + 1) * 256);
+        let mut cy2 = cl(images.get_max_y(), cell_y * 256, (cell_y + 1) * 256);
+        if cx1 == cx2 || cy1 == cy2 {
+            return;
+        }
+        let ws = self.world_scale as f64;
+        let mpt = images.pyramid.borrow().calculate_meters_per_tile(ptz1);
+        let m = self.map();
+        cx1 = cl(cx1, m.get_min_x_in_squares(), m.get_max_x_in_squares());
+        cy1 = cl(cy1, m.get_min_y_in_squares(), m.get_max_y_in_squares());
+        cx2 = cl(cx2, m.get_min_x_in_squares(), m.get_max_x_in_squares() + 1);
+        cy2 = cl(cy2, m.get_min_y_in_squares(), m.get_max_y_in_squares() + 1);
+        let (clip_x1, clip_y1, clip_x2, clip_y2) = (cx1 as f64, cy1 as f64, cx2 as f64, cy2 as f64);
+        let span_x = tx1 - tx0 + 1;
+        let span_y = ty1 - ty0 + 1;
+        let mut rendered = vec![0u8; (span_x.max(0) * span_y.max(0)) as usize];
+        let c = [fill.r, fill.g, fill.b, fill.a];
+        let (ccx, ccy) = (self.center_world_x as f64, self.center_world_y as f64);
+        let (ix, iy) = (images.get_min_x() as f64, images.get_min_y() as f64);
+        let clampd = |v: f64, a: f64, b: f64| {
+            if v < a {
+                a
+            } else if v > b {
+                b
+            } else {
+                v
+            }
+        };
+        for pty in ty0..=ty1 {
+            for ptx in tx0..=tx1 {
+                if !images.pyramid.borrow().is_valid_tile(ptx, pty, ptz1) {
+                    continue;
+                }
+                let n = (ptx - tx0 + (pty - ty0) * span_x) as usize;
+                rendered[n] |= 1;
+                let tex = {
+                    let mut pyr = images.pyramid.borrow_mut();
+                    match pyr.get_texture(ptx, pty, ptz1) {
+                        Some(t) if t.is_ready() => t.texture.clone(),
+                        _ => None,
+                    }
+                };
+                let Some(tex) = tex else { continue };
+                let wx1 = ix + ptx as f64 * mpt;
+                let wy1 = iy + pty as f64 * mpt;
+                let (wx2, wy2) = (wx1 + mpt, wy1 + mpt);
+                let x1c = clampd(wx1, clip_x1, clip_x2);
+                let y1c = clampd(wy1, clip_y1, clip_y2);
+                let x2c = clampd(wx2, clip_x1, clip_x2);
+                let y2c = clampd(wy2, clip_y1, clip_y2);
+                if x2c <= x1c || y2c <= y1c {
+                    rendered[n] |= 2;
+                    continue;
+                }
+                let xs = [
+                    (x1c - ccx) * ws,
+                    (x2c - ccx) * ws,
+                    (x2c - ccx) * ws,
+                    (x1c - ccx) * ws,
+                ];
+                let ys = [
+                    (y1c - ccy) * ws,
+                    (y1c - ccy) * ws,
+                    (y2c - ccy) * ws,
+                    (y2c - ccy) * ws,
+                ];
+                let us = [
+                    (x1c - wx1) / mpt,
+                    (x2c - wx1) / mpt,
+                    (x2c - wx1) / mpt,
+                    (x1c - wx1) / mpt,
+                ];
+                let vs = [
+                    (y1c - wy1) / mpt,
+                    (y1c - wy1) / mpt,
+                    (y2c - wy1) / mpt,
+                    (y2c - wy1) / mpt,
+                ];
+                self.pyramid_quad(tex, xs, ys, us, vs, c, [wx1, wy1, wx2, wy2]);
+                rendered[n] |= 2;
+            }
+        }
+        for ly in 0..span_y.max(0) {
+            for lx in 0..span_x.max(0) {
+                let f = rendered[(lx + ly * span_x) as usize];
+                if f & 1 == 0 || f & 2 != 0 {
+                    continue;
+                }
+                let (ptx, pty) = (tx0 + lx, ty0 + ly);
+                let lower = images
+                    .pyramid
+                    .borrow_mut()
+                    .get_lower_res_texture(ptx, pty, ptz1);
+                let Some((ptx1, pty1, ptz2, tex)) = lower else {
+                    continue;
+                };
+                let mpt1 = images.pyramid.borrow().calculate_meters_per_tile(ptz2);
+                let wx1 = ix + ptx1 as f64 * mpt1;
+                let wy1 = iy + pty1 as f64 * mpt1;
+                let (wx2, wy2) = (wx1 + mpt1, wy1 + mpt1);
+                let hx1 = ix + ptx as f64 * mpt;
+                let hy1 = iy + pty as f64 * mpt;
+                let x1c = clampd(clampd(wx1, clip_x1, clip_x2), hx1, hx1 + mpt);
+                let y1c = clampd(clampd(wy1, clip_y1, clip_y2), hy1, hy1 + mpt);
+                let x2c = clampd(clampd(wx2, clip_x1, clip_x2), hx1, hx1 + mpt);
+                let y2c = clampd(clampd(wy2, clip_y1, clip_y2), hy1, hy1 + mpt);
+                let (x1, y1, x2, y2) = (
+                    (x1c - ccx) * ws,
+                    (y1c - ccy) * ws,
+                    (x2c - ccx) * ws,
+                    (y2c - ccy) * ws,
+                );
+                let (u1, v1, u2, v2) = (
+                    (x1c - wx1) / mpt1,
+                    (y1c - wy1) / mpt1,
+                    (x2c - wx1) / mpt1,
+                    (y2c - wy1) / mpt1,
+                );
+                self.pyramid_quad(
+                    tex,
+                    [x1, x2, x2, x1],
+                    [y1, y1, y2, y2],
+                    [u1, u2, u2, u1],
+                    [v1, v1, v2, v2],
+                    c,
+                    [wx1, wy1, wx2, wy2],
+                );
+            }
+        }
     }
 
     /// `renderDropShadow()`.
