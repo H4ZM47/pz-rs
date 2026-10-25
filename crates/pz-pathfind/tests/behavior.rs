@@ -393,3 +393,17 @@ fn should_ignore_collision_with_the_furniture_square() {
     assert!(!pfb.should_ignore_collision_with_square((4, 5, 0)));
     assert!(!pfb.should_get_up_from_crawl(&chr));
 }
+
+#[test]
+fn fake_character_reports_floor_death_and_grappling() {
+    use pz_pathfind::mover::CharacterView;
+    let chr = Chr {
+        on_floor: true,
+        dead: true,
+        reanimated_for_grappling: true,
+        ..Chr::default()
+    };
+    assert!(chr.is_on_floor() && chr.is_dead() && chr.is_reanimated_for_grappling());
+    let plain = Chr::default();
+    assert!(!plain.is_on_floor() && !plain.is_dead() && !plain.is_reanimated_for_grappling());
+}
