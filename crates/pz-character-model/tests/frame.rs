@@ -746,6 +746,343 @@ fn corpse_and_floor_items() {
     }
 }
 
+/// The ragdoll's floor: a floor on every square of the chunks the world
+/// asks for.
+struct RagdollFloor {
+    pending: std::collections::HashSet<(i32, i32)>,
+}
+
+impl pz_bullet::JavaCallbacks for RagdollFloor {
+    fn update_physics_for_level_if_needed(&mut self, wx: i32, wy: i32, level: i32, to_bullet: &mut Vec<Vec<u8>>) -> bool {
+        if level != 0 || !self.pending.remove(&(wx, wy)) {
+            return false;
+        }
+        let mut b = vec![8u8];
+        for v in [wx as i16, wy as i16, 0, 0, 0] {
+            b.extend(v.to_le_bytes());
+        }
+        for y in 0..8u8 {
+            for x in 0..8u8 {
+                b.extend([x, y, 1, 7]);
+            }
+        }
+        b.extend([0xff, 0xff]);
+        to_bullet.push(b);
+        true
+    }
+
+    fn on_vehicle_constraint_impulse(&mut self, _c: i32, _a: i32, _b: i32, _imp: f32) {}
+}
+
+/// The dying zombie the ragdoll is simulated for.
+#[derive(Default)]
+struct DyingZombie {
+    pos: pz_ragdoll::Vec3,
+    fwd: f32,
+    fall_on_front: bool,
+    ragdoll_fall: bool,
+}
+
+impl pz_ragdoll::RagdollCharacter for DyingZombie {
+    fn id(&self) -> i32 {
+        1
+    }
+    fn position(&self) -> pz_ragdoll::Vec3 {
+        self.pos
+    }
+    fn forward_direction_angle(&self) -> f32 {
+        self.fwd
+    }
+    fn can_ragdoll(&self) -> bool {
+        true
+    }
+    fn set_ragdoll_fall(&mut self, v: bool) {
+        self.ragdoll_fall = v;
+    }
+    fn set_use_physic_hit_reaction(&mut self, _v: bool) {}
+    fn is_fall_on_front(&self) -> bool {
+        self.fall_on_front
+    }
+    fn set_fall_on_front(&mut self, v: bool) {
+        self.fall_on_front = v;
+    }
+    fn set_on_floor(&mut self, _v: bool) {}
+    fn do_deferred_movement_from_ragdoll(&mut self, _p: &AnimationPlayer, m: pz_ragdoll::Vec3) {
+        self.pos = pz_ragdoll::Vec3::new(self.pos.x + m.x, self.pos.y + m.y, self.pos.z + m.z);
+    }
+}
+
+/// A zombie killed into a ragdoll (`Zombie_Death` blending into the
+/// ragdoll track, simulated by pz-bullet on a flat floor until it settles)
+/// next to one lying in the death animation's pose: both corpses go
+/// through `DeadBodyAtlas`, the ragdolled one with its frozen
+/// `diedBoneTransforms`. Frames go to `PZ_RAGDOLL_FRAME_OUT` (default: the
+/// system temp directory).
+#[test]
+fn ragdolled_corpse_beside_death_anim_corpse() {
+    use pz_character_model::corpse::{body_key, corpse_shadow, corpse_world_draw, pose, ragdoll_bone_points, BodyVisualKey, DeadBody, DeadBodyAtlas};
+    use pz_ragdoll::controller::RagdollController;
+    use pz_ragdoll::{corpse, RagdollBuilder, RagdollDebugOptions, RagdollEnv, RagdollFrame, RagdollGlobals, RagdollScripts};
+
+    let Some(game) = game_dir() else { return };
+    let (w, h) = (640u32, 480u32);
+    let Ok(mut gpu) = pz_gpu::Gpu::new_headless(w, h) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let out_dir = std::env::var_os("PZ_RAGDOLL_FRAME_OUT").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let cache = std::env::temp_dir().join("pz-character-model-frame-test");
+    let mut fs = pz_fs::GameFs::new(&game);
+    fs.set_cache_dir(&cache);
+    let media = MediaIndex::scan(&game).unwrap();
+    let (mesh_path, mesh_ty) = resolve_model_file(&media, "Skinned/MaleBody", AssetKind::Mesh).unwrap();
+    let body = load_mesh(&std::fs::read(mesh_path).unwrap(), mesh_ty.import_format().unwrap(), &MeshParams::default()).unwrap();
+    let mut sd = body.skeleton.clone().unwrap();
+    for anim in ["Bob/Bob_TPose", "Zombie/Zombie_Death", "Zombie/Zombie_Idle_FloorOnBack", "Zombie/Zombie_Idle_FloorOnFront"] {
+        let (p, ty) = resolve_model_file(&media, anim, AssetKind::Animation).unwrap();
+        let clips = load_animation(&std::fs::read(p).unwrap(), ty.import_format().unwrap(), Some(&sd)).unwrap();
+        sd.animation_clips.extend(clips);
+    }
+    let sd = Rc::new(sd);
+
+    // The physics: the game's ragdoll scripts, a flat floor, RagdollBuilder.
+    let mut scripts = RagdollScripts::default();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(game.join("media/scripts/ragdolls")).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    for f in &files {
+        scripts.load_file(&std::fs::read_to_string(f).unwrap());
+    }
+    let mut bullet = pz_bullet::PzBullet::new();
+    bullet.init_pz_bullet();
+    scripts.to_bullet(&mut bullet, false);
+    bullet.init_world(-1, -1, 1, 1, 0, 0, false).unwrap();
+    bullet.activate_chunk_map(0, 0, 0, 4).unwrap();
+    let mut floor = RagdollFloor { pending: (0..4).flat_map(|x| (0..4).map(move |y| (x, y))).collect() };
+    for x in 0..4 {
+        for y in 0..4 {
+            bullet.set_chunk_min_max_level(x, y, 0, 0).unwrap();
+        }
+    }
+    let mut dying = AnimationPlayer::new(sd.clone());
+    let tpose = (*dying.clip("Bob_TPose").unwrap()).clone();
+    let builder = RagdollBuilder::initialize(&mut bullet, dying.skeleton(), &tpose, &scripts.body_dynamics);
+
+    // The death: Zombie_Death, the ragdoll blended in over 10 frames from
+    // frame 12, then 5 simulated seconds.
+    let (dx, dy) = (-0.6f32, 0.8f32);
+    let mut zombie = DyingZombie { pos: pz_ragdoll::Vec3::new(9.8, 11.9, 0.0), fwd: pz_anim::math::Vector2::direction(dx, dy), ..Default::default() };
+    dying.set_target_and_current_direction(dx, dy);
+    let mut globals = RagdollGlobals::default();
+    let mut slot: Option<RagdollController> = None;
+    // The zombie anim set's nodes move the character by Bip01 (deferred
+    // movement), which is what keeps it on the ragdoll's pelvis.
+    let bip01 = Some(dying.skinning_bone_index("Bip01", -1) as usize);
+    let death = dying.play("Zombie_Death", false, false, -1.0).unwrap();
+    dying.track_mut(death).unwrap().set_blend_weight(1.0);
+    dying.track_mut(death).unwrap().set_deferred_bone(bip01, pz_anim::BoneAxis::Y);
+    let mut ragdoll = None;
+    let mut frame_no = -1;
+    for f in 0..300 {
+        if f == 12 {
+            ragdoll = dying.play("Ragdoll", false, true, 5.0);
+            dying.track_mut(ragdoll.unwrap()).unwrap().set_deferred_bone(bip01, pz_anim::BoneAxis::Y);
+        }
+        if let Some(r) = ragdoll {
+            let wgt = 1f32.min((f - 11) as f32 / 10.0);
+            dying.track_mut(r).unwrap().set_blend_weight(wgt);
+            dying.track_mut(death).unwrap().set_blend_weight(1.0 - wgt);
+        }
+        if f > 0 {
+            bullet.step_simulation(0.01, 0, 0.0, &mut floor).unwrap();
+            bullet.step_simulation(0.01, 0, 0.0, &mut floor).unwrap();
+            frame_no += 1;
+        }
+        let mut host = RagdollFrame {
+            env: RagdollEnv {
+                bullet: &mut bullet,
+                globals: &mut globals,
+                builder: &builder,
+                character: &mut zombie,
+                bullet_frame_no: frame_no,
+                time_delta: 1.0 / 60.0,
+                debug: RagdollDebugOptions::default(),
+            },
+            controller: &mut slot,
+            multiplier: 0.8,
+        };
+        dying.update_with_ragdoll(1.0 / 60.0, None, &mut host);
+    }
+    let c = slot.as_ref().unwrap();
+    eprintln!(
+        "ragdoll settled: simulating {} upright {} on back {} pelvis {:?} head {:?} character {:?}",
+        c.is_simulation_active(),
+        c.is_upright(),
+        c.is_on_back(),
+        c.pelvis_position(),
+        c.head_position(),
+        zombie.pos
+    );
+    assert!(!c.is_upright(), "the ragdoll ends lying down");
+    assert!(zombie.ragdoll_fall);
+
+    // The corpses: IsoDeadBody from the dying zombie, and one in the
+    // death animation's pose.
+    let ragdolled = DeadBody {
+        x: zombie.pos.x,
+        y: zombie.pos.y,
+        z: zombie.pos.z,
+        angle: if dying.bone_transforms_need_first_frame() { zombie.fwd } else { dying.angle() },
+        dir: 2,
+        zombie: true,
+        fall_on_front: zombie.fall_on_front,
+        ragdoll_fall: zombie.ragdoll_fall,
+        died_bone_transforms: corpse::died_bone_transforms(&dying, zombie.ragdoll_fall, corpse::can_use_current_pose_for_corpse(&dying, false, true)),
+        outside: true,
+        alpha: 1.0,
+        animal_size: 1.0,
+        ..Default::default()
+    };
+    let anim_posed = DeadBody { x: 11.9, y: 10.2, died_bone_transforms: Vec::new(), ragdoll_fall: false, fall_on_front: false, ..ragdolled.clone() };
+    let zombie_set = Rc::new(pz_anim::AnimationSet::load_states("zombie", &game.join("media/AnimSets/zombie"), &["onground"]));
+    let mut rag_player = AnimationPlayer::new(sd.clone());
+    pose(&mut rag_player, zombie_set.clone(), &ragdolled);
+    let mut anim_player = AnimationPlayer::new(sd.clone());
+    pose(&mut anim_player, zombie_set, &anim_posed);
+    // The atlas's player shows exactly the frozen pose (only the DeathPose
+    // track is left), and the death-anim body its state's clip.
+    assert_eq!(rag_player.track_count(), 1);
+    assert_eq!(rag_player.tracks()[0].name(), "RagdollAnimationClip");
+    for b in 0..rag_player.num_bones() {
+        assert_eq!(rag_player.bone_transform_at(b).prs(), dying.bone_transform_at(b).prs(), "bone {b}");
+    }
+    assert_eq!(anim_player.tracks()[0].name(), "Zombie_Idle_FloorOnBack");
+    assert!(ragdoll_bone_points(&rag_player, &ragdolled).is_some());
+    assert!(ragdoll_bone_points(&anim_player, &anim_posed).is_none());
+
+    let mut pop = Population::default();
+    pop.init(&mut fs);
+    let groups = BodyLocationGroup::new("Human").unwrap();
+    let mscripts: HashMap<String, ModelScriptRef> = HashMap::new();
+    let mut tm = TextureManager::new();
+    let mut smart: Vec<Option<Texture>> = Vec::new();
+    let model_flags = flags::COMPRESS | flags::LIMIT_TEXTURE_SIZE_1;
+    let mut slot_for = |hair: &str, skin: &str, clothes: &[&str], player: &AnimationPlayer, tm: &mut TextureManager, gpu: &mut pz_gpu::Gpu| {
+        let mut hv = HumanVisual::new(BLOOD_PARTS);
+        hv.skin_texture_name = Some(skin.into());
+        hv.hair_model = Some(hair.into());
+        hv.hair_color = Some([0.35, 0.22, 0.12]);
+        let visuals: Vec<ResolvedItemVisual> = clothes.iter().map(|n| clothing(&game, n)).collect();
+        let human = HumanModel::resolve(&mut hv, false, false, false, &pop.styles(&[], 0.0), &[]);
+        let bone_index = |n: &str| player.skinning_bone_index(n, -1);
+        let mut slot = ModelSlot::build(&CharacterModelInput {
+            human: &human,
+            item_visuals: &visuals,
+            equipped: &EquippedModels::default(),
+            body_locations: &groups,
+            hair_styles: pop.hair_styles.as_ref(),
+            beard_styles: pop.beard_styles.as_ref(),
+            scripts: &mscripts,
+            body_model_script: None,
+            bone_index: &bone_index,
+        });
+        let jobs = create_textures(
+            &mut slot,
+            &TextureCreatorInput { human: &human, item_visuals: &visuals, body_locations: &groups, decals: &|_| None, simple_clothing_textures: false },
+        );
+        let base = smart.len();
+        let mut file = |tm: &mut TextureManager, p: &str| tm.shared_texture_flags(&fs, p, model_flags);
+        smart.extend(run_jobs(&jobs.jobs, &mut file, gpu, tm));
+        for inst in &mut slot.instances {
+            if let pz_character_model::TextureSource::Smart(j) = &mut inst.tex {
+                *j += base;
+            }
+        }
+        slot
+    };
+    let rag_slot = slot_for("Bob", "MaleBody02a", &["Tshirt_DefaultTEXTURE", "Trousers_Denim"], &rag_player, &mut tm, &mut gpu);
+    let anim_slot = slot_for("Bob", "MaleBody02a", &["Tshirt_DefaultTEXTURE", "Trousers_Denim"], &anim_player, &mut tm, &mut gpu);
+
+    tm.load_texture_pack(&fs, "Tiles2x.floor", 0, None);
+    tm.set_texture_pack_lookup(&[]);
+    let grass = tm.try_get_texture(&fs, "blends_natural_01_16").expect("grass tile");
+    let depth_maps = pz_render::tile_depth::TileDepthTextureManager::init(&mut fs, &mut tm);
+    let floor_sprite = Rc::new(SpriteInfo {
+        texture: Some(grass),
+        flags: SpriteFlags { solidfloor: true, ..Default::default() },
+        tint_mod: [1.0; 3],
+        ..Default::default()
+    });
+    let squares: Vec<RenderSquare> = (8..14)
+        .flat_map(|y| (8..14).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let mut sq = RenderSquare::new(x, y, 0);
+            sq.objects.push(RenderObject::new(ObjectKind::Plain, Some(floor_sprite.clone())));
+            sq
+        })
+        .collect();
+    let mut level = [None; 64];
+    for sq in &squares {
+        level[((sq.x - 8) + (sq.y - 8) * 8) as usize] = Some(sq);
+    }
+    let shadow_tex = tm.shared_texture(&fs, "media/textures/NewShadow.png");
+    let loader = Loader { tm: RefCell::new(tm), files: RefCell::new(HashMap::new()), smart: RefCell::new(smart) };
+    let res = MediaModelResources::new(&media, &loader);
+    let mut bodies = DeadBodyAtlas::new(1 << 40);
+    let (px, py) = (10.8f32, 11.0f32);
+    for (zoom, name) in [(1.0f32, "ragdoll_corpse_zoom1.png"), (0.5, "ragdoll_corpse_zoom05.png")] {
+        let cam = Camera::player(px, py, 0.0, w as i32, h as i32, zoom);
+        let amb = 0.8f32;
+        let mut pre = Vec::new();
+        let mut corpses = Vec::new();
+        let mut corpse_shadows = Vec::new();
+        for (dead, slot, player) in [(&ragdolled, &rag_slot, &rag_player), (&anim_posed, &anim_slot, &anim_player)] {
+            let key = body_key(dead, &BodyVisualKey::default());
+            let t = bodies.body_texture(&key, dead, slot, player, &res, &mut pre).clone();
+            eprintln!("{name}: corpse at ({}, {}) entry {:?} shadow {:?}", dead.x, dead.y, t.entry, t.shadow);
+            corpses.extend(corpse_world_draw(&t, &cam, dead, [amb, amb, amb, 1.0]));
+            corpse_shadows.push(corpse_shadow(dead, Some(&t), [1.0; 3]));
+        }
+        let objects = FrameObjects { corpse_shadows, corpses, ..Default::default() };
+        let r = ChunkRenderer::new(cam, &depth_maps, (w, h));
+        let chunks = [ChunkLevels { texture: ChunkTexture::new(1, 1, 0, 0, 0), levels: vec![(0, level)], dirty: true }];
+        let cmds = world_frame_with_objects(
+            &r,
+            FrameSize { width: w, height: h },
+            &chunks,
+            &objects,
+            shadow_tex.clone(),
+            pz_render::ScreenParams { desaturation: 0.0, timer: 0.0 },
+            pre,
+        );
+        let list = pz_render::DrawList { cmds };
+        gpu.render_frame(&[(pz_gpu::FrameParams::ui(w, h), &list)], &mut loader.tm.borrow_mut());
+        let pixels = gpu.read_pixels();
+        let path = out_dir.join(name);
+        write_png(&path, w, h, &pixels);
+        eprintln!("wrote {}", path.display());
+        let at = |x: f32, y: f32| -> [i32; 3] {
+            let (x, y) = (x as u32, y as u32);
+            std::array::from_fn(|k| pixels[((y * w + x) * 4) as usize + k] as i32)
+        };
+        let to_screen = |x: f32, y: f32| {
+            ((pz_render::iso::x_to_screen(x, y) - cam.off_x as f32) / zoom, (pz_render::iso::y_to_screen(x, y, 0.0, 0) - cam.off_y as f32) / zoom)
+        };
+        for dead in [&ragdolled, &anim_posed] {
+            let (cx, cy) = to_screen(dead.x, dead.y);
+            let mut non_grass = 0;
+            for oy in -6..=6 {
+                for ox in -6..=6 {
+                    let p = at(cx + ox as f32 * 2.0 / zoom, cy + oy as f32 * 2.0 / zoom);
+                    if !(p[1] > p[0] + 10 && p[1] > p[2] + 10) {
+                        non_grass += 1;
+                    }
+                }
+            }
+            assert!(non_grass > 30, "corpse at ({}, {}) -> ({cx}, {cy}): {non_grass} non-grass samples", dead.x, dead.y);
+        }
+    }
+}
+
 /// Fluids by name only (the test's fluid has its own colour).
 struct NoFluids;
 

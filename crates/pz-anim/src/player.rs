@@ -10,14 +10,14 @@ use std::rc::Rc;
 
 use pz_model::{Mat4, SkinningData};
 
-use crate::bone_transform::AnimatorsBoneTransform;
+use crate::bone_transform::{AnimatorsBoneTransform, BoneTransform};
 use crate::clip::{AnimClip, Keyframe};
 use crate::math::{helpers, pzmath, Matrix4f, Quaternion, Vector2, Vector3f, PI_F};
 use crate::shared_skele::{ModelTransformSampler, SharedSkeleAnimationTrack, SharedSkeleRepository};
 use crate::skeleton::Skeleton;
 use crate::track::{AnimationTrack, TrackEvent, TrackId, TrackListener};
 use crate::vars::AnimationVariableSource;
-use crate::{AnimBoneWeight, BoneAxis};
+use crate::{AnimBoneWeight, BoneAxis, RagdollHost};
 
 /// The debug switches the animation code reads, with the original's
 /// defaults.
@@ -32,6 +32,9 @@ pub struct AnimDebugOptions {
     pub allow_early_transition_out: bool,
     pub disable_animation_blends: bool,
     pub allow_anim_node_override: bool,
+    /// `character.debug.animate.keepAtOrigin` (a debug-only option, so its
+    /// default `true` holds in release builds).
+    pub keep_at_origin: bool,
 }
 
 impl Default for AnimDebugOptions {
@@ -46,6 +49,7 @@ impl Default for AnimDebugOptions {
             allow_early_transition_out: true,
             disable_animation_blends: false,
             allow_anim_node_override: false,
+            keep_at_origin: true,
         }
     }
 }
@@ -112,6 +116,7 @@ pub struct LayerBinding {
 #[derive(Clone, Copy, Debug)]
 struct LiveEntry {
     track: usize,
+    id: TrackId,
     weight: f32,
     priority: i32,
     layer: i32,
@@ -166,7 +171,7 @@ impl LiveAnimationTrackEntries {
                 break;
             }
             let Some(at) = insert_at else { continue };
-            self.entries.insert(at, LiveEntry { track: i, weight: w, priority: prio, layer });
+            self.entries.insert(at, LiveEntry { track: i, id: t.id, weight: w, priority: prio, layer });
             self.entries.truncate(LIVE_ENTRY_CACHE);
         }
         if self.entries.is_empty() {
@@ -208,6 +213,13 @@ pub struct AnimationPlayer {
     pub bone_transforms: Vec<AnimatorsBoneTransform>,
     model_transforms: Vec<Matrix4f>,
     ragdoll_animation_clip: Option<Rc<AnimClip>>,
+    /// `ragdollAnimationWeight`.
+    ragdoll_animation_weight: f32,
+    /// `isRagdolling()` (the controller exists and is initialised), as of
+    /// the last call into the [`RagdollHost`].
+    ragdolling: bool,
+    /// `isRagdollSimulationActive()`, likewise.
+    ragdoll_simulation_active: bool,
     shared_skele_repo: Option<Rc<RefCell<SharedSkeleRepository>>>,
     current_shared_track: Option<Rc<SharedSkeleAnimationTrack>>,
     current_shared_track_clip: Option<*const AnimClip>,
@@ -270,6 +282,9 @@ impl AnimationPlayer {
             bone_transforms: vec![AnimatorsBoneTransform::default(); n],
             model_transforms: vec![Matrix4f::IDENTITY; n],
             ragdoll_animation_clip: None,
+            ragdoll_animation_weight: 0.0,
+            ragdolling: false,
+            ragdoll_simulation_active: false,
             shared_skele_repo: None,
             current_shared_track: None,
             current_shared_track_clip: None,
@@ -469,22 +484,12 @@ impl AnimationPlayer {
         Some(id)
     }
 
-    /// `getOrCreateRagdollAnimationClip`. The ragdoll simulation itself is
-    /// not ported (see [`crate::RagdollController`]); the placeholder clip
-    /// is.
+    /// `getOrCreateRagdollAnimationClip`: two keyframes (times 0 and 1) per
+    /// bone, which the ragdoll controller overwrites with the simulated pose.
     pub fn get_or_create_ragdoll_animation_clip(&mut self) -> Option<Rc<AnimClip>> {
         if self.ragdoll_animation_clip.is_none() {
-            let root = self.skeleton.find_bone_ignore_case("Dummy01")?;
-            let mut bones = Vec::new();
-            fn walk(s: &Skeleton, b: usize, out: &mut Vec<usize>) {
-                out.push(b);
-                for &c in &s.bones[b].children {
-                    walk(s, c, out);
-                }
-            }
-            walk(&self.skeleton, root, &mut bones);
             let mut keys = Vec::new();
-            for b in bones {
+            for b in 0..self.skeleton.num_bones() {
                 for t in [0.0, 1.0] {
                     keys.push(Keyframe { bone: b as i32, time: t, position: Vector3f::ZERO, rotation: Quaternion::IDENTITY, scale: Vector3f::ZERO });
                 }
@@ -495,6 +500,267 @@ impl AnimationPlayer {
         self.ragdoll_animation_clip.clone()
     }
 
+    /// `getRagdollSimulationAnimationClip`.
+    pub fn ragdoll_simulation_animation_clip(&self) -> Option<&Rc<AnimClip>> {
+        self.ragdoll_animation_clip.as_ref()
+    }
+
+    /// Mutates the ragdoll clip the way the original mutates its shared
+    /// `Keyframe` objects: every track playing it sees the change.
+    pub fn edit_ragdoll_clip(&mut self, f: impl FnOnce(&mut AnimClip)) {
+        let Some(old) = self.ragdoll_animation_clip.clone() else { return };
+        let mut clip = (*old).clone();
+        f(&mut clip);
+        let new = Rc::new(clip);
+        for t in &mut self.tracks {
+            if t.current_clip.as_ref().is_some_and(|c| Rc::ptr_eq(c, &old)) {
+                t.current_clip = Some(new.clone());
+            }
+        }
+        self.ragdoll_animation_clip = Some(new);
+    }
+
+    /// `AnimationTrack.initRagdollTransforms(boneTransforms)`: every keyframe
+    /// of each bone of the track's (ragdoll) clip takes that bone's
+    /// transform; then the track leaves its first frame and samples again.
+    pub fn init_ragdoll_transforms(&mut self, track: TrackId, bones: &mut [BoneTransform]) {
+        let Some(ti) = self.tracks.iter().position(|t| t.id == track) else { return };
+        if self.tracks[ti].is_ragdoll() {
+            let prs: Vec<(Vector3f, Quaternion, Vector3f)> = bones.iter_mut().map(|b| b.prs()).collect();
+            let old = self.tracks[ti].current_clip.clone().unwrap();
+            let mut clip = (*old).clone();
+            for (bone, &(p, r, sc)) in prs.iter().enumerate() {
+                clip.edit_bone_frames(bone, |frames| {
+                    for k in frames.iter_mut() {
+                        k.position = p;
+                        k.rotation = r;
+                        k.scale = sc;
+                    }
+                });
+            }
+            let new = Rc::new(clip);
+            for t in &mut self.tracks {
+                if t.current_clip.as_ref().is_some_and(|c| Rc::ptr_eq(c, &old)) {
+                    t.current_clip = Some(new.clone());
+                }
+            }
+            if self.ragdoll_animation_clip.as_ref().is_some_and(|c| Rc::ptr_eq(c, &old)) {
+                self.ragdoll_animation_clip = Some(new);
+            }
+        }
+        // (A non-ragdoll track only warns, per bone, in the original.)
+        self.tracks[ti].finish_init_ragdoll_transforms();
+    }
+
+    /// `AnimationMultiTrack.initRagdollTransforms(boneTransforms, bForce)`.
+    /// As in the original, `force` skips every track.
+    fn multi_track_init_ragdoll_transforms(&mut self, force: bool) {
+        let mut bones: Vec<BoneTransform> = self.bone_transforms.iter().map(|b| b.transform).collect();
+        let ids: Vec<TrackId> = self.tracks.iter().map(|t| t.id).collect();
+        for id in ids {
+            let Some(t) = self.track(id) else { continue };
+            if force || !t.is_ragdoll_first_frame() {
+                continue;
+            }
+            self.init_ragdoll_transforms(id, &mut bones);
+        }
+    }
+
+    /// `AnimationMultiTrack.containsAnyRagdollTracks`.
+    pub fn contains_any_ragdoll_tracks(&self) -> bool {
+        self.tracks.iter().any(|t| t.is_ragdoll())
+    }
+
+    /// `AnimationMultiTrack.getActiveRagdollTrack`.
+    pub fn active_ragdoll_track(&self) -> Option<TrackId> {
+        let mut found: Option<&AnimationTrack> = None;
+        for t in &self.tracks {
+            if !t.is_ragdoll() || !t.is_playing || t.blend_weight() <= 0.0 || found.is_some_and(|f| !(f.blend_weight() > t.blend_weight())) {
+                continue;
+            }
+            found = Some(t);
+        }
+        found.map(|t| t.id)
+    }
+
+    /// `isRagdolling()`.
+    pub fn is_ragdolling(&self) -> bool {
+        self.ragdolling
+    }
+
+    /// `isRagdollSimulationActive()`.
+    pub fn is_ragdoll_simulation_active(&self) -> bool {
+        self.ragdoll_simulation_active
+    }
+
+    /// `isFullyRagdolling()`.
+    pub fn is_fully_ragdolling(&self) -> bool {
+        self.is_ragdolling() && self.is_ragdoll_simulation_active() && self.ragdoll_animation_weight > 0.9
+    }
+
+    /// `ragdollAnimationWeight`.
+    pub fn ragdoll_animation_weight(&self) -> f32 {
+        self.ragdoll_animation_weight
+    }
+
+    /// `getBoneTransformAt(boneIndex, out)`: a copy of the bone's local
+    /// transform (what `IsoDeadBody` keeps as `diedBoneTransforms`).
+    pub fn bone_transform_at(&self, bone: usize) -> BoneTransform {
+        self.bone_transforms[bone].transform
+    }
+
+    /// `isBoneCountMismatched(boneTransforms)`.
+    pub fn is_bone_count_mismatched(&self, count: usize) -> bool {
+        count != self.bone_transforms.len()
+    }
+
+    fn sync_ragdoll_state(&mut self, host: &dyn RagdollHost) {
+        let has = host.has_controller();
+        self.ragdolling = has && host.is_initialized();
+        self.ragdoll_simulation_active = has && host.is_simulation_active();
+    }
+
+    /// `releaseRagdollController`.
+    pub fn release_ragdoll_controller<'h>(&mut self, host: Option<&mut (dyn RagdollHost + 'h)>) {
+        if let Some(h) = host {
+            h.release_controller();
+            self.sync_ragdoll_state(h);
+        } else {
+            self.ragdolling = false;
+            self.ragdoll_simulation_active = false;
+        }
+        if let Some(c) = &self.ragdoll_animation_clip {
+            c.set_ragdoll_simulation_active(false);
+        }
+        self.ragdoll_animation_weight = 0.0;
+    }
+
+    /// `updateRagdoll(deltaT)`.
+    fn update_ragdoll<'h>(&mut self, dt: f32, host: Option<&mut (dyn RagdollHost + 'h)>) {
+        let Some(host) = host else {
+            // No character: canRagdoll() is false.
+            self.release_ragdoll_controller(None);
+            return;
+        };
+        if !self.update_bones || !(host.has_character() && host.can_ragdoll()) || !self.contains_any_ragdoll_tracks() || self.active_ragdoll_track().is_none() {
+            self.release_ragdoll_controller(Some(host));
+            return;
+        }
+        self.update_ragdoll_internal(dt, host);
+    }
+
+    /// `updateRagdollInternal(deltaT)`.
+    fn update_ragdoll_internal<'h>(&mut self, dt: f32, host: &mut (dyn RagdollHost + 'h)) {
+        // getOrCreateRagdollController (initRagdollController).
+        if !host.has_controller() && host.has_character() && host.can_ragdoll() {
+            host.alloc_controller();
+        }
+        self.sync_ragdoll_state(host);
+        if !host.has_controller() {
+            return;
+        }
+        if self.bone_transforms_need_first_frame {
+            return;
+        }
+        if self.tracks.iter().any(|t| t.is_ragdoll_first_frame()) {
+            self.multi_track_init_ragdoll_transforms(false);
+        }
+        self.update_total_ragdoll_weight();
+        self.deferred_movement_from_ragdoll = Vector3f::ZERO;
+        if host.is_first_frame() {
+            self.multi_track_init_ragdoll_transforms(true);
+        }
+        if host.has_character() && self.is_simulation_direction_calculated(host) && self.is_fully_ragdolling() {
+            let m = self.calculate_deferred_movement_from_ragdolls(host);
+            self.deferred_movement_from_ragdoll = m;
+            host.do_deferred_movement_from_ragdoll(self, m);
+        }
+        host.update(self, dt);
+        self.sync_ragdoll_state(host);
+    }
+
+    fn is_simulation_direction_calculated(&self, host: &dyn RagdollHost) -> bool {
+        self.is_ragdolling() && host.is_simulation_direction_calculated()
+    }
+
+    /// `updateTotalRagdollWeight`: over the live entries of the last
+    /// blend.
+    fn update_total_ragdoll_weight(&mut self) {
+        self.ragdoll_animation_weight = 0.0;
+        let mut remaining = 1.0f32;
+        let mut idx = self.live_entries.entries.len() as isize - 1;
+        while idx >= 0 && remaining > 0.0 {
+            let e = self.live_entries.entries[idx as usize];
+            idx -= 1;
+            let w = e.weight;
+            if self.track(e.id).is_some_and(|t| t.is_ragdoll()) {
+                self.ragdoll_animation_weight = pzmath::clamp(self.ragdoll_animation_weight + w, 0.0, 1.0);
+            }
+            remaining -= w;
+        }
+    }
+
+    /// `calculateDeferredMovementFromRagdolls`.
+    fn calculate_deferred_movement_from_ragdolls(&mut self, host: &dyn RagdollHost) -> Vector3f {
+        let mut ragdoll_weight = 0.0f32;
+        let mut remaining = 1.0f32;
+        let mut idx = self.live_entries.entries.len() as isize - 1;
+        while idx >= 0 && !(remaining <= 0.001) {
+            let e = self.live_entries.entries[idx as usize];
+            idx -= 1;
+            let Some(t) = self.track(e.id) else { continue };
+            if t.is_finished() {
+                continue;
+            }
+            let bw = t.deferred_bone_weight();
+            if bw <= 0.001 {
+                continue;
+            }
+            let raw = e.weight * bw;
+            if raw <= 0.001 {
+                continue;
+            }
+            let w = pzmath::clamp(raw, 0.0, remaining);
+            remaining -= raw;
+            remaining = remaining.max(0.0);
+            if !t.is_ragdoll() {
+                continue;
+            }
+            ragdoll_weight += w;
+        }
+        let mut m = Vector3f::ZERO;
+        ragdoll_weight = pzmath::clamp(ragdoll_weight, 0.0, 1.0) * 0.5;
+        if self.is_simulation_direction_calculated(host) {
+            let deferred_weight = pzmath::clamp(ragdoll_weight * host.game_time_multiplier(), 0.0, 1.0);
+            let desired = host.desired_character_position();
+            let pos = host.character_position();
+            m.x = (desired.x - pos.x) * deferred_weight;
+            m.y = (desired.y - pos.y) * deferred_weight;
+            m.z = (desired.z - pos.z) * deferred_weight;
+            let source = self.target_angle;
+            let sim = host.calculated_simulation_direction_angle();
+            self.target_angle = pzmath::lerp_angle(source, sim, deferred_weight);
+            self.set_angle_to_target();
+        }
+        m
+    }
+
+    /// `postUpdateRagdoll(deltaT)`.
+    fn post_update_ragdoll<'h>(&mut self, dt: f32, host: Option<&mut (dyn RagdollHost + 'h)>) {
+        let Some(host) = host else {
+            self.release_ragdoll_controller(None);
+            return;
+        };
+        if !self.update_bones || !host.has_character() || !self.contains_any_ragdoll_tracks() || self.active_ragdoll_track().is_none() {
+            self.release_ragdoll_controller(Some(host));
+            return;
+        }
+        if host.has_controller() {
+            host.post_update(self, dt);
+            self.sync_ragdoll_state(host);
+        }
+    }
+
     /// `AnimationMultiTrack.removeTrack` + release: returns the listeners
     /// the original would notify with `onTrackDestroyed`.
     pub fn remove_track(&mut self, id: TrackId) -> Option<Vec<TrackListener>> {
@@ -503,9 +769,13 @@ impl AnimationPlayer {
         Some(t.listeners)
     }
 
-    /// `reset()` / `stopAll()`: drops every track without notifying.
+    /// `reset()` / `stopAll()`: drops every track without notifying and
+    /// releases the ragdoll controller (use
+    /// [`AnimationPlayer::release_ragdoll_controller`] with the host first
+    /// when the character has one).
     pub fn reset(&mut self) {
         self.tracks.clear();
+        self.release_ragdoll_controller(None);
     }
 
     pub fn stop_all(&mut self) {
@@ -517,17 +787,23 @@ impl AnimationPlayer {
     /// `Update(deltaT)`. `vars` serves tracks driven by a variable
     /// (`m_TrackTimeToVariable`).
     pub fn update(&mut self, dt: f32, vars: Option<&dyn AnimationVariableSource>) {
-        self.update_internal(dt, vars, None);
+        self.update_internal(dt, vars, None, None);
+    }
+
+    /// `Update(deltaT)` for a character's player: `host` is the character
+    /// and its ragdoll controller.
+    pub fn update_with_ragdoll<'h>(&mut self, dt: f32, vars: Option<&dyn AnimationVariableSource>, host: &mut (dyn RagdollHost + 'h)) {
+        self.update_internal(dt, vars, None, Some(host));
     }
 
     /// `Update(deltaT)` for a player whose `parentPlayer` is `parent`
     /// (attached models copy the parent's bone transforms).
     pub fn update_attached(&mut self, dt: f32, vars: Option<&dyn AnimationVariableSource>, parent: &AnimationPlayer) {
-        self.update_internal(dt, vars, Some(parent));
+        self.update_internal(dt, vars, Some(parent), None);
     }
 
-    fn update_internal(&mut self, dt: f32, vars: Option<&dyn AnimationVariableSource>, parent: Option<&AnimationPlayer>) {
-        // updateRagdoll: no ragdoll controller without physics.
+    fn update_internal<'h>(&mut self, dt: f32, vars: Option<&dyn AnimationVariableSource>, parent: Option<&AnimationPlayer>, mut host: Option<&mut (dyn RagdollHost + 'h)>) {
+        self.update_ragdoll(dt, host.as_deref_mut());
         self.multi_track_update(dt, vars);
         if !self.update_bones {
             self.update_animation_non_visual_only(dt, parent.is_some());
@@ -542,6 +818,7 @@ impl AnimationPlayer {
             return;
         }
         self.update_animation_standard(dt, parent);
+        self.post_update_ragdoll(dt, host);
     }
 
     /// `AnimationMultiTrack.Update`.
@@ -559,6 +836,9 @@ impl AnimationPlayer {
     }
 
     fn determine_current_shared_skele_track(&mut self, has_parent: bool) -> Option<Rc<SharedSkeleAnimationTrack>> {
+        if self.is_ragdolling() {
+            return None;
+        }
         let repo = self.shared_skele_repo.clone()?;
         if self.do_blending || !self.debug.shared_skeles_enabled || self.tracks.len() != 1 {
             return None;
@@ -755,10 +1035,16 @@ impl AnimationPlayer {
         if bone == 1 && !self.tracks[track].is_ragdoll() {
             let t = &mut self.tracks[track];
             if !t.is_initial_adjustment_calculated {
-                // Only non-zero while ragdolling, which is not ported.
                 t.initial_adjustment = Vector3f::ZERO;
-                t.is_initial_adjustment_calculated = true;
+                if self.is_ragdolling() && self.debug.keep_at_origin {
+                    let um = self.unweighted_model_transform(track, 1);
+                    let p = helpers::get_position(&um);
+                    let t = &mut self.tracks[track];
+                    t.initial_adjustment = Vector3f::new(t.initial_adjustment.x - p.x, t.initial_adjustment.y - p.y, t.initial_adjustment.z - p.z);
+                }
+                self.tracks[track].is_initial_adjustment_calculated = true;
             }
+            let t = &mut self.tracks[track];
             let (mut pos, rot, scale) = t.get(bone);
             pos.x += t.initial_adjustment.x;
             pos.y -= t.initial_adjustment.z;
@@ -908,6 +1194,9 @@ impl AnimationPlayer {
 
     /// `DoAngles`.
     pub fn do_angles(&mut self, dt: f32) {
+        if self.is_ragdolling() {
+            return;
+        }
         let step = 0.15 * (dt * 0.8 * self.multiplier_bias * 60.0);
         let step = pzmath::min(step, PI_F);
         self.interpolate_body_angle(step);

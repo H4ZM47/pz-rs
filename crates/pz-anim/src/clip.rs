@@ -2,6 +2,8 @@
 //! grouped per bone, with the duplicate last frame dropped unless the clip
 //! keeps it (`keepLastFrame`).
 
+use std::cell::Cell;
+
 use crate::math::{pzmath, Quaternion, Vector2, Vector3f};
 use crate::BoneAxis;
 
@@ -58,6 +60,9 @@ pub struct AnimClip {
     /// Bone name per keyframe (parallel to `keyframes`).
     pub keyframe_bone_names: Vec<String>,
     by_bone: Vec<Vec<Keyframe>>,
+    /// `isRagdollSimulationActive`: set by the ragdoll controller while it
+    /// writes the simulated pose into this (ragdoll) clip.
+    ragdoll_simulation_active: Cell<bool>,
 }
 
 impl AnimClip {
@@ -70,6 +75,7 @@ impl AnimClip {
             keyframes,
             keyframe_bone_names: names,
             by_bone: Vec::new(),
+            ragdoll_simulation_active: Cell::new(false),
         };
         clip.recalculate_keyframes_by_bone_index();
         clip
@@ -97,6 +103,31 @@ impl AnimClip {
                 v
             })
             .collect();
+    }
+
+    /// `isRagdollSimulationActive`.
+    pub fn is_ragdoll_simulation_active(&self) -> bool {
+        self.ragdoll_simulation_active.get()
+    }
+
+    /// `setRagdollSimulationActive`.
+    pub fn set_ragdoll_simulation_active(&self, v: bool) {
+        self.ragdoll_simulation_active.set(v);
+    }
+
+    /// Edits the keyframes of one bone in place, in clip order (the
+    /// original mutates the shared `Keyframe` objects of
+    /// `getKeyframesForBone` / `getBoneFramesAt`).
+    pub fn edit_bone_frames(&mut self, bone: usize, f: impl FnOnce(&mut [&mut Keyframe])) {
+        let mut frames: Vec<&mut Keyframe> = self.keyframes.iter_mut().filter(|k| k.bone == bone as i32).collect();
+        f(&mut frames);
+        if bone < self.by_bone.len() {
+            let mut v: Vec<Keyframe> = self.keyframes.iter().filter(|k| k.bone == bone as i32).copied().collect();
+            if !self.keep_last_frame && v.len() > 1 {
+                v.pop();
+            }
+            self.by_bone[bone] = v;
+        }
     }
 
     /// `getBoneFramesAt`.

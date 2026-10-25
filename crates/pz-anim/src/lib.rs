@@ -20,9 +20,13 @@
 //! * [`vars`] is the animation-variable system the conditions read, with a
 //!   map-backed source ([`MapVariableSource`]) for tests.
 //!
-//! Ragdoll physics and grappling are not ported: [`RagdollController`] and
-//! [`Grappleable`] are the seams, and the player/animator behave as the
-//! original does for a character that cannot ragdoll and is not grappling.
+//! Ragdolls: the player runs the original's `updateRagdoll` /
+//! `postUpdateRagdoll` and blends the ragdoll clip like any other track;
+//! the `RagdollController` itself (Bullet physics) lives outside this crate
+//! and is reached through [`RagdollHost`] (`pz-ragdoll` implements it).
+//! Without a host the player behaves as the original does for a character
+//! that cannot ragdoll. Grappling is not ported: [`Grappleable`] is the
+//! seam, and the animator treats every character as not grappling.
 //!
 //! Matrices: the internal math keeps the original's LWJGL `Matrix4f`
 //! fields so float operations match ([`math`]); everything handed out to
@@ -83,12 +87,44 @@ impl AnimBoneWeight {
     }
 }
 
-/// The seam for `RagdollController` (Bullet physics in the original). Not
-/// ported: the player never creates one, so ragdoll tracks only play their
-/// placeholder clip.
-pub trait RagdollController {
+/// What `AnimationPlayer`'s ragdoll code reaches outside the player: its
+/// `IsoGameCharacter` and the `RagdollController` the player holds (which
+/// lives with the host here, since it drives the physics world).
+pub trait RagdollHost {
+    /// `getIsoGameCharacter() != null`.
+    fn has_character(&self) -> bool;
+    /// `character.canRagdoll()`.
+    fn can_ragdoll(&self) -> bool;
+    /// `ragdollController != null`.
+    fn has_controller(&self) -> bool;
+    /// `initRagdollController` once its checks passed:
+    /// `RagdollController.alloc()`, `setGameCharacterObject` and
+    /// `character.onRagdollSimulationStarted()`.
+    fn alloc_controller(&mut self);
+    /// `Pool.tryRelease(ragdollController)` (`onReleased` → `reset`).
+    fn release_controller(&mut self);
+    /// `ragdollController.isInitialized()`.
     fn is_initialized(&self) -> bool;
+    /// `ragdollController.isFirstFrame()`.
+    fn is_first_frame(&self) -> bool;
+    /// `ragdollController.isSimulationActive()`.
     fn is_simulation_active(&self) -> bool;
+    /// `ragdollController.isSimulationDirectionCalculated()`.
+    fn is_simulation_direction_calculated(&self) -> bool;
+    /// `getDesiredCharacterPosition`.
+    fn desired_character_position(&self) -> math::Vector3f;
+    /// `getCalculatedSimulationDirectionAngle`.
+    fn calculated_simulation_direction_angle(&self) -> f32;
+    /// `ragdollController.update(deltaT, ...)`.
+    fn update(&mut self, player: &mut AnimationPlayer, dt: f32);
+    /// `ragdollController.postUpdate(deltaT)`.
+    fn post_update(&mut self, player: &mut AnimationPlayer, dt: f32);
+    /// The character's `getX/getY/getZ`.
+    fn character_position(&self) -> math::Vector3f;
+    /// `character.doDeferredMovementFromRagdoll(dMovement)`.
+    fn do_deferred_movement_from_ragdoll(&mut self, player: &AnimationPlayer, movement: math::Vector3f);
+    /// `GameTime.getInstance().getMultiplier()`.
+    fn game_time_multiplier(&self) -> f32;
 }
 
 /// The seam for `IGrappleable`. Not ported: the animator treats every
