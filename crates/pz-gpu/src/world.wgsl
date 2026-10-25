@@ -73,6 +73,13 @@ fn fs_projected(in: VsOut) -> @location(0) vec4<f32> {
     return in.col * texel;
 }
 
+// `vboRenderer_PositionColor` / `vboRenderer_PositionNormalColor`:
+// `gl_FragColor = vColor`.
+@fragment
+fn fs_vbo(in: VsOut) -> @location(0) vec4<f32> {
+    return in.col;
+}
+
 // `vboRenderer_PositionColorUVDepth`: colour times texel with no discard;
 // the per-corner depth arrives as the position's z.
 @fragment
