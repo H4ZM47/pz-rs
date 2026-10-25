@@ -1837,7 +1837,9 @@ name = "pz-animals"
 version = "0.1.0"
 dependencies = [
  "indexmap",
+ "pz-core",
  "pz-fs",
+ "pz-inventory",
  "pz-kahlua",
  "pz-world",
 ]
