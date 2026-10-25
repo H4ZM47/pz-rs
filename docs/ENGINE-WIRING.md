@@ -37,6 +37,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
 - [ ] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
+- [ ] Pathfinding: one `PathfindService::new(meta min_x, min_y, width, height, is_server)` in a
+      `pz_pathfind::host::PathHost` per world. On chunk load/unload
+      `add_chunk_to_world(chunk, load_id, &SquareBits)` /
+      `remove_chunk_from_world`, `square_changed` on square edits (SquareBits
+      over the cell with `pz_world::ObjectHooks`); per frame, before characters
+      update, `update_thread()` (game runs it every ~50 ms while there is work)
+      then `update_main(vehicles, seating, movers)`; `remove(id)` when a
+      character leaves; postupdate calls `PathHost::resolve_collision(_radius)`
+      on the same host (#60).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
 
