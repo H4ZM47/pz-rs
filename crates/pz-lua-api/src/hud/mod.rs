@@ -1429,7 +1429,7 @@ mod tests {
             .filter(|l| !l.starts_with("tex ") && !l.starts_with("fake "))
             .map(normalise_oracle)
             .collect();
-        assert_lines_close(&got, &want, 1e-4);
+        assert_eq!(got, want);
     }
 
     #[test]
