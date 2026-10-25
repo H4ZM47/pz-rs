@@ -25,6 +25,8 @@
 //!
 //! [`StateWorld::animal_host`]: crate::character::state::StateWorld::animal_host
 
+pub mod actions;
+pub mod behavior;
 pub mod save;
 pub mod update;
 
@@ -43,7 +45,7 @@ use pz_world::save::animal::CharacterStatDecl;
 use pz_world::square::IsoDirections;
 
 use super::fire::CtxRand;
-use super::state::{ActionGroups, StateRegistry};
+use super::state::{ActionGroups, StateCx, StateRegistry};
 use super::stats::{CharacterStatRef, CharacterStats};
 use super::{CharacterKind, GameCharacter, SimContext};
 use crate::worn_items::ItemIdentity;
@@ -67,11 +69,14 @@ pub struct AnimalDefValues {
     pub base_dmg: f32,
     pub attack_back: bool,
     pub wild_flee_time_until_dead_timer: f32,
+    /// The whole definition, for the behaviour and the states.
+    pub adef: Rc<AnimalDefinitions>,
 }
 
 impl AnimalDefValues {
     pub fn of(d: &AnimalDefinitions) -> Self {
         AnimalDefValues {
+            adef: Rc::new(d.clone()),
             animset: d.animset.clone(),
             turn_delta: d.turn_delta,
             animal_size: d.animal_size,
@@ -90,7 +95,8 @@ impl AnimalDefValues {
 }
 
 /// One character `updateLOS` passed to `behavior.spotted(chr, false, dist)`
-/// (the zombies and visible non-animal players of the cell).
+/// (the zombies and visible non-animal players of the cell), in the order
+/// of the calls.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Spotted {
     pub chr: i32,
@@ -122,15 +128,35 @@ pub struct AnimalFields {
     /// `vehicle4testCollision`: the vehicle (by id) a collision is tested
     /// against this update.
     pub vehicle_for_collision_test: Option<i32>,
-    /// `behavior.blockMovement`. Step 3 (`BaseAnimalBehavior`).
-    pub block_movement: bool,
-    /// `spottedList` and the `behavior.spotted` calls of the last
-    /// `updateLOS`, for `BaseAnimalBehavior.spotted` (step 3).
+    /// The `behavior.spotted` calls of the last `updateLOS`.
     pub spotted: Vec<Spotted>,
-    /// `behavior.wildAndHurt`, `behavior.wildDropDeadTimer` (set when a
-    /// wild animal is hit). Step 3 (`BaseAnimalBehavior`).
-    pub wild_and_hurt: bool,
-    pub wild_drop_dead_timer: f32,
+    /// `spottedChr` (a character id).
+    pub spotted_chr: Option<i32>,
+    /// `alertedChr`.
+    pub alerted_chr: Option<i32>,
+    /// `atkTarget`.
+    pub atk_target: Option<i32>,
+    /// `thumpTarget` (an `IsoThumpable` or `IsoDoor`).
+    pub thump_target: Option<pz_pathfind::mover::ObjectRef>,
+    /// `fightingOpponent`.
+    pub fighting_opponent: Option<i32>,
+    /// `luredBy` (a player).
+    pub lured_by: Option<i32>,
+    pub walk_to_char_luring: bool,
+    pub lured_start_timer: f32,
+    /// `isAttackingOnClient`.
+    pub attacking_on_client: bool,
+    /// `lastSoundRespondedTo` (the copy the animal keeps).
+    pub last_sound_responded_to: Option<pz_audio::world_sound::WorldSound>,
+    pub time_since_flee_from_sound: f32,
+    /// `isExistInTheWorld()`: on a square whose moving objects list the
+    /// animal. The world sets it when it adds the animal to a square and
+    /// clears it when it takes it off.
+    pub exists_in_world: bool,
+    /// `stopAllMovementNow()` asked for by the animal logic
+    /// (`pz-animals`, which has no state machine): done after its call
+    /// returns ([`GameCharacter::animal_env`]).
+    pub pending_stop_all_movement: bool,
 }
 
 impl AnimalFields {
@@ -147,10 +173,20 @@ impl AnimalFields {
             width: 0.24,
             online_id: -1,
             vehicle_for_collision_test: None,
-            block_movement: false,
             spotted: Vec::new(),
-            wild_and_hurt: false,
-            wild_drop_dead_timer: 0.0,
+            spotted_chr: None,
+            alerted_chr: None,
+            atk_target: None,
+            thump_target: None,
+            fighting_opponent: None,
+            lured_by: None,
+            walk_to_char_luring: false,
+            lured_start_timer: -1.0,
+            attacking_on_client: false,
+            last_sound_responded_to: None,
+            time_since_flee_from_sound: 0.0,
+            exists_in_world: false,
+            pending_stop_all_movement: false,
         })
     }
 
@@ -482,20 +518,20 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoAnimal.hitConsequences(weapon, wielder, ignoreDamage, damage,
     /// false)`, which replaces the character's: health lost through
     /// `data.getHealthLoss(0.025)`, a wild animal's drop-dead timer, blood,
-    /// the attacker and attack time, the `hitreact` reaction and stress.
-    /// `killed(player)` (alerting the zone's other animals and fleeing) and
-    /// the server's `goAttack` are step 3 (`BaseAnimalBehavior`).
+    /// the attacker and attack time, the `hitreact` reaction, `killed(player)`
+    /// (the zone's other animals are stressed and flee), stress and the
+    /// server's `goAttack`.
     pub fn animal_hit_consequences(
         &mut self,
         wielder: &GameCharacter<I>,
         wielder_aiming_level: i32,
         ignore_damage: bool,
         damage: f32,
-        ctx: &dyn SimContext,
-        host: Option<&mut AnimalHost<'_>>,
+        cx: &mut StateCx<'_, I>,
     ) -> ScriptResult {
+        let ctx = cx.ctx;
         if !ctx.is_client() && !ignore_damage {
-            if let Some(host) = host {
+            if let Some(host) = cx.world.animal_host(self.id) {
                 let clock = CtxClock(ctx);
                 let sandbox = ctx.animal_sandbox();
                 let actx = AnimalCtx {
@@ -525,8 +561,8 @@ impl<I: 'static> GameCharacter<I> {
             let mut v = ctx.rand_next_float(t / 2.0, t);
             v /= 1.0 + wielder_aiming_level as f32 / 10.0;
             if let Some(f) = self.animal.as_mut() {
-                f.wild_and_hurt = true;
-                f.wild_drop_dead_timer = v;
+                f.animal.behavior.wild_and_hurt = true;
+                f.animal.behavior.wild_drop_dead_timer = v;
             }
         }
         if !ignore_damage {
@@ -541,13 +577,20 @@ impl<I: 'static> GameCharacter<I> {
             self.vars.hit_reaction = "hitreact".to_string();
             // instanceof IsoPlayer
             if (wielder.is_player() || wielder.is_animal()) && self.health <= 0.0 {
-                // killed(player): step 3.
+                self.animal_killed(Some(wielder.id), (wielder.vars.x, wielder.vars.y), cx);
             }
         }
         let r = ctx.rand_next_range(20, 40);
         if let Some(f) = self.animal.as_mut() {
             let s = f.animal.stress_level + r as f32;
             f.animal.set_debug_stress(s);
+        }
+        let attack_back = self.animal.as_ref().and_then(|f| f.def.as_ref()).is_some_and(|d| d.attack_back);
+        if ctx.is_server() && (wielder.is_player() || wielder.is_animal() || wielder.is_zombie()) && attack_back {
+            if let Some(f) = self.animal.as_mut() {
+                f.atk_target = Some(wielder.id);
+            }
+            self.behavior_go_attack(wielder.id, cx);
         }
         Ok(())
     }
@@ -565,7 +608,7 @@ impl<I: 'static> GameCharacter<I> {
         let blocks = |c: &GameCharacter<I>| {
             c.animal
                 .as_ref()
-                .map(|f| !f.def.as_ref().is_some_and(|d| d.collidable) || f.block_movement)
+                .map(|f| !f.def.as_ref().is_some_and(|d| d.collidable) || f.animal.behavior.block_movement)
         };
         match (blocks(self), blocks(other)) {
             (Some(true), _) | (_, Some(true)) => Some(false),
@@ -734,6 +777,26 @@ impl<I: 'static> AnimalCharacter for GameCharacter<I> {
     }
     fn clear_attacked_by(&mut self) {
         self.vars.attacked_by = None;
+    }
+    /// The current square as a [`pz_animals::square_ref`].
+    fn current_square(&self) -> Option<ObjectRef> {
+        self.path
+            .current_square
+            .map(|(x, y, z)| pz_animals::square_ref(x, y, z))
+    }
+    fn exists_in_world(&self) -> bool {
+        self.animal.as_ref().is_some_and(|f| f.exists_in_world)
+    }
+    /// `stopAllMovementNow()`: the parts without the world (not moving, no
+    /// path); the path reset and the change to the default state follow
+    /// when the `pz-animals` call returns
+    /// ([`AnimalFields::pending_stop_all_movement`]).
+    fn stop_all_movement_now(&mut self) {
+        self.vars.moving = false;
+        self.path.path2 = None;
+        if let Some(f) = self.animal.as_mut() {
+            f.pending_stop_all_movement = true;
+        }
     }
 }
 

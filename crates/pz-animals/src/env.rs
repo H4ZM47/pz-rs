@@ -22,7 +22,61 @@ use pz_world::GameRand;
 use std::rc::Rc;
 
 /// An opaque handle to something the [`AnimalWorld`] implementer owns.
+///
+/// Two kinds of handle have a fixed form, so that the animal and character
+/// code can make them: squares ([`square_ref`]) and characters
+/// ([`character_ref`]: other animals, players, zombies).
 pub type ObjectRef = u64;
+
+const SQUARE_TAG: u64 = 1 << 63;
+const CHARACTER_TAG: u64 = 1 << 62;
+
+/// The handle of the square `(x, y, z)` (`IsoCell.getGridSquare(x, y, z)`
+/// as a value: 24-bit `x` and `y`, 8-bit `z`, two's complement).
+pub fn square_ref(x: i32, y: i32, z: i32) -> ObjectRef {
+    SQUARE_TAG
+        | ((x as u32 as u64 & 0xff_ffff) << 32)
+        | ((y as u32 as u64 & 0xff_ffff) << 8)
+        | (z as u8 as u64)
+}
+
+/// The square of a [`square_ref`] handle.
+pub fn square_ref_xyz(r: ObjectRef) -> Option<(i32, i32, i32)> {
+    if r & SQUARE_TAG == 0 || r & CHARACTER_TAG != 0 {
+        return None;
+    }
+    let sx = |v: u64| ((v as u32) << 8) as i32 >> 8;
+    Some((sx(r >> 32), sx(r >> 8), r as u8 as i8 as i32))
+}
+
+/// The handle of the character with id `id` (`IsoMovingObject.getID`; an
+/// animal, player or zombie).
+pub fn character_ref(id: i32) -> ObjectRef {
+    CHARACTER_TAG | id as u32 as u64
+}
+
+/// The character id of a [`character_ref`] handle.
+pub fn character_ref_id(r: ObjectRef) -> Option<i32> {
+    if r & CHARACTER_TAG == 0 || r & SQUARE_TAG != 0 {
+        return None;
+    }
+    Some(r as u32 as i32)
+}
+
+/// An `AnimalZoneJunction` as `AnimalZoneState` reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimalZoneJunction {
+    /// `zoneOther` (its id).
+    pub zone_other: (i64, i64),
+    /// `pointIndexOther`.
+    pub point_index_other: i32,
+    /// `isFirstPointOnZone1()`, `isLastPointOnZone1()`.
+    pub first_point_on_zone1: bool,
+    pub last_point_on_zone1: bool,
+    /// `isFirstPointOnZone2()`, `isLastPointOnZone2()`.
+    pub first_point_on_zone2: bool,
+    pub last_point_on_zone2: bool,
+}
 
 /// `GameTime.getInstance()` as the animal code reads it.
 pub trait AnimalClock {
@@ -449,6 +503,37 @@ pub trait AnimalWorld {
         false
     }
 
+    // --- animal zones (`AnimalZone`, by id; `AnimalZoneState`) ---
+    /// `zone.getAction()`.
+    fn animal_zone_action(&self, zone: (i64, i64)) -> Option<String> {
+        None
+    }
+    /// `zone.getClosestPointOnPolyline(x, y, pos)`: the fraction along the
+    /// polyline.
+    fn animal_zone_closest_point_on_polyline(&self, zone: (i64, i64), x: f32, y: f32) -> f32 {
+        0.0
+    }
+    /// `zone.getPolylineLength()`.
+    fn animal_zone_polyline_length(&self, zone: (i64, i64)) -> f32 {
+        1.0
+    }
+    /// `zone.getJunctionsBetween(t1, t2, junctions)`.
+    fn animal_zone_junctions_between(&self, zone: (i64, i64), t1: f32, t2: f32) -> Vec<AnimalZoneJunction> {
+        Vec::new()
+    }
+    /// `zone.getDistanceOfPointFromStart(pointIndex)`.
+    fn animal_zone_distance_of_point_from_start(&self, zone: (i64, i64), point_index: i32) -> f32 {
+        0.0
+    }
+    /// `zone.getPointOnPolyline(t, pos)`.
+    fn animal_zone_point_on_polyline(&self, zone: (i64, i64), t: f32) -> (f32, f32) {
+        (0.0, 0.0)
+    }
+    /// `zone.getDirectionOnPolyline(t, pos)`.
+    fn animal_zone_direction_on_polyline(&self, zone: (i64, i64), t: f32) -> (f32, f32) {
+        (1.0, 0.0)
+    }
+
     // --- designation zones (`DesignationZoneAnimal`) ---
     /// `DesignationZoneAnimal.getZoneF(x, y, z)`.
     fn zone_at(&self, x: f32, y: f32, z: f32) -> Option<ObjectRef> {
@@ -616,17 +701,112 @@ pub trait AnimalWorld {
     }
     /// `square.getChunk().addBloodSplat(x, y, z, type)`.
     fn add_blood_splat(&mut self, square: ObjectRef, x: f32, y: f32, z: f32, kind: i32) {}
-    /// A square's integer coordinates.
+    /// A square's integer coordinates (a [`square_ref`] decodes by
+    /// default).
     fn square_xyz(&self, square: ObjectRef) -> (i32, i32, i32) {
-        (0, 0, 0)
+        square_ref_xyz(square).unwrap_or((0, 0, 0))
     }
-    /// `getBehavior().callToHutch(null, true)`.
-    fn call_to_hutch(&mut self) {}
-    /// `getBehavior()`: `setDoingBehavior(false)` then `checkBehavior()`
-    /// (`check`) or `resetBehaviorAction()`.
-    fn behavior_after_eating(&mut self, check: bool) {}
-    /// `mother.getBehavior().blockMovement = false`.
-    fn unblock_mother_movement(&mut self, mother: ObjectRef) {}
+    /// `getAnimalInside().size()`.
+    fn hutch_inside_count(&self, hutch: ObjectRef) -> i32 {
+        0
+    }
+    /// `getMaxAnimals()`.
+    fn hutch_max_animals(&self, hutch: ObjectRef) -> i32 {
+        0
+    }
+    /// `toggleDoor()` (which calls the outside animals to the hutch when it
+    /// opens: the world's).
+    fn hutch_toggle_door(&mut self, hutch: ObjectRef) {}
+    /// `getSquare()` of the hutch.
+    fn hutch_square(&self, hutch: ObjectRef) -> Option<ObjectRef> {
+        None
+    }
+    /// `getEnterSpotX()`, `getEnterSpotY()`.
+    fn hutch_enter_spot(&self, hutch: ObjectRef) -> (i32, i32) {
+        (0, 0)
+    }
+    /// `addAnimalInside(animal)` then `animalOutside.remove(animal)` when it
+    /// was added (`BaseAnimalBehavior.enterHutch`); the animal's
+    /// `removeFromWorld` and `removeFromSquare` are the character side's.
+    fn hutch_add_animal_inside(&mut self, hutch: ObjectRef) -> bool {
+        false
+    }
+
+    // --- what the character side looks up (`IsoAnimal`, `BaseAnimalBehavior`) ---
+    /// `getCanAttachAnimalObject(square)`: the square's tree, else its first
+    /// special object with the `CanAttachAnimal` property.
+    fn attach_object_at(&self, square: ObjectRef) -> Option<ObjectRef> {
+        None
+    }
+    /// `reattachBackToHook()`: the first `IsoButcherHook` on the square
+    /// takes the animal back (`hook.reattachAnimal(animal)`); true when
+    /// there was one.
+    fn reattach_to_hook(&mut self, square: ObjectRef) -> bool {
+        false
+    }
+    /// `zone.getRoofAreas()`: the roofed positions of the zone.
+    fn zone_roof_areas(&self, zone: ObjectRef) -> Vec<(f32, f32, f32)> {
+        Vec::new()
+    }
+    /// `zone.getNearWaterSquaresConnected()` (squares).
+    fn zone_near_water_squares_connected(&self, zone: ObjectRef) -> Vec<ObjectRef> {
+        Vec::new()
+    }
+    /// `zone.getAnimalsConnected()` ([`character_ref`]s).
+    fn zone_animals_connected(&self, zone: ObjectRef) -> Vec<ObjectRef> {
+        Vec::new()
+    }
+    /// A square has an object whose properties have `IsoFlagType.water`
+    /// (`getNearestWaterSquare`).
+    fn square_has_water_object(&self, square: ObjectRef) -> bool {
+        false
+    }
+    /// `square.getPuddleFloor() != null`.
+    fn square_has_puddle_floor(&self, square: ObjectRef) -> bool {
+        false
+    }
+    /// `square.getFloor()` has the `grassFloor` sprite property and
+    /// `square.checkHaveGrass()`.
+    fn square_has_grass_floor(&self, square: ObjectRef) -> bool {
+        false
+    }
+    /// `worldItem.getSquare()`.
+    fn world_item_square(&self, world_item: ObjectRef) -> Option<ObjectRef> {
+        None
+    }
+    /// `worldItem.useFluid(amount)` (drinking from water on the ground):
+    /// whether it still has fluid.
+    fn world_item_use_fluid(&mut self, world_item: ObjectRef, amount: f32) -> bool {
+        false
+    }
+    /// `worldItem.isPureWater(true)`.
+    fn world_item_is_pure_water(&self, world_item: ObjectRef) -> bool {
+        false
+    }
+    /// `trough.getSquare()`.
+    fn trough_square(&self, trough: ObjectRef) -> Option<ObjectRef> {
+        None
+    }
+    /// `trough.getX()`, `getY()`, `getZ()` and `trough.north`.
+    fn trough_position(&self, trough: ObjectRef) -> Option<(f32, f32, f32, bool)> {
+        None
+    }
+    /// `trough.getContainer() != null`.
+    fn trough_has_container(&self, trough: ObjectRef) -> bool {
+        false
+    }
+    /// `faceThisObject(obj)`'s facing position of a world object (a trough,
+    /// a world inventory object; the closest sprite-grid part to
+    /// `(from_x, from_y)`), `None` when the object is not in the world
+    /// (`getObjectIndex() == -1`).
+    fn facing_position(&self, obj: ObjectRef, from_x: f32, from_y: f32) -> Option<(f32, f32)> {
+        None
+    }
+    /// The facing position of a square's floor (`square.getFloor()`), as
+    /// [`Self::facing_position`].
+    fn floor_facing_position(&self, square: ObjectRef, from_x: f32, from_y: f32) -> Option<(f32, f32)> {
+        None
+    }
     /// `getCurrentSquare().DistToProper(mother.getCurrentSquare())`, `None`
     /// when either square is missing.
     fn distance_to(&self, other: ObjectRef) -> Option<f32> {

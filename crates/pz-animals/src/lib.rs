@@ -9,6 +9,7 @@
 //! its iteration order.
 
 pub mod animal;
+pub mod behavior;
 pub mod breed;
 pub mod data;
 pub mod definitions;
@@ -22,6 +23,7 @@ pub mod save;
 pub mod tracks;
 
 pub use animal::{Animal, Male, NewAnimal};
+pub use behavior::{AnimalBehavior, BehaviorAction, BehaviorObject};
 pub use breed::{AnimalBreed, AnimalGrowStage, BreedSound, ForcedGenes};
 pub use data::AnimalData;
 pub use definitions::AnimalDefinitions;
@@ -29,6 +31,8 @@ pub use env::{
     AnimalCharacter, AnimalClock, AnimalCtx, AnimalEnv, AnimalSandbox, AnimalStat, AnimalWorld,
     CharacterValues, NoWorld, ObjectRef,
 };
+pub use env::{character_ref, character_ref_id, square_ref, square_ref_xyz, AnimalZoneJunction};
+pub use data::EatFollowUp;
 pub use genome::{AnimalAllele, AnimalGene, AnimalGenomeDefinitions, GeneDefinition};
 pub use java::{JHashMap, JResult, JavaException};
 pub use migration::{MigrationGroupDefinitions, MigrationGroupDefinitionsGrouped};

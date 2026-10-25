@@ -37,6 +37,7 @@ fn defs() -> AnimalDefValues {
         base_dmg: 4.0,
         attack_back: false,
         wild_flee_time_until_dead_timer: 100.0,
+        adef: Default::default(),
     }
 }
 
@@ -296,7 +297,7 @@ fn overrides() {
     assert_eq!(c.health, 1.5);
     let p = Chr::new(&sm, CharacterKind::Player);
     assert_eq!(c.animal_pushed_by_for_separate(&p), Some(true));
-    c.animal_fields_mut().unwrap().block_movement = true;
+    c.animal_fields_mut().unwrap().animal.behavior.block_movement = true;
     assert_eq!(c.animal_pushed_by_for_separate(&p), Some(false));
     assert_eq!(p.animal_pushed_by_for_separate(&p), None);
 }
@@ -335,13 +336,16 @@ fn remove_from_world_calls_the_population_hooks() {
 
 #[test]
 fn hit_consequences_take_the_attacker_and_draw_the_stress() {
-    let (sm, _chars, mut c) = animal(9);
+    let (sm, chars, mut c) = animal(9);
     c.animal_fields_mut().unwrap().def = Some(defs());
     let mut wielder = Chr::new(&sm, CharacterKind::Player);
     wielder.id = 42;
     let ctx = Recorder::default();
+    let calls = Calls::default();
+    let mut w = world(&calls);
+    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
     pz_core::random::set_seed(5);
-    c.animal_hit_consequences(&wielder, 0, true, 1.0, &ctx, None)
+    c.animal_hit_consequences(&wielder, 0, true, 1.0, &mut cx)
         .unwrap();
     pz_core::random::set_seed(5);
     let r = pz_core::random::next_range(20, 40);

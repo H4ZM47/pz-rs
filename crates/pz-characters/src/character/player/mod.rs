@@ -145,6 +145,14 @@ pub struct PlayerControl {
     /// `climbOverWallSuccess`, `climbOverWallStruggle`.
     pub climb_over_wall_success: bool,
     pub climb_over_wall_struggle: bool,
+    /// `IsoPlayer.onlineId` (1 until the server assigns one).
+    pub online_id: i16,
+    /// `isLuringAnimals`.
+    pub luring_animals: bool,
+    /// `luredAnimals` (character ids).
+    pub lured_animals: Vec<i32>,
+    /// `getAttachedAnimals()` (character ids of the animals on a leash).
+    pub attached_animals: Vec<i32>,
 }
 
 impl Default for PlayerControl {
@@ -213,6 +221,10 @@ impl Default for PlayerControl {
             npc: false,
             climb_over_wall_success: false,
             climb_over_wall_struggle: false,
+            online_id: 1,
+            luring_animals: false,
+            lured_animals: Vec::new(),
+            attached_animals: Vec::new(),
         }
     }
 }
