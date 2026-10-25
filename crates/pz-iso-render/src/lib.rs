@@ -26,6 +26,7 @@ pub mod models;
 pub mod objects;
 pub mod obscuring;
 pub mod occlusion;
+pub mod outlines;
 pub mod seam;
 pub mod shadows;
 pub mod sprite;

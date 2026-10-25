@@ -13,6 +13,7 @@
 use pz_render::DrawCmd;
 
 use crate::models::ModelCamera;
+use crate::outlines::{ModelOutlines, OutlineRequest};
 use crate::shadows::{ShadowParams, Shadows, SlopedSurface};
 
 /// A shadow an object adds while it renders.
@@ -85,14 +86,44 @@ impl ShadowRequest {
 pub struct ObjectRender {
     pub shadow: Option<ShadowRequest>,
     pub draws: Vec<DrawCmd>,
+    /// `ModelSlotRenderData.characterOutline`: the character's meshes (its
+    /// [`DrawCmd::Model`] draws) go into the outline mask first.
+    pub outline: Option<OutlineRequest>,
+    /// The player whose view this is (`IsoPlayer.players[playerIndex]`):
+    /// drawn without an outline, it masks outlines behind it
+    /// (`ModelOutlines.setPlayerRenderData`).
+    pub local_player: bool,
 }
 
 impl ObjectRender {
-    fn render(&self, cam: &ModelCamera, shadows: &mut Shadows, out: &mut Vec<DrawCmd>) {
+    /// The character's meshes (`modelData`). A vehicle's meshes count too,
+    /// untextured (solid): build 42 never outlines vehicles (their
+    /// `ModelSlotRenderData` ignores the highlight), but a caller may ask
+    /// for it.
+    fn meshes(&self) -> Vec<pz_render::model::ModelDraw> {
+        self.draws
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Model(d) => Some((**d).clone()),
+                DrawCmd::VehicleModel(v) => Some(pz_render::model::ModelDraw { texture: None, ..v.base.clone() }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn render(&self, cam: &ModelCamera, shadows: &mut Shadows, outlines: &mut ModelOutlines, out: &mut Vec<DrawCmd>) {
         if let Some(s) = &self.shadow {
             s.add(shadows, cam);
         }
+        // renderCharacter: the outline, the model, then the player's mask
+        // data.
+        if let Some(o) = &self.outline {
+            outlines.render_character_outline(&self.meshes(), o.color, o.behind_player, false, out);
+        }
         out.extend(self.draws.iter().cloned());
+        if self.local_player && self.outline.is_none() {
+            outlines.set_player_render_data(self.meshes());
+        }
     }
 }
 
@@ -117,21 +148,28 @@ pub struct FrameObjects {
 
 impl FrameObjects {
     /// The draws from `renderPlayers` to `renderMovingObjects`, adding the
-    /// shadows to `shadows` as they go.
+    /// shadows to `shadows` as they go (and dropping outlines).
     pub fn render(&self, cam: &ModelCamera, shadows: &mut Shadows, out: &mut Vec<DrawCmd>) {
+        let mut outlines = ModelOutlines::new(1, 1, 1.0);
+        self.render_outlined(cam, shadows, &mut outlines, out);
+    }
+
+    /// [`render`](Self::render) with the frame's `ModelOutlines`: outlined
+    /// characters draw into its mask as they render.
+    pub fn render_outlined(&self, cam: &ModelCamera, shadows: &mut Shadows, outlines: &mut ModelOutlines, out: &mut Vec<DrawCmd>) {
         for p in &self.players {
-            p.render(cam, shadows, out);
+            p.render(cam, shadows, outlines, out);
         }
         for s in &self.corpse_shadows {
             s.add(shadows, cam);
         }
         for m in &self.mannequins {
-            m.render(cam, shadows, out);
+            m.render(cam, shadows, outlines, out);
         }
         out.extend(self.corpses.iter().cloned());
         out.extend(self.items.iter().cloned());
         for m in &self.moving {
-            m.render(cam, shadows, out);
+            m.render(cam, shadows, outlines, out);
         }
     }
 }
@@ -163,6 +201,7 @@ mod tests {
             players: vec![ObjectRender {
                 shadow: Some(shadow(0.0)),
                 draws: vec![mark(1)],
+                ..Default::default()
             }],
             corpse_shadows: vec![shadow(1.0)],
             mannequins: vec![],
@@ -171,6 +210,7 @@ mod tests {
             moving: vec![ObjectRender {
                 shadow: Some(shadow(0.0)),
                 draws: vec![mark(4)],
+                ..Default::default()
             }],
         };
         let mut shadows = Shadows::default();

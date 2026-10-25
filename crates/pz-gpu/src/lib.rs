@@ -26,6 +26,7 @@ mod atlas;
 mod combiner;
 mod gl;
 mod model;
+mod outline;
 mod vehicle;
 mod state;
 
@@ -135,6 +136,10 @@ enum PassTarget {
     Offscreen,
     /// An atlas texture (stored with the chunk textures; scissor honoured).
     Atlas(u64),
+    /// One of `ModelOutlines`' textures ([`outline::MASK`],
+    /// [`outline::THICK_H`], [`outline::THICK_V`]); only outline draws go
+    /// there.
+    Outline(u8),
 }
 
 impl PassTarget {
@@ -142,7 +147,7 @@ impl PassTarget {
         match self {
             PassTarget::Main => TargetKind::Main,
             PassTarget::Chunk(_) | PassTarget::Atlas(_) => TargetKind::Chunk,
-            PassTarget::Offscreen => TargetKind::Offscreen,
+            PassTarget::Offscreen | PassTarget::Outline(_) => TargetKind::Offscreen,
         }
     }
 }
@@ -177,6 +182,8 @@ struct Batch {
     model: Option<(model::ModelKey, u64, u32)>,
     /// A vehicle draw: its pipeline, mesh, uniform block and textures.
     vehicle: Option<(vehicle::VehicleKey, u64, u32, [u32; 10])>,
+    /// An outline draw (`ModelOutlines`).
+    outline: Option<outline::Op>,
     stencil_ref: u32,
     scissor: Option<[u32; 4]>,
     globals: u32,
@@ -222,6 +229,8 @@ pub struct Gpu {
     chunks: HashMap<u64, ChunkTarget>,
     models: model::ModelPipelines,
     vehicles: vehicle::VehiclePipelines,
+    /// `ModelOutlines`' textures and shaders.
+    outlines: outline::OutlinePipelines,
     /// Each uploaded texture's sampler state.
     filters: HashMap<u32, Filter>,
     /// glGenerateMipmap's downsampling pipeline and its source layout.
@@ -356,6 +365,7 @@ impl Gpu {
         let depth_stencil = depth_stencil_view(&device, width, height);
         let models = model::ModelPipelines::new(&device, &texture_layout);
         let vehicles = vehicle::VehiclePipelines::new(&device);
+        let outlines = outline::OutlinePipelines::new(&device, &models.uniform_layout, &texture_layout);
         let mip_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("mip source"),
             entries: &[
@@ -409,6 +419,7 @@ impl Gpu {
             chunks: HashMap::new(),
             models,
             vehicles,
+            outlines,
             filters: HashMap::new(),
             mip_pipeline,
             mip_layout,
@@ -542,6 +553,19 @@ impl Gpu {
             if let (Tex2::Nearest, Some(id)) = (f.batches[i].tex2, f.batches[i].texture) {
                 self.ensure_nearest(id);
             }
+            if let Some(op) = f.batches[i].outline {
+                match op {
+                    outline::Op::Solid { kind, cull, texture, .. } => {
+                        if let Some(id) = texture {
+                            self.ensure_texture(id, textures);
+                        }
+                        self.outlines.ensure_solid(&self.device, kind, cull);
+                    }
+                    outline::Op::Thicken { .. } => self.outlines.ensure_thicken(&self.device),
+                    outline::Op::Blit { target } => self.outlines.ensure_blit(&self.device, target, self.format),
+                }
+                continue;
+            }
             if let Some((key, _, _, ids)) = f.batches[i].vehicle {
                 for id in ids.into_iter().filter(|&id| id != NO_TEXTURE) {
                     self.ensure_texture(id, textures);
@@ -555,7 +579,21 @@ impl Gpu {
                 None => self.ensure_pipeline(f.batches[i].key),
             }
         }
-        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, vehicle_uniforms, .. } = f;
+        let FrameBuilder { mut vertices, mut indices, mut globals, batches, passes, freed, model_uniforms, vehicle_uniforms, outline_uniforms, .. } = f;
+        let mut obytes = vec![0u8; outline_uniforms.len().max(1) * outline::PASS_STRIDE as usize];
+        for (i, u) in outline_uniforms.iter().enumerate() {
+            let at = i * outline::PASS_STRIDE as usize;
+            obytes[at..at + std::mem::size_of::<outline::PassUniforms>()].copy_from_slice(bytemuck::bytes_of(u));
+        }
+        let obuf = self.buffer(&obytes, wgpu::BufferUsages::UNIFORM);
+        let obind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("outline passes"),
+            layout: &self.outlines.pass_uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &obuf, offset: 0, size: wgpu::BufferSize::new(std::mem::size_of::<outline::PassUniforms>() as u64) }),
+            }],
+        });
         let mut vbytes = vec![0u8; vehicle_uniforms.len().max(1) * vehicle::VEHICLE_STRIDE as usize];
         for (i, u) in vehicle_uniforms.iter().enumerate() {
             let at = i * vehicle::VEHICLE_STRIDE as usize;
@@ -623,6 +661,45 @@ impl Gpu {
         }
         let mut main_cleared = false;
         for pass_desc in &passes {
+            if let PassTarget::Outline(i) = pass_desc.target {
+                let Some(t) = self.outlines.targets.as_ref() else { continue };
+                let load = if pass_desc.clear { wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT) } else { wgpu::LoadOp::Load };
+                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("outline"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &t.views[i as usize], depth_slice: None, resolve_target: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store } })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                let white = self.white.as_ref().expect("white texture");
+                for b in &batches[pass_desc.batches.clone()] {
+                    let Some(op) = b.outline else { continue };
+                    pass.set_viewport(0.0, 0.0, b.viewport.0.min(t.width) as f32, b.viewport.1.min(t.height) as f32, 0.0, 1.0);
+                    match op {
+                        outline::Op::Solid { kind, cull, mesh, uniform, texture } => {
+                            let (Some(p), Some(m)) = (self.outlines.solid.get(&(kind, cull)), self.models.meshes.get(&mesh)) else { continue };
+                            let tex = texture.and_then(|id| self.textures.get(&id)).unwrap_or(white);
+                            pass.set_pipeline(p);
+                            pass.set_bind_group(0, &mbind, &[uniform * model::MODEL_STRIDE as u32]);
+                            pass.set_bind_group(1, tex, &[]);
+                            pass.set_vertex_buffer(0, m.vertices.slice(..));
+                            pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
+                            pass.draw_indexed(0..m.count, 0, 0..1);
+                        }
+                        outline::Op::Thicken { vertical, uniform } => {
+                            let Some(p) = self.outlines.thicken.as_ref() else { continue };
+                            pass.set_pipeline(&p[usize::from(vertical)]);
+                            pass.set_bind_group(0, &obind, &[uniform * outline::PASS_STRIDE as u32]);
+                            pass.set_bind_group(1, &t.binds[if vertical { outline::THICK_H } else { outline::MASK } as usize], &[]);
+                            pass.set_bind_group(2, &t.binds[outline::MASK as usize], &[]);
+                            pass.draw(0..3, 0..1);
+                        }
+                        outline::Op::Blit { .. } => {}
+                    }
+                }
+                continue;
+            }
             let (color_view, depth_view, load, depth_ops, stencil_ops, tw, th) = match pass_desc.target {
                 PassTarget::Main => {
                     let load = match clear_first.filter(|_| !main_cleared) {
@@ -642,6 +719,7 @@ impl Gpu {
                     };
                     (&c.color, &c.depth, load, Some(wgpu::Operations { load: dload, store: wgpu::StoreOp::Store }), None, c.width, c.height)
                 }
+                PassTarget::Outline(_) => continue,
                 PassTarget::Offscreen => {
                     let Some(o) = self.offscreen.as_ref() else { continue };
                     let keep = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
@@ -671,6 +749,23 @@ impl Gpu {
                     _ => [0, 0, tw, th],
                 };
                 if sw == 0 || sh == 0 {
+                    continue;
+                }
+                if let Some(op) = b.outline {
+                    let outline::Op::Blit { target } = op else { continue };
+                    let fmt = match target {
+                        TargetKind::Main => self.format,
+                        TargetKind::Offscreen => state::OFFSCREEN_COLOR_FORMAT,
+                        TargetKind::Chunk => state::CHUNK_COLOR_FORMAT,
+                    };
+                    let (Some(p), Some(t)) = (self.outlines.blit.get(&(target, fmt)), self.outlines.targets.as_ref()) else { continue };
+                    pass.set_viewport(0.0, 0.0, b.viewport.0.min(tw) as f32, b.viewport.1.min(th) as f32, 0.0, 1.0);
+                    pass.set_scissor_rect(sx, sy, sw, sh);
+                    pass.set_pipeline(p);
+                    pass.set_bind_group(0, &obind, &[0]);
+                    pass.set_bind_group(1, &t.binds[outline::THICK_V as usize], &[]);
+                    pass.set_bind_group(2, &t.binds[outline::MASK as usize], &[]);
+                    pass.draw(0..3, 0..1);
                     continue;
                 }
                 if let Some((key, mesh, u, ids)) = b.vehicle {
@@ -897,6 +992,60 @@ impl Gpu {
                 };
                 let ids = std::array::from_fn(|i| d.textures[i].as_ref().and_then(|t| t.id).unwrap_or(NO_TEXTURE));
                 f.push_vehicle(key, d.base.mesh.id, u, ids, &self.state);
+            }
+            DrawCmd::OutlineBegin { width, height, clear } => {
+                let sampler = self.sampler((false, false, false, true));
+                self.outlines.ensure_targets(&self.device, &self.texture_layout, &sampler, *width, *height);
+                // TextureFBO.startDrawing remembers the bound buffer.
+                if !matches!(f.target, PassTarget::Outline(_)) {
+                    f.outline_return = f.target;
+                }
+                f.target = PassTarget::Outline(outline::MASK);
+                let at = f.batches.len();
+                f.passes.push(PassDesc { target: f.target, clear: *clear, mipmaps: false, batches: at..at });
+            }
+            DrawCmd::OutlineEnd => f.target = f.outline_return,
+            DrawCmd::OutlineModel { draw, color } => {
+                if f.target != PassTarget::Outline(outline::MASK) {
+                    return;
+                }
+                if !self.models.meshes.contains_key(&draw.mesh.id) {
+                    let m = model::upload(&self.device, &self.queue, &draw.mesh);
+                    self.models.meshes.insert(draw.mesh.id, m);
+                }
+                let mut u = model::ModelUniforms::new(draw, true);
+                u.tint = [color[0], color[1], color[2], 1.0];
+                f.model_uniforms.push(u);
+                let uniform = (f.model_uniforms.len() - 1) as u32;
+                let cull = match draw.pass {
+                    pz_render::model::ModelPass::Character { cull } | pz_render::model::ModelPass::Item { cull } => cull,
+                };
+                let op = outline::Op::Solid { kind: draw.mesh.kind, cull, mesh: draw.mesh.id, uniform, texture: draw.texture.as_ref().and_then(|t| t.id) };
+                f.push_outline(op, &self.state);
+            }
+            DrawCmd::OutlineThicken { color, radius, resolution } => {
+                if self.outlines.targets.is_none() {
+                    return;
+                }
+                f.outline_uniforms.push(outline::PassUniforms { color: *color, params: [resolution[0], resolution[1], *radius, 0.0] });
+                let uniform = (f.outline_uniforms.len() - 1) as u32;
+                let back = f.target;
+                for (i, vertical) in [(outline::THICK_H, false), (outline::THICK_V, true)] {
+                    f.target = PassTarget::Outline(i);
+                    let at = f.batches.len();
+                    f.passes.push(PassDesc { target: f.target, clear: true, mipmaps: false, batches: at..at });
+                    f.push_outline(outline::Op::Thicken { vertical, uniform }, &self.state);
+                }
+                f.target = back;
+            }
+            DrawCmd::OutlineBlit => {
+                if self.outlines.targets.is_none() || matches!(f.target, PassTarget::Outline(_)) {
+                    return;
+                }
+                if f.outline_uniforms.is_empty() {
+                    f.outline_uniforms.push(outline::PassUniforms::zeroed());
+                }
+                f.push_outline(outline::Op::Blit { target: f.target.kind() }, &self.state);
             }
             DrawCmd::ProjectedQuad { texture, pos, uv, color, nearest } => {
                 let Some(id) = texture.id else { return };
@@ -1242,6 +1391,9 @@ struct FrameBuilder {
     viewport: (u32, u32),
     /// What `AtlasBegin` saved: target, projection, viewport, GL state.
     atlas_stack: Vec<AtlasSave>,
+    /// The target `OutlineEnd` returns to.
+    outline_return: PassTarget,
+    outline_uniforms: Vec<outline::PassUniforms>,
 }
 
 impl Default for FrameBuilder {
@@ -1261,6 +1413,8 @@ impl Default for FrameBuilder {
             mvp: IDENTITY,
             viewport: (1, 1),
             atlas_stack: Vec::new(),
+            outline_return: PassTarget::Main,
+            outline_uniforms: Vec::new(),
         }
     }
 }
@@ -1305,6 +1459,31 @@ impl FrameBuilder {
             tex3: None,
             model: None,
             vehicle: Some((key, mesh, uniform, textures)),
+            outline: None,
+            stencil_ref: st.stencil_ref,
+            scissor: st.scissor_box(),
+            globals: 0,
+            viewport: self.viewport,
+            indices: at..at,
+        });
+        self.passes.last_mut().expect("pass").batches.end = self.batches.len();
+    }
+
+    /// An outline draw as its own batch.
+    fn push_outline(&mut self, op: outline::Op, st: &GlState) {
+        if self.passes.last().is_none_or(|p| p.target != self.target) {
+            let at = self.batches.len();
+            self.passes.push(PassDesc { target: self.target, clear: false, mipmaps: false, batches: at..at });
+        }
+        let at = self.indices.len() as u32;
+        self.batches.push(Batch {
+            key: st.pipe_key(),
+            texture: None,
+            tex2: Tex2::None,
+            tex3: None,
+            model: None,
+            vehicle: None,
+            outline: Some(op),
             stencil_ref: st.stencil_ref,
             scissor: st.scissor_box(),
             globals: 0,
@@ -1328,6 +1507,7 @@ impl FrameBuilder {
             tex3: None,
             model: Some((key, mesh, uniform)),
             vehicle: None,
+            outline: None,
             stencil_ref: st.stencil_ref,
             scissor: st.scissor_box(),
             globals: 0,
@@ -1359,6 +1539,7 @@ impl FrameBuilder {
                     && b.tex2 == tex2
                     && b.tex3 == tex3
                     && b.model.is_none()
+                    && b.outline.is_none()
                     && b.stencil_ref == stencil_ref
                     && b.scissor == scissor
                     && b.globals == globals
@@ -1368,7 +1549,7 @@ impl FrameBuilder {
                 b.indices.end = end
             }
             _ => {
-                self.batches.push(Batch { model: None, vehicle: None, key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, indices: start..end });
+                self.batches.push(Batch { model: None, vehicle: None, outline: None, key, texture, tex2, tex3, stencil_ref, scissor, globals, viewport, indices: start..end });
                 pass.batches.end = self.batches.len();
             }
         }
