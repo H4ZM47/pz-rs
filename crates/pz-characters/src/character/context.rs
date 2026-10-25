@@ -230,6 +230,35 @@ pub enum SimEvent {
     SwingSound(String),
     /// An error the original would log (`DebugType.printException`).
     Error(String),
+    // ---- ranged combat (characters by id) ----
+    /// `chr.addBlood(BloodBodyPartType.FromIndex(part), scratched, bitten,
+    /// allLayers)` on a character other than the one updating.
+    CharacterAddBlood { chr: i32, part: i32, scratched: bool, bitten: bool, all_layers: bool },
+    /// `chr.splatBlood(dist, alpha)` (the square's blood splats).
+    CharacterSplatBlood { chr: i32, dist: i32, alpha: f32 },
+    /// `chr.splatBloodFloorBig()`.
+    CharacterSplatBloodFloorBig { chr: i32 },
+    /// `chr.playBloodSplatterSound()`.
+    BloodSplatterSound { chr: i32 },
+    /// `new IsoZombieGiblets(A, cell, x, y, z, velX, velY)`: the giblet's
+    /// own draws are made (`vel` includes them; `invisible` is its
+    /// `Rand.Next(3) != 0`).
+    Giblet { x: f32, y: f32, z: f32, vel_x: f32, vel_y: f32, invisible: bool },
+    /// `EffectsManager.startMuzzleFlash(chr, 1)`.
+    MuzzleFlash { chr: i32 },
+    /// `IsoBulletTracerEffects.addEffect(chr, range[, end, square])`: the
+    /// end point and the square hit (`None`: a full-range miss).
+    BulletTracer { chr: i32, range: f32, end: Option<(f32, f32, f32)>, square: Option<(i32, i32, i32)> },
+    /// `chr.getEmitter().playSoundImpl(sound, null)` with the bullet hit
+    /// surface parameter (`Flesh` / `Flesh_Hollow`).
+    BulletHitSound { chr: i32, sound: String, hollow: bool },
+    /// `StatisticsManager.incrementStatistic(Player, Combat, name, value)`.
+    CombatStatistic { name: &'static str, value: f32 },
+    /// `IsoReticle.trySetTargetReticleMode(playerIndex, RETICLE)`.
+    ReticleMode { player_index: i32 },
+    /// `target.setReanimateTimer(...)`'s target and value (another
+    /// character than the one updating, by id).
+    ReanimateTimer { chr: i32, value: f32 },
 }
 
 /// The singletons the simulation reads. Every method has the default a
@@ -607,6 +636,64 @@ pub trait SimContext {
     }
     /// Receives the side effects (Lua events, sounds, UI).
     fn event(&self, _event: SimEvent) {}
+    // ---- firearms and ragdolls ----
+    /// `ClimateManager.getWindIntensity()`.
+    fn wind_intensity(&self) -> f32 {
+        0.0
+    }
+    /// `SandboxOptions.firearmUseDamageChance` (1 none, 2 zombies, 3 all).
+    fn firearm_use_damage_chance(&self) -> i32 {
+        2
+    }
+    /// `SandboxOptions.firearmMoodleMultiplier`.
+    fn firearm_moodle_multiplier(&self) -> f64 {
+        1.0
+    }
+    /// `SandboxOptions.firearmWeatherMultiplier`.
+    fn firearm_weather_multiplier(&self) -> f64 {
+        1.0
+    }
+    /// `SandboxOptions.firearmHeadGearEffect`.
+    fn firearm_head_gear_effect(&self) -> bool {
+        true
+    }
+    /// `SandboxOptions.firearmJamMultiplier` (0: no jams).
+    fn firearm_jam_multiplier(&self) -> f64 {
+        0.0
+    }
+    /// `SandboxOptions.bloodLevel` (1 none .. 5 ultra gore).
+    fn blood_level(&self) -> i32 {
+        3
+    }
+    /// `Core.getOptionUsePhysicsHitReaction()` (false in multiplayer).
+    fn option_use_physics_hit_reaction(&self) -> bool {
+        !self.is_client() && !self.is_server()
+    }
+    /// `RagdollController.getNumberOfActiveSimulations()` (pz-ragdoll's
+    /// `RagdollGlobals.number_of_active_simulations`).
+    fn active_ragdoll_simulations(&self) -> i32 {
+        0
+    }
+    /// `Core.getMaxActiveRagdolls()`.
+    fn max_active_ragdolls(&self) -> i32 {
+        20
+    }
+    /// `DebugOptions.instance.animation.disableRagdolls`.
+    fn debug_disable_ragdolls(&self) -> bool {
+        false
+    }
+    /// `IsoPlayer.getCoopPVP()`.
+    fn coop_pvp(&self) -> bool {
+        false
+    }
+    /// `Core.getIgnoreProneZombieRange()` (option 2: 1.5).
+    fn ignore_prone_zombie_range(&self) -> f32 {
+        1.5
+    }
+    /// `DebugOptions.instance.character.debug.alwaysHitTarget`.
+    fn debug_always_hit_target(&self) -> bool {
+        false
+    }
 }
 
 /// `java.lang.Math.random()`: one `java.util.Random` seeded from the clock

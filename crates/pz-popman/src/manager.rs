@@ -323,6 +323,12 @@ pub trait PopulationHost {
     /// `VirtualZombieManager.createRealZombieAlways(outfit, dir, false,
     /// persistentId)` with `choices = [square]`.
     fn create_real_zombie(&mut self, outfit: i32, dir: IsoDirections, persistent_id: i32, square: (i32, i32, i32)) -> Option<Self::Zombie>;
+    /// The zombie as `registerZombie` reads it at the end of
+    /// `createRealZombieAlways` (its position in the chosen square, its
+    /// fresh state flags and `getPersistentOutfitID()`).
+    fn real_zombie_info(&self, z: Self::Zombie) -> Option<RealZombieInfo<Self::Zombie>>;
+    /// `zombie.persistentId = id`.
+    fn set_persistent_id(&mut self, z: Self::Zombie, id: i32);
     /// `setX(x); setY(y)`.
     fn set_position(&mut self, z: Self::Zombie, x: f32, y: f32);
     /// `sitAgainstWall`'s effect: position, `setSitAgainstWall(true)`,
@@ -449,6 +455,15 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
         let id = self.native.n_register_zombie(z.x, z.y, z.z, z.dir as u8, z.outfit, state, persistent_id as u32) as i32;
         self.real_zombies.register(z.handle, id);
         id
+    }
+
+    /// The end of `createRealZombieAlways`: `zombie.persistentId =
+    /// registerZombie(zombie, persistentId)`.
+    fn register_created<P: PopulationHost<Zombie = H>>(&mut self, host: &mut P, z: H, persistent_id: i32) {
+        if let Some(info) = host.real_zombie_info(z) {
+            let id = self.register_zombie(&info, persistent_id);
+            host.set_persistent_id(z, id);
+        }
     }
 
     /// `releaseZombie(zombie)`.
@@ -667,7 +682,9 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
     /// `updateMain()`. `chunk_maps` are the non-ignored players' chunk map
     /// origins (`getWorldXMin/YMin`) and `chunk_grid_width` is
     /// `IsoChunkMap.chunkGridWidth`; `real_zombies` is the cell's zombie
-    /// list, packed when due.
+    /// list, packed when due. Returns whether it notified the worker
+    /// thread (`MapCollisionData.notifyThread()`: the library or the
+    /// collision grid has data for it).
     pub fn update_main<P: PopulationHost<Zombie = H>>(
         &mut self,
         host: &mut P,
@@ -676,9 +693,9 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
         chunk_maps: &[(i32, i32)],
         chunk_grid_width: i32,
         real_zombies: &[RealZombieInfo<H>],
-    ) {
+    ) -> bool {
         if self.client {
-            return;
+            return false;
         }
         let now = self.now();
         self.native.n_update_main(multiplier, world_age_hours);
@@ -736,8 +753,8 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
         }
         let d1 = self.native.n_has_data_for_thread();
         let d2 = self.mcd.has_data_for_thread(&mut self.native);
-        let _ = d1 || d2; // MapCollisionData.notifyThread(): the thread runs in-line.
         self.player_spawns.update(now);
+        d1 || d2
     }
 
     fn is_stale_record(&mut self, persistent_id: i32) -> bool {
@@ -785,6 +802,7 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
         let Some(z) = host.create_real_zombie(r.outfit, dir, r.id as i32, square) else {
             return;
         };
+        self.register_created(host, z, r.id as i32);
         match wall {
             Some((wx, wy, wall_type)) => {
                 let d = Self::sitting_direction(host, wall_type, self.client, wx, wy);
@@ -876,6 +894,7 @@ impl<H: Copy + Eq> ZombiePopulationManager<H> {
         let Some(z) = host.create_real_zombie(r.outfit, dir, r.id as i32, square) else {
             return;
         };
+        self.register_created(host, z, r.id as i32);
         host.set_position(z, r.x, r.y);
         if state.is_crawling() {
             host.make_crawler(z, state.is_can_walk());

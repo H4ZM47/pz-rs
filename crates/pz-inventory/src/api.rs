@@ -451,6 +451,85 @@ impl InventoryItem {
         }
     }
 
+    /// Port of `getCurrentAmmoCount()`.
+    pub fn get_current_ammo_count(&self) -> i32 {
+        self.current_ammo_count
+    }
+
+    /// Port of `setCurrentAmmoCount(int)`.
+    pub fn set_current_ammo_count(&mut self, count: i32) {
+        self.current_ammo_count = count;
+    }
+
+    /// Port of `HandWeapon.isJammed()` (false for other items).
+    pub fn is_jammed(&self) -> bool {
+        self.weapon().is_some_and(|w| w.is_jammed)
+    }
+
+    /// Port of `HandWeapon.setJammed(boolean)`.
+    pub fn set_jammed(&mut self, jammed: bool) {
+        if let Some(w) = self.weapon_data_mut() {
+            w.is_jammed = jammed;
+        }
+    }
+
+    /// Port of `HandWeapon.isRoundChambered()`.
+    pub fn is_round_chambered(&self) -> bool {
+        self.weapon().is_some_and(|w| w.round_chambered)
+    }
+
+    /// Port of `HandWeapon.setRoundChambered(boolean)`: only a weapon with a
+    /// chamber (`haveChamber`, a script value) keeps a round.
+    pub fn set_round_chambered(&mut self, chambered: bool, have_chamber: bool) {
+        if let Some(w) = self.weapon_data_mut() {
+            w.round_chambered = have_chamber && chambered;
+        }
+    }
+
+    /// Port of `HandWeapon.isSpentRoundChambered()`.
+    pub fn is_spent_round_chambered(&self) -> bool {
+        self.weapon().is_some_and(|w| w.spent_round_chambered)
+    }
+
+    /// Port of `HandWeapon.setSpentRoundChambered(boolean)`.
+    pub fn set_spent_round_chambered(&mut self, chambered: bool) {
+        if let Some(w) = self.weapon_data_mut() {
+            w.spent_round_chambered = chambered;
+        }
+    }
+
+    /// Port of `HandWeapon.getSpentRoundCount()`.
+    pub fn get_spent_round_count(&self) -> i32 {
+        self.weapon().map_or(0, |w| w.spent_round_count)
+    }
+
+    /// Port of `HandWeapon.setSpentRoundCount(int)`: clamped to
+    /// `[0, getMaxAmmo()]` (`maxAmmo`, a script value).
+    pub fn set_spent_round_count(&mut self, count: i32, max_ammo: i32) {
+        if let Some(w) = self.weapon_data_mut() {
+            // `PZMath.clamp(int, int, int)`.
+            w.spent_round_count = if count < 0 {
+                0
+            } else if count > max_ammo {
+                max_ammo
+            } else {
+                count
+            };
+        }
+    }
+
+    /// Port of `HandWeapon.isContainsClip()`.
+    pub fn is_contains_clip(&self) -> bool {
+        self.weapon().is_some_and(|w| w.contains_clip)
+    }
+
+    /// Port of `HandWeapon.setContainsClip(boolean)`.
+    pub fn set_contains_clip(&mut self, contains: bool) {
+        if let Some(w) = self.weapon_data_mut() {
+            w.contains_clip = contains;
+        }
+    }
+
     fn clothing(&self) -> Option<&ClothingData> {
         match &self.kind {
             ItemKind::Clothing(c) | ItemKind::AlarmClockClothing(c, _) => Some(c),

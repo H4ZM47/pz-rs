@@ -22,7 +22,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Character simulation context: `bind_character_sim::install_sim_context`
       with the engine's `SimContext` (lore, climate, `Rand`, events) (#41).
 - [ ] Game time and climate: `bind_climate::install_game_time` and
-      `set_climate_settings` from the sandbox options (#49).
+      `set_climate_settings` from the sandbox options (#49);
+      `bind_climate::install_event_sink` routing to
+      `LuaEventManager.triggerEvent` (climate, `OnInitSeasons` and clock
+      events reach Lua only through it).
+- [ ] Zombie population: a `pz_popman::native::Native` per world (seeded,
+      wall clock) for `WorldPopulation::init`; the outfit names are
+      `PersistentOutfits.getOutfitNames()` (not ported yet: the outfit ids in
+      `zpop` records reach `RealZombies` unmapped, i.e. without
+      `PersistentOutfits.getOutfit`'s variant re-roll).
 - [ ] Meta population: `install_population` with
       `shared_population().init(fs)` (#67); popman's
       `bind_popman::install_population` (#73).
@@ -52,10 +60,54 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `postupdate_zombie` / `moving_postupdate` (with
       `slide_head_away_from_walls`) (#41/#74/#75).
 - [ ] `ZombiePopulationManager::update_main` with PopulationHost and
-      `ZombieOps` (`RealZombies`) (#73/#77).
+      `ZombieOps` (`RealZombies`) (#73/#77): `GameWindow.logic` calls
+      `WorldPopulation::update_game_state(no_save, paused)`; `IngameState.update`
+      (after `VirtualZombieManager.update`) calls `WorldPopulation::update(&mut
+      WorldPopulationHost::from_state(.., &mut RealZombies { .. }),
+      &PopulationFrame { multiplier, world_age_hours,
+      chunk_maps: &player_chunk_maps(&streamer), real_zombies:
+      &real_zombies.infos() })`; it also runs the in-line worker
+      (`MCDThread`) pass when due.
 - [ ] `WorldSoundManager::update` once per frame (#75).
 
 ## World (`GameLoadingState` / `IngameState`)
+World load, in the original's order (`GameLoadingState.enter` loads the
+server Lua first, so `ClimateMain.lua`'s `OnClimateManagerInit` handler is
+registered):
+- [ ] `GameTime.setInstance(new GameTime())`: `bind_climate::install_game_time`.
+- [ ] `ClimateManager.setInstance(new ClimateManager())`:
+      `bind_climate::new_climate_manager(thread)` (fires
+      `OnClimateManagerInit`; `ClimateMain.lua` sets the season colours, without
+      which the global light stays black).
+- [ ] `IsoWorld.init`: `GameTime.init` then `GameTime.load`
+      (`game_time_save::load_map_t_file`; the climate part keeps the colours);
+      `ErosionGlobals.Boot` → `bind_climate::start_erosion_season(thread,
+      &SeasonConfig, sandbox Temperature)` (`OnInitSeasons`); after
+      `metaGrid.CreateStep2`, `bind_climate::init_climate_manager(thread,
+      Some((meta.min_x, meta.min_y, meta.max_x, meta.max_y)))`.
+- [ ] `IsoWorld.init`, after `OnLoadedMapZones` and before the cell load:
+      `pz_world_popman::WorldPopulation::init(native, &meta,
+      &save_game_state(save_dir) + sandbox/mode fields, &ZombieConfig,
+      outfit names)` (`MapCollisionData.init` then
+      `ZombiePopulationManager.init`; reads `zpop_ids.bin`/`zpop_virtual.bin`,
+      each `zpop_X_Y.bin` when a loaded area first touches its cell).
+- [ ] Every chunk the streamer hands off (`StreamEvent::HandedOff`,
+      `doLoadGridsquare`): `WorldPopulation::add_chunk_to_world(&cell, &meta,
+      &sprites, wx, wy)`; every `StreamEvent::Unloaded`:
+      `WorldPopulation::remove_chunk_from_world(&mut host, wx, wy,
+      &real_zombies.chunk_zombies(wx, wy, in_room))` (needs the chunk's rooms:
+      decide `in_room` before the chunk leaves the cell).
+- [ ] After the cell load: `ClimateManager.postCellLoadSetSnow()`.
+- [ ] `IngameState.enter`, world loaded: `WorldPopulation::start_game(&mut
+      host, &frame)` (`MapCollisionData.startGame`).
+- [ ] Quit: `WorldPopulation::save(&reals)` with the world save, then
+      `WorldPopulation::stop()`.
+
+- [ ] Sandbox: on loading a save, `SandboxOptions::load_bin(map_sand.bin)` on
+      the constructed instance (preset name goes to the world), then
+      `handleOldZombiesFile1`, `applySettings` and `toLua` as `load()` does;
+      on save/new game write `save_bin(save_bin::world_version(&jar), preset)`
+      to `map_sand.bin` (#21).
 - [ ] `ChunkStreamer::new(players, calc_chunk_width(w, h))`, `load_world`,
       per-frame `update(..)`, `take_events()`, `save_now()` on quit (#64);
       wrap its ChunkLoadHook in `ClearSoundsOnUnload` (#71) and use
@@ -63,7 +115,8 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] CGlobalObjects `initSystems` and update pumps (#31).
 - [ ] Popman: `WorldPopulationHost::from_state`, `update_main` with
       `player_chunk_maps(&streamer)`; supply SittingChecks,
-      `has_moving_objects`, `line_clear_collide` (#77, #60).
+      `has_moving_objects`, `line_clear_collide` (#77, #60). Driven through
+      `WorldPopulation` (see the world-load list above).
 - [ ] World sound: `WorldSoundAdapter::from_state`; engine `SoundEffects`
       (OnWorldSound, fish noise, popman) (#71).
 - [ ] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
@@ -119,6 +172,16 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `has_render_effect` / `set_render_effect` (ObjectRenderEffects) and
       `do_tree_noises` (tree sound manager); `ThumpSettings::server`.
 - [ ] `SimContext` climate values from `ClimateManager` (#49).
+- [ ] Square edits → pathfinding: `pz_pathfind::pathfind_square_hooks!(pz_world)`
+      in the engine crate, and pass `PathfindSquareHooksImpl(PathfindMutationHooks { service:
+      host.service_mut(), sprites, meta, bits_hooks: &ObjectHooks })` as
+      `MutationEnv`'s `PathfindSquareHooks`; compile-checked against #97
+      d844ab0 (#60, #97).
+- [ ] Chunk physics after square edits: once per frame, drain the world
+      renderer's `PendingRender::physics` into
+      `pz_vehicles::chunk_physics::ChunkPhysics::mark_physics_dirty(cell, ..)`
+      (`IsoChunk.checkPhysicsLater`); `ChunkPhysics::update_if_needed` then
+      rebuilds them from Bullet's step callback (#86, #99).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
 - [ ] Vehicle models: `VehicleModelSet::create` when a vehicle is added to
@@ -143,6 +206,55 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `update_frame()` per frame; `spawn` (`IsoChunk.AddVehicles`) from the
       chunk loader through a `SpawnWorld` impl fed by the meta cell vehicle
       zones; `bind_vehicles::register` (#86).
+- [ ] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
+      `PlayerDb::load_local_player(sql_id)` (#100) go to
+      `GameCharacter::load_player(sm, chars, ctx, SaveEnv { items:
+      ScriptItems over the save's WorldDictionary, tables }, reader,
+      world_version, set_on_fire)` on a fresh `GameCharacter::new(.., Player)`
+      with a descriptor; `set_on_fire` runs `pz_world::fire::character::set_on_fire`
+      with the world's fire manager. Then, for an `isDead` row,
+      `setOverallBodyHealth(0)`/`setHealth(0)`; `saved_vehicle` seats the
+      player; save with `save_player` (#101).
+- [ ] Bullet world ownership: the world/engine owns the one `PzBullet`
+      (`WorldSimulation`) and counts its steps (`getBulletFrameNo`); the
+      characters reach it through `StateWorld::physics()` (`PzBullet`
+      implements `pz_characters::character::firearm::PhysicsWorld` with
+      the `bullet` feature) (#114).
+- [ ] Firearm hooks on `StateWorld`: `muzzle_attachment(chr)` (the
+      primary hand model's MUZZLE attachment world position/direction),
+      `aim_reticle_iso(chr)` (`AimingReticle` x/y through `XToIso/YToIso`),
+      `ballistics_skeleton(chr)` (bone count, `getAngle()`, packed bone
+      transforms), `first_blocking_square` (`LosUtil` for tracers),
+      `square_is_outside`, `vehicle_aim`, `ragdoll_pelvis(chr)` (the
+      pz-ragdoll controller's pelvis); `SimContext::wind_intensity`, the
+      firearm sandbox options and `active_ragdoll_simulations`
+      (`RagdollGlobals.number_of_active_simulations`) (#114).
+- [ ] Per frame, ballistics (`IsoGameCharacter.updateInternal` order):
+      each non-animal character `update_ballistics_target(ctx, world)`;
+      a character aiming an aimed firearm (`getUseHandWeapon`) runs
+      `setAngleFromAim` then `update_ballistics(sm, chars, ctx, world)`;
+      `CombatManager.update` for player 0 with a ready ranged weapon and
+      the reticle mode: `calculate_attack_vars` + `calculate_ranged_hit_info_list`
+      (`updateReticle`; the reticle chance comes from
+      `calculate_hit_chance_data(cx, w, None, vehicle)`); in the
+      character's postupdate `ballistics_controller.post_update()`; on
+      release `release_ballistics_controller` / `release_ballistics_target`.
+      Physics steps after the character updates (#114).
+- [ ] Shots: the anim event `AttackCollisionCheck` runs the ranged path
+      of `attack_collision_check`; Lua's `ISReloadWeaponAction.onShoot`
+      (`OnWeaponSwingHitPoint`) spends the round through the bound
+      HandWeapon methods; `SimEvent::BulletTracer`, `MuzzleFlash`,
+      `BulletHitSound`, `CharacterAddBlood`, `CombatStatistic`,
+      `ReticleMode` go to the effects, sound, visuals and statistics
+      (#114).
+- [ ] Per frame, ragdolls: before the animation update call
+      `update_ragdoll_variables(ctx)` (the `canRagdoll` variable the death
+      and shot nodes test); once pz-ragdoll (#102) lands, its
+      `RagdollCharacter` reads `can_ragdoll_uncapped`, the fall flags and
+      `take_ragdoll_hit(sm, attacker position)` (the shot impulse from the
+      ballistics target's combat data and `PhysicsHitReactionScript`), and
+      after the update the controller state goes into `chr.ragdoll`
+      (`RagdollTracking`) (#114).
 
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);

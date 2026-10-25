@@ -14,8 +14,9 @@
 // Altered for pz-rs: Rust translation of btCollisionDispatcher,
 // btDefaultCollisionConfiguration's dispatch table, btCollisionObjectWrapper,
 // btManifoldResult and the collision algorithms the game reaches
-// (convex-convex, compound, compound-compound, box-box, sphere-sphere,
-// empty) from Bullet 2.82, double precision.
+// (convex-convex with its capsule-capsule special case, compound,
+// compound-compound, box-box, sphere-sphere, empty) from Bullet 2.82,
+// double precision.
 
 //! Collision dispatch: the narrowphase algorithms run on broadphase pairs.
 //!
@@ -359,6 +360,97 @@ impl DiscreteResult for PerturbedSink<'_, '_, '_, '_> {
         }
         self.inner.add_contact_point(normal, &start_pt, new_depth);
     }
+}
+
+/// `segmentsClosestPoints` (btConvexConvexAlgorithm.cpp): returns
+/// `(ptsVector, offsetA, offsetB)`.
+fn segments_closest_points(
+    translation: &Vec3,
+    dir_a: &Vec3,
+    hlen_a: f64,
+    dir_b: &Vec3,
+    hlen_b: f64,
+) -> (Vec3, Vec3, Vec3) {
+    let dir_a_dot_dir_b = dir_a.dot(dir_b);
+    let dir_a_dot_trans = dir_a.dot(translation);
+    let dir_b_dot_trans = dir_b.dot(translation);
+    let denom = fma(-dir_a_dot_dir_b, dir_a_dot_dir_b, 1.0);
+    let mut t_a;
+    if denom == 0.0 {
+        t_a = 0.0;
+    } else {
+        t_a = fma(-dir_b_dot_trans, dir_a_dot_dir_b, dir_a_dot_trans) / denom;
+        if t_a < -hlen_a {
+            t_a = -hlen_a;
+        } else if t_a > hlen_a {
+            t_a = hlen_a;
+        }
+    }
+    let mut t_b = fma(t_a, dir_a_dot_dir_b, -dir_b_dot_trans);
+    if t_b < -hlen_b {
+        t_b = -hlen_b;
+        t_a = fma(t_b, dir_a_dot_dir_b, dir_a_dot_trans);
+        if t_a < -hlen_a {
+            t_a = -hlen_a;
+        } else if t_a > hlen_a {
+            t_a = hlen_a;
+        }
+    } else if t_b > hlen_b {
+        t_b = hlen_b;
+        t_a = fma(t_b, dir_a_dot_dir_b, dir_a_dot_trans);
+        if t_a < -hlen_a {
+            t_a = -hlen_a;
+        } else if t_a > hlen_a {
+            t_a = hlen_a;
+        }
+    }
+    let offset_a = *dir_a * t_a;
+    let offset_b = *dir_b * t_b;
+    let pts_vector = *translation - offset_a + offset_b;
+    (pts_vector, offset_a, offset_b)
+}
+
+/// `capsuleCapsuleDistance`: returns `(distance, normalOnB, pointOnB)`.
+/// When the distance exceeds the threshold the normal and point are not
+/// computed (zero here; Bullet leaves them unset).
+#[allow(clippy::too_many_arguments)]
+pub fn capsule_capsule_distance(
+    capsule_length_a: f64,
+    capsule_radius_a: f64,
+    capsule_length_b: f64,
+    capsule_radius_b: f64,
+    capsule_axis_a: usize,
+    capsule_axis_b: usize,
+    transform_a: &Transform,
+    transform_b: &Transform,
+    distance_threshold: f64,
+) -> (f64, Vec3, Vec3) {
+    let direction_a = transform_a.basis.get_column(capsule_axis_a);
+    let translation_a = transform_a.origin;
+    let direction_b = transform_b.basis.get_column(capsule_axis_b);
+    let translation_b = transform_b.origin;
+    let translation = translation_b - translation_a;
+    let (pts_vector, _offset_a, offset_b) = segments_closest_points(
+        &translation,
+        &direction_a,
+        capsule_length_a,
+        &direction_b,
+        capsule_length_b,
+    );
+    let distance = pts_vector.length() - capsule_radius_a - capsule_radius_b;
+    let mut normal_on_b = Vec3::ZERO;
+    if distance > distance_threshold {
+        return (distance, normal_on_b, Vec3::ZERO);
+    }
+    let len_sqr = pts_vector.length2();
+    if len_sqr <= SIMD_EPSILON * SIMD_EPSILON {
+        let mut q = Vec3::ZERO;
+        plane_space1(&direction_a, &mut normal_on_b, &mut q);
+    } else {
+        normal_on_b = pts_vector * -bt_recip_sqrt(len_sqr);
+    }
+    let point_on_b = transform_b.origin + offset_b + normal_on_b * capsule_radius_b;
+    (distance, normal_on_b, point_on_b)
 }
 
 /// The collision algorithms (`btCollisionAlgorithm` subclasses).
@@ -921,6 +1013,34 @@ impl CollisionDispatcher {
         let min0 = shapes.get(w0.shape);
         let min1 = shapes.get(w1.shape);
         let mid = result.manifold.expect("no manifold");
+        if let (ShapeKind::Capsule(capsule_a), ShapeKind::Capsule(capsule_b)) =
+            (&min0.kind, &min1.kind)
+        {
+            // The specialised capsule-capsule collider (always refreshes).
+            let threshold = self.manifold(mid).get_contact_breaking_threshold();
+            let (dist, normal_on_b, point_on_b_world) = capsule_capsule_distance(
+                capsule_a.get_half_height(),
+                capsule_a.get_radius(),
+                capsule_b.get_half_height(),
+                capsule_b.get_radius(),
+                capsule_a.up_axis,
+                capsule_b.up_axis,
+                &w0.world_transform,
+                &w1.world_transform,
+                threshold,
+            );
+            if dist < threshold {
+                result.add_contact_point(
+                    &mut self.manifolds,
+                    ctx,
+                    &normal_on_b,
+                    &point_on_b_world,
+                    dist,
+                );
+            }
+            result.refresh_contact_points(&mut self.manifolds, ctx.objects);
+            return;
+        }
         let mut input = ClosestPointInput::default();
         {
             let x = min0.get_margin()

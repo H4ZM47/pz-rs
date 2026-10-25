@@ -11,6 +11,15 @@
 //! - [`player_chunk_maps`] reads the local players' chunk map origins from a
 //!   [`ChunkStreamer`] for `ZombiePopulationManager::update_main`
 //!   (`LoadedAreas.set`).
+//! - [`world::WorldPopulation`] runs the manager over a loaded world in the
+//!   original's order: init from the save's `zpop` files, chunk add/remove
+//!   notifications, `startGame` and the per-frame update.
+
+pub mod world;
+
+pub use pz_popman::manager::{ChunkZombie, RealZombieInfo};
+pub use pz_popman::state_flags::ZombieStateSource;
+pub use world::{PopulationFrame, PopulationWorker, WorldPopulation};
 
 use pz_popman::manager::{PopulationHost, SquareInfo, SquarePlace};
 use pz_world::sprite::{IsoFlagType, IsoSpriteManager};
@@ -33,6 +42,11 @@ pub trait ZombieOps {
         persistent_id: i32,
         square: (i32, i32, i32),
     ) -> Option<Self::Zombie>;
+    /// The zombie as `ZombiePopulationManager.registerZombie` reads it at
+    /// the end of `createRealZombieAlways`.
+    fn real_zombie_info(&self, z: Self::Zombie) -> Option<RealZombieInfo<Self::Zombie>>;
+    /// `zombie.persistentId = id`.
+    fn set_persistent_id(&mut self, z: Self::Zombie, id: i32);
     /// `setX(x); setY(y)`.
     fn set_position(&mut self, z: Self::Zombie, x: f32, y: f32);
     /// `sitAgainstWall`'s effect: position, `setSitAgainstWall(true)`,
@@ -330,6 +344,12 @@ impl<Z: ZombieOps> PopulationHost for WorldPopulationHost<'_, Z> {
     ) -> Option<Self::Zombie> {
         self.zombies
             .create_real_zombie(outfit, dir, persistent_id, square)
+    }
+    fn real_zombie_info(&self, z: Self::Zombie) -> Option<RealZombieInfo<Self::Zombie>> {
+        self.zombies.real_zombie_info(z)
+    }
+    fn set_persistent_id(&mut self, z: Self::Zombie, id: i32) {
+        self.zombies.set_persistent_id(z, id);
     }
     fn set_position(&mut self, z: Self::Zombie, x: f32, y: f32) {
         self.zombies.set_position(z, x, y);

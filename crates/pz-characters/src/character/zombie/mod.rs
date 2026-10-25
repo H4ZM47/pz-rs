@@ -183,6 +183,9 @@ pub struct ZombieFields {
     pub follow_count: i32,
     pub zombie_id: i32,
     pub persistent_id: i32,
+    /// `persistentOutfitId` (`IsoGameCharacter`; only zombies get one here):
+    /// the `PersistentOutfits` id the population manager stores.
+    pub persistent_outfit_id: i32,
     pub bonus_spot_time: f32,
     pub knife_death: bool,
     pub jaw_stab_attach: bool,
@@ -320,6 +323,7 @@ impl Default for ZombieFields {
             follow_count: 0,
             zombie_id: 0,
             persistent_id: 0,
+            persistent_outfit_id: 0,
             bonus_spot_time: 0.0,
             knife_death: false,
             jaw_stab_attach: false,

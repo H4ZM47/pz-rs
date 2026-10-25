@@ -176,6 +176,64 @@ impl RayResultCallback for ClosestRayResultCallback {
     }
 }
 
+/// `btCollisionWorld::AllHitsRayResultCallback`: records every hit in
+/// report order and never shortens the ray.
+#[derive(Clone, Debug)]
+pub struct AllHitsRayResultCallback {
+    pub base: RayResultBase,
+    pub collision_objects: Vec<ObjId>,
+    pub ray_from_world: Vec3,
+    pub ray_to_world: Vec3,
+    pub hit_normal_world: Vec<Vec3>,
+    /// The fourth component is left uninitialised by Bullet; it is zero
+    /// here.
+    pub hit_point_world: Vec<Vec3>,
+    pub hit_fractions: Vec<f64>,
+}
+
+impl AllHitsRayResultCallback {
+    pub fn new(ray_from_world: Vec3, ray_to_world: Vec3) -> AllHitsRayResultCallback {
+        AllHitsRayResultCallback {
+            base: RayResultBase::default(),
+            collision_objects: Vec::new(),
+            ray_from_world,
+            ray_to_world,
+            hit_normal_world: Vec::new(),
+            hit_point_world: Vec::new(),
+            hit_fractions: Vec::new(),
+        }
+    }
+}
+
+impl RayResultCallback for AllHitsRayResultCallback {
+    fn base(&self) -> &RayResultBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut RayResultBase {
+        &mut self.base
+    }
+    fn add_single_result(
+        &mut self,
+        r: &mut LocalRayResult,
+        normal_in_world_space: bool,
+        objects: &ObjArena,
+    ) -> f64 {
+        self.base.collision_object = Some(r.collision_object);
+        self.collision_objects.push(r.collision_object);
+        let hit_normal_world = if normal_in_world_space {
+            r.hit_normal_local
+        } else {
+            obj(objects, r.collision_object).world_transform.basis * r.hit_normal_local
+        };
+        self.hit_normal_world.push(hit_normal_world);
+        let mut hit_point_world = Vec3::ZERO;
+        hit_point_world.set_interpolate3(&self.ray_from_world, &self.ray_to_world, r.hit_fraction);
+        self.hit_point_world.push(hit_point_world);
+        self.hit_fractions.push(r.hit_fraction);
+        self.base.closest_hit_fraction
+    }
+}
+
 /// `ConvexResultCallback`'s data members.
 #[derive(Clone, Copy, Debug)]
 pub struct ConvexResultBase {

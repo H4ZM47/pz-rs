@@ -13,13 +13,14 @@
 //
 // Altered for pz-rs: Rust translation of btCollisionShape, btConvexShape,
 // btConvexInternalShape, btPolyhedralConvexShape (and the AABB caching
-// variants), btBoxShape, btSphereShape, btConvexHullShape and
-// btCompoundShape from Bullet 2.82, double precision.
+// variants), btBoxShape, btSphereShape, btCapsuleShape (with
+// btCapsuleShapeX/Z), btConvexHullShape and btCompoundShape from Bullet
+// 2.82, double precision.
 
 //! Collision shapes.
 //!
-//! The game only creates boxes, spheres, convex hulls and compounds of those,
-//! so [`ShapeKind`] has exactly these variants; Bullet's virtual dispatch
+//! The game only creates boxes, spheres, capsules, convex hulls and compounds
+//! of those, so [`ShapeKind`] has exactly these variants; Bullet's virtual dispatch
 //! becomes a `match`. Shapes live in a [`Shapes`] arena and refer to each
 //! other (compound children) by [`ShapeId`]. Methods are named after the
 //! Bullet member they translate; `*_non_virtual` are the `btConvexShape`
@@ -132,6 +133,87 @@ pub struct SphereShape {
     pub ci: ConvexInternal,
 }
 
+/// `btCapsuleShape` (`up_axis` 1), `btCapsuleShapeX` (0) or
+/// `btCapsuleShapeZ` (2). The game's `PZCapsuleShape` derives from
+/// `btCapsuleShape` without overriding anything, so it is a plain Y capsule.
+#[derive(Clone, Debug)]
+pub struct CapsuleShape {
+    pub ci: ConvexInternal,
+    pub up_axis: usize,
+}
+
+impl CapsuleShape {
+    /// `getRadius()`: `m_implicitShapeDimensions[(m_upAxis + 2) % 3]`.
+    #[inline(always)]
+    pub fn get_radius(&self) -> f64 {
+        self.ci.implicit_shape_dimensions[(self.up_axis + 2) % 3]
+    }
+    /// `getHalfHeight()`.
+    #[inline(always)]
+    pub fn get_half_height(&self) -> f64 {
+        self.ci.implicit_shape_dimensions[self.up_axis]
+    }
+    /// `localGetSupportingVertexWithoutMargin`; the non-virtual
+    /// `btConvexShape` capsule case is the same code.
+    fn support_without_margin(&self, vec0: &Vec3) -> Vec3 {
+        let mut sup_vec = Vec3::ZERO;
+        let mut max_dot = -BT_LARGE_FLOAT;
+        let mut vec = *vec0;
+        let len_sqr = vec.length2();
+        if len_sqr < 0.0001 {
+            vec.set_value(1.0, 0.0, 0.0);
+        } else {
+            let rlen = 1.0 / len_sqr.sqrt();
+            vec *= rlen;
+        }
+        let radius = self.get_radius();
+        let margin = self.ci.collision_margin;
+        for top in [true, false] {
+            let mut pos = Vec3::ZERO;
+            let hh = self.get_half_height();
+            pos[self.up_axis] = if top { hh } else { -hh };
+            let vtx = pos + vec * radius - vec * margin;
+            let new_dot = vec.dot(&vtx);
+            if new_dot > max_dot {
+                max_dot = new_dot;
+                sup_vec = vtx;
+            }
+        }
+        Vec3::new(sup_vec.x, sup_vec.y, sup_vec.z)
+    }
+    /// `batchedUnitVectorGetSupportingVertexWithoutMargin`.
+    fn batched(&self, vectors: &[Vec3], out: &mut [Vec3]) {
+        let radius = self.get_radius();
+        let margin = self.ci.collision_margin;
+        for (o, vec) in out.iter_mut().zip(vectors) {
+            let mut max_dot = -BT_LARGE_FLOAT;
+            for top in [true, false] {
+                let mut pos = Vec3::ZERO;
+                let hh = self.get_half_height();
+                pos[self.up_axis] = if top { hh } else { -hh };
+                let vtx = pos + *vec * radius - *vec * margin;
+                let new_dot = vec.dot(&vtx);
+                if new_dot > max_dot {
+                    max_dot = new_dot;
+                    *o = vtx;
+                }
+            }
+        }
+    }
+    /// `getAabb` (and the `getAabbNonVirtual` capsule case).
+    fn get_aabb(&self, t: &Transform) -> (Vec3, Vec3) {
+        let r = self.get_radius();
+        let mut half_extents = Vec3::new(r, r, r);
+        half_extents[self.up_axis] = r + self.get_half_height();
+        let m = self.ci.collision_margin;
+        half_extents += Vec3::new(m, m, m);
+        let abs_b = t.basis.absolute();
+        let center = t.origin;
+        let extent = half_extents.dot3(&abs_b.el[0], &abs_b.el[1], &abs_b.el[2]);
+        (center - extent, center + extent)
+    }
+}
+
 /// `btConvexHullShape` (a `btPolyhedralConvexAabbCachingShape`).
 #[derive(Clone, Debug)]
 pub struct ConvexHullShape {
@@ -200,6 +282,7 @@ impl CompoundShape {
 pub enum ShapeKind {
     Box(BoxShape),
     Sphere(SphereShape),
+    Capsule(CapsuleShape),
     ConvexHull(ConvexHullShape),
     Compound(CompoundShape),
 }
@@ -245,6 +328,24 @@ impl Shape {
             kind: ShapeKind::Sphere(SphereShape { ci }),
         }
     }
+    /// `btCapsuleShape(radius, height)` around `up_axis` (1 for
+    /// `btCapsuleShape` and the game's `PZCapsuleShape`, 0 for
+    /// `btCapsuleShapeX`, 2 for `btCapsuleShapeZ`). `height` is the distance
+    /// between the two cap centers.
+    pub fn new_capsule(radius: f64, height: f64, up_axis: usize) -> Shape {
+        assert!(up_axis < 3, "capsule up axis {up_axis}");
+        let mut ci = ConvexInternal::new();
+        // 0.5f*height: the float literal promotes to double exactly.
+        let half_height = 0.5 * height;
+        ci.implicit_shape_dimensions = match up_axis {
+            0 => Vec3::new(half_height, radius, radius),
+            1 => Vec3::new(radius, half_height, radius),
+            _ => Vec3::new(radius, radius, half_height),
+        };
+        Shape {
+            kind: ShapeKind::Capsule(CapsuleShape { ci, up_axis }),
+        }
+    }
     /// `btConvexHullShape(points, numPoints, stride)` with packed xyz
     /// doubles (`stride == 24`) or `btVector3`s (`stride == 32`).
     pub fn new_convex_hull(points: &[f64], num_points: usize, stride_doubles: usize) -> Shape {
@@ -278,6 +379,7 @@ impl Shape {
         match &self.kind {
             ShapeKind::Box(_) => BOX_SHAPE_PROXYTYPE,
             ShapeKind::Sphere(_) => SPHERE_SHAPE_PROXYTYPE,
+            ShapeKind::Capsule(_) => CAPSULE_SHAPE_PROXYTYPE,
             ShapeKind::ConvexHull(_) => CONVEX_HULL_SHAPE_PROXYTYPE,
             ShapeKind::Compound(_) => COMPOUND_SHAPE_PROXYTYPE,
         }
@@ -317,8 +419,17 @@ impl Shape {
         match &self.kind {
             ShapeKind::Box(s) => &s.ci,
             ShapeKind::Sphere(s) => &s.ci,
+            ShapeKind::Capsule(s) => &s.ci,
             ShapeKind::ConvexHull(s) => &s.ci,
             ShapeKind::Compound(_) => panic!("compound shape is not convex"),
+        }
+    }
+    /// The capsule (panics for other shapes).
+    #[inline(always)]
+    pub fn capsule(&self) -> &CapsuleShape {
+        match &self.kind {
+            ShapeKind::Capsule(c) => c,
+            _ => panic!("not a capsule shape"),
         }
     }
     #[inline(always)]
@@ -368,6 +479,7 @@ impl Shape {
         match &self.kind {
             ShapeKind::Box(s) => s.ci.collision_margin,
             ShapeKind::Sphere(_) => self.sphere_radius(),
+            ShapeKind::Capsule(s) => s.ci.collision_margin,
             ShapeKind::ConvexHull(s) => s.ci.collision_margin,
             ShapeKind::Compound(c) => c.collision_margin,
         }
@@ -375,14 +487,14 @@ impl Shape {
     /// `setMargin(margin)` (virtual).
     pub fn set_margin(&mut self, collision_margin: f64) {
         match &mut self.kind {
-            ShapeKind::Box(s) => {
-                let om = s.ci.collision_margin;
+            ShapeKind::Box(BoxShape { ci: c }) | ShapeKind::Capsule(CapsuleShape { ci: c, .. }) => {
+                let om = c.collision_margin;
                 let old_margin = Vec3::new(om, om, om);
-                let with_margin = s.ci.implicit_shape_dimensions + old_margin;
-                s.ci.collision_margin = collision_margin;
-                let nm = s.ci.collision_margin;
+                let with_margin = c.implicit_shape_dimensions + old_margin;
+                c.collision_margin = collision_margin;
+                let nm = c.collision_margin;
                 let new_margin = Vec3::new(nm, nm, nm);
-                s.ci.implicit_shape_dimensions = with_margin - new_margin;
+                c.implicit_shape_dimensions = with_margin - new_margin;
             }
             ShapeKind::Sphere(s) => s.ci.collision_margin = collision_margin,
             ShapeKind::ConvexHull(s) => s.ci.collision_margin = collision_margin,
@@ -400,13 +512,13 @@ impl Shape {
     /// [`Shapes::compound_set_local_scaling`]).
     pub fn set_local_scaling_convex(&mut self, scaling: &Vec3) {
         match &mut self.kind {
-            ShapeKind::Box(s) => {
-                let om = s.ci.collision_margin;
+            ShapeKind::Box(BoxShape { ci: c }) | ShapeKind::Capsule(CapsuleShape { ci: c, .. }) => {
+                let om = c.collision_margin;
                 let old_margin = Vec3::new(om, om, om);
-                let with_margin = s.ci.implicit_shape_dimensions + old_margin;
-                let unscaled = with_margin.div_vec(&s.ci.local_scaling);
-                s.ci.local_scaling = scaling.absolute();
-                s.ci.implicit_shape_dimensions = (unscaled * s.ci.local_scaling) - old_margin;
+                let with_margin = c.implicit_shape_dimensions + old_margin;
+                let unscaled = with_margin.div_vec(&c.local_scaling);
+                c.local_scaling = scaling.absolute();
+                c.implicit_shape_dimensions = (unscaled * c.local_scaling) - old_margin;
             }
             ShapeKind::Sphere(s) => s.ci.local_scaling = scaling.absolute(),
             ShapeKind::ConvexHull(s) => {
@@ -429,6 +541,7 @@ impl Shape {
                 )
             }
             ShapeKind::Sphere(_) => Vec3::ZERO,
+            ShapeKind::Capsule(c) => c.support_without_margin(vec),
             ShapeKind::ConvexHull(h) => h.local_get_supporting_vertex_without_margin(vec),
             ShapeKind::Compound(_) => panic!("compound shape is not convex"),
         }
@@ -455,9 +568,10 @@ impl Shape {
                 sup_vertex += self.get_margin() * vecnorm;
                 sup_vertex
             }
-            ShapeKind::ConvexHull(h) => {
-                let mut sup_vertex = h.local_get_supporting_vertex_without_margin(vec);
-                let m = h.ci.collision_margin;
+            ShapeKind::Capsule(_) | ShapeKind::ConvexHull(_) => {
+                // btConvexInternalShape::localGetSupportingVertex
+                let mut sup_vertex = self.local_get_supporting_vertex_without_margin(vec);
+                let m = self.ci().collision_margin;
                 if m != 0.0 {
                     let mut vecnorm = *vec;
                     if vecnorm.length2() < SIMD_EPSILON * SIMD_EPSILON {
@@ -494,6 +608,7 @@ impl Shape {
                     o.set_value(0.0, 0.0, 0.0);
                 }
             }
+            ShapeKind::Capsule(c) => c.batched(vectors, out),
             ShapeKind::ConvexHull(h) => h.batched(vectors, out),
             ShapeKind::Compound(_) => panic!("compound shape is not convex"),
         }
@@ -511,6 +626,7 @@ impl Shape {
                 let extent = Vec3::new(m, m, m);
                 (center - extent, center + extent)
             }
+            ShapeKind::Capsule(c) => c.get_aabb(t),
             ShapeKind::ConvexHull(h) => transform_aabb(
                 &h.local_aabb_min,
                 &h.local_aabb_max,
@@ -569,6 +685,24 @@ impl Shape {
             ShapeKind::Sphere(_) => {
                 let elem = 0.4 * mass * self.get_margin() * self.get_margin();
                 Vec3::new(elem, elem, elem)
+            }
+            ShapeKind::Capsule(c) => {
+                let radius = c.get_radius();
+                let mut half_extents = Vec3::new(radius, radius, radius);
+                half_extents[c.up_axis] += c.get_half_height();
+                let margin = CONVEX_DISTANCE_MARGIN;
+                let lx = 2.0 * (half_extents.x + margin);
+                let ly = 2.0 * (half_extents.y + margin);
+                let lz = 2.0 * (half_extents.z + margin);
+                let x2 = lx * lx;
+                let y2 = ly * ly;
+                let z2 = lz * lz;
+                let scaledmass = mass * 0.08333333;
+                Vec3::new(
+                    scaledmass * (y2 + z2),
+                    scaledmass * (x2 + z2),
+                    scaledmass * (x2 + y2),
+                )
             }
             ShapeKind::ConvexHull(_) => {
                 // btPolyhedralConvexShape::calculateLocalInertia
@@ -670,6 +804,7 @@ impl Shape {
                     fsel(local_dir.z, h.z, -h.z),
                 )
             }
+            ShapeKind::Capsule(c) => c.support_without_margin(local_dir),
             ShapeKind::ConvexHull(h) => {
                 // convexHullSupport(localDir, points, numPoints, localScaling)
                 let vec = *local_dir * h.ci.local_scaling;
@@ -695,6 +830,7 @@ impl Shape {
         match &self.kind {
             ShapeKind::Sphere(_) => self.sphere_radius(),
             ShapeKind::Box(s) => s.ci.collision_margin,
+            ShapeKind::Capsule(s) => s.ci.collision_margin,
             ShapeKind::ConvexHull(s) => s.ci.collision_margin,
             ShapeKind::Compound(c) => c.collision_margin,
         }
@@ -718,6 +854,7 @@ impl Shape {
                 let extent = half_extents.dot3(&abs_b.el[0], &abs_b.el[1], &abs_b.el[2]);
                 (center - extent, center + extent)
             }
+            ShapeKind::Capsule(c) => c.get_aabb(t),
             ShapeKind::ConvexHull(h) => transform_aabb(
                 &h.local_aabb_min,
                 &h.local_aabb_max,

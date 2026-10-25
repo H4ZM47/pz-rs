@@ -109,6 +109,7 @@ pub mod host;
 pub mod line_clear_collide;
 pub mod main_thread;
 pub mod mover;
+pub mod mutation_hooks;
 pub mod path;
 pub mod polygonal_map2;
 pub mod pool;

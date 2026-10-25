@@ -1869,6 +1869,7 @@ version = "0.1.0"
 dependencies = [
  "pz-anim",
  "pz-audio",
+ "pz-bullet",
  "pz-core",
  "pz-fs",
  "pz-inventory",
@@ -2168,6 +2169,7 @@ dependencies = [
  "pz-fs",
  "pz-inventory",
  "pz-kahlua",
+ "pz-pathfind",
  "pz-scripts",
  "pz-world",
 ]
