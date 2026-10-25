@@ -1609,8 +1609,10 @@ dependencies = [
  "pz-core",
  "pz-inventory",
  "pz-pathfind",
+ "pz-popman",
  "pz-scripts",
  "pz-world",
+ "pz-world-popman",
 ]
 
 [[package]]
