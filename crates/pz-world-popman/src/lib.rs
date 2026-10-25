@@ -263,6 +263,13 @@ pub struct PopulationView<'w> {
     pub checks: &'w dyn SittingChecks,
 }
 
+/// [`WorldSource::FromOps`]' world reader.
+pub type ViewFn<Z> = for<'z> fn(&'z Z) -> PopulationView<'z>;
+
+/// [`WorldSource::FromOps`]' extra movers: a character the ops hold stands
+/// on `(x, y, z)`.
+pub type MoversFn<Z> = for<'z> fn(&'z Z, i32, i32, i32) -> bool;
+
 /// Where [`WorldPopulationHost`] reads the world from.
 pub enum WorldSource<'a, Z> {
     /// Borrowed for the whole pass, next to the zombie ops.
@@ -271,12 +278,12 @@ pub enum WorldSource<'a, Z> {
     /// (`RealZombies` over a `StatesWorldAdapter`). `view` is called for
     /// each read, never while a zombie method runs.
     FromOps {
-        view: for<'z> fn(&'z Z) -> PopulationView<'z>,
+        view: ViewFn<Z>,
         /// Characters the ops hold that stand on a square without being in
         /// `view`'s [`SittingChecks::has_moving_objects`] (the real zombie
         /// list lent to the ops: a zombie created in this pass is on its
         /// square's `movingObjects` at once). `None`: no such characters.
-        movers: Option<for<'z> fn(&'z Z, i32, i32, i32) -> bool>,
+        movers: Option<MoversFn<Z>>,
     },
 }
 
@@ -325,8 +332,8 @@ impl<'a, Z: ZombieOps> WorldPopulationHost<'a, Z> {
 
     /// The host over a world `zombies` holds ([`WorldSource::FromOps`]).
     pub fn from_ops(
-        view: for<'z> fn(&'z Z) -> PopulationView<'z>,
-        movers: Option<for<'z> fn(&'z Z, i32, i32, i32) -> bool>,
+        view: ViewFn<Z>,
+        movers: Option<MoversFn<Z>>,
         rand: &'a mut dyn GameRand,
         zombies: &'a mut Z,
     ) -> Self {
@@ -393,8 +400,7 @@ impl<Z: ZombieOps> PopulationHost for WorldPopulationHost<'_, Z> {
             return None;
         }
         let (to_x, to_y) = (sq.x as f32 + 0.5, sq.y as f32 + 0.5);
-        if v
-            .checks
+        if v.checks
             .line_clear_collide(from_x, from_y, to_x, to_y, sq.z, false, true)
         {
             return None;

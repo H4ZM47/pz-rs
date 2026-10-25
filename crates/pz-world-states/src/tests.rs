@@ -87,6 +87,13 @@ fn tables() -> SpriteTables {
             "climbSheetTopN",
             "climbSheetTopE",
             "climbSheetTopS",
+            "WallN",
+            "WallW",
+            "WallNTrans",
+            "WallWTrans",
+            "DoorWallW",
+            "DoorWallN",
+            "isEave",
         ]),
         names(&[
             "normal",
@@ -112,6 +119,9 @@ fn tables() -> SpriteTables {
             "stairsTW",
             "stairsMW",
             "stairsBW",
+            "WestRoofB",
+            "WestRoofM",
+            "WestRoofT",
         ]),
         names(&["North", "West"]),
     )
@@ -1126,11 +1136,13 @@ fn sitting_checks_on_the_adapter() {
     w.add(12, 12, "door_n", door(true, 500), true);
     w.engine.moving.push((9, 9, 0));
     let a = w.adapter();
-    assert!(a.has_moving_objects(9, 9, 0));
-    assert!(!a.has_moving_objects(9, 10, 0));
+    let line =
+        |fx, fy, tx, ty| SittingChecks::line_clear_collide(&a, fx, fy, tx, ty, 0, false, true);
+    assert!(SittingChecks::has_moving_objects(&a, 9, 9, 0));
+    assert!(!SittingChecks::has_moving_objects(&a, 9, 10, 0));
     // Open floor; then through the closed door's north edge.
-    assert!(!a.line_clear_collide(14.5, 13.5, 14.5, 10.5, 0, false, true));
-    assert!(a.line_clear_collide(12.5, 13.5, 12.5, 10.5, 0, false, true));
+    assert!(!line(14.5, 13.5, 14.5, 10.5));
+    assert!(line(12.5, 13.5, 12.5, 10.5));
 }
 
 #[test]
@@ -1148,8 +1160,9 @@ fn population_host_reads_the_adapter_real_zombies_hold() {
     let ctx = DefaultSimContext;
     let mut zombies = vec![zombie(11.5, 9.5, 1)];
     let mut next_id = 10;
-    let mut survivor =
-        || -> pz_scripts::ScriptResult<SurvivorDescRef<()>> { unreachable!("no zombie is created") };
+    let mut survivor = || -> pz_scripts::ScriptResult<SurvivorDescRef<()>> {
+        unreachable!("no zombie is created")
+    };
     let water = |_: (i32, i32, i32)| false;
     let mut adapter = w.adapter();
     let mut ops = RealZombies {
@@ -1180,6 +1193,5 @@ fn population_host_reads_the_adapter_real_zombies_hold() {
     assert!(!free(&host, 11, 9));
     assert_eq!(host.rand().next(9), 4);
     host.set_position(3, 12.5, 12.5);
-    drop(host);
     assert_eq!((zombies[0].vars.x, zombies[0].vars.y), (12.5, 12.5));
 }

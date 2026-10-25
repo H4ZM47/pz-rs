@@ -1,8 +1,8 @@
 use super::*;
-use pz_sandbox::ZombieConfig;
 use pz_popman::native::Native;
 use pz_popman::state_flags::{ZombieStateFlag, ZombieStateFlags};
 use pz_popman::ZombiePopulationManager;
+use pz_sandbox::ZombieConfig;
 use pz_world::defs::room_id;
 use pz_world::meta_grid::IsoMetaCell;
 use pz_world::sprite::SpriteTables;
@@ -501,7 +501,8 @@ fn manager_sits_a_zombie_against_a_wall_of_the_cell() {
             WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut zs);
         let mut tick = |m: &mut ZombiePopulationManager<u32>| {
             clock.set(clock.get() + 50);
-            m.update_main(&mut host, 1.0, 10.0, &[(0, 0)], 10, &[]).unwrap();
+            m.update_main(&mut host, 1.0, 10.0, &[(0, 0)], 10, &[])
+                .unwrap();
             m.thread_step();
         };
         for _ in 0..3 {
@@ -558,7 +559,10 @@ impl ZombieOps for OwningZombies {
         square: (i32, i32, i32),
     ) -> Result<Option<u32>, String> {
         // A mutation of the held world between reads.
-        let _ = self.w.cell.get_grid_square_mut(square.0, square.1, square.2);
+        let _ = self
+            .w
+            .cell
+            .get_grid_square_mut(square.0, square.1, square.2);
         self.standing.push(square);
         self.inner
             .create_real_zombie(outfit, dir, persistent_id, square)
@@ -636,9 +640,8 @@ fn from_ops_reads_the_world_the_ops_hold() {
     let mut rand = ListRand(vec![7], vec![]);
     let mut h =
         WorldPopulationHost::from_ops(owning_view, Some(owning_movers), &mut rand, &mut ops);
-    let t = |h: &WorldPopulationHost<'_, OwningZombies>, x| {
-        h.sitting_wall_type(x, 20, 0, 18.25, 21.75)
-    };
+    let t =
+        |h: &WorldPopulationHost<'_, OwningZombies>, x| h.sitting_wall_type(x, 20, 0, 18.25, 21.75);
     assert_eq!(t(&h, 20), Some(1));
     assert_eq!(t(&h, 21), None);
     assert_eq!(t(&h, 22), None);
@@ -655,7 +658,6 @@ fn from_ops_reads_the_world_the_ops_hold() {
     assert_eq!(t(&h, 20), None);
     assert_eq!(t(&h, 23), Some(4));
     h.set_position(z, 20.5, 20.5);
-    drop(h);
     assert_eq!(rand.1, vec![4]);
     assert_eq!(
         *ops.checks.calls.borrow(),
