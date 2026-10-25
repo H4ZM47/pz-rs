@@ -68,6 +68,7 @@ impl MainScreenState {
             alpha_step: 0.2 * 0.9,
         });
         lua.trigger_event("OnMainMenuEnter", &[]);
+        pz_lua_api::bind_game_window::set_main_screen_instance();
     }
 
     /// `update()`.
