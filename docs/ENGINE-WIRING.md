@@ -138,7 +138,8 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       popman worker pass has already run, as its own thread would): `GameWindow.logic` calls
       `WorldPopulation::update_game_state(no_save, paused)`; `IngameState.update`
       (after `VirtualZombieManager.update`) calls `WorldPopulation::update(&mut
-      WorldPopulationHost::from_state(.., &mut RealZombies { .. }),
+      pz_world_states::population_host(rand, &mut RealZombies { world: &mut
+      states_adapter, .. }),
       &PopulationFrame { multiplier, world_age_hours,
       chunk_maps: &player_chunk_maps(&streamer), real_zombies:
       &real_zombies.infos() })`; it also runs the in-line worker
@@ -359,6 +360,16 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
+- [ ] Popman over the real world (#210): build the population host with
+      `pz_world_states::population_host(rand, &mut RealZombies { world:
+      &mut StatesWorldAdapter::new(..), .. })` (the host reads the cell,
+      meta grid, sprites and sitting checks through the adapter between
+      zombie calls; the adapter is the `SittingChecks`: `has_moving_objects`
+      is `StatesEngine::has_moving_objects` plus the lent zombie list,
+      `line_clear_collide` is `LineClearCollideMain` with pz-vehicles'
+      `PathfindVehicles` and `ignore_vehicle = None`). The engine's
+      `has_moving_objects` must answer for players and animals on the
+      square (the real zombie list is counted by the host).
 World load, in the original's order (`GameLoadingState.enter` loads the
 server Lua first, so `ClimateMain.lua`'s `OnClimateManagerInit` handler is
 registered):
@@ -590,9 +601,10 @@ registered):
       (decode with `load_player`, health 0 when `is_dead`, set `sqlId`) and
       `chunkMap.worldX/Y = local_player_chunk_map_pos(x, y, offset)` (#100).
 - [ ] CGlobalObjects `initSystems` and update pumps (#31).
-- [ ] Popman: `WorldPopulationHost::from_state`, `update_main` with
-      `player_chunk_maps(&streamer)`; supply SittingChecks,
-      `has_moving_objects`, `line_clear_collide` (#77, #60). Driven through
+- [ ] Popman: `pz_world_states::population_host` (#210; was
+      `WorldPopulationHost::from_state`), `update_main` with
+      `player_chunk_maps(&streamer)`; SittingChecks is the
+      `StatesWorldAdapter` (#77, #60, #210). Driven through
       `WorldPopulation` (see the world-load list above).
 - [ ] World sound: `WorldSoundAdapter::from_state`; engine `SoundEffects`
       (OnWorldSound, fish noise, popman) (#71).

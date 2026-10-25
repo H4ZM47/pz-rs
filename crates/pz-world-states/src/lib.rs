@@ -20,16 +20,24 @@
 //! toggling) comes from a [`StatesEngine`] the caller supplies. Character,
 //! path-finding, lighting and audio methods of [`StateWorld`] keep their
 //! defaults; the engine wraps this adapter for those.
+//!
+//! The adapter is also the population manager's [`SittingChecks`]
+//! (`pz-world-popman`), and [`population_host`] runs that manager over the
+//! adapter `RealZombies` holds ([`population`]).
+//!
+//! [`SittingChecks`]: pz_world_popman::SittingChecks
 
 mod bent_fences;
 mod climb;
 mod collide;
+pub mod population;
 mod query;
 mod thump;
 mod vehicles;
 mod windows;
 
 pub use bent_fences::{BentFenceEntry, BentFences, FenceTileDef, ThumpData};
+pub use population::{population_host, population_view, real_zombie_on_square};
 pub use collide::{CollideMoverInfo, NewRenderEffect, RenderEffectType, StatesFire, WorldView};
 pub use query::Env;
 pub use vehicles::{VehicleBox, VehicleGeometry};

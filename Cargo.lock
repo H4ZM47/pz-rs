@@ -2320,8 +2320,11 @@ dependencies = [
  "pz-fs",
  "pz-inventory",
  "pz-pathfind",
+ "pz-popman",
  "pz-scripts",
+ "pz-vehicles",
  "pz-world",
+ "pz-world-popman",
 ]
 
 [[package]]
