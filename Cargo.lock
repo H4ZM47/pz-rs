@@ -1875,8 +1875,10 @@ dependencies = [
  "pz-core",
  "pz-fs",
  "pz-inventory",
+ "pz-model",
  "pz-pathfind",
  "pz-popman",
+ "pz-ragdoll",
  "pz-sandbox",
  "pz-scripts",
  "pz-world",
@@ -1919,6 +1921,7 @@ name = "pz-core"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "png",
  "pz-kahlua",
 ]
 
@@ -2050,7 +2053,9 @@ dependencies = [
  "pz-text",
  "pz-ui",
  "pz-vehicles",
+ "pz-video",
  "pz-world",
+ "pz-worldgen",
  "regex",
 ]
 
@@ -2202,8 +2207,13 @@ dependencies = [
  "pz-kahlua",
  "pz-pathfind",
  "pz-scripts",
+ "pz-sqlite",
  "pz-world",
 ]
+
+[[package]]
+name = "pz-video"
+version = "0.1.0"
 
 [[package]]
 name = "pz-world"

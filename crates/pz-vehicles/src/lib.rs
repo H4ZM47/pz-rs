@@ -36,6 +36,7 @@ pub mod spawn;
 pub mod surround;
 pub mod vehicle;
 pub mod vehicle_type;
+pub mod vehicles_db;
 pub mod world_sim;
 
 pub use part::{PartRef, VehiclePart};

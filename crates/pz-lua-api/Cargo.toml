@@ -27,18 +27,13 @@ pz-sqlite.workspace = true
 regex.workspace = true
 pz-popman.workspace = true
 pz-vehicles.workspace = true
+pz-video.workspace = true
 
 pz-entity.workspace = true
+pz-worldgen.workspace = true
 
 [dev-dependencies]
 pz-sqlite = { workspace = true, features = ["writer"] }
-pz-popman.workspace = true
 
-pz-scripts.workspace = true
-pz-classfile.workspace = true
-pz-inventory.workspace = true
-pz-input.workspace = true
-pz-vehicles.workspace = true
 
 pz-bullet.workspace = true
-pz-world.workspace = true

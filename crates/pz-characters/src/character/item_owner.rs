@@ -6,9 +6,9 @@
 //! a `Use` outcome to the character's inventory and hands as the
 //! original's `Use` does. Also `IHumanVisual` ([`HumanVisualOwner`]).
 //!
-//! Items are the ones directly in `inventory` (the hand and worn items
-//! are ids of those); an item inside a bag in the inventory has a
-//! container without a parent.
+//! Items are the ones directly in the shared `inventory` (the hand and
+//! worn items are ids of those); an item inside a bag in the inventory has
+//! a container without a parent.
 
 use std::rc::Rc;
 
@@ -16,7 +16,7 @@ use pz_inventory::context::{ItemPlace, ItemOwner};
 use pz_inventory::env::ItemEnv;
 use pz_inventory::gameplay::UseOutcome;
 use pz_inventory::visual::human::HumanVisualOwner;
-use pz_inventory::{InventoryItem, ItemContainer, ItemContext, ItemKind, ItemTemplate};
+use pz_inventory::{InventoryItem, ItemContext, ItemKind, ItemTemplate};
 use pz_scripts::objects::items::find_item;
 use pz_scripts::ScriptManager;
 
@@ -24,11 +24,6 @@ use super::context::SimContext;
 use super::items::CharacterItems;
 use super::{CharacterKind, GameCharacter};
 use crate::survivor::CharacterGender;
-
-/// Whether the item `id` is somewhere in `c` (directly or in a bag).
-fn contains_anywhere(c: &ItemContainer, id: i32) -> bool {
-    c.items.iter().filter_map(|i| i.as_item()).any(|i| i.id == id || in_bag(i, id))
-}
 
 /// Whether the item `id` is somewhere in the bag `i`'s inventory.
 fn in_bag(i: &pz_inventory::InventoryItem, id: i32) -> bool {
@@ -51,7 +46,10 @@ impl CharacterItems {
 
     /// The item is in `inventory` or a bag in it.
     pub fn holds(&self, id: i32) -> bool {
-        contains_anywhere(&self.inventory, id)
+        self.inventory.borrow().items.iter().any(|i| {
+            let i = i.borrow();
+            i.id == id || in_bag(&i, id)
+        })
     }
 }
 
@@ -204,11 +202,13 @@ impl ItemContext for CharacterItemContext<'_> {
 
 impl<I> GameCharacter<I> {
     /// Runs `f` on the inventory item `id` with this character as its
-    /// holder (on a copy, written back after).
+    /// holder (on a copy, written back to the same item object after, so
+    /// the owner's queries can read the inventory meanwhile).
     pub fn with_held_item<R>(&mut self, id: i32, f: impl FnOnce(&mut InventoryItem, &Self) -> R) -> Option<R> {
-        let mut item = self.items.item(id)?.clone();
+        let shared = self.items.item(id)?;
+        let mut item = shared.borrow().clone();
         let r = f(&mut item, self);
-        *self.items.item_mut(id)? = item;
+        *shared.borrow_mut() = item;
         Some(r)
     }
 
@@ -242,7 +242,7 @@ impl<I> GameCharacter<I> {
             }
         }
         let temperature = ItemOwner::container_temperature(self);
-        self.items.inventory.apply_use(id, out, temperature)
+        pz_inventory::shared::apply_use(&self.items.inventory, id, out, temperature)
     }
 
     /// `item.Use(crafting, inContainer, needSync)` for the inventory item

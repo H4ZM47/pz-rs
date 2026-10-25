@@ -105,6 +105,7 @@ pub fn from_save_with(s: &saved::BaseVehicle, loading: impl FnOnce()) -> Vehicle
         st.sound_back_move_on = s.sound_back_move_on;
         st.lightbar_lights_mode.set(s.lightbar_lights_mode);
         st.lightbar_siren_mode = s.lightbar_siren_mode;
+        st.iso_object = Some(s.base.clone());
     }
     for p in &s.parts {
         let part = VehiclePart::new(&v);
@@ -196,50 +197,49 @@ pub fn from_save_with(s: &saved::BaseVehicle, loading: impl FnOnce()) -> Vehicle
     v
 }
 
+/// The saved state of a runtime part (`VehiclePart.save`'s fields).
+pub fn part_to_save(p: &VehiclePart) -> saved::VehiclePart {
+    let ps = p.st();
+    let mut sp = saved::VehiclePart::new();
+    sp.part_id = p.id().unwrap_or_default();
+    sp.created = ps.created;
+    sp.last_updated = ps.last_updated;
+    sp.item = ps.item.as_ref().map(|i| match i {
+        PartItem::Item(i) => SavedItem::Item(Box::new(i.borrow().clone())),
+        PartItem::Raw(r) => r.clone(),
+    });
+    sp.container = ps.container.clone();
+    sp.mod_data = ps.mod_data.as_ref().map(lua_to_mod_data);
+    sp.device_data = ps.device_data.clone();
+    sp.light = ps.light.as_ref().map(|l| saved::VehicleLight {
+        active: l.active,
+        offset_x: l.offset.x,
+        offset_y: l.offset.y,
+        intensity: l.intensity,
+        dist: l.dist,
+        focusing: l.focusing,
+    });
+    sp.door = ps.door.map(|d| saved::VehicleDoor {
+        open: d.open,
+        locked: d.locked,
+        lock_broken: d.lock_broken,
+    });
+    sp.window = ps.window.map(|w| saved::VehicleWindow {
+        open: w.open,
+        open_delta: w.open_delta,
+    });
+    sp.condition = ps.condition;
+    sp.wheel_friction = ps.wheel_friction;
+    sp.mechanic_skill_installer = ps.mechanic_skill_installer;
+    sp.suspension_compression = ps.suspension_compression;
+    sp.suspension_damping = ps.suspension_damping;
+    sp.components = ps.components.clone();
+    sp
+}
+
 /// The saved state of a runtime vehicle (`BaseVehicle.save`'s fields).
 pub fn to_save(v: &BaseVehicle, base: &pz_world::save::visual::MovingBase) -> saved::BaseVehicle {
-    let parts: Vec<saved::VehiclePart> = v
-        .parts()
-        .iter()
-        .map(|p| {
-            let ps = p.st();
-            let mut sp = saved::VehiclePart::new();
-            sp.part_id = p.id().unwrap_or_default();
-            sp.created = ps.created;
-            sp.last_updated = ps.last_updated;
-            sp.item = ps.item.as_ref().map(|i| match i {
-                PartItem::Item(i) => SavedItem::Item(Box::new(i.borrow().clone())),
-                PartItem::Raw(r) => r.clone(),
-            });
-            sp.container = ps.container.clone();
-            sp.mod_data = ps.mod_data.as_ref().map(lua_to_mod_data);
-            sp.device_data = ps.device_data.clone();
-            sp.light = ps.light.as_ref().map(|l| saved::VehicleLight {
-                active: l.active,
-                offset_x: l.offset.x,
-                offset_y: l.offset.y,
-                intensity: l.intensity,
-                dist: l.dist,
-                focusing: l.focusing,
-            });
-            sp.door = ps.door.map(|d| saved::VehicleDoor {
-                open: d.open,
-                locked: d.locked,
-                lock_broken: d.lock_broken,
-            });
-            sp.window = ps.window.map(|w| saved::VehicleWindow {
-                open: w.open,
-                open_delta: w.open_delta,
-            });
-            sp.condition = ps.condition;
-            sp.wheel_friction = ps.wheel_friction;
-            sp.mechanic_skill_installer = ps.mechanic_skill_installer;
-            sp.suspension_compression = ps.suspension_compression;
-            sp.suspension_damping = ps.suspension_damping;
-            sp.components = ps.components.clone();
-            sp
-        })
-        .collect();
+    let parts: Vec<saved::VehiclePart> = v.parts().iter().map(|p| part_to_save(p)).collect();
     let engine = v.engine_part().map(|_| {
         v.with_engine(|e| saved::VehicleEngine {
             running: e.is_running(),

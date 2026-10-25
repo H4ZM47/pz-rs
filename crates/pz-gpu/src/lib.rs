@@ -342,6 +342,8 @@ pub struct Gpu {
     /// `WeatherFxMask.fboMask` and `fboParticles`.
     weather: [Option<OffscreenTarget>; 2],
     textures: HashMap<u32, wgpu::BindGroup>,
+    /// `TextureData::version` of each uploaded texture.
+    versions: HashMap<u32, u32>,
     samplers: HashMap<Filter, wgpu::Sampler>,
     /// Bound for untextured quads; samples as 1.0 like `useTexture = 0`.
     white: Option<wgpu::BindGroup>,
@@ -570,6 +572,7 @@ impl Gpu {
             offscreen: None,
             weather: [None, None],
             textures: HashMap::new(),
+            versions: HashMap::new(),
             samplers: HashMap::new(),
             white: None,
             state: GlState::default(),
@@ -1883,10 +1886,18 @@ impl Gpu {
     /// `TextureID.generateHwId` + `assignFilteringFlags`: uploads the image
     /// (every mip level for `MIPMAPS` textures) and picks the sampler.
     fn ensure_texture(&mut self, id: u32, textures: &mut TextureManager) {
-        if self.textures.contains_key(&id) {
-            return;
-        }
         let Some(d) = textures.data(id) else { return };
+        if self.textures.contains_key(&id) {
+            // A respecified image (`glTexImage2D` on a live texture, e.g. a
+            // video frame) replaces the upload.
+            if self.versions.get(&id) == Some(&d.version) || (d.ready && d.image.is_none()) {
+                return;
+            }
+            self.textures.remove(&id);
+            self.views.remove(&id);
+            self.filters.remove(&id);
+            self.nearest.remove(&id);
+        }
         if !d.ready {
             return;
         }
@@ -1900,6 +1911,7 @@ impl Gpu {
         let pixels: Vec<Vec<u8>> = levels.iter().map(|l| l.pixels.clone()).collect();
         let (bind_group, view) = self.create_texture(levels[0].width as u32, levels[0].height as u32, &pixels, filter);
         self.textures.insert(id, bind_group);
+        self.versions.insert(id, d.version);
         self.filters.insert(id, filter);
         self.views.insert(id, view);
         // The original frees the CPU copy once uploaded.

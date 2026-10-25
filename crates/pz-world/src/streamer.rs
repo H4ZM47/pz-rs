@@ -183,9 +183,52 @@ pub enum StreamEvent {
     Discarded { wx: i32, wy: i32 },
     /// `removeFromWorld` + `ChunkSaveWorker.Add`.
     Unloaded { wx: i32, wy: i32 },
-    /// `ChunkSaveWorker.WriteQueuedSave` wrote the chunk file (`written` is
-    /// false when saving is off, `Core.isNoSave`).
+    /// `VehiclesDB2.unloadChunk` while a chunk was saved, before its file
+    /// is written (only when [`StreamCtx::vehicles_db`] is set): the ids of
+    /// the rows written and the vehicles that were not (list index and
+    /// error).
+    VehiclesUnloaded {
+        wx: i32,
+        wy: i32,
+        saved: Vec<i32>,
+        errors: Vec<(usize, String)>,
+    },
+    /// `ChunkSaveWorker.WriteQueuedSave` (or `IsoChunkMap.Save`) wrote the
+    /// chunk file (`written` is false when saving is off, `Core.isNoSave`).
     Saved { wx: i32, wy: i32, written: bool },
+    /// The save queue became empty after a write
+    /// (`ChunkSaveWorker.HotsaveAncilliarySystems`): the main thread now
+    /// saves the meta grid, animals, game time and world map
+    /// (`saveToBufferMap`) and `PlayerDB.savePlayers()` runs.
+    HotSave,
+    /// Quitting (`IngameState.exit`): the chunk left the world without
+    /// being saved again (`removeFromWorld` only).
+    Removed { wx: i32, wy: i32 },
+    /// `IsoChunk.removeFromWorld` (an unload or quitting) took vehicles that
+    /// keep updating in the meta (`shouldUpdateInMeta`) out of the chunk's
+    /// list, queued their rows (`VehiclesDB2.updateVehicle`) and handed
+    /// them to [`StreamCtx::vehicle_meta`]: the row ids (`-1` when the row
+    /// could not be built), and the vehicles that failed (list index and
+    /// exception). Only reported when something happened.
+    VehiclesToMeta {
+        wx: i32,
+        wy: i32,
+        ids: Vec<i32>,
+        errors: Vec<(usize, String)>,
+    },
+    /// The chunk's meta cell had not generated its animal paths yet
+    /// (`IsoMetaCell.checkAnimalZonesGenerated` set `animalZonesGenerated`):
+    /// the engine runs `ZoneGenerator.genAnimalsPath(wx, wy)` (world
+    /// generation, not ported), which queues the cell for saving
+    /// (`IsoMetaGrid::add_cell_to_save`) unless the sandbox's animal path
+    /// chance is "none".
+    GenAnimalsPath { wx: i32, wy: i32 },
+    /// `VehiclesDB2.updateWorldStreamer()` wrote the queued vehicle rows
+    /// (only reported when the queue was not empty).
+    VehiclesUpdated {
+        saved: Vec<i32>,
+        errors: Vec<(usize, String)>,
+    },
     /// Saving failed; the chunk is dropped like the original logs and drops
     /// it.
     SaveFailed { wx: i32, wy: i32, error: String },
@@ -230,6 +273,20 @@ pub struct StreamCtx<'a> {
     /// ([`vehicles_db::load_chunk`]); `None` (no store, `Core.isNoSave`)
     /// loads none.
     pub vehicles_db: Option<&'a mut Connection>,
+    /// How a saved chunk's vehicles become rows (`VehicleBuffer.set`).
+    /// `None`: [`vehicles_db::LoadedVehicleSaver`] with
+    /// [`vehicles_db::NoVehicleScripts`] (vehicles never added to the
+    /// world, which the original cannot write either).
+    pub vehicle_saver: Option<&'a dyn vehicles_db::ChunkVehicleSaver>,
+    /// `VirtualVehicleManager.addToMeta` for the vehicles
+    /// `IsoChunk.removeFromWorld` takes out of the world while they keep
+    /// updating (the vehicle runtime's virtual vehicles). `None`: they are
+    /// dropped after their rows are queued.
+    pub vehicle_meta: Option<&'a mut dyn vehicles_db::VehicleMetaHook>,
+    /// `VehiclesDB2`'s main-thread id sets: `removeFromWorld` unloads the
+    /// vehicles' ids and allocates one for a vehicle sent to the meta
+    /// without one. `None`: not tracked.
+    pub vehicle_ids: Option<&'a mut vehicles_db::VehicleIds>,
 }
 
 /// Reborrow an optional hook for a shorter time.
@@ -364,6 +421,9 @@ pub struct ChunkStreamer {
     load_grid_square: VecDeque<(ChunkId, IsoChunk)>,
     /// `ChunkSaveWorker.toSaveQueue`.
     save_queue: VecDeque<QueuedSave>,
+    /// `VehiclesDB2.worldStreamer.queue`: the rows `removeFromWorld` queued
+    /// (`QueueUpdateVehicle`).
+    vehicle_queue: VecDeque<crate::save::vehicle::VehicleRow>,
     events: Vec<StreamEvent>,
 }
 
@@ -384,6 +444,7 @@ impl ChunkStreamer {
             job_list: Vec::new(),
             load_grid_square: VecDeque::new(),
             save_queue: VecDeque::new(),
+            vehicle_queue: VecDeque::new(),
             events: Vec::new(),
         }
     }
@@ -573,7 +634,8 @@ impl ChunkStreamer {
         }
         self.events
             .push(StreamEvent::Unloaded { wx: r.wx, wy: r.wy });
-        if let Some(chunk) = cell.unload_chunk(r.wx, r.wy, chunk_hook(&mut ctx.chunk_hook)) {
+        if let Some(mut chunk) = cell.unload_chunk(r.wx, r.wy, chunk_hook(&mut ctx.chunk_hook)) {
+            self.vehicles_to_meta(&mut chunk, ctx);
             self.save_queue.push_back(QueuedSave {
                 wx: r.wx,
                 wy: r.wy,
@@ -792,7 +854,11 @@ impl ChunkStreamer {
             }
         }
         if self.job_list.is_empty() {
-            return self.save_worker_update(None, ctx);
+            let saved = self.save_worker_update(None, ctx);
+            if !saved {
+                self.update_vehicles_db(ctx);
+            }
+            return saved;
         }
         for i in (0..self.job_list.len()).rev() {
             let id = self.job_list[i];
@@ -813,7 +879,10 @@ impl ChunkStreamer {
             self.job_list.pop()
         };
         let about = next.map(|id| (self.records[&id].wx, self.records[&id].wy));
-        self.save_worker_update(about, ctx);
+        let saved = self.save_worker_update(about, ctx);
+        if next.is_none() && !saved {
+            self.update_vehicles_db(ctx);
+        }
         if let Some(id) = next {
             if self.records[&id].refs.is_empty() {
                 self.cancel(id);
@@ -846,14 +915,23 @@ impl ChunkStreamer {
             .unwrap_or(0);
         let q = self.save_queue.remove(i).unwrap();
         self.write_queued_save(q, ctx);
-        // `HotsaveAncilliarySystems` once the queue is empty (meta grid,
-        // animals, game time, world map) is not ported.
+        // `HotsaveAncilliarySystems` (single player): the engine runs the
+        // main-thread part when it sees the event.
+        if self.save_queue.is_empty() {
+            self.events.push(StreamEvent::HotSave);
+        }
         true
     }
 
-    /// `WriteQueuedSave` → `IsoChunk.Save(false)` → `SafeWrite`.
+    /// `WriteQueuedSave` → `IsoChunk.Save(false)`.
     fn write_queued_save(&mut self, q: QueuedSave, ctx: &mut StreamCtx<'_>) {
-        let (wx, wy) = (q.wx, q.wy);
+        self.save_chunk_file(q.wx, q.wy, &q.chunk, ctx);
+    }
+
+    /// `IsoChunk.Save(bPreventChunkReuse)` (not a hot save): the chunk's
+    /// bytes, then `VehiclesDB2.unloadChunk` (inside `Save(ByteBuffer)`,
+    /// after the erosion data), then `SafeWrite`. Nothing with saving off.
+    fn save_chunk_file(&mut self, wx: i32, wy: i32, chunk: &IsoChunk, ctx: &mut StreamCtx<'_>) {
         if ctx.no_save {
             self.events.push(StreamEvent::Saved {
                 wx,
@@ -862,15 +940,37 @@ impl ChunkStreamer {
             });
             return;
         }
-        let result = save_chunk(&q.chunk, &ctx.save_ctx())
-            .map_err(|e| e.0)
-            .and_then(|bytes| {
-                let path = chunk_path(ctx.save_dir, wx, wy);
-                if let Some(dir) = path.parent() {
-                    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-                }
-                std::fs::write(&path, bytes).map_err(|e| e.to_string())
-            });
+        let save_ctx = SaveCtx {
+            sprites: ctx.sprites,
+            tables: ctx.save_tables,
+            settings: ctx.save_settings,
+            items: ctx.items,
+            hooks: ctx.save_hooks,
+            meta: Some(ctx.meta),
+        };
+        let bytes = save_chunk(chunk, &save_ctx).map_err(|e| e.0);
+        if bytes.is_ok() {
+            if let Some(conn) = ctx.vehicles_db.as_deref_mut() {
+                let default_saver = vehicles_db::LoadedVehicleSaver {
+                    scripts: &vehicles_db::NoVehicleScripts,
+                };
+                let saver = ctx.vehicle_saver.unwrap_or(&default_saver);
+                let r = vehicles_db::unload_chunk(Some(conn), chunk, &save_ctx, saver);
+                self.events.push(StreamEvent::VehiclesUnloaded {
+                    wx,
+                    wy,
+                    saved: r.saved,
+                    errors: r.errors,
+                });
+            }
+        }
+        let result = bytes.and_then(|bytes| {
+            let path = chunk_path(ctx.save_dir, wx, wy);
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&path, bytes).map_err(|e| e.to_string())
+        });
         self.events.push(match result {
             Ok(()) => StreamEvent::Saved {
                 wx,
@@ -1004,6 +1104,12 @@ impl ChunkStreamer {
             chunk_hook(&mut ctx.chunk_hook),
         );
         self.events.push(StreamEvent::HandedOff { wx, wy });
+        // `doLoadGridsquare`, after `loadInMainThread`:
+        // `metaCell.checkAnimalZonesGenerated(wx, wy)`.
+        let (cx, cy) = (fastfloor(wx as f32 / 32.0), fastfloor(wy as f32 / 32.0));
+        if ctx.meta.check_animal_zones_generated(cx, cy) {
+            self.events.push(StreamEvent::GenAnimalsPath { wx, wy });
+        }
         true
     }
 
@@ -1108,6 +1214,142 @@ impl ChunkStreamer {
         while let Some(q) = self.save_queue.pop_front() {
             self.write_queued_save(q, ctx);
         }
+    }
+
+    /// The start of `IsoCell.save`: wait while `ChunkSaveWorker.saving`,
+    /// i.e. let the streamer thread write the queued saves one per loop
+    /// (`ChunkSaveWorker.Update(null)`), ending with the hot save event.
+    /// The chunk loads the streamer would serve in between are left
+    /// queued.
+    pub fn wait_for_saves(&mut self, ctx: &mut StreamCtx<'_>) {
+        while self.save_worker_update(None, ctx) {}
+    }
+
+    /// `IsoChunkMap.Save()` for every player's map in player order
+    /// (`IsoCell.save`): each chunk of the grid, x outer and y inner, is
+    /// saved with `IsoChunk.Save(true)` (file and vehicles; it stays loaded
+    /// and is not reused). A chunk in two maps is saved twice, like the
+    /// original.
+    pub fn save_chunk_maps(&mut self, cell: &IsoCell, ctx: &mut StreamCtx<'_>) {
+        for m in 0..self.maps.len() {
+            for x in 0..self.width {
+                for y in 0..self.width {
+                    let Some(id) = self.get_chunk(m, x, y) else {
+                        continue;
+                    };
+                    let (wx, wy) = (self.records[&id].wx, self.records[&id].wy);
+                    if let Some(chunk) = cell.chunks.get(&(wx, wy)) {
+                        self.save_chunk_file(wx, wy, chunk, ctx);
+                    }
+                }
+            }
+        }
+    }
+
+    /// `IngameState.exit` after the game was saved: `WorldStreamer.stop()`
+    /// (pending jobs are dropped, then `ChunkSaveWorker.SaveNow()`), then
+    /// every chunk of every player's map (`n % width`, `n / width`) loses
+    /// that map's ref and leaves the world once no map holds it
+    /// (`removeFromWorld`, [`StreamEvent::Removed`]), without another save.
+    /// The loaded chunks waiting for the hand-off stay with the streamer
+    /// and are dropped with it.
+    pub fn stop(&mut self, cell: &mut IsoCell, ctx: &mut StreamCtx<'_>) {
+        self.job_list.clear();
+        self.job_queue.clear();
+        self.save_now(ctx);
+        let w = self.width;
+        for m in 0..self.maps.len() {
+            for n in 0..w * w {
+                let Some(id) = self.get_chunk(m, n % w, n / w) else {
+                    continue;
+                };
+                let Some(r) = self.records.get(&id) else {
+                    continue;
+                };
+                if !r.refs.contains(&m) {
+                    continue;
+                }
+                self.release_ref(id, m);
+                if !self.records[&id].refs.is_empty() {
+                    continue;
+                }
+                let r = self.records.remove(&id).expect("chunk record");
+                self.events
+                    .push(StreamEvent::Removed { wx: r.wx, wy: r.wy });
+                if let Some(mut chunk) =
+                    cell.unload_chunk(r.wx, r.wy, chunk_hook(&mut ctx.chunk_hook))
+                {
+                    self.vehicles_to_meta(&mut chunk, ctx);
+                }
+            }
+        }
+    }
+
+    /// The vehicle part of `IsoChunk.removeFromWorld`
+    /// ([`vehicles_db::remove_vehicles_to_meta`]) with this context's saver
+    /// and meta hook; the rows join the streamer's vehicle queue.
+    fn vehicles_to_meta(&mut self, chunk: &mut IsoChunk, ctx: &mut StreamCtx<'_>) {
+        if chunk.vehicles.is_empty() {
+            return;
+        }
+        let default_saver = vehicles_db::LoadedVehicleSaver {
+            scripts: &vehicles_db::NoVehicleScripts,
+        };
+        let saver = ctx.vehicle_saver.unwrap_or(&default_saver);
+        let save_ctx = SaveCtx {
+            sprites: ctx.sprites,
+            tables: ctx.save_tables,
+            settings: ctx.save_settings,
+            items: ctx.items,
+            hooks: ctx.save_hooks,
+            meta: Some(ctx.meta),
+        };
+        let hook = ctx
+            .vehicle_meta
+            .as_mut()
+            .map(|h| &mut **h as &mut dyn vehicles_db::VehicleMetaHook);
+        let r = vehicles_db::remove_vehicles_to_meta(
+            chunk,
+            &save_ctx,
+            saver,
+            ctx.vehicle_ids.as_deref_mut(),
+            hook,
+        );
+        if r.to_meta.is_empty() && r.errors.is_empty() {
+            return;
+        }
+        self.vehicle_queue.extend(r.queued);
+        self.events.push(StreamEvent::VehiclesToMeta {
+            wx: chunk.wx,
+            wy: chunk.wy,
+            ids: r.to_meta,
+            errors: r.errors,
+        });
+    }
+
+    /// `VehiclesDB2.instance.updateWorldStreamer()`: the queued rows are
+    /// written with the store's connection. The streamer thread does this
+    /// at the end of a loop that served no chunk and wrote no save;
+    /// `VehiclesDB2.Reset` (quitting, after [`ChunkStreamer::stop`]) does it
+    /// once more ([`ChunkStreamer::take_vehicle_queue`]).
+    pub fn update_vehicles_db(&mut self, ctx: &mut StreamCtx<'_>) {
+        if self.vehicle_queue.is_empty() {
+            return;
+        }
+        let r = vehicles_db::update_world_streamer(
+            ctx.vehicles_db.as_deref_mut(),
+            &mut self.vehicle_queue,
+        );
+        self.events.push(StreamEvent::VehiclesUpdated {
+            saved: r.saved,
+            errors: r.errors,
+        });
+    }
+
+    /// The vehicle rows still queued for the streamer thread, for
+    /// `VehiclesDB2.Reset` once the streamer is stopped.
+    pub fn take_vehicle_queue(&mut self) -> VecDeque<crate::save::vehicle::VehicleRow> {
+        std::mem::take(&mut self.vehicle_queue)
     }
 }
 

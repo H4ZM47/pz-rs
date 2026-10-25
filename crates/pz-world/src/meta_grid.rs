@@ -170,6 +170,10 @@ pub struct IsoMetaCell {
     /// Lazily created upstream (`null` until the first world-gen zone).
     pub world_gen_zones: Option<Vec<ZoneId>>,
     pub animal_zones: Vec<ZoneId>,
+    /// `animalZonesGenerated` (`metagrid/metacell_<x>_<y>.bin`): the
+    /// procedural animal paths were generated for this cell
+    /// (`checkAnimalZonesGenerated`).
+    pub animal_zones_generated: std::cell::Cell<bool>,
     pub room_tones: Vec<RoomTone>,
     /// Keys of `isoBuildings`: buildings whose runtime `IsoBuilding` has been
     /// created (by [`IsoMetaGrid::get_room_by_id`]).
@@ -192,6 +196,7 @@ impl IsoMetaCell {
             mannequin_zones: Vec::new(),
             world_gen_zones: None,
             animal_zones: Vec::new(),
+            animal_zones_generated: Default::default(),
             room_tones: Vec::new(),
             iso_buildings: Default::default(),
         }
@@ -327,6 +332,12 @@ pub struct IsoMetaGrid {
     /// `animalZoneHandler` contents in registration order (the original
     /// keys them by random UUID).
     pub animal_zones: Vec<ZoneId>,
+    /// The most zones `animalZoneHandler`'s `HashMap` has held (its table
+    /// never shrinks; it sets the save order).
+    pub animal_zones_peak: usize,
+    /// `cellsToSave` (absolute cell coordinates, each once): the cells
+    /// whose `metacell_*.bin` the next save writes.
+    pub cells_to_save: std::cell::RefCell<Vec<(i32, i32)>>,
     /// Runtime game tables used by zones.
     pub zone_tables: ZoneTables,
     /// The native clipper (`Clipper` / `ClipperOffset`).
@@ -389,6 +400,8 @@ impl IsoMetaGrid {
             zones: Vec::new(),
             vehicles_zones: Vec::new(),
             animal_zones: Vec::new(),
+            animal_zones_peak: 0,
+            cells_to_save: Default::default(),
             zone_tables: ZoneTables::default(),
             clipper: None,
         }
@@ -757,6 +770,8 @@ impl IsoMetaGrid {
             zones: Vec::new(),
             vehicles_zones: Vec::new(),
             animal_zones: Vec::new(),
+            animal_zones_peak: 0,
+            cells_to_save: Default::default(),
             zone_tables: ZoneTables::default(),
             clipper: None,
         })

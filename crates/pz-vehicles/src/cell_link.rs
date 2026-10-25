@@ -7,7 +7,7 @@
 //! forwards its chunk hooks to these functions.
 
 use crate::vehicle::{BaseVehicle, VehicleRef};
-use pz_world::chunk_vehicles::{ChunkVehicles, LoadedVehicle, VehicleHandle};
+use pz_world::chunk_vehicles::{ChunkVehicles, LoadedVehicle, VehicleHandle, VehicleOrigin};
 use pz_world::IsoCell;
 
 /// The list handle of a runtime vehicle (same allocation, so identity
@@ -49,7 +49,9 @@ pub fn remove_from_chunk(cell: &mut IsoCell, v: &VehicleRef, chunk: (i32, i32)) 
 /// Replaces the vehicles chunk loading put in `(wx, wy)`'s list with
 /// runtime vehicles: `make` builds one from each [`LoadedVehicle`] (for
 /// example [`crate::save::from_save`]); entries it declines stay as they
-/// are. Returns the vehicles made, in list order.
+/// are. A vehicle from a `vehicles.db` row takes the row's id as its
+/// `sqlId` (`WorldStreamerThread.vehicleLoaded`). Returns the vehicles
+/// made, in list order.
 pub fn adopt_loaded(
     cell: &mut IsoCell,
     wx: i32,
@@ -67,8 +69,16 @@ pub fn adopt_loaded(
             .and_then(|h| h.clone().downcast::<LoadedVehicle>().ok());
         let Some(lv) = loaded else { continue };
         if let Some(v) = make(&lv) {
-            v.st_mut().chunk = Some((wx, wy));
-            v.st_mut().current = lv.square;
+            {
+                let mut st = v.st_mut();
+                st.chunk = Some((wx, wy));
+                // `vehicle.setSquare(sq)`, `vehicle.setCurrent(sq)`.
+                st.square = lv.square;
+                st.current = lv.square;
+                if let VehicleOrigin::Database { sql_id } = lv.origin {
+                    st.sql_id = sql_id;
+                }
+            }
             c.vehicles.replace(i, handle(&v));
             out.push(v);
         }

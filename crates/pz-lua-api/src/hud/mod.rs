@@ -6,11 +6,20 @@
 //! [`init_ui`] is `UIManager.init()` (call it instead of
 //! `pz_ui::UIManager::init` once Lua is up).
 
+pub mod characters;
 pub mod clock;
+pub mod debug_console;
+pub mod health;
 pub mod host;
 pub mod moodles;
+pub mod new_window;
 pub mod progress_bar;
+pub mod radial_menu;
+pub mod radial_progress_bar;
+pub mod scroll_bar;
 pub mod speed_controls;
+pub mod tooltip;
+pub mod vehicle_gauge;
 
 use crate::bind_ui::{element_of, UIELEMENT, UIMANAGER};
 use crate::expose::{expose_class, int_arg, num_arg};
@@ -50,7 +59,11 @@ pub fn init_ui(t: &mut Thread) {
     if with_host(|h| h.network.is_server()) {
         return;
     }
-    // TODO(ui): UIManager.setToolTip(new ObjectTooltip()) (its own PR).
+    let tip = tooltip::create_tooltip();
+    with_ui(|m| {
+        m.tool_tip = Some(tip.clone());
+        m.update_tooltip_hook = Some(Rc::new(tooltip::update_tooltip));
+    });
     let (clock_size, offscreen_w) = {
         let core = crate::bind_core::shared_core();
         let c = core.borrow();
@@ -61,13 +74,19 @@ pub fn init_ui(t: &mut Thread) {
     if game_mode != "LastStand" {
         with_ui(|m| m.ui.push(clock.clone()));
     }
-    // TODO(ui): UI.add(toolTip); UIDebugConsole (their own PRs).
+    with_ui(|m| m.ui.push(tip.clone()));
+    let screen_h = crate::bind_core::shared_core().borrow().get_screen_height();
+    let console = debug_console::UIDebugConsole::create(t, 20, screen_h - 265);
+    with_ui(|m| m.debug_console = Some(console.clone()));
+    console.set_y(screen_h as f64 - console.get_height() - 20.0);
+    console.set_visible(debug && with_host(|h| h.debug.ui_debug_console_start_visible()));
     for i in 0..4 {
         let ui = MoodlesUI::create();
         with_ui(|m| m.moodle_ui[i] = Some(ui.clone()));
         ui.set_visible(true);
         with_ui(|m| m.ui.push(ui.clone()));
     }
+    with_ui(|m| m.ui.push(console.clone()));
     with_ui(|m| m.resize_hook = Some(Rc::new(resize_hud)));
     UIManager::resize();
     for i in 0..4 {
@@ -208,6 +227,7 @@ fn speed_controls(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
 /// Register the HUD classes and the `UIManager` getters (after
 /// `bind_ui::register`).
 pub fn register(thread: &mut Thread) {
+    tooltip::register(thread);
     let m = expose_class(thread, UIMANAGER, None);
     m.static_fn("init", |c| {
         init_ui(c.thread);
@@ -290,6 +310,11 @@ pub fn register(thread: &mut Thread) {
         Ok(0)
     });
 
+    register_health(thread);
+    debug_console::register(thread);
+    register_radial(thread);
+    register_radial_menu(thread);
+    register_vehicle_gauge(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
     mu.method("wiggle", |c| {
@@ -397,6 +422,199 @@ pub fn register(thread: &mut Thread) {
     });
 }
 
+fn register_vehicle_gauge(thread: &mut Thread) {
+    use vehicle_gauge::{VehicleGauge, VEHICLE_GAUGE};
+    let b = expose_class(thread, VEHICLE_GAUGE, Some(UIELEMENT));
+    fn gauge(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
+        let e = element_of(&c.arg(0)).ok_or_else(|| LuaError::runtime("Expected VehicleGauge"))?;
+        if e.ext::<VehicleGauge>().is_none() {
+            return Err(LuaError::runtime("Expected VehicleGauge"));
+        }
+        Ok(e)
+    }
+    fn tex(v: Value) -> Option<pz_render::Texture> {
+        match v {
+            Value::Object(o) => o.as_any().downcast_ref::<pz_render::LuaTexture>().map(pz_render::LuaTexture::get),
+            _ => None,
+        }
+    }
+    b.ctor(|c| {
+        // texture.getWidth() on null throws in the original.
+        let t = tex(c.arg(0)).ok_or(LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" })?;
+        let e = VehicleGauge::create(t, int_arg(c, 1), int_arg(c, 2), num_arg(c, 3) as f32, num_arg(c, 4) as f32);
+        Ok(c.push(Value::Object(e as Rc<dyn LuaObject>)))
+    });
+    b.method("setNeedleWidth", |c| {
+        let e = gauge(c)?;
+        e.ext::<VehicleGauge>().unwrap().set_needle_width(int_arg(c, 1));
+        Ok(0)
+    });
+    b.method("setValue", |c| {
+        let e = gauge(c)?;
+        e.ext::<VehicleGauge>().unwrap().set_value(num_arg(c, 1) as f32);
+        Ok(0)
+    });
+    b.method("setTexture", |c| {
+        let e = gauge(c)?;
+        e.ext::<VehicleGauge>().unwrap().set_texture(tex(c.arg(1)));
+        Ok(0)
+    });
+}
+
+fn register_radial_menu(thread: &mut Thread) {
+    use radial_menu::{RadialMenu, RADIAL_MENU};
+    let b = expose_class(thread, RADIAL_MENU, Some(UIELEMENT));
+    fn menu(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
+        let e = element_of(&c.arg(0)).ok_or_else(|| LuaError::runtime("Expected RadialMenu"))?;
+        if e.ext::<RadialMenu>().is_none() {
+            return Err(LuaError::runtime("Expected RadialMenu"));
+        }
+        Ok(e)
+    }
+    fn tex(v: Value) -> Option<pz_render::Texture> {
+        match v {
+            Value::Object(o) => o.as_any().downcast_ref::<pz_render::LuaTexture>().map(pz_render::LuaTexture::get),
+            _ => None,
+        }
+    }
+    fn text(v: Value) -> Option<String> {
+        match v {
+            Value::Nil => None,
+            v => Some(pz_kahlua::exec::java_value_of(&v)),
+        }
+    }
+    b.ctor(|c| {
+        let e = RadialMenu::create(int_arg(c, 0), int_arg(c, 1), int_arg(c, 2), int_arg(c, 3));
+        Ok(c.push(Value::Object(e as Rc<dyn LuaObject>)))
+    });
+    b.method("clear", |c| {
+        menu(c)?.ext::<RadialMenu>().unwrap().clear();
+        Ok(0)
+    });
+    b.method("addSlice", |c| {
+        let e = menu(c)?;
+        e.ext::<RadialMenu>().unwrap().add_slice(text(c.arg(1)), tex(c.arg(2)));
+        Ok(0)
+    });
+    b.method("setSliceText", |c| {
+        let e = menu(c)?;
+        e.ext::<RadialMenu>().unwrap().set_slice_text(int_arg(c, 1), text(c.arg(2)));
+        Ok(0)
+    });
+    b.method("setSliceTexture", |c| {
+        let e = menu(c)?;
+        e.ext::<RadialMenu>().unwrap().set_slice_texture(int_arg(c, 1), tex(c.arg(2)));
+        Ok(0)
+    });
+    b.method("getSliceIndexFromMouse", |c| {
+        let e = menu(c)?;
+        let r = e.ext::<RadialMenu>().unwrap().slice_index_from_mouse(&e, int_arg(c, 1), int_arg(c, 2));
+        Ok(c.push(r as f64))
+    });
+    b.method("getSliceIndexFromJoypad", |c| {
+        let e = menu(c)?;
+        let r = e.ext::<RadialMenu>().unwrap().slice_index_from_joypad(int_arg(c, 1));
+        Ok(c.push(r as f64))
+    });
+    b.method("setJoypad", |c| {
+        let e = menu(c)?;
+        e.ext::<RadialMenu>().unwrap().set_joypad(int_arg(c, 1));
+        Ok(0)
+    });
+}
+
+fn register_radial(thread: &mut Thread) {
+    use radial_progress_bar::{RadialProgressBar, RADIAL_PROGRESS_BAR};
+    let b = expose_class(thread, RADIAL_PROGRESS_BAR, Some(UIELEMENT));
+    fn bar(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
+        let e = element_of(&c.arg(0)).ok_or_else(|| LuaError::runtime("Expected RadialProgressBar"))?;
+        if e.ext::<RadialProgressBar>().is_none() {
+            return Err(LuaError::runtime("Expected RadialProgressBar"));
+        }
+        Ok(e)
+    }
+    fn tex(v: Value) -> Option<pz_render::Texture> {
+        match v {
+            Value::Object(o) => o.as_any().downcast_ref::<pz_render::LuaTexture>().map(pz_render::LuaTexture::get),
+            _ => None,
+        }
+    }
+    b.ctor(|c| {
+        let table = match c.arg(0) {
+            Value::Table(t) => Some(t),
+            _ => None,
+        };
+        let e = RadialProgressBar::create(table, tex(c.arg(1)));
+        Ok(c.push(Value::Object(e as Rc<dyn LuaObject>)))
+    });
+    b.method("setValue", |c| {
+        let e = bar(c)?;
+        e.ext::<RadialProgressBar>().unwrap().set_value(num_arg(c, 1) as f32);
+        Ok(0)
+    });
+    b.method("getValue", |c| {
+        let e = bar(c)?;
+        Ok(c.push(e.ext::<RadialProgressBar>().unwrap().get_value() as f64))
+    });
+    b.method("setTexture", |c| {
+        let e = bar(c)?;
+        e.ext::<RadialProgressBar>().unwrap().set_texture(tex(c.arg(1)));
+        Ok(0)
+    });
+    b.method("getTexture", |c| {
+        let e = bar(c)?;
+        Ok(c.push(crate::bind_render::texture_value(e.ext::<RadialProgressBar>().unwrap().get_texture())))
+    });
+    b.method("setColor", |c| {
+        let e = bar(c)?;
+        e.ext::<RadialProgressBar>().unwrap().set_color_value(c.arg(1));
+        Ok(0)
+    });
+}
+
+fn register_health(thread: &mut Thread) {
+    use health::{NewHealthPanel, NEW_HEALTH_PANEL};
+    // NewWindow isn't exposed itself; its public methods are inherited.
+    let b = expose_class(thread, NEW_HEALTH_PANEL, Some(UIELEMENT));
+    fn panel(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
+        let e = element_of(&c.arg(0)).ok_or_else(|| LuaError::runtime("Expected NewHealthPanel"))?;
+        if e.ext::<NewHealthPanel>().is_none() {
+            return Err(LuaError::runtime(format!("Expected NewHealthPanel but got {}", e.class_name())));
+        }
+        Ok(e)
+    }
+    b.ctor(|c| {
+        let chr = c.arg(2);
+        if chr.is_nil() {
+            return Err(LuaError::Runtime { message: "parentCharacter is null".into(), class: "java.lang.NullPointerException" });
+        }
+        let e = NewHealthPanel::create(int_arg(c, 0), int_arg(c, 1), chr);
+        Ok(c.push(Value::Object(e as Rc<dyn LuaObject>)))
+    });
+    b.method("SetCharacter", |c| {
+        let e = panel(c)?;
+        e.ext::<NewHealthPanel>().unwrap().set_character(c.arg(1));
+        Ok(0)
+    });
+    b.method("getDamageStatusString", |c| {
+        let e = panel(c)?;
+        let s = e.ext::<NewHealthPanel>().unwrap().damage_status_string();
+        Ok(c.push(Value::str(&s)))
+    });
+    b.method("setMovable", |c| {
+        let e = panel(c)?;
+        e.ext::<NewHealthPanel>().unwrap().core.movable.set(crate::expose::bool_arg(c, 1));
+        Ok(0)
+    });
+    b.method("Nest", |c| {
+        let e = panel(c)?;
+        let child = element_of(&c.arg(1)).ok_or_else(|| LuaError::runtime("Expected UIElement"))?;
+        let (t, r, bt, l) = (int_arg(c, 2), int_arg(c, 3), int_arg(c, 4), int_arg(c, 5));
+        e.ext::<NewHealthPanel>().unwrap().core.nest(&e, &child, c.thread, t, r, bt, l);
+        Ok(0)
+    });
+}
+
 fn index_error(i: i32) -> LuaError {
     LuaError::Runtime {
         message: format!("Index {i} out of bounds for length 4"),
@@ -423,9 +641,23 @@ pub(crate) mod test_util {
 
     /// As [`install_textures`] with draw offsets (`offsetX`, `offsetY`).
     pub fn install_textures_ex(sizes: &[(String, i32, i32, f32, f32)]) {
-        let sizes: HashMap<String, (i32, i32, f32, f32)> = sizes
+        let v: Vec<_> = sizes
             .iter()
-            .map(|(n, w, h, x, y)| (n.clone(), (*w, *h, *x, *y)))
+            .map(|(n, w, h, x, y)| (n.clone(), *w, *h, *x, *y, [0.0, 0.0, 1.0, 1.0]))
+            .collect();
+        install_textures_uv(&v);
+    }
+
+    /// A texture: name, size, draw offsets, atlas rectangle.
+    pub type TexSpec = (String, i32, i32, f32, f32, [f32; 4]);
+
+    /// As [`install_textures_ex`] with the texture's atlas rectangle
+    /// (`xStart`, `yStart`, `xEnd`, `yEnd`).
+    pub fn install_textures_uv(sizes: &[TexSpec]) {
+        type Spec = (i32, i32, f32, f32, [f32; 4]);
+        let sizes: HashMap<String, Spec> = sizes
+            .iter()
+            .map(|(n, w, h, x, y, uv)| (n.clone(), (*w, *h, *x, *y, *uv)))
             .collect();
         let tm = Rc::new(RefCell::new(TextureManager::new()));
         let cache: RefCell<HashMap<String, Texture>> = RefCell::default();
@@ -433,7 +665,10 @@ pub(crate) mod test_util {
             if let Some(t) = cache.borrow().get(name) {
                 return Some(t.clone());
             }
-            let (w, h, ox, oy) = sizes.get(name).copied().unwrap_or((24, 24, 0.0, 0.0));
+            let (w, h, ox, oy, uv) = sizes
+                .get(name)
+                .copied()
+                .unwrap_or((24, 24, 0.0, 0.0, [0.0, 0.0, 1.0, 1.0]));
             let px = vec![
                 255;
                 ((w.max(1) as u32).next_power_of_two() * (h.max(1) as u32).next_power_of_two() * 4)
@@ -446,6 +681,8 @@ pub(crate) mod test_util {
             t.height = h as u32;
             t.offset_x = ox;
             t.offset_y = oy;
+            // The oracles' textures cover their whole image unless given.
+            (t.x_start, t.y_start, t.x_end, t.y_end) = (uv[0], uv[1], uv[2], uv[3]);
             cache.borrow_mut().insert(name.to_string(), t.clone());
             Some(t)
         });
@@ -511,6 +748,7 @@ pub(crate) mod test_util {
 
     /// Line-by-line comparison where numeric tokens may differ by `tol`
     /// (the original truncates texture coordinates to 1/1000).
+    #[allow(dead_code)]
     pub fn assert_lines_close(got: &[String], want: &[String], tol: f32) {
         assert_eq!(
             got.len(),
@@ -969,8 +1207,13 @@ mod tests {
             assert!(!b.is_visible() && b.get_render_this_player_only() == i as i32);
             assert_eq!(b.ext::<ActionProgressBar>().unwrap().get_value(), 1.0);
         }
-        // Speed controls, clock, four moodle columns and the four bars.
-        assert_eq!(with_ui(|m| m.ui.len()), 10);
+        // Speed controls, clock, tooltip, four moodle columns, the debug
+        // console (hidden: no Core.debug), four bars.
+        assert_eq!(with_ui(|m| m.ui.len()), 12);
+        let console = with_ui(|m| m.debug_console.clone()).unwrap();
+        assert!(!console.is_visible());
+        assert!(Rc::ptr_eq(&with_ui(|m| m.ui[7].clone()), &console));
+        assert_eq!(console.get_y(), 720.0 - console.get_height() - 20.0);
         assert!(eval(&mut t, "UIManager.trySetProgressBarValue(1, 0.5)").truthy());
         assert_eq!(
             eval(&mut t, "UIManager.getProgressBar(1):getValue()").as_num(),
@@ -1002,7 +1245,8 @@ mod tests {
 
     /// Parity with the original `ActionProgressBar` (oracle
     /// `progress.txt`): render at values 0..1 and scales 1 and 2, the
-    /// show/hide countdown with the screen position, the infinite sweep.
+    /// show/hide countdown with the screen position, the infinite sweep
+    /// (texture coordinates included, truncated to 1/1000 as the original).
     #[test]
     fn matches_progress_bar_oracle() {
         let Some(text) = oracle("progress.txt") else {
@@ -1069,7 +1313,7 @@ mod tests {
             .filter(|l| !l.starts_with("tex ") && !l.starts_with("fake "))
             .map(normalise_oracle)
             .collect();
-        assert_lines_close(&got, &want, 1.5e-3);
+        assert_eq!(got, want);
     }
 
     use std::cell::Cell;
@@ -1077,10 +1321,17 @@ mod tests {
         static FAKE_TIME: Cell<(f32, i32, i32)> = const { Cell::new((9.0, 0, 0)) };
         static FAKE_TEMP: Cell<f32> = const { Cell::new(0.0) };
     }
+    thread_local! {
+        /// `serverTimeOfDay` while fast-forwarding (`None`: not).
+        static FAKE_SERVER_TIME: Cell<Option<f32>> = const { Cell::new(None) };
+    }
     struct FakeTime;
     impl host::HudGameTime for FakeTime {
         fn time_of_day(&self) -> f32 {
             FAKE_TIME.with(|t| t.get().0)
+        }
+        fn digits_time_of_day(&self) -> f32 {
+            FAKE_SERVER_TIME.with(|s| s.get()).unwrap_or_else(|| self.time_of_day())
         }
         fn day(&self) -> i32 {
             FAKE_TIME.with(|t| t.get().1)
@@ -1173,6 +1424,59 @@ mod tests {
             .map(normalise_oracle)
             .collect();
         assert_eq!(got, want);
+    }
+
+    /// While an MP client fast-forwards, the digits show the server's
+    /// time but the AM/PM indicator still reads the local time of day
+    /// (`Clock.timeDigits` vs `Clock.render`'s `getTimeOfDay() < 12`).
+    #[test]
+    fn clock_fast_forward_digits_and_am_pm() {
+        install_textures(&[]);
+        install(HudHost {
+            game_time: Box::new(FakeTime),
+            climate: Box::new(FakeClimate),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        {
+            let core = crate::bind_core::shared_core();
+            let mut c = core.borrow_mut();
+            c.set_option_clock_size(1);
+            c.set_option_clock24_hour(false);
+        }
+        let e = Clock::create(500, 10);
+        let clock = e.ext::<Clock>().unwrap();
+        clock.set_state(true, None, false, false);
+        e.set_visible(true);
+        let drawn = |t: &mut Thread| {
+            with_ui(|m| m.sprite.clear());
+            e.render(t);
+            draw_lines()
+                .iter()
+                .filter_map(|l| l.split(' ').nth(1).map(|n| n.rsplit('/').next().unwrap().to_string()))
+                .collect::<Vec<_>>()
+        };
+        // The ghost display draws "88:88", AM and PM first; then the time.
+        let count = |v: &[String], p: &str| v.iter().filter(|n| n.starts_with(p)).count();
+        let time = |v: &[String]| -> String {
+            v.iter()
+                .filter_map(|n| n.strip_prefix("ClockDigitsMedium"))
+                .skip(4)
+                .take(4)
+                .map(|n| n.chars().next().unwrap())
+                .collect()
+        };
+        // Local 14:30 (PM), the server at 09:15 (AM).
+        FAKE_TIME.with(|f| f.set((14.5, 0, 0)));
+        FAKE_SERVER_TIME.with(|s| s.set(Some(9.25)));
+        let ff = drawn(&mut t);
+        assert_eq!((count(&ff, "ClockAm"), count(&ff, "ClockPm")), (1, 2), "{ff:?}");
+        // The server's 09:1x (the clock shows minutes in tens).
+        assert_eq!(time(&ff), "0910");
+        FAKE_SERVER_TIME.with(|s| s.set(None));
+        let local = drawn(&mut t);
+        assert_eq!((count(&local, "ClockAm"), count(&local, "ClockPm")), (1, 2));
+        assert_eq!(time(&local), "0230");
     }
 
     thread_local! {
@@ -1425,7 +1729,7 @@ mod tests {
             .filter(|l| !l.starts_with("tex ") && !l.starts_with("fake "))
             .map(normalise_oracle)
             .collect();
-        assert_lines_close(&got, &want, 1e-4);
+        assert_eq!(got, want);
     }
 
     #[test]
@@ -1473,5 +1777,166 @@ mod tests {
         );
         assert!(d.slots_pos > 400.0 && d.slots_pos < 500.0);
         set_mood("Panic", None);
+    }
+
+    /// Parity with the original `ObjectTooltip` lifecycle (oracle
+    /// `tooltip_life.txt`): show delay, fade in to 0.5, fades to lower
+    /// targets, mouse follow, hide.
+    #[test]
+    fn matches_tooltip_lifecycle_oracle() {
+        let Some(text) = oracle("tooltip_life.txt") else {
+            eprintln!("PZ_HUD_ORACLE_DIR not set; skipping");
+            return;
+        };
+        install_textures(&[]);
+        install(HudHost::default());
+        let mut t = thread();
+        let e = tooltip::create_tooltip();
+        let tt = pz_ui::tooltip::ObjectTooltip::of(&e).unwrap();
+        e.set_visible(false);
+        let obj = pz_ui::tooltip::TooltipObject {
+            id: 1,
+            have_special_tooltip: false,
+            square: Value::Nil,
+        };
+        tt.show_object(&e, obj, 300.0, 200.0);
+        let st = |l: &str| {
+            let life = tt.life.borrow();
+            format!(
+                "{l} visible {} alpha {} target {} delay {} pos {} {}",
+                e.is_visible(),
+                jf(life.alpha),
+                jf(life.target_alpha),
+                life.show_delay,
+                jf(e.get_x() as f32),
+                jf(e.get_y() as f32)
+            )
+        };
+        let mut got = vec![st("show")];
+        for i in 0..22 {
+            e.update(&mut t);
+            got.push(st(&format!("update {i}")));
+        }
+        tt.life.borrow_mut().target_alpha = 0.2;
+        for i in 0..4 {
+            e.update(&mut t);
+            got.push(st(&format!("fade {i}")));
+        }
+        tt.life.borrow_mut().target_alpha = 0.0;
+        for i in 0..3 {
+            e.update(&mut t);
+            got.push(st(&format!("out {i}")));
+        }
+        e.on_mouse_move(&mut t, 5.0, -3.0);
+        got.push(st("move"));
+        e.on_mouse_move_outside(&mut t, -2.0, 4.0);
+        got.push(st("moveout"));
+        tt.hide(&e);
+        got.push(st("hide"));
+        e.update(&mut t);
+        got.push(st("after"));
+        let want: Vec<String> = text.lines().map(str::to_string).collect();
+        assert_eq!(got, want);
+    }
+
+    thread_local! {
+        static PICKED: RefCell<Option<pz_ui::tooltip::TooltipObject>> = const { RefCell::new(None) };
+    }
+    struct FakePicking;
+    impl host::HudPicking for FakePicking {
+        fn picked_tile(&self) -> Option<pz_ui::tooltip::TooltipObject> {
+            PICKED.with(|p| p.borrow().clone())
+        }
+    }
+
+    /// The shared tooltip: built by init, follows a picked object with a
+    /// special tooltip, filled by `DoSpecialTooltip` handlers through the
+    /// Lua layout classes, hidden when nothing is drawn or nothing picked.
+    #[test]
+    fn shared_tooltip_over_picked_objects() {
+        install_textures(&[]);
+        install(HudHost {
+            players: Box::new(OnePlayer),
+            picking: Box::new(FakePicking),
+            ..HudHost::default()
+        });
+        let mut t = thread();
+        // DoSpecialTooltip goes to a Lua global handler.
+        pz_ui::UIManager::set_event_sink(Some(Rc::new(
+            |t: &mut Thread, name: &str, args: &[Value]| {
+                if name == "DoSpecialTooltip" {
+                    let f = t.globals().get_str("onSpecial");
+                    if !f.is_nil() {
+                        t.call(&f, args).unwrap();
+                    }
+                }
+            },
+        )));
+        run(
+            &mut t,
+            r#"
+            drawn = 0
+            function onSpecial(tooltip, square)
+                if square ~= "farm" then return end
+                local layout = tooltip:beginLayout()
+                local item = layout:addItem()
+                item:setLabel("Water:", 1, 1, 1, 1)
+                item:setProgress(0.5, 0, 0, 1, 1)
+                local y = layout:render(tooltip.padLeft or 5, 5, tooltip)
+                tooltip:endLayout(layout)
+                tooltip:setHeight(y + 5)
+                drawn = drawn + 1
+            end
+        "#,
+        );
+        init_ui(&mut t);
+        let tip = with_ui(|m| m.tool_tip.clone()).unwrap();
+        let tt = pz_ui::tooltip::ObjectTooltip::of(&tip).unwrap();
+        assert!(eval(&mut t, "UIManager.getToolTip() ~= nil").truthy());
+        with_ui(|m| {
+            m.mouse.x = 400;
+            m.mouse.y = 300;
+        });
+        // A plant with a special tooltip under the mouse.
+        PICKED.with(|p| {
+            *p.borrow_mut() = Some(pz_ui::tooltip::TooltipObject {
+                id: 7,
+                have_special_tooltip: true,
+                square: Value::str("farm"),
+            })
+        });
+        tooltip::update_tooltip(&mut t, 400, 300);
+        assert_eq!(tt.life.borrow().object.as_ref().map(|o| o.id), Some(7));
+        assert_eq!((tip.get_x(), tip.get_y()), (424.0, 324.0));
+        // 15 updates of delay, then it shows and fades in.
+        for _ in 0..16 {
+            tip.update(&mut t);
+            tooltip::update_tooltip(&mut t, 400, 300);
+        }
+        assert!(tip.is_visible() && tt.life.borrow().alpha > 0.0);
+        UIManager::render(&mut t);
+        assert_eq!(eval(&mut t, "drawn").as_num(), Some(1.0));
+        // (No text renderer here: rows measure 0 high.)
+        assert_eq!(tip.get_height(), 5.0 + 5.0);
+        // A special object whose handler draws nothing: hidden.
+        PICKED.with(|p| {
+            *p.borrow_mut() = Some(pz_ui::tooltip::TooltipObject {
+                id: 8,
+                have_special_tooltip: true,
+                square: Value::str("other"),
+            })
+        });
+        tooltip::update_tooltip(&mut t, 400, 300);
+        for _ in 0..16 {
+            tip.update(&mut t);
+        }
+        tt.life.borrow_mut().alpha = 0.5;
+        UIManager::render(&mut t);
+        assert!(!tip.is_visible());
+        // Nothing picked: hidden.
+        PICKED.with(|p| *p.borrow_mut() = None);
+        tip.set_visible(true);
+        tooltip::update_tooltip(&mut t, 400, 300);
+        assert!(!tip.is_visible());
     }
 }

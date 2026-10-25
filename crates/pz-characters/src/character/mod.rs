@@ -631,6 +631,10 @@ impl<I: 'static> GameCharacter<I> {
     pub fn is_unlimited_endurance(&self, ctx: &dyn SimContext) -> bool {
         self.cheats.is_set(ctx, "UNLIMITED_ENDURANCE")
     }
+    /// `isUnlimitedCarry`.
+    pub fn is_unlimited_carry(&self, ctx: &dyn SimContext) -> bool {
+        self.cheats.is_set(ctx, "UNLIMITED_CARRY")
+    }
     /// `IsoPlayer.isGhostMode`: `isInvisible`.
     pub fn is_ghost_mode(&self, ctx: &dyn SimContext) -> bool {
         self.cheats.is_set(ctx, "INVISIBLE")

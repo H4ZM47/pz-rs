@@ -5,6 +5,7 @@
 //! Map data is read from the installed game's `media/maps` at runtime; this
 //! crate contains no game data.
 
+pub mod animal_zone_save;
 pub mod bra;
 pub mod cell_loader;
 pub mod chunk;

@@ -76,7 +76,7 @@ fn dressed(sm: &ScriptManager, chars: &mut Characters, ctx: &Recorder, locs: &[R
     v.hair_model = Some("Bob".into());
     c.human_visual = Some(v);
     // Two identical things (one run on save), another type, and a third.
-    c.items.inventory.items = vec![raw(1, 101, 7), raw(2, 102, 8), raw(1, 103, 7), raw(3, 104, 9)];
+    c.items.inventory.borrow_mut().raw_items = vec![raw(1, 101, 7), raw(2, 102, 8), raw(1, 103, 7), raw(3, 104, 9)];
     c.items.worn_items = vec![101, 104];
     c.items.worn_locations = vec![(101, locs[0].clone()), (104, locs[2].clone())];
     c.items.primary_hand_item = Some(102);
@@ -155,7 +155,7 @@ fn player_record_round_trips() {
         assert_eq!((d.extra.clone(), d.xp_boost_map.clone(), d.voice_type), (vec!["Extra1".to_string()], vec![("Axe".to_string(), 2)], 2));
     }
     assert_eq!(back.human_visual, c.human_visual);
-    let ids: Vec<i32> = back.items.inventory.items.iter().map(|i| i.id()).collect();
+    let ids: Vec<i32> = back.items.inventory.borrow().to_container().items.iter().map(|i| i.id()).collect();
     assert_eq!(ids, [101, 103, 102, 104]);
     assert_eq!(back.items.worn_items, [101, 104]);
     assert!(Rc::ptr_eq(back.items.worn_location(104).unwrap(), &locs[2]));
@@ -206,12 +206,12 @@ fn saved_indices_count_items_that_cannot_load() {
     let mut c = dressed(&sm, &mut chars, &ctx, &locs);
     // The second record (type 9) is dropped on load but keeps its slot in
     // savedInventoryItems.
-    c.items.inventory.items = vec![raw(1, 101, 7), raw(9, 102, 8), raw(3, 104, 9)];
+    c.items.inventory.borrow_mut().raw_items = vec![raw(1, 101, 7), raw(9, 102, 8), raw(3, 104, 9)];
     c.items.secondary_hand_item = Some(102);
     let data = save(&sm, &chars, &ctx, &mut c);
     let back = load(&sm, &mut chars, &ctx, &data);
     assert_eq!(back.saved_inventory_items, [Some(101), None, Some(104)]);
-    let ids: Vec<i32> = back.items.inventory.items.iter().map(|i| i.id()).collect();
+    let ids: Vec<i32> = back.items.inventory.borrow().to_container().items.iter().map(|i| i.id()).collect();
     assert_eq!(ids, [101, 104]);
     assert_eq!(back.items.worn_items, [101, 104]);
     assert_eq!((back.items.primary_hand_item, back.items.secondary_hand_item), (None, None));

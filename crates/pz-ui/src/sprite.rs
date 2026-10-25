@@ -46,6 +46,10 @@ pub enum UiDrawCmd {
     /// `SpriteRenderer.render` with four free corners (top-left, top-right,
     /// bottom-right, bottom-left) and `renderPoly`.
     Quad4 { texture: Option<Texture>, points: [[f32; 2]; 4], color: Rgba },
+    /// `SpriteRenderer.renderPoly(tex, x1..y4, r, g, b, a, u1..v4)`: four
+    /// corners with their texture coordinates (in the texture's atlas, not
+    /// normalised).
+    Poly { texture: Option<Texture>, points: [[f32; 2]; 4], color: Rgba, uv: [[f32; 2]; 4] },
     /// `SpriteRenderer.renderline`.
     Line { texture: Option<Texture>, x1: f32, y1: f32, x2: f32, y2: f32, thickness: f32, color: Rgba },
     /// A string drawn while no text renderer was installed.
@@ -81,6 +85,11 @@ impl SpriteRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn render(&mut self, tex: Option<&Texture>, x: f32, y: f32, w: f32, h: f32, color: Rgba, uv: Option<[f32; 4]>) {
         self.cmds.push(UiDrawCmd::Quad { texture: tex.cloned(), x, y, w, h, color, uv });
+    }
+
+    /// `SpriteRenderer.renderPoly(tex, x1..y4, r, g, b, a, u1..v4)`.
+    pub fn render_poly_uv(&mut self, tex: Option<&Texture>, points: [[f32; 2]; 4], color: Rgba, uv: [[f32; 2]; 4]) {
+        self.cmds.push(UiDrawCmd::Poly { texture: tex.cloned(), points, color, uv });
     }
 
     pub fn render4(&mut self, tex: Option<&Texture>, points: [[f32; 2]; 4], color: Rgba) {
@@ -200,6 +209,9 @@ impl SpriteRenderer {
                 UiDrawCmd::Quad4 { texture, points, color } => {
                     out.render4(texture.as_ref(), points.map(|p| p[0]), points.map(|p| p[1]), *color);
                 }
+                UiDrawCmd::Poly { texture, points, color, uv } => {
+                    out.render_poly_uv(texture.as_ref(), points.map(|p| p[0]), points.map(|p| p[1]), *color, uv.map(|p| p[0]), uv.map(|p| p[1]));
+                }
                 UiDrawCmd::Line { texture, x1, y1, x2, y2, thickness, color } => {
                     out.render_line(texture.as_ref(), *x1, *y1, *x2, *y2, *color, *thickness);
                 }
@@ -213,6 +225,28 @@ impl SpriteRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poly_with_uvs_lowers_to_its_coordinates() {
+        let mut s = SpriteRenderer::default();
+        let mut t = pz_render::Texture::empty("t");
+        t.ready = true;
+        let pts = [[0.0, 0.0], [10.0, 0.0], [5.0, 5.0], [5.0, 5.0]];
+        let uv = [[0.5, 0.125], [0.75, 0.125], [0.5, 0.3], [0.5, 0.3]];
+        s.render_poly_uv(Some(&t), pts, Rgba(1.0, 1.0, 1.0, 1.0), uv);
+        // A texture that is not ready draws nothing (renderPoly's check).
+        s.render_poly_uv(Some(&pz_render::Texture::empty("t")), pts, Rgba(1.0, 1.0, 1.0, 1.0), uv);
+        let mut dl = DrawList::default();
+        s.lower_into(&mut dl);
+        let sprites: Vec<_> = dl.cmds.iter().filter_map(|c| match c {
+            DrawCmd::Sprite(sp) => Some(sp),
+            _ => None,
+        }).collect();
+        assert_eq!(sprites.len(), 1);
+        assert_eq!(sprites[0].u, [0.5, 0.75, 0.5, 0.5]);
+        assert_eq!(sprites[0].v, [0.125, 0.125, 0.3, 0.3]);
+        assert_eq!(sprites[0].x, [0.0, 10.0, 5.0, 5.0]);
+    }
 
     #[test]
     fn nested_stencils_record_gl_and_unwind() {

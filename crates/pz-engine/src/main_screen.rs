@@ -1,6 +1,7 @@
 //! `zombie.gameStates.MainScreenState`: the title screen's own drawing
 //! (background, lightning, logo) around the Lua main menu.
 
+use pz_lua_api::bind_video::{VideoRef, VideoTexture};
 use pz_lua_api::LuaManager;
 use pz_render::{DrawList, Rgba, Texture};
 use pz_ui::UIManager;
@@ -41,6 +42,8 @@ pub struct MainScreenState {
     pub show_logo: bool,
     pub fade_alpha: f32,
     pub total_scale: f32,
+    /// `videoTex`: the title video (`title_screen_background.bik`).
+    pub video_tex: Option<VideoRef>,
 }
 
 fn tex(path: &str) -> Option<Texture> {
@@ -89,8 +92,32 @@ impl MainScreenState {
         }
     }
 
-    /// `renderBackground()` (the original falls back to these stills when
-    /// the Bink title video is unavailable).
+    /// `exit()`'s video part: closes the title video.
+    pub fn exit_video(&mut self) {
+        if let Some(v) = self.video_tex.take() {
+            v.close_and_destroy();
+        }
+    }
+
+    /// `renderVideo()`: the title video scaled to the largest 16:9 box
+    /// centred on the screen; false when it cannot play.
+    fn render_video(&mut self, out: &mut DrawList, sw: i32, sh: i32) -> bool {
+        if self.video_tex.is_none() {
+            self.video_tex = VideoTexture::get_or_create("title_screen_background.bik", 1920, 1080, true);
+        }
+        let Some(v) = self.video_tex.as_ref().filter(|v| v.is_valid()) else { return false };
+        v.render_frame();
+        let scale = (sw as f32 / 16.0).min(sh as f32 / 9.0);
+        let width = (scale * 16.0) as i32;
+        let height = (scale * 9.0) as i32;
+        let x = (sw - width) / 2;
+        let y = (sh - height) / 2;
+        out.renderi(Some(&v.texture()), x, y, width, height, Rgba(1.0, 1.0, 1.0, 1.0));
+        true
+    }
+
+    /// `renderBackground()`: the title video, or the stills when video
+    /// effects are off or the video cannot play.
     fn render_background(&mut self, out: &mut DrawList, sw: i32, sh: i32, multiplier: f32) {
         if self.lightning_target_delta == 0.0 && self.lightning_delta != 0.0 && self.lightning_delta < 0.6 && self.lightning_count == 0.0 {
             self.lightning_target_delta = 1.0;
@@ -129,6 +156,15 @@ impl MainScreenState {
         }
         // TODO(rand): `Rand.Next(150) == 0` sets lightOffCount (unused here).
         let a = 1.0 - self.lightning_delta * 0.6;
+        let video_effects = pz_lua_api::bind_core::shared_core().borrow().get_option_do_video_effects();
+        if video_effects && self.render_video(out, sw, sh) {
+            return;
+        }
+        self.render_original_background(out, sw, sh, a);
+    }
+
+    /// `renderOriginalBackground(a)`.
+    fn render_original_background(&mut self, out: &mut DrawList, sw: i32, sh: i32, a: f32) {
         let (Some(l), Some(l2), Some(l3), Some(l4)) =
             (tex("media/ui/Title.png"), tex("media/ui/Title2.png"), tex("media/ui/Title3.png"), tex("media/ui/Title4.png"))
         else {

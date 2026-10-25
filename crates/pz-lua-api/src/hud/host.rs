@@ -78,10 +78,15 @@ pub trait HudGameTime {
     fn realworld_seconds_since_last_update(&self) -> f32 {
         1.0 / 60.0
     }
-    /// `getTimeOfDay()` (or `serverTimeOfDay` for an MP client while the
-    /// server fast-forwards: `GameClient.fastForward`).
+    /// `getTimeOfDay()`, raw (the clock's AM/PM indicator reads this).
     fn time_of_day(&self) -> f32 {
         9.0
+    }
+    /// The time the clock's digits show (`Clock.timeDigits`):
+    /// `getTimeOfDay()`, or `serverTimeOfDay` for an MP client while the
+    /// server fast-forwards (`GameClient.client && GameClient.fastForward`).
+    fn digits_time_of_day(&self) -> f32 {
+        self.time_of_day()
     }
     /// `getDay()` (0-based).
     fn day(&self) -> i32 {
@@ -171,11 +176,106 @@ pub trait HudMoodles {
     }
 }
 
+/// The object under the mouse (`UIManager.getPicked().tile`). Owner: world
+/// thread (picking).
+pub trait HudPicking {
+    /// The picked tile object, if any.
+    fn picked_tile(&self) -> Option<pz_ui::tooltip::TooltipObject> {
+        None
+    }
+}
+
+/// One `BodyPart` as `UI_BodyPart` reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BodyPartView {
+    /// `bandaged()` (also `BodyDamage.IsBandaged(type)`).
+    pub bandaged: bool,
+    pub bandage_life: f32,
+    pub wound_infection_level: f32,
+    /// `scratched()`.
+    pub scratched: bool,
+    pub scratch_time: f32,
+    /// `getCutTime()` (`IsCut` is `cutTime > 0`).
+    pub cut_time: f32,
+    /// `bitten()`.
+    pub bitten: bool,
+    pub bite_time: f32,
+    /// `deepWounded()`.
+    pub deep_wounded: bool,
+    pub deep_wound_time: f32,
+    /// `stitched()`.
+    pub stitched: bool,
+    pub fracture_time: f32,
+    pub splint_factor: f32,
+    pub have_glass: bool,
+    pub have_bullet: bool,
+    pub burn_time: f32,
+}
+
+/// A character's `BodyDamage` as the health panel reads it; the character
+/// is its Lua object (`IsoGameCharacter`). Implementations pick
+/// `getBodyDamageRemote()` for a remote MP player. Owner: characters
+/// thread.
+pub trait HudBodyDamage {
+    /// `isFemale()`.
+    fn is_female(&self, _chr: &pz_kahlua::Value) -> bool {
+        false
+    }
+    /// `getBodyDamage().getHealth()`.
+    fn health(&self, _chr: &pz_kahlua::Value) -> f32 {
+        100.0
+    }
+    /// `getBodyDamage().getBodyPart(type)` by `BodyPartType.ToIndex`.
+    fn body_part(&self, _chr: &pz_kahlua::Value, _index: usize) -> BodyPartView {
+        BodyPartView::default()
+    }
+}
+
 /// `DebugOptions` the HUD reads. Owner: us (debug options).
 pub trait HudDebug {
     /// `DebugOptions.instance.cheat.clock.visible`.
     fn cheat_clock_visible(&self) -> bool {
         false
+    }
+    /// `Core.debug && DebugOptions.instance.uiRenderOutline`.
+    fn ui_render_outline(&self) -> bool {
+        false
+    }
+    /// `DebugOptions.instance.uiDebugConsoleStartVisible`.
+    fn ui_debug_console_start_visible(&self) -> bool {
+        false
+    }
+    /// `DebugOptions.instance.uiDebugConsoleEchoCommand`.
+    fn ui_debug_console_echo_command(&self) -> bool {
+        false
+    }
+    /// `DebugOptions.instance.uiDebugConsoleDebugLog`.
+    fn ui_debug_console_debug_log(&self) -> bool {
+        false
+    }
+}
+
+/// A Java method as the debug console's suggestion engine sees it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ConsoleMethod {
+    pub name: String,
+    /// `getReturnType().toString()`: `void`, `int`, `class a.b.C`, ...
+    pub return_type: String,
+    /// `getParameterTypes().length`.
+    pub param_count: usize,
+}
+
+/// The reflection the debug console's suggestions use. Owner: us (the
+/// Lua API's exposure tables).
+pub trait HudConsoleMethods {
+    /// `LuaManager.GlobalObject.class.getDeclaredMethods()`, in that order.
+    fn global_methods(&self) -> Vec<ConsoleMethod> {
+        Vec::new()
+    }
+    /// The public declared methods of `return_type` (as
+    /// [`ConsoleMethod::return_type`]) and each superclass, class first.
+    fn public_methods_of(&self, _return_type: &str) -> Vec<ConsoleMethod> {
+        Vec::new()
     }
 }
 
@@ -195,6 +295,12 @@ pub trait HudNetwork {
     fn is_server(&self) -> bool {
         false
     }
+    /// The debug console may run commands: `!GameClient.client`, or the
+    /// player's role has `Capability.UIManagerProcessCommands`, or the
+    /// connection is the coop host.
+    fn may_process_console_commands(&self) -> bool {
+        !self.is_client()
+    }
 }
 
 /// `GameClient.client` / `GameServer.server` as Core mirrors them. In this
@@ -210,7 +316,7 @@ impl HudNetwork for CoreNetwork {
     }
 }
 
-/// The no-op defaults.
+/// The no-op defaults (sound defaults to the shared sound system).
 pub struct NoHud;
 impl HudPlayers for NoHud {}
 impl HudCamera for NoHud {}
@@ -218,6 +324,9 @@ impl HudClimate for NoHud {}
 impl HudAlarmClocks for NoHud {}
 impl HudDebug for NoHud {}
 impl HudMoodles for NoHud {}
+impl HudPicking for NoHud {}
+impl HudBodyDamage for NoHud {}
+impl HudConsoleMethods for NoHud {}
 impl HudSound for NoHud {}
 impl HudNetwork for NoHud {}
 
@@ -243,6 +352,32 @@ impl HudGameTime for SharedGameTime {
             .borrow()
             .get_true_multiplier()
     }
+    fn realworld_seconds_since_last_update(&self) -> f32 {
+        crate::bind_climate::shared_game_time()
+            .borrow()
+            .realworld_seconds_since_last_update()
+    }
+    fn time_of_day(&self) -> f32 {
+        crate::bind_climate::shared_game_time().borrow().time_of_day
+    }
+    fn digits_time_of_day(&self) -> f32 {
+        use pz_core::game_time::GameTimeContext;
+        let ctx = crate::bind_climate::LuaClimateContext::new();
+        let client = crate::bind_core::shared_core().borrow().is_client;
+        let gt = crate::bind_climate::shared_game_time();
+        let g = gt.borrow();
+        if client && ctx.fast_forward() {
+            g.server_time_of_day
+        } else {
+            g.time_of_day
+        }
+    }
+    fn day(&self) -> i32 {
+        crate::bind_climate::shared_game_time().borrow().day
+    }
+    fn month(&self) -> i32 {
+        crate::bind_climate::shared_game_time().borrow().month
+    }
 }
 
 /// The installed inputs.
@@ -256,6 +391,9 @@ pub struct HudHost {
     pub alarm_clocks: Box<dyn HudAlarmClocks>,
     pub debug: Box<dyn HudDebug>,
     pub moodles: Box<dyn HudMoodles>,
+    pub picking: Box<dyn HudPicking>,
+    pub body_damage: Box<dyn HudBodyDamage>,
+    pub console_methods: Box<dyn HudConsoleMethods>,
 }
 
 impl Default for HudHost {
@@ -263,13 +401,16 @@ impl Default for HudHost {
         HudHost {
             players: Box::new(NoHud),
             game_time: Box::new(SharedGameTime),
-            sound: Box::new(NoHud),
+            sound: Box::new(crate::bind_audio::SharedHudSound),
             network: Box::new(CoreNetwork),
             camera: Box::new(NoHud),
             climate: Box::new(NoHud),
             alarm_clocks: Box::new(NoHud),
             debug: Box::new(NoHud),
             moodles: Box::new(NoHud),
+            picking: Box::new(NoHud),
+            body_damage: Box::new(NoHud),
+            console_methods: Box::new(NoHud),
         }
     }
 }

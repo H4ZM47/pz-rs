@@ -4,7 +4,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use pz_inventory::saved::SavedItem;
 use pz_inventory::{InventoryItem, ItemClass, ItemTemplate};
 use pz_scripts::objects::items::{add_character_trait_definition, get_item, CharacterTrait, Item, MoodleType};
 use pz_scripts::registry::builtin::{BuiltinTables, CharacterStatDecl, MoodleStatDecl, PerkDecl, PerkInit};
@@ -219,7 +218,7 @@ pub(crate) fn give_item<I>(
     tpl(&mut t);
     let mut item = InventoryItem::create(Rc::new(t), 0);
     item.id = id;
-    c.items.inventory.items.push(SavedItem::Item(Box::new(item)));
+    c.items.add_item(item);
 }
 
 /// Registers `ItemTag.<field>` (or another item registry's constant) as

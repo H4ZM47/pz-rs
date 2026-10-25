@@ -16,6 +16,7 @@ pub mod bind_characters;
 pub mod bind_audio;
 pub mod bind_erosion;
 pub mod bind_core;
+pub mod bind_credits;
 pub mod bind_debug;
 pub mod bind_climate;
 pub mod bind_combat;
@@ -33,6 +34,7 @@ pub mod bind_misc;
 pub mod bind_misc_classes;
 pub mod bind_mods;
 pub mod bind_nutrition;
+pub mod bind_players;
 pub mod bind_popman;
 pub mod bind_registry;
 pub mod bind_render;
@@ -54,6 +56,7 @@ pub mod bind_server;
 pub mod bind_map_groups;
 pub mod bind_world;
 pub mod bind_vehicles;
+pub mod bind_video;
 pub mod events;
 pub mod expose;
 pub mod global_objects;
@@ -61,6 +64,7 @@ pub mod global_objects_save;
 pub mod lua_manager;
 pub mod player_db;
 pub mod savefile;
+pub mod world_save;
 
 pub use lua_manager::LuaManager;
 
@@ -76,6 +80,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     let sink: bind_climate::EventSink = Rc::new(sink);
     bind_java_util::register(&mut mgr.thread);
     bind_globals::register(&mut mgr.thread);
+    bind_players::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
     bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
     bind_core::register(
@@ -85,9 +90,11 @@ pub fn register_all(mgr: &mut LuaManager) {
     );
     bind_fs::register(mgr);
     bind_render::register(mgr);
+    bind_video::register(mgr);
     bind_save::register(mgr);
     // Text before UI: bind_text's UIFont is canonical.
     bind_text::register(&mut mgr.thread);
+    bind_credits::register(mgr);
     bind_debug::register(&mut mgr.thread);
     bind_input::register(mgr);
     bind_joypad::register(mgr);
@@ -128,6 +135,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_vehicles::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
+    hud::characters::install_character_hud_hosts();
     bind_ui3d::register(&mut mgr.thread);
     bind_uitextbox2::register(&mut mgr.thread);
     bind_voice::register(&mut mgr.thread);

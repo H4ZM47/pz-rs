@@ -5,9 +5,11 @@
 //! `zombie.characterTextures.BloodClothingType`'s covered parts are here
 //! too.
 //!
-//! Items are `pz-inventory` [`InventoryItem`]s in the character's
-//! [`ItemContainer`]; the hand and worn items are the ids of items in it
-//! (the original holds the same objects in both places).
+//! Items are `pz-inventory` [`InventoryItem`]s, shared ([`ItemRef`]) in
+//! the character's shared container ([`pz_inventory::ContainerRef`], the
+//! object Lua's `getInventory()` returns); the hand and worn items are the
+//! ids of items in it (the original holds the same objects in both
+//! places).
 //!
 //! What `pz-inventory` does not have yet is read here from the item's
 //! script (`getScriptItem()`), or is a marked STUB:
@@ -20,7 +22,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use pz_inventory::{InventoryItem, ItemContainer, ItemKind};
+use pz_inventory::shared::{self, ContainerRef, ItemRef};
+use pz_inventory::{InventoryItem, ItemKind, SharedContainer};
 use pz_scripts::objects::items::{get_item, Item, ItemBodyLocation, ItemTag};
 use pz_scripts::registry::RegistryKey;
 use pz_scripts::{ScriptManager, ScriptResult};
@@ -282,10 +285,11 @@ fn def_for_part(sm: &ScriptManager, item: &InventoryItem, part: usize, bite: boo
 }
 
 /// The character's items.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct CharacterItems {
-    /// `inventory`.
-    pub inventory: ItemContainer,
+    /// `inventory`: shared with Lua (`getInventory()`), so both see the
+    /// same container and item objects.
+    pub inventory: ContainerRef,
     /// `primaryHandItem`: the id of an item in `inventory`.
     pub primary_hand_item: Option<i32>,
     /// `secondaryHandItem`.
@@ -300,7 +304,9 @@ pub struct CharacterItems {
 impl Default for CharacterItems {
     fn default() -> Self {
         CharacterItems {
-            inventory: ItemContainer::new(Some("none")),
+            // `new ItemContainer()`, explored (the `IsoGameCharacter`
+            // constructor).
+            inventory: SharedContainer { explored: true, ..Default::default() }.into_ref(),
             primary_hand_item: None,
             secondary_hand_item: None,
             worn_items: Vec::new(),
@@ -310,23 +316,31 @@ impl Default for CharacterItems {
 }
 
 impl CharacterItems {
-    /// The item `id` in the inventory.
-    pub fn item(&self, id: i32) -> Option<&InventoryItem> {
-        self.inventory.items.iter().filter_map(|i| i.as_item()).find(|i| i.id == id)
+    /// The items directly in the inventory, in order.
+    pub fn inventory_items(&self) -> Vec<ItemRef> {
+        self.inventory.borrow().items.clone()
     }
 
-    /// The item `id` in the inventory, mutably.
-    pub fn item_mut(&mut self, id: i32) -> Option<&mut InventoryItem> {
-        self.inventory.items.iter_mut().filter_map(|i| i.as_item_mut()).find(|i| i.id == id)
+    /// The item `id` in the inventory.
+    pub fn item(&self, id: i32) -> Option<ItemRef> {
+        self.inventory.borrow().items.iter().find(|i| i.borrow().id == id).cloned()
+    }
+
+    /// Adds `item` at the end of the inventory (the list part of
+    /// `AddItem`).
+    pub fn add_item(&self, item: InventoryItem) -> ItemRef {
+        let r = shared::new_item(item);
+        shared::add_item(&self.inventory, &r);
+        r
     }
 
     /// `getPrimaryHandItem()`.
-    pub fn primary_hand_item(&self) -> Option<&InventoryItem> {
+    pub fn primary_hand_item(&self) -> Option<ItemRef> {
         self.primary_hand_item.and_then(|id| self.item(id))
     }
 
     /// `getSecondaryHandItem()`.
-    pub fn secondary_hand_item(&self) -> Option<&InventoryItem> {
+    pub fn secondary_hand_item(&self) -> Option<ItemRef> {
         self.secondary_hand_item.and_then(|id| self.item(id))
     }
 
@@ -336,19 +350,19 @@ impl CharacterItems {
     }
 
     /// `getWornItems()` items, in order.
-    pub fn worn(&self) -> impl Iterator<Item = &InventoryItem> {
+    pub fn worn(&self) -> impl Iterator<Item = ItemRef> + use<'_> {
         self.worn_items.iter().filter_map(|&id| self.item(id))
     }
 
     /// `getItemVisuals(itemVisuals)`: the worn items that have a visual
     /// (`WornItems.getItemVisuals`), as their items.
-    pub fn item_visuals(&self) -> Vec<&InventoryItem> {
-        self.worn().filter(|i| visual(i).is_some()).collect()
+    pub fn item_visuals(&self) -> Vec<ItemRef> {
+        self.worn().filter(|i| visual(&i.borrow()).is_some()).collect()
     }
 
     /// Ids of [`Self::item_visuals`].
     pub fn item_visual_ids(&self) -> Vec<i32> {
-        self.item_visuals().iter().map(|i| i.id).collect()
+        self.item_visuals().iter().map(|i| i.borrow().id).collect()
     }
 
     /// `isEquipped(item)`: worn or in a hand.
@@ -359,6 +373,7 @@ impl CharacterItems {
     /// `bodyPartHasTag(part, tag)`.
     fn body_part_has_tag(&self, sm: &ScriptManager, part: i32, field: &str) -> bool {
         for item in self.item_visuals().into_iter().rev() {
+            let item = &*item.borrow();
             let Some(parts) = covered_parts(sm, item) else { continue };
             for &p in &parts {
                 if !is_clothing(item) || p as i32 != part || visual_hole(item, p) != 0.0 || !has_tag(sm, item, field) {
@@ -384,6 +399,7 @@ impl CharacterItems {
     pub fn body_part_clothing_defense(&self, sm: &ScriptManager, part: i32, bite: bool, bullet: bool) -> f32 {
         let mut result = 0.0f32;
         for item in self.item_visuals().into_iter().rev() {
+            let item = &*item.borrow();
             let Some(parts) = covered_parts(sm, item) else { continue };
             for &p in &parts {
                 if !is_clothing(item) || p as i32 != part || visual_hole(item, p) != 0.0 {
@@ -398,6 +414,7 @@ impl CharacterItems {
 
     fn clothing_matches(&self, sm: &ScriptManager, part: i32, test: impl Fn(&InventoryItem, usize) -> bool) -> bool {
         for item in self.item_visuals().into_iter().rev() {
+            let item = &*item.borrow();
             let Some(parts) = covered_parts(sm, item) else { continue };
             for &p in &parts {
                 if is_clothing(item) && p as i32 == part && test(item, p) {
@@ -426,7 +443,8 @@ impl CharacterItems {
         let ictx = CharacterItemContext::new(sm, ctx);
         let mut defense = 0.0f32;
         for id in self.worn_items.clone() {
-            let Some(item) = self.item_mut(id) else { continue };
+            let Some(item) = self.item(id) else { continue };
+            let item = &mut *item.borrow_mut();
             if is_clothing(item) {
                 if has_tag(sm, item, "SCBA") && item.activated && item.has_tank() && item.get_used_delta() > 0.0 {
                     return Ok(g.standard_gas_mask_defense);
@@ -460,6 +478,7 @@ impl CharacterItems {
     /// the mod data when it is missing; that is not done here.)
     pub fn is_protected_from_toxic(&self, sm: &ScriptManager) -> bool {
         for item in self.worn() {
+            let item = &*item.borrow();
             if !is_clothing(item) {
                 continue;
             }
@@ -480,7 +499,8 @@ impl CharacterItems {
     pub fn is_protected_from_toxic_drain(&mut self, sm: &ScriptManager, ctx: &dyn SimContext) -> ScriptResult<bool> {
         let ictx = CharacterItemContext::new(sm, ctx);
         for id in self.worn_items.clone() {
-            let Some(item) = self.item_mut(id) else { continue };
+            let Some(item) = self.item(id) else { continue };
+            let item = &mut *item.borrow_mut();
             if !is_clothing(item) {
                 continue;
             }
@@ -499,8 +519,8 @@ impl CharacterItems {
 
     /// A hand item `isEquippedNoSprint()` (`canSprint`).
     pub fn hand_item_equipped_no_sprint(&self, sm: &ScriptManager) -> bool {
-        self.primary_hand_item().is_some_and(|i| is_equipped_no_sprint(sm, i))
-            || self.secondary_hand_item().is_some_and(|i| is_equipped_no_sprint(sm, i))
+        self.primary_hand_item().is_some_and(|i| is_equipped_no_sprint(sm, &i.borrow()))
+            || self.secondary_hand_item().is_some_and(|i| is_equipped_no_sprint(sm, &i.borrow()))
     }
 }
 
@@ -515,17 +535,19 @@ impl<I> GameCharacter<I> {
             i.get_type() == "Tissue" || i.get_type() == "ToiletPaper" || has_tag(sm, i, "MUFFLE_SNEEZE")
         };
         let items = &self.items;
-        let target = match items.primary_hand_item().filter(|i| is_tissue(i)) {
+        let target = match items.primary_hand_item().filter(|i| is_tissue(&i.borrow())) {
             Some(i) => i,
-            None => match items.secondary_hand_item().filter(|i| is_tissue(i)) {
+            None => match items.secondary_hand_item().filter(|i| is_tissue(&i.borrow())) {
                 Some(i) => i,
                 None => return false,
             },
         };
+        let target = target.borrow();
         if target.get_current_uses() <= 0 {
             return false;
         }
         let id = target.id;
+        drop(target);
         let ictx = CharacterItemContext::new(sm, ctx);
         let Some(uses) = self.with_held_item(id, |item, _| {
             item.set_current_uses_with(item.get_current_uses() - 1, Some(&ictx));
@@ -539,6 +561,44 @@ impl<I> GameCharacter<I> {
         true
     }
 
+    /// `setPrimaryHandItem(item)` with the item `id` (`None` for `null`):
+    /// the weapon in use becomes the item if it is a `HandWeapon` (else
+    /// none), then the hand and the `Weapon` variable are set. Returns
+    /// whether it changed (the caller fires `OnEquipPrimary`). The equip
+    /// parent, animal, ballistics cache and hand models are not modelled.
+    pub fn set_primary_hand_item(&mut self, sm: &ScriptManager, id: Option<i32>) -> bool {
+        if self.items.primary_hand_item == id {
+            return false;
+        }
+        let weapon = id.filter(|&i| self.items.item(i).is_some_and(|i| is_hand_weapon(&i.borrow())));
+        self.set_use_hand_weapon(weapon);
+        self.items.primary_hand_item = id;
+        let w = self.weapon_type(sm);
+        self.set_var_str("Weapon", w.type_name());
+        true
+    }
+
+    /// `setSecondaryHandItem(item)`: as [`Self::set_primary_hand_item`]
+    /// without the weapon in use (`OnEquipSecondary`).
+    pub fn set_secondary_hand_item(&mut self, sm: &ScriptManager, id: Option<i32>) -> bool {
+        if self.items.secondary_hand_item == id {
+            return false;
+        }
+        self.items.secondary_hand_item = id;
+        let w = self.weapon_type(sm);
+        self.set_var_str("Weapon", w.type_name());
+        true
+    }
+
+    /// `removeFromHands(item)`: `setPrimaryHandItem(null)` and
+    /// `setSecondaryHandItem(null)` for the hands holding the item `id`.
+    /// Returns which hands changed (primary, secondary).
+    pub fn remove_from_hands(&mut self, sm: &ScriptManager, id: i32) -> (bool, bool) {
+        let primary = self.items.primary_hand_item == Some(id) && self.set_primary_hand_item(sm, None);
+        let secondary = self.items.secondary_hand_item == Some(id) && self.set_secondary_hand_item(sm, None);
+        (primary, secondary)
+    }
+
     /// `getInventory().getCapacityWeight()`: `getInventoryWeight()` (the
     /// unlimited-carry and ghost-mode cheats are not modelled).
     pub fn capacity_weight(&self, sm: &ScriptManager, ctx: &dyn SimContext) -> f32 {
@@ -550,7 +610,8 @@ impl<I> GameCharacter<I> {
     pub fn inventory_weight(&self, sm: &ScriptManager, ctx: &dyn SimContext) -> f32 {
         let ictx = CharacterItemContext::new(sm, ctx);
         let mut total = 0.0f32;
-        for item in self.items.inventory.items.iter().filter_map(|i| i.as_item()) {
+        for item in self.items.inventory_items() {
+            let item = &*item.borrow();
             let equipped = self.items.is_equipped(item.id);
             if item.attached_slot > -1 && !equipped {
                 total += item.get_hotbar_equipped_weight(&ictx, self);
@@ -588,7 +649,8 @@ impl CharacterItems {
     pub fn add_hole(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, part: usize, all_layers: bool) -> bool {
         let mut added = false;
         for id in self.item_visual_ids().into_iter().rev() {
-            let Some(item) = self.item(id) else { continue };
+            let Some(item_ref) = self.item(id) else { continue };
+            let item = &mut *item_ref.borrow_mut();
             let Some(script) = script_item(sm, item) else { continue };
             if item.condition <= 0 {
                 continue;
@@ -603,7 +665,6 @@ impl CharacterItems {
                 (s.can_have_holes, s.condition_lower_chance)
             };
             let n_parts = parts.len() as i32;
-            let item = self.item_mut(id).unwrap();
             if clothing && can_holes {
                 set_visual_hole(item, part);
                 if let ItemKind::Clothing(c) | ItemKind::AlarmClockClothing(c, _) = &mut item.kind {
@@ -635,6 +696,7 @@ impl CharacterItems {
         let mut hit = None;
         for id in self.item_visual_ids().into_iter().rev() {
             let Some(item) = self.item(id) else { continue };
+            let item = &*item.borrow();
             if script_item(sm, item).is_none() {
                 continue;
             }
@@ -646,6 +708,7 @@ impl CharacterItems {
         }
         let mut base_def = 0.0f32;
         if let Some(item) = hit.and_then(|id| self.item(id)) {
+            let item = &*item.borrow();
             if is_clothing(item) {
                 base_def = 30.0f32.max(100.0 - def_for_part(sm, item, part, !scratch, false) / 1.5);
             }
@@ -660,13 +723,14 @@ impl CharacterItems {
     /// `helmetFallFromWornItems(hitHead)`: worn clothing with a chance to
     /// fall comes off (the original's loop skips the item after a removed
     /// one). Returns the removed items (the world makes them fall).
-    pub fn helmet_fall_from_worn_items(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, hit_head: bool) -> Vec<InventoryItem> {
+    pub fn helmet_fall_from_worn_items(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, hit_head: bool) -> Vec<ItemRef> {
         let mut removed = Vec::new();
         let mut i = 0;
         while i < self.worn_items.len() {
             let id = self.worn_items[i];
             i += 1;
-            let Some(item) = self.item(id) else { continue };
+            let Some(item_ref) = self.item(id) else { continue };
+            let item = &*item_ref.borrow();
             if !is_clothing(item) {
                 continue;
             }
@@ -678,11 +742,8 @@ impl CharacterItems {
             if chance <= 0 || ctx.rand_next(100) > chance_to_fall {
                 continue;
             }
-            let pos = self.inventory.items.iter().position(|it| it.as_item().is_some_and(|it| it.id == id));
-            if let Some(p) = pos {
-                if let pz_inventory::SavedItem::Item(it) = self.inventory.items.remove(p) {
-                    removed.push(*it);
-                }
+            if shared::remove_item(&self.inventory, &item_ref) {
+                removed.push(item_ref.clone());
             }
             self.worn_items.retain(|w| *w != id);
             self.worn_locations.retain(|(w, _)| *w != id);

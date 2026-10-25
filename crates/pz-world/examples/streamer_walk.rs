@@ -81,6 +81,14 @@ fn line(e: &StreamEvent) -> String {
         StreamEvent::Unloaded { wx, wy } => format!("U {wx},{wy}"),
         StreamEvent::Saved { wx, wy, .. } => format!("W {wx},{wy}"),
         StreamEvent::SaveFailed { wx, wy, error } => format!("W {wx},{wy} failed: {error}"),
+        StreamEvent::Removed { wx, wy } => format!("X {wx},{wy}"),
+        StreamEvent::HotSave => "# hot save".into(),
+        StreamEvent::VehiclesUnloaded {
+            wx,
+            wy,
+            saved,
+            errors,
+        } => format!("# vehicles unloaded {wx},{wy} saved={saved:?} errors={errors:?}"),
         StreamEvent::VehiclesLoaded {
             wx,
             wy,
@@ -88,6 +96,16 @@ fn line(e: &StreamEvent) -> String {
             error,
             ..
         } => format!("# vehicles {wx},{wy} removed={removed:?} error={error:?}"),
+        StreamEvent::VehiclesToMeta {
+            wx,
+            wy,
+            ids,
+            errors,
+        } => format!("# vehicles to meta {wx},{wy} ids={ids:?} errors={errors:?}"),
+        StreamEvent::VehiclesUpdated { saved, errors } => {
+            format!("# vehicle rows saved={saved:?} errors={errors:?}")
+        }
+        StreamEvent::GenAnimalsPath { wx, wy } => format!("# animal paths {wx},{wy}"),
     }
 }
 
@@ -165,6 +183,9 @@ fn main() {
             chunk_hook: None,
             no_save: false,
             vehicles_db: vehicles_db.as_mut(),
+            vehicle_saver: None,
+            vehicle_meta: None,
+            vehicle_ids: None,
         };
         match t[0] {
             "load" => {
@@ -199,7 +220,9 @@ fn main() {
         }
         for e in s.take_events() {
             let t = line(&e);
-            if t.starts_with("# vehicles") && t.ends_with("removed=[] error=None") {
+            if t.starts_with("# vehicles")
+                && (t.ends_with("removed=[] error=None") || t.ends_with("saved=[] errors=[]"))
+            {
                 continue;
             }
             out.push_str(&t);

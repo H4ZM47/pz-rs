@@ -9,25 +9,22 @@
 //! ([`pz_vehicles::lua::with_thread`]), so vehicle code that calls back
 //! into Lua (`repair`, `isEngineWorking`, ...) re-enters on it.
 //!
-//! The item methods here are the vehicle subset; pz-lua-api's full item
-//! binding (`bind_items` on the items branch) uses the same item type
-//! (`Rc<RefCell<InventoryItem>>`) and should replace them when merged.
+//! Items are bind_items' ordinary `InventoryItem` userdata; the vehicle
+//! part item methods (capacity, part stats) are registered there.
 
 use crate::expose::{bool_arg, expose_class, int_arg, num_arg, str_arg, with_this};
 use pz_inventory::device::DeviceData;
 use pz_inventory::item::ItemKind;
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaResult, NativeCall, TableRef, Thread, Value};
-use pz_vehicles::items::{self, ItemRef};
+use pz_vehicles::items::ItemRef;
 use pz_vehicles::lua::{
     self as vlua, LuaDoor, LuaEngine, LuaLight, LuaPart, LuaVehicle, LuaVehicleScript, LuaWindow,
 };
 use pz_vehicles::part::{PartItem, PartRef};
 use pz_vehicles::vehicle::{BaseVehicle, VehicleRef};
 use std::any::Any;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 pub const INVENTORY_ITEM_CLASS: &str = "zombie.inventory.InventoryItem";
 pub const DRAINABLE_CLASS: &str = "zombie.inventory.types.DrainableComboItem";
@@ -47,56 +44,17 @@ fn opt(v: Option<String>) -> Value {
     v.map_or(Value::Nil, |s| Value::str(&s))
 }
 
-/// An item handed to Lua by the vehicle code.
-pub struct LuaVehItem {
-    pub item: ItemRef,
-    class: &'static str,
-}
-
-impl LuaObject for LuaVehItem {
-    fn class_name(&self) -> &str {
-        self.class
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-    fn super_classes(&self) -> &[&'static str] {
-        &[INVENTORY_ITEM_CLASS, "zombie.entity.GameEntity"]
-    }
-}
-
-thread_local! {
-    static ITEMS: RefCell<HashMap<usize, Weak<dyn LuaObject>>> = RefCell::new(HashMap::new());
-}
-
-/// The Lua object of an item (one per item while it lives).
+/// The Lua object of an item: pz-lua-api's ordinary `InventoryItem`
+/// userdata ([`crate::bind_items::item_value`]).
 pub fn item_value(i: &ItemRef) -> Value {
-    let key = Rc::as_ptr(i) as usize;
-    if let Some(o) = ITEMS.with(|m| m.borrow().get(&key).and_then(Weak::upgrade)) {
-        return Value::Object(o);
-    }
-    let class = if items::is_drainable(&i.borrow()) {
-        DRAINABLE_CLASS
-    } else {
-        INVENTORY_ITEM_CLASS
-    };
-    let o: Rc<dyn LuaObject> = Rc::new(LuaVehItem {
-        item: i.clone(),
-        class,
-    });
-    ITEMS.with(|m| {
-        let mut m = m.borrow_mut();
-        m.retain(|_, w| w.strong_count() > 0);
-        m.insert(key, Rc::downgrade(&o));
-    });
-    Value::Object(o)
+    crate::bind_items::item_value(i)
 }
 
 fn item_of(v: &Value) -> Option<ItemRef> {
     match v {
         Value::Object(o) => o
             .as_any()
-            .downcast_ref::<LuaVehItem>()
+            .downcast_ref::<crate::bind_items::LuaInventoryItem>()
             .map(|i| i.item.clone()),
         _ => None,
     }
@@ -332,7 +290,9 @@ fn register_vehicle(thread: &mut Thread) {
         v.set_tire_inflation(int_arg(c, 1), num_arg(c, 2) as f32);
         Value::Nil
     });
-    vmethod!(b, "getAnimals", |_v, c| crate::bind_java_util::list_value(Vec::new()));
+    vmethod!(b, "getAnimals", |_v, c| crate::bind_java_util::list_value(
+        Vec::new()
+    ));
     vmethod!(b, "isGoodCar", |v, c| Value::Bool(v.is_good_car()));
     vmethod!(b, "setGoodCar", |v, c| {
         v.set_good_car(bool_arg(c, 1));
@@ -459,7 +419,9 @@ fn register_part(thread: &mut Thread) {
     pmethod!(b, "getCategory", |p, c| opt(p.st().category.clone()));
     pmethod!(b, "getItemType", |p, c| p
         .item_type()
-        .map_or(Value::Nil, |t| crate::bind_java_util::list_value((t).into_iter().map(Value::from).collect())));
+        .map_or(Value::Nil, |t| crate::bind_java_util::list_value(
+            (t).into_iter().map(Value::from).collect()
+        )));
     pmethod!(b, "getInventoryItem", |p, c| p
         .item()
         .map_or(Value::Nil, |i| vlua::item_value(&i)));
@@ -626,7 +588,10 @@ fn register_part(thread: &mut Thread) {
         // Containers are bound by the inventory port; a {isEmpty} view.
         match &p.st().container {
             Some(cont) => crate::bind_java_util::list_value(
-                cont.items.iter().map(|_| Value::from(String::new())).collect(),
+                cont.items
+                    .iter()
+                    .map(|_| Value::from(String::new()))
+                    .collect(),
             ),
             None => Value::Nil,
         }
@@ -809,93 +774,18 @@ fn register_script(thread: &mut Thread) {
 }
 
 fn register_items(thread: &mut Thread) {
+    // The vehicle part item methods are bind_items' (registered there);
+    // only `Radio.getDeviceData` needs this module's `DeviceData` object.
     let b = expose_class(thread, INVENTORY_ITEM_CLASS, None);
-    macro_rules! imethod {
-        ($name:literal, |$i:ident, $c:ident| $body:expr) => {
-            b.method($name, |$c| {
-                let item = with_this::<LuaVehItem, _>($c, |i| i.item.clone())?;
-                let $i = &item;
-                let r: Value = $body;
-                Ok($c.push(r))
-            });
-        };
-    }
-    imethod!("getCondition", |i, c| Value::Num(
-        i.borrow().condition as f64
-    ));
-    imethod!("getConditionMax", |i, c| Value::Num(
-        i.borrow().condition_max as f64
-    ));
-    imethod!("setCondition", |i, c| {
-        items::set_condition(&mut i.borrow_mut(), int_arg(c, 1));
-        Value::Nil
-    });
-    imethod!("setConditionNoSound", |i, c| {
-        items::set_condition(&mut i.borrow_mut(), int_arg(c, 1));
-        Value::Nil
-    });
-    imethod!("setConditionMax", |i, c| {
-        i.borrow_mut().condition_max = int_arg(c, 1);
-        Value::Nil
-    });
-    imethod!("isBroken", |i, c| Value::Bool(i.borrow().condition <= 0));
-    imethod!("getMaxCapacity", |i, c| Value::Num(
-        i.borrow().max_capacity as f64
-    ));
-    imethod!("setMaxCapacity", |i, c| {
-        i.borrow_mut().max_capacity = int_arg(c, 1);
-        Value::Nil
-    });
-    imethod!("getItemCapacity", |i, c| f(i.borrow().item_capacity));
-    imethod!("setItemCapacity", |i, c| {
-        i.borrow_mut().item_capacity = num_arg(c, 1) as f32;
-        Value::Nil
-    });
-    imethod!("getCurrentUsesFloat", |i, c| f(items::current_uses_float(
-        &i.borrow()
-    )));
-    imethod!("setCurrentUsesFloat", |i, c| {
-        items::set_current_uses_float(&mut i.borrow_mut(), num_arg(c, 1) as f32);
-        Value::Nil
-    });
-    imethod!("setUsedDelta", |i, c| {
-        items::set_current_uses_float(&mut i.borrow_mut(), num_arg(c, 1) as f32);
-        Value::Nil
-    });
-    imethod!("getUseDelta", |i, c| f(items::use_delta(&i.borrow())));
-    imethod!("getConditionLowerNormal", |i, c| f(items::stats(
-        &i.borrow()
-    )
-    .condition_lower_normal));
-    imethod!("getConditionLowerOffroad", |i, c| f(items::stats(
-        &i.borrow()
-    )
-    .condition_lower_offroad));
-    imethod!("getBrakeForce", |i, c| f(
-        items::stats(&i.borrow()).brake_force
-    ));
-    imethod!("getWheelFriction", |i, c| f(
-        items::stats(&i.borrow()).wheel_friction
-    ));
-    imethod!("getChanceToSpawnDamaged", |i, c| Value::Num(
-        items::stats(&i.borrow()).chance_to_spawn_damaged as f64
-    ));
-    imethod!("getWeight", |i, c| f(items::weight(&i.borrow())));
-    imethod!("getFullType", |i, c| Value::str(
-        &i.borrow().get_full_type()
-    ));
-    imethod!("getType", |i, c| Value::str(i.borrow().get_type()));
-    imethod!("getName", |i, c| Value::str(i.borrow().get_name()));
-    imethod!("getID", |i, c| Value::Num(i.borrow().id as f64));
-    imethod!("getDeviceData", |i, c| {
-        if matches!(i.borrow().kind, ItemKind::Radio(..)) {
-            Value::Object(Rc::new(LuaDeviceData(DeviceOwner::Item(i.clone()))))
+    b.method("getDeviceData", |c| {
+        let item = with_this::<crate::bind_items::LuaInventoryItem, _>(c, |i| i.item.clone())?;
+        let v = if matches!(item.borrow().kind, ItemKind::Radio(..)) {
+            Value::Object(Rc::new(LuaDeviceData(DeviceOwner::Item(item.clone()))))
         } else {
             Value::Nil
-        }
+        };
+        Ok(c.push(v))
     });
-    let d = expose_class(thread, DRAINABLE_CLASS, Some(INVENTORY_ITEM_CLASS));
-    let _ = d;
 
     let b = expose_class(thread, DEVICE_DATA_CLASS, None);
     macro_rules! dget {
@@ -1120,4 +1010,56 @@ pub fn register(thread: &mut Thread) {
         Rc::new(|v: &Value| item_of(v)),
     );
     let _: Option<&BaseVehicle> = None;
+}
+
+#[cfg(test)]
+mod item_binding_tests {
+    use pz_inventory::item::InventoryItem;
+    use pz_inventory::template::{ItemClass, ItemTemplate};
+    use pz_kahlua::{Thread, Value};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Registering the vehicle bindings after the item bindings must leave
+    /// ordinary items working (the vehicle module once re-registered
+    /// `InventoryItem` methods that only accepted its own item type).
+    #[test]
+    fn items_keep_their_methods_after_vehicle_bindings() {
+        let mut t = Thread::new(pz_kahlua::TableRef::new());
+        pz_kahlua::stdlib::install(&mut t, None).unwrap();
+        crate::bind_java_util::register(&mut t);
+        crate::bind_globals::register(&mut t);
+        crate::bind_items::register(&mut t);
+        super::register(&mut t);
+        let mut tpl = ItemTemplate::new(ItemClass::Normal, "Base", "Tire");
+        tpl.condition_max = 100;
+        tpl.vehicle_part.brake_force = 2.5;
+        let item = Rc::new(RefCell::new(InventoryItem::create(Rc::new(tpl), 1)));
+        // Items reach Lua the same way from both modules.
+        t.globals().set_str("item", super::item_value(&item));
+        t.globals()
+            .set_str("same", crate::bind_items::item_value(&item));
+        let f = pz_kahlua::stdlib::load_string(
+            "item:setMaxCapacity(7)\n\
+             return item:getFullType(), item:getCondition(), item:getBrakeForce(),\n\
+             item:getMaxCapacity(), item == same, item:getDeviceData()",
+            Some("test"),
+            t.globals().clone(),
+        )
+        .unwrap();
+        let r = t
+            .pcall(&f, &[])
+            .map_err(|(m, _)| pz_kahlua::exec::java_value_of(&m))
+            .unwrap();
+        assert_eq!(pz_kahlua::exec::java_value_of(&r[0]), "Base.Tire");
+        assert!(matches!(r[1], Value::Num(n) if n == 100.0));
+        assert!(matches!(r[2], Value::Num(n) if n == 2.5));
+        assert!(matches!(r[3], Value::Num(n) if n == 7.0));
+        assert!(matches!(r[4], Value::Bool(true)));
+        assert!(matches!(r[5], Value::Nil));
+        assert_eq!(
+            super::item_of(&super::item_value(&item)).map(|i| Rc::ptr_eq(&i, &item)),
+            Some(true)
+        );
+    }
 }

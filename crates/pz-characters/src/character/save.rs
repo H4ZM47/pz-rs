@@ -335,9 +335,12 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             self.descriptor = Some(Rc::new(std::cell::RefCell::new(d)));
         }
         self.human_visual = Some(e(HumanVisual::load(r, env.tables.blood_body_parts))?);
-        let saved = e(self.items.inventory.load_saved(r, world_version, env.items))?;
-        let items = &self.items.inventory.items;
-        self.saved_inventory_items = saved.iter().map(|s| s.map(|i| items[i].id())).collect();
+        // `inventory.load(input, worldVersion)`: into the same (shared)
+        // container object.
+        let mut loaded = self.items.inventory.borrow().to_container();
+        let saved = e(loaded.load_saved(r, world_version, env.items))?;
+        self.saved_inventory_items = saved.iter().map(|s| s.map(|i| loaded.items[i].id())).collect();
+        pz_inventory::shared::SharedContainer::fill_from(&self.items.inventory, loaded);
         self.asleep = e(r.bool())?;
         self.force_wake_up_time = e(r.f32())?;
         if !self.is_zombie() {
@@ -561,9 +564,9 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         }
         // `inventory.save(output, this)`: equipped items start no run.
         let equipped = |i: &pz_inventory::saved::SavedItem| self.items.is_equipped(i.id());
-        let order = e(self.items.inventory.save_saved(w, env.items, Some(&equipped)))?;
-        let items = &self.items.inventory.items;
-        self.saved_inventory_items = order.iter().map(|&i| Some(items[i].id())).collect();
+        let inventory = self.items.inventory.borrow().to_container();
+        let order = e(inventory.save_saved(w, env.items, Some(&equipped)))?;
+        self.saved_inventory_items = order.iter().map(|&i| Some(inventory.items[i].id())).collect();
         w.bool(self.asleep);
         w.f32(self.force_wake_up_time);
         if !self.is_zombie() {
@@ -578,7 +581,7 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             }
             self.save_xp(w);
             let index = |id: Option<i32>| {
-                id.and_then(|id| self.items.inventory.items.iter().position(|i| i.id() == id)).map_or(-1, |i| i as i32)
+                id.and_then(|id| inventory.items.iter().position(|i| i.id() == id)).map_or(-1, |i| i as i32)
             };
             w.i32(index(self.items.primary_hand_item));
             w.i32(index(self.items.secondary_hand_item));

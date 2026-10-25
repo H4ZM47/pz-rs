@@ -196,6 +196,9 @@ pub struct ItemTemplate {
     pub windresist: f32,
     pub waterresist: f32,
     pub weight_wet: f32,
+    /// `wetCooldown` (`WetCooldown`; 0 when the script has none), which
+    /// `InstanceItem` gives every new item.
+    pub wet_cooldown: f32,
     pub capacity: i32,
     pub weight_reduction: i32,
     /// `maxItemSize` (an `InventoryContainer`'s per-item weight limit).
@@ -428,6 +431,7 @@ impl ItemTemplate {
             windresist: 0.0,
             waterresist: 0.0,
             weight_wet: 0.0,
+            wet_cooldown: 0.0,
             capacity: 0,
             weight_reduction: 0,
             max_item_size: 0.0,
@@ -591,6 +595,7 @@ impl ItemTemplate {
             windresist: item.windresist,
             waterresist: item.waterresist,
             weight_wet: item.weight_wet,
+            wet_cooldown: item.wet_cooldown,
             capacity: item.capacity,
             weight_reduction: item.weight_reduction,
             max_item_size: item.max_item_size,

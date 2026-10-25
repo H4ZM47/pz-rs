@@ -360,6 +360,12 @@ pub struct VehicleState {
     pub impulses_from_squished_bodies: [Option<VehicleImpulse>; 4],
     pub impulses_from_hit_objects: Vec<VehicleImpulse>,
     pub create_physics_recursion: i32,
+    /// The `IsoObject`/`IsoMovingObject` fields `save` writes that the
+    /// runtime does not otherwise keep (`offsetX`, `offsetY`, `dir`, the
+    /// mod-data `table`), as `load` read them; its position is not used.
+    /// `None` for a vehicle made by `new BaseVehicle` (the constructor's
+    /// `32 * Core.tileScale`, `96 * Core.tileScale`, `N`, no table).
+    pub iso_object: Option<pz_world::save::visual::MovingBase>,
 }
 
 /// `BaseVehicle`.
@@ -546,6 +552,7 @@ impl BaseVehicle {
             impulses_from_squished_bodies: [None; 4],
             impulses_from_hit_objects: Vec::new(),
             create_physics_recursion: 0,
+            iso_object: None,
         };
         let v = Rc::new_cyclic(|me| BaseVehicle {
             me: me.clone(),

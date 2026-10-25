@@ -48,6 +48,7 @@ impl ClothingWetness {
             l.clear();
         }
         for item in items.item_visuals().into_iter().rev() {
+            let item = &*item.borrow();
             let Some(parts) = covered_parts(sm, item) else { continue };
             for p in parts {
                 self.clothing_list[p].push(item.id);
@@ -70,10 +71,10 @@ impl ClothingWetness {
         outer_dec: f32,
     ) {
         let mut umbrella = false;
-        if items.primary_hand_item().is_some_and(|i| is_protect_from_rain_while_equipped(sm, i)) {
+        if items.primary_hand_item().is_some_and(|i| is_protect_from_rain_while_equipped(sm, &i.borrow())) {
             umbrella = true;
         }
-        if items.secondary_hand_item().is_some_and(|i| is_protect_from_rain_while_equipped(sm, i)) {
+        if items.secondary_hand_item().is_some_and(|i| is_protect_from_rain_while_equipped(sm, &i.borrow())) {
             umbrella = true;
         }
         if self.changed {
@@ -81,8 +82,9 @@ impl ClothingWetness {
             self.calculate_exposed_items(sm, items);
         }
         for id in items.item_visual_ids() {
-            let has_types = items.item(id).is_some_and(|i| covered_parts(sm, i).is_some());
-            let Some(item) = items.item_mut(id) else { continue };
+            let has_types = items.item(id).is_some_and(|i| covered_parts(sm, &i.borrow()).is_some());
+            let Some(item) = items.item(id) else { continue };
+            let item = &mut *item.borrow_mut();
             if !is_clothing(item) {
                 continue;
             }
@@ -148,7 +150,8 @@ impl ClothingWetness {
                 if base_delta > 0.0 {
                     self.perspiring_parts[i] += 1;
                 }
-                let Some(item) = items.item_mut(self.clothing_list[i][j]) else { continue };
+                let Some(item) = items.item(self.clothing_list[i][j]) else { continue };
+                let item = &mut *item.borrow_mut();
                 if !is_clothing(item) {
                     continue;
                 }
@@ -206,10 +209,11 @@ impl ClothingWetness {
                 let part_count = 1 + n as i32 - j as i32;
                 let mut increase_mod = 1.0f32;
                 let id = self.clothing_list[i][j];
-                let Some(num_parts) = items.item(id).map(|it| covered_parts(sm, it).map_or(0, |p| p.len())) else {
+                let Some(num_parts) = items.item(id).map(|it| covered_parts(sm, &it.borrow()).map_or(0, |p| p.len())) else {
                     continue;
                 };
-                let Some(item) = items.item_mut(id) else { continue };
+                let Some(item) = items.item(id) else { continue };
+                let item = &mut *item.borrow_mut();
                 if !is_clothing(item) {
                     continue;
                 }
@@ -263,6 +267,7 @@ impl ClothingWetness {
                 continue;
             }
             let Some(bottom) = items.item(self.clothing_list[i][n - 1]) else { continue };
+            let bottom = &*bottom.borrow();
             if !is_clothing(bottom) {
                 continue;
             }

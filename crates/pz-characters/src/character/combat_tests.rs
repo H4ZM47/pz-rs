@@ -58,7 +58,7 @@ fn bat(sm: &pz_scripts::ScriptManager, c: &mut GameCharacter<()>, id: i32) {
             s.push_back_mod = 0.5;
         },
     );
-    if let Some(w) = c.items.item_mut(id).and_then(|i| i.weapon_data_mut()) {
+    if let Some(w) = c.items.item(id).as_ref().map(|i| i.borrow_mut()).as_mut().and_then(|i| i.weapon_data_mut()) {
         w.min_damage = 0.8;
         w.max_damage = 1.2;
         w.min_angle = 0.7;
@@ -73,7 +73,7 @@ fn weapon_stats_type_and_mods() {
     let (sm, mut chars) = body_fixture();
     let mut c = player(&sm, &mut chars);
     bat(&sm, &mut c, 5);
-    let w = WeaponStats::of(&sm, c.items.item(5).unwrap()).unwrap();
+    let w = WeaponStats::of(&sm, &c.items.item(5).unwrap().borrow()).unwrap();
     assert!(w.is_melee() && w.two_hand && w.is_of_category(&sm, "BLUNT"));
     assert_eq!(c.weapon_type(&sm), WeaponType::TwoHanded);
     assert!(!c.get_variable_boolean("rangedWeapon"));
@@ -92,7 +92,7 @@ fn process_hit_damage_by_hand() {
     let (sm, mut chars) = body_fixture();
     let mut wielder = player(&sm, &mut chars);
     bat(&sm, &mut wielder, 5);
-    let w = WeaponStats::of(&sm, wielder.items.item(5).unwrap()).unwrap();
+    let w = WeaponStats::of(&sm, &wielder.items.item(5).unwrap().borrow()).unwrap();
     let mut z: GameCharacter<()> = GameCharacter::new(&sm, CharacterKind::Zombie);
     z.vars.x = 1.0;
     z.set_forward_direction(1.0, 0.0);

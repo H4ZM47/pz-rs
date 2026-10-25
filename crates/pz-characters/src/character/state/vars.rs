@@ -1383,24 +1383,24 @@ impl<I: 'static> GameCharacter<I> {
     pub fn fire_mode(&self) -> String {
         self.items
             .primary_hand_item()
-            .filter(|i| super::super::items::is_hand_weapon(i))
-            .and_then(|i| i.weapon_data().and_then(|w| w.fire_mode.clone()))
+            .filter(|i| super::super::items::is_hand_weapon(&i.borrow()))
+            .and_then(|i| i.borrow().weapon_data().and_then(|w| w.fire_mode.clone()))
             .unwrap_or_default()
     }
 
     /// `isUnarmed()`.
     pub fn is_unarmed(&self) -> bool {
-        !self.items.primary_hand_item().is_some_and(super::super::items::is_hand_weapon)
+        !self.items.primary_hand_item().is_some_and(|i| super::super::items::is_hand_weapon(&i.borrow()))
     }
 
     /// `isMeleeWeaponEquipped()`.
     pub fn is_melee_weapon_equipped(&self) -> bool {
-        self.items.primary_hand_item().is_some_and(|i| super::super::items::is_hand_weapon(i) && !i.is_ranged())
+        self.items.primary_hand_item().is_some_and(|i| super::super::items::is_hand_weapon(&i.borrow()) && !i.borrow().is_ranged())
     }
 
     /// `isRangedWeaponEquipped()`.
     pub fn is_ranged_weapon_equipped(&self) -> bool {
-        self.items.primary_hand_item().is_some_and(|i| super::super::items::is_hand_weapon(i) && i.is_ranged())
+        self.items.primary_hand_item().is_some_and(|i| super::super::items::is_hand_weapon(&i.borrow()) && i.borrow().is_ranged())
     }
 
     /// `getAimingMode()` (the `AimingMode` constant name).

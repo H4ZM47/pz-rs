@@ -78,6 +78,18 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       characters thread), `HudGameTime` (characters thread; defaults to the
       shared Lua `GameTime`), `HudSound` (`SoundManager`, audio thread),
       `HudNetwork` (`GameClient`/`GameServer`) (#144).
+- [x] HUD players, game time, climate and moodles:
+      `hud::characters::install_character_hud_hosts()` (run by
+      `register_all`) reads `bind_players` (`IsoPlayer.players`,
+      `numPlayers`, `getInstance`), the shared `GameTime`/`ClimateManager`
+      and the players' `Moodles`.
+- [ ] Local players: when a player is created / loaded (`IsoPlayer`
+      constructor, `GameLoadingState`) call `bind_players::set_player(i,
+      Some(chr))`, `set_player_instance`, `set_num_players`; each frame for
+      the local player (`IsoPlayer.updateInternal1`)
+      `hud::set_moodles_character(i, Some(i))`; `bind_players::reset()` when
+      leaving the game. Then `UIManager.init` (`hud::init_ui`) builds the
+      in-game HUD.
 
 ## Per frame (`GameWindow.logic` / `render`)
 - [ ] Input: every winit event → `pz_input::winit::handle`; before
@@ -124,11 +136,25 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       wired; the frame multiplier / 30 now) and `UiModels::prepare(gpu)`
       (texture compositing) before the UI renders (#115).
 
+- [x] Title video: `MainScreenState.render_background` plays
+      `title_screen_background.bik` through `bind_video::VideoTexture`
+      (`render_frame` uploads each due frame with
+      `TextureManager::tex_image`; `pz-gpu` re-uploads on
+      `TextureData::version`). Still to wire: `MainScreenState.exit` →
+      `exit_video()`, and the `enter()` check that turns video effects off
+      below 8 GB of RAM. Headless runs that want the video to advance
+      should step `pz_video::with_manager(|m| m.set_clock(..))` with the
+      frame time (#159).
+
 - [x] Text entry: `bind_uitextbox2::update_keyboard(&mut mgr.thread)` once
       per frame (`Core.DoFrameReady` → `Core.updateKeyboard`), after the
       window's key/char events are queued (#119).
 
 ## World (`GameLoadingState` / `IngameState`)
+- [ ] `GameLoadingState.enter`: `bind_video::release_all_video_textures()`
+      (`LuaManager.releaseAllVideoTextures`, after `WorldMapImages.Reset` /
+      `WorldMapVisited.Reset`) closes and destroys every texture `getVideo`
+      returned (#159).
 - [ ] Character inventories: hold the inventory as a
       `pz_inventory::ContainerRef` (`SharedContainer::from_container` on
       load, `to_container` on save), return
@@ -160,15 +186,48 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Clock inputs: `HudAlarmClocks` (players' worn and inventory
       `AlarmClock`/`AlarmClockClothing`, stop/set alarm; world thread),
       `HudClimate::air_temperature_for_character` and
-      `HudGameTime::time_of_day/day/month` (characters thread),
+      `HudGameTime::time_of_day/day/month` and `digits_time_of_day` (the
+      digits' `serverTimeOfDay` swap while an MP client fast-forwards)
+      (characters thread),
       `HudPlayers::player_dead`, `HudDebug::cheat_clock_visible`. Call
       `UIManager::resize()` when a player's clocks change (the original
-      re-runs `resize` from its callers) (#146).
+      re-runs `resize` from its callers) (#146; digits split #164).
 - [ ] Moodles: `hud::set_moodles_character(i, Some(player_index))` when a
       player is created or removed (`IsoPlayer` sets
       `UIManager.getMoodleUI(i).setCharacter`); `HudMoodles` (a player's
       `Moodles`: refresh flag, levels, good/bad, display and description
       strings; characters thread) (#148).
+- [x] Character inventories: `CharacterItems::inventory` is a
+      `pz_inventory::ContainerRef` (loaded in place with
+      `SharedContainer::fill_from`, saved via `to_container`);
+      `bind_character_sim::character_value` sets the character's Lua object
+      as its parent once and `getInventory()` returns
+      `bind_item_container::container_value(&inv)`, so Lua and the
+      simulation share the container and items. Characters handed to Lua
+      must go through `character_value` (#143, char-inventory PR).
+- [ ] World containers need their `IsoObject` parent set with
+      `bind_item_container::set_parent` the same way (#143).
+- [ ] Shared tooltip: `HudPicking::picked_tile` (`UIManager.getPicked().tile`
+      as a `pz_ui::tooltip::TooltipObject`: identity, `haveSpecialTooltip`,
+      its square's Lua object; world thread); the tooltip font option and
+      highlight colours come from `Core` (#153).
+- [ ] Health panel: `HudBodyDamage` (`isFemale`, `getBodyDamage().getHealth()`,
+      each `BodyPart`'s wound state as a `BodyPartView`; the remote
+      `getBodyDamageRemote()` for another MP player; characters thread) and
+      `HudDebug::ui_render_outline` (`Core.debug` plus the debug option)
+      feed `NewHealthPanel`/`UI_BodyPart`, built by `ISNewHealthPanel` (#155).
+      `HudBodyDamage` for local characters is `CharacterBodyDamage`
+      (installed by `install_character_hud_hosts`); the remote path is
+      TODO(network).
+- [ ] Debug console (built in `hud::init_ui`): with `Core.debug`, the
+      `TOGGLE_LUA_CONSOLE` key toggles `UIManager.debug_console`'s visibility
+      in `GameWindow.logic`; `DebugLog`'s stream calls
+      `hud::debug_console::debug_log_write(bytes)`; `HudDebug`'s
+      `ui_debug_console_start_visible/echo_command/debug_log` options;
+      `HudNetwork::may_process_console_commands` (role capability or coop
+      host; network thread); `HudConsoleMethods` (GlobalObject's declared
+      methods and each return type's public methods, for suggestions;
+      ours, from the exposure tables) (#160).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
@@ -241,9 +300,93 @@ registered):
       serves, from disk or brand new (`WorldStreamer.DoChunkAlways`), and
       reports `StreamEvent::VehiclesLoaded`. `None` (no store,
       `Core.isNoSave`) loads none. The streamer passes `meta: Some(grid)`
-      in `SaveCtx`, so squares get `associatedBuilding` (#100). Not ported:
-      `VehiclesDB2.unloadChunk` writing a chunk's vehicles back when it
-      unloads.
+      in `SaveCtx`, so squares get `associatedBuilding` (#100).
+- [ ] Chunk vehicles on save: every `IsoChunk.Save` the streamer does
+      writes the chunk's vehicles (`VehiclesDB2.unloadChunk`,
+      `StreamEvent::VehiclesUnloaded`). Set `StreamCtx::vehicle_saver` to
+      a saver that knows the attached scripts (`LoadedVehicleSaver {
+      scripts }`), later to the vehicle runtime's own saver for vehicles
+      in the world; the default writes none (null script, as the original
+      for a vehicle never added to the world) (#150).
+- [ ] Runtime vehicles on save: `StreamCtx::vehicle_saver =
+      Some(&pz_vehicles::vehicles_db::RuntimeVehicleSaver::default())`
+      writes the runtime `BaseVehicle`s of a saved chunk's list
+      (`VehicleBuffer.set` + `BaseVehicle.save`: `vehicles_db::vehicle_buffer`),
+      and hands entries the runtime has not taken over to
+      `LoadedVehicleSaver { NoVehicleScripts }`. A vehicle without a script
+      or chunk is skipped with the original's NPE; the rest still save.
+      Needs: loaded rows taken over with `cell_link::adopt_loaded(..,
+      save::from_save)` (sets `sqlId`, `square`/`current` and the saved
+      `IsoObject` fields); `sqlId` for new vehicles from
+      `VehiclesDB2.setVehicleLoaded` (`allocateID` over `init_used_ids`) in
+      `addToWorld` (not ported; an id < 1 is written as is, like the
+      shipped game with asserts off); and `IsoChunk.removeFromWorld` before
+      the chunk save is queued: per vehicle on its squares
+      `remove_from_world`, clear `square`/`current` (the save then does not
+      clamp the position), and when `vehicles_db::should_update_in_meta` is
+      `Ok(true)` take it off the list and write
+      `update_vehicle(vehicle_buffer(v))` (`VehiclesDB2.updateVehicle`, then
+      `VirtualVehicleManager.addToMeta`). The quit save's
+      `updateVehicleAndTrailer` uses the same `vehicle_buffer`
+      (ws/vehicles-db-save).
+- [ ] Vehicles leaving with their chunk (`IsoChunk.removeFromWorld`,
+      unload and quit) are done by the streamer: with
+      `RuntimeVehicleSaver` as `StreamCtx::vehicle_saver`, each vehicle
+      `added_to_world` on one of the chunk's squares (`current`) loses its
+      loaded id, and when `should_update_in_meta` is true leaves the list,
+      gets its row queued (off its square, `square` cleared) and goes to
+      `StreamCtx::vehicle_meta` (`VirtualVehicleManager.addToMeta`: the
+      vehicle runtime implements `vehicles_db::VehicleMetaHook`). The
+      queued rows are written by the streamer's idle loop
+      (`StreamEvent::VehiclesUpdated`) and, after `streamer.stop`, by
+      `world_save::close_stores(.., streamer.take_vehicle_queue())`.
+      Create `vehicles_db::VehicleIds::init(conn)` at `VehiclesDB2.init`,
+      pass it as `StreamCtx::vehicle_ids`, and call
+      `ids.set_vehicle_loaded(sql_id)` from the runtime's `addToWorld`
+      (store the returned id) (#167).
+- [ ] Animal paths: on `StreamEvent::GenAnimalsPath { wx, wy }` run
+      `ZoneGenerator.genAnimalsPath` (not ported); it calls
+      `meta.add_cell_to_save(cell_x, cell_y)` unless the sandbox's
+      animal path chance is "none" and registers its zones with
+      `register_animal_zone_def` (#167).
+- [ ] Hot save: on `StreamEvent::HotSave` (main thread, after the
+      streamer step) call `world_save::hot_save_ancillary(&mut HotSave {
+      .. })` and set `PlayerDB.forceSavePlayers` when `canSavePlayers`
+      (#150).
+- [ ] Game save (`GameWindow.save(true)`: sleep, menu save, quit):
+      `world_save::save_game(&mut SaveGame { .. }, &mut hooks)`; the
+      engine's `SaveGameHooks::save_chunks(meta)` builds its `StreamCtx`
+      and calls `streamer.wait_for_saves(ctx)` then
+      `streamer.save_chunk_maps(&cell, ctx)`; `save_population` calls
+      `WorldPopulation::save`; `on_save` fires Lua `OnSave`. Supply
+      `sandbox: &sandbox.save_bin(world_version, preset)`, and from the
+      characters side the local players' `IsoPlayer.save` bytes and the
+      reanimated zombies' `IsoZombie.save` bytes (#150).
+      `SaveGame` also takes `world_gen` (`map_worldgen.bin`),
+      `instance_tracker` (`iTrack.bin`; `cache_dir` for
+      `ItemTracker.log`), `meta_tracker` (helicopter + ambient alarms,
+      `metadata.bin`), `statistics`, `local_players` and
+      `on_game_thread`; the renderer implements
+      `SaveGameHooks::capture_thumbnail(player)` (zoom 1, centre, render,
+      read back the 256x256 middle as bottom-up RGBA) and `save_game`
+      writes `thumb.png`, then the renderer reloads that texture.
+      `map_animals.bin` and the queued `metagrid/metacell_*.bin` are
+      written with `map_zone.bin` (#167).
+- [ ] Game load (`IsoWorld.init`): `world_gen.load_file(save_dir)`
+      where `WorldGenParams.INSTANCE.load()` runs; after
+      `GlobalModData.init`, `instance_tracker.load_file(save_dir,
+      no_save)`; after `map_zone.bin`,
+      `world_save::load_meta_grid_extras(&mut meta, save_dir)`; after
+      player 0 is placed, `meta_tracker.load_file(save_dir, no_save,
+      players[0].is_some())` then `statistics.load_file(save_dir,
+      no_save)` (achievement checks are the caller's). In
+      `GameLoadingState`, unless saving is off,
+      `world_save::ensure_subdirectories_exist(save_dir)` (#167).
+- [ ] Quit (`Core.exiting`): `world_save::save_on_quit(&mut g,
+      &mut local_players, &mut hooks)` (`on_post_save` fires `OnPostSave`),
+      then `IngameState.exit`: `streamer.stop(&mut cell, ctx)`, the other
+      stops, `world_save::close_stores(Some(&mut player_db), &mut
+      vehicle_store)` (#150).
 - [ ] `IsoWorld.init`, after `VehiclesDB2.init` and before
       `WorldStreamer.create` / the cell load:
       `let regions = IsoRegions::init_world(save_dir, chunk_grid_width,
@@ -467,12 +610,16 @@ registered):
       (#114).
 - [ ] Per frame, ragdolls: before the animation update call
       `update_ragdoll_variables(ctx)` (the `canRagdoll` variable the death
-      and shot nodes test); once pz-ragdoll (#142) lands, its
-      `RagdollCharacter` reads `can_ragdoll_uncapped`, the fall flags and
-      `take_ragdoll_hit(sm, attacker position)` (the shot impulse from the
-      ballistics target's combat data and `PhysicsHitReactionScript`), and
-      after the update the controller state goes into `chr.ragdoll`
-      (`RagdollTracking`) (#114).
+      and shot nodes test); pass
+      `firearm::CharacterRagdoll::new(&mut chr, StateCx)` (pz-characters'
+      `bullet` feature) as `RagdollEnv::character` (it reads
+      `can_ragdoll_uncapped`, writes the fall flags, `onFloor` and the
+      deferred movement, slides away from walls on start and takes the
+      pending shot with the attacker's position from
+      `StateWorld::character_mut`); after the update call
+      `CharacterRagdoll::track(&mut chr, &player, controller)` so
+      `chr.ragdoll` (`RagdollTracking`) and `isRagdollSimulationActive`
+      follow the controller (#114, char-ragdoll PR).
 - [ ] Per frame, PlayerInput adapter: once per frame the rendering side
       implements `pz_characters::character::player::PlayerInput` over
       `pz_input` (`InputState`, `Core::get_key`/`get_key_binding`, the
@@ -517,9 +664,8 @@ registered):
       `update_with_ragdoll(dt, vars, &mut RagdollFrame { env: RagdollEnv {
       bullet, globals, builder, character, bullet_frame_no:
       WorldSimulation's frame number, time_delta, debug }, controller,
-      multiplier })` instead of `update`; implement `RagdollCharacter` on
-      the character (`canRagdoll`, fall flags, `setOnFloor`,
-      `doDeferredMovementFromRagdoll`, ballistics hits). Before `stopAll`
+      multiplier })` instead of `update`, with `CharacterRagdoll` as the
+      character (see the per-frame ragdoll line above). Before `stopAll`
       or releasing the player call `release_ragdoll_controller(Some(host))`
       so the ragdoll leaves the world; `vehicle_collision` from
       `IsoZombie`'s vehicle contact (#142).

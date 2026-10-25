@@ -1186,8 +1186,47 @@ fn register_container(thread: &mut Thread) {
 }
 
 /// Registers the item classes and `WeaponType`.
+/// The `InventoryItem` methods the vehicle part Lua (`Vehicles.lua`, the
+/// mechanics UI) calls on part items: capacities, the part stats from the
+/// item script, `setConditionMax` and `setCurrentUsesFloat`.
+fn register_vehicle_part_methods(thread: &mut Thread) {
+    let b = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
+    get!(b, "getMaxCapacity", |i| Value::from(i.max_capacity));
+    get!(b, "getItemCapacity", |i| f(i.item_capacity));
+    get!(b, "getConditionLowerNormal", |i| f(
+        i.vehicle_part.condition_lower_normal
+    ));
+    get!(b, "getConditionLowerOffroad", |i| f(
+        i.vehicle_part.condition_lower_offroad
+    ));
+    get!(b, "getBrakeForce", |i| f(i.vehicle_part.brake_force));
+    get!(b, "getWheelFriction", |i| f(i.vehicle_part.wheel_friction));
+    get!(b, "getChanceToSpawnDamaged", |i| Value::from(
+        i.vehicle_part.chance_to_spawn_damaged
+    ));
+    with!(b, "setConditionMax", |i, c| {
+        i.condition_max = int_arg(c, 1);
+        Ok(Value::Nil)
+    });
+    with!(b, "setMaxCapacity", |i, c| {
+        i.max_capacity = int_arg(c, 1);
+        Ok(Value::Nil)
+    });
+    with!(b, "setItemCapacity", |i, c| {
+        i.item_capacity = num_arg(c, 1) as f32;
+        Ok(Value::Nil)
+    });
+    // `InventoryItem.setCurrentUsesFloat`, and `DrainableComboItem`'s
+    // (which also updates the weight).
+    with!(b, "setCurrentUsesFloat", |i, c| {
+        pz_vehicles::items::set_current_uses_float(&mut i, num_arg(c, 1) as f32);
+        Ok(Value::Nil)
+    });
+}
+
 pub fn register(thread: &mut Thread) {
     register_inventory_item(thread);
+    register_vehicle_part_methods(thread);
     register_clothing(thread);
     register_food(thread);
     register_weapon(thread);

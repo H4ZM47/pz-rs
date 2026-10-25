@@ -206,7 +206,7 @@ impl Clock {
 
     /// `timeDigits()`.
     fn time_digits() -> [usize; 4] {
-        let mut time = with_host(|h| h.game_time.time_of_day());
+        let mut time = with_host(|h| h.game_time.digits_time_of_day());
         if !crate::bind_core::shared_core()
             .borrow()
             .get_option_clock24_hour()
