@@ -14,8 +14,8 @@
 //! the debug renderer reads it. The one `BulletObject` field the queries
 //! read back, the "hit" flag of body parts (`getTargetedBodyPart`), is.
 //!
-//! `C rand()` is the macOS libc generator (Park-Miller minimal standard,
-//! seed 1, never reseeded by the library); [`CRand`] reproduces it.
+//! `C rand()` is the platform's libc generator, never seeded by the
+//! library; [`CRand`] reproduces each platform's in pure Rust.
 
 use std::collections::BTreeMap;
 
@@ -50,34 +50,159 @@ fn c_powf(x: f32, y: f32) -> f32 {
     unsafe { libm::powf(x, y) }
 }
 
-/// macOS libc `rand()`: `next = 16807 * next mod (2^31 - 1)` by Schrage's
-/// method, starting from 1 (`srand` is never called by the library, and
-/// nothing else in the game's process draws from it).
-#[derive(Clone, Copy, Debug)]
+/// The C library `rand()` of the platform the game's native library was
+/// built for, in pure Rust (the host libc is never called), starting from
+/// its initial state: the library never calls `srand` and nothing else in
+/// the game's process draws from it.
+///
+/// * macOS: Park-Miller minimal standard, `next = 16807 * next mod
+///   (2^31 - 1)` by Schrage's method, from 1; `RAND_MAX` = `2^31 - 1`.
+///   Checked against the shipped library and libc.
+/// * Windows (MSVC CRT): `state = state * 214013 + 2531011`, returning bits
+///   16..30, from 1; `RAND_MAX` = 32767. The CRT keeps this state per
+///   thread.
+/// * Linux (glibc): `random()`'s `TYPE_3` additive feedback generator
+///   (`r[i] = r[i-3] + r[i-31]`, output `>> 1`, the first 310 outputs
+///   discarded) seeded with 1; `RAND_MAX` = `2^31 - 1`.
+///
+/// The Windows and Linux variants follow their documented algorithms and
+/// are checked against those (first outputs of each from seed 1); the
+/// game's Windows and Linux libraries could not be run here.
+#[derive(Clone, Debug)]
 pub struct CRand {
-    pub next: i64,
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    next: i64,
+    #[cfg(target_os = "windows")]
+    state: u32,
+    #[cfg(target_os = "linux")]
+    glibc: GlibcRandom,
+}
+
+/// glibc `random()` state (`TYPE_3`, degree 31, separation 3).
+#[derive(Clone, Debug)]
+pub struct GlibcRandom {
+    r: [i32; 34],
+    f: usize,
+    b: usize,
+}
+
+impl GlibcRandom {
+    /// `srandom(seed)`.
+    pub fn new(seed: u32) -> Self {
+        let mut r = [0i32; 34];
+        r[0] = if seed == 0 { 1 } else { seed as i32 };
+        for i in 1..31 {
+            // `word = 16807 * hi ...` as glibc's `__srandom_r`.
+            let w = r[i - 1] as i64;
+            let hi = w / 127_773;
+            let lo = w % 127_773;
+            let mut word = 16807 * lo - 2836 * hi;
+            if word < 0 {
+                word += 2_147_483_647;
+            }
+            r[i] = word as i32;
+        }
+        let mut g = GlibcRandom { r, f: 3, b: 0 };
+        for _ in 0..310 {
+            g.next();
+        }
+        g
+    }
+
+    /// `random()`.
+    pub fn next(&mut self) -> i32 {
+        let v = (self.r[self.f] as u32).wrapping_add(self.r[self.b] as u32);
+        self.r[self.f] = v as i32;
+        self.f = (self.f + 1) % 31;
+        self.b = (self.b + 1) % 31;
+        (v >> 1) as i32
+    }
 }
 
 impl Default for CRand {
     fn default() -> Self {
-        CRand { next: 1 }
+        CRand {
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+            next: 1,
+            #[cfg(target_os = "windows")]
+            state: 1,
+            #[cfg(target_os = "linux")]
+            glibc: GlibcRandom::new(1),
+        }
     }
 }
 
 impl CRand {
+    /// `RAND_MAX` of the platform.
+    #[cfg(target_os = "windows")]
+    pub const RAND_MAX: i32 = 0x7fff;
+    /// `RAND_MAX` of the platform.
+    #[cfg(not(target_os = "windows"))]
+    pub const RAND_MAX: i32 = 0x7fff_ffff;
+
+    /// `rand()`.
     pub fn rand(&mut self) -> i32 {
-        let mut x = self.next;
-        if x == 0 {
-            x = 123_459_876;
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+        {
+            macos_rand(&mut self.next)
         }
-        let hi = x / 127_773;
-        let lo = x % 127_773;
-        x = 16807 * lo - 2836 * hi;
-        if x < 0 {
-            x += 0x7fff_ffff;
+        #[cfg(target_os = "windows")]
+        {
+            msvc_rand(&mut self.state)
         }
-        self.next = x;
-        x as i32
+        #[cfg(target_os = "linux")]
+        {
+            self.glibc.next()
+        }
+    }
+}
+
+/// macOS libc `rand()` step.
+pub fn macos_rand(next: &mut i64) -> i32 {
+    let mut x = *next;
+    if x == 0 {
+        x = 123_459_876;
+    }
+    let hi = x / 127_773;
+    let lo = x % 127_773;
+    x = 16807 * lo - 2836 * hi;
+    if x < 0 {
+        x += 0x7fff_ffff;
+    }
+    *next = x;
+    x as i32
+}
+
+/// MSVC CRT `rand()` step.
+pub fn msvc_rand(state: &mut u32) -> i32 {
+    *state = state.wrapping_mul(214_013).wrapping_add(2_531_011);
+    ((*state >> 16) & 0x7fff) as i32
+}
+
+#[cfg(test)]
+mod rand_tests {
+    use super::*;
+
+    #[test]
+    fn documented_first_outputs_from_seed_1() {
+        let mut m = 1i64;
+        let mac: Vec<i32> = (0..3).map(|_| macos_rand(&mut m)).collect();
+        assert_eq!(mac, [16807, 282_475_249, 1_622_650_073]);
+        let mut w = 1u32;
+        let win: Vec<i32> = (0..5).map(|_| msvc_rand(&mut w)).collect();
+        assert_eq!(win, [41, 18467, 6334, 26500, 19169]);
+        let mut g = GlibcRandom::new(1);
+        let lin: Vec<i32> = (0..5).map(|_| g.next()).collect();
+        assert_eq!(
+            lin,
+            [
+                1_804_289_383,
+                846_930_886,
+                1_681_692_777,
+                1_714_636_915,
+                1_957_747_793
+            ]
+        );
     }
 }
 
@@ -820,8 +945,11 @@ impl WorldSimulation {
         for i in 0..count.max(0) as usize {
             let r1 = statics.rand.rand();
             let r2 = statics.rand.rand();
-            let angle = ((r1 as f32) as f64 * std::f64::consts::TAU) / 2_147_483_647.0;
-            let u = (r2 as f32) / 2_147_483_648.0f32;
+            // The macOS binary divides by `RAND_MAX` and `RAND_MAX + 1`
+            // (2147483647 and 2147483648); builds for the other platforms
+            // compile in their own `RAND_MAX`.
+            let angle = ((r1 as f32) as f64 * std::f64::consts::TAU) / CRand::RAND_MAX as f64;
+            let u = (r2 as f32) / (CRand::RAND_MAX as f32 + 1.0);
             let radius = (c_powf(u, weight_center) * spread) as f64;
             let (s, c) = bt_sincos(angle);
             let target = t.apply(&Vec3::new(c * radius, s * radius, range));
