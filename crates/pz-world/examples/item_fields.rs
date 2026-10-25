@@ -260,6 +260,10 @@ fn main() {
         let ctx: &'static pz_entity::BasicContext = Box::leak(Box::new(ctx));
         env.components = Box::new(pz_inventory::component::EntityCodec { ctx });
     }
+    // ClothingItem assets (synchWithVisual at load); ITEM_ASSETS=0 skips them.
+    if std::env::var("ITEM_ASSETS").as_deref() != Ok("0") {
+        env.assets = Some(pz_inventory::ItemAssets::load(game).unwrap());
+    }
     let world_age: f64 = a
         .get(6)
         .map(|s| s.parse().unwrap())

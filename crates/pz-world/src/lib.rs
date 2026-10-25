@@ -9,6 +9,7 @@ pub mod bra;
 pub mod cell_loader;
 pub mod chunk;
 pub mod chunk_data;
+pub mod chunk_vehicles;
 pub mod defs;
 pub mod erosion_data;
 pub mod fire;
@@ -35,7 +36,7 @@ pub use chunk::{
 };
 pub use defs::{BuildingDef, BuildingIdx, MetaObject, RoomDef, RoomIdx, RoomRect};
 pub use iso_lot::IsoLot;
-pub use java::GameRand;
+pub use java::{FactoryRand, GameRand};
 pub use los::TestResults;
 pub use map_files::{LotHeader, MapFiles, MapInfo};
 pub use meta_grid::{
@@ -51,6 +52,6 @@ pub use square::{
 };
 pub use world_state::{ObjectHooks, PowerSettings, WorldState};
 pub use zones::{
-    ClipperOps, PropValue, RoomTone, Zone, ZoneError, ZoneGeometryType, ZoneId, ZoneKind,
+    ClipperOps, PropValue, RoomTone, VehicleZone, Zone, ZoneError, ZoneGeometryType, ZoneId, ZoneKind,
     ZoneProps, ZoneTables,
 };

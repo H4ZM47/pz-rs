@@ -58,6 +58,10 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
 - [ ] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
+- [ ] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`)
+      read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime
+      replaces those entries with its own objects, route these through
+      the cell's vehicle list instead.
 - [ ] `StateWorld` impl owners: characters by id, squares, PathHost
       (`path_*`, `path_cancel_request` → `PathfindService::cancel_request`,
       `resolve_collision`, `resolve_collision_radius`,

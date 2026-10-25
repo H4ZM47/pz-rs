@@ -811,23 +811,3 @@ impl VehicleRow {
         BaseVehicle::load(&mut r, self.world_version, offsets, items).map(Some)
     }
 }
-
-/// A vehicle in a chunk file's vehicle list (`IsoChunk.vehicles` as
-/// loaded): its chunk-local square bytes and the vehicle.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ChunkVehicle {
-    pub x: i8,
-    pub y: i8,
-    pub z: i8,
-    pub vehicle: BaseVehicle,
-}
-
-impl ChunkVehicle {
-    /// The `(x, y)` of `chunk.getGridSquare(x, y, z)`, the square the
-    /// vehicle is given on load (`None` when the chunk has none there).
-    pub fn square(&self, chunk: &crate::chunk::IsoChunk) -> Option<(i32, i32)> {
-        chunk
-            .get_grid_square(self.x as i32, self.y as i32, self.z as i32)
-            .map(|s| (s.x, s.y))
-    }
-}

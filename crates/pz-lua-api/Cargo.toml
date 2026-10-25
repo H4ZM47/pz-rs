@@ -19,3 +19,4 @@ pz-input.workspace = true
 pz-classfile.workspace = true
 pz-popman.workspace = true
 pz-world.workspace = true
+pz-inventory.workspace = true

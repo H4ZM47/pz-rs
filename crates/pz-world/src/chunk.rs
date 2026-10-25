@@ -205,6 +205,12 @@ pub struct IsoChunk {
     /// `addZombies`: set by `LoadBrandNew`; `doLoadGridsquare` then adds
     /// vehicles, zone stories and zombies.
     pub add_zombies: bool,
+    /// `vehicles`: filled from the chunk file's vehicle list (saving writes
+    /// an empty list; the original keeps vehicles in `vehicles.db`) and by
+    /// [`IsoChunk::vehicle_loaded`].
+    pub vehicles: crate::chunk_vehicles::ChunkVehicles,
+    /// `IsoChunkLevel.physicsCheck`, per level (`[z - minLevel]`).
+    physics_check: Vec<bool>,
 }
 
 /// `IsoFloorBloodSplat` (positions quantised to 1/255 of a chunk).
@@ -238,9 +244,6 @@ pub struct ChunkSaveData {
     pub generators: Option<Vec<(i32, i32, i8)>>,
     pub loot_respawn_hour: i32,
     pub spawned_rooms: Vec<i64>,
-    /// `vehicles` read from the chunk file's vehicle list. Saving writes an
-    /// empty list (the original moves them to `vehicles.db`).
-    pub vehicles: Vec<crate::save::vehicle::ChunkVehicle>,
 }
 
 impl Default for ChunkSaveData {
@@ -259,7 +262,6 @@ impl Default for ChunkSaveData {
             generators: None,
             loot_respawn_hour: -1,
             spawned_rooms: Vec::new(),
-            vehicles: Vec::new(),
         }
     }
 }
@@ -294,7 +296,58 @@ impl IsoChunk {
             saved: ChunkSaveData::default(),
             erosion: None,
             add_zombies: false,
+            vehicles: Default::default(),
+            physics_check: vec![false],
         }
+    }
+
+    /// `checkPhysicsLater(level)`: marks the level's physics shapes for
+    /// rebuilding (`IsoChunkLevel.physicsCheck = true`); nothing for a level
+    /// the chunk does not have. `RecalcProperties` on one of the chunk's
+    /// squares calls it (see [`IsoCell::recalc_chunk_squares`] and
+    /// [`IsoCell::recalc_all_with_neighbours`]).
+    pub fn check_physics_later(&mut self, level: i32) {
+        if self.is_valid_level(level) {
+            self.physics_check[(level - self.min_level) as usize] = true;
+        }
+    }
+
+    /// `getLevelData(level).physicsCheck` (`false` for a level the chunk
+    /// does not have).
+    pub fn physics_check(&self, level: i32) -> bool {
+        self.is_valid_level(level) && self.physics_check[(level - self.min_level) as usize]
+    }
+
+    /// The test-and-clear of `Bullet.updatePhysicsForLevelIfNeeded`: returns
+    /// whether the level's flag was set and clears it (the caller then runs
+    /// `updatePhysicsForLevel(level)`).
+    pub fn take_physics_check(&mut self, level: i32) -> bool {
+        if !self.is_valid_level(level) {
+            return false;
+        }
+        std::mem::take(&mut self.physics_check[(level - self.min_level) as usize])
+    }
+
+    /// `VehiclesDB2.WorldStreamerThread.vehicleLoaded`: a vehicle of a
+    /// `vehicles.db` row of this chunk, given the square at its position
+    /// (`(int)(x - wx*8)`, `(int)(y - wy*8)`, level 0), joins the list.
+    /// Returns its handle.
+    pub fn vehicle_loaded(
+        &mut self,
+        row: &crate::save::vehicle::VehicleRow,
+        vehicle: crate::save::vehicle::BaseVehicle,
+    ) -> crate::chunk_vehicles::VehicleHandle {
+        let lx = (row.x - (self.wx * CHUNK_WIDTH) as f32) as i32;
+        let ly = (row.y - (self.wy * CHUNK_WIDTH) as f32) as i32;
+        let square = self.get_grid_square(lx, ly, 0).map(|s| (s.x, s.y, s.z));
+        let h: crate::chunk_vehicles::VehicleHandle =
+            std::rc::Rc::new(crate::chunk_vehicles::LoadedVehicle {
+                origin: crate::chunk_vehicles::VehicleOrigin::Database { sql_id: row.id },
+                square,
+                vehicle,
+            });
+        self.vehicles.add(h.clone());
+        h
     }
 
     pub fn is_valid_level(&self, z: i32) -> bool {
@@ -305,19 +358,24 @@ impl IsoChunk {
         if min_level == self.min_level && max_level == self.max_level {
             return;
         }
+        // Kept levels keep their `IsoChunkLevel` (and flags); dropped levels
+        // are cleared and new ones come from the pool cleared.
         let mut levels = Vec::with_capacity((max_level - min_level + 1) as usize);
+        let mut physics = Vec::with_capacity(levels.capacity());
         for z in min_level..=max_level {
             if self.is_valid_level(z) {
-                levels.push(std::mem::take(
-                    &mut self.squares[(z - self.min_level) as usize],
-                ));
+                let i = (z - self.min_level) as usize;
+                levels.push(std::mem::take(&mut self.squares[i]));
+                physics.push(self.physics_check[i]);
             } else {
                 levels.push(vec![None; 64]);
+                physics.push(false);
             }
         }
         self.min_level = min_level;
         self.max_level = max_level;
         self.squares = levels;
+        self.physics_check = physics;
     }
 
     pub fn set_square(&mut self, x: i32, y: i32, z: i32, square: Option<IsoGridSquare>) {
@@ -678,6 +736,50 @@ pub struct IsoCell {
 }
 
 impl IsoCell {
+    /// The `vehicles` of loaded chunk `(wx, wy)`.
+    pub fn chunk_vehicles(
+        &self,
+        wx: i32,
+        wy: i32,
+    ) -> Option<&crate::chunk_vehicles::ChunkVehicles> {
+        self.chunks.get(&(wx, wy)).map(|c| &c.vehicles)
+    }
+
+    /// `BaseVehicle.update`'s chunk change: when the vehicle's current
+    /// square is in loaded chunk `to` and that is not its chunk `from`,
+    /// it leaves `from.vehicles` and joins `to.vehicles`. Returns whether
+    /// it moved (the caller then sets `chunk` and calls
+    /// `addFromCheckedVehicles`).
+    pub fn update_vehicle_chunk(
+        &mut self,
+        v: &crate::chunk_vehicles::VehicleHandle,
+        from: (i32, i32),
+        to: (i32, i32),
+    ) -> bool {
+        if from == to || !self.chunks.contains_key(&to) {
+            return false;
+        }
+        if let Some(c) = self.chunks.get_mut(&from) {
+            c.vehicles.remove(v);
+        }
+        if let Some(c) = self.chunks.get_mut(&to) {
+            c.vehicles.add(v.clone());
+        }
+        true
+    }
+
+    /// `this.chunk.vehicles.remove(this)` (`BaseVehicle.permanentlyRemove`
+    /// and the meta hand-off of `IsoChunk.removeFromWorld`).
+    pub fn remove_vehicle_from_chunk(
+        &mut self,
+        v: &crate::chunk_vehicles::VehicleHandle,
+        chunk: (i32, i32),
+    ) -> bool {
+        self.chunks
+            .get_mut(&chunk)
+            .is_some_and(|c| c.vehicles.remove(v))
+    }
+
     /// Remove chunk `(wx, wy)` from the cell (`IsoChunk.removeFromWorld`
     /// for the parts ported so far) and tell `hook` it is gone.
     pub fn unload_chunk(

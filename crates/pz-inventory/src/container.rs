@@ -62,27 +62,34 @@ impl ItemContainer {
     }
 }
 
-/// `CompressIdenticalItems.load`: every copy of a run is loaded from the
-/// same record and given the saved ids; runs whose item cannot be created
-/// are skipped.
+/// `CompressIdenticalItems.load`: every copy of a run is loaded again
+/// from the same record (`InventoryItem.loadItem` per copy, with its
+/// `CreateItem` and load-time `Rand` draws) and given the saved ids; runs
+/// whose item cannot be created are skipped.
 pub fn load_items(r: &mut Reader<'_>, wv: i32, env: &dyn ItemEnv) -> SaveResult<Vec<SavedItem>> {
     let count = r.i16()?;
     let mut items = Vec::new();
     for _ in 0..count.max(0) {
         let identical = r.i32()?;
-        let item = SavedItem::load(r, wv, env)?;
-        let mut ids = Vec::new();
-        for _ in 1..identical.max(1) {
-            ids.push(r.i32()?);
-        }
-        if let Some(item) = item {
-            for id in ids {
-                let mut copy = item.clone();
-                copy.set_id(id);
-                items.push(copy);
+        let rec = crate::saved::read_record(r)?;
+        let reg = i16::from_be_bytes([rec[0], rec[1]]);
+        let created = env.exists(reg);
+        let first = items.len();
+        if created {
+            // The first load happens even for a run of 0 (nothing is added).
+            let item = SavedItem::decode(rec, wv, env);
+            if identical > 0 {
+                items.push(item);
             }
-            let at = items.len() + 1 - identical.max(1) as usize;
-            items.insert(at, item);
+            for _ in 1..identical {
+                items.push(SavedItem::decode(rec, wv, env));
+            }
+        }
+        for i in 1..identical.max(1) as usize {
+            let id = r.i32()?;
+            if created {
+                items[first + i].set_id(id);
+            }
         }
     }
     Ok(items)

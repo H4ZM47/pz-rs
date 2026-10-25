@@ -466,11 +466,15 @@ fn chunk_vehicle_lists() {
     );
     let back = load_chunk(&file, 10, 20, &ctx).unwrap();
     assert!(back.crc_ok);
-    let vs = &back.chunk.saved.vehicles;
+    let vs: Vec<_> = back.chunk.vehicles.loaded().collect();
     // The entry with a clear serialise flag is skipped.
     assert_eq!(vs.len(), 2);
-    assert_eq!((vs[0].x, vs[0].y), (2, 3));
-    assert_eq!(vs[0].square(&back.chunk), Some((82, 163)));
+    assert_eq!(back.chunk.vehicles.len(), 2);
+    assert_eq!(
+        vs[0].origin,
+        crate::chunk_vehicles::VehicleOrigin::ChunkFile { x: 2, y: 3, z: 0 }
+    );
+    assert_eq!(vs[0].square, Some((82, 163, 0)));
     assert_eq!(vs[1].vehicle.script_name, "Base.CarNormal");
     // Saving writes the empty list, as the original.
     assert_eq!(save_chunk(&back.chunk, &ctx).unwrap(), plain);
@@ -481,4 +485,64 @@ fn chunk_vehicle_lists() {
         &[(0, 0, 0, vec![1, t.class_id("Pushable") as u8])],
     );
     assert!(load_chunk(&file, 10, 20, &ctx).is_err());
+}
+
+#[test]
+fn chunk_vehicle_list_from_rows_and_moves() {
+    use crate::chunk::IsoCell;
+    use crate::chunk_vehicles::{LoadedVehicle, VehicleHandle, VehicleOrigin};
+    use std::rc::Rc;
+    let mut ch = IsoChunk::new(10, 20);
+    for x in 0..8 {
+        for y in 0..8 {
+            ch.set_square(x, y, 0, Some(IsoGridSquare::new(80 + x, 160 + y, 0)));
+        }
+    }
+    let row = |id: i32, x: f32, y: f32| VehicleRow {
+        id,
+        wx: 10,
+        wy: 20,
+        x,
+        y,
+        world_version: 249,
+        in_meta: false,
+        data: Vec::new(),
+    };
+    let a = ch.vehicle_loaded(&row(7, 83.9, 161.2), vehicle());
+    // Outside the chunk's squares: no square (-0.5 truncates to 0, so it
+    // takes 1.5 to leave).
+    let b = ch.vehicle_loaded(&row(8, 78.5, 161.0), vehicle());
+    assert_eq!(ch.vehicles.len(), 2);
+    let l: Vec<Rc<LoadedVehicle>> = ch.vehicles.loaded().collect();
+    assert_eq!(l[0].origin, VehicleOrigin::Database { sql_id: 7 });
+    assert_eq!(l[0].square, Some((83, 161, 0)));
+    assert_eq!(l[1].square, None);
+    assert!(ch.vehicles.contains(&a) && ch.vehicles.contains(&b));
+
+    // The runtime takes over entry 0 with its own object.
+    struct Runtime(i32);
+    let r: VehicleHandle = Rc::new(Runtime(1));
+    let old = ch.vehicles.replace(0, r.clone());
+    assert!(Rc::ptr_eq(&old, &a));
+    assert_eq!(
+        ch.vehicles
+            .of_type::<Runtime>()
+            .map(|v| v.0)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    assert_eq!(ch.vehicles.loaded().count(), 1);
+
+    let mut cell = IsoCell::default();
+    cell.chunks.insert((10, 20), ch);
+    cell.chunks.insert((11, 20), IsoChunk::new(11, 20));
+    // Moving to a chunk that is not loaded keeps it where it is.
+    assert!(!cell.update_vehicle_chunk(&r, (10, 20), (12, 20)));
+    assert!(cell.update_vehicle_chunk(&r, (10, 20), (11, 20)));
+    assert!(!cell.chunk_vehicles(10, 20).unwrap().contains(&r));
+    assert!(cell.chunk_vehicles(11, 20).unwrap().contains(&r));
+    assert_eq!(cell.chunk_vehicles(10, 20).unwrap().len(), 1);
+    assert!(cell.remove_vehicle_from_chunk(&r, (11, 20)));
+    assert!(!cell.remove_vehicle_from_chunk(&r, (11, 20)));
+    assert!(cell.chunk_vehicles(11, 20).unwrap().is_empty());
 }

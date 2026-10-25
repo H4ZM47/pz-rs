@@ -257,3 +257,66 @@ fn props_trait_is_object_safe() {
     assert_eq!(d.rawget("A"), PropValue::Number(1.0));
     assert_eq!(d.rawget("B"), PropValue::Nil);
 }
+
+#[test]
+fn vehicle_zone_views_per_cell() {
+    let mut g = IsoMetaGrid::with_bounds(10, 20, 11, 21);
+    g.zone_tables.iso_direction_names = ["N", "NW", "W", "SW", "S", "SE", "E", "NE"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let p = props(&[
+        ("Direction", PropValue::Str("E".into())),
+        ("FaceDirection", PropValue::Bool(true)),
+    ]);
+    // Spans cells (10,20) and (11,20); registered in that order.
+    let a = g
+        .register_vehicles_zone("lot", "ParkingStall", 2810, 5130, 0, 20, 6, Some(&p))
+        .unwrap()
+        .unwrap();
+    g.register_vehicles_zone("", "Vehicle", 2700, 5200, 0, 3, 3, None)
+        .unwrap()
+        .unwrap();
+    // Not a vehicle zone type: no view, nothing registered.
+    assert!(g
+        .register_vehicles_zone("x", "TownZone", 2900, 5200, 0, 3, 3, None)
+        .unwrap()
+        .is_none());
+    let c0 = g.cell_vehicle_zones(10, 20);
+    assert_eq!(c0.len(), 2);
+    let v = &c0[0];
+    assert_eq!(
+        (v.name.as_str(), v.zone_type.as_str(), v.x, v.y, v.w, v.h),
+        ("lot", "ParkingStall", 2810, 5130, 20, 6)
+    );
+    assert_eq!(v.dir, Some(pz_world::IsoDirections::E));
+    assert!(v.face_direction);
+    assert!(!v.is_polyline() && v.is_rectangle());
+    assert_eq!(v.polyline_length(), 0.0);
+    assert_eq!(c0[1].dir, None);
+    assert!(!c0[1].face_direction);
+    let c1 = g.cell_vehicle_zones(11, 20);
+    assert_eq!(c1.len(), 1);
+    assert_eq!(c1[0], *v);
+    assert!(g.cell_vehicle_zones(10, 21).is_empty());
+    assert!(g.cell_vehicle_zones(50, 50).is_empty());
+    // getVehicleZoneAt: the cell's zones in order.
+    assert_eq!(g.vehicle_zone_at(2815, 5131, 0).as_ref(), Some(v));
+    assert_eq!(g.get_vehicle_zone_at(2815, 5131, 0), Some(a));
+    assert_eq!(g.vehicle_zone_at(2815, 5131, 1), None);
+    assert_eq!(
+        g.vehicle_zone_at(2701, 5201, 0).unwrap().zone_type,
+        "Vehicle"
+    );
+}
+
+#[test]
+fn vehicle_zone_polyline_length() {
+    let z = pz_world::VehicleZone {
+        geometry_type: pz_world::ZoneGeometryType::Polyline,
+        points: vec![0, 0, 3, 4, 3, 10],
+        ..Default::default()
+    };
+    assert!(z.is_polyline());
+    assert_eq!(z.polyline_length(), 11.0);
+}
