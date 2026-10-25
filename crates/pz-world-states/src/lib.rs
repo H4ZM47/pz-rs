@@ -761,6 +761,53 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             .is_none_or(|r| r.blocked)
     }
 
+    /// `testCollideAdjacent(mover, ...)` with the character's own view.
+    fn test_collide_adjacent_mover(
+        &self,
+        mover: &dyn pz_world::square::CollideMover,
+        _id: MoverId,
+        from: (i32, i32, i32),
+        dx: i32,
+        dy: i32,
+        dz: i32,
+    ) -> pz_world::square::CollideAdjacent {
+        let Some(sq) = self.cell.get_grid_square(from.0, from.1, from.2) else {
+            return pz_world::square::CollideAdjacent {
+                blocked: true,
+                ..Default::default()
+            };
+        };
+        self.collide_env()
+            .test_collide_adjacent(sq, Some(mover), dx, dy, dz)
+    }
+
+    fn hoppable_actions(
+        &self,
+        mover: &dyn pz_world::square::CollideMover,
+        chr: i32,
+        last: (i32, i32, i32),
+    ) -> Vec<HoppableAction> {
+        self.hoppable_actions_dyn(mover, chr, last)
+    }
+
+    fn fence_climb(
+        &mut self,
+        chr: &dyn CharacterView,
+        zombie: bool,
+        from: (i32, i32, i32),
+        dir: IsoDirections,
+    ) -> Option<pz_characters::character::state::FenceClimb> {
+        let t = Thumper {
+            x: chr.x(),
+            y: chr.y(),
+            z: chr.z(),
+            current_square: Some(from),
+            zombie,
+            ..Default::default()
+        };
+        self.fence_climb_for(&t, from, dir)
+    }
+
     /// `checkBreakHoppable()`, `checkHitHoppable()` and
     /// `checkBreakBendableFence(current)`, handed to
     /// [`StatesEngine::hoppable_actions`].

@@ -190,7 +190,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoWindow.canClimbThroughHelper(chr, sq, oppositeSq, north)`.
-    fn can_climb_through_helper(
+    pub(crate) fn can_climb_through_helper(
         &self,
         chr: &Thumper,
         sq: &IsoGridSquare,

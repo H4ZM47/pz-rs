@@ -260,6 +260,8 @@ pub struct CharacterVars {
     pub collided_this_frame: bool,
     pub collided_with_vehicle: bool,
     pub collided_with_door: bool,
+    /// `collidedObject`: the special object the last collision hit.
+    pub collided_object: Option<pz_pathfind::mover::ObjectRef>,
     /// `last` (the square before this frame's move).
     pub last_square: Option<(i32, i32, i32)>,
     /// `isRagdollSimulationActive()`, `IsoPlayer.isNoClip()`, `destroyed`.
@@ -477,6 +479,7 @@ impl Default for CharacterVars {
             collided_this_frame: false,
             collided_with_vehicle: false,
             collided_with_door: false,
+            collided_object: None,
             last_square: None,
             ragdoll_simulation_active: false,
             no_clip: false,
