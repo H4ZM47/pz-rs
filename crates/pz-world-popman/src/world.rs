@@ -169,7 +169,24 @@ impl<H: Copy + Eq> WorldPopulation<H> {
     /// and `PersistentOutfits.getOutfitNames()`). `gs` is
     /// [`save_game_state`] plus the sandbox and mode fields.
     pub fn init(native: Native, meta: &IsoMetaGrid, gs: &McdGameState, config: &ZombieConfig, outfit_names: &[String]) -> Self {
+        Self::init_with_spawn_origins(native, meta, gs, config, outfit_names, &[])
+    }
+
+    /// [`WorldPopulation::init`] with the spawn origins Lua registered
+    /// before (`IsoWorld.registerSpawnOrigin` on `OnLoadMapZones`), which
+    /// `init` hands to the native side: `(x, y, w, h)`.
+    pub fn init_with_spawn_origins(
+        native: Native,
+        meta: &IsoMetaGrid,
+        gs: &McdGameState,
+        config: &ZombieConfig,
+        outfit_names: &[String],
+        spawn_origins: &[(i32, i32, i32, i32)],
+    ) -> Self {
         let mut pm = ZombiePopulationManager::new(native);
+        for &(x, y, w, h) in spawn_origins {
+            pm.register_spawn_origin(x, y, w, h);
+        }
         pm.last_stand = gs.last_stand;
         let mi = meta_init(meta);
         let client = pm.client;

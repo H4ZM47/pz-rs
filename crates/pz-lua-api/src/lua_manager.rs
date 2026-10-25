@@ -57,6 +57,7 @@ impl LuaManager {
             loader,
         };
         mgr.register_require();
+        mgr.register_reload_lua_file();
         let mut mgr = mgr;
         crate::register_all(&mut mgr);
         Ok(mgr)
@@ -84,6 +85,43 @@ impl LuaManager {
                 }
                 (c.thread.out)(&format!("require(\"{f}\") failed"));
                 Ok(c.push(Value::Nil))
+            })),
+        );
+    }
+
+    /// `reloadLuaFile(filename)`: run a file again (dropped from `loaded`
+    /// first). A path with `..` is refused (`nil`); one outside the
+    /// install, the user folder and the mods is an error
+    /// (`validatePrefix`). The file is opened through
+    /// `ZomboidFileSystem.getString`, as `RunLuaInternal` does.
+    fn register_reload_lua_file(&self) {
+        let loader = self.loader.clone();
+        let fs = self.fs.clone();
+        self.thread.globals().set_str(
+            "reloadLuaFile",
+            Value::Native(NativeFunction::new("reloadLuaFile", move |c| {
+                let f = pz_kahlua::stdlib::string_arg(c, 1, "reloadLuaFile")?.to_string();
+                if f.contains("..") {
+                    (c.thread.log)("relative paths not allowed");
+                    return Ok(c.push(Value::Nil));
+                }
+                let abs = {
+                    let fs = fs.borrow();
+                    if !fs.validate_prefix(&f) {
+                        return Err(LuaError::Runtime {
+                            message: format!("Invalid prefix found for: {f}"),
+                            class: "java.lang.IllegalArgumentException",
+                        });
+                    }
+                    let rel = f.replace('\\', "/");
+                    match fs.resolve(&rel) {
+                        Some(p) => p.to_string_lossy().replace('\\', "/"),
+                        None => rel,
+                    }
+                };
+                loader.borrow_mut().forget(&abs);
+                let r = run_lua(c.thread, &loader, &abs);
+                Ok(c.push(r))
             })),
         );
     }

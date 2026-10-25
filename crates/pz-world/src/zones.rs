@@ -68,11 +68,41 @@ pub struct ZoneTables {
 }
 
 impl ZoneTables {
-    /// LOADER STUB: to be filled from `projectzomboid.jar` through
-    /// `pz-classfile` (`zombie.iso.zones.Zone.<clinit>` and the
-    /// `zombie.iso.IsoDirections` enum). Returns `None` until that lands.
-    pub fn load_from_game_jar(_jar: &std::path::Path) -> Option<ZoneTables> {
-        None
+    /// Reads the tables from `projectzomboid.jar`: the `List.of(...)`
+    /// arguments `zombie.iso.zones.Zone.<clinit>` stores in
+    /// `s_PreferredZoneTypes`, and the `zombie.iso.IsoDirections` constants.
+    pub fn load_from_game_jar(jar: &std::path::Path) -> Result<ZoneTables, String> {
+        let jar = pz_classfile::Jar::open(jar).map_err(|e| format!("{}: {e}", jar.display()))?;
+        Self::from_jar(&jar)
+    }
+
+    /// [`ZoneTables::load_from_game_jar`] on an open jar.
+    pub fn from_jar(jar: &pz_classfile::Jar) -> Result<ZoneTables, String> {
+        use pz_classfile::Value;
+        const ZONE: &str = "zombie/iso/zones/Zone";
+        const DIRS: &str = "zombie/iso/IsoDirections";
+        let preferred = match pz_classfile::static_value(jar, ZONE, "s_PreferredZoneTypes")
+            .map_err(|e| format!("{ZONE}: {e}"))?
+        {
+            // `List.of(E...)` takes an array; the fixed-arity overloads
+            // take the elements.
+            Some(Value::Call { name, args, .. }) if name == "of" => match args.as_slice() {
+                [a @ Value::Array(_)] => a
+                    .as_str_array()
+                    .map(|v| v.into_iter().map(str::to_string).collect()),
+                _ => args
+                    .iter()
+                    .map(|a| a.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>(),
+            },
+            _ => None,
+        }
+        .ok_or_else(|| format!("{ZONE}.s_PreferredZoneTypes: not a List.of of strings"))?;
+        let dirs = pz_classfile::enum_constants(jar, DIRS).map_err(|e| format!("{DIRS}: {e}"))?;
+        Ok(ZoneTables {
+            preferred_zone_types: preferred,
+            iso_direction_names: dirs,
+        })
     }
 
     /// `Zone.isPreferredZoneForSquare(type)`.

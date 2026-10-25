@@ -31,4 +31,5 @@ pz-sandbox.workspace = true
 pz-world-popman.workspace = true
 pz-worldgen.workspace = true
 pz-text.workspace = true
+pz-clipper.workspace = true
 winit = "0.30"

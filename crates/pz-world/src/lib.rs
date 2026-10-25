@@ -24,6 +24,7 @@ pub mod map_groups;
 pub mod meta_grid;
 pub mod meta_save;
 pub mod meta_zones;
+pub mod nav_streets;
 pub mod objects;
 pub mod save;
 pub mod sprite;
