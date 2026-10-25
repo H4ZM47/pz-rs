@@ -785,7 +785,7 @@ registered):
       32. Save thumbnail (#173, not in integration yet): pass
       `params.thumbnail(256, 256, 1.0)` (`startThumbnail`) to
       `capture_thumbnail`.
-- [ ] Screen shader player inputs and `SearchMode` (#SEARCHPR): in
+- [ ] Screen shader player inputs and `SearchMode` (#188): in
       `IngameState.UpdateStuff` (after `WorldMapVisited.update`) call
       `pz_lua_api::bind_search_mode::update(GameTime.getTimeDelta())`; in
       `IngameState.exit` call `bind_search_mode::reset()`. Keep one
