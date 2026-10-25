@@ -367,17 +367,10 @@ fn main() {
             thirty_fps: t30,
             now_millis: 0,
         };
-        mgr.update(&mut w, &mut rand, frame);
-        if let Ok(d) = std::env::var("FP_DEBUG") {
-            let p: Vec<i32> = d.split(',').map(|v| v.parse().unwrap()).collect();
-            if let Some(sq) = w.cell.get_grid_square(p[0], p[1], p[2]) {
-                eprintln!(
-                    "sq {s} ext={} roof={} room={}",
-                    sq.has(w.sprites.tables.flag.exterior),
-                    sq.have_roof,
-                    sq.room_id
-                );
-            }
+        // The harness stops IsoFireManager.Update's loop at an exception,
+        // as the original does, and skips fireSounds.update.
+        if let Err(e) = mgr.update(&mut w, &mut rand, frame) {
+            writeln!(out, "error {e}").unwrap();
         }
         if sounds {
             let mut l = String::from("sounds");
@@ -438,10 +431,7 @@ fn main() {
         writeln!(out, "{s}").unwrap();
     }
     std::fs::write(oracle.join("rust_fire.txt"), &out).unwrap();
-    let jl: Vec<&str> = java
-        .lines()
-        .filter(|l| !l.starts_with("lamps ") && !l.starts_with("error "))
-        .collect();
+    let jl: Vec<&str> = java.lines().filter(|l| !l.starts_with("lamps ")).collect();
     let rl: Vec<&str> = out.lines().collect();
     let (mut same, mut first) = (0, None);
     for i in 0..jl.len().max(rl.len()) {

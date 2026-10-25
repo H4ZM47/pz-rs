@@ -599,6 +599,12 @@ registered):
 - [ ] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
+      (#FIRE-REST) `update` returns `Err(java exception text)` when a
+      burn threw (`IsoWindow.removeSheet` on a window outside rooms whose
+      inside square does not exist): like the population `Err` above,
+      nothing up to `IngameState.update` catches it, so the rest of that
+      frame's `IngameState.update` is skipped and the text is logged via
+      `ExceptionLogger`.
 - [ ] Fire world parts (#FIRE-REST): `FireWorld.mutation` (`FireMutation`:
       the regions, door tables and the `SquareMutationHooks` /
       `PathfindSquareHooks` / `RenderSquareHooks` the square mutations

@@ -600,9 +600,9 @@ impl IsoFireManager {
         rand: &mut dyn GameRand,
         (gx, gy, gz): (i32, i32, i32),
         power: i32,
-    ) {
+    ) -> Result<(), String> {
         if w.sq(gx, gy, gz).is_none() {
-            return;
+            return Ok(());
         }
         self.fire_recalc = 1;
         for x in -2..=2 {
@@ -617,10 +617,11 @@ impl IsoFireManager {
                     }
                     let energy = rand.next_range(100, 250 + power);
                     self.start_fire(w, rand, at.0, at.1, at.2, true, energy, 0);
-                    super::burn::burn_walls(self, w, rand, at, true, true);
+                    super::burn::burn_walls(self, w, rand, at, true, true)?;
                 }
             }
         }
+        Ok(())
     }
 
     /// `RemoveAllOn(square)`: puts out every fire there (last first).
@@ -764,16 +765,18 @@ impl IsoFireManager {
         }
     }
 
-    /// `IsoFire.update()` of one fire in `FireStack`.
+    /// `IsoFire.update()` of one fire in `FireStack`. On `Err` the fire
+    /// keeps the state it had when the original threw (it was written
+    /// back before the burn).
     fn update_fire(
         &mut self,
         w: &mut FireWorld<'_>,
         rand: &mut dyn GameRand,
         frame: FireFrame,
         r: FireRef,
-    ) {
+    ) -> Result<(), String> {
         let Some(mut fire) = self.fire(w.cell, r).cloned() else {
-            return;
+            return Ok(());
         };
         self.sounds.add_fire(r);
         let flag = if fire.life_stage < 4 {
@@ -795,7 +798,7 @@ impl IsoFireManager {
             r,
             gone: false,
         };
-        fire.update_with(
+        let res = fire.update_with(
             dt,
             frame.thirty_fps,
             frame.now_millis,
@@ -803,28 +806,47 @@ impl IsoFireManager {
             rand,
             &mut step,
         );
+        if res.is_err() {
+            if let Some(f) = step.mgr.fire(step.w.cell, r).cloned() {
+                step.w.hooks.fire_updated(r, &f);
+            }
+            return res;
+        }
         if !step.gone && step.mgr.fire(step.w.cell, r).is_some() {
             Self::sync(step.w.cell, r, &fire);
             step.w.hooks.fire_updated(r, &fire);
         }
+        Ok(())
     }
 
     /// `IsoFireManager.Update()`: every fire in `FireStack` (as it was when
     /// the frame began, skipping fires removed meanwhile) updates once.
-    pub fn update(&mut self, w: &mut FireWorld<'_>, rand: &mut dyn GameRand, frame: FireFrame) {
+    ///
+    /// `Err` is an exception a fire's update threw (its `toString()`
+    /// text): `Update` stops there, without the later fires, `fireRecalc`
+    /// or the sounds, and nothing on the way to `IngameState.update`
+    /// catches it, so the engine skips the rest of that frame's
+    /// `IngameState.update` and logs it with `ExceptionLogger`.
+    pub fn update(
+        &mut self,
+        w: &mut FireWorld<'_>,
+        rand: &mut dyn GameRand,
+        frame: FireFrame,
+    ) -> Result<(), String> {
         self.oscillators.update();
         let stack = self.fire_stack.clone();
         for r in stack {
             if self.fire(w.cell, r).is_none() || !self.fire_stack.contains(&r) {
                 continue;
             }
-            self.update_fire(w, rand, frame, r);
+            self.update_fire(w, rand, frame, r)?;
         }
         self.fire_recalc -= 1;
         if self.fire_recalc < 0 {
             self.fire_recalc = FIRE_RECALC_DELAY;
         }
         self.update_sounds(w);
+        Ok(())
     }
 
     /// `fireSounds.update()`.
@@ -867,12 +889,17 @@ struct Step<'m, 'w, 'a> {
 }
 
 impl FireCallbacks for Step<'_, '_, '_> {
-    fn on_event(&mut self, fire: &mut IsoFire, event: FireEvent, rand: &mut dyn GameRand) {
+    fn on_event(
+        &mut self,
+        fire: &mut IsoFire,
+        event: FireEvent,
+        rand: &mut dyn GameRand,
+    ) -> Result<(), String> {
         let r = self.r;
         match event {
             FireEvent::Burn => {
                 IsoFireManager::sync(self.w.cell, r, fire);
-                super::burn::burn(self.mgr, self.w, rand, (r.x, r.y, r.z));
+                super::burn::burn(self.mgr, self.w, rand, (r.x, r.y, r.z))?;
             }
             FireEvent::Spread => self.mgr.spread(self.w, rand, r, fire),
             FireEvent::Extinct => {
@@ -882,5 +909,6 @@ impl FireCallbacks for Step<'_, '_, '_> {
             // The new light is read after the update (FireHooks::fire_updated).
             FireEvent::LightChanged => {}
         }
+        Ok(())
     }
 }

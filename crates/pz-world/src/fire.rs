@@ -208,13 +208,26 @@ pub enum FireEvent {
 /// What [`IsoFire::update_from_timer_with`] calls at each [`FireEvent`],
 /// while the fire is being stepped: `square.Burn()`, `Spread()` (which
 /// spends the fire's energy, so it gets the fire) and `extinctFire()`.
+/// An `Err` is an exception the original throws there (its text, as
+/// `Throwable.toString()` prints it); the rest of the update is skipped.
 pub trait FireCallbacks {
-    fn on_event(&mut self, fire: &mut IsoFire, event: FireEvent, rand: &mut dyn GameRand);
+    fn on_event(
+        &mut self,
+        fire: &mut IsoFire,
+        event: FireEvent,
+        rand: &mut dyn GameRand,
+    ) -> Result<(), String>;
 }
 
 impl<F: FnMut(&mut IsoFire, FireEvent, &mut dyn GameRand)> FireCallbacks for F {
-    fn on_event(&mut self, fire: &mut IsoFire, event: FireEvent, rand: &mut dyn GameRand) {
-        self(fire, event, rand)
+    fn on_event(
+        &mut self,
+        fire: &mut IsoFire,
+        event: FireEvent,
+        rand: &mut dyn GameRand,
+    ) -> Result<(), String> {
+        self(fire, event, rand);
+        Ok(())
     }
 }
 
@@ -565,7 +578,7 @@ impl IsoFire {
         alpha: f32,
         rand: &mut dyn GameRand,
         cb: &mut dyn FireCallbacks,
-    ) {
+    ) -> Result<(), String> {
         for a in &mut self.anims {
             a.advance(dt);
         }
@@ -590,7 +603,7 @@ impl IsoFire {
         if self.perm {
             // addHeatSource on the first update, setRadius after.
             self.heat_source = Some(self.light_radius);
-            return;
+            return Ok(());
         }
         // updateSinceLastLoaded.
         if self.saved_update_time != -1 {
@@ -599,9 +612,9 @@ impl IsoFire {
             }
             let delta = (now - self.saved_update_time) as f32 / 30.0;
             self.saved_update_time = -1;
-            self.update_from_timer_with(delta, rand, cb);
+            self.update_from_timer_with(delta, rand, cb)?;
         }
-        self.update_from_timer_with(thirty_fps, rand, cb);
+        self.update_from_timer_with(thirty_fps, rand, cb)
     }
 
     /// [`IsoFire::update_with`], collecting the events instead of acting on
@@ -616,7 +629,8 @@ impl IsoFire {
     ) -> Vec<FireEvent> {
         let mut events = Vec::new();
         let mut cb = |_: &mut IsoFire, e: FireEvent, _: &mut dyn GameRand| events.push(e);
-        self.update_with(dt, thirty_fps, now, alpha, rand, &mut cb);
+        // The collecting callback never throws.
+        let _ = self.update_with(dt, thirty_fps, now, alpha, rand, &mut cb);
         events
     }
 
@@ -628,7 +642,7 @@ impl IsoFire {
         timer: f32,
         rand: &mut dyn GameRand,
         cb: &mut dyn FireCallbacks,
-    ) {
+    ) -> Result<(), String> {
         self.accum += timer;
         while self.accum > 1.0 {
             self.accum -= 1.0;
@@ -636,11 +650,11 @@ impl IsoFire {
             if self.life_stage_timer > 0 {
                 self.life_stage_timer -= 1;
                 if self.life_stage_timer <= 0 {
-                    self.next_stage(rand, cb);
+                    self.next_stage(rand, cb)?;
                 }
             }
             if self.life <= 0 {
-                cb.on_event(self, FireEvent::Extinct, rand);
+                cb.on_event(self, FireEvent::Extinct, rand)?;
                 break;
             }
             self.life -= 1;
@@ -648,35 +662,40 @@ impl IsoFire {
                 self.spread_timer -= 1;
                 if self.spread_timer <= 0 {
                     if self.life_stage != 5 {
-                        cb.on_event(self, FireEvent::Spread, rand);
+                        cb.on_event(self, FireEvent::Spread, rand)?;
                     }
                     self.spread_timer = self.spread_delay;
                 }
             }
             if self.energy <= 0 {
-                cb.on_event(self, FireEvent::Extinct, rand);
+                cb.on_event(self, FireEvent::Extinct, rand)?;
                 break;
             }
         }
+        Ok(())
     }
 
     /// [`IsoFire::update_from_timer_with`], collecting the events.
     pub fn update_from_timer(&mut self, timer: f32, rand: &mut dyn GameRand) -> Vec<FireEvent> {
         let mut events = Vec::new();
         let mut cb = |_: &mut IsoFire, e: FireEvent, _: &mut dyn GameRand| events.push(e);
-        self.update_from_timer_with(timer, rand, &mut cb);
+        let _ = self.update_from_timer_with(timer, rand, &mut cb);
         events
     }
 
-    fn next_stage(&mut self, rand: &mut dyn GameRand, cb: &mut dyn FireCallbacks) {
+    fn next_stage(
+        &mut self,
+        rand: &mut dyn GameRand,
+        cb: &mut dyn FireCallbacks,
+    ) -> Result<(), String> {
         let light = self.light.is_some();
         match self.life_stage {
             0 => {
                 self.life_stage = 1;
                 self.life_stage_timer = self.life_stage_duration;
-                cb.on_event(self, FireEvent::Burn, rand);
+                cb.on_event(self, FireEvent::Burn, rand)?;
                 if light {
-                    self.set_light_radius_with(LIGHT_RADIUS_LOW, rand, cb);
+                    self.set_light_radius_with(LIGHT_RADIUS_LOW, rand, cb)?;
                 }
             }
             1 => {
@@ -685,9 +704,9 @@ impl IsoFire {
                 self.anims.clear();
                 self.anims.push(FireAnim::smoke(2, rand));
                 self.anims.push(FireAnim::fire(2, rand));
-                cb.on_event(self, FireEvent::Burn, rand);
+                cb.on_event(self, FireEvent::Burn, rand)?;
                 if light {
-                    self.set_light_radius_with(LIGHT_RADIUS_MEDIUM, rand, cb);
+                    self.set_light_radius_with(LIGHT_RADIUS_MEDIUM, rand, cb)?;
                 }
             }
             2 => {
@@ -697,7 +716,7 @@ impl IsoFire {
                 self.anims.push(FireAnim::smoke(3, rand));
                 self.anims.push(FireAnim::fire(3, rand));
                 if light {
-                    self.set_light_radius_with(LIGHT_RADIUS_HIGH, rand, cb);
+                    self.set_light_radius_with(LIGHT_RADIUS_HIGH, rand, cb)?;
                 }
             }
             3 => {
@@ -707,7 +726,7 @@ impl IsoFire {
                 self.anims.push(FireAnim::smoke(2, rand));
                 self.anims.push(FireAnim::fire(2, rand));
                 if light {
-                    self.set_light_radius_with(LIGHT_RADIUS_MEDIUM, rand, cb);
+                    self.set_light_radius_with(LIGHT_RADIUS_MEDIUM, rand, cb)?;
                 }
             }
             4 => {
@@ -716,11 +735,12 @@ impl IsoFire {
                 self.anims.clear();
                 self.anims.push(FireAnim::smoke(1, rand));
                 if light {
-                    self.set_light_radius_with(LIGHT_RADIUS_MINIMUM, rand, cb);
+                    self.set_light_radius_with(LIGHT_RADIUS_MINIMUM, rand, cb)?;
                 }
             }
             _ => {}
         }
+        Ok(())
     }
 
     fn set_light_radius_with(
@@ -728,10 +748,11 @@ impl IsoFire {
         radius: i32,
         rand: &mut dyn GameRand,
         cb: &mut dyn FireCallbacks,
-    ) {
+    ) -> Result<(), String> {
         if self.replace_light(radius) {
-            cb.on_event(self, FireEvent::LightChanged, rand);
+            cb.on_event(self, FireEvent::LightChanged, rand)?;
         }
+        Ok(())
     }
 
     /// `setLightRadius(radius)` without the relight: a different radius

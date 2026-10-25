@@ -31,13 +31,25 @@ fn oref(pos: At, id: ObjectId) -> ObjectRef {
     ObjectRef { pos, id }
 }
 
+/// The exception `IsoWindow.removeSheet` throws when the square inside a
+/// window outside any room does not exist.
+pub const REMOVE_SHEET_NPE: &str = "java.lang.NullPointerException: Cannot invoke \"zombie.iso.IsoGridSquare.getSpecialObjects()\" because \"sq\" is null";
+
 /// `IsoGridSquare.Burn()`: `BurnWalls(true, true)` and `OnGridBurnt`.
-pub fn burn(mgr: &mut IsoFireManager, w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) {
+/// `Err` is the exception the original throws partway (see
+/// [`REMOVE_SHEET_NPE`]); what ran before it stays done.
+pub fn burn(
+    mgr: &mut IsoFireManager,
+    w: &mut FireWorld<'_>,
+    rand: &mut dyn GameRand,
+    at: At,
+) -> Result<(), String> {
     if w.sq(at.0, at.1, at.2).is_none() {
-        return;
+        return Ok(());
     }
-    burn_walls(mgr, w, rand, at, true, true);
+    burn_walls(mgr, w, rand, at, true, true)?;
     w.hooks.lua_event("OnGridBurnt", at.0, at.1, at.2);
+    Ok(())
 }
 
 /// `IsoGridSquare.Burn(explode)`.
@@ -47,11 +59,11 @@ pub fn burn_explode(
     rand: &mut dyn GameRand,
     at: At,
     explode: bool,
-) {
+) -> Result<(), String> {
     if w.sq(at.0, at.1, at.2).is_none() {
-        return;
+        return Ok(());
     }
-    burn_walls(mgr, w, rand, at, explode, true);
+    burn_walls(mgr, w, rand, at, explode, true)
 }
 
 /// `IsoGridSquare.RemoveTileObject(obj)` (the chunk is loaded, so the
@@ -151,10 +163,16 @@ fn remove_sheet_rope(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, nor
 }
 
 /// `IsoWindow.removeSheet(null)`: the first curtain on the inside square
-/// (the window's own square in a room, else the one north or west).
-fn remove_window_sheet(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, north: bool) {
+/// (the window's own square in a room, else the one north or west, which
+/// the original reads without a null check).
+fn remove_window_sheet(
+    w: &mut FireWorld<'_>,
+    rand: &mut dyn GameRand,
+    at: At,
+    north: bool,
+) -> Result<(), String> {
     let Some(sq) = w.sq(at.0, at.1, at.2) else {
-        return;
+        return Ok(());
     };
     let s = if sq.room_id != -1 {
         at
@@ -164,7 +182,7 @@ fn remove_window_sheet(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, n
         (at.0 - 1, at.1, at.2)
     };
     let Some(sq) = w.sq(s.0, s.1, s.2) else {
-        return;
+        return Err(REMOVE_SHEET_NPE.to_string());
     };
     let curtain = sq.special_objects.iter().copied().find(|&id| {
         sq.object_index(id)
@@ -173,6 +191,7 @@ fn remove_window_sheet(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, n
     if let Some(id) = curtain {
         transmit_remove(w, rand, s, id);
     }
+    Ok(())
 }
 
 /// `IsoObject.getProperties().has(flag)` (the sprite's).
@@ -243,7 +262,7 @@ fn barricade_id(sq: &crate::IsoGridSquare, dir: IsoDirections) -> Option<ObjectI
 /// The first loop of `BurnWalls`, over the special objects as they change:
 /// sheet ropes and window sheets come down, then the barricades on both
 /// sides of every barricade-able object go.
-fn burn_specials(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) {
+fn burn_specials(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) -> Result<(), String> {
     let (x, y, z) = at;
     let mut i = 0;
     while let Some(id) = w
@@ -264,7 +283,7 @@ fn burn_specials(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) {
             if is_top_of_sheet_rope_here(w, at, win.north) {
                 remove_sheet_rope(w, rand, at, win.north);
             }
-            remove_window_sheet(w, rand, at, win.north);
+            remove_window_sheet(w, rand, at, win.north)?;
         }
         if let ObjectKind::WindowFrame { north } = obj.kind {
             if is_top_of_sheet_rope_here(w, at, north) {
@@ -288,6 +307,7 @@ fn burn_specials(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) {
         }
         i += 1;
     }
+    Ok(())
 }
 
 /// `IsoGridSquare.addAshes()`: a burnt-floor object (`new IsoObject(sq,
@@ -367,7 +387,7 @@ fn hutch_handle_burning(
     w: &mut FireWorld<'_>,
     rand: &mut dyn GameRand,
     r: ObjectRef,
-) {
+) -> Result<(), String> {
     // A HashSet of squares in the original (identity hash order); kept in
     // insertion order here.
     let mut burn_squares = vec![r.pos];
@@ -406,9 +426,10 @@ fn hutch_handle_burning(
     for p in burn_squares {
         add_ashes(w, rand, p);
         if p != r.pos {
-            burn_walls(mgr, w, rand, p, true, false);
+            burn_walls(mgr, w, rand, p, true, false)?;
         }
     }
+    Ok(())
 }
 
 /// `IsoFeedingTrough.handleBurning()`: every part of the trough leaves the
@@ -418,7 +439,7 @@ fn trough_handle_burning(
     w: &mut FireWorld<'_>,
     rand: &mut dyn GameRand,
     r: ObjectRef,
-) {
+) -> Result<(), String> {
     let mut burn_squares = vec![r.pos];
     for o in sprite_grid_objects(w, r, false) {
         let trough = w.sq(o.pos.0, o.pos.1, o.pos.2).is_some_and(|sq| {
@@ -437,8 +458,9 @@ fn trough_handle_burning(
     w.env(rand).safely_remove_tile_object_from_square(r);
     for p in burn_squares {
         add_ashes(w, rand, p);
-        burn_walls(mgr, w, rand, p, true, false);
+        burn_walls(mgr, w, rand, p, true, false)?;
     }
+    Ok(())
 }
 
 /// `IsoObjectUtils.safelyBurnTileObjectFromSquare(obj)`: the other parts
@@ -449,9 +471,9 @@ fn safely_burn_tile_object(
     w: &mut FireWorld<'_>,
     rand: &mut dyn GameRand,
     r: ObjectRef,
-) {
+) -> Result<(), String> {
     if !w.env(rand).is_object_multi_square(r) {
-        return;
+        return Ok(());
     }
     let parts = w
         .env(rand)
@@ -459,9 +481,10 @@ fn safely_burn_tile_object(
         .unwrap_or_default();
     for p in parts {
         if p != r {
-            burn_walls(mgr, w, rand, p.pos, true, false);
+            burn_walls(mgr, w, rand, p.pos, true, false)?;
         }
     }
+    Ok(())
 }
 
 /// The suffix after the last `_` of a sprite name.
@@ -494,12 +517,12 @@ pub fn burn_walls(
     at: At,
     explode: bool,
     recursive: bool,
-) {
+) -> Result<(), String> {
     let (x, y, z) = at;
     if w.sq(x, y, z).is_none() {
-        return;
+        return Ok(());
     }
-    burn_specials(w, rand, at);
+    burn_specials(w, rand, at)?;
 
     let burnt_out = w.sprites.tables.flag.burntOut;
     let mut removed_tile_object = false;
@@ -511,8 +534,8 @@ pub fn burn_walls(
             while let Some(o) = w.sq(x, y, z).and_then(|s| s.objects.get(n)) {
                 let r = oref(at, o.id);
                 match o.kind {
-                    ObjectKind::Hutch(_) => hutch_handle_burning(mgr, w, rand, r),
-                    ObjectKind::FeedingTrough(_) => trough_handle_burning(mgr, w, rand, r),
+                    ObjectKind::Hutch(_) => hutch_handle_burning(mgr, w, rand, r)?,
+                    ObjectKind::FeedingTrough(_) => trough_handle_burning(mgr, w, rand, r)?,
                     _ => {}
                 }
                 n += 1;
@@ -527,28 +550,37 @@ pub fn burn_walls(
         {
             let r = oref(at, obj.id);
             if recursive {
-                safely_burn_tile_object(mgr, w, rand, r);
+                safely_burn_tile_object(mgr, w, rand, r)?;
             }
             let outcome = burn_object(w, rand, at, &obj, &mut power);
-            // The object may have moved if a recursive burn changed this
-            // square; find it by identity.
+            // The object may have moved, or gone, if a recursive burn
+            // changed this square. The removals are by object
+            // (`objects.remove(obj)`, `RemoveTileObject(obj)`; for an object
+            // no longer there the latter only resets the square's region
+            // flags, which nothing here reads) and `--n` follows them
+            // regardless.
+            // The replacements are `objects.set(n, ..)` in the original;
+            // here they find the object by identity, which is the same
+            // unless a recursive burn shifted the list.
             let idx = w.sq(x, y, z).and_then(|s| s.object_index(obj.id));
             match (outcome, idx) {
-                (_, None) | (Outcome::Skip, _) => {}
-                (Outcome::ReplaceWith(s), Some(i)) => {
-                    w.env(rand).object_remove_from_world(r);
-                    replace(w, at, obj.id, i, Some(s));
-                }
-                (Outcome::Drop, Some(i)) => {
-                    if let Some(sq) = w.sq_mut(x, y, z) {
+                (Outcome::Drop, i) => {
+                    if let (Some(i), Some(sq)) = (i, w.sq_mut(x, y, z)) {
                         sq.objects.remove(i);
                     }
                     n -= 1;
                 }
-                (Outcome::RemoveTile(counts), Some(_)) => {
-                    remove_tile_object(w, rand, at, obj.id);
+                (Outcome::RemoveTile(counts), i) => {
+                    if i.is_some() {
+                        remove_tile_object(w, rand, at, obj.id);
+                    }
                     removed_tile_object |= counts;
                     n -= 1;
+                }
+                (_, None) | (Outcome::Skip, _) => {}
+                (Outcome::ReplaceWith(s), Some(i)) => {
+                    w.env(rand).object_remove_from_world(r);
+                    replace(w, at, obj.id, i, Some(s));
                 }
                 (Outcome::Keep { replace: rep }, Some(i)) => {
                     if rep || matches!(obj.kind, ObjectKind::Thumpable(_)) {
@@ -573,7 +605,7 @@ pub fn burn_walls(
         if power > 0 && explode {
             w.hooks
                 .play_world_sound("BurnedObjectExploded", x, y, z, 50.0, 1.0);
-            mgr.explode(w, rand, at, power);
+            mgr.explode(w, rand, at, power)?;
         }
     }
     if let Some(sq) = w.sq_mut(x, y, z) {
@@ -591,6 +623,7 @@ pub fn burn_walls(
     env.map_collision_square_changed(at);
     env.polygonal_map2_square_changed(at);
     env.invalidate_render(at, 384);
+    Ok(())
 }
 
 /// `objects.set(i, IsoObject.getNew())` with sprite `s` (the old object's

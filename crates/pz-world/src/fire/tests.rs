@@ -347,7 +347,7 @@ fn burning_turns_walls_and_furniture_to_burnt_tiles() {
     // Wall: Rand.Next(2) == 0 picks "0"; bench: floors_burnt_01_ +
     // Next(1, 2); tree: fencing_burnt_01_ + Next(15, 19) + 1.
     let mut r = Script::new(&[0, 0, 2]);
-    burn::burn(&mut mgr, &mut w.fw(&mut log), &mut r, (2, 2, 0));
+    burn::burn(&mut mgr, &mut w.fw(&mut log), &mut r, (2, 2, 0)).unwrap();
     assert_eq!(r.calls, ["next(2)", "next(1)", "next(4)"]);
     // The indoor carpet burns to floors_burnt_01_0; the new burnt sprites
     // have no name (AddSprite); the fireproof floor stays; the door is
@@ -369,7 +369,7 @@ fn burning_turns_walls_and_furniture_to_burnt_tiles() {
     assert!(log.0.contains(&"OnGridBurnt 2,2".to_string()));
     // Burning again leaves the burnt tiles alone.
     let mut r = Script::new(&[]);
-    burn::burn(&mut mgr, &mut w.fw(&mut log), &mut r, (2, 2, 0));
+    burn::burn(&mut mgr, &mut w.fw(&mut log), &mut r, (2, 2, 0)).unwrap();
     assert!(r.calls.is_empty());
 }
 
@@ -399,7 +399,7 @@ fn a_fuelled_generator_explodes_into_fires_around() {
     ints.extend([0; 3]);
     ints.extend([99; 40]);
     let mut r = Script::new(&ints);
-    burn::burn(&mut mgr, &mut w.fw(&mut log), &mut r, (2, 2, 0));
+    burn::burn(&mut mgr, &mut w.fw(&mut log), &mut r, (2, 2, 0)).unwrap();
     assert!(log.0.contains(&"BurnedObjectExploded 2,2".to_string()));
     // The grass sprite has no `exterior` flag of its own: a burnt floor.
     assert_eq!(w.sprite_names(2, 2), [""]);
@@ -437,7 +437,7 @@ fn a_fire_spreads_spending_its_energy_then_goes_out() {
         thirty_fps: 1.5,
         now_millis: 0,
     };
-    mgr.update(&mut w.fw(&mut log), &mut r, frame);
+    mgr.update(&mut w.fw(&mut log), &mut r, frame).unwrap();
     assert_eq!(
         &r.calls[..4],
         ["next(3)", "next(50)", "next(13)", "float(0,30)"]
@@ -451,7 +451,8 @@ fn a_fire_spreads_spending_its_energy_then_goes_out() {
     // At no energy the first fire goes out.
     IsoFireManager::fire_mut(&mut w.cell, at).unwrap().energy = 0;
     let mut log = Log::default();
-    mgr.update(&mut w.fw(&mut log), &mut Script::new(&[]), frame);
+    mgr.update(&mut w.fw(&mut log), &mut Script::new(&[]), frame)
+        .unwrap();
     assert!(log.0.contains(&"removed 2,2".to_string()));
     assert_eq!(mgr.fire_stack.len(), 1);
     assert!(!w.sq(2, 2).has(w.flags.burning));
@@ -480,7 +481,8 @@ fn rain_spends_the_energy_without_spreading() {
         &mut w.fw(&mut NoFireHooks),
         &mut Script::new(&[0, 1, 0]),
         frame,
-    );
+    )
+    .unwrap();
     assert_eq!(mgr.fire_stack.len(), 1);
     assert_eq!(mgr.fire(&w.cell, at).unwrap().energy, 5);
     // With FireSpread off nothing is spent.
@@ -492,7 +494,8 @@ fn rain_spends_the_energy_without_spreading() {
     f.energy = 35;
     f.spread_timer = 1;
     let mut r = Script::new(&[]);
-    mgr.update(&mut w.fw(&mut NoFireHooks), &mut r, frame);
+    mgr.update(&mut w.fw(&mut NoFireHooks), &mut r, frame)
+        .unwrap();
     assert!(r.calls.is_empty());
     assert_eq!(mgr.fire(&w.cell, at).unwrap().energy, 35);
 }
@@ -649,7 +652,8 @@ fn burning_takes_down_the_sheet_rope_of_a_window_frame() {
         &mut w.fw(&mut NoFireHooks),
         &mut Script::new(&[]),
         (2, 2, 0),
-    );
+    )
+    .unwrap();
     // The rope tile is gone (the chunk's lowest level stops the descent),
     // the frame stays and the square no longer has the rope flag.
     assert_eq!(w.sprite_names(2, 2), ["", "frame"]);
@@ -699,7 +703,7 @@ fn a_burning_hutch_leaves_ashes_on_its_squares() {
     let mut h = H::default();
     let mut mgr = IsoFireManager::new();
     let mut r = Script::new(&[]);
-    burn::burn(&mut mgr, &mut w.fw(&mut h), &mut r, (2, 2, 0));
+    burn::burn(&mut mgr, &mut w.fw(&mut h), &mut r, (2, 2, 0)).unwrap();
     // The slave square's hutch is released and removed; both squares get
     // ashes (Rand.Next(1, 2) each) and burn.
     assert_eq!(h.0, [(3, 2)]);
@@ -925,4 +929,48 @@ fn fire_fighting_finds_the_fire_and_the_extinguisher() {
     assert_eq!(get_extinguisher(None, Some(&small), &inv), Some(4));
     assert_eq!(get_extinguisher(None, None, &inv[..2]), Some(3));
     assert_eq!(get_extinguisher(Some(&bottle), None, &[]), Some(0));
+}
+
+#[test]
+fn a_window_outside_rooms_with_no_square_inside_throws_like_the_original() {
+    use crate::objects::IsoWindow;
+    let mut w = World::new();
+    w.put(2, 2, false, &["carpet"]);
+    let win = IsoWindow {
+        north: true,
+        locked: false,
+        perma_locked: false,
+        open: false,
+        destroyed: false,
+        glass_removed: false,
+        health: 75,
+        max_health: 75,
+        open_sprite: None,
+        closed_sprite: None,
+        smashed_sprite: None,
+        glass_removed_sprite: None,
+    };
+    w.add(2, 2, "frame", ObjectKind::Window(win));
+    let mut mgr = IsoFireManager::new();
+    // removeSheet reads the square north of it (2,1), which is null: the
+    // NPE leaves BurnWalls before anything burns.
+    let e = burn::burn(
+        &mut mgr,
+        &mut w.fw(&mut NoFireHooks),
+        &mut Script::new(&[]),
+        (2, 2, 0),
+    );
+    assert_eq!(e.unwrap_err(), burn::REMOVE_SHEET_NPE);
+    assert!(!w.sq(2, 2).burnt_out);
+    assert_eq!(w.sprite_names(2, 2), ["carpet", "frame"]);
+    // With the square there (no curtain), the window burns.
+    w.put(2, 1, false, &["carpet"]);
+    burn::burn(
+        &mut mgr,
+        &mut w.fw(&mut NoFireHooks),
+        &mut Script::new(&[]),
+        (2, 2, 0),
+    )
+    .unwrap();
+    assert!(w.sq(2, 2).burnt_out);
 }
