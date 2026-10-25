@@ -128,6 +128,19 @@ pub trait ItemEnv {
         &crate::visual::NoVisualRng
     }
 
+    /// `ZomboidRadio.GetChannelList` for new radios' presets. The default
+    /// has no radio data (every list is `null`).
+    fn channel_lists(&self) -> &dyn crate::device::ChannelLists {
+        &crate::device::NoChannels
+    }
+
+    /// `MapDefinitions.definitions` (the keys of the Lua `LootMaps.Init`
+    /// table, in iteration order) for a new map item without a `Map`
+    /// value. Empty (the default) gives `"Default"`.
+    fn map_definitions(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Called when an item is kept as raw bytes, with the reason.
     fn note_raw(&self, _registry_id: i16, _reason: &str) {}
 }
@@ -197,7 +210,9 @@ pub fn create_from_template(
 
 /// The `Rand` draws `Item.InstanceItem` and the item constructors make
 /// before the components: a padlock's key id; a clothing item's palette
-/// pick and its random `col`; an alarm clock's random alarm.
+/// pick and its random `col`; an alarm clock's random alarm; a radio's
+/// presets and channel (`generatePresets`, `setRandomChannel`); a map
+/// item's random map (`MapDefinitions.pickRandom`).
 fn instance_draws(env: &dyn ItemEnv, item: &mut InventoryItem) {
     use crate::item::ItemKind;
     let t = item.template.clone();
@@ -234,6 +249,27 @@ fn instance_draws(env: &dyn ItemEnv, item: &mut InventoryItem) {
             a.alarm_hour = env.rand_next(23);
             a.alarm_minutes = env.rand_next(59) / 10 * 10;
             a.alarm_set = env.rand_next(6) == 1;
+        }
+        ItemKind::Radio(_, d) => {
+            d.instance_from_script(
+                Some(&t.display_name),
+                &t.radio,
+                env.channel_lists(),
+                &mut |b| env.rand_next(b),
+            );
+        }
+        ItemKind::Map { map_id, .. } => {
+            *map_id = match t.map.as_deref().filter(|m| !m.trim().is_empty()) {
+                Some(m) => m.to_string(),
+                None => {
+                    let defs = env.map_definitions();
+                    if defs.is_empty() {
+                        "Default".to_string()
+                    } else {
+                        defs[env.rand_next(defs.len() as i32) as usize].clone()
+                    }
+                }
+            };
         }
         _ => {}
     }

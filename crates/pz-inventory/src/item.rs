@@ -419,6 +419,9 @@ pub struct InventoryItem {
     pub world_x_rotation: f32,
     pub world_y_rotation: f32,
     pub world_z_rotation: f32,
+    /// `brakeForce`, `durability`, ... (from the script at creation; not
+    /// saved).
+    pub vehicle_part: crate::template::VehiclePartStats,
     pub kind: ItemKind,
 }
 
@@ -486,7 +489,7 @@ impl InventoryItem {
             visual: None,
             custom_color: false,
             col: WHITE,
-            item_capacity: -1.0,
+            item_capacity: t.item_capacity as f32,
             table: None,
             activated: false,
             have_been_repaired: 0,
@@ -513,7 +516,7 @@ impl InventoryItem {
             attached_slot: -1,
             attached_slot_type: None,
             attached_to_model: None,
-            max_capacity: -1,
+            max_capacity: t.max_capacity,
             recorded_media_index: -1,
             world_scale: 1.0,
             is_initialised: false,
@@ -530,6 +533,7 @@ impl InventoryItem {
             world_x_rotation: 0.0,
             world_y_rotation: 0.0,
             world_z_rotation: -1.0,
+            vehicle_part: t.vehicle_part.clone(),
             kind,
             template,
         }
@@ -1122,8 +1126,8 @@ impl InventoryItem {
     }
 
     /// `Moveable.ReadFromWorldSprite`: the item state the sprite's
-    /// properties give (textures and the flatpack colour, drawn from
-    /// `Rand`, are not modelled).
+    /// properties give, with the flatpack colour of a multi-tile sprite
+    /// drawn from `Rand` (textures are not modelled).
     pub fn read_from_world_sprite(&mut self, sprite: &str, env: &dyn ItemEnv) -> bool {
         let (ItemKind::Moveable(m) | ItemKind::Radio(m, _)) = &mut self.kind else {
             return false;
@@ -1155,6 +1159,11 @@ impl InventoryItem {
             _ => "Moveable Object".to_string(),
         };
         if let Some((index, count)) = info.sprite_grid {
+            // `setColor(new Color(Rand.Next(0.7f, 1.0f), ...))`, r, g, b.
+            let r = env.rand_float(0.7, 1.0);
+            let g = env.rand_float(0.7, 1.0);
+            let b = env.rand_float(0.7, 1.0);
+            self.col = [r, g, b, 1.0];
             name = if info.force_single_item {
                 format!("{name} (1/1)")
             } else {

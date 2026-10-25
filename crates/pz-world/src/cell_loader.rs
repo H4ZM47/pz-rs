@@ -943,54 +943,22 @@ fn wave_signal_init(env: &mut ObjectEnv<'_>, spr: SpriteIdx, radio: bool) -> Dev
     dd.unwrap_or_default()
 }
 
+/// `ZomboidRadio.GetChannelList` through the object-load hooks.
+struct HookChannels<'a>(&'a dyn ObjectLoadHooks);
+impl pz_inventory::device::ChannelLists for HookChannels<'_> {
+    fn channel_list(&self, category: &str) -> Option<Vec<(i32, String)>> {
+        self.0.channel_list(category)
+    }
+}
+
 /// `DeviceData.generatePresets()`.
 fn generate_presets(d: &mut DeviceData, hooks: &dyn ObjectLoadHooks, rand: &mut dyn GameRand) {
-    d.presets.presets.clear();
-    let in_range = |d: &DeviceData, k: i32| k >= d.min_channel_range && k <= d.max_channel_range;
-    if d.is_television {
-        if let Some(list) = hooks.channel_list("Television") {
-            for (k, v) in list {
-                if in_range(d, k) {
-                    d.presets.add_preset(&v, k);
-                }
-            }
-        }
-        return;
-    }
-    let mut chance = if d.two_way { 100 } else { 300 };
-    if d.is_high_tier {
-        chance = 800;
-    }
-    let mut add = |d: &mut DeviceData, cat: &str, chance: i32| {
-        if let Some(list) = hooks.channel_list(cat) {
-            for (k, v) in list {
-                if !in_range(d, k) || rand.next(1000) >= chance {
-                    continue;
-                }
-                d.presets.add_preset(&v, k);
-            }
-        }
-    };
-    add(d, "Emergency", chance);
-    let chance = if d.two_way { 100 } else { 800 };
-    add(d, "Radio", chance);
-    if d.two_way {
-        add(d, "Amateur", chance);
-    }
-    if d.is_high_tier {
-        add(d, "Military", 10);
-    }
+    d.generate_presets(&HookChannels(hooks), &mut |b| rand.next(b));
 }
 
 /// `DeviceData.setRandomChannel()`.
 fn set_random_channel(d: &mut DeviceData, rand: &mut dyn GameRand) {
-    if !d.presets.presets.is_empty() {
-        let r = rand.next_range(0, d.presets.presets.len() as i32);
-        d.channel = d.presets.presets[r as usize].frequency;
-    } else {
-        d.channel = rand.next_range(d.min_channel_range, d.max_channel_range);
-        d.channel -= d.channel % 200;
-    }
+    d.set_random_channel(&mut |b| rand.next(b));
 }
 
 /// `IsoObject.createContainersFromSpriteProperties()`.
