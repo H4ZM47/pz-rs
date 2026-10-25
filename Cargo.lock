@@ -1792,6 +1792,7 @@ dependencies = [
  "pz-sandbox",
  "pz-scripts",
  "pz-server-settings",
+ "pz-sound",
  "pz-sqlite",
  "pz-text",
  "pz-ui",
