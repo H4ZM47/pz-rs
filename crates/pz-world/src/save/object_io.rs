@@ -1096,6 +1096,35 @@ fn opt_item(r: &mut Reader<'_>, ctx: &SaveCtx<'_>) -> SaveResult<Option<ItemBlob
     Ok(ctx.items.exists(item.registry_id()).then_some(item))
 }
 
+/// The sprite name `IsoBarricade.chooseSprite()` picks: the metal sheet
+/// (damaged at 2500 health or less), the metal bars, or the plank count's
+/// carpentry tile. `None` for a diagonal direction, where the original calls
+/// `LoadFramesNoDirPageSimple` on the still-null sprite.
+pub(super) fn barricade_sprite_name(b: &IsoBarricade) -> Option<String> {
+    // `getForwardIsoDirection()`: `IsoDirections` ordinals N, NW, W, SW, S,
+    // SE, E, NE.
+    let pick = |w: i32, n: i32, e: i32, s: i32| match b.dir & 7 {
+        2 => Some(w),
+        0 => Some(n),
+        6 => Some(e),
+        4 => Some(s),
+        _ => None,
+    };
+    if b.metal_health > 0 {
+        let dmg = if b.metal_health <= 2500 { 2 } else { 0 };
+        return pick(24, 25, 28, 29).map(|t| format!("constructedobjects_01_{}", t + dmg));
+    }
+    if b.metal_bar_health > 0 {
+        return pick(55, 53, 52, 54).map(|t| format!("constructedobjects_01_{t}"));
+    }
+    // `getNumPlanks()`.
+    let planks = b.plank_health.iter().filter(|&&h| h > 0).count() as i32;
+    if planks <= 0 {
+        return Some("media/ui/missing-tile.png".into());
+    }
+    pick(8, 9, 0, 1).map(|t| format!("carpentry_01_{}", t + (planks - 1) * 2))
+}
+
 /// Classes whose state is built entirely in their `load`.
 fn load_special(
     r: &mut Reader<'_>,
@@ -1148,12 +1177,19 @@ fn load_special(
                     *p = h as i32;
                 }
             }
-            o.kind = ObjectKind::Barricade(IsoBarricade {
+            let b = IsoBarricade {
                 dir,
                 plank_health,
                 metal_health: r.i16()? as i32,
                 metal_bar_health: r.i16()? as i32,
-            });
+            };
+            // `chooseSprite()`. `getSprite(name)` adds a sprite for a name it
+            // does not know; the tiles it picks are all defined.
+            let Some(n) = barricade_sprite_name(&b) else {
+                return err("NullPointerException: IsoBarricade.chooseSprite with no sprite");
+            };
+            o.sprite = ctx.sprites.named_map.get(&n).copied();
+            o.kind = ObjectKind::Barricade(b);
             return Ok(());
         }
         _ => {}

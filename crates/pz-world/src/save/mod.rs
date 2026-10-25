@@ -288,7 +288,8 @@ pub struct SaveSettings {
     pub blood_splat_lifespan_days: i32,
     /// `SandboxOptions.hoursForWorldItemRemoval`.
     pub hours_for_world_item_removal: f64,
-    /// `SandboxOptions.worldItemRemovalList`, split on commas and trimmed.
+    /// `SandboxOptions.worldItemRemovalList` as `getSplitCSVList()` has it
+    /// (see [`SaveSettings::set_world_item_removal_list`]).
     pub world_item_removal_list: Vec<String>,
     /// `SandboxOptions.itemRemovalListBlacklistToggle`.
     pub item_removal_list_blacklist: bool,
@@ -315,6 +316,14 @@ impl Default for SaveSettings {
 }
 
 impl SaveSettings {
+    /// Sets the removal list from the `WorldItemRemovalList` option string,
+    /// as `StringConfigOption.setValueInternal` caches it: every whitespace
+    /// character removed, then split on commas.
+    pub fn set_world_item_removal_list(&mut self, value: &str) {
+        let squeezed: String = value.chars().filter(|c| !is_java_regex_space(*c)).collect();
+        self.world_item_removal_list = java_split(&squeezed, ',');
+    }
+
     /// `SandboxOptions.worldItemRemovalListContains`.
     pub fn removal_list_contains(&self, s: &str) -> bool {
         self.world_item_removal_list.iter().any(|x| x == s)
@@ -370,6 +379,24 @@ impl SaveCtx<'_> {
         }
         Ok(id)
     }
+}
+
+/// `\s` in a `java.util.regex` pattern: `[ \t\n\x0B\f\r]`.
+fn is_java_regex_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\u{b}' | '\u{c}' | '\r')
+}
+
+/// `String.split(String.valueOf(sep))`: a string without `sep` is the
+/// only element; otherwise trailing empty strings are removed.
+fn java_split(s: &str, sep: char) -> Vec<String> {
+    if !s.contains(sep) {
+        return vec![s.to_string()];
+    }
+    let mut v: Vec<String> = s.split(sep).map(str::to_string).collect();
+    while v.last().is_some_and(String::is_empty) {
+        v.pop();
+    }
+    v
 }
 
 #[cfg(test)]
