@@ -773,7 +773,7 @@ registered):
       `ClimateSettings::screen_params(player, params)` (pz-world-render,
       `updateRenderSettings`' screen half over the same `ClimateInput` and
       `PlayerRenderInput.night_vision_goggles` =
-      `isWearingNightVisionGoggles()`) (#PRN); `drunk_factor` = intoxication / 100,
+      `isWearingNightVisionGoggles()`) (#183); `drunk_factor` = intoxication / 100,
       `blur_factor` = `IsoPlayer.getBlurFactor()` (not updated for a dead
       player); `search` from the `SearchMode` port (characters/gameplay,
       not ported yet: `isShaderEnabled`, `getShaderBlur/Radius/
