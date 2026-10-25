@@ -213,6 +213,54 @@ impl RenderWorld {
         (ch.min_level..=ch.max_level).map(|z| (wx, wy, z)).collect()
     }
 
+    /// Rebuilds the render square at `(x, y, z)` from the world after its
+    /// objects or properties changed, keeping what lighting wrote
+    /// (`light_info`, `vert_lights`, `light_level`, the cutaway visibility
+    /// fields) and its water and puddle geometry, and refreshes the seams
+    /// of it and of its north and west neighbours. A square gone from the
+    /// world is dropped. Does nothing for a chunk not built here.
+    pub fn rebuild_square(
+        &mut self,
+        w: &WorldView<'_>,
+        (x, y, z): (i32, i32, i32),
+        cache: &mut SpriteCache,
+        tex: &mut dyn SpriteTextures,
+    ) {
+        let (wx, wy) = (x.div_euclid(8), y.div_euclid(8));
+        if !self.chunks.contains_key(&(wx, wy)) {
+            return;
+        }
+        if let Some(ch) = w.cell.chunks.get(&(wx, wy)) {
+            self.chunks.insert((wx, wy), (ch.min_level, ch.max_level));
+        }
+        let Some(sq) = w.cell.get_grid_square(x, y, z) else {
+            self.squares.remove(&(x, y, z));
+            return;
+        };
+        let mut rs = render_square(w, sq, cache, tex);
+        if let Some(old) = self.squares.get(&(x, y, z)) {
+            rs.light_info = old.light_info;
+            rs.vert_lights = old.vert_lights;
+            rs.light_level = old.light_level;
+            rs.cut.seen = old.cut.seen;
+            rs.cut.can_see = old.cut.can_see;
+            rs.cut.could_see = old.cut.could_see;
+            rs.cut.dark_multi = old.cut.dark_multi;
+            rs.water = old.water;
+            rs.puddles = old.puddles;
+        }
+        rs.seam = seam_neighbours(w, sq);
+        self.squares.insert((x, y, z), rs);
+        for p in [(x - 1, y, z), (x, y - 1, z)] {
+            if let (Some(sq), Some(rs)) = (
+                w.cell.get_grid_square(p.0, p.1, p.2),
+                self.squares.get_mut(&p),
+            ) {
+                rs.seam = seam_neighbours(w, sq);
+            }
+        }
+    }
+
     /// Drops chunk `(wx, wy)`'s squares.
     pub fn remove_chunk(&mut self, wx: i32, wy: i32) {
         if self.chunks.remove(&(wx, wy)).is_none() {

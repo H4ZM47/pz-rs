@@ -264,6 +264,17 @@ registered):
       `IsoChunk` keeps `physicsCheck` itself), `clear_water`,
       `buildings_changed` (`LightingJNI.buildingsChanged`),
       `chunk_buildings_changed` (#97).
+- [ ] The world's square mutations (`MutationEnv.render`) and
+      `WorldRegionToMetaGrid` (`BuildingCtx.render`) are given
+      `pz_world_render::RenderInvalidation::new(&mut render_world,
+      &mut world_lighting, &mut per_player_chunk_caches, &mut pending,
+      sprites.tables.flag.water, num_players)`; each frame, before the
+      lighting frames and chunk recording, `pending.apply(view,
+      render_world, lighting, world_hooks, sprite_cache, textures)`, and
+      after every player's lighting frame `check_changed_buildings(lighting,
+      caches, pending, num_players)`; `pending.vispoly` / `physics` /
+      `puddles` are drained by `VisibilityPolygon2`, chunk physics
+      (`updatePhysicsForLevel`) and puddle init (ws/render-invalidate).
 - [ ] Engine implements `SquareMutationHooks`: Lua `OnObjectAboutToBeRemoved`
       / `OnTileRemoved` / `OnContainerUpdate`, the `WorldCall` registries of
       `addToWorld` / `removeFromWorld` (entities, process lists, lampposts,

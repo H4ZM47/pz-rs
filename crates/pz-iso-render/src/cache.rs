@@ -67,6 +67,12 @@ impl ChunkCache {
         self.pairs.entry((wx, wy, calculate_min_level(level))).or_default().dirty |= flags;
     }
 
+    /// The dirty flags waiting on the level pair holding `level` (0 when
+    /// clean or unknown).
+    pub fn dirty_flags(&self, wx: i32, wy: i32, level: i32) -> u64 {
+        self.pairs.get(&(wx, wy, calculate_min_level(level))).map_or(0, |p| p.dirty)
+    }
+
     /// Every level pair of a chunk (`invalidateAll`).
     pub fn invalidate_chunk(&mut self, wx: i32, wy: i32, flags: u64) {
         for ((x, y, _), p) in self.pairs.iter_mut() {
