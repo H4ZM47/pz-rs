@@ -166,40 +166,43 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
 
     /// The worn items of `IsoPlayer.load` and `IsoZombie.load`: a byte
     /// count, then each item's body location and its short index into
-    /// `savedInventoryItems`. Indices out of range and locations the
-    /// `Human` group lacks are skipped; a saved item that could not be
-    /// loaded clears its location (`setItem(location, null)`).
+    /// `savedInventoryItems`, set into the character's worn items (the
+    /// constructor's `initWornItems("Human")` when there are none; emptied
+    /// first). Indices out of range and locations the group lacks are
+    /// skipped; a saved item that could not be loaded clears its location
+    /// (`setItem(location, null)`).
     fn load_worn_items(&mut self, sm: &ScriptManager, chars: &mut Characters, r: &mut Reader<'_>) -> ScriptResult {
         let worn_count = e(r.i8())?;
-        let group = chars.body_locations.get_group("Human")?;
-        let mut worn: WornItems<i32> = WornItems::new(group.clone());
+        match self.items.worn_items.as_mut() {
+            Some(w) => w.clear(),
+            None => self.items.worn_items = Some(WornItems::new(chars.body_locations.get_group("Human")?)),
+        }
         for _ in 0..worn_count {
             let name = e(r.string())?;
             let location = ItemBodyLocation::get(sm, &ResourceLocation::of(&name)?);
             let index = e(r.i16())?;
             let Some(item) = self.saved_item(index as i32) else { continue };
-            if group.borrow().location(location.as_ref())?.is_none() {
+            let worn = self.items.worn_items.as_mut().ok_or_else(npe)?;
+            if worn.body_location_group().borrow().location(location.as_ref())?.is_none() {
                 continue;
             }
             worn.set_item(location, item)?;
         }
-        self.items.worn_items = worn.items().iter().map(|w| w.item).collect();
-        self.items.worn_locations =
-            worn.items().iter().filter_map(|w| w.location.clone().map(|l| (w.item, l))).collect();
         Ok(())
     }
 
     /// The worn items of `IsoPlayer.save` and `IsoZombie.save` (more than
     /// 127 is a `RuntimeException`).
     fn save_worn_items(&self, w: &mut Writer) -> ScriptResult {
-        if self.items.worn_items.len() > 127 {
+        let worn = self.items.worn_items.as_ref().ok_or_else(npe)?;
+        if worn.size() > 127 {
             return Err(ScriptError::new("java.lang.RuntimeException: too many worn items"));
         }
-        w.i8(self.items.worn_items.len() as i8);
-        for &id in &self.items.worn_items {
-            let location = self.items.worn_location(id).ok_or_else(npe)?;
+        w.i8(worn.size() as i8);
+        for worn in worn.items() {
+            let location = worn.location.as_ref().ok_or_else(npe)?;
             w.string(&location.location.id());
-            w.i16(self.saved_index(Some(id)));
+            w.i16(self.saved_index(Some(worn.item)));
         }
         Ok(())
     }
@@ -245,6 +248,7 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         self.player_fields.speak_colour = c;
         self.zombie_kills = e(r.i32())?;
         self.load_worn_items(sm, chars, r)?;
+        self.on_worn_items_changed(sm);
         let index = e(r.i16())?;
         if let Some(item) = self.saved_item(index as i32) {
             self.items.primary_hand_item = item;

@@ -23,6 +23,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use pz_inventory::shared::{self, ContainerRef, ItemRef};
+use pz_inventory::visual::human::HumanStyles;
 use pz_inventory::{InventoryItem, ItemKind, SharedContainer};
 use pz_scripts::objects::items::{get_item, Item, ItemBodyLocation, ItemTag};
 use pz_scripts::registry::RegistryKey;
@@ -31,6 +32,7 @@ use pz_scripts::{ScriptManager, ScriptResult};
 use super::context::SimContext;
 use super::item_owner::CharacterItemContext;
 use super::GameCharacter;
+use crate::worn_items::{BodyLocationGroup, BodyLocationGroupRef, WornItems};
 
 /// `BloodBodyPartType` indices.
 pub mod blood_part {
@@ -294,11 +296,11 @@ pub struct CharacterItems {
     pub primary_hand_item: Option<i32>,
     /// `secondaryHandItem`.
     pub secondary_hand_item: Option<i32>,
-    /// `wornItems`, in order: ids of items in `inventory`.
-    pub worn_items: Vec<i32>,
-    /// The `ItemBodyLocation` of worn items, by item id (`WornItem.location`;
-    /// set when the worn items are loaded).
-    pub worn_locations: Vec<(i32, Rc<RegistryKey>)>,
+    /// `wornItems`: the ids of items in `inventory` with their body
+    /// locations, in the group's location order. `None` until
+    /// `initWornItems` (the constructors' [`GameCharacter::init_worn_items`])
+    /// or a player load.
+    pub worn_items: Option<WornItems<i32>>,
 }
 
 impl Default for CharacterItems {
@@ -309,8 +311,7 @@ impl Default for CharacterItems {
             inventory: SharedContainer { explored: true, ..Default::default() }.into_ref(),
             primary_hand_item: None,
             secondary_hand_item: None,
-            worn_items: Vec::new(),
-            worn_locations: Vec::new(),
+            worn_items: None,
         }
     }
 }
@@ -345,13 +346,44 @@ impl CharacterItems {
     }
 
     /// `wornItems.getLocation(item)` for the worn item `id`.
-    pub fn worn_location(&self, id: i32) -> Option<&Rc<RegistryKey>> {
-        self.worn_locations.iter().find(|(i, _)| *i == id).map(|(_, l)| l)
+    pub fn worn_location(&self, id: i32) -> Option<Rc<RegistryKey>> {
+        self.worn_items.as_ref().and_then(|w| w.location(&id))
     }
 
-    /// `getWornItems()` items, in order.
+    /// The ids of the worn items, in order (none without `wornItems`).
+    pub fn worn_ids(&self) -> Vec<i32> {
+        self.worn_items.as_ref().map_or_else(Vec::new, |w| w.items().iter().map(|w| w.item).collect())
+    }
+
+    /// `wornItems.contains(item)` for the item `id` (false without
+    /// `wornItems`).
+    pub fn is_worn(&self, id: i32) -> bool {
+        self.worn_items.as_ref().is_some_and(|w| w.contains(&id))
+    }
+
+    /// `getWornItems()` items, in order (the worn ids that are items of the
+    /// inventory).
     pub fn worn(&self) -> impl Iterator<Item = ItemRef> + use<'_> {
-        self.worn_items.iter().filter_map(|&id| self.item(id))
+        self.worn_ids().into_iter().filter_map(|id| self.item(id))
+    }
+
+    /// Test support: makes `wornItems` the items `ids`, in order, each at a
+    /// location of its own in a new body location group (for code that
+    /// reads the worn items but not their locations).
+    pub fn wear_in_order(&mut self, ids: &[i32]) {
+        let mut reg = pz_scripts::registry::Registry::new("item_body_location");
+        let mut group = BodyLocationGroup::new("Test").expect("non-empty id");
+        let keys: Vec<_> = (0..ids.len())
+            .map(|i| Some(reg.register_id(&format!("test:worn{i}"), false).expect("new id")))
+            .collect();
+        for k in &keys {
+            group.get_or_create_location(k.clone()).expect("location");
+        }
+        let mut worn = WornItems::new(Rc::new(RefCell::new(group)));
+        for (k, &id) in keys.into_iter().zip(ids) {
+            worn.set_item(k, Some(id)).expect("known location");
+        }
+        self.worn_items = Some(worn);
     }
 
     /// `getItemVisuals(itemVisuals)`: the worn items that have a visual
@@ -367,7 +399,7 @@ impl CharacterItems {
 
     /// `isEquipped(item)`: worn or in a hand.
     pub fn is_equipped(&self, id: i32) -> bool {
-        self.worn_items.contains(&id) || self.primary_hand_item == Some(id) || self.secondary_hand_item == Some(id)
+        self.is_worn(id) || self.primary_hand_item == Some(id) || self.secondary_hand_item == Some(id)
     }
 
     /// `bodyPartHasTag(part, tag)`.
@@ -442,7 +474,7 @@ impl CharacterItems {
         let g = ctx.zomboid_globals();
         let ictx = CharacterItemContext::new(sm, ctx);
         let mut defense = 0.0f32;
-        for id in self.worn_items.clone() {
+        for id in self.worn_ids() {
             let Some(item) = self.item(id) else { continue };
             let item = &mut *item.borrow_mut();
             if is_clothing(item) {
@@ -498,7 +530,7 @@ impl CharacterItems {
     /// gas mask's filter by 0.01.
     pub fn is_protected_from_toxic_drain(&mut self, sm: &ScriptManager, ctx: &dyn SimContext) -> ScriptResult<bool> {
         let ictx = CharacterItemContext::new(sm, ctx);
-        for id in self.worn_items.clone() {
+        for id in self.worn_ids() {
             let Some(item) = self.item(id) else { continue };
             let item = &mut *item.borrow_mut();
             if !is_clothing(item) {
@@ -627,6 +659,132 @@ impl<I> GameCharacter<I> {
     }
 }
 
+/// `ItemBodyLocation.<field>` as a worn item location.
+fn body_location_key(sm: &ScriptManager, field: &str) -> Option<Rc<RegistryKey>> {
+    ItemBodyLocation::constant(sm, field)
+}
+
+/// The `getClothingItem_*` / `setClothingItem_*` locations
+/// (`ItemBodyLocation` fields), by suffix.
+pub const CLOTHING_ITEM_LOCATIONS: [(&str, &str); 6] =
+    [("Head", "HAT"), ("Torso", "TSHIRT"), ("Back", "BACK"), ("Hands", "HANDS"), ("Legs", "PANTS"), ("Feet", "SHOES")];
+
+impl<I> GameCharacter<I> {
+    /// `initWornItems(name)` with the group `BodyLocations.getGroup(name)`:
+    /// new, empty worn items, then `onWornItemsChanged()`.
+    pub fn init_worn_items(&mut self, sm: &ScriptManager, group: BodyLocationGroupRef) {
+        self.items.worn_items = Some(WornItems::new(group));
+        self.on_worn_items_changed(sm);
+    }
+
+    /// `wornItems`, which the original dereferences
+    /// (`NullPointerException` without).
+    fn worn_items_or_npe(&self) -> ScriptResult<&WornItems<i32>> {
+        self.items.worn_items.as_ref().ok_or_else(crate::npe)
+    }
+
+    /// `getWornItem(location)`: the id of the item worn there.
+    pub fn worn_item(&self, location: Option<&Rc<RegistryKey>>) -> ScriptResult<Option<i32>> {
+        self.worn_items_or_npe()?.item(location)
+    }
+
+    /// `getClothingItem_<suffix>()` (see [`CLOTHING_ITEM_LOCATIONS`]).
+    pub fn clothing_item(&self, sm: &ScriptManager, field: &str) -> ScriptResult<Option<i32>> {
+        self.worn_item(body_location_key(sm, field).as_ref())
+    }
+
+    /// `isEquippedClothing(item)`: `wornItems.contains(item)`.
+    pub fn is_equipped_clothing(&self, id: Option<i32>) -> ScriptResult<bool> {
+        let worn = self.worn_items_or_npe()?;
+        Ok(id.is_some_and(|id| worn.contains(&id)))
+    }
+
+    /// `hasWornTag(tag)` for `ItemTag.<field>` (the worn ids that are not
+    /// items of the inventory are skipped).
+    pub fn has_worn_tag(&self, sm: &ScriptManager, field: &str) -> bool {
+        self.items.worn().any(|i| has_tag(sm, &i.borrow(), field))
+    }
+
+    /// `onWornItemsChanged()`: whether the clothes allow ragdolling (no
+    /// worn `NO_RAGDOLL` item). The server's `OnClothingUpdated()` and the
+    /// player's model reset and shoe sound parameter are not modelled.
+    pub fn on_worn_items_changed(&mut self, sm: &ScriptManager) {
+        self.worn_clothing_can_ragdoll = !self.has_worn_tag(sm, "NO_RAGDOLL");
+    }
+
+    /// `setWornItem(location, item, forceDropTooHeavy)` with the item `id`
+    /// (`None` for `null`): nothing when the same item is already there,
+    /// else `WornItems.setItem` (replacing the item at a single-item
+    /// location and dropping the items at exclusive locations), a
+    /// player's mohawk flattened under a hat, the clothing wetness marked
+    /// changed and `onWornItemsChanged()`. Returns whether it changed.
+    /// `styles` are the hair style tables `getHairModel()` checks the
+    /// stored model against (`None`: the stored model is read as it is).
+    ///
+    /// STUB: the cell's process-item lists, the model reset, the network
+    /// syncs and `forceDropTooHeavy` (an `IsoPlayer` with no room for the
+    /// replaced item drops it on the square: TODO(world)) are not modelled.
+    pub fn set_worn_item(
+        &mut self,
+        sm: &ScriptManager,
+        styles: Option<&dyn HumanStyles>,
+        location: Option<Rc<RegistryKey>>,
+        id: Option<i32>,
+        force_drop_too_heavy: bool,
+    ) -> ScriptResult<bool> {
+        let _ = force_drop_too_heavy;
+        let current = self.worn_item(location.as_ref())?;
+        if id == current {
+            return Ok(false);
+        }
+        let worn = self.items.worn_items.as_mut().ok_or_else(crate::npe)?;
+        worn.set_item(location.clone(), id)?;
+        if self.is_player() {
+            let hat = |f| body_location_key(sm, f).is_some_and(|k| location.as_ref().is_some_and(|l| l.location == k.location));
+            if let Some(mut hv) = self.human_visual.take() {
+                let hair = match styles {
+                    Some(styles) => hv.get_hair_model(self, styles),
+                    None => hv.hair_model.clone(),
+                };
+                if hair.is_some_and(|h| h.contains("Mohawk")) && (hat("HAT") || hat("FULL_HAT")) {
+                    hv.set_hair_model(Some("MohawkFlat"));
+                }
+                self.human_visual = Some(hv);
+            }
+        }
+        if let Some(w) = &mut self.clothing_wetness {
+            w.changed = true;
+        }
+        self.on_worn_items_changed(sm);
+        Ok(true)
+    }
+
+    /// `removeWornItem(item, forceDropTooHeavy)`:
+    /// `setWornItem(wornItems.getLocation(item), null, forceDropTooHeavy)`
+    /// (nothing for an item that is not worn).
+    pub fn remove_worn_item(
+        &mut self,
+        sm: &ScriptManager,
+        styles: Option<&dyn HumanStyles>,
+        id: Option<i32>,
+        force_drop_too_heavy: bool,
+    ) -> ScriptResult<bool> {
+        let worn = self.worn_items_or_npe()?;
+        let location = id.and_then(|id| worn.location(&id));
+        self.set_worn_item(sm, styles, location, None, force_drop_too_heavy)
+    }
+
+    /// `clearWornItems()`: nothing without `wornItems`.
+    pub fn clear_worn_items(&mut self, sm: &ScriptManager) {
+        let Some(w) = &mut self.items.worn_items else { return };
+        w.clear();
+        if let Some(w) = &mut self.clothing_wetness {
+            w.changed = true;
+        }
+        self.on_worn_items_changed(sm);
+    }
+}
+
 /// `ItemVisual.setHole(part)`.
 fn set_visual_hole(item: &mut InventoryItem, part: usize) {
     if let Some(v) = item.visual.as_mut() {
@@ -722,12 +880,12 @@ impl CharacterItems {
 
     /// `helmetFallFromWornItems(hitHead)`: worn clothing with a chance to
     /// fall comes off (the original's loop skips the item after a removed
-    /// one). Returns the removed items (the world makes them fall).
+    /// one). Returns the removed items (the world makes them fall; the
+    /// caller runs `onWornItemsChanged()` when there are any).
     pub fn helmet_fall_from_worn_items(&mut self, sm: &ScriptManager, ctx: &dyn SimContext, hit_head: bool) -> Vec<ItemRef> {
         let mut removed = Vec::new();
         let mut i = 0;
-        while i < self.worn_items.len() {
-            let id = self.worn_items[i];
+        while let Some(id) = self.worn_items.as_ref().and_then(|w| w.item_by_index(i)) {
             i += 1;
             let Some(item_ref) = self.item(id) else { continue };
             let item = &*item_ref.borrow();
@@ -745,8 +903,9 @@ impl CharacterItems {
             if shared::remove_item(&self.inventory, &item_ref) {
                 removed.push(item_ref.clone());
             }
-            self.worn_items.retain(|w| *w != id);
-            self.worn_locations.retain(|(w, _)| *w != id);
+            if let Some(w) = &mut self.worn_items {
+                w.remove(&id);
+            }
             // `i` keeps pointing past the removed slot.
         }
         removed

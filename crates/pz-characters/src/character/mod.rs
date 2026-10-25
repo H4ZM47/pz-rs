@@ -68,7 +68,7 @@ use pz_scripts::{ScriptManager, ScriptResult};
 pub use body_damage::{BodyDamage, WeaponUser, ZombieAttack, ZombieAttackOutcome};
 pub use clothing_wetness::ClothingWetness;
 pub use item_owner::CharacterItemContext;
-pub use items::CharacterItems;
+pub use items::{CharacterItems, CLOTHING_ITEM_LOCATIONS};
 pub use body_part::{BodyPart, BodyPartContacts, BodyPartLast, BodyPartTypes, InjuryEnv};
 pub use context::{
     CharacterEnvironment, DefaultSimContext, HaloText, SimContext, SimEvent, ZomboidGlobals,
@@ -510,8 +510,10 @@ impl<I: 'static> GameCharacter<I> {
     /// `bare_hands`), then `speakColour` and `neightbourUpdate`, with the
     /// descriptor set (the `setFemale` before it is a no-op: it writes
     /// through the still-null descriptor). `Dressup` finds no `wornItems`
-    /// yet (they are made after it) and does nothing; `initWornItems` /
-    /// `initAttachedItems` leave both empty. TODO(world, render): the cell,
+    /// yet (they are made after it) and does nothing; `initWornItems("Human")`
+    /// makes empty worn items on the descriptor's group (the same
+    /// `BodyLocations.getGroup("Human")`); `initAttachedItems` is not
+    /// modelled. TODO(world, render): the cell,
     /// position and moving-object list, sprite parts, path finder, chat
     /// element and state machine.
     pub fn new_survivor(
@@ -527,6 +529,10 @@ impl<I: 'static> GameCharacter<I> {
         let (r, g, b) = (ch(), ch(), ch());
         c.speak_colour = [r, g, b, 1.0];
         c.neightbour_update = pz_core::random::next(20);
+        let group = c.descriptor.as_ref().map(|d| d.borrow().worn_items.body_location_group().clone());
+        if let Some(group) = group {
+            c.init_worn_items(sm, group);
+        }
         c
     }
 
