@@ -61,7 +61,7 @@ pub fn grid_square(
         let Some(i) = sq.object_index(id) else {
             continue;
         };
-        let o = &sq.objects[i];
+        let o = sq.objects[i].borrow();
         let sp = o.sprite.map(|s| &w.sprites.sprites[s]);
         let prop = |n: &str| {
             sp.and_then(|sp| sp.properties.get(&w.sprites.alias, n))
@@ -70,8 +70,8 @@ pub fn grid_square(
         let has_name = |n: &str| sp.is_some_and(|sp| sp.properties.has_name(&w.sprites.alias, n));
         match &o.kind {
             ObjectKind::Door(d) => {
-                let (same, opposite) = hooks.barricades(sq, o);
-                let curtain = hooks.door_curtain(sq, o);
+                let (same, opposite) = hooks.barricades(sq, &o);
+                let curtain = hooks.door_curtain(sq, &o);
                 special_objects.push(SpecialObject::Door(Door {
                     north: d.north,
                     open: d.open,
@@ -84,7 +84,7 @@ pub fn grid_square(
                 }));
             }
             ObjectKind::Window(win) => {
-                let (same, opposite) = hooks.barricades(sq, o);
+                let (same, opposite) = hooks.barricades(sq, &o);
                 special_objects.push(SpecialObject::Window(Window {
                     north: win.north,
                     open: win.open,
@@ -112,7 +112,7 @@ pub fn grid_square(
                 }));
             }
             ObjectKind::Thumpable(th) => {
-                let (same, opposite) = hooks.barricades(sq, o);
+                let (same, opposite) = hooks.barricades(sq, &o);
                 let flag = &t.flag;
                 special_objects.push(SpecialObject::Thumpable(Thumpable {
                     north: th.north,
@@ -447,7 +447,7 @@ impl WorldLighting {
         let mut cl = ChunkLights::default();
         for sq in ch.squares() {
             for o in &sq.objects {
-                let ObjectKind::LightSwitch(s) = &o.kind else {
+                let o = o.borrow();                let ObjectKind::LightSwitch(s) = &o.kind else {
                     continue;
                 };
                 if s.light_room {
@@ -822,7 +822,7 @@ impl WorldLighting {
                 if sq
                     .objects
                     .iter()
-                    .any(|o| matches!(&o.kind, ObjectKind::LightSwitch(s) if s.light_room))
+                    .any(|o| matches!(&o.borrow().kind, ObjectKind::LightSwitch(s) if s.light_room))
                 {
                     out.push((sq.x, sq.y, sq.z));
                 }

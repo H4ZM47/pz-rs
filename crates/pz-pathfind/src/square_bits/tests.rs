@@ -269,7 +269,7 @@ impl World {
         let id = sq.new_object_id();
         let special = !matches!(kind, ObjectKind::Object);
         sq.objects
-            .push(IsoObject::new(id, kind, Some(self.m.named_map[name])));
+            .push(pz_world::ObjectSlot::new(IsoObject::new(id, kind, Some(self.m.named_map[name]))));
         if special {
             sq.special_objects.push(id);
         }
@@ -471,7 +471,7 @@ fn thumpables() {
     assert_eq!(w.bits(11, 9, 0), SOLID_FLOOR | COLLIDE_W);
     // A moved furniture item that is thumpable.
     w.put(12, 9, 0, &["floor", "barrel"]);
-    w.cell.get_grid_square_mut(12, 9, 0).unwrap().objects[1].moved_thumpable = true;
+    w.cell.get_grid_square_mut(12, 9, 0).unwrap().objects[1].borrow_mut().moved_thumpable = true;
     assert_eq!(
         w.bits(12, 9, 0),
         SOLID_FLOOR | CAN_PATH_W | CAN_PATH_N | THUMPABLE | SOLID_TRANS

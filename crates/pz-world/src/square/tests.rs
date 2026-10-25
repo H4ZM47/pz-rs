@@ -110,7 +110,7 @@ fn add(sq: &mut IsoGridSquare, m: &IsoSpriteManager, name: &str, kind: ObjectKin
     let id = sq.new_object_id();
     let special = !matches!(kind, ObjectKind::Object);
     sq.objects
-        .push(IsoObject::new(id, kind, Some(m.named_map[name])));
+        .push((IsoObject::new(id, kind, Some(m.named_map[name]))).into());
     if special {
         sq.special_objects.push(id);
     }
@@ -346,7 +346,7 @@ fn windows_and_doors_to() {
     assert!(!a.is_wall_to(Some(b), &w.m, g));
     assert!(a.is_window_blocked_to(Some(b), g, &NoSquareHooks));
     let found = a.get_window_to(Some(b), g).unwrap();
-    assert!(matches!(found.kind, ObjectKind::Window(_)));
+    assert!(matches!(found.borrow().kind, ObjectKind::Window(_)));
     assert!(b.get_window_to(Some(a), g).is_some());
     assert!(a.get_window_to(Some(w.sq(12, 10, 0)), g).is_none());
     let (c, d) = (w.sq(12, 10, 0), w.sq(12, 11, 0));
@@ -542,7 +542,7 @@ impl World {
     fn add_special(&mut self, x: i32, y: i32, z: i32, name: &str) -> ObjectId {
         self.add(x, y, z, name, ObjectKind::Object);
         let sq = self.cell.get_grid_square_mut(x, y, z).unwrap();
-        let id = sq.objects.last().unwrap().id;
+        let id = sq.objects.last().unwrap().borrow().id;
         sq.special_objects.push(id);
         id
     }
@@ -668,7 +668,7 @@ fn adjacent_windows_and_hoppables() {
     let (sq, o) = a
         .get_window_thumpable_to(g.get_grid_square(13, 9, 0), m, g, &hooks)
         .unwrap();
-    assert_eq!(((sq.x, sq.y), o.id), ((13, 10), tw));
+    assert_eq!(((sq.x, sq.y), o.borrow().id), ((13, 10), tw));
     assert!(a
         .get_window_thumpable_to(g.get_grid_square(13, 11, 0), m, g, &hooks)
         .is_none());
@@ -683,7 +683,10 @@ fn adjacent_windows_and_hoppables() {
         .get_window_frame_to(g.get_grid_square(11, 10, 0), g)
         .unwrap();
     assert_eq!((sq.x, sq.y), (11, 10));
-    assert!(matches!(obj.kind, ObjectKind::WindowFrame { north: false }));
+    assert!(matches!(
+        obj.borrow().kind,
+        ObjectKind::WindowFrame { north: false }
+    ));
 }
 
 #[test]
@@ -722,10 +725,10 @@ fn doors_to_and_reach() {
     let (m, g, none) = (&w.m, &w.cell, &NoSquareHooks);
     let at = |x, y| g.get_grid_square(x, y, 0);
     let (_, d) = w.sq(10, 10, 0).get_door_to(at(10, 11), g, none).unwrap();
-    assert!(matches!(d.kind, ObjectKind::Door(_)));
+    assert!(matches!(d.borrow().kind, ObjectKind::Door(_)));
     assert!(w.sq(12, 10, 0).get_door_to(at(12, 11), g, none).is_none());
     let (sq, d) = w.sq(12, 10, 0).get_door_to(at(12, 11), g, &hooks).unwrap();
-    assert_eq!(((sq.x, sq.y), d.id), ((12, 11), th));
+    assert_eq!(((sq.x, sq.y), d.borrow().id), ((12, 11), th));
     // Closed doors and walls stop reaching; open floor does not.
     assert!(!w.sq(10, 10, 0).can_reach_to(w.sq(10, 11, 0), m, g, none));
     assert!(!w.sq(14, 10, 0).can_reach_to(w.sq(14, 11, 0), m, g, none));
@@ -739,19 +742,33 @@ fn reach_exclusions_preserve_both_directions_of_each_edge_and_null_names() {
     let mut w = World::new();
     let north = w.m.named_map["wall_n"];
     let west = w.m.named_map["wall_w"];
-    w.m.sprites[north].properties.unset_flag(w.m.tables.flag.collideN);
-    w.m.sprites[west].properties.unset_flag(w.m.tables.flag.collideW);
+    w.m.sprites[north]
+        .properties
+        .unset_flag(w.m.tables.flag.collideN);
+    w.m.sprites[west]
+        .properties
+        .unset_flag(w.m.tables.flag.collideW);
     w.m.sprites[north].cut_n = true;
     w.m.sprites[west].cut_w = true;
     w.put(8, 8, 0, &["floor"]);
     w.put(8, 9, 0, &["wall_n"]);
     w.put(9, 8, 0, &["wall_w"]);
-    let pairs = [((8, 8), (8, 9)), ((8, 9), (8, 8)), ((8, 8), (9, 8)), ((9, 8), (8, 8))];
+    let pairs = [
+        ((8, 8), (8, 9)),
+        ((8, 9), (8, 8)),
+        ((8, 8), (9, 8)),
+        ((9, 8), (8, 8)),
+    ];
     for (from, to) in pairs {
         let (a, b) = (w.sq(from.0, from.1, 0), w.sq(to.0, to.1, 0));
         assert!(!a.can_reach_to(b, &w.m, &w.cell, &NoSquareHooks));
-        assert!(a.can_reach_to_excluding(b, &w.m, &w.cell, &NoSquareHooks,
-            &[Some("wall_n".into()), Some("wall_w".into())]));
+        assert!(a.can_reach_to_excluding(
+            b,
+            &w.m,
+            &w.cell,
+            &NoSquareHooks,
+            &[Some("wall_n".into()), Some("wall_w".into())]
+        ));
     }
     w.m.sprites[north].name = None;
     let (a, b) = (w.sq(8, 8, 0), w.sq(8, 9, 0));

@@ -9,6 +9,7 @@ use super::manager::{FireFlags, NoFireHooks};
 use super::*;
 use crate::objects::{IsoDoor, IsoFireplace, IsoGenerator, IsoObject, ObjectKind};
 use crate::sprite::{test_tables, IsoFlagType, PropertyValueMap, SpriteTables};
+use crate::ObjectSlot;
 use crate::{IsoCell, IsoChunk, IsoGridSquare, IsoMetaGrid, IsoSpriteManager};
 
 /// Returns scripted values (0 once they run out) and records each call.
@@ -46,7 +47,7 @@ impl GameRand for Script {
     }
 }
 
-fn tables() -> SpriteTables {
+pub(super) fn tables() -> SpriteTables {
     let t = test_tables();
     let mut flags: Vec<String> = (0..t.flag_count())
         .map(|i| t.flag_name(IsoFlagType(i as u8)).to_string())
@@ -201,11 +202,8 @@ impl World {
         let mut sq = IsoGridSquare::new(x, y, 0);
         for n in objects {
             let id = sq.new_object_id();
-            sq.objects.push(IsoObject::new(
-                id,
-                ObjectKind::Object,
-                Some(self.m.named_map[*n]),
-            ));
+            sq.objects
+                .push((IsoObject::new(id, ObjectKind::Object, Some(self.m.named_map[*n]))).into());
         }
         sq.have_roof = indoor;
         sq.recalc_properties(&self.m);
@@ -217,7 +215,7 @@ impl World {
         let s = self.m.named_map[sprite];
         let sq = self.cell.get_grid_square_mut(x, y, 0).unwrap();
         let id = sq.new_object_id();
-        sq.objects.push(IsoObject::new(id, kind, Some(s)));
+        sq.objects.push((IsoObject::new(id, kind, Some(s))).into());
         sq.special_objects.push(id);
     }
 
@@ -248,6 +246,7 @@ impl World {
         self.sq(x, y)
             .objects
             .iter()
+            .map(ObjectSlot::borrow)
             .map(|o| match o.sprite {
                 Some(s) => self.m.sprites[s].name().to_string(),
                 None => o.kind.class_name().to_string(),
@@ -300,7 +299,7 @@ fn starting_a_fire_draws_rand_like_the_constructor() {
         ["float(0,30)", "next(2200)", "next(900)", "next(5)"]
     );
     assert_eq!(log.0, ["OnNewFire 2,2", "sound 2,2 20/20"]);
-    let f = mgr.fire(&w.cell, at).unwrap();
+    let f = mgr.fire(&w.cell, at).unwrap().clone();
     // Vegetation adds 50 energy; the grass floor needs nothing.
     assert_eq!((f.life, f.spread_delay, f.energy), (1800, 400, 70));
     assert_eq!(f.life_stage_duration, 360);
@@ -335,7 +334,7 @@ fn a_poor_floor_shortens_the_fire_and_takes_energy() {
     let at = mgr
         .start_fire(&mut w.fw(&mut NoFireHooks), &mut r, 1, 1, 0, true, 10, 0)
         .unwrap();
-    let f = mgr.fire(&w.cell, at).unwrap();
+    let f = mgr.fire(&w.cell, at).unwrap().clone();
     // 10 less the floor's 8 is under the minimum of 5.
     assert_eq!(f.energy, 5);
     // No life given: 800 less a hundred per point of the requirement,
@@ -455,9 +454,9 @@ fn a_fire_spreads_spending_its_energy_then_goes_out() {
         ["next(3)", "next(50)", "next(13)", "float(0,30)"]
     );
     assert_eq!(mgr.fire_stack.len(), 2);
-    let f = mgr.fire(&w.cell, at).unwrap();
+    let f = mgr.fire(&w.cell, at).unwrap().clone();
     assert_eq!((f.energy, f.spread_timer, f.age), (5, 9, 1));
-    let new = mgr.fire(&w.cell, mgr.fire_stack[1]).unwrap();
+    let new = mgr.fire(&w.cell, mgr.fire_stack[1]).unwrap().clone();
     assert_eq!(new.energy, 5);
     assert_eq!(log.0.last().unwrap(), "updated 2,2 light Some(5)");
     // At no energy the first fire goes out.
@@ -502,9 +501,10 @@ fn rain_spends_the_energy_without_spreading() {
         fire_spread: false,
         ..Default::default()
     };
-    let f = IsoFireManager::fire_mut(&mut w.cell, at).unwrap();
+    let mut f = IsoFireManager::fire_mut(&mut w.cell, at).unwrap();
     f.energy = 35;
     f.spread_timer = 1;
+    drop(f);
     let mut r = Script::new(&[]);
     mgr.update(&mut w.fw(&mut NoFireHooks), &mut r, frame)
         .unwrap();
@@ -723,7 +723,7 @@ fn a_burning_hutch_leaves_ashes_on_its_squares() {
     let ash = |x| {
         w.sq(x, 2)
             .objects
-            .iter()
+            .iter().map(ObjectSlot::borrow)
             .any(|o| matches!(&o.sprite_name, Some(crate::objects::SpriteName::Str(n)) if n == "floors_burnt_01_1"))
     };
     assert!(ash(2) && ash(3));
@@ -731,6 +731,7 @@ fn a_burning_hutch_leaves_ashes_on_its_squares() {
         .sq(3, 2)
         .objects
         .iter()
+        .map(ObjectSlot::borrow)
         .any(|o| matches!(o.kind, ObjectKind::Hutch(_))));
     assert!(w.sq(3, 2).burnt_out);
 }
@@ -1011,11 +1012,8 @@ fn garage_door_world(extra: &[&str]) -> World {
     for e in extra {
         let sq = w.cell.get_grid_square_mut(2, 2, 0).unwrap();
         let id = sq.new_object_id();
-        sq.objects.push(IsoObject::new(
-            id,
-            ObjectKind::Object,
-            Some(w.m.named_map[*e]),
-        ));
+        sq.objects
+            .push((IsoObject::new(id, ObjectKind::Object, Some(w.m.named_map[*e]))).into());
     }
     w
 }

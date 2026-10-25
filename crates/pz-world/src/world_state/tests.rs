@@ -1,6 +1,7 @@
 //! Barricades, thumpables, curtains, power and torches on hand-built
 //! squares (made-up values).
 
+use crate::ObjectSlot;
 use std::rc::Rc;
 
 use super::*;
@@ -99,11 +100,8 @@ impl World {
     fn put(&mut self, x: i32, y: i32, z: i32, indoor: bool) {
         let mut sq = IsoGridSquare::new(x, y, z);
         let id = sq.new_object_id();
-        sq.objects.push(IsoObject::new(
-            id,
-            ObjectKind::Object,
-            Some(self.m.named_map["floor"]),
-        ));
+        sq.objects
+            .push((IsoObject::new(id, ObjectKind::Object, Some(self.m.named_map["floor"]))).into());
         sq.have_roof = indoor;
         sq.recalc_properties(&self.m);
         let ch = self
@@ -118,7 +116,7 @@ impl World {
         let sq = self.cell.get_grid_square_mut(x, y, z).unwrap();
         let id = sq.new_object_id();
         sq.objects
-            .push(IsoObject::new(id, kind, Some(self.m.named_map[sprite])));
+            .push((IsoObject::new(id, kind, Some(self.m.named_map[sprite]))).into());
         sq.special_objects.push(id);
     }
 
@@ -205,7 +203,7 @@ fn barricades_on_both_sides() {
     let (same, opp) = ws.barricades_for(sq, true);
     assert!(same.is_none());
     assert_eq!(opp.unwrap().num_planks(), 2);
-    assert!(ws.object_barricaded(sq, &sq.objects[1]));
+    assert!(ws.object_barricaded(sq, &sq.objects[1].borrow()));
     // The open, barricaded door blocks the way north.
     let north = w.sq(10, 10, 0);
     assert!(sq.is_door_blocked_to(Some(north), &w.cell, &ws));
@@ -216,8 +214,8 @@ fn barricades_on_both_sides() {
     assert_eq!(same.unwrap().num_planks(), 3);
     assert_eq!(opp.unwrap().num_planks(), 1);
     // The floor object is not barricade-able.
-    assert!(!ws.object_barricaded(sq, &sq.objects[0]));
-    assert!(ws.object_barricaded(sq, &sq.objects[1]));
+    assert!(!ws.object_barricaded(sq, &sq.objects[0].borrow()));
+    assert!(ws.object_barricaded(sq, &sq.objects[1].borrow()));
 }
 
 #[test]
@@ -245,8 +243,8 @@ fn thumpable_doors_and_windows() {
     // window sprite has the window flag.
     let sq2 = w.sq(13, 12, 0);
     assert!(!ws.thumpable_door_blocked(sq2, EdgeFacing::NorthSouth));
-    assert!(ws.object_is_window(&sq2.objects[1]));
-    assert!(!ws.object_is_window(&sq.objects[1]));
+    assert!(ws.object_is_window(&sq2.objects[1].borrow()));
+    assert!(!ws.object_is_window(&sq.objects[1].borrow()));
 
     // Closed: blocked on its own edge only.
     let mut w2 = World::new();
@@ -287,9 +285,9 @@ fn door_curtains() {
     );
     let ws = w.state();
     let sq = w.sq(9, 9, 0);
-    assert_eq!(ws.door_curtain(&sq.objects[0]), None);
-    assert_eq!(ws.door_curtain(&sq.objects[1]), None);
-    assert_eq!(ws.door_curtain(&sq.objects[2]), Some(true));
+    assert_eq!(ws.door_curtain(&sq.objects[0].borrow()), None);
+    assert_eq!(ws.door_curtain(&sq.objects[1].borrow()), None);
+    assert_eq!(ws.door_curtain(&sq.objects[2].borrow()), Some(true));
 }
 
 #[test]
@@ -545,7 +543,8 @@ fn special_objects_from_the_real_objects() {
     let got: Vec<_> = sq
         .objects
         .iter()
-        .map(|o| SquareHooks::special_object(&ws, sq, o))
+        .map(ObjectSlot::borrow)
+        .map(|o| SquareHooks::special_object(&ws, sq, &o))
         .collect();
     let th = |north, open, is_door, is_hoppable, can_pass_through| {
         Some(SpecialObject::Thumpable(ThumpableInfo {
@@ -577,7 +576,10 @@ fn special_objects_from_the_real_objects() {
             None,
         ]
     );
-    assert_eq!(SquareHooks::door_curtain(&ws, sq, &sq.objects[9]), None);
+    assert_eq!(
+        SquareHooks::door_curtain(&ws, sq, &sq.objects[9].borrow()),
+        None
+    );
 }
 
 /// A row of squares y = 10, x 8..=14, with `kind` on the west edge of
@@ -693,7 +695,7 @@ fn adjacent_queries_see_thumpables_and_barricades() {
     assert!(a.can_reach_to(b, m, g, &NoSquareHooks));
     assert!(b
         .get_door_facing(EdgeFacing::EastWest, &ws)
-        .is_some_and(|o| matches!(o.kind, ObjectKind::Thumpable(_))));
+        .is_some_and(|o| matches!(o.borrow().kind, ObjectKind::Thumpable(_))));
     assert!(b
         .get_door_facing(EdgeFacing::EastWest, &NoSquareHooks)
         .is_none());
@@ -745,11 +747,11 @@ fn object_hooks_without_world_state() {
     let oh = ObjectHooks::new(&w.cell, &w.m);
     let (sq, north) = (w.sq(12, 12, 0), w.sq(12, 11, 0));
     // Open, but barricaded from the opposite square.
-    assert!(oh.is_barricaded(sq, &sq.objects[1]));
+    assert!(oh.is_barricaded(sq, &sq.objects[1].borrow()));
     assert!(oh.has_blocked_thumpable_door(sq, EdgeFacing::NorthSouth));
     assert!(!sq.can_reach_to(north, &w.m, &w.cell, &oh));
     assert_eq!(
-        oh.special_object(north, &north.objects[1]),
+        oh.special_object(north, &north.objects[1].borrow()),
         Some(SpecialObject::Barricade {
             dir: IsoDirections::S,
             blocks_vision: true
@@ -760,5 +762,5 @@ fn object_hooks_without_world_state() {
     let ch = &w.cell.chunks[&(1, 1)];
     let getter = crate::square::ChunkGetter(ch);
     let oh = ObjectHooks::new(&getter, &w.m);
-    assert!(oh.is_barricaded(sq, &sq.objects[1]));
+    assert!(oh.is_barricaded(sq, &sq.objects[1].borrow()));
 }

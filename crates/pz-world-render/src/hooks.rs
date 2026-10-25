@@ -81,7 +81,7 @@ impl WorldHooks for WorldState<'_> {
             return (None, None);
         };
         let (a, b) = self.barricades_for(sq, north);
-        (a.map(lighting_barricade), b.map(lighting_barricade))
+        (a.as_deref().map(lighting_barricade), b.as_deref().map(lighting_barricade))
     }
 
     fn hydro_power_off(&self) -> bool {

@@ -228,11 +228,11 @@ impl Map {
         let mut sq = IsoGridSquare::new(x, y, 0);
         for o in objs {
             let id = sq.new_object_id();
-            sq.objects.push(IsoObject::new(
+            sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                 id,
                 ObjectKind::Object,
                 Some(self.m.named_map[*o]),
-            ));
+            )));
         }
         sq.recalc_properties(&self.m);
         self.cell
@@ -247,7 +247,7 @@ impl Map {
         let mut sq = self.cell.get_grid_square(x, y, 0).unwrap().clone();
         let id = sq.new_object_id();
         sq.objects
-            .push(IsoObject::new(id, kind, Some(self.m.named_map[name])));
+            .push(pz_world::ObjectSlot::new(IsoObject::new(id, kind, Some(self.m.named_map[name]))));
         sq.special_objects.push(id);
         sq.recalc_properties(&self.m);
         *self.cell.get_grid_square_mut(x, y, 0).unwrap() = sq;

@@ -182,11 +182,11 @@ fn setup() -> (IsoSpriteManager, IsoChunk) {
             let mut sq = IsoGridSquare::new(16 + x, 24 + y, 0);
             let id = sq.new_object_id();
             sq.objects
-                .push(IsoObject::new(id, ObjectKind::Object, Some(floor)));
+                .push(pz_world::ObjectSlot::new(IsoObject::new(id, ObjectKind::Object, Some(floor))));
             if (x, y) == (3, 4) {
                 let id = sq.new_object_id();
                 sq.objects
-                    .push(IsoObject::new(id, ObjectKind::Object, Some(tree)));
+                    .push(pz_world::ObjectSlot::new(IsoObject::new(id, ObjectKind::Object, Some(tree))));
             }
             // As the chunk load does before erosion runs.
             sq.recalc_properties(&m);
@@ -255,10 +255,12 @@ fn chunk_load_replaces_and_grows() {
     let tree = sq
         .objects
         .iter()
+        .map(|slot| slot.borrow())
         .find(|o| matches!(&o.name, Some(ObjectName::Str(n)) if n.starts_with("Tree")))
         .unwrap();
     // update() then staged it with the erosion sprite set (`t_*_1_<n>`).
     let name = sprites.sprites[tree.sprite.unwrap()].name.clone().unwrap();
+    drop(tree);
     assert!(
         name.starts_with("t_a_1_") || name.starts_with("t_b_1_"),
         "{name}"
@@ -414,7 +416,7 @@ fn walls_come_from_square_queries() {
     let sq = chunk.get_grid_square_mut(2, 2, 0).unwrap();
     let id = sq.new_object_id();
     sq.objects
-        .push(IsoObject::new(id, ObjectKind::Object, Some(wall)));
+        .push(pz_world::ObjectSlot::new(IsoObject::new(id, ObjectKind::Object, Some(wall))));
     sq.recalc_properties(&sprites);
     let host = ChunkHost {
         chunk: &mut chunk,
@@ -461,9 +463,10 @@ fn dictionary_object_names_resolve() {
     use pz_erosion::host::ErosionHost;
     let (mut sprites, mut chunk) = setup();
     let sq = chunk.get_grid_square_mut(3, 4, 0).unwrap();
-    let tree = sq.objects.last_mut().unwrap();
+    let mut tree = sq.objects.last().unwrap().borrow_mut();
     tree.name = Some(ObjectName::Dict(5));
     let id = tree.id;
+    drop(tree);
     let mut dict = pz_inventory::dictionary::WorldDictionary::default();
     dict.object_names.insert(5, "Tree A".to_string());
     let world = WorldView {

@@ -145,10 +145,10 @@ impl Kinds<'_> {
             .is_some_and(|n| n.starts_with("boulders_") || n.starts_with("crafting_ore_"))
     }
     fn first(&self, sq: &IsoGridSquare, f: impl Fn(&Self, &IsoObject) -> bool) -> Option<ObjectId> {
-        sq.objects.iter().find(|o| f(self, o)).map(|o| o.id)
+        sq.objects.iter().map(|o| o.borrow()).find(|o| f(self, o)).map(|o| o.id)
     }
     fn count(&self, sq: &IsoGridSquare, f: impl Fn(&Self, &IsoObject) -> bool) -> usize {
-        sq.objects.iter().filter(|o| f(self, o)).count()
+        sq.objects.iter().filter(|o| f(self, &o.borrow())).count()
     }
     /// `getTree()`, `getBush()`, `getGrass()` for TREE, BUSH, PLANT.
     fn current(&self, sq: &IsoGridSquare, ty: FeatureType) -> Option<ObjectId> {
@@ -165,8 +165,8 @@ impl Kinds<'_> {
 /// sprite is cleared, so later lookups through it see no sprite).
 fn delete(sq: &mut IsoGridSquare, id: Option<ObjectId>) {
     if let Some(id) = id {
-        if let Some(i) = sq.objects.iter().position(|o| o.id == id) {
-            sq.objects.remove(i);
+        if let Some(i) = sq.objects.iter().position(|o| o.borrow().id == id) {
+            sq.remove_object_slot(i);
         }
     }
 }
@@ -502,7 +502,7 @@ impl WorldGen {
         let Some(fi) = sq.floor_index(m) else {
             return Ok(());
         };
-        let floor_id = sq.objects[fi].id;
+        let floor_id = sq.objects[fi].borrow().id;
         let Some(lookup) = self
             .biome_map
             .entry(biomes[(ty * 8 + tx) as usize])
@@ -534,9 +534,9 @@ impl WorldGen {
         )?;
         let floor_name = {
             let sq = square(c.chunks, &at).expect("square");
-            let f = sq.objects.iter().find(|o| o.id == floor_id);
+            let f = sq.objects.iter().find(|o| o.borrow().id == floor_id);
             // The floor object itself is never deleted here.
-            f.and_then(|o| o.sprite)
+            f.and_then(|o| o.borrow().sprite)
                 .and_then(|s| c.env.sprites.sprites[s].name.clone())
                 .ok_or_else(|| npe("floor sprite name"))?
         };
@@ -556,8 +556,8 @@ impl WorldGen {
                 match sq
                     .objects
                     .iter()
-                    .find(|o| o.id == cur)
-                    .and_then(|o| o.sprite)
+                    .find(|o| o.borrow().id == cur)
+                    .and_then(|o| o.borrow().sprite)
                 {
                     Some(s) => c.env.sprites.sprites[s].name.clone().unwrap_or_default(),
                     None => continue,
@@ -601,9 +601,10 @@ impl WorldGen {
                 if r.0 == TileReplacement::Success {
                     let mut i = 1;
                     while i < sq.objects.len() {
-                        let o = &sq.objects[i];
-                        if o.sprite != r.1 && (k.tree(o) || k.bush(o) || k.grass_like(o)) {
-                            sq.objects.remove(i);
+                        let o = sq.objects[i].borrow();
+                        if o.sprite != r.1 && (k.tree(&o) || k.bush(&o) || k.grass_like(&o)) {
+                            drop(o);
+                            sq.remove_object_slot(i);
                         }
                         i += 1;
                     }
@@ -611,9 +612,10 @@ impl WorldGen {
                 if r.0 == TileReplacement::Delete {
                     let mut i = 1;
                     while i < sq.objects.len() {
-                        let o = &sq.objects[i];
-                        if k.tree(o) || k.bush(o) || k.ores(o) || k.grass_like(o) {
-                            sq.objects.remove(i);
+                        let o = sq.objects[i].borrow();
+                        if k.tree(&o) || k.bush(&o) || k.ores(&o) || k.grass_like(&o) {
+                            drop(o);
+                            sq.remove_object_slot(i);
                         }
                         i += 1;
                     }
@@ -627,8 +629,8 @@ impl WorldGen {
             let sq = square(c.chunks, &at).expect("square");
             sq.objects
                 .iter()
-                .filter(|o| k.grass_like(o))
-                .map(|o| o.id)
+                .filter(|o| k.grass_like(&o.borrow()))
+                .map(|o| o.borrow().id)
                 .collect()
         };
         let n = square(c.chunks, &at).expect("square").objects.len();
@@ -776,6 +778,7 @@ impl WorldGen {
             let (id, name) = {
                 let sq = square(c.chunks, &at).expect("square");
                 let Some(o) = sq.objects.get(i) else { break };
+                let o = o.borrow();
                 let s = o.sprite.ok_or_else(|| npe("object sprite"))?;
                 (
                     o.id,
@@ -993,7 +996,7 @@ impl WorldGen {
                     return Ok(false);
                 }
                 let floor_name = k
-                    .name(&sq.objects[fi])
+                    .name(&sq.objects[fi].borrow())
                     .ok_or_else(|| npe("floor name"))?
                     .to_string();
                 if !self.can_place(placement, &floor_name)? {
@@ -1266,11 +1269,11 @@ impl WorldGen {
                 let Some(fi) = sq.floor_index(m) else {
                     continue;
                 };
-                let fs = sq.objects[fi].sprite.expect("floor sprite");
+                let fs = sq.objects[fi].borrow().sprite.expect("floor sprite");
                 let mat = m.sprites[fs].properties.get(&m.alias, "FloorMaterial");
                 if mat.is_some_and(|mat| self.wild.matches_regex(&re, mat)) {
-                    sq.objects.retain(|o| {
-                        !o.sprite
+                    sq.retain_objects(|o| {
+                        !o.borrow().sprite
                             .and_then(|s| m.sprites[s].name.as_deref())
                             .is_some_and(|n| n.starts_with(filter))
                     });
@@ -1350,7 +1353,7 @@ mod tests {
         for x in 0..8 {
             for y in 0..8 {
                 let mut sq = IsoGridSquare::new(x, y, 0);
-                sq.objects.push(IsoObject::new(0, ObjectKind::Object, None));
+                sq.objects.push(pz_world::object_slot::ObjectSlot::new(IsoObject::new(0, ObjectKind::Object, None)));
                 ch.set_square(x, y, 0, Some(sq));
             }
         }

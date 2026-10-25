@@ -17,7 +17,7 @@ use crate::iso_lot::IsoLot;
 use crate::java::{fastfloor, java_throwable, GameRand};
 use crate::map_files::{header_name, lotpack_name};
 use crate::meta_grid::IsoMetaGrid;
-use crate::objects::{IsoObject, ObjectId, ObjectLoadHooks, ObjectLoadSettings, ObjectTables};
+use crate::objects::{ObjectId, ObjectLoadHooks, ObjectLoadSettings, ObjectTables};
 use crate::save::lua_table::LuaTable;
 use crate::save::visual::IsoDeadBody;
 use crate::sprite::IsoSpriteManager;
@@ -50,7 +50,8 @@ pub struct IsoGridSquare {
     /// `isoWorldRegion`: the cached `IsoRegions.getIsoWorldRegion` result
     /// (see [`IsoGridSquare::get_iso_world_region`]).
     pub iso_world_region: std::cell::Cell<Option<crate::isoregion::WorldRegionRef>>,
-    pub objects: Vec<IsoObject>,
+    pub objects: Vec<crate::ObjectSlot>,
+    retired_objects: crate::object_slot::ObjectRetirements,
     /// `specialObjects`, by object identity. Like the original, clearing
     /// `objects` leaves this list alone; identities no longer in `objects`
     /// are skipped by lookups.
@@ -112,6 +113,7 @@ impl IsoGridSquare {
             has_set_iso_world_region: std::cell::Cell::new(false),
             iso_world_region: std::cell::Cell::new(None),
             objects: Vec::new(),
+            retired_objects: Default::default(),
             special_objects: Vec::new(),
             next_object_id: 0,
             erosion: None,
@@ -164,6 +166,38 @@ impl IsoGridSquare {
             self.has_set_iso_world_region.set(true);
         }
         self.iso_world_region.get()
+    }
+
+    /// Keep a detached receiver alive until its host releases world/sprite guards.
+    pub fn retire_object(&mut self, object: crate::ObjectSlot) {
+        self.retired_objects.0.push(object);
+    }
+    /// Remove the actual slot, pinning an alias for the host retirement boundary.
+    pub fn remove_object_slot(&mut self, index: usize) -> crate::ObjectSlot {
+        let object = self.objects.remove(index);
+        self.retire_object(crate::ObjectSlot::retain(&object.ref_handle()));
+        object
+    }
+    pub fn replace_object_slot(&mut self, index: usize, object: crate::ObjectSlot) {
+        let old = std::mem::replace(&mut self.objects[index], object);
+        self.retire_object(old);
+    }
+    pub fn clear_objects(&mut self) {
+        self.retired_objects.0.append(&mut self.objects);
+    }
+    pub fn retain_objects(&mut self, mut keep: impl FnMut(&crate::ObjectSlot) -> bool) {
+        let mut i = 0;
+        while i < self.objects.len() {
+            if keep(&self.objects[i]) {
+                i += 1;
+            } else {
+                let old = self.objects.remove(i);
+                self.retire_object(old);
+            }
+        }
+    }
+    pub fn take_retired_objects(&mut self) -> Vec<crate::ObjectSlot> {
+        std::mem::take(&mut self.retired_objects.0)
     }
 
     /// `isInARoom()`: a meta-grid room, or a player room region.
@@ -241,6 +275,7 @@ pub struct IsoChunk {
     pub max_level: i32,
     /// `squares[z - minLevel][x + y*8]`.
     squares: Vec<Vec<Option<IsoGridSquare>>>,
+    retired_objects: Vec<crate::ObjectSlot>,
     /// `lotheader`: header file name, set when the lot came from the
     /// top-level header.
     pub lotheader: Option<String>,
@@ -416,6 +451,7 @@ impl IsoChunk {
             min_level: 0,
             max_level: 0,
             squares: vec![vec![None; 64]],
+            retired_objects: Vec::new(),
             lotheader: None,
             modded: false,
             generation_status: ChunkGenerationStatusSet::default(),
@@ -499,6 +535,12 @@ impl IsoChunk {
                 physics.push(false);
             }
         }
+        for level in &mut self.squares {
+            for old in level.iter_mut().filter_map(Option::take) {
+                self.retired_objects.extend(old.objects);
+                self.retired_objects.extend(old.retired_objects.0);
+            }
+        }
         self.min_level = min_level;
         self.max_level = max_level;
         self.squares = levels;
@@ -506,9 +548,22 @@ impl IsoChunk {
     }
 
     pub fn set_square(&mut self, x: i32, y: i32, z: i32, square: Option<IsoGridSquare>) {
+        // Pin incoming owners before level/index work can unwind. Successful
+        // placement still owns these same allocations; aliases retire at the host boundary.
+        if let Some(sq) = &square {
+            self.retired_objects.extend(
+                sq.objects
+                    .iter()
+                    .chain(sq.retired_objects.0.iter())
+                    .map(|o| crate::ObjectSlot::retain(&o.ref_handle())),
+            );
+        }
         self.set_min_max_level(self.min_level.min(z), self.max_level.max(z));
         let zz = (z - self.min_level) as usize;
-        self.squares[zz][(x + y * 8) as usize] = square;
+        if let Some(old) = std::mem::replace(&mut self.squares[zz][(x + y * 8) as usize], square) {
+            self.retired_objects.extend(old.objects);
+            self.retired_objects.extend(old.retired_objects.0);
+        }
     }
 
     pub fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
@@ -525,6 +580,17 @@ impl IsoChunk {
             return None;
         }
         self.squares[(z - self.min_level) as usize][(y * 8 + x) as usize].as_mut()
+    }
+
+    pub fn retire_object(&mut self, object: crate::ObjectSlot) {
+        self.retired_objects.push(object);
+    }
+    pub fn take_retired_objects(&mut self) -> Vec<crate::ObjectSlot> {
+        let mut retired = std::mem::take(&mut self.retired_objects);
+        for square in self.squares.iter_mut().flatten().flatten() {
+            retired.extend(square.take_retired_objects());
+        }
+        retired
     }
 
     pub fn squares(&self) -> impl Iterator<Item = &IsoGridSquare> {
@@ -736,7 +802,7 @@ fn place_lot_inner(
                     // hidewalls test only re-sets it), so the first tile with a
                     // definition always clears the square.
                     if n == 0 {
-                        square.objects.clear();
+                        square.clear_objects();
                     }
                     let ty = env.sprites.sprites[spr].tile_type;
                     do_tile_object_creation(&mut env.objects(), meta, square, spr, ty, &tile)?;
@@ -873,9 +939,23 @@ pub struct IsoCell {
     pub drag: crate::cell_drag::CellDrag,
     pub process_items: crate::process_items::ProcessItemQueues,
     cache: LotCache,
+    retired_objects: Vec<crate::ObjectSlot>,
 }
 
 impl IsoCell {
+    pub fn retire_object(&mut self, object: crate::ObjectSlot) {
+        self.retired_objects.push(object);
+    }
+    /// Move pending owners out; callers must release every world/sprite guard
+    /// before dropping them. Errors/unwinds leave the pending owners in place.
+    pub fn take_retired_objects(&mut self) -> Vec<crate::ObjectSlot> {
+        let mut retired = std::mem::take(&mut self.retired_objects);
+        for chunk in self.chunks.values_mut() {
+            retired.extend(chunk.take_retired_objects());
+        }
+        retired
+    }
+
     /// The `vehicles` of loaded chunk `(wx, wy)`.
     pub fn chunk_vehicles(
         &self,
@@ -930,6 +1010,12 @@ impl IsoCell {
     ) -> Option<IsoChunk> {
         let mut chunk = self.chunks.remove(&(wx, wy));
         if let Some(c) = &mut chunk {
+            self.retired_objects.extend(
+                c.squares()
+                    .flat_map(|sq| sq.objects.iter())
+                    .map(|o| crate::ObjectSlot::retain(&o.ref_handle())),
+            );
+            self.retired_objects.extend(c.take_retired_objects());
             if let Some(h) = hook {
                 h.chunk_unloaded(wx, wy);
             }

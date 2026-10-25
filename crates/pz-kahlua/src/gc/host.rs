@@ -55,6 +55,8 @@ pub enum RegistrationError {
     VmPayloadReserved,
     /// This allocation already has a different ownership description.
     DescriptorConflict,
+    /// This physical Rc allocation is already registered under another node kind.
+    AllocationKindConflict,
     /// Thread-local teardown or an enclosing registry borrow prevented registration.
     /// The allocation remains an ordinary conservative external owner.
     RegistryUnavailable,
@@ -121,6 +123,13 @@ impl TraceVisitor {
 
     pub fn native(&mut self, slot: &Rc<NativeFunction>) {
         self.targets.push(NodeId::Native(Rc::as_ptr(slot) as usize));
+    }
+
+    /// One actual userdata-owning slot, typed or erased. Unregistered targets
+    /// remain opaque; this does not invoke any LuaObject virtual methods.
+    pub fn userdata<T: crate::LuaObject + ?Sized>(&mut self, slot: &Rc<T>) {
+        self.targets
+            .push(NodeId::Userdata(super::userdata::address(Rc::as_ptr(slot))));
     }
 
     /// One physical host-owner slot. Use `table` or `upvalue` for VM nodes;
@@ -227,6 +236,12 @@ impl<T: 'static, D: TraceDescriptor<T>> HostGuard for PayloadGuard<'_, T, D> {
 impl Collector {
     fn register_host(&mut self, owner: Box<dyn HostWeak>) -> Result<bool, RegistrationError> {
         let id = owner.id();
+        let NodeId::Host(_, address) = id else {
+            unreachable!("host metadata always identifies a host allocation");
+        };
+        if self.has_userdata_address(address) {
+            return Err(RegistrationError::AllocationKindConflict);
+        }
         if let Some(&index) = self.host_indices.get(&id) {
             let previous = &self.hosts[index];
             if previous.strong_count() != 0 {
@@ -247,8 +262,21 @@ impl Collector {
             }
         }
         self.host_indices.insert(id, self.hosts.len());
+        self.host_addresses.insert(address, id);
         self.hosts.push(owner);
         Ok(true)
+    }
+
+    pub(super) fn has_host_address(&mut self, address: usize) -> bool {
+        let Some(id) = self.host_addresses.get(&address) else {
+            return false;
+        };
+        if self.hosts[self.host_indices[id]].strong_count() != 0 {
+            true
+        } else {
+            self.prune_hosts();
+            false
+        }
     }
 
     pub(super) fn prune_hosts(&mut self) {
@@ -260,5 +288,13 @@ impl Collector {
                 .enumerate()
                 .map(|(index, owner)| (owner.id(), index)),
         );
+        self.host_addresses.clear();
+        self.host_addresses
+            .extend(self.host_indices.keys().map(|&id| {
+                let NodeId::Host(_, address) = id else {
+                    unreachable!("host metadata always identifies a host allocation");
+                };
+                (address, id)
+            }));
     }
 }

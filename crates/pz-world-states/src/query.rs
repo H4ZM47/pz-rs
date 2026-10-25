@@ -287,7 +287,7 @@ impl<'a> Env<'a> {
 
     /// `getSheetRope()`: the first object with `sheetRope`.
     pub fn sheet_rope_index(&self, sq: &IsoGridSquare) -> Option<usize> {
-        sq.objects.iter().position(|o| o.sheet_rope)
+        sq.objects.iter().position(|o| o.borrow().sheet_rope)
     }
 }
 

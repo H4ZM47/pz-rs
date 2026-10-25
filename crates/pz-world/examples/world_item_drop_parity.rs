@@ -319,19 +319,20 @@ fn main() {
         };
         let mut i = 0;
         while i < sq.objects.len() {
-            let o = &sq.objects[i];
+            let mut o = sq.objects[i].borrow_mut();
             let name = o.sprite.and_then(|s| sprites.sprites[s].name.clone());
             match java.get(i) {
                 Some(&(class, spr)) if class == o.kind.class_name() => {
                     if name.as_deref().unwrap_or("null") != spr {
                         if let Some(&s) = sprites.named_map.get(spr) {
-                            sq.objects[i].sprite = Some(s);
+                            o.sprite = Some(s);
                         }
                     }
                     i += 1;
                 }
                 _ => {
-                    let id = sq.objects.remove(i).id;
+                    drop(o);
+                    let id = sq.remove_object_slot(i).borrow().id;
                     sq.world_objects.retain(|&w| w != id);
                     sq.special_objects.retain(|&w| w != id);
                 }
@@ -495,7 +496,7 @@ fn main() {
             let sq = cell.get_grid_square(dp.0, dp.1, dp.2).unwrap();
             let id = *sq.world_objects.last().unwrap();
             let idx = sq.object_index(id).unwrap();
-            let o = &sq.objects[idx];
+            let o = sq.objects[idx].borrow();
             let ObjectKind::WorldInventory(wi) = &o.kind else {
                 panic!()
             };

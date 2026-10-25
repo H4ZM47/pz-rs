@@ -14,6 +14,7 @@
 //! [`crate::chunk::IsoChunk::vehicles`] and, like the original, not
 //! written back (vehicles are saved to `vehicles.db`).
 
+use crate::object_slot::ObjectSlot;
 use std::path::{Path, PathBuf};
 
 use super::io::{crc32, err, has, BitHeaderWrite, Reader, SaveResult, Writer};
@@ -345,7 +346,7 @@ pub fn load_square(
                 if world && !matches!(obj.kind, ObjectKind::WorldInventory(_)) {
                     return err("ClassCastException: world object flag on a non-item");
                 }
-                sq.objects.push(obj);
+                sq.objects.push((ObjectSlot::new(obj)).into());
                 if special {
                     sq.special_objects.push(id);
                 }
@@ -403,13 +404,14 @@ pub fn load_square(
     // light source.
     let room = ctx.meta.and_then(|meta| sq.room_def(meta));
     let (x, y, z) = (sq.x, sq.y, sq.z);
-    for o in &mut sq.objects {
+    for mut o in sq.objects.iter().map(ObjectSlot::borrow_mut) {
+        let sprite = o.sprite;
         let ObjectKind::LightSwitch(s) = &mut o.kind else {
             continue;
         };
         match room {
             Some(room) if s.light_room => s.activated = room.lights_active.get(),
-            _ => load_light_source(ctx, o.sprite, s, (x, y, z))?,
+            _ => load_light_source(ctx, sprite, s, (x, y, z))?,
         }
     }
     Ok(())
@@ -492,7 +494,7 @@ pub fn save_square(w: &mut Writer, ctx: &SaveCtx<'_>, sq: &IsoGridSquare) -> Sav
         if n >= 4 {
             w.i16(n as i16);
         }
-        for o in &sq.objects {
+        for o in sq.objects.iter().map(ObjectSlot::borrow) {
             let mut f = 0i8;
             if sq.special_objects.contains(&o.id) {
                 f |= 2;
@@ -501,7 +503,7 @@ pub fn save_square(w: &mut Writer, ctx: &SaveCtx<'_>, sq: &IsoGridSquare) -> Sav
                 f |= 4;
             }
             w.i8(f);
-            save_object(w, ctx, o)?;
+            save_object(w, ctx, &o)?;
         }
     }
     if sq.overlay_done {
@@ -738,7 +740,7 @@ pub fn apply_loaded_window_sprites(ch: &IsoChunk, m: &mut crate::sprite::IsoSpri
                 let Some(sq) = ch.get_grid_square(x, y, z) else {
                     continue;
                 };
-                for obj in &sq.objects {
+                for obj in sq.objects.iter().map(ObjectSlot::borrow) {
                     let ObjectKind::Window(w) = &obj.kind else {
                         continue;
                     };

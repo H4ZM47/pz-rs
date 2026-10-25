@@ -159,16 +159,16 @@ impl Scene {
             for y in 8..16 {
                 let mut sq = IsoGridSquare::new(x, y, 0);
                 let id = sq.new_object_id();
-                sq.objects.push(IsoObject::new(
+                sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                     id,
                     ObjectKind::Object,
                     Some(m.named_map["floor"]),
-                ));
+                )));
                 if (x, y) == CRATE {
                     let id = sq.new_object_id();
                     let mut o = IsoObject::new(id, ObjectKind::Object, Some(m.named_map["crate"]));
                     o.container = Some(pz_inventory::container::ItemContainer::new(Some("crate")));
-                    sq.objects.push(o);
+                    sq.objects.push(pz_world::ObjectSlot::new(o));
                 }
                 if (x, y) == DOOR {
                     let id = sq.new_object_id();
@@ -176,11 +176,11 @@ impl Scene {
                         open: true,
                         ..Default::default()
                     };
-                    sq.objects.push(IsoObject::new(
+                    sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                         id,
                         ObjectKind::Door(door),
                         Some(m.named_map["door_w"]),
-                    ));
+                    )));
                 }
                 cell.chunks
                     .get_mut(&(1, 1))

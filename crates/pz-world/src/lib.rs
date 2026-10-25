@@ -7,8 +7,8 @@
 
 pub mod animal_zone_save;
 pub mod bra;
-pub mod cell_loader;
 pub mod cell_drag;
+pub mod cell_loader;
 pub mod chunk;
 pub mod chunk_data;
 pub mod chunk_vehicles;
@@ -28,6 +28,7 @@ pub mod meta_grid;
 pub mod meta_save;
 pub mod meta_zones;
 pub mod nav_streets;
+pub mod object_slot;
 pub mod objects;
 pub mod process_items;
 pub mod save;
@@ -46,22 +47,23 @@ pub use chunk::{
 };
 pub use defs::{BuildingDef, BuildingIdx, MetaObject, RoomDef, RoomIdx, RoomRect};
 pub use iso_lot::IsoLot;
-pub use los::TestResults;
 pub use java::{FactoryRand, GameRand};
+pub use los::TestResults;
 pub use map_files::{LotHeader, MapFiles, MapInfo};
 pub use meta_grid::{
     CreateParams, IsoMetaCell, IsoMetaChunk, IsoMetaGrid, WorldGenBounds, ZombieVoronoi,
 };
+pub use object_slot::{IsoObjectRef, ObjectSlot};
 pub use objects::{
     IsoObject, NoHooks, ObjectKind, ObjectLoadHooks, ObjectLoadSettings, ObjectTables,
 };
 pub use sprite::{IsoSpriteManager, SpriteTables};
-pub use zones::{
-    ClipperOps, PropValue, RoomTone, VehicleZone, Zone, ZoneError, ZoneGeometryType, ZoneId, ZoneKind,
-    ZoneProps, ZoneTables,
-};
 pub use square::{
     ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks,
     SpecialObject, SquareHooks, ThumpableInfo, VisionEnv, VisionResult,
 };
 pub use world_state::{ObjectHooks, PowerSettings, WorldState};
+pub use zones::{
+    ClipperOps, PropValue, RoomTone, VehicleZone, Zone, ZoneError, ZoneGeometryType, ZoneId,
+    ZoneKind, ZoneProps, ZoneTables,
+};

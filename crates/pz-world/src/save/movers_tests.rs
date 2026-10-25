@@ -345,7 +345,7 @@ fn animal_tracks_and_pushables_in_chunks() {
     );
     track.mod_data = Some(table("k", "v"));
     let id = track.id;
-    sq.objects.push(track);
+    sq.objects.push((track).into());
     sq.special_objects.push(id);
     let base = |x: f32, offsets: (f32, f32)| MovingBase {
         offset_x: offsets.0,
@@ -367,7 +367,7 @@ fn animal_tracks_and_pushables_in_chunks() {
     let mut c = ItemContainer::new(Some("crate"));
     c.items.push(raw_item(3, 4));
     push.container = Some(c);
-    sq.objects.push(push);
+    sq.objects.push((push).into());
     let bin = IsoObject::new(
         sq.new_object_id(),
         ObjectKind::Pushable(Box::new(IsoPushableObject {
@@ -376,39 +376,50 @@ fn animal_tracks_and_pushables_in_chunks() {
         })),
         None,
     );
-    sq.objects.push(bin);
+    sq.objects.push((bin).into());
     let b = save_chunk(&ch, &ctx).unwrap();
     let back = load_chunk(&b, 10, 20, &ctx).unwrap().chunk;
     let sq = back.get_grid_square(1, 1, 0).unwrap();
     assert_eq!(sq.objects.len(), 3);
-    assert_eq!(sq.special_objects, vec![sq.objects[0].id]);
-    let ObjectKind::AnimalTrack(tr) = &sq.objects[0].kind else {
-        panic!("{:?}", sq.objects[0].kind);
+    assert_eq!(sq.special_objects, vec![sq.objects[0].borrow().id]);
+    let ObjectKind::AnimalTrack(tr) = &sq.objects[0].borrow().kind else {
+        panic!("{:?}", sq.objects[0].borrow().kind);
     };
     assert_eq!(tr.animal_type, "deer");
     assert_eq!(tr.dir, Some(4));
-    let ObjectKind::Pushable(p) = &sq.objects[1].kind else {
+    let ObjectKind::Pushable(p) = &sq.objects[1].borrow().kind else {
         panic!();
     };
     // The constructor's offsets replace the saved ones; dir is masked.
     assert_eq!((p.base.offset_x, p.base.offset_y), (64.0, 192.0));
     assert_eq!(p.base.dir, 1);
-    assert_eq!(sq.objects[1].sprite, Some(m.named_map["crate_0"]));
-    assert_eq!(sq.objects[1].container.as_ref().unwrap().items.len(), 1);
+    assert_eq!(sq.objects[1].borrow().sprite, Some(m.named_map["crate_0"]));
+    assert_eq!(
+        sq.objects[1]
+            .borrow()
+            .container
+            .as_ref()
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
     // A wheelie bin saved without a container gets its own back.
-    let ObjectKind::Pushable(w) = &sq.objects[2].kind else {
+    let ObjectKind::Pushable(w) = &sq.objects[2].borrow().kind else {
         panic!();
     };
     assert!(w.wheelie_bin);
     assert_eq!((w.base.offset_x, w.base.offset_y), (-26.0, -248.0));
-    let wc = sq.objects[2].container.as_ref().unwrap();
+    let wc = sq.objects[2].borrow().container.as_ref().unwrap().clone();
     assert_eq!(wc.kind.as_deref(), Some("wheeliebin"));
     let b2 = save_chunk(&back, &ctx).unwrap();
     let back2 = load_chunk(&b2, 10, 20, &ctx).unwrap().chunk;
     assert_eq!(save_chunk(&back2, &ctx).unwrap(), b2);
     // A pushable whose sprite is unknown cannot be saved.
     let mut bad = back2;
-    bad.get_grid_square_mut(1, 1, 0).unwrap().objects[1].sprite = None;
+    bad.get_grid_square_mut(1, 1, 0).unwrap().objects[1]
+        .borrow_mut()
+        .sprite = None;
     assert!(save_chunk(&bad, &ctx).is_err());
 }
 

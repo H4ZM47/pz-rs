@@ -210,6 +210,7 @@ fn main() {
                                     .is_some_and(|s| {
                                         !s.special_objects.is_empty()
                                             || s.objects.iter().any(|o| {
+                                                let o = o.borrow();
                                                 o.moved_thumpable
                                                     || matches!(
                                                         o.kind,
@@ -253,6 +254,7 @@ fn main() {
                             continue;
                         };
                         for (oi, o) in sq.objects.iter().enumerate() {
+                            let o = o.borrow();
                             let r = ObjectRef {
                                 x: sq.x,
                                 y: sq.y,
@@ -316,10 +318,10 @@ fn main() {
         let mut rand = JRandom::new(java_hash(&name) as i64);
         write!(out, "bd {name}").unwrap();
         for _ in 0..40 {
-            let destroyed = match a.find(r).map(|(_, o)| &o.kind) {
-                Some(ObjectKind::Barricade(b)) => b.is_destroyed(),
+            let destroyed = a.find(r).map_or(true, |(_, o)| match &o.kind {
+                ObjectKind::Barricade(b) => b.is_destroyed(),
                 _ => true,
-            };
+            });
             if destroyed {
                 break;
             }

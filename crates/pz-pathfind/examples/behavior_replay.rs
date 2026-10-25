@@ -253,6 +253,7 @@ fn rust_inputs(
             .objects
             .iter()
             .map(|o| {
+                let o = o.borrow();
                 format!(
                     "{}:{}",
                     o.kind.class_name(),

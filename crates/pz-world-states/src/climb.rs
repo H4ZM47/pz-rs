@@ -240,7 +240,7 @@ impl StatesWorldAdapter<'_> {
         let (sq, o) = self.find(r)?;
         let (portal, can_climb, portal_can_climb, north, broken_glass, barbed) = match &o.kind {
             ObjectKind::Window(w) => {
-                let c = self.window_can_climb_through(sq, o, Some(t));
+                let c = self.window_can_climb_through(sq, &o, Some(t));
                 (
                     ThumpKind::Window,
                     c,
@@ -251,8 +251,8 @@ impl StatesWorldAdapter<'_> {
                 )
             }
             ObjectKind::Thumpable(th) => {
-                let c = self.thumpable_can_climb_through(sq, o, Some(t));
-                let barbed = self.object_name(o).as_deref() == Some("Barbed Fence");
+                let c = self.thumpable_can_climb_through(sq, &o, Some(t));
+                let barbed = self.object_name(&o).as_deref() == Some("Barbed Fence");
                 (ThumpKind::Thumpable, c, c, th.north, false, barbed)
             }
             ObjectKind::WindowFrame { north } => {
@@ -329,12 +329,12 @@ impl StatesWorldAdapter<'_> {
         let a = self.cell.get_grid_square(start.0, start.1, start.2)?;
         let b = self.cell.get_grid_square(end.0, end.1, end.2)?;
         let hooks = self.env().hooks();
-        let in_a = |o: &IsoObject| a.objects.iter().any(|x| std::ptr::eq(x, o));
+        let in_a = |o: &pz_world::IsoObjectRef| a.objects.iter().any(|x| x.ptr_eq_ref(o));
         let found = a
             .get_window_to(Some(b), self.cell)
-            .map(|o| (if in_a(o) { a } else { b }, o))
+            .map(|o| (if in_a(&o) { a } else { b }, o))
             .or_else(|| a.get_window_thumpable_to(Some(b), self.sprites, self.cell, &hooks))
-            .map(|(s, o)| oref(s, o))
+            .map(|(s, o)| oref(s, &o.borrow()))
             .or_else(|| {
                 self.collide_env()
                     .get_hoppable_to(a, Some(b))
@@ -346,25 +346,27 @@ impl StatesWorldAdapter<'_> {
                     })
             })?;
         let (_, o) = self.find(found)?;
-        Some((found, Self::kind_of(o)))
+        Some((found, Self::kind_of(&o)))
     }
 
     /// `square.getBrokenGlass() != null`.
     pub fn broken_glass_at(&self, p: (i32, i32, i32)) -> bool {
         self.cell.get_grid_square(p.0, p.1, p.2).is_some_and(|s| {
             s.get_special_objects()
-                .any(|o| matches!(o.kind, ObjectKind::BrokenGlass))
+                .any(|o| matches!(o.borrow().kind, ObjectKind::BrokenGlass))
         })
     }
 
     /// `IsoThumpable.health -= damage`, `destroy()` at 0 or below.
     pub fn damage_thumpable_at(&mut self, r: ObjectRef, damage: i32) {
-        let Some(o) = self.find_mut(r) else { return };
+        let Some(mut o) = self.find_mut(r) else { return };
         let ObjectKind::Thumpable(t) = &mut o.kind else {
             return;
         };
         t.health -= damage;
-        if t.health <= 0 {
+        let destroyed = t.health <= 0;
+        drop(o);
+        if destroyed {
             self.destroy_thumpable(r);
         }
     }
@@ -392,7 +394,7 @@ impl StatesWorldAdapter<'_> {
     /// `ClimbOverFenceState.isMetalFence(fence)`.
     fn is_metal_fence(&self, o: &IsoObject) -> bool {
         let env = self.env();
-        let mats = ["Material", "Material2", "Material3"].map(|k| env.obj_prop(o, k));
+        let mats = ["Material", "Material2", "Material3"].map(|k| env.obj_prop(&o, k));
         if mats
             .iter()
             .any(|m| matches!(m, Some("MetalBars") | Some("MetalWire")))
@@ -418,10 +420,10 @@ impl StatesWorldAdapter<'_> {
         if o.sprite.is_none() {
             return (WOOD, WOOD);
         }
-        if let Some(low) = env.obj_prop(o, "FenceTypeLow") {
+        if let Some(low) = env.obj_prop(&o, "FenceTypeLow") {
             if low == "Sandbag"
                 && self
-                    .object_name(o)
+                    .object_name(&o)
                     .is_some_and(|n| n.to_lowercase().contains("gravel"))
             {
                 return (3, 3);
@@ -445,7 +447,7 @@ impl StatesWorldAdapter<'_> {
             };
             return (fence, trip);
         }
-        if let Some(high) = env.obj_prop(o, "FenceTypeHigh") {
+        if let Some(high) = env.obj_prop(&o, "FenceTypeHigh") {
             return match high {
                 "Metal" => (1, 1),
                 "MetalGate" => (6, 8),
@@ -458,11 +460,11 @@ impl StatesWorldAdapter<'_> {
     /// What `ClimbOverFenceState` reads of a hoppable.
     pub fn fence_info_of(&self, r: ObjectRef) -> Option<FenceInfo> {
         let (sq, o) = self.find(r)?;
-        let (fence_type_low, trip_type) = self.fence_sound_types(o);
+        let (fence_type_low, trip_type) = self.fence_sound_types(&o);
         Some(FenceInfo {
             square: (sq.x, sq.y, sq.z),
-            hoppable_n: self.env().obj_has_flag(o, "HoppableN"),
-            metal: self.is_metal_fence(o),
+            hoppable_n: self.env().obj_has_flag(&o, "HoppableN"),
+            metal: self.is_metal_fence(&o),
             fence_type_low,
             trip_type,
         })
@@ -489,13 +491,13 @@ impl StatesWorldAdapter<'_> {
     /// sprite has `solidfloor`.
     pub fn floor_sprite_name_at(&self, p: (i32, i32, i32)) -> Option<String> {
         let sq = self.cell.get_grid_square(p.0, p.1, p.2)?;
-        let floor = sq.objects.iter().find(|o| {
+        let floor = sq.objects.iter().map(|o| o.borrow()).find(|o| {
             o.sprite.is_some_and(|s| {
                 self.sprites.sprites[s]
                     .properties
                     .has(self.sprites.tables.flag.solidfloor)
             })
         })?;
-        self.env().sprite_name(floor).map(str::to_string)
+        self.env().sprite_name(&floor).map(str::to_string)
     }
 }

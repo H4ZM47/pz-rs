@@ -41,13 +41,13 @@ impl StatesWorldAdapter<'_> {
             perma_locked: w.perma_locked,
             open: w.open,
             destroyed: w.destroyed,
-            invincible: self.window_invincible(sq, o, w.north),
+            invincible: self.window_invincible(sq, &o, w.north),
         })
     }
 
     /// `window.setPermaLocked(perma)` (`sync()` is the network's).
     pub fn set_window_perma_locked_at(&mut self, r: ObjectRef, perma: bool) {
-        if let Some(ObjectKind::Window(w)) = self.find_mut(r).map(|o| &mut o.kind) {
+        if let Some(mut w) = self.find_mut(r).and_then(|o| std::cell::RefMut::filter_map(o, |o| match &mut o.kind { ObjectKind::Window(value) => Some(value), _ => None }).ok()) {
             w.perma_locked = perma;
         }
     }
@@ -87,16 +87,19 @@ impl StatesWorldAdapter<'_> {
         let ObjectKind::Window(w) = &o.kind else {
             return;
         };
-        let invincible = self.window_invincible(sq, o, w.north);
+        let invincible = self.window_invincible(sq, &o, w.north);
+        drop(o);
         if player && !invincible {
-            if let Some(ObjectKind::Window(w)) = self.find_mut(r).map(|o| &mut o.kind) {
+            if let Some(mut w) = self.find_mut(r).and_then(|o| std::cell::RefMut::filter_map(o, |o| match &mut o.kind { ObjectKind::Window(value) => Some(value), _ => None }).ok()) {
                 w.health = 0;
             }
         }
-        let Some(ObjectKind::Window(w)) = self.find(r).map(|(_, o)| &o.kind) else {
+        let Some(w) = self.find(r).and_then(|(_, o)| std::cell::Ref::filter_map(o, |o| match &o.kind { ObjectKind::Window(value) => Some(value), _ => None }).ok()) else {
             return;
         };
-        if !w.destroyed && w.health <= 0 {
+        let destroyed = !w.destroyed && w.health <= 0;
+        drop(w);
+        if destroyed {
             self.smash_window(r, true);
             self.add_broken_glass(r, t);
         }
@@ -104,13 +107,14 @@ impl StatesWorldAdapter<'_> {
 
     /// `IsoBarricade.WeaponHit(owner, null)` off the client.
     fn barricade_weapon_hit(&mut self, r: ObjectRef, t: &Thumper) {
-        let Some(ObjectKind::Barricade(b)) = self.find(r).map(|(_, o)| &o.kind) else {
+        let Some(b) = self.find(r).and_then(|(_, o)| std::cell::Ref::filter_map(o, |o| match &o.kind { ObjectKind::Barricade(value) => Some(value), _ => None }).ok()) else {
             return;
         };
         if b.is_destroyed() {
             return;
         }
         let metal = b.metal_health > 0 || b.metal_bar_health > 0;
+        drop(b);
         self.engine.weapon_hit_thumpable(t.id, r);
         let sound = if metal {
             "HitBarricadeMetal"
@@ -120,7 +124,7 @@ impl StatesWorldAdapter<'_> {
         self.engine.play_world_sound(sound, (r.x, r.y, r.z));
         self.barricade_damage(r, 100.0);
         self.weapon_hit_sound(t.id, r);
-        let destroyed = matches!(self.find(r).map(|(_, o)| &o.kind), Some(ObjectKind::Barricade(b)) if b.is_destroyed());
+        let destroyed = matches!(self.find(r).as_ref().map(|(_, o)| &o.kind), Some(ObjectKind::Barricade(b)) if b.is_destroyed());
         if destroyed {
             let sound2 = if metal {
                 "BreakBarricadeMetal"
@@ -183,9 +187,10 @@ impl StatesWorldAdapter<'_> {
         }
         let north = matches!(dir, IsoDirections::N | IsoDirections::S);
         let window = sq.get_window_to(Some(exit), self.cell).map(|o| {
-            let in_sq = sq.objects.iter().any(|x| std::ptr::eq(x, o));
+            let in_sq = sq.objects.iter().any(|x| x.ptr_eq_ref(&o));
+            let o = o.borrow();
             (
-                oref(if in_sq { sq } else { exit }, o),
+                oref(if in_sq { sq } else { exit }, &o),
                 matches!(&o.kind, ObjectKind::Window(w) if w.open),
             )
         });
@@ -195,7 +200,7 @@ impl StatesWorldAdapter<'_> {
             }
             let climb = self
                 .find(r)
-                .is_some_and(|(s, o)| self.window_can_climb_through(s, o, Some(t)));
+                .is_some_and(|(s, o)| self.window_can_climb_through(s, &o, Some(t)));
             if !climb {
                 return SheetRopeExit::Blocked;
             }
@@ -204,7 +209,7 @@ impl StatesWorldAdapter<'_> {
         let hooks = self.env().hooks();
         let found = sq
             .get_window_thumpable_to(Some(exit), self.sprites, self.cell, &hooks)
-            .map(|(s, o)| (oref(s, o), self.thumpable_can_climb_through(s, o, Some(t))));
+            .map(|(s, o)| { let o = o.borrow(); (oref(s, &o), self.thumpable_can_climb_through(s, &o, Some(t))) });
         if let Some((r, climb)) = found {
             return if climb {
                 SheetRopeExit::OpenWindow(r)
@@ -225,12 +230,12 @@ impl StatesWorldAdapter<'_> {
         }
         let frame = sq
             .get_window_frame_to(Some(exit), self.cell)
-            .and_then(|(s, o)| match &o.kind {
+            .and_then(|(s, o)| { let o = o.borrow(); match &o.kind {
                 ObjectKind::WindowFrame { north } => {
-                    Some((oref(s, o), self.frame_can_climb_through(s, *north, Some(t))))
+                    Some((oref(s, &o), self.frame_can_climb_through(s, *north, Some(t))))
                 }
                 _ => None,
-            });
+            }});
         if let Some((r, climb)) = frame {
             return if climb {
                 SheetRopeExit::WindowFrame(r)
@@ -320,7 +325,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `ClimbOverWallState.getClimbableWallN` / `getClimbableWallW`.
-    fn climbable_wall<'s>(&'s self, sq: &'s IsoGridSquare, north: bool) -> Option<&'s IsoObject> {
+    fn climbable_wall<'s>(&'s self, sq: &'s IsoGridSquare, north: bool) -> Option<std::cell::Ref<'s, IsoObject>> {
         let env = self.env();
         let wall = self.sprites.tables.ty.wall;
         let (collide, hoppable) = if north {
@@ -328,12 +333,12 @@ impl StatesWorldAdapter<'_> {
         } else {
             ("collideW", "HoppableW")
         };
-        sq.objects.iter().find(|o| {
+        sq.objects.iter().map(|o| o.borrow()).find(|o| {
             let Some(s) = o.sprite else { return false };
             self.sprites.sprites[s].tile_type == wall
-                && !env.obj_has_flag(o, "CantClimb")
-                && env.obj_has_flag(o, collide)
-                && !env.obj_has_flag(o, hoppable)
+                && !env.obj_has_flag(&o, "CantClimb")
+                && env.obj_has_flag(&o, collide)
+                && !env.obj_has_flag(&o, hoppable)
         })
     }
 
@@ -353,7 +358,7 @@ impl StatesWorldAdapter<'_> {
             IsoDirections::S => self.climbable_wall(e, true),
             _ => None,
         }?;
-        Some(match self.env().obj_prop(fence, "FenceTypeHigh") {
+        Some(match self.env().obj_prop(&fence, "FenceTypeHigh") {
             Some("Metal") => 1,
             Some("MetalGate") => 2,
             _ => 0,

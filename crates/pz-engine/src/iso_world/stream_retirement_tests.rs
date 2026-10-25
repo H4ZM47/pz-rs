@@ -77,26 +77,31 @@ impl Fixture {
             .borrow_mut()
             .parent = Some(Rc::new(probe));
         let mut square = IsoGridSquare::new(80, 80, 0);
-        square.objects.push(IsoObject::new(
-            1,
-            ObjectKind::WorldInventory(pz_world::floor_object::FloorObject::new(
-                IsoWorldInventoryObject {
-                    xoff: 0.0,
-                    yoff: 0.0,
-                    zoff: 0.0,
-                    offset_x: 0.0,
-                    offset_y: 0.0,
-                    item: FloorItem::retain(&bag),
-                    drop_time: 0.0,
-                    ignore_remove_sandbox: false,
-                    extended_placement: false,
-                },
-            )),
-            None,
-        ));
+        square
+            .objects
+            .push(pz_world::ObjectSlot::new(IsoObject::new(
+                1,
+                ObjectKind::WorldInventory(pz_world::floor_object::FloorObject::new(
+                    IsoWorldInventoryObject {
+                        xoff: 0.0,
+                        yoff: 0.0,
+                        zoff: 0.0,
+                        offset_x: 0.0,
+                        offset_y: 0.0,
+                        item: FloorItem::retain(&bag),
+                        drop_time: 0.0,
+                        ignore_remove_sandbox: false,
+                        extended_placement: false,
+                    },
+                )),
+                None,
+            )));
         square.world_objects.push(1);
         let mut chunk = IsoChunk::new(10, 10);
         chunk.set_square(0, 0, 0, Some(square));
+        // Discard construction pins while membership still owns the object, so
+        // the probes below rely on the particular removal path being tested.
+        drop(chunk.take_retired_objects());
         let old = with_world(|w| w.cell.as_mut().unwrap().chunks.insert((10, 10), chunk));
         drop(old);
         (weak, drops)
@@ -225,5 +230,100 @@ fn unwind_keeps_retired_payload_for_next_safe_boundary_and_preserves_user_root()
         }
         assert_eq!(drops.get(), 1);
         assert!(weak.upgrade().is_none());
+    }
+}
+
+#[test]
+fn whole_object_retirement_releases_parents_only_at_stream_or_frame_boundaries() {
+    for stream_boundary in [false, true] {
+        for retain_user_root in [false, true] {
+            for operation in ["remove", "replace", "clear", "set_square", "drop_levels"] {
+                let mut f = Fixture::new(true);
+                let (weak_item, drops) = f.install_bag();
+                let retained = with_world(|w| {
+                    let slot = &w
+                        .cell
+                        .as_ref()
+                        .unwrap()
+                        .get_grid_square(80, 80, 0)
+                        .unwrap()
+                        .objects[0];
+                    slot.borrow_mut().key_id = 837;
+                    retain_user_root.then(|| slot.ref_handle())
+                });
+                if stream_boundary {
+                    f.world
+                        .with_stream(|_, cell, _| {
+                            retire_object_path(cell, operation);
+                            assert_eq!(drops.get(), 0);
+                        })
+                        .unwrap();
+                } else {
+                    // Simulate a nonstream update with the actual sprite owner
+                    // borrowed outside WORLD. Generic with_world must not drain.
+                    let sprites = f.world.sprites.as_ref().unwrap().clone();
+                    {
+                        let _sprites = sprites.borrow_mut();
+                        with_world(|w| {
+                            let cell = w.cell.as_mut().unwrap();
+                            retire_object_path(cell, operation);
+                        });
+                        assert_eq!(drops.get(), 0);
+                    }
+                    assert_eq!(drops.get(), 0);
+                    drain_retired_world_objects();
+                }
+                if let Some(owner) = retained {
+                    assert_eq!(drops.get(), 0);
+                    {
+                        let object = owner.borrow();
+                        assert_eq!(
+                            object.key_id, 837,
+                            "retirement must not reset retained base fields"
+                        );
+                        let ObjectKind::WorldInventory(floor) = &object.kind else {
+                            panic!("retained object subtype lost")
+                        };
+                        assert!(Rc::ptr_eq(
+                            &floor.borrow().item.item_ref().unwrap(),
+                            &weak_item.upgrade().unwrap()
+                        ));
+                    }
+                    drop(owner);
+                }
+                assert_eq!(drops.get(), 1);
+                assert!(weak_item.upgrade().is_none());
+            }
+        }
+    }
+}
+
+fn retire_object_path(cell: &mut IsoCell, operation: &str) {
+    match operation {
+        "remove" => drop(
+            cell.get_grid_square_mut(80, 80, 0)
+                .unwrap()
+                .remove_object_slot(0),
+        ),
+        "replace" => cell
+            .get_grid_square_mut(80, 80, 0)
+            .unwrap()
+            .replace_object_slot(
+                0,
+                pz_world::ObjectSlot::new(IsoObject::new(2, ObjectKind::Object, None)),
+            ),
+        "clear" => cell.get_grid_square_mut(80, 80, 0).unwrap().clear_objects(),
+        "set_square" => cell.chunks.get_mut(&(10, 10)).unwrap().set_square(
+            0,
+            0,
+            0,
+            Some(IsoGridSquare::new(80, 80, 0)),
+        ),
+        "drop_levels" => cell
+            .chunks
+            .get_mut(&(10, 10))
+            .unwrap()
+            .set_min_max_level(1, 1),
+        _ => unreachable!("unknown authored retirement path"),
     }
 }

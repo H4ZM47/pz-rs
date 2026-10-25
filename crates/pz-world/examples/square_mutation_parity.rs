@@ -20,6 +20,7 @@
 //! position; every `FULL_EVERY` steps the regions and the meta grid's
 //! buildings. Writes `rust_steps.txt` and prints the first difference.
 
+use pz_world::ObjectSlot;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
@@ -164,16 +165,19 @@ impl RenderSquareHooks for H {
 }
 
 impl SquareMutationHooks for H {
-    fn lua_event(&mut self, sq: &IsoGridSquare, ev: LuaEvent<'_>) {
+    fn lua_event(&mut self, sq: &mut IsoGridSquare, ev: LuaEvent) {
         let mut r = self.0.borrow_mut();
         let r = &mut *r;
         let s = match ev {
-            LuaEvent::ObjectAboutToBeRemoved { index } => {
-                format!("OnObjectAboutToBeRemoved {}", r.name(&sq.objects[index]))
+            LuaEvent::ObjectAboutToBeRemoved { index, .. } => {
+                format!(
+                    "OnObjectAboutToBeRemoved {}",
+                    r.name(&sq.objects[index].borrow())
+                )
             }
             LuaEvent::TileRemoved { object } => format!(
                 "OnTileRemoved {}",
-                object.map_or("nil".to_string(), |o| r.name(o))
+                object.map_or("nil".to_string(), |o| r.name(&o.borrow()))
             ),
             LuaEvent::ContainerUpdate => "OnContainerUpdate".into(),
         };
@@ -187,7 +191,14 @@ impl SquareMutationHooks for H {
     }
     // What `IsoCell.addLamppost` / `removeLamppost` do with the light source
     // `addLightSourceToWorld` makes for a sprite with light colours.
-    fn world_call(&mut self, r: ObjectRef, o: &mut IsoObject, _: &mut dyn GameRand, c: WorldCall) {
+    fn world_call(
+        &mut self,
+        r: ObjectRef,
+        o: pz_world::IsoObjectRef,
+        _: &mut dyn GameRand,
+        c: WorldCall,
+    ) {
+        let o = o.borrow();
         let mut rec = self.0.borrow_mut();
         if let WorldCall::SwitchLamppost { add: false, .. } = c {
             // `IsoCell.removeLamppost(light)`.
@@ -210,7 +221,7 @@ impl SquareMutationHooks for H {
             )
         };
         let changed = if add {
-            lights(o)
+            lights(&o)
                 && o.sprite.is_some_and(|s| rec.light_sprites.contains(&s))
                 && rec.lit.insert(r)
         } else {
@@ -320,7 +331,13 @@ impl World {
 
     fn queries(&self, p: SquarePos, id: Option<ObjectId>) -> String {
         let mut s = String::new();
-        let Some(o) = id.and_then(|id| self.sq(p)?.objects.iter().find(|o| o.id == id)) else {
+        let Some(o) = id.and_then(|id| {
+            self.sq(p)?
+                .objects
+                .iter()
+                .map(ObjectSlot::borrow)
+                .find(|o| o.id == id)
+        }) else {
             return s;
         };
         if o.containers()
@@ -374,9 +391,9 @@ fn do_op(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos, op: usize) -
         };
         let o = w.new_object(&s);
         let id = if special {
-            w.env().add_special_object(p, o, index)
+            w.env().add_special_object(p, (o).into(), index)
         } else {
-            w.env().add_tile_object(p, o, index)
+            w.env().add_tile_object(p, (o).into(), index)
         };
         return format!(
             "{} {s} {index} -> {}{}",
@@ -391,13 +408,14 @@ fn do_op(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos, op: usize) -
             return format!("{what} none");
         }
         let i = rng.next(n);
-        let o = &w.sq(p).unwrap().objects[i];
-        let (id, name) = (o.id, w.name_of(o));
+        let o = w.sq(p).unwrap().objects[i].borrow();
+        let (id, name) = (o.id, w.name_of(&o));
         let name = if op < 72 {
             format!("{}:{name}", o.kind.class_name())
         } else {
             name
         };
+        drop(o);
         let (r, _) = if op < 72 {
             w.env().remove_tile_object(p, id)
         } else {
@@ -414,8 +432,9 @@ fn do_op(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos, op: usize) -
         return "erosionRemove none".into();
     }
     let i = rng.next(n);
-    let o = &w.sq(p).unwrap().objects[i];
-    let (id, name) = (o.id, w.name_of(o));
+    let o = w.sq(p).unwrap().objects[i].borrow();
+    let (id, name) = (o.id, w.name_of(&o));
+    drop(o);
     let (r, _) = w.env().remove_tile_object_erosion_no_recalc(p, id);
     format!("erosionRemove {i} {name} -> {r}")
 }
@@ -430,7 +449,7 @@ fn build_room(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos) -> Stri
             return;
         }
         let o = w.new_object(spr);
-        w.env().add_tile_object((x, y, z), o, -1);
+        w.env().add_tile_object((x, y, z), (o).into(), -1);
         n += 1;
     };
     for y in y0..y0 + h {
@@ -553,11 +572,12 @@ fn dump_squares(w: &mut World, p: SquarePos) {
                 let objs: Vec<String> = sq
                     .objects
                     .iter()
+                    .map(ObjectSlot::borrow)
                     .map(|o| {
                         format!(
                             "{}:{}:{:x}:{}",
                             o.kind.class_name(),
-                            w.name_of(o),
+                            w.name_of(&o),
                             o.render_y_offset.to_bits(),
                             o.container_count()
                         )
@@ -837,20 +857,21 @@ fn main() {
         };
         let mut i = 0;
         while i < sq.objects.len() {
-            let o = &sq.objects[i];
+            let mut o = sq.objects[i].borrow_mut();
             let name = o.sprite.and_then(|s| sprites.sprites[s].name.clone());
             match java.get(i) {
                 Some(&(class, spr)) if class == o.kind.class_name() => {
                     if name.as_deref().unwrap_or("null") != spr {
                         if let Some(&s) = sprites.named_map.get(spr) {
-                            sq.objects[i].sprite = Some(s);
+                            o.sprite = Some(s);
                             aligned.0 += 1;
                         }
                     }
                     i += 1;
                 }
                 _ => {
-                    let id = sq.objects.remove(i).id;
+                    drop(o);
+                    let id = sq.remove_object_slot(i).borrow().id;
                     sq.world_objects.retain(|&w| w != id);
                     sq.special_objects.retain(|&w| w != id);
                     aligned.1 += 1;
@@ -870,7 +891,7 @@ fn main() {
                         // for a switch outside a room (the blank meta grid
                         // has none); the chunk-file loader does not yet.
                         let (sx, sy, sz) = (sq.x, sq.y, sq.z);
-                        for o in &mut sq.objects {
+                        for mut o in sq.objects.iter().map(ObjectSlot::borrow_mut) {
                             if let ObjectKind::LightSwitch(s) = &mut o.kind {
                                 s.lights.push(pz_world::objects::IsoLightSource {
                                     x: sx,

@@ -89,7 +89,7 @@ fn retained_floor_object_survives_removal_moves_drop_and_same_id_replacement() {
     let actual = handle(&original);
     let weak = Rc::downgrade(&actual);
     let mut square = IsoGridSquare::new(0, 0, 0);
-    square.objects.push(original);
+    square.objects.push((original).into());
     square.world_objects.push(1);
     let mut chunk = IsoChunk::new(0, 0);
     chunk.set_square(0, 0, 0, Some(square));
@@ -97,7 +97,7 @@ fn retained_floor_object_survives_removal_moves_drop_and_same_id_replacement() {
     chunks.reserve(64); // Chunks and their square/object vectors may move.
     assert!(Rc::ptr_eq(
         &actual,
-        &handle(&chunks[0].get_grid_square(0, 0, 0).unwrap().objects[0])
+        &handle(&chunks[0].get_grid_square(0, 0, 0).unwrap().objects[0].borrow())
     ));
     let detached = chunks[0]
         .get_grid_square_mut(0, 0, 0)
@@ -111,7 +111,7 @@ fn retained_floor_object_survives_removal_moves_drop_and_same_id_replacement() {
         .get_grid_square_mut(0, 0, 0)
         .unwrap()
         .objects
-        .push(replacement);
+        .push((replacement).into());
     assert!(!Rc::ptr_eq(&actual, &other));
     actual.borrow_mut().drop_time = 91.0;
     assert_eq!(other.borrow().drop_time, 2.5);
@@ -126,11 +126,11 @@ fn retained_floor_object_survives_removal_moves_drop_and_same_id_replacement() {
 #[test]
 fn archive_square_copies_in_distinct_chunks_have_independent_floor_allocations() {
     let mut square = IsoGridSquare::new(0, 0, 0);
-    square.objects.push(object(1));
+    square.objects.push((object(1)).into());
     square.world_objects.push(1);
-    let original = handle(&square.objects[0]);
+    let original = handle(&square.objects[0].borrow());
     let copy_square = square.clone();
-    let copy = handle(&copy_square.objects[0]);
+    let copy = handle(&copy_square.objects[0].borrow());
     assert!(!Rc::ptr_eq(&original, &copy));
     let mut chunk = IsoChunk::new(0, 0);
     chunk.set_square(0, 0, 0, Some(square));
@@ -143,7 +143,8 @@ fn archive_square_copies_in_distinct_chunks_have_independent_floor_allocations()
         0,
         Some(chunk.get_grid_square(0, 0, 0).unwrap().clone()),
     );
-    let copied_chunk_owner = handle(&copy_chunk.get_grid_square(0, 0, 0).unwrap().objects[0]);
+    let copied_chunk_owner =
+        handle(&copy_chunk.get_grid_square(0, 0, 0).unwrap().objects[0].borrow());
     assert!(!Rc::ptr_eq(&original, &copied_chunk_owner));
     original.borrow_mut().ignore_remove_sandbox = true;
     assert!(!copy.borrow().ignore_remove_sandbox);

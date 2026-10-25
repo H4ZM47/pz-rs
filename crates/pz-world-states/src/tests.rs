@@ -239,6 +239,8 @@ struct Engine {
     played: Vec<String>,
     items: Vec<String>,
     removed: Vec<(String, bool)>,
+    retain_removed: bool,
+    removed_owners: Vec<pz_world::IsoObjectRef>,
     movers: HashMap<i32, CollideMoverInfo>,
     hop: Vec<(i32, Vec<HoppableAction>)>,
     effects: Vec<(ObjectRef, NewRenderEffect)>,
@@ -274,8 +276,13 @@ impl StatesEngine for Engine {
     ) {
         self.items.push(item.into());
     }
-    fn object_removed(&mut self, _sq: (i32, i32, i32), obj: &IsoObject, destroyed: bool) {
-        self.removed.push((obj.kind.class_name().into(), destroyed));
+    fn object_removed(&mut self, _sq: (i32, i32, i32), obj: &pz_world::IsoObjectRef, destroyed: bool) {
+        self.removed.push((obj.borrow().kind.class_name().into(), destroyed));
+        if self.retain_removed {
+            // The adapter must release every object guard before callbacks.
+            obj.borrow_mut().key_id = 902;
+            self.removed_owners.push(obj.clone());
+        }
     }
     fn collide_mover(&self, id: i32) -> Option<CollideMoverInfo> {
         self.movers.get(&id).copied()
@@ -302,9 +309,10 @@ impl StatesEngine for Engine {
             .unwrap();
         if let Some(ObjectKind::Window(w)) = sq
             .objects
-            .iter_mut()
-            .find(|o| o.id == window.id)
-            .map(|o| &mut o.kind)
+            .iter()
+            .find(|o| o.borrow().id == window.id)
+            .map(|o| o.borrow_mut())
+            .as_deref_mut().map(|o| &mut o.kind)
         {
             w.open = !w.open;
         }
@@ -354,11 +362,11 @@ impl World {
             for y in 8..16 {
                 let mut sq = IsoGridSquare::new(x, y, 0);
                 let id = sq.new_object_id();
-                sq.objects.push(IsoObject::new(
+                sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                     id,
                     ObjectKind::Object,
                     Some(w.m.named_map["floor"]),
-                ));
+                )));
                 sq.recalc_properties(&w.m);
                 let ch = w
                     .cell
@@ -375,7 +383,7 @@ impl World {
         let spr = self.m.named_map[sprite];
         let sq = self.cell.get_grid_square_mut(x, y, 0).unwrap();
         let id = sq.new_object_id();
-        sq.objects.push(IsoObject::new(id, kind, Some(spr)));
+        sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(id, kind, Some(spr))));
         if special {
             sq.special_objects.push(id);
         }
@@ -406,9 +414,9 @@ impl World {
         )
     }
 
-    fn kind(&self, r: ObjectRef) -> Option<&ObjectKind> {
+    fn kind(&self, r: ObjectRef) -> Option<std::cell::Ref<'_, ObjectKind>> {
         let sq = self.cell.get_grid_square(r.x, r.y, r.z)?;
-        sq.objects.iter().find(|o| o.id == r.id).map(|o| &o.kind)
+        sq.objects.iter().find(|o| o.borrow().id == r.id).map(|o| std::cell::Ref::map(o.borrow(), |o| &o.kind))
     }
 }
 
@@ -467,7 +475,7 @@ fn special_objects_between_neighbours() {
     assert_eq!(special(&mut w, (10, 10, 0), (11, 10, 0)), None);
     // An open door is not in the way.
     if let ObjectKind::Door(dd) =
-        &mut w.cell.get_grid_square_mut(10, 10, 0).unwrap().objects[1].kind
+        &mut w.cell.get_grid_square_mut(10, 10, 0).unwrap().objects[1].borrow_mut().kind
     {
         dd.open = true;
     }
@@ -536,7 +544,7 @@ fn thumping_a_barricade_breaks_planks_then_removes_it() {
     let b = w.barricade(10, 9, IsoDirections::S, &[1000, 300]);
     let mut z = zombie(10.5, 9.5, 200);
     z.zombie.thump_target = Some(ThumpTarget::Object(d));
-    let planks = |w: &World| match w.kind(b) {
+    let planks = |w: &World| match w.kind(b).as_deref() {
         Some(ObjectKind::Barricade(b)) => Some(b.plank_health),
         _ => None,
     };
@@ -572,7 +580,7 @@ fn door_needs_two_thumpers_and_breaks_into_items() {
     let d = w.add(12, 12, "door_w_mat", door(false, 30), true);
     let mut z = zombie(12.5, 12.5, 20);
     z.zombie.thump_target = Some(ThumpTarget::Object(d));
-    let health = |w: &World| match w.kind(d) {
+    let health = |w: &World| match w.kind(d).as_deref() {
         Some(ObjectKind::Door(dd)) => Some(dd.health),
         _ => None,
     };
@@ -615,28 +623,30 @@ fn smashing_a_window_leaves_glass_and_hands_over_to_the_barricade() {
     let mut z = zombie(12.5, 12.5, 30);
     z.zombie.thump_target = Some(ThumpTarget::Object(win));
     thump(&mut w, win, &mut z);
-    assert!(matches!(w.kind(win), Some(ObjectKind::Window(x)) if x.health == 20 && !x.destroyed));
+    assert!(matches!(w.kind(win).as_deref(), Some(ObjectKind::Window(x)) if x.health == 20 && !x.destroyed));
     w.engine.rand = Seq(vec![2]);
     thump(&mut w, win, &mut z);
     let sq = w.cell.get_grid_square(12, 12, 0).unwrap();
-    let o = sq.objects.iter().find(|o| o.id == win.id).unwrap();
+    let o = sq.objects.iter().find(|o| o.borrow().id == win.id).unwrap().borrow();
     assert!(matches!(&o.kind, ObjectKind::Window(x) if x.destroyed && x.health == 0));
     assert_eq!(o.sprite, Some(w.m.named_map["window_w_smashed"]));
+    drop(o);
     // `damage` smashed it and dropped glass on the far side (the zombie
     // is east of the west edge); the thump's own break block is skipped
     // once destroyed, so the target stays.
     assert!(!sq
         .objects
         .iter()
-        .any(|o| matches!(o.kind, ObjectKind::BrokenGlass)));
+        .any(|o| matches!(o.borrow().kind, ObjectKind::BrokenGlass)));
     let far = w.cell.get_grid_square(11, 12, 0).unwrap();
     let glass = far
         .objects
         .iter()
-        .find(|o| matches!(o.kind, ObjectKind::BrokenGlass))
-        .unwrap();
+        .find(|o| matches!(o.borrow().kind, ObjectKind::BrokenGlass))
+        .unwrap().borrow();
     assert_eq!(glass.sprite, Some(w.m.named_map["brokenglass_1_2"]));
     assert!(far.special_objects.contains(&glass.id));
+    drop(glass);
     assert_eq!(z.zombie.thump_target, Some(ThumpTarget::Object(win)));
     assert_eq!(
         w.engine
@@ -668,7 +678,7 @@ fn thumpable_takes_partial_damage() {
     let t = w.add(12, 12, "crate", ObjectKind::Thumpable(Box::new(th)), true);
     w.engine.thumpers = 2;
     let mut z = zombie(12.5, 12.5, 5);
-    let hp = |w: &World| match w.kind(t) {
+    let hp = |w: &World| match w.kind(t).as_deref() {
         Some(ObjectKind::Thumpable(x)) => Some(x.health),
         _ => None,
     };
@@ -924,11 +934,11 @@ fn hoppable_edges() {
     );
     assert_eq!(env.get_hoppable(s10, true), Some(f.id));
     assert_eq!(env.get_hoppable(s10, false), None);
-    let o = &s10.objects[s10.object_index(f.id).unwrap()];
+    let o = s10.objects[s10.object_index(f.id).unwrap()].borrow();
     assert!(o.is_hoppable(a.sprites) && !o.is_tall_hoppable(a.sprites));
     assert!(o.is_north_hoppable(a.sprites));
     let s14 = sq(14, 10).unwrap();
-    let o = &s14.objects[s14.object_index(t.id).unwrap()];
+    let o = s14.objects[s14.object_index(t.id).unwrap()].borrow();
     assert!(o.is_hoppable(a.sprites) && o.is_tall_hoppable(a.sprites));
     assert!(env.is_hoppable_to(s14, sq(13, 10)));
     assert!(!s10.have_door());
@@ -946,7 +956,7 @@ fn doors_hop_only_when_closed_with_a_hoppable_closed_sprite() {
     let a = w.adapter();
     let sq = a.cell.get_grid_square(12, 12, 0).unwrap();
     assert!(sq.have_door());
-    let o = &sq.objects[sq.object_index(d.id).unwrap()];
+    let o = sq.objects[sq.object_index(d.id).unwrap()].borrow();
     assert!(o.is_hoppable(a.sprites));
     let mut open = o.clone();
     if let ObjectKind::Door(d) = &mut open.kind {
@@ -1070,7 +1080,7 @@ fn vegetation_rustles_past_the_first_object() {
     {
         let spr = w.m.named_map["shrub"];
         let sq = w.cell.get_grid_square_mut(11, 10, 0).unwrap();
-        sq.objects[0].sprite = Some(spr);
+        sq.objects[0].borrow_mut().sprite = Some(spr);
         sq.recalc_properties(&w.m);
     }
     let ctx = DrawCtx::default();
@@ -1366,4 +1376,24 @@ fn the_floor_sprite_name_is_the_solid_floor_object() {
         Some("floor")
     );
     assert_eq!(a.floor_sprite_name_at((40, 40, 0)), None);
+}
+
+#[test]
+fn removal_callback_can_mutate_and_retain_the_actual_whole_object() {
+    let mut w = World::new();
+    let r = w.add(10, 10, "crate", ObjectKind::Object, false);
+    let owner = {
+        let sq = w.cell.get_grid_square(10, 10, 0).unwrap();
+        sq.objects[sq.object_index(r.id).unwrap()].ref_handle()
+    };
+    owner.borrow_mut().tint_r = 0.375;
+    w.engine.retain_removed = true;
+    let removed = w.adapter().remove_object(r, true).unwrap();
+    assert!(removed.ptr_eq_ref(&owner));
+    assert!(std::rc::Rc::ptr_eq(&w.engine.removed_owners[0], &owner));
+    assert_eq!(owner.borrow().key_id, 902, "callback mutation hit a copy");
+    assert_eq!(owner.borrow().tint_r, 0.375);
+    assert!(w.cell.get_grid_square(10, 10, 0).unwrap().object_index(r.id).is_none());
+    drop(removed);
+    assert_eq!(w.engine.removed_owners[0].borrow().tint_r, 0.375);
 }

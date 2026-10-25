@@ -14,6 +14,7 @@
 //! touched squares' objects) and `items.txt`. Writes `rust_fire.txt` there
 //! and prints the first difference.
 
+use pz_world::ObjectSlot;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -397,6 +398,7 @@ fn main() {
                     let objs: Vec<String> = sq
                         .objects
                         .iter()
+                        .map(ObjectSlot::borrow)
                         .map(|o| {
                             let n = o
                                 .sprite

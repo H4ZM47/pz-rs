@@ -14,10 +14,11 @@
 
 use crate::fire::manager::{FireWorld, IsoFireManager};
 use crate::java::GameRand;
+use crate::object_slot::{IsoObjectRef, ObjectSlot};
 use crate::objects::{IsoObject, ObjectId, ObjectKind, ObjectName, SpriteName};
 use crate::sprite::IsoFlagType;
 use crate::square::IsoDirections;
-use crate::square_mutation::{MutationEnv, ObjectRef, WorldCall};
+use crate::square_mutation::{ObjectRef, WorldCall};
 use crate::world_state::get_barricade_on_square;
 
 /// `IsoGridSquare.FIRE_IMMUNE_THRESHOLD`.
@@ -77,20 +78,6 @@ fn transmit_remove(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, id: O
     w.env(rand).transmit_remove_item_from_square(at, id, true);
 }
 
-/// A [`WorldCall`] for the object `r` on its square.
-fn call_in_place(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, r: ObjectRef, c: WorldCall) {
-    let MutationEnv {
-        cell, world, rand, ..
-    } = w.env(rand);
-    let Some(o) = cell
-        .get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)
-        .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == r.id))
-    else {
-        return;
-    };
-    world.world_call(r, o, rand, c);
-}
-
 fn sq_has(w: &FireWorld<'_>, at: At, f: Option<IsoFlagType>) -> bool {
     f.is_some_and(|f| w.sq(at.0, at.1, at.2).is_some_and(|sq| sq.has(f)))
 }
@@ -128,6 +115,7 @@ fn remove_sheet_rope(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, nor
         let hook = w.sq(at.0, at.1, at.2).and_then(|sq| {
             sq.objects
                 .iter()
+                .map(ObjectSlot::borrow)
                 .find(|o| o.sprite.and_then(|s| w.sprites.sprites[s].name.as_deref()) == Some(tile))
                 .map(|o| o.id)
         });
@@ -146,6 +134,7 @@ fn remove_sheet_rope(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, nor
         let rope = sq
             .objects
             .iter()
+            .map(ObjectSlot::borrow)
             .find(|o| has(o, t1) || has(o, t2))
             .map(|o| o.id);
         let Some(id) = rope else { return };
@@ -186,7 +175,7 @@ fn remove_window_sheet(
     };
     let curtain = sq.special_objects.iter().copied().find(|&id| {
         sq.object_index(id)
-            .is_some_and(|i| matches!(sq.objects[i].kind, ObjectKind::Curtain(_)))
+            .is_some_and(|i| matches!(sq.objects[i].borrow().kind, ObjectKind::Curtain(_)))
     });
     if let Some(id) = curtain {
         transmit_remove(w, rand, s, id);
@@ -254,7 +243,7 @@ fn barricade_id(sq: &crate::IsoGridSquare, dir: IsoDirections) -> Option<ObjectI
     get_barricade_on_square(Some(sq), dir)?;
     sq.special_objects.iter().copied().find(|&id| {
         sq.object_index(id).is_some_and(
-            |i| matches!(&sq.objects[i].kind, ObjectKind::Barricade(b) if b.forward_dir() == dir),
+            |i| matches!(&sq.objects[i].borrow().kind, ObjectKind::Barricade(b) if b.forward_dir() == dir),
         )
     })
 }
@@ -271,7 +260,7 @@ fn burn_specials(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) -> Resu
     {
         let Some(obj) = w
             .sq(x, y, z)
-            .and_then(|sq| sq.object_index(id).map(|j| sq.objects[j].clone()))
+            .and_then(|sq| sq.object_index(id).map(|j| sq.objects[j].borrow().clone()))
         else {
             i += 1;
             continue;
@@ -324,7 +313,7 @@ pub fn add_ashes(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) {
     let id = sq.new_object_id();
     let mut o = IsoObject::new(id, ObjectKind::Object, Some(s));
     o.sprite_name = Some(SpriteName::Str(name));
-    sq.objects.push(o);
+    sq.objects.push((ObjectSlot::new(o)).into());
 }
 
 /// `getSpriteGridObjects(result, addSelf)` of `r`: the objects with the
@@ -332,12 +321,12 @@ pub fn add_ashes(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) {
 fn sprite_grid_objects(w: &FireWorld<'_>, r: ObjectRef, add_self: bool) -> Vec<ObjectRef> {
     let Some(obj) = w
         .sq(r.pos.0, r.pos.1, r.pos.2)
-        .and_then(|sq| sq.object_index(r.id).map(|i| &sq.objects[i]))
+        .and_then(|sq| sq.object_index(r.id).map(|i| sq.objects[i].borrow()))
     else {
         return Vec::new();
     };
     let grid_of = |o: &IsoObject| o.sprite.and_then(|s| w.sprites.sprites[s].sprite_grid);
-    let Some(gi) = grid_of(obj) else {
+    let Some(gi) = grid_of(&obj) else {
         return if add_self { vec![r] } else { Vec::new() };
     };
     let g = &w.sprites.grids[gi];
@@ -350,9 +339,9 @@ fn sprite_grid_objects(w: &FireWorld<'_>, r: ObjectRef, add_self: bool) -> Vec<O
         for y in cy - gy..cy - gy + g.height {
             for x in cx - gx..cx - gx + g.width {
                 let Some(sq) = w.sq(x, y, z) else { continue };
-                for o in &sq.objects {
+                for o in sq.objects.iter().map(ObjectSlot::borrow) {
                     let is_self = (x, y, z) == r.pos && o.id == r.id;
-                    if (is_self && !add_self) || grid_of(o) != Some(gi) {
+                    if (is_self && !add_self) || grid_of(&o) != Some(gi) {
                         continue;
                     }
                     out.push(oref((x, y, z), o.id));
@@ -366,7 +355,7 @@ fn sprite_grid_objects(w: &FireWorld<'_>, r: ObjectRef, add_self: bool) -> Vec<O
 /// `IsoHutch.getHutch()`: the master hutch object of `r`.
 fn hutch_master(w: &FireWorld<'_>, r: ObjectRef) -> Option<ObjectRef> {
     let sq = w.sq(r.pos.0, r.pos.1, r.pos.2)?;
-    let ObjectKind::Hutch(h) = &sq.objects[sq.object_index(r.id)?].kind else {
+    let ObjectKind::Hutch(h) = &sq.objects[sq.object_index(r.id)?].borrow().kind else {
         return None;
     };
     if h.master.is_some() {
@@ -376,7 +365,7 @@ fn hutch_master(w: &FireWorld<'_>, r: ObjectRef) -> Option<ObjectRef> {
     let lsq = w.sq(p.0, p.1, p.2)?;
     lsq.special_objects.iter().copied().find_map(|id| {
         let i = lsq.object_index(id)?;
-        matches!(lsq.objects[i].kind, ObjectKind::Hutch(_)).then_some(oref(p, id))
+        matches!(lsq.objects[i].borrow().kind, ObjectKind::Hutch(_)).then_some(oref(p, id))
     })
 }
 
@@ -404,7 +393,7 @@ fn hutch_handle_burning(
                 let Some(i) = sq.object_index(id) else {
                     continue;
                 };
-                if matches!(sq.objects[i].kind, ObjectKind::Hutch(_))
+                if matches!(sq.objects[i].borrow().kind, ObjectKind::Hutch(_))
                     && hutch_master(w, oref(p, id)) == master
                 {
                     hutches.push(oref(p, id));
@@ -443,8 +432,9 @@ fn trough_handle_burning(
     let mut burn_squares = vec![r.pos];
     for o in sprite_grid_objects(w, r, false) {
         let trough = w.sq(o.pos.0, o.pos.1, o.pos.2).is_some_and(|sq| {
-            sq.object_index(o.id)
-                .is_some_and(|i| matches!(sq.objects[i].kind, ObjectKind::FeedingTrough(_)))
+            sq.object_index(o.id).is_some_and(|i| {
+                matches!(sq.objects[i].borrow().kind, ObjectKind::FeedingTrough(_))
+            })
         });
         if trough {
             w.env(rand).object_remove_from_world(o);
@@ -532,8 +522,11 @@ pub fn burn_walls(
             // handleBurning (only hutches and feeding troughs do anything).
             let mut n = 0;
             while let Some(o) = w.sq(x, y, z).and_then(|s| s.objects.get(n)) {
-                let r = oref(at, o.id);
-                match o.kind {
+                let (r, kind) = {
+                    let o = o.borrow();
+                    (oref(at, o.id), o.kind.clone())
+                };
+                match kind {
                     ObjectKind::Hutch(_) => hutch_handle_burning(mgr, w, rand, r)?,
                     ObjectKind::FeedingTrough(_) => trough_handle_burning(mgr, w, rand, r)?,
                     _ => {}
@@ -543,40 +536,20 @@ pub fn burn_walls(
         }
         let mut power = 0;
         let mut n: isize = 0;
-        while let Some(mut obj) = w
+        while let Some(obj) = w
             .sq(x, y, z)
-            .and_then(|s| s.objects.get(n as usize))
-            .cloned()
+            .and_then(|s| s.objects.get(n as usize).map(ObjectSlot::ref_handle))
         {
-            // `obj = objects.get(n)`: the original works on that reference
-            // from here on, wherever a recursive burn moves it. Only the
-            // safe removal of its other parts (`RemoveTileObject` of a
-            // multi-square part) takes it off this square meanwhile, by
-            // `removeFromSquare`, which leaves its `square` set: what reaches
-            // it by reference still does, scans of `objects` do not.
-            let r = oref(at, obj.id);
+            let id = obj.borrow().id;
+            let r = oref(at, id);
             if recursive {
                 safely_burn_tile_object(mgr, w, rand, r)?;
             }
             let detached = w
                 .sq(x, y, z)
-                .is_some_and(|s| s.object_index(obj.id).is_none());
-            // The basement-wall test scans the square for a floor; the
-            // rest of the object's treatment reaches it by reference, so a
-            // detached object is put back at the end of `objects` for it.
-            let void_wall = basement_wall_next_to_void(w, at, &obj);
-            if detached {
-                attach(w, at, obj.clone());
-            }
+                .is_none_or(|s| !s.objects.iter().any(|s| s.ptr_eq_ref(&obj)));
+            let void_wall = basement_wall_next_to_void(w, at, &obj.borrow());
             let outcome = burn_object(w, rand, at, &obj, void_wall, &mut power);
-            if detached {
-                obj = take(w, at, obj.id).unwrap_or(obj);
-            } else if let Some(o) = w
-                .sq(x, y, z)
-                .and_then(|s| s.object_index(obj.id).map(|i| s.objects[i].clone()))
-            {
-                obj = o;
-            }
             // The removals are by object (`objects.remove(obj)`,
             // `RemoveTileObject(obj)`; for a detached object the latter
             // only resets the square's region flags, which nothing here
@@ -589,45 +562,34 @@ pub fn burn_walls(
                 Outcome::Skip => {}
                 Outcome::Drop => {
                     if let Some(sq) = w.sq_mut(x, y, z) {
-                        if let Some(i) = sq.object_index(obj.id) {
-                            sq.objects.remove(i);
+                        if let Some(i) = sq.objects.iter().position(|s| s.ptr_eq_ref(&obj)) {
+                            sq.remove_object_slot(i);
                         }
                     }
                     n -= 1;
                 }
                 Outcome::RemoveTile(counts) => {
                     if !detached {
-                        remove_tile_object(w, rand, at, obj.id);
+                        remove_tile_object(w, rand, at, id);
                     }
                     removed_tile_object |= counts;
                     n -= 1;
                 }
                 Outcome::ReplaceWith(s) => {
-                    remove_from_world(w, rand, r, detached, &mut obj);
+                    remove_from_world(w, rand, r, detached, &obj);
                     set_at(w, at, set_n, Some(s))?;
                 }
                 Outcome::Keep { replace: rep } => {
-                    if rep || matches!(obj.kind, ObjectKind::Thumpable(_)) {
-                        let s = obj.sprite;
-                        remove_from_world(w, rand, r, detached, &mut obj);
+                    if rep || matches!(obj.borrow().kind, ObjectKind::Thumpable(_)) {
+                        let s = obj.borrow().sprite;
+                        remove_from_world(w, rand, r, detached, &obj);
                         set_at(w, at, set_n, s)?;
-                    } else if let Some(o) = w
-                        .sq_mut(x, y, z)
-                        .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == obj.id))
-                    {
+                    } else {
+                        let mut o = obj.borrow_mut();
                         o.attached_anim_sprite = None;
                         o.overlay_sprite = None;
                     }
-                    // obj.emitter.stopAll(), on the square or not.
-                    let on_square = w
-                        .sq(x, y, z)
-                        .is_some_and(|s| s.object_index(obj.id).is_some());
-                    if on_square {
-                        call_in_place(w, rand, r, WorldCall::StopEmitter);
-                    } else {
-                        w.env(rand)
-                            .world_call_on(r, &mut obj, WorldCall::StopEmitter);
-                    }
+                    w.env(rand).world_call_on(r, &obj, WorldCall::StopEmitter);
                 }
             }
             n += 1;
@@ -639,7 +601,12 @@ pub fn burn_walls(
         }
     }
     if let Some(sq) = w.sq_mut(x, y, z) {
-        let live: Vec<ObjectId> = sq.objects.iter().map(|o| o.id).collect();
+        let live: Vec<ObjectId> = sq
+            .objects
+            .iter()
+            .map(ObjectSlot::borrow)
+            .map(|o| o.id)
+            .collect();
         sq.special_objects.retain(|id| live.contains(id));
     }
     let mut env = w.env(rand);
@@ -670,22 +637,11 @@ fn set_at(w: &mut FireWorld<'_>, at: At, n: usize, s: Option<usize>) -> Result<(
         ));
     }
     let nid = sq.new_object_id();
-    sq.objects[n] = IsoObject::new(nid, ObjectKind::Object, s);
+    sq.replace_object_slot(
+        n,
+        ObjectSlot::new(IsoObject::new(nid, ObjectKind::Object, s)),
+    );
     Ok(())
-}
-
-/// Puts an object that left the square back at the end of `objects`.
-fn attach(w: &mut FireWorld<'_>, at: At, o: IsoObject) {
-    if let Some(sq) = w.sq_mut(at.0, at.1, at.2) {
-        sq.objects.push(o);
-    }
-}
-
-/// Takes object `id` off the square's `objects`.
-fn take(w: &mut FireWorld<'_>, at: At, id: ObjectId) -> Option<IsoObject> {
-    let sq = w.sq_mut(at.0, at.1, at.2)?;
-    let i = sq.object_index(id)?;
-    Some(sq.objects.remove(i))
 }
 
 /// `obj.removeFromWorld()`, with `obj` on the square or `detached`.
@@ -694,13 +650,10 @@ fn remove_from_world(
     rand: &mut dyn GameRand,
     r: ObjectRef,
     detached: bool,
-    obj: &mut IsoObject,
+    obj: &IsoObjectRef,
 ) {
-    if detached {
-        w.env(rand).object_remove_from_world_detached(r, obj);
-    } else {
-        w.env(rand).object_remove_from_world(r);
-    }
+    let _ = detached;
+    w.env(rand).object_remove_from_world_detached(r, obj);
 }
 
 /// The middle of `BurnWalls`' object loop for one object: its new sprite
@@ -710,10 +663,11 @@ fn burn_object(
     w: &mut FireWorld<'_>,
     rand: &mut dyn GameRand,
     at: At,
-    obj: &IsoObject,
+    receiver: &IsoObjectRef,
     void_wall: bool,
     power: &mut i32,
 ) -> Outcome {
+    let obj = receiver.borrow().clone();
     let Some(s) = obj.sprite else {
         return Outcome::Skip;
     };
@@ -745,21 +699,14 @@ fn burn_object(
     }
     let set_sprite = |w: &mut FireWorld<'_>, name: &str| {
         let ns = w.sprite_named(name);
-        if let Some(sq) = w.sq_mut(at.0, at.1, at.2) {
-            if let Some(i) = sq.object_index(obj.id) {
-                sq.objects[i].sprite = Some(ns);
-            }
-        }
+        receiver.borrow_mut().sprite = Some(ns);
     };
-    let clear_overlay = |w: &mut FireWorld<'_>, anims: bool| {
-        if let Some(sq) = w.sq_mut(at.0, at.1, at.2) {
-            if let Some(i) = sq.object_index(obj.id) {
-                if anims {
-                    sq.objects[i].attached_anim_sprite = None;
-                }
-                sq.objects[i].overlay_sprite = None;
-            }
+    let clear_overlay = |_w: &mut FireWorld<'_>, anims: bool| {
+        let mut o = receiver.borrow_mut();
+        if anims {
+            o.attached_anim_sprite = None;
         }
+        o.overlay_sprite = None;
     };
     if burnt_tile.is_some() || tile_type == ty.tree {
         let n = match &burnt_tile {
@@ -778,12 +725,8 @@ fn burn_object(
                 *power += 20;
             }
             if g.activated {
-                if let Some(sq) = w.sq_mut(at.0, at.1, at.2) {
-                    if let Some(i) = sq.object_index(obj.id) {
-                        if let ObjectKind::Generator(g) = &mut sq.objects[i].kind {
-                            g.activated = false;
-                        }
-                    }
+                if let ObjectKind::Generator(g) = &mut receiver.borrow_mut().kind {
+                    g.activated = false;
                 }
                 w.hooks.generator_switched_off(at.0, at.1, at.2);
             }
@@ -791,7 +734,7 @@ fn burn_object(
         }
         _ => {}
     }
-    if w.object_name(obj)
+    if w.object_name(&obj)
         .is_some_and(|n| n.eq_ignore_ascii_case("Campfire"))
     {
         return Outcome::Skip;
@@ -875,24 +818,23 @@ fn burn_object(
             let r = oref(at, obj.id);
             let count = obj.container_count();
             for c in 0..count {
-                call_in_place(
-                    w,
-                    rand,
+                w.env(rand).world_call_on(
                     r,
+                    receiver,
                     WorldCall::ProcessItems {
                         container: c,
                         add: false,
                     },
                 );
             }
-            if let Some(sq) = w.sq_mut(at.0, at.1, at.2) {
-                if let Some(i) = sq.object_index(obj.id) {
-                    let o = &mut sq.objects[i];
-                    o.container = None;
-                    o.secondary_containers.clear();
-                    o.overlay_sprite = None;
-                }
-            }
+            let retired = {
+                let mut o = receiver.borrow_mut();
+                let primary = o.container.take();
+                let secondary = std::mem::take(&mut o.secondary_containers);
+                o.overlay_sprite = None;
+                (primary, secondary)
+            };
+            drop(retired);
             replace_it = true;
         } else if has(f.solidtrans) || has(ff.bed) || has(ff.waterPiped) {
             floor_burnt(w, rand);
@@ -985,7 +927,8 @@ pub fn burn_tick(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, multipl
             let sq = w.sq(x, y, z).unwrap();
             sq.objects
                 .iter()
-                .any(|o| w.object_name(o).as_deref() == Some("burnedCorpse"))
+                .map(ObjectSlot::borrow)
+                .any(|o| w.object_name(&o).as_deref() == Some("burnedCorpse"))
         };
         if !have_remains {
             // new IsoObject(square, tile, "burnedCorpse").
@@ -997,7 +940,7 @@ pub fn burn_tick(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At, multipl
             o.name = Some(ObjectName::Str("burnedCorpse".into()));
             o.tile = Some(name.clone());
             o.sprite_name = Some(SpriteName::Str(name));
-            sq.objects.push(o);
+            sq.objects.push((ObjectSlot::new(o)).into());
         }
         w.env(rand).remove_corpse(at, i);
     }

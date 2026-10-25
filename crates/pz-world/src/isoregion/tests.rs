@@ -392,11 +392,8 @@ fn square(m: &IsoSpriteManager, x: i32, y: i32, z: i32, objs: &[&str]) -> IsoGri
     let mut sq = IsoGridSquare::new(x, y, z);
     for o in objs {
         let id = sq.new_object_id();
-        sq.objects.push(IsoObject::new(
-            id,
-            ObjectKind::Object,
-            Some(m.named_map[*o]),
-        ));
+        sq.objects
+            .push((IsoObject::new(id, ObjectKind::Object, Some(m.named_map[*o]))).into());
     }
     sq.recalc_properties(m);
     sq
@@ -595,15 +592,18 @@ fn loaded_windows_make_their_walls_cut() {
     let open = m.named_map["stairs"];
     let mut sq = IsoGridSquare::new(1, 1, 0);
     let id = sq.new_object_id();
-    sq.objects.push(IsoObject::new(
-        id,
-        ObjectKind::Window(crate::objects::IsoWindow {
-            closed_sprite: Some(spr),
-            open_sprite: Some(open),
-            ..Default::default()
-        }),
-        Some(spr),
-    ));
+    sq.objects.push(
+        (IsoObject::new(
+            id,
+            ObjectKind::Window(crate::objects::IsoWindow {
+                closed_sprite: Some(spr),
+                open_sprite: Some(open),
+                ..Default::default()
+            }),
+            Some(spr),
+        ))
+        .into(),
+    );
     sq.recalc_properties(&m);
     assert_eq!(calculate_square_flags(Some(&sq), &m), F);
     let mut ch = IsoChunk::new(0, 0);

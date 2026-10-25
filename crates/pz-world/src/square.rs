@@ -21,6 +21,7 @@
 use crate::chunk::{IsoCell, IsoChunk, IsoGridSquare, MAX_LEVEL, MIN_LEVEL};
 use crate::los::TestResults;
 use crate::meta_grid::IsoMetaGrid;
+use crate::object_slot::{IsoObjectRef, ObjectSlot};
 use crate::objects::{IsoObject, ObjectKind};
 use crate::sprite::{IsoFlagType, IsoObjectType, IsoSpriteManager, PropertyContainer};
 
@@ -264,7 +265,7 @@ impl IsoGridSquare {
         let mut non_transparent_cut_n = false;
         let mut non_transparent_cut_w = false;
         let mut force_render = false;
-        for obj in &self.objects {
+        for obj in self.objects.iter().map(ObjectSlot::borrow) {
             let Some(s) = obj.sprite else { continue };
             let sp = &m.sprites[s];
             let p = &sp.properties;
@@ -988,31 +989,39 @@ impl IsoGridSquare {
     /// `hasBlockedWindow(facing)`: an `IsoWindow` in `objects` on that edge
     /// with `isBlocked()` (closed and intact, or barricaded).
     pub fn has_blocked_window(&self, facing: EdgeFacing, hooks: &dyn SquareHooks) -> bool {
-        self.objects.iter().any(|o| match &o.kind {
-            ObjectKind::Window(w) => {
-                EdgeFacing::of_north(w.north) == facing
-                    && (!w.destroyed && !w.open || hooks.is_barricaded(self, o))
-            }
-            _ => false,
-        })
+        self.objects
+            .iter()
+            .map(ObjectSlot::borrow)
+            .any(|o| match &o.kind {
+                ObjectKind::Window(w) => {
+                    EdgeFacing::of_north(w.north) == facing
+                        && (!w.destroyed && !w.open || hooks.is_barricaded(self, &o))
+                }
+                _ => false,
+            })
     }
 
     /// `hasBlockedDoor(facing)`: an `IsoDoor` on that edge that is closed or
     /// barricaded, or a blocked thumpable door ([`SquareHooks`]).
     pub fn has_blocked_door(&self, facing: EdgeFacing, hooks: &dyn SquareHooks) -> bool {
-        self.objects.iter().any(|o| match &o.kind {
-            ObjectKind::Door(d) => {
-                EdgeFacing::of_north(d.north) == facing && (!d.open || hooks.is_barricaded(self, o))
-            }
-            _ => false,
-        }) || hooks.has_blocked_thumpable_door(self, facing)
+        self.objects
+            .iter()
+            .map(ObjectSlot::borrow)
+            .any(|o| match &o.kind {
+                ObjectKind::Door(d) => {
+                    EdgeFacing::of_north(d.north) == facing
+                        && (!d.open || hooks.is_barricaded(self, &o))
+                }
+                _ => false,
+            })
+            || hooks.has_blocked_thumpable_door(self, facing)
     }
 
     /// `getWindow(GridSquareEdgeFacingDirection)`: the first `IsoWindow` in
     /// `specialObjects` on that edge.
-    pub fn get_window_facing(&self, facing: EdgeFacing) -> Option<&IsoObject> {
+    pub fn get_window_facing(&self, facing: EdgeFacing) -> Option<IsoObjectRef> {
         self.window_index(facing == EdgeFacing::NorthSouth)
-            .map(|i| &self.objects[i])
+            .map(|i| self.objects[i].ref_handle())
     }
 
     /// `isEdgeElement(alongEdge, facingGetter, getSquare)`.
@@ -1164,7 +1173,7 @@ impl IsoGridSquare {
         &'a self,
         next: Option<&'a IsoGridSquare>,
         g: &'a impl GetSquare,
-    ) -> Option<&'a IsoObject> {
+    ) -> Option<IsoObjectRef> {
         self.get_edge_element_to(next, g, &|s: &'a IsoGridSquare, f| s.get_window_facing(f))
     }
 }
@@ -1400,10 +1409,13 @@ fn barricade_vision(
 
 impl IsoGridSquare {
     /// `getSpecialObjects()`, skipping identities no longer in `objects`.
-    pub fn get_special_objects(&self) -> impl Iterator<Item = &IsoObject> {
-        self.special_objects
-            .iter()
-            .filter_map(move |&id| self.objects.iter().find(|o| o.id == id))
+    pub fn get_special_objects(&self) -> impl Iterator<Item = IsoObjectRef> + '_ {
+        self.special_objects.iter().filter_map(move |&id| {
+            self.objects
+                .iter()
+                .find(|o| o.borrow().id == id)
+                .map(ObjectSlot::ref_handle)
+        })
     }
 
     /// `isSolid()`.
@@ -1528,12 +1540,14 @@ impl IsoGridSquare {
     fn thumpables<'s>(
         &'s self,
         hooks: &'s dyn SquareHooks,
-    ) -> impl Iterator<Item = (&'s IsoObject, ThumpableInfo)> + 's {
-        self.get_special_objects()
-            .filter_map(move |o| match hooks.special_object(self, o) {
+    ) -> impl Iterator<Item = (IsoObjectRef, ThumpableInfo)> + 's {
+        self.get_special_objects().filter_map(move |o| {
+            let info = hooks.special_object(self, &o.borrow());
+            match info {
                 Some(SpecialObject::Thumpable(t)) => Some((o, t)),
                 _ => None,
-            })
+            }
+        })
     }
 
     /// `getThumpableWindow(facing)`: the first `IsoThumpable` special object
@@ -1543,9 +1557,9 @@ impl IsoGridSquare {
         facing: EdgeFacing,
         m: &IsoSpriteManager,
         hooks: &'s dyn SquareHooks,
-    ) -> Option<&'s IsoObject> {
+    ) -> Option<IsoObjectRef> {
         self.thumpables(hooks)
-            .find(|(o, t)| o.is_window(m) && EdgeFacing::of_north(t.north) == facing)
+            .find(|(o, t)| o.borrow().is_window(m) && EdgeFacing::of_north(t.north) == facing)
             .map(|(o, _)| o)
     }
 
@@ -1554,7 +1568,7 @@ impl IsoGridSquare {
         &'s self,
         facing: EdgeFacing,
         hooks: &'s dyn SquareHooks,
-    ) -> Option<&'s IsoObject> {
+    ) -> Option<IsoObjectRef> {
         self.thumpables(hooks)
             .find(|(_, t)| t.is_hoppable && EdgeFacing::of_north(t.north) == facing)
             .map(|(o, _)| o)
@@ -1562,10 +1576,10 @@ impl IsoGridSquare {
 
     /// `getWindowFrame(facing)`: an `IsoWindowFrame` in `objects` on that
     /// edge.
-    pub fn get_window_frame_facing(&self, facing: EdgeFacing) -> Option<&IsoObject> {
+    pub fn get_window_frame_facing(&self, facing: EdgeFacing) -> Option<IsoObjectRef> {
         self.objects.iter().find(
-            |o| matches!(&o.kind, ObjectKind::WindowFrame { north } if EdgeFacing::of_north(*north) == facing),
-        )
+            |o| matches!(&o.borrow().kind, ObjectKind::WindowFrame { north } if EdgeFacing::of_north(*north) == facing),
+        ).map(ObjectSlot::ref_handle)
     }
 
     /// `getHoppableOrWindowFrame(facing)`: the first object that is
@@ -1574,10 +1588,11 @@ impl IsoGridSquare {
         &self,
         facing: EdgeFacing,
         m: &IsoSpriteManager,
-    ) -> Option<&IsoObject> {
+    ) -> Option<IsoObjectRef> {
         self.objects
             .iter()
-            .find(|o| o.is_hoppable_or_window_frame(facing, m))
+            .find(|o| o.borrow().is_hoppable_or_window_frame(facing, m))
+            .map(ObjectSlot::ref_handle)
     }
 
     /// `getDoor(facing)`: the first special object that is an `IsoDoor` or
@@ -1586,14 +1601,14 @@ impl IsoGridSquare {
         &'s self,
         facing: EdgeFacing,
         hooks: &'s dyn SquareHooks,
-    ) -> Option<&'s IsoObject> {
+    ) -> Option<IsoObjectRef> {
         self.get_special_objects()
-            .find(|o| match hooks.special_object(self, o) {
+            .find(|o| match hooks.special_object(self, &o.borrow()) {
                 Some(SpecialObject::Thumpable(t)) => {
                     t.is_door && EdgeFacing::of_north(t.north) == facing
                 }
                 Some(_) => false,
-                None => matches!(&o.kind, ObjectKind::Door(d) if EdgeFacing::of_north(d.north) == facing),
+                None => matches!(&o.borrow().kind, ObjectKind::Door(d) if EdgeFacing::of_north(d.north) == facing),
             })
     }
 
@@ -1650,7 +1665,7 @@ impl IsoGridSquare {
         next: Option<&'s IsoGridSquare>,
         g: &'s impl GetSquare,
         hooks: &'s dyn SquareHooks,
-    ) -> Option<(&'s IsoGridSquare, &'s IsoObject)> {
+    ) -> Option<(&'s IsoGridSquare, IsoObjectRef)> {
         self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
             s.get_door_facing(f, hooks).map(|o| (s, o))
         })
@@ -1663,7 +1678,7 @@ impl IsoGridSquare {
         m: &'s IsoSpriteManager,
         g: &'s impl GetSquare,
         hooks: &'s dyn SquareHooks,
-    ) -> Option<(&'s IsoGridSquare, &'s IsoObject)> {
+    ) -> Option<(&'s IsoGridSquare, IsoObjectRef)> {
         self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
             s.get_thumpable_window_facing(f, m, hooks).map(|o| (s, o))
         })
@@ -1674,7 +1689,7 @@ impl IsoGridSquare {
         &'s self,
         next: Option<&'s IsoGridSquare>,
         g: &'s impl GetSquare,
-    ) -> Option<(&'s IsoGridSquare, &'s IsoObject)> {
+    ) -> Option<(&'s IsoGridSquare, IsoObjectRef)> {
         self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
             s.get_window_frame_facing(f).map(|o| (s, o))
         })
@@ -1686,7 +1701,7 @@ impl IsoGridSquare {
         next: Option<&'s IsoGridSquare>,
         g: &'s impl GetSquare,
         hooks: &'s dyn SquareHooks,
-    ) -> Option<(&'s IsoGridSquare, &'s IsoObject)> {
+    ) -> Option<(&'s IsoGridSquare, IsoObjectRef)> {
         self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
             s.get_hoppable_thumpable_facing(f, hooks).map(|o| (s, o))
         })
@@ -1698,10 +1713,11 @@ impl IsoGridSquare {
         &self,
         facing: EdgeFacing,
         m: &IsoSpriteManager,
-    ) -> Option<&IsoObject> {
+    ) -> Option<IsoObjectRef> {
         self.objects
             .iter()
-            .find(|o| o.get_hoppable_direction(m) == Some(facing))
+            .find(|o| o.borrow().get_hoppable_direction(m) == Some(facing))
+            .map(ObjectSlot::ref_handle)
     }
 
     /// `getWallHoppableTo(next)`.
@@ -1710,7 +1726,7 @@ impl IsoGridSquare {
         next: Option<&'s IsoGridSquare>,
         m: &'s IsoSpriteManager,
         g: &'s impl GetSquare,
-    ) -> Option<(&'s IsoGridSquare, &'s IsoObject)> {
+    ) -> Option<(&'s IsoGridSquare, IsoObjectRef)> {
         self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
             s.get_wall_hoppable_facing(f, m).map(|o| (s, o))
         })
@@ -1740,7 +1756,7 @@ impl IsoGridSquare {
             (flag("DoorWallW"), flag("WallW"))
         };
         let has = |p: &PropertyContainer, f: Option<IsoFlagType>| f.is_some_and(|f| p.has(f));
-        self.objects.iter().any(|o| {
+        self.objects.iter().map(ObjectSlot::borrow).any(|o| {
             let Some(s) = o.sprite else { return false };
             let spr = &m.sprites[s];
             if excluded.contains(&spr.name) {
@@ -1815,6 +1831,7 @@ impl IsoGridSquare {
         use VisionClass as C;
         use VisionResult::*;
         for obj in owner.get_special_objects() {
+            let obj = obj.borrow();
             let (vis, class) = obj.vision(owner, self, sq3, env.sprites, env.hooks);
             match (vis, class) {
                 (NoEffect, _) => {}

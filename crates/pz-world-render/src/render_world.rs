@@ -60,6 +60,7 @@ pub fn render_square(
     let mut rs = RenderSquare::new(sq.x, sq.y, sq.z);
     rs.cut = cutaway_info(w, sq);
     for o in &sq.objects {
+        let o = o.borrow();
         let kind = match &o.kind {
             pz_world::ObjectKind::Door(d) => ObjectKind::Door { open: d.open },
             pz_world::ObjectKind::Window(win) => ObjectKind::Window { north: win.north },
@@ -118,9 +119,8 @@ pub fn puddle_square(w: &WorldView<'_>, regions: &IsoRegions, sq: &IsoGridSquare
     let names = sq
         .objects
         .iter()
-        .filter_map(|o| o.attached_anim_sprite.as_ref())
-        .flatten()
-        .filter_map(|a| w.sprites.sprites[a.sprite].name.as_deref());
+        .flat_map(|o| o.borrow().attached_anim_sprite.iter().flatten().map(|a| a.sprite).collect::<Vec<_>>())
+        .filter_map(|sprite| w.sprites.sprites[sprite].name.as_deref());
     PuddleSquare {
         exterior: sq.has(f.exterior),
         water: sq.has(f.water),
@@ -165,7 +165,7 @@ pub fn wall_type(w: &WorldView<'_>, sq: &IsoGridSquare) -> i32 {
 pub fn has_window_frame(sq: &IsoGridSquare, north: bool) -> bool {
     sq.objects
         .iter()
-        .any(|o| matches!(o.kind, pz_world::ObjectKind::WindowFrame { north: n } if n == north))
+        .any(|o| matches!(o.borrow().kind, pz_world::ObjectKind::WindowFrame { north: n } if n == north))
 }
 
 /// The neighbour tests of `renderSeamFix2_Floor` / `renderSeamFix2_Wall`

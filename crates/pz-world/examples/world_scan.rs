@@ -7,6 +7,7 @@
 //! they are not part of this repository.
 
 use pz_fs::GameFs;
+use pz_world::ObjectSlot;
 use pz_world::{CreateParams, GameRand, IsoMetaGrid, WorldGenBounds};
 
 /// Placeholder generator for inspection (not the game's `Rand`).
@@ -116,7 +117,8 @@ fn main() {
                 sq.room_id,
                 sq.objects
                     .iter()
-                    .map(|o| (o.kind.class_name(), o.tile.as_deref().unwrap_or("")))
+                    .map(ObjectSlot::borrow)
+                    .map(|o| (o.kind.class_name(), o.tile.clone().unwrap_or_default()))
                     .collect::<Vec<_>>()
             );
         }

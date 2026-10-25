@@ -72,11 +72,11 @@ pub fn scene() -> (IsoCell, IsoSpriteManager, IsoMetaGrid) {
         for y in 8..32 {
             let mut sq = IsoGridSquare::new(x, y, 0);
             let id = sq.new_object_id();
-            sq.objects.push(IsoObject::new(
+            sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                 id,
                 ObjectKind::Object,
                 Some(m.named_map["floor"]),
-            ));
+            )));
             cell.chunks
                 .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
                 .unwrap()

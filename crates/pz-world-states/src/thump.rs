@@ -8,6 +8,8 @@
 use pz_characters::character::state::{ThumpInfo, ThumpKind, ThumpTarget};
 use pz_pathfind::mover::ObjectRef;
 use pz_world::java::parse_int;
+use pz_world::object_slot::{IsoObjectRef, ObjectSlot};
+use std::cell::{Ref, RefMut};
 use pz_world::objects::{IsoObject, ObjectKind};
 use pz_world::square::EdgeFacing;
 use pz_world::{IsoDirections, IsoGridSquare};
@@ -46,16 +48,22 @@ fn door_like(o: &IsoObject) -> Option<(bool, bool)> {
 
 impl StatesWorldAdapter<'_> {
     /// The square and object an [`ObjectRef`] names.
-    pub fn find(&self, r: ObjectRef) -> Option<(&IsoGridSquare, &IsoObject)> {
+    pub fn find(&self, r: ObjectRef) -> Option<(&IsoGridSquare, Ref<'_, IsoObject>)> {
         let sq = self.cell.get_grid_square(r.x, r.y, r.z)?;
         let i = sq.object_index(r.id)?;
-        Some((sq, &sq.objects[i]))
+        Some((sq, sq.objects[i].borrow()))
     }
 
-    pub(crate) fn find_mut(&mut self, r: ObjectRef) -> Option<&mut IsoObject> {
-        let sq = self.cell.get_grid_square_mut(r.x, r.y, r.z)?;
+    pub(crate) fn find_mut(&self, r: ObjectRef) -> Option<RefMut<'_, IsoObject>> {
+        let sq = self.cell.get_grid_square(r.x, r.y, r.z)?;
         let i = sq.object_index(r.id)?;
-        Some(&mut sq.objects[i])
+        Some(sq.objects[i].borrow_mut())
+    }
+
+    /// Pin the actual allocation before callbacks or world mutation.
+    pub(crate) fn object_ref(&self, r: ObjectRef) -> Option<IsoObjectRef> {
+        let sq = self.cell.get_grid_square(r.x, r.y, r.z)?;
+        Some(sq.objects[sq.object_index(r.id)?].ref_handle())
     }
 
     fn sound(
@@ -94,9 +102,9 @@ impl StatesWorldAdapter<'_> {
     fn barricade_on(&self, sq: Option<&IsoGridSquare>, dir: IsoDirections) -> Option<ObjectRef> {
         let sq = sq?;
         sq.special_objects.iter().find_map(|&id| {
-            let o = &sq.objects[sq.object_index(id)?];
+            let o = sq.objects[sq.object_index(id)?].borrow();
             match &o.kind {
-                ObjectKind::Barricade(b) if b.forward_dir() == dir => Some(oref(sq, o)),
+                ObjectKind::Barricade(b) if b.forward_dir() == dir => Some(oref(sq, &o)),
                 _ => None,
             }
         })
@@ -182,11 +190,12 @@ impl StatesWorldAdapter<'_> {
         }
         let cut = if north { "cutN" } else { "cutW" };
         if sq.objects.iter().any(|x| {
-            x.id != o.id && env.obj_has_flag(x, cut) && env.obj_has_flag(x, "makeWindowInvincible")
+            let x = x.borrow();
+            x.id != o.id && env.obj_has_flag(&x, cut) && env.obj_has_flag(&x, "makeWindowInvincible")
         }) {
             return true;
         }
-        env.obj_has_flag(o, "makeWindowInvincible")
+        env.obj_has_flag(&o, "makeWindowInvincible")
     }
 
     /// `IsoWindow.canClimbThroughHelper(chr, sq, oppositeSq, north)`.
@@ -239,7 +248,7 @@ impl StatesWorldAdapter<'_> {
         let ObjectKind::Window(w) = &o.kind else {
             return false;
         };
-        if self.window_invincible(sq, o, w.north) || self.env().hooks().object_barricaded(sq, o) {
+        if self.window_invincible(sq, &o, w.north) || self.env().hooks().object_barricaded(sq, o) {
             return false;
         }
         if let Some(c) = chr {
@@ -247,7 +256,7 @@ impl StatesWorldAdapter<'_> {
                 return false;
             }
         }
-        if self.engine.window_closing_success(oref(sq, o)) {
+        if self.engine.window_closing_success(oref(sq, &o)) {
             return false;
         }
         if w.health <= 0 || w.destroyed {
@@ -257,7 +266,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoWindowFrame.getWindow()`.
-    fn frame_window<'s>(&self, sq: &'s IsoGridSquare, north: bool) -> Option<&'s IsoObject> {
+    fn frame_window(&self, sq: &IsoGridSquare, north: bool) -> Option<IsoObjectRef> {
         sq.get_window_facing(EdgeFacing::of_north(north))
     }
 
@@ -269,7 +278,7 @@ impl StatesWorldAdapter<'_> {
     ) -> bool {
         let hooks = self.env().hooks();
         if let Some(w) = self.frame_window(sq, north) {
-            if hooks.object_barricaded(sq, w) {
+            if hooks.object_barricaded(sq, &w.borrow()) {
                 return false;
             }
         } else {
@@ -311,7 +320,7 @@ impl StatesWorldAdapter<'_> {
 
     fn breakable(&self, o: &IsoObject) -> bool {
         self.env()
-            .sprite_name(o)
+            .sprite_name(&o)
             .is_some_and(|n| self.engine.is_breakable_fence(n))
     }
 
@@ -368,7 +377,7 @@ impl StatesWorldAdapter<'_> {
                 .or_else(|| self.barricade_opposite_character(sq, d.north, chr))
                 .or((!d.open).then_some(r)),
             ObjectKind::Thumpable(t) => {
-                if t.is_door || env.is_window(o) {
+                if t.is_door || env.is_window(&o) {
                     if let Some(b) = self
                         .barricade_for_character(sq, t.north, chr)
                         .or_else(|| self.barricade_opposite_character(sq, t.north, chr))
@@ -377,9 +386,9 @@ impl StatesWorldAdapter<'_> {
                     }
                 }
                 let crawling = chr.is_some_and(|c| c.zombie && c.crawling);
-                let hoppable = env.hooks().thumpable_is_hoppable(o, t);
+                let hoppable = env.hooks().thumpable_is_hoppable(&o, t);
                 let mut thumpable = t.is_thumpable;
-                if !thumpable && crawling && self.breakable(o) {
+                if !thumpable && crawling && self.breakable(&o) {
                     thumpable = true;
                 }
                 if !thumpable && crawling && hoppable {
@@ -388,10 +397,10 @@ impl StatesWorldAdapter<'_> {
                 if !thumpable {
                     return None;
                 }
-                if t.is_door && t.open || env.is_window(o) {
+                if t.is_door && t.open || env.is_window(&o) {
                     return None;
                 }
-                if !crawling && hoppable && !self.tall_hoppable(o) {
+                if !crawling && hoppable && !self.tall_hoppable(&o) {
                     return None;
                 }
                 Some(r)
@@ -407,7 +416,7 @@ impl StatesWorldAdapter<'_> {
             }
             ObjectKind::WindowFrame { north } => {
                 if let Some(w) = self.frame_window(sq, *north) {
-                    return self.thumpable_for(oref(sq, w), chr);
+                    return self.thumpable_for(oref(sq, &w.borrow()), chr);
                 }
                 self.barricade_for_character(sq, *north, chr)
                     .or_else(|| self.barricade_opposite_character(sq, *north, chr))
@@ -423,7 +432,7 @@ impl StatesWorldAdapter<'_> {
                 // BentFences (unbent fences thumped by a hunting zombie) is
                 // not ported: Lua registers no bent fences in vanilla
                 // B42 maps' default `BentFences.isEnabled()` path here.
-                if self.breakable(o) {
+                if self.breakable(&o) {
                     return chr.is_some_and(|c| c.zombie && c.crawling).then_some(r);
                 }
                 None
@@ -507,7 +516,7 @@ impl StatesWorldAdapter<'_> {
             _ => None,
         };
         let own = env
-            .obj_prop(o, "ThumpSound")
+            .obj_prop(&o, "ThumpSound")
             .filter(|s| !s.trim().is_empty());
         match &o.kind {
             ObjectKind::Door(_) => own.map(str::to_string).unwrap_or_else(|| {
@@ -566,32 +575,32 @@ impl StatesWorldAdapter<'_> {
         let (sq, o) = self.find(r)?;
         let env = self.env();
         let mut i = ThumpInfo {
-            kind: Self::kind_of(o),
+            kind: Self::kind_of(&o),
             square: Some((sq.x, sq.y, sq.z)),
             in_world: true,
-            facing_position: self.facing_position(sq, o),
+            facing_position: self.facing_position(sq, &o),
             ..Default::default()
         };
         let north = match &o.kind {
             ObjectKind::Door(d) => {
                 i.open = d.open;
-                i.hoppable = self.door_hoppable(o);
-                i.tall_hoppable = self.tall_hoppable(o);
+                i.hoppable = self.door_hoppable(&o);
+                i.tall_hoppable = self.tall_hoppable(&o);
                 Some(d.north)
             }
             ObjectKind::Thumpable(t) => {
                 i.open = t.open;
                 i.is_door = t.is_door;
-                i.hoppable = env.hooks().thumpable_is_hoppable(o, t);
-                i.tall_hoppable = self.tall_hoppable(o);
-                i.can_climb_through = self.thumpable_can_climb_through(sq, o, chr);
+                i.hoppable = env.hooks().thumpable_is_hoppable(&o, t);
+                i.tall_hoppable = self.tall_hoppable(&o);
+                i.can_climb_through = self.thumpable_can_climb_through(sq, &o, chr);
                 i.block_all_the_square = t.block_all_the_square;
                 Some(t.north)
             }
             ObjectKind::Window(w) => {
                 i.open = w.open;
                 i.destroyed = w.destroyed;
-                i.can_climb_through = self.window_can_climb_through(sq, o, chr);
+                i.can_climb_through = self.window_can_climb_through(sq, &o, chr);
                 Some(w.north)
             }
             ObjectKind::WindowFrame { north } => {
@@ -615,10 +624,10 @@ impl StatesWorldAdapter<'_> {
         if let Some(tf) = self.thumpable_for(r, chr) {
             let (tsq, to) = self.find(tf)?;
             i.thumpable_for = Some(ThumpTarget::Object(tf));
-            i.thumpable_for_kind = Self::kind_of(to);
+            i.thumpable_for_kind = Self::kind_of(&to);
             i.thump_condition = self.thump_condition(tf);
-            i.thump_sound = self.thump_sound(to);
-            i.sound_prefix = self.sound_prefix(to);
+            i.thump_sound = self.thump_sound(&to);
+            i.sound_prefix = self.sound_prefix(&to);
             if let ObjectKind::Barricade(b) = &to.kind {
                 i.barricade_metal = b.is_metal() || b.is_metal_bar();
                 i.barricade_planks = b.num_planks();
@@ -637,7 +646,8 @@ impl StatesWorldAdapter<'_> {
     /// `obj.Thump(chr)` (one thump event).
     pub(crate) fn thump_object(&mut self, r: ObjectRef, t: &Thumper, out: &mut TargetOut) {
         let Some((_, o)) = self.find(r) else { return };
-        let kind = Self::kind_of(o);
+        let kind = Self::kind_of(&o);
+        drop(o);
         if kind != ThumpKind::Barricade {
             if kind == ThumpKind::Thumpable && !self.settings.thump_on_construction {
                 return;
@@ -676,13 +686,13 @@ impl StatesWorldAdapter<'_> {
         if self.settings.tutorial {
             return;
         }
-        if let Some(ObjectKind::Door(d)) = self.find_mut(r).map(|o| &mut o.kind) {
+        if let Some(mut d) = self.find_mut(r).and_then(|o| std::cell::RefMut::filter_map(o, |o| match &mut o.kind { ObjectKind::Door(value) => Some(value), _ => None }).ok()) {
             d.health -= amount;
         }
     }
 
     fn thump_door(&mut self, r: ObjectRef, t: &Thumper, out: &mut TargetOut) {
-        let door = |s: &Self| match s.find(r).map(|(_, o)| &o.kind) {
+        let door = |s: &Self| match s.find(r).as_ref().map(|(_, o)| &o.kind) {
             Some(ObjectKind::Door(d)) => Some((d.open, d.locked, d.health)),
             _ => None,
         };
@@ -720,7 +730,7 @@ impl StatesWorldAdapter<'_> {
             self.force_awake_at(r);
             let prefix = self
                 .find(r)
-                .map(|(_, o)| self.sound_prefix(o))
+                .map(|(_, o)| self.sound_prefix(&o))
                 .unwrap_or_default();
             self.engine
                 .play_sound(t.id, &format!("{prefix}Break"), Some(r));
@@ -739,8 +749,9 @@ impl StatesWorldAdapter<'_> {
             return;
         };
         let (is_door, open, locked, thump_dmg) = (th.is_door, th.open, th.locked, th.thump_dmg);
-        let breakable = self.breakable(o);
-        let stress = self.stress_mod_from_thumping(o);
+        let breakable = self.breakable(&o);
+        let stress = self.stress_mod_from_thumping(&o);
+        drop(o);
         if t.zombie {
             if t.cognition == 1 && is_door && !open && !locked {
                 self.engine.toggle_door(self.cell, r, t.id);
@@ -764,7 +775,7 @@ impl StatesWorldAdapter<'_> {
                 a.max(0)
             };
             if amount > 0 {
-                if let Some(ObjectKind::Thumpable(th)) = self.find_mut(r).map(|o| &mut o.kind) {
+                if let Some(mut th) = self.find_mut(r).and_then(|o| std::cell::RefMut::filter_map(o, |o| match &mut o.kind { ObjectKind::Thumpable(value) => Some(value), _ => None }).ok()) {
                     th.health -= amount;
                 }
             }
@@ -774,9 +785,11 @@ impl StatesWorldAdapter<'_> {
         let ObjectKind::Thumpable(th) = &o.kind else {
             return;
         };
-        if th.health <= 0 {
-            if !breakable {
-                let s = self.engine.thumpable_break_sound(o);
+        let destroyed = th.health <= 0;
+        let break_sound = (destroyed && !breakable).then(|| self.engine.thumpable_break_sound(&o));
+        drop(o);
+        if destroyed {
+            if let Some(s) = break_sound {
                 self.engine.play_sound(t.id, &s, Some(r));
             }
             self.sound(None, r, 10, 20, 15.0);
@@ -801,11 +814,11 @@ impl StatesWorldAdapter<'_> {
         } else {
             25.0
         };
-        if env.obj_has_prop(o, "FenceTypeHigh") {
+        if env.obj_has_prop(&o, "FenceTypeHigh") {
             m = 7.0;
             if ["WallNTrans", "WallWTrans", "DoorTrans"]
                 .into_iter()
-                .any(|p| env.obj_has_prop(o, p))
+                .any(|p| env.obj_has_prop(&o, p))
             {
                 m = 0.0;
             }
@@ -819,7 +832,7 @@ impl StatesWorldAdapter<'_> {
         let f = &self.sprites.tables.flag;
         let (n, w) = self
             .find(r)
-            .and_then(|(_, o)| env.props(o))
+            .and_then(|(_, o)| env.props(&o))
             .map_or((false, false), |p| (p.has(f.collideN), p.has(f.collideW)));
         let ns = if t.y >= r.y as f32 {
             IsoDirections::N
@@ -841,28 +854,32 @@ impl StatesWorldAdapter<'_> {
             let ObjectKind::Window(w) = &o.kind else {
                 return;
             };
-            let climb = self.window_can_climb_through(sq, o, Some(t));
-            let invincible = self.window_invincible(sq, o, w.north);
-            if t.cognition == 1 && !climb && !invincible && !self.locked_out(t, w.locked) {
+            let climb = self.window_can_climb_through(sq, &o, Some(t));
+            let invincible = self.window_invincible(sq, &o, w.north);
+            let can_toggle = t.cognition == 1 && !climb && !invincible && !self.locked_out(t, w.locked);
+            drop(o);
+            if can_toggle {
                 self.engine.toggle_window(self.cell, r, t.id);
                 let Some((sq, o)) = self.find(r) else { return };
-                if self.window_can_climb_through(sq, o, Some(t)) {
+                if self.window_can_climb_through(sq, &o, Some(t)) {
                     return;
                 }
             }
             self.window_damage(r, t.strength, t);
             self.sound(Some(t.id), r, 20, 20, 15.0);
         }
-        let Some(ObjectKind::Window(w)) = self.find(r).map(|(_, o)| &o.kind) else {
+        let Some(w) = self.find(r).and_then(|(_, o)| std::cell::Ref::filter_map(o, |o| match &o.kind { ObjectKind::Window(value) => Some(value), _ => None }).ok()) else {
             return;
         };
-        if !w.destroyed && w.health <= 0 {
-            let smashed = w.smashed_sprite;
+        let should_smash = !w.destroyed && w.health <= 0;
+        let smashed = w.smashed_sprite;
+        drop(w);
+        if should_smash {
             self.force_awake_at(r);
             self.engine.play_sound(t.id, "SmashWindow", Some(r));
             self.sound(None, r, 10, 20, 15.0);
             *out = Some(None);
-            if let Some(o) = self.find_mut(r) {
+            if let Some(mut o) = self.find_mut(r) {
                 if let ObjectKind::Window(w) = &mut o.kind {
                     w.destroyed = true;
                 }
@@ -884,14 +901,17 @@ impl StatesWorldAdapter<'_> {
         let ObjectKind::Window(w) = &o.kind else {
             return;
         };
-        if self.window_invincible(sq, o, w.north) || self.settings.tutorial {
+        if self.window_invincible(sq, &o, w.north) || self.settings.tutorial {
             return;
         }
-        let Some(ObjectKind::Window(w)) = self.find_mut(r).map(|o| &mut o.kind) else {
+        drop(o);
+        let Some(mut w) = self.find_mut(r).and_then(|o| std::cell::RefMut::filter_map(o, |o| match &mut o.kind { ObjectKind::Window(value) => Some(value), _ => None }).ok()) else {
             return;
         };
         w.health = (w.health - amount).max(0);
-        if !w.destroyed && w.health == 0 {
+        let should_smash = !w.destroyed && w.health == 0;
+        drop(w);
+        if should_smash {
             let alarm = !chr.zombie || self.settings.trigger_house_alarm;
             self.smash_window(r, alarm);
             self.add_broken_glass(r, chr);
@@ -933,9 +953,10 @@ impl StatesWorldAdapter<'_> {
                     .has_name(&self.sprites.alias, "AttachedToGlass")
             })
             .collect();
+        drop(o);
         self.engine.play_world_sound("SmashWindow", sqp);
         self.sound(None, r, 10, 20, 15.0);
-        if let Some(o) = self.find_mut(r) {
+        if let Some(mut o) = self.find_mut(r) {
             if let ObjectKind::Window(w) = &mut o.kind {
                 w.destroyed = true;
             }
@@ -975,6 +996,7 @@ impl StatesWorldAdapter<'_> {
         let Some(t) = target.map(|s| (s.x, s.y, s.z)) else {
             return;
         };
+        drop(o);
         self.square_add_broken_glass(t);
     }
 
@@ -986,7 +1008,7 @@ impl StatesWorldAdapter<'_> {
         }
         let has = sq
             .get_special_objects()
-            .any(|o| matches!(o.kind, ObjectKind::BrokenGlass));
+            .any(|o| matches!(o.borrow().kind, ObjectKind::BrokenGlass));
         if has {
             return;
         }
@@ -1004,9 +1026,9 @@ impl StatesWorldAdapter<'_> {
         let obj = IsoObject::new(id, ObjectKind::BrokenGlass, sprite);
         let index = sq.place_wall_and_door_check(sprites, &obj, -1);
         if index >= 0 && (index as usize) <= sq.objects.len() {
-            sq.objects.insert(index as usize, obj);
+            sq.objects.insert(index as usize, ObjectSlot::new(obj));
         } else {
-            sq.objects.push(obj);
+            sq.objects.push(ObjectSlot::new(obj));
         }
         sq.special_objects.push(id);
         sq.burnt_out = false;
@@ -1016,18 +1038,20 @@ impl StatesWorldAdapter<'_> {
     }
 
     fn thump_barricade(&mut self, r: ObjectRef, t: &Thumper) {
-        let Some(ObjectKind::Barricade(b)) = self.find(r).map(|(_, o)| &o.kind) else {
+        let Some(b) = self.find(r).and_then(|(_, o)| std::cell::Ref::filter_map(o, |o| match &o.kind { ObjectKind::Barricade(value) => Some(value), _ => None }).ok()) else {
             return;
         };
         if b.is_destroyed() || !t.zombie {
             return;
         }
         let planks = b.num_planks();
+        drop(b);
         self.barricade_damage(r, t.strength as f32);
-        let Some(ObjectKind::Barricade(b)) = self.find(r).map(|(_, o)| &o.kind) else {
+        let Some(b) = self.find(r).and_then(|(_, o)| std::cell::Ref::filter_map(o, |o| match &o.kind { ObjectKind::Barricade(value) => Some(value), _ => None }).ok()) else {
             return;
         };
         let (now, destroyed) = (b.num_planks(), b.is_destroyed());
+        drop(b);
         if planks != now {
             self.engine.play_sound(t.id, "BreakBarricadePlank", None);
         }
@@ -1043,7 +1067,7 @@ impl StatesWorldAdapter<'_> {
         if self.settings.tutorial {
             return;
         }
-        let Some(o) = self.find_mut(r) else { return };
+        let Some(mut o) = self.find_mut(r) else { return };
         let ObjectKind::Barricade(b) = &mut o.kind else {
             return;
         };
@@ -1073,6 +1097,7 @@ impl StatesWorldAdapter<'_> {
                 break;
             }
         }
+        drop(o);
         if changed {
             self.barricade_choose_sprite(r);
         }
@@ -1080,14 +1105,15 @@ impl StatesWorldAdapter<'_> {
 
     /// `IsoBarricade.chooseSprite()`.
     fn barricade_choose_sprite(&mut self, r: ObjectRef) {
-        let Some(ObjectKind::Barricade(b)) = self.find(r).map(|(_, o)| &o.kind) else {
+        let Some(b) = self.find(r).and_then(|(_, o)| std::cell::Ref::filter_map(o, |o| match &o.kind { ObjectKind::Barricade(value) => Some(value), _ => None }).ok()) else {
             return;
         };
         let Some(name) = b.sprite_name() else {
             return;
         };
         let s = self.sprites.named_map.get(&name).copied();
-        if let Some(o) = self.find_mut(r) {
+        drop(b);
+        if let Some(mut o) = self.find_mut(r) {
             o.sprite = s;
         }
     }
@@ -1095,7 +1121,8 @@ impl StatesWorldAdapter<'_> {
     /// `IsoObject.Thump` without the bent-fence branch.
     fn thump_plain(&mut self, r: ObjectRef, t: &Thumper, out: &mut TargetOut) {
         let Some((_, o)) = self.find(r) else { return };
-        let breakable = self.breakable(o);
+        let breakable = self.breakable(&o);
+        drop(o);
         if t.zombie {
             let total = self.engine.surrounding_thumpers(t);
             let amount = if total >= 8 {
@@ -1123,8 +1150,7 @@ impl StatesWorldAdapter<'_> {
                 return;
             }
             self.engine.play_sound(t.id, "BreakObject", Some(r));
-            if let Some((_, o)) = self.find(r) {
-                let o = o.clone();
+            if let Some(o) = self.object_ref(r) {
                 self.engine.dump_contents((r.x, r.y, r.z), &o);
             }
             self.remove_object(r, false);
@@ -1136,17 +1162,17 @@ impl StatesWorldAdapter<'_> {
     /// `square.transmitRemoveItemFromSquare(obj)` offline
     /// (`RemoveTileObject`): out of `objects` and `specialObjects`, then
     /// `RecalcAllWithNeighbours(true)`.
-    pub fn remove_object(&mut self, r: ObjectRef, destroyed: bool) -> Option<IsoObject> {
+    pub fn remove_object(&mut self, r: ObjectRef, destroyed: bool) -> Option<ObjectSlot> {
         let sq = self.cell.get_grid_square_mut(r.x, r.y, r.z)?;
         let i = sq.object_index(r.id)?;
-        let obj = sq.objects.remove(i);
+        let obj = sq.remove_object_slot(i);
         sq.special_objects.retain(|&id| id != r.id);
         self.runtime.forget(r);
-        if !matches!(obj.kind, ObjectKind::WorldInventory(_)) {
+        if !matches!(obj.borrow().kind, ObjectKind::WorldInventory(_)) {
             self.cell
                 .recalc_all_with_neighbours(r.x, r.y, r.z, self.meta, self.sprites);
         }
-        self.engine.object_removed((r.x, r.y, r.z), &obj, destroyed);
+        self.engine.object_removed((r.x, r.y, r.z), &obj.ref_handle(), destroyed);
         self.engine.square_changed((r.x, r.y, r.z));
         Some(obj)
     }
@@ -1156,19 +1182,21 @@ impl StatesWorldAdapter<'_> {
         let Some((sq, o)) = self.find(r) else { return };
         let ObjectKind::Door(d) = &o.kind else { return };
         let env = self.env();
-        if env.obj_has_prop(o, "GarageDoor") {
+        if env.obj_has_prop(&o, "GarageDoor") {
+            drop(o);
             self.remove_object(r, true);
             return;
         }
-        if env.props(o).is_none() {
+        if env.props(&o).is_none() {
             return;
         }
         let mats: Vec<String> = ["Material", "Material2", "Material3"]
             .into_iter()
-            .filter_map(|k| env.obj_prop(o, k).map(str::to_string))
+            .filter_map(|k| env.obj_prop(&o, k).map(str::to_string))
             .collect();
         let has_curtain = d.has_curtain;
-        let key = self.check_key_id(sq, o, d.north, d.locked);
+        let key = self.check_key_id(sq, &o, d.north, d.locked);
+        drop(o);
         let p = (r.x, r.y, r.z);
         if mats.iter().any(|m| !m.is_empty()) {
             self.add_items_from_properties(p, &mats);
@@ -1206,7 +1234,7 @@ impl StatesWorldAdapter<'_> {
         match (key(sq), key(other)) {
             (None, Some(k)) => k,
             (Some(k), None) => k,
-            (Some(k), Some(_)) if self.env().obj_has_prop(o, "forceLocked") => k,
+            (Some(k), Some(_)) if self.env().obj_has_prop(&o, "forceLocked") => k,
             _ => o.key_id,
         }
     }
@@ -1242,16 +1270,17 @@ impl StatesWorldAdapter<'_> {
     /// `IsoThumpable.destroy()`.
     pub(crate) fn destroy_thumpable(&mut self, r: ObjectRef) {
         let Some((_, o)) = self.find(r) else { return };
-        let o = o.clone();
+        drop(o);
+        let o = self.object_ref(r).expect("located object");
         self.engine.dump_contents((r.x, r.y, r.z), &o);
-        if let Some(ObjectKind::Thumpable(t)) = self.find_mut(r).map(|o| &mut o.kind) {
+        if let Some(mut t) = self.find_mut(r).and_then(|o| std::cell::RefMut::filter_map(o, |o| match &mut o.kind { ObjectKind::Thumpable(value) => Some(value), _ => None }).ok()) {
             t.health = 0;
         }
         self.remove_object(r, true);
     }
 
     fn destroy_any(&mut self, r: ObjectRef) {
-        match self.find(r).map(|(_, o)| Self::kind_of(o)) {
+        match self.find(r).map(|(_, o)| Self::kind_of(&o)) {
             Some(ThumpKind::Door) => self.destroy_door(r),
             Some(ThumpKind::Thumpable) => self.destroy_thumpable(r),
             _ => {}
@@ -1263,14 +1292,14 @@ impl StatesWorldAdapter<'_> {
         let Some((_, o)) = self.find(r) else {
             return -1;
         };
-        let Some(v) = self.env().obj_prop(o, prop) else {
+        let Some(v) = self.env().obj_prop(&o, prop) else {
             return -1;
         };
         let Some(i) = parse_int(v) else { return -1 };
         if !(1..=max).contains(&i) {
             return -1;
         }
-        let Some((_, open)) = door_like(o) else {
+        let Some((_, open)) = door_like(&o) else {
             return -1;
         };
         if open {
@@ -1305,12 +1334,13 @@ impl StatesWorldAdapter<'_> {
         let door = matches!(me.kind, ObjectKind::Door(_));
         let sq = self.at(p)?;
         sq.get_special_objects().find_map(|o| {
+            let o = o.borrow();
             let same = match &o.kind {
                 ObjectKind::Door(d) => door && d.north == north,
                 ObjectKind::Thumpable(t) => !door && t.north == north,
                 _ => false,
             };
-            let c = oref(sq, o);
+            let c = oref(sq, &o);
             (same && pick(self, c)).then_some(c)
         })
     }
@@ -1321,7 +1351,7 @@ impl StatesWorldAdapter<'_> {
         if me == -1 || index <= 0 {
             return None;
         }
-        let (north, open) = door_like(self.find(r)?.1)?;
+        let (north, open) = door_like(&self.find(r)?.1)?;
         let (xo, yo) = match (north, open) {
             (true, true) => (DD_NORTH_OPEN_X, DD_NORTH_OPEN_Y),
             (true, false) => (DD_NORTH_CLOSED_X, DD_NORTH_CLOSED_Y),
@@ -1359,7 +1389,7 @@ impl StatesWorldAdapter<'_> {
         if me == -1 || (!next && me == 1) || (next && me == 3) {
             return None;
         }
-        let (north, _) = door_like(self.find(r)?.1)?;
+        let (north, _) = door_like(&self.find(r)?.1)?;
         let p = if next {
             (r.x + north as i32, r.y - (!north) as i32, r.z)
         } else {
@@ -1401,10 +1431,10 @@ impl StatesWorldAdapter<'_> {
         let Some(sq) = self.cell.get_grid_square_mut(p.0, p.1, p.2) else {
             return;
         };
-        let Some(o) = sq.objects.iter_mut().find(|o| o.sheet_rope) else {
+        let Some(o) = sq.objects.iter().find(|o| o.borrow().sheet_rope) else {
             return;
         };
-        o.sheet_rope_health -= damage;
+        o.borrow_mut().sheet_rope_health -= damage;
         self.damage_sprite_sheet_rope_from_bottom(p);
     }
 
@@ -1440,7 +1470,7 @@ impl StatesWorldAdapter<'_> {
         let Some(i) = self.env().sheet_rope_index(sq) else {
             return;
         };
-        let health = sq.objects[i].sheet_rope_health;
+        let health = sq.objects[i].borrow().sheet_rope_health;
         if health >= 40.0 {
             return;
         }
@@ -1454,9 +1484,9 @@ impl StatesWorldAdapter<'_> {
         let mut z = p.2;
         while let Some(sq) = self.at((p.0, p.1, z)) {
             let env = self.env();
-            let found = sq.objects.iter().position(|o| env.obj_has_flag(o, ty));
+            let found = sq.objects.iter().position(|o| env.obj_has_flag(&o.borrow(), ty));
             if let Some(k) = found {
-                let name = env.sprite_name(&sq.objects[k]).unwrap_or("").to_string();
+                let name = env.sprite_name(&sq.objects[k].borrow()).unwrap_or("").to_string();
                 let parts: Vec<&str> = name.split('_').collect();
                 let index = parts.get(2).and_then(|s| parse_int(s)).unwrap_or(0);
                 if index > 14 {
@@ -1470,7 +1500,7 @@ impl StatesWorldAdapter<'_> {
                 );
                 let s = self.sprites.named_map.get(&new).copied();
                 if let Some(sq) = self.cell.get_grid_square_mut(p.0, p.1, z) {
-                    sq.objects[k].sprite = s;
+                    sq.objects[k].borrow_mut().sprite = s;
                 }
             }
             if z == 7 {
@@ -1497,8 +1527,8 @@ impl StatesWorldAdapter<'_> {
             _ => None,
         };
         if let Some(tile) = tile {
-            if let Some(o) = sq.objects.iter().find(|o| env.sprite_name(o) == Some(tile)) {
-                let r = oref(sq, o);
+            if let Some(o) = sq.objects.iter().find(|o| env.sprite_name(&o.borrow()) == Some(tile)) {
+                let r = oref(sq, &o.borrow());
                 self.remove_object(r, false);
             }
         }
@@ -1510,8 +1540,8 @@ impl StatesWorldAdapter<'_> {
             let hit = sq
                 .objects
                 .iter()
-                .find(|o| env.obj_has_flag(o, t1) || env.obj_has_flag(o, t2))
-                .map(|o| oref(sq, o));
+                .find(|o| { let o = o.borrow(); env.obj_has_flag(&o, t1) || env.obj_has_flag(&o, t2) })
+                .map(|o| oref(sq, &o.borrow()));
             if let Some(r) = hit {
                 previous = Some(z);
                 find = true;
@@ -1537,8 +1567,8 @@ impl StatesWorldAdapter<'_> {
         if let Some(r) = tsq
             .objects
             .iter()
-            .find(|o| env.obj_has_flag(o, t1) || env.obj_has_flag(o, t2))
-            .map(|o| oref(tsq, o))
+            .find(|o| { let o = o.borrow(); env.obj_has_flag(&o, t1) || env.obj_has_flag(&o, t2) })
+            .map(|o| oref(tsq, &o.borrow()))
         {
             self.remove_object(r, false);
         }

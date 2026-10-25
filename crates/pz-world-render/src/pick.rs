@@ -145,7 +145,7 @@ impl WorldPick<'_> {
             sq.objects
                 .iter()
                 .enumerate()
-                .map(|(i, o)| self.object(sq, i, o))
+                .map(|(i, o)| self.object(sq, i, &o.borrow()))
                 .collect(),
         )
     }

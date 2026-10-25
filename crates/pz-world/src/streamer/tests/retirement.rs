@@ -33,23 +33,26 @@ fn bag_chunk(
         .parent = Some(Rc::new(DropProbe(drops)));
     let weak = Rc::downgrade(&bag);
     let mut square = IsoGridSquare::new(wx * 8, wy * 8, 0);
-    square.objects.push(IsoObject::new(
-        1,
-        ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
-            IsoWorldInventoryObject {
-                xoff: 0.0,
-                yoff: 0.0,
-                zoff: 0.0,
-                offset_x: 0.0,
-                offset_y: 0.0,
-                item: FloorItem::retain(&bag),
-                drop_time: 0.0,
-                ignore_remove_sandbox: false,
-                extended_placement: false,
-            },
-        )),
-        None,
-    ));
+    square.objects.push(
+        (IsoObject::new(
+            1,
+            ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+                IsoWorldInventoryObject {
+                    xoff: 0.0,
+                    yoff: 0.0,
+                    zoff: 0.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    item: FloorItem::retain(&bag),
+                    drop_time: 0.0,
+                    ignore_remove_sandbox: false,
+                    extended_placement: false,
+                },
+            )),
+            None,
+        ))
+        .into(),
+    );
     square.world_objects.push(1);
     let mut chunk = IsoChunk::new(wx, wy);
     chunk.set_square(0, 0, 0, Some(square));
@@ -330,7 +333,7 @@ fn retained_bag_mutation_after_unload_is_written_by_real_pending_save() {
     ctx.items = &env;
     let reloaded = load_chunk(&bytes, 10, 10, &ctx).unwrap().chunk;
     let object = &reloaded.get_grid_square(0, 0, 0).unwrap().objects[0];
-    let ObjectKind::WorldInventory(floor) = &object.kind else {
+    let ObjectKind::WorldInventory(floor) = &object.borrow().kind else {
         panic!("saved floor item missing")
     };
     let floor = floor.borrow();

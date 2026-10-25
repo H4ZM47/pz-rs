@@ -270,6 +270,7 @@ fn main() {
                 sq.objects
                     .iter()
                     .map(|o| {
+                        let o = o.borrow();
                         format!(
                             "{}:{}",
                             o.kind.class_name(),

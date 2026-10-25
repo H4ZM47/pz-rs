@@ -73,7 +73,7 @@ fn main() {
                     }
                 }
                 h.i(r.objects.len() as i32);
-                for o in &r.objects {
+                for o in r.objects.iter() {
                     for v in [o.kind, o.x, o.y] {
                         h.i(v);
                     }

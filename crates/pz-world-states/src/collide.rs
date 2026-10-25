@@ -279,11 +279,11 @@ impl StatesWorldAdapter<'_> {
             })
         };
         let tree = self.sprites.tables.ty.tree;
-        if !(s.has_type(tree) || s.objects.iter().any(is_bush)) {
+        if !(s.has_type(tree) || s.objects.iter().any(|o| is_bush(&o.borrow()))) {
             return Vec::new();
         }
         s.objects
-            .iter()
+            .iter().map(|o| o.borrow())
             .skip(1)
             .filter_map(|o| {
                 let r = ObjectRef {
@@ -294,7 +294,7 @@ impl StatesWorldAdapter<'_> {
                 };
                 match &o.kind {
                     ObjectKind::Tree(t) => Some((r, true, t.size > 4)),
-                    _ if is_bush(o) => Some((r, false, false)),
+                    _ if is_bush(&o) => Some((r, false, false)),
                     _ => None,
                 }
             })
@@ -309,7 +309,7 @@ impl StatesWorldAdapter<'_> {
         let m = &*self.sprites;
         let t = &m.tables;
         for o in &sq.objects {
-            let Some(si) = o.sprite else { continue };
+            let o = o.borrow();            let Some(si) = o.sprite else { continue };
             let sp = &m.sprites[si];
             let p = &sp.properties;
             if p.has(t.flag.WallSE) {

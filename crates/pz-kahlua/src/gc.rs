@@ -1,15 +1,16 @@
 //! Conservative collection through Lua tables, closures, upvalues and reviewed
-//! explicit native/host ownership.
+//! explicit native/host/userdata ownership.
 //!
 //! Each participating allocation is weakly registered. At a host safe point,
 //! the collector counts owning table key/value/metatable slots, closure
 //! environments and shared upvalue slots, closed upvalue values, and the
-//! physical slots of explicitly traceable native captures and host payloads. Every
+//! physical slots of explicitly traceable native captures, host payloads and
+//! registered immutable userdata. Every
 //! remaining strong reference is a root, including Rust handles, interpreter
 //! stacks, coroutine state, prototype constants, opaque native captures and engine
 //! objects. Rooted nodes retain their contents unchanged.
 //!
-//! Coroutines, prototypes, ordinary native captures and engine objects remain opaque.
+//! Coroutines, prototypes, ordinary native captures and unregistered engine objects remain opaque.
 //! Their outgoing references stay external roots, so cycles passing through
 //! them can remain retained. Immutable host-only cycles may also remain retained.
 //! This does not reclaim every old LuaManager or
@@ -31,9 +32,11 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 mod host;
+mod userdata;
 pub use host::{
     register_existing, traceable, RegistrationError, TraceDescriptor, TracePayload, TraceVisitor,
 };
+pub use userdata::{register_userdata, TraceDeferred, UserdataDescriptor};
 
 struct NativeRecord {
     native: Weak<NativeFunction>,
@@ -50,6 +53,9 @@ struct Collector {
     natives: Vec<NativeRecord>,
     hosts: Vec<Box<dyn host::HostWeak>>,
     host_indices: HashMap<NodeId, usize>,
+    host_addresses: HashMap<usize, NodeId>,
+    userdata: Vec<Box<dyn userdata::UserdataWeak>>,
+    userdata_indices: HashMap<usize, usize>,
     active: bool,
     pending: bool,
 }
@@ -123,6 +129,7 @@ impl Collector {
         self.upvalues.retain(|node| node.strong_count() != 0);
         self.natives.retain(|node| node.native.strong_count() != 0);
         self.prune_hosts();
+        self.prune_userdata();
     }
 }
 
@@ -212,6 +219,7 @@ enum NodeId {
     Upvalue(usize),
     Native(usize),
     Host(TypeId, usize),
+    Userdata(usize),
 }
 
 enum Node {
@@ -220,6 +228,7 @@ enum Node {
     Upvalue(UpValueRef),
     Native(Rc<NativeFunction>, Option<NodeId>),
     Host(Box<dyn host::HostPin>),
+    Userdata(Box<dyn userdata::UserdataPin>),
 }
 
 impl Node {
@@ -230,6 +239,7 @@ impl Node {
             Self::Upvalue(node) => NodeId::Upvalue(Rc::as_ptr(node) as usize),
             Self::Native(node, _) => NodeId::Native(Rc::as_ptr(node) as usize),
             Self::Host(node) => node.id(),
+            Self::Userdata(node) => node.id(),
         }
     }
 
@@ -240,6 +250,7 @@ impl Node {
             Self::Upvalue(node) => Rc::strong_count(node),
             Self::Native(node, _) => Rc::strong_count(node),
             Self::Host(node) => node.strong_count(),
+            Self::Userdata(node) => node.strong_count(),
         }
     }
 }
@@ -249,7 +260,10 @@ fn value_node(value: &Value) -> Option<NodeId> {
         Value::Table(node) => Some(NodeId::Table(node.ptr_id())),
         Value::Closure(node) => Some(NodeId::Closure(Rc::as_ptr(node) as usize)),
         Value::Native(node) => Some(NodeId::Native(Rc::as_ptr(node) as usize)),
-        // Coroutine/userdata-owned references are not subtracted.
+        Value::Object(node) => Some(NodeId::Userdata(userdata::address(Rc::as_ptr(node)))),
+        // Unknown userdata addresses miss the registered snapshot and remain
+        // opaque. Never invoke virtual methods or map them to another kind.
+        // Coroutine-owned references are not subtracted.
         _ => None,
     }
 }
@@ -292,6 +306,13 @@ fn collect_registered_nodes() -> Result<CollectionStats, ()> {
                 .iter()
                 .filter_map(|owner| owner.upgrade())
                 .map(Node::Host),
+        );
+        nodes.extend(
+            collector
+                .userdata
+                .iter()
+                .filter_map(|owner| owner.upgrade())
+                .map(Node::Userdata),
         );
         nodes
     });
@@ -360,6 +381,13 @@ fn collect_registered_nodes() -> Result<CollectionStats, ()> {
                     edge(target)?;
                 }
             }
+            Node::Userdata(node) => {
+                let mut visitor = TraceVisitor::default();
+                node.trace(&mut visitor).map_err(|_| ())?;
+                for target in visitor.targets {
+                    edge(target)?;
+                }
+            }
         }
     }
 
@@ -396,7 +424,7 @@ fn collect_registered_nodes() -> Result<CollectionStats, ()> {
                 Node::Table(node) => dead_tables.push(node.try_borrow_mut().map_err(|_| ())?),
                 Node::Upvalue(node) => dead_upvalues.push(node.try_borrow_mut().map_err(|_| ())?),
                 Node::Host(node) => dead_hosts.push(node.borrow()?),
-                Node::Closure(_) | Node::Native(_, _) => {}
+                Node::Closure(_) | Node::Native(_, _) | Node::Userdata(_) => {}
             }
         }
     }

@@ -19,6 +19,7 @@
 
 use crate::chunk::{IsoCell, IsoGridSquare};
 use crate::meta_grid::IsoMetaGrid;
+use crate::object_slot::ObjectSlot;
 use crate::objects::{IsoObject, IsoThumpable, ObjectId, ObjectKind};
 use crate::sprite::IsoSpriteManager;
 use crate::world_state::ObjectHooks;
@@ -262,6 +263,7 @@ impl IsoGridSquare {
     pub fn have_door(&self) -> bool {
         self.objects
             .iter()
+            .map(ObjectSlot::borrow)
             .any(|o| matches!(o.kind, ObjectKind::Door(_)))
     }
 
@@ -352,19 +354,19 @@ impl<'a> CollideEnv<'a> {
             let Some(i) = sq.object_index(id) else {
                 continue;
             };
-            let o = &sq.objects[i];
+            let o = sq.objects[i].borrow();
             match &o.kind {
                 ObjectKind::Thumpable(t) => {
                     let skip = t.is_stairs
-                        || !self.thumpable_is_thumpable(sq, o, t)
-                            && !hooks.object_is_window(o)
+                        || !self.thumpable_is_thumpable(sq, &o, t)
+                            && !hooks.object_is_window(&o)
                             && !t.is_door
                         || t.is_door && t.open
                         || t.block_all_the_square
                         || t.can_pass_through
                             && o.sprite.is_some()
                             && o.container.is_some()
-                            && self.has_prop(o, "IsHigh");
+                            && self.has_prop(&o, "IsHigh");
                     if !skip && north == t.north && !t.is_corner {
                         return Some(o.id);
                     }
@@ -379,7 +381,7 @@ impl<'a> CollideEnv<'a> {
             return None;
         }
         sq.get_window_frame_facing(EdgeFacing::of_north(north))
-            .map(|o| o.id)
+            .map(|o| o.borrow().id)
     }
 
     /// `isAdjacentToWindow() || isAdjacentToHoppable()`.
@@ -397,11 +399,11 @@ impl<'a> CollideEnv<'a> {
             let Some(i) = sq.object_index(id) else {
                 continue;
             };
-            let o = &sq.objects[i];
+            let o = sq.objects[i].borrow();
             let ObjectKind::Thumpable(t) = &o.kind else {
                 continue;
             };
-            if t.is_stairs || !self.thumpable_is_thumpable(sq, o, t) || !t.block_all_the_square {
+            if t.is_stairs || !self.thumpable_is_thumpable(sq, &o, t) || !t.block_all_the_square {
                 continue;
             }
             if o.sprite
@@ -412,7 +414,7 @@ impl<'a> CollideEnv<'a> {
             }
             return Some(o.id);
         }
-        for o in &sq.objects {
+        for o in sq.objects.iter().map(ObjectSlot::borrow) {
             if !o.moved_thumpable {
                 continue;
             }
@@ -656,13 +658,13 @@ impl<'a> CollideEnv<'a> {
             }
             if let Some(sq) = sq {
                 if let Some((osq, id)) = self.test_collide_special_objects(this, Some(sq)) {
-                    let door = osq
-                        .object_index(id)
-                        .is_some_and(|i| match &osq.objects[i].kind {
-                            ObjectKind::Door(_) => true,
-                            ObjectKind::Thumpable(t) => t.is_door,
-                            _ => false,
-                        });
+                    let door =
+                        osq.object_index(id)
+                            .is_some_and(|i| match &osq.objects[i].borrow().kind {
+                                ObjectKind::Door(_) => true,
+                                ObjectKind::Thumpable(t) => t.is_door,
+                                _ => false,
+                            });
                     return CollideAdjacent {
                         blocked: true,
                         special: Some(SpecialCollide {
@@ -691,7 +693,7 @@ impl<'a> CollideEnv<'a> {
         let m = self.sprites;
         sq.get_edge_element(edge, self.cell, &|s: &'a IsoGridSquare, f| {
             s.get_hoppable_or_window_frame_facing(f, m)
-                .map(|o| (s, o.id))
+                .map(|o| (s, o.borrow().id))
         })
     }
 
@@ -699,7 +701,7 @@ impl<'a> CollideEnv<'a> {
     /// square).
     pub fn get_hoppable(&self, sq: &IsoGridSquare, north: bool) -> Option<ObjectId> {
         sq.get_hoppable_or_window_frame_facing(EdgeFacing::of_north(north), self.sprites)
-            .map(|o| o.id)
+            .map(|o| o.borrow().id)
     }
 
     /// `isHoppable(alongEdge)`.
@@ -717,7 +719,7 @@ impl<'a> CollideEnv<'a> {
         let m = self.sprites;
         sq.get_edge_element_to(next, self.cell, &|s: &'a IsoGridSquare, f| {
             s.get_hoppable_or_window_frame_facing(f, m)
-                .map(|o| (s, o.id))
+                .map(|o| (s, o.borrow().id))
         })
     }
 
@@ -743,6 +745,7 @@ impl<'a> CollideEnv<'a> {
         sq.get_edge_element_to(next, self.cell, &|s: &'a IsoGridSquare, f| {
             s.objects
                 .iter()
+                .map(ObjectSlot::borrow)
                 .find(|o| hooks.is_unbent_object(s, o, f))
                 .map(|o| (s, o.id))
         })
@@ -773,10 +776,12 @@ impl<'a> CollideEnv<'a> {
             if let Some(dir) = c.single_edge() {
                 if let Some((hsq, id)) = self.get_hoppable_to(last, adj(dir)) {
                     let i = hsq.object_index(id).unwrap();
-                    let o = &hsq.objects[i];
+                    let o = hsq.objects[i].borrow();
                     let target = match &o.kind {
-                        ObjectKind::Thumpable(t) if !self.thumpable_is_thumpable(hsq, o, t) => true,
-                        _ => hooks.thumpable_for(hsq, o),
+                        ObjectKind::Thumpable(t) if !self.thumpable_is_thumpable(hsq, &o, t) => {
+                            true
+                        }
+                        _ => hooks.thumpable_for(hsq, &o),
                     };
                     if target {
                         out.push(HoppableAction::ThumpTarget(SquareObject::on(hsq, id)));
@@ -845,12 +850,14 @@ impl<'a> CollideEnv<'a> {
                 let bend = self.get_bendable_to(last, adj(dir), hooks);
                 if hooks.bent_fences_enabled() {
                     if let Some((bsq, id)) = bend {
-                        let o = &bsq.objects[bsq.object_index(id).unwrap()];
+                        let o = bsq.objects[bsq.object_index(id).unwrap()].borrow();
                         let target = match &o.kind {
-                            ObjectKind::Thumpable(t) if !self.thumpable_is_thumpable(bsq, o, t) => {
+                            ObjectKind::Thumpable(t)
+                                if !self.thumpable_is_thumpable(bsq, &o, t) =>
+                            {
                                 true
                             }
-                            _ => hooks.thumpable_for(bsq, o),
+                            _ => hooks.thumpable_for(bsq, &o),
                         };
                         if target {
                             out.push(HoppableAction::ThumpTarget(SquareObject::on(bsq, id)));

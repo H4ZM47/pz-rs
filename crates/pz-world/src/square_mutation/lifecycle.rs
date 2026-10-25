@@ -5,6 +5,8 @@
 
 use super::{MutationEnv, ObjectRef};
 use crate::objects::{IsoObject, ObjectKind};
+use crate::{IsoObjectRef, ObjectSlot};
+use std::cell::RefMut;
 
 /// `ObjectAmbientEmitters` logic `IsoObject.addToWorld` attaches
 /// (`chunk.addObjectAmbientEmitter(obj, logic)`).
@@ -138,33 +140,36 @@ pub enum WorldCall {
     MovingObjectRemove,
 }
 
-fn call(env: &mut MutationEnv<'_>, r: ObjectRef, c: WorldCall) {
-    let MutationEnv {
-        cell, world, rand, ..
-    } = env;
-    let Some(o) = cell
-        .get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)
-        .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == r.id))
-    else {
-        return;
-    };
-    world.world_call(r, o, &mut **rand, c);
+/// A Java method receiver remains the same allocation across host calls,
+/// even when callbacks remove or replace its square membership.
+struct Receiver {
+    location: ObjectRef,
+    object: IsoObjectRef,
+}
+impl std::ops::Deref for Receiver {
+    type Target = ObjectRef;
+    fn deref(&self) -> &ObjectRef {
+        &self.location
+    }
+}
+fn receiver(env: &MutationEnv<'_>, r: ObjectRef) -> Option<Receiver> {
+    Some(Receiver {
+        location: r,
+        object: env.object_handle(r)?,
+    })
+}
+fn call(env: &mut MutationEnv<'_>, r: &Receiver, c: WorldCall) {
+    env.world
+        .world_call(r.location, r.object.clone(), &mut *env.rand, c);
+}
+fn with_obj<T>(_env: &MutationEnv<'_>, r: &Receiver, f: impl FnOnce(&IsoObject) -> T) -> Option<T> {
+    Some(f(&r.object.borrow()))
+}
+fn obj_mut<'r>(_env: &mut MutationEnv<'_>, r: &'r Receiver) -> Option<RefMut<'r, IsoObject>> {
+    Some(r.object.borrow_mut())
 }
 
-fn with_obj<T>(env: &MutationEnv<'_>, r: ObjectRef, f: impl FnOnce(&IsoObject) -> T) -> Option<T> {
-    env.cell
-        .get_grid_square(r.pos.0, r.pos.1, r.pos.2)
-        .and_then(|sq| sq.objects.iter().find(|o| o.id == r.id))
-        .map(f)
-}
-
-fn obj_mut<'e>(env: &'e mut MutationEnv<'_>, r: ObjectRef) -> Option<&'e mut IsoObject> {
-    env.cell
-        .get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)
-        .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == r.id))
-}
-
-fn kind_of(env: &MutationEnv<'_>, r: ObjectRef) -> Option<ObjectKind> {
+fn kind_of(env: &MutationEnv<'_>, r: &Receiver) -> Option<ObjectKind> {
     with_obj(env, r, |o| o.kind.clone())
 }
 
@@ -180,30 +185,24 @@ fn fridge_index(o: &IsoObject) -> Option<usize> {
 }
 
 /// `couldBePoweredByGenerator()`.
-fn could_be_powered_by_generator(env: &mut MutationEnv<'_>, r: ObjectRef) -> bool {
+fn could_be_powered_by_generator(env: &mut MutationEnv<'_>, r: &Receiver) -> bool {
     let Some(o) = with_obj(env, r, |o| o.clone()) else {
         return false;
     };
-    if env.world.piped_fuel_amount(r, &o) > 0 {
+    if env.world.piped_fuel_amount(r.location, &o) > 0 {
         return true;
     }
     fridge_index(&o).is_some()
 }
 
 /// `IsoObject.addToWorld()`.
-fn base_add(env: &mut MutationEnv<'_>, r: ObjectRef) {
+fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) {
     call(env, r, WorldCall::RegisterEntity);
     {
         let sprites = &*env.sprites;
-        if let Some(o) = env
-            .cell
-            .get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)
-            .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == r.id))
-        {
-            // A malformed `ContainerCapacity` throws upstream; the
-            // container is then left as far as it was built.
-            let _ = crate::cell_loader::create_containers_from_sprite_properties(sprites, o);
-        }
+        let mut o = r.object.borrow_mut();
+        // Malformed properties preserve the partially built container.
+        let _ = crate::cell_loader::create_containers_from_sprite_properties(sprites, &mut o);
     }
     let n = with_obj(env, r, |o| o.container_count()).unwrap_or(0);
     for i in 0..n {
@@ -234,10 +233,11 @@ fn base_add(env: &mut MutationEnv<'_>, r: ObjectRef) {
             && (s.tile_sheet_index == 0 || s.tile_sheet_index == 3)
     });
     let ambient = spr.is_some_and(|s| env.sprites.has_prop(s, "AmbientSound"));
-    let fridge_powered = fridge_index(&o).is_some_and(|i| env.world.container_powered(r, &o, i));
+    let fridge_powered =
+        fridge_index(&o).is_some_and(|i| env.world.container_powered(r.location, &o, i));
     let emitter = if fridge_powered {
         Some((AmbientEmitterKind::FridgeHum, true))
-    } else if piped && env.world.fluid_amount(r, &o) > 0.0 && env.rand.next(15) == 0 {
+    } else if piped && env.world.fluid_amount(r.location, &o) > 0.0 && env.rand.next(15) == 0 {
         Some((AmbientEmitterKind::WaterDrip, false))
     } else if tent {
         Some((AmbientEmitterKind::TentAmbiance, false))
@@ -265,7 +265,7 @@ fn base_add(env: &mut MutationEnv<'_>, r: ObjectRef) {
 }
 
 /// `obj.addToWorld()` for the object's class.
-pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
+fn add_to_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
     let Some(kind) = kind_of(env, r) else {
         return;
     };
@@ -333,7 +333,7 @@ pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
         }
         K::LightSwitch(_) => {
             let (light_room, lights, can_be_modified) = {
-                let Some(o) = obj_mut(env, r) else {
+                let Some(mut o) = obj_mut(env, r) else {
                     return;
                 };
                 let ObjectKind::LightSwitch(s) = &mut o.kind else {
@@ -404,7 +404,7 @@ pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
 }
 
 /// `IsoObject.removeFromWorld()`.
-fn base_remove(env: &mut MutationEnv<'_>, r: ObjectRef) {
+fn base_remove(env: &mut MutationEnv<'_>, r: &Receiver) {
     call(env, r, WorldCall::UnregisterEntity);
     call(env, r, WorldCall::ProcessIsoObjectRemove);
     call(env, r, WorldCall::StaticUpdater { add: false });
@@ -433,7 +433,7 @@ fn base_remove(env: &mut MutationEnv<'_>, r: ObjectRef) {
 }
 
 /// `obj.removeFromWorld()` for the object's class.
-pub(super) fn remove_from_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
+fn remove_from_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
     let Some(kind) = kind_of(env, r) else {
         return;
     };
@@ -491,7 +491,10 @@ pub(super) fn remove_from_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
             .unwrap_or((true, 0));
             if !light_room && lights > 0 {
                 for i in 0..lights {
-                    if let Some(ObjectKind::LightSwitch(s)) = obj_mut(env, r).map(|o| &mut o.kind) {
+                    if let Some(mut o) = obj_mut(env, r) {
+                        let ObjectKind::LightSwitch(s) = &mut o.kind else {
+                            unreachable!()
+                        };
                         s.lights[i].active = false;
                     }
                     call(
@@ -503,7 +506,10 @@ pub(super) fn remove_from_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
                         },
                     );
                 }
-                if let Some(ObjectKind::LightSwitch(s)) = obj_mut(env, r).map(|o| &mut o.kind) {
+                if let Some(mut o) = obj_mut(env, r) {
+                    let ObjectKind::LightSwitch(s) = &mut o.kind else {
+                        unreachable!()
+                    };
                     s.lights.clear();
                 }
             }
@@ -549,104 +555,88 @@ pub(super) fn remove_from_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
     }
 }
 
-/// `obj.removeFromSquare()`: out of `objects` and `specialObjects` (and
-/// `worldObjects` for a world item). Returns the object.
-pub(super) fn remove_from_square(env: &mut MutationEnv<'_>, r: ObjectRef) -> Option<IsoObject> {
-    let world_item = with_obj(env, r, |o| {
+pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
+    if let Some(r) = receiver(env, r) {
+        add_to_world_on(env, &r);
+    }
+}
+pub(super) fn remove_from_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
+    if let Some(r) = receiver(env, r) {
+        remove_from_world_on(env, &r);
+    }
+}
+pub(super) fn remove_from_world_handle(
+    env: &mut MutationEnv<'_>,
+    r: ObjectRef,
+    object: &IsoObjectRef,
+) {
+    remove_from_world_on(
+        env,
+        &Receiver {
+            location: r,
+            object: object.clone(),
+        },
+    );
+}
+
+/// Remove only this actual receiver; a same-ID replacement is a different object.
+pub(super) fn remove_from_square_handle(
+    env: &mut MutationEnv<'_>,
+    r: ObjectRef,
+    object: &IsoObjectRef,
+) -> Option<ObjectSlot> {
+    let world_item = {
+        let o = object.borrow();
         (
             matches!(o.kind, ObjectKind::WorldInventory(_)),
             o.has_components,
         )
-    });
-    if let Some((true, has_components)) = world_item {
-        if has_components {
-            call(env, r, WorldCall::WorldItemTransferFluid);
-        }
+    };
+    if world_item == (true, true) {
+        call(
+            env,
+            &Receiver {
+                location: r,
+                object: object.clone(),
+            },
+            WorldCall::WorldItemTransferFluid,
+        );
     }
     let sq = env.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)?;
-    if matches!(world_item, Some((true, _))) {
+    if world_item.0 {
         if let Some(i) = sq.world_objects.iter().position(|&w| w == r.id) {
             sq.world_objects.remove(i);
         }
     }
-    let removed = sq.object_index(r.id).map(|i| sq.objects.remove(i));
+    let removed = sq
+        .objects
+        .iter()
+        .position(|o| o.ptr_eq_ref(object))
+        .map(|i| sq.remove_object_slot(i));
     if let Some(i) = sq.special_objects.iter().position(|&s| s == r.id) {
         sq.special_objects.remove(i);
     }
     removed
 }
-
-/// The `removeFromWorld` entry points the fire code uses (`BurnWalls`
-/// replacing an object, `IsoFire.removeFromWorld` and the feeding
-/// trough's `handleBurning`).
 impl MutationEnv<'_> {
-    /// `obj.removeFromWorld()` of `r`, which is on its square, for its
-    /// class.
     pub(crate) fn object_remove_from_world(&mut self, r: ObjectRef) {
         remove_from_world(self, r);
     }
-
-    /// `obj.removeFromWorld()` for the object's class, for `obj` (id
-    /// `r.id`) taken off square `r.pos` by `removeFromSquare`, which leaves
-    /// its `square` set: the class code runs as for an object still there.
-    /// It reaches the object only by reference, never by scanning the
-    /// square, so `obj` is put back at the end of `objects` for the call
-    /// and taken off again, with what the call changed on it.
-    pub(crate) fn object_remove_from_world_detached(&mut self, r: ObjectRef, obj: &mut IsoObject) {
-        let Some(sq) = self.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2) else {
-            return;
-        };
-        debug_assert!(sq.object_index(r.id).is_none());
-        sq.objects.push(obj.clone());
-        remove_from_world(self, r);
-        if let Some(sq) = self.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2) {
-            if let Some(i) = sq.object_index(r.id) {
-                *obj = sq.objects.remove(i);
-            }
-        }
+    /// A detached Java receiver is reachable by reference, never reinserted
+    /// into square lists merely to execute its method.
+    pub(crate) fn object_remove_from_world_detached(&mut self, r: ObjectRef, obj: &IsoObjectRef) {
+        remove_from_world_handle(self, r, obj);
     }
-
-    /// `IsoObject.removeFromWorld()` (the base class part) of `r`, which is
-    /// on its square.
-    pub(crate) fn base_remove_from_world(&mut self, r: ObjectRef) {
-        base_remove(self, r);
+    pub(crate) fn world_call_on(&mut self, r: ObjectRef, obj: &IsoObjectRef, c: WorldCall) {
+        self.world.world_call(r, obj.clone(), &mut *self.rand, c);
     }
-
-    /// One [`WorldCall`] for `obj`, which need not be on a square any
-    /// more (`r` is where it was).
-    pub(crate) fn world_call_on(&mut self, r: ObjectRef, obj: &mut IsoObject, c: WorldCall) {
-        let MutationEnv { world, rand, .. } = self;
-        world.world_call(r, obj, &mut **rand, c);
-    }
-
-    /// `IsoObject.removeFromWorld()` (the base class part) of `obj`, which
-    /// already left square `r.pos` (`IsoFire.extinctFire` takes the fire
-    /// off the square before `removeFromWorld`).
-    pub(crate) fn base_remove_from_world_detached(&mut self, r: ObjectRef, obj: &mut IsoObject) {
-        self.world_call_on(r, obj, WorldCall::UnregisterEntity);
-        self.world_call_on(r, obj, WorldCall::ProcessIsoObjectRemove);
-        self.world_call_on(r, obj, WorldCall::StaticUpdater { add: false });
-        for i in 0..obj.container_count() {
-            self.world_call_on(
-                r,
-                obj,
-                WorldCall::ProcessItems {
-                    container: i,
-                    add: false,
-                },
-            );
-        }
-        self.world_call_on(r, obj, WorldCall::StopEmitter);
-        self.world_call_on(r, obj, WorldCall::RemoveAmbientEmitters);
-        self.world_call_on(r, obj, WorldCall::LightSource { add: false });
-        self.world_call_on(r, obj, WorldCall::ClearOnOverlay);
-        if self.render.fbo_render_chunk() {
-            self.world_call_on(r, obj, WorldCall::UnregisterHighlight);
-        }
-        let powered = self.world.piped_fuel_amount(r, obj) > 0 || fridge_index(obj).is_some();
-        if powered {
-            self.world_call_on(r, obj, WorldCall::PoweredByGenerator { add: false });
-        }
-        self.world_call_on(r, obj, WorldCall::FlagForHotSave);
+    pub(crate) fn base_remove_from_world_detached(&mut self, r: ObjectRef, obj: &IsoObjectRef) {
+        base_remove(
+            self,
+            &Receiver {
+                location: r,
+                object: obj.clone(),
+            },
+        );
     }
 }

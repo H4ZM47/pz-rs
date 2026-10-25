@@ -7,7 +7,9 @@
 //! [`WorldState`] answers them over an [`IsoCell`]; sandbox options and the
 //! world's power state are runtime input ([`PowerSettings`]).
 
+use crate::object_slot::ObjectSlot;
 use pz_inventory::item::InventoryItem;
+use std::cell::Ref;
 
 use crate::chunk::{IsoCell, IsoGridSquare};
 use crate::meta_grid::IsoMetaGrid;
@@ -105,14 +107,16 @@ impl IsoThumpable {
 pub fn get_barricade_on_square(
     sq: Option<&IsoGridSquare>,
     dir: IsoDirections,
-) -> Option<&IsoBarricade> {
+) -> Option<Ref<'_, IsoBarricade>> {
     let sq = sq?;
     sq.special_objects.iter().find_map(|&id| {
-        let o = &sq.objects[sq.object_index(id)?];
-        match &o.kind {
-            ObjectKind::Barricade(b) if b.forward_dir() == dir => Some(b),
-            _ => None,
-        }
+        Ref::filter_map(sq.objects[sq.object_index(id)?].borrow(), |o| {
+            match &o.kind {
+                ObjectKind::Barricade(b) if b.forward_dir() == dir => Some(b),
+                _ => None,
+            }
+        })
+        .ok()
     })
 }
 
@@ -277,7 +281,7 @@ impl<'a> ObjectHooks<'a> {
         &self,
         sq: &'s IsoGridSquare,
         north: bool,
-    ) -> (Option<&'s IsoBarricade>, Option<&'a IsoBarricade>) {
+    ) -> (Option<Ref<'s, IsoBarricade>>, Option<Ref<'a, IsoBarricade>>) {
         let (same, opposite) = if north {
             (IsoDirections::N, IsoDirections::S)
         } else {
@@ -301,13 +305,16 @@ impl<'a> ObjectHooks<'a> {
     /// `IsoGridSquare.hasBlockedDoor(facing)` restricted to `IsoThumpable`:
     /// a thumpable in `objects` with `isBlockedDoor(facing)`.
     pub fn thumpable_door_blocked(&self, sq: &IsoGridSquare, facing: EdgeFacing) -> bool {
-        sq.objects.iter().any(|o| match &o.kind {
-            ObjectKind::Thumpable(t) => {
-                EdgeFacing::of_north(t.north) == facing
-                    && t.is_blocked_door(self.object_barricaded(sq, o))
-            }
-            _ => false,
-        })
+        sq.objects
+            .iter()
+            .map(ObjectSlot::borrow)
+            .any(|o| match &o.kind {
+                ObjectKind::Thumpable(t) => {
+                    EdgeFacing::of_north(t.north) == facing
+                        && t.is_blocked_door(self.object_barricaded(sq, &o))
+                }
+                _ => false,
+            })
     }
 
     /// `IsoThumpable.isWindow()` (`IsoObject.isWindow`): the sprite has
@@ -438,7 +445,7 @@ impl<'a> WorldState<'a> {
         &self,
         sq: &'s IsoGridSquare,
         north: bool,
-    ) -> (Option<&'s IsoBarricade>, Option<&'a IsoBarricade>) {
+    ) -> (Option<Ref<'s, IsoBarricade>>, Option<Ref<'a, IsoBarricade>>) {
         self.objects().barricades_for(sq, north)
     }
 
@@ -575,12 +582,15 @@ impl<'a> WorldState<'a> {
         x: i32,
         y: i32,
         z: i32,
-    ) -> Option<(&'a IsoGridSquare, &'a IsoLightSwitch)> {
+    ) -> Option<(&'a IsoGridSquare, Ref<'a, IsoLightSwitch>)> {
         let sq = self.square(x, y, z)?;
         let switches = || {
-            sq.objects.iter().filter_map(|o| match &o.kind {
-                ObjectKind::LightSwitch(s) => Some(s),
-                _ => None,
+            sq.objects.iter().filter_map(|o| {
+                Ref::filter_map(o.borrow(), |o| match &o.kind {
+                    ObjectKind::LightSwitch(s) => Some(s),
+                    _ => None,
+                })
+                .ok()
             })
         };
         let sw = switches()
@@ -596,7 +606,7 @@ impl<'a> WorldState<'a> {
         let Some((sq, sw)) = self.lamp_switch(x, y, z) else {
             return false;
         };
-        let mut has_power = self.can_switch_light(sq, sw);
+        let mut has_power = self.can_switch_light(sq, &sw);
         if sw.street_light && !self.has_grid_power(sq) {
             has_power = false;
         }

@@ -14,6 +14,7 @@
 //! `items.txt` and `summary.txt`. Writes `rust_hooks.txt` there and prints
 //! line counts by kind.
 
+use pz_world::ObjectSlot;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -278,7 +279,7 @@ fn main() {
                     if elec || bl.contains('D') || bl.contains('W') {
                         writeln!(out, "sq {at} elec={} blocked={bl}", elec as u8).unwrap();
                     }
-                    if sq.objects.iter().any(|o| {
+                    if sq.objects.iter().map(ObjectSlot::borrow).any(|o| {
                         matches!(
                             o.kind,
                             ObjectKind::Door(_)
@@ -291,7 +292,7 @@ fn main() {
                     }) {
                         vision_line(&mut out, &at, sq, &env, &sprites, &cell, &ws);
                     }
-                    for (oi, o) in sq.objects.iter().enumerate() {
+                    for (oi, o) in sq.objects.iter().map(ObjectSlot::borrow).enumerate() {
                         let p = format!(" {at} {oi}");
                         match &o.kind {
                             ObjectKind::Barricade(b) => writeln!(
@@ -319,13 +320,13 @@ fn main() {
                                     "{kind}{p} north={} open={} barricaded={} same={} opp={}",
                                     north as u8,
                                     open as u8,
-                                    ws.object_barricaded(sq, o) as u8,
-                                    bar(same),
-                                    bar(opp)
+                                    ws.object_barricaded(sq, &o) as u8,
+                                    bar(same.as_deref()),
+                                    bar(opp.as_deref())
                                 )
                                 .unwrap();
                                 if let ObjectKind::Door(d) = &o.kind {
-                                    let c = ws.door_curtain(o);
+                                    let c = ws.door_curtain(&o);
                                     write!(
                                         out,
                                         " curtain={} copen={}",
@@ -335,7 +336,7 @@ fn main() {
                                     .unwrap();
                                 }
                                 if let ObjectKind::Thumpable(t) = &o.kind {
-                                    let barr = ws.object_barricaded(sq, o);
+                                    let barr = ws.object_barricaded(sq, &o);
                                     let blocked = |f: EdgeFacing| {
                                         (EdgeFacing::of_north(t.north) == f && t.is_blocked_door(barr))
                                             as u8
@@ -344,7 +345,7 @@ fn main() {
                                         out,
                                         " isDoor={} isWindow={} pass={} blockedNS={} blockedEW={} hp={}/{} frame={} canBar={} light={}",
                                         t.is_door as u8,
-                                        ws.object_is_window(o) as u8,
+                                        ws.object_is_window(&o) as u8,
                                         t.can_pass_through as u8,
                                         blocked(EdgeFacing::NorthSouth),
                                         blocked(EdgeFacing::EastWest),

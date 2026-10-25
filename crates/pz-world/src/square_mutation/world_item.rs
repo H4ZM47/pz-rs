@@ -9,6 +9,7 @@
 //! to its rotations and the fluid container moving to the object. Single player: the
 //! server's `transmitCompleteItemToClients` is not made.
 
+use crate::object_slot::ObjectSlot;
 use pz_inventory::floor_drop::FloorWorld;
 use pz_inventory::shared::{self, ItemRef};
 use pz_inventory::{InventoryItem, ItemClass};
@@ -86,14 +87,19 @@ impl IsoGridSquare {
     ) -> f32 {
         let mut total = 0.0f32;
         for id in &self.world_objects {
-            let Some(o) = self.objects.iter().find(|o| o.id == *id) else {
+            let Some(o) = self
+                .objects
+                .iter()
+                .map(ObjectSlot::borrow)
+                .find(|o| o.id == *id)
+            else {
                 continue;
             };
             if let ObjectKind::WorldInventory(w) = &o.kind {
                 let w = w.borrow();
                 let item = w.item.borrow_item();
                 if let Some(i) = item {
-                    total += weight(o, &i);
+                    total += weight(&o, &i);
                 }
             }
         }
@@ -279,16 +285,18 @@ impl MutationEnv<'_> {
         let sq = self.sq_mut(pos).unwrap();
         obj.id = sq.new_object_id();
         let id = obj.id;
-        sq.objects.push(obj);
+        sq.objects.push((ObjectSlot::new(obj)).into());
         sq.world_objects.push(id);
         let r = ObjectRef { pos, id };
         super::lifecycle::add_to_world(self, r);
         {
             let MutationEnv { cell, world, .. } = self;
-            if let Some(o) = cell
-                .get_grid_square(pos.0, pos.1, pos.2)
-                .and_then(|sq| sq.objects.iter().find(|o| o.id == id))
-            {
+            if let Some(o) = cell.get_grid_square(pos.0, pos.1, pos.2).and_then(|sq| {
+                sq.objects
+                    .iter()
+                    .find(|o| o.borrow().id == id)
+                    .map(ObjectSlot::ref_handle)
+            }) {
                 world.designation_zone_item_on_ground(r, o);
             }
         }

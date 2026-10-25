@@ -83,11 +83,11 @@ fn put(cell: &mut IsoCell, m: &IsoSpriteManager, x: i32, y: i32, z: i32, names: 
     let mut sq = IsoGridSquare::new(x, y, z);
     for n in names {
         let id = sq.new_object_id();
-        sq.objects.push(IsoObject::new(
+        sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
             id,
             ObjectKind::Object,
             Some(m.named_map[*n]),
-        ));
+        )));
     }
     cell.chunks
         .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
@@ -312,11 +312,11 @@ fn lamp_lights_its_surroundings_at_night() {
         lights: vec![light],
         ..Default::default()
     };
-    sq.objects.push(IsoObject::new(
+    sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
         id,
         ObjectKind::LightSwitch(switch),
         Some(m.named_map["lamp"]),
-    ));
+    )));
     sq.special_objects.push(id);
     cell.recalc_all_with_neighbours(15, 15, 0, &meta, &m);
     let view = WorldView {
@@ -372,7 +372,7 @@ fn add_special(
     let sq = cell.get_grid_square_mut(at.0, at.1, 0).unwrap();
     let id = sq.new_object_id();
     sq.objects
-        .push(IsoObject::new(id, k, Some(m.named_map[sprite])));
+        .push(pz_world::ObjectSlot::new(IsoObject::new(id, k, Some(m.named_map[sprite]))));
     sq.special_objects.push(id);
 }
 

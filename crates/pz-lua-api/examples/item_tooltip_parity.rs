@@ -455,6 +455,7 @@ fn main() -> Result<(), String> {
         let mut items: Vec<InventoryItem> = Vec::new();
         for sq in ch.squares() {
             for o in &sq.objects {
+                let o = o.borrow();
                 match &o.kind {
                     ObjectKind::Mannequin(Some(m)) => {
                         for c in m.container.iter() {

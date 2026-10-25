@@ -14,6 +14,7 @@
 //! the meta grid is built. The tables files are read from the installed game
 //! and are not part of this repository.
 
+use pz_world::ObjectSlot;
 use std::fmt::Write as _;
 
 use pz_fs::GameFs;
@@ -283,9 +284,9 @@ fn main() {
                     bid(sq.roof_hide_building)
                 )
                 .unwrap();
-                for o in &sq.objects {
+                for o in sq.objects.iter().map(ObjectSlot::borrow) {
                     *counts.entry(o.kind.class_name()).or_default() += 1;
-                    writeln!(out, "{}", object_line(&sprites, o)).unwrap();
+                    writeln!(out, "{}", object_line(&sprites, &o)).unwrap();
                 }
             }
         }

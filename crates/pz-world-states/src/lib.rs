@@ -57,6 +57,7 @@ use pz_pathfind::mover::{CharacterView, MoverId, ObjectRef};
 use pz_world::java::{fastfloor, GameRand};
 use pz_world::los::{self, TestResults};
 use pz_world::objects::IsoObject;
+use pz_world::object_slot::IsoObjectRef;
 use pz_world::square::{EdgeFacing, HoppableAction};
 use pz_world::{
     BuildingIdx, IsoCell, IsoDirections, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, VisionEnv,
@@ -260,7 +261,7 @@ pub trait StatesEngine {
     }
     /// `BrokenFences.getInstance().addItems(obj, square)` (the debris items
     /// of a removed fence piece; draws `Rand`).
-    fn broken_fence_items(&mut self, _sq: (i32, i32, i32), _obj: &IsoObject) {}
+    fn broken_fence_items(&mut self, _sq: (i32, i32, i32), _obj: &IsoObjectRef) {}
     /// `BentFences.collapse`'s characters: the zombies in `trip` that are
     /// not behind `fence` fall on their front (`setOnFloor`,
     /// `setFallOnFront`, hit reaction `Floor`); in `crush`, zombies fall
@@ -334,10 +335,10 @@ pub trait StatesEngine {
     }
     /// `dumpContentsInSquare()` / the containers' items dropped on the
     /// square, for `obj` just before it is removed.
-    fn dump_contents(&mut self, _sq: (i32, i32, i32), _obj: &IsoObject) {}
+    fn dump_contents(&mut self, _sq: (i32, i32, i32), _obj: &IsoObjectRef) {}
     /// `obj` left `sq` (`OnObjectAboutToBeRemoved` / `OnTileRemoved`, and
     /// `OnDestroyIsoThumpable` for destroyed thumpables when `destroyed`).
-    fn object_removed(&mut self, _sq: (i32, i32, i32), _obj: &IsoObject, _destroyed: bool) {}
+    fn object_removed(&mut self, _sq: (i32, i32, i32), _obj: &IsoObjectRef, _destroyed: bool) {}
     /// `LuaEventManager.triggerEvent("OnContainerUpdate")`.
     fn on_container_update(&mut self) {}
     /// `building.forceAwake()`.
@@ -807,7 +808,7 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             .map(|s| {
                 s.objects
                     .iter()
-                    .filter_map(|o| env.sprite_name(o))
+                    .filter_map(|o| env.sprite_name(&o.borrow()))
                     .map(str::to_string)
                     .collect()
             })
@@ -1035,7 +1036,7 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
             env.at(sq).is_some_and(|s| {
                 s.has_type(self.sprites.tables.ty.tree)
                     || s.objects.iter().any(|o| {
-                        o.sprite.is_some_and(|i| {
+                        o.borrow().sprite.is_some_and(|i| {
                             let spr = &self.sprites.sprites[i];
                             spr.tileset_name.as_deref() == Some("f_bushes_1")
                                 || spr.properties.get(&self.sprites.alias, "Bush").is_some()

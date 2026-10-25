@@ -180,6 +180,7 @@ fn main() {
                             cell.get_grid_square(sx + dx, sy + dy, z).is_some_and(|s| {
                                 !s.special_objects.is_empty()
                                     || s.objects.iter().any(|o| {
+                                        let o = o.borrow();
                                         o.moved_thumpable
                                             || matches!(o.kind, ObjectKind::WindowFrame { .. })
                                             || o.is_hoppable(&sprites)
@@ -267,6 +268,7 @@ fn main() {
                     }
                     out.push_str(" o ");
                     for o in &sq.objects {
+                        let o = o.borrow();
                         write!(
                             out,
                             "{}{}.",

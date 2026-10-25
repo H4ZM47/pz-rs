@@ -17,6 +17,7 @@
 //! session loading the files written (`d3`). Writes `rust_d*.txt` to
 //! `<out dir>` and prints, per dump, whether it equals the oracle's.
 
+use pz_world::ObjectSlot;
 use std::path::Path;
 
 use pz_inventory::dictionary::WorldDictionary;
@@ -118,7 +119,7 @@ fn main() {
     if let Ok(q) = std::env::var("SHOW_SQUARE") {
         let v: Vec<i32> = q.split(',').map(|x| x.parse().unwrap()).collect();
         if let Some(sq) = cell.get_grid_square(v[0], v[1], v[2]) {
-            for o in &sq.objects {
+            for o in sq.objects.iter().map(ObjectSlot::borrow) {
                 let sp = o.sprite.map(|s| &sprites.sprites[s]);
                 let f = &sprites.tables.flag;
                 eprintln!(

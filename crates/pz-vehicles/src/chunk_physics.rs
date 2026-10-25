@@ -64,7 +64,7 @@ pub fn calc_physics(
     if z == 0 {
         let mut column = false;
         for o in &sq.objects {
-            let spr = o.sprite.map(|i| &m.sprites[i]);
+            let o = o.borrow();            let spr = o.sprite.map(|i| &m.sprites[i]);
             let has_shape = spr.is_some_and(|s| m.has_prop(s, "PhysicsShape"));
             let Some(s) = spr else { continue };
             if has_shape {
@@ -94,8 +94,8 @@ pub fn calc_physics(
     let solid_thumpable = sq.special_objects.iter().any(|id| {
         sq.objects
             .iter()
-            .find(|o| o.id == *id)
-            .is_some_and(|o| matches!(&o.kind, ObjectKind::Thumpable(t) if t.block_all_the_square))
+            .find(|o| o.borrow().id == *id)
+            .is_some_and(|o| matches!(&o.borrow().kind, ObjectKind::Thumpable(t) if t.block_all_the_square))
     });
     let stairs = sq.has_stairs(m);
     if stairs {

@@ -365,6 +365,9 @@ impl App {
         }
         // Core.DoFrameReady -> Core.updateKeyboard: focused text entry.
         pz_lua_api::bind_uitextbox2::update_keyboard(&mut lua.thread);
+        // Whole-object owners can carry opaque Lua parents. End every
+        // callback and world/sprite borrow before releasing retired slots.
+        crate::iso_world::drain_retired_world_objects();
         // Requests from Lua are drained after the frame's callbacks and
         // table borrows have returned to the host.
         let _ = pz_kahlua::gc::collect_pending();

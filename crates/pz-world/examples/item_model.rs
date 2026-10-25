@@ -14,6 +14,7 @@
 //! `String.hashCode()`, and chunk loads from one seeded with
 //! `(wx << 32) ^ wy`, as the harness seeds the game's `Rand`.
 
+use pz_world::ObjectSlot;
 use std::fmt::Write as _;
 use std::path::Path;
 use std::rc::Rc;
@@ -331,7 +332,7 @@ fn main() {
         };
         let mut items: Vec<InventoryItem> = Vec::new();
         for sq in ch.squares() {
-            for o in &sq.objects {
+            for o in sq.objects.iter().map(ObjectSlot::borrow) {
                 match &o.kind {
                     ObjectKind::Mannequin(Some(m)) => {
                         for c in m.container.iter() {

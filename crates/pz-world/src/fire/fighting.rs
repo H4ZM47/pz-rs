@@ -6,6 +6,7 @@
 //! implements.
 
 use crate::chunk::IsoCell;
+use crate::object_slot::ObjectSlot;
 use crate::objects::ObjectKind;
 use crate::sprite::IsoFlagType;
 
@@ -121,6 +122,7 @@ pub fn is_square_to_extinguish(
         && sq
             .objects
             .iter()
+            .map(ObjectSlot::borrow)
             .any(|o| matches!(&o.kind, ObjectKind::Fire(f) if !f.perm))
     {
         return true;

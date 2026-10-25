@@ -3,33 +3,36 @@
 
 use pz_world::chunk::IsoGridSquare;
 use pz_world::objects::IsoObject;
+use pz_world::object_slot::IsoObjectRef;
+use std::cell::Ref;
 use pz_world::GetSquare;
 
 use super::MainThreadMap;
 use crate::mover::ObjectRef;
 
-fn obj_ref((sq, o): (&IsoGridSquare, &IsoObject)) -> ObjectRef {
+fn obj_ref((sq, o): (&IsoGridSquare, IsoObjectRef)) -> ObjectRef {
     ObjectRef {
         x: sq.x,
         y: sq.y,
         z: sq.z,
-        id: o.id,
+        id: o.borrow().id,
     }
 }
 
 impl<'w, 'a: 'w, G: GetSquare> MainThreadMap<'w, 'a, G> {
     /// The object an [`ObjectRef`] names.
-    pub fn object(&self, r: ObjectRef) -> Option<&'a IsoObject> {
+    pub fn object(&self, r: ObjectRef) -> Option<Ref<'a, IsoObject>> {
         self.square(r.x, r.y, r.z)?
             .objects
             .iter()
-            .find(|o| o.id == r.id)
+            .find(|o| o.borrow().id == r.id)
+            .map(|o| o.borrow())
     }
 
     /// `BarricadeAble.isBarricaded()` of the object.
     pub fn is_barricaded(&self, r: ObjectRef) -> bool {
         match (self.square(r.x, r.y, r.z), self.object(r)) {
-            (Some(sq), Some(o)) => self.hooks.object_barricaded(sq, o),
+            (Some(sq), Some(o)) => self.hooks.object_barricaded(sq, &o),
             _ => false,
         }
     }

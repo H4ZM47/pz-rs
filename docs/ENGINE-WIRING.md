@@ -36,8 +36,13 @@ and Loader caches participate through explicit strong native-capture owners.
 Reviewed descriptors can also weakly register an existing backing allocation
 without wrapping or copying its live owner. Duplicate registration shares the
 same physical allocation record; conflicting descriptions are rejected. This
-provides a tracing prerequisite for runtime owners from other crates. Floor-item
-backlinks and Lua userdata do not participate through this protocol yet.
+provides a tracing prerequisite for runtime owners from other crates. A separate
+trace-only descriptor can register the actual typed userdata allocation before
+type erasure. Object recognition reads only its pointer; it never invokes
+userdata methods during collection. Incomplete registration stays conservative,
+and an unavailable interior borrow defers the whole pass. VM allocation shapes
+are reserved, and one allocation cannot also register as a host owner. Production
+engine userdata and floor-item backlinks are not connected to this protocol yet.
 Other native captures, coroutines, prototypes and engine-owned references
 remain opaque roots; character/action cycles and some old LuaManager
 environments can remain retained. Heap
@@ -104,17 +109,26 @@ The global `getCell()` entry now returns that same live cell. Square
 the live nullable sprite-exclusion list. Decoded floor items now become shared
 runtime items once, and placement retains the supplied item. Saving reads that
 same owner, including later nested bag mutations; explicit archive copies keep
-their independent value semantics. The floor subclass payload has its own stable
-allocation: explicit handles retain its item, offsets and drop flags across
-removal and chunk moves, while archive copies get independent payloads and items.
-The enclosing base object, its fluid components and square remain separate
-ownership work. Raw undecodable records keep their bytes.
+their independent value semantics. Squares now store stable allocations for the
+entire object, including its base fields and components. Runtime handles retain
+that allocation across removal and chunk moves; explicit archive copies remain
+independent. Lifecycle and removal hooks receive the actual object between
+released object borrows. Membership checks after callbacks use pointer identity,
+so a replacement with the same numeric ID cannot take over the original receiver.
+Raw undecodable records keep their bytes.
 The streamer retains removed chunk payloads until both world and sprite-manager
 borrows have ended, including queued-save errors and shutdown. Failed unload
 callbacks retain the removed payload without publishing a partial pending save.
-World-object lists, stable object/body handles, reciprocal world-item links and
-non-floor containers still need their runtime owner bridge. Getter-time copies
+Direct object removals and replaced squares also retain their discarded owners
+until the outer frame or streaming boundary releases world and sprite borrows.
+This is host cleanup bookkeeping and does not implement the original square
+reset/reuse lifecycle. Lua world-object lists, stable square/body handles,
+reciprocal world-item links and non-floor containers still need their runtime
+owner bridge. Getter-time copies
 or empty arrays would not implement the original inventory behavior.
+Fire operations now pin their actual object receivers, but the manager's
+locator registry and stepped simulation copies still need a complete owner
+migration and callback timing comparison.
 `isOutside` reads the same stored exterior property as existing square logic,
 without recalculating it from room or roof state. Existing coordinate-based
 square handles still lack the original retained-square lifetime across reload.

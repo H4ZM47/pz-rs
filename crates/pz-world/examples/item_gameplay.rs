@@ -11,6 +11,7 @@
 //! improvised=.. standard=.. raining=.. rain=..`) carries the game state the
 //! harness read, so both sides evaluate under the same values.
 
+use pz_world::ObjectSlot;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -588,7 +589,7 @@ fn main() {
         };
         let mut items: Vec<InventoryItem> = Vec::new();
         for sq in ch.squares() {
-            for o in &sq.objects {
+            for o in sq.objects.iter().map(ObjectSlot::borrow) {
                 match &o.kind {
                     ObjectKind::Mannequin(Some(m)) => {
                         for c in m.container.iter() {

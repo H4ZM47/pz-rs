@@ -1,5 +1,6 @@
 //! Loads a small hand-built map directory (authored test data, not game data).
 
+use pz_world::ObjectSlot;
 use std::path::Path;
 
 use pz_fs::GameFs;
@@ -134,7 +135,8 @@ fn loads_header_rooms_and_chunk() {
     let names: Vec<_> = sq
         .objects
         .iter()
-        .map(|o| o.tile.as_deref().unwrap())
+        .map(ObjectSlot::borrow)
+        .map(|o| o.tile.as_deref().unwrap().to_owned())
         .collect();
     assert_eq!(names, vec!["floor_a", "wall_b"]);
     // The room's rect starts at (3,4) in the cell; squares one tile north

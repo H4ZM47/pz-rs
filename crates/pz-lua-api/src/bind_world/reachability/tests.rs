@@ -79,7 +79,7 @@ impl Fixture {
                 .unwrap()
                 .get_grid_square_mut(1, 2, 0)
                 .unwrap();
-            square.objects = vec![IsoObject::new(1, object, sprite)];
+            square.objects = vec![pz_world::ObjectSlot::new(IsoObject::new(1, object, sprite))];
             square.special_objects = vec![1];
             square.recalc_properties(&self.sprites.borrow());
         });
@@ -195,7 +195,7 @@ fn reachability_uses_live_doors_windows_thumpables_and_barricades() {
             .unwrap()
             .get_grid_square_mut(1, 2, 0)
             .unwrap();
-        square.objects.push(IsoObject::new(
+        square.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
             2,
             ObjectKind::Barricade(IsoBarricade {
                 dir: 0,
@@ -204,7 +204,7 @@ fn reachability_uses_live_doors_windows_thumpables_and_barricades() {
                 metal_bar_health: 0,
             }),
             None,
-        ));
+        )));
         square.special_objects.push(2);
     });
     fixture.run("check(not a:canReachTo(b))");

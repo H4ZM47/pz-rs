@@ -198,6 +198,7 @@ fn objects(sq: &IsoGridSquare, m: &IsoSpriteManager) -> String {
     sq.objects
         .iter()
         .map(|o| {
+            let o = o.borrow();
             format!(
                 "{}:{};",
                 o.kind.class_name(),

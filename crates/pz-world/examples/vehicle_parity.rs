@@ -14,6 +14,7 @@
 //! classes) `resave/map/...`, `resave/vehicles/<wx>_<wy>_<i>.bin` and
 //! `synth_digest.txt`. Prints counts per kind.
 
+use pz_world::ObjectSlot;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -424,7 +425,7 @@ fn main() {
                     let Some(sq) = ch.get_grid_square(x, y, z) else {
                         continue;
                     };
-                    for o in &sq.objects {
+                    for o in sq.objects.iter().map(ObjectSlot::borrow) {
                         match &o.kind {
                             ObjectKind::AnimalTrack(t) => rt.push(format!(
                                 "track {wx},{wy} {} {} {} {} {} {} {} sprite={}",

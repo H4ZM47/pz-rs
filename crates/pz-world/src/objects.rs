@@ -975,7 +975,11 @@ pub trait ObjectLoadHooks {
     /// `GameEntityFactory.CreateIsoEntityFromCellLoading(obj)` for an object
     /// whose sprite has the `EntityScript` flag or both `IsMoveAble` and
     /// `CustomItem`. Returns whether components were added.
-    fn create_iso_entity(&mut self, _obj: &IsoObject, _rand: &mut dyn crate::GameRand) -> bool {
+    fn create_iso_entity(
+        &mut self,
+        _obj: crate::IsoObjectRef,
+        _rand: &mut dyn crate::GameRand,
+    ) -> bool {
         false
     }
 

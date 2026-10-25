@@ -190,7 +190,7 @@ impl StatesWorldAdapter<'_> {
 
     /// `getBendStage(obj, entry)`.
     fn bf_bend_stage(&self, o: &IsoObject, e: Option<&BentFenceEntry>) -> i32 {
-        let (Some(name), Some(e)) = (self.obj_sprite_name(o), e) else {
+        let (Some(name), Some(e)) = (self.obj_sprite_name(&o), e) else {
             return -1;
         };
         for i in 0..e.stage_count() {
@@ -207,10 +207,10 @@ impl StatesWorldAdapter<'_> {
         sq: &'s IsoGridSquare,
         tiles: &[String],
         index: usize,
-    ) -> Option<&'s IsoObject> {
+    ) -> Option<std::cell::Ref<'s, IsoObject>> {
         sq.objects
-            .iter()
-            .find(|o| self.obj_sprite_name(o) == Some(tiles[index].as_str()))
+            .iter().map(|o| o.borrow())
+            .find(|o| self.obj_sprite_name(&o) == Some(tiles[index].as_str()))
     }
 
     /// The square `i - index` along the fence from `sq`.
@@ -257,7 +257,7 @@ impl StatesWorldAdapter<'_> {
         let mut index = -1;
         let mut last = -1;
         let center = tiles.len() as i32 / 2;
-        if let Some(name) = self.obj_sprite_name(o) {
+        if let Some(name) = self.obj_sprite_name(&o) {
             for (i, t) in tiles.iter().enumerate() {
                 let i = i as i32;
                 if t != name || !self.bf_valid_span(tiles, sq, e, i) {
@@ -270,7 +270,7 @@ impl StatesWorldAdapter<'_> {
                 index = i;
             }
         }
-        if self.bf_bend_stage(o, Some(e)) == 0 {
+        if self.bf_bend_stage(&o, Some(e)) == 0 {
             if last == -1 {
                 index
             } else {
@@ -283,14 +283,14 @@ impl StatesWorldAdapter<'_> {
 
     /// `isValidObject(obj, entry)`.
     fn bf_valid_object(&self, f: Found<'_>, e: &BentFenceEntry) -> bool {
-        let stage = self.bf_bend_stage(f.1, Some(e));
+        let stage = self.bf_bend_stage(&f.1, Some(e));
         if stage == -1 {
             return false;
         }
         let Some(tiles) = e.stage(stage) else {
             return false;
         };
-        self.bf_tile_index(tiles, f, e, false) != -1
+        self.bf_tile_index(tiles, (f.0, &f.1), e, false) != -1
     }
 
     fn is_stairs_object(&self, o: &IsoObject) -> bool {
@@ -310,15 +310,15 @@ impl StatesWorldAdapter<'_> {
     }
 
     fn obj_flag(&self, o: &IsoObject, name: &str) -> bool {
-        self.env().obj_has_flag(o, name)
+        self.env().obj_has_flag(&o, name)
     }
 
     fn is_wall_n(&self, o: &IsoObject) -> bool {
-        self.obj_flag(o, "WallN") || self.obj_flag(o, "WallNTrans")
+        self.obj_flag(&o, "WallN") || self.obj_flag(&o, "WallNTrans")
     }
 
     fn is_wall_w(&self, o: &IsoObject) -> bool {
-        self.obj_flag(o, "WallW") || self.obj_flag(o, "WallWTrans")
+        self.obj_flag(&o, "WallW") || self.obj_flag(&o, "WallWTrans")
     }
 
     /// `IsoObject.isWall()` (`sprite != null && isWallN() || isWallW()`).
@@ -368,11 +368,11 @@ impl StatesWorldAdapter<'_> {
         if e.collapsed.is_empty() {
             return false;
         }
-        let stage = self.bf_bend_stage(f.1, Some(e));
+        let stage = self.bf_bend_stage(&f.1, Some(e));
         let Some(tiles) = e.stage(stage) else {
             return false;
         };
-        let index = self.bf_tile_index(tiles, f, e, false);
+        let index = self.bf_tile_index(tiles, (f.0, &f.1), e, false);
         let (ox, oy, rx, ry) = Self::bf_collapse_origin(f.0, dir, e, index);
         for x in 0..e.collapsed_size_x {
             for y in 0..e.collapsed_size_y {
@@ -383,10 +383,11 @@ impl StatesWorldAdapter<'_> {
                     return false;
                 }
                 for o in s.objects.iter().skip(1).rev() {
-                    if self.is_stairs_object(o) {
+                    let o = o.borrow();
+                    if self.is_stairs_object(&o) {
                         return false;
                     }
-                    if self.is_wall_obj(o) && self.wall_blocking_object_on_tile(dir, e, x, y, o) {
+                    if self.is_wall_obj(&o) && self.wall_blocking_object_on_tile(dir, e, x, y, &o) {
                         return false;
                     }
                 }
@@ -429,16 +430,16 @@ impl StatesWorldAdapter<'_> {
             }
             let longer = matched.is_none_or(|m| bf.entries[m].length < e.length);
             if dir.is_none() {
-                if !self.bf_valid_object(f, e) || !longer {
+                if !self.bf_valid_object((f.0, &f.1), e) || !longer {
                     continue;
                 }
                 matched = Some(i);
                 continue;
             }
-            if !self.bf_valid_object(f, e)
-                || self.bf_bend_stage(f.1, Some(e)) >= e.stage_count()
+            if !self.bf_valid_object((f.0, &f.1), e)
+                || self.bf_bend_stage(&f.1, Some(e)) >= e.stage_count()
                     && !e.collapsed.is_empty()
-                    && !self.bf_check_can_collapse(f, dir, e)
+                    && !self.bf_check_can_collapse((f.0, &f.1), dir, e)
                 || !longer
             {
                 continue;
@@ -458,21 +459,21 @@ impl StatesWorldAdapter<'_> {
             return false;
         };
         let e = self
-            .bf_entry_for_object(&bf, f, None)
+            .bf_entry_for_object(&bf, (f.0, &f.1), None)
             .map(|i| &bf.entries[i]);
-        let stage = self.bf_bend_stage(f.1, e);
+        let stage = self.bf_bend_stage(&f.1, e);
         stage > 0 || e.is_some_and(|e| stage < e.stage_count() - 1)
     }
 
     /// `isUnbentObject(obj, facing)`.
     pub fn is_unbent_object(&self, bf: &BentFences, f: Found<'_>, facing: EdgeFacing) -> bool {
         let Some(e) = self
-            .bf_entry_for_object(bf, f, None)
+            .bf_entry_for_object(bf, (f.0, &f.1), None)
             .map(|i| &bf.entries[i])
         else {
             return false;
         };
-        e.facing() == facing && self.bf_bend_stage(f.1, Some(e)) < e.stage_count() - 1
+        e.facing() == facing && self.bf_bend_stage(&f.1, Some(e)) < e.stage_count() - 1
     }
 
     /// `getThumpData(obj)`.
@@ -481,7 +482,7 @@ impl StatesWorldAdapter<'_> {
             return ThumpData::default();
         };
         let Some(e) = self
-            .bf_entry_for_object(&bf, f, None)
+            .bf_entry_for_object(&bf, (f.0, &f.1), None)
             .map(|i| &bf.entries[i])
         else {
             return ThumpData::default();
@@ -490,7 +491,7 @@ impl StatesWorldAdapter<'_> {
             health: e.health,
             ..Default::default()
         };
-        let stage = self.bf_bend_stage(f.1, Some(e));
+        let stage = self.bf_bend_stage(&f.1, Some(e));
         d.bend_stage = stage;
         d.stages = e.stage_count();
         if !bf.is_enabled() {
@@ -508,7 +509,7 @@ impl StatesWorldAdapter<'_> {
         let Some(tiles) = e.stage(stage) else {
             return d;
         };
-        let index = self.bf_tile_index(tiles, f, e, false);
+        let index = self.bf_tile_index(tiles, (f.0, &f.1), e, false);
         let count = |x: i32, y: i32, z: i32| -> i32 {
             if self.cell.get_grid_square(x, y, z).is_none() {
                 return 0;
@@ -617,7 +618,7 @@ impl StatesWorldAdapter<'_> {
     /// `obj.setSprite(getSprite(name))`.
     fn set_object_sprite(&mut self, r: ObjectRef, name: &str) {
         let s = self.sprite_named(name);
-        if let Some(o) = self.find_mut(r) {
+        if let Some(mut o) = self.find_mut(r) {
             o.sprite = Some(s);
         }
     }
@@ -640,9 +641,9 @@ impl StatesWorldAdapter<'_> {
         let obj = IsoObject::new(id, ObjectKind::Object, Some(s));
         let i = sq.place_wall_and_door_check(sprites, &obj, index);
         if i >= 0 && (i as usize) <= sq.objects.len() {
-            sq.objects.insert(i as usize, obj);
+            sq.objects.insert(i as usize, pz_world::ObjectSlot::new(obj));
         } else {
-            sq.objects.push(obj);
+            sq.objects.push(pz_world::ObjectSlot::new(obj));
         }
         sq.burnt_out = false;
         self.cell
@@ -657,8 +658,8 @@ impl StatesWorldAdapter<'_> {
         let Some(bf) = self.bf() else { return };
         let Some(f) = self.find(r) else { return };
         let mut dir = dir;
-        let mut e = self.bf_entry_for_object(&bf, f, dir);
-        if !e.is_some_and(|i| self.bf_valid_object(f, &bf.entries[i])) {
+        let mut e = self.bf_entry_for_object(&bf, (f.0, &f.1), dir);
+        if !e.is_some_and(|i| self.bf_valid_object((f.0, &f.1), &bf.entries[i])) {
             let d2 = match dir {
                 None => return,
                 Some(IsoDirections::N) => Some(IsoDirections::W),
@@ -668,25 +669,26 @@ impl StatesWorldAdapter<'_> {
                 other => other,
             };
             if d2 != dir {
-                e = self.bf_entry_for_object(&bf, f, d2);
+                e = self.bf_entry_for_object(&bf, (f.0, &f.1), d2);
                 dir = d2;
             }
         }
         let Some(ei) = e else { return };
         let entry = &bf.entries[ei];
-        let old = self.bf_bend_stage(f.1, Some(entry));
+        let old = self.bf_bend_stage(&f.1, Some(entry));
         let thump_sound = self
             .env()
-            .obj_prop(f.1, "ThumpSound")
+            .obj_prop(&f.1, "ThumpSound")
             .unwrap_or("ZombieThumpGeneric")
             .to_string();
         let sqp = (f.0.x, f.0.y, f.0.z);
+        drop(f);
         self.swap_tiles(r, dir, true, -1);
         let new = self.find(r).map_or(-1, |f| {
             let e2 = self
-                .bf_entry_for_object(&bf, f, None)
+                .bf_entry_for_object(&bf, (f.0, &f.1), None)
                 .map(|i| &bf.entries[i]);
-            self.bf_bend_stage(f.1, e2)
+            self.bf_bend_stage(&f.1, e2)
         });
         if new <= old {
             return;
@@ -727,9 +729,9 @@ impl StatesWorldAdapter<'_> {
     ) {
         let Some(bf) = self.bf() else { return };
         let Some(f) = self.find(r) else { return };
-        let ei = match self.bf_entry_for_object(&bf, f, dir) {
+        let ei = match self.bf_entry_for_object(&bf, (f.0, &f.1), dir) {
             Some(i) => i,
-            None if bending => match self.bf_entry_for_object(&bf, f, None) {
+            None if bending => match self.bf_entry_for_object(&bf, (f.0, &f.1), None) {
                 Some(i) => i,
                 None => return,
             },
@@ -747,7 +749,7 @@ impl StatesWorldAdapter<'_> {
         let stage = if force_stage != -1 {
             force_stage
         } else {
-            self.bf_bend_stage(f.1, Some(e))
+            self.bf_bend_stage(&f.1, Some(e))
         };
         if stage == -1 || !bending && stage == 0 {
             return;
@@ -755,7 +757,7 @@ impl StatesWorldAdapter<'_> {
         let n = e.stage_count();
         let do_smash = bending && stage > 0 && e.dir != dir;
         let do_collapse = !do_smash && bending && stage + 1 >= n - 1;
-        let do_smash_collapse = do_collapse && !self.bf_check_can_collapse(f, dir, e) && e.do_smash;
+        let do_smash_collapse = do_collapse && !self.bf_check_can_collapse((f.0, &f.1), dir, e) && e.do_smash;
         let do_remove_collapsed = !bending && stage + 1 == n;
         let do_debris = do_collapse && !e.debris.is_empty();
         if stage == n && bending {
@@ -771,9 +773,10 @@ impl StatesWorldAdapter<'_> {
         if tiles.len() != swap.len() {
             return;
         }
-        let index = self.bf_tile_index(tiles, f, e, false);
+        let index = self.bf_tile_index(tiles, (f.0, &f.1), e, false);
         let origin = f.0;
         let (ox, oy, oz) = (origin.x, origin.y, origin.z);
+        drop(f);
         let mut updated = Vec::new();
         for i in 0..tiles.len() as i32 {
             let x = ox + if e.is_north() { i - index } else { 0 };
@@ -790,7 +793,9 @@ impl StatesWorldAdapter<'_> {
                 z: oz,
                 id: fo.id,
             };
-            if self.env().obj_has_prop(fo, "CornerNorthWall") {
+            let corner = self.env().obj_has_prop(&fo, "CornerNorthWall");
+            drop(fo);
+            if corner {
                 self.split_corner(fr, e);
             }
             if bending {
@@ -803,23 +808,24 @@ impl StatesWorldAdapter<'_> {
                             .skip(1)
                             .rev()
                             .filter(|o| {
+                                let o = o.borrow();
                                 o.sprite.is_some()
                                     && ["attachedN", "attachedW", "attachedS", "attachedE"]
                                         .iter()
-                                        .any(|a| self.obj_flag(o, a))
+                                        .any(|a| self.obj_flag(&o, a))
                             })
                             .map(|o| ObjectRef {
                                 x,
                                 y,
                                 z: oz,
-                                id: o.id,
+                                id: o.borrow().id,
                             })
                             .collect()
                     })
                     .unwrap_or_default();
                 for s in signs {
                     if let Some(o) = self.remove_object(s, false) {
-                        self.engine.broken_fence_items((x, y, oz), &o);
+                        self.engine.broken_fence_items((x, y, oz), &o.ref_handle());
                     }
                 }
             }
@@ -858,12 +864,13 @@ impl StatesWorldAdapter<'_> {
         let Some((_, o)) = self.find(r) else { return };
         let env = self.env();
         let (Some(cn), Some(cw)) = (
-            env.obj_prop(o, "CornerNorthWall").map(str::to_string),
-            env.obj_prop(o, "CornerWestWall").map(str::to_string),
+            env.obj_prop(&o, "CornerNorthWall").map(str::to_string),
+            env.obj_prop(&o, "CornerWestWall").map(str::to_string),
         ) else {
             return;
         };
         let (keep, add) = if e.is_north() { (cn, cw) } else { (cw, cn) };
+        drop(o);
         self.set_object_sprite(r, &keep);
         let p = (r.x, r.y, r.z);
         let len = self
@@ -877,10 +884,11 @@ impl StatesWorldAdapter<'_> {
     /// `addDebrisObject(obj, dir, entry)`.
     fn add_debris_object(&mut self, r: ObjectRef, dir: Option<IsoDirections>, e: &BentFenceEntry) {
         let Some((_, o)) = self.find(r) else { return };
-        if self.is_wall_obj(o) || e.debris.is_empty() {
+        if self.is_wall_obj(&o) || e.debris.is_empty() {
             return;
         }
-        let o = o.clone();
+        drop(o);
+        let o = self.object_ref(r).expect("located object");
         // PZArrayUtil.pickRandom: Rand.Next(size).
         let name = e.debris[self.engine.rand().next(e.debris.len() as i32) as usize].clone();
         let mut p = (r.x, r.y, r.z);
@@ -907,18 +915,19 @@ impl StatesWorldAdapter<'_> {
     pub fn smash_fence(&mut self, r: ObjectRef, dir: IsoDirections, index: i32) {
         let Some(bf) = self.bf() else { return };
         let Some(f) = self.find(r) else { return };
-        let Some(ei) = self.bf_entry_for_object(&bf, f, None) else {
+        let Some(ei) = self.bf_entry_for_object(&bf, (f.0, &f.1), None) else {
             return;
         };
         let e = &bf.entries[ei];
         let Some(tiles) = e.stage(0) else { return };
-        let stage = self.bf_bend_stage(f.1, Some(e));
+        let stage = self.bf_bend_stage(&f.1, Some(e));
         let use_index = if index != -1 {
             index
         } else {
-            self.bf_tile_index(tiles, f, e, true)
+            self.bf_tile_index(tiles, (f.0, &f.1), e, true)
         };
         let (ox, oy, oz) = (f.0.x, f.0.y, f.0.z);
+        drop(f);
         if stage != 0 {
             self.reset_fence(r);
         }
@@ -940,8 +949,7 @@ impl StatesWorldAdapter<'_> {
                 self.engine.destroy_fence(self.cell, fr, dir);
                 continue;
             }
-            if let Some((_, o)) = self.find(fr) {
-                let o = o.clone();
+            if let Some(o) = self.object_ref(fr) {
                 self.engine.broken_fence_items((x, y, oz), &o);
             }
             self.remove_object(fr, false);
@@ -956,12 +964,12 @@ impl StatesWorldAdapter<'_> {
         north: bool,
     ) -> Option<pz_world::objects::ObjectId> {
         sq.objects
-            .iter()
+            .iter().map(|o| o.borrow())
             .find(|o| {
-                self.obj_sprite_name(o)
+                self.obj_sprite_name(&o)
                     .is_some_and(|n| self.engine.is_breakable_fence(n))
-                    && (north && self.obj_flag(o, "collideN")
-                        || !north && self.obj_flag(o, "collideW"))
+                    && (north && self.obj_flag(&o, "collideN")
+                        || !north && self.obj_flag(&o, "collideW"))
             })
             .map(|o| o.id)
     }
@@ -970,11 +978,11 @@ impl StatesWorldAdapter<'_> {
     pub fn reset_fence(&mut self, r: ObjectRef) {
         let Some(bf) = self.bf() else { return };
         let Some(f) = self.find(r) else { return };
-        let Some(ei) = self.bf_entry_for_object(&bf, f, None) else {
+        let Some(ei) = self.bf_entry_for_object(&bf, (f.0, &f.1), None) else {
             return;
         };
         let e = &bf.entries[ei];
-        let stage = self.bf_bend_stage(f.1, Some(e));
+        let stage = self.bf_bend_stage(&f.1, Some(e));
         if stage == -1 {
             return;
         }
@@ -984,8 +992,9 @@ impl StatesWorldAdapter<'_> {
         if tiles.len() != base.len() {
             return;
         }
-        let index = self.bf_tile_index(tiles, f, e, false);
+        let index = self.bf_tile_index(tiles, (f.0, &f.1), e, false);
         let (ox, oy, oz) = (f.0.x, f.0.y, f.0.z);
+        drop(f);
         for i in 0..tiles.len() as i32 {
             let x = ox + if e.is_north() { i - index } else { 0 };
             let y = oy + if e.is_north() { 0 } else { i - index };
@@ -1001,7 +1010,9 @@ impl StatesWorldAdapter<'_> {
                 z: oz,
                 id: fo.id,
             };
-            if self.env().obj_has_prop(fo, "CornerNorthWall") {
+            let corner = self.env().obj_has_prop(&fo, "CornerNorthWall");
+            drop(fo);
+            if corner {
                 self.split_corner(fr, e);
             }
             self.set_object_sprite(fr, &base[i as usize]);
@@ -1039,11 +1050,13 @@ impl StatesWorldAdapter<'_> {
                         break;
                     };
                     let Some(o) = s.objects.get(i) else { continue };
+                    let o = o.borrow();
                     if self
-                        .obj_sprite_name(o)
+                        .obj_sprite_name(&o)
                         .is_some_and(|nm| bf.collapsed_tiles.contains(nm))
                     {
                         let id = o.id;
+                        drop(o);
                         self.remove_object(
                             ObjectRef {
                                 x: p.0,
@@ -1053,7 +1066,7 @@ impl StatesWorldAdapter<'_> {
                             },
                             false,
                         );
-                    }
+                    } else { drop(o); }
                     self.square_update_tasks(p);
                 }
             }
@@ -1100,30 +1113,34 @@ impl StatesWorldAdapter<'_> {
                         break;
                     };
                     let Some(o) = s.objects.get(i) else { continue };
+                    let o = o.borrow();
                     let or = ObjectRef {
                         x: p.0,
                         y: p.1,
                         z: p.2,
                         id: o.id,
                     };
-                    let name = self.obj_sprite_name(o).map(str::to_string);
+                    let name = self.obj_sprite_name(&o).map(str::to_string);
                     if name
                         .as_deref()
                         .is_some_and(|n| self.engine.is_breakable_fence(n))
                     {
+                        drop(o);
                         self.engine.destroy_fence(self.cell, or, dir);
                         continue;
                     }
                     let Some(name) = name else { continue };
-                    if self.is_wall_obj(o)
-                        || self.env().obj_has_flag(o, "solidfloor")
+                    if self.is_wall_obj(&o)
+                        || self.env().obj_has_flag(&o, "solidfloor")
                         || bf.fence_map.contains_key(&name)
                         || bf.collapsed_tiles.contains(&name)
                     {
                         continue;
                     }
-                    let o = o.clone();
-                    if o.container.as_ref().is_some_and(|c| !c.items.is_empty()) {
+                    drop(o);
+                    let o = self.object_ref(or).expect("located object");
+                    let has_contents = o.borrow().container.as_ref().is_some_and(|c| !c.items.is_empty());
+                    if has_contents {
                         self.engine.dump_contents(p, &o);
                     }
                     self.remove_object(or, false);

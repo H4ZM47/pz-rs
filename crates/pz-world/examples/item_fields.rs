@@ -6,6 +6,7 @@
 //! item_fields <game dir> <sprite tables> <save tables> <save dir> <oracle items_fields.txt>
 //! ```
 
+use pz_world::ObjectSlot;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -310,7 +311,7 @@ fn main() {
         };
         let mut lines = Vec::new();
         for sq in ch.squares() {
-            for o in &sq.objects {
+            for o in sq.objects.iter().map(ObjectSlot::borrow) {
                 let conts: Vec<&ItemContainer> = match &o.kind {
                     ObjectKind::Mannequin(Some(m)) => m.container.iter().collect(),
                     _ => o.containers().collect(),

@@ -12,6 +12,7 @@
 //! and `summary.txt` (world age). Prints counts; writes `rust_digest.txt`
 //! and `rust_diffs.txt` into `<oracle dir>`.
 
+use pz_world::ObjectSlot;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -227,7 +228,12 @@ fn field_lines(ctx: &SaveCtx<'_>, ch: &IsoChunk, hooks: &OracleHooks, out: &mut 
                         continue;
                     };
                     let at = format!("{},{},{}", sq.x, sq.y, sq.z);
-                    for o in sq.objects.iter().filter(|_| pass == 0) {
+                    for o in sq
+                        .objects
+                        .iter()
+                        .map(ObjectSlot::borrow)
+                        .filter(|_| pass == 0)
+                    {
                         if let ObjectKind::FeedingTrough(t) = &o.kind {
                             let mut l = format!(
                             "trough {at} linked={},{} north={} water={} maxWater={} maxFeed={} feeding=",
@@ -268,7 +274,12 @@ fn field_lines(ctx: &SaveCtx<'_>, ch: &IsoChunk, hooks: &OracleHooks, out: &mut 
                             out.push(l);
                         }
                     }
-                    for o in sq.objects.iter().filter(|_| pass == 1) {
+                    for o in sq
+                        .objects
+                        .iter()
+                        .map(ObjectSlot::borrow)
+                        .filter(|_| pass == 1)
+                    {
                         let ObjectKind::Hutch(h) = &o.kind else {
                             continue;
                         };
@@ -403,8 +414,8 @@ fn digest(ctx: &SaveCtx<'_>, ch: &IsoChunk, out: &mut String) {
                     sq.overlay_done as u8, sq.have_roof as u8, sq.burnt_out as u8, sq.have_sheet_rope as u8, seen
                 )
                 .unwrap();
-                for o in &sq.objects {
-                    writeln!(out, "{}", object_line(ctx, o)).unwrap();
+                for o in sq.objects.iter().map(ObjectSlot::borrow) {
+                    writeln!(out, "{}", object_line(ctx, &o)).unwrap();
                 }
                 for b in &sq.static_moving {
                     writeln!(
@@ -456,7 +467,7 @@ fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(ItemRecordMut<'_>)) {
                 let Some(sq) = ch.get_grid_square_mut(x, y, z) else {
                     continue;
                 };
-                for o in &mut sq.objects {
+                for mut o in sq.objects.iter().map(ObjectSlot::borrow_mut) {
                     if let Some(c) = &mut o.container {
                         cont(c, f);
                     }
@@ -562,10 +573,15 @@ fn first_object_diff(ctx: &SaveCtx<'_>, r: &IsoChunk, j: &IsoChunk, out: &mut St
     use pz_world::save::io::Writer;
     use pz_world::save::object_io::save_object;
     for (rs, js) in r.squares().zip(j.squares()) {
-        for (ro, jo) in rs.objects.iter().zip(js.objects.iter()) {
+        for (ro, jo) in rs
+            .objects
+            .iter()
+            .map(ObjectSlot::borrow)
+            .zip(js.objects.iter().map(ObjectSlot::borrow))
+        {
             let (mut a, mut b) = (Writer::new(), Writer::new());
-            let _ = save_object(&mut a, ctx, ro);
-            let _ = save_object(&mut b, ctx, jo);
+            let _ = save_object(&mut a, ctx, &ro);
+            let _ = save_object(&mut b, ctx, &jo);
             if a.buf != b.buf {
                 let name = ro
                     .sprite

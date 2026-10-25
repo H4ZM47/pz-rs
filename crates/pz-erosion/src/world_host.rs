@@ -7,6 +7,8 @@
 //! from [`WorldView`].
 
 use pz_inventory::dictionary::WorldDictionary;
+use std::cell::{Ref, RefMut};
+use pz_world::object_slot::ObjectSlot;
 use pz_world::objects::{IsoObject, IsoSpriteInstance, IsoTree, ObjectKind, ObjectName};
 use pz_world::square::{GetSquare, NoSquareHooks, SquareHooks};
 use pz_world::{IsoChunk, IsoGridSquare, IsoSpriteManager};
@@ -109,18 +111,18 @@ impl ChunkHost<'_> {
         self.chunk.get_grid_square_mut(x, y, z)
     }
 
-    fn obj(&self, sq: Sq, o: ObjId) -> Option<&IsoObject> {
+    fn obj(&self, sq: Sq, o: ObjId) -> Option<Ref<'_, IsoObject>> {
         let s = self.square(sq)?;
-        s.objects.iter().find(|x| x.id == o)
+        s.objects.iter().find(|x| x.borrow().id == o).map(ObjectSlot::borrow)
     }
 
-    fn obj_mut(&mut self, sq: Sq, o: ObjId) -> Option<&mut IsoObject> {
-        self.square_mut(sq)?.objects.iter_mut().find(|x| x.id == o)
+    fn obj_mut(&mut self, sq: Sq, o: ObjId) -> Option<RefMut<'_, IsoObject>> {
+        self.square(sq)?.objects.iter().find(|x| x.borrow().id == o).map(ObjectSlot::borrow_mut)
     }
 
     fn remove(&mut self, sq: Sq, o: ObjId, special_too: bool) {
         if let Some(s) = self.square_mut(sq) {
-            s.objects.retain(|x| x.id != o);
+            s.retain_objects(|x| x.borrow().id != o);
             if special_too {
                 s.special_objects.retain(|&x| x != o);
             }
@@ -152,17 +154,17 @@ impl ErosionHost for ChunkHost<'_> {
 
     fn objects(&self, sq: Sq) -> Vec<ObjId> {
         self.square(sq)
-            .map_or_else(Vec::new, |s| s.objects.iter().map(|o| o.id).collect())
+            .map_or_else(Vec::new, |s| s.objects.iter().map(|o| o.borrow().id).collect())
     }
 
     fn floor(&self, sq: Sq) -> Option<ObjId> {
         let s = self.square(sq)?;
-        s.floor_index(self.sprites).map(|i| s.objects[i].id)
+        s.floor_index(self.sprites).map(|i| s.objects[i].borrow().id)
     }
 
     fn wall(&self, sq: Sq, north: bool) -> Option<ObjId> {
         let s = self.square(sq)?;
-        s.wall_index(self.sprites, north).map(|i| s.objects[i].id)
+        s.wall_index(self.sprites, north).map(|i| s.objects[i].borrow().id)
     }
 
     fn is_wall_to(&self, sq: Sq, other: Sq) -> bool {
@@ -189,7 +191,7 @@ impl ErosionHost for ChunkHost<'_> {
         let g = self.squares();
         let s = self.square(sq)?;
         let w = s.get_window_to(self.any_square(other), &g)?;
-        s.objects.iter().any(|o| std::ptr::eq(o, w)).then_some(w.id)
+        s.objects.iter().any(|o| o.ptr_eq_ref(&w)).then(|| w.borrow().id)
     }
 
     fn sprite_name(&self, sq: Sq, o: ObjId) -> Option<String> {
@@ -228,7 +230,7 @@ impl ErosionHost for ChunkHost<'_> {
     }
 
     fn set_object_name(&mut self, sq: Sq, o: ObjId, name: Option<&str>) {
-        if let Some(obj) = self.obj_mut(sq, o) {
+        if let Some(mut obj) = self.obj_mut(sq, o) {
             obj.name = name.map(|n| ObjectName::Str(n.to_string()));
             obj.do_not_sync = true;
         }
@@ -236,14 +238,15 @@ impl ErosionHost for ChunkHost<'_> {
 
     fn set_object_sprite(&mut self, sq: Sq, o: ObjId, sprite: &str) {
         let s = get_sprite(self.sprites, sprite);
-        if let Some(obj) = self.obj_mut(sq, o) {
+        if let Some(mut obj) = self.obj_mut(sq, o) {
             obj.sprite = Some(s);
             obj.do_not_sync = true;
         }
     }
 
     fn attached(&self, sq: Sq, o: ObjId) -> Option<Vec<Attached>> {
-        let list = self.obj(sq, o)?.attached_anim_sprite.as_ref()?;
+        let obj = self.obj(sq, o)?;
+        let list = obj.attached_anim_sprite.as_ref()?;
         Some(
             list.iter()
                 .map(|i| {
@@ -258,10 +261,8 @@ impl ErosionHost for ChunkHost<'_> {
     }
 
     fn attached_remove(&mut self, sq: Sq, o: ObjId, index: usize) {
-        if let Some(list) = self
-            .obj_mut(sq, o)
-            .and_then(|x| x.attached_anim_sprite.as_mut())
-        {
+        if let Some(mut obj) = self.obj_mut(sq, o) {
+            let Some(list) = obj.attached_anim_sprite.as_mut() else { return };
             if index < list.len() {
                 list.remove(index);
             }
@@ -269,7 +270,7 @@ impl ErosionHost for ChunkHost<'_> {
     }
 
     fn attached_clear(&mut self, sq: Sq, o: ObjId) {
-        if let Some(obj) = self.obj_mut(sq, o) {
+        if let Some(mut obj) = self.obj_mut(sq, o) {
             obj.attached_anim_sprite
                 .get_or_insert_with(Vec::new)
                 .clear();
@@ -279,7 +280,7 @@ impl ErosionHost for ChunkHost<'_> {
     fn attached_add(&mut self, sq: Sq, o: ObjId, sprite: &str) -> i32 {
         let s = get_sprite(self.sprites, sprite);
         let id = self.sprites.sprites[s].id;
-        if let Some(obj) = self.obj_mut(sq, o) {
+        if let Some(mut obj) = self.obj_mut(sq, o) {
             obj.attached_anim_sprite
                 .get_or_insert_with(Vec::new)
                 .push(IsoSpriteInstance::new(s));
@@ -344,12 +345,12 @@ impl ErosionHost for ChunkHost<'_> {
         if tree {
             let index = square.place_wall_and_door_check(sprites, &obj, -1);
             if index >= 0 && index as usize <= square.objects.len() {
-                square.objects.insert(index as usize, obj);
+                square.objects.insert(index as usize, ObjectSlot::new(obj));
             } else {
-                square.objects.push(obj);
+                square.objects.push(ObjectSlot::new(obj));
             }
         } else {
-            square.objects.push(obj);
+            square.objects.push(ObjectSlot::new(obj));
         }
         id
     }

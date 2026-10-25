@@ -1627,7 +1627,7 @@ impl PathFindBehavior2 {
             return false;
         }
         if let Some(door) = map.door_to(current, square) {
-            let open = match map.object(door).map(|o| &o.kind) {
+            let open = match map.object(door).as_deref().map(|o| &o.kind) {
                 Some(ObjectKind::Door(d)) => d.open,
                 Some(ObjectKind::Thumpable(t)) => t.open,
                 _ => true,
@@ -1652,7 +1652,7 @@ impl PathFindBehavior2 {
             }
         }
         if let Some(window) = map.window_to(current, square) {
-            let (smashed, glass_removed) = match map.object(window).map(|o| &o.kind) {
+            let (smashed, glass_removed) = match map.object(window).as_deref().map(|o| &o.kind) {
                 Some(ObjectKind::Window(w)) => (w.destroyed, w.glass_removed),
                 _ => (false, false),
             };

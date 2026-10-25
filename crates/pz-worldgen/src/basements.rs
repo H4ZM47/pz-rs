@@ -780,7 +780,7 @@ fn add_to_iso_chunk(
                     let mut i = square.objects.len();
                     while i > 0 {
                         i -= 1;
-                        let o = &square.objects[i];
+                        let o = square.objects[i].borrow();
                         let spr = o.sprite.map(|s| &m.sprites[s]);
                         let is_floor = spr.is_some_and(|s| s.solidfloor);
                         let has = |f: Option<pz_world::sprite::IsoFlagType>| {
@@ -796,11 +796,12 @@ fn add_to_iso_chunk(
                             continue;
                         }
                         let id = o.id;
-                        square.objects.remove(i);
+                        drop(o);
+                        square.remove_object_slot(i);
                         square.special_objects.retain(|&s| s != id);
                     }
                 } else {
-                    square.objects.clear();
+                    square.clear_objects();
                     square.special_objects.clear();
                 }
                 for &n in ints {
@@ -863,9 +864,9 @@ fn remove_floors_above_stairs(
     if let Some(i) = square
         .objects
         .iter()
-        .position(|o| o.sprite.is_some_and(|s| m.sprites[s].properties.has(f)))
+        .position(|o| o.borrow().sprite.is_some_and(|s| m.sprites[s].properties.has(f)))
     {
-        square.objects.remove(i);
+        square.remove_object_slot(i);
     }
 }
 

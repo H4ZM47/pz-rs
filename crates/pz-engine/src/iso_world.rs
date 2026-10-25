@@ -203,6 +203,14 @@ fn sandbox_vars(lua: &LuaManager) -> Option<pz_kahlua::TableRef> {
     }
 }
 
+/// Retire object owners at an outer host boundary, after all callbacks and
+/// world/sprite guards. A failed frame may leave these pinned until the
+/// next successful boundary or the cell's borrow-free shutdown.
+pub(crate) fn drain_retired_world_objects() {
+    let retired = with_world(|world| world.cell.as_mut().map(IsoCell::take_retired_objects));
+    drop(retired);
+}
+
 impl IsoWorld {
     /// `new IsoWorld()` for the save `<cache>/Saves/<Core.gameMode>/<Core.gameSaveWorld>`.
     pub fn new(game_dir: &Path, cache_dir: &Path, save_dir: PathBuf) -> Self {
@@ -312,8 +320,8 @@ impl IsoWorld {
         };
         let (result, retired) = {
             let mut sprites = sprites.borrow_mut();
-            let result = with_world(|w| {
-                let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else { return None };
+            let (result, retired_objects) = with_world(|w| {
+                let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else { return (None, Vec::new()) };
                 let mut object_hooks = NoHooks;
                 let mut ctx = StreamCtx {
                     save_dir,
@@ -342,9 +350,10 @@ impl IsoWorld {
                     vehicle_meta: None,
                     vehicle_ids: None,
                 };
-                Some(f(streamer, cell, &mut ctx))
+                let result = Some(f(streamer, cell, &mut ctx));
+                (result, cell.take_retired_objects())
             });
-            (result, streamer.take_retired_chunks())
+            (result, (streamer.take_retired_chunks(), retired_objects))
         };
         // A queued floor item may be the last owner of a bag's opaque Lua
         // parent. Its destructor can reenter WORLD and the sprite manager.

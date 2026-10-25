@@ -199,6 +199,7 @@ fn main() {
                     .objects
                     .iter()
                     .map(|o| {
+                        let o = o.borrow();
                         o.sprite
                             .and_then(|i| sprites.sprites[i].name.clone())
                             .unwrap_or_else(|| "null".into())

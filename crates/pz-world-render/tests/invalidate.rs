@@ -113,11 +113,11 @@ impl Scene {
                 let mut sq = IsoGridSquare::new(x, y, 0);
                 let id = sq.new_object_id();
                 let name = if (x, y) == (9, 9) { "water" } else { "floor" };
-                sq.objects.push(IsoObject::new(
+                sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
                     id,
                     ObjectKind::Object,
                     Some(m.named_map[name]),
-                ));
+                )));
                 cell.chunks
                     .get_mut(&(x / 8, y / 8))
                     .unwrap()
@@ -447,7 +447,7 @@ fn adding_a_wall_re_records_its_chunk_level_and_relights() {
         };
         for y in 10..=21 {
             let o = IsoObject::new(0, ObjectKind::Object, Some(wall));
-            env.add_tile_object((17, y, 0), o, -1).unwrap();
+            env.add_tile_object((17, y, 0), pz_world::ObjectSlot::new(o), -1).unwrap();
         }
     }
     // The chunk levels holding the wall are dirty (OBJECT_ADD), for every
