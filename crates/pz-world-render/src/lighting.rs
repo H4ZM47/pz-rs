@@ -182,6 +182,50 @@ pub fn default_player(x: f32, y: f32, z: f32, forward: IsoDirection) -> PlayerIn
     }
 }
 
+/// A light the world adds to the cell itself (`IsoCell.addLamppost`):
+/// fires, fireplaces and other burning objects. Its fields are the
+/// `IsoLightSource` fields the owner writes directly.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CellLight {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    pub radius: i32,
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub active: bool,
+    /// `localToBuilding.id`.
+    pub local_to_building: Option<i32>,
+}
+
+impl CellLight {
+    /// `new IsoLightSource(x, y, z, r, g, b, radius)`: active, permanent.
+    pub fn new(x: i32, y: i32, z: i32, r: f32, g: f32, b: f32, radius: i32) -> Self {
+        CellLight {
+            x,
+            y,
+            z,
+            radius,
+            r,
+            g,
+            b,
+            active: true,
+            local_to_building: None,
+        }
+    }
+}
+
+/// A [`CellLight`] in `IsoCell.lamppostPositions`.
+#[derive(Clone, Copy, Debug)]
+struct Lamppost {
+    key: u64,
+    light: CellLight,
+    /// `life == 0`: `removeLamppost` or a replaced light; `checkLights`
+    /// drops it.
+    dead: bool,
+}
+
 /// What a lighting frame changed.
 #[derive(Clone, Debug, Default)]
 pub struct LightingFrame {
@@ -204,6 +248,8 @@ pub struct WorldLighting {
     lights: HashMap<(i32, i32), ChunkLights>,
     /// Lamp keys of removed chunks, sent once as not alive.
     removed_lamps: Vec<LightSource>,
+    /// The cell's own lights, in `lamppostPositions` order.
+    lampposts: Vec<Lamppost>,
     room_light_keys: HashMap<(i64, usize), u64>,
     lamp_keys: HashMap<(i32, i32, i32, u32, usize), u64>,
     next_key: u64,
@@ -212,6 +258,9 @@ pub struct WorldLighting {
     light_source_update: f32,
     /// `LosUtil.cachecleared[player]`.
     cache_cleared: [bool; 4],
+    /// `IsoCell.chunkMap[player]` in squares, `(min_x, min_y, max_x,
+    /// max_y)`, for each local player (`None`: `ignore`).
+    chunk_maps: [Option<(i32, i32, i32, i32)>; 4],
     /// `Core.dirtyGlobalLightsCount`.
     pub dirty_global_lights: i32,
     /// `PerformanceSettings.getLockFPS()`.
@@ -237,12 +286,14 @@ impl WorldLighting {
             chunks: HashMap::new(),
             lights: HashMap::new(),
             removed_lamps: Vec::new(),
+            lampposts: Vec::new(),
             room_light_keys: HashMap::new(),
             lamp_keys: HashMap::new(),
             next_key: 1,
             levels: HashMap::new(),
             light_source_update: 100.0,
             cache_cleared: [true; 4],
+            chunk_maps: [None; 4],
             dirty_global_lights: 0,
             lock_fps: 60,
         }
@@ -386,8 +437,74 @@ impl WorldLighting {
         }
     }
 
+    /// `IsoCell.addLamppost(light)`: appends a light to the cell's list
+    /// and flags a lighting update (`recalcLightTime`,
+    /// `dirtyGlobalLightsCount`, `lightSourceUpdate`). Returns its key.
+    pub fn add_lamppost(&mut self, light: CellLight) -> u64 {
+        let key = self.push_lamppost(light);
+        self.mark_lights_dirty();
+        key
+    }
+
+    /// `getLamppostPositions().add(light)`: appends without flagging.
+    pub fn push_lamppost(&mut self, light: CellLight) -> u64 {
+        self.next_key += 1;
+        let key = self.next_key;
+        self.lampposts.push(Lamppost {
+            key,
+            light,
+            dead: false,
+        });
+        key
+    }
+
+    /// `IsoCell.removeLamppost(light)`: `life = 0` (the next frame's
+    /// `checkLights` removes it) and the update flags.
+    pub fn remove_lamppost(&mut self, key: u64) {
+        self.kill_lamppost(key);
+        self.mark_lights_dirty();
+    }
+
+    /// `light.life = 0` alone.
+    pub fn kill_lamppost(&mut self, key: u64) {
+        if let Some(l) = self.lampposts.iter_mut().find(|l| l.key == key) {
+            l.dead = true;
+        }
+    }
+
+    /// `IsoGridSquare.recalcLightTime = -1`, `++Core.dirtyGlobalLightsCount`
+    /// and `GameTime.lightSourceUpdate = 100`.
+    pub fn mark_lights_dirty(&mut self) {
+        self.dirty_global_lights += 1;
+        self.light_source_update = 100.0;
+    }
+
+    /// The fields of a light still in the cell's list (its owner writes
+    /// colour and `active` directly; `checkLights` sends the changes).
+    pub fn lamppost_mut(&mut self, key: u64) -> Option<&mut CellLight> {
+        self.lampposts
+            .iter_mut()
+            .find(|l| l.key == key)
+            .map(|l| &mut l.light)
+    }
+
+    /// The cell's own lights still in its list, in order, and whether each
+    /// is dead (`life == 0`, dropped by the next frame).
+    pub fn lampposts(&self) -> impl Iterator<Item = (u64, &CellLight, bool)> {
+        self.lampposts.iter().map(|l| (l.key, &l.light, l.dead))
+    }
+
+    /// The lighting library's id for a light (`IsoLightSource.id`), once
+    /// `checkLights` has sent it.
+    pub fn light_id(&self, key: u64) -> Option<i32> {
+        self.sync.light_id(key)
+    }
+
     /// `IsoCell.getLamppostPositions()` with each lamp's `active` after
-    /// `checkLights`' power rules, plus removed lamps once.
+    /// `checkLights`' power rules, plus removed lamps once, then the cell's
+    /// own lights. A cell light that is dead or outside every local
+    /// player's chunk map (`isInBounds`) is sent as not alive and leaves the
+    /// list, as `checkLights` removes it.
     fn lamp_list(
         &mut self,
         settings: &dyn RenderSettingsSource,
@@ -409,6 +526,32 @@ impl WorldLighting {
                 out.push(LightSource { active, ..l.source });
             }
         }
+        let maps = self.chunk_maps;
+        // `IsoLightSource.isInBounds()`: inside any local player's map.
+        let in_bounds = |c: &CellLight| {
+            maps.iter().flatten().any(|&(min_x, min_y, max_x, max_y)| {
+                c.x >= min_x && c.x < max_x && c.y >= min_y && c.y < max_y
+            })
+        };
+        for l in &self.lampposts {
+            let c = &l.light;
+            let in_bounds = in_bounds(c);
+            out.push(LightSource {
+                key: l.key,
+                x: c.x,
+                y: c.y,
+                z: c.z,
+                radius: c.radius,
+                r: c.r,
+                g: c.g,
+                b: c.b,
+                active: c.active,
+                life: -1,
+                local_to_building: c.local_to_building,
+                alive: !l.dead && in_bounds,
+            });
+        }
+        self.lampposts.retain(|l| !l.dead && in_bounds(&l.light));
         out
     }
 
@@ -417,7 +560,6 @@ impl WorldLighting {
         &mut self,
         w: &WorldView<'_>,
         hooks: &dyn WorldHooks,
-        bounds: (i32, i32, i32, i32),
     ) -> Vec<RoomLightSource> {
         let rooms: BTreeSet<i64> = self
             .lights
@@ -446,11 +588,17 @@ impl WorldLighting {
                     self.next_key += 1;
                     self.next_key
                 });
-                let (min_x, min_y, max_x, max_y) = bounds;
-                let in_bounds = !(r.x - 5 >= max_x
-                    || r.x + r.w + 5 <= min_x
-                    || r.y - 5 >= max_y
-                    || r.y + r.h + 5 <= min_y);
+                // `IsoRoomLight.isInBounds()`: near any local player's map.
+                let in_bounds =
+                    self.chunk_maps
+                        .iter()
+                        .flatten()
+                        .any(|&(min_x, min_y, max_x, max_y)| {
+                            !(r.x - 5 >= max_x
+                                || r.x + r.w + 5 <= min_x
+                                || r.y - 5 >= max_y
+                                || r.y + r.h + 5 <= min_y)
+                        });
                 out.push(RoomLightSource {
                     key,
                     building_id,
@@ -485,6 +633,15 @@ impl WorldLighting {
         out
     }
 
+    /// Sets local player `player`'s chunk map, `(getWorldXMin(),
+    /// getWorldYMin(), chunkGridWidth)` in chunks, or `None` when the
+    /// player has left (`chunkMap[player].ignore`). [`Self::frame`] sets
+    /// its own player's; cell lights stay while inside any player's map.
+    pub fn set_chunk_map(&mut self, player: i32, map: Option<(i32, i32, i32)>) {
+        self.chunk_maps[player as usize & 3] =
+            map.map(|(x, y, w)| (x * 8, y * 8, (x + w) * 8, (y + w) * 8));
+    }
+
     /// The decoded light of a square for `player`.
     pub fn square_light(&self, player: i32, x: i32, y: i32, z: i32) -> Option<&SquareLight> {
         let lvl = self
@@ -508,14 +665,9 @@ impl WorldLighting {
         on_screen: &dyn Fn(i32, i32, i32) -> bool,
     ) -> Result<LightingFrame, LightingError> {
         let pi = p.index;
-        let bounds = (
-            p.chunk_x_min * 8,
-            p.chunk_y_min * 8,
-            (p.chunk_x_min + p.chunk_grid_width) * 8,
-            (p.chunk_y_min + p.chunk_grid_width) * 8,
-        );
+        self.set_chunk_map(pi, Some((p.chunk_x_min, p.chunk_y_min, p.chunk_grid_width)));
         let lamps = self.lamp_list(settings, hooks);
-        let rooms = self.room_light_list(w, hooks, bounds);
+        let rooms = self.room_light_list(w, hooks);
         let torches = hooks.torches();
         let r =
             self.sync

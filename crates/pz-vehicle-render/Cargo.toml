@@ -12,9 +12,12 @@ pz-render.workspace = true
 pz-model = { path = "../pz-model" }
 pz-anim = { path = "../pz-anim" }
 pz-iso-render = { path = "../pz-iso-render" }
+pz-lighting.workspace = true
+pz-world-render = { path = "../pz-world-render" }
 
 [dev-dependencies]
 pz-fs.workspace = true
+pz-world.workspace = true
 pz-inventory.workspace = true
 pz-gpu = { path = "../pz-gpu" }
 pz-character-model = { path = "../pz-character-model" }

@@ -28,7 +28,7 @@ pub mod sprites;
 
 pub use hooks::{NoWorldHooks, WorldHooks};
 pub use lighting::{
-    default_player, grid_square, LightingFrame, LightingSquares, PlayerFrameInput, WorldLighting,
+    default_player, grid_square, CellLight, LightingFrame, LightingSquares, PlayerFrameInput, WorldLighting,
 };
 pub use render_world::{
     building_id, cutaway_info, render_square, seam_neighbours, wall_type, RenderWorld, WorldView,

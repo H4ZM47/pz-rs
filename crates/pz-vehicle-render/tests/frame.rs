@@ -13,6 +13,8 @@
 
 mod common;
 
+use common::night;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -273,6 +275,64 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
     let torches = vehicle_torches(&v);
     eprintln!("torches: {torches:?}");
 
+    // Night: the same car in the lighting pass (its headlights as torches,
+    // `LightingJNI.checkLights`), the player at its spot looking south-east
+    // along the beams; the results light a full chunk of road.
+    let (lcell, lsprites, lmeta) = night::scene();
+    let lview = pz_world_render::WorldView {
+        cell: &lcell,
+        meta: &lmeta,
+        sprites: &lsprites,
+    };
+    let vehicles = [&*v];
+    let hooks = night::VehicleTorches(&vehicles);
+    let mut lighting = night::new_lighting(&lview, &hooks);
+    let lit = night::light_from(
+        &lview,
+        &mut lighting,
+        &hooks,
+        12,
+        (10.5, 10.5),
+        pz_lighting::jni::IsoDirection::SE,
+    );
+    let night_squares: Vec<RenderSquare> = (8..16)
+        .flat_map(|y| (8..16).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let l = &lit.squares[&(x, y, 0)];
+            let mut sq = RenderSquare::new(x, y, 0);
+            sq.objects
+                .push(RenderObject::new(ObjectKind::Plain, Some(floor.clone())));
+            sq.light_info = l.light_info;
+            sq.vert_lights = l.vert_lights;
+            sq.light_level = l.light_level;
+            sq.cut = l.cut;
+            sq
+        })
+        .collect();
+    let mut night_level = [None; 64];
+    for sq in &night_squares {
+        night_level[((sq.x - 8) + (sq.y - 8) * 8) as usize] = Some(sq);
+    }
+    let night_light = |x: f32, y: f32| {
+        let c = lit.squares[&(x.floor() as i32, y.floor() as i32, 0)].light_info;
+        [c.r, c.g, c.b]
+    };
+    // A square 4 ahead of the car's centre along its axis, in the front
+    // beams, and one beside the car (outside every beam; the rear pair
+    // lights the road behind it).
+    let (fx, fy) = (torches[0].angle_x, torches[0].angle_y);
+    let ahead = (
+        (12.6 + fx * 4.0).floor() as i32,
+        (10.4 + fy * 4.0).floor() as i32,
+    );
+    let beside = (9, 13);
+    let (la, lb) = (
+        lit.squares[&(ahead.0, ahead.1, 0)].light_level,
+        lit.squares[&(beside.0, beside.1, 0)].light_level,
+    );
+    eprintln!("night light ahead {ahead:?} {la}, beside {beside:?} {lb}");
+    assert!(la > lb + 0.3 && lb > 0.0, "beam {la} vs beside {lb}");
+
     let loader = Loader {
         tm: RefCell::new(tm),
         files: RefCell::new(HashMap::new()),
@@ -303,16 +363,21 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
     let res = MediaModelResources::new(&media, &loader);
     let (px, py, pz) = (10.5f32, 10.5f32, 0.0f32);
     let mut lit_sum = None;
-    for (zoom, name, headlights) in [
-        (1.0f32, "vehrender_frame_zoom1.png", true),
-        (0.5, "vehrender_frame_zoom05.png", true),
-        (1.0, "vehrender_frame_lights_off.png", false),
+    for (zoom, name, headlights, night) in [
+        (1.0f32, "vehrender_frame_zoom1.png", true, false),
+        (0.5, "vehrender_frame_zoom05.png", true, false),
+        (1.0, "vehrender_frame_lights_off.png", false, false),
+        (1.0, "vehrender_frame_night.png", true, true),
     ] {
         v.st_mut().headlights_on = headlights;
         set.instance.update_lights(&v);
         let cam = Camera::player(px, py, pz, w as i32, h as i32, zoom);
         let mc = ModelCamera::new(&cam, w as f32 * zoom, h as f32 * zoom);
-        let amb = 0.8f32;
+        let amb = if night {
+            night_light(px, py)[0]
+        } else {
+            0.8f32
+        };
         let mut lights = [EffectLight::default(); 5];
         let fill = amb * 1.7 / 4.0;
         lights[3].set(px - 2.0, py - 2.0, pz + 1.0, fill, fill, fill, 5000);
@@ -346,11 +411,19 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
         let chr = render_character_object(&slot, &frame, shadow, &mc, &res);
         let vframe = VehicleFrame {
             alpha: 1.0,
-            ambient: [amb; 3],
+            ambient: if night {
+                night_light(12.6, 10.4)
+            } else {
+                [amb; 3]
+            },
             lights: Vec::new(),
             sky_texture_shift: 0.0,
             sky_textures: [None, None],
-            square_light: [amb; 3],
+            square_light: if night {
+                night_light(12.6, 10.4)
+            } else {
+                [amb; 3]
+            },
             seen: true,
             slope: None,
             default_shadow: vehicle_shadow.clone(),
@@ -371,7 +444,7 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
         let r = ChunkRenderer::new(cam, &depth_maps, (w, h));
         let chunks = [ChunkLevels {
             texture: ChunkTexture::new(1, 1, 0, 0, 0),
-            levels: vec![(0, level)],
+            levels: vec![(0, if night { night_level } else { level })],
             dirty: true,
         }];
         let cmds = world_frame_with_objects(
@@ -418,6 +491,26 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
                     red += 1;
                 }
             }
+        }
+        if night {
+            // The road in the beams is lit, behind the car it is dark.
+            let screen = |(x, y): (i32, i32)| {
+                let (dx, dy) = (x as f32 + 0.5 - px, y as f32 + 0.5 - py);
+                (
+                    (w as f32 / 2.0 + (dx - dy) * 64.0) as u32,
+                    (h as f32 / 2.0 + (dx + dy) * 32.0) as u32,
+                )
+            };
+            let sum = |(x, y): (u32, u32)| -> i32 {
+                (0..5)
+                    .flat_map(|dy| (0..5).map(move |dx| (x + dx - 2, y + dy - 2)))
+                    .map(|(x, y)| at(x, y).iter().sum::<i32>())
+                    .sum()
+            };
+            let (a, b) = (sum(screen(ahead)), sum(screen(beside)));
+            eprintln!("night pixels ahead {a} beside {b}");
+            assert!(a > b * 2, "beam {a} vs beside {b}");
+            continue;
         }
         assert!(red > r * r, "car paint around the car: {red}");
         // The headlights' lights texture: brighter with them on.
