@@ -1230,3 +1230,7 @@ registered):
       `pz_worldmap::triangulate::MapFilesInfo` over the current
       `MapFiles` (directory names in priority order, `hasCell300`), so
       lower-priority map directories' cells are clipped (#228).
+- [ ] World map pyramids: `pz_worldmap::pyramid::start_frame()` at the
+      start and `end_frame()` at the end of each frame
+      (`SpriteRenderer`'s `WorldMapImages.startFrame/endFrame`); until
+      then each `UIWorldMap.render` brackets its own draw (#PYR).

@@ -283,3 +283,118 @@ fn matches_draw_oracle() {
     assert_eq!(bad, 0, "{bad} lines differ");
     assert_eq!(out.len(), want.len());
 }
+
+/// The pyramid tile selection against the original `ImagePyramid` and
+/// `Drawer` (oracle `pyramid.txt`): bounds and levels from `pyramid.txt`,
+/// metres per tile, `getZoom`, `isValidTile`, the tiles covering cells and
+/// the visible tiles of five views, flat and isometric, for both of
+/// Muldraugh's pyramids.
+#[test]
+fn matches_pyramid_oracle() {
+    use crate::pyramid::WorldMapImages;
+    let (Some(dir), Some(map)) = (
+        std::env::var_os("PZ_WORLDMAP_ORACLE_DIR"),
+        std::env::var_os("PZ_WORLDMAP_MAP_DIR"),
+    ) else {
+        eprintln!("PZ_WORLDMAP_ORACLE_DIR / PZ_WORLDMAP_MAP_DIR not set; skipping");
+        return;
+    };
+    let want = std::fs::read_to_string(std::path::Path::new(&dir).join("pyramid.txt")).unwrap();
+    let map = map.to_string_lossy().to_string();
+    let d64 = |v: f64| format!("{:x}", v.to_bits());
+    let mut out = Vec::new();
+    for name in ["pyramid.zip", "forest.pyramid.zip"] {
+        let images = WorldMapImages::get_or_create(&format!("{map}/{name}")).unwrap();
+        {
+            let p = images.pyramid.borrow();
+            out.push(format!(
+                "pyr {name} {} {} {} {} {} {} {}",
+                p.min_x,
+                p.min_y,
+                p.max_x,
+                p.max_y,
+                p.min_z,
+                p.max_z,
+                b(p.resolution)
+            ));
+            for z in 0..=5 {
+                out.push(format!("mpt {z} {}", d64(p.calculate_meters_per_tile(z))));
+            }
+        }
+        let mut zf = 10.0f32;
+        while zf <= 18.0 {
+            out.push(format!("zoom {} {}", b(zf), images.get_zoom(zf)));
+            zf += 0.25;
+        }
+        {
+            let p = images.pyramid.borrow();
+            for z in -1..=5 {
+                for x in (-1..90).step_by(7) {
+                    for y in (-1..70).step_by(5) {
+                        if p.is_valid_tile(x, y, z) {
+                            out.push(format!("valid {x} {y} {z}"));
+                        }
+                    }
+                }
+            }
+            for z in 0..=4 {
+                for cx in (0..80).step_by(9) {
+                    for cy in (0..65).step_by(8) {
+                        match p.tiles_covering_cell(cx, cy, z) {
+                            Some(t) => out.push(format!(
+                                "cover {cx} {cy} {z} true {} {} {} {}",
+                                t[0], t[1], t[2], t[3]
+                            )),
+                            None => out.push(format!("cover {cx} {cy} {z} false")),
+                        }
+                    }
+                }
+            }
+        }
+        for iso in 0..2 {
+            for (cx, cy, z) in [
+                (10700.0f32, 9800.0f32, 15.0f32),
+                (10700.0, 9800.0, 13.0),
+                (10650.0, 10150.0, 17.25),
+                (300.0, 200.0, 14.0),
+                (19800.0, 16000.0, 12.5),
+            ] {
+                let mut wm = WorldMap::new();
+                wm.set_bounds_in_squares(0, 0, 19967, 16127);
+                let mut r = WorldMapRenderer::new();
+                r.set_boolean("Isometric", iso == 1);
+                r.set_map(0, 0, 1280, 720);
+                r.reset_view(&wm);
+                r.center_on(cx, cy);
+                r.set_zoom(&wm, z);
+                r.update_view(&wm, 1_000_000, 0.0);
+                let style = WorldMapStyle::new();
+                let inp = DrawInputs {
+                    map: &wm,
+                    style: &style,
+                    fill: [1.0; 4],
+                    files: &Muldraugh,
+                    debug: false,
+                };
+                let d = Drawer::new(&r, &inp);
+                let adj = d.zoom_adjusted(&images);
+                let ptz = images.get_zoom(adj as f32);
+                let (xy, bounds) = d.calc_visible_pyramid_tiles(&images, ptz);
+                let list: Vec<String> = xy.iter().map(|v| v.to_string()).collect();
+                out.push(format!(
+                    "view {iso} {} {} {} {} {ptz} {{{}}} [{}, {}, {}, {}]",
+                    jf(cx),
+                    jf(cy),
+                    jf(z),
+                    d64(adj),
+                    list.join(", "),
+                    bounds[0],
+                    bounds[1],
+                    bounds[2],
+                    bounds[3]
+                ));
+            }
+        }
+    }
+    assert_eq!(out, want.lines().collect::<Vec<_>>());
+}

@@ -2,6 +2,7 @@
 //! files one map UI shows, and the displayed bounds in squares.
 
 use crate::data::WorldMapData;
+use crate::pyramid::WorldMapImages;
 use std::rc::Rc;
 
 /// Squares per world-map cell.
@@ -21,8 +22,8 @@ pub struct WorldMap {
     pub max_y: i32,
     bounds_from_data: bool,
     pub last_data_in_directory: Vec<Rc<WorldMapData>>,
-    /// `images.size()`: the image pyramids (`WorldMapImages`) added.
-    pub images: Vec<Rc<str>>,
+    /// The image pyramids (`WorldMapImages`) added.
+    pub images: Vec<Rc<WorldMapImages>>,
 }
 
 impl WorldMap {
@@ -171,12 +172,24 @@ impl WorldMap {
 
     /// `addImagePyramid(absolutePath)`.
     pub fn add_image_pyramid(&mut self, path: &str) {
-        if path.trim().is_empty() || !std::path::Path::new(path).exists() {
+        if path.trim().is_empty() {
             return;
         }
-        if !self.images.iter().any(|i| &**i == path) {
-            self.images.push(path.into());
+        if let Some(i) = WorldMapImages::get_or_create(path) {
+            if !self.images.iter().any(|x| Rc::ptr_eq(x, &i)) {
+                self.images.push(i);
+            }
         }
+    }
+
+    /// `getWorldMapImagesByFileName(absolutePath)`.
+    pub fn get_world_map_images_by_file_name(&self, path: &str) -> Option<&Rc<WorldMapImages>> {
+        if path.trim().is_empty() {
+            return None;
+        }
+        self.images
+            .iter()
+            .find(|i| i.absolute_path.eq_ignore_ascii_case(path))
     }
 
     pub fn has_images(&self) -> bool {

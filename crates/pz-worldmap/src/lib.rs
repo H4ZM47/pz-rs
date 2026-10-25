@@ -8,6 +8,7 @@ pub mod binary;
 pub mod data;
 pub mod draw;
 pub mod projection;
+pub mod pyramid;
 pub mod rasterize;
 pub mod renderer;
 pub mod style;

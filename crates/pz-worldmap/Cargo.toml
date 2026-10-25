@@ -11,3 +11,7 @@ quick-xml.workspace = true
 pz-render.workspace = true
 pz-text.workspace = true
 pz-clipper.workspace = true
+pz-classfile.workspace = true
+
+[dev-dependencies]
+png.workspace = true
