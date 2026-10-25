@@ -248,6 +248,10 @@ pub struct CharacterVars {
     pub collided_e: bool,
     pub collided_w: bool,
     pub last_collide_time: f32,
+    /// `IsoPlayer.ignoreAutoVault`.
+    pub ignore_auto_vault: bool,
+    /// `IsoPlayer.hasObstacleOnPath` (a remote player's).
+    pub has_obstacle_on_path: bool,
     /// `IsoMovingObject.nx`, `ny` (`getNextX/Y`), `reqMovement`, `impulsex/y`.
     pub next_x: f32,
     pub next_y: f32,
@@ -469,6 +473,8 @@ impl Default for CharacterVars {
             collided_e: false,
             collided_w: false,
             last_collide_time: 0.0,
+            ignore_auto_vault: false,
+            has_obstacle_on_path: false,
             next_x: 0.0,
             next_y: 0.0,
             req_movement: (0.0, 0.0),
@@ -1308,7 +1314,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `getDirectionAngleRadians()`: `Vector2.getDirection` of the forward
     /// direction.
     pub fn direction_angle_radians(&self) -> f32 {
-        (self.vars.forward_y as f64).atan2(self.vars.forward_x as f64) as f32
+        crate::character::zombie::math::direction(self.vars.forward_x, self.vars.forward_y)
     }
 
     /// `getDirectionAngle()`.
@@ -1327,8 +1333,11 @@ impl<I: 'static> GameCharacter<I> {
     /// original throws).
     pub fn set_forward_direction(&mut self, x: f32, y: f32) {
         if x * x + y * y == 0.0 {
+            // The original sets the direction from the zero vector (east)
+            // before it throws "Forward Direction cannot be zero length".
             self.vars.forward_x = x;
             self.vars.forward_y = y;
+            self.vars.dir = iso_direction_from_angle(x, y);
             return;
         }
         // `Vector2.normalize()`: a length already within 1e-5 of 1 stays.

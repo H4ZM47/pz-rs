@@ -194,8 +194,9 @@ pub trait HoppableHooks {
     fn bent_fences_enabled(&self) -> bool {
         false
     }
-    /// `BentFences.getInstance().isUnbentObject(obj, facing)`.
-    fn is_unbent_object(&self, _obj: &IsoObject, _facing: EdgeFacing) -> bool {
+    /// `BentFences.getInstance().isUnbentObject(obj, facing)` for `obj` on
+    /// `sq`.
+    fn is_unbent_object(&self, _sq: &IsoGridSquare, _obj: &IsoObject, _facing: EdgeFacing) -> bool {
         false
     }
 }
@@ -742,7 +743,7 @@ impl<'a> CollideEnv<'a> {
         sq.get_edge_element_to(next, self.cell, &|s: &'a IsoGridSquare, f| {
             s.objects
                 .iter()
-                .find(|o| hooks.is_unbent_object(o, f))
+                .find(|o| hooks.is_unbent_object(s, o, f))
                 .map(|o| (s, o.id))
         })
     }

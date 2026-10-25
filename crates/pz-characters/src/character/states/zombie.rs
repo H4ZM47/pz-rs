@@ -405,6 +405,7 @@ impl<I: 'static> State<I> for PathFindState {
     fn execute(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
         use crate::character::state::BehaviorResult;
         let result = cx.world.path_update(owner);
+        owner.run_path_requests(cx);
         match result {
             BehaviorResult::Failed => {
                 owner.set_var_bool("bPathfind", false);
@@ -830,7 +831,7 @@ impl<I: 'static> State<I> for ThumpState {
         let Some(i) = info else { return };
         if i.kind == ThumpKind::Window && i.can_climb_through {
             if let ThumpTarget::Object(o) = thump {
-                owner.path.requests.push(crate::character::path_mover::PathMoverRequest::ClimbThroughWindow(o));
+                owner.climb_through_window(o, cx);
             }
             return;
         }

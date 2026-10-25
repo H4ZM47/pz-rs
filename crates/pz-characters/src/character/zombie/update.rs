@@ -212,12 +212,15 @@ impl<I: 'static> GameCharacter<I> {
         let Some(obj) = cx.world.special_object_between(cur, feeler) else { return false };
         let Some(i) = cx.world.thump_info(obj, self.id) else { return false };
         let ThumpTarget::Object(oref) = obj else { return false };
-        use crate::character::path_mover::PathMoverRequest as R;
         if (i.kind == ThumpKind::Window || i.kind == ThumpKind::WindowFrame) && i.can_climb_through {
             if !self.is_facing_location(i.facing_position.0, i.facing_position.1, 0.8) {
                 return false;
             }
-            self.path.requests.push(if i.kind == ThumpKind::Window { R::ClimbThroughWindow(oref) } else { R::ClimbThroughWindowFrame(oref) });
+            if i.kind == ThumpKind::Window {
+                self.climb_through_window(oref, cx);
+            } else {
+                self.climb_through_window_frame(oref, cx);
+            }
             return true;
         }
         if (i.kind == ThumpKind::Door || i.kind == ThumpKind::Thumpable && !i.can_climb_through) && i.hoppable && !i.tall_hoppable {
@@ -225,11 +228,11 @@ impl<I: 'static> GameCharacter<I> {
                 return false;
             }
             let dir = cardinal_direction_to(cur, i.square.unwrap_or(cur), i.north);
-            self.path.requests.push(R::ClimbOverFence(dir));
+            self.do_climb_over_fence(dir, cx);
             return true;
         }
         if i.kind == ThumpKind::Thumpable && i.can_climb_through {
-            self.path.requests.push(R::ClimbThroughWindow(oref));
+            self.climb_through_window(oref, cx);
             return true;
         }
         if i.thumpable_for.is_some() {
