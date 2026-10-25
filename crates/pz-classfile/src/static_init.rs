@@ -240,6 +240,21 @@ fn eval(class: &ClassFile, method: &str, params: Option<&[Value]>) -> Result<(Ve
                     }
                 }
             }
+            // invokedynamic (a lambda or string concatenation): its
+            // arguments are consumed and its value is not modelled.
+            0xba => {
+                let n = match class.constant(u16_at(pc + 1)?)? {
+                    crate::class::Constant::InvokeDynamic(_, nt) => match class.constant(*nt)? {
+                        crate::class::Constant::NameAndType(_, d) => descriptor_args(class.utf8(*d)?).0,
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                for _ in 0..n {
+                    pop(&mut stack);
+                }
+                stack.push(Value::Unknown);
+            }
             0xbc | 0xbd => {
                 let len = match pop(&mut stack) {
                     Value::Int(n) if (0..=1 << 20).contains(&n) => n as usize,
