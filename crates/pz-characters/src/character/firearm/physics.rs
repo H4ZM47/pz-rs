@@ -5,8 +5,6 @@
 //!
 //! The world (engine) owns the physics world and hands it out through
 //! [`StateWorld::physics`](crate::character::state::StateWorld::physics).
-//! With the `bullet` feature, `pz_bullet::api::PzBullet` implements this
-//! trait (see `bullet.rs`).
 //!
 //! Positions cross in the physics frame: an iso position `(x, y, z level)`
 //! is sent as `(x, z * 2.44949, y)` ([`BULLET_Z_SCALE`]).

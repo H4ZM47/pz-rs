@@ -1,10 +1,12 @@
 //! The character side of ragdolls. The ragdoll itself (`RagdollBuilder`,
 //! `RagdollController`) is pz-ragdoll's and lives beside the character's
-//! animation player; this module gives it the character
-//! (`pz_ragdoll::RagdollCharacter`, behind the `bullet` feature):
-//! `canRagdoll`, the fall flags and position it writes, and the shot it
-//! reacts to, with the impulse `PhysicsHitReactionScript` gives for the
-//! weapon (`RagdollController.simulateHitReaction`'s first half).
+//! animation player; this module is the character side it needs:
+//! `canRagdoll` ([`GameCharacter::can_ragdoll_uncapped`]), the tracked
+//! ragdolling state, and the shot it reacts to with the impulse
+//! `PhysicsHitReactionScript` gives for the weapon
+//! ([`GameCharacter::take_ragdoll_hit`], `simulateHitReaction`'s first
+//! half). TODO(#102): the `pz_ragdoll::RagdollCharacter` impl over these
+//! (`CharacterRagdoll`) lands with pz-ragdoll.
 //!
 //! The ragdoll starts the way the original's does: the animation state
 //! machine picks a ragdoll node (death and hit-reaction nodes test
@@ -102,86 +104,5 @@ impl<I: 'static> GameCharacter<I> {
             target: [self.vars.x, self.vars.y, self.vars.z],
             attacker: attacker.unwrap_or(data.attacker_position),
         })
-    }
-}
-
-/// A character as pz-ragdoll's `RagdollCharacter`.
-#[cfg(feature = "bullet")]
-pub struct CharacterRagdoll<'a, I: 'static> {
-    pub chr: &'a mut GameCharacter<I>,
-    pub sm: &'a ScriptManager,
-    pub ctx: &'a dyn SimContext,
-    /// The attacker's position by character id (for the shot impulse).
-    pub attacker_position: &'a dyn Fn(i32) -> Option<[f32; 3]>,
-}
-
-#[cfg(feature = "bullet")]
-impl<I: 'static> pz_ragdoll::RagdollCharacter for CharacterRagdoll<'_, I> {
-    fn id(&self) -> i32 {
-        self.chr.id
-    }
-    fn position(&self) -> pz_ragdoll::Vec3 {
-        pz_ragdoll::Vec3::new(self.chr.vars.x, self.chr.vars.y, self.chr.vars.z)
-    }
-    fn forward_direction_angle(&self) -> f32 {
-        self.chr.direction_angle_radians()
-    }
-    fn can_ragdoll(&self) -> bool {
-        self.chr.can_ragdoll_uncapped(self.ctx)
-    }
-    fn set_ragdoll_fall(&mut self, v: bool) {
-        self.chr.vars.ragdoll_fall = v;
-    }
-    fn set_use_physic_hit_reaction(&mut self, v: bool) {
-        self.chr.vars.use_physic_hit_reaction = v;
-    }
-    fn is_fall_on_front(&self) -> bool {
-        self.chr.environment.fall_on_front
-    }
-    fn set_fall_on_front(&mut self, v: bool) {
-        self.chr.environment.fall_on_front = v;
-    }
-    fn set_on_floor(&mut self, v: bool) {
-        self.chr.vars.on_floor = v;
-    }
-    /// `doDeferredMovementFromRagdoll(dMovement)`.
-    fn do_deferred_movement_from_ragdoll(&mut self, player: &pz_anim::AnimationPlayer, m: pz_ragdoll::Vec3) {
-        if !player.is_ragdolling() {
-            return;
-        }
-        let c = &mut *self.chr;
-        // `moveUnmoddedInternal`, then the position follows.
-        c.vars.next_x += m.x;
-        c.vars.next_y += m.y;
-        c.vars.req_movement = (m.x, m.y);
-        c.vars.x = c.vars.next_x;
-        c.vars.y = c.vars.next_y;
-        c.vars.z += m.z;
-    }
-    fn take_ragdoll_hit(&mut self) -> Option<pz_ragdoll::RagdollHit> {
-        let attacker = self.chr.ballistics_target.as_ref().and_then(|t| (self.attacker_position)(t.combat_damage_data.attacker));
-        let h = self.chr.take_ragdoll_hit(self.sm, attacker)?;
-        let v = |p: [f32; 3]| pz_ragdoll::Vec3::new(p[0], p[1], p[2]);
-        Some(pz_ragdoll::RagdollHit {
-            body_part: h.body_part,
-            impulse: h.impulse,
-            upward_impulse: h.upward_impulse,
-            target: v(h.target),
-            attacker: v(h.attacker),
-        })
-    }
-}
-
-#[cfg(feature = "bullet")]
-impl<I: 'static> CharacterRagdoll<'_, I> {
-    /// After the animation update: what the character tracks of the
-    /// controller (`isRagdoll`, `isRagdollSimulationActive`, `isUpright`,
-    /// `isOnBack`).
-    pub fn track(chr: &mut GameCharacter<I>, player: &pz_anim::AnimationPlayer, controller: Option<&pz_ragdoll::RagdollController>) {
-        chr.ragdoll.has_controller = controller.is_some();
-        chr.ragdoll.is_ragdolling = player.is_ragdolling();
-        chr.ragdoll.upright = controller.is_some_and(|c| c.is_upright());
-        chr.ragdoll.on_back = controller.is_some_and(|c| c.is_on_back());
-        chr.vars.ragdoll_simulation_active = controller.is_some_and(|c| c.is_simulation_active()) && chr.ragdoll.can_ragdoll;
     }
 }

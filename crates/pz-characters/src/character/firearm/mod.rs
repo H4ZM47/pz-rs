@@ -8,16 +8,14 @@
 //! zombies too).
 //!
 //! The physics is reached through the [`PhysicsWorld`] trait (the Bullet
-//! natives the game calls); with the `bullet` feature, `pz_bullet`'s
-//! `PzBullet` implements it and [`ragdoll::CharacterRagdoll`] is the
-//! `pz_ragdoll::RagdollCharacter` of a character. The world owns the physics world and hands it
+//! natives the game calls). TODO(#92): the adapter over `pz_bullet`'s
+//! `PzBullet` comes with its ballistics natives (`ws/bullet`), which this
+//! base's pz-bullet lacks. The world owns the physics world and hands it
 //! out with `StateWorld::physics`; the animation inputs (muzzle attachment,
 //! reticle, bone transforms, the ragdoll clip) come from the other
 //! `StateWorld` hooks.
 
 pub mod ballistics;
-#[cfg(any(feature = "bullet", test))]
-pub mod bullet;
 pub mod hit_chance;
 pub mod physics;
 pub mod ragdoll;

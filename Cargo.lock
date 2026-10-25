@@ -1869,7 +1869,6 @@ version = "0.1.0"
 dependencies = [
  "pz-anim",
  "pz-audio",
- "pz-bullet",
  "pz-core",
  "pz-fs",
  "pz-inventory",

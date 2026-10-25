@@ -217,10 +217,10 @@ registered):
       player; save with `save_player` (#101).
 - [ ] Bullet world ownership: the world/engine owns the one `PzBullet`
       (`WorldSimulation`) and counts its steps (`getBulletFrameNo`); the
-      characters reach it through `StateWorld::physics()` (`PzBullet`
-      implements `pz_characters::character::firearm::PhysicsWorld` with
-      the `bullet` feature) and the ragdoll driver through `RagdollEnv`
-      (#ws/firearms).
+      characters reach it through `StateWorld::physics()`
+      (`pz_characters::character::firearm::PhysicsWorld`, the ballistics
+      natives; implement it over `PzBullet` once its ballistics natives
+      from ws/bullet are on this base) (#ws/firearms).
 - [ ] Firearm hooks on `StateWorld`: `muzzle_attachment(chr)` (the
       primary hand model's MUZZLE attachment world position/direction),
       `aim_reticle_iso(chr)` (`AimingReticle` x/y through `XToIso/YToIso`),
@@ -250,11 +250,12 @@ registered):
       (#ws/firearms).
 - [ ] Per frame, ragdolls: before the animation update call
       `update_ragdoll_variables(ctx)` (the `canRagdoll` variable the death
-      and shot nodes test); pass `CharacterRagdoll { chr, sm, ctx,
-      attacker_position }` as the `RagdollCharacter` of #102's
-      `RagdollEnv` (it takes the shot impulse from the ballistics target's
-      combat data and `PhysicsHitReactionScript`); after the update
-      `CharacterRagdoll::track(chr, player, controller)` (#ws/firearms).
+      and shot nodes test); once pz-ragdoll (#102) lands, its
+      `RagdollCharacter` reads `can_ragdoll_uncapped`, the fall flags and
+      `take_ragdoll_hit(sm, attacker position)` (the shot impulse from the
+      ballistics target's combat data and `PhysicsHitReactionScript`), and
+      after the update the controller state goes into `chr.ragdoll`
+      (`RagdollTracking`) (#ws/firearms).
 
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);

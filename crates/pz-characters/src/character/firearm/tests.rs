@@ -2,44 +2,15 @@
 //! skeleton (the field names are the original's code symbols; every number
 //! is made up).
 
-use std::cell::RefCell;
-
-use pz_anim::AnimationVariableSource;
-use pz_bullet::PzBullet;
 use pz_inventory::ItemClass;
 
 use super::hit_chance::*;
-use super::physics::{PhysicsWorld, RagdollBodyPart};
+use super::physics::RagdollBodyPart;
 use super::reaction::{body_part_for, calculate_shot_direction, resolve_hit_reaction, HitReaction, ShotDirection};
-use super::{FirearmStats, MuzzleAttachment, TargetSkeleton};
-use crate::character::state::{SquareInfo, StateCx, StateWorld};
+use super::FirearmStats;
 use crate::character::tests::{give_item, player};
 use crate::character::thermoregulator::body_tests::body_fixture;
 use crate::character::*;
-
-/// Draws from a Java-compatible generator, recording the events.
-struct Seeded {
-    rand: pz_core::random::Rand,
-    events: RefCell<Vec<String>>,
-}
-
-impl SimContext for Seeded {
-    fn rand_next(&self, max: i32) -> i32 {
-        self.rand.next(max)
-    }
-    fn rand_next_range(&self, min: i32, max: i32) -> i32 {
-        self.rand.next_range(min, max)
-    }
-    fn rand_next_float(&self, min: f32, max: f32) -> f32 {
-        self.rand.next_float(min, max)
-    }
-    fn event(&self, e: SimEvent) {
-        self.events.borrow_mut().push(format!("{e:?}"));
-    }
-    fn debug_always_hit_target(&self) -> bool {
-        true
-    }
-}
 
 /// Draws `n - 1` (never a one-in-n) and the top of a float range.
 struct High;
@@ -172,141 +143,6 @@ fn perk_scaled_recoil_ammo_and_jams() {
     p.vars.aiming_delay = 19.0;
     p.set_aiming_delay_after_shot(&chars, &f);
     assert_eq!(p.vars.aiming_delay, 20.0);
-}
-
-/// A shooter's world: the zombies, the synthetic physics and the
-/// animation inputs.
-struct Range {
-    chars: Vec<GameCharacter<()>>,
-    bullet: PzBullet,
-    muzzle: MuzzleAttachment,
-}
-
-impl StateWorld<()> for Range {
-    fn character_mut(&mut self, id: i32) -> Option<&mut GameCharacter<()>> {
-        self.chars.iter_mut().find(|c| c.id == id)
-    }
-    fn take_character(&mut self, id: i32) -> Option<GameCharacter<()>> {
-        let i = self.chars.iter().position(|c| c.id == id)?;
-        Some(self.chars.remove(i))
-    }
-    fn put_character(&mut self, chr: GameCharacter<()>) {
-        self.chars.push(chr);
-    }
-    fn characters_near(&self, _x: f32, _y: f32, _z: f32, _r: f32) -> Vec<i32> {
-        self.chars.iter().map(|c| c.id).collect()
-    }
-    fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareInfo> {
-        Some(SquareInfo { x, y, z, ..Default::default() })
-    }
-    fn physics(&mut self) -> Option<&mut dyn PhysicsWorld> {
-        Some(&mut self.bullet)
-    }
-    fn muzzle_attachment(&self, _chr: i32) -> Option<MuzzleAttachment> {
-        Some(self.muzzle)
-    }
-    fn aim_reticle_iso(&self, _chr: i32) -> (f32, f32) {
-        (4.0, 0.0)
-    }
-    fn ballistics_skeleton(&self, _chr: i32) -> Option<TargetSkeleton> {
-        let mut packed = Vec::new();
-        for i in 0..35 {
-            let y = if i == 0 { 0.0 } else { 0.05 };
-            packed.extend_from_slice(&[0.0, y, 0.0, 0.0, 0.0, 0.0, 1.0]);
-        }
-        Some(TargetSkeleton { bone_count: 35, angle: 0.0, packed })
-    }
-}
-
-/// A 35-bone chain standing up the physics y axis with 11 capsule parts.
-fn synthetic_bullet() -> PzBullet {
-    let mut b = PzBullet::new();
-    b.init_pz_bullet();
-    b.init_world(-2, -2, 2, 2, 0, 0, false).unwrap();
-    let mut info = Vec::new();
-    for part in 0..11 {
-        info.extend_from_slice(&[part as f32, 1.0, 0.08, 0.3, 0.02, 0.0, 0.09, 0.0, 0.0, 0.0]);
-    }
-    b.define_ragdoll_body_part_info(Some(&info), false).unwrap();
-    let mut joints = Vec::new();
-    for j in 0..10 {
-        joints.extend_from_slice(&[j as f32, 5.0, j as f32, (j + 1) as f32]);
-        joints.extend_from_slice(&[0.0; 12]);
-        joints.extend_from_slice(&[0.5; 6]);
-    }
-    b.define_ragdoll_constraints(Some(&joints), false).unwrap();
-    let mut dynamics = Vec::new();
-    for part in 0..11 {
-        dynamics.extend_from_slice(&[part as f32, 0.05, 0.9, 0.8, 1.6, 2.5, 1.5, 0.5]);
-    }
-    b.define_ragdoll_body_dynamics(Some(&dynamics), false).unwrap();
-    let bones = [2, 4, 6, 20, 21, 24, 25, 8, 9, 14, 15];
-    let mut anchors = Vec::new();
-    for bone in 0..35 {
-        let part = bones.iter().position(|&x| x == bone);
-        anchors.extend_from_slice(&[bone as f32, part.unwrap_or(0) as f32, 0.0, 0.0, if part.is_some() { 1.0 } else { 0.0 }]);
-    }
-    b.define_ragdoll_anchors(Some(&anchors), false).unwrap();
-    let hierarchy: Vec<i32> = (0..35).map(|i| i - 1).collect();
-    b.initialize_ragdoll_skeleton(35, &hierarchy);
-    let mut pose = Vec::new();
-    for i in 0..35 {
-        let y = if i == 0 { 0.0 } else { 0.05 };
-        pose.extend_from_slice(&[0.0, y, 0.0, 0.0, 0.0, 0.0, 1.0]);
-    }
-    b.initialize_ragdoll_pose(35, &pose, 0.0, 0.0, 0.0, 1.0);
-    b
-}
-
-#[test]
-fn a_shot_hits_the_zombie_in_front() {
-    let (sm, mut chars) = body_fixture();
-    let mut p = player(&sm, &mut chars);
-    p.id = 1;
-    p.set_forward_direction(1.0, 0.0);
-    pistol(&sm, &mut p, 7, 6);
-    p.set_variable_string("ZombieHitReaction", "Shot");
-    let mut z: GameCharacter<()> = GameCharacter::new(&sm, CharacterKind::Zombie);
-    z.id = 2;
-    z.vars.x = 4.0;
-    z.vars.shootable = true;
-    z.health = 50.0;
-    z.set_forward_direction(-1.0, 0.0);
-    // The muzzle at physics height 0.6 (iso z 0.6 / 2.44949), level.
-    let muzzle = MuzzleAttachment { position: [0.4, 0.0, 0.6 / 2.44949], direction: [1.0, 0.0, 0.0] };
-    let mut world = Range { chars: vec![z], bullet: synthetic_bullet(), muzzle };
-    let ctx = Seeded { rand: pz_core::random::Rand::new(11), events: RefCell::new(Vec::new()) };
-    let item = p.items.item(7).unwrap().clone();
-    let f = FirearmStats::of(&sm, &item).unwrap();
-    // Aiming frames (the reticle's hit list adds the target), then the shot.
-    for _ in 0..3 {
-        let mut t = world.take_character(2).unwrap();
-        t.update_ballistics_target(&ctx, &mut world);
-        world.put_character(t);
-        p.update_ballistics(&sm, &chars, &ctx, &mut world);
-        p.calculate_ballistics(&mut chars.combat.borrow_mut(), Some(&muzzle), 12.0);
-        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
-        p.calculate_ranged_hit_info_list(&mut cx, &f).unwrap();
-        world.bullet.step_simulation(1.0 / 60.0, 1, 1.0 / 60.0, &mut pz_bullet::NoCallbacks).unwrap();
-        if let Some(c) = p.ballistics_controller.as_mut() {
-            c.post_update();
-        }
-    }
-    assert!(world.chars[0].ballistics_target.is_some(), "the reticle query added the target");
-    let mut cx = StateCx::new(&sm, &chars, &ctx, &mut world);
-    p.ranged_attack_collision_check(&mut cx, &item).unwrap();
-    assert_eq!(p.hit_info_list.len(), 1);
-    assert_eq!(p.hit_info_list[0].target, 2);
-    assert_eq!(p.hit_info_list[0].chance, 100);
-    assert_eq!(p.vars.last_hit_count, 1);
-    assert!(crate::character::states::swipe::ATTACKED.get(&mut p.state.params));
-    let z = &world.chars[0];
-    assert!(z.health < 50.0, "damage applied");
-    assert!(z.vars.hit_reaction.starts_with("Shot"), "{}", z.vars.hit_reaction);
-    assert_eq!(z.vars.attacked_by, Some(1));
-    let ev = ctx.events.borrow();
-    assert!(ev.iter().any(|e| e.starts_with("BulletTracer")), "{ev:?}");
-    assert!(ev.iter().any(|e| e.contains("Shots Fired")));
 }
 
 #[test]
