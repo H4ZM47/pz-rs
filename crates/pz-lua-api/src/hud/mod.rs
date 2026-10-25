@@ -7,11 +7,13 @@
 //! `pz_ui::UIManager::init` once Lua is up).
 
 pub mod clock;
+pub mod debug_console;
 pub mod health;
 pub mod host;
 pub mod moodles;
 pub mod new_window;
 pub mod progress_bar;
+pub mod scroll_bar;
 pub mod speed_controls;
 pub mod tooltip;
 
@@ -69,13 +71,18 @@ pub fn init_ui(t: &mut Thread) {
         with_ui(|m| m.ui.push(clock.clone()));
     }
     with_ui(|m| m.ui.push(tip.clone()));
-    // TODO(ui): UIDebugConsole (its own PR).
+    let screen_h = crate::bind_core::shared_core().borrow().get_screen_height();
+    let console = debug_console::UIDebugConsole::create(t, 20, screen_h - 265);
+    with_ui(|m| m.debug_console = Some(console.clone()));
+    console.set_y(screen_h as f64 - console.get_height() - 20.0);
+    console.set_visible(debug && with_host(|h| h.debug.ui_debug_console_start_visible()));
     for i in 0..4 {
         let ui = MoodlesUI::create();
         with_ui(|m| m.moodle_ui[i] = Some(ui.clone()));
         ui.set_visible(true);
         with_ui(|m| m.ui.push(ui.clone()));
     }
+    with_ui(|m| m.ui.push(console.clone()));
     with_ui(|m| m.resize_hook = Some(Rc::new(resize_hud)));
     UIManager::resize();
     for i in 0..4 {
@@ -300,6 +307,7 @@ pub fn register(thread: &mut Thread) {
     });
 
     register_health(thread);
+    debug_console::register(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
     mu.method("wiggle", |c| {
@@ -1025,8 +1033,13 @@ mod tests {
             assert!(!b.is_visible() && b.get_render_this_player_only() == i as i32);
             assert_eq!(b.ext::<ActionProgressBar>().unwrap().get_value(), 1.0);
         }
-        // Speed controls, clock, tooltip, four moodle columns, four bars.
-        assert_eq!(with_ui(|m| m.ui.len()), 11);
+        // Speed controls, clock, tooltip, four moodle columns, the debug
+        // console (hidden: no Core.debug), four bars.
+        assert_eq!(with_ui(|m| m.ui.len()), 12);
+        let console = with_ui(|m| m.debug_console.clone()).unwrap();
+        assert!(!console.is_visible());
+        assert!(Rc::ptr_eq(&with_ui(|m| m.ui[7].clone()), &console));
+        assert_eq!(console.get_y(), 720.0 - console.get_height() - 20.0);
         assert!(eval(&mut t, "UIManager.trySetProgressBarValue(1, 0.5)").truthy());
         assert_eq!(
             eval(&mut t, "UIManager.getProgressBar(1):getValue()").as_num(),

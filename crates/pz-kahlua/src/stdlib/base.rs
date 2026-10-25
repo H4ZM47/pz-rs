@@ -6,6 +6,18 @@ use crate::number::kahlua_tonumber;
 use crate::vm::LuaClosure;
 use std::rc::Rc;
 
+/// `BaseLib.printCallback`: also handed each printed line.
+pub type PrintCallback = Rc<dyn Fn(&mut crate::Thread, &str)>;
+
+thread_local! {
+    static PRINT_CALLBACK: std::cell::RefCell<Option<PrintCallback>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `BaseLib.setPrintCallback(callback)`.
+pub fn set_print_callback(cb: Option<PrintCallback>) {
+    PRINT_CALLBACK.with(|c| *c.borrow_mut() = cb);
+}
+
 pub fn register(env: &TableRef) {
     reg(env, "pcall", |c| {
         let f = c.arg(0);
@@ -38,6 +50,9 @@ pub fn register(env: &TableRef) {
             s.push_str(&java_value_of(&r));
         }
         (c.thread.out)(&s);
+        if let Some(cb) = PRINT_CALLBACK.with(|c| c.borrow().clone()) {
+            cb(c.thread, &s);
+        }
         Ok(0)
     });
     reg(env, "select", |c| {
