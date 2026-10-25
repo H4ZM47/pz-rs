@@ -110,11 +110,21 @@ impl EdgeFacing {
 /// `IsoGridSquare.GetSquare`.
 pub trait GetSquare {
     fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare>;
+
+    /// The whole cell behind this getter, when it is one (the queries that
+    /// look past single squares, `testCollideAdjacent` with a mover, need
+    /// it).
+    fn as_iso_cell(&self) -> Option<&IsoCell> {
+        None
+    }
 }
 
 impl GetSquare for IsoCell {
     fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
         IsoCell::get_grid_square(self, x, y, z)
+    }
+    fn as_iso_cell(&self) -> Option<&IsoCell> {
+        Some(self)
     }
 }
 
@@ -2411,6 +2421,12 @@ fn ensure_squares(ch: &mut IsoChunk, meta: &IsoMetaGrid) {
         z += 1;
     }
 }
+
+mod collide_mover;
+pub use collide_mover::{
+    window_load_sprites, CollideAdjacent, CollideEnv, CollideMover, CollidedFlags, HoppableAction,
+    HoppableHooks, MoverKind, MoverStates, NoHoppableHooks, SpecialCollide, SquareObject,
+};
 
 #[cfg(test)]
 mod tests;

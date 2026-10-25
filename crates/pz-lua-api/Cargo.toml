@@ -6,18 +6,22 @@ edition.workspace = true
 [dependencies]
 pz-kahlua.workspace = true
 pz-core.workspace = true
+pz-characters.workspace = true
+pz-audio.workspace = true
+pz-anim.workspace = true
+pz-scripts.workspace = true
 pz-fs.workspace = true
 pz-render.workspace = true
+indexmap.workspace = true
 pz-text.workspace = true
 pz-ui.workspace = true
 pz-vehicles.workspace = true
 pz-inventory.workspace = true
-indexmap.workspace = true
 pz-input.workspace = true
 pz-classfile.workspace = true
+pz-popman.workspace = true
+pz-world.workspace = true
 
 [dev-dependencies]
 pz-bullet.workspace = true
-pz-world.workspace = true
-pz-scripts.workspace = true
 pz-entity.workspace = true

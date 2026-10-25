@@ -216,3 +216,154 @@ fn screen_pass_keeps_orientation() {
     assert!(top[0] > 200 && top[2] < 50, "{top:?}");
     assert!(bottom[2] > 200 && bottom[0] < 50, "{bottom:?}");
 }
+
+fn surface_quad(x0: f32, y0: f32, x1: f32, y1: f32, attr: [f32; 4], depth: f32) -> [pz_render::SurfaceVertex; 4] {
+    let v = |x, y| pz_render::SurfaceVertex { attr, pos: [x, y], color: 0xFFFF_FFFF, depth };
+    [v(x0, y0), v(x1, y0), v(x1, y1), v(x0, y1)]
+}
+
+fn surface(program: pz_render::SurfaceProgram, quads: Vec<[pz_render::SurfaceVertex; 4]>, ground: Option<pz_render::Texture>, params: [[f32; 4]; 2]) -> DrawCmd {
+    DrawCmd::Surface(Box::new(pz_render::SurfaceDraw {
+        program,
+        quads,
+        uniforms: pz_render::SurfaceUniforms { time: 1.0, offset: [-90000.0, -640000.0, 16.0, 8.0], viewport: [0.0, 0.0, 16.0, 8.0], reflection_param: 0.5, params },
+        ground,
+        reflection: [None, None],
+        depth_func: gl::LEQUAL,
+        blend_func: [gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA, gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA],
+    }))
+}
+
+/// `puddles_lq` with a white height map: full level, so the puddle colour
+/// is `mix(dark, reflection, 0.8)` at alpha 0.5.
+#[test]
+fn low_quality_puddles_follow_the_height_map() {
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let hm = tm.texture_from_pixels("hm", 4, 4, [255u8; 4].repeat(16), 0);
+    let mut dl = DrawList::default();
+    dl.cmds.push(DrawCmd::DepthMask(true));
+    dl.cmds.push(DrawCmd::Clear(gl::DEPTH_BUFFER_BIT));
+    dl.cmds.push(surface(pz_render::SurfaceProgram::PuddlesLq, vec![surface_quad(0.0, 0.0, 8.0, 8.0, [0.0; 4], 0.5)], Some(hm), [[0.0; 4], [0.0, 0.0, 0.5, 0.0]]));
+    g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+    let p = g.read_pixels();
+    assert!(near_rgb(px(&p, 16, 3, 3), [54, 54, 61]), "{:?}", px(&p, 16, 3, 3));
+    assert_eq!(px(&p, 16, 12, 3), [0, 0, 0, 255]);
+}
+
+/// Every surface program builds and draws; water is depth-tested with
+/// its fragment depth.
+#[test]
+fn surface_programs_draw_with_their_fragment_depth() {
+    use pz_render::SurfaceProgram as P;
+    let Some(mut g) = gpu(16, 8) else { return };
+    let mut tm = TextureManager::new();
+    let ground = tm.texture_from_pixels("ground", 4, 4, [200u8, 150, 100, 255].repeat(16), 0);
+    for program in [P::Water, P::WaterHq, P::PuddlesHq, P::PuddlesMq, P::PuddlesLq] {
+        let mut dl = DrawList::default();
+        dl.cmds.push(DrawCmd::DepthMask(true));
+        dl.cmds.push(DrawCmd::Clear(gl::DEPTH_BUFFER_BIT));
+        // A nearer quad on the right half: depth 0.2 written.
+        dl.cmds.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
+        dl.cmds.push(DrawCmd::DepthFunc(gl::ALWAYS));
+        dl.cmds.push(DrawCmd::WorldSprite(
+            pz_render::Sprite { texture: None, x: [8.0, 16.0, 16.0, 8.0], y: [0.0, 0.0, 8.0, 8.0], u: [0.0; 4], v: [0.0; 4], color: [0xFF00_00FF; 4], flipped: false },
+            WorldShader::Default { z: 0.2 * 2.0 - 1.0 },
+        ));
+        let attr = if program.is_water() { [1.0, 0.0, 0.0, 1.0] } else { [0.0; 4] };
+        dl.cmds.push(surface(program, vec![surface_quad(0.0, 0.0, 16.0, 8.0, attr, 0.5)], Some(ground.clone()), [[0.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.7, 0.0]]));
+        g.render_frame(&[(opaque_black(16, 8), &dl)], &mut tm);
+        let p = g.read_pixels();
+        // Behind the nearer quad: untouched red.
+        assert_eq!(px(&p, 16, 12, 4), [255, 0, 0, 255], "{program:?}");
+        // In front of the cleared depth: the surface blended over black.
+        assert_ne!(px(&p, 16, 3, 4), [0, 0, 0, 255], "{program:?}");
+    }
+}
+
+/// The sky renders into its reflection texture: sky inside the sphere
+/// map, black outside it; sampled like any texture afterwards.
+#[test]
+fn skybox_renders_into_its_reflection_texture() {
+    let Some(mut g) = gpu(64, 64) else { return };
+    let mut tm = TextureManager::new();
+    let l = [0.35f32, 0.22, 0.3];
+    let n = (l[0] * l[0] + l[1] * l[1] + l[2] * l[2]).sqrt();
+    let uniforms = pz_render::SkyBoxUniforms {
+        time: 1.0,
+        cloud_count: 0.3,
+        cloud_size: 0.2,
+        sun_light: l.map(|v| v / n),
+        sun_colour: [1.0, 0.86, 0.7],
+        sky_h_colour: [0.1, 0.1, 0.4],
+        sky_l_colour: [0.1, 0.45, 0.7],
+        cloud_light: 0.99,
+        stars: 0.0,
+        fog: 0.0,
+        wind: [0.0; 3],
+    };
+    for hires in [false, true] {
+        let mut dl = DrawList::default();
+        dl.cmds.push(DrawCmd::SkyBox(Box::new(pz_render::SkyBoxDraw { target: 0, hires, uniforms })));
+        let sky = pz_render::skybox_texture(0);
+        dl.render(Some(&sky), 0.0, 0.0, 64.0, 64.0, Rgba(1.0, 1.0, 1.0, 1.0));
+        g.render_frame(&[(opaque_black(64, 64), &dl)], &mut tm);
+        let p = g.read_pixels();
+        // Clouds overhead (the centre), blue sky lower down.
+        let c = px(&p, 64, 32, 32);
+        assert!(c[0] > 60 && c[3] == 255, "{hires}: {c:?}");
+        let b = px(&p, 64, 50, 50);
+        assert!(b[2] > b[0] + 40, "{hires}: {b:?}");
+        assert_eq!(px(&p, 64, 1, 1), [0, 0, 0, 255], "{hires}");
+    }
+}
+
+fn particles(program: pz_render::ParticleProgram, time: f32, texture: Option<pz_render::Texture>, particles: Vec<[f32; 4]>, blend: u32) -> DrawCmd {
+    // Particles.orthogonal(0, 256, 256, 0, -1, 1), column major.
+    let mvp = [[2.0 / 256.0, 0.0, 0.0, 0.0], [0.0, -2.0 / 256.0, 0.0, 0.0], [0.0, 0.0, -1.0, 0.0], [-1.0, 1.0, 0.0, 1.0]];
+    DrawCmd::Particles(Box::new(pz_render::ParticlesDraw { program, mvp, time, param: [[0.0; 3]; 3], texture, particles, blend_func: [gl::SRC_ALPHA, blend], viewport: (256, 256) }))
+}
+
+/// One flame at the middle of its life: `fire.vert` with `hashA` = -1
+/// (id 0, first cycle) gives size 0.5 (a 90-pixel quad turned by
+/// -0.13 * 3.1415), lifted 75 pixels, alpha 0.5, atlas cell 16 (column 0,
+/// row 2); `fire.frag` takes alpha from the texel's red, added to black.
+#[test]
+fn a_fire_particle_lands_where_fire_vert_puts_it() {
+    let Some(mut g) = gpu(256, 256) else { return };
+    let mut tm = TextureManager::new();
+    let mut px8x4 = vec![0u8; 8 * 4 * 4];
+    for t in px8x4.chunks_mut(4) {
+        t.copy_from_slice(&[0, 255, 0, 255]);
+    }
+    px8x4[(2 * 8) * 4..(2 * 8) * 4 + 4].copy_from_slice(&[255, 0, 0, 255]);
+    let atlas = tm.texture_from_pixels("FireFlame", 8, 4, px8x4, 0);
+    let mut dl = DrawList::default();
+    dl.cmds.push(particles(pz_render::ParticleProgram::Fire, 0.3, Some(atlas), vec![[128.0, 203.0, 0.0, 0.0]], gl::ONE));
+    g.render_frame(&[(opaque_black(256, 256), &dl)], &mut tm);
+    let p = g.read_pixels();
+    // Centre: the cell's red at alpha 0.5 (bilinear filtering pulls in a
+    // little of the neighbouring cells).
+    let c = px(&p, 256, 128, 128);
+    assert!((118..=130).contains(&c[0]) && c[1] < 8 && c[2] == 0, "{c:?}");
+    // Inside the turned square, and outside it.
+    assert!(px(&p, 256, 128, 165)[0] > 0);
+    assert_eq!(px(&p, 256, 128 + 60, 128), [0, 0, 0, 255]);
+    assert_eq!(px(&p, 256, 128, 128 - 60), [0, 0, 0, 255]);
+}
+
+/// `smoke.vert`/`smoke.frag` draw alpha-blended puffs above the particle.
+#[test]
+fn a_smoke_particle_draws_above_its_origin() {
+    let Some(mut g) = gpu(256, 256) else { return };
+    let mut tm = TextureManager::new();
+    let white = tm.texture_from_pixels("FireSmokes", 2, 2, [255u8; 4].repeat(4), 0);
+    let mut dl = DrawList::default();
+    dl.cmds.push(particles(pz_render::ParticleProgram::Smoke, 0.5, Some(white), vec![[128.0, 250.0, 0.0, 0.0]], gl::ONE_MINUS_SRC_ALPHA));
+    g.render_frame(&[(opaque_black(256, 256), &dl)], &mut tm);
+    let p = g.read_pixels();
+    // Life 0.28..0.36: 110..145 pixels up, at least 105 pixels across.
+    let c = px(&p, 256, 128, 120);
+    assert!(c[0] > 0 && c[0] == c[1] && c[1] == c[2], "{c:?}");
+    assert_eq!(px(&p, 256, 2, 254), [0, 0, 0, 255]);
+}

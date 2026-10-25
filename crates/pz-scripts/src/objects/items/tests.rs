@@ -270,7 +270,10 @@ fn trait_and_profession_definitions() {
         "t x { CharacterTrait = bold, GrantedTraits = brave, }",
     )
     .unwrap();
-    let defs = character_trait_definitions(&sm);
+    let defs: Vec<CharacterTraitDefinition> = character_trait_definitions(&sm)
+        .iter()
+        .map(|d| d.borrow().clone())
+        .collect();
     assert_eq!(defs.len(), 3);
     assert_eq!(
         defs[0].xp_boosts,
@@ -296,11 +299,14 @@ fn trait_and_profession_definitions() {
 
     let body = "p x { CharacterProfession = base:baker, Cost = 3, XPBoosts = Cooking=3=4, GrantedTraits = bold, Oops = 1, }";
     load(&mut CharacterProfessionDefinitionScript::new(), body).unwrap();
-    let profs = character_profession_definitions(&sm);
+    let profs: Vec<CharacterProfessionDefinition> = character_profession_definitions(&sm)
+        .iter()
+        .map(|d| d.borrow().clone())
+        .collect();
     assert_eq!(profs.len(), 1);
     assert_eq!(profs[0].xp_boosts, [("Cooking".to_string(), 1)]);
     assert_eq!(profs[0].right_label(), "-3");
-    assert_eq!(profs[0].description, "");
+    assert_eq!(profs[0].description.as_deref(), Some(""));
 }
 
 #[test]

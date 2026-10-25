@@ -15,14 +15,18 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 pub use character_definitions::{
-    character_profession_definitions, character_trait_definition, character_trait_definitions,
-    CharacterProfessionDefinition, CharacterProfessionDefinitionScript, CharacterTraitDefinition,
-    CharacterTraitDefinitionScript,
+    add_character_profession_definition, add_character_trait_definition, add_granted_trait,
+    character_profession_definition, character_profession_definitions, character_trait_definition,
+    character_trait_definitions, is_mutually_exclusive, reset_character_profession_definitions,
+    reset_character_trait_definitions, set_mutual_exclusive, CharacterProfessionDefinition,
+    CharacterProfessionDefinitionRef, CharacterProfessionDefinitionScript,
+    CharacterTraitDefinition, CharacterTraitDefinitionRef, CharacterTraitDefinitionScript,
 };
 pub use item::{Item, KeySet, ModDataValue};
 pub use item_filter::{resolve_get_item_types, FilterTypeInfo, ItemFilterScript};
 pub use keys::{
-    load_builtin_constants, AmmoType, BookSubject, BuiltinConstants, ItemBodyLocation, ItemTag,
+    load_builtin_constants, AmmoType, BookSubject, BuiltinConstants, CharacterProfession,
+    CharacterTrait, GameMode, ItemBodyLocation, ItemTag, MoodleType,
     ItemType, MagazineSubject, WeaponCategory,
 };
 pub use parts::{ItemReplacement, ModelWeaponPart, VehiclePartModel};
@@ -81,9 +85,9 @@ pub struct Statics {
     pub item_evolved_recipe_name: HashMap<String, String>,
     /// `CharacterTraitDefinition.characterTraitDefinitions` (a
     /// `LinkedHashMap` keyed by trait).
-    pub character_trait_definitions: Vec<CharacterTraitDefinition>,
+    pub character_trait_definitions: Vec<CharacterTraitDefinitionRef>,
     /// `CharacterProfessionDefinition.characterProfessionDefinitions`.
-    pub character_profession_definitions: Vec<CharacterProfessionDefinition>,
+    pub character_profession_definitions: Vec<CharacterProfessionDefinitionRef>,
     /// `PhysicsHitReactionScript.physicsHitReactionList`.
     pub physics_hit_reaction_list: Vec<PhysicsHitReaction>,
     /// `PhysicsHitReactionScript.originalFilename`.

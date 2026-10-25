@@ -20,7 +20,7 @@ fn main() {
     }));
     mgr.load_all_client();
     let mut mv: Vec<_> = missing.borrow().clone().into_iter().collect();
-    mv.sort_by(|a, b| b.1.cmp(&a.1));
+    mv.sort_by_key(|e| std::cmp::Reverse(e.1));
     println!("missing globals during load ({}):", mv.len());
     for (n, c) in mv.iter().take(60) {
         print!("{n}({c}) ");
@@ -40,7 +40,7 @@ fn main() {
         *causes.entry(msg).or_default() += 1;
     }
     let mut v: Vec<_> = causes.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|e| std::cmp::Reverse(e.1));
     for (m, n) in v.iter().take(40) {
         println!("{n:4}  {m}");
     }

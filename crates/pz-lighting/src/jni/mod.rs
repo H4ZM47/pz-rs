@@ -48,7 +48,8 @@ mod vision;
 pub use chunk::{square_args, update_chunk, ObjectCall, SquareArgs};
 pub use cone::{detection_range, effective_fatigue, luma_inverted, VisionCone, VisionConeInput};
 pub use decode::{
-    ChunkLevelLight, ColorInfo, DecodePlayer, LevelRefresh, Refresh, ResultLightInfo, SquareLight, SquarePos, FORCED_VIS,
+    light_level2, ChunkLevelLight, ColorInfo, DecodePlayer, LevelRefresh, Refresh, ResultLightInfo, SquareLight, SquarePos,
+    FORCED_VIS,
 };
 pub use driver::{player_character, update_player, visible_room_ids, FrameParams, PlayerFrame, PlayerFrameResult};
 pub use input::{
