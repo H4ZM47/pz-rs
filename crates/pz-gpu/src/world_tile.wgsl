@@ -84,3 +84,24 @@ fn fs_cutaway(in: VsOut) -> DepthOut {
     o.depth = (in.depth.y - in.depth.x) * d + in.depth.x;
     return o;
 }
+
+// `CutawayNoDepth`: the wall cut by the stencil (group 3, `uv2`) with no
+// depth texture and no depth output.
+@fragment
+fn fs_cutaway_nodepth(in: VsOut) -> @location(0) vec4<f32> {
+    var c = textureSample(diffuse, diffuse_sampler, in.uv);
+    let st = textureSample(seam_mask, seam_sampler, in.uv2);
+    if (st.g + st.b > 0.0) {
+        discard;
+    }
+    c = vec4<f32>(c.rgb * in.col.rgb, c.a);
+    c = c * vec4<f32>(st.r, st.r, st.r, st.a);
+    c = vec4<f32>(c.rgb + 0.75 * st.b, c.a);
+    c.a = max(c.a, st.b * st.a);
+    c.a = max(c.a, st.g * st.a);
+    c = vec4<f32>(c.rgb - st.g, c.a);
+    if (!alpha_pass(c.a)) {
+        discard;
+    }
+    return c;
+}

@@ -126,6 +126,13 @@ thread_local! {
     );
 }
 
+/// Runs `f` with `RandStandard.INSTANCE` itself, for code that takes a
+/// generator (so tests can pass a seeded one) but must draw from the
+/// shared sequence in the game.
+pub fn with_standard<R>(f: impl FnOnce(&Rand) -> R) -> R {
+    STANDARD.with(f)
+}
+
 /// `Rand.Next(int max)` on `RandStandard.INSTANCE`.
 pub fn next(max: i32) -> i32 {
     STANDARD.with(|r| r.next(max))

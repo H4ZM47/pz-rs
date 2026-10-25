@@ -670,7 +670,7 @@ fn render_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderO
 }
 
 /// `hasCutawayCapableWallNorth` / `West`.
-fn has_cutaway_capable_wall(sq: Option<&RenderSquare>, north: bool) -> bool {
+pub(crate) fn has_cutaway_capable_wall(sq: Option<&RenderSquare>, north: bool) -> bool {
     let Some(sq) = sq else { return false };
     let any = |f: &dyn Fn(&crate::world::SpriteFlags) -> bool| sq.objects.iter().any(|o| o.sprite.as_ref().is_some_and(|s| f(&s.flags)));
     if any(&|f| f.wall_se) {

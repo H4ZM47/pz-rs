@@ -78,7 +78,14 @@ pub fn world_frame(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels
 
 /// [`world_frame`] appended to `out` (which may hold texture frees).
 pub fn world_frame_into(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], screen: ScreenParams, out: Vec<DrawCmd>) -> Vec<DrawCmd> {
-    world_frame_with_objects(r, size, chunks, &FrameObjects::default(), None, screen, out)
+    world_frame_into_with(r, size, chunks, screen, out, &mut |_| {})
+}
+
+/// [`world_frame_into`] with `late` recording what `IsoWorld.render` draws
+/// into the offscreen buffer after the cell (the weather effects,
+/// [`crate::weather_fx_mask::render_weather_fx`]), in the world projection.
+pub fn world_frame_into_with(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], screen: ScreenParams, out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
+    world_frame_full(r, size, chunks, &FrameObjects::default(), None, screen, out, late)
 }
 
 /// [`world_frame_into`] with the frame's moving objects: after the chunk
@@ -86,7 +93,14 @@ pub fn world_frame_into(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkL
 /// (adding their shadows), and each level's shadows draw between its
 /// translucent floors and translucent objects. `drop_shadow` is
 /// `media/textures/NewShadow.png`; without it no shadows are drawn.
-pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, mut out: Vec<DrawCmd>) -> Vec<DrawCmd> {
+pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, out: Vec<DrawCmd>) -> Vec<DrawCmd> {
+    world_frame_full(r, size, chunks, objects, drop_shadow, screen, out, &mut |_| {})
+}
+
+/// The whole frame: moving objects and shadows, then `late` (the weather
+/// effects) in the world projection before the offscreen buffer ends.
+#[allow(clippy::too_many_arguments)]
+pub fn world_frame_full(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], objects: &FrameObjects, drop_shadow: Option<Texture>, screen: ScreenParams, mut out: Vec<DrawCmd>, late: &mut dyn FnMut(&mut Vec<DrawCmd>)) -> Vec<DrawCmd> {
     let (ow, oh) = size.offscreen();
     let (w, h) = (size.width, size.height);
     let z = r.cam.zoom;
@@ -152,6 +166,8 @@ pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: 
         }
     }
     shadows.end_render();
+    out.push(DrawCmd::Ortho { left: 0.0, right: w as f32 * z, bottom: h as f32 * z, top: 0.0, width: w, height: h });
+    late(&mut out);
     out.push(DrawCmd::GlDisable(gl::DEPTH_TEST));
     out.push(DrawCmd::OffscreenEnd);
     // Core.RenderOffScreenBuffer: 1:1 screen projection, no blending.
