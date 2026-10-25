@@ -248,10 +248,15 @@ Status of the Rust port. Update this file with every merged change.
   of the zombie state machine on the real action groups match bit for bit,
   with the `Rand` stream (checked locally). `IsoMovingObject.postupdate`'s
   collision passes (`DoCollide`, collision flags, the obstacle clip through
-  pz-pathfind) and `doDeferredMovement` are ported with unit tests only.
-  Lunges and paths (the original's path finder is native), ragdolls,
-  vehicles and the network states are not checked against the original;
-  stairs, slopes and `slideAwayFromWalls` are TODO.
+  pz-pathfind), `slideAwayFromWalls` (square edges here, vehicles through
+  pz-pathfind's `resolve_collision_radius`) and `doDeferredMovement` are
+  ported with unit tests only. Characters burn through pz-world's fire
+  (`FireCharacter`, the `FireCheck`/`SpreadFire`/`ReduceHealthWhenBurning`
+  step after the state machine): 60 `SetOnFire` runs with 16361 ticks of
+  burning damage on players and zombies match the original with the
+  `Rand` stream. Lunges and paths (the original's path finder is native),
+  ragdolls, vehicles and the network states are not checked against the
+  original; stairs and slopes are TODO.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
