@@ -282,3 +282,46 @@ fn records_that_do_not_decode_stay_raw() {
         SavedItem::Raw(_)
     ));
 }
+
+/// `Item.InstanceItem` for a moveable: the weight is the moveable's after
+/// `ReadFromWorldSprite`, so a sprite that is not a moveable leaves the
+/// default 1.0 rather than the script's `Weight`.
+#[test]
+fn created_moveable_weight_follows_world_sprite() {
+    struct MovEnv(HashMap<i16, Rc<ItemTemplate>>);
+    impl ItemEnv for MovEnv {
+        fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
+            self.0.get(&id).cloned()
+        }
+        fn rand_next(&self, _bound: i32) -> i32 {
+            7
+        }
+        fn world_sprite(&self, name: &str) -> Option<crate::env::WorldSpriteInfo> {
+            (name == "fixtures_01_0").then(|| crate::env::WorldSpriteInfo {
+                pick_up_weight: Some(150.0),
+                custom_name: Some("Table".into()),
+                ..Default::default()
+            })
+        }
+    }
+    let mut templates = HashMap::new();
+    for (id, ty, sprite) in [
+        (1, "Anvil", Some("crafted_01_35")),
+        (2, "Table", Some("fixtures_01_0")),
+        (3, "Moveable", None),
+    ] {
+        let mut t = ItemTemplate::new(ItemClass::Moveable, "Base", ty);
+        t.display_name = format!("{ty} name");
+        t.actual_weight = 40.0;
+        t.world_object_sprite = sprite.map(str::to_string);
+        templates.insert(id, Rc::new(t));
+    }
+    let e = MovEnv(templates);
+    let weights = |id| {
+        let i = crate::env::create_item(&e, id).unwrap();
+        (i.weight, i.actual_weight)
+    };
+    assert_eq!(weights(1), (1.0, 1.0));
+    assert_eq!(weights(2), (15.0, 15.0));
+    assert_eq!(weights(3), (1.0, 1.0));
+}
