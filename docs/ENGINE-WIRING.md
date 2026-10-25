@@ -205,7 +205,7 @@ registered):
       `test_collide_adjacent` hit the character runs `IsoZombie.collideWith`
       on `special_object_between(from, to)`; `bent_fences_enabled` /
       `is_unbent_fence` from BentFences.
-- [ ] Climbs, stairs and fences (#136): `StatesEngine::zombies_on_square`
+- [ ] Climbs, stairs and fences (#139): `StatesEngine::zombies_on_square`
       and `moving_objects_on_square` (the squares' moving-object lists, in
       list order), `dict_object_name` (WorldDictionary object names),
       `bent_fences()` (a `pz_world_states::BentFences::new(lore
