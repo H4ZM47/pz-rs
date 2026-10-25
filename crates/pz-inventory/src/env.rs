@@ -46,6 +46,11 @@ pub trait ItemEnv {
         None
     }
 
+    /// `WorldDictionary.getItemRegistryID`: -1 for an unknown type.
+    fn registry_id(&self, _full_type: &str) -> i16 {
+        -1
+    }
+
     /// `ScriptManager.FindItem(fullType).getObsolete()`.
     fn obsolete(&self, _full_type: &str) -> bool {
         false

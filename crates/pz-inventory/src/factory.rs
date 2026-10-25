@@ -147,6 +147,10 @@ impl ItemEnv for ScriptItems {
         self.dictionary.item_type(registry_id).map(str::to_string)
     }
 
+    fn registry_id(&self, full_type: &str) -> i16 {
+        self.dictionary.item_id(full_type).unwrap_or(-1)
+    }
+
     fn obsolete(&self, full_type: &str) -> bool {
         self.obsolete.get(full_type).copied().unwrap_or(false)
     }

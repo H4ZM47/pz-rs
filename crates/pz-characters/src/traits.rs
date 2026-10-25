@@ -3,9 +3,11 @@
 use std::rc::Rc;
 
 use pz_scripts::objects::items::CharacterTrait;
-use pz_scripts::registry::RegistryKey;
+use pz_inventory::io::{Reader, Writer};
+use pz_scripts::registry::{RegistryKey, ResourceLocation};
 use pz_scripts::{ScriptManager, ScriptResult};
 
+use crate::character::save::io_error;
 use crate::npe;
 
 /// `CharacterTraits`.
@@ -137,6 +139,27 @@ impl CharacterTraits {
         self.known_traits.clear();
         for e in &mut self.traits {
             e.1 = false;
+        }
+    }
+
+    /// `load`: `reset`, then every saved trait (`CharacterTrait.get` of the
+    /// saved location) added.
+    pub fn load(&mut self, sm: &ScriptManager, r: &mut Reader<'_>) -> ScriptResult {
+        self.reset();
+        let n = r.i32().map_err(io_error)?;
+        for _ in 0..n {
+            let id = r.string().map_err(io_error)?;
+            let t = CharacterTrait::get(sm, &ResourceLocation::of(&id)?);
+            self.add(t.as_ref())?;
+        }
+        Ok(())
+    }
+
+    /// `save`: the known traits' registry locations.
+    pub fn save(&self, w: &mut Writer) {
+        w.i32(self.known_traits.len() as i32);
+        for t in &self.known_traits {
+            w.string(&t.location.id());
         }
     }
 

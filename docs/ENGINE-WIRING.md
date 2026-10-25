@@ -96,6 +96,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] `SimContext` climate values from `ClimateManager` (#49).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
+- [ ] Player load (`PlayerDB.loadLocalPlayer`/`loadPlayer`): the bytes of
+      `PlayerDb::load_local_player(sql_id)` (#100) go to
+      `GameCharacter::load_player(sm, chars, ctx, SaveEnv { items:
+      ScriptItems over the save's WorldDictionary, tables }, reader,
+      world_version, set_on_fire)` on a fresh `GameCharacter::new(.., Player)`
+      with a descriptor; `set_on_fire` runs `pz_world::fire::character::set_on_fire`
+      with the world's fire manager. Then, for an `isDead` row,
+      `setOverallBodyHealth(0)`/`setHealth(0)`; `saved_vehicle` seats the
+      player; save with `save_player` (#ws/player-load).
 
 ## World render pass
 - [ ] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
