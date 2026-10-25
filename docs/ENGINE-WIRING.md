@@ -265,6 +265,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `ensure_chat_backdrop()`; `HudPlayers::player_index`
       (`IsoPlayer.getPlayerIndex()`; characters thread) tags batched draws
       (#174).
+- [ ] Gizmos: `IsoWorld.render` calls `gizmo::render(frame player)` after
+      the cell and draws the returned `GizmoFrame` (its projection, then each
+      `GizmoPrimitive`: debug axis lines, `addCylinder_Fill`, `addTorus` with
+      depth testing as noted) on the render thread; `HudGizmoCamera`
+      (`IsoCamera.frameState` camCharacter/zoom and `cameras[0]`'s offsets;
+      world-render thread). `UIManager`'s left button already goes through
+      `gizmo_hit_test_hook` (#199).
 - [ ] Chat (SP): characters thread implements `chat::ChatPlayer` and
       `chat::ChatElementOwner` for IsoPlayer (and installs `chat::ChatPlayers`
       for `IsoPlayer.players`/`getInstance`), gives each `IsoGameCharacter` a

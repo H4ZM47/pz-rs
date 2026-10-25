@@ -345,6 +345,256 @@ impl Matrix4f {
     }
 }
 
+impl Matrix4f {
+    /// `transformPosition(v)` (`Vector3f.mulPosition`).
+    pub fn transform_position(&self, v: [f32; 3]) -> [f32; 3] {
+        let m = &self.m;
+        std::array::from_fn(|k| {
+            fma(
+                m[0][k],
+                v[0],
+                fma(m[1][k], v[1], fma(m[2][k], v[2], m[3][k])),
+            )
+        })
+    }
+
+    /// `transformDirection(v)` (`Vector3f.mulDirection`).
+    pub fn transform_direction(&self, v: [f32; 3]) -> [f32; 3] {
+        let m = &self.m;
+        std::array::from_fn(|k| fma(m[0][k], v[0], fma(m[1][k], v[1], m[2][k] * v[2])))
+    }
+
+    /// `transformProject(v)` (`Vector3f.mulProject`).
+    pub fn transform_project(&self, v: [f32; 3]) -> [f32; 3] {
+        let m = &self.m;
+        let inv_w = 1.0
+            / fma(
+                m[0][3],
+                v[0],
+                fma(m[1][3], v[1], fma(m[2][3], v[2], m[3][3])),
+            );
+        std::array::from_fn(|k| {
+            fma(
+                m[0][k],
+                v[0],
+                fma(m[1][k], v[1], fma(m[2][k], v[2], m[3][k])),
+            ) * inv_w
+        })
+    }
+
+    /// `getTranslation(dest)`.
+    pub fn get_translation(&self) -> [f32; 3] {
+        [self.m[3][0], self.m[3][1], self.m[3][2]]
+    }
+
+    /// `getScale(dest)`: the length of each basis column.
+    pub fn get_scale(&self) -> [f32; 3] {
+        let m = &self.m;
+        let l = |c: usize| {
+            (((m[c][0] * m[c][0] + m[c][1] * m[c][1] + m[c][2] * m[c][2]) as f64).sqrt()) as f32
+        };
+        [l(0), l(1), l(2)]
+    }
+
+    /// `rotationX(ang)`.
+    pub fn rotation_x(ang: f32) -> Self {
+        let (s, c) = (sin(ang), cos_from_sin(sin(ang), ang));
+        let mut o = Self::identity();
+        (o.m[1][1], o.m[1][2], o.m[2][1], o.m[2][2]) = (c, s, -s, c);
+        o
+    }
+
+    /// `rotationY(ang)`.
+    pub fn rotation_y(ang: f32) -> Self {
+        let (s, c) = (sin(ang), cos_from_sin(sin(ang), ang));
+        let mut o = Self::identity();
+        (o.m[0][0], o.m[0][2], o.m[2][0], o.m[2][2]) = (c, -s, s, c);
+        o
+    }
+
+    /// `rotationZ(ang)`.
+    pub fn rotation_z(ang: f32) -> Self {
+        let (s, c) = (sin(ang), cos_from_sin(sin(ang), ang));
+        let mut o = Self::identity();
+        (o.m[0][0], o.m[0][1], o.m[1][0], o.m[1][1]) = (c, s, -s, c);
+        o
+    }
+
+    /// `rotation(angle, x, y, z)` about a unit coordinate axis.
+    pub fn rotation(ang: f32, x: f32, y: f32, z: f32) -> Self {
+        let one = |v: f32| v.abs() == 1.0;
+        if y == 0.0 && z == 0.0 && one(x) {
+            Self::rotation_x(x * ang)
+        } else if x == 0.0 && z == 0.0 && one(y) {
+            Self::rotation_y(y * ang)
+        } else if x == 0.0 && y == 0.0 && one(z) {
+            Self::rotation_z(z * ang)
+        } else {
+            unimplemented!("rotation about a non-axis vector")
+        }
+    }
+
+    /// The 3x3 of `rotationXYZ` / `setRotationXYZ`.
+    fn rotation_xyz_3x3(ax: f32, ay: f32, az: f32) -> [[f32; 3]; 3] {
+        let (sx, sy, sz) = (sin(ax), sin(ay), sin(az));
+        let (cx, cy, cz) = (
+            cos_from_sin(sx, ax),
+            cos_from_sin(sy, ay),
+            cos_from_sin(sz, az),
+        );
+        let nm01 = -sx * -sy;
+        let nm02 = cx * -sy;
+        [
+            [cy * cz, nm01 * cz + cx * sz, nm02 * cz + sx * sz],
+            [cy * -sz, nm01 * -sz + cx * cz, nm02 * -sz + sx * cz],
+            [sy, -sx * cy, cx * cy],
+        ]
+    }
+
+    /// `rotationXYZ(ax, ay, az)`.
+    pub fn rotation_xyz(ax: f32, ay: f32, az: f32) -> Self {
+        Self::identity().set_rotation_xyz(ax, ay, az)
+    }
+
+    /// `setRotationXYZ(ax, ay, az)`: replaces the upper 3x3.
+    pub fn set_rotation_xyz(&self, ax: f32, ay: f32, az: f32) -> Self {
+        let r = Self::rotation_xyz_3x3(ax, ay, az);
+        let mut o = *self;
+        for c in 0..3 {
+            o.m[c][..3].copy_from_slice(&r[c]);
+        }
+        o
+    }
+
+    /// `invert()` for the affine matrices the ported code builds
+    /// (`invertAffine`, as JOML picks for a matrix flagged affine).
+    pub fn invert(&self) -> Self {
+        if *self == Self::identity() {
+            return *self;
+        }
+        self.invert_affine()
+    }
+}
+
+/// `org.joml.Vector3f` operations, with JOML's arithmetic.
+pub mod vec3 {
+    pub type V = [f32; 3];
+    pub fn add(a: V, b: V) -> V {
+        [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+    }
+    pub fn sub(a: V, b: V) -> V {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+    pub fn mul(a: V, s: f32) -> V {
+        [a[0] * s, a[1] * s, a[2] * s]
+    }
+    /// `dot(v)`.
+    pub fn dot(a: V, b: V) -> f32 {
+        a[0] * b[0] + (a[1] * b[1] + a[2] * b[2])
+    }
+    /// `length()`.
+    pub fn length(a: V) -> f32 {
+        ((a[0] * a[0] + (a[1] * a[1] + a[2] * a[2])) as f64).sqrt() as f32
+    }
+    /// `normalize()`.
+    pub fn normalize(a: V) -> V {
+        super::normalize(a)
+    }
+    /// `cross(v, dest)`.
+    pub fn cross(a: V, b: V) -> V {
+        [
+            a[1] * b[2] + -a[2] * b[1],
+            a[2] * b[0] + -a[0] * b[2],
+            a[0] * b[1] + -a[1] * b[0],
+        ]
+    }
+    /// `equals` (bitwise, as `Float.floatToIntBits`).
+    pub fn bit_eq(a: V, b: V) -> bool {
+        a.iter().zip(&b).all(|(x, y)| x.to_bits() == y.to_bits())
+    }
+}
+
+/// `org.joml.Quaternionf`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Quaternionf {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub w: f32,
+}
+
+impl Quaternionf {
+    /// `fromAxisAngleRad(x, y, z, angle)`.
+    pub fn from_axis_angle_rad(ax: f32, ay: f32, az: f32, angle: f32) -> Self {
+        let h = angle / 2.0;
+        let s = sin(h);
+        let len = ((ax * ax + ay * ay + az * az) as f64).sqrt() as f32;
+        Quaternionf {
+            x: ax / len * s,
+            y: ay / len * s,
+            z: az / len * s,
+            w: cos_from_sin(s, h),
+        }
+    }
+
+    /// `fromAxisAngleDeg(axis, angle)`.
+    pub fn from_axis_angle_deg(axis: [f32; 3], angle: f32) -> Self {
+        Self::from_axis_angle_rad(
+            axis[0],
+            axis[1],
+            axis[2],
+            (angle as f64).to_radians() as f32,
+        )
+    }
+
+    /// `rotationXYZ(ax, ay, az)`.
+    pub fn rotation_xyz(ax: f32, ay: f32, az: f32) -> Self {
+        let (sx, sy, sz) = (sin(ax * 0.5), sin(ay * 0.5), sin(az * 0.5));
+        let (cx, cy, cz) = (
+            cos_from_sin(sx, ax * 0.5),
+            cos_from_sin(sy, ay * 0.5),
+            cos_from_sin(sz, az * 0.5),
+        );
+        let (cycz, sysz, sycz, cysz) = (cy * cz, sy * sz, sy * cz, cy * sz);
+        Quaternionf {
+            w: cx * cycz - sx * sysz,
+            x: sx * cycz + cx * sysz,
+            y: cx * sycz - sx * cysz,
+            z: cx * cysz + sx * sycz,
+        }
+    }
+
+    /// `mul(q)`: `this * q`.
+    pub fn mul(&self, q: &Quaternionf) -> Self {
+        let (x, y, z, w) = (self.x, self.y, self.z, self.w);
+        Quaternionf {
+            x: fma(w, q.x, fma(x, q.w, fma(y, q.z, -z * q.y))),
+            y: fma(w, q.y, fma(-x, q.z, fma(y, q.w, z * q.x))),
+            z: fma(w, q.z, fma(x, q.y, fma(-y, q.x, z * q.w))),
+            w: fma(w, q.w, fma(-x, q.x, fma(-y, q.y, -z * q.z))),
+        }
+    }
+
+    /// `getEulerAnglesXYZ(dest)`.
+    pub fn euler_angles_xyz(&self) -> [f32; 3] {
+        let (x, y, z, w) = (self.x, self.y, self.z, self.w);
+        let atan2 = |a: f32, b: f32| (a as f64).atan2(b as f64) as f32;
+        let r = 2.0 * (x * z + y * w);
+        let asin = if r <= -1.0 {
+            -1.5707964
+        } else if r >= 1.0 {
+            1.5707964
+        } else {
+            (r as f64).asin() as f32
+        };
+        [
+            atan2(2.0 * (x * w - y * z), 1.0 - 2.0 * (x * x + y * y)),
+            asin,
+            atan2(2.0 * (z * w - x * y), 1.0 - 2.0 * (y * y + z * z)),
+        ]
+    }
+}
+
 /// `Vector3f.rotateY(angle)`.
 pub fn rotate_y_vec(v: [f32; 3], angle: f32) -> [f32; 3] {
     let s = sin(angle);

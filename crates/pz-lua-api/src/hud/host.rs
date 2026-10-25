@@ -332,6 +332,7 @@ impl HudMoodles for NoHud {}
 impl HudPicking for NoHud {}
 impl HudBodyDamage for NoHud {}
 impl HudConsoleMethods for NoHud {}
+impl HudGizmoCamera for NoHud {}
 impl HudSound for NoHud {}
 impl HudNetwork for NoHud {}
 
@@ -385,6 +386,15 @@ impl HudGameTime for SharedGameTime {
     }
 }
 
+/// The camera values the gizmo scene reads. Owner: world-render thread.
+pub trait HudGizmoCamera {
+    /// `IsoCamera.frameState` / `IsoCamera.cameras[0]`, as
+    /// [`crate::gizmo::GizmoCamera`] lists them.
+    fn gizmo_camera(&self) -> crate::gizmo::GizmoCamera {
+        crate::gizmo::GizmoCamera::default()
+    }
+}
+
 /// The installed inputs.
 pub struct HudHost {
     pub players: Box<dyn HudPlayers>,
@@ -399,6 +409,7 @@ pub struct HudHost {
     pub picking: Box<dyn HudPicking>,
     pub body_damage: Box<dyn HudBodyDamage>,
     pub console_methods: Box<dyn HudConsoleMethods>,
+    pub gizmo_camera: Box<dyn HudGizmoCamera>,
 }
 
 impl Default for HudHost {
@@ -416,6 +427,7 @@ impl Default for HudHost {
             picking: Box::new(NoHud),
             body_damage: Box::new(NoHud),
             console_methods: Box::new(NoHud),
+            gizmo_camera: Box::new(NoHud),
         }
     }
 }

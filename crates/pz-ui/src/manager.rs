@@ -29,6 +29,10 @@ pub type EventSink = Rc<dyn Fn(&mut Thread, &str, &[Value])>;
 /// `UIManager.updateTooltip(mx, my)`, supplied by pz-lua-api.
 pub type TooltipHook = Rc<dyn Fn(&mut Thread, i32, i32)>;
 
+/// `Gizmos.getInstance().hitTest(mx, my)`, supplied by pz-lua-api: true
+/// when a gizmo drag takes the left button.
+pub type GizmoHitTestHook = Rc<dyn Fn(&mut Thread, i32, i32) -> bool>;
+
 /// `Core.UnfocusActiveTextEntryBox()`, supplied by pz-lua-api.
 pub type UnfocusHook = Rc<dyn Fn(&mut Thread)>;
 
@@ -237,6 +241,8 @@ pub struct UIManager {
     /// `UIManager.updateTooltip(mx, my)`, supplied with the shared tooltip
     /// (it needs the world's picked object).
     pub update_tooltip_hook: Option<TooltipHook>,
+    /// See [`GizmoHitTestHook`].
+    pub gizmo_hit_test_hook: Option<GizmoHitTestHook>,
     /// Fixed clock for tests (`System.currentTimeMillis`).
     pub time_override_ms: Option<i64>,
 }
@@ -300,6 +306,7 @@ impl Default for UIManager {
             progress_bar: Default::default(),
             resize_hook: None,
             update_tooltip_hook: None,
+            gizmo_hit_test_hook: None,
             time_override_ms: None,
         }
     }
@@ -597,8 +604,12 @@ impl UIManager {
         let mut consumed_click = false;
         let mut consumed_rclick = false;
         for btn in 0..mouse.button_count() {
-            // TODO(world): btn 0 Gizmos.hitTest.
             let mut consumed = false;
+            if btn == 0 {
+                if let Some(h) = with_ui(|m| m.gizmo_hit_test_hook.clone()) {
+                    consumed = h(t, mx, my);
+                }
+            }
             let pressed = mouse.is_button_pressed(btn);
             let released = !pressed && mouse.is_button_released(btn);
             if pressed || released {

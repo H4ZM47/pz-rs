@@ -1283,6 +1283,13 @@ pub struct Vector3f {
     pub z: Cell<f32>,
 }
 
+/// A new Lua `org.joml.Vector3f`.
+pub fn vector3f_value(v: [f32; 3]) -> Value {
+    let o = Vector3f::default();
+    o.set(v);
+    Value::Object(Rc::new(o))
+}
+
 impl LuaObject for Vector3f {
     fn class_name(&self) -> &str {
         "org.joml.Vector3f"
@@ -1314,11 +1321,11 @@ fn joml_format(v: f64) -> String {
 }
 
 impl Vector3f {
-    fn get(&self) -> [f32; 3] {
+    pub fn get(&self) -> [f32; 3] {
         [self.x.get(), self.y.get(), self.z.get()]
     }
 
-    fn set(&self, v: [f32; 3]) {
+    pub fn set(&self, v: [f32; 3]) {
         self.x.set(v[0]);
         self.y.set(v[1]);
         self.z.set(v[2]);
