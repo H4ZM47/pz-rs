@@ -79,6 +79,13 @@ impl Rand {
         Rand { id: Cell::new(0), rand: JavaRandom::new(seed) }
     }
 
+    /// Restarts the sequence from `seed` (`Rand.init`'s seeding; tests use
+    /// it on [`with_standard`] for a reproducible `RandStandard`).
+    pub fn set_seed(&self, seed: i64) {
+        self.id.set(0);
+        self.rand.set_seed(seed);
+    }
+
     fn bump(&self) {
         let id = self.id.get() + 1;
         self.id.set(if id >= 10000 { 0 } else { id });
