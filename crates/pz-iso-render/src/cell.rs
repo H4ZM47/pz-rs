@@ -15,9 +15,10 @@
 //! ([`crate::trees`]); floors and walls get `renderSeamFix2_*`
 //! ([`crate::seam`]).
 //!
-//! Not yet ported: fading and obscuring objects, cut walls drawn with
-//! `DoCutawayShader` (the circle stencil and the `wallcutaways` masks; such
-//! walls are drawn whole), snow, blood, puddles and overlay sprites.
+//! With [`crate::weather::Surfaces`], snow ([`crate::snow`]) and blood
+//! ([`crate::blood`]) are recorded after the floors, low-quality puddles
+//! ([`crate::puddles`]) after the other objects, and water floors follow
+//! the water rules ([`crate::water`]).
 
 use pz_render::{gl, DrawCmd};
 
@@ -54,13 +55,27 @@ pub fn object_layer(square: &RenderSquare, obj: &RenderObject) -> Layer {
         return Layer::WorldInventoryObject;
     }
     let f = obj.flags();
-    if f.transparent_floor {
+    let water = crate::water::ground_water(square).filter(|w| w.shader);
+    // TranslucentFloor: transparent floors, and solid floors on a shore
+    // (faded towards the water by `renderFloor`).
+    if f.transparent_floor || (sprite.is_some_and(|s| s.flags.solidfloor) && water.is_some_and(|w| w.shore)) {
         return Layer::TranslucentFloor;
     }
     // Floor.
     let mut floor = !sprite.is_some_and(|s| !s.flags.solidfloor && s.render_layer != 1);
     if obj.kind == ObjectKind::Fire {
         floor = false;
+    }
+    if let Some(w) = water.filter(|w| w.is_valid()) {
+        // Water tiles are drawn by the water shader except on shores; on
+        // open water only the objects above the water object are floors.
+        if sprite.is_some_and(|s| s.flags.water) {
+            floor = w.shore;
+        }
+        if floor && !w.shore {
+            let index = square.objects.iter().position(|o| std::ptr::eq(o, obj));
+            floor = square.water_object().is_some_and(|wi| index.is_some_and(|i| wi < i));
+        }
     }
     if floor && !sprite.is_some_and(|s| s.sloped) {
         return Layer::Floor;
@@ -127,11 +142,18 @@ pub struct ChunkRenderer<'a> {
     pub view_size: (u32, u32),
     /// This frame's trees (`FBORenderTrees`, with its depth stagger).
     pub trees: std::cell::RefCell<crate::trees::Trees>,
+    /// Water, puddles, snow and blood; `None` draws none of them.
+    pub surfaces: Option<crate::weather::Surfaces<'a>>,
 }
 
 impl<'a> ChunkRenderer<'a> {
     pub fn new(cam: Camera, depth_maps: &'a dyn DepthMaps, view_size: (u32, u32)) -> Self {
-        ChunkRenderer { cam, depth_maps, view_size, trees: Default::default(), cutaways: None }
+        ChunkRenderer { cam, depth_maps, view_size, trees: Default::default(), cutaways: None, surfaces: None }
+    }
+
+    /// This renderer with this frame's water, puddles, snow and blood.
+    pub fn with_surfaces(self, surfaces: Option<crate::weather::Surfaces<'a>>) -> Self {
+        ChunkRenderer { surfaces, ..self }
     }
 
     /// This renderer with this frame's cutaways.
@@ -152,7 +174,7 @@ impl ChunkRenderer<'_> {
             if *level < tex.min_level || *level > tex.top_level {
                 continue;
             }
-            self.render_one_level(tex, squares, out);
+            self.render_one_level(tex, *level, squares, out);
         }
         // renderOneChunk: depth writes off, depth func ALWAYS.
         out.push(DrawCmd::DepthMask(false));
@@ -160,7 +182,7 @@ impl ChunkRenderer<'_> {
         out.push(DrawCmd::ChunkEnd);
     }
 
-    fn render_one_level(&self, tex: ChunkTexture, squares: &LevelSquares<'_>, out: &mut Vec<DrawCmd>) {
+    fn render_one_level(&self, tex: ChunkTexture, level: i32, squares: &LevelSquares<'_>, out: &mut Vec<DrawCmd>) {
         let mut solid_floor = Vec::new();
         let mut minus_floor = Vec::new();
         let cv = self.cutaways.as_ref();
@@ -195,6 +217,14 @@ impl ChunkRenderer<'_> {
                 }
             }
         }
+        if let Some(s) = self.surfaces.as_ref() {
+            // Snow with the depth test off, then blood.
+            ctx.out.push(DrawCmd::GlDisable(gl::DEPTH_TEST));
+            set_blend(ctx.out);
+            crate::snow::render_snow(s, tex, level, &solid_floor, ctx.out);
+            ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
+            crate::blood::render_level_blood(s, cv, self.cam.z, tex, level, ctx.out);
+        }
         for sq in &minus_floor {
             for layer in [Layer::MinusFloor, Layer::MinusFloorSE] {
                 for obj in &sq.objects {
@@ -203,6 +233,10 @@ impl ChunkRenderer<'_> {
                     }
                 }
             }
+        }
+        if let Some(s) = self.surfaces.as_ref().filter(|s| s.settings.puddles_quality == 2) {
+            let all: Vec<&RenderSquare> = squares.iter().flatten().copied().collect();
+            crate::puddles::render_puddles_to_chunk(self, s, tex, &all, level, ctx.out);
         }
     }
 
@@ -232,6 +266,8 @@ impl ChunkRenderer<'_> {
                 render_translucent(&mut ctx, sq, obj, cv);
             }
         }
+        ctx.out.push(DrawCmd::DepthMask(false));
+        ctx.out.push(DrawCmd::DepthFunc(gl::ALWAYS));
     }
 
     /// `renderTranslucentObjects(z)`: translucent objects, sorted by
@@ -261,6 +297,29 @@ impl ChunkRenderer<'_> {
             }
         }
         flush_trees(&mut trees, &self.cam, vw, vh, ctx.out);
+        ctx.out.push(DrawCmd::DepthMask(false));
+        ctx.out.push(DrawCmd::DepthFunc(gl::ALWAYS));
+    }
+
+    /// `renderOneChunk_AnimatedAttachments`: the flames and smoke of the
+    /// fireplaces and barbecues on `squares` (one chunk's on-screen
+    /// squares, levels ascending) whose objects are not drawn in the
+    /// translucent pass (those draw theirs there).
+    pub fn render_animated_attachments(&self, squares: &[&RenderSquare], out: &mut Vec<DrawCmd>) {
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out };
+        let cv = self.cutaways.as_ref();
+        ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
+        ctx.out.push(DrawCmd::DepthFunc(gl::LEQUAL));
+        ctx.out.push(DrawCmd::DepthMask(false));
+        for sq in squares.iter().copied().filter(|s| cv.is_none_or(|cv| cv.is_visible(s))) {
+            for obj in &sq.objects {
+                let layer = alpha::render_layer(cv, sq, obj);
+                if matches!(layer, Layer::None | Layer::Translucent | Layer::TranslucentSE) || !crate::hearth::has_animated_attachments(obj) {
+                    continue;
+                }
+                crate::hearth::render_animated_attachments(&mut ctx, sq, obj);
+            }
+        }
         ctx.out.push(DrawCmd::DepthMask(false));
         ctx.out.push(DrawCmd::DepthFunc(gl::ALWAYS));
     }
@@ -307,7 +366,11 @@ fn render_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, index: usize) {
     ctx.out.push(DrawCmd::AlphaFunc(gl::GREATER, 0.0));
     ctx.out.push(DrawCmd::DepthMask(true));
     let v = &sq.vert_lights;
-    let shaper = FloorShaper { col: [v[0], v[1], v[2], v[3]], tint: 0, shore: false, water_depth: [0.0; 4] };
+    // The shore fade: alpha 1 - water depth at each corner.
+    let water = crate::water::ground_water(sq);
+    let shore = water.is_some_and(|w| w.shore && w.shader);
+    let d = water.map_or([0.0; 4], |w| [w.depth[0], w.depth[3], w.depth[2], w.depth[1]]);
+    let shaper = FloorShaper { col: [v[0], v[1], v[2], v[3]], tint: 0, shore, water_depth: d };
     let main = if sprite.flags.diamond_floor || sprite.flags.water { Modifier::FloorDiamond(shaper) } else { Modifier::FloorDeDiamond(shaper) };
     set_blend(ctx.out);
     let col = prepare_color(obj, ColorInfo::WHITE);
@@ -405,6 +468,17 @@ fn render_overlay(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject
     );
 }
 
+/// `IsoObject.renderAttachedAndOverlaySprites` in the per-frame pass:
+/// overlay then attached sprites in the square's light, no shaper.
+pub fn render_attached_and_overlay(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, col: ColorInfo) {
+    if obj.sprite.as_ref().is_some_and(|s| s.flags.invisible) {
+        return;
+    }
+    let (x, y, z) = (sq.x as f32, sq.y as f32, sq.z as f32);
+    render_overlay(ctx, sq, obj, x, y, z, col);
+    render_attached(ctx, obj, x, y, z, Dir::Other, col, false, Modifier::None);
+}
+
 /// `IsoObject.renderAttachedSprites`.
 #[allow(clippy::too_many_arguments)]
 fn render_attached(ctx: &mut SpriteCtx<'_>, obj: &RenderObject, x: f32, y: f32, z: f32, dir: Dir, col: ColorInfo, wall_lighting_pass: bool, modifier: Modifier) {
@@ -489,7 +563,7 @@ fn begin_translucent(out: &mut Vec<DrawCmd>) {
 fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, cv: Option<&CutawayView<'_>>) {
     ctx.out.push(DrawCmd::BlendFunc(gl::ONE, gl::ONE_MINUS_SRC_ALPHA));
     let f = obj.flags();
-    if f.transparent_floor {
+    if f.transparent_floor || (f.solidfloor && sq.water.is_some_and(|w| w.shore)) {
         let i = sq.objects.iter().position(|o| std::ptr::eq(o, obj)).expect("object");
         render_floor(ctx, sq, i);
         return;
@@ -503,6 +577,13 @@ fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderOb
         render_door_or_wall(ctx, sq, &o, t, cv);
     } else {
         render_not_door_or_wall(ctx, sq, &o);
+    }
+    // hasAnimatedAttachments: a fire's flames and smoke.
+    if o.kind == ObjectKind::Fire {
+        crate::fire::render_animated_attachments(ctx, sq, &o);
+    }
+    if crate::hearth::has_animated_attachments(&o) {
+        crate::hearth::render_animated_attachments(ctx, sq, &o);
     }
 }
 
@@ -882,6 +963,13 @@ fn render_not_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &Ren
         ctx,
         &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::None, seam: None },
     );
+    // With animated attachments (a fireplace's flames, a barbecue's
+    // smoke) `IsoObject.render` skips the overlay and attached sprites;
+    // `IsoFireplace.render` draws its logs itself.
+    if crate::hearth::has_animated_attachments(obj) {
+        crate::hearth::render_static(ctx, sq, obj, sq.light_info);
+        return;
+    }
     render_overlay(ctx, sq, obj, x, y, z, sq.light_info);
     render_attached(ctx, obj, x, y, z, Dir::Other, sq.light_info, false, Modifier::None);
 }

@@ -77,6 +77,30 @@ pub fn world_frame(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels
     world_frame_into(r, size, chunks, screen, Vec::new())
 }
 
+/// `FBORenderCell.renderAnimatedAttachments` (after the water): each
+/// on-screen chunk holding a fireplace's or barbecue's flames or smoke,
+/// its squares level by level.
+pub fn render_animated_attachments(r: &ChunkRenderer<'_>, chunks: &[ChunkLevels<'_>], out: &mut Vec<DrawCmd>) {
+    let mut done: Vec<(i32, i32)> = Vec::new();
+    for c in chunks {
+        let k = (c.texture.wx, c.texture.wy);
+        if done.contains(&k) {
+            continue;
+        }
+        done.push(k);
+        let mut squares: Vec<&crate::world::RenderSquare> = chunks
+            .iter()
+            .filter(|o| (o.texture.wx, o.texture.wy) == k)
+            .flat_map(|o| o.levels.iter().flat_map(|(_, l)| l.iter().flatten().copied()))
+            .collect();
+        if !squares.iter().any(|s| s.objects.iter().any(crate::hearth::has_animated_attachments)) {
+            continue;
+        }
+        squares.sort_by_key(|s| s.z);
+        r.render_animated_attachments(&squares, out);
+    }
+}
+
 /// [`world_frame`] appended to `out` (which may hold texture frees).
 pub fn world_frame_into(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], screen: ScreenParams, out: Vec<DrawCmd>) -> Vec<DrawCmd> {
     world_frame_with_objects(r, size, chunks, &FrameObjects::default(), None, screen, out)
@@ -111,6 +135,15 @@ pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: 
         recorded.push(c.texture);
     }
     r.composite(&recorded, w, h, &mut out);
+    let squares: Vec<&crate::world::RenderSquare> = chunks.iter().flat_map(|c| c.levels.iter().flat_map(|(_, l)| l.iter().flatten().copied())).collect();
+    // performRenderTiles after the composite: puddles (quality 0 and 1),
+    // then open water.
+    if let Some(s) = r.surfaces.as_ref() {
+        if s.settings.puddles_quality < 2 {
+            crate::puddles::render_puddles(r, s, &squares, &mut out);
+        }
+        crate::water::render_water(r, s, &squares, &mut out);
+    }
     // FBORenderShadows.clear, then renderPlayers .. renderMovingObjects.
     let model_cam = ModelCamera::new(&r.cam, w as f32 * z, h as f32 * z);
     let mut shadows = Shadows::default();
@@ -119,14 +152,30 @@ pub fn world_frame_with_objects(r: &ChunkRenderer<'_>, size: FrameSize, chunks: 
     let mut outlines = ModelOutlines::new(w, h, z);
     outlines.start_frame();
     objects.render_outlined(&model_cam, &mut shadows, &mut outlines, &mut out);
-    // performRenderTiles' per-level translucent passes, over every
-    // on-screen square (recorded this frame or not), with each level's
-    // shadows between its translucent floors and objects.
-    let squares: Vec<&crate::world::RenderSquare> = chunks.iter().flat_map(|c| c.levels.iter().flat_map(|(_, l)| l.iter().flatten().copied())).collect();
+    render_animated_attachments(r, chunks, &mut out);
+    // The per-level translucent passes, over every on-screen square
+    // (recorded this frame or not): translucent floors, puddles on them,
+    // shores (from level 0), shadows, then translucent objects.
     let levels = squares.iter().map(|s| s.z).chain(shadows.shadows.iter().map(|s| pz_render::iso::fastfloor(s.oz)));
     if let (Some(lo), Some(hi)) = (levels.clone().min(), levels.max()) {
+        let (lo, hi) = if r.surfaces.is_some() { (lo.min(0), hi.max(0)) } else { (lo, hi) };
         for z in lo..=hi {
             r.render_translucent_floors(&squares, z, &mut out);
+            if let Some(s) = r.surfaces.as_ref() {
+                crate::puddles::render_puddles_translucent_floors(r, s, &squares, z, &mut out);
+                if z == 0 {
+                    crate::water::render_water_shore(r, s, &squares, &mut out);
+                }
+                // renderRainSplashes: each on-screen chunk holding level z.
+                let mut seen = Vec::new();
+                for c in chunks.iter().filter(|c| (c.texture.min_level..=c.texture.top_level).contains(&z)) {
+                    let k = (c.texture.wx, c.texture.wy);
+                    if !seen.contains(&k) {
+                        seen.push(k);
+                        crate::splashes::render_rain_splashes(r, s, k.0, k.1, z, &mut out);
+                    }
+                }
+            }
             shadows.render_main(z, &model_cam, &mut out);
             r.render_translucent_objects(&squares, z, &mut out);
         }

@@ -1697,7 +1697,10 @@ dependencies = [
 name = "pz-iso-render"
 version = "0.1.0"
 dependencies = [
+ "pz-core",
+ "pz-fs",
  "pz-gpu",
+ "pz-kahlua",
  "pz-render",
 ]
 
@@ -1828,6 +1831,7 @@ name = "pz-world-render"
 version = "0.1.0"
 dependencies = [
  "png",
+ "pz-core",
  "pz-fs",
  "pz-gpu",
  "pz-iso-render",
