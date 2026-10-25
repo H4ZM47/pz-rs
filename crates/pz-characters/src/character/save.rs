@@ -200,21 +200,22 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         self.player_fields.speak_colour = c;
         self.zombie_kills = e(r.i32())?;
         let worn_count = e(r.i8())?;
-        let group = chars.body_locations.get_group("Human")?;
-        let mut worn: WornItems<i32> = WornItems::new(group.clone());
+        // The constructor's `initWornItems("Human")`, unless already made.
+        if self.items.worn_items.is_none() {
+            self.items.worn_items = Some(WornItems::new(chars.body_locations.get_group("Human")?));
+        }
         for _ in 0..worn_count {
             let name = e(r.string())?;
             let location = ItemBodyLocation::get(sm, &ResourceLocation::of(&name)?);
             let index = e(r.i16())?;
             let Some(item) = self.saved_item(index as i32) else { continue };
-            if group.borrow().location(location.as_ref())?.is_none() {
+            let worn = self.items.worn_items.as_mut().ok_or_else(npe)?;
+            if worn.body_location_group().borrow().location(location.as_ref())?.is_none() {
                 continue;
             }
             worn.set_item(location, item)?;
         }
-        self.items.worn_items = worn.items().iter().map(|w| w.item).collect();
-        self.items.worn_locations =
-            worn.items().iter().filter_map(|w| w.location.clone().map(|l| (w.item, l))).collect();
+        self.on_worn_items_changed(sm);
         let index = e(r.i16())?;
         if let Some(item) = self.saved_item(index as i32) {
             self.items.primary_hand_item = item;
@@ -440,17 +441,18 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
         self.save_game_character(sm, chars, ctx, env, w)?;
         w.f64(self.hours_survived);
         w.i32(self.zombie_kills);
-        if self.items.worn_items.len() > 127 {
+        let worn = self.items.worn_items.as_ref().ok_or_else(npe)?;
+        if worn.size() > 127 {
             return Err(ScriptError::new("java.lang.RuntimeException: too many worn items"));
         }
-        w.i8(self.items.worn_items.len() as i8);
+        w.i8(worn.size() as i8);
         let saved_index = |id: Option<i32>| -> i16 {
             id.and_then(|id| self.saved_inventory_items.iter().position(|s| *s == Some(id))).map_or(-1, |i| i as i16)
         };
-        for &id in &self.items.worn_items {
-            let location = self.items.worn_location(id).ok_or_else(npe)?;
+        for worn in worn.items() {
+            let location = worn.location.as_ref().ok_or_else(npe)?;
             w.string(&location.location.id());
-            w.i16(saved_index(Some(id)));
+            w.i16(saved_index(Some(worn.item)));
         }
         w.i16(saved_index(self.items.primary_hand_item));
         w.i16(saved_index(self.items.secondary_hand_item));

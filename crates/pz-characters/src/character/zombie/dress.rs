@@ -285,8 +285,9 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `IsoZombie.dressInNamedOutfit(outfitName)`.
     pub fn zombie_dress_in_named_outfit(&mut self, outfit_name: &str, cx: &mut ZombieDressCx<'_>) -> ScriptResult {
-        self.items.worn_items.clear();
-        self.items.worn_locations.clear();
+        if let Some(w) = &mut self.items.worn_items {
+            w.clear();
+        }
         self.visual_mut().clear();
         self.zombie.item_visuals.clear();
         let female = self.is_female();

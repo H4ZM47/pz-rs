@@ -2570,6 +2570,9 @@ impl<I: 'static> GameCharacter<I> {
             out.helmet_fall = Some(hit_head);
             if !ctx.is_client() {
                 out.fallen_items = self.items.helmet_fall_from_worn_items(sm, ctx, hit_head);
+                if !out.fallen_items.is_empty() {
+                    self.on_worn_items_changed(sm);
+                }
             }
             if ctx.rand_next(100) > lacer {
                 out.scratch = false;

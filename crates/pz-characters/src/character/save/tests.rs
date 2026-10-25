@@ -77,8 +77,11 @@ fn dressed(sm: &ScriptManager, chars: &mut Characters, ctx: &Recorder, locs: &[R
     c.human_visual = Some(v);
     // Two identical things (one run on save), another type, and a third.
     c.items.inventory.borrow_mut().raw_items = vec![raw(1, 101, 7), raw(2, 102, 8), raw(1, 103, 7), raw(3, 104, 9)];
-    c.items.worn_items = vec![101, 104];
-    c.items.worn_locations = vec![(101, locs[0].clone()), (104, locs[2].clone())];
+    let group = chars.body_locations.get_group("Human").unwrap();
+    c.init_worn_items(sm, group);
+    let worn = c.items.worn_items.as_mut().unwrap();
+    worn.set_item(Some(locs[2].clone()), Some(104)).unwrap();
+    worn.set_item(Some(locs[0].clone()), Some(101)).unwrap();
     c.items.primary_hand_item = Some(102);
     c.items.secondary_hand_item = Some(103);
     c.asleep = true;
@@ -157,8 +160,8 @@ fn player_record_round_trips() {
     assert_eq!(back.human_visual, c.human_visual);
     let ids: Vec<i32> = back.items.inventory.borrow().to_container().items.iter().map(|i| i.id()).collect();
     assert_eq!(ids, [101, 103, 102, 104]);
-    assert_eq!(back.items.worn_items, [101, 104]);
-    assert!(Rc::ptr_eq(back.items.worn_location(104).unwrap(), &locs[2]));
+    assert_eq!(back.items.worn_ids(), [101, 104]);
+    assert!(Rc::ptr_eq(&back.items.worn_location(104).unwrap(), &locs[2]));
     // IsoPlayer's short indices into the saved list win.
     assert_eq!((back.items.primary_hand_item, back.items.secondary_hand_item), (Some(102), Some(103)));
     assert!(back.asleep && back.body_damage.parts[0].bitten);
@@ -213,7 +216,7 @@ fn saved_indices_count_items_that_cannot_load() {
     assert_eq!(back.saved_inventory_items, [Some(101), None, Some(104)]);
     let ids: Vec<i32> = back.items.inventory.borrow().to_container().items.iter().map(|i| i.id()).collect();
     assert_eq!(ids, [101, 104]);
-    assert_eq!(back.items.worn_items, [101, 104]);
+    assert_eq!(back.items.worn_ids(), [101, 104]);
     assert_eq!((back.items.primary_hand_item, back.items.secondary_hand_item), (None, None));
     // Without debug mode the cheat setters and the cheat set do nothing.
     assert!(!back.is_god_mod(&ctx));
@@ -230,7 +233,7 @@ fn worn_items_need_a_known_location() {
     let g = chars.body_locations.get_group("Human").unwrap();
     g.borrow_mut().get_or_create_location(Some(locs[2].clone())).unwrap();
     let back = load(&sm, &mut chars, &ctx, &data);
-    assert_eq!(back.items.worn_items, [104]);
+    assert_eq!(back.items.worn_ids(), [104]);
 }
 
 #[test]

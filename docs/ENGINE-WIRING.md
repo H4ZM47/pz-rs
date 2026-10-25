@@ -205,6 +205,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `bind_item_container::container_value(&inv)`, so Lua and the
       simulation share the container and items. Characters handed to Lua
       must go through `character_value` (#143, char-inventory PR).
+- [ ] Worn items: characters made outside `load_player`,
+      `new_survivor` and `new_zombie` (an `IsoPlayer` constructor) must call
+      `GameCharacter::init_worn_items(sm, BodyLocations.getGroup("Human"))`
+      or `getWornItems()` is `nil`. `GameItemEnv::owner` should resolve a
+      character parent so an item's `isEquipped()`/`isWorn()` see it.
 - [ ] World containers need their `IsoObject` parent set with
       `bind_item_container::set_parent` the same way (#143).
 - [ ] Shared tooltip: `HudPicking::picked_tile` (`UIManager.getPicked().tile`
