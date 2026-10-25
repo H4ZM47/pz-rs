@@ -296,11 +296,61 @@ impl UIElementExt for UIWorldMap {
             el.draw_texture_scaled_col(None, x + w - 1.0, y, 1.0, h, r1, 1.0, 1.0, 0.5);
             el.draw_texture_scaled_col(None, x + 1.0, y + h - 1.0, w - 2.0, 1.0, r1, 1.0, 1.0, 0.5);
         }
+        if debug && self.st.borrow().renderer.get_boolean("HitTest") {
+            self.render_hit_test(el);
+        }
+        // TODO(world): BuildingsWithoutFeatures and Basements need
+        // IsoMetaGrid's BuildingDefs.
         el.render_base(t);
     }
 }
 
 impl UIWorldMap {
+    /// `HitTest`: the outline of the last data feature under the mouse.
+    fn render_hit_test(&self, el: &UIElement) {
+        let (wx, wy) = (self.mouse_to_world_x(el), self.mouse_to_world_y(el));
+        let mut last = None;
+        for d in self.st.borrow().world_map.data.iter() {
+            if !d.is_ready() {
+                continue;
+            }
+            if let Some((cell, hits)) = d.hit_test(wx, wy) {
+                if let Some(&i) = hits.last() {
+                    last = Some((cell, i));
+                }
+            }
+        }
+        let Some((cell, i)) = last else { return };
+        let (cx, cy) = (cell.x * 256, cell.y * 256);
+        let (ax, ay) = (el.get_absolute_x() as i32, el.get_absolute_y() as i32);
+        let Some(g) = cell.features[i].geometry.as_ref() else {
+            return;
+        };
+        for ring in &g.points {
+            let n = ring.num_points();
+            for j in 0..n {
+                let (p1x, p1y) = (ring.get_x(&cell.points, j), ring.get_y(&cell.points, j));
+                let (p2x, p2y) = (
+                    ring.get_x(&cell.points, (j + 1) % n),
+                    ring.get_y(&cell.points, (j + 1) % n),
+                );
+                let (x1, y1) = self.world_to_ui((cx + p1x) as f32, (cy + p1y) as f32);
+                let (x2, y2) = self.world_to_ui((cx + p2x) as f32, (cy + p2y) as f32);
+                with_ui(|m| {
+                    m.sprite.renderline(
+                        None,
+                        ax + x1 as i32,
+                        ay + y1 as i32,
+                        ax + x2 as i32,
+                        ay + y2 as i32,
+                        pz_render::Rgba(1.0, 0.0, 0.0, 1.0),
+                        1.0,
+                    )
+                });
+            }
+        }
+    }
+
     /// The `DebugInfo` panel: the square and cell under the mouse, the
     /// centre, the zoom and the scale.
     fn render_debug_info(&self, el: &UIElement) {

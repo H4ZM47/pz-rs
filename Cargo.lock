@@ -2347,6 +2347,7 @@ version = "0.1.0"
 dependencies = [
  "pz-core",
  "pz-joml",
+ "quick-xml",
 ]
 
 [[package]]
