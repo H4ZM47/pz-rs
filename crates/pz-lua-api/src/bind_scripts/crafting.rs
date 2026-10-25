@@ -19,15 +19,15 @@
 //! name in `getModName` (TODO(ChooseGameInfo)).
 
 use super::{
-    get, handle_arg, method, opt_str, script_list, script_value, set, string_list, void, IntoLua, ScriptHandle,
-    CRAFT_RECIPE_CLASS,
+    get, handle_arg, method, opt_str, script_list, script_value, set, string_list, void, IntoLua,
+    ScriptHandle, CRAFT_RECIPE_CLASS,
 };
 use crate::bind_registry::{key_value, ITEM_TAG_CLASS};
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg};
 use pz_kahlua::{LuaResult, NativeCall, Thread, Value};
 use pz_scripts::objects::entity::components::crafting::{
-    CraftRecipe, FluidMatchMode, InputFlag, InputScript, ItemApplyMode, OutputFlag, OutputScript, RequiredSkill,
-    XpAward,
+    CraftRecipe, FluidMatchMode, InputFlag, InputScript, ItemApplyMode, OutputFlag, OutputScript,
+    RequiredSkill, XpAward,
 };
 use pz_scripts::objects::entity::components::resources::ResourceType;
 use pz_scripts::objects::entity::ComponentType;
@@ -37,8 +37,10 @@ use std::rc::Rc;
 
 pub const INPUT_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.InputScript";
 pub const OUTPUT_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.OutputScript";
-pub const IO_SCRIPT_CLASS: &str = "zombie.scripting.entity.components.crafting.CraftRecipe$IOScript";
-pub const REQUIRED_SKILL_CLASS: &str = "zombie.scripting.entity.components.crafting.CraftRecipe$RequiredSkill";
+pub const IO_SCRIPT_CLASS: &str =
+    "zombie.scripting.entity.components.crafting.CraftRecipe$IOScript";
+pub const REQUIRED_SKILL_CLASS: &str =
+    "zombie.scripting.entity.components.crafting.CraftRecipe$RequiredSkill";
 pub const XP_AWARD_CLASS: &str = "zombie.scripting.entity.components.crafting.CraftRecipe$XpAward";
 pub const INPUT_FLAG_CLASS: &str = "zombie.entity.components.crafting.InputFlag";
 pub const OUTPUT_FLAG_CLASS: &str = "zombie.entity.components.crafting.OutputFlag";
@@ -52,13 +54,19 @@ fn list(values: Vec<Value>) -> Value {
 
 /// Line `i` of a recipe (an `InputScript` or `OutputScript`).
 fn io_value(recipe: &ScriptHandle, i: usize) -> LuaResult<Value> {
-    let input = recipe.read(|r: &CraftRecipe| r.io_lines().get(i).map(|io| io.as_input().is_some()))?;
+    let input =
+        recipe.read(|r: &CraftRecipe| r.io_lines().get(i).map(|io| io.as_input().is_some()))?;
     Ok(match input {
-        Some(true) => {
-            recipe.child(INPUT_SCRIPT_CLASS, &format!("io{i}"), move |r: &CraftRecipe| r.io_lines().get(i)?.as_input())
-        }
-        Some(false) => recipe
-            .child(OUTPUT_SCRIPT_CLASS, &format!("io{i}"), move |r: &CraftRecipe| r.io_lines().get(i)?.as_output()),
+        Some(true) => recipe.child(
+            INPUT_SCRIPT_CLASS,
+            &format!("io{i}"),
+            move |r: &CraftRecipe| r.io_lines().get(i)?.as_input(),
+        ),
+        Some(false) => recipe.child(
+            OUTPUT_SCRIPT_CLASS,
+            &format!("io{i}"),
+            move |r: &CraftRecipe| r.io_lines().get(i)?.as_output(),
+        ),
         None => Value::Nil,
     })
 }
@@ -72,7 +80,9 @@ fn opt_io(recipe: &ScriptHandle, i: Option<usize>) -> LuaResult<Value> {
 
 /// The index of an input/output handle among its recipe's lines.
 fn line_index(h: &ScriptHandle) -> LuaResult<Option<(ScriptHandle, usize)>> {
-    let Some(recipe) = h.parent().cloned() else { return Ok(None) };
+    let Some(recipe) = h.parent().cloned() else {
+        return Ok(None);
+    };
     let ptr = h.target_ptr()?;
     let i = recipe.read(|r: &CraftRecipe| {
         r.io_lines().iter().position(|io| {
@@ -102,7 +112,11 @@ fn skill_value(
     f: fn(&CraftRecipe) -> Option<&Vec<RequiredSkill>>,
     i: usize,
 ) -> Value {
-    h.child(REQUIRED_SKILL_CLASS, &format!("{field}{i}"), move |r: &CraftRecipe| f(r)?.get(i))
+    h.child(
+        REQUIRED_SKILL_CLASS,
+        &format!("{field}{i}"),
+        move |r: &CraftRecipe| f(r)?.get(i),
+    )
 }
 
 fn skill_at(
@@ -136,77 +150,193 @@ fn enum_once(thread: &mut Thread, class: &'static str, names: Vec<&'static str>)
 }
 
 pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
-    enum_once(thread, INPUT_FLAG_CLASS, InputFlag::ALL.iter().map(|v| v.name()).collect());
-    enum_once(thread, OUTPUT_FLAG_CLASS, OutputFlag::ALL.iter().map(|v| v.name()).collect());
-    enum_once(thread, ITEM_APPLY_MODE_CLASS, ItemApplyMode::ALL.iter().map(|v| v.name()).collect());
-    enum_once(thread, FLUID_MATCH_MODE_CLASS, FluidMatchMode::ALL.iter().map(|v| v.name()).collect());
-    enum_once(thread, RESOURCE_TYPE_CLASS, ResourceType::ALL.iter().map(|v| v.name()).collect());
-    enum_once(thread, super::COMPONENT_TYPE_CLASS, ComponentType::ALL.iter().map(|v| v.name()).collect());
+    enum_once(
+        thread,
+        INPUT_FLAG_CLASS,
+        InputFlag::ALL.iter().map(|v| v.name()).collect(),
+    );
+    enum_once(
+        thread,
+        OUTPUT_FLAG_CLASS,
+        OutputFlag::ALL.iter().map(|v| v.name()).collect(),
+    );
+    enum_once(
+        thread,
+        ITEM_APPLY_MODE_CLASS,
+        ItemApplyMode::ALL.iter().map(|v| v.name()).collect(),
+    );
+    enum_once(
+        thread,
+        FLUID_MATCH_MODE_CLASS,
+        FluidMatchMode::ALL.iter().map(|v| v.name()).collect(),
+    );
+    enum_once(
+        thread,
+        RESOURCE_TYPE_CLASS,
+        ResourceType::ALL.iter().map(|v| v.name()).collect(),
+    );
+    enum_once(
+        thread,
+        super::COMPONENT_TYPE_CLASS,
+        ComponentType::ALL.iter().map(|v| v.name()).collect(),
+    );
 
-    let b = expose_class(thread, CRAFT_RECIPE_CLASS, Some(super::BASE_SCRIPT_OBJECT_CLASS));
-    get(&b, "getName", |r: &CraftRecipe| r.name().map(str::to_string));
-    get(&b, "getTranslationName", |r: &CraftRecipe| r.translation_name().map(str::to_string));
-    set(&b, "overrideTranslationName", |r: &mut CraftRecipe, v: Option<String>| r.override_translation_name(v));
-    get(&b, "getIconName", |r: &CraftRecipe| r.icon_name().map(str::to_string));
-    get(&b, "getModID", |r: &CraftRecipe| r.mod_id().map(str::to_string));
-    get(&b, "getModName", |r: &CraftRecipe| if r.is_vanilla() { "Project Zomboid" } else { "<unknown_mod>" });
+    let b = expose_class(
+        thread,
+        CRAFT_RECIPE_CLASS,
+        Some(super::BASE_SCRIPT_OBJECT_CLASS),
+    );
+    get(&b, "getName", |r: &CraftRecipe| {
+        r.name().map(str::to_string)
+    });
+    get(&b, "getTranslationName", |r: &CraftRecipe| {
+        r.translation_name().map(str::to_string)
+    });
+    set(
+        &b,
+        "overrideTranslationName",
+        |r: &mut CraftRecipe, v: Option<String>| r.override_translation_name(v),
+    );
+    get(&b, "getIconName", |r: &CraftRecipe| {
+        r.icon_name().map(str::to_string)
+    });
+    get(&b, "getModID", |r: &CraftRecipe| {
+        r.mod_id().map(str::to_string)
+    });
+    get(&b, "getModName", |r: &CraftRecipe| {
+        if r.is_vanilla() {
+            "Project Zomboid"
+        } else {
+            "<unknown_mod>"
+        }
+    });
     get(&b, "isVanilla", |r: &CraftRecipe| r.is_vanilla());
-    get(&b, "getExistsAsVanilla", |r: &CraftRecipe| r.exists_as_vanilla());
+    get(&b, "getExistsAsVanilla", |r: &CraftRecipe| {
+        r.exists_as_vanilla()
+    });
     get(&b, "needToBeLearn", |r: &CraftRecipe| r.need_to_be_learn());
-    get(&b, "getMetaRecipe", |r: &CraftRecipe| r.meta_recipe().map(str::to_string));
+    get(&b, "getMetaRecipe", |r: &CraftRecipe| {
+        r.meta_recipe().map(str::to_string)
+    });
     method(&b, "hasTag", |c, h| {
         let t = opt_str(c, 1).unwrap_or_default();
         h.read(|r: &CraftRecipe| r.has_tag(&t).into_lua())
     });
     get(&b, "getTags", |r: &CraftRecipe| string_list(r.tags()));
-    get(&b, "getCategory", |r: &CraftRecipe| r.category().to_string());
-    get(&b, "getTooltip", |r: &CraftRecipe| r.tooltip().map(str::to_string));
+    get(&b, "getCategory", |r: &CraftRecipe| {
+        r.category().to_string()
+    });
+    get(&b, "getTooltip", |r: &CraftRecipe| {
+        r.tooltip().map(str::to_string)
+    });
     get(&b, "isCanWalk", |r: &CraftRecipe| r.is_can_walk());
-    get(&b, "hasOnTickInputs", |r: &CraftRecipe| r.has_on_tick_inputs());
-    get(&b, "hasOnTickOutputs", |r: &CraftRecipe| r.has_on_tick_outputs());
-    get(&b, "canBeDoneInDark", |r: &CraftRecipe| r.can_be_done_in_dark());
+    get(&b, "hasOnTickInputs", |r: &CraftRecipe| {
+        r.has_on_tick_inputs()
+    });
+    get(&b, "hasOnTickOutputs", |r: &CraftRecipe| {
+        r.has_on_tick_outputs()
+    });
+    get(&b, "canBeDoneInDark", |r: &CraftRecipe| {
+        r.can_be_done_in_dark()
+    });
     get(&b, "isSmithing", |r: &CraftRecipe| r.is_smithing());
     get(&b, "isResearchAll", |r: &CraftRecipe| r.is_research_all());
     get(&b, "isShapeless", |_: &CraftRecipe| true);
     get(&b, "isConsumeOnFinish", |_: &CraftRecipe| false);
     get(&b, "isRequiresPlayer", |_: &CraftRecipe| false);
     get(&b, "isUsesTools", |r: &CraftRecipe| r.is_uses_tools());
-    get(&b, "getAnimation", |r: &CraftRecipe| r.animation().map(str::to_string));
-    set(&b, "setAnimation", |r: &mut CraftRecipe, v: Option<String>| r.set_animation(v));
-    get(&b, "isAllowBatchCraft", |r: &CraftRecipe| r.is_allow_batch_craft());
-    get(&b, "isInHandCraftCraft", |r: &CraftRecipe| r.is_in_hand_craft());
+    get(&b, "getAnimation", |r: &CraftRecipe| {
+        r.animation().map(str::to_string)
+    });
+    set(
+        &b,
+        "setAnimation",
+        |r: &mut CraftRecipe, v: Option<String>| r.set_animation(v),
+    );
+    get(&b, "isAllowBatchCraft", |r: &CraftRecipe| {
+        r.is_allow_batch_craft()
+    });
+    get(&b, "isInHandCraftCraft", |r: &CraftRecipe| {
+        r.is_in_hand_craft()
+    });
     get(&b, "isAutoRotate", |r: &CraftRecipe| r.is_auto_rotate());
-    get(&b, "getOnAddToMenu", |r: &CraftRecipe| r.on_add_to_menu().map(str::to_string));
-    get(&b, "isBuildableRecipe", |r: &CraftRecipe| r.is_buildable_recipe());
-    get(&b, "requiresSpecificWorkstation", |r: &CraftRecipe| r.requires_specific_workstation());
-    get(&b, "isCanBeDoneFromFloor", |r: &CraftRecipe| r.is_can_be_done_from_floor());
-    get(&b, "isAnySurfaceCraft", |r: &CraftRecipe| r.is_any_surface_craft());
-    get(&b, "cannotBeResearched", |r: &CraftRecipe| r.cannot_be_researched());
-    method(&b, "canBeResearched", |_, h| h.write(|r: &mut CraftRecipe| r.can_be_researched().into_lua()));
-    method(&b, "canAlwaysBeResearched", |_, h| h.write(|r: &mut CraftRecipe| r.can_always_be_researched().into_lua()));
-    method(&b, "getResearchSkillLevel", |_, h| h.write(|r: &mut CraftRecipe| r.get_research_skill_level().into_lua()));
-    set(&b, "setResearchSkillLevel", |r: &mut CraftRecipe, v: i32| r.set_research_skill_level(v));
-    method(&b, "normalizeSkillLevel", |c, _| Ok(CraftRecipe::normalize_skill_level(int_arg(c, 1)).into_lua()));
+    get(&b, "getOnAddToMenu", |r: &CraftRecipe| {
+        r.on_add_to_menu().map(str::to_string)
+    });
+    get(&b, "isBuildableRecipe", |r: &CraftRecipe| {
+        r.is_buildable_recipe()
+    });
+    get(&b, "requiresSpecificWorkstation", |r: &CraftRecipe| {
+        r.requires_specific_workstation()
+    });
+    get(&b, "isCanBeDoneFromFloor", |r: &CraftRecipe| {
+        r.is_can_be_done_from_floor()
+    });
+    get(&b, "isAnySurfaceCraft", |r: &CraftRecipe| {
+        r.is_any_surface_craft()
+    });
+    get(&b, "cannotBeResearched", |r: &CraftRecipe| {
+        r.cannot_be_researched()
+    });
+    method(&b, "canBeResearched", |_, h| {
+        h.write(|r: &mut CraftRecipe| r.can_be_researched().into_lua())
+    });
+    method(&b, "canAlwaysBeResearched", |_, h| {
+        h.write(|r: &mut CraftRecipe| r.can_always_be_researched().into_lua())
+    });
+    method(&b, "getResearchSkillLevel", |_, h| {
+        h.write(|r: &mut CraftRecipe| r.get_research_skill_level().into_lua())
+    });
+    set(
+        &b,
+        "setResearchSkillLevel",
+        |r: &mut CraftRecipe, v: i32| r.set_research_skill_level(v),
+    );
+    method(&b, "normalizeSkillLevel", |c, _| {
+        Ok(CraftRecipe::normalize_skill_level(int_arg(c, 1)).into_lua())
+    });
     method(&b, "getTime", |c, h| {
         if !c.arg(1).is_nil() {
-            return Err(pz_kahlua::LuaError::runtime("TODO(IsoGameCharacter): getTime(character)"));
+            return Err(pz_kahlua::LuaError::runtime(
+                "TODO(IsoGameCharacter): getTime(character)",
+            ));
         }
         h.read(|r: &CraftRecipe| r.time().into_lua())
     });
-    get(&b, "getTimedActionScript", |r: &CraftRecipe| script_value(r.timed_action_script()));
+    get(&b, "getTimedActionScript", |r: &CraftRecipe| {
+        script_value(r.timed_action_script())
+    });
     method(&b, "getHighestSkillRequirement", |c, h| {
         let include = c.nargs() > 1 && bool_arg(c, 1);
         h.read(|r: &CraftRecipe| r.highest_skill_requirement(include).into_lua())
     });
-    get(&b, "getRequiredSkillCount", |r: &CraftRecipe| r.required_skill_count());
-    get(&b, "getRequiredSkills", |r: &CraftRecipe| string_list(r.required_skills()));
-    method(&b, "getRequiredSkill", |c, h| skill_at(c, h, "skill", |r| r.skill_required.as_ref()));
-    get(&b, "getAutoLearnAnySkillCount", |r: &CraftRecipe| r.auto_learn_any.as_ref().map_or(0, Vec::len));
-    get(&b, "getAutoLearnAllSkillCount", |r: &CraftRecipe| r.auto_learn_all.as_ref().map_or(0, Vec::len));
-    method(&b, "getAutoLearnAnySkills", |_, h| skill_list(h, "autoLearnAny", |r| r.auto_learn_any.as_ref()));
-    method(&b, "getAutoLearnAllSkills", |_, h| skill_list(h, "autoLearnAll", |r| r.auto_learn_all.as_ref()));
-    method(&b, "getAutoLearnAnySkill", |c, h| skill_at(c, h, "autoLearnAny", |r| r.auto_learn_any.as_ref()));
-    method(&b, "getAutoLearnAllSkill", |c, h| skill_at(c, h, "autoLearnAll", |r| r.auto_learn_all.as_ref()));
+    get(&b, "getRequiredSkillCount", |r: &CraftRecipe| {
+        r.required_skill_count()
+    });
+    get(&b, "getRequiredSkills", |r: &CraftRecipe| {
+        string_list(r.required_skills())
+    });
+    method(&b, "getRequiredSkill", |c, h| {
+        skill_at(c, h, "skill", |r| r.skill_required.as_ref())
+    });
+    get(&b, "getAutoLearnAnySkillCount", |r: &CraftRecipe| {
+        r.auto_learn_any.as_ref().map_or(0, Vec::len)
+    });
+    get(&b, "getAutoLearnAllSkillCount", |r: &CraftRecipe| {
+        r.auto_learn_all.as_ref().map_or(0, Vec::len)
+    });
+    method(&b, "getAutoLearnAnySkills", |_, h| {
+        skill_list(h, "autoLearnAny", |r| r.auto_learn_any.as_ref())
+    });
+    method(&b, "getAutoLearnAllSkills", |_, h| {
+        skill_list(h, "autoLearnAll", |r| r.auto_learn_all.as_ref())
+    });
+    method(&b, "getAutoLearnAnySkill", |c, h| {
+        skill_at(c, h, "autoLearnAny", |r| r.auto_learn_any.as_ref())
+    });
+    method(&b, "getAutoLearnAllSkill", |c, h| {
+        skill_at(c, h, "autoLearnAll", |r| r.auto_learn_all.as_ref())
+    });
     void(&b, "addRequiredSkill", |c, h| {
         let perk = match c.arg(1) {
             Value::Object(o) => o.to_lua_string(),
@@ -215,13 +345,17 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let level = int_arg(c, 2);
         h.write(|r: &mut CraftRecipe| r.add_required_skill(&perk, level))
     });
-    void(&b, "clearRequiredSkills", |_, h| h.write(|r: &mut CraftRecipe| r.clear_required_skills()));
+    void(&b, "clearRequiredSkills", |_, h| {
+        h.write(|r: &mut CraftRecipe| r.clear_required_skills())
+    });
     get(&b, "getXPAwardCount", |r: &CraftRecipe| r.xp_award_count());
     method(&b, "getXPAward", |c, h| {
         let i = int_arg(c, 1);
         let n = h.read(|r: &CraftRecipe| r.xp_award_count())?;
         Ok(match usize::try_from(i).ok().filter(|i| *i < n) {
-            Some(i) => h.child(XP_AWARD_CLASS, &format!("xp{i}"), move |r: &CraftRecipe| r.xp_award.as_ref()?.get(i)),
+            Some(i) => h.child(XP_AWARD_CLASS, &format!("xp{i}"), move |r: &CraftRecipe| {
+                r.xp_award.as_ref()?.get(i)
+            }),
             None => Value::Nil,
         })
     });
@@ -229,33 +363,57 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     get(&b, "getOutputCount", |r: &CraftRecipe| r.output_count());
     method(&b, "getInputs", |_, h| {
         let idx = h.read(|r: &CraftRecipe| r.input_indices().to_vec())?;
-        Ok(list(idx.into_iter().map(|i| io_value(h, i)).collect::<LuaResult<_>>()?))
+        Ok(list(
+            idx.into_iter()
+                .map(|i| io_value(h, i))
+                .collect::<LuaResult<_>>()?,
+        ))
     });
     method(&b, "getOutputs", |_, h| {
         let idx = h.read(|r: &CraftRecipe| r.output_indices().to_vec())?;
-        Ok(list(idx.into_iter().map(|i| io_value(h, i)).collect::<LuaResult<_>>()?))
+        Ok(list(
+            idx.into_iter()
+                .map(|i| io_value(h, i))
+                .collect::<LuaResult<_>>()?,
+        ))
     });
     method(&b, "getIoLines", |_, h| {
         let n = h.read(|r: &CraftRecipe| r.io_lines().len())?;
-        Ok(list((0..n).map(|i| io_value(h, i)).collect::<LuaResult<_>>()?))
+        Ok(list(
+            (0..n).map(|i| io_value(h, i)).collect::<LuaResult<_>>()?,
+        ))
     });
     method(&b, "getIOForIndex", |c, h| {
         let i = int_arg(c, 1);
         opt_io(h, usize::try_from(i).ok())
     });
     method(&b, "getIndexForIO", |c, _| {
-        let Some(io) = handle_arg(c, 1)? else { return Ok((-1).into_lua()) };
+        let Some(io) = handle_arg(c, 1)? else {
+            return Ok((-1).into_lua());
+        };
         Ok(line_index(&io)?.map_or(-1, |(_, i)| i as i32).into_lua())
     });
     method(&b, "containsIO", |c, h| {
-        let Some(io) = handle_arg(c, 1)? else { return Ok(false.into_lua()) };
-        Ok(line_index(&io)?.is_some_and(|(r, _)| r.root.ptr_eq(&h.root)).into_lua())
+        let Some(io) = handle_arg(c, 1)? else {
+            return Ok(false.into_lua());
+        };
+        Ok(line_index(&io)?
+            .is_some_and(|(r, _)| r.root.ptr_eq(&h.root))
+            .into_lua())
     });
-    method(&b, "getToolLeft", |_, h| opt_io(h, h.read(|r: &CraftRecipe| r.tool_left_index())?));
-    method(&b, "getToolRight", |_, h| opt_io(h, h.read(|r: &CraftRecipe| r.tool_right_index())?));
+    method(&b, "getToolLeft", |_, h| {
+        opt_io(h, h.read(|r: &CraftRecipe| r.tool_left_index())?)
+    });
+    method(&b, "getToolRight", |_, h| {
+        opt_io(h, h.read(|r: &CraftRecipe| r.tool_right_index())?)
+    });
     method(&b, "getToolBoth", |_, _| Ok(Value::Nil));
-    method(&b, "getProp1", |_, h| opt_io(h, h.read(|r: &CraftRecipe| r.prop1_index())?));
-    method(&b, "getProp2", |_, h| opt_io(h, h.read(|r: &CraftRecipe| r.prop2_index())?));
+    method(&b, "getProp1", |_, h| {
+        opt_io(h, h.read(|r: &CraftRecipe| r.prop1_index())?)
+    });
+    method(&b, "getProp2", |_, h| {
+        opt_io(h, h.read(|r: &CraftRecipe| r.prop2_index())?)
+    });
 
     let b = expose_class(thread, REQUIRED_SKILL_CLASS, None);
     get(&b, "getLevel", |s: &RequiredSkill| s.level());
@@ -317,7 +475,11 @@ fn flag_arg<F: Copy>(c: &NativeCall<'_>, all: &[F], name: fn(F) -> &'static str)
 fn frozen_food(sm: &ScriptManager, i: &InputScript) -> bool {
     i.possible_input_items().iter().any(|s| {
         s.downcast::<Item>()
-            .and_then(|it| it.try_borrow().ok().map(|it| it.is_item_type(sm, "FOOD") && !it.cant_be_frozen))
+            .and_then(|it| {
+                it.try_borrow()
+                    .ok()
+                    .map(|it| it.is_item_type(sm, "FOOD") && !it.cant_be_frozen)
+            })
             .unwrap_or(false)
     })
 }
@@ -338,49 +500,105 @@ fn register_input(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     get(&b, "isProp1", |i: &InputScript| i.is_prop1());
     get(&b, "isProp2", |i: &InputScript| i.is_prop2());
     get(&b, "isApplyOnTick", |i: &InputScript| i.is_apply_on_tick());
-    get(&b, "isAcceptsAnyItem", |i: &InputScript| i.is_accepts_any_item());
-    get(&b, "isAcceptsAnyFluid", |i: &InputScript| i.is_accepts_any_fluid());
-    get(&b, "isAcceptsAnyEnergy", |i: &InputScript| i.is_accepts_any_energy());
-    get(&b, "isHandcraftOnly", |i: &InputScript| i.is_handcraft_only());
-    get(&b, "isAutomationOnly", |i: &InputScript| i.is_automation_only());
+    get(&b, "isAcceptsAnyItem", |i: &InputScript| {
+        i.is_accepts_any_item()
+    });
+    get(&b, "isAcceptsAnyFluid", |i: &InputScript| {
+        i.is_accepts_any_fluid()
+    });
+    get(&b, "isAcceptsAnyEnergy", |i: &InputScript| {
+        i.is_accepts_any_energy()
+    });
+    get(&b, "isHandcraftOnly", |i: &InputScript| {
+        i.is_handcraft_only()
+    });
+    get(&b, "isAutomationOnly", |i: &InputScript| {
+        i.is_automation_only()
+    });
     get(&b, "allowFavorites", |i: &InputScript| i.allow_favorites());
     get(&b, "isReplace", |_: &InputScript| false);
     get(&b, "isFluidExact", |i: &InputScript| i.is_fluid_exact());
     get(&b, "isFluidPrimary", |i: &InputScript| i.is_fluid_primary());
     get(&b, "isFluidMixture", |i: &InputScript| i.is_fluid_mixture());
-    get(&b, "isFluidAnything", |i: &InputScript| i.is_fluid_anything());
-    get(&b, "isVariableAmount", |i: &InputScript| i.is_variable_amount());
-    get(&b, "getOriginalLine", |i: &InputScript| i.original_line().to_string());
-    get(&b, "getShapedIndex", |i: &InputScript| i.shaped_index());
-    get(&b, "getResourceType", |i: &InputScript| enum_value(RESOURCE_TYPE_CLASS, i.resource_type().name()));
-    get(&b, "getItemApplyMode", |i: &InputScript| enum_value(ITEM_APPLY_MODE_CLASS, i.item_apply_mode().name()));
-    get(&b, "getFluidMatchMode", |i: &InputScript| enum_value(FLUID_MATCH_MODE_CLASS, i.fluid_match_mode().name()));
-    get(&b, "getItems", |i: &InputScript| string_list(i.loaded_items()));
-    get(&b, "getItemTags", |i: &InputScript| {
-        list(i.item_tags().iter().map(|k| key_value(ITEM_TAG_CLASS, k.as_ref())).collect())
+    get(&b, "isFluidAnything", |i: &InputScript| {
+        i.is_fluid_anything()
     });
-    get(&b, "getPossibleInputItems", |i: &InputScript| script_list(i.possible_input_items()));
+    get(&b, "isVariableAmount", |i: &InputScript| {
+        i.is_variable_amount()
+    });
+    get(&b, "getOriginalLine", |i: &InputScript| {
+        i.original_line().to_string()
+    });
+    get(&b, "getShapedIndex", |i: &InputScript| i.shaped_index());
+    get(&b, "getResourceType", |i: &InputScript| {
+        enum_value(RESOURCE_TYPE_CLASS, i.resource_type().name())
+    });
+    get(&b, "getItemApplyMode", |i: &InputScript| {
+        enum_value(ITEM_APPLY_MODE_CLASS, i.item_apply_mode().name())
+    });
+    get(&b, "getFluidMatchMode", |i: &InputScript| {
+        enum_value(FLUID_MATCH_MODE_CLASS, i.fluid_match_mode().name())
+    });
+    get(&b, "getItems", |i: &InputScript| {
+        string_list(i.loaded_items())
+    });
+    get(&b, "getItemTags", |i: &InputScript| {
+        list(
+            i.item_tags()
+                .iter()
+                .map(|k| key_value(ITEM_TAG_CLASS, k.as_ref()))
+                .collect(),
+        )
+    });
+    get(&b, "getPossibleInputItems", |i: &InputScript| {
+        script_list(i.possible_input_items())
+    });
     let s = sm.clone();
-    method(&b, "hasPossibleFrozenFoodInputItems", move |_, h| h.read(|i: &InputScript| frozen_food(&s, i).into_lua()));
+    method(&b, "hasPossibleFrozenFoodInputItems", move |_, h| {
+        h.read(|i: &InputScript| frozen_food(&s, i).into_lua())
+    });
     let s = sm.clone();
     method(&b, "dontAllowFrozenItem", move |_, h| {
         h.read(|i: &InputScript| {
-            (i.resource_type() == ResourceType::Item && frozen_food(&s, i) && !i.has_flag(InputFlag::AllowFrozenItem))
-                .into_lua()
+            (i.resource_type() == ResourceType::Item
+                && frozen_food(&s, i)
+                && !i.has_flag(InputFlag::AllowFrozenItem))
+            .into_lua()
         })
     });
-    get(&b, "hasCreateToItem", |i: &InputScript| i.has_create_to_item());
-    get(&b, "hasConsumeFromItem", |i: &InputScript| i.has_consume_from_item());
-    get(&b, "hasParentScript", |i: &InputScript| i.has_parent_script());
-    method(&b, "getCreateToItemScript", |_, h| sibling(h, |i: &InputScript| i.create_to_item_script()));
-    method(&b, "getConsumeFromItemScript", |_, h| sibling(h, |i: &InputScript| i.consume_from_item_script()));
-    method(&b, "getParentScript", |_, h| sibling(h, |i: &InputScript| i.parent_script()));
+    get(&b, "hasCreateToItem", |i: &InputScript| {
+        i.has_create_to_item()
+    });
+    get(&b, "hasConsumeFromItem", |i: &InputScript| {
+        i.has_consume_from_item()
+    });
+    get(&b, "hasParentScript", |i: &InputScript| {
+        i.has_parent_script()
+    });
+    method(&b, "getCreateToItemScript", |_, h| {
+        sibling(h, |i: &InputScript| i.create_to_item_script())
+    });
+    method(&b, "getConsumeFromItemScript", |_, h| {
+        sibling(h, |i: &InputScript| i.consume_from_item_script())
+    });
+    method(&b, "getParentScript", |_, h| {
+        sibling(h, |i: &InputScript| i.parent_script())
+    });
     method(&b, "getReplaceOutputScript", |_, _| Ok(Value::Nil));
     method(&b, "getParentRecipe", |_, h| Ok(parent_value(h)));
-    method(&b, "getRecipeLineIndex", |_, h| Ok(line_index(h)?.map_or(-1, |(_, i)| i as i32).into_lua()));
+    method(&b, "getRecipeLineIndex", |_, h| {
+        Ok(line_index(h)?.map_or(-1, |(_, i)| i as i32).into_lua())
+    });
     method(&b, "containsItem", |c, h| {
-        let Some(item) = handle_arg(c, 1)? else { return Ok(false.into_lua()) };
-        h.read(|i: &InputScript| i.possible_input_items().iter().any(|s| s.ptr_eq(&item.root)).into_lua())
+        let Some(item) = handle_arg(c, 1)? else {
+            return Ok(false.into_lua());
+        };
+        h.read(|i: &InputScript| {
+            i.possible_input_items()
+                .iter()
+                .any(|s| s.ptr_eq(&item.root))
+                .into_lua()
+        })
     });
     amounts(&b, "getAmount", |i, a| match a {
         Amount::None => i.amount(),
@@ -435,7 +653,11 @@ fn amounts(b: &crate::expose::ClassBuilder, name: &str, f: fn(&InputScript, Amou
             },
         };
         let v = h.read(|i: &InputScript| f(i, a))?;
-        Ok(if int { (v as i32).into_lua() } else { v.into_lua() })
+        Ok(if int {
+            (v as i32).into_lua()
+        } else {
+            v.into_lua()
+        })
     });
 }
 
@@ -467,24 +689,50 @@ fn register_output(thread: &mut Thread) {
     get(&b, "getMaxAmount", |o: &OutputScript| o.max_amount());
     get(&b, "getIntMaxAmount", |o: &OutputScript| o.int_max_amount());
     get(&b, "getChance", |o: &OutputScript| o.chance());
-    get(&b, "isVariableAmount", |o: &OutputScript| o.is_variable_amount());
+    get(&b, "isVariableAmount", |o: &OutputScript| {
+        o.is_variable_amount()
+    });
     get(&b, "getShapedIndex", |o: &OutputScript| o.shaped_index());
     get(&b, "isApplyOnTick", |o: &OutputScript| o.is_apply_on_tick());
-    get(&b, "isHandcraftOnly", |o: &OutputScript| o.is_handcraft_only());
-    get(&b, "isAutomationOnly", |o: &OutputScript| o.is_automation_only());
-    get(&b, "getOriginalLine", |o: &OutputScript| o.original_line().to_string());
+    get(&b, "isHandcraftOnly", |o: &OutputScript| {
+        o.is_handcraft_only()
+    });
+    get(&b, "isAutomationOnly", |o: &OutputScript| {
+        o.is_automation_only()
+    });
+    get(&b, "getOriginalLine", |o: &OutputScript| {
+        o.original_line().to_string()
+    });
     get(&b, "isFluidExact", |o: &OutputScript| o.is_fluid_exact());
-    get(&b, "isFluidPrimary", |o: &OutputScript| o.is_fluid_primary());
-    get(&b, "isFluidAnything", |o: &OutputScript| o.is_fluid_anything());
-    get(&b, "hasCreateToItem", |o: &OutputScript| o.has_create_to_item());
-    get(&b, "getResourceType", |o: &OutputScript| enum_value(RESOURCE_TYPE_CLASS, o.resource_type().name()));
-    get(&b, "getItemApplyMode", |o: &OutputScript| enum_value(ITEM_APPLY_MODE_CLASS, o.item_apply_mode().name()));
-    get(&b, "getFluidMatchMode", |o: &OutputScript| enum_value(FLUID_MATCH_MODE_CLASS, o.fluid_match_mode().name()));
-    method(&b, "getCreateToItemScript", |_, h| sibling(h, |o: &OutputScript| o.create_to_item_script()));
+    get(&b, "isFluidPrimary", |o: &OutputScript| {
+        o.is_fluid_primary()
+    });
+    get(&b, "isFluidAnything", |o: &OutputScript| {
+        o.is_fluid_anything()
+    });
+    get(&b, "hasCreateToItem", |o: &OutputScript| {
+        o.has_create_to_item()
+    });
+    get(&b, "getResourceType", |o: &OutputScript| {
+        enum_value(RESOURCE_TYPE_CLASS, o.resource_type().name())
+    });
+    get(&b, "getItemApplyMode", |o: &OutputScript| {
+        enum_value(ITEM_APPLY_MODE_CLASS, o.item_apply_mode().name())
+    });
+    get(&b, "getFluidMatchMode", |o: &OutputScript| {
+        enum_value(FLUID_MATCH_MODE_CLASS, o.fluid_match_mode().name())
+    });
+    method(&b, "getCreateToItemScript", |_, h| {
+        sibling(h, |o: &OutputScript| o.create_to_item_script())
+    });
     method(&b, "getParentRecipe", |_, h| Ok(parent_value(h)));
-    method(&b, "getRecipeLineIndex", |_, h| Ok(line_index(h)?.map_or(-1, |(_, i)| i as i32).into_lua()));
+    method(&b, "getRecipeLineIndex", |_, h| {
+        Ok(line_index(h)?.map_or(-1, |(_, i)| i as i32).into_lua())
+    });
     method(&b, "getPossibleResultItems", |_, h| {
-        let Some((recipe, i)) = line_index(h)? else { return Ok(list(Vec::new())) };
+        let Some((recipe, i)) = line_index(h)? else {
+            return Ok(list(Vec::new()));
+        };
         recipe.read(|r: &CraftRecipe| {
             let out = r.io_lines()[i].as_output();
             match out.and_then(|o| r.output_mapper_for(o)) {
@@ -494,8 +742,12 @@ fn register_output(thread: &mut Thread) {
         })
     });
     method(&b, "containsItem", |c, h| {
-        let Some(item) = handle_arg(c, 1)? else { return Ok(false.into_lua()) };
-        let Some((recipe, i)) = line_index(h)? else { return Ok(false.into_lua()) };
+        let Some(item) = handle_arg(c, 1)? else {
+            return Ok(false.into_lua());
+        };
+        let Some((recipe, i)) = line_index(h)? else {
+            return Ok(false.into_lua());
+        };
         recipe.read(|r: &CraftRecipe| {
             let out = r.io_lines()[i].as_output();
             out.and_then(|o| r.output_mapper_for(o))

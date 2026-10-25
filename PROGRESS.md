@@ -101,10 +101,12 @@ Status of the Rust port. Update this file with every merged change.
   with a `pathfind_adapter!` for pz-pathfind; Lua bindings in
   `pz-lua-api::bind_vehicles`. Against the original with a recording
   Bullet stand-in, a fake clock and scripted driving (400 frames, every
-  dump field and Bullet call): 241 of 243 saved `vehicles.db` vehicles are
-  bit-exact, one matches up to the original's own crash (a broken window
-  with no square) and one holds a trailer animal the original cannot run
-  headless; all 241 vanilla vehicle scripts as new vehicles are
+  dump field and Bullet call, the item load draws made on the vehicle's
+  own `Rand` stream as the original does): 240 of 243 saved `vehicles.db`
+  vehicles are bit-exact, two match up to the original's own crash (a
+  broken window with no square) and one holds a trailer animal the
+  original cannot run headless; the load draws match for all 242 loadable
+  vehicles; all 241 vanilla vehicle scripts as new vehicles are
   bit-exact; 3,000 single-zone spawns and 2,000 `AddVehicles` runs on
   synthetic zone lists give the original's vehicles and `Rand` state.
   End to end on pz-bullet (`VehiclePhysics` for `PzBullet`, with the

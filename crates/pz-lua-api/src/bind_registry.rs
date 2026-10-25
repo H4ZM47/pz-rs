@@ -57,7 +57,10 @@ pub const KEY_CLASSES: &[(&str, &str)] = &[
 
 /// The key class exposed for registry `registry`.
 pub fn key_class(registry: &str) -> Option<&'static str> {
-    KEY_CLASSES.iter().find(|(_, r)| *r == registry).map(|(c, _)| *c)
+    KEY_CLASSES
+        .iter()
+        .find(|(_, r)| *r == registry)
+        .map(|(c, _)| *c)
 }
 
 thread_local! {
@@ -73,7 +76,11 @@ pub fn install_script_manager(sm: Rc<ScriptManager>) {
 /// The shared ScriptManager (`ScriptManager.instance`), empty if none was
 /// installed.
 pub fn shared_script_manager() -> Rc<ScriptManager> {
-    SHARED.with(|s| s.borrow_mut().get_or_insert_with(|| Rc::new(ScriptManager::new())).clone())
+    SHARED.with(|s| {
+        s.borrow_mut()
+            .get_or_insert_with(|| Rc::new(ScriptManager::new()))
+            .clone()
+    })
 }
 
 /// A Java exception from the ported code (`"java.lang.X: message"`) as the
@@ -124,7 +131,12 @@ pub fn key_value(class: &'static str, key: Option<&Rc<RegistryKey>>) -> Value {
     KEYS.with(|k| {
         k.borrow_mut()
             .entry(Rc::as_ptr(key))
-            .or_insert_with(|| Value::Object(Rc::new(KeyObject { class, key: key.clone() })))
+            .or_insert_with(|| {
+                Value::Object(Rc::new(KeyObject {
+                    class,
+                    key: key.clone(),
+                }))
+            })
             .clone()
     })
 }
@@ -135,7 +147,10 @@ pub fn key_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<Rc<RegistryKey>
         Value::Nil => Ok(None),
         Value::Object(o) => match o.as_any().downcast_ref::<KeyObject>() {
             Some(k) => Ok(Some(k.key.clone())),
-            None => Err(LuaError::runtime(format!("Expected a registry key but got {}", o.class_name()))),
+            None => Err(LuaError::runtime(format!(
+                "Expected a registry key but got {}",
+                o.class_name()
+            ))),
         },
         other => Err(LuaError::runtime(format!(
             "Expected a registry key but got {}",
@@ -165,7 +180,10 @@ pub fn location_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<ResourceLo
         Value::Nil => Ok(None),
         Value::Object(o) => match o.as_any().downcast_ref::<ResourceLocationObject>() {
             Some(l) => Ok(Some(l.0.clone())),
-            None => Err(LuaError::runtime(format!("Expected ResourceLocation but got {}", o.class_name()))),
+            None => Err(LuaError::runtime(format!(
+                "Expected ResourceLocation but got {}",
+                o.class_name()
+            ))),
         },
         other => Err(LuaError::runtime(format!(
             "Expected ResourceLocation but got {}",
@@ -180,7 +198,11 @@ fn str_or_empty(c: &NativeCall<'_>, i: usize) -> String {
 
 fn this_location(c: &NativeCall<'_>) -> LuaResult<ResourceLocation> {
     let o = this::<ResourceLocationObject>(c)?;
-    Ok(o.as_any().downcast_ref::<ResourceLocationObject>().unwrap().0.clone())
+    Ok(o.as_any()
+        .downcast_ref::<ResourceLocationObject>()
+        .unwrap()
+        .0
+        .clone())
 }
 
 fn this_key(c: &NativeCall<'_>) -> LuaResult<Rc<RegistryKey>> {
@@ -251,7 +273,8 @@ fn register_item_keys(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let mut holder: Option<(String, crate::expose::ClassBuilder)> = None;
     for d in decls {
         if holder.as_ref().is_none_or(|(h, _)| *h != d.holder) {
-            let class: &'static str = Box::leak(format!("{ITEM_KEY_CLASS}${}", d.holder).into_boxed_str());
+            let class: &'static str =
+                Box::leak(format!("{ITEM_KEY_CLASS}${}", d.holder).into_boxed_str());
             holder = Some((d.holder.clone(), expose_class(thread, class, None)));
         }
         let item_type = sm
@@ -262,7 +285,10 @@ fn register_item_keys(thread: &mut Thread, sm: &Rc<ScriptManager>) {
             .id("item_type", &d.item_type)
             .and_then(|id| ResourceLocation::of(id).ok())
             .and_then(|l| types.borrow().get(&l));
-        let v = Value::Object(Rc::new(ItemKeyObject { id: d.id, item_type }));
+        let v = Value::Object(Rc::new(ItemKeyObject {
+            id: d.id,
+            item_type,
+        }));
         holder.as_ref().unwrap().1.field(&d.field, v);
     }
 }
@@ -279,7 +305,8 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
         Ok(c.push(Value::Object(Rc::new(ResourceLocationObject(l)))))
     });
     b.ctor(|c| {
-        let l = ResourceLocation::new(&str_or_empty(c, 0), &str_or_empty(c, 1)).map_err(java_error)?;
+        let l =
+            ResourceLocation::new(&str_or_empty(c, 0), &str_or_empty(c, 1)).map_err(java_error)?;
         Ok(c.push(Value::Object(Rc::new(ResourceLocationObject(l)))))
     });
     b.method("getNamespace", |c| {
@@ -301,7 +328,10 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
     b.method("equals", |c| {
         let l = this_location(c)?;
         let eq = match c.arg(1) {
-            Value::Object(o) => o.as_any().downcast_ref::<ResourceLocationObject>().is_some_and(|o| o.0 == l),
+            Value::Object(o) => o
+                .as_any()
+                .downcast_ref::<ResourceLocationObject>()
+                .is_some_and(|o| o.0 == l),
             _ => false,
         };
         Ok(c.push(eq))
@@ -319,9 +349,13 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
             .map(|(f, id)| (f.to_string(), id.to_string()))
             .collect();
         for (field, id) in constants {
-            let key = ResourceLocation::of(&id)
-                .ok()
-                .and_then(|l| sm.registries.get(registry).expect("known registry").borrow().get(&l));
+            let key = ResourceLocation::of(&id).ok().and_then(|l| {
+                sm.registries
+                    .get(registry)
+                    .expect("known registry")
+                    .borrow()
+                    .get(&l)
+            });
             if let Some(key) = key {
                 b.field(&field, key_value(class, Some(&key)));
             }
@@ -329,7 +363,12 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
         let s = sm.clone();
         b.static_fn("get", move |c| {
             let key = match location_arg(c, 0)? {
-                Some(l) => s.registries.get(registry).expect("known registry").borrow().get(&l),
+                Some(l) => s
+                    .registries
+                    .get(registry)
+                    .expect("known registry")
+                    .borrow()
+                    .get(&l),
                 None => None,
             };
             Ok(c.push(key_value(class, key.as_ref())))
@@ -337,7 +376,8 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
         let s = sm.clone();
         if class == AMMO_TYPE_CLASS {
             b.static_fn("register", move |c| {
-                let key = AmmoType::register_with_item(&s, &str_or_empty(c, 0), &str_or_empty(c, 1));
+                let key =
+                    AmmoType::register_with_item(&s, &str_or_empty(c, 0), &str_or_empty(c, 1));
                 Ok(c.push(key_value(class, Some(&key.map_err(java_error)?))))
             });
             let s = sm.clone();
@@ -348,7 +388,12 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
         } else {
             b.static_fn("register", move |c| {
                 let id = str_or_empty(c, 0);
-                let key = s.registries.get(registry).expect("known registry").borrow_mut().register_id(&id, false);
+                let key = s
+                    .registries
+                    .get(registry)
+                    .expect("known registry")
+                    .borrow_mut()
+                    .register_id(&id, false);
                 Ok(c.push(key_value(class, Some(&key.map_err(java_error)?))))
             });
         }
@@ -406,24 +451,43 @@ mod tests {
 
     pub(crate) fn sm_with_keys() -> Rc<ScriptManager> {
         let sm = Rc::new(ScriptManager::new());
-        for (reg, ids) in [("character_trait", ["t:brave", "t:timid"]), ("character_profession", ["t:baker", "t:smith"])] {
+        for (reg, ids) in [
+            ("character_trait", ["t:brave", "t:timid"]),
+            ("character_profession", ["t:baker", "t:smith"]),
+        ] {
             for id in ids {
-                sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
+                sm.registries
+                    .get(reg)
+                    .unwrap()
+                    .borrow_mut()
+                    .register_id(id, false)
+                    .unwrap();
             }
         }
-        sm.registries.get("game_mode").unwrap().borrow_mut().register_id("t:Quick", false).unwrap();
+        sm.registries
+            .get("game_mode")
+            .unwrap()
+            .borrow_mut()
+            .register_id("t:Quick", false)
+            .unwrap();
         let mut st = sm.statics.items.borrow_mut();
         st.constants.insert("game_mode", "QUICK", "t:Quick");
         st.constants.insert("character_trait", "BRAVE", "t:brave");
-        st.constants.insert("character_profession", "BAKER", "t:baker");
+        st.constants
+            .insert("character_profession", "BAKER", "t:baker");
         drop(st);
         sm
     }
 
     fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, _)| pz_kahlua::exec::java_value_of(&e))
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map(|_| ())
+            .map_err(|(e, _)| pz_kahlua::exec::java_value_of(&e))
     }
 
     #[test]
@@ -470,16 +534,28 @@ mod tests {
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end").unwrap();
         let sm = sm_with_keys();
-        sm.registries.get("item_type").unwrap().borrow_mut().register_id("t:boxy", false).unwrap();
-        sm.statics.items.borrow_mut().constants.insert("item_type", "BOXY", "t:boxy");
+        sm.registries
+            .get("item_type")
+            .unwrap()
+            .borrow_mut()
+            .register_id("t:boxy", false)
+            .unwrap();
+        sm.statics
+            .items
+            .borrow_mut()
+            .constants
+            .insert("item_type", "BOXY", "t:boxy");
         let decl = |holder: &str, field: &str, id: &str| ItemKeyDecl {
             holder: holder.into(),
             field: field.into(),
             id: id.into(),
             item_type: "BOXY".into(),
         };
-        sm.builtin_tables.borrow_mut().item_keys =
-            vec![decl("Crate", "SMALL_CRATE", "SmallCrate"), decl("Crate", "BIG_CRATE", "BigCrate"), decl("Odd", "THING", "Thing")];
+        sm.builtin_tables.borrow_mut().item_keys = vec![
+            decl("Crate", "SMALL_CRATE", "SmallCrate"),
+            decl("Crate", "BIG_CRATE", "BigCrate"),
+            decl("Odd", "THING", "Thing"),
+        ];
         register(&mut t, sm);
         run(
             &mut t,

@@ -19,7 +19,9 @@
 //! TODO(InventoryItem Lua objects, IsoZombie, IsoAnimal).
 
 use crate::bind_body_damage::{enum_arg, BODY_PART_TYPE_CLASS};
-use crate::bind_character_sim::{character_value, chr_of, with_ctx, LuaGameCharacterRef, ISO_GAME_CHARACTER_CLASS};
+use crate::bind_character_sim::{
+    character_value, chr_of, with_ctx, LuaGameCharacterRef, ISO_GAME_CHARACTER_CLASS,
+};
 use crate::bind_characters::shared_characters;
 use crate::bind_java_util::JavaList;
 use crate::bind_registry::{java_error, shared_script_manager};
@@ -83,7 +85,12 @@ pub fn body_part_value(chr: &LuaGameCharacterRef, index: usize) -> Value {
     HANDLES.with(|h| {
         h.borrow_mut()
             .entry((true, Rc::as_ptr(chr) as usize, index))
-            .or_insert_with(|| Value::Object(Rc::new(BodyPartObject { chr: chr.clone(), index })))
+            .or_insert_with(|| {
+                Value::Object(Rc::new(BodyPartObject {
+                    chr: chr.clone(),
+                    index,
+                }))
+            })
             .clone()
     })
 }
@@ -122,7 +129,10 @@ fn part_arg(c: &NativeCall<'_>, i: usize, chr: &LuaGameCharacterRef) -> LuaResul
         Value::Num(n) => n as i32 as i64,
         _ => enum_arg(c, i, BODY_PART_TYPE_CLASS)?.unwrap_or(0) as i64,
     };
-    usize::try_from(idx).ok().filter(|i| *i < len).ok_or_else(|| index_error(idx, len))
+    usize::try_from(idx)
+        .ok()
+        .filter(|i| *i < len)
+        .ok_or_else(|| index_error(idx, len))
 }
 
 /// Runs `f` on the character with the installed context, then fires its
@@ -198,9 +208,13 @@ fn register_character_members(thread: &mut Thread) {
         ("setBetaDelta", |c, v| c.beta_delta = v),
         ("setPainEffect", |c, v| c.pain_effect = v),
         ("setPainDelta", |c, v| c.pain_delta = v),
-        ("setSleepingTabletEffect", |c, v| c.sleeping_tablet_effect = v),
+        ("setSleepingTabletEffect", |c, v| {
+            c.sleeping_tablet_effect = v
+        }),
         ("setSleepingTabletDelta", |c, v| c.sleeping_tablet_delta = v),
-        ("setReduceInfectionPower", |c, v| c.reduce_infection_power = v),
+        ("setReduceInfectionPower", |c, v| {
+            c.reduce_infection_power = v
+        }),
         ("setTimeSinceLastSmoke", |c, v| c.time_since_last_smoke = v),
         ("SleepingTablet", |c, v| c.sleeping_tablet(v)),
         ("BetaBlockers", |c, v| c.beta_blockers(v)),
@@ -241,9 +255,16 @@ fn register_character_members(thread: &mut Thread) {
 type BdGet = fn(&BodyDamage) -> Value;
 type BdSet = fn(&mut BodyDamage, &NativeCall<'_>);
 
-fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
+fn register_body_damage(
+    thread: &mut Thread,
+    sm: &Rc<ScriptManager>,
+    chars: &Rc<RefCell<Characters>>,
+) {
     let b = expose_class(thread, BODY_DAMAGE_CLASS, None);
-    b.field("InfectionLevelToZombify", fv(pz_characters::character::body_damage::INFECTION_LEVEL_TO_ZOMBIFY));
+    b.field(
+        "InfectionLevelToZombify",
+        fv(pz_characters::character::body_damage::INFECTION_LEVEL_TO_ZOMBIFY),
+    );
     let gets: Vec<(&str, BdGet)> = vec![
         ("getHealth", |b| fv(b.health())),
         ("getOverallBodyHealth", |b| fv(b.overall_body_health)),
@@ -255,24 +276,48 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         ("getColdProgressionRate", |b| fv(b.cold_progression_rate)),
         ("getInfectionGrowthRate", |b| fv(b.infection_growth_rate)),
         ("getInfectionTime", |b| fv(b.infection_time)),
-        ("getInfectionMortalityDuration", |b| fv(b.infection_mortality_duration)),
+        ("getInfectionMortalityDuration", |b| {
+            fv(b.infection_mortality_duration)
+        }),
         ("getHealthFromFood", |b| fv(b.health_from_food)),
         ("getHealthFromFoodTimer", |b| fv(b.health_from_food_timer)),
-        ("getHealthReductionFromSevereBadMoodles", |b| fv(b.health_reduction_from_severe_bad_moodles)),
-        ("getStandardHealthAddition", |b| fv(b.standard_health_addition)),
-        ("getReducedHealthAddition", |b| fv(b.reduced_health_addition)),
-        ("getSeverlyReducedHealthAddition", |b| fv(b.severly_reduced_health_addition)),
-        ("getSleepingHealthAddition", |b| fv(b.sleeping_health_addition)),
-        ("getBoredomDecreaseFromReading", |b| fv(b.boredom_decrease_from_reading)),
+        ("getHealthReductionFromSevereBadMoodles", |b| {
+            fv(b.health_reduction_from_severe_bad_moodles)
+        }),
+        ("getStandardHealthAddition", |b| {
+            fv(b.standard_health_addition)
+        }),
+        (
+            "getReducedHealthAddition",
+            |b| fv(b.reduced_health_addition),
+        ),
+        ("getSeverlyReducedHealthAddition", |b| {
+            fv(b.severly_reduced_health_addition)
+        }),
+        ("getSleepingHealthAddition", |b| {
+            fv(b.sleeping_health_addition)
+        }),
+        ("getBoredomDecreaseFromReading", |b| {
+            fv(b.boredom_decrease_from_reading)
+        }),
         ("getInitialThumpPain", |b| fv(b.initial_thump_pain)),
         ("getInitialScratchPain", |b| fv(b.initial_scratch_pain)),
         ("getInitialBitePain", |b| fv(b.initial_bite_pain)),
         ("getInitialWoundPain", |b| fv(b.initial_wound_pain)),
-        ("getContinualPainIncrease", |b| fv(b.continual_pain_increase)),
-        ("getPainReductionFromMeds", |b| fv(b.pain_reduction_from_meds)),
-        ("getStandardPainReductionWhenWell", |b| fv(b.standard_pain_reduction_when_well)),
+        (
+            "getContinualPainIncrease",
+            |b| fv(b.continual_pain_increase),
+        ),
+        ("getPainReductionFromMeds", |b| {
+            fv(b.pain_reduction_from_meds)
+        }),
+        ("getStandardPainReductionWhenWell", |b| {
+            fv(b.standard_pain_reduction_when_well)
+        }),
         ("getPanicIncreaseValue", |b| fv(b.panic_increase_value)),
-        ("getPanicIncreaseValueFrame", |b| fv(b.panic_increase_value_frame())),
+        ("getPanicIncreaseValueFrame", |b| {
+            fv(b.panic_increase_value_frame())
+        }),
         ("getPanicReductionValue", |b| fv(b.panic_reduction_value)),
         ("getDrunkIncreaseValue", |b| fv(b.drunk_increase_value)),
         ("getDrunkReductionValue", |b| fv(b.drunk_reduction_value)),
@@ -281,22 +326,40 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         ("getNumPartsBleeding", |b| b.num_parts_bleeding().into()),
         ("getNumPartsScratched", |b| b.num_parts_scratched().into()),
         ("getDamageModCount", |b| b.damage_mod_count.into()),
-        ("getOldNumZombiesVisible", |b| b.old_num_zombies_visible.into()),
-        ("getCurrentNumZombiesVisible", |b| b.current_num_zombies_visible.into()),
+        ("getOldNumZombiesVisible", |b| {
+            b.old_num_zombies_visible.into()
+        }),
+        ("getCurrentNumZombiesVisible", |b| {
+            b.current_num_zombies_visible.into()
+        }),
         ("getRemotePainLevel", |b| b.remote_pain_level.into()),
         ("getSneezeCoughActive", |b| b.sneeze_cough_active.into()),
         ("IsSneezingCoughing", |b| b.is_sneezing_coughing().into()),
         ("getSneezeCoughTime", |b| b.sneeze_cough_time.into()),
         ("getSneezeCoughDelay", |b| b.sneeze_cough_delay.into()),
-        ("getMildColdSneezeTimerMin", |b| b.mild_cold_sneeze_timer_min.into()),
-        ("getMildColdSneezeTimerMax", |b| b.mild_cold_sneeze_timer_max.into()),
+        ("getMildColdSneezeTimerMin", |b| {
+            b.mild_cold_sneeze_timer_min.into()
+        }),
+        ("getMildColdSneezeTimerMax", |b| {
+            b.mild_cold_sneeze_timer_max.into()
+        }),
         ("getColdSneezeTimerMin", |b| b.cold_sneeze_timer_min.into()),
         ("getColdSneezeTimerMax", |b| b.cold_sneeze_timer_max.into()),
-        ("getNastyColdSneezeTimerMin", |b| b.nasty_cold_sneeze_timer_min.into()),
-        ("getNastyColdSneezeTimerMax", |b| b.nasty_cold_sneeze_timer_max.into()),
-        ("getSmokerSneezeTimerMin", |b| b.smoker_sneeze_timer_min().into()),
-        ("getSmokerSneezeTimerMax", |b| b.smoker_sneeze_timer_max().into()),
-        ("getStandardHealthFromFoodTime", |b| b.standard_health_from_food_time.into()),
+        ("getNastyColdSneezeTimerMin", |b| {
+            b.nasty_cold_sneeze_timer_min.into()
+        }),
+        ("getNastyColdSneezeTimerMax", |b| {
+            b.nasty_cold_sneeze_timer_max.into()
+        }),
+        ("getSmokerSneezeTimerMin", |b| {
+            b.smoker_sneeze_timer_min().into()
+        }),
+        ("getSmokerSneezeTimerMax", |b| {
+            b.smoker_sneeze_timer_max().into()
+        }),
+        ("getStandardHealthFromFoodTime", |b| {
+            b.standard_health_from_food_time.into()
+        }),
         ("HasInjury", |b| b.has_injury().into()),
         ("IsOnFire", |b| b.is_on_fire.into()),
         ("isIsOnFire", |b| b.is_on_fire.into()),
@@ -311,68 +374,163 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         ("getWasDraggingCorpse", |b| b.was_dragging_corpse.into()),
         ("UseBandageOnMostNeededPart", |_| Value::Nil),
     ];
-    for (name, f) in gets.into_iter().filter(|(n, _)| *n != "UseBandageOnMostNeededPart") {
+    for (name, f) in gets
+        .into_iter()
+        .filter(|(n, _)| *n != "UseBandageOnMostNeededPart")
+    {
         b.method(name, move |c| {
             let v = f(&bd_chr(c)?.borrow().body_damage);
             Ok(c.push(v))
         });
     }
     let sets: Vec<(&str, BdSet)> = vec![
-        ("setPainReduction", |b, c| b.pain_reduction = float_arg(c, 1)),
-        ("setColdReduction", |b, c| b.cold_reduction = float_arg(c, 1)),
+        ("setPainReduction", |b, c| {
+            b.pain_reduction = float_arg(c, 1)
+        }),
+        ("setColdReduction", |b, c| {
+            b.cold_reduction = float_arg(c, 1)
+        }),
         ("setCatchACold", |b, c| b.catch_a_cold = float_arg(c, 1)),
         ("setColdStrength", |b, c| b.cold_strength = float_arg(c, 1)),
-        ("setColdDamageStage", |b, c| b.cold_damage_stage = float_arg(c, 1)),
-        ("setColdProgressionRate", |b, c| b.cold_progression_rate = float_arg(c, 1)),
-        ("setInfectionGrowthRate", |b, c| b.infection_growth_rate = float_arg(c, 1)),
-        ("setInfectionTime", |b, c| b.infection_time = float_arg(c, 1)),
-        ("setInfectionMortalityDuration", |b, c| b.infection_mortality_duration = float_arg(c, 1)),
-        ("setHealthFromFood", |b, c| b.health_from_food = float_arg(c, 1)),
-        ("setHealthFromFoodTimer", |b, c| b.health_from_food_timer = float_arg(c, 1)),
-        ("setHealthReductionFromSevereBadMoodles", |b, c| b.health_reduction_from_severe_bad_moodles = float_arg(c, 1)),
-        ("setStandardHealthAddition", |b, c| b.standard_health_addition = float_arg(c, 1)),
-        ("setReducedHealthAddition", |b, c| b.reduced_health_addition = float_arg(c, 1)),
-        ("setSeverlyReducedHealthAddition", |b, c| b.severly_reduced_health_addition = float_arg(c, 1)),
-        ("setSleepingHealthAddition", |b, c| b.sleeping_health_addition = float_arg(c, 1)),
-        ("setBoredomDecreaseFromReading", |b, c| b.boredom_decrease_from_reading = float_arg(c, 1)),
-        ("setInitialThumpPain", |b, c| b.initial_thump_pain = float_arg(c, 1)),
-        ("setInitialScratchPain", |b, c| b.initial_scratch_pain = float_arg(c, 1)),
-        ("setInitialBitePain", |b, c| b.initial_bite_pain = float_arg(c, 1)),
-        ("setInitialWoundPain", |b, c| b.initial_wound_pain = float_arg(c, 1)),
-        ("setContinualPainIncrease", |b, c| b.continual_pain_increase = float_arg(c, 1)),
-        ("setPainReductionFromMeds", |b, c| b.pain_reduction_from_meds = float_arg(c, 1)),
-        ("setStandardPainReductionWhenWell", |b, c| b.standard_pain_reduction_when_well = float_arg(c, 1)),
-        ("setPanicReductionValue", |b, c| b.panic_reduction_value = float_arg(c, 1)),
-        ("setDrunkIncreaseValue", |b, c| b.drunk_increase_value = float_arg(c, 1)),
-        ("setDrunkReductionValue", |b, c| b.drunk_reduction_value = float_arg(c, 1)),
-        ("setTimeToSneezeOrCough", |b, c| b.time_to_sneeze_or_cough = float_arg(c, 1)),
-        ("setOverallBodyHealth", |b, c| b.overall_body_health = float_arg(c, 1)),
-        ("setDamageModCount", |b, c| b.damage_mod_count = int_arg(c, 1)),
-        ("setOldNumZombiesVisible", |b, c| b.old_num_zombies_visible = int_arg(c, 1)),
-        ("setCurrentNumZombiesVisible", |b, c| b.current_num_zombies_visible = int_arg(c, 1)),
-        ("setRemotePainLevel", |b, c| b.remote_pain_level = int_arg(c, 1)),
-        ("setSneezeCoughActive", |b, c| b.sneeze_cough_active = int_arg(c, 1)),
-        ("setSneezeCoughTime", |b, c| b.sneeze_cough_time = int_arg(c, 1)),
-        ("setSneezeCoughDelay", |b, c| b.sneeze_cough_delay = int_arg(c, 1)),
-        ("setMildColdSneezeTimerMin", |b, c| b.mild_cold_sneeze_timer_min = int_arg(c, 1)),
-        ("setMildColdSneezeTimerMax", |b, c| b.mild_cold_sneeze_timer_max = int_arg(c, 1)),
-        ("setColdSneezeTimerMin", |b, c| b.cold_sneeze_timer_min = int_arg(c, 1)),
-        ("setColdSneezeTimerMax", |b, c| b.cold_sneeze_timer_max = int_arg(c, 1)),
-        ("setNastyColdSneezeTimerMin", |b, c| b.nasty_cold_sneeze_timer_min = int_arg(c, 1)),
-        ("setNastyColdSneezeTimerMax", |b, c| b.nasty_cold_sneeze_timer_max = int_arg(c, 1)),
-        ("setStandardHealthFromFoodTime", |b, c| b.standard_health_from_food_time = int_arg(c, 1)),
+        ("setColdDamageStage", |b, c| {
+            b.cold_damage_stage = float_arg(c, 1)
+        }),
+        ("setColdProgressionRate", |b, c| {
+            b.cold_progression_rate = float_arg(c, 1)
+        }),
+        ("setInfectionGrowthRate", |b, c| {
+            b.infection_growth_rate = float_arg(c, 1)
+        }),
+        ("setInfectionTime", |b, c| {
+            b.infection_time = float_arg(c, 1)
+        }),
+        ("setInfectionMortalityDuration", |b, c| {
+            b.infection_mortality_duration = float_arg(c, 1)
+        }),
+        ("setHealthFromFood", |b, c| {
+            b.health_from_food = float_arg(c, 1)
+        }),
+        ("setHealthFromFoodTimer", |b, c| {
+            b.health_from_food_timer = float_arg(c, 1)
+        }),
+        ("setHealthReductionFromSevereBadMoodles", |b, c| {
+            b.health_reduction_from_severe_bad_moodles = float_arg(c, 1)
+        }),
+        ("setStandardHealthAddition", |b, c| {
+            b.standard_health_addition = float_arg(c, 1)
+        }),
+        ("setReducedHealthAddition", |b, c| {
+            b.reduced_health_addition = float_arg(c, 1)
+        }),
+        ("setSeverlyReducedHealthAddition", |b, c| {
+            b.severly_reduced_health_addition = float_arg(c, 1)
+        }),
+        ("setSleepingHealthAddition", |b, c| {
+            b.sleeping_health_addition = float_arg(c, 1)
+        }),
+        ("setBoredomDecreaseFromReading", |b, c| {
+            b.boredom_decrease_from_reading = float_arg(c, 1)
+        }),
+        ("setInitialThumpPain", |b, c| {
+            b.initial_thump_pain = float_arg(c, 1)
+        }),
+        ("setInitialScratchPain", |b, c| {
+            b.initial_scratch_pain = float_arg(c, 1)
+        }),
+        ("setInitialBitePain", |b, c| {
+            b.initial_bite_pain = float_arg(c, 1)
+        }),
+        ("setInitialWoundPain", |b, c| {
+            b.initial_wound_pain = float_arg(c, 1)
+        }),
+        ("setContinualPainIncrease", |b, c| {
+            b.continual_pain_increase = float_arg(c, 1)
+        }),
+        ("setPainReductionFromMeds", |b, c| {
+            b.pain_reduction_from_meds = float_arg(c, 1)
+        }),
+        ("setStandardPainReductionWhenWell", |b, c| {
+            b.standard_pain_reduction_when_well = float_arg(c, 1)
+        }),
+        ("setPanicReductionValue", |b, c| {
+            b.panic_reduction_value = float_arg(c, 1)
+        }),
+        ("setDrunkIncreaseValue", |b, c| {
+            b.drunk_increase_value = float_arg(c, 1)
+        }),
+        ("setDrunkReductionValue", |b, c| {
+            b.drunk_reduction_value = float_arg(c, 1)
+        }),
+        ("setTimeToSneezeOrCough", |b, c| {
+            b.time_to_sneeze_or_cough = float_arg(c, 1)
+        }),
+        ("setOverallBodyHealth", |b, c| {
+            b.overall_body_health = float_arg(c, 1)
+        }),
+        ("setDamageModCount", |b, c| {
+            b.damage_mod_count = int_arg(c, 1)
+        }),
+        ("setOldNumZombiesVisible", |b, c| {
+            b.old_num_zombies_visible = int_arg(c, 1)
+        }),
+        ("setCurrentNumZombiesVisible", |b, c| {
+            b.current_num_zombies_visible = int_arg(c, 1)
+        }),
+        ("setRemotePainLevel", |b, c| {
+            b.remote_pain_level = int_arg(c, 1)
+        }),
+        ("setSneezeCoughActive", |b, c| {
+            b.sneeze_cough_active = int_arg(c, 1)
+        }),
+        ("setSneezeCoughTime", |b, c| {
+            b.sneeze_cough_time = int_arg(c, 1)
+        }),
+        ("setSneezeCoughDelay", |b, c| {
+            b.sneeze_cough_delay = int_arg(c, 1)
+        }),
+        ("setMildColdSneezeTimerMin", |b, c| {
+            b.mild_cold_sneeze_timer_min = int_arg(c, 1)
+        }),
+        ("setMildColdSneezeTimerMax", |b, c| {
+            b.mild_cold_sneeze_timer_max = int_arg(c, 1)
+        }),
+        ("setColdSneezeTimerMin", |b, c| {
+            b.cold_sneeze_timer_min = int_arg(c, 1)
+        }),
+        ("setColdSneezeTimerMax", |b, c| {
+            b.cold_sneeze_timer_max = int_arg(c, 1)
+        }),
+        ("setNastyColdSneezeTimerMin", |b, c| {
+            b.nasty_cold_sneeze_timer_min = int_arg(c, 1)
+        }),
+        ("setNastyColdSneezeTimerMax", |b, c| {
+            b.nasty_cold_sneeze_timer_max = int_arg(c, 1)
+        }),
+        ("setStandardHealthFromFoodTime", |b, c| {
+            b.standard_health_from_food_time = int_arg(c, 1)
+        }),
         ("OnFire", |b, c| b.is_on_fire = bool_arg(c, 1)),
         ("setIsOnFire", |b, c| b.is_on_fire = bool_arg(c, 1)),
         ("setBurntToDeath", |b, c| b.burnt_to_death = bool_arg(c, 1)),
         ("setHasACold", |b, c| b.has_a_cold = bool_arg(c, 1)),
         ("setInfected", |b, c| b.is_infected = bool_arg(c, 1)),
         ("setInf", |b, c| b.is_infected = bool_arg(c, 1)),
-        ("setIsFakeInfected", |b, c| b.set_is_fake_infected(bool_arg(c, 1))),
-        ("setReduceFakeInfection", |b, c| b.reduce_fake_infection = bool_arg(c, 1)),
-        ("setWasDraggingCorpse", |b, c| b.was_dragging_corpse = bool_arg(c, 1)),
-        ("AddGeneralHealth", |b, c| b.add_general_health(float_arg(c, 1))),
+        ("setIsFakeInfected", |b, c| {
+            b.set_is_fake_infected(bool_arg(c, 1))
+        }),
+        ("setReduceFakeInfection", |b, c| {
+            b.reduce_fake_infection = bool_arg(c, 1)
+        }),
+        ("setWasDraggingCorpse", |b, c| {
+            b.was_dragging_corpse = bool_arg(c, 1)
+        }),
+        ("AddGeneralHealth", |b, c| {
+            b.add_general_health(float_arg(c, 1))
+        }),
         ("ShowDebugInfo", |b, _| b.show_debug_info()),
-        ("setBodyPartsLastState", |b, _| b.set_body_parts_last_state()),
+        ("setBodyPartsLastState", |b, _| {
+            b.set_body_parts_last_state()
+        }),
     ];
     for (name, f) in sets {
         b.method(name, move |c| {
@@ -382,7 +540,10 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         });
     }
     b.method("UseBandageOnMostNeededPart", |c| {
-        let v = bd_chr(c)?.borrow_mut().body_damage.use_bandage_on_most_needed_part();
+        let v = bd_chr(c)?
+            .borrow_mut()
+            .body_damage
+            .use_bandage_on_most_needed_part();
         Ok(c.push(v))
     });
     b.method("setPanicIncreaseValue", {
@@ -390,7 +551,10 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         move |c| {
             let chr = bd_chr(c)?;
             let v = float_arg(c, 1);
-            let des = chr.borrow().has_trait(&sm, "DESENSITIZED").map_err(java_error)?;
+            let des = chr
+                .borrow()
+                .has_trait(&sm, "DESENSITIZED")
+                .map_err(java_error)?;
             chr.borrow_mut().body_damage.panic_increase_value = if des { 0.0 } else { v };
             Ok(0)
         }
@@ -406,7 +570,11 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
     b.method("getBodyParts", |c| {
         let chr = bd_chr(c)?;
         let ch = chr.clone();
-        let read = move || (0..ch.borrow().body_damage.parts.len()).map(|i| body_part_value(&ch, i)).collect();
+        let read = move || {
+            (0..ch.borrow().body_damage.parts.len())
+                .map(|i| body_part_value(&ch, i))
+                .collect()
+        };
         Ok(c.push(Value::Object(Rc::new(JavaList::live(read, None)))))
     });
     b.method("getBodyPart", |c| {
@@ -455,8 +623,10 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         Ok(c.push(v))
     });
     type PairQuery = fn(&BodyPart) -> bool;
-    let pairs: [(&str, PairQuery); 2] =
-        [("doBodyPartsHaveInjuries", |p| p.has_injury()), ("areBodyPartsBleeding", |p| p.bleeding_time > 0.0)];
+    let pairs: [(&str, PairQuery); 2] = [
+        ("doBodyPartsHaveInjuries", |p| p.has_injury()),
+        ("areBodyPartsBleeding", |p| p.bleeding_time > 0.0),
+    ];
     for (name, f) in pairs {
         b.method(name, move |c| {
             let chr = bd_chr(c)?;
@@ -480,7 +650,9 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
     type PartSet = fn(&mut BodyPart, &NativeCall<'_>);
     let part_sets: [(&str, PartSet); 7] = [
         ("SetBleeding", |p, c| p.set_bleeding(bool_arg(c, 2))),
-        ("SetBleedingStemmed", |p, c| p.set_bleeding_stemmed(bool_arg(c, 2))),
+        ("SetBleedingStemmed", |p, c| {
+            p.set_bleeding_stemmed(bool_arg(c, 2))
+        }),
         ("SetCauterized", |p, c| p.set_cauterized(bool_arg(c, 2))),
         ("SetWounded", |p, c| p.set_deep_wounded(bool_arg(c, 2))),
         ("DisableFakeInfection", |p, _| p.disable_fake_infection()),
@@ -505,7 +677,12 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         let chr = bd_chr(c)?;
         let i = part_arg(c, 1, &chr)?;
         let t = str_arg(c, 5).map(|s| s.to_string());
-        chr.borrow_mut().body_damage.parts[i].set_bandaged(bool_arg(c, 2), float_arg(c, 3), bool_arg(c, 4), t);
+        chr.borrow_mut().body_damage.parts[i].set_bandaged(
+            bool_arg(c, 2),
+            float_arg(c, 3),
+            bool_arg(c, 4),
+            t,
+        );
         Ok(0)
     });
     let s = sm.clone();
@@ -528,7 +705,9 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
     type EnvSet = fn(&mut BodyPart, &InjuryEnv<'_>, bool);
     let env_sets: [(&str, EnvSet); 3] = [
         ("SetScratched", |p, e, v| p.set_scratched(e, v, false)),
-        ("SetScratchedFromWeapon", |p, e, v| p.set_scratched_weapon(e, v)),
+        ("SetScratchedFromWeapon", |p, e, v| {
+            p.set_scratched_weapon(e, v)
+        }),
         ("SetCut", |p, e, v| p.set_cut(e, v, false)),
     ];
     for (name, f) in env_sets {
@@ -565,18 +744,34 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
             });
         }};
     }
-    owner!("Update", |ch, c, sm, chars, ctx, args| ch.body_damage_update(sm, chars, ctx).map(|_| Value::Nil));
-    owner!("UpdateWetness", |ch, c, sm, chars, ctx, args| ch.update_wetness(sm, chars, ctx).map(|_| Value::Nil));
-    owner!("UpdateCold", |ch, c, sm, chars, ctx, args| ch.update_cold(sm, chars, ctx).map(|_| Value::Nil));
-    owner!("UpdateBoredom", |ch, c, sm, chars, ctx, args| ch.update_boredom(sm, chars, ctx).map(|_| Value::Nil));
-    owner!("UpdateStrength", |ch, c, sm, chars, ctx, args| ch.update_strength(sm, chars).map(|_| Value::Nil));
-    owner!("UpdatePanicState", |ch, c, sm, chars, ctx, args| ch.update_panic_state(sm, chars, ctx).map(|_| Value::Nil));
-    owner!("UpdateDiscomfort", |ch, c, sm, chars, ctx, args| ch.update_discomfort(sm, chars, ctx).map(|_| Value::Nil));
+    owner!("Update", |ch, c, sm, chars, ctx, args| ch
+        .body_damage_update(sm, chars, ctx)
+        .map(|_| Value::Nil));
+    owner!("UpdateWetness", |ch, c, sm, chars, ctx, args| ch
+        .update_wetness(sm, chars, ctx)
+        .map(|_| Value::Nil));
+    owner!("UpdateCold", |ch, c, sm, chars, ctx, args| ch
+        .update_cold(sm, chars, ctx)
+        .map(|_| Value::Nil));
+    owner!("UpdateBoredom", |ch, c, sm, chars, ctx, args| ch
+        .update_boredom(sm, chars, ctx)
+        .map(|_| Value::Nil));
+    owner!("UpdateStrength", |ch, c, sm, chars, ctx, args| ch
+        .update_strength(sm, chars)
+        .map(|_| Value::Nil));
+    owner!("UpdatePanicState", |ch, c, sm, chars, ctx, args| ch
+        .update_panic_state(sm, chars, ctx)
+        .map(|_| Value::Nil));
+    owner!("UpdateDiscomfort", |ch, c, sm, chars, ctx, args| ch
+        .update_discomfort(sm, chars, ctx)
+        .map(|_| Value::Nil));
     owner!("UpdateDraggingCorpse", |ch, c, sm, chars, ctx, args| {
         ch.update_dragging_corpse();
         Ok(Value::Nil)
     });
-    owner!("TriggerSneezeCough", |ch, c, sm, chars, ctx, args| ch.trigger_sneeze_cough(sm, ctx).map(|_| Value::Nil));
+    owner!("TriggerSneezeCough", |ch, c, sm, chars, ctx, args| ch
+        .trigger_sneeze_cough(sm, ctx)
+        .map(|_| Value::Nil));
     owner!("RestoreToFullHealth", |ch, c, sm, chars, ctx, args| {
         ch.restore_to_full_health(chars).map(|_| Value::Nil)
     });
@@ -584,17 +779,33 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         ch.calculate_overall_health(chars);
         Ok(Value::Nil)
     });
-    owner!("ReducePanic", |ch, c, sm, chars, ctx, args| ch.reduce_panic(chars, ctx).map(|_| Value::Nil));
-    owner!("JustTookPainMeds", |ch, c, sm, chars, ctx, args| ch.just_took_pain_meds(chars).map(|_| Value::Nil));
-    owner!("AddRandomDamage", |ch, c, sm, chars, ctx, args| ch.add_random_damage(sm, ctx).map(|_| Value::Nil));
-    owner!("pickMortalityDuration", |ch, c, sm, chars, ctx, args| ch.pick_mortality_duration(sm, ctx).map(fv));
-    owner!("GetBaseCorpseSickness", |ch, c, sm, chars, ctx, args| Ok(fv(ch.base_corpse_sickness(ctx))));
-    owner!("getGeneralWoundInfectionLevel", |ch, c, sm, chars, ctx, args| {
-        Ok(fv(ch.body_damage.general_wound_infection_level(ctx)))
-    });
-    owner!("getApparentInfectionLevel", |ch, c, sm, chars, ctx, args| {
-        ch.body_damage.apparent_infection_level(&ch.stats, &chars.sim.character_stats).map(fv)
-    });
+    owner!("ReducePanic", |ch, c, sm, chars, ctx, args| ch
+        .reduce_panic(chars, ctx)
+        .map(|_| Value::Nil));
+    owner!("JustTookPainMeds", |ch, c, sm, chars, ctx, args| ch
+        .just_took_pain_meds(chars)
+        .map(|_| Value::Nil));
+    owner!("AddRandomDamage", |ch, c, sm, chars, ctx, args| ch
+        .add_random_damage(sm, ctx)
+        .map(|_| Value::Nil));
+    owner!("pickMortalityDuration", |ch, c, sm, chars, ctx, args| ch
+        .pick_mortality_duration(sm, ctx)
+        .map(fv));
+    owner!("GetBaseCorpseSickness", |ch, c, sm, chars, ctx, args| Ok(
+        fv(ch.base_corpse_sickness(ctx))
+    ));
+    owner!(
+        "getGeneralWoundInfectionLevel",
+        |ch, c, sm, chars, ctx, args| { Ok(fv(ch.body_damage.general_wound_infection_level(ctx))) }
+    );
+    owner!(
+        "getApparentInfectionLevel",
+        |ch, c, sm, chars, ctx, args| {
+            ch.body_damage
+                .apparent_infection_level(&ch.stats, &chars.sim.character_stats)
+                .map(fv)
+        }
+    );
     let num = |args: &[Value], i: usize| match args.get(i) {
         Some(Value::Num(n)) => *n,
         _ => 0.0,
@@ -604,19 +815,24 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         Ok(Value::Nil)
     });
     owner!("IncreasePanic", |ch, c, sm, chars, ctx, args| {
-        ch.increase_panic(sm, chars, num(&args, 1) as i32).map(|_| Value::Nil)
+        ch.increase_panic(sm, chars, num(&args, 1) as i32)
+            .map(|_| Value::Nil)
     });
     owner!("IncreasePanicFloat", |ch, c, sm, chars, ctx, args| {
-        ch.increase_panic_float(sm, chars, num(&args, 1) as f32).map(|_| Value::Nil)
+        ch.increase_panic_float(sm, chars, num(&args, 1) as f32)
+            .map(|_| Value::Nil)
     });
     owner!("JustDrankBoozeFluid", |ch, c, sm, chars, ctx, args| {
-        ch.just_drank_booze_fluid(chars, num(&args, 1) as f32).map(|_| Value::Nil)
+        ch.just_drank_booze_fluid(chars, num(&args, 1) as f32)
+            .map(|_| Value::Nil)
     });
     owner!("decreaseBodyWetness", |ch, c, sm, chars, ctx, args| {
-        ch.decrease_body_wetness(chars, num(&args, 1) as f32).map(|_| Value::Nil)
+        ch.decrease_body_wetness(chars, num(&args, 1) as f32)
+            .map(|_| Value::Nil)
     });
     owner!("increaseBodyWetness", |ch, c, sm, chars, ctx, args| {
-        ch.increase_body_wetness(chars, num(&args, 1) as f32).map(|_| Value::Nil)
+        ch.increase_body_wetness(chars, num(&args, 1) as f32)
+            .map(|_| Value::Nil)
     });
     owner!("applyDamageFromWeapon", |ch, c, sm, chars, ctx, args| {
         ch.apply_damage_from_weapon(
@@ -643,20 +859,28 @@ fn register_body_damage(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<
         let _ = &k;
         let n = int_arg(c, 0);
         let ctx = crate::bind_character_sim::current_sim_context();
-        Ok(c.push(fv(GameCharacter::<crate::bind_characters::LuaItem>::sickness_from_corpses_rate(&*ctx, n))))
+        Ok(c.push(fv(
+            GameCharacter::<crate::bind_characters::LuaItem>::sickness_from_corpses_rate(&*ctx, n),
+        )))
     });
 }
 
 type BpGet = fn(&BodyPart) -> Value;
 type BpSet = fn(&mut BodyPart, &NativeCall<'_>);
 
-fn register_body_part(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
+fn register_body_part(
+    thread: &mut Thread,
+    sm: &Rc<ScriptManager>,
+    chars: &Rc<RefCell<Characters>>,
+) {
     let b = expose_class(thread, BODY_PART_CLASS, None);
     let gets: Vec<(&str, BpGet)> = vec![
         ("getHealth", |p| fv(p.health)),
         ("getAlcoholLevel", |p| fv(p.alcohol_level)),
         ("getBandageLife", |p| fv(p.bandage_life)),
-        ("getBandageNeededDamageLevel", |p| fv(p.bandage_needed_damage_level())),
+        ("getBandageNeededDamageLevel", |p| {
+            fv(p.bandage_needed_damage_level())
+        }),
         ("getBiteTime", |p| fv(p.bite_time)),
         ("getBleedingTime", |p| fv(p.bleeding_time)),
         ("getBurnSpeedModifier", |p| fv(p.burn_speed_modifier)),
@@ -665,7 +889,9 @@ fn register_body_part(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         ("getCutSpeedModifier", |p| fv(p.cut_speed_modifier)),
         ("getCutTime", |p| fv(p.cut_time)),
         ("getDamageScaler", |p| fv(p.damage_scaler)),
-        ("getDeepWoundSpeedModifier", |p| fv(p.deep_wound_speed_modifier)),
+        ("getDeepWoundSpeedModifier", |p| {
+            fv(p.deep_wound_speed_modifier)
+        }),
         ("getDeepWoundTime", |p| fv(p.deep_wound_time)),
         ("getDistToCore", |p| fv(p.dist_to_core())),
         ("getFractureTime", |p| fv(p.fracture_time)),
@@ -685,8 +911,12 @@ fn register_body_part(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         ("getIndex", |p| (p.index as i32).into()),
         ("getBandageType", |p| opt_str(&p.bandage_type)),
         ("getSplintItem", |p| opt_str(&p.splint_item)),
-        ("manipulatingUsername", |p| opt_str(&p.manipulating_username)),
-        ("getType", |p| enum_value(BODY_PART_TYPE_CLASS, &p.type_field)),
+        ("manipulatingUsername", |p| {
+            opt_str(&p.manipulating_username)
+        }),
+        ("getType", |p| {
+            enum_value(BODY_PART_TYPE_CLASS, &p.type_field)
+        }),
         ("HasInjury", |p| p.has_injury().into()),
         ("IsBleedingStemmed", |p| p.is_bleeding_stemmed.into()),
         ("IsCauterized", |p| p.is_cauterized.into()),
@@ -721,7 +951,11 @@ fn register_body_part(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     b.method("getAdditionalPain", |c| {
         let (chr, i) = bp_this(c)?;
         let p = &chr.borrow().body_damage.parts[i];
-        let v = if c.nargs() > 1 { p.additional_pain_with(bool_arg(c, 1)) } else { p.additional_pain };
+        let v = if c.nargs() > 1 {
+            p.additional_pain_with(bool_arg(c, 1))
+        } else {
+            p.additional_pain
+        };
         Ok(c.push(fv(v)))
     });
     b.method("getParentChar", |c| {
@@ -735,49 +969,96 @@ fn register_body_part(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         ("SetHealth", |p, c| p.set_health(float_arg(c, 1))),
         ("DisableFakeInfection", |p, _| p.disable_fake_infection()),
         ("RestoreToFullHealth", |p, _| p.restore_to_full_health()),
-        ("SetBleedingStemmed", |p, c| p.set_bleeding_stemmed(bool_arg(c, 1))),
+        ("SetBleedingStemmed", |p, c| {
+            p.set_bleeding_stemmed(bool_arg(c, 1))
+        }),
         ("SetCauterized", |p, c| p.set_cauterized(bool_arg(c, 1))),
-        ("SetFakeInfected", |p, c| p.is_fake_infected = bool_arg(c, 1)),
+        ("SetFakeInfected", |p, c| {
+            p.is_fake_infected = bool_arg(c, 1)
+        }),
         ("SetInfected", |p, c| p.is_infected = bool_arg(c, 1)),
         ("addStiffness", |p, c| p.add_stiffness(float_arg(c, 1))),
-        ("setAdditionalPain", |p, c| p.additional_pain = float_arg(c, 1)),
+        ("setAdditionalPain", |p, c| {
+            p.additional_pain = float_arg(c, 1)
+        }),
         ("setAlcoholLevel", |p, c| p.alcohol_level = float_arg(c, 1)),
         ("setBandageLife", |p, c| p.set_bandage_life(float_arg(c, 1))),
-        ("setBandageType", |p, c| p.bandage_type = str_arg(c, 1).map(|s| s.to_string())),
+        ("setBandageType", |p, c| {
+            p.bandage_type = str_arg(c, 1).map(|s| s.to_string())
+        }),
         ("setBiteTime", |p, c| p.bite_time = float_arg(c, 1)),
         ("setBleeding", |p, c| p.set_bleeding(bool_arg(c, 1))),
-        ("setBleedingTime", |p, c| p.set_bleeding_time(float_arg(c, 1))),
-        ("setBurnSpeedModifier", |p, c| p.burn_speed_modifier = float_arg(c, 1)),
+        ("setBleedingTime", |p, c| {
+            p.set_bleeding_time(float_arg(c, 1))
+        }),
+        ("setBurnSpeedModifier", |p, c| {
+            p.burn_speed_modifier = float_arg(c, 1)
+        }),
         ("setBurnTime", |p, c| p.burn_time = float_arg(c, 1)),
-        ("setComfreyFactor", |p, c| p.set_comfrey_factor(float_arg(c, 1))),
-        ("setCutSpeedModifier", |p, c| p.cut_speed_modifier = float_arg(c, 1)),
+        ("setComfreyFactor", |p, c| {
+            p.set_comfrey_factor(float_arg(c, 1))
+        }),
+        ("setCutSpeedModifier", |p, c| {
+            p.cut_speed_modifier = float_arg(c, 1)
+        }),
         ("setCutTime", |p, c| p.set_cut_time(float_arg(c, 1))),
-        ("setDeepWoundSpeedModifier", |p, c| p.deep_wound_speed_modifier = float_arg(c, 1)),
-        ("setDeepWoundTime", |p, c| p.deep_wound_time = float_arg(c, 1)),
+        ("setDeepWoundSpeedModifier", |p, c| {
+            p.deep_wound_speed_modifier = float_arg(c, 1)
+        }),
+        ("setDeepWoundTime", |p, c| {
+            p.deep_wound_time = float_arg(c, 1)
+        }),
         ("setDeepWounded", |p, c| p.set_deep_wounded(bool_arg(c, 1))),
         ("setFractureTime", |p, c| p.fracture_time = float_arg(c, 1)),
-        ("setGarlicFactor", |p, c| p.set_garlic_factor(float_arg(c, 1))),
+        ("setGarlicFactor", |p, c| {
+            p.set_garlic_factor(float_arg(c, 1))
+        }),
         ("setGetBandageXp", |p, c| p.get_bandage_xp = bool_arg(c, 1)),
         ("setGetSplintXp", |p, c| p.get_splint_xp = bool_arg(c, 1)),
         ("setGetStitchXp", |p, c| p.get_stitch_xp = bool_arg(c, 1)),
         ("setHaveGlass", |p, c| p.have_glass = bool_arg(c, 1)),
         ("setInfectedWound", |p, c| p.infected_wound = bool_arg(c, 1)),
-        ("setLastTimeBurnWash", |p, c| p.last_time_burn_wash = float_arg(c, 1)),
-        ("setManipulatingUsername", |p, c| p.manipulating_username = str_arg(c, 1).map(|s| s.to_string())),
-        ("setNeedBurnWash", |p, c| p.set_need_burn_wash(bool_arg(c, 1))),
-        ("setPlantainFactor", |p, c| p.set_plantain_factor(float_arg(c, 1))),
-        ("setScratchSpeedModifier", |p, c| p.scratch_speed_modifier = float_arg(c, 1)),
+        ("setLastTimeBurnWash", |p, c| {
+            p.last_time_burn_wash = float_arg(c, 1)
+        }),
+        ("setManipulatingUsername", |p, c| {
+            p.manipulating_username = str_arg(c, 1).map(|s| s.to_string())
+        }),
+        ("setNeedBurnWash", |p, c| {
+            p.set_need_burn_wash(bool_arg(c, 1))
+        }),
+        ("setPlantainFactor", |p, c| {
+            p.set_plantain_factor(float_arg(c, 1))
+        }),
+        ("setScratchSpeedModifier", |p, c| {
+            p.scratch_speed_modifier = float_arg(c, 1)
+        }),
         ("setScratchTime", |p, c| p.set_scratch_time(float_arg(c, 1))),
-        ("setSplint", |p, c| p.set_splint(bool_arg(c, 1), float_arg(c, 2))),
+        ("setSplint", |p, c| {
+            p.set_splint(bool_arg(c, 1), float_arg(c, 2))
+        }),
         ("setSplintFactor", |p, c| p.splint_factor = float_arg(c, 1)),
-        ("setSplintItem", |p, c| p.splint_item = str_arg(c, 1).map(|s| s.to_string())),
+        ("setSplintItem", |p, c| {
+            p.splint_item = str_arg(c, 1).map(|s| s.to_string())
+        }),
         ("setStiffness", |p, c| p.set_stiffness(float_arg(c, 1))),
         ("setStitchTime", |p, c| p.stitch_time = float_arg(c, 1)),
         ("setWetness", |p, c| p.set_wetness(float_arg(c, 1))),
-        ("setWoundInfectionLevel", |p, c| p.set_wound_infection_level(float_arg(c, 1))),
+        ("setWoundInfectionLevel", |p, c| {
+            p.set_wound_infection_level(float_arg(c, 1))
+        }),
         ("setBandaged", |p, c| {
-            let t = if c.nargs() > 3 { str_arg(c, 4).map(|s| s.to_string()) } else { None };
-            p.set_bandaged(bool_arg(c, 1), float_arg(c, 2), c.nargs() > 3 && bool_arg(c, 3), t)
+            let t = if c.nargs() > 3 {
+                str_arg(c, 4).map(|s| s.to_string())
+            } else {
+                None
+            };
+            p.set_bandaged(
+                bool_arg(c, 1),
+                float_arg(c, 2),
+                c.nargs() > 3 && bool_arg(c, 3),
+                t,
+            )
         }),
     ];
     for (name, f) in sets {
@@ -812,17 +1093,33 @@ fn register_body_part(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
                 p.set_bitten(e, b1(a, 1))
             }
         }),
-        ("SetScratchedWeapon", |p, e, a| p.set_scratched_weapon(e, b1(a, 1))),
-        ("SetScratchedWindow", |p, e, a| p.set_scratched_window(e, b1(a, 1))),
-        ("setCut", |p, e, a| p.set_cut(e, b1(a, 1), if a.len() > 2 { b1(a, 2) } else { true })),
-        ("setScratched", |p, e, a| p.set_scratched(e, b1(a, 1), b1(a, 2))),
+        ("SetScratchedWeapon", |p, e, a| {
+            p.set_scratched_weapon(e, b1(a, 1))
+        }),
+        ("SetScratchedWindow", |p, e, a| {
+            p.set_scratched_window(e, b1(a, 1))
+        }),
+        ("setCut", |p, e, a| {
+            p.set_cut(e, b1(a, 1), if a.len() > 2 { b1(a, 2) } else { true })
+        }),
+        ("setScratched", |p, e, a| {
+            p.set_scratched(e, b1(a, 1), b1(a, 2))
+        }),
         ("setStitched", |p, e, a| p.set_stitched(e, b1(a, 1))),
-        ("setHaveBullet", |p, e, a| p.set_have_bullet(e, b1(a, 1), n1(a, 2) as i32)),
-        ("damageFromFirearm", |p, e, a| p.damage_from_firearm(e, n1(a, 1) as f32)),
+        ("setHaveBullet", |p, e, a| {
+            p.set_have_bullet(e, b1(a, 1), n1(a, 2) as i32)
+        }),
+        ("damageFromFirearm", |p, e, a| {
+            p.damage_from_firearm(e, n1(a, 1) as f32)
+        }),
         ("generateBleeding", |p, e, _| p.generate_bleeding(e)),
         ("generateDeepWound", |p, e, _| p.generate_deep_wound(e)),
-        ("generateDeepShardWound", |p, e, _| p.generate_deep_shard_wound(e)),
-        ("generateZombieInfection", |p, e, a| p.generate_zombie_infection(e, n1(a, 1) as i32)),
+        ("generateDeepShardWound", |p, e, _| {
+            p.generate_deep_shard_wound(e)
+        }),
+        ("generateZombieInfection", |p, e, a| {
+            p.generate_zombie_infection(e, n1(a, 1) as i32)
+        }),
         ("setBurned", |p, e, _| p.set_burned(e)),
     ];
     for (name, f) in env_fns {
@@ -847,7 +1144,9 @@ fn register_body_part(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     b.method("DamageUpdate", move |c| {
         let (chr, i) = bp_this(c)?;
         let chars = k.borrow();
-        run(c, &chr, |ch, ctx| ch.body_part_damage_update(&s, &chars, ctx, i))?;
+        run(c, &chr, |ch, ctx| {
+            ch.body_part_damage_update(&s, &chars, ctx, i)
+        })?;
         Ok(0)
     });
     let s = sm.clone();
@@ -874,8 +1173,13 @@ mod tests {
 
     fn exec(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map(|_| ())
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
     }
 
     /// Invented parts, stats and traits.
@@ -889,7 +1193,12 @@ mod tests {
         {
             let mut st = sm.statics.items.borrow_mut();
             let (reg, field, id) = ("character_trait", "FAST_HEALER", "t:quickheal");
-            sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
+            sm.registries
+                .get(reg)
+                .unwrap()
+                .borrow_mut()
+                .register_id(id, false)
+                .unwrap();
             st.constants.insert(reg, field, id);
         }
         let mut tables = BuiltinTables::default();
@@ -912,7 +1221,10 @@ mod tests {
         };
         tables.body_parts = vec![part("Hand_L", 0.5), part("Neck", 0.25), part("MAX", 1.0)];
         *sm.builtin_tables.borrow_mut() = tables.clone();
-        let chars = Characters { sim: pz_characters::SimStatics::from_tables(&tables).unwrap(), ..Default::default() };
+        let chars = Characters {
+            sim: pz_characters::SimStatics::from_tables(&tables).unwrap(),
+            ..Default::default()
+        };
         let chars = Rc::new(RefCell::new(chars));
         crate::bind_body_damage::register(&mut t, &sm);
         crate::bind_character_sim::register(&mut t, sm.clone(), chars.clone());

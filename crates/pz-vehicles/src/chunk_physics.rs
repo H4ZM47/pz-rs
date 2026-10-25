@@ -272,36 +272,23 @@ pub fn update_physics_for_level_in(
     )
 }
 
-/// `IsoChunkLevel.physicsCheck` flags and `Bullet.physicsShapeNameToIndex`,
-/// with `Bullet.updatePhysicsForLevelIfNeeded` on top (pz-world keeps no
-/// physics flags of its own).
+/// `Bullet.physicsShapeNameToIndex` and `Bullet.updatePhysicsForLevelIfNeeded`
+/// over pz-world's chunks (whose `IsoChunk::check_physics_later` /
+/// `take_physics_check` hold `IsoChunkLevel.physicsCheck`).
 #[derive(Clone, Debug, Default)]
 pub struct ChunkPhysics {
-    pending: std::collections::HashSet<(i32, i32, i32)>,
     /// `Bullet.physicsShapeNameToIndex` (`Module.Name` to mesh index).
     pub mesh_index: std::collections::HashMap<String, i32>,
 }
 
 impl ChunkPhysics {
-    /// `IsoChunk.checkPhysicsLater(level)`.
-    pub fn check_physics_later(&mut self, wx: i32, wy: i32, level: i32) {
-        self.pending.insert((wx, wy, level));
-    }
-
-    /// `checkPhysicsLater` for every level of a chunk (as chunk loading
-    /// does).
-    pub fn check_chunk_later(&mut self, chunk: &IsoChunk) {
-        for z in chunk.min_level..=chunk.max_level {
-            self.check_physics_later(chunk.wx, chunk.wy, z);
-        }
-    }
-
     /// `Bullet.updatePhysicsForLevelIfNeeded(wx, wy, level)`: `valid_chunk`
-    /// is `metaGrid.isValidChunk(wx, wy)`; the buffer goes to `to_bullet`.
+    /// is `metaGrid.isValidChunk(wx, wy)`; the level's flag is taken and the
+    /// buffer goes to `to_bullet`.
     #[allow(clippy::too_many_arguments)]
     pub fn update_if_needed(
-        &mut self,
-        cell: &pz_world::IsoCell,
+        &self,
+        cell: &mut pz_world::IsoCell,
         valid_chunk: bool,
         m: &IsoSpriteManager,
         wx: i32,
@@ -312,13 +299,13 @@ impl ChunkPhysics {
         if !valid_chunk {
             return false;
         }
-        let Some(chunk) = cell.chunks.get(&(wx, wy)) else {
+        let Some(chunk) = cell.chunks.get_mut(&(wx, wy)) else {
             return false;
         };
         if !(chunk.min_level..=chunk.max_level).contains(&level) {
             return false;
         }
-        if !self.pending.remove(&(wx, wy, level)) {
+        if !chunk.take_physics_check(level) {
             return false;
         }
         let index = &self.mesh_index;

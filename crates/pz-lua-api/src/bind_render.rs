@@ -41,7 +41,12 @@ pub fn textures() -> Rc<RefCell<TextureManager>> {
 pub fn texture_value(t: Option<Texture>) -> Value {
     let Some(t) = t else { return Value::Nil };
     let key = (t.id, t.uv.map(f32::to_bits), t.name.clone());
-    OBJECTS.with(|o| o.borrow_mut().entry(key).or_insert_with(|| Value::Object(Rc::new(LuaTexture::new(t)))).clone())
+    OBJECTS.with(|o| {
+        o.borrow_mut()
+            .entry(key)
+            .or_insert_with(|| Value::Object(Rc::new(LuaTexture::new(t))))
+            .clone()
+    })
 }
 
 fn shared(fs: &RefCell<GameFs>, name: &str) -> Value {
@@ -58,7 +63,9 @@ fn get<R>(c: &NativeCall<'_>, f: impl FnOnce(&Texture) -> R) -> pz_kahlua::LuaRe
 pub fn register(mgr: &mut LuaManager) {
     let fs = mgr.fs.clone();
     let f = fs.clone();
-    pz_render::install_shared_texture_loader(move |name| textures().borrow_mut().shared_texture(&f.borrow(), name));
+    pz_render::install_shared_texture_loader(move |name| {
+        textures().borrow_mut().shared_texture(&f.borrow(), name)
+    });
     let thread = &mut mgr.thread;
 
     let asset = expose_class(thread, ASSET, None);

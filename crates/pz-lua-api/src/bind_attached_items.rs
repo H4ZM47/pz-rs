@@ -22,7 +22,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 pub const ATTACHED_LOCATIONS_CLASS: &str = "zombie.characters.AttachedItems.AttachedLocations";
-pub const ATTACHED_LOCATION_GROUP_CLASS: &str = "zombie.characters.AttachedItems.AttachedLocationGroup";
+pub const ATTACHED_LOCATION_GROUP_CLASS: &str =
+    "zombie.characters.AttachedItems.AttachedLocationGroup";
 pub const ATTACHED_LOCATION_CLASS: &str = "zombie.characters.AttachedItems.AttachedLocation";
 pub const ATTACHED_ITEMS_CLASS: &str = "zombie.characters.AttachedItems.AttachedItems";
 pub const ATTACHED_ITEM_CLASS: &str = "zombie.characters.AttachedItems.AttachedItem";
@@ -51,7 +52,9 @@ impl LuaObject for AttachedLocationGroupObject {
 }
 
 pub fn group_value(g: &AttachedLocationGroupRef) -> Value {
-    canonical(g, || Value::Object(Rc::new(AttachedLocationGroupObject(g.clone()))))
+    canonical(g, || {
+        Value::Object(Rc::new(AttachedLocationGroupObject(g.clone())))
+    })
 }
 
 /// An `AttachedLocation`.
@@ -68,7 +71,9 @@ impl LuaObject for AttachedLocationObject {
 
 fn location_value(l: Option<&AttachedLocationRef>) -> Value {
     match l {
-        Some(l) => canonical(l, || Value::Object(Rc::new(AttachedLocationObject(l.clone())))),
+        Some(l) => canonical(l, || {
+            Value::Object(Rc::new(AttachedLocationObject(l.clone())))
+        }),
         None => Value::Nil,
     }
 }
@@ -98,7 +103,10 @@ impl LuaObject for AttachedItemObject {
 }
 
 fn npe() -> LuaError {
-    LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" }
+    LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.NullPointerException",
+    }
 }
 
 fn opt_string(c: &NativeCall<'_>, i: usize) -> Option<String> {
@@ -115,7 +123,10 @@ fn group_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<AttachedLocationGroupRef
     match c.arg(i) {
         Value::Object(o) => match o.as_any().downcast_ref::<AttachedLocationGroupObject>() {
             Some(g) => Ok(g.0.clone()),
-            None => Err(LuaError::runtime(format!("Expected AttachedLocationGroup but got {}", o.class_name()))),
+            None => Err(LuaError::runtime(format!(
+                "Expected AttachedLocationGroup but got {}",
+                o.class_name()
+            ))),
         },
         Value::Nil => Err(npe()),
         _ => Err(LuaError::runtime("Expected AttachedLocationGroup")),
@@ -130,7 +141,10 @@ fn location(c: &NativeCall<'_>) -> LuaResult<AttachedLocationRef> {
     with_this::<AttachedLocationObject, _>(c, |o| o.0.clone())
 }
 
-fn attached<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut AttachedItems<LuaItem>) -> R) -> LuaResult<R> {
+fn attached<R>(
+    c: &NativeCall<'_>,
+    f: impl FnOnce(&mut AttachedItems<LuaItem>) -> R,
+) -> LuaResult<R> {
     with_this::<AttachedItemsObject, _>(c, |o| f(&mut o.0.borrow_mut()))
 }
 
@@ -140,7 +154,11 @@ pub fn register(thread: &mut Thread, chars: Rc<RefCell<Characters>>) {
     let ch = chars.clone();
     b.static_fn("getGroup", move |c| {
         let id = opt_string(c, 0);
-        let g = ch.borrow_mut().attached_locations.get_group(id.as_deref()).map_err(java_error)?;
+        let g = ch
+            .borrow_mut()
+            .attached_locations
+            .get_group(id.as_deref())
+            .map_err(java_error)?;
         Ok(c.push(group_value(&g)))
     });
     let ch = chars;
@@ -162,7 +180,10 @@ pub fn register(thread: &mut Thread, chars: Rc<RefCell<Characters>>) {
     });
     b.method("getOrCreateLocation", |c| {
         let id = opt_string(c, 1);
-        let l = group(c)?.borrow_mut().get_or_create_location(id.as_deref()).map_err(java_error)?;
+        let l = group(c)?
+            .borrow_mut()
+            .get_or_create_location(id.as_deref())
+            .map_err(java_error)?;
         Ok(c.push(location_value(Some(&l))))
     });
     b.method("getLocationByIndex", |c| {
@@ -180,7 +201,10 @@ pub fn register(thread: &mut Thread, chars: Rc<RefCell<Characters>>) {
     });
     b.method("checkValid", |c| {
         let id = opt_string(c, 1);
-        group(c)?.borrow().check_valid(id.as_deref()).map_err(java_error)?;
+        group(c)?
+            .borrow()
+            .check_valid(id.as_deref())
+            .map_err(java_error)?;
         Ok(0)
     });
 
@@ -195,12 +219,18 @@ pub fn register(thread: &mut Thread, chars: Rc<RefCell<Characters>>) {
         Ok(c.push(v))
     });
     b.method("getAttachmentName", |c| {
-        let v = location(c)?.borrow().attachment_name().map(Value::from).unwrap_or_default();
+        let v = location(c)?
+            .borrow()
+            .attachment_name()
+            .map(Value::from)
+            .unwrap_or_default();
         Ok(c.push(v))
     });
     b.method("setAttachmentName", |c| {
         let name = opt_string(c, 1);
-        location(c)?.borrow_mut().set_attachment_name(name.as_deref());
+        location(c)?
+            .borrow_mut()
+            .set_attachment_name(name.as_deref());
         Ok(0)
     });
 
@@ -208,18 +238,31 @@ pub fn register(thread: &mut Thread, chars: Rc<RefCell<Characters>>) {
     // `new AttachedItems(group)` / `new AttachedItems(other)` (a copy).
     b.ctor(|c| {
         let items = match c.arg(0) {
-            Value::Object(o) if o.as_any().is::<AttachedItemsObject>() => {
-                o.as_any().downcast_ref::<AttachedItemsObject>().unwrap().0.borrow().clone()
-            }
+            Value::Object(o) if o.as_any().is::<AttachedItemsObject>() => o
+                .as_any()
+                .downcast_ref::<AttachedItemsObject>()
+                .unwrap()
+                .0
+                .borrow()
+                .clone(),
             _ => AttachedItems::new(group_arg(c, 0)?),
         };
-        Ok(c.push(Value::Object(Rc::new(AttachedItemsObject(RefCell::new(items))))))
+        Ok(
+            c.push(Value::Object(Rc::new(AttachedItemsObject(RefCell::new(
+                items,
+            ))))),
+        )
     });
     b.method("copyFrom", |c| {
         let other = match c.arg(1) {
             Value::Object(o) => match o.as_any().downcast_ref::<AttachedItemsObject>() {
                 Some(a) => a.0.borrow().clone(),
-                None => return Err(LuaError::runtime(format!("Expected AttachedItems but got {}", o.class_name()))),
+                None => {
+                    return Err(LuaError::runtime(format!(
+                        "Expected AttachedItems but got {}",
+                        o.class_name()
+                    )))
+                }
             },
             _ => return Err(npe()),
         };
@@ -280,7 +323,8 @@ pub fn register(thread: &mut Thread, chars: Rc<RefCell<Characters>>) {
 
     let b = expose_class(thread, ATTACHED_ITEM_CLASS, None);
     b.ctor(|c| {
-        let item = AttachedItem::new(opt_string(c, 0).as_deref(), item_arg(c, 1)).map_err(java_error)?;
+        let item =
+            AttachedItem::new(opt_string(c, 0).as_deref(), item_arg(c, 1)).map_err(java_error)?;
         Ok(c.push(Value::Object(Rc::new(AttachedItemObject(item)))))
     });
     b.method("getLocation", |c| {
@@ -305,8 +349,13 @@ mod tests {
 
     fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map(|_| ())
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
     }
 
     #[test]
@@ -349,11 +398,20 @@ mod tests {
         )
         .unwrap();
         for (src, err) in [
-            ("AttachedLocations.getGroup('Critter'):checkValid('nose')", "no such location \"nose\""),
+            (
+                "AttachedLocations.getGroup('Critter'):checkValid('nose')",
+                "no such location \"nose\"",
+            ),
             ("AttachedLocations.getGroup(nil)", "id is null"),
-            ("AttachedLocations.getGroup('Critter'):getOrCreateLocation('')", "id is empty"),
+            (
+                "AttachedLocations.getGroup('Critter'):getOrCreateLocation('')",
+                "id is empty",
+            ),
             ("AttachedItem.new('tail', nil)", "item is null"),
-            ("AttachedItems.new(AttachedLocations.getGroup('Critter')):setItem('x', {})", "no such location"),
+            (
+                "AttachedItems.new(AttachedLocations.getGroup('Critter')):setItem('x', {})",
+                "no such location",
+            ),
         ] {
             let e = run(&mut t, src).unwrap_err();
             assert!(e.contains(err), "{src}: {e}");

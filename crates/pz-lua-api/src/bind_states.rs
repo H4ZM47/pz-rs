@@ -64,7 +64,12 @@ pub fn install_state_world(world: SharedWorld) {
 
 /// The canonical Lua object of the state class `class`.
 fn object_of(class: &'static str) -> Value {
-    OBJECTS.with(|o| o.borrow_mut().entry(class).or_insert_with(|| Value::Object(Rc::new(StateObject { class }))).clone())
+    OBJECTS.with(|o| {
+        o.borrow_mut()
+            .entry(class)
+            .or_insert_with(|| Value::Object(Rc::new(StateObject { class })))
+            .clone()
+    })
 }
 
 /// The Lua object of a state (`nil` for none).
@@ -278,7 +283,8 @@ mod tests {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         let sm = Rc::new(ScriptManager::new());
-        sm.builtin_tables.borrow_mut().state_singletons = vec!["t/states/HopState".into(), "t/states/SkipState".into()];
+        sm.builtin_tables.borrow_mut().state_singletons =
+            vec!["t/states/HopState".into(), "t/states/SkipState".into()];
         register(&mut t, &sm);
         let src = r#"
             local function assert(v) if not v then error("assertion failed!", 2) end end
@@ -289,7 +295,12 @@ mod tests {
             assert(IdleState.instance():getName() == "IdleState")
         "#;
         let p = pz_kahlua::compiler::compile(src, Some("t"), Some("t"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e))).unwrap();
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+            .unwrap();
     }
 }

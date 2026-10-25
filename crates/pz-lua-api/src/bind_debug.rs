@@ -23,7 +23,9 @@
 //! Enum constants are exposed from [`DEBUG_TYPE_NAMES`] and
 //! [`LOG_SEVERITY_NAMES`] only.
 
-use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, global, int_arg, ClassBuilder, JavaEnum};
+use crate::expose::{
+    bool_arg, enum_value, expose_class, expose_enum, global, int_arg, ClassBuilder, JavaEnum,
+};
 use pz_core::debug::{
     self, DebugLog, DebugType, FmtArg, JavaError, LogSeverity, LogThrowable, StackElement,
     DEBUG_TYPE_NAMES, LOG_SEVERITY_NAMES,
@@ -883,7 +885,11 @@ mod tests {
         let mut t = Thread::new(TableRef::new());
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         crate::bind_java_util::register(&mut t);
-        crate::bind_core::register(&mut t, None, Rc::new(RefCell::new(pz_core::core::Core::new())));
+        crate::bind_core::register(
+            &mut t,
+            None,
+            Rc::new(RefCell::new(pz_core::core::Core::new())),
+        );
         crate::bind_java_util::register(&mut t);
         let sink = MemorySink::new();
         debug::with(|d| {

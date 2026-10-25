@@ -11,7 +11,9 @@
 use std::cell::RefCell;
 use std::path::Path;
 
-use pz_input::controller::{set_dead_zone, trigger_value, ControllerEvent, Input, Joypad, JoypadEvent, JoypadManager};
+use pz_input::controller::{
+    set_dead_zone, trigger_value, ControllerEvent, Input, Joypad, JoypadEvent, JoypadManager,
+};
 use pz_input::with_controllers;
 use pz_kahlua::{LuaError, NativeCall, Thread, Value};
 
@@ -42,14 +44,19 @@ fn with<R>(f: impl FnOnce(&mut Input, &mut JoypadManager) -> R) -> R {
 
 /// A joypad by controller index, created on first use (`checkJoypad`).
 fn joypad(input: &mut Input, jm: &mut JoypadManager, index: i32) -> Option<Joypad> {
-    jm.check(input, index).and_then(|s| jm.by_controller[s].clone())
+    jm.check(input, index)
+        .and_then(|s| jm.by_controller[s].clone())
 }
 
 /// `checkOrAnyJoypad`: index < 0 means any active joypad.
 fn check_or_any(index: i32, any: bool, f: impl Fn(&Input, &Joypad) -> bool) -> bool {
     with(|input, jm| {
         if index < 0 && any {
-            return jm.list.iter().filter_map(|&s| jm.by_controller[s].as_ref()).any(|j| f(input, j));
+            return jm
+                .list
+                .iter()
+                .filter_map(|&s| jm.by_controller[s].as_ref())
+                .any(|j| f(input, j));
         }
         joypad(input, jm, index).is_some_and(|j| f(input, &j))
     })
@@ -77,7 +84,13 @@ enum Btn {
 /// `Joypad.is<Button>Pressed()`.
 fn pressed(input: &Input, j: &Joypad, b: Btn) -> bool {
     let id = j.id as i32;
-    let dpad = |n: i32, d: &dyn Fn(i32) -> bool| if n != -1 { input.is_button_pressed_d(n, id) } else { d(id) };
+    let dpad = |n: i32, d: &dyn Fn(i32) -> bool| {
+        if n != -1 {
+            input.is_button_pressed_d(n, id)
+        } else {
+            d(id)
+        }
+    };
     match b {
         Btn::A => input.is_button_pressed_d(j.a_button, id),
         Btn::B => input.is_button_pressed_d(j.b_button, id),
@@ -100,7 +113,10 @@ fn pressed(input: &Input, j: &Joypad, b: Btn) -> bool {
 /// `JoypadManager.is<Button>Pressed(c)`: the d-pad and bumpers check one
 /// joypad; the face, stick, trigger and menu buttons accept -1 for any.
 fn jm_pressed(c: i32, b: Btn) -> bool {
-    let any = !matches!(b, Btn::Up | Btn::Down | Btn::Left | Btn::Right | Btn::LB | Btn::RB);
+    let any = !matches!(
+        b,
+        Btn::Up | Btn::Down | Btn::Left | Btn::Right | Btn::LB | Btn::RB
+    );
     check_or_any(c, any, |input, j| pressed(input, j, b))
 }
 
@@ -115,9 +131,19 @@ fn jm_trigger_value(c: i32, left: bool) -> f32 {
 /// `Joypad.isMovementInsideDeadZone` / `isAimingInsideDeadZone`.
 fn is_applied(input: &Input, jm: &JoypadManager, j: &Joypad, movement: bool) -> bool {
     let stick = if movement { j.movement() } else { j.aiming() };
-    let (x, y) = (stick.value(input, j.id as i32, true), stick.value(input, j.id as i32, false));
-    let (ax, ay) = if movement { (j.movement_axis_x, j.movement_axis_y) } else { (j.aiming_axis_x, j.aiming_axis_y) };
-    let (dx, dy) = (jm.joypad_dead_zone(input, j, ax), jm.joypad_dead_zone(input, j, ay));
+    let (x, y) = (
+        stick.value(input, j.id as i32, true),
+        stick.value(input, j.id as i32, false),
+    );
+    let (ax, ay) = if movement {
+        (j.movement_axis_x, j.movement_axis_y)
+    } else {
+        (j.aiming_axis_x, j.aiming_axis_y)
+    };
+    let (dx, dy) = (
+        jm.joypad_dead_zone(input, j, ax),
+        jm.joypad_dead_zone(input, j, ay),
+    );
     // The movement check multiplies the two dead zones; the aiming check
     // sums their squares, as in the original.
     let dz = if movement { dx * dy } else { dx * dx + dy * dy };
@@ -128,7 +154,9 @@ fn is_applied(input: &Input, jm: &JoypadManager, j: &Joypad, movement: bool) -> 
 /// the stick is outside its dead zone.
 fn jm_stick(c: i32, movement: bool, want_x: bool) -> f32 {
     with(|input, jm| {
-        let Some(j) = joypad(input, jm, c) else { return 0.0 };
+        let Some(j) = joypad(input, jm, c) else {
+            return 0.0;
+        };
         if !is_applied(input, jm, &j, movement) {
             return 0.0;
         }
@@ -206,7 +234,11 @@ pub fn update(mgr: &mut LuaManager) {
                     }
                     None => {}
                 }
-                let name = if connected { "OnGamepadConnect" } else { "OnGamepadDisconnect" };
+                let name = if connected {
+                    "OnGamepadConnect"
+                } else {
+                    "OnGamepadDisconnect"
+                };
                 mgr.trigger_event(name, std::slice::from_ref(&id));
             }
             other => with(|input, jm| jm.on_input(input, &other)),
@@ -224,7 +256,9 @@ pub fn after_ui_update(mgr: &mut LuaManager) {
         let s = &mut *s.borrow_mut();
         let list = s.jm.list.clone();
         for slot in list {
-            let Some(j) = s.jm.by_controller[slot].as_ref() else { continue };
+            let Some(j) = s.jm.by_controller[slot].as_ref() else {
+                continue;
+            };
             if !pressed(&s.input, j, Btn::A) {
                 continue;
             }
@@ -249,9 +283,13 @@ pub fn set_cache_dir(dir: &Path) {
 // ---- Lua ------------------------------------------------------------------------------
 
 fn enum_names(base: &Path, class: &str) -> Vec<&'static str> {
-    let names = pz_classfile::Jar::open(base.join("projectzomboid.jar")).and_then(|j| pz_classfile::enum_constants(&j, class));
+    let names = pz_classfile::Jar::open(base.join("projectzomboid.jar"))
+        .and_then(|j| pz_classfile::enum_constants(&j, class));
     match names {
-        Ok(n) => n.into_iter().map(|s| &*Box::leak(s.into_boxed_str())).collect(),
+        Ok(n) => n
+            .into_iter()
+            .map(|s| &*Box::leak(s.into_boxed_str()))
+            .collect(),
         Err(e) => {
             eprintln!("{class}: {e}");
             Vec::new()
@@ -286,13 +324,18 @@ fn register_enums(t: &mut Thread, base: &Path) {
     });
     b.method("getNameTranslationKey", |c| {
         let n = enum_name(c)?;
-        Ok(c.push(Value::str(&format!("UI_optionscreen_gamepad_JoypadButton_name_{n}"))))
+        Ok(c.push(Value::str(&format!(
+            "UI_optionscreen_gamepad_JoypadButton_name_{n}"
+        ))))
     });
     b.static_fn("getButtonCount", move |c| Ok(c.push(count as f64)));
     let n2 = names.clone();
     b.static_fn("isButtonDown", move |c| {
         let (bind, idx) = (int_arg(c, 0), int_arg(c, 1));
-        let r = usize::try_from(idx).ok().and_then(|i| n2.get(i)).is_some_and(|n| button_down(n, bind));
+        let r = usize::try_from(idx)
+            .ok()
+            .and_then(|i| n2.get(i))
+            .is_some_and(|n| button_down(n, bind));
         Ok(c.push(r))
     });
     let n3 = names.clone();
@@ -306,10 +349,13 @@ fn register_enums(t: &mut Thread, base: &Path) {
     let n4 = names;
     b.static_fn("fromIndex", move |c| {
         let i = int_arg(c, 0);
-        let n = usize::try_from(i).ok().and_then(|k| n4.get(k)).ok_or_else(|| LuaError::Runtime {
-            message: format!("Index out of range: {i}. Expected 0 - {}", n4.len()),
-            class: "java.lang.ArrayIndexOutOfBoundsException",
-        })?;
+        let n = usize::try_from(i)
+            .ok()
+            .and_then(|k| n4.get(k))
+            .ok_or_else(|| LuaError::Runtime {
+                message: format!("Index out of range: {i}. Expected 0 - {}", n4.len()),
+                class: "java.lang.ArrayIndexOutOfBoundsException",
+            })?;
         Ok(c.push(crate::expose::enum_value(JOYPAD_BUTTON, n)))
     });
 
@@ -323,7 +369,11 @@ fn register_enums(t: &mut Thread, base: &Path) {
     b.method("getDeadZone", |c| {
         let n = enum_name(c)?;
         let bind = int_arg(c, 1);
-        let v = with(|input, jm| joypad(input, jm, bind).map_or(0.0, |j| jm.joypad_dead_zone(input, &j, dead_zone_axis(&j, n))));
+        let v = with(|input, jm| {
+            joypad(input, jm, bind).map_or(0.0, |j| {
+                jm.joypad_dead_zone(input, &j, dead_zone_axis(&j, n))
+            })
+        });
         Ok(c.push(f64::from(v)))
     });
     b.method("setDeadZone", |c| {
@@ -338,7 +388,9 @@ fn register_enums(t: &mut Thread, base: &Path) {
     });
     b.method("getNameTranslationKey", |c| {
         let n = enum_name(c)?;
-        Ok(c.push(Value::str(&format!("UI_optionscreen_gamepad_JoypadAxis1d_name_{n}"))))
+        Ok(c.push(Value::str(&format!(
+            "UI_optionscreen_gamepad_JoypadAxis1d_name_{n}"
+        ))))
     });
     b.static_fn("getAxisCount", move |c| Ok(c.push(count as f64)));
     let n2 = names.clone();
@@ -352,10 +404,13 @@ fn register_enums(t: &mut Thread, base: &Path) {
     let n3 = names;
     b.static_fn("fromIndex", move |c| {
         let i = int_arg(c, 0);
-        let n = usize::try_from(i).ok().and_then(|k| n3.get(k)).ok_or_else(|| LuaError::Runtime {
-            message: format!("Index out of range: {i}. Expected 0 - {}", n3.len()),
-            class: "java.lang.ArrayIndexOutOfBoundsException",
-        })?;
+        let n = usize::try_from(i)
+            .ok()
+            .and_then(|k| n3.get(k))
+            .ok_or_else(|| LuaError::Runtime {
+                message: format!("Index out of range: {i}. Expected 0 - {}", n3.len()),
+                class: "java.lang.ArrayIndexOutOfBoundsException",
+            })?;
         Ok(c.push(crate::expose::enum_value(JOYPAD_AXIS_1D, n)))
     });
 
@@ -372,7 +427,10 @@ fn register_enums(t: &mut Thread, base: &Path) {
     b.method("getLength", |c| {
         let n = enum_name(c)?;
         let bind = int_arg(c, 1);
-        let (x, y) = (jm_stick(bind, n == "LeftStick", true), jm_stick(bind, n == "LeftStick", false));
+        let (x, y) = (
+            jm_stick(bind, n == "LeftStick", true),
+            jm_stick(bind, n == "LeftStick", false),
+        );
         Ok(c.push(f64::from((x * x + y * y).sqrt())))
     });
     b.method("isApplied", |c| {
@@ -381,7 +439,9 @@ fn register_enums(t: &mut Thread, base: &Path) {
     });
     b.method("getNameTranslationKey", |c| {
         let n = enum_name(c)?;
-        Ok(c.push(Value::str(&format!("UI_optionscreen_gamepad_JoypadAxis2d_name_{n}"))))
+        Ok(c.push(Value::str(&format!(
+            "UI_optionscreen_gamepad_JoypadAxis2d_name_{n}"
+        ))))
     });
     let n2 = names;
     b.static_fn("getAxes", move |c| {
@@ -393,14 +453,19 @@ fn register_enums(t: &mut Thread, base: &Path) {
     });
 }
 
-fn controller_str(c: &NativeCall<'_>, f: impl Fn(&pz_input::controller::Controller) -> String) -> Value {
+fn controller_str(
+    c: &NativeCall<'_>,
+    f: impl Fn(&pz_input::controller::Controller) -> String,
+) -> Value {
     let i = int_arg(c, 0);
     let s = ST.with(|s| s.borrow().input.controller(i).map(&f));
     Value::str(&s.unwrap_or_else(|| "???".into()))
 }
 
 fn register_globals(t: &mut Thread) {
-    global(t, "getControllerCount", |c| Ok(c.push(pz_input::controller::MAX_CONTROLLERS as f64)));
+    global(t, "getControllerCount", |c| {
+        Ok(c.push(pz_input::controller::MAX_CONTROLLERS as f64))
+    });
     global(t, "isControllerConnected", |c| {
         let i = int_arg(c, 0);
         Ok(c.push(ST.with(|s| s.borrow().input.controller(i).is_some())))
@@ -409,20 +474,34 @@ fn register_globals(t: &mut Thread) {
         let i = int_arg(c, 0);
         Ok(c.push(ST.with(|s| s.borrow().input.controller(i).is_some())))
     });
-    global(t, "getControllerGUID", |c| Ok(c.push(controller_str(c, |ct| ct.guid.clone()))));
-    global(t, "getControllerName", |c| Ok(c.push(controller_str(c, |ct| ct.gamepad_name.clone()))));
+    global(t, "getControllerGUID", |c| {
+        Ok(c.push(controller_str(c, |ct| ct.guid.clone())))
+    });
+    global(t, "getControllerName", |c| {
+        Ok(c.push(controller_str(c, |ct| ct.gamepad_name.clone())))
+    });
     global(t, "getControllerAxisValue", |c| {
         let (i, a) = (int_arg(c, 0), int_arg(c, 1));
-        let v = ST.with(|s| s.borrow().input.controller(i).filter(|ct| a >= 0 && (a as usize) < ct.axis_count()).map_or(0.0, |ct| ct.axis_value(a)));
+        let v = ST.with(|s| {
+            s.borrow()
+                .input
+                .controller(i)
+                .filter(|ct| a >= 0 && (a as usize) < ct.axis_count())
+                .map_or(0.0, |ct| ct.axis_value(a))
+        });
         Ok(c.push(f64::from(v)))
     });
     global(t, "getControllerPovX", |c| {
         let i = int_arg(c, 0);
-        Ok(c.push(f64::from(ST.with(|s| s.borrow().input.controller(i).map_or(0.0, |ct| ct.pov_x())))))
+        Ok(c.push(f64::from(ST.with(|s| {
+            s.borrow().input.controller(i).map_or(0.0, |ct| ct.pov_x())
+        }))))
     });
     global(t, "getControllerPovY", |c| {
         let i = int_arg(c, 0);
-        Ok(c.push(f64::from(ST.with(|s| s.borrow().input.controller(i).map_or(0.0, |ct| ct.pov_y())))))
+        Ok(c.push(f64::from(ST.with(|s| {
+            s.borrow().input.controller(i).map_or(0.0, |ct| ct.pov_y())
+        }))))
     });
     global(t, "getControllerDeadZone", |c| {
         let (i, a) = (int_arg(c, 0), int_arg(c, 1));
@@ -466,18 +545,41 @@ fn register_globals(t: &mut Thread) {
     ] {
         global(t, name, move |c| Ok(c.push(jm_pressed(int_arg(c, 0), b))));
     }
-    global(t, "isJoypadLTPressed", |c| Ok(c.push(jm_trigger_pressed(int_arg(c, 0), true))));
-    global(t, "isJoypadRTPressed", |c| Ok(c.push(jm_trigger_pressed(int_arg(c, 0), false))));
-    global(t, "getJoypadMovementAxisX", |c| Ok(c.push(f64::from(jm_stick(int_arg(c, 0), true, true)))));
-    global(t, "getJoypadMovementAxisY", |c| Ok(c.push(f64::from(jm_stick(int_arg(c, 0), true, false)))));
-    global(t, "getJoypadAimingAxisX", |c| Ok(c.push(f64::from(jm_stick(int_arg(c, 0), false, true)))));
-    global(t, "getJoypadAimingAxisY", |c| Ok(c.push(f64::from(jm_stick(int_arg(c, 0), false, false)))));
+    global(t, "isJoypadLTPressed", |c| {
+        Ok(c.push(jm_trigger_pressed(int_arg(c, 0), true)))
+    });
+    global(t, "isJoypadRTPressed", |c| {
+        Ok(c.push(jm_trigger_pressed(int_arg(c, 0), false)))
+    });
+    global(t, "getJoypadMovementAxisX", |c| {
+        Ok(c.push(f64::from(jm_stick(int_arg(c, 0), true, true))))
+    });
+    global(t, "getJoypadMovementAxisY", |c| {
+        Ok(c.push(f64::from(jm_stick(int_arg(c, 0), true, false))))
+    });
+    global(t, "getJoypadAimingAxisX", |c| {
+        Ok(c.push(f64::from(jm_stick(int_arg(c, 0), false, true))))
+    });
+    global(t, "getJoypadAimingAxisY", |c| {
+        Ok(c.push(f64::from(jm_stick(int_arg(c, 0), false, false))))
+    });
     global(t, "isXBOXController", |c| {
-        Ok(c.push(ST.with(|s| s.borrow().input.controllers.iter().flatten().any(|ct| ct.gamepad_name.contains("XBOX 360")))))
+        Ok(c.push(ST.with(|s| {
+            s.borrow()
+                .input
+                .controllers
+                .iter()
+                .flatten()
+                .any(|ct| ct.gamepad_name.contains("XBOX 360"))
+        })))
     });
     global(t, "isPlaystationController", |c| {
         let i = int_arg(c, 0);
-        let r = ST.with(|s| s.borrow().input.controller(i).is_some_and(|ct| ct.joystick_name.contains("Playstation") || ct.joystick_name.contains("Dualshock")));
+        let r = ST.with(|s| {
+            s.borrow().input.controller(i).is_some_and(|ct| {
+                ct.joystick_name.contains("Playstation") || ct.joystick_name.contains("Dualshock")
+            })
+        });
         Ok(c.push(r))
     });
     global(t, "setDebugToggleControllerPluggedIn", |_c| Ok(0));
@@ -490,7 +592,9 @@ fn register_globals(t: &mut Thread) {
         let r = ST.with(|s| {
             let s = s.borrow();
             match s.activated.and_then(|i| s.jm.by_controller[i].as_ref()) {
-                Some(j) if !j.disabled => s.jm.last_activity(j.id) < crate::bind_input::mouse_last_activity(),
+                Some(j) if !j.disabled => {
+                    s.jm.last_activity(j.id) < crate::bind_input::mouse_last_activity()
+                }
                 _ => true,
             }
         });
@@ -519,7 +623,13 @@ mod tests {
         let mut mgr = LuaManager::init(Rc::new(RefCell::new(gfs))).unwrap();
         let guid = "030000005e0400008e02000014010000";
         let slot = with_controllers(|c| {
-            let mut ct = Controller::new(0, guid, Some("Xbox 360 Controller"), Some("XBOX 360 Controller"), true);
+            let mut ct = Controller::new(
+                0,
+                guid,
+                Some("Xbox 360 Controller"),
+                Some("XBOX 360 Controller"),
+                true,
+            );
             ct.state.polled = true;
             ct.state.axes[4] = -1.0;
             ct.state.axes[5] = -1.0;
@@ -529,11 +639,19 @@ mod tests {
         with(|_, jm| jm.set_controller_active(guid, true));
         let call = |mgr: &mut LuaManager, g: &str, args: &[Value]| {
             let f = mgr.thread.globals().get_str(g);
-            mgr.thread.call(&f, args).unwrap().into_iter().next().unwrap_or_default()
+            mgr.thread
+                .call(&f, args)
+                .unwrap()
+                .into_iter()
+                .next()
+                .unwrap_or_default()
         };
         let s = Value::Num(slot as f64);
         assert!(call(&mut mgr, "isControllerConnected", std::slice::from_ref(&s)).truthy());
-        assert_eq!(call(&mut mgr, "getControllerGUID", std::slice::from_ref(&s)).as_str(), Some(guid));
+        assert_eq!(
+            call(&mut mgr, "getControllerGUID", std::slice::from_ref(&s)).as_str(),
+            Some(guid)
+        );
         assert!(call(&mut mgr, "isXBOXController", &[]).truthy());
         with_controllers(|c| {
             let st = &mut c.slots[slot].as_mut().unwrap().state;
@@ -543,11 +661,21 @@ mod tests {
         });
         update(&mut mgr);
         assert!(call(&mut mgr, "isJoypadDown", std::slice::from_ref(&s)).truthy());
-        assert!((call(&mut mgr, "getJoypadMovementAxisX", std::slice::from_ref(&s)).as_num().unwrap() - 1.0).abs() < 1e-6);
+        assert!(
+            (call(&mut mgr, "getJoypadMovementAxisX", std::slice::from_ref(&s))
+                .as_num()
+                .unwrap()
+                - 1.0)
+                .abs()
+                < 1e-6
+        );
         assert!(!call(&mut mgr, "isJoypadLTPressed", std::slice::from_ref(&s)).truthy());
         after_ui_update(&mut mgr);
         assert_eq!(activated_joypad(), Some(slot));
-        assert!(dir.join("user/joypads").join(format!("{guid}.config")).exists());
+        assert!(dir
+            .join("user/joypads")
+            .join(format!("{guid}.config"))
+            .exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
@@ -558,7 +686,9 @@ mod tests {
 #[test]
 #[ignore]
 fn installed_game_joypad_enums() {
-    let Some(dir) = std::env::var_os("PZ_GAME_DIR") else { return };
+    let Some(dir) = std::env::var_os("PZ_GAME_DIR") else {
+        return;
+    };
     let b = enum_names(Path::new(&dir), "zombie/input/JoypadButton");
     let a = enum_names(Path::new(&dir), "zombie/input/JoypadAxis1d");
     let s = enum_names(Path::new(&dir), "zombie/input/JoypadAxis2d");
@@ -598,10 +728,14 @@ impl pz_kahlua::value::LuaObject for LuaBindingSet {
 
 /// The enum constants' constructor arguments: `(name, extra args)`.
 fn enum_ctor_args(base: &Path, class: &str) -> Vec<(String, Vec<pz_classfile::Value>)> {
-    let r = pz_classfile::Jar::open(base.join("projectzomboid.jar")).and_then(|j| pz_classfile::self_constructed_constants(&j, class));
+    let r = pz_classfile::Jar::open(base.join("projectzomboid.jar"))
+        .and_then(|j| pz_classfile::self_constructed_constants(&j, class));
     match r {
         // Enum constructors take the implicit name and ordinal first.
-        Ok(v) => v.into_iter().map(|(n, a)| (n, a.into_iter().skip(2).collect())).collect(),
+        Ok(v) => v
+            .into_iter()
+            .map(|(n, a)| (n, a.into_iter().skip(2).collect()))
+            .collect(),
         Err(e) => {
             eprintln!("{class}: {e}");
             Vec::new()
@@ -630,7 +764,10 @@ fn default_is_down(args: &[pz_classfile::Value]) -> Option<IsDown> {
     if let Some(b) = static_name(first, "zombie/input/JoypadButton") {
         return Some(IsDown::Button(b));
     }
-    let (min, max) = (float_of(args.get(1)).unwrap_or(0.0), float_of(args.get(2)).unwrap_or(f32::MAX));
+    let (min, max) = (
+        float_of(args.get(1)).unwrap_or(0.0),
+        float_of(args.get(2)).unwrap_or(f32::MAX),
+    );
     if let Some(a) = static_name(first, "zombie/input/JoypadAxis1d") {
         return Some(IsDown::Axis1d(a, min, max));
     }
@@ -638,21 +775,38 @@ fn default_is_down(args: &[pz_classfile::Value]) -> Option<IsDown> {
 }
 
 fn init_bindings(base: &Path, cache: &Path) {
-    let buttons: Vec<ButtonBinding> = enum_ctor_args(base, "zombie/characters/CharacterJoypadButtonBinding")
-        .into_iter()
-        .map(|(name, args)| {
-            let d = default_is_down(&args);
-            ButtonBinding { name, default: d.clone(), binding: d }
-        })
-        .collect();
-    let axes: Vec<Axis2dBinding> = enum_ctor_args(base, "zombie/characters/CharacterJoypadAxis2dBinding")
-        .into_iter()
-        .map(|(name, args)| {
-            let d = args.first().and_then(|a| static_name(a, "zombie/input/JoypadAxis2d"));
-            Axis2dBinding { name, default: d.clone(), binding: d }
-        })
-        .collect();
-    let names = |c| enum_names(base, c).into_iter().map(str::to_string).collect();
+    let buttons: Vec<ButtonBinding> =
+        enum_ctor_args(base, "zombie/characters/CharacterJoypadButtonBinding")
+            .into_iter()
+            .map(|(name, args)| {
+                let d = default_is_down(&args);
+                ButtonBinding {
+                    name,
+                    default: d.clone(),
+                    binding: d,
+                }
+            })
+            .collect();
+    let axes: Vec<Axis2dBinding> =
+        enum_ctor_args(base, "zombie/characters/CharacterJoypadAxis2dBinding")
+            .into_iter()
+            .map(|(name, args)| {
+                let d = args
+                    .first()
+                    .and_then(|a| static_name(a, "zombie/input/JoypadAxis2d"));
+                Axis2dBinding {
+                    name,
+                    default: d.clone(),
+                    binding: d,
+                }
+            })
+            .collect();
+    let names = |c| {
+        enum_names(base, c)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    };
     BINDINGS.with(|b| {
         *b.borrow_mut() = Bindings {
             buttons,
@@ -676,7 +830,10 @@ fn is_down(b: &IsDown, bind: i32) -> bool {
         }
         IsDown::Axis2d(a, min, max) => {
             let movement = a == "LeftStick";
-            let (x, y) = (jm_stick(bind, movement, true), jm_stick(bind, movement, false));
+            let (x, y) = (
+                jm_stick(bind, movement, true),
+                jm_stick(bind, movement, false),
+            );
             let v = (x * x + y * y).sqrt();
             v >= *min && v < *max
         }
@@ -686,7 +843,11 @@ fn is_down(b: &IsDown, bind: i32) -> bool {
 /// A Lua enum argument of `class`: its constant name.
 fn enum_arg(c: &NativeCall<'_>, i: usize, class: &str) -> Option<&'static str> {
     match c.arg(i) {
-        Value::Object(o) => o.as_any().downcast_ref::<JavaEnum>().filter(|e| e.class == class).map(|e| e.name),
+        Value::Object(o) => o
+            .as_any()
+            .downcast_ref::<JavaEnum>()
+            .filter(|e| e.class == class)
+            .map(|e| e.name),
         _ => None,
     }
 }
@@ -699,7 +860,10 @@ fn set_value(generation: u64, index: usize) -> Value {
         }
         while s.1.len() <= index {
             let i = s.1.len();
-            s.1.push(Value::Object(Rc::new(LuaBindingSet { generation, index: i })));
+            s.1.push(Value::Object(Rc::new(LuaBindingSet {
+                generation,
+                index: i,
+            })));
         }
         s.1[index].clone()
     })
@@ -719,7 +883,10 @@ fn sets_table() -> Value {
     Value::Table(t)
 }
 
-fn with_set<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut Bindings, usize) -> R) -> Result<R, LuaError> {
+fn with_set<R>(
+    c: &NativeCall<'_>,
+    f: impl FnOnce(&mut Bindings, usize) -> R,
+) -> Result<R, LuaError> {
     let (gen, idx) = with_this::<LuaBindingSet, _>(c, |s| (s.generation, s.index))?;
     if gen != GENERATION.with(|g| g.get()) {
         return Err(LuaError::runtime("binding set was reloaded"));
@@ -758,7 +925,9 @@ fn register_character_bindings(t: &mut Thread) {
         });
         Ok(c.push(sets_table()))
     });
-    b.static_fn("saveAll", |c| Ok(c.push(BINDINGS.with(|b| b.borrow_mut().save_all()))));
+    b.static_fn("saveAll", |c| {
+        Ok(c.push(BINDINGS.with(|b| b.borrow_mut().save_all())))
+    });
     b.static_fn("resetAllToDefault", |_c| {
         BINDINGS.with(|b| b.borrow_mut().reset_all_to_default());
         Ok(0)
@@ -781,7 +950,10 @@ fn register_character_bindings(t: &mut Thread) {
     b.static_fn("createNewFromCurrent", |c| {
         let n = string_param(c);
         let custom = translated(c.thread, "IGUI_Custom");
-        let i = BINDINGS.with(|b| b.borrow_mut().create_new_from_current(n.as_deref(), &custom));
+        let i = BINDINGS.with(|b| {
+            b.borrow_mut()
+                .create_new_from_current(n.as_deref(), &custom)
+        });
         Ok(c.push(set_value(GENERATION.with(|g| g.get()), i)))
     });
     b.method("getName", |c| {
@@ -815,7 +987,13 @@ fn register_character_bindings(t: &mut Thread) {
     });
 
     // CharacterJoypadButtonBinding
-    let names: Vec<&'static str> = BINDINGS.with(|b| b.borrow().buttons.iter().map(|x| &*Box::leak(x.name.clone().into_boxed_str())).collect());
+    let names: Vec<&'static str> = BINDINGS.with(|b| {
+        b.borrow()
+            .buttons
+            .iter()
+            .map(|x| &*Box::leak(x.name.clone().into_boxed_str()))
+            .collect()
+    });
     let b = expose_enum(t, BUTTON_BINDING, &names);
     fn btn<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut ButtonBinding) -> R) -> Result<R, LuaError> {
         let n = enum_name(c)?;
@@ -830,16 +1008,29 @@ fn register_character_bindings(t: &mut Thread) {
         Ok(c.push(enum_list(BUTTON_BINDING, n)))
     });
     b.static_fn("setAllToDefault", |_c| {
-        BINDINGS.with(|b| b.borrow_mut().buttons.iter_mut().for_each(|x| x.binding = x.default.clone()));
+        BINDINGS.with(|b| {
+            b.borrow_mut()
+                .buttons
+                .iter_mut()
+                .for_each(|x| x.binding = x.default.clone())
+        });
         Ok(0)
     });
     b.static_fn("fromString", |c| {
         let s = crate::expose::str_arg(c, 0).unwrap_or_default();
         let found = BINDINGS.with(|b| b.borrow().button(&s).is_some());
-        Ok(c.push(if found { crate::expose::enum_value(BUTTON_BINDING, &s) } else { Value::Nil }))
+        Ok(c.push(if found {
+            crate::expose::enum_value(BUTTON_BINDING, &s)
+        } else {
+            Value::Nil
+        }))
     });
     let matching = |c: &NativeCall<'_>| -> Vec<String> {
-        let (button, a1, a2) = (enum_arg(c, 0, JOYPAD_BUTTON), enum_arg(c, 0, JOYPAD_AXIS_1D), enum_arg(c, 0, JOYPAD_AXIS_2D));
+        let (button, a1, a2) = (
+            enum_arg(c, 0, JOYPAD_BUTTON),
+            enum_arg(c, 0, JOYPAD_AXIS_1D),
+            enum_arg(c, 0, JOYPAD_AXIS_2D),
+        );
         BINDINGS.with(|b| {
             b.borrow()
                 .buttons
@@ -861,7 +1052,10 @@ fn register_character_bindings(t: &mut Thread) {
     });
     b.static_fn("findBinding", move |c| {
         let n = matching(c);
-        Ok(c.push(n.first().map_or(Value::Nil, |n| crate::expose::enum_value(BUTTON_BINDING, n))))
+        Ok(c.push(
+            n.first()
+                .map_or(Value::Nil, |n| crate::expose::enum_value(BUTTON_BINDING, n)),
+        ))
     });
     b.method("isDown", |c| {
         let bind = int_arg(c, 1);
@@ -870,7 +1064,9 @@ fn register_character_bindings(t: &mut Thread) {
     });
     b.method("getNameTranslationKey", |c| {
         let n = enum_name(c)?;
-        Ok(c.push(Value::str(&format!("UI_optionscreen_gamepad_CharacterJoypadButtonBinding_name_{n}"))))
+        Ok(c.push(Value::str(&format!(
+            "UI_optionscreen_gamepad_CharacterJoypadButtonBinding_name_{n}"
+        ))))
     });
     b.method("getJoypadButton", |c| {
         let d = btn(c, |x| x.binding.clone())?;
@@ -893,23 +1089,42 @@ fn register_character_bindings(t: &mut Thread) {
             _ => Value::Nil,
         }))
     });
-    b.method("getAxisMinThreshold", |c| Ok(c.push(f64::from(btn(c, |x| x.binding.as_ref().map_or(0.0, IsDown::min))?))));
-    b.method("getAxisMaxThreshold", |c| Ok(c.push(f64::from(btn(c, |x| x.binding.as_ref().map_or(0.0, IsDown::max))?))));
-    b.method("isAxisMaxThresholdInfinity", |c| Ok(c.push(btn(c, |x| x.binding.as_ref().map_or(0.0, IsDown::max))? > 1.0)));
+    b.method("getAxisMinThreshold", |c| {
+        Ok(c.push(f64::from(btn(c, |x| {
+            x.binding.as_ref().map_or(0.0, IsDown::min)
+        })?)))
+    });
+    b.method("getAxisMaxThreshold", |c| {
+        Ok(c.push(f64::from(btn(c, |x| {
+            x.binding.as_ref().map_or(0.0, IsDown::max)
+        })?)))
+    });
+    b.method("isAxisMaxThresholdInfinity", |c| {
+        Ok(c.push(btn(c, |x| x.binding.as_ref().map_or(0.0, IsDown::max))? > 1.0))
+    });
     // The binding a Lua argument names, as `setBinding` would store it.
     fn arg_binding(c: &NativeCall<'_>, default_min: Option<f32>) -> Option<Option<IsDown>> {
         if c.arg(1).is_nil() {
             return Some(None);
         }
-        let min = if c.nargs() > 2 { Some(num_arg(c, 2) as f32) } else { default_min };
-        let max = if c.nargs() > 3 { num_arg(c, 3) as f32 } else { f32::MAX };
+        let min = if c.nargs() > 2 {
+            Some(num_arg(c, 2) as f32)
+        } else {
+            default_min
+        };
+        let max = if c.nargs() > 3 {
+            num_arg(c, 3) as f32
+        } else {
+            f32::MAX
+        };
         if let Some(n) = enum_arg(c, 1, JOYPAD_BUTTON) {
             return Some(Some(IsDown::Button(n.to_string())));
         }
         if let Some(n) = enum_arg(c, 1, JOYPAD_AXIS_1D) {
             return Some(Some(IsDown::Axis1d(n.to_string(), min?, max)));
         }
-        enum_arg(c, 1, JOYPAD_AXIS_2D).and_then(|n| Some(Some(IsDown::Axis2d(n.to_string(), min?, max))))
+        enum_arg(c, 1, JOYPAD_AXIS_2D)
+            .and_then(|n| Some(Some(IsDown::Axis2d(n.to_string(), min?, max))))
     }
     fn same_target(a: &Option<IsDown>, b: &Option<IsDown>) -> bool {
         match (a, b) {
@@ -954,7 +1169,9 @@ fn register_character_bindings(t: &mut Thread) {
     });
     b.method("moveBindingFrom", |c| {
         let to = enum_name(c)?;
-        let Some(from) = enum_arg(c, 1, BUTTON_BINDING) else { return Ok(0) };
+        let Some(from) = enum_arg(c, 1, BUTTON_BINDING) else {
+            return Ok(0);
+        };
         if to != from {
             BINDINGS.with(|b| {
                 let mut b = b.borrow_mut();
@@ -971,7 +1188,13 @@ fn register_character_bindings(t: &mut Thread) {
     });
 
     // CharacterJoypadAxis2dBinding
-    let names: Vec<&'static str> = BINDINGS.with(|b| b.borrow().axes.iter().map(|x| &*Box::leak(x.name.clone().into_boxed_str())).collect());
+    let names: Vec<&'static str> = BINDINGS.with(|b| {
+        b.borrow()
+            .axes
+            .iter()
+            .map(|x| &*Box::leak(x.name.clone().into_boxed_str()))
+            .collect()
+    });
     let b = expose_enum(t, AXIS2D_BINDING, &names);
     fn axis<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut Axis2dBinding) -> R) -> Result<R, LuaError> {
         let n = enum_name(c)?;
@@ -986,26 +1209,46 @@ fn register_character_bindings(t: &mut Thread) {
         Ok(c.push(enum_list(AXIS2D_BINDING, n)))
     });
     b.static_fn("setAllToDefault", |_c| {
-        BINDINGS.with(|b| b.borrow_mut().axes.iter_mut().for_each(|x| x.binding = x.default.clone()));
+        BINDINGS.with(|b| {
+            b.borrow_mut()
+                .axes
+                .iter_mut()
+                .for_each(|x| x.binding = x.default.clone())
+        });
         Ok(0)
     });
     b.static_fn("fromString", |c| {
         let s = crate::expose::str_arg(c, 0).unwrap_or_default();
         let found = BINDINGS.with(|b| b.borrow().axis(&s).is_some());
-        Ok(c.push(if found { crate::expose::enum_value(AXIS2D_BINDING, &s) } else { Value::Nil }))
+        Ok(c.push(if found {
+            crate::expose::enum_value(AXIS2D_BINDING, &s)
+        } else {
+            Value::Nil
+        }))
     });
     b.static_fn("findBindings", |c| {
         let want = enum_arg(c, 0, JOYPAD_AXIS_2D);
-        let n = BINDINGS.with(|b| b.borrow().axes.iter().filter(|x| x.binding.as_deref() == want).map(|x| x.name.clone()).collect());
+        let n = BINDINGS.with(|b| {
+            b.borrow()
+                .axes
+                .iter()
+                .filter(|x| x.binding.as_deref() == want)
+                .map(|x| x.name.clone())
+                .collect()
+        });
         Ok(c.push(enum_list(AXIS2D_BINDING, n)))
     });
     b.method("getNameTranslationKey", |c| {
         let n = enum_name(c)?;
-        Ok(c.push(Value::str(&format!("UI_optionscreen_gamepad_CharacterJoypadAxis2dBinding_name_{n}"))))
+        Ok(c.push(Value::str(&format!(
+            "UI_optionscreen_gamepad_CharacterJoypadAxis2dBinding_name_{n}"
+        ))))
     });
     b.method("getJoypadAxis", |c| {
         let a = axis(c, |x| x.binding.clone())?;
-        Ok(c.push(a.map_or(Value::Nil, |n| crate::expose::enum_value(JOYPAD_AXIS_2D, &n))))
+        Ok(c.push(a.map_or(Value::Nil, |n| {
+            crate::expose::enum_value(JOYPAD_AXIS_2D, &n)
+        })))
     });
     b.method("setBinding", |c| {
         let n = enum_arg(c, 1, JOYPAD_AXIS_2D).map(str::to_string);
@@ -1023,7 +1266,9 @@ fn register_character_bindings(t: &mut Thread) {
     });
     b.method("moveBindingFrom", |c| {
         let to = enum_name(c)?;
-        let Some(from) = enum_arg(c, 1, AXIS2D_BINDING) else { return Ok(0) };
+        let Some(from) = enum_arg(c, 1, AXIS2D_BINDING) else {
+            return Ok(0);
+        };
         if to != from {
             BINDINGS.with(|b| {
                 let mut b = b.borrow_mut();
@@ -1052,8 +1297,12 @@ fn register_character_bindings(t: &mut Thread) {
             }
         }))
     };
-    b.method("getValueX", move |c| Ok(c.push(f64::from(value(c, Some(true))?))));
-    b.method("getValueY", move |c| Ok(c.push(f64::from(value(c, Some(false))?))));
+    b.method("getValueX", move |c| {
+        Ok(c.push(f64::from(value(c, Some(true))?)))
+    });
+    b.method("getValueY", move |c| {
+        Ok(c.push(f64::from(value(c, Some(false))?)))
+    });
     b.method("getLength", move |c| Ok(c.push(f64::from(value(c, None)?))));
     b.method("isApplied", |c| {
         let a = axis(c, |x| x.binding.clone())?;
@@ -1067,7 +1316,9 @@ fn register_character_bindings(t: &mut Thread) {
 #[test]
 #[ignore]
 fn installed_game_character_bindings() {
-    let Some(dir) = std::env::var_os("PZ_GAME_DIR") else { return };
+    let Some(dir) = std::env::var_os("PZ_GAME_DIR") else {
+        return;
+    };
     let tmp = std::env::temp_dir().join(format!("pz-char-bind-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     let mut gfs = pz_fs::GameFs::new(Path::new(&dir).to_path_buf());
@@ -1099,7 +1350,10 @@ fn installed_game_character_bindings() {
         end
     "#;
     let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-    let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), mgr.thread.globals().clone()));
+    let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+        Rc::new(p),
+        mgr.thread.globals().clone(),
+    ));
     if let Err((e, tr)) = mgr.thread.pcall(&f, &[]) {
         panic!("lua error: {e:?}\n{tr}");
     }

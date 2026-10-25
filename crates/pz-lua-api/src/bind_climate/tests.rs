@@ -9,9 +9,19 @@ fn setup() -> Thread {
     let mut t = Thread::new(TableRef::new());
     pz_kahlua::stdlib::install(&mut t, None).unwrap();
     crate::bind_java_util::register(&mut t);
-    let constants = vec![(CLIMATE_MANAGER_CLASS, vec![("FLOAT_TEMPERATURE".to_string(), Value::from(4))])];
+    let constants = vec![(
+        CLIMATE_MANAGER_CLASS,
+        vec![("FLOAT_TEMPERATURE".to_string(), Value::from(4))],
+    )];
     register_with(&mut t, &constants);
-    let mut gt = GameTime { day: 10, month: 0, year: 1994, multiplier: 20.0, helicopter_day1: -1, ..GameTime::default() };
+    let mut gt = GameTime {
+        day: 10,
+        month: 0,
+        year: 1994,
+        multiplier: 20.0,
+        helicopter_day1: -1,
+        ..GameTime::default()
+    };
     gt.climate = ClimateManager::with_offsets([10.0, 9000.0, -10.0, -9000.0]);
     gt.set_minutes_stamp();
     let season = ErosionSeason::from_config(&SeasonConfig::default(), 3, gt.day, gt.month, gt.year);
@@ -25,7 +35,10 @@ fn setup() -> Thread {
             let _ = t.pcall(&f, &[Value::from(name)]);
         }
     }));
-    run(&mut t, "function assert(v, m) if not v then error(m or 'assertion failed') end return v end");
+    run(
+        &mut t,
+        "function assert(v, m) if not v then error(m or 'assertion failed') end return v end",
+    );
     t
 }
 
@@ -73,11 +86,22 @@ fn clock_and_climate_from_lua() {
     for _ in 0..300 {
         update_game_time(&mut t);
     }
-    let r = run(&mut t, "return ticks, getClimateManager():getTemperature(), lastT");
+    let r = run(
+        &mut t,
+        "return ticks, getClimateManager():getTemperature(), lastT",
+    );
     assert!(r[0].as_num().unwrap() > 0.0);
     let temp = r[1].as_num().unwrap();
     // The modded layer pins the temperature unless weather overrides it.
-    assert!(temp == 12.5 || shared_game_time().borrow().climate.weather_period.is_running, "{temp}");
+    assert!(
+        temp == 12.5
+            || shared_game_time()
+                .borrow()
+                .climate
+                .weather_period
+                .is_running,
+        "{temp}"
+    );
     assert!(r[2].as_num().is_some());
 }
 
@@ -137,7 +161,9 @@ fn modded_period_events_see_the_stage() {
 /// from it.
 #[test]
 fn constants_from_the_jar() {
-    let Some(path) = std::env::var_os("PZ_JAR") else { return };
+    let Some(path) = std::env::var_os("PZ_JAR") else {
+        return;
+    };
     let jar = Jar::open(std::path::Path::new(&path)).unwrap();
     let c = class_constants(&jar, "zombie/iso/weather/ClimateManager");
     let get = |n: &str| c.iter().find(|(k, _)| k == n).map(|(_, v)| v.as_num());

@@ -16,7 +16,8 @@
 
 use crate::bind_body_damage::{BODY_PART_TYPE_CLASS, METABOLICS_CLASS};
 use crate::bind_character_sim::{
-    character_value, chr_of, with_ctx, LuaGameCharacterRef, ISO_GAME_CHARACTER_CLASS, ISO_PLAYER_CLASS,
+    character_value, chr_of, with_ctx, LuaGameCharacterRef, ISO_GAME_CHARACTER_CLASS,
+    ISO_PLAYER_CLASS,
 };
 use crate::bind_characters::shared_characters;
 use crate::bind_java_util::class_cast;
@@ -85,7 +86,9 @@ pub fn nutrition_value(chr: &LuaGameCharacterRef) -> Value {
     if chr.borrow().nutrition.is_none() {
         return Value::Nil;
     }
-    canonical((0, Rc::as_ptr(chr) as usize, 0), || Value::Object(Rc::new(NutritionObject(chr.clone()))))
+    canonical((0, Rc::as_ptr(chr) as usize, 0), || {
+        Value::Object(Rc::new(NutritionObject(chr.clone())))
+    })
 }
 
 /// The canonical `Thermoregulator` of `chr` (`BodyDamage.getThermoregulator()`;
@@ -94,12 +97,17 @@ pub fn thermoregulator_value(chr: &LuaGameCharacterRef) -> Value {
     if chr.borrow().body_damage.thermoregulator().is_none() {
         return Value::Nil;
     }
-    canonical((1, Rc::as_ptr(chr) as usize, 0), || Value::Object(Rc::new(ThermoregulatorObject(chr.clone()))))
+    canonical((1, Rc::as_ptr(chr) as usize, 0), || {
+        Value::Object(Rc::new(ThermoregulatorObject(chr.clone())))
+    })
 }
 
 fn thermal_node_value(chr: &LuaGameCharacterRef, index: usize) -> Value {
     canonical((2, Rc::as_ptr(chr) as usize, index), || {
-        Value::Object(Rc::new(ThermalNodeObject { chr: chr.clone(), index }))
+        Value::Object(Rc::new(ThermalNodeObject {
+            chr: chr.clone(),
+            index,
+        }))
     })
 }
 
@@ -108,7 +116,9 @@ pub fn fitness_value(chr: &LuaGameCharacterRef) -> Value {
     if chr.borrow().fitness.is_none() {
         return Value::Nil;
     }
-    canonical((3, Rc::as_ptr(chr) as usize, 0), || Value::Object(Rc::new(FitnessObject(chr.clone()))))
+    canonical((3, Rc::as_ptr(chr) as usize, 0), || {
+        Value::Object(Rc::new(FitnessObject(chr.clone())))
+    })
 }
 
 fn float_arg(c: &NativeCall<'_>, i: usize) -> f32 {
@@ -120,14 +130,21 @@ fn float_value(f: f32) -> Value {
 }
 
 fn npe() -> LuaError {
-    LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" }
+    LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.NullPointerException",
+    }
 }
 
 /// The ordinal and name of an enum argument of `class` (`None` for nil).
 fn enum_arg(c: &NativeCall<'_>, i: usize, class: &str) -> LuaResult<Option<(usize, &'static str)>> {
     match c.arg(i) {
         Value::Nil => Ok(None),
-        Value::Object(o) => match o.as_any().downcast_ref::<JavaEnum>().filter(|e| e.class == class) {
+        Value::Object(o) => match o
+            .as_any()
+            .downcast_ref::<JavaEnum>()
+            .filter(|e| e.class == class)
+        {
             Some(e) => Ok(Some((e.ordinal as usize, e.name))),
             None => Err(class_cast(&c.arg(i), class)),
         },
@@ -148,7 +165,11 @@ pub fn register_shared(thread: &mut Thread) {
     register(thread, shared_script_manager(), shared_characters());
 }
 
-fn register_character_members(thread: &mut Thread, sm: &Rc<ScriptManager>, _chars: &Rc<RefCell<Characters>>) {
+fn register_character_members(
+    thread: &mut Thread,
+    sm: &Rc<ScriptManager>,
+    _chars: &Rc<RefCell<Characters>>,
+) {
     let b = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
     let s = sm.clone();
     b.method("setMetabolicTarget", move |c| {
@@ -170,7 +191,9 @@ fn register_character_members(thread: &mut Thread, sm: &Rc<ScriptManager>, _char
             _ => Some(float_arg(c, 1)),
         };
         if let Some(t) = target {
-            chr.borrow_mut().set_metabolic_target(t).map_err(java_error)?;
+            chr.borrow_mut()
+                .set_metabolic_target(t)
+                .map_err(java_error)?;
         }
         Ok(0)
     });
@@ -214,7 +237,11 @@ fn with_nutrition<R>(
     Ok(f(chr.nutrition.as_mut().ok_or_else(npe)?))
 }
 
-fn register_nutrition(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
+fn register_nutrition(
+    thread: &mut Thread,
+    sm: &Rc<ScriptManager>,
+    chars: &Rc<RefCell<Characters>>,
+) {
     use pz_characters::character::Nutrition;
     let b = expose_class(thread, NUTRITION_CLASS, None);
     type FloatGet = fn(&Nutrition) -> f32;
@@ -283,7 +310,9 @@ fn register_nutrition(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let chr = nutrition_chr(c)?;
         let v = character_value(&chr);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().nutrition_update(&s, &chars, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().nutrition_update(&s, &chars, ctx)
+        })?;
         Ok(0)
     });
     let s = sm.clone();
@@ -298,14 +327,18 @@ fn register_nutrition(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     });
     let s = sm.clone();
     b.method("applyTraitFromWeight", move |c| {
-        nutrition_chr(c)?.borrow_mut().apply_trait_from_weight(&s).map_err(java_error)?;
+        nutrition_chr(c)?
+            .borrow_mut()
+            .apply_trait_from_weight(&s)
+            .map_err(java_error)?;
         Ok(0)
     });
     let s = sm.clone();
     b.method("characterHaveWeightTrouble", move |c| {
         let chr = nutrition_chr(c)?;
         let chr = chr.borrow();
-        let v = Nutrition::character_have_weight_trouble(&|f| chr.has_trait(&s, f)).map_err(java_error)?;
+        let v = Nutrition::character_have_weight_trouble(&|f| chr.has_trait(&s, f))
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     let (s, ch) = (sm.clone(), chars.clone());
@@ -314,7 +347,9 @@ fn register_nutrition(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let chr = chr.borrow();
         let level = chr.perk_level(ch.borrow().perks.constant("Fitness").as_ref());
         let n = chr.nutrition.as_ref().ok_or_else(npe)?;
-        let v = n.can_add_fitness_xp(level, &|f| chr.has_trait(&s, f)).map_err(java_error)?;
+        let v = n
+            .can_add_fitness_xp(level, &|f| chr.has_trait(&s, f))
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
 }
@@ -329,9 +364,16 @@ fn with_thermo<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut Thermoregulator) -> R)
     Ok(f(chr.body_damage.thermoregulator_mut().ok_or_else(npe)?))
 }
 
-fn register_thermoregulator(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
+fn register_thermoregulator(
+    thread: &mut Thread,
+    sm: &Rc<ScriptManager>,
+    chars: &Rc<RefCell<Characters>>,
+) {
     let b = expose_class(thread, THERMOREGULATOR_CLASS, None);
-    b.field("THERMAL_COLD_DAMAGE_MOD", float_value(Thermoregulator::THERMAL_COLD_DAMAGE_MOD));
+    b.field(
+        "THERMAL_COLD_DAMAGE_MOD",
+        float_value(Thermoregulator::THERMAL_COLD_DAMAGE_MOD),
+    );
     b.static_fn("setSimulationMultiplier", |c| {
         Thermoregulator::set_simulation_multiplier(float_arg(c, 0));
         Ok(0)
@@ -339,7 +381,9 @@ fn register_thermoregulator(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: 
     type Const = fn() -> f32;
     let consts: [(&str, Const); 3] = [
         ("getSkinCelciusMin", || Thermoregulator::SKIN_CELCIUS_MIN),
-        ("getSkinCelciusFavorable", || Thermoregulator::SKIN_CELCIUS_FAVORABLE),
+        ("getSkinCelciusFavorable", || {
+            Thermoregulator::SKIN_CELCIUS_FAVORABLE
+        }),
         ("getSkinCelciusMax", || Thermoregulator::SKIN_CELCIUS_MAX),
     ];
     for (name, f) in consts {
@@ -355,15 +399,23 @@ fn register_thermoregulator(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: 
         ("getSetPoint", Thermoregulator::set_point),
         ("getCoreHeatDelta", Thermoregulator::core_heat_delta),
         ("getCoreRateOfChange", Thermoregulator::core_rate_of_change),
-        ("getExternalAirTemperature", Thermoregulator::external_air_temperature),
-        ("getTimedActionTimeModifier", Thermoregulator::timed_action_time_modifier),
+        (
+            "getExternalAirTemperature",
+            Thermoregulator::external_air_temperature,
+        ),
+        (
+            "getTimedActionTimeModifier",
+            Thermoregulator::timed_action_time_modifier,
+        ),
         ("getThermalDamage", Thermoregulator::thermal_damage),
         ("getDbg_totalHeatRaw", Thermoregulator::dbg_total_heat_raw),
         ("getDbg_totalHeat", Thermoregulator::dbg_total_heat),
         ("getCoreCelcius", Thermoregulator::core_celcius),
         ("getDbg_primTotal", Thermoregulator::dbg_prim_total),
         ("getDbg_secTotal", Thermoregulator::dbg_sec_total),
-        ("getSimulationMultiplier", |_| Thermoregulator::simulation_multiplier()),
+        ("getSimulationMultiplier", |_| {
+            Thermoregulator::simulation_multiplier()
+        }),
     ];
     for (name, f) in floats {
         b.method(name, move |c| {
@@ -440,8 +492,14 @@ fn register_thermoregulator(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: 
     let s = sm.clone();
     let levels = move |chr: &LuaGameCharacterRef| -> LuaResult<(i32, i32)> {
         let chr = chr.borrow();
-        let hypo = chr.moodles.moodle_level_of(&s, "HYPOTHERMIA").map_err(java_error)?;
-        let hyper = chr.moodles.moodle_level_of(&s, "HYPERTHERMIA").map_err(java_error)?;
+        let hypo = chr
+            .moodles
+            .moodle_level_of(&s, "HYPOTHERMIA")
+            .map_err(java_error)?;
+        let hyper = chr
+            .moodles
+            .moodle_level_of(&s, "HYPERTHERMIA")
+            .map_err(java_error)?;
         Ok((hypo, hyper))
     };
     let lv = levels.clone();
@@ -463,14 +521,15 @@ fn register_thermoregulator(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: 
     let ch = chars.clone();
     b.method("getEnergy", move |c| {
         let chr = thermo_chr(c)?;
-        let v = Thermoregulator::energy(&chr.borrow().stats, &ch.borrow().sim.character_stats).map_err(java_error)?;
+        let v = Thermoregulator::energy(&chr.borrow().stats, &ch.borrow().sim.character_stats)
+            .map_err(java_error)?;
         Ok(c.push(float_value(v)))
     });
     let ch = chars.clone();
     b.method("getBodyFluids", move |c| {
         let chr = thermo_chr(c)?;
-        let v =
-            Thermoregulator::body_fluids(&chr.borrow().stats, &ch.borrow().sim.character_stats).map_err(java_error)?;
+        let v = Thermoregulator::body_fluids(&chr.borrow().stats, &ch.borrow().sim.character_stats)
+            .map_err(java_error)?;
         Ok(c.push(float_value(v)))
     });
     let s = sm.clone();
@@ -478,7 +537,13 @@ fn register_thermoregulator(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: 
         let target = match c.arg(1) {
             Value::Object(_) => {
                 let (_, name) = enum_arg(c, 1, METABOLICS_CLASS)?.ok_or_else(npe)?;
-                s.builtin_tables.borrow().metabolics.iter().find(|(n, _)| n == name).map(|(_, m)| *m).ok_or_else(npe)?
+                s.builtin_tables
+                    .borrow()
+                    .metabolics
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, m)| *m)
+                    .ok_or_else(npe)?
             }
             Value::Nil => return Err(npe()),
             _ => float_arg(c, 1),
@@ -495,7 +560,9 @@ fn register_thermoregulator(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: 
         let chr = thermo_chr(c)?;
         let v = character_value(&chr);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().thermoregulator_update(&s, &chars, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().thermoregulator_update(&s, &chars, ctx)
+        })?;
         Ok(0)
     });
     b.method("getNodeSize", |c| {
@@ -506,10 +573,13 @@ fn register_thermoregulator(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: 
         let chr = thermo_chr(c)?;
         let i = int_arg(c, 1);
         let n = with_thermo(c, |t| t.node_size())?;
-        let i = usize::try_from(i).ok().filter(|i| *i < n).ok_or_else(|| LuaError::Runtime {
-            message: format!("Index {i} out of bounds for length {n}"),
-            class: "java.lang.ArrayIndexOutOfBoundsException",
-        })?;
+        let i = usize::try_from(i)
+            .ok()
+            .filter(|i| *i < n)
+            .ok_or_else(|| LuaError::Runtime {
+                message: format!("Index {i} out of bounds for length {n}"),
+                class: "java.lang.ArrayIndexOutOfBoundsException",
+            })?;
         Ok(c.push(thermal_node_value(&chr, i)))
     });
     b.method("getNodeForType", |c| {
@@ -521,10 +591,17 @@ fn register_thermoregulator(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: 
     b.method("getNodeForBloodType", |c| {
         let chr = thermo_chr(c)?;
         let i = match c.arg(1) {
-            Value::Object(o) => o.as_any().downcast_ref::<JavaEnum>().map(|e| e.ordinal as usize),
+            Value::Object(o) => o
+                .as_any()
+                .downcast_ref::<JavaEnum>()
+                .map(|e| e.ordinal as usize),
             _ => None,
         };
-        let i = i.and_then(|o| with_thermo(c, |t| t.node_index_for_blood_type(o)).ok().flatten());
+        let i = i.and_then(|o| {
+            with_thermo(c, |t| t.node_index_for_blood_type(o))
+                .ok()
+                .flatten()
+        });
         Ok(c.push(i.map_or(Value::Nil, |i| thermal_node_value(&chr, i))))
     });
     register_thermal_node(thread, sm);
@@ -585,8 +662,18 @@ fn register_thermal_node(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     b.method("getName", move |c| {
         let i = with_node(c, |n| n.body_part_index())?;
         // `BodyPartType.getDisplayName`: `Translator.getText(displayNameKey)`.
-        let key = s.builtin_tables.borrow().body_parts.get(i).and_then(|p| p.display_name_key.clone());
-        Ok(c.push(key.as_deref().map(Characters::translate).map(Value::from).unwrap_or_default()))
+        let key = s
+            .builtin_tables
+            .borrow()
+            .body_parts
+            .get(i)
+            .and_then(|p| p.display_name_key.clone());
+        Ok(c.push(
+            key.as_deref()
+                .map(Characters::translate)
+                .map(Value::from)
+                .unwrap_or_default(),
+        ))
     });
 }
 
@@ -594,7 +681,10 @@ fn fitness_chr(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
     with_this::<FitnessObject, _>(c, |o| o.0.clone())
 }
 
-fn with_fitness<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut pz_characters::character::Fitness) -> R) -> LuaResult<R> {
+fn with_fitness<R>(
+    c: &NativeCall<'_>,
+    f: impl FnOnce(&mut pz_characters::character::Fitness) -> R,
+) -> LuaResult<R> {
     let chr = fitness_chr(c)?;
     let mut chr = chr.borrow_mut();
     Ok(f(chr.fitness.as_mut().ok_or_else(npe)?))
@@ -622,7 +712,11 @@ fn fitness_exercise(v: &Value) -> LuaResult<FitnessExercise> {
     let ty = str_of(get("type"))?;
     let metabolics = match get("metabolics") {
         Value::Nil => None,
-        Value::Object(o) => match o.as_any().downcast_ref::<JavaEnum>().filter(|e| e.class == METABOLICS_CLASS) {
+        Value::Object(o) => match o
+            .as_any()
+            .downcast_ref::<JavaEnum>()
+            .filter(|e| e.class == METABOLICS_CLASS)
+        {
             Some(e) => Some(e.name.to_string()),
             None => return Err(class_cast(&Value::Object(o), METABOLICS_CLASS)),
         },
@@ -642,7 +736,14 @@ fn register_fitness(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
     let s = sm.clone();
     b.method("init", move |c| {
         let chr = fitness_chr(c)?;
-        if !chr.borrow().fitness.as_ref().ok_or_else(npe)?.exercises().is_empty() {
+        if !chr
+            .borrow()
+            .fitness
+            .as_ref()
+            .ok_or_else(npe)?
+            .exercises()
+            .is_empty()
+        {
             return Ok(0);
         }
         let globals = c.thread.globals().clone();
@@ -672,14 +773,18 @@ fn register_fitness(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
             }
         }
         let v = character_value(&chr);
-        with_ctx(c, &v, |ctx| chr.borrow_mut().fitness_init(&s, Some(entries), ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().fitness_init(&s, Some(entries), ctx)
+        })?;
         Ok(0)
     });
     let s = sm.clone();
     b.method("initRegularityMapProfession", move |c| {
         let chr = fitness_chr(c)?;
         let v = character_value(&chr);
-        with_ctx(c, &v, |ctx| chr.borrow_mut().init_regularity_map_profession(&s, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().init_regularity_map_profession(&s, ctx)
+        })?;
         Ok(0)
     });
     b.method("setCurrentExercise", |c| {
@@ -689,14 +794,18 @@ fn register_fitness(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
     });
     b.method("getCurrentExe", |c| {
         let e = with_fitness(c, |f| f.current_exe().cloned())?;
-        Ok(c.push(e.map_or(Value::Nil, |e| Value::Object(Rc::new(FitnessExerciseObject(e))))))
+        Ok(c.push(e.map_or(Value::Nil, |e| {
+            Value::Object(Rc::new(FitnessExerciseObject(e)))
+        })))
     });
     let (s, ch) = (sm.clone(), chars.clone());
     b.method("exerciseRepeat", move |c| {
         let chr = fitness_chr(c)?;
         let v = character_value(&chr);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().fitness_exercise_repeat(&s, &chars, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().fitness_exercise_repeat(&s, &chars, ctx)
+        })?;
         Ok(0)
     });
     let (s, ch) = (sm.clone(), chars.clone());
@@ -704,7 +813,9 @@ fn register_fitness(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
         let chr = fitness_chr(c)?;
         let v = character_value(&chr);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().fitness_reduce_endurance(&s, &chars, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().fitness_reduce_endurance(&s, &chars, ctx)
+        })?;
         Ok(0)
     });
     let (s, ch) = (sm.clone(), chars.clone());
@@ -712,7 +823,9 @@ fn register_fitness(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
         let chr = fitness_chr(c)?;
         let v = character_value(&chr);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().fitness_inc_stats(&s, &chars, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().fitness_inc_stats(&s, &chars, ctx)
+        })?;
         Ok(0)
     });
     b.method("incRegularity", |c| {
@@ -723,8 +836,15 @@ fn register_fitness(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
     b.method("incFutureStiffness", move |c| {
         let chr = fitness_chr(c)?;
         let mut chr = chr.borrow_mut();
-        let tired = chr.moodles.moodle_level_of(&s, "TIRED").map_err(java_error)?;
-        chr.fitness.as_mut().ok_or_else(npe)?.inc_future_stiffness(tired).map_err(java_error)?;
+        let tired = chr
+            .moodles
+            .moodle_level_of(&s, "TIRED")
+            .map_err(java_error)?;
+        chr.fitness
+            .as_mut()
+            .ok_or_else(npe)?
+            .inc_future_stiffness(tired)
+            .map_err(java_error)?;
         Ok(0)
     });
     let s = sm.clone();
@@ -778,12 +898,19 @@ mod tests {
     use crate::bind_character_sim::LuaGameCharacter;
     use pz_characters::{CharacterKind, SurvivorDesc};
     use pz_kahlua::TableRef;
-    use pz_scripts::registry::builtin::{BodyPartDecl, BuiltinTables, CharacterStatDecl, PerkDecl, PerkInit};
+    use pz_scripts::registry::builtin::{
+        BodyPartDecl, BuiltinTables, CharacterStatDecl, PerkDecl, PerkInit,
+    };
 
     fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map(|_| ())
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
     }
 
     /// Invented ids, stats, body parts, metabolics and perks.
@@ -814,19 +941,49 @@ mod tests {
             {
                 keys.push(("character_trait", *f, format!("t:w{i}")));
             }
-            for (i, f) in ["TIRED", "HEAVY_LOAD", "HYPOTHERMIA", "HYPERTHERMIA", "ENDURANCE"].iter().enumerate() {
+            for (i, f) in [
+                "TIRED",
+                "HEAVY_LOAD",
+                "HYPOTHERMIA",
+                "HYPERTHERMIA",
+                "ENDURANCE",
+            ]
+            .iter()
+            .enumerate()
+            {
                 keys.push(("moodle_type", *f, format!("t:m{i}")));
             }
-            for (i, f) in ["UNEMPLOYED", "FIRE_OFFICER", "FITNESS_INSTRUCTOR", "SECURITY_GUARD"].iter().enumerate() {
+            for (i, f) in [
+                "UNEMPLOYED",
+                "FIRE_OFFICER",
+                "FITNESS_INSTRUCTOR",
+                "SECURITY_GUARD",
+            ]
+            .iter()
+            .enumerate()
+            {
                 keys.push(("character_profession", *f, format!("t:p{i}")));
             }
             for (reg, field, id) in keys {
-                sm.registries.get(reg).unwrap().borrow_mut().register_id(&id, false).unwrap();
+                sm.registries
+                    .get(reg)
+                    .unwrap()
+                    .borrow_mut()
+                    .register_id(&id, false)
+                    .unwrap();
                 st.constants.insert(reg, field, &id);
             }
         }
         let mut tables = BuiltinTables::default();
-        for f in ["ENDURANCE", "FITNESS", "HUNGER", "FATIGUE", "THIRST", "SICKNESS", "TEMPERATURE"] {
+        for f in [
+            "ENDURANCE",
+            "FITNESS",
+            "HUNGER",
+            "FATIGUE",
+            "THIRST",
+            "SICKNESS",
+            "TEMPERATURE",
+        ] {
             let (min, max, def) = match f {
                 "ENDURANCE" => (0.0, 1.0, 1.0),
                 "FITNESS" => (-1.0, 1.0, 0.0),
@@ -850,17 +1007,29 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        tables.metabolics =
-            [("Default", 1.5), ("DefaultExercise", 2.5), ("Fitness", 4.5), ("FitnessHeavy", 6.0), ("MAX", 9.5)]
-                .iter()
-                .map(|(n, m)| (n.to_string(), *m))
-                .collect();
+        tables.metabolics = [
+            ("Default", 1.5),
+            ("DefaultExercise", 2.5),
+            ("Fitness", 4.5),
+            ("FitnessHeavy", 6.0),
+            ("MAX", 9.5),
+        ]
+        .iter()
+        .map(|(n, m)| (n.to_string(), *m))
+        .collect();
         tables.level_up_levels = vec![5, 10];
-        let decl = |f: &str| PerkDecl { field: f.into(), id: f.into(), parent: None };
+        let decl = |f: &str| PerkDecl {
+            field: f.into(),
+            id: f.into(),
+            parent: None,
+        };
         tables.perks = ["None", "Fitness", "Strength", "MAX"].map(decl).to_vec();
         tables.perk_ids = tables.perks.iter().map(|p| p.id.clone()).collect();
         let xp = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-        tables.perk_init = vec![PerkInit::SetParent { perk: "None".into(), parent: "None".into() }];
+        tables.perk_init = vec![PerkInit::SetParent {
+            perk: "None".into(),
+            parent: "None".into(),
+        }];
         for p in ["Fitness", "Strength"] {
             tables.perk_init.push(PerkInit::AddPerk {
                 perk: p.into(),
@@ -871,17 +1040,22 @@ mod tests {
             });
         }
         *sm.builtin_tables.borrow_mut() = tables.clone();
-        let mut chars =
-            Characters { perks: pz_characters::PerkFactory::from_tables(&tables).unwrap(), ..Default::default() };
+        let mut chars = Characters {
+            perks: pz_characters::PerkFactory::from_tables(&tables).unwrap(),
+            ..Default::default()
+        };
         chars.perks.init(&tables, &|k| k.to_string()).unwrap();
         chars.sim = pz_characters::SimStatics::from_tables(&tables).unwrap();
-        let desc = SurvivorDesc::<crate::bind_characters::LuaItem>::new_unregistered(&mut chars, &sm).unwrap();
+        let desc =
+            SurvivorDesc::<crate::bind_characters::LuaItem>::new_unregistered(&mut chars, &sm)
+                .unwrap();
         let chars = Rc::new(RefCell::new(chars));
         crate::bind_registry::register(&mut t, sm.clone());
         crate::bind_body_damage::register(&mut t, &sm);
         crate::bind_character_sim::register(&mut t, sm.clone(), chars.clone());
         register(&mut t, sm.clone(), chars);
-        let mut chr: LuaGameCharacter = pz_characters::GameCharacter::new(&sm, CharacterKind::Player);
+        let mut chr: LuaGameCharacter =
+            pz_characters::GameCharacter::new(&sm, CharacterKind::Player);
         chr.in_players = true;
         chr.player_instance = true;
         chr.descriptor = Some(Rc::new(RefCell::new(desc)));
@@ -937,7 +1111,14 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(chr.borrow().body_damage.thermoregulator().unwrap().metabolic_target(), 9.5);
+        assert_eq!(
+            chr.borrow()
+                .body_damage
+                .thermoregulator()
+                .unwrap()
+                .metabolic_target(),
+            9.5
+        );
     }
 
     #[test]
@@ -969,7 +1150,10 @@ mod tests {
         let c = chr.borrow();
         let fit = c.fitness.as_ref().unwrap();
         assert_eq!(fit.exercises().get("hop").unwrap().xp_modifier, 2.0);
-        assert_eq!(fit.exercises().get("hop").unwrap().metabolics.as_deref(), Some("FitnessHeavy"));
+        assert_eq!(
+            fit.exercises().get("hop").unwrap().metabolics.as_deref(),
+            Some("FitnessHeavy")
+        );
     }
 
     #[test]

@@ -29,14 +29,18 @@ mod vehicles;
 use crate::bind_java_util::{list_value, JavaList};
 use crate::bind_registry::{java_error, key_arg, key_value};
 use crate::expose::{
-    bool_arg, enum_value, expose_class, expose_enum, global, int_arg, num_arg, str_arg, this, ClassBuilder, JavaEnum,
+    bool_arg, enum_value, expose_class, expose_enum, global, int_arg, num_arg, str_arg, this,
+    ClassBuilder, JavaEnum,
 };
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_scripts::objects::entity::components::crafting::{CraftRecipe, CraftRecipeComponentScript};
 use pz_scripts::objects::entity::{ComponentScript, ComponentType, GameEntityScript};
 use pz_scripts::objects::items::Item;
-use pz_scripts::{BaseScriptObject, ScriptLoadMode, ScriptManager, ScriptModule, ScriptObject, ScriptRef, ScriptType};
+use pz_scripts::{
+    BaseScriptObject, ScriptLoadMode, ScriptManager, ScriptModule, ScriptObject, ScriptRef,
+    ScriptType,
+};
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -55,38 +59,122 @@ pub const CRAFT_RECIPE_CLASS: &str = "zombie.scripting.entity.components.craftin
 const SCRIPT_CLASSES: &[(&str, &str)] = &[
     (GAME_ENTITY_SCRIPT_CLASS, BASE_SCRIPT_OBJECT_CLASS),
     (ITEM_CLASS, GAME_ENTITY_SCRIPT_CLASS),
-    ("zombie.scripting.entity.GameEntityTemplate", BASE_SCRIPT_OBJECT_CLASS),
+    (
+        "zombie.scripting.entity.GameEntityTemplate",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
     (CRAFT_RECIPE_CLASS, BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.itemConfig.ItemConfig", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.core.skinnedmodel.runtime.RuntimeAnimationScript", BASE_SCRIPT_OBJECT_CLASS),
+    (
+        "zombie.scripting.itemConfig.ItemConfig",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.core.skinnedmodel.runtime.RuntimeAnimationScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
     ("zombie.iso.SpriteModel", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.AnimationsMesh", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.CharacterProfessionDefinitionScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.CharacterTraitDefinitionScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.ClockScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.EnergyDefinitionScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.EvolvedRecipe", BASE_SCRIPT_OBJECT_CLASS),
+    (
+        "zombie.scripting.objects.AnimationsMesh",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.CharacterProfessionDefinitionScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.CharacterTraitDefinitionScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.ClockScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.EnergyDefinitionScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.EvolvedRecipe",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
     ("zombie.scripting.objects.Fixing", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.FluidDefinitionScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.FluidFilterScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.GameSoundScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.ItemFilterScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.MannequinScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.ModelScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.PhysicsHitReactionScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.PhysicsShapeScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.RagdollScript", BASE_SCRIPT_OBJECT_CLASS),
+    (
+        "zombie.scripting.objects.FluidDefinitionScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.FluidFilterScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.GameSoundScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.ItemFilterScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.MannequinScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.ModelScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.PhysicsHitReactionScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.PhysicsShapeScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.RagdollScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
     ("zombie.scripting.objects.Recipe", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.SoundTimelineScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.StringListScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.TimedActionScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.UniqueRecipe", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.VehicleScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.VehicleTemplate", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.XuiColorsScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.XuiConfigScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.XuiLayoutScript", BASE_SCRIPT_OBJECT_CLASS),
-    ("zombie.scripting.objects.XuiSkinScript", BASE_SCRIPT_OBJECT_CLASS),
+    (
+        "zombie.scripting.objects.SoundTimelineScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.StringListScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.TimedActionScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.UniqueRecipe",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.VehicleScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.VehicleTemplate",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.XuiColorsScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.XuiConfigScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.XuiLayoutScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
+    (
+        "zombie.scripting.objects.XuiSkinScript",
+        BASE_SCRIPT_OBJECT_CLASS,
+    ),
     ("zombie.vehicles.VehicleEngineRPM", BASE_SCRIPT_OBJECT_CLASS),
 ];
 
@@ -165,7 +253,10 @@ pub fn cast_mut<T: 'static>(a: &mut dyn Any) -> Option<&mut T> {
         return a.downcast_mut::<T>();
     }
     if a.is::<Box<dyn ComponentScript>>() {
-        return a.downcast_mut::<Box<dyn ComponentScript>>()?.as_any_mut().downcast_mut::<T>();
+        return a
+            .downcast_mut::<Box<dyn ComponentScript>>()?
+            .as_any_mut()
+            .downcast_mut::<T>();
     }
     if a.is::<Item>() {
         return (&mut a.downcast_mut::<Item>()?.entity as &mut dyn Any).downcast_mut::<T>();
@@ -178,7 +269,10 @@ fn busy() -> LuaError {
 }
 
 fn gone() -> LuaError {
-    LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" }
+    LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.NullPointerException",
+    }
 }
 
 fn wrong_type<T>(class: &str) -> LuaError {
@@ -192,7 +286,12 @@ pub fn npe() -> LuaError {
 
 impl ScriptHandle {
     fn new(root: ScriptRef, class: &'static str) -> Self {
-        ScriptHandle { root, class, path: None, parent: None }
+        ScriptHandle {
+            root,
+            class,
+            path: None,
+            parent: None,
+        }
     }
 
     pub fn is_root(&self) -> bool {
@@ -209,7 +308,13 @@ impl ScriptHandle {
     }
 
     fn key(&self) -> (usize, String) {
-        (self.root.as_ptr() as usize, self.path.as_ref().map(|p| p.key.clone()).unwrap_or_default())
+        (
+            self.root.as_ptr() as usize,
+            self.path
+                .as_ref()
+                .map(|p| p.key.clone())
+                .unwrap_or_default(),
+        )
     }
 
     fn read_any<R>(&self, f: impl FnOnce(&dyn Any) -> R) -> LuaResult<R> {
@@ -227,19 +332,28 @@ impl ScriptHandle {
         let any: &mut dyn Any = &mut *root;
         let target = match &self.path {
             None => any,
-            Some(Path { get_mut: Some(g), .. }) => g(any).ok_or_else(gone)?,
-            Some(_) => return Err(LuaError::runtime(format!("{} is read-only here", self.class))),
+            Some(Path {
+                get_mut: Some(g), ..
+            }) => g(any).ok_or_else(gone)?,
+            Some(_) => {
+                return Err(LuaError::runtime(format!(
+                    "{} is read-only here",
+                    self.class
+                )))
+            }
         };
         Ok(f(target))
     }
 
     /// Run `f` on the object as a `T`.
     pub fn read<T: 'static, R>(&self, f: impl FnOnce(&T) -> R) -> LuaResult<R> {
-        self.read_any(|a| cast::<T>(a).map(f))?.ok_or_else(|| wrong_type::<T>(self.class))
+        self.read_any(|a| cast::<T>(a).map(f))?
+            .ok_or_else(|| wrong_type::<T>(self.class))
     }
 
     pub fn write<T: 'static, R>(&self, f: impl FnOnce(&mut T) -> R) -> LuaResult<R> {
-        self.write_any(|a| cast_mut::<T>(a).map(f))?.ok_or_else(|| wrong_type::<T>(self.class))
+        self.write_any(|a| cast_mut::<T>(a).map(f))?
+            .ok_or_else(|| wrong_type::<T>(self.class))
     }
 
     /// Run `f` on the script the handle is (a root script or an embedded
@@ -272,7 +386,8 @@ impl ScriptHandle {
             if let Some(r) = cast::<CraftRecipe>(a) {
                 Some(f(r.base()))
             } else {
-                a.downcast_ref::<Box<dyn ComponentScript>>().map(|c| f(&c.component().base))
+                a.downcast_ref::<Box<dyn ComponentScript>>()
+                    .map(|c| f(&c.component().base))
             }
         })?
         .ok_or_else(|| wrong_type::<BaseScriptObject>(self.class))
@@ -285,7 +400,9 @@ impl ScriptHandle {
         }
         self.write_any(|a| {
             if a.is::<Box<dyn ComponentScript>>() {
-                return a.downcast_mut::<Box<dyn ComponentScript>>().map(|c| f(&mut c.component_mut().base));
+                return a
+                    .downcast_mut::<Box<dyn ComponentScript>>()
+                    .map(|c| f(&mut c.component_mut().base));
             }
             cast_mut::<CraftRecipe>(a).map(|r| f(r.base_mut()))
         })?
@@ -298,7 +415,10 @@ impl ScriptHandle {
             Some(p) => format!("{}/{key}", p.key),
             None => key.to_string(),
         };
-        let (pg, pgm) = (parent.as_ref().map(|p| p.get.clone()), parent.as_ref().map(|p| p.get_mut.clone()));
+        let (pg, pgm) = (
+            parent.as_ref().map(|p| p.get.clone()),
+            parent.as_ref().map(|p| p.get_mut.clone()),
+        );
         let full_get: Get = Rc::new(move |a: &dyn Any| {
             let p = match &pg {
                 Some(g) => g(a)?,
@@ -314,7 +434,11 @@ impl ScriptHandle {
         let h = ScriptHandle {
             root: self.root.clone(),
             class,
-            path: Some(Path { key, get: full_get, get_mut: full_get_mut }),
+            path: Some(Path {
+                key,
+                get: full_get,
+                get_mut: full_get_mut,
+            }),
             parent: Some(Rc::new(self.clone())),
         };
         canonical(h)
@@ -340,14 +464,20 @@ impl ScriptHandle {
         fm: impl Fn(&mut P) -> Option<&mut C> + 'static,
     ) -> Value {
         let get: Get = Rc::new(move |a: &dyn Any| f(cast::<P>(a)?).map(|c| c as &dyn Any));
-        let get_mut: GetMut = Rc::new(move |a: &mut dyn Any| fm(cast_mut::<P>(a)?).map(|c| c as &mut dyn Any));
+        let get_mut: GetMut =
+            Rc::new(move |a: &mut dyn Any| fm(cast_mut::<P>(a)?).map(|c| c as &mut dyn Any));
         self.sub(key, get, Some(get_mut), class)
     }
 }
 
 pub(crate) fn canonical(h: ScriptHandle) -> Value {
     let key = h.key();
-    HANDLES.with(|m| m.borrow_mut().entry(key).or_insert_with(|| Value::Object(Rc::new(h))).clone())
+    HANDLES.with(|m| {
+        m.borrow_mut()
+            .entry(key)
+            .or_insert_with(|| Value::Object(Rc::new(h)))
+            .clone()
+    })
 }
 
 /// The Lua class of a script object.
@@ -398,7 +528,10 @@ pub fn handle_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<ScriptHandle
         Value::Nil => Ok(None),
         Value::Object(o) => match o.as_any().downcast_ref::<ScriptHandle>() {
             Some(h) => Ok(Some(h.clone())),
-            None => Err(LuaError::runtime(format!("Expected a script object but got {}", o.class_name()))),
+            None => Err(LuaError::runtime(format!(
+                "Expected a script object but got {}",
+                o.class_name()
+            ))),
         },
         other => Err(LuaError::runtime(format!(
             "Expected a script object but got {}",
@@ -505,7 +638,10 @@ pub fn list_arg(c: &NativeCall<'_>, i: usize) -> Vec<Value> {
                 Vec::new()
             }
         }
-        Value::Table(t) => (1..).map(|i| t.get_int(i)).take_while(|v| !v.is_nil()).collect(),
+        Value::Table(t) => (1..)
+            .map(|i| t.get_int(i))
+            .take_while(|v| !v.is_nil())
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -530,7 +666,11 @@ pub fn set<T: 'static, A: FromLua>(b: &ClassBuilder, name: &str, f: impl Fn(&mut
 }
 
 /// A getter returning an object made from the handle.
-pub fn get_obj<T: 'static>(b: &ClassBuilder, name: &str, f: impl Fn(&ScriptHandle, &T) -> Value + 'static) {
+pub fn get_obj<T: 'static>(
+    b: &ClassBuilder,
+    name: &str,
+    f: impl Fn(&ScriptHandle, &T) -> Value + 'static,
+) {
     b.method(name, move |c| {
         let h = this_handle(c)?;
         let v = h.read::<T, _>(|t| f(&h, t))?;
@@ -552,7 +692,11 @@ pub fn method(
 }
 
 /// A void method with arguments.
-pub fn void(b: &ClassBuilder, name: &str, f: impl Fn(&mut NativeCall<'_>, &ScriptHandle) -> LuaResult<()> + 'static) {
+pub fn void(
+    b: &ClassBuilder,
+    name: &str,
+    f: impl Fn(&mut NativeCall<'_>, &ScriptHandle) -> LuaResult<()> + 'static,
+) {
     b.method(name, move |c| {
         let h = this_handle(c)?;
         f(c, &h)?;
@@ -612,7 +756,10 @@ pub fn module_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<Rc<ScriptMod
         Value::Nil => Ok(None),
         Value::Object(o) => match o.as_any().downcast_ref::<ModuleObject>() {
             Some(m) => Ok(Some(m.0.clone())),
-            None => Err(LuaError::runtime(format!("Expected ScriptModule but got {}", o.class_name()))),
+            None => Err(LuaError::runtime(format!(
+                "Expected ScriptModule but got {}",
+                o.class_name()
+            ))),
         },
         other => Err(LuaError::runtime(format!(
             "Expected ScriptModule but got {}",
@@ -662,9 +809,18 @@ const MODULE_GETTERS: &[(&str, ScriptType)] = &[
     ("getFluidDefinitionScript", ScriptType::FluidDefinition),
     ("getTimedActionScript", ScriptType::TimedAction),
     ("getRagdollScript", ScriptType::Ragdoll),
-    ("getCharacterTraitScript", ScriptType::CharacterTraitDefinition),
-    ("getCharacterProfessionScript", ScriptType::CharacterProfessionDefinition),
-    ("getPhysicsHitReactionScript", ScriptType::PhysicsHitReaction),
+    (
+        "getCharacterTraitScript",
+        ScriptType::CharacterTraitDefinition,
+    ),
+    (
+        "getCharacterProfessionScript",
+        ScriptType::CharacterProfessionDefinition,
+    ),
+    (
+        "getPhysicsHitReactionScript",
+        ScriptType::PhysicsHitReaction,
+    ),
 ];
 
 fn register_module(thread: &mut Thread, sm: &Rc<ScriptManager>) {
@@ -693,14 +849,16 @@ fn register_module(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     b.method("Load", move |c| {
         let m = this_module(c)?;
         let mode = load_mode_arg(c, 1);
-        m.load(&s, mode, &req_str(c, 2)?, &req_str(c, 3)?).map_err(java_error)?;
+        m.load(&s, mode, &req_str(c, 2)?, &req_str(c, 3)?)
+            .map_err(java_error)?;
         Ok(0)
     });
     let s = sm.clone();
     b.method("ParseScriptPP", move |c| {
         let m = this_module(c)?;
         let mode = load_mode_arg(c, 1);
-        m.parse_script_pp(&s, mode, &req_str(c, 2)?).map_err(java_error)?;
+        m.parse_script_pp(&s, mode, &req_str(c, 2)?)
+            .map_err(java_error)?;
         Ok(0)
     });
     b.method("equals", |c| {
@@ -715,7 +873,10 @@ fn register_script_type(thread: &mut Thread) {
     let names: Vec<&'static str> = ScriptType::ALL.iter().map(|t| t.name()).collect();
     let b = expose_enum(thread, SCRIPT_TYPE_CLASS, &names);
     b.static_fn("GetEnumListLua", |c| {
-        let list: Vec<Value> = ScriptType::enum_list_lua().into_iter().map(script_type_value).collect();
+        let list: Vec<Value> = ScriptType::enum_list_lua()
+            .into_iter()
+            .map(script_type_value)
+            .collect();
         Ok(c.push(list_value(list)))
     });
     fn this_type(c: &NativeCall<'_>) -> LuaResult<ScriptType> {
@@ -745,18 +906,44 @@ fn register_script_type(thread: &mut Thread) {
 
 fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let b = expose_class(thread, BASE_SCRIPT_OBJECT_CLASS, None);
-    method(&b, "getObsolete", |_, h| h.script(|s| s.get_obsolete().into_lua()));
+    method(&b, "getObsolete", |_, h| {
+        h.script(|s| s.get_obsolete().into_lua())
+    });
     method(&b, "isEnabled", |_, h| h.base(|b| b.enabled.into_lua()));
-    method(&b, "isDebugOnly", |_, h| h.base(|b| b.debug_only.into_lua()));
-    method(&b, "getScriptVersion", |_, h| h.base(|b| b.script_version().into_lua()));
-    method(&b, "getScriptObjectName", |_, h| h.base(|b| b.script_object_name().into_lua()));
-    method(&b, "getScriptObjectType", |_, h| h.base(|b| script_type_value(b.script_object_type())));
-    method(&b, "getScriptObjectFullType", |_, h| h.base(|b| b.full_type().map_err(java_error))?.map(IntoLua::into_lua));
-    method(&b, "getModule", |_, h| h.base(|b| module_value(b.module().as_ref())));
-    method(&b, "debugString", |_, h| h.base(|b| b.debug_string().into_lua()));
-    method(&b, "getLoadedScriptBodyCount", |_, h| h.base(|b| b.loaded_script_body_count().into_lua()));
+    method(&b, "isDebugOnly", |_, h| {
+        h.base(|b| b.debug_only.into_lua())
+    });
+    method(&b, "getScriptVersion", |_, h| {
+        h.base(|b| b.script_version().into_lua())
+    });
+    method(&b, "getScriptObjectName", |_, h| {
+        h.base(|b| b.script_object_name().into_lua())
+    });
+    method(&b, "getScriptObjectType", |_, h| {
+        h.base(|b| script_type_value(b.script_object_type()))
+    });
+    method(&b, "getScriptObjectFullType", |_, h| {
+        h.base(|b| b.full_type().map_err(java_error))?
+            .map(IntoLua::into_lua)
+    });
+    method(&b, "getModule", |_, h| {
+        h.base(|b| module_value(b.module().as_ref()))
+    });
+    method(&b, "debugString", |_, h| {
+        h.base(|b| b.debug_string().into_lua())
+    });
+    method(&b, "getLoadedScriptBodyCount", |_, h| {
+        h.base(|b| b.loaded_script_body_count().into_lua())
+    });
     method(&b, "getLoadedScriptBodies", |_, h| {
-        h.base(|b| list_value(b.loaded_script_bodies().iter().map(|s| s.as_deref().into_lua()).collect()))
+        h.base(|b| {
+            list_value(
+                b.loaded_script_bodies()
+                    .iter()
+                    .map(|s| s.as_deref().into_lua())
+                    .collect(),
+            )
+        })
     });
     method(&b, "getScriptLines", |_, h| {
         h.base(|b| {
@@ -780,15 +967,24 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         lines.extend(more.into_iter().map(Value::from));
         Ok(list_value(lines))
     });
-    void(&b, "resetLoadedScriptBodies", |_, h| h.base_mut(|b| b.reset_loaded_script_bodies()));
+    void(&b, "resetLoadedScriptBodies", |_, h| {
+        h.base_mut(|b| b.reset_loaded_script_bodies())
+    });
     void(&b, "addLoadedScriptBody", |c, h| {
-        let (m, body) = (opt_str(c, 1), opt_str(c, 2).unwrap_or_else(|| "null".into()));
+        let (m, body) = (
+            opt_str(c, 1),
+            opt_str(c, 2).unwrap_or_else(|| "null".into()),
+        );
         h.base_mut(|b| b.add_loaded_script_body(m.as_deref(), &body))
     });
-    void(&b, "calculateScriptVersion", |_, h| h.base_mut(|b| b.calculate_script_version())?.map_err(java_error));
+    void(&b, "calculateScriptVersion", |_, h| {
+        h.base_mut(|b| b.calculate_script_version())?
+            .map_err(java_error)
+    });
     void(&b, "LoadCommonBlock", |c, h| {
         let body = req_str(c, 1)?;
-        h.base_mut(|b| b.load_common_block_str(&body))?.map_err(java_error)
+        h.base_mut(|b| b.load_common_block_str(&body))?
+            .map_err(java_error)
     });
     void(&b, "setModule", |c, h| {
         let m = module_arg(c, 1)?.ok_or_else(npe)?;
@@ -802,20 +998,26 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let s = sm.clone();
     void(&b, "Load", move |c, h| {
         let (name, body) = (req_str(c, 1)?, req_str(c, 2)?);
-        h.script_mut(|o| o.load(&s, &name, &body))?.map_err(java_error)
+        h.script_mut(|o| o.load(&s, &name, &body))?
+            .map_err(java_error)
     });
     void(&b, "PreReload", |_, h| h.script_mut(|o| o.pre_reload()));
     void(&b, "reset", |_, h| h.script_mut(|o| o.reset()));
     let s = sm.clone();
     void(&b, "OnScriptsLoaded", move |c, h| {
         let mode = load_mode_arg(c, 1);
-        h.script_mut(|o| o.on_scripts_loaded(&s, mode))?.map_err(java_error)
+        h.script_mut(|o| o.on_scripts_loaded(&s, mode))?
+            .map_err(java_error)
     });
     let s = sm.clone();
-    void(&b, "OnLoadedAfterLua", move |_, h| h.script_mut(|o| o.on_loaded_after_lua(&s))?.map_err(java_error));
+    void(&b, "OnLoadedAfterLua", move |_, h| {
+        h.script_mut(|o| o.on_loaded_after_lua(&s))?
+            .map_err(java_error)
+    });
     let s = sm.clone();
     void(&b, "OnPostWorldDictionaryInit", move |_, h| {
-        h.script_mut(|o| o.on_post_world_dictionary_init(&s))?.map_err(java_error)
+        h.script_mut(|o| o.on_post_world_dictionary_init(&s))?
+            .map_err(java_error)
     });
     b.method("getVersion", |c| {
         let h = this_handle(c)?;
@@ -842,41 +1044,65 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         expose_class(thread, class, Some(sup));
     }
 
-    let b = expose_class(thread, GAME_ENTITY_SCRIPT_CLASS, Some(BASE_SCRIPT_OBJECT_CLASS));
-    get(&b, "getName", |e: &GameEntityScript| e.name().map(str::to_string));
+    let b = expose_class(
+        thread,
+        GAME_ENTITY_SCRIPT_CLASS,
+        Some(BASE_SCRIPT_OBJECT_CLASS),
+    );
+    get(&b, "getName", |e: &GameEntityScript| {
+        e.name().map(str::to_string)
+    });
     get(&b, "getModuleName", |e: &GameEntityScript| e.module_name());
     method(&b, "getFullName", |_, h| {
-        h.read(|e: &GameEntityScript| e.full_name().map_err(java_error))?.map(IntoLua::into_lua)
+        h.read(|e: &GameEntityScript| e.full_name().map_err(java_error))?
+            .map(IntoLua::into_lua)
     });
-    get(&b, "getModID", |e: &GameEntityScript| e.mod_id().map(str::to_string));
-    get(&b, "getExistsAsVanilla", |e: &GameEntityScript| e.exists_as_vanilla());
-    get(&b, "getFileAbsPath", |e: &GameEntityScript| e.file_abs_path().map(str::to_string));
+    get(&b, "getModID", |e: &GameEntityScript| {
+        e.mod_id().map(str::to_string)
+    });
+    get(&b, "getExistsAsVanilla", |e: &GameEntityScript| {
+        e.exists_as_vanilla()
+    });
+    get(&b, "getFileAbsPath", |e: &GameEntityScript| {
+        e.file_abs_path().map(str::to_string)
+    });
     get(&b, "getRegistry_id", |e: &GameEntityScript| e.registry_id());
     void(&b, "setRegistry_id", |c, h| {
         let id = int_arg(c, 1) as i16;
-        h.write(|e: &mut GameEntityScript| e.set_registry_id(id))?.map_err(java_error)
+        h.write(|e: &mut GameEntityScript| e.set_registry_id(id))?
+            .map_err(java_error)
     });
     let s = sm.clone();
     void(&b, "setModID", move |c, h| {
         let id = req_str(c, 1)?;
         // `GameClient.client`: the main menu runs no client connection.
-        h.write(|e: &mut GameEntityScript| e.set_mod_id(&s, false, &id))?.map_err(java_error)
+        h.write(|e: &mut GameEntityScript| e.set_mod_id(&s, false, &id))?
+            .map_err(java_error)
     });
-    get(&b, "hasComponents", |e: &GameEntityScript| e.has_components());
-    get(&b, "getDisplayNameDebug", |e: &GameEntityScript| e.display_name_debug());
+    get(&b, "hasComponents", |e: &GameEntityScript| {
+        e.has_components()
+    });
+    get(&b, "getDisplayNameDebug", |e: &GameEntityScript| {
+        e.display_name_debug()
+    });
     method(&b, "containsComponent", |c, h| {
         let t = component_type_arg(c, 1);
         h.read(|e: &GameEntityScript| t.is_some_and(|t| e.contains_component(t)).into_lua())
     });
     method(&b, "getComponentScripts", |_, h| {
         let n = h.read(|e: &GameEntityScript| e.component_scripts().len())?;
-        let list = (0..n).map(|i| component_value(h, i)).collect::<LuaResult<Vec<_>>>()?;
+        let list = (0..n)
+            .map(|i| component_value(h, i))
+            .collect::<LuaResult<Vec<_>>>()?;
         Ok(list_value(list))
     });
     method(&b, "getComponentScriptFor", |c, h| {
         let t = component_type_arg(c, 1);
-        let i =
-            h.read(|e: &GameEntityScript| e.component_scripts().iter().position(|s| Some(s.component_type()) == t))?;
+        let i = h.read(|e: &GameEntityScript| {
+            e.component_scripts()
+                .iter()
+                .position(|s| Some(s.component_type()) == t)
+        })?;
         match i {
             Some(i) => component_value(h, i),
             None => Ok(Value::Nil),
@@ -885,7 +1111,8 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     let s = sm.clone();
     void(&b, "LoadAttribute", move |c, h| {
         let (k, v) = (req_str(c, 1)?, req_str(c, 2)?);
-        h.write(|e: &mut GameEntityScript| e.load_attribute(&s, &k, &v))?.map_err(java_error)?;
+        h.write(|e: &mut GameEntityScript| e.load_attribute(&s, &k, &v))?
+            .map_err(java_error)?;
         Ok(())
     });
     void(&b, "copyFrom", |c, h| {
@@ -893,33 +1120,60 @@ fn register_base(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         if other.root.ptr_eq(&h.root) {
             return Ok(());
         }
-        other.read(|o: &GameEntityScript| h.write(|e: &mut GameEntityScript| e.copy_from(o)))??.map_err(java_error)
+        other
+            .read(|o: &GameEntityScript| h.write(|e: &mut GameEntityScript| e.copy_from(o)))??
+            .map_err(java_error)
     });
 
-    let b = expose_class(thread, COMPONENT_SCRIPT_CLASS, Some(BASE_SCRIPT_OBJECT_CLASS));
+    let b = expose_class(
+        thread,
+        COMPONENT_SCRIPT_CLASS,
+        Some(BASE_SCRIPT_OBJECT_CLASS),
+    );
     let s = sm.clone();
     method(&b, "getName", move |_, h| {
-        h.read_any(|a| a.downcast_ref::<Box<dyn ComponentScript>>().map(|c| c.component().name(&s)))?
-            .ok_or_else(|| wrong_type::<Box<dyn ComponentScript>>(h.class))?
-            .map(IntoLua::into_lua)
-            .map_err(java_error)
+        h.read_any(|a| {
+            a.downcast_ref::<Box<dyn ComponentScript>>()
+                .map(|c| c.component().name(&s))
+        })?
+        .ok_or_else(|| wrong_type::<Box<dyn ComponentScript>>(h.class))?
+        .map(IntoLua::into_lua)
+        .map_err(java_error)
     });
     method(&b, "getComponentType", |_, h| {
         let t = h
-            .read_any(|a| a.downcast_ref::<Box<dyn ComponentScript>>().map(|c| c.component_type()))?
+            .read_any(|a| {
+                a.downcast_ref::<Box<dyn ComponentScript>>()
+                    .map(|c| c.component_type())
+            })?
             .ok_or_else(npe)?;
         Ok(enum_value(COMPONENT_TYPE_CLASS, t.name()))
     });
-    let b = expose_class(thread, CRAFT_RECIPE_COMPONENT_CLASS, Some(COMPONENT_SCRIPT_CLASS));
-    get_obj(&b, "getCraftRecipe", |h, c: &CraftRecipeComponentScript| match c.craft_recipe() {
-        Some(_) => h.child(CRAFT_RECIPE_CLASS, "craftRecipe", |c: &CraftRecipeComponentScript| c.craft_recipe()),
-        None => Value::Nil,
+    let b = expose_class(
+        thread,
+        CRAFT_RECIPE_COMPONENT_CLASS,
+        Some(COMPONENT_SCRIPT_CLASS),
+    );
+    get_obj(
+        &b,
+        "getCraftRecipe",
+        |h, c: &CraftRecipeComponentScript| match c.craft_recipe() {
+            Some(_) => h.child(
+                CRAFT_RECIPE_CLASS,
+                "craftRecipe",
+                |c: &CraftRecipeComponentScript| c.craft_recipe(),
+            ),
+            None => Value::Nil,
+        },
+    );
+    get(&b, "getBuildCategory", |c: &CraftRecipeComponentScript| {
+        c.build_category().map(str::to_string)
     });
-    get(&b, "getBuildCategory", |c: &CraftRecipeComponentScript| c.build_category().map(str::to_string));
 }
 
 pub const COMPONENT_TYPE_CLASS: &str = "zombie.entity.ComponentType";
-pub const CRAFT_RECIPE_COMPONENT_CLASS: &str = "zombie.scripting.entity.components.crafting.CraftRecipeComponentScript";
+pub const CRAFT_RECIPE_COMPONENT_CLASS: &str =
+    "zombie.scripting.entity.components.crafting.CraftRecipeComponentScript";
 
 fn component_type_arg(c: &NativeCall<'_>, i: usize) -> Option<ComponentType> {
     match c.arg(i) {
@@ -931,15 +1185,28 @@ fn component_type_arg(c: &NativeCall<'_>, i: usize) -> Option<ComponentType> {
 /// The handle on component `index` of an entity script.
 fn component_value(h: &ScriptHandle, index: usize) -> LuaResult<Value> {
     let class = h.read(|e: &GameEntityScript| e.component_scripts()[index].class_name())?;
-    let class = if class.ends_with("CraftRecipeComponentScript") { CRAFT_RECIPE_COMPONENT_CLASS } else { class };
-    Ok(h.child(class, &format!("component{index}"), move |e: &GameEntityScript| e.component_scripts().get(index)))
+    let class = if class.ends_with("CraftRecipeComponentScript") {
+        CRAFT_RECIPE_COMPONENT_CLASS
+    } else {
+        class
+    };
+    Ok(h.child(
+        class,
+        &format!("component{index}"),
+        move |e: &GameEntityScript| e.component_scripts().get(index),
+    ))
 }
 
 /// The craft recipe an entity script embeds (`CraftRecipeComponentScript`).
 fn entity_recipe(h: &ScriptHandle) -> Value {
-    h.child(CRAFT_RECIPE_CLASS, "component:CraftRecipe/craftRecipe", |e: &GameEntityScript| {
-        e.component::<CraftRecipeComponentScript>(ComponentType::CraftRecipe)?.craft_recipe()
-    })
+    h.child(
+        CRAFT_RECIPE_CLASS,
+        "component:CraftRecipe/craftRecipe",
+        |e: &GameEntityScript| {
+            e.component::<CraftRecipeComponentScript>(ComponentType::CraftRecipe)?
+                .craft_recipe()
+        },
+    )
 }
 
 // ---- ScriptManager ----
@@ -991,9 +1258,18 @@ const MANAGER_GETTERS: &[(&str, ScriptType)] = &[
     ("getFluidDefinitionScript", ScriptType::FluidDefinition),
     ("getTimedActionScript", ScriptType::TimedAction),
     ("getRagdollScript", ScriptType::Ragdoll),
-    ("getPhysicsHitReactionScript", ScriptType::PhysicsHitReaction),
-    ("getCharacterTraitScript", ScriptType::CharacterTraitDefinition),
-    ("getCharacterProfessionScript", ScriptType::CharacterProfessionDefinition),
+    (
+        "getPhysicsHitReactionScript",
+        ScriptType::PhysicsHitReaction,
+    ),
+    (
+        "getCharacterTraitScript",
+        ScriptType::CharacterTraitDefinition,
+    ),
+    (
+        "getCharacterProfessionScript",
+        ScriptType::CharacterProfessionDefinition,
+    ),
 ];
 
 /// `ScriptManager.getAllX()` (`getAllScripts` on the type's collection).
@@ -1014,7 +1290,10 @@ const MANAGER_LISTS: &[(&str, ScriptType)] = &[
     ("getAllSoundTimelines", ScriptType::SoundTimeline),
     ("getAllSpriteModels", ScriptType::SpriteModel),
     ("getAllVehicleScripts", ScriptType::Vehicle),
-    ("getAllRuntimeAnimationScripts", ScriptType::RuntimeAnimation),
+    (
+        "getAllRuntimeAnimationScripts",
+        ScriptType::RuntimeAnimation,
+    ),
     ("getAllVehicleEngineRPMs", ScriptType::VehicleEngineRPM),
     ("getAllItemConfigs", ScriptType::ItemConfig),
     ("getAllGameEntities", ScriptType::Entity),
@@ -1028,7 +1307,10 @@ const MANAGER_LISTS: &[(&str, ScriptType)] = &[
     ("getAllFluidFilters", ScriptType::FluidFilter),
     ("getAllCraftRecipes", ScriptType::CraftRecipe),
     ("getAllStringLists", ScriptType::StringList),
-    ("getAllEnergyDefinitionScripts", ScriptType::EnergyDefinition),
+    (
+        "getAllEnergyDefinitionScripts",
+        ScriptType::EnergyDefinition,
+    ),
     ("getAllFluidDefinitionScripts", ScriptType::FluidDefinition),
     ("getAllTimedActionScripts", ScriptType::TimedAction),
 ];
@@ -1038,7 +1320,9 @@ const MANAGER_LISTS: &[(&str, ScriptType)] = &[
 fn buildable_recipes(sm: &ScriptManager) -> Vec<(ScriptRef, Option<String>)> {
     let mut out = Vec::new();
     for e in sm.collection(ScriptType::Entity).get_all_scripts() {
-        let Some(entity) = e.downcast::<GameEntityScript>() else { continue };
+        let Some(entity) = e.downcast::<GameEntityScript>() else {
+            continue;
+        };
         let entity = entity.borrow();
         let recipe = entity
             .component::<CraftRecipeComponentScript>(ComponentType::CraftRecipe)
@@ -1065,7 +1349,9 @@ pub fn get_craft_recipe(sm: &ScriptManager, name: &str) -> Value {
     if let Some(r) = sm.get_script(ScriptType::CraftRecipe, name) {
         return script_value(Some(&r));
     }
-    let Some(e) = sm.get_script(ScriptType::Entity, name) else { return Value::Nil };
+    let Some(e) = sm.get_script(ScriptType::Entity, name) else {
+        return Value::Nil;
+    };
     let has = e.downcast::<GameEntityScript>().is_some_and(|g| {
         g.borrow()
             .component::<CraftRecipeComponentScript>(ComponentType::CraftRecipe)
@@ -1086,7 +1372,11 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     b.field("Base_Module", pz_scripts::manager::BASE_MODULE);
     b.field("VanillaID", pz_scripts::manager::VANILLA_ID);
     let inst = instance.clone();
-    global(thread, "getScriptManager", move |c| Ok(c.push(inst.clone())));
+    global(
+        thread,
+        "getScriptManager",
+        move |c| Ok(c.push(inst.clone())),
+    );
 
     let s = sm.clone();
     b.static_fn("EnableDebug", move |c| {
@@ -1117,9 +1407,18 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     });
     type LoadState = fn(&ScriptManager) -> Option<String>;
     let load_state: [(&str, LoadState); 3] = [
-        ("getCurrentLoadFileMod", ScriptManager::current_load_file_mod),
-        ("getCurrentLoadFileAbsPath", ScriptManager::current_load_file_abs_path),
-        ("getCurrentLoadFileName", ScriptManager::current_load_file_name),
+        (
+            "getCurrentLoadFileMod",
+            ScriptManager::current_load_file_mod,
+        ),
+        (
+            "getCurrentLoadFileAbsPath",
+            ScriptManager::current_load_file_abs_path,
+        ),
+        (
+            "getCurrentLoadFileName",
+            ScriptManager::current_load_file_name,
+        ),
     ];
     for (name, f) in load_state {
         let s = sm.clone();
@@ -1135,12 +1434,19 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     }
     for &(name, t) in MANAGER_LISTS {
         let s = sm.clone();
-        b.method(name, move |c| Ok(c.push(script_list(&s.collection(t).get_all_scripts()))));
+        b.method(name, move |c| {
+            Ok(c.push(script_list(&s.collection(t).get_all_scripts())))
+        });
     }
     let s = sm.clone();
     b.method("getAllFixing", move |c| {
         let mut list = list_arg(c, 1);
-        list.extend(s.collection(ScriptType::Fixing).get_all_scripts().iter().map(|f| script_value(Some(f))));
+        list.extend(
+            s.collection(ScriptType::Fixing)
+                .get_all_scripts()
+                .iter()
+                .map(|f| script_value(Some(f))),
+        );
         Ok(c.push(list_value(list)))
     });
     let s = sm.clone();
@@ -1158,14 +1464,21 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     });
     let s = sm.clone();
     b.method("getAllBuildableRecipes", move |c| {
-        let list: Vec<Value> = buildable_recipes(&s).iter().map(|(e, _)| entity_recipe_value(e)).collect();
+        let list: Vec<Value> = buildable_recipes(&s)
+            .iter()
+            .map(|(e, _)| entity_recipe_value(e))
+            .collect();
         Ok(c.push(list_value(list)))
     });
     let s = sm.clone();
     b.method("getBuildableRecipe", move |c| {
         let name = opt_str(c, 1);
         let found = buildable_recipes(&s).into_iter().find(|(_, n)| *n == name);
-        Ok(c.push(found.map(|(e, _)| entity_recipe_value(&e)).unwrap_or_default()))
+        Ok(c.push(
+            found
+                .map(|(e, _)| entity_recipe_value(&e))
+                .unwrap_or_default(),
+        ))
     });
     let s = sm.clone();
     b.method("addModelScript", move |c| {
@@ -1202,7 +1515,11 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     let s = sm.clone();
     b.method("getModule", move |c| {
         let name = req_str(c, 1)?;
-        let m = if c.nargs() > 2 { s.get_module_default(&name, bool_arg(c, 2)) } else { s.get_module(&name) };
+        let m = if c.nargs() > 2 {
+            s.get_module_default(&name, bool_arg(c, 2))
+        } else {
+            s.get_module(&name)
+        };
         Ok(c.push(module_value(m.as_ref())))
     });
     let s = sm.clone();
@@ -1241,7 +1558,10 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
             .collection(ScriptType::Item)
             .get_all_scripts()
             .iter()
-            .filter(|i| i.downcast::<Item>().is_some_and(|i| i.borrow().has_tag(tag.as_ref())))
+            .filter(|i| {
+                i.downcast::<Item>()
+                    .is_some_and(|i| i.borrow().has_tag(tag.as_ref()))
+            })
             .map(|i| script_value(Some(i)))
             .collect();
         Ok(c.push(list_value(items)))
@@ -1264,7 +1584,8 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     b.method("LoadFile", move |c| {
         let mode = load_mode_arg(c, 1);
         let name = req_str(c, 2)?;
-        s.load_file(mode, &name, bool_arg(c, 3)).map_err(java_error)?;
+        s.load_file(mode, &name, bool_arg(c, 3))
+            .map_err(java_error)?;
         Ok(0)
     });
     let s = sm.clone();
@@ -1281,7 +1602,10 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
             None => list_arg(c, 1)
                 .iter()
                 .filter_map(|v| match v {
-                    Value::Object(o) => ScriptType::ALL.iter().copied().find(|t| t.name() == o.to_lua_string()),
+                    Value::Object(o) => ScriptType::ALL
+                        .iter()
+                        .copied()
+                        .find(|t| t.name() == o.to_lua_string()),
                     _ => None,
                 })
                 .collect(),
@@ -1293,7 +1617,10 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     let phases: [(&str, Phase); 3] = [
         ("LoadedAfterLua", ScriptManager::loaded_after_lua),
         ("PostTileDefinitions", ScriptManager::post_tile_definitions),
-        ("PostWorldDictionaryInit", ScriptManager::post_world_dictionary_init),
+        (
+            "PostWorldDictionaryInit",
+            ScriptManager::post_world_dictionary_init,
+        ),
     ];
     for (name, f) in phases {
         let s = sm.clone();
@@ -1314,8 +1641,14 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
         let result = opt_str(c, 1);
         let mut out = Vec::new();
         for r in s.collection(ScriptType::Recipe).get_all_scripts() {
-            let Some(recipe) = r.downcast::<pz_scripts::objects::recipes::Recipe>() else { continue };
-            let t = recipe.borrow().result().and_then(|res| res.type_.clone()).ok_or_else(npe)?;
+            let Some(recipe) = r.downcast::<pz_scripts::objects::recipes::Recipe>() else {
+                continue;
+            };
+            let t = recipe
+                .borrow()
+                .result()
+                .and_then(|res| res.type_.clone())
+                .ok_or_else(npe)?;
             let t = match t.find('.') {
                 Some(i) => t[i + 1..].to_string(),
                 None => t,
@@ -1329,17 +1662,21 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
     let s = sm.clone();
     b.method("getItemTypeForClothingItem", move |c| {
         let name = opt_str(c, 1).unwrap_or_default();
-        Ok(c.push(pz_scripts::objects::items::get_item_type_for_clothing_item(&s, &name).into_lua()))
+        Ok(c.push(
+            pz_scripts::objects::items::get_item_type_for_clothing_item(&s, &name).into_lua(),
+        ))
     });
     let s = sm.clone();
     b.method("getItemForClothingItem", move |c| {
         let name = opt_str(c, 1).unwrap_or_default();
-        let item =
-            pz_scripts::objects::items::get_item_type_for_clothing_item(&s, &name).and_then(|t| s.find_item(&t, true));
+        let item = pz_scripts::objects::items::get_item_type_for_clothing_item(&s, &name)
+            .and_then(|t| s.find_item(&t, true));
         Ok(c.push(script_value(item.as_ref())))
     });
     let s = sm.clone();
-    b.method("getZedDmgMap", move |c| Ok(c.push(string_list(pz_scripts::objects::items::get_zed_dmg_map(&s)))));
+    b.method("getZedDmgMap", move |c| {
+        Ok(c.push(string_list(pz_scripts::objects::items::get_zed_dmg_map(&s))))
+    });
     let s = sm.clone();
     b.method("resolveItemType", move |c| {
         let m = module_arg(c, 1)?;
@@ -1347,7 +1684,11 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
         let r = match (m, t) {
             (_, None) => None,
             (Some(m), Some(t)) => s.resolve_item_type(&m, &t),
-            (None, Some(t)) if pz_scripts::java::is_null_or_whitespace(Some(&t)) || t.contains('.') => Some(t),
+            (None, Some(t))
+                if pz_scripts::java::is_null_or_whitespace(Some(&t)) || t.contains('.') =>
+            {
+                Some(t)
+            }
             (None, Some(_)) => return Err(npe()),
         };
         Ok(c.push(r.into_lua()))
@@ -1359,18 +1700,27 @@ fn register_manager(thread: &mut Thread, sm: &Rc<ScriptManager>) -> Value {
         let r = match (m, t) {
             (_, None) => None,
             (Some(m), Some(t)) => s.resolve_model_script(&m, &t),
-            (None, Some(t)) if pz_scripts::java::is_null_or_whitespace(Some(&t)) || t.contains('.') => Some(t),
+            (None, Some(t))
+                if pz_scripts::java::is_null_or_whitespace(Some(&t)) || t.contains('.') =>
+            {
+                Some(t)
+            }
             (None, Some(_)) => return Err(npe()),
         };
         Ok(c.push(r.into_lua()))
     });
-    for (name, t) in [("getSpecificItem", ScriptType::Item), ("getSpecificEntity", ScriptType::Entity)] {
+    for (name, t) in [
+        ("getSpecificItem", ScriptType::Item),
+        ("getSpecificEntity", ScriptType::Entity),
+    ] {
         let s = sm.clone();
         b.method(name, move |c| {
             let n = req_str(c, 1)?;
             if s.debug && !n.contains('.') {
                 return Err(LuaError::Runtime {
-                    message: format!("ScriptManager.{name} requires a full type name, cannot find: {n}"),
+                    message: format!(
+                        "ScriptManager.{name} requires a full type name, cannot find: {n}"
+                    ),
                     class: "java.lang.RuntimeException",
                 });
             }
@@ -1405,19 +1755,35 @@ mod tests {
     use pz_kahlua::TableRef;
 
     fn load(tag: &str, files: &[(&str, &str)]) -> Rc<ScriptManager> {
-        let dir = std::env::temp_dir().join(format!("pz-bind-scripts-{}-{tag}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pz-bind-scripts-{}-{tag}", std::process::id()));
         for (path, text) in files {
             let p = dir.join(path);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(p, text).unwrap();
         }
         let sm = ScriptManager::new();
-        sm.builtin_tables.borrow_mut().perk_ids = ["Woodwork", "Cooking"].map(String::from).to_vec();
-        sm.builtin_tables.borrow_mut().metabolics = vec![("Default".into(), 1.5), ("Napping".into(), 0.5)];
-        for (reg, id) in [("item_tag", "t:shiny"), ("item_tag", "t:dull"), ("item_type", "t:normal")] {
-            sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
+        sm.builtin_tables.borrow_mut().perk_ids =
+            ["Woodwork", "Cooking"].map(String::from).to_vec();
+        sm.builtin_tables.borrow_mut().metabolics =
+            vec![("Default".into(), 1.5), ("Napping".into(), 0.5)];
+        for (reg, id) in [
+            ("item_tag", "t:shiny"),
+            ("item_tag", "t:dull"),
+            ("item_type", "t:normal"),
+        ] {
+            sm.registries
+                .get(reg)
+                .unwrap()
+                .borrow_mut()
+                .register_id(id, false)
+                .unwrap();
         }
-        sm.statics.items.borrow_mut().constants.insert("item_tag", "SHINY", "t:shiny");
+        sm.statics
+            .items
+            .borrow_mut()
+            .constants
+            .insert("item_tag", "SHINY", "t:shiny");
         sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
         Rc::new(sm)
@@ -1425,8 +1791,13 @@ mod tests {
 
     fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, _)| pz_kahlua::exec::java_value_of(&e))
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map(|_| ())
+            .map_err(|(e, _)| pz_kahlua::exec::java_value_of(&e))
     }
 
     fn thread(sm: Rc<ScriptManager>) -> Thread {
@@ -1435,7 +1806,11 @@ mod tests {
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end")
             .unwrap();
         crate::bind_java_util::register(&mut t);
-        crate::bind_core::register(&mut t, None, Rc::new(RefCell::new(pz_core::core::Core::default())));
+        crate::bind_core::register(
+            &mut t,
+            None,
+            Rc::new(RefCell::new(pz_core::core::Core::default())),
+        );
         crate::bind_registry::register(&mut t, sm.clone());
         register(&mut t, sm);
         t

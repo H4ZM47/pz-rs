@@ -23,15 +23,17 @@
 //! `ClimateColorInfo.getInterior`/`getExterior` return a copy of the colour.
 
 use crate::bind_java_util::{class_cast, list_value};
-use crate::expose::{bool_arg, expose_class, expose_enum, global, int_arg, num_arg, str_arg, this, JavaEnum};
+use crate::expose::{
+    bool_arg, expose_class, expose_enum, global, int_arg, num_arg, str_arg, this, JavaEnum,
+};
 use crate::LuaManager;
 use pz_classfile::class::Constant;
 use pz_classfile::Jar;
 use pz_core::game_time::{GameTime, GameTimeContext, GameTimeEvent};
 use pz_core::weather::manager::{AirFront, FLOAT_MAX};
 use pz_core::weather::{
-    temperature, ClimateColorInfo, ClimateContext, ClimateEvent, ClimateManager, ClimateValues, ColorRef,
-    ErosionSeason, PeriodId, WeatherPeriod,
+    temperature, ClimateColorInfo, ClimateContext, ClimateEvent, ClimateManager, ClimateValues,
+    ColorRef, ErosionSeason, PeriodId, WeatherPeriod,
 };
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
@@ -123,7 +125,11 @@ pub fn install_game_time(gt: Rc<RefCell<GameTime>>) {
 
 /// The shared `GameTime` (created on first use).
 pub fn shared_game_time() -> Rc<RefCell<GameTime>> {
-    GAME_TIME.with(|g| g.borrow_mut().get_or_insert_with(|| Rc::new(RefCell::new(GameTime::default()))).clone())
+    GAME_TIME.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(|| Rc::new(RefCell::new(GameTime::default())))
+            .clone()
+    })
 }
 
 pub fn set_climate_settings(s: ClimateSettings) {
@@ -150,7 +156,11 @@ pub struct LuaClimateContext {
 
 impl LuaClimateContext {
     pub fn new() -> Self {
-        LuaClimateContext { settings: climate_settings(), events: Vec::new(), clock_events: Vec::new() }
+        LuaClimateContext {
+            settings: climate_settings(),
+            events: Vec::new(),
+            clock_events: Vec::new(),
+        }
     }
 }
 
@@ -183,7 +193,9 @@ impl ClimateContext for LuaClimateContext {
         crate::bind_core::shared_core().borrow().is_force_snow()
     }
     fn set_force_snow(&mut self, b: bool) {
-        crate::bind_core::shared_core().borrow_mut().set_force_snow(b);
+        crate::bind_core::shared_core()
+            .borrow_mut()
+            .set_force_snow(b);
     }
     fn players(&self) -> [Option<(f32, f32)>; 4] {
         self.settings.players
@@ -192,7 +204,9 @@ impl ClimateContext for LuaClimateContext {
         self.settings.game_speed
     }
     fn disable_lightning_during_storms(&self) -> bool {
-        crate::bind_core::shared_core().borrow().get_option_disable_lightning_during_storms()
+        crate::bind_core::shared_core()
+            .borrow()
+            .get_option_disable_lightning_during_storms()
     }
     fn event(&mut self, e: ClimateEvent) {
         self.events.push(e);
@@ -221,36 +235,82 @@ impl GameTimeContext for LuaClimateContext {
 }
 
 fn busy() -> LuaError {
-    LuaError::Runtime { message: "GameTime is in use".into(), class: "java.lang.IllegalStateException" }
+    LuaError::Runtime {
+        message: "GameTime is in use".into(),
+        class: "java.lang.IllegalStateException",
+    }
 }
 
 fn npe() -> LuaError {
-    LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" }
+    LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.NullPointerException",
+    }
 }
 
 /// Fires collected events through the installed sink.
 pub fn fire_events(thread: &mut Thread, ctx: LuaClimateContext) {
-    let Some(sink) = SINK.with(|s| s.borrow().clone()) else { return };
+    let Some(sink) = SINK.with(|s| s.borrow().clone()) else {
+        return;
+    };
     for e in ctx.events {
         let (name, args): (&str, Vec<Value>) = match e {
-            ClimateEvent::ClimateManagerInit => ("OnClimateManagerInit", vec![handle(Obj::Climate)]),
+            ClimateEvent::ClimateManagerInit => {
+                ("OnClimateManagerInit", vec![handle(Obj::Climate)])
+            }
             ClimateEvent::ClimateTick => ("OnClimateTick", vec![handle(Obj::Climate)]),
             ClimateEvent::ClimateTickDebug => ("OnClimateTickDebug", vec![handle(Obj::Climate)]),
-            ClimateEvent::WeatherPeriodStart(p) => ("OnWeatherPeriodStart", vec![handle(Obj::Period(p))]),
-            ClimateEvent::WeatherPeriodStop(p) => ("OnWeatherPeriodStop", vec![handle(Obj::Period(p))]),
-            ClimateEvent::WeatherPeriodComplete(p) => ("OnWeatherPeriodComplete", vec![handle(Obj::Period(p))]),
-            ClimateEvent::WeatherPeriodStage(p) => ("OnWeatherPeriodStage", vec![handle(Obj::Period(p))]),
-            ClimateEvent::InitModdedWeatherStage { period, stage, strength } => (
+            ClimateEvent::WeatherPeriodStart(p) => {
+                ("OnWeatherPeriodStart", vec![handle(Obj::Period(p))])
+            }
+            ClimateEvent::WeatherPeriodStop(p) => {
+                ("OnWeatherPeriodStop", vec![handle(Obj::Period(p))])
+            }
+            ClimateEvent::WeatherPeriodComplete(p) => {
+                ("OnWeatherPeriodComplete", vec![handle(Obj::Period(p))])
+            }
+            ClimateEvent::WeatherPeriodStage(p) => {
+                ("OnWeatherPeriodStage", vec![handle(Obj::Period(p))])
+            }
+            ClimateEvent::InitModdedWeatherStage {
+                period,
+                stage,
+                strength,
+            } => (
                 "OnInitModdedWeatherStage",
-                vec![handle(Obj::Period(period)), handle(Obj::Stage(period, stage)), fv(strength)],
+                vec![
+                    handle(Obj::Period(period)),
+                    handle(Obj::Stage(period, stage)),
+                    fv(strength),
+                ],
             ),
-            ClimateEvent::UpdateModdedWeatherStage { period, stage, strength } => (
+            ClimateEvent::UpdateModdedWeatherStage {
+                period,
+                stage,
+                strength,
+            } => (
                 "OnUpdateModdedWeatherStage",
-                vec![handle(Obj::Period(period)), handle(Obj::Stage(period, stage)), fv(strength)],
+                vec![
+                    handle(Obj::Period(period)),
+                    handle(Obj::Stage(period, stage)),
+                    fv(strength),
+                ],
             ),
-            ClimateEvent::ThunderEvent { x, y, strike, lightning, rumble } => (
+            ClimateEvent::ThunderEvent {
+                x,
+                y,
+                strike,
+                lightning,
+                rumble,
+            } => (
                 "OnThunderEvent",
-                vec![Value::from(x), Value::from(y), Value::Bool(strike), Value::Bool(lightning), Value::Bool(rumble)],
+                vec![
+                    Value::from(x),
+                    Value::from(y),
+                    Value::Bool(strike),
+                    Value::Bool(lightning),
+                    Value::Bool(rumble),
+                ],
             ),
             _ => continue,
         };
@@ -286,7 +346,10 @@ pub fn update_game_time(thread: &mut Thread) {
     fire_events(thread, ctx);
 }
 
-fn with_gt<R>(c: &mut NativeCall<'_>, f: impl FnOnce(&mut GameTime, &mut LuaClimateContext) -> R) -> LuaResult<R> {
+fn with_gt<R>(
+    c: &mut NativeCall<'_>,
+    f: impl FnOnce(&mut GameTime, &mut LuaClimateContext) -> R,
+) -> LuaResult<R> {
     let gt = shared_game_time();
     let mut ctx = LuaClimateContext::new();
     let r = {
@@ -373,12 +436,20 @@ impl LuaObject for ClimateObject {
 
 /// The canonical Lua object for `o` (Lua `==` is identity).
 fn handle(o: Obj) -> Value {
-    HANDLES.with(|h| h.borrow_mut().entry(o).or_insert_with(|| Value::Object(Rc::new(ClimateObject(o)))).clone())
+    HANDLES.with(|h| {
+        h.borrow_mut()
+            .entry(o)
+            .or_insert_with(|| Value::Object(Rc::new(ClimateObject(o))))
+            .clone()
+    })
 }
 
 fn obj_of(c: &NativeCall<'_>) -> LuaResult<Obj> {
     let o = this::<ClimateObject>(c)?;
-    Ok(o.as_any().downcast_ref::<ClimateObject>().ok_or_else(npe)?.0)
+    Ok(o.as_any()
+        .downcast_ref::<ClimateObject>()
+        .ok_or_else(npe)?
+        .0)
 }
 
 /// A `ClimateColorInfo` (shared, so Lua writes land in the climate).
@@ -398,7 +469,12 @@ fn color_value(c: &ColorRef) -> Value {
     COLORS.with(|m| {
         m.borrow_mut()
             .entry(key)
-            .or_insert_with(|| (c.clone(), Value::Object(Rc::new(ColorInfoObject(c.clone())))))
+            .or_insert_with(|| {
+                (
+                    c.clone(),
+                    Value::Object(Rc::new(ColorInfoObject(c.clone()))),
+                )
+            })
             .1
             .clone()
     })
@@ -434,14 +510,22 @@ impl LuaObject for ClimateValuesObject {
 fn period_mut(g: &mut GameTime, p: PeriodId) -> Option<&mut WeatherPeriod> {
     match p {
         PeriodId::Main => Some(&mut g.climate.weather_period),
-        PeriodId::Forecast(id) => g.climate.climate_forecaster.by_id_mut(id).map(|f| &mut f.weather_period),
+        PeriodId::Forecast(id) => g
+            .climate
+            .climate_forecaster
+            .by_id_mut(id)
+            .map(|f| &mut f.weather_period),
     }
 }
 
 fn front_mut(g: &mut GameTime, f: Front) -> Option<&mut AirFront> {
     match f {
         Front::Period(p) => period_mut(g, p).map(|w| &mut w.front_cache),
-        Front::Forecast(id) => g.climate.climate_forecaster.by_id_mut(id).map(|f| &mut f.air_front),
+        Front::Forecast(id) => g
+            .climate
+            .climate_forecaster
+            .by_id_mut(id)
+            .map(|f| &mut f.air_front),
     }
 }
 
@@ -467,7 +551,11 @@ fn day_info(g: &GameTime, s: SeasonRef) -> Option<&pz_core::weather::DayInfo> {
 
 /// `getSeason()`'s object: the current day's season when there is one.
 fn season_handle(g: &GameTime) -> Value {
-    if g.climate.current_day.as_ref().is_some_and(|d| d.season.is_some()) {
+    if g.climate
+        .current_day
+        .as_ref()
+        .is_some_and(|d| d.season.is_some())
+    {
         handle(Obj::Season(SeasonRef::Current))
     } else if g.climate.season.is_some() {
         handle(Obj::Season(SeasonRef::Erosion))
@@ -490,7 +578,9 @@ fn on_obj<R>(
 /// The `static final` primitive and string constants (`ConstantValue`) of
 /// a class, from the jar.
 pub fn class_constants(jar: &Jar, class: &str) -> Vec<(String, Value)> {
-    let Ok(cf) = pz_classfile::load_class(jar, class) else { return Vec::new() };
+    let Ok(cf) = pz_classfile::load_class(jar, class) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     for f in &cf.fields {
         let Some(i) = f.constant_value else { continue };
@@ -531,7 +621,10 @@ const CONSTANT_CLASSES: [(&str, &str); 6] = [
 pub fn register(mgr: &mut LuaManager) {
     let jar_path = mgr.fs.borrow().base.join("projectzomboid.jar");
     let constants: Vec<(&'static str, Vec<(String, Value)>)> = match Jar::open(&jar_path) {
-        Ok(jar) => CONSTANT_CLASSES.iter().map(|(fqn, path)| (*fqn, class_constants(&jar, path))).collect(),
+        Ok(jar) => CONSTANT_CLASSES
+            .iter()
+            .map(|(fqn, path)| (*fqn, class_constants(&jar, path)))
+            .collect(),
         Err(e) => {
             (mgr.thread.log)(&format!("bind_climate: {}: {e}", jar_path.display()));
             Vec::new()
@@ -543,7 +636,9 @@ pub fn register(mgr: &mut LuaManager) {
 /// Register with already-read class constants.
 pub fn register_with(thread: &mut Thread, constants: &[(&'static str, Vec<(String, Value)>)]) {
     global(thread, "getGameTime", |c| Ok(c.push(handle(Obj::GameTime))));
-    global(thread, "getClimateManager", |c| Ok(c.push(handle(Obj::Climate))));
+    global(thread, "getClimateManager", |c| {
+        Ok(c.push(handle(Obj::Climate)))
+    });
     global(thread, "getClimateMoon", |c| Ok(c.push(handle(Obj::Moon))));
     register_game_time(thread);
     register_climate_manager(thread);
@@ -610,7 +705,8 @@ fn register_game_time(thread: &mut Thread) {
     getter!(b, "getStartYear", |g| g.start_year);
     setter!(b, "setStartYear", |g, a| g.start_year = a.2);
     fgetter!(b, "getStartTimeOfDay", |g| g.start_time_of_day);
-    setter!(b, "setStartTimeOfDay", |g, a| g.start_time_of_day = a.0 as f32);
+    setter!(b, "setStartTimeOfDay", |g, a| g.start_time_of_day =
+        a.0 as f32);
     getter!(b, "getNightsSurvived", |g| g.nights_survived);
     setter!(b, "setNightsSurvived", |g, a| g.nights_survived = a.2);
     getter!(b, "getHour", |g| g.hour());
@@ -630,11 +726,19 @@ fn register_game_time(thread: &mut Thread) {
         ("getMultiplier", |g, x| g.get_multiplier(x)),
         ("getUnmoddedMultiplier", |g, x| g.get_unmodded_multiplier(x)),
         ("getInvMultiplier", |g, x| g.get_inv_multiplier(x)),
-        ("getThirtyFPSMultiplier", |g, x| g.get_thirty_fps_multiplier(x)),
+        ("getThirtyFPSMultiplier", |g, x| {
+            g.get_thirty_fps_multiplier(x)
+        }),
         ("getTimeDelta", |g, x| g.get_time_delta(x)),
-        ("getMultipliedSecondsSinceLastUpdate", |g, x| g.multiplied_seconds_since_last_update(x)),
-        ("getGameWorldSecondsSinceLastUpdate", |g, x| g.game_world_seconds_since_last_update(x)),
-        ("getRealworldSecondsSinceLastUpdate", |g, _| g.realworld_seconds_since_last_update()),
+        ("getMultipliedSecondsSinceLastUpdate", |g, x| {
+            g.multiplied_seconds_since_last_update(x)
+        }),
+        ("getGameWorldSecondsSinceLastUpdate", |g, x| {
+            g.game_world_seconds_since_last_update(x)
+        }),
+        ("getRealworldSecondsSinceLastUpdate", |g, _| {
+            g.realworld_seconds_since_last_update()
+        }),
         ("getMultiplierInMenu", |g, _| g.get_multiplier_in_menu()),
     ];
     for (name, f) in ctx_floats {
@@ -647,9 +751,11 @@ fn register_game_time(thread: &mut Thread) {
     setter!(b, "setMultiplier", |g, a| g.multiplier = a.0 as f32);
     fgetter!(b, "getMinutesPerDay", |g| g.minutes_per_day);
     setter!(b, "setMinutesPerDay", |g, a| g.minutes_per_day = a.0 as f32);
-    fgetter!(b, "getDeltaMinutesPerDay", |g| g.get_delta_minutes_per_day());
+    fgetter!(b, "getDeltaMinutesPerDay", |g| g
+        .get_delta_minutes_per_day());
     fgetter!(b, "getLastTimeOfDay", |g| g.last_time_of_day);
-    setter!(b, "setLastTimeOfDay", |g, a| g.last_time_of_day = a.0 as f32);
+    setter!(b, "setLastTimeOfDay", |g, a| g.last_time_of_day =
+        a.0 as f32);
     fgetter!(b, "getAmbient", |g| g.climate.get_ambient());
     setter!(b, "setAmbient", |g, a| g.ambient = a.0 as f32);
     fgetter!(b, "getAmbientMin", |g| g.ambient_min);
@@ -672,26 +778,36 @@ fn register_game_time(thread: &mut Thread) {
     getter!(b, "getDusk", |g| g.dusk);
     setter!(b, "setDusk", |g, a| g.dusk = a.2);
     fgetter!(b, "getMaxZombieCount", |g| g.max_zombie_count);
-    setter!(b, "setMaxZombieCount", |g, a| g.max_zombie_count = a.0 as f32);
+    setter!(b, "setMaxZombieCount", |g, a| g.max_zombie_count =
+        a.0 as f32);
     fgetter!(b, "getMinZombieCount", |g| g.min_zombie_count);
-    setter!(b, "setMinZombieCount", |g, a| g.min_zombie_count = a.0 as f32);
+    setter!(b, "setMinZombieCount", |g, a| g.min_zombie_count =
+        a.0 as f32);
     // The original returns 0 from both start-count getters.
     b.method("getMaxZombieCountStart", |c| Ok(c.push(0.0)));
     b.method("getMinZombieCountStart", |c| Ok(c.push(0.0)));
-    setter!(b, "setMaxZombieCountStart", |g, a| g.max_zombie_count_start = a.0 as f32);
-    setter!(b, "setMinZombieCountStart", |g, a| g.min_zombie_count_start = a.0 as f32);
+    setter!(b, "setMaxZombieCountStart", |g, a| g
+        .max_zombie_count_start =
+        a.0 as f32);
+    setter!(b, "setMinZombieCountStart", |g, a| g
+        .min_zombie_count_start =
+        a.0 as f32);
     setter!(b, "setTargetZombies", |g, a| g.target_zombies = a.2);
     getter!(b, "isThunderDay", |g| g.thunder_day);
     setter!(b, "setThunderDay", |g, a| g.thunder_day = a.1);
     b.method("isRainingToday", |c| Ok(c.push(true)));
-    getter!(b, "getThunderStorm", |g| g.climate.get_is_thunder_storming());
+    getter!(b, "getThunderStorm", |g| g
+        .climate
+        .get_is_thunder_storming());
     getter!(b, "getHelicopterDay", |g| g.helicopter_day1);
     getter!(b, "getHelicopterDay1", |g| g.helicopter_day1);
     setter!(b, "setHelicopterDay", |g, a| g.set_helicopter_day(a.2));
     getter!(b, "getHelicopterStartHour", |g| g.helicopter_time1_start);
-    setter!(b, "setHelicopterStartHour", |g, a| g.set_helicopter_start_hour(a.2));
+    setter!(b, "setHelicopterStartHour", |g, a| g
+        .set_helicopter_start_hour(a.2));
     getter!(b, "getHelicopterEndHour", |g| g.helicopter_time1_end);
-    setter!(b, "setHelicopterEndHour", |g, a| g.set_helicopter_end_hour(a.2));
+    setter!(b, "setHelicopterEndHour", |g, a| g
+        .set_helicopter_end_hour(a.2));
     b.method("isDay", |c| {
         let v = with_gt(c, |g, x| g.is_day(x))?;
         Ok(c.push(v))
@@ -700,19 +816,27 @@ fn register_game_time(thread: &mut Thread) {
         let v = with_gt(c, |g, x| g.is_night(x))?;
         Ok(c.push(v))
     });
-    b.method("isEndlessDay", |c| Ok(c.push(climate_settings().day_night_cycle == 2)));
-    b.method("isEndlessNight", |c| Ok(c.push(climate_settings().day_night_cycle == 3)));
+    b.method("isEndlessDay", |c| {
+        Ok(c.push(climate_settings().day_night_cycle == 2))
+    });
+    b.method("isEndlessNight", |c| {
+        Ok(c.push(climate_settings().day_night_cycle == 3))
+    });
     b.method("getModData", |c| {
         let t = with_gt(c, |g, _| g.mod_data())?;
         Ok(c.push(t))
     });
-    b.method("Lerp", |c| Ok(c.push(fv(GameTime::lerp(farg(c, 1), farg(c, 2), farg(c, 3))))));
+    b.method("Lerp", |c| {
+        Ok(c.push(fv(GameTime::lerp(farg(c, 1), farg(c, 2), farg(c, 3)))))
+    });
     b.method("TimeLerp", |c| {
         let a = (farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4));
         let v = with_gt(c, |g, _| g.time_lerp(a.0, a.1, a.2, a.3))?;
         Ok(c.push(fv(v)))
     });
-    b.method("daysInMonth", |c| Ok(c.push(GameTime::days_in_month(int_arg(c, 1), int_arg(c, 2)))));
+    b.method("daysInMonth", |c| {
+        Ok(c.push(GameTime::days_in_month(int_arg(c, 1), int_arg(c, 2))))
+    });
     b.method("getTimeDeltaFromMultiplier", |c| {
         let m = farg(c, 1);
         let v = with_gt(c, |g, _| g.time_delta_from_multiplier(m))?;
@@ -743,8 +867,14 @@ fn register_climate_manager(thread: &mut Thread) {
         ("getTemperature", ClimateManager::get_temperature),
         ("getHumidity", ClimateManager::get_humidity),
         ("getWindIntensity", ClimateManager::get_wind_intensity),
-        ("getWindAngleIntensity", ClimateManager::get_wind_angle_intensity),
-        ("getCorrectedWindAngleIntensity", ClimateManager::get_corrected_wind_angle_intensity),
+        (
+            "getWindAngleIntensity",
+            ClimateManager::get_wind_angle_intensity,
+        ),
+        (
+            "getCorrectedWindAngleIntensity",
+            ClimateManager::get_corrected_wind_angle_intensity,
+        ),
         ("getWindPower", ClimateManager::get_wind_power),
         ("getWindspeedKph", ClimateManager::get_windspeed_kph),
         ("getMaxWindspeedKph", |_| 120.0),
@@ -752,11 +882,20 @@ fn register_climate_manager(thread: &mut Thread) {
         ("getCloudIntensity", ClimateManager::get_cloud_intensity),
         ("getAmbient", ClimateManager::get_ambient),
         ("getViewDistance", ClimateManager::get_view_distance),
-        ("getDayLightStrength", ClimateManager::get_day_light_strength),
+        (
+            "getDayLightStrength",
+            ClimateManager::get_day_light_strength,
+        ),
         ("getNightStrength", ClimateManager::get_night_strength),
         ("getDesaturation", ClimateManager::get_desaturation),
-        ("getGlobalLightIntensity", ClimateManager::get_global_light_intensity),
-        ("getPrecipitationIntensity", ClimateManager::get_precipitation_intensity),
+        (
+            "getGlobalLightIntensity",
+            ClimateManager::get_global_light_intensity,
+        ),
+        (
+            "getPrecipitationIntensity",
+            ClimateManager::get_precipitation_intensity,
+        ),
         ("getFogIntensity", ClimateManager::get_fog_intensity),
         ("getRainIntensity", ClimateManager::get_rain_intensity),
         ("getSnowIntensity", ClimateManager::get_snow_intensity),
@@ -764,14 +903,35 @@ fn register_climate_manager(thread: &mut Thread) {
         ("getSnowFracNow", ClimateManager::get_snow_frac_now),
         ("getAirMass", ClimateManager::get_air_mass),
         ("getAirMassDaily", ClimateManager::get_air_mass_daily),
-        ("getAirMassTemperature", ClimateManager::get_air_mass_temperature),
+        (
+            "getAirMassTemperature",
+            ClimateManager::get_air_mass_temperature,
+        ),
         ("getBaseTemperature", ClimateManager::get_base_temperature),
-        ("getDayMeanTemperature", ClimateManager::get_day_mean_temperature),
-        ("getWindAngleDegrees", ClimateManager::get_wind_angle_degrees),
-        ("getWindAngleRadians", ClimateManager::get_wind_angle_radians),
-        ("getWindSpeedMovement", ClimateManager::get_wind_speed_movement),
-        ("getWeatherInterference", ClimateManager::get_weather_interference),
-        ("getSeasonProgression", ClimateManager::get_season_progression),
+        (
+            "getDayMeanTemperature",
+            ClimateManager::get_day_mean_temperature,
+        ),
+        (
+            "getWindAngleDegrees",
+            ClimateManager::get_wind_angle_degrees,
+        ),
+        (
+            "getWindAngleRadians",
+            ClimateManager::get_wind_angle_radians,
+        ),
+        (
+            "getWindSpeedMovement",
+            ClimateManager::get_wind_speed_movement,
+        ),
+        (
+            "getWeatherInterference",
+            ClimateManager::get_weather_interference,
+        ),
+        (
+            "getSeasonProgression",
+            ClimateManager::get_season_progression,
+        ),
         ("getSeasonStrength", ClimateManager::get_season_strength),
     ];
     for (name, f) in floats {
@@ -797,13 +957,22 @@ fn register_climate_manager(thread: &mut Thread) {
     }
     type B = fn(&ClimateManager) -> bool;
     let bools: [(&str, B); 7] = [
-        ("getPrecipitationIsSnow", ClimateManager::get_precipitation_is_snow),
+        (
+            "getPrecipitationIsSnow",
+            ClimateManager::get_precipitation_is_snow,
+        ),
         ("isRaining", ClimateManager::is_raining),
         ("isSnowing", ClimateManager::is_snowing),
-        ("getIsThunderStorming", ClimateManager::get_is_thunder_storming),
+        (
+            "getIsThunderStorming",
+            ClimateManager::get_is_thunder_storming,
+        ),
         ("getEnabledSimulation", |c| !c.disable_simulation),
         ("getEnabledFxUpdate", |c| !c.disable_fx_update),
-        ("getEnabledWeatherGeneration", ClimateManager::get_enabled_weather_generation),
+        (
+            "getEnabledWeatherGeneration",
+            ClimateManager::get_enabled_weather_generation,
+        ),
     ];
     for (name, f) in bools {
         b.method(name, move |c| {
@@ -816,11 +985,21 @@ fn register_climate_manager(thread: &mut Thread) {
         Ok(c.push(v))
     });
     setter!(b, "setAmbient", |g, a| g.climate.set_ambient(a.0 as f32));
-    setter!(b, "setViewDistance", |g, a| g.climate.set_view_distance(a.0 as f32));
-    setter!(b, "setDayLightStrength", |g, a| g.climate.set_day_light_strength(a.0 as f32));
-    setter!(b, "setPrecipitationIsSnow", |g, a| g.climate.set_precipitation_is_snow(a.1));
-    setter!(b, "setNightStrength", |g, a| g.climate.set_night_strength(a.0 as f32));
-    setter!(b, "setDesaturation", |g, a| g.climate.set_desaturation(a.0 as f32));
+    setter!(b, "setViewDistance", |g, a| g
+        .climate
+        .set_view_distance(a.0 as f32));
+    setter!(b, "setDayLightStrength", |g, a| g
+        .climate
+        .set_day_light_strength(a.0 as f32));
+    setter!(b, "setPrecipitationIsSnow", |g, a| g
+        .climate
+        .set_precipitation_is_snow(a.1));
+    setter!(b, "setNightStrength", |g, a| g
+        .climate
+        .set_night_strength(a.0 as f32));
+    setter!(b, "setDesaturation", |g, a| g
+        .climate
+        .set_desaturation(a.0 as f32));
     b.method("setEnabledSimulation", |c| {
         let v = bool_arg(c, 1);
         with_gt(c, |g, x| g.climate.set_enabled_simulation(v, x))?;
@@ -831,45 +1010,70 @@ fn register_climate_manager(thread: &mut Thread) {
         with_gt(c, |g, x| g.climate.set_enabled_fx_update(v, x))?;
         Ok(0)
     });
-    setter!(b, "setEnabledWeatherGeneration", |g, a| g.climate.set_enabled_weather_generation(a.1));
+    setter!(b, "setEnabledWeatherGeneration", |g, a| g
+        .climate
+        .set_enabled_weather_generation(a.1));
     getter!(b, "getSeasonId", |g| g.climate.get_season_id());
     b.method("getSeasonName", |c| {
         let v = with_gt(c, |g, _| g.climate.get_season_name())?;
         Ok(c.push(v.map_or(Value::Nil, Value::from)))
     });
     b.method("getSeasonNameTranslated", |c| {
-        let v = with_gt(c, |g, _| g.climate.season.as_ref().and_then(|s| s.get_season_name_key()))?;
+        let v = with_gt(c, |g, _| {
+            g.climate
+                .season
+                .as_ref()
+                .and_then(|s| s.get_season_name_key())
+        })?;
         Ok(c.push(v.map_or(Value::Nil, |k| Value::from(crate::bind_text::translate(k)))))
     });
     b.method("getSeason", |c| {
         let v = with_gt(c, |g, _| season_handle(g))?;
         Ok(c.push(v))
     });
-    for (name, s) in
-        [("getPreviousDay", SeasonRef::Previous), ("getCurrentDay", SeasonRef::Current), ("getNextDay", SeasonRef::Next)]
-    {
+    for (name, s) in [
+        ("getPreviousDay", SeasonRef::Previous),
+        ("getCurrentDay", SeasonRef::Current),
+        ("getNextDay", SeasonRef::Next),
+    ] {
         b.method(name, move |c| {
             let has = with_gt(c, |g, _| day_info(g, s).is_some())?;
-            Ok(c.push(if has { handle(Obj::DayInfo(s)) } else { Value::Nil }))
+            Ok(c.push(if has {
+                handle(Obj::DayInfo(s))
+            } else {
+                Value::Nil
+            }))
         });
     }
-    b.method("getWeatherPeriod", |c| Ok(c.push(handle(Obj::Period(PeriodId::Main)))));
+    b.method("getWeatherPeriod", |c| {
+        Ok(c.push(handle(Obj::Period(PeriodId::Main))))
+    });
     b.method("getThunderStorm", |c| Ok(c.push(handle(Obj::Thunder))));
-    b.method("getClimateForecaster", |c| Ok(c.push(handle(Obj::Forecaster))));
+    b.method("getClimateForecaster", |c| {
+        Ok(c.push(handle(Obj::Forecaster)))
+    });
     b.method("getClimateHistory", |c| Ok(c.push(handle(Obj::History))));
     b.method("getModData", |c| {
         let t = with_gt(c, |g, _| g.climate.get_mod_data())?;
         Ok(c.push(t))
     });
     for (name, max, mk) in [
-        ("getClimateFloat", FLOAT_MAX as i32, Obj::Float as fn(usize) -> Obj),
+        (
+            "getClimateFloat",
+            FLOAT_MAX as i32,
+            Obj::Float as fn(usize) -> Obj,
+        ),
         ("getClimateColor", 2, Obj::Color as fn(usize) -> Obj),
         ("getClimateBool", 1, Obj::Bool as fn(usize) -> Obj),
     ] {
         b.method(name, move |c| {
             let id = int_arg(c, 1);
             // "Climate: cannot get float override id." for others.
-            Ok(c.push(if (0..max).contains(&id) { handle(mk(id as usize)) } else { Value::Nil }))
+            Ok(c.push(if (0..max).contains(&id) {
+                handle(mk(id as usize))
+            } else {
+                Value::Nil
+            }))
         });
     }
     b.method("getFloatMax", |c| Ok(c.push(FLOAT_MAX as i32)));
@@ -894,7 +1098,11 @@ fn register_climate_manager(thread: &mut Thread) {
             Ok(c.push(color_value(&v)))
         });
     }
-    for (name, seg) in [("setSeasonColorDawn", 0), ("setSeasonColorDay", 1), ("setSeasonColorDusk", 2)] {
+    for (name, seg) in [
+        ("setSeasonColorDawn", 0),
+        ("setSeasonColorDay", 1),
+        ("setSeasonColorDusk", 2),
+    ] {
         b.method(name, move |c| {
             let (t, s) = (int_arg(c, 1), int_arg(c, 2));
             let rgba = [farg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6)];
@@ -906,18 +1114,26 @@ fn register_climate_manager(thread: &mut Thread) {
                     class: "java.lang.ArrayIndexOutOfBoundsException",
                 });
             }
-            with_gt(c, |g, _| g.climate.set_season_color(seg, t as usize, s as usize, rgba, ext))?;
+            with_gt(c, |g, _| {
+                g.climate
+                    .set_season_color(seg, t as usize, s as usize, rgba, ext)
+            })?;
             Ok(0)
         });
     }
     b.method("getSeasonColor", |c| {
         let (seg, t, s) = (int_arg(c, 1), int_arg(c, 2), int_arg(c, 3));
-        let v = with_gt(c, |g, _| g.climate.get_season_color(seg, t.max(0) as usize, s.max(0) as usize))?;
+        let v = with_gt(c, |g, _| {
+            g.climate
+                .get_season_color(seg, t.max(0) as usize, s.max(0) as usize)
+        })?;
         Ok(c.push(v.map_or(Value::Nil, |v| color_value(&v))))
     });
     b.method("getGlobalLightInternal", |c| {
         let v = with_gt(c, |g, _| g.climate.get_global_light_internal())?;
-        Ok(c.push(Value::Object(Rc::new(pz_ui::ColorObject::new(v[0], v[1], v[2], v[3])))))
+        Ok(c.push(Value::Object(Rc::new(pz_ui::ColorObject::new(
+            v[0], v[1], v[2], v[3],
+        )))))
     });
     b.method("getFrontStrength", |c| {
         let v = with_gt(c, |g, x| {
@@ -954,11 +1170,23 @@ fn register_climate_manager(thread: &mut Thread) {
         Ok(c.push(v))
     });
     b.method("triggerKateBobIntroStorm", |c| {
-        let (cx, cy, dur, s, p, a) = (int_arg(c, 1), int_arg(c, 2), num_arg(c, 3), farg(c, 4), farg(c, 5), farg(c, 6));
-        let color = if c.nargs() > 8 { color_arg(c, 8)? } else { None };
+        let (cx, cy, dur, s, p, a) = (
+            int_arg(c, 1),
+            int_arg(c, 2),
+            num_arg(c, 3),
+            farg(c, 4),
+            farg(c, 5),
+            farg(c, 6),
+        );
+        let color = if c.nargs() > 8 {
+            color_arg(c, 8)?
+        } else {
+            None
+        };
         with_gt(c, |g, x| {
             let clock = g.clock(x);
-            g.climate.trigger_kate_bob_intro_storm(cx, cy, dur, s, p, a, color, &clock, x)
+            g.climate
+                .trigger_kate_bob_intro_storm(cx, cy, dur, s, p, a, color, &clock, x)
         })?;
         Ok(0)
     });
@@ -986,11 +1214,15 @@ fn register_climate_manager(thread: &mut Thread) {
         Ok(c.push(Value::Object(Rc::new(ClimateValuesObject(RefCell::new(v))))))
     });
     b.method("CopyClimateValues", |c| {
-        let Value::Object(o) = c.arg(1) else { return Err(npe()) };
+        let Value::Object(o) = c.arg(1) else {
+            return Err(npe());
+        };
         let Some(t) = o.as_any().downcast_ref::<ClimateValuesObject>() else {
             return Err(class_cast(&c.arg(1), CLIMATE_VALUES_CLASS));
         };
-        with_gt(c, |g, _| g.climate.climate_values.copy_values(&mut t.0.borrow_mut()))?;
+        with_gt(c, |g, _| {
+            g.climate.climate_values.copy_values(&mut t.0.borrow_mut())
+        })?;
         Ok(0)
     });
     // Multiplayer requests: nothing to send in single player.
@@ -1016,13 +1248,42 @@ fn register_climate_manager(thread: &mut Thread) {
     }
     b.static_fn("ToKph", |c| Ok(c.push(fv(farg(c, 0) * 120.0))));
     b.static_fn("ToMph", |c| Ok(c.push(fv(farg(c, 0) * 74.5645))));
-    b.static_fn("clamp01", |c| Ok(c.push(fv(pz_core::weather::clamp01(farg(c, 0))))));
-    b.static_fn("clamp", |c| Ok(c.push(fv(pz_core::weather::clamp(farg(c, 0), farg(c, 1), farg(c, 2))))));
-    b.static_fn("lerp", |c| Ok(c.push(fv(pz_core::weather::lerp(farg(c, 0), farg(c, 1), farg(c, 2))))));
-    b.static_fn("clerp", |c| Ok(c.push(fv(pz_core::weather::clerp(farg(c, 0), farg(c, 1), farg(c, 2))))));
-    b.static_fn("normalizeRange", |c| Ok(c.push(fv(pz_core::weather::normalize_range(farg(c, 0), farg(c, 1))))));
-    b.static_fn("posToPosNegRange", |c| Ok(c.push(fv(pz_core::weather::pos_to_pos_neg_range(farg(c, 0))))));
-    b.static_fn("getWindAngleString", |c| Ok(c.push(pz_core::weather::wind_angle_string(farg(c, 0)))));
+    b.static_fn("clamp01", |c| {
+        Ok(c.push(fv(pz_core::weather::clamp01(farg(c, 0)))))
+    });
+    b.static_fn("clamp", |c| {
+        Ok(c.push(fv(pz_core::weather::clamp(
+            farg(c, 0),
+            farg(c, 1),
+            farg(c, 2),
+        ))))
+    });
+    b.static_fn("lerp", |c| {
+        Ok(c.push(fv(pz_core::weather::lerp(
+            farg(c, 0),
+            farg(c, 1),
+            farg(c, 2),
+        ))))
+    });
+    b.static_fn("clerp", |c| {
+        Ok(c.push(fv(pz_core::weather::clerp(
+            farg(c, 0),
+            farg(c, 1),
+            farg(c, 2),
+        ))))
+    });
+    b.static_fn("normalizeRange", |c| {
+        Ok(c.push(fv(pz_core::weather::normalize_range(
+            farg(c, 0),
+            farg(c, 1),
+        ))))
+    });
+    b.static_fn("posToPosNegRange", |c| {
+        Ok(c.push(fv(pz_core::weather::pos_to_pos_neg_range(farg(c, 0)))))
+    });
+    b.static_fn("getWindAngleString", |c| {
+        Ok(c.push(pz_core::weather::wind_angle_string(farg(c, 0))))
+    });
     type S = fn(&ClimateManager) -> f64;
     let statics: [(&str, S); 3] = [
         ("getWindNoiseBase", |c| c.wind_noise_base),
@@ -1075,7 +1336,9 @@ fn register_layers(thread: &mut Thread) {
         ("setAdminValue", |f, v, _| f.set_admin_value(v as f32)),
         ("setEnableModded", |f, _, b| f.set_enable_modded(b)),
         ("setModdedValue", |f, v, _| f.set_modded_value(v as f32)),
-        ("setModdedInterpolate", |f, v, _| f.set_modded_interpolate(v as f32)),
+        ("setModdedInterpolate", |f, v, _| {
+            f.set_modded_interpolate(v as f32)
+        }),
         ("setFinalValue", |f, v, _| f.final_value = v as f32),
         ("setOverrideValue", |f, _, b| f.set_override_value(b)),
     ];
@@ -1133,7 +1396,9 @@ fn register_layers(thread: &mut Thread) {
         ("setEnableOverride", |f, _, b| f.set_enable_override(b)),
         ("setEnableAdmin", |f, _, b| f.set_enable_admin(b)),
         ("setEnableModded", |f, _, b| f.set_enable_modded(b)),
-        ("setModdedInterpolate", |f, v, _| f.set_modded_interpolate(v as f32)),
+        ("setModdedInterpolate", |f, v, _| {
+            f.set_modded_interpolate(v as f32)
+        }),
     ];
     for (name, f) in sets {
         b.method(name, move |c| {
@@ -1158,7 +1423,11 @@ fn register_layers(thread: &mut Thread) {
     for (name, f) in copies {
         b.method(name, move |c| {
             let n = c.nargs();
-            let src = if n == 2 { Some(color_arg(c, 1)?.ok_or_else(npe)?) } else { None };
+            let src = if n == 2 {
+                Some(color_arg(c, 1)?.ok_or_else(npe)?)
+            } else {
+                None
+            };
             let vals: Vec<f32> = (1..n).map(|i| farg(c, i)).collect();
             on_obj(c, |o, g, _| {
                 let Obj::Color(i) = o else { return Err(npe()) };
@@ -1178,7 +1447,10 @@ fn register_layers(thread: &mut Thread) {
             Ok(0)
         });
     }
-    for (name, ext) in [("setAdminValueExterior", true), ("setAdminValueInterior", false)] {
+    for (name, ext) in [
+        ("setAdminValueExterior", true),
+        ("setAdminValueInterior", false),
+    ] {
         b.method(name, move |c| {
             let v = [farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4)];
             on_obj(c, |o, g, _| {
@@ -1288,8 +1560,11 @@ fn register_layers(thread: &mut Thread) {
         });
     }
     b.method("copyFrom", |c| {
-        let Value::Object(src) = c.arg(1) else { return Err(npe()) };
-        let Some(ClimateObject(Obj::Front(sf))) = src.as_any().downcast_ref::<ClimateObject>() else {
+        let Value::Object(src) = c.arg(1) else {
+            return Err(npe());
+        };
+        let Some(ClimateObject(Obj::Front(sf))) = src.as_any().downcast_ref::<ClimateObject>()
+        else {
             return Err(class_cast(&c.arg(1), AIR_FRONT_CLASS));
         };
         let sf = *sf;
@@ -1331,7 +1606,9 @@ fn register_layers(thread: &mut Thread) {
     b.method("set", |c| {
         let (d, m, y) = (int_arg(c, 1), int_arg(c, 2), int_arg(c, 3));
         on_obj(c, |o, g, _| {
-            let Obj::DayInfo(s) = o else { return Err(npe()) };
+            let Obj::DayInfo(s) = o else {
+                return Err(npe());
+            };
             let cl = &mut g.climate;
             let di = match s {
                 SeasonRef::Previous => cl.previous_day.as_mut(),
@@ -1346,7 +1623,10 @@ fn register_layers(thread: &mut Thread) {
     });
 }
 
-fn with_period<R>(c: &mut NativeCall<'_>, f: impl FnOnce(&mut WeatherPeriod, &mut LuaClimateContext) -> R) -> LuaResult<R> {
+fn with_period<R>(
+    c: &mut NativeCall<'_>,
+    f: impl FnOnce(&mut WeatherPeriod, &mut LuaClimateContext) -> R,
+) -> LuaResult<R> {
     on_obj(c, |o, g, x| match o {
         Obj::Period(p) => period_mut(g, p).map(|w| f(w, x)).ok_or_else(npe),
         _ => Err(npe()),
@@ -1408,21 +1688,29 @@ fn register_period(thread: &mut Thread) {
     b.method("getCurrentStage", |c| {
         let o = obj_of(c)?;
         let Obj::Period(p) = o else { return Err(npe()) };
-        let idx = with_period(c, |w, _| w.current_stage().map(|_| w.current_stage.unwrap_or(0)))?;
+        let idx = with_period(c, |w, _| {
+            w.current_stage().map(|_| w.current_stage.unwrap_or(0))
+        })?;
         Ok(c.push(idx.map_or(Value::Nil, |i| handle(Obj::Stage(p, i)))))
     });
     b.method("getStageForWorldAge", |c| {
         let o = obj_of(c)?;
         let Obj::Period(p) = o else { return Err(npe()) };
         let h = num_arg(c, 1);
-        let idx = with_period(c, |w, _| w.weather_stages.iter().position(|s| h >= s.stage_start && h < s.stage_end))?;
+        let idx = with_period(c, |w, _| {
+            w.weather_stages
+                .iter()
+                .position(|s| h >= s.stage_start && h < s.stage_end)
+        })?;
         Ok(c.push(idx.map_or(Value::Nil, |i| handle(Obj::Stage(p, i)))))
     });
     b.method("getWeatherStages", |c| {
         let o = obj_of(c)?;
         let Obj::Period(p) = o else { return Err(npe()) };
         let n = with_period(c, |w, _| w.weather_stages.len())?;
-        Ok(c.push(list_value((0..n).map(|i| handle(Obj::Stage(p, i))).collect())))
+        Ok(c.push(list_value(
+            (0..n).map(|i| handle(Obj::Stage(p, i))).collect(),
+        )))
     });
     type CR = fn(&WeatherPeriod) -> ColorRef;
     let colors: [(&str, CR); 7] = [
@@ -1462,7 +1750,8 @@ fn register_period(thread: &mut Thread) {
             let clock = g.clock(x);
             let (sa, sb) = (g.climate.simplex_offset_a, g.climate.simplex_offset_b);
             match o {
-                Obj::Period(p) => period_mut(g, p).map(|w| w.start_create_modded_period(warm, s, a, &clock, sa, sb, x)),
+                Obj::Period(p) => period_mut(g, p)
+                    .map(|w| w.start_create_modded_period(warm, s, a, &clock, sa, sb, x)),
                 _ => None,
             }
         })?;
@@ -1522,14 +1811,29 @@ fn register_period(thread: &mut Thread) {
     }
     type SG = fn(&WeatherPeriod, usize) -> Value;
     let gets: [(&str, SG); 9] = [
-        ("getStageStart", |w, i| Value::Num(w.weather_stages[i].stage_start)),
-        ("getStageEnd", |w, i| Value::Num(w.weather_stages[i].stage_end)),
-        ("getStageDuration", |w, i| Value::Num(w.weather_stages[i].stage_duration)),
-        ("getStageID", |w, i| Value::from(w.weather_stages[i].stage_id)),
-        ("getModID", |w, i| w.weather_stages[i].mod_id.clone().map_or(Value::Nil, Value::from)),
+        ("getStageStart", |w, i| {
+            Value::Num(w.weather_stages[i].stage_start)
+        }),
+        ("getStageEnd", |w, i| {
+            Value::Num(w.weather_stages[i].stage_end)
+        }),
+        ("getStageDuration", |w, i| {
+            Value::Num(w.weather_stages[i].stage_duration)
+        }),
+        ("getStageID", |w, i| {
+            Value::from(w.weather_stages[i].stage_id)
+        }),
+        ("getModID", |w, i| {
+            w.weather_stages[i]
+                .mod_id
+                .clone()
+                .map_or(Value::Nil, Value::from)
+        }),
         ("getLinearT", |w, i| fv(w.weather_stages[i].linear_t)),
         ("getParabolicT", |w, i| fv(w.weather_stages[i].parabolic_t)),
-        ("getHasStartedCloud", |w, i| Value::Bool(w.weather_stages[i].has_started_cloud)),
+        ("getHasStartedCloud", |w, i| {
+            Value::Bool(w.weather_stages[i].has_started_cloud)
+        }),
         ("getStageCurrentStrength", |w, i| fv(w.stage_strength(i))),
     ];
     for (name, f) in gets {
@@ -1556,14 +1860,23 @@ fn register_period(thread: &mut Thread) {
     b.method("lerpEntryTo", |c| {
         let (m, e) = (int_arg(c, 1), int_arg(c, 2));
         use pz_core::weather::StrLerpVal;
-        with_stage(c, |w, i| w.weather_stages[i].lerp_entry_to(StrLerpVal::from_value(m), StrLerpVal::from_value(e)))?;
+        with_stage(c, |w, i| {
+            w.weather_stages[i].lerp_entry_to(StrLerpVal::from_value(m), StrLerpVal::from_value(e))
+        })?;
         Ok(0)
     });
 
-    let e = expose_enum(thread, STR_LERP_VAL_CLASS, &["Entry", "Target", "NextTarget", "None"]);
+    let e = expose_enum(
+        thread,
+        STR_LERP_VAL_CLASS,
+        &["Entry", "Target", "NextTarget", "None"],
+    );
     e.method("getValue", |c| {
         let v = this::<JavaEnum>(c)?;
-        let ord = v.as_any().downcast_ref::<JavaEnum>().map_or(3, |e| e.ordinal);
+        let ord = v
+            .as_any()
+            .downcast_ref::<JavaEnum>()
+            .map_or(3, |e| e.ordinal);
         Ok(c.push([1, 2, 3, 0][ord.clamp(0, 3) as usize]))
     });
     e.static_fn("fromValue", |c| {
@@ -1574,9 +1887,13 @@ fn register_period(thread: &mut Thread) {
 
 fn register_thunder(thread: &mut Thread) {
     let b = expose_class(thread, THUNDER_STORM_CLASS, None);
-    b.method("getClouds", |c| Ok(c.push(list_value((0..3).map(|i| handle(Obj::Cloud(i))).collect()))));
+    b.method("getClouds", |c| {
+        Ok(c.push(list_value((0..3).map(|i| handle(Obj::Cloud(i))).collect())))
+    });
     b.method("HasActiveThunderClouds", |c| {
-        let v = with_gt(c, |g, _| g.climate.thunder_storm.has_active_thunder_clouds())?;
+        let v = with_gt(c, |g, _| {
+            g.climate.thunder_storm.has_active_thunder_clouds()
+        })?;
         Ok(c.push(v))
     });
     b.method("isModifyingNight", |c| Ok(c.push(false)));
@@ -1594,9 +1911,18 @@ fn register_thunder(thread: &mut Thread) {
         let v = with_gt(c, |g, _| g.climate.thunder_storm.map_diagonal())?;
         Ok(c.push(v))
     });
-    for (name, enqueue) in [("triggerThunderEvent", false), ("enqueueThunderEvent", true)] {
+    for (name, enqueue) in [
+        ("triggerThunderEvent", false),
+        ("enqueueThunderEvent", true),
+    ] {
         b.method(name, move |c| {
-            let (x, y, s, l, r) = (int_arg(c, 1), int_arg(c, 2), bool_arg(c, 3), bool_arg(c, 4), bool_arg(c, 5));
+            let (x, y, s, l, r) = (
+                int_arg(c, 1),
+                int_arg(c, 2),
+                bool_arg(c, 3),
+                bool_arg(c, 4),
+                bool_arg(c, 5),
+            );
             with_gt(c, |g, ctx| {
                 let t = &mut g.climate.thunder_storm;
                 if enqueue {
@@ -1611,12 +1937,26 @@ fn register_thunder(thread: &mut Thread) {
     b.method("startThunderCloud", |c| {
         if c.nargs() < 9 {
             // The 7-argument overload calls itself.
-            return Err(LuaError::Runtime { message: String::new(), class: "java.lang.StackOverflowError" });
+            return Err(LuaError::Runtime {
+                message: String::new(),
+                class: "java.lang.StackOverflowError",
+            });
         }
-        let a = (farg(c, 1), farg(c, 2), farg(c, 3), farg(c, 4), farg(c, 5), num_arg(c, 6), bool_arg(c, 7), farg(c, 8));
+        let a = (
+            farg(c, 1),
+            farg(c, 2),
+            farg(c, 3),
+            farg(c, 4),
+            farg(c, 5),
+            num_arg(c, 6),
+            bool_arg(c, 7),
+            farg(c, 8),
+        );
         let idx = with_gt(c, |g, ctx| {
             let w = g.world_age_hours();
-            g.climate.thunder_storm.start_thunder_cloud(a.0, a.1, a.2, a.3, a.4, a.5, a.6, a.7, w, ctx)
+            g.climate
+                .thunder_storm
+                .start_thunder_cloud(a.0, a.1, a.2, a.3, a.4, a.5, a.6, a.7, w, ctx)
         })?;
         Ok(c.push(idx.map_or(Value::Nil, |i| handle(Obj::Cloud(i)))))
     });
@@ -1656,16 +1996,29 @@ fn register_thunder(thread: &mut Thread) {
 fn register_forecaster(thread: &mut Thread) {
     let b = expose_class(thread, CLIMATE_FORECASTER_CLASS, None);
     b.method("getForecasts", |c| {
-        let ids = with_gt(c, |g, _| g.climate.climate_forecaster.forecasts.iter().map(|f| f.id).collect::<Vec<_>>())?;
-        Ok(c.push(list_value(ids.into_iter().map(|i| handle(Obj::Forecast(i))).collect())))
+        let ids = with_gt(c, |g, _| {
+            g.climate
+                .climate_forecaster
+                .forecasts
+                .iter()
+                .map(|f| f.id)
+                .collect::<Vec<_>>()
+        })?;
+        Ok(c.push(list_value(
+            ids.into_iter().map(|i| handle(Obj::Forecast(i))).collect(),
+        )))
     });
     b.method("getForecast", |c| {
         let off = if c.nargs() > 1 { int_arg(c, 1) } else { 0 };
-        let id = with_gt(c, |g, _| g.climate.climate_forecaster.get_forecast(off).map(|f| f.id))?;
+        let id = with_gt(c, |g, _| {
+            g.climate.climate_forecaster.get_forecast(off).map(|f| f.id)
+        })?;
         Ok(c.push(id.map_or(Value::Nil, |i| handle(Obj::Forecast(i)))))
     });
     b.method("getDaysTillFirstWeather", |c| {
-        let v = with_gt(c, |g, _| g.climate.climate_forecaster.days_till_first_weather())?;
+        let v = with_gt(c, |g, _| {
+            g.climate.climate_forecaster.days_till_first_weather()
+        })?;
         Ok(c.push(v))
     });
 
@@ -1674,7 +2027,10 @@ fn register_forecaster(thread: &mut Thread) {
     let gets: [(&str, FG); 19] = [
         ("getIndexOffset", |f| Value::from(f.index_offset)),
         ("getName", |f| match f.name_date {
-            Some((y, m, d)) => Value::from(format!("{}: {y} - {m} - {d}", crate::bind_text::translate("IGUI_Forecaster_Day"))),
+            Some((y, m, d)) => Value::from(format!(
+                "{}: {y} - {m} - {d}",
+                crate::bind_text::translate("IGUI_Forecaster_Day")
+            )),
             None => Value::from("Day x"),
         }),
         ("isWeatherStarts", |f| Value::Bool(f.weather_starts)),
@@ -1683,14 +2039,18 @@ fn register_forecaster(thread: &mut Thread) {
         ("isChanceOnSnow", |f| Value::Bool(f.chance_on_snow)),
         ("getAirFrontString", |f| Value::from(f.air_front_string)),
         ("isHasFog", |f| Value::Bool(f.has_fog)),
-        ("getMeanWindAngleString", |f| Value::from(f.mean_wind_angle_string())),
+        ("getMeanWindAngleString", |f| {
+            Value::from(f.mean_wind_angle_string())
+        }),
         ("getFogStrength", |f| fv(f.fog_strength)),
         ("getFogDuration", |f| fv(f.fog_duration)),
         ("isHasHeavyRain", |f| Value::Bool(f.has_heavy_rain)),
         ("isHasStorm", |f| Value::Bool(f.has_storm)),
         ("isHasTropicalStorm", |f| Value::Bool(f.has_tropical_storm)),
         ("isHasBlizzard", |f| Value::Bool(f.has_blizzard)),
-        ("getWeatherStages", |f| list_value(f.weather_stages.iter().map(|&i| Value::from(i)).collect())),
+        ("getWeatherStages", |f| {
+            list_value(f.weather_stages.iter().map(|&i| Value::from(i)).collect())
+        }),
         ("getDawn", |f| fv(f.dawn)),
         ("getDusk", |f| fv(f.dusk)),
         ("getDayLightHours", |f| fv(f.day_light_hours)),
@@ -1698,15 +2058,26 @@ fn register_forecaster(thread: &mut Thread) {
     for (name, f) in gets {
         b.method(name, move |c| {
             let v = on_obj(c, |o, g, _| match o {
-                Obj::Forecast(id) => g.climate.climate_forecaster.by_id(id).map(f).ok_or_else(npe),
+                Obj::Forecast(id) => g
+                    .climate
+                    .climate_forecaster
+                    .by_id(id)
+                    .map(f)
+                    .ok_or_else(npe),
                 _ => Err(npe()),
             })?;
             Ok(c.push(v))
         });
     }
-    for (k, name) in ["getTemperature", "getHumidity", "getWindDirection", "getWindPower", "getCloudiness"]
-        .into_iter()
-        .enumerate()
+    for (k, name) in [
+        "getTemperature",
+        "getHumidity",
+        "getWindDirection",
+        "getWindPower",
+        "getCloudiness",
+    ]
+    .into_iter()
+    .enumerate()
     {
         b.method(name, move |c| {
             let o = obj_of(c)?;
@@ -1732,7 +2103,11 @@ fn register_forecaster(thread: &mut Thread) {
     });
     b.method("getWeatherOverlap", |c| {
         let v = on_obj(c, |o, g, _| match o {
-            Obj::Forecast(id) => Ok(g.climate.climate_forecaster.by_id(id).and_then(|f| f.weather_overlap)),
+            Obj::Forecast(id) => Ok(g
+                .climate
+                .climate_forecaster
+                .by_id(id)
+                .and_then(|f| f.weather_overlap)),
             _ => Err(npe()),
         })?;
         Ok(c.push(v.map_or(Value::Nil, |i| handle(Obj::Forecast(i)))))
@@ -1756,7 +2131,13 @@ fn register_forecaster(thread: &mut Thread) {
             let v = on_obj(c, |o, g, _| match o {
                 Obj::ForecastValue(id, k) => {
                     let d = g.climate.climate_forecaster.by_id(id).ok_or_else(npe)?;
-                    let fvv = [&d.temperature, &d.humidity, &d.wind_direction, &d.wind_power, &d.cloudiness][k as usize];
+                    let fvv = [
+                        &d.temperature,
+                        &d.humidity,
+                        &d.wind_direction,
+                        &d.wind_power,
+                        &d.cloudiness,
+                    ][k as usize];
                     Ok(f(fvv))
                 }
                 _ => Err(npe()),
@@ -1776,7 +2157,10 @@ fn register_misc(thread: &mut Thread) {
         Ok(c.push(v))
     });
     fgetter!(b, "getMoonFloat", |g| g.climate.moon.get_moon_float());
-    getter!(b, "getCurrentMoonPhase", |g| g.climate.moon.get_current_moon_phase());
+    getter!(b, "getCurrentMoonPhase", |g| g
+        .climate
+        .moon
+        .get_current_moon_phase());
     b.method("updatePhase", |c| {
         let (y, m, d) = (int_arg(c, 1), int_arg(c, 2), int_arg(c, 3));
         with_gt(c, |g, _| g.climate.moon.update_phase(y, m, d))?;
@@ -1816,7 +2200,9 @@ fn register_misc(thread: &mut Thread) {
             let col = this_color(c)?;
             let d = col.borrow();
             let v = if ext { d.exterior } else { d.interior };
-            Ok(c.push(Value::Object(Rc::new(pz_ui::ColorObject::new(v[0], v[1], v[2], v[3])))))
+            Ok(c.push(Value::Object(Rc::new(pz_ui::ColorObject::new(
+                v[0], v[1], v[2], v[3],
+            )))))
         });
     }
     b.method("setTo", |c| {
@@ -1842,7 +2228,10 @@ fn register_misc(thread: &mut Thread) {
     let b = expose_class(thread, CLIMATE_VALUES_CLASS, None);
     fn with_values<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut ClimateValues) -> R) -> LuaResult<R> {
         let o = this::<ClimateValuesObject>(c)?;
-        let v = o.as_any().downcast_ref::<ClimateValuesObject>().ok_or_else(npe)?;
+        let v = o
+            .as_any()
+            .downcast_ref::<ClimateValuesObject>()
+            .ok_or_else(npe)?;
         let r = f(&mut v.0.borrow_mut());
         Ok(r)
     }
@@ -1852,29 +2241,46 @@ fn register_misc(thread: &mut Thread) {
         ("getDawn", |v| fv(v.get_dawn())),
         ("getDusk", |v| fv(v.get_dusk())),
         ("getNoon", |v| fv(v.get_noon())),
-        ("getAirMassNoiseFrequencyMod", |v| Value::Num(v.get_air_mass_noise_frequency_mod())),
+        ("getAirMassNoiseFrequencyMod", |v| {
+            Value::Num(v.get_air_mass_noise_frequency_mod())
+        }),
         ("getNoiseAirmass", |v| fv(v.get_noise_airmass())),
-        ("getAirMassTemperature", |v| fv(v.get_air_mass_temperature())),
+        (
+            "getAirMassTemperature",
+            |v| fv(v.get_air_mass_temperature()),
+        ),
         ("getBaseTemperature", |v| fv(v.get_base_temperature())),
         ("getDayLightLagged", |v| fv(v.get_day_light_lagged())),
         ("getNightLagged", |v| fv(v.get_night_lagged())),
         ("getTemperature", |v| fv(v.get_temperature())),
-        ("isTemperatureIsSnow", |v| Value::Bool(v.is_temperature_is_snow())),
+        ("isTemperatureIsSnow", |v| {
+            Value::Bool(v.is_temperature_is_snow())
+        }),
         ("getHumidity", |v| fv(v.get_humidity())),
         ("getWindIntensity", |v| fv(v.get_wind_intensity())),
-        ("getWindAngleIntensity", |v| fv(v.get_wind_angle_intensity())),
+        (
+            "getWindAngleIntensity",
+            |v| fv(v.get_wind_angle_intensity()),
+        ),
         ("getWindAngleDegrees", |v| fv(v.get_wind_angle_degrees())),
         ("getNightStrength", |v| fv(v.get_night_strength())),
         ("getDayLightStrength", |v| fv(v.get_day_light_strength())),
         ("getAmbient", |v| fv(v.get_ambient())),
         ("getDesaturation", |v| fv(v.get_desaturation())),
-        ("getDayLightStrengthBase", |v| fv(v.get_day_light_strength_base())),
+        ("getDayLightStrengthBase", |v| {
+            fv(v.get_day_light_strength_base())
+        }),
         ("getLerpNight", |v| fv(v.get_lerp_night())),
         ("getCloudyT", |v| fv(v.get_cloudy_t())),
         ("getCloudIntensity", |v| fv(v.get_cloud_intensity())),
         ("getAirFrontAirmass", |v| fv(v.get_air_front_airmass())),
-        ("getCacheWorldAgeHours", |v| Value::Num(v.get_cache_world_age_hours())),
-        ("getDayMeanTemperature", |v| fv(v.get_day_mean_temperature())),
+        ("getCacheWorldAgeHours", |v| {
+            Value::Num(v.get_cache_world_age_hours())
+        }),
+        (
+            "getDayMeanTemperature",
+            |v| fv(v.get_day_mean_temperature()),
+        ),
         ("isDayDoFog", |v| Value::Bool(v.is_day_do_fog())),
         ("getDayFogStrength", |v| fv(v.get_day_fog_strength())),
         ("getDayFogDuration", |v| fv(v.get_day_fog_duration())),
@@ -1885,9 +2291,15 @@ fn register_misc(thread: &mut Thread) {
             Ok(c.push(v))
         });
     }
-    for (name, k) in [("getCacheYear", 0), ("getCacheMonth", 1), ("getCacheDay", 2)] {
+    for (name, k) in [
+        ("getCacheYear", 0),
+        ("getCacheMonth", 1),
+        ("getCacheDay", 2),
+    ] {
         b.method(name, move |c| {
-            let v = with_values(c, |v| [v.get_cache_year(), v.get_cache_month(), v.get_cache_day()][k])?;
+            let v = with_values(c, |v| {
+                [v.get_cache_year(), v.get_cache_month(), v.get_cache_day()][k]
+            })?;
             Ok(c.push(v))
         });
     }
@@ -1897,7 +2309,10 @@ fn register_misc(thread: &mut Thread) {
         if a.len() < 3 {
             return Err(npe());
         }
-        let (h, mi) = (a.get(3).copied().unwrap_or(0), a.get(4).copied().unwrap_or(0));
+        let (h, mi) = (
+            a.get(3).copied().unwrap_or(0),
+            a.get(4).copied().unwrap_or(0),
+        );
         let o = this::<ClimateValuesObject>(c)?;
         with_gt(c, |g, x| {
             let clock = g.clock(x);
@@ -1910,7 +2325,8 @@ fn register_misc(thread: &mut Thread) {
             };
             let base = g.climate.season.clone().unwrap_or_default();
             if let Some(v) = o.as_any().downcast_ref::<ClimateValuesObject>() {
-                v.0.borrow_mut().poll_date_ymdhm(a[0], a[1], a[2], h, mi, &clock, &base, &env);
+                v.0.borrow_mut()
+                    .poll_date_ymdhm(a[0], a[1], a[2], h, mi, &clock, &base, &env);
             }
         })?;
         Ok(0)
@@ -1920,11 +2336,18 @@ fn register_misc(thread: &mut Thread) {
         let offs = with_gt(c, |g, _| g.climate.offsets())?;
         let mut copy = ClimateValues::new(offs);
         v.copy_values(&mut copy);
-        Ok(c.push(Value::Object(Rc::new(ClimateValuesObject(RefCell::new(copy))))))
+        Ok(
+            c.push(Value::Object(Rc::new(ClimateValuesObject(RefCell::new(
+                copy,
+            ))))),
+        )
     });
 
     let b = expose_class(thread, EROSION_SEASON_CLASS, None);
-    fn with_season<R>(c: &mut NativeCall<'_>, f: impl FnOnce(&mut ErosionSeason) -> R) -> LuaResult<R> {
+    fn with_season<R>(
+        c: &mut NativeCall<'_>,
+        f: impl FnOnce(&mut ErosionSeason) -> R,
+    ) -> LuaResult<R> {
         on_obj(c, |o, g, _| match o {
             Obj::Season(s) => season_mut(g, s).map(f).ok_or_else(npe),
             _ => Err(npe()),
@@ -1942,16 +2365,25 @@ fn register_misc(thread: &mut Thread) {
         ("getSeedB", |s| Value::from(s.get_seed_b())),
         ("getSeedC", |s| Value::from(s.get_seed_c())),
         ("getCurDayPercent", |s| fv(s.get_cur_day_percent())),
-        ("getMaxDaylightWinter", |s| Value::Num(s.get_max_daylight_winter())),
-        ("getMaxDaylightSummer", |s| Value::Num(s.get_max_daylight_summer())),
+        ("getMaxDaylightWinter", |s| {
+            Value::Num(s.get_max_daylight_winter())
+        }),
+        ("getMaxDaylightSummer", |s| {
+            Value::Num(s.get_max_daylight_summer())
+        }),
         ("getDusk", |s| fv(s.get_dusk())),
         ("getDawn", |s| fv(s.get_dawn())),
         ("getDaylight", |s| fv(s.get_daylight())),
         ("getDayTemperature", |s| fv(s.get_day_temperature())),
-        ("getDayMeanTemperature", |s| fv(s.get_day_mean_temperature())),
+        (
+            "getDayMeanTemperature",
+            |s| fv(s.get_day_mean_temperature()),
+        ),
         ("getSeason", |s| Value::from(s.get_season())),
         ("getDayHighNoon", |s| fv(s.get_day_high_noon())),
-        ("getSeasonName", |s| s.get_season_name().map_or(Value::Nil, Value::from)),
+        ("getSeasonName", |s| {
+            s.get_season_name().map_or(Value::Nil, Value::from)
+        }),
         ("getSeasonDay", |s| fv(s.get_season_day())),
         ("getSeasonDays", |s| fv(s.get_season_days())),
         ("getSeasonStrength", |s| fv(s.get_season_strength())),
@@ -1988,36 +2420,68 @@ fn register_misc(thread: &mut Thread) {
         with_season(c, |s| s.set_cur_season(v))?;
         Ok(0)
     });
-    b.method("isEndlessDay", |c| Ok(c.push(climate_settings().day_night_cycle == 2)));
-    b.method("isEndlessNight", |c| Ok(c.push(climate_settings().day_night_cycle == 3)));
+    b.method("isEndlessDay", |c| {
+        Ok(c.push(climate_settings().day_night_cycle == 2))
+    });
+    b.method("isEndlessNight", |c| {
+        Ok(c.push(climate_settings().day_night_cycle == 3))
+    });
 
     let b = expose_class(thread, TEMPERATURE_CLASS, None);
-    b.static_fn("CelsiusToFahrenheit", |c| Ok(c.push(fv(temperature::celsius_to_fahrenheit(farg(c, 0))))));
-    b.static_fn("FahrenheitToCelsius", |c| Ok(c.push(fv(temperature::fahrenheit_to_celsius(farg(c, 0))))));
-    b.static_fn("WindchillCelsiusKph", |c| {
-        Ok(c.push(fv(temperature::windchill_celsius_kph(farg(c, 0), farg(c, 1)))))
+    b.static_fn("CelsiusToFahrenheit", |c| {
+        Ok(c.push(fv(temperature::celsius_to_fahrenheit(farg(c, 0)))))
     });
-    b.static_fn("getTrueInsulationValue", |c| Ok(c.push(fv(temperature::true_insulation_value(farg(c, 0))))));
+    b.static_fn("FahrenheitToCelsius", |c| {
+        Ok(c.push(fv(temperature::fahrenheit_to_celsius(farg(c, 0)))))
+    });
+    b.static_fn("WindchillCelsiusKph", |c| {
+        Ok(c.push(fv(temperature::windchill_celsius_kph(
+            farg(c, 0),
+            farg(c, 1),
+        ))))
+    });
+    b.static_fn("getTrueInsulationValue", |c| {
+        Ok(c.push(fv(temperature::true_insulation_value(farg(c, 0)))))
+    });
     b.static_fn("getTrueWindresistanceValue", |c| {
         Ok(c.push(fv(temperature::true_windresistance_value(farg(c, 0)))))
     });
-    let celsius = || crate::bind_core::shared_core().borrow().get_option_temperature_display_celsius();
-    b.static_fn("getCelsiusPostfix", |c| Ok(c.push(temperature::CELSIUS_POSTFIX)));
-    b.static_fn("getFahrenheitPostfix", |c| Ok(c.push(temperature::FAHRENHEIT_POSTFIX)));
-    b.static_fn("getTemperaturePostfix", move |c| Ok(c.push(temperature::temperature_postfix(celsius()))));
+    let celsius = || {
+        crate::bind_core::shared_core()
+            .borrow()
+            .get_option_temperature_display_celsius()
+    };
+    b.static_fn("getCelsiusPostfix", |c| {
+        Ok(c.push(temperature::CELSIUS_POSTFIX))
+    });
+    b.static_fn("getFahrenheitPostfix", |c| {
+        Ok(c.push(temperature::FAHRENHEIT_POSTFIX))
+    });
+    b.static_fn("getTemperaturePostfix", move |c| {
+        Ok(c.push(temperature::temperature_postfix(celsius())))
+    });
     b.static_fn("getTemperatureString", move |c| {
         Ok(c.push(temperature::temperature_string(farg(c, 0), celsius())))
     });
     b.static_fn("getRoundedDisplayTemperature", move |c| {
-        Ok(c.push(temperature::rounded_display_temperature(farg(c, 0), celsius())))
+        Ok(c.push(temperature::rounded_display_temperature(
+            farg(c, 0),
+            celsius(),
+        )))
     });
     b.static_fn("getFractionForRealTimeRatePerMin", |c| {
         let (len, def) = climate_settings().day_length_minutes;
-        Ok(c.push(fv(temperature::fraction_for_real_time_rate_per_min(farg(c, 0), len, def))))
+        Ok(c.push(fv(temperature::fraction_for_real_time_rate_per_min(
+            farg(c, 0),
+            len,
+            def,
+        ))))
     });
     b.static_fn("getValueColor", |c| {
         let v = temperature::value_color(farg(c, 0));
-        Ok(c.push(Value::Object(Rc::new(pz_ui::ColorObject::new(v[0], v[1], v[2], v[3])))))
+        Ok(c.push(Value::Object(Rc::new(pz_ui::ColorObject::new(
+            v[0], v[1], v[2], v[3],
+        )))))
     });
     b.static_fn("reset", |_| Ok(0));
 }

@@ -11,7 +11,8 @@ Project Zomboid's vehicle runtime (`zombie.vehicles`, the vehicle side of
   `physics::bullet` implements it on `pz_bullet::PzBullet`,
   `physics::replay` answers calls from a recorded log.
 - `chunk_physics`: `IsoChunk.updatePhysicsForLevel` / `calcPhysics` (the
-  `ToBullet` chunk shapes) and the `physicsCheck` flags.
+  `ToBullet` chunk shapes) and `updatePhysicsForLevelIfNeeded` on
+  pz-world's `IsoChunk` physics-check flags.
 - `manager`, `vehicle_type`, `spawn`: the vehicle id map and cell lists,
   `VehicleType`, `IsoChunk.AddVehicles` (`SpawnWorld`, `CellSpawnWorld`).
 - `cell_link`: runtime vehicles in pz-world's `IsoChunk.vehicles`.
@@ -42,7 +43,7 @@ compares the chunk shapes with the original's buffers.
 
 | Track | Result |
 |---|---|
-| Saved vehicles, 8 saves | 241/243 exact; 1 matches up to the original's crash, 1 trailer animal |
+| Saved vehicles, 8 saves, item load draws live on the vehicle stream (no post-load reseed) | 240/243 exact; 2 match up to the original's own crash (a broken window with no square), 1 trailer animal; load draws match for all 242 loadable |
 | Vehicle scripts | 241/241 exact |
 | Spawn helpers | 3,000/3,000 |
 | `AddVehicles` | 2,000/2,000 |

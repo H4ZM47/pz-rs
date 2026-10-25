@@ -29,7 +29,10 @@ fn this_ordinal(c: &NativeCall<'_>, class: &str) -> LuaResult<usize> {
     let o = this::<JavaEnum>(c)?;
     let e = o.as_any().downcast_ref::<JavaEnum>().unwrap();
     if e.class != class {
-        return Err(LuaError::runtime(format!("Expected {class} but got {}", e.class)));
+        return Err(LuaError::runtime(format!(
+            "Expected {class} but got {}",
+            e.class
+        )));
     }
     Ok(e.ordinal as usize)
 }
@@ -38,9 +41,16 @@ fn this_ordinal(c: &NativeCall<'_>, class: &str) -> LuaResult<usize> {
 pub(crate) fn enum_arg(c: &NativeCall<'_>, i: usize, class: &str) -> LuaResult<Option<usize>> {
     match c.arg(i) {
         Value::Nil => Ok(None),
-        Value::Object(o) => match o.as_any().downcast_ref::<JavaEnum>().filter(|e| e.class == class) {
+        Value::Object(o) => match o
+            .as_any()
+            .downcast_ref::<JavaEnum>()
+            .filter(|e| e.class == class)
+        {
             Some(e) => Ok(Some(e.ordinal as usize)),
-            None => Err(LuaError::runtime(format!("Expected {class} but got {}", o.class_name()))),
+            None => Err(LuaError::runtime(format!(
+                "Expected {class} but got {}",
+                o.class_name()
+            ))),
         },
         other => Err(LuaError::runtime(format!(
             "Expected {class} but got {}",
@@ -91,8 +101,12 @@ fn register_metabolics(thread: &mut Thread, mets: Vec<(String, f32)>) {
     let b = expose_enum(thread, METABOLICS_CLASS, &names);
     let mets: Rc<Vec<f32>> = Rc::new(mets.into_iter().map(|(_, m)| m).collect());
     type Conv = fn(f32) -> f32;
-    let getters: [(&str, Conv); 4] =
-        [("getMet", |m| m), ("getWm2", met_to_wm2), ("getW", met_to_w), ("getBtuHr", met_to_btu_hr)];
+    let getters: [(&str, Conv); 4] = [
+        ("getMet", |m| m),
+        ("getWm2", met_to_wm2),
+        ("getW", met_to_w),
+        ("getBtuHr", met_to_btu_hr),
+    ];
     for (name, f) in getters {
         let m = mets.clone();
         b.method(name, move |c| {
@@ -100,7 +114,11 @@ fn register_metabolics(thread: &mut Thread, mets: Vec<(String, f32)>) {
             Ok(c.push(float_value(f(m[i]))))
         });
     }
-    let statics: [(&str, Conv); 3] = [("MetToWm2", met_to_wm2), ("MetToW", met_to_w), ("MetToBtuHr", met_to_btu_hr)];
+    let statics: [(&str, Conv); 3] = [
+        ("MetToWm2", met_to_wm2),
+        ("MetToW", met_to_w),
+        ("MetToBtuHr", met_to_btu_hr),
+    ];
     for (name, f) in statics {
         b.static_fn(name, move |c| Ok(c.push(float_value(f(float_arg(c, 0))))));
     }
@@ -112,8 +130,12 @@ fn register_body_part_type(thread: &mut Thread, parts: Vec<BodyPartDecl>) {
     let parts = Rc::new(parts);
     // `MAX` is the last constant.
     let max = parts.len().saturating_sub(1);
-    let consts: Rc<Vec<Value>> =
-        Rc::new(names.iter().map(|n| crate::expose::enum_value(BODY_PART_TYPE_CLASS, n)).collect());
+    let consts: Rc<Vec<Value>> = Rc::new(
+        names
+            .iter()
+            .map(|n| crate::expose::enum_value(BODY_PART_TYPE_CLASS, n))
+            .collect(),
+    );
 
     b.method("index", |c| {
         let i = this_ordinal(c, BODY_PART_TYPE_CLASS)?;
@@ -122,14 +144,20 @@ fn register_body_part_type(thread: &mut Thread, parts: Vec<BodyPartDecl>) {
     let k = consts.clone();
     b.static_fn("FromIndex", move |c| {
         let i = int_arg(c, 0);
-        let v = usize::try_from(i).ok().filter(|i| *i < k.len()).unwrap_or(max);
+        let v = usize::try_from(i)
+            .ok()
+            .filter(|i| *i < k.len())
+            .unwrap_or(max);
         Ok(c.push(k[v].clone()))
     });
     let (k, p) = (consts.clone(), parts.clone());
     b.static_fn("FromString", move |c| {
         let s = str_arg(c, 0);
         let i = s
-            .and_then(|s| p.iter().position(|d| pz_scripts::java::eq_ignore_case(&d.name, &s)))
+            .and_then(|s| {
+                p.iter()
+                    .position(|d| pz_scripts::java::eq_ignore_case(&d.name, &s))
+            })
             .unwrap_or(max);
         Ok(c.push(k[i].clone()))
     });
@@ -160,7 +188,10 @@ fn register_body_part_type(thread: &mut Thread, parts: Vec<BodyPartDecl>) {
     for (name, f) in by_index {
         let p = parts.clone();
         b.static_fn(name, move |c| {
-            let i = usize::try_from(int_arg(c, 0)).ok().filter(|i| *i < p.len()).unwrap_or(max);
+            let i = usize::try_from(int_arg(c, 0))
+                .ok()
+                .filter(|i| *i < p.len())
+                .unwrap_or(max);
             Ok(c.push(float_value(f(&p[i]))))
         });
     }
@@ -182,7 +213,12 @@ fn register_body_part_type(thread: &mut Thread, parts: Vec<BodyPartDecl>) {
     let p = parts.clone();
     b.method("getBandageModel", move |c| {
         let i = this_ordinal(c, BODY_PART_TYPE_CLASS)?;
-        Ok(c.push(p[i].bandage_model.as_deref().map(Value::from).unwrap_or_default()))
+        Ok(c.push(
+            p[i].bandage_model
+                .as_deref()
+                .map(Value::from)
+                .unwrap_or_default(),
+        ))
     });
     type Model = fn(&BodyPartDecl) -> Option<&str>;
     let models: [(&str, Model); 3] = [
@@ -217,7 +253,13 @@ mod tests {
     use super::*;
     use pz_kahlua::TableRef;
 
-    fn part(field: &str, name: &str, key: Option<&str>, bite: Option<&str>, pain: f32) -> BodyPartDecl {
+    fn part(
+        field: &str,
+        name: &str,
+        key: Option<&str>,
+        bite: Option<&str>,
+        pain: f32,
+    ) -> BodyPartDecl {
         BodyPartDecl {
             field: field.into(),
             name: name.into(),
@@ -237,9 +279,19 @@ mod tests {
         let sm = Rc::new(ScriptManager::new());
         {
             let mut tables = sm.builtin_tables.borrow_mut();
-            tables.metabolics = vec![("Napping".into(), 0.7), ("Juggling".into(), 2.5), ("MAX".into(), 9.9)];
+            tables.metabolics = vec![
+                ("Napping".into(), 0.7),
+                ("Juggling".into(), 2.5),
+                ("MAX".into(), 9.9),
+            ];
             tables.body_parts = vec![
-                part("Elbow_L", "Elbow_L", Some("UI_elbow"), Some("T.Bite_Elbow_"), 0.5),
+                part(
+                    "Elbow_L",
+                    "Elbow_L",
+                    Some("UI_elbow"),
+                    Some("T.Bite_Elbow_"),
+                    0.5,
+                ),
                 part("Knee_R", "Knee_R", Some("UI_knee"), None, 0.25),
                 part("MAX", "Odd Part", Some("UI_odd"), None, 1.0),
             ];
@@ -270,7 +322,12 @@ mod tests {
             assert(r == BodyPartType.Elbow_L or r == BodyPartType.Knee_R)
         "#;
         let p = pz_kahlua::compiler::compile(src, Some("t"), Some("t"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e))).unwrap();
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+            .unwrap();
     }
 }

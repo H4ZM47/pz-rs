@@ -68,7 +68,9 @@ fn key_of(v: &Value) -> Key {
             n.to_bits()
         }),
         Value::Str(s) => Key::Str(s.clone()),
-        Value::Object(o) if o.as_any().is::<JavaInteger>() => Key::Int(o.as_any().downcast_ref::<JavaInteger>().unwrap().0),
+        Value::Object(o) if o.as_any().is::<JavaInteger>() => {
+            Key::Int(o.as_any().downcast_ref::<JavaInteger>().unwrap().0)
+        }
         other => Key::Ref(other.type_name(), other.ptr_id()),
     }
 }
@@ -91,7 +93,9 @@ fn java_hash(k: &Key) -> i32 {
         }
         Key::Num(bits) => (*bits ^ (*bits >> 32)) as i32,
         Key::Int(i) => *i,
-        Key::Str(s) => s.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c))),
+        Key::Str(s) => s
+            .encode_utf16()
+            .fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(i32::from(c))),
         Key::Ref(_, p) => (*p as u64 ^ (*p as u64 >> 32)) as i32,
     }
 }
@@ -127,14 +131,20 @@ fn no_such_element() -> LuaError {
 }
 
 fn unsupported() -> LuaError {
-    LuaError::Runtime { message: String::new(), class: "java.lang.UnsupportedOperationException" }
+    LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.UnsupportedOperationException",
+    }
 }
 
 /// `ClassCastException` for a live collection's writer given an element of
 /// the wrong type.
 pub fn class_cast(v: &Value, to: &str) -> LuaError {
     LuaError::Runtime {
-        message: format!("class {} cannot be cast to class {to}", pz_kahlua::stdlib::java_class_name(v)),
+        message: format!(
+            "class {} cannot be cast to class {to}",
+            pz_kahlua::stdlib::java_class_name(v)
+        ),
         class: "java.lang.ClassCastException",
     }
 }
@@ -245,16 +255,22 @@ pub fn integer_value(i: i32) -> Value {
 
 impl JavaList {
     pub fn new(items: Vec<Value>) -> Self {
-        JavaList { items: RefCell::new(items), live: None }
+        JavaList {
+            items: RefCell::new(items),
+            live: None,
+        }
     }
 
     /// A live view of an owner's list; `write` stores a mutated list back
     /// (`None`: mutations throw `UnsupportedOperationException`).
-    pub fn live(
-        read: impl Fn() -> Vec<Value> + 'static,
-        write: Option<ListWrite>,
-    ) -> Self {
-        JavaList { items: RefCell::new(Vec::new()), live: Some(Live { read: Box::new(read), write }) }
+    pub fn live(read: impl Fn() -> Vec<Value> + 'static, write: Option<ListWrite>) -> Self {
+        JavaList {
+            items: RefCell::new(Vec::new()),
+            live: Some(Live {
+                read: Box::new(read),
+                write,
+            }),
+        }
     }
 
     /// Reload a live list from its owner.
@@ -314,11 +330,14 @@ impl JavaMap {
     /// A live view of an owner's `HashMap`: `read` lists the entries in the
     /// owner's iteration order; `write` stores a mutated map back (`None`:
     /// mutations throw `UnsupportedOperationException`).
-    pub fn live(
-        read: impl Fn() -> Vec<(Value, Value)> + 'static,
-        write: Option<MapWrite>,
-    ) -> Self {
-        JavaMap { live: Some(Live { read: Box::new(read), write }), ..Self::with_class(HASH_MAP, 16) }
+    pub fn live(read: impl Fn() -> Vec<(Value, Value)> + 'static, write: Option<MapWrite>) -> Self {
+        JavaMap {
+            live: Some(Live {
+                read: Box::new(read),
+                write,
+            }),
+            ..Self::with_class(HASH_MAP, 16)
+        }
     }
 
     /// Reload a live map from its owner.
@@ -502,7 +521,10 @@ fn list_mut<R>(c: &NativeCall<'_>, f: impl FnOnce(&JavaList) -> R) -> LuaResult<
 fn map_obj(c: &NativeCall<'_>) -> LuaResult<Rc<dyn LuaObject>> {
     match c.arg(0) {
         Value::Object(o) if o.as_any().is::<JavaMap>() => Ok(o),
-        other => Err(LuaError::runtime(format!("Expected a map or set but got {}", pz_kahlua::stdlib::java_class_name(&other)))),
+        other => Err(LuaError::runtime(format!(
+            "Expected a map or set but got {}",
+            pz_kahlua::stdlib::java_class_name(&other)
+        ))),
     }
 }
 
@@ -920,7 +942,14 @@ fn register_integer(thread: &mut Thread) {
         }
     }
     let b = expose_class(thread, INTEGER, None);
-    for name in ["intValue", "longValue", "floatValue", "doubleValue", "shortValue", "byteValue"] {
+    for name in [
+        "intValue",
+        "longValue",
+        "floatValue",
+        "doubleValue",
+        "shortValue",
+        "byteValue",
+    ] {
         b.method(name, move |c| {
             let v = int(c)?;
             let v = match name {
@@ -948,7 +977,10 @@ fn register_integer(thread: &mut Thread) {
     b.method("compareTo", |c| {
         let v = int(c)?;
         let other = int_of(&c.arg(1)).ok_or_else(|| LuaError::Runtime {
-            message: format!("class {} cannot be cast to class {INTEGER}", pz_kahlua::stdlib::java_class_name(&c.arg(1))),
+            message: format!(
+                "class {} cannot be cast to class {INTEGER}",
+                pz_kahlua::stdlib::java_class_name(&c.arg(1))
+            ),
             class: "java.lang.ClassCastException",
         })?;
         Ok(c.push(f64::from(v.cmp(&other) as i32)))
@@ -981,7 +1013,13 @@ fn register_views(thread: &mut Thread) {
     });
     b.method("getValue", |c| {
         let o = this::<JavaEntry>(c)?;
-        let v = o.as_any().downcast_ref::<JavaEntry>().unwrap().value.borrow().clone();
+        let v = o
+            .as_any()
+            .downcast_ref::<JavaEntry>()
+            .unwrap()
+            .value
+            .borrow()
+            .clone();
         Ok(c.push(to_lua_number(v)))
     });
 }
@@ -1057,8 +1095,13 @@ mod tests {
 
     fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map(|_| ())
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
     }
 
     #[test]
@@ -1072,13 +1115,25 @@ mod tests {
         let list = JavaList::live(
             move || r.borrow().iter().map(|i| integer_value(*i)).collect(),
             Some(Box::new(move |v: Vec<Value>| {
-                *w.borrow_mut() = v.iter().map(|x| to_lua_number(x.clone()).as_num().unwrap_or(0.0) as i32).collect();
+                *w.borrow_mut() = v
+                    .iter()
+                    .map(|x| to_lua_number(x.clone()).as_num().unwrap_or(0.0) as i32)
+                    .collect();
                 Ok(())
             })),
         );
         t.globals().set_str("live", Value::Object(Rc::new(list)));
         let r = owner.clone();
-        let ro = JavaMap::live(move || r.borrow().iter().map(|i| (Value::str("k"), integer_value(*i))).take(1).collect(), None);
+        let ro = JavaMap::live(
+            move || {
+                r.borrow()
+                    .iter()
+                    .map(|i| (Value::str("k"), integer_value(*i)))
+                    .take(1)
+                    .collect()
+            },
+            None,
+        );
         t.globals().set_str("ro", Value::Object(Rc::new(ro)));
         run(
             &mut t,

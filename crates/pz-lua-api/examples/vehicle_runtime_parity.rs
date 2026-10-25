@@ -143,6 +143,8 @@ impl pz_inventory::ItemContext for ItemCtx {
 /// `InventoryItemFactory.CreateItem` makes for every loaded item (its id).
 struct DrawingItems<'a> {
     inner: &'a ScriptItems,
+    /// Draw from the vehicle `Rand` stream (else record and answer 0/min).
+    live: bool,
     bounds: std::cell::RefCell<Vec<i32>>,
 }
 
@@ -188,11 +190,19 @@ impl pz_inventory::ItemEnv for DrawingItems<'_> {
     }
     fn rand_next(&self, bound: i32) -> i32 {
         self.bounds.borrow_mut().push(bound);
-        0
+        if self.live {
+            rand::next(bound)
+        } else {
+            0
+        }
     }
-    fn rand_float(&self, min: f32, _max: f32) -> f32 {
+    fn rand_float(&self, min: f32, max: f32) -> f32 {
         self.bounds.borrow_mut().push(i32::MIN);
-        min
+        if self.live {
+            rand::next_float(min, max)
+        } else {
+            min
+        }
     }
 }
 
@@ -641,6 +651,7 @@ fn main() {
         saved: Option<pz_world::save::vehicle::BaseVehicle>,
         bounds: Vec<i32>,
         script: Option<String>,
+        row: Option<VehicleRow>,
     }
     let mut cases = Vec::new();
     let e2e = a[5] == "--e2e";
@@ -665,6 +676,7 @@ fn main() {
                     saved: None,
                     bounds: Vec::new(),
                     script,
+                    row: None,
                 });
             }
             i += 1;
@@ -689,6 +701,7 @@ fn main() {
             };
             let drawing = DrawingItems {
                 inner: registry,
+                live: false,
                 bounds: Default::default(),
             };
             let saved = match row.load(class, offsets, &drawing) {
@@ -699,6 +712,20 @@ fn main() {
                 }
             };
             let bounds = drawing.bounds.borrow().clone();
+            if std::env::var("LOAD_TRACE")
+                .ok()
+                .and_then(|v| v.parse::<i32>().ok())
+                == Some(id)
+            {
+                let mut m = std::collections::BTreeMap::new();
+                for b in &bounds {
+                    *m.entry(*b).or_insert(0) += 1;
+                }
+                println!("load draws v{id}: {m:?}");
+                for b in &bounds {
+                    println!("load draw {b}");
+                }
+            }
             cases.push(Case {
                 id,
                 dir: oracle.join(format!("v{id}")),
@@ -706,6 +733,7 @@ fn main() {
                 saved: Some(saved),
                 bounds,
                 script: None,
+                row: Some(row),
             });
         }
     }
@@ -782,17 +810,20 @@ fn main() {
             rand::seed_lua(id as i64 * 31 + 7);
             apply_time(times[0]);
             let bounds = case.bounds.clone();
+            let live_draws = std::cell::RefCell::new(0usize);
             let v = match &case.saved {
                 Some(saved) => pz_vehicles::save::from_save_with(saved, || {
-                    for b in &bounds {
-                        if *b == i32::MIN {
-                            rand::next_float(0.0, 1.0);
-                        } else if *b < 0 {
-                            rand::next_range(0, -*b);
-                        } else {
-                            rand::next(*b);
-                        }
+                    // The load's item draws, live on the vehicle stream
+                    // (the loaded fields come from the first load).
+                    let live = DrawingItems {
+                        inner: registry,
+                        live: true,
+                        bounds: Default::default(),
+                    };
+                    if let Some(row) = &case.row {
+                        let _ = row.load(class, offsets, &live);
                     }
+                    *live_draws.borrow_mut() = live.bounds.borrow().len();
                 }),
                 None => {
                     let v = BaseVehicle::new();
@@ -810,8 +841,15 @@ fn main() {
                     v
                 }
             };
-            rust_lines.push(format!("D loadDraws={}", bounds.len()));
-            rand::seed_standard(id as i64 + 1_000_003);
+            let draws = if case.row.is_some() {
+                *live_draws.borrow()
+            } else {
+                bounds.len()
+            };
+            rust_lines.push(format!("D loadDraws={}", draws));
+            if std::env::var_os("NO_RESEED").is_none() {
+                rand::seed_standard(id as i64 + 1_000_003);
+            }
             v.st_mut().chunk = Some(case.chunk);
             v.add_to_world();
             manager::process_add_vehicles();
@@ -886,7 +924,14 @@ fn main() {
             .find(|l| l.starts_with("D loadDraws"))
             .cloned();
         rust_lines.retain(|l| !l.starts_with('D'));
-        if java_draws != rust_draws {
+        // `RandAbstract.id` wraps at 10000.
+        let count = |l: &Option<String>| {
+            l.as_deref()
+                .and_then(|l| l.strip_prefix("D loadDraws="))
+                .and_then(|n| n.parse::<i32>().ok())
+                .map(|n| n.rem_euclid(10_000))
+        };
+        if count(&java_draws) != count(&rust_draws) {
             println!(
                 "v{id}: item load draws differ (item port): J {:?} R {:?}",
                 java_draws, rust_draws

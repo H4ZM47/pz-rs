@@ -20,23 +20,23 @@ pub mod bind_fs;
 pub mod bind_global_objects;
 pub mod bind_globals;
 pub mod bind_input;
-pub mod bind_joypad;
-pub mod bind_ui;
-pub mod bind_items;
 pub mod bind_iso_enums;
+pub mod bind_items;
 pub mod bind_java_util;
+pub mod bind_joypad;
 pub mod bind_mods;
 pub mod bind_nutrition;
 pub mod bind_popman;
 pub mod bind_registry;
 pub mod bind_render;
-pub mod bind_vehicles;
 pub mod bind_save;
 pub mod bind_scripts;
 pub mod bind_skills;
 pub mod bind_states;
-pub mod bind_zombie;
 pub mod bind_text;
+pub mod bind_ui;
+pub mod bind_vehicles;
+pub mod bind_zombie;
 pub mod events;
 pub mod expose;
 pub mod global_objects;
@@ -52,7 +52,11 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_java_util::register(&mut mgr.thread);
     bind_globals::register(&mut mgr.thread);
     // Core: binds the shared instance (`bind_core::install_core` before init).
-    bind_core::register(&mut mgr.thread, Some(mgr.events.clone()), bind_core::shared_core());
+    bind_core::register(
+        &mut mgr.thread,
+        Some(mgr.events.clone()),
+        bind_core::shared_core(),
+    );
     bind_fs::register(mgr);
     bind_render::register(mgr);
     bind_save::register(mgr);

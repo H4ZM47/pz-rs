@@ -10,7 +10,9 @@
 //! the world's owner ([`install_world_sounds`]); without one the cell is
 //! empty (`pz_audio::world_sound::NoWorld`).
 
-use crate::bind_character_sim::{chr_of, with_ctx, CharacterObject, ISO_GAME_CHARACTER_CLASS, ISO_ZOMBIE_CLASS};
+use crate::bind_character_sim::{
+    chr_of, with_ctx, CharacterObject, ISO_GAME_CHARACTER_CLASS, ISO_ZOMBIE_CLASS,
+};
 use crate::bind_states::with_state_cx;
 use crate::expose::{bool_arg, expose_class, global, int_arg, num_arg, str_arg};
 use pz_audio::world_sound::{NoWorld, SoundId, SoundSource, SoundWorld, WorldSoundManager};
@@ -78,14 +80,19 @@ fn source_of(v: &Value) -> Option<SoundSource> {
             if let Some(c) = o.as_any().downcast_ref::<CharacterObject>() {
                 return Some(c.0.borrow().sound_source());
             }
-            Some(SoundSource { id: (Rc::as_ptr(o) as *const () as usize as u64) | (1 << 63), ..Default::default() })
+            Some(SoundSource {
+                id: (Rc::as_ptr(o) as *const () as usize as u64) | (1 << 63),
+                ..Default::default()
+            })
         }
         _ => None,
     }
 }
 
 fn sound_value(id: Option<SoundId>) -> Value {
-    id.map_or(Value::Nil, |id| Value::Object(Rc::new(WorldSoundObject(id))))
+    id.map_or(Value::Nil, |id| {
+        Value::Object(Rc::new(WorldSoundObject(id)))
+    })
 }
 
 /// `addSound(source, x, y, z, radius, volume[, stressHumans[,
@@ -96,15 +103,41 @@ fn add_sound(c: &mut NativeCall<'_>, a: usize, repeating: bool) -> Value {
     let (radius, volume) = (int_arg(c, a + 4), int_arg(c, a + 5));
     let n = c.nargs();
     let stress = n > a + 6 && bool_arg(c, a + 6);
-    let (ignore, stress_mod) = if n > a + 8 { (num_arg(c, a + 7) as f32, num_arg(c, a + 8) as f32) } else { (0.0, 1.0) };
+    let (ignore, stress_mod) = if n > a + 8 {
+        (num_arg(c, a + 7) as f32, num_arg(c, a + 8) as f32)
+    } else {
+        (0.0, 1.0)
+    };
     let sounds = shared_world_sounds();
     let world = SOUND_WORLD.with(|w| w.borrow().clone());
     let mut world = world.borrow_mut();
     let mut m = sounds.borrow_mut();
     let id = if repeating {
-        m.add_sound_repeating(&mut *world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
+        m.add_sound_repeating(
+            &mut *world,
+            source,
+            x,
+            y,
+            z,
+            radius,
+            volume,
+            stress,
+            ignore,
+            stress_mod,
+        )
     } else {
-        m.add_sound_stress(&mut *world, source, x, y, z, radius, volume, stress, ignore, stress_mod)
+        m.add_sound_stress(
+            &mut *world,
+            source,
+            x,
+            y,
+            z,
+            radius,
+            volume,
+            stress,
+            ignore,
+            stress_mod,
+        )
     };
     sound_value(id)
 }
@@ -133,28 +166,111 @@ pub fn register(thread: &mut Thread) {
     let b = expose_class(thread, ISO_ZOMBIE_CLASS, Some(ISO_GAME_CHARACTER_CLASS));
     zfield!(b, "isUseless", "setUseless", zombie.useless, bool);
     zfield!(b, "isCanWalk", "setCanWalk", zombie.can_walk, bool);
-    zfield!(b, "isCanCrawlUnderVehicle", "setCanCrawlUnderVehicle", zombie.can_crawl_under_vehicle, bool);
-    zfield!(b, "isAlwaysKnockedDown", "setAlwaysKnockedDown", vars.always_knocked_down, bool);
-    zfield!(b, "isOnlyJawStab", "setOnlyJawStab", vars.only_jaw_stab, bool);
+    zfield!(
+        b,
+        "isCanCrawlUnderVehicle",
+        "setCanCrawlUnderVehicle",
+        zombie.can_crawl_under_vehicle,
+        bool
+    );
+    zfield!(
+        b,
+        "isAlwaysKnockedDown",
+        "setAlwaysKnockedDown",
+        vars.always_knocked_down,
+        bool
+    );
+    zfield!(
+        b,
+        "isOnlyJawStab",
+        "setOnlyJawStab",
+        vars.only_jaw_stab,
+        bool
+    );
     zfield!(b, "isNoTeeth", "setNoTeeth", zombie.no_teeth, bool);
-    zfield!(b, "isForceEatingAnimation", "setForceEatingAnimation", zombie.force_eating_animation, bool);
-    zfield!(b, "isForceFakeDead", "setForceFakeDead", zombie.force_fake_dead, bool);
+    zfield!(
+        b,
+        "isForceEatingAnimation",
+        "setForceEatingAnimation",
+        zombie.force_eating_animation,
+        bool
+    );
+    zfield!(
+        b,
+        "isForceFakeDead",
+        "setForceFakeDead",
+        zombie.force_fake_dead,
+        bool
+    );
     zfield!(b, "isReanimate", "setReanimate", zombie.reanimate, bool);
-    zfield!(b, "isReanimatedPlayer", "setReanimatedPlayer", zombie.reanimated_player, bool);
-    zfield!(b, "wasFakeDead", "setWasFakeDead", zombie.was_fake_dead, bool);
+    zfield!(
+        b,
+        "isReanimatedPlayer",
+        "setReanimatedPlayer",
+        zombie.reanimated_player,
+        bool
+    );
+    zfield!(
+        b,
+        "wasFakeDead",
+        "setWasFakeDead",
+        zombie.was_fake_dead,
+        bool
+    );
     zfield!(b, "isSkeleton", "setSkeleton", zombie.is_skeleton, bool);
-    zfield!(b, "isStaggerBack", "setStaggerBack", vars.stagger_back, bool);
+    zfield!(
+        b,
+        "isStaggerBack",
+        "setStaggerBack",
+        vars.stagger_back,
+        bool
+    );
     zfield!(b, "isKnifeDeath", "setKnifeDeath", zombie.knife_death, bool);
-    zfield!(b, "isJawStabAttach", "setJawStabAttach", zombie.jaw_stab_attach, bool);
-    zfield!(b, "isSitAgainstWall", "setSitAgainstWall", vars.sit_against_wall, bool);
-    zfield!(b, "isHitLegsWhileOnFloor", "setHitLegsWhileOnFloor", vars.hit_legs_while_on_floor, bool);
-    zfield!(b, "shouldDressInRandomOutfit", "setDressInRandomOutfit", zombie.dress_in_random_outfit, bool);
-    zfield!(b, "isReanimatedForGrappleOnly", "setReanimatedForGrappleOnly", zombie.reanimated_for_grapple_only, bool);
+    zfield!(
+        b,
+        "isJawStabAttach",
+        "setJawStabAttach",
+        zombie.jaw_stab_attach,
+        bool
+    );
+    zfield!(
+        b,
+        "isSitAgainstWall",
+        "setSitAgainstWall",
+        vars.sit_against_wall,
+        bool
+    );
+    zfield!(
+        b,
+        "isHitLegsWhileOnFloor",
+        "setHitLegsWhileOnFloor",
+        vars.hit_legs_while_on_floor,
+        bool
+    );
+    zfield!(
+        b,
+        "shouldDressInRandomOutfit",
+        "setDressInRandomOutfit",
+        zombie.dress_in_random_outfit,
+        bool
+    );
+    zfield!(
+        b,
+        "isReanimatedForGrappleOnly",
+        "setReanimatedForGrappleOnly",
+        zombie.reanimated_for_grapple_only,
+        bool
+    );
     zfield!(b, "getSpeedType", zombie.speed_type, int);
     zfield!(b, "getCrawlerType", zombie.crawler_type, int);
     zfield!(b, "getThumpTimer", zombie.thump_timer, int);
     zfield!(b, "getHitTime", vars.hit_time, int);
-    zfield!(b, "getHitHeadWhileOnFloor", vars.hit_head_while_on_floor, int);
+    zfield!(
+        b,
+        "getHitHeadWhileOnFloor",
+        vars.hit_head_while_on_floor,
+        int
+    );
     b.method("setImmortalTutorialZombie", |c| {
         let v = bool_arg(c, 1);
         chr_of(c)?.borrow_mut().zombie.immortal_tutorial_zombie = v;
@@ -191,7 +307,9 @@ pub fn register(thread: &mut Thread) {
     b.method("isFakeDead", |c| {
         let this = c.arg(0);
         let chr = chr_of(c)?;
-        let v = with_ctx(c, &this, |ctx| Ok(chr.borrow_mut().is_fake_dead(ctx, false)))?;
+        let v = with_ctx(c, &this, |ctx| {
+            Ok(chr.borrow_mut().is_fake_dead(ctx, false))
+        })?;
         Ok(c.push(v))
     });
     b.method("setFakeDead", |c| {
@@ -366,7 +484,9 @@ pub fn register(thread: &mut Thread) {
     });
     m.method("getStressFromSounds", |c| {
         let (x, y, z) = (int_arg(c, 1), int_arg(c, 2), int_arg(c, 3));
-        let v = shared_world_sounds().borrow().get_stress_from_sounds(x, y, z);
+        let v = shared_world_sounds()
+            .borrow()
+            .get_stress_from_sounds(x, y, z);
         Ok(c.push(Value::Num(f64::from(v))))
     });
     m.method("KillCell", |c| {
@@ -378,7 +498,9 @@ pub fn register(thread: &mut Thread) {
         let v = WorldSoundManager::hearing_multiplier(int_arg(c, 1));
         Ok(c.push(Value::Num(f64::from(v))))
     });
-    global(thread, "getWorldSoundManager", |c| Ok(c.push(MANAGER.with(|m| m.clone()))));
+    global(thread, "getWorldSoundManager", |c| {
+        Ok(c.push(MANAGER.with(|m| m.clone())))
+    });
     global(thread, "addSound", |c| {
         add_sound(c, 0, false);
         Ok(0)
@@ -412,8 +534,13 @@ mod tests {
             assert(m:getHearingMultiplier(1) == 3)
         "#;
         let p = pz_kahlua::compiler::compile(src, Some("t"), Some("t"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e))).unwrap();
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+            .unwrap();
         assert_eq!(shared_world_sounds().borrow().sound_list.len(), 2);
     }
 }

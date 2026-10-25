@@ -37,7 +37,11 @@ impl LuaObject for ActiveMods {
 
 impl ActiveMods {
     fn new(id: &str) -> Self {
-        ActiveMods { id: id.to_string(), mods: Rc::new(JavaList::new(Vec::new())), map_order: Rc::new(JavaList::new(Vec::new())) }
+        ActiveMods {
+            id: id.to_string(),
+            mods: Rc::new(JavaList::new(Vec::new())),
+            map_order: Rc::new(JavaList::new(Vec::new())),
+        }
     }
 
     /// The mod ids as strings.
@@ -57,7 +61,10 @@ impl ActiveMods {
 
     /// `copyFrom(other)`.
     pub fn copy_from(&self, other: &ActiveMods) {
-        let (m, o) = (other.mods.items.borrow().clone(), other.map_order.items.borrow().clone());
+        let (m, o) = (
+            other.mods.items.borrow().clone(),
+            other.map_order.items.borrow().clone(),
+        );
         *self.mods.items.borrow_mut() = m;
         *self.map_order.items.borrow_mut() = o;
     }
@@ -69,7 +76,10 @@ impl ActiveMods {
     }
 
     pub fn to_file(&self) -> pz_fs::ActiveMods {
-        pz_fs::ActiveMods { mods: self.mod_ids(), map_order: self.map_order_names() }
+        pz_fs::ActiveMods {
+            mods: self.mod_ids(),
+            map_order: self.map_order_names(),
+        }
     }
 
     /// `setModActive(modID, active)`.
@@ -93,19 +103,35 @@ impl ActiveMods {
     /// `isModActive(modID)`.
     pub fn is_mod_active(&self, mod_id: &str) -> bool {
         let id = pz_fs::java::trim(mod_id);
-        !pz_fs::java::is_null_or_whitespace(id) && self.mods.items.borrow().iter().any(|x| java_equals(x, &Value::str(id)))
+        !pz_fs::java::is_null_or_whitespace(id)
+            && self
+                .mods
+                .items
+                .borrow()
+                .iter()
+                .any(|x| java_equals(x, &Value::str(id)))
     }
 
     /// `checkMissingMods`: drops mods that are missing or unavailable.
     pub fn check_missing_mods(&self, fs: &mut GameFs) {
         let ids = self.mods.items.borrow().clone();
-        let keep: Vec<Value> = ids.into_iter().filter(|v| v.as_str().is_some_and(|id| fs.available_mod_dir(id).is_some())).collect();
+        let keep: Vec<Value> = ids
+            .into_iter()
+            .filter(|v| {
+                v.as_str()
+                    .is_some_and(|id| fs.available_mod_dir(id).is_some())
+            })
+            .collect();
         *self.mods.items.borrow_mut() = keep;
     }
 }
 
 fn strings(l: &JavaList) -> Vec<String> {
-    l.items.borrow().iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
+    l.items
+        .borrow()
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect()
 }
 
 /// `ArrayList.remove(Object)`: the first equal element.
@@ -125,7 +151,10 @@ thread_local! {
 
 fn require_valid_id(id: &str) -> LuaResult<()> {
     if pz_fs::java::is_null_or_whitespace(id) {
-        return Err(LuaError::Runtime { message: "id is null or whitespace".into(), class: "java.lang.IllegalArgumentException" });
+        return Err(LuaError::Runtime {
+            message: "id is null or whitespace".into(),
+            class: "java.lang.IllegalArgumentException",
+        });
     }
     Ok(())
 }
@@ -134,7 +163,11 @@ fn require_valid_id(id: &str) -> LuaResult<()> {
 pub fn index_of(id: &str) -> LuaResult<Option<usize>> {
     let id = pz_fs::java::trim(id);
     require_valid_id(id)?;
-    Ok(ALL.with(|a| a.borrow().iter().position(|m| pz_fs::java::case_insensitive_cmp(&m.id, id).is_eq())))
+    Ok(ALL.with(|a| {
+        a.borrow()
+            .iter()
+            .position(|m| pz_fs::java::case_insensitive_cmp(&m.id, id).is_eq())
+    }))
 }
 
 /// `ActiveMods.getById(id)`: creates the list on first use.
@@ -160,7 +193,9 @@ pub fn set_loaded_mods(m: &ActiveMods) {
 /// [`GameFs::load_mods`].
 pub fn read_default(fs: &mut GameFs) -> Vec<String> {
     let file = fs.read_default_mods();
-    let Ok(m) = get_by_id("default") else { return Vec::new() };
+    let Ok(m) = get_by_id("default") else {
+        return Vec::new();
+    };
     m.set_from(&file);
     m.check_missing_mods(fs);
     // TODO(pz-world): `checkMissingMaps` once MapGroups is on main.
@@ -198,9 +233,16 @@ pub fn register(mgr: &mut LuaManager) {
     });
     b.static_fn("getByIndex", |c| {
         let i = int_arg(c, 0);
-        let m = ALL.with(|a| usize::try_from(i).ok().and_then(|i| a.borrow().get(i).cloned()));
+        let m = ALL.with(|a| {
+            usize::try_from(i)
+                .ok()
+                .and_then(|i| a.borrow().get(i).cloned())
+        });
         let len = ALL.with(|a| a.borrow().len());
-        let m = m.ok_or_else(|| LuaError::Runtime { message: format!("Index {i} out of bounds for length {len}"), class: "java.lang.IndexOutOfBoundsException" })?;
+        let m = m.ok_or_else(|| LuaError::Runtime {
+            message: format!("Index {i} out of bounds for length {len}"),
+            class: "java.lang.IndexOutOfBoundsException",
+        })?;
         Ok(c.push(value_of(m)))
     });
     b.static_fn("setLoadedMods", |c| {
@@ -214,7 +256,12 @@ pub fn register(mgr: &mut LuaManager) {
     b.static_fn("requiresResetLua", |c| {
         let o = match c.arg(0) {
             Value::Object(o) if o.as_any().is::<ActiveMods>() => o,
-            _ => return Err(LuaError::Runtime { message: "activeMods is null".into(), class: "java.lang.NullPointerException" }),
+            _ => {
+                return Err(LuaError::Runtime {
+                    message: "activeMods is null".into(),
+                    class: "java.lang.NullPointerException",
+                })
+            }
         };
         let m = o.as_any().downcast_ref::<ActiveMods>().unwrap();
         // `!s_loaded.mods.equals(activeMods.mods)`: element-wise equals.
@@ -246,7 +293,12 @@ pub fn register(mgr: &mut LuaManager) {
     b.method("copyFrom", |c| {
         let other = match c.arg(1) {
             Value::Object(o) if o.as_any().is::<ActiveMods>() => o,
-            _ => return Err(LuaError::Runtime { message: "other is null".into(), class: "java.lang.NullPointerException" }),
+            _ => {
+                return Err(LuaError::Runtime {
+                    message: "other is null".into(),
+                    class: "java.lang.NullPointerException",
+                })
+            }
         };
         let other = other.as_any().downcast_ref::<ActiveMods>().unwrap();
         with_self(c, |m| m.copy_from(other))?;
@@ -265,7 +317,9 @@ pub fn register(mgr: &mut LuaManager) {
     });
     b.method("removeMod", |c| {
         let id = str_arg(c, 1).unwrap_or_else(|| Rc::from(""));
-        with_self(c, |m| remove_value(&m.mods, &Value::str(pz_fs::java::trim(&id))))?;
+        with_self(c, |m| {
+            remove_value(&m.mods, &Value::str(pz_fs::java::trim(&id)))
+        })?;
         Ok(0)
     });
     b.method("removeMapOrder", |c| {
@@ -301,7 +355,10 @@ pub fn register(mgr: &mut LuaManager) {
         let m = get_by_id("default")?;
         let dir = f.borrow().cache_dir().join("mods");
         let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("default.txt"), pz_fs::mods::active_mods_to_string(&m.to_file()));
+        let _ = std::fs::write(
+            dir.join("default.txt"),
+            pz_fs::mods::active_mods_to_string(&m.to_file()),
+        );
         Ok(0)
     });
 }

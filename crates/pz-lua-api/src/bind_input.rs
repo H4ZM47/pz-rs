@@ -85,13 +85,18 @@ impl KeyNames {
             if !field.starts_with("KEY_") || field.ends_with("WIN") {
                 continue;
             }
-            let Some(slot) = usize::try_from(*key).ok().filter(|&k| k < KEYBOARD_SIZE) else { continue };
+            let Some(slot) = usize::try_from(*key).ok().filter(|&k| k < KEYBOARD_SIZE) else {
+                continue;
+            };
             let mut name = field["KEY_".len()..].to_string();
             match keys::class(*key) {
                 KeyClass::KeypadDigit => name = name.replace("NUMPAD", "KP_"),
                 KeyClass::KeypadOther => name = format!("KP_{}", name.replace("NUMPAD", "")),
                 KeyClass::Printable(us) => {
-                    name = layout.iter().find(|(k, _)| k == key).map_or_else(|| us.to_string(), |(_, n)| n.clone());
+                    name = layout
+                        .iter()
+                        .find(|(k, _)| k == key)
+                        .map_or_else(|| us.to_string(), |(_, n)| n.clone());
                 }
                 KeyClass::Named | KeyClass::Unmapped => {}
             }
@@ -150,15 +155,26 @@ pub fn keyboard_is_key_down(key: i32) -> bool {
     if keys::class(key) == KeyClass::Unmapped {
         return false;
     }
-    with_input(|i| usize::try_from(key).ok().and_then(|k| i.keys_down.get(k).copied()).unwrap_or(false))
+    with_input(|i| {
+        usize::try_from(key)
+            .ok()
+            .and_then(|k| i.keys_down.get(k).copied())
+            .unwrap_or(false)
+    })
 }
 
 fn doing_text_entry() -> bool {
-    shared_core().borrow().current_text_entry_box.as_ref().is_some_and(|b| b.doing_text_entry)
+    shared_core()
+        .borrow()
+        .current_text_entry_box
+        .as_ref()
+        .is_some_and(|b| b.doing_text_entry)
 }
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 /// `GameKeyboard.isKeyDown(int)`.
@@ -169,7 +185,13 @@ pub fn is_key_down(key: i32) -> bool {
     if doing_text_entry() {
         return false;
     }
-    GK.with(|g| g.borrow().down.as_ref().and_then(|d| usize::try_from(key).ok().and_then(|k| d.get(k).copied())).unwrap_or(false))
+    GK.with(|g| {
+        g.borrow()
+            .down
+            .as_ref()
+            .and_then(|d| usize::try_from(key).ok().and_then(|k| d.get(k).copied()))
+            .unwrap_or(false)
+    })
 }
 
 /// `GameKeyboard.wasKeyDown(int)`.
@@ -182,7 +204,14 @@ pub fn was_key_down(key: i32) -> bool {
     }
     GK.with(|g| {
         let g = g.borrow();
-        g.down.as_ref().and_then(|_| usize::try_from(key).ok().and_then(|k| g.last_down.get(k).copied())).unwrap_or(false)
+        g.down
+            .as_ref()
+            .and_then(|_| {
+                usize::try_from(key)
+                    .ok()
+                    .and_then(|k| g.last_down.get(k).copied())
+            })
+            .unwrap_or(false)
     })
 }
 
@@ -216,13 +245,22 @@ pub fn was_key_down_named(name: &str) -> bool {
 }
 
 fn mouse_is_button_down(b: i32) -> bool {
-    MS.with(|m| m.borrow().down.as_ref().and_then(|d| usize::try_from(b).ok().and_then(|i| d.get(i).copied())).unwrap_or(false))
+    MS.with(|m| {
+        m.borrow()
+            .down
+            .as_ref()
+            .and_then(|d| usize::try_from(b).ok().and_then(|i| d.get(i).copied()))
+            .unwrap_or(false)
+    })
 }
 
 fn mouse_was_button_down(b: i32) -> bool {
     MS.with(|m| {
         let m = m.borrow();
-        m.down.as_ref().and_then(|_| usize::try_from(b).ok().and_then(|i| m.prev.get(i).copied())).unwrap_or(false)
+        m.down
+            .as_ref()
+            .and_then(|_| usize::try_from(b).ok().and_then(|i| m.prev.get(i).copied()))
+            .unwrap_or(false)
     })
 }
 
@@ -245,7 +283,9 @@ pub fn mouse_is_right_delay() -> bool {
 
 /// `Mouse.isButtonDownUICheck(number)`.
 pub fn mouse_is_button_down_ui_check(n: i32) -> bool {
-    let Ok(i) = usize::try_from(n) else { return false };
+    let Ok(i) = usize::try_from(n) else {
+        return false;
+    };
     let state = MS.with(|m| {
         let mut m = m.borrow_mut();
         let down = m.down.as_ref().and_then(|d| d.get(i).copied())?;
@@ -328,7 +368,14 @@ fn game_keyboard_update(mgr: &mut LuaManager) {
             }
         }
         let eaten = GK.with(|g| g.borrow().eat_key[n]);
-        if !down || last || no_events || text_entry || eaten || UIManager::on_key_press(&mut mgr.thread, n as i32) || GK.with(|g| g.borrow().eat_key[n]) {
+        if !down
+            || last
+            || no_events
+            || text_entry
+            || eaten
+            || UIManager::on_key_press(&mut mgr.thread, n as i32)
+            || GK.with(|g| g.borrow().eat_key[n])
+        {
             continue;
         }
         if do_lua {
@@ -337,13 +384,25 @@ fn game_keyboard_update(mgr: &mut LuaManager) {
         mgr.trigger_event("OnCustomUIKeyPressed", std::slice::from_ref(&key));
     }
     // `Core.invalidBindingShiftCtrl` reads `GameKeyboard.isKeyDownRaw`.
-    let raw: std::collections::HashSet<i32> =
-        GK.with(|g| g.borrow().down.as_ref().map(|d| d.iter().enumerate().filter(|(_, &b)| b).map(|(i, _)| i as i32).collect()).unwrap_or_default());
+    let raw: std::collections::HashSet<i32> = GK.with(|g| {
+        g.borrow()
+            .down
+            .as_ref()
+            .map(|d| {
+                d.iter()
+                    .enumerate()
+                    .filter(|(_, &b)| b)
+                    .map(|(i, _)| i as i32)
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
     shared_core().borrow_mut().keys_down_raw = raw;
 }
 
 fn mouse_update(seconds: f32) {
-    let (cx, cy, wheel, buttons) = with_input(|i| (i.cursor_x, i.cursor_y, i.take_wheel(), i.buttons_down));
+    let (cx, cy, wheel, buttons) =
+        with_input(|i| (i.cursor_x, i.cursor_y, i.take_wheel(), i.buttons_down));
     let core = shared_core();
     let zoom = core.borrow().get_zoom(0);
     MS.with(|m| {
@@ -366,7 +425,11 @@ fn mouse_update(seconds: f32) {
             }
         }
         m.down = Some(buttons.to_vec());
-        m.time_right_pressed = if buttons[1] { m.time_right_pressed + seconds } else { 0.0 };
+        m.time_right_pressed = if buttons[1] {
+            m.time_right_pressed + seconds
+        } else {
+            0.0
+        };
         if activity {
             m.last_activity = now_ms();
         }
@@ -374,7 +437,13 @@ fn mouse_update(seconds: f32) {
     // `UIManager` reads Mouse through its MouseState.
     let (x, y, down, prev, wd) = MS.with(|m| {
         let m = m.borrow();
-        (m.x, m.y, m.down.clone().unwrap_or_default(), m.prev.clone(), m.wheel_delta)
+        (
+            m.x,
+            m.y,
+            m.down.clone().unwrap_or_default(),
+            m.prev.clone(),
+            m.wheel_delta,
+        )
     });
     let right_delay = mouse_is_right_delay();
     with_ui(|u| {
@@ -388,8 +457,19 @@ fn mouse_update(seconds: f32) {
         u.mouse.right_delay = right_delay;
         u.mouse.ui_blocked.resize(MOUSE_BUTTONS, false);
     });
-    core.borrow_mut().mouse_buttons_down =
-        MS.with(|m| m.borrow().down.as_ref().map(|d| d.iter().enumerate().filter(|(_, &b)| b).map(|(i, _)| i as i32).collect()).unwrap_or_default());
+    core.borrow_mut().mouse_buttons_down = MS.with(|m| {
+        m.borrow()
+            .down
+            .as_ref()
+            .map(|d| {
+                d.iter()
+                    .enumerate()
+                    .filter(|(_, &b)| b)
+                    .map(|(i, _)| i as i32)
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
 }
 
 /// After `UIManager.update`: buttons the UI blocked
@@ -446,7 +526,10 @@ fn pressed_any(k: KeyArg) -> bool {
 }
 
 fn index_error(i: i32, len: usize) -> LuaError {
-    LuaError::Runtime { message: format!("Index {i} out of bounds for length {len}"), class: "java.lang.ArrayIndexOutOfBoundsException" }
+    LuaError::Runtime {
+        message: format!("Index {i} out of bounds for length {len}"),
+        class: "java.lang.ArrayIndexOutOfBoundsException",
+    }
 }
 
 pub fn register(mgr: &mut LuaManager) {
@@ -487,7 +570,10 @@ fn register_keyboard(t: &mut Thread) {
         let k = int_arg(c, 0);
         let name = NAMES.with(|n| {
             let n = n.borrow();
-            usize::try_from(k).ok().and_then(|i| n.names.get(i).cloned()).ok_or_else(|| index_error(k, n.names.len()))
+            usize::try_from(k)
+                .ok()
+                .and_then(|i| n.names.get(i).cloned())
+                .ok_or_else(|| index_error(k, n.names.len()))
         })?;
         Ok(c.push(name.map_or(Value::Nil, |s| Value::str(&s))))
     });
@@ -501,16 +587,26 @@ fn register_keyboard(t: &mut Thread) {
         with_input(|i| i.repeat_events = on);
         Ok(0)
     });
-    b.static_fn("areRepeatEventsEnabled", |c| Ok(c.push(with_input(|i| i.repeat_events))));
-    b.static_fn("isRepeatEvent", |c| Ok(c.push(with_input(|i| i.repeat_events))));
+    b.static_fn("areRepeatEventsEnabled", |c| {
+        Ok(c.push(with_input(|i| i.repeat_events)))
+    });
+    b.static_fn("isRepeatEvent", |c| {
+        Ok(c.push(with_input(|i| i.repeat_events)))
+    });
     b.static_fn("next", |c| Ok(c.push(with_input(|i| i.key_events.next()))));
-    b.static_fn("getEventKey", |c| Ok(c.push(f64::from(with_input(|i| i.key_events.event_key())))));
+    b.static_fn("getEventKey", |c| {
+        Ok(c.push(f64::from(with_input(|i| i.key_events.event_key()))))
+    });
     b.static_fn("getEventCharacter", |c| {
         let ch = with_input(|i| i.key_events.event_character());
         Ok(c.push(Value::str(&ch.to_string())))
     });
-    b.static_fn("getEventKeyState", |c| Ok(c.push(with_input(|i| i.key_events.event_key_state()))));
-    b.static_fn("getEventNanoseconds", |c| Ok(c.push(with_input(|i| i.key_events.event_nanoseconds()) as f64)));
+    b.static_fn("getEventKeyState", |c| {
+        Ok(c.push(with_input(|i| i.key_events.event_key_state())))
+    });
+    b.static_fn("getEventNanoseconds", |c| {
+        Ok(c.push(with_input(|i| i.key_events.event_nanoseconds()) as f64))
+    });
     // `addKeyEvent(glfwKey, status)` takes a GLFW key in the original; the
     // queue here works in LWJGL codes.
     b.static_fn("addKeyEvent", |c| {
@@ -544,12 +640,23 @@ fn register_game_keyboard(t: &mut Thread) {
     });
     b.static_fn("isKeyDownRaw", |c| {
         let k = int_arg(c, 0);
-        let r = GK.with(|g| g.borrow().down.as_ref().and_then(|d| usize::try_from(k).ok().and_then(|i| d.get(i).copied())).unwrap_or(false));
+        let r = GK.with(|g| {
+            g.borrow()
+                .down
+                .as_ref()
+                .and_then(|d| usize::try_from(k).ok().and_then(|i| d.get(i).copied()))
+                .unwrap_or(false)
+        });
         Ok(c.push(r))
     });
     b.static_fn("wasKeyDownRaw", |c| {
         let k = int_arg(c, 0);
-        let r = GK.with(|g| usize::try_from(k).ok().and_then(|i| g.borrow().last_down.get(i).copied()).unwrap_or(false));
+        let r = GK.with(|g| {
+            usize::try_from(k)
+                .ok()
+                .and_then(|i| g.borrow().last_down.get(i).copied())
+                .unwrap_or(false)
+        });
         Ok(c.push(r))
     });
     fn which(c: &NativeCall<'_>, test: impl Fn(i32) -> bool, gate: impl Fn(&str) -> bool) -> f64 {
@@ -573,10 +680,20 @@ fn register_game_keyboard(t: &mut Thread) {
             0.0
         }
     }
-    b.static_fn("whichKeyDown", |c| Ok(c.push(which(c, is_key_down, is_key_down_named))));
-    b.static_fn("whichKeyPressed", |c| Ok(c.push(which(c, is_key_pressed, |s| is_key_down_named(s) && !was_key_down_named(s)))));
-    b.static_fn("whichKeyWasDown", |c| Ok(c.push(which(c, was_key_down, |_| true))));
-    b.static_fn("whichKeyDownIgnoreMouse", |c| Ok(c.push(which(c, |k| k < BTN_OFFSET && is_key_down(k), |_| true))));
+    b.static_fn("whichKeyDown", |c| {
+        Ok(c.push(which(c, is_key_down, is_key_down_named)))
+    });
+    b.static_fn("whichKeyPressed", |c| {
+        Ok(c.push(which(c, is_key_pressed, |s| {
+            is_key_down_named(s) && !was_key_down_named(s)
+        })))
+    });
+    b.static_fn("whichKeyWasDown", |c| {
+        Ok(c.push(which(c, was_key_down, |_| true)))
+    });
+    b.static_fn("whichKeyDownIgnoreMouse", |c| {
+        Ok(c.push(which(c, |k| k < BTN_OFFSET && is_key_down(k), |_| true)))
+    });
     b.static_fn("eatKeyPress", |c| {
         let k = int_arg(c, 0);
         GK.with(|g| {
@@ -602,8 +719,14 @@ fn register_mouse(t: &mut Thread, consts: &[(String, i32)]) {
     for (name, v) in consts {
         b.field(name, Value::Num(f64::from(*v)));
     }
-    b.static_fn("getXA", |c| Ok(c.push(f64::from(MS.with(|m| m.borrow().x)))));
-    b.static_fn("getYA", |c| Ok(c.push(f64::from(MS.with(|m| m.borrow().y)))));
+    b.static_fn(
+        "getXA",
+        |c| Ok(c.push(f64::from(MS.with(|m| m.borrow().x)))),
+    );
+    b.static_fn(
+        "getYA",
+        |c| Ok(c.push(f64::from(MS.with(|m| m.borrow().y)))),
+    );
     b.static_fn("getX", |c| {
         let z = shared_core().borrow().get_zoom(0);
         Ok(c.push(f64::from((MS.with(|m| m.borrow().x) as f32 * z) as i32)))
@@ -612,17 +735,34 @@ fn register_mouse(t: &mut Thread, consts: &[(String, i32)]) {
         let z = shared_core().borrow().get_zoom(0);
         Ok(c.push(f64::from((MS.with(|m| m.borrow().y) as f32 * z) as i32)))
     });
-    b.static_fn("getWheelState", |c| Ok(c.push(f64::from(MS.with(|m| m.borrow().wheel_delta)))));
+    b.static_fn("getWheelState", |c| {
+        Ok(c.push(f64::from(MS.with(|m| m.borrow().wheel_delta))))
+    });
     b.static_fn("getButtonCount", |c| Ok(c.push(MOUSE_BUTTONS as f64)));
     b.static_fn("isButtonKey", |c| Ok(c.push(int_arg(c, 0) >= BTN_OFFSET)));
-    b.static_fn("isButtonDown", |c| Ok(c.push(mouse_is_button_down(int_arg(c, 0)))));
-    b.static_fn("wasButtonDown", |c| Ok(c.push(mouse_was_button_down(int_arg(c, 0)))));
-    b.static_fn("isButtonPressed", |c| Ok(c.push(mouse_is_button_pressed(int_arg(c, 0)))));
-    b.static_fn("isButtonReleased", |c| Ok(c.push(mouse_is_button_released(int_arg(c, 0)))));
-    b.static_fn("isButtonDownUICheck", |c| Ok(c.push(mouse_is_button_down_ui_check(int_arg(c, 0)))));
+    b.static_fn("isButtonDown", |c| {
+        Ok(c.push(mouse_is_button_down(int_arg(c, 0))))
+    });
+    b.static_fn("wasButtonDown", |c| {
+        Ok(c.push(mouse_was_button_down(int_arg(c, 0))))
+    });
+    b.static_fn("isButtonPressed", |c| {
+        Ok(c.push(mouse_is_button_pressed(int_arg(c, 0))))
+    });
+    b.static_fn("isButtonReleased", |c| {
+        Ok(c.push(mouse_is_button_released(int_arg(c, 0))))
+    });
+    b.static_fn("isButtonDownUICheck", |c| {
+        Ok(c.push(mouse_is_button_down_ui_check(int_arg(c, 0))))
+    });
     b.static_fn("UIBlockButtonDown", |c| {
         let n = int_arg(c, 0);
-        let ok = MS.with(|m| usize::try_from(n).ok().and_then(|i| m.borrow_mut().ui_captured.get_mut(i).map(|v| *v = true)).is_some());
+        let ok = MS.with(|m| {
+            usize::try_from(n)
+                .ok()
+                .and_then(|i| m.borrow_mut().ui_captured.get_mut(i).map(|v| *v = true))
+                .is_some()
+        });
         if !ok {
             return Err(index_error(n, 10));
         }
@@ -658,7 +798,9 @@ fn register_mouse(t: &mut Thread, consts: &[(String, i32)]) {
         MS.with(|m| m.borrow_mut().cursor_visible = v);
         Ok(0)
     });
-    b.static_fn("isCursorVisible", |c| Ok(c.push(MS.with(|m| m.borrow().cursor_visible))));
+    b.static_fn("isCursorVisible", |c| {
+        Ok(c.push(MS.with(|m| m.borrow().cursor_visible)))
+    });
     b.static_fn("setXY", |c| {
         // `setCursorPosition(x, offscreenHeight - 1 - y)` in GLFW's top-left
         // window coordinates: the same point from the top.
@@ -687,12 +829,24 @@ fn register_globals(t: &mut Thread) {
         let k = key_arg(c, 0);
         Ok(c.push(pressed_any(k)))
     });
-    global(t, "isShiftKeyDown", |c| Ok(c.push(is_key_down(42) || is_key_down(54))));
-    global(t, "isCtrlKeyDown", |c| Ok(c.push(is_key_down(29) || is_key_down(157))));
-    global(t, "isAltKeyDown", |c| Ok(c.push(is_key_down(56) || is_key_down(184))));
-    global(t, "isMetaKeyDown", |c| Ok(c.push(is_key_down(219) || is_key_down(220))));
-    global(t, "getMouseX", |c| Ok(c.push(f64::from(MS.with(|m| m.borrow().x)))));
-    global(t, "getMouseY", |c| Ok(c.push(f64::from(MS.with(|m| m.borrow().y)))));
+    global(t, "isShiftKeyDown", |c| {
+        Ok(c.push(is_key_down(42) || is_key_down(54)))
+    });
+    global(t, "isCtrlKeyDown", |c| {
+        Ok(c.push(is_key_down(29) || is_key_down(157)))
+    });
+    global(t, "isAltKeyDown", |c| {
+        Ok(c.push(is_key_down(56) || is_key_down(184)))
+    });
+    global(t, "isMetaKeyDown", |c| {
+        Ok(c.push(is_key_down(219) || is_key_down(220)))
+    });
+    global(t, "getMouseX", |c| {
+        Ok(c.push(f64::from(MS.with(|m| m.borrow().x))))
+    });
+    global(t, "getMouseY", |c| {
+        Ok(c.push(f64::from(MS.with(|m| m.borrow().y))))
+    });
     global(t, "getMouseXScaled", |c| {
         let z = shared_core().borrow().get_zoom(0);
         Ok(c.push(f64::from((MS.with(|m| m.borrow().x) as f32 * z) as i32)))
@@ -706,8 +860,12 @@ fn register_globals(t: &mut Thread) {
         with_input(|i| i.request(WindowRequest::SetCursorPosition(x, y)));
         Ok(0)
     });
-    global(t, "isMouseButtonDown", |c| Ok(c.push(mouse_is_button_down(int_arg(c, 0)))));
-    global(t, "isMouseButtonPressed", |c| Ok(c.push(mouse_is_button_pressed(int_arg(c, 0)))));
+    global(t, "isMouseButtonDown", |c| {
+        Ok(c.push(mouse_is_button_down(int_arg(c, 0))))
+    });
+    global(t, "isMouseButtonPressed", |c| {
+        Ok(c.push(mouse_is_button_pressed(int_arg(c, 0))))
+    });
     // `queueKeyEvent(lwjglKey)`: a press and a release on the next poll.
     global(t, "queueKeyEvent", |c| {
         let k = int_arg(c, 0);
@@ -722,7 +880,10 @@ fn register_globals(t: &mut Thread) {
     global(t, "queueCharEvent", |c| {
         let ch = str_arg(c, 0).and_then(|s| s.chars().next());
         let Some(ch) = ch else {
-            return Err(LuaError::Runtime { message: "Index 0 out of bounds for length 0".into(), class: "java.lang.StringIndexOutOfBoundsException" });
+            return Err(LuaError::Runtime {
+                message: "Index 0 out of bounds for length 0".into(),
+                class: "java.lang.StringIndexOutOfBoundsException",
+            });
         };
         with_input(|i| i.char(ch));
         Ok(0)
@@ -781,7 +942,10 @@ mod tests {
         with_input(|i| i.mouse_button(1, false));
         mouse_update(0.1);
         assert!(!mouse_is_button_down_ui_check(1));
-        assert!(!MS.with(|m| m.borrow().ui_captured[1]), "released clears the capture");
+        assert!(
+            !MS.with(|m| m.borrow().ui_captured[1]),
+            "released clears the capture"
+        );
     }
 }
 
@@ -791,11 +955,17 @@ mod tests {
 #[test]
 #[ignore]
 fn installed_game_key_constants() {
-    let Some(dir) = std::env::var_os("PZ_GAME_DIR") else { return };
+    let Some(dir) = std::env::var_os("PZ_GAME_DIR") else {
+        return;
+    };
     let consts = int_constants(Path::new(&dir), "org/lwjglx/input/Keyboard");
     let keys = consts.iter().filter(|(n, _)| n.starts_with("KEY_")).count();
     let mouse = int_constants(Path::new(&dir), "zombie/input/Mouse");
-    eprintln!("Keyboard: {} constants ({keys} KEY_*); Mouse: {}", consts.len(), mouse.len());
+    eprintln!(
+        "Keyboard: {} constants ({keys} KEY_*); Mouse: {}",
+        consts.len(),
+        mouse.len()
+    );
     assert!(keys > 100);
     assert!(mouse.iter().any(|(n, _)| n == "BTN_OFFSET"));
 }

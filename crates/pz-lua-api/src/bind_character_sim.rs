@@ -25,15 +25,19 @@
 //! TODO(saves).
 
 use crate::bind_characters::{
-    adopt_survivor_desc_value, desc_arg, shared_characters, survivor_desc_value, trait_def_arg, LuaItem,
+    adopt_survivor_desc_value, desc_arg, shared_characters, survivor_desc_value, trait_def_arg,
+    LuaItem,
 };
 use crate::bind_java_util::{class_cast, JavaList, JavaMap};
-use crate::bind_registry::{java_error, key_arg, key_value, shared_script_manager, MOODLE_TYPE_CLASS};
+use crate::bind_registry::{
+    java_error, key_arg, key_value, shared_script_manager, MOODLE_TYPE_CLASS,
+};
 use crate::bind_skills::{perk_arg, perk_value};
 use crate::expose::{bool_arg, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this};
 use pz_characters::character::{CharacterStatRef, CharacterStats};
 use pz_characters::character::{
-    ChevronColor, DefaultSimContext, GameCharacter, MoodleLevel, Moodles, SimContext, SimEvent, Stats,
+    ChevronColor, DefaultSimContext, GameCharacter, MoodleLevel, Moodles, SimContext, SimEvent,
+    Stats,
 };
 use pz_characters::{CharacterKind, Characters, Color, PerkRef};
 use pz_kahlua::value::LuaObject;
@@ -163,7 +167,10 @@ impl SimContext for CallContext {
         if let Some(c) = self.base.climate() {
             return Some(c);
         }
-        self.game_time.try_borrow().ok().map(|g| std::cell::Ref::map(g, |g| &g.climate))
+        self.game_time
+            .try_borrow()
+            .ok()
+            .map(|g| std::cell::Ref::map(g, |g| &g.climate))
     }
     fn hydro_power_on(&self) -> bool {
         self.base.hydro_power_on()
@@ -211,19 +218,40 @@ pub(crate) fn with_ctx<R>(
     if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
         for e in events {
             let (name, args) = match e {
-                SimEvent::LevelPerk { perk, level, increased } => (
+                SimEvent::LevelPerk {
+                    perk,
+                    level,
+                    increased,
+                } => (
                     "LevelPerk",
-                    vec![chr.clone(), perk_value(Some(&perk)), Value::from(level), Value::Bool(increased)],
+                    vec![
+                        chr.clone(),
+                        perk_value(Some(&perk)),
+                        Value::from(level),
+                        Value::Bool(increased),
+                    ],
                 ),
-                SimEvent::LogLevelPerk { perk, level } => {
-                    ("LogLevelPerk", vec![chr.clone(), perk_value(Some(&perk)), Value::from(level), Value::Bool(false)])
-                }
-                SimEvent::AddXp { perk, amount } => {
-                    ("AddXP", vec![chr.clone(), perk_value(Some(&perk)), Value::Num(f64::from(amount))])
-                }
-                SimEvent::PlayerGetDamage { kind, amount } => {
-                    ("OnPlayerGetDamage", vec![chr.clone(), Value::str(kind), Value::Num(f64::from(amount))])
-                }
+                SimEvent::LogLevelPerk { perk, level } => (
+                    "LogLevelPerk",
+                    vec![
+                        chr.clone(),
+                        perk_value(Some(&perk)),
+                        Value::from(level),
+                        Value::Bool(false),
+                    ],
+                ),
+                SimEvent::AddXp { perk, amount } => (
+                    "AddXP",
+                    vec![
+                        chr.clone(),
+                        perk_value(Some(&perk)),
+                        Value::Num(f64::from(amount)),
+                    ],
+                ),
+                SimEvent::PlayerGetDamage { kind, amount } => (
+                    "OnPlayerGetDamage",
+                    vec![chr.clone(), Value::str(kind), Value::Num(f64::from(amount))],
+                ),
                 _ => continue,
             };
             sink(c.thread, name, &args);
@@ -270,7 +298,9 @@ fn canonical(id: (Handle, usize, usize), make: impl FnOnce() -> Value) -> Value 
 
 /// The canonical Lua object of `chr`.
 pub fn character_value(chr: &LuaGameCharacterRef) -> Value {
-    canonical((Handle::Character, Rc::as_ptr(chr) as usize, 0), || Value::Object(Rc::new(CharacterObject(chr.clone()))))
+    canonical((Handle::Character, Rc::as_ptr(chr) as usize, 0), || {
+        Value::Object(Rc::new(CharacterObject(chr.clone())))
+    })
 }
 
 /// A character's `Stats`, or a free-standing `new Stats()`.
@@ -322,7 +352,10 @@ fn stat_value(s: Option<&CharacterStatRef>) -> Value {
 }
 
 fn npe() -> LuaError {
-    LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" }
+    LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.NullPointerException",
+    }
 }
 
 fn stat_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<CharacterStatRef> {
@@ -399,8 +432,13 @@ fn color_value(col: &ChevronColor) -> Value {
         ChevronColor::White => FIXED.with(|f| f[0].clone()),
         ChevronColor::Negative => FIXED.with(|f| f[1].clone()),
         ChevronColor::Positive => FIXED.with(|f| f[2].clone()),
-        ChevronColor::Other(rc) => COLORS
-            .with(|m| m.borrow().values().find(|(k, _)| Rc::ptr_eq(k, rc)).map(|(_, v)| v.clone()).unwrap_or_default()),
+        ChevronColor::Other(rc) => COLORS.with(|m| {
+            m.borrow()
+                .values()
+                .find(|(k, _)| Rc::ptr_eq(k, rc))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        }),
     }
 }
 
@@ -409,9 +447,17 @@ fn color_value(col: &ChevronColor) -> Value {
 fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<ChevronColor>> {
     let v = c.arg(i);
     let Value::Object(o) = &v else {
-        return if v.is_nil() { Ok(None) } else { Err(class_cast(&v, "zombie.core.Color")) };
+        return if v.is_nil() {
+            Ok(None)
+        } else {
+            Err(class_cast(&v, "zombie.core.Color"))
+        };
     };
-    for fixed in [ChevronColor::White, ChevronColor::Negative, ChevronColor::Positive] {
+    for fixed in [
+        ChevronColor::White,
+        ChevronColor::Negative,
+        ChevronColor::Positive,
+    ] {
         if color_value(&fixed).raw_equals(&v) {
             return Ok(Some(fixed));
         }
@@ -421,8 +467,13 @@ fn color_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<ChevronColor>> {
     };
     let pz_render::Rgba(r, g, b, a) = col.rgba.get();
     let id = Rc::as_ptr(o) as *const () as usize;
-    let rc = COLORS
-        .with(|m| m.borrow_mut().entry(id).or_insert_with(|| (Rc::new(Color { r, g, b, a }), v.clone())).0.clone());
+    let rc = COLORS.with(|m| {
+        m.borrow_mut()
+            .entry(id)
+            .or_insert_with(|| (Rc::new(Color { r, g, b, a }), v.clone()))
+            .0
+            .clone()
+    });
     Ok(Some(ChevronColor::Other(rc)))
 }
 
@@ -450,7 +501,12 @@ fn register_character_stat(thread: &mut Thread, chars: &Rc<RefCell<Characters>>)
     let ch = chars.clone();
     b.static_fn("register", move |c| {
         let id = str_arg(c, 0).map(|s| s.to_string()).unwrap_or_default();
-        let s = ch.borrow_mut().sim.character_stats.register(&id, float_arg(c, 1), float_arg(c, 2), float_arg(c, 3));
+        let s = ch.borrow_mut().sim.character_stats.register(
+            &id,
+            float_arg(c, 1),
+            float_arg(c, 2),
+            float_arg(c, 3),
+        );
         Ok(c.push(stat_value(Some(&s))))
     });
     let ch = chars.clone();
@@ -505,7 +561,13 @@ fn with_stats<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut Stats) -> R) -> LuaResu
 
 fn register_stats(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     let b = expose_class(thread, STATS_CLASS, None);
-    b.ctor(|c| Ok(c.push(Value::Object(Rc::new(StatsObject::Owned(RefCell::new(Stats::default())))))));
+    b.ctor(|c| {
+        Ok(
+            c.push(Value::Object(Rc::new(StatsObject::Owned(RefCell::new(
+                Stats::default(),
+            ))))),
+        )
+    });
     type StatFn = fn(&mut Stats, &CharacterStatRef) -> Value;
     let by_stat: [(&str, StatFn); 6] = [
         ("get", |s, k| float_value(s.get(k))),
@@ -523,8 +585,11 @@ fn register_stats(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
         });
     }
     type AmountFn = fn(&mut Stats, &CharacterStatRef, f32) -> bool;
-    let by_amount: [(&str, AmountFn); 3] =
-        [("set", |s, k, v| s.set(k, v)), ("add", |s, k, v| s.add(k, v)), ("remove", |s, k, v| s.remove(k, v))];
+    let by_amount: [(&str, AmountFn); 3] = [
+        ("set", |s, k, v| s.set(k, v)),
+        ("add", |s, k, v| s.add(k, v)),
+        ("remove", |s, k, v| s.remove(k, v)),
+    ];
     for (name, f) in by_amount {
         b.method(name, move |c| {
             let k = stat_arg(c, 1)?;
@@ -576,7 +641,9 @@ fn register_stats(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     let floats: [(&str, FloatGet); 4] = [
         ("getLastEndurance", Stats::last_endurance),
         ("getTrippingRotAngle", Stats::tripping_rot_angle),
-        ("getEnduranceDangerWarning", |_| Stats::ENDURANCE_DANGER_WARNING),
+        ("getEnduranceDangerWarning", |_| {
+            Stats::ENDURANCE_DANGER_WARNING
+        }),
         ("getEnduranceWarning", |_| Stats::ENDURANCE_WARNING),
     ];
     for (name, f) in floats {
@@ -617,15 +684,26 @@ fn moodles_chr(c: &NativeCall<'_>) -> LuaResult<LuaGameCharacterRef> {
     with_this::<MoodlesObject, _>(c, |o| o.0.clone())
 }
 
-fn moodle_this(c: &NativeCall<'_>) -> LuaResult<(LuaGameCharacterRef, Rc<pz_scripts::registry::RegistryKey>)> {
+fn moodle_this(
+    c: &NativeCall<'_>,
+) -> LuaResult<(LuaGameCharacterRef, Rc<pz_scripts::registry::RegistryKey>)> {
     with_this::<MoodleObject, _>(c, |o| (o.chr.clone(), o.moodle_type.clone()))
 }
 
 /// The canonical Lua object of `chr`'s moodle of type `t` (the original
 /// hands `Moodle`s to its UI, not to scripts).
 pub fn moodle_value(chr: &LuaGameCharacterRef, t: &Rc<pz_scripts::registry::RegistryKey>) -> Value {
-    let id = (Handle::Moodle, Rc::as_ptr(chr) as usize, Rc::as_ptr(t) as usize);
-    canonical(id, || Value::Object(Rc::new(MoodleObject { chr: chr.clone(), moodle_type: t.clone() })))
+    let id = (
+        Handle::Moodle,
+        Rc::as_ptr(chr) as usize,
+        Rc::as_ptr(t) as usize,
+    );
+    canonical(id, || {
+        Value::Object(Rc::new(MoodleObject {
+            chr: chr.clone(),
+            moodle_type: t.clone(),
+        }))
+    })
 }
 
 fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
@@ -644,13 +722,21 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
     b.method("getMoodleLevel", |c| {
         let t = key_arg(c, 1)?;
         let chr = moodles_chr(c)?;
-        let v = chr.borrow().moodles.moodle_level(t.as_deref()).map_err(java_error)?;
+        let v = chr
+            .borrow()
+            .moodles
+            .moodle_level(t.as_deref())
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     b.method("isMaxMoodleLevel", |c| {
         let t = key_arg(c, 1)?;
         let chr = moodles_chr(c)?;
-        let v = chr.borrow().moodles.is_max_moodle_level(t.as_deref()).map_err(java_error)?;
+        let v = chr
+            .borrow()
+            .moodles
+            .is_max_moodle_level(t.as_deref())
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     let get_text = || {
@@ -660,13 +746,21 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
     b.method("getMoodleDisplayString", move |c| {
         let t = key_arg(c, 1)?;
         let chr = moodles_chr(c)?;
-        let v = chr.borrow().moodles.moodle_display_string(t.as_deref(), &get_text()).map_err(java_error)?;
+        let v = chr
+            .borrow()
+            .moodles
+            .moodle_display_string(t.as_deref(), &get_text())
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     b.method("getMoodleDescriptionString", move |c| {
         let t = key_arg(c, 1)?;
         let chr = moodles_chr(c)?;
-        let v = chr.borrow().moodles.moodle_description_string(t.as_deref(), &get_text()).map_err(java_error)?;
+        let v = chr
+            .borrow()
+            .moodles
+            .moodle_description_string(t.as_deref(), &get_text())
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     b.method("UI_RefreshNeeded", |c| {
@@ -676,7 +770,10 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
     });
     b.method("setMoodlesStateChanged", |c| {
         let v = bool_arg(c, 1);
-        moodles_chr(c)?.borrow_mut().moodles.set_moodles_state_changed(v);
+        moodles_chr(c)?
+            .borrow_mut()
+            .moodles
+            .set_moodles_state_changed(v);
         Ok(0)
     });
     let ch = chars.clone();
@@ -685,7 +782,9 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
         let chr = moodles_chr(c)?;
         let v = character_value(&chr);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().update_moodles(&s, &chars, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().update_moodles(&s, &chars, ctx)
+        })?;
         Ok(0)
     });
 
@@ -694,7 +793,10 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
         let (_, t) = moodle_this(c)?;
         Ok(c.push(key_value(MOODLE_TYPE_CLASS, Some(&t))))
     });
-    fn with_moodle<R>(c: &NativeCall<'_>, f: impl FnOnce(&mut pz_characters::character::Moodle) -> R) -> LuaResult<R> {
+    fn with_moodle<R>(
+        c: &NativeCall<'_>,
+        f: impl FnOnce(&mut pz_characters::character::Moodle) -> R,
+    ) -> LuaResult<R> {
         let (chr, t) = moodle_this(c)?;
         let mut chr = chr.borrow_mut();
         chr.moodles.moodle_mut(&t).map(f).ok_or_else(npe)
@@ -739,7 +841,12 @@ fn register_moodles(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefC
         let chars = ch.borrow();
         let changed = with_ctx(c, &v, |ctx| {
             let mut g = chr.borrow_mut();
-            let Some(i) = g.moodles.all().iter().position(|m| m.moodle_type().location == t.location) else {
+            let Some(i) = g
+                .moodles
+                .all()
+                .iter()
+                .position(|m| m.moodle_type().location == t.location)
+            else {
                 return Err(ScriptError::new("java.lang.NullPointerException"));
             };
             let mut m = g.moodles.all()[i].clone();
@@ -777,8 +884,12 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
                 3 => g.add_xp_no_multiplier_flag(&s, &chars, p, amount, flags[0], false, ctx),
                 4 => g.add_xp_no_multiplier_flag(&s, &chars, p, amount, flags[0], flags[1], ctx),
                 // AddXP(perk, amount, callLua, doXPBoost, remote[, haloText])
-                5 => g.add_xp_full(&s, &chars, p, amount, flags[0], flags[1], flags[2], false, ctx),
-                _ => g.add_xp_full(&s, &chars, p, amount, flags[0], flags[1], flags[2], flags[3], ctx),
+                5 => g.add_xp_full(
+                    &s, &chars, p, amount, flags[0], flags[1], flags[2], false, ctx,
+                ),
+                _ => g.add_xp_full(
+                    &s, &chars, p, amount, flags[0], flags[1], flags[2], flags[3], ctx,
+                ),
             }
         })?;
         Ok(0)
@@ -790,7 +901,10 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
         let perk = perk_arg(c, 1)?;
         let amount = float_arg(c, 2);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().add_xp_halo_text(&s, &chars, perk.as_ref(), amount, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut()
+                .add_xp_halo_text(&s, &chars, perk.as_ref(), amount, ctx)
+        })?;
         Ok(0)
     });
     let (s, ch) = (sm.clone(), chars.clone());
@@ -800,13 +914,18 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
         let perk = perk_arg(c, 1)?;
         let amount = float_arg(c, 2);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().add_xp_no_multiplier(&s, &chars, perk.as_ref(), amount, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut()
+                .add_xp_no_multiplier(&s, &chars, perk.as_ref(), amount, ctx)
+        })?;
         Ok(0)
     });
     b.method("addXpMultiplier", |c| {
         let chr = xp_chr(c)?;
         let perk = perk_arg(c, 1)?.ok_or_else(npe)?;
-        chr.borrow_mut().xp.add_xp_multiplier(&perk, float_arg(c, 2), int_arg(c, 3), int_arg(c, 4));
+        chr.borrow_mut()
+            .xp
+            .add_xp_multiplier(&perk, float_arg(c, 2), int_arg(c, 3), int_arg(c, 4));
         Ok(0)
     });
     b.method("getMultiplier", |c| {
@@ -821,7 +940,12 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
                 .xp
                 .xp_map_multiplier
                 .iter()
-                .map(|(p, m)| (perk_value(Some(p)), Value::Object(Rc::new(XpMultiplierObject(*m)))))
+                .map(|(p, m)| {
+                    (
+                        perk_value(Some(p)),
+                        Value::Object(Rc::new(XpMultiplierObject(*m))),
+                    )
+                })
                 .collect()
         };
         Ok(c.push(Value::Object(Rc::new(JavaMap::live(read, None)))))
@@ -841,7 +965,9 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
         let chr = xp_chr(c)?;
         let perk = perk_arg(c, 1)?;
         let chars = ch.borrow();
-        chr.borrow_mut().xp_set_perk_boost(&chars, perk.as_ref(), int_arg(c, 2)).map_err(java_error)?;
+        chr.borrow_mut()
+            .xp_set_perk_boost(&chars, perk.as_ref(), int_arg(c, 2))
+            .map_err(java_error)?;
         Ok(0)
     });
     b.method("getLevel", |c| {
@@ -871,10 +997,15 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
     b.method("setXPToLevel", move |c| {
         let chr = xp_chr(c)?;
         let v = character_value(&chr);
-        let Some(perk) = perk_arg(c, 1)? else { return Ok(0) };
+        let Some(perk) = perk_arg(c, 1)? else {
+            return Ok(0);
+        };
         let level = int_arg(c, 2);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().xp_set_xp_to_level(&chars, &perk, level, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut()
+                .xp_set_xp_to_level(&chars, &perk, level, ctx)
+        })?;
         Ok(0)
     });
 
@@ -887,13 +1018,31 @@ fn register_xp(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<C
 }
 
 fn perk_info_value(chr: &LuaGameCharacterRef, perk: &PerkRef) -> Value {
-    let id = (Handle::PerkInfo, Rc::as_ptr(chr) as usize, Rc::as_ptr(perk) as usize);
-    canonical(id, || Value::Object(Rc::new(PerkInfoObject { chr: chr.clone(), perk: perk.clone() })))
+    let id = (
+        Handle::PerkInfo,
+        Rc::as_ptr(chr) as usize,
+        Rc::as_ptr(perk) as usize,
+    );
+    canonical(id, || {
+        Value::Object(Rc::new(PerkInfoObject {
+            chr: chr.clone(),
+            perk: perk.clone(),
+        }))
+    })
 }
 
-fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
+fn register_character(
+    thread: &mut Thread,
+    sm: &Rc<ScriptManager>,
+    chars: &Rc<RefCell<Characters>>,
+) {
     let b = expose_class(thread, ISO_GAME_CHARACTER_CLASS, None);
-    for class in [ISO_PLAYER_CLASS, ISO_SURVIVOR_CLASS, ISO_ZOMBIE_CLASS, ISO_ANIMAL_CLASS] {
+    for class in [
+        ISO_PLAYER_CLASS,
+        ISO_SURVIVOR_CLASS,
+        ISO_ZOMBIE_CLASS,
+        ISO_ANIMAL_CLASS,
+    ] {
         expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
     }
     b.method("getStats", |c| {
@@ -912,7 +1061,9 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     });
     b.method("getXp", |c| {
         let chr = chr_of(c)?;
-        let v = canonical((Handle::Xp, Rc::as_ptr(&chr) as usize, 0), || Value::Object(Rc::new(XpObject(chr.clone()))));
+        let v = canonical((Handle::Xp, Rc::as_ptr(&chr) as usize, 0), || {
+            Value::Object(Rc::new(XpObject(chr.clone())))
+        });
         Ok(c.push(v))
     });
     b.method("getPerkLevel", |c| {
@@ -941,7 +1092,9 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let v = character_value(&chr);
         let perk = perk_arg(c, 1)?;
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().level_perk(&chars, perk.as_ref(), ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut().level_perk(&chars, perk.as_ref(), ctx)
+        })?;
         Ok(0)
     });
     let ch = chars.clone();
@@ -970,12 +1123,21 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     b.method("getPerkInfo", |c| {
         let chr = chr_of(c)?;
         let perk = perk_arg(c, 1)?;
-        let found = chr.borrow().perk_info(perk.as_ref()).map(|i| i.perk.clone());
+        let found = chr
+            .borrow()
+            .perk_info(perk.as_ref())
+            .map(|i| i.perk.clone());
         Ok(c.push(found.map_or(Value::Nil, |p| perk_info_value(&chr, &p))))
     });
     b.method("getPerkList", |c| {
         let chr = chr_of(c)?;
-        let read = move || chr.borrow().perk_list.iter().map(|i| perk_info_value(&chr, &i.perk)).collect();
+        let read = move || {
+            chr.borrow()
+                .perk_list
+                .iter()
+                .map(|i| perk_info_value(&chr, &i.perk))
+                .collect()
+        };
         Ok(c.push(Value::Object(Rc::new(JavaList::live(read, None)))))
     });
     b.method("getPerkToUnit", |c| {
@@ -985,12 +1147,18 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     });
     let ch = chars.clone();
     b.method("getXpForLevel", move |c| {
-        let v = chr_of(c)?.borrow().xp_for_level(&ch.borrow(), int_arg(c, 1)).map_err(java_error)?;
+        let v = chr_of(c)?
+            .borrow()
+            .xp_for_level(&ch.borrow(), int_arg(c, 1))
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     let ch = chars.clone();
     b.method("getLevelUpLevels", move |c| {
-        let v = chr_of(c)?.borrow().level_up_levels(&ch.borrow(), int_arg(c, 1)).map_err(java_error)?;
+        let v = chr_of(c)?
+            .borrow()
+            .level_up_levels(&ch.borrow(), int_arg(c, 1))
+            .map_err(java_error)?;
         Ok(c.push(v))
     });
     let ch = chars.clone();
@@ -1004,7 +1172,12 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let mut any = false;
         for i in 1..c.nargs().max(2) {
             let t = key_arg(c, i)?;
-            if chr.borrow().character_traits.get(t.as_ref()).map_err(java_error)? {
+            if chr
+                .borrow()
+                .character_traits
+                .get(t.as_ref())
+                .map_err(java_error)?
+            {
                 any = true;
                 break;
             }
@@ -1059,7 +1232,10 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     });
     let (s, ch) = (sm.clone(), chars.clone());
     b.method("getRecoveryMod", move |c| {
-        let v = chr_of(c)?.borrow().recovery_mod(&s, &ch.borrow()).map_err(java_error)?;
+        let v = chr_of(c)?
+            .borrow()
+            .recovery_mod(&s, &ch.borrow())
+            .map_err(java_error)?;
         Ok(c.push(float_value(v)))
     });
     let (s, ch) = (sm.clone(), chars.clone());
@@ -1067,7 +1243,10 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let chr = chr_of(c)?;
         let v = character_value(&chr);
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().update_endurance_while_sitting(&s, &chars, ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut()
+                .update_endurance_while_sitting(&s, &chars, ctx)
+        })?;
         Ok(0)
     });
     b.method("getDescriptor", |c| {
@@ -1075,7 +1254,11 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         Ok(c.push(d.as_ref().map_or(Value::Nil, survivor_desc_value)))
     });
     b.method("setDescriptor", |c| {
-        let d = if c.arg(1).is_nil() { None } else { Some(desc_arg(c, 1)?) };
+        let d = if c.arg(1).is_nil() {
+            None
+        } else {
+            Some(desc_arg(c, 1)?)
+        };
         adopt_survivor_desc_value(&c.arg(1));
         chr_of(c)?.borrow_mut().descriptor = d;
         Ok(0)
@@ -1083,7 +1266,10 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     b.method("modifyTraitXPBoost", |c| {
         let def = trait_def_arg(c, 1)?;
         let removing = bool_arg(c, 2);
-        chr_of(c)?.borrow_mut().modify_trait_xp_boost(def.as_ref(), removing).map_err(java_error)?;
+        chr_of(c)?
+            .borrow_mut()
+            .modify_trait_xp_boost(def.as_ref(), removing)
+            .map_err(java_error)?;
         Ok(0)
     });
     let (s, ch) = (sm.clone(), chars.clone());
@@ -1093,8 +1279,10 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
         let traits: Option<Vec<Option<Rc<pz_scripts::registry::RegistryKey>>>> = match c.arg(1) {
             Value::Nil => None,
             Value::Object(o) => {
-                let list =
-                    o.as_any().downcast_ref::<JavaList>().ok_or_else(|| class_cast(&c.arg(1), "java.util.List"))?;
+                let list = o
+                    .as_any()
+                    .downcast_ref::<JavaList>()
+                    .ok_or_else(|| class_cast(&c.arg(1), "java.util.List"))?;
                 let mut out = Vec::new();
                 for item in list.snapshot() {
                     out.push(match &item {
@@ -1103,9 +1291,16 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
                             k.as_any()
                                 .downcast_ref::<crate::bind_registry::KeyObject>()
                                 .map(|k| k.key.clone())
-                                .ok_or_else(|| class_cast(&item, crate::bind_registry::CHARACTER_TRAIT_CLASS))?,
+                                .ok_or_else(|| {
+                                    class_cast(&item, crate::bind_registry::CHARACTER_TRAIT_CLASS)
+                                })?,
                         ),
-                        other => return Err(class_cast(other, crate::bind_registry::CHARACTER_TRAIT_CLASS)),
+                        other => {
+                            return Err(class_cast(
+                                other,
+                                crate::bind_registry::CHARACTER_TRAIT_CLASS,
+                            ))
+                        }
                     });
                 }
                 Some(out)
@@ -1113,12 +1308,18 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
             other => return Err(class_cast(&other, "java.util.List")),
         };
         let chars = ch.borrow();
-        with_ctx(c, &v, |ctx| chr.borrow_mut().apply_traits(&s, &chars, traits.as_deref(), ctx))?;
+        with_ctx(c, &v, |ctx| {
+            chr.borrow_mut()
+                .apply_traits(&s, &chars, traits.as_deref(), ctx)
+        })?;
         Ok(0)
     });
     let s = sm.clone();
     b.method("applyProfessionRecipes", move |c| {
-        chr_of(c)?.borrow_mut().apply_profession_recipes(&s).map_err(java_error)?;
+        chr_of(c)?
+            .borrow_mut()
+            .apply_profession_recipes(&s)
+            .map_err(java_error)?;
         Ok(0)
     });
     let s = sm.clone();
@@ -1133,12 +1334,19 @@ mod tests {
     use super::*;
     use pz_characters::SurvivorDesc;
     use pz_kahlua::TableRef;
-    use pz_scripts::registry::builtin::{BuiltinTables, CharacterStatDecl, MoodleStatDecl, PerkDecl, PerkInit};
+    use pz_scripts::registry::builtin::{
+        BuiltinTables, CharacterStatDecl, MoodleStatDecl, PerkDecl, PerkInit,
+    };
 
     fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map(|_| ())
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
     }
 
     /// Invented stats, moodle types, traits and perks.
@@ -1160,12 +1368,24 @@ mod tests {
                 ("moodle_type", "PANIC", "t:Scared"),
                 ("moodle_type", "FOOD_EATEN", "t:Fed"),
             ] {
-                sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
+                sm.registries
+                    .get(reg)
+                    .unwrap()
+                    .borrow_mut()
+                    .register_id(id, false)
+                    .unwrap();
                 st.constants.insert(reg, field, id);
             }
         }
         let mut tables = BuiltinTables::default();
-        for f in ["PANIC", "FITNESS", "STRESS", "NICOTINE_WITHDRAWAL", "TEMPERATURE", "ZOMBIE_INFECTION"] {
+        for f in [
+            "PANIC",
+            "FITNESS",
+            "STRESS",
+            "NICOTINE_WITHDRAWAL",
+            "TEMPERATURE",
+            "ZOMBIE_INFECTION",
+        ] {
             let max = if f == "PANIC" { 100.0 } else { 1.0 };
             tables.character_stats.push(CharacterStatDecl {
                 field: f.into(),
@@ -1181,11 +1401,20 @@ mod tests {
             thresholds: [0.0, 5.0, 10.0, 20.0, 40.0],
         }];
         tables.level_up_levels = vec![5, 10];
-        let decl = |f: &str| PerkDecl { field: f.into(), id: f.into(), parent: None };
-        tables.perks = ["None", "Fitness", "Strength", "Sprinting", "Knit", "MAX"].map(decl).to_vec();
+        let decl = |f: &str| PerkDecl {
+            field: f.into(),
+            id: f.into(),
+            parent: None,
+        };
+        tables.perks = ["None", "Fitness", "Strength", "Sprinting", "Knit", "MAX"]
+            .map(decl)
+            .to_vec();
         tables.perk_ids = tables.perks.iter().map(|p| p.id.clone()).collect();
         let xp = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
-        tables.perk_init = vec![PerkInit::SetParent { perk: "None".into(), parent: "None".into() }];
+        tables.perk_init = vec![PerkInit::SetParent {
+            perk: "None".into(),
+            parent: "None".into(),
+        }];
         for p in ["Fitness", "Strength", "Sprinting", "Knit"] {
             tables.perk_init.push(PerkInit::AddPerk {
                 perk: p.into(),
@@ -1196,8 +1425,10 @@ mod tests {
             });
         }
         *sm.builtin_tables.borrow_mut() = tables.clone();
-        let mut chars =
-            Characters { perks: pz_characters::PerkFactory::from_tables(&tables).unwrap(), ..Default::default() };
+        let mut chars = Characters {
+            perks: pz_characters::PerkFactory::from_tables(&tables).unwrap(),
+            ..Default::default()
+        };
         chars.perks.init(&tables, &|k| k.to_string()).unwrap();
         chars.sim = pz_characters::SimStatics::from_tables(&tables).unwrap();
         let desc = SurvivorDesc::<LuaItem>::new_unregistered(&mut chars, &sm).unwrap();
@@ -1213,10 +1444,15 @@ mod tests {
         t.globals().set_str("player", character_value(&chr));
         let log: Rc<RefCell<Vec<String>>> = Rc::default();
         let l = log.clone();
-        install_event_sink(Rc::new(move |_t: &mut Thread, name: &str, args: &[Value]| {
-            let rest: Vec<String> = args[1..].iter().map(pz_kahlua::exec::java_value_of).collect();
-            l.borrow_mut().push(format!("{name} {}", rest.join(" ")));
-        }));
+        install_event_sink(Rc::new(
+            move |_t: &mut Thread, name: &str, args: &[Value]| {
+                let rest: Vec<String> = args[1..]
+                    .iter()
+                    .map(pz_kahlua::exec::java_value_of)
+                    .collect();
+                l.borrow_mut().push(format!("{name} {}", rest.join(" ")));
+            },
+        ));
         (t, chr, log)
     }
 
@@ -1252,7 +1488,11 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(chr.borrow().state.action_context.has_event_occurred("eventx", None));
+        assert!(chr
+            .borrow()
+            .state
+            .action_context
+            .has_event_occurred("eventx", None));
     }
 
     #[test]
@@ -1318,6 +1558,9 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(chr.borrow().moodles.all().iter().map(|m| m.level()).max(), Some(2));
+        assert_eq!(
+            chr.borrow().moodles.all().iter().map(|m| m.level()).max(),
+            Some(2)
+        );
     }
 }

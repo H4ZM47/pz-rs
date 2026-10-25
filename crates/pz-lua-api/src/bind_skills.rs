@@ -23,8 +23,8 @@
 //! original can produce for the same contents.
 
 use crate::bind_characters::{ProfessionDefObject, SurvivorDescObject, TraitDefObject};
-use crate::bind_registry::{java_error, shared_script_manager};
 use crate::bind_java_util::{class_cast, integer_value, JavaInteger, JavaList, JavaMap, INTEGER};
+use crate::bind_registry::{java_error, shared_script_manager};
 use crate::expose::{bool_arg, expose_class, int_arg, str_arg, with_this};
 use pz_characters::{Characters, PerkFactory, PerkRef};
 use pz_kahlua::value::LuaObject;
@@ -63,7 +63,12 @@ impl LuaObject for PerkObject {
 pub fn perk_value(perk: Option<&PerkRef>) -> Value {
     let Some(perk) = perk else { return Value::Nil };
     let id = Rc::as_ptr(perk) as usize;
-    PERKS.with(|m| m.borrow_mut().entry(id).or_insert_with(|| Value::Object(Rc::new(PerkObject(perk.clone())))).clone())
+    PERKS.with(|m| {
+        m.borrow_mut()
+            .entry(id)
+            .or_insert_with(|| Value::Object(Rc::new(PerkObject(perk.clone()))))
+            .clone()
+    })
 }
 
 /// A `Perk` argument: nil is `null`.
@@ -72,14 +77,23 @@ pub fn perk_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Option<PerkRef>> {
         Value::Nil => Ok(None),
         Value::Object(o) => match o.as_any().downcast_ref::<PerkObject>() {
             Some(p) => Ok(Some(p.0.clone())),
-            None => Err(LuaError::runtime(format!("Expected Perk but got {}", o.class_name()))),
+            None => Err(LuaError::runtime(format!(
+                "Expected Perk but got {}",
+                o.class_name()
+            ))),
         },
-        other => Err(LuaError::runtime(format!("Expected Perk but got {}", pz_kahlua::stdlib::java_class_name(&other)))),
+        other => Err(LuaError::runtime(format!(
+            "Expected Perk but got {}",
+            pz_kahlua::stdlib::java_class_name(&other)
+        ))),
     }
 }
 
 fn npe() -> LuaError {
-    LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" }
+    LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.NullPointerException",
+    }
 }
 
 fn this_perk(c: &NativeCall<'_>) -> LuaResult<PerkRef> {
@@ -98,7 +112,10 @@ fn boost_entries(chars: &Rc<RefCell<Characters>>, boosts: &[(String, i32)]) -> V
     boosts
         .iter()
         .map(|(id, level)| {
-            (perk_value(chars.perks.from_string(id).as_ref()), integer_value(*level))
+            (
+                perk_value(chars.perks.from_string(id).as_ref()),
+                integer_value(*level),
+            )
         })
         .collect()
 }
@@ -116,7 +133,10 @@ fn boost_map<O: 'static>(
         let mut out = Vec::with_capacity(entries.len());
         for (k, v) in &entries {
             let perk = match k {
-                Value::Object(o) => o.as_any().downcast_ref::<PerkObject>().map(|p| p.0.borrow().id().to_string()),
+                Value::Object(o) => o
+                    .as_any()
+                    .downcast_ref::<PerkObject>()
+                    .map(|p| p.0.borrow().id().to_string()),
                 _ => None,
             }
             .ok_or_else(|| class_cast(k, PERK_CLASS))?;
@@ -146,16 +166,31 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>, chars: Rc<RefCell<Ch
 
 /// `register` on the shared ScriptManager and Characters.
 pub fn register_shared(thread: &mut Thread) {
-    register(thread, shared_script_manager(), crate::bind_characters::shared_characters());
+    register(
+        thread,
+        shared_script_manager(),
+        crate::bind_characters::shared_characters(),
+    );
 }
 
-fn register_perk_factory(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<RefCell<Characters>>) {
+fn register_perk_factory(
+    thread: &mut Thread,
+    sm: &Rc<ScriptManager>,
+    chars: &Rc<RefCell<Characters>>,
+) {
     let b = expose_class(thread, PERK_FACTORY_CLASS, None);
     let ch = chars.clone();
     b.field(
         "PerkList",
         Value::Object(Rc::new(JavaList::live(
-            move || ch.borrow().perks.perk_list.iter().map(|p| perk_value(Some(p))).collect(),
+            move || {
+                ch.borrow()
+                    .perks
+                    .perk_list
+                    .iter()
+                    .map(|p| perk_value(Some(p)))
+                    .collect()
+            },
             None,
         ))),
     );
@@ -177,7 +212,9 @@ fn register_perk_factory(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc
     let ch = chars.clone();
     b.static_fn("AddPerk", move |c| {
         let perk = perk_arg(c, 0)?.ok_or_else(npe)?;
-        let translation = str_arg(c, 1).map(|s| s.to_string()).unwrap_or_else(|| "null".into());
+        let translation = str_arg(c, 1)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "null".into());
         let has_parent = matches!(c.arg(2), Value::Object(_)) || (c.nargs() == 14);
         let first_xp = if has_parent { 3 } else { 2 };
         let mut xp = [0; 10];
@@ -186,14 +223,23 @@ fn register_perk_factory(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc
         }
         let passiv = c.nargs() > first_xp + 10 && bool_arg(c, first_xp + 10);
         let mut chars = ch.borrow_mut();
-        let parent = if has_parent { perk_arg(c, 2)? } else { chars.perks.none() };
-        let p = chars.perks.add_perk(&perk, &translation, parent, xp, passiv, &get_text);
+        let parent = if has_parent {
+            perk_arg(c, 2)?
+        } else {
+            chars.perks.none()
+        };
+        let p = chars
+            .perks
+            .add_perk(&perk, &translation, parent, xp, passiv, &get_text);
         Ok(c.push(perk_value(Some(&p))))
     });
     let (s, ch) = (sm.clone(), chars.clone());
     b.static_fn("init", move |_| {
         let tables = s.builtin_tables.borrow();
-        ch.borrow_mut().perks.init(&tables, &get_text).map_err(java_error)?;
+        ch.borrow_mut()
+            .perks
+            .init(&tables, &get_text)
+            .map_err(java_error)?;
         Ok(0)
     });
     let ch = chars.clone();
@@ -213,8 +259,14 @@ fn register_perk(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     // `new Perk(id)` / `new Perk(id, parent)`.
     let ch = chars.clone();
     b.ctor(move |c| {
-        let id = str_arg(c, 0).map(|s| s.to_string()).unwrap_or_else(|| "null".into());
-        let parent = if c.nargs() >= 2 { Some(perk_arg(c, 1)?) } else { None };
+        let id = str_arg(c, 0)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "null".into());
+        let parent = if c.nargs() >= 2 {
+            Some(perk_arg(c, 1)?)
+        } else {
+            None
+        };
         let mut chars = ch.borrow_mut();
         let p = match parent {
             Some(parent) => chars.perks.new_perk_with_parent(&id, parent),
@@ -289,7 +341,11 @@ fn register_perks(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     });
     let ch = chars.clone();
     b.static_fn("fromIndex", move |c| {
-        let p = ch.borrow().perks.from_index(int_arg(c, 0)).map_err(java_error)?;
+        let p = ch
+            .borrow()
+            .perks
+            .from_index(int_arg(c, 0))
+            .map_err(java_error)?;
         Ok(c.push(perk_value(p.as_ref())))
     });
     let ch = chars.clone();
@@ -325,7 +381,11 @@ fn register_xp_boosts(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
         Ok(0)
     });
 
-    let b = expose_class(thread, crate::bind_characters::PROFESSION_DEFINITION_CLASS, None);
+    let b = expose_class(
+        thread,
+        crate::bind_characters::PROFESSION_DEFINITION_CLASS,
+        None,
+    );
     let ch = chars.clone();
     b.method("getXpBoosts", move |c| {
         let d = with_this::<ProfessionDefObject, _>(c, |o| o.0.clone())?;
@@ -343,7 +403,12 @@ fn register_xp_boosts(thread: &mut Thread, chars: &Rc<RefCell<Characters>>) {
     let ch = chars.clone();
     b.method("getXPBoostMap", move |c| {
         let d = with_this::<SurvivorDescObject, _>(c, |o| o.desc.clone())?;
-        Ok(c.push(boost_map(&ch, d, |d| &d.xp_boost_map, |d| &mut d.xp_boost_map)))
+        Ok(c.push(boost_map(
+            &ch,
+            d,
+            |d| &d.xp_boost_map,
+            |d| &mut d.xp_boost_map,
+        )))
     });
 }
 
@@ -358,25 +423,53 @@ mod tests {
         pz_kahlua::stdlib::install(&mut t, None).unwrap();
         run(&mut t, "function assert(v, msg) if not v then error(msg or 'assertion failed!', 2) end return v end").unwrap();
         crate::bind_java_util::register(&mut t);
-        crate::bind_core::register(&mut t, None, Rc::new(RefCell::new(pz_core::core::Core::new())));
+        crate::bind_core::register(
+            &mut t,
+            None,
+            Rc::new(RefCell::new(pz_core::core::Core::new())),
+        );
         let sm = Rc::new(ScriptManager::new());
-        for (reg, id) in [("character_trait", "t:brave"), ("character_profession", "t:baker")] {
-            sm.registries.get(reg).unwrap().borrow_mut().register_id(id, false).unwrap();
+        for (reg, id) in [
+            ("character_trait", "t:brave"),
+            ("character_profession", "t:baker"),
+        ] {
+            sm.registries
+                .get(reg)
+                .unwrap()
+                .borrow_mut()
+                .register_id(id, false)
+                .unwrap();
         }
         {
             let mut st = sm.statics.items.borrow_mut();
             st.constants.insert("character_trait", "BRAVE", "t:brave");
-            st.constants.insert("character_profession", "BAKER", "t:baker");
+            st.constants
+                .insert("character_profession", "BAKER", "t:baker");
         }
         {
-            let decl = |f: &str| PerkDecl { field: f.into(), id: f.into(), parent: None };
+            let decl = |f: &str| PerkDecl {
+                field: f.into(),
+                id: f.into(),
+                parent: None,
+            };
             let mut tables = sm.builtin_tables.borrow_mut();
-            tables.perks = ["None", "Digging", "Outdoors", "Shovel", "MAX"].map(decl).to_vec();
+            tables.perks = ["None", "Digging", "Outdoors", "Shovel", "MAX"]
+                .map(decl)
+                .to_vec();
             tables.perk_ids = tables.perks.iter().map(|p| p.id.clone()).collect();
             let xp = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
             tables.perk_init = vec![
-                PerkInit::SetParent { perk: "None".into(), parent: "None".into() },
-                PerkInit::AddPerk { perk: "Outdoors".into(), translation: "Out".into(), parent: None, xp, passiv: false },
+                PerkInit::SetParent {
+                    perk: "None".into(),
+                    parent: "None".into(),
+                },
+                PerkInit::AddPerk {
+                    perk: "Outdoors".into(),
+                    translation: "Out".into(),
+                    parent: None,
+                    xp,
+                    passiv: false,
+                },
                 PerkInit::AddPerk {
                     perk: "Shovel".into(),
                     translation: "Shov".into(),
@@ -386,9 +479,14 @@ mod tests {
                 },
             ];
         }
-        let mut chars =
-            Characters { perks: PerkFactory::from_tables(&sm.builtin_tables.borrow()).unwrap(), ..Default::default() };
-        chars.perks.init(&sm.builtin_tables.borrow(), &get_text).unwrap();
+        let mut chars = Characters {
+            perks: PerkFactory::from_tables(&sm.builtin_tables.borrow()).unwrap(),
+            ..Default::default()
+        };
+        chars
+            .perks
+            .init(&sm.builtin_tables.borrow(), &get_text)
+            .unwrap();
         let chars = Rc::new(RefCell::new(chars));
         crate::bind_registry::register(&mut t, sm.clone());
         crate::bind_characters::register(&mut t, sm.clone(), chars.clone());
@@ -398,8 +496,13 @@ mod tests {
 
     fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map(|_| ()).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map(|_| ())
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
     }
 
     #[test]

@@ -10,7 +10,9 @@
 //! `Hit(weapon, ...)` is not bound: it takes an `InventoryItem` Lua object,
 //! which is not exposed yet. TODO(InventoryItem Lua objects).
 
-use crate::bind_character_sim::{character_value, chr_of, CharacterObject, LuaGameCharacter, LuaGameCharacterRef};
+use crate::bind_character_sim::{
+    character_value, chr_of, CharacterObject, LuaGameCharacter, LuaGameCharacterRef,
+};
 use crate::bind_characters::shared_characters;
 use crate::bind_registry::shared_script_manager;
 use crate::bind_states::with_state_cx;
@@ -38,7 +40,10 @@ fn by_id(id: Option<i32>) -> Value {
 /// A character argument (`nil` is `None`).
 fn character_arg(c: &NativeCall<'_>, i: usize) -> Option<LuaGameCharacterRef> {
     match c.arg(i) {
-        Value::Object(o) => o.as_any().downcast_ref::<CharacterObject>().map(|o| o.0.clone()),
+        Value::Object(o) => o
+            .as_any()
+            .downcast_ref::<CharacterObject>()
+            .map(|o| o.0.clone()),
         _ => None,
     }
 }
@@ -99,9 +104,19 @@ pub fn register_character_methods(b: &ClassBuilder) {
     flag!(b, "isKnockedDown", "setKnockedDown", knocked_down);
     flag!(b, "isAimAtFloor", "setAimAtFloor", aim_at_floor);
     flag!(b, "isHitFromBehind", "setHitFromBehind", hit_from_behind);
-    flag!(b, "isRangedWeaponEmpty", "setRangedWeaponEmpty", ranged_weapon_empty);
+    flag!(
+        b,
+        "isRangedWeaponEmpty",
+        "setRangedWeaponEmpty",
+        ranged_weapon_empty
+    );
     float_field!(b, "getHitForce", "setHitForce", hit_force);
-    float_field!(b, "getStateEventDelayTimer", "setStateEventDelayTimer", state_event_delay_timer);
+    float_field!(
+        b,
+        "getStateEventDelayTimer",
+        "setStateEventDelayTimer",
+        state_event_delay_timer
+    );
     float_field!(b, "getReanimateTimer", "setReanimateTimer", reanimate_timer);
     b.method("isFallOnFront", |c| {
         let v = chr_of(c)?.borrow().environment.fall_on_front;
@@ -186,7 +201,8 @@ pub fn register_character_methods(b: &ClassBuilder) {
             let p = chr.borrow();
             p.calculate_crit_chance(&sm, &chars.borrow(), &*ctx, &p)
         } else {
-            chr.borrow().calculate_crit_chance(&sm, &chars.borrow(), &*ctx, &target.borrow())
+            chr.borrow()
+                .calculate_crit_chance(&sm, &chars.borrow(), &*ctx, &target.borrow())
         };
         Ok(c.push(Value::Num(f64::from(v))))
     });
@@ -211,5 +227,8 @@ pub fn register_character_methods(b: &ClassBuilder) {
 }
 
 fn npe() -> pz_kahlua::LuaError {
-    pz_kahlua::LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" }
+    pz_kahlua::LuaError::Runtime {
+        message: String::new(),
+        class: "java.lang.NullPointerException",
+    }
 }

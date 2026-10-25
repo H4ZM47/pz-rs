@@ -33,7 +33,16 @@ pub trait PopulationLua {
     fn set_zombies_max_per_chunk(&mut self, f: f32);
     fn create_horde_from_to(&mut self, sx: i32, sy: i32, tx: i32, ty: i32, count: i32);
     #[allow(clippy::too_many_arguments)]
-    fn create_horde_in_area_to(&mut self, sx: i32, sy: i32, sw: i32, sh: i32, tx: i32, ty: i32, count: i32);
+    fn create_horde_in_area_to(
+        &mut self,
+        sx: i32,
+        sy: i32,
+        sw: i32,
+        sh: i32,
+        tx: i32,
+        ty: i32,
+        count: i32,
+    );
     fn dbg_spawn_time_to_zero(&mut self, cx: i32, cy: i32);
     fn dbg_clear_zombies(&mut self, cx: i32, cy: i32);
     fn dbg_spawn_now(&mut self, cx: i32, cy: i32);
@@ -50,7 +59,16 @@ impl<H: Copy + Eq> PopulationLua for ZombiePopulationManager<H> {
     fn create_horde_from_to(&mut self, sx: i32, sy: i32, tx: i32, ty: i32, count: i32) {
         ZombiePopulationManager::create_horde_from_to(self, sx, sy, tx, ty, count);
     }
-    fn create_horde_in_area_to(&mut self, sx: i32, sy: i32, sw: i32, sh: i32, tx: i32, ty: i32, count: i32) {
+    fn create_horde_in_area_to(
+        &mut self,
+        sx: i32,
+        sy: i32,
+        sw: i32,
+        sh: i32,
+        tx: i32,
+        ty: i32,
+        count: i32,
+    ) {
         ZombiePopulationManager::create_horde_in_area_to(self, sx, sy, sw, sh, tx, ty, count);
     }
     fn dbg_spawn_time_to_zero(&mut self, cx: i32, cy: i32) {
@@ -109,11 +127,18 @@ impl LuaObject for PopulationRendererObject {
 
 pub fn register(thread: &mut Thread) {
     let vzm = expose_class(thread, VIRTUAL_ZOMBIE_MANAGER, Some("java.lang.Object"));
-    vzm.field("instance", Value::Object(Rc::new(VirtualZombieManagerObject)));
+    vzm.field(
+        "instance",
+        Value::Object(Rc::new(VirtualZombieManagerObject)),
+    );
     vzm.ctor(|c| Ok(c.push(Value::Object(Rc::new(VirtualZombieManagerObject)))));
     let r = expose_class(thread, RENDERER, Some("java.lang.Object"));
     r.ctor(|c| Ok(c.push(Value::Object(Rc::new(PopulationRendererObject)))));
-    expose_class(thread, BOOLEAN_DEBUG_OPTION, Some("zombie.config.BooleanConfigOption"));
+    expose_class(
+        thread,
+        BOOLEAN_DEBUG_OPTION,
+        Some("zombie.config.BooleanConfigOption"),
+    );
 
     global(thread, "setMinMaxZombiesPerChunk", |c| {
         let (min, max) = (num_arg(c, 0) as f32, num_arg(c, 1) as f32);
@@ -134,7 +159,9 @@ pub fn register(thread: &mut Thread) {
         with_population(|m| m.create_horde_in_area_to(a[0], a[1], a[2], a[3], a[4], a[5], a[6]));
         Ok(0)
     });
-    global(thread, "zpopNewRenderer", |c| Ok(c.push(Value::Object(Rc::new(PopulationRendererObject)))));
+    global(thread, "zpopNewRenderer", |c| {
+        Ok(c.push(Value::Object(Rc::new(PopulationRendererObject))))
+    });
     global(thread, "zpopSpawnTimeToZero", |c| {
         let (x, y) = (int_arg(c, 0), int_arg(c, 1));
         with_population(|m| m.dbg_spawn_time_to_zero(x, y));
@@ -177,8 +204,18 @@ mod tests {
         fn create_horde_from_to(&mut self, sx: i32, sy: i32, tx: i32, ty: i32, count: i32) {
             self.0.push(format!("horde {sx} {sy} {tx} {ty} {count}"));
         }
-        fn create_horde_in_area_to(&mut self, sx: i32, sy: i32, sw: i32, sh: i32, tx: i32, ty: i32, count: i32) {
-            self.0.push(format!("area {sx} {sy} {sw} {sh} {tx} {ty} {count}"));
+        fn create_horde_in_area_to(
+            &mut self,
+            sx: i32,
+            sy: i32,
+            sw: i32,
+            sh: i32,
+            tx: i32,
+            ty: i32,
+            count: i32,
+        ) {
+            self.0
+                .push(format!("area {sx} {sy} {sw} {sh} {tx} {ty} {count}"));
         }
         fn dbg_spawn_time_to_zero(&mut self, cx: i32, cy: i32) {
             self.0.push(format!("t0 {cx} {cy}"));
@@ -213,8 +250,13 @@ mod tests {
             assert(zpopNewRenderer() ~= nil)
         "#;
         let p = pz_kahlua::compiler::compile(src, Some("t"), Some("t"), None).unwrap();
-        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(Rc::new(p), t.globals().clone()));
-        t.pcall(&f, &[]).map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e))).unwrap();
+        let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
+            Rc::new(p),
+            t.globals().clone(),
+        ));
+        t.pcall(&f, &[])
+            .map_err(|(e, tr)| format!("{}\n{tr}", pz_kahlua::exec::java_value_of(&e)))
+            .unwrap();
         assert_eq!(
             rec.borrow().0,
             vec![

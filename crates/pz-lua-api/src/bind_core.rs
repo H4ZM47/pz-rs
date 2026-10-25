@@ -1025,7 +1025,12 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
         Ok(Ret::Void)
     });
     def(b, cx, "getDefaultZoomLevels", |cx, _| {
-        let v = cx.core().get_default_zoom_levels().into_iter().map(|p| Value::Num(p as f64)).collect();
+        let v = cx
+            .core()
+            .get_default_zoom_levels()
+            .into_iter()
+            .map(|p| Value::Num(p as f64))
+            .collect();
         Ok(crate::bind_java_util::list_value(v).into())
     });
 
@@ -1685,7 +1690,6 @@ fn register_helpers(thread: &mut Thread, cx: &Rc<Ctx>) {
             Ok(c.push(s))
         });
     }
-
 
     if class_free(thread, CONFIG_OPTION_CLASS) {
         let b = expose_class(thread, CONFIG_OPTION_CLASS, None);

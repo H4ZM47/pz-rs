@@ -17,8 +17,8 @@ use crate::expose::{
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, NativeFunction, TableRef, Thread, Value};
 use pz_render::Rgba;
-use pz_text::UIFont;
 use pz_render::{LuaTexture, Texture};
+use pz_text::UIFont;
 use pz_ui::{with_ui, ColorObject, UIElement, UIManager};
 use std::any::Any;
 use std::rc::Rc;
@@ -964,7 +964,16 @@ fn register_manager(thread: &mut Thread) {
         } else {
             (t.width as i32, t.height as i32, 1.0)
         };
-        with_ui(|m| m.sprite.renderi(Some(&t), x as i32, y as i32, w, h, Rgba(1.0, 1.0, 1.0, a as f32)));
+        with_ui(|m| {
+            m.sprite.renderi(
+                Some(&t),
+                x as i32,
+                y as i32,
+                w,
+                h,
+                Rgba(1.0, 1.0, 1.0, a as f32),
+            )
+        });
         Ok(0)
     });
     // FadeIn(seconds) / FadeIn(playerIndex, seconds); FadeOut likewise.
@@ -1559,11 +1568,29 @@ mod tests {
         let cmds = with_ui(|m| m.sprite.cmds.clone());
         // setStencilRect: the stencil quad covers the element's rectangle.
         assert!(cmds.iter().any(|c| matches!(c, UiDrawCmd::Quad { texture: None, x, y, w, h, .. } if (*x, *y, *w, *h) == (10.0, 10.0, 50.0, 50.0))));
-        let texts: Vec<_> = cmds.iter().filter(|c| matches!(c, UiDrawCmd::Text { .. })).collect();
-        assert!(matches!(texts[0], UiDrawCmd::Text { align: TextAlign::Centre, font: None, x, .. } if *x == 15.0));
-        assert!(matches!(texts[1], UiDrawCmd::Text { align: TextAlign::Right, font: Some(UIFont::Small), .. }));
+        let texts: Vec<_> = cmds
+            .iter()
+            .filter(|c| matches!(c, UiDrawCmd::Text { .. }))
+            .collect();
+        assert!(
+            matches!(texts[0], UiDrawCmd::Text { align: TextAlign::Centre, font: None, x, .. } if *x == 15.0)
+        );
+        assert!(matches!(
+            texts[1],
+            UiDrawCmd::Text {
+                align: TextAlign::Right,
+                font: Some(UIFont::Small),
+                ..
+            }
+        ));
         // clearStencilRect at level 0 clears the stencil buffer.
-        assert!(matches!(cmds.last(), Some(UiDrawCmd::Render(pz_render::DrawCmd::Clear(1280)))));
-        assert_eq!(eval(&mut t, "tostring(s.javaObject:getUIName())").as_str(), Some("Widget: s"));
+        assert!(matches!(
+            cmds.last(),
+            Some(UiDrawCmd::Render(pz_render::DrawCmd::Clear(1280)))
+        ));
+        assert_eq!(
+            eval(&mut t, "tostring(s.javaObject:getUIName())").as_str(),
+            Some("Widget: s")
+        );
     }
 }
