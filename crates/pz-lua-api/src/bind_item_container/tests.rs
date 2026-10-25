@@ -1,6 +1,6 @@
 use super::*;
 use crate::bind_items::{install_item_env, GameItemEnv};
-use pz_inventory::ItemTemplate;
+use pz_inventory::{ItemContainer, ItemTemplate, SavedItem};
 use pz_kahlua::TableRef;
 use pz_scripts::ScriptManager;
 
@@ -82,7 +82,7 @@ fn item(class: ItemClass, ty: &str, weight: f32, tags: &[&str], id: i32) -> Inve
 }
 
 fn shared(i: InventoryItem) -> ItemRef {
-    Rc::new(RefCell::new(i))
+    shared::new_item(i)
 }
 
 #[test]
@@ -202,39 +202,53 @@ fn eval_predicates_and_comparators() {
     );
 }
 
+/// A bag of `weight` with weight reduction `reduction` and capacity 10.
+fn bag_item(ty: &str, weight: f32, reduction: i32, id: i32) -> ItemRef {
+    let mut t = ItemTemplate::new(ItemClass::Container, "Base", ty);
+    t.actual_weight = weight;
+    t.display_name = ty.into();
+    t.capacity = 10;
+    t.weight_reduction = reduction;
+    let mut i = InventoryItem::create(Rc::new(t), 1);
+    i.id = id;
+    shared(i)
+}
+
 #[test]
-fn bags_are_searched_by_value() {
+fn bags_hold_shared_items() {
     let mut t = setup();
     let inv = SharedContainer::new(-1, "none").into_ref();
-    let mut bag = item(ItemClass::Container, "Bag", 0.5, &[], 10);
-    if let ItemKind::Container(c) = &mut bag.kind {
-        c.container.items.push(SavedItem::Item(Box::new(item(
-            ItemClass::Normal,
-            "Rock",
-            2.0,
-            &[],
-            11,
-        ))));
-        let mut inner = item(ItemClass::Container, "Pouch", 0.1, &[], 12);
-        if let ItemKind::Container(p) = &mut inner.kind {
-            p.container.items.push(SavedItem::Item(Box::new(item(
-                ItemClass::Normal,
-                "Coin",
-                0.0,
-                &["base:coin"],
-                13,
-            ))));
-        }
-        c.container.items.push(SavedItem::Item(Box::new(inner)));
-    }
-    let bag = shared(bag);
+    let bag = bag_item("Bag", 0.5, 0, 10);
+    let pouch = bag_item("Pouch", 0.1, 0, 12);
+    let bag_inv = shared::inventory_of(&bag.borrow()).unwrap();
+    let pouch_inv = shared::inventory_of(&pouch.borrow()).unwrap();
+    shared::add_item(
+        &bag_inv,
+        &shared(item(ItemClass::Normal, "Rock", 2.0, &[], 11)),
+    );
+    shared::add_item(
+        &pouch_inv,
+        &shared(item(ItemClass::Normal, "Coin", 0.0, &["base:coin"], 13)),
+    );
+    shared::add_item(&bag_inv, &pouch);
     shared::add_item(&inv, &bag);
     shared::add_item(&inv, &shared(item(ItemClass::Normal, "Rock", 2.0, &[], 1)));
+    assert_eq!(bag_inv.borrow().kind, "Bag");
+    assert_eq!(bag_inv.borrow().capacity, 10);
     t.globals().set_str("inv", container_value(&inv));
     t.globals().set_str("bag", item_value(&bag));
     ok(
         &mut t,
         r#"
+        local binv = bag:getInventory()
+        assert(binv == bag:getInventory() and binv == bag:getItemContainer())
+        assert(binv:getContainingItem() == bag and bag:getContainer() == inv)
+        assert(binv:getType() == "Bag" and binv:getDisplayType() == "Bag")
+        local pouch = binv:getFirstType("Pouch")
+        local pinv = pouch:getInventory()
+        assert(pinv:getOutermostContainer() == inv and pinv:isInside(bag) and pinv:isInside(pouch))
+        local coin = pinv:getItems():get(0)
+        assert(coin:getContainer() == pinv and coin:getOutermostContainer() == inv)
         assert(inv:getCountType("Rock") == 1 and inv:getCountTypeRecurse("Rock") == 2)
         assert(inv:getItemCount("Rock", true) == 2 and inv:getItemCountRecurse("Coin") == 1)
         assert(inv:containsTypeRecurse("Coin") and not inv:containsType("Coin"))
@@ -242,19 +256,73 @@ fn bags_are_searched_by_value() {
         assert(inv:getItemCountFromTypeRecurse("Base.Coin") == 1)
         assert(inv:getNumberOfItem("Rock", false, true) == 2)
         assert(inv:getUsesTypeRecurse("Rock") == 2)
-        -- The first match is a shared item: fine.
         assert(inv:getFirstTypeRecurse("Rock"):getID() == 1)
         assert(inv:getFirstCategoryRecurse("Container") == bag)
-        -- Returning an item inside a bag is not supported yet.
-        assert(not pcall(function() inv:getAllTypeRecurse("Rock") end))
-        assert(not pcall(function() inv:getFirstTypeRecurse("Coin") end))
-        assert(not pcall(function() inv:getCountEvalRecurse(function() return true end) end))
-        -- Removal inside bags works on their contents.
+        -- Items inside bags are the bags' own objects.
+        local all = inv:getAllTypeRecurse("Rock")
+        assert(all:size() == 2 and all:get(1):getContainer() == binv)
+        assert(inv:getFirstTypeRecurse("Coin") == coin)
+        assert(inv:getCountEvalRecurse(function() return true end) == 5)
+        assert(inv:getItemWithIDRecursiv(13) == coin and inv:containsRecursive(coin))
+        assert(inv:contains(coin, true) and not inv:contains(coin, false))
+        assert(inv:findItem("Coin", true, false) == coin)
+        assert(inv:getItemFromType("Coin", false, true) == coin)
+        -- Weights: the bag weighs its contents (no reduction unequipped).
+        assert(math.abs(binv:getContentsWeight() - 2.1) < 1e-6)
+        assert(math.abs(bag:getUnequippedWeight() - 2.6) < 1e-6)
+        assert(math.abs(inv:getContentsWeight() - 4.6) < 1e-6)
+        assert(binv:getCapacity() == 10 and bag:getCapacity() == 10)
+        assert(binv:hasRoomFor(nil, 7.9) and not binv:hasRoomFor(nil, 8))
+        -- Removal inside bags.
         assert(inv:removeItemWithIDRecurse(13))
-        assert(inv:getItemCountRecurse("Coin") == 0)
+        assert(inv:getItemCountRecurse("Coin") == 0 and coin:getContainer() == nil)
         inv:RemoveOneOf("Rock")
         assert(inv:getCountType("Rock") == 0 and inv:getCountTypeRecurse("Rock") == 1)
         assert(inv:RemoveOneOf("Rock", true) == bag and inv:getCountTypeRecurse("Rock") == 0)
+        "#,
+    );
+}
+
+#[test]
+fn items_move_between_bags() {
+    let mut t = setup();
+    let inv = SharedContainer::new(-1, "none").into_ref();
+    let a = bag_item("Bag", 0.5, 30, 10);
+    let b = bag_item("Pack", 1.0, 0, 20);
+    shared::add_item(&inv, &a);
+    shared::add_item(&inv, &b);
+    let rock = shared(item(ItemClass::Normal, "Rock", 2.0, &[], 1));
+    shared::add_item(&shared::inventory_of(&a.borrow()).unwrap(), &rock);
+    t.globals().set_str("inv", container_value(&inv));
+    t.globals().set_str("a", item_value(&a));
+    t.globals().set_str("b", item_value(&b));
+    t.globals().set_str("rock", item_value(&rock));
+    ok(
+        &mut t,
+        r#"
+        local ai, bi = a:getInventory(), b:getInventory()
+        assert(rock:getContainer() == ai and ai:contains(rock))
+        assert(a:getWeightReduction() == 30 and ai:getWeightReduction() == 30)
+        assert(math.abs(a:getInventoryWeight() - 2.0) < 1e-6)
+        -- Into the other bag: out of the first one.
+        assert(bi:AddItem(rock) == rock)
+        assert(rock:getContainer() == bi and not ai:contains(rock) and bi:contains(rock))
+        assert(ai:isEmpty() and a:isEmpty() and not b:isEmpty())
+        assert(math.abs(b:getUnequippedWeight() - 3.0) < 1e-6)
+        assert(math.abs(a:getUnequippedWeight() - 0.5) < 1e-6)
+        -- A bag into a bag carries its contents.
+        ai:AddItem(b)
+        assert(b:getContainer() == ai and bi:getContainingItem() == b)
+        assert(bi:getOutermostContainer() == inv and rock:getOutermostContainer() == inv)
+        assert(inv:getItems():size() == 1 and inv:getFirstTypeRecurse("Rock") == rock)
+        assert(math.abs(a:getUnequippedWeight() - 3.5) < 1e-6)
+        -- Back out to the top.
+        inv:AddItem(rock)
+        assert(rock:getContainer() == inv and bi:isEmpty() and inv:getItems():size() == 2)
+        bi:AddItem(rock)
+        ai:Remove(b)
+        assert(b:getContainer() == nil and bi:getOutermostContainer() == bi)
+        assert(rock:getOutermostContainer() == bi)
         "#,
     );
 }
@@ -385,6 +453,32 @@ fn shared_container_round_trip() {
     assert_eq!(s.borrow().to_container(), c);
 }
 
+#[test]
+fn nested_bags_round_trip() {
+    let bag = bag_item("Bag", 0.5, 20, 10);
+    let pouch = bag_item("Pouch", 0.1, 0, 12);
+    let bag_inv = shared::inventory_of(&bag.borrow()).unwrap();
+    shared::add_item(
+        &shared::inventory_of(&pouch.borrow()).unwrap(),
+        &shared(item(ItemClass::Normal, "Coin", 0.0, &[], 13)),
+    );
+    shared::add_item(&bag_inv, &pouch);
+    let mut c = ItemContainer::new(Some("crate"));
+    c.items
+        .push(SavedItem::Item(Box::new(bag.borrow().clone())));
+    let s = SharedContainer::from_container(c.clone());
+    let b = s.borrow().items[0].clone();
+    let inner = shared::inventory_of(&b.borrow()).unwrap();
+    // A copy, linked to its own bag object.
+    assert!(!Rc::ptr_eq(&inner, &bag_inv));
+    assert!(shared::containing_item(&inner).is_some_and(|i| Rc::ptr_eq(&i, &b)));
+    let p = inner.borrow().items[0].clone();
+    assert!(container_of(&p).is_some_and(|o| Rc::ptr_eq(&o, &inner)));
+    let coin = shared::inventory_of(&p.borrow()).unwrap().borrow().items[0].clone();
+    assert!(shared::outermost_container_of(&coin).is_some_and(|o| Rc::ptr_eq(&o, &s)));
+    assert_eq!(s.borrow().to_container(), c);
+}
+
 fn with_fluid(ty: &str, id: i32, fluid: Option<(i8, f32)>, capacity: f32) -> ItemRef {
     let mut i = item(ItemClass::Normal, ty, 0.5, &[], id);
     let mut fc = pz_entity::FluidContainer {
@@ -433,5 +527,76 @@ fn fluid_queries() {
         assert(inv:FindAndReturnWaterItem(0) == nil)
         assert(inv:getSoapList(nil, false):size() == 0)
         "#,
+    );
+}
+
+/// A character holding item 1 in a hand and wearing item 2.
+struct Holder;
+
+impl ItemOwner for Holder {
+    fn is_equipped(&self, item: &InventoryItem) -> bool {
+        item.id == 1 || item.id == 2
+    }
+    fn is_primary_hand_item(&self, item: &InventoryItem) -> bool {
+        item.id == 1
+    }
+    fn is_worn(&self, item: &InventoryItem) -> bool {
+        item.id == 2
+    }
+}
+
+#[test]
+fn items_ask_the_character_holding_their_container() {
+    let mut t = setup();
+    let inv = SharedContainer::new(-1, "none").into_ref();
+    let chr = Value::Object(Rc::new(FakePlayer));
+    set_parent_with_owner(&inv, chr.clone(), Rc::new(Holder));
+    let knife = shared(item(ItemClass::Normal, "Knife", 1.0, &[], 1));
+    let shirt = shared(item(ItemClass::Clothing, "Shirt", 0.2, &[], 2));
+    let bag = bag_item("Bag", 0.5, 0, 3);
+    let inner = shared(item(ItemClass::Clothing, "Sock", 0.1, &[], 2));
+    shared::add_item(&inv, &knife);
+    shared::add_item(&inv, &shirt);
+    shared::add_item(&inv, &bag);
+    shared::add_item(&shared::inventory_of(&bag.borrow()).unwrap(), &inner);
+    let loose = shared(item(ItemClass::Normal, "Rock", 1.0, &[], 1));
+    let g = t.globals().clone();
+    g.set_str("chr", chr);
+    g.set_str("inv", container_value(&inv));
+    for (n, i) in [
+        ("knife", &knife),
+        ("shirt", &shirt),
+        ("inner", &inner),
+        ("loose", &loose),
+    ] {
+        g.set_str(n, item_value(i));
+    }
+    ok(
+        &mut t,
+        r#"
+        assert(inv:getParent() == chr and inv:getCharacter() == chr)
+        assert(knife:getContainer():getParent() == chr)
+        assert(knife:isEquipped() and not knife:isWorn())
+        assert(shirt:isEquipped() and shirt:isWorn())
+        -- Inside a bag the container has no parent: not equipped or worn,
+        -- but still in the player's inventory.
+        assert(not inner:isEquipped() and not inner:isWorn())
+        assert(inner:isInPlayerInventory() and knife:isInPlayerInventory())
+        -- No container: nothing.
+        assert(not loose:isEquipped() and not loose:isInPlayerInventory())
+        "#,
+    );
+    // Without an owner the character's answers are false.
+    set_parent(&inv, Value::Object(Rc::new(FakePlayer)));
+    ok(
+        &mut t,
+        "assert(not knife:isEquipped() and knife:isInPlayerInventory())",
+    );
+    assert!(container_owner(&inner).has_container(&inner.borrow()));
+    assert!(!container_owner(&inner).is_in_outermost_container(&inner.borrow()));
+    assert!(container_owner(&knife).is_in_outermost_container(&knife.borrow()));
+    assert_eq!(
+        container_owner(&loose).place(&loose.borrow()),
+        ItemPlace::Nowhere
     );
 }

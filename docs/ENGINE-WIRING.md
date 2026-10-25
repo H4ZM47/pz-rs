@@ -176,6 +176,19 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `isUnlimitedCarry` (`isGhostMode` in debug), `hasTrait` and
       `removeFromHands` on that Lua object; world containers need their
       `IsoObject` parent set the same way (#143).
+- [ ] Item owners: a character's inventory parent goes in with
+      `bind_item_container::set_parent_with_owner(&inv, character_lua_value,
+      owner)`, `owner` an `ItemOwner` answering `chr.isEquipped(item)`,
+      `getWornItems().contains(item)`, the hand items and `place` for the
+      character's items (the `GameCharacter` impl in
+      `pz-characters/src/character/item_owner.rs`). An `ItemLuaEnv` returns
+      `bind_item_container::container_owner(item)` from `owner` (as
+      `GameItemEnv` does), so `isEquipped`/`isWorn`/`isInPlayerInventory`
+      follow `item.container.parent` (bags).
+- [ ] Inventories loaded into an existing container must make items with
+      `pz_inventory::shared::new_item` (or `SharedContainer::fill_from`, which
+      `shared::load_into` now calls) so a bag's inventory gets its
+      `containingItem` (bags).
 - [ ] End of `GameLoadingState`: `hud::init_ui(&mut thread)` (the in-game
       HUD, then `OnCreateUI`) before `OnCreatePlayer` (#144).
 - [ ] `IngameState` per player: `hud::update_progress_bar(n)` in the update

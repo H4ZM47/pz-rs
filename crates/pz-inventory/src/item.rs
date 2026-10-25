@@ -15,6 +15,7 @@ use crate::device::DeviceData;
 use crate::env::ItemEnv;
 use crate::io::{err, has, read_header, BitHeaderWrite, Reader, SaveError, SaveResult, Writer};
 use crate::lua_table::{present, LuaKey, LuaTable, LuaValue};
+use crate::shared::{ContainerRef, SharedContainer};
 use crate::template::{ItemClass, ItemTemplate};
 use crate::visual::ItemVisual;
 use pz_scripts::objects::items::ModelWeaponPart;
@@ -328,11 +329,31 @@ pub struct MoveableData {
     pub custom_name_full: String,
 }
 
-/// `InventoryContainer`.
-#[derive(Clone, Debug, PartialEq)]
+/// `InventoryContainer`: `weightReduction` and the bag's inventory (a
+/// shared container whose `containingItem` is the bag once the item is a
+/// shared object, see [`crate::shared::new_item`]).
+#[derive(Debug)]
 pub struct ContainerData {
     pub weight_reduction: i32,
-    pub container: ItemContainer,
+    pub container: ContainerRef,
+}
+
+impl Clone for ContainerData {
+    /// A copy of the bag holds a copy of its contents.
+    fn clone(&self) -> Self {
+        ContainerData {
+            weight_reduction: self.weight_reduction,
+            container: self.container.borrow().deep_clone(),
+        }
+    }
+}
+
+impl PartialEq for ContainerData {
+    fn eq(&self, o: &Self) -> bool {
+        self.weight_reduction == o.weight_reduction
+            && (Rc::ptr_eq(&self.container, &o.container)
+                || *self.container.borrow() == *o.container.borrow())
+    }
 }
 
 /// The subclass part of an item.
@@ -492,8 +513,8 @@ impl InventoryItem {
                 Box::default(),
             ),
             ItemClass::Container => ItemKind::Container(Box::new(ContainerData {
-                weight_reduction: t.weight_reduction,
-                container: ItemContainer::new(Some("none")),
+                weight_reduction: t.weight_reduction.clamp(0, 100),
+                container: SharedContainer::new_bag(t).into_ref(),
             })),
             ItemClass::Map => ItemKind::Map {
                 map_id: String::new(),
@@ -799,9 +820,10 @@ impl InventoryItem {
                 w.bytes(symbols);
             }
             ItemKind::Container(c) => {
-                w.i32(c.container.id);
+                let saved = c.container.borrow().to_container();
+                w.i32(saved.id);
                 w.i32(c.weight_reduction);
-                c.container.save(w, env)?;
+                saved.save(w, env)?;
             }
         }
         Ok(())
@@ -1124,12 +1146,16 @@ impl InventoryItem {
                 *symbols = rest.to_vec();
             }
             ItemKind::Container(c) => {
+                // The bag keeps its container object: `clear()`, then the
+                // weight reduction, capacity and id, then `load`.
                 let id = r.i32()?;
-                c.weight_reduction = r.i32()?;
-                c.container = ItemContainer::new(None);
-                c.container.capacity = template.capacity;
-                c.container.id = id;
-                c.container.load(r, wv, env)?;
+                c.weight_reduction = r.i32()?.clamp(0, 100);
+                let mut saved = ItemContainer::new(None);
+                saved.capacity = template.capacity;
+                saved.id = id;
+                saved.load(r, wv, env)?;
+                c.container.borrow_mut().weight_reduction = c.weight_reduction;
+                SharedContainer::fill_from(&c.container, saved);
             }
         }
         Ok(())

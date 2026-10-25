@@ -11,15 +11,14 @@
 //!
 //! Plan lines: `C <n>` starts a container, `I <type>` adds an item, `X
 //! <type>` is an item the original could not create, `B <type>` adds a bag,
-//! `N <type>` puts an item in the last bag, `Q type|tag <arg>` lists the
-//! query arguments.
+//! `N <type>` puts an item in the last bag, `T <type>` is a second bag made
+//! after the queries for the bag-to-bag transfers, `Q type|tag <arg>`
+//! lists the query arguments.
 
-use pz_inventory::item::ItemKind;
 use pz_inventory::shared::{self, SharedContainer};
-use pz_inventory::SavedItem;
 use pz_kahlua::{TableRef, Thread, Value};
 use pz_lua_api::bind_item_container::container_value;
-use pz_lua_api::bind_items::{create_item, install_item_env, GameItemEnv, ItemRef};
+use pz_lua_api::bind_items::{create_item, install_item_env, item_value, GameItemEnv, ItemRef};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -130,11 +129,70 @@ function runContainer(c, types, tags)
         q("itemFromTag " .. g, function() return idx(c, c:getItemFromTag(g, false, false)) end)
     end
 end
+local function where(o, c, b1, b2)
+    if o == nil then return "null" end
+    if o == c then return "cont" end
+    if o == b1 then return "b1" end
+    if o == b2 then return "b2" end
+    return "other"
+end
+function runXfer(c, bag1, bag2, nested)
+    local b1, b2 = bag1:getInventory(), bag2:getInventory()
+    for st = 0, 3 do
+        if st == 1 and #nested > 0 then b2:AddItem(nested[1]) end
+        if st == 2 then b1:AddItem(bag2) end
+        if st == 3 then
+            if #nested > 0 then q("xfer removeIdRecurse", function() return c:removeItemWithIDRecurse(nested[1]:getID()) end) end
+            if #nested > 1 then q("xfer removeOneOfInside", function()
+                local r = c:RemoveOneOf(nested[2]:getFullType(), true)
+                if r == bag1 then return "bag1" elseif r == nil then return "null" end
+                return "other"
+            end) end
+        end
+        q("xfer " .. st .. " contSize", function() return c:getItems():size() end)
+        q("xfer " .. st .. " b1Size", function() return b1:getItems():size() end)
+        q("xfer " .. st .. " b2Size", function() return b2:getItems():size() end)
+        q("xferf " .. st .. " b1Contents", function() return b1:getContentsWeight() end)
+        q("xferf " .. st .. " b2Contents", function() return b2:getContentsWeight() end)
+        q("xferf " .. st .. " b1Unequipped", function() return bag1:getUnequippedWeight() end)
+        q("xferf " .. st .. " b2Unequipped", function() return bag2:getUnequippedWeight() end)
+        q("xferf " .. st .. " b1Equipped", function() return bag1:getEquippedWeight() end)
+        q("xferf " .. st .. " b2Equipped", function() return bag2:getEquippedWeight() end)
+        q("xferf " .. st .. " b1InvWeight", function() return bag1:getInventoryWeight() end)
+        q("xferf " .. st .. " b2InvWeight", function() return bag2:getInventoryWeight() end)
+        q("xferf " .. st .. " contContents", function() return c:getContentsWeight() end)
+        q("xferf " .. st .. " b1CapWeight", function() return b1:getCapacityWeight() end)
+        q("xferf " .. st .. " b1Free", function() return b1:getFreeCapacity(nil) end)
+        q("xferf " .. st .. " b2Free", function() return b2:getFreeCapacity(nil) end)
+        q("xfer " .. st .. " b1Cap", function() return bag1:getCapacity() end)
+        q("xfer " .. st .. " b2Cap", function() return bag2:getCapacity() end)
+        q("xfer " .. st .. " b2EffCap", function() return bag2:getEffectiveCapacity(nil) end)
+        q("xfer " .. st .. " b2InvCap", function() return b2:getCapacity() end)
+        q("xfer " .. st .. " b2Room5", function() return b2:hasRoomFor(nil, 5) end)
+        q("xfer " .. st .. " b2Room30", function() return b2:hasRoomFor(nil, 30) end)
+        q("xfer " .. st .. " b2RoomItem0", function() return b2:hasRoomFor(nil, c:getItems():get(0)) end)
+        q("xfer " .. st .. " b2Containing", function() return b2:getContainingItem() == bag2 end)
+        q("xfer " .. st .. " b2Outer", function() return where(b2:getOutermostContainer(), c, b1, b2) end)
+        q("xfer " .. st .. " bag2Container", function() return where(bag2:getContainer(), c, b1, b2) end)
+        q("xfer " .. st .. " b1InCont", function() return c:contains(bag2, false) end)
+        q("xfer " .. st .. " b1InContInv", function() return c:contains(bag2, true) end)
+        if #nested > 0 then
+            local n0 = nested[1]
+            q("xfer " .. st .. " n0Container", function() return where(n0:getContainer(), c, b1, b2) end)
+            q("xfer " .. st .. " n0Outer", function() return where(n0:getOutermostContainer(), c, b1, b2) end)
+            q("xfer " .. st .. " n0Recurse", function() return c:getFirstTypeRecurse(n0:getFullType()) == n0 end)
+            q("xfer " .. st .. " n0Count", function() return c:getCountTypeRecurse(n0:getFullType()) end)
+            q("xfer " .. st .. " n0ById", function() return c:getItemWithIDRecursiv(n0:getID()) == n0 end)
+            q("xfer " .. st .. " n0InCharInv", function() return b2:isInside(bag1) end)
+        end
+    end
+end
 "#;
 
 /// Queries the harness prints as `Float.floatToIntBits` hex.
-const FLOATS: [&str; 8] = [
+const FLOATS: [&str; 9] = [
     "itemWeight",
+    "xferf",
     "availableFluidContainersCapacity",
     "contentsWeight",
     "capacityWeight",
@@ -152,6 +210,25 @@ fn format(name: &str, v: &Value) -> String {
         }
         Value::Num(n) => format!("{}", *n as i64),
         other => pz_kahlua::exec::java_value_of(other),
+    }
+}
+
+/// A number field of the `ZomboidGlobals` table in the game's Lua.
+fn zomboid_global(game: &std::path::Path, name: &str) -> Result<f64, String> {
+    let src = std::fs::read_to_string(game.join("media/lua/shared/defines.lua"))
+        .map_err(|e| e.to_string())?;
+    let mut t = Thread::new(TableRef::new());
+    pz_kahlua::stdlib::install(&mut t, None).map_err(|e| format!("{e:?}"))?;
+    let f = pz_kahlua::stdlib::load_string(&src, Some("ZomboidGlobals"), t.globals().clone())
+        .map_err(|e| format!("{e:?}"))?;
+    t.pcall(&f, &[])
+        .map_err(|(e, _)| pz_kahlua::exec::java_value_of(&e))?;
+    match t.globals().get_str("ZomboidGlobals") {
+        Value::Table(tb) => match tb.get_str(name) {
+            Value::Num(n) => Ok(n),
+            _ => Err(format!("ZomboidGlobals.{name} is not a number")),
+        },
+        _ => Err("no ZomboidGlobals table".into()),
     }
 }
 
@@ -185,6 +262,9 @@ fn main() -> Result<(), String> {
         &sm,
     )?);
 
+    // ZomboidGlobals.Load: EquippedOrWornEncumbranceMultiplier from
+    // media/lua/shared/defines.lua (the harness loads it too).
+    let encumbrance = zomboid_global(&game, "EquippedOrWornEncumbranceMultiplier")?;
     let mut plans: Vec<Plan> = Vec::new();
     for l in plan_text.lines() {
         let p: Vec<&str> = l.splitn(3, '\t').collect();
@@ -231,10 +311,17 @@ fn main() -> Result<(), String> {
     for (k, plan) in plans.iter().enumerate() {
         let cont = SharedContainer::default().into_ref();
         let mut bag: Option<ItemRef> = None;
+        let mut nested: Vec<ItemRef> = Vec::new();
+        let mut second: Option<String> = None;
         for (kind, ty) in &plan.items {
+            if *kind == 'T' {
+                second = Some(ty.clone());
+                continue;
+            }
             let mut env = GameItemEnv::new(Some(assets.clone()));
             env.rand = Some(pz_core::random::Rand::new(1000 + seed));
             env.entity = Some(entity.clone());
+            env.encumbrance_multiplier = Some(encumbrance);
             seed += 1;
             install_item_env(Rc::new(env));
             let item = create_item(ty, 1.0);
@@ -247,11 +334,9 @@ fn main() -> Result<(), String> {
                 }
                 ('N', Some(i)) => {
                     let b = bag.as_ref().ok_or("no bag")?;
-                    if let ItemKind::Container(c) = &mut b.borrow_mut().kind {
-                        c.container
-                            .items
-                            .push(SavedItem::Item(Box::new(i.borrow().clone())));
-                    }
+                    let inv = shared::inventory_of(&b.borrow()).ok_or("not a bag")?;
+                    shared::add_item(&inv, &i);
+                    nested.push(i);
                 }
                 (_, None) => return Err(format!("{ty}: not created")),
                 _ => {}
@@ -271,6 +356,32 @@ fn main() -> Result<(), String> {
             &[container_value(&cont), list(&plan.types), list(&plan.tags)],
         )
         .map_err(|e| format!("{e:?}"))?;
+        if let Some(ty) = second {
+            let mut env = GameItemEnv::new(Some(assets.clone()));
+            env.rand = Some(pz_core::random::Rand::new(1000 + seed));
+            env.entity = Some(entity.clone());
+            env.encumbrance_multiplier = Some(encumbrance);
+            seed += 1;
+            install_item_env(Rc::new(env));
+            let b2 = create_item(&ty, 1.0).ok_or("second bag not created")?;
+            shared::add_item(&cont, &b2);
+            let n = TableRef::new();
+            for (i, r) in nested.iter().enumerate() {
+                n.set_int(i as i64 + 1, item_value(r));
+            }
+            let b1 = bag.as_ref().ok_or("no bag")?;
+            let x = t.globals().get_str("runXfer");
+            t.call(
+                &x,
+                &[
+                    container_value(&cont),
+                    item_value(b1),
+                    item_value(&b2),
+                    Value::Table(n),
+                ],
+            )
+            .map_err(|e| format!("{e:?}"))?;
+        }
         for (n, v) in lines.borrow().iter() {
             out.push_str(&format!("{k}\t{n}\t{v}\n"));
         }

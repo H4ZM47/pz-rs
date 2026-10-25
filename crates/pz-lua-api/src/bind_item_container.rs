@@ -15,11 +15,10 @@
 //! result the method uses fail when the binding lacks the method; side
 //! effects (`removeFromHands`, `checkClothing`) are skipped then.
 //!
-//! Items the original reaches through a bag (`InventoryContainer`
-//! contents, the `*Recurse` methods) are saved items inside the bag, not
-//! shared objects: they are counted and tested by type, tag and category,
-//! but a method that would return one or pass one to a Lua function
-//! raises an error saying so.
+//! A bag's inventory (`InventoryContainer.getInventory()`) is the bag
+//! item's shared container ([`shared::inventory_of`]), so the `*Recurse`
+//! methods and `doInv`/`insideInv` arguments walk real containers and
+//! return the items inside bags.
 //!
 //! Not ported: vehicle part containers (`vehiclePart` is never set, so
 //! the vehicle methods answer as for a container outside a vehicle), the
@@ -49,9 +48,10 @@ use crate::bind_items::{item_env, item_value, ItemRef, LuaInventoryItem};
 use crate::bind_java_util::{list_value, JavaList};
 use crate::expose::{bool_arg, expose_class, int_arg, num_arg};
 use pz_core::debug::DebugType;
+use pz_inventory::context::{ItemOwner, ItemPlace};
 use pz_inventory::item::ItemKind;
 use pz_inventory::shared::{self, container_of, set_container, ContainerRef, SharedContainer};
-use pz_inventory::{InventoryItem, ItemClass, ItemContainer, SavedItem};
+use pz_inventory::{InventoryItem, ItemClass};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use std::any::Any;
@@ -153,15 +153,160 @@ pub fn set_parent(c: &ContainerRef, parent: Value) {
     c.borrow_mut().parent = (!parent.is_nil()).then(|| Rc::new(LuaRef(parent)) as Rc<dyn Any>);
 }
 
+/// A parent that is a character (or another object answering for the
+/// items it holds): its Lua object and the [`ItemOwner`] that answers
+/// `chr.isEquipped(item)`, `getWornItems().contains(item)`, the hand items
+/// and the item's place for the items directly in the container.
+pub struct LuaParent {
+    pub value: Value,
+    pub owner: Rc<dyn ItemOwner>,
+}
+
+/// [`set_parent`] for a parent that answers for its items: what the
+/// characters binding calls for a character's inventory, so items' owner
+/// queries ([`container_owner`]) reach the character.
+pub fn set_parent_with_owner(c: &ContainerRef, parent: Value, owner: Rc<dyn ItemOwner>) {
+    c.borrow_mut().parent = if parent.is_nil() {
+        None
+    } else {
+        Some(Rc::new(LuaParent {
+            value: parent,
+            owner,
+        }) as Rc<dyn Any>)
+    };
+}
+
 /// `getParent()`.
 pub fn parent_of(c: &SharedContainer) -> Value {
     lua_ref(&c.parent)
 }
 
 fn lua_ref(r: &Option<Rc<dyn Any>>) -> Value {
-    r.as_ref()
-        .and_then(|p| p.downcast_ref::<LuaRef>())
-        .map_or(Value::Nil, |l| l.0.clone())
+    let Some(p) = r.as_ref() else {
+        return Value::Nil;
+    };
+    if let Some(l) = p.downcast_ref::<LuaRef>() {
+        return l.0.clone();
+    }
+    p.downcast_ref::<LuaParent>()
+        .map_or(Value::Nil, |l| l.value.clone())
+}
+
+/// The [`ItemOwner`] of the container's parent, when it was set with
+/// [`set_parent_with_owner`].
+pub fn parent_owner(c: &SharedContainer) -> Option<Rc<dyn ItemOwner>> {
+    c.parent
+        .as_ref()?
+        .downcast_ref::<LuaParent>()
+        .map(|l| l.owner.clone())
+}
+
+/// The holder of a shared item as the original reaches it through
+/// `item.container`: the container, its parent (and the parent's
+/// [`ItemOwner`]), and the outermost container's parent.
+pub struct ContainerOwner {
+    container: Option<ContainerRef>,
+    outermost: Option<ContainerRef>,
+    /// The direct container's parent is an `IsoGameCharacter`.
+    character_parent: bool,
+    /// The direct container's parent has a parent value at all.
+    has_parent: bool,
+    parent: Option<Rc<dyn ItemOwner>>,
+    /// The outermost container's parent is an `IsoPlayer`.
+    player_outermost: bool,
+}
+
+/// The [`ItemOwner`] of `item` from its current container (what
+/// [`crate::bind_items::GameItemEnv`] answers for `owner`, and what an
+/// [`crate::bind_items::ItemLuaEnv`] of the characters thread can use).
+/// Equipped/worn/hand questions go to the parent's owner given with
+/// [`set_parent_with_owner`] and only when the item is directly in that
+/// container (`isEquipped`/`isWorn` read `container.parent`); without one
+/// they answer as for a container without a character.
+pub fn container_owner(item: &ItemRef) -> Rc<dyn ItemOwner> {
+    let container = container_of(item);
+    let outermost = shared::outermost_container_of(item);
+    let (character_parent, has_parent, parent) = match &container {
+        Some(c) => {
+            let s = c.borrow();
+            let v = parent_of(&s);
+            (
+                instance_of(&v, ISO_GAME_CHARACTER),
+                !v.is_nil(),
+                parent_owner(&s),
+            )
+        }
+        None => (false, false, None),
+    };
+    let player_outermost = outermost
+        .as_ref()
+        .is_some_and(|o| instance_of(&parent_of(&o.borrow()), ISO_PLAYER));
+    Rc::new(ContainerOwner {
+        container,
+        outermost,
+        character_parent,
+        has_parent,
+        parent,
+        player_outermost,
+    })
+}
+
+impl ContainerOwner {
+    fn character(&self) -> Option<&dyn ItemOwner> {
+        if self.character_parent {
+            self.parent.as_deref()
+        } else {
+            None
+        }
+    }
+}
+
+impl ItemOwner for ContainerOwner {
+    fn is_equipped(&self, item: &InventoryItem) -> bool {
+        self.character().is_some_and(|c| c.is_equipped(item))
+    }
+    fn is_primary_hand_item(&self, item: &InventoryItem) -> bool {
+        self.character()
+            .is_some_and(|c| c.is_primary_hand_item(item))
+    }
+    fn is_secondary_hand_item(&self, item: &InventoryItem) -> bool {
+        self.character()
+            .is_some_and(|c| c.is_secondary_hand_item(item))
+    }
+    fn is_worn(&self, item: &InventoryItem) -> bool {
+        self.character().is_some_and(|c| c.is_worn(item))
+    }
+    fn is_in_player_inventory(&self, _item: &InventoryItem) -> bool {
+        self.player_outermost
+    }
+    fn is_in_outermost_container(&self, _item: &InventoryItem) -> bool {
+        match (&self.container, &self.outermost) {
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+    fn has_container(&self, _item: &InventoryItem) -> bool {
+        self.container.is_some()
+    }
+    fn place(&self, item: &InventoryItem) -> ItemPlace {
+        match (&self.container, &self.parent) {
+            (None, _) => ItemPlace::Nowhere,
+            (Some(_), Some(p)) => p.place(item),
+            (Some(_), None) if !self.has_parent => ItemPlace::NoParent,
+            (Some(_), None) => ItemPlace::OtherParent,
+        }
+    }
+    fn world_item_fluid_amount(&self, item: &InventoryItem) -> Option<f32> {
+        self.parent
+            .as_ref()
+            .and_then(|p| p.world_item_fluid_amount(item))
+    }
+    fn container_temperature(&self) -> f32 {
+        self.parent
+            .as_ref()
+            .map_or(1.0, |p| p.container_temperature())
+    }
 }
 
 /// `item.getContainer()` as a Lua value.
@@ -202,13 +347,6 @@ fn class_cast(v: &Value, to: &str) -> LuaError {
         ),
         class: "java.lang.ClassCastException",
     }
-}
-
-fn nested_error() -> LuaError {
-    LuaError::runtime(
-        "ItemContainer: items inside bags are not shared objects yet \
-         (InventoryContainer.getInventory is not ported)",
-    )
 }
 
 /// `String.valueOf(o)`.
@@ -441,18 +579,9 @@ fn is_drainable_interface(i: &InventoryItem) -> bool {
     )
 }
 
-fn bag_items(i: &InventoryItem) -> Option<&[SavedItem]> {
-    match &i.kind {
-        ItemKind::Container(c) => Some(&c.container.items),
-        _ => None,
-    }
-}
-
-fn bag_container_mut(i: &mut InventoryItem) -> Option<&mut ItemContainer> {
-    match &mut i.kind {
-        ItemKind::Container(c) => Some(&mut c.container),
-        _ => None,
-    }
+/// `item instanceof InventoryContainer ? item.getInventory() : null`.
+fn bag(i: &ItemRef) -> Option<ContainerRef> {
+    shared::inventory_of(&i.borrow())
 }
 
 /// `protectedCallBoolean(f, args) == Boolean.TRUE` (errors are false).
@@ -526,48 +655,17 @@ impl Pred {
             Some((f, Some(a))) => call_bool(t, f, &[item_value(r), a.clone()]),
         }
     }
-
-    /// For an item inside a bag: an error when the test needs Lua.
-    fn test_nested(&self, i: &InventoryItem) -> LuaResult<bool> {
-        if !self.plain(i) {
-            return Ok(false);
-        }
-        match self.function() {
-            None => Ok(true),
-            Some(_) => Err(nested_error()),
-        }
-    }
-}
-
-/// A match: a shared item, or a copy of one inside a bag.
-enum Found {
-    Live(ItemRef),
-    Nested(Box<InventoryItem>),
-}
-
-impl Found {
-    fn live(self) -> LuaResult<ItemRef> {
-        match self {
-            Found::Live(r) => Ok(r),
-            Found::Nested(_) => Err(nested_error()),
-        }
-    }
-    fn with<R>(&self, f: impl FnOnce(&InventoryItem) -> R) -> R {
-        match self {
-            Found::Live(r) => f(&r.borrow()),
-            Found::Nested(i) => f(i),
-        }
-    }
 }
 
 /// `getSome`/`getSomeRecurse`/`getAll`/`getAllRecurse`/`getFirst*`: the
-/// matches in the original's order (this level, then each bag). `limit`
-/// is `count` against `base + out.len()` (the result list's size).
+/// matches in the original's order (this level, then each bag's
+/// inventory). `limit` is `count` against `base + out.len()` (the result
+/// list's size).
 struct Walk<'a, 'b> {
     t: &'a mut Thread,
     pred: &'b Pred,
     limit: Option<(usize, i32)>,
-    out: Vec<Found>,
+    out: Vec<ItemRef>,
 }
 
 impl Walk<'_, '_> {
@@ -576,48 +674,27 @@ impl Walk<'_, '_> {
             .is_some_and(|(base, count)| (base + self.out.len()) as i64 >= count as i64)
     }
 
-    fn live(&mut self, items: &[ItemRef], recurse: bool) -> LuaResult<bool> {
+    fn walk(&mut self, c: &ContainerRef, recurse: bool) -> bool {
         let mut bags = Vec::new();
-        for r in items {
-            if self.pred.test(self.t, r) {
-                self.out.push(Found::Live(r.clone()));
+        for r in items(c) {
+            if self.pred.test(self.t, &r) {
+                self.out.push(r.clone());
                 if self.full() {
-                    return Ok(true);
+                    return true;
                 }
             }
             if recurse {
-                if let Some(b) = bag_items(&r.borrow()) {
-                    bags.push(b.to_vec());
+                if let Some(b) = bag(&r) {
+                    bags.push(b);
                 }
             }
         }
         for b in bags {
-            if self.nested(&b)? {
-                return Ok(true);
+            if self.walk(&b, true) {
+                return true;
             }
         }
-        Ok(false)
-    }
-
-    fn nested(&mut self, items: &[SavedItem]) -> LuaResult<bool> {
-        let mut bags = Vec::new();
-        for i in items.iter().filter_map(SavedItem::as_item) {
-            if self.pred.test_nested(i)? {
-                self.out.push(Found::Nested(Box::new(i.clone())));
-                if self.full() {
-                    return Ok(true);
-                }
-            }
-            if let Some(b) = bag_items(i) {
-                bags.push(b);
-            }
-        }
-        for b in bags {
-            if self.nested(b)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        false
     }
 }
 
@@ -627,19 +704,23 @@ fn collect(
     pred: &Pred,
     recurse: bool,
     limit: Option<(usize, i32)>,
-) -> LuaResult<Vec<Found>> {
-    let list = items(c);
+) -> LuaResult<Vec<ItemRef>> {
     let mut w = Walk {
         t,
         pred,
         limit,
         out: Vec::new(),
     };
-    w.live(&list, recurse)?;
+    w.walk(c, recurse);
     Ok(w.out)
 }
 
-fn first(t: &mut Thread, c: &ContainerRef, pred: &Pred, recurse: bool) -> LuaResult<Option<Found>> {
+fn first(
+    t: &mut Thread,
+    c: &ContainerRef,
+    pred: &Pred,
+    recurse: bool,
+) -> LuaResult<Option<ItemRef>> {
     Ok(collect(t, c, pred, recurse, Some((0, 1)))?
         .into_iter()
         .next())
@@ -652,13 +733,10 @@ enum Cmp {
     EvalArg(Value, Value),
 }
 
-fn compare(t: &mut Thread, cmp: &Cmp, a: &Found, b: &Found) -> LuaResult<i32> {
+fn compare(t: &mut Thread, cmp: &Cmp, a: &ItemRef, b: &ItemRef) -> LuaResult<i32> {
     match cmp {
-        Cmp::Condition => Ok(a.with(|a| a.condition) - b.with(|b| b.condition)),
+        Cmp::Condition => Ok(a.borrow().condition - b.borrow().condition),
         Cmp::Eval(f) | Cmp::EvalArg(f, _) => {
-            let (Found::Live(a), Found::Live(b)) = (a, b) else {
-                return Err(nested_error());
-            };
             let mut args = vec![item_value(a), item_value(b)];
             if let Cmp::EvalArg(_, x) = cmp {
                 args.push(x.clone());
@@ -675,7 +753,7 @@ fn best(
     pred: &Pred,
     cmp: &Cmp,
     recurse: bool,
-) -> LuaResult<Option<Found>> {
+) -> LuaResult<Option<ItemRef>> {
     let mut all = collect(t, c, pred, recurse, None)?.into_iter();
     let Some(mut b) = all.next() else {
         return Ok(None);
@@ -696,29 +774,21 @@ fn best_condition(
     recurse: bool,
 ) -> LuaResult<Option<ItemRef>> {
     match best(t, c, pred, &Cmp::Condition, recurse)? {
-        Some(b) if b.with(|i| i.condition) <= 0 => Ok(None),
-        Some(b) => b.live().map(Some),
-        None => Ok(None),
+        Some(b) if b.borrow().condition <= 0 => Ok(None),
+        b => Ok(b),
     }
 }
 
-fn found_values(f: Vec<Found>) -> LuaResult<Vec<Value>> {
-    f.into_iter()
-        .map(|f| f.live().map(|r| item_value(&r)))
-        .collect()
-}
-
 /// `getUses(items)`: drainables count their uses, other items one.
-fn uses(f: &[Found]) -> i32 {
+fn uses(f: &[ItemRef]) -> i32 {
     f.iter()
         .map(|f| {
-            f.with(|i| {
-                if is_drainable(i) {
-                    i.get_current_uses()
-                } else {
-                    1
-                }
-            })
+            let i = f.borrow();
+            if is_drainable(&i) {
+                i.get_current_uses()
+            } else {
+                1
+            }
         })
         .sum()
 }
@@ -729,8 +799,7 @@ fn parent(c: &ContainerRef) -> Value {
     parent_of(&c.borrow())
 }
 
-/// `getCharacter()` (`containingItem` is never set for a shared container
-/// whose bag is not one, so only the parent counts).
+/// `getCharacter()`: the parent, or the character of the bag's container.
 fn character(c: &ContainerRef) -> Value {
     let p = parent(c);
     if instance_of(&p, ISO_GAME_CHARACTER) {
@@ -745,7 +814,7 @@ fn character(c: &ContainerRef) -> Value {
 }
 
 fn containing_item(c: &ContainerRef) -> Option<ItemRef> {
-    c.borrow().containing_item.as_ref().and_then(Weak::upgrade)
+    shared::containing_item(c)
 }
 
 /// `getCapacity()`.
@@ -844,15 +913,9 @@ fn in_character_inventory(t: &mut Thread, c: &ContainerRef, chr: &Value) -> LuaR
     Ok(false)
 }
 
-/// `contains(item, doInv)` (by identity; a shared item is never inside a
-/// bag's saved contents).
-fn contains_in(
-    _t: &mut Thread,
-    c: &ContainerRef,
-    item: &ItemRef,
-    _do_inv: bool,
-) -> LuaResult<bool> {
-    Ok(c.borrow().index_of(item).is_some())
+/// `contains(item, doInv)`: `findItem` by identity.
+fn contains_in(_t: &mut Thread, c: &ContainerRef, item: &ItemRef, do_inv: bool) -> LuaResult<bool> {
+    Ok(find_ref(c, &|r| Rc::ptr_eq(r, item), do_inv).is_some())
 }
 
 /// `isItemAllowed(item)`.
@@ -945,8 +1008,13 @@ fn has_room_for_weight(
     w: f32,
     _floor: f32,
 ) -> LuaResult<bool> {
-    // STUB: `inventoryContainer.getMaxItemSize()` (a bag's limit) is not
-    // in pz-inventory's container data.
+    // `inventoryContainer.getMaxItemSize()`: the bag's script limit.
+    if let Some(b) = containing_item(c) {
+        let max = b.borrow().template.max_item_size;
+        if max > 0.0 && w > max {
+            return Ok(false);
+        }
+    }
     let cw = capacity_weight(t, c)?;
     Ok(floating_point_correction(cw) + w <= effective_capacity(t, c, chr)? as f32)
 }
@@ -1161,58 +1229,65 @@ fn do_remove_item(t: &mut Thread, c: &ContainerRef, item: &ItemRef) -> LuaResult
     after_remove(t, c, item_value(item))
 }
 
-/// `Remove(String)` / `RemoveOneOf` on a bag's saved contents.
-fn remove_one_of_saved(c: &mut ItemContainer, s: &str, inside: bool) -> bool {
+/// `RemoveOneOf(type, insideInv)`: the first item of the type loses a
+/// use or leaves; with `insideInv`, then the bags' inventories (the bag
+/// is returned).
+fn remove_one_of(c: &ContainerRef, ty: &str, inside: bool) -> Option<ItemRef> {
+    let p = parent(c);
+    {
+        let mut m = c.borrow_mut();
+        m.draw_dirty = true;
+        if !p.is_nil() && !instance_of(&p, ISO_GAME_CHARACTER) {
+            m.dirty = true;
+        }
+    }
     let e = item_env();
-    for m in 0..c.items.len() {
-        let Some(i) = c.items[m].as_item_mut() else {
-            continue;
+    for r in items(c) {
+        let hit = {
+            let i = r.borrow();
+            i.get_full_type() == ty || i.get_type() == ty
         };
-        if i.get_full_type() != s && i.get_type() != s {
+        if !hit {
             continue;
         }
-        if i.get_current_uses() > 1 {
-            let n = i.get_current_uses() - 1;
-            i.set_current_uses_with(n, Some(e.context()));
+        let uses = r.borrow().get_current_uses();
+        if uses > 1 {
+            r.borrow_mut()
+                .set_current_uses_with(uses - 1, Some(e.context()));
         } else {
-            c.items.remove(m);
+            set_container(&r, None);
+            let mut m = c.borrow_mut();
+            if let Some(i) = m.index_of(&r) {
+                m.items.remove(i);
+            }
         }
-        return true;
+        c.borrow_mut().dirty = true;
+        return Some(r);
     }
     if inside {
-        for it in c.items.iter_mut().filter_map(SavedItem::as_item_mut) {
-            if let Some(b) = bag_container_mut(it) {
-                if remove_one_of_saved(b, s, inside) {
-                    return true;
-                }
+        for r in items(c) {
+            if bag(&r).is_some_and(|b| remove_one_of(&b, ty, inside).is_some()) {
+                return Some(r);
             }
         }
     }
-    false
+    None
 }
 
-/// `removeItemWithIDRecurse` on a bag's saved contents.
-fn remove_id_saved(c: &mut ItemContainer, id: i32) -> bool {
-    for m in 0..c.items.len() {
-        if c.items[m].as_item().is_some_and(|i| i.id == id) {
-            c.items.remove(m);
-            return true;
+/// `removeItemWithIDRecurse(id)`.
+fn remove_with_id_recurse(t: &mut Thread, c: &ContainerRef, id: i32) -> LuaResult<bool> {
+    for r in items(c) {
+        if r.borrow().id == id {
+            remove(t, c, &r)?;
+            return Ok(true);
         }
-        if let Some(b) = c.items[m].as_item_mut().and_then(bag_container_mut) {
-            if remove_id_saved(b, id) {
-                return true;
+        if let Some(b) = bag(&r) {
+            if remove_with_id_recurse(t, &b, id)? {
+                return Ok(true);
             }
         }
     }
-    false
-}
-
-/// `getNumberOfItem(findItem)` on a bag's saved contents.
-fn number_of_item_saved(c: &[SavedItem], find: &str) -> i32 {
-    c.iter()
-        .filter_map(SavedItem::as_item)
-        .filter(|i| i.get_full_type() == find || i.get_type() == find)
-        .count() as i32
+    Ok(false)
 }
 
 /// `getNumberOfItem(findItem, includeReplaceOnDeplete, insideInv)`.
@@ -1225,8 +1300,9 @@ fn number_of_item(c: &ContainerRef, find: &str, rod: bool, inside: bool) -> i32 
             continue;
         }
         if inside {
-            if let Some(b) = bag_items(&i) {
-                result += number_of_item_saved(b, find);
+            if let Some(b) = shared::inventory_of(&i) {
+                drop(i);
+                result += number_of_item(&b, find, false, false);
                 continue;
             }
         }
@@ -1246,51 +1322,70 @@ fn number_of_item(c: &ContainerRef, find: &str, rod: bool, inside: bool) -> i32 
     result
 }
 
-/// `getItemCountFromTypeRecurse` over saved contents.
-fn count_full_type_saved(c: &[SavedItem], ty: &str) -> i32 {
+/// `getItemCountFromTypeRecurse(type)`.
+fn count_full_type_recurse(c: &ContainerRef, ty: Option<&str>) -> i32 {
     let mut n = 0;
-    for i in c.iter().filter_map(SavedItem::as_item) {
-        if i.get_full_type() == ty {
+    for r in items(c) {
+        if ty == Some(r.borrow().get_full_type().as_str()) {
             n += 1;
         }
-        if let Some(b) = bag_items(i) {
-            n += count_full_type_saved(b, ty);
+        if let Some(b) = bag(&r) {
+            n += count_full_type_recurse(&b, ty);
         }
     }
     n
 }
 
-/// A key with `keyId` in saved contents (key rings included).
-fn find_key_saved(c: &[SavedItem], key_id: i32) -> bool {
-    for i in c.iter().filter_map(SavedItem::as_item) {
-        if let ItemKind::Key { key_id: k, .. } = &i.kind {
-            if *k == key_id {
-                return true;
-            }
-            continue;
-        }
-        if i.get_type() == "KeyRing" || i.has_tag("base:keyring") {
-            if let Some(b) = bag_items(i) {
-                if find_key_saved(b, key_id) {
-                    return true;
+/// `haveThisKeyId(keyId)`: a key, or one on a key ring (a key ring that
+/// is not a bag throws as the original's cast does).
+fn have_key_id(c: &ContainerRef, key_id: i32) -> LuaResult<Option<ItemRef>> {
+    for r in items(c) {
+        let ring = {
+            let i = r.borrow();
+            if let ItemKind::Key { key_id: k, .. } = &i.kind {
+                if *k == key_id {
+                    drop(i);
+                    return Ok(Some(r));
                 }
+                continue;
+            }
+            i.get_type() == "KeyRing" || i.has_tag("base:keyring")
+        };
+        if ring {
+            let b = bag(&r).ok_or_else(|| {
+                class_cast(&item_value(&r), "zombie.inventory.types.InventoryContainer")
+            })?;
+            if let Some(k) = have_key_id(&b, key_id)? {
+                return Ok(Some(k));
             }
         }
     }
-    false
+    Ok(None)
 }
 
-/// An item with `id` in saved contents (`getItemWithIDRecursiv`).
-fn has_id_saved(c: &[SavedItem], id: i32) -> bool {
-    for i in c.iter().filter_map(SavedItem::as_item) {
-        if i.id == id {
-            return true;
+/// `getItemWithIDRecursiv(id)`.
+fn item_with_id_recursive(c: &ContainerRef, id: i64) -> Option<ItemRef> {
+    for r in items(c) {
+        if r.borrow().id as i64 == id {
+            return Some(r);
         }
-        if bag_items(i).is_some_and(|b| !b.is_empty() && has_id_saved(b, id)) {
-            return true;
+        if let Some(b) = bag(&r) {
+            if b.borrow().items.is_empty() {
+                continue;
+            }
+            if let Some(f) = item_with_id_recursive(&b, id) {
+                return Some(f);
+            }
         }
     }
-    false
+    None
+}
+
+/// `containsRecursive(item)`.
+fn contains_recursive(c: &ContainerRef, item: &ItemRef) -> bool {
+    items(c)
+        .iter()
+        .any(|r| Rc::ptr_eq(r, item) || bag(r).is_some_and(|b| contains_recursive(&b, item)))
 }
 
 /// `findItem(type, doInv, ignoreBroken)`.
@@ -1299,7 +1394,7 @@ fn find_item(
     ty: &str,
     do_inv: bool,
     ignore_broken: bool,
-) -> LuaResult<Option<Found>> {
+) -> LuaResult<Option<ItemRef>> {
     if ty.contains('/') {
         for v in ty.split('/') {
             if let Some(f) = find_item(c, v.trim(), do_inv, ignore_broken)? {
@@ -1335,40 +1430,28 @@ fn find_item(
 }
 
 /// `findItem(predicate, doInv)`: this level, then each bag once.
-fn find_by(c: &ContainerRef, pred: &dyn Fn(&InventoryItem) -> bool, do_inv: bool) -> Option<Found> {
-    let mut bags = Vec::new();
-    for r in items(c) {
-        let i = r.borrow();
-        if pred(&i) {
-            drop(i);
-            return Some(Found::Live(r));
-        }
-        if do_inv {
-            if let Some(b) = bag_items(&i) {
-                bags.push(b.to_vec());
-            }
-        }
-    }
-    bags.iter().find_map(|b| find_saved(b, pred, do_inv))
-}
-
-fn find_saved(
-    c: &[SavedItem],
+fn find_by(
+    c: &ContainerRef,
     pred: &dyn Fn(&InventoryItem) -> bool,
     do_inv: bool,
-) -> Option<Found> {
-    let mut bags = Vec::new();
-    for i in c.iter().filter_map(SavedItem::as_item) {
-        if pred(i) {
-            return Some(Found::Nested(Box::new(i.clone())));
+) -> Option<ItemRef> {
+    find_ref(c, &|r| pred(&r.borrow()), do_inv)
+}
+
+/// [`find_by`] with a test of the item object.
+fn find_ref(c: &ContainerRef, pred: &dyn Fn(&ItemRef) -> bool, do_inv: bool) -> Option<ItemRef> {
+    let mut bags: Vec<(ItemRef, ContainerRef)> = Vec::new();
+    for r in items(c) {
+        if pred(&r) {
+            return Some(r);
         }
-        if do_inv {
-            if let Some(b) = bag_items(i) {
-                bags.push(b);
+        if do_inv && !bags.iter().any(|(b, _)| Rc::ptr_eq(b, &r)) {
+            if let Some(b) = bag(&r) {
+                bags.push((r, b));
             }
         }
     }
-    bags.into_iter().find_map(|b| find_saved(b, pred, do_inv))
+    bags.iter().find_map(|(_, b)| find_ref(b, pred, do_inv))
 }
 
 /// `getItemFromType(type, chr, notEquipped, ignoreBroken, includeInv)` /
@@ -1381,8 +1464,8 @@ fn item_from(
     not_equipped: bool,
     ignore_broken: bool,
     include_inv: bool,
-) -> LuaResult<Option<Found>> {
-    let mut bags = Vec::new();
+) -> LuaResult<Option<ItemRef>> {
+    let mut bags: Vec<(ItemRef, ContainerRef)> = Vec::new();
     for r in items(c) {
         if test(&r.borrow()) {
             if not_equipped
@@ -1392,50 +1475,22 @@ fn item_from(
                 continue;
             }
             if !ignore_broken || !r.borrow().is_broken() {
-                return Ok(Some(Found::Live(r)));
+                return Ok(Some(r));
             }
             continue;
         }
-        if include_inv {
-            if let Some(b) = bag_items(&r.borrow()) {
-                bags.push(b.to_vec());
+        if include_inv && !bags.iter().any(|(b, _)| Rc::ptr_eq(b, &r)) {
+            if let Some(b) = bag(&r) {
+                bags.push((r, b));
             }
         }
     }
-    for b in bags {
-        if let Some(f) = item_from_saved(&b, test, ignore_broken, include_inv) {
-            if not_equipped && !chr.is_nil() {
-                // `isEquippedClothing` of a bag's item needs its object.
-                return Err(nested_error());
-            }
+    for (_, b) in bags {
+        if let Some(f) = item_from(t, &b, test, chr, not_equipped, ignore_broken, include_inv)? {
             return Ok(Some(f));
         }
     }
     Ok(None)
-}
-
-fn item_from_saved(
-    c: &[SavedItem],
-    test: &dyn Fn(&InventoryItem) -> bool,
-    ignore_broken: bool,
-    include_inv: bool,
-) -> Option<Found> {
-    let mut bags = Vec::new();
-    for i in c.iter().filter_map(SavedItem::as_item) {
-        if test(i) {
-            if !ignore_broken || !i.is_broken() {
-                return Some(Found::Nested(Box::new(i.clone())));
-            }
-            continue;
-        }
-        if include_inv {
-            if let Some(b) = bag_items(i) {
-                bags.push(b);
-            }
-        }
-    }
-    bags.into_iter()
-        .find_map(|b| item_from_saved(b, test, ignore_broken, include_inv))
 }
 
 // ---- fluids ---------------------------------------------------------------------
@@ -1592,6 +1647,35 @@ fn available_fluid_containers(c: &ContainerRef, ty: Option<&str>) -> Vec<ItemRef
     out
 }
 
+/// `getSoapList(result, includeLiquidSoap)`: equipped bags add their own.
+fn soap_list(c: &ContainerRef, list: &JavaList, liquid: bool, need: f64) -> LuaResult<()> {
+    let e = item_env();
+    for r in items(c) {
+        let inner = {
+            let i = r.borrow();
+            if i.get_full_type() == "Base.Soap2" {
+                list.push(item_value(&r))?;
+            } else if liquid {
+                if let Some(fc) = fluid_container(&i) {
+                    if ratio_for_fluid(&fc, "CleaningLiquid") >= 0.499f32
+                        && fc.get_amount() as f64 >= need
+                    {
+                        list.push(item_value(&r))?;
+                    }
+                }
+            }
+            match shared::inventory_of(&i) {
+                Some(b) if i.is_equipped(e.owner(&r).as_ref()) => Some(b),
+                _ => None,
+            }
+        };
+        if let Some(b) = inner {
+            soap_list(&b, list, liquid, need)?;
+        }
+    }
+    Ok(())
+}
+
 fn register_fluids(b: &crate::expose::ClassBuilder) {
     b.method("getWaterContainerCount", |c| {
         let s = this(c)?;
@@ -1725,48 +1809,15 @@ fn register_fluids(b: &crate::expose::ClassBuilder) {
             Value::Table(t) => num(&t.get_str("CleanStainCleaningFluidAmount")),
             _ => 0.0,
         };
-        let e = item_env();
-        for r in items(&s) {
-            let i = r.borrow();
-            if i.get_full_type() == "Base.Soap2" {
-                as_list(&list).push(item_value(&r))?;
-            } else if liquid {
-                if let Some(fc) = fluid_container(&i) {
-                    if ratio_for_fluid(&fc, "CleaningLiquid") >= 0.499f32
-                        && fc.get_amount() as f64 >= need
-                    {
-                        as_list(&list).push(item_value(&r))?;
-                    }
-                }
-            }
-            if let Some(bag) = bag_items(&i) {
-                let equipped = i.is_equipped(e.owner(&r).as_ref());
-                if equipped
-                    && bag.iter().filter_map(SavedItem::as_item).any(|n| {
-                        n.get_full_type() == "Base.Soap2"
-                            || liquid
-                                && fluid_container(n).is_some_and(|fc| {
-                                    ratio_for_fluid(&fc, "CleaningLiquid") >= 0.499f32
-                                        && fc.get_amount() as f64 >= need
-                                })
-                    })
-                {
-                    // `bag.getSoapList(result, ...)` would add a bag's item.
-                    return Err(nested_error());
-                }
-            }
-        }
+        soap_list(&s, as_list(&list), liquid, need)?;
         Ok(c.push(Value::Object(list)))
     });
 }
 
 // ---- registration -------------------------------------------------------------
 
-fn push_opt(c: &mut NativeCall<'_>, v: LuaResult<Option<Found>>) -> LuaResult<usize> {
-    let v = match v? {
-        Some(f) => item_value(&f.live()?),
-        None => Value::Nil,
-    };
+fn push_opt(c: &mut NativeCall<'_>, v: LuaResult<Option<ItemRef>>) -> LuaResult<usize> {
+    let v = opt_item(v?);
     Ok(c.push(v))
 }
 
@@ -1841,7 +1892,7 @@ fn fill_result(
     at: usize,
     optional: bool,
     null_ok: bool,
-    f: impl FnOnce(&mut Thread, usize) -> LuaResult<Vec<Found>>,
+    f: impl FnOnce(&mut Thread, usize) -> LuaResult<Vec<ItemRef>>,
 ) -> LuaResult<usize> {
     let (list, value) = if c.nargs() > at {
         match list_arg(c, at)? {
@@ -1856,7 +1907,7 @@ fn fill_result(
     };
     let base = list.as_ref().map_or(0, |l| as_list(l).len());
     let found = f(c.thread, base)?;
-    let vals = found_values(found)?;
+    let vals: Vec<Value> = found.iter().map(item_value).collect();
     match list {
         Some(l) => {
             for v in vals {
@@ -2476,55 +2527,12 @@ fn register_items(b: &crate::expose::ClassBuilder) {
         let s = this(c)?;
         let ty = str_arg(c, 1)?;
         let inside = c.nargs() <= 2 || bool_arg(c, 2);
-        let p = parent(&s);
-        {
-            let mut m = s.borrow_mut();
-            m.draw_dirty = true;
-            if !p.is_nil() && !instance_of(&p, ISO_GAME_CHARACTER) {
-                m.dirty = true;
-            }
-        }
-        let e = item_env();
-        for r in items(&s) {
-            let hit = {
-                let i = r.borrow();
-                i.get_full_type() == ty || i.get_type() == ty
-            };
-            if !hit {
-                continue;
-            }
-            let uses = r.borrow().get_current_uses();
-            if uses > 1 {
-                r.borrow_mut()
-                    .set_current_uses_with(uses - 1, Some(e.context()));
-            } else {
-                set_container(&r, None);
-                let mut m = s.borrow_mut();
-                if let Some(i) = m.index_of(&r) {
-                    m.items.remove(i);
-                }
-            }
-            s.borrow_mut().dirty = true;
-            return Ok(if c.nargs() > 2 {
-                c.push(item_value(&r))
-            } else {
-                0
-            });
-        }
-        if inside {
-            for r in items(&s) {
-                let hit = bag_container_mut(&mut r.borrow_mut())
-                    .is_some_and(|b| remove_one_of_saved(b, &ty, inside));
-                if hit {
-                    return Ok(if c.nargs() > 2 {
-                        c.push(item_value(&r))
-                    } else {
-                        0
-                    });
-                }
-            }
-        }
-        Ok(if c.nargs() > 2 { c.push(Value::Nil) } else { 0 })
+        let r = remove_one_of(&s, &ty, inside);
+        Ok(if c.nargs() > 2 {
+            c.push(opt_item(r))
+        } else {
+            0
+        })
     });
     b.method("removeItemWithID", |c| {
         let s = this(c)?;
@@ -2538,18 +2546,8 @@ fn register_items(b: &crate::expose::ClassBuilder) {
     b.method("removeItemWithIDRecurse", |c| {
         let s = this(c)?;
         let id = int_arg(c, 1);
-        for r in items(&s) {
-            if r.borrow().id == id {
-                remove(c.thread, &s, &r)?;
-                return Ok(c.push(true));
-            }
-            let hit =
-                bag_container_mut(&mut r.borrow_mut()).is_some_and(|b| remove_id_saved(b, id));
-            if hit {
-                return Ok(c.push(true));
-            }
-        }
-        Ok(c.push(false))
+        let r = remove_with_id_recurse(c.thread, &s, id)?;
+        Ok(c.push(r))
     });
     b.method("removeItemOnServer", |_| Ok(0));
     b.method("contains", |c| {
@@ -2592,7 +2590,7 @@ fn register_items(b: &crate::expose::ClassBuilder) {
     b.method("containsRecursive", |c| {
         let s = this(c)?;
         let item = opt_item_arg(c, 1)?;
-        let r = item.is_some_and(|i| s.borrow().index_of(&i).is_some());
+        let r = item.is_some_and(|i| contains_recursive(&s, &i));
         Ok(c.push(r))
     });
     b.method("containsHumanCorpse", |c| {
@@ -2638,45 +2636,16 @@ fn register_items(b: &crate::expose::ClassBuilder) {
     let with_id_recursive = |c: &mut NativeCall<'_>| -> LuaResult<usize> {
         let s = this(c)?;
         let id = num_arg(c, 1) as i64;
-        for r in items(&s) {
-            if r.borrow().id as i64 == id {
-                return Ok(c.push(item_value(&r)));
-            }
-            let nested =
-                bag_items(&r.borrow()).is_some_and(|b| !b.is_empty() && has_id_saved(b, id as i32));
-            if nested {
-                return Err(nested_error());
-            }
-        }
-        Ok(c.push(Value::Nil))
+        let r = item_with_id_recursive(&s, id);
+        Ok(c.push(opt_item(r)))
     };
     b.method("getItemWithIDRecursiv", with_id_recursive);
     b.method("getItemById", with_id_recursive);
     b.method("haveThisKeyId", |c| {
         let s = this(c)?;
         let key_id = int_arg(c, 1);
-        for r in items(&s) {
-            let i = r.borrow();
-            if let ItemKind::Key { key_id: k, .. } = &i.kind {
-                if *k == key_id {
-                    drop(i);
-                    return Ok(c.push(item_value(&r)));
-                }
-                continue;
-            }
-            if i.get_type() == "KeyRing" || i.has_tag("base:keyring") {
-                let Some(b) = bag_items(&i) else {
-                    return Err(class_cast(
-                        &item_value(&r),
-                        "zombie.inventory.types.InventoryContainer",
-                    ));
-                };
-                if find_key_saved(b, key_id) {
-                    return Err(nested_error());
-                }
-            }
-        }
-        Ok(c.push(Value::Nil))
+        let r = have_key_id(&s, key_id)?;
+        Ok(c.push(opt_item(r)))
     });
     b.method("getNumberOfItem", |c| {
         let s = this(c)?;
@@ -2721,16 +2690,7 @@ fn register_items(b: &crate::expose::ClassBuilder) {
     b.method("getItemCountFromTypeRecurse", |c| {
         let s = this(c)?;
         let ty = opt_str_arg(c, 1);
-        let mut n = 0;
-        for r in items(&s) {
-            let i = r.borrow();
-            if ty.as_deref() == Some(i.get_full_type().as_str()) {
-                n += 1;
-            }
-            if let (Some(b), Some(t)) = (bag_items(&i), ty.as_deref()) {
-                n += count_full_type_saved(b, t);
-            }
-        }
+        let n = count_full_type_recurse(&s, ty.as_deref());
         Ok(c.push(n as f64))
     });
     b.method("getItemFromType", |c| {
@@ -2886,21 +2846,7 @@ fn register_fields(b: &crate::expose::ClassBuilder) {
     b.method("setCapacity", |c| {
         let s = this(c)?;
         let cap = int_arg(c, 1);
-        let old = s.borrow().capacity;
-        if let Some(bag) = containing_item(&s).filter(|_| old > 50) {
-            let name = java_string(&item_value(&bag));
-            DebugType::General.warn(
-                None,
-                &format!("Attempting to set capacity of {name}over maximum capacity of 50"),
-            );
-        } else if cap > 100 {
-            let me = java_string(&c.arg(0));
-            DebugType::General.warn(
-                None,
-                &format!("Attempting to set capacity of {me}over maximum capacity of 100"),
-            );
-        }
-        s.borrow_mut().capacity = cap;
+        set_capacity(&s, cap, &c.arg(0));
         Ok(0)
     });
     field!(b, "isExplored", "setExplored", explored, bool);
@@ -3536,6 +3482,132 @@ pub fn register(thread: &mut Thread) {
         let item = opt_item_arg(c, 0)?.ok_or_else(npe)?;
         Ok(c.push(item_container_value(&item)))
     });
+    ib.method("getOutermostContainer", |c| {
+        let item = opt_item_arg(c, 0)?.ok_or_else(npe)?;
+        let v = shared::outermost_container_of(&item).map_or(Value::Nil, |o| container_value(&o));
+        Ok(c.push(v))
+    });
+    register_bag(thread);
+}
+
+/// The bag item and its argument checks.
+fn bag_this(c: &NativeCall<'_>) -> LuaResult<(ItemRef, ContainerRef)> {
+    let item = opt_item_arg(c, 0)?.ok_or_else(npe)?;
+    let inv = bag(&item).ok_or_else(|| {
+        class_cast(
+            &item_value(&item),
+            "zombie.inventory.types.InventoryContainer",
+        )
+    })?;
+    Ok((item, inv))
+}
+
+/// `50 - actualWeight`, the most a bag holds.
+fn bag_limit(item: &ItemRef) -> f32 {
+    50.0f32 - item.borrow().actual_weight
+}
+
+/// `zombie.inventory.types.InventoryContainer`'s inventory methods.
+fn register_bag(thread: &mut Thread) {
+    let b = expose_class(
+        thread,
+        "zombie.inventory.types.InventoryContainer",
+        Some(crate::bind_items::INVENTORY_ITEM_CLASS),
+    );
+    let inventory = |c: &mut NativeCall<'_>| -> LuaResult<usize> {
+        let (_, inv) = bag_this(c)?;
+        Ok(c.push(container_value(&inv)))
+    };
+    b.method("getInventory", inventory);
+    b.method("getItemContainer", inventory);
+    b.method("setItemContainer", |c| {
+        let (item, _) = bag_this(c)?;
+        let v = c.arg(1);
+        let Some(inv) = container_of_value(&v) else {
+            // A null container: the shared form always has one.
+            return Err(LuaError::runtime(
+                "InventoryContainer.setItemContainer(null) is not supported",
+            ));
+        };
+        if let ItemKind::Container(d) = &mut item.borrow_mut().kind {
+            d.container = inv;
+        }
+        Ok(0)
+    });
+    b.method("getCapacity", |c| {
+        let (item, inv) = bag_this(c)?;
+        let mut cap = capacity(&inv);
+        let limit = bag_limit(&item);
+        if cap as f32 > limit {
+            cap = limit as i32;
+        }
+        Ok(c.push(cap as f64))
+    });
+    b.method("getEffectiveCapacity", |c| {
+        let (item, inv) = bag_this(c)?;
+        let mut cap = effective_capacity(c.thread, &inv, &c.arg(1))?;
+        let limit = bag_limit(&item);
+        if cap as f32 > limit {
+            cap = limit as i32;
+        }
+        Ok(c.push(cap as f64))
+    });
+    b.method("setCapacity", |c| {
+        let (item, inv) = bag_this(c)?;
+        let cap = int_arg(c, 1);
+        let limit = bag_limit(&item);
+        if cap as f32 > limit {
+            let name = java_string(&item_value(&item));
+            DebugType::General.warn(
+                None,
+                &format!(
+                    "Attempting to set capacity of {name}over maximum capacity of {}",
+                    pz_kahlua::exec::java_value_of(&Value::Num(limit as f64))
+                ),
+            );
+        }
+        set_capacity(&inv, cap, &container_value(&inv));
+        Ok(0)
+    });
+    b.method("getMaxItemSize", |c| {
+        let (item, _) = bag_this(c)?;
+        let v = item.borrow().template.max_item_size;
+        Ok(c.push(v as f64))
+    });
+    b.method("setWeightReduction", |c| {
+        let (item, inv) = bag_this(c)?;
+        let v = int_arg(c, 1).clamp(0, 100);
+        if let ItemKind::Container(d) = &mut item.borrow_mut().kind {
+            d.weight_reduction = v;
+        }
+        inv.borrow_mut().weight_reduction = v;
+        Ok(0)
+    });
+    b.method("isEmpty", |c| {
+        let (_, inv) = bag_this(c)?;
+        let v = inv.borrow().items.is_empty();
+        Ok(c.push(v))
+    });
+}
+
+/// `ItemContainer.setCapacity(capacity)` (`me` is the container's object,
+/// for the warning).
+fn set_capacity(s: &ContainerRef, cap: i32, me: &Value) {
+    let old = s.borrow().capacity;
+    if let Some(bag) = containing_item(s).filter(|_| old > 50) {
+        let name = java_string(&item_value(&bag));
+        DebugType::General.warn(
+            None,
+            &format!("Attempting to set capacity of {name}over maximum capacity of 50"),
+        );
+    } else if cap > 100 {
+        let me = java_string(me);
+        DebugType::General.warn(
+            None,
+            &format!("Attempting to set capacity of {me}over maximum capacity of 100"),
+        );
+    }
+    s.borrow_mut().capacity = cap;
 }
 
 #[cfg(test)]
