@@ -8,7 +8,12 @@ pz-kahlua.workspace = true
 pz-core.workspace = true
 pz-fs.workspace = true
 pz-render.workspace = true
+indexmap.workspace = true
 pz-text.workspace = true
 pz-ui.workspace = true
 pz-inventory.workspace = true
-indexmap.workspace = true
+pz-sqlite.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+pz-sqlite = { workspace = true, features = ["writer"] }

@@ -16,7 +16,8 @@ use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, NativeFunction, TableRef, Thread, Value};
 use pz_render::Rgba;
 use pz_text::UIFont;
-use pz_ui::{with_ui, ColorObject, UIElement, UIManager, UiTexture};
+use pz_render::{LuaTexture, Texture};
+use pz_ui::{with_ui, ColorObject, UIElement, UIManager};
 use std::any::Any;
 use std::rc::Rc;
 
@@ -34,38 +35,9 @@ pub const UIFONT_NAMES: &[&str] = &[
     "SdfRobertoSans", "SdfCaveat",
 ];
 
-/// Map a Java `UIFont` name onto `pz_text::UIFont`. Constants pz-text does
-/// not have yet (`CodeSmall`, `SdfOld*`, ...) map to `None` (default font).
+/// Map a Java `UIFont` name onto `pz_text::UIFont` (`UIFont.valueOf`).
 pub fn ui_font_from_name(name: &str) -> Option<UIFont> {
-    use UIFont::*;
-    Some(match name {
-        "Small" => Small,
-        "Medium" => Medium,
-        "Large" => Large,
-        "Massive" => Massive,
-        "MainMenu1" => MainMenu1,
-        "MainMenu2" => MainMenu2,
-        "Cred1" => Cred1,
-        "Cred2" => Cred2,
-        "NewSmall" => NewSmall,
-        "NewMedium" => NewMedium,
-        "NewLarge" => NewLarge,
-        "Code" => Code,
-        "MediumNew" => MediumNew,
-        "AutoNormSmall" => AutoNormSmall,
-        "AutoNormMedium" => AutoNormMedium,
-        "AutoNormLarge" => AutoNormLarge,
-        "Dialogue" => Dialogue,
-        "Intro" => Intro,
-        "Handwritten" => Handwritten,
-        "DebugConsole" => DebugConsole,
-        "Title" => Title,
-        "SdfRegular" => SdfRegular,
-        "SdfBold" => SdfBold,
-        "SdfItalic" => SdfItalic,
-        "SdfBoldItalic" => SdfBoldItalic,
-        _ => return None,
-    })
+    UIFont::from_string(name)
 }
 
 // ---- argument helpers ----
@@ -89,9 +61,9 @@ fn el_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<Rc<UIElement>> {
     })
 }
 
-fn tex_arg(c: &NativeCall<'_>, i: usize) -> Option<UiTexture> {
+fn tex_arg(c: &NativeCall<'_>, i: usize) -> Option<Texture> {
     match c.arg(i) {
-        Value::Object(o) => o.as_any().downcast_ref::<UiTexture>().cloned(),
+        Value::Object(o) => o.as_any().downcast_ref::<LuaTexture>().map(LuaTexture::get),
         _ => None,
     }
 }
@@ -880,9 +852,9 @@ fn register_manager(thread: &mut Thread) {
         let (w, h, a) = if c.nargs() >= 6 {
             (num_arg(c, 3) as i32, num_arg(c, 4) as i32, num_arg(c, 5))
         } else {
-            (t.width(), t.height(), 1.0)
+            (t.width as i32, t.height as i32, 1.0)
         };
-        with_ui(|m| m.sprite.renderi(Some(&t.tex), x as i32, y as i32, w, h, Rgba(1.0, 1.0, 1.0, a as f32)));
+        with_ui(|m| m.sprite.renderi(Some(&t), x as i32, y as i32, w, h, Rgba(1.0, 1.0, 1.0, a as f32)));
         Ok(0)
     });
     // FadeIn(seconds) / FadeIn(playerIndex, seconds); FadeOut likewise.
@@ -1366,10 +1338,13 @@ mod tests {
         "#,
         );
         let cmds = with_ui(|m| m.sprite.cmds.clone());
-        assert!(matches!(cmds[0], UiDrawCmd::Render(pz_render::DrawCmd::Clip(Some([10, 10, 50, 50])))));
-        assert!(matches!(&cmds[1], UiDrawCmd::Text { align: TextAlign::Centre, font: None, x, .. } if *x == 15.0));
-        assert!(matches!(&cmds[2], UiDrawCmd::Text { align: TextAlign::Right, font: Some(UIFont::Small), .. }));
-        assert!(matches!(cmds[3], UiDrawCmd::Render(pz_render::DrawCmd::Clip(None))));
+        // setStencilRect: the stencil quad covers the element's rectangle.
+        assert!(cmds.iter().any(|c| matches!(c, UiDrawCmd::Quad { texture: None, x, y, w, h, .. } if (*x, *y, *w, *h) == (10.0, 10.0, 50.0, 50.0))));
+        let texts: Vec<_> = cmds.iter().filter(|c| matches!(c, UiDrawCmd::Text { .. })).collect();
+        assert!(matches!(texts[0], UiDrawCmd::Text { align: TextAlign::Centre, font: None, x, .. } if *x == 15.0));
+        assert!(matches!(texts[1], UiDrawCmd::Text { align: TextAlign::Right, font: Some(UIFont::Small), .. }));
+        // clearStencilRect at level 0 clears the stencil buffer.
+        assert!(matches!(cmds.last(), Some(UiDrawCmd::Render(pz_render::DrawCmd::Clear(1280)))));
         assert_eq!(eval(&mut t, "tostring(s.javaObject:getUIName())").as_str(), Some("Widget: s"));
     }
 }
