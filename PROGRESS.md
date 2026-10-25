@@ -255,6 +255,9 @@ Status of the Rust port. Update this file with every merged change.
   asserting the order. Not yet in the frame: `renderFlies`,
   `FBORenderObjectHighlight`, the cell's `renderFog`,
   `VisibilityPolygon2`, markers, `FBORenderObjectOutline`.
+- `pz-clipper`: the `PZClipper` native library (Clipper2 1.5.4 + earcut.hpp
+  + the game's JNI glue) in pure Rust. Local differential run against the
+  shipped arm64 library: every in-contract case bit-identical.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.

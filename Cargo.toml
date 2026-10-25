@@ -26,6 +26,7 @@ pz-inventory = { path = "crates/pz-inventory" }
 pz-vehicles = { path = "crates/pz-vehicles" }
 pz-lighting = { path = "crates/pz-lighting" }
 pz-bullet = { path = "crates/pz-bullet" }
+pz-clipper = { path = "crates/pz-clipper" }
 indexmap = "2"
 jiff = "0.2"
 macroquad = { version = "0.4", default-features = false }
