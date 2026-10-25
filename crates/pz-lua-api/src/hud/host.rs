@@ -197,6 +197,19 @@ pub trait HudNetwork {
     }
 }
 
+/// `GameClient.client` / `GameServer.server` as Core mirrors them. In this
+/// single-player port both stay false unless a network layer sets them.
+pub struct CoreNetwork;
+
+impl HudNetwork for CoreNetwork {
+    fn is_client(&self) -> bool {
+        crate::bind_core::shared_core().borrow().is_client
+    }
+    fn is_server(&self) -> bool {
+        crate::bind_core::shared_core().borrow().is_server
+    }
+}
+
 /// The no-op defaults.
 pub struct NoHud;
 impl HudPlayers for NoHud {}
@@ -251,7 +264,7 @@ impl Default for HudHost {
             players: Box::new(NoHud),
             game_time: Box::new(SharedGameTime),
             sound: Box::new(NoHud),
-            network: Box::new(NoHud),
+            network: Box::new(CoreNetwork),
             camera: Box::new(NoHud),
             climate: Box::new(NoHud),
             alarm_clocks: Box::new(NoHud),
