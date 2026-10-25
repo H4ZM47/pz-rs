@@ -6,6 +6,7 @@
 //! (`IsoWorld.instance.metaGrid` / `currentCell`, which Lua reads); the
 //! rest of the world state is here.
 
+use pz_characters::character::save::SaveEnv;
 use pz_characters::character::DefaultSimContext;
 use pz_characters::CharacterKind;
 use pz_core::save_trackers::{InstanceTracker, MetaTracker, Statistics};
@@ -98,6 +99,12 @@ pub struct IsoWorld {
     pub vehicles: VehicleStore,
     /// `PlayerDB.getInstance()` (`PlayerDB.setAllow(true)`).
     pub player_db: Option<PlayerDb>,
+    /// `WorldDictionary.isNewGame` (`GameLoadingState.newGame`, set before
+    /// the loader runs).
+    pub dictionary_new_game: bool,
+    /// The save's item registry: `WorldDictionary.data` over the scripts
+    /// (`None` until `WorldDictionary.init()` read a `WorldDictionary.bin`).
+    pub items: Option<pz_inventory::factory::ScriptItems>,
     /// `WorldStreamer.instance` with the chunk maps.
     pub streamer: Option<ChunkStreamer>,
     /// `IsoMetaGrid`'s part of `map_meta.bin` the grid does not keep.
@@ -171,6 +178,8 @@ impl IsoWorld {
             rand: StandardRand,
             vehicles: VehicleStore::default(),
             player_db: None,
+            dictionary_new_game: false,
+            items: None,
             streamer: None,
             meta_world: MetaWorld::default(),
             spawned_zones: SpawnedZombieZones::default(),
@@ -218,8 +227,17 @@ impl IsoWorld {
             vehicles,
             streamer,
             world_gen,
+            items,
             ..
         } = self;
+        // `GameTime.getWorldAgeHours()` as the item loads read it.
+        if let Some(items) = items.as_mut() {
+            items.world_age_hours = pz_lua_api::bind_climate::shared_game_time().borrow().world_age_hours();
+        }
+        let items: &dyn pz_world::save::items::ItemRegistry = match items.as_ref() {
+            Some(i) => i,
+            None => &AllItems,
+        };
         let (Some(streamer), Some(sprites), Some(object_tables), Some(save_tables)) =
             (streamer.as_mut(), sprites.as_mut(), object_tables.as_ref(), save_tables.as_ref())
         else {
@@ -239,9 +257,9 @@ impl IsoWorld {
                 object_hooks: &mut object_hooks,
                 save_tables,
                 save_settings,
-                // TODO(port): `ScriptItems` over the save's `WorldDictionary`
-                // (`WorldDictionary.init` is not ported); items load raw.
-                items: &AllItems,
+                // The save's `WorldDictionary`; without one (a new game, see
+                // `world_dictionary::init`) items load raw.
+                items,
                 save_hooks: &NoSaveHooks,
                 brand_new: world_gen.as_mut().map(|h| h as &mut dyn pz_world::chunk::BrandNewHook),
                 // TODO(port): `ErosionChunkHook` wrapped in
@@ -402,9 +420,26 @@ impl IsoWorld {
         // `ErosionGlobals.Boot` → `ErosionMain` (its `start()` reads
         // `erosion.ini`), whose season `OnInitSeasons` hands to Lua.
         self.boot_erosion(lua, &sb, no_save);
-        // TODO(port): `WorldDictionary.init()` and
-        // `ScriptManager.PostWorldDictionaryInit()`; `FishSchoolManager.init`;
-        // `WorldMarkers.instance.init`; `GameEntityManager.Init`.
+        // `WorldDictionary.init()`: the save's item registry.
+        println!("WorldDictionary.init() start");
+        let dictionary = crate::world_dictionary::init(&self.save_dir, no_save, self.dictionary_new_game)?;
+        // TODO(port): `ScriptManager.PostWorldDictionaryInit()`.
+        println!("WorldDictionary.init() end");
+        self.items = match (dictionary, self.save_tables.as_ref()) {
+            (Some(d), Some(tables)) => {
+                let world_age_hours = pz_lua_api::bind_climate::shared_game_time().borrow().world_age_hours();
+                let inputs = crate::world_dictionary::RegistryInputs {
+                    game_dir: &self.game_dir,
+                    save_tables: tables,
+                    sprites: self.sprites.as_ref(),
+                    world_age_hours,
+                };
+                Some(crate::world_dictionary::script_items(d, &inputs))
+            }
+            _ => None,
+        };
+        // TODO(port): `FishSchoolManager.init`; `WorldMarkers.instance.init`;
+        // `GameEntityManager.Init`.
         // `PersistentOutfits.instance.init()`.
         self.outfit_names =
             pz_lua_api::bind_zombie_outfits::init_persistent_outfits(&lua.thread, Some((&self.file_in_save("z_outfits.bin"), no_save)));
@@ -813,36 +848,105 @@ impl IsoWorld {
         }
     }
 
-    /// `IsoCell.LoadPlayer(savedWorldVersion)` in a local game: the row of
-    /// `loadLocalPlayer(1)` decoded into a new `IsoPlayer`.
+    /// `IsoCell.LoadPlayer(savedWorldVersion)` in a local game:
+    /// `importPlayersFromVehiclesDB`, then `PlayerDB.loadLocalPlayer(1)`.
+    /// That makes a `new IsoPlayer(cell)` the instance and player 0 when
+    /// there is none, then `loadPlayer` decodes the row into it with
+    /// `IsoPlayer.load(bytes, worldVersion)` over the save's item registry
+    /// (inventory, worn and hand items, body damage, stats, XP, nutrition,
+    /// ...); a dead player gets 0 overall body health and health. On
+    /// success player 0's chunk map moves to the player's chunk. A missing
+    /// row or a failed decode is logged and the load goes on (the original
+    /// ignores `LoadPlayer`'s result), leaving the player as far as it got.
     fn load_player(&mut self, save_dir: &str) -> Result<(), String> {
         let db = self.player_db.as_mut().ok_or("PlayerDB")?;
         let data = match player_db::load_local_player_1(db, &mut self.vehicles, save_dir) {
-            LocalPlayerLoad::Db(Some(d)) => d,
-            LocalPlayerLoad::Db(None) => return Err("PlayerDB.loadLocalPlayer(1): no player".into()),
+            LocalPlayerLoad::Db(d) => d,
+            // TODO(port): pre-database saves (`map_p.bin`).
             LocalPlayerLoad::MapPBin(p) => return Err(format!("{p}: map_p.bin saves are not supported")),
         };
         let sm = pz_lua_api::bind_registry::shared_script_manager();
-        let mut chr = LuaGameCharacter::new(&sm, CharacterKind::Player);
-        // TODO(port): `IsoPlayer.load(bytes, worldVersion)`
-        // (`GameCharacter::load_player` needs the save's item registry,
-        // `ScriptItems` over `WorldDictionary.bin`); the player gets the
-        // row's position only.
-        chr.vars.x = data.x;
-        chr.vars.y = data.y;
-        chr.vars.z = data.z;
-        if data.is_dead {
-            chr.health = 0.0;
+        let chars = pz_lua_api::bind_characters::shared_characters();
+        let chr = match pz_lua_api::bind_players::player_instance() {
+            Some(p) => p,
+            None => {
+                let chr = Rc::new(RefCell::new(Self::new_iso_player(&sm, &mut chars.borrow_mut())?));
+                pz_lua_api::bind_players::set_player_instance(Some(chr.clone()));
+                pz_lua_api::bind_players::set_player(0, Some(chr.clone()));
+                chr
+            }
+        };
+        let Some(data) = data else {
+            self.log_error("PlayerDB.loadLocalPlayer(1): no player");
+            return Ok(());
+        };
+        let ctx = DefaultSimContext;
+        let loaded = {
+            let Some(tables) = self.save_tables.as_ref() else { return Err("SaveTables".into()) };
+            let items: &dyn pz_inventory::env::ItemEnv = match self.items.as_ref() {
+                Some(i) => i,
+                None => &AllItems,
+            };
+            let env = SaveEnv { items, tables };
+            let mut on_fire = false;
+            let mut r = pz_inventory::io::Reader::new(&data.bytes);
+            let mut c = chr.borrow_mut();
+            let res = c.load_player(&sm, &mut chars.borrow_mut(), &ctx, &env, &mut r, data.world_version, &mut |_| on_fire = true);
+            if res.is_ok() && data.is_dead {
+                c.body_damage.overall_body_health = 0.0;
+                c.set_health(&ctx, 0.0);
+            }
+            // TODO(port): `player.sqlId = sqlId`.
+            drop(c);
+            if on_fire {
+                // TODO(port): `SetOnFire()` (`pz_world::fire::character::set_on_fire`
+                // needs the world's `IsoFireManager`).
+                self.log_error("IsoPlayer.load: the player is on fire (SetOnFire is not ported)");
+            }
+            res.map(|()| r.pos)
+        };
+        match loaded {
+            Ok(consumed) => {
+                let c = chr.borrow();
+                let inv = c.items.inventory_items().len();
+                let worn = c.items.worn_items.as_ref().map_or(0, |w| w.size());
+                println!(
+                    "IsoPlayer.load: {consumed} of {} bytes (world version {}), {inv} inventory items, {worn} worn, hours survived {}, health {}",
+                    data.bytes.len(),
+                    data.world_version,
+                    c.hours_survived,
+                    c.body_damage.overall_body_health()
+                );
+            }
+            Err(e) => {
+                self.log_error(format!("PlayerDB.loadPlayer: IsoPlayer.load: {e:?}"));
+                return Ok(());
+            }
         }
-        let chr = Rc::new(RefCell::new(chr));
-        self.place_player(chr);
-        let (wx, wy) = player_db::local_player_chunk_map_pos(data.x, data.y, (0, 0));
+        let (x, y) = {
+            let c = chr.borrow();
+            (c.vars.x, c.vars.y)
+        };
+        let (wx, wy) = player_db::local_player_chunk_map_pos(x, y, (0, 0));
         if let Some(s) = self.streamer.as_mut() {
             let m = s.chunk_map_mut(0);
             m.world_x = wx;
             m.world_y = wy;
         }
         Ok(())
+    }
+
+    /// `new IsoPlayer(cell)` as far as the port models it: a player
+    /// character with a `new SurvivorDesc()` and `initWornItems("Human")`.
+    /// TODO(port): the rest of the constructor (sprite parts, the state
+    /// machine and action context, the speak colour's draws).
+    fn new_iso_player(sm: &pz_scripts::ScriptManager, chars: &mut pz_characters::Characters) -> Result<LuaGameCharacter, String> {
+        let mut chr = LuaGameCharacter::new(sm, CharacterKind::Player);
+        let desc = LuaSurvivorDesc::new(chars, sm).map_err(|e| format!("new SurvivorDesc(): {e:?}"))?;
+        chr.descriptor = Some(Rc::new(RefCell::new(desc)));
+        let group = chars.body_locations.get_group("Human").map_err(|e| format!("initWornItems: {e:?}"))?;
+        chr.init_worn_items(sm, group);
+        Ok(chr)
     }
 
     /// `IsoPlayer.players[0] = player`, `IsoPlayer.setInstance(player)`.
