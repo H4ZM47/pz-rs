@@ -618,7 +618,8 @@ all installed assets, render paths or foreign platforms.
       `SetupHeaders::from_game_dir`, load the strings, Sound, SoundMP and
       Music banks, start `pz_audio::output::Output` on it, then
       `bind_audio::install_sound_system(SoundSystem::new(Box::new(backend), env, backend.parameter_count()))`
-      with `backend = StudioBackend::new(studio)` (pz-sound feature
+      with `backend = StudioBackend::new(studio).with_file_resolver(..)`
+      (resolving `media/sound/*` through GameFs) (pz-sound feature
       `studio`); set its `rand_next` and `media_file_exists` (#80/#82/#83).
 - [ ] Event and hook names read from the jar via pz-classfile instead of
       `events.rs` constants (#7).
