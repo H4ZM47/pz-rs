@@ -224,7 +224,8 @@ impl DeviceData {
 /// `ZomboidRadio.GetChannelList(category)`: the channels of a category in
 /// the map's iteration order, `None` when the category is unknown (or the
 /// radio data is not loaded). The channel lists come from the game's radio
-/// data and are runtime input here: no `ZomboidRadio` port exists yet.
+/// data and are runtime input here; `pz-radio`'s `ZomboidRadio` (and its
+/// `ChannelNames`) implement this from the loaded radio scripts.
 pub trait ChannelLists {
     fn channel_list(&self, category: &str) -> Option<Vec<(i32, String)>>;
 }
