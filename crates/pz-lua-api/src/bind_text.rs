@@ -275,6 +275,14 @@ fn language_value(l: Rc<Language>) -> Value {
     })
 }
 
+/// The `Language` behind a Lua `Language` object.
+pub(crate) fn language_of(v: &Value) -> Option<Rc<Language>> {
+    match v {
+        Value::Object(o) => o.as_any().downcast_ref::<LanguageObj>().map(|l| l.0.clone()),
+        _ => None,
+    }
+}
+
 /// `TextManager.instance`.
 struct TextManagerObj;
 
