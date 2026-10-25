@@ -27,6 +27,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Vsync from Core options; `FrameParams` size from Core screen size.
 
 ## World (`GameLoadingState` / `IngameState`)
+- [ ] Sandbox: on loading a save, `SandboxOptions::load_bin(map_sand.bin)` on
+      the constructed instance (preset name goes to the world), then
+      `handleOldZombiesFile1`, `applySettings` and `toLua` as `load()` does;
+      on save/new game write `save_bin(save_bin::world_version(&jar), preset)`
+      to `map_sand.bin` (#21).
 - [ ] `ChunkStreamer::new(players, calc_chunk_width(w, h))`, `load_world`,
       per-frame `update(..)`, `take_events()`, `save_now()` on quit (#64);
       wrap its ChunkLoadHook in `ClearSoundsOnUnload` (#71) and use

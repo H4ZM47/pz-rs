@@ -6,6 +6,7 @@
 //! save file) are outside this crate and are noted where they apply.
 
 pub mod defs;
+pub mod save_bin;
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -681,7 +682,7 @@ impl SandboxOptions {
     pub fn upgrade_option_value(&mut self, name: &str, value: &str, version: i32) -> String {
         let mut value = value.to_string();
         // `(int)Double.parseDouble(v)`.
-        let parse_int = |v: &str| v.trim().parse::<f64>().ok().map(|d| d as i32);
+        let parse_int = |v: &str| pz_kahlua::number::java_parse_double(v).map(|d| d as i32);
         if version < 3 && name == "DayLength" {
             if let Some(o) = self.option_by_name_mut("DayLength") {
                 o.config.parse(&value);
@@ -695,7 +696,7 @@ impl SandboxOptions {
         }
         if version < 4 && name == "CarSpawnRate" {
             if let Some(v) = parse_int(&value).filter(|v| *v > 1) {
-                value = (v + 1).to_string();
+                value = v.wrapping_add(1).to_string();
             }
         }
         if version < 5 {
@@ -713,12 +714,12 @@ impl SandboxOptions {
             ];
             if OLD_LOOT.contains(&name) {
                 if let Some(v) = parse_int(&value).filter(|v| *v > 0) {
-                    value = (v + 2).to_string();
+                    value = v.wrapping_add(2).to_string();
                 }
             }
             if name == "RecentlySurvivorVehicles" {
                 if let Some(v) = parse_int(&value).filter(|v| *v > 0) {
-                    value = (v + 1).to_string();
+                    value = v.wrapping_add(1).to_string();
                 }
             }
         }
@@ -728,7 +729,7 @@ impl SandboxOptions {
             if let Some(o) = self.option_by_name_mut("DayLength") {
                 o.config.parse(&value);
                 if o.config.get_int() > 3 {
-                    let v = o.config.get_int() + 1;
+                    let v = o.config.get_int().wrapping_add(1);
                     o.config.set_int(v);
                 }
             }
