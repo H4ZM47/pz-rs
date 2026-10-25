@@ -90,6 +90,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `hud::set_moodles_character(i, Some(i))`; `bind_players::reset()` when
       leaving the game. Then `UIManager.init` (`hud::init_ui`) builds the
       in-game HUD.
+- [ ] Current player: wherever the original calls `IsoPlayer.setInstance`
+      around a local player's update/render, call
+      `bind_players::set_player_instance`; `getPlayerIndex()`
+      (`bind_players::player_index`, the HUD's `player_index`) reads it, or
+      `assumedPlayer` (`set_assumed_player`) without an instance (#177).
 
 - [ ] `IsoWorld.init` → `ScriptManager.PostTileDefinitions`: after the
       tile definitions and the scripts, call

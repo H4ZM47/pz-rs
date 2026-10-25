@@ -23,11 +23,13 @@ struct IsoPlayerStatics {
     num_players: i32,
     /// `IsoPlayer.instance`.
     instance: Option<LuaGameCharacterRef>,
+    /// `IsoPlayer.assumedPlayer`.
+    assumed_player: i32,
 }
 
 impl Default for IsoPlayerStatics {
     fn default() -> Self {
-        IsoPlayerStatics { players: Default::default(), num_players: 1, instance: None }
+        IsoPlayerStatics { players: Default::default(), num_players: 1, instance: None, assumed_player: 0 }
     }
 }
 
@@ -89,6 +91,20 @@ pub fn set_player_instance(chr: Option<LuaGameCharacterRef>) {
 /// `IsoPlayer.getInstance()`.
 pub fn player_instance() -> Option<LuaGameCharacterRef> {
     STATICS.with(|s| s.borrow().instance.clone())
+}
+
+/// `IsoPlayer.assumedPlayer = i`.
+pub fn set_assumed_player(i: i32) {
+    STATICS.with(|s| s.borrow_mut().assumed_player = i);
+}
+
+/// `IsoPlayer.getPlayerIndex()`: the instance's `playerIndex`, else
+/// `assumedPlayer`.
+pub fn player_index() -> i32 {
+    STATICS.with(|s| {
+        let s = s.borrow();
+        s.instance.as_ref().map_or(s.assumed_player, |p| p.borrow().player.player_index)
+    })
 }
 
 /// `IsoPlayer.allPlayersDead()`: no living player among the first
