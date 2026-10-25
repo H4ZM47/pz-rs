@@ -405,6 +405,21 @@ fn register_globals(t: &mut Thread) {
     });
 }
 
+/// `JoypadManager.instance.isJoypadConnected(index)`.
+pub fn is_joypad_connected(index: i32) -> bool {
+    (0..16).contains(&index) && ST.with(|s| s.borrow().input.controller(index).is_some())
+}
+
+/// `JoypadManager.instance.isAimingAxisBeingApplied(index)`.
+pub fn is_aiming_axis_being_applied(index: i32) -> bool {
+    jm_applied(index, false)
+}
+
+/// `JoypadManager.instance.getAimingAxisX/Y(index)`.
+pub fn aiming_axis(index: i32) -> (f32, f32) {
+    (jm_stick(index, false, true), jm_stick(index, false, false))
+}
+
 /// The activated joypad (`GameWindow.activatedJoyPad`), as a controller slot.
 pub fn activated_joypad() -> Option<usize> {
     ST.with(|s| s.borrow().activated)

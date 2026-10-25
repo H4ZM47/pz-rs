@@ -670,6 +670,11 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Sets `UITransition.currentTimeMS` / `elapsedTimeMS` (tests).
+pub fn set_ui_transition_clock(current_ms: i64, elapsed_ms: i64) {
+    TRANSITION_CLOCK.with(|c| c.set((current_ms, elapsed_ms)));
+}
+
 /// `UITransition.UpdateAll()`, called once per frame by `UIManager.update`.
 pub fn ui_transition_update_all() {
     TRANSITION_CLOCK.with(|c| {
@@ -732,6 +737,16 @@ impl UITransition {
         self.frac.set(self.elapsed.get() / d);
         self.elapsed
             .set((self.elapsed.get() + elapsed_ms as f32).min(d));
+    }
+
+    /// `reset()`.
+    pub fn reset(&self) {
+        self.elapsed.set(0.0);
+    }
+
+    /// `setIgnoreUpdateTime(ignore)`.
+    pub fn set_ignore_update_time(&self, b: bool) {
+        self.ignore_update_time.set(b);
     }
 
     pub fn fraction(&self) -> f32 {

@@ -13,6 +13,7 @@ pub mod host;
 pub mod moodles;
 pub mod new_window;
 pub mod progress_bar;
+pub mod radial_menu;
 pub mod radial_progress_bar;
 pub mod scroll_bar;
 pub mod speed_controls;
@@ -311,6 +312,7 @@ pub fn register(thread: &mut Thread) {
     register_health(thread);
     debug_console::register(thread);
     register_radial(thread);
+    register_radial_menu(thread);
     register_vehicle_gauge(thread);
     let mu = expose_class(thread, MOODLES_UI, Some(UIELEMENT));
     mu.static_fn("getInstance", |c| Ok(c.push(el_value(moodles::instance()))));
@@ -454,6 +456,68 @@ fn register_vehicle_gauge(thread: &mut Thread) {
     b.method("setTexture", |c| {
         let e = gauge(c)?;
         e.ext::<VehicleGauge>().unwrap().set_texture(tex(c.arg(1)));
+        Ok(0)
+    });
+}
+
+fn register_radial_menu(thread: &mut Thread) {
+    use radial_menu::{RadialMenu, RADIAL_MENU};
+    let b = expose_class(thread, RADIAL_MENU, Some(UIELEMENT));
+    fn menu(c: &NativeCall<'_>) -> LuaResult<Rc<UIElement>> {
+        let e = element_of(&c.arg(0)).ok_or_else(|| LuaError::runtime("Expected RadialMenu"))?;
+        if e.ext::<RadialMenu>().is_none() {
+            return Err(LuaError::runtime("Expected RadialMenu"));
+        }
+        Ok(e)
+    }
+    fn tex(v: Value) -> Option<pz_render::Texture> {
+        match v {
+            Value::Object(o) => o.as_any().downcast_ref::<pz_render::LuaTexture>().map(pz_render::LuaTexture::get),
+            _ => None,
+        }
+    }
+    fn text(v: Value) -> Option<String> {
+        match v {
+            Value::Nil => None,
+            v => Some(pz_kahlua::exec::java_value_of(&v)),
+        }
+    }
+    b.ctor(|c| {
+        let e = RadialMenu::create(int_arg(c, 0), int_arg(c, 1), int_arg(c, 2), int_arg(c, 3));
+        Ok(c.push(Value::Object(e as Rc<dyn LuaObject>)))
+    });
+    b.method("clear", |c| {
+        menu(c)?.ext::<RadialMenu>().unwrap().clear();
+        Ok(0)
+    });
+    b.method("addSlice", |c| {
+        let e = menu(c)?;
+        e.ext::<RadialMenu>().unwrap().add_slice(text(c.arg(1)), tex(c.arg(2)));
+        Ok(0)
+    });
+    b.method("setSliceText", |c| {
+        let e = menu(c)?;
+        e.ext::<RadialMenu>().unwrap().set_slice_text(int_arg(c, 1), text(c.arg(2)));
+        Ok(0)
+    });
+    b.method("setSliceTexture", |c| {
+        let e = menu(c)?;
+        e.ext::<RadialMenu>().unwrap().set_slice_texture(int_arg(c, 1), tex(c.arg(2)));
+        Ok(0)
+    });
+    b.method("getSliceIndexFromMouse", |c| {
+        let e = menu(c)?;
+        let r = e.ext::<RadialMenu>().unwrap().slice_index_from_mouse(&e, int_arg(c, 1), int_arg(c, 2));
+        Ok(c.push(r as f64))
+    });
+    b.method("getSliceIndexFromJoypad", |c| {
+        let e = menu(c)?;
+        let r = e.ext::<RadialMenu>().unwrap().slice_index_from_joypad(int_arg(c, 1));
+        Ok(c.push(r as f64))
+    });
+    b.method("setJoypad", |c| {
+        let e = menu(c)?;
+        e.ext::<RadialMenu>().unwrap().set_joypad(int_arg(c, 1));
         Ok(0)
     });
 }
