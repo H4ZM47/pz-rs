@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 pz-anim = { path = "../pz-anim" }
+pz-ragdoll.workspace = true
 pz-model = { path = "../pz-model" }
 pz-render = { path = "../pz-render" }
 pz-iso-render = { path = "../pz-iso-render" }
@@ -16,6 +17,7 @@ pz-scripts.workspace = true
 pz-lighting.workspace = true
 
 [dev-dependencies]
+pz-bullet.workspace = true
 pz-fs.workspace = true
 pz-gpu = { path = "../pz-gpu" }
 png.workspace = true

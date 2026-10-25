@@ -114,6 +114,56 @@ pub fn model_bounds(p: &Matrix4f, mv: &Matrix4f, bones: &[[f32; 3]]) -> [f32; 4]
     [min_x, min_y, max_x, max_y]
 }
 
+/// `calcModelBounds` with a ragdoll pose: the bones' points (in the
+/// pose's own frame) relative to the pelvis's window position, centred on
+/// the bitmap, at most 1024 pixels each way.
+pub fn model_bounds_ragdoll(p: &Matrix4f, mv: &Matrix4f, bones: &[[f32; 3]], pelvis: [f32; 3]) -> [f32; 4] {
+    let rel = scene_to_ui(p, mv, pelvis);
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, -f32::MAX, -f32::MAX);
+    for b in bones {
+        let mut s = scene_to_ui(p, mv, *b);
+        s[0] -= rel[0];
+        s[1] -= rel[1];
+        min_x = min_x.min(s[0]);
+        max_x = max_x.max(s[0]);
+        min_y = min_y.min(s[1]);
+        max_y = max_y.max(s[1]);
+    }
+    min_x += 512.0;
+    max_x += 512.0;
+    min_y += 512.0;
+    max_y += 512.0;
+    if max_x - min_x > 1024.0 {
+        let excess = max_x - min_x - 1024.0;
+        min_x += excess / 2.0;
+        max_x -= excess / 2.0;
+    }
+    if max_y - min_y > 1024.0 {
+        let excess = max_y - min_y - 1024.0;
+        min_y += excess / 2.0;
+        max_y -= excess / 2.0;
+    }
+    [min_x, min_y, max_x, max_y]
+}
+
+/// The bone points `calcModelBounds` measures.
+#[derive(Clone, Copy, Debug)]
+pub enum BodyBones<'a> {
+    /// The bones' model-space positions.
+    Model(&'a [[f32; 3]]),
+    /// A ragdoll pose's bone points and its pelvis (`useRagdollPose`).
+    Ragdoll(&'a [[f32; 3]], [f32; 3]),
+}
+
+impl BodyBones<'_> {
+    fn bounds(&self, p: &Matrix4f, mv: &Matrix4f) -> [f32; 4] {
+        match *self {
+            BodyBones::Model(b) => model_bounds(p, mv, b),
+            BodyBones::Ragdoll(b, pelvis) => model_bounds_ragdoll(p, mv, b, pelvis),
+        }
+    }
+}
+
 /// The placement `calcModelOffset` and `calcEntrySize` work out.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BodyPlacement {
@@ -129,9 +179,14 @@ pub struct BodyPlacement {
 /// turned to `angle` (`getRenderedAngle`) with `scale` (`finalScale`) and
 /// the bones' model-space positions.
 pub fn placement(angle: f32, scale: f32, bones: &[[f32; 3]]) -> BodyPlacement {
+    placement_of(angle, scale, BodyBones::Model(bones))
+}
+
+/// [`placement`] for either kind of bone points.
+pub fn placement_of(angle: f32, scale: f32, bones: BodyBones) -> BodyPlacement {
     let w = BITMAP_SIZE as f32;
     let (p, mv) = matrices(angle, scale, [0.0; 3]);
-    let [min_x, min_y, max_x, max_y] = model_bounds(&p, &mv, bones);
+    let [min_x, min_y, max_x, max_y] = bones.bounds(&p, &mv);
     let s = ui_to_scene(&p, &mv, min_x, min_y);
     let (scene_min_x, scene_min_y) = (s[0], s[2]);
     let ui_x = (w - (max_x - min_x)) / 2.0;
@@ -146,7 +201,7 @@ pub fn placement(angle: f32, scale: f32, bones: &[[f32; 3]]) -> BodyPlacement {
     let entry_offset = [(ui_x - min_x) / div, (ui_y - min_y) / div];
     // calcEntrySize.
     let (p, mv) = matrices(angle, scale, offset);
-    let [min_x, min_y, max_x, max_y] = model_bounds(&p, &mv, bones);
+    let [min_x, min_y, max_x, max_y] = bones.bounds(&p, &mv);
     let lo = |v: f32| ((v - 128.0) / 128.0).floor() * 128.0;
     let hi = |v: f32| ((v + 128.0) / 128.0).ceil() * 128.0;
     let idiv = 8 / TILE_SCALE;

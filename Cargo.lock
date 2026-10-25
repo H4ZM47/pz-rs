@@ -1851,6 +1851,7 @@ version = "0.1.0"
 dependencies = [
  "png",
  "pz-anim",
+ "pz-bullet",
  "pz-characters",
  "pz-entity",
  "pz-fs",
@@ -1859,6 +1860,7 @@ dependencies = [
  "pz-iso-render",
  "pz-lighting",
  "pz-model",
+ "pz-ragdoll",
  "pz-render",
  "pz-scripts",
 ]
@@ -2076,6 +2078,16 @@ dependencies = [
  "pz-fs",
  "pz-sandbox",
  "pz-world",
+]
+
+[[package]]
+name = "pz-ragdoll"
+version = "0.1.0"
+dependencies = [
+ "pz-anim",
+ "pz-bullet",
+ "pz-model",
+ "pz-scripts",
 ]
 
 [[package]]

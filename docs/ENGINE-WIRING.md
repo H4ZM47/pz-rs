@@ -315,6 +315,31 @@ registered):
       after the update the controller state goes into `chr.ragdoll`
       (`RagdollTracking`) (#114).
 
+- [ ] Ragdolls, boot: after ScriptManager loads `media/scripts/ragdolls`,
+      `RagdollScripts::load_file` per file then `to_bullet(&mut bullet,
+      false)` (`RagdollScript.toBullet`); once the world exists
+      (`IsoChunk.addRagdollControllers`), `RagdollBuilder::initialize` with
+      the `bob/bob_tpose` skeleton and the `Bob_TPose` clip; keep one
+      `RagdollGlobals` (max active ragdolls from Core) (ws/ragdoll).
+- [ ] Ragdolls, per character: keep an `Option<RagdollController>` beside
+      its `AnimationPlayer` and update the player with
+      `update_with_ragdoll(dt, vars, &mut RagdollFrame { env: RagdollEnv {
+      bullet, globals, builder, character, bullet_frame_no:
+      WorldSimulation's frame number, time_delta, debug }, controller,
+      multiplier })` instead of `update`; implement `RagdollCharacter` on
+      the character (`canRagdoll`, fall flags, `setOnFloor`,
+      `doDeferredMovementFromRagdoll`, ballistics hits). Before `stopAll`
+      or releasing the player call `release_ragdoll_controller(Some(host))`
+      so the ragdoll leaves the world; `vehicle_collision` from
+      `IsoZombie`'s vehicle contact (ws/ragdoll).
+- [ ] Ragdoll corpses: when an `IsoDeadBody` is made from a character,
+      `DeadBody.ragdoll_fall = isRagdollFall()` and
+      `died_bone_transforms = pz_ragdoll::corpse::died_bone_transforms(
+      player, ragdoll_fall, can_use_current_pose_for_corpse(player,
+      culled, has_active_model))`; from saves,
+      `corpse::died_bone_transforms_from_saved(n, &ragdoll bones)` with
+      pz-world's `IsoDeadBody.ragdoll` (ws/ragdoll).
+
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
       allocating every loaded chunk exhausts the GPU device.
