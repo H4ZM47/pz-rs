@@ -209,7 +209,7 @@ impl ChunkRenderer<'_> {
                 minus_floor.push(*sq);
             }
         }
-        let mut ctx = SpriteCtx { cam: &self.cam, chunk: Some(tex), depth_maps: self.depth_maps, out };
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: Some(tex), depth_maps: self.depth_maps, out, highlight_pass: false };
         for sq in &solid_floor {
             for (i, obj) in sq.objects.iter().enumerate() {
                 if alpha::render_layer(cv, sq, obj) == Layer::Floor {
@@ -250,7 +250,7 @@ impl ChunkRenderer<'_> {
 
     /// `renderTranslucentFloorObjects` for level `z`.
     pub fn render_translucent_floors(&self, squares: &[&RenderSquare], z: i32, out: &mut Vec<DrawCmd>) {
-        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out };
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out, highlight_pass: false };
         let cv = self.cutaways.as_ref();
         let at_level: Vec<&RenderSquare> = squares.iter().copied().filter(|s| s.z == z && cv.is_none_or(|cv| cv.is_visible(s))).collect();
         let has = |sq: &RenderSquare, l: &[Layer]| sq.objects.iter().any(|o| l.contains(&alpha::render_layer(cv, sq, o)));
@@ -267,7 +267,7 @@ impl ChunkRenderer<'_> {
 
     /// `renderTranslucentObjects` for level `z`.
     pub fn render_translucent_objects(&self, squares: &[&RenderSquare], z: i32, out: &mut Vec<DrawCmd>) {
-        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out };
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out, highlight_pass: false };
         let cv = self.cutaways.as_ref();
         let at_level: Vec<&RenderSquare> = squares.iter().copied().filter(|s| s.z == z && cv.is_none_or(|cv| cv.is_visible(s))).collect();
         let has = |sq: &RenderSquare, l: &[Layer]| sq.objects.iter().any(|o| l.contains(&alpha::render_layer(cv, sq, o)));
@@ -304,7 +304,7 @@ impl ChunkRenderer<'_> {
     /// squares, levels ascending) whose objects are not drawn in the
     /// translucent pass (those draw theirs there).
     pub fn render_animated_attachments(&self, squares: &[&RenderSquare], out: &mut Vec<DrawCmd>) {
-        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out };
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out, highlight_pass: false };
         let cv = self.cutaways.as_ref();
         ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
         ctx.out.push(DrawCmd::DepthFunc(gl::LEQUAL));
@@ -352,10 +352,35 @@ fn set_blend(out: &mut Vec<DrawCmd>) {
     out.push(DrawCmd::BlendFuncSeparate(gl::ONE, gl::ONE_MINUS_SRC_ALPHA, gl::ONE_MINUS_DST_ALPHA, gl::ONE));
 }
 
-/// `IsoObject.prepareToRender`'s colour (`stCol`) for an object with no
-/// highlight.
-fn prepare_color(obj: &RenderObject, col: ColorInfo) -> ColorInfo {
+/// `FBORenderObjectHighlight.shouldRenderObjectHighlight`: the object's
+/// highlight, in the highlight pass or the per-frame passes (the objects
+/// drawn every frame); objects recorded into a chunk texture are drawn
+/// there unhighlighted and again by the highlight pass.
+pub(crate) fn highlight(ctx: &SpriteCtx<'_>, obj: &RenderObject) -> Option<crate::world::ObjectHighlight> {
+    obj.highlight.filter(|_| ctx.highlight_pass || ctx.chunk.is_none())
+}
+
+/// The highlight's tint for `FloorShaper`/`WallShaper.setTintColor`
+/// (`colorToABGR(r, g, b, a * blink)`), 0 without one.
+fn highlight_tint(ctx: &SpriteCtx<'_>, obj: &RenderObject) -> u32 {
+    highlight(ctx, obj).map_or(0, |h| color::to_abgr(h.color.r, h.color.g, h.color.b, h.color.a * h.alpha_scale))
+}
+
+/// `IsoObject.prepareToRender`'s colour (`stCol`): the light times the
+/// custom colour, or with a highlight that colour mixed towards the
+/// highlight colour by its alpha (alpha kept).
+fn prepare_color(ctx: &SpriteCtx<'_>, obj: &RenderObject, col: ColorInfo) -> ColorInfo {
     let mut c = col;
+    if let Some(h) = highlight(ctx, obj) {
+        let a = h.color.a * h.alpha_scale;
+        let cc = obj.custom_color.unwrap_or(ColorInfo::WHITE);
+        let (nr, ng, nb) = (col.r * cc.r, col.g * cc.g, col.b * cc.b);
+        c.r = nr * (1.0 - a) + h.color.r * a;
+        c.g = ng * (1.0 - a) + h.color.g * a;
+        c.b = nb * (1.0 - a) + h.color.b * a;
+        c.a = col.a;
+        return c;
+    }
     if let Some(cc) = obj.custom_color {
         c.r *= cc.r;
         c.g *= cc.g;
@@ -365,7 +390,7 @@ fn prepare_color(obj: &RenderObject, col: ColorInfo) -> ColorInfo {
 }
 
 /// `FBORenderCell.renderFloor(object)` and `IsoObject.renderFloorTile`.
-fn render_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, index: usize) {
+pub(crate) fn render_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, index: usize) {
     let obj = &sq.objects[index];
     let Some(sprite) = obj.sprite.as_deref() else { return };
     ctx.out.push(DrawCmd::AlphaFunc(gl::GREATER, 0.0));
@@ -375,10 +400,13 @@ fn render_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, index: usize) {
     let water = crate::water::ground_water(sq);
     let shore = water.is_some_and(|w| w.shore && w.shader);
     let d = water.map_or([0.0; 4], |w| [w.depth[0], w.depth[3], w.depth[2], w.depth[1]]);
-    let shaper = FloorShaper { col: [v[0], v[1], v[2], v[3]], tint: 0, shore, water_depth: d };
+    let shaper = FloorShaper { col: [v[0], v[1], v[2], v[3]], tint: highlight_tint(ctx, obj), shore, water_depth: d };
     let main = if sprite.flags.diamond_floor || sprite.flags.water { Modifier::FloorDiamond(shaper) } else { Modifier::FloorDeDiamond(shaper) };
     set_blend(ctx.out);
-    let col = prepare_color(obj, ColorInfo::WHITE);
+    let col = prepare_color(ctx, obj, ColorInfo::WHITE);
+    // renderAttachedAndOverlaySpritesInternal: a highlighted object's
+    // overlay and attached sprites take stCol.
+    let attached_col = if highlight(ctx, obj).is_some() { col } else { ColorInfo::WHITE };
     let (x, y, z) = (sq.x as f32, sq.y as f32, sq.z as f32);
     let offset_y = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32;
     if sq.floor() == Some(index) && ctx.chunk.is_some() {
@@ -388,8 +416,8 @@ fn render_floor(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, index: usize) {
         ctx,
         &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: main, seam: None },
     );
-    render_overlay(ctx, sq, obj, x, y, z, ColorInfo::WHITE);
-    render_attached(ctx, obj, x, y, z, Dir::Other, ColorInfo::WHITE, false, Modifier::FloorAttached(shaper));
+    render_overlay(ctx, sq, obj, x, y, z, attached_col);
+    render_attached(ctx, obj, x, y, z, Dir::Other, attached_col, false, Modifier::FloorAttached(shaper));
 }
 
 /// `FBORenderCell.renderSeamFix2_Floor` (shore seams not ported).
@@ -552,7 +580,7 @@ fn flush_trees(trees: &mut crate::trees::Trees, cam: &Camera, w: f32, h: f32, ou
 
 /// `FBORenderCell.renderTranslucent(object)`: with the default blend, the
 /// object at its target alpha.
-fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, cv: Option<&CutawayView<'_>>) {
+pub(crate) fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject, cv: Option<&CutawayView<'_>>) {
     ctx.out.push(DrawCmd::BlendFunc(gl::ONE, gl::ONE_MINUS_SRC_ALPHA));
     let f = obj.flags();
     if f.transparent_floor || (f.solidfloor && sq.water.is_some_and(|w| w.shore)) {
@@ -721,8 +749,8 @@ fn do_cutaway_se(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObject,
     let at = |dx: i32, dy: i32| cv.world.square(sq.x + dx, sq.y + dy, sq.z);
     let x = if (wc.cutaway_w & 1 == 0 && has_cutaway_capable_wall(at(-1, 0), true)) || (wc.cutaway_n & 2 == 0 && has_cutaway_capable_wall(at(0, -1), false)) { 1212 } else { 1084 };
     let v = &sq.vert_lights;
-    let shaper = WallShaper { col: [v[7], v[4], v[0], v[3]], tint: 0, part: WallPart::Whole };
-    let col = prepare_color(obj, if sprite.flags.no_wall_lighting { sq.light_info } else { ColorInfo::WHITE });
+    let shaper = WallShaper { col: [v[7], v[4], v[0], v[3]], tint: highlight_tint(ctx, obj), part: WallPart::Whole };
+    let col = prepare_color(ctx, obj, if sprite.flags.no_wall_lighting { sq.light_info } else { ColorInfo::WHITE });
     let offset_y = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32;
     ctx.out.push(DrawCmd::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
     let d = SpriteDraw { sprite, obj: Some(obj), main: true, x: sq.x as f32, y: sq.y as f32, z: sq.z as f32, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::None, seam: None };
@@ -840,8 +868,8 @@ fn do_cutaway_part(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObjec
     }
     let Some(depth) = ctx.depth_maps.preset(preset) else { return };
     let no_wall_lighting = sprite.flags.no_wall_lighting;
-    let col = prepare_color(obj, if no_wall_lighting { sq.light_info } else { ColorInfo::WHITE });
-    let shaper = WallShaper { col: cols, tint: 0, part: WallPart::Whole };
+    let col = prepare_color(ctx, obj, if no_wall_lighting { sq.light_info } else { ColorInfo::WHITE });
+    let shaper = WallShaper { col: cols, tint: highlight_tint(ctx, obj), part: WallPart::Whole };
     let offset_y = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32;
     // The stencils have no mipmaps: drawn with (SRC_ALPHA, 1 - SRC_ALPHA).
     ctx.out.push(DrawCmd::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA));
@@ -905,7 +933,8 @@ fn perform_draw_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderObj
     let (x, y, z) = (sq.x as f32, sq.y as f32, sq.z as f32);
     let offset_y = obj.offset_y + obj.render_y_offset * pz_render::iso::TILE_SCALE as f32;
     ctx.out.push(DrawCmd::GlEnable(gl::ALPHA_TEST));
-    let col = prepare_color(obj, col);
+    let col = prepare_color(ctx, obj, col);
+    let shaper = WallShaper { tint: highlight_tint(ctx, obj), ..shaper };
     if ctx.chunk.is_some() {
         seam_fix2_wall(ctx, sq, obj, col, shaper, seam_col);
     }
@@ -943,8 +972,9 @@ fn render_not_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &Ren
         }
     }
     let Some(sprite) = obj.sprite.as_deref() else { return };
-    let mut col = prepare_color(obj, sq.light_info);
-    if sprite.force_ambient {
+    let mut col = prepare_color(ctx, obj, sq.light_info);
+    let highlighted = highlight(ctx, obj).is_some();
+    if sprite.force_ambient && !highlighted {
         // RenderSettings ambient for the player; noon is full ambient.
         col.r = obj.tint[0];
         col.g = obj.tint[1];
@@ -962,6 +992,7 @@ fn render_not_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &Ren
         crate::hearth::render_static(ctx, sq, obj, sq.light_info);
         return;
     }
-    render_overlay(ctx, sq, obj, x, y, z, sq.light_info);
-    render_attached(ctx, obj, x, y, z, Dir::Other, sq.light_info, false, Modifier::None);
+    let attached_col = if highlighted { col } else { sq.light_info };
+    render_overlay(ctx, sq, obj, x, y, z, attached_col);
+    render_attached(ctx, obj, x, y, z, Dir::Other, attached_col, false, Modifier::None);
 }

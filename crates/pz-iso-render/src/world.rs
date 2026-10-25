@@ -242,6 +242,21 @@ pub struct RenderObject {
     /// For an `IsoFireplace` or `IsoBarbecue`: which of `attached` are
     /// animated and how they are drawn.
     pub hearth: Option<crate::hearth::HearthRender>,
+    /// `isHighlighted(playerIndex)` with `getHighlightColor(playerIndex)`
+    /// and `isBlink()` for the viewing player (owner: the gameplay code
+    /// calling `setHighlighted`, e.g. context menus, build and fishing
+    /// UIs). Drawn by [`crate::highlight`].
+    pub highlight: Option<ObjectHighlight>,
+}
+
+/// An object's highlight for the viewing player.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObjectHighlight {
+    /// `getHighlightColor(playerIndex)`.
+    pub color: ColorInfo,
+    /// What the highlight's alpha is multiplied by: `Core.blinkAlpha`
+    /// while `isBlink()`, else 1.
+    pub alpha_scale: f32,
 }
 
 /// A garage door segment's place in its door.
@@ -272,6 +287,7 @@ impl RenderObject {
             overlay: None,
             fire: None,
             hearth: None,
+            highlight: None,
         }
     }
 
@@ -312,6 +328,9 @@ pub struct RenderSquare {
     /// `getPuddles()`, initialised (`IsoPuddlesGeometry.init`); `None`
     /// draws no puddles.
     pub puddles: Option<crate::puddles::PuddlesGeometry>,
+    /// `hasFlies()`: a rotting corpse lies here (owner: the corpse
+    /// simulation, `IsoDeadBody`'s `setHasFlies` on its square).
+    pub flies: bool,
 }
 
 /// The neighbour tests `renderSeamFix2_Floor` and `renderSeamFix2_Wall`
@@ -402,7 +421,7 @@ impl Default for SquareCutawayInfo {
 
 impl RenderSquare {
     pub fn new(x: i32, y: i32, z: i32) -> Self {
-        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default(), water: None, puddles: None }
+        RenderSquare { x, y, z, objects: Vec::new(), light_info: ColorInfo::WHITE, vert_lights: [0xFFFF_FFFF; 8], light_level: 1.0, seam: SeamNeighbours::default(), cut: SquareCutawayInfo::default(), water: None, puddles: None, flies: false }
     }
 
     /// `getProperties().has(flag)`: any object's sprite has it.

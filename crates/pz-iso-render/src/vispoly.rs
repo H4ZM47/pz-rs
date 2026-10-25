@@ -758,3 +758,83 @@ mod tests {
         assert_eq!(d.opacity_scale, 3);
     }
 }
+
+/// The per-chunk-level `ChunkLevelData` the game keeps on each `IsoChunk`
+/// (`getVispolyDataForLevel`), with its rebuild rule: a level is recreated
+/// when its `adjacentChunkLoadedCounter` differs from the chunk's, and
+/// [`invalidate`](Self::invalidate) forces that (`ChunkLevelData.invalidate`
+/// sets it to -1 and bumps `VisibilityPolygon2.dirtyObstacleCounter`).
+#[derive(Clone, Debug, Default)]
+pub struct VisPolyChunks {
+    levels: std::collections::HashMap<(i32, i32, i32), (i64, ChunkLevelData)>,
+    /// `VisibilityPolygon2.dirtyObstacleCounter`.
+    pub dirty_obstacle_counter: i32,
+}
+
+impl VisPolyChunks {
+    /// `IsoChunk.invalidateVispoly(level)` / `ChunkLevelData.invalidate()`
+    /// for chunk `(wx, wy)`. Drain pz-world-render's `PendingRender.vispoly`
+    /// into this.
+    pub fn invalidate(&mut self, wx: i32, wy: i32, level: i32) {
+        if let Some(e) = self.levels.get_mut(&(wx, wy, level)) {
+            e.0 = -1;
+        }
+        self.dirty_obstacle_counter += 1;
+    }
+
+    /// `VisibilityPolygon2.addChunkToWorld`.
+    pub fn add_chunk_to_world(&mut self) {
+        self.dirty_obstacle_counter += 1;
+    }
+
+    /// Drops a chunk's levels when it unloads.
+    pub fn remove_chunk(&mut self, wx: i32, wy: i32) {
+        self.levels.retain(|k, _| (k.0, k.1) != (wx, wy));
+    }
+
+    /// The level's data, recreated with `build` (normally
+    /// [`ChunkLevelData::recreate`]) when it is new, invalidated, or the
+    /// chunk's `adjacentChunkLoadedCounter` has moved.
+    pub fn level(
+        &mut self,
+        wx: i32,
+        wy: i32,
+        level: i32,
+        adjacent_chunk_loaded_counter: i64,
+        build: impl FnOnce() -> ChunkLevelData,
+    ) -> &ChunkLevelData {
+        let e = self
+            .levels
+            .entry((wx, wy, level))
+            .or_insert_with(|| (i64::MIN, ChunkLevelData::default()));
+        if e.0 != adjacent_chunk_loaded_counter {
+            e.0 = adjacent_chunk_loaded_counter;
+            e.1 = build();
+        }
+        &e.1
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn invalidate_forces_a_recreate() {
+        let mut c = VisPolyChunks::default();
+        let mut builds = 0;
+        let get = |c: &mut VisPolyChunks, n: i64, builds: &mut i32| {
+            c.level(1, 2, 0, n, || {
+                *builds += 1;
+                ChunkLevelData::default()
+            });
+        };
+        get(&mut c, 3, &mut builds);
+        get(&mut c, 3, &mut builds);
+        c.invalidate(1, 2, 0);
+        get(&mut c, 3, &mut builds);
+        get(&mut c, 4, &mut builds);
+        assert_eq!(builds, 3);
+        assert_eq!(c.dirty_obstacle_counter, 1);
+    }
+}

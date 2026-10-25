@@ -9,6 +9,8 @@ use pz_render::DrawCmd;
 pub const FLOOR_HEIGHT: i32 = 32 * TILE_SCALE;
 /// `FBORenderChunk.JUMBO_L_HEIGHT`.
 pub const JUMBO_L_HEIGHT: i32 = FLOOR_HEIGHT * 8;
+/// `FBORenderChunk.JUMBO_XXL_HEIGHT`.
+pub const JUMBO_XXL_HEIGHT: i32 = FLOOR_HEIGHT * 16;
 /// `FBORenderChunk.FLOOR_WIDTH`.
 pub const FLOOR_WIDTH: i32 = 64 * TILE_SCALE;
 /// `FBORenderChunk.JUMBO_L_WIDTH`, `JUMBO_XL_WIDTH`, `JUMBO_XXL_WIDTH`.
