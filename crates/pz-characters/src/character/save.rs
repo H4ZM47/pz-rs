@@ -559,7 +559,9 @@ impl<I: ItemIdentity + 'static> GameCharacter<I> {
             Some(v) => v.save(w),
             None => HumanVisual::new(env.tables.blood_body_parts).save(w),
         }
-        let order = e(self.items.inventory.save_saved(w, env.items))?;
+        // `inventory.save(output, this)`: equipped items start no run.
+        let equipped = |i: &pz_inventory::saved::SavedItem| self.items.is_equipped(i.id());
+        let order = e(self.items.inventory.save_saved(w, env.items, Some(&equipped)))?;
         let items = &self.items.inventory.items;
         self.saved_inventory_items = order.iter().map(|&i| Some(items[i].id())).collect();
         w.bool(self.asleep);

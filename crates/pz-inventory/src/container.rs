@@ -48,7 +48,7 @@ impl ItemContainer {
 
     /// `ItemContainer.save`.
     pub fn save(&self, w: &mut Writer, env: &dyn ItemEnv) -> SaveResult<()> {
-        self.save_saved(w, env).map(|_| ())
+        self.save_saved(w, env, None).map(|_| ())
     }
 
     /// `ItemContainer.load` returning `savedItems` (see
@@ -63,21 +63,27 @@ impl ItemContainer {
         Ok(saved)
     }
 
-    /// `ItemContainer.save` returning `savedItems` (see
-    /// [`save_items_saved`]).
-    pub fn save_saved(&self, w: &mut Writer, env: &dyn ItemEnv) -> SaveResult<Vec<usize>> {
+    /// `ItemContainer.save(output, noCompress)` returning `savedItems` (see
+    /// [`save_items_saved`]); `no_compress` is `noCompress.isEquipped`.
+    pub fn save_saved(
+        &self,
+        w: &mut Writer,
+        env: &dyn ItemEnv,
+        no_compress: Option<&dyn Fn(&SavedItem) -> bool>,
+    ) -> SaveResult<Vec<usize>> {
         w.opt_string(self.kind.as_deref());
         w.bool(self.explored);
-        let saved = save_items_saved(w, &self.items, env)?;
+        let saved = save_items_saved(w, &self.items, env, no_compress)?;
         w.bool(self.has_been_looted);
         w.i32(self.capacity);
         Ok(saved)
     }
 }
 
-/// `CompressIdenticalItems.load`: every copy of a run is loaded from the
-/// same record and given the saved ids; runs whose item cannot be created
-/// are skipped.
+/// `CompressIdenticalItems.load`: every copy of a run is loaded again
+/// from the same record (`InventoryItem.loadItem` per copy, with its
+/// `CreateItem` and load-time `Rand` draws) and given the saved ids; runs
+/// whose item cannot be created are skipped.
 pub fn load_items(r: &mut Reader<'_>, wv: i32, env: &dyn ItemEnv) -> SaveResult<Vec<SavedItem>> {
     Ok(load_items_saved(r, wv, env)?.0)
 }
@@ -96,24 +102,30 @@ pub fn load_items_saved(
     let mut saved = Vec::new();
     for _ in 0..count.max(0) {
         let identical = r.i32()?;
-        let item = SavedItem::load(r, wv, env)?;
-        let mut ids = Vec::new();
-        for _ in 1..identical.max(1) {
-            ids.push(r.i32()?);
-        }
-        match item {
-            Some(item) if identical > 0 => {
+        let rec = crate::saved::read_record(r)?;
+        let reg = i16::from_be_bytes([rec[0], rec[1]]);
+        let created = env.exists(reg);
+        let first = items.len();
+        if created {
+            // The first load happens even for a run of 0 or less (its
+            // draws are made; nothing is added).
+            let item = SavedItem::decode(rec, wv, env);
+            if identical > 0 {
                 saved.push(Some(items.len()));
-                items.push(item.clone());
-                for id in ids {
-                    let mut copy = item.clone();
-                    copy.set_id(id);
-                    saved.push(Some(items.len()));
-                    items.push(copy);
-                }
+                items.push(item);
             }
-            Some(_) => {}
-            None => saved.extend((0..identical.max(0)).map(|_| None)),
+            for _ in 1..identical {
+                saved.push(Some(items.len()));
+                items.push(SavedItem::decode(rec, wv, env));
+            }
+        } else {
+            saved.extend((0..identical.max(0)).map(|_| None));
+        }
+        for i in 1..identical.max(1) as usize {
+            let id = r.i32()?;
+            if created {
+                items[first + i].set_id(id);
+            }
         }
     }
     Ok((items, saved))
@@ -123,12 +135,20 @@ pub fn load_items_saved(
 /// first appearance), and consecutive items of a type whose saved bytes
 /// (with the id zeroed) match written once with the other ids.
 pub fn save_items(w: &mut Writer, items: &[SavedItem], env: &dyn ItemEnv) -> SaveResult<()> {
-    save_items_saved(w, items, env).map(|_| ())
+    save_items_saved(w, items, env, None).map(|_| ())
 }
 
 /// [`save_items`] returning the list `CompressIdenticalItems.save` returns
 /// (`savedItems`): the indices of `items` in the order they were written.
-pub fn save_items_saved(w: &mut Writer, items: &[SavedItem], env: &dyn ItemEnv) -> SaveResult<Vec<usize>> {
+/// `no_compress` is `noCompress.isEquipped`: a run never starts at an
+/// equipped item (one that follows the run's first item can still join it,
+/// as in the original).
+pub fn save_items_saved(
+    w: &mut Writer,
+    items: &[SavedItem],
+    env: &dyn ItemEnv,
+    no_compress: Option<&dyn Fn(&SavedItem) -> bool>,
+) -> SaveResult<Vec<usize>> {
     let mut saved = Vec::with_capacity(items.len());
     let mut types: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, it) in items.iter().enumerate() {
@@ -156,7 +176,9 @@ pub fn save_items_saved(w: &mut Writer, items: &[SavedItem], env: &dyn ItemEnv) 
             let first = list[m];
             let key = zeroed(first);
             let mut end = m + 1;
-            while end < list.len()
+            let compress = no_compress.is_none_or(|f| !f(&items[first]));
+            while compress
+                && end < list.len()
                 && !items[first].is_nonempty_container(env)
                 && !items[list[end]].is_nonempty_container(env)
                 && zeroed(list[end]) == key
