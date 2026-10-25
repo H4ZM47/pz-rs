@@ -1221,6 +1221,30 @@ mod tests {
     }
 
     #[test]
+    fn firearm_and_ragdoll_members_from_lua() {
+        let (mut t, _chr, _) = setup();
+        crate::bind_states::register(&mut t, &Rc::new(ScriptManager::new()));
+        run(
+            &mut t,
+            r#"
+            player:setAimingDelay(12.5)
+            assert(player:getAimingDelay() == 12.5)
+            player:setRecoilDelay(3)
+            assert(player:getRecoilDelay() == 3)
+            player:setBeenMovingFor(90)
+            assert(player:getBeenMovingFor() == 70)
+            player:setUsePhysicHitReaction(true)
+            assert(player:usePhysicHitReaction() and player:getVariableBoolean("usePhysicHitReaction"))
+            player:setRagdollFall(true)
+            assert(player:isRagdollFall())
+            assert(not player:isRagdoll() and not player:isUpright() and not player:isOnBack())
+            assert(not player:canRagdoll())
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn states_and_variables_from_lua() {
         let (mut t, chr, _) = setup();
         crate::bind_states::register(&mut t, &Rc::new(ScriptManager::new()));

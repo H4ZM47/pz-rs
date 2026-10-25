@@ -344,6 +344,15 @@ fn register_inventory_item(thread: &mut Thread) {
     get!(b, "getCurrentAmmoCount", |i| Value::from(
         i.current_ammo_count
     ));
+    get!(b, "getMaxAmmo", |i| {
+        let sm = crate::bind_registry::shared_script_manager();
+        Value::from(pz_characters::character::items::script_item(&sm, &i).map_or(0, |s| s.borrow().max_ammo))
+    });
+    b.method("setCurrentAmmoCount", |c| {
+        let n = int_arg(c, 1);
+        this(c)?.borrow_mut().set_current_ammo_count(n);
+        Ok(0)
+    });
     get!(b, "getWetCooldown", |i| f(i.wet_cooldown));
     get!(b, "getCount", |i| Value::from(i.template.count));
     get!(b, "getDisplayCategory", |i| opt_str(
@@ -663,6 +672,36 @@ fn food(i: &InventoryItem, g: fn(&pz_inventory::item::FoodData) -> f32) -> Value
     }
 }
 
+/// A weapon's script values (`FirearmStats`), `nil` for other items.
+fn firearm(i: &InventoryItem, g: fn(&pz_characters::character::firearm::FirearmStats) -> Value) -> Value {
+    let sm = crate::bind_registry::shared_script_manager();
+    pz_characters::character::firearm::FirearmStats::of(&sm, i).map_or(Value::Nil, |f| g(&f))
+}
+
+/// Runs `f` with the character argument 1 (`checkJam(player, ...)`),
+/// the scripts, the character statics and the simulation context.
+fn with_shooter<R>(
+    c: &NativeCall<'_>,
+    f: impl FnOnce(
+        &crate::bind_character_sim::LuaGameCharacter,
+        &pz_scripts::ScriptManager,
+        &pz_characters::Characters,
+        &dyn pz_characters::SimContext,
+    ) -> R,
+) -> LuaResult<R> {
+    let chr = match c.arg(1) {
+        Value::Object(o) => o.as_any().downcast_ref::<crate::bind_character_sim::CharacterObject>().map(|o| o.0.clone()),
+        _ => None,
+    };
+    let chr = chr.ok_or_else(|| LuaError::Runtime { message: String::new(), class: "java.lang.NullPointerException" })?;
+    let sm = crate::bind_registry::shared_script_manager();
+    let chars = crate::bind_characters::shared_characters();
+    let ctx = crate::bind_character_sim::current_sim_context();
+    let p = chr.borrow();
+    let chars = chars.borrow();
+    Ok(f(&p, &sm, &chars, &*ctx))
+}
+
 fn weapon(i: &InventoryItem, g: fn(&pz_inventory::item::WeaponData) -> Value) -> Value {
     match &i.kind {
         ItemKind::Weapon(x) => g(x),
@@ -733,6 +772,59 @@ fn register_weapon(thread: &mut Thread) {
     get!(b, "getFireMode", |i| weapon(&i, |x| opt_str(
         x.fire_mode.as_deref()
     )));
+    // The firearm state Lua's reload, rack and shoot actions use.
+    get!(b, "isSpentRoundChambered", |i| Value::from(i.is_spent_round_chambered()));
+    get!(b, "getSpentRoundCount", |i| Value::from(i.get_spent_round_count()));
+    get!(b, "getAmmoPerShoot", |_i| Value::from(1));
+    get!(b, "getJamGunChance", |i| firearm(&i, |w| f(w.jam_gun_chance)));
+    get!(b, "isRackAfterShoot", |i| firearm(&i, |w| Value::from(w.rack_after_shoot)));
+    get!(b, "isManuallyRemoveSpentRounds", |i| firearm(&i, |w| Value::from(w.manually_remove_spent_rounds)));
+    get!(b, "getAimingTime", |i| firearm(&i, |w| Value::from(w.aiming_time)));
+    get!(b, "getRecoilDelay", |i| firearm(&i, |w| Value::from(w.recoil_delay)));
+    b.method("setRoundChambered", |c| {
+        let r = this(c)?;
+        let v = bool_arg(c, 1);
+        let have = r.borrow().template.have_chamber;
+        r.borrow_mut().set_round_chambered(v, have);
+        Ok(0)
+    });
+    b.method("setSpentRoundChambered", |c| {
+        let v = bool_arg(c, 1);
+        this(c)?.borrow_mut().set_spent_round_chambered(v);
+        Ok(0)
+    });
+    b.method("setSpentRoundCount", |c| {
+        let r = this(c)?;
+        let n = int_arg(c, 1);
+        let max = firearm(&r.borrow(), |w| Value::from(w.max_ammo));
+        let max = match max {
+            Value::Num(m) => m as i32,
+            _ => 0,
+        };
+        r.borrow_mut().set_spent_round_count(n, max);
+        Ok(0)
+    });
+    b.method("setJammed", |c| {
+        let v = bool_arg(c, 1);
+        this(c)?.borrow_mut().set_jammed(v);
+        Ok(0)
+    });
+    b.method("setContainsClip", |c| {
+        let v = bool_arg(c, 1);
+        this(c)?.borrow_mut().set_contains_clip(v);
+        Ok(0)
+    });
+    b.method("checkJam", |c| {
+        let r = this(c)?;
+        let racking = bool_arg(c, 2);
+        let v = with_shooter(c, |p, sm, chars, ctx| p.check_jam_item(sm, chars, ctx, &mut r.borrow_mut(), racking))?;
+        Ok(c.push(v))
+    });
+    b.method("checkUnJam", |c| {
+        let r = this(c)?;
+        let v = with_shooter(c, |p, sm, chars, ctx| p.check_unjam_item(sm, chars, ctx, &mut r.borrow_mut()))?;
+        Ok(c.push(v))
+    });
     b.method("isOfWeaponCategory", |c| {
         let r = this(c)?;
         let id = id_arg(c, 1);
