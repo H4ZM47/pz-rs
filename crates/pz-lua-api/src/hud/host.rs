@@ -78,10 +78,15 @@ pub trait HudGameTime {
     fn realworld_seconds_since_last_update(&self) -> f32 {
         1.0 / 60.0
     }
-    /// `getTimeOfDay()` (or `serverTimeOfDay` for an MP client while the
-    /// server fast-forwards: `GameClient.fastForward`).
+    /// `getTimeOfDay()`, raw (the clock's AM/PM indicator reads this).
     fn time_of_day(&self) -> f32 {
         9.0
+    }
+    /// The time the clock's digits show (`Clock.timeDigits`):
+    /// `getTimeOfDay()`, or `serverTimeOfDay` for an MP client while the
+    /// server fast-forwards (`GameClient.client && GameClient.fastForward`).
+    fn digits_time_of_day(&self) -> f32 {
+        self.time_of_day()
     }
     /// `getDay()` (0-based).
     fn day(&self) -> i32 {
@@ -353,6 +358,9 @@ impl HudGameTime for SharedGameTime {
             .realworld_seconds_since_last_update()
     }
     fn time_of_day(&self) -> f32 {
+        crate::bind_climate::shared_game_time().borrow().time_of_day
+    }
+    fn digits_time_of_day(&self) -> f32 {
         use pz_core::game_time::GameTimeContext;
         let ctx = crate::bind_climate::LuaClimateContext::new();
         let client = crate::bind_core::shared_core().borrow().is_client;
