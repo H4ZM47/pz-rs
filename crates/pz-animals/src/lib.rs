@@ -8,17 +8,27 @@
 //! a definition set in a `java.util.HashMap`, [`java::JHashMap`] reproduces
 //! its iteration order.
 
+pub mod animal;
 pub mod breed;
+pub mod data;
 pub mod definitions;
+pub mod env;
 pub mod genome;
 pub mod java;
 pub mod lua;
 pub mod migration;
 pub mod parts;
+pub mod save;
 pub mod tracks;
 
+pub use animal::{Animal, Male, NewAnimal};
 pub use breed::{AnimalBreed, AnimalGrowStage, BreedSound, ForcedGenes};
+pub use data::AnimalData;
 pub use definitions::AnimalDefinitions;
+pub use env::{
+    AnimalCharacter, AnimalClock, AnimalCtx, AnimalEnv, AnimalSandbox, AnimalStat, AnimalWorld,
+    CharacterValues, NoWorld, ObjectRef,
+};
 pub use genome::{AnimalAllele, AnimalGene, AnimalGenomeDefinitions, GeneDefinition};
 pub use java::{JHashMap, JResult, JavaException};
 pub use migration::{MigrationGroupDefinitions, MigrationGroupDefinitionsGrouped};
