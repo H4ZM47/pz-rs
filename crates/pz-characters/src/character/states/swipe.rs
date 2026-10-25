@@ -268,7 +268,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `calculateHitInfoList` (melee): the shove or weapon hit list,
     /// nearest first, cut to the weapon's hit count.
-    fn melee_hit_list(&mut self, cx: &mut StateCx<'_, I>) -> Vec<HitInfo> {
+    pub(crate) fn melee_hit_list(&mut self, cx: &mut StateCx<'_, I>) -> Vec<HitInfo> {
         let sm = cx.sm;
         let (w, _) = self.attack_weapon(sm);
         let mut max_hit = w.max_hit_count;
@@ -658,7 +658,7 @@ impl<I: 'static> State<I> for SwipeStatePlayer {
 
     fn exit(&self, owner: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) {
         owner.environment.sprinting = false;
-        owner.vars.force_sprint = false;
+        owner.player.input.force_sprint = false;
         owner.vars.ignore_movement = false;
         owner.vars.performing_shove_animation = false;
         owner.vars.performing_stomp_animation = false;

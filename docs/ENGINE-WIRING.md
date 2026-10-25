@@ -343,6 +343,38 @@ registered):
       ballistics target's combat data and `PhysicsHitReactionScript`), and
       after the update the controller state goes into `chr.ragdoll`
       (`RagdollTracking`) (#114).
+- [ ] Per frame, PlayerInput adapter: once per frame the rendering side
+      implements `pz_characters::character::player::PlayerInput` over
+      `pz_input` (`InputState`, `Core::get_key`/`get_key_binding`, the
+      controllers' `CharacterJoypad*Binding`s, `UIManager::is_mouse_over_inventory`,
+      `Core` toggle options, camera `XToIso`/`YToIso` and `XToScreenExact`,
+      zoom, screen size, wall-clock ms); for a gamepad player call
+      `chr.update_aiming_reticle(input, multiplier)` first
+      (`AimingReticle.update`) and feed the returned position back to the
+      renderer (#135).
+- [ ] Per frame, local player update order (`MovingObjectUpdateScheduler`):
+      `preupdate_player()`, `frame_step(input)` (the input component's
+      toggles), `update_player(input, registry, groups, cx)` (IsoPlayer
+      `updateInternal2` then the player part of `IsoGameCharacter.updateInternal`:
+      stats, body damage, `calculate_stats`, state machine, fire, momentum,
+      dirt, ballistics), and after all objects updated `postupdate_player(cx)`
+      (move/collisions, action context, hit reaction, body part last state).
+      Before the update set `chr.player.action_blocks_movement`/
+      `action_overrides_animation`/`has_actions` from the Lua timed action
+      queue and `climate_wind_speed_movement`/`climate_wind_force_movement`.
+      Handle `SimEvent::SetGameSpeed` at once (speed controls; `GameTime`
+      multiplier 1) and the returned `PlayerUpdate::events` (Lua
+      `OnPlayerMove`/`OnPlayerUpdate`/`OnContextKey`/`OnPressWalkTo`/reload,
+      contextual actions to the world/Lua, reticle mode, cursor, stop action
+      queue, dirt). `StateWorld` player hooks: `game_speed`,
+      `deferred_movement_length_sq`, `characters_on_square`, `separate`,
+      `path_should_be_moving`, `contains_any_idle_nodes`,
+      `animation_player_ready`, `rendered_angle`, `primary_hand_model_ready`,
+      `square_trees`, `collapsed_fence`, `tree_slow_factor`, `ground_info`,
+      `foot_injury_floor`, `vehicle_useable_part_near`,
+      `context_actions_nswe`/`context_actions_corners`/`context_door_or_window`;
+      `SimContext::wet_ground_final_value`, `clothing_degradation`
+      (#135).
 
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);

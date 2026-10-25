@@ -12,6 +12,7 @@ pub mod generic_default;
 pub mod idle;
 pub mod player;
 pub mod player_ai;
+pub mod player_movement;
 pub mod stagger_back;
 pub mod swipe;
 pub mod zombie;
@@ -122,6 +123,7 @@ pub fn all<I: 'static>() -> Vec<StateRef<I>> {
         player::collide_with_wall(),
         player::aim(),
         player::strafe(),
+        player_movement::instance(),
         climb_fence::climb_over_fence(),
     ]
     .into_iter()

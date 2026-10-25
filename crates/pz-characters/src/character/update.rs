@@ -171,7 +171,7 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     /// `updateIdleSquareTime`.
-    fn update_idle_square_time(&mut self, ctx: &dyn SimContext) {
+    pub(crate) fn update_idle_square_time(&mut self, ctx: &dyn SimContext) {
         if self.environment.on_last_square {
             if self.idle_square_time <= 3600.0 {
                 self.idle_square_time += 1.0 * ctx.multiplier() * ctx.delta_minutes_per_day();

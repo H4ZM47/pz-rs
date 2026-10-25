@@ -386,6 +386,116 @@ pub trait StateWorld<I> {
     fn ragdoll_pelvis(&self, _chr: i32) -> Option<[f32; 3]> {
         None
     }
+
+    // ---- the player control loop (#player-control) ----
+
+    /// `UIManager.speedControls.getCurrentGameSpeed()`.
+    fn game_speed(&self) -> i32 {
+        1
+    }
+    /// `getDeferredMovement(tempo).getLengthSquared()`: the root motion the
+    /// animation has for `chr` this frame (`runningTime`).
+    fn deferred_movement_length_sq(&self, _chr: i32) -> f32 {
+        0.0
+    }
+    /// The characters on a square (`getMovingObjects()`).
+    fn characters_on_square(&self, _sq: (i32, i32, i32)) -> Vec<i32> {
+        Vec::new()
+    }
+    /// `IsoMovingObject.separate()` for `chr` (pushing apart overlapping
+    /// characters, bumps; the world owns the other characters).
+    fn separate(&mut self, _chr: &mut GameCharacter<I>) {}
+    /// `getPathFindBehavior2().shouldBeMoving()`.
+    fn path_should_be_moving(&self, _chr: i32) -> bool {
+        false
+    }
+    /// `getAdvancedAnimator().containsAnyIdleNodes()`.
+    fn contains_any_idle_nodes(&self, _chr: i32) -> bool {
+        false
+    }
+    /// `getAnimationPlayer().isReady()` (a loaded skinned model).
+    fn animation_player_ready(&self, _chr: i32) -> bool {
+        false
+    }
+    /// The animation player's `getRenderedAngle()` (`None`: not ready).
+    fn rendered_angle(&self, _chr: i32) -> Option<f32> {
+        None
+    }
+    /// `isPrimaryHandModelReady()` (the hand item's model is loaded).
+    fn primary_hand_model_ready(&self, _chr: i32) -> bool {
+        false
+    }
+    /// `(isInTrees, isInTreesNoBush)` on a square.
+    fn square_trees(&self, _sq: (i32, i32, i32)) -> (bool, bool) {
+        (false, false)
+    }
+    /// `BentFences.getCollapsedFence(square) != null`.
+    fn collapsed_fence(&self, _sq: (i32, i32, i32)) -> bool {
+        false
+    }
+    /// `square.getTree().getSlowFactor(chr)`.
+    fn tree_slow_factor(&self, _sq: (i32, i32, i32), _chr: i32) -> Option<f32> {
+        None
+    }
+    /// The ground of a square for the walk speed and dirt.
+    fn ground_info(&self, _sq: (i32, i32, i32)) -> crate::character::state::GroundInfo {
+        Default::default()
+    }
+    /// What `updateFootInjuries` reads of the floor (no intact shoes).
+    fn foot_injury_floor(&self, _sq: (i32, i32, i32)) -> crate::character::state::FootFloor {
+        Default::default()
+    }
+    /// A vehicle near `chr` has a part it can use (`getUseablePart`):
+    /// the context key is the vehicle's.
+    fn vehicle_useable_part_near(&self, _chr: i32) -> bool {
+        false
+    }
+    /// `doContextNSWE(dir)`: the action the square edge offers (sheet
+    /// rope, door/window/frame, hutch, butcher hook, animal, furniture,
+    /// curtain, grappled throws, fence, wall), in the original's order;
+    /// at most the first that applies.
+    fn context_actions_nswe(
+        &mut self,
+        _q: &crate::character::player::context::ContextQuery,
+        _dir: IsoDirections,
+    ) -> Vec<crate::character::player::ContextualAction> {
+        Vec::new()
+    }
+    /// `doContextCorners(dir)` for a diagonal facing.
+    fn context_actions_corners(
+        &mut self,
+        _q: &crate::character::player::context::ContextQuery,
+        _dir: IsoDirections,
+    ) -> Vec<crate::character::player::ContextualAction> {
+        Vec::new()
+    }
+    /// `getContextDoorOrWindowOrWindowFrame(dir)` then
+    /// `doContextDoorOrWindowOrWindowFrame` (the square behind).
+    fn context_door_or_window(
+        &mut self,
+        _q: &crate::character::player::context::ContextQuery,
+        _dir: IsoDirections,
+    ) -> Option<crate::character::player::ContextualAction> {
+        None
+    }
+}
+
+/// The ground of a square (`hasNaturalFloor`, `hasSand`,
+/// `getPuddlesInGround`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GroundInfo {
+    pub natural_floor: bool,
+    pub sand: bool,
+    pub puddles_in_ground: f32,
+}
+
+/// `updateFootInjuries`' floor: `getBrokenGlass() != null` and the
+/// modifier (2: natural floor in a forest zone, 1: other floor outside a
+/// building, 0: none).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FootFloor {
+    pub broken_glass: bool,
+    pub modifier: i32,
 }
 
 /// A `Thumpable`: an object on a square or a vehicle.

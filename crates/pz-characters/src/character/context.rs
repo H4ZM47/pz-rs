@@ -254,6 +254,9 @@ pub enum SimEvent {
     BulletHitSound { chr: i32, sound: String, hollow: bool },
     /// `StatisticsManager.incrementStatistic(Player, Combat, name, value)`.
     CombatStatistic { name: &'static str, value: f32 },
+    /// `UIManager.speedControls.SetCurrentGameSpeed(speed)`, which also sets
+    /// `GameTime.multiplier = 1` at once (the rest of the update sees it).
+    SetGameSpeed(i32),
     /// `IsoReticle.trySetTargetReticleMode(playerIndex, RETICLE)`.
     ReticleMode { player_index: i32 },
     /// `target.setReanimateTimer(...)`'s target and value (another
@@ -639,6 +642,14 @@ pub trait SimContext {
     // ---- firearms and ragdolls ----
     /// `ClimateManager.getWindIntensity()`.
     fn wind_intensity(&self) -> f32 {
+        0.0
+    }
+    /// `SandboxOptions.clothingDegradation` (1 none .. 4; default 3).
+    fn clothing_degradation(&self) -> i32 {
+        3
+    }
+    /// `IsoPuddles.getInstance().getWetGroundFinalValue()`.
+    fn wet_ground_final_value(&self) -> f32 {
         0.0
     }
     /// `SandboxOptions.firearmUseDamageChance` (1 none, 2 zombies, 3 all).
