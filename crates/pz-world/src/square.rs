@@ -2005,6 +2005,7 @@ impl IsoCell {
                     if let Some(sq) = ch.get_grid_square_mut(x, y, z) {
                         sq.recalc_properties(m);
                         any = true;
+                        ch.collision.clear();
                     }
                 }
             }
@@ -2363,13 +2364,10 @@ impl IsoCell {
         meta: &IsoMetaGrid,
         m: &IsoSpriteManager,
     ) {
-        let Some(sq) = self.get_grid_square_mut(x, y, z) else {
+        if self.get_grid_square(x, y, z).is_none() {
             return;
-        };
-        sq.recalc_properties(m);
-        if let Some(ch) = self.chunks.get_mut(&(x.div_euclid(8), y.div_euclid(8))) {
-            ch.check_physics_later(z);
         }
+        self.recalc_square_properties(x, y, z, m);
         let mut bits = Vec::new();
         if let Some(sq) = self.get_grid_square(x, y, z) {
             recalc_all_with_neighbours(sq, meta, m, self, &mut bits);

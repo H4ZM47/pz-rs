@@ -207,6 +207,10 @@ registered):
       `remove_tile_object_erosion_no_recalc`, `add_corpse` / `remove_corpse`,
       `create_new_grid_square`) with `num_players` and
       `DoorTables::from_jar` (#97).
+- [ ] Collision code fills `IsoChunk::collision` through
+      `ChunkCollision::init(z, build)` (`CollideWithObstaclesPoly` /
+      `LineClearCollide`) and drops levels with `take` on vehicle moves; the
+      mutations clear it (#97).
 - [ ] Pathfinding thread implements `PathfindSquareHooks`:
       `square_changed(cell, pos)` (PathfindNative square tasks for the
       square and its neighbours, bits read from `cell` at the call),
@@ -218,8 +222,8 @@ registered):
       invalidation, `FBORenderCutaways.squareChanged`,
       `LosUtil.cachecleared`, `recalcLightTime`, `Core.dirtyGlobalLightsCount`,
       `lightSourceUpdate`, `IsoGridOcclusionData`, `fbo_render_chunk`,
-      `properties_recalculated` (puddles, `checkLightingLater`,
-      `checkPhysicsLater`, collision cache, water), `clear_water`,
+      `properties_recalculated` (puddles, `checkLightingLater`, water;
+      `IsoChunk` keeps `physicsCheck` itself), `clear_water`,
       `buildings_changed` (`LightingJNI.buildingsChanged`),
       `chunk_buildings_changed` (#97).
 - [ ] Engine implements `SquareMutationHooks`: Lua `OnObjectAboutToBeRemoved`

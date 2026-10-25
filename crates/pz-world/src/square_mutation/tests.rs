@@ -540,3 +540,35 @@ fn corpses() {
     assert!(w.env().remove_corpse(p, 0).is_some());
     assert_eq!(w.take_log(), ["render 0,0,0 130", "OnContainerUpdate"]);
 }
+
+#[test]
+fn recalculating_properties_clears_the_chunk_collision_data() {
+    let mut w = World::new();
+    let ch = w.cell.chunks.get_mut(&(0, 0)).unwrap();
+    assert_eq!(*ch.collision.init(0, || 7u32).unwrap(), 7);
+    assert_eq!(*ch.collision.init(1, || 8u32).unwrap(), 8);
+    // Built data is kept until something changes.
+    assert_eq!(*ch.collision.init(0, || 9u32).unwrap(), 7);
+    assert!(ch.collision.init(8, || 0u32).is_none());
+    let wall = w.obj("wall_n");
+    w.env().add_tile_object((3, 3, 0), wall, -1);
+    let ch = w.cell.chunks.get_mut(&(0, 0)).unwrap();
+    // `clear()` only flags; the levels are dropped at the next `init`.
+    assert!(ch.collision.is_clear_pending());
+    assert_eq!(ch.collision.get::<u32>(1), Some(&8));
+    assert_eq!(*ch.collision.init(0, || 9u32).unwrap(), 9);
+    assert!(!ch.collision.is_clear_pending());
+    assert_eq!(ch.collision.get::<u32>(1), None);
+    // The neighbouring chunk's squares are recalculated too (the wall's
+    // neighbourhood does not reach it here, so it is untouched).
+    assert!(!w.cell.chunks[&(1, 0)].collision.is_clear_pending());
+    let wall = w.obj("wall_w");
+    w.env().add_tile_object((8, 3, 0), wall, -1);
+    assert!(w.cell.chunks[&(0, 0)].collision.is_clear_pending());
+    assert!(w.cell.chunks[&(1, 0)].collision.is_clear_pending());
+    // Unloading clears it as `IsoChunk.removeFromWorld` does.
+    let mut ch = w.cell.unload_chunk(1, 0, None).unwrap();
+    ch.collision.init(0, || 1u8);
+    assert!(!w.cell.chunks.contains_key(&(1, 0)));
+    assert_eq!(ch.collision.get::<u8>(0), Some(&1));
+}

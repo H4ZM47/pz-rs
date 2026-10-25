@@ -266,6 +266,77 @@ pub struct IsoChunk {
     pub vehicles: crate::chunk_vehicles::ChunkVehicles,
     /// `IsoChunkLevel.physicsCheck`, per level (`[z - minLevel]`).
     physics_check: Vec<bool>,
+    /// `collision` (`CollideWithObstaclesPoly.ChunkData`): the collision
+    /// geometry the pathfinding side builds per level. Every
+    /// `RecalcProperties` of one of the chunk's squares clears it.
+    pub collision: ChunkCollision,
+}
+
+/// `CollideWithObstaclesPoly.ChunkData`: a lazily built entry per level
+/// 0..8 (`ChunkDataZ`: obstacles and nodes from the squares, built by the
+/// collision code, which is not part of this crate). `clear()` only flags
+/// the data; the next [`ChunkCollision::init`] drops every level first.
+#[derive(Default)]
+pub struct ChunkCollision {
+    data: [Option<Box<dyn std::any::Any + Send>>; 8],
+    clear: bool,
+}
+
+impl std::fmt::Debug for ChunkCollision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let levels: Vec<usize> = (0..8).filter(|&z| self.data[z].is_some()).collect();
+        f.debug_struct("ChunkCollision")
+            .field("levels", &levels)
+            .field("clear", &self.clear)
+            .finish()
+    }
+}
+
+impl ChunkCollision {
+    /// `clear()`: the data is dropped at the next `init`.
+    pub fn clear(&mut self) {
+        self.clear = true;
+    }
+
+    /// Whether a `clear()` is waiting for the next `init`.
+    pub fn is_clear_pending(&self) -> bool {
+        self.clear
+    }
+
+    /// `init(chunk, z, instance)`: level `z`'s data, built with `build`
+    /// when missing (`ChunkDataZ.pool.alloc().init(...)`); a pending clear
+    /// drops every level first (`clearInner`). `None` for a level outside
+    /// 0..8 (an index error upstream). Data of another type than `T` is
+    /// replaced.
+    pub fn init<T: std::any::Any + Send>(
+        &mut self,
+        z: i32,
+        build: impl FnOnce() -> T,
+    ) -> Option<&mut T> {
+        if self.clear {
+            self.clear = false;
+            self.data = Default::default();
+        }
+        let slot = self.data.get_mut(usize::try_from(z).ok()?)?;
+        if !slot.as_ref().is_some_and(|d| d.is::<T>()) {
+            *slot = Some(Box::new(build()));
+        }
+        slot.as_mut()?.downcast_mut()
+    }
+
+    /// `data[z]` as it is (no pending clear applied).
+    pub fn get<T: std::any::Any>(&self, z: i32) -> Option<&T> {
+        self.data
+            .get(usize::try_from(z).ok()?)?
+            .as_ref()?
+            .downcast_ref()
+    }
+
+    /// `data[z] = null` with the old entry handed back
+    /// (`CollideWithObstaclesPoly.vehicleMoved`).
+    pub fn take(&mut self, z: i32) -> Option<Box<dyn std::any::Any + Send>> {
+        self.data.get_mut(usize::try_from(z).ok()?)?.take()
+    }
 }
 
 /// `IsoFloorBloodSplat` (positions quantised to 1/255 of a chunk).
@@ -353,6 +424,7 @@ impl IsoChunk {
             add_zombies: false,
             vehicles: Default::default(),
             physics_check: vec![false],
+            collision: ChunkCollision::default(),
         }
     }
 
@@ -854,13 +926,30 @@ impl IsoCell {
         wy: i32,
         hook: Option<&mut dyn crate::save::chunk_file::ChunkLoadHook>,
     ) -> Option<IsoChunk> {
-        let chunk = self.chunks.remove(&(wx, wy));
-        if chunk.is_some() {
+        let mut chunk = self.chunks.remove(&(wx, wy));
+        if let Some(c) = &mut chunk {
             if let Some(h) = hook {
                 h.chunk_unloaded(wx, wy);
             }
+            // `IsoChunk.removeFromWorld`: after the pathfinding removal.
+            c.collision.clear();
         }
         chunk
+    }
+
+    /// `IsoGridSquare.RecalcProperties()` of the square at `(x, y, z)` with
+    /// its chunk's part: `chunk.checkPhysicsLater(z)`, then
+    /// `chunk.collision.clear()`.
+    pub fn recalc_square_properties(&mut self, x: i32, y: i32, z: i32, m: &IsoSpriteManager) {
+        let (wx, wy) = (x.div_euclid(8), y.div_euclid(8));
+        let Some(ch) = self.chunks.get_mut(&(wx, wy)) else {
+            return;
+        };
+        if let Some(sq) = ch.get_grid_square_mut(x - wx * 8, y - wy * 8, z) {
+            sq.recalc_properties(m);
+            ch.check_physics_later(z);
+            ch.collision.clear();
+        }
     }
 
     /// Load chunk `(wx, wy)` from map files if it is not loaded yet.

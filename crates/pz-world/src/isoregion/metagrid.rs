@@ -680,6 +680,9 @@ impl WorldRegionToMetaGrid {
                 sq.associated_building = assoc;
                 sq.recalc_properties(ctx.sprites);
                 ctx.render.properties_recalculated(sq);
+                let ch = ctx.cell.chunks.get_mut(&c).unwrap();
+                ch.check_physics_later(z);
+                ch.collision.clear();
                 let sq = ctx.cell.get_grid_square(x, y, z).unwrap();
                 // `PolygonalMap2.instance.squareChanged(square)`.
                 let native = ctx.pathfind.uses_native_code();

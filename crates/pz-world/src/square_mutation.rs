@@ -21,7 +21,7 @@
 //!   cutaways, `LosUtil.cachecleared`, `setRecalcLightTime`,
 //!   `Core.dirtyGlobalLightsCount`, `GameTime.lightSourceUpdate`,
 //!   `IsoGridOcclusionData.SquareChanged` and the per-`RecalcProperties`
-//!   lighting/physics/puddle flags;
+//!   lighting/puddle flags;
 //! * [`SquareMutationHooks`]: Lua events, the registries objects join and
 //!   leave in `addToWorld` / `removeFromWorld` ([`WorldCall`]), the queries
 //!   those make (power, fluids, piped fuel, entity sprite configs) and the
@@ -149,11 +149,13 @@ pub trait RenderSquareHooks {
 
     /// The tail of `IsoGridSquare.RecalcProperties()` for `sq`, after its
     /// properties were rebuilt: `getPuddles().recalc = true`,
-    /// `chunk.checkLightingLater_AllPlayers_OneLevel(z)`,
-    /// `chunk.checkPhysicsLater(z)`, `chunk.collision.clear()`, and
-    /// `clearWater()` when the square has valid water geometry but no
-    /// `water` flag any more. Called for every `RecalcProperties`,
-    /// including the many `RecalcAllWithNeighbours` makes.
+    /// `chunk.checkLightingLater_AllPlayers_OneLevel(z)`, and `clearWater()`
+    /// when the square has valid water geometry but no `water` flag any
+    /// more. Called for every `RecalcProperties`, including the many
+    /// `RecalcAllWithNeighbours` makes; `chunk.checkPhysicsLater(z)`
+    /// ([`crate::chunk::IsoChunk::check_physics_later`]) and the chunk's
+    /// collision data (`chunk.collision.clear()`, both between the lighting
+    /// and water parts upstream) are done right after it.
     fn properties_recalculated(&mut self, _sq: &IsoGridSquare) {}
 
     /// `IsoGridSquare.clearWater()` (`addFloor`): the square's water
@@ -370,6 +372,14 @@ impl MutationEnv<'_> {
         };
         sq.recalc_properties(&*self.sprites);
         self.render.properties_recalculated(&*sq);
+        // `this.chunk.checkPhysicsLater(z)`, then
+        // `this.chunk.collision.clear()`; only the hook's water part comes
+        // after them upstream, and neither reads the other.
+        let (wx, wy) = chunk_of(pos);
+        if let Some(ch) = self.cell.chunks.get_mut(&(wx, wy)) {
+            ch.check_physics_later(pos.2);
+            ch.collision.clear();
+        }
     }
 
     /// `ReCalculateCollide` / `ReCalculatePathFind` /
