@@ -158,9 +158,32 @@ registered):
       serves, from disk or brand new (`WorldStreamer.DoChunkAlways`), and
       reports `StreamEvent::VehiclesLoaded`. `None` (no store,
       `Core.isNoSave`) loads none. The streamer passes `meta: Some(grid)`
-      in `SaveCtx`, so squares get `associatedBuilding` (#100). Not ported:
-      `VehiclesDB2.unloadChunk` writing a chunk's vehicles back when it
-      unloads.
+      in `SaveCtx`, so squares get `associatedBuilding` (#100).
+- [ ] Chunk vehicles on save: every `IsoChunk.Save` the streamer does
+      writes the chunk's vehicles (`VehiclesDB2.unloadChunk`,
+      `StreamEvent::VehiclesUnloaded`). Set `StreamCtx::vehicle_saver` to
+      a saver that knows the attached scripts (`LoadedVehicleSaver {
+      scripts }`), later to the vehicle runtime's own saver for vehicles
+      in the world; the default writes none (null script, as the original
+      for a vehicle never added to the world) (#150).
+- [ ] Hot save: on `StreamEvent::HotSave` (main thread, after the
+      streamer step) call `world_save::hot_save_ancillary(&mut HotSave {
+      .. })` and set `PlayerDB.forceSavePlayers` when `canSavePlayers`
+      (#150).
+- [ ] Game save (`GameWindow.save(true)`: sleep, menu save, quit):
+      `world_save::save_game(&mut SaveGame { .. }, &mut hooks)`; the
+      engine's `SaveGameHooks::save_chunks(meta)` builds its `StreamCtx`
+      and calls `streamer.wait_for_saves(ctx)` then
+      `streamer.save_chunk_maps(&cell, ctx)`; `save_population` calls
+      `WorldPopulation::save`; `on_save` fires Lua `OnSave`. Supply
+      `sandbox: &sandbox.save_bin(world_version, preset)`, and from the
+      characters side the local players' `IsoPlayer.save` bytes and the
+      reanimated zombies' `IsoZombie.save` bytes (#150).
+- [ ] Quit (`Core.exiting`): `world_save::save_on_quit(&mut g,
+      &mut local_players, &mut hooks)` (`on_post_save` fires `OnPostSave`),
+      then `IngameState.exit`: `streamer.stop(&mut cell, ctx)`, the other
+      stops, `world_save::close_stores(Some(&mut player_db), &mut
+      vehicle_store)` (#150).
 - [ ] `IsoWorld.init`, after `VehiclesDB2.init` and before
       `WorldStreamer.create` / the cell load:
       `let regions = IsoRegions::init_world(save_dir, chunk_grid_width,
