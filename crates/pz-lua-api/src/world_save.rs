@@ -29,6 +29,13 @@ use pz_world::meta_save::{save_map_meta, MetaWorld, NetRole};
 use pz_world::zone_save::{SpawnedZombieZones, UuidSource};
 use pz_world::IsoMetaGrid;
 
+use pz_characters::character::save::SaveEnv;
+use pz_characters::character::{GameCharacter, SimContext};
+use pz_characters::worn_items::ItemIdentity;
+use pz_characters::Characters;
+use pz_inventory::io::Writer;
+use pz_scripts::{ScriptError, ScriptManager, ScriptResult};
+
 use crate::global_objects_save;
 use crate::player_db::{PlayerData, PlayerDb, VehicleStore};
 
@@ -71,6 +78,45 @@ pub fn reanimated_bytes(zombies: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
+/// `PlayerDB.PlayerData.set(player)` for [`save_on_quit`]'s local players:
+/// the player's id (`-1` gets one from [`PlayerDb::save_player`], which the
+/// engine keeps as the player's `sqlId`), position, `isDead()`, the
+/// descriptor's `forename + " " + surname`, the world version and the
+/// `IsoPlayer.save` bytes (`GameCharacter::save_player`).
+pub fn local_player_data<I: ItemIdentity + 'static>(
+    player: &mut GameCharacter<I>,
+    sql_id: i32,
+    sm: &ScriptManager,
+    chars: &Characters,
+    ctx: &dyn SimContext,
+    env: &SaveEnv<'_>,
+) -> ScriptResult<PlayerData> {
+    let name = {
+        let d = player
+            .descriptor
+            .as_ref()
+            .ok_or_else(|| ScriptError::new("java.lang.NullPointerException"))?;
+        let d = d.borrow();
+        format!(
+            "{} {}",
+            d.forename.as_deref().unwrap_or("null"),
+            d.surname.as_deref().unwrap_or("null")
+        )
+    };
+    let mut w = Writer::new();
+    player.save_player(sm, chars, ctx, env, &mut w)?;
+    Ok(PlayerData {
+        sql_id,
+        x: player.vars.x,
+        y: player.vars.y,
+        z: player.vars.z,
+        is_dead: player.is_dead(),
+        name: Some(name),
+        world_version: WORLD_VERSION,
+        bytes: w.buf,
+    })
+}
+
 /// The world state [`save_game`] saves.
 pub struct SaveGame<'a> {
     /// The current save folder (`ZomboidFileSystem.getCurrentSaveDir`).
@@ -102,8 +148,11 @@ pub struct SaveGame<'a> {
     /// `PlayerDB.canSavePlayers`.
     pub can_save_players: bool,
     /// The `IsoZombie.save` bytes of the reanimated players
-    /// ([`reanimated_bytes`]).
-    pub reanimated: &'a [Vec<u8>],
+    /// ([`reanimated_bytes`];
+    /// `pz_characters::character::save::reanimated_players_to_save`).
+    /// `None`: `saveReanimatedPlayers` threw (logged), `reanimated.bin` is
+    /// not written.
+    pub reanimated: Option<&'a [Vec<u8>]>,
 }
 
 /// The steps of the save that belong to systems outside this crate, called
@@ -192,8 +241,10 @@ pub fn save_game(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks) -> io::Res
             if g.players.is_some() && g.can_save_players {
                 report.force_save_players = true;
             }
-            let r = write(dir, "reanimated.bin", &reanimated_bytes(g.reanimated));
-            log(&mut report, "reanimated.bin", r);
+            if let Some(zombies) = g.reanimated {
+                let r = write(dir, "reanimated.bin", &reanimated_bytes(zombies));
+                log(&mut report, "reanimated.bin", r);
+            }
         }
     }
     hooks.save_animals();
