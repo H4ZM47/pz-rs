@@ -98,11 +98,19 @@ fn decodes_like_a_reference_decoder() {
 
 // ---- texture manager ------------------------------------------------------
 
+/// A path under the system temp dir unique to this call (tag, process id and a
+/// per-call counter): tests run in parallel and must not share directories.
+pub(crate) fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()))
+}
+
 struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let p = std::env::temp_dir().join(format!("pz-render-{tag}-{}", std::process::id()));
+        let p = unique_temp_dir(&format!("pz-render-{tag}"));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         Scratch(p)

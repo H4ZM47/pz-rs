@@ -50,6 +50,14 @@ impl FxMaskWorld for Room {
     }
 }
 
+/// A path under the system temp dir unique to this call (tag, process id and a
+/// per-call counter): tests run in parallel and must not share directories.
+fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()))
+}
+
 /// A 6x6 room at (10..16, 10..16) with outside floors around it.
 fn room() -> Room {
     let mut m = HashMap::new();
@@ -290,7 +298,7 @@ fn game_textures_load_and_render() {
         return;
     };
     let mut fs = pz_fs::GameFs::new(std::path::Path::new(&game));
-    fs.set_cache_dir(std::env::temp_dir().join("pz-weatherfx-test"));
+    fs.set_cache_dir(unique_temp_dir("pz-weatherfx-test"));
     let mut tm = TextureManager::new();
     tm.load_ui_packs(&fs);
     for p in ["Tiles2x", "Tiles2x.floor"] {
@@ -580,7 +588,7 @@ fn game_building_with_cut_walls_in_rain() {
     const FW: u32 = 1024;
     const FH: u32 = 640;
     let mut fs = pz_fs::GameFs::new(std::path::Path::new(&game));
-    fs.set_cache_dir(std::env::temp_dir().join("pz-weatherfx-test"));
+    fs.set_cache_dir(unique_temp_dir("pz-weatherfx-test"));
     let mut tm = TextureManager::new();
     tm.load_ui_packs(&fs);
     for p in ["Tiles2x", "Tiles2x.floor"] {

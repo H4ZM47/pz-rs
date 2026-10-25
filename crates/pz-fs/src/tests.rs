@@ -1,11 +1,19 @@
 use super::*;
 
+/// A path under the system temp dir unique to this call (tag, process id and a
+/// per-call counter): tests run in parallel and must not share directories.
+pub(crate) fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()))
+}
+
 /// A scratch directory removed on drop.
 struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(tag: &str) -> Self {
-        let p = std::env::temp_dir().join(format!("pz-fs-{tag}-{}", std::process::id()));
+        let p = unique_temp_dir(&format!("pz-fs-{tag}"));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         Scratch(p)

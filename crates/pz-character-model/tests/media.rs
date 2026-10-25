@@ -32,6 +32,14 @@ impl TextureLoader for NoTextures {
     }
 }
 
+/// A path under the system temp dir unique to this call (tag, process id and a
+/// per-call counter): tests run in parallel and must not share directories.
+fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()))
+}
+
 fn game_dir() -> Option<PathBuf> {
     let game = std::env::var_os("PZ_GAME_DIR")
         .map(PathBuf::from)
@@ -105,7 +113,7 @@ fn head_models(
 fn assembles_game_hair_and_decals() {
     let Some(game) = game_dir() else { return };
     let mut fs = pz_fs::GameFs::new(&game);
-    fs.set_cache_dir(std::env::temp_dir().join("pz-character-model-media-test"));
+    fs.set_cache_dir(unique_temp_dir("pz-character-model-media-test"));
     let mut pop = Population::default();
     pop.init(&mut fs);
     let hair = pop.hair_styles.as_ref().expect("hairStyles.xml");

@@ -74,6 +74,14 @@ const BOTTLE: &str = "media/textures/WorldItems/PopBottle_Generic.png";
 const MUG: &str = "media/textures/Mug_Green.png";
 const WHITE: [f32; 3] = [1.0; 3];
 
+/// A path under the system temp dir unique to this call (tag, process id and a
+/// per-call counter): tests run in parallel and must not share directories.
+fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("{tag}-{}-{n}", std::process::id()))
+}
+
 fn init(blood: f32, tint: [f32; 3], fluid: f32, fluid_tint: Option<[f32; 3]>) -> ItemTextureInit {
     ItemTextureInit {
         blood_level: blood,
@@ -218,7 +226,7 @@ fn item_smart_textures_match_the_original() {
     }
 
     let mut fs = pz_fs::GameFs::new(&game);
-    fs.set_cache_dir(std::env::temp_dir().join("pz-itemtex-oracle"));
+    fs.set_cache_dir(unique_temp_dir("pz-itemtex-oracle"));
     let mut tm = TextureManager::new();
     let model_flags = flags::COMPRESS | flags::LIMIT_TEXTURE_SIZE_1;
     let mut file = |tm: &mut TextureManager, p: &str| {
