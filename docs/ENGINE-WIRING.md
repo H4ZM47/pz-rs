@@ -135,7 +135,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       player is created or removed (`IsoPlayer` sets
       `UIManager.getMoodleUI(i).setCharacter`); `HudMoodles` (a player's
       `Moodles`: refresh flag, levels, good/bad, display and description
-      strings; characters thread) (#PR4).
+      strings; characters thread) (#148).
 - [ ] Zombies: pass the real `StatesWorldAdapter` and sitting-obstacle
       provider to the zombie state machines each frame, not
       `NullWorld`/`NoSittingObstacles` (found in the e2e run).
