@@ -1,14 +1,17 @@
 //! `zombie.core.CreditsName`, `CreditsRole` and `CreditsRoleGroup`: the
 //! credits roll `CreditsScreen.lua` builds, and the translator credits read
 //! from each language's `Credits_Translator.json`.
-
-mod data;
+//!
+//! The constants (names, roles, groups) are read at run time from the
+//! enums' static initializers in the installed `projectzomboid.jar`
+//! ([`CreditsData::load`]); nothing of them is shipped.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use pz_classfile::{Jar, Value as JValue};
 use pz_core::debug::DebugType;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, TableRef, Value};
 use pz_text::translator::Language;
@@ -34,33 +37,98 @@ fn java_compare(a: &str, b: &str) -> Ordering {
     a.encode_utf16().cmp(b.encode_utf16())
 }
 
-/// `CreditsName.getSort()`: the explicit sort word, else the last word of
-/// the name (`split(" ")`, which drops trailing empty strings), upper-cased.
-pub fn name_sort(i: usize) -> String {
-    let (_, name, sort) = data::NAMES[i];
-    let word = sort.unwrap_or_else(|| name.split(' ').rev().find(|s| !s.is_empty()).unwrap_or(""));
-    word.to_uppercase()
+/// The three enums' constants in declaration order.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CreditsData {
+    /// `CreditsName`: constant, display name, explicit sort word.
+    pub names: Vec<(String, String, Option<String>)>,
+    /// `CreditsRole`: constant, sorted by `getSort`, names (indices).
+    pub roles: Vec<(String, bool, Vec<usize>)>,
+    /// `CreditsRoleGroup`: constant, logo, roles (indices).
+    pub groups: Vec<(String, Option<String>, Vec<usize>)>,
 }
 
-/// `CreditsRole.getNames()`: indices into the names, sorted (stably) by
-/// sort key unless the role keeps its order.
-pub fn role_names(role: usize) -> Vec<usize> {
-    let (_, sorted, names) = data::ROLES[role];
-    let mut v = names.to_vec();
-    if sorted {
-        v.sort_by(|&a, &b| java_compare(&name_sort(a), &name_sort(b)));
+const NAME_CLASS: &str = "zombie/core/CreditsName";
+const ROLE_CLASS: &str = "zombie/core/CreditsRole";
+const GROUP_CLASS: &str = "zombie/core/CreditsRoleGroup";
+
+/// The `getstatic owner.X` elements of a varargs array argument, as
+/// indices into `consts`.
+fn refs(args: &[JValue], owner: &str, consts: &[String]) -> Result<Vec<usize>, String> {
+    let Some(JValue::Array(items)) = args.iter().find(|a| matches!(a, JValue::Array(_))) else {
+        return Err(format!("{owner}: no constant array"));
+    };
+    items
+        .iter()
+        .map(|v| match v {
+            JValue::Static { class, name } if class == owner => {
+                consts.iter().position(|c| c == name).ok_or_else(|| format!("unknown {owner}.{name}"))
+            }
+            other => Err(format!("{owner}: unexpected element {other:?}")),
+        })
+        .collect()
+}
+
+impl CreditsData {
+    /// Reads the constants from the enums' `<clinit>` in `jar`. Enum
+    /// constructor arguments start with the implicit name and ordinal.
+    pub fn load(jar: &Jar) -> Result<CreditsData, String> {
+        let e = |e: pz_classfile::Error| format!("{e:?}");
+        let mut d = CreditsData::default();
+        for (field, args) in pz_classfile::self_constructed_constants(jar, NAME_CLASS).map_err(e)? {
+            let strs: Vec<&str> = args.iter().skip(2).filter_map(JValue::as_str).collect();
+            let name = strs.first().ok_or_else(|| format!("CreditsName.{field}: no name"))?.to_string();
+            d.names.push((field, name, strs.get(1).map(|s| s.to_string())));
+        }
+        let names: Vec<String> = d.names.iter().map(|n| n.0.clone()).collect();
+        for (field, args) in pz_classfile::self_constructed_constants(jar, ROLE_CLASS).map_err(e)? {
+            // `CreditsRole(boolean sort, CreditsName...)`; the one-argument
+            // constructor sorts.
+            let sorted = !matches!(args.get(2), Some(JValue::Int(0)));
+            let list = refs(&args[2..], NAME_CLASS, &names)?;
+            d.roles.push((field, sorted, list));
+        }
+        let roles: Vec<String> = d.roles.iter().map(|r| r.0.clone()).collect();
+        for (field, args) in pz_classfile::self_constructed_constants(jar, GROUP_CLASS).map_err(e)? {
+            let logo = args.get(2).and_then(JValue::as_str).map(str::to_string);
+            let list = refs(&args[2..], ROLE_CLASS, &roles)?;
+            d.groups.push((field, logo, list));
+        }
+        if d.names.is_empty() || d.roles.is_empty() || d.groups.is_empty() {
+            return Err("credits enums are empty".into());
+        }
+        Ok(d)
     }
-    v
-}
 
-/// `CreditsRole.getTitle()`: `credits_role.<constant in lower case>`.
-pub fn role_title(role: usize) -> String {
-    format!("credits_role.{}", data::ROLES[role].0.to_lowercase())
-}
+    /// `CreditsName.getSort()`: the explicit sort word, else the last word
+    /// of the name (`split(" ")`, which drops trailing empty strings),
+    /// upper-cased.
+    pub fn name_sort(&self, i: usize) -> String {
+        let (_, name, sort) = &self.names[i];
+        let word = sort.as_deref().unwrap_or_else(|| name.split(' ').rev().find(|s| !s.is_empty()).unwrap_or(""));
+        word.to_uppercase()
+    }
 
-/// `CreditsRoleGroup.getTitle()`.
-pub fn group_title(group: usize) -> String {
-    format!("credits_role_group.{}", data::GROUPS[group].0.to_lowercase())
+    /// `CreditsRole.getNames()`: sorted (stably) by sort key unless the
+    /// role keeps its order.
+    pub fn role_names(&self, role: usize) -> Vec<usize> {
+        let (_, sorted, names) = &self.roles[role];
+        let mut v = names.clone();
+        if *sorted {
+            v.sort_by(|&a, &b| java_compare(&self.name_sort(a), &self.name_sort(b)));
+        }
+        v
+    }
+
+    /// `CreditsRole.getTitle()`: `credits_role.<constant in lower case>`.
+    pub fn role_title(&self, role: usize) -> String {
+        format!("credits_role.{}", self.roles[role].0.to_lowercase())
+    }
+
+    /// `CreditsRoleGroup.getTitle()`.
+    pub fn group_title(&self, group: usize) -> String {
+        format!("credits_role_group.{}", self.groups[group].0.to_lowercase())
+    }
 }
 
 /// An error a Java method throws.
@@ -188,42 +256,60 @@ fn this_ordinal(c: &NativeCall<'_>, class: &str) -> LuaResult<usize> {
     }
 }
 
-fn name_value(i: usize) -> Value {
-    enum_value(CREDITS_NAME, data::NAMES[i].0)
+fn leak(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
 }
 
-fn role_value(i: usize) -> Value {
-    enum_value(CREDITS_ROLE, data::ROLES[i].0)
-}
-
-fn group_value(i: usize) -> Value {
-    enum_value(CREDITS_ROLE_GROUP, data::GROUPS[i].0)
-}
-
+/// Exposes the enums with the constants read from the game's jar (nothing
+/// is exposed when the jar cannot be read).
 pub fn register(mgr: &mut LuaManager) {
     let fs = mgr.fs.clone();
+    let jar = Jar::open(fs.borrow().base.join("projectzomboid.jar"));
+    let data = match jar.map_err(|e| format!("{e:?}")).and_then(|j| CreditsData::load(&j)) {
+        Ok(d) => Rc::new(d),
+        Err(e) => {
+            pz_core::debug::with(|d| d.log(DebugType::General, &format!("credits enums not loaded: {e}")));
+            return;
+        }
+    };
+    register_data(mgr, data);
+}
+
+/// Exposes the enums over `data`.
+pub fn register_data(mgr: &mut LuaManager, data: Rc<CreditsData>) {
+    let fs = mgr.fs.clone();
     let thread = &mut mgr.thread;
+    let d = data.clone();
+    let name_value = move |i: usize| enum_value(CREDITS_NAME, &d.names[i].0);
+    let d = data.clone();
+    let role_value = move |i: usize| enum_value(CREDITS_ROLE, &d.roles[i].0);
+    let d = data.clone();
+    let group_value = move |i: usize| enum_value(CREDITS_ROLE_GROUP, &d.groups[i].0);
 
-    let names: Vec<&'static str> = data::NAMES.iter().map(|n| n.0).collect();
+    let names: Vec<&'static str> = data.names.iter().map(|n| leak(&n.0)).collect();
     let b = expose_enum(thread, CREDITS_NAME, &names);
-    b.method("getName", |c| {
+    let d = data.clone();
+    b.method("getName", move |c| {
         let i = this_ordinal(c, CREDITS_NAME)?;
-        Ok(c.push(data::NAMES[i].1))
+        Ok(c.push(d.names[i].1.clone()))
     });
-    b.method("getSort", |c| {
+    let d = data.clone();
+    b.method("getSort", move |c| {
         let i = this_ordinal(c, CREDITS_NAME)?;
-        Ok(c.push(name_sort(i)))
+        Ok(c.push(d.name_sort(i)))
     });
 
-    let roles: Vec<&'static str> = data::ROLES.iter().map(|r| r.0).collect();
+    let roles: Vec<&'static str> = data.roles.iter().map(|r| leak(&r.0)).collect();
     let b = expose_enum(thread, CREDITS_ROLE, &roles);
-    b.method("getTitle", |c| {
+    let d = data.clone();
+    b.method("getTitle", move |c| {
         let i = this_ordinal(c, CREDITS_ROLE)?;
-        Ok(c.push(role_title(i)))
+        Ok(c.push(d.role_title(i)))
     });
-    b.method("getNames", |c| {
+    let d = data.clone();
+    b.method("getNames", move |c| {
         let i = this_ordinal(c, CREDITS_ROLE)?;
-        let v = cached_list(CREDITS_ROLE, i, || role_names(i).into_iter().map(name_value).collect());
+        let v = cached_list(CREDITS_ROLE, i, || d.role_names(i).into_iter().map(&name_value).collect());
         Ok(c.push(v))
     });
     b.field("TRANSLATOR", TRANSLATOR);
@@ -252,23 +338,27 @@ pub fn register(mgr: &mut LuaManager) {
         Ok(c.push(strings(list)))
     });
 
-    let groups: Vec<&'static str> = data::GROUPS.iter().map(|g| g.0).collect();
+    let groups: Vec<&'static str> = data.groups.iter().map(|g| leak(&g.0)).collect();
     let b = expose_enum(thread, CREDITS_ROLE_GROUP, &groups);
-    b.static_fn("getAll", |c| {
-        let all = (0..data::GROUPS.len()).map(group_value).collect();
+    let n = data.groups.len();
+    b.static_fn("getAll", move |c| {
+        let all = (0..n).map(&group_value).collect();
         Ok(c.push(list_value(all)))
     });
-    b.method("getTitle", |c| {
+    let d = data.clone();
+    b.method("getTitle", move |c| {
         let i = this_ordinal(c, CREDITS_ROLE_GROUP)?;
-        Ok(c.push(group_title(i)))
+        Ok(c.push(d.group_title(i)))
     });
-    b.method("getLogo", |c| {
+    let d = data.clone();
+    b.method("getLogo", move |c| {
         let i = this_ordinal(c, CREDITS_ROLE_GROUP)?;
-        Ok(c.push(data::GROUPS[i].1.map_or(Value::Nil, Value::from)))
+        Ok(c.push(d.groups[i].1.clone().map_or(Value::Nil, Value::from)))
     });
-    b.method("getRoles", |c| {
+    let d = data;
+    b.method("getRoles", move |c| {
         let i = this_ordinal(c, CREDITS_ROLE_GROUP)?;
-        let v = cached_list(CREDITS_ROLE_GROUP, i, || data::GROUPS[i].2.iter().map(|&r| role_value(r)).collect());
+        let v = cached_list(CREDITS_ROLE_GROUP, i, || d.groups[i].2.iter().map(|&r| role_value(r)).collect());
         Ok(c.push(v))
     });
 }
