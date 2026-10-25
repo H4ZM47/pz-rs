@@ -53,6 +53,7 @@ pub mod bind_zombie_outfits;
 pub mod chat;
 pub mod bind_text;
 pub mod bind_ui;
+pub mod gizmo;
 pub mod hud;
 pub mod bind_ui3d;
 pub mod bind_uitextbox2;
@@ -148,6 +149,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_vehicles::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
+    gizmo::register(&mut mgr.thread);
     hud::characters::install_character_hud_hosts();
     hud::alarm_clocks::install_alarm_clock_host();
     bind_ui3d::register(&mut mgr.thread);
