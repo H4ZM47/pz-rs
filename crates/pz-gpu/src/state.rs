@@ -53,11 +53,16 @@ pub enum Program {
     DepthAtlas,
     /// `fog` (`FogShader`, `ImprovedFogDrawer`).
     Fog,
+    /// `vboRenderer_PositionColor` / `PositionNormalColor` triangles (a
+    /// `VBORenderer` quad-strip run): the float vertex colour as is.
+    VboTriangles,
+    /// The same shaders' `GL_LINES` runs.
+    VboLines,
 }
 
 impl Program {
     pub fn uses_world_shader(self) -> bool {
-        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::ProjectedDepth | Program::Seam | Program::Cutaway | Program::DepthAtlas | Program::Surface(_) | Program::Particles(_) | Program::CutawayNoDepth | Program::ProjectedF32 | Program::Fog)
+        matches!(self, Program::WorldDefault | Program::TileDepth | Program::OpaqueDepth | Program::Composite | Program::Projected | Program::ProjectedDepth | Program::Seam | Program::Cutaway | Program::DepthAtlas | Program::Surface(_) | Program::Particles(_) | Program::CutawayNoDepth | Program::ProjectedF32 | Program::Fog | Program::VboTriangles | Program::VboLines)
     }
 }
 
@@ -289,7 +294,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::Seam | Program::Cutaway | Program::CutawayNoDepth => (&programs.world_tile, &programs.seam_layout),
         Program::Surface(_) => (&programs.surface, &programs.seam_layout),
         Program::Particles(_) => (&programs.particles, &programs.sprite_layout),
-        Program::WorldDefault | Program::Projected | Program::ProjectedDepth | Program::ProjectedF32 => (&programs.world_tile, &programs.sprite_layout),
+        Program::WorldDefault | Program::Projected | Program::ProjectedDepth | Program::ProjectedF32 | Program::VboTriangles | Program::VboLines => (&programs.world_tile, &programs.sprite_layout),
         Program::Default | Program::Clear | Program::FogCircle => (&programs.sprite, &programs.sprite_layout),
         Program::Screen => (&programs.screen, &programs.sprite_layout),
         Program::Fog => (&programs.fog, &programs.sprite_layout),
@@ -312,6 +317,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         Program::Particles(pz_render::ParticleProgram::Smoke) => ("vs_smoke", "fs_smoke"),
         Program::CutawayNoDepth => ("vs_world", "fs_cutaway_nodepth"),
         Program::ProjectedF32 => ("vs_world", "fs_projected"),
+        Program::VboTriangles | Program::VboLines => ("vs_world", "fs_vbo"),
         Program::Surface(p) => (
             "vs_surface",
             match p {
@@ -334,7 +340,7 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 28, shader_location: 4 },
         wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 36, shader_location: 5 },
     ];
-    let attributes: &[wgpu::VertexAttribute] = if key.program == Program::ProjectedF32 {
+    let attributes: &[wgpu::VertexAttribute] = if matches!(key.program, Program::ProjectedF32 | Program::VboTriangles | Program::VboLines) {
         &f32_colour
     } else if world {
         &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4, 3 => Float32x2, 4 => Float32x2, 5 => Float32x2]
@@ -355,7 +361,11 @@ pub fn create_pipeline(device: &wgpu::Device, programs: &Programs, format: wgpu:
             compilation_options: Default::default(),
             buffers: &[Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<crate::Vertex>() as u64, step_mode: wgpu::VertexStepMode::Vertex, attributes })],
         },
-        primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+        primitive: wgpu::PrimitiveState {
+            topology: if key.program == Program::VboLines { wgpu::PrimitiveTopology::LineList } else { wgpu::PrimitiveTopology::TriangleList },
+            cull_mode: None,
+            ..Default::default()
+        },
         depth_stencil: Some(wgpu::DepthStencilState {
             format: depth_format,
             depth_write_enabled: Some(depth_write),

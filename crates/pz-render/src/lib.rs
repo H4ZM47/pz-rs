@@ -16,6 +16,7 @@ pub mod model;
 pub mod png;
 pub mod screen;
 pub mod tile_depth;
+pub mod vbo;
 
 use std::rc::Rc;
 
@@ -355,6 +356,11 @@ pub enum DrawCmd {
     /// `visibilityBlur` pass over the current target. See
     /// [`VisibilityPolygonDraw`].
     VisibilityPolygon(Box<VisibilityPolygonDraw>),
+    /// A `VBORenderer` run (lines or a quad strip under its own
+    /// model-view-projection, float colours, its own depth test) drawn
+    /// into the current target and viewport with the current blend state.
+    /// See [`vbo::VboRun`].
+    VboRun(Box<vbo::VboRun>),
 }
 
 /// The uniforms and rectangles of one `ImprovedFogDrawer` frame.
