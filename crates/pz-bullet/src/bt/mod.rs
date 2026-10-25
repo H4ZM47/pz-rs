@@ -6,7 +6,10 @@
 
 pub mod broadphase;
 pub mod collision_object;
+pub mod collision_world;
+pub mod dispatch;
 pub mod dynamics;
+pub mod island;
 pub mod linear_math;
 pub mod manifold;
 pub mod narrowphase;

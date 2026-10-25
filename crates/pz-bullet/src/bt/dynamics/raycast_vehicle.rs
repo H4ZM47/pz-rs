@@ -77,6 +77,35 @@ pub trait VehicleRaycaster {
     fn cast_ray(&mut self, from: &Vec3, to: &Vec3) -> Option<VehicleRaycasterResult>;
 }
 
+/// Bodies plus the vehicle raycaster, for when the raycaster reads the same
+/// object arena the vehicle updates (the world's ray test).
+pub trait VehicleWorld: BodyArena {
+    fn cast_ray(&self, from: &Vec3, to: &Vec3) -> Option<VehicleRaycasterResult>;
+}
+
+struct WithRaycaster<'a, 'r, A: ?Sized> {
+    objects: &'a mut A,
+    rc: std::cell::RefCell<&'r mut dyn VehicleRaycaster>,
+}
+
+impl<A: BodyArena + ?Sized> crate::bt::dynamics::typed_constraint::BodyAccess
+    for WithRaycaster<'_, '_, A>
+{
+    fn obj(&self, id: ObjId) -> &CollisionObject {
+        self.objects.obj(id)
+    }
+}
+impl<A: BodyArena + ?Sized> BodyArena for WithRaycaster<'_, '_, A> {
+    fn obj_mut(&mut self, id: ObjId) -> &mut CollisionObject {
+        self.objects.obj_mut(id)
+    }
+}
+impl<A: BodyArena + ?Sized> VehicleWorld for WithRaycaster<'_, '_, A> {
+    fn cast_ray(&self, from: &Vec3, to: &Vec3) -> Option<VehicleRaycasterResult> {
+        self.rc.borrow_mut().cast_ray(from, to)
+    }
+}
+
 /// `btRaycastVehicle::btVehicleTuning`.
 #[derive(Clone, Copy, Debug)]
 pub struct VehicleTuning {
@@ -481,9 +510,22 @@ impl RaycastVehicle {
     /// `rayCast(wheel)`: returns `depth`.
     pub fn ray_cast<A: BodyArena + ?Sized>(
         &mut self,
-        objects: &A,
+        objects: &mut A,
         wheel_index: usize,
         raycaster: &mut dyn VehicleRaycaster,
+    ) -> f64 {
+        let w = WithRaycaster {
+            objects,
+            rc: std::cell::RefCell::new(raycaster),
+        };
+        self.ray_cast_in(&w, wheel_index)
+    }
+
+    /// `rayCast(wheel)` against a [`VehicleWorld`] (objects and raycaster in one).
+    pub fn ray_cast_in<W: VehicleWorld + ?Sized>(
+        &mut self,
+        objects: &W,
+        wheel_index: usize,
     ) -> f64 {
         self.update_wheel_transforms_ws(objects, wheel_index, false);
         let chassis = objects.obj(self.chassis);
@@ -496,7 +538,7 @@ impl RaycastVehicle {
         wheel.raycast_info.contact_point_ws = source + rayvector;
         let target = wheel.raycast_info.contact_point_ws;
 
-        let hit = raycaster.cast_ray(&source, &target);
+        let hit = objects.cast_ray(&source, &target);
         wheel.raycast_info.ground_object = false;
 
         if let Some(ray_results) = hit {
@@ -563,6 +605,15 @@ impl RaycastVehicle {
         step: f64,
         raycaster: &mut dyn VehicleRaycaster,
     ) {
+        let mut w = WithRaycaster {
+            objects,
+            rc: std::cell::RefCell::new(raycaster),
+        };
+        self.update_vehicle_in(&mut w, step);
+    }
+
+    /// `updateVehicle(step)` against a [`VehicleWorld`].
+    pub fn update_vehicle_in<A: VehicleWorld + ?Sized>(&mut self, objects: &mut A, step: f64) {
         for i in 0..self.get_num_wheels() {
             self.update_wheel_transform(objects, i, false);
         }
@@ -580,7 +631,7 @@ impl RaycastVehicle {
         }
 
         for i in 0..self.wheel_info.len() {
-            let _depth = self.ray_cast(objects, i, raycaster);
+            let _depth = self.ray_cast_in(&*objects, i);
         }
 
         self.update_suspension(objects, step);

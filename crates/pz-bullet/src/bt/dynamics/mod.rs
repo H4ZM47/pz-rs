@@ -9,3 +9,4 @@ pub mod rigid_body;
 pub mod sequential_impulse;
 pub mod solver_body;
 pub mod typed_constraint;
+pub mod world;
