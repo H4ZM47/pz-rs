@@ -40,6 +40,6 @@ pub use square::{
     ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks, SquareHooks,
 };
 pub use zones::{
-    ClipperOps, PropValue, RoomTone, Zone, ZoneError, ZoneGeometryType, ZoneId, ZoneKind,
-    ZoneProps, ZoneTables,
+    ClipperOps, PropValue, RoomTone, VehicleZone, Zone, ZoneError, ZoneGeometryType, ZoneId,
+    ZoneKind, ZoneProps, ZoneTables,
 };
