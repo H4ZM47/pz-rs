@@ -932,10 +932,7 @@ fn register_manager(thread: &mut Thread) {
     b.static_fn("getUI", |c| {
         Ok(c.push(Value::Object(Rc::new(UIElementList { src: ListSrc::Ui }))))
     });
-    b.static_fn("init", |_c| {
-        UIManager::init();
-        Ok(0)
-    });
+    // `init` is `hud::init_ui` (registered by `hud::register`).
     b.static_fn("update", |c| {
         UIManager::update(c.thread);
         Ok(0)
@@ -1163,12 +1160,6 @@ fn register_manager(thread: &mut Thread) {
     b.static_fn("trySetProgressBarValue", |c| Ok(c.push(false))); // TODO(world): ActionProgressBar
                                                                   // TODO(world): world objects and Java-side widgets not ported yet.
     s_nil!(
-        "getSpeedControls",
-        "getClock",
-        "getToolTip",
-        "getDebugConsole",
-        "getMoodleUI",
-        "getProgressBar",
         "getPicked",
         "getLastPicked",
         "getPickedTile",

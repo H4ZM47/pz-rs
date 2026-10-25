@@ -216,6 +216,21 @@ pub struct UIManager {
     /// `Core.UnfocusActiveTextEntryBox()`, supplied by the text entry
     /// binding (`Core.currentTextEntryBox` lives there).
     pub unfocus_text_entry: Option<UnfocusHook>,
+    /// `UIManager.speedControls` (`zombie.ui.SpeedControls`, built by the
+    /// in-game `init` in pz-lua-api's `hud`).
+    pub speed_controls: Option<Rc<UIElement>>,
+    /// `UIManager.clock`.
+    pub clock: Option<Rc<UIElement>>,
+    /// `UIManager.toolTip`.
+    pub tool_tip: Option<Rc<UIElement>>,
+    /// `UIManager.debugConsole`.
+    pub debug_console: Option<Rc<UIElement>>,
+    /// `UIManager.MoodleUI[4]`.
+    pub moodle_ui: [Option<Rc<UIElement>>; 4],
+    /// `UIManager.ProgressBar[4]`.
+    pub progress_bar: [Option<Rc<UIElement>>; 4],
+    /// `UIManager.resize()`'s HUD layout, supplied with the HUD widgets.
+    pub resize_hook: Option<Rc<dyn Fn()>>,
     /// Fixed clock for tests (`System.currentTimeMillis`).
     pub time_override_ms: Option<i64>,
 }
@@ -271,6 +286,13 @@ impl Default for UIManager {
             text: None,
             events: None,
             unfocus_text_entry: None,
+            speed_controls: None,
+            clock: None,
+            tool_tip: None,
+            debug_console: None,
+            moodle_ui: Default::default(),
+            progress_bar: Default::default(),
+            resize_hook: None,
             time_override_ms: None,
         }
     }
@@ -391,6 +413,8 @@ impl UIManager {
             m.show_paused_message = true;
             m.ui.clear();
             m.debug_ui.clear();
+            m.clock = None;
+            m.moodle_ui = Default::default();
             m.fade_before_ui = false;
             m.visible_all_ui = true;
             for f in &mut m.player_fade_info {
@@ -401,10 +425,16 @@ impl UIManager {
         });
     }
 
-    /// `resize()`. TODO(world): repositions clock, moodles and speed
-    /// controls; returns early without a clock, which is always the case
-    /// until those are ported.
-    pub fn resize() {}
+    /// `resize()`: the HUD layout (clock, moodles, speed controls) through
+    /// the hook its widgets install; nothing without a clock.
+    pub fn resize() {
+        if with_ui(|m| m.clock.is_none()) {
+            return;
+        }
+        if let Some(h) = with_ui(|m| m.resize_hook.clone()) {
+            h();
+        }
+    }
 
     // ---- per-frame update ----
 
