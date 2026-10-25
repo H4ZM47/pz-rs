@@ -74,7 +74,7 @@ pub struct SpriteFlags {
 }
 
 /// An `IsoSprite` as the renderer needs it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SpriteInfo {
     pub name: String,
     pub tileset: String,
@@ -117,6 +117,42 @@ pub struct SpriteInfo {
     /// the water shader draws instead (see
     /// [`crate::water::hides_for_water_render`]).
     pub hide_for_water_render: bool,
+}
+
+impl Default for SpriteInfo {
+    /// A blank sprite; `tintMod` starts white, as `IsoSprite`'s does.
+    fn default() -> Self {
+        SpriteInfo {
+            name: String::new(),
+            tileset: String::new(),
+            tile_sheet_index: 0,
+            cutaway_hint: None,
+            window_shape: None,
+            texture: None,
+            soff_x: 0,
+            soff_y: 0,
+            render_layer: 0,
+            depth_flags: 0,
+            cut_n: false,
+            cut_w: false,
+            tile_type: TileType::default(),
+            flags: SpriteFlags::default(),
+            is_bush: false,
+            can_be_removed: false,
+            attached_floor: false,
+            always_draw: false,
+            force_ambient: false,
+            solid: false,
+            solid_trans: false,
+            sloped: false,
+            tint_mod: [1.0; 3],
+            stairs: None,
+            depth_texture: None,
+            grid_levels: 0,
+            grid_pos_z: 0,
+            hide_for_water_render: false,
+        }
+    }
 }
 
 impl SpriteInfo {
@@ -201,6 +237,11 @@ pub struct RenderObject {
     pub container_count: u32,
     /// `overlaySprite` and `overlaySpriteColor`.
     pub overlay: Option<Overlay>,
+    /// For an `IsoFire`: what drawing its animations reads.
+    pub fire: Option<crate::fire::FireRender>,
+    /// For an `IsoFireplace` or `IsoBarbecue`: which of `attached` are
+    /// animated and how they are drawn.
+    pub hearth: Option<crate::hearth::HearthRender>,
 }
 
 /// A garage door segment's place in its door.
@@ -229,6 +270,8 @@ impl RenderObject {
             fascia_attached: None,
             container_count: 0,
             overlay: None,
+            fire: None,
+            hearth: None,
         }
     }
 
@@ -402,6 +445,10 @@ pub trait DepthMaps {
     fn cutaway_stencil(&self, _index: usize) -> Option<Texture> {
         None
     }
+    /// `getBillboardDepthTexture()` when not empty (fire sprites).
+    fn billboard(&self) -> Option<Texture> {
+        None
+    }
 }
 
 impl DepthMaps for pz_render::tile_depth::TileDepthTextureManager {
@@ -411,6 +458,14 @@ impl DepthMaps for pz_render::tile_depth::TileDepthTextureManager {
 
     fn default_texture(&self) -> Option<Texture> {
         let t = self.default_depth_texture()?;
+        if t.is_empty() {
+            return None;
+        }
+        t.uploaded_texture().cloned()
+    }
+
+    fn billboard(&self) -> Option<Texture> {
+        let t = self.billboard_depth_texture()?;
         if t.is_empty() {
             return None;
         }

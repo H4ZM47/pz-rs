@@ -299,6 +299,29 @@ impl ChunkRenderer<'_> {
         ctx.out.push(DrawCmd::DepthFunc(gl::ALWAYS));
     }
 
+    /// `renderOneChunk_AnimatedAttachments`: the flames and smoke of the
+    /// fireplaces and barbecues on `squares` (one chunk's on-screen
+    /// squares, levels ascending) whose objects are not drawn in the
+    /// translucent pass (those draw theirs there).
+    pub fn render_animated_attachments(&self, squares: &[&RenderSquare], out: &mut Vec<DrawCmd>) {
+        let mut ctx = SpriteCtx { cam: &self.cam, chunk: None, depth_maps: self.depth_maps, out };
+        let cv = self.cutaways.as_ref();
+        ctx.out.push(DrawCmd::GlEnable(gl::DEPTH_TEST));
+        ctx.out.push(DrawCmd::DepthFunc(gl::LEQUAL));
+        ctx.out.push(DrawCmd::DepthMask(false));
+        for sq in squares.iter().copied().filter(|s| cv.is_none_or(|cv| cv.is_visible(s))) {
+            for obj in &sq.objects {
+                let layer = alpha::render_layer(cv, sq, obj);
+                if matches!(layer, Layer::None | Layer::Translucent | Layer::TranslucentSE) || !crate::hearth::has_animated_attachments(obj) {
+                    continue;
+                }
+                crate::hearth::render_animated_attachments(&mut ctx, sq, obj);
+            }
+        }
+        ctx.out.push(DrawCmd::DepthMask(false));
+        ctx.out.push(DrawCmd::DepthFunc(gl::ALWAYS));
+    }
+
     /// `FBORenderChunkManager.endFrame`: every recorded chunk texture
     /// composited into the offscreen buffer under a screen-pixel projection,
     /// then the zoomed projection restored.
@@ -546,6 +569,13 @@ fn render_translucent(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &RenderOb
         render_door_or_wall(ctx, sq, &o, t, cv);
     } else {
         render_not_door_or_wall(ctx, sq, &o);
+    }
+    // hasAnimatedAttachments: a fire's flames and smoke.
+    if o.kind == ObjectKind::Fire {
+        crate::fire::render_animated_attachments(ctx, sq, &o);
+    }
+    if crate::hearth::has_animated_attachments(&o) {
+        crate::hearth::render_animated_attachments(ctx, sq, &o);
     }
 }
 
@@ -925,6 +955,13 @@ fn render_not_door_or_wall(ctx: &mut SpriteCtx<'_>, sq: &RenderSquare, obj: &Ren
         ctx,
         &SpriteDraw { sprite, obj: Some(obj), main: true, x, y, z, dir: Dir::Other, offset_x: obj.offset_x, offset_y, col, alpha: obj.alpha, flip: obj.flip, modifier: Modifier::None, seam: None },
     );
+    // With animated attachments (a fireplace's flames, a barbecue's
+    // smoke) `IsoObject.render` skips the overlay and attached sprites;
+    // `IsoFireplace.render` draws its logs itself.
+    if crate::hearth::has_animated_attachments(obj) {
+        crate::hearth::render_static(ctx, sq, obj, sq.light_info);
+        return;
+    }
     render_overlay(ctx, sq, obj, x, y, z, sq.light_info);
     render_attached(ctx, obj, x, y, z, Dir::Other, sq.light_info, false, Modifier::None);
 }

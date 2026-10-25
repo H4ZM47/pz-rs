@@ -12,9 +12,9 @@ use pz_world::{
     PowerSettings, SpriteTables, WorldState,
 };
 use pz_world_render::{
-    default_player, grid_square, seam_neighbours, wall_type, NoTextures, NoWorldHooks, NoonSettings,
-    PlayerFrameInput, RenderSettings, RenderSettingsSource, RenderWorld, SpriteCache, StateLighting, WorldHooks,
-    WorldLighting, WorldView,
+    default_player, grid_square, seam_neighbours, wall_type, CellLight, NoTextures, NoWorldHooks,
+    NoonSettings, PlayerFrameInput, RenderSettings, RenderSettingsSource, RenderWorld, SpriteCache,
+    StateLighting, WorldHooks, WorldLighting, WorldView,
 };
 
 /// Hand-authored enum tables: the names pz-world and this crate refer to,
@@ -473,4 +473,202 @@ fn world_state_feeds_lighting() {
     let t = ws.torches();
     assert_eq!(t.len(), 1);
     assert_eq!((t[0].id, t[0].dist, t[0].strength), (9, 7.0, 0.5));
+}
+
+/// Night frames for a player at (14.5, 15.5), returning the render world
+/// with the results applied.
+fn lit_world(view: &WorldView<'_>, lighting: &mut WorldLighting, frames: usize) -> RenderWorld {
+    let mut world = RenderWorld::new();
+    let mut cache = SpriteCache::new();
+    for wx in 1..=3 {
+        for wy in 1..=3 {
+            world.build_chunk(view, wx, wy, &mut cache, &mut NoTextures);
+        }
+    }
+    run(view, lighting, &mut Night, frames, IsoDirection::E);
+    lighting.apply(0, &mut world);
+    world
+}
+
+#[test]
+fn a_fire_lights_its_neighbours_through_its_stages() {
+    use pz_core::random::Rand;
+    use pz_iso_render::fire::{FireEvent, FireSquare, FireState, FIRE_COLOR, LIGHT_RGB};
+    use pz_world_render::LightLink;
+
+    let (cell, m, meta) = scene();
+    let view = WorldView {
+        cell: &cell,
+        meta: &meta,
+        sprites: &m,
+    };
+    let (_, mut dark) = build(&view);
+    let dark = lit_world(&view, &mut dark, 12);
+
+    let (_, mut lighting) = build(&view);
+    let r = Rand::new(21);
+    let mut fire = FireState::new_fire(FireSquare::default(), 1000, 1000, &r);
+    let mut link = LightLink::new();
+    let (fx, fy) = (13, 15);
+    // The first update adds the light (radius 5, LIGHT_R/G/B).
+    fire.update(0.0, 0.0, 0, 1.0, &r);
+    link.sync_fire(&mut lighting, &fire, fx, fy, 0);
+    let first = link.key.unwrap();
+    let ls: Vec<_> = lighting.lampposts().map(|(k, l, d)| (k, *l, d)).collect();
+    assert_eq!(ls.len(), 1);
+    let [lr, lg, lb] = LIGHT_RGB;
+    assert_eq!(ls[0].1, CellLight::new(fx, fy, 0, lr, lg, lb, 5));
+    let world = lit_world(&view, &mut lighting, 12);
+    assert!(lighting.light_id(first).is_some());
+    let near = |w: &RenderWorld| w.squares[&(fx + 1, fy, 0)].light_level;
+    let far = |w: &RenderWorld| w.squares[&(fx + 6, fy, 0)].light_level;
+    assert!(near(&world) > near(&dark) + 0.2, "{} {}", near(&world), near(&dark));
+    // Six squares away, ahead of the player: outside radius 5.
+    assert!((far(&world) - far(&dark)).abs() < 0.01, "{} {}", far(&world), far(&dark));
+
+    // Stage 1 keeps radius 5; stage 2 replaces the light with radius 8 in
+    // fireColor.
+    let mut changed = 0;
+    while fire.life_stage < 2 {
+        let ev = fire.update_from_timer(1.0001, &r);
+        changed += ev.iter().filter(|e| **e == FireEvent::LightChanged).count();
+        link.sync_fire(&mut lighting, &fire, fx, fy, 0);
+    }
+    assert_eq!(changed, 1);
+    let second = link.key.unwrap();
+    assert_ne!(second, first);
+    let ls: Vec<_> = lighting.lampposts().map(|(k, l, d)| (k, *l, d)).collect();
+    let [cr, cg, cb] = FIRE_COLOR;
+    assert_eq!(ls.len(), 2);
+    assert_eq!((ls[0].0, ls[0].2), (first, true));
+    assert_eq!((ls[1].0, ls[1].1, ls[1].2), (second, CellLight::new(fx, fy, 0, cr, cg, cb, 8), false));
+    let world = lit_world(&view, &mut lighting, 12);
+    assert_eq!(lighting.light_id(first), None);
+    assert!(lighting.light_id(second).is_some());
+    assert_eq!(lighting.lampposts().count(), 1);
+    assert!(far(&world) > far(&dark) + 0.05, "{} {}", far(&world), far(&dark));
+
+    // Through stage 5 (radius 1); its fade scales the light's colour in
+    // place.
+    while fire.life_stage < 5 {
+        fire.update_from_timer(1.0001, &r);
+        link.sync_fire(&mut lighting, &fire, fx, fy, 0);
+    }
+    let last = link.key.unwrap();
+    assert_eq!(lighting.lamppost_mut(last).unwrap().radius, 1);
+    fire.update(0.0, 0.0, 0, 0.5, &r);
+    link.sync_fire(&mut lighting, &fire, fx, fy, 0);
+    assert_eq!(link.key, Some(last));
+    let l = *lighting.lamppost_mut(last).unwrap();
+    assert_eq!((l.r, l.g, l.b), (lr * 0.5, lg * 0.5, lb * 0.5));
+    lit_world(&view, &mut lighting, 2);
+    assert!(lighting.light_id(last).is_some());
+
+    // removeFromWorld: the light leaves with the next frame.
+    link.remove(&mut lighting);
+    let world = lit_world(&view, &mut lighting, 12);
+    assert_eq!(lighting.light_id(last), None);
+    assert_eq!(lighting.lampposts().count(), 0);
+    assert!((near(&world) - near(&dark)).abs() < 0.01);
+}
+
+#[test]
+fn a_fireplace_light_follows_its_fuel() {
+    use pz_core::random::Rand;
+    use pz_iso_render::hearth::{FireplaceInput, FireplaceState};
+    use pz_world_render::LightLink;
+
+    let (cell, m, meta) = scene();
+    let view = WorldView {
+        cell: &cell,
+        meta: &meta,
+        sprites: &m,
+    };
+    let (_, mut lighting) = build(&view);
+    let r = Rand::new(2);
+    let mut fp = FireplaceState::new();
+    let mut link = LightLink::new();
+    let input = |lit, fuel_amount| FireplaceInput {
+        lit,
+        fuel_amount,
+        sprite_name: "fixtures_fireplace_01_0",
+        container_type: Some("fireplace"),
+        collide_w: true,
+        ..Default::default()
+    };
+    let size = |_: &str| Some((128, 256));
+    fp.update(&input(true, 90), 0.0, &r, &size);
+    link.sync_fireplace(&mut lighting, &fp, 16, 17, 0);
+    let first = link.key.unwrap();
+    assert_eq!(lighting.lamppost_mut(first).unwrap().radius, 8);
+    lit_world(&view, &mut lighting, 3);
+    assert!(lighting.light_id(first).is_some());
+    // Fuel below an hour shrinks the light: a new one replaces it.
+    fp.update(&input(true, 30), 0.0, &r, &size);
+    link.sync_fireplace(&mut lighting, &fp, 16, 17, 0);
+    let second = link.key.unwrap();
+    assert_ne!(first, second);
+    assert_eq!(lighting.lamppost_mut(second).unwrap().radius, 4);
+    lit_world(&view, &mut lighting, 3);
+    assert_eq!(lighting.light_id(first), None);
+    assert!(lighting.light_id(second).is_some());
+    // Put out.
+    fp.update(&input(false, 30), 0.0, &r, &size);
+    link.sync_fireplace(&mut lighting, &fp, 16, 17, 0);
+    assert_eq!(link.key, None);
+    lit_world(&view, &mut lighting, 3);
+    assert_eq!(lighting.light_id(second), None);
+    assert_eq!(lighting.lampposts().count(), 0);
+}
+
+#[test]
+fn a_cell_light_stays_while_inside_any_players_chunk_map() {
+    let (cell, m, meta) = scene();
+    let view = WorldView {
+        cell: &cell,
+        meta: &meta,
+        sprites: &m,
+    };
+    let (_, mut lighting) = build(&view);
+    // Player 0's map is chunk (1, 1) alone (squares 8..16); player 1's is
+    // chunks (2, 2)..(3, 3) (squares 16..32). The light is in player 1's.
+    let frame = |lighting: &mut WorldLighting, f: u64| {
+        let input = PlayerFrameInput {
+            index: 0,
+            player: default_player(12.5, 12.5, 0.0, IsoDirection::E),
+            cone: VisionConeInput {
+                worn_items_vision_multiplier: 1.0,
+                ..Default::default()
+            },
+            chunk_x_min: 1,
+            chunk_y_min: 1,
+            chunk_grid_width: 1,
+        };
+        lighting
+            .frame(
+                &view,
+                &input,
+                &mut Night,
+                &NoWorldHooks,
+                f * 33_000_000,
+                &|_, _, _| true,
+            )
+            .unwrap();
+    };
+    lighting.set_chunk_map(1, Some((2, 2, 2)));
+    let key = lighting.add_lamppost(CellLight::new(20, 20, 0, 1.0, 0.5, 0.2, 4));
+    for f in 0..3 {
+        frame(&mut lighting, f);
+    }
+    // Outside player 0's map but inside player 1's: kept and sent.
+    assert_eq!(lighting.lampposts().count(), 1);
+    assert!(lighting.light_id(key).is_some());
+
+    // Player 1 leaves: outside every map, the light goes.
+    lighting.set_chunk_map(1, None);
+    for f in 3..6 {
+        frame(&mut lighting, f);
+    }
+    assert_eq!(lighting.lampposts().count(), 0);
+    assert_eq!(lighting.light_id(key), None);
 }

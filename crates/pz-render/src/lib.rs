@@ -243,6 +243,40 @@ pub enum DrawCmd {
     /// 512x512 reflection textures ([`skybox_texture`]) with the `skybox` or
     /// `skybox_hires` shader.
     SkyBox(Box<SkyBoxDraw>),
+    /// `ModelManager.RenderParticles`' instanced draw with the `fire` or
+    /// `smoke` shader (`ParticlesFire`).
+    Particles(Box<ParticlesDraw>),
+}
+
+/// The shader of a [`ParticlesDraw`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ParticleProgram {
+    /// `fire` (`FireShader`): flames from `FireFlame.png`'s 8x4 frames.
+    Fire,
+    /// `smoke` (`SmokeShader`): puffs from `FireSmokes.png`'s 2x2 cells.
+    Smoke,
+}
+
+/// One `glDrawArraysInstanced` of the particle quad (`Particles.initBuffers`'
+/// strip from -1 to 1) over `particles`. The draw pushes and pops the GL
+/// attributes: blending with `blend_func`, no depth test, viewport
+/// `viewport`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParticlesDraw {
+    pub program: ParticleProgram,
+    /// `mvpMatrix`, column major (`m[col][row]`).
+    pub mvp: [[f32; 4]; 4],
+    /// `FireTime`.
+    pub time: f32,
+    /// `FireParam[col][row]`.
+    pub param: [[f32; 3]; 3],
+    /// `FireTexture` (unit 0).
+    pub texture: Option<Texture>,
+    /// Attribute 1 (`Particule`) per instance: x, y, id, slot fraction.
+    pub particles: Vec<[f32; 4]>,
+    /// `glBlendFunc(src, dst)`.
+    pub blend_func: [u32; 2],
+    pub viewport: (u32, u32),
 }
 
 /// The ids of `SkyBox`'s two render textures (`textureFboA`/`B`), reserved

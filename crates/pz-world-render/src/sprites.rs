@@ -189,7 +189,6 @@ fn build(
         door_n: has(f.doorN),
         door_w: has(f.doorW),
         never_cutaway: has(f.NeverCutaway),
-        vegitation: has(f.vegitation),
         door_trans: p.has_name(&sprites.alias, "doorTrans"),
         garage_door: p.has_name(&sprites.alias, "GarageDoor"),
         attached_surface: opt(named.attached_surface),
@@ -207,6 +206,7 @@ fn build(
         transparent_n: has(f.transparentN),
         transparent_w: has(f.transparentW),
         exterior: has(f.exterior),
+        vegitation: has(f.vegitation),
     };
     let name = sp.name().to_string();
     let grid = sp.sprite_grid.map(|g| &sprites.grids[g]);

@@ -11,3 +11,4 @@ pz-kahlua = { path = "../pz-kahlua" }
 
 [dev-dependencies]
 pz-gpu = { path = "../pz-gpu" }
+pz-fs = { path = "../pz-fs" }
