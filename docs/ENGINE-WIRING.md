@@ -379,28 +379,28 @@ registered):
       and hand the returned textures to `Combiner::release` after
       `render_frame` (#94).
 
-- [ ] Frame extras (ws/frame-extras): build the world frame with
+- [ ] Frame extras (#126): build the world frame with
       `frame::world_frame_extras(.., &mut FrameExtras { .. }, ..)`; a field
       left `None` draws nothing. `ModelOutlines.endFrameMain` now runs after
       the weather, area highlights and LineDrawer, as in
       `IngameState.renderframe`.
-- [ ] Corpse flies (ws/frame-extras): `RenderSquare.flies` from
+- [ ] Corpse flies (#126): `RenderSquare.flies` from
       `IsoGridSquare.hasFlies` (set by the corpse rot simulation); keep one
       `flies::CorpseFlies` (texture `media/textures/CorpseFlies.png`), call
       `update(realworldSecondsSinceLastUpdate)` from `IsoWorld.update` (not
       on a server) and pass it as `FrameExtras.flies`.
-- [ ] Object highlight (ws/frame-extras): `RenderObject.highlight =
+- [ ] Object highlight (#126): `RenderObject.highlight =
       Some(ObjectHighlight { color: getHighlightColor(playerIndex),
       alpha_scale: isBlink() ? Core.blinkAlpha : 1 })` while
       `isHighlighted(playerIndex)` (the render-once bookkeeping of
       `objectHighlightRendered` stays with the owner); `FrameExtras.highlight
       = Some(HighlightFrame { creating_thumbnail })`.
-- [ ] Opaque-objects event (ws/frame-extras): `FrameExtras.opaque_event`
+- [ ] Opaque-objects event (#126): `FrameExtras.opaque_event`
       with the joypad flag, `UIManager.getPickedTile()`,
       `IsoWorld.isValidSquare` and a handler raising Lua's
       `RenderOpaqueObjectsInWorld(playerIndex, x, y, z, square)` whose
       handlers (ISBuildingObject ghosts, fishing Bobber) draw into the list.
-- [ ] Markers (ws/frame-extras): `FrameExtras.markers` with
+- [ ] Markers (#126): `FrameExtras.markers` with
       `WorldMarkers.gridSquareMarkers` after `update()`'s fade/blink
       (`GridSquareMarker`), `IsoMarkers.markers` (`IsoMarker`, with the item
       model's draws when it has one), `circle_center.png` and
@@ -409,13 +409,13 @@ registered):
       points and direction arrows draw in `renderframetext` (screen space)
       with `markers::render_frame_text`; their placement
       (`WorldMarkers.update`/`PlayerScreen`) is not ported.
-- [ ] Area highlights (ws/frame-extras): `FrameExtras.area_highlights` with
+- [ ] Area highlights (#126): `FrameExtras.area_highlights` with
       this UI frame's `FBORenderAreaHighlights.addHighlight*` calls, the
       client's non-PvP zones and safehouses (when shown), the animal
       designation zones (when `isSeeDesignationZone`), the chunk map bounds
       and a white texture; outlines go through `LineDrawer`
       (`area_highlights::render_lines`).
-- [ ] Vision cone (ws/frame-extras): `FrameExtras.vision` = a
+- [ ] Vision cone (#126): `FrameExtras.vision` = a
       `vispoly::VisionFrame` each frame: `vision_cone` from
       `LightingJNI.calculateVisionCone` (pz-lighting), look angle/vector and
       the reversing-driver flag from the player/pz-vehicles,
@@ -428,7 +428,7 @@ registered):
       `VisSquare` flags from pz-world's line of sight, and drain
       pz-world-render's `PendingRender.vispoly` into
       `VisPolyChunks::invalidate(wx, wy, level)` each frame.
-- [ ] Cell fog (ws/frame-extras): keep a `fog::ImprovedFog`; the weather
+- [ ] Cell fog (#126): keep a `fog::ImprovedFog`; the weather
       owner calls `init(fogIntensity)` at world start and
       `update(&FogClimate)` once per tick (ClimateManager fog intensity,
       new-fog exterior colour, wind angle and intensity, `GameTime`
@@ -437,7 +437,7 @@ registered):
       media/textures/weather/fognew/fog_noise.png, player (x, y, z,
       isInARoom, in a vehicle), storm (tropical storm or thunderstorm
       running), right_click_off, offscreen_left/top, .. }`.
-- [ ] New draw commands (ws/frame-extras): `DrawCmd::ImprovedFog` and
+- [ ] New draw commands (#126): `DrawCmd::ImprovedFog` and
       `DrawCmd::VisibilityPolygon` are executed by pz-gpu (`fog.wgsl`,
       `vispoly.wgsl`); any other backend must handle them.
 
