@@ -15,6 +15,13 @@ pub enum MeshKind {
     /// `ImportedSkinnedMesh`: position, normal, 4 bone weights, 4 bone
     /// indices (as floats), uv (16 floats per vertex).
     Skinned,
+    /// A vehicle's static mesh: position, normal, the first and second UV
+    /// sets (10 floats per vertex; the second set is zero when the mesh
+    /// has one, as GL's disabled attribute array reads).
+    StaticUv2,
+    /// A vehicle's skinned mesh: the skinned layout plus the second UV set
+    /// (18 floats per vertex).
+    SkinnedUv2,
 }
 
 impl MeshKind {
@@ -23,6 +30,8 @@ impl MeshKind {
         match self {
             MeshKind::Static => 8,
             MeshKind::Skinned => 16,
+            MeshKind::StaticUv2 => 10,
+            MeshKind::SkinnedUv2 => 18,
         }
     }
 }
@@ -83,4 +92,106 @@ pub struct ModelDraw {
     pub hue: f32,
     pub alpha: f32,
     pub pass: ModelPass,
+}
+
+/// The vehicle shader a vehicle mesh draws with (the model script's
+/// `shader`, after `ModelManager.modifyShaderName`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VehicleShader {
+    /// `vehicle`: one UV set for every texture; the older damage blend.
+    Vehicle,
+    /// `vehicle_multiuv`: rust, damage and blood on the second UV set;
+    /// the paint colour fills the skin's transparent texels.
+    MultiUv,
+    /// `vehicle_norandom_multiuv`: as `MultiUv` without the paint fill;
+    /// the damage tint takes the skin's own hue.
+    NoRandomMultiUv,
+    /// `vehiclewheel`: the texture lit and tinted, alpha from `Alpha`.
+    Wheel,
+}
+
+impl VehicleShader {
+    /// The script's shader name (with or without `_noreflect`); `None`
+    /// for non-vehicle shaders. The second value says whether the
+    /// `_noreflect` program is used.
+    pub fn from_name(name: &str) -> Option<(VehicleShader, bool)> {
+        let (base, noreflect) = match name.strip_suffix("_noreflect") {
+            Some(b) => (b, true),
+            None => (name, false),
+        };
+        let s = match base {
+            "vehicle" => VehicleShader::Vehicle,
+            "vehicle_multiuv" => VehicleShader::MultiUv,
+            "vehicle_norandom_multiuv" => VehicleShader::NoRandomMultiUv,
+            "vehiclewheel" => VehicleShader::Wheel,
+            _ => return None,
+        };
+        Some((s, noreflect))
+    }
+
+    /// `Shader.isVehicleShader`: has the `TextureRust` uniform.
+    pub fn is_vehicle_shader(self) -> bool {
+        self != VehicleShader::Wheel
+    }
+}
+
+/// The textures a vehicle shader samples (`VehicleModelInstance`), in
+/// texture-unit order: `Texture0` (or `Texture` for the wheel shader),
+/// `TextureRust`, `TextureMask`, `TextureLights`, `TextureDamage1Overlay`,
+/// `TextureDamage1Shell`, `TextureDamage2Overlay`, `TextureDamage2Shell`,
+/// `TextureReflectionA`, `TextureReflectionB`.
+pub type VehicleTextures = [Option<Texture>; 10];
+
+/// The uniforms `Model.DrawVehicle` sets from a `VehicleModelInstance`.
+/// The enable matrices are the instance's `float[16]` arrays as uploaded
+/// (`glUniformMatrix4fv(.., transpose = true, ..)`: element `[c][r]` of
+/// the GLSL matrix is `array[r * 4 + c]`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct VehicleUniforms {
+    pub texture_uninstall: [[f32; 16]; 2],
+    pub texture_lights_enables: [[f32; 16]; 2],
+    pub texture_damage1_enables: [[f32; 16]; 2],
+    pub texture_damage2_enables: [[f32; 16]; 2],
+    pub matrix_blood1_enables: [[f32; 16]; 2],
+    pub matrix_blood2_enables: [[f32; 16]; 2],
+    pub texture_rust_a: f32,
+    /// `TexturePainColor`: the paint hue, saturation and value, and the
+    /// slot's alpha.
+    pub paint_color: [f32; 4],
+    /// `ReflectionParam`: the sky box's texture shift, `refWindows`,
+    /// `refBody`.
+    pub reflection: [f32; 3],
+}
+
+impl Default for VehicleUniforms {
+    fn default() -> Self {
+        VehicleUniforms {
+            texture_uninstall: [[0.0; 16]; 2],
+            texture_lights_enables: [[0.0; 16]; 2],
+            texture_damage1_enables: [[0.0; 16]; 2],
+            texture_damage2_enables: [[0.0; 16]; 2],
+            matrix_blood1_enables: [[0.0; 16]; 2],
+            matrix_blood2_enables: [[0.0; 16]; 2],
+            texture_rust_a: 0.0,
+            paint_color: [0.0, 0.5, 0.5, 1.0],
+            reflection: [0.0, 0.5, 0.4],
+        }
+    }
+}
+
+/// One mesh of a vehicle (`Model.DrawVehicle`): the base model draw (its
+/// matrices, lights, ambient, tint, `targetDepth` and alpha; `texture` is
+/// unused) plus the vehicle shader, its textures and uniforms. Drawn with
+/// blending (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), depth LESS with writes,
+/// alpha test GREATER 0 and front faces culled (back faces with
+/// `invertX`).
+#[derive(Clone, Debug)]
+pub struct VehicleDraw {
+    pub base: ModelDraw,
+    pub shader: VehicleShader,
+    /// The `_noreflect` program (`bPerfReflections` off).
+    pub noreflect: bool,
+    pub invert_x: bool,
+    pub textures: VehicleTextures,
+    pub uniforms: VehicleUniforms,
 }

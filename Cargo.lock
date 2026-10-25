@@ -1770,6 +1770,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-vehicle-render"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "pz-anim",
+ "pz-character-model",
+ "pz-fs",
+ "pz-gpu",
+ "pz-inventory",
+ "pz-iso-render",
+ "pz-model",
+ "pz-render",
+ "pz-scripts",
+ "pz-vehicles",
+]
+
+[[package]]
 name = "pz-vehicles"
 version = "0.1.0"
 dependencies = [

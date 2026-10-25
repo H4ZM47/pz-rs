@@ -130,6 +130,9 @@ impl ModelPipelines {
         let (vs, attrs, stride): (&str, &[wgpu::VertexAttribute], u64) = match key.kind {
             MeshKind::Static => ("vs_static", &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2], 32),
             MeshKind::Skinned => ("vs_skinned", &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x2], 64),
+            // The vehicle layouts through basicEffect: the first UV set.
+            MeshKind::StaticUv2 => ("vs_static", &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2], 40),
+            MeshKind::SkinnedUv2 => ("vs_skinned", &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4, 4 => Float32x2], 72),
         };
         let (format, depth_format) = match key.target {
             TargetKind::Main => (main_format, state::DEPTH_STENCIL_FORMAT),

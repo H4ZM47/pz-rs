@@ -1188,6 +1188,31 @@ impl ImportedStaticMesh {
     }
 }
 
+impl ImportedStaticMesh {
+    /// The vehicle layout (`MeshKind::StaticUv2`: position, normal, the
+    /// first and second UV sets, zeros where the mesh has fewer).
+    pub fn to_mesh_data_uv2(&self, id: u64) -> crate::MeshData {
+        let s = self.stride();
+        let mut v = Vec::with_capacity(self.vertices.len() / s.max(1) * 10);
+        for c in self.vertices.chunks_exact(s) {
+            v.extend_from_slice(&c[0..6]);
+            for k in 0..2 {
+                if k < self.num_uvs {
+                    v.extend_from_slice(&c[6 + 2 * k..8 + 2 * k]);
+                } else {
+                    v.extend_from_slice(&[0.0, 0.0]);
+                }
+            }
+        }
+        crate::MeshData {
+            id,
+            kind: crate::MeshKind::StaticUv2,
+            vertices: v,
+            indices: self.elements.clone(),
+        }
+    }
+}
+
 impl ImportedSkinnedMesh {
     /// The render layout (`MeshKind::Skinned`, first UV set).
     pub fn to_mesh_data(&self, id: u64) -> crate::MeshData {
@@ -1210,11 +1235,46 @@ impl ImportedSkinnedMesh {
     }
 }
 
+impl ImportedSkinnedMesh {
+    /// The vehicle layout (`MeshKind::SkinnedUv2`: the skinned layout plus
+    /// the second UV set, zeros where the mesh has fewer).
+    pub fn to_mesh_data_uv2(&self, id: u64) -> crate::MeshData {
+        let s = self.stride();
+        let mut v = Vec::with_capacity(self.vertices.len() / s.max(1) * 18);
+        for c in self.vertices.chunks_exact(s) {
+            v.extend_from_slice(&c[0..14]);
+            for k in 0..2 {
+                if k < self.num_uvs {
+                    v.extend_from_slice(&c[14 + 2 * k..16 + 2 * k]);
+                } else {
+                    v.extend_from_slice(&[0.0, 0.0]);
+                }
+            }
+        }
+        crate::MeshData {
+            id,
+            kind: crate::MeshKind::SkinnedUv2,
+            vertices: v,
+            indices: self.elements.clone(),
+        }
+    }
+}
+
 impl ProcessedAiScene {
     /// `ProcessedAiScene.applyToMesh`: the first static mesh (bounds and
     /// transform) or the skinned mesh, plus the skeleton. `id` tags the
     /// mesh for GPU caching.
     pub fn into_model_mesh(self, id: u64) -> Option<crate::ModelMesh> {
+        self.into_model_mesh_layout(id, false)
+    }
+
+    /// [`ProcessedAiScene::into_model_mesh`] in the vehicle layouts (both
+    /// UV sets: `MeshKind::StaticUv2` / `SkinnedUv2`).
+    pub fn into_model_mesh_uv2(self, id: u64) -> Option<crate::ModelMesh> {
+        self.into_model_mesh_layout(id, true)
+    }
+
+    fn into_model_mesh_layout(self, id: u64, uv2: bool) -> Option<crate::ModelMesh> {
         let mut min = [f32::MAX; 3];
         let mut max = [-f32::MAX; 3];
         let mut transform = None;
@@ -1223,13 +1283,13 @@ impl ProcessedAiScene {
             min = sm.min_xyz;
             max = sm.max_xyz;
             transform = sm.transform;
-            mesh = Some(sm.to_mesh_data(id));
+            mesh = Some(if uv2 { sm.to_mesh_data_uv2(id) } else { sm.to_mesh_data(id) });
         }
         if let Some(sk) = &self.skinned_mesh {
             if sk.transform.is_some() {
                 transform = sk.transform;
             }
-            mesh = Some(sk.to_mesh_data(id));
+            mesh = Some(if uv2 { sk.to_mesh_data_uv2(id) } else { sk.to_mesh_data(id) });
         }
         Some(crate::ModelMesh {
             mesh: std::rc::Rc::new(mesh?),
