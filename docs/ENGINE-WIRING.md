@@ -170,7 +170,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `getWornItems().contains(item)`, the hand items and `place` for the
       character's items (`CharacterItemOwner` over the `GameCharacter` impl
       in `pz-characters/src/character/item_owner.rs`; done for characters
-      through `character_value`, #WORN). An `ItemLuaEnv` returns
+      through `character_value`, #179). An `ItemLuaEnv` returns
       `bind_item_container::container_owner(item)` from `owner` (as
       `GameItemEnv` does), so `isEquipped`/`isWorn`/`isInPlayerInventory`
       follow `item.container.parent` (bags).
@@ -209,13 +209,13 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Worn items: characters made outside `load_player`,
       `new_survivor` and `new_zombie` (an `IsoPlayer` constructor) must call
       `GameCharacter::init_worn_items(sm, BodyLocations.getGroup("Human"))`
-      or `getWornItems()` is `nil` (#WORN).
+      or `getWornItems()` is `nil` (#179).
 - [x] Item-side `isEquipped()`/`isWorn()` for character items:
       `character_value` (and `setWornItem`) set the inventory's parent with
       `set_parent_with_owner(&inv, character_lua_value,
       Rc::new(CharacterItemOwner::new(&chr)))`, so `GameItemEnv::owner`
       (`container_owner`) reaches the character's hands and `WornItems`
-      (#WORN).
+      (#179).
 - [ ] World containers need their `IsoObject` parent set with
       `bind_item_container::set_parent` the same way (#143).
 - [ ] Shared tooltip: `HudPicking::picked_tile` (`UIManager.getPicked().tile`
