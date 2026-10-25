@@ -176,6 +176,19 @@ Status of the Rust port. Update this file with every merged change.
   headlight light on the ground (needs the lighting pass), sloped-surface
   shadow height, `renderToTexture`.
 
+- Character outlines and item textures: `ModelOutlines` (solid mask with
+  `aim_outline_solid`, `aim_outline_h`/`_v` thickening, masked
+  `aim_outline_blit`, the player masking outlines behind it) in the iso
+  frame's object pass, and `ItemSmartTexture` for held items
+  (`ModelInstanceTextureInitializer`/`EquippedTextureCreator`: tint and
+  `TINT` masks, weapon blood, fluid) and for placed items in the
+  `WorldItemAtlas` (`_Fluid` models, `FLUIDTINT` overlays) through the GPU
+  texture combiner. The outline state machine and passes (buffers,
+  viewports, uniforms, quads at nine zooms) and the item combine command
+  lists match the original's (local harnesses). Not yet: sprite-object
+  outlines (`FBORenderObjectOutline`, `vboRenderer_SpriteOutline`) and
+  `IsoObjectModelDrawer`'s sprite-model outlines; split-screen viewports.
+
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
 
