@@ -16,10 +16,14 @@ pub struct ClimateColorInfo {
     pub exterior: [f32; 4],
 }
 
+/// `new Color(0, 0, 0, 1)`'s alpha: the `int` constructor divides by 255.
+const DEFAULT_ALPHA: f32 = 1.0 / 255.0;
+
 impl Default for ClimateColorInfo {
-    /// `new ClimateColorInfo()`: both black with alpha 1.
+    /// `new ClimateColorInfo()`: both `new Color(0, 0, 0, 1)` (the `int`
+    /// constructor: black with alpha 1/255).
     fn default() -> Self {
-        ClimateColorInfo { interior: [0.0, 0.0, 0.0, 1.0], exterior: [0.0, 0.0, 0.0, 1.0] }
+        ClimateColorInfo { interior: [0.0, 0.0, 0.0, DEFAULT_ALPHA], exterior: [0.0, 0.0, 0.0, DEFAULT_ALPHA] }
     }
 }
 
