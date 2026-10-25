@@ -1,6 +1,9 @@
 //! `zombie.GameWindow`: window, event loop and the per-frame
 //! logic/render sequence, rendering through `pz-gpu`.
 
+use crate::game_loading::LoadingQueueState;
+use crate::game_state::{state, GameStateMachine, StateCx};
+use crate::iso_world::{IsoWorld, NewGameSetup};
 use crate::main_screen::MainScreenState;
 use pz_core::core::Core;
 use pz_lua_api::LuaManager;
@@ -19,6 +22,68 @@ pub struct Launch {
     pub game_dir: PathBuf,
     /// Cache directory (the original's `~/Zomboid`).
     pub cache_dir: PathBuf,
+    pub start: Start,
+}
+
+/// Where the state machine starts.
+#[derive(Clone, Debug, Default)]
+pub enum Start {
+    /// The title screen (`MainScreenState`).
+    #[default]
+    MainMenu,
+    /// Development entry: what the main menu's Lua does before it calls
+    /// `forceChangeState(LoadingQueueState.new())` (`setGameMode`,
+    /// `createWorld`, `initWorld`'s player setup), without the menu.
+    Game(DevGame),
+}
+
+/// A game the development entry starts.
+#[derive(Clone, Debug)]
+pub struct DevGame {
+    /// `Core.gameMode` (`getWorld():setGameMode`).
+    pub game_mode: String,
+    /// The save folder's name (`Core.gameSaveWorld`).
+    pub world: String,
+    /// `Some` for a new game: `createWorld(world)` and the player setup;
+    /// `None` loads the existing save.
+    pub new_game: Option<NewGameSetup>,
+    /// `Core.gameMap` for a new game (`getWorld():setMap`).
+    pub map: String,
+}
+
+impl Start {
+    /// The player setup `IsoWorld.init` uses for a new game.
+    pub fn new_game_setup(&self) -> Option<NewGameSetup> {
+        match self {
+            Start::Game(g) => g.new_game.clone(),
+            Start::MainMenu => None,
+        }
+    }
+
+    /// Whether `GameLoadingState` takes the "click to start" by itself
+    /// (the development entry runs without anyone to click).
+    pub fn click_to_skip(&self) -> bool {
+        matches!(self, Start::Game(_))
+    }
+}
+
+/// `LuaManager.GlobalObject.createWorld(worldName)`: the save folder (unless
+/// saving is off) with its subdirectories, and `Core.gameSaveWorld`.
+pub fn create_world(cache_dir: &std::path::Path, world_name: &str) -> Result<(), String> {
+    let name = if world_name.is_empty() { "blah" } else { world_name };
+    let name = pz_lua_api::savefile::sanitize_world_name(name);
+    let core = pz_lua_api::bind_core::shared_core();
+    let (mode, no_save) = {
+        let c = core.borrow();
+        (c.game_mode.clone(), c.is_no_save())
+    };
+    let dir = cache_dir.join("Saves").join(mode).join(&name);
+    if !no_save {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        pz_lua_api::world_save::ensure_subdirectories_exist(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    core.borrow_mut().game_save_world = name;
+    Ok(())
 }
 
 struct App {
@@ -27,7 +92,10 @@ struct App {
     gpu: Option<pz_gpu::Gpu>,
     lua: Option<LuaManager>,
     core: Rc<RefCell<Core>>,
-    state: MainScreenState,
+    /// `GameWindow.states`.
+    states: GameStateMachine,
+    /// `IsoWorld.instance` once a game loads.
+    world: Option<IsoWorld>,
     last_frame: Instant,
     /// `Controllers` backend (gilrs); `None` when unavailable.
     gamepads: Option<pz_input::gamepads::Gamepads>,
@@ -53,7 +121,8 @@ pub fn run(launch: Launch) -> Result<(), String> {
         gpu: None,
         lua: None,
         core,
-        state: MainScreenState::default(),
+        states: GameStateMachine::default(),
+        world: None,
         last_frame: Instant::now(),
         gamepads: None,
         audio: None,
@@ -64,7 +133,6 @@ pub fn run(launch: Launch) -> Result<(), String> {
 
 impl App {
     fn boot(&mut self) -> Result<(), String> {
-        let (w, h) = self.screen_size();
         let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&self.launch.game_dir)));
         fs.borrow_mut().set_cache_dir(&self.launch.cache_dir);
         pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
@@ -87,9 +155,42 @@ impl App {
         pz_lua_api::hud::init_ui(&mut lua.thread);
         lua.load_all_client();
         lua.trigger_event("OnGameBoot", &[]);
-        self.state.enter(&mut lua, w, h);
         self.lua = Some(lua);
+        self.init_states()
+    }
+
+    /// The end of `GameWindow.init`: the listed states (entered by the
+    /// first `states.update()`), or the development entry's game.
+    fn init_states(&mut self) -> Result<(), String> {
+        match self.launch.start.clone() {
+            Start::MainMenu => {
+                // TODO(port): `TISLogoState` and `TermsOfServiceState` come
+                // first (`loopToState = 1` outside debug, the terms screen).
+                self.states.states.push(state(MainScreenState::default()));
+            }
+            Start::Game(g) => {
+                {
+                    let mut c = self.core.borrow_mut();
+                    c.set_game_mode(&g.game_mode);
+                    c.game_save_world = g.world.clone();
+                    if g.new_game.is_some() {
+                        c.game_map = g.map.clone();
+                    }
+                }
+                if g.new_game.is_some() {
+                    create_world(&self.launch.cache_dir, &g.world)?;
+                }
+                // `GameWindow.doRenderEvent(false)`;
+                // `forceChangeState(LoadingQueueState.new())`.
+                self.states.force_next_state(state(LoadingQueueState::default()));
+            }
+        }
         Ok(())
+    }
+
+    /// The current state's class name (`GameWindow.states.current`).
+    pub fn current_state(&self) -> Option<&'static str> {
+        self.states.current_name()
     }
 
     fn screen_size(&self) -> (i32, i32) {
@@ -121,7 +222,18 @@ impl App {
         if let Some(w) = self.window.as_ref() {
             apply_window_requests(w, pz_lua_api::bind_input::take_window_requests());
         }
-        self.state.update(lua, multiplier);
+        {
+            let mut cx = StateCx {
+                lua: &mut *lua,
+                launch: &self.launch,
+                screen_w: w,
+                screen_h: h,
+                multiplier,
+                time_delta: dt,
+                world: &mut self.world,
+            };
+            self.states.update(&mut cx);
+        }
         // SoundManager.instance.Update() (GameWindow.logic, "Sound").
         let toggle_music = pz_lua_api::bind_input::is_key_down_named("Toggle Music") && !pz_lua_api::bind_input::was_key_down_named("Toggle Music");
         pz_lua_api::bind_audio::sound_system().borrow_mut().with(|m, ctx| m.update(toggle_music, ctx));
@@ -137,7 +249,18 @@ impl App {
         }
         // GameWindow.render: states.render.
         let mut dl = pz_render::DrawList::default();
-        self.state.render(lua, &mut dl, w, h, multiplier);
+        {
+            let mut cx = StateCx {
+                lua: &mut *lua,
+                launch: &self.launch,
+                screen_w: w,
+                screen_h: h,
+                multiplier,
+                time_delta: dt,
+                world: &mut self.world,
+            };
+            self.states.render(&mut cx, &mut dl);
+        }
         if let Some(gpu) = self.gpu.as_mut() {
             let tm = pz_lua_api::bind_render::textures();
             let params = pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(w as u32, h as u32) };
@@ -236,32 +359,48 @@ fn apply_window_requests(w: &Window, requests: Vec<pz_input::WindowRequest>) {
     }
 }
 
-/// Boot headless, run `frames` main-menu frames and return the last frame
-/// as RGBA pixels (width, height, data).
+/// Boot headless, run `frames` frames and return the last frame as RGBA
+/// pixels (width, height, data).
 pub fn render_headless(launch: Launch, frames: u32) -> Result<(u32, u32, Vec<u8>), String> {
+    let (w, h, px) = headless(launch, frames, true)?;
+    Ok((w, h, px.unwrap_or_default()))
+}
+
+/// Boot headless without a GPU and run `frames` frames (logic and the
+/// draw lists, nothing presented); returns the state the machine is in.
+pub fn run_headless(launch: Launch, frames: u32) -> Result<Option<&'static str>, String> {
+    let mut app = headless_app(launch)?;
+    app.boot()?;
+    run_headless_lua(&mut app)?;
+    run_frames(&mut app, frames);
+    Ok(app.current_state())
+}
+
+fn headless_app(launch: Launch) -> Result<App, String> {
     let core = pz_lua_api::bind_core::shared_core();
     {
         let mut c = core.borrow_mut();
         c.set_cache_dir(&launch.cache_dir);
         let _ = c.load_options();
     }
-    let mut app = App {
+    Ok(App {
         launch,
         window: None,
         gpu: None,
         lua: None,
         core,
-        state: MainScreenState::default(),
+        states: GameStateMachine::default(),
+        world: None,
         last_frame: Instant::now(),
         gamepads: None,
         audio: None,
         ui_models: None,
-    };
-    let (w, h) = app.screen_size();
-    app.gpu = Some(pz_gpu::Gpu::new_headless(w as u32, h as u32).map_err(|e| e.to_string())?);
-    app.boot()?;
-    // Development harness: `PZ_HEADLESS_LUA=<file>` runs a Lua file after
-    // boot (e.g. to open a screen before the frames).
+    })
+}
+
+/// Development harness: `PZ_HEADLESS_LUA=<file>` runs a Lua file after
+/// boot (e.g. to open a screen before the frames).
+fn run_headless_lua(app: &mut App) -> Result<(), String> {
     if let Some(path) = std::env::var_os("PZ_HEADLESS_LUA") {
         let src = std::fs::read_to_string(&path).map_err(|e| format!("PZ_HEADLESS_LUA: {e}"))?;
         let lua = app.lua.as_mut().ok_or("no Lua")?;
@@ -271,10 +410,25 @@ pub fn render_headless(launch: Launch, frames: u32) -> Result<(u32, u32, Vec<u8>
             eprintln!("PZ_HEADLESS_LUA: {e:?}\n{tr}");
         }
     }
+    Ok(())
+}
+
+fn run_frames(app: &mut App, frames: u32) {
     for _ in 0..frames {
         app.last_frame = Instant::now() - Duration::from_millis(33);
         app.frame();
     }
-    let px = app.gpu.as_ref().unwrap().read_pixels();
+}
+
+fn headless(launch: Launch, frames: u32, gpu: bool) -> Result<(u32, u32, Option<Vec<u8>>), String> {
+    let mut app = headless_app(launch)?;
+    let (w, h) = app.screen_size();
+    if gpu {
+        app.gpu = Some(pz_gpu::Gpu::new_headless(w as u32, h as u32).map_err(|e| e.to_string())?);
+    }
+    app.boot()?;
+    run_headless_lua(&mut app)?;
+    run_frames(&mut app, frames);
+    let px = app.gpu.as_ref().map(|g| g.read_pixels());
     Ok((w as u32, h as u32, px))
 }

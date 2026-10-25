@@ -23,4 +23,12 @@ pz-world-render = { path = "../pz-world-render" }
 pz-input = { workspace = true, features = ["winit", "gilrs"] }
 pz-audio.workspace = true
 pz-sound = { path = "../pz-sound", features = ["studio"] }
+pz-classfile.workspace = true
+pz-erosion.workspace = true
+pz-pathfind.workspace = true
+pz-popman.workspace = true
+pz-sandbox.workspace = true
+pz-world-popman.workspace = true
+pz-worldgen.workspace = true
+pz-text.workspace = true
 winit = "0.30"
