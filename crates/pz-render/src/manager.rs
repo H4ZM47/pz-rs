@@ -474,4 +474,8 @@ impl TextureLoader for SharedTextures<'_> {
     fn shared_texture(&mut self, path: &str) -> Option<Texture> {
         self.manager.shared_texture(self.fs, path)
     }
+
+    fn image_size(&self, id: u32) -> Option<(i32, i32)> {
+        self.manager.data(id).map(|d| (d.width, d.height))
+    }
 }
