@@ -696,6 +696,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `checkReloading()`.
     fn check_reloading(&mut self, input: &dyn PlayerInput, out: &mut PlayerUpdate, cx: &StateCx<'_, I>) {
         let Some(item) = self.items.primary_hand_item() else { return };
+        let item = &*item.borrow();
         if !crate::character::items::is_hand_weapon(item) || !item.is_ranged() {
             return;
         }
@@ -928,7 +929,7 @@ impl<I: 'static> GameCharacter<I> {
     fn update_aiming_delay(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext) {
         let aiming = self.perk_lv(chars, "Aiming");
         let mut m = 0.0f32;
-        let firearm = self.items.primary_hand_item().and_then(|i| crate::character::firearm::FirearmStats::of(sm, i));
+        let firearm = self.items.primary_hand_item().and_then(|i| crate::character::firearm::FirearmStats::of(sm, &i.borrow()));
         if let Some(f) = &firearm {
             m = self.firearm_recoil_delay(chars, f) as f32 * (aiming as f32 / 30.0);
         }
@@ -943,11 +944,11 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `resetAimingDelay()`.
     pub fn reset_aiming_delay(&mut self, sm: &ScriptManager) {
-        let w = self.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(i));
+        let w = self.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(&i.borrow()));
         match w {
             None => self.vars.aiming_delay = 0.0,
             Some(i) => {
-                let mut d = crate::character::firearm::FirearmStats::of(sm, i).map_or(0, |f| f.aiming_time) as f32;
+                let mut d = crate::character::firearm::FirearmStats::of(sm, &i.borrow()).map_or(0, |f| f.aiming_time) as f32;
                 d *= if self.trait_on(sm, "DEXTROUS") {
                     0.8
                 } else if self.trait_on(sm, "ALL_THUMBS") {
@@ -1081,7 +1082,7 @@ impl<I: 'static> GameCharacter<I> {
             return;
         }
         let sm = cx.sm;
-        let shoes = self.items.worn().any(|i| crate::character::items::is_body_location(sm, i, "SHOES") && i.condition > 0);
+        let shoes = self.items.worn().any(|i| crate::character::items::is_body_location(sm, &i.borrow(), "SHOES") && i.borrow().condition > 0);
         if shoes {
             return;
         }
@@ -1278,7 +1279,7 @@ impl<I: 'static> GameCharacter<I> {
         self.update_movement_momentum(ctx);
         // effectiveEdibleBuffTimer: TODO(food buffs).
         self.update_dirt(out, sm, chars, ctx, cx)?;
-        let aimed = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_some_and(|i| i.is_aimed_firearm());
+        let aimed = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_some_and(|i| i.borrow().is_aimed_firearm());
         if aimed && self.is_player_aiming() {
             // setAngleFromAim, updateBallistics: the firearm code (#114).
             self.set_angle_from_aim_player(cx);
@@ -1392,8 +1393,8 @@ impl<I: 'static> GameCharacter<I> {
             };
             let covers = |c: &Self, id: i32| {
                 c.items.item(id).is_some_and(|i| {
-                    crate::character::items::covered_parts(sm, i).is_some_and(|p| p.contains(&part))
-                        && crate::character::items::visual_hole(i, part) == 0.0
+                    crate::character::items::covered_parts(sm, &i.borrow()).is_some_and(|p| p.contains(&part))
+                        && crate::character::items::visual_hole(&i.borrow(), part) == 0.0
                 })
             };
             if !all_layers {
@@ -1401,9 +1402,11 @@ impl<I: 'static> GameCharacter<I> {
                 match hit {
                     Some(id) => {
                         if intensity > 0.0 {
-                            if let Some(v) = self.items.item_mut(id).and_then(|i| i.visual.as_mut()) {
-                                let d = v.get_dirt(part);
-                                v.set_dirt(part, d + intensity, MAX);
+                            if let Some(i) = self.items.item(id) {
+                                if let Some(v) = i.borrow_mut().visual.as_mut() {
+                                    let d = v.get_dirt(part);
+                                    v.set_dirt(part, d + intensity, MAX);
+                                }
                             }
                             // TODO(items): calcTotalDirtLevel for clothing.
                         }
@@ -1429,10 +1432,12 @@ impl<I: 'static> GameCharacter<I> {
                     continue;
                 }
                 if intensity > 0.0 {
-                    if let Some(v) = self.items.item_mut(id).and_then(|i| i.visual.as_mut()) {
-                        let d = v.get_dirt(part);
-                        v.set_dirt(part, d + intensity, MAX);
-                        current = v.get_dirt(part);
+                    if let Some(i) = self.items.item(id) {
+                        if let Some(v) = i.borrow_mut().visual.as_mut() {
+                            let d = v.get_dirt(part);
+                            v.set_dirt(part, d + intensity, MAX);
+                            current = v.get_dirt(part);
+                        }
                     }
                 }
                 if next_bool(ctx, ((current * 100.0) as i32 - 100).abs()) {

@@ -168,16 +168,16 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `isWearingGlasses()`: a worn visual aid.
     pub fn is_wearing_glasses(&self, sm: &ScriptManager) -> bool {
-        self.items.worn().any(|i| script_item(sm, i).is_some_and(|s| s.borrow().visual_aid))
+        self.items.worn().any(|i| script_item(sm, &i.borrow()).is_some_and(|s| s.borrow().visual_aid))
     }
 
     /// `HandWeapon.checkJam(player, racking)` on the weapon item `id`:
     /// draws `Rand.Next(0f, 1f)` unless the chance is 0; returns
     /// `isJammed()`.
     pub fn check_jam(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, id: i32, racking: bool) -> bool {
-        let Some(mut item) = self.items.item(id).cloned() else { return false };
+        let Some(mut item) = self.items.item(id).map(|i| i.borrow().clone()) else { return false };
         let r = self.check_jam_item(sm, chars, ctx, &mut item, racking);
-        *self.items.item_mut(id).expect("weapon present above") = item;
+        *self.items.item(id).expect("weapon present above").borrow_mut() = item;
         r
     }
 
@@ -204,9 +204,9 @@ impl<I: 'static> GameCharacter<I> {
     /// `HandWeapon.checkUnJam(player)` on the weapon item `id`; returns
     /// `isJammed()`.
     pub fn check_unjam(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, id: i32) -> bool {
-        let Some(mut item) = self.items.item(id).cloned() else { return false };
+        let Some(mut item) = self.items.item(id).map(|i| i.borrow().clone()) else { return false };
         let r = self.check_unjam_item(sm, chars, ctx, &mut item);
-        *self.items.item_mut(id).expect("weapon present above") = item;
+        *self.items.item(id).expect("weapon present above").borrow_mut() = item;
         r
     }
 
@@ -237,11 +237,12 @@ impl<I: 'static> GameCharacter<I> {
     /// and checks for a jam. Here so the Rust driver and tests can fire
     /// without Lua; the game runs the Lua.
     pub fn on_shoot_ammo(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, id: i32) {
-        let Some(w) = self.items.item(id).and_then(|i| FirearmStats::of(sm, i)) else { return };
+        let Some(w) = self.items.item(id).and_then(|i| FirearmStats::of(sm, &i.borrow())) else { return };
         if !w.ranged {
             return;
         }
-        let item = self.items.item_mut(id).expect("weapon present above");
+        let item_ref = self.items.item(id).expect("weapon present above");
+        let mut item = item_ref.borrow_mut();
         if w.have_chamber {
             item.set_round_chambered(false, w.have_chamber);
             item.set_spent_round_chambered(true);
@@ -262,12 +263,13 @@ impl<I: 'static> GameCharacter<I> {
                     item.set_current_ammo_count(n);
                 }
                 if w.jam_gun_chance > 0.0 {
+                    drop(item);
                     self.check_jam(sm, chars, ctx, id, false);
                 }
             }
         }
         if w.manually_remove_spent_rounds {
-            let item = self.items.item_mut(id).expect("weapon present above");
+            let item = &mut *item_ref.borrow_mut();
             let n = item.get_spent_round_count() + w.ammo_per_shoot;
             item.set_spent_round_count(n, w.max_ammo);
         }

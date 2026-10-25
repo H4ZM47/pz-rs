@@ -93,6 +93,7 @@ impl<I: 'static> GameCharacter<I> {
     pub fn attack_weapon(&self, sm: &pz_scripts::ScriptManager) -> (WeaponStats, Option<InventoryItem>) {
         if let Some(id) = self.attack_vars.weapon {
             if let Some(item) = self.items.item(id) {
+                let item = &*item.borrow();
                 if let Some(w) = WeaponStats::of(sm, item) {
                     return (w, Some(item.clone()));
                 }
@@ -139,7 +140,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `CombatManager.calculateAttackVars(owner)` (melee).
     pub fn calculate_attack_vars(&mut self, cx: &mut StateCx<'_, I>) {
         let sm = cx.sm;
-        let primary = self.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(i)).map(|i| i.id);
+        let primary = self.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(&i.borrow())).map(|i| i.borrow().id);
         let attacking = self.is_performing_hostile_animation();
         let mut v = AttackVars {
             weapon: primary,
@@ -338,7 +339,7 @@ impl<I: 'static> GameCharacter<I> {
         let (sm, chars) = (cx.sm, cx.chars);
         // `getWeapon(owner)`: the weapon in use; a ranged one takes the
         // firearm path.
-        if let Some(item) = self.vars.use_hand_weapon.and_then(|id| self.items.item(id)).cloned() {
+        if let Some(item) = self.vars.use_hand_weapon.and_then(|id| self.items.item(id)).map(|i| i.borrow().clone()) {
             if item.is_ranged() {
                 return self.ranged_attack_collision_check(cx, &item);
             }
@@ -471,7 +472,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `isActuallyAttackingWithMeleeWeapon()`.
     pub fn is_actually_attacking_with_melee_weapon(&self, sm: &pz_scripts::ScriptManager) -> bool {
-        let Some(w) = self.items.primary_hand_item().and_then(|i| WeaponStats::of(sm, i)) else { return false };
+        let Some(w) = self.items.primary_hand_item().and_then(|i| WeaponStats::of(sm, &i.borrow())) else { return false };
         if self.attack_vars.weapon.is_none() || w.bare_hands || w.ranged {
             return false;
         }
@@ -488,11 +489,9 @@ impl<I: 'static> GameCharacter<I> {
             skill += self.perk_level(cx.chars.perks.constant("Maintenance").as_ref()) + self.weapon_level(cx.sm, cx.chars) / 2;
         }
         let Some(item) = self.items.item(id) else { return false };
-        let clc = WeaponStats::of(cx.sm, item).map_or(10, |w| w.condition_lower_chance);
+        let clc = WeaponStats::of(cx.sm, &item.borrow()).map_or(10, |w| w.condition_lower_chance);
         if crate::character::body_part::next_bool(cx.ctx, (clc as f32 * multiplier + skill as f32) as i32) {
-            if let Some(item) = self.items.item_mut(id) {
-                item.condition -= 1;
-            }
+            item.borrow_mut().condition -= 1;
             return true;
         }
         false
@@ -517,22 +516,22 @@ impl<I: 'static> State<I> for SwipeStatePlayer {
         owner.calculate_attack_vars(cx);
         // doAttack.
         owner.vars.use_charge_delta = 2.0f32.min(90.0) / 25.0;
-        let primary = owner.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(i)).map(|i| i.id);
+        let primary = owner.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(&i.borrow())).map(|i| i.borrow().id);
         let attack_item = if owner.attack_vars.do_shove { None } else { primary };
         // `bareHands` is a HandWeapon too: the weapon in use is cleared to
         // it (by id: `None`).
         owner.set_use_hand_weapon(attack_item);
         owner.vars.recoil_delay = owner.attack_vars.recoil_delay as f32;
-        if let Some(f) = attack_item.and_then(|id| owner.items.item(id)).and_then(|i| FirearmStats::of(cx.sm, i)) {
+        if let Some(f) = attack_item.and_then(|id| owner.items.item(id)).and_then(|i| FirearmStats::of(cx.sm, &i.borrow())) {
             owner.set_aiming_delay_after_shot(cx.chars, &f);
         } else if owner.bare_hands.is_some() {
             // `setAimingDelay(player, bareHands)`: no recoil, no aiming time.
-            let max = owner.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(i)).map_or(0.0, |i| {
-                FirearmStats::of(cx.sm, i).map_or(0.0, |f| f.aiming_time as f32)
+            let max = owner.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(&i.borrow())).map_or(0.0, |i| {
+                FirearmStats::of(cx.sm, &i.borrow()).map_or(0.0, |f| f.aiming_time as f32)
             });
             owner.vars.aiming_delay = crate::character::firearm::hit_chance::clamp(owner.vars.aiming_delay, 0.0, max);
         }
-        if let Some(f) = attack_item.and_then(|id| owner.items.item(id)).and_then(|i| FirearmStats::of(cx.sm, i)) {
+        if let Some(f) = attack_item.and_then(|id| owner.items.item(id)).and_then(|i| FirearmStats::of(cx.sm, &i.borrow())) {
             if !owner.vars.remote {
                 owner.vars.recoil_var_y = 0.0;
                 let recoil = f.recoil_delay as f32;
@@ -540,7 +539,7 @@ impl<I: 'static> State<I> for SwipeStatePlayer {
                 owner.vars.recoil_var_x = if current < recoil && recoil != 0.0 { 1.0 - current / recoil } else { 0.0 };
             }
             if f.fire_mode.as_deref() == Some("Auto") {
-                let rate = owner.items.item(f.id).and_then(|i| i.weapon_data()).map_or(0.0, |d| d.cyclic_rate_multiplier);
+                let rate = owner.items.item(f.id).and_then(|i| i.borrow().weapon_data().map(|d| d.cyclic_rate_multiplier)).unwrap_or(0.0);
                 owner.set_variable_float("autoShootSpeed", if rate > 0.0 { rate } else { 1.0 });
                 owner.set_variable_float("autoShootVarY", 0.0);
                 owner.set_variable_float("autoShootVarX", 1.0);
@@ -681,7 +680,7 @@ impl<I: 'static> State<I> for SwipeStatePlayer {
         }
         let attacked = ATTACKED.get(&mut owner.state.params);
         if !w.bare_hands {
-            let cond = owner.items.item(w.id).map_or(0, |i| i.condition);
+            let cond = owner.items.item(w.id).map_or(0, |i| i.borrow().condition);
             if cond <= 0 || (attacked && w.use_self) {
                 if owner.items.primary_hand_item == Some(w.id) {
                     owner.items.primary_hand_item = None;

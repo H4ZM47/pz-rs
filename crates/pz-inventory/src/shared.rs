@@ -27,7 +27,8 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use crate::container::ItemContainer;
-use crate::item::InventoryItem;
+use crate::gameplay::UseOutcome;
+use crate::item::{InventoryItem, ItemKind};
 use crate::saved::SavedItem;
 
 /// A shared item (the original's object identity).
@@ -279,4 +280,60 @@ pub fn remove_item(c: &ContainerRef, item: &ItemRef) -> bool {
         }
         None => false,
     }
+}
+
+/// `ItemContainer.load` into the existing container `c` (the object
+/// stays, as the original loads into the same container): its fields and
+/// items become those of the saved `saved`; the old items have no
+/// container after.
+pub fn load_into(c: &ContainerRef, saved: ItemContainer) {
+    let old = std::mem::take(&mut c.borrow_mut().items);
+    for i in &old {
+        set_container(i, None);
+    }
+    let mut items = Vec::new();
+    let mut raw_items = Vec::new();
+    for i in saved.items {
+        match i {
+            SavedItem::Item(b) => items.push(Rc::new(RefCell::new(*b))),
+            raw => raw_items.push(raw),
+        }
+    }
+    for i in &items {
+        set_container(i, Some(c));
+    }
+    let mut s = c.borrow_mut();
+    s.kind = saved.kind.unwrap_or_else(|| "none".to_string());
+    s.capacity = saved.capacity;
+    s.id = saved.id;
+    s.explored = saved.explored;
+    s.has_been_looted = saved.has_been_looted;
+    s.container_position = saved.container_position;
+    s.freezer_position = saved.freezer_position;
+    s.items = items;
+    s.raw_items = raw_items;
+}
+
+/// [`ItemContainer::apply_use`] on a shared container: the
+/// `ReplaceOnUse`/`ReplaceOnDeplete` item is added (food at
+/// `temperature`), then the used item `id` removed when the outcome says
+/// so. Returns the new item's id.
+pub fn apply_use(c: &ContainerRef, id: i32, out: &mut UseOutcome, temperature: f32) -> Option<i32> {
+    let mut new_id = None;
+    if let Some(a) = out.added.as_mut() {
+        if let Some(mut item) = a.item.take() {
+            if let ItemKind::Food(f) = &mut item.kind {
+                f.heat = temperature;
+            }
+            new_id = Some(item.id);
+            add_item(c, &Rc::new(RefCell::new(item)));
+        }
+    }
+    if out.remove {
+        let found = c.borrow().items.iter().find(|i| i.borrow().id == id).cloned();
+        if let Some(i) = found {
+            remove_item(c, &i);
+        }
+    }
+    new_id
 }

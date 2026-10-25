@@ -10,6 +10,7 @@
 //! (TODO(vehicles), TODO(world objects)): the hit list holds characters.
 
 use pz_anim::AnimationVariableSource;
+use pz_inventory::shared::ItemRef;
 use pz_inventory::InventoryItem;
 use pz_scripts::{ScriptManager, ScriptResult};
 
@@ -114,11 +115,11 @@ fn range_compare(a: (&HitInfo, RangeKey), b: (&HitInfo, RangeKey)) -> std::cmp::
 impl<I: 'static> GameCharacter<I> {
     /// `getUseHandWeapon()`'s item, else the primary hand weapon
     /// (`getAttackingWeapon()` without the hand-to-hand case).
-    fn use_hand_weapon_item(&self) -> Option<&InventoryItem> {
+    fn use_hand_weapon_item(&self) -> Option<ItemRef> {
         if let Some(i) = self.vars.use_hand_weapon.and_then(|id| self.items.item(id)) {
             return Some(i);
         }
-        self.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(i))
+        self.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(&i.borrow()))
     }
 
     /// `getAttackingWeapon()`: the bare hands for a hand-to-hand attack,
@@ -127,6 +128,7 @@ impl<I: 'static> GameCharacter<I> {
         let hand_to_hand = self.vars.do_shove || self.vars.do_grapple;
         if !hand_to_hand {
             if let Some(item) = self.use_hand_weapon_item() {
+                let item = &*item.borrow();
                 if let Some(w) = WeaponStats::of(sm, item) {
                     return (w, Some(item.clone()));
                 }
@@ -137,7 +139,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `getUseHandWeapon().isRackAfterShoot()` (false without one).
     pub fn use_hand_weapon_rack_after_shoot(&self, sm: &ScriptManager) -> bool {
-        self.vars.use_hand_weapon.and_then(|id| self.items.item(id)).and_then(|i| FirearmStats::of(sm, i)).is_some_and(|f| f.rack_after_shoot)
+        self.vars.use_hand_weapon.and_then(|id| self.items.item(id)).and_then(|i| FirearmStats::of(sm, &i.borrow())).is_some_and(|f| f.rack_after_shoot)
     }
 
     /// `setUseHandWeapon(weapon)` by item id.
@@ -198,7 +200,7 @@ impl<I: 'static> GameCharacter<I> {
     /// weapon, then `processBallisticsTargets`.
     fn calculate_hit_list_ranged(&mut self, cx: &mut StateCx<'_, I>, w: &FirearmStats, list: &mut Vec<HitInfo>) {
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
-        let ws = self.items.item(w.id).and_then(|i| WeaponStats::of(sm, i));
+        let ws = self.items.item(w.id).and_then(|i| WeaponStats::of(sm, &i.borrow()));
         let range_mod = ws.as_ref().map_or(1.0, |ws| self.weapon_range_mod(sm, chars, ws));
         let weapon_range = self.firearm_max_range(chars, w) * range_mod;
         let threshold = config::BALLISTICS_CONTROLLER_DISTANCE_THRESHOLD;
@@ -360,7 +362,7 @@ impl<I: 'static> GameCharacter<I> {
     pub fn calculate_ranged_hit_info_list(&mut self, cx: &mut StateCx<'_, I>, w: &FirearmStats) -> ScriptResult {
         let sm = cx.sm;
         self.hit_info_list.clear();
-        let ws = self.items.item(w.id).and_then(|i| WeaponStats::of(sm, i));
+        let ws = self.items.item(w.id).and_then(|i| WeaponStats::of(sm, &i.borrow()));
         let mut max_hit = ws.as_ref().map_or(1, |ws| ws.max_hit_count);
         if self.attack_vars.do_shove {
             max_hit = if self.weapon_type_of(sm) != crate::character::combat::WeaponType::Unarmed { 3 } else { 1 };
@@ -503,7 +505,7 @@ impl<I: 'static> GameCharacter<I> {
     fn add_firearm_muscle_strain(&mut self, sm: &ScriptManager, chars: &Characters, ctx: &dyn SimContext, w: &FirearmStats) -> ScriptResult {
         let strength = self.perk_level(chars.perks.constant("Strength").as_ref());
         let skill = self.perk_level(chars.perks.constant("Aiming").as_ref());
-        let strain = self.items.item(w.id).and_then(|i| crate::character::items::script_item(sm, i)).map_or(1.0, |s| s.borrow().strain_modifier);
+        let strain = self.items.item(w.id).and_then(|i| crate::character::items::script_item(sm, &i.borrow())).map_or(1.0, |s| s.borrow().strain_modifier);
         let strain_mod = (1.0 - skill as f32 * 0.075) * strain;
         let mut value = self.firearm_recoil_delay(chars, w) as f32
             * config::FIREARM_RECOIL_MUSCLE_STRAIN_MODIFIER
@@ -640,7 +642,7 @@ impl<I: 'static> GameCharacter<I> {
         let max = self
             .items
             .primary_hand_item()
-            .filter(|i| crate::character::items::is_hand_weapon(i))
+            .filter(|i| crate::character::items::is_hand_weapon(&i.borrow()))
             .map_or(0.0, |_| w.aiming_time as f32);
         self.vars.aiming_delay = super::hit_chance::clamp(delay, 0.0, max);
     }
@@ -870,10 +872,10 @@ impl<I: 'static> GameCharacter<I> {
         let process = self.check_for_condition_loss(&ws, process_condition_loss);
         if process && !ws.is_melee() {
             // `weapon.damageCheck(0, 1f, false, true, owner)`.
-            if let Some(item) = self.items.item_mut(w.id) {
+            if let Some(item) = self.items.item(w.id) {
                 let clc = ws.condition_lower_chance;
                 if crate::character::body_part::next_bool(cx.ctx, clc) {
-                    item.condition -= 1;
+                    item.borrow_mut().condition -= 1;
                 }
             }
         }
