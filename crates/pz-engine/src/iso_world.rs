@@ -97,7 +97,8 @@ pub struct IsoWorld {
     pub world_gen_params: pz_worldgen::WorldGenParams,
     pub world_gen: Option<pz_worldgen::WorldGenHook>,
     /// `IsoSpriteManager.instance`.
-    pub sprites: Option<IsoSpriteManager>,
+    /// `IsoSpriteManager.instance`, shared with its Lua object.
+    pub sprites: Option<Rc<RefCell<IsoSpriteManager>>>,
     pub object_tables: Option<ObjectTables>,
     pub save_tables: Option<SaveTables>,
     pub save_settings: SaveSettings,
@@ -128,7 +129,8 @@ pub struct IsoWorld {
     /// `PathfindNative`/`PolygonalMap2.instance`.
     pub pathfind: Option<pz_pathfind::host::PathHost>,
     /// `ErosionMain.getInstance()`.
-    pub erosion: Option<pz_erosion::erosion_main::ErosionMain>,
+    /// `ErosionMain.getInstance()`, shared with its Lua object.
+    pub erosion: Option<Rc<RefCell<pz_erosion::erosion_main::ErosionMain>>>,
     pub instance_tracker: InstanceTracker,
     pub meta_tracker: MetaTracker,
     pub statistics: Statistics,
@@ -297,10 +299,12 @@ impl IsoWorld {
             None => &AllItems,
         };
         let (Some(streamer), Some(sprites), Some(object_tables), Some(save_tables)) =
-            (streamer.as_mut(), sprites.as_mut(), object_tables.as_ref(), save_tables.as_ref())
+            (streamer.as_mut(), sprites.as_ref(), object_tables.as_ref(), save_tables.as_ref())
         else {
             return None;
         };
+        let mut sprites = sprites.borrow_mut();
+        let sprites = &mut *sprites;
         with_world(|w| {
             let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else { return None };
             let mut object_hooks = NoHooks;
@@ -398,6 +402,11 @@ impl IsoWorld {
             )
             .map_err(|e| format!("IsoMetaGrid.Create: {e}"))?
         };
+        let mut meta = meta;
+        // `Zone.s_PreferredZoneTypes` / `IsoDirections` for zone
+        // registration, and the native clipper (`PZClipper`).
+        meta.zone_tables = pz_world::zones::ZoneTables::load_from_game_jar(&self.jar())?;
+        meta.clipper = Some(Box::new(crate::zone_clipper::ZoneClipperOps::default()));
         set_meta_grid(Some(meta));
         lua.trigger_event("OnPreDistributionMerge", &[]);
         lua.trigger_event("OnDistributionMerge", &[]);
@@ -442,6 +451,8 @@ impl IsoWorld {
         // `!IsoSprite.hasNoTextures()`: a client has every tile's textures.
         // TODO(port): the world tile packs are not loaded at boot yet.
         sprites.loaded_tile_definitions(&|_| true)?;
+        let sprites = Rc::new(RefCell::new(sprites));
+        pz_lua_api::bind_sprites::install_sprite_manager(Some(sprites.clone()));
         self.sprites = Some(sprites);
         self.object_tables = Some(ObjectTables::from_game_jar(&self.jar())?);
         self.save_tables = Some(SaveTables::from_game_jar(&self.jar())?);
@@ -454,7 +465,20 @@ impl IsoWorld {
             calc_chunk_width(c.get_screen_width(), c.get_screen_height())
         };
         self.regions = Some(IsoRegions::init_world(&self.save_dir, chunk_grid_width, no_save));
-        // TODO(port): `BentFences.init`, `ObjectRenderEffects.init`,
+        // `BentFences.init()` (empty): the registry reads the sandbox's
+        // `ZombieLore.FenceThumpersRequired` / `FenceDamageMultiplier`.
+        {
+            let s = sb.borrow();
+            let multiplier = s
+                .option_by_name("ZombieLore.FenceDamageMultiplier")
+                .and_then(|o| o.config.get_value_as_string().parse::<f64>().ok())
+                .unwrap_or(1.0) as f32;
+            let bf = pz_lua_api::bind_bent_fences::shared_bent_fences();
+            let mut bf = bf.borrow_mut();
+            bf.thumpers_required = opt_int(&s, "ZombieLore.FenceThumpersRequired");
+            bf.damage_multiplier = multiplier;
+        }
+        // TODO(port): `ObjectRenderEffects.init`,
         // `WorldConverter.instance.convert` (and its `worldVersionError`).
         // TODO(port): `SandboxOptions.handleOldZombiesFile2` (old `zombies.ini`).
         // `GameTime.init()` then `GameTime.load()`.
@@ -486,10 +510,11 @@ impl IsoWorld {
         self.items = match (dictionary, self.save_tables.as_ref()) {
             (Some(d), Some(tables)) => {
                 let world_age_hours = pz_lua_api::bind_climate::shared_game_time().borrow().world_age_hours();
+                let sprites = self.sprites.as_ref().map(|s| s.borrow());
                 let inputs = crate::world_dictionary::RegistryInputs {
                     game_dir: &self.game_dir,
                     save_tables: tables,
-                    sprites: self.sprites.as_ref(),
+                    sprites: sprites.as_deref(),
                     world_age_hours,
                 };
                 Some(crate::world_dictionary::script_items(d, &inputs))
@@ -519,7 +544,8 @@ impl IsoWorld {
         let bounds = with_world(|w| w.meta_grid.as_ref().map(|g| (g.min_x, g.min_y, g.max_x, g.max_y)));
         pz_lua_api::bind_climate::init_climate_manager(&mut lua.thread, bounds);
         // TODO(port): `SafeHouse.init`, `VirtualZombieManager.instance.init`,
-        // `StashSystem.init`, `Basements.beforeOnLoadMapZones`.
+        // `StashSystem.init`.
+        pz_lua_api::bind_basements::before_on_load_map_zones();
         lua.trigger_event("OnLoadMapZones", &[]);
         // TODO(port): `Basements.beforeLoadMetaGrid`/`afterLoadMetaGrid`
         // (`pz_worldgen::load_basements`), `BuildingRoomsEditor.load`.
@@ -651,6 +677,8 @@ impl IsoWorld {
                 }
             },
         };
+        // What the menu's `getWorld():setLuaPosX/Y/Z` would have set.
+        pz_lua_api::bind_world::lua_world::set_lua_pos(self.lua_pos);
     }
 
     /// The single-map spawn region `SpawnRegionMgr` builds
@@ -783,8 +811,16 @@ impl IsoWorld {
         };
         let temperature = s.temperature_modifier();
         drop(s);
-        let Some(sprites) = self.sprites.as_mut() else { return };
-        let main = pz_erosion::erosion_main::ErosionMain::new(tables, settings, sprites, None, None);
+        let Some(sprites) = self.sprites.clone() else {
+            return;
+        };
+        let main = pz_erosion::erosion_main::ErosionMain::new(
+            tables,
+            settings,
+            &mut sprites.borrow_mut(),
+            None,
+            None,
+        );
         let c = &main.get_config().season;
         let cfg = pz_core::weather::season::SeasonConfig {
             lat: c.lat,
@@ -799,7 +835,18 @@ impl IsoWorld {
             rain: c.rain,
         };
         pz_lua_api::bind_climate::start_erosion_season(&mut lua.thread, &cfg, temperature);
-        // TODO(port): `bind_erosion::set_instance` and the erosion tick.
+        // `ErosionMain.instance`; `mainTimer` reads the `GameTime` date.
+        // TODO(port): the erosion tick and the square / chunk load hooks.
+        let main = Rc::new(RefCell::new(main));
+        let hooks = pz_lua_api::bind_erosion::ErosionLuaHooks {
+            game_date: Some(Box::new(|| {
+                let gt = pz_lua_api::bind_climate::shared_game_time();
+                let g = gt.borrow();
+                (g.day, g.month, g.year)
+            })),
+            ..Default::default()
+        };
+        pz_lua_api::bind_erosion::set_instance(Some((main.clone(), Rc::new(hooks))));
         self.erosion = Some(main);
     }
 
@@ -835,8 +882,14 @@ impl IsoWorld {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u32);
         let native = pz_popman::native::Native::new(seed);
         let outfits = &self.outfit_names;
-        self.population =
-            with_world(|w| w.meta_grid.as_ref().map(|m| pz_world_popman::WorldPopulation::init(native, m, &gs, &config, outfits)));
+        let origins = pz_lua_api::bind_world::lua_world::take_spawn_origins();
+        self.population = with_world(|w| {
+            w.meta_grid.as_ref().map(|m| {
+                pz_world_popman::WorldPopulation::init_with_spawn_origins(
+                    native, m, &gs, &config, outfits, &origins,
+                )
+            })
+        });
     }
 
     /// `new WorldGenChunk(seed)`, the biome map and the map's `WorldGen`
