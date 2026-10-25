@@ -226,13 +226,39 @@ pub struct MannequinZoneData {
     pub outfit: Option<String>,
 }
 
-/// `AnimalZone` fields set from map data (junctions and runtime state are
-/// not ported).
-#[derive(Clone, Debug, Default, PartialEq)]
+/// `AnimalZone` fields: the map data, `spawnedAnimals` and the junctions
+/// with other animal zones (the animal runtime's paths are not ported).
+#[derive(Clone, Debug, PartialEq)]
 pub struct AnimalZoneData {
     pub action: Option<String>,
     pub animal_type: Option<String>,
+    /// `spawnAnimal` (true unless the map says `SpawnAnimals = false`).
     pub spawn_animal: bool,
+    /// `spawnedAnimals`.
+    pub spawned_animals: bool,
+    /// `junctions` (`null` until the first one).
+    pub junctions: Option<Vec<AnimalZoneJunction>>,
+}
+
+impl Default for AnimalZoneData {
+    /// `new AnimalZone()`: `spawnAnimal = true`.
+    fn default() -> Self {
+        AnimalZoneData {
+            action: None,
+            animal_type: None,
+            spawn_animal: true,
+            spawned_animals: false,
+            junctions: None,
+        }
+    }
+}
+
+/// `AnimalZoneJunction`: a point this zone shares with another animal zone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimalZoneJunction {
+    pub point_index_self: i32,
+    pub zone_other: ZoneId,
+    pub point_index_other: i32,
 }
 
 /// Which Java class the zone is.

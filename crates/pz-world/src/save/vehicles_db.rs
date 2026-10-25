@@ -78,6 +78,73 @@ pub fn init_used_ids(conn: &mut Connection) -> pz_sqlite::Result<(BTreeSet<i32>,
     Ok((used, seen))
 }
 
+/// `VehiclesDB2.MainThread`'s id sets: `usedIds` (every row id and every
+/// id handed out), `loadedIds` (the vehicles in the world) and
+/// `seenChunks` (`wy << 16 | wx` of the chunks with rows, and those
+/// `setChunkSeen` marks).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct VehicleIds {
+    pub used: BTreeSet<i32>,
+    pub loaded: BTreeSet<i32>,
+    pub seen_chunks: BTreeSet<i32>,
+}
+
+impl VehicleIds {
+    /// `VehiclesDB2.init()` → `SQLStore.init` → `initUsedIDs`.
+    pub fn init(conn: &mut Connection) -> pz_sqlite::Result<Self> {
+        let (used, seen_chunks) = init_used_ids(conn)?;
+        Ok(VehicleIds {
+            used,
+            loaded: BTreeSet::new(),
+            seen_chunks,
+        })
+    }
+
+    /// `allocateID()`: the smallest unused id from 1.
+    pub fn allocate_id(&mut self) -> i32 {
+        let mut i = 1;
+        while self.used.contains(&i) {
+            i += 1;
+        }
+        self.used.insert(i);
+        i
+    }
+
+    /// `setVehicleLoaded(vehicle)` (`BaseVehicle.addToWorld`): a vehicle
+    /// without an id gets one; the id is loaded. Returns the id.
+    pub fn set_vehicle_loaded(&mut self, sql_id: i32) -> i32 {
+        let id = if sql_id == -1 {
+            self.allocate_id()
+        } else {
+            sql_id
+        };
+        self.loaded.insert(id);
+        id
+    }
+
+    /// `setVehicleUnloaded(vehicle)` (`BaseVehicle.removeFromWorld`).
+    pub fn set_vehicle_unloaded(&mut self, sql_id: i32) {
+        if sql_id != -1 {
+            self.loaded.remove(&sql_id);
+        }
+    }
+
+    /// `isVehicleLoaded(vehicle)`.
+    pub fn is_vehicle_loaded(&self, sql_id: i32) -> bool {
+        self.loaded.contains(&sql_id)
+    }
+
+    /// `setChunkSeen(wx, wy)`.
+    pub fn set_chunk_seen(&mut self, wx: i32, wy: i32) {
+        self.seen_chunks.insert(wy << 16 | wx);
+    }
+
+    /// `isChunkSeen(wx, wy)`.
+    pub fn is_chunk_seen(&self, wx: i32, wy: i32) -> bool {
+        self.seen_chunks.contains(&(wy << 16 | wx))
+    }
+}
+
 /// One row of `SELECT id, x, y, data, worldversion, inMeta FROM vehicles
 /// WHERE wx=? AND wy=?`; `data` is `None` for NULL.
 fn chunk_row(t: &Table, r: &Row, wx: i32, wy: i32) -> pz_sqlite::Result<(VehicleRow, bool)> {
@@ -355,6 +422,52 @@ pub trait ChunkVehicleSaver {
         chunk: &IsoChunk,
         ctx: &SaveCtx<'_>,
     ) -> Result<VehicleRow, String>;
+
+    /// The square `vehicle` stands on as a moving object
+    /// (`IsoMovingObject.square` with the vehicle in its
+    /// `getMovingObjects()`), in world coordinates, for
+    /// `IsoChunk.removeFromWorld`. `None`: on no square (never updated in
+    /// the world). The default is `None`.
+    fn moving_square(&self, _vehicle: &VehicleHandle) -> Option<(i32, i32, i32)> {
+        None
+    }
+
+    /// `vehicle.sqlId` (-1, `INVALID_ID`, when it has none). The default
+    /// is -1.
+    fn sql_id(&self, _vehicle: &VehicleHandle) -> i32 {
+        -1
+    }
+
+    /// `vehicle.sqlId = id` (an id `VehiclesDB2.updateVehicle` allocated).
+    /// The default does nothing (a loaded vehicle keeps -1).
+    fn set_sql_id(&self, _vehicle: &VehicleHandle, _id: i32) {}
+
+    /// `BaseVehicle.shouldUpdateInMeta()` (alarm active, siren active or
+    /// engine running), or the exception it throws. The default is
+    /// `false`.
+    fn should_update_in_meta(&self, _vehicle: &VehicleHandle) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    /// `VehicleBuffer.set(vehicle)` after `removeFromWorld` took the vehicle
+    /// off its square (`setSquare(null)`): `BaseVehicle.save` no longer
+    /// clamps the position to the square. The default is
+    /// [`ChunkVehicleSaver::vehicle_buffer`].
+    fn vehicle_buffer_off_square(
+        &self,
+        vehicle: &VehicleHandle,
+        chunk: &IsoChunk,
+        ctx: &SaveCtx<'_>,
+    ) -> Result<VehicleRow, String> {
+        self.vehicle_buffer(vehicle, chunk, ctx)
+    }
+}
+
+/// `VirtualVehicleManager.getInstance().addToMeta(vehicle)`: the vehicle
+/// left the world with its chunk but keeps updating in the meta (alarm,
+/// siren or engine). The vehicle runtime owns the virtual vehicles.
+pub trait VehicleMetaHook {
+    fn add_to_meta(&mut self, vehicle: VehicleHandle);
 }
 
 /// [`ChunkVehicleSaver`] for the vehicles chunk loading put in the list
@@ -373,21 +486,71 @@ impl ChunkVehicleSaver for LoadedVehicleSaver<'_> {
         chunk: &IsoChunk,
         ctx: &SaveCtx<'_>,
     ) -> Result<VehicleRow, String> {
+        self.row(vehicle, chunk, ctx, true)
+    }
+
+    /// A loaded vehicle with a square stands on it: the state the
+    /// original's vehicles are in once added to the world and updated
+    /// (`IsoMovingObject` puts itself in its square's moving objects).
+    fn moving_square(&self, vehicle: &VehicleHandle) -> Option<(i32, i32, i32)> {
+        vehicle.clone().downcast::<LoadedVehicle>().ok()?.square
+    }
+
+    fn sql_id(&self, vehicle: &VehicleHandle) -> i32 {
+        vehicle
+            .clone()
+            .downcast::<LoadedVehicle>()
+            .map_or(-1, |lv| loaded_sql_id(&lv))
+    }
+
+    fn should_update_in_meta(&self, vehicle: &VehicleHandle) -> Result<bool, String> {
+        let Ok(lv) = vehicle.clone().downcast::<LoadedVehicle>() else {
+            return Err("not a vehicle chunk loading made (no saver)".into());
+        };
+        let script = self.scripts.script(&lv.vehicle.script_name);
+        should_update_in_meta(&lv.vehicle, script.as_ref())
+    }
+
+    fn vehicle_buffer_off_square(
+        &self,
+        vehicle: &VehicleHandle,
+        chunk: &IsoChunk,
+        ctx: &SaveCtx<'_>,
+    ) -> Result<VehicleRow, String> {
+        self.row(vehicle, chunk, ctx, false)
+    }
+}
+
+/// A loaded vehicle's `sqlId`: its row's, or -1 (`INVALID_ID`).
+fn loaded_sql_id(lv: &LoadedVehicle) -> i32 {
+    match lv.origin {
+        VehicleOrigin::Database { sql_id } => sql_id,
+        _ => -1,
+    }
+}
+
+impl LoadedVehicleSaver<'_> {
+    fn row(
+        &self,
+        vehicle: &VehicleHandle,
+        chunk: &IsoChunk,
+        ctx: &SaveCtx<'_>,
+        on_square: bool,
+    ) -> Result<VehicleRow, String> {
         let Ok(lv) = vehicle.clone().downcast::<LoadedVehicle>() else {
             return Err("not a vehicle chunk loading made (no saver)".into());
         };
         // `sqlId`: rows carry theirs; a vehicle from an old chunk file's
-        // vehicle list gets one from `VehiclesDB2.addVehicle` when it is
-        // added to the world (`doLoadGridsquare`), which is not ported.
-        let VehicleOrigin::Database { sql_id } = lv.origin else {
-            return Err("java.lang.AssertionError: vehicle.sqlId >= 1".into());
-        };
+        // vehicle list has -1 until `VehiclesDB2.addVehicle` gives it one
+        // when it is added to the world. `set`'s `assert sqlId >= 1` is off
+        // in the shipped game, so -1 is written as it is.
+        let sql_id = loaded_sql_id(&lv);
         let v = &lv.vehicle;
         let script = self.scripts.script(&v.script_name);
         let in_meta = should_update_in_meta(v, script.as_ref())?;
         let mut w = Writer::new();
         let class = ctx.tables.class_id("Vehicle");
-        let square = lv.square.map(|(x, y, _)| (x, y));
+        let square = lv.square.filter(|_| on_square).map(|(x, y, _)| (x, y));
         v.save(
             &mut w,
             class,
@@ -451,6 +614,133 @@ pub fn unload_chunk(
                 out.errors.push((i, e.to_string()));
             }
         }
+    }
+    out
+}
+
+/// What [`remove_vehicles_to_meta`] did.
+#[derive(Debug, Default, PartialEq)]
+pub struct VehiclesToMeta {
+    /// The rows `VehiclesDB2.updateVehicle` queued for the streamer thread
+    /// (`QueueUpdateVehicle`, built by `VehicleBuffer.set` when queued), in
+    /// the order the vehicles left the world.
+    pub queued: Vec<VehicleRow>,
+    /// The vehicles that went to the meta (`VirtualVehicleManager.addToMeta`),
+    /// with their row id (`-1` when the row could not be built).
+    pub to_meta: Vec<i32>,
+    /// The vehicles whose `shouldUpdateInMeta` or `VehicleBuffer.set`
+    /// threw: their index in the list before removal, and the exception.
+    pub errors: Vec<(usize, String)>,
+}
+
+/// The vehicle part of `IsoChunk.removeFromWorld()` (single player): for
+/// each square of the chunk, level by level from `minLevel` and in square
+/// index order (`x + y * 8`), each vehicle among its moving objects
+/// ([`ChunkVehicleSaver::moving_square`]) leaves the square, and when
+/// `shouldUpdateInMeta()` it leaves the chunk's list, its row is queued
+/// (`VehiclesDB2.updateVehicle`; the queue is written by the streamer
+/// thread's `VehiclesDB2.updateWorldStreamer`) and it goes to the meta
+/// (`hook`). The vehicles that stay are written later by `unloadChunk`
+/// when the chunk is saved.
+///
+/// `BaseVehicle.removeFromWorld` (physics, sounds, models, the cell's
+/// vehicle list) is the vehicle runtime's; it does not change the saved
+/// fields. `ids` are `VehiclesDB2`'s main-thread id sets (`None`: not
+/// tracked). `shouldUpdateInMeta` throwing (a vehicle without a script,
+/// which the original never has in the world) is logged and the vehicle
+/// stays in the list.
+pub fn remove_vehicles_to_meta(
+    chunk: &mut IsoChunk,
+    ctx: &SaveCtx<'_>,
+    saver: &dyn ChunkVehicleSaver,
+    mut ids: Option<&mut VehicleIds>,
+    mut hook: Option<&mut dyn VehicleMetaHook>,
+) -> VehiclesToMeta {
+    let mut out = VehiclesToMeta::default();
+    let (ox, oy) = (chunk.wx * 8, chunk.wy * 8);
+    // Vehicles on this chunk's squares, in the walk order (several on one
+    // square keep list order).
+    let mut on: Vec<((i32, i32), usize, VehicleHandle)> = Vec::new();
+    for (i, v) in chunk.vehicles.iter().enumerate() {
+        let Some((x, y, z)) = saver.moving_square(v) else {
+            continue;
+        };
+        let (lx, ly) = (x - ox, y - oy);
+        if !(0..8).contains(&lx) || !(0..8).contains(&ly) {
+            continue;
+        }
+        if chunk.get_grid_square(lx, ly, z).is_none() {
+            continue;
+        }
+        on.push(((z, lx + ly * 8), i, v.clone()));
+    }
+    on.sort_by_key(|(k, i, _)| (*k, *i));
+    for (_, i, v) in on {
+        // `BaseVehicle.removeFromWorld` starts with
+        // `VehiclesDB2.setVehicleUnloaded`.
+        if let Some(ids) = ids.as_deref_mut() {
+            ids.set_vehicle_unloaded(saver.sql_id(&v));
+        }
+        match saver.should_update_in_meta(&v) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => {
+                eprintln!("ERROR: IsoChunk.removeFromWorld: {e}");
+                out.errors.push((i, e));
+                continue;
+            }
+        }
+        chunk.vehicles.remove(&v);
+        // `MainThread.updateVehicle`: a vehicle without an id gets one
+        // before `VehicleBuffer.set`.
+        if saver.sql_id(&v) == -1 {
+            if let Some(ids) = ids.as_deref_mut() {
+                saver.set_sql_id(&v, ids.allocate_id());
+            }
+        }
+        match saver.vehicle_buffer_off_square(&v, chunk, ctx) {
+            Ok(row) => {
+                out.to_meta.push(row.id);
+                out.queued.push(row);
+            }
+            Err(e) => {
+                // `VehiclesDB2.updateVehicle` logs it and goes on.
+                eprintln!("ERROR: VehiclesDB2.updateVehicle: {e}");
+                out.errors.push((i, e));
+                out.to_meta.push(-1);
+            }
+        }
+        if let Some(h) = hook.as_deref_mut() {
+            h.add_to_meta(v);
+        }
+    }
+    out
+}
+
+/// `VehiclesDB2.WorldStreamerThread.update()` for the queued row updates:
+/// each is written with `SQLStore.updateVehicle` (a failure is logged and
+/// the next one written). `conn` is `None` without a store connection
+/// (`Core.isNoSave`): nothing is written and the queue is emptied. Returns
+/// the ids written and the failures.
+pub fn update_world_streamer(
+    conn: Option<&mut Connection>,
+    queue: &mut std::collections::VecDeque<VehicleRow>,
+) -> ChunkVehiclesUnloaded {
+    let mut out = ChunkVehiclesUnloaded::default();
+    let Some(conn) = conn else {
+        queue.clear();
+        return out;
+    };
+    let mut i = 0;
+    while let Some(row) = queue.pop_front() {
+        match update_vehicle(conn, &row) {
+            Ok(()) => out.saved.push(row.id),
+            Err(e) => {
+                eprintln!("ERROR: vehicles.db: {e}");
+                out.errors.push((i, e.to_string()));
+            }
+        }
+        i += 1;
     }
     out
 }

@@ -44,11 +44,23 @@ struct Log<'a> {
     calls: Vec<String>,
 }
 
+/// A 2x2 thumbnail.
+fn thumb() -> Thumbnail {
+    Thumbnail {
+        width: 2,
+        height: 2,
+        rgba: (0..16).collect(),
+    }
+}
+
 impl Log<'_> {
     fn note(&mut self, what: &str) {
         let have: Vec<&str> = [
             "map_ver.bin",
             "map_sand.bin",
+            "map_worldgen.bin",
+            "statistics.bin",
+            "thumb.png",
             "map.bin",
             "map_t.bin",
             "reanimated.bin",
@@ -67,8 +79,9 @@ impl SaveGameHooks for Log<'_> {
     fn save_chunks(&mut self, _: &IsoMetaGrid) {
         self.note("chunks");
     }
-    fn save_meta_extra(&mut self) {
-        self.note("meta_extra");
+    fn capture_thumbnail(&mut self, player: usize) -> Option<Thumbnail> {
+        self.note(&format!("thumbnail {player}"));
+        Some(thumb())
     }
     fn save_animals(&mut self) {
         self.note("animals");
@@ -91,6 +104,10 @@ struct World {
     meta_world: MetaWorld,
     spawned: SpawnedZombieZones,
     uuids: ClockUuids,
+    world_gen: WorldGenParams,
+    instance_tracker: InstanceTracker,
+    meta_tracker: MetaTracker,
+    statistics: Statistics,
 }
 
 impl World {
@@ -102,6 +119,10 @@ impl World {
             meta_world: MetaWorld::default(),
             spawned: SpawnedZombieZones::default(),
             uuids: ClockUuids::default(),
+            world_gen: WorldGenParams::new("seed"),
+            instance_tracker: InstanceTracker::default(),
+            meta_tracker: MetaTracker::default(),
+            statistics: Statistics::default(),
         }
     }
 
@@ -122,6 +143,13 @@ impl World {
             players: None,
             can_save_players: true,
             reanimated: zombies,
+            world_gen: &self.world_gen,
+            instance_tracker: &self.instance_tracker,
+            cache_dir: None,
+            meta_tracker: &self.meta_tracker,
+            statistics: &self.statistics,
+            local_players: &[false, true],
+            on_game_thread: true,
         }
     }
 }
@@ -160,25 +188,39 @@ fn save_game_writes_in_the_original_order() {
     assert_eq!(
         log.calls,
         [
-            r#"on_save ["map_ver.bin", "map_sand.bin"]"#,
-            r#"chunks ["map_ver.bin", "map_sand.bin"]"#,
-            r#"meta_extra ["map_ver.bin", "map_sand.bin", "map.bin", "map_t.bin"]"#,
-            r#"animals ["map_ver.bin", "map_sand.bin", "map.bin", "map_t.bin", "reanimated.bin"]"#,
-            r#"population ["map_ver.bin", "map_sand.bin", "map.bin", "map_t.bin", "reanimated.bin"]"#,
-            r#"others ["map_ver.bin", "map_sand.bin", "map.bin", "map_t.bin", "reanimated.bin"]"#,
+            r#"on_save ["map_ver.bin", "map_sand.bin", "map_worldgen.bin", "statistics.bin"]"#,
+            r#"thumbnail 1 ["map_ver.bin", "map_sand.bin", "map_worldgen.bin", "statistics.bin"]"#,
+            r#"chunks ["map_ver.bin", "map_sand.bin", "map_worldgen.bin", "statistics.bin", "thumb.png"]"#,
+            r#"animals ["map_ver.bin", "map_sand.bin", "map_worldgen.bin", "statistics.bin", "thumb.png", "map.bin", "map_t.bin", "reanimated.bin"]"#,
+            r#"population ["map_ver.bin", "map_sand.bin", "map_worldgen.bin", "statistics.bin", "thumb.png", "map.bin", "map_t.bin", "reanimated.bin"]"#,
+            r#"others ["map_ver.bin", "map_sand.bin", "map_worldgen.bin", "statistics.bin", "thumb.png", "map.bin", "map_t.bin", "reanimated.bin"]"#,
         ]
     );
     assert_eq!(
         d.names(),
         [
+            "iTrack.bin",
             "map.bin",
+            "map_animals.bin",
             "map_meta.bin",
             "map_sand.bin",
             "map_t.bin",
             "map_ver.bin",
+            "map_worldgen.bin",
             "map_zone.bin",
-            "reanimated.bin"
+            "metadata.bin",
+            "reanimated.bin",
+            "statistics.bin",
+            "thumb.png"
         ]
+    );
+    assert_eq!(
+        std::fs::read(d.0.join("map_worldgen.bin")).unwrap(),
+        w.world_gen.save_bytes()
+    );
+    assert_eq!(
+        std::fs::read(d.0.join("thumb.png")).unwrap(),
+        pz_core::thumbnail::stbi_write_png(&thumb().rgba, 2, 2, 4, true)
     );
     assert_eq!(std::fs::read(d.0.join("map_sand.bin")).unwrap(), b"SAND");
     assert_eq!(
@@ -245,7 +287,7 @@ fn quitting_stores_the_local_players_first_and_stops_further_player_saves() {
     assert_eq!(row.bytes, [1, 2, 3]);
     assert_eq!(row.name.as_deref(), Some("Kate"));
     let mut vehicles = VehicleStore::default();
-    close_stores(Some(&mut db), &mut vehicles);
+    close_stores(Some(&mut db), &mut vehicles, Default::default());
 }
 
 #[test]
@@ -282,11 +324,70 @@ fn hot_save_writes_meta_zones_and_time_unless_saving_is_off() {
         if no_save {
             assert!(d.names().is_empty());
         } else {
-            assert_eq!(d.names(), ["map_meta.bin", "map_t.bin", "map_zone.bin"]);
+            assert_eq!(
+                d.names(),
+                [
+                    "map_animals.bin",
+                    "map_meta.bin",
+                    "map_t.bin",
+                    "map_zone.bin"
+                ]
+            );
             assert_eq!(
                 std::fs::read(d.0.join("map_meta.bin")).unwrap(),
                 save_map_meta(&w.meta, &w.meta_world, NetRole::SinglePlayer)
             );
         }
     }
+}
+
+#[test]
+fn queued_meta_cells_are_saved_with_the_meta_grid() {
+    let d = Dir::new();
+    ensure_subdirectories_exist(&d.0).unwrap();
+    let mut w = World::new();
+    w.meta
+        .set_cell(1, 0, Some(pz_world::meta_grid::IsoMetaCell::new(1, 0)));
+    w.meta.add_cell_to_save(1, 0);
+    let mut g = w.game(&d.0, &[]);
+    // Not on the game thread: no thumbnail.
+    g.on_game_thread = false;
+    let mut log = Log {
+        dir: &d.0,
+        calls: Vec::new(),
+    };
+    let r = save_game(&mut g, &mut log).unwrap();
+    assert!(r.errors.is_empty(), "{:?}", r.errors);
+    assert!(!log.calls.iter().any(|c| c.starts_with("thumbnail")));
+    assert_eq!(
+        std::fs::read(d.0.join("metagrid/metacell_1_0.bin")).unwrap(),
+        [0]
+    );
+    assert!(w.meta.cells_to_save.borrow().is_empty());
+    let mut m = IsoMetaGrid::with_bounds(0, 0, 1, 1);
+    assert!(load_meta_grid_extras(&mut m, &d.0).is_empty());
+    assert!(m.get_cell_data(1, 0).is_some());
+}
+
+#[test]
+fn the_item_tracker_log_goes_to_the_cache_folder() {
+    let d = Dir::new();
+    let cache = Dir::new();
+    let mut w = World::new();
+    w.instance_tracker
+        .inc(pz_core::save_trackers::ITEMS, "Base.Axe");
+    let mut g = w.game(&d.0, &[]);
+    g.cache_dir = Some(&cache.0);
+    let mut log = Log {
+        dir: &d.0,
+        calls: Vec::new(),
+    };
+    save_game(&mut g, &mut log).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(cache.0.join("ItemTracker.log")).unwrap(),
+        "[Item Spawns] ; 1 entries\nBase.Axe = 1\n\n"
+    );
+    let mut t = InstanceTracker::default();
+    t.load_file(&d.0, false).unwrap();
+    assert_eq!(t.get(pz_core::save_trackers::ITEMS, "Base.Axe"), 1);
 }

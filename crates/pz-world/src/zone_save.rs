@@ -20,7 +20,7 @@ use std::path::Path;
 
 /// `IsoWorld.getWorldVersion()` in this build.
 pub const WORLD_VERSION: i32 = 249;
-const MAGIC: [u8; 4] = *b"ZONE";
+pub(crate) const MAGIC: [u8; 4] = *b"ZONE";
 
 /// `UUID.randomUUID()`.
 pub trait UuidSource {
@@ -105,6 +105,68 @@ pub fn java_hash_order<'a>(keys: &[Option<&'a str>]) -> Vec<Option<&'a str>> {
         .collect();
     indexed.sort_by_key(|&(bucket, i, _)| (bucket, i));
     indexed.into_iter().map(|(_, _, k)| k).collect()
+}
+
+/// `Zone.save(output, stringMap)`: the base fields every zone class
+/// writes (name, type, bounds, geometry, timers, original name, UUID).
+/// The zone must have its id.
+pub(crate) fn write_zone(
+    out: &mut Vec<u8>,
+    z: &Zone,
+    index: &std::collections::HashMap<Option<&str>, i16>,
+) {
+    out.put_i16(index[&Some(z.name.as_str())]);
+    out.put_i16(index[&Some(z.zone_type.as_str())]);
+    out.put_i32(z.x);
+    out.put_i32(z.y);
+    out.put_i8(z.z as i8);
+    out.put_i32(z.w);
+    out.put_i32(z.h);
+    out.put_i8(z.geometry_type as i8);
+    if !z.is_rectangle() {
+        if z.is_polyline() {
+            out.put_i8(z.polyline_width as i8);
+        }
+        out.put_i16(z.points.len() as i16);
+        for p in &z.points {
+            out.put_i32(*p);
+        }
+    }
+    out.put_i32(z.hour_last_seen);
+    out.put_bool(z.have_construction);
+    out.put_i32(z.last_action_timestamp);
+    out.put_i16(index[&z.get_original_name()]);
+    out.write_uuid(z.id.expect("zone id assigned before saving"));
+}
+
+/// `IsoMetaGrid.saveStringMap(output, zones)`: every zone's name, original
+/// name and type in `HashSet` order, written as a count and strings;
+/// returns the index of each.
+pub(crate) fn write_string_map<'z>(
+    out: &mut Vec<u8>,
+    zones: impl Iterator<Item = &'z Zone>,
+) -> io::Result<std::collections::HashMap<Option<&'z str>, i16>> {
+    let mut keys = Vec::new();
+    for z in zones {
+        keys.push(Some(z.name.as_str()));
+        keys.push(z.get_original_name());
+        keys.push(Some(z.zone_type.as_str()));
+    }
+    let table = java_hash_order(&keys);
+    if table.len() > i16::MAX as usize {
+        return Err(io::Error::other(
+            "IsoMetaGrid.saveZone() string table is too large",
+        ));
+    }
+    out.put_i32(table.len() as i32);
+    for s in &table {
+        out.write_string_utf(*s);
+    }
+    Ok(table
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (*s, i as i16))
+        .collect())
 }
 
 /// What [`IsoMetaGrid::load_zones`] did.
@@ -197,7 +259,7 @@ impl IsoMetaGrid {
         }
     }
 
-    fn read_zone(
+    pub(crate) fn read_zone(
         &self,
         r: &mut JavaReader<'_>,
         world_version: i32,
@@ -270,53 +332,10 @@ impl IsoMetaGrid {
         let mut out = Vec::new();
         out.extend_from_slice(&MAGIC);
         out.put_i32(WORLD_VERSION);
-        let mut keys = Vec::with_capacity(self.zones.len() * 3);
-        for &id in &self.zones {
-            let z = self.zone(id);
-            keys.push(Some(z.name.as_str()));
-            keys.push(z.get_original_name());
-            keys.push(Some(z.zone_type.as_str()));
-        }
-        let table = java_hash_order(&keys);
-        if table.len() > i16::MAX as usize {
-            return Err(io::Error::other(
-                "IsoMetaGrid.saveZone() string table is too large",
-            ));
-        }
-        let index: std::collections::HashMap<Option<&str>, i16> = table
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (*s, i as i16))
-            .collect();
-        out.put_i32(table.len() as i32);
-        for s in &table {
-            out.write_string_utf(*s);
-        }
+        let index = write_string_map(&mut out, self.zones.iter().map(|&id| self.zone(id)))?;
         out.put_i32(self.zones.len() as i32);
         for &id in &self.zones {
-            let z = self.zone(id);
-            out.put_i16(index[&Some(z.name.as_str())]);
-            out.put_i16(index[&Some(z.zone_type.as_str())]);
-            out.put_i32(z.x);
-            out.put_i32(z.y);
-            out.put_i8(z.z as i8);
-            out.put_i32(z.w);
-            out.put_i32(z.h);
-            out.put_i8(z.geometry_type as i8);
-            if !z.is_rectangle() {
-                if z.is_polyline() {
-                    out.put_i8(z.polyline_width as i8);
-                }
-                out.put_i16(z.points.len() as i16);
-                for p in &z.points {
-                    out.put_i32(*p);
-                }
-            }
-            out.put_i32(z.hour_last_seen);
-            out.put_bool(z.have_construction);
-            out.put_i32(z.last_action_timestamp);
-            out.put_i16(index[&z.get_original_name()]);
-            out.write_uuid(z.id.expect("assigned above"));
+            write_zone(&mut out, self.zone(id), &index);
         }
         let names: Vec<Option<&str>> = spawned
             .entries

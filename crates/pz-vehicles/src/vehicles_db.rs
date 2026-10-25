@@ -4,6 +4,10 @@
 //! [`ChunkVehicleSaver`] pz-world's `unload_chunk`
 //! (`VehiclesDB2.unloadChunk`) writes a chunk's list with.
 //!
+//! `IsoChunk.removeFromWorld` asks the same saver which vehicles stand on
+//! the chunk's squares, whether they keep updating in the meta, and for
+//! their rows off the square (`pz_world::save::vehicles_db::remove_vehicles_to_meta`).
+//!
 //! `VehicleBuffer.set` runs, in order: the `sqlId` asserts (off in the
 //! shipped game, so an id below 1 is written as it is), `vehicle.chunk.wx`
 //! (a vehicle without a chunk throws `NullPointerException`), the
@@ -260,6 +264,57 @@ impl ChunkVehicleSaver for RuntimeVehicleSaver<'_> {
         match vehicle.clone().downcast::<BaseVehicle>() {
             Ok(v) => vehicle_buffer(&v, ctx),
             Err(_) => self.others.vehicle_buffer(vehicle, chunk, ctx),
+        }
+    }
+
+    /// A runtime vehicle added to the world stands in its `current`
+    /// square's moving objects.
+    fn moving_square(&self, vehicle: &VehicleHandle) -> Option<(i32, i32, i32)> {
+        match vehicle.clone().downcast::<BaseVehicle>() {
+            Ok(v) => {
+                let st = v.st();
+                st.current.filter(|_| st.added_to_world)
+            }
+            Err(_) => self.others.moving_square(vehicle),
+        }
+    }
+
+    fn sql_id(&self, vehicle: &VehicleHandle) -> i32 {
+        match vehicle.clone().downcast::<BaseVehicle>() {
+            Ok(v) => v.st().sql_id,
+            Err(_) => self.others.sql_id(vehicle),
+        }
+    }
+
+    fn set_sql_id(&self, vehicle: &VehicleHandle, id: i32) {
+        match vehicle.clone().downcast::<BaseVehicle>() {
+            Ok(v) => v.st_mut().sql_id = id,
+            Err(_) => self.others.set_sql_id(vehicle, id),
+        }
+    }
+
+    fn should_update_in_meta(&self, vehicle: &VehicleHandle) -> Result<bool, String> {
+        match vehicle.clone().downcast::<BaseVehicle>() {
+            Ok(v) => should_update_in_meta(&v),
+            Err(_) => self.others.should_update_in_meta(vehicle),
+        }
+    }
+
+    /// `IsoChunk.removeFromWorld` took the vehicle off its square
+    /// (`removeFromSquare`, `setSquare(null)`, which the runtime vehicle
+    /// keeps), so `save` no longer clamps the position.
+    fn vehicle_buffer_off_square(
+        &self,
+        vehicle: &VehicleHandle,
+        chunk: &IsoChunk,
+        ctx: &SaveCtx<'_>,
+    ) -> Result<VehicleRow, String> {
+        match vehicle.clone().downcast::<BaseVehicle>() {
+            Ok(v) => {
+                v.st_mut().square = None;
+                vehicle_buffer(&v, ctx)
+            }
+            Err(_) => self.others.vehicle_buffer_off_square(vehicle, chunk, ctx),
         }
     }
 }

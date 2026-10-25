@@ -240,7 +240,7 @@ impl IsoMetaGrid {
     }
 
     /// `getCellOrCreate(gridX, gridY)`.
-    fn get_cell_or_create(&mut self, gx: i32, gy: i32) -> &mut IsoMetaCell {
+    pub(crate) fn get_cell_or_create(&mut self, gx: i32, gy: i32) -> &mut IsoMetaCell {
         let (wx, wy) = (self.min_x + gx, self.min_y + gy);
         self.cell_slot(gx, gy)
             .get_or_insert_with(|| IsoMetaCell::new(wx, wy))
@@ -877,14 +877,24 @@ impl IsoMetaGrid {
         Some(self.register_animal_zone_def(zone))
     }
 
-    /// `registerAnimalZone(AnimalZone)`. Marking cells for saving
-    /// (`addCellToSave`) is not modelled.
+    /// `registerAnimalZone(AnimalZone)`: `registerAnimalZone(zone, true)`.
     pub fn register_animal_zone_def(&mut self, zone: Zone) -> ZoneId {
+        self.register_animal_zone_save(zone, true)
+    }
+
+    /// `registerAnimalZone(AnimalZone, bHotSave)`: the zone joins
+    /// `animalZoneHandler` and every grid cell it covers; with `hot_save`
+    /// those cells are queued for saving (`addCellToSave`).
+    pub fn register_animal_zone_save(&mut self, zone: Zone, hot_save: bool) -> ZoneId {
         let (x, y, w, h) = (zone.x, zone.y, zone.w, zone.h);
         let id = self.push_zone(zone);
         self.animal_zones.push(id);
+        self.animal_zones_peak = self.animal_zones_peak.max(self.animal_zones.len());
         for (gx, gy) in self.ceil_cells(x, y, w, h) {
             self.get_cell_or_create(gx, gy).animal_zones.push(id);
+            if hot_save {
+                self.add_cell_to_save(gx + self.min_x, gy + self.min_y);
+            }
         }
         id
     }
