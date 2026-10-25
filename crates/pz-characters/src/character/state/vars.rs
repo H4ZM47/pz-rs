@@ -178,6 +178,11 @@ pub struct CharacterVars {
     pub ignore_stagger_back: bool,
     pub damaged_by_vehicle: bool,
     pub climbing: bool,
+    /// `climbRopeTime`.
+    pub climb_rope_time: f32,
+    /// `getClimbData()` (`ClimbSheetRopeState.ClimbData`, made on the
+    /// first rope climb).
+    pub climb_data: Option<ClimbData>,
     pub on_kill_done: bool,
     /// `getAttackedBy()` (by character id).
     pub attacked_by: Option<i32>,
@@ -417,6 +422,8 @@ impl Default for CharacterVars {
             ignore_stagger_back: false,
             damaged_by_vehicle: false,
             climbing: false,
+            climb_rope_time: 0.0,
+            climb_data: None,
             on_kill_done: false,
             attacked_by: None,
             on_fire: false,
@@ -1554,4 +1561,36 @@ impl<I: 'static> GameCharacter<I> {
 /// `String.valueOf(float)` for callers formatting variable values.
 pub fn float_string(f: f32) -> String {
     java_float_to_string(f)
+}
+
+/// `ClimbSheetRopeState.ClimbData` (kept on the character from its first
+/// rope climb on).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClimbData {
+    pub target_climb_height: i32,
+    pub fall_chance: f32,
+    pub idealx: f32,
+    pub idealy: f32,
+    pub target_fall_height: f32,
+    /// `climbTargetIsoObject`.
+    pub climb_target: Option<pz_pathfind::mover::ObjectRef>,
+    /// `targetGridSquare`.
+    pub target_square: Option<(i32, i32, i32)>,
+    /// `exitBlocked` (`None`: `null`).
+    pub exit_blocked: Option<super::SheetRopeExit>,
+}
+
+impl Default for ClimbData {
+    fn default() -> Self {
+        ClimbData {
+            target_climb_height: 0,
+            fall_chance: 0.0,
+            idealx: 0.0,
+            idealy: 0.0,
+            target_fall_height: f32::MAX,
+            climb_target: None,
+            target_square: None,
+            exit_blocked: None,
+        }
+    }
 }

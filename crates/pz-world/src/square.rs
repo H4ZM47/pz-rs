@@ -1680,6 +1680,42 @@ impl IsoGridSquare {
         })
     }
 
+    /// `getHoppableThumpableTo(next)`.
+    pub fn get_hoppable_thumpable_to<'s>(
+        &'s self,
+        next: Option<&'s IsoGridSquare>,
+        g: &'s impl GetSquare,
+        hooks: &'s dyn SquareHooks,
+    ) -> Option<(&'s IsoGridSquare, &'s IsoObject)> {
+        self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
+            s.get_hoppable_thumpable_facing(f, hooks).map(|o| (s, o))
+        })
+    }
+
+    /// `getWallHoppable(facing)`: the first object whose
+    /// `getHoppableDirection()` is `facing`.
+    pub fn get_wall_hoppable_facing(
+        &self,
+        facing: EdgeFacing,
+        m: &IsoSpriteManager,
+    ) -> Option<&IsoObject> {
+        self.objects
+            .iter()
+            .find(|o| o.get_hoppable_direction(m) == Some(facing))
+    }
+
+    /// `getWallHoppableTo(next)`.
+    pub fn get_wall_hoppable_to<'s>(
+        &'s self,
+        next: Option<&'s IsoGridSquare>,
+        m: &'s IsoSpriteManager,
+        g: &'s impl GetSquare,
+    ) -> Option<(&'s IsoGridSquare, &'s IsoObject)> {
+        self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
+            s.get_wall_hoppable_facing(f, m).map(|o| (s, o))
+        })
+    }
+
     /// `getWallExcludingList(bNorth, ignoreBlockingSprites)` with the
     /// (vanilla: empty) exclusion list: a wall object on that edge.
     pub fn has_wall_excluding_list(&self, north: bool, m: &IsoSpriteManager) -> bool {

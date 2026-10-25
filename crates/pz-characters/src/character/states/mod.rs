@@ -16,6 +16,7 @@ pub mod player_ai;
 pub mod player_movement;
 pub mod stagger_back;
 pub mod swipe;
+pub mod window;
 pub mod zombie;
 
 /// Every `zombie.ai.states` class (the jar's names).
@@ -127,6 +128,9 @@ pub fn all<I: 'static>() -> Vec<StateRef<I>> {
         player_movement::instance(),
         climb_fence::climb_over_fence(),
         climb_window::climb_through_window(),
+        window::open_window(),
+        window::close_window(),
+        window::smash_window(),
     ]
     .into_iter()
     .chain(zombie::all())

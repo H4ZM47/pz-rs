@@ -93,7 +93,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoPlayer.isSafeToClimbOver(dir)` from the square `at`.
-    fn is_safe_to_climb_over(&self, at: (i32, i32, i32), dir: IsoDirections) -> bool {
+    pub(crate) fn is_safe_to_climb_over(&self, at: (i32, i32, i32), dir: IsoDirections) -> bool {
         let (dx, dy) = match dir {
             IsoDirections::N => (0, -1),
             IsoDirections::S => (0, 1),

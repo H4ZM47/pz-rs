@@ -908,6 +908,22 @@ registered):
       `unregister_device`; DeviceData preset generation takes the radio
       as its `ChannelLists` (#200).
 
+- [ ] Windows (#208): `StatesEngine::player_input` returns the local
+      player's frame `PlayerInput` (Open/Close/Smash window states read
+      `pressedMovement` / `pressedCancelAction` from it); `toggle_window`
+      must run `IsoWindow.ToggleWindow` (also used by `OpenWindowState`
+      and `CloseWindowState`); `weapon_hit_thumpable` fires Lua
+      `OnWeaponHitThumpable`; `vehicle_window_destroyed` /
+      `vehicle_window_hit` from pz-vehicles (`smashCarWindow`).
+      `window_closing_success` should answer from
+      `pz_characters::character::states::window::closing_window(chr)` of
+      the characters on the window's squares. `SimContext::easy_climbing`
+      = `SandboxOptions.easyClimbing`. Lua `ISOpenCloseWindow` and
+      `ISSmashWindow` call `GameCharacter::open_window`, `close_window`,
+      `smash_window`, `smash_car_window`. Not ported: the debug
+      window-unlock cheat, the `Hit_Door` render effect on a bare-handed
+      barricade hit.
+
 ## World render pass
 - [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
       allocating every loaded chunk exhausts the GPU device.
