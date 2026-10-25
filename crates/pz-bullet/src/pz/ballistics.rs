@@ -104,13 +104,13 @@ impl GlibcRandom {
         }
         let mut g = GlibcRandom { r, f: 3, b: 0 };
         for _ in 0..310 {
-            g.next();
+            g.random();
         }
         g
     }
 
     /// `random()`.
-    pub fn next(&mut self) -> i32 {
+    pub fn random(&mut self) -> i32 {
         let v = (self.r[self.f] as u32).wrapping_add(self.r[self.b] as u32);
         self.r[self.f] = v as i32;
         self.f = (self.f + 1) % 31;
@@ -152,7 +152,7 @@ impl CRand {
         }
         #[cfg(target_os = "linux")]
         {
-            self.glibc.next()
+            self.glibc.random()
         }
     }
 }
@@ -192,7 +192,7 @@ mod rand_tests {
         let win: Vec<i32> = (0..5).map(|_| msvc_rand(&mut w)).collect();
         assert_eq!(win, [41, 18467, 6334, 26500, 19169]);
         let mut g = GlibcRandom::new(1);
-        let lin: Vec<i32> = (0..5).map(|_| g.next()).collect();
+        let lin: Vec<i32> = (0..5).map(|_| g.random()).collect();
         assert_eq!(
             lin,
             [
