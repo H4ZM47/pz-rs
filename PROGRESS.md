@@ -240,10 +240,18 @@ Status of the Rust port. Update this file with every merged change.
   original (600 lore-matrix `DoZombieStats`/`makeInactive`/`toggleCrawling`
   cases with the `Rand` stream after each, 2000 `setTurnAlertedValues` and
   500 vision-radius cases, 40 rounds of `WorldSoundManager` sounds with
-  1200 zombie hearing queries and aging) matches bit for bit (checked
-  locally). Spotting, the zombie states' world interplay, ragdolls,
-  vehicles and the network states are not yet checked against the
-  original; the movement code (`IsoGameCharacter.update`) is TODO.
+  1200 zombie hearing queries and aging, plus 1280 lines on a cell with
+  rooms), 3000 spotting checks (`spottedNew`/`spottedOld` on a real cell
+  with light, rooms, sneaking, traits and distances), 392 bites and
+  scratches on dressed players (`AttackState.triggerPlayerReaction` with
+  clothing holes, helmet falls and the BodyDamage update) and 24000 ticks
+  of the zombie state machine on the real action groups match bit for bit,
+  with the `Rand` stream (checked locally). `IsoMovingObject.postupdate`'s
+  collision passes (`DoCollide`, collision flags, the obstacle clip through
+  pz-pathfind) and `doDeferredMovement` are ported with unit tests only.
+  Lunges and paths (the original's path finder is native), ragdolls,
+  vehicles and the network states are not checked against the original;
+  stairs, slopes and `slideAwayFromWalls` are TODO.
 
 ## In progress
 - UIElement/UIManager, Core options, client window loop.
