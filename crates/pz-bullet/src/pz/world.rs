@@ -134,6 +134,8 @@ pub struct WorldSimulation {
     /// Value of the stairs child transforms' origin x, which the original
     /// leaves uninitialised (a stack slot); see `get_stairs_shape`.
     pub stairs_origin_x: f64,
+    /// `+0xb8`: ragdolls by id and the ragdoll pool.
+    pub ragdoll: super::ragdoll::RagdollWorld,
 }
 
 /// The world's callbacks into the glue for one step: `tickCallback`
@@ -327,6 +329,7 @@ impl WorldSimulation {
                 Vec3::new(1.0, flt(0.2), flt(0.05)),
             ],
             stairs_origin_x: 0.0,
+            ragdoll: Default::default(),
         }
     }
 
@@ -1079,6 +1082,19 @@ impl WorldSimulation {
             let ids: Vec<i32> = self.vehicles.keys().copied().collect();
             for id in ids {
                 let body = self.vehicles[&id].body;
+                let o = self.dw.cw.obj(body).world_transform.origin;
+                let x = (o.x + self.offset_x as f64).floor() as i32;
+                let y = (o.z + self.offset_y as f64).floor() as i32;
+                let z = (o.y / LEVEL_HEIGHT).floor() as i32;
+                self.chunk_map_set_need(i, x, y, z);
+            }
+            let bodies: Vec<ObjId> = self
+                .ragdoll
+                .ragdolls
+                .values()
+                .map(|r| r.ragdoll.as_ref().expect("ragdoll").body(0))
+                .collect();
+            for body in bodies {
                 let o = self.dw.cw.obj(body).world_transform.origin;
                 let x = (o.x + self.offset_x as f64).floor() as i32;
                 let y = (o.z + self.offset_y as f64).floor() as i32;
