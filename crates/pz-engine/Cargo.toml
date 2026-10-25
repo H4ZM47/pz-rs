@@ -18,4 +18,6 @@ pz-characters.workspace = true
 pz-inventory.workspace = true
 pz-scripts.workspace = true
 pz-input = { workspace = true, features = ["winit", "gilrs"] }
+pz-audio.workspace = true
+pz-sound = { path = "../pz-sound", features = ["studio"] }
 winit = "0.30"

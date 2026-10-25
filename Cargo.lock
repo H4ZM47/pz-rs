@@ -1940,6 +1940,7 @@ name = "pz-engine"
 version = "0.1.0"
 dependencies = [
  "pz-anim",
+ "pz-audio",
  "pz-character-model",
  "pz-characters",
  "pz-core",
@@ -1952,6 +1953,7 @@ dependencies = [
  "pz-model",
  "pz-render",
  "pz-scripts",
+ "pz-sound",
  "pz-ui",
  "winit",
 ]

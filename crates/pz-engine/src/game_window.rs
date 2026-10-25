@@ -31,6 +31,8 @@ struct App {
     last_frame: Instant,
     /// `Controllers` backend (gilrs); `None` when unavailable.
     gamepads: Option<pz_input::gamepads::Gamepads>,
+    /// The audio device stream (windowed runs only).
+    audio: Option<pz_audio::output::Output>,
     /// `UI3DModel` avatars (installed at boot).
     ui_models: Option<Rc<RefCell<crate::ui_models::UiModels>>>,
 }
@@ -54,6 +56,7 @@ pub fn run(launch: Launch) -> Result<(), String> {
         state: MainScreenState::default(),
         last_frame: Instant::now(),
         gamepads: None,
+        audio: None,
         ui_models: None,
     };
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
@@ -66,6 +69,14 @@ impl App {
         fs.borrow_mut().set_cache_dir(&self.launch.cache_dir);
         pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
         crate::boot::load_scripts(&self.launch.game_dir, &mut fs.borrow_mut())?;
+        // SoundManager.init / FMODManager.init (windowed runs; headless
+        // runs keep the silent system).
+        if self.window.is_some() {
+            match crate::sound::install(&self.launch.game_dir, &self.launch.cache_dir, fs.clone(), &self.core.borrow()) {
+                Ok(o) => self.audio = Some(o),
+                Err(e) => eprintln!("sound: {e}"),
+            }
+        }
         self.ui_models = Some(crate::ui_models::install(&self.launch.game_dir, fs.clone()));
         // Controllers.create (GameWindow.init, before LuaManager.init).
         pz_lua_api::bind_joypad::set_cache_dir(&self.launch.cache_dir);
@@ -111,6 +122,9 @@ impl App {
             apply_window_requests(w, pz_lua_api::bind_input::take_window_requests());
         }
         self.state.update(lua, multiplier);
+        // SoundManager.instance.Update() (GameWindow.logic, "Sound").
+        let toggle_music = pz_lua_api::bind_input::is_key_down_named("Toggle Music") && !pz_lua_api::bind_input::was_key_down_named("Toggle Music");
+        pz_lua_api::bind_audio::sound_system().borrow_mut().with(|m, ctx| m.update(toggle_music, ctx));
         pz_ui::with_ui(|m| m.mouse.end_frame());
         // The avatars' texture jobs (ModelInstanceTextureCreator) before
         // the UI draws them.
@@ -240,6 +254,7 @@ pub fn render_headless(launch: Launch, frames: u32) -> Result<(u32, u32, Vec<u8>
         state: MainScreenState::default(),
         last_frame: Instant::now(),
         gamepads: None,
+        audio: None,
         ui_models: None,
     };
     let (w, h) = app.screen_size();
