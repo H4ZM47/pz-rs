@@ -53,6 +53,24 @@ impl HudPlayers for CharacterPlayers {
     fn player_index(&self) -> i32 {
         bind_players::player_index()
     }
+    fn player_square(&self, i: usize) -> Option<(i32, i32, i32)> {
+        let p = bind_players::player(i)?;
+        let p = p.borrow();
+        // The current square is the one `IsoMovingObject` looks up at
+        // `fastfloor` of the position; the world keeps it in step.
+        p.environment.has_current_square.then(|| {
+            use pz_characters::character::zombie::math::fastfloor;
+            (fastfloor(p.vars.x), fastfloor(p.vars.y), fastfloor(p.vars.z))
+        })
+    }
+    fn player_index_of(&self, player: &Value) -> Option<usize> {
+        // `((IsoPlayer) player).playerIndex`: `None` (the caller's
+        // exception) for nil or a character that is not an `IsoPlayer`.
+        let Value::Object(o) = player else { return None };
+        let chr = o.as_any().downcast_ref::<CharacterObject>()?.0.clone();
+        let chr = chr.borrow();
+        (chr.is_player() || chr.is_animal()).then(|| chr.player.player_index as usize)
+    }
     fn player_dead(&self, i: usize) -> bool {
         bind_players::player(i).is_some_and(|p| p.borrow().is_dead())
     }
@@ -71,6 +89,9 @@ impl HudClimate for CharacterClimate {
             // from the HUD. `getTemperature()` keeps a stray call harmless.
             None => ctx.climate().map_or(0.0, |c| c.get_temperature()),
         })
+    }
+    fn fog_intensity(&self) -> f32 {
+        with_sim_context(|ctx| ctx.climate().map_or(0.0, |c| c.get_fog_intensity()))
     }
 }
 
@@ -287,6 +308,19 @@ mod tests {
         bind_players::set_player(0, Some(p0.clone()));
         bind_players::set_player_instance(Some(p0.clone()));
         assert!(p0.borrow().in_players && p0.borrow().player_instance);
+        // getSquare() and a Lua IsoPlayer's playerIndex.
+        assert_eq!(CharacterPlayers.player_square(0), None);
+        p0.borrow_mut().environment.has_current_square = true;
+        p0.borrow_mut().vars.z = 1.5;
+        assert_eq!(CharacterPlayers.player_square(0), Some((10, 20, 1)));
+        assert_eq!(CharacterPlayers.player_square(1), None);
+        p0.borrow_mut().player.player_index = 2;
+        assert_eq!(CharacterPlayers.player_index_of(&crate::bind_character_sim::character_value(&p0)), Some(2));
+        p0.borrow_mut().player.player_index = 0;
+        p0.borrow_mut().vars.z = 0.0;
+        assert_eq!(CharacterPlayers.player_index_of(&Value::Nil), None);
+        let z = Rc::new(RefCell::new(LuaGameCharacter::new(&sm, CharacterKind::Zombie)));
+        assert_eq!(CharacterPlayers.player_index_of(&crate::bind_character_sim::character_value(&z)), None);
         // ...and the instance's playerIndex with one.
         p0.borrow_mut().player.player_index = 1;
         assert_eq!(CharacterPlayers.player_index(), 1);
@@ -378,7 +412,9 @@ mod tests {
             g.month = 6;
             g.fps_multiplier = 2.0;
             g.climate.vars.floats[pz_core::weather::manager::FLOAT_TEMPERATURE].final_value = -4.25;
+            g.climate.vars.floats[pz_core::weather::manager::FLOAT_FOG_INTENSITY].final_value = 0.375;
         }
+        assert_eq!(with_host(|h| h.climate.fog_intensity()), 0.375);
         assert_eq!(
             with_host(|h| (
                 h.game_time.time_of_day(),
