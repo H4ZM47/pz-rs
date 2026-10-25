@@ -544,6 +544,37 @@ fn saves_and_loads_region_files() {
 }
 
 #[test]
+fn world_load_shows_saved_regions_from_the_first_update() {
+    let m = manager();
+    let cell = cell(&m);
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/isoregion-test")
+        .join(format!("world-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut r = IsoRegions::init_world(&dir, 13, false);
+    r.read_surrounding_chunks(&cell, &m, 0, 0, 7, true, false);
+    r.update(&cell, &m, None);
+    let room = r.get_iso_world_region(3, 3, 0).unwrap();
+    let size = r.world_region(room).square_size();
+
+    // The next load: every saved file is read and queued at init.
+    let mut r2 = IsoRegions::init_world(&dir, 13, true);
+    assert!(r2.no_save);
+    assert_eq!(r2.discovered_chunks().len(), 2);
+    assert_eq!(r2.queued_jobs().count(), 2);
+    // While the world loads, the game's root is still empty.
+    assert!(r2.get_data_chunk(0, 0).is_none());
+    assert!(r2.get_iso_world_region(3, 3, 0).is_none());
+    // The first frame's update applies them.
+    assert!(r2.update(&cell, &m, None));
+    let room2 = r2.get_iso_world_region(3, 3, 0).unwrap();
+    assert_eq!(r2.world_region(room2).square_size(), size);
+    assert_eq!(r2.queued_jobs().count(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn debug_load_follows_the_player() {
     let m = manager();
     let cell = cell(&m);

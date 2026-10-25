@@ -161,12 +161,26 @@ registered):
       per-frame `update(..)`, `take_events()`, `save_now()` on quit (#64);
       wrap its ChunkLoadHook in `ClearSoundsOnUnload` (#71) and use
       `pz_worldgen::WorldGenHook` as BrandNewHook (#63).
-- [ ] Chunk vehicles: in the streamer's `DoChunk`, right after `load_chunk`
-      / `load_brand_new` succeeds and before `finish_chunk_load`, call
-      `save::vehicles_db::load_chunk(vehicle_store.conn.as_mut(), &mut chunk,
-      &save_ctx)` (`WorldStreamer.DoChunkAlways`); pass `meta: Some(grid)` in
-      `SaveCtx` for every save chunk so squares get `associatedBuilding`
-      (#100).
+- [ ] Chunk vehicles: pass the `VehicleStore` connection to the streamer,
+      `StreamCtx { vehicles_db: vehicle_store.conn.as_mut(), .. }`; its
+      `DoChunk` then calls `save::vehicles_db::load_chunk` for every chunk it
+      serves, from disk or brand new (`WorldStreamer.DoChunkAlways`), and
+      reports `StreamEvent::VehiclesLoaded`. `None` (no store,
+      `Core.isNoSave`) loads none. The streamer passes `meta: Some(grid)`
+      in `SaveCtx`, so squares get `associatedBuilding` (#100). Not ported:
+      `VehiclesDB2.unloadChunk` writing a chunk's vehicles back when it
+      unloads.
+- [ ] `IsoWorld.init`, after `VehiclesDB2.init` and before
+      `WorldStreamer.create` / the cell load:
+      `let regions = IsoRegions::init_world(save_dir, chunk_grid_width,
+      core.no_save)` (`IsoRegions.init`: reads and queues every
+      `isoregiondata` file). Per frame, in `IsoWorld.updateWorld` right after
+      `IsoCell.update`: `regions.update_with_buildings(&mut BuildingCtx { .. },
+      player)`; the first call makes the saved regions visible, as the
+      original's first `IsoRegions.update` swaps them in. Give the same
+      `IsoRegions` to the region readers (puddles, weather mask, square
+      edits through `set_previous_flags` / `square_changed`). Quit:
+      `IngameState` calls `IsoRegions.reset()`; drop it.
 - [ ] Local player at world init: `VehicleStore::create` (`VehiclesDB2.init`),
       `savefile::is_player_alive`, `PlayerDb::new`; `load_player_for_info`
       gives `SWorldX/SWorldY` for the chunk map; later `load_local_player_1`

@@ -63,6 +63,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 
+use pz_sqlite::Connection;
+
 use crate::chunk::{load_brand_new, BrandNewHook, ChunkLoadEnv, IsoCell, IsoChunk};
 use crate::fix2x::Fix2xTable;
 use crate::java::{fastfloor, GameRand};
@@ -72,6 +74,7 @@ use crate::save::chunk_file::{
     chunk_path, finish_chunk_load, load_chunk, save_chunk, ChunkLoadHook,
 };
 use crate::save::items::ItemRegistry;
+use crate::save::vehicles_db;
 use crate::save::{SaveCtx, SaveHooks, SaveSettings, SaveTables};
 use crate::sprite::IsoSpriteManager;
 
@@ -159,6 +162,18 @@ pub enum StreamEvent {
         wy: i32,
         source: ChunkSource,
     },
+    /// `VehiclesDB2.loadChunk` for a served chunk, right after
+    /// [`StreamEvent::Served`] (only when [`StreamCtx::vehicles_db`] is
+    /// set): the vehicles added to [`IsoChunk::vehicles`], the rows that
+    /// failed to load and were deleted, and the error that ended the
+    /// statement early.
+    VehiclesLoaded {
+        wx: i32,
+        wy: i32,
+        added: usize,
+        removed: Vec<(i32, String)>,
+        error: Option<String>,
+    },
     /// A queued job nobody references any more went back to `chunkStore`.
     Cancelled { wx: i32, wy: i32 },
     /// A finished chunk went into the chunk maps and the cell
@@ -209,6 +224,12 @@ pub struct StreamCtx<'a> {
     pub chunk_hook: Option<&'a mut dyn ChunkLoadHook>,
     /// `Core.getInstance().isNoSave()`: unloaded chunks are not written.
     pub no_save: bool,
+    /// The vehicle store's connection to `vehicles.db`
+    /// (`VehiclesDB2.WorldStreamerThread.store`, opened by
+    /// `SQLStore.create`). Every served chunk's vehicles are loaded from it
+    /// ([`vehicles_db::load_chunk`]); `None` (no store, `Core.isNoSave`)
+    /// loads none.
+    pub vehicles_db: Option<&'a mut Connection>,
 }
 
 /// Reborrow an optional hook for a shorter time.
@@ -860,10 +881,12 @@ impl ChunkStreamer {
         });
     }
 
-    /// `WorldStreamer.DoChunk(chunk, null)` → `IsoChunk.LoadChunk`: the
-    /// save file if there is one, else (or when it fails) `LoadBrandNew`.
-    /// `ZoneGenerator.genForaging` and `VehiclesDB2.loadChunk` are not
-    /// ported.
+    /// `WorldStreamer.DoChunk(chunk, null)` → `DoChunkAlways`:
+    /// `IsoChunk.LoadChunk` (the save file if there is one, else, or when
+    /// it fails, `LoadBrandNew`), then `VehiclesDB2.instance.loadChunk`
+    /// for either kind of chunk, before `loadInWorldStreamerThread` creates
+    /// the missing squares (which here runs at hand-off, so vehicles see
+    /// the same squares). `ZoneGenerator.genForaging` is not ported.
     fn do_chunk(&mut self, id: ChunkId, ctx: &mut StreamCtx<'_>) {
         let (wx, wy) = (self.records[&id].wx, self.records[&id].wy);
         let path = chunk_path(ctx.save_dir, wx, wy);
@@ -884,7 +907,7 @@ impl ChunkStreamer {
                 }
             }
         }
-        let chunk = match chunk {
+        let mut chunk = match chunk {
             Some(c) => c,
             None => {
                 let mut env = ChunkLoadEnv {
@@ -908,6 +931,24 @@ impl ChunkStreamer {
             }
         };
         self.events.push(StreamEvent::Served { wx, wy, source });
+        if let Some(conn) = ctx.vehicles_db.as_deref_mut() {
+            let save_ctx = SaveCtx {
+                sprites: ctx.sprites,
+                tables: ctx.save_tables,
+                settings: ctx.save_settings,
+                items: ctx.items,
+                hooks: ctx.save_hooks,
+                meta: Some(ctx.meta),
+            };
+            let r = vehicles_db::load_chunk(Some(conn), &mut chunk, &save_ctx);
+            self.events.push(StreamEvent::VehiclesLoaded {
+                wx,
+                wy,
+                added: r.added.len(),
+                removed: r.removed,
+                error: r.error,
+            });
+        }
         self.load_grid_square.push_back((id, chunk));
     }
 

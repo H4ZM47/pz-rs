@@ -46,7 +46,7 @@ fn part(id: &str, condition: i32) -> VehiclePart {
     }
 }
 
-fn vehicle() -> BaseVehicle {
+pub(crate) fn vehicle() -> BaseVehicle {
     let mut engine = part("Engine", 70);
     engine.mod_data = Some(table("a", "b"));
     let mut trunk = part("TruckBed", 40);

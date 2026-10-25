@@ -13,15 +13,26 @@
 //! harness wrote one, otherwise every item is known. The map has no lot
 //! files, so brand-new chunks are empty, as in the harness.
 //!
+//! When the save has a `vehicles.db` it is copied to `<work dir>` and
+//! every served chunk loads its vehicles from the copy; each handed-off
+//! chunk's vehicles are printed after its `H` line. When it has an
+//! `isoregiondata` directory that is copied too and loaded with
+//! [`IsoRegions::init_world`] before the script runs (`IsoWorld.init`).
+//!
 //! The script's first line is `width <chunkGridWidth>`; then
 //! `load <wx> <wy>` loads the world around a chunk with the player in its
-//! middle, and `frame <x> <y> <all|n>` moves the player to tile `(x, y)` and
-//! runs one frame, serving all jobs or `n` streamer iterations.
+//! middle, `frame <x> <y> <all|n>` moves the player to tile `(x, y)` and
+//! runs one frame, serving all jobs or `n` streamer iterations, and
+//! `regions` prints the region dump of the cell's chunks, runs one
+//! [`IsoRegions::update`] (the first frame's `IsoWorld.updateWorld`) and
+//! prints it again.
 
 use std::path::Path;
 
 use pz_world::chunk::IsoCell;
+use pz_world::chunk_vehicles::VehicleOrigin;
 use pz_world::fix2x::Fix2xTable;
+use pz_world::isoregion::IsoRegions;
 use pz_world::save::items::AllItems;
 use pz_world::save::{NoSaveHooks, SaveSettings, SaveTables};
 use pz_world::streamer::{ChunkSource, ChunkStreamer, PlayerPos, Serve, StreamCtx, StreamEvent};
@@ -29,6 +40,9 @@ use pz_world::{
     GameRand, IsoMetaGrid, IsoSpriteManager, NoHooks, ObjectLoadSettings, ObjectTables,
     SpriteTables,
 };
+
+#[path = "common/region_dump.rs"]
+mod region_dump;
 
 struct NoRand;
 impl GameRand for NoRand {
@@ -67,6 +81,13 @@ fn line(e: &StreamEvent) -> String {
         StreamEvent::Unloaded { wx, wy } => format!("U {wx},{wy}"),
         StreamEvent::Saved { wx, wy, .. } => format!("W {wx},{wy}"),
         StreamEvent::SaveFailed { wx, wy, error } => format!("W {wx},{wy} failed: {error}"),
+        StreamEvent::VehiclesLoaded {
+            wx,
+            wy,
+            removed,
+            error,
+            ..
+        } => format!("# vehicles {wx},{wy} removed={removed:?} error={error:?}"),
     }
 }
 
@@ -102,6 +123,19 @@ fn main() {
         .unwrap()
         .parse()
         .unwrap();
+    let mut vehicles_db = None;
+    if save.join("vehicles.db").exists() {
+        std::fs::copy(save.join("vehicles.db"), work.join("vehicles.db")).unwrap();
+        // `SQLStore.create` on an existing file: auto-commit off.
+        let mut c = pz_sqlite::Connection::open(work.join("vehicles.db")).unwrap();
+        c.set_autocommit(false).unwrap();
+        vehicles_db = Some(c);
+    }
+    let mut regions = None;
+    if save.join("isoregiondata").is_dir() {
+        copy_dir(&save.join("isoregiondata"), &work.join("isoregiondata"));
+        regions = Some(IsoRegions::init_world(work, width, false));
+    }
     let mut s = ChunkStreamer::new(1, width);
     let mut cell = IsoCell::default();
     let (mut rand, mut object_hooks) = (NoRand, NoHooks);
@@ -130,6 +164,7 @@ fn main() {
             brand_new: None,
             chunk_hook: None,
             no_save: false,
+            vehicles_db: vehicles_db.as_mut(),
         };
         match t[0] {
             "load" => {
@@ -147,11 +182,48 @@ fn main() {
                 s.update(&[Some(p)], serve, &mut cell, &mut ctx);
                 last = (x, y);
             }
+            "regions" => {
+                let r = regions.as_mut().expect("the save has no isoregiondata");
+                let order: Vec<(i32, i32)> = {
+                    let mut v: Vec<_> = cell.chunks.keys().copied().collect();
+                    v.sort();
+                    v
+                };
+                out.push_str("# regions before update\n");
+                out.push_str(&region_dump::dump(r, &order));
+                r.update(&cell, ctx.sprites, None);
+                out.push_str("# regions after update\n");
+                out.push_str(&region_dump::dump(r, &order));
+            }
             _ => panic!("bad script line {l}"),
         }
         for e in s.take_events() {
-            out.push_str(&line(&e));
+            let t = line(&e);
+            if t.starts_with("# vehicles") && t.ends_with("removed=[] error=None") {
+                continue;
+            }
+            out.push_str(&t);
             out.push('\n');
+            let StreamEvent::HandedOff { wx, wy } = e else {
+                continue;
+            };
+            for v in cell.chunks[&(wx, wy)].vehicles.loaded() {
+                let VehicleOrigin::Database { sql_id } = v.origin else {
+                    continue;
+                };
+                let sq = v
+                    .square
+                    .map_or("null".to_string(), |(x, y, z)| format!("{x},{y},{z}"));
+                let b = &v.vehicle.base;
+                out.push_str(&format!(
+                    " v {sql_id} sq={sq} script={} x={} y={} z={} parts={}\n",
+                    v.vehicle.script_name,
+                    b.x.to_bits() as i32,
+                    b.y.to_bits() as i32,
+                    b.z.to_bits() as i32,
+                    v.vehicle.parts.len()
+                ));
+            }
         }
     }
     std::fs::write(&a[5], out).unwrap();
