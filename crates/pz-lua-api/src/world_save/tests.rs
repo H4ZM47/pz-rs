@@ -142,7 +142,7 @@ impl World {
             uuids: &mut self.uuids,
             players: None,
             can_save_players: true,
-            reanimated: zombies,
+            reanimated: Some(zombies),
             world_gen: &self.world_gen,
             instance_tracker: &self.instance_tracker,
             cache_dir: None,
@@ -231,6 +231,22 @@ fn save_game_writes_in_the_original_order() {
         std::fs::read(d.0.join("reanimated.bin")).unwrap(),
         reanimated_bytes(&zombies)
     );
+}
+
+#[test]
+fn a_failed_reanimated_save_writes_no_file() {
+    let d = Dir::new();
+    let mut w = World::new();
+    let mut g = w.game(&d.0, &[]);
+    g.reanimated = None;
+    let mut log = Log {
+        dir: &d.0,
+        calls: Vec::new(),
+    };
+    let r = save_game(&mut g, &mut log).unwrap();
+    assert!(r.saved && r.errors.is_empty());
+    assert!(!d.names().contains(&"reanimated.bin".to_string()));
+    assert!(d.names().contains(&"map_zone.bin".to_string()));
 }
 
 #[test]
