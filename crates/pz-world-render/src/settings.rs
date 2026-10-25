@@ -191,6 +191,81 @@ impl ClimateSettings {
     }
 }
 
+/// What `updateRenderSettings` leaves on `PlayerRenderSettings` for the
+/// screen pass (`WeatherShader.startMainThread`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenRenderSettings {
+    /// `getBlendColor()` rgb: the climate's exterior global light.
+    pub blend_color: [f32; 3],
+    /// `getBlendIntensity()`: its alpha; 0 on the legacy path with goggles.
+    pub blend_intensity: f32,
+    /// `getDesaturation()`: the climate's, times `1 - darkness` unless the
+    /// weather shader draws the goggles.
+    pub desaturation: f32,
+    /// `getDarkness()`: `1 - dayLightStrength` (0.25 in Last Stand).
+    pub darkness: f32,
+    /// `isApplyNightVisionGoggles()`.
+    pub night_vision_goggles: bool,
+    /// `isExterior()`: forced true by the original.
+    pub exterior: bool,
+}
+
+impl ClimateSettings {
+    /// The screen-pass half of `updateRenderSettings` for `player`.
+    pub fn screen_settings(&self, player: usize) -> ScreenRenderSettings {
+        let c = &self.climate;
+        let p = self.players.get(player).copied().unwrap_or_default();
+        let mut desaturation = c.desaturation;
+        let mut darkness = 1.0 - c.day_light_strength;
+        // isExterior = true: the exterior light, no interior adjustment.
+        let blend = c.global_light_exterior;
+        let mut blend_intensity = blend[3];
+        if c.last_stand {
+            darkness = 0.25;
+        }
+        if c.weather_shader {
+            if !p.night_vision_goggles {
+                desaturation *= 1.0 - darkness;
+            }
+        } else {
+            desaturation *= 1.0 - darkness;
+            if p.night_vision_goggles {
+                blend_intensity = 0.0;
+            }
+        }
+        ScreenRenderSettings {
+            blend_color: [blend[0], blend[1], blend[2]],
+            blend_intensity,
+            desaturation,
+            darkness,
+            night_vision_goggles: p.night_vision_goggles,
+            exterior: true,
+        }
+    }
+
+    /// `params` with the fields `WeatherShader.startMainThread` takes from
+    /// `RenderSettings` for `player` (`Light`, `LightIntensity`,
+    /// `DesaturationVal`, `NightVisionGoggles`, `NightValue`, `Exterior`).
+    pub fn screen_params(&self, player: usize, params: pz_render::ScreenParams) -> pz_render::ScreenParams {
+        self.screen_settings(player).apply(params)
+    }
+}
+
+impl ScreenRenderSettings {
+    /// `params` with these values in its render-settings fields.
+    pub fn apply(&self, params: pz_render::ScreenParams) -> pz_render::ScreenParams {
+        pz_render::ScreenParams {
+            light: self.blend_color,
+            light_intensity: self.blend_intensity,
+            desaturation: self.desaturation,
+            night_vision_goggles: self.night_vision_goggles,
+            night_value: self.darkness,
+            exterior: self.exterior,
+            ..params
+        }
+    }
+}
+
 impl RenderSettingsSource for ClimateSettings {
     fn player_settings(&mut self, player: i32) -> PlayerRenderSettings {
         self.compute(player.max(0) as usize)
@@ -238,5 +313,50 @@ mod climate_tests {
         assert!((s.gmod - 0.9).abs() < 1e-6 && (s.bmod - 0.8).abs() < 1e-6);
         // ambientMin 0.15 for night darkness 3: 0.15 + 0.85 * 0.5.
         assert!((s.ambient - 0.575).abs() < 1e-6);
+    }
+
+    fn screen(climate: ClimateInput, goggles: bool) -> ScreenRenderSettings {
+        let mut players = [PlayerRenderInput::default(); 4];
+        players[1].night_vision_goggles = goggles;
+        ClimateSettings { climate, players }.screen_settings(1)
+    }
+
+    /// Dusk with the weather shader: desaturation 0.6 * (1 - 0.25).
+    #[test]
+    fn screen_settings_scale_desaturation_by_darkness() {
+        let c = ClimateInput { desaturation: 0.6, day_light_strength: 0.75, ..input() };
+        let s = screen(c, false);
+        assert_eq!(s, ScreenRenderSettings { blend_color: [1.0, 0.8, 0.6], blend_intensity: 0.5, desaturation: 0.6 * 0.75, darkness: 0.25, night_vision_goggles: false, exterior: true });
+    }
+
+    /// Goggles under the weather shader keep the climate's desaturation;
+    /// on the legacy path they drop the blend intensity instead.
+    #[test]
+    fn screen_settings_with_goggles() {
+        let c = ClimateInput { desaturation: 0.6, day_light_strength: 0.75, ..input() };
+        let s = screen(c, true);
+        assert_eq!((s.desaturation, s.blend_intensity, s.night_vision_goggles), (0.6, 0.5, true));
+        let s = screen(ClimateInput { weather_shader: false, ..c }, true);
+        assert_eq!((s.desaturation, s.blend_intensity, s.darkness), (0.6 * 0.75, 0.0, 0.25));
+    }
+
+    /// Last Stand fixes the darkness at 0.25; the exterior light is used
+    /// even indoors (`isExterior` is forced true).
+    #[test]
+    fn screen_settings_in_last_stand() {
+        let c = ClimateInput { desaturation: 0.4, day_light_strength: 0.1, last_stand: true, global_light_interior: [0.1, 0.2, 0.3, 0.9], ..input() };
+        let s = screen(c, false);
+        assert_eq!((s.darkness, s.desaturation, s.blend_color, s.exterior), (0.25, 0.3, [1.0, 0.8, 0.6], true));
+    }
+
+    #[test]
+    fn screen_params_take_the_render_settings_fields() {
+        let c = ClimateInput { desaturation: 0.6, day_light_strength: 0.75, ..input() };
+        let mut players = [PlayerRenderInput::default(); 4];
+        players[1].night_vision_goggles = true;
+        let base = pz_render::ScreenParams { timer: 5.0, zoom: 1.5, drunk_factor: 0.3, ..Default::default() };
+        let p = ClimateSettings { climate: c, players }.screen_params(1, base);
+        let want = pz_render::ScreenParams { light: [1.0, 0.8, 0.6], light_intensity: 0.5, desaturation: 0.6, night_vision_goggles: true, night_value: 0.25, exterior: true, ..base };
+        assert_eq!(p, want);
     }
 }

@@ -844,13 +844,12 @@ registered):
       `ScreenTimer` kept for the session (`timer.apply(params,
       PerformanceSettings.lockFps)`, once per player screen pass and once
       per save thumbnail, in that order):
-      `light`/`light_intensity` (`getBlendColor`/`getBlendIntensity`),
-      `desaturation` (after `*= 1 - darkness`), `night_value`
-      (`getDarkness` = 1 - day light strength; 0.25 in Last Stand),
-      `exterior` from `RenderSettings.PlayerRenderSettings`
-      (`updateRenderSettings`; pz-world-render's `ClimateSettings`
-      computes the lighting half of it); `night_vision_goggles` =
-      `isWearingNightVisionGoggles()`, `drunk_factor` = intoxication / 100,
+      `light`, `light_intensity`, `desaturation`, `night_value`,
+      `exterior` and `night_vision_goggles` from
+      `ClimateSettings::screen_params(player, params)` (pz-world-render,
+      `updateRenderSettings`' screen half over the same `ClimateInput` and
+      `PlayerRenderInput.night_vision_goggles` =
+      `isWearingNightVisionGoggles()`) (#183); `drunk_factor` = intoxication / 100,
       `blur_factor` = `IsoPlayer.getBlurFactor()` (not updated for a dead
       player); `search` from the `SearchMode` port (characters/gameplay,
       not ported yet: `isShaderEnabled`, `getShaderBlur/Radius/

@@ -54,7 +54,7 @@ pub use render_world::{
     RenderWorld, WorldView,
 };
 pub use settings::{
-    ClimateInput, ClimateSettings, NoonSettings, PlayerRenderInput, RenderSettingsSource,
+    ClimateInput, ClimateSettings, NoonSettings, PlayerRenderInput, RenderSettingsSource, ScreenRenderSettings,
 };
 pub use sprites::{GameTextures, NoTextures, SpriteCache, SpriteTextures};
 pub use state_light::{RenderSettings, StateLighting};
