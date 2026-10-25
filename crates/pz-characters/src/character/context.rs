@@ -669,6 +669,11 @@ pub trait SimContext {
     fn option_use_physics_hit_reaction(&self) -> bool {
         !self.is_client() && !self.is_server()
     }
+    /// `RagdollController.getNumberOfActiveSimulations()` (pz-ragdoll's
+    /// `RagdollGlobals.number_of_active_simulations`).
+    fn active_ragdoll_simulations(&self) -> i32 {
+        0
+    }
     /// `Core.getMaxActiveRagdolls()`.
     fn max_active_ragdolls(&self) -> i32 {
         20
@@ -676,14 +681,6 @@ pub trait SimContext {
     /// `DebugOptions.instance.animation.disableRagdolls`.
     fn debug_disable_ragdolls(&self) -> bool {
         false
-    }
-    /// `DebugOptions...ragdoll.enableInitialVelocities` (on by default).
-    fn debug_ragdoll_initial_velocities(&self) -> bool {
-        true
-    }
-    /// `DebugOptions...ragdoll.physics.physicsHitReaction` (on by default).
-    fn debug_physics_hit_reaction(&self) -> bool {
-        true
     }
     /// `IsoPlayer.getCoopPVP()`.
     fn coop_pvp(&self) -> bool {

@@ -19,7 +19,6 @@ use crate::character::items::blood_part;
 use crate::character::state::StateCx;
 use crate::character::states::ids;
 use crate::character::{GameCharacter, SimContext, SimEvent};
-use crate::Characters;
 
 /// `zombie.combat.HitReaction`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,24 +317,13 @@ pub fn resolve_hit_reaction(ctx: &dyn SimContext, critical: bool, hit_from_behin
 }
 
 impl<I: 'static> GameCharacter<I> {
-    /// `canRagdoll()`.
-    pub fn can_ragdoll(&self, chars: &Characters, ctx: &dyn SimContext) -> bool {
-        if ctx.is_client() || ctx.is_server() {
+    /// `canRagdoll()`: [`Self::can_ragdoll_uncapped`] and room for one more
+    /// ragdoll simulation when the character has no controller yet.
+    pub fn can_ragdoll(&self, ctx: &dyn SimContext) -> bool {
+        if !self.ragdoll.has_controller && ctx.active_ragdoll_simulations() >= ctx.max_active_ragdolls() {
             return false;
         }
-        if ctx.debug_disable_ragdolls() {
-            return false;
-        }
-        if !ctx.option_use_physics_hit_reaction() {
-            return false;
-        }
-        if self.ragdoll.is_none() && chars.combat.borrow().active_ragdolls >= ctx.max_active_ragdolls() {
-            return false;
-        }
-        if !self.worn_clothing_can_ragdoll {
-            return false;
-        }
-        self.current_state().is_some_and(|s| s.can_ragdoll(self))
+        self.can_ragdoll_uncapped(ctx)
     }
 
     /// `RagdollSettingsManager.usePhysicHitReaction(chr)` with no forced
@@ -350,8 +338,8 @@ impl<I: 'static> GameCharacter<I> {
     }
 
     /// `CombatManager.setUsePhysicHitReaction(weapon, chr)`.
-    pub fn set_use_physic_hit_reaction_for(&mut self, chars: &Characters, ctx: &dyn SimContext, ranged: bool) {
-        if !self.can_ragdoll(chars, ctx) {
+    pub fn set_use_physic_hit_reaction_for(&mut self, ctx: &dyn SimContext, ranged: bool) {
+        if !self.can_ragdoll(ctx) {
             self.vars.use_physic_hit_reaction = false;
             return;
         }
@@ -410,8 +398,8 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `CombatManager.createCombatData(weapon, attacker, target, part)` on
     /// `self` (the target).
-    fn create_combat_data(&mut self, chars: &Characters, ctx: &dyn SimContext, w: &HitWeapon, attacker: (i32, [f32; 3]), part: RagdollBodyPart) {
-        if !self.vars.use_physic_hit_reaction || !self.can_ragdoll(chars, ctx) {
+    fn create_combat_data(&mut self, ctx: &dyn SimContext, w: &HitWeapon, attacker: (i32, [f32; 3]), part: RagdollBodyPart) {
+        if !self.vars.use_physic_hit_reaction || !self.can_ragdoll(ctx) {
             return;
         }
         let event = self.vars.hit_reaction.clone();
@@ -443,7 +431,6 @@ impl<I: 'static> GameCharacter<I> {
     #[allow(clippy::too_many_arguments)]
     fn process_targeted_hit(
         &mut self,
-        chars: &Characters,
         ctx: &dyn SimContext,
         w: &HitWeapon,
         attacker: (i32, [f32; 3]),
@@ -513,7 +500,7 @@ impl<I: 'static> GameCharacter<I> {
             r = e;
         }
         self.vars.hit_reaction = r.value().to_string();
-        self.create_combat_data(chars, ctx, w, attacker, part);
+        self.create_combat_data(ctx, w, attacker, part);
     }
 
     /// `CombatManager.processHit(weapon, wielder, target)` on `self` (the
@@ -522,7 +509,7 @@ impl<I: 'static> GameCharacter<I> {
     pub fn process_hit(&mut self, w: &HitWeapon, wielder: &mut GameCharacter<I>, cx: &mut StateCx<'_, I>) -> i32 {
         let (chars, ctx) = (cx.chars, cx.ctx);
         let mut r = HitReaction::from_string(&wielder.get_variable_string("ZombieHitReaction"));
-        self.set_use_physic_hit_reaction_for(chars, ctx, w.ranged);
+        self.set_use_physic_hit_reaction_for(ctx, w.ranged);
         let d = calculate_shot_direction(ctx, (wielder.vars.forward_x, wielder.vars.forward_y), (self.vars.forward_x, self.vars.forward_y));
         let attacker = (wielder.id, [wielder.vars.x, wielder.vars.y, wielder.vars.z]);
         if r == HitReaction::Shot {
@@ -533,7 +520,7 @@ impl<I: 'static> GameCharacter<I> {
                 _ => RagdollBodyPart::Count.ordinal(),
             };
             if targeted != RagdollBodyPart::Count.ordinal() {
-                self.process_targeted_hit(chars, ctx, w, attacker, RagdollBodyPart::from_ordinal(targeted), d);
+                self.process_targeted_hit(ctx, w, attacker, RagdollBodyPart::from_ordinal(targeted), d);
                 return targeted;
             }
             r = resolve_hit_reaction(ctx, wielder.vars.critical_hit, self.vars.hit_from_behind, d);
@@ -555,7 +542,7 @@ impl<I: 'static> GameCharacter<I> {
             self.vars.hit_reaction = String::new();
         }
         let part = body_part_for(ctx, r, d);
-        self.create_combat_data(chars, ctx, w, attacker, part);
+        self.create_combat_data(ctx, w, attacker, part);
         part.ordinal()
     }
 }

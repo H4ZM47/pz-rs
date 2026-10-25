@@ -1,7 +1,7 @@
-//! The physics the firearm and ragdoll code calls: the subset of the
-//! `zombie.core.physics.Bullet` natives that `BallisticsController`,
-//! `BallisticsTarget`, `RagdollController` and `RagdollBuilder` use, with
-//! the argument order and float-array layouts of the natives.
+//! The physics the firearm code calls: the `zombie.core.physics.Bullet`
+//! ballistics natives that `BallisticsController` and `BallisticsTarget`
+//! use, with the argument order and float-array layouts of the natives.
+//! Ragdolls are pz-ragdoll's (over `PzBullet` directly).
 //!
 //! The world (engine) owns the physics world and hands it out through
 //! [`StateWorld::physics`](crate::character::state::StateWorld::physics).
@@ -94,41 +94,6 @@ pub trait PhysicsWorld {
     fn update_ballistics_target_skeleton(&mut self, id: i32, count: i32, data: &[f32]);
     /// `setBallisticsTargetAdjustingShapeScale(x, y, z)`.
     fn set_ballistics_target_adjusting_shape_scale(&mut self, x: f32, y: f32, z: f32);
-
-    // ---- ragdolls (`RagdollBuilder`, `RagdollController`) ----
-
-    /// `initializeRagdollSkeleton(numberOfBones, hierarchy)`.
-    fn initialize_ragdoll_skeleton(&mut self, n: i32, hierarchy: &[i32]);
-    /// `initializeRagdollPose(numberOfBones, data, qx, qy, qz, qw)`.
-    fn initialize_ragdoll_pose(&mut self, n: i32, data: &[f32], q: [f32; 4]);
-    /// `setRagdollMass(mass)`.
-    fn set_ragdoll_mass(&mut self, mass: f32);
-    /// `addRagdoll(id, position, rotation)`.
-    fn add_ragdoll(&mut self, id: i32, position: [f32; 3], rotation: [f32; 4]);
-    /// `removeRagdoll(id)`.
-    fn remove_ragdoll(&mut self, id: i32);
-    /// `updateRagdoll(id, position, rotation)`.
-    fn update_ragdoll(&mut self, id: i32, position: [f32; 3], rotation: [f32; 4]);
-    /// `setRagdollActive(id, active)`.
-    fn set_ragdoll_active(&mut self, id: i32, active: bool);
-    /// `setRagdollLocalTransformRotation(id, qx, qy, qz, qw)`.
-    fn set_ragdoll_local_transform_rotation(&mut self, id: i32, q: [f32; 4]);
-    /// `updateRagdollSkeletonTransforms(id, numberOfBones, bones)`.
-    fn update_ragdoll_skeleton_transforms(&mut self, id: i32, n: i32, bones: &[f32]);
-    /// `updateRagdollSkeletonPreviousTransforms(id, numberOfBones, dt,
-    /// bones)`.
-    fn update_ragdoll_skeleton_previous_transforms(&mut self, id: i32, n: i32, dt: f32, bones: &[f32]);
-    /// `simulateRagdollWithRigidBodyOutput(id, skeleton, rigidBodies)`:
-    /// the number of bones written.
-    fn simulate_ragdoll_with_rigid_body_output(&mut self, id: i32, skeleton: &mut [f32], rigid_bodies: &mut [f32]) -> i32;
-    /// `getRagdollSimulationState(id)`.
-    fn get_ragdoll_simulation_state(&mut self, id: i32) -> i32;
-    /// `applyImpulse(id, bodyPart, impulse)`: 6 floats.
-    fn apply_impulse(&mut self, id: i32, part: i32, impulse: &[f32]);
-    /// `setRagdollBodyDynamics(id, params)`: 8 floats.
-    fn set_ragdoll_body_dynamics(&mut self, id: i32, params: &[f32]);
-    /// `resetRagdollBodyDynamics(id)`.
-    fn reset_ragdoll_body_dynamics(&mut self, id: i32);
 }
 
 /// `RagdollBodyPart` (ordinal order; `BODYPART_COUNT` is "none").
@@ -229,7 +194,3 @@ impl RagdollBodyPart {
     }
 }
 
-/// `pzSpaceToBulletSpace`: `(x, y, z)` iso to `(x, z * 2.44949, y)`.
-pub fn pz_space_to_bullet_space(p: [f32; 3]) -> [f32; 3] {
-    [p[0], p[2] * BULLET_Z_SCALE, p[1]]
-}

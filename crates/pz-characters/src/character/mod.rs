@@ -377,8 +377,9 @@ pub struct GameCharacter<I: 'static> {
     pub ballistics_controller: Option<Box<firearm::BallisticsController>>,
     /// `ballisticsTarget` (a character a ballistics query may hit).
     pub ballistics_target: Option<Box<firearm::BallisticsTarget>>,
-    /// The animation player's `ragdollController`.
-    pub ragdoll: Option<Box<firearm::RagdollController>>,
+    /// What the character side tracks of its ragdoll (the controller is
+    /// pz-ragdoll's, beside the animation player).
+    pub ragdoll: firearm::ragdoll::RagdollTracking,
     /// `hitInfoList` (the ranged path's targets).
     pub hit_info_list: Vec<states::swipe::HitInfo>,
     /// `wornClothingCanRagdoll` (no worn item has the `NO_RAGDOLL` tag).
@@ -479,7 +480,7 @@ impl<I: 'static> GameCharacter<I> {
             player_fields: Box::default(),
             ballistics_controller: None,
             ballistics_target: None,
-            ragdoll: None,
+            ragdoll: Default::default(),
             hit_info_list: Vec::new(),
             worn_clothing_can_ragdoll: true,
         }

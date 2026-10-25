@@ -260,7 +260,8 @@ impl<I: 'static> GameCharacter<I> {
                 continue;
             }
             let mut bt = t.ballistics_target.take().unwrap_or_default();
-            let (pos, pelvis, dir) = ([t.vars.x, t.vars.y, t.vars.z], t.ragdoll.as_ref().map(|r| r.pelvis_position), t.direction_angle());
+            let (pos, dir) = ([t.vars.x, t.vars.y, t.vars.z], t.direction_angle());
+            let pelvis = cx.world.ragdoll_pelvis(h.target);
             let skeleton = cx.world.ballistics_skeleton(h.target);
             if let Some(p) = cx.world.physics() {
                 bt.add(h.target, pos, pelvis, dir, skeleton.as_ref(), p);

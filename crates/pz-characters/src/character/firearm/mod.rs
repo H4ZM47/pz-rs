@@ -2,13 +2,15 @@
 //! (hit chance, ballistics target selection, shot resolution, damage,
 //! hit reactions by body part), `BallisticsController` /
 //! `BallisticsTarget`, the firearm side of `HandWeapon` (perk-scaled
-//! ranges, recoil, jams, ammunition), `RagdollBuilder` /
-//! `RagdollController`, and `CombatManager.processHit` (used by melee
-//! hits on zombies too).
+//! ranges, recoil, jams, ammunition), the character side of ragdolls
+//! (`canRagdoll`, the hit impulses, the ragdolling state; the controller
+//! is pz-ragdoll's) and `CombatManager.processHit` (used by melee hits on
+//! zombies too).
 //!
 //! The physics is reached through the [`PhysicsWorld`] trait (the Bullet
 //! natives the game calls); with the `bullet` feature, `pz_bullet`'s
-//! `PzBullet` implements it. The world owns the physics world and hands it
+//! `PzBullet` implements it and [`ragdoll::CharacterRagdoll`] is the
+//! `pz_ragdoll::RagdollCharacter` of a character. The world owns the physics world and hands it
 //! out with `StateWorld::physics`; the animation inputs (muzzle attachment,
 //! reticle, bone transforms, the ragdoll clip) come from the other
 //! `StateWorld` hooks.
@@ -29,7 +31,7 @@ mod tests;
 pub use ballistics::{BallisticsController, BallisticsTarget, CombatDamageData, MuzzleAttachment, TargetSkeleton};
 pub use hit_chance::{HitChanceData, TargetInfo, VehicleAim};
 pub use physics::{PhysicsWorld, RagdollBodyPart, BULLET_Z_SCALE, SKELETON_BONE_COUNT};
-pub use ragdoll::{RagdollAnim, RagdollBone, RagdollBuilder, RagdollController, RagdollSkeletonData, RagdollStateData};
+pub use ragdoll::RagdollTracking;
 pub use reaction::{HitReaction, HitWeapon, ShotDirection};
 pub use weapon::FirearmStats;
 
@@ -65,10 +67,6 @@ pub struct CombatManagerState {
     pub temp_vector4f: [f32; 4],
     /// `dotList` (piercing shots).
     pub dot_list: Vec<f32>,
-    /// `RagdollController.numberOfActiveSimulations`.
-    pub active_ragdolls: i32,
-    /// `RagdollBuilder.instance`.
-    pub ragdoll_builder: RagdollBuilder,
 }
 
 impl Default for CombatManagerState {
@@ -80,8 +78,6 @@ impl Default for CombatManagerState {
             ballistics_spread_angle_scale: 1.0,
             temp_vector4f: [0.0; 4],
             dot_list: Vec::new(),
-            active_ragdolls: 0,
-            ragdoll_builder: RagdollBuilder::default(),
         }
     }
 }

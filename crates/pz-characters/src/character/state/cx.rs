@@ -381,14 +381,10 @@ pub trait StateWorld<I> {
     fn square_is_outside(&self, _sq: (i32, i32, i32)) -> bool {
         false
     }
-    /// The physics world and `chr`'s animation player (the ragdoll clip and
-    /// bones) together, for the ragdoll controller.
-    #[allow(clippy::type_complexity)]
-    fn ragdoll_io(
-        &mut self,
-        _chr: i32,
-    ) -> (Option<&mut dyn crate::character::firearm::PhysicsWorld>, Option<&mut dyn crate::character::firearm::RagdollAnim>) {
-        (self.physics(), None)
+    /// The ragdoll controller's `getPelvisPositionX/Y/Z()` for `chr`, when
+    /// its animation player has one (pz-ragdoll's `pelvis_position`).
+    fn ragdoll_pelvis(&self, _chr: i32) -> Option<[f32; 3]> {
+        None
     }
 }
 

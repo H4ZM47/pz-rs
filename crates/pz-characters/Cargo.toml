@@ -15,12 +15,15 @@ pz-pathfind.workspace = true
 pz-audio.workspace = true
 pz-world-popman.workspace = true
 pz-bullet = { workspace = true, optional = true }
+pz-ragdoll = { workspace = true, optional = true }
 
 [features]
-# `PhysicsWorld` over pz-bullet's `PzBullet`.
-bullet = ["dep:pz-bullet"]
+# `PhysicsWorld` over pz-bullet's `PzBullet` and the `RagdollCharacter` of
+# a character for pz-ragdoll.
+bullet = ["dep:pz-bullet", "dep:pz-ragdoll"]
 
 [dev-dependencies]
 pz-popman.workspace = true
 pz-sandbox.workspace = true
 pz-bullet.workspace = true
+pz-ragdoll.workspace = true
