@@ -25,6 +25,7 @@ pz-engine = { path = "crates/pz-engine" }
 pz-world = { path = "crates/pz-world" }
 pz-clipper = { path = "crates/pz-clipper" }
 pz-sqlite = { path = "crates/pz-sqlite" }
+pz-network = { path = "crates/pz-network" }
 pz-core = { path = "crates/pz-core" }
 pz-inventory = { path = "crates/pz-inventory" }
 pz-worldgen = { path = "crates/pz-worldgen" }

@@ -1,0 +1,8 @@
+[package]
+name = "pz-network"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pz-sqlite.workspace = true
+jiff.workspace = true

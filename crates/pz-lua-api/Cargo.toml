@@ -24,6 +24,7 @@ pz-world.workspace = true
 pz-input.workspace = true
 pz-classfile.workspace = true
 pz-sqlite.workspace = true
+pz-network.workspace = true
 regex.workspace = true
 pz-popman.workspace = true
 pz-vehicles.workspace = true

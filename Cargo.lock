@@ -2043,6 +2043,7 @@ dependencies = [
  "pz-input",
  "pz-inventory",
  "pz-kahlua",
+ "pz-network",
  "pz-popman",
  "pz-render",
  "pz-sandbox",
@@ -2066,6 +2067,14 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "pz-render",
  "serde_json",
+]
+
+[[package]]
+name = "pz-network"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "pz-sqlite",
 ]
 
 [[package]]
