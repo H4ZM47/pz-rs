@@ -213,7 +213,7 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
                 }
                 load_square(&mut r, ctx, wv, &mut sq)?;
                 sq.fix_stackable_objects(ctx.sprites);
-                ch.set_square(x, y, z, Some(sq));
+                ch.set_square(x, y, z, Some((sq).into()));
             }
         }
     }
@@ -246,7 +246,7 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
         let vehicle = BaseVehicle::load(&mut r, wv, (32.0 * ts, 96.0 * ts), ctx.items)?;
         let square = ch
             .get_grid_square(x as i32, y as i32, z as i32)
-            .map(|s| (s.x, s.y, s.z));
+            .map(|s| (s.borrow().x, s.borrow().y, s.borrow().z));
         ch.vehicles.add(std::rc::Rc::new(LoadedVehicle {
             origin: VehicleOrigin::ChunkFile { x, y, z },
             square,
@@ -599,16 +599,17 @@ pub fn save_chunk(ch: &IsoChunk, ctx: &SaveCtx<'_>) -> SaveResult<Vec<u8>> {
             w.i64(0);
             let mut flags = 0i64;
             for z in ch.min_level..=ch.max_level {
-                let Some(gs) = ch.get_grid_square(x, y, z) else {
+                let Some(gs_owner) = ch.get_grid_square(x, y, z) else {
                     continue;
                 };
-                if !should_save(gs) {
+                let gs = gs_owner.borrow();
+                if !should_save(&gs) {
                     continue;
                 }
                 flags |= 1i64 << (z + 32);
                 min1 = min1.min(z);
                 max1 = max1.max(z);
-                save_square(&mut w, ctx, gs)?;
+                save_square(&mut w, ctx, &gs)?;
             }
             w.patch_i64(flag_pos, flags);
         }
@@ -737,9 +738,10 @@ pub fn apply_loaded_window_sprites(ch: &IsoChunk, m: &mut crate::sprite::IsoSpri
     for z in ch.min_level..=ch.max_level {
         for x in 0..8 {
             for y in 0..8 {
-                let Some(sq) = ch.get_grid_square(x, y, z) else {
+                let Some(sq_owner) = ch.get_grid_square(x, y, z) else {
                     continue;
                 };
+                let sq = sq_owner.borrow();
                 for obj in sq.objects.iter().map(ObjectSlot::borrow) {
                     let ObjectKind::Window(w) = &obj.kind else {
                         continue;
@@ -785,7 +787,7 @@ pub fn do_load_gridsquare(
             for y in 0..8 {
                 if ch
                     .get_grid_square(x, y, z)
-                    .is_some_and(|sq| !sq.objects.is_empty())
+                    .is_some_and(|sq| !sq.borrow().objects.is_empty())
                 {
                     hook.load_grid_square(ch, x, y, z, ctx);
                 }

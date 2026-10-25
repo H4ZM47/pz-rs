@@ -3,7 +3,7 @@
 //! the vision test `LosUtil.lineClear` ([`super::line_clear`]).
 
 use pz_world::chunk::IsoGridSquare;
-use pz_world::GetSquare;
+use pz_world::{GetSquare, SquareRef};
 
 use super::{fastfloor, MainThreadMap};
 
@@ -31,7 +31,7 @@ pub fn los_line_clear_collide<G: GetSquare>(
     let mut dz = z1 - z0;
     let mut t = 0.5f32;
     let mut t2 = 0.5f32;
-    let mut b: Option<&IsoGridSquare> = map.square(x0, y0, z0);
+    let mut b: Option<SquareRef> = map.square(x0, y0, z0);
     let blocked = |a: &IsoGridSquare, b: &IsoGridSquare, doors: bool| {
         a.calculate_collide(Some(b), false, false, true, true, m, g)
             || doors && !ignore_doors && a.is_door_blocked_to(Some(b), g, map.hooks())
@@ -49,8 +49,8 @@ pub fn los_line_clear_collide<G: GetSquare>(
             t += k;
             t2 += k2;
             let a = map.square(x0, fastfloor(t), fastfloor(t2));
-            if let (Some(a), Some(b)) = (a, b) {
-                if blocked(a, b, true) {
+            if let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) {
+                if blocked(&a.borrow(), &b.borrow(), true) {
                     return true;
                 }
             }
@@ -69,8 +69,8 @@ pub fn los_line_clear_collide<G: GetSquare>(
             t += k;
             t2 += k2;
             let a = map.square(fastfloor(t), y0, fastfloor(t2));
-            if let (Some(a), Some(b)) = (a, b) {
-                if blocked(a, b, true) {
+            if let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) {
+                if blocked(&a.borrow(), &b.borrow(), true) {
                     return true;
                 }
             }
@@ -89,8 +89,8 @@ pub fn los_line_clear_collide<G: GetSquare>(
             t += k;
             t2 += k2;
             let a = map.square(fastfloor(t), fastfloor(t2), z0);
-            if let (Some(a), Some(b)) = (a, b) {
-                if blocked(a, b, false) {
+            if let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) {
+                if blocked(&a.borrow(), &b.borrow(), false) {
                     return true;
                 }
             }

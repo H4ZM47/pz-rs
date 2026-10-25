@@ -17,7 +17,7 @@ mod world {
                 true
             }
             fn square_changed(&mut self, _cell: &super::chunk::IsoCell, _sq: (i32, i32, i32)) {}
-            fn map_collision_square_changed(&mut self, _sq: &pz_world::IsoGridSquare) {}
+            fn map_collision_square_changed(&mut self, _sq: pz_world::SquareRef) {}
             fn add_chunk_to_world(&mut self, _cell: &super::chunk::IsoCell, _wx: i32, _wy: i32) {}
         }
     }

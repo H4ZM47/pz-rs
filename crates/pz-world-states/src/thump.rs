@@ -9,10 +9,9 @@ use pz_characters::character::state::{ThumpInfo, ThumpKind, ThumpTarget};
 use pz_pathfind::mover::ObjectRef;
 use pz_world::java::parse_int;
 use pz_world::object_slot::{IsoObjectRef, ObjectSlot};
-use std::cell::{Ref, RefMut};
 use pz_world::objects::{IsoObject, ObjectKind};
 use pz_world::square::EdgeFacing;
-use pz_world::{IsoDirections, IsoGridSquare};
+use pz_world::{IsoDirections, IsoGridSquare, SquareRef};
 
 use crate::{StatesWorldAdapter, Thumper, WorldSoundRequest};
 
@@ -48,22 +47,29 @@ fn door_like(o: &IsoObject) -> Option<(bool, bool)> {
 
 impl StatesWorldAdapter<'_> {
     /// The square and object an [`ObjectRef`] names.
-    pub fn find(&self, r: ObjectRef) -> Option<(&IsoGridSquare, Ref<'_, IsoObject>)> {
-        let sq = self.cell.get_grid_square(r.x, r.y, r.z)?;
-        let i = sq.object_index(r.id)?;
-        Some((sq, sq.objects[i].borrow()))
+    pub fn find(&self, r: ObjectRef) -> Option<(SquareRef, IsoObjectRef)> {
+        let square = self.cell.get_grid_square(r.x, r.y, r.z)?;
+        let object = {
+            let sq = square.borrow();
+            sq.objects[sq.object_index(r.id)?].ref_handle()
+        };
+        Some((square, object))
     }
 
-    pub(crate) fn find_mut(&self, r: ObjectRef) -> Option<RefMut<'_, IsoObject>> {
-        let sq = self.cell.get_grid_square(r.x, r.y, r.z)?;
-        let i = sq.object_index(r.id)?;
-        Some(sq.objects[i].borrow_mut())
-    }
-
-    /// Pin the actual allocation before callbacks or world mutation.
+    /// Pin the actual object allocation independently of its square's guard.
     pub(crate) fn object_ref(&self, r: ObjectRef) -> Option<IsoObjectRef> {
-        let sq = self.cell.get_grid_square(r.x, r.y, r.z)?;
-        Some(sq.objects[sq.object_index(r.id)?].ref_handle())
+        self.find(r).map(|(_, object)| object)
+    }
+
+    /// Mutation phases end before their caller performs another lookup or callback.
+    pub(crate) fn with_object_mut<R>(
+        &self,
+        r: ObjectRef,
+        f: impl FnOnce(&mut IsoObject) -> R,
+    ) -> Option<R> {
+        let object = self.object_ref(r)?;
+        let result = f(&mut object.borrow_mut());
+        Some(result)
     }
 
     fn sound(
@@ -90,7 +96,7 @@ impl StatesWorldAdapter<'_> {
     fn force_awake_at(&mut self, r: ObjectRef) {
         let b = self
             .at((r.x, r.y, r.z))
-            .and_then(|s| self.square_building_idx(s));
+            .and_then(|s| self.square_building_idx(&s.borrow()));
         if let Some(b) = b {
             self.engine.force_awake(b);
         }
@@ -110,7 +116,7 @@ impl StatesWorldAdapter<'_> {
         })
     }
 
-    fn opposite(&self, sq: &IsoGridSquare, north: bool) -> Option<&IsoGridSquare> {
+    fn opposite(&self, sq: &IsoGridSquare, north: bool) -> Option<SquareRef> {
         if north {
             self.cell.get_grid_square(sq.x, sq.y - 1, sq.z)
         } else {
@@ -143,7 +149,10 @@ impl StatesWorldAdapter<'_> {
 
     fn opposite_side(&self, sq: &IsoGridSquare, north: bool) -> Option<ObjectRef> {
         self.barricade_on(
-            self.opposite(sq, north),
+            self.opposite(sq, north)
+                .as_ref()
+                .map(|s| s.borrow())
+                .as_deref(),
             if north {
                 IsoDirections::S
             } else {
@@ -191,7 +200,9 @@ impl StatesWorldAdapter<'_> {
         let cut = if north { "cutN" } else { "cutW" };
         if sq.objects.iter().any(|x| {
             let x = x.borrow();
-            x.id != o.id && env.obj_has_flag(&x, cut) && env.obj_has_flag(&x, "makeWindowInvincible")
+            x.id != o.id
+                && env.obj_has_flag(&x, cut)
+                && env.obj_has_flag(&x, "makeWindowInvincible")
         }) {
             return true;
         }
@@ -252,7 +263,15 @@ impl StatesWorldAdapter<'_> {
             return false;
         }
         if let Some(c) = chr {
-            if !self.can_climb_through_helper(c, sq, self.opposite(sq, w.north), w.north) {
+            if !self.can_climb_through_helper(
+                c,
+                sq,
+                self.opposite(sq, w.north)
+                    .as_ref()
+                    .map(|s| s.borrow())
+                    .as_deref(),
+                w.north,
+            ) {
                 return false;
             }
         }
@@ -293,7 +312,12 @@ impl StatesWorldAdapter<'_> {
             } else {
                 sq.get_adjacent_square(IsoDirections::W, self.cell)
             };
-            if !self.can_climb_through_helper(c, sq, opp, north) {
+            if !self.can_climb_through_helper(
+                c,
+                sq,
+                opp.as_ref().map(|s| s.borrow()).as_deref(),
+                north,
+            ) {
                 return false;
             }
         }
@@ -314,7 +338,15 @@ impl StatesWorldAdapter<'_> {
             return false;
         }
         chr.is_none_or(|c| {
-            self.can_climb_through_helper(c, sq, self.opposite(sq, t.north), t.north)
+            self.can_climb_through_helper(
+                c,
+                sq,
+                self.opposite(sq, t.north)
+                    .as_ref()
+                    .map(|s| s.borrow())
+                    .as_deref(),
+                t.north,
+            )
         })
     }
 
@@ -369,18 +401,20 @@ impl StatesWorldAdapter<'_> {
 
     /// `obj.getThumpableFor(chr)`.
     pub fn thumpable_for(&self, r: ObjectRef, chr: Option<&Thumper>) -> Option<ObjectRef> {
-        let (sq, o) = self.find(r)?;
+        let (sq_owner, o_owner) = self.find(r)?;
+        let sq = sq_owner.borrow();
+        let o = o_owner.borrow();
         let env = self.env();
         match &o.kind {
             ObjectKind::Door(d) => self
-                .barricade_for_character(sq, d.north, chr)
-                .or_else(|| self.barricade_opposite_character(sq, d.north, chr))
+                .barricade_for_character(&sq, d.north, chr)
+                .or_else(|| self.barricade_opposite_character(&sq, d.north, chr))
                 .or((!d.open).then_some(r)),
             ObjectKind::Thumpable(t) => {
                 if t.is_door || env.is_window(&o) {
                     if let Some(b) = self
-                        .barricade_for_character(sq, t.north, chr)
-                        .or_else(|| self.barricade_opposite_character(sq, t.north, chr))
+                        .barricade_for_character(&sq, t.north, chr)
+                        .or_else(|| self.barricade_opposite_character(&sq, t.north, chr))
                     {
                         return Some(b);
                     }
@@ -406,20 +440,20 @@ impl StatesWorldAdapter<'_> {
                 Some(r)
             }
             ObjectKind::Window(w) => {
-                if let Some(b) = self.barricade_for_character(sq, w.north, chr) {
+                if let Some(b) = self.barricade_for_character(&sq, w.north, chr) {
                     return Some(b);
                 }
                 if w.destroyed || w.open {
-                    return self.barricade_opposite_character(sq, w.north, chr);
+                    return self.barricade_opposite_character(&sq, w.north, chr);
                 }
                 Some(r)
             }
             ObjectKind::WindowFrame { north } => {
-                if let Some(w) = self.frame_window(sq, *north) {
-                    return self.thumpable_for(oref(sq, &w.borrow()), chr);
+                if let Some(w) = self.frame_window(&sq, *north) {
+                    return self.thumpable_for(oref(&sq, &w.borrow()), chr);
                 }
-                self.barricade_for_character(sq, *north, chr)
-                    .or_else(|| self.barricade_opposite_character(sq, *north, chr))
+                self.barricade_for_character(&sq, *north, chr)
+                    .or_else(|| self.barricade_opposite_character(&sq, *north, chr))
             }
             ObjectKind::Barricade(b) => (!b.is_destroyed()).then_some(r),
             ObjectKind::Object => {
@@ -443,9 +477,10 @@ impl StatesWorldAdapter<'_> {
 
     /// `thumpable.getThumpCondition()`.
     pub fn thump_condition(&self, r: ObjectRef) -> f32 {
-        let Some((_, o)) = self.find(r) else {
+        let Some((_, o_owner)) = self.find(r) else {
             return 0.0;
         };
+        let o = o_owner.borrow();
         let ratio = |h: i32, max: i32| h.clamp(0, max) as f32 / max as f32;
         match &o.kind {
             ObjectKind::Door(d) => {
@@ -572,13 +607,15 @@ impl StatesWorldAdapter<'_> {
 
     /// What the zombie code reads about `r` as `chr` sees it.
     pub fn object_thump_info(&self, r: ObjectRef, chr: Option<&Thumper>) -> Option<ThumpInfo> {
-        let (sq, o) = self.find(r)?;
+        let (sq_owner, o_owner) = self.find(r)?;
+        let sq = sq_owner.borrow();
+        let o = o_owner.borrow();
         let env = self.env();
         let mut i = ThumpInfo {
             kind: Self::kind_of(&o),
             square: Some((sq.x, sq.y, sq.z)),
             in_world: true,
-            facing_position: self.facing_position(sq, &o),
+            facing_position: self.facing_position(&sq, &o),
             ..Default::default()
         };
         let north = match &o.kind {
@@ -593,18 +630,18 @@ impl StatesWorldAdapter<'_> {
                 i.is_door = t.is_door;
                 i.hoppable = env.hooks().thumpable_is_hoppable(&o, t);
                 i.tall_hoppable = self.tall_hoppable(&o);
-                i.can_climb_through = self.thumpable_can_climb_through(sq, &o, chr);
+                i.can_climb_through = self.thumpable_can_climb_through(&sq, &o, chr);
                 i.block_all_the_square = t.block_all_the_square;
                 Some(t.north)
             }
             ObjectKind::Window(w) => {
                 i.open = w.open;
                 i.destroyed = w.destroyed;
-                i.can_climb_through = self.window_can_climb_through(sq, &o, chr);
+                i.can_climb_through = self.window_can_climb_through(&sq, &o, chr);
                 Some(w.north)
             }
             ObjectKind::WindowFrame { north } => {
-                i.can_climb_through = self.frame_can_climb_through(sq, *north, chr);
+                i.can_climb_through = self.frame_can_climb_through(&sq, *north, chr);
                 Some(*north)
             }
             ObjectKind::Barricade(b) => {
@@ -619,10 +656,15 @@ impl StatesWorldAdapter<'_> {
         };
         if let Some(n) = north {
             i.north = n;
-            i.opposite_square = self.opposite(sq, n).map(|s| (s.x, s.y, s.z));
+            i.opposite_square = self.opposite(&sq, n).map(|s| {
+                let s = s.borrow();
+                (s.x, s.y, s.z)
+            });
         }
         if let Some(tf) = self.thumpable_for(r, chr) {
-            let (tsq, to) = self.find(tf)?;
+            let (tsq_owner, to_owner) = self.find(tf)?;
+            let tsq = tsq_owner.borrow();
+            let to = to_owner.borrow();
             i.thumpable_for = Some(ThumpTarget::Object(tf));
             i.thumpable_for_kind = Self::kind_of(&to);
             i.thump_condition = self.thump_condition(tf);
@@ -633,7 +675,7 @@ impl StatesWorldAdapter<'_> {
                 i.barricade_planks = b.num_planks();
                 if let Some(n) = north {
                     i.barricade_for_character =
-                        self.barricade_for_character(sq, n, chr) == Some(tf);
+                        self.barricade_for_character(&sq, n, chr) == Some(tf);
                 }
             }
             let _ = tsq;
@@ -645,7 +687,10 @@ impl StatesWorldAdapter<'_> {
 
     /// `obj.Thump(chr)` (one thump event).
     pub(crate) fn thump_object(&mut self, r: ObjectRef, t: &Thumper, out: &mut TargetOut) {
-        let Some((_, o)) = self.find(r) else { return };
+        let Some((_, o_owner)) = self.find(r) else {
+            return;
+        };
+        let o = o_owner.borrow();
         let kind = Self::kind_of(&o);
         drop(o);
         if kind != ThumpKind::Barricade {
@@ -678,7 +723,10 @@ impl StatesWorldAdapter<'_> {
     }
 
     fn locked_out(&self, t: &Thumper, locked: bool) -> bool {
-        let exterior = |p: (i32, i32, i32)| self.at(p).is_some_and(|s| s.is_exterior(self.sprites));
+        let exterior = |p: (i32, i32, i32)| {
+            self.at(p)
+                .is_some_and(|s| s.borrow().is_exterior(self.sprites))
+        };
         locked && t.current_square.is_none_or(exterior)
     }
 
@@ -686,15 +734,19 @@ impl StatesWorldAdapter<'_> {
         if self.settings.tutorial {
             return;
         }
-        if let Some(mut d) = self.find_mut(r).and_then(|o| std::cell::RefMut::filter_map(o, |o| match &mut o.kind { ObjectKind::Door(value) => Some(value), _ => None }).ok()) {
-            d.health -= amount;
-        }
+        self.with_object_mut(r, |o| {
+            if let ObjectKind::Door(d) = &mut o.kind {
+                d.health -= amount;
+            }
+        });
     }
 
     fn thump_door(&mut self, r: ObjectRef, t: &Thumper, out: &mut TargetOut) {
-        let door = |s: &Self| match s.find(r).as_ref().map(|(_, o)| &o.kind) {
-            Some(ObjectKind::Door(d)) => Some((d.open, d.locked, d.health)),
-            _ => None,
+        let door = |s: &Self| {
+            s.object_ref(r).and_then(|o| match &o.borrow().kind {
+                ObjectKind::Door(d) => Some((d.open, d.locked, d.health)),
+                _ => None,
+            })
         };
         let Some((open, locked, _)) = door(self) else {
             return;
@@ -730,7 +782,7 @@ impl StatesWorldAdapter<'_> {
             self.force_awake_at(r);
             let prefix = self
                 .find(r)
-                .map(|(_, o)| self.sound_prefix(&o))
+                .map(|(_, o)| self.sound_prefix(&o.borrow()))
                 .unwrap_or_default();
             self.engine
                 .play_sound(t.id, &format!("{prefix}Break"), Some(r));
@@ -744,7 +796,10 @@ impl StatesWorldAdapter<'_> {
     }
 
     fn thump_thumpable(&mut self, r: ObjectRef, t: &Thumper, out: &mut TargetOut) {
-        let Some((_, o)) = self.find(r) else { return };
+        let Some((_, o_owner)) = self.find(r) else {
+            return;
+        };
+        let o = o_owner.borrow();
         let ObjectKind::Thumpable(th) = &o.kind else {
             return;
         };
@@ -775,13 +830,18 @@ impl StatesWorldAdapter<'_> {
                 a.max(0)
             };
             if amount > 0 {
-                if let Some(mut th) = self.find_mut(r).and_then(|o| std::cell::RefMut::filter_map(o, |o| match &mut o.kind { ObjectKind::Thumpable(value) => Some(value), _ => None }).ok()) {
-                    th.health -= amount;
-                }
+                self.with_object_mut(r, |o| {
+                    if let ObjectKind::Thumpable(th) = &mut o.kind {
+                        th.health -= amount;
+                    }
+                });
             }
             self.sound(Some(t.id), r, 20, 20, stress);
         }
-        let Some((_, o)) = self.find(r) else { return };
+        let Some((_, o_owner)) = self.find(r) else {
+            return;
+        };
+        let o = o_owner.borrow();
         let ObjectKind::Thumpable(th) = &o.kind else {
             return;
         };
@@ -830,10 +890,10 @@ impl StatesWorldAdapter<'_> {
     fn break_dir(&self, r: ObjectRef, t: &Thumper) -> IsoDirections {
         let env = self.env();
         let f = &self.sprites.tables.flag;
-        let (n, w) = self
-            .find(r)
-            .and_then(|(_, o)| env.props(&o))
-            .map_or((false, false), |p| (p.has(f.collideN), p.has(f.collideW)));
+        let (n, w) = self.find(r).map_or((false, false), |(_, o)| {
+            env.props(&o.borrow())
+                .map_or((false, false), |p| (p.has(f.collideN), p.has(f.collideW)))
+        });
         let ns = if t.y >= r.y as f32 {
             IsoDirections::N
         } else {
@@ -850,25 +910,41 @@ impl StatesWorldAdapter<'_> {
 
     fn thump_window(&mut self, r: ObjectRef, t: &Thumper, out: &mut TargetOut) {
         if t.zombie {
-            let Some((sq, o)) = self.find(r) else { return };
+            let Some((sq_owner, o_owner)) = self.find(r) else {
+                return;
+            };
+            let sq = sq_owner.borrow();
+            let o = o_owner.borrow();
             let ObjectKind::Window(w) = &o.kind else {
                 return;
             };
-            let climb = self.window_can_climb_through(sq, &o, Some(t));
-            let invincible = self.window_invincible(sq, &o, w.north);
-            let can_toggle = t.cognition == 1 && !climb && !invincible && !self.locked_out(t, w.locked);
+            let climb = self.window_can_climb_through(&sq, &o, Some(t));
+            let invincible = self.window_invincible(&sq, &o, w.north);
+            let can_toggle =
+                t.cognition == 1 && !climb && !invincible && !self.locked_out(t, w.locked);
             drop(o);
+            drop(sq);
             if can_toggle {
                 self.engine.toggle_window(self.cell, r, t.id);
-                let Some((sq, o)) = self.find(r) else { return };
-                if self.window_can_climb_through(sq, &o, Some(t)) {
+                let Some((sq_owner, o_owner)) = self.find(r) else {
+                    return;
+                };
+                let sq = sq_owner.borrow();
+                let o = o_owner.borrow();
+                if self.window_can_climb_through(&sq, &o, Some(t)) {
                     return;
                 }
             }
             self.window_damage(r, t.strength, t);
             self.sound(Some(t.id), r, 20, 20, 15.0);
         }
-        let Some(w) = self.find(r).and_then(|(_, o)| std::cell::Ref::filter_map(o, |o| match &o.kind { ObjectKind::Window(value) => Some(value), _ => None }).ok()) else {
+        let Some(w_owner) = self.object_ref(r) else {
+            return;
+        };
+        let Ok(w) = std::cell::Ref::filter_map(w_owner.borrow(), |o| match &o.kind {
+            ObjectKind::Window(value) => Some(value),
+            _ => None,
+        }) else {
             return;
         };
         let should_smash = !w.destroyed && w.health <= 0;
@@ -879,7 +955,8 @@ impl StatesWorldAdapter<'_> {
             self.engine.play_sound(t.id, "SmashWindow", Some(r));
             self.sound(None, r, 10, 20, 15.0);
             *out = Some(None);
-            if let Some(mut o) = self.find_mut(r) {
+            if let Some(o_owner) = self.object_ref(r) {
+                let mut o = o_owner.borrow_mut();
                 if let ObjectKind::Window(w) = &mut o.kind {
                     w.destroyed = true;
                 }
@@ -897,15 +974,28 @@ impl StatesWorldAdapter<'_> {
 
     /// `IsoWindow.damage(amount, chr)`.
     pub(crate) fn window_damage(&mut self, r: ObjectRef, amount: i32, chr: &Thumper) {
-        let Some((sq, o)) = self.find(r) else { return };
+        let Some((sq_owner, o_owner)) = self.find(r) else {
+            return;
+        };
+        let sq = sq_owner.borrow();
+        let o = o_owner.borrow();
         let ObjectKind::Window(w) = &o.kind else {
             return;
         };
-        if self.window_invincible(sq, &o, w.north) || self.settings.tutorial {
+        if self.window_invincible(&sq, &o, w.north) || self.settings.tutorial {
             return;
         }
         drop(o);
-        let Some(mut w) = self.find_mut(r).and_then(|o| std::cell::RefMut::filter_map(o, |o| match &mut o.kind { ObjectKind::Window(value) => Some(value), _ => None }).ok()) else {
+        drop(sq);
+        let Some(w_owner) = self.object_ref(r) else {
+            return;
+        };
+        let Ok(mut w) =
+            std::cell::RefMut::filter_map(w_owner.borrow_mut(), |o| match &mut o.kind {
+                ObjectKind::Window(value) => Some(value),
+                _ => None,
+            })
+        else {
             return;
         };
         w.health = (w.health - amount).max(0);
@@ -920,7 +1010,11 @@ impl StatesWorldAdapter<'_> {
 
     /// `IsoWindow.smashWindow(false, doAlarm)`.
     pub(crate) fn smash_window(&mut self, r: ObjectRef, do_alarm: bool) {
-        let Some((sq, o)) = self.find(r) else { return };
+        let Some((sq_owner, o_owner)) = self.find(r) else {
+            return;
+        };
+        let sq = sq_owner.borrow();
+        let o = o_owner.borrow();
         let ObjectKind::Window(w) = &o.kind else {
             return;
         };
@@ -930,12 +1024,13 @@ impl StatesWorldAdapter<'_> {
         let (north, smashed) = (w.north, w.smashed_sprite);
         // `getIndoorSquare()`'s building for `handleAlarm`.
         let indoor = if sq.room_id != -1 {
-            Some(sq)
+            Some(sq_owner.clone())
         } else {
-            self.opposite(sq, north).filter(|s| s.room_id != -1)
+            self.opposite(&sq, north)
+                .filter(|s| s.borrow().room_id != -1)
         };
         let alarm_building = indoor
-            .and_then(|s| self.square_building_idx(s))
+            .and_then(|s| self.square_building_idx(&s.borrow()))
             .filter(|b| {
                 self.meta
                     .building_defs
@@ -954,9 +1049,11 @@ impl StatesWorldAdapter<'_> {
             })
             .collect();
         drop(o);
+        drop(sq);
         self.engine.play_world_sound("SmashWindow", sqp);
         self.sound(None, r, 10, 20, 15.0);
-        if let Some(mut o) = self.find_mut(r) {
+        if let Some(o_owner) = self.object_ref(r) {
+            let mut o = o_owner.borrow_mut();
             if let ObjectKind::Window(w) = &mut o.kind {
                 w.destroyed = true;
             }
@@ -979,7 +1076,11 @@ impl StatesWorldAdapter<'_> {
 
     /// `IsoWindow.addBrokenGlass(chr)`.
     pub(crate) fn add_broken_glass(&mut self, r: ObjectRef, chr: &Thumper) {
-        let Some((sq, o)) = self.find(r) else { return };
+        let Some((sq_owner, o_owner)) = self.find(r) else {
+            return;
+        };
+        let sq = sq_owner.borrow();
+        let o = o_owner.borrow();
         let ObjectKind::Window(w) = &o.kind else {
             return;
         };
@@ -989,24 +1090,29 @@ impl StatesWorldAdapter<'_> {
             chr.x >= sq.x as f32
         };
         let target = if opposite {
-            self.opposite(sq, w.north)
+            self.opposite(&sq, w.north)
         } else {
-            Some(sq)
+            Some(sq_owner.clone())
         };
-        let Some(t) = target.map(|s| (s.x, s.y, s.z)) else {
+        let Some(t) = target.map(|s| {
+            let s = s.borrow();
+            (s.x, s.y, s.z)
+        }) else {
             return;
         };
         drop(o);
+        drop(sq);
         self.square_add_broken_glass(t);
     }
 
     /// `IsoGridSquare.addBrokenGlass()`.
     pub fn square_add_broken_glass(&mut self, p: (i32, i32, i32)) {
         let Some(sq) = self.at(p) else { return };
-        if !self.env().is_free(sq) {
+        if !self.env().is_free(&sq.borrow()) {
             return;
         }
         let has = sq
+            .borrow()
             .get_special_objects()
             .any(|o| matches!(o.borrow().kind, ObjectKind::BrokenGlass));
         if has {
@@ -1019,9 +1125,10 @@ impl StatesWorldAdapter<'_> {
             .get(&format!("brokenglass_1_{n}"))
             .copied();
         let sprites = &*self.sprites;
-        let Some(sq) = self.cell.get_grid_square_mut(p.0, p.1, p.2) else {
+        let Some(sq_owner) = self.cell.get_grid_square_mut(p.0, p.1, p.2) else {
             return;
         };
+        let mut sq = sq_owner.borrow_mut();
         let id = sq.new_object_id();
         let obj = IsoObject::new(id, ObjectKind::BrokenGlass, sprite);
         let index = sq.place_wall_and_door_check(sprites, &obj, -1);
@@ -1032,13 +1139,20 @@ impl StatesWorldAdapter<'_> {
         }
         sq.special_objects.push(id);
         sq.burnt_out = false;
+        drop(sq);
         self.cell
             .recalc_all_with_neighbours(p.0, p.1, p.2, self.meta, sprites);
         self.engine.square_changed(p);
     }
 
     fn thump_barricade(&mut self, r: ObjectRef, t: &Thumper) {
-        let Some(b) = self.find(r).and_then(|(_, o)| std::cell::Ref::filter_map(o, |o| match &o.kind { ObjectKind::Barricade(value) => Some(value), _ => None }).ok()) else {
+        let Some(b_owner) = self.object_ref(r) else {
+            return;
+        };
+        let Ok(b) = std::cell::Ref::filter_map(b_owner.borrow(), |o| match &o.kind {
+            ObjectKind::Barricade(value) => Some(value),
+            _ => None,
+        }) else {
             return;
         };
         if b.is_destroyed() || !t.zombie {
@@ -1047,7 +1161,13 @@ impl StatesWorldAdapter<'_> {
         let planks = b.num_planks();
         drop(b);
         self.barricade_damage(r, t.strength as f32);
-        let Some(b) = self.find(r).and_then(|(_, o)| std::cell::Ref::filter_map(o, |o| match &o.kind { ObjectKind::Barricade(value) => Some(value), _ => None }).ok()) else {
+        let Some(b_owner) = self.object_ref(r) else {
+            return;
+        };
+        let Ok(b) = std::cell::Ref::filter_map(b_owner.borrow(), |o| match &o.kind {
+            ObjectKind::Barricade(value) => Some(value),
+            _ => None,
+        }) else {
             return;
         };
         let (now, destroyed) = (b.num_planks(), b.is_destroyed());
@@ -1067,7 +1187,10 @@ impl StatesWorldAdapter<'_> {
         if self.settings.tutorial {
             return;
         }
-        let Some(mut o) = self.find_mut(r) else { return };
+        let Some(o_owner) = self.object_ref(r) else {
+            return;
+        };
+        let mut o = o_owner.borrow_mut();
         let ObjectKind::Barricade(b) = &mut o.kind else {
             return;
         };
@@ -1105,7 +1228,13 @@ impl StatesWorldAdapter<'_> {
 
     /// `IsoBarricade.chooseSprite()`.
     fn barricade_choose_sprite(&mut self, r: ObjectRef) {
-        let Some(b) = self.find(r).and_then(|(_, o)| std::cell::Ref::filter_map(o, |o| match &o.kind { ObjectKind::Barricade(value) => Some(value), _ => None }).ok()) else {
+        let Some(b_owner) = self.object_ref(r) else {
+            return;
+        };
+        let Ok(b) = std::cell::Ref::filter_map(b_owner.borrow(), |o| match &o.kind {
+            ObjectKind::Barricade(value) => Some(value),
+            _ => None,
+        }) else {
             return;
         };
         let Some(name) = b.sprite_name() else {
@@ -1113,14 +1242,18 @@ impl StatesWorldAdapter<'_> {
         };
         let s = self.sprites.named_map.get(&name).copied();
         drop(b);
-        if let Some(mut o) = self.find_mut(r) {
+        if let Some(o_owner) = self.object_ref(r) {
+            let mut o = o_owner.borrow_mut();
             o.sprite = s;
         }
     }
 
     /// `IsoObject.Thump` without the bent-fence branch.
     fn thump_plain(&mut self, r: ObjectRef, t: &Thumper, out: &mut TargetOut) {
-        let Some((_, o)) = self.find(r) else { return };
+        let Some((_, o_owner)) = self.find(r) else {
+            return;
+        };
+        let o = o_owner.borrow();
         let breakable = self.breakable(&o);
         drop(o);
         if t.zombie {
@@ -1163,27 +1296,35 @@ impl StatesWorldAdapter<'_> {
     /// (`RemoveTileObject`): out of `objects` and `specialObjects`, then
     /// `RecalcAllWithNeighbours(true)`.
     pub fn remove_object(&mut self, r: ObjectRef, destroyed: bool) -> Option<ObjectSlot> {
-        let sq = self.cell.get_grid_square_mut(r.x, r.y, r.z)?;
+        let sq_owner = self.cell.get_grid_square_mut(r.x, r.y, r.z)?;
+        let mut sq = sq_owner.borrow_mut();
         let i = sq.object_index(r.id)?;
         let obj = sq.remove_object_slot(i);
         sq.special_objects.retain(|&id| id != r.id);
+        drop(sq);
         self.runtime.forget(r);
         if !matches!(obj.borrow().kind, ObjectKind::WorldInventory(_)) {
             self.cell
                 .recalc_all_with_neighbours(r.x, r.y, r.z, self.meta, self.sprites);
         }
-        self.engine.object_removed((r.x, r.y, r.z), &obj.ref_handle(), destroyed);
+        self.engine
+            .object_removed((r.x, r.y, r.z), &obj.ref_handle(), destroyed);
         self.engine.square_changed((r.x, r.y, r.z));
         Some(obj)
     }
 
     /// `IsoDoor.destroy()`.
     fn destroy_door(&mut self, r: ObjectRef) {
-        let Some((sq, o)) = self.find(r) else { return };
+        let Some((sq_owner, o_owner)) = self.find(r) else {
+            return;
+        };
+        let sq = sq_owner.borrow();
+        let o = o_owner.borrow();
         let ObjectKind::Door(d) = &o.kind else { return };
         let env = self.env();
         if env.obj_has_prop(&o, "GarageDoor") {
             drop(o);
+            drop(sq);
             self.remove_object(r, true);
             return;
         }
@@ -1195,8 +1336,9 @@ impl StatesWorldAdapter<'_> {
             .filter_map(|k| env.obj_prop(&o, k).map(str::to_string))
             .collect();
         let has_curtain = d.has_curtain;
-        let key = self.check_key_id(sq, &o, d.north, d.locked);
+        let key = self.check_key_id(&sq, &o, d.north, d.locked);
         drop(o);
+        drop(sq);
         let p = (r.x, r.y, r.z);
         if mats.iter().any(|m| !m.is_empty()) {
             self.add_items_from_properties(p, &mats);
@@ -1231,7 +1373,8 @@ impl StatesWorldAdapter<'_> {
                 .and_then(|b| self.meta.building_defs.get(b.0 as usize))
                 .map(|d| d.key_id)
         };
-        match (key(sq), key(other)) {
+        let other = other.borrow();
+        match (key(sq), key(&other)) {
             (None, Some(k)) => k,
             (Some(k), None) => k,
             (Some(k), Some(_)) if self.env().obj_has_prop(&o, "forceLocked") => k,
@@ -1269,18 +1412,23 @@ impl StatesWorldAdapter<'_> {
 
     /// `IsoThumpable.destroy()`.
     pub(crate) fn destroy_thumpable(&mut self, r: ObjectRef) {
-        let Some((_, o)) = self.find(r) else { return };
+        let Some((_, o_owner)) = self.find(r) else {
+            return;
+        };
+        let o = o_owner.borrow();
         drop(o);
         let o = self.object_ref(r).expect("located object");
         self.engine.dump_contents((r.x, r.y, r.z), &o);
-        if let Some(mut t) = self.find_mut(r).and_then(|o| std::cell::RefMut::filter_map(o, |o| match &mut o.kind { ObjectKind::Thumpable(value) => Some(value), _ => None }).ok()) {
-            t.health = 0;
-        }
+        self.with_object_mut(r, |o| {
+            if let ObjectKind::Thumpable(t) = &mut o.kind {
+                t.health = 0;
+            }
+        });
         self.remove_object(r, true);
     }
 
     fn destroy_any(&mut self, r: ObjectRef) {
-        match self.find(r).map(|(_, o)| Self::kind_of(&o)) {
+        match self.find(r).map(|(_, o)| Self::kind_of(&o.borrow())) {
             Some(ThumpKind::Door) => self.destroy_door(r),
             Some(ThumpKind::Thumpable) => self.destroy_thumpable(r),
             _ => {}
@@ -1289,9 +1437,10 @@ impl StatesWorldAdapter<'_> {
 
     /// `IsoDoor.getDoubleDoorIndex(obj)` / `getGarageDoorIndex(obj)`.
     fn multi_door_index(&self, r: ObjectRef, prop: &str, max: i32, open_shift: i32) -> i32 {
-        let Some((_, o)) = self.find(r) else {
+        let Some((_, o_owner)) = self.find(r) else {
             return -1;
         };
+        let o = o_owner.borrow();
         let Some(v) = self.env().obj_prop(&o, prop) else {
             return -1;
         };
@@ -1330,19 +1479,22 @@ impl StatesWorldAdapter<'_> {
         north: bool,
         pick: &dyn Fn(&Self, ObjectRef) -> bool,
     ) -> Option<ObjectRef> {
-        let (_, me) = self.find(r)?;
+        let (_, me_owner) = self.find(r)?;
+        let me = me_owner.borrow();
         let door = matches!(me.kind, ObjectKind::Door(_));
         let sq = self.at(p)?;
-        sq.get_special_objects().find_map(|o| {
+        let sq = sq.borrow();
+        let found = sq.get_special_objects().find_map(|o| {
             let o = o.borrow();
             let same = match &o.kind {
                 ObjectKind::Door(d) => door && d.north == north,
                 ObjectKind::Thumpable(t) => !door && t.north == north,
                 _ => false,
             };
-            let c = oref(sq, &o);
+            let c = oref(&sq, &o);
             (same && pick(self, c)).then_some(c)
-        })
+        });
+        found
     }
 
     /// `IsoDoor.getDoubleDoorObject(obj, index)`.
@@ -1351,7 +1503,7 @@ impl StatesWorldAdapter<'_> {
         if me == -1 || index <= 0 {
             return None;
         }
-        let (north, open) = door_like(&self.find(r)?.1)?;
+        let (north, open) = door_like(&self.find(r)?.1.borrow())?;
         let (xo, yo) = match (north, open) {
             (true, true) => (DD_NORTH_OPEN_X, DD_NORTH_OPEN_Y),
             (true, false) => (DD_NORTH_CLOSED_X, DD_NORTH_CLOSED_Y),
@@ -1389,7 +1541,7 @@ impl StatesWorldAdapter<'_> {
         if me == -1 || (!next && me == 1) || (next && me == 3) {
             return None;
         }
-        let (north, _) = door_like(&self.find(r)?.1)?;
+        let (north, _) = door_like(&self.find(r)?.1.borrow())?;
         let p = if next {
             (r.x + north as i32, r.y - (!north) as i32, r.z)
         } else {
@@ -1428,13 +1580,15 @@ impl StatesWorldAdapter<'_> {
     /// `IsoZombie.damageSheetRope`'s effect: `sheetRope.sheetRopeHealth -=
     /// damage`, then `damageSpriteSheetRopeFromBottom()`.
     pub fn damage_sheet_rope_at(&mut self, p: (i32, i32, i32), damage: f32) {
-        let Some(sq) = self.cell.get_grid_square_mut(p.0, p.1, p.2) else {
+        let Some(sq_owner) = self.cell.get_grid_square_mut(p.0, p.1, p.2) else {
             return;
         };
+        let sq = sq_owner.borrow();
         let Some(o) = sq.objects.iter().find(|o| o.borrow().sheet_rope) else {
             return;
         };
         o.borrow_mut().sheet_rope_health -= damage;
+        drop(sq);
         self.damage_sprite_sheet_rope_from_bottom(p);
     }
 
@@ -1466,11 +1620,15 @@ impl StatesWorldAdapter<'_> {
 
     /// `IsoGridSquare.damageSpriteSheetRopeFromBottom()`.
     fn damage_sprite_sheet_rope_from_bottom(&mut self, p: (i32, i32, i32)) {
-        let Some(sq) = self.at(p) else { return };
-        let Some(i) = self.env().sheet_rope_index(sq) else {
-            return;
+        let Some(square) = self.at(p) else { return };
+        let (health, rope) = {
+            let sq = square.borrow();
+            let Some(i) = self.env().sheet_rope_index(&sq) else {
+                return;
+            };
+            let health = sq.objects[i].borrow().sheet_rope_health;
+            (health, self.rope_flag(&sq, false))
         };
-        let health = sq.objects[i].borrow().sheet_rope_health;
         if health >= 40.0 {
             return;
         }
@@ -1478,15 +1636,23 @@ impl StatesWorldAdapter<'_> {
             self.remove_sheet_rope_from_bottom(p);
             return;
         }
-        let Some((_, ty, _)) = self.rope_flag(sq, false) else {
-            return;
-        };
+        let Some((_, ty, _)) = rope else { return };
         let mut z = p.2;
-        while let Some(sq) = self.at((p.0, p.1, z)) {
-            let env = self.env();
-            let found = sq.objects.iter().position(|o| env.obj_has_flag(&o.borrow(), ty));
-            if let Some(k) = found {
-                let name = env.sprite_name(&sq.objects[k].borrow()).unwrap_or("").to_string();
+        while let Some(square) = self.at((p.0, p.1, z)) {
+            let hit = {
+                let sq = square.borrow();
+                let env = self.env();
+                sq.objects
+                    .iter()
+                    .find(|o| env.obj_has_flag(&o.borrow(), ty))
+                    .map(|o| {
+                        (
+                            o.ref_handle(),
+                            env.sprite_name(&o.borrow()).unwrap_or("").to_string(),
+                        )
+                    })
+            };
+            if let Some((object, name)) = hit {
                 let parts: Vec<&str> = name.split('_').collect();
                 let index = parts.get(2).and_then(|s| parse_int(s)).unwrap_or(0);
                 if index > 14 {
@@ -1498,50 +1664,57 @@ impl StatesWorldAdapter<'_> {
                     parts.get(1).unwrap_or(&""),
                     index + 40
                 );
-                let s = self.sprites.named_map.get(&new).copied();
-                if let Some(sq) = self.cell.get_grid_square_mut(p.0, p.1, z) {
-                    sq.objects[k].borrow_mut().sprite = s;
-                }
+                object.borrow_mut().sprite = self.sprites.named_map.get(&new).copied();
             }
             if z == 7 {
                 break;
             }
             z += 1;
         }
-        let sprites = &*self.sprites;
-        if let Some(sq) = self.cell.get_grid_square_mut(p.0, p.1, p.2) {
-            sq.recalc_properties(sprites);
+        if let Some(square) = self.at(p) {
+            square.borrow_mut().recalc_properties(self.sprites);
         }
     }
 
     /// `IsoGridSquare.removeSheetRopeFromBottom()`.
     fn remove_sheet_rope_from_bottom(&mut self, p: (i32, i32, i32)) {
-        let Some(sq) = self.at(p) else { return };
-        let Some((t1, t2, north)) = self.rope_flag(sq, true) else {
+        let Some(square) = self.at(p) else { return };
+        let Some((t1, t2, north)) = self.rope_flag(&square.borrow(), true) else {
             return;
         };
-        let env = self.env();
         let tile = match (t2, north) {
             ("climbSheetS", true) => Some("crafted_01_4"),
             ("climbSheetE", false) => Some("crafted_01_3"),
             _ => None,
         };
         if let Some(tile) = tile {
-            if let Some(o) = sq.objects.iter().find(|o| env.sprite_name(&o.borrow()) == Some(tile)) {
-                let r = oref(sq, &o.borrow());
+            let receiver = {
+                let sq = square.borrow();
+                let env = self.env();
+                sq.objects
+                    .iter()
+                    .find(|o| env.sprite_name(&o.borrow()) == Some(tile))
+                    .map(|o| oref(&sq, &o.borrow()))
+            };
+            if let Some(r) = receiver {
                 self.remove_object(r, false);
             }
         }
         let mut find = false;
         let mut previous = None;
         let mut z = p.2;
-        while let Some(sq) = self.at((p.0, p.1, z)) {
-            let env = self.env();
-            let hit = sq
-                .objects
-                .iter()
-                .find(|o| { let o = o.borrow(); env.obj_has_flag(&o, t1) || env.obj_has_flag(&o, t2) })
-                .map(|o| oref(sq, &o.borrow()));
+        while let Some(square) = self.at((p.0, p.1, z)) {
+            let hit = {
+                let sq = square.borrow();
+                let env = self.env();
+                sq.objects
+                    .iter()
+                    .find(|o| {
+                        let o = o.borrow();
+                        env.obj_has_flag(&o, t1) || env.obj_has_flag(&o, t2)
+                    })
+                    .map(|o| oref(&sq, &o.borrow()))
+            };
             if let Some(r) = hit {
                 previous = Some(z);
                 find = true;
@@ -1562,14 +1735,19 @@ impl StatesWorldAdapter<'_> {
         } else {
             (p.0 + 1, p.1, pz)
         };
-        let Some(tsq) = self.at(top) else { return };
-        let env = self.env();
-        if let Some(r) = tsq
-            .objects
-            .iter()
-            .find(|o| { let o = o.borrow(); env.obj_has_flag(&o, t1) || env.obj_has_flag(&o, t2) })
-            .map(|o| oref(tsq, &o.borrow()))
-        {
+        let Some(square) = self.at(top) else { return };
+        let receiver = {
+            let sq = square.borrow();
+            let env = self.env();
+            sq.objects
+                .iter()
+                .find(|o| {
+                    let o = o.borrow();
+                    env.obj_has_flag(&o, t1) || env.obj_has_flag(&o, t2)
+                })
+                .map(|o| oref(&sq, &o.borrow()))
+        };
+        if let Some(r) = receiver {
             self.remove_object(r, false);
         }
     }

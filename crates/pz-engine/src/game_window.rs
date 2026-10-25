@@ -70,7 +70,11 @@ impl Start {
 /// `LuaManager.GlobalObject.createWorld(worldName)`: the save folder (unless
 /// saving is off) with its subdirectories, and `Core.gameSaveWorld`.
 pub fn create_world(cache_dir: &std::path::Path, world_name: &str) -> Result<(), String> {
-    let name = if world_name.is_empty() { "blah" } else { world_name };
+    let name = if world_name.is_empty() {
+        "blah"
+    } else {
+        world_name
+    };
     let name = pz_lua_api::savefile::sanitize_world_name(name);
     let core = pz_lua_api::bind_core::shared_core();
     let (mode, no_save) = {
@@ -80,7 +84,8 @@ pub fn create_world(cache_dir: &std::path::Path, world_name: &str) -> Result<(),
     let dir = cache_dir.join("Saves").join(mode).join(&name);
     if !no_save {
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        pz_lua_api::world_save::ensure_subdirectories_exist(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        pz_lua_api::world_save::ensure_subdirectories_exist(&dir)
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     core.borrow_mut().game_save_world = name;
     Ok(())
@@ -141,7 +146,9 @@ impl App {
     /// quit path as the menu, then stops its owners before the GPU goes.
     fn close(&mut self) {
         let current = self.states.current.take();
-        let in_game = current.as_ref().is_some_and(|s| s.borrow().class_name() == "zombie.gameStates.IngameState");
+        let in_game = current
+            .as_ref()
+            .is_some_and(|s| s.borrow().class_name() == "zombie.gameStates.IngameState");
         let (screen_w, screen_h) = self.screen_size();
         let Some(lua) = self.lua.as_mut() else { return };
         if in_game {
@@ -151,8 +158,13 @@ impl App {
         }
         if let Some(current) = current {
             current.borrow_mut().exit(&mut StateCx {
-                lua, launch: &self.launch, screen_w, screen_h,
-                multiplier: 0.0, time_delta: 0.0, world: &mut self.world,
+                lua,
+                launch: &self.launch,
+                screen_w,
+                screen_h,
+                multiplier: 0.0,
+                time_delta: 0.0,
+                world: &mut self.world,
                 shutdown: true,
                 error: &mut self.error,
                 retired_models: &mut self.retired_models,
@@ -160,7 +172,9 @@ impl App {
         }
         // A partially loaded world may have no current IngameState yet.
         if let Some(world) = self.world.as_mut() {
-            if let Some(models) = world.models.take() { self.retired_models.push(models); }
+            if let Some(models) = world.models.take() {
+                self.retired_models.push(models);
+            }
             world.stop();
         }
         self.world = None;
@@ -179,12 +193,19 @@ impl App {
     fn boot(&mut self) -> Result<(), String> {
         let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&self.launch.game_dir)));
         fs.borrow_mut().set_cache_dir(&self.launch.cache_dir);
-        pz_lua_api::bind_render::textures().borrow_mut().load_ui_packs(&fs.borrow());
+        pz_lua_api::bind_render::textures()
+            .borrow_mut()
+            .load_ui_packs(&fs.borrow());
         crate::boot::load_scripts(&self.launch.game_dir, &mut fs.borrow_mut())?;
         // SoundManager.init / FMODManager.init (windowed runs; headless
         // runs keep the silent system).
         if self.window.is_some() {
-            match crate::sound::install(&self.launch.game_dir, &self.launch.cache_dir, fs.clone(), &self.core.borrow()) {
+            match crate::sound::install(
+                &self.launch.game_dir,
+                &self.launch.cache_dir,
+                fs.clone(),
+                &self.core.borrow(),
+            ) {
                 Ok(o) => self.audio = Some(o),
                 Err(e) => eprintln!("sound: {e}"),
             }
@@ -192,10 +213,13 @@ impl App {
         self.ui_models = Some(crate::ui_models::install(&self.launch.game_dir, fs.clone()));
         // Controllers.create (GameWindow.init, before LuaManager.init).
         pz_lua_api::bind_joypad::set_cache_dir(&self.launch.cache_dir);
-        self.gamepads = pz_input::with_controllers(|c| pz_input::gamepads::Gamepads::new(&self.launch.game_dir, &self.launch.cache_dir, c));
+        self.gamepads = pz_input::with_controllers(|c| {
+            pz_input::gamepads::Gamepads::new(&self.launch.game_dir, &self.launch.cache_dir, c)
+        });
         let mut lua = LuaManager::init(fs).map_err(|e| format!("LuaManager.init: {e}"))?;
         // GameWindow.init: Translator.loadFiles and TextManager.Init.
-        pz_lua_api::bind_text::boot(&lua.fs.borrow(), &self.core.borrow()).map_err(|e| format!("text init: {e}"))?;
+        pz_lua_api::bind_text::boot(&lua.fs.borrow(), &self.core.borrow())
+            .map_err(|e| format!("text init: {e}"))?;
         pz_lua_api::hud::init_ui(&mut lua.thread);
         lua.load_all_client();
         lua.trigger_event("OnGameBoot", &[]);
@@ -230,7 +254,8 @@ impl App {
                 }
                 // `GameWindow.doRenderEvent(false)`;
                 // `forceChangeState(LoadingQueueState.new())`.
-                self.states.force_next_state(state(LoadingQueueState::default()));
+                self.states
+                    .force_next_state(state(LoadingQueueState::default()));
             }
         }
         Ok(())
@@ -247,7 +272,9 @@ impl App {
     }
 
     fn frame(&mut self) {
-        if self.error.is_some() { return; }
+        if self.error.is_some() {
+            return;
+        }
         let Some(lua) = self.lua.as_mut() else { return };
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
@@ -255,7 +282,9 @@ impl App {
         // GameTime multiplier at 30 FPS reference, clamped like the original.
         let multiplier = (dt * 30.0).clamp(0.0, 5.0);
         // FPSTracking.frameStep: GameTime.fpsMultiplier = 60 / fps, at most 5.
-        pz_lua_api::bind_climate::shared_game_time().borrow_mut().fps_multiplier = (dt * 60.0).min(5.0);
+        pz_lua_api::bind_climate::shared_game_time()
+            .borrow_mut()
+            .fps_multiplier = (dt * 60.0).min(5.0);
         // GameWindow.logic pumps the single-player server then client after
         // frame timing, before input/UI and pause capture, even while paused.
         pz_lua_api::global_objects::update_server(&mut lua.thread);
@@ -308,7 +337,9 @@ impl App {
         }
         // Direct game entry is a startup request. Once a session returns
         // to the menu, future loads use the choices made by the menu.
-        if self.world.is_none() && self.states.current_name() == Some("zombie.gameStates.MainScreenState") {
+        if self.world.is_none()
+            && self.states.current_name() == Some("zombie.gameStates.MainScreenState")
+        {
             self.launch.start = Start::MainMenu;
         }
         for mut models in self.retired_models.drain(..) {
@@ -318,10 +349,15 @@ impl App {
                 gpu.clear_character_mesh_cache();
             }
         }
-        if self.error.is_some() { return; }
+        if self.error.is_some() {
+            return;
+        }
         // SoundManager.instance.Update() (GameWindow.logic, "Sound").
-        let toggle_music = pz_lua_api::bind_input::is_key_down_named("Toggle Music") && !pz_lua_api::bind_input::was_key_down_named("Toggle Music");
-        pz_lua_api::bind_audio::sound_system().borrow_mut().with(|m, ctx| m.update(toggle_music, ctx));
+        let toggle_music = pz_lua_api::bind_input::is_key_down_named("Toggle Music")
+            && !pz_lua_api::bind_input::was_key_down_named("Toggle Music");
+        pz_lua_api::bind_audio::sound_system()
+            .borrow_mut()
+            .with(|m, ctx| m.update(toggle_music, ctx));
         pz_ui::with_ui(|m| m.mouse.end_frame());
         // The avatars' texture jobs (ModelInstanceTextureCreator) before
         // the UI draws them.
@@ -356,7 +392,10 @@ impl App {
         }
         if let Some(gpu) = self.gpu.as_mut() {
             let tm = pz_lua_api::bind_render::textures();
-            let params = pz_gpu::FrameParams { clear: Some([0.0, 0.0, 0.0, 1.0]), ..pz_gpu::FrameParams::ui(w as u32, h as u32) };
+            let params = pz_gpu::FrameParams {
+                clear: Some([0.0, 0.0, 0.0, 1.0]),
+                ..pz_gpu::FrameParams::ui(w as u32, h as u32)
+            };
             gpu.render_frame(&[(params, &dl)], &mut tm.borrow_mut());
         }
         // `if (doRenderEvent) onRender()`: OnRenderTick after the frame.
@@ -365,7 +404,7 @@ impl App {
         }
         // Core.DoFrameReady -> Core.updateKeyboard: focused text entry.
         pz_lua_api::bind_uitextbox2::update_keyboard(&mut lua.thread);
-        // Whole-object owners can carry opaque Lua parents. End every
+        // Square and whole-object owners can carry opaque Lua parents. End every
         // callback and world/sprite borrow before releasing retired slots.
         crate::iso_world::drain_retired_world_objects();
         // Requests from Lua are drained after the frame's callbacks and
@@ -392,7 +431,9 @@ impl ApplicationHandler for App {
             }
         };
         let size = window.inner_size();
-        self.core.borrow_mut().set_screen_size(size.width as i32, size.height as i32);
+        self.core
+            .borrow_mut()
+            .set_screen_size(size.width as i32, size.height as i32);
         match pz_gpu::Gpu::new(window.clone(), size.width, size.height) {
             Ok(mut g) => {
                 g.set_vsync(self.core.borrow().get_option_v_sync());
@@ -419,7 +460,9 @@ impl ApplicationHandler for App {
                 if let Some(g) = self.gpu.as_mut() {
                     g.resize(size.width.max(1), size.height.max(1));
                 }
-                self.core.borrow_mut().set_screen_size(size.width.max(1) as i32, size.height.max(1) as i32);
+                self.core
+                    .borrow_mut()
+                    .set_screen_size(size.width.max(1) as i32, size.height.max(1) as i32);
             }
             WindowEvent::RedrawRequested => {
                 self.frame();
@@ -459,7 +502,11 @@ fn apply_window_requests(w: &Window, requests: Vec<pz_input::WindowRequest>) {
                 let _ = w.set_cursor_position(winit::dpi::PhysicalPosition::new(x, y));
             }
             SetGrabbed(g) => {
-                let mode = if g { winit::window::CursorGrabMode::Confined } else { winit::window::CursorGrabMode::None };
+                let mode = if g {
+                    winit::window::CursorGrabMode::Confined
+                } else {
+                    winit::window::CursorGrabMode::None
+                };
                 if w.set_cursor_grab(mode).is_err() && g {
                     let _ = w.set_cursor_grab(winit::window::CursorGrabMode::Locked);
                 }
@@ -483,7 +530,9 @@ pub fn run_headless(launch: Launch, frames: u32) -> Result<Option<&'static str>,
     app.boot()?;
     run_headless_lua(&mut app)?;
     run_frames(&mut app, frames);
-    if let Some(error) = app.error.take() { return Err(error); }
+    if let Some(error) = app.error.take() {
+        return Err(error);
+    }
     Ok(app.current_state())
 }
 
@@ -517,8 +566,9 @@ fn run_headless_lua(app: &mut App) -> Result<(), String> {
     if let Some(path) = std::env::var_os("PZ_HEADLESS_LUA") {
         let src = std::fs::read_to_string(&path).map_err(|e| format!("PZ_HEADLESS_LUA: {e}"))?;
         let lua = app.lua.as_mut().ok_or("no Lua")?;
-        let f = pz_kahlua::stdlib::load_string(&src, Some("headless"), lua.thread.globals().clone())
-            .map_err(|e| format!("PZ_HEADLESS_LUA: {e:?}"))?;
+        let f =
+            pz_kahlua::stdlib::load_string(&src, Some("headless"), lua.thread.globals().clone())
+                .map_err(|e| format!("PZ_HEADLESS_LUA: {e:?}"))?;
         if let Err((e, tr)) = lua.thread.pcall(&f, &[]) {
             eprintln!("PZ_HEADLESS_LUA: {e:?}\n{tr}");
         }
@@ -528,7 +578,9 @@ fn run_headless_lua(app: &mut App) -> Result<(), String> {
 
 fn run_frames(app: &mut App, frames: u32) {
     for _ in 0..frames {
-        if app.error.is_some() { break; }
+        if app.error.is_some() {
+            break;
+        }
         app.last_frame = Instant::now() - Duration::from_millis(33);
         app.frame();
     }
@@ -543,7 +595,9 @@ fn headless(launch: Launch, frames: u32, gpu: bool) -> Result<(u32, u32, Option<
     app.boot()?;
     run_headless_lua(&mut app)?;
     run_frames(&mut app, frames);
-    if let Some(error) = app.error.take() { return Err(error); }
+    if let Some(error) = app.error.take() {
+        return Err(error);
+    }
     let px = app.gpu.as_ref().map(|g| g.read_pixels());
     Ok((w as u32, h as u32, px))
 }

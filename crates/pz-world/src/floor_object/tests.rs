@@ -92,16 +92,17 @@ fn retained_floor_object_survives_removal_moves_drop_and_same_id_replacement() {
     square.objects.push((original).into());
     square.world_objects.push(1);
     let mut chunk = IsoChunk::new(0, 0);
-    chunk.set_square(0, 0, 0, Some(square));
+    chunk.set_square(0, 0, 0, Some((square).into()));
     let mut chunks = vec![chunk];
     chunks.reserve(64); // Chunks and their square/object vectors may move.
     assert!(Rc::ptr_eq(
         &actual,
-        &handle(&chunks[0].get_grid_square(0, 0, 0).unwrap().objects[0].borrow())
+        &handle(&chunks[0].get_grid_square(0, 0, 0).unwrap().borrow().objects[0].borrow())
     ));
     let detached = chunks[0]
         .get_grid_square_mut(0, 0, 0)
         .unwrap()
+        .borrow_mut()
         .objects
         .remove(0);
     drop(detached);
@@ -110,6 +111,7 @@ fn retained_floor_object_survives_removal_moves_drop_and_same_id_replacement() {
     chunks[0]
         .get_grid_square_mut(0, 0, 0)
         .unwrap()
+        .borrow_mut()
         .objects
         .push((replacement).into());
     assert!(!Rc::ptr_eq(&actual, &other));
@@ -133,7 +135,7 @@ fn archive_square_copies_in_distinct_chunks_have_independent_floor_allocations()
     let copy = handle(&copy_square.objects[0].borrow());
     assert!(!Rc::ptr_eq(&original, &copy));
     let mut chunk = IsoChunk::new(0, 0);
-    chunk.set_square(0, 0, 0, Some(square));
+    chunk.set_square(0, 0, 0, Some((square).into()));
     // IsoChunk deliberately has no Clone implementation. Its value-owned
     // square is explicitly copied into a separate archive chunk here.
     let mut copy_chunk = IsoChunk::new(0, 0);
@@ -141,10 +143,23 @@ fn archive_square_copies_in_distinct_chunks_have_independent_floor_allocations()
         0,
         0,
         0,
-        Some(chunk.get_grid_square(0, 0, 0).unwrap().clone()),
+        Some(
+            chunk
+                .get_grid_square(0, 0, 0)
+                .unwrap()
+                .borrow()
+                .clone()
+                .into(),
+        ),
     );
-    let copied_chunk_owner =
-        handle(&copy_chunk.get_grid_square(0, 0, 0).unwrap().objects[0].borrow());
+    let copied_chunk_owner = handle(
+        &copy_chunk
+            .get_grid_square(0, 0, 0)
+            .unwrap()
+            .borrow()
+            .objects[0]
+            .borrow(),
+    );
     assert!(!Rc::ptr_eq(&original, &copied_chunk_owner));
     original.borrow_mut().ignore_remove_sandbox = true;
     assert!(!copy.borrow().ignore_remove_sandbox);

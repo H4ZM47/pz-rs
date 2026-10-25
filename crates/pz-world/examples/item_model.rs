@@ -332,7 +332,7 @@ fn main() {
         };
         let mut items: Vec<InventoryItem> = Vec::new();
         for sq in ch.squares() {
-            for o in sq.objects.iter().map(ObjectSlot::borrow) {
+            for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                 match &o.kind {
                     ObjectKind::Mannequin(Some(m)) => {
                         for c in m.container.iter() {
@@ -353,7 +353,7 @@ fn main() {
                     }
                 }
             }
-            for bd in &sq.static_moving {
+            for bd in &sq.borrow().static_moving {
                 if let Some(c) = &bd.container {
                     collect(&c.items, &mut items);
                 }

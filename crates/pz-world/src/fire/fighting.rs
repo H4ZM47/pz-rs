@@ -115,9 +115,10 @@ pub fn is_square_to_extinguish(
     at: (i32, i32, i32),
     character_on_fire: &dyn Fn((i32, i32, i32)) -> bool,
 ) -> bool {
-    let Some(sq) = cell.get_grid_square(at.0, at.1, at.2) else {
+    let Some(sq_owner) = cell.get_grid_square(at.0, at.1, at.2) else {
         return false;
     };
+    let sq = sq_owner.borrow();
     if sq.has(burning)
         && sq
             .objects

@@ -247,6 +247,7 @@ struct Engine {
     noises: Vec<(i32, (i32, i32, i32))>,
     cancelled: Vec<MoverId>,
     toggled: Vec<ObjectRef>,
+    replace_toggled_square: bool,
     moving: Vec<(i32, i32, i32)>,
 }
 
@@ -276,8 +277,14 @@ impl StatesEngine for Engine {
     ) {
         self.items.push(item.into());
     }
-    fn object_removed(&mut self, _sq: (i32, i32, i32), obj: &pz_world::IsoObjectRef, destroyed: bool) {
-        self.removed.push((obj.borrow().kind.class_name().into(), destroyed));
+    fn object_removed(
+        &mut self,
+        _sq: (i32, i32, i32),
+        obj: &pz_world::IsoObjectRef,
+        destroyed: bool,
+    ) {
+        self.removed
+            .push((obj.borrow().kind.class_name().into(), destroyed));
         if self.retain_removed {
             // The adapter must release every object guard before callbacks.
             obj.borrow_mut().key_id = 902;
@@ -307,14 +314,40 @@ impl StatesEngine for Engine {
         let sq = cell
             .get_grid_square_mut(window.x, window.y, window.z)
             .unwrap();
-        if let Some(ObjectKind::Window(w)) = sq
+        let object = sq
+            .borrow()
             .objects
             .iter()
             .find(|o| o.borrow().id == window.id)
-            .map(|o| o.borrow_mut())
-            .as_deref_mut().map(|o| &mut o.kind)
-        {
-            w.open = !w.open;
+            .map(pz_world::ObjectSlot::ref_handle);
+        if let Some(object) = object {
+            if let ObjectKind::Window(w) = &mut object.borrow_mut().kind {
+                w.open = !w.open;
+            };
+        }
+        if self.replace_toggled_square {
+            let mut replacement = sq
+                .try_borrow_mut()
+                .expect("square guard survived into ToggleWindow")
+                .clone();
+            for object in &replacement.objects {
+                let mut object = object.borrow_mut();
+                if object.id == window.id {
+                    if let ObjectKind::Window(w) = &mut object.kind {
+                        w.open = false;
+                    }
+                }
+            }
+            replacement.overlay_done = true;
+            cell.chunks
+                .get_mut(&(window.x.div_euclid(8), window.y.div_euclid(8)))
+                .unwrap()
+                .set_square(
+                    window.x.rem_euclid(8),
+                    window.y.rem_euclid(8),
+                    window.z,
+                    Some(replacement.into()),
+                );
         }
     }
     fn has_moving_objects(&self, sq: (i32, i32, i32)) -> bool {
@@ -373,7 +406,7 @@ impl World {
                     .chunks
                     .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
                     .unwrap();
-                ch.set_square(x.rem_euclid(8), y.rem_euclid(8), 0, Some(sq));
+                ch.set_square(x.rem_euclid(8), y.rem_euclid(8), 0, Some((sq).into()));
             }
         }
         w
@@ -381,9 +414,14 @@ impl World {
 
     fn add(&mut self, x: i32, y: i32, sprite: &str, kind: ObjectKind, special: bool) -> ObjectRef {
         let spr = self.m.named_map[sprite];
-        let sq = self.cell.get_grid_square_mut(x, y, 0).unwrap();
+        let sq_owner = self.cell.get_grid_square_mut(x, y, 0).unwrap();
+        let mut sq = sq_owner.borrow_mut();
         let id = sq.new_object_id();
-        sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(id, kind, Some(spr))));
+        sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
+            id,
+            kind,
+            Some(spr),
+        )));
         if special {
             sq.special_objects.push(id);
         }
@@ -414,9 +452,13 @@ impl World {
         )
     }
 
-    fn kind(&self, r: ObjectRef) -> Option<std::cell::Ref<'_, ObjectKind>> {
-        let sq = self.cell.get_grid_square(r.x, r.y, r.z)?;
-        sq.objects.iter().find(|o| o.borrow().id == r.id).map(|o| std::cell::Ref::map(o.borrow(), |o| &o.kind))
+    fn object(&self, r: ObjectRef) -> Option<pz_world::IsoObjectRef> {
+        let sq_owner = self.cell.get_grid_square(r.x, r.y, r.z)?;
+        let sq = sq_owner.borrow();
+        sq.objects
+            .iter()
+            .find(|o| o.borrow().id == r.id)
+            .map(pz_world::ObjectSlot::ref_handle)
     }
 }
 
@@ -474,8 +516,14 @@ fn special_objects_between_neighbours() {
     assert_eq!(special(&mut w, (10, 10, 0), (11, 9, 0)), Some(d));
     assert_eq!(special(&mut w, (10, 10, 0), (11, 10, 0)), None);
     // An open door is not in the way.
-    if let ObjectKind::Door(dd) =
-        &mut w.cell.get_grid_square_mut(10, 10, 0).unwrap().objects[1].borrow_mut().kind
+    if let ObjectKind::Door(dd) = &mut w
+        .cell
+        .get_grid_square_mut(10, 10, 0)
+        .unwrap()
+        .borrow()
+        .objects[1]
+        .borrow_mut()
+        .kind
     {
         dd.open = true;
     }
@@ -544,9 +592,13 @@ fn thumping_a_barricade_breaks_planks_then_removes_it() {
     let b = w.barricade(10, 9, IsoDirections::S, &[1000, 300]);
     let mut z = zombie(10.5, 9.5, 200);
     z.zombie.thump_target = Some(ThumpTarget::Object(d));
-    let planks = |w: &World| match w.kind(b).as_deref() {
-        Some(ObjectKind::Barricade(b)) => Some(b.plank_health),
-        _ => None,
+    let planks = |w: &World| {
+        let owner = w.object(b)?;
+        let object = owner.borrow();
+        match &object.kind {
+            ObjectKind::Barricade(b) => Some(b.plank_health),
+            _ => None,
+        }
     };
     // The door hands over to the barricade; the top plank takes the damage.
     thump(&mut w, d, &mut z);
@@ -580,9 +632,13 @@ fn door_needs_two_thumpers_and_breaks_into_items() {
     let d = w.add(12, 12, "door_w_mat", door(false, 30), true);
     let mut z = zombie(12.5, 12.5, 20);
     z.zombie.thump_target = Some(ThumpTarget::Object(d));
-    let health = |w: &World| match w.kind(d).as_deref() {
-        Some(ObjectKind::Door(dd)) => Some(dd.health),
-        _ => None,
+    let health = |w: &World| {
+        let owner = w.object(d)?;
+        let object = owner.borrow();
+        match &object.kind {
+            ObjectKind::Door(dd) => Some(dd.health),
+            _ => None,
+        }
     };
     thump(&mut w, d, &mut z);
     assert_eq!(health(&w), Some(30));
@@ -612,6 +668,7 @@ fn door_needs_two_thumpers_and_breaks_into_items() {
         .cell
         .get_grid_square(12, 12, 0)
         .unwrap()
+        .borrow()
         .has(w.m.tables.flag.doorW));
 }
 
@@ -623,11 +680,19 @@ fn smashing_a_window_leaves_glass_and_hands_over_to_the_barricade() {
     let mut z = zombie(12.5, 12.5, 30);
     z.zombie.thump_target = Some(ThumpTarget::Object(win));
     thump(&mut w, win, &mut z);
-    assert!(matches!(w.kind(win).as_deref(), Some(ObjectKind::Window(x)) if x.health == 20 && !x.destroyed));
+    assert!(
+        matches!(&w.object(win).unwrap().borrow().kind, ObjectKind::Window(x) if x.health == 20 && !x.destroyed)
+    );
     w.engine.rand = Seq(vec![2]);
     thump(&mut w, win, &mut z);
-    let sq = w.cell.get_grid_square(12, 12, 0).unwrap();
-    let o = sq.objects.iter().find(|o| o.borrow().id == win.id).unwrap().borrow();
+    let sq_owner = w.cell.get_grid_square(12, 12, 0).unwrap();
+    let sq = sq_owner.borrow();
+    let o = sq
+        .objects
+        .iter()
+        .find(|o| o.borrow().id == win.id)
+        .unwrap()
+        .borrow();
     assert!(matches!(&o.kind, ObjectKind::Window(x) if x.destroyed && x.health == 0));
     assert_eq!(o.sprite, Some(w.m.named_map["window_w_smashed"]));
     drop(o);
@@ -638,15 +703,19 @@ fn smashing_a_window_leaves_glass_and_hands_over_to_the_barricade() {
         .objects
         .iter()
         .any(|o| matches!(o.borrow().kind, ObjectKind::BrokenGlass)));
-    let far = w.cell.get_grid_square(11, 12, 0).unwrap();
+    let far_owner = w.cell.get_grid_square(11, 12, 0).unwrap();
+    let far = far_owner.borrow();
     let glass = far
         .objects
         .iter()
         .find(|o| matches!(o.borrow().kind, ObjectKind::BrokenGlass))
-        .unwrap().borrow();
+        .unwrap()
+        .borrow();
     assert_eq!(glass.sprite, Some(w.m.named_map["brokenglass_1_2"]));
     assert!(far.special_objects.contains(&glass.id));
     drop(glass);
+    drop(far);
+    drop(sq);
     assert_eq!(z.zombie.thump_target, Some(ThumpTarget::Object(win)));
     assert_eq!(
         w.engine
@@ -678,9 +747,13 @@ fn thumpable_takes_partial_damage() {
     let t = w.add(12, 12, "crate", ObjectKind::Thumpable(Box::new(th)), true);
     w.engine.thumpers = 2;
     let mut z = zombie(12.5, 12.5, 5);
-    let hp = |w: &World| match w.kind(t).as_deref() {
-        Some(ObjectKind::Thumpable(x)) => Some(x.health),
-        _ => None,
+    let hp = |w: &World| {
+        let owner = w.object(t)?;
+        let object = owner.borrow();
+        match &object.kind {
+            ObjectKind::Thumpable(x) => Some(x.health),
+            _ => None,
+        }
     };
     for _ in 0..3 {
         thump(&mut w, t, &mut z);
@@ -708,7 +781,7 @@ fn thumpable_takes_partial_damage() {
     let t2 = w.add(13, 12, "crate", ObjectKind::Thumpable(Box::new(th2)), true);
     w.settings.thump_on_construction = false;
     thump(&mut w, t2, &mut z);
-    assert!(w.kind(t2).is_some());
+    assert!(w.object(t2).is_some());
 }
 
 #[test]
@@ -858,8 +931,8 @@ fn collide_adjacent_with_the_mover() {
     assert_eq!(r.special.map(|s| s.object.id), Some(d.id));
     // No mover: only the matrix bit (the door blocks it).
     let env = a.collide_env();
-    let sq = a.cell.get_grid_square(12, 12, 0).unwrap();
-    let r = env.test_collide_adjacent(sq, None, 0, -1, 0);
+    let sq_owner = a.cell.get_grid_square(12, 12, 0).unwrap();
+    let r = env.test_collide_adjacent(&sq_owner, None, 0, -1, 0);
     assert!(r.blocked && r.special.is_none() && !r.recalc);
     // Open floor: nothing; a player gets no recalculation for a clear bit.
     let p = mover_info(4, MoverKind::Player);
@@ -923,25 +996,27 @@ fn hoppable_edges() {
     let env = a.collide_env();
     let sq = |x, y| a.cell.get_grid_square(x, y, 0);
     let (s10, s9, s11) = (sq(10, 10).unwrap(), sq(10, 9).unwrap(), sq(10, 11).unwrap());
-    assert!(env.is_hoppable_to(s10, Some(s9)));
-    assert!(env.is_hoppable_to(s9, Some(s10)));
-    assert!(!env.is_hoppable_to(s10, Some(s11)));
+    assert!(env.is_hoppable_to(&s10.borrow(), Some(&s9.borrow())));
+    assert!(env.is_hoppable_to(&s9.borrow(), Some(&s10.borrow())));
+    assert!(!env.is_hoppable_to(&s10.borrow(), Some(&s11.borrow())));
     // Diagonal is never hoppable, but getHoppableTo still finds the edge.
-    assert!(!env.is_hoppable_to(s11, sq(9, 9)));
+    assert!(!env.is_hoppable_to(&s11.borrow(), Some(&sq(9, 9).unwrap().borrow())));
     assert_eq!(
-        env.get_hoppable_to(s9, Some(s10)).map(|(_, id)| id),
+        env.get_hoppable_to(&s9, Some(&s10)).map(|(_, id)| id),
         Some(f.id)
     );
-    assert_eq!(env.get_hoppable(s10, true), Some(f.id));
-    assert_eq!(env.get_hoppable(s10, false), None);
-    let o = s10.objects[s10.object_index(f.id).unwrap()].borrow();
+    assert_eq!(env.get_hoppable(&s10.borrow(), true), Some(f.id));
+    assert_eq!(env.get_hoppable(&s10.borrow(), false), None);
+    let s10_body = s10.borrow();
+    let o = s10_body.objects[s10_body.object_index(f.id).unwrap()].borrow();
     assert!(o.is_hoppable(a.sprites) && !o.is_tall_hoppable(a.sprites));
     assert!(o.is_north_hoppable(a.sprites));
     let s14 = sq(14, 10).unwrap();
-    let o = s14.objects[s14.object_index(t.id).unwrap()].borrow();
+    let s14_body = s14.borrow();
+    let o = s14_body.objects[s14_body.object_index(t.id).unwrap()].borrow();
     assert!(o.is_hoppable(a.sprites) && o.is_tall_hoppable(a.sprites));
-    assert!(env.is_hoppable_to(s14, sq(13, 10)));
-    assert!(!s10.have_door());
+    assert!(env.is_hoppable_to(&s14_body, Some(&sq(13, 10).unwrap().borrow())));
+    assert!(!s10_body.have_door());
 }
 
 #[test]
@@ -954,7 +1029,8 @@ fn doors_hop_only_when_closed_with_a_hoppable_closed_sprite() {
     }
     let d = w.add(12, 12, "door_n", k, true);
     let a = w.adapter();
-    let sq = a.cell.get_grid_square(12, 12, 0).unwrap();
+    let sq_owner = a.cell.get_grid_square(12, 12, 0).unwrap();
+    let sq = sq_owner.borrow();
     assert!(sq.have_door());
     let o = sq.objects[sq.object_index(d.id).unwrap()].borrow();
     assert!(o.is_hoppable(a.sprites));
@@ -1079,7 +1155,8 @@ fn vegetation_rustles_past_the_first_object() {
     // A bush as the first object makes noise but rustles nothing.
     {
         let spr = w.m.named_map["shrub"];
-        let sq = w.cell.get_grid_square_mut(11, 10, 0).unwrap();
+        let sq_owner = w.cell.get_grid_square_mut(11, 10, 0).unwrap();
+        let mut sq = sq_owner.borrow_mut();
         sq.objects[0].borrow_mut().sprite = Some(spr);
         sq.recalc_properties(&w.m);
     }
@@ -1159,7 +1236,8 @@ fn loaded_windows_share_their_closed_sprite_properties() {
     pz_world::save::chunk_file::apply_loaded_window_sprites(&w.cell.chunks[&(1, 1)], &mut w.m);
     assert!(w.m.sprites[smashed].properties.has(collide_w));
     assert!(w.m.sprites[closed].properties.has(w.m.tables.flag.cutW));
-    let sq = w.cell.get_grid_square(12, 12, 0).unwrap();
+    let sq_owner = w.cell.get_grid_square(12, 12, 0).unwrap();
+    let sq = sq_owner.borrow();
     assert_eq!(sq.object_index(r.id), Some(1));
 }
 
@@ -1260,6 +1338,28 @@ fn sheet_rope_exits() {
 }
 
 #[test]
+fn sheet_rope_toggle_uses_original_window_when_callback_replaces_its_square() {
+    let mut w = World::new();
+    let win = w.add(12, 12, "window_w", window(&w, 50), true);
+    let original = w.object(win).unwrap();
+    let square = w.cell.get_grid_square(12, 12, 0).unwrap();
+    w.engine.replace_toggled_square = true;
+    assert_eq!(
+        w.adapter()
+            .sheet_rope_exit_for(&climber(12.5, 12.5), (12, 12, 0), IsoDirections::W),
+        SheetRopeExit::OpenWindow(win)
+    );
+    assert_eq!(w.engine.toggled, [win]);
+    let replacement_square = w.cell.get_grid_square(12, 12, 0).unwrap();
+    let replacement = w.object(win).unwrap();
+    assert!(!std::rc::Rc::ptr_eq(&square, &replacement_square));
+    assert!(!std::rc::Rc::ptr_eq(&original, &replacement));
+    assert!(replacement_square.borrow().overlay_done);
+    assert!(matches!(&original.borrow().kind, ObjectKind::Window(w) if w.open));
+    assert!(matches!(&replacement.borrow().kind, ObjectKind::Window(w) if !w.open));
+}
+
+#[test]
 fn climbing_over_walls() {
     let mut w = World::new();
     w.add(12, 12, "wall_n_metal", ObjectKind::Object, false);
@@ -1355,7 +1455,7 @@ fn population_host_reads_the_adapter_real_zombies_hold() {
     assert!(host.square(30, 8, 0).is_none());
     let free = |h: &pz_world_popman::WorldPopulationHost<'_, _>, x, y| {
         let v = h.view();
-        h.is_free(v.cell.get_grid_square(x, y, 0).unwrap())
+        h.is_free(&v.cell.get_grid_square(x, y, 0).unwrap().borrow())
     };
     assert!(free(&host, 8, 8));
     // The crate; a character the engine knows; a real zombie of the list.
@@ -1383,7 +1483,8 @@ fn removal_callback_can_mutate_and_retain_the_actual_whole_object() {
     let mut w = World::new();
     let r = w.add(10, 10, "crate", ObjectKind::Object, false);
     let owner = {
-        let sq = w.cell.get_grid_square(10, 10, 0).unwrap();
+        let sq_owner = w.cell.get_grid_square(10, 10, 0).unwrap();
+        let sq = sq_owner.borrow();
         sq.objects[sq.object_index(r.id).unwrap()].ref_handle()
     };
     owner.borrow_mut().tint_r = 0.375;
@@ -1393,7 +1494,13 @@ fn removal_callback_can_mutate_and_retain_the_actual_whole_object() {
     assert!(std::rc::Rc::ptr_eq(&w.engine.removed_owners[0], &owner));
     assert_eq!(owner.borrow().key_id, 902, "callback mutation hit a copy");
     assert_eq!(owner.borrow().tint_r, 0.375);
-    assert!(w.cell.get_grid_square(10, 10, 0).unwrap().object_index(r.id).is_none());
+    assert!(w
+        .cell
+        .get_grid_square(10, 10, 0)
+        .unwrap()
+        .borrow()
+        .object_index(r.id)
+        .is_none());
     drop(removed);
     assert_eq!(w.engine.removed_owners[0].borrow().tint_r, 0.375);
 }

@@ -46,7 +46,6 @@ use pz_iso_render::chunk::dirty;
 use pz_world::isoregion::IsoRegions;
 use pz_world::sprite::IsoFlagType;
 use pz_world::square_mutation::{RenderSquareHooks, SquarePos};
-use pz_world::IsoGridSquare;
 
 use crate::hooks::WorldHooks;
 use crate::lighting::WorldLighting;
@@ -139,7 +138,10 @@ impl PendingRender {
                 .filter(|&(x, y, _)| (x.div_euclid(8), y.div_euclid(8)) == (wx, wy))
                 .collect();
             if let Some(ch) = w.cell.chunks.get(&(wx, wy)) {
-                positions.extend(ch.squares().map(|s| (s.x, s.y, s.z)));
+                positions.extend(ch.squares().map(|s| {
+                    let s = s.borrow();
+                    (s.x, s.y, s.z)
+                }));
             }
             for p in positions {
                 render.rebuild_square(w, p, cache, tex);
@@ -272,7 +274,8 @@ impl RenderSquareHooks for RenderInvalidation<'_> {
     /// water geometry dropped from a square that lost `water`.
     /// (`chunk.checkPhysicsLater` and `chunk.collision.clear()` are
     /// pz-world's own.)
-    fn properties_recalculated(&mut self, sq: &IsoGridSquare) {
+    fn properties_recalculated(&mut self, square: pz_world::SquareRef) {
+        let sq = square.borrow();
         let p = (sq.x, sq.y, sq.z);
         let (wx, wy) = chunk_of(sq.x, sq.y);
         self.pending.puddles.insert(p);
@@ -285,7 +288,8 @@ impl RenderSquareHooks for RenderInvalidation<'_> {
         self.pending.squares.insert(p);
     }
 
-    fn clear_water(&mut self, sq: &IsoGridSquare) {
+    fn clear_water(&mut self, square: pz_world::SquareRef) {
+        let sq = square.borrow();
         if let Some(rs) = self.render.squares.get_mut(&(sq.x, sq.y, sq.z)) {
             rs.water = None;
         }

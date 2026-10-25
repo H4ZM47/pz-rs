@@ -26,10 +26,10 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
+mod cell_drag;
 pub mod lua_world;
 mod reachability;
 mod square_queries;
-mod cell_drag;
 
 /// `IsoWorld.instance.metaGrid` and `IsoWorld.instance.currentCell`.
 #[derive(Default)]
@@ -1684,7 +1684,10 @@ pub fn current_cell() -> Value {
 fn register_iso_cell(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::events::Event>>>) {
     let b = expose_class(thread, "zombie.iso.IsoCell", Some("java.lang.Object"));
     cell_drag::register(&b, drag_event);
-    for (name, remove) in [("addToProcessItems", false), ("addToProcessItemsRemove", true)] {
+    for (name, remove) in [
+        ("addToProcessItems", false),
+        ("addToProcessItemsRemove", true),
+    ] {
         void(&b, name, move |c| {
             self_cell(c)?;
             let items = crate::bind_process_items::argument_values(&c.arg(1));
@@ -1710,11 +1713,13 @@ fn register_iso_cell(thread: &mut Thread, drag_event: Option<Rc<RefCell<crate::e
     for (name, remove) in [("getProcessItems", false), ("getProcessItemsRemove", true)] {
         get(&b, name, move |c| {
             self_cell(c)?;
-            let entries = cell(|cl| Ok(if remove {
-                cl.process_items.remove.clone()
-            } else {
-                cl.process_items.items.clone()
-            }))?;
+            let entries = cell(|cl| {
+                Ok(if remove {
+                    cl.process_items.remove.clone()
+                } else {
+                    cl.process_items.items.clone()
+                })
+            })?;
             Ok(crate::bind_process_items::queue_value(&entries, remove))
         });
     }
@@ -1811,8 +1816,10 @@ fn register_iso_chunk(thread: &mut Thread) {
     get(&b, "getGridSquare", |c| {
         let (x, y, z) = (int_arg(c, 1), int_arg(c, 2), int_arg(c, 3));
         let k = chunk(c, |ch| {
-            ch.get_grid_square(x, y, z)
-                .map(|s| Key::Square(s.x, s.y, s.z))
+            ch.get_grid_square(x, y, z).map(|s| {
+                let s = s.borrow();
+                Key::Square(s.x, s.y, s.z)
+            })
         })?;
         Ok(opt(k))
     });
@@ -1827,7 +1834,7 @@ fn self_square(c: &NativeCall<'_>) -> LuaResult<(i32, i32, i32)> {
 fn square_room_id(x: i32, y: i32, z: i32) -> LuaResult<i64> {
     cell(|cl| {
         cl.get_grid_square(x, y, z)
-            .map(|s| s.room_id)
+            .map(|s| s.borrow().room_id)
             .ok_or_else(|| LuaError::runtime("IsoGridSquare is no longer loaded"))
     })
 }
@@ -2076,9 +2083,9 @@ mod tests {
         let mut ch = IsoChunk::new(32, 32);
         let mut sq = IsoGridSquare::new(259, 260, 0);
         sq.room_id = kitchen;
-        ch.set_square(3, 4, 0, Some(sq));
-        ch.set_square(4, 4, 0, Some(IsoGridSquare::new(260, 260, 0)));
-        ch.set_square(3, 4, 1, Some(IsoGridSquare::new(259, 260, 1)));
+        ch.set_square(3, 4, 0, Some((sq).into()));
+        ch.set_square(4, 4, 0, Some((IsoGridSquare::new(260, 260, 0)).into()));
+        ch.set_square(3, 4, 1, Some((IsoGridSquare::new(259, 260, 1)).into()));
         cell.chunks.insert((32, 32), ch);
         set_cell(Some(cell));
         TempDir(root)

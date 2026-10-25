@@ -94,7 +94,8 @@ impl PathfindSquareHooks for H {
         let n = adjacent_squares(cell, sq).iter().flatten().count();
         self.push(format!("pathfind {},{},{} +{n}", sq.0, sq.1, sq.2));
     }
-    fn map_collision_square_changed(&mut self, sq: &IsoGridSquare) {
+    fn map_collision_square_changed(&mut self, sq: crate::SquareRef) {
+        let sq = sq.borrow();
         self.push(format!("collision {},{}", sq.x, sq.y));
     }
     fn add_chunk_to_world(&mut self, cell: &IsoCell, wx: i32, wy: i32) {
@@ -128,7 +129,8 @@ impl RenderSquareHooks for H {
 }
 
 impl SquareMutationHooks for H {
-    fn lua_event(&mut self, sq: &mut IsoGridSquare, ev: LuaEvent) {
+    fn lua_event(&mut self, sq: crate::SquareRef, ev: LuaEvent) {
+        let sq = sq.borrow();
         let s = match ev {
             LuaEvent::ObjectAboutToBeRemoved { index, .. } => {
                 format!("OnObjectAboutToBeRemoved {}", sq.objects[index].borrow().id)
@@ -152,7 +154,7 @@ impl SquareMutationHooks for H {
     fn fluid_amount(&mut self, _: ObjectRef, _: &IsoObject) -> f32 {
         5.0
     }
-    fn ambient_walls_square_changed(&mut self, _: &IsoGridSquare) {
+    fn ambient_walls_square_changed(&mut self, _: crate::SquareRef) {
         self.push("ambientWalls".into());
     }
     fn designation_zone_add_new_roof(&mut self, x: i32, y: i32, z: i32) {
@@ -196,7 +198,7 @@ impl World {
                     (IsoObject::new(id, ObjectKind::Object, Some(m.named_map["floor"]))).into(),
                 );
                 sq.recalc_properties(&m);
-                ch.set_square(i % 8, i / 8, 0, Some(sq));
+                ch.set_square(i % 8, i / 8, 0, Some((sq).into()));
             }
             cell.chunks.insert((wx, 0), ch);
         }
@@ -240,12 +242,13 @@ impl World {
         IsoObject::new(0, ObjectKind::Object, Some(self.m.named_map[name]))
     }
 
-    fn sq(&self, p: SquarePos) -> &IsoGridSquare {
+    fn sq(&self, p: SquarePos) -> crate::SquareRef {
         self.cell.get_grid_square(p.0, p.1, p.2).unwrap()
     }
 
     fn names(&self, p: SquarePos) -> Vec<&str> {
         self.sq(p)
+            .borrow()
             .objects
             .iter()
             .map(ObjectSlot::borrow)
@@ -268,9 +271,9 @@ fn add_tile_object_order_and_hooks() {
     let p = (3, 3, 0);
     let wall = w.obj("wall_n");
     let id = w.env().add_tile_object(p, (wall).into(), -1).unwrap();
-    assert!(w.sq(p).has(w.m.tables.flag.collideN));
-    assert!(blocked(w.sq(p).collide_matrix, 0, -1, 0));
-    assert!(blocked(w.sq((3, 2, 0)).collide_matrix, 0, 1, 0));
+    assert!(w.sq(p).borrow().has(w.m.tables.flag.collideN));
+    assert!(blocked(w.sq(p).borrow().collide_matrix, 0, -1, 0));
+    assert!(blocked(w.sq((3, 2, 0)).borrow().collide_matrix, 0, 1, 0));
     let log = w.take_log();
     let expected = [
         format!("world {id} RegisterEntity"),
@@ -334,13 +337,15 @@ fn remove_tile_object_events_and_table_tops() {
     let (index, removed) = w.env().remove_tile_object(p, t);
     assert_eq!(index, 1);
     assert_eq!(removed.unwrap().borrow().id, t);
-    let cup = w
+    let cup_owner = w
         .sq(p)
+        .borrow()
         .objects
         .iter()
-        .map(ObjectSlot::borrow)
-        .find(|o| o.id == c)
-        .unwrap();
+        .find(|o| o.borrow().id == c)
+        .unwrap()
+        .ref_handle();
+    let cup = cup_owner.borrow();
     assert_eq!(cup.render_y_offset, 6.0);
     drop(cup);
     let log = w.take_log();
@@ -382,8 +387,8 @@ fn add_floor_replaces_floors_keeps_rugs_and_builds_below() {
     w.env().add_floor((5, 5, 2), "floor");
     assert!(w.cell.get_grid_square(4, 4, 2).is_some());
     assert!(w.cell.get_grid_square(6, 6, 1).is_some());
-    assert!(!w.sq((5, 5, 1)).have_roof);
-    assert!(w.sq((5, 5, 0)).have_roof);
+    assert!(!w.sq((5, 5, 1)).borrow().have_roof);
+    assert!(w.sq((5, 5, 0)).borrow().have_roof);
     let log = w.take_log();
     assert!(log.contains(&"newRoof 5,5,2".to_string()));
     assert!(log.contains(&"occlusion".to_string()));
@@ -401,10 +406,10 @@ fn check_have_roof_follows_rain_blocking_squares() {
         .add_tile_object((1, 1, 3), (floor).into(), -1)
         .unwrap();
     w.env().check_have_roof(1, 1);
-    assert!(w.sq((1, 1, 0)).have_roof);
-    assert!(!w.sq((1, 1, 3)).have_roof);
+    assert!(w.sq((1, 1, 0)).borrow().have_roof);
+    assert!(!w.sq((1, 1, 3)).borrow().have_roof);
     w.env().remove_tile_object((1, 1, 3), id);
-    assert!(!w.sq((1, 1, 0)).have_roof);
+    assert!(!w.sq((1, 1, 0)).borrow().have_roof);
 }
 
 #[test]
@@ -417,10 +422,10 @@ fn special_objects_and_sheet_ropes() {
     let c = w.env().add_special_object(p, (crate_).into(), -1).unwrap();
     // The sheet rope moves back on top.
     assert_eq!(w.names(p), ["floor", "crate", "rope"]);
-    assert_eq!(w.sq(p).special_objects, [r, c]);
+    assert_eq!(w.sq(p).borrow().special_objects, [r, c]);
     let (i, _) = w.env().remove_tile_object(p, c);
     assert_eq!(i, 1);
-    assert_eq!(w.sq(p).special_objects, [r]);
+    assert_eq!(w.sq(p).borrow().special_objects, [r]);
 }
 
 #[test]
@@ -429,13 +434,13 @@ fn erosion_removal_only_recalculates_properties() {
     let p = (7, 1, 0);
     let wall = w.obj("wall_n");
     let id = w.env().add_tile_object(p, (wall).into(), -1).unwrap();
-    let before = w.sq(p).collide_matrix;
+    let before = w.sq(p).borrow().collide_matrix;
     w.take_log();
     let (i, removed) = w.env().remove_tile_object_erosion_no_recalc(p, id);
     assert_eq!((i, removed.is_some()), (1, true));
-    assert!(!w.sq(p).has(w.m.tables.flag.collideN));
+    assert!(!w.sq(p).borrow().has(w.m.tables.flag.collideN));
     // The matrices are left as they were.
-    assert_eq!(w.sq(p).collide_matrix, before);
+    assert_eq!(w.sq(p).borrow().collide_matrix, before);
     let log = w.take_log();
     assert!(log.iter().all(|l| l.starts_with("world")), "{log:?}");
 }
@@ -498,10 +503,10 @@ fn regions_hear_about_wall_changes() {
     assert!(w.regions.queued_jobs().count() > 0);
     w.regions.worker_tick();
     assert!(w.regions.get_data_chunk(0, 0).is_some());
-    let flags = crate::isoregion::calculate_square_flags(Some(w.sq((2, 2, 0))), &w.m);
+    let flags = crate::isoregion::calculate_square_flags(Some(&(w.sq((2, 2, 0))).borrow()), &w.m);
     assert_eq!(w.regions.get_square_flags(2, 2, 0), flags);
     // A later change of a known chunk is a square update.
-    let id = w.sq((2, 2, 0)).objects[1].borrow().id;
+    let id = w.sq((2, 2, 0)).borrow().objects[1].borrow().id;
     w.env().remove_tile_object((2, 2, 0), id);
     assert!(w.regions.queued_jobs().any(|j| matches!(
         j,
@@ -554,13 +559,14 @@ fn corpses() {
     let p = (1, 2, 0);
     let burnt = w.m.tables.flag.burntOut;
     {
-        let sq = w.cell.get_grid_square_mut(1, 2, 0).unwrap();
+        let sq_owner = w.cell.get_grid_square_mut(1, 2, 0).unwrap();
+        let mut sq = sq_owner.borrow_mut();
         sq.burnt_out = true;
         sq.properties.set_flag(burnt);
     }
     w.env().add_corpse(p, body());
-    assert!(!w.sq(p).burnt_out && !w.sq(p).has(burnt));
-    assert_eq!(w.sq(p).static_moving.len(), 1);
+    assert!(!w.sq(p).borrow().burnt_out && !w.sq(p).borrow().has(burnt));
+    assert_eq!(w.sq(p).borrow().static_moving.len(), 1);
     w.take_log();
     assert!(w.env().remove_corpse(p, 0).is_some());
     assert_eq!(w.take_log(), ["render 0,0,0 130", "OnContainerUpdate"]);
@@ -625,7 +631,7 @@ fn world_item_joins_the_square() {
             type_id: pz_entity::ComponentType::FluidContainer.id(),
             data: vec![1, 2],
         });
-    let before = w.sq(p).objects.len();
+    let before = w.sq(p).borrow().objects.len();
     let placed = w
         .env()
         .add_world_inventory_item(p, &item, 0.0, 0.5, 0.25, 123.5);
@@ -635,9 +641,10 @@ fn world_item_joins_the_square() {
     // z rotation, then the x offset (y is not 0).
     assert_eq!(w.rand.0, [360, 1000]);
     let sq = w.sq(p);
-    assert_eq!(sq.objects.len(), before + 1);
-    assert_eq!(sq.world_objects, [r.id]);
-    let o = sq.objects.last().unwrap().borrow();
+    assert_eq!(sq.borrow().objects.len(), before + 1);
+    assert_eq!(sq.borrow().world_objects, [r.id]);
+    let o_owner = sq.borrow().objects.last().unwrap().ref_handle();
+    let o = o_owner.borrow();
     assert_eq!(o.id, r.id);
     assert_eq!(o.name, Some(ObjectName::Str("Hammer name".into())));
     assert_eq!(o.key_id, 77);
@@ -675,27 +682,31 @@ fn world_item_joins_the_square() {
     w.env()
         .add_world_inventory_item(p, &item2, 0.3, 0.4, 0.0, 1.0);
     assert!(w.rand.0.is_empty());
-    assert_eq!(w.sq(p).world_objects.len(), 2);
+    assert_eq!(w.sq(p).borrow().world_objects.len(), 2);
     let total = w
         .sq(p)
+        .borrow()
         .get_total_weight_of_items_on_floor(|_, i| i.template.actual_weight);
     assert_eq!(total, 40.0);
     item.borrow_mut().actual_weight = 3.0;
     item2.borrow_mut().actual_weight = 7.0;
     assert_eq!(
         w.sq(p)
+            .borrow()
             .get_total_weight_of_items_on_floor(|_, i| i.actual_weight),
         10.0
     );
     // Cloning a square for an archive/pure hook keeps value-copy semantics;
     // the lifecycle hook snapshots did not replace the canonical item.
-    let snapshot = w.sq(p).clone();
+    let snapshot = w.sq(p).borrow().clone();
     let ObjectKind::WorldInventory(copied) = &snapshot.objects.last().unwrap().borrow().kind else {
         panic!()
     };
     let copied = copied.borrow();
     assert!(!Rc::ptr_eq(&copied.item.item_ref().unwrap(), &item2));
-    let ObjectKind::WorldInventory(live) = &w.sq(p).objects.last().unwrap().borrow().kind else {
+    let live_object = w.sq(p).borrow().objects.last().unwrap().ref_handle();
+    let live_body = live_object.borrow();
+    let ObjectKind::WorldInventory(live) = &live_body.kind else {
         panic!()
     };
     let live = live.borrow();
@@ -738,7 +749,7 @@ fn corpses_generators_and_animals_go_to_hooks() {
             .add_world_inventory_item(p, &animal, 0.5, 0.5, 0.0, 0.0),
         WorldItemPlaced::Animal
     );
-    assert!(w.sq(p).world_objects.is_empty());
+    assert!(w.sq(p).borrow().world_objects.is_empty());
 }
 
 #[test]
@@ -753,14 +764,19 @@ fn solid_floor_and_apparent_z() {
     let o = w.obj("stairs_tn");
     w.env().add_tile_object(p, (o).into(), -1);
     let sq = w.sq(p);
-    assert!(sq.has_type(w.m.tables.ty.stairsTN));
+    assert!(sq.borrow().has_type(w.m.tables.ty.stairsTN));
     let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
     assert_eq!(
-        sq.get_apparent_z(0.5, 0.25, &w.m, true),
+        sq.borrow().get_apparent_z(0.5, 0.25, &w.m, true),
         lerp(0.7666, 1.0, 0.75)
     );
-    assert_eq!(sq.get_apparent_z(0.5, 2.0, &w.m, false), 0.6666);
-    assert_eq!(w.sq((6, 6, 0)).get_apparent_z(0.5, 0.5, &w.m, true), 0.0);
+    assert_eq!(sq.borrow().get_apparent_z(0.5, 2.0, &w.m, false), 0.6666);
+    assert_eq!(
+        w.sq((6, 6, 0))
+            .borrow()
+            .get_apparent_z(0.5, 0.5, &w.m, true),
+        0.0
+    );
 }
 
 /// A player holding `items` on (3, 3, 1) with a 50 capacity.
@@ -824,7 +840,9 @@ fn too_heavy_worn_item_drops_to_the_floor_below() {
     assert!(matches!(placed[..], [WorldItemPlaced::Object(r)] if r.pos == (3, 3, 0)));
     assert_eq!(chr.inv.borrow().items.len(), 2);
     let sq = w.sq((3, 3, 0));
-    let ObjectKind::WorldInventory(wi) = &sq.objects.last().unwrap().borrow().kind else {
+    let wi_object = sq.borrow().objects.last().unwrap().ref_handle();
+    let wi_body = wi_object.borrow();
+    let ObjectKind::WorldInventory(wi) = &wi_body.kind else {
         panic!()
     };
     let wi = wi.borrow();
@@ -841,7 +859,8 @@ fn removal_callback_pins_actual_receiver_recomputes_index_and_rejects_equal_repl
         calls: usize,
     }
     impl SquareMutationHooks for Callback {
-        fn lua_event(&mut self, square: &mut IsoGridSquare, event: LuaEvent) {
+        fn lua_event(&mut self, square: crate::SquareRef, event: LuaEvent) {
+            let mut square = square.borrow_mut();
             if let LuaEvent::ObjectAboutToBeRemoved { index, ref object } = event {
                 assert!(Rc::ptr_eq(&object, &self.target));
                 assert!(square.objects[index].ptr_eq_ref(&object));
@@ -894,7 +913,7 @@ fn removal_callback_pins_actual_receiver_recomputes_index_and_rejects_equal_repl
         if replacement {
             assert!(result.is_err());
             assert_eq!(callback.calls, 0);
-            assert!(!w.sq(p).objects[1].ptr_eq_ref(&actual));
+            assert!(!w.sq(p).borrow().objects[1].ptr_eq_ref(&actual));
             assert_eq!(actual.borrow().key_id, 771);
         } else {
             let (index, removed) = result.unwrap();
@@ -902,7 +921,7 @@ fn removal_callback_pins_actual_receiver_recomputes_index_and_rejects_equal_repl
             assert!(removed.unwrap().ptr_eq_ref(&actual));
             assert!(callback.calls > 0);
             assert_eq!(actual.borrow().key_id, 772);
-            assert!(w.sq(p).objects.is_empty());
+            assert!(w.sq(p).borrow().objects.is_empty());
         }
     }
 }
@@ -933,7 +952,7 @@ fn detached_remove_from_world_mutates_actual_receiver_without_reinsertion() {
     let id = w.env().add_tile_object(p, slot, -1).unwrap();
     let removed = w.env().delete_tile_object(p, id).unwrap();
     assert!(removed.ptr_eq_ref(&actual));
-    let count = w.sq(p).objects.len();
+    let count = w.sq(p).borrow().objects.len();
     let mut calls = Calls {
         actual: actual.clone(),
         count: 0,
@@ -945,8 +964,8 @@ fn detached_remove_from_world_mutates_actual_receiver_without_reinsertion() {
     }
     assert!(calls.count > 0);
     assert_eq!(actual.borrow().key_id, calls.count as i32 - 1); // initial keyId is -1
-    assert_eq!(w.sq(p).objects.len(), count);
-    assert!(w.sq(p).object_index(id).is_none());
+    assert_eq!(w.sq(p).borrow().objects.len(), count);
+    assert!(w.sq(p).borrow().object_index(id).is_none());
 }
 
 #[test]
@@ -956,7 +975,7 @@ fn detached_receiver_removal_event_keeps_original_argument_and_same_id_replaceme
         seen: bool,
     }
     impl SquareMutationHooks for Event {
-        fn lua_event(&mut self, _: &mut IsoGridSquare, event: LuaEvent) {
+        fn lua_event(&mut self, _: crate::SquareRef, event: LuaEvent) {
             match event {
                 LuaEvent::ObjectAboutToBeRemoved { .. } => panic!("detached receiver is absent"),
                 LuaEvent::TileRemoved {
@@ -983,6 +1002,7 @@ fn detached_receiver_removal_event_keeps_original_argument_and_same_id_replaceme
     w.cell
         .get_grid_square_mut(p.0, p.1, p.2)
         .unwrap()
+        .borrow_mut()
         .objects
         .push(replacement);
     let mut event = Event {
@@ -1001,6 +1021,7 @@ fn detached_receiver_removal_event_keeps_original_argument_and_same_id_replaceme
     assert_eq!(replacement_handle.borrow().key_id, 555);
     assert!(w
         .sq(p)
+        .borrow()
         .objects
         .last()
         .unwrap()

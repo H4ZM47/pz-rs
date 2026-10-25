@@ -265,14 +265,16 @@ fn garage_door_index(m: &IsoSpriteManager, o: &IsoObject) -> JavaResult<i32> {
 /// `CellLoader.AddObject`: entity hook, then insert at the
 /// `placeWallAndDoorCheck` index. Returns the object's position.
 fn add_object(
-    sq: &mut IsoGridSquare,
+    sq: &crate::SquareRef,
     env: &mut ObjectEnv<'_>,
     obj: IsoObject,
     special: bool,
 ) -> usize {
     let obj = ObjectSlot::new(obj);
-    sq.retire_object(ObjectSlot::retain(&obj.ref_handle()));
+    sq.borrow_mut()
+        .retire_object(ObjectSlot::retain(&obj.ref_handle()));
     create_iso_entity_from_cell_loading(env, &obj.ref_handle());
+    let mut sq = sq.borrow_mut();
     let size = sq.objects.len() as i32;
     let index = sq.place_wall_and_door_check(env.sprites, &obj.borrow(), size);
     if index != size && index >= 0 && index <= size {
@@ -341,7 +343,7 @@ fn container_is(m: &IsoSpriteManager, s: SpriteIdx, value: &str) -> JavaResult<b
 pub fn do_tile_object_creation(
     env: &mut ObjectEnv<'_>,
     meta: &IsoMetaGrid,
-    sq: &mut IsoGridSquare,
+    sq: &crate::SquareRef,
     spr: SpriteIdx,
     ty: IsoObjectType,
     name: &str,
@@ -367,19 +369,21 @@ pub fn do_tile_object_creation(
         let sp = &m.sprites[spr];
         let props = &sp.properties;
         if sp.solidfloor && props.has(f.diamondFloor) && !props.has(f.transparentFloor) {
-            if let Some(fi) = sq.floor_index(m) {
-                let floor = sq.objects[fi].borrow();
+            let floor_index = sq.borrow().floor_index(m);
+            if let Some(fi) = floor_index {
+                let floor_owner = sq.borrow().objects[fi].ref_handle();
+                let floor = floor_owner.borrow();
                 if IsoGridSquare::spr(m, &floor).is_some_and(|s| s.properties.has(f.diamondFloor)) {
                     if floor.has_components {
                         // Its components are removed and the floor leaves
                         // the square (`removeFromSquare`).
                         let id = floor.id;
                         drop(floor);
-                        sq.remove_object_slot(fi);
-                        sq.special_objects.retain(|&x| x != id);
+                        sq.borrow_mut().remove_object_slot(fi);
+                        sq.borrow_mut().special_objects.retain(|&x| x != id);
                     } else {
                         drop(floor);
-                        let mut floor = sq.objects[fi].borrow_mut();
+                        let mut floor = floor_owner.borrow_mut();
                         if let Some(a) = &mut floor.attached_anim_sprite {
                             a.clear();
                         }
@@ -395,7 +399,7 @@ pub fn do_tile_object_creation(
     let is_stove = ["stove", "toaster", "coffeemaker"]
         .iter()
         .any(|v| props.property_equals(&m.alias, "container", v));
-    let id = sq.new_object_id();
+    let id = sq.borrow_mut().new_object_id();
 
     // The object to finish (`obj != null` after the class switch).
     let obj_index: Option<usize>;
@@ -408,7 +412,7 @@ pub fn do_tile_object_creation(
         let mut obj = IsoObject::new(id, ObjectKind::Door(door), Some(spr));
         obj.outline_on_mouseover = true;
         let i = add_object(sq, env, obj, true);
-        if let ObjectKind::Door(d) = &mut sq.objects[i].borrow_mut().kind {
+        if let ObjectKind::Door(d) = &mut sq.borrow().objects[i].borrow_mut().kind {
             if has_double {
                 d.locked = false;
                 d.locked_by_key = false;
@@ -420,7 +424,7 @@ pub fn do_tile_object_creation(
         }
         obj_index = Some(i);
     } else if ty == t.lightswitch {
-        let room_id = sq.room_id;
+        let room_id = sq.borrow().room_id;
         let sw = new_light_switch(env, meta, sq, spr, room_id)?;
         let obj = IsoObject::new(id, ObjectKind::LightSwitch(sw), Some(spr));
         let i = add_object(sq, env, obj, false);
@@ -435,9 +439,9 @@ pub fn do_tile_object_creation(
                 radius = int(m.prop(sp, "LightRadius"))?;
             }
             let light = IsoLightSource {
-                x: sq.x,
-                y: sq.y,
-                z: sq.z,
+                x: sq.borrow().x,
+                y: sq.borrow().y,
+                z: sq.borrow().z,
                 r,
                 g,
                 b,
@@ -445,10 +449,10 @@ pub fn do_tile_object_creation(
                 active: true,
                 hydro_powered: true,
             };
-            if let ObjectKind::LightSwitch(sw) = &mut sq.objects[i].borrow_mut().kind {
+            if let ObjectKind::LightSwitch(sw) = &mut sq.borrow().objects[i].borrow_mut().kind {
                 sw.lights.push(light);
             }
-        } else if let ObjectKind::LightSwitch(sw) = &mut sq.objects[i].borrow_mut().kind {
+        } else if let ObjectKind::LightSwitch(sw) = &mut sq.borrow().objects[i].borrow_mut().kind {
             sw.light_room = true;
         }
         obj_index = Some(i);
@@ -492,20 +496,25 @@ pub fn do_tile_object_creation(
         // `gridSquare.getWall(north).rerouteCollide = this`.
         let m = &*env.sprites;
         let wall_se = m.tables.flag.WallSE;
-        let wall = sq.objects.iter().map(ObjectSlot::borrow).position(|o| {
-            o.sprite.is_some_and(|s| {
-                let sp = &m.sprites[s];
-                !sp.properties.has(wall_se) && (sp.cut_n && north || sp.cut_w && !north)
-            })
-        });
+        let wall = sq
+            .borrow()
+            .objects
+            .iter()
+            .map(ObjectSlot::borrow)
+            .position(|o| {
+                o.sprite.is_some_and(|s| {
+                    let sp = &m.sprites[s];
+                    !sp.properties.has(wall_se) && (sp.cut_n && north || sp.cut_w && !north)
+                })
+            });
         if let Some(i) = wall {
-            sq.objects[i].borrow_mut().reroute_collide = Some(id);
+            sq.borrow().objects[i].borrow_mut().reroute_collide = Some(id);
         }
         let obj = IsoObject::new(id, ObjectKind::Window(w), sprite);
         obj_index = Some(add_object(sq, env, obj, true));
     } else if props.has(f.WindowW) || props.has(f.WindowN) {
         let north = props.has(f.WindowN);
-        if !treat_window_frame_as_overlay(m, spr, sq) {
+        if !treat_window_frame_as_overlay(m, spr, &mut sq.borrow_mut()) {
             let obj = IsoObject::new(id, ObjectKind::WindowFrame { north }, Some(spr));
             obj_index = Some(add_object(sq, env, obj, false));
         } else {
@@ -572,8 +581,9 @@ pub fn do_tile_object_creation(
         let obj = IsoObject::new(id, kind, Some(spr));
         obj_index = Some(add_object(sq, env, obj, false));
     } else if props.has_name(&m.alias, "Countertop") {
-        if let Some(ci) = sq.countertop_attach_index(m) {
-            sq.objects[ci].borrow_mut().attach_anim_sprite(spr);
+        let countertop = sq.borrow().countertop_attach_index(m);
+        if let Some(ci) = countertop {
+            sq.borrow().objects[ci].borrow_mut().attach_anim_sprite(spr);
             obj_index = None;
         } else {
             let obj = IsoObject::new(id, ObjectKind::Object, Some(spr));
@@ -581,30 +591,30 @@ pub fn do_tile_object_creation(
         }
     } else if props.has(f.WallOverlay) {
         let target = if props.has(f.attachedSE) {
-            sq.wall_se_index(m)
+            sq.borrow().wall_se_index(m)
         } else if props.has(f.attachedW) || props.has(f.attachedN) {
             let north = !props.has(f.attachedW);
             let (window_flag, mut found) = if north {
-                (f.WindowN, sq.wall_index(m, true))
+                (f.WindowN, sq.borrow().wall_index(m, true))
             } else {
-                (f.WindowW, sq.wall_index(m, false))
+                (f.WindowW, sq.borrow().wall_index(m, false))
             };
             if found.is_none() {
                 // A window only counts when its sprite has the window
                 // frame flag.
-                found = sq.window_index(north).filter(|&w| {
-                    IsoGridSquare::spr(m, &sq.objects[w].borrow())
+                found = sq.borrow().window_index(north).filter(|&w| {
+                    IsoGridSquare::spr(m, &sq.borrow().objects[w].borrow())
                         .is_some_and(|s| s.properties.has(window_flag))
                 });
             }
             if found.is_none() {
-                found = sq.garage_door_index(m, north)?;
+                found = sq.borrow().garage_door_index(m, north)?;
             }
             found
         } else {
             let mut found = None;
-            for n in (0..sq.objects.len()).rev() {
-                let s = IsoGridSquare::spr(m, &sq.objects[n].borrow()).ok_or_else(npe)?;
+            for n in (0..sq.borrow().objects.len()).rev() {
+                let s = IsoGridSquare::spr(m, &sq.borrow().objects[n].borrow()).ok_or_else(npe)?;
                 if s.properties.has(f.cutW) || s.properties.has(f.cutN) {
                     found = Some(n);
                     break;
@@ -613,7 +623,7 @@ pub fn do_tile_object_creation(
             found
         };
         match target {
-            Some(i) => sq.objects[i].borrow_mut().attach_anim_sprite(spr),
+            Some(i) => sq.borrow().objects[i].borrow_mut().attach_anim_sprite(spr),
             None => {
                 let obj = IsoObject::new(id, ObjectKind::Object, Some(spr));
                 add_object(sq, env, obj, false);
@@ -621,8 +631,8 @@ pub fn do_tile_object_creation(
         }
         return Ok(());
     } else if props.has(f.FloorOverlay) {
-        if let Some(fi) = sq.floor_index(m) {
-            sq.objects[fi].borrow_mut().attach_anim_sprite(spr);
+        if let Some(fi) = sq.borrow().floor_index(m) {
+            sq.borrow().objects[fi].borrow_mut().attach_anim_sprite(spr);
         }
         obj_index = None;
     } else if m.prop(&m.sprites[spr], "CustomName") == Some("Mannequin") {
@@ -631,8 +641,8 @@ pub fn do_tile_object_creation(
     } else if ty == t.tree {
         let sname = m.sprites[spr].name.as_deref();
         if sname.is_some_and(|n| n.starts_with("vegetation_trees")) {
-            let natural = sq.floor_index(m).is_some_and(|fi| {
-                IsoGridSquare::spr(m, &sq.objects[fi].borrow())
+            let natural = sq.borrow().floor_index(m).is_some_and(|fi| {
+                IsoGridSquare::spr(m, &sq.borrow().objects[fi].borrow())
                     .and_then(|s| s.name.as_deref())
                     .is_some_and(|n| n.starts_with("blends_natural"))
             });
@@ -642,13 +652,14 @@ pub fn do_tile_object_creation(
         }
         let tree = init_tree(env, spr)?;
         let obj = IsoObject::new(id, ObjectKind::Tree(tree), Some(spr));
-        if let Some(i) = sq
+        let old_tree = sq
+            .borrow()
             .objects
             .iter()
             .map(ObjectSlot::borrow)
-            .position(|o| matches!(o.kind, ObjectKind::Tree(_)))
-        {
-            sq.remove_object_slot(i);
+            .position(|o| matches!(o.kind, ObjectKind::Tree(_)));
+        if let Some(i) = old_tree {
+            sq.borrow_mut().remove_object_slot(i);
         }
         obj_index = Some(add_object(sq, env, obj, false));
     } else {
@@ -661,18 +672,22 @@ pub fn do_tile_object_creation(
     let Some(i) = obj_index else {
         return Ok(());
     };
-    sq.objects[i].borrow_mut().tile = Some(name.to_string());
-    create_containers_from_sprite_properties(env.sprites, &mut sq.objects[i].borrow_mut())?;
-    let s = sq.objects[i].borrow().sprite.ok_or_else(npe)?;
+    sq.borrow().objects[i].borrow_mut().tile = Some(name.to_string());
+    create_containers_from_sprite_properties(
+        env.sprites,
+        &mut sq.borrow().objects[i].borrow_mut(),
+    )?;
+    let s = sq.borrow().objects[i].borrow().sprite.ok_or_else(npe)?;
     if env.sprites.sprites[s].properties.has(f.vegitation) {
-        let mut o = sq.objects[i].borrow_mut();
+        let object = sq.borrow().objects[i].ref_handle();
+        let mut o = object.borrow_mut();
         o.tint_r = 0.7 + env.rand.next(30) as f32 / 100.0;
         o.tint_g = 0.7 + env.rand.next(30) as f32 / 100.0;
         o.tint_b = 0.7 + env.rand.next(30) as f32 / 100.0;
     }
-    if should_not_spawn_activated_radios_or_tvs(meta, sq) {
+    if should_not_spawn_activated_radios_or_tvs(meta, &sq.borrow()) {
         if let ObjectKind::Radio(d) | ObjectKind::Television(d) =
-            &mut sq.objects[i].borrow_mut().kind
+            &mut sq.borrow().objects[i].borrow_mut().kind
         {
             if d.is_turned_on {
                 d.set_turned_on_raw(false);
@@ -690,7 +705,7 @@ fn should_not_spawn_activated_radios_or_tvs(meta: &IsoMetaGrid, sq: &IsoGridSqua
 
 /// `new IsoFireplace(cell, sq, spr)` added with `AddObject`.
 fn add_fireplace(
-    sq: &mut IsoGridSquare,
+    sq: &crate::SquareRef,
     env: &mut ObjectEnv<'_>,
     id: ObjectId,
     spr: SpriteIdx,
@@ -887,7 +902,7 @@ fn new_window(env: &mut ObjectEnv<'_>, spr: SpriteIdx, north: bool) -> JavaResul
 fn new_light_switch(
     env: &mut ObjectEnv<'_>,
     meta: &IsoMetaGrid,
-    sq: &IsoGridSquare,
+    sq: &crate::SquareRef,
     spr: SpriteIdx,
     room_id: i64,
 ) -> JavaResult<IsoLightSwitch> {
@@ -916,9 +931,10 @@ fn new_light_switch(
         sw.light_room = true;
     }
     sw.street_light = m.has_prop(sp, "streetlight");
-    match sq.room_def(meta) {
+    let room = sq.borrow().room_def(meta);
+    match room {
         Some(room) if sw.light_room => {
-            if !env.hooks.square_powered(sq, room) {
+            if !env.hooks.square_powered(sq.clone(), room) {
                 room.lights_active.set(false);
             }
             sw.activated = room.lights_active.get();

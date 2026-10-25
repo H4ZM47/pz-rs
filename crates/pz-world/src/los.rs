@@ -2,7 +2,6 @@
 //! between two squares, stepping square by square with
 //! [`IsoGridSquare::test_vision_adjacent`].
 
-use crate::chunk::IsoGridSquare;
 use crate::java::fastfloor;
 use crate::square::{GetSquare, VisionEnv};
 
@@ -48,7 +47,8 @@ pub fn line_clear_range<G: GetSquare>(
 ) -> TestResults {
     let g = env.squares;
     if z1 == z0 - 1 {
-        if let Some(sq) = g.get_grid_square(x1, y1, z1) {
+        if let Some(sq_owner) = g.get_grid_square(x1, y1, z1) {
+            let sq = sq_owner.borrow();
             if sq.has_elevated_floor(env.sprites) {
                 z1 = z0;
             }
@@ -121,22 +121,23 @@ pub fn line_clear_range<G: GetSquare>(
 
 /// The walk state of `lineClear`: the result so far, the previous square
 /// and the distance since the last window.
-struct Walk<'s> {
+struct Walk {
     test: TestResults,
-    b: Option<&'s IsoGridSquare>,
+    b: Option<crate::SquareRef>,
     dist: i32,
 }
 
-impl<'s> Walk<'s> {
+impl Walk {
     /// One step onto square `a`; `Some` ends the walk with that result.
     fn step<G: GetSquare>(
         &mut self,
         env: &VisionEnv<'_, G>,
-        a: Option<&'s IsoGridSquare>,
+        a: Option<crate::SquareRef>,
         ignore_doors: bool,
         range_till_windows: i32,
     ) -> Option<TestResults> {
-        if let (Some(a), Some(b)) = (a, self.b) {
+        if let (Some(a), Some(b)) = (&a, &self.b) {
+            let (a, b) = (a.borrow(), b.borrow());
             let new_test =
                 a.test_vision_adjacent(b.x - a.x, b.y - a.y, b.z - a.z, true, ignore_doors, env);
             let window_change = new_test == TestResults::ClearThroughWindow;

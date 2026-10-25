@@ -41,7 +41,10 @@ trace-only descriptor can register the actual typed userdata allocation before
 type erasure. Object recognition reads only its pointer; it never invokes
 userdata methods during collection. Incomplete registration stays conservative,
 and an unavailable interior borrow defers the whole pass. VM allocation shapes
-are reserved, and one allocation cannot also register as a host owner. Production
+are reserved, and one allocation cannot also register as a host owner. A checked
+visitor can trace a physical `Rc<dyn Any>` slot that directly owns a registered
+`RefCell<T>`, preserving that allocation through a crate boundary without cloning
+or borrowing its contents. Wrong types and node kinds stay conservative. Production
 engine userdata and floor-item backlinks are not connected to this protocol yet.
 Other native captures, coroutines, prototypes and engine-owned references
 remain opaque roots; character/action cycles and some old LuaManager
@@ -116,13 +119,19 @@ independent. Lifecycle and removal hooks receive the actual object between
 released object borrows. Membership checks after callbacks use pointer identity,
 so a replacement with the same numeric ID cannot take over the original receiver.
 Raw undecodable records keep their bytes.
+Chunks also store each entire square in a canonical allocation. World getters,
+paired edge queries and mutation/render hooks retain that allocation; archive
+copies make independent square and object allocations. Replacing a coordinate
+does not retarget a retained receiver. Detached squares keep their contents
+until the native clear/reuse lifecycle is implemented. Borrowed retirement
+owners wait for a later safe drain instead of losing their pending cleanup.
 The streamer retains removed chunk payloads until both world and sprite-manager
 borrows have ended, including queued-save errors and shutdown. Failed unload
 callbacks retain the removed payload without publishing a partial pending save.
 Direct object removals and replaced squares also retain their discarded owners
 until the outer frame or streaming boundary releases world and sprite borrows.
 This is host cleanup bookkeeping and does not implement the original square
-reset/reuse lifecycle. Lua world-object lists, stable square/body handles,
+reset/reuse lifecycle. Lua world-object lists, stable Lua square/body handles,
 reciprocal world-item links and non-floor containers still need their runtime
 owner bridge. Getter-time copies
 or empty arrays would not implement the original inventory behavior.
@@ -132,6 +141,12 @@ migration and callback timing comparison.
 `isOutside` reads the same stored exterior property as existing square logic,
 without recalculating it from room or roof state. Existing coordinate-based
 square handles still lack the original retained-square lifetime across reload.
+Square-owner callback arguments release their local square/object borrows;
+the surrounding world and sprite guards still need a separate callback yield
+and resume path before arbitrary Lua reentry is safe.
+Sheet-rope exit eligibility retains the found window across its toggle callback,
+so a replacement with the same coordinates and ID cannot change that check's
+receiver. Character state targets still use locator data beyond that phase.
 
 Puddles now have a shared live singleton and indexed float controls. A real
 cell-owned WeatherFX object initializes at world init; the climate updates

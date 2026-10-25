@@ -453,7 +453,8 @@ fn main() -> Result<(), String> {
             }
         };
         let mut items: Vec<InventoryItem> = Vec::new();
-        for sq in ch.squares() {
+        for sq_owner in ch.squares() {
+            let sq = sq_owner.borrow();
             for o in &sq.objects {
                 let o = o.borrow();
                 match &o.kind {

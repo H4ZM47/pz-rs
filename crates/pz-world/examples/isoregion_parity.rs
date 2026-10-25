@@ -109,7 +109,7 @@ fn main() {
             for y in 0..8 {
                 for x in 0..8 {
                     if let Some(sq) = ch.get_grid_square_mut(x, y, z) {
-                        sq.recalc_properties(&sprites);
+                        sq.borrow_mut().recalc_properties(&sprites);
                     }
                 }
             }
@@ -119,7 +119,7 @@ fn main() {
     if let Ok(q) = std::env::var("SHOW_SQUARE") {
         let v: Vec<i32> = q.split(',').map(|x| x.parse().unwrap()).collect();
         if let Some(sq) = cell.get_grid_square(v[0], v[1], v[2]) {
-            for o in sq.objects.iter().map(ObjectSlot::borrow) {
+            for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                 let sp = o.sprite.map(|s| &sprites.sprites[s]);
                 let f = &sprites.tables.flag;
                 eprintln!(
@@ -134,9 +134,9 @@ fn main() {
             }
             eprintln!(
                 "sq cutW={} WindowW={} flags={}",
-                sq.has(sprites.tables.flag.cutW),
-                sq.has(sprites.tables.flag.WindowW),
-                pz_world::isoregion::calculate_square_flags(Some(sq), &sprites)
+                sq.borrow().has(sprites.tables.flag.cutW),
+                sq.borrow().has(sprites.tables.flag.WindowW),
+                pz_world::isoregion::calculate_square_flags(Some(&sq.borrow()), &sprites)
             );
         }
         return;

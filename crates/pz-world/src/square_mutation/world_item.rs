@@ -120,7 +120,7 @@ impl IsoCell {
         while z >= 0 {
             if self
                 .get_grid_square(x, y, z)
-                .is_some_and(|sq| sq.treat_as_solid_floor(m))
+                .is_some_and(|sq| sq.borrow().treat_as_solid_floor(m))
             {
                 return Some((x, y, z));
             }
@@ -196,7 +196,9 @@ impl MutationEnv<'_> {
             body.base.z = self.apparent_z(pos, x, y);
             self.add_corpse(pos, body);
             self.world.process_items_remove(&item.borrow());
-            let index = self.sq(pos).map_or(0, |sq| sq.static_moving.len() - 1);
+            let index = self
+                .sq(pos)
+                .map_or(0, |sq| sq.borrow().static_moving.len() - 1);
             return WorldItemPlaced::Corpse { pos, index };
         }
         self.invalidate_render(pos, WORLD_ITEM_ADDED);
@@ -282,17 +284,20 @@ impl MutationEnv<'_> {
         obj.components = components;
         obj.name = Some(ObjectName::Str(name));
         obj.key_id = key_id;
-        let sq = self.sq_mut(pos).unwrap();
+        let sq_owner = self.sq_mut(pos).unwrap();
+        let mut sq = sq_owner.borrow_mut();
         obj.id = sq.new_object_id();
         let id = obj.id;
         sq.objects.push((ObjectSlot::new(obj)).into());
         sq.world_objects.push(id);
+        drop(sq);
         let r = ObjectRef { pos, id };
         super::lifecycle::add_to_world(self, r);
         {
             let MutationEnv { cell, world, .. } = self;
             if let Some(o) = cell.get_grid_square(pos.0, pos.1, pos.2).and_then(|sq| {
-                sq.objects
+                sq.borrow()
+                    .objects
                     .iter()
                     .find(|o| o.borrow().id == id)
                     .map(ObjectSlot::ref_handle)
@@ -309,7 +314,7 @@ impl MutationEnv<'_> {
     fn apparent_z(&self, pos: SquarePos, dx: f32, dy: f32) -> f32 {
         let fbo = self.render.fbo_render_chunk();
         self.sq(pos).map_or(pos.2 as f32, |sq| {
-            sq.get_apparent_z(dx, dy, self.sprites, fbo)
+            sq.borrow().get_apparent_z(dx, dy, self.sprites, fbo)
         })
     }
 }

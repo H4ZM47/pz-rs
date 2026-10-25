@@ -137,6 +137,21 @@ impl TraceVisitor {
     pub fn owner<T: 'static>(&mut self, slot: &Rc<RefCell<T>>) {
         self.targets.push(owner_id::<T>(Rc::as_ptr(slot)));
     }
+
+    /// One physical host-owner slot whose actual Rc was erased to `dyn Any`.
+    ///
+    /// The slot must directly own the registered `RefCell<T>` allocation;
+    /// wrappers containing another owner do not match. Inspect the borrowed
+    /// allocation without cloning its Rc, borrowing its contents or invoking
+    /// LuaObject methods. Missing/wrong-type registration stays conservative.
+    /// This emits only a host ID: VM/userdata allocations are never inferred
+    /// from a matching address. Use their explicit visitor methods instead.
+    pub fn owner_erased<T: 'static>(&mut self, slot: &Rc<dyn Any>) {
+        if let Some(backing) = slot.as_ref().downcast_ref::<RefCell<T>>() {
+            self.targets
+                .push(owner_id::<T>(std::ptr::from_ref(backing)));
+        }
+    }
 }
 
 /// Allocate and weakly register one host backing allocation. Clones of the

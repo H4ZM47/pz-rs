@@ -23,8 +23,9 @@ use crate::object_slot::ObjectSlot;
 use crate::objects::{IsoObject, IsoThumpable, ObjectId, ObjectKind};
 use crate::sprite::IsoSpriteManager;
 use crate::world_state::ObjectHooks;
+use crate::{SquareOwnerQueries, SquareRef};
 
-use super::{get_matrix_bit, is, is_valid_chunk, EdgeFacing, GridSquareEdge, IsoDirections};
+use super::{get_matrix_bit, is_valid_chunk, EdgeFacing, GridSquareEdge, IsoDirections};
 
 /// What a mover is (`instanceof` in the original).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -308,7 +309,7 @@ impl<'a> CollideEnv<'a> {
     }
 
     /// `getCell().getGridSquare(x, y, z)`.
-    pub fn sq(&self, x: i32, y: i32, z: i32) -> Option<&'a IsoGridSquare> {
+    pub fn sq(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         self.cell.get_grid_square(x, y, z)
     }
 
@@ -431,24 +432,31 @@ impl<'a> CollideEnv<'a> {
     /// square it is on.
     pub fn test_collide_special_objects(
         &self,
-        this: &'a IsoGridSquare,
-        next: Option<&'a IsoGridSquare>,
-    ) -> Option<(&'a IsoGridSquare, ObjectId)> {
+        this: &SquareRef,
+        next: Option<&SquareRef>,
+    ) -> Option<(SquareRef, ObjectId)> {
         let next = next?;
-        if is(next, this) {
+        if std::rc::Rc::ptr_eq(next, this) {
             return None;
         }
         let ty = &self.sprites.tables.ty;
-        let wall =
-            |s: &'a IsoGridSquare, north: bool| self.get_special_wall(s, north).map(|o| (s, o));
-        let solid = |s: &'a IsoGridSquare| self.get_special_solid(s).map(|o| (s, o));
-        let blocked = |a: &IsoGridSquare, b: &IsoGridSquare| self.is_blocked_to(a, Some(b));
-        let (x, y, z) = (this.x, this.y, this.z);
-        if next.x < x && next.y == y {
-            if next.z == z && this.has_type(ty.stairsTW) {
+        let wall = |s: &SquareRef, north: bool| {
+            self.get_special_wall(&s.borrow(), north)
+                .map(|o| (s.clone(), o))
+        };
+        let solid = |s: &SquareRef| self.get_special_solid(&s.borrow()).map(|o| (s.clone(), o));
+        let blocked =
+            |a: &SquareRef, b: &SquareRef| self.is_blocked_to(&a.borrow(), Some(&b.borrow()));
+        let (x, y, z) = (this.borrow().x, this.borrow().y, this.borrow().z);
+        if next.borrow().x < x && next.borrow().y == y {
+            if next.borrow().z == z && this.borrow().has_type(ty.stairsTW) {
                 return None;
             }
-            if next.z == z && this.has_sloped_surface_to_level_above(IsoDirections::W) {
+            if next.borrow().z == z
+                && this
+                    .borrow()
+                    .has_sloped_surface_to_level_above(IsoDirections::W)
+            {
                 return None;
             }
             if let Some(o) = wall(this, false) {
@@ -459,11 +467,15 @@ impl<'a> CollideEnv<'a> {
             }
             return solid(next);
         }
-        if next.x == x && next.y < y {
-            if next.z == z && this.has_type(ty.stairsTN) {
+        if next.borrow().x == x && next.borrow().y < y {
+            if next.borrow().z == z && this.borrow().has_type(ty.stairsTN) {
                 return None;
             }
-            if next.z == z && this.has_sloped_surface_to_level_above(IsoDirections::N) {
+            if next.borrow().z == z
+                && this
+                    .borrow()
+                    .has_sloped_surface_to_level_above(IsoDirections::N)
+            {
                 return None;
             }
             if let Some(o) = wall(this, true) {
@@ -474,7 +486,7 @@ impl<'a> CollideEnv<'a> {
             }
             return solid(next);
         }
-        if next.x > x && next.y == y {
+        if next.borrow().x > x && next.borrow().y == y {
             if let Some(o) = wall(next, false) {
                 return Some(o);
             }
@@ -483,7 +495,7 @@ impl<'a> CollideEnv<'a> {
             }
             return solid(next);
         }
-        if next.x == x && next.y > y {
+        if next.borrow().x == x && next.borrow().y > y {
             if let Some(o) = wall(next, true) {
                 return Some(o);
             }
@@ -492,23 +504,23 @@ impl<'a> CollideEnv<'a> {
             }
             return solid(next);
         }
-        if next.x < x && next.y < y {
+        if next.borrow().x < x && next.borrow().y < y {
             if let Some(o) = wall(this, true).or_else(|| wall(this, false)) {
                 return Some(o);
             }
             let a = self.sq(x, y - 1, z);
-            if let Some(a) = a.filter(|a| !blocked(this, a)) {
+            if let Some(a) = a.as_ref().filter(|a| !blocked(this, a)) {
                 if let Some(o) = solid(a).or_else(|| wall(a, false)) {
                     return Some(o);
                 }
             }
             let b = self.sq(x - 1, y, z);
-            if let Some(b) = b.filter(|b| !blocked(this, b)) {
+            if let Some(b) = b.as_ref().filter(|b| !blocked(this, b)) {
                 if let Some(o) = solid(b).or_else(|| wall(b, true)) {
                     return Some(o);
                 }
             }
-            let (Some(a), Some(b)) = (a, b) else {
+            let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) else {
                 return None;
             };
             if blocked(this, a) || blocked(this, b) || blocked(a, next) || blocked(b, next) {
@@ -516,18 +528,18 @@ impl<'a> CollideEnv<'a> {
             }
             return solid(next);
         }
-        if next.x > x && next.y < y {
+        if next.borrow().x > x && next.borrow().y < y {
             if let Some(o) = wall(this, true) {
                 return Some(o);
             }
             let a = self.sq(x, y - 1, z);
-            if let Some(a) = a.filter(|a| !blocked(this, a)) {
+            if let Some(a) = a.as_ref().filter(|a| !blocked(this, a)) {
                 if let Some(o) = solid(a) {
                     return Some(o);
                 }
             }
             let b = self.sq(x + 1, y, z);
-            if let Some(b) = b {
+            if let Some(b) = b.as_ref() {
                 if let Some(o) = wall(b, false) {
                     return Some(o);
                 }
@@ -537,7 +549,7 @@ impl<'a> CollideEnv<'a> {
                     }
                 }
             }
-            let (Some(a), Some(b)) = (a, b) else {
+            let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) else {
                 return None;
             };
             if blocked(this, a) || blocked(this, b) {
@@ -551,9 +563,9 @@ impl<'a> CollideEnv<'a> {
             }
             return solid(next);
         }
-        if next.x > x && next.y > y {
+        if next.borrow().x > x && next.borrow().y > y {
             let a = self.sq(x, y + 1, z);
-            if let Some(a) = a {
+            if let Some(a) = a.as_ref() {
                 if let Some(o) = wall(a, true) {
                     return Some(o);
                 }
@@ -564,7 +576,7 @@ impl<'a> CollideEnv<'a> {
                 }
             }
             let b = self.sq(x + 1, y, z);
-            if let Some(b) = b {
+            if let Some(b) = b.as_ref() {
                 if let Some(o) = wall(b, false) {
                     return Some(o);
                 }
@@ -574,7 +586,7 @@ impl<'a> CollideEnv<'a> {
                     }
                 }
             }
-            let (Some(a), Some(b)) = (a, b) else {
+            let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) else {
                 return None;
             };
             if blocked(this, a) || blocked(this, b) {
@@ -588,12 +600,12 @@ impl<'a> CollideEnv<'a> {
             }
             return solid(next);
         }
-        if next.x < x && next.y > y {
+        if next.borrow().x < x && next.borrow().y > y {
             if let Some(o) = wall(this, false) {
                 return Some(o);
             }
             let a = self.sq(x, y + 1, z);
-            if let Some(a) = a {
+            if let Some(a) = a.as_ref() {
                 if let Some(o) = wall(a, true) {
                     return Some(o);
                 }
@@ -604,12 +616,12 @@ impl<'a> CollideEnv<'a> {
                 }
             }
             let b = self.sq(x - 1, y, z);
-            if let Some(b) = b.filter(|b| !blocked(this, b)) {
+            if let Some(b) = b.as_ref().filter(|b| !blocked(this, b)) {
                 if let Some(o) = solid(b) {
                     return Some(o);
                 }
             }
-            let (Some(a), Some(b)) = (a, b) else {
+            let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) else {
                 return None;
             };
             if blocked(this, a) || blocked(this, b) {
@@ -629,7 +641,7 @@ impl<'a> CollideEnv<'a> {
     /// `this.testCollideAdjacent(mover, x, y, z)`.
     pub fn test_collide_adjacent(
         &self,
-        this: &'a IsoGridSquare,
+        this: &SquareRef,
         mover: Option<&dyn CollideMover>,
         x: i32,
         y: i32,
@@ -642,33 +654,44 @@ impl<'a> CollideEnv<'a> {
         if mover.is_some_and(|m| m.mover_kind().is_player_class() && m.is_no_clip()) {
             return hit(false);
         }
-        if this.collide_matrix == -1 {
+        if this.borrow().collide_matrix == -1 {
             return hit(true);
         }
         if !(-1..=1).contains(&x) || !(-1..=1).contains(&y) || !(-1..=1).contains(&z) {
             return hit(true);
         }
-        if !is_valid_chunk(self.meta, (this.x + x) / 8, (this.y + y) / 8) {
+        if !is_valid_chunk(
+            self.meta,
+            (this.borrow().x + x) / 8,
+            (this.borrow().y + y) / 8,
+        ) {
             return hit(true);
         }
-        let sq = self.sq(this.x + x, this.y + y, this.z + z);
+        let sq = self.sq(
+            this.borrow().x + x,
+            this.borrow().y + y,
+            this.borrow().z + z,
+        );
         if let Some(m) = mover {
-            if m.should_ignore_collision_with_square(sq.map(|s| (s.x, s.y, s.z))) {
+            if m.should_ignore_collision_with_square(sq.as_ref().map(|s| {
+                let s = s.borrow();
+                (s.x, s.y, s.z)
+            })) {
                 return hit(false);
             }
             if let Some(sq) = sq {
-                if let Some((osq, id)) = self.test_collide_special_objects(this, Some(sq)) {
-                    let door =
-                        osq.object_index(id)
-                            .is_some_and(|i| match &osq.objects[i].borrow().kind {
-                                ObjectKind::Door(_) => true,
-                                ObjectKind::Thumpable(t) => t.is_door,
-                                _ => false,
-                            });
+                if let Some((osq, id)) = self.test_collide_special_objects(this, Some(&sq)) {
+                    let door = osq.borrow().object_index(id).is_some_and(|i| {
+                        match &osq.borrow().objects[i].borrow().kind {
+                            ObjectKind::Door(_) => true,
+                            ObjectKind::Thumpable(t) => t.is_door,
+                            _ => false,
+                        }
+                    });
                     return CollideAdjacent {
                         blocked: true,
                         special: Some(SpecialCollide {
-                            object: SquareObject::on(osq, id),
+                            object: SquareObject::on(&osq.borrow(), id),
                             door,
                         }),
                         recalc: false,
@@ -676,7 +699,7 @@ impl<'a> CollideEnv<'a> {
                 }
             }
         }
-        let bit = get_matrix_bit(this.collide_matrix, x + 1, y + 1, z + 1);
+        let bit = get_matrix_bit(this.borrow().collide_matrix, x + 1, y + 1, z + 1);
         CollideAdjacent {
             blocked: bit,
             special: None,
@@ -687,13 +710,14 @@ impl<'a> CollideEnv<'a> {
     /// `getHoppableOrWindowFrame(alongEdge)`.
     pub fn get_hoppable_or_window_frame_edge(
         &self,
-        sq: &'a IsoGridSquare,
+        sq: &SquareRef,
         edge: GridSquareEdge,
-    ) -> Option<(&'a IsoGridSquare, ObjectId)> {
+    ) -> Option<(SquareRef, ObjectId)> {
         let m = self.sprites;
-        sq.get_edge_element(edge, self.cell, &|s: &'a IsoGridSquare, f| {
-            s.get_hoppable_or_window_frame_facing(f, m)
-                .map(|o| (s, o.borrow().id))
+        sq.get_edge_element(edge, self.cell, &|s: &SquareRef, f| {
+            s.borrow()
+                .get_hoppable_or_window_frame_facing(f, m)
+                .map(|o| (s.clone(), o.borrow().id))
         })
     }
 
@@ -705,7 +729,7 @@ impl<'a> CollideEnv<'a> {
     }
 
     /// `isHoppable(alongEdge)`.
-    pub fn is_hoppable_edge(&self, sq: &'a IsoGridSquare, edge: GridSquareEdge) -> bool {
+    pub fn is_hoppable_edge(&self, sq: &SquareRef, edge: GridSquareEdge) -> bool {
         self.get_hoppable_or_window_frame_edge(sq, edge).is_some()
     }
 
@@ -713,13 +737,14 @@ impl<'a> CollideEnv<'a> {
     /// edge between the squares.
     pub fn get_hoppable_to(
         &self,
-        sq: &'a IsoGridSquare,
-        next: Option<&'a IsoGridSquare>,
-    ) -> Option<(&'a IsoGridSquare, ObjectId)> {
+        sq: &SquareRef,
+        next: Option<&SquareRef>,
+    ) -> Option<(SquareRef, ObjectId)> {
         let m = self.sprites;
-        sq.get_edge_element_to(next, self.cell, &|s: &'a IsoGridSquare, f| {
-            s.get_hoppable_or_window_frame_facing(f, m)
-                .map(|o| (s, o.borrow().id))
+        sq.get_edge_element_to(next, self.cell, &|s: &SquareRef, f| {
+            s.borrow()
+                .get_hoppable_or_window_frame_facing(f, m)
+                .map(|o| (s.clone(), o.borrow().id))
         })
     }
 
@@ -738,16 +763,17 @@ impl<'a> CollideEnv<'a> {
     /// squares (`BentFences.isUnbentObject`).
     pub fn get_bendable_to(
         &self,
-        sq: &'a IsoGridSquare,
-        next: Option<&'a IsoGridSquare>,
+        sq: &SquareRef,
+        next: Option<&SquareRef>,
         hooks: &dyn HoppableHooks,
-    ) -> Option<(&'a IsoGridSquare, ObjectId)> {
-        sq.get_edge_element_to(next, self.cell, &|s: &'a IsoGridSquare, f| {
-            s.objects
+    ) -> Option<(SquareRef, ObjectId)> {
+        sq.get_edge_element_to(next, self.cell, &|s: &SquareRef, f| {
+            s.borrow()
+                .objects
                 .iter()
                 .map(ObjectSlot::borrow)
-                .find(|o| hooks.is_unbent_object(s, o, f))
-                .map(|o| (s, o.id))
+                .find(|o| hooks.is_unbent_object(&s.borrow(), o, f))
+                .map(|o| (s.clone(), o.id))
         })
     }
 
@@ -758,14 +784,14 @@ impl<'a> CollideEnv<'a> {
     pub fn hoppable_actions(
         &self,
         mover: &dyn CollideMover,
-        last: &'a IsoGridSquare,
+        last: &SquareRef,
         hooks: &dyn HoppableHooks,
     ) -> Vec<HoppableAction> {
         let mut out = Vec::new();
         let kind = mover.mover_kind();
         let st = mover.states();
         let c = mover.collided();
-        let adj = |d: IsoDirections| last.get_adjacent_square(d, self.cell);
+        let adj = |d: IsoDirections| last.borrow().get_adjacent_square(d, self.cell);
         let m = self.sprites;
         let f = &m.tables.flag;
         // checkBreakHoppable
@@ -774,17 +800,23 @@ impl<'a> CollideEnv<'a> {
             && !(st.attack || st.stagger_back || st.crawling_zombie_turn)
         {
             if let Some(dir) = c.single_edge() {
-                if let Some((hsq, id)) = self.get_hoppable_to(last, adj(dir)) {
-                    let i = hsq.object_index(id).unwrap();
-                    let o = hsq.objects[i].borrow();
+                if let Some((hsq, id)) = self.get_hoppable_to(last, adj(dir).as_ref()) {
+                    let i = hsq.borrow().object_index(id).unwrap();
+                    let object = hsq.borrow().objects[i].ref_handle();
+                    let o = object.borrow();
                     let target = match &o.kind {
-                        ObjectKind::Thumpable(t) if !self.thumpable_is_thumpable(hsq, &o, t) => {
+                        ObjectKind::Thumpable(t)
+                            if !self.thumpable_is_thumpable(&hsq.borrow(), &o, t) =>
+                        {
                             true
                         }
-                        _ => hooks.thumpable_for(hsq, &o),
+                        _ => hooks.thumpable_for(&hsq.borrow(), &o),
                     };
                     if target {
-                        out.push(HoppableAction::ThumpTarget(SquareObject::on(hsq, id)));
+                        out.push(HoppableAction::ThumpTarget(SquareObject::on(
+                            &hsq.borrow(),
+                            id,
+                        )));
                     }
                 }
             }
@@ -792,17 +824,23 @@ impl<'a> CollideEnv<'a> {
         // checkHitHoppable
         if kind == MoverKind::Animal {
             if mover.can_climb_fences() && !(st.animal_attack || st.animal_climb_over_fence) {
-                if c.w && !c.n && !c.s && last.has(f.HoppableW) {
+                if c.w && !c.n && !c.s && last.borrow().has(f.HoppableW) {
                     out.push(HoppableAction::ClimbOverFence(IsoDirections::W));
                 }
-                if c.n && !c.e && !c.w && last.has(f.HoppableN) {
+                if c.n && !c.e && !c.w && last.borrow().has(f.HoppableN) {
                     out.push(HoppableAction::ClimbOverFence(IsoDirections::N));
                 }
-                if c.s && !c.e && !c.w && adj(IsoDirections::S).is_some_and(|s| s.has(f.HoppableN))
+                if c.s
+                    && !c.e
+                    && !c.w
+                    && adj(IsoDirections::S).is_some_and(|s| s.borrow().has(f.HoppableN))
                 {
                     out.push(HoppableAction::ClimbOverFence(IsoDirections::S));
                 }
-                if c.e && !c.n && !c.s && adj(IsoDirections::E).is_some_and(|e| e.has(f.HoppableW))
+                if c.e
+                    && !c.n
+                    && !c.s
+                    && adj(IsoDirections::E).is_some_and(|e| e.borrow().has(f.HoppableW))
                 {
                     out.push(HoppableAction::ClimbOverFence(IsoDirections::E));
                 }
@@ -813,32 +851,38 @@ impl<'a> CollideEnv<'a> {
         {
             if c.w && !c.n && !c.s {
                 let w = adj(IsoDirections::W);
-                if last.has(f.HoppableW)
-                    && !last.stairs_north(m)
-                    && !w.is_some_and(|w| w.stairs_north(m))
+                if last.borrow().has(f.HoppableW)
+                    && !last.borrow().stairs_north(m)
+                    && !w.is_some_and(|w| w.borrow().stairs_north(m))
                 {
                     out.push(HoppableAction::ClimbOverFence(IsoDirections::W));
                 }
             }
             if c.n && !c.e && !c.w {
                 let n = adj(IsoDirections::N);
-                if last.has(f.HoppableN)
-                    && !last.stairs_west(m)
-                    && !n.is_some_and(|n| n.stairs_west(m))
+                if last.borrow().has(f.HoppableN)
+                    && !last.borrow().stairs_west(m)
+                    && !n.is_some_and(|n| n.borrow().stairs_west(m))
                 {
                     out.push(HoppableAction::ClimbOverFence(IsoDirections::N));
                 }
             }
             if c.s && !c.e && !c.w {
                 if let Some(s) = adj(IsoDirections::S) {
-                    if s.has(f.HoppableN) && !last.stairs_west(m) && !s.stairs_west(m) {
+                    if s.borrow().has(f.HoppableN)
+                        && !last.borrow().stairs_west(m)
+                        && !s.borrow().stairs_west(m)
+                    {
                         out.push(HoppableAction::ClimbOverFence(IsoDirections::S));
                     }
                 }
             }
             if c.e && !c.n && !c.s {
                 if let Some(e) = adj(IsoDirections::E) {
-                    if e.has(f.HoppableW) && !last.stairs_north(m) && !e.stairs_north(m) {
+                    if e.borrow().has(f.HoppableW)
+                        && !last.borrow().stairs_north(m)
+                        && !e.borrow().stairs_north(m)
+                    {
                         out.push(HoppableAction::ClimbOverFence(IsoDirections::E));
                     }
                 }
@@ -847,20 +891,25 @@ impl<'a> CollideEnv<'a> {
         // checkBreakBendableFence
         if kind == MoverKind::Zombie && !(st.attack || st.stagger_back || st.crawling_zombie_turn) {
             if let Some(dir) = c.single_edge() {
-                let bend = self.get_bendable_to(last, adj(dir), hooks);
+                let bend = self.get_bendable_to(last, adj(dir).as_ref(), hooks);
                 if hooks.bent_fences_enabled() {
                     if let Some((bsq, id)) = bend {
-                        let o = bsq.objects[bsq.object_index(id).unwrap()].borrow();
+                        let object = bsq.borrow().objects[bsq.borrow().object_index(id).unwrap()]
+                            .ref_handle();
+                        let o = object.borrow();
                         let target = match &o.kind {
                             ObjectKind::Thumpable(t)
-                                if !self.thumpable_is_thumpable(bsq, &o, t) =>
+                                if !self.thumpable_is_thumpable(&bsq.borrow(), &o, t) =>
                             {
                                 true
                             }
-                            _ => hooks.thumpable_for(bsq, &o),
+                            _ => hooks.thumpable_for(&bsq.borrow(), &o),
                         };
                         if target {
-                            out.push(HoppableAction::ThumpTarget(SquareObject::on(bsq, id)));
+                            out.push(HoppableAction::ThumpTarget(SquareObject::on(
+                                &bsq.borrow(),
+                                id,
+                            )));
                         }
                     }
                 }
@@ -885,14 +934,15 @@ impl IsoCell {
     ) -> Option<CollideAdjacent> {
         let r = {
             let env = CollideEnv::new(self, m, meta);
-            let sq = self.get_grid_square(from.0, from.1, from.2)?;
-            env.test_collide_adjacent(sq, mover, d.0, d.1, d.2)
+            let sq_owner = self.get_grid_square(from.0, from.1, from.2)?;
+            env.test_collide_adjacent(&sq_owner, mover, d.0, d.1, d.2)
         };
         if !r.recalc {
             return Some(r);
         }
         self.recalc_all_with_neighbours(from.0, from.1, from.2, meta, m);
-        let sq = self.get_grid_square(from.0, from.1, from.2)?;
+        let sq_owner = self.get_grid_square(from.0, from.1, from.2)?;
+        let sq = sq_owner.borrow();
         Some(CollideAdjacent {
             blocked: get_matrix_bit(sq.collide_matrix, d.0 + 1, d.1 + 1, d.2 + 1),
             ..r

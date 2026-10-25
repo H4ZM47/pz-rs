@@ -24,6 +24,7 @@ use crate::meta_grid::IsoMetaGrid;
 use crate::object_slot::{IsoObjectRef, ObjectSlot};
 use crate::objects::{IsoObject, ObjectKind};
 use crate::sprite::{IsoFlagType, IsoObjectType, IsoSpriteManager, PropertyContainer};
+use crate::SquareRef;
 
 /// `IsoDirections`, in ordinal order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -110,7 +111,7 @@ impl EdgeFacing {
 
 /// `IsoGridSquare.GetSquare`.
 pub trait GetSquare {
-    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare>;
+    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef>;
 
     /// The whole cell behind this getter, when it is one (the queries that
     /// look past single squares, `testCollideAdjacent` with a mover, need
@@ -121,7 +122,7 @@ pub trait GetSquare {
 }
 
 impl GetSquare for IsoCell {
-    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
+    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         IsoCell::get_grid_square(self, x, y, z)
     }
     fn as_iso_cell(&self) -> Option<&IsoCell> {
@@ -133,7 +134,7 @@ impl GetSquare for IsoCell {
 pub struct ChunkGetter<'a>(pub &'a IsoChunk);
 
 impl GetSquare for ChunkGetter<'_> {
-    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
+    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         let (x, y) = (x - self.0.wx * 8, y - self.0.wy * 8);
         if (0..8).contains(&x) && (0..8).contains(&y) && (-32..=31).contains(&z) {
             self.0.get_grid_square(x, y, z)
@@ -229,13 +230,13 @@ pub fn set_matrix_bit(matrix: i32, x: i32, y: i32, z: i32, val: bool) -> i32 {
 fn same(a: Option<&IsoGridSquare>, b: Option<&IsoGridSquare>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => (a.x, a.y, a.z) == (b.x, b.y, b.z),
+        (Some(a), Some(b)) => std::ptr::eq(a, b),
         _ => false,
     }
 }
 
 fn is(a: &IsoGridSquare, b: &IsoGridSquare) -> bool {
-    (a.x, a.y, a.z) == (b.x, b.y, b.z)
+    std::ptr::eq(a, b)
 }
 
 impl IsoGridSquare {
@@ -462,7 +463,7 @@ impl IsoGridSquare {
         &self,
         dir: IsoDirections,
         g: &'a impl GetSquare,
-    ) -> Option<&'a IsoGridSquare> {
+    ) -> Option<SquareRef> {
         let (dx, dy) = dir.delta();
         g.get_grid_square(self.x + dx, self.y + dy, self.z)
     }
@@ -472,9 +473,10 @@ impl IsoGridSquare {
         if self.sloped_surface_direction.is_none() {
             return false;
         }
-        let Some(sq2) = self.get_adjacent_square(edge, g) else {
+        let Some(sq2_owner) = self.get_adjacent_square(edge, g) else {
             return true;
         };
+        let sq2 = sq2_owner.borrow();
         self.get_sloped_surface_height(edge) != sq2.get_sloped_surface_height(edge.rot180())
     }
 
@@ -505,7 +507,7 @@ impl IsoGridSquare {
                 }
                 match g.get_grid_square(self.x, self.y, o.z) {
                     None => return false,
-                    Some(sq) if opaque_floor(sq) => return true,
+                    Some(sq) if opaque_floor(&sq.borrow()) => return true,
                     _ => {}
                 }
             } else {
@@ -514,7 +516,7 @@ impl IsoGridSquare {
                 }
                 match g.get_grid_square(o.x, o.y, self.z) {
                     None => return false,
-                    Some(sq) if opaque_floor(sq) => return true,
+                    Some(sq) if opaque_floor(&sq.borrow()) => return true,
                     _ => {}
                 }
             }
@@ -535,10 +537,10 @@ impl IsoGridSquare {
         if diag {
             let a = g.get_grid_square(self.x, o.y, self.z);
             let b = g.get_grid_square(o.x, self.y, self.z);
-            if self.calculate_vision_blocked(a, m, g)
-                || self.calculate_vision_blocked(b, m, g)
-                || o.calculate_vision_blocked(a, m, g)
-                || o.calculate_vision_blocked(b, m, g)
+            if self.calculate_vision_blocked(a.as_ref().map(|s| s.borrow()).as_deref(), m, g)
+                || self.calculate_vision_blocked(b.as_ref().map(|s| s.borrow()).as_deref(), m, g)
+                || o.calculate_vision_blocked(a.as_ref().map(|s| s.borrow()).as_deref(), m, g)
+                || o.calculate_vision_blocked(b.as_ref().map(|s| s.borrow()).as_deref(), m, g)
             {
                 return true;
             }
@@ -606,10 +608,16 @@ impl IsoGridSquare {
             }
             let hop = |s: &IsoGridSquare| s.has(f.HoppableN) || s.has(f.HoppableW);
             let mut has_hoppable = hop(o);
-            if !has_hoppable && g.get_grid_square(o.x, o.y + 1, self.z).is_some_and(hop) {
+            if !has_hoppable
+                && g.get_grid_square(o.x, o.y + 1, self.z)
+                    .is_some_and(|s| hop(&s.borrow()))
+            {
                 has_hoppable = true;
             }
-            if !has_hoppable && g.get_grid_square(o.x + 1, o.y, self.z).is_some_and(hop) {
+            if !has_hoppable
+                && g.get_grid_square(o.x + 1, o.y, self.z)
+                    .is_some_and(|s| hop(&s.borrow()))
+            {
                 has_hoppable = true;
             }
             let mut has_window = o.has(f.windowW) || o.has(f.windowN);
@@ -618,13 +626,13 @@ impl IsoGridSquare {
             }
             if !has_window
                 && g.get_grid_square(o.x, o.y + 1, self.z)
-                    .is_some_and(|s| s.has(f.windowN) || s.has(f.WindowN))
+                    .is_some_and(|s| s.borrow().has(f.windowN) || s.borrow().has(f.WindowN))
             {
                 has_window = true;
             }
             if !has_window
                 && g.get_grid_square(o.x + 1, o.y, self.z)
-                    .is_some_and(|s| s.has(f.windowW) || s.has(f.WindowW))
+                    .is_some_and(|s| s.borrow().has(f.windowW) || s.borrow().has(f.WindowW))
             {
                 has_window = true;
             }
@@ -709,7 +717,7 @@ impl IsoGridSquare {
         if diagonal && (has_current || has_target) {
             let adjacent_has = |sq: &IsoGridSquare, dir: IsoDirections, t: IsoObjectType| {
                 sq.get_adjacent_square(dir, g)
-                    .is_some_and(|a| a.has_type(t))
+                    .is_some_and(|a| a.borrow().has_type(t))
             };
             // hasConnectingBNStair(up, left, upSquare)
             if same_level && up_stairs == Some(ty.stairsBN) {
@@ -756,7 +764,9 @@ impl IsoGridSquare {
                 }
             }
         }
-        let below_lacks = |t: IsoObjectType| below_targ.is_none_or(|b| !b.has_type(t)) || pathfind;
+        let below_lacks = |t: IsoObjectType| {
+            below_targ.as_ref().is_none_or(|b| !b.borrow().has_type(t)) || pathfind
+        };
         if o.x != self.x && o.z == self.z && o.has_type(ty.stairsTN) && below_lacks(ty.stairsTN) {
             return true;
         }
@@ -915,23 +925,65 @@ impl IsoGridSquare {
             let a = g.get_grid_square(self.x, o.y, self.z);
             let b = g.get_grid_square(o.x, self.y, self.z);
             let this = Some(self);
-            if same(a, b) || same(a, this) || same(b, this) || same(a, Some(o)) || same(b, Some(o))
+            if same(
+                a.as_ref().map(|s| s.borrow()).as_deref(),
+                b.as_ref().map(|s| s.borrow()).as_deref(),
+            ) || same(a.as_ref().map(|s| s.borrow()).as_deref(), this)
+                || same(b.as_ref().map(|s| s.borrow()).as_deref(), this)
+                || same(a.as_ref().map(|s| s.borrow()).as_deref(), Some(o))
+                || same(b.as_ref().map(|s| s.borrow()).as_deref(), Some(o))
             {
                 return true;
             }
-            if let (Some(a), Some(b)) = (a, b) {
-                if o.x == self.x + 1 && o.y == self.y + 1 && a.has(f.windowN) && b.has(f.windowW) {
+            if let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) {
+                if o.x == self.x + 1
+                    && o.y == self.y + 1
+                    && a.borrow().has(f.windowN)
+                    && b.borrow().has(f.windowW)
+                {
                     return true;
                 }
-                if o.x == self.x - 1 && o.y == self.y - 1 && a.has(f.windowW) && b.has(f.windowN) {
+                if o.x == self.x - 1
+                    && o.y == self.y - 1
+                    && a.borrow().has(f.windowW)
+                    && b.borrow().has(f.windowN)
+                {
                     return true;
                 }
             }
-            if self.calculate_collide(a, vision, pathfind, ignore_solid_trans, false, m, g)
-                || self.calculate_collide(b, vision, pathfind, ignore_solid_trans, false, m, g)
-                || o.calculate_collide(a, vision, pathfind, ignore_solid_trans, false, m, g)
-                || o.calculate_collide(b, vision, pathfind, ignore_solid_trans, false, m, g)
-            {
+            if self.calculate_collide(
+                a.as_ref().map(|s| s.borrow()).as_deref(),
+                vision,
+                pathfind,
+                ignore_solid_trans,
+                false,
+                m,
+                g,
+            ) || self.calculate_collide(
+                b.as_ref().map(|s| s.borrow()).as_deref(),
+                vision,
+                pathfind,
+                ignore_solid_trans,
+                false,
+                m,
+                g,
+            ) || o.calculate_collide(
+                a.as_ref().map(|s| s.borrow()).as_deref(),
+                vision,
+                pathfind,
+                ignore_solid_trans,
+                false,
+                m,
+                g,
+            ) || o.calculate_collide(
+                b.as_ref().map(|s| s.borrow()).as_deref(),
+                vision,
+                pathfind,
+                ignore_solid_trans,
+                false,
+                m,
+                g,
+            ) {
                 return true;
             }
         }
@@ -1036,29 +1088,29 @@ impl IsoGridSquare {
             GridSquareEdge::West => test(self, EdgeFacing::EastWest),
             GridSquareEdge::South => g
                 .get_grid_square(self.x, self.y + 1, self.z)
-                .is_some_and(|s| test(s, EdgeFacing::NorthSouth)),
+                .is_some_and(|s| test(&s.borrow(), EdgeFacing::NorthSouth)),
             GridSquareEdge::East => g
                 .get_grid_square(self.x + 1, self.y, self.z)
-                .is_some_and(|s| test(s, EdgeFacing::EastWest)),
+                .is_some_and(|s| test(&s.borrow(), EdgeFacing::EastWest)),
         }
     }
 
     /// `getEdgeElement(alongEdge, facingGetter, getSquare)`.
-    pub fn get_edge_element<'a, T>(
-        &'a self,
+    pub fn get_edge_element<T>(
+        &self,
         edge: GridSquareEdge,
-        g: &'a impl GetSquare,
-        get: &dyn Fn(&'a IsoGridSquare, EdgeFacing) -> Option<T>,
+        g: &impl GetSquare,
+        get: &dyn Fn(&IsoGridSquare, EdgeFacing) -> Option<T>,
     ) -> Option<T> {
         match edge {
             GridSquareEdge::North => get(self, EdgeFacing::NorthSouth),
             GridSquareEdge::West => get(self, EdgeFacing::EastWest),
             GridSquareEdge::South => g
                 .get_grid_square(self.x, self.y + 1, self.z)
-                .and_then(|s| get(s, EdgeFacing::NorthSouth)),
+                .and_then(|s| get(&s.borrow(), EdgeFacing::NorthSouth)),
             GridSquareEdge::East => g
                 .get_grid_square(self.x + 1, self.y, self.z)
-                .and_then(|s| get(s, EdgeFacing::EastWest)),
+                .and_then(|s| get(&s.borrow(), EdgeFacing::EastWest)),
         }
     }
 
@@ -1082,18 +1134,18 @@ impl IsoGridSquare {
     }
 
     /// `getEdgeElementTo(next, edgeGetter, getSquare)`.
-    pub fn get_edge_element_to<'a, T>(
-        &'a self,
-        next: Option<&'a IsoGridSquare>,
-        g: &'a impl GetSquare,
-        get: &dyn Fn(&'a IsoGridSquare, EdgeFacing) -> Option<T>,
+    pub fn get_edge_element_to<T>(
+        &self,
+        next: Option<&IsoGridSquare>,
+        g: &impl GetSquare,
+        get: &dyn Fn(&IsoGridSquare, EdgeFacing) -> Option<T>,
     ) -> Option<T> {
         use GridSquareEdge::*;
         let o = next?;
         if is(self, o) {
             return None;
         }
-        let e = |s: &'a IsoGridSquare, edge| s.get_edge_element(edge, g, get);
+        let e = |s: &IsoGridSquare, edge| s.get_edge_element(edge, g, get);
         if self.x > o.x {
             if let Some(v) = e(self, West).or_else(|| e(o, East)) {
                 return Some(v);
@@ -1169,12 +1221,12 @@ impl IsoGridSquare {
 
     /// `getWindowTo(next, getSquare)`: the `IsoWindow` between this square
     /// and `next`.
-    pub fn get_window_to<'a>(
-        &'a self,
-        next: Option<&'a IsoGridSquare>,
-        g: &'a impl GetSquare,
+    pub fn get_window_to(
+        &self,
+        next: Option<&IsoGridSquare>,
+        g: &impl GetSquare,
     ) -> Option<IsoObjectRef> {
-        self.get_edge_element_to(next, g, &|s: &'a IsoGridSquare, f| s.get_window_facing(f))
+        self.get_edge_element_to(next, g, &|s: &IsoGridSquare, f| s.get_window_facing(f))
     }
 }
 
@@ -1530,9 +1582,10 @@ impl IsoGridSquare {
         if self.get_stairs_direction(m).is_none() {
             return false;
         }
-        let Some(sq2) = self.get_adjacent_square(edge, g) else {
+        let Some(sq2_owner) = self.get_adjacent_square(edge, g) else {
             return true;
         };
+        let sq2 = sq2_owner.borrow();
         self.get_stairs_height(edge, m) != sq2.get_stairs_height(edge.rot180(), m)
     }
 
@@ -1658,55 +1711,6 @@ impl IsoGridSquare {
         })
     }
 
-    /// `getDoorTo(next)`: the `IsoDoor` or door `IsoThumpable` between this
-    /// square and `next`, and the square it is on.
-    pub fn get_door_to<'s>(
-        &'s self,
-        next: Option<&'s IsoGridSquare>,
-        g: &'s impl GetSquare,
-        hooks: &'s dyn SquareHooks,
-    ) -> Option<(&'s IsoGridSquare, IsoObjectRef)> {
-        self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
-            s.get_door_facing(f, hooks).map(|o| (s, o))
-        })
-    }
-
-    /// `getWindowThumpableTo(next)`.
-    pub fn get_window_thumpable_to<'s>(
-        &'s self,
-        next: Option<&'s IsoGridSquare>,
-        m: &'s IsoSpriteManager,
-        g: &'s impl GetSquare,
-        hooks: &'s dyn SquareHooks,
-    ) -> Option<(&'s IsoGridSquare, IsoObjectRef)> {
-        self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
-            s.get_thumpable_window_facing(f, m, hooks).map(|o| (s, o))
-        })
-    }
-
-    /// `getWindowFrameTo(next)`.
-    pub fn get_window_frame_to<'s>(
-        &'s self,
-        next: Option<&'s IsoGridSquare>,
-        g: &'s impl GetSquare,
-    ) -> Option<(&'s IsoGridSquare, IsoObjectRef)> {
-        self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
-            s.get_window_frame_facing(f).map(|o| (s, o))
-        })
-    }
-
-    /// `getHoppableThumpableTo(next)`.
-    pub fn get_hoppable_thumpable_to<'s>(
-        &'s self,
-        next: Option<&'s IsoGridSquare>,
-        g: &'s impl GetSquare,
-        hooks: &'s dyn SquareHooks,
-    ) -> Option<(&'s IsoGridSquare, IsoObjectRef)> {
-        self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
-            s.get_hoppable_thumpable_facing(f, hooks).map(|o| (s, o))
-        })
-    }
-
     /// `getWallHoppable(facing)`: the first object whose
     /// `getHoppableDirection()` is `facing`.
     pub fn get_wall_hoppable_facing(
@@ -1718,18 +1722,6 @@ impl IsoGridSquare {
             .iter()
             .find(|o| o.borrow().get_hoppable_direction(m) == Some(facing))
             .map(ObjectSlot::ref_handle)
-    }
-
-    /// `getWallHoppableTo(next)`.
-    pub fn get_wall_hoppable_to<'s>(
-        &'s self,
-        next: Option<&'s IsoGridSquare>,
-        m: &'s IsoSpriteManager,
-        g: &'s impl GetSquare,
-    ) -> Option<(&'s IsoGridSquare, IsoObjectRef)> {
-        self.get_edge_element_to(next, g, &|s: &'s IsoGridSquare, f| {
-            s.get_wall_hoppable_facing(f, m).map(|o| (s, o))
-        })
     }
 
     /// `getWallExcludingList(bNorth, ignoreBlockingSprites)` with the
@@ -1876,12 +1868,14 @@ impl IsoGridSquare {
         let g = env.squares;
         let m = env.sprites;
         if z == 1 && (x != 0 || y != 0) && self.has_elevated_floor(m) {
-            if let Some(sq) = g.get_grid_square(self.x, self.y, self.z + z) {
+            if let Some(sq_owner) = g.get_grid_square(self.x, self.y, self.z + z) {
+                let sq = sq_owner.borrow();
                 return sq.test_vision_adjacent(x, y, 0, special_diag, ignore_doors, env);
             }
         }
         if z == -1 && (x != 0 || y != 0) {
-            if let Some(sq) = g.get_grid_square(self.x + x, self.y + y, self.z + z) {
+            if let Some(sq_owner) = g.get_grid_square(self.x + x, self.y + y, self.z + z) {
+                let sq = sq_owner.borrow();
                 if sq.has_elevated_floor(m) {
                     return self.test_vision_adjacent(x, y, 0, special_diag, ignore_doors, env);
                 }
@@ -1890,7 +1884,8 @@ impl IsoGridSquare {
         if x != 0 && y != 0 && special_diag {
             let mut test = self.do_diagonal_check(x, y, z, ignore_doors, env);
             if !env.is_server && test != TestResults::Blocked {
-                if let Some(sq2) = g.get_grid_square(self.x + x, self.y + y, self.z + z) {
+                if let Some(sq2_owner) = g.get_grid_square(self.x + x, self.y + y, self.z + z) {
+                    let sq2 = sq2_owner.borrow();
                     test = sq2.do_diagonal_check(-x, -y, -z, ignore_doors, env);
                 }
             }
@@ -1899,17 +1894,25 @@ impl IsoGridSquare {
         let sq3 = g.get_grid_square(self.x + x, self.y + y, self.z + z);
         let mut ret = TestResults::Clear;
         match sq3 {
-            Some(sq3) if sq3.z == self.z => {
-                if let Err(r) = self.vision_specials(self, sq3, ignore_doors, env, &mut ret) {
+            Some(sq3) if sq3.borrow().z == self.z => {
+                if let Err(r) =
+                    self.vision_specials(self, &(sq3).borrow(), ignore_doors, env, &mut ret)
+                {
                     return r;
                 }
-                if let Err(r) = self.vision_specials(sq3, sq3, ignore_doors, env, &mut ret) {
+                if let Err(r) =
+                    self.vision_specials(&sq3.borrow(), &sq3.borrow(), ignore_doors, env, &mut ret)
+                {
                     return r;
                 }
             }
             Some(sq3) => {
                 let ext = m.tables.flag.exterior;
-                if z > 0 && (self.z != -1 || sq3.z != 0) && sq3.has(ext) && !self.has(ext) {
+                if z > 0
+                    && (self.z != -1 || sq3.borrow().z != 0)
+                    && sq3.borrow().has(ext)
+                    && !self.has(ext)
+                {
                     ret = TestResults::Blocked;
                 }
             }
@@ -2019,8 +2022,9 @@ fn recalc_all_with_neighbours(
                 if (x, y, z) == (sq.x, sq.y, sq.z) {
                     continue;
                 }
-                if let Some(n) = g.get_grid_square(x, y, z) {
-                    recalc_pair(sq, n, true, m, g, out);
+                if let Some(n_owner) = g.get_grid_square(x, y, z) {
+                    let n = n_owner.borrow();
+                    recalc_pair(sq, &n, true, m, g, out);
                 }
             }
         }
@@ -2032,9 +2036,14 @@ fn recalc_all_with_neighbours(
         nav(IsoDirections::W),
         nav(IsoDirections::E),
     );
-    for (a, b) in [(n, w), (n, e), (s, w), (s, e)] {
-        if let (Some(a), Some(b)) = (a, b) {
-            recalc_pair(a, b, true, m, g, out);
+    for (a, b) in [
+        (n.as_ref(), w.as_ref()),
+        (n.as_ref(), e.as_ref()),
+        (s.as_ref(), w.as_ref()),
+        (s.as_ref(), e.as_ref()),
+    ] {
+        if let (Some(a), Some(b)) = (a.as_ref(), b.as_ref()) {
+            recalc_pair(&a.borrow(), &b.borrow(), true, m, g, out);
         }
     }
 }
@@ -2042,9 +2051,10 @@ fn recalc_all_with_neighbours(
 impl IsoCell {
     fn apply_matrix_bits(&mut self, bits: Vec<MatrixBits>) {
         for b in bits {
-            let Some(sq) = self.get_grid_square_mut(b.at.0, b.at.1, b.at.2) else {
+            let Some(sq_owner) = self.get_grid_square_mut(b.at.0, b.at.1, b.at.2) else {
                 continue;
             };
+            let mut sq = sq_owner.borrow_mut();
             let (dx, dy, dz) = (
                 1 + b.to.0 - b.at.0,
                 1 + b.to.1 - b.at.1,
@@ -2083,7 +2093,8 @@ impl IsoCell {
             let mut any = false;
             for y in 0..8 {
                 for x in 0..8 {
-                    if let Some(sq) = ch.get_grid_square_mut(x, y, z) {
+                    if let Some(sq_owner) = ch.get_grid_square_mut(x, y, z) {
+                        let mut sq = sq_owner.borrow_mut();
                         sq.recalc_properties(m);
                         any = true;
                         ch.collision.clear();
@@ -2101,11 +2112,12 @@ impl IsoCell {
                 while z2 > 0 {
                     if ch
                         .get_grid_square(x, y, z2)
-                        .is_some_and(|s| s.has_rain_blocking_tile(m))
+                        .is_some_and(|s| s.borrow().has_rain_blocking_tile(m))
                     {
                         z2 -= 1;
                         while z2 >= min {
-                            if let Some(sq) = ch.get_grid_square_mut(x, y, z2) {
+                            if let Some(sq_owner) = ch.get_grid_square_mut(x, y, z2) {
+                                let mut sq = sq_owner.borrow_mut();
                                 if !sq.have_roof {
                                     sq.have_roof = true;
                                     sq.properties.unset_flag(m.tables.flag.exterior);
@@ -2126,8 +2138,9 @@ impl IsoCell {
             for z in min..=max {
                 for y in 0..8 {
                     for x in 0..8 {
-                        if let Some(sq) = ch.get_grid_square(x, y, z) {
-                            recalc_all_with_neighbours(sq, meta, m, &g, &mut bits);
+                        if let Some(sq_owner) = ch.get_grid_square(x, y, z) {
+                            let sq = sq_owner.borrow();
+                            recalc_all_with_neighbours(&sq, meta, m, &g, &mut bits);
                         }
                     }
                 }
@@ -2205,7 +2218,7 @@ impl IsoCell {
             cell.chunks
                 .get(&(wx + d.0, wy + d.1))
                 .and_then(|c| c.get_grid_square(x, y, z))
-                .is_some_and(|sq| !sq.objects.is_empty())
+                .is_some_and(|sq| !sq.borrow().objects.is_empty())
         };
         let exists =
             |cell: &IsoCell, d: (i32, i32)| cell.chunks.contains_key(&(wx + d.0, wy + d.1));
@@ -2283,9 +2296,10 @@ impl IsoCell {
             let mut bits = Vec::new();
             for y in 0..8 {
                 for x in 0..8 {
-                    let Some(sq) = self.chunks[&(wx, wy)].get_grid_square(x, y, z) else {
+                    let Some(sq_owner) = self.chunks[&(wx, wy)].get_grid_square(x, y, z) else {
                         continue;
                     };
+                    let sq = sq_owner.borrow();
                     if !(x == 0 || x == 7 || y == 0 || y == 7) {
                         continue;
                     }
@@ -2315,31 +2329,31 @@ impl IsoCell {
                             }
                         }
                         for dir in dirs {
-                            self.recalc_all_with_neighbour(sq, dir, dz, m, &mut bits);
+                            self.recalc_all_with_neighbour(&sq, dir, dz, m, &mut bits);
                         }
                     }
                     let n = sq.get_adjacent_square(D::N, self);
                     let s = sq.get_adjacent_square(D::S, self);
                     let w = sq.get_adjacent_square(D::W, self);
                     let e = sq.get_adjacent_square(D::E, self);
-                    if let (Some(n), Some(_)) = (n, w) {
+                    if let (Some(n), Some(_)) = (n.as_ref(), w.as_ref()) {
                         if x == 0 || y == 0 {
-                            self.recalc_all_with_neighbour(n, D::W, 0, m, &mut bits);
+                            self.recalc_all_with_neighbour(&(n).borrow(), D::W, 0, m, &mut bits);
                         }
                     }
-                    if let (Some(n), Some(_)) = (n, e) {
+                    if let (Some(n), Some(_)) = (n.as_ref(), e.as_ref()) {
                         if x == 7 || y == 0 {
-                            self.recalc_all_with_neighbour(n, D::E, 0, m, &mut bits);
+                            self.recalc_all_with_neighbour(&(n).borrow(), D::E, 0, m, &mut bits);
                         }
                     }
-                    if let (Some(s), Some(_)) = (s, w) {
+                    if let (Some(s), Some(_)) = (s.as_ref(), w.as_ref()) {
                         if x == 0 || y == 7 {
-                            self.recalc_all_with_neighbour(s, D::W, 0, m, &mut bits);
+                            self.recalc_all_with_neighbour(&(s).borrow(), D::W, 0, m, &mut bits);
                         }
                     }
-                    if let (Some(s), Some(_)) = (s, e) {
+                    if let (Some(s), Some(_)) = (s.as_ref(), e.as_ref()) {
                         if x == 7 || y == 7 {
-                            self.recalc_all_with_neighbour(s, D::E, 0, m, &mut bits);
+                            self.recalc_all_with_neighbour(&(s).borrow(), D::E, 0, m, &mut bits);
                         }
                     }
                 }
@@ -2367,9 +2381,10 @@ impl IsoCell {
         out: &mut Vec<MatrixBits>,
     ) {
         let (dx, dy) = dir.delta();
-        if let Some(sq2) = self.get_grid_square(sq.x + dx, sq.y + dy, sq.z + dz) {
-            out.push(matrix_bits(sq, sq2, m, self));
-            out.push(matrix_bits(sq2, sq, m, self));
+        if let Some(sq2_owner) = self.get_grid_square(sq.x + dx, sq.y + dy, sq.z + dz) {
+            let sq2 = sq2_owner.borrow();
+            out.push(matrix_bits(sq, &sq2, m, self));
+            out.push(matrix_bits(&sq2, sq, m, self));
         }
     }
 
@@ -2431,7 +2446,7 @@ impl IsoCell {
         let mut sq = IsoGridSquare::new(sx, sy, z);
         sq.associated_building = meta.get_associated_building_at(sx, sy).ok().flatten();
         sq.room_id = meta.get_room_at(sx, sy, z).map_or(-1, |r| r.id);
-        ch.set_square(x, y, z, Some(sq));
+        ch.set_square(x, y, z, Some((sq).into()));
         new.push((sx, sy, z));
     }
 
@@ -2450,14 +2465,15 @@ impl IsoCell {
         }
         self.recalc_square_properties(x, y, z, m);
         let mut bits = Vec::new();
-        if let Some(sq) = self.get_grid_square(x, y, z) {
-            recalc_all_with_neighbours(sq, meta, m, self, &mut bits);
+        if let Some(sq_owner) = self.get_grid_square(x, y, z) {
+            let sq = sq_owner.borrow();
+            recalc_all_with_neighbours(&sq, meta, m, self, &mut bits);
         }
         self.apply_matrix_bits(bits);
     }
 
     /// `getGridSquare(x, y, z)`, mutable.
-    pub fn get_grid_square_mut(&mut self, x: i32, y: i32, z: i32) -> Option<&mut IsoGridSquare> {
+    pub fn get_grid_square_mut(&mut self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         let (wx, wy) = (x.div_euclid(8), y.div_euclid(8));
         self.chunks
             .get_mut(&(wx, wy))?
@@ -2487,7 +2503,7 @@ fn ensure_squares(ch: &mut IsoChunk, meta: &IsoMetaGrid) {
         }
         let mut sq = new_square(lx, ly, z);
         sq.room_id = meta.get_room_at(sq.x, sq.y, z).map_or(-1, |r| r.id);
-        ch.set_square(lx, ly, z, Some(sq));
+        ch.set_square(lx, ly, z, Some((sq).into()));
     };
     let ensure3x3 = |ch: &mut IsoChunk, lx: i32, ly: i32, z: i32| {
         ensure(ch, lx, ly, z);
@@ -2501,11 +2517,12 @@ fn ensure_squares(ch: &mut IsoChunk, meta: &IsoMetaGrid) {
         for y in 0..8 {
             for x in 0..8 {
                 if ch.get_grid_square(x, y, z).is_none() && z == 0 {
-                    ch.set_square(x, y, z, Some(new_square(x, y, z)));
+                    ch.set_square(x, y, z, Some((new_square(x, y, z)).into()));
                 }
-                let Some(sq) = ch.get_grid_square(x, y, z) else {
+                let Some(sq_owner) = ch.get_grid_square(x, y, z) else {
                     continue;
                 };
+                let sq = sq_owner.borrow();
                 if !sq.objects.is_empty() {
                     ensure3x3(ch, x, y, z);
                     let mut zz = z - 1;
@@ -2528,3 +2545,170 @@ pub use collide_mover::{
 
 #[cfg(test)]
 mod tests;
+
+/// Queries whose result includes the actual receiver allocation. A body
+/// reference alone cannot recover that allocation from coordinates.
+pub trait SquareOwnerQueries {
+    fn get_edge_element<T>(
+        &self,
+        edge: GridSquareEdge,
+        g: &impl GetSquare,
+        get: &dyn Fn(&SquareRef, EdgeFacing) -> Option<T>,
+    ) -> Option<T>;
+    fn get_edge_element_to<T>(
+        &self,
+        next: Option<&SquareRef>,
+        g: &impl GetSquare,
+        get: &dyn Fn(&SquareRef, EdgeFacing) -> Option<T>,
+    ) -> Option<T>;
+    fn get_door_to(
+        &self,
+        next: Option<&SquareRef>,
+        g: &impl GetSquare,
+        hooks: &dyn SquareHooks,
+    ) -> Option<(SquareRef, IsoObjectRef)>;
+    fn get_window_thumpable_to(
+        &self,
+        next: Option<&SquareRef>,
+        m: &IsoSpriteManager,
+        g: &impl GetSquare,
+        hooks: &dyn SquareHooks,
+    ) -> Option<(SquareRef, IsoObjectRef)>;
+    fn get_window_frame_to(
+        &self,
+        next: Option<&SquareRef>,
+        g: &impl GetSquare,
+    ) -> Option<(SquareRef, IsoObjectRef)>;
+    fn get_hoppable_thumpable_to(
+        &self,
+        next: Option<&SquareRef>,
+        g: &impl GetSquare,
+        hooks: &dyn SquareHooks,
+    ) -> Option<(SquareRef, IsoObjectRef)>;
+    fn get_wall_hoppable_to(
+        &self,
+        next: Option<&SquareRef>,
+        m: &IsoSpriteManager,
+        g: &impl GetSquare,
+    ) -> Option<(SquareRef, IsoObjectRef)>;
+}
+impl SquareOwnerQueries for SquareRef {
+    fn get_edge_element<T>(
+        &self,
+        edge: GridSquareEdge,
+        g: &impl GetSquare,
+        get: &dyn Fn(&SquareRef, EdgeFacing) -> Option<T>,
+    ) -> Option<T> {
+        let (x, y, z) = {
+            let s = self.borrow();
+            (s.x, s.y, s.z)
+        };
+        match edge {
+            GridSquareEdge::North => get(self, EdgeFacing::NorthSouth),
+            GridSquareEdge::West => get(self, EdgeFacing::EastWest),
+            GridSquareEdge::South => g
+                .get_grid_square(x, y + 1, z)
+                .and_then(|s| get(&s, EdgeFacing::NorthSouth)),
+            GridSquareEdge::East => g
+                .get_grid_square(x + 1, y, z)
+                .and_then(|s| get(&s, EdgeFacing::EastWest)),
+        }
+    }
+    fn get_edge_element_to<T>(
+        &self,
+        next: Option<&SquareRef>,
+        g: &impl GetSquare,
+        get: &dyn Fn(&SquareRef, EdgeFacing) -> Option<T>,
+    ) -> Option<T> {
+        let o = next?;
+        if std::rc::Rc::ptr_eq(self, o) {
+            return None;
+        }
+        let (x, y) = {
+            let s = self.borrow();
+            (s.x, s.y)
+        };
+        let (ox, oy) = {
+            let s = o.borrow();
+            (s.x, s.y)
+        };
+        let e = |s: &SquareRef, edge| SquareOwnerQueries::get_edge_element(s, edge, g, get);
+        use GridSquareEdge::*;
+        if x > ox {
+            if let Some(v) = e(self, West).or_else(|| e(o, East)) {
+                return Some(v);
+            }
+        }
+        if x < ox {
+            if let Some(v) = e(o, West).or_else(|| e(self, East)) {
+                return Some(v);
+            }
+        }
+        if y < oy {
+            if let Some(v) = e(o, North).or_else(|| e(self, South)) {
+                return Some(v);
+            }
+        }
+        if y > oy {
+            if let Some(v) = e(self, North).or_else(|| e(o, South)) {
+                return Some(v);
+            }
+        }
+        None
+    }
+    fn get_door_to(
+        &self,
+        next: Option<&SquareRef>,
+        g: &impl GetSquare,
+        hooks: &dyn SquareHooks,
+    ) -> Option<(SquareRef, IsoObjectRef)> {
+        self.get_edge_element_to(next, g, &|s, f| {
+            let object = s.borrow().get_door_facing(f, hooks)?;
+            Some((s.clone(), object))
+        })
+    }
+    fn get_window_thumpable_to(
+        &self,
+        next: Option<&SquareRef>,
+        m: &IsoSpriteManager,
+        g: &impl GetSquare,
+        hooks: &dyn SquareHooks,
+    ) -> Option<(SquareRef, IsoObjectRef)> {
+        self.get_edge_element_to(next, g, &|s, f| {
+            let object = s.borrow().get_thumpable_window_facing(f, m, hooks)?;
+            Some((s.clone(), object))
+        })
+    }
+    fn get_window_frame_to(
+        &self,
+        next: Option<&SquareRef>,
+        g: &impl GetSquare,
+    ) -> Option<(SquareRef, IsoObjectRef)> {
+        self.get_edge_element_to(next, g, &|s, f| {
+            let object = s.borrow().get_window_frame_facing(f)?;
+            Some((s.clone(), object))
+        })
+    }
+    fn get_hoppable_thumpable_to(
+        &self,
+        next: Option<&SquareRef>,
+        g: &impl GetSquare,
+        hooks: &dyn SquareHooks,
+    ) -> Option<(SquareRef, IsoObjectRef)> {
+        self.get_edge_element_to(next, g, &|s, f| {
+            let object = s.borrow().get_hoppable_thumpable_facing(f, hooks)?;
+            Some((s.clone(), object))
+        })
+    }
+    fn get_wall_hoppable_to(
+        &self,
+        next: Option<&SquareRef>,
+        m: &IsoSpriteManager,
+        g: &impl GetSquare,
+    ) -> Option<(SquareRef, IsoObjectRef)> {
+        self.get_edge_element_to(next, g, &|s, f| {
+            let object = s.borrow().get_wall_hoppable_facing(f, m)?;
+            Some((s.clone(), object))
+        })
+    }
+}

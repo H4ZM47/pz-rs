@@ -80,7 +80,7 @@ pub fn scene() -> (IsoCell, IsoSpriteManager, IsoMetaGrid) {
             cell.chunks
                 .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
                 .unwrap()
-                .set_square(x.rem_euclid(8), y.rem_euclid(8), 0, Some(sq));
+                .set_square(x.rem_euclid(8), y.rem_euclid(8), 0, Some((sq).into()));
         }
     }
     for wx in 1..=3 {

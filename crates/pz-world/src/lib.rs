@@ -35,6 +35,7 @@ pub mod save;
 pub mod sprite;
 pub mod square;
 pub mod square_mutation;
+pub mod square_slot;
 pub mod streamer;
 pub mod tile_overlays;
 pub mod tiledef;
@@ -60,8 +61,9 @@ pub use objects::{
 pub use sprite::{IsoSpriteManager, SpriteTables};
 pub use square::{
     ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks,
-    SpecialObject, SquareHooks, ThumpableInfo, VisionEnv, VisionResult,
+    SpecialObject, SquareHooks, SquareOwnerQueries, ThumpableInfo, VisionEnv, VisionResult,
 };
+pub use square_slot::{RetiredWorldOwners, SquareRef, SquareSlot};
 pub use world_state::{ObjectHooks, PowerSettings, WorldState};
 pub use zones::{
     ClipperOps, PropValue, RoomTone, VehicleZone, Zone, ZoneError, ZoneGeometryType, ZoneId,

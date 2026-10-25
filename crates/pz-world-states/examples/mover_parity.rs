@@ -134,7 +134,10 @@ fn main() {
     meta.max_y = (max_wy * 8).div_euclid(256);
     // `IsoWindow.load` changes the shared window sprites as it reads them.
     for &(wx, wy) in &order {
-        pz_world::save::chunk_file::apply_loaded_window_sprites(&cell.chunks[&(wx, wy)], &mut sprites);
+        pz_world::save::chunk_file::apply_loaded_window_sprites(
+            &cell.chunks[&(wx, wy)],
+            &mut sprites,
+        );
     }
     for &(wx, wy) in &order {
         let (min, max) = {
@@ -172,12 +175,14 @@ fn main() {
             for y in 0..8 {
                 for z in min..=max {
                     let (sx, sy) = (wx * 8 + x, wy * 8 + y);
-                    let Some(sq) = cell.get_grid_square(sx, sy, z) else {
+                    let Some(sq_owner) = cell.get_grid_square(sx, sy, z) else {
                         continue;
                     };
+                    let sq = sq_owner.borrow();
                     let near = (-1..=1).any(|dx| {
                         (-1..=1).any(|dy| {
                             cell.get_grid_square(sx + dx, sy + dy, z).is_some_and(|s| {
+                                let s = s.borrow();
                                 !s.special_objects.is_empty()
                                     || s.objects.iter().any(|o| {
                                         let o = o.borrow();
@@ -193,6 +198,7 @@ fn main() {
                     }
                     n_sq += 1;
                     write!(out, "mv {sx},{sy},{z} d={} ", sq.have_door() as i32).unwrap();
+                    drop(sq);
                     for dz in -1..=1 {
                         for dy in -1..=1 {
                             for dx in -1..=1 {
@@ -217,7 +223,9 @@ fn main() {
                                     if let Some(sp) = r.special {
                                         n_special += 1;
                                         let o = sp.object;
-                                        let osq = cell.get_grid_square(o.x, o.y, o.z).unwrap();
+                                        let osq_owner =
+                                            cell.get_grid_square(o.x, o.y, o.z).unwrap();
+                                        let osq = osq_owner.borrow();
                                         write!(
                                             out,
                                             "@{},{},{},{}{}",
@@ -237,22 +245,26 @@ fn main() {
                     }
                     out.push_str(" h ");
                     let env = CollideEnv::new(&cell, &sprites, &meta);
-                    let sq = cell.get_grid_square(sx, sy, z).unwrap();
+                    let sq_owner = cell.get_grid_square(sx, sy, z).unwrap();
+                    let sq = sq_owner.borrow();
                     for dy in -1..=1 {
                         for dx in -1..=1 {
                             if dx == 0 && dy == 0 {
                                 continue;
                             }
-                            let Some(nb) = cell.get_grid_square(sx + dx, sy + dy, z) else {
+                            let Some(nb_owner) = cell.get_grid_square(sx + dx, sy + dy, z) else {
                                 out.push_str("-/");
                                 continue;
                             };
-                            out.push(if env.is_hoppable_to(sq, Some(nb)) {
+                            let nb = nb_owner.borrow();
+                            out.push(if env.is_hoppable_to(&sq, Some(&nb)) {
                                 '1'
                             } else {
                                 '0'
                             });
-                            if let Some((osq, id)) = env.get_hoppable_to(sq, Some(nb)) {
+                            if let Some((osq, id)) = env.get_hoppable_to(&sq_owner, Some(&nb_owner))
+                            {
+                                let osq = osq.borrow();
                                 write!(
                                     out,
                                     "@{},{},{},{}",

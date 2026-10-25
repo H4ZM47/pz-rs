@@ -602,7 +602,8 @@ pub(super) fn remove_from_square_handle(
             WorldCall::WorldItemTransferFluid,
         );
     }
-    let sq = env.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)?;
+    let sq_owner = env.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)?;
+    let mut sq = sq_owner.borrow_mut();
     if world_item.0 {
         if let Some(i) = sq.world_objects.iter().position(|&w| w == r.id) {
             sq.world_objects.remove(i);

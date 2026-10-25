@@ -207,10 +207,11 @@ impl StatesWorldAdapter<'_> {
         sq: &'s IsoGridSquare,
         tiles: &[String],
         index: usize,
-    ) -> Option<std::cell::Ref<'s, IsoObject>> {
+    ) -> Option<pz_world::IsoObjectRef> {
         sq.objects
-            .iter().map(|o| o.borrow())
-            .find(|o| self.obj_sprite_name(&o) == Some(tiles[index].as_str()))
+            .iter()
+            .find(|o| self.obj_sprite_name(&o.borrow()) == Some(tiles[index].as_str()))
+            .map(|o| o.ref_handle())
     }
 
     /// The square `i - index` along the fence from `sq`.
@@ -220,7 +221,7 @@ impl StatesWorldAdapter<'_> {
         e: &BentFenceEntry,
         i: i32,
         index: i32,
-    ) -> Option<&IsoGridSquare> {
+    ) -> Option<pz_world::SquareRef> {
         let x = sq.x + if e.is_north() { i - index } else { 0 };
         let y = sq.y + if e.is_north() { 0 } else { i - index };
         self.cell.get_grid_square(x, y, sq.z)
@@ -235,10 +236,11 @@ impl StatesWorldAdapter<'_> {
         index: i32,
     ) -> bool {
         for i in 0..tiles.len() as i32 {
-            let Some(s) = self.bf_span_square(sq, e, i, index) else {
+            let Some(s_owner) = self.bf_span_square(sq, e, i, index) else {
                 return false;
             };
-            if index == i || self.bf_object_for_entry(s, tiles, i as usize).is_some() {
+            let s = s_owner.borrow();
+            if index == i || self.bf_object_for_entry(&s, tiles, i as usize).is_some() {
                 continue;
             }
             return false;
@@ -376,9 +378,11 @@ impl StatesWorldAdapter<'_> {
         let (ox, oy, rx, ry) = Self::bf_collapse_origin(f.0, dir, e, index);
         for x in 0..e.collapsed_size_x {
             for y in 0..e.collapsed_size_y {
-                let Some(s) = self.cell.get_grid_square(ox + x * rx, oy + y * ry, f.0.z) else {
+                let Some(s_owner) = self.cell.get_grid_square(ox + x * rx, oy + y * ry, f.0.z)
+                else {
                     return false;
                 };
+                let s = s_owner.borrow();
                 if !s.treat_as_solid_floor(self.sprites) {
                     return false;
                 }
@@ -455,9 +459,12 @@ impl StatesWorldAdapter<'_> {
 
     /// `isBendableFence(obj)`: bent or unbent.
     pub fn is_bendable_fence(&self, r: ObjectRef) -> bool {
-        let (Some(bf), Some(f)) = (self.bf(), self.find(r)) else {
+        let (Some(bf), Some(f_owners)) = (self.bf(), self.find(r)) else {
             return false;
         };
+        let f_square = f_owners.0.borrow();
+        let f_object = f_owners.1.borrow();
+        let f = (&*f_square, &*f_object);
         let e = self
             .bf_entry_for_object(&bf, (f.0, &f.1), None)
             .map(|i| &bf.entries[i]);
@@ -478,9 +485,12 @@ impl StatesWorldAdapter<'_> {
 
     /// `getThumpData(obj)`.
     pub fn bent_thump_data(&self, r: ObjectRef) -> ThumpData {
-        let (Some(bf), Some(f)) = (self.bf(), self.find(r)) else {
+        let (Some(bf), Some(f_owners)) = (self.bf(), self.find(r)) else {
             return ThumpData::default();
         };
+        let f_square = f_owners.0.borrow();
+        let f_object = f_owners.1.borrow();
+        let f = (&*f_square, &*f_object);
         let Some(e) = self
             .bf_entry_for_object(&bf, (f.0, &f.1), None)
             .map(|i| &bf.entries[i])
@@ -520,10 +530,13 @@ impl StatesWorldAdapter<'_> {
         let (mut n, mut s, mut ea, mut w) = (0, 0, 0, 0);
         let z = f.0.z;
         for i in 0..tiles.len() as i32 {
-            let Some(sq) = self.bf_span_square(f.0, e, i, index) else {
+            let Some(sq_owner) = self.bf_span_square(f.0, e, i, index) else {
                 continue;
             };
-            let (x, y) = (sq.x, sq.y);
+            let (x, y) = {
+                let sq = sq_owner.borrow();
+                (sq.x, sq.y)
+            };
             let here = count(x, y, z);
             if e.is_north() {
                 d.total_thumpers += here;
@@ -618,7 +631,8 @@ impl StatesWorldAdapter<'_> {
     /// `obj.setSprite(getSprite(name))`.
     fn set_object_sprite(&mut self, r: ObjectRef, name: &str) {
         let s = self.sprite_named(name);
-        if let Some(mut o) = self.find_mut(r) {
+        if let Some(o_owner) = self.object_ref(r) {
+            let mut o = o_owner.borrow_mut();
             o.sprite = Some(s);
         }
     }
@@ -634,18 +648,21 @@ impl StatesWorldAdapter<'_> {
     fn add_tile_object(&mut self, p: (i32, i32, i32), name: &str, index: i32) {
         let s = self.sprite_named(name);
         let sprites = &*self.sprites;
-        let Some(sq) = self.cell.get_grid_square_mut(p.0, p.1, p.2) else {
+        let Some(sq_owner) = self.cell.get_grid_square_mut(p.0, p.1, p.2) else {
             return;
         };
+        let mut sq = sq_owner.borrow_mut();
         let id = sq.new_object_id();
         let obj = IsoObject::new(id, ObjectKind::Object, Some(s));
         let i = sq.place_wall_and_door_check(sprites, &obj, index);
         if i >= 0 && (i as usize) <= sq.objects.len() {
-            sq.objects.insert(i as usize, pz_world::ObjectSlot::new(obj));
+            sq.objects
+                .insert(i as usize, pz_world::ObjectSlot::new(obj));
         } else {
             sq.objects.push(pz_world::ObjectSlot::new(obj));
         }
         sq.burnt_out = false;
+        drop(sq);
         self.cell
             .recalc_all_with_neighbours(p.0, p.1, p.2, self.meta, self.sprites);
         self.engine.square_changed(p);
@@ -656,7 +673,10 @@ impl StatesWorldAdapter<'_> {
     /// object is no valid fence, which here only stops the bend).
     pub fn bend_fence(&mut self, r: ObjectRef, dir: Option<IsoDirections>) {
         let Some(bf) = self.bf() else { return };
-        let Some(f) = self.find(r) else { return };
+        let Some(f_owners) = self.find(r) else { return };
+        let f_square = f_owners.0.borrow();
+        let f_object = f_owners.1.borrow();
+        let f = (&*f_square, &*f_object);
         let mut dir = dir;
         let mut e = self.bf_entry_for_object(&bf, (f.0, &f.1), dir);
         if !e.is_some_and(|i| self.bf_valid_object((f.0, &f.1), &bf.entries[i])) {
@@ -682,9 +702,13 @@ impl StatesWorldAdapter<'_> {
             .unwrap_or("ZombieThumpGeneric")
             .to_string();
         let sqp = (f.0.x, f.0.y, f.0.z);
-        drop(f);
+        drop(f_object);
+        drop(f_square);
         self.swap_tiles(r, dir, true, -1);
-        let new = self.find(r).map_or(-1, |f| {
+        let new = self.find(r).map_or(-1, |owners| {
+            let square = owners.0.borrow();
+            let object = owners.1.borrow();
+            let f = (&*square, &*object);
             let e2 = self
                 .bf_entry_for_object(&bf, (f.0, &f.1), None)
                 .map(|i| &bf.entries[i]);
@@ -728,7 +752,10 @@ impl StatesWorldAdapter<'_> {
         force_stage: i32,
     ) {
         let Some(bf) = self.bf() else { return };
-        let Some(f) = self.find(r) else { return };
+        let Some(f_owners) = self.find(r) else { return };
+        let f_square = f_owners.0.borrow();
+        let f_object = f_owners.1.borrow();
+        let f = (&*f_square, &*f_object);
         let ei = match self.bf_entry_for_object(&bf, (f.0, &f.1), dir) {
             Some(i) => i,
             None if bending => match self.bf_entry_for_object(&bf, (f.0, &f.1), None) {
@@ -757,7 +784,8 @@ impl StatesWorldAdapter<'_> {
         let n = e.stage_count();
         let do_smash = bending && stage > 0 && e.dir != dir;
         let do_collapse = !do_smash && bending && stage + 1 >= n - 1;
-        let do_smash_collapse = do_collapse && !self.bf_check_can_collapse((f.0, &f.1), dir, e) && e.do_smash;
+        let do_smash_collapse =
+            do_collapse && !self.bf_check_can_collapse((f.0, &f.1), dir, e) && e.do_smash;
         let do_remove_collapsed = !bending && stage + 1 == n;
         let do_debris = do_collapse && !e.debris.is_empty();
         if stage == n && bending {
@@ -776,25 +804,28 @@ impl StatesWorldAdapter<'_> {
         let index = self.bf_tile_index(tiles, (f.0, &f.1), e, false);
         let origin = f.0;
         let (ox, oy, oz) = (origin.x, origin.y, origin.z);
-        drop(f);
+        drop(f_object);
+        drop(f_square);
         let mut updated = Vec::new();
         for i in 0..tiles.len() as i32 {
             let x = ox + if e.is_north() { i - index } else { 0 };
             let y = oy + if e.is_north() { 0 } else { i - index };
-            let Some(sq) = self.cell.get_grid_square(x, y, oz) else {
+            let Some(sq_owner) = self.cell.get_grid_square(x, y, oz) else {
                 continue;
             };
-            let Some(fo) = self.bf_object_for_entry(sq, tiles, i as usize) else {
+            let sq = sq_owner.borrow();
+            let Some(fo) = self.bf_object_for_entry(&sq, tiles, i as usize) else {
                 continue;
             };
             let fr = ObjectRef {
                 x,
                 y,
                 z: oz,
-                id: fo.id,
+                id: fo.borrow().id,
             };
-            let corner = self.env().obj_has_prop(&fo, "CornerNorthWall");
+            let corner = self.env().obj_has_prop(&fo.borrow(), "CornerNorthWall");
             drop(fo);
+            drop(sq);
             if corner {
                 self.split_corner(fr, e);
             }
@@ -803,6 +834,7 @@ impl StatesWorldAdapter<'_> {
                     .cell
                     .get_grid_square(x, y, oz)
                     .map(|sq| {
+                        let sq = sq.borrow();
                         sq.objects
                             .iter()
                             .skip(1)
@@ -861,7 +893,10 @@ impl StatesWorldAdapter<'_> {
 
     /// `splitCorner(obj, square, entry)`.
     fn split_corner(&mut self, r: ObjectRef, e: &BentFenceEntry) {
-        let Some((_, o)) = self.find(r) else { return };
+        let Some((_, o_owner)) = self.find(r) else {
+            return;
+        };
+        let o = o_owner.borrow();
         let env = self.env();
         let (Some(cn), Some(cw)) = (
             env.obj_prop(&o, "CornerNorthWall").map(str::to_string),
@@ -876,14 +911,17 @@ impl StatesWorldAdapter<'_> {
         let len = self
             .cell
             .get_grid_square(p.0, p.1, p.2)
-            .map_or(0, |s| s.objects.len() as i32);
+            .map_or(0, |s| s.borrow().objects.len() as i32);
         self.add_tile_object(p, &add, len + 1);
         self.square_update_tasks(p);
     }
 
     /// `addDebrisObject(obj, dir, entry)`.
     fn add_debris_object(&mut self, r: ObjectRef, dir: Option<IsoDirections>, e: &BentFenceEntry) {
-        let Some((_, o)) = self.find(r) else { return };
+        let Some((_, o_owner)) = self.find(r) else {
+            return;
+        };
+        let o = o_owner.borrow();
         if self.is_wall_obj(&o) || e.debris.is_empty() {
             return;
         }
@@ -896,9 +934,10 @@ impl StatesWorldAdapter<'_> {
             let (dx, dy) = dir.map_or((0, 0), |d| d.delta());
             p = (p.0 + dx, p.1 + dy, p.2);
         }
-        let Some(sq) = self.cell.get_grid_square(p.0, p.1, p.2) else {
+        let Some(sq_owner) = self.cell.get_grid_square(p.0, p.1, p.2) else {
             return;
         };
+        let sq = sq_owner.borrow();
         if !sq.treat_as_solid_floor(self.sprites) {
             return;
         }
@@ -907,6 +946,7 @@ impl StatesWorldAdapter<'_> {
         } else {
             -1
         };
+        drop(sq);
         self.add_tile_object(p, &name, index);
         self.engine.broken_fence_items(p, &o);
     }
@@ -914,7 +954,10 @@ impl StatesWorldAdapter<'_> {
     /// `smashFence(obj, dir, index)`.
     pub fn smash_fence(&mut self, r: ObjectRef, dir: IsoDirections, index: i32) {
         let Some(bf) = self.bf() else { return };
-        let Some(f) = self.find(r) else { return };
+        let Some(f_owners) = self.find(r) else { return };
+        let f_square = f_owners.0.borrow();
+        let f_object = f_owners.1.borrow();
+        let f = (&*f_square, &*f_object);
         let Some(ei) = self.bf_entry_for_object(&bf, (f.0, &f.1), None) else {
             return;
         };
@@ -927,21 +970,24 @@ impl StatesWorldAdapter<'_> {
             self.bf_tile_index(tiles, (f.0, &f.1), e, true)
         };
         let (ox, oy, oz) = (f.0.x, f.0.y, f.0.z);
-        drop(f);
+        drop(f_object);
+        drop(f_square);
         if stage != 0 {
             self.reset_fence(r);
         }
         for i in 1..tiles.len().saturating_sub(1) as i32 {
             let x = ox + if e.is_north() { i - use_index } else { 0 };
             let y = oy + if e.is_north() { 0 } else { i - use_index };
-            let Some(sq) = self.cell.get_grid_square(x, y, oz) else {
+            let Some(sq_owner) = self.cell.get_grid_square(x, y, oz) else {
                 continue;
             };
+            let sq = sq_owner.borrow();
             let fo = self
-                .bf_object_for_entry(sq, tiles, i as usize)
-                .map(|o| o.id)
-                .or_else(|| self.breakable_object(sq, e.is_north()));
+                .bf_object_for_entry(&sq, tiles, i as usize)
+                .map(|o| o.borrow().id)
+                .or_else(|| self.breakable_object(&sq, e.is_north()));
             let Some(id) = fo else { continue };
+            drop(sq);
             let fr = ObjectRef { x, y, z: oz, id };
             let name = tiles[i as usize].clone();
             self.set_object_sprite(fr, &name);
@@ -964,7 +1010,8 @@ impl StatesWorldAdapter<'_> {
         north: bool,
     ) -> Option<pz_world::objects::ObjectId> {
         sq.objects
-            .iter().map(|o| o.borrow())
+            .iter()
+            .map(|o| o.borrow())
             .find(|o| {
                 self.obj_sprite_name(&o)
                     .is_some_and(|n| self.engine.is_breakable_fence(n))
@@ -977,7 +1024,10 @@ impl StatesWorldAdapter<'_> {
     /// `resetFence(obj)`.
     pub fn reset_fence(&mut self, r: ObjectRef) {
         let Some(bf) = self.bf() else { return };
-        let Some(f) = self.find(r) else { return };
+        let Some(f_owners) = self.find(r) else { return };
+        let f_square = f_owners.0.borrow();
+        let f_object = f_owners.1.borrow();
+        let f = (&*f_square, &*f_object);
         let Some(ei) = self.bf_entry_for_object(&bf, (f.0, &f.1), None) else {
             return;
         };
@@ -994,24 +1044,27 @@ impl StatesWorldAdapter<'_> {
         }
         let index = self.bf_tile_index(tiles, (f.0, &f.1), e, false);
         let (ox, oy, oz) = (f.0.x, f.0.y, f.0.z);
-        drop(f);
+        drop(f_object);
+        drop(f_square);
         for i in 0..tiles.len() as i32 {
             let x = ox + if e.is_north() { i - index } else { 0 };
             let y = oy + if e.is_north() { 0 } else { i - index };
-            let Some(sq) = self.cell.get_grid_square(x, y, oz) else {
+            let Some(sq_owner) = self.cell.get_grid_square(x, y, oz) else {
                 continue;
             };
-            let Some(fo) = self.bf_object_for_entry(sq, tiles, i as usize) else {
+            let sq = sq_owner.borrow();
+            let Some(fo) = self.bf_object_for_entry(&sq, tiles, i as usize) else {
                 continue;
             };
             let fr = ObjectRef {
                 x,
                 y,
                 z: oz,
-                id: fo.id,
+                id: fo.borrow().id,
             };
-            let corner = self.env().obj_has_prop(&fo, "CornerNorthWall");
+            let corner = self.env().obj_has_prop(&fo.borrow(), "CornerNorthWall");
             drop(fo);
+            drop(sq);
             if corner {
                 self.split_corner(fr, e);
             }
@@ -1035,20 +1088,27 @@ impl StatesWorldAdapter<'_> {
         index: i32,
     ) {
         let Some(bf) = self.bf() else { return };
-        let Some((sq, _)) = self.find(r) else { return };
-        let (ox, oy, rx, ry) = Self::bf_collapse_origin(sq, dir, e, index);
+        let Some((sq_owner, _)) = self.find(r) else {
+            return;
+        };
+        let sq = sq_owner.borrow();
+        let (ox, oy, rx, ry) = Self::bf_collapse_origin(&sq, dir, e, index);
         let z = sq.z;
+        drop(sq);
         for x in 0..e.collapsed_size_x {
             for y in 0..e.collapsed_size_y {
                 let p = (ox + x * rx, oy + y * ry, z);
-                let Some(s) = self.cell.get_grid_square(p.0, p.1, p.2) else {
+                let Some(s_owner) = self.cell.get_grid_square(p.0, p.1, p.2) else {
                     continue;
                 };
+                let s = s_owner.borrow();
                 let n = s.objects.len();
+                drop(s);
                 for i in (1..n).rev() {
-                    let Some(s) = self.cell.get_grid_square(p.0, p.1, p.2) else {
+                    let Some(s_owner) = self.cell.get_grid_square(p.0, p.1, p.2) else {
                         break;
                     };
+                    let s = s_owner.borrow();
                     let Some(o) = s.objects.get(i) else { continue };
                     let o = o.borrow();
                     if self
@@ -1057,6 +1117,7 @@ impl StatesWorldAdapter<'_> {
                     {
                         let id = o.id;
                         drop(o);
+                        drop(s);
                         self.remove_object(
                             ObjectRef {
                                 x: p.0,
@@ -1066,7 +1127,10 @@ impl StatesWorldAdapter<'_> {
                             },
                             false,
                         );
-                    } else { drop(o); }
+                    } else {
+                        drop(o);
+                        drop(s);
+                    }
                     self.square_update_tasks(p);
                 }
             }
@@ -1076,10 +1140,14 @@ impl StatesWorldAdapter<'_> {
     /// `collapse(obj, dir, entry, index)`.
     fn collapse(&mut self, r: ObjectRef, dir: IsoDirections, e: &BentFenceEntry, index: i32) {
         let Some(bf) = self.bf() else { return };
-        let Some((sq, _)) = self.find(r) else { return };
+        let Some((sq_owner, _)) = self.find(r) else {
+            return;
+        };
+        let sq = sq_owner.borrow();
         let north = e.is_north();
-        let (ox, oy, rx, ry) = Self::bf_collapse_origin(sq, Some(dir), e, index);
+        let (ox, oy, rx, ry) = Self::bf_collapse_origin(&sq, Some(dir), e, index);
         let z = sq.z;
+        drop(sq);
         let mut collapsed = e.collapsed.iter();
         let mut trip = Vec::new();
         let mut crush = Vec::new();
@@ -1107,11 +1175,12 @@ impl StatesWorldAdapter<'_> {
                 let n = self
                     .cell
                     .get_grid_square(p.0, p.1, p.2)
-                    .map_or(0, |s| s.objects.len());
+                    .map_or(0, |s| s.borrow().objects.len());
                 for i in (1..n).rev() {
-                    let Some(s) = self.cell.get_grid_square(p.0, p.1, p.2) else {
+                    let Some(s_owner) = self.cell.get_grid_square(p.0, p.1, p.2) else {
                         break;
                     };
+                    let s = s_owner.borrow();
                     let Some(o) = s.objects.get(i) else { continue };
                     let o = o.borrow();
                     let or = ObjectRef {
@@ -1126,6 +1195,7 @@ impl StatesWorldAdapter<'_> {
                         .is_some_and(|n| self.engine.is_breakable_fence(n))
                     {
                         drop(o);
+                        drop(s);
                         self.engine.destroy_fence(self.cell, or, dir);
                         continue;
                     }
@@ -1137,9 +1207,15 @@ impl StatesWorldAdapter<'_> {
                     {
                         continue;
                     }
+                    let actual = s.objects[i].ref_handle();
                     drop(o);
-                    let o = self.object_ref(or).expect("located object");
-                    let has_contents = o.borrow().container.as_ref().is_some_and(|c| !c.items.is_empty());
+                    drop(s);
+                    let o = actual;
+                    let has_contents = o
+                        .borrow()
+                        .container
+                        .as_ref()
+                        .is_some_and(|c| !c.items.is_empty());
                     if has_contents {
                         self.engine.dump_contents(p, &o);
                     }
@@ -1152,7 +1228,7 @@ impl StatesWorldAdapter<'_> {
                 let len = self
                     .cell
                     .get_grid_square(p.0, p.1, p.2)
-                    .map_or(0, |s| s.objects.len() as i32);
+                    .map_or(0, |s| s.borrow().objects.len() as i32);
                 self.add_tile_object(p, name, len + 1);
                 self.square_update_tasks(p);
             }

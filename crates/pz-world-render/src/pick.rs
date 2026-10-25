@@ -14,7 +14,7 @@ use std::rc::Rc;
 use pz_iso_render::{Camera, ObjectRenderInfo, RenderInfos};
 use pz_render::Texture;
 use pz_world::square::EdgeFacing;
-use pz_world::{IsoGridSquare, IsoObject, ObjectKind};
+use pz_world::{IsoGridSquare, IsoObject, ObjectKind, SquareRef};
 
 use crate::render_world::{RenderWorld, WorldView};
 
@@ -133,19 +133,20 @@ impl WorldPick<'_> {
     }
 
     /// The square at `x, y, z`.
-    pub fn square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
+    pub fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         self.view.cell.get_grid_square(x, y, z)
     }
 
     /// `square.getObjects()` of the square at `x, y, z`, in order; `None`
     /// without a square.
     pub fn objects(&self, x: i32, y: i32, z: i32) -> Option<Vec<ObjectPick>> {
-        let sq = self.square(x, y, z)?;
+        let sq_owner = self.square(x, y, z)?;
+        let sq = sq_owner.borrow();
         Some(
             sq.objects
                 .iter()
                 .enumerate()
-                .map(|(i, o)| self.object(sq, i, &o.borrow()))
+                .map(|(i, o)| self.object(&sq, i, &o.borrow()))
                 .collect(),
         )
     }

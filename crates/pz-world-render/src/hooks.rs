@@ -81,7 +81,14 @@ impl WorldHooks for WorldState<'_> {
             return (None, None);
         };
         let (a, b) = self.barricades_for(sq, north);
-        (a.as_deref().map(lighting_barricade), b.as_deref().map(lighting_barricade))
+        let read = |owner: pz_world::IsoObjectRef| {
+            let object = owner.borrow();
+            let pz_world::objects::ObjectKind::Barricade(b) = &object.kind else {
+                return None;
+            };
+            Some(lighting_barricade(b))
+        };
+        (a.and_then(read), b.and_then(read))
     }
 
     fn hydro_power_off(&self) -> bool {

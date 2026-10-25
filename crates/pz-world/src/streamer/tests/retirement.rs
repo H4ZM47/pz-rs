@@ -55,7 +55,7 @@ fn bag_chunk(
     );
     square.world_objects.push(1);
     let mut chunk = IsoChunk::new(wx, wy);
-    chunk.set_square(0, 0, 0, Some(square));
+    chunk.set_square(0, 0, 0, Some((square).into()));
     (chunk, weak)
 }
 
@@ -332,7 +332,7 @@ fn retained_bag_mutation_after_unload_is_written_by_real_pending_save() {
     let mut ctx = f.save_ctx();
     ctx.items = &env;
     let reloaded = load_chunk(&bytes, 10, 10, &ctx).unwrap().chunk;
-    let object = &reloaded.get_grid_square(0, 0, 0).unwrap().objects[0];
+    let object = reloaded.get_grid_square(0, 0, 0).unwrap().borrow().objects[0].ref_handle();
     let ObjectKind::WorldInventory(floor) = &object.borrow().kind else {
         panic!("saved floor item missing")
     };

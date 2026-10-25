@@ -119,7 +119,14 @@ pub fn puddle_square(w: &WorldView<'_>, regions: &IsoRegions, sq: &IsoGridSquare
     let names = sq
         .objects
         .iter()
-        .flat_map(|o| o.borrow().attached_anim_sprite.iter().flatten().map(|a| a.sprite).collect::<Vec<_>>())
+        .flat_map(|o| {
+            o.borrow()
+                .attached_anim_sprite
+                .iter()
+                .flatten()
+                .map(|a| a.sprite)
+                .collect::<Vec<_>>()
+        })
         .filter_map(|sprite| w.sprites.sprites[sprite].name.as_deref());
     PuddleSquare {
         exterior: sq.has(f.exterior),
@@ -148,12 +155,14 @@ pub fn wall_type(w: &WorldView<'_>, sq: &IsoGridSquare) -> i32 {
         ty |= 5;
     }
     if let Some(e) = sq.get_adjacent_square(IsoDirections::E, w.cell) {
-        if flag(e, "WallW") || flag(e, "WallNW") {
+        let e = e.borrow();
+        if flag(&e, "WallW") || flag(&e, "WallNW") {
             ty |= 8;
         }
     }
     if let Some(s) = sq.get_adjacent_square(IsoDirections::S, w.cell) {
-        if flag(s, "WallN") || flag(s, "WallNW") {
+        let s = s.borrow();
+        if flag(&s, "WallN") || flag(&s, "WallNW") {
             ty |= 2;
         }
     }
@@ -163,9 +172,9 @@ pub fn wall_type(w: &WorldView<'_>, sq: &IsoGridSquare) -> i32 {
 /// `getWindowFrame(GridSquareEdgeFacingDirection)`: an `IsoWindowFrame` in
 /// `objects` on the north (`north`) or west edge.
 pub fn has_window_frame(sq: &IsoGridSquare, north: bool) -> bool {
-    sq.objects
-        .iter()
-        .any(|o| matches!(o.borrow().kind, pz_world::ObjectKind::WindowFrame { north: n } if n == north))
+    sq.objects.iter().any(
+        |o| matches!(o.borrow().kind, pz_world::ObjectKind::WindowFrame { north: n } if n == north),
+    )
 }
 
 /// The neighbour tests of `renderSeamFix2_Floor` / `renderSeamFix2_Wall`
@@ -175,8 +184,12 @@ pub fn seam_neighbours(w: &WorldView<'_>, sq: &IsoGridSquare) -> SeamNeighbours 
     let t = &w.sprites.tables;
     let flag =
         |s: &IsoGridSquare, n: &str| t.flag_from_string(n).is_some_and(|f: IsoFlagType| s.has(f));
-    let s = sq.get_adjacent_square(IsoDirections::S, w.cell);
-    let e = sq.get_adjacent_square(IsoDirections::E, w.cell);
+    let s_owner = sq.get_adjacent_square(IsoDirections::S, w.cell);
+    let e_owner = sq.get_adjacent_square(IsoDirections::E, w.cell);
+    let s_guard = s_owner.as_ref().map(|s| s.borrow());
+    let e_guard = e_owner.as_ref().map(|s| s.borrow());
+    let s = s_guard.as_deref();
+    let e = e_guard.as_deref();
     let floor = |s: &IsoGridSquare| s.floor_index(w.sprites).is_some();
     SeamNeighbours {
         s_floor: s.is_some_and(floor),
@@ -236,9 +249,10 @@ impl RenderWorld {
             return Vec::new();
         };
         self.chunks.insert((wx, wy), (ch.min_level, ch.max_level));
-        for sq in ch.squares() {
+        for sq_owner in ch.squares() {
+            let sq = sq_owner.borrow();
             self.squares
-                .insert((sq.x, sq.y, sq.z), render_square(w, sq, cache, tex));
+                .insert((sq.x, sq.y, sq.z), render_square(w, &sq, cache, tex));
             self.puddles_recalc.insert((sq.x, sq.y, sq.z));
         }
         self.refresh_seams(w, wx, wy);
@@ -265,11 +279,12 @@ impl RenderWorld {
         if let Some(ch) = w.cell.chunks.get(&(wx, wy)) {
             self.chunks.insert((wx, wy), (ch.min_level, ch.max_level));
         }
-        let Some(sq) = w.cell.get_grid_square(x, y, z) else {
+        let Some(sq_owner) = w.cell.get_grid_square(x, y, z) else {
             self.squares.remove(&(x, y, z));
             return;
         };
-        let mut rs = render_square(w, sq, cache, tex);
+        let sq = sq_owner.borrow();
+        let mut rs = render_square(w, &sq, cache, tex);
         if let Some(old) = self.squares.get(&(x, y, z)) {
             rs.light_info = old.light_info;
             rs.vert_lights = old.vert_lights;
@@ -283,14 +298,14 @@ impl RenderWorld {
         } else {
             self.puddles_recalc.insert((x, y, z));
         }
-        rs.seam = seam_neighbours(w, sq);
+        rs.seam = seam_neighbours(w, &sq);
         self.squares.insert((x, y, z), rs);
         for p in [(x - 1, y, z), (x, y - 1, z)] {
             if let (Some(sq), Some(rs)) = (
                 w.cell.get_grid_square(p.0, p.1, p.2),
                 self.squares.get_mut(&p),
             ) {
-                rs.seam = seam_neighbours(w, sq);
+                rs.seam = seam_neighbours(w, &sq.borrow());
             }
         }
     }
@@ -316,10 +331,10 @@ impl RenderWorld {
         let at = |dx: i32, dy: i32| {
             w.cell
                 .get_grid_square(x + dx, y + dy, z)
-                .map(|n| puddle_square(w, regions, n))
+                .map(|n| puddle_square(w, regions, &n.borrow()))
         };
         rs.puddles = Some(PuddlesGeometry::init(
-            &puddle_square(w, regions, sq),
+            &puddle_square(w, regions, &sq.borrow()),
             perf_puddles,
             at,
         ));
@@ -341,7 +356,10 @@ impl RenderWorld {
     pub fn refresh_seams(&mut self, w: &WorldView<'_>, wx: i32, wy: i32) {
         let mut targets = Vec::new();
         if let Some(ch) = w.cell.chunks.get(&(wx, wy)) {
-            targets.extend(ch.squares().map(|s| (s.x, s.y, s.z)));
+            targets.extend(ch.squares().map(|s| {
+                let s = s.borrow();
+                (s.x, s.y, s.z)
+            }));
         }
         let (x0, y0) = (wx * 8, wy * 8);
         for (_, &(min, max)) in self
@@ -363,7 +381,7 @@ impl RenderWorld {
             ) else {
                 continue;
             };
-            rs.seam = seam_neighbours(w, sq);
+            rs.seam = seam_neighbours(w, &sq.borrow());
         }
     }
 
@@ -432,7 +450,7 @@ impl CutawayWorld for RenderWorld {
 
 /// [`GetSquare`] through a [`WorldView`]'s cell.
 impl GetSquare for WorldView<'_> {
-    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
+    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<pz_world::SquareRef> {
         self.cell.get_grid_square(x, y, z)
     }
 }

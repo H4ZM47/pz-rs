@@ -53,8 +53,8 @@ use pz_pathfind::square_bits::SquareBits;
 use pz_world::chunk::{ChunkLoadEnv, IsoCell};
 use pz_world::fix2x::Fix2xTable;
 use pz_world::{
-    CreateParams, GameRand, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, NoHooks,
-    ObjectLoadSettings, ObjectTables, SpriteTables, WorldGenBounds,
+    CreateParams, GameRand, IsoMetaGrid, IsoSpriteManager, NoHooks, ObjectLoadSettings,
+    ObjectTables, SpriteTables, WorldGenBounds,
 };
 
 /// `java.util.Random`.
@@ -214,7 +214,7 @@ const OTYPES: [&str; 6] = [
 ];
 
 fn rust_inputs(
-    sq: Option<&IsoGridSquare>,
+    sq: Option<pz_world::SquareRef>,
     sb: &SquareBits<'_, IsoCell>,
     m: &IsoSpriteManager,
 ) -> Inputs {
@@ -228,6 +228,8 @@ fn rust_inputs(
             objects: String::new(),
         };
     };
+    let sq_guard = sq.borrow();
+    let sq = &*sq_guard;
     let t = &m.tables;
     let mut fl: Vec<&str> = FLAGS
         .iter()

@@ -448,6 +448,6 @@ fn java_split(s: &str, sep: char) -> Vec<String> {
 #[cfg(test)]
 mod animal_tests;
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 pub(crate) mod movers_tests;
+#[cfg(test)]
+mod tests;

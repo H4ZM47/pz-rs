@@ -182,10 +182,12 @@ impl Scene {
                         Some(m.named_map["door_w"]),
                     )));
                 }
-                cell.chunks
-                    .get_mut(&(1, 1))
-                    .unwrap()
-                    .set_square(x % 8, y % 8, 0, Some(sq));
+                cell.chunks.get_mut(&(1, 1)).unwrap().set_square(
+                    x % 8,
+                    y % 8,
+                    0,
+                    Some((sq).into()),
+                );
             }
         }
         cell.recalc_chunk_squares(1, 1, &meta, &m);

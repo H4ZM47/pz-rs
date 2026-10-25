@@ -8,7 +8,7 @@ use pz_world::objects::{IsoObject, IsoThumpable, ObjectId};
 use pz_world::sprite::IsoFlagType;
 use pz_world::square::CollideEnv;
 use pz_world::square::GetSquare;
-use pz_world::{IsoCell, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, ObjectHooks};
+use pz_world::{IsoCell, IsoGridSquare, IsoMetaGrid, IsoSpriteManager, ObjectHooks, SquareRef};
 
 /// The loaded cell and the tables its queries read.
 #[derive(Clone, Copy)]
@@ -33,12 +33,12 @@ impl<'a> Env<'a> {
     }
 
     /// `getCell().getGridSquare(x, y, z)`.
-    pub fn sq(&self, x: i32, y: i32, z: i32) -> Option<&'a IsoGridSquare> {
+    pub fn sq(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         self.cell.get_grid_square(x, y, z)
     }
 
     /// The square at `p`.
-    pub fn at(&self, p: (i32, i32, i32)) -> Option<&'a IsoGridSquare> {
+    pub fn at(&self, p: (i32, i32, i32)) -> Option<SquareRef> {
         self.sq(p.0, p.1, p.2)
     }
 
@@ -139,9 +139,9 @@ impl<'a> Env<'a> {
     /// square it is on.
     pub fn test_collide_special_objects(
         &self,
-        this: &'a IsoGridSquare,
-        next: Option<&'a IsoGridSquare>,
-    ) -> Option<(&'a IsoGridSquare, ObjectId)> {
+        this: &SquareRef,
+        next: Option<&SquareRef>,
+    ) -> Option<(SquareRef, ObjectId)> {
         self.collide().test_collide_special_objects(this, next)
     }
 
@@ -201,7 +201,8 @@ impl<'a> Env<'a> {
         if x < min_x || y < min_y || x > max_x || y > max_y {
             return false;
         }
-        self.sq(x, y, z).is_some_and(|s| s.has_stairs(self.sprites))
+        self.sq(x, y, z)
+            .is_some_and(|s| s.borrow().has_stairs(self.sprites))
     }
 
     /// `getGridSneakModifier(onlySolidTrans)`.
@@ -262,27 +263,38 @@ impl<'a> Env<'a> {
     }
 
     /// `IsoGameCharacter.canClimbDownSheetRope(sq)`.
-    pub fn can_climb_down_sheet_rope(&self, sq: Option<&IsoGridSquare>) -> bool {
-        let Some(mut sq) = sq else { return false };
-        let start_z = sq.z;
-        loop {
+    pub fn can_climb_down_sheet_rope(&self, square: Option<&IsoGridSquare>) -> bool {
+        let Some(square) = square else { return false };
+        let start_z = square.z;
+        let check = |sq: &IsoGridSquare| {
             if !self.is_sheet_rope_here(sq) || !self.can_climb_here(sq) {
+                Some(false)
+            } else if sq.treat_as_solid_floor(self.sprites) {
+                Some(sq.z < start_z)
+            } else {
+                None
+            }
+        };
+        if let Some(result) = check(square) {
+            return result;
+        }
+        let mut next = (square.x, square.y, fastfloor(square.z as f32 - 1.0));
+        loop {
+            let Some(owner) = self.sq(next.0, next.1, next.2) else {
                 return false;
+            };
+            let sq = owner.borrow();
+            if let Some(result) = check(&sq) {
+                return result;
             }
-            if sq.treat_as_solid_floor(self.sprites) {
-                return sq.z < start_z;
-            }
-            match self.sq(sq.x, sq.y, fastfloor(sq.z as f32 - 1.0)) {
-                Some(s) => sq = s,
-                None => return false,
-            }
+            next = (sq.x, sq.y, fastfloor(sq.z as f32 - 1.0));
         }
     }
 
     /// `HasStairsBelow()`.
     pub fn has_stairs_below(&self, sq: &IsoGridSquare) -> bool {
         self.sq(sq.x, sq.y, sq.z - 1)
-            .is_some_and(|s| s.has_stairs(self.sprites))
+            .is_some_and(|s| s.borrow().has_stairs(self.sprites))
     }
 
     /// `getSheetRope()`: the first object with `sheetRope`.
@@ -292,7 +304,7 @@ impl<'a> Env<'a> {
 }
 
 impl GetSquare for Env<'_> {
-    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
+    fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         self.cell.get_grid_square(x, y, z)
     }
 }

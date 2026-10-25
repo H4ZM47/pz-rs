@@ -17,9 +17,11 @@ pub(super) fn register(b: &ClassBuilder) {
             };
             let (from, to) = (square(from)?, square(to)?);
             // These original early returns do not read sprite definitions.
-            if std::ptr::eq(from, to) {
+            if Rc::ptr_eq(&from, &to) {
                 return Ok(true.into());
             }
+            let from = from.borrow();
+            let to = to.borrow();
             if (to.x - from.x).abs() > 1 || (to.y - from.y).abs() > 1 || to.z != from.z {
                 return Ok(false.into());
             }
@@ -29,7 +31,7 @@ pub(super) fn register(b: &ClassBuilder) {
                 .map_err(|_| LuaError::runtime("IsoSpriteManager is in use"))?;
             let objects = ObjectHooks::new(cell, &sprites);
             Ok(from
-                .can_reach_to_excluding(to, &sprites, cell, &objects, &excluded)
+                .can_reach_to_excluding(&to, &sprites, cell, &objects, &excluded)
                 .into())
         })
     });

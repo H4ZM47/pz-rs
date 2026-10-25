@@ -266,7 +266,8 @@ fn main() {
             let (g_null, g_obj, g_room) = &game_sq[&k];
             n += 1;
             let ours = cell.get_grid_square(k.0, k.1, k.2);
-            let p_obj = ours.map(|sq| {
+            let p_obj = ours.as_ref().map(|sq| {
+                let sq = sq.borrow();
                 sq.objects
                     .iter()
                     .map(|o| {
@@ -281,7 +282,8 @@ fn main() {
                     .join(";")
             });
             let p_null = ours.is_none();
-            let p_room = ours.map_or((String::new(), false), |sq| {
+            let p_room = ours.as_ref().map_or((String::new(), false), |sq| {
+                let sq = sq.borrow();
                 (
                     sq.room_id.to_string(),
                     sq.room_def(&meta).is_some_and(|r| r.building.is_some()),

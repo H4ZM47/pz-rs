@@ -90,7 +90,7 @@ struct World {
     rand: Script,
     tables: ObjectTables,
     settings: ObjectLoadSettings,
-    sq: IsoGridSquare,
+    sq: crate::SquareRef,
     meta: IsoMetaGrid,
 }
 
@@ -101,7 +101,7 @@ impl World {
             rand: Script::default(),
             tables: tables(),
             settings: ObjectLoadSettings::default(),
-            sq: IsoGridSquare::new(10, 20, 0),
+            sq: crate::SquareSlot::new(IsoGridSquare::new(10, 20, 0)).ref_handle(),
             meta: IsoMetaGrid::empty(),
         }
     }
@@ -116,7 +116,7 @@ impl World {
             settings: self.settings,
             hooks,
         };
-        do_tile_object_creation(&mut env, &self.meta, &mut self.sq, spr, ty, name)
+        do_tile_object_creation(&mut env, &self.meta, &self.sq, spr, ty, name)
     }
 
     fn place(&mut self, name: &str) -> JavaResult<()> {
@@ -125,6 +125,7 @@ impl World {
 
     fn classes(&self) -> Vec<&'static str> {
         self.sq
+            .borrow()
             .objects
             .iter()
             .map(ObjectSlot::borrow)
@@ -148,19 +149,25 @@ fn doors_lock_and_order_against_walls() {
     ]);
     w.rand.ints = [10, 0].into();
     w.place("door_0").unwrap();
-    let ObjectKind::Door(d) = &w.sq.objects[0].borrow().kind.clone() else {
+    let ObjectKind::Door(d) = &w.sq.borrow().objects[0].borrow().kind.clone() else {
         panic!()
     };
     assert!(d.north && !d.open && d.locked && d.locked_by_key);
     assert_eq!(d.open_sprite, Some(w.idx("door_2")));
     assert_eq!(w.rand.log, ["next(100)", "next(3)"]);
-    assert_eq!(w.sq.special_objects, [w.sq.objects[0].borrow().id]);
-    assert!(w.sq.objects[0].borrow().outline_on_mouseover);
+    assert_eq!(
+        w.sq.borrow().special_objects,
+        [w.sq.borrow().objects[0].borrow().id]
+    );
+    assert!(w.sq.borrow().objects[0].borrow().outline_on_mouseover);
 
     // A wall goes in front of the door and is not a special object.
     w.place("wall_0").unwrap();
     assert_eq!(w.classes(), ["IsoObject", "IsoDoor"]);
-    assert_eq!(w.sq.objects[0].borrow().tile.as_deref(), Some("wall_0"));
+    assert_eq!(
+        w.sq.borrow().objects[0].borrow().tile.as_deref(),
+        Some("wall_0")
+    );
 
     // An open garage door: never locked, and its open sprite is itself.
     w.rand = Script {
@@ -168,7 +175,7 @@ fn doors_lock_and_order_against_walls() {
         ..Default::default()
     };
     w.place("gdoor_8").unwrap();
-    let ObjectKind::Door(d) = &w.sq.objects[2].borrow().kind.clone() else {
+    let ObjectKind::Door(d) = &w.sq.borrow().objects[2].borrow().kind.clone() else {
         panic!()
     };
     assert!(d.open && !d.locked);
@@ -203,7 +210,7 @@ fn windows_smashed_and_frames() {
     // Lock chance for "VeryOften" (the fallback) is 7 here.
     w.rand.ints = [3].into();
     w.place("win_2").unwrap();
-    let o = w.sq.objects[0].borrow().clone();
+    let o = w.sq.borrow().objects[0].borrow().clone();
     let ObjectKind::Window(win) = &o.kind else {
         panic!()
     };
@@ -219,7 +226,8 @@ fn windows_smashed_and_frames() {
     w.place("wall_0").unwrap();
     w.place("frame_0").unwrap();
     let wall =
-        w.sq.objects
+        w.sq.borrow()
+            .objects
             .iter()
             .map(ObjectSlot::borrow)
             .find(|o| o.tile.as_deref() == Some("wall_0"))
@@ -238,7 +246,7 @@ fn curtains_and_missing_sprites() {
         ("curt_2", 2, "curtainN", &[]),
     ]);
     w.place("curt_5").unwrap();
-    let ObjectKind::Curtain(c) = &w.sq.objects[0].borrow().kind.clone() else {
+    let ObjectKind::Curtain(c) = &w.sq.borrow().objects[0].borrow().kind.clone() else {
         panic!()
     };
     assert!(!c.north && c.open);
@@ -263,11 +271,11 @@ fn trees_need_natural_floor_and_tint() {
     w.place("blends_street_01_0").unwrap();
     w.place("vegetation_trees_01_0").unwrap();
     assert_eq!(w.classes(), ["IsoObject"]);
-    w.sq.objects.clear();
+    w.sq.borrow_mut().clear_objects();
     w.place("blends_natural_01_0").unwrap();
     w.rand.ints = [10, 20, 29].into();
     w.place("vegetation_trees_01_0").unwrap();
-    let o = w.sq.objects[1].borrow().clone();
+    let o = w.sq.borrow().objects[1].borrow().clone();
     assert_eq!(
         o.kind,
         ObjectKind::Tree(IsoTree {
@@ -305,7 +313,7 @@ fn light_switches() {
         ),
     ]);
     w.place("light_0").unwrap();
-    let ObjectKind::LightSwitch(s) = &w.sq.objects[0].borrow().kind.clone() else {
+    let ObjectKind::LightSwitch(s) = &w.sq.borrow().objects[0].borrow().kind.clone() else {
         panic!()
     };
     assert!(!s.light_room && s.activated);
@@ -316,7 +324,7 @@ fn light_switches() {
         (10, 20, 10)
     );
     w.place("switch_0").unwrap();
-    let ObjectKind::LightSwitch(s) = &w.sq.objects[1].borrow().kind.clone() else {
+    let ObjectKind::LightSwitch(s) = &w.sq.borrow().objects[1].borrow().kind.clone() else {
         panic!()
     };
     assert!(s.light_room && s.activated && s.lights.is_empty());
@@ -346,23 +354,23 @@ fn overlays_attach() {
         ("rug_0", 5, "normal", &[("FloorOverlay", "")]),
     ]);
     w.place("rug_0").unwrap();
-    assert!(w.sq.objects.is_empty());
+    assert!(w.sq.borrow().objects.is_empty());
     w.place("floor_0").unwrap();
     w.place("wall_0").unwrap();
     w.place("over_0").unwrap();
     w.place("rug_0").unwrap();
     // No west wall: a plain object without a tile.
     w.place("over_1").unwrap();
-    assert_eq!(w.sq.objects.len(), 3);
+    assert_eq!(w.sq.borrow().objects.len(), 3);
     assert_eq!(
-        w.sq.objects[0].borrow().attached_sprites(),
+        w.sq.borrow().objects[0].borrow().attached_sprites(),
         Some(vec![w.idx("rug_0")])
     );
     assert_eq!(
-        w.sq.objects[1].borrow().attached_sprites(),
+        w.sq.borrow().objects[1].borrow().attached_sprites(),
         Some(vec![w.idx("over_0")])
     );
-    assert_eq!(w.sq.objects[2].borrow().tile, None);
+    assert_eq!(w.sq.borrow().objects[2].borrow().tile, None);
 }
 
 #[test]
@@ -409,7 +417,7 @@ fn containers_and_classes_by_property() {
         ("juke_0", 8, "jukebox", &[]),
     ]);
     w.place("crate_0").unwrap();
-    let o = w.sq.objects[0].borrow().clone();
+    let o = w.sq.borrow().objects[0].borrow().clone();
     let c = o.container.as_ref().unwrap();
     assert_eq!((c.kind.as_deref(), c.capacity), (Some("crate"), 20));
     assert_eq!(o.secondary_containers[0].capacity, 7);
@@ -430,7 +438,7 @@ fn containers_and_classes_by_property() {
             "IsoJukebox"
         ]
     );
-    let ObjectKind::Barbecue(b) = &w.sq.objects[1].borrow().kind.clone() else {
+    let ObjectKind::Barbecue(b) = &w.sq.borrow().objects[1].borrow().kind.clone() else {
         panic!()
     };
     assert!(b.has_propane_tank);
@@ -486,7 +494,12 @@ fn radios_draw_in_order() {
             "next(100)"
         ]
     );
-    let d = w.sq.objects[0].borrow().kind.device_data().unwrap().clone();
+    let d = w.sq.borrow().objects[0]
+        .borrow()
+        .kind
+        .device_data()
+        .unwrap()
+        .clone();
     assert_eq!(d.presets.presets.len(), 2);
     assert_eq!(d.channel, 600);
     assert!((d.device_volume - 0.55).abs() < 1e-6);
@@ -526,13 +539,51 @@ fn stackable_objects() {
     for t in ["table_0", "top_0", "stack_0"] {
         w.place(t).unwrap();
     }
-    w.sq.fix_stackable_objects(&w.m);
+    w.sq.borrow_mut().fix_stackable_objects(&w.m);
     let y: Vec<f32> =
-        w.sq.objects
+        w.sq.borrow()
+            .objects
             .iter()
             .map(ObjectSlot::borrow)
             .map(|o| o.render_y_offset)
             .collect();
     assert_eq!(y, [0.0, 6.0, 10.0]);
-    assert_eq!(w.sq.objects[2].borrow().sprite, Some(w.idx("stack_1")));
+    assert_eq!(
+        w.sq.borrow().objects[2].borrow().sprite,
+        Some(w.idx("stack_1"))
+    );
+}
+
+#[test]
+fn entity_loading_callback_can_borrow_actual_square_and_object_before_insertion() {
+    struct Entity {
+        square: crate::SquareRef,
+        called: bool,
+    }
+    impl ObjectLoadHooks for Entity {
+        fn create_iso_entity(&mut self, object: crate::IsoObjectRef, _: &mut dyn GameRand) -> bool {
+            let mut square = self
+                .square
+                .try_borrow_mut()
+                .expect("square guard must end before host callback");
+            assert!(square.objects.is_empty());
+            square.have_roof = true;
+            object
+                .try_borrow_mut()
+                .expect("object guard must end before host callback")
+                .key_id = 731;
+            self.called = true;
+            true
+        }
+    }
+    let mut w = World::new(&[("entity", 1, "normal", &[("EntityScript", "")])]);
+    let mut hook = Entity {
+        square: w.sq.clone(),
+        called: false,
+    };
+    w.place_with("entity", &mut hook).unwrap();
+    assert!(hook.called);
+    assert!(w.sq.borrow().have_roof);
+    assert_eq!(w.sq.borrow().objects[0].borrow().key_id, 731);
+    assert!(w.sq.borrow().objects[0].borrow().has_components);
 }

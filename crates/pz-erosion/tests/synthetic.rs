@@ -181,16 +181,22 @@ fn setup() -> (IsoSpriteManager, IsoChunk) {
         for y in 0..8 {
             let mut sq = IsoGridSquare::new(16 + x, 24 + y, 0);
             let id = sq.new_object_id();
-            sq.objects
-                .push(pz_world::ObjectSlot::new(IsoObject::new(id, ObjectKind::Object, Some(floor))));
+            sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
+                id,
+                ObjectKind::Object,
+                Some(floor),
+            )));
             if (x, y) == (3, 4) {
                 let id = sq.new_object_id();
-                sq.objects
-                    .push(pz_world::ObjectSlot::new(IsoObject::new(id, ObjectKind::Object, Some(tree))));
+                sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
+                    id,
+                    ObjectKind::Object,
+                    Some(tree),
+                )));
             }
             // As the chunk load does before erosion runs.
             sq.recalc_properties(&m);
-            chunk.set_square(x, y, 0, Some(sq));
+            chunk.set_square(x, y, 0, Some((sq).into()));
         }
     }
     (m, chunk)
@@ -243,7 +249,8 @@ fn chunk_load_replaces_and_grows() {
     assert_eq!((cd.e_tick_stamp, cd.epoch), (60, 0));
 
     // The map tree was adopted by NatureTrees and renamed.
-    let sq = chunk.get_grid_square(3, 4, 0).unwrap();
+    let sq_owner = chunk.get_grid_square(3, 4, 0).unwrap();
+    let sq = sq_owner.borrow();
     let saved = sq.erosion.as_ref().unwrap();
     assert!(saved.init);
     let tree_data = saved
@@ -266,10 +273,13 @@ fn chunk_load_replaces_and_grows() {
         "{name}"
     );
 
+    drop(sq);
+
     // Every square was initialised; in-memory data mirrors the saved record.
     for x in 0..8 {
         for y in 0..8 {
-            let s = chunk.get_grid_square(x, y, 0).unwrap();
+            let s_owner = chunk.get_grid_square(x, y, 0).unwrap();
+            let s = s_owner.borrow();
             assert!(s.erosion.as_ref().unwrap().init);
             let mem = main.square_data(16 + x, 24 + y, 0).unwrap();
             assert_eq!(&mem.to_saved(), s.erosion.as_ref().unwrap());
@@ -280,7 +290,10 @@ fn chunk_load_replaces_and_grows() {
     // A second pass with unchanged stamps leaves everything alone.
     let before: Vec<_> = chunk
         .squares()
-        .map(|s| (s.objects.len(), s.erosion.clone()))
+        .map(|s| {
+            let s = s.borrow();
+            (s.objects.len(), s.erosion.clone())
+        })
         .collect();
     main.load_grid_square(
         &mut chunk,
@@ -294,7 +307,10 @@ fn chunk_load_replaces_and_grows() {
     );
     let after: Vec<_> = chunk
         .squares()
-        .map(|s| (s.objects.len(), s.erosion.clone()))
+        .map(|s| {
+            let s = s.borrow();
+            (s.objects.len(), s.erosion.clone())
+        })
         .collect();
     assert_eq!(before, after);
 
@@ -357,6 +373,7 @@ fn erosion_square_controls() {
         chunk
             .get_grid_square(3, 4, 0)
             .unwrap()
+            .borrow()
             .erosion
             .as_ref()
             .unwrap()
@@ -366,6 +383,7 @@ fn erosion_square_controls() {
     let s = chunk
         .get_grid_square(3, 4, 0)
         .unwrap()
+        .borrow()
         .erosion
         .clone()
         .unwrap();
@@ -413,11 +431,16 @@ fn walls_come_from_square_queries() {
     for fl in [f.collideN, f.cutN] {
         sprites.sprites[wall].properties.set_flag(fl);
     }
-    let sq = chunk.get_grid_square_mut(2, 2, 0).unwrap();
+    let sq_owner = chunk.get_grid_square_mut(2, 2, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
     let id = sq.new_object_id();
-    sq.objects
-        .push(pz_world::ObjectSlot::new(IsoObject::new(id, ObjectKind::Object, Some(wall))));
+    sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
+        id,
+        ObjectKind::Object,
+        Some(wall),
+    )));
     sq.recalc_properties(&sprites);
+    drop(sq);
     let host = ChunkHost {
         chunk: &mut chunk,
         sprites: &mut sprites,
@@ -455,18 +478,25 @@ fn world_chunk_load_runs_erosion() {
     );
     let chunk = &cell.chunks[&(2, 3)];
     assert!(chunk.erosion.as_ref().is_some_and(|c| c.init));
-    assert!(chunk.get_grid_square(3, 4, 0).unwrap().erosion.is_some());
+    assert!(chunk
+        .get_grid_square(3, 4, 0)
+        .unwrap()
+        .borrow()
+        .erosion
+        .is_some());
 }
 
 #[test]
 fn dictionary_object_names_resolve() {
     use pz_erosion::host::ErosionHost;
     let (mut sprites, mut chunk) = setup();
-    let sq = chunk.get_grid_square_mut(3, 4, 0).unwrap();
+    let sq_owner = chunk.get_grid_square_mut(3, 4, 0).unwrap();
+    let sq = sq_owner.borrow();
     let mut tree = sq.objects.last().unwrap().borrow_mut();
     tree.name = Some(ObjectName::Dict(5));
     let id = tree.id;
     drop(tree);
+    drop(sq);
     let mut dict = pz_inventory::dictionary::WorldDictionary::default();
     dict.object_names.insert(5, "Tree A".to_string());
     let world = WorldView {

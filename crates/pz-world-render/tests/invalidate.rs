@@ -118,10 +118,12 @@ impl Scene {
                     ObjectKind::Object,
                     Some(m.named_map[name]),
                 )));
-                cell.chunks
-                    .get_mut(&(x / 8, y / 8))
-                    .unwrap()
-                    .set_square(x % 8, y % 8, 0, Some(sq));
+                cell.chunks.get_mut(&(x / 8, y / 8)).unwrap().set_square(
+                    x % 8,
+                    y % 8,
+                    0,
+                    Some((sq).into()),
+                );
             }
         }
         for wx in 1..=3 {
@@ -173,7 +175,7 @@ impl Scene {
         )
     }
 
-    fn sq(&self, x: i32, y: i32) -> &IsoGridSquare {
+    fn sq(&self, x: i32, y: i32) -> pz_world::SquareRef {
         self.cell.get_grid_square(x, y, 0).unwrap()
     }
 
@@ -298,10 +300,10 @@ fn recalculated_properties_flag_lighting_puddles_and_water() {
     };
     s.render.squares.get_mut(&(17, 9, 0)).unwrap().water = Some(geom);
     s.render.squares.get_mut(&(9, 9, 0)).unwrap().water = Some(geom);
-    let (dry, wet) = (s.sq(17, 9).clone(), s.sq(9, 9).clone());
+    let (dry, wet) = (s.sq(17, 9), s.sq(9, 9));
     let mut h = s.hooks();
-    h.properties_recalculated(&dry);
-    h.properties_recalculated(&wet);
+    h.properties_recalculated(dry);
+    h.properties_recalculated(wet);
     // checkLightingLater_AllPlayers_OneLevel.
     assert_eq!(s.lighting.light_check(2, 1, 0, 0), Some((true, true)));
     assert_eq!(s.lighting.light_check(2, 1, 0, 1), Some((true, true)));
@@ -325,8 +327,8 @@ fn clear_water_drops_the_geometry() {
         ..Default::default()
     };
     s.render.squares.get_mut(&(9, 9, 0)).unwrap().water = Some(geom);
-    let wet = s.sq(9, 9).clone();
-    s.hooks().clear_water(&wet);
+    let wet = s.sq(9, 9);
+    s.hooks().clear_water(wet);
     assert_eq!(s.render.squares[&(9, 9, 0)].water, None);
 }
 
@@ -447,7 +449,8 @@ fn adding_a_wall_re_records_its_chunk_level_and_relights() {
         };
         for y in 10..=21 {
             let o = IsoObject::new(0, ObjectKind::Object, Some(wall));
-            env.add_tile_object((17, y, 0), pz_world::ObjectSlot::new(o), -1).unwrap();
+            env.add_tile_object((17, y, 0), pz_world::ObjectSlot::new(o), -1)
+                .unwrap();
         }
     }
     // The chunk levels holding the wall are dirty (OBJECT_ADD), for every
@@ -503,7 +506,11 @@ fn a_square_going_indoors_re_initialises_its_puddles_next_frame() {
     let neighbour = s.render.squares[&(14, 13, 0)].puddles;
 
     // A roof over (13, 13): RecalcProperties drops `exterior`.
-    s.cell.get_grid_square_mut(13, 13, 0).unwrap().have_roof = true;
+    s.cell
+        .get_grid_square_mut(13, 13, 0)
+        .unwrap()
+        .borrow_mut()
+        .have_roof = true;
     let doors = DoorTables {
         x_offset: [[[0; 4]; 2]; 2],
         y_offset: [[[0; 4]; 2]; 2],
@@ -533,7 +540,7 @@ fn a_square_going_indoors_re_initialises_its_puddles_next_frame() {
         };
         env.recalc_properties((13, 13, 0));
     }
-    assert!(!s.sq(13, 13).has(s.m.tables.flag.exterior));
+    assert!(!s.sq(13, 13).borrow().has(s.m.tables.flag.exterior));
     assert!(s.pending.puddles.contains(&(13, 13, 0)));
     // Unchanged until the frame re-initialises it.
     assert_eq!(s.render.squares[&(13, 13, 0)].puddles, Some(out));

@@ -145,7 +145,11 @@ impl Kinds<'_> {
             .is_some_and(|n| n.starts_with("boulders_") || n.starts_with("crafting_ore_"))
     }
     fn first(&self, sq: &IsoGridSquare, f: impl Fn(&Self, &IsoObject) -> bool) -> Option<ObjectId> {
-        sq.objects.iter().map(|o| o.borrow()).find(|o| f(self, o)).map(|o| o.id)
+        sq.objects
+            .iter()
+            .map(|o| o.borrow())
+            .find(|o| f(self, o))
+            .map(|o| o.id)
     }
     fn count(&self, sq: &IsoGridSquare, f: impl Fn(&Self, &IsoObject) -> bool) -> usize {
         sq.objects.iter().filter(|o| f(self, &o.borrow())).count()
@@ -193,14 +197,14 @@ impl At {
     }
 }
 
-fn square_mut<'a>(chunks: &'a mut ChunksCache, at: &At) -> Option<&'a mut IsoGridSquare> {
+fn square_mut(chunks: &mut ChunksCache, at: &At) -> Option<pz_world::SquareRef> {
     let (lx, ly) = at.local();
     chunks
         .get_mut(at.ch.0, at.ch.1)?
         .get_grid_square_mut(lx, ly, 0)
 }
 
-fn square<'a>(chunks: &'a ChunksCache, at: &At) -> Option<&'a IsoGridSquare> {
+fn square(chunks: &ChunksCache, at: &At) -> Option<pz_world::SquareRef> {
     let (lx, ly) = at.local();
     chunks.get(at.ch.0, at.ch.1)?.get_grid_square(lx, ly, 0)
 }
@@ -378,7 +382,8 @@ impl WorldGen {
     ) -> JResult<()> {
         let (tx, ty) = at.local();
         let ch = chunk_mut(c.chunks, &at);
-        if let Some(sq) = ch.get_grid_square(tx, ty, 0) {
+        if let Some(sq_owner) = ch.get_grid_square(tx, ty, 0) {
+            let sq = sq_owner.borrow();
             if !sq.objects.is_empty() {
                 let s = &mut ch.saved;
                 s.blending_done_full = false;
@@ -391,11 +396,13 @@ impl WorldGen {
             }
         } else {
             let sq = new_square(c.meta, at.x, at.y)?;
-            ch.set_square(tx, ty, 0, Some(sq));
+            ch.set_square(tx, ty, 0, Some((sq).into()));
         }
-        let sq = ch.get_grid_square_mut(tx, ty, 0).expect("square");
+        let sq_owner = ch.get_grid_square_mut(tx, ty, 0).expect("square");
+        let mut sq = sq_owner.borrow_mut();
         sq.room_id = -1;
         sq.reset_iso_world_region();
+        drop(sq);
         let (x, y) = (at.x, at.y);
         let module = self
             .static_modules
@@ -496,13 +503,15 @@ impl WorldGen {
         self.replace_square(c, at, biomes)?;
         let rocks = self.zones.zone_at(x, y, 0).is_none_or(|z| z.rocks);
         let m = &*c.env.sprites;
-        let Some(sq) = square(c.chunks, &at) else {
+        let Some(sq_owner) = square(c.chunks, &at) else {
             return Ok(());
         };
+        let sq = sq_owner.borrow();
         let Some(fi) = sq.floor_index(m) else {
             return Ok(());
         };
         let floor_id = sq.objects[fi].borrow().id;
+        drop(sq);
         let Some(lookup) = self
             .biome_map
             .entry(biomes[(ty * 8 + tx) as usize])
@@ -514,7 +523,7 @@ impl WorldGen {
             let ch = chunk_mut(c.chunks, &at);
             reset_attachments(ch);
             let sq = new_square(c.meta, x, y)?;
-            ch.set_square(tx, ty, 0, Some(sq));
+            ch.set_square(tx, ty, 0, Some((sq).into()));
             return self.gen_random_square(c, at, &[]);
         }
         let mut rnd = self.params.random(
@@ -533,7 +542,8 @@ impl WorldGen {
             &mut subs,
         )?;
         let floor_name = {
-            let sq = square(c.chunks, &at).expect("square");
+            let sq_owner = square(c.chunks, &at).expect("square");
+            let sq = sq_owner.borrow();
             let f = sq.objects.iter().find(|o| o.borrow().id == floor_id);
             // The floor object itself is never deleted here.
             f.and_then(|o| o.borrow().sprite)
@@ -542,16 +552,18 @@ impl WorldGen {
         };
         let current: Vec<(FeatureType, Option<ObjectId>)> = {
             let k = Kinds { m: c.env.sprites };
-            let sq = square(c.chunks, &at).expect("square");
+            let sq_owner = square(c.chunks, &at).expect("square");
+            let sq = sq_owner.borrow();
             FeatureType::ALL
                 .iter()
-                .map(|&t| (t, k.current(sq, t)))
+                .map(|&t| (t, k.current(&sq, t)))
                 .collect()
         };
         for &(ty, cur) in &current {
             let Some(cur) = cur else { continue };
             let cur_name = {
-                let sq = square(c.chunks, &at).expect("square");
+                let sq_owner = square(c.chunks, &at).expect("square");
+                let sq = sq_owner.borrow();
                 // A deleted object has had its sprite cleared.
                 match sq
                     .objects
@@ -597,7 +609,8 @@ impl WorldGen {
                     r = self.apply_biome(c, &at, &biome, ty, &mut rnd)?;
                 }
                 let k = Kinds { m: c.env.sprites };
-                let sq = square_mut(c.chunks, &at).expect("square");
+                let sq_owner = square_mut(c.chunks, &at).expect("square");
+                let mut sq = sq_owner.borrow_mut();
                 if r.0 == TileReplacement::Success {
                     let mut i = 1;
                     while i < sq.objects.len() {
@@ -622,18 +635,26 @@ impl WorldGen {
                 }
                 continue;
             }
-            delete(square_mut(c.chunks, &at).expect("square"), Some(cur));
+            delete(
+                &mut square_mut(c.chunks, &at).expect("square").borrow_mut(),
+                Some(cur),
+            );
         }
         let grasses: Vec<ObjectId> = {
             let k = Kinds { m: c.env.sprites };
-            let sq = square(c.chunks, &at).expect("square");
+            let sq_owner = square(c.chunks, &at).expect("square");
+            let sq = sq_owner.borrow();
             sq.objects
                 .iter()
                 .filter(|o| k.grass_like(&o.borrow()))
                 .map(|o| o.borrow().id)
                 .collect()
         };
-        let n = square(c.chunks, &at).expect("square").objects.len();
+        let n = square(c.chunks, &at)
+            .expect("square")
+            .borrow()
+            .objects
+            .len();
         if n - grasses.len() == 1 {
             let biome = match subs.get(&FeatureType::Ore) {
                 Some(b) => Some(b.clone()),
@@ -669,9 +690,10 @@ impl WorldGen {
                     r = self.apply_biome(c, &at, &biome, FeatureType::Ore, &mut rnd)?;
                 }
                 if r.0 == TileReplacement::Success {
-                    let sq = square_mut(c.chunks, &at).expect("square");
+                    let sq_owner = square_mut(c.chunks, &at).expect("square");
+                    let mut sq = sq_owner.borrow_mut();
                     for g in grasses {
-                        delete(sq, Some(g));
+                        delete(&mut sq, Some(g));
                     }
                 }
             }
@@ -698,11 +720,12 @@ impl WorldGen {
             };
             let current = {
                 let k = Kinds { m: c.env.sprites };
-                let sq = square(c.chunks, at).ok_or_else(|| npe("square"))?;
+                let sq_owner = square(c.chunks, at).ok_or_else(|| npe("square"))?;
+                let sq = sq_owner.borrow();
                 [
-                    k.current(sq, FeatureType::Tree),
-                    k.current(sq, FeatureType::Bush),
-                    k.current(sq, FeatureType::Plant),
+                    k.current(&sq, FeatureType::Tree),
+                    k.current(&sq, FeatureType::Bush),
+                    k.current(&sq, FeatureType::Plant),
                 ]
             };
             match tile.as_str() {
@@ -731,14 +754,25 @@ impl WorldGen {
                         break;
                     }
                 }
-                NO_TREE => delete(square_mut(c.chunks, at).expect("square"), current[0]),
-                NO_BUSH => delete(square_mut(c.chunks, at).expect("square"), current[1]),
-                NO_GRASS => delete(square_mut(c.chunks, at).expect("square"), current[2]),
+                NO_TREE => delete(
+                    &mut square_mut(c.chunks, at).expect("square").borrow_mut(),
+                    current[0],
+                ),
+                NO_BUSH => delete(
+                    &mut square_mut(c.chunks, at).expect("square").borrow_mut(),
+                    current[1],
+                ),
+                NO_GRASS => delete(
+                    &mut square_mut(c.chunks, at).expect("square").borrow_mut(),
+                    current[2],
+                ),
                 _ => {
-                    let sq = square_mut(c.chunks, at).expect("square");
+                    let sq_owner = square_mut(c.chunks, at).expect("square");
+                    let mut sq = sq_owner.borrow_mut();
                     for id in current {
-                        delete(sq, id);
+                        delete(&mut sq, id);
                     }
+                    drop(sq);
                     // `applyTile` with the square's own generator would be
                     // `rnd`; the original passes it but `applyTile` only
                     // uses `Rand` (through `Fix2x`).
@@ -776,7 +810,8 @@ impl WorldGen {
         let mut i = 0;
         loop {
             let (id, name) = {
-                let sq = square(c.chunks, &at).expect("square");
+                let sq_owner = square(c.chunks, &at).expect("square");
+                let sq = sq_owner.borrow();
                 let Some(o) = sq.objects.get(i) else { break };
                 let o = o.borrow();
                 let s = o.sprite.ok_or_else(|| npe("object sprite"))?;
@@ -797,7 +832,10 @@ impl WorldGen {
             if f.probability as f64 == 0.0 {
                 continue;
             }
-            delete(square_mut(c.chunks, &at).expect("square"), Some(id));
+            delete(
+                &mut square_mut(c.chunks, &at).expect("square").borrow_mut(),
+                Some(id),
+            );
             let tg = &f.tile_groups[rnd.next_int_bound(f.tile_groups.len() as i32) as usize];
             let tile = tg.tiles[0].clone();
             self.apply_tile(c, &at, &tile, &mut rnd)?;
@@ -826,6 +864,7 @@ impl WorldGen {
             let m = &*c.env.sprites;
             square_mut(c.chunks, at)
                 .expect("square")
+                .borrow_mut()
                 .fix_stackable_objects(m);
             self.generate_zombies(biome.zombies, at, rnd);
         }
@@ -979,19 +1018,20 @@ impl WorldGen {
                 if ix == 0 && iy == 0 {
                     continue;
                 }
-                let Some(sq) = c.chunks.get_grid_square(cx + ix, cy + iy, z) else {
+                let Some(sq_owner) = c.chunks.get_grid_square(cx + ix, cy + iy, z) else {
                     return Ok(false);
                 };
+                let sq = sq_owner.borrow();
                 let Some(fi) = sq.floor_index(m) else {
                     return Ok(false);
                 };
                 let n = sq.objects.len();
                 let human = n as i64
-                    - k.count(sq, Kinds::grass_like) as i64
-                    - k.count(sq, Kinds::bush) as i64
-                    - k.count(sq, Kinds::ores) as i64
+                    - k.count(&sq, Kinds::grass_like) as i64
+                    - k.count(&sq, Kinds::bush) as i64
+                    - k.count(&sq, Kinds::ores) as i64
                     > 1
-                    && k.first(sq, Kinds::tree).is_none();
+                    && k.first(&sq, Kinds::tree).is_none();
                 if human {
                     return Ok(false);
                 }
@@ -1054,7 +1094,7 @@ impl WorldGen {
             settings: c.env.settings,
             hooks: &mut *c.env.hooks,
         };
-        do_tile_object_creation(&mut oe, meta, sq, spr, ty, tile).map_err(JavaException)?;
+        do_tile_object_creation(&mut oe, meta, &sq, spr, ty, tile).map_err(JavaException)?;
         Ok((r, Some(spr)))
     }
 
@@ -1127,6 +1167,7 @@ impl WorldGen {
         let m = &*c.env.sprites;
         square_mut(c.chunks, &at)
             .expect("square")
+            .borrow_mut()
             .fix_stackable_objects(m);
         self.generate_zombies(prefab.zombies, &at, rnd);
         Ok(())
@@ -1263,9 +1304,10 @@ impl WorldGen {
         let re = wildcard_regex(material);
         for x in 0..8 {
             for y in 0..8 {
-                let Some(sq) = ch.get_grid_square_mut(x, y, 0) else {
+                let Some(sq_owner) = ch.get_grid_square_mut(x, y, 0) else {
                     continue;
                 };
+                let mut sq = sq_owner.borrow_mut();
                 let Some(fi) = sq.floor_index(m) else {
                     continue;
                 };
@@ -1273,7 +1315,8 @@ impl WorldGen {
                 let mat = m.sprites[fs].properties.get(&m.alias, "FloorMaterial");
                 if mat.is_some_and(|mat| self.wild.matches_regex(&re, mat)) {
                     sq.retain_objects(|o| {
-                        !o.borrow().sprite
+                        !o.borrow()
+                            .sprite
                             .and_then(|s| m.sprites[s].name.as_deref())
                             .is_some_and(|n| n.starts_with(filter))
                     });
@@ -1302,10 +1345,10 @@ pub fn has_empty_squares_on_level_zero(ch: &IsoChunk) -> bool {
         for x in 0..8 {
             let filled = ch
                 .get_grid_square(x, y, 0)
-                .is_some_and(|s| !s.objects.is_empty());
+                .is_some_and(|s| !s.borrow().objects.is_empty());
             let below = (ch.min_level..0).rev().any(|z| {
                 ch.get_grid_square(x, y, z)
-                    .is_some_and(|s| !s.objects.is_empty())
+                    .is_some_and(|s| !s.borrow().objects.is_empty())
             });
             if filled || below {
                 continue;
@@ -1335,7 +1378,7 @@ mod tests {
     #[test]
     fn random_chunks_are_marked_worldgen() {
         let mut ch = IsoChunk::new(3, 4);
-        ch.set_square(0, 0, -1, Some(IsoGridSquare::new(24, 32, -1)));
+        ch.set_square(0, 0, -1, Some((IsoGridSquare::new(24, 32, -1)).into()));
         assert!(has_empty_squares_on_level_zero(&ch));
         start_random_chunk(&mut ch);
         assert!(ch
@@ -1353,8 +1396,13 @@ mod tests {
         for x in 0..8 {
             for y in 0..8 {
                 let mut sq = IsoGridSquare::new(x, y, 0);
-                sq.objects.push(pz_world::object_slot::ObjectSlot::new(IsoObject::new(0, ObjectKind::Object, None)));
-                ch.set_square(x, y, 0, Some(sq));
+                sq.objects
+                    .push(pz_world::object_slot::ObjectSlot::new(IsoObject::new(
+                        0,
+                        ObjectKind::Object,
+                        None,
+                    )));
+                ch.set_square(x, y, 0, Some((sq).into()));
             }
         }
         assert!(!has_empty_squares_on_level_zero(&ch));

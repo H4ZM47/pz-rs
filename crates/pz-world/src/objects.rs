@@ -6,7 +6,6 @@
 //! an [`ObjectKind`] with the class-specific state. Rendering, sound,
 //! networking and update-loop state are not represented.
 
-use crate::chunk::IsoGridSquare;
 use crate::defs::RoomDef;
 use crate::save::items::ItemBlob;
 use crate::save::lua_table::LuaTable;
@@ -968,7 +967,7 @@ pub trait ObjectLoadHooks {
     /// `IsoGridSquare.haveElectricity() || hasGridPower()` for a square in
     /// `room` (generators, sandbox power-grid timing, derelict and
     /// user-defined rooms, `NoPower` zones).
-    fn square_powered(&mut self, _sq: &IsoGridSquare, _room: &RoomDef) -> bool {
+    fn square_powered(&mut self, _sq: crate::SquareRef, _room: &RoomDef) -> bool {
         false
     }
 

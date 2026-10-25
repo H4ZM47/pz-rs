@@ -11,7 +11,7 @@ use pz_characters::character::state::{
 };
 use pz_pathfind::mover::ObjectRef;
 use pz_world::objects::{IsoObject, ObjectKind, ObjectName};
-use pz_world::{IsoDirections, IsoGridSquare};
+use pz_world::{IsoDirections, IsoGridSquare, SquareOwnerQueries, SquareRef};
 
 use crate::{StatesWorldAdapter, Thumper};
 
@@ -74,12 +74,12 @@ impl StatesWorldAdapter<'_> {
             t |= 5;
         }
         if let Some(e) = sq.get_adjacent_square(IsoDirections::E, self.cell) {
-            if self.sq_flag(e, "WallW") || self.sq_flag(e, "WallNW") {
+            if self.sq_flag(&e.borrow(), "WallW") || self.sq_flag(&e.borrow(), "WallNW") {
                 t |= 8;
             }
         }
         if let Some(s) = sq.get_adjacent_square(IsoDirections::S, self.cell) {
-            if self.sq_flag(s, "WallN") || self.sq_flag(s, "WallNW") {
+            if self.sq_flag(&s.borrow(), "WallN") || self.sq_flag(&s.borrow(), "WallNW") {
                 t |= 2;
             }
         }
@@ -106,15 +106,16 @@ impl StatesWorldAdapter<'_> {
             IsoDirections::E => (1, 0),
             _ => return false,
         };
-        let Some(sq) = self.cell.get_grid_square(at.0 + dx, at.1 + dy, at.2) else {
+        let Some(sq_owner) = self.cell.get_grid_square(at.0 + dx, at.1 + dy, at.2) else {
             return false;
         };
+        let sq = sq_owner.borrow();
         let m = &*self.sprites;
         if sq.has(m.tables.flag.water) {
             return false;
         }
         if !sq.treat_as_solid_floor(m) {
-            return self.env().has_stairs_below(sq);
+            return self.env().has_stairs_below(&sq);
         }
         true
     }
@@ -129,11 +130,12 @@ impl StatesWorldAdapter<'_> {
         (cn, cs, cw, ce): (bool, bool, bool, bool),
     ) -> Option<(IsoDirections, FenceClimb)> {
         use IsoDirections as D;
-        let cur = self.cell.get_grid_square(current.0, current.1, current.2)?;
+        let cur_owner = self.cell.get_grid_square(current.0, current.1, current.2)?;
+        let cur = cur_owner.borrow();
         let f = &self.sprites.tables.flag;
         if dir == D::SE {
             if let Some(se) = cur.get_adjacent_square(D::SE, self.cell) {
-                if se.has(f.HoppableN) && se.has(f.HoppableW) {
+                if se.borrow().has(f.HoppableN) && se.borrow().has(f.HoppableW) {
                     return None;
                 }
             }
@@ -143,8 +145,9 @@ impl StatesWorldAdapter<'_> {
         } else if ce {
             cur.get_adjacent_square(D::E, self.cell)
         } else {
-            Some(cur)
+            Some(cur_owner.clone())
         }?;
+        let feeler = feeler.borrow();
         let mut dir = dir;
         let mut vault = false;
         if cur.has(f.HoppableN) && cn && !cw && !ce && matches!(dir, D::NW | D::N | D::NE) {
@@ -164,14 +167,19 @@ impl StatesWorldAdapter<'_> {
             vault = true;
         }
         if !vault
-            || !self.is_player_able_to_hop_wall_to(cur, dir, feeler)
+            || !self.is_player_able_to_hop_wall_to(&cur, dir, &feeler)
             || !self.is_safe_to_climb_over(at, dir)
         {
             return None;
         }
         Some((
             dir,
-            self.fence_opposite(cur.get_adjacent_square(dir, self.cell)),
+            self.fence_opposite(
+                cur.get_adjacent_square(dir, self.cell)
+                    .as_ref()
+                    .map(|s| s.borrow())
+                    .as_deref(),
+            ),
         ))
     }
 
@@ -195,32 +203,33 @@ impl StatesWorldAdapter<'_> {
 
     /// Nothing between `a` and `b` stops a counter climb: no wall, window or
     /// door (`isSomethingTo`), window frame or window thumpable.
-    fn open_between(&self, a: &IsoGridSquare, b: &IsoGridSquare) -> bool {
+    fn open_between(&self, a: &SquareRef, b: &SquareRef) -> bool {
         let hooks = self.env().hooks();
-        !self.env().is_something_to(a, b)
+        let blocked = self.env().is_something_to(&a.borrow(), &b.borrow());
+        !blocked
             && a.get_window_frame_to(Some(b), self.cell).is_none()
             && a.get_window_thumpable_to(Some(b), self.sprites, self.cell, &hooks)
                 .is_none()
     }
 
-    /// `getFreeSquareAfterObstacles(square, dir)`.
-    fn free_square_after_obstacles<'s>(
-        &'s self,
-        mut sq: &'s IsoGridSquare,
+    /// Keep actual square owners while traversing; no guard escapes a step.
+    fn free_square_after_obstacles(
+        &self,
+        mut square: SquareRef,
         dir: IsoDirections,
-    ) -> Option<&'s IsoGridSquare> {
+    ) -> Option<SquareRef> {
         loop {
-            let next = sq.get_adjacent_square(dir, self.cell)?;
-            if !self.open_between(sq, next) {
+            let next = square.borrow().get_adjacent_square(dir, self.cell)?;
+            if !self.open_between(&square, &next) {
                 return None;
             }
-            if self.is_free_square(Some(next)) {
+            if self.is_free_square(Some(&next.borrow())) {
                 return Some(next);
             }
-            if !self.is_obstacle_square(Some(next)) {
+            if !self.is_obstacle_square(Some(&next.borrow())) {
                 return None;
             }
-            sq = next;
+            square = next;
         }
     }
 
@@ -237,10 +246,12 @@ impl StatesWorldAdapter<'_> {
     /// `getClimbThroughWindowPositioningParams(chr, obj, params)`'s world
     /// part.
     pub fn window_climb_for(&self, t: &Thumper, r: ObjectRef) -> Option<WindowClimb> {
-        let (sq, o) = self.find(r)?;
+        let (sq_owner, o_owner) = self.find(r)?;
+        let sq = sq_owner.borrow();
+        let o = o_owner.borrow();
         let (portal, can_climb, portal_can_climb, north, broken_glass, barbed) = match &o.kind {
             ObjectKind::Window(w) => {
-                let c = self.window_can_climb_through(sq, &o, Some(t));
+                let c = self.window_can_climb_through(&sq, &o, Some(t));
                 (
                     ThumpKind::Window,
                     c,
@@ -251,12 +262,12 @@ impl StatesWorldAdapter<'_> {
                 )
             }
             ObjectKind::Thumpable(th) => {
-                let c = self.thumpable_can_climb_through(sq, &o, Some(t));
+                let c = self.thumpable_can_climb_through(&sq, &o, Some(t));
                 let barbed = self.object_name(&o).as_deref() == Some("Barbed Fence");
                 (ThumpKind::Thumpable, c, c, th.north, false, barbed)
             }
             ObjectKind::WindowFrame { north } => {
-                let c = self.frame_can_climb_through(sq, *north, Some(t));
+                let c = self.frame_can_climb_through(&sq, *north, Some(t));
                 (ThumpKind::WindowFrame, true, c, *north, false, false)
             }
             _ => return None,
@@ -280,22 +291,38 @@ impl StatesWorldAdapter<'_> {
         };
         let m = &*self.sprites;
         let opposite = self.cell.get_grid_square(opp.0, opp.1, z);
-        let mut counter = opposite.is_some_and(|s| s.has(m.tables.flag.solidtrans));
-        let floor = opposite.is_some_and(|s| s.treat_as_solid_floor(m));
-        let sheet_rope = opposite.is_some_and(|s| self.env().can_climb_down_sheet_rope(Some(s)));
+        let mut counter = opposite
+            .as_ref()
+            .is_some_and(|s| s.borrow().has(m.tables.flag.solidtrans));
+        let floor = opposite
+            .as_ref()
+            .is_some_and(|s| s.borrow().treat_as_solid_floor(m));
+        let sheet_rope = opposite
+            .as_ref()
+            .is_some_and(|s| self.env().can_climb_down_sheet_rope(Some(&s.borrow())));
         let mut end = opp;
         if let Some(os) = opposite.filter(|_| counter) {
             if t.zombie {
-                let next = os.get_adjacent_square(dir, self.cell);
+                let next = os.borrow().get_adjacent_square(dir, self.cell);
                 match next {
-                    Some(n) if self.is_free_square(Some(n)) && self.open_between(os, n) => {
-                        end = (n.x, n.y)
+                    Some(n)
+                        if self.is_free_square(Some(&n.borrow())) && self.open_between(&os, &n) =>
+                    {
+                        end = {
+                            let n = n.borrow();
+                            (n.x, n.y)
+                        }
                     }
                     _ => counter = false,
                 }
             } else {
                 match self.free_square_after_obstacles(os, dir) {
-                    Some(n) => end = (n.x, n.y),
+                    Some(n) => {
+                        end = {
+                            let n = n.borrow();
+                            (n.x, n.y)
+                        }
+                    }
                     None => counter = false,
                 }
             }
@@ -329,37 +356,51 @@ impl StatesWorldAdapter<'_> {
         let a = self.cell.get_grid_square(start.0, start.1, start.2)?;
         let b = self.cell.get_grid_square(end.0, end.1, end.2)?;
         let hooks = self.env().hooks();
-        let in_a = |o: &pz_world::IsoObjectRef| a.objects.iter().any(|x| x.ptr_eq_ref(o));
-        let found = a
-            .get_window_to(Some(b), self.cell)
-            .map(|o| (if in_a(&o) { a } else { b }, o))
-            .or_else(|| a.get_window_thumpable_to(Some(b), self.sprites, self.cell, &hooks))
-            .map(|(s, o)| oref(s, &o.borrow()))
+        let window = a.borrow().get_window_to(Some(&b.borrow()), self.cell);
+        let found = window
+            .map(|o| {
+                let in_a = a.borrow().objects.iter().any(|x| x.ptr_eq_ref(&o));
+                let square = if in_a { a.clone() } else { b.clone() };
+                let locator = oref(&square.borrow(), &o.borrow());
+                locator
+            })
+            .or_else(|| {
+                a.get_window_thumpable_to(Some(&b), self.sprites, self.cell, &hooks)
+                    .map(|(s, o)| oref(&s.borrow(), &o.borrow()))
+            })
             .or_else(|| {
                 self.collide_env()
-                    .get_hoppable_to(a, Some(b))
-                    .map(|(s, id)| ObjectRef {
-                        x: s.x,
-                        y: s.y,
-                        z: s.z,
-                        id,
+                    .get_hoppable_to(&a, Some(&b))
+                    .map(|(s, id)| {
+                        let s = s.borrow();
+                        ObjectRef {
+                            x: s.x,
+                            y: s.y,
+                            z: s.z,
+                            id,
+                        }
                     })
             })?;
-        let (_, o) = self.find(found)?;
+        let (_, o_owner) = self.find(found)?;
+        let o = o_owner.borrow();
         Some((found, Self::kind_of(&o)))
     }
 
     /// `square.getBrokenGlass() != null`.
     pub fn broken_glass_at(&self, p: (i32, i32, i32)) -> bool {
         self.cell.get_grid_square(p.0, p.1, p.2).is_some_and(|s| {
-            s.get_special_objects()
+            s.borrow()
+                .get_special_objects()
                 .any(|o| matches!(o.borrow().kind, ObjectKind::BrokenGlass))
         })
     }
 
     /// `IsoThumpable.health -= damage`, `destroy()` at 0 or below.
     pub fn damage_thumpable_at(&mut self, r: ObjectRef, damage: i32) {
-        let Some(mut o) = self.find_mut(r) else { return };
+        let Some(o_owner) = self.object_ref(r) else {
+            return;
+        };
+        let mut o = o_owner.borrow_mut();
         let ObjectKind::Thumpable(t) = &mut o.kind else {
             return;
         };
@@ -382,12 +423,15 @@ impl StatesWorldAdapter<'_> {
         let a = self.cell.get_grid_square(start.0, start.1, start.2)?;
         let b = self.cell.get_grid_square(end.0, end.1, end.2)?;
         self.collide_env()
-            .get_hoppable_to(a, Some(b))
-            .map(|(s, id)| ObjectRef {
-                x: s.x,
-                y: s.y,
-                z: s.z,
-                id,
+            .get_hoppable_to(&a, Some(&b))
+            .map(|(s, id)| {
+                let s = s.borrow();
+                ObjectRef {
+                    x: s.x,
+                    y: s.y,
+                    z: s.z,
+                    id,
+                }
             })
     }
 
@@ -459,7 +503,9 @@ impl StatesWorldAdapter<'_> {
 
     /// What `ClimbOverFenceState` reads of a hoppable.
     pub fn fence_info_of(&self, r: ObjectRef) -> Option<FenceInfo> {
-        let (sq, o) = self.find(r)?;
+        let (sq_owner, o_owner) = self.find(r)?;
+        let sq = sq_owner.borrow();
+        let o = o_owner.borrow();
         let (fence_type_low, trip_type) = self.fence_sound_types(&o);
         Some(FenceInfo {
             square: (sq.x, sq.y, sq.z),
@@ -490,7 +536,8 @@ impl StatesWorldAdapter<'_> {
     /// `sq.getFloor().getSprite().getName()`: the first object whose
     /// sprite has `solidfloor`.
     pub fn floor_sprite_name_at(&self, p: (i32, i32, i32)) -> Option<String> {
-        let sq = self.cell.get_grid_square(p.0, p.1, p.2)?;
+        let sq_owner = self.cell.get_grid_square(p.0, p.1, p.2)?;
+        let sq = sq_owner.borrow();
         let floor = sq.objects.iter().map(|o| o.borrow()).find(|o| {
             o.sprite.is_some_and(|s| {
                 self.sprites.sprites[s]

@@ -8,7 +8,6 @@
 use crate::iso_world::{IsoWorld, RenderChunkEvents};
 use crate::world_models::{CharacterView, WorldModels};
 use pz_character_model::lights::LightContext;
-use pz_lua_api::bind_character_sim::LuaGameCharacter;
 use pz_fs::GameFs;
 use pz_iso_render::cache::ChunkCache;
 use pz_iso_render::chunk::dirty;
@@ -17,12 +16,16 @@ use pz_iso_render::frame::{plan_chunks, world_frame_full, FrameSize};
 use pz_iso_render::objects::FrameObjects;
 use pz_iso_render::{Camera, ChunkRenderer};
 use pz_lighting::jni::{IsoDirection, VisionConeInput};
-use pz_render::tile_depth::{TileDepthTextureAssignmentManager, TileDepthTextureManager, TileGeometryManager};
+use pz_lua_api::bind_character_sim::LuaGameCharacter;
+use pz_render::tile_depth::{
+    TileDepthTextureAssignmentManager, TileDepthTextureManager, TileGeometryManager,
+};
 use pz_render::{DrawCmd, ScreenParams, Texture, TextureManager};
-use pz_world::square::IsoDirections;
 use pz_world::isoregion::IsoRegions;
+use pz_world::square::IsoDirections;
 use pz_world_render::{
-    check_changed_buildings, default_player, PendingRender, PuddleInputs, RenderInvalidation, ClimateSettings, GameTextures, NoWorldHooks, PlayerFrameInput, RenderWorld, SpriteCache,
+    check_changed_buildings, default_player, ClimateSettings, GameTextures, NoWorldHooks,
+    PendingRender, PlayerFrameInput, PuddleInputs, RenderInvalidation, RenderWorld, SpriteCache,
     WorldLighting, WorldView,
 };
 use std::time::Instant;
@@ -138,32 +141,83 @@ impl WorldRender {
     /// The `RenderSquareHooks` the square mutations (fire, Lua, the
     /// states) are given: chunk texture, lighting, water and building
     /// invalidation, rebuilt by the next frame.
-    pub fn invalidation(&mut self, water_flag: pz_world::sprite::IsoFlagType, num_players: i32) -> RenderInvalidation<'_> {
-        RenderInvalidation::new(&mut self.world, &mut self.lighting, &mut self.caches, &mut self.pending, water_flag, num_players)
+    pub fn invalidation(
+        &mut self,
+        water_flag: pz_world::sprite::IsoFlagType,
+        num_players: i32,
+    ) -> RenderInvalidation<'_> {
+        RenderInvalidation::new(
+            &mut self.world,
+            &mut self.lighting,
+            &mut self.caches,
+            &mut self.pending,
+            water_flag,
+            num_players,
+        )
     }
 
     /// The pending rebuilds, before the lighting frames and chunk recording
     /// (`PendingRender::apply`).
-    fn apply_pending(&mut self, view: &WorldView<'_>, regions: &IsoRegions, fs: &GameFs, tm: &mut TextureManager) {
-        let mut tex = GameTextures { fs, textures: tm, depth: &self.depth, assignments: &self.assignments, geometry: &self.geometry };
-        let perf_puddles = pz_lua_api::bind_core::shared_core().borrow().get_perf_puddles();
-        self.pending.apply(view, &mut self.world, &mut self.lighting, &NoWorldHooks, &mut self.sprites, &mut tex, PuddleInputs { regions, perf_puddles });
+    fn apply_pending(
+        &mut self,
+        view: &WorldView<'_>,
+        regions: &IsoRegions,
+        fs: &GameFs,
+        tm: &mut TextureManager,
+    ) {
+        let mut tex = GameTextures {
+            fs,
+            textures: tm,
+            depth: &self.depth,
+            assignments: &self.assignments,
+            geometry: &self.geometry,
+        };
+        let perf_puddles = pz_lua_api::bind_core::shared_core()
+            .borrow()
+            .get_perf_puddles();
+        self.pending.apply(
+            view,
+            &mut self.world,
+            &mut self.lighting,
+            &NoWorldHooks,
+            &mut self.sprites,
+            &mut tex,
+            PuddleInputs {
+                regions,
+                perf_puddles,
+            },
+        );
     }
 
     /// The chunks that entered the cell get their render squares and
     /// lighting chunk (`FBORenderChunk` creation, `LightingJNI.chunkLoaded`),
     /// the ones that left lose them.
-    fn sync_chunks(&mut self, view: &WorldView<'_>, events: &mut RenderChunkEvents, fs: &GameFs, tm: &mut TextureManager) {
+    fn sync_chunks(
+        &mut self,
+        view: &WorldView<'_>,
+        events: &mut RenderChunkEvents,
+        fs: &GameFs,
+        tm: &mut TextureManager,
+    ) {
         for (wx, wy) in events.removed.drain(..) {
             self.world.remove_chunk(wx, wy);
             self.lighting.remove_chunk(wx, wy);
         }
-        let mut tex = GameTextures { fs, textures: tm, depth: &self.depth, assignments: &self.assignments, geometry: &self.geometry };
+        let mut tex = GameTextures {
+            fs,
+            textures: tm,
+            depth: &self.depth,
+            assignments: &self.assignments,
+            geometry: &self.geometry,
+        };
         // TODO(port): `NoWorldHooks`: thumpables, barricades, power and
         // the players' torches (`WorldHooks`).
         let hooks = NoWorldHooks;
         for (wx, wy) in events.added.drain(..) {
-            for level in self.world.build_chunk(view, wx, wy, &mut self.sprites, &mut tex) {
+            for level in self
+                .world
+                .build_chunk(view, wx, wy, &mut self.sprites, &mut tex)
+            {
                 for c in self.caches.iter_mut() {
                     c.invalidate(level.0, level.1, level.2, dirty::CREATE);
                 }
@@ -180,10 +234,20 @@ impl WorldRender {
 
     /// One player's world frame (`FBORenderCell.renderInternal` and what
     /// `IsoWorld.render` draws around it), appended to `out`.
-    fn render_player(&mut self, view: &WorldView<'_>, v: &mut RenderView, models: Option<&mut WorldModels>, zombies: &[LuaGameCharacter], out: &mut Vec<DrawCmd>) {
+    fn render_player(
+        &mut self,
+        view: &WorldView<'_>,
+        v: &mut RenderView,
+        models: Option<&mut WorldModels>,
+        zombies: &[LuaGameCharacter],
+        out: &mut Vec<DrawCmd>,
+    ) {
         let p = v.player;
         let cam = Camera::player(v.x, v.y, v.z, v.width as i32, v.height as i32, v.zoom);
-        let size = FrameSize { width: v.width, height: v.height };
+        let size = FrameSize {
+            width: v.width,
+            height: v.height,
+        };
         // `LightingJNI.update` for the player, then the decoded results
         // into the render squares.
         if !self.lighting_error {
@@ -192,15 +256,27 @@ impl WorldRender {
                 // TODO(port): the player's fatigue, detection range and
                 // the worn items' vision multiplier.
                 player: default_player(v.x, v.y, v.z, IsoDirection::ALL[v.dir as usize]),
-                cone: VisionConeInput { worn_items_vision_multiplier: 1.0, ..Default::default() },
+                cone: VisionConeInput {
+                    worn_items_vision_multiplier: 1.0,
+                    ..Default::default()
+                },
                 chunk_x_min: v.chunk_map.0,
                 chunk_y_min: v.chunk_map.1,
                 chunk_grid_width: v.chunk_map.2,
             };
             let nanos = self.start.elapsed().as_nanos() as u64;
             let (w, h) = (v.width, v.height);
-            let on_screen = |wx: i32, wy: i32, z: i32| pz_iso_render::cache::level_on_screen(&cam, w, h, wx, wy, z);
-            match self.lighting.frame(view, &input, &mut v.climate, &NoWorldHooks, nanos, &on_screen) {
+            let on_screen = |wx: i32, wy: i32, z: i32| {
+                pz_iso_render::cache::level_on_screen(&cam, w, h, wx, wy, z)
+            };
+            match self.lighting.frame(
+                view,
+                &input,
+                &mut v.climate,
+                &NoWorldHooks,
+                nanos,
+                &on_screen,
+            ) {
                 Ok(r) => {
                     for (wx, wy, z) in r.dirty_levels {
                         self.caches[p].invalidate(wx, wy, z, dirty::LIGHTING);
@@ -216,7 +292,9 @@ impl WorldRender {
         // `checkNewlyOnScreenChunks`' order: x outer, y inner over the
         // player's chunk map.
         let (x0, y0, n) = v.chunk_map;
-        let order: Vec<(i32, i32)> = (x0..x0 + n).flat_map(|x| (y0..y0 + n).map(move |y| (x, y))).collect();
+        let order: Vec<(i32, i32)> = (x0..x0 + n)
+            .flat_map(|x| (y0..y0 + n).map(move |y| (x, y)))
+            .collect();
         let inputs = self.world.chunk_inputs(&order);
         let mut cmds = Vec::new();
         let chunks = plan_chunks(&mut self.caches[p], &cam, size, &inputs, &mut cmds);
@@ -236,39 +314,76 @@ impl WorldRender {
             aiming: false,
             mouse_poi: None,
             peeking: None,
-            occlusion_bounds: Some(pz_iso_render::occlusion::grid_bounds(&cam, v.width as i32, v.height as i32)),
+            occlusion_bounds: Some(pz_iso_render::occlusion::grid_bounds(
+                &cam,
+                v.width as i32,
+                v.height as i32,
+            )),
         };
         let state = self.cutaways[p].update(&self.world, &player);
-        let cv = pz_iso_render::alpha::CutawayView { state: &state, world: &self.world };
+        let cv = pz_iso_render::alpha::CutawayView {
+            state: &state,
+            world: &self.world,
+        };
         let r = ChunkRenderer::new(cam, &maps, (v.width, v.height)).with_cutaways(Some(cv));
         // TODO(port): corpses, world items, the water and sky surfaces
         // (`SkyBox`, `SurfaceChecks`) and the
         // `FrameExtras` (flies, highlights, markers, vision cone, fog).
         let mut objects = FrameObjects::default();
         if let Some(models) = models {
-            let camera = pz_iso_render::models::ModelCamera::new(&cam, v.width as f32 * v.zoom, v.height as f32 * v.zoom);
-            let display_player = pz_lua_api::bind_core::shared_core().borrow().is_display_player_model();
+            let camera = pz_iso_render::models::ModelCamera::new(
+                &cam,
+                v.width as f32 * v.zoom,
+                v.height as f32 * v.zoom,
+            );
+            let display_player = pz_lua_api::bind_core::shared_core()
+                .borrow()
+                .is_display_player_model();
             let mut draw = |chr: &LuaGameCharacter| {
-                let (x, y, z) = (chr.vars.x.floor() as i32, chr.vars.y.floor() as i32, chr.vars.z.floor() as i32);
-                let sq = view.cell.get_grid_square(x, y, z)?;
+                let (x, y, z) = (
+                    chr.vars.x.floor() as i32,
+                    chr.vars.y.floor() as i32,
+                    chr.vars.z.floor() as i32,
+                );
+                let sq_owner = view.cell.get_grid_square(x, y, z)?;
+                let sq = sq_owner.borrow();
                 let light = self.lighting.square_light(p as i32, x, y, z);
-                let ambient = light.map(|l| pz_iso_render::models::interpolate_light(&l.vert_light, chr.vars.x - x as f32, chr.vars.y - y as f32));
-                let color = ambient.map(|c| [c.r, c.g, c.b]).unwrap_or([v.climate.climate.ambient; 3]);
+                let ambient = light.map(|l| {
+                    pz_iso_render::models::interpolate_light(
+                        &l.vert_light,
+                        chr.vars.x - x as f32,
+                        chr.vars.y - y as f32,
+                    )
+                });
+                let color = ambient
+                    .map(|c| [c.r, c.g, c.b])
+                    .unwrap_or([v.climate.climate.ambient; 3]);
                 let lighting = LightContext {
-                    x: chr.vars.x, y: chr.vars.y, z: chr.vars.z,
+                    x: chr.vars.x,
+                    y: chr.vars.y,
+                    z: chr.vars.z,
                     result_lights: self.lighting.result_lights(p as i32, x, y, z).to_vec(),
                     target_ambient: color,
-                    outside: sq.room_id == -1, in_room: sq.room_id != -1,
+                    outside: sq.room_id == -1,
+                    in_room: sq.room_id != -1,
                     // TODO(port): room-light ids and the player's equipped torch.
                     room_light_ids: Vec::new(),
                     player_index: chr.is_player().then_some(chr.player.player_index),
-                    torch_strength: 0.0, forward: [chr.vars.forward_x, chr.vars.forward_y], multiplier: v.multiplier,
+                    torch_strength: 0.0,
+                    forward: [chr.vars.forward_x, chr.vars.forward_y],
+                    multiplier: v.multiplier,
                 };
-                let hidden = (chr.is_player() && !display_player) || (!chr.is_player() && light.is_some_and(|l| l.vis & 2 == 0));
+                let hidden = (chr.is_player() && !display_player)
+                    || (!chr.is_player() && light.is_some_and(|l| l.vis & 2 == 0));
                 let cv = CharacterView {
-                    camera: &camera, camera_index: p, lighting: &lighting, alpha: 1.0,
-                    hidden, height_above_floor: chr.vars.z - z as f32,
-                    tick: v.tick, thirty_fps_multiplier: v.multiplier / 1.6,
+                    camera: &camera,
+                    camera_index: p,
+                    lighting: &lighting,
+                    alpha: 1.0,
+                    hidden,
+                    height_above_floor: chr.vars.z - z as f32,
+                    tick: v.tick,
+                    thirty_fps_multiplier: v.multiplier / 1.6,
                 };
                 models.render_character(chr, &cv)
             };
@@ -281,14 +396,25 @@ impl WorldRender {
                 }
             }
             for zombie in zombies {
-                if let Some(object) = draw(zombie) { objects.moving.push(object); }
+                if let Some(object) = draw(zombie) {
+                    objects.moving.push(object);
+                }
             }
         }
         // `renderWeatherFX` draws after the cell, in the world projection.
         // TODO(port): `render_weather_fx` from `ClimateRenderValues` with
         // the weather mask.
         let mut late = |_: &mut Vec<DrawCmd>| {};
-        let cmds = world_frame_full(&r, size, &chunks, &objects, self.drop_shadow.clone(), v.screen, cmds, &mut late);
+        let cmds = world_frame_full(
+            &r,
+            size,
+            &chunks,
+            &objects,
+            self.drop_shadow.clone(),
+            v.screen,
+            cmds,
+            &mut late,
+        );
         out.extend(cmds);
     }
 }
@@ -296,7 +422,13 @@ impl WorldRender {
 impl IsoWorld {
     /// `IsoWorld.render()` for `view.player` (the camera character is
     /// `IsoPlayer.players[view.player]`), appended to `out`.
-    pub fn render(&mut self, view: &mut RenderView, fs: &mut GameFs, tm: &std::rc::Rc<std::cell::RefCell<TextureManager>>, out: &mut Vec<DrawCmd>) {
+    pub fn render(
+        &mut self,
+        view: &mut RenderView,
+        fs: &mut GameFs,
+        tm: &std::rc::Rc<std::cell::RefCell<TextureManager>>,
+        out: &mut Vec<DrawCmd>,
+    ) {
         // TODO(port): `drawWorld`; `sceneCullZombies`/`sceneCullAnimals`,
         // `WeatherFxMask.initMask`, `DeadBodyAtlas`/`WorldItemAtlas.render`.
         // Each local player's chunk map for the lighting's cell lights
@@ -304,10 +436,20 @@ impl IsoWorld {
         let maps: [Option<(i32, i32, i32)>; MAX_PLAYERS] = std::array::from_fn(|n| {
             let s = self.streamer.as_ref().filter(|s| n < s.num_players())?;
             let m = s.chunk_map(n);
-            (!m.ignore && pz_lua_api::bind_players::player(n).is_some()).then(|| (m.world_x - s.width / 2, m.world_y - s.width / 2, s.width))
+            (!m.ignore && pz_lua_api::bind_players::player(n).is_some())
+                .then(|| (m.world_x - s.width / 2, m.world_y - s.width / 2, s.width))
         });
         let num_players = pz_lua_api::bind_players::num_players();
-        let IsoWorld { render, render_chunks, sprites, game_dir, regions, models, zombies, .. } = self;
+        let IsoWorld {
+            render,
+            render_chunks,
+            sprites,
+            game_dir,
+            regions,
+            models,
+            zombies,
+            ..
+        } = self;
         let no_regions;
         let regions = match regions.as_ref() {
             Some(r) => r,
@@ -316,7 +458,9 @@ impl IsoWorld {
                 &no_regions
             }
         };
-        let Some(sprites) = sprites.as_ref() else { return };
+        let Some(sprites) = sprites.as_ref() else {
+            return;
+        };
         let r = render.get_or_insert_with(|| {
             let mut r = WorldRender::new(game_dir, fs, &mut tm.borrow_mut());
             pz_lua_api::bind_world::with_world(|w| {
@@ -327,9 +471,15 @@ impl IsoWorld {
             r
         });
         pz_lua_api::bind_world::with_world(|w| {
-            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_ref()) else { return };
+            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_ref()) else {
+                return;
+            };
             let sprites = sprites.borrow();
-            let wv = WorldView { cell, meta, sprites: &sprites };
+            let wv = WorldView {
+                cell,
+                meta,
+                sprites: &sprites,
+            };
             {
                 let mut textures = tm.borrow_mut();
                 r.sync_chunks(&wv, render_chunks, fs, &mut textures);

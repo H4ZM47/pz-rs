@@ -195,6 +195,7 @@ fn main() {
             .get(&(wx, wy))
             .and_then(|c| c.get_grid_square(x, y, z))
             .map(|sq| {
+                let sq = sq.borrow();
                 let names: Vec<String> = sq
                     .objects
                     .iter()

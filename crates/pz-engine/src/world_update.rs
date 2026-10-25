@@ -436,7 +436,11 @@ impl IsoWorld {
 
     /// `IsoCell.ProcessRemoveItems`, before and after its item-update phase.
     fn process_remove_items(&mut self) {
-        let removed = with_world(|w| w.cell.as_ref().map(|cell| cell.process_items.drain_remove()));
+        let removed = with_world(|w| {
+            w.cell
+                .as_ref()
+                .map(|cell| cell.process_items.drain_remove())
+        });
         drop(removed);
     }
 
@@ -466,14 +470,31 @@ impl IsoWorld {
                         chr.preupdate_player();
                         chr.frame_step(&input);
                     }
-                    let IsoWorld { sprites, states_runtime, action_groups, models, .. } = self;
-                    let Some(sprites) = sprites.as_mut() else { return; };
+                    let IsoWorld {
+                        sprites,
+                        states_runtime,
+                        action_groups,
+                        models,
+                        ..
+                    } = self;
+                    let Some(sprites) = sprites.as_mut() else {
+                        return;
+                    };
                     with_states(sprites, states_runtime, models.as_mut(), sim, |w| {
-                        if first_phase { fill_square_environment(&mut chr, w.cell); }
+                        if first_phase {
+                            fill_square_environment(&mut chr, w.cell);
+                        }
                         pz_lua_api::bind_states::with_state_registry(|reg| {
                             let chars = chars.borrow();
                             let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
-                            chr.advance_player_update(phase, &input, reg, action_groups, &mut u, &mut cx)
+                            chr.advance_player_update(
+                                phase,
+                                &input,
+                                reg,
+                                action_groups,
+                                &mut u,
+                                &mut cx,
+                            )
                         })
                     })
                 };
@@ -508,7 +529,10 @@ impl IsoWorld {
                             pz_characters::character::player::PlayerUpdateStep::Done => break,
                         }
                     }
-                    Some(Err(e)) => { self.log_update_error(format!("IsoPlayer.update: {e}")); break; }
+                    Some(Err(e)) => {
+                        self.log_update_error(format!("IsoPlayer.update: {e}"));
+                        break;
+                    }
                     None => break,
                 }
             }
@@ -664,27 +688,33 @@ impl IsoWorld {
             };
             let events = prepared.and_then(|()| {
                 let initial = models.action_movement_modifiers(&p.borrow());
-                let modifiers = initial.map(|m| pz_lua_api::timed_actions::movement_modifiers(&mut lua.thread, &p, m));
+                let modifiers = initial
+                    .map(|m| pz_lua_api::timed_actions::movement_modifiers(&mut lua.thread, &p, m));
                 models.finish_character_update(&mut p.borrow_mut(), dt, modifiers)
             });
             match events {
                 Ok(events) if !events.is_empty() => {
                     for event in events {
-                      if let Some(sprites) = self.sprites.as_ref() {
-                        with_states(
-                            sprites,
-                            &mut self.states_runtime,
-                            Some(&mut models),
-                            sim,
-                            |w| {
-                                let chars = chars.borrow();
-                                let mut cx = StateCx::new(&sm, &chars, sim, w);
-                                let mut chr = p.borrow_mut();
-                                chr.on_anim_event(&event, &mut cx);
-                            },
+                        if let Some(sprites) = self.sprites.as_ref() {
+                            with_states(
+                                sprites,
+                                &mut self.states_runtime,
+                                Some(&mut models),
+                                sim,
+                                |w| {
+                                    let chars = chars.borrow();
+                                    let mut cx = StateCx::new(&sm, &chars, sim, w);
+                                    let mut chr = p.borrow_mut();
+                                    chr.on_anim_event(&event, &mut cx);
+                                },
+                            );
+                        }
+                        pz_lua_api::timed_actions::anim_event(
+                            &mut lua.thread,
+                            &p,
+                            &event.event.event_name,
+                            event.event.parameter_value.as_deref(),
                         );
-                      }
-                      pz_lua_api::timed_actions::anim_event(&mut lua.thread, &p, &event.event.event_name, event.event.parameter_value.as_deref());
                     }
                 }
                 Err(e) => errors.push(e),
@@ -771,8 +801,11 @@ impl IsoWorld {
                 .chunks
                 .values()
                 .flat_map(|c| c.squares())
-                .filter(|s| s.has(water_flag))
-                .map(|s| (s.x, s.y, s.z))
+                .filter(|s| s.borrow().has(water_flag))
+                .map(|s| {
+                    let s = s.borrow();
+                    (s.x, s.y, s.z)
+                })
                 .collect();
             let water = |p: (i32, i32, i32)| water_squares.contains(&p);
             let mut create = || create_survivor(&chars);
@@ -1081,7 +1114,8 @@ impl IsoWorld {
 /// room size, building toxicity, can-see, heat sources and the vehicle.
 fn fill_square_environment(chr: &mut LuaGameCharacter, cell: &IsoCell) {
     let cur = chr.path.current_square;
-    let sq = cur.and_then(|(x, y, z)| cell.get_grid_square(x, y, z));
+    let sq_owner = cur.and_then(|(x, y, z)| cell.get_grid_square(x, y, z));
+    let sq = sq_owner.as_ref().map(|s| s.borrow());
     let stress = cur.map_or(0.0, |(x, y, z)| {
         pz_lua_api::bind_zombie::shared_world_sounds()
             .borrow()
@@ -1090,11 +1124,14 @@ fn fill_square_environment(chr: &mut LuaGameCharacter, cell: &IsoCell) {
     let e = &mut chr.environment;
     e.has_current_square = sq.is_some();
     e.on_last_square = cur.is_some() && cur == chr.vars.last_square;
-    e.square_in_room = sq.is_some_and(|s| s.room_id != -1);
-    e.square_have_roof = sq.is_some_and(|s| s.have_roof);
-    e.square_z = sq.map_or(0, |s| s.z);
+    e.square_in_room = sq.as_ref().is_some_and(|s| s.room_id != -1);
+    e.square_have_roof = sq.as_ref().is_some_and(|s| s.have_roof);
+    e.square_z = sq.as_ref().map_or(0, |s| s.z);
     e.square_has_chunk = sq.is_some();
-    e.square_room = sq.filter(|s| s.room_id != -1).map(|s| s.room_id as u64);
+    e.square_room = sq
+        .as_ref()
+        .filter(|s| s.room_id != -1)
+        .map(|s| s.room_id as u64);
     e.stress_from_sounds = stress;
 }
 
@@ -1417,7 +1454,10 @@ impl IsoWorld {
         // IngameState.exit retires both global-object registries. Native
         // close also takes this path without rebuilding the Lua environment.
         pz_lua_api::global_objects::reset_single_player_packets();
-        for side in [pz_lua_api::global_objects::Side::Client, pz_lua_api::global_objects::Side::Server] {
+        for side in [
+            pz_lua_api::global_objects::Side::Client,
+            pz_lua_api::global_objects::Side::Server,
+        ] {
             pz_lua_api::global_objects::reset(side);
         }
         pz_lua_api::global_objects_save::set_save_dir(None);
@@ -1513,9 +1553,16 @@ mod quit_save_tests {
     fn queued_simulation_stop_cancels_the_actual_action_once_before_its_tick() {
         let (_fixture, mut world, mut lua) = Fixture::new(true, "Sandbox", false);
         let sm = pz_lua_api::bind_registry::shared_script_manager();
-        let character = Rc::new(RefCell::new(LuaGameCharacter::new(&sm, pz_characters::CharacterKind::Player)));
-        lua.thread.globals().set_str("player", character_value(&character));
-        run_lua(&mut lua, r#"
+        let character = Rc::new(RefCell::new(LuaGameCharacter::new(
+            &sm,
+            pz_characters::CharacterKind::Player,
+        )));
+        lua.thread
+            .globals()
+            .set_str("player", character_value(&character));
+        run_lua(
+            &mut lua,
+            r#"
             stopped=0; updated=0
             T={}; T.__index=T
             function T:isValid() return true end
@@ -1531,7 +1578,8 @@ mod quit_save_tests {
             a.action=LuaTimedActionNew.new(a,player)
             player:setIsFarming(true)
             player:StartAction(a.action)
-        "#);
+        "#,
+        );
         let sim = FrameSim::capture();
         sim.events.borrow_mut().push(SimEvent::StopAllActionQueue);
         world.fire_sim_events(&mut lua, Some(&character), &sim);

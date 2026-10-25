@@ -12,7 +12,7 @@ struct Fixture {
 
 fn authored_cell() -> IsoCell {
     let mut chunk = IsoChunk::new(0, 0);
-    chunk.set_square(1, 1, 0, Some(IsoGridSquare::new(1, 1, 0)));
+    chunk.set_square(1, 1, 0, Some((IsoGridSquare::new(1, 1, 0)).into()));
     let mut cell = IsoCell::default();
     cell.chunks.insert((0, 0), chunk);
     cell
@@ -52,12 +52,13 @@ impl Fixture {
 
     fn square(&self, f: impl FnOnce(&mut IsoGridSquare)) {
         with_world(|world| {
-            f(world
+            f(&mut world
                 .cell
                 .as_mut()
                 .unwrap()
                 .get_grid_square_mut(1, 1, 0)
-                .unwrap())
+                .unwrap()
+                .borrow_mut())
         });
     }
 }
@@ -146,6 +147,7 @@ fn is_outside_preserves_null_unloaded_and_stale_cell_contracts() {
     let exterior = f.sprites.borrow().tables.flag.exterior;
     next.get_grid_square_mut(1, 1, 0)
         .unwrap()
+        .borrow_mut()
         .properties
         .set_flag(exterior);
     set_cell(Some(next));

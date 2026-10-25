@@ -311,7 +311,7 @@ fn main() {
         };
         let mut lines = Vec::new();
         for sq in ch.squares() {
-            for o in sq.objects.iter().map(ObjectSlot::borrow) {
+            for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                 let conts: Vec<&ItemContainer> = match &o.kind {
                     ObjectKind::Mannequin(Some(m)) => m.container.iter().collect(),
                     _ => o.containers().collect(),
@@ -329,7 +329,7 @@ fn main() {
                     }
                 }
             }
-            for bd in &sq.static_moving {
+            for bd in &sq.borrow().static_moving {
                 if let Some(c) = &bd.container {
                     dump(&c.items, &mut lines, &mut raw);
                 }

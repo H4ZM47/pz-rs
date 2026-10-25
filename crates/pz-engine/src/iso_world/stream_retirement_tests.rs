@@ -98,10 +98,10 @@ impl Fixture {
             )));
         square.world_objects.push(1);
         let mut chunk = IsoChunk::new(10, 10);
-        chunk.set_square(0, 0, 0, Some(square));
+        chunk.set_square(0, 0, 0, Some((square).into()));
         // Discard construction pins while membership still owns the object, so
         // the probes below rely on the particular removal path being tested.
-        drop(chunk.take_retired_objects());
+        drop(chunk.take_retired_owners());
         let old = with_world(|w| w.cell.as_mut().unwrap().chunks.insert((10, 10), chunk));
         drop(old);
         (weak, drops)
@@ -241,13 +241,9 @@ fn whole_object_retirement_releases_parents_only_at_stream_or_frame_boundaries()
                 let mut f = Fixture::new(true);
                 let (weak_item, drops) = f.install_bag();
                 let retained = with_world(|w| {
-                    let slot = &w
-                        .cell
-                        .as_ref()
-                        .unwrap()
-                        .get_grid_square(80, 80, 0)
-                        .unwrap()
-                        .objects[0];
+                    let square = w.cell.as_ref().unwrap().get_grid_square(80, 80, 0).unwrap();
+                    let square = square.borrow();
+                    let slot = &square.objects[0];
                     slot.borrow_mut().key_id = 837;
                     retain_user_root.then(|| slot.ref_handle())
                 });
@@ -303,21 +299,27 @@ fn retire_object_path(cell: &mut IsoCell, operation: &str) {
         "remove" => drop(
             cell.get_grid_square_mut(80, 80, 0)
                 .unwrap()
+                .borrow_mut()
                 .remove_object_slot(0),
         ),
         "replace" => cell
             .get_grid_square_mut(80, 80, 0)
             .unwrap()
+            .borrow_mut()
             .replace_object_slot(
                 0,
                 pz_world::ObjectSlot::new(IsoObject::new(2, ObjectKind::Object, None)),
             ),
-        "clear" => cell.get_grid_square_mut(80, 80, 0).unwrap().clear_objects(),
+        "clear" => cell
+            .get_grid_square_mut(80, 80, 0)
+            .unwrap()
+            .borrow_mut()
+            .clear_objects(),
         "set_square" => cell.chunks.get_mut(&(10, 10)).unwrap().set_square(
             0,
             0,
             0,
-            Some(IsoGridSquare::new(80, 80, 0)),
+            Some((IsoGridSquare::new(80, 80, 0)).into()),
         ),
         "drop_levels" => cell
             .chunks
@@ -325,5 +327,145 @@ fn retire_object_path(cell: &mut IsoCell, operation: &str) {
             .unwrap()
             .set_min_max_level(1, 1),
         _ => unreachable!("unknown authored retirement path"),
+    }
+}
+
+#[test]
+fn whole_square_retirement_keeps_retained_payload_and_releases_after_both_guards() {
+    for stream_boundary in [false, true] {
+        for retain_square in [false, true] {
+            for operation in ["set_square", "drop_levels"] {
+                let mut f = Fixture::new(true);
+                let (weak_item, drops) = f.install_bag();
+                let held = with_world(|w| {
+                    let square = w.cell.as_ref().unwrap().get_grid_square(80, 80, 0).unwrap();
+                    square.borrow_mut().room_id = 932;
+                    retain_square.then_some(square)
+                });
+                if stream_boundary {
+                    f.world
+                        .with_stream(|_, cell, _| {
+                            retire_object_path(cell, operation);
+                            assert_eq!(drops.get(), 0);
+                        })
+                        .unwrap();
+                } else {
+                    let sprites = f.world.sprites.as_ref().unwrap().clone();
+                    {
+                        let _sprites = sprites.borrow_mut();
+                        with_world(|w| retire_object_path(w.cell.as_mut().unwrap(), operation));
+                        assert_eq!(drops.get(), 0);
+                    }
+                    drain_retired_world_objects();
+                }
+                if let Some(square) = held {
+                    assert_eq!(drops.get(), 0);
+                    {
+                        let square = square.borrow();
+                        assert_eq!(
+                            (square.x, square.y, square.z, square.room_id),
+                            (80, 80, 0, 932)
+                        );
+                        assert_eq!(square.world_objects, [1]);
+                        assert_eq!(
+                            square.objects.len(),
+                            1,
+                            "retirement emptied the old square before native discard"
+                        );
+                        let object = square.objects[0].borrow();
+                        let ObjectKind::WorldInventory(floor) = &object.kind else {
+                            panic!("retained subtype lost")
+                        };
+                        assert!(Rc::ptr_eq(
+                            &floor.borrow().item.item_ref().unwrap(),
+                            &weak_item.upgrade().unwrap()
+                        ));
+                    }
+                    drop(square);
+                }
+                assert_eq!(drops.get(), 1);
+                assert!(weak_item.upgrade().is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn borrowed_retired_square_waits_for_next_safe_owner_drain() {
+    for mutable in [false, true] {
+        let mut f = Fixture::new(true);
+        let (weak_item, drops) = f.install_bag();
+        let square = with_world(|w| w.cell.as_ref().unwrap().get_grid_square(80, 80, 0).unwrap());
+        if mutable {
+            let held = square.borrow_mut();
+            f.world
+                .with_stream(|_, cell, _| retire_object_path(cell, "set_square"))
+                .unwrap();
+            assert_eq!(drops.get(), 0);
+            assert_eq!(held.objects.len(), 1);
+            drop(held);
+        } else {
+            let held = square.borrow();
+            f.world
+                .with_stream(|_, cell, _| retire_object_path(cell, "set_square"))
+                .unwrap();
+            assert_eq!(drops.get(), 0);
+            assert_eq!(held.objects.len(), 1);
+            drop(held);
+        }
+        drop(square);
+        assert_eq!(
+            drops.get(),
+            0,
+            "borrowed retirement must remain pinned for retry"
+        );
+        f.world
+            .with_stream(|_, _, _| assert_eq!(drops.get(), 0))
+            .unwrap();
+        assert_eq!(drops.get(), 1);
+        assert!(weak_item.upgrade().is_none());
+    }
+}
+
+#[test]
+fn stopped_chunk_keeps_borrowed_square_cleanup_queued_while_user_retains_it() {
+    for mutable in [false, true] {
+        let mut f = Fixture::new(true);
+        let (weak_item, drops) = f.install_bag();
+        let square = with_world(|w| w.cell.as_ref().unwrap().get_grid_square(80, 80, 0).unwrap());
+        // The item now lives only in the square's pending host cleanup. A
+        // retained square must not keep that queue stranded after chunk stop.
+        drop(square.borrow_mut().remove_object_slot(0));
+        if mutable {
+            let held = square.borrow_mut();
+            f.world
+                .with_stream(|s, cell, ctx| s.stop(cell, ctx))
+                .unwrap();
+            assert!(held.objects.is_empty());
+            assert_eq!(drops.get(), 0);
+            drop(held);
+        } else {
+            let held = square.borrow();
+            f.world
+                .with_stream(|s, cell, ctx| s.stop(cell, ctx))
+                .unwrap();
+            assert!(held.objects.is_empty());
+            assert_eq!(drops.get(), 0);
+            drop(held);
+        }
+        assert!(weak_item.upgrade().is_some());
+        assert!(with_world(|w| !w
+            .cell
+            .as_ref()
+            .unwrap()
+            .chunks
+            .contains_key(&(10, 10))));
+        f.world
+            .with_stream(|_, _, _| assert_eq!(drops.get(), 0))
+            .unwrap();
+        assert_eq!(drops.get(), 1);
+        assert!(weak_item.upgrade().is_none());
+        assert_eq!(square.borrow().world_objects, [1]);
+        assert!(square.borrow().objects.is_empty());
     }
 }

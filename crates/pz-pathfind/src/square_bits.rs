@@ -298,9 +298,12 @@ fn props<'m>(m: &'m IsoSpriteManager, o: &IsoObject) -> Option<&'m PropertyConta
 /// `square.getSpecialObjects()`, skipping identities no longer in
 /// `objects`.
 fn specials(sq: &IsoGridSquare) -> impl Iterator<Item = std::cell::Ref<'_, IsoObject>> {
-    sq.special_objects
-        .iter()
-        .filter_map(move |&id| sq.objects.iter().find(|o| o.borrow().id == id).map(|o| o.borrow()))
+    sq.special_objects.iter().filter_map(move |&id| {
+        sq.objects
+            .iter()
+            .find(|o| o.borrow().id == id)
+            .map(|o| o.borrow())
+    })
 }
 
 impl<'a, G: GetSquare> SquareBits<'a, G> {
@@ -498,8 +501,8 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
     pub fn sloped_surface(&self, sq: &IsoGridSquare) -> Option<SlopedSurface> {
         sq.sloped_surface_direction.map(|direction| SlopedSurface {
             direction,
-            min: slope_min(sq),
-            max: slope_max(sq),
+            min: slope_min(&sq),
+            max: slope_max(&sq),
         })
     }
 
@@ -509,13 +512,13 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
             x: sq.x,
             y: sq.y,
             z: sq.z + 32,
-            bits: self.get_bits(sq),
-            cost: self.get_cost(sq),
+            bits: self.get_bits(&sq),
+            cost: self.get_cost(&sq),
             slope_direction: sq
                 .sloped_surface_direction
                 .map_or(NO_SLOPE_DIRECTION, |d| d as i32),
-            slope_min: slope_min(sq),
-            slope_max: slope_max(sq),
+            slope_min: slope_min(&sq),
+            slope_max: slope_max(&sq),
         }
     }
 
@@ -539,19 +542,20 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         for z in chunk.min_level..=chunk.max_level {
             for y in 0..8 {
                 for x in 0..8 {
-                    let Some(sq) = chunk.get_grid_square(x, y, z) else {
+                    let Some(sq_owner) = chunk.get_grid_square(x, y, z) else {
                         bb.extend_from_slice(&0i64.to_be_bytes());
                         bb.extend_from_slice(&0i16.to_be_bytes());
                         continue;
                     };
-                    bb.extend_from_slice(&self.get_bits(sq).to_be_bytes());
-                    bb.extend_from_slice(&self.get_cost(sq).to_be_bytes());
+                    let sq = sq_owner.borrow();
+                    bb.extend_from_slice(&self.get_bits(&sq).to_be_bytes());
+                    bb.extend_from_slice(&self.get_cost(&sq).to_be_bytes());
                     let Some(dir) = sq.sloped_surface_direction else {
                         continue;
                     };
                     slopes.extend_from_slice(&[x as u8, y as u8, (z + 32) as u8, dir as u8]);
-                    slopes.extend_from_slice(&slope_min(sq).to_be_bytes());
-                    slopes.extend_from_slice(&slope_max(sq).to_be_bytes());
+                    slopes.extend_from_slice(&slope_min(&sq).to_be_bytes());
+                    slopes.extend_from_slice(&slope_max(&sq).to_be_bytes());
                     num_sloped = num_sloped.wrapping_add(1);
                 }
             }
@@ -694,10 +698,9 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         }
         // `getWindowFrame(facing)`: the first `IsoWindowFrame` in `objects`
         // on that edge, then `canClimbThrough(null)`.
-        let frame = sq
-            .objects
-            .iter()
-            .find(|o| matches!(o.borrow().kind, ObjectKind::WindowFrame { north: n } if n == north));
+        let frame = sq.objects.iter().find(
+            |o| matches!(o.borrow().kind, ObjectKind::WindowFrame { north: n } if n == north),
+        );
         let Some(frame) = frame else {
             return false;
         };
@@ -773,9 +776,10 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
 
     /// `SquareUpdateTask.hasWallBendableN/W(square)`.
     fn has_wall_bendable(&self, sq: &IsoGridSquare, north: bool) -> bool {
-        sq.objects
-            .iter()
-            .any(|o| { let o = o.borrow(); self.hooks.is_unbent_object(sq, &o) && self.is_wall_object(&o, north) })
+        sq.objects.iter().any(|o| {
+            let o = o.borrow();
+            self.hooks.is_unbent_object(sq, &o) && self.is_wall_object(&o, north)
+        })
     }
 
     /// `IsoWindow.isSheetRopeHere(square)`.
@@ -806,39 +810,54 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         let Some(adj) = sq.get_adjacent_square(dir, self.squares) else {
             return false;
         };
-        if sq.have_roof || adj.have_roof {
+        if sq.have_roof || adj.borrow().have_roof {
             return false;
         }
-        if !sq.treat_as_solid_floor(m) || !adj.treat_as_solid_floor(m) {
+        if !sq.treat_as_solid_floor(m) || !adj.borrow().treat_as_solid_floor(m) {
             return false;
         }
-        if self.is_sheet_rope_here(Some(sq)) || self.is_sheet_rope_here(Some(adj)) {
+        if self.is_sheet_rope_here(Some(sq)) || self.is_sheet_rope_here(Some(&adj.borrow())) {
             return false;
         }
-        if self.has_building(sq) || self.has_building(adj) {
+        if self.has_building(sq) || self.has_building(&adj.borrow()) {
             return false;
         }
-        if sq.has(t.water) || adj.has(t.water) {
+        if sq.has(t.water) || adj.borrow().has(t.water) {
             return false;
         }
-        if sq.has(t.CantClimb) || adj.has(t.CantClimb) {
+        if sq.has(t.CantClimb) || adj.borrow().has(t.CantClimb) {
             return false;
         }
-        if sq.has(t.solid) || sq.has(t.solidtrans) || adj.has(t.solid) || adj.has(t.solidtrans) {
+        if sq.has(t.solid)
+            || sq.has(t.solidtrans)
+            || adj.borrow().has(t.solid)
+            || adj.borrow().has(t.solidtrans)
+        {
             return false;
         }
         let above = self.squares.get_grid_square(sq.x, sq.y, sq.z + 1);
-        if above.is_some_and(|a| self.sloped_roof_without_eave(a)) {
+        if above
+            .as_ref()
+            .is_some_and(|a| self.sloped_roof_without_eave(&a.borrow()))
+        {
             return false;
         }
-        let above2 = self.squares.get_grid_square(adj.x, adj.y, adj.z + 1);
-        if above2.is_some_and(|a| self.sloped_roof_without_eave(a)) {
+        let above2 =
+            self.squares
+                .get_grid_square(adj.borrow().x, adj.borrow().y, adj.borrow().z + 1);
+        if above2
+            .as_ref()
+            .is_some_and(|a| self.sloped_roof_without_eave(&a.borrow()))
+        {
             return false;
         }
-        if above.is_some_and(|a| a.has(t.collideN)) || above2.is_some_and(|a| a.has(t.collideN)) {
+        if above.as_ref().is_some_and(|a| a.borrow().has(t.collideN))
+            || above2.as_ref().is_some_and(|a| a.borrow().has(t.collideN))
+        {
             return false;
         }
-        !self.hooks.is_client() || !self.hooks.in_safehouse(sq) && !self.hooks.in_safehouse(adj)
+        !self.hooks.is_client()
+            || !self.hooks.in_safehouse(sq) && !self.hooks.in_safehouse(&adj.borrow())
     }
 }
 

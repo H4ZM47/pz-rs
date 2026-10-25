@@ -114,8 +114,9 @@ fn main() {
         if let Some(sq) = cell.get_grid_square(x, y, z) {
             println!(
                 "square {x},{y},{z} room={} objects={:?}",
-                sq.room_id,
-                sq.objects
+                sq.borrow().room_id,
+                sq.borrow()
+                    .objects
                     .iter()
                     .map(ObjectSlot::borrow)
                     .map(|o| (o.kind.class_name(), o.tile.clone().unwrap_or_default()))

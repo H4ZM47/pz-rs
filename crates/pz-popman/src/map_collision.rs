@@ -42,9 +42,16 @@ pub fn meta_init(grid: &IsoMetaGrid) -> MetaInit {
     for cy in grid.min_y..grid.min_y + grid.height {
         for cx in grid.min_x..grid.min_x + grid.width {
             let name = format!("chunkdata_{cx}_{cy}.bin");
-            let chunkdata = grid.map_files.iter().map(|mf| mf.info_file_names.get(&name).cloned()).collect();
+            let chunkdata = grid
+                .map_files
+                .iter()
+                .map(|mf| mf.info_file_names.get(&name).cloned())
+                .collect();
             let intensity = grid.get_cell_data(cx, cy).map(|cell| {
-                let header = cell.info.as_ref().and_then(|(mf, n)| grid.map_files[*mf].info_headers.get(n));
+                let header = cell
+                    .info
+                    .as_ref()
+                    .and_then(|(mf, n)| grid.map_files[*mf].info_headers.get(n));
                 let mut v = vec![0u8; 1024];
                 for wy in 0..32 {
                     for wx in 0..32 {
@@ -54,10 +61,21 @@ pub fn meta_init(grid: &IsoMetaGrid) -> MetaInit {
                 }
                 v
             });
-            cells.push(MetaCellInit { cx, cy, chunkdata, intensity });
+            cells.push(MetaCellInit {
+                cx,
+                cy,
+                chunkdata,
+                intensity,
+            });
         }
     }
-    MetaInit { min_x: grid.min_x, min_y: grid.min_y, width: grid.width, height: grid.height, cells }
+    MetaInit {
+        min_x: grid.min_x,
+        min_y: grid.min_y,
+        width: grid.width,
+        height: grid.height,
+        cells,
+    }
 }
 
 /// The game state `MapCollisionData.init` sends before the meta grid.
@@ -215,7 +233,7 @@ impl MapCollisionData {
         for y in 0..8 {
             for x in 0..8 {
                 bits[(x + y * 8) as usize] = match chunk.get_grid_square(x, y, 0) {
-                    Some(sq) => SquareFlags::from_square(sq, m).bits(),
+                    Some(sq) => SquareFlags::from_square(&sq.borrow(), m).bits(),
                     None => BIT_SOLID,
                 };
             }
@@ -319,11 +337,26 @@ mod tests {
 
     #[test]
     fn square_bits() {
-        let f = SquareFlags { solid: true, tree: true, blocks_n: true, room: true, ..Default::default() };
+        let f = SquareFlags {
+            solid: true,
+            tree: true,
+            blocks_n: true,
+            room: true,
+            ..Default::default()
+        };
         assert_eq!(f.bits(), BIT_WALLN | BIT_ROOM);
-        let f = SquareFlags { has_stairs: true, blocks_w: true, hoppable_w: true, ..Default::default() };
+        let f = SquareFlags {
+            has_stairs: true,
+            blocks_w: true,
+            hoppable_w: true,
+            ..Default::default()
+        };
         assert_eq!(f.bits(), BIT_SOLID);
-        let f = SquareFlags { water: true, solid: true, ..Default::default() };
+        let f = SquareFlags {
+            water: true,
+            solid: true,
+            ..Default::default()
+        };
         assert_eq!(f.bits(), BIT_WATER);
     }
 
@@ -337,10 +370,16 @@ mod tests {
         sq.properties.set_flag(f.collideN);
         sq.has_types |= 1 << ty.windowFW.index();
         sq.room_id = 12;
-        assert_eq!(SquareFlags::from_square(&sq, &m).bits(), BIT_SOLID | BIT_WALLN | BIT_WALLW | BIT_ROOM);
+        assert_eq!(
+            SquareFlags::from_square(&sq, &m).bits(),
+            BIT_SOLID | BIT_WALLN | BIT_WALLW | BIT_ROOM
+        );
         sq.properties.set_flag(f.HoppableN);
         sq.has_types |= 1 << ty.tree.index();
-        assert_eq!(SquareFlags::from_square(&sq, &m).bits(), BIT_WALLW | BIT_ROOM);
+        assert_eq!(
+            SquareFlags::from_square(&sq, &m).bits(),
+            BIT_WALLW | BIT_ROOM
+        );
         let mut sq = IsoGridSquare::new(0, 0, 0);
         sq.properties.set_flag(f.water);
         sq.has_types |= 1 << ty.stairsTW.index();

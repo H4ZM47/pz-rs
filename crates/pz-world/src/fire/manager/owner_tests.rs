@@ -33,7 +33,7 @@ fn evict_missing_or_wrong_kind_receiver_keeps_original_registry_sound_and_hook_c
                 .push(ObjectSlot::new(IsoObject::new(1, ObjectKind::Object, None)));
         }
         let mut chunk = IsoChunk::new(0, 0);
-        chunk.set_square(2, 2, 0, Some(square));
+        chunk.set_square(2, 2, 0, Some((square).into()));
         let mut cell = IsoCell::default();
         cell.chunks.insert((0, 0), chunk);
         let meta = IsoMetaGrid::blank(0, 0, 0, 0);
@@ -79,7 +79,8 @@ fn evict_missing_or_wrong_kind_receiver_keeps_original_registry_sound_and_hook_c
         assert!(manager.fire_stack.is_empty());
         assert!(manager.sounds.fires.is_empty());
         assert_eq!(removed.0, [fire]);
-        let square = cell.get_grid_square(2, 2, 0).unwrap();
+        let square_owner = cell.get_grid_square(2, 2, 0).unwrap();
+        let square = square_owner.borrow();
         assert!(!square.properties.has(flags.burning));
         assert!(!square.properties.has(flags.smoke));
         assert_eq!(square.objects.len(), usize::from(wrong_kind));

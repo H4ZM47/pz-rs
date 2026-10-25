@@ -227,8 +227,9 @@ fn field_lines(ctx: &SaveCtx<'_>, ch: &IsoChunk, hooks: &OracleHooks, out: &mut 
                     let Some(sq) = ch.get_grid_square(x, y, z) else {
                         continue;
                     };
-                    let at = format!("{},{},{}", sq.x, sq.y, sq.z);
+                    let at = format!("{},{},{}", sq.borrow().x, sq.borrow().y, sq.borrow().z);
                     for o in sq
+                        .borrow()
                         .objects
                         .iter()
                         .map(ObjectSlot::borrow)
@@ -275,6 +276,7 @@ fn field_lines(ctx: &SaveCtx<'_>, ch: &IsoChunk, hooks: &OracleHooks, out: &mut 
                         }
                     }
                     for o in sq
+                        .borrow()
                         .objects
                         .iter()
                         .map(ObjectSlot::borrow)
@@ -402,6 +404,7 @@ fn digest(ctx: &SaveCtx<'_>, ch: &IsoChunk, out: &mut String) {
                     continue;
                 };
                 let seen = sq
+                    .borrow()
                     .seen
                     .iter()
                     .enumerate()
@@ -409,15 +412,15 @@ fn digest(ctx: &SaveCtx<'_>, ch: &IsoChunk, out: &mut String) {
                 writeln!(
                     out,
                     " sq {},{},{} objs={} special={} world={} moving={} table={} overlay={} roof={} burnt={} rope={} seen={}",
-                    sq.x, sq.y, sq.z, sq.objects.len(), sq.special_objects.len(), sq.world_objects.len(),
-                    sq.static_moving.len(), sq.mod_data.as_ref().is_some_and(|t| !t.is_empty()) as u8,
-                    sq.overlay_done as u8, sq.have_roof as u8, sq.burnt_out as u8, sq.have_sheet_rope as u8, seen
+                    sq.borrow().x, sq.borrow().y, sq.borrow().z, sq.borrow().objects.len(), sq.borrow().special_objects.len(), sq.borrow().world_objects.len(),
+                    sq.borrow().static_moving.len(), sq.borrow().mod_data.as_ref().is_some_and(|t| !t.is_empty()) as u8,
+                    sq.borrow().overlay_done as u8, sq.borrow().have_roof as u8, sq.borrow().burnt_out as u8, sq.borrow().have_sheet_rope as u8, seen
                 )
                 .unwrap();
-                for o in sq.objects.iter().map(ObjectSlot::borrow) {
+                for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                     writeln!(out, "{}", object_line(ctx, &o)).unwrap();
                 }
-                for b in &sq.static_moving {
+                for b in &sq.borrow().static_moving {
                     writeln!(
                         out,
                         "  b IsoDeadBody spr=20000000 name=null sname=null att=-1 wbs=-1 md={} ent=0 conts={}",
@@ -467,7 +470,7 @@ fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(ItemRecordMut<'_>)) {
                 let Some(sq) = ch.get_grid_square_mut(x, y, z) else {
                     continue;
                 };
-                for mut o in sq.objects.iter().map(ObjectSlot::borrow_mut) {
+                for mut o in sq.borrow().objects.iter().map(ObjectSlot::borrow_mut) {
                     if let Some(c) = &mut o.container {
                         cont(c, f);
                     }
@@ -503,7 +506,7 @@ fn for_each_item(ch: &mut IsoChunk, f: &mut dyn FnMut(ItemRecordMut<'_>)) {
                         _ => {}
                     }
                 }
-                for b in &mut sq.static_moving {
+                for b in &mut sq.borrow_mut().static_moving {
                     if let Some(c) = &mut b.container {
                         cont(c, f);
                     }
@@ -574,10 +577,11 @@ fn first_object_diff(ctx: &SaveCtx<'_>, r: &IsoChunk, j: &IsoChunk, out: &mut St
     use pz_world::save::object_io::save_object;
     for (rs, js) in r.squares().zip(j.squares()) {
         for (ro, jo) in rs
+            .borrow()
             .objects
             .iter()
             .map(ObjectSlot::borrow)
-            .zip(js.objects.iter().map(ObjectSlot::borrow))
+            .zip(js.borrow().objects.iter().map(ObjectSlot::borrow))
         {
             let (mut a, mut b) = (Writer::new(), Writer::new());
             let _ = save_object(&mut a, ctx, &ro);
@@ -592,9 +596,9 @@ fn first_object_diff(ctx: &SaveCtx<'_>, r: &IsoChunk, j: &IsoChunk, out: &mut St
                     "  OBJ {} {} at {},{},{}: rust {:?}\n    java {:?}",
                     ro.kind.class_name(),
                     name,
-                    rs.x,
-                    rs.y,
-                    rs.z,
+                    rs.borrow().x,
+                    rs.borrow().y,
+                    rs.borrow().z,
                     ro.components.iter().map(|c| c.type_id).collect::<Vec<_>>(),
                     jo.components.iter().map(|c| c.type_id).collect::<Vec<_>>()
                 )
@@ -602,8 +606,15 @@ fn first_object_diff(ctx: &SaveCtx<'_>, r: &IsoChunk, j: &IsoChunk, out: &mut St
                 return;
             }
         }
-        if rs.static_moving != js.static_moving {
-            writeln!(out, "  BODY at {},{},{}", rs.x, rs.y, rs.z).unwrap();
+        if rs.borrow().static_moving != js.borrow().static_moving {
+            writeln!(
+                out,
+                "  BODY at {},{},{}",
+                rs.borrow().x,
+                rs.borrow().y,
+                rs.borrow().z
+            )
+            .unwrap();
             return;
         }
     }

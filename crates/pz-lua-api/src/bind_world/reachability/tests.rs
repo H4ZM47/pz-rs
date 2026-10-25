@@ -26,7 +26,7 @@ impl Fixture {
         let mut cell = IsoCell::default();
         let mut chunk = IsoChunk::new(0, 0);
         for (x, y, z) in [(1, 1, 0), (1, 2, 0), (2, 1, 0), (4, 1, 0), (1, 1, 1)] {
-            chunk.set_square(x, y, z, Some(IsoGridSquare::new(x, y, z)));
+            chunk.set_square(x, y, z, Some((IsoGridSquare::new(x, y, z)).into()));
         }
         cell.chunks.insert((0, 0), chunk);
         set_cell(Some(cell));
@@ -79,6 +79,7 @@ impl Fixture {
                 .unwrap()
                 .get_grid_square_mut(1, 2, 0)
                 .unwrap();
+            let mut square = square.borrow_mut();
             square.objects = vec![pz_world::ObjectSlot::new(IsoObject::new(1, object, sprite))];
             square.special_objects = vec![1];
             square.recalc_properties(&self.sprites.borrow());
@@ -195,16 +196,19 @@ fn reachability_uses_live_doors_windows_thumpables_and_barricades() {
             .unwrap()
             .get_grid_square_mut(1, 2, 0)
             .unwrap();
-        square.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
-            2,
-            ObjectKind::Barricade(IsoBarricade {
-                dir: 0,
-                plank_health: [10, 0, 0, 0],
-                metal_health: 0,
-                metal_bar_health: 0,
-            }),
-            None,
-        )));
+        let mut square = square.borrow_mut();
+        square
+            .objects
+            .push(pz_world::ObjectSlot::new(IsoObject::new(
+                2,
+                ObjectKind::Barricade(IsoBarricade {
+                    dir: 0,
+                    plank_health: [10, 0, 0, 0],
+                    metal_health: 0,
+                    metal_bar_health: 0,
+                }),
+                None,
+            )));
         square.special_objects.push(2);
     });
     fixture.run("check(not a:canReachTo(b))");

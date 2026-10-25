@@ -340,7 +340,8 @@ impl WorldLighting {
         let Some(ch) = w.cell.chunks.get(&(wx, wy)) else {
             return;
         };
-        for sq in ch.squares() {
+        for sq_owner in ch.squares() {
+            let sq = sq_owner.borrow();
             let p = (sq.x, sq.y, sq.z);
             // A square new to lighting starts with the `seen` flags it
             // was loaded with (`IsoGridSquare.load` sets `lighting[i].bSeen`
@@ -349,10 +350,10 @@ impl WorldLighting {
                 .squares
                 .0
                 .get(&p)
-                .map_or((0, loaded_seen_by(sq)), |g| (g.light_level, g.seen_by));
+                .map_or((0, loaded_seen_by(&sq)), |g| (g.light_level, g.seen_by));
             self.squares
                 .0
-                .insert(p, grid_square(w, sq, hooks, ll, seen));
+                .insert(p, grid_square(w, &sq, hooks, ll, seen));
         }
         let st = self.chunks.entry((wx, wy)).or_insert(ChunkState {
             min_level: 0,
@@ -421,14 +422,15 @@ impl WorldLighting {
         let p = (x, y, z);
         match w.cell.get_grid_square(x, y, z) {
             Some(sq) => {
+                let sq = sq.borrow();
                 let (ll, seen) = self
                     .squares
                     .0
                     .get(&p)
-                    .map_or((0, loaded_seen_by(sq)), |g| (g.light_level, g.seen_by));
+                    .map_or((0, loaded_seen_by(&sq)), |g| (g.light_level, g.seen_by));
                 self.squares
                     .0
-                    .insert(p, grid_square(w, sq, hooks, ll, seen));
+                    .insert(p, grid_square(w, &sq, hooks, ll, seen));
             }
             None => {
                 self.squares.0.remove(&p);
@@ -445,9 +447,11 @@ impl WorldLighting {
             return;
         };
         let mut cl = ChunkLights::default();
-        for sq in ch.squares() {
+        for sq_owner in ch.squares() {
+            let sq = sq_owner.borrow();
             for o in &sq.objects {
-                let o = o.borrow();                let ObjectKind::LightSwitch(s) = &o.kind else {
+                let o = o.borrow();
+                let ObjectKind::LightSwitch(s) = &o.kind else {
                     continue;
                 };
                 if s.light_room {
@@ -554,7 +558,9 @@ impl WorldLighting {
     pub fn light_check(&self, wx: i32, wy: i32, z: i32, player: i32) -> Option<(bool, bool)> {
         let st = self.chunks.get(&(wx, wy))?;
         let pi = player as usize & 3;
-        let l = st.level_light_check.get(usize::try_from(z - st.min_level).ok()?)?;
+        let l = st
+            .level_light_check
+            .get(usize::try_from(z - st.min_level).ok()?)?;
         Some((st.light_check[pi], l[pi]))
     }
 
@@ -818,7 +824,11 @@ impl WorldLighting {
     fn switch_positions(&self, w: &WorldView<'_>, rid: i64) -> Vec<(i32, i32, i32)> {
         let mut out = Vec::new();
         for ch in w.cell.chunks.values() {
-            for sq in ch.squares().filter(|s| s.room_id == rid) {
+            for sq_owner in ch.squares() {
+                let sq = sq_owner.borrow();
+                if sq.room_id != rid {
+                    continue;
+                }
                 if sq
                     .objects
                     .iter()

@@ -8,8 +8,8 @@
 //! world's power state are runtime input ([`PowerSettings`]).
 
 use crate::object_slot::ObjectSlot;
+use crate::{IsoObjectRef, SquareRef};
 use pz_inventory::item::InventoryItem;
-use std::cell::Ref;
 
 use crate::chunk::{IsoCell, IsoGridSquare};
 use crate::meta_grid::IsoMetaGrid;
@@ -107,16 +107,13 @@ impl IsoThumpable {
 pub fn get_barricade_on_square(
     sq: Option<&IsoGridSquare>,
     dir: IsoDirections,
-) -> Option<Ref<'_, IsoBarricade>> {
+) -> Option<IsoObjectRef> {
     let sq = sq?;
     sq.special_objects.iter().find_map(|&id| {
-        Ref::filter_map(sq.objects[sq.object_index(id)?].borrow(), |o| {
-            match &o.kind {
-                ObjectKind::Barricade(b) if b.forward_dir() == dir => Some(b),
-                _ => None,
-            }
-        })
-        .ok()
+        let slot = &sq.objects[sq.object_index(id)?];
+        let matches =
+            matches!(&slot.borrow().kind, ObjectKind::Barricade(b) if b.forward_dir()==dir);
+        matches.then(|| slot.ref_handle())
     })
 }
 
@@ -267,7 +264,7 @@ impl<'a> ObjectHooks<'a> {
 
     /// `getOppositeSquare()` of an edge element on `sq` (`getNorth()` or
     /// `getWest()` of the square).
-    pub fn opposite_square(&self, sq: &IsoGridSquare, north: bool) -> Option<&'a IsoGridSquare> {
+    pub fn opposite_square(&self, sq: &IsoGridSquare, north: bool) -> Option<SquareRef> {
         if north {
             self.squares.get_grid_square(sq.x, sq.y - 1, sq.z)
         } else {
@@ -281,7 +278,7 @@ impl<'a> ObjectHooks<'a> {
         &self,
         sq: &'s IsoGridSquare,
         north: bool,
-    ) -> (Option<Ref<'s, IsoBarricade>>, Option<Ref<'a, IsoBarricade>>) {
+    ) -> (Option<IsoObjectRef>, Option<IsoObjectRef>) {
         let (same, opposite) = if north {
             (IsoDirections::N, IsoDirections::S)
         } else {
@@ -289,7 +286,13 @@ impl<'a> ObjectHooks<'a> {
         };
         (
             get_barricade_on_square(Some(sq), same),
-            get_barricade_on_square(self.opposite_square(sq, north), opposite),
+            get_barricade_on_square(
+                self.opposite_square(sq, north)
+                    .as_ref()
+                    .map(|s| s.borrow())
+                    .as_deref(),
+                opposite,
+            ),
         )
     }
 
@@ -426,7 +429,7 @@ impl<'a> WorldState<'a> {
         }
     }
 
-    fn square(&self, x: i32, y: i32, z: i32) -> Option<&'a IsoGridSquare> {
+    fn square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         self.cell.get_grid_square(x, y, z)
     }
 
@@ -436,7 +439,7 @@ impl<'a> WorldState<'a> {
     }
 
     /// See [`ObjectHooks::opposite_square`].
-    pub fn opposite_square(&self, sq: &IsoGridSquare, north: bool) -> Option<&'a IsoGridSquare> {
+    pub fn opposite_square(&self, sq: &IsoGridSquare, north: bool) -> Option<SquareRef> {
         self.objects().opposite_square(sq, north)
     }
 
@@ -445,7 +448,7 @@ impl<'a> WorldState<'a> {
         &self,
         sq: &'s IsoGridSquare,
         north: bool,
-    ) -> (Option<Ref<'s, IsoBarricade>>, Option<Ref<'a, IsoBarricade>>) {
+    ) -> (Option<IsoObjectRef>, Option<IsoObjectRef>) {
         self.objects().barricades_for(sq, north)
     }
 
@@ -545,16 +548,17 @@ impl<'a> WorldState<'a> {
                     if dx == 0 && dy == 0 && dz == 0 {
                         continue;
                     }
-                    let Some(gs) = self.square(sq.x + dx, sq.y + dy, sq.z + dz) else {
+                    let Some(gs_owner) = self.square(sq.x + dx, sq.y + dy, sq.z + dz) else {
                         continue;
                     };
+                    let gs = gs_owner.borrow();
                     if pre_elec_shut
-                        && (self.is_building_square(Some(gs))
-                            || self.has_fascia_adjacent_to_building_square(gs))
+                        && (self.is_building_square(Some(&gs))
+                            || self.has_fascia_adjacent_to_building_square(&gs))
                     {
                         return true;
                     }
-                    if self.have_electricity(gs) {
+                    if self.have_electricity(&gs) {
                         return true;
                     }
                 }
@@ -577,26 +581,23 @@ impl<'a> WorldState<'a> {
     /// The light switch on `(x, y, z)` controlling a lamp
     /// (`IsoLightSource.switches.get(0)`): the first non-room switch there,
     /// else the first switch.
-    pub fn lamp_switch(
-        &self,
-        x: i32,
-        y: i32,
-        z: i32,
-    ) -> Option<(&'a IsoGridSquare, Ref<'a, IsoLightSwitch>)> {
-        let sq = self.square(x, y, z)?;
-        let switches = || {
-            sq.objects.iter().filter_map(|o| {
-                Ref::filter_map(o.borrow(), |o| match &o.kind {
-                    ObjectKind::LightSwitch(s) => Some(s),
-                    _ => None,
-                })
-                .ok()
-            })
+    pub fn lamp_switch(&self, x: i32, y: i32, z: i32) -> Option<(SquareRef, IsoObjectRef)> {
+        let sq_owner = self.square(x, y, z)?;
+        let sq = sq_owner.borrow();
+        let sw = {
+            let body = &sq;
+            let switches = || {
+                body.objects
+                    .iter()
+                    .filter(|o| matches!(&o.borrow().kind, ObjectKind::LightSwitch(_)))
+            };
+            switches()
+                .find(|o| matches!(&o.borrow().kind,ObjectKind::LightSwitch(s) if !s.light_room))
+                .or_else(|| switches().next())?
+                .ref_handle()
         };
-        let sw = switches()
-            .find(|s| !s.light_room)
-            .or_else(|| switches().next())?;
-        Some((sq, sw))
+        drop(sq);
+        Some((sq_owner, sw))
     }
 
     /// `checkLights`' power for a lamp switched at `(x, y, z)`:
@@ -606,8 +607,13 @@ impl<'a> WorldState<'a> {
         let Some((sq, sw)) = self.lamp_switch(x, y, z) else {
             return false;
         };
-        let mut has_power = self.can_switch_light(sq, &sw);
-        if sw.street_light && !self.has_grid_power(sq) {
+        let sq = sq.borrow();
+        let sw = sw.borrow();
+        let ObjectKind::LightSwitch(sw) = &sw.kind else {
+            return false;
+        };
+        let mut has_power = self.can_switch_light(&sq, sw);
+        if sw.street_light && !self.has_grid_power(&sq) {
             has_power = false;
         }
         has_power
@@ -617,7 +623,7 @@ impl<'a> WorldState<'a> {
     /// `lightSwitch.square.haveElectricity()` for a switch at `(x, y, z)`.
     pub fn room_switch_square_powered(&self, x: i32, y: i32, z: i32) -> bool {
         self.square(x, y, z)
-            .is_some_and(|sq| self.have_electricity(sq))
+            .is_some_and(|sq| self.have_electricity(&(sq).borrow()))
     }
 
     /// The players' torches (`checkPlayerTorches` for each player).

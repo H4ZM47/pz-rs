@@ -467,6 +467,9 @@ mod native_tests;
 mod existing_owner_tests;
 
 #[cfg(test)]
+mod erased_owner_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{LuaObject, NativeFunction, TableRef, Thread};

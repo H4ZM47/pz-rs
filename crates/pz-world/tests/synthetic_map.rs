@@ -133,6 +133,7 @@ fn loads_header_rooms_and_chunk() {
     );
     let sq = ch.get_grid_square(0, 0, 0).unwrap();
     let names: Vec<_> = sq
+        .borrow()
         .objects
         .iter()
         .map(ObjectSlot::borrow)
@@ -148,13 +149,29 @@ fn loads_header_rooms_and_chunk() {
     assert!(ch
         .get_grid_square(0, 0, 0)
         .unwrap()
+        .borrow()
         .associated_building
         .is_none());
     // Neighbours of a used square are created empty; count-1 squares are not.
-    assert!(ch.get_grid_square(1, 1, 0).unwrap().objects.is_empty());
-    assert!(ch.get_grid_square(0, 1, 0).unwrap().objects.is_empty());
+    assert!(ch
+        .get_grid_square(1, 1, 0)
+        .unwrap()
+        .borrow()
+        .objects
+        .is_empty());
+    assert!(ch
+        .get_grid_square(0, 1, 0)
+        .unwrap()
+        .borrow()
+        .objects
+        .is_empty());
     // A square with only a missing tile exists but has no objects.
-    assert!(ch.get_grid_square(7, 7, 0).unwrap().objects.is_empty());
+    assert!(ch
+        .get_grid_square(7, 7, 0)
+        .unwrap()
+        .borrow()
+        .objects
+        .is_empty());
     assert!(ch.get_grid_square(4, 4, 0).is_none());
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -249,7 +266,12 @@ fn squares_loaded_from_a_save_get_their_associated_building() {
     let mut ch = IsoChunk::new(wx, wy);
     for x in 0..8 {
         for y in 0..8 {
-            ch.set_square(x, y, 0, Some(IsoGridSquare::new(wx * 8 + x, wy * 8 + y, 0)));
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(wx * 8 + x, wy * 8 + y, 0)).into()),
+            );
         }
     }
     let sprites = sprites();
@@ -265,30 +287,41 @@ fn squares_loaded_from_a_save_get_their_associated_building() {
     };
     let bytes = save_chunk(&ch, &ctx).unwrap();
     let no_meta = load_chunk(&bytes, wx, wy, &ctx).unwrap().chunk;
-    assert!(no_meta.squares().all(|s| s.associated_building.is_none()));
+    assert!(no_meta
+        .squares()
+        .all(|s| s.borrow().associated_building.is_none()));
     ctx.meta = Some(&grid);
     let loaded = load_chunk(&bytes, wx, wy, &ctx).unwrap().chunk;
     let mut n = 0;
     for sq in loaded.squares() {
         assert_eq!(
-            sq.associated_building,
-            grid.get_associated_building_at(sq.x, sq.y).unwrap(),
+            sq.borrow().associated_building,
+            grid.get_associated_building_at(sq.borrow().x, sq.borrow().y)
+                .unwrap(),
             "{},{},{}",
-            sq.x,
-            sq.y,
-            sq.z
+            sq.borrow().x,
+            sq.borrow().y,
+            sq.borrow().z
         );
-        n += sq.associated_building.is_some() as usize;
+        n += sq.borrow().associated_building.is_some() as usize;
     }
     // The room's rect grown by one tile to the north and west: (2..=5, 3..=6).
     assert_eq!(n, 16);
     let b = Some(grid.buildings[0]);
     assert_eq!(
-        loaded.get_grid_square(2, 3, 0).unwrap().associated_building,
+        loaded
+            .get_grid_square(2, 3, 0)
+            .unwrap()
+            .borrow()
+            .associated_building,
         b
     );
     assert_eq!(
-        loaded.get_grid_square(6, 6, 0).unwrap().associated_building,
+        loaded
+            .get_grid_square(6, 6, 0)
+            .unwrap()
+            .borrow()
+            .associated_building,
         None
     );
     let _ = std::fs::remove_dir_all(&root);

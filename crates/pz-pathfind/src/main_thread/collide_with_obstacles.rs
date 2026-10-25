@@ -38,7 +38,6 @@
 // The negated comparisons are Java's (false for NaN).
 #![allow(clippy::neg_cmp_op_on_partial_ord, clippy::manual_range_contains)]
 
-use pz_world::chunk::IsoGridSquare;
 use pz_world::{EdgeFacing, GetSquare};
 
 use super::{ceil_i, fastfloor, normalize, MainThreadMap};
@@ -659,50 +658,60 @@ impl Graph {
                 let Some(sq) = map.square(x, y, z) else {
                     continue;
                 };
-                if sq.is_solid(m)
-                    || sq.is_solid_trans(m)
-                        && !sq.is_adjacent_to_window(m, map.squares(), map.hooks())
-                        && !sq.is_adjacent_to_hoppable(m, map.squares(), map.hooks())
-                    || sq.has_type(t.stairsMN)
-                    || sq.has_type(t.stairsTN)
-                    || sq.has_type(t.stairsMW)
-                    || sq.has_type(t.stairsTW)
+                if sq.borrow().is_solid(m)
+                    || sq.borrow().is_solid_trans(m)
+                        && !sq
+                            .borrow()
+                            .is_adjacent_to_window(m, map.squares(), map.hooks())
+                        && !sq
+                            .borrow()
+                            .is_adjacent_to_hoppable(m, map.squares(), map.hooks())
+                    || sq.borrow().has_type(t.stairsMN)
+                    || sq.borrow().has_type(t.stairsTN)
+                    || sq.borrow().has_type(t.stairsMW)
+                    || sq.borrow().has_type(t.stairsTW)
                 {
                     self.set_solid(x - left, y - top);
                 }
-                let mut collide_w = sq.has(flag.collideW);
-                if sq.has(flag.windowW) || sq.has(flag.WindowW) {
+                let mut collide_w = sq.borrow().has(flag.collideW);
+                if sq.borrow().has(flag.windowW) || sq.borrow().has(flag.WindowW) {
                     collide_w = true;
                 }
-                if collide_w && sq.has(flag.doorW) {
+                if collide_w && sq.borrow().has(flag.doorW) {
                     collide_w = false;
                 }
-                let mut collide_n = sq.has(flag.collideN);
-                if sq.has(flag.windowN) || sq.has(flag.WindowN) {
+                let mut collide_n = sq.borrow().has(flag.collideN);
+                if sq.borrow().has(flag.windowN) || sq.borrow().has(flag.WindowN) {
                     collide_n = true;
                 }
-                if collide_n && sq.has(flag.doorN) {
+                if collide_n && sq.borrow().has(flag.doorN) {
                     collide_n = false;
                 }
                 if collide_w
-                    || sq.has_blocked_door(EdgeFacing::EastWest, map.hooks())
-                    || sq.has_type(t.stairsBN)
+                    || sq
+                        .borrow()
+                        .has_blocked_door(EdgeFacing::EastWest, map.hooks())
+                    || sq.borrow().has_type(t.stairsBN)
                 {
                     self.set_west(x - left, y - top);
                 }
                 if collide_n
-                    || sq.has_blocked_door(EdgeFacing::NorthSouth, map.hooks())
-                    || sq.has_type(t.stairsBW)
+                    || sq
+                        .borrow()
+                        .has_blocked_door(EdgeFacing::NorthSouth, map.hooks())
+                    || sq.borrow().has_type(t.stairsBW)
                 {
                     self.set_north(x - left, y - top);
                 }
-                if sq.has_type(t.stairsBN) && x != right - 2 {
+                if sq.borrow().has_type(t.stairsBN) && x != right - 2 {
                     if map.square(x + 1, y, z).is_some() {
                         self.set_west(x + 1 - left, y - top);
                     }
                     continue;
                 }
-                if !sq.has_type(t.stairsBW) || y == bottom - 2 || map.square(x, y + 1, z).is_none()
+                if !sq.borrow().has_type(t.stairsBW)
+                    || y == bottom - 2
+                    || map.square(x, y + 1, z).is_none()
                 {
                     continue;
                 }
@@ -1132,7 +1141,7 @@ impl CollideWithObstacles {
     fn on_stairs<G: GetSquare>(map: &MainThreadMap<'_, '_, G>, chr: &dyn CharacterView) -> bool {
         chr.current_square()
             .and_then(|(x, y, z)| map.square(x, y, z))
-            .is_some_and(|s: &IsoGridSquare| s.has_stairs(map.sprites()))
+            .is_some_and(|s| s.borrow().has_stairs(map.sprites()))
     }
 
     /// `CollideWithObstacles.resolveCollision(chr, nx, ny, finalPos)`

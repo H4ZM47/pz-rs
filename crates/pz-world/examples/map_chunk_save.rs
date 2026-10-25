@@ -61,7 +61,7 @@ impl GameRand for JavaRandom {
 /// in derelict and user-defined rooms (`IsoGridSquare.isNoPower`).
 struct GridOn;
 impl ObjectLoadHooks for GridOn {
-    fn square_powered(&mut self, _sq: &pz_world::IsoGridSquare, room: &pz_world::RoomDef) -> bool {
+    fn square_powered(&mut self, _sq: pz_world::SquareRef, room: &pz_world::RoomDef) -> bool {
         !room.name.to_lowercase().contains("derelict") && !room.user_defined
     }
 }

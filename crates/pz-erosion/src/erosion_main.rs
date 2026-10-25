@@ -464,14 +464,14 @@ impl ErosionMain {
         let (lx, ly) = (sq.0 - chunk.wx * 8, sq.1 - chunk.wy * 8);
         chunk
             .get_grid_square(lx, ly, sq.2)
-            .and_then(|s| s.erosion.as_ref())
-            .map(SquareData::from_saved)
+            .and_then(|s| s.borrow().erosion.as_ref().map(SquareData::from_saved))
             .unwrap_or_default()
     }
 
     fn put_square(&mut self, chunk: &mut IsoChunk, sq: (i32, i32, i32), d: SquareData) {
         let (lx, ly) = (sq.0 - chunk.wx * 8, sq.1 - chunk.wy * 8);
-        if let Some(s) = chunk.get_grid_square_mut(lx, ly, sq.2) {
+        if let Some(s_owner) = chunk.get_grid_square_mut(lx, ly, sq.2) {
+            let mut s = s_owner.borrow_mut();
             s.erosion = Some(d.to_saved());
         }
         self.squares.insert(sq, d);

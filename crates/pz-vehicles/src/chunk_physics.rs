@@ -64,7 +64,8 @@ pub fn calc_physics(
     if z == 0 {
         let mut column = false;
         for o in &sq.objects {
-            let o = o.borrow();            let spr = o.sprite.map(|i| &m.sprites[i]);
+            let o = o.borrow();
+            let spr = o.sprite.map(|i| &m.sprites[i]);
             let has_shape = spr.is_some_and(|s| m.has_prop(s, "PhysicsShape"));
             let Some(s) = spr else { continue };
             if has_shape {
@@ -95,7 +96,9 @@ pub fn calc_physics(
         sq.objects
             .iter()
             .find(|o| o.borrow().id == *id)
-            .is_some_and(|o| matches!(&o.borrow().kind, ObjectKind::Thumpable(t) if t.block_all_the_square))
+            .is_some_and(
+                |o| matches!(&o.borrow().kind, ObjectKind::Thumpable(t) if t.block_all_the_square),
+            )
     });
     let stairs = sq.has_stairs(m);
     if stairs {
@@ -215,7 +218,7 @@ fn build<'a>(
     level: i32,
     mesh_index: &dyn Fn(&str) -> Option<i32>,
     m: &IsoSpriteManager,
-    square: &dyn Fn(i32, i32) -> Option<&'a IsoGridSquare>,
+    square: &dyn Fn(i32, i32) -> Option<pz_world::SquareRef>,
 ) -> Option<Vec<u8>> {
     let mut buf = vec![8u8];
     for v in [wx, wy, min_level, max_level, level] {
@@ -223,7 +226,9 @@ fn build<'a>(
     }
     for y in 0..8 {
         for x in 0..8 {
-            let shapes = calc_physics(square(x, y), level, m, mesh_index);
+            let owner = square(x, y);
+            let sq = owner.as_ref().map(|s| s.borrow());
+            let shapes = calc_physics(sq.as_deref(), level, m, mesh_index);
             let present: Vec<u8> = shapes
                 .iter()
                 .filter(|&&s| s != -1)

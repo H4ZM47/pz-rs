@@ -90,7 +90,7 @@ impl World {
     }
 
     /// A square at `(x, y, z)` with the named flags and object types.
-    fn put(&mut self, x: i32, y: i32, z: i32, names: &[&str]) -> &mut IsoGridSquare {
+    fn put(&mut self, x: i32, y: i32, z: i32, names: &[&str]) -> pz_world::SquareRef {
         let mut sq = IsoGridSquare::new(x, y, z);
         for n in names {
             if let Some(f) = self.m.tables.flag_from_string(n) {
@@ -106,11 +106,11 @@ impl World {
             .chunks
             .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
             .unwrap();
-        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some(sq));
+        ch.set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some((sq).into()));
         self.cell.get_grid_square_mut(x, y, z).unwrap()
     }
 
-    fn sq(&self, x: i32, y: i32, z: i32) -> &IsoGridSquare {
+    fn sq(&self, x: i32, y: i32, z: i32) -> pz_world::SquareRef {
         self.cell.get_grid_square(x, y, z).unwrap()
     }
 }
@@ -235,10 +235,10 @@ fn square_reads_floor_room_and_building() {
     w.put(20, 20, 0, &["solidfloor"]);
     w.put(21, 20, 0, &[]);
     w.put(22, 20, 0, &["stairsTN"]);
-    w.put(23, 20, 0, &["solidfloor"]).room_id = room(ROOM);
-    w.put(24, 20, 0, &["solidfloor"]).room_id = room(OUTSIDE_ROOM);
+    w.put(23, 20, 0, &["solidfloor"]).borrow_mut().room_id = room(ROOM);
+    w.put(24, 20, 0, &["solidfloor"]).borrow_mut().room_id = room(OUTSIDE_ROOM);
     // A room id the meta grid does not know: `getRoom()` finds no room.
-    w.put(25, 20, 0, &["solidfloor"]).room_id = room(9);
+    w.put(25, 20, 0, &["solidfloor"]).borrow_mut().room_id = room(9);
     let (checks, mut rand, mut zs) = (
         NoSittingObstacles,
         ListRand(vec![], vec![]),
@@ -284,7 +284,7 @@ fn wall_type_bits() {
     w.put(23, 21, 0, &["WallNW"]);
     w.put(24, 21, 0, &["WallNW"]);
     let f = WallFlags::new(&w.m);
-    let t = |x, y| wall_type(w.sq(x, y, 0), &w.cell, &f);
+    let t = |x, y| wall_type(&w.sq(x, y, 0).borrow(), &w.cell, &f);
     // North wall here; west wall on the square to the east; north wall on
     // the square to the south.
     assert_eq!(t(20, 20), 1 | 8 | 2);
@@ -298,7 +298,7 @@ fn wall_type_bits() {
     assert_eq!(t(23, 21), 5 | 8);
     // No square to the south or east (outside the loaded chunks).
     w.put(39, 39, 0, &["WallW"]);
-    assert_eq!(wall_type(w.sq(39, 39, 0), &w.cell, &f), 4);
+    assert_eq!(wall_type(&w.sq(39, 39, 0).borrow(), &w.cell, &f), 4);
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn is_free_rules() {
     w.put(20, 21, 0, &["solidfloor"]);
     let (mut rand, mut zs) = (ListRand(vec![], vec![]), Zombies::default());
     let h = WorldPopulationHost::new(&w.cell, &w.meta, &w.m, &checks, &mut rand, &mut zs);
-    let free = |x, y| h.is_free(w.sq(x, y, 0));
+    let free = |x, y| h.is_free(&w.sq(x, y, 0).borrow());
     assert!(free(20, 20));
     assert!(!free(21, 20));
     assert!(!free(22, 20));
@@ -329,7 +329,7 @@ fn is_free_rules() {
     // `isFree(true)` counts the characters on the square.
     assert!(!free(26, 20));
     assert!(!free(20, 21));
-    assert!(is_free_ignoring_movers(w.sq(26, 20, 0), &w.m));
+    assert!(is_free_ignoring_movers(&w.sq(26, 20, 0).borrow(), &w.m));
 }
 
 #[test]
@@ -340,9 +340,13 @@ fn sitting_wall_type_tests_in_order() {
     // No wall.
     w.put(21, 20, 0, &["solidfloor"]);
     // Inside a building.
-    w.put(22, 20, 0, &["solidfloor", "WallN"]).room_id = room(ROOM);
+    w.put(22, 20, 0, &["solidfloor", "WallN"])
+        .borrow_mut()
+        .room_id = room(ROOM);
     // A room without a building is not a building.
-    w.put(23, 20, 0, &["solidfloor", "WallW"]).room_id = room(OUTSIDE_ROOM);
+    w.put(23, 20, 0, &["solidfloor", "WallW"])
+        .borrow_mut()
+        .room_id = room(OUTSIDE_ROOM);
     // Not free.
     w.put(24, 20, 0, &["solidfloor", "WallN", "solid"]);
     // A character stands there.
@@ -622,8 +626,12 @@ fn from_ops_reads_the_world_the_ops_hold() {
     let mut w = World::new();
     w.put(20, 20, 0, &["solidfloor", "WallN"]);
     w.put(21, 20, 0, &["solidfloor"]);
-    w.put(22, 20, 0, &["solidfloor", "WallN"]).room_id = room(ROOM);
-    w.put(23, 20, 0, &["solidfloor", "WallW"]).room_id = room(OUTSIDE_ROOM);
+    w.put(22, 20, 0, &["solidfloor", "WallN"])
+        .borrow_mut()
+        .room_id = room(ROOM);
+    w.put(23, 20, 0, &["solidfloor", "WallW"])
+        .borrow_mut()
+        .room_id = room(OUTSIDE_ROOM);
     w.put(25, 20, 0, &["solidfloor", "WallN"]);
     w.put(26, 20, 0, &["solidfloor", "WallN"]);
     let checks = Checks {

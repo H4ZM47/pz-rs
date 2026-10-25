@@ -425,7 +425,7 @@ fn main() {
                     let Some(sq) = ch.get_grid_square(x, y, z) else {
                         continue;
                     };
-                    for o in sq.objects.iter().map(ObjectSlot::borrow) {
+                    for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
                         match &o.kind {
                             ObjectKind::AnimalTrack(t) => rt.push(format!(
                                 "track {wx},{wy} {} {} {} {} {} {} {} sprite={}",

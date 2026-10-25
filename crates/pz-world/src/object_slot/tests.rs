@@ -49,9 +49,9 @@ fn discarded_objects_retire_through_square_chunk_and_cell_without_entering_archi
         let weak = Rc::downgrade(&slot.ref_handle());
         square.objects.push(slot);
         let mut chunk = IsoChunk::new(0, 0);
-        chunk.set_square(0, 0, 0, Some(square));
+        chunk.set_square(0, 0, 0, Some((square).into()));
         // Discard placement's temporary unwind pin: the actual slot is still live.
-        drop(chunk.take_retired_objects());
+        drop(chunk.take_retired_owners());
         let mut cell = IsoCell::default();
         cell.chunks.insert((0, 0), chunk);
         match operation {
@@ -59,7 +59,7 @@ fn discarded_objects_retire_through_square_chunk_and_cell_without_entering_archi
                 0,
                 0,
                 0,
-                Some(IsoGridSquare::new(0, 0, 0)),
+                Some((IsoGridSquare::new(0, 0, 0)).into()),
             ),
             "shrink-level" => cell
                 .chunks
@@ -67,7 +67,8 @@ fn discarded_objects_retire_through_square_chunk_and_cell_without_entering_archi
                 .unwrap()
                 .set_min_max_level(1, 1),
             _ => {
-                let square = cell.get_grid_square_mut(0, 0, 0).unwrap();
+                let square_owner = cell.get_grid_square_mut(0, 0, 0).unwrap();
+                let mut square = square_owner.borrow_mut();
                 match operation {
                     "remove" => drop(square.remove_object_slot(0)),
                     "replace" => square.replace_object_slot(
@@ -82,9 +83,9 @@ fn discarded_objects_retire_through_square_chunk_and_cell_without_entering_archi
             }
         }
         assert!(weak.upgrade().is_some(), "{operation}");
-        let retired = cell.take_retired_objects();
+        let retired = cell.take_retired_owners();
         assert!(weak.upgrade().is_some());
-        assert!(cell.take_retired_objects().is_empty());
+        assert!(cell.take_retired_owners().is_empty());
         drop(retired);
         assert!(weak.upgrade().is_none(), "{operation}");
     }
@@ -98,11 +99,11 @@ fn incoming_square_owner_survives_index_unwind_until_explicit_retirement() {
     let weak = Rc::downgrade(&slot.ref_handle());
     square.objects.push(slot);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        chunk.set_square(-1, 0, 0, Some(square))
+        chunk.set_square(-1, 0, 0, Some((square).into()))
     }));
     assert!(result.is_err());
     assert!(weak.upgrade().is_some());
-    let retired = chunk.take_retired_objects();
+    let retired = chunk.take_retired_owners();
     assert!(weak.upgrade().is_some());
     drop(retired);
     assert!(weak.upgrade().is_none());

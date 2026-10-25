@@ -5,6 +5,7 @@
 //! Object changes after loading (`AddTileObject`, `RemoveTileObject`,
 //! `addFloor`, ...) are [`crate::square_mutation`].
 
+use crate::{RetiredWorldOwners, SquareRef, SquareSlot};
 use std::collections::HashMap;
 
 use pz_core::debug::{self, JulLevel, StackElement};
@@ -274,8 +275,9 @@ pub struct IsoChunk {
     pub min_level: i32,
     pub max_level: i32,
     /// `squares[z - minLevel][x + y*8]`.
-    squares: Vec<Vec<Option<IsoGridSquare>>>,
+    squares: Vec<Vec<Option<SquareSlot>>>,
     retired_objects: Vec<crate::ObjectSlot>,
+    retired_squares: Vec<SquareSlot>,
     /// `lotheader`: header file name, set when the lot came from the
     /// top-level header.
     pub lotheader: Option<String>,
@@ -452,6 +454,7 @@ impl IsoChunk {
             max_level: 0,
             squares: vec![vec![None; 64]],
             retired_objects: Vec::new(),
+            retired_squares: Vec::new(),
             lotheader: None,
             modded: false,
             generation_status: ChunkGenerationStatusSet::default(),
@@ -502,7 +505,9 @@ impl IsoChunk {
     ) -> crate::chunk_vehicles::VehicleHandle {
         let lx = (row.x - (self.wx * CHUNK_WIDTH) as f32) as i32;
         let ly = (row.y - (self.wy * CHUNK_WIDTH) as f32) as i32;
-        let square = self.get_grid_square(lx, ly, 0).map(|s| (s.x, s.y, s.z));
+        let square = self
+            .get_grid_square(lx, ly, 0)
+            .map(|s| (s.borrow().x, s.borrow().y, s.borrow().z));
         let h: crate::chunk_vehicles::VehicleHandle =
             std::rc::Rc::new(crate::chunk_vehicles::LoadedVehicle {
                 origin: crate::chunk_vehicles::VehicleOrigin::Database { sql_id: row.id },
@@ -522,7 +527,8 @@ impl IsoChunk {
             return;
         }
         // Kept levels keep their `IsoChunkLevel` (and flags); dropped levels
-        // are cleared and new ones come from the pool cleared.
+        // leave live storage as whole retained allocations. No native pool reset
+        // or discard is implied by retiring an owner here.
         let mut levels = Vec::with_capacity((max_level - min_level + 1) as usize);
         let mut physics = Vec::with_capacity(levels.capacity());
         for z in min_level..=max_level {
@@ -537,8 +543,7 @@ impl IsoChunk {
         }
         for level in &mut self.squares {
             for old in level.iter_mut().filter_map(Option::take) {
-                self.retired_objects.extend(old.objects);
-                self.retired_objects.extend(old.retired_objects.0);
+                self.retired_squares.push(old);
             }
         }
         self.min_level = min_level;
@@ -547,54 +552,80 @@ impl IsoChunk {
         self.physics_check = physics;
     }
 
-    pub fn set_square(&mut self, x: i32, y: i32, z: i32, square: Option<IsoGridSquare>) {
-        // Pin incoming owners before level/index work can unwind. Successful
-        // placement still owns these same allocations; aliases retire at the host boundary.
+    pub fn set_square(&mut self, x: i32, y: i32, z: i32, square: Option<SquareSlot>) {
+        // Pin the incoming allocation before any indexing work can unwind.
         if let Some(sq) = &square {
-            self.retired_objects.extend(
-                sq.objects
-                    .iter()
-                    .chain(sq.retired_objects.0.iter())
-                    .map(|o| crate::ObjectSlot::retain(&o.ref_handle())),
-            );
+            self.retired_squares
+                .push(SquareSlot::retain(&sq.ref_handle()));
         }
         self.set_min_max_level(self.min_level.min(z), self.max_level.max(z));
         let zz = (z - self.min_level) as usize;
         if let Some(old) = std::mem::replace(&mut self.squares[zz][(x + y * 8) as usize], square) {
-            self.retired_objects.extend(old.objects);
-            self.retired_objects.extend(old.retired_objects.0);
+            self.retired_squares.push(old);
         }
     }
 
-    pub fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
+    pub fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         if !(0..8).contains(&x) || !(0..8).contains(&y) || z > self.max_level || z < self.min_level
         {
             return None;
         }
-        self.squares[(z - self.min_level) as usize][(y * 8 + x) as usize].as_ref()
+        self.squares[(z - self.min_level) as usize][(y * 8 + x) as usize]
+            .as_ref()
+            .map(SquareSlot::ref_handle)
     }
-
-    pub fn get_grid_square_mut(&mut self, x: i32, y: i32, z: i32) -> Option<&mut IsoGridSquare> {
-        if !(0..8).contains(&x) || !(0..8).contains(&y) || z > self.max_level || z < self.min_level
-        {
-            return None;
+    pub fn get_grid_square_mut(&mut self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
+        self.get_grid_square(x, y, z)
+    }
+    /// Move whole square slots from a terminally retired chunk to its host's
+    /// retry queue. Only call after its last possible save. The square bodies
+    /// are never borrowed, cleared or reset by this ownership transfer.
+    pub fn take_square_owners_for_retirement(&mut self) -> Vec<SquareSlot> {
+        let mut squares = std::mem::take(&mut self.retired_squares);
+        for slot in self.squares.iter_mut().flatten() {
+            if let Some(square) = slot.take() {
+                squares.push(square);
+            }
         }
-        self.squares[(z - self.min_level) as usize][(y * 8 + x) as usize].as_mut()
+        squares
     }
-
     pub fn retire_object(&mut self, object: crate::ObjectSlot) {
         self.retired_objects.push(object);
     }
+    pub fn take_retired_owners(&mut self) -> RetiredWorldOwners {
+        let mut retired = RetiredWorldOwners {
+            objects: std::mem::take(&mut self.retired_objects),
+            squares: Vec::new(),
+        };
+        for slot in self.squares.iter().flatten().flatten() {
+            if let Ok(mut square) = slot.square_borrow_for_retirement() {
+                retired.objects.extend(square.take_retired_objects());
+            }
+        }
+        crate::square_slot::drain_squares(&mut self.retired_squares, &mut retired);
+        retired
+    }
     pub fn take_retired_objects(&mut self) -> Vec<crate::ObjectSlot> {
         let mut retired = std::mem::take(&mut self.retired_objects);
-        for square in self.squares.iter_mut().flatten().flatten() {
-            retired.extend(square.take_retired_objects());
+        for slot in self
+            .squares
+            .iter()
+            .flatten()
+            .flatten()
+            .chain(self.retired_squares.iter())
+        {
+            if let Ok(mut square) = slot.square_borrow_for_retirement() {
+                retired.extend(square.take_retired_objects());
+            }
         }
         retired
     }
-
-    pub fn squares(&self) -> impl Iterator<Item = &IsoGridSquare> {
-        self.squares.iter().flatten().flatten()
+    pub fn squares(&self) -> impl Iterator<Item = SquareRef> + '_ {
+        self.squares
+            .iter()
+            .flatten()
+            .flatten()
+            .map(SquareSlot::ref_handle)
     }
 }
 
@@ -738,7 +769,7 @@ fn place_lot_inner(
                     *count += 1;
                 }
                 if ch.get_grid_square(x - wx, y - wy, z).is_none() {
-                    ch.set_square(x - wx, y - wy, z, Some(new_square(meta, x, y, z)?));
+                    ch.set_square(x - wx, y - wy, z, Some((new_square(meta, x, y, z)?).into()));
                 }
                 for xx in -1..=1 {
                     for yy in -1..=1 {
@@ -757,12 +788,13 @@ fn place_lot_inner(
                             x + xx - wx,
                             y + yy - wy,
                             z,
-                            Some(new_square(meta, x + xx, y + yy, z)?),
+                            Some((new_square(meta, x + xx, y + yy, z)?).into()),
                         );
                     }
                 }
                 let room_id = meta.get_room_at(x, y, z).map_or(-1, |r| r.id);
-                let square = ch.get_grid_square_mut(x - wx, y - wy, z).unwrap();
+                let square_owner = ch.get_grid_square_mut(x - wx, y - wy, z).unwrap();
+                let mut square = square_owner.borrow_mut();
                 // `setRoomID` looks the room up (`IsoChunk.getRoom`).
                 square.room_id = room_id;
                 if room_id != -1 {
@@ -774,6 +806,7 @@ fn place_lot_inner(
                         .get_room_by_id(eo.id, env.rand)
                         .and_then(|r| r.building);
                 }
+                drop(square);
                 for n in 0..num_ints {
                     let tile_idx = *lot
                         .data
@@ -802,12 +835,19 @@ fn place_lot_inner(
                     // hidewalls test only re-sets it), so the first tile with a
                     // definition always clears the square.
                     if n == 0 {
-                        square.clear_objects();
+                        square_owner.borrow_mut().clear_objects();
                     }
                     let ty = env.sprites.sprites[spr].tile_type;
-                    do_tile_object_creation(&mut env.objects(), meta, square, spr, ty, &tile)?;
+                    do_tile_object_creation(
+                        &mut env.objects(),
+                        meta,
+                        &square_owner,
+                        spr,
+                        ty,
+                        &tile,
+                    )?;
                 }
-                square.fix_stackable_objects(env.sprites);
+                square_owner.borrow_mut().fix_stackable_objects(env.sprites);
             }
         }
     }
@@ -940,16 +980,38 @@ pub struct IsoCell {
     pub process_items: crate::process_items::ProcessItemQueues,
     cache: LotCache,
     retired_objects: Vec<crate::ObjectSlot>,
+    retired_squares: Vec<SquareSlot>,
 }
 
 impl IsoCell {
+    /// Retain a whole detached square until its pending host roots can be
+    /// extracted and every outer world/sprite guard has been released.
+    pub fn retire_square(&mut self, square: SquareSlot) {
+        self.retired_squares.push(square);
+    }
+
     pub fn retire_object(&mut self, object: crate::ObjectSlot) {
         self.retired_objects.push(object);
     }
-    /// Move pending owners out; callers must release every world/sprite guard
-    /// before dropping them. Errors/unwinds leave the pending owners in place.
+    /// Move detached owners to a host boundary outside every world/sprite guard.
+    pub fn take_retired_owners(&mut self) -> RetiredWorldOwners {
+        let mut retired = RetiredWorldOwners {
+            objects: std::mem::take(&mut self.retired_objects),
+            squares: Vec::new(),
+        };
+        crate::square_slot::drain_squares(&mut self.retired_squares, &mut retired);
+        for chunk in self.chunks.values_mut() {
+            retired.append(&mut chunk.take_retired_owners());
+        }
+        retired
+    }
     pub fn take_retired_objects(&mut self) -> Vec<crate::ObjectSlot> {
         let mut retired = std::mem::take(&mut self.retired_objects);
+        for slot in &self.retired_squares {
+            if let Ok(mut square) = slot.square_borrow_for_retirement() {
+                retired.extend(square.take_retired_objects());
+            }
+        }
         for chunk in self.chunks.values_mut() {
             retired.extend(chunk.take_retired_objects());
         }
@@ -1010,12 +1072,11 @@ impl IsoCell {
     ) -> Option<IsoChunk> {
         let mut chunk = self.chunks.remove(&(wx, wy));
         if let Some(c) = &mut chunk {
-            self.retired_objects.extend(
-                c.squares()
-                    .flat_map(|sq| sq.objects.iter())
-                    .map(|o| crate::ObjectSlot::retain(&o.ref_handle())),
-            );
-            self.retired_objects.extend(c.take_retired_objects());
+            self.retired_squares
+                .extend(c.squares().map(|sq| SquareSlot::retain(&sq)));
+            let mut retired = c.take_retired_owners();
+            self.retired_objects.append(&mut retired.objects);
+            self.retired_squares.append(&mut retired.squares);
             if let Some(h) = hook {
                 h.chunk_unloaded(wx, wy);
             }
@@ -1033,7 +1094,8 @@ impl IsoCell {
         let Some(ch) = self.chunks.get_mut(&(wx, wy)) else {
             return;
         };
-        if let Some(sq) = ch.get_grid_square_mut(x - wx * 8, y - wy * 8, z) {
+        if let Some(sq_owner) = ch.get_grid_square_mut(x - wx * 8, y - wy * 8, z) {
+            let mut sq = sq_owner.borrow_mut();
             sq.recalc_properties(m);
             ch.check_physics_later(z);
             ch.collision.clear();
@@ -1057,7 +1119,7 @@ impl IsoCell {
     }
 
     /// `getGridSquare(x, y, z)` over loaded chunks.
-    pub fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
+    pub fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         let (wx, wy) = (x.div_euclid(8), y.div_euclid(8));
         self.chunks
             .get(&(wx, wy))?

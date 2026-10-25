@@ -652,7 +652,10 @@ impl ChunkStreamer {
             // only after the original unload/vehicle phases succeed. On an
             // unwind the payload remains retired rather than partly saved.
             self.retired_chunks.push(chunk);
-            let chunk = self.retired_chunks.last_mut().expect("unloading chunk pinned");
+            let chunk = self
+                .retired_chunks
+                .last_mut()
+                .expect("unloading chunk pinned");
             Self::finish_unload(chunk, ctx);
             Self::vehicles_to_meta(&mut self.vehicle_queue, &mut self.events, chunk, ctx);
             let chunk = self.retired_chunks.pop().expect("unloading chunk pinned");
@@ -955,7 +958,13 @@ impl ChunkStreamer {
     /// `IsoChunk.Save(bPreventChunkReuse)` (not a hot save): the chunk's
     /// bytes, then `VehiclesDB2.unloadChunk` (inside `Save(ByteBuffer)`,
     /// after the erosion data), then `SafeWrite`. Nothing with saving off.
-    fn save_chunk_file(events: &mut Vec<StreamEvent>, wx: i32, wy: i32, chunk: &IsoChunk, ctx: &mut StreamCtx<'_>) {
+    fn save_chunk_file(
+        events: &mut Vec<StreamEvent>,
+        wx: i32,
+        wy: i32,
+        chunk: &IsoChunk,
+        ctx: &mut StreamCtx<'_>,
+    ) {
         if ctx.no_save {
             events.push(StreamEvent::Saved {
                 wx,
@@ -1307,7 +1316,10 @@ impl ChunkStreamer {
                     .push(StreamEvent::Removed { wx: r.wx, wy: r.wy });
                 if let Some(chunk) = cell.chunks.remove(&(r.wx, r.wy)) {
                     self.retired_chunks.push(chunk);
-                    let chunk = self.retired_chunks.last_mut().expect("removed chunk retired");
+                    let chunk = self
+                        .retired_chunks
+                        .last_mut()
+                        .expect("removed chunk retired");
                     Self::finish_unload(chunk, ctx);
                     Self::vehicles_to_meta(&mut self.vehicle_queue, &mut self.events, chunk, ctx);
                 }

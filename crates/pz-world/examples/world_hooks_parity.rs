@@ -117,7 +117,7 @@ fn vision_line(
     for (dx, dy) in [(0, -1), (-1, 0), (0, 1), (1, 0)] {
         out.push(match cell.get_grid_square(sq.x + dx, sq.y + dy, sq.z) {
             None => '-',
-            Some(o2) if sq.can_reach_to(o2, m, cell, ws) => 'R',
+            Some(o2) if sq.can_reach_to(&(o2).borrow(), m, cell, ws) => 'R',
             Some(_) => '.',
         });
     }
@@ -257,29 +257,43 @@ fn main() {
                     let Some(sq) = ch.get_grid_square(x, y, z) else {
                         continue;
                     };
-                    let at = format!("{},{},{}", sq.x, sq.y, sq.z);
-                    let elec = ws.have_electricity(sq);
+                    let at = format!("{},{},{}", sq.borrow().x, sq.borrow().y, sq.borrow().z);
+                    let elec = ws.have_electricity(&(sq).borrow());
                     let mut bl = String::new();
                     for (dx, dy) in [(0, -1), (-1, 0), (0, 1), (1, 0)] {
-                        let Some(o2) = cell.get_grid_square(sq.x + dx, sq.y + dy, sq.z) else {
+                        let Some(o2) = cell.get_grid_square(
+                            sq.borrow().x + dx,
+                            sq.borrow().y + dy,
+                            sq.borrow().z,
+                        ) else {
                             bl.push('-');
                             continue;
                         };
-                        bl.push(if sq.is_door_blocked_to(Some(o2), &cell, &ws) {
-                            'D'
-                        } else {
-                            '.'
-                        });
-                        bl.push(if sq.is_window_blocked_to(Some(o2), &cell, &ws) {
-                            'W'
-                        } else {
-                            '.'
-                        });
+                        bl.push(
+                            if sq
+                                .borrow()
+                                .is_door_blocked_to(Some(&(o2).borrow()), &cell, &ws)
+                            {
+                                'D'
+                            } else {
+                                '.'
+                            },
+                        );
+                        bl.push(
+                            if sq
+                                .borrow()
+                                .is_window_blocked_to(Some(&(o2).borrow()), &cell, &ws)
+                            {
+                                'W'
+                            } else {
+                                '.'
+                            },
+                        );
                     }
                     if elec || bl.contains('D') || bl.contains('W') {
                         writeln!(out, "sq {at} elec={} blocked={bl}", elec as u8).unwrap();
                     }
-                    if sq.objects.iter().map(ObjectSlot::borrow).any(|o| {
+                    if sq.borrow().objects.iter().map(ObjectSlot::borrow).any(|o| {
                         matches!(
                             o.kind,
                             ObjectKind::Door(_)
@@ -290,9 +304,15 @@ fn main() {
                                 | ObjectKind::Curtain(_)
                         )
                     }) {
-                        vision_line(&mut out, &at, sq, &env, &sprites, &cell, &ws);
+                        vision_line(&mut out, &at, &(sq).borrow(), &env, &sprites, &cell, &ws);
                     }
-                    for (oi, o) in sq.objects.iter().map(ObjectSlot::borrow).enumerate() {
+                    for (oi, o) in sq
+                        .borrow()
+                        .objects
+                        .iter()
+                        .map(ObjectSlot::borrow)
+                        .enumerate()
+                    {
                         let p = format!(" {at} {oi}");
                         match &o.kind {
                             ObjectKind::Barricade(b) => writeln!(
@@ -314,15 +334,15 @@ fn main() {
                                     ObjectKind::Thumpable(t) => ("thump", t.north, t.open),
                                     _ => unreachable!(),
                                 };
-                                let (same, opp) = ws.barricades_for(sq, north);
+                                let (same, opp) = ws.barricades_for(&(sq).borrow(), north);
                                 write!(
                                     out,
                                     "{kind}{p} north={} open={} barricaded={} same={} opp={}",
                                     north as u8,
                                     open as u8,
-                                    ws.object_barricaded(sq, &o) as u8,
-                                    bar(same.as_deref()),
-                                    bar(opp.as_deref())
+                                    ws.object_barricaded(&(sq).borrow(), &o) as u8,
+                                    bar(same.as_ref().map(|o|std::cell::Ref::map(o.borrow(),|o|match &o.kind {ObjectKind::Barricade(b)=>b,_=>panic!()})).as_deref()),
+                                    bar(opp.as_ref().map(|o|std::cell::Ref::map(o.borrow(),|o|match &o.kind {ObjectKind::Barricade(b)=>b,_=>panic!()})).as_deref())
                                 )
                                 .unwrap();
                                 if let ObjectKind::Door(d) = &o.kind {
@@ -336,7 +356,7 @@ fn main() {
                                     .unwrap();
                                 }
                                 if let ObjectKind::Thumpable(t) = &o.kind {
-                                    let barr = ws.object_barricaded(sq, &o);
+                                    let barr = ws.object_barricaded(&(sq).borrow(), &o);
                                     let blocked = |f: EdgeFacing| {
                                         (EdgeFacing::of_north(t.north) == f && t.is_blocked_door(barr))
                                             as u8
@@ -362,7 +382,7 @@ fn main() {
                             ObjectKind::LightSwitch(s) => writeln!(
                                 out,
                                 "switch{p} can={} street={} room={} bulb={}",
-                                ws.can_switch_light(sq, s) as u8,
+                                ws.can_switch_light(&(sq).borrow(), &s) as u8,
                                 s.street_light as u8,
                                 s.light_room as u8,
                                 s.bulb_item.is_some() as u8

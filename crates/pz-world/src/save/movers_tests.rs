@@ -326,10 +326,16 @@ fn animal_tracks_and_pushables_in_chunks() {
     let mut ch = IsoChunk::new(10, 20);
     for x in 0..8 {
         for y in 0..8 {
-            ch.set_square(x, y, 0, Some(IsoGridSquare::new(80 + x, 160 + y, 0)));
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
         }
     }
-    let sq = ch.get_grid_square_mut(1, 1, 0).unwrap();
+    let sq_owner = ch.get_grid_square_mut(1, 1, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
     let mut track = IsoObject::new(
         sq.new_object_id(),
         ObjectKind::AnimalTrack(Box::new(AnimalTracks {
@@ -377,9 +383,11 @@ fn animal_tracks_and_pushables_in_chunks() {
         None,
     );
     sq.objects.push((bin).into());
+    drop(sq);
     let b = save_chunk(&ch, &ctx).unwrap();
     let back = load_chunk(&b, 10, 20, &ctx).unwrap().chunk;
-    let sq = back.get_grid_square(1, 1, 0).unwrap();
+    let sq_owner = back.get_grid_square(1, 1, 0).unwrap();
+    let sq = sq_owner.borrow();
     assert_eq!(sq.objects.len(), 3);
     assert_eq!(sq.special_objects, vec![sq.objects[0].borrow().id]);
     let ObjectKind::AnimalTrack(tr) = &sq.objects[0].borrow().kind else {
@@ -417,7 +425,10 @@ fn animal_tracks_and_pushables_in_chunks() {
     assert_eq!(save_chunk(&back2, &ctx).unwrap(), b2);
     // A pushable whose sprite is unknown cannot be saved.
     let mut bad = back2;
-    bad.get_grid_square_mut(1, 1, 0).unwrap().objects[1]
+    bad.get_grid_square_mut(1, 1, 0)
+        .unwrap()
+        .borrow_mut()
+        .objects[1]
         .borrow_mut()
         .sprite = None;
     assert!(save_chunk(&bad, &ctx).is_err());
@@ -456,7 +467,12 @@ fn chunk_vehicle_lists() {
     let mut ch = IsoChunk::new(10, 20);
     for x in 0..8 {
         for y in 0..8 {
-            ch.set_square(x, y, 0, Some(IsoGridSquare::new(80 + x, 160 + y, 0)));
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
         }
     }
     ch.saved.spawned_rooms = vec![5];
@@ -506,7 +522,12 @@ fn chunk_vehicle_list_from_rows_and_moves() {
     let mut ch = IsoChunk::new(10, 20);
     for x in 0..8 {
         for y in 0..8 {
-            ch.set_square(x, y, 0, Some(IsoGridSquare::new(80 + x, 160 + y, 0)));
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
         }
     }
     let row = |id: i32, x: f32, y: f32| VehicleRow {
@@ -627,7 +648,7 @@ fn vehicles_db_load_chunk() {
         meta: None,
     };
     let mut ch = IsoChunk::new(10, 20);
-    ch.set_square(3, 1, 0, Some(IsoGridSquare::new(83, 161, 0)));
+    ch.set_square(3, 1, 0, Some((IsoGridSquare::new(83, 161, 0)).into()));
     let r = load_chunk(Some(&mut c), &mut ch, &ctx);
     // In id order; serialise off is skipped, the broken row is deleted.
     let ids: Vec<_> = ch

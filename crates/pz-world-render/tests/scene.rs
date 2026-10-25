@@ -92,7 +92,7 @@ fn put(cell: &mut IsoCell, m: &IsoSpriteManager, x: i32, y: i32, z: i32, names: 
     cell.chunks
         .get_mut(&(x.div_euclid(8), y.div_euclid(8)))
         .unwrap()
-        .set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some(sq));
+        .set_square(x.rem_euclid(8), y.rem_euclid(8), z, Some((sq).into()));
 }
 
 /// Chunks (1..=3, 1..=3), floors everywhere on level 0, a west wall along
@@ -196,15 +196,19 @@ fn render_squares_from_world() {
     assert_eq!(wall.tile_type, pz_iso_render::TileType::Wall);
     // The square west of the wall sees it as its east neighbour's west wall.
     assert_eq!(
-        wall_type(&view, cell.get_grid_square(19, 15, 0).unwrap()) & 8,
+        wall_type(&view, &cell.get_grid_square(19, 15, 0).unwrap().borrow()) & 8,
         8
     );
-    let seam = seam_neighbours(&view, cell.get_grid_square(20, 14, 0).unwrap());
+    let seam = seam_neighbours(&view, &cell.get_grid_square(20, 14, 0).unwrap().borrow());
     assert!(seam.s_floor && seam.e_floor && seam.s_wall_w);
     assert!(world.squares[&(20, 14, 0)].seam.s_wall_w);
     // The roof blocks vision down, and the square under it is not exterior.
     assert!(world.squares[&(12, 12, 1)].cut.vision_blocked_below);
-    assert!(!cell.get_grid_square(12, 12, 0).unwrap().is_exterior(&m));
+    assert!(!cell
+        .get_grid_square(12, 12, 0)
+        .unwrap()
+        .borrow()
+        .is_exterior(&m));
     assert_eq!(world.chunk_levels(1, 1), Some((0, 1)));
     assert_eq!(world.on_screen_chunks().len(), 9);
     assert_eq!(world.chunk_inputs(&[(1, 1), (9, 9)]).len(), 1);
@@ -244,7 +248,7 @@ fn squares_seen_before_loading_stay_seen() {
     let (mut cell, m, meta) = scene();
     // Behind the wall, out of sight: the save marks it seen by player 0.
     let ch = cell.chunks.get_mut(&(3, 1)).unwrap();
-    ch.get_grid_square_mut(0, 7, 0).unwrap().seen[0] = true;
+    ch.get_grid_square_mut(0, 7, 0).unwrap().borrow_mut().seen[0] = true;
     let view = WorldView {
         cell: &cell,
         meta: &meta,
@@ -287,7 +291,8 @@ impl RenderSettingsSource for Night {
 fn lamp_lights_its_surroundings_at_night() {
     let (mut cell, m, meta) = scene();
     // A lamp post switch at (15, 15) lighting radius 6.
-    let sq = cell.get_grid_square_mut(15, 15, 0).unwrap();
+    let sq_owner = cell.get_grid_square_mut(15, 15, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
     let id = sq.new_object_id();
     let light = IsoLightSource {
         x: 15,
@@ -318,6 +323,7 @@ fn lamp_lights_its_surroundings_at_night() {
         Some(m.named_map["lamp"]),
     )));
     sq.special_objects.push(id);
+    drop(sq);
     cell.recalc_all_with_neighbours(15, 15, 0, &meta, &m);
     let view = WorldView {
         cell: &cell,
@@ -337,7 +343,11 @@ fn lamp_lights_its_surroundings_at_night() {
     settings.update(&mut Night, [true, false, false, false], false);
     let mut words = Vec::new();
     for sq in [(16, 15, 0), (14, 26, 0), (15, 15, 0)] {
-        let ints = lighting.session.get_square_lighting(0, sq.0, sq.1, sq.2 + 32).unwrap().unwrap();
+        let ints = lighting
+            .session
+            .get_square_lighting(0, sq.0, sq.1, sq.2 + 32)
+            .unwrap()
+            .unwrap();
         words.push((sq, ints[1]));
     }
     let hooks = StateLighting::new(&lighting, &settings);
@@ -349,7 +359,10 @@ fn lamp_lights_its_surroundings_at_night() {
         );
         assert_eq!(hooks.square_light(sq, 0), (r + g + b) / 3.0, "{sq:?}");
         assert_eq!(hooks.square_light_level(sq, 0), r.max(g).max(b), "{sq:?}");
-        assert_eq!(hooks.square_light_level(sq, 0), world.squares[&sq].light_level);
+        assert_eq!(
+            hooks.square_light_level(sq, 0),
+            world.squares[&sq].light_level
+        );
     }
     assert!(hooks.square_light((16, 15, 0), 0) > hooks.square_light((14, 26, 0), 0));
     // A square no frame decoded keeps `new ColorInfo()` (white).
@@ -369,10 +382,14 @@ fn add_special(
     sprite: &str,
     k: ObjectKind,
 ) {
-    let sq = cell.get_grid_square_mut(at.0, at.1, 0).unwrap();
+    let sq_owner = cell.get_grid_square_mut(at.0, at.1, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
     let id = sq.new_object_id();
-    sq.objects
-        .push(pz_world::ObjectSlot::new(IsoObject::new(id, k, Some(m.named_map[sprite]))));
+    sq.objects.push(pz_world::ObjectSlot::new(IsoObject::new(
+        id,
+        k,
+        Some(m.named_map[sprite]),
+    )));
     sq.special_objects.push(id);
 }
 
@@ -425,7 +442,13 @@ fn world_state_feeds_lighting() {
         sprites: &m,
     };
     let ws = WorldState::new(&cell, &meta, &m, p);
-    let g = grid_square(&view, cell.get_grid_square(15, 15, 0).unwrap(), &ws, 0, 0);
+    let g = grid_square(
+        &view,
+        &cell.get_grid_square(15, 15, 0).unwrap().borrow(),
+        &ws,
+        0,
+        0,
+    );
     match &g.special_objects[..] {
         [SpecialObject::Door(d)] => {
             assert!(d.has_curtain && !d.curtain_open);
@@ -435,7 +458,13 @@ fn world_state_feeds_lighting() {
         }
         o => panic!("{o:?}"),
     }
-    let g = grid_square(&view, cell.get_grid_square(17, 15, 0).unwrap(), &ws, 0, 0);
+    let g = grid_square(
+        &view,
+        &cell.get_grid_square(17, 15, 0).unwrap().borrow(),
+        &ws,
+        0,
+        0,
+    );
     let metal = Barricade {
         dir: Some(IsoDirection::N),
         metal_health: 77,
@@ -457,7 +486,7 @@ fn world_state_feeds_lighting() {
     // The same view without the world state sees no barricades or curtain.
     let g = grid_square(
         &view,
-        cell.get_grid_square(15, 15, 0).unwrap(),
+        &cell.get_grid_square(15, 15, 0).unwrap().borrow(),
         &NoWorldHooks,
         0,
         0,
@@ -528,7 +557,12 @@ fn a_fire_lights_its_neighbours_through_its_stages() {
 
     let (_, mut lighting) = build(&view);
     let r = Rand::new(21);
-    let mut fire = FireState::new_fire(FireSquare::default(), 1000, 1000, &mut pz_iso_render::fire::rand(&r));
+    let mut fire = FireState::new_fire(
+        FireSquare::default(),
+        1000,
+        1000,
+        &mut pz_iso_render::fire::rand(&r),
+    );
     let mut link = LightLink::new();
     let (fx, fy) = (13, 15);
     // The first update adds the light (radius 5, LIGHT_R/G/B).
@@ -543,9 +577,19 @@ fn a_fire_lights_its_neighbours_through_its_stages() {
     assert!(lighting.light_id(first).is_some());
     let near = |w: &RenderWorld| w.squares[&(fx + 1, fy, 0)].light_level;
     let far = |w: &RenderWorld| w.squares[&(fx + 6, fy, 0)].light_level;
-    assert!(near(&world) > near(&dark) + 0.2, "{} {}", near(&world), near(&dark));
+    assert!(
+        near(&world) > near(&dark) + 0.2,
+        "{} {}",
+        near(&world),
+        near(&dark)
+    );
     // Six squares away, ahead of the player: outside radius 5.
-    assert!((far(&world) - far(&dark)).abs() < 0.01, "{} {}", far(&world), far(&dark));
+    assert!(
+        (far(&world) - far(&dark)).abs() < 0.01,
+        "{} {}",
+        far(&world),
+        far(&dark)
+    );
 
     // Stage 1 keeps radius 5; stage 2 replaces the light with radius 8 in
     // fireColor.
@@ -562,12 +606,20 @@ fn a_fire_lights_its_neighbours_through_its_stages() {
     let [cr, cg, cb] = FIRE_COLOR;
     assert_eq!(ls.len(), 2);
     assert_eq!((ls[0].0, ls[0].2), (first, true));
-    assert_eq!((ls[1].0, ls[1].1, ls[1].2), (second, CellLight::new(fx, fy, 0, cr, cg, cb, 8), false));
+    assert_eq!(
+        (ls[1].0, ls[1].1, ls[1].2),
+        (second, CellLight::new(fx, fy, 0, cr, cg, cb, 8), false)
+    );
     let world = lit_world(&view, &mut lighting, 12);
     assert_eq!(lighting.light_id(first), None);
     assert!(lighting.light_id(second).is_some());
     assert_eq!(lighting.lampposts().count(), 1);
-    assert!(far(&world) > far(&dark) + 0.05, "{} {}", far(&world), far(&dark));
+    assert!(
+        far(&world) > far(&dark) + 0.05,
+        "{} {}",
+        far(&world),
+        far(&dark)
+    );
 
     // Through stage 5 (radius 1); its fade scales the light's colour in
     // place.

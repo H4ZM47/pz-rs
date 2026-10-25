@@ -125,11 +125,12 @@ impl PathfindSquareHooks for H {
     fn square_changed(&mut self, cell: &IsoCell, sq: SquarePos) {
         let mut r = self.0.borrow_mut();
         for a in adjacent_squares(cell, sq).into_iter().flatten() {
-            r.pathfind.push((a.x, a.y, a.z));
+            r.pathfind.push((a.borrow().x, a.borrow().y, a.borrow().z));
         }
         r.pathfind.push(sq);
     }
-    fn map_collision_square_changed(&mut self, sq: &IsoGridSquare) {
+    fn map_collision_square_changed(&mut self, sq: pz_world::SquareRef) {
+        let sq = sq.borrow();
         self.0.borrow_mut().collision.push((sq.x, sq.y));
     }
     fn add_chunk_to_world(&mut self, _: &IsoCell, wx: i32, wy: i32) {
@@ -165,7 +166,8 @@ impl RenderSquareHooks for H {
 }
 
 impl SquareMutationHooks for H {
-    fn lua_event(&mut self, sq: &mut IsoGridSquare, ev: LuaEvent) {
+    fn lua_event(&mut self, sq: pz_world::SquareRef, ev: LuaEvent) {
+        let sq = sq.borrow();
         let mut r = self.0.borrow_mut();
         let r = &mut *r;
         let s = match ev {
@@ -303,7 +305,7 @@ impl World {
         }
     }
 
-    fn sq(&self, p: SquarePos) -> Option<&IsoGridSquare> {
+    fn sq(&self, p: SquarePos) -> Option<pz_world::SquareRef> {
         self.cell.get_grid_square(p.0, p.1, p.2)
     }
 
@@ -325,7 +327,7 @@ impl World {
     }
 
     fn index_of(&self, p: SquarePos, id: Option<ObjectId>) -> i32 {
-        id.and_then(|id| self.sq(p).and_then(|sq| sq.object_index(id)))
+        id.and_then(|id| self.sq(p).and_then(|sq| sq.borrow().object_index(id)))
             .map_or(-1, |i| i as i32)
     }
 
@@ -333,13 +335,15 @@ impl World {
         let mut s = String::new();
         let Some(o) = id.and_then(|id| {
             self.sq(p)?
+                .borrow()
                 .objects
                 .iter()
-                .map(ObjectSlot::borrow)
-                .find(|o| o.id == id)
+                .find(|o| o.borrow().id == id)
+                .map(ObjectSlot::ref_handle)
         }) else {
             return s;
         };
+        let o = o.borrow();
         if o.containers()
             .any(|c| matches!(c.kind.as_deref(), Some("fridge" | "freezer")))
         {
@@ -380,7 +384,7 @@ fn do_op(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos, op: usize) -
     if w.sq(p).is_none() {
         return format!("create {}", w.create(p));
     }
-    let n = w.sq(p).unwrap().objects.len();
+    let n = w.sq(p).unwrap().borrow().objects.len();
     if op < 42 {
         let special = op >= 35;
         let s = pools.pool[rng.next(pools.pool.len())].clone();
@@ -408,7 +412,8 @@ fn do_op(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos, op: usize) -
             return format!("{what} none");
         }
         let i = rng.next(n);
-        let o = w.sq(p).unwrap().objects[i].borrow();
+        let o_owner = w.sq(p).unwrap().borrow().objects[i].ref_handle();
+        let o = o_owner.borrow();
         let (id, name) = (o.id, w.name_of(&o));
         let name = if op < 72 {
             format!("{}:{name}", o.kind.class_name())
@@ -432,7 +437,8 @@ fn do_op(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos, op: usize) -
         return "erosionRemove none".into();
     }
     let i = rng.next(n);
-    let o = w.sq(p).unwrap().objects[i].borrow();
+    let o_owner = w.sq(p).unwrap().borrow().objects[i].ref_handle();
+    let o = o_owner.borrow();
     let (id, name) = (o.id, w.name_of(&o));
     drop(o);
     let (r, _) = w.env().remove_tile_object_erosion_no_recalc(p, id);
@@ -553,23 +559,24 @@ fn dump_squares(w: &mut World, p: SquarePos) {
                 let Some(sq) = w.sq((x, y, z)) else {
                     continue;
                 };
-                let assoc = match sq.associated_building {
+                let assoc = match sq.borrow().associated_building {
                     None => "-".to_string(),
                     Some(b) => w.bd_n.get(&b).map_or(-2, |&n| n as i64).to_string(),
                 };
                 write!(
                     out,
                     " sq {x},{y},{z} room={} roof={} burnt={} col={:x} path={:x} vis={:x} assoc={assoc} flags={} objs=[",
-                    sq.room_id,
-                    sq.have_roof,
-                    sq.burnt_out,
-                    sq.collide_matrix,
-                    sq.path_matrix,
-                    sq.vision_matrix,
-                    flags(w, sq)
+                    sq.borrow().room_id,
+                    sq.borrow().have_roof,
+                    sq.borrow().burnt_out,
+                    sq.borrow().collide_matrix,
+                    sq.borrow().path_matrix,
+                    sq.borrow().vision_matrix,
+                    flags(w, &(sq).borrow())
                 )
                 .unwrap();
                 let objs: Vec<String> = sq
+                    .borrow()
                     .objects
                     .iter()
                     .map(ObjectSlot::borrow)
@@ -584,9 +591,15 @@ fn dump_squares(w: &mut World, p: SquarePos) {
                     })
                     .collect();
                 let special: Vec<String> = sq
+                    .borrow()
                     .special_objects
                     .iter()
-                    .map(|&id| sq.object_index(id).map_or(-1, |i| i as i32).to_string())
+                    .map(|&id| {
+                        sq.borrow()
+                            .object_index(id)
+                            .map_or(-1, |i| i as i32)
+                            .to_string()
+                    })
                     .collect();
                 writeln!(
                     out,
@@ -856,8 +869,9 @@ fn main() {
             continue;
         };
         let mut i = 0;
-        while i < sq.objects.len() {
-            let mut o = sq.objects[i].borrow_mut();
+        while i < sq.borrow().objects.len() {
+            let o_owner = sq.borrow().objects[i].ref_handle();
+            let mut o = o_owner.borrow_mut();
             let name = o.sprite.and_then(|s| sprites.sprites[s].name.clone());
             match java.get(i) {
                 Some(&(class, spr)) if class == o.kind.class_name() => {
@@ -871,9 +885,9 @@ fn main() {
                 }
                 _ => {
                     drop(o);
-                    let id = sq.remove_object_slot(i).borrow().id;
-                    sq.world_objects.retain(|&w| w != id);
-                    sq.special_objects.retain(|&w| w != id);
+                    let id = sq.borrow_mut().remove_object_slot(i).borrow().id;
+                    sq.borrow_mut().world_objects.retain(|&w| w != id);
+                    sq.borrow_mut().special_objects.retain(|&w| w != id);
                     aligned.1 += 1;
                 }
             }
@@ -886,12 +900,12 @@ fn main() {
             for y in 0..8 {
                 for x in 0..8 {
                     if let Some(sq) = ch.get_grid_square_mut(x, y, z) {
-                        sq.recalc_properties(&sprites);
+                        sq.borrow_mut().recalc_properties(&sprites);
                         // `IsoLightSwitch.load` ends with `createLightSource`
                         // for a switch outside a room (the blank meta grid
                         // has none); the chunk-file loader does not yet.
-                        let (sx, sy, sz) = (sq.x, sq.y, sq.z);
-                        for mut o in sq.objects.iter().map(ObjectSlot::borrow_mut) {
+                        let (sx, sy, sz) = (sq.borrow().x, sq.borrow().y, sq.borrow().z);
+                        for mut o in sq.borrow().objects.iter().map(ObjectSlot::borrow_mut) {
                             if let ObjectKind::LightSwitch(s) = &mut o.kind {
                                 s.lights.push(pz_world::objects::IsoLightSource {
                                     x: sx,

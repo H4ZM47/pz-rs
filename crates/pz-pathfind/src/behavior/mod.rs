@@ -301,7 +301,7 @@ pub fn closest_point_on_path<G: GetSquare>(
             let square1 = map.square(ff(x3), ff(y3), ff(z));
             let square2 = map.square(ffd(xu), ffd(yu), ff(z));
             if let (Some(s1), Some(_)) = (square1, square2) {
-                let from = (s1.x, s1.y, s1.z);
+                let from = (s1.borrow().x, s1.borrow().y, s1.borrow().z);
                 let with_cell = map.bits.squares.as_iso_cell().map(|cell| {
                     pz_world::square::CollideEnv::new(cell, map.bits.sprites, map.bits.meta)
                 });
@@ -313,8 +313,8 @@ pub fn closest_point_on_path<G: GetSquare>(
                     Some(m) if with_cell.is_some() => {
                         let env = with_cell.as_ref().unwrap();
                         let view = MoverCollideView(&*m);
-                        let sq = env.sq(s1.x, s1.y, s1.z).unwrap_or(s1);
-                        env.test_collide_adjacent(sq, Some(&view), dx, dy, 0)
+                        let sq = env.sq(from.0, from.1, from.2).unwrap_or(s1);
+                        env.test_collide_adjacent(&sq, Some(&view), dx, dy, 0)
                             .blocked
                     }
                     Some(m) => {
@@ -337,7 +337,7 @@ pub fn closest_point_on_path<G: GetSquare>(
                             m.test_collide_adjacent(from, dx, dy, 0)
                         }
                     }
-                    None => s1.test_collide_adjacent(map.bits.meta, dx, dy, 0),
+                    None => s1.borrow().test_collide_adjacent(map.bits.meta, dx, dy, 0),
                 };
                 if blocked {
                     continue;
@@ -348,8 +348,8 @@ pub fn closest_point_on_path<G: GetSquare>(
         if dx.abs() <= 1 && dy.abs() <= 1 {
             let s1 = map.square(ff(node1.x), ff(node1.y), ff(node1.z));
             let s2 = map.square(ff(node2.x), ff(node2.y), ff(node2.z));
-            let z1 = s1.map_or(node1.z, |s| lcc.get_apparent_z(s));
-            let z2 = s2.map_or(node2.z, |s| lcc.get_apparent_z(s));
+            let z1 = s1.map_or(node1.z, |s| lcc.get_apparent_z(&s.borrow()));
+            let z2 = s2.map_or(node2.z, |s| lcc.get_apparent_z(&s.borrow()));
             closest_z = z1 + (z2 - z1) * u as f32;
         }
         let dist = distance_to_squared3(x3, y3, z, xu as f32, yu as f32, closest_z);
@@ -790,7 +790,7 @@ impl PathFindBehavior2 {
             .and_then(|(x, y, z)| map.square(x, y, z));
         if let Some(tsq) = target_sq.filter(|s| {
             target.is_sitting_on_furniture()
-                && (s.is_solid(map.sprites()) || s.is_solid_trans(map.sprites()))
+                && (s.borrow().is_solid(map.sprites()) || s.borrow().is_solid_trans(map.sprites()))
         }) {
             let dir = target.sit_on_furniture_direction();
             let x = ff(target.x());
@@ -806,7 +806,7 @@ impl PathFindBehavior2 {
             };
             if let Some((cx, cy)) = cand {
                 let sq = map.square(ff(cx), ff(cy), z);
-                if self.is_good_chair_adjacent_square(map, tsq, sq) {
+                if self.is_good_chair_adjacent_square(map, &tsq, sq.as_ref()) {
                     self.set_data(chr, ctx.service, cx, cy, z as f32);
                     return;
                 }
@@ -817,19 +817,20 @@ impl PathFindBehavior2 {
                 if Some(d) == dir {
                     continue;
                 }
-                let ts = tsq.get_adjacent_square(d, map.bits.squares);
-                if self.is_good_chair_adjacent_square(map, tsq, ts) {
+                let ts = tsq.borrow().get_adjacent_square(d, map.bits.squares);
+                if self.is_good_chair_adjacent_square(map, &tsq, ts.as_ref()) {
                     test_squares.push(ts.unwrap());
                 }
             }
             let mut closest_distance = 0.0f32;
-            let mut closest: Option<&IsoGridSquare> = None;
+            let mut closest: Option<pz_world::SquareRef> = None;
             for ts in test_squares {
                 // IsoMovingObject.DistTo(int, int): Manhattan.
-                let d = (chr.x() - ts.x as f32).abs() + (chr.y() - ts.y as f32).abs();
+                let d =
+                    (chr.x() - ts.borrow().x as f32).abs() + (chr.y() - ts.borrow().y as f32).abs();
                 if closest_distance != 0.0
                     && (!(d < closest_distance)
-                        || !self.is_good_chair_adjacent_square(map, tsq, Some(ts)))
+                        || !self.is_good_chair_adjacent_square(map, &tsq, Some(&ts)))
                 {
                     continue;
                 }
@@ -840,9 +841,9 @@ impl PathFindBehavior2 {
                 self.set_data(
                     chr,
                     ctx.service,
-                    c.x as f32 + 0.5,
-                    c.y as f32 + 0.5,
-                    c.z as f32,
+                    c.borrow().x as f32 + 0.5,
+                    c.borrow().y as f32 + 0.5,
+                    c.borrow().z as f32,
                 );
                 return;
             }
@@ -854,15 +855,19 @@ impl PathFindBehavior2 {
     pub fn is_good_chair_adjacent_square<G: GetSquare>(
         &self,
         map: &MainThreadMap<'_, '_, G>,
-        target: &IsoGridSquare,
-        adjacent: Option<&IsoGridSquare>,
+        target: &pz_world::SquareRef,
+        adjacent: Option<&pz_world::SquareRef>,
     ) -> bool {
-        let Some(a) = adjacent else { return false };
+        let Some(a_owner) = adjacent else {
+            return false;
+        };
+        let a = a_owner.borrow();
+        let target = target.borrow();
         let water = map.bits.t.water;
         !a.is_solid(map.sprites())
             && !a.is_solid_trans(map.sprites())
             && (!a.has(water) || a.has_floor_over_water(map.bits.sprites))
-            && a.can_reach_to(target, map.sprites(), map.squares(), map.hooks())
+            && a.can_reach_to(&target, map.sprites(), map.squares(), map.hooks())
     }
 
     /// `pathToSitOnFurniture(furniture, bAnySpriteGridObject)`.
@@ -919,11 +924,13 @@ impl PathFindBehavior2 {
                 else {
                     continue;
                 };
-                let solid = square.is_solid(map.sprites()) || square.is_solid_trans(map.sprites());
-                let in_square = is_point_in_square(wp.0, wp.1, square.x, square.y);
+                let solid = square.borrow().is_solid(map.sprites())
+                    || square.borrow().is_solid_trans(map.sprites());
+                let in_square =
+                    is_point_in_square(wp.0, wp.1, square.borrow().x, square.borrow().y);
                 if solid && in_square {
                     let (ox, oy) = (wp.0, wp.1);
-                    let (sx, sy) = (square.x, square.y);
+                    let (sx, sy) = (square.borrow().x, square.borrow().y);
                     match (di, si) {
                         (0, 0) => wp.1 = sy as f32 - 0.3,
                         (0, 1) => wp.0 = sx as f32 - 0.3,
@@ -957,9 +964,9 @@ impl PathFindBehavior2 {
                         ff(wp.0),
                         ff(wp.1),
                         ff(wp.2),
-                        square.x,
-                        square.y,
-                        square.z,
+                        square.borrow().x,
+                        square.borrow().y,
+                        square.borrow().z,
                         false,
                     );
                     if blocked(r) {
@@ -1618,20 +1625,22 @@ impl PathFindBehavior2 {
         let Some(square) = map.square(ff(nx), ff(ny), ff(z)) else {
             return false;
         };
-        if (square.x, square.y, square.z) == (current.x, current.y, current.z) {
+        if (square.borrow().x, square.borrow().y, square.borrow().z)
+            == (current.borrow().x, current.borrow().y, current.borrow().z)
+        {
             return false;
         }
-        let dx = square.x - current.x;
-        let dy = square.y - current.y;
+        let dx = square.borrow().x - current.borrow().x;
+        let dy = square.borrow().y - current.borrow().y;
         if dx != 0 && dy != 0 {
             return false;
         }
-        if let Some(door) = map.door_to(current, square) {
-            let open = match map.object(door).as_deref().map(|o| &o.kind) {
-                Some(ObjectKind::Door(d)) => d.open,
-                Some(ObjectKind::Thumpable(t)) => t.open,
+        if let Some(door) = map.door_to(&current, &square) {
+            let open = map.object(door).map_or(true, |o| match &o.borrow().kind {
+                ObjectKind::Door(d) => d.open,
+                ObjectKind::Thumpable(t) => t.open,
                 _ => true,
-            };
+            });
             if !open {
                 let player_closed_recently = chr.as_animal().is_none()
                     && chr
@@ -1651,11 +1660,13 @@ impl PathFindBehavior2 {
                 }
             }
         }
-        if let Some(window) = map.window_to(current, square) {
-            let (smashed, glass_removed) = match map.object(window).as_deref().map(|o| &o.kind) {
-                Some(ObjectKind::Window(w)) => (w.destroyed, w.glass_removed),
-                _ => (false, false),
-            };
+        if let Some(window) = map.window_to(&current, &square) {
+            let (smashed, glass_removed) =
+                map.object(window)
+                    .map_or((false, false), |o| match &o.borrow().kind {
+                        ObjectKind::Window(w) => (w.destroyed, w.glass_removed),
+                        _ => (false, false),
+                    });
             if !chr.can_climb_through_window(window) || smashed && !glass_removed {
                 return true;
             }
@@ -1670,7 +1681,7 @@ impl PathFindBehavior2 {
             chr.climb_through_window(window);
             return false;
         }
-        if let Some(window) = map.window_thumpable_to(current, square) {
+        if let Some(window) = map.window_thumpable_to(&current, &square) {
             if map.is_barricaded(window) {
                 return true;
             }
@@ -1685,18 +1696,18 @@ impl PathFindBehavior2 {
             chr.climb_through_window(window);
             return false;
         }
-        if let Some(frame) = map.window_frame_to(current, square) {
+        if let Some(frame) = map.window_frame_to(&current, &square) {
             chr.climb_through_window_frame(frame);
             return false;
         }
         let t = &map.bits.t;
-        let climb_dir = if dx > 0 && square.has(t.HoppableW) {
+        let climb_dir = if dx > 0 && square.borrow().has(t.HoppableW) {
             Some(IsoDirections::E)
-        } else if dx < 0 && current.has(t.HoppableW) {
+        } else if dx < 0 && current.borrow().has(t.HoppableW) {
             Some(IsoDirections::W)
-        } else if dy < 0 && current.has(t.HoppableN) {
+        } else if dy < 0 && current.borrow().has(t.HoppableN) {
             Some(IsoDirections::N)
-        } else if dy > 0 && square.has(t.HoppableN) {
+        } else if dy > 0 && square.borrow().has(t.HoppableN) {
             Some(IsoDirections::S)
         } else {
             None
@@ -1716,13 +1727,13 @@ impl PathFindBehavior2 {
             |s: &IsoGridSquare| s.has(t.TallHoppableW) || s.has(t.WallW) || s.has(t.WallWTrans);
         let tall_n =
             |s: &IsoGridSquare| s.has(t.TallHoppableN) || s.has(t.WallN) || s.has(t.WallNTrans);
-        let climb_dir = if dx > 0 && tall_w(square) {
+        let climb_dir = if dx > 0 && tall_w(&square.borrow()) {
             Some(IsoDirections::E)
-        } else if dx < 0 && tall_w(current) {
+        } else if dx < 0 && tall_w(&current.borrow()) {
             Some(IsoDirections::W)
-        } else if dy < 0 && tall_n(current) {
+        } else if dy < 0 && tall_n(&current.borrow()) {
             Some(IsoDirections::N)
-        } else if dy > 0 && tall_n(square) {
+        } else if dy > 0 && tall_n(&square.borrow()) {
             Some(IsoDirections::S)
         } else {
             None

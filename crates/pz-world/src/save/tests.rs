@@ -119,10 +119,16 @@ fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
     ch.saved.attachments_partial = Some(vec![(1, 2, 3)]);
     for x in 0..8 {
         for y in 0..8 {
-            ch.set_square(x, y, 0, Some(IsoGridSquare::new(80 + x, 160 + y, 0)));
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
         }
     }
-    let sq = ch.get_grid_square_mut(0, 0, 0).unwrap();
+    let sq_owner = ch.get_grid_square_mut(0, 0, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
     sq.erosion = Some(ErosionSquareData {
         init: true,
         soil: 2,
@@ -170,7 +176,8 @@ fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
     let did = d.id;
     sq.objects.push((d).into());
     sq.special_objects.push(did);
-    let sq = ch.get_grid_square_mut(1, 0, 0).unwrap();
+    let sq_owner = ch.get_grid_square_mut(1, 0, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
     let wi = IsoWorldInventoryObject {
         xoff: 0.25,
         yoff: 0.5,
@@ -261,7 +268,8 @@ fn chunk_round_trip() {
     assert_eq!(back.saved.floor_blood_splats.len(), 1);
     assert_eq!(back.saved.next_splat_index, 4);
     assert_eq!(back.saved.generators, Some(vec![(80, 160, 0)]));
-    let sq = back.get_grid_square(0, 0, 0).unwrap();
+    let sq_owner = back.get_grid_square(0, 0, 0).unwrap();
+    let sq = sq_owner.borrow();
     assert_eq!(sq.objects.len(), 2);
     assert_eq!(sq.special_objects, vec![sq.objects[1].borrow().id]);
     assert_eq!(sq.seen, [true, false, true, false]);
@@ -273,7 +281,8 @@ fn chunk_round_trip() {
     };
     assert!(d.has_curtain && d.curtain_open && !d.curtain_inside);
     assert_eq!(sq.objects[1].borrow().key_id, 77);
-    let sq1 = back.get_grid_square(1, 0, 0).unwrap();
+    let sq1_owner = back.get_grid_square(1, 0, 0).unwrap();
+    let sq1 = sq1_owner.borrow();
     assert_eq!(sq1.world_objects.len(), 1);
     assert_eq!(sq1.static_moving.len(), 1);
     assert_eq!(
@@ -295,7 +304,7 @@ fn chunk_round_trip() {
     assert_eq!(save_chunk(&back, &c).unwrap(), bytes);
     // Empty squares above ground are not saved; the levels shrink.
     let mut ch2 = sample_chunk(&m, &t);
-    ch2.set_square(0, 0, 3, Some(IsoGridSquare::new(80, 160, 3)));
+    ch2.set_square(0, 0, 3, Some((IsoGridSquare::new(80, 160, 3)).into()));
     assert_eq!(ch2.max_level, 3);
     let b2 = save_chunk(&ch2, &c).unwrap();
     assert_eq!(b2, bytes);
@@ -325,10 +334,9 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
         }
     }
     fn floor(ch: &IsoChunk) -> crate::floor_object::FloorObjectRef {
-        let ObjectKind::WorldInventory(wi) = &ch.get_grid_square(0, 0, 0).unwrap().objects[0]
-            .borrow()
-            .kind
-        else {
+        let object = ch.get_grid_square(0, 0, 0).unwrap().borrow().objects[0].ref_handle();
+        let body = object.borrow();
+        let ObjectKind::WorldInventory(wi) = &body.kind else {
             panic!()
         };
         wi.ref_handle()
@@ -368,14 +376,21 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
     obj.sprite_id_override = Some(object_io::UNREGISTERED_SPRITE_ID);
     sq.objects.push((obj).into());
     sq.world_objects.push(id);
-    chunk.set_square(0, 0, 0, Some(sq));
+    chunk.set_square(0, 0, 0, Some((sq).into()));
     let live = floor(&chunk);
     let mut snapshot = IsoChunk::new(10, 20);
     snapshot.set_square(
         0,
         0,
         0,
-        Some(chunk.get_grid_square(0, 0, 0).unwrap().clone()),
+        Some(
+            chunk
+                .get_grid_square(0, 0, 0)
+                .unwrap()
+                .borrow()
+                .clone()
+                .into(),
+        ),
     );
     assert!(!Rc::ptr_eq(&live, &floor(&snapshot)));
     {
@@ -397,7 +412,7 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
     save_object(
         &mut object_bytes,
         &ctx,
-        &chunk.get_grid_square(0, 0, 0).unwrap().objects[0].borrow(),
+        &chunk.get_grid_square(0, 0, 0).unwrap().borrow().objects[0].borrow(),
     )
     .unwrap();
     let mut object_reader = Reader::new(&object_bytes.buf);
@@ -486,18 +501,19 @@ fn load_transforms() {
     let c0 = ctx(&m, &t, &s, &AllItems);
     let ch = sample_chunk(&m, &t);
     // An attached overlay_blood sprite becomes a wall blood splat.
-    ch.get_grid_square(0, 0, 0).unwrap().objects[0]
+    ch.get_grid_square(0, 0, 0).unwrap().borrow().objects[0]
         .borrow_mut()
         .attach_anim_sprite(m.named_map["overlay_blood_0"]);
     // An empty attached-sprite list is saved with a zero count and loads
     // back as no list.
-    ch.get_grid_square(0, 0, 0).unwrap().objects[1]
+    ch.get_grid_square(0, 0, 0).unwrap().borrow().objects[1]
         .borrow_mut()
         .attached_anim_sprite = Some(Vec::new());
     let bytes = save_chunk(&ch, &c0).unwrap();
     let c = ctx(&m, &t, &s, &Reg);
     let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
-    let sq = back.get_grid_square(0, 0, 0).unwrap();
+    let sq_owner = back.get_grid_square(0, 0, 0).unwrap();
+    let sq = sq_owner.borrow();
     let f = sq.objects[0].borrow();
     assert_eq!(f.attached_anim_sprite.as_ref().unwrap().len(), 1);
     let splats = f.wall_blood_splats.as_ref().unwrap();
@@ -511,11 +527,19 @@ fn load_transforms() {
     // The hat on the floor (dropped at hour 2) is past the 24h removal, but
     // its ignoreRemoveSandbox flag keeps it.
     assert_eq!(
-        back.get_grid_square(1, 0, 0).unwrap().world_objects.len(),
+        back.get_grid_square(1, 0, 0)
+            .unwrap()
+            .borrow()
+            .world_objects
+            .len(),
         1
     );
     let mut ch = sample_chunk(&m, &t);
-    if let ObjectKind::WorldInventory(w) = &mut ch.get_grid_square_mut(1, 0, 0).unwrap().objects[0]
+    if let ObjectKind::WorldInventory(w) = &mut ch
+        .get_grid_square_mut(1, 0, 0)
+        .unwrap()
+        .borrow_mut()
+        .objects[0]
         .borrow_mut()
         .kind
     {
@@ -523,7 +547,8 @@ fn load_transforms() {
     }
     let bytes = save_chunk(&ch, &c0).unwrap();
     let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
-    let sq1 = back.get_grid_square(1, 0, 0).unwrap();
+    let sq1_owner = back.get_grid_square(1, 0, 0).unwrap();
+    let sq1 = sq1_owner.borrow();
     assert!(sq1.world_objects.is_empty());
     assert!(!sq1
         .objects
@@ -618,7 +643,8 @@ fn finish_chunk_load_recalculates_before_hook() {
                 .neighbours
                 .get_grid_square(c.wx * 8 + x, c.wy * 8 + y, z)
                 .is_some();
-            let sq = c.get_grid_square(x, y, z).unwrap();
+            let sq_owner = c.get_grid_square(x, y, z).unwrap();
+            let sq = sq_owner.borrow();
             let mut fresh = sq.clone();
             fresh.recalc_properties(ctx.sprites);
             self.0
@@ -810,7 +836,8 @@ fn barricades_choose_sprite() {
     let c = ctx(&m, &t, &s, &AllItems);
     let bytes = save_chunk(&sample_chunk(&m, &t), &c).unwrap();
     let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
-    let sq1 = back.get_grid_square(1, 0, 0).unwrap();
+    let sq1_owner = back.get_grid_square(1, 0, 0).unwrap();
+    let sq1 = sq1_owner.borrow();
     let bar = sq1
         .objects
         .iter()
@@ -912,10 +939,16 @@ fn light_switch_load_creates_light() {
     let mut ch = IsoChunk::new(10, 20);
     for x in 0..8 {
         for y in 0..8 {
-            ch.set_square(x, y, 0, Some(IsoGridSquare::new(80 + x, 160 + y, 0)));
+            ch.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
         }
     }
-    let sq = ch.get_grid_square_mut(2, 3, 0).unwrap();
+    let sq_owner = ch.get_grid_square_mut(2, 3, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
     let switches = [
         // A room switch with no room (no meta grid): warm white, radius 8.
         ("switch_0", true, false, true),
@@ -938,9 +971,11 @@ fn light_switch_load_creates_light() {
         sq.objects
             .push((IsoObject::new(id, ObjectKind::LightSwitch(sw), Some(m.named_map[n]))).into());
     }
+    drop(sq);
     let bytes = save_chunk(&ch, &c).unwrap();
     let back = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
-    let sq = back.get_grid_square(2, 3, 0).unwrap();
+    let sq_owner = back.get_grid_square(2, 3, 0).unwrap();
+    let sq = sq_owner.borrow();
     let sw = |i: usize| {
         let ObjectKind::LightSwitch(s) = &sq.objects[i].borrow().kind else {
             panic!()
@@ -971,10 +1006,16 @@ fn light_switch_load_creates_light() {
     let mut ch2 = IsoChunk::new(10, 20);
     for x in 0..8 {
         for y in 0..8 {
-            ch2.set_square(x, y, 0, Some(IsoGridSquare::new(80 + x, 160 + y, 0)));
+            ch2.set_square(
+                x,
+                y,
+                0,
+                Some((IsoGridSquare::new(80 + x, 160 + y, 0)).into()),
+            );
         }
     }
-    let sq = ch2.get_grid_square_mut(0, 0, 0).unwrap();
+    let sq_owner = ch2.get_grid_square_mut(0, 0, 0).unwrap();
+    let mut sq = sq_owner.borrow_mut();
     let id = sq.new_object_id();
     sq.objects.push(
         (IsoObject::new(
@@ -984,6 +1025,7 @@ fn light_switch_load_creates_light() {
         ))
         .into(),
     );
+    drop(sq);
     let bytes = save_chunk(&ch2, &c).unwrap();
     let Err(e) = load_chunk(&bytes, 10, 20, &c) else {
         panic!("loaded")
@@ -1086,7 +1128,8 @@ fn whole_object_owner_live_base_changes_save_and_archive_snapshot_is_independent
     let settings = SaveSettings::default();
     let c = ctx(&m, &t, &settings, &AllItems);
     let chunk = sample_chunk(&m, &t);
-    let square = chunk.get_grid_square(0, 0, 0).unwrap();
+    let square_owner = chunk.get_grid_square(0, 0, 0).unwrap();
+    let square = square_owner.borrow();
     let actual = square.objects[0].ref_handle();
     let archive = square.clone();
     assert!(!archive.objects[0].ptr_eq_ref(&actual));
@@ -1105,11 +1148,12 @@ fn whole_object_owner_live_base_changes_save_and_archive_snapshot_is_independent
     chunks.reserve(64);
     assert!(Rc::ptr_eq(
         &actual,
-        &chunks[0].get_grid_square(0, 0, 0).unwrap().objects[0].ref_handle()
+        &chunks[0].get_grid_square(0, 0, 0).unwrap().borrow().objects[0].ref_handle()
     ));
     let bytes = save_chunk(&chunks[0], &c).unwrap();
     let loaded = load_chunk(&bytes, 10, 20, &c).unwrap().chunk;
-    let back = loaded.get_grid_square(0, 0, 0).unwrap().objects[0].borrow();
+    let back_owner = loaded.get_grid_square(0, 0, 0).unwrap().borrow().objects[0].ref_handle();
+    let back = back_owner.borrow();
     assert_eq!(back.key_id, 991);
     assert_eq!(
         back.name,

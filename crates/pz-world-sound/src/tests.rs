@@ -12,12 +12,12 @@ fn square(x: i32, y: i32, z: i32, room_id: i64) -> IsoGridSquare {
 fn cell() -> IsoCell {
     let mut cell = IsoCell::default();
     let mut c = IsoChunk::new(0, 0);
-    c.set_square(2, 3, 0, Some(square(2, 3, 0, -1)));
-    c.set_square(4, 4, 0, Some(square(4, 4, 0, 42)));
+    c.set_square(2, 3, 0, Some((square(2, 3, 0, -1)).into()));
+    c.set_square(4, 4, 0, Some((square(4, 4, 0, 42)).into()));
     cell.chunks.insert((0, 0), c);
     cell.chunks.insert((1, 0), IsoChunk::new(1, 0));
     let mut c = IsoChunk::new(-1, -1);
-    c.set_square(7, 7, 0, Some(square(-1, -1, 0, 7)));
+    c.set_square(7, 7, 0, Some((square(-1, -1, 0, 7)).into()));
     cell.chunks.insert((-1, -1), c);
     cell
 }

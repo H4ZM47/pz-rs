@@ -158,7 +158,11 @@ impl<H: PickHooks> PickWorld for EnginePick<'_, H> {
     fn objects(&self, x: i32, y: i32, z: i32) -> Option<Vec<PickObject>> {
         let sq = self.world.square(x, y, z)?;
         let objs = self.world.objects(x, y, z)?;
-        Some(objs.into_iter().map(|o| self.pick_object(sq, o)).collect())
+        Some(
+            objs.into_iter()
+                .map(|o| self.pick_object(&sq.borrow(), o))
+                .collect(),
+        )
     }
 
     fn corpses(&self, x: i32, y: i32, z: i32) -> Vec<PickObject> {

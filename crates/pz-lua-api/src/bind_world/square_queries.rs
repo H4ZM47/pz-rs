@@ -6,9 +6,10 @@ pub(super) fn register(b: &ClassBuilder) {
     get(b, "isOutside", |c| {
         let (x, y, z) = self_square(c)?;
         cell(|cell| {
-            let square = cell
+            let square_owner = cell
                 .get_grid_square(x, y, z)
                 .ok_or_else(|| LuaError::runtime("IsoGridSquare is no longer loaded"))?;
+            let square = square_owner.borrow();
             let sprites = crate::bind_sprites::manager()?;
             let sprites = sprites
                 .try_borrow()

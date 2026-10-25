@@ -32,7 +32,7 @@ use crate::square_mutation::{
     dirty, DoorTables, MutationEnv, ObjectRef, PathfindSquareHooks, RenderSquareHooks,
     SquareMutationHooks,
 };
-use crate::IsoGridSquare;
+use crate::{IsoGridSquare, SquareRef};
 use std::cell::{Ref, RefMut};
 
 /// The `IsoFlagType`s fire reads and sets that the sprite loader does not
@@ -210,9 +210,10 @@ impl FireWorld<'_> {
     /// `IsoFire.isCampfire()` of the fire at `r`: an object after the
     /// first on its square, not a world item, named `Campfire`.
     pub fn is_campfire(&self, r: FireRef) -> bool {
-        let Some(sq) = self.sq(r.x, r.y, r.z) else {
+        let Some(sq_owner) = self.sq(r.x, r.y, r.z) else {
             return false;
         };
+        let sq = sq_owner.borrow();
         sq.objects.iter().map(ObjectSlot::borrow).skip(1).any(|o| {
             !matches!(o.kind, ObjectKind::WorldInventory(_))
                 && self
@@ -240,11 +241,11 @@ impl FireWorld<'_> {
         }
     }
 
-    pub(crate) fn sq(&self, x: i32, y: i32, z: i32) -> Option<&IsoGridSquare> {
+    pub(crate) fn sq(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         self.cell.get_grid_square(x, y, z)
     }
 
-    pub(crate) fn sq_mut(&mut self, x: i32, y: i32, z: i32) -> Option<&mut IsoGridSquare> {
+    pub(crate) fn sq_mut(&mut self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
         self.cell.get_grid_square_mut(x, y, z)
     }
 
@@ -262,16 +263,16 @@ impl FireWorld<'_> {
             return false;
         };
         let f = &self.sprites.tables.flag;
-        if sq.objects.is_empty() || sq.has(f.water) {
+        if sq.borrow().objects.is_empty() || sq.borrow().has(f.water) {
             return false;
         }
-        if !can_burn_anywhere && sq.has(f.burntOut) {
+        if !can_burn_anywhere && sq.borrow().has(f.burntOut) {
             return false;
         }
-        if sq.has(self.flags.burning) || sq.has(self.flags.smoke) {
+        if sq.borrow().has(self.flags.burning) || sq.borrow().has(self.flags.smoke) {
             return false;
         }
-        if !can_burn_anywhere && sq.has(self.flags.unflamable) {
+        if !can_burn_anywhere && sq.borrow().has(self.flags.unflamable) {
             return false;
         }
         true
@@ -346,31 +347,19 @@ impl IsoFireManager {
     }
 
     fn object(cell: &IsoCell, r: FireRef) -> Option<IsoObjectRef> {
-        let square = cell.get_grid_square(r.x, r.y, r.z)?;
+        let square_owner = cell.get_grid_square(r.x, r.y, r.z)?;
+        let square = square_owner.borrow();
         Some(square.objects[square.object_index(r.id)?].ref_handle())
     }
 
-    /// The fire `r` refers to, if it is still on its square.
-    pub fn fire<'c>(&self, cell: &'c IsoCell, r: FireRef) -> Option<Ref<'c, IsoFire>> {
-        let sq = cell.get_grid_square(r.x, r.y, r.z)?;
-        Ref::filter_map(sq.objects[sq.object_index(r.id)?].borrow(), |o| {
-            match &o.kind {
-                ObjectKind::Fire(f) => Some(f),
-                _ => None,
-            }
-        })
-        .ok()
+    /// The actual whole-object owner, when the attached object is a fire.
+    pub fn fire(&self, cell: &IsoCell, r: FireRef) -> Option<IsoObjectRef> {
+        let object = Self::object(cell, r)?;
+        let is_fire = matches!(&object.borrow().kind, ObjectKind::Fire(_));
+        is_fire.then_some(object)
     }
-
-    /// The fire `r` refers to, mutably.
-    pub fn fire_mut(cell: &mut IsoCell, r: FireRef) -> Option<RefMut<'_, IsoFire>> {
-        let sq = cell.get_grid_square_mut(r.x, r.y, r.z)?;
-        let i = sq.object_index(r.id)?;
-        RefMut::filter_map(sq.objects[i].borrow_mut(), |o| match &mut o.kind {
-            ObjectKind::Fire(f) => Some(f),
-            _ => None,
-        })
-        .ok()
+    pub fn fire_mut(cell: &mut IsoCell, r: FireRef) -> Option<IsoObjectRef> {
+        Self::default().fire(cell, r)
     }
 
     /// `AddBurningCharacter(c)`.
@@ -430,7 +419,7 @@ impl IsoFireManager {
             let mut oldest = None;
             let mut oldest_age = 0;
             for &f in &self.fire_stack {
-                let age = self.fire(w.cell, f).map_or(0, |f| f.age);
+                let age = self.fire(w.cell, f).map_or(0, |f| fire_body(&f).age);
                 if age > oldest_age {
                     oldest_age = age;
                     oldest = Some(f);
@@ -447,14 +436,16 @@ impl IsoFireManager {
     /// `RemoveAttachedAnims`, `removeFromWorld`, `removeFromSquare`.
     fn evict(&mut self, w: &mut FireWorld<'_>, rand: &mut dyn GameRand, o: FireRef) {
         let flags = w.flags;
-        let Some(sq) = w.sq_mut(o.x, o.y, o.z) else {
+        let Some(sq_owner) = w.sq_mut(o.x, o.y, o.z) else {
             // No square: removeFromWorld is not reached.
             return;
         };
+        let mut sq = sq_owner.borrow_mut();
         sq.properties.unset_flag(flags.burning);
         sq.properties.unset_flag(flags.smoke);
+        drop(sq);
         let object = Self::object(w.cell, o);
-        let fire = self.fire(w.cell, o).map(|f| f.clone());
+        let fire = self.fire(w.cell, o).map(|f| fire_body(&f).clone());
         let (Some(object), Some(mut fire)) = (object, fire) else {
             // Preserve missing-fire cleanup in the existing locator registry.
             // A full retained FireStack owner is a separate migration.
@@ -472,10 +463,16 @@ impl IsoFireManager {
         };
         w.env(rand).base_remove_from_world_detached(or, &object);
         if let Some(sq) = w.sq_mut(o.x, o.y, o.z) {
-            if let Some(i) = sq.objects.iter().position(|o| o.ptr_eq_ref(&object)) {
-                sq.remove_object_slot(i);
+            let index = {
+                sq.borrow()
+                    .objects
+                    .iter()
+                    .position(|o| o.ptr_eq_ref(&object))
+            };
+            if let Some(i) = index {
+                sq.borrow_mut().remove_object_slot(i);
             }
-            sq.special_objects.retain(|&id| id != o.id);
+            sq.borrow_mut().special_objects.retain(|&id| id != o.id);
         }
     }
 
@@ -483,7 +480,8 @@ impl IsoFireManager {
     /// square), returning its reference; [`IsoFireManager::add_loaded`]
     /// registers it.
     pub fn place(w: &mut FireWorld<'_>, x: i32, y: i32, z: i32, fire: IsoFire) -> Option<FireRef> {
-        let sq = w.sq_mut(x, y, z)?;
+        let sq_owner = w.sq_mut(x, y, z)?;
+        let mut sq = sq_owner.borrow_mut();
         let id = sq.new_object_id();
         sq.objects
             .push((IsoObject::new(id, ObjectKind::Fire(fire), None)).into());
@@ -506,34 +504,40 @@ impl IsoFireManager {
         if energy <= 0 {
             return None;
         }
-        let sq = w.sq(x, y, z)?;
-        if let Some(req) = w.floor_fire_requirement(sq) {
+        let sq_owner = w.sq(x, y, z)?;
+        let sq = sq_owner.borrow();
+        if let Some(req) = w.floor_fire_requirement(&sq) {
             energy -= req;
         }
+        drop(sq);
         if energy < 5 {
             energy = 5;
         }
         if !w.can_add_fire(Some((x, y, z)), ignite_on_any) {
             return None;
         }
-        let sq = w.sq(x, y, z)?;
+        let sq_owner = w.sq(x, y, z)?;
+        let sq = sq_owner.borrow();
         let fs = FireSquare {
             vegitation: sq.has(w.sprites.tables.flag.vegitation),
-            floor_fire_requirement: w.floor_fire_requirement(sq),
+            floor_fire_requirement: w.floor_fire_requirement(&sq),
             tutorial: w.settings.tutorial,
         };
+        drop(sq);
         let fire = IsoFire::new_fire(fs, energy, life, rand);
         let burning = w.flags.burning;
-        w.sq_mut(x, y, z)?.properties.set_flag(burning);
+        w.sq_mut(x, y, z)?.borrow_mut().properties.set_flag(burning);
         w.hooks.lua_event("OnNewFire", x, y, z);
         // Add before the object joins the square (an eviction cannot pick
         // the new fire: it is not in FireStack yet).
-        let id = w.sq_mut(x, y, z)?.new_object_id();
+        let id = w.sq_mut(x, y, z)?.borrow_mut().new_object_id();
         let r = FireRef { x, y, z, id };
         self.add(w, rand, r);
-        let sq = w.sq_mut(x, y, z)?;
+        let sq_owner = w.sq_mut(x, y, z)?;
+        let mut sq = sq_owner.borrow_mut();
         sq.objects
             .push((IsoObject::new(id, ObjectKind::Fire(fire), None)).into());
+        drop(sq);
         if rand.next(5) == 0 {
             w.hooks.world_sound(x, y, z, 20, 20);
         }
@@ -573,12 +577,13 @@ impl IsoFireManager {
             return None;
         }
         let smoke = w.flags.smoke;
-        w.sq_mut(x, y, z)?.properties.set_flag(smoke);
+        w.sq_mut(x, y, z)?.borrow_mut().properties.set_flag(smoke);
         let fire = IsoFire::new_smoke(energy, life, true, rand);
-        let id = w.sq_mut(x, y, z)?.new_object_id();
+        let id = w.sq_mut(x, y, z)?.borrow_mut().new_object_id();
         let r = FireRef { x, y, z, id };
         self.add(w, rand, r);
         w.sq_mut(x, y, z)?
+            .borrow_mut()
             .objects
             .push((IsoObject::new(id, ObjectKind::Fire(fire), None)).into());
         w.env(rand)
@@ -592,14 +597,18 @@ impl IsoFireManager {
         let Some(f) = self.fire(w.cell, r) else {
             return;
         };
-        let (perm, burning) = (f.perm, f.burning());
+        let (perm, burning) = {
+            let f = fire_body(&f);
+            (f.perm, f.burning())
+        };
         drop(f);
         let flag = if burning {
             w.flags.burning
         } else {
             w.flags.smoke
         };
-        if let Some(sq) = w.sq_mut(r.x, r.y, r.z) {
+        if let Some(sq_owner) = w.sq_mut(r.x, r.y, r.z) {
+            let mut sq = sq_owner.borrow_mut();
             sq.properties.set_flag(flag);
         }
         if !perm {
@@ -652,7 +661,7 @@ impl IsoFireManager {
             if (r.x, r.y, r.z) != (x, y, z) {
                 continue;
             }
-            let Some(mut f) = self.fire(w.cell, r).map(|f| f.clone()) else {
+            let Some(mut f) = self.fire(w.cell, r).map(|f| fire_body(&f).clone()) else {
                 // Not on its square any more: extinctFire only drops it.
                 self.remove(r);
                 continue;
@@ -672,7 +681,8 @@ impl IsoFireManager {
     ) {
         self.remove_all_on(w, rand, at);
         let (burnt, burning) = (w.sprites.tables.flag.burntOut, w.flags.burning);
-        if let Some(sq) = w.sq_mut(at.0, at.1, at.2) {
+        if let Some(sq_owner) = w.sq_mut(at.0, at.1, at.2) {
+            let mut sq = sq_owner.borrow_mut();
             sq.properties.set_flag(burnt);
             sq.properties.unset_flag(burning);
             sq.burnt_out = true;
@@ -692,15 +702,22 @@ impl IsoFireManager {
         fire: &mut IsoFire,
     ) {
         let flags = w.flags;
-        if let Some(sq) = w.sq_mut(r.x, r.y, r.z) {
+        if let Some(sq_owner) = w.sq_mut(r.x, r.y, r.z) {
+            let mut sq = sq_owner.borrow_mut();
             sq.properties.unset_flag(flags.burning);
             sq.properties.unset_flag(flags.smoke);
         }
         fire.anims.clear();
         let mut obj = None;
         if let Some(sq) = w.sq_mut(r.x, r.y, r.z) {
-            if let Some(i) = sq.objects.iter().position(|o| o.ptr_eq_ref(object)) {
-                obj = Some(sq.remove_object_slot(i));
+            let index = {
+                sq.borrow()
+                    .objects
+                    .iter()
+                    .position(|o| o.ptr_eq_ref(object))
+            };
+            if let Some(i) = index {
+                obj = Some(sq.borrow_mut().remove_object_slot(i));
             }
         }
         // A fire is never multi-square, so either branch of
@@ -757,10 +774,11 @@ impl IsoFireManager {
             if !w.can_add_fire(Some(at), false) {
                 continue;
             }
-            let Some(sq) = w.sq(at.0, at.1, at.2) else {
+            let Some(sq_owner) = w.sq(at.0, at.1, at.2) else {
                 continue;
             };
-            let req = w.squares_energy_requirement(sq);
+            let sq = sq_owner.borrow();
+            let req = w.squares_energy_requirement(&sq);
             if fire.energy < req {
                 continue;
             }
@@ -769,6 +787,7 @@ impl IsoFireManager {
                 return;
             }
             let exterior = sq.has(w.sprites.tables.flag.exterior);
+            drop(sq);
             let energy = if exterior { fire.energy } else { req * 2 };
             // The new fire may evict this one: keep its age current.
             Self::sync(object, fire);
@@ -797,7 +816,7 @@ impl IsoFireManager {
         let Some(object) = Self::object(w.cell, r) else {
             return Ok(());
         };
-        let Some(mut fire) = self.fire(w.cell, r).map(|f| f.clone()) else {
+        let Some(mut fire) = self.fire(w.cell, r).map(|f| fire_body(&f).clone()) else {
             return Ok(());
         };
         self.sounds.add_fire(r);
@@ -806,7 +825,8 @@ impl IsoFireManager {
         } else {
             w.flags.smoke
         };
-        if let Some(sq) = w.sq_mut(r.x, r.y, r.z) {
+        if let Some(sq_owner) = w.sq_mut(r.x, r.y, r.z) {
+            let mut sq = sq_owner.borrow_mut();
             sq.properties.set_flag(flag);
         }
         if !fire.smoke && fire.life_stage < 5 {
@@ -840,10 +860,12 @@ impl IsoFireManager {
             return res;
         }
         if !step.gone
-            && step
-                .w
-                .sq(r.x, r.y, r.z)
-                .is_some_and(|sq| sq.objects.iter().any(|o| o.ptr_eq_ref(&step.object)))
+            && step.w.sq(r.x, r.y, r.z).is_some_and(|sq| {
+                sq.borrow()
+                    .objects
+                    .iter()
+                    .any(|o| o.ptr_eq_ref(&step.object))
+            })
         {
             Self::sync(&step.object, &fire);
             step.w.hooks.fire_updated(r, &fire);
@@ -888,8 +910,8 @@ impl IsoFireManager {
             let f = self.fire(w.cell, r);
             FireSoundInfo {
                 on_square: f.is_some(),
-                smoke: f.as_ref().is_some_and(|f| f.smoke),
-                life_stage: f.map_or(0, |f| f.life_stage),
+                smoke: f.as_ref().is_some_and(|f| fire_body(f).smoke),
+                life_stage: f.map_or(0, |f| fire_body(&f).life_stage),
                 campfire: w.is_campfire(r),
                 listener_distance_sq: w.hooks.listener_distance_sq(
                     r.x as f32 + 0.5,
@@ -948,3 +970,16 @@ impl FireCallbacks for Step<'_, '_, '_> {
 
 #[cfg(test)]
 mod owner_tests;
+
+pub fn fire_body(object: &IsoObjectRef) -> Ref<'_, IsoFire> {
+    Ref::map(object.borrow(), |o| match &o.kind {
+        ObjectKind::Fire(f) => f,
+        _ => panic!("object is not a fire"),
+    })
+}
+pub fn fire_body_mut(object: &IsoObjectRef) -> RefMut<'_, IsoFire> {
+    RefMut::map(object.borrow_mut(), |o| match &mut o.kind {
+        ObjectKind::Fire(f) => f,
+        _ => panic!("object is not a fire"),
+    })
+}

@@ -318,8 +318,9 @@ fn main() {
             continue;
         };
         let mut i = 0;
-        while i < sq.objects.len() {
-            let mut o = sq.objects[i].borrow_mut();
+        while i < sq.borrow().objects.len() {
+            let o_owner = sq.borrow().objects[i].ref_handle();
+            let mut o = o_owner.borrow_mut();
             let name = o.sprite.and_then(|s| sprites.sprites[s].name.clone());
             match java.get(i) {
                 Some(&(class, spr)) if class == o.kind.class_name() => {
@@ -332,9 +333,9 @@ fn main() {
                 }
                 _ => {
                     drop(o);
-                    let id = sq.remove_object_slot(i).borrow().id;
-                    sq.world_objects.retain(|&w| w != id);
-                    sq.special_objects.retain(|&w| w != id);
+                    let id = sq.borrow_mut().remove_object_slot(i).borrow().id;
+                    sq.borrow_mut().world_objects.retain(|&w| w != id);
+                    sq.borrow_mut().special_objects.retain(|&w| w != id);
                 }
             }
         }
@@ -345,7 +346,7 @@ fn main() {
             for y in 0..8 {
                 for x in 0..8 {
                     if let Some(sq) = ch.get_grid_square_mut(x, y, z) {
-                        sq.recalc_properties(&sprites);
+                        sq.borrow_mut().recalc_properties(&sprites);
                     }
                 }
             }
@@ -494,9 +495,10 @@ fn main() {
         write!(s, " inv={}", inv.borrow().items.len()).unwrap();
         if let Some(dp) = drop_sq {
             let sq = cell.get_grid_square(dp.0, dp.1, dp.2).unwrap();
-            let id = *sq.world_objects.last().unwrap();
-            let idx = sq.object_index(id).unwrap();
-            let o = sq.objects[idx].borrow();
+            let id = *sq.borrow().world_objects.last().unwrap();
+            let idx = sq.borrow().object_index(id).unwrap();
+            let o_owner = sq.borrow().objects[idx].ref_handle();
+            let o = o_owner.borrow();
             let ObjectKind::WorldInventory(wi) = &o.kind else {
                 panic!()
             };
@@ -540,10 +542,10 @@ fn main() {
                 s,
                 " objFluid={} itemFluid={item_comps} idx={idx}/{} world={} special={} floorW={}",
                 o.has_components,
-                sq.objects.len(),
-                sq.world_objects.len(),
-                sq.special_objects.len(),
-                h(sq.get_total_weight_of_items_on_floor(weight))
+                sq.borrow().objects.len(),
+                sq.borrow().world_objects.len(),
+                sq.borrow().special_objects.len(),
+                h(sq.borrow().get_total_weight_of_items_on_floor(weight))
             )
             .unwrap();
         }
@@ -575,10 +577,15 @@ fn main() {
         )
         .unwrap();
         if let Some(q) = cell.get_grid_square(p.0, p.1, p.2) {
-            if q.has_stairs(&sprites) || q.has_sloped_surface() {
+            if q.borrow().has_stairs(&sprites) || q.borrow().has_sloped_surface() {
                 app.push_str(" z=");
                 for (dx, dy) in pts {
-                    write!(app, "{};", h(q.get_apparent_z(dx, dy, &sprites, true))).unwrap();
+                    write!(
+                        app,
+                        "{};",
+                        h(q.borrow().get_apparent_z(dx, dy, &sprites, true))
+                    )
+                    .unwrap();
                 }
             }
         }

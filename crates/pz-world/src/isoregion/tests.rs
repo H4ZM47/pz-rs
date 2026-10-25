@@ -432,9 +432,9 @@ fn cell(m: &IsoSpriteManager) -> IsoCell {
                 if wx == 0 && (2..6).contains(&y) && (x == 2 || x == 5) {
                     objs.push("wall_w");
                 }
-                ch.set_square(x, y, 0, Some(square(m, gx, gy, 0, &objs)));
+                ch.set_square(x, y, 0, Some((square(m, gx, gy, 0, &objs)).into()));
                 if wx == 0 && (2..5).contains(&x) && (2..6).contains(&y) {
-                    ch.set_square(x, y, 1, Some(square(m, gx, gy, 1, &["floor"])));
+                    ch.set_square(x, y, 1, Some((square(m, gx, gy, 1, &["floor"])).into()));
                 }
             }
         }
@@ -448,7 +448,8 @@ fn square_changes_read_the_surrounding_chunks() {
     let m = manager();
     let mut cell = cell(&m);
     let mut r = IsoRegions::new(13);
-    let sq = cell.get_grid_square(3, 3, 0).unwrap();
+    let sq_owner = cell.get_grid_square(3, 3, 0).unwrap();
+    let sq = sq_owner.borrow();
     assert_eq!(sq.get_iso_world_region(&r), None);
     // First change in an unseen chunk: both loaded chunks are read.
     r.set_previous_flags(None, &m);
@@ -457,22 +458,25 @@ fn square_changes_read_the_surrounding_chunks() {
     // Still cached as "none" until the update drops the cache.
     assert_eq!(sq.get_iso_world_region(&r), None);
     assert!(r.update(&cell, &m, None));
-    let sq = cell.get_grid_square(3, 3, 0).unwrap();
+    let sq_owner = cell.get_grid_square(3, 3, 0).unwrap();
+    let sq = sq_owner.borrow();
     let room = sq.get_iso_world_region(&r).unwrap();
     assert!(r.is_fog_mask(room));
     assert!(sq.is_in_a_room(&crate::IsoMetaGrid::empty(), &r));
     assert_eq!(sq.player_room_size(&r), Some(12));
-    let out = cell.get_grid_square(12, 3, 0).unwrap();
+    let out_owner = cell.get_grid_square(12, 3, 0).unwrap();
+    let out = out_owner.borrow();
     assert!(!r.is_fog_mask(out.get_iso_world_region(&r).unwrap()));
 
     // Remove the wall of (3, 2): a square update of a seen chunk.
-    let g = cell.get_grid_square(3, 2, 0).unwrap();
-    r.set_previous_flags(Some(g), &m);
+    let g_owner = cell.get_grid_square(3, 2, 0).unwrap();
+    let g = g_owner.borrow();
+    r.set_previous_flags(Some(&g), &m);
     let g = square(&m, 3, 2, 0, &["floor"]);
     cell.chunks
         .get_mut(&(0, 0))
         .unwrap()
-        .set_square(3, 2, 0, Some(g));
+        .set_square(3, 2, 0, Some((g).into()));
     r.square_changed(&cell, &m, 3, 2, 0, true);
     assert!(matches!(
         r.job_queue.front(),
@@ -487,10 +491,12 @@ fn square_changes_read_the_surrounding_chunks() {
     let a = cell
         .get_grid_square(3, 3, 0)
         .unwrap()
+        .borrow()
         .get_iso_world_region(&r);
     let b = cell
         .get_grid_square(12, 3, 0)
         .unwrap()
+        .borrow()
         .get_iso_world_region(&r);
     assert_eq!(a, b);
 }
@@ -607,9 +613,9 @@ fn loaded_windows_make_their_walls_cut() {
     sq.recalc_properties(&m);
     assert_eq!(calculate_square_flags(Some(&sq), &m), F);
     let mut ch = IsoChunk::new(0, 0);
-    ch.set_square(1, 1, 0, Some(sq));
+    ch.set_square(1, 1, 0, Some((sq).into()));
     crate::save::chunk_file::apply_loaded_window_sprites(&ch, &mut m);
-    let mut sq = ch.get_grid_square(1, 1, 0).unwrap().clone();
+    let mut sq = ch.get_grid_square(1, 1, 0).unwrap().borrow().clone();
     sq.recalc_properties(&m);
     // The open sprite now has the closed sprite's flags and tile type.
     assert_eq!(
@@ -648,7 +654,12 @@ impl Town {
         let mut ch = crate::IsoChunk::new(0, 0);
         for z in 0..2 {
             for i in 0..64 {
-                ch.set_square(i % 8, i / 8, z, Some(IsoGridSquare::new(i % 8, i / 8, z)));
+                ch.set_square(
+                    i % 8,
+                    i / 8,
+                    z,
+                    Some((IsoGridSquare::new(i % 8, i / 8, z)).into()),
+                );
             }
         }
         cell.chunks.insert((0, 0), ch);
@@ -710,8 +721,14 @@ fn player_room_becomes_a_meta_grid_building() {
     // The new BuildingDef's key id, then the runtime building of its room.
     assert_eq!(t.rand.0, [100000000, 120]);
     // The squares of the room get its id; the region knows its building.
-    assert_eq!(t.cell.get_grid_square(3, 3, 0).unwrap().room_id, room.id);
-    assert_eq!(t.cell.get_grid_square(0, 0, 0).unwrap().room_id, -1);
+    assert_eq!(
+        t.cell.get_grid_square(3, 3, 0).unwrap().borrow().room_id,
+        room.id
+    );
+    assert_eq!(
+        t.cell.get_grid_square(0, 0, 0).unwrap().borrow().room_id,
+        -1
+    );
     let w = r.get_iso_world_region(3, 3, 0).unwrap();
     assert_eq!(r.world_region(w).building_def(), Some(bs[0]));
     // Opening the room: the building goes, and its def goes back to the
@@ -721,7 +738,10 @@ fn player_room_becomes_a_meta_grid_building() {
     r.add_square_changed_job(&t.cell, &m, 3, 2, 0, true, F);
     assert!(t.update(&mut r));
     assert!(t.user_buildings().is_empty());
-    assert_eq!(t.cell.get_grid_square(3, 3, 0).unwrap().room_id, -1);
+    assert_eq!(
+        t.cell.get_grid_square(3, 3, 0).unwrap().borrow().room_id,
+        -1
+    );
     r.add_square_changed_job(&t.cell, &m, 3, 2, 0, false, F | BIT_WALL_N);
     assert!(t.update(&mut r));
     let bs2 = t.user_buildings();
@@ -761,4 +781,68 @@ fn player_rooms_next_to_map_buildings_are_dropped() {
     assert!(!t.meta.building_defs[bs[0].0 as usize].user_defined);
     let w = r.get_iso_world_region(3, 3, 0).unwrap();
     assert_eq!(r.world_region(w).building_def(), None);
+}
+
+#[test]
+fn building_updates_release_square_guards_before_pathfind_and_render_hooks() {
+    struct Path {
+        native: bool,
+        calls: usize,
+    }
+    impl crate::square_mutation::PathfindSquareHooks for Path {
+        fn uses_native_code(&self) -> bool {
+            self.native
+        }
+        fn square_changed(&mut self, cell: &IsoCell, pos: (i32, i32, i32)) {
+            let square = cell.get_grid_square(pos.0, pos.1, pos.2).unwrap();
+            square
+                .try_borrow_mut()
+                .expect("pathfind hook must receive an unborrowed actual square")
+                .overlay_done = true;
+            self.calls += 1;
+        }
+    }
+    struct Render {
+        probe: crate::SquareRef,
+        calls: usize,
+    }
+    impl crate::square_mutation::RenderSquareHooks for Render {
+        fn invalidate_vispoly_chunk_level(&mut self, _: i32, _: i32, _: i32) {
+            self.probe
+                .try_borrow_mut()
+                .expect("render hook must run without the active square read guard");
+            self.calls += 1;
+        }
+    }
+    for native in [false, true] {
+        let mut town = Town::new();
+        let mut regions = IsoRegions::new(13);
+        let mut job = JobChunkUpdate::new();
+        job.add_chunk_from_file(&block(
+            0,
+            0,
+            &[room_level(2, 2, 5, 6), roof_over(2, 2, 5, 6)],
+        ));
+        regions.job_queue.push_back(RegionJob::ChunkUpdate(job));
+        regions.apply_chunk_changes(false);
+        let probe = town.cell.get_grid_square(3, 3, 0).unwrap();
+        let mut path = Path { native, calls: 0 };
+        let mut render = Render {
+            probe: probe.clone(),
+            calls: 0,
+        };
+        let mut ctx = metagrid::BuildingCtx {
+            cell: &mut town.cell,
+            meta: &mut town.meta,
+            sprites: &town.m,
+            rand: &mut town.rand,
+            world: &mut town.hooks,
+            pathfind: &mut path,
+            render: &mut render,
+        };
+        assert!(regions.update_with_buildings(&mut ctx, None));
+        assert!(path.calls > 0);
+        assert!(render.calls > 0);
+        assert!(probe.borrow().overlay_done);
+    }
 }
