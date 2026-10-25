@@ -71,6 +71,30 @@ pub fn world_frame(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels
     world_frame_into(r, size, chunks, screen, Vec::new())
 }
 
+/// `FBORenderCell.renderAnimatedAttachments` (after the water): each
+/// on-screen chunk holding a fireplace's or barbecue's flames or smoke,
+/// its squares level by level.
+pub fn render_animated_attachments(r: &ChunkRenderer<'_>, chunks: &[ChunkLevels<'_>], out: &mut Vec<DrawCmd>) {
+    let mut done: Vec<(i32, i32)> = Vec::new();
+    for c in chunks {
+        let k = (c.texture.wx, c.texture.wy);
+        if done.contains(&k) {
+            continue;
+        }
+        done.push(k);
+        let mut squares: Vec<&crate::world::RenderSquare> = chunks
+            .iter()
+            .filter(|o| (o.texture.wx, o.texture.wy) == k)
+            .flat_map(|o| o.levels.iter().flat_map(|(_, l)| l.iter().flatten().copied()))
+            .collect();
+        if !squares.iter().any(|s| s.objects.iter().any(crate::hearth::has_animated_attachments)) {
+            continue;
+        }
+        squares.sort_by_key(|s| s.z);
+        r.render_animated_attachments(&squares, out);
+    }
+}
+
 /// [`world_frame`] appended to `out` (which may hold texture frees).
 pub fn world_frame_into(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkLevels<'_>], screen: ScreenParams, mut out: Vec<DrawCmd>) -> Vec<DrawCmd> {
     let (ow, oh) = size.offscreen();
@@ -105,6 +129,7 @@ pub fn world_frame_into(r: &ChunkRenderer<'_>, size: FrameSize, chunks: &[ChunkL
         }
         crate::water::render_water(r, s, &squares, &mut out);
     }
+    render_animated_attachments(r, chunks, &mut out);
     // The per-level translucent passes, over every on-screen square
     // (recorded this frame or not): translucent floors, puddles on them,
     // shores (from level 0), then translucent objects.
