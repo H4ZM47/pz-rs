@@ -620,7 +620,7 @@ pub trait StateWorld<I> {
     /// it at once, `ClimbOverFenceState`'s `OnFloor`).
     fn damage_fence(&mut self, _fence: pz_pathfind::mover::ObjectRef, _damage: i32, _dir: IsoDirections) {}
 
-    // ---- windows, sheet ropes and walls (#world-states-rest) ----
+    // ---- windows, sheet ropes and walls (#208; the climb states are #204) ----
 
     /// The local player's input this frame, for the states' own
     /// `pressedMovement` / `pressedCancelAction` (`None`: nothing pressed).

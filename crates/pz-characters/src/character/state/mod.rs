@@ -50,7 +50,7 @@ pub use cx::{
 pub use action::ActionGroups;
 pub use machine::{StateMachine, StateMachineComponent, SubstateSlot};
 pub use params::{Param, StateParams};
-pub use vars::{CharVar, CharacterVars};
+pub use vars::{CharVar, CharacterVars, ClimbData};
 
 use pz_anim::AnimEventRecord;
 

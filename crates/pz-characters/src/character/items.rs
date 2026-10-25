@@ -665,7 +665,7 @@ impl<I> GameCharacter<I> {
 }
 
 /// `ItemBodyLocation.<field>` as a worn item location.
-pub(crate) fn body_location_key(sm: &ScriptManager, field: &str) -> Option<Rc<RegistryKey>> {
+fn body_location_key(sm: &ScriptManager, field: &str) -> Option<Rc<RegistryKey>> {
     ItemBodyLocation::constant(sm, field)
 }
 
