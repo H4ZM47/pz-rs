@@ -12,4 +12,5 @@ pz-inventory.workspace = true
 pz-world.workspace = true
 
 [dev-dependencies]
+pz-pathfind.workspace = true
 pz-fs.workspace = true

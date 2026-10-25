@@ -18,6 +18,7 @@ use pz_scripts::ScriptResult;
 use super::ids;
 use super::stagger_back::parse_boolean;
 use crate::character::combat::{WeaponStats, WeaponType};
+use crate::character::firearm::FirearmStats;
 use crate::character::state::{Param, State, StateCx, StateId, StateRef, SyncFlags};
 use crate::character::{GameCharacter, SimEvent};
 
@@ -67,7 +68,7 @@ pub struct AttackVars {
 }
 
 /// The bare hands (`IsoLivingCharacter.bareHands`, `Base.BareHands`).
-fn bare_hands_stats() -> WeaponStats {
+pub(crate) fn bare_hands_stats() -> WeaponStats {
     // Base.BareHands script values are data; the fields combat reads for a
     // shove only need identity and the flags below.
     WeaponStats {
@@ -152,8 +153,26 @@ impl<I: 'static> GameCharacter<I> {
             v.weapon = None;
         }
         self.attack_vars.weapon = v.weapon;
-        let (w, _) = self.attack_weapon(sm);
-        let range = 2.0f32.max(w.max_range * self.weapon_range_mod(sm, cx.chars, &w) + 1.0);
+        let (w, w_item) = self.attack_weapon(sm);
+        let firearm = w_item.as_ref().and_then(|i| FirearmStats::of(sm, i));
+        // `calcValidTargets`: an aimed firearm picks its standing targets by
+        // the muzzle ray (`useBallistics`).
+        let use_ballistics = self.ballistics_controller.is_some() && w.aimed_firearm;
+        let weapon_range = w.max_range * self.weapon_range_mod(sm, cx.chars, &w);
+        let range = cx.ctx.ignore_prone_zombie_range().max(weapon_range + if use_ballistics { 0.0 } else { 1.0 });
+        let threshold = crate::character::combat::config::BALLISTICS_CONTROLLER_DISTANCE_THRESHOLD;
+        if use_ballistics {
+            let muzzle = cx.world.muzzle_attachment(self.id);
+            let mut st = cx.chars.combat.borrow_mut();
+            self.calculate_ballistics(&mut st, muzzle.as_ref(), range);
+        }
+        let (start, end) = {
+            let st = cx.chars.combat.borrow();
+            (st.ballistics_start_position, st.ballistics_end_position)
+        };
+        let ballistic_hit = |h: &HitInfo| crate::character::firearm::ranged::is_point_within_distance(start, end, [h.x, h.y, h.z], threshold);
+        let bare = bare_hands_stats();
+        let mut too_close: Option<HitInfo> = None;
         let ids = cx.world.characters_near(self.vars.x, self.vars.y, self.vars.z, range);
         let from = self.square_xyz();
         for id in ids {
@@ -167,6 +186,33 @@ impl<I: 'static> GameCharacter<I> {
             let line = los_allows_melee(cx.world.los_line_clear(from, to, false));
             let Some(t) = cx.world.character_mut(id) else { continue };
             let Some(h) = self.valid_melee_target(t, &w, range, line) else { continue };
+            {
+                let mut st = cx.chars.combat.borrow_mut();
+                st.temp_vector4f = [h.x, h.y, h.z, h.dot];
+            }
+            if t.is_standing() && use_ballistics {
+                // `isMeleeTargetTooCloseToShoot` (with the bare hands' reach).
+                let in_angle = !(h.dot < w.min_angle || h.dot > w.max_angle);
+                let dx = h.x - self.vars.x;
+                let dy = h.y - self.vars.y;
+                let reach = bare.max_range;
+                let in_reach = (t.vars.z - self.vars.z).abs() < 0.5 && dx * dx + dy * dy < reach * reach;
+                if in_angle && in_reach && !ballistic_hit(&h) && too_close.as_ref().is_none_or(|c| h.dist_sq < c.dist_sq) {
+                    too_close = Some(h.clone());
+                }
+                if !ballistic_hit(&h) {
+                    continue;
+                }
+                v.targets_standing.push(h);
+                continue;
+            }
+            if !t.is_standing() && w.ranged && self.ballistics_controller.is_some() {
+                if !ballistic_hit(&h) {
+                    continue;
+                }
+                v.targets_prone.push(h);
+                continue;
+            }
             let (min, max) = if t.is_standing() { (w.min_angle, w.max_angle) } else { (w.min_angle / 1.5, w.max_angle) };
             if h.dot < min || h.dot > max {
                 continue;
@@ -176,6 +222,9 @@ impl<I: 'static> GameCharacter<I> {
             } else {
                 v.targets_prone.push(h);
             }
+        }
+        if let Some(c) = too_close {
+            v.targets_standing = vec![c];
         }
         let by_dist = |a: &HitInfo, b: &HitInfo| a.dist_sq.partial_cmp(&b.dist_sq).unwrap_or(std::cmp::Ordering::Equal);
         v.targets_standing.sort_by(by_dist);
@@ -208,6 +257,11 @@ impl<I: 'static> GameCharacter<I> {
             v.do_shove = true;
             v.aim_at_floor = false;
             v.use_charge_delta = 3.0;
+        }
+        if let Some(f) = firearm.filter(|f| f.ranged) {
+            if !f.fire_mode.as_deref().is_some_and(|m| m.eq_ignore_ascii_case("Auto")) {
+                v.recoil_delay = self.firearm_recoil_delay(cx.chars, &f);
+            }
         }
         self.attack_vars = v;
     }
@@ -282,6 +336,13 @@ impl<I: 'static> GameCharacter<I> {
     /// NONE)` for melee weapons and shoves.
     pub fn attack_collision_check(&mut self, cx: &mut StateCx<'_, I>) -> ScriptResult {
         let (sm, chars) = (cx.sm, cx.chars);
+        // `getWeapon(owner)`: the weapon in use; a ranged one takes the
+        // firearm path.
+        if let Some(item) = self.vars.use_hand_weapon.and_then(|id| self.items.item(id)).cloned() {
+            if item.is_ranged() {
+                return self.ranged_attack_collision_check(cx, &item);
+            }
+        }
         if self.vars.performing_shove_animation {
             self.vars.do_shove = true;
         }
@@ -456,7 +517,38 @@ impl<I: 'static> State<I> for SwipeStatePlayer {
         owner.calculate_attack_vars(cx);
         // doAttack.
         owner.vars.use_charge_delta = 2.0f32.min(90.0) / 25.0;
+        let primary = owner.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(i)).map(|i| i.id);
+        let attack_item = if owner.attack_vars.do_shove { None } else { primary };
+        // `bareHands` is a HandWeapon too: the weapon in use is cleared to
+        // it (by id: `None`).
+        owner.set_use_hand_weapon(attack_item);
         owner.vars.recoil_delay = owner.attack_vars.recoil_delay as f32;
+        if let Some(f) = attack_item.and_then(|id| owner.items.item(id)).and_then(|i| FirearmStats::of(cx.sm, i)) {
+            owner.set_aiming_delay_after_shot(cx.chars, &f);
+        } else if owner.bare_hands.is_some() {
+            // `setAimingDelay(player, bareHands)`: no recoil, no aiming time.
+            let max = owner.items.primary_hand_item().filter(|i| crate::character::items::is_hand_weapon(i)).map_or(0.0, |i| {
+                FirearmStats::of(cx.sm, i).map_or(0.0, |f| f.aiming_time as f32)
+            });
+            owner.vars.aiming_delay = crate::character::firearm::hit_chance::clamp(owner.vars.aiming_delay, 0.0, max);
+        }
+        if let Some(f) = attack_item.and_then(|id| owner.items.item(id)).and_then(|i| FirearmStats::of(cx.sm, i)) {
+            if !owner.vars.remote {
+                owner.vars.recoil_var_y = 0.0;
+                let recoil = f.recoil_delay as f32;
+                let current = owner.firearm_recoil_delay(cx.chars, &f) as f32;
+                owner.vars.recoil_var_x = if current < recoil && recoil != 0.0 { 1.0 - current / recoil } else { 0.0 };
+            }
+            if f.fire_mode.as_deref() == Some("Auto") {
+                let rate = owner.items.item(f.id).and_then(|i| i.weapon_data()).map_or(0.0, |d| d.cyclic_rate_multiplier);
+                owner.set_variable_float("autoShootSpeed", if rate > 0.0 { rate } else { 1.0 });
+                owner.set_variable_float("autoShootVarY", 0.0);
+                owner.set_variable_float("autoShootVarX", 1.0);
+            } else {
+                let v = 0.8 + (1.0 - owner.firearm_recoil_delay(cx.chars, &f) as f32 / f.recoil_delay as f32);
+                owner.set_variable_float("singleShootSpeed", 0.5f32.max(v));
+            }
+        }
         owner.set_variable_bool("ShotDone", false);
         owner.vars.performing_shove_animation = false;
         owner.vars.performing_grapple_grab_animation = false;
@@ -533,9 +625,14 @@ impl<I: 'static> State<I> for SwipeStatePlayer {
         } else if is("SetVariable") {
             if let AnimEventKind::SetVariable { reference, .. } = &e.event.kind {
                 if reference.name().eq_ignore_ascii_case("ShotDone") {
-                    // isRackAfterShoot is a firearm property (TODO(ballistics)).
-                    owner.set_variable_bool("ShotDone", false);
+                    let rack = owner.use_hand_weapon_rack_after_shoot(cx.sm);
+                    let v = owner.get_variable_boolean("ShotDone") && rack;
+                    owner.set_variable_bool("ShotDone", v);
                 }
+            }
+        } else if is("ShotDone") {
+            if owner.use_hand_weapon_rack_after_shoot(cx.sm) {
+                owner.set_variable_bool("ShotDone", true);
             }
         } else if is("SetMeleeDelay") {
             owner.vars.melee_delay = pz_anim::vars::try_parse_float(e.event.parameter_value.as_deref().unwrap_or(""), 0.0);

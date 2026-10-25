@@ -25,6 +25,7 @@ use std::sync::OnceLock;
 use crate::bt::collision_object::*;
 use crate::bt::linear_math::*;
 
+use super::cone_twist::ConeTwistConstraint;
 use super::generic_6dof::Generic6DofConstraint;
 use super::hinge::HingeConstraint;
 use super::point2point::Point2PointConstraint;
@@ -32,6 +33,7 @@ use super::solver_body::SolverConstraint;
 
 pub const POINT2POINT_CONSTRAINT_TYPE: i32 = 3;
 pub const HINGE_CONSTRAINT_TYPE: i32 = 4;
+pub const CONETWIST_CONSTRAINT_TYPE: i32 = 5;
 pub const D6_CONSTRAINT_TYPE: i32 = 6;
 
 /// `btConstraintParams`.
@@ -143,6 +145,7 @@ pub enum ConstraintKind {
     Point2Point(Point2PointConstraint),
     Hinge(Box<HingeConstraint>),
     Generic6Dof(Box<Generic6DofConstraint>),
+    ConeTwist(Box<ConeTwistConstraint>),
 }
 
 /// `btTypedConstraint`.
@@ -204,6 +207,11 @@ impl TypedConstraint {
             ConstraintKind::Point2Point(c) => c.get_info1(info),
             ConstraintKind::Hinge(c) => c.get_info1(info, &ta, &tb),
             ConstraintKind::Generic6Dof(c) => c.get_info1(info, &ta, &tb, ma, mb),
+            ConstraintKind::ConeTwist(c) => c.get_info1(
+                info,
+                body_ref(objects, self.rb_a),
+                body_ref(objects, self.rb_b),
+            ),
         }
     }
 
@@ -217,6 +225,7 @@ impl TypedConstraint {
             }
             ConstraintKind::Hinge(c) => c.get_info2(info, a, b),
             ConstraintKind::Generic6Dof(c) => c.get_info2(info, a, b),
+            ConstraintKind::ConeTwist(c) => c.get_info2(info, a, b),
         }
     }
 
@@ -226,6 +235,7 @@ impl TypedConstraint {
             ConstraintKind::Point2Point(c) => c.set_param(num, value, axis),
             ConstraintKind::Hinge(c) => c.set_param(num, value, axis),
             ConstraintKind::Generic6Dof(c) => c.set_param(num, value, axis),
+            ConstraintKind::ConeTwist(c) => c.set_param(num, value, axis),
         }
     }
 
@@ -235,6 +245,7 @@ impl TypedConstraint {
             ConstraintKind::Point2Point(c) => c.get_param(num, axis),
             ConstraintKind::Hinge(c) => c.get_param(num, axis),
             ConstraintKind::Generic6Dof(c) => c.get_param(num, axis),
+            ConstraintKind::ConeTwist(c) => c.get_param(num, axis),
         }
     }
 }

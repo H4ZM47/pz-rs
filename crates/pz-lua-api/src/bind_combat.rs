@@ -1,7 +1,8 @@
 //! The `IsoGameCharacter` / `IsoLivingCharacter` / `IsoPlayer` combat and
 //! state-flag members Lua uses (`isAiming`, `isAttacking`, `isDoShove`,
 //! `isCriticalHit`, `getHitReaction`, `setAttackedBy`, `Kill`,
-//! `calculateCritChance`, `testDotSide`, ...), over
+//! `calculateCritChance`, `testDotSide`, the aiming and recoil delays,
+//! the ragdoll flags, ...), over
 //! `pz_characters::character::combat`.
 //!
 //! Characters are referred to by id inside the simulation; the Lua objects
@@ -101,6 +102,45 @@ pub fn register_character_methods(b: &ClassBuilder) {
     flag!(b, "isHitFromBehind", "setHitFromBehind", hit_from_behind);
     flag!(b, "isRangedWeaponEmpty", "setRangedWeaponEmpty", ranged_weapon_empty);
     float_field!(b, "getHitForce", "setHitForce", hit_force);
+    float_field!(b, "getAimingDelay", "setAimingDelay", aiming_delay);
+    float_field!(b, "getRecoilDelay", "setRecoilDelay", recoil_delay);
+    flag!(b, "usePhysicHitReaction", "setUsePhysicHitReaction", use_physic_hit_reaction);
+    flag!(b, "isRagdollFall", "setRagdollFall", ragdoll_fall);
+    b.method("getBeenMovingFor", |c| {
+        let v = chr_of(c)?.borrow().vars.been_moving_for;
+        Ok(c.push(float(v)))
+    });
+    // `setBeenMovingFor`: clamped to 0..70.
+    b.method("setBeenMovingFor", |c| {
+        let v = num_arg(c, 1) as f32;
+        chr_of(c)?.borrow_mut().vars.been_moving_for = v.clamp(0.0, 70.0);
+        Ok(0)
+    });
+    b.method("canRagdoll", |c| {
+        let ctx = crate::bind_character_sim::current_sim_context();
+        let v = chr_of(c)?.borrow().can_ragdoll(&*ctx);
+        Ok(c.push(v))
+    });
+    b.method("isRagdoll", |c| {
+        let v = chr_of(c)?.borrow().ragdoll.is_ragdolling;
+        Ok(c.push(v))
+    });
+    b.method("isRagdollSimulationActive", |c| {
+        let v = chr_of(c)?.borrow().vars.ragdoll_simulation_active;
+        Ok(c.push(v))
+    });
+    b.method("isUpright", |c| {
+        let ctx = crate::bind_character_sim::current_sim_context();
+        let chr = chr_of(c)?;
+        let chr = chr.borrow();
+        let v = chr.can_ragdoll(&*ctx) && chr.ragdoll.has_controller && chr.ragdoll.upright;
+        Ok(c.push(v))
+    });
+    b.method("isOnBack", |c| {
+        let chr = chr_of(c)?;
+        let chr = chr.borrow();
+        Ok(c.push(chr.ragdoll.has_controller && chr.ragdoll.on_back))
+    });
     float_field!(b, "getStateEventDelayTimer", "setStateEventDelayTimer", state_event_delay_timer);
     float_field!(b, "getReanimateTimer", "setReanimateTimer", reanimate_timer);
     b.method("isFallOnFront", |c| {

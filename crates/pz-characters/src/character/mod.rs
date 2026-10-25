@@ -41,6 +41,7 @@ pub mod collision;
 pub mod combat;
 pub mod context;
 pub mod fire;
+pub mod firearm;
 pub mod fitness;
 pub mod item_owner;
 pub mod items;
@@ -372,6 +373,17 @@ pub struct GameCharacter<I: 'static> {
     pub saved_vehicle: Option<save::SavedVehicle>,
     /// `IsoPlayer`'s saved fields not kept elsewhere.
     pub player_fields: Box<save::PlayerFields>,
+    /// `ballisticsController` (a shooter aiming a firearm).
+    pub ballistics_controller: Option<Box<firearm::BallisticsController>>,
+    /// `ballisticsTarget` (a character a ballistics query may hit).
+    pub ballistics_target: Option<Box<firearm::BallisticsTarget>>,
+    /// What the character side tracks of its ragdoll (the controller is
+    /// pz-ragdoll's, beside the animation player).
+    pub ragdoll: firearm::ragdoll::RagdollTracking,
+    /// `hitInfoList` (the ranged path's targets).
+    pub hit_info_list: Vec<states::swipe::HitInfo>,
+    /// `wornClothingCanRagdoll` (no worn item has the `NO_RAGDOLL` tag).
+    pub worn_clothing_can_ragdoll: bool,
 }
 
 impl<I: 'static> GameCharacter<I> {
@@ -466,6 +478,11 @@ impl<I: 'static> GameCharacter<I> {
             known_media_lines: pz_scripts::java::JHashMap::new(),
             saved_vehicle: None,
             player_fields: Box::default(),
+            ballistics_controller: None,
+            ballistics_target: None,
+            ragdoll: Default::default(),
+            hit_info_list: Vec::new(),
+            worn_clothing_can_ragdoll: true,
         }
     }
 

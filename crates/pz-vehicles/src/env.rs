@@ -137,6 +137,28 @@ pub trait VehicleWorld {
     ) -> bool {
         false
     }
+    /// `PolygonalMap2.instance.lineClearCollide(x1, y1, x2, y2, z, vehicle)`
+    /// (`SurroundVehicle`'s blocked spots).
+    fn line_clear_collide(
+        &self,
+        _x1: f32,
+        _y1: f32,
+        _x2: f32,
+        _y2: f32,
+        _z: i32,
+        _vehicle: &crate::BaseVehicle,
+    ) -> bool {
+        false
+    }
+    /// `PolygonalMap2.instance.canStandAt(x, y, z, vehicle, false, false)`.
+    fn can_stand_at(&self, _x: f32, _y: f32, _z: i32, _vehicle: &crate::BaseVehicle) -> bool {
+        true
+    }
+    /// The zombie with this key as `SurroundVehicle` reads it (`None` when
+    /// it is gone).
+    fn surround_zombie(&self, _key: u64) -> Option<crate::surround::SurroundZombie> {
+        None
+    }
     /// `addToWorld`: `chunk.vehicles.add(this)` unless already there.
     fn add_vehicle_to_chunk(&self, _v: &crate::VehicleRef, _chunk: (i32, i32)) {}
     /// `update`: the vehicle moved from chunk `from` to `to`.
@@ -178,6 +200,10 @@ pub struct LightbarState {
 
 pub trait VehicleEvents {
     fn event(&self, _what: &str) {}
+    /// `VehiclesDB2.instance.setVehicleUnloaded(vehicle)` (`removeFromWorld`).
+    fn vehicle_unloaded(&self, _vehicle: &crate::BaseVehicle) {}
+    /// `VehiclesDB2.instance.removeVehicle(vehicle)` (`permanentlyRemove`).
+    fn vehicle_removed_from_database(&self, _vehicle: &crate::BaseVehicle) {}
     /// `updateWorldLights()`: rendering places or removes the lightbar's
     /// world lights from this state.
     fn lightbar_world_lights(&self, _vehicle: &crate::BaseVehicle, _state: LightbarState) {}
