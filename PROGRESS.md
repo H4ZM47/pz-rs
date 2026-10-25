@@ -135,6 +135,12 @@ Status of the Rust port. Update this file with every merged change.
   (`examples/differential.rs`): 64 of 65 corpus scripts produce identical
   output; the remaining one differs only in an identity hash.
 
+- Audio: FSB5 sample banks inside the game's FMOD Studio banks are parsed
+  and their Vorbis samples decoded in Rust (`pz-audio`). FSB5 omits the
+  Vorbis setup headers; they are rebuilt at runtime from the FMOD library
+  in the user's install and CRC-verified (all 161 in Build 42.21). Decoded
+  output matches libvorbis (via ffmpeg) to within 5e-7. The strings bank
+  table (paths to GUIDs) parses identically to FMOD's own lookup.
 - Character simulation core (`pz-characters::character`): `Stats`,
   `CharacterStat`, `Moodle`/`MoodleStat`/`Moodles`, `IsoGameCharacter.XP`
   and perk levels, `applyTraits`, `calculateStats` and the stat part of

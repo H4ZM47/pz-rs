@@ -1818,6 +1818,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pz-world-popman"
+version = "0.1.0"
+dependencies = [
+ "pz-fs",
+ "pz-popman",
+ "pz-world",
+]
+
+[[package]]
 name = "pz-world-render"
 version = "0.1.0"
 dependencies = [
@@ -1828,6 +1837,14 @@ dependencies = [
  "pz-iso-render",
  "pz-lighting",
  "pz-render",
+ "pz-world",
+]
+
+[[package]]
+name = "pz-world-sound"
+version = "0.1.0"
+dependencies = [
+ "pz-audio",
  "pz-world",
 ]
 

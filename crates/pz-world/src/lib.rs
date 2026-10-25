@@ -23,6 +23,7 @@ pub mod objects;
 pub mod save;
 pub mod sprite;
 pub mod square;
+pub mod streamer;
 pub mod tiledef;
 pub mod zone_save;
 pub mod zones;
@@ -47,8 +48,8 @@ pub use square::{
     ChunkGetter, EdgeFacing, GetSquare, GridSquareEdge, IsoDirections, NoSquareHooks,
     SpecialObject, SquareHooks, ThumpableInfo, VisionEnv, VisionResult,
 };
+pub use world_state::{ObjectHooks, PowerSettings, WorldState};
 pub use zones::{
     ClipperOps, PropValue, RoomTone, Zone, ZoneError, ZoneGeometryType, ZoneId, ZoneKind,
     ZoneProps, ZoneTables,
 };
-pub use world_state::{ObjectHooks, PowerSettings, WorldState};
