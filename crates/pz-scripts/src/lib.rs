@@ -10,7 +10,7 @@ pub mod manager;
 pub mod math;
 pub mod module;
 pub mod objects;
-pub mod parser;
+pub use pz_script_parser as parser;
 pub mod registry;
 pub mod script_type;
 

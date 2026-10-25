@@ -5,8 +5,11 @@
 //! The scanners mirror the original loops exactly, including their quirks
 //! (for example, the character straight after a nested block's `}` is never
 //! inspected), because mods rely on whatever the original accepts.
+//!
+//! This is a leaf crate shared by `pz-scripts` (script files), `pz-fs`
+//! (`mods/default.txt`) and `pz-text` (`fonts.txt`).
 
-use crate::java;
+pub mod java;
 
 pub const DEFAULT_INDENTATION: &str = "    ";
 pub const DEFAULT_EOL: &str = "\n";
@@ -374,6 +377,40 @@ mod tests {
         let mut sb = String::new();
         root.children[0].pretty_print(0, &mut sb, DEFAULT_EOL, DEFAULT_INDENTATION);
         assert_eq!(sb, "item Axe\n{\n    Weight = 3,\n\n    model\n    {\n        a = 1,\n    }\n}\n");
+    }
+
+    #[test]
+    fn parses_mod_list() {
+        // `ActiveModsFile.read` joins lines without separators.
+        let text = "VERSION = 1,mods{    mod = A,    mod = B\\,}maps{}";
+        let b = parse(&strip_comments(text));
+        assert_eq!(b.get_value("VERSION").map(|v| java::trim(v.get_value())), Some("1"));
+        let mods = b.get_block("mods", None).unwrap();
+        let ids: Vec<_> = mods.values.iter().map(|v| java::trim(v.get_value())).collect();
+        assert_eq!(ids, ["A", "B\\"]);
+        assert!(b.get_block("maps", None).unwrap().values.is_empty());
+    }
+
+    #[test]
+    fn root_pretty_print_elements() {
+        let mut b = Block::default();
+        b.set_value("VERSION", "1");
+        b.add_block("mods", None).add_value("mod", "A");
+        b.add_block("maps", None);
+        let mut s = String::new();
+        b.pretty_print_elements(0, &mut s, "\n", "    ");
+        assert_eq!(s, "VERSION = 1,\n\nmods\n{\n    mod = A,\n}\n\nmaps\n{\n}\n");
+    }
+
+    #[test]
+    fn utf16_offsets_match_byte_scan() {
+        // Non-ASCII text before the delimiters: splits are unaffected and the
+        // uid offset is in UTF-16 units.
+        let root = parse_with(&strip_comments("/* é */ font Ünï { fnt = ä.fnt, }"), Some("X"));
+        let f = &root.children[0];
+        assert_eq!((f.type_str(), f.id.as_deref()), ("font", Some("Ünï")));
+        assert_eq!(java::trim(f.get_value("fnt").unwrap().get_value()), "ä.fnt");
+        assert_eq!(f.uid(), Some("UID:X@font@10"));
     }
 
     #[test]
