@@ -192,6 +192,15 @@ pub fn to_body_atlas(
         DrawCmd::GlEnable(gl::DEPTH_TEST),
         DrawCmd::DepthFunc(gl::ALWAYS),
         DrawCmd::DepthMask(true),
+        // toBodyAtlas sets no blend function: it runs from
+        // IsoDeadBody.render inside renderCorpsesInWorld, after
+        // FBORenderChunk.renderInWorldMainThread left blending on with
+        // glBlendFuncSeparate(ONE, ONE_MINUS_SRC_ALPHA, ONE_MINUS_DST_ALPHA,
+        // ONE). Into the cleared cell that copies the filtered bitmap texel
+        // unchanged (premultiplied colour, coverage alpha); SRC_ALPHA
+        // blending would square the alpha of every edge texel.
+        DrawCmd::GlEnable(gl::BLEND),
+        DrawCmd::BlendFuncSeparate(gl::ONE, gl::ONE_MINUS_SRC_ALPHA, gl::ONE_MINUS_DST_ALPHA, gl::ONE),
     ];
     let [sx, sy, sw, sh] = e.scissor();
     out.push(DrawCmd::Clip(Some([sx, sy, sw, sh])));
@@ -270,8 +279,8 @@ mod tests {
             offset_y: 0.0,
         };
         let cmds = to_body_atlas(&e, true, false, 3);
-        let DrawCmd::AtlasQuad { id, pos, .. } = &cmds[6] else {
-            panic!("{:?}", cmds[6])
+        let DrawCmd::AtlasQuad { id, pos, .. } = &cmds[8] else {
+            panic!("{:?}", cmds[8])
         };
         assert_eq!(*id, 3);
         assert_eq!(pos[0], [256.0, -64.0]);
