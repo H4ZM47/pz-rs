@@ -878,7 +878,7 @@ impl CharVar {
             CharVar::BeenMovingFor => F(v.been_moving_for),
             CharVar::PreviousState => S(c.previous_action_context_state_name()),
             CharVar::MomentumScalar => F(v.momentum_scalar),
-            CharVar::HasTimedActions => B(v.has_timed_actions),
+            CharVar::HasTimedActions => B(!c.character_actions.borrow().is_empty() || v.performing_an_action),
             CharVar::IsOverEncumbered => B(c.environment_over_encumbered()),
             CharVar::CriticalHit => B(v.critical_hit),
             CharVar::KnockedDown => B(v.knocked_down),

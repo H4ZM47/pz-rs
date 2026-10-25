@@ -101,6 +101,11 @@ impl SimContext for FrameSim {
     fn climate(&self) -> Option<Ref<'_, ClimateManager>> {
         self.game_time.try_borrow().ok().map(|g| Ref::map(g, |g| &g.climate))
     }
+    fn wet_ground_final_value(&self) -> f32 {
+        // Movement and ground dirt query IsoPuddles at the point of use,
+        // including changes made by Lua after this frame was captured.
+        pz_lua_api::bind_puddles::shared_puddles().borrow().state.wet_ground.get()
+    }
     fn lock_fps(&self) -> i32 {
         self.lock_fps
     }
@@ -115,5 +120,36 @@ impl SimContext for FrameSim {
     }
     fn event(&self, e: SimEvent) {
         self.events.borrow_mut().push(e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_sim_reads_live_puddle_controls_after_capture() {
+        let owner = pz_lua_api::bind_puddles::shared_puddles();
+        struct RestorePuddles(pz_iso_render::weather::PuddlesState);
+        impl Drop for RestorePuddles {
+            fn drop(&mut self) {
+                pz_lua_api::bind_puddles::shared_puddles().borrow_mut().state = self.0;
+            }
+        }
+        let _restore = RestorePuddles(owner.borrow().state);
+        owner.borrow_mut().state = Default::default();
+        let frame = FrameSim::capture();
+        let mut thread = pz_kahlua::Thread::new(pz_kahlua::TableRef::new());
+        pz_lua_api::bind_puddles::register(&mut thread);
+        let mut run = |source| {
+            let closure = pz_kahlua::stdlib::load_string(source, Some("wet-ground"), thread.globals().clone()).unwrap();
+            thread.pcall(&closure, &[]).unwrap_or_else(|(error, trace)| panic!("{error:?}\n{trace}"));
+        };
+        run("getPuddlesManager():getPuddlesFloat(1):setFinalValue(0.75)");
+        assert_eq!(frame.wet_ground_final_value(), 0.75);
+        run("local wet = getPuddlesManager():getPuddlesFloat(1); wet:setAdminValue(0.25); wet:setEnableAdmin(true)");
+        assert_eq!(frame.wet_ground_final_value(), 0.25);
+        run("getPuddlesManager():getPuddlesFloat(1):setEnableAdmin(false)");
+        assert_eq!(frame.wet_ground_final_value(), 0.75);
     }
 }

@@ -15,7 +15,7 @@ use std::rc::Rc;
 use pz_anim::{AdvancedAnimator, AnimEventRecord, AnimationPlayer};
 use pz_character_model::combine::run_jobs;
 use pz_character_model::data::{HumanModel, HumanVisual, ResolvedItemVisual};
-use pz_character_model::items::{AttachedModel, EquippedModels, HeldItem};
+use pz_character_model::items::{ActionHandModels, AttachedModel, EquippedModels, HeldItem};
 use pz_character_model::lights::{LightContext, PlayerLightData};
 use pz_character_model::model_tree::{CharacterModelInput, ModelSlot, TextureSource};
 use pz_character_model::scene::{
@@ -114,6 +114,17 @@ impl WorldModels {
         dt: f32,
         world_age_days: f32,
     ) -> Result<Vec<AnimEventRecord>, String> {
+        self.update_character_before_action_modifiers(chr, dt, world_age_days)?;
+        self.finish_character_update(chr, dt, None)
+    }
+
+    /// Stop before the Lua timed-action movement modifier callback.
+    pub fn update_character_before_action_modifiers(
+        &mut self,
+        chr: &mut LuaGameCharacter,
+        dt: f32,
+        world_age_days: f32,
+    ) -> Result<(), String> {
         if chr.kind == CharacterKind::Animal {
             return Err("animal model producer is not connected".into());
         }
@@ -196,7 +207,23 @@ impl WorldModels {
         update_direction_and_turning(model, chr);
         publish_animation_variables(model, chr);
         model.animator.update(&mut model.player, chr, dt);
-        apply_deltas(model, chr);
+        chr.wait_to_start_timed_action = model.animator.should_wait_for_sit_action();
+        Ok(())
+    }
+
+    pub fn action_movement_modifiers(&self, chr: &LuaGameCharacter) -> Option<pz_characters::character::state::MoveDeltaModifiers> {
+        self.characters.get(&chr.id).map(|model| base_deltas(model, chr))
+    }
+
+    /// Resume once the host releases its borrows and calls the Lua modifier.
+    pub fn finish_character_update(
+        &mut self,
+        chr: &mut LuaGameCharacter,
+        dt: f32,
+        modifiers: Option<pz_characters::character::state::MoveDeltaModifiers>,
+    ) -> Result<Vec<AnimEventRecord>, String> {
+        let model = self.characters.get_mut(&chr.id).ok_or("character model is not initialized")?;
+        apply_deltas(model, chr, modifiers);
         model.player.update(dt, Some(&*chr));
         model.animator.dispatch_track_events(&mut model.player, chr);
         // Callback animation variables read the real player's result on
@@ -453,7 +480,7 @@ fn update_direction_and_turning(model: &mut CharacterModel, chr: &mut LuaGameCha
     }
 }
 
-fn apply_deltas(model: &mut CharacterModel, chr: &LuaGameCharacter) {
+fn base_deltas(model: &CharacterModel, chr: &LuaGameCharacter) -> pz_characters::character::state::MoveDeltaModifiers {
     let mut deltas = pz_characters::character::state::MoveDeltaModifiers {
         move_delta: chr.vars.move_delta,
         turn_delta: if model.zombie {
@@ -473,6 +500,11 @@ fn apply_deltas(model: &mut CharacterModel, chr: &LuaGameCharacter) {
     if let Some(state) = chr.current_state() {
         state.get_delta_modifiers(chr, &mut deltas);
     }
+    deltas
+}
+
+fn apply_deltas(model: &mut CharacterModel, chr: &LuaGameCharacter, modifiers: Option<pz_characters::character::state::MoveDeltaModifiers>) {
+    let mut deltas = modifiers.unwrap_or_else(|| base_deltas(model, chr));
     if deltas.twist_delta == -1.0 {
         deltas.twist_delta = deltas.turn_delta * 1.8;
     }
@@ -549,6 +581,8 @@ fn equipment_key(
         (
             e.primary.as_ref().map(|h| key(h, scripts)),
             e.secondary.as_ref().map(|h| key(h, scripts)),
+            e.hide_weapon_model,
+            e.action.as_ref().map(|a| (a.primary_item.as_ref().map(|h| key(h, scripts)), a.secondary_item.as_ref().map(|h| key(h, scripts)), &a.primary_model, &a.secondary_model)),
             e.attached
                 .iter()
                 .map(|a| (&a.attachment_name, key(&a.item, scripts)))
@@ -605,6 +639,12 @@ fn rebuild_if_changed(
     };
     let primary = chr.items.primary_hand_item();
     let secondary = chr.items.secondary_hand_item();
+    let action = chr.character_actions.borrow().first().and_then(|a| {
+        let a = a.borrow();
+        a.override_hand_models.then(|| (a.primary_item.clone(), a.secondary_item.clone(), a.primary_model.clone(), a.secondary_model.clone()))
+    });
+    let action_primary = action.as_ref().and_then(|a| a.0.as_ref()).map(|i| i.borrow());
+    let action_secondary = action.as_ref().and_then(|a| a.1.as_ref()).map(|i| i.borrow());
     let pb = primary.as_ref().map(|i| i.borrow());
     let sb = secondary.as_ref().map(|i| i.borrow());
     let held = |i| {
@@ -641,6 +681,12 @@ fn rebuild_if_changed(
     let mut equipped = EquippedModels {
         primary: pb.as_deref().map(held),
         secondary: sb.as_deref().map(held),
+        hide_weapon_model: chr.vars.hide_weapon_model,
+        action: action.as_ref().map(|a| ActionHandModels {
+            primary_item: action_primary.as_deref().map(held),
+            secondary_item: action_secondary.as_deref().map(held),
+            primary_model: a.2.clone(), secondary_model: a.3.clone(),
+        }),
         ..Default::default()
     };
     for (location, item) in &chr.zombie.attached_items {

@@ -68,20 +68,37 @@ impl<I: 'static> GameCharacter<I> {
         groups: &mut ActionGroups,
         cx: &mut StateCx<'_, I>,
     ) -> ScriptResult<PlayerUpdate> {
+        let (mut out, resume) = self.update_player_before_actions(input, registry, groups, cx)?;
+        if resume {
+            self.update_player_after_actions(&mut out, cx)?;
+        }
+        Ok(out)
+    }
+
+    /// Stop exactly before the base character's action callbacks. The engine
+    /// releases this character and StateCx before invoking Lua, then resumes
+    /// with `update_player_after_actions` when the returned flag is true.
+    pub fn update_player_before_actions(
+        &mut self,
+        input: &dyn PlayerInput,
+        registry: &mut StateRegistry<I>,
+        groups: &mut ActionGroups,
+        cx: &mut StateCx<'_, I>,
+    ) -> ScriptResult<(PlayerUpdate, bool)> {
         let mut out = PlayerUpdate::default();
         self.player.now_ms = input.current_time_ms();
         let owner = self.input_owner();
         self.vars.melee_button_down = self.player.input.is_melee_button_down(input, owner);
         self.vars.manual_floor_attack_button_down = self.player.input.is_manual_floor_atk_button_down(input, owner);
         if self.is_animal() {
-            return Ok(out);
+            return Ok((out, false));
         }
-        if self.update_internal2(input, registry, groups, &mut out, cx)? {
+        let resume = if self.update_internal2(input, registry, groups, &mut out, cx)? {
             // updateLOS: the spotting of other characters is the world's
             // (TODO(los): IsoPlayer.updateLOS).
-            self.update_character_internal(&mut out, cx)?;
-        }
-        Ok(out)
+            self.update_character_before_actions(cx)?
+        } else { false };
+        Ok((out, resume))
     }
 
     /// `setBeenMovingSprinting()`.
@@ -275,7 +292,7 @@ impl<I: 'static> GameCharacter<I> {
                 self.running = false;
                 self.environment.sprinting = false;
             }
-            // isFarming: TODO(farming).
+            if self.player.is_farming { self.vars.is_aiming = false; }
             self.player.ticks_since_seen_zombie += 1;
         }
         if self.player.player_move_dir.0 == 0.0 && self.player.player_move_dir.1 == 0.0 {
@@ -488,9 +505,9 @@ impl<I: 'static> GameCharacter<I> {
         chars.sim.character_stats.field(f)
     }
 
-    /// `isCurrentActionPathfinding()` (the Lua timed action's; false).
+    /// `isCurrentActionPathfinding()` reads the running action's real flag.
     fn is_current_action_pathfinding(&self) -> bool {
-        false
+        self.character_actions.borrow().first().is_some_and(|a| a.borrow().pathfinding)
     }
 
     /// `calculateInTreesSpeed()`.
@@ -1211,16 +1228,16 @@ impl<I: 'static> GameCharacter<I> {
     /// `IsoGameCharacter.updateInternal()` for a player (after
     /// `updateInternal2`), in the original order; the parts other systems
     /// own are noted.
-    fn update_character_internal(&mut self, out: &mut PlayerUpdate, cx: &mut StateCx<'_, I>) -> ScriptResult {
+    fn update_character_before_actions(&mut self, cx: &mut StateCx<'_, I>) -> ScriptResult<bool> {
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         if self.current_square_xyz().is_none() {
-            return Ok(());
+            return Ok(false);
         }
         // updateAlpha: rendering.
         self.update_ballistics_target(ctx, &mut *cx.world);
         // TODO(grappling): LetGoOfGrappled when not in a grappler state.
         if self.is_dead() {
-            return Ok(());
+            return Ok(false);
         }
         // checkSCBADrain: TODO(items). Toxic buildings: TODO(world).
         let fps = ctx.thirty_fps_multiplier();
@@ -1245,7 +1262,13 @@ impl<I: 'static> GameCharacter<I> {
         // updateBeardAndHair: TODO(visual) (grows while asleep).
         // updateFalling: TODO(falling).
         self.update_internal_stats(sm, chars, ctx)?;
-        // characterActions: the Lua timed action queue is the engine's.
+        Ok(true)
+    }
+
+    /// Resume after the host's borrow-free timed-action callbacks.
+    pub fn update_player_after_actions(&mut self, out: &mut PlayerUpdate, cx: &mut StateCx<'_, I>) -> ScriptResult {
+        let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
+        let fps = ctx.thirty_fps_multiplier();
         if ctx.do_character_stats() {
             self.body_damage_update(sm, chars, ctx)?;
             // updateBandages: TODO(items).

@@ -445,8 +445,7 @@ impl IsoWorld {
                 continue;
             }
             pz_lua_api::bind_players::set_player_instance(Some(p.clone()));
-            // TODO(port): `action_blocks_movement`/`has_actions` from the
-            // Lua timed-action queue and the climate's wind movement.
+            pz_lua_api::timed_actions::sync_flags(&p);
             let r = {
                 let mut chr = p.borrow_mut();
                 chr.preupdate_player();
@@ -466,12 +465,30 @@ impl IsoWorld {
                     pz_lua_api::bind_states::with_state_registry(|reg| {
                         let chars = chars.borrow();
                         let mut cx = StateCx::new(&sm, &chars, sim, w);
-                        chr.update_player(&input, reg, action_groups, &mut cx)
+                        chr.update_player_before_actions(&input, reg, action_groups, &mut cx)
                     })
                 })
             };
             match r {
-                Some(Ok(u)) => fire_player_events(lua, &p, u.events),
+                Some(Ok((mut u, resume))) => {
+                    fire_player_events(lua, &p, std::mem::take(&mut u.events));
+                    self.fire_sim_events(lua, Some(&p), sim);
+                    if resume {
+                        pz_lua_api::timed_actions::update(&mut lua.thread, &p);
+                        let IsoWorld { sprites, states_runtime, models, .. } = self;
+                        if let Some(sprites) = sprites.as_mut() {
+                            let result = with_states(sprites, states_runtime, models.as_mut(), sim, |w| {
+                                pz_lua_api::bind_states::with_state_registry(|_| {
+                                    let chars = chars.borrow();
+                                    let mut cx = StateCx::new(&sm, &chars, sim, w);
+                                    p.borrow_mut().update_player_after_actions(&mut u, &mut cx)
+                                })
+                            });
+                            if let Some(Err(e)) = result { self.log_update_error(format!("IsoPlayer.update: {e}")); }
+                        }
+                        fire_player_events(lua, &p, u.events);
+                    }
+                }
                 Some(Err(e)) => self.log_update_error(format!("IsoPlayer.update: {e}")),
                 None => {}
             }
@@ -578,6 +595,9 @@ impl IsoWorld {
                         &[cv.clone(), Value::str(kind), Value::Num(f64::from(amount))],
                     );
                 }
+                SimEvent::ForceStopAction if chr.is_some() => {
+                    pz_lua_api::timed_actions::force_stop(chr.unwrap());
+                }
                 // TODO(port): the other `SimEvent`s (sounds, visuals, XP,
                 // game speed, the world's side of combat).
                 _ => {}
@@ -614,14 +634,20 @@ impl IsoWorld {
         let mut errors = Vec::new();
         for p in local_players().into_iter().flatten() {
             pz_lua_api::bind_players::set_player_instance(Some(p.clone()));
-            let events = {
+            let prepared = {
                 let mut chr = p.borrow_mut();
                 ids.push(chr.id);
-                models.update_character(&mut chr, dt, days)
+                models.update_character_before_action_modifiers(&mut chr, dt, days)
             };
+            let events = prepared.and_then(|()| {
+                let initial = models.action_movement_modifiers(&p.borrow());
+                let modifiers = initial.map(|m| pz_lua_api::timed_actions::movement_modifiers(&mut lua.thread, &p, m));
+                models.finish_character_update(&mut p.borrow_mut(), dt, modifiers)
+            });
             match events {
                 Ok(events) if !events.is_empty() => {
-                    if let Some(sprites) = self.sprites.as_ref() {
+                    for event in events {
+                      if let Some(sprites) = self.sprites.as_ref() {
                         with_states(
                             sprites,
                             &mut self.states_runtime,
@@ -631,11 +657,11 @@ impl IsoWorld {
                                 let chars = chars.borrow();
                                 let mut cx = StateCx::new(&sm, &chars, sim, w);
                                 let mut chr = p.borrow_mut();
-                                for event in events {
-                                    chr.on_anim_event(&event, &mut cx);
-                                }
+                                chr.on_anim_event(&event, &mut cx);
                             },
                         );
+                      }
+                      pz_lua_api::timed_actions::anim_event(&mut lua.thread, &p, &event.event.event_name, event.event.parameter_value.as_deref());
                     }
                 }
                 Err(e) => errors.push(e),
@@ -1166,8 +1192,11 @@ fn fire_player_events(
                     &[Value::from(0), Value::from(0), Value::from(0)],
                 );
             }
+            PlayerEvent::StopActionQueue(reason) => {
+                pz_lua_api::timed_actions::cancel(&mut lua.thread, p, reason);
+            }
             // TODO(port): reload/rack, contextual actions, the reticle mode,
-            // dirt, the action queue stops and the cursor.
+            // dirt and the cursor.
             _ => {}
         }
     }

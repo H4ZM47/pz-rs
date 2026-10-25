@@ -33,6 +33,9 @@ pub mod lua_world;
 pub struct WorldState {
     pub meta_grid: Option<IsoMetaGrid>,
     pub cell: Option<IsoCell>,
+    /// `currentCell.weatherFx`, initialized by `initWeatherFx` and retired
+    /// with the cell. The simulation exists independently of GPU drawing.
+    pub weather_fx: Option<Rc<RefCell<pz_iso_render::weather_fx::IsoWeatherFx>>>,
 }
 
 thread_local! {
@@ -52,7 +55,11 @@ pub fn set_meta_grid(grid: Option<IsoMetaGrid>) {
 
 /// Install (or clear) `IsoWorld.instance.currentCell`.
 pub fn set_cell(cell: Option<IsoCell>) {
-    WORLD.with(|w| w.borrow_mut().cell = cell);
+    WORLD.with(|w| {
+        let mut w = w.borrow_mut();
+        w.weather_fx = None;
+        w.cell = cell;
+    });
     CELL_GEN.with(|g| g.set(g.get() + 1));
     HANDLES.with(|h| {
         h.borrow_mut()

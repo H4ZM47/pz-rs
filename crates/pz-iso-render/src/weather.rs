@@ -89,6 +89,24 @@ impl WaterState {
 pub struct PuddlesFloat {
     pub final_value: f32,
     pub admin_override: Option<f32>,
+    /// Retained while the override is disabled, like `adminValue`.
+    pub admin_value: f32,
+}
+
+/// Math.max(+0, Math.min(maximum, value)): Java propagates NaNs and the
+/// outer max turns either signed zero into +0. Rust min/max ignore NaNs.
+fn clamp_puddle(value: f32, maximum: f32) -> f32 {
+    if maximum.is_nan() {
+        maximum
+    } else if value.is_nan() {
+        value
+    } else if value <= 0.0 || maximum <= 0.0 {
+        0.0
+    } else if value < maximum {
+        value
+    } else {
+        maximum
+    }
 }
 
 impl PuddlesFloat {
@@ -97,16 +115,44 @@ impl PuddlesFloat {
     }
 
     pub fn set(&mut self, f: f32) {
-        self.final_value = f.clamp(0.0, 1.0);
+        self.final_value = clamp_puddle(f, 1.0);
+    }
+
+    pub fn set_enable_admin(&mut self, enabled: bool) {
+        if let Some(value) = self.admin_override {
+            self.admin_value = value;
+        }
+        self.admin_override = enabled.then_some(self.admin_value);
+    }
+
+    pub fn set_admin_value(&mut self, f: f32) {
+        self.admin_value = clamp_puddle(f, 1.0);
+        if self.admin_override.is_some() {
+            self.admin_override = Some(self.admin_value);
+        }
+    }
+
+    pub fn get_admin_value(&self) -> f32 {
+        self.admin_override.unwrap_or(self.admin_value)
+    }
+
+    pub fn interpolate_final_value(&mut self, f: f32) {
+        if (self.final_value - f).abs() < 0.01 {
+            self.final_value = f;
+        } else if f > self.final_value {
+            self.final_value += 0.01;
+        } else {
+            self.final_value -= 0.01;
+        }
     }
 
     pub fn add(&mut self, f: f32) {
-        self.final_value = (self.final_value + f).clamp(0.0, 1.0);
+        self.final_value = clamp_puddle(self.final_value + f, 1.0);
     }
 
     /// `addFinalValueForMax`.
     pub fn add_for_max(&mut self, f: f32, maximum: f32) {
-        self.final_value = (self.final_value + f).min(maximum).max(0.0);
+        self.final_value = clamp_puddle(self.final_value + f, maximum);
     }
 }
 
@@ -324,6 +370,33 @@ impl SurfaceChecks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn puddle_float_matches_java_nan_signed_zero_and_interpolation() {
+        let mut f = PuddlesFloat::default();
+        f.set(-0.0);
+        assert_eq!(f.get().to_bits(), 0.0f32.to_bits());
+        f.set_admin_value(-0.0);
+        assert_eq!(f.get_admin_value().to_bits(), 0.0f32.to_bits());
+        f.set(f32::NAN);
+        assert!(f.get().is_nan());
+        f.add_for_max(0.1, 0.7);
+        assert!(f.get().is_nan(), "NaN input was silently replaced by a bound");
+        f.set(0.3);
+        f.add_for_max(0.1, f32::NAN);
+        assert!(f.get().is_nan(), "NaN maximum did not propagate");
+        f.set(0.3);
+        f.add_for_max(0.1, -1.0);
+        assert_eq!(f.get(), 0.0);
+        f.set(0.5);
+        f.interpolate_final_value(f32::NAN);
+        assert_eq!(f.get(), 0.5f32 - 0.01, "unordered comparison must take the decrement branch");
+        f.interpolate_final_value(0.485);
+        assert_eq!(f.get(), 0.485);
+        f.set(0.0);
+        f.interpolate_final_value(-0.0);
+        assert_eq!(f.get().to_bits(), (-0.0f32).to_bits(), "interpolation directly assigns nearby targets");
+    }
 
     #[test]
     fn rain_wets_the_ground_and_grows_puddles() {

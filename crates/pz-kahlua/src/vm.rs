@@ -39,7 +39,13 @@ pub struct LuaClosure {
 
 impl LuaClosure {
     pub fn new(prototype: Rc<Prototype>, env: TableRef) -> Rc<Self> {
-        Rc::new(LuaClosure { prototype, env: RefCell::new(env), upvalues: Vec::new(), debug_name: RefCell::new(None) })
+        Self::with_upvalues(prototype, env, Vec::new())
+    }
+
+    pub(crate) fn with_upvalues(prototype: Rc<Prototype>, env: TableRef, upvalues: Vec<UpValueRef>) -> Rc<Self> {
+        let closure = Rc::new(LuaClosure { prototype, env: RefCell::new(env), upvalues, debug_name: RefCell::new(None) });
+        crate::gc::register_closure(Rc::downgrade(&closure));
+        closure
     }
     /// `LuaClosure.toString`.
     pub fn describe(&self) -> String {
@@ -57,6 +63,25 @@ pub enum UpValue {
     /// Still on a coroutine stack at this absolute index.
     Open { coroutine: CoroutineRef, index: usize },
     Closed(Value),
+}
+
+impl UpValue {
+    /// A shared closed slot participating in conservative cycle collection.
+    /// Raw `Rc<RefCell<UpValue>>` construction remains supported, but its
+    /// outgoing references are opaque roots rather than traced slots.
+    pub fn closed(value: Value) -> UpValueRef {
+        Self::allocate(Self::Closed(value))
+    }
+
+    pub(crate) fn open(coroutine: CoroutineRef, index: usize) -> UpValueRef {
+        Self::allocate(Self::Open { coroutine, index })
+    }
+
+    fn allocate(value: Self) -> UpValueRef {
+        let upvalue = Rc::new(RefCell::new(value));
+        crate::gc::register_upvalue(Rc::downgrade(&upvalue));
+        upvalue
+    }
 }
 
 pub type CoroutineRef = Rc<RefCell<Coroutine>>;

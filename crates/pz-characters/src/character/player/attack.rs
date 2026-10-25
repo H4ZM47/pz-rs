@@ -407,6 +407,9 @@ impl<I: 'static> GameCharacter<I> {
     ///
     /// [`StateWorld::primary_hand_model_ready`]: crate::character::state::StateWorld::primary_hand_model_ready
     pub fn is_weapon_ready(&self, cx: &StateCx<'_, I>) -> bool {
+        if self.character_actions.borrow().first().is_some_and(|a| a.borrow().override_hand_models) {
+            return false;
+        }
         // IsoLivingCharacter.isPrimaryHandModelReady: the bare hands (no
         // useHandWeapon) are always ready.
         let bare = self.vars.use_hand_weapon.and_then(|i| self.items.item(i)).is_none_or(|i| i.borrow().type_.as_str() == "BareHands");

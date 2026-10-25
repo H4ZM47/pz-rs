@@ -60,6 +60,7 @@ pub mod state;
 pub mod states;
 pub mod stats;
 pub mod thermoregulator;
+pub mod timed_action;
 pub mod update;
 pub mod xp;
 pub mod zombie;
@@ -215,6 +216,12 @@ pub enum CharacterKind {
 
 /// `IsoGameCharacter`'s simulation state.
 pub struct GameCharacter<I: 'static> {
+    /// The real `Stack<BaseAction>`, distinct from Lua's pending-action queue.
+    pub character_actions: Rc<std::cell::RefCell<Vec<timed_action::ActionRef>>>,
+    pub character_actions_handle: Option<pz_kahlua::Value>,
+    pub timed_action_to_retrigger: Option<timed_action::ActionRef>,
+    /// The animator's sit-action readiness gate for BaseAction.waitToStart.
+    pub wait_to_start_timed_action: bool,
     /// `IsoMovingObject.getID()`.
     pub id: i32,
     pub kind: CharacterKind,
@@ -420,6 +427,10 @@ impl<I: 'static> GameCharacter<I> {
         let player = kind == CharacterKind::Player;
         let body_damage = BodyDamage::new(sm, player);
         GameCharacter {
+            character_actions: Rc::default(),
+            character_actions_handle: None,
+            timed_action_to_retrigger: None,
+            wait_to_start_timed_action: false,
             id: 0,
             kind,
             in_players: false,

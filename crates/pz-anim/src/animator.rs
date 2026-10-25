@@ -416,6 +416,15 @@ impl AdvancedAnimator {
         self.anim_set.as_ref().is_some_and(|s| s.contains_state(name))
     }
 
+    /// IsoGameCharacter.shouldWaitToStartTimedAction's animator branch.
+    pub fn should_wait_for_sit_action(&self) -> bool {
+        let Some(state) = self.anim_set.as_ref().and_then(|set| set.states.get("sitonground")) else { return false };
+        if !state.nodes.iter().any(|node| node.name.eq_ignore_ascii_case("sit_action")) { return false; }
+        self.root_layer().live_nodes().iter().filter_map(|id| self.node(*id))
+            .find(|node| node.is_active() && node.name().eq_ignore_ascii_case("sit_action"))
+            .is_none_or(|node| !node.is_main_anim_active())
+    }
+
     /// `AnimLayer.getDepth`.
     pub fn layer_depth(&self, id: u32) -> i32 {
         match self.layer(id) {

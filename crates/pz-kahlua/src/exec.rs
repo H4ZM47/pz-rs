@@ -359,7 +359,7 @@ impl Thread {
             }
             i -= 1;
         }
-        let uv = Rc::new(RefCell::new(UpValue::Open { coroutine: self.current.clone(), index }));
+        let uv = UpValue::open(self.current.clone(), index);
         self.open_upvalues.insert(i, uv.clone());
         uv
     }
@@ -972,8 +972,7 @@ impl Thread {
                     }
                 }
                 let env = closure.env.borrow().clone();
-                let c = LuaClosure { prototype: np, env: RefCell::new(env), upvalues: ups, debug_name: RefCell::new(None) };
-                self.stack[base + a] = Value::Closure(Rc::new(c));
+                self.stack[base + a] = Value::Closure(LuaClosure::with_upvalues(np, env, ups));
             }
             OP_VARARG => {
                 let a = a8(op);

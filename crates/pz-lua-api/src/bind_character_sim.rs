@@ -67,6 +67,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod key_ring;
+#[cfg(test)]
+mod sneaking_tests;
+#[cfg(test)]
+mod timed_actions_tests;
 
 pub const ISO_GAME_CHARACTER_CLASS: &str = "zombie.characters.IsoGameCharacter";
 pub const ISO_PLAYER_CLASS: &str = "zombie.characters.IsoPlayer";
@@ -1498,6 +1502,15 @@ fn register_character(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &Rc<Re
     b.method("isAsleep", |c| {
         let v = chr_of(c)?.borrow().is_asleep();
         Ok(c.push(v))
+    });
+    b.method("isSneaking", |c| {
+        let v = chr_of(c)?.borrow().is_sneaking();
+        Ok(c.push(v))
+    });
+    b.method("setSneaking", |c| {
+        let v = bool_arg(c, 1);
+        chr_of(c)?.borrow_mut().environment.sneaking = v;
+        Ok(0)
     });
     b.method("setAsleep", |c| {
         let v = bool_arg(c, 1);

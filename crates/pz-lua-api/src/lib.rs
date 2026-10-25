@@ -22,6 +22,7 @@ pub mod bind_date;
 pub mod bind_credits;
 pub mod bind_debug;
 pub mod bind_climate;
+pub mod bind_puddles;
 pub mod bind_combat;
 pub mod bind_input;
 pub mod bind_joypad;
@@ -86,6 +87,7 @@ pub mod player_db;
 pub mod savefile;
 pub mod session_reset;
 pub mod world_save;
+pub mod timed_actions;
 pub mod worldmap;
 
 pub use lua_manager::LuaManager;
@@ -131,6 +133,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     {
         let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
         bind_misc_classes::register(&mut mgr.thread, jar.as_ref());
+        if let Some(jar) = jar.as_ref() { timed_actions::register_action_anims(&mut mgr.thread, jar); }
     }
     // Scripts: binds the shared ScriptManager (`bind_registry::install_script_manager` before init).
     bind_registry::register(&mut mgr.thread, bind_registry::shared_script_manager());
@@ -145,12 +148,14 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_characters::register_shared(&mut mgr.thread);
     bind_skills::register_shared(&mut mgr.thread);
     bind_character_sim::register_shared(&mut mgr.thread);
+    timed_actions::register(&mut mgr.thread);
     bind_body::register_shared(&mut mgr.thread);
     bind_nutrition::register_shared(&mut mgr.thread);
     bind_attached_items::register_shared(&mut mgr.thread);
     bind_appearance::register(&mut mgr.thread);
     bind_item_visual::register(&mut mgr.thread);
     bind_climate::register(mgr);
+    bind_puddles::register(&mut mgr.thread);
     bind_mods::register(mgr);
     bind_map_symbols::register(mgr);
     bind_world::register(&mut mgr.thread);

@@ -1,23 +1,27 @@
-//! Conservative collection of cycles made entirely from Lua tables.
+//! Conservative collection of cycles through Lua tables, closures and upvalues.
 //!
-//! Each table allocation is weakly registered. At a host safe point, the
-//! collector counts every owning table key, value and metatable slot. Any
+//! Each participating allocation is weakly registered. At a host safe point,
+//! the collector counts owning table key/value/metatable slots, closure
+//! environments and shared upvalue slots, and closed upvalue values. Every
 //! remaining strong reference is a root, including Rust handles, interpreter
-//! stacks, closures, coroutines, native captures and engine objects. Rooted
-//! tables and everything reachable from them retain their contents unchanged.
+//! stacks, coroutine state, prototype constants, native captures and engine
+//! objects. Rooted nodes retain their contents unchanged.
 //!
-//! This is deliberately a table-only collector. Cycles through closures or
-//! engine userdata remain conservatively retained until those allocation
-//! types have their own tracing support. In particular, this does not yet
-//! reclaim a character whose mod-data points back to that character.
+//! Coroutines, prototypes and native/engine objects are deliberately opaque.
+//! Their outgoing references stay external roots, so cycles passing through
+//! them can remain retained. This does not reclaim every old LuaManager or
+//! a character whose mod-data or timed action points back to that character.
+//! Unregistered allocations also remain conservative roots through their
+//! outgoing references. This is not a complete Lua/JVM collector.
 //!
-//! Lua `collectgarbage` queues a request instead of sweeping inside a native
+//! Lua collectgarbage queues a request instead of sweeping inside a native
 //! callback. The interpreter drains requests after outer calls unwind; hosts
-//! may also call [`collect_pending`] after their final callback for a frame.
+//! may also call collect_pending after their final callback for a frame.
 //! Direct coroutine resumes can leave a request pending until that host drain.
 
 use crate::table::Table;
 use crate::value::Value;
+use crate::vm::{LuaClosure, UpValue, UpValueRef};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -25,6 +29,8 @@ use std::rc::{Rc, Weak};
 #[derive(Default)]
 struct Collector {
     tables: Vec<Weak<RefCell<Table>>>,
+    closures: Vec<Weak<LuaClosure>>,
+    upvalues: Vec<Weak<RefCell<UpValue>>>,
     active: bool,
     pending: bool,
 }
@@ -33,33 +39,48 @@ thread_local! {
     static COLLECTOR: RefCell<Collector> = RefCell::new(Collector::default());
 }
 
+fn register<T>(registry: &mut Vec<Weak<T>>, node: Weak<T>) {
+    // Bound dead allocation headers without requiring a collection. If
+    // pruning removes less than half the entries, grow for amortized scans.
+    if registry.len() == registry.capacity() {
+        let capacity = registry.capacity();
+        registry.retain(|node| node.strong_count() != 0);
+        if registry.len() > capacity / 2 {
+            registry.reserve(capacity);
+        }
+    }
+    registry.push(node);
+}
+
 pub(crate) fn register_table(table: Weak<RefCell<Table>>) {
     // A host TLS destructor can allocate after this registry was destroyed.
     // Such allocations stay untracked; no further pass can run on that thread.
-    let _ = COLLECTOR.try_with(|collector| {
-        let mut collector = collector.borrow_mut();
-        // Also reclaim dead allocation headers in hosts that never request a
-        // collection. Pruning only when the vector would grow is amortized and
-        // drops Weak references, never user values or table contents.
-        if collector.tables.len() == collector.tables.capacity() {
-            let capacity = collector.tables.capacity();
-            collector.tables.retain(|table| table.strong_count() != 0);
-            // If most entries are still live, pruning alone would leave too
-            // little headroom and repeat the linear scan on each allocation.
-            if collector.tables.len() > capacity / 2 {
-                collector.tables.reserve(capacity);
-            }
-        }
-        collector.tables.push(table);
-    });
+    let _ = COLLECTOR.try_with(|collector| register(&mut collector.borrow_mut().tables, table));
 }
 
-/// Request a table collection at the next host safe point.
+pub(crate) fn register_closure(closure: Weak<LuaClosure>) {
+    let _ = COLLECTOR.try_with(|collector| register(&mut collector.borrow_mut().closures, closure));
+}
+
+pub(crate) fn register_upvalue(upvalue: Weak<RefCell<UpValue>>) {
+    let _ = COLLECTOR.try_with(|collector| register(&mut collector.borrow_mut().upvalues, upvalue));
+}
+
+impl Collector {
+    fn prune(&mut self) {
+        self.tables.retain(|node| node.strong_count() != 0);
+        self.closures.retain(|node| node.strong_count() != 0);
+        self.upvalues.retain(|node| node.strong_count() != 0);
+    }
+}
+
+/// Request a collection at the next host safe point.
 pub fn request_collection() {
     let _ = COLLECTOR.try_with(|collector| collector.borrow_mut().pending = true);
 }
 
 /// Table counts for a completed pass, not Lua/JVM heap memory statistics.
+/// Closure and upvalue bookkeeping is deliberately not reported as heap size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CollectionStats {
     pub tables_scanned: usize,
@@ -70,7 +91,7 @@ pub struct CollectionStats {
 pub enum CollectionResult {
     NotRequested,
     /// A borrow, reentrant call or inconsistent reference count prevented a
-    /// pass. The request remains pending and no table contents were changed.
+    /// pass. The request remains pending and no node contents were changed.
     Deferred,
     Collected(CollectionStats),
 }
@@ -96,13 +117,13 @@ impl Drop for ActivePass {
     }
 }
 
-/// Attempt an immediate table-only pass at a host safe point.
+/// Attempt an immediate conservative pass at a host safe point.
 ///
 /// No user callbacks may be executing while the host invokes this function.
-/// A borrowed table defers the entire pass, and destructors may safely allocate
-/// tables or request another pass: sweeping is never reentrant. Collection
-/// first detaches all dead edges, releases every table borrow, then drops the
-/// detached values. Unknown ownership is preserved as an external root.
+/// A borrow conflict defers the entire pass, and destructors may safely
+/// allocate nodes or request another pass: sweeping is never reentrant.
+/// First detach all white table/upvalue payloads, release every borrow, then
+/// drop detached values. Unknown ownership remains an external root.
 pub fn collect_tables() -> CollectionResult {
     let started = COLLECTOR.try_with(|collector| {
         let mut collector = collector.borrow_mut();
@@ -119,15 +140,10 @@ pub fn collect_tables() -> CollectionResult {
         return CollectionResult::Deferred;
     }
     let _active = ActivePass;
-    let result = collect_registered_tables();
+    let result = collect_registered_nodes();
     // No collector-state borrow is held while values or node pins are dropped.
-    // Those drops may register new tables or queue a further collection.
-    COLLECTOR.with(|collector| {
-        collector
-            .borrow_mut()
-            .tables
-            .retain(|table| table.strong_count() != 0);
-    });
+    // Those drops may register new nodes or queue a further collection.
+    COLLECTOR.with(|collector| collector.borrow_mut().prune());
     match result {
         Ok(stats) => CollectionResult::Collected(stats),
         Err(()) => {
@@ -137,41 +153,124 @@ pub fn collect_tables() -> CollectionResult {
     }
 }
 
-fn collect_registered_tables() -> Result<CollectionStats, ()> {
-    // Exactly one collector pin per allocation. Registration only occurs in
-    // TableRef::default, shared by new(), so this list has no duplicate nodes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum NodeId {
+    Table(usize),
+    Closure(usize),
+    Upvalue(usize),
+}
+
+enum Node {
+    Table(Rc<RefCell<Table>>),
+    Closure(Rc<LuaClosure>),
+    Upvalue(UpValueRef),
+}
+
+impl Node {
+    fn id(&self) -> NodeId {
+        match self {
+            Self::Table(node) => NodeId::Table(Rc::as_ptr(node) as usize),
+            Self::Closure(node) => NodeId::Closure(Rc::as_ptr(node) as usize),
+            Self::Upvalue(node) => NodeId::Upvalue(Rc::as_ptr(node) as usize),
+        }
+    }
+
+    fn strong_count(&self) -> usize {
+        match self {
+            Self::Table(node) => Rc::strong_count(node),
+            Self::Closure(node) => Rc::strong_count(node),
+            Self::Upvalue(node) => Rc::strong_count(node),
+        }
+    }
+}
+
+fn value_node(value: &Value) -> Option<NodeId> {
+    match value {
+        Value::Table(node) => Some(NodeId::Table(node.ptr_id())),
+        Value::Closure(node) => Some(NodeId::Closure(Rc::as_ptr(node) as usize)),
+        // Coroutine/native/userdata-owned references are not subtracted.
+        _ => None,
+    }
+}
+
+fn collect_registered_nodes() -> Result<CollectionStats, ()> {
+    // Exactly one collector pin per allocation, registered at its constructor.
+    // No snapshots/cloned Values or Rc handles may add uncounted pins below.
     let nodes: Vec<_> = COLLECTOR.with(|collector| {
         let mut collector = collector.borrow_mut();
-        collector.tables.retain(|table| table.strong_count() != 0);
-        collector.tables.iter().filter_map(Weak::upgrade).collect()
+        collector.prune();
+        let mut nodes: Vec<_> = collector
+            .tables
+            .iter()
+            .filter_map(Weak::upgrade)
+            .map(Node::Table)
+            .collect();
+        nodes.extend(
+            collector
+                .closures
+                .iter()
+                .filter_map(Weak::upgrade)
+                .map(Node::Closure),
+        );
+        nodes.extend(
+            collector
+                .upvalues
+                .iter()
+                .filter_map(Weak::upgrade)
+                .map(Node::Upvalue),
+        );
+        nodes
     });
     let indices: HashMap<_, _> = nodes
         .iter()
         .enumerate()
-        .map(|(index, table)| (Rc::as_ptr(table) as usize, index))
+        .map(|(index, node)| (node.id(), index))
         .collect();
     let mut edges = vec![Vec::new(); nodes.len()];
     let mut incoming = vec![0usize; nodes.len()];
     for (index, node) in nodes.iter().enumerate() {
-        // A mutable borrow also rejects outstanding shared Ref guards. Do not
-        // use entries()/keys(): their snapshots would add uncounted Rc pins.
-        let table = node.try_borrow_mut().map_err(|_| ())?;
-        let mut edge = |target: &crate::TableRef| {
-            if let Some(&target_index) = indices.get(&target.ptr_id()) {
-                incoming[target_index] += 1;
+        let mut edge = |target: NodeId| -> Result<(), ()> {
+            if let Some(&target_index) = indices.get(&target) {
+                incoming[target_index] = incoming[target_index].checked_add(1).ok_or(())?;
                 edges[index].push(target_index);
             }
+            Ok(())
         };
-        for (key, value) in &table.map {
-            if let Value::Table(target) = &key.0 {
-                edge(target);
+        match node {
+            Node::Table(node) => {
+                let table = node.try_borrow_mut().map_err(|_| ())?;
+                for (key, value) in &table.map {
+                    if let Some(target) = value_node(&key.0) {
+                        edge(target)?;
+                    }
+                    if let Some(target) = value_node(value) {
+                        edge(target)?;
+                    }
+                }
+                if let Some(target) = &table.meta {
+                    edge(NodeId::Table(target.ptr_id()))?;
+                }
             }
-            if let Value::Table(target) = value {
-                edge(target);
+            Node::Closure(node) => {
+                let env = node.env.try_borrow_mut().map_err(|_| ())?;
+                edge(NodeId::Table(env.ptr_id()))?;
+                for upvalue in &node.upvalues {
+                    edge(NodeId::Upvalue(Rc::as_ptr(upvalue) as usize))?;
+                }
+                // Prototype.constants may contain arbitrary public Values.
+                // They remain opaque roots, rather than being counted once
+                // per closure sharing the same Prototype allocation.
             }
-        }
-        if let Some(target) = &table.meta {
-            edge(target);
+            Node::Upvalue(node) => {
+                let upvalue = node.try_borrow_mut().map_err(|_| ())?;
+                if let UpValue::Closed(value) = &*upvalue {
+                    if let Some(target) = value_node(value) {
+                        edge(target)?;
+                    }
+                }
+                // Open holds an opaque CoroutineRef. Its stack/open-upvalue
+                // slots remain external roots, including active Thread state.
+            }
         }
     }
 
@@ -179,7 +278,7 @@ fn collect_registered_tables() -> Result<CollectionStats, ()> {
     let mut work = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
         let internal = incoming[index].checked_add(1).ok_or(())?;
-        let external = Rc::strong_count(node).checked_sub(internal).ok_or(())?;
+        let external = node.strong_count().checked_sub(internal).ok_or(())?;
         if external != 0 {
             reachable[index] = true;
             work.push(index);
@@ -194,27 +293,46 @@ fn collect_registered_tables() -> Result<CollectionStats, ()> {
         }
     }
 
-    // Acquire every required borrow before changing any table. Keep all node
-    // pins until every dead map/metatable has been detached.
-    let mut dead = Vec::new();
+    // Acquire every required mutable borrow before changing any payload.
+    // Immutable closure fields do not need mutation: every represented cycle
+    // crosses a table or upvalue, which can be detached without changing Rc
+    // identity or rewriting a live closure's environment/prototype/upvalues.
+    let mut dead_tables = Vec::new();
+    let mut dead_upvalues = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
         if !reachable[index] {
-            dead.push(node.try_borrow_mut().map_err(|_| ())?);
+            match node {
+                Node::Table(node) => dead_tables.push(node.try_borrow_mut().map_err(|_| ())?),
+                Node::Upvalue(node) => dead_upvalues.push(node.try_borrow_mut().map_err(|_| ())?),
+                Node::Closure(_) => {}
+            }
         }
     }
-    let mut detached = Vec::with_capacity(dead.len());
-    for table in &mut dead {
-        detached.push(std::mem::take(&mut **table));
-    }
+    let detached_tables: Vec<_> = dead_tables
+        .iter_mut()
+        .map(|table| std::mem::take(&mut **table))
+        .collect();
+    let detached_upvalues: Vec<_> = dead_upvalues
+        .iter_mut()
+        .map(|upvalue| std::mem::replace(&mut **upvalue, UpValue::Closed(Value::Nil)))
+        .collect();
     let stats = CollectionStats {
-        tables_scanned: nodes.len(),
-        tables_cleared: dead.len(),
+        tables_scanned: nodes
+            .iter()
+            .filter(|node| matches!(node, Node::Table(_)))
+            .count(),
+        tables_cleared: dead_tables.len(),
     };
-    drop(dead);
-    drop(detached);
+    drop(dead_tables);
+    drop(dead_upvalues);
+    drop(detached_tables);
+    drop(detached_upvalues);
     drop(nodes);
     Ok(stats)
 }
+
+#[cfg(test)]
+mod closure_tests;
 
 #[cfg(test)]
 mod tests {
@@ -307,10 +425,20 @@ mod tests {
             let result = std::panic::catch_unwind(|| {
                 let table = TableRef::new();
                 table.set_str("value", 37);
+                let upvalue = UpValue::closed(table.clone().into());
+                let closure = LuaClosure::with_upvalues(
+                    Rc::new(crate::vm::Prototype::default()),
+                    table.clone(),
+                    vec![upvalue.clone()],
+                );
                 request_collection();
                 assert_eq!(collect_tables(), CollectionResult::Deferred);
                 assert_eq!(collect_pending(), CollectionResult::NotRequested);
                 assert_eq!(table.get_str("value").as_num(), Some(37.0));
+                assert!(closure.env.borrow().ptr_eq(&table));
+                assert!(
+                    matches!(&*upvalue.borrow(), UpValue::Closed(Value::Table(value)) if value.ptr_eq(&table))
+                );
             });
             self.0.store(result.is_ok(), Ordering::SeqCst);
         }

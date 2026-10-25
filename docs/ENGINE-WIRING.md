@@ -29,10 +29,12 @@ are excluded, so a green source check alone cannot establish gameplay parity.
 Returning to the menu rebuilds script/Lua/UI owners before menu entry;
 native shutdown skips that rebuild. A failed rebuild stops the client
 instead of entering a menu with mixed owners. Character `getModData`
-exposes a live table and saves retained nested mutations. Lua cycles that
-retain character userdata or closures still require tracing support. The
-conservative collector handles unreachable table/key/metatable cycles;
-opaque host references stay rooted and heap statistics remain unported.
+exposes a live table and saves retained nested mutations. The conservative
+collector handles registered tables, Lua closures and shared upvalues,
+including environment and recursive closure cycles. Coroutine, prototype,
+native and engine-owned references remain opaque roots; character/action
+cycles and some old LuaManager environments can remain retained. Heap
+statistics and a complete VM/host collector remain unported.
 The SQLite writer rejects auto-vacuum files before changing them; writing
 that format needs pointer-map/root relocation support and remains pending.
 
@@ -48,7 +50,27 @@ the actual meta-room's building. String-based item creation retains its
 script dictionary ID, so nested items can reload with their correct types.
 The player-screen Lua globals read the current Core size and player count;
 this supplies inventory layout geometry but does not implement split-screen
-world rendering.
+world rendering. Inventory category/type queries use the real per-item
+reference and original subclass constructor behavior, including null types
+and the WeaponPart constructor's WEAPON value. `getTex` delegates to the
+same live texture lookup as `getTexture`.
+
+The running timed-action stack now belongs to the character, separately
+from Lua's pending-action queue. Protected callbacks run between released
+character borrows, before body damage/stat processing, and completed actions
+are removed by identity. Movement modifiers, animation events, progress and
+hand models use the live action. Input cancellation still runs after
+`updateInternal2` returns; normal vanilla queue entrance still needs genuine
+grapple ownership for `isDraggingCorpse`. Remaining action APIs, network and
+voice audio also need work. Sneaking uses the existing input/save field;
+farming exposes its actual transient player flag.
+
+Puddles now have a shared live singleton and indexed float controls. A real
+cell-owned WeatherFX object initializes at world init; the climate updates
+its targets and puddles after Lua climate callbacks, respecting the live
+enable flags. Movement and ground-dirt calculations read the live wet-ground
+control, including Lua admin changes made after frame capture. Per-cell
+particle stepping, sky/water updates, masks and rendering remain unwired.
 
 Known integration gaps include action-context/turning phase timing, timed
 actions, character visibility fading, split-screen viewports, weather and
@@ -69,9 +91,6 @@ all installed assets, render paths or foreign platforms.
       (`ClothingItem` XMLs + `BloodClothingType`; without it items made from
       Lua have no `ItemVisual`). Wired in `pz_engine::boot::load_scripts`,
       used by every client mode. Decals
-- [ ] Item assets for `instanceItem`: after the ScriptManager,
-      Lua have no `ItemVisual`). Wired in `pz_engine::boot::load_scripts`
-      (both client modes). Decals
       (`ItemVisual.getDecal`, `getAllDecalNamesForItem`) also need the meta
       population line below (`ClothingDecals`). A character simulation
       that installs its own `ItemLuaEnv` must return these assets from

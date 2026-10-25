@@ -663,8 +663,9 @@ impl IsoWorld {
             self.log_error(format!("StatisticsManager.load: {e}"));
         }
         // TODO(port): `AnimationPlayerRecorder.initMessaging`,
-        // `WorldDictionary.onWorldLoaded`, `currentCell.initWeatherFx`, and
-        // the script / sprite-config load-error check.
+        // `WorldDictionary.onWorldLoaded`, and the script / sprite-config
+        // load-error check.
+        pz_lua_api::bind_puddles::init_weather_fx(&lua.fs.borrow());
         let chunks = with_world(|w| w.cell.as_ref().map_or(0, |c| c.chunks.len()));
         let pos = pz_lua_api::bind_players::player(0).map(|p| {
             let p = p.borrow();

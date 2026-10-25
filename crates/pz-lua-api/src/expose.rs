@@ -401,7 +401,12 @@ pub fn expose_enum(
 ) -> ClassBuilder {
     ensure_enum_base(thread);
     let b = expose_class(thread, fqn, Some("java.lang.Enum"));
-    let vals: Vec<Value> = constants
+    let existing = ENUMS.with(|e| e.borrow().get(fqn).cloned()).filter(|values| {
+        values.len() == constants.len() && values.iter().zip(constants).enumerate().all(|(i,(value,name))| {
+            matches!(value, Value::Object(o) if o.as_any().downcast_ref::<JavaEnum>().is_some_and(|e| e.class == fqn && e.name == *name && e.ordinal == i as i32))
+        })
+    });
+    let vals: Vec<Value> = existing.unwrap_or_else(|| constants
         .iter()
         .enumerate()
         .map(|(i, n)| {
@@ -411,7 +416,7 @@ pub fn expose_enum(
                 ordinal: i as i32,
             }))
         })
-        .collect();
+        .collect());
     for (n, v) in constants.iter().zip(&vals) {
         b.field(n, v.clone());
     }

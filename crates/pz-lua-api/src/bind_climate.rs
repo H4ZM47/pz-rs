@@ -320,6 +320,11 @@ pub fn update_game_time(thread: &mut Thread) {
         g.apply_climate_view_dist();
     }
     fire_events(thread, ctx);
+    // `ClimateManager.updateFx` follows OnClimateTickDebug. Read the live
+    // climate only after callbacks, which can alter its values or FX flag.
+    if go_on {
+        crate::bind_puddles::update_climate_fx(thread);
+    }
 }
 
 // ---- world load -------------------------------------------------------------
