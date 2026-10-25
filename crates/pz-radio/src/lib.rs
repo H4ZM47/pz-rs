@@ -12,6 +12,7 @@
 
 pub mod channel;
 pub mod data;
+pub mod devices;
 pub mod java;
 pub mod manager;
 pub mod media;
@@ -24,6 +25,7 @@ mod tests;
 
 pub use channel::{AiredLine, RadioChannel, RadioDataRef};
 pub use data::{ModRadioDirs, RadioData, RadioSource, RadioText, RadioTranslationData};
+pub use devices::{deliver_line, device_view, media_line, WithRadio};
 pub use manager::{ChannelNames, LoadError, RadioScriptManager};
 pub use media::{MediaData, MediaLineData, RecordedMedia};
 pub use radio::{

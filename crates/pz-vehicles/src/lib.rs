@@ -19,6 +19,7 @@
 pub mod cell_link;
 pub mod chunk_physics;
 pub mod controller;
+pub mod devices;
 pub mod engine;
 pub mod env;
 pub mod geometry;

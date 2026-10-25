@@ -60,6 +60,7 @@ pub mod bind_server_list;
 pub mod bind_map_groups;
 pub mod bind_world;
 pub mod bind_vehicles;
+pub mod bind_radio;
 pub mod bind_video;
 pub mod events;
 pub mod expose;
@@ -142,6 +143,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_popman::register(&mut mgr.thread);
     bind_zombie::register_shared(&mut mgr.thread);
     bind_vehicles::register(&mut mgr.thread);
+    bind_radio::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     hud::register(&mut mgr.thread);
     hud::characters::install_character_hud_hosts();
