@@ -179,8 +179,8 @@ Status of the Rust port. Update this file with every merged change.
 - Character outlines and item textures: `ModelOutlines` (solid mask with
   `aim_outline_solid`, `aim_outline_h`/`_v` thickening, masked
   `aim_outline_blit`, the player masking outlines behind it) in the iso
-  frame's object pass, and `ItemSmartTexture` for held items
-  (`ModelInstanceTextureInitializer`/`EquippedTextureCreator`: tint and
+  frame's object pass (vehicles, as in build 42, take none), and
+  `ItemSmartTexture` for held items (`ModelInstanceTextureInitializer`/`EquippedTextureCreator`: tint and
   `TINT` masks, weapon blood, fluid) and for placed items in the
   `WorldItemAtlas` (`_Fluid` models, `FLUIDTINT` overlays) through the GPU
   texture combiner. The outline state machine and passes (buffers,

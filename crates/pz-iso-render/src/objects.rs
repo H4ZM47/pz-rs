@@ -96,16 +96,13 @@ pub struct ObjectRender {
 }
 
 impl ObjectRender {
-    /// The character's meshes (`modelData`). A vehicle's meshes count too,
-    /// untextured (solid): build 42 never outlines vehicles (their
-    /// `ModelSlotRenderData` ignores the highlight), but a caller may ask
-    /// for it.
+    /// The character's meshes (`modelData`). Vehicle meshes never count:
+    /// a vehicle's `ModelSlotRenderData` ignores the highlight.
     fn meshes(&self) -> Vec<pz_render::model::ModelDraw> {
         self.draws
             .iter()
             .filter_map(|c| match c {
                 DrawCmd::Model(d) => Some((**d).clone()),
-                DrawCmd::VehicleModel(v) => Some(pz_render::model::ModelDraw { texture: None, ..v.base.clone() }),
                 _ => None,
             })
             .collect()
@@ -116,8 +113,9 @@ impl ObjectRender {
             s.add(shadows, cam);
         }
         // renderCharacter: the outline, the model, then the player's mask
-        // data.
-        if let Some(o) = &self.outline {
+        // data. Vehicles (`renderVehicle`) take no outline.
+        let vehicle = self.draws.iter().any(|c| matches!(c, DrawCmd::VehicleModel(_)));
+        if let Some(o) = self.outline.as_ref().filter(|_| !vehicle) {
             outlines.render_character_outline(&self.meshes(), o.color, o.behind_player, false, out);
         }
         out.extend(self.draws.iter().cloned());
@@ -232,5 +230,45 @@ mod tests {
         assert_eq!(marks, [1, 2, 3, 4]);
         assert_eq!(shadows.shadows.len(), 3);
         assert_eq!(shadows.shadows[1].oz, 1.0);
+    }
+
+    /// A highlighted vehicle draws no outline (`renderVehicle` ignores it).
+    #[test]
+    fn vehicles_take_no_outline() {
+        use crate::outlines::{ModelOutlines, OutlineRequest};
+        use pz_render::model::{MeshData, MeshKind, ModelDraw, ModelLight, ModelPass, VehicleDraw, VehicleShader, VehicleUniforms};
+        use std::rc::Rc;
+        let ident = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        let base = ModelDraw {
+            mesh: Rc::new(MeshData { id: 1, kind: MeshKind::Static, vertices: vec![], indices: vec![] }),
+            texture: None,
+            mvp: ident,
+            transform: ident,
+            palette: Rc::new(Vec::new()),
+            target_depth: 0.5,
+            final_scale: 1.0,
+            uv_scale: [1.0; 2],
+            lights: [ModelLight::default(); 5],
+            ambient: [1.0; 3],
+            tint: [1.0; 3],
+            hue: 0.0,
+            alpha: 1.0,
+            pass: ModelPass::Character { cull: true },
+        };
+        let draw = VehicleDraw { base, shader: VehicleShader::Vehicle, noreflect: false, invert_x: false, textures: Default::default(), uniforms: VehicleUniforms::default() };
+        let car = ObjectRender {
+            draws: vec![DrawCmd::VehicleModel(Box::new(draw))],
+            outline: Some(OutlineRequest { color: [1.0, 1.0, 0.0, 1.0], behind_player: false }),
+            ..Default::default()
+        };
+        let cam = Camera::player(10.5, 10.5, 0.0, 640, 480, 1.0);
+        let mc = ModelCamera::new(&cam, 640.0, 480.0);
+        let mut outlines = ModelOutlines::new(640, 480, 1.0);
+        outlines.start_frame();
+        let mut out = Vec::new();
+        FrameObjects { moving: vec![car], ..Default::default() }.render_outlined(&mc, &mut Shadows::default(), &mut outlines, &mut out);
+        outlines.end_frame(&mut out);
+        assert!(!out.iter().any(|c| matches!(c, DrawCmd::OutlineBegin { .. } | DrawCmd::OutlineThicken { .. } | DrawCmd::OutlineBlit)));
+        assert_eq!(out.len(), 1);
     }
 }

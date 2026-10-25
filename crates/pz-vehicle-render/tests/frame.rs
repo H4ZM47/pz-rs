@@ -4,8 +4,7 @@
 //! loop, the screen pass) and saved as a PNG for inspection. The car's
 //! front-left door is open (its skinned door model posed by the
 //! `Opened` part animation) and its headlights are on (the lights zones of
-//! the vehicle shader lit). A last frame outlines the car (build 42 never
-//! outlines vehicles; the outline pass takes any meshes).
+//! the vehicle shader lit).
 //!
 //! Reads the installed game at runtime: point `PZ_GAME_DIR` at the folder
 //! holding `media/`; `PZ_VEHRENDER_FRAME_OUT` names the directory the
@@ -304,11 +303,10 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
     let res = MediaModelResources::new(&media, &loader);
     let (px, py, pz) = (10.5f32, 10.5f32, 0.0f32);
     let mut lit_sum = None;
-    for (zoom, name, headlights, outlined) in [
-        (1.0f32, "vehrender_frame_zoom1.png", true, false),
-        (0.5, "vehrender_frame_zoom05.png", true, false),
-        (1.0, "vehrender_frame_lights_off.png", false, false),
-        (1.0, "vehrender_frame_outlined.png", true, true),
+    for (zoom, name, headlights) in [
+        (1.0f32, "vehrender_frame_zoom1.png", true),
+        (0.5, "vehrender_frame_zoom05.png", true),
+        (1.0, "vehrender_frame_lights_off.png", false),
     ] {
         v.st_mut().headlights_on = headlights;
         set.instance.update_lights(&v);
@@ -357,14 +355,7 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
             slope: None,
             default_shadow: vehicle_shadow.clone(),
         };
-        let mut car = render_vehicle_object(&v, &set, &vframe, &mc);
-        if outlined {
-            // A yellow outline in front of the player.
-            car.outline = Some(pz_iso_render::outlines::OutlineRequest {
-                color: [1.0, 1.0, 0.0, 1.0],
-                behind_player: pz_iso_render::outlines::behind_player(12.6, 10.4, false, cam.x, cam.y),
-            });
-        }
+        let car = render_vehicle_object(&v, &set, &vframe, &mc);
         let n = car
             .draws
             .iter()
@@ -429,16 +420,6 @@ fn car_with_open_door_and_headlights_next_to_the_player() {
             }
         }
         assert!(red > r * r, "car paint around the car: {red}");
-        if outlined {
-            let yellow = (0..w * h)
-                .filter(|i| {
-                    let p = &pixels[(*i * 4) as usize..][..3];
-                    p[0] > 200 && p[1] > 200 && p[2] < 60
-                })
-                .count();
-            assert!(yellow > 200, "{yellow} outline pixels");
-            continue;
-        }
         // The headlights' lights texture: brighter with them on.
         if zoom == 1.0 {
             let front: i32 = (370..440)
