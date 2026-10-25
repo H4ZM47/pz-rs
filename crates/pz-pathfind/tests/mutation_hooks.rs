@@ -11,6 +11,7 @@ use pz_pathfind::square_bits::DefaultBitsHooks;
 mod world {
     pub use pz_world::chunk;
     pub mod square_mutation {
+        #[allow(dead_code)]
         pub trait PathfindSquareHooks {
             fn uses_native_code(&self) -> bool {
                 true
