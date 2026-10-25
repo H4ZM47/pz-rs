@@ -205,7 +205,10 @@ pub fn real_zombie_info<I: 'static>(z: &GameCharacter<I>, ctx: &dyn SimContext, 
 /// the character id.
 pub struct RealZombies<'a, I: 'static> {
     pub sm: &'a ScriptManager,
-    pub chars: &'a crate::Characters,
+    /// Borrowed only while a zombie is pathed, killed or removed, so
+    /// [`Self::create_survivor`] may borrow it mutably
+    /// (`SurvivorFactory.CreateSurvivor` counts descriptor ids).
+    pub chars: &'a std::cell::RefCell<crate::Characters>,
     pub ctx: &'a dyn SimContext,
     /// The rest of the world (path finding, corpses).
     pub world: &'a mut dyn crate::character::state::StateWorld<I>,
@@ -235,7 +238,8 @@ impl<I: 'static> RealZombies<'_, I> {
         let i = self.find(id)?;
         let mut z = self.zombies.remove(i);
         let r = {
-            let mut cx = StateCx::new(self.sm, self.chars, self.ctx, &mut *self.world);
+            let chars = self.chars.borrow();
+            let mut cx = StateCx::new(self.sm, &chars, self.ctx, &mut *self.world);
             f(&mut z, &mut cx)
         };
         self.zombies.insert(i, z);

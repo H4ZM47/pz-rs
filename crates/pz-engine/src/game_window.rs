@@ -205,6 +205,8 @@ impl App {
         self.last_frame = now;
         // GameTime multiplier at 30 FPS reference, clamped like the original.
         let multiplier = (dt * 30.0).clamp(0.0, 5.0);
+        // FPSTracking.frameStep: GameTime.fpsMultiplier = 60 / fps, at most 5.
+        pz_lua_api::bind_climate::shared_game_time().borrow_mut().fps_multiplier = (dt * 60.0).min(5.0);
         let (w, h) = {
             let c = self.core.borrow();
             (c.get_screen_width().max(1), c.get_screen_height().max(1))
@@ -221,6 +223,11 @@ impl App {
         pz_lua_api::bind_input::after_ui_update(lua);
         if let Some(w) = self.window.as_ref() {
             apply_window_requests(w, pz_lua_api::bind_input::take_window_requests());
+        }
+        // MapCollisionData.instance.updateGameState().
+        if let Some(world) = self.world.as_mut() {
+            let no_save = self.core.borrow().is_no_save();
+            world.update_game_state(no_save, false);
         }
         {
             let mut cx = StateCx {

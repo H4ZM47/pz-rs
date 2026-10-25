@@ -112,15 +112,15 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `sound_system().with(..)`; listener from the active camera (#78/#83).
 - [x] `UITransition.UpdateAll` → `bind_misc::ui_transition_update_all()` (#20).
 - [ ] Vsync from Core options; `FrameParams` size from Core screen size.
-- [ ] `GameTime::update` / `update_game_time(thread)` once per frame
+- [x] `GameTime::update` / `update_game_time(thread)` once per frame
       before the world (#49).
 - [ ] Pathfinding: PathHost `update_thread` then `update_main` before the
       characters update; `host.remove(id)` when a character leaves (#74).
-- [ ] Characters, in game order: `preupdate_zombie` (players: their
+- [x] Characters, in game order: `preupdate_zombie` (players: their
       preupdate), `update_zombie` (the state machine, then `update_fire`),
       `postupdate_zombie` / `moving_postupdate` (with
       `slide_head_away_from_walls`) (#41/#74/#75).
-- [ ] Player input: after the camera update call
+- [x] Player input: after the camera update call
       `pz_player_input::set_camera_info(i, CameraInfo { off_x, off_y,
       right_click_x, right_click_y })` per local player (the reticle
       position is `chr.player.aiming_position`, set by
@@ -128,7 +128,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `bind_input::update`/`after_ui_update` the game loop builds one
       `EnginePlayerInput::capture()` per frame, passes `&input` to each local
       player's `IsoPlayer.update`, then calls `input.write_back()` (#137).
-- [ ] `ZombiePopulationManager::update_main` with PopulationHost and
+- [x] `ZombiePopulationManager::update_main` with PopulationHost and
       `ZombieOps` (`RealZombies`) (#73/#77; `RealZombies::create_survivor`
       returns `CreateSurvivor`'s `ScriptResult`, and `WorldPopulation::update`
       / `start_game` return `Err(java exception text)` when creating a real
@@ -143,7 +143,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       chunk_maps: &player_chunk_maps(&streamer), real_zombies:
       &real_zombies.infos() })`; it also runs the in-line worker
       (`MCDThread`) pass when due.
-- [ ] `WorldSoundManager::update` once per frame (#75).
+- [x] `WorldSoundManager::update` once per frame (#75).
 - [x] UI avatars: `UiModels::set_time_delta` (from `GameTime` once it is
       wired; the frame multiplier / 30 now) and `UiModels::prepare(gpu)`
       (texture compositing) before the UI renders (#115).
@@ -199,7 +199,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `containingItem` (#185).
 - [x] End of `GameLoadingState`: `hud::init_ui(&mut thread)` (the in-game
       HUD, then `OnCreateUI`) before `OnCreatePlayer` (#144).
-- [ ] `IngameState` per player: `hud::update_progress_bar(n)` in the update
+- [x] `IngameState` per player: `hud::update_progress_bar(n)` in the update
       and `hud::render_progress_bar(&mut thread, n)` after the player's
       game-world UI; `HudPlayers::player_screen` (characters thread) and
       `HudCamera` (`IsoCamera.getOffX/Y`, `Core.getZoom`; world-render
@@ -304,7 +304,7 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       host; network thread); `HudConsoleMethods` (GlobalObject's declared
       methods and each return type's public methods, for suggestions;
       ours, from the exposure tables) (#160).
-- [ ] TextDrawObject: `IngameState.renderframeui` calls
+- [x] TextDrawObject: `IngameState.renderframeui` calls
       `hud::text_draw::render_batch(player)` after `WorldMarkers`/`IsoMarkers`
       (`DebugChunkState` calls `no_render`); `ChatElement`'s constructor calls
       `ensure_chat_backdrop()`; `HudPlayers::player_index`
@@ -408,9 +408,9 @@ registered):
       chance_of_attached_weapon (sandbox) }, settings (sandbox
       `ClothingDegradation`, `RemoveZombieLoot`, game mode, world age) })`;
       it fills `human_visual`, `zombie.item_visuals` and attached weapons (#147).
-- [ ] `IngameState.enter`, world loaded: `WorldPopulation::start_game(&mut
+- [x] `IngameState.enter`, world loaded: `WorldPopulation::start_game(&mut
       host, &frame)` (`MapCollisionData.startGame`).
-- [ ] Quit: `WorldPopulation::save(&reals)` with the world save, then
+- [x] Quit: `WorldPopulation::save(&reals)` with the world save, then
       `WorldPopulation::stop()`.
 
 - [ ] Sandbox: on loading a save, `SandboxOptions::load_bin(map_sand.bin)` on
@@ -549,7 +549,7 @@ registered):
       no_save)` (achievement checks are the caller's). In
       `GameLoadingState`, unless saving is off,
       `world_save::ensure_subdirectories_exist(save_dir)` (#167).
-- [ ] Quit (`Core.exiting`): `world_save::save_on_quit(&mut g,
+- [x] Quit (`Core.exiting`): `world_save::save_on_quit(&mut g,
       &mut local_players, &mut hooks)` (`on_post_save` fires `OnPostSave`),
       then `IngameState.exit`: `streamer.stop(&mut cell, ctx)`, the other
       stops, `world_save::close_stores(Some(&mut player_db), &mut
@@ -596,10 +596,10 @@ registered):
       `WorldPopulation` (see the world-load list above).
 - [ ] World sound: `WorldSoundAdapter::from_state`; engine `SoundEffects`
       (OnWorldSound, fish noise, popman) (#71).
-- [ ] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
+- [x] Lighting: `WorldLighting::set_chunk_map` for every local player (#76).
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
-- [ ] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
+- [x] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
 - [ ] Zombie vehicle checks (`isVehicleBetween`, `DistToSquared(vehicle)`)
       read `IsoChunk.vehicles.loaded()` (#88/#91); once the vehicle runtime
       replaces those entries with its own objects, route these through
@@ -909,7 +909,7 @@ registered):
       as its `ChannelLists` (#200).
 
 ## World render pass
-- [ ] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
+- [x] Cull chunk textures to the screen (`plan_chunks` / `level_on_screen`);
       allocating every loaded chunk exhausts the GPU device.
 - [ ] Water/sky: `SkyBox::render`, `Surfaces.sky` from `reflection()`;
       `SurfaceChecks::run` + `apply_surface_checks` before `plan_chunks`;
@@ -1038,7 +1038,7 @@ registered):
       32. Save thumbnail (#173, not in integration yet): pass
       `params.thumbnail(256, 256, 1.0)` (`startThumbnail`) to
       `capture_thumbnail`.
-- [ ] Screen shader player inputs and `SearchMode` (#188): in
+- [x] Screen shader player inputs and `SearchMode` (#188): in
       `IngameState.UpdateStuff` (after `WorldMapVisited.update`) call
       `pz_lua_api::bind_search_mode::update(GameTime.getTimeDelta())`; in
       `IngameState.exit` call `bind_search_mode::reset()`. Keep one

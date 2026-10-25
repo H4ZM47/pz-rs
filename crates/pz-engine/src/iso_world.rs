@@ -46,6 +46,14 @@ impl GameRand for StandardRand {
     }
 }
 
+/// Chunks that entered (`doLoadGridsquare`) or left (`removeFromWorld`)
+/// the cell, in order, for the world renderer.
+#[derive(Default)]
+pub struct RenderChunkEvents {
+    pub added: Vec<(i32, i32)>,
+    pub removed: Vec<(i32, i32)>,
+}
+
 /// What the main menu's Lua leaves on `IsoWorld.instance` for a new game
 /// (`CharacterCreationProfession.initWorld` on `OnInitWorld`: the player's
 /// descriptor, traits and spawn square). The menu cannot run that yet
@@ -119,19 +127,51 @@ pub struct IsoWorld {
     pub statistics: Statistics,
     /// The sandbox preset `map_sand.bin` named.
     pub preset: String,
+    /// `IsoCell.getZombieList()`: the real zombies.
+    pub zombies: Vec<LuaGameCharacter>,
+    /// The last `IsoMovingObject` id handed out (`IDMax`).
+    pub next_object_id: i32,
+    /// Object state the character states keep outside the objects.
+    pub states_runtime: pz_world_states::StatesRuntime,
+    /// `ActionGroup.getActionGroup(name)`'s loaded groups.
+    pub action_groups: pz_characters::character::state::ActionGroups,
+    /// `IsoFireManager`.
+    pub fire: pz_world::fire::IsoFireManager,
+    pub fire_flags: Option<pz_world::fire::manager::FireFlags>,
+    /// `IsoWorld.frameNo`.
+    pub frame_no: i64,
+    /// The last `IsoChunk.loadID` handed out.
+    pub chunk_load_id: i16,
+    /// `VirtualZombieManager.getKeySpawnChanceD100()`.
+    pub key_spawn_chance_d100: f32,
+    /// Chunks that entered or left the cell since the renderer last looked.
+    pub render_chunks: RenderChunkEvents,
+    /// The world renderer (`IsoCell.render`'s state), made on the first
+    /// rendered frame.
+    pub render: Option<crate::world_render::WorldRender>,
     /// Errors of steps that failed without stopping the load (the
     /// original's `ExceptionLogger.logException` calls).
     pub errors: Vec<String>,
 }
 
-fn opt_int(sb: &pz_sandbox::SandboxOptions, name: &str) -> i32 {
+/// A sandbox option's value as a number (0 when unknown).
+pub(crate) fn opt_f64(sb: &pz_sandbox::SandboxOptions, name: &str) -> f64 {
+    sb.option_by_name(name).and_then(|o| o.config.get_value_as_string().parse::<f64>().ok()).unwrap_or(0.0)
+}
+
+/// A boolean sandbox option (false when unknown).
+pub(crate) fn opt_bool(sb: &pz_sandbox::SandboxOptions, name: &str) -> bool {
+    sb.option_by_name(name).is_some_and(|o| o.config.get_value_as_string() == "true")
+}
+
+pub(crate) fn opt_int(sb: &pz_sandbox::SandboxOptions, name: &str) -> i32 {
     sb.option_by_name(name)
         .and_then(|o| o.config.get_value_as_string().parse::<f64>().ok())
         .map_or(0, |v| v as i32)
 }
 
 /// `SandboxOptions.instance` (created on first use, as Lua does).
-fn sandbox(lua: &mut LuaManager) -> Option<Rc<RefCell<pz_sandbox::SandboxOptions>>> {
+pub(crate) fn sandbox(lua: &mut LuaManager) -> Option<Rc<RefCell<pz_sandbox::SandboxOptions>>> {
     let v = pz_lua_api::bind_sandbox::instance(&mut lua.thread).ok()?;
     let Value::Object(o) = v else { return None };
     o.as_any().downcast_ref::<pz_lua_api::bind_sandbox::SandboxObj>().map(|s| s.0.clone())
@@ -184,6 +224,17 @@ impl IsoWorld {
             meta_tracker: MetaTracker::default(),
             statistics: Statistics::default(),
             preset: String::new(),
+            zombies: Vec::new(),
+            next_object_id: 0,
+            states_runtime: Default::default(),
+            action_groups: pz_characters::character::state::ActionGroups::from_media(game_dir.join("media")),
+            fire: pz_world::fire::IsoFireManager::new(),
+            fire_flags: None,
+            frame_no: 0,
+            chunk_load_id: 0,
+            key_spawn_chance_d100: 0.0,
+            render_chunks: RenderChunkEvents::default(),
+            render: None,
             errors: Vec::new(),
         }
     }
@@ -502,10 +553,14 @@ impl IsoWorld {
         // TODO(port): `PlayerDB.canSavePlayers` (kept by the save path);
         // `TutorialManager.activeControlZombies`;
         // `ReanimatedPlayers.loadReanimatedPlayers`.
-        if pz_lua_api::bind_players::player_instance().is_some() {
+        if let Some(p) = pz_lua_api::bind_players::player_instance() {
             // TODO(port): `ScriptManager.checkAutoLearn`, `checkMetaRecipes`,
-            // `VerifyAllCraftRecipesAreLearnable`,
-            // `IsoPlayer.setCurrentSquareFromPosition`.
+            // `VerifyAllCraftRecipesAreLearnable`.
+            // `IsoPlayer.setCurrentSquareFromPosition()`.
+            let mut c = p.borrow_mut();
+            let (x, y, z) = (pz_world::java::fastfloor(c.vars.x), pz_world::java::fastfloor(c.vars.y), pz_world::java::fastfloor(c.vars.z));
+            let exists = with_world(|w| w.cell.as_ref().is_some_and(|cell| cell.get_grid_square(x, y, z).is_some()));
+            c.path.current_square = exists.then_some((x, y, z));
         }
         // TODO(port): `PopulateCellWithSurvivors`, the cell's object list,
         // `LightingThread.instance.create()`.
@@ -782,33 +837,6 @@ impl IsoWorld {
                 drop(s);
                 self.log_error(format!("world generation: {e}"));
                 None
-            }
-        }
-    }
-
-    /// Takes the streamer's events and runs the world's side of each
-    /// handed-off chunk (`doLoadGridsquare`'s population add).
-    pub fn hand_off_events(&mut self) {
-        let Some(events) = self.streamer.as_mut().map(|s| s.take_events()) else { return };
-        let IsoWorld { population, sprites, .. } = self;
-        for e in events {
-            match e {
-                pz_world::streamer::StreamEvent::HandedOff { wx, wy } => {
-                    if let (Some(p), Some(sp)) = (population.as_mut(), sprites.as_ref()) {
-                        with_world(|w| {
-                            if let (Some(cell), Some(meta)) = (w.cell.as_ref(), w.meta_grid.as_ref()) {
-                                p.add_chunk_to_world(cell, meta, sp, wx, wy);
-                            }
-                        });
-                    }
-                    // TODO(port): pathfinding `add_chunk_to_world`, lighting,
-                    // the chunk's vehicles and reanimated players.
-                }
-                pz_world::streamer::StreamEvent::Unloaded { .. } => {
-                    // TODO(port): `WorldPopulation::remove_chunk_from_world`
-                    // (needs the cell's real zombies).
-                }
-                _ => {}
             }
         }
     }

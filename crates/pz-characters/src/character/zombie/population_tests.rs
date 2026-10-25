@@ -216,6 +216,7 @@ fn population_tick_creates_a_sitting_real_zombie() {
     let (sm, mut chars) = fixture();
     let ctx = Ctx(pz_core::random::Rand::new(8));
     let desc = Rc::new(RefCell::new(SurvivorDesc::new(&mut chars, &sm).unwrap()));
+    let chars = RefCell::new(chars);
     let mut zombies: Vec<GameCharacter<()>> = Vec::new();
     let mut next_id = 100;
     let mut nw = NullWorld;
@@ -335,6 +336,7 @@ fn loaded_world_zpop_zombies_become_real() {
     let (sm, mut chars) = fixture();
     let ctx = Ctx(pz_core::random::Rand::new(8));
     let desc = Rc::new(RefCell::new(SurvivorDesc::new(&mut chars, &sm).unwrap()));
+    let chars = RefCell::new(chars);
     let mut zombies: Vec<GameCharacter<()>> = Vec::new();
     let mut next_id = 100;
     let mut nw = NullWorld;

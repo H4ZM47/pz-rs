@@ -62,6 +62,13 @@ pub fn install_state_world(world: SharedWorld) {
     WORLD.with(|w| *w.borrow_mut() = world);
 }
 
+/// Runs `f` with the state singletons the bound characters use, for the
+/// engine's character updates (`IsoGameCharacter.update` enters the same
+/// `instance()` objects Lua compares against). `f` must not call into Lua.
+pub fn with_state_registry<R>(f: impl FnOnce(&mut StateRegistry<LuaItem>) -> R) -> R {
+    REGISTRY.with(|r| f(&mut r.borrow_mut()))
+}
+
 /// The canonical Lua object of the state class `class`.
 fn object_of(class: &'static str) -> Value {
     OBJECTS.with(|o| o.borrow_mut().entry(class).or_insert_with(|| Value::Object(Rc::new(StateObject { class }))).clone())
