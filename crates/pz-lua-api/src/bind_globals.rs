@@ -90,6 +90,27 @@ pub fn register(thread: &mut Thread) {
         let r = instance_of(&c.arg(0), &name);
         Ok(c.push(r))
     });
+    // Tables report their `Type` field; engine objects their Java simple
+    // class name; everything else its Lua type.
+    global(thread, "typeof", |c| {
+        let o = c.arg(0);
+        let r = match &o {
+            Value::Object(obj) => crate::expose::simple_name(obj.class_name()).to_string(),
+            Value::Table(t) => match t.get_str("Type") {
+                Value::Str(s) => s.to_string(),
+                _ => "table".to_string(),
+            },
+            other => other.type_name().to_string(),
+        };
+        Ok(c.push(r))
+    });
+    global(thread, "getClassSimpleName", |c| {
+        let r = match c.arg(0) {
+            Value::Object(obj) => crate::expose::simple_name(obj.class_name()).to_string(),
+            other => crate::expose::simple_name(&pz_kahlua::stdlib::java_class_name(&other)).to_string(),
+        };
+        Ok(c.push(r))
+    });
     global(thread, "getTimestamp", |c| {
         Ok(c.push((now_ms() / 1000) as f64))
     });

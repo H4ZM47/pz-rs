@@ -501,6 +501,15 @@ fn fs_global(
 }
 
 pub fn register(mgr: &mut LuaManager) {
+    {
+        let fs = mgr.fs.clone();
+        // <cache>/Lua/<filename> exists.
+        crate::expose::global(&mut mgr.thread, "cacheFileExists", move |c| {
+            let name = crate::expose::str_arg(c, 0).map(|s| s.replace('\\', "/")).unwrap_or_default();
+            let p = fs.borrow().cache_dir().join("Lua").join(name);
+            Ok(c.push(p.exists()))
+        });
+    }
     register_file(&mut mgr.thread);
 
     // Lines of <cache>/latestSave.ini, 1-based; empty when missing.
