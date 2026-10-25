@@ -210,7 +210,7 @@ impl HudNetwork for CoreNetwork {
     }
 }
 
-/// The no-op defaults.
+/// The no-op defaults (sound defaults to the shared sound system).
 pub struct NoHud;
 impl HudPlayers for NoHud {}
 impl HudCamera for NoHud {}
@@ -263,7 +263,7 @@ impl Default for HudHost {
         HudHost {
             players: Box::new(NoHud),
             game_time: Box::new(SharedGameTime),
-            sound: Box::new(NoHud),
+            sound: Box::new(crate::bind_audio::SharedHudSound),
             network: Box::new(CoreNetwork),
             camera: Box::new(NoHud),
             climate: Box::new(NoHud),
