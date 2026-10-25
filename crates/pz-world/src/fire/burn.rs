@@ -543,60 +543,90 @@ pub fn burn_walls(
         }
         let mut power = 0;
         let mut n: isize = 0;
-        while let Some(obj) = w
+        while let Some(mut obj) = w
             .sq(x, y, z)
             .and_then(|s| s.objects.get(n as usize))
             .cloned()
         {
+            // `obj = objects.get(n)`: the original works on that reference
+            // from here on, wherever a recursive burn moves it. Only the
+            // safe removal of its other parts (`RemoveTileObject` of a
+            // multi-square part) takes it off this square meanwhile, by
+            // `removeFromSquare`, which leaves its `square` set: what reaches
+            // it by reference still does, scans of `objects` do not.
             let r = oref(at, obj.id);
             if recursive {
                 safely_burn_tile_object(mgr, w, rand, r)?;
             }
-            let outcome = burn_object(w, rand, at, &obj, &mut power);
-            // The object may have moved, or gone, if a recursive burn
-            // changed this square. The removals are by object
-            // (`objects.remove(obj)`, `RemoveTileObject(obj)`; for an object
-            // no longer there the latter only resets the square's region
-            // flags, which nothing here reads) and `--n` follows them
-            // regardless.
-            // The replacements are `objects.set(n, ..)` in the original;
-            // here they find the object by identity, which is the same
-            // unless a recursive burn shifted the list.
-            let idx = w.sq(x, y, z).and_then(|s| s.object_index(obj.id));
-            match (outcome, idx) {
-                (Outcome::Drop, i) => {
-                    if let (Some(i), Some(sq)) = (i, w.sq_mut(x, y, z)) {
-                        sq.objects.remove(i);
+            let detached = w
+                .sq(x, y, z)
+                .is_some_and(|s| s.object_index(obj.id).is_none());
+            // The basement-wall test scans the square for a floor; the
+            // rest of the object's treatment reaches it by reference, so a
+            // detached object is put back at the end of `objects` for it.
+            let void_wall = basement_wall_next_to_void(w, at, &obj);
+            if detached {
+                attach(w, at, obj.clone());
+            }
+            let outcome = burn_object(w, rand, at, &obj, void_wall, &mut power);
+            if detached {
+                obj = take(w, at, obj.id).unwrap_or(obj);
+            } else if let Some(o) = w
+                .sq(x, y, z)
+                .and_then(|s| s.object_index(obj.id).map(|i| s.objects[i].clone()))
+            {
+                obj = o;
+            }
+            // The removals are by object (`objects.remove(obj)`,
+            // `RemoveTileObject(obj)`; for a detached object the latter
+            // only resets the square's region flags, which nothing here
+            // reads) and `--n` follows them regardless. The replacements are
+            // `objects.set(n, ..)`: after a shift they replace whichever
+            // object is at `n` now (or throw past the end), and `obj` keeps
+            // its place if it is still there.
+            let set_n = n as usize;
+            match outcome {
+                Outcome::Skip => {}
+                Outcome::Drop => {
+                    if let Some(sq) = w.sq_mut(x, y, z) {
+                        if let Some(i) = sq.object_index(obj.id) {
+                            sq.objects.remove(i);
+                        }
                     }
                     n -= 1;
                 }
-                (Outcome::RemoveTile(counts), i) => {
-                    if i.is_some() {
+                Outcome::RemoveTile(counts) => {
+                    if !detached {
                         remove_tile_object(w, rand, at, obj.id);
                     }
                     removed_tile_object |= counts;
                     n -= 1;
                 }
-                (_, None) | (Outcome::Skip, _) => {}
-                (Outcome::ReplaceWith(s), Some(i)) => {
-                    w.env(rand).object_remove_from_world(r);
-                    replace(w, at, obj.id, i, Some(s));
+                Outcome::ReplaceWith(s) => {
+                    remove_from_world(w, rand, r, detached, &mut obj);
+                    set_at(w, at, set_n, Some(s))?;
                 }
-                (Outcome::Keep { replace: rep }, Some(i)) => {
+                Outcome::Keep { replace: rep } => {
                     if rep || matches!(obj.kind, ObjectKind::Thumpable(_)) {
-                        let s = w.sq(x, y, z).and_then(|s| s.objects[i].sprite);
-                        w.env(rand).object_remove_from_world(r);
-                        if let Some(mut old) = replace(w, at, obj.id, i, s) {
-                            w.env(rand)
-                                .world_call_on(r, &mut old, WorldCall::StopEmitter);
-                        }
-                    } else {
-                        if let Some(sq) = w.sq_mut(x, y, z) {
-                            let o = &mut sq.objects[i];
-                            o.attached_anim_sprite = None;
-                            o.overlay_sprite = None;
-                        }
+                        let s = obj.sprite;
+                        remove_from_world(w, rand, r, detached, &mut obj);
+                        set_at(w, at, set_n, s)?;
+                    } else if let Some(o) = w
+                        .sq_mut(x, y, z)
+                        .and_then(|sq| sq.objects.iter_mut().find(|o| o.id == obj.id))
+                    {
+                        o.attached_anim_sprite = None;
+                        o.overlay_sprite = None;
+                    }
+                    // obj.emitter.stopAll(), on the square or not.
+                    let on_square = w
+                        .sq(x, y, z)
+                        .is_some_and(|s| s.object_index(obj.id).is_some());
+                    if on_square {
                         call_in_place(w, rand, r, WorldCall::StopEmitter);
+                    } else {
+                        w.env(rand)
+                            .world_call_on(r, &mut obj, WorldCall::StopEmitter);
                     }
                 }
             }
@@ -626,31 +656,62 @@ pub fn burn_walls(
     Ok(())
 }
 
-/// `objects.set(i, IsoObject.getNew())` with sprite `s` (the old object's
-/// `removeFromWorld` already ran); returns the old object.
-fn replace(
-    w: &mut FireWorld<'_>,
-    at: At,
-    id: ObjectId,
-    i: usize,
-    s: Option<usize>,
-) -> Option<IsoObject> {
-    let sq = w.sq_mut(at.0, at.1, at.2)?;
-    let i = sq.object_index(id).unwrap_or(i);
+/// `objects.set(n, IsoObject.getNew())` with sprite `s` (the replaced
+/// object's `removeFromWorld` already ran, if it was the burning one);
+/// `PZArrayList.set`'s `IndexOutOfBoundsException` past the end.
+fn set_at(w: &mut FireWorld<'_>, at: At, n: usize, s: Option<usize>) -> Result<(), String> {
+    let Some(sq) = w.sq_mut(at.0, at.1, at.2) else {
+        return Ok(());
+    };
+    if n >= sq.objects.len() {
+        return Err(format!(
+            "java.lang.IndexOutOfBoundsException: Index: {n} Size: {}",
+            sq.objects.len()
+        ));
+    }
     let nid = sq.new_object_id();
-    Some(std::mem::replace(
-        &mut sq.objects[i],
-        IsoObject::new(nid, ObjectKind::Object, s),
-    ))
+    sq.objects[n] = IsoObject::new(nid, ObjectKind::Object, s);
+    Ok(())
+}
+
+/// Puts an object that left the square back at the end of `objects`.
+fn attach(w: &mut FireWorld<'_>, at: At, o: IsoObject) {
+    if let Some(sq) = w.sq_mut(at.0, at.1, at.2) {
+        sq.objects.push(o);
+    }
+}
+
+/// Takes object `id` off the square's `objects`.
+fn take(w: &mut FireWorld<'_>, at: At, id: ObjectId) -> Option<IsoObject> {
+    let sq = w.sq_mut(at.0, at.1, at.2)?;
+    let i = sq.object_index(id)?;
+    Some(sq.objects.remove(i))
+}
+
+/// `obj.removeFromWorld()`, with `obj` on the square or `detached`.
+fn remove_from_world(
+    w: &mut FireWorld<'_>,
+    rand: &mut dyn GameRand,
+    r: ObjectRef,
+    detached: bool,
+    obj: &mut IsoObject,
+) {
+    if detached {
+        w.env(rand).object_remove_from_world_detached(r, obj);
+    } else {
+        w.env(rand).object_remove_from_world(r);
+    }
 }
 
 /// The middle of `BurnWalls`' object loop for one object: its new sprite
-/// (set on the square's object) and what happens to it.
+/// (set on the square's object) and what happens to it. `void_wall` is
+/// `isBasementWallAdjacentToTheVoid_North/West(obj)`.
 fn burn_object(
     w: &mut FireWorld<'_>,
     rand: &mut dyn GameRand,
     at: At,
     obj: &IsoObject,
+    void_wall: bool,
     power: &mut i32,
 ) -> Outcome {
     let Some(s) = obj.sprite else {
@@ -670,7 +731,7 @@ fn burn_object(
     if has(f.water)
         || name.contains("_burnt_")
         || sp.firerequirement >= FIRE_IMMUNE_THRESHOLD
-        || basement_wall_next_to_void(w, at, obj)
+        || void_wall
     {
         return Outcome::Skip;
     }

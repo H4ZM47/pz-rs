@@ -586,6 +586,26 @@ impl MutationEnv<'_> {
         remove_from_world(self, r);
     }
 
+    /// `obj.removeFromWorld()` for the object's class, for `obj` (id
+    /// `r.id`) taken off square `r.pos` by `removeFromSquare`, which leaves
+    /// its `square` set: the class code runs as for an object still there.
+    /// It reaches the object only by reference, never by scanning the
+    /// square, so `obj` is put back at the end of `objects` for the call
+    /// and taken off again, with what the call changed on it.
+    pub(crate) fn object_remove_from_world_detached(&mut self, r: ObjectRef, obj: &mut IsoObject) {
+        let Some(sq) = self.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2) else {
+            return;
+        };
+        debug_assert!(sq.object_index(r.id).is_none());
+        sq.objects.push(obj.clone());
+        remove_from_world(self, r);
+        if let Some(sq) = self.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2) {
+            if let Some(i) = sq.object_index(r.id) {
+                *obj = sq.objects.remove(i);
+            }
+        }
+    }
+
     /// `IsoObject.removeFromWorld()` (the base class part) of `r`, which is
     /// on its square.
     pub(crate) fn base_remove_from_world(&mut self, r: ObjectRef) {

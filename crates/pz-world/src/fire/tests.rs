@@ -109,6 +109,15 @@ const SPRITES: &[Spr] = &[
     ("frame", &[], "normal", 0, None),
     ("rope_top", &["climbSheetTopN"], "normal", 0, None),
     ("hutch", &[], "normal", 0, None),
+    // A two-part player-built garage door (north-facing, parts at x and x+1).
+    (
+        "gdoor1",
+        &["GarageDoor=1"],
+        "normal",
+        0,
+        Some("walls_burnt_01_0"),
+    ),
+    ("gdoor2", &["GarageDoor=2", "attachedN"], "normal", 0, None),
 ];
 
 fn manager() -> IsoSpriteManager {
@@ -129,6 +138,8 @@ fn manager() -> IsoSpriteManager {
     ] {
         map.entry(k);
     }
+    map.entry("GarageDoor")
+        .extend(["1".to_string(), "2".to_string()]);
     let mut m = IsoSpriteManager::new(tables());
     m.generate_alias_map(map, &[]).unwrap();
     for (i, (name, props, ty, req, burnt)) in SPRITES.iter().enumerate() {
@@ -140,7 +151,8 @@ fn manager() -> IsoSpriteManager {
         sp.firerequirement = *req;
         sp.burnt_tile = burnt.map(str::to_string);
         for k in *props {
-            sp.properties.set(&t, &alias, k, "", true);
+            let (k, v) = k.split_once('=').unwrap_or((k, ""));
+            sp.properties.set(&t, &alias, k, v, true);
         }
     }
     m
@@ -973,4 +985,77 @@ fn a_window_outside_rooms_with_no_square_inside_throws_like_the_original() {
     )
     .unwrap();
     assert!(w.sq(2, 2).burnt_out);
+}
+
+/// Square (2,2) with a carpet, part 1 of a player-built garage door and
+/// `extra`; part 2 on (3,2).
+fn garage_door_world(extra: &[&str]) -> World {
+    use crate::objects::IsoThumpable;
+    let mut w = World::new();
+    let mut objs = vec!["carpet"];
+    objs.extend_from_slice(extra);
+    w.put(2, 2, false, &["carpet"]);
+    w.put(3, 2, false, &["carpet"]);
+    let part = |w: &World, s: &str| {
+        ObjectKind::Thumpable(Box::new(IsoThumpable {
+            north: true,
+            is_door: true,
+            closed_sprite: Some(w.m.named_map[s]),
+            ..Default::default()
+        }))
+    };
+    let k = part(&w, "gdoor1");
+    w.add(2, 2, "gdoor1", k);
+    let k = part(&w, "gdoor2");
+    w.add(3, 2, "gdoor2", k);
+    for e in extra {
+        let sq = w.cell.get_grid_square_mut(2, 2, 0).unwrap();
+        let id = sq.new_object_id();
+        sq.objects.push(IsoObject::new(
+            id,
+            ObjectKind::Object,
+            Some(w.m.named_map[*e]),
+        ));
+    }
+    w
+}
+
+#[test]
+fn burnt_objects_are_replaced_at_the_loop_index_after_a_recursive_burn_shifts_the_list() {
+    // BurnWalls takes part 1 (index 1), burns part 2 first
+    // (safelyBurnTileObjectFromSquare); part 2 has no burntTile and is
+    // attached, so RemoveTileObject safely removes the whole door, part 1
+    // too. Part 1 is an IsoThumpable with a burntTile: removeFromWorld and
+    // objects.set(1, new object) -- index 1 now holds the table, which is
+    // replaced instead and never burns.
+    let mut w = garage_door_world(&["table"]);
+    assert_eq!(w.sprite_names(2, 2), ["carpet", "gdoor1", "table"]);
+    let mut mgr = IsoFireManager::new();
+    burn::burn(
+        &mut mgr,
+        &mut w.fw(&mut NoFireHooks),
+        &mut Script::new(&[]),
+        (2, 2, 0),
+    )
+    .unwrap();
+    // ("" is floors_burnt_01_0, a sprite these tables do not have.)
+    assert_eq!(w.sprite_names(2, 2), ["", "walls_burnt_01_0"]);
+    assert_eq!(w.sprite_names(3, 2), [""]);
+    assert!(w.sq(2, 2).special_objects.is_empty());
+    assert!(w.sq(2, 2).burnt_out && w.sq(3, 2).burnt_out);
+    // Without the table, index 1 is past the end: PZArrayList.set throws
+    // and BurnWalls stops before the square is marked burnt out.
+    let mut w = garage_door_world(&[]);
+    let e = burn::burn(
+        &mut mgr,
+        &mut w.fw(&mut NoFireHooks),
+        &mut Script::new(&[]),
+        (2, 2, 0),
+    );
+    assert_eq!(
+        e.unwrap_err(),
+        "java.lang.IndexOutOfBoundsException: Index: 1 Size: 1"
+    );
+    assert_eq!(w.sprite_names(2, 2), [""]);
+    assert!(!w.sq(2, 2).burnt_out && w.sq(3, 2).burnt_out);
 }
