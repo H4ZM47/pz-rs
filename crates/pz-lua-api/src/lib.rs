@@ -9,6 +9,7 @@
 
 pub mod bind_core;
 pub mod bind_fs;
+pub mod bind_debug;
 pub mod bind_globals;
 pub mod bind_java_util;
 pub mod bind_misc;
@@ -38,6 +39,7 @@ pub fn register_all(mgr: &mut LuaManager) {
         let jar = pz_classfile::Jar::open(mgr.fs.borrow().base.join("projectzomboid.jar")).ok();
         bind_misc_classes::register(&mut mgr.thread, jar.as_ref());
     }
+    bind_debug::register(&mut mgr.thread);
     bind_ui::register(&mut mgr.thread);
     bind_ui::install_event_sink(mgr.events.clone());
 }
