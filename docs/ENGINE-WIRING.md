@@ -1233,4 +1233,4 @@ registered):
 - [ ] World map pyramids: `pz_worldmap::pyramid::start_frame()` at the
       start and `end_frame()` at the end of each frame
       (`SpriteRenderer`'s `WorldMapImages.startFrame/endFrame`); until
-      then each `UIWorldMap.render` brackets its own draw (#PYR).
+      then each `UIWorldMap.render` brackets its own draw (#229).
