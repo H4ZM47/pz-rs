@@ -37,6 +37,12 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
 - [ ] Fire: `IsoFireManager::update(FireWorld, rand, FireFrame)` once per
       frame; FireHooks; fire_updated/removed via FireLightLinks (#89).
 - [ ] States: `StatesWorldAdapter` + engine `StatesEngine` (#88).
+- [ ] Vehicles: `world_sim::set_world_bounds` + `create()` at world load
+      (`destroy()` on exit) with a `VehiclePhysics` impl (pz-bullet once it
+      lands; `NoPhysics` until then); `manager::process_add_vehicles()` and
+      `update_frame()` per frame; `spawn` (`IsoChunk.AddVehicles`) from the
+      chunk loader through a `SpawnWorld` impl fed by the meta cell vehicle
+      zones; `bind_vehicles::register` (#86).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
 
