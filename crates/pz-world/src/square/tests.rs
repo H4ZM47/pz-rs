@@ -735,6 +735,31 @@ fn doors_to_and_reach() {
 }
 
 #[test]
+fn reach_exclusions_preserve_both_directions_of_each_edge_and_null_names() {
+    let mut w = World::new();
+    let north = w.m.named_map["wall_n"];
+    let west = w.m.named_map["wall_w"];
+    w.m.sprites[north].properties.unset_flag(w.m.tables.flag.collideN);
+    w.m.sprites[west].properties.unset_flag(w.m.tables.flag.collideW);
+    w.m.sprites[north].cut_n = true;
+    w.m.sprites[west].cut_w = true;
+    w.put(8, 8, 0, &["floor"]);
+    w.put(8, 9, 0, &["wall_n"]);
+    w.put(9, 8, 0, &["wall_w"]);
+    let pairs = [((8, 8), (8, 9)), ((8, 9), (8, 8)), ((8, 8), (9, 8)), ((9, 8), (8, 8))];
+    for (from, to) in pairs {
+        let (a, b) = (w.sq(from.0, from.1, 0), w.sq(to.0, to.1, 0));
+        assert!(!a.can_reach_to(b, &w.m, &w.cell, &NoSquareHooks));
+        assert!(a.can_reach_to_excluding(b, &w.m, &w.cell, &NoSquareHooks,
+            &[Some("wall_n".into()), Some("wall_w".into())]));
+    }
+    w.m.sprites[north].name = None;
+    let (a, b) = (w.sq(8, 8, 0), w.sq(8, 9, 0));
+    assert!(!a.can_reach_to_excluding(b, &w.m, &w.cell, &NoSquareHooks, &[Some("wall_n".into())]));
+    assert!(a.can_reach_to_excluding(b, &w.m, &w.cell, &NoSquareHooks, &[None]));
+}
+
+#[test]
 fn vision_through_edges() {
     let mut w = World::new();
     for x in 8..16 {

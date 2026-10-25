@@ -94,6 +94,12 @@ use four real Lua table slots, original event/deactivation ordering and traced
 ownership across callbacks. Broader inventory and world-object APIs still
 prevent complete inventory screen setup and interaction.
 
+The global `getCell()` entry now returns that same live cell. Square
+`canReachTo` uses the actual door, window and barricade owners together with
+the live nullable sprite-exclusion list. World-object lists and floor-item
+identity still need a canonical runtime owner bridge; getter-time copies or
+empty arrays would not implement the original inventory behavior.
+
 Puddles now have a shared live singleton and indexed float controls. A real
 cell-owned WeatherFX object initializes at world init; the climate updates
 its targets and puddles after Lua climate callbacks, respecting the live

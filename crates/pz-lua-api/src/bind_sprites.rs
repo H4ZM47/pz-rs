@@ -28,7 +28,7 @@ pub fn install_sprite_manager(m: Option<Rc<RefCell<IsoSpriteManager>>>) {
     SPRITES.with(|s| *s.borrow_mut() = m);
 }
 
-fn manager() -> LuaResult<Rc<RefCell<IsoSpriteManager>>> {
+pub(crate) fn manager() -> LuaResult<Rc<RefCell<IsoSpriteManager>>> {
     SPRITES
         .with(|s| s.borrow().clone())
         .ok_or_else(|| LuaError::runtime("IsoSpriteManager: tile definitions are not loaded"))

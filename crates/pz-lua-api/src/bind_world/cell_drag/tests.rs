@@ -17,7 +17,6 @@ impl Fixture {
         pz_kahlua::stdlib::install(&mut thread, None).unwrap();
         let events = EventManager::register(thread.globals(), "Events", EVENT_NAMES);
         super::super::register_with_events(&mut thread, events.clone());
-        thread.globals().set_str("cell", current_cell());
         let errors: Rc<RefCell<Vec<String>>> = Rc::default();
         let out = errors.clone();
         thread.log = Box::new(move |s| out.borrow_mut().push(s.into()));
@@ -28,7 +27,7 @@ impl Fixture {
             old_weather,
             errors,
         };
-        f.run("function check(v) if not v then error('authored cell drag check failed') end end");
+        f.run("function check(v) if not v then error('authored cell drag check failed') end end; cell=getCell(); check(cell==IsoCell.getInstance())");
         f
     }
 
@@ -48,6 +47,20 @@ impl Drop for Fixture {
         set_cell(self.old_cell.take());
         with_world(|w| w.weather_fx = self.old_weather.take());
     }
+}
+
+#[test]
+fn cell_drag_global_cell_alias_tracks_real_install_replace_and_unload_identity() {
+    let mut f = Fixture::new();
+    set_cell(None);
+    f.run("check(getCell()==nil and IsoCell.getInstance()==nil)");
+    set_cell(Some(IsoCell::default()));
+    f.run("first=getCell(); check(first~=nil and first==IsoCell.getInstance()); cursor={}; first:setDrag(cursor,0); check(getCell():getDrag(0)==cursor)");
+    set_cell(Some(IsoCell::default()));
+    f.run("check(getCell()~=nil and getCell()==IsoCell.getInstance() and getCell()~=first); check(getCell():getDrag(0)==nil)");
+    set_cell(None);
+    f.run("check(getCell()==nil and IsoCell.getInstance()==nil)");
+    assert!(f.errors.borrow().is_empty(), "{:?}", f.errors.borrow());
 }
 
 #[test]

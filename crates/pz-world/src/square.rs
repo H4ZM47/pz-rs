@@ -1719,6 +1719,18 @@ impl IsoGridSquare {
     /// `getWallExcludingList(bNorth, ignoreBlockingSprites)` with the
     /// (vanilla: empty) exclusion list: a wall object on that edge.
     pub fn has_wall_excluding_list(&self, north: bool, m: &IsoSpriteManager) -> bool {
+        self.has_wall_excluding_sprites(north, m, &[])
+    }
+
+    /// `getWallExcludingList` with the current nullable sprite names from
+    /// the actual `ignoreBlockingSprites` list. Java `contains(null)` can
+    /// exclude an unnamed sprite as well as a named one.
+    pub fn has_wall_excluding_sprites(
+        &self,
+        north: bool,
+        m: &IsoSpriteManager,
+        excluded: &[Option<String>],
+    ) -> bool {
         let f = &m.tables.flag;
         // Flags a table without them cannot have set.
         let flag = |name| m.tables.flag_from_string(name);
@@ -1731,6 +1743,9 @@ impl IsoGridSquare {
         self.objects.iter().any(|o| {
             let Some(s) = o.sprite else { return false };
             let spr = &m.sprites[s];
+            if excluded.contains(&spr.name) {
+                return false;
+            }
             let p = &spr.properties;
             if p.has(f.WallSE) || has(p, door_wall) {
                 return false;
@@ -1747,6 +1762,19 @@ impl IsoGridSquare {
         g: &impl GetSquare,
         hooks: &dyn SquareHooks,
     ) -> bool {
+        self.can_reach_to_excluding(other, m, g, hooks, &[])
+    }
+
+    /// `canReachTo` using the live `ignoreBlockingSprites` names, without
+    /// replacing the real object hooks for doors, windows and barricades.
+    pub fn can_reach_to_excluding(
+        &self,
+        other: &IsoGridSquare,
+        m: &IsoSpriteManager,
+        g: &impl GetSquare,
+        hooks: &dyn SquareHooks,
+        excluded: &[Option<String>],
+    ) -> bool {
         if is(self, other) {
             return true;
         }
@@ -1758,10 +1786,10 @@ impl IsoGridSquare {
         {
             return false;
         }
-        if other.y < self.y && self.has_wall_excluding_list(true, m)
-            || self.y < other.y && other.has_wall_excluding_list(true, m)
-            || other.x < self.x && self.has_wall_excluding_list(false, m)
-            || self.x < other.x && other.has_wall_excluding_list(false, m)
+        if other.y < self.y && self.has_wall_excluding_sprites(true, m, excluded)
+            || self.y < other.y && other.has_wall_excluding_sprites(true, m, excluded)
+            || other.x < self.x && self.has_wall_excluding_sprites(false, m, excluded)
+            || self.x < other.x && other.has_wall_excluding_sprites(false, m, excluded)
         {
             return false;
         }

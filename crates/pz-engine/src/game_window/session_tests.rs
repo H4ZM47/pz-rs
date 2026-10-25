@@ -84,6 +84,9 @@ fn inventory_ui_check(lua: &mut LuaManager) {
 fn global_systems_check(lua: &mut LuaManager, saved_world: bool) {
     lua.thread.globals().set_str("rustSessionLoadedGlobalSystems", saved_world);
     lua_check(lua, r#"
+        local cell = getCell()
+        assert(cell and cell == IsoCell.getInstance(), "global getCell does not return the live world cell")
+        assert(cell:getDrag(0) == nil, "freshly started session retained a drag cursor")
         local systems = {
             {SCampfireSystem, 'campfire', CCampfireSystem},
             {SFarmingSystem, 'farming', CFarmingSystem},

@@ -38,6 +38,7 @@ pz-iso-render = { path = "../pz-iso-render" }
 pz-world-states = { path = "../pz-world-states" }
 
 [dev-dependencies]
+pz-world = { workspace = true, features = ["test-util"] }
 pz-sqlite = { workspace = true, features = ["writer"] }
 pz-clipper.workspace = true
 
