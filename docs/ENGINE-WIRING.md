@@ -94,6 +94,11 @@ Hooks that subsystem crates expose and the game loop (`pz-engine`,
       `has_render_effect` / `set_render_effect` (ObjectRenderEffects) and
       `do_tree_noises` (tree sound manager); `ThumpSettings::server`.
 - [ ] `SimContext` climate values from `ClimateManager` (#49).
+- [ ] Square edits → pathfinding: `pz_pathfind::pathfind_square_hooks!(pz_world)`
+      in the engine crate, and pass `PathfindMutationHooks { service:
+      host.service_mut(), sprites, meta, bits_hooks: &ObjectHooks }` as
+      `MutationEnv`'s `PathfindSquareHooks` (needs #97's `square_changed(cell,
+      sq)` / `add_chunk_to_world(cell, wx, wy)` signatures) (#60, #97).
 - [ ] Vehicles ↔ pathfinding: `pz_vehicles::pathfind_adapter!(pz_pathfind)`
       (#86).
 
