@@ -525,7 +525,7 @@ registered):
       implements the new `SquareMutationHooks` methods: `corpse_from_item`
       (`loadCorpseFromByteData`), `generator_from_item` (`IsoGenerator`),
       `animal_dropped` (`IsoAnimal`), `process_items_remove`,
-      `designation_zone_item_on_ground` (#PRNUM).
+      `designation_zone_item_on_ground` (#186).
 - [ ] Character item drops: the characters' `setWornItem` /
       `removeWornItem` (with `forceDropTooHeavy`, true by default) call
       `pz_inventory::floor_drop::force_drop_too_heavy(chr, world, force,
@@ -536,7 +536,7 @@ registered):
       square, `getCapacityWeight`, `getUnequippedWeight`, the
       `OnContainerUpdate` / `onItemFall` Lua events and the drop sound);
       the world is `square_mutation::FloorDropEnv::new(&mut env,
-      world_age_hours)` (#PRNUM).
+      world_age_hours)` (#186).
 - [ ] Collision code fills `IsoChunk::collision` through
       `ChunkCollision::init(z, build)` (`CollideWithObstaclesPoly` /
       `LineClearCollide`) and drops levels with `take` on vehicle moves; the
