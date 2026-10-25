@@ -1171,7 +1171,6 @@ fn sheet_rope_squares_and_chunk_levels() {
     let none = a.sheet_rope_square_at((14, 12, 0)).unwrap();
     assert!(!none.sheet_rope && !none.w);
     assert_eq!(a.sheet_rope_square_at((40, 40, 0)), None);
-    drop(a);
     let ch = w.cell.chunks.get_mut(&(1, 1)).unwrap();
     ch.min_level = -1;
     ch.max_level = 3;
@@ -1224,7 +1223,6 @@ fn climbing_over_walls() {
     assert_eq!(a.climb_wall_fence_type_at((12, 11, 0), (12, 12), IsoDirections::S), Some(1));
     assert_eq!(a.climb_wall_fence_type_at((13, 12, 0), (14, 12), IsoDirections::E), Some(0));
     assert_eq!(a.climb_wall_fence_type_at((12, 12, 0), (11, 12), IsoDirections::W), None);
-    drop(a);
     // A hoppable fence is not a wall.
     w.add(16, 12, "fence_n", ObjectKind::Object, false);
     let a = w.adapter();
