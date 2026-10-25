@@ -175,7 +175,7 @@ impl StatesWorldAdapter<'_> {
     // ---- window and frame queries ----
 
     /// `IsoWindow.isInvincible()`.
-    fn window_invincible(&self, sq: &IsoGridSquare, o: &IsoObject, north: bool) -> bool {
+    pub(crate) fn window_invincible(&self, sq: &IsoGridSquare, o: &IsoObject, north: bool) -> bool {
         let env = self.env();
         if !env.sq_has(sq, "makeWindowInvincible") {
             return false;
@@ -879,7 +879,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoWindow.damage(amount, chr)`.
-    fn window_damage(&mut self, r: ObjectRef, amount: i32, chr: &Thumper) {
+    pub(crate) fn window_damage(&mut self, r: ObjectRef, amount: i32, chr: &Thumper) {
         let Some((sq, o)) = self.find(r) else { return };
         let ObjectKind::Window(w) = &o.kind else {
             return;
@@ -899,7 +899,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoWindow.smashWindow(false, doAlarm)`.
-    fn smash_window(&mut self, r: ObjectRef, do_alarm: bool) {
+    pub(crate) fn smash_window(&mut self, r: ObjectRef, do_alarm: bool) {
         let Some((sq, o)) = self.find(r) else { return };
         let ObjectKind::Window(w) = &o.kind else {
             return;
@@ -957,7 +957,7 @@ impl StatesWorldAdapter<'_> {
     }
 
     /// `IsoWindow.addBrokenGlass(chr)`.
-    fn add_broken_glass(&mut self, r: ObjectRef, chr: &Thumper) {
+    pub(crate) fn add_broken_glass(&mut self, r: ObjectRef, chr: &Thumper) {
         let Some((sq, o)) = self.find(r) else { return };
         let ObjectKind::Window(w) = &o.kind else {
             return;

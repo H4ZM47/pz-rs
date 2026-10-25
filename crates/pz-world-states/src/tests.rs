@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use pz_characters::character::state::{StateWorld, ThumpKind, ThumpTarget};
+use pz_characters::character::state::{SheetRopeExit, StateWorld, ThumpKind, ThumpTarget};
 use pz_characters::{CharacterKind, GameCharacter};
 use pz_pathfind::mover::{CharacterView, MoverId, ObjectRef, PathMover};
 use pz_scripts::ScriptManager;
@@ -153,6 +153,15 @@ const SPRITES: &[Spec] = &[
     ),
     ("tree_a", "tree", &[]),
     ("shrub", "normal", &[("Bush", "")]),
+    (
+        "wall_n_metal",
+        "wall",
+        &[("collideN", ""), ("FenceTypeHigh", "Metal")],
+    ),
+    ("wall_w", "wall", &[("collideW", "")]),
+    ("sheet_w", "normal", &[("climbSheetW", "")]),
+    ("sheet_top_w", "normal", &[("climbSheetTopW", "")]),
+    ("solid_block", "normal", &[("solid", "")]),
 ];
 
 fn manager() -> IsoSpriteManager {
@@ -225,6 +234,7 @@ struct Engine {
     effects: Vec<(ObjectRef, NewRenderEffect)>,
     noises: Vec<(i32, (i32, i32, i32))>,
     cancelled: Vec<MoverId>,
+    toggled: Vec<ObjectRef>,
 }
 
 impl StatesEngine for Engine {
@@ -273,6 +283,13 @@ impl StatesEngine for Engine {
     }
     fn path_cancel_request(&mut self, mover: MoverId) {
         self.cancelled.push(mover);
+    }
+    fn toggle_window(&mut self, cell: &mut IsoCell, window: ObjectRef, _chr: i32) {
+        self.toggled.push(window);
+        let sq = cell.get_grid_square_mut(window.x, window.y, window.z).unwrap();
+        if let Some(ObjectKind::Window(w)) = sq.objects.iter_mut().find(|o| o.id == window.id).map(|o| &mut o.kind) {
+            w.open = !w.open;
+        }
     }
     fn resolve_collision_radius(
         &mut self,
@@ -1113,4 +1130,102 @@ fn loaded_windows_share_their_closed_sprite_properties() {
     assert!(w.m.sprites[closed].properties.has(w.m.tables.flag.cutW));
     let sq = w.cell.get_grid_square(12, 12, 0).unwrap();
     assert_eq!(sq.object_index(r.id), Some(1));
+}
+
+fn climber(x: f32, y: f32) -> Thumper {
+    Thumper {
+        id: 7,
+        x,
+        y,
+        current_square: Some((x as i32, y as i32, 0)),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn window_info_and_perma_lock() {
+    let mut w = World::new();
+    let win = w.add(12, 12, "window_w", window(&w, 50), true);
+    let i = w.adapter().window_info_of(win).unwrap();
+    assert_eq!(i.square, (12, 12, 0));
+    assert!(!i.north && i.in_world && !i.open && !i.destroyed && !i.perma_locked && !i.invincible);
+    assert_eq!(i.opposite(), (11, 12, 0));
+    w.adapter().set_window_perma_locked_at(win, true);
+    assert!(w.adapter().window_info_of(win).unwrap().perma_locked);
+    // Not a window.
+    let d = w.add(10, 10, "door_n", door(true, 500), true);
+    assert_eq!(w.adapter().window_info_of(d), None);
+}
+
+#[test]
+fn sheet_rope_squares_and_chunk_levels() {
+    let mut w = World::new();
+    w.add(12, 12, "sheet_w", ObjectKind::Object, false);
+    w.add(13, 12, "sheet_top_w", ObjectKind::Object, false);
+    let a = w.adapter();
+    let r = a.sheet_rope_square_at((12, 12, 0)).unwrap();
+    assert!(r.sheet_rope && r.w && !r.top && !r.n && !r.s && !r.e);
+    assert!(r.can_climb_here && r.solid_floor && !r.solidtrans);
+    let t = a.sheet_rope_square_at((13, 12, 0)).unwrap();
+    assert!(t.sheet_rope && t.top && t.w);
+    let none = a.sheet_rope_square_at((14, 12, 0)).unwrap();
+    assert!(!none.sheet_rope && !none.w);
+    assert_eq!(a.sheet_rope_square_at((40, 40, 0)), None);
+    let ch = w.cell.chunks.get_mut(&(1, 1)).unwrap();
+    ch.min_level = -1;
+    ch.max_level = 3;
+    let a = w.adapter();
+    assert_eq!(a.chunk_levels_at((12, 12, 0)), (-1, 3));
+    assert_eq!(a.chunk_levels_at((17, 12, 0)), (0, 0));
+    assert_eq!(a.chunk_levels_at((100, 100, 0)), (0, 0));
+}
+
+#[test]
+fn sheet_rope_exits() {
+    let mut w = World::new();
+    let t = climber(12.5, 12.5);
+    // Nothing on the edge.
+    assert_eq!(w.adapter().sheet_rope_exit_for(&t, (12, 12, 0), IsoDirections::W), SheetRopeExit::Undefined);
+    // Off the map beyond.
+    assert_eq!(w.adapter().sheet_rope_exit_for(&t, (8, 12, 0), IsoDirections::W), SheetRopeExit::Blocked);
+    // A shut window is opened (ToggleWindow) and climbed through.
+    let win = w.add(12, 12, "window_w", window(&w, 50), true);
+    assert_eq!(w.adapter().sheet_rope_exit_for(&t, (12, 12, 0), IsoDirections::W), SheetRopeExit::OpenWindow(win));
+    assert_eq!(w.engine.toggled, [win]);
+    // Already open: no second toggle.
+    assert_eq!(w.adapter().sheet_rope_exit_for(&t, (12, 12, 0), IsoDirections::W), SheetRopeExit::OpenWindow(win));
+    assert_eq!(w.engine.toggled.len(), 1);
+    // A fence on the north edge.
+    w.add(14, 12, "fence_n", ObjectKind::Object, false);
+    let t2 = climber(14.5, 12.5);
+    assert_eq!(w.adapter().sheet_rope_exit_for(&t2, (14, 12, 0), IsoDirections::N), SheetRopeExit::Fence);
+    // A solid square beyond it blocks the climb.
+    w.add(14, 11, "solid_block", ObjectKind::Object, false);
+    assert_eq!(w.adapter().sheet_rope_exit_for(&t2, (14, 12, 0), IsoDirections::N), SheetRopeExit::Blocked);
+}
+
+#[test]
+fn climbing_over_walls() {
+    let mut w = World::new();
+    w.add(12, 12, "wall_n_metal", ObjectKind::Object, false);
+    w.add(14, 12, "wall_w", ObjectKind::Object, false);
+    let a = w.adapter();
+    // North over the metal wall on (12, 12), from inside the square.
+    assert!(a.can_climb_over_wall_for(&climber(12.5, 12.5), IsoDirections::N));
+    // No wall on that edge.
+    assert!(!a.can_climb_over_wall_for(&climber(12.5, 12.5), IsoDirections::W));
+    assert!(!a.can_climb_over_wall_for(&climber(10.5, 12.5), IsoDirections::N));
+    // South onto (12, 12) from (12, 11): the wall is on the square beyond.
+    assert!(a.can_climb_over_wall_for(&climber(12.5, 11.5), IsoDirections::S));
+    // East over the west wall of (14, 12).
+    assert!(a.can_climb_over_wall_for(&climber(13.5, 12.5), IsoDirections::E));
+    assert_eq!(a.climb_wall_fence_type_at((12, 12, 0), (12, 11), IsoDirections::N), Some(1));
+    assert_eq!(a.climb_wall_fence_type_at((12, 11, 0), (12, 12), IsoDirections::S), Some(1));
+    assert_eq!(a.climb_wall_fence_type_at((13, 12, 0), (14, 12), IsoDirections::E), Some(0));
+    assert_eq!(a.climb_wall_fence_type_at((12, 12, 0), (11, 12), IsoDirections::W), None);
+    // A hoppable fence is not a wall.
+    w.add(16, 12, "fence_n", ObjectKind::Object, false);
+    let a = w.adapter();
+    assert!(!a.can_climb_over_wall_for(&climber(16.5, 12.5), IsoDirections::N));
+    assert_eq!(a.climb_wall_fence_type_at((16, 12, 0), (16, 11), IsoDirections::N), None);
 }
