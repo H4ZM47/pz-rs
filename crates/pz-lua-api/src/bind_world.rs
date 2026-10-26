@@ -32,6 +32,9 @@ mod reachability;
 mod square_queries;
 pub mod power;
 
+#[cfg(test)]
+mod collection_deferral_tests;
+
 /// `IsoWorld.instance.metaGrid` and `IsoWorld.instance.currentCell`.
 #[derive(Default)]
 pub struct WorldState {
@@ -50,16 +53,23 @@ thread_local! {
     static HANDLES: RefCell<HashMap<Key, Weak<Handle>>> = RefCell::default();
 }
 
+// A Lua call can unwind to an interpreter drain while this actual WORLD
+// cell is still borrowed by its Rust caller. Do not collect at that boundary.
+fn with_world_state_cell<R>(f: impl FnOnce(&RefCell<WorldState>) -> R) -> R {
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
+    WORLD.with(f)
+}
+
 /// Install (or clear) the meta grid Lua sees through `IsoWorld`.
 pub fn set_meta_grid(grid: Option<IsoMetaGrid>) {
-    WORLD.with(|w| w.borrow_mut().meta_grid = grid);
+    with_world_state_cell(|w| w.borrow_mut().meta_grid = grid);
     META_GEN.with(|g| g.set(g.get() + 1));
     HANDLES.with(|h| h.borrow_mut().retain(|k, _| !k.is_meta()));
 }
 
 /// Install (or clear) `IsoWorld.instance.currentCell`.
 pub fn set_cell(cell: Option<IsoCell>) {
-    let retired = WORLD.with(|w| {
+    let retired = with_world_state_cell(|w| {
         let mut w = w.borrow_mut();
         let weather = w.weather_fx.take();
         let cell = std::mem::replace(&mut w.cell, cell);
@@ -79,7 +89,7 @@ pub fn set_cell(cell: Option<IsoCell>) {
 /// `IsoWorld.instance.getMetaGrid()`'s `(minX, minY, maxX, maxY)` in cells,
 /// `None` without a meta grid.
 pub fn meta_grid_cell_bounds() -> Option<(i32, i32, i32, i32)> {
-    WORLD.with(|w| {
+    with_world_state_cell(|w| {
         w.borrow()
             .meta_grid
             .as_ref()
@@ -90,7 +100,7 @@ pub fn meta_grid_cell_bounds() -> Option<(i32, i32, i32, i32)> {
 /// Access the world state (e.g. to load chunks into the cell). Must not be
 /// called from inside a bound method.
 pub fn with_world<R>(f: impl FnOnce(&mut WorldState) -> R) -> R {
-    WORLD.with(|w| f(&mut w.borrow_mut()))
+    with_world_state_cell(|w| f(&mut w.borrow_mut()))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -346,7 +356,7 @@ fn fastfloor_d(v: f64) -> i32 {
 }
 
 fn grid<R>(f: impl FnOnce(&mut IsoMetaGrid) -> LuaResult<R>) -> LuaResult<R> {
-    WORLD.with(|w| match w.borrow_mut().meta_grid.as_mut() {
+    with_world_state_cell(|w| match w.borrow_mut().meta_grid.as_mut() {
         Some(g) => f(g),
         None => Err(LuaError::runtime("IsoMetaGrid is not loaded")),
     })
@@ -354,14 +364,14 @@ fn grid<R>(f: impl FnOnce(&mut IsoMetaGrid) -> LuaResult<R>) -> LuaResult<R> {
 
 /// `IsoWorld.instance.currentCell`, NPE when there is none.
 fn cell<R>(f: impl FnOnce(&IsoCell) -> LuaResult<R>) -> LuaResult<R> {
-    WORLD.with(|w| match w.borrow().cell.as_ref() {
+    with_world_state_cell(|w| match w.borrow().cell.as_ref() {
         Some(c) => f(c),
         None => Err(npe()),
     })
 }
 
 fn square_exists(x: i32, y: i32, z: i32) -> bool {
-    WORLD.with(|w| {
+    with_world_state_cell(|w| {
         w.borrow()
             .cell
             .as_ref()
@@ -1678,7 +1688,7 @@ fn self_cell(c: &NativeCall<'_>) -> LuaResult<()> {
 /// The canonical Lua handle for the current world cell, or `nil` before
 /// a cell is installed and after it is unloaded.
 pub fn current_cell() -> Value {
-    let has = WORLD.with(|w| w.borrow().cell.is_some());
+    let has = with_world_state_cell(|w| w.borrow().cell.is_some());
     opt(has.then_some(Key::Cell))
 }
 
@@ -1993,7 +2003,7 @@ fn register_iso_world(thread: &mut Thread) {
     });
     get(&b, "getMetaGrid", |c| {
         self_world(c)?;
-        let has = WORLD.with(|w| w.borrow().meta_grid.is_some());
+        let has = with_world_state_cell(|w| w.borrow().meta_grid.is_some());
         Ok(opt(has.then_some(Key::MetaGrid)))
     });
     get(&b, "getMetaChunk", |c| {

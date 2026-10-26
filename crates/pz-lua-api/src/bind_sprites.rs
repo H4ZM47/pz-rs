@@ -35,6 +35,7 @@ pub(crate) fn manager() -> LuaResult<Rc<RefCell<IsoSpriteManager>>> {
 }
 
 fn with_manager<R>(f: impl FnOnce(&mut IsoSpriteManager) -> LuaResult<R>) -> LuaResult<R> {
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
     let m = manager()?;
     let mut m = m
         .try_borrow_mut()
@@ -46,6 +47,7 @@ fn with_manager<R>(f: impl FnOnce(&mut IsoSpriteManager) -> LuaResult<R>) -> Lua
 /// (adding a sprite for an unknown name, as `getSprite` does); `None` while
 /// no manager is installed.
 pub fn sprite_property(name: &str, key: &str) -> Option<Option<String>> {
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
     let m = SPRITES.with(|s| s.borrow().clone())?;
     let mut m = m.try_borrow_mut().ok()?;
     let i = match m.named_map.get(name) {

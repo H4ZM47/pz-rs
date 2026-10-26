@@ -145,6 +145,7 @@ impl App {
     /// A native window close saves an active session through the same
     /// quit path as the menu, then stops its owners before the GPU goes.
     fn close(&mut self) {
+        let _collection_deferral = pz_kahlua::gc::defer_collection();
         let current = self.states.current.take();
         let in_game = current
             .as_ref()
@@ -191,6 +192,7 @@ impl App {
     }
 
     fn boot(&mut self) -> Result<(), String> {
+        let _collection_deferral = pz_kahlua::gc::defer_collection();
         let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&self.launch.game_dir)));
         fs.borrow_mut().set_cache_dir(&self.launch.cache_dir);
         pz_lua_api::bind_render::textures()
@@ -276,6 +278,7 @@ impl App {
             return;
         }
         let Some(lua) = self.lua.as_mut() else { return };
+        let collection_deferral = pz_kahlua::gc::defer_collection();
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
@@ -404,6 +407,9 @@ impl App {
         }
         // Core.DoFrameReady -> Core.updateKeyboard: focused text entry.
         pz_lua_api::bind_uitextbox2::update_keyboard(&mut lua.thread);
+        // Interpreter call boundaries can occur inside WORLD/sprite scopes.
+        // Only this outer boundary permits final host destructors to reenter.
+        drop(collection_deferral);
         // Square and whole-object owners can carry opaque Lua parents. End every
         // callback and world/sprite borrow before releasing retired slots.
         crate::iso_world::drain_retired_world_objects();
@@ -563,6 +569,7 @@ fn headless_app(launch: Launch) -> Result<App, String> {
 /// Development harness: `PZ_HEADLESS_LUA=<file>` runs a Lua file after
 /// boot (e.g. to open a screen before the frames).
 fn run_headless_lua(app: &mut App) -> Result<(), String> {
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
     if let Some(path) = std::env::var_os("PZ_HEADLESS_LUA") {
         let src = std::fs::read_to_string(&path).map_err(|e| format!("PZ_HEADLESS_LUA: {e}"))?;
         let lua = app.lua.as_mut().ok_or("no Lua")?;

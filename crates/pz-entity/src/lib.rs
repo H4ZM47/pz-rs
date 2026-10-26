@@ -23,6 +23,8 @@ pub mod fluids;
 pub mod io;
 pub mod java;
 pub mod meta;
+pub mod runtime;
+pub mod runtime_load;
 pub mod tables;
 
 pub use context::{
@@ -36,6 +38,11 @@ pub use fluids::{FluidContainer, FluidFilter, FluidInstance, FluidRef, FluidRegi
 pub use io::{EntityError, Result};
 pub use meta::{load_meta_entities, save_meta_entities, MetaEntity};
 pub use pz_scripts::objects::entity::ComponentType;
+pub use runtime::{
+    ComponentBodyMut, ComponentRef, EncodedComponent, EntityOwner, EntryPresence, Promotion,
+    RejectedComponent, RejectedComponentRef, RejectedEncoded, RejectedValues, RetiredComponents,
+    RuntimeComponent, RuntimeComponents, RuntimeEntryView, RuntimeError,
+};
 pub use tables::AttributeTypes;
 
 #[cfg(test)]

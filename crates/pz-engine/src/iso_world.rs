@@ -338,6 +338,9 @@ impl IsoWorld {
             return None;
         };
         let (result, retired) = {
+            // Keep this outside both guards: callbacks may finish an outer
+            // Lua call while the actual world and sprite manager are borrowed.
+            let _collection_deferral = pz_kahlua::gc::defer_collection();
             let mut sprites = sprites.borrow_mut();
             let (result, retired_objects, retired_chunks) = with_world(|w| {
                 let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_mut()) else {

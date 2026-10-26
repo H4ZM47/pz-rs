@@ -22,13 +22,16 @@
 //! callback. The interpreter drains requests after outer calls unwind; hosts
 //! may also call collect_pending after their final callback for a frame.
 //! Direct coroutine resumes can leave a request pending until that host drain.
+//! Hosts holding world or rendering guards across such calls must keep a
+//! collection deferral alive until those guards end, then drain explicitly.
 
 use crate::table::Table;
 use crate::value::Value;
 use crate::vm::{LuaClosure, NativeFunction, UpValue, UpValueRef};
 use std::any::TypeId;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::rc::{Rc, Weak};
 
 mod host;
@@ -62,6 +65,43 @@ struct Collector {
 
 thread_local! {
     static COLLECTOR: RefCell<Collector> = RefCell::new(Collector::default());
+    static COLLECTION_DEFERRALS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Prevent collection while a host holds guards that final destructors may
+/// reenter. Guards nest on the current thread and are deliberately not Send.
+/// Dropping the guard only restores the prior depth; it never collects.
+#[must_use = "keep the guard alive until every protected host borrow ends"]
+pub struct CollectionDeferral {
+    active: bool,
+    _thread: PhantomData<Rc<()>>,
+}
+
+/// Defer both explicit and queued collection until a later safe host drain.
+/// No collection is requested merely by entering or leaving this scope.
+pub fn defer_collection() -> CollectionDeferral {
+    let active = COLLECTION_DEFERRALS
+        .try_with(|depth| {
+            depth.set(
+                depth
+                    .get()
+                    .checked_add(1)
+                    .expect("collection deferral depth overflow"),
+            );
+        })
+        .is_ok();
+    CollectionDeferral {
+        active,
+        _thread: PhantomData,
+    }
+}
+
+impl Drop for CollectionDeferral {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = COLLECTION_DEFERRALS.try_with(|depth| depth.set(depth.get() - 1));
+        }
+    }
 }
 
 fn prepare_registration<T>(registry: &mut Vec<T>, live: impl FnMut(&T) -> bool) {
@@ -149,7 +189,7 @@ pub struct CollectionStats {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CollectionResult {
     NotRequested,
-    /// A borrow, reentrant call or inconsistent reference count prevented a
+    /// A host deferral, borrow, reentrant call or inconsistent reference count prevented a
     /// pass. The request remains pending and no node contents were changed.
     Deferred,
     Collected(CollectionStats),
@@ -179,14 +219,19 @@ impl Drop for ActivePass {
 /// Attempt an immediate conservative pass at a host safe point.
 ///
 /// No user callbacks may be executing while the host invokes this function.
+/// An enclosing [`defer_collection`] scope keeps a request pending instead
+/// when an interpreter call returns before its host guards have ended.
 /// A borrow conflict defers the entire pass, and destructors may safely
 /// allocate nodes or request another pass: sweeping is never reentrant.
 /// First detach all white mutable table/upvalue/host payloads, release every borrow, then
 /// drop detached values. Unknown ownership remains an external root.
 pub fn collect_tables() -> CollectionResult {
+    let deferred = COLLECTION_DEFERRALS
+        .try_with(|depth| depth.get() != 0)
+        .unwrap_or(false);
     let started = COLLECTOR.try_with(|collector| {
         let mut collector = collector.borrow_mut();
-        if collector.active {
+        if deferred || collector.active {
             collector.pending = true;
             false
         } else {
@@ -211,6 +256,9 @@ pub fn collect_tables() -> CollectionResult {
         }
     }
 }
+
+#[cfg(test)]
+mod deferral_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum NodeId {

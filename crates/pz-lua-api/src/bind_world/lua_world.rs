@@ -13,7 +13,8 @@
 //! ([`shared_water_flow`]).
 
 use super::{
-    get, grid, java_err, key_of, npe, obj, opt, self_world, void, wrong, Key, ZoneClass, WORLD,
+    get, grid, java_err, key_of, npe, obj, opt, self_world, void, with_world_state_cell, wrong, Key,
+    ZoneClass,
 };
 use crate::bind_java_util::list_value;
 use crate::expose::{expose_class, global, int_arg, num_arg, str_arg, ClassBuilder};
@@ -518,7 +519,7 @@ pub fn register_zone(thread: &mut Thread) {
     let field = |b: &ClassBuilder, name: &str, f: fn(&pz_world::zones::Zone) -> Value| {
         get(b, name, move |c| {
             let id = zone_of(c)?;
-            WORLD.with(|w| match w.borrow().meta_grid.as_ref() {
+            with_world_state_cell(|w| match w.borrow().meta_grid.as_ref() {
                 Some(g) => Ok(f(g.zone(id))),
                 None => Err(LuaError::runtime("IsoMetaGrid is not loaded")),
             })

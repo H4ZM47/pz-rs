@@ -25,20 +25,57 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> Result<T> {
 /// Reading side of a heap `ByteBuffer`.
 pub struct Reader<'a> {
     buf: &'a [u8],
-    pos: usize,
+    cursor: Cursor<'a>,
+}
+
+enum Cursor<'a> {
+    Owned(usize),
+    Borrowed(&'a mut usize),
 }
 
 impl<'a> Reader<'a> {
     pub fn new(buf: &'a [u8]) -> Self {
-        Reader { buf, pos: 0 }
+        Reader {
+            buf,
+            cursor: Cursor::Owned(0),
+        }
+    }
+
+    /// Shares the caller's original buffer limit and absolute cursor. Every
+    /// read/seek is immediately visible to the caller, including a completed
+    /// prefix followed by an error. This does not make a record/block slice.
+    pub fn borrow_cursor(buf: &'a [u8], pos: &'a mut usize) -> Result<Self> {
+        if buf.len() > i32::MAX as usize || *pos > buf.len() {
+            return err("IllegalArgumentException");
+        }
+        Ok(Self {
+            buf,
+            cursor: Cursor::Borrowed(pos),
+        })
     }
 
     pub fn pos(&self) -> usize {
-        self.pos
+        match &self.cursor {
+            Cursor::Owned(pos) => *pos,
+            Cursor::Borrowed(pos) => **pos,
+        }
+    }
+
+    fn set_pos(&mut self, value: usize) {
+        match &mut self.cursor {
+            Cursor::Owned(pos) => *pos = value,
+            Cursor::Borrowed(pos) => **pos = value,
+        }
+    }
+
+    /// The original ByteBuffer limit, independent of a component's declared
+    /// ByteBlock end. A native ByteBuffer cannot have a limit above i32::MAX.
+    pub fn limit(&self) -> usize {
+        self.buf.len()
     }
 
     pub fn remaining(&self) -> usize {
-        self.buf.len() - self.pos
+        self.buf.len() - self.pos()
     }
 
     /// `position(p)`.
@@ -46,7 +83,18 @@ impl<'a> Reader<'a> {
         if p > self.buf.len() {
             return err("BufferUnderflowException");
         }
-        self.pos = p;
+        self.set_pos(p);
+        Ok(())
+    }
+
+    /// Java `ByteBuffer.position(int)`, including backwards movement. Use
+    /// wrapping i32 arithmetic at the call site for native ByteBlock.End.
+    /// Invalid positions do not move the cursor.
+    pub fn seek_java(&mut self, p: i32) -> Result<()> {
+        if p < 0 || p as usize > self.buf.len() {
+            return err("IllegalArgumentException");
+        }
+        self.set_pos(p as usize);
         Ok(())
     }
 
@@ -54,8 +102,9 @@ impl<'a> Reader<'a> {
         if self.remaining() < n {
             return err("BufferUnderflowException");
         }
-        let s = &self.buf[self.pos..self.pos + n];
-        self.pos += n;
+        let pos = self.pos();
+        let s = &self.buf[pos..pos + n];
+        self.set_pos(pos + n);
         Ok(s)
     }
 

@@ -84,7 +84,7 @@ pub(super) fn register(b: &ClassBuilder) {
         };
         let sprites = crate::bind_sprites::manager()?;
         let range = world_state::generator_power_range();
-        WORLD.with(|world| {
+        with_world_state_cell(|world| {
             let world = world
                 .try_borrow()
                 .map_err(|_| LuaError::runtime("IsoWorld is in use"))?;
