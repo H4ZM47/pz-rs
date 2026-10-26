@@ -499,6 +499,7 @@ impl IsoWorld {
         // `SandboxOptions.instance.load()`.
         let sb = sandbox(lua).ok_or("SandboxOptions.instance")?;
         self.load_sandbox(lua, &sb);
+        pz_lua_api::bind_world::power::install_sandbox(Some(sb.clone()));
         // TODO(port): `ItemPickerJava.Parse()`.
         self.hydro_power_on = {
             let gt = pz_lua_api::bind_climate::shared_game_time();

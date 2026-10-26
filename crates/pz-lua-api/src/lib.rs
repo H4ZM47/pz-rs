@@ -32,6 +32,7 @@ pub mod bind_fs;
 pub mod bind_global_objects;
 pub mod bind_globals;
 pub mod bind_item_container;
+pub(crate) mod bind_item_age;
 pub mod bind_item_name;
 pub mod bind_item_visual;
 pub mod bind_items;
@@ -100,6 +101,9 @@ use std::rc::Rc;
 
 /// Register all globals and exposed classes.
 pub fn register_all(mgr: &mut LuaManager) {
+    // A new Lua session must not retain the previous session's sandbox
+    // provider. Native generator range latches have a separate lifetime.
+    bind_world::power::install_sandbox(None);
     let fs = mgr.fs.clone();
     let events = mgr.events.clone();
     let sink = move |t: &mut pz_kahlua::Thread, name: &str, a: &[pz_kahlua::Value]| {
@@ -130,6 +134,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_joypad::register(mgr);
     bind_erosion::register(&mut mgr.thread);
     bind_items::register(&mut mgr.thread);
+    bind_item_age::install_events(mgr.events.clone());
     bind_item_container::register(&mut mgr.thread);
     bind_misc::register(&mut mgr.thread, mgr.fs.clone(), mgr.events.clone());
     bind_sandbox::register(&mut mgr.thread, mgr.fs.clone(), mgr.loader.clone());

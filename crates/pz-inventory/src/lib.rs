@@ -16,6 +16,7 @@ pub mod dictionary;
 pub mod env;
 pub mod factory;
 pub mod floor_drop;
+pub mod food_age;
 pub mod gameplay;
 pub mod io;
 pub mod item;

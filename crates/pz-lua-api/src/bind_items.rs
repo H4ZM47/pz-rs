@@ -679,6 +679,19 @@ macro_rules! envd {
 fn register_inventory_item(thread: &mut Thread) {
     expose_class(thread, GAME_ENTITY_CLASS, None);
     let b = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
+    b.method("updateAge", |c| {
+        let item = this(c)?;
+        let argument = match c.nargs() {
+            1 => None,
+            2 => match c.arg(1) {
+                Value::Bool(value) => Some(value),
+                _ => return Err(LuaError::runtime("updateAge(boolean): expected boolean")),
+            },
+            _ => return Err(LuaError::runtime("updateAge: invalid argument count")),
+        };
+        crate::bind_item_age::update_age(c.thread, &item, argument)?;
+        Ok(0)
+    });
     get!(b, "getType", |i| Value::from(i.get_type()));
     get!(b, "getFullType", |i| Value::from(i.get_full_type()));
     get!(b, "getCategory", |i| Value::from(i.get_category()));
@@ -1216,6 +1229,28 @@ fn register_food(thread: &mut Thread) {
         "zombie.inventory.types.Food",
         Some(INVENTORY_ITEM_CLASS),
     );
+    get!(b, "canBeFrozen", |i| Value::from(matches!(&i.kind, ItemKind::Food(f) if f.can_be_frozen)));
+    b.method("setCanBeFrozen", |c| {
+        let item = this(c)?;
+        if let ItemKind::Food(food) = &mut item.borrow_mut().kind { food.can_be_frozen = bool_arg(c, 1); }
+        Ok(0)
+    });
+    get!(b, "getFreezingTime", |i| food(&i, |f| f.freezing_time));
+    b.method("setFreezingTime", |c| {
+        let item = this(c)?;
+        if let ItemKind::Food(food) = &mut item.borrow_mut().kind { food.set_freezing_time(num_arg(c, 1) as f32); }
+        Ok(0)
+    });
+    b.method("isFreezing", |c| {
+        let item = this(c)?;
+        let value = crate::bind_item_age::is_freezing(c.thread, &item)?;
+        Ok(c.push(value))
+    });
+    b.method("isThawing", |c| {
+        let item = this(c)?;
+        let value = crate::bind_item_age::is_thawing(c.thread, &item)?;
+        Ok(c.push(value))
+    });
     get!(b, "getHungerChange", |i| f(i.get_hunger_change()));
     get!(b, "getHungChange", |i| f(i.get_hung_change()));
     get!(b, "getBaseHunger", |i| f(i.get_base_hunger()));

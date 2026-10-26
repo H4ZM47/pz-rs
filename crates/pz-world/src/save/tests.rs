@@ -62,6 +62,33 @@ fn ctx<'a>(
     }
 }
 
+// These archive fixtures explicitly provide an authored sandbox source for
+// the real generator constructor; production never falls back to this data.
+struct GeneratorRangeFixture {
+    source: Option<crate::world_state::GeneratorRangeSource>,
+    range: crate::world_state::GeneratorPowerRange,
+}
+
+impl GeneratorRangeFixture {
+    fn new() -> Self {
+        let range = crate::world_state::generator_power_range();
+        let source = crate::world_state::install_generator_range_source(Some(
+            crate::world_state::GeneratorRangeSource {
+                vertical: || Ok(3),
+                radius: || Ok(20),
+            },
+        ));
+        Self { source, range }
+    }
+}
+
+impl Drop for GeneratorRangeFixture {
+    fn drop(&mut self) {
+        crate::world_state::install_generator_range_source(self.source);
+        crate::world_state::set_generator_power_range(self.range);
+    }
+}
+
 fn body(parts: usize) -> IsoDeadBody {
     let mut c = ItemContainer::new(Some("inventorymale"));
     c.id = 42;
@@ -255,6 +282,7 @@ fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
 
 #[test]
 fn chunk_round_trip() {
+    let _generator_ranges = GeneratorRangeFixture::new();
     let m = sprites();
     let t = SaveTables::for_tests();
     // Saved ages are clamped to the world age on load.
@@ -495,6 +523,7 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
 
 #[test]
 fn load_transforms() {
+    let _generator_ranges = GeneratorRangeFixture::new();
     let m = sprites();
     let t = SaveTables::for_tests();
     let s = SaveSettings {
@@ -573,6 +602,7 @@ fn load_transforms() {
 
 #[test]
 fn errors_and_versions() {
+    let _generator_ranges = GeneratorRangeFixture::new();
     let m = sprites();
     let t = SaveTables::for_tests();
     let s = SaveSettings::default();
@@ -606,6 +636,7 @@ fn errors_and_versions() {
 
 #[test]
 fn erosion_hook_order() {
+    let _generator_ranges = GeneratorRangeFixture::new();
     struct Log(Vec<(i32, i32, i32)>, bool);
     impl ChunkLoadHook for Log {
         fn load_grid_square(
@@ -639,6 +670,7 @@ fn erosion_hook_order() {
 
 #[test]
 fn finish_chunk_load_recalculates_before_hook() {
+    let _generator_ranges = GeneratorRangeFixture::new();
     struct Seen(Vec<bool>, bool);
     impl ChunkLoadHook for Seen {
         fn load_grid_square(
@@ -805,6 +837,7 @@ fn reads_init_factory_calls() {
 
 #[test]
 fn barricades_choose_sprite() {
+    let _generator_ranges = GeneratorRangeFixture::new();
     let b = |dir: i8, planks: usize, metal: i32, bars: i32| {
         let mut plank_health = [0; 4];
         plank_health[..planks].fill(1000);
@@ -1133,6 +1166,7 @@ fn sprite_config_master_follows_the_object_sprite() {
 
 #[test]
 fn whole_object_owner_live_base_changes_save_and_archive_snapshot_is_independent() {
+    let _generator_ranges = GeneratorRangeFixture::new();
     use std::rc::Rc;
     let m = sprites();
     let t = SaveTables::for_tests();

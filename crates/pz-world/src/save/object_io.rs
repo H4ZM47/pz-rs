@@ -89,6 +89,9 @@ pub fn load_object(
             load_tail(r, ctx, wv, &mut obj)?;
         }
         Err(e) if e.0.starts_with("deferred:") => {
+            if name == Some("IsoGenerator") {
+                crate::world_state::generator_constructed()?;
+            }
             obj.components = ctx.hooks.factory_components(name.unwrap_or("IsoObject"));
             if name == Some("FeedingTrough") {
                 feeding_trough_constructor(&mut obj);

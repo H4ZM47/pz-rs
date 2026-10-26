@@ -191,6 +191,10 @@ fn lua_ref(r: &Option<Rc<dyn Any>>) -> Value {
         .map_or(Value::Nil, |l| l.value.clone())
 }
 
+pub(crate) fn source_grid(c: &ContainerRef) -> Value {
+    lua_ref(&c.borrow().source_grid)
+}
+
 /// The [`ItemOwner`] of the container's parent, when it was set with
 /// [`set_parent_with_owner`].
 pub fn parent_owner(c: &SharedContainer) -> Option<Rc<dyn ItemOwner>> {
@@ -1019,7 +1023,7 @@ fn has_room_for_weight(
 }
 
 /// `isPowered()`.
-fn is_powered(t: &mut Thread, c: &ContainerRef) -> LuaResult<bool> {
+pub(crate) fn is_powered(t: &mut Thread, c: &ContainerRef) -> LuaResult<bool> {
     let p = parent(c);
     if p.is_nil() {
         return Ok(false);
@@ -1031,7 +1035,7 @@ fn is_powered(t: &mut Thread, c: &ContainerRef) -> LuaResult<bool> {
 }
 
 /// `isFridge()`.
-fn is_fridge(t: &mut Thread, c: &ContainerRef) -> LuaResult<bool> {
+pub(crate) fn is_fridge(t: &mut Thread, c: &ContainerRef) -> LuaResult<bool> {
     let (fridge, freezer, none) = {
         let s = c.borrow();
         (s.is_fridge_type(), s.is_freezer(), s.kind == "none")
@@ -1071,7 +1075,7 @@ fn is_fridge_or_freezer_warming(t: &mut Thread, c: &ContainerRef) -> LuaResult<b
 }
 
 /// `getTemperature()`.
-fn temperature(t: &mut Thread, c: &ContainerRef) -> LuaResult<f32> {
+pub(crate) fn temperature(t: &mut Thread, c: &ContainerRef) -> LuaResult<f32> {
     let custom = c.borrow().custom_temperature;
     if custom != 0.0 {
         return Ok(custom);

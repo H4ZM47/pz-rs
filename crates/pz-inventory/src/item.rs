@@ -245,6 +245,9 @@ pub struct FoodData {
     pub food_sickness_change: i32,
     pub poison: bool,
     pub use_for_poison: i32,
+    /// `Food.canBeFrozen` (runtime only; native constructors set true).
+    /// Loading food fields leaves the existing value unchanged.
+    pub can_be_frozen: bool,
     pub freezing_time: f32,
     pub frozen: bool,
     pub last_frozen_update: f32,
@@ -1382,6 +1385,7 @@ impl ClothingData {
 
 impl FoodData {
     fn from_template(t: &ItemTemplate) -> Self {
+        crate::food_age::initialize_update_rate();
         FoodData {
             age: 0.0,
             last_aged: -1.0,
@@ -1412,6 +1416,7 @@ impl FoodData {
             food_sickness_change: 0,
             poison: false,
             use_for_poison: 0,
+            can_be_frozen: true,
             freezing_time: 0.0,
             frozen: false,
             last_frozen_update: 0.0,
