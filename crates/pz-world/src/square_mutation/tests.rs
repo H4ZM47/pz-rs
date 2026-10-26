@@ -855,12 +855,12 @@ fn floor_placement_callbacks_keep_original_receiver_after_same_id_replacement() 
 }
 
 #[test]
-fn floor_removal_transfers_fluid_then_removes_only_first_actual_membership() {
+fn floor_removal_notifies_fluid_before_removing_only_first_actual_membership() {
     use crate::world_objects::WorldObjectEntry as Entry;
     struct Calls {
         square: crate::SquareRef,
         actual: IsoObjectRef,
-        transferred: bool,
+        notifications: usize,
     }
     impl SquareMutationHooks for Calls {
         fn world_call(
@@ -872,25 +872,45 @@ fn floor_removal_transfers_fluid_then_removes_only_first_actual_membership() {
         ) {
             assert_eq!(call, WorldCall::WorldItemTransferFluid);
             assert!(Rc::ptr_eq(&actual, &self.actual));
-            assert_eq!(self.square.borrow().world_objects.borrow().len(), 4);
+            let square = self
+                .square
+                .try_borrow_mut()
+                .expect("fluid notification retained the square guard");
+            let list = square
+                .world_objects
+                .try_borrow_mut()
+                .expect("fluid notification retained the world-list guard");
+            assert_eq!(list.len(), 4);
             assert_eq!(
-                self.square
-                    .borrow()
+                square
                     .objects
                     .iter()
                     .filter(|o| o.ptr_eq_ref(&actual))
                     .count(),
                 2
             );
-            actual.borrow_mut().key_id = 555;
-            self.transferred = true;
+            actual
+                .try_borrow_mut()
+                .expect("fluid notification retained the receiver guard")
+                .key_id = 555;
+            self.notifications += 1;
         }
     }
     let mut w = World::new();
     let p = (2, 2, 0);
     let item = world_item("A", 1);
     let actual = floor_owner(700, crate::floor_item::FloorItem::retain(&item));
-    actual.borrow_mut().has_components = true;
+    {
+        let mut object = actual.borrow_mut();
+        object.has_components = true;
+        // Empty fluid still qualifies: native checks the component's type,
+        // not its current amount or the presence of unrelated components.
+        object
+            .components
+            .push(pz_inventory::component::encode_component(
+                pz_entity::Component::FluidContainer(Default::default()),
+            ));
+    }
     let replacement = ObjectSlot::new(actual.borrow().clone());
     let replacement_owner = replacement.ref_handle();
     let sq = w.sq(p);
@@ -909,7 +929,7 @@ fn floor_removal_transfers_fluid_then_removes_only_first_actual_membership() {
     let mut calls = Calls {
         square: sq.clone(),
         actual: actual.clone(),
-        transferred: false,
+        notifications: 0,
     };
     let removed = {
         let mut env = w.env();
@@ -921,7 +941,9 @@ fn floor_removal_transfers_fluid_then_removes_only_first_actual_membership() {
         )
     }
     .unwrap();
-    assert!(calls.transferred && removed.ptr_eq_ref(&actual));
+    assert_eq!(calls.notifications, 1);
+    assert!(removed.ptr_eq_ref(&actual));
+    assert_eq!(actual.borrow().key_id, 555);
     let sq = sq.borrow();
     assert_eq!(
         sq.objects.iter().filter(|o| o.ptr_eq_ref(&actual)).count(),
@@ -937,6 +959,61 @@ fn floor_removal_transfers_fluid_then_removes_only_first_actual_membership() {
     ));
     assert!(matches!(list.entry(1), Some(Entry::Object(o)) if Rc::ptr_eq(&o, &replacement_owner)));
     assert!(matches!(list.entry(2), Some(Entry::Object(o)) if Rc::ptr_eq(&o, &actual)));
+}
+
+#[test]
+fn floor_removal_fluid_notification_requires_real_component_and_floor_kind() {
+    use pz_entity::ComponentType;
+    for (floor, marker, component) in [
+        (true, false, None),
+        (true, true, None),
+        (true, true, Some(ComponentType::Attributes)),
+        (false, true, Some(ComponentType::FluidContainer)),
+    ] {
+        let mut w = World::new();
+        let p = (2, 2, 0);
+        let actual = if floor {
+            floor_owner(
+                700,
+                crate::floor_item::FloorItem::retain(&world_item("A", 1)),
+            )
+        } else {
+            ObjectSlot::new(IsoObject::new(700, ObjectKind::Object, None)).ref_handle()
+        };
+        {
+            let mut object = actual.borrow_mut();
+            object.has_components = marker;
+            if let Some(kind) = component {
+                object
+                    .components
+                    .push(pz_inventory::component::encode_component(
+                        pz_entity::Component::create(kind).unwrap(),
+                    ));
+            }
+        }
+        let square = w.sq(p);
+        {
+            let mut square = square.borrow_mut();
+            square.objects.push(ObjectSlot::retain(&actual));
+            square.special_objects.push(700);
+            square.world_objects.borrow_mut().push_object(&actual);
+        }
+        let removed = super::lifecycle::remove_from_square_handle(
+            &mut w.env(),
+            ObjectRef { pos: p, id: 700 },
+            &actual,
+        )
+        .unwrap();
+        assert!(removed.ptr_eq_ref(&actual));
+        assert!(
+            w.h.0.borrow().is_empty(),
+            "unexpected fluid notification: floor={floor}, marker={marker}, component={component:?}"
+        );
+        let square = square.borrow();
+        assert!(!square.objects.iter().any(|o| o.ptr_eq_ref(&actual)));
+        assert!(square.special_objects.is_empty());
+        assert_eq!(square.world_objects.borrow().len(), usize::from(!floor));
+    }
 }
 
 #[test]
@@ -970,6 +1047,14 @@ fn detached_floor_list_removal_retires_final_owner_until_guards_end() {
         drops: drops.clone(),
     }));
     let actual = floor_owner(700, crate::floor_item::FloorItem::retain(&bag));
+    // The generic marker is deliberately left false. Native hasComponents
+    // derives its answer from the actual component collection.
+    actual
+        .borrow_mut()
+        .components
+        .push(pz_inventory::component::encode_component(
+            pz_entity::Component::FluidContainer(Default::default()),
+        ));
     let weak = Rc::downgrade(&actual);
     list.borrow_mut().push_object(&actual);
     drop(inventory);
@@ -982,6 +1067,10 @@ fn detached_floor_list_removal_retires_final_owner_until_guards_end() {
         &actual
     )
     .is_none());
+    assert_eq!(
+        w.h.0.borrow().as_slice(),
+        ["world 700 WorldItemTransferFluid"]
+    );
     drop(actual);
     assert!(list.borrow().is_empty());
     assert!(weak.upgrade().is_some());

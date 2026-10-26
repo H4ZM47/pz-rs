@@ -594,14 +594,16 @@ pub(super) fn remove_from_square_handle(
     r: ObjectRef,
     object: &IsoObjectRef,
 ) -> Option<ObjectSlot> {
-    let world_item = {
+    let (world_item, has_fluid_container) = {
         let o = object.borrow();
         (
             matches!(o.kind, ObjectKind::WorldInventory(_)),
-            o.has_components,
+            o.components
+                .iter()
+                .any(|c| c.type_id == pz_entity::ComponentType::FluidContainer.id()),
         )
     };
-    if world_item == (true, true) {
+    if world_item && has_fluid_container {
         call(
             env,
             &Receiver {
@@ -613,7 +615,7 @@ pub(super) fn remove_from_square_handle(
     }
     let sq_owner = env.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)?;
     let mut sq = sq_owner.borrow_mut();
-    if world_item.0 {
+    if world_item {
         let removed = sq.world_objects.borrow_mut().remove_first_object(object);
         if let Some(crate::world_objects::WorldObjectEntry::Object(owner)) = removed {
             sq.retire_object(ObjectSlot::retain(&owner));
