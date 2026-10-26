@@ -598,9 +598,7 @@ pub(super) fn remove_from_square_handle(
         let o = object.borrow();
         (
             matches!(o.kind, ObjectKind::WorldInventory(_)),
-            o.components
-                .iter()
-                .any(|c| c.type_id == pz_entity::ComponentType::FluidContainer.id()),
+            !matches!(o.components.runtime().presence(pz_entity::ComponentType::FluidContainer), pz_entity::EntryPresence::Absent),
         )
     };
     if world_item && has_fluid_container {

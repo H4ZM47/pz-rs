@@ -43,6 +43,20 @@ pub enum WorldItemPlaced {
     NotPlaced,
 }
 
+#[derive(Debug)]
+pub enum WorldItemPlacementError {
+    Component(pz_entity::runtime_load::RuntimeHostError),
+    Binding(crate::object_slot::ObjectBindingError),
+}
+
+impl std::fmt::Display for WorldItemPlacementError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "world item placement: {self:?}")
+    }
+}
+
+impl std::error::Error for WorldItemPlacementError {}
+
 impl IsoGridSquare {
     /// `getApparentZ(dx, dy)`: the stairs' height (with the 0.1 fudge when
     /// `fbo_render_chunk`), else the sloped surface's, above the level.
@@ -172,10 +186,6 @@ pub fn render_square(cell: &IsoCell, pos: SquarePos) -> Option<SquarePos> {
 }
 
 /// `ComponentType.FluidContainer`'s id.
-fn fluid_container_id() -> i16 {
-    pz_entity::ComponentType::FluidContainer.id()
-}
-
 impl MutationEnv<'_> {
     /// `AddWorldInventoryItem(item, x, y, height)` (with `transmit`, which
     /// only matters on a server) on the square at `pos`; `world_age_hours`
@@ -205,8 +215,20 @@ impl MutationEnv<'_> {
         height: f32,
         world_age_hours: f64,
     ) -> WorldItemPlaced {
+        self.try_add_world_inventory_item(pos, item, x, y, height, world_age_hours)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// Fallible actual-reference path. Detached owners and failed receiver
+    /// pins are queued in the cell until an outer world/sprite safe boundary.
+    /// Native world-manager/meta registration still requires its real host;
+    /// component storage movement alone does not complete that lifecycle.
+    pub fn try_add_world_inventory_item(
+        &mut self, pos: SquarePos, item: &ItemRef, x: f32, y: f32,
+        height: f32, world_age_hours: f64,
+    ) -> Result<WorldItemPlaced, WorldItemPlacementError> {
         if self.sq(pos).is_none() {
-            return WorldItemPlaced::NotPlaced;
+            return Ok(WorldItemPlaced::NotPlaced);
         }
         // `tryAddCorpseToWorld(item, x, y)`.
         let corpse = {
@@ -216,7 +238,7 @@ impl MutationEnv<'_> {
         if corpse {
             let body = self.world.corpse_from_item(pos, &item.borrow());
             let Some(mut body) = body else {
-                return WorldItemPlaced::NotPlaced;
+                return Ok(WorldItemPlaced::NotPlaced);
             };
             body.base.x = pos.0 as f32 + x;
             body.base.y = pos.1 as f32 + y;
@@ -226,7 +248,7 @@ impl MutationEnv<'_> {
             let index = self
                 .sq(pos)
                 .map_or(0, |sq| sq.borrow().static_moving.len() - 1);
-            return WorldItemPlaced::Corpse { pos, index };
+            return Ok(WorldItemPlaced::Corpse { pos, index });
         }
         self.invalidate_render(pos, WORLD_ITEM_ADDED);
         let generator = {
@@ -237,22 +259,22 @@ impl MutationEnv<'_> {
         if generator {
             let obj = self.world.generator_from_item(pos, &item.borrow());
             let Some(obj) = obj else {
-                return WorldItemPlaced::NotPlaced;
+                return Ok(WorldItemPlaced::NotPlaced);
             };
             let id = self.add_special_object(pos, obj, -1);
             self.world.process_items_remove(&item.borrow());
-            return match id {
+            return Ok(match id {
                 Some(id) => WorldItemPlaced::Generator(ObjectRef { pos, id }),
                 None => WorldItemPlaced::NotPlaced,
-            };
+            });
         }
         if item.borrow().template.class == ItemClass::Animal {
             self.world.animal_dropped(pos, &item.borrow());
             self.world.process_items_remove(&item.borrow());
-            return WorldItemPlaced::Animal;
+            return Ok(WorldItemPlaced::Animal);
         }
         // `new IsoWorldInventoryObject(item, sq, x, y, height)`.
-        let mut components = Vec::new();
+        let mut components = pz_inventory::ItemComponents::new();
         {
             let mut i = item.borrow_mut();
             i.world_x_rotation = 0.0;
@@ -270,16 +292,26 @@ impl MutationEnv<'_> {
         if yoff == 0.0 {
             yoff = self.rand.next(1000) as f32 / 1000.0;
         }
-        {
-            // `GameEntityFactory.TransferComponent(item, this,
-            // FluidContainer)`.
-            let mut i = item.borrow_mut();
-            let fc = fluid_container_id();
-            if let Some(k) = i.components.iter().position(|b| b.type_id == fc) {
-                components.push(i.components.remove(k));
-                i.component_cache = None;
+        let mut retired = pz_entity::RetiredComponents::new();
+        let moved = pz_inventory::component_host::detach_component_for_transfer(
+            item, pz_entity::ComponentType::FluidContainer, &mut retired,
+        );
+        let moved = match moved {
+            Ok(moved) => moved,
+            Err(error) => {
+                self.cell.retire_components(retired);
+                return Err(WorldItemPlacementError::Component(error));
+            }
+        };
+        if let Some(component) = moved {
+            if let Err(rejected) = components.runtime_mut().push_ref_if_absent(component) {
+                let error = rejected.error;
+                retired.push_component(rejected.component);
+                self.cell.retire_components(retired);
+                return Err(WorldItemPlacementError::Component(pz_entity::runtime_load::RuntimeHostError::Storage(error)));
             }
         }
+        self.cell.retire_components(retired);
         let (name, key_id) = {
             let i = item.borrow();
             let name = self
@@ -311,11 +343,14 @@ impl MutationEnv<'_> {
         obj.components = components;
         obj.name = Some(ObjectName::Str(name));
         obj.key_id = key_id;
+        let slot = ObjectSlot::try_new(obj).map_err(|failure| {
+            self.cell.retire_object(ObjectSlot::retain(&failure.object));
+            WorldItemPlacementError::Binding(failure.error)
+        })?;
         let sq_owner = self.sq_mut(pos).unwrap();
         let mut sq = sq_owner.borrow_mut();
-        obj.id = sq.new_object_id();
-        let id = obj.id;
-        let slot = ObjectSlot::new(obj);
+        let id = sq.new_object_id();
+        slot.borrow_mut().id = id;
         let object = slot.ref_handle();
         sq.objects.push(slot);
         sq.world_objects.borrow_mut().push_object(&object);
@@ -326,7 +361,7 @@ impl MutationEnv<'_> {
         if let Some(rs) = render_square(self.cell, pos) {
             self.invalidate_render(rs, WORLD_ITEM_ADDED);
         }
-        WorldItemPlaced::Object(r)
+        Ok(WorldItemPlaced::Object(r))
     }
 
     fn apparent_z(&self, pos: SquarePos, dx: f32, dy: f32) -> f32 {

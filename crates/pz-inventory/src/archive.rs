@@ -14,6 +14,7 @@ use crate::{InventoryItem, ItemContainer, ItemKind, SavedItem};
 pub enum ArchiveCopyError {
     BorrowedItem,
     BorrowedContainer,
+    BorrowedComponent,
     CyclicContainer,
     DepthLimit,
     SizeLimit,
@@ -107,6 +108,15 @@ impl ArchiveCopyCheck {
 
     fn item(&mut self, item: &InventoryItem, depth: usize) -> Result<(), ArchiveCopyError> {
         self.enter(depth)?;
+        for entry in item.components.entry_slots() {
+            if let pz_entity::RuntimeEntryView::Live { component, .. } = entry {
+                let body = component
+                    .try_borrow()
+                    .map_err(|_| ArchiveCopyError::BorrowedComponent)?;
+                body.check_archive_copy()
+                    .map_err(|_| ArchiveCopyError::BorrowedComponent)?;
+            }
+        }
         if let Some(table) = &item.table {
             self.table_at(table, depth + 1)?;
         }

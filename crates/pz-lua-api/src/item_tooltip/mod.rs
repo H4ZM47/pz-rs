@@ -881,8 +881,12 @@ fn tail_rows(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout
                 .value(&v, LABEL);
         }
     }
-    if !is_weapon(&item.borrow()) && components::has_sharpness(&item.borrow()) {
-        let f = components::sharpness_mut(&mut item.borrow_mut());
+    if !is_weapon(&item.borrow())
+        && components::has_sharpness_ref(item)
+            .map_err(|error| LuaError::runtime(format!("{error:?}")))?
+    {
+        let f = components::sharpness_mut(item)
+            .map_err(|error| LuaError::runtime(format!("{error:?}")))?;
         let c = cx.bad_to_good(f);
         layout
             .add_item()

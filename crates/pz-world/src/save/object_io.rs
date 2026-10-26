@@ -83,7 +83,7 @@ pub fn load_object(
     match instantiate(name, ctx.tables.blood_body_parts) {
         Ok(kind) => {
             obj.kind = kind;
-            obj.components = ctx.hooks.factory_components(name.unwrap_or("IsoObject"));
+            obj.components = archive_constructor_components(ctx, name.unwrap_or("IsoObject"))?;
             obj.has_components = !obj.components.is_empty();
             load_base(r, ctx, wv, &mut obj)?;
             load_tail(r, ctx, wv, &mut obj)?;
@@ -92,9 +92,9 @@ pub fn load_object(
             if name == Some("IsoGenerator") {
                 crate::world_state::generator_constructed()?;
             }
-            obj.components = ctx.hooks.factory_components(name.unwrap_or("IsoObject"));
+            obj.components = archive_constructor_components(ctx, name.unwrap_or("IsoObject"))?;
             if name == Some("FeedingTrough") {
-                feeding_trough_constructor(&mut obj);
+                feeding_trough_constructor(&mut obj)?;
             }
             obj.has_components = !obj.components.is_empty();
             load_special(r, ctx, wv, &mut obj, &e.0["deferred:".len()..])?;
@@ -106,39 +106,66 @@ pub fn load_object(
 
 /// `new IsoFeedingTrough(cell)`: `createFluidContainer()` while `maxWater`
 /// is still 0 (the definition is read after `load`).
-fn feeding_trough_constructor(obj: &mut IsoObject) {
+fn archive_constructor_components(ctx: &SaveCtx<'_>, name: &str) -> SaveResult<ItemComponents> {
+    ItemComponents::from_encoded_blobs(ctx.hooks.factory_components(name), pz_inventory::component::BLOB_WORLD_VERSION)
+        .map_err(|rejected| super::io::SaveError(format!("object component archive: {}", rejected.error)))
+}
+
+fn feeding_trough_constructor(obj: &mut IsoObject) -> SaveResult<()> {
     let fc = pz_entity::factory::feeding_trough_fluid_container(0.0);
     let blob = pz_inventory::component::encode_component(pz_entity::Component::FluidContainer(fc));
     // GameEntityFactory.AddComponent(this, true, fc) replaces one of the type.
-    match obj
-        .components
-        .iter_mut()
-        .find(|c| c.type_id == blob.type_id)
-    {
+    // This by-value constructor is an explicit archive boundary. Production
+    // world lifecycle must obtain a real pooled ref and run its host phases.
+    let mut blobs = obj.components.try_encoded_blobs().map_err(|error| super::io::SaveError(error.to_string()))?;
+    match blobs.iter_mut().find(|c| c.type_id == blob.type_id) {
         Some(c) => *c = blob,
-        None => obj.components.push(blob),
+        None => blobs.push(blob),
     }
+    obj.components = ItemComponents::from_encoded_blobs(blobs, pz_inventory::component::BLOB_WORLD_VERSION)
+        .map_err(|rejected| super::io::SaveError(rejected.error.to_string()))?;
+    Ok(())
 }
 
 fn sprite_or_null(ctx: &SaveCtx<'_>, id: i32) -> Option<SpriteIdx> {
     ctx.sprites.idx_by_id(id)
 }
 
-/// `GameEntity.loadEntity`: through the item environment's component
-/// codec, so components the constructor made load in place.
-fn load_entity(
+/// The existing by-value world archive decoder. It is deliberately restricted
+/// to encoded carriers before publication. Live component loading requires
+/// the actual world owner and ordered lifecycle/manager host, not this adapter.
+fn load_entity_archive(
     r: &mut Reader<'_>,
     ctx: &SaveCtx<'_>,
     wv: i32,
     obj: &mut IsoObject,
 ) -> SaveResult<()> {
+    if obj.components.is_bound() {
+        return err("owned world components require the native world load host");
+    }
+    let versions: std::collections::HashMap<_, _> = obj.components.entry_slots().filter_map(|entry| match entry {
+        pz_entity::RuntimeEntryView::Encoded(encoded) => Some((encoded.type_id(), encoded.world_version())),
+        _ => None,
+    }).collect();
+    let mut blobs = obj.components.try_encoded_blobs().map_err(|error| super::io::SaveError(error.to_string()))?;
     let loaded = ctx
         .items
         .components()
-        .load_entity(r, wv, &mut obj.components)?;
+        .load_entity(r, wv, &mut blobs)?;
     if loaded.contains(&SPRITE_CONFIG_ID) {
-        sprite_config_added(ctx, obj);
+        sprite_config_archive_projection(ctx, obj.sprite, &mut blobs);
     }
+    obj.components = ItemComponents::from_encoded_entries(blobs.into_iter().map(|blob| {
+        let version = if ctx.items.components().entity_context().is_some() {
+            pz_inventory::component::BLOB_WORLD_VERSION
+        } else if loaded.contains(&blob.type_id) {
+            wv
+        } else {
+            versions.get(&blob.type_id).copied().unwrap_or(pz_inventory::component::BLOB_WORLD_VERSION)
+        };
+        pz_entity::EncodedComponent::new(blob.type_id, blob.data, version)
+    }).collect())
+        .map_err(|rejected| super::io::SaveError(rejected.error.to_string()))?;
     obj.has_components = !obj.components.is_empty();
     Ok(())
 }
@@ -152,10 +179,8 @@ const SPRITE_CONFIG_ID: i16 = 3;
 /// `SpriteConfigManager` entry, not the saved flag. A script reference the
 /// dictionary does not resolve leaves no script (saved as a single 0).
 /// Without a script dictionary the bytes stay as loaded.
-fn sprite_config_added(ctx: &SaveCtx<'_>, obj: &mut IsoObject) {
-    let Some(c) = obj
-        .components
-        .iter_mut()
+fn sprite_config_archive_projection(ctx: &SaveCtx<'_>, sprite: Option<SpriteIdx>, blobs: &mut [ComponentBlob]) {
+    let Some(c) = blobs.iter_mut()
         .find(|c| c.type_id == SPRITE_CONFIG_ID)
     else {
         return;
@@ -186,8 +211,7 @@ fn sprite_config_added(ctx: &SaveCtx<'_>, obj: &mut IsoObject) {
         c.data = vec![0];
         return;
     };
-    let sprite = obj
-        .sprite
+    let sprite = sprite
         .and_then(|s| ctx.sprites.sprites[s].name.as_deref());
     c.data[master_at] = ctx.sprites.is_multi_square_master(config, sprite) as u8;
 }
@@ -198,13 +222,7 @@ fn save_entity(w: &mut Writer, obj: &IsoObject) -> SaveResult<()> {
         // form here.
         return err("object has entity components without saved data");
     }
-    w.i8(obj.components.len() as i8);
-    for c in &obj.components {
-        w.i32(c.data.len() as i32 + 2);
-        w.i16(c.type_id);
-        w.bytes(&c.data);
-    }
-    Ok(())
+    obj.components.write_to(w, pz_inventory::component::BLOB_WORLD_VERSION)
 }
 
 /// `IsoObject.load` (after the factory bytes).
@@ -382,7 +400,7 @@ fn load_base(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
             }
             o.moved_thumpable = has(bits, 2048);
             if has(bits, 4096) {
-                load_entity(r, ctx, wv, o)?;
+                load_entity_archive(r, ctx, wv, o)?;
             }
             if has(bits, 8192) {
                 o.sprite_model_name = Some(r.string()?);
@@ -1221,7 +1239,7 @@ fn load_special(
                 return Ok(());
             }
             if has(bits, 2) {
-                load_entity(r, ctx, wv, o)?;
+                load_entity_archive(r, ctx, wv, o)?;
             }
             o.sprite_id_override = Some(UNREGISTERED_SPRITE_ID);
             return Ok(());

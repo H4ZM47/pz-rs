@@ -251,6 +251,24 @@ impl OwnedEntityCodec {
 }
 
 impl ComponentCodec for OwnedEntityCodec {
+    fn load_archive_entity(
+        &self,
+        reader: &mut Reader<'_>,
+        world_version: i32,
+        components: &mut pz_inventory::ItemComponents,
+    ) -> SaveResult<pz_entity::RetiredComponents> {
+        self.codec().load_archive_entity(reader, world_version, components)
+    }
+    fn factory_runtime(
+        &self,
+        item: &pz_inventory::shared::ItemRef,
+        template: &ItemTemplate,
+        rng: &mut dyn FactoryRng,
+        retired: &mut pz_entity::RetiredComponents,
+        native_notices: &mut Vec<pz_entity::runtime_fluid::RuntimeNativeNotice>,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        self.codec().factory_runtime(item, template, rng, retired, native_notices)
+    }
     fn load_entity(
         &self,
         r: &mut Reader<'_>,

@@ -33,6 +33,8 @@ pub fn fluid_category_from_id(id: i8) -> Option<FluidCategory> {
 pub struct FluidRegistry {
     by_id: HashMap<i8, FluidInfo>,
     by_name: HashMap<String, FluidInfo>,
+    // Absent metadata means unknown, distinct from a known native null.
+    properties_by_name: HashMap<String, Option<SealedFluidProperties>>,
 }
 
 impl FluidRegistry {
@@ -116,6 +118,10 @@ impl FluidRegistry {
             defs.iter()
                 .map(|(t, s, c, k)| (*t, s.as_deref(), *c, k.clone())),
         );
+        // Both native Fluid constructors leave properties null. The public
+        // colour-only from_definitions helper deliberately does not invent
+        // this metadata; this actual script/constructor path knows it.
+        reg.properties_by_name = reg.by_name.keys().map(|name| (name.clone(), None)).collect();
         // The tail of `Fluid.Init`: blend filters, created once every fluid
         // is registered.
         let ctx = crate::context::BasicContext {
@@ -131,6 +137,27 @@ impl FluidRegistry {
                 },
                 t => t.name().to_string(),
             };
+            // Fluid.setScript allocates properties only when the definition
+            // has an explicitly non-default property. Otherwise the actual
+            // native field is null, rather than an unknown zero value.
+            let properties = d.has_properties_set().then(|| SealedFluidProperties {
+                fatigue_change: d.fatigue_change(),
+                hunger_change: d.hunger_change(),
+                stress_change: d.stress_change(),
+                thirst_change: d.thirst_change(),
+                unhappy_change: d.unhappy_change(),
+                calories: d.calories(),
+                carbohydrates: d.carbohydrates(),
+                lipids: d.lipids(),
+                proteins: d.proteins(),
+                alcohol: d.alcohol(),
+                flu_reduction: d.flu_reduction(),
+                pain_reduction: d.pain_reduction(),
+                endurance_change: d.endurance_change(),
+                food_sickness_change: d.food_sickness_change(),
+                poison: d.poison_max_effect().player_effect() as f32,
+            });
+            reg.set_properties(&name, properties);
             let white = d
                 .blend_whitelist()
                 .map(|f| crate::factory::filter_from_script(f, &ctx));
@@ -171,10 +198,30 @@ impl FluidRegistry {
 
     /// Adds or replaces one fluid (`Modded` fluids go in by name only).
     pub fn insert(&mut self, type_id: Option<i8>, info: FluidInfo) {
+        self.properties_by_name.remove(&info.name);
         if let Some(id) = type_id {
             self.by_id.insert(id, info.clone());
         }
         self.by_name.insert(info.name.clone(), info);
+    }
+
+    /// Set authenticated properties metadata for an existing fluid. A null
+    /// value is explicit; callers with only colour/name data leave it unknown.
+    pub fn set_properties(&mut self, name: &str, properties: Option<SealedFluidProperties>) -> bool {
+        if !self.by_name.contains_key(name) {
+            return false;
+        }
+        self.properties_by_name.insert(name.to_owned(), properties);
+        true
+    }
+
+    pub fn properties(&self, fluid: &FluidRef) -> Lookup<Option<SealedFluidProperties>> {
+        let info = match fluid {
+            FluidRef::Type(id) => self.by_id(*id),
+            FluidRef::Modded(name) => self.by_name(name),
+        };
+        let Some(info) = info else { return Lookup::Missing; };
+        self.properties_by_name.get(&info.name).cloned().map_or(Lookup::Unknown, Lookup::Found)
     }
 
     /// `Fluid.Get(FluidType.FromId(id))`.
@@ -541,6 +588,17 @@ impl FluidContainer {
     /// `rainCatcher` when the save has none). Instances whose fluid does not
     /// resolve are dropped.
     pub fn load(&mut self, r: &mut Reader<'_>, ctx: &dyn EntityContext) -> Result<()> {
+        self.load_data_without_cache(r, ctx)?;
+        self.recalculate_caches(true);
+        Ok(())
+    }
+
+    /// Field decoding for an actual runtime component. Its host completes
+    /// native load with the real colour/properties cache data phase followed
+    /// by owner notifications outside every component/entity guard. The DTO
+    /// archive loader above retains its separate value-cache contract.
+    pub(crate) fn load_data_without_cache(&mut self, r: &mut Reader<'_>, ctx: &dyn EntityContext) -> Result<()> {
+        self.amount_cache = 0.0;
         self.capacity = 1.0;
         self.whitelist = None;
         self.blacklist = None;
@@ -578,7 +636,6 @@ impl FluidContainer {
         if h & 512 != 0 {
             self.rain_catcher = r.f32()?;
         }
-        self.recalculate_caches(true);
         Ok(())
     }
 

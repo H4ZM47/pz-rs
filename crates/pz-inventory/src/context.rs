@@ -43,6 +43,17 @@ pub trait ItemContext {
     fn create_item(&self, _full_type: &str) -> Option<InventoryItem> {
         None
     }
+    /// Actual-owner factory for resumable production operations. A value
+    /// factory cannot stand in for native pooled allocation identity.
+    fn create_item_ref(
+        &self,
+        _full_type: &str,
+    ) -> pz_entity::runtime_load::HostResult<Option<crate::shared::ItemRef>> {
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "actual ItemContext item factory",
+            kind: None,
+        })
+    }
     /// `WorldDictionary.getItemTypeFromID(id)` (for `extraItems`).
     fn item_type_from_id(&self, _id: i16) -> Option<String> {
         None

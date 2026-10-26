@@ -46,6 +46,13 @@ pub trait ItemEnv {
         None
     }
 
+    /// DictionaryData.getItemTypeDebugString: the actual registered type,
+    /// or the native literal when getItemTypeFromID returns null.
+    fn item_type_debug_string(&self, registry_id: i16) -> String {
+        self.full_type(registry_id)
+            .unwrap_or_else(|| "Unknown".into())
+    }
+
     /// `WorldDictionary.getItemRegistryID`: -1 for an unknown type.
     fn registry_id(&self, _full_type: &str) -> i16 {
         -1
@@ -172,6 +179,182 @@ pub fn create_item(env: &dyn ItemEnv, registry_id: i16) -> Option<InventoryItem>
 /// constructors (see [`instance_draws`]).
 pub fn create_from_template(
     env: &dyn ItemEnv,
+    template: Rc<ItemTemplate>,
+    registry_id: i16,
+) -> InventoryItem {
+    let mut item = create_template_prefix(env, template.clone(), registry_id);
+    let codec = env.components();
+    match codec.factory_entity(&template, &mut crate::component::EnvRng(env)) {
+        Some(values) => drop(
+            item.set_components(values)
+                .expect("unowned component factory values"),
+        ),
+        None => {
+            item.components = crate::item_components::ItemComponents::from_encoded_blobs(
+                codec.factory_components(&template, &mut crate::component::EnvRng(env)),
+                crate::component::COMPONENT_WORLD_VERSION,
+            )
+            .expect("explicit component archive import")
+        }
+    }
+    finish_template_before_empty(env, &mut item);
+    if template.empty_fluid_container {
+        if let Some(context) = codec.entity_context() {
+            if let Some(mut fluid) = item.get_fluid_container(context) {
+                fluid.empty();
+                drop(
+                    item.set_fluid_container(fluid)
+                        .expect("unowned empty-fluid factory value"),
+                );
+            }
+        }
+    }
+    finish_template_after_empty(env, &mut item);
+    item
+}
+
+/// An actual factory receiver and completed native prefix on failure.
+#[derive(Debug)]
+#[must_use]
+pub struct FactoryItemFailure {
+    pub error: pz_entity::runtime_load::RuntimeHostError,
+    pub item: Option<crate::shared::ItemRef>,
+    pub retired: pz_entity::RetiredComponents,
+}
+
+impl FactoryItemFailure {
+    pub fn into_error_and_retire(mut self) -> pz_entity::runtime_load::RuntimeHostError {
+        if let Some(item) = self.item.take() {
+            self.retired
+                .push_owner(pz_entity::EntityOwner::from_ref(&item));
+        }
+        crate::component_host::retire_components(self.retired);
+        self.error
+    }
+}
+
+pub fn create_item_ref(
+    env: &dyn ItemEnv,
+    registry_id: i16,
+) -> Result<Option<crate::shared::ItemRef>, FactoryItemFailure> {
+    let Some(template) = env.template(registry_id) else {
+        return Ok(None);
+    };
+    create_from_template_ref(env, template, registry_id).map(Some)
+}
+
+/// Production actual-owner factory. Native component construction and pool
+/// reuse happen while this exact receiver already exists, before subsequent
+/// visual/model/id draws and before any Lua initialisation exposure.
+pub fn create_from_template_ref(
+    env: &dyn ItemEnv,
+    template: Rc<ItemTemplate>,
+    registry_id: i16,
+) -> Result<crate::shared::ItemRef, FactoryItemFailure> {
+    let value = create_template_prefix(env, template.clone(), registry_id);
+    let item = crate::shared::try_new_item(value).map_err(|failure| FactoryItemFailure {
+        error: failure.error,
+        item: Some(failure.item),
+        retired: failure.retired,
+    })?;
+    let mut retired = pz_entity::RetiredComponents::new();
+    let mut native_notices = Vec::new();
+    let built = env.components().factory_runtime(
+        &item,
+        &template,
+        &mut crate::component::EnvRng(env),
+        &mut retired,
+        &mut native_notices,
+    );
+    // factory_runtime has ended every body/script guard, including Err.
+    // A later unported lookup must not erase earlier native warning output.
+    let emitted = crate::component_host::emit_native_notices(&native_notices);
+    if let Err(error) = emitted {
+        return Err(FactoryItemFailure {
+            error,
+            item: Some(item),
+            retired,
+        });
+    }
+    if let Err(error) = built {
+        return Err(FactoryItemFailure {
+            error,
+            item: Some(item),
+            retired,
+        });
+    }
+    finish_template_before_empty(env, &mut item.borrow_mut());
+    if template.empty_fluid_container {
+        let component = item
+            .borrow()
+            .get_fluid_ref()
+            .map_err(|error| FactoryItemFailure {
+                error: pz_entity::runtime_load::RuntimeHostError::Storage(error),
+                item: Some(item.clone()),
+                retired: pz_entity::RetiredComponents::new(),
+            });
+        match component {
+            Ok(Some(component)) => {
+                let result = {
+                    let Some(context) = env.components().entity_context() else {
+                        retired.push_component(component);
+                        return Err(FactoryItemFailure {
+                            error: pz_entity::runtime_load::RuntimeHostError::Unsupported {
+                                operation: "actual factory fluid context",
+                                kind: Some(pz_entity::ComponentType::FluidContainer),
+                            },
+                            item: Some(item),
+                            retired,
+                        });
+                    };
+                    component
+                        .try_borrow_mut()
+                        .map_err(|_| {
+                            pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                                "empty factory fluid",
+                            )
+                        })
+                        .and_then(|mut body| {
+                            body.fluid_empty_data(context)
+                                .map_err(pz_entity::runtime_load::RuntimeHostError::Storage)
+                        })
+                };
+                retired.push_component(component);
+                match result {
+                    Ok(outcome) => {
+                        if let Err(error) = crate::component_host::notify_fluid_update(&outcome) {
+                            return Err(FactoryItemFailure {
+                                error,
+                                item: Some(item),
+                                retired,
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        return Err(FactoryItemFailure {
+                            error,
+                            item: Some(item),
+                            retired,
+                        })
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(mut failure) => {
+                failure.retired.append(retired);
+                return Err(failure);
+            }
+        }
+    }
+    finish_template_after_empty(env, &mut item.borrow_mut());
+    // Pool reuse can replace the last actual cached-script owner. Successful
+    // construction is also callable under outer WORLD/sprite scopes.
+    crate::component_host::retire_components(retired);
+    Ok(item)
+}
+
+fn create_template_prefix(
+    env: &dyn ItemEnv,
     t: Rc<ItemTemplate>,
     registry_id: i16,
 ) -> InventoryItem {
@@ -203,13 +386,10 @@ pub fn create_from_template(
     {
         item.read_from_world_sprite(ws, env);
     }
-    let codec = env.components();
-    match codec.factory_entity(&t, &mut crate::component::EnvRng(env)) {
-        Some(c) => item.set_components(c),
-        None => {
-            item.components = codec.factory_components(&t, &mut crate::component::EnvRng(env));
-        }
-    }
+    item
+}
+
+fn finish_template_before_empty(env: &dyn ItemEnv, item: &mut InventoryItem) {
     // `OutfitRNG.setSeed(Rand.Next(Integer.MAX_VALUE))` around
     // `synchWithVisual` (the visual draws come from `visual_rng`).
     let rng = env.visual_rng();
@@ -220,14 +400,10 @@ pub fn create_from_template(
         item.synch_with_visual(Some(a), &crate::context::Loose, rng);
     }
     rng.set_seed(saved_seed);
-    // createItemInternal: a `<type>Empty` fluid container starts empty.
-    if t.empty_fluid_container {
-        let ctx = env.components().entity_context();
-        if let Some(mut fc) = ctx.and_then(|c| item.get_fluid_container(c)) {
-            fc.empty();
-            item.set_fluid_container(fc);
-        }
-    }
+}
+
+fn finish_template_after_empty(env: &dyn ItemEnv, item: &mut InventoryItem) {
+    let t = item.template.clone();
     item.id = env.rand_next(2146250223).wrapping_add(1233423);
     if let Some(ms) = &t.moveable_sprite {
         item.read_from_world_sprite(ms, env);
@@ -237,7 +413,6 @@ pub fn create_from_template(
         item.uses = item.get_max_uses();
         item.update_weight_by(|n| env.script_actual_weight(n));
     }
-    item
 }
 
 /// The `Rand` draws `Item.InstanceItem` and the item constructors make

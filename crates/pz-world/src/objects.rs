@@ -719,6 +719,7 @@ pub struct OverlaySprite {
 }
 
 pub use pz_inventory::component::ComponentBlob;
+pub use pz_inventory::ItemComponents;
 
 /// `IsoObject` plus its class.
 #[derive(Clone, Debug, PartialEq)]
@@ -744,8 +745,9 @@ pub struct IsoObject {
     /// Whether the entity hook gave the object components
     /// (`GameEntity.hasComponents`).
     pub has_components: bool,
-    /// The components as loaded from a chunk file.
-    pub components: Vec<ComponentBlob>,
+    /// Sole component authority. Explicit archive imports may remain encoded;
+    /// a live component has one actual allocation and mutable body.
+    pub components: ItemComponents,
     pub name: Option<ObjectName>,
     pub sprite_name: Option<SpriteName>,
     pub custom_color: Option<[f32; 3]>,
@@ -784,7 +786,7 @@ impl IsoObject {
             tint_b: 1.0,
             render_y_offset: 0.0,
             has_components: false,
-            components: Vec::new(),
+            components: ItemComponents::new(),
             name: None,
             sprite_name: None,
             custom_color: None,

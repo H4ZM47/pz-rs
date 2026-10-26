@@ -21,6 +21,10 @@ use crate::context::EntityContext;
 use crate::entity::{Component, Components};
 use crate::fluids::FluidContainer;
 use crate::io::{EntityError, Reader, Writer};
+use crate::runtime_attributes::RuntimeAttributes;
+use crate::runtime_fluid::{
+    FluidColorRef, FluidPropertiesRef, FluidRecalcOutcome, RuntimeFluidState,
+};
 use crate::ComponentType;
 
 /// The actual component allocation. Cloning this reference aliases the same
@@ -109,6 +113,8 @@ pub enum RuntimeError {
         kind: ComponentType,
         remaining: usize,
     },
+    BorrowedTransient(&'static str),
+    UnsupportedRuntime(&'static str),
     Codec(EntityError),
 }
 
@@ -143,6 +149,8 @@ impl fmt::Display for RuntimeError {
                 kind.name()
             ),
             Self::Codec(e) => e.fmt(f),
+            Self::BorrowedTransient(name) => write!(f, "{name} is borrowed"),
+            Self::UnsupportedRuntime(message) => f.write_str(message),
         }
     }
 }
@@ -187,7 +195,7 @@ pub struct RejectedEncoded {
 
 /// A mutable view cannot replace the enum variant or alter class identity.
 pub enum ComponentBodyMut<'a> {
-    Attributes(&'a mut AttributeContainer),
+    Attributes(&'a mut RuntimeAttributes),
     FluidContainer(&'a mut FluidContainer),
     SpriteConfig(&'a mut SpriteConfig),
     Script(&'a mut EntityScriptInfo),
@@ -202,13 +210,24 @@ pub enum ComponentBodyMut<'a> {
     Empty,
 }
 
+/// The actual body has one authority. Attributes owns real instance slots;
+/// other represented components retain their original data bodies. A live
+/// Attributes allocation never contains an editable AttributeContainer DTO.
+#[derive(Debug)]
+pub enum RuntimeBody {
+    Attributes(RuntimeAttributes),
+    Data(Component),
+}
+
 /// Actual mutable component state. The kind and body variant stay fixed for
 /// the lifetime of this allocation; the owner is a real, strong backedge.
 #[derive(Debug)]
 pub struct RuntimeComponent {
     kind: ComponentType,
-    body: Component,
+    body: RuntimeBody,
     owner: Option<EntityOwner>,
+    fluid_runtime: Option<RuntimeFluidState>,
+    script_cache: Option<EntityOwner>,
 }
 
 impl RuntimeComponent {
@@ -219,51 +238,385 @@ impl RuntimeComponent {
                 component: body,
             });
         }
-        Ok(Rc::new(RefCell::new(Self {
-            kind: body.kind(),
+        let default_color = if matches!(body, Component::FluidContainer(_)) {
+            match crate::runtime_fluid::copy_default_color() {
+                Ok(color) => Some(color),
+                Err(error) => {
+                    return Err(RejectedComponent {
+                        error,
+                        component: body,
+                    })
+                }
+            }
+        } else {
+            None
+        };
+        Ok(Rc::new(RefCell::new(Self::from_validated_body(
+            body,
+            default_color,
+        ))))
+    }
+
+    fn from_validated_body(body: Component, default_color: Option<crate::color::Rgba>) -> Self {
+        let kind = body.kind();
+        let fluid_runtime = match &body {
+            Component::FluidContainer(fluid) => Some(RuntimeFluidState::from_value(
+                fluid,
+                default_color.expect("fluid constructor default color"),
+            )),
+            _ => None,
+        };
+        let body = match body {
+            Component::Attributes(value) => {
+                RuntimeBody::Attributes(RuntimeAttributes::from_archive(value))
+            }
+            value => RuntimeBody::Data(value),
+        };
+        Self {
+            kind,
             body,
             owner: None,
-        })))
+            fluid_runtime,
+            script_cache: None,
+        }
     }
 
     pub fn kind(&self) -> ComponentType {
         self.kind
     }
 
-    pub fn body(&self) -> &Component {
+    pub fn body(&self) -> &RuntimeBody {
         &self.body
+    }
+
+    pub fn value_snapshot(&self) -> Result<Component, RuntimeError> {
+        match &self.body {
+            RuntimeBody::Attributes(attributes) => {
+                Ok(Component::Attributes(attributes.value_snapshot()?))
+            }
+            RuntimeBody::Data(value) => Ok(value.clone()),
+        }
+    }
+
+    pub fn script_info(&self) -> Option<&EntityScriptInfo> {
+        match &self.body {
+            RuntimeBody::Data(Component::Script(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn attributes(&self) -> Option<&RuntimeAttributes> {
+        match &self.body {
+            RuntimeBody::Attributes(value) => Some(value),
+            _ => None,
+        }
+    }
+    pub fn attributes_mut(&mut self) -> Option<&mut RuntimeAttributes> {
+        match &mut self.body {
+            RuntimeBody::Attributes(value) => Some(value),
+            _ => None,
+        }
     }
 
     pub fn typed_mut(&mut self) -> ComponentBodyMut<'_> {
         match &mut self.body {
-            Component::Attributes(c) => ComponentBodyMut::Attributes(c),
-            Component::FluidContainer(c) => ComponentBodyMut::FluidContainer(c),
-            Component::SpriteConfig(c) => ComponentBodyMut::SpriteConfig(c),
-            Component::Script(c) => ComponentBodyMut::Script(c),
-            Component::UiConfig(c) => ComponentBodyMut::UiConfig(c),
-            Component::CraftLogic(c) => ComponentBodyMut::CraftLogic(c),
-            Component::DryingCraftLogic(c) => ComponentBodyMut::DryingCraftLogic(c),
-            Component::MetaTag(c) => ComponentBodyMut::MetaTag(c),
-            Component::Resources(c) => ComponentBodyMut::Resources(c),
-            Component::CraftBench(c) => ComponentBodyMut::CraftBench(c),
-            Component::Durability(c) => ComponentBodyMut::Durability(c),
-            Component::SpriteOverlayConfig(c) => ComponentBodyMut::SpriteOverlayConfig(c),
-            Component::Empty(_) => ComponentBodyMut::Empty,
-            Component::Opaque { .. } => unreachable!("opaque bodies are never live"),
+            RuntimeBody::Attributes(c) => ComponentBodyMut::Attributes(c),
+            RuntimeBody::Data(Component::FluidContainer(c)) => {
+                c.cache_invalidated = true;
+                ComponentBodyMut::FluidContainer(c)
+            }
+            RuntimeBody::Data(Component::SpriteConfig(c)) => ComponentBodyMut::SpriteConfig(c),
+            RuntimeBody::Data(Component::Script(c)) => ComponentBodyMut::Script(c),
+            RuntimeBody::Data(Component::UiConfig(c)) => ComponentBodyMut::UiConfig(c),
+            RuntimeBody::Data(Component::CraftLogic(c)) => ComponentBodyMut::CraftLogic(c),
+            RuntimeBody::Data(Component::DryingCraftLogic(c)) => {
+                ComponentBodyMut::DryingCraftLogic(c)
+            }
+            RuntimeBody::Data(Component::MetaTag(c)) => ComponentBodyMut::MetaTag(c),
+            RuntimeBody::Data(Component::Resources(c)) => ComponentBodyMut::Resources(c),
+            RuntimeBody::Data(Component::CraftBench(c)) => ComponentBodyMut::CraftBench(c),
+            RuntimeBody::Data(Component::Durability(c)) => ComponentBodyMut::Durability(c),
+            RuntimeBody::Data(Component::SpriteOverlayConfig(c)) => {
+                ComponentBodyMut::SpriteOverlayConfig(c)
+            }
+            RuntimeBody::Data(Component::Empty(_)) => ComponentBodyMut::Empty,
+            RuntimeBody::Data(Component::Opaque { .. } | Component::Attributes(_)) => {
+                unreachable!("invalid actual data body")
+            }
         }
     }
 
     pub fn fluid(&self) -> Option<&FluidContainer> {
         match &self.body {
-            Component::FluidContainer(c) => Some(c),
+            RuntimeBody::Data(Component::FluidContainer(c)) => Some(c),
             _ => None,
         }
     }
 
     pub fn fluid_mut(&mut self) -> Option<&mut FluidContainer> {
         match &mut self.body {
-            Component::FluidContainer(c) => Some(c),
+            RuntimeBody::Data(Component::FluidContainer(c)) => {
+                c.cache_invalidated = true;
+                Some(c)
+            }
             _ => None,
+        }
+    }
+
+    pub fn fluid_runtime(&self) -> Option<&RuntimeFluidState> {
+        self.fluid_runtime.as_ref()
+    }
+    pub fn fluid_runtime_mut(&mut self) -> Option<&mut RuntimeFluidState> {
+        self.fluid_runtime.as_mut()
+    }
+    /// Borrowed physical final cache allocations; never cloned trace views.
+    pub fn fluid_color_slot(&self) -> Option<&FluidColorRef> {
+        self.fluid_runtime
+            .as_ref()
+            .map(RuntimeFluidState::color_slot)
+    }
+    pub fn fluid_properties_slot(&self) -> Option<&FluidPropertiesRef> {
+        self.fluid_runtime
+            .as_ref()
+            .map(RuntimeFluidState::properties_slot)
+    }
+
+    /// Native cache data phase only. Dispatch the returned actual owner's
+    /// dirty/notification phase after releasing every component/entity guard.
+    /// Pure lookup contexts only; no Lua callback is permitted here.
+    pub fn fluid_recalculate_data(
+        &mut self,
+        ctx: &dyn EntityContext,
+        force: bool,
+    ) -> Result<FluidRecalcOutcome, RuntimeError> {
+        let RuntimeBody::Data(Component::FluidContainer(body)) = &mut self.body else {
+            return Err(RuntimeError::InvalidBody(self.kind));
+        };
+        self.fluid_runtime
+            .as_mut()
+            .expect("fluid runtime matches immutable kind")
+            .recalculate(body, ctx, force, self.owner.as_ref())
+    }
+
+    pub fn fluid_empty_data(
+        &mut self,
+        ctx: &dyn EntityContext,
+    ) -> Result<FluidRecalcOutcome, RuntimeError> {
+        let RuntimeBody::Data(Component::FluidContainer(body)) = &mut self.body else {
+            return Err(RuntimeError::InvalidBody(self.kind));
+        };
+        self.fluid_runtime
+            .as_mut()
+            .expect("fluid runtime matches immutable kind")
+            .empty(body, ctx, self.owner.as_ref())
+    }
+
+    /// A factory/data import initializes actual caches before publishing the
+    /// owner. Native loads use fluid_recalculate_data(force=true) after their
+    /// successful body read and dispatch its real owner phase separately.
+    pub fn initialize_fluid_data(&mut self, ctx: &dyn EntityContext) -> Result<(), RuntimeError> {
+        if self.owner.is_some() {
+            return Err(RuntimeError::UnsupportedRuntime(
+                "FluidContainer initialization requires an unowned component",
+            ));
+        }
+        let outcome = self.fluid_recalculate_data(ctx, true)?;
+        debug_assert!(outcome.owner.is_none());
+        Ok(())
+    }
+
+    /// Actual FluidContainer.readFromScript on a pooled, detached receiver.
+    /// It deliberately does NOT replace the body or empty existing fluids:
+    /// retained handles can mutate a component while it is held by the pool.
+    /// The context and RNG must be reviewed callback-free implementations.
+    /// `script_name` is the actual ComponentScript.getName result supplied by
+    /// the host, rather than an item type or display name. The host emits all
+    /// notices outside its guards on both success and failure.
+    pub fn read_fluid_script(
+        &mut self,
+        script: &pz_scripts::objects::entity::components::fluids::FluidContainerScript,
+        ctx: &dyn EntityContext,
+        rng: &mut dyn crate::factory::FactoryRng,
+        script_name: &str,
+        native_notices: &mut Vec<crate::runtime_fluid::RuntimeNativeNotice>,
+    ) -> Result<(), RuntimeError> {
+        if self.owner.is_some() {
+            return Err(RuntimeError::UnsupportedRuntime(
+                "Fluid script factory requires a detached component",
+            ));
+        }
+        let RuntimeBody::Data(Component::FluidContainer(body)) = &mut self.body else {
+            return Err(RuntimeError::InvalidBody(self.kind));
+        };
+        body.whitelist = script
+            .whitelist()
+            .map(|filter| crate::factory::filter_from_script(filter, ctx));
+        body.blacklist = script
+            .blacklist()
+            .map(|filter| crate::factory::filter_from_script(filter, ctx));
+        body.container_name = script.container_name().to_string();
+        body.custom_drink_sound = Some(script.custom_drink_sound().to_string());
+        body.rain_catcher = script.rain_catcher();
+        body.fills_with_clean_water = script.is_filled_with_clean_water();
+        body.input_locked = false;
+        body.can_player_empty = true;
+        // Native setCapacity writes capacity BEFORE its getAmount call.
+        let old_capacity = body.capacity;
+        body.capacity = script.capacity().max(0.05);
+        let _unowned_update = self.fluid_recalculate_data(ctx, false)?;
+        let body = match &mut self.body {
+            RuntimeBody::Data(Component::FluidContainer(body)) => body,
+            _ => unreachable!(),
+        };
+        if body.amount_cache > body.capacity {
+            for index in (0..body.fluids.len()).rev() {
+                let percentage = body.fluids[index].amount / old_capacity;
+                body.fluids[index].amount = body.capacity * percentage;
+                if body.fluids[index].amount.abs() < 1.0e-4 {
+                    body.fluids.remove(index);
+                }
+            }
+        }
+        body.cache_invalidated = true;
+        let initial_amount = |rng: &mut dyn crate::factory::FactoryRng| {
+            if !script.initial_amount_set() {
+                script.capacity()
+            } else {
+                let (min, max) = script.initial_amount_range();
+                if min == max {
+                    min
+                } else {
+                    rng.next_float(min, max)
+                }
+            }
+        };
+        if let Some(initial) = script.initial_fluids().filter(|fluids| !fluids.is_empty()) {
+            if initial_amount(rng) > 0.0 {
+                let amount = initial_amount(rng);
+                let indices: Vec<usize> = if initial.len() == 1 {
+                    vec![0]
+                } else if script.is_initial_fluids_is_random() {
+                    vec![rng.next_int(initial.len() as i32) as usize]
+                } else {
+                    (0..initial.len()).collect()
+                };
+                for index in indices {
+                    let initial = &initial[index];
+                    let name = initial.fluid_type();
+                    match ctx.fluid_by_name(name) {
+                        crate::Lookup::Missing => {
+                            native_notices.push(
+                                crate::runtime_fluid::RuntimeNativeNotice::GeneralLog(format!(
+                                    "FluidContainer -> initial Fluid '{name}' not found! [{script_name}]"
+                                )),
+                            );
+                            continue;
+                        }
+                        crate::Lookup::Unknown => {
+                            return Err(RuntimeError::UnsupportedRuntime(
+                                "Fluid script factory registry is unavailable",
+                            ))
+                        }
+                        crate::Lookup::Found(_) => {}
+                    }
+                    use pz_scripts::objects::definitions::FluidType;
+                    let fluid = match FluidType::value_of(name) {
+                        Ok(kind) if kind != FluidType::Modded && kind != FluidType::None => {
+                            crate::fluids::FluidRef::Type(kind.id())
+                        }
+                        _ => crate::fluids::FluidRef::Modded(name.to_string()),
+                    };
+                    let add = amount * initial.percentage();
+                    if add.max(0.0) > 0.0 {
+                        let _unowned_update = self.fluid_recalculate_data(ctx, false)?;
+                        let body = match &mut self.body {
+                            RuntimeBody::Data(Component::FluidContainer(body)) => body,
+                            _ => unreachable!(),
+                        };
+                        let color = initial
+                            .custom_color()
+                            .map(|color| [color.r, color.g, color.b]);
+                        body.add_fluid(fluid, color, add, ctx);
+                    }
+                }
+            }
+        }
+        let body = match &mut self.body {
+            RuntimeBody::Data(Component::FluidContainer(body)) => body,
+            _ => unreachable!(),
+        };
+        body.input_locked = script.input_locked();
+        body.can_player_empty = script.can_empty();
+        body.hidden_amount = script.is_hidden_amount();
+        Ok(())
+    }
+
+    /// Pure-data ScriptInfo setter. The native cached script-object reference
+    /// has no exposed getter here; adding one requires its real retained owner.
+    pub fn set_original_script_data(
+        &mut self,
+        is_item: bool,
+        full_type: String,
+    ) -> Result<(), RuntimeError> {
+        let RuntimeBody::Data(Component::Script(script)) = &mut self.body else {
+            return Err(RuntimeError::InvalidBody(self.kind));
+        };
+        script.original_is_item = is_item;
+        script.original_script = Some(full_type);
+        Ok(())
+    }
+
+    /// Cache the same actual script allocation. The replaced cache pin is
+    /// returned for outer retirement; no script body is copied or traversed.
+    #[must_use]
+    pub fn set_original_script_actual(
+        &mut self,
+        is_item: bool,
+        full_type: String,
+        script: &EntityOwner,
+    ) -> Result<Option<EntityOwner>, RuntimeError> {
+        self.set_original_script_data(is_item, full_type)?;
+        Ok(std::mem::replace(
+            &mut self.script_cache,
+            Some(script.clone()),
+        ))
+    }
+
+    pub fn script_cache_slot(&self) -> Option<&EntityOwner> {
+        self.script_cache.as_ref()
+    }
+
+    /// The normal Script.load lookup phase uses this only when the loaded
+    /// originalScript was nonnull. A null original name preserves the cache.
+    #[must_use]
+    pub fn replace_script_cache(
+        &mut self,
+        script: Option<&EntityOwner>,
+    ) -> Result<Option<EntityOwner>, RuntimeError> {
+        if self.kind != ComponentType::Script {
+            return Err(RuntimeError::InvalidBody(self.kind));
+        }
+        Ok(std::mem::replace(&mut self.script_cache, script.cloned()))
+    }
+
+    pub(crate) fn reset_detached_for_pool(
+        &mut self,
+        retired: &mut RetiredComponents,
+    ) -> Result<(), RuntimeError> {
+        if self.owner.is_some() {
+            return Err(RuntimeError::UnsupportedRuntime(
+                "Component pool reset requires detached owner",
+            ));
+        }
+        match &mut self.body {
+            RuntimeBody::Attributes(attributes) => attributes.clear(retired),
+            RuntimeBody::Data(Component::Script(_)) => Ok(()), // actual inherited Component.reset
+            RuntimeBody::Data(Component::FluidContainer(body)) => self
+                .fluid_runtime
+                .as_mut()
+                .expect("fluid runtime matches immutable kind")
+                .reset_detached(body),
+            _ => Err(RuntimeError::UnsupportedLive(self.kind)),
         }
     }
 
@@ -280,7 +633,9 @@ impl RuntimeComponent {
     }
 
     /// Decode into the SAME body using the caller's SAME reader. No bounded
-    /// block subreader, rollback, owner mutation, hooks or reset is performed.
+    /// block subreader, rollback, owner mutation or lifecycle/pool call occurs.
+    /// Fluid field loading includes its authentic Empty(false) cache prefix;
+    /// the host finishes its successful force-recalc and owner phases.
     /// `ctx` must be a reviewed, callback-free lookup implementation while a
     /// component RefCell guard is held. Errors preserve partial body effects.
     pub fn load_payload_in_place(
@@ -288,21 +643,114 @@ impl RuntimeComponent {
         reader: &mut Reader<'_>,
         world_version: i32,
         ctx: &dyn EntityContext,
+        retired: &mut RetiredComponents,
     ) -> Result<(), RuntimeError> {
-        self.body
-            .load(reader, world_version, ctx)
-            .map_err(Into::into)
-    }
-
-    pub fn write_payload(&self, writer: &mut Writer) -> Result<(), RuntimeError> {
-        self.body.save(writer);
+        match &mut self.body {
+            RuntimeBody::Attributes(attributes) => attributes.load(reader, ctx, retired)?,
+            // Native field decoding precedes the real cache/properties and
+            // guard-free owner phases driven by RuntimeLoadHost. The legacy
+            // DTO loader must not publish its amount-only cache prematurely.
+            RuntimeBody::Data(Component::FluidContainer(fluid)) => {
+                // Fluid.load reaches Empty(false) before even reading its
+                // header. All final cache contents are therefore cleared on
+                // a partial header/body failure, with no owner notification.
+                fluid.amount_cache = 0.0;
+                fluid.capacity = 1.0;
+                fluid.whitelist = None;
+                fluid.blacklist = None;
+                fluid.input_locked = false;
+                fluid.can_player_empty = false;
+                fluid.hidden_amount = false;
+                self.fluid_runtime
+                    .as_mut()
+                    .expect("fluid runtime matches immutable kind")
+                    .empty_without_recalculate(fluid)?;
+                fluid.load_data_without_cache(reader, ctx)?;
+            }
+            RuntimeBody::Data(body) => body.load(reader, world_version, ctx)?,
+        }
+        if let Some(fluid) = &mut self.fluid_runtime {
+            fluid.mark_uninitialized();
+        }
         Ok(())
     }
 
-    /// Named value copy. Current DTO bodies contain only owned data, not
-    /// Rc/native/Lua payloads; the actual owner backedge is never followed.
+    pub fn write_payload(&self, writer: &mut Writer) -> Result<(), RuntimeError> {
+        match &self.body {
+            RuntimeBody::Attributes(attributes) => attributes.write(writer)?,
+            RuntimeBody::Data(body) => body.save(writer),
+        }
+        Ok(())
+    }
+
+    /// Named archive copy: saved/script body data and final cache contents
+    /// copy into fresh allocations, shared actual script definitions retain
+    /// their reference, and the actual entity-owner backedge is never followed.
     pub fn try_archive_copy_unowned(&self) -> Result<ComponentRef, RuntimeError> {
-        Self::new_unowned(self.body.clone()).map_err(|rejected| rejected.error)
+        let copy = Self {
+            kind: self.kind,
+            body: match &self.body {
+                RuntimeBody::Attributes(attributes) => {
+                    RuntimeBody::Attributes(attributes.archive_copy()?)
+                }
+                RuntimeBody::Data(body) => RuntimeBody::Data(body.clone()),
+            },
+            owner: None,
+            fluid_runtime: self
+                .fluid_runtime
+                .as_ref()
+                .map(RuntimeFluidState::archive_copy)
+                .transpose()?,
+            script_cache: self.script_cache.clone(),
+        };
+        Ok(Rc::new(RefCell::new(copy)))
+    }
+
+    /// Borrow-only archive preflight. This does not allocate/cache/clone any
+    /// body or recursively traverse the actual owner backedge.
+    pub fn check_archive_copy(&self) -> Result<(), RuntimeError> {
+        if let Some(fluid) = &self.fluid_runtime {
+            fluid.check_archive_copy()?;
+        }
+        if let Some(attributes) = self.attributes() {
+            attributes.check_archive_copy()?;
+        }
+        Ok(())
+    }
+
+    /// Native AttributeContainer.readFromScript data phase on this SAME
+    /// receiver. A missing script template logs and leaves current data alone.
+    pub fn read_attributes_template(
+        &mut self,
+        template: Option<&ComponentRef>,
+        script_name: &str,
+        notices: &mut Vec<crate::runtime_fluid::RuntimeNativeNotice>,
+        retired: &mut RetiredComponents,
+    ) -> Result<(), RuntimeError> {
+        let Some(template) = template else {
+            if self.kind != ComponentType::Attributes {
+                return Err(RuntimeError::InvalidBody(self.kind));
+            }
+            notices.push(crate::runtime_fluid::RuntimeNativeNotice::GeneralError(
+                format!("Unable to create AttributeContainer from script: {script_name}"),
+            ));
+            return Ok(());
+        };
+        let same = std::ptr::eq(template.as_ref().as_ptr().cast_const(), self as *const Self);
+        let kind = self.kind;
+        let destination = self
+            .attributes_mut()
+            .ok_or(RuntimeError::InvalidBody(kind))?;
+        if same {
+            return destination.clear(retired);
+        }
+        let source = template
+            .try_borrow()
+            .map_err(|_| RuntimeError::BorrowedTransient("Attribute template component"))?;
+        let source = source
+            .attributes()
+            .ok_or(RuntimeError::InvalidBody(source.kind()))?;
+        destination.copy_from(source, retired)
     }
 }
 
@@ -410,12 +858,24 @@ pub enum EntryPresence {
 /// Detached owning slots. Keep this value in an outer retirement sink and
 /// drop it only after all relevant RefCell/WORLD/sprite guards end. No Drop
 /// implementation invokes hooks, clears another live object, or pools data.
-#[derive(Debug, Default)]
+#[derive(Default)]
 #[must_use]
 pub struct RetiredComponents {
     entries: Vec<RuntimeEntry>,
     owners: Vec<EntityOwner>,
     components: Vec<ComponentRef>,
+    payloads: Vec<Box<dyn Any>>,
+}
+
+impl fmt::Debug for RetiredComponents {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RetiredComponents")
+            .field("entries", &self.entries.len())
+            .field("owners", &self.owners.len())
+            .field("components", &self.components.len())
+            .field("payloads", &self.payloads.len())
+            .finish()
+    }
 }
 
 impl RetiredComponents {
@@ -423,21 +883,33 @@ impl RetiredComponents {
         Self::default()
     }
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty() && self.owners.is_empty() && self.components.is_empty()
+        self.entries.is_empty()
+            && self.owners.is_empty()
+            && self.components.is_empty()
+            && self.payloads.is_empty()
     }
     pub fn len(&self) -> usize {
-        self.entries.len() + self.owners.len() + self.components.len()
+        self.entries.len() + self.owners.len() + self.components.len() + self.payloads.len()
     }
     pub fn push_owner(&mut self, owner: EntityOwner) {
         self.owners.push(owner);
     }
+    pub fn push_erased(&mut self, allocation: Rc<dyn Any>) {
+        self.owners.push(EntityOwner { allocation });
+    }
     pub fn push_component(&mut self, component: ComponentRef) {
         self.components.push(component);
+    }
+    /// Retain owned host bookkeeping until its outer guard-safe drain.
+    /// This payload is not a native entity/component or lifecycle action.
+    pub fn push_payload(&mut self, payload: Box<dyn Any>) {
+        self.payloads.push(payload);
     }
     pub fn append(&mut self, mut other: Self) {
         self.entries.append(&mut other.entries);
         self.owners.append(&mut other.owners);
         self.components.append(&mut other.components);
+        self.payloads.append(&mut other.payloads);
     }
 }
 
@@ -473,6 +945,7 @@ impl RuntimeComponents {
     /// Moves factory values directly, preserving unsaved/script-only fields
     /// and exact numeric data. Validate ALL entries before consuming any.
     pub fn adopt_values_unowned(values: Components) -> Result<Self, RejectedValues> {
+        let mut default_color = None;
         let validation = (|| {
             if values.len() > 127 {
                 return Err(RuntimeError::TooManyComponents);
@@ -486,6 +959,13 @@ impl RuntimeComponents {
                 }
                 seen.push(id);
             }
+            if values
+                .list
+                .iter()
+                .any(|body| matches!(body, Component::FluidContainer(_)))
+            {
+                default_color = Some(crate::runtime_fluid::copy_default_color()?);
+            }
             Ok(())
         })();
         if let Err(error) = validation {
@@ -498,11 +978,10 @@ impl RuntimeComponents {
                 let kind = body.kind();
                 RuntimeEntry::Live {
                     kind,
-                    component: Rc::new(RefCell::new(RuntimeComponent {
-                        kind,
+                    component: Rc::new(RefCell::new(RuntimeComponent::from_validated_body(
                         body,
-                        owner: None,
-                    })),
+                        default_color,
+                    ))),
                 }
             })
             .collect();
@@ -541,6 +1020,86 @@ impl RuntimeComponents {
             },
             RuntimeEntry::Encoded(encoded) => RuntimeEntryView::Encoded(encoded),
         })
+    }
+
+    /// Explicit encoded import append; never rebuilds/replaces unrelated
+    /// live allocations. Rejected input is returned intact for outer drop.
+    pub fn push_encoded_if_absent(
+        &mut self,
+        entry: EncodedComponent,
+    ) -> Result<(), RejectedEncoded> {
+        let error = if self.entries.len() >= 127 {
+            Some(RuntimeError::TooManyComponents)
+        } else if self
+            .entries
+            .iter()
+            .any(|current| current.stored_type_id() == entry.type_id())
+        {
+            Some(RuntimeError::DuplicateType(entry.type_id()))
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            return Err(RejectedEncoded {
+                error,
+                entries: vec![entry],
+            });
+        }
+        self.entries.push(RuntimeEntry::Encoded(entry));
+        Ok(())
+    }
+
+    /// Remove only an explicit encoded carrier. Live actual components are
+    /// never silently removed through a blob/DTO migration API.
+    pub fn remove_encoded_type_unordered(&mut self, type_id: i16) -> Option<EncodedComponent> {
+        let index = self.entries.iter().position(
+            |entry| matches!(entry, RuntimeEntry::Encoded(encoded) if encoded.type_id() == type_id),
+        )?;
+        match self.entries.swap_remove(index) {
+            RuntimeEntry::Encoded(encoded) => Some(encoded),
+            RuntimeEntry::Live { .. } => unreachable!(),
+        }
+    }
+
+    /// Replace only the sole encoded carrier at its existing physical index.
+    /// Actual live components cannot be edited through this archive API.
+    pub fn replace_encoded(
+        &mut self,
+        existing_type_id: i16,
+        incoming: EncodedComponent,
+    ) -> Result<EncodedComponent, RejectedEncoded> {
+        if incoming.type_id() != existing_type_id {
+            return Err(RejectedEncoded {
+                error: RuntimeError::UnsupportedRuntime(
+                    "Encoded replacement cannot change component type",
+                ),
+                entries: vec![incoming],
+            });
+        }
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.stored_type_id() == existing_type_id)
+        else {
+            return Err(RejectedEncoded {
+                error: RuntimeError::UnsupportedRuntime(
+                    "Encoded replacement requires an existing carrier",
+                ),
+                entries: vec![incoming],
+            });
+        };
+        if matches!(self.entries[index], RuntimeEntry::Live { .. }) {
+            return Err(RejectedEncoded {
+                error: RuntimeError::UnsupportedRuntime(
+                    "Live component cannot be replaced through encoded archive API",
+                ),
+                entries: vec![incoming],
+            });
+        }
+        match std::mem::replace(&mut self.entries[index], RuntimeEntry::Encoded(incoming)) {
+            RuntimeEntry::Encoded(old) => Ok(old),
+            RuntimeEntry::Live { .. } => unreachable!(),
+        }
     }
 
     pub fn presence(&self, kind: ComponentType) -> EntryPresence {
@@ -694,11 +1253,16 @@ impl RuntimeComponents {
                 remaining: reader.remaining(),
             });
         }
-        let component = Rc::new(RefCell::new(RuntimeComponent {
-            kind,
-            body,
-            owner: None,
-        }));
+        let default_color = if kind == ComponentType::FluidContainer {
+            Some(crate::runtime_fluid::copy_default_color()?)
+        } else {
+            None
+        };
+        let mut runtime = RuntimeComponent::from_validated_body(body, default_color);
+        if kind == ComponentType::FluidContainer {
+            runtime.initialize_fluid_data(ctx)?;
+        }
+        let component = Rc::new(RefCell::new(runtime));
         let old = std::mem::replace(
             &mut self.entries[index],
             RuntimeEntry::Live {
@@ -752,8 +1316,7 @@ impl RuntimeComponents {
                             index: Some(index),
                             kind: *kind,
                         })?
-                        .body
-                        .clone(),
+                        .value_snapshot()?,
                 ),
                 RuntimeEntry::Encoded(c) => {
                     return Err(RuntimeError::NeedsPromotion {
@@ -803,7 +1366,7 @@ impl RuntimeComponents {
                                 index: Some(index),
                                 kind: *right_kind,
                             })?;
-                    if left.body != right.body {
+                    if left.value_snapshot()? != right.value_snapshot()? {
                         return Ok(false);
                     }
                 }

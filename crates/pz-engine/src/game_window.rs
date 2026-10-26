@@ -114,6 +114,7 @@ struct App {
 
 /// Boot (`GameWindow.init`) and run the main menu until the window closes.
 pub fn run(launch: Launch) -> Result<(), String> {
+    let _retirement_boundary = HostRetirementBoundary;
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let core = pz_lua_api::bind_core::shared_core();
@@ -145,13 +146,17 @@ impl App {
     /// A native window close saves an active session through the same
     /// quit path as the menu, then stops its owners before the GPU goes.
     fn close(&mut self) {
-        let _collection_deferral = pz_kahlua::gc::defer_collection();
+        let collection_deferral = pz_kahlua::gc::defer_collection();
         let current = self.states.current.take();
         let in_game = current
             .as_ref()
             .is_some_and(|s| s.borrow().class_name() == "zombie.gameStates.IngameState");
         let (screen_w, screen_h) = self.screen_size();
-        let Some(lua) = self.lua.as_mut() else { return };
+        let Some(lua) = self.lua.as_mut() else {
+            drop(collection_deferral);
+            drain_retired_host_owners();
+            return;
+        };
         if in_game {
             if let Some(world) = self.world.as_mut() {
                 world.save_on_quit(lua);
@@ -189,6 +194,10 @@ impl App {
                 gpu.clear_character_mesh_cache();
             }
         }
+        // Error-only and partially booted sessions may never reach a frame
+        // tail. Retire their pins after world teardown has ended every guard.
+        drop(collection_deferral);
+        drain_retired_host_owners();
     }
 
     fn boot(&mut self) -> Result<(), String> {
@@ -275,6 +284,7 @@ impl App {
 
     fn frame(&mut self) {
         if self.error.is_some() {
+            drain_retired_host_owners();
             return;
         }
         let Some(lua) = self.lua.as_mut() else { return };
@@ -353,6 +363,8 @@ impl App {
             }
         }
         if self.error.is_some() {
+            drop(collection_deferral);
+            drain_retired_host_owners();
             return;
         }
         // SoundManager.instance.Update() (GameWindow.logic, "Sound").
@@ -410,12 +422,29 @@ impl App {
         // Interpreter call boundaries can occur inside WORLD/sprite scopes.
         // Only this outer boundary permits final host destructors to reenter.
         drop(collection_deferral);
-        // Square and whole-object owners can carry opaque Lua parents. End every
-        // callback and world/sprite borrow before releasing retired slots.
-        crate::iso_world::drain_retired_world_objects();
-        // Requests from Lua are drained after the frame's callbacks and
-        // table borrows have returned to the host.
-        let _ = pz_kahlua::gc::collect_pending();
+        drain_retired_host_owners();
+    }
+}
+
+/// Outermost frame/error/close boundary, after all world, sprite and entity
+/// guards have ended. Retired payloads can reenter host registration on drop.
+fn drain_retired_host_owners() {
+    crate::iso_world::drain_retired_world_objects();
+    pz_inventory::component_host::drain_retired_components();
+    drop(pz_scripts::objects::entity::components::attributes::take_retired_attribute_templates());
+    pz_lua_api::component_gc::retry_pending();
+    for fault in pz_lua_api::component_gc::take_registration_faults() {
+        eprintln!("component registration: {fault}");
+    }
+    let _ = pz_kahlua::gc::collect_pending();
+}
+
+/// Declared before App so unwinding and boot failures release host pins only
+/// after the application's fields and all scoped guards have been dropped.
+struct HostRetirementBoundary;
+impl Drop for HostRetirementBoundary {
+    fn drop(&mut self) {
+        drain_retired_host_owners();
     }
 }
 
@@ -532,6 +561,7 @@ pub fn render_headless(launch: Launch, frames: u32) -> Result<(u32, u32, Vec<u8>
 /// Boot headless without a GPU and run `frames` frames (logic and the
 /// draw lists, nothing presented); returns the state the machine is in.
 pub fn run_headless(launch: Launch, frames: u32) -> Result<Option<&'static str>, String> {
+    let _retirement_boundary = HostRetirementBoundary;
     let mut app = headless_app(launch)?;
     app.boot()?;
     run_headless_lua(&mut app)?;
@@ -594,6 +624,7 @@ fn run_frames(app: &mut App, frames: u32) {
 }
 
 fn headless(launch: Launch, frames: u32, gpu: bool) -> Result<(u32, u32, Option<Vec<u8>>), String> {
+    let _retirement_boundary = HostRetirementBoundary;
     let mut app = headless_app(launch)?;
     let (w, h) = app.screen_size();
     if gpu {
@@ -611,3 +642,5 @@ fn headless(launch: Launch, frames: u32, gpu: bool) -> Result<(u32, u32, Option<
 
 #[cfg(test)]
 mod session_tests;
+#[cfg(test)]
+mod retirement_tests;

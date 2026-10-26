@@ -460,6 +460,13 @@ impl<I: ItemIdentity> WornItems<I> {
         self.items.clear();
     }
 
+    /// Host-safe clear: move the removed physical owning slots to a caller
+    /// that can release them after its descriptor/worn/group guards end.
+    /// This retains this collection and its existing backing capacity.
+    pub fn take_items_for_retirement(&mut self) -> Vec<WornItem<I>> {
+        self.items.drain(..).collect()
+    }
+
     /// `getLocation(item)`.
     pub fn location(&self, item: &I) -> Key {
         self.index_of_item(item)

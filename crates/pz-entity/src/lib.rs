@@ -24,7 +24,10 @@ pub mod io;
 pub mod java;
 pub mod meta;
 pub mod runtime;
+pub mod runtime_attributes;
+pub mod runtime_fluid;
 pub mod runtime_load;
+pub mod runtime_pool;
 pub mod tables;
 
 pub use context::{
@@ -43,7 +46,10 @@ pub use runtime::{
     RejectedComponent, RejectedComponentRef, RejectedEncoded, RejectedValues, RetiredComponents,
     RuntimeComponent, RuntimeComponents, RuntimeEntryView, RuntimeError,
 };
-pub use tables::AttributeTypes;
+pub use tables::{
+    AttributeTypeDefinition, AttributeTypeRef, AttributeTypes, NumericAttributeBounds,
+    NumericAttributeValidation,
+};
 
 #[cfg(test)]
 mod tests;

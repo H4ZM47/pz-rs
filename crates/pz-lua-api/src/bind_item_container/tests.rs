@@ -492,7 +492,7 @@ fn with_fluid(ty: &str, id: i32, fluid: Option<(i8, f32)>, capacity: f32) -> Ite
         ));
         fc.recalculate_caches(true);
     }
-    i.set_fluid_container(fc);
+    drop(i.set_fluid_container(fc).unwrap());
     shared(i)
 }
 

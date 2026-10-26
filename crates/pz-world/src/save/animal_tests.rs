@@ -115,7 +115,7 @@ fn feeding_trough_constructor_adds_a_fluid_container() {
     for linked in [(0, 0), (12, 34)] {
         let back = round(&trough(linked), &c);
         // Masters and slaves alike: the constructor runs before load.
-        assert_eq!(back.components, vec![want.clone()]);
+        assert_eq!(back.components.try_encoded_blobs().unwrap(), vec![want.clone()]);
         assert!(back.has_components);
         let ObjectKind::FeedingTrough(tr) = &back.kind else {
             panic!()
@@ -130,13 +130,13 @@ fn feeding_trough_constructor_adds_a_fluid_container() {
     }
     // Another saved component is appended after the constructor's.
     let mut o = trough((0, 0));
-    o.components.push(pz_inventory::ComponentBlob {
+    o.components.push_encoded_blob(pz_inventory::ComponentBlob {
         type_id: 99,
         data: vec![1, 2],
-    });
+    }, 249).unwrap();
     let back = round(&o, &c);
     assert_eq!(
-        back.components
+        back.components.try_encoded_blobs().unwrap()
             .iter()
             .map(|c| c.type_id)
             .collect::<Vec<_>>(),
@@ -156,14 +156,13 @@ fn saved_trough_container_loads_in_place() {
         ..Default::default()
     };
     let mut o = trough((0, 0));
-    o.components
-        .push(encode_component(pz_entity::Component::FluidContainer(fc)));
+    o.components.push_encoded_blob(encode_component(pz_entity::Component::FluidContainer(fc)), 249).unwrap();
     let back = round(&o, &c);
     assert_eq!(back.components.len(), 1);
     let mut loaded = pz_entity::FluidContainer::default();
     loaded
         .load(
-            &mut pz_entity::io::Reader::new(&back.components[0].data),
+            &mut pz_entity::io::Reader::new(&back.components.try_encoded_blobs().unwrap()[0].data),
             &pz_entity::BasicContext::default(),
         )
         .unwrap();

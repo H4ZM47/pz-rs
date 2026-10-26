@@ -63,7 +63,7 @@ pub struct NativeComponentIssue {
 /// No method here has an implicit no-op lifecycle or pool implementation.
 pub trait RuntimeLoadHost {
     /// Read Core.debug at the actual null-component branch, after prior calls.
-    fn debug_enabled(&self) -> bool;
+    fn debug_enabled(&self) -> HostResult<bool>;
     /// Native ComponentType.FromId, including its signed array lookup errors.
     fn resolve_type(&mut self, id: i16) -> HostResult<ComponentType>;
     fn get_component(&mut self, kind: ComponentType) -> HostResult<Option<ComponentRef>>;
@@ -247,12 +247,13 @@ pub fn load_native_with<H: RuntimeLoadHost>(
                 if options.collect_loaded {
                     report.loaded.push(Rc::clone(component));
                 }
-            } else if host.debug_enabled() {
+            } else {
                 phase = RuntimeLoadPhase::NullComponent;
-                return Err(RuntimeHostError::NativeException(EntityError(format!(
-                    "Component with id '{}' not found.",
-                    id
-                ))));
+                if host.debug_enabled()? {
+                    return Err(RuntimeHostError::NativeException(EntityError(format!(
+                        "Component with id '{}' not found.", id
+                    ))));
+                }
             }
             Ok(())
         })();

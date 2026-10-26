@@ -24,7 +24,7 @@
 //! into a new container (an item value is a copy, not the object).
 
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
@@ -342,9 +342,101 @@ impl SharedContainer {
 /// The item object of `item`: a bag's inventory gets the new object as
 /// its `containingItem`. Every shared item is made with this.
 pub fn new_item(item: InventoryItem) -> ItemRef {
-    let r = Rc::new(RefCell::new(item));
-    link_bag(&r);
-    r
+    try_new_item(item)
+        .unwrap_or_else(|failure| panic!("item allocation: {:?}", failure.into_error_and_retire()))
+}
+
+/// Metadata-only host registration, installed before live item creation.
+/// The function must not invoke Lua or native lifecycle callbacks. Registry
+/// unavailability stays conservative and is retried by the host observer.
+pub type ItemObserver = fn(&ItemRef);
+
+thread_local! {
+    static ITEM_OBSERVER: Cell<Option<ItemObserver>> = const { Cell::new(None) };
+}
+
+pub fn install_item_observer(observer: Option<ItemObserver>) -> Option<ItemObserver> {
+    ITEM_OBSERVER.with(|slot| slot.replace(observer))
+}
+
+/// End the observer-slot borrow before invoking the metadata callback.
+pub fn observe_item(item: &ItemRef) {
+    let observer = ITEM_OBSERVER.with(Cell::get);
+    if let Some(observer) = observer {
+        observer(item);
+    }
+}
+
+#[derive(Debug)]
+#[must_use]
+pub struct NewItemFailure {
+    pub error: pz_entity::runtime_load::RuntimeHostError,
+    pub item: ItemRef,
+    pub retired: pz_entity::RetiredComponents,
+}
+
+impl NewItemFailure {
+    pub fn into_error_and_retire(mut self) -> pz_entity::runtime_load::RuntimeHostError {
+        self.retired
+            .push_owner(pz_entity::EntityOwner::from_ref(&self.item));
+        crate::component_host::retire_components(self.retired);
+        self.error
+    }
+}
+
+/// Construct the actual allocation before installing strong backedges. The
+/// observer sees every actual item/component allocation before a cycle can
+/// become unreachable. Failure owns the completed prefix for outer retirement.
+pub fn try_new_item(item: InventoryItem) -> Result<ItemRef, NewItemFailure> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let item = Rc::new(RefCell::new(item));
+    item.borrow_mut().components.mark_bound();
+    observe_item(&item);
+    let refs: Vec<_> = item
+        .borrow()
+        .components
+        .entry_slots()
+        .filter_map(|entry| match entry {
+            pz_entity::RuntimeEntryView::Live { component, .. } => Some(component.clone()),
+            pz_entity::RuntimeEntryView::Encoded(_) => None,
+        })
+        .collect();
+    let mut retired = pz_entity::RetiredComponents::new();
+    for component in refs {
+        let result = match component.try_borrow_mut() {
+            Ok(mut body) => {
+                if body.owner_slot().is_some() {
+                    Err(RuntimeHostError::Unsupported {
+                        operation: "adopt component with existing owner",
+                        kind: Some(body.kind()),
+                    })
+                } else {
+                    if let Some(owner) =
+                        body.replace_owner(Some(&pz_entity::EntityOwner::from_ref(&item)))
+                    {
+                        retired.push_owner(owner);
+                    }
+                    Ok(())
+                }
+            }
+            Err(_) => Err(RuntimeHostError::Borrowed(
+                "attach new item component owner",
+            )),
+        };
+        retired.push_component(component);
+        if let Err(error) = result {
+            return Err(NewItemFailure {
+                error,
+                item,
+                retired,
+            });
+        }
+    }
+    link_bag(&item);
+    // These are additional pins only: the actual store retains every live
+    // component, and no former owner exists on successful unowned adoption.
+    drop(retired);
+    Ok(item)
 }
 
 /// Sets `containingItem` of `item`'s inventory (a bag) to `item`.
@@ -488,7 +580,12 @@ pub fn apply_use(c: &ContainerRef, id: i32, out: &mut UseOutcome, temperature: f
         }
     }
     if out.remove {
-        let found = c.borrow().items.iter().find(|i| i.borrow().id == id).cloned();
+        let found = c
+            .borrow()
+            .items
+            .iter()
+            .find(|i| i.borrow().id == id)
+            .cloned();
         if let Some(i) = found {
             remove_item(c, &i);
         }

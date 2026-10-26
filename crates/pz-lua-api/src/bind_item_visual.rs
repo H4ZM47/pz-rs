@@ -655,7 +655,10 @@ fn instance_item(c: &mut NativeCall<'_>) -> LuaResult<usize> {
             (name, d)
         }
     };
-    let item = crate::bind_items::create_item(&name, use_delta);
+    let item = crate::bind_items::try_create_item(&name, use_delta)?;
+    if let Some(item) = &item {
+        crate::bind_items::initialise_item(c.thread, item);
+    }
     Ok(c.push(item.map(|i| item_value(&i)).unwrap_or_default()))
 }
 
@@ -688,15 +691,35 @@ fn all_decal_names(c: &mut NativeCall<'_>) -> LuaResult<usize> {
 /// picking the source's unset values), runs `synchWithVisual` and wears it
 /// at its body location (clothing) or `canBeEquipped()` location.
 pub fn set_worn_items_from_item_visuals(
-    desc: &mut LuaSurvivorDesc,
+    thread: &mut Thread,
+    desc: &Rc<RefCell<LuaSurvivorDesc>>,
     visuals: &[ItemVisual],
 ) -> Result<(), pz_scripts::ScriptError> {
-    desc.worn_items.clear();
+    let retired = {
+        let mut desc = desc.try_borrow_mut().map_err(|_| pz_scripts::ScriptError::new(
+            "descriptor is borrowed while clearing worn items",
+        ))?;
+        desc.worn_items.take_items_for_retirement()
+    };
+    if !retired.is_empty() {
+        let mut pins = pz_entity::RetiredComponents::new();
+        pins.push_payload(Box::new(retired));
+        pz_inventory::component_host::retire_components(pins);
+    }
     let e = item_env();
     for other in visuals {
-        let Some(item) = crate::bind_items::create_item(&other.full_type, 1.0) else {
+        let Some(item) = crate::bind_items::try_create_item(&other.full_type, 1.0)
+            .map_err(|error| pz_scripts::ScriptError::new(format!("{error:?}")))? else {
             continue;
         };
+        // The method may still be inside its caller's world/sprite scope.
+        // Preserve the actual incoming item even if a later phase fails.
+        let mut pins = pz_entity::RetiredComponents::new();
+        pins.push_owner(pz_entity::EntityOwner::from_ref(&item));
+        pz_inventory::component_host::retire_components(pins);
+        // Initialization may reenter the same descriptor. Its worn items
+        // have already been cleared; reacquire its current fields afterward.
+        crate::bind_items::initialise_item(thread, &item);
         let owner = e.owner(&item);
         {
             let mut i = item.borrow_mut();
@@ -718,8 +741,21 @@ pub fn set_worn_items_from_item_visuals(
             can_be_equipped(&i)
         };
         drop(i);
-        desc.worn_items
-            .set_item(location, Some(LuaItem(item_value(&item))))?;
+        let prior = desc.try_borrow().map_err(|_| pz_scripts::ScriptError::new(
+            "descriptor is borrowed while retaining worn items",
+        ))?.worn_items.items().to_vec();
+        if !prior.is_empty() {
+            let mut pins = pz_entity::RetiredComponents::new();
+            pins.push_payload(Box::new(prior));
+            pz_inventory::component_host::retire_components(pins);
+        }
+        let result = {
+            let mut desc = desc.try_borrow_mut().map_err(|_| pz_scripts::ScriptError::new(
+                "descriptor is borrowed while setting a worn item",
+            ))?;
+            desc.worn_items.set_item(location, Some(LuaItem(item_value(&item))))
+        };
+        result?;
     }
     Ok(())
 }
@@ -1075,7 +1111,7 @@ mod tests {
 
     #[test]
     fn dress_from_item_visuals() {
-        let _t = setup(3);
+        let mut t = setup(3);
         let sm = shared_script_manager();
         let mut chars = pz_characters::Characters::default();
         let tshirt = body_location_key("base:tshirt");
@@ -1084,12 +1120,30 @@ mod tests {
             .borrow_mut()
             .get_or_create_location(tshirt.clone())
             .unwrap();
-        let mut desc = LuaSurvivorDesc::new(&mut chars, &sm).unwrap();
+        let desc = Rc::new(RefCell::new(LuaSurvivorDesc::new(&mut chars, &sm).unwrap()));
+        let prior = crate::bind_items::try_create_item("Base.Rock", 1.0).unwrap().unwrap();
+        desc.borrow_mut().worn_items.set_item(tshirt.clone(), Some(LuaItem(item_value(&prior)))).unwrap();
+        sm.get::<pz_scripts::objects::items::Item>(pz_scripts::ScriptType::Item, "Base.Tshirt_Test")
+            .unwrap().borrow_mut().lua_create = Some("wornInitProbe".into());
+        let created = Rc::new(RefCell::new(None::<ItemRef>));
+        let (probe_desc, probe_created) = (desc.clone(), created.clone());
+        t.globals().set_str("wornInitProbe", Value::Native(pz_kahlua::NativeFunction::new("wornInitProbe", move |call| {
+            let desc = probe_desc.try_borrow_mut().expect("initialization must release descriptor guards");
+            assert!(desc.worn_items.items().is_empty(), "native clear precedes the first factory callback");
+            drop(desc);
+            let Value::Object(object) = call.arg(0) else { panic!("actual initialization receiver") };
+            let item = &object.as_any().downcast_ref::<LuaInventoryItem>().unwrap().item;
+            assert!(item.borrow().is_initialised, "native flag precedes LuaCreate");
+            item.borrow_mut().condition = 6;
+            *probe_created.borrow_mut() = Some(item.clone());
+            Ok(0)
+        })));
         let mut v = ItemVisual::new("Base.Tshirt_Test");
         v.texture_choice = 1;
         v.tint = Some([0.25, 0.5, 0.75]);
         let visuals = [ItemVisual::new("Base.Gone"), v];
-        set_worn_items_from_item_visuals(&mut desc, &visuals).unwrap();
+        set_worn_items_from_item_visuals(&mut t, &desc, &visuals).unwrap();
+        let desc = desc.borrow();
         let worn = desc.worn_items.items();
         assert_eq!(worn.len(), 1);
         assert!(worn[0].location == tshirt);
@@ -1102,6 +1156,9 @@ mod tests {
             .unwrap()
             .item
             .borrow();
+        assert_eq!(item.condition, 6, "callback mutation remains on the actual worn item");
+        let worn_ref = &o.as_any().downcast_ref::<LuaInventoryItem>().unwrap().item;
+        assert!(Rc::ptr_eq(created.borrow().as_ref().unwrap(), worn_ref));
         let vis = item.visual.as_ref().unwrap();
         assert_eq!((vis.texture_choice, vis.tint), (1, Some([0.25, 0.5, 0.75])));
         assert_eq!(item.col, [0.25, 0.5, 0.75, 1.0]);

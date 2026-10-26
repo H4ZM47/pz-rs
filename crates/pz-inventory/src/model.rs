@@ -214,92 +214,156 @@ impl InventoryItem {
         }
     }
 
-    /// The item's ECS components, decoded (`None` when a block does not
-    /// decode, e.g. with an opaque codec's raw bytes of an older format).
+    /// Detached, read-only archive/presentation values. Runtime users obtain
+    /// actual component references instead of retaining this snapshot.
     pub fn decode_components(&self, ctx: &dyn EntityContext) -> Option<Components> {
-        match &self.component_cache {
-            Some(c) => Some((**c).clone()),
-            None => decode_blobs(&self.components, ctx),
-        }
+        self.components.values_snapshot(ctx).ok()
     }
 
-    /// Replaces the item's components with `c` (encoded as saved, and kept
-    /// decoded).
-    pub fn set_components(&mut self, c: Components) {
-        self.components = encode_blobs(&c);
-        self.component_cache = Some(Box::new(c));
+    /// Explicit unowned factory/archive replacement. All displaced native
+    /// slots are returned for destruction after enclosing guards end.
+    pub fn set_components(
+        &mut self,
+        values: Components,
+    ) -> Result<pz_entity::RetiredComponents, pz_entity::runtime_load::RuntimeHostError> {
+        use pz_entity::runtime_load::RuntimeHostError;
+        let replacement = crate::item_components::ItemComponents::from_values_unowned(values)
+            .map_err(|rejected| RuntimeHostError::Storage(rejected.error))?;
+        self.components
+            .replace_unowned(replacement)
+            .map_err(|rejected| rejected.into_error_and_retire())
     }
 
-    /// `getFluidContainer()`: the `FluidContainer` component. Read amount,
-    /// capacity and colour with its `get_amount`, `get_capacity`,
-    /// `get_filled_ratio`, `is_empty` and `get_color(ctx)`.
+    /// The actual native allocation; absence and encoded/unavailable state
+    /// remain distinct. No body is copied or decoded by this live getter.
+    pub fn get_fluid_ref(
+        &self,
+    ) -> Result<Option<pz_entity::ComponentRef>, pz_entity::RuntimeError> {
+        self.components.get_ref(ComponentType::FluidContainer)
+    }
+
+    /// The actual Attributes component allocation. An encoded body or a
+    /// borrowed store is an error, rather than a missing attribute container.
+    pub fn get_attributes_ref(
+        &self,
+    ) -> Result<Option<pz_entity::ComponentRef>, pz_entity::RuntimeError> {
+        self.components.get_ref(ComponentType::Attributes)
+    }
+
+    /// Read the actual attribute instance. This propagates nested instance
+    /// borrows and encoded storage instead of reporting a false absence.
+    pub fn try_get_attribute_by_id(
+        &self,
+        id: i16,
+    ) -> Result<Option<pz_entity::components::attributes::AttributeValue>, pz_entity::RuntimeError>
+    {
+        let Some(component) = self.get_attributes_ref()? else {
+            return Ok(None);
+        };
+        let body =
+            component
+                .try_borrow()
+                .map_err(|_| pz_entity::RuntimeError::BorrowedComponent {
+                    index: None,
+                    kind: ComponentType::Attributes,
+                })?;
+        body.attributes()
+            .ok_or(pz_entity::RuntimeError::InvalidBody(
+                ComponentType::Attributes,
+            ))?
+            .get_value(id)
+    }
+
+    /// Detached fluid data for existing pure value-presentation consumers.
+    /// This is not the Lua/native getFluidContainer implementation.
     pub fn get_fluid_container(&self, ctx: &dyn EntityContext) -> Option<FluidContainer> {
-        if let Some(c) = &self.component_cache {
-            return c.fluid_container().cloned();
-        }
-        let b = self
+        match self
             .components
-            .iter()
-            .find(|b| b.type_id == ComponentType::FluidContainer.id())?;
-        match decode_blobs(std::slice::from_ref(b), ctx)?.list.pop()? {
-            Component::FluidContainer(f) => Some(f),
+            .value_snapshot(ComponentType::FluidContainer, ctx)
+            .ok()??
+        {
+            Component::FluidContainer(fluid) => Some(fluid),
             _ => None,
         }
     }
 
-    /// `attrib()`: the `Attributes` component's attributes.
+    /// Detached attributes for value-presentation consumers.
     pub fn get_attributes(
         &self,
         ctx: &dyn EntityContext,
     ) -> Option<pz_entity::components::attributes::AttributeContainer> {
-        if let Some(c) = &self.component_cache {
-            return match c.get(ComponentType::Attributes) {
-                Some(Component::Attributes(a)) => Some(a.clone()),
-                _ => None,
-            };
-        }
-        let b = self
+        match self
             .components
-            .iter()
-            .find(|b| b.type_id == ComponentType::Attributes.id())?;
-        match decode_blobs(std::slice::from_ref(b), ctx)?.list.pop()? {
-            Component::Attributes(a) => Some(a),
+            .value_snapshot(ComponentType::Attributes, ctx)
+            .ok()??
+        {
+            Component::Attributes(attributes) => Some(attributes),
             _ => None,
         }
     }
 
-    /// `attrib().getAttribute(<name>)`'s value.
     pub fn get_attribute(
         &self,
         ctx: &dyn EntityContext,
         name: &str,
     ) -> Option<pz_entity::components::attributes::AttributeValue> {
         let id = ctx.attribute_type_by_name(name)?.id;
-        let a = self.get_attributes(ctx)?;
-        a.attributes
+        self.get_attributes(ctx)?
+            .attributes
             .into_iter()
-            .find(|a| a.id == id)
-            .map(|a| a.value)
+            .find(|attribute| attribute.id == id)
+            .map(|attribute| attribute.value)
     }
 
-    /// Stores a changed `FluidContainer` back into the item's components
-    /// (in place, or appended when the item had none).
-    pub fn set_fluid_container(&mut self, fc: FluidContainer) {
-        if let Some(mut c) = self.component_cache.take() {
-            c.add_replace_in_place(Component::FluidContainer(fc));
-            self.set_components(*c);
-            return;
-        }
-        let mut comps = Components::new();
-        comps.add(Component::FluidContainer(fc));
-        let blob = encode_blobs(&comps).pop().expect("one component");
-        match self
-            .components
-            .iter_mut()
-            .find(|b| b.type_id == blob.type_id)
-        {
-            Some(b) => *b = blob,
-            None => self.components.push(blob),
+    /// Legacy data-setting boundary, not a native fluid mutator. Existing
+    /// live allocation identity is retained. Adding to an owned entity must
+    /// use ItemComponentHost so metadata/owner/lifecycle phases are real.
+    pub fn set_fluid_container(
+        &mut self,
+        fluid: FluidContainer,
+    ) -> Result<pz_entity::RetiredComponents, pz_entity::runtime_load::RuntimeHostError> {
+        use pz_entity::runtime_load::RuntimeHostError;
+        use pz_entity::{RuntimeComponent, RuntimeError};
+        match self.get_fluid_ref() {
+            Ok(Some(component)) => {
+                let mut body = component
+                    .try_borrow_mut()
+                    .map_err(|_| RuntimeHostError::Borrowed("set fluid body"))?;
+                *body
+                    .fluid_mut()
+                    .ok_or(RuntimeHostError::Storage(RuntimeError::InvalidBody(
+                        ComponentType::FluidContainer,
+                    )))? = fluid;
+                body.fluid_mut()
+                    .expect("immutable FluidContainer class")
+                    .cache_invalidated = true;
+                Ok(pz_entity::RetiredComponents::new())
+            }
+            Ok(None) | Err(RuntimeError::NeedsPromotion { .. }) => {
+                if self.components.is_bound()
+                    || self
+                        .components
+                        .has_live_owners()
+                        .map_err(RuntimeHostError::Storage)?
+                {
+                    return Err(RuntimeHostError::Unsupported {
+                        operation: "add fluid without item lifecycle host",
+                        kind: Some(ComponentType::FluidContainer),
+                    });
+                }
+                let component = RuntimeComponent::new_unowned(Component::FluidContainer(fluid))
+                    .map_err(|rejected| RuntimeHostError::Storage(rejected.error))?;
+                let _old_encoded = self
+                    .components
+                    .runtime_mut()
+                    .remove_encoded_type_unordered(ComponentType::FluidContainer.id());
+                self.components
+                    .runtime_mut()
+                    .push_ref_if_absent(component)
+                    .map_err(|rejected| RuntimeHostError::Storage(rejected.error))?;
+                Ok(pz_entity::RetiredComponents::new())
+            }
+            Err(error) => Err(RuntimeHostError::Storage(error)),
         }
     }
 }

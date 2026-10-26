@@ -1,19 +1,11 @@
 //! ECS component blocks (`GameEntity.saveEntity`/`loadEntity`) behind a
 //! codec seam.
 //!
-//! The components themselves (`FluidContainer`, `Durability`, ...) are
-//! ported in `pz-entity`. Until that lands, items keep each component as
-//! its type id and payload bytes ([`ComponentBlob`]), which round-trips
-//! exactly because every component is framed by a `ByteBlock` length.
-//! [`ComponentCodec`] is the swap point: an implementation backed by
-//! `pz-entity` decodes the payload into real components on `load_entity`
-//! and encodes them back on `save_entity`, and supplies the components
-//! `GameEntityFactory.CreateInventoryItemEntity` gives a new item
-//! ([`ComponentCodec::factory_components`]).
-//!
-//! With [`EntityCodec`] the blobs are always the current format and decode
-//! through [`InventoryItem::decode_components`](crate::InventoryItem::decode_components) /
-//! [`get_fluid_container`](crate::InventoryItem::get_fluid_container).
+//! Actual shared items store canonical runtime component references in
+//! [`crate::item_components::ItemComponents`]. [`ComponentCodec`] supplies
+//! their native factory and context seams. [`ComponentBlob`] and the value
+//! codec methods remain explicit unowned archive/legacy carriers; they do
+//! not provide an editable mirror of a live component.
 
 pub use pz_entity::factory::FactoryRng;
 
@@ -35,6 +27,45 @@ pub struct ComponentBlob {
 
 /// Reads and writes an entity's component list.
 pub trait ComponentCodec {
+    /// Legacy unowned value/archive load. Actual shared receivers must use
+    /// the native ItemComponentHost coordinator instead of this operation.
+    fn load_archive_entity(
+        &self,
+        reader: &mut Reader<'_>,
+        world_version: i32,
+        components: &mut crate::item_components::ItemComponents,
+    ) -> SaveResult<pz_entity::RetiredComponents> {
+        components
+            .load_encoded_archive(reader, world_version)
+            .map(|(_, retired)| retired)
+    }
+    /// Actual-owner production factory. Unsupported codecs cannot pretend
+    /// that their archive bytes are missing native components.
+    fn factory_runtime(
+        &self,
+        _item: &crate::shared::ItemRef,
+        template: &ItemTemplate,
+        _rng: &mut dyn FactoryRng,
+        _retired: &mut pz_entity::RetiredComponents,
+        _native_notices: &mut Vec<pz_entity::runtime_fluid::RuntimeNativeNotice>,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        if let Some(script) = template.script.as_ref() {
+            let script = script.0.try_borrow().map_err(|_| {
+                pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                    "component factory script definition",
+                )
+            })?;
+            if !script.entity.has_components() {
+                return Ok(());
+            }
+        } else {
+            return Ok(());
+        }
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "actual item component factory",
+            kind: None,
+        })
+    }
     /// `loadEntity`: reads the components into `components` (one already
     /// there of the same type loads in place, others are appended) and
     /// returns the type ids loaded.
@@ -117,19 +148,191 @@ pub trait ComponentCodec {
 pub struct OpaqueComponents;
 impl ComponentCodec for OpaqueComponents {}
 
-/// [`ComponentCodec`] backed by `pz-entity`: every component block is
-/// decoded into its component (loading in place into the components the
-/// item already has, as `loadEntity` does) and encoded back, so items whose
-/// components do not decode cleanly stay raw records. Storage stays
-/// [`ComponentBlob`]s, in the current format (decode them with
-/// [`InventoryItem::decode_components`](crate::InventoryItem::decode_components)).
-/// New items get their components from
-/// `pz_entity::factory::create_from_script`.
+/// [`ComponentCodec`] backed by `pz-entity`. Actual factories obtain pooled
+/// runtime references and read the actual script into those allocations.
+/// The unowned archive methods retain the existing value codec boundary;
+/// actual shared loads use [`crate::component_host::load_item_ref`] instead.
 pub struct EntityCodec<'a> {
     pub ctx: &'a dyn pz_entity::EntityContext,
 }
 
 impl ComponentCodec for EntityCodec<'_> {
+    fn load_archive_entity(
+        &self,
+        reader: &mut Reader<'_>,
+        world_version: i32,
+        components: &mut crate::item_components::ItemComponents,
+    ) -> SaveResult<pz_entity::RetiredComponents> {
+        if components.is_bound() {
+            return err("actual shared item requires the native component load coordinator");
+        }
+        let rest = &reader.buf[reader.pos..];
+        let length = pz_entity::entity::entity_len(rest)
+            .map_err(|error| crate::io::SaveError(format!("entity archive: {error}")))?;
+        let mut values = components
+            .values_snapshot(self.ctx)
+            .map_err(|error| crate::io::SaveError(format!("entity archive: {error}")))?;
+        let loaded = pz_entity::entity::load_components_into(
+            &mut values,
+            &rest[..length],
+            world_version,
+            self.ctx,
+        )
+        .map_err(|error| crate::io::SaveError(format!("entity archive: {error}")))?;
+        if !loaded.issues.is_empty() || loaded.consumed != length {
+            return err(format!("entity archive issues: {:?}", loaded.issues));
+        }
+        for index in (0..values.list.len()).rev() {
+            if !loaded.loaded.contains(&values.list[index].kind()) {
+                values.list.swap_remove(index);
+            }
+        }
+        let replacement = crate::item_components::ItemComponents::from_values_unowned(values)
+            .map_err(|rejected| {
+                crate::io::SaveError(format!("entity archive: {}", rejected.error))
+            })?;
+        reader.bytes(length)?;
+        components.replace_unowned(replacement).map_err(|rejected| {
+            crate::io::SaveError(format!(
+                "entity archive: {:?}",
+                rejected.into_error_and_retire()
+            ))
+        })
+    }
+    fn factory_runtime(
+        &self,
+        item: &crate::shared::ItemRef,
+        template: &ItemTemplate,
+        rng: &mut dyn FactoryRng,
+        retired: &mut pz_entity::RetiredComponents,
+        native_notices: &mut Vec<pz_entity::runtime_fluid::RuntimeNativeNotice>,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        use pz_entity::runtime_load::RuntimeHostError;
+        use pz_entity::{ComponentType, EntityOwner};
+        use pz_scripts::objects::entity::components::attributes::AttributesScript;
+        use pz_scripts::objects::entity::components::fluids::FluidContainerScript;
+        let Some(script_ref) = template.script.as_ref() else {
+            return Ok(());
+        };
+        let script = script_ref
+            .0
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("actual factory item script"))?;
+        if !script.entity.has_components() {
+            return Ok(());
+        }
+        // CreateInventoryItemEntity protects createEntity only. The script
+        // checks above and the InventoryItem constructor remain outside its
+        // native Exception catch; Rust capability/borrow faults stay fatal.
+        let created: pz_entity::runtime_load::HostResult<()> = (|| {
+            if !item
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("actual component factory receiver"))?
+                .components
+                .is_empty()
+            {
+                return Err(RuntimeHostError::NativeException(pz_entity::EntityError(
+                    "Calling CreateEntity on entity that already has components.".into(),
+                )));
+            }
+            let mut host = crate::component_host::ItemComponentHost::new(item, self.ctx);
+            for component_script in script.entity.component_scripts() {
+                let kind = component_script.component_type();
+                let component = pz_entity::runtime_pool::obtain_component(kind)
+                    .map_err(crate::component_host::pool_error)?;
+                retired.push_component(component.clone());
+                match kind {
+                    ComponentType::Attributes => {
+                        let attributes_script = component_script
+                            .as_any()
+                            .downcast_ref::<AttributesScript>()
+                            .ok_or(RuntimeHostError::InvalidHostState(
+                                "Attributes script class mismatch",
+                            ))?;
+                        // Native obtains this instance before a lazy template
+                        // allocation. Template construction runs without an
+                        // instance guard; its debug query occurs only on the
+                        // native failed-parse branch.
+                        let attributes_template =
+                            pz_entity::runtime_attributes::get_or_create_attributes_template(
+                                attributes_script,
+                                self.ctx,
+                                &crate::component_host::component_debug_enabled,
+                                native_notices,
+                                retired,
+                            )?;
+                        component
+                            .try_borrow_mut()
+                            .map_err(|_| {
+                                RuntimeHostError::Borrowed("pooled attributes script body")
+                            })?
+                            .read_attributes_template(
+                                attributes_template.as_ref(),
+                                script.entity.name().unwrap_or("null"),
+                                native_notices,
+                                retired,
+                            )
+                            .map_err(crate::component_host::native_component_error)?;
+                    }
+                    ComponentType::FluidContainer => {
+                        let fluid_script = component_script
+                            .as_any()
+                            .downcast_ref::<FluidContainerScript>()
+                            .ok_or(RuntimeHostError::InvalidHostState(
+                                "FluidContainer script class mismatch",
+                            ))?;
+                        component
+                            .try_borrow_mut()
+                            .map_err(|_| RuntimeHostError::Borrowed("pooled fluid script body"))?
+                            .read_fluid_script(
+                                fluid_script,
+                                self.ctx,
+                                rng,
+                                script.entity.name().unwrap_or("null"),
+                                native_notices,
+                            )
+                            .map_err(crate::component_host::native_component_error)?;
+                    }
+                    _ => {
+                        return Err(RuntimeHostError::Unsupported {
+                            operation: "native component readFromScript",
+                            kind: Some(kind),
+                        })
+                    }
+                }
+                let _added = host.add(&component, retired)?;
+            }
+            let component = pz_entity::runtime_pool::obtain_component(ComponentType::Script)
+                .map_err(crate::component_host::pool_error)?;
+            retired.push_component(component.clone());
+            let former_script = component
+                .try_borrow_mut()
+                .map_err(|_| RuntimeHostError::Borrowed("pooled entity script-info body"))?
+                .set_original_script_actual(
+                    true,
+                    script.full_name(),
+                    &EntityOwner::from_ref(&script_ref.0),
+                )
+                .map_err(RuntimeHostError::Storage)?;
+            if let Some(former_script) = former_script {
+                retired.push_owner(former_script);
+            }
+            let _added = host.add(&component, retired)?;
+            host.connect(retired)?;
+            // The following bool=true first-creation dispatch is authenticated
+            // return-only for these exact supported classes. No extra state is
+            // written by GameEntity's indexed dispatch or their inherited hook.
+            Ok(())
+        })();
+        match created {
+            Err(RuntimeHostError::NativeException(error)) => {
+                native_notices
+                    .push(pz_entity::runtime_fluid::RuntimeNativeNotice::ExceptionLogger(error.0));
+                Ok(())
+            }
+            result => result,
+        }
+    }
     fn load_entity(
         &self,
         r: &mut Reader<'_>,

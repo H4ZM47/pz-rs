@@ -15,6 +15,49 @@ fn empty_ref(kind: ComponentType) -> ComponentRef {
 }
 
 #[test]
+fn owned_retired_payloads_append_without_dropping_under_the_callers_guard() {
+    struct Probe {
+        guard: Rc<RefCell<()>>,
+        drops: Rc<Cell<usize>>,
+        dropped_under_guard: Rc<Cell<bool>>,
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            if self.guard.try_borrow_mut().is_err() {
+                self.dropped_under_guard.set(true);
+            }
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    let guard = Rc::new(RefCell::new(()));
+    let drops = Rc::new(Cell::new(0));
+    let dropped_under_guard = Rc::new(Cell::new(false));
+    let mut outer = RetiredComponents::new();
+    assert!(outer.is_empty());
+    let held = guard.borrow_mut();
+    for _ in 0..2 {
+        let mut inner = RetiredComponents::new();
+        inner.push_payload(Box::new(vec![Probe {
+            guard: Rc::clone(&guard),
+            drops: Rc::clone(&drops),
+            dropped_under_guard: Rc::clone(&dropped_under_guard),
+        }]));
+        assert!(!inner.is_empty());
+        assert_eq!(inner.len(), 1);
+        outer.append(inner);
+        assert_eq!(drops.get(), 0);
+    }
+    assert_eq!(outer.len(), 2);
+    assert!(format!("{outer:?}").contains("payloads: 2"));
+    assert_eq!(drops.get(), 0);
+    drop(held);
+    drop(outer);
+    assert_eq!(drops.get(), 2);
+    assert!(!dropped_under_guard.get());
+}
+
+#[test]
 fn erased_owner_is_direct_actual_allocation_and_borrowed_slot_is_not_a_clone() {
     let entity = Rc::new(RefCell::new(31i32));
     let owner = EntityOwner::from_ref(&entity);
@@ -299,9 +342,10 @@ fn live_load_keeps_allocation_partial_effects_and_original_absolute_reader() {
     let bytes = [0xee, 0x00, 0x01, 0x12, 0x34];
     let mut reader = Reader::new(&bytes);
     reader.seek(1).unwrap();
+    let mut retired = RetiredComponents::new();
     let error = component
         .borrow_mut()
-        .load_payload_in_place(&mut reader, VERSION, &BasicContext::default())
+        .load_payload_in_place(&mut reader, VERSION, &BasicContext::default(), &mut retired)
         .unwrap_err();
     assert!(matches!(error, RuntimeError::Codec(_)));
     assert_eq!(
@@ -335,7 +379,7 @@ fn live_load_keeps_allocation_partial_effects_and_original_absolute_reader() {
     reader.seek(1).unwrap();
     component
         .borrow_mut()
-        .load_payload_in_place(&mut reader, VERSION, &BasicContext::default())
+        .load_payload_in_place(&mut reader, VERSION, &BasicContext::default(), &mut retired)
         .unwrap();
     assert_eq!(reader.pos(), 7);
     assert_eq!(reader.i8().unwrap(), 0x33);

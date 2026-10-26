@@ -179,10 +179,10 @@ fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
     let mut c = ItemContainer::new(Some("crate"));
     c.items.push(blob(3, 1, &[9]));
     floor.container = Some(c);
-    floor.components.push(ComponentBlob {
+    floor.components.push_encoded_blob(ComponentBlob {
         type_id: 17,
         data: vec![1, 2],
-    });
+    }, 249).unwrap();
     floor.has_components = true;
     sq.objects.push((floor).into());
     let door = IsoDoor {
@@ -1125,14 +1125,14 @@ fn sprite_config_master_follows_the_object_sprite() {
     let idx = |n: &str| m.named_map[n];
     let resave = |sprite: &str, blob: ComponentBlob| {
         let mut o = IsoObject::new(1, ObjectKind::Object, Some(idx(sprite)));
-        o.components.push(blob);
+        o.components.push_encoded_blob(blob, 249).unwrap();
         o.has_components = true;
         let mut w = Writer::new();
         save_object(&mut w, &c, &o).unwrap();
         let back = load_object(&mut Reader::new(&w.buf), &c, WORLD_VERSION, 1)
             .unwrap()
             .unwrap();
-        back.components[0].data.clone()
+        back.components.try_encoded_blobs().unwrap()[0].data.clone()
     };
     // The master tile writes 1, another tile of the face and a sprite
     // outside the faces (an open window) write 0.
@@ -1154,14 +1154,14 @@ fn sprite_config_master_follows_the_object_sprite() {
     // Without a dictionary the bytes stay.
     let plain = ctx(&m, &t, &s, &AllItems);
     let mut o = IsoObject::new(1, ObjectKind::Object, Some(idx("door_1")));
-    o.components.push(sprite_config(Some(7), true));
+    o.components.push_encoded_blob(sprite_config(Some(7), true), 249).unwrap();
     o.has_components = true;
     let mut w = Writer::new();
     save_object(&mut w, &plain, &o).unwrap();
     let back = load_object(&mut Reader::new(&w.buf), &plain, WORLD_VERSION, 1)
         .unwrap()
         .unwrap();
-    assert_eq!(back.components[0], sprite_config(Some(7), true));
+    assert_eq!(back.components.try_encoded_blobs().unwrap()[0], sprite_config(Some(7), true));
 }
 
 #[test]
@@ -1182,7 +1182,8 @@ fn whole_object_owner_live_base_changes_save_and_archive_snapshot_is_independent
         let mut object = actual.borrow_mut();
         object.key_id = 991;
         object.name = Some(ObjectName::Str("Authored late base".into()));
-        object.components[0].data = vec![4, 5, 6];
+        let id = object.components.try_encoded_blobs().unwrap()[0].type_id;
+        object.components.runtime_mut().replace_encoded(id, pz_entity::EncodedComponent::new(id, vec![4, 5, 6], 249)).unwrap();
         object
             .mod_data
             .as_mut()
@@ -1204,10 +1205,10 @@ fn whole_object_owner_live_base_changes_save_and_archive_snapshot_is_independent
         back.name,
         Some(ObjectName::Str("Authored late base".into()))
     );
-    assert_eq!(back.components[0].data, [4, 5, 6]);
+    assert_eq!(back.components.try_encoded_blobs().unwrap()[0].data, [4, 5, 6]);
     assert_eq!(back.mod_data, actual.borrow().mod_data);
     assert_ne!(archive.objects[0].borrow().key_id, 991);
-    assert_ne!(archive.objects[0].borrow().components[0].data, [4, 5, 6]);
+    assert_ne!(archive.objects[0].borrow().components.try_encoded_blobs().unwrap()[0].data, [4, 5, 6]);
 }
 
 #[test]

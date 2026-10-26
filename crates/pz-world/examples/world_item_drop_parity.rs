@@ -385,14 +385,16 @@ fn main() {
     let display = |full: &str| names.get(full).cloned();
     // `getUnequippedWeight()` of an item on the floor: its fluid is in the
     // world object.
-    let fluid_id = pz_entity::ComponentType::FluidContainer.id();
+    struct WorldFluidAmount(Option<f32>);
+    impl pz_inventory::context::ItemOwner for WorldFluidAmount {
+        fn world_item_fluid_amount(&self, _: &InventoryItem) -> Option<f32> { self.0 }
+    }
     let weight = |o: &pz_world::IsoObject, i: &InventoryItem| {
-        let mut i = i.clone();
-        if let Some(b) = o.components.iter().find(|b| b.type_id == fluid_id) {
-            i.components.push(b.clone());
-            i.component_cache = None;
-        }
-        i.get_unequipped_weight(&ctx, &NoOwner)
+        // Detached read-only diagnostic data; never reattach a copied fluid
+        // to an item to stand in for the world's actual component reference.
+        let values = o.components.values_snapshot(ectx).expect("world component diagnostic snapshot");
+        let amount = values.fluid_container().map(|fluid| fluid.get_amount());
+        i.get_unequipped_weight(&ctx, &WorldFluidAmount(amount))
     };
 
     let mut cand = Vec::new();
@@ -557,7 +559,7 @@ fn main() {
                 i.get_full_type()
             )
             .unwrap();
-            let item_comps = !i.components.is_empty() || i.component_cache.is_some();
+            let item_comps = !i.components.is_empty();
             write!(
                 s,
                 " objFluid={} itemFluid={item_comps} idx={idx}/{} world={} special={} floorW={}",

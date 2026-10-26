@@ -4,6 +4,22 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+thread_local! {
+    // Attribute's actual class-static registry survives menu/script reloads.
+    // AttributeFactory's instance-pool reset is a separate native operation.
+    static ATTRIBUTE_TYPES: RefCell<Option<pz_entity::AttributeTypes>> = const { RefCell::new(None) };
+}
+
+fn native_attribute_types(jar: &pz_classfile::Jar) -> Result<pz_entity::AttributeTypes, String> {
+    if let Some(types) = ATTRIBUTE_TYPES.with(|slot| slot.borrow().clone()) {
+        return Ok(types);
+    }
+    let types = pz_entity::AttributeTypes::from_jar(jar)
+        .map_err(|error| format!("attribute registry: {error}"))?;
+    ATTRIBUTE_TYPES.with(|slot| *slot.borrow_mut() = Some(types.clone()));
+    Ok(types)
+}
+
 /// The development game entry skips `MainScreen.create`, which normally
 /// runs `MainOptions.loadKeys` before a game can start. Run that same Lua
 /// loader so defaults, the user's saved bindings and keyboard layout are
@@ -46,14 +62,22 @@ pub fn load_scripts(game_dir: &Path, fs: &mut pz_fs::GameFs) -> Result<(), Strin
             .map_err(|e| format!("character statics: {e}"))?;
     }
     pz_lua_api::bind_characters::install_characters(Rc::new(RefCell::new(chars)));
-    sm.load(fs, &[])
-        .map_err(|e| format!("ScriptManager.Load failed: {e}"))?;
+    let jar = pz_classfile::Jar::open(game_dir.join("projectzomboid.jar"))
+        .map_err(|error| format!("attribute registry jar: {error}"))?;
+    let attributes = native_attribute_types(&jar)?;
+    pz_lua_api::attribute_templates::install(attributes.clone());
+    let loaded = sm.load(fs, &[]);
+    pz_lua_api::attribute_templates::flush_notices()
+        .map_err(|error| format!("attribute template diagnostics: {error:?}"))?;
+    loaded.map_err(|e| format!("ScriptManager.Load failed: {e}"))?;
     // The entity registries items' factory components (`FluidContainer`)
     // resolve against.
-    let entity =
-        pz_lua_api::bind_items::item_entity_context(&game_dir.join("projectzomboid.jar"), &sm)
-            .map_err(|e| eprintln!("item entity registries: {e}"))
-            .ok();
+    let entity = Some(pz_entity::BasicContext {
+        attributes,
+        fluids: Some(pz_entity::FluidRegistry::from_scripts(&jar, &sm)
+            .map_err(|error| format!("item fluid registry: {error}"))?),
+        ..Default::default()
+    });
     pz_lua_api::bind_registry::install_script_manager(Rc::new(sm));
     let mut pop = pz_characters::population::Population::default();
     pop.init(fs);

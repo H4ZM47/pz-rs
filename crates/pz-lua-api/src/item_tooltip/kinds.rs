@@ -559,8 +559,11 @@ fn find_script_display_name(name: &str) -> Option<String> {
 
 /// `HandWeapon.DoTooltip`.
 fn weapon(cx: &mut Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult<()> {
-    if super::components::has_sharpness(&item.borrow()) {
-        let f = super::components::sharpness_mut(&mut item.borrow_mut());
+    if super::components::has_sharpness_ref(item)
+        .map_err(|error| pz_kahlua::LuaError::runtime(format!("{error:?}")))?
+    {
+        let f = super::components::sharpness_mut(item)
+            .map_err(|error| pz_kahlua::LuaError::runtime(format!("{error:?}")))?;
         layout
             .add_item()
             .label(&trc("Tooltip_weapon_Sharpness"), LABEL)

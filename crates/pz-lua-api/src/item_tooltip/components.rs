@@ -102,32 +102,182 @@ pub fn sharpness(it: &InventoryItem) -> f32 {
     }
 }
 
-/// `getSharpness()`: a sharpness above `getMaxSharpness()` is lowered to
-/// it (`applyMaxSharpness`) first.
-pub fn sharpness_mut(it: &mut InventoryItem) -> f32 {
-    let Some(v) = attr(it, "Sharpness") else {
-        return 0.0;
+fn actual_attribute_ref(
+    item: &ItemRef,
+    context: &dyn EntityContext,
+    name: &str,
+) -> Result<Option<pz_entity::runtime_attributes::AttributeRef>, pz_entity::RuntimeError> {
+    use pz_entity::{ComponentType, RuntimeError};
+    let component = {
+        let item = item
+            .try_borrow()
+            .map_err(|_| RuntimeError::BorrowedTransient("InventoryItem"))?;
+        item.get_attributes_ref()?
     };
-    let max = max_sharpness(it);
-    let s = float_of(&v);
-    if s <= max {
-        return s;
+    let Some(component) = component else {
+        return Ok(None);
+    };
+    let type_ref = match context.attribute_type_by_name_ref(name) {
+        Lookup::Found(type_ref) => type_ref,
+        Lookup::Missing | Lookup::Unknown => {
+            return Err(RuntimeError::UnsupportedRuntime(
+                "native attribute type registry is unavailable",
+            ))
+        }
+    };
+    let body = component
+        .try_borrow()
+        .map_err(|_| RuntimeError::BorrowedComponent {
+            index: None,
+            kind: ComponentType::Attributes,
+        })?;
+    let attributes = body
+        .attributes()
+        .ok_or(RuntimeError::InvalidBody(ComponentType::Attributes))?;
+    Ok(attributes.get_ref_by_type(&type_ref)?.cloned())
+}
+
+fn actual_attribute_value(
+    attribute: &pz_entity::runtime_attributes::AttributeRef,
+) -> Result<AttributeValue, pz_entity::RuntimeError> {
+    attribute
+        .try_borrow()
+        .map(|instance| instance.value_snapshot())
+        .map_err(|_| pz_entity::RuntimeError::BorrowedTransient("AttributeInstance"))
+}
+
+fn actual_max_sharpness(
+    item: &ItemRef,
+    context: &dyn EntityContext,
+) -> Result<f32, pz_entity::RuntimeError> {
+    use pz_entity::RuntimeError;
+    if actual_attribute_ref(item, context, "Sharpness")?.is_none() {
+        return Ok(1.0);
     }
-    // applyMaxSharpness: setSharpness(max), clamped to [0, 1].
-    let max = max.clamp(0.0, 1.0);
-    let e = item_env();
-    if let Some(ctx) = e.entity() {
-        let id = ctx.attribute_type_by_name("Sharpness").map(|t| t.id);
-        if let (Some(id), Some(mut comps)) = (id, it.decode_components(ctx)) {
-            for c in &mut comps.list {
-                if let Component::Attributes(a) = c {
-                    a.set(id, AttributeValue::Float(max));
-                }
+    if let Some(head) = actual_attribute_ref(item, context, "HeadCondition")? {
+        let head = int_of(&actual_attribute_value(&head)?);
+        let maximum = match actual_attribute_ref(item, context, "HeadConditionMax")? {
+            Some(maximum) => int_of(&actual_attribute_value(&maximum)?),
+            None => {
+                item.try_borrow()
+                    .map_err(|_| RuntimeError::BorrowedTransient("InventoryItem"))?
+                    .condition_max
             }
-            it.set_components(comps);
+        };
+        Ok(head as f32 / maximum as f32)
+    } else {
+        let item = item
+            .try_borrow()
+            .map_err(|_| RuntimeError::BorrowedTransient("InventoryItem"))?;
+        Ok(item.condition as f32 / item.condition_max as f32)
+    }
+}
+
+fn actual_set_sharpness(
+    item: &ItemRef,
+    context: &dyn EntityContext,
+    mut value: f32,
+    notices: &mut Vec<pz_entity::runtime_fluid::RuntimeNativeNotice>,
+) -> Result<(), pz_entity::RuntimeError> {
+    use pz_entity::RuntimeError;
+    if actual_attribute_ref(item, context, "Sharpness")?.is_none() {
+        return Ok(());
+    }
+    let maximum = actual_max_sharpness(item, context)?;
+    if value > maximum {
+        value = maximum;
+    }
+    if value < 0.0 {
+        value = 0.0;
+    }
+    if value > 1.0 {
+        value = 1.0;
+    }
+    let value = pz_core::config::float_to_string(value);
+    let instance = actual_attribute_ref(item, context, "Sharpness")?.ok_or_else(|| {
+        RuntimeError::Codec(pz_entity::EntityError("NullPointerException".into()))
+    })?;
+    // Native uses the existing instance's script-string setter, including its
+    // actual type validation. It does not get-or-add or replace the instance.
+    instance
+        .try_borrow_mut()
+        .map_err(|_| RuntimeError::BorrowedTransient("AttributeInstance"))?
+        .set_value_from_script_string(&value, notices)?;
+    Ok(())
+}
+
+fn actual_get_sharpness(
+    item: &ItemRef,
+    context: &dyn EntityContext,
+    notices: &mut Vec<pz_entity::runtime_fluid::RuntimeNativeNotice>,
+) -> Result<f32, pz_entity::RuntimeError> {
+    use pz_entity::RuntimeError;
+    let Some(instance) = actual_attribute_ref(item, context, "Sharpness")? else {
+        return Ok(0.0);
+    };
+    let sharpness = float_of(&actual_attribute_value(&instance)?);
+    let maximum = actual_max_sharpness(item, context)?;
+    // fcmpl/ifle skips the native write for either NaN operand and equal
+    // signed zeros. Only the ordered greater-than relation enters it.
+    if sharpness > maximum {
+        // applyMaxSharpness checks presence and reads max again; the setter
+        // then performs its own third max read before the ordered clamps.
+        if actual_attribute_ref(item, context, "Sharpness")?.is_some() {
+            let maximum = actual_max_sharpness(item, context)?;
+            actual_set_sharpness(item, context, maximum, notices)?;
         }
     }
-    max
+    let instance = actual_attribute_ref(item, context, "Sharpness")?.ok_or_else(|| {
+        RuntimeError::Codec(pz_entity::EntityError("NullPointerException".into()))
+    })?;
+    Ok(float_of(&actual_attribute_value(&instance)?))
+}
+
+/// Fallible native presence: this checks the actual slot without reading a
+/// scalar or collapsing a held component/instance into genuine absence.
+pub fn has_sharpness_ref(item: &ItemRef) -> pz_entity::runtime_load::HostResult<bool> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let env = item_env();
+    match env.entity() {
+        Some(context) => actual_attribute_ref(item, context, "Sharpness")
+            .map(|value| value.is_some())
+            .map_err(RuntimeHostError::Storage),
+        None => {
+            let item = item
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("InventoryItem"))?;
+            if item
+                .get_attributes_ref()
+                .map_err(RuntimeHostError::Storage)?
+                .is_none()
+            {
+                Ok(false)
+            } else {
+                Err(RuntimeHostError::Unsupported {
+                    operation: "native Sharpness attribute registry",
+                    kind: Some(pz_entity::ComponentType::Attributes),
+                })
+            }
+        }
+    }
+}
+
+/// Native getSharpness over the actual item and instance. All guards end
+/// before owned diagnostics reach the host logger, on success and failure.
+pub fn sharpness_mut(item: &ItemRef) -> pz_entity::runtime_load::HostResult<f32> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let env = item_env();
+    let Some(context) = env.entity() else {
+        // No attribute component is genuine absence even before a context is
+        // installed. A represented component without its registry is explicit.
+        has_sharpness_ref(item)?;
+        return Ok(0.0);
+    };
+    let mut notices = Vec::new();
+    let result =
+        actual_get_sharpness(item, context, &mut notices).map_err(RuntimeHostError::Storage);
+    pz_inventory::component_host::emit_native_notices(&notices)?;
+    result
 }
 
 /// `AttributeInstance.stringValue()`.
@@ -512,6 +662,10 @@ pub fn do_tooltip(cx: &mut Cx<'_>, item: &ItemRef, _tip: &Tip<'_>, layout: &mut 
     }
     let _ = trc;
 }
+
+#[cfg(test)]
+#[path = "components/attributes_tests.rs"]
+mod attributes_tests;
 
 #[cfg(test)]
 mod tests {

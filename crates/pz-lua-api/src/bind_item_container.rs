@@ -1157,9 +1157,10 @@ pub fn add_item_type(t: &mut Thread, c: &ContainerRef, ty: &str) -> LuaResult<Op
     if script.borrow().obsolete {
         return Ok(None);
     }
-    let Some(item) = crate::bind_items::create_item(ty, 1.0) else {
+    let Some(item) = crate::bind_items::try_create_item(ty, 1.0)? else {
         return Ok(None);
     };
+    crate::bind_items::initialise_item(t, &item);
     set_container(&item, Some(c));
     c.borrow_mut().items.push(item.clone());
     let food = matches!(item.borrow().kind, ItemKind::Food(_));
@@ -1175,11 +1176,12 @@ pub fn add_item_type(t: &mut Thread, c: &ContainerRef, ty: &str) -> LuaResult<Op
 
 /// `AddItem(String type, float useDelta)` (the `synchSpawn` variant is
 /// the same offline).
-pub fn add_item_uses(c: &ContainerRef, ty: &str, use_delta: f32) -> bool {
+pub fn add_item_uses(t: &mut Thread, c: &ContainerRef, ty: &str, use_delta: f32) -> LuaResult<bool> {
     mark_added(c, false);
-    let Some(item) = crate::bind_items::create_item(ty, 1.0) else {
-        return false;
+    let Some(item) = crate::bind_items::try_create_item(ty, 1.0)? else {
+        return Ok(false);
     };
+    crate::bind_items::initialise_item(t, &item);
     if is_drainable_interface(&item.borrow()) {
         let e = item_env();
         let n = (item.borrow().get_max_uses() as f32 * use_delta) as i32;
@@ -1188,7 +1190,7 @@ pub fn add_item_uses(c: &ContainerRef, ty: &str, use_delta: f32) -> bool {
     }
     set_container(&item, Some(c));
     c.borrow_mut().items.push(item);
-    true
+    Ok(true)
 }
 
 /// The parent's `checkClothing(item)` (dead bodies, mannequins) and
@@ -1498,15 +1500,54 @@ fn item_from(
 
 // ---- fluids ---------------------------------------------------------------------
 
-/// `item.hasComponent(ComponentType.FluidContainer)`.
+/// Stored component-data presence for the legacy read-only presentation
+/// helpers below. Encoded carriers are not exposed as live Lua components;
+/// the actual getFluidContainer binding uses get_fluid_ref and reports them.
 fn has_fluid_container(i: &InventoryItem) -> bool {
-    match &i.component_cache {
-        Some(c) => c.fluid_container().is_some(),
-        None => {
-            let id = pz_scripts::objects::entity::ComponentType::FluidContainer.id();
-            i.components.iter().any(|b| b.type_id == id)
+    !matches!(i.components.runtime().presence(pz_entity::ComponentType::FluidContainer), pz_entity::EntryPresence::Absent)
+}
+
+/// The owner phase of FluidContainer.recalculateCaches. Resolve the actual
+/// outermost parent, then dirty the DIRECT container in native write order.
+/// Every parent/class operation runs after the container borrow ends.
+pub(crate) fn on_fluid_update(item: &ItemRef) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let borrowed = |operation| RuntimeHostError::Borrowed(operation);
+    let Some(mut outer) = shared::container_of(item) else { return Ok(()); };
+    if outer.try_borrow().map_err(|_| borrowed("fluid outermost container"))?.kind == "floor" {
+        return Ok(());
+    }
+    loop {
+        let containing = outer.try_borrow().map_err(|_| borrowed("fluid containing item"))?
+            .containing_item.as_ref().and_then(Weak::upgrade);
+        let Some(next) = containing.and_then(|bag| shared::container_of(&bag)) else { break; };
+        if next.try_borrow().map_err(|_| borrowed("fluid outer container kind"))?.kind == "floor" { break; }
+        outer = next;
+    }
+    let parent = {
+        let container = outer.try_borrow().map_err(|_| borrowed("fluid outermost parent"))?;
+        match container.parent.as_ref() {
+            None => Value::Nil,
+            Some(parent) => {
+                if let Some(parent) = parent.downcast_ref::<LuaRef>() { parent.0.clone() }
+                else if let Some(parent) = parent.downcast_ref::<LuaParent>() { parent.value.clone() }
+                else { return Err(RuntimeHostError::Unsupported {
+                    operation: "actual fluid ItemContainer parent type", kind: Some(pz_entity::ComponentType::FluidContainer),
+                }); }
+            }
+        }
+    };
+    if instance_of(&parent, ISO_PLAYER) {
+        // The original reads item.getContainer again after the predicate.
+        if let Some(direct) = shared::container_of(item) {
+            let mut direct = direct.try_borrow_mut().map_err(|_| borrowed("fluid direct container flags"))?;
+            direct.draw_dirty = true;
+            direct.dirty = true;
         }
     }
+    // Current InventoryItem subclasses inherit the exact return-only
+    // GameEntity.onFluidContainerUpdate, authenticated across the installed JAR.
+    Ok(())
 }
 
 /// `item.getFluidContainer()` decoded against the environment's entity
@@ -2349,7 +2390,9 @@ fn register_items(b: &crate::expose::ClassBuilder) {
         }
         let ty = str_arg(c, 1)?;
         if c.nargs() >= 3 {
-            return Ok(c.push(add_item_uses(&s, &ty, num_arg(c, 2) as f32)));
+            let delta = num_arg(c, 2) as f32;
+            let added = add_item_uses(c.thread, &s, &ty, delta)?;
+            return Ok(c.push(added));
         }
         let r = add_item_type(c.thread, &s, &ty)?;
         Ok(c.push(opt_item(r)))
@@ -2393,7 +2436,9 @@ fn register_items(b: &crate::expose::ClassBuilder) {
         }
         let ty = str_arg(c, 1)?;
         if c.nargs() >= 3 {
-            return Ok(c.push(add_item_uses(&s, &ty, num_arg(c, 2) as f32)));
+            let delta = num_arg(c, 2) as f32;
+            let added = add_item_uses(c.thread, &s, &ty, delta)?;
+            return Ok(c.push(added));
         }
         let r = add_item_type(c.thread, &s, &ty)?;
         Ok(c.push(opt_item(r)))

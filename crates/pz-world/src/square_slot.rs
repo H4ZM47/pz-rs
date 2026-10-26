@@ -65,14 +65,16 @@ impl From<IsoGridSquare> for SquareSlot {
 pub struct RetiredWorldOwners {
     pub objects: Vec<ObjectSlot>,
     pub squares: Vec<SquareSlot>,
+    pub components: pz_entity::RetiredComponents,
 }
 impl RetiredWorldOwners {
     pub fn is_empty(&self) -> bool {
-        self.objects.is_empty() && self.squares.is_empty()
+        self.objects.is_empty() && self.squares.is_empty() && self.components.is_empty()
     }
     pub fn append(&mut self, other: &mut Self) {
         self.objects.append(&mut other.objects);
         self.squares.append(&mut other.squares);
+        self.components.append(std::mem::take(&mut other.components));
     }
 }
 

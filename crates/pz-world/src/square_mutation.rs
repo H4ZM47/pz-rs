@@ -57,7 +57,7 @@ use pz_inventory::InventoryItem;
 mod lifecycle;
 mod world_item;
 pub use lifecycle::{AmbientEmitterKind, WorldCall};
-pub use world_item::{render_square, FloorDropEnv, WorldItemPlaced, WORLD_ITEM_ADDED};
+pub use world_item::{render_square, FloorDropEnv, WorldItemPlaced, WorldItemPlacementError, WORLD_ITEM_ADDED};
 
 #[cfg(test)]
 mod tests;

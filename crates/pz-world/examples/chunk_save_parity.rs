@@ -246,7 +246,8 @@ fn field_lines(ctx: &SaveCtx<'_>, ch: &IsoChunk, hooks: &OracleHooks, out: &mut 
                                 let v = t.feeding_types.iter().find(|e| e.0 == k).unwrap().1;
                                 write!(l, "{k}:{};", fx(v)).unwrap();
                             }
-                            let fc = o.components.iter().find(|c| {
+                            let component_archive = o.components.try_encoded_blobs().expect("chunk archive diagnostics require encoded component carriers");
+                            let fc = component_archive.iter().find(|c| {
                                 c.type_id == pz_entity::ComponentType::FluidContainer.id()
                             });
                             match fc {
@@ -599,8 +600,8 @@ fn first_object_diff(ctx: &SaveCtx<'_>, r: &IsoChunk, j: &IsoChunk, out: &mut St
                     rs.borrow().x,
                     rs.borrow().y,
                     rs.borrow().z,
-                    ro.components.iter().map(|c| c.type_id).collect::<Vec<_>>(),
-                    jo.components.iter().map(|c| c.type_id).collect::<Vec<_>>()
+                    ro.components.entry_slots().map(|entry| match entry { pz_entity::RuntimeEntryView::Live { kind, .. } => kind.id(), pz_entity::RuntimeEntryView::Encoded(c) => c.type_id() }).collect::<Vec<_>>(),
+                    jo.components.entry_slots().map(|entry| match entry { pz_entity::RuntimeEntryView::Live { kind, .. } => kind.id(), pz_entity::RuntimeEntryView::Encoded(c) => c.type_id() }).collect::<Vec<_>>()
                 )
                 .unwrap();
                 return;

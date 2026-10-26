@@ -26,6 +26,7 @@ struct Host {
     substitute: Option<ComponentRef>,
     null_obtain: bool,
     debug: bool,
+    debug_error: Option<RuntimeHostError>,
     enable_debug_on_obtain: bool,
     remove_absent: bool,
 }
@@ -78,8 +79,9 @@ impl Host {
 }
 
 impl RuntimeLoadHost for Host {
-    fn debug_enabled(&self) -> bool {
-        self.debug
+    fn debug_enabled(&self) -> HostResult<bool> {
+        if let Some(error) = &self.debug_error { return Err(error.clone()); }
+        Ok(self.debug)
     }
     fn resolve_type(&mut self, id: i16) -> HostResult<ComponentType> {
         self.events.push(format!("type:{id}"));
@@ -135,13 +137,13 @@ impl RuntimeLoadHost for Host {
         component: &ComponentRef,
         reader: &mut Reader<'_>,
         version: i32,
-        _: &mut RetiredComponents,
+        retired: &mut RetiredComponents,
     ) -> HostResult<()> {
         self.events.push("load".into());
         let result = component
             .try_borrow_mut()
             .map_err(|_| RuntimeHostError::Borrowed("fixture body"))?
-            .load_payload_in_place(reader, version, &BasicContext::default());
+            .load_payload_in_place(reader, version, &BasicContext::default(), retired);
         match result {
             Ok(()) => self.fail_at(RuntimeLoadPhase::LoadComponent),
             Err(RuntimeError::Codec(error)) => Err(RuntimeHostError::NativeException(error)),
@@ -467,6 +469,20 @@ fn null_component_reads_live_debug_and_uses_authenticated_original_id_message() 
         }
         assert_eq!(host.events.last().unwrap(), "connect");
     }
+}
+
+#[test]
+fn borrowed_live_debug_state_is_fatal_before_end_and_not_a_native_exception() {
+    let mut writer = Writer::new();
+    writer.i8(1);
+    block(&mut writer, 0, &[0x55]);
+    let mut host = Host { null_obtain: true, debug_error: Some(RuntimeHostError::Borrowed("Core.debug")), ..Default::default() };
+    let failure = load_native_with(&mut Reader::new(&writer.buf), VERSION, &mut host, options()).unwrap_err();
+    assert_eq!(failure.phase, RuntimeLoadPhase::NullComponent);
+    assert_eq!(failure.error, RuntimeHostError::Borrowed("Core.debug"));
+    assert_eq!(failure.report.position, 7, "no forced End skipped the trailing byte");
+    assert!(failure.report.issues.is_empty());
+    assert_eq!(host.events.last().unwrap(), "obtain");
 }
 
 #[test]

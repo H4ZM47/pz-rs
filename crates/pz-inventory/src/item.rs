@@ -9,11 +9,11 @@
 
 use std::rc::Rc;
 
-use crate::component::ComponentBlob;
 use crate::container::ItemContainer;
 use crate::device::DeviceData;
 use crate::env::ItemEnv;
 use crate::io::{err, has, read_header, BitHeaderWrite, Reader, SaveError, SaveResult, Writer};
+use crate::item_components::ItemComponents;
 use crate::lua_table::{present, LuaKey, LuaTable, LuaValue};
 use crate::shared::{ContainerRef, SharedContainer};
 use crate::template::{ItemClass, ItemTemplate};
@@ -462,15 +462,8 @@ pub struct InventoryItem {
     pub recorded_media_index: i16,
     pub world_scale: f32,
     pub is_initialised: bool,
-    /// ECS components in entity order (see [`crate::component`]), as
-    /// saved.
-    pub components: Vec<ComponentBlob>,
-    /// The decoded components of a newly made item (or one changed through
-    /// [`set_components`](InventoryItem::set_components)), kept beside the
-    /// blobs: in memory the original keeps values the save rounds (fluid
-    /// colours are saved as bytes). `None` after a load, whose blobs decode
-    /// exactly. Code that edits `components` directly must clear it.
-    pub component_cache: Option<Box<pz_entity::Components>>,
+    /// Sole live/explicit-archive component authority.
+    pub components: ItemComponents,
     pub animal_tracks: Option<AnimalTracks>,
     /// A texture name saved because it differs from the script icon.
     pub texture_override: Option<String>,
@@ -492,6 +485,13 @@ pub struct InventoryItem {
     /// saved).
     pub vehicle_part: crate::template::VehiclePartStats,
     pub kind: ItemKind,
+}
+
+/// Scalar prefix continuation at the native entity-data phase.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ItemLoadContinuation {
+    pub(crate) bits: u64,
+    pub(crate) entity_present: bool,
 }
 
 const WHITE: Rgba = [1.0, 1.0, 1.0, 1.0];
@@ -603,8 +603,7 @@ impl InventoryItem {
             recorded_media_index: -1,
             world_scale: 1.0,
             is_initialised: false,
-            components: Vec::new(),
-            component_cache: None,
+            components: ItemComponents::new(),
             animal_tracks: None,
             texture_override: None,
             model_index: -1,
@@ -806,7 +805,8 @@ impl InventoryItem {
         }
         if !self.components.is_empty() {
             bits.add(0x4000000);
-            env.components().save_entity(w, &self.components)?;
+            self.components
+                .write_to(w, crate::component::COMPONENT_WORLD_VERSION)?;
         }
         if let Some(t) = &self.animal_tracks {
             bits.add(0x8000000);
@@ -881,6 +881,25 @@ impl InventoryItem {
     /// `InventoryItem.load` and the subclass `load` (after the registry
     /// id and save type).
     pub fn load(&mut self, r: &mut Reader<'_>, wv: i32, env: &dyn ItemEnv) -> SaveResult<()> {
+        let continuation = self.load_prefix(r, wv, env)?;
+        if continuation.entity_present {
+            // Explicit value/archive entry point. Actual shared entities use
+            // component_host::load_item_ref, with no item guard over hooks.
+            let retired = env
+                .components()
+                .load_archive_entity(r, wv, &mut self.components)?;
+            drop(retired); // This archive body is unowned; no host owner drops.
+        }
+        self.load_suffix(continuation, r, wv, env)?;
+        self.load_kind_and_sync(r, wv, env)
+    }
+
+    pub(crate) fn load_prefix(
+        &mut self,
+        r: &mut Reader<'_>,
+        wv: i32,
+        env: &dyn ItemEnv,
+    ) -> SaveResult<ItemLoadContinuation> {
         if let ItemKind::Weapon(w) = &mut self.kind {
             // clearAllWeaponParts
             w.attachments.clear();
@@ -1055,44 +1074,58 @@ impl InventoryItem {
                     self.world_scale = r.f32()?;
                 }
                 self.is_initialised = has(bits, 0x2000000);
-                if has(bits, 0x4000000) {
-                    let loaded = env.components().load_entity(r, wv, &mut self.components)?;
-                    // Components the factory made that the file does not hold
-                    // are removed, last to first, from the component list (an
-                    // unordered `Array`: the last component takes the removed
-                    // one's place).
-                    for i in (0..self.components.len()).rev() {
-                        if !loaded.contains(&self.components[i].type_id) {
-                            self.components.swap_remove(i);
-                        }
-                    }
-                    self.component_cache = None;
-                }
-                if has(bits, 0x8000000) {
-                    self.animal_tracks = Some(AnimalTracks::load(r)?);
-                }
-                if has(bits, 0x10000000) {
-                    let name = r.string()?;
-                    self.texture_override = env.texture_round_trip(&self.template, &name);
-                }
-                if has(bits, 0x20000000) {
-                    self.model_index = r.i32()?;
-                }
-                if has(bits, 0x40000000) {
-                    if wv >= 232 {
-                        self.world_x_rotation = r.f32()?;
-                        self.world_y_rotation = r.f32()?;
-                        self.world_z_rotation = r.f32()?;
-                    } else {
-                        self.world_y_rotation = r.i32()? as f32;
-                        self.world_x_rotation = r.i32()? as f32;
-                    }
-                }
+                return Ok(ItemLoadContinuation {
+                    bits,
+                    entity_present: has(bits, 0x4000000),
+                });
+            }
+        }
+        Ok(ItemLoadContinuation {
+            bits: 0,
+            entity_present: false,
+        })
+    }
+
+    pub(crate) fn load_suffix(
+        &mut self,
+        continuation: ItemLoadContinuation,
+        r: &mut Reader<'_>,
+        wv: i32,
+        env: &dyn ItemEnv,
+    ) -> SaveResult<()> {
+        let bits = continuation.bits;
+        if has(bits, 0x8000000) {
+            self.animal_tracks = Some(AnimalTracks::load(r)?);
+        }
+        if has(bits, 0x10000000) {
+            let name = r.string()?;
+            self.texture_override = env.texture_round_trip(&self.template, &name);
+        }
+        if has(bits, 0x20000000) {
+            self.model_index = r.i32()?;
+        }
+        if has(bits, 0x40000000) {
+            if wv >= 232 {
+                self.world_x_rotation = r.f32()?;
+                self.world_y_rotation = r.f32()?;
+                self.world_z_rotation = r.f32()?;
+            } else {
+                self.world_y_rotation = r.i32()? as f32;
+                self.world_x_rotation = r.i32()? as f32;
             }
         }
         // The end of `InventoryItem.load`: `synchWithVisual` (its model
         // index draw; the visual part runs after the subclass fields here).
         self.pick_model_index(&mut |m| env.rand_next(m));
+        Ok(())
+    }
+
+    pub(crate) fn load_kind_and_sync(
+        &mut self,
+        r: &mut Reader<'_>,
+        wv: i32,
+        env: &dyn ItemEnv,
+    ) -> SaveResult<()> {
         self.load_kind(r, wv, env)?;
         if let Some(a) = env.assets() {
             self.synch_with_visual(Some(a), &crate::context::NoOwner, env.visual_rng());

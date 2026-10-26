@@ -104,16 +104,11 @@ fn opt(s: Option<&str>) -> String {
 }
 
 fn ent_hex(i: &InventoryItem) -> String {
-    let mut s = format!("{:02x}", i.components.len() as u8);
-    for c in &i.components {
-        for x in (c.data.len() as i32 + 2)
-            .to_be_bytes()
-            .iter()
-            .chain(c.type_id.to_be_bytes().iter())
-            .chain(c.data.iter())
-        {
-            write!(s, "{x:02x}").unwrap();
-        }
+    let mut writer = pz_inventory::io::Writer::new();
+    i.components.write_to(&mut writer, 249).expect("component diagnostic serialization");
+    let mut s = String::new();
+    for x in &writer.buf {
+        write!(s, "{x:02x}").unwrap();
     }
     s
 }

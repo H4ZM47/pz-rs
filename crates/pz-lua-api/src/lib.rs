@@ -36,6 +36,9 @@ pub(crate) mod bind_item_age;
 pub mod bind_item_name;
 pub mod bind_item_visual;
 pub mod bind_items;
+pub mod bind_fluid_container;
+pub mod component_gc;
+pub mod attribute_templates;
 pub mod item_tooltip;
 pub mod bind_iso_enums;
 pub mod bind_java_util;
@@ -99,8 +102,81 @@ pub use session_reset::reset_session_bindings;
 
 use std::rc::Rc;
 
+fn component_debug_query() -> pz_entity::runtime_load::HostResult<bool> {
+    let core = bind_core::shared_core();
+    let core = core.try_borrow().map_err(|_| {
+        pz_entity::runtime_load::RuntimeHostError::Borrowed("Core.debug")
+    })?;
+    Ok(core.get_debug())
+}
+
+fn component_native_notice(notice: &pz_entity::runtime_fluid::RuntimeNativeNotice) -> pz_entity::runtime_load::HostResult<()> {
+    match notice {
+        pz_entity::runtime_fluid::RuntimeNativeNotice::GeneralLog(message) => pz_core::debug::log(message),
+        pz_entity::runtime_fluid::RuntimeNativeNotice::GeneralError(message) =>
+            pz_core::debug::DebugType::General.error(None, message),
+        pz_entity::runtime_fluid::RuntimeNativeNotice::GeneralException(message) =>
+            pz_core::debug::with(|log| log.print_exception(
+                pz_core::debug::DebugType::General,
+                Some(&pz_core::debug::LogThrowable::new(message)),
+                None,
+                "",
+                pz_core::debug::LogSeverity::Error,
+            )),
+        pz_entity::runtime_fluid::RuntimeNativeNotice::ExceptionLogger(message) =>
+            pz_core::debug::log_exception(&pz_core::debug::LogThrowable::new(message), None),
+    }
+    Ok(())
+}
+
+fn component_script_cache(is_item: bool, name: &str) -> pz_entity::runtime_load::HostResult<Option<pz_entity::EntityOwner>> {
+    let scripts = bind_registry::shared_script_manager();
+    let owner = if is_item {
+        scripts.get::<pz_scripts::objects::items::Item>(pz_scripts::ScriptType::Item, name)
+            .map(|script| pz_entity::EntityOwner::from_ref(&script))
+    } else {
+        scripts.get::<pz_scripts::objects::entity::GameEntityScript>(pz_scripts::ScriptType::Entity, name)
+            .map(|script| pz_entity::EntityOwner::from_ref(&script))
+    };
+    Ok(owner)
+}
+
+fn component_fluid_owner(owner: &pz_entity::EntityOwner) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    if let Some(item) = owner.try_handle::<pz_inventory::InventoryItem>() {
+        return bind_item_container::on_fluid_update(&item);
+    }
+    if let Some(object) = owner.try_handle::<pz_world::IsoObject>() {
+        let trough = {
+            let object = object.try_borrow().map_err(|_| RuntimeHostError::Borrowed("fluid world owner class"))?;
+            matches!(object.kind, pz_world::ObjectKind::FeedingTrough(_))
+        };
+        if trough {
+            // The native override runs real container/event/linked-world/
+            // overlay/network phases. Do not substitute the inherited no-op.
+            return Err(RuntimeHostError::Unsupported {
+                operation: "IsoFeedingTrough.onFluidContainerUpdate container/overlay phases",
+                kind: Some(pz_entity::ComponentType::FluidContainer),
+            });
+        }
+        // The authenticated current JAR declares no other world-object
+        // override of GameEntity's exact return-only implementation.
+        return Ok(());
+    }
+    Err(RuntimeHostError::Unsupported {
+        operation: "actual fluid component owner type",
+        kind: Some(pz_entity::ComponentType::FluidContainer),
+    })
+}
+
 /// Register all globals and exposed classes.
 pub fn register_all(mgr: &mut LuaManager) {
+    component_gc::install_observers();
+    pz_inventory::component_host::install_component_debug_query(Some(component_debug_query));
+    pz_inventory::component_host::install_native_notice_logger(Some(component_native_notice));
+    pz_inventory::component_host::install_script_cache_resolver(Some(component_script_cache));
+    pz_inventory::component_host::install_item_fluid_observer(Some(bind_item_container::on_fluid_update));
+    pz_inventory::component_host::install_fluid_owner_observer(Some(component_fluid_owner));
     // A new Lua session must not retain the previous session's sandbox
     // provider. Native generator range latches have a separate lifetime.
     bind_world::power::install_sandbox(None);
@@ -133,6 +209,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_input::register(mgr);
     bind_joypad::register(mgr);
     bind_erosion::register(&mut mgr.thread);
+    bind_fluid_container::register(&mut mgr.thread);
     bind_items::register(&mut mgr.thread);
     bind_item_age::install_events(mgr.events.clone());
     bind_item_container::register(&mut mgr.thread);

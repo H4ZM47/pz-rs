@@ -906,10 +906,9 @@ fn floor_removal_notifies_fluid_before_removing_only_first_actual_membership() {
         // Empty fluid still qualifies: native checks the component's type,
         // not its current amount or the presence of unrelated components.
         object
-            .components
-            .push(pz_inventory::component::encode_component(
+            .components.push_encoded_blob(pz_inventory::component::encode_component(
                 pz_entity::Component::FluidContainer(Default::default()),
-            ));
+            ), 249).unwrap();
     }
     let replacement = ObjectSlot::new(actual.borrow().clone());
     let replacement_owner = replacement.ref_handle();
@@ -985,10 +984,9 @@ fn floor_removal_fluid_notification_requires_real_component_and_floor_kind() {
             object.has_components = marker;
             if let Some(kind) = component {
                 object
-                    .components
-                    .push(pz_inventory::component::encode_component(
+                    .components.push_encoded_blob(pz_inventory::component::encode_component(
                         pz_entity::Component::create(kind).unwrap(),
-                    ));
+                    ), 249).unwrap();
             }
         }
         let square = w.sq(p);
@@ -1051,10 +1049,9 @@ fn detached_floor_list_removal_retires_final_owner_until_guards_end() {
     // derives its answer from the actual component collection.
     actual
         .borrow_mut()
-        .components
-        .push(pz_inventory::component::encode_component(
+        .components.push_encoded_blob(pz_inventory::component::encode_component(
             pz_entity::Component::FluidContainer(Default::default()),
-        ));
+        ), 249).unwrap();
     let weak = Rc::downgrade(&actual);
     list.borrow_mut().push_object(&actual);
     drop(inventory);
@@ -1091,12 +1088,13 @@ fn world_item_joins_the_square() {
     let inv = pz_inventory::SharedContainer::default().into_ref();
     pz_inventory::shared::add_item(&inv, &item);
     pz_inventory::shared::remove_item(&inv, &item);
-    item.borrow_mut()
-        .components
-        .push(pz_inventory::ComponentBlob {
-            type_id: pz_entity::ComponentType::FluidContainer.id(),
-            data: vec![1, 2],
-        });
+    let fluid = pz_entity::RuntimeComponent::new_unowned(
+        pz_entity::Component::FluidContainer(Default::default()),
+    ).unwrap();
+    let mut retired = pz_entity::RetiredComponents::new();
+    pz_inventory::component_host::ItemComponentHost::new(&item, &pz_entity::BasicContext::default())
+        .add(&fluid, &mut retired).unwrap();
+    drop(retired);
     let before = w.sq(p).borrow().objects.len();
     let placed = w
         .env()
@@ -1117,6 +1115,8 @@ fn world_item_joins_the_square() {
     assert_eq!(o.key_id, 77);
     assert!(o.outline_on_mouseover && o.has_components);
     assert_eq!(o.components.len(), 1);
+    assert!(Rc::ptr_eq(&o.components.get_ref(pz_entity::ComponentType::FluidContainer).unwrap().unwrap(), &fluid));
+    assert!(fluid.borrow().owner_slot().unwrap().ptr_eq(&pz_entity::EntityOwner::from_ref(&o_owner)));
     let ObjectKind::WorldInventory(wi) = &o.kind else {
         panic!()
     };

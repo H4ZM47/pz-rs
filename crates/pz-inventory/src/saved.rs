@@ -156,3 +156,188 @@ pub fn read_record<'a>(r: &mut Reader<'a>) -> SaveResult<&'a [u8]> {
     }
     r.bytes(len as usize)
 }
+
+/// Actual native sized-record phases. The legacy SavedItem/decode APIs above
+/// remain named value/raw-archive carriers and do not back this path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveRecordPhase {
+    Header,
+    Factory,
+    Body,
+    Repair,
+    DebugMismatch,
+}
+
+#[derive(Debug)]
+#[must_use]
+pub struct LiveRecordLoad {
+    pub item: Option<crate::shared::ItemRef>,
+    pub retired: pz_entity::RetiredComponents,
+    /// Native caught body exceptions, kept separately from host failures.
+    pub body_exceptions: Vec<pz_entity::EntityError>,
+}
+
+#[derive(Debug)]
+#[must_use]
+pub struct LiveRecordFailure {
+    pub error: pz_entity::runtime_load::RuntimeHostError,
+    pub receiver: Option<crate::shared::ItemRef>,
+    pub retired: pz_entity::RetiredComponents,
+    pub phase: LiveRecordPhase,
+    pub position: usize,
+}
+
+impl LiveRecordFailure {
+    pub fn into_error_and_retire(mut self) -> pz_entity::runtime_load::RuntimeHostError {
+        if let Some(receiver) = self.receiver.take() {
+            self.retired
+                .push_owner(pz_entity::EntityOwner::from_ref(&receiver));
+        }
+        crate::component_host::retire_components(self.retired);
+        self.error
+    }
+}
+
+/// InventoryItem.loadItem using the actual original caller buffer and an
+/// optional actual supplied receiver. Header/factory and repair are outside
+/// the body Exception catch. No minimum7 guard or record-sized slice exists.
+pub fn load_item_record(
+    reader: &mut Reader<'_>,
+    world_version: i32,
+    env: &dyn ItemEnv,
+    supplied: Option<&crate::shared::ItemRef>,
+) -> Result<LiveRecordLoad, LiveRecordFailure> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let mut result = LiveRecordLoad {
+        item: None,
+        retired: pz_entity::RetiredComponents::new(),
+        body_exceptions: Vec::new(),
+    };
+    let header = (|| -> Result<_, RuntimeHostError> {
+        if reader.buf.len() > i32::MAX as usize || reader.pos > reader.buf.len() {
+            return Err(RuntimeHostError::InvalidHostState(
+                "invalid original ByteBuffer domain",
+            ));
+        }
+        let length = reader
+            .i32()
+            .map_err(|error| RuntimeHostError::NativeException(pz_entity::EntityError(error.0)))?;
+        if length <= 0 {
+            return Err(RuntimeHostError::NativeException(pz_entity::EntityError(
+                format!("InventoryItem.loadItem() invalid item data length: {length}"),
+            )));
+        }
+        let start = reader.pos as i32;
+        let registry = reader
+            .i16()
+            .map_err(|error| RuntimeHostError::NativeException(pz_entity::EntityError(error.0)))?;
+        let _save_type = reader
+            .i8()
+            .map_err(|error| RuntimeHostError::NativeException(pz_entity::EntityError(error.0)))?;
+        Ok((start.wrapping_add(length), registry))
+    })();
+    let (end, registry) = match header {
+        Ok(header) => header,
+        Err(error) => {
+            return Err(LiveRecordFailure {
+                error,
+                receiver: supplied.cloned(),
+                retired: result.retired,
+                phase: LiveRecordPhase::Header,
+                position: reader.pos,
+            })
+        }
+    };
+    result.item = match supplied {
+        Some(item) => Some(item.clone()),
+        None => match crate::env::create_item_ref(env, registry) {
+            Ok(item) => item,
+            Err(failure) => {
+                return Err(LiveRecordFailure {
+                    error: failure.error,
+                    receiver: failure.item,
+                    retired: failure.retired,
+                    phase: LiveRecordPhase::Factory,
+                    position: reader.pos,
+                })
+            }
+        },
+    };
+    if let Some(item) = result.item.as_ref() {
+        match crate::component_host::load_item_ref(item, reader, world_version, env) {
+            Ok(retired) => result.retired.append(retired),
+            Err(failure) => {
+                result.retired.append(failure.retired);
+                result
+                    .retired
+                    .push_owner(pz_entity::EntityOwner::from_ref(&failure.item));
+                match failure.error {
+                    RuntimeHostError::NativeException(error) => {
+                        eprintln!("{error}");
+                        result.body_exceptions.push(error);
+                        result.item = None;
+                    }
+                    error => {
+                        return Err(LiveRecordFailure {
+                            error,
+                            receiver: result.item,
+                            retired: result.retired,
+                            phase: LiveRecordPhase::Body,
+                            position: reader.pos,
+                        })
+                    }
+                }
+            }
+        }
+    }
+    let repaired = (|| -> Result<(), RuntimeHostError> {
+        if result.item.is_none() {
+            if (reader.pos as i32) < end {
+                while (reader.pos as i32) < end {
+                    reader.i8().map_err(|error| {
+                        RuntimeHostError::NativeException(pz_entity::EntityError(error.0))
+                    })?;
+                }
+                eprintln!(
+                    "InventoryItem.loadItem() item == null, skipped bytes. itemtype: {}",
+                    env.item_type_debug_string(registry)
+                );
+            } else {
+                let mut buffer = pz_entity::io::Reader::borrow_cursor(reader.buf, &mut reader.pos)
+                    .map_err(RuntimeHostError::NativeException)?;
+                buffer
+                    .seek_java(end)
+                    .map_err(RuntimeHostError::NativeException)?;
+                drop(buffer);
+                eprintln!("InventoryItem.loadItem() item == null, resetting buffer position to '{end}'. itemtype: {}", env.item_type_debug_string(registry));
+            }
+        } else if reader.pos as i32 != end {
+            let mut buffer = pz_entity::io::Reader::borrow_cursor(reader.buf, &mut reader.pos)
+                .map_err(RuntimeHostError::NativeException)?;
+            buffer
+                .seek_java(end)
+                .map_err(RuntimeHostError::NativeException)?;
+            drop(buffer);
+            eprintln!("InventoryItem.loadItem() data length not matching, resetting buffer position to '{end}'. itemtype: {}", env.item_type_debug_string(registry));
+            if crate::component_host::component_debug_enabled()? {
+                return Err(RuntimeHostError::NativeException(pz_entity::EntityError(
+                    format!(
+                        "InventoryItem.loadItem() read more data than save() wrote ({})",
+                        env.item_type_debug_string(registry)
+                    ),
+                )));
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = repaired {
+        return Err(LiveRecordFailure {
+            error,
+            receiver: result.item,
+            retired: result.retired,
+            phase: LiveRecordPhase::Repair,
+            position: reader.pos,
+        });
+    }
+    Ok(result)
+}

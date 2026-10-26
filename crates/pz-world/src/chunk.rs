@@ -649,6 +649,7 @@ impl IsoChunk {
         let mut retired = RetiredWorldOwners {
             objects: std::mem::take(&mut self.retired_objects),
             squares: Vec::new(),
+            components: Default::default(),
         };
         for slot in self.squares.iter().flatten().flatten() {
             if let Ok(mut square) = slot.square_borrow_for_retirement() {
@@ -1037,9 +1038,15 @@ pub struct IsoCell {
     cache: LotCache,
     retired_objects: Vec<crate::ObjectSlot>,
     retired_squares: Vec<SquareSlot>,
+    retired_components: pz_entity::RetiredComponents,
 }
 
 impl IsoCell {
+    /// Keep detached actual components and old owners alive until the same
+    /// outer world/sprite boundary as retired whole objects and squares.
+    pub fn retire_components(&mut self, retired: pz_entity::RetiredComponents) {
+        self.retired_components.append(retired);
+    }
     /// Retain a whole detached square until its pending host roots can be
     /// extracted and every outer world/sprite guard has been released.
     pub fn retire_square(&mut self, square: SquareSlot) {
@@ -1054,6 +1061,7 @@ impl IsoCell {
         let mut retired = RetiredWorldOwners {
             objects: std::mem::take(&mut self.retired_objects),
             squares: Vec::new(),
+            components: std::mem::take(&mut self.retired_components),
         };
         crate::square_slot::drain_squares(&mut self.retired_squares, &mut retired);
         for chunk in self.chunks.values_mut() {
@@ -1133,6 +1141,7 @@ impl IsoCell {
             let mut retired = c.take_retired_owners();
             self.retired_objects.append(&mut retired.objects);
             self.retired_squares.append(&mut retired.squares);
+            self.retired_components.append(std::mem::take(&mut retired.components));
             if let Some(h) = hook {
                 h.chunk_unloaded(wx, wy);
             }

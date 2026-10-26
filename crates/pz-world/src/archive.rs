@@ -14,7 +14,7 @@ pub enum ArchiveLocation {
     WorldObject(usize),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SquareArchiveError {
     BorrowedSquare,
     BorrowedWorldObjects,
@@ -27,6 +27,10 @@ pub enum SquareArchiveError {
     BorrowedObject(usize),
     BorrowedFloor(usize),
     BorrowedMannequinWorn(ArchiveLocation),
+    Components {
+        location: ArchiveLocation,
+        cause: pz_entity::RuntimeError,
+    },
     Metadata(pz_inventory::archive::ArchiveCopyError),
     Inventory {
         location: ArchiveLocation,
@@ -101,6 +105,15 @@ fn check_object(
     let object = object.try_borrow().map_err(|_| origin.borrowed_object())?;
     let location = origin.location();
     let inventory_error = |cause| SquareArchiveError::Inventory { location, cause };
+    for (index, entry) in object.components.entry_slots().enumerate() {
+        if let pz_entity::RuntimeEntryView::Live { kind, component } = entry {
+            let body = component.try_borrow().map_err(|_| SquareArchiveError::Components {
+                location,
+                cause: pz_entity::RuntimeError::BorrowedComponent { index: Some(index), kind },
+            })?;
+            body.check_archive_copy().map_err(|cause| SquareArchiveError::Components { location, cause })?;
+        }
+    }
     for container in object.containers() {
         check.container(container).map_err(inventory_error)?;
     }

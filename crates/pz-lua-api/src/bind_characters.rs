@@ -1084,7 +1084,7 @@ fn register_survivor_desc(thread: &mut Thread, sm: &Rc<ScriptManager>, chars: &R
         })
         .unwrap_or_else(|| Ok(Vec::new()))
         .map_err(LuaError::runtime)?;
-        crate::bind_item_visual::set_worn_items_from_item_visuals(&mut d.borrow_mut(), &visuals).map_err(java_error)?;
+        crate::bind_item_visual::set_worn_items_from_item_visuals(c.thread, &d, &visuals).map_err(java_error)?;
         Ok(0)
     });
     let (s, ch) = (sm.clone(), chars.clone());

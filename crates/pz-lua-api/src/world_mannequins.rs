@@ -210,7 +210,8 @@ impl HumanVisualOwner for VisualOwner {
 struct InventoryHost<'a>(&'a mut Thread);
 impl WornItemsInventoryHost for InventoryHost<'_> {
     fn create_item(&mut self, item_type: &str) -> ScriptResult<Option<ItemRef>> {
-        let item = crate::bind_items::create_item(item_type, 1.0);
+        let item = crate::bind_items::try_create_item(item_type, 1.0)
+            .map_err(|error| pz_scripts::ScriptError::new(format!("{error:?}")))?;
         if let Some(item) = &item {
             crate::bind_items::initialise_item(self.0, item);
         }

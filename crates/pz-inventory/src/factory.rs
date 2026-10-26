@@ -338,6 +338,183 @@ pub fn create_item_by_type(
     module_defaults_to_base: bool,
     display_name: &dyn Fn(&str) -> Option<String>,
 ) -> Option<crate::item::InventoryItem> {
+    let (template, registry_id) =
+        runtime_item_template(sm, item_type, module_defaults_to_base, display_name)?;
+    let mut item = crate::env::create_from_template(env, template, registry_id);
+    if use_delta != 1.0
+        && matches!(
+            item.template.class,
+            crate::template::ItemClass::Drainable | crate::template::ItemClass::WeaponPart
+        )
+    {
+        item.uses = (item.get_max_uses() as f32 * use_delta) as i32;
+        item.update_weight_by(|n| env.script_actual_weight(n));
+    }
+    Some(item)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_factory_keeps_the_loaded_script_dictionary_id() {
+        let sm = ScriptManager::new();
+        sm.registries
+            .get("item_type")
+            .unwrap()
+            .borrow_mut()
+            .register_id("test:normal", true)
+            .unwrap();
+        sm.statics
+            .items
+            .borrow_mut()
+            .constants
+            .insert("item_type", "NORMAL", "test:normal");
+        sm.parse_script(
+            pz_scripts::ScriptLoadMode::Init,
+            "module Base { item TestMarble { ItemType = test:normal, Weight = 0.1, } }",
+        )
+        .unwrap();
+        sm.get_module("Base")
+            .unwrap()
+            .bucket(pz_scripts::ScriptType::Item)
+            .load_scripts(&sm, pz_scripts::ScriptLoadMode::Init);
+        let script = sm
+            .find_item("Base.TestMarble", false)
+            .unwrap()
+            .downcast::<pz_scripts::objects::items::Item>()
+            .unwrap();
+        script.borrow_mut().entity.set_registry_id(73).unwrap();
+        struct Env;
+        impl ItemEnv for Env {}
+        for ty in ["Base.TestMarble", "TestMarble"] {
+            let item = create_item_by_type(&Env, &sm, ty, 1.0, true, &|_| None).unwrap();
+            assert_eq!(
+                item.registry_id, 73,
+                "string factory discarded WorldDictionary registration"
+            );
+            assert_eq!(item.get_full_type(), "Base.TestMarble");
+            assert!(
+                item.item_type.is_none(),
+                "ComboItem constructor leaves itemType null"
+            );
+        }
+    }
+
+    #[test]
+    fn created_item_types_follow_subclass_constructor_references() {
+        use pz_scripts::objects::items::ItemType;
+        let sm = ScriptManager::new();
+        let cases = [
+            ("NORMAL", None),
+            ("KEY", Some("KEY")),
+            ("WEAPON_PART", Some("WEAPON")),
+            ("CONTAINER", Some("CONTAINER")),
+            ("FOOD", Some("FOOD")),
+            ("LITERATURE", Some("LITERATURE")),
+            ("ALARM_CLOCK", Some("ALARM_CLOCK")),
+            ("ALARM_CLOCK_CLOTHING", Some("ALARM_CLOCK_CLOTHING")),
+            ("WEAPON", Some("WEAPON")),
+            ("CLOTHING", Some("CLOTHING")),
+            ("DRAINABLE", None),
+            ("RADIO", Some("RADIO")),
+            ("MOVEABLE", Some("MOVEABLE")),
+            ("MAP", None),
+            ("ANIMAL", Some("ANIMAL")),
+        ];
+        for (field, _) in cases {
+            let id = format!("test:{}", field.to_lowercase());
+            sm.registries
+                .get("item_type")
+                .unwrap()
+                .borrow_mut()
+                .register_id(&id, false)
+                .unwrap();
+            sm.statics
+                .items
+                .borrow_mut()
+                .constants
+                .insert("item_type", field, &id);
+            sm.parse_script(
+                pz_scripts::ScriptLoadMode::Init,
+                &format!("module Base {{ item Test{field} {{ ItemType = {id}, Weight = 0.1, }} }}"),
+            )
+            .unwrap();
+        }
+        sm.get_module("Base")
+            .unwrap()
+            .bucket(pz_scripts::ScriptType::Item)
+            .load_scripts(&sm, pz_scripts::ScriptLoadMode::Init);
+        struct Env;
+        impl ItemEnv for Env {}
+        for (field, expected) in cases {
+            let item =
+                create_item_by_type(&Env, &sm, &format!("Base.Test{field}"), 1.0, true, &|_| {
+                    None
+                })
+                .unwrap();
+            match expected {
+                Some(expected) => assert!(
+                    Rc::ptr_eq(
+                        item.item_type.as_ref().unwrap(),
+                        &ItemType::constant(&sm, expected).unwrap()
+                    ),
+                    "wrong constructor type for {field}"
+                ),
+                None => assert!(
+                    item.item_type.is_none(),
+                    "constructor unexpectedly assigned {field}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn item_names() {
+        let m = parse_item_names("{\n \"Base.A\": \"An \\\"A\\\"\",\n \"Base.B\": \"B\\u00e9\"\n}");
+        assert_eq!(m["Base.A"], "An \"A\"");
+        assert_eq!(m["Base.B"], "B\u{e9}");
+    }
+}
+
+/// Actual-owner counterpart of create_item_by_type. The entire constructor
+/// sequence uses the same actual receiver and returns ownership on failures.
+pub fn create_item_by_type_ref(
+    env: &dyn ItemEnv,
+    sm: &ScriptManager,
+    item_type: &str,
+    use_delta: f32,
+    module_defaults_to_base: bool,
+    display_name: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<crate::shared::ItemRef>, crate::env::FactoryItemFailure> {
+    let Some((template, registry_id)) =
+        runtime_item_template(sm, item_type, module_defaults_to_base, display_name)
+    else {
+        return Ok(None);
+    };
+    let item = crate::env::create_from_template_ref(env, template, registry_id)?;
+    {
+        let mut body = item.borrow_mut();
+        if use_delta != 1.0
+            && matches!(
+                body.template.class,
+                crate::template::ItemClass::Drainable | crate::template::ItemClass::WeaponPart
+            )
+        {
+            body.uses = (body.get_max_uses() as f32 * use_delta) as i32;
+            body.update_weight_by(|name| env.script_actual_weight(name));
+        }
+    }
+    Ok(Some(item))
+}
+
+fn runtime_item_template(
+    sm: &ScriptManager,
+    item_type: &str,
+    module_defaults_to_base: bool,
+    display_name: &dyn Fn(&str) -> Option<String>,
+) -> Option<(Rc<ItemTemplate>, i16)> {
     let mut item_type = item_type.to_string();
     let mut moveable = None;
     if let Some(name) = item_type.strip_prefix("Moveables.") {
@@ -365,83 +542,5 @@ pub fn create_item_by_type(
         t = Rc::new(c);
     }
     let registry_id = script.borrow().entity.registry_id();
-    let mut item = crate::env::create_from_template(env, t, registry_id);
-    if use_delta != 1.0
-        && matches!(
-            item.template.class,
-            crate::template::ItemClass::Drainable | crate::template::ItemClass::WeaponPart
-        )
-    {
-        item.uses = (item.get_max_uses() as f32 * use_delta) as i32;
-        item.update_weight_by(|n| env.script_actual_weight(n));
-    }
-    Some(item)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn string_factory_keeps_the_loaded_script_dictionary_id() {
-        let sm = ScriptManager::new();
-        sm.registries.get("item_type").unwrap().borrow_mut().register_id("test:normal", true).unwrap();
-        sm.statics.items.borrow_mut().constants.insert("item_type", "NORMAL", "test:normal");
-        sm.parse_script(pz_scripts::ScriptLoadMode::Init,
-            "module Base { item TestMarble { ItemType = test:normal, Weight = 0.1, } }")
-            .unwrap();
-        sm.get_module("Base").unwrap().bucket(pz_scripts::ScriptType::Item)
-            .load_scripts(&sm, pz_scripts::ScriptLoadMode::Init);
-        let script = sm.find_item("Base.TestMarble", false).unwrap()
-            .downcast::<pz_scripts::objects::items::Item>().unwrap();
-        script.borrow_mut().entity.set_registry_id(73).unwrap();
-        struct Env;
-        impl ItemEnv for Env {}
-        for ty in ["Base.TestMarble", "TestMarble"] {
-            let item = create_item_by_type(&Env, &sm, ty, 1.0, true, &|_| None).unwrap();
-            assert_eq!(item.registry_id, 73, "string factory discarded WorldDictionary registration");
-            assert_eq!(item.get_full_type(), "Base.TestMarble");
-            assert!(item.item_type.is_none(), "ComboItem constructor leaves itemType null");
-        }
-    }
-
-    #[test]
-    fn created_item_types_follow_subclass_constructor_references() {
-        use pz_scripts::objects::items::ItemType;
-        let sm = ScriptManager::new();
-        let cases = [
-            ("NORMAL", None), ("KEY", Some("KEY")), ("WEAPON_PART", Some("WEAPON")),
-            ("CONTAINER", Some("CONTAINER")), ("FOOD", Some("FOOD")),
-            ("LITERATURE", Some("LITERATURE")), ("ALARM_CLOCK", Some("ALARM_CLOCK")),
-            ("ALARM_CLOCK_CLOTHING", Some("ALARM_CLOCK_CLOTHING")), ("WEAPON", Some("WEAPON")),
-            ("CLOTHING", Some("CLOTHING")), ("DRAINABLE", None), ("RADIO", Some("RADIO")),
-            ("MOVEABLE", Some("MOVEABLE")), ("MAP", None), ("ANIMAL", Some("ANIMAL")),
-        ];
-        for (field, _) in cases {
-            let id = format!("test:{}", field.to_lowercase());
-            sm.registries.get("item_type").unwrap().borrow_mut().register_id(&id, false).unwrap();
-            sm.statics.items.borrow_mut().constants.insert("item_type", field, &id);
-            sm.parse_script(pz_scripts::ScriptLoadMode::Init, &format!(
-                "module Base {{ item Test{field} {{ ItemType = {id}, Weight = 0.1, }} }}"
-            )).unwrap();
-        }
-        sm.get_module("Base").unwrap().bucket(pz_scripts::ScriptType::Item)
-            .load_scripts(&sm, pz_scripts::ScriptLoadMode::Init);
-        struct Env;
-        impl ItemEnv for Env {}
-        for (field, expected) in cases {
-            let item = create_item_by_type(&Env, &sm, &format!("Base.Test{field}"), 1.0, true, &|_| None).unwrap();
-            match expected {
-                Some(expected) => assert!(Rc::ptr_eq(item.item_type.as_ref().unwrap(), &ItemType::constant(&sm, expected).unwrap()), "wrong constructor type for {field}"),
-                None => assert!(item.item_type.is_none(), "constructor unexpectedly assigned {field}"),
-            }
-        }
-    }
-
-    #[test]
-    fn item_names() {
-        let m = parse_item_names("{\n \"Base.A\": \"An \\\"A\\\"\",\n \"Base.B\": \"B\\u00e9\"\n}");
-        assert_eq!(m["Base.A"], "An \"A\"");
-        assert_eq!(m["Base.B"], "B\u{e9}");
-    }
+    Some((t, registry_id))
 }

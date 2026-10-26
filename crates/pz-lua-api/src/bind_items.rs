@@ -352,7 +352,7 @@ fn create_item_with(
 /// `InventoryItemFactory.CreateItem(itemType, useDelta)` through the
 /// installed environment (its `Rand`, `OutfitRNG` and assets) and the
 /// shared `ScriptManager`: `None` for an unknown type.
-pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
+pub fn try_create_item(item_type: &str, use_delta: f32) -> LuaResult<Option<ItemRef>> {
     let e = env();
     let sm = crate::bind_registry::shared_script_manager();
     let ce = CreateEnv {
@@ -363,15 +363,25 @@ pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
             .entity()
             .map(|ctx| pz_inventory::component::EntityCodec { ctx }),
     };
-    let item = pz_inventory::factory::create_item_by_type(
+    pz_inventory::factory::create_item_by_type_ref(
         &ce,
         &sm,
         item_type,
         use_delta,
         true,
         &translated_name,
-    )?;
-    Some(pz_inventory::shared::new_item(item))
+    )
+    .map_err(|failure| {
+        let error = failure.into_error_and_retire();
+        LuaError::runtime(format!("InventoryItemFactory.CreateItem: {error:?}"))
+    })
+}
+
+/// Legacy synchronous adapter. Production Lua uses [`try_create_item`] so
+/// unsupported lifecycle/borrow failures cannot become a false missing item.
+pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
+    try_create_item(item_type, use_delta)
+        .expect("create_item failed; production callers must use try_create_item")
 }
 
 /// `initialiseItem` on a game/loading-thread factory result. Set the flag
@@ -425,7 +435,7 @@ pub fn install_item_runtime(assets: Option<ItemAssets>, entity: Option<pz_entity
 
 thread_local! {
     static ENV: RefCell<Rc<dyn ItemLuaEnv>> = RefCell::new(Rc::new(GameItemEnv::new(None)));
-    static OBJECTS: RefCell<HashMap<usize, Weak<dyn LuaObject>>> = RefCell::new(HashMap::new());
+    static OBJECTS: RefCell<HashMap<usize, Weak<LuaInventoryItem>>> = RefCell::new(HashMap::new());
 }
 
 /// Installs the environment the item methods use.
@@ -507,23 +517,48 @@ impl LuaObject for LuaInventoryItem {
     }
 }
 
+fn item_userdata(item: &ItemRef) -> LuaResult<Rc<LuaInventoryItem>> {
+    let key = Rc::as_ptr(item) as *const () as usize;
+    let cached = OBJECTS.with(|m| m.borrow().get(&key).and_then(Weak::upgrade));
+    let object = match cached {
+        Some(object) if Rc::ptr_eq(&object.item, item) => object,
+        _ => {
+            let body = item.try_borrow().map_err(|_| LuaError::runtime("InventoryItem is in use"))?;
+            let class = class_of(&body);
+            drop(body);
+            let object = Rc::new(LuaInventoryItem {
+                item: Rc::clone(item),
+                class,
+            });
+            OBJECTS.with(|m| {
+                let mut m = m.borrow_mut();
+                m.retain(|_, w| w.strong_count() > 0);
+                m.insert(key, Rc::downgrade(&object));
+            });
+            object
+        }
+    };
+    Ok(object)
+}
+
+/// Fallible native userdata conversion. A cold class lookup under an item
+/// guard is a visible host error; an existing cached identity needs no body
+/// lookup. Hard metadata conflicts are never turned into a fake null owner.
+pub fn try_item_value(item: &ItemRef) -> LuaResult<Value> {
+    let object = item_userdata(item)?;
+    crate::component_gc::register_item_userdata(&object)
+        .map_err(|error| LuaError::runtime(error.to_string()))?;
+    Ok(Value::Object(object))
+}
+
 /// The Lua object of `item` (the same object while it is alive).
 pub fn item_value(item: &ItemRef) -> Value {
-    let key = Rc::as_ptr(item) as *const () as usize;
-    OBJECTS.with(|m| {
-        let mut m = m.borrow_mut();
-        if let Some(o) = m.get(&key).and_then(Weak::upgrade) {
-            return Value::Object(o);
-        }
-        let class = class_of(&item.borrow());
-        let o: Rc<dyn LuaObject> = Rc::new(LuaInventoryItem {
-            item: item.clone(),
-            class,
-        });
-        m.retain(|_, w| w.strong_count() > 0);
-        m.insert(key, Rc::downgrade(&o));
-        Value::Object(o)
-    })
+    let object = item_userdata(item).expect("item_value requires an unborrowed item or an existing userdata; native getters use try_item_value");
+    // Typed registration precedes dyn erasure, including canonical cache hits.
+    // This legacy infallible adapter retains conservative ownership on a
+    // registry conflict; component_gc records explicit faults and weak retries.
+    let _ = crate::component_gc::register_item_userdata(&object);
+    Value::Object(object)
 }
 
 /// The item behind a Lua `InventoryItem` object.
@@ -677,7 +712,22 @@ macro_rules! envd {
 }
 
 fn register_inventory_item(thread: &mut Thread) {
-    expose_class(thread, GAME_ENTITY_CLASS, None);
+    let entity = expose_class(thread, GAME_ENTITY_CLASS, None);
+    entity.method("getFluidContainer", |c| {
+        let item = this(c)?;
+        let component = {
+            let item = item
+                .try_borrow()
+                .map_err(|_| LuaError::runtime("InventoryItem is in use"))?;
+            item.get_fluid_ref()
+                .map_err(|error| LuaError::runtime(error.to_string()))?
+        };
+        let value = match component {
+            Some(component) => crate::bind_fluid_container::fluid_value(&component)?,
+            None => Value::Nil,
+        };
+        Ok(c.push(value))
+    });
     let b = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
     b.method("updateAge", |c| {
         let item = this(c)?;
@@ -1533,7 +1583,13 @@ pub fn register(thread: &mut Thread) {
         } else {
             1.0
         };
-        let v = create_item(&t, delta).map_or(Value::Nil, |i| item_value(&i));
+        let v = match try_create_item(&t, delta)? {
+            Some(item) => {
+                initialise_item(c.thread, &item);
+                item_value(&item)
+            }
+            None => Value::Nil,
+        };
         Ok(c.push(v))
     });
     crate::item_tooltip::register(thread);
