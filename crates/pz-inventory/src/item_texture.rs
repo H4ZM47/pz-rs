@@ -355,6 +355,7 @@ pub(crate) fn constructor_script_ref(
     // The script constructor only reads its argument. The retained scriptItem
     // field stays null until Item.InstanceItem.setScriptItem at PC3398.
     initialize_food_java_fields(item)?;
+    crate::literature::initialize_java_fields(item)?;
     begin_native_constructor(item, None)?;
     let capture = current_script_capture(template)?;
     set_texture_ref(item, capture.normal.as_ref())?;
@@ -367,6 +368,7 @@ pub(crate) fn constructor_script_ref(
         };
         live.world_name = capture.world_name.clone();
     }
+    crate::literature::finish_super_fields(item)?;
     if template.class == crate::ItemClass::Food {
         finish_food_super_fields(item)?;
         pz_render::set_warn_fail_find_texture(false);
@@ -705,6 +707,7 @@ impl InventoryItem {
 /// distinct native producer, never a fallback for an uncaptured script item.
 pub fn constructor_string_ref(item: &ItemRef, name: &str) -> HostResult<()> {
     initialize_food_java_fields(item)?;
+    crate::literature::initialize_java_fields(item)?;
     begin_native_constructor(item, None)?;
     let texture = pz_render::try_get_texture_ref(name).map_err(texture_host_error)?;
     set_texture_ref(item, texture.as_ref())?;
@@ -726,6 +729,7 @@ pub fn constructor_string_ref(item: &ItemRef, name: &str) -> HostResult<()> {
         };
         live.world_name = Some(world_name.clone());
     }
+    crate::literature::finish_super_fields(item)?;
     let food = read(item, |body| Ok(matches!(body.kind, ItemKind::Food(_))))?;
     if food {
         finish_food_super_fields(item)?;

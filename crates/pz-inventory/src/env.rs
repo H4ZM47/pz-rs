@@ -254,6 +254,7 @@ pub fn create_from_template_ref(
     // Publish the same actual receiver before any captured constructor read.
     // Archive creation remains the explicitly separate value API above.
     let mut value = InventoryItem::create(template.clone(), registry_id);
+    crate::literature::initialize_java_fields_value(&mut value);
     // Native InventoryContainer string constructor leaves its own two ints
     // at Java defaults, distinct from the noarg child container's capacity50.
     if let crate::ItemKind::Container(bag) = &mut value.kind {
@@ -295,6 +296,9 @@ pub fn create_from_template_ref(
         retired: std::mem::take(&mut retired),
     })?;
     copy_food_herbalist_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error, item: Some(item.clone()), retired: std::mem::take(&mut retired),
+    })?;
+    crate::literature::copy_instance_fields(&item, &template).map_err(|error| FactoryItemFailure {
         error, item: Some(item.clone()), retired: std::mem::take(&mut retired),
     })?;
     finish_constructor_prefix(env, &mut item.borrow_mut());

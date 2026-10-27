@@ -1097,7 +1097,7 @@ impl Item {
         if self.lvl_skill_trained == -1 {
             return -1;
         }
-        self.lvl_skill_trained + self.num_levels_trained
+        self.lvl_skill_trained.wrapping_add(self.num_levels_trained)
     }
 
     /// `getR` / `getColorRed`.

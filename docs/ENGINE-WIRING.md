@@ -6,11 +6,26 @@ parity requires separate verification. Current continuation is on
 `codex/gameplay-continuation`, based on Claude's `ws/integration` and
 `ws/ingame-loop`; the older `main` checkout is not the current engine.
 
-The current designation/KnownPoison source batch passes the workspace all-target
+The current reading continuation passes the workspace all-target check, 1,987
+affected tests (zero failed, nine ignored across 35 summaries), and the native
+client build. All 1,406 recorded Rust/Cargo inputs stay unchanged through those
+checks. It implements the actual Literature allocation, constructor and factory
+scalar fields, six authentic Lua getters and the existing IsLiterature class
+test without borrowing the item body for class dispatch. Learned-recipe reads
+allocate/read actual ModData first; genuine null is supported, while a needed
+nonnull native List allocation or return remains an explicit capability.
+Character reading checks use actual stored fields, copy the saved day before
+reading the live clock and lazy Sandbox option, and preserve signed wrapping
+and the native strict comparison. Null collection keys and complete shared
+native collection ownership remain incomplete. The earlier fixture compile
+and setup failures are preserved; the corrected fixtures and final combined
+run pass. This source still needs its own installed-assets result.
+
+The preceding designation/KnownPoison source batch passes the workspace all-target
 check, 1,961 affected tests (zero failed, nine ignored across 35 summaries), and
 the native client build. All 1,398 recorded Rust/Cargo inputs stay unchanged
 through those checks; all 53 changed source inputs have independent review.
-The compiled client is pinned for the next installed-assets check.
+Its compiled client is pinned and its installed-assets check is recorded below.
 Its permanent designation class lists are initialized before menu Lua, shared
 with the world's live metadata and floor service, and cleared without replacing
 their allocations on exit. Metadata load resumes the original reader outside
@@ -37,10 +52,14 @@ phase. Cheat knowledge uses the existing non-null inline representation and a
 field lease across pure static-role reads; retained/publicly replaced CheatRef
 identity remains unsupported. Generic invoker diagnostics are incomplete;
 unsupported Food argument conversions or arity fail before mutation.
-This source does not yet have a new installed-assets result; the last
-committed `d7b5bb79` probe still fails at `isKnownPoison:2324` and the missing
-designation registry. Its inventory window/refresh are restored, with blank
-drawn rows. All four native build/full-suite checks pass for that prior commit.
+Its committed `2b3a1781` installed-assets probe passes actual Bandage placement,
+clearing/restoration and retention into the next real UI frame. Inventory
+creation and refresh succeed, but drawing stops at the missing
+`item:getSkillTrained()` in `isLiteratureRead:2608`, called from
+`renderdetails:2327`; the saved rows remain blank. All four native client
+builds/full suites pass for that commit, with 24 actual GPU readbacks. These
+results do not cover the subsequent reading source or establish full gameplay,
+item-model or visual parity.
 
 The preceding October 27 actual-reference continuation routes production player load/save
 through the same retained container and saved-inventory list. Resolved compressed

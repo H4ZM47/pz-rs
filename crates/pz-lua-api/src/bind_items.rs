@@ -23,6 +23,7 @@
 //! and `canBeEquipped` live in [`crate::bind_item_visual`].
 
 mod native_item_code_on_create;
+mod reading;
 
 use crate::bind_java_util::JavaList;
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg};
@@ -1093,10 +1094,7 @@ fn register_inventory_item(thread: &mut Thread) {
         i.kind,
         ItemKind::Container(_)
     )));
-    get!(b, "IsLiterature", |i| Value::from(matches!(
-        i.kind,
-        ItemKind::Literature(_)
-    )));
+    b.method("IsLiterature", reading::is_literature);
     get!(b, "IsMap", |i| Value::from(matches!(
         i.kind,
         ItemKind::Map { .. }
@@ -1769,10 +1767,10 @@ pub fn register(thread: &mut Thread) {
     register_drainable(thread);
     register_container(thread);
     register_weapon_part(thread);
+    reading::register(thread);
     for c in [
         "zombie.inventory.types.ComboItem",
         "zombie.inventory.types.AnimalInventoryItem",
-        "zombie.inventory.types.Literature",
         "zombie.inventory.types.Moveable",
         "zombie.inventory.types.MapItem",
         "zombie.inventory.types.AlarmClock",

@@ -322,6 +322,11 @@ pub struct WeaponData {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiteratureData {
     pub number_of_pages: i32,
+    /// Actual Literature fields copied by InstanceItem; not part of its wire body.
+    pub lvl_skill_trained: i32,
+    pub num_levels_trained: i32,
+    pub skill_trained: Option<String>,
+    pub page_to_write: i32,
     pub already_read_pages: i32,
     pub can_be_write: bool,
     /// `customPages` values in key order `1..=n` (`HashMap` order for
@@ -553,8 +558,12 @@ impl InventoryItem {
             ItemClass::Weapon => ItemKind::Weapon(Box::new(WeaponData::from_template(t))),
             ItemClass::Literature => ItemKind::Literature(Box::new(LiteratureData {
                 number_of_pages: t.number_of_pages,
+                lvl_skill_trained: t.lvl_skill_trained,
+                num_levels_trained: t.num_levels_trained,
+                skill_trained: t.skill_trained.clone(),
+                page_to_write: t.page_to_write,
                 already_read_pages: 0,
-                can_be_write: false,
+                can_be_write: t.can_be_write,
                 custom_pages: None,
                 locked_by: None,
                 learned_recipes: None,

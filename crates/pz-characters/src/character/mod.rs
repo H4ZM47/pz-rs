@@ -56,6 +56,7 @@ pub mod moodles;
 pub mod nutrition;
 pub mod path_mover;
 pub mod player;
+pub mod reading;
 pub mod save;
 pub mod state;
 pub mod states;
