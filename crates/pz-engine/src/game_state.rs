@@ -43,10 +43,17 @@ pub struct StateCx<'a> {
     pub shutdown: bool,
     /// A failed environment rebuild stops state transitions. The window
     /// or headless caller reports the error after owners are retired.
-    pub error: &'a mut Option<String>,
+    pub error: &'a mut Option<crate::failure::EngineError>,
     /// Models retired at the actual state-exit boundary. The window
     /// releases their GPU resources after returning from the state call.
     pub retired_models: &'a mut Vec<crate::world_models::WorldModels>,
+}
+
+impl StateCx<'_> {
+    /// Record the original owned fault and end the current phase immediately.
+    pub fn record_lua_failure(&mut self, operation: &'static str, fault: pz_kahlua::LuaError) {
+        crate::failure::record_first(self.error, crate::failure::EngineError::lua(operation, fault));
+    }
 }
 
 /// `zombie.gameStates.GameState`; every method defaults to the base
@@ -106,8 +113,10 @@ impl Default for GameStateMachine {
 impl GameStateMachine {
     /// `render()`.
     pub fn render(&mut self, cx: &mut StateCx<'_>, out: &mut DrawList) {
+        if self.stop_on_error(cx) { return; }
         if let Some(c) = self.current.clone() {
             c.borrow_mut().render(cx, out);
+            self.stop_on_error(cx);
         }
     }
 
@@ -143,6 +152,7 @@ impl GameStateMachine {
             }
             if let Some(c) = self.current.clone() {
                 Self::enter(&c, cx);
+                if self.stop_on_error(cx) { return; }
             }
             self.firstrun = false;
         }
@@ -157,6 +167,7 @@ impl GameStateMachine {
             self.current = self.states.get(self.state_index).cloned();
             if let Some(c) = self.current.clone() {
                 Self::enter(&c, cx);
+                if self.stop_on_error(cx) { return; }
             }
         }
         let Some(current) = self.current.clone() else { return };
@@ -168,6 +179,7 @@ impl GameStateMachine {
             next = Some(f);
         } else {
             let action = current.borrow_mut().update(cx);
+            if self.stop_on_error(cx) { return; }
             match action {
                 StateAction::Continue => {
                     println!("STATE: exit {}", current.borrow().class_name());
@@ -177,21 +189,26 @@ impl GameStateMachine {
                         println!("STATE: reenter {}", y.borrow().class_name());
                         self.current = Some(y.clone());
                         y.borrow_mut().reenter(cx);
+                        self.stop_on_error(cx);
                         return;
                     }
                     next = current.borrow_mut().redirect_state(cx);
+                    if self.stop_on_error(cx) { return; }
                 }
                 StateAction::Yield => {
                     println!("STATE: yield {}", current.borrow().class_name());
                     current.borrow_mut().yield_state(cx);
+                    if self.stop_on_error(cx) { return; }
                     self.yield_stack.push(current.clone());
                     next = current.borrow_mut().redirect_state(cx);
+                    if self.stop_on_error(cx) { return; }
                 }
                 StateAction::Remain => return,
             }
         }
         if let Some(n) = next {
             Self::enter(&n, cx);
+            if self.stop_on_error(cx) { return; }
             self.current = Some(n);
             return;
         }
@@ -200,6 +217,7 @@ impl GameStateMachine {
             let c = self.states[self.state_index].clone();
             self.current = Some(c.clone());
             Self::enter(&c, cx);
+            self.stop_on_error(cx);
             return;
         }
         self.current = None;
@@ -341,3 +359,6 @@ mod tests {
         assert_eq!(log.borrow().join(", "), "Q enter, Q update");
     }
 }
+
+#[cfg(test)]
+mod failure_tests;

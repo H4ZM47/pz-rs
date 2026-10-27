@@ -101,7 +101,7 @@ struct App {
     states: GameStateMachine,
     /// `IsoWorld.instance` once a game loads.
     world: Option<IsoWorld>,
-    error: Option<String>,
+    error: Option<crate::failure::EngineError>,
     retired_models: Vec<crate::world_models::WorldModels>,
     last_frame: Instant,
     /// `Controllers` backend (gilrs); `None` when unavailable.
@@ -113,7 +113,7 @@ struct App {
 }
 
 /// Boot (`GameWindow.init`) and run the main menu until the window closes.
-pub fn run(launch: Launch) -> Result<(), String> {
+pub fn run(launch: Launch) -> crate::failure::EngineResult<()> {
     let _retirement_boundary = HostRetirementBoundary;
     let event_loop = EventLoop::new().map_err(|e| e.to_string())?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -161,7 +161,7 @@ impl App {
         if in_game {
             if let Some(world) = self.world.as_mut() {
                 if let Err(error) = world.save_on_quit(lua) {
-                    self.error = Some(format!("PlayerDB save host failure: {error}"));
+                    crate::failure::record_first(&mut self.error, (format!("PlayerDB save host failure: {error}")).into());
                 }
             }
         }
@@ -204,7 +204,7 @@ impl App {
         drain_retired_host_owners();
     }
 
-    fn boot(&mut self) -> Result<(), String> {
+    fn boot(&mut self) -> crate::failure::EngineResult<()> {
         let _collection_deferral = pz_kahlua::gc::defer_collection();
         let fs = Rc::new(RefCell::new(pz_fs::GameFs::new(&self.launch.game_dir)));
         fs.borrow_mut().set_cache_dir(&self.launch.cache_dir);
@@ -231,7 +231,7 @@ impl App {
         self.gamepads = pz_input::with_controllers(|c| {
             pz_input::gamepads::Gamepads::new(&self.launch.game_dir, &self.launch.cache_dir, c)
         });
-        let mut lua = LuaManager::init(fs).map_err(|e| format!("LuaManager.init: {e}"))?;
+        let mut lua = LuaManager::init(fs).map_err(|error| crate::failure::EngineError::lua("LuaManager.init", error))?;
         // GameWindow.init: Translator.loadFiles and TextManager.Init.
         pz_lua_api::bind_text::boot(&lua.fs.borrow(), &self.core.borrow())
             .map_err(|e| format!("text init: {e}"))?;
@@ -244,7 +244,7 @@ impl App {
 
     /// The end of `GameWindow.init`: the listed states (entered by the
     /// first `states.update()`), or the development entry's game.
-    fn init_states(&mut self) -> Result<(), String> {
+    fn init_states(&mut self) -> crate::failure::EngineResult<()> {
         match self.launch.start.clone() {
             Start::MainMenu => {
                 // TODO(port): `TISLogoState` and `TermsOfServiceState` come
@@ -319,7 +319,7 @@ impl App {
         pz_lua_api::bind_input::update(lua, dt);
         pz_lua_api::bind_misc::ui_transition_update_all();
         if let Err(error) = UIManager::update(&mut lua.thread) {
-            self.error = Some(format!("UIManager.update: {error:?}"));
+            crate::failure::record_first(&mut self.error, crate::failure::EngineError::lua("UIManager.update", error));
             drop(collection_deferral);
             drain_retired_host_owners();
             return;
@@ -501,7 +501,7 @@ impl ApplicationHandler for App {
         }
         self.window = Some(window);
         if let Err(e) = self.boot() {
-            self.error = Some(e);
+            crate::failure::record_first(&mut self.error, e);
             el.exit();
         }
     }
@@ -576,14 +576,14 @@ fn apply_window_requests(w: &Window, requests: Vec<pz_input::WindowRequest>) {
 
 /// Boot headless, run `frames` frames and return the last frame as RGBA
 /// pixels (width, height, data).
-pub fn render_headless(launch: Launch, frames: u32) -> Result<(u32, u32, Vec<u8>), String> {
+pub fn render_headless(launch: Launch, frames: u32) -> crate::failure::EngineResult<(u32, u32, Vec<u8>)> {
     let (w, h, px) = headless(launch, frames, true)?;
     Ok((w, h, px.unwrap_or_default()))
 }
 
 /// Boot headless without a GPU and run `frames` frames (logic and the
 /// draw lists, nothing presented); returns the state the machine is in.
-pub fn run_headless(launch: Launch, frames: u32) -> Result<Option<&'static str>, String> {
+pub fn run_headless(launch: Launch, frames: u32) -> crate::failure::EngineResult<Option<&'static str>> {
     let _retirement_boundary = HostRetirementBoundary;
     let mut app = headless_app(launch)?;
     app.boot()?;
@@ -595,7 +595,7 @@ pub fn run_headless(launch: Launch, frames: u32) -> Result<Option<&'static str>,
     Ok(app.current_state())
 }
 
-fn headless_app(launch: Launch) -> Result<App, String> {
+fn headless_app(launch: Launch) -> crate::failure::EngineResult<App> {
     let core = pz_lua_api::bind_core::shared_core();
     {
         let mut c = core.borrow_mut();
@@ -621,18 +621,21 @@ fn headless_app(launch: Launch) -> Result<App, String> {
 
 /// Development harness: `PZ_HEADLESS_LUA=<file>` runs a Lua file after
 /// boot (e.g. to open a screen before the frames).
-fn run_headless_lua(app: &mut App) -> Result<(), String> {
+fn run_headless_lua(app: &mut App) -> crate::failure::EngineResult<()> {
     let _collection_deferral = pz_kahlua::gc::defer_collection();
     if let Some(path) = std::env::var_os("PZ_HEADLESS_LUA") {
         let src = std::fs::read_to_string(&path).map_err(|e| format!("PZ_HEADLESS_LUA: {e}"))?;
         let lua = app.lua.as_mut().ok_or("no Lua")?;
-        let f =
-            pz_kahlua::stdlib::load_string(&src, Some("headless"), lua.thread.globals().clone())
-                .map_err(|e| format!("PZ_HEADLESS_LUA: {e:?}"))?;
-        if let Err((e, tr)) = lua.thread.pcall(&f, &[]) {
-            eprintln!("PZ_HEADLESS_LUA: {e:?}\n{tr}");
-        }
+        run_headless_source(lua, &src)?;
     }
+    Ok(())
+}
+
+fn run_headless_source(lua: &mut LuaManager, source: &str) -> crate::failure::EngineResult<()> {
+    let f = pz_kahlua::stdlib::load_string(source, Some("headless"), lua.thread.globals().clone())
+        .map_err(|error| crate::failure::EngineError::lua("PZ_HEADLESS_LUA compile", error))?;
+    lua.thread.pcall_ex(&f, &[])
+        .map_err(|(_, _, error)| crate::failure::EngineError::lua("PZ_HEADLESS_LUA run", error))?;
     Ok(())
 }
 
@@ -646,7 +649,7 @@ fn run_frames(app: &mut App, frames: u32) {
     }
 }
 
-fn headless(launch: Launch, frames: u32, gpu: bool) -> Result<(u32, u32, Option<Vec<u8>>), String> {
+fn headless(launch: Launch, frames: u32, gpu: bool) -> crate::failure::EngineResult<(u32, u32, Option<Vec<u8>>)> {
     let _retirement_boundary = HostRetirementBoundary;
     let mut app = headless_app(launch)?;
     let (w, h) = app.screen_size();
@@ -667,3 +670,6 @@ fn headless(launch: Launch, frames: u32, gpu: bool) -> Result<(u32, u32, Option<
 mod retirement_tests;
 #[cfg(test)]
 mod session_tests;
+
+#[cfg(test)]
+mod error_boundary_tests;

@@ -395,7 +395,7 @@ mod session_reset_tests {
         };
         machine.update(&mut cx);
         assert!(initializer_called.get(), "failure did not reach the late initialization boundary");
-        assert_eq!(cx.error.as_deref(), Some("Unable to rebuild main menu: forced late initializer failure"));
+        assert_eq!(cx.error.as_ref().and_then(crate::failure::EngineError::report_text), Some("Unable to rebuild main menu: forced late initializer failure"));
         assert!(machine.current.is_none());
         assert!(!machine.looping);
         assert!(pz_ui::with_ui(|ui| ui.ui.is_empty()), "old UI was not retired before the forced failure");

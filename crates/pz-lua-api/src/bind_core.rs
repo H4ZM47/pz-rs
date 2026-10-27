@@ -76,6 +76,46 @@ pub fn shared_core() -> Rc<RefCell<Core>> {
     })
 }
 
+/// Formatting continuations read only an already installed actual authority.
+/// Unlike shared_core(), this path never initializes a default singleton.
+fn current_format_core() -> LuaResult<Rc<RefCell<Core>>> {
+    SHARED.try_with(|slot| {
+        let slot = slot.try_borrow().map_err(|_| LuaError::Runtime {
+            class: "pz.host.Borrowed", message: "formatter current Core slot".into(),
+        })?;
+        slot.as_ref().cloned().ok_or_else(|| LuaError::Runtime {
+            class: "pz.host.Unsupported", message: "formatter current Core authority unavailable".into(),
+        })
+    }).map_err(|_| LuaError::Runtime {
+        class: "pz.host.Unsupported", message: "formatter current Core TLS unavailable".into(),
+    })?
+}
+
+pub(crate) fn try_format_core_debug() -> LuaResult<bool> {
+    let actual = current_format_core()?;
+    let value = {
+        let body = actual.try_borrow().map_err(|_| LuaError::Runtime {
+            class: "pz.host.Borrowed", message: "formatter current Core.debug".into(),
+        })?;
+        body.debug
+    };
+    Ok(value)
+}
+
+pub(crate) fn try_format_core_is_dev() -> LuaResult<bool> {
+    let actual = current_format_core()?;
+    let value = {
+        let body = actual.try_borrow().map_err(|_| LuaError::Runtime {
+            class: "pz.host.Borrowed", message: "formatter current Core.IS_DEV".into(),
+        })?;
+        body.is_dev
+    };
+    Ok(value)
+}
+
+#[cfg(test)]
+mod formatting_core_tests;
+
 /// The Lua object for the Core singleton.
 pub struct CoreObject {
     pub core: Rc<RefCell<Core>>,

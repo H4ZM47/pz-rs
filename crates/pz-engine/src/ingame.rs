@@ -70,7 +70,7 @@ pub(crate) fn rebuild_main_menu_with(
     rebuild: impl FnOnce(&mut LuaManager, &crate::game_window::Launch) -> Result<(), String>,
 ) {
     if let Err(error) = rebuild(cx.lua, cx.launch) {
-        *cx.error = Some(format!("Unable to rebuild main menu: {error}"));
+        crate::failure::record_first(cx.error, (format!("Unable to rebuild main menu: {error}")).into());
     }
 }
 
@@ -280,7 +280,7 @@ impl IngameState {
         };
         if let Err(error) = result {
             if cx.error.is_none() {
-                *cx.error = Some(format!("IsoWorld.render: {error:?}"));
+                crate::failure::record_first(cx.error, (format!("IsoWorld.render: {error:?}")).into());
             }
             return;
         }
@@ -408,7 +408,7 @@ impl GameState for IngameState {
         if let Some(world) = cx.world.as_mut() {
             if world.meta_world.designation_zones.live_slot().is_some() {
                 if let Err(error) = world.reset_designation_registry() {
-                    *cx.error = Some(format!("designation exit reset host failure: {error:?}"));
+                    crate::failure::record_first(cx.error, (format!("designation exit reset host failure: {error:?}")).into());
                     return;
                 }
             }
@@ -435,7 +435,7 @@ impl GameState for IngameState {
         let manager = pz_lua_api::bind_registry::shared_script_manager();
         if manager.native_item_key_statics().is_some() {
             if let Err(error) = manager.try_reset_native_item_key_registries() {
-                *cx.error = Some(format!("native item key reset: {error:?}"));
+                crate::failure::record_first(cx.error, (format!("native item key reset: {error:?}")).into());
                 return;
             }
         }
@@ -475,7 +475,7 @@ impl GameState for IngameState {
             // `OnPostSave`.
             if let Some(w) = cx.world.as_mut() {
                 if let Err(error) = w.save_on_quit(cx.lua) {
-                    *cx.error = Some(format!("PlayerDB save host failure: {error}"));
+                    crate::failure::record_first(cx.error, (format!("PlayerDB save host failure: {error}")).into());
                     return StateAction::Remain;
                 }
             }
@@ -503,7 +503,7 @@ impl GameState for IngameState {
                 if let Err(error) = w.update(cx.lua, &sim) {
                     // A typed character host fault is not an ordinary script
                     // update error. Stop this frame before later callbacks.
-                    *cx.error = Some(format!("IsoWorld host fault: {error:?}"));
+                    crate::failure::record_first(cx.error, (format!("IsoWorld host fault: {error:?}")).into());
                     return StateAction::Remain;
                 }
             }

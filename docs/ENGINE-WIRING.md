@@ -6,7 +6,33 @@ parity requires separate verification. Current continuation is on
 `codex/gameplay-continuation`, based on Claude's `ws/integration` and
 `ws/ingame-loop`; the older `main` checkout is not the current engine.
 
-The next ten reviewed source changes add a selected READY noarg `List.of`
+The current reviewed continuation adds a typed engine failure channel and immediate
+state lifecycle abort checks. `StateCx` and the window retain the original owned
+`LuaError`; later teardown reports cannot overwrite the first failure. Error
+reporting uses structural labels without invoking payload formatting, and raw
+error owners retire only at the shared safe boundary. Existing LuaManager init
+and UI update errors retain their original variant/payload. A failed headless
+script now returns an error before frames instead of logging an overall success.
+
+State callbacks are checked immediately after enter, update, exit, yield,
+redirect, reenter and render, and before a later render. Native GameStateMachine
+update/render bytecode has no catch handlers; the transport preserves immediate
+failure stopping. Existing Rust stop cleanup and other state-machine ordering
+are not certified as the native heap state after an uncaught throw. Unmigrated
+string-oriented boot/save/world reports remain explicit earlier profiles.
+
+The current-Core formatter helpers read only an already installed authority,
+reacquire it at each call, and return typed missing/borrowed failures. They never
+initialize a default singleton. The larger formatter integration remains held.
+
+At this source freeze, the workspace all-target check, full affected Engine/Lua
+suites and native client build pass against 1,430 unchanged Rust/Cargo inputs:
+602 passed, zero failed and four existing ignores across five summaries in two
+packages. All sixteen new tests execute (four Core, twelve error-boundary tests).
+The client is pinned; committed installed-assets and platform checks for this
+new batch are pending. This local test selection makes no GPU readback claim.
+
+Committed `a9e3e55d`, the preceding ten source changes, adds a selected READY noarg `List.of`
 empty-list role and same-target ArrayList construction, plus authentic
 `InventoryItem.isNoRecipes`. The final combined run passes the workspace all-target check, 2,123 affected
 tests (zero failed, nine ignored across 36 summaries in 18 packages), and client
@@ -15,7 +41,11 @@ Independent review of the first run found nine test-only outer GC deferrals
 missing from held-state fixtures. The corrected fixtures retain every assertion
 and production input; the full second run passes. The preceding focused list
 run also passes 31 tests, including all eleven new constructor tests. Committed
-platform and installed runtime verification for this batch are still pending.
+platform checks pass on all four native targets, with 24 graphics readbacks.
+Its unchanged 120-frame installed-assets run passes ownership and inventory
+refresh, but row drawing stops at `isFavouriteRecipeInput` (`renderdetails:2338`)
+and the saved rows remain blank. That committed proof excludes the current
+engine-error/Core source above.
 
 The READY role has its own immutable ListN owner and distinct empty backing
 array. Installation is explicit; a runtime getter never creates a missing
