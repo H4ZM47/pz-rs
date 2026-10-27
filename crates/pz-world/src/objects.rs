@@ -766,6 +766,7 @@ pub use pz_inventory::ItemComponents;
 /// are not successful native Sprite operations or serialized game fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FloorVisualTail {
+    ConstructorCreateSprite,
     ConstructorUpdateSprite,
     LoadedTextureAndSprite,
 }
@@ -796,6 +797,8 @@ pub struct IsoObject {
     /// Whether the entity hook gave the object components
     /// (`GameEntity.hasComponents`).
     pub has_components: bool,
+    /// Actual GameEntity lifecycle field; distinct from manager registration.
+    pub added_to_world_or_equipped: bool,
     /// Sole component authority. Explicit archive imports may remain encoded;
     /// a live component has one actual allocation and mutable body.
     pub components: ItemComponents,
@@ -838,6 +841,7 @@ impl IsoObject {
             tint_b: 1.0,
             render_y_offset: 0.0,
             has_components: false,
+            added_to_world_or_equipped: false,
             components: ItemComponents::new(),
             name: None,
             sprite_name: None,

@@ -138,6 +138,14 @@ impl WorldRender {
         }
     }
 
+    /// The same actual chunk cache invalidation used by RenderInvalidation,
+    /// without borrowing unrelated lighting/sprite inputs before Native PC20.
+    pub(crate) fn invalidate_floor_chunk(&mut self, wx: i32, wy: i32, level: i32, flags: u64) {
+        for cache in &mut self.caches {
+            cache.invalidate(wx, wy, level, flags);
+        }
+    }
+
     /// The `RenderSquareHooks` the square mutations (fire, Lua, the
     /// states) are given: chunk texture, lighting, water and building
     /// invalidation, rebuilt by the next frame.
@@ -451,8 +459,9 @@ impl IsoWorld {
             ..
         } = self;
         let no_regions;
-        let regions = match regions.as_ref() {
-            Some(r) => r,
+        let regions_guard = regions.as_ref().map(|r| r.borrow());
+        let regions = match regions_guard.as_ref() {
+            Some(r) => &**r,
             None => {
                 no_regions = IsoRegions::new(0);
                 &no_regions
@@ -461,6 +470,7 @@ impl IsoWorld {
         let Some(sprites) = sprites.as_ref() else {
             return;
         };
+        let mut render = render.borrow_mut();
         let r = render.get_or_insert_with(|| {
             let mut r = WorldRender::new(game_dir, fs, &mut tm.borrow_mut());
             pz_lua_api::bind_world::with_world(|w| {

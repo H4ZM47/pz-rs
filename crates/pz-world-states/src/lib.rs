@@ -31,6 +31,7 @@ mod bent_fences;
 mod broken_fences;
 mod climb;
 mod collide;
+mod floor;
 pub mod population;
 mod query;
 mod thump;
@@ -182,6 +183,39 @@ pub struct WorldSoundRequest {
 pub trait StatesEngine {
     /// `Rand` (`zombie.core.random.Rand`): the game's random source.
     fn rand(&mut self) -> &mut dyn GameRand;
+
+    /// Actual floor mutation service. State adapters already hold the cell
+    /// and sprites and must not re-enter global WORLD to perform placement.
+    fn add_world_inventory_item(
+        &mut self,
+        _cell: &mut IsoCell,
+        _meta: &IsoMetaGrid,
+        _sprites: &mut IsoSpriteManager,
+        _square: (i32, i32, i32),
+        _item: &pz_inventory::shared::ItemRef,
+        _x: f32,
+        _y: f32,
+        _height: f32,
+    ) -> pz_inventory::floor_drop::HostResult<()> {
+        Err(pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+            operation: "actual state floor placement service",
+            kind: None,
+        })
+    }
+
+    fn validate_floor_session(&self) -> pz_inventory::floor_drop::HostResult<()> {
+        Err(pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+            operation: "actual state floor session",
+            kind: None,
+        })
+    }
+
+    fn floor_fbo_render_chunk(&self) -> pz_inventory::floor_drop::HostResult<bool> {
+        Err(pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+            operation: "actual floor render configuration",
+            kind: None,
+        })
+    }
 
     // ---- the live character animation owner ----
     fn thumps_this_frame(&mut self, _chr: i32) -> i32 {
@@ -669,6 +703,10 @@ pub fn corpse_pos(id: i64) -> (i32, i32, i32, usize) {
 }
 
 impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
+    fn floor(&mut self) -> Option<&mut dyn pz_inventory::floor_drop::FloorWorld> {
+        Some(self)
+    }
+
     fn thumps_this_frame(&mut self, chr: i32) -> i32 {
         self.engine.thumps_this_frame(chr)
     }

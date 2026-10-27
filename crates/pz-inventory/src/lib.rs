@@ -34,6 +34,7 @@ pub mod shared;
 pub mod template;
 pub mod visual;
 pub mod world_item;
+pub mod world_update;
 pub mod worn_items;
 
 pub use assets::{BloodClothingTypes, ClothingItem, ClothingItems, ItemAssets};

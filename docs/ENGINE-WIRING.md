@@ -97,6 +97,33 @@ results preserve these boundaries; they do not certify a completed native tail.
 The actual square-list Lua bridge, captured icon textures/masks and full inventory
 row rendering remain separate integration work.
 
+The installed-session check at `d873dfa9` reaches the actual pane's next failure,
+`isKnownPoison` at `ISInventoryPane.renderdetails:2324`. Its real Bandage drop
+fails because no production caller installs the Lua floor provider and the
+state-world adapter lacks its floor capability. That negative result exposed
+the connection implemented next; it remains distinct from source tests.
+
+The engine now installs a floor service over its actual cell and shared sprite,
+region, render and door owners. Lua captures one provider per action; states
+use the already borrowed cell without reentering WORLD. Cell/provider generation
+and a weak engine-session anchor reject stale services, including RNG calls.
+Floor, height, RNG and placement failures retain their original typed result;
+native no-hands, Tutorial and other early returns avoid borrowing the provider.
+Render invalidation runs at the supplied-item method's PC20 after corpse dispatch;
+later region/door bodies cannot preempt that prefix.
+
+The strict native placement path currently stops at `IsoSprite.CreateSprite`
+PC128. It retains the allocated receiver and earlier changes, before later
+`updateSprite`, square, drop-time, Fluid transfer, list and backlink phases.
+Explicit `*_data_projection` APIs preserve the older Rust projection separately.
+An absent projected sprite cannot stand in for a native empty-sprite result.
+New fallible lifecycle/render hooks reject unavailable capabilities; the actual
+added-to-world flag clears only after successful unregister. Captured item
+textures and actual sprite/instance ownership remain required before a native
+placement completion claim. The installed session still needs this new pinned
+service build; no successful Bandage placement or inventory-row rendering is
+established by its 1,145 passing affected tests.
+
 Returning to the menu rebuilds script/Lua/UI owners before menu entry;
 native shutdown skips that rebuild. A failed rebuild stops the client
 instead of entering a menu with mixed owners. Character `getModData`

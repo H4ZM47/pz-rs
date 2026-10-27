@@ -169,7 +169,7 @@ struct World {
     settings: FireSettings,
     regions: crate::isoregion::IsoRegions,
     doors: crate::square_mutation::DoorTables,
-    mw: crate::square_mutation::NoMutationHooks,
+    mw: crate::square_mutation::DataProjectionMutationHooks,
     mp: crate::square_mutation::NoMutationHooks,
     mr: crate::square_mutation::NoMutationHooks,
 }
@@ -192,7 +192,7 @@ impl World {
                 x_offset: [[[0; 4]; 2]; 2],
                 y_offset: [[[0; 4]; 2]; 2],
             },
-            mw: crate::square_mutation::NoMutationHooks,
+            mw: crate::square_mutation::DataProjectionMutationHooks,
             mp: crate::square_mutation::NoMutationHooks,
             mr: crate::square_mutation::NoMutationHooks,
         }

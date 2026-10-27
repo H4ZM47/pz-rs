@@ -121,7 +121,8 @@ pub struct IsoWorld {
     pub streamer: Option<ChunkStreamer>,
     /// A failed native activation stops subsequent handoffs and retains the
     /// actual cursor/receiver for diagnostics and an explicit load abort.
-    pub failed_chunk_activation: Option<(pz_world::save::chunk_file::ChunkActivationCursor, String)>,
+    pub failed_chunk_activation:
+        Option<(pz_world::save::chunk_file::ChunkActivationCursor, String)>,
     /// `IsoMetaGrid`'s part of `map_meta.bin` the grid does not keep.
     pub meta_world: MetaWorld,
     pub spawned_zones: SpawnedZombieZones,
@@ -131,7 +132,7 @@ pub struct IsoWorld {
     /// `ZombiePopulationManager.instance` and `MapCollisionData.instance`.
     pub population: Option<pz_world_popman::WorldPopulation<i32>>,
     /// `IsoRegions`.
-    pub regions: Option<IsoRegions>,
+    pub regions: Option<Rc<RefCell<IsoRegions>>>,
     /// `PathfindNative`/`PolygonalMap2.instance`.
     pub pathfind: Option<pz_pathfind::host::PathHost>,
     /// `ErosionMain.getInstance()`.
@@ -157,7 +158,7 @@ pub struct IsoWorld {
     /// before its first save).
     pub player_sql_ids: [i32; 4],
     /// `IsoDoor`'s double-door offset tables, for the square mutations.
-    pub door_tables: Option<pz_world::square_mutation::DoorTables>,
+    pub door_tables: Option<Rc<pz_world::square_mutation::DoorTables>>,
     /// `IsoWorld.frameNo`.
     pub frame_no: i64,
     /// The last `IsoChunk.loadID` handed out.
@@ -168,7 +169,10 @@ pub struct IsoWorld {
     pub render_chunks: RenderChunkEvents,
     /// The world renderer (`IsoCell.render`'s state), made on the first
     /// rendered frame.
-    pub render: Option<crate::world_render::WorldRender>,
+    pub render: Rc<RefCell<Option<crate::world_render::WorldRender>>>,
+    /// The same live floor service installed for Lua and borrowed states.
+    pub(crate) floor_world: Option<Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
+    pub(crate) floor_session: Option<Rc<()>>,
     /// Live character models and animation players for this world.
     pub models: Option<crate::world_models::WorldModels>,
     /// Errors of steps that failed without stopping the load (the
@@ -277,7 +281,9 @@ impl IsoWorld {
             chunk_load_id: 0,
             key_spawn_chance_d100: 0.0,
             render_chunks: RenderChunkEvents::default(),
-            render: None,
+            render: Rc::new(RefCell::new(None)),
+            floor_world: None,
+            floor_session: None,
             models: None,
             errors: Vec::new(),
         }
@@ -542,9 +548,9 @@ impl IsoWorld {
         self.sprites = Some(sprites);
         self.object_tables = Some(ObjectTables::from_game_jar(&self.jar())?);
         self.save_tables = Some(SaveTables::from_game_jar(&self.jar())?);
-        self.door_tables = Some(pz_world::square_mutation::DoorTables::from_jar(
+        self.door_tables = Some(Rc::new(pz_world::square_mutation::DoorTables::from_jar(
             &pz_classfile::Jar::open(self.jar()).map_err(|e| e.to_string())?,
-        )?);
+        )?));
         // TODO(port): `AnimalDefinitions.getAnimalDefs()`
         // (`pz_animals::AnimalDefinitionTables::load`), `WeatherFxMask.init`,
         // `TemplateText.Initialize`.
@@ -553,11 +559,11 @@ impl IsoWorld {
             let c = core_rc.borrow();
             calc_chunk_width(c.get_screen_width(), c.get_screen_height())
         };
-        self.regions = Some(IsoRegions::init_world(
+        self.regions = Some(Rc::new(RefCell::new(IsoRegions::init_world(
             &self.save_dir,
             chunk_grid_width,
             no_save,
-        ));
+        ))));
         // `BentFences.init()` (empty): the registry reads the sandbox's
         // `ZombieLore.FenceThumpersRequired` / `FenceDamageMultiplier`.
         {
@@ -732,8 +738,12 @@ impl IsoWorld {
             g.basements = self.basements.take();
         }
         self.streamer = Some(ChunkStreamer::new(1, chunk_grid_width));
-        self.streamer.as_mut().unwrap().set_deferred_world_activation(true);
+        self.streamer
+            .as_mut()
+            .unwrap()
+            .set_deferred_world_activation(true);
         set_cell(Some(IsoCell::default()));
+        self.install_floor_world()?;
         let (wx, wy) = (self.world_x, self.world_y);
         self.with_stream(|s, cell, ctx| s.load_world(wx, wy, cell, ctx));
         self.activate_streamed_chunks(lua)?;

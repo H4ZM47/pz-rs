@@ -166,6 +166,18 @@ impl RenderSquareHooks for H {
 }
 
 impl SquareMutationHooks for H {
+    // This harness compares a data/trace profile; no live registry is supplied.
+    fn try_world_call(
+        &mut self,
+        obj: ObjectRef,
+        object: pz_world::IsoObjectRef,
+        rand: &mut dyn pz_world::GameRand,
+        call: WorldCall,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        self.world_call(obj, object, rand, call);
+        Ok(())
+    }
+
     fn lua_event(&mut self, sq: pz_world::SquareRef, ev: LuaEvent) {
         let sq = sq.borrow();
         let mut r = self.0.borrow_mut();

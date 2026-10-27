@@ -461,7 +461,11 @@ impl IsoFireManager {
             pos: (o.x, o.y, o.z),
             id: o.id,
         };
-        w.env(rand).base_remove_from_world_detached(or, &object);
+        // Existing FireStack/body data projection: this does not supply a
+        // checked Native registry host. Live floor burn classification remains
+        // explicitly unsupported rather than entering this projection.
+        w.env(rand)
+            .base_remove_from_world_detached_data_projection(or, &object);
         if let Some(sq) = w.sq_mut(o.x, o.y, o.z) {
             let index = {
                 sq.borrow()
@@ -735,7 +739,11 @@ impl IsoFireManager {
             pos: (r.x, r.y, r.z),
             id: r.id,
         };
-        w.env(rand).base_remove_from_world_detached(or, &object);
+        // Existing FireStack/body data projection: this does not supply a
+        // checked Native registry host. Live floor burn classification remains
+        // explicitly unsupported rather than entering this projection.
+        w.env(rand)
+            .base_remove_from_world_detached_data_projection(or, &object);
         Ok(())
     }
 

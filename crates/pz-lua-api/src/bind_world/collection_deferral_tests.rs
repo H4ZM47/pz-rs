@@ -7,6 +7,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 struct Fixture {
     old_world: Option<WorldState>,
+    old_cell_generation: u64,
+    old_handles: HashMap<Key, Weak<Handle>>,
     old_sprites: Option<Rc<RefCell<IsoSpriteManager>>>,
     sprites: Rc<RefCell<IsoSpriteManager>>,
 }
@@ -19,6 +21,8 @@ impl Fixture {
         crate::bind_sprites::install_sprite_manager(Some(sprites.clone()));
         Self {
             old_world: Some(old_world),
+            old_cell_generation: cell_generation(),
+            old_handles: HANDLES.with(|handles| handles.borrow().clone()),
             old_sprites,
             sprites,
         }
@@ -42,7 +46,15 @@ impl Drop for Fixture {
         // Every test guard has ended before restoration. Retired payloads
         // remain outside WORLD while their final destructors run.
         let retired = with_world(|world| std::mem::replace(world, self.old_world.take().unwrap()));
+        CELL_GEN.with(|generation| generation.set(self.old_cell_generation));
+        let retired_handles = HANDLES.with(|handles| {
+            std::mem::replace(
+                &mut *handles.borrow_mut(),
+                std::mem::take(&mut self.old_handles),
+            )
+        });
         drop(retired);
+        drop(retired_handles);
         crate::bind_sprites::install_sprite_manager(self.old_sprites.take());
     }
 }
@@ -115,4 +127,70 @@ fn actual_world_unwind_restores_gate_and_retains_the_request() {
         CollectionResult::Collected(_)
     ));
     assert!(dropped.get());
+}
+
+#[test]
+fn fallible_world_access_reports_the_actual_borrow_without_running_a_fallback() {
+    let _fixture = Fixture::new();
+    let called = Cell::new(false);
+    with_world(|_| {
+        assert_eq!(
+            try_with_world(|_| {
+                called.set(true);
+                Ok(())
+            }),
+            Err(pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                "Lua actual world state"
+            ))
+        );
+    });
+    assert!(!called.get());
+    try_with_world(|world| {
+        assert!(world.cell.is_none() && world.meta_grid.is_none());
+        called.set(true);
+        Ok(())
+    })
+    .unwrap();
+    assert!(called.get());
+}
+
+#[test]
+fn fallible_world_error_retains_collection_request_until_real_guards_end() {
+    let fixture = Fixture::new();
+    let dropped = Rc::new(Cell::new(false));
+    fixture.unreachable_probe(&dropped);
+    let error = try_with_world::<()>(|_| {
+        let _sprites = fixture.sprites.borrow_mut();
+        assert_eq!(gc::collect_tables(), CollectionResult::Deferred);
+        assert!(!dropped.get());
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "authored native floor phase",
+            kind: None,
+        })
+    })
+    .unwrap_err();
+    assert_eq!(
+        error,
+        pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "authored native floor phase",
+            kind: None,
+        }
+    );
+    assert!(!dropped.get());
+    assert!(matches!(
+        gc::collect_pending(),
+        CollectionResult::Collected(_)
+    ));
+    assert!(dropped.get());
+}
+
+#[test]
+fn cell_session_token_changes_even_when_clearing_an_absent_cell() {
+    let _fixture = Fixture::new();
+    let before = cell_generation();
+    set_cell(None);
+    assert_ne!(cell_generation(), before);
+    let cleared = cell_generation();
+    set_cell(None);
+    assert_ne!(cell_generation(), cleared);
 }

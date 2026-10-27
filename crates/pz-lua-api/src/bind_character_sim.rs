@@ -68,7 +68,7 @@ use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use pz_scripts::{ScriptError, ScriptManager};
 use pz_ui::ColorObject;
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -85,6 +85,8 @@ mod sneaking_tests;
 mod timed_action_phases_tests;
 #[cfg(test)]
 mod timed_actions_tests;
+#[cfg(test)]
+mod floor_bridge_tests;
 
 pub const ISO_GAME_CHARACTER_CLASS: &str = "zombie.characters.IsoGameCharacter";
 pub const ISO_PLAYER_CLASS: &str = "zombie.characters.IsoPlayer";
@@ -112,16 +114,18 @@ thread_local! {
     static HANDLES: RefCell<HashMap<(Handle, usize, usize), Value>> = RefCell::new(HashMap::new());
     static COLORS: RefCell<HashMap<usize, (Rc<Color>, Value)>> = RefCell::new(HashMap::new());
     static FLOOR: RefCell<Option<FloorWorldRef>> = const { RefCell::new(None) };
+    static FLOOR_GENERATION: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Drop the old environment's character handles and callback sink at an
 /// explicit session reset. A fresh Lua registration installs its own sink.
 pub(crate) fn reset_session_handles() {
+    let retired_floor = reset_floor_world();
     HANDLES.with(|h| h.borrow_mut().clear());
     COLORS.with(|c| c.borrow_mut().clear());
     SINK.with(|s| *s.borrow_mut() = None);
-    FLOOR.with(|f| *f.borrow_mut() = None);
     CONTEXT.with(|c| *c.borrow_mut() = Rc::new(DefaultSimContext));
+    drop(retired_floor);
 }
 
 /// The world the bound characters' items fall into.
@@ -130,14 +134,107 @@ pub type FloorWorldRef = Rc<RefCell<dyn FloorWorld>>;
 /// Makes `floor` the world the bound characters' items drop into
 /// (`setWornItem`'s `forceDropTooHeavy`, `dropHandItems`,
 /// `dropHeavyItems`): the engine's wrapper that runs
-/// `pz_world::square_mutation::FloorDropEnv::new(&mut env, world_age_hours)`
-/// for each call. `None` (the default): nothing drops.
-pub fn install_floor_world(floor: Option<FloorWorldRef>) {
-    FLOOR.with(|f| *f.borrow_mut() = floor);
+/// `pz_world::square_mutation::FloorDropEnv::new_native(&mut env)`
+/// for each call. Explicit data projections are separate from this native
+/// service. The displaced service is returned after the registry guard
+/// ends; callers release it outside their own outer host guards.
+/// Without a service, native no-op branches remain no-ops; the first actual
+/// floor operation is an explicit unsupported host capability.
+pub fn install_floor_world(floor: Option<FloorWorldRef>) -> Option<FloorWorldRef> {
+    let retired = FLOOR.with(|f| std::mem::replace(&mut *f.borrow_mut(), floor));
+    FLOOR_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
+    retired
 }
 
+/// Host service registration lifetime, independent of the actual cell token.
+/// Retained services must reject a replaced/reset registration even if the
+/// previous cell and weak resource owners are still alive.
+pub fn floor_world_generation() -> u64 {
+    FLOOR_GENERATION.with(Cell::get)
+}
+
+/// Detach the current session's service without running its destructor under
+/// the registry guard. A retained old service is still responsible for its
+/// own real session/generation validation.
+pub fn reset_floor_world() -> Option<FloorWorldRef> {
+    install_floor_world(None)
+}
+
+#[cfg(test)]
 fn floor_world() -> Option<FloorWorldRef> {
     FLOOR.with(|f| f.borrow().clone())
+}
+
+/// Capture one service identity for the whole action. Borrow its body only at
+/// an actual native floor operation, after native no-op checks have run.
+struct FloorAccess {
+    service: Option<FloorWorldRef>,
+}
+
+impl FloorAccess {
+    fn capture() -> HostResult<Self> {
+        FLOOR
+            .try_with(|slot| {
+                Ok(Self {
+                    service: slot
+                        .try_borrow()
+                        .map_err(|_| RuntimeHostError::Borrowed("Lua floor service registry"))?
+                        .clone(),
+                })
+            })
+            .map_err(|_| Self::unavailable())?
+    }
+
+    fn unavailable() -> RuntimeHostError {
+        RuntimeHostError::Unsupported {
+            operation: "actual Lua floor service is not installed",
+            kind: None,
+        }
+    }
+
+    fn read<R>(&self, f: impl FnOnce(&dyn FloorWorld) -> HostResult<R>) -> HostResult<R> {
+        let service = self.service.as_ref().ok_or_else(Self::unavailable)?;
+        let service = service
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("Lua floor service query"))?;
+        f(&*service)
+    }
+
+    fn write<R>(
+        &mut self,
+        f: impl FnOnce(&mut dyn FloorWorld) -> HostResult<R>,
+    ) -> HostResult<R> {
+        let service = self.service.as_ref().ok_or_else(Self::unavailable)?;
+        let mut service = service
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("Lua floor service mutation"))?;
+        f(&mut *service)
+    }
+}
+
+impl FloorWorld for FloorAccess {
+    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<(i32, i32, i32)>> {
+        self.read(|service| service.solid_floor_at(x, y, z))
+    }
+
+    fn apparent_z(&self, square: (i32, i32, i32), x: f32, y: f32) -> HostResult<f32> {
+        self.read(|service| service.apparent_z(square, x, y))
+    }
+
+    fn rand_float(&mut self, min: f32, max: f32) -> HostResult<f32> {
+        self.write(|service| service.rand_float(min, max))
+    }
+
+    fn add_world_inventory_item(
+        &mut self,
+        square: (i32, i32, i32),
+        item: &pz_inventory::shared::ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> HostResult<()> {
+        self.write(|service| service.add_world_inventory_item(square, item, x, y, height))
+    }
 }
 
 /// Makes `ctx` the singletons the bound characters read.
@@ -272,7 +369,7 @@ pub(crate) fn with_ctx<R>(
     chr: &Value,
     f: impl FnOnce(&dyn SimContext) -> Result<R, ScriptError>,
 ) -> LuaResult<R> {
-    with_ctx_result(c, chr, f, java_error)
+    with_ctx_result(c, chr, |_, ctx| f(ctx), java_error)
 }
 
 pub(crate) fn with_ctx_host<R>(
@@ -280,7 +377,7 @@ pub(crate) fn with_ctx_host<R>(
     chr: &Value,
     f: impl FnOnce(&dyn SimContext) -> HostResult<R>,
 ) -> LuaResult<R> {
-    with_ctx_result(c, chr, f, crate::bind_world_object::host_error)
+    with_ctx_result(c, chr, |_, ctx| f(ctx), crate::bind_world_object::host_error)
 }
 
 fn character_action_error(error: CharacterActionError) -> LuaError {
@@ -296,13 +393,21 @@ pub(crate) fn with_ctx_action<R>(
     chr: &Value,
     f: impl FnOnce(&dyn SimContext) -> CharacterActionResult<R>,
 ) -> LuaResult<R> {
+    with_ctx_result(c, chr, |_, ctx| f(ctx), character_action_error)
+}
+
+fn with_ctx_action_thread<R>(
+    c: &mut NativeCall<'_>,
+    chr: &Value,
+    f: impl FnOnce(&Thread, &dyn SimContext) -> CharacterActionResult<R>,
+) -> LuaResult<R> {
     with_ctx_result(c, chr, f, character_action_error)
 }
 
 fn with_ctx_result<R, E>(
     c: &mut NativeCall<'_>,
     chr: &Value,
-    f: impl FnOnce(&dyn SimContext) -> Result<R, E>,
+    f: impl FnOnce(&Thread, &dyn SimContext) -> Result<R, E>,
     convert: impl FnOnce(E) -> LuaError,
 ) -> LuaResult<R> {
     let ctx = CallContext {
@@ -310,7 +415,7 @@ fn with_ctx_result<R, E>(
         events: RefCell::default(),
         game_time: crate::bind_climate::shared_game_time(),
     };
-    let r = f(&ctx);
+    let r = f(c.thread, &ctx);
     let events = ctx.events.into_inner();
     if let Some(sink) = SINK.with(|s| s.borrow().clone()) {
         for e in events {
@@ -655,16 +760,15 @@ fn set_worn_item(
     force_drop_too_heavy: bool,
 ) -> LuaResult<()> {
     let id = opt_item_id(c, item)?;
-    let floor = floor_world();
-    let changed = crate::bind_appearance::with_styles(c.thread, |st| {
-        let ctx = current_sim_context();
-        let mut f = floor.as_ref().map(|f| f.try_borrow_mut()
-            .map_err(|_| RuntimeHostError::Borrowed("worn item floor world"))).transpose()?;
-        let cx = f.as_deref_mut().map(|f| FloorCx::new(&*ctx, f));
-        chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("worn item character"))?
-            .set_worn_item(sm, Some(st), location, id, force_drop_too_heavy, cx)
-    })
-    .map_err(character_action_error)?;
+    let mut floor = FloorAccess::capture().map_err(crate::bind_world_object::host_error)?;
+    let value = character_value(chr);
+    let changed = with_ctx_action_thread(c, &value, |thread, ctx| {
+        crate::bind_appearance::with_styles(thread, |st| {
+            let cx = Some(FloorCx::new(ctx, &mut floor));
+            chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("worn item character"))?
+                .set_worn_item(sm, Some(st), location, id, force_drop_too_heavy, cx)
+        })
+    })?;
     if changed && id.is_some() {
         let item = crate::bind_items::item_arg(c, item)?;
         if let Some(container) = pz_inventory::shared::container_of(&item) {
@@ -711,32 +815,28 @@ fn register_clothing(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let chr = chr_of(c)?;
         let id = opt_item_id(c, 1)?;
         let force = c.nargs() <= 2 || bool_arg(c, 2);
-        let floor = floor_world();
-        crate::bind_appearance::with_styles(c.thread, |st| {
-            let ctx = current_sim_context();
-            let mut f = floor.as_ref().map(|f| f.try_borrow_mut()
-                .map_err(|_| RuntimeHostError::Borrowed("remove worn item floor world"))).transpose()?;
-            let cx = f.as_deref_mut().map(|f| FloorCx::new(&*ctx, f));
-            chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("remove worn item character"))?
-                .remove_worn_item(&s, Some(st), id, force, cx)
-        })
-        .map_err(character_action_error)?;
+        let mut floor = FloorAccess::capture().map_err(crate::bind_world_object::host_error)?;
+        let value = character_value(&chr);
+        with_ctx_action_thread(c, &value, |thread, ctx| {
+            crate::bind_appearance::with_styles(thread, |st| {
+                let cx = Some(FloorCx::new(ctx, &mut floor));
+                chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("remove worn item character"))?
+                    .remove_worn_item(&s, Some(st), id, force, cx)
+            })
+        })?;
         Ok(0)
     });
     // `dropHandItems()` / `dropHeavyItems()` into the installed floor
-    // world (nothing drops without one), firing `OnContainerUpdate` and
+    // world, firing `OnContainerUpdate` and
     // `onItemFall`.
     for (name, hand) in [("dropHandItems", true), ("dropHeavyItems", false)] {
         let s = sm.clone();
         b.method(name, move |c| {
             let chr = chr_of(c)?;
-            let Some(floor) = floor_world() else {
-                return Ok(0);
-            };
+            let mut floor = FloorAccess::capture().map_err(crate::bind_world_object::host_error)?;
             let v = character_value(&chr);
             with_ctx_host(c, &v, |ctx| {
-                let mut f = floor.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("drop floor world"))?;
-                let cx = FloorCx::new(ctx, &mut *f);
+                let cx = FloorCx::new(ctx, &mut floor);
                 let mut chr = chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("drop character"))?;
                 if hand {
                     chr.drop_hand_items(&s, cx)?;
@@ -2249,7 +2349,7 @@ pub(crate) mod tests {
 
     /// A script manager with invented clothing (`t:` body locations and
     /// tags), loaded from a unique temp dir.
-    fn clothing_scripts() -> ScriptManager {
+    pub(crate) fn clothing_scripts() -> ScriptManager {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir =
@@ -2413,14 +2513,14 @@ pub(crate) mod tests {
     struct RecFloor(Vec<((i32, i32, i32), i32)>);
 
     impl FloorWorld for RecFloor {
-        fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<(i32, i32, i32)> {
-            Some((x, y, z))
+        fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<(i32, i32, i32)>> {
+            Ok(Some((x, y, z)))
         }
-        fn apparent_z(&self, sq: (i32, i32, i32), _dx: f32, _dy: f32) -> f32 {
-            sq.2 as f32
+        fn apparent_z(&self, sq: (i32, i32, i32), _dx: f32, _dy: f32) -> HostResult<f32> {
+            Ok(sq.2 as f32)
         }
-        fn rand_float(&mut self, min: f32, _max: f32) -> f32 {
-            min
+        fn rand_float(&mut self, min: f32, _max: f32) -> HostResult<f32> {
+            Ok(min)
         }
         fn add_world_inventory_item(
             &mut self,
@@ -2439,9 +2539,9 @@ pub(crate) mod tests {
     fn drop_host_failure_preserves_typed_error_and_only_completed_prefix_events() {
         struct FailingFloor { calls: Rc<std::cell::Cell<usize>>, fail_at: usize }
         impl FloorWorld for FailingFloor {
-            fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<(i32,i32,i32)> { Some((x,y,z)) }
-            fn apparent_z(&self, sq: (i32,i32,i32), _: f32, _: f32) -> f32 { sq.2 as f32 }
-            fn rand_float(&mut self, min: f32, _: f32) -> f32 { min }
+            fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<(i32,i32,i32)>> { Ok(Some((x,y,z))) }
+            fn apparent_z(&self, sq: (i32,i32,i32), _: f32, _: f32) -> HostResult<f32> { Ok(sq.2 as f32) }
+            fn rand_float(&mut self, min: f32, _: f32) -> HostResult<f32> { Ok(min) }
             fn add_world_inventory_item(&mut self, _: (i32,i32,i32), _: &pz_inventory::shared::ItemRef, _: f32, _: f32, _: f32) -> HostResult<()> {
                 self.calls.set(self.calls.get()+1);
                 if self.calls.get()==self.fail_at {
@@ -2451,7 +2551,7 @@ pub(crate) mod tests {
             }
         }
         struct Restore(Option<FloorWorldRef>);
-        impl Drop for Restore { fn drop(&mut self) { install_floor_world(self.0.take()); } }
+        impl Drop for Restore { fn drop(&mut self) { drop(install_floor_world(self.0.take())); } }
         for fail_at in [1,2] {
             let (mut t, player, log) = setup_with(clothing_scripts());
             let _restore = Restore(floor_world());
@@ -2462,7 +2562,7 @@ pub(crate) mod tests {
             player.borrow_mut().path.current_square=Some((4,6,0));
             run(&mut t, "local inv=player:getInventory(); first=inv:AddItem('Base.TestBoots'); second=inv:AddItem('Base.TestBoots'); player:setPrimaryHandItem(first); player:setSecondaryHandItem(second)").unwrap();
             let calls=Rc::new(std::cell::Cell::new(0));
-            install_floor_world(Some(Rc::new(RefCell::new(FailingFloor {calls:calls.clone(),fail_at}))));
+            drop(install_floor_world(Some(Rc::new(RefCell::new(FailingFloor {calls:calls.clone(),fail_at})))));
             log.borrow_mut().clear();
             let error=run(&mut t,"player:dropHandItems(); error('false success after failed placement')").unwrap_err();
             assert!(error.contains("fixture floor placement phase") && error.contains("pz.host.Unsupported"));
@@ -2488,7 +2588,7 @@ pub(crate) mod tests {
         log.borrow_mut().clear();
         let old=floor_world();
         let floor=Rc::new(RefCell::new(RecFloor::default()));
-        install_floor_world(Some(floor.clone()));
+        drop(install_floor_world(Some(floor.clone())));
         let guard=floor.borrow_mut();
         let error=run(&mut t,"player:dropHandItems(); error('false success')").unwrap_err();
         assert!(error.contains("pz.host.Borrowed") && !error.contains("false success"));
@@ -2496,7 +2596,7 @@ pub(crate) mod tests {
         assert!(log.borrow().is_empty());
         assert!(player.borrow().items.primary_hand_item.is_some());
         drop(guard);
-        install_floor_world(old);
+        drop(install_floor_world(old));
     }
 
     /// `setWornItem`'s `forceDropTooHeavy` and `dropHandItems` from Lua
@@ -2517,8 +2617,9 @@ pub(crate) mod tests {
             p.path.current_square = Some((4, 6, 0));
             p.items.inventory.borrow_mut().capacity = 1;
         }
-        // Without a floor world nothing drops.
-        install_floor_world(None);
+        // These still-default names have no effective item weight, so the
+        // native capacity check does not need a floor service yet.
+        drop(install_floor_world(None));
         run(
             &mut t,
             r#"
@@ -2540,7 +2641,7 @@ pub(crate) mod tests {
             i.borrow_mut().name = "Invented".into();
         }
         let floor = Rc::new(RefCell::new(RecFloor::default()));
-        install_floor_world(Some(floor.clone()));
+        drop(install_floor_world(Some(floor.clone())));
         // The swap leaves the coat unequipped (1; the worn tee weighs 0 with
         // this context's multiplier): no room for another 1 in a capacity
         // of 1, so it drops; with forceDropTooHeavy false it stays.
@@ -2561,7 +2662,7 @@ pub(crate) mod tests {
             "#,
         )
         .unwrap();
-        install_floor_world(None);
+        drop(install_floor_world(None));
         let ids: Vec<i32> = floor.borrow().0.iter().map(|d| d.1).collect();
         let (coat, boots) = {
             let id = |n: &str| match t.globals().get_str(n) {

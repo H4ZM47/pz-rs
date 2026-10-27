@@ -484,7 +484,7 @@ fn main() {
                 if player.square.is_none() {
                     s.push_str(" nosquare");
                 } else {
-                    let mut floor = FloorDropEnv::new(&mut env, 0.0);
+                    let mut floor = FloorDropEnv::new_data_projection(&mut env, 0.0);
                     match floor_drop::force_drop_too_heavy(
                         &mut player,
                         &mut floor,
@@ -507,7 +507,7 @@ fn main() {
             floor_drop::remove(&mut player, &item);
             drop_sq = Some(p);
             (dx, dy, dz) = (ox, oy, oh);
-            let placed = env.add_world_inventory_item(p, &item, ox, oy, oh, 0.0);
+            let placed = env.add_world_inventory_item_data_projection(p, &item, ox, oy, oh, 0.0);
             assert!(matches!(placed, WorldItemPlaced::Object(_)), "{placed:?}");
         }
         write!(s, " inv={}", inv.borrow().items.len()).unwrap();

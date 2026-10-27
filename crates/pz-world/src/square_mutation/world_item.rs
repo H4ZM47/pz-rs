@@ -10,7 +10,7 @@
 //! server's `transmitCompleteItemToClients` is not made.
 
 use crate::object_slot::ObjectSlot;
-use pz_inventory::floor_drop::FloorWorld;
+use pz_inventory::floor_drop::{FloorWorld, HostResult, RuntimeHostError};
 use pz_inventory::shared::{self, ItemRef};
 use pz_inventory::{InventoryItem, ItemClass};
 
@@ -56,6 +56,194 @@ impl std::fmt::Display for WorldItemPlacementError {
 }
 
 impl std::error::Error for WorldItemPlacementError {}
+
+/// Shared actual receiver prefix; native visual support must complete before
+/// square/time/component/list/backlink publication.
+fn construct_floor_prefix(
+    cell: &mut IsoCell,
+    rand: &mut dyn crate::GameRand,
+    item: &ItemRef,
+    x: f32,
+    y: f32,
+    height: f32,
+    data_projection_age: Option<f64>,
+) -> Result<ObjectSlot, WorldItemPlacementError> {
+    {
+        let mut i = item.try_borrow_mut().map_err(|_| {
+            WorldItemPlacementError::Component(pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                "floor constructor item",
+            ))
+        })?;
+        i.world_x_rotation = 0.0;
+        i.world_y_rotation = 0.0;
+        if i.world_z_rotation < 0.0 {
+            i.world_z_rotation = rand.next_range(0, 360) as f32;
+        }
+    }
+    shared::set_container(item, None);
+    let xoff = if x == 0.0 {
+        rand.next(1000) as f32 / 1000.0
+    } else {
+        x
+    };
+    let yoff = if y == 0.0 {
+        rand.next(1000) as f32 / 1000.0
+    } else {
+        y
+    };
+    let mut obj = IsoObject::new(
+        0,
+        ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+            IsoWorldInventoryObject {
+                xoff,
+                yoff,
+                zoff: height,
+                offset_x: 0.0,
+                offset_y: 0.0,
+                item: FloorItem::retain(item),
+                drop_time: data_projection_age.unwrap_or(-1.0),
+                ignore_remove_sandbox: false,
+                extended_placement: false,
+            },
+        )),
+        None,
+    );
+    obj.sprite_id_override = data_projection_age.map(|_| UNREGISTERED_SPRITE_ID);
+    obj.pending_floor_visual_tail = Some(if data_projection_age.is_some() {
+        crate::objects::FloorVisualTail::ConstructorUpdateSprite
+    } else {
+        crate::objects::FloorVisualTail::ConstructorCreateSprite
+    });
+    obj.outline_on_mouseover = true;
+    let slot = ObjectSlot::try_new(obj).map_err(|failure| {
+        cell.retire_object(ObjectSlot::retain(&failure.object));
+        WorldItemPlacementError::Binding(failure.error)
+    })?;
+    if data_projection_age.is_none() {
+        // Native CreateSprite precedes updateSprite, square assignment,
+        // world-age read and Fluid transfer. Retain this actual receiver
+        // with its completed item/rotation/offset prefix on unsupported.
+        cell.retire_object(slot);
+        return Err(WorldItemPlacementError::Component(
+            RuntimeHostError::Unsupported {
+                operation: "native IsoSprite.CreateSprite/LoadSingleTexture constructor",
+                kind: None,
+            },
+        ));
+    }
+    Ok(slot)
+}
+
+/// Only the render operation needed before the strict native constructor.
+/// The host borrows its actual renderer exactly when PC20 requests it.
+pub trait NativeFloorRender {
+    fn invalidate_render_chunk_level(
+        &mut self,
+        wx: i32,
+        wy: i32,
+        level: i32,
+        flags: u64,
+    ) -> HostResult<()>;
+}
+
+pub struct NativeFloorPlacement<'a> {
+    pub cell: &'a mut IsoCell,
+    pub rand: &'a mut dyn crate::GameRand,
+    pub render: &'a mut dyn NativeFloorRender,
+}
+impl NativeFloorPlacement<'_> {
+    pub fn place(
+        &mut self,
+        pos: SquarePos,
+        item: &ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> Result<WorldItemPlaced, WorldItemPlacementError> {
+        if self.cell.get_grid_square(pos.0, pos.1, pos.2).is_none() {
+            return Err(WorldItemPlacementError::Component(
+                RuntimeHostError::InvalidHostState(
+                    "native floor placement requires its actual square",
+                ),
+            ));
+        }
+        let corpse = {
+            let item = item.try_borrow().map_err(|_| {
+                WorldItemPlacementError::Component(RuntimeHostError::Borrowed(
+                    "floor placement item",
+                ))
+            })?;
+            item.is_human_corpse() || item.is_animal_corpse()
+        };
+        if corpse {
+            return Err(WorldItemPlacementError::Component(
+                RuntimeHostError::Unsupported {
+                    operation: "native corpse floor placement",
+                    kind: None,
+                },
+            ));
+        }
+        // Supplied overload PC20, after corpse attempt and BEFORE generator,
+        // animal and ordinary constructor. No unrelated manager is borrowed.
+        self.render
+            .invalidate_render_chunk_level(
+                pos.0.div_euclid(8),
+                pos.1.div_euclid(8),
+                pos.2,
+                WORLD_ITEM_ADDED,
+            )
+            .map_err(WorldItemPlacementError::Component)?;
+        {
+            let item = item.try_borrow().map_err(|_| {
+                WorldItemPlacementError::Component(RuntimeHostError::Borrowed(
+                    "floor placement item",
+                ))
+            })?;
+            if item.get_full_type().contains(".Generator")
+                || item.has_tag("base:generator") && item.template.world_object_sprite.is_some()
+            {
+                return Err(WorldItemPlacementError::Component(
+                    RuntimeHostError::Unsupported {
+                        operation: "native generator floor placement",
+                        kind: None,
+                    },
+                ));
+            }
+            if item.template.class == ItemClass::Animal {
+                return Err(WorldItemPlacementError::Component(
+                    RuntimeHostError::Unsupported {
+                        operation: "native animal floor placement",
+                        kind: None,
+                    },
+                ));
+            }
+        }
+        let slot = construct_floor_prefix(self.cell, self.rand, item, x, y, height, None)?;
+        // A future real Sprite implementation must provide an owned native
+        // continuation rather than accidentally treating the prefix as placed.
+        self.cell.retire_object(slot);
+        Err(WorldItemPlacementError::Component(
+            RuntimeHostError::Unsupported {
+                operation: "native floor post-constructor continuation",
+                kind: None,
+            },
+        ))
+    }
+}
+
+struct NativeRenderAdapter<'a>(&'a mut dyn super::RenderSquareHooks);
+impl NativeFloorRender for NativeRenderAdapter<'_> {
+    fn invalidate_render_chunk_level(
+        &mut self,
+        wx: i32,
+        wy: i32,
+        level: i32,
+        flags: u64,
+    ) -> HostResult<()> {
+        self.0
+            .try_invalidate_render_chunk_level(wx, wy, level, flags)
+    }
+}
 
 impl IsoGridSquare {
     /// `getApparentZ(dx, dy)`: the stairs' height (with the 0.1 fudge when
@@ -155,19 +343,51 @@ impl IsoCell {
         &self,
         x: i32,
         y: i32,
-        mut z: i32,
+        z: i32,
         m: &IsoSpriteManager,
     ) -> Option<SquarePos> {
+        self.try_get_solid_floor_at(x, y, z, m)
+            .expect("synchronous archive floor query requires unborrowed squares")
+    }
+
+    pub fn try_get_solid_floor_at(
+        &self,
+        x: i32,
+        y: i32,
+        mut z: i32,
+        m: &IsoSpriteManager,
+    ) -> HostResult<Option<SquarePos>> {
         while z >= 0 {
-            if self
-                .get_grid_square(x, y, z)
-                .is_some_and(|sq| sq.borrow().treat_as_solid_floor(m))
-            {
-                return Some((x, y, z));
+            if let Some(square) = self.get_grid_square(x, y, z) {
+                let square = square
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("solid floor square"))?;
+                if square.treat_as_solid_floor(m) {
+                    return Ok(Some((x, y, z)));
+                }
             }
             z -= 1;
         }
-        None
+        Ok(None)
+    }
+
+    pub fn try_get_apparent_z(
+        &self,
+        pos: SquarePos,
+        dx: f32,
+        dy: f32,
+        sprites: &IsoSpriteManager,
+        fbo_render_chunk: bool,
+    ) -> HostResult<f32> {
+        let square =
+            self.get_grid_square(pos.0, pos.1, pos.2)
+                .ok_or(RuntimeHostError::InvalidHostState(
+                    "apparent floor square disappeared",
+                ))?;
+        let square = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("apparent floor square"))?;
+        Ok(square.get_apparent_z(dx, dy, sprites, fbo_render_chunk))
     }
 }
 
@@ -208,7 +428,7 @@ impl MutationEnv<'_> {
     /// STUB: `updateSprite()` (the world texture and scale; render state).
     /// Legacy synchronous archive/fixture adapter. Production callers use the
     /// fallible try_add_world_inventory_item path and propagate Host faults.
-    pub fn add_world_inventory_item(
+    pub fn add_world_inventory_item_data_projection(
         &mut self,
         pos: SquarePos,
         item: &ItemRef,
@@ -217,15 +437,14 @@ impl MutationEnv<'_> {
         height: f32,
         world_age_hours: f64,
     ) -> WorldItemPlaced {
-        self.try_add_world_inventory_item(pos, item, x, y, height, world_age_hours)
+        self.try_add_world_inventory_item_data_projection(pos, item, x, y, height, world_age_hours)
             .unwrap_or_else(|error| panic!("{error}"))
     }
 
-    /// Fallible actual-reference path. Detached owners and failed receiver
-    /// pins are queued in the cell until an outer world/sprite safe boundary.
-    /// Native world-manager/meta registration still requires its real host;
-    /// component storage movement alone does not complete that lifecycle.
-    pub fn try_add_world_inventory_item(
+    /// Explicit Rust data/renderer projection. This is not native constructor
+    /// completion; detached owners and failed prefixes still retire safely.
+    /// Production native callers use try_add_world_inventory_item instead.
+    pub fn try_add_world_inventory_item_data_projection(
         &mut self,
         pos: SquarePos,
         item: &ItemRef,
@@ -234,8 +453,45 @@ impl MutationEnv<'_> {
         height: f32,
         world_age_hours: f64,
     ) -> Result<WorldItemPlaced, WorldItemPlacementError> {
+        self.try_add_world_inventory_item_profile(pos, item, x, y, height, Some(world_age_hours))
+    }
+
+    /// Actual native constructor profile. Unimplemented visual phases stop
+    /// before square/time/component/list/backlink publication.
+    pub fn try_add_world_inventory_item(
+        &mut self,
+        pos: SquarePos,
+        item: &ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> Result<WorldItemPlaced, WorldItemPlacementError> {
+        NativeFloorPlacement {
+            cell: self.cell,
+            rand: self.rand,
+            render: &mut NativeRenderAdapter(self.render),
+        }
+        .place(pos, item, x, y, height)
+    }
+
+    fn try_add_world_inventory_item_profile(
+        &mut self,
+        pos: SquarePos,
+        item: &ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+        data_projection_age: Option<f64>,
+    ) -> Result<WorldItemPlaced, WorldItemPlacementError> {
         if self.sq(pos).is_none() {
-            return Ok(WorldItemPlaced::NotPlaced);
+            if data_projection_age.is_some() {
+                return Ok(WorldItemPlaced::NotPlaced);
+            }
+            return Err(WorldItemPlacementError::Component(
+                RuntimeHostError::InvalidHostState(
+                    "native floor placement requires its actual square",
+                ),
+            ));
         }
         // `tryAddCorpseToWorld(item, x, y)`.
         let corpse = {
@@ -247,6 +503,14 @@ impl MutationEnv<'_> {
             i.is_human_corpse() || i.is_animal_corpse()
         };
         if corpse {
+            if data_projection_age.is_none() {
+                return Err(WorldItemPlacementError::Component(
+                    RuntimeHostError::Unsupported {
+                        operation: "native corpse floor placement",
+                        kind: None,
+                    },
+                ));
+            }
             let body = self.world.corpse_from_item(
                 pos,
                 &*item.try_borrow().map_err(|_| {
@@ -260,7 +524,9 @@ impl MutationEnv<'_> {
             };
             body.base.x = pos.0 as f32 + x;
             body.base.y = pos.1 as f32 + y;
-            body.base.z = self.apparent_z(pos, x, y);
+            body.base.z = self
+                .apparent_z(pos, x, y)
+                .map_err(WorldItemPlacementError::Component)?;
             self.add_corpse(pos, body);
             self.world
                 .process_items_remove(&*item.try_borrow().map_err(|_| {
@@ -284,6 +550,14 @@ impl MutationEnv<'_> {
                 || i.has_tag("base:generator") && i.template.world_object_sprite.is_some()
         };
         if generator {
+            if data_projection_age.is_none() {
+                return Err(WorldItemPlacementError::Component(
+                    RuntimeHostError::Unsupported {
+                        operation: "native generator floor placement",
+                        kind: None,
+                    },
+                ));
+            }
             let obj = self.world.generator_from_item(
                 pos,
                 &*item.try_borrow().map_err(|_| {
@@ -318,6 +592,14 @@ impl MutationEnv<'_> {
             .class
             == ItemClass::Animal
         {
+            if data_projection_age.is_none() {
+                return Err(WorldItemPlacementError::Component(
+                    RuntimeHostError::Unsupported {
+                        operation: "native animal floor placement",
+                        kind: None,
+                    },
+                ));
+            }
             self.world.animal_dropped(
                 pos,
                 &*item.try_borrow().map_err(|_| {
@@ -334,16 +616,15 @@ impl MutationEnv<'_> {
                 })?);
             return Ok(WorldItemPlaced::Animal);
         }
-        let slot = self.construct_world_inventory_item(item, x, y, height, world_age_hours)?;
+        let slot =
+            self.construct_world_inventory_item_profile(item, x, y, height, data_projection_age)?;
         self.finish_world_inventory_item(pos, slot, false)
     }
 
-    /// The actual native floor constructor. It deliberately does not set the
-    /// item's worldItem field. A string-overload caller can retain this owned
-    /// continuation, perform genuine setAutoAge outside host guards, and then
-    /// call finish_created_world_inventory_item. It must not use the supplied
-    /// overload's corpse/generator/animal branches.
-    pub fn construct_world_inventory_item(
+    /// Explicit Rust data/renderer constructor projection. No native visual
+    /// completion is claimed. It deliberately does not publish worldItem;
+    /// projection fixtures can finish through the named created continuation.
+    pub fn construct_world_inventory_item_data_projection(
         &mut self,
         item: &ItemRef,
         x: f32,
@@ -351,54 +632,36 @@ impl MutationEnv<'_> {
         height: f32,
         world_age_hours: f64,
     ) -> Result<ObjectSlot, WorldItemPlacementError> {
-        {
-            let mut i = item.try_borrow_mut().map_err(|_| {
-                WorldItemPlacementError::Component(
-                    pz_entity::runtime_load::RuntimeHostError::Borrowed("floor constructor item"),
-                )
-            })?;
-            i.world_x_rotation = 0.0;
-            i.world_y_rotation = 0.0;
-            if i.world_z_rotation < 0.0 {
-                i.world_z_rotation = self.rand.next_range(0, 360) as f32;
-            }
-        }
-        shared::set_container(item, None);
-        let xoff = if x == 0.0 {
-            self.rand.next(1000) as f32 / 1000.0
-        } else {
-            x
-        };
-        let yoff = if y == 0.0 {
-            self.rand.next(1000) as f32 / 1000.0
-        } else {
-            y
-        };
-        let mut obj = IsoObject::new(
-            0,
-            ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
-                IsoWorldInventoryObject {
-                    xoff,
-                    yoff,
-                    zoff: height,
-                    offset_x: 0.0,
-                    offset_y: 0.0,
-                    item: FloorItem::retain(item),
-                    drop_time: world_age_hours,
-                    ignore_remove_sandbox: false,
-                    extended_placement: false,
-                },
-            )),
-            None,
-        );
-        obj.sprite_id_override = Some(UNREGISTERED_SPRITE_ID);
-        obj.pending_floor_visual_tail =
-            Some(crate::objects::FloorVisualTail::ConstructorUpdateSprite);
-        obj.outline_on_mouseover = true;
-        let slot = ObjectSlot::try_new(obj).map_err(|failure| {
-            self.cell.retire_object(ObjectSlot::retain(&failure.object));
-            WorldItemPlacementError::Binding(failure.error)
-        })?;
+        self.construct_world_inventory_item_profile(item, x, y, height, Some(world_age_hours))
+    }
+
+    pub fn construct_world_inventory_item(
+        &mut self,
+        item: &ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> Result<ObjectSlot, WorldItemPlacementError> {
+        self.construct_world_inventory_item_profile(item, x, y, height, None)
+    }
+
+    fn construct_world_inventory_item_profile(
+        &mut self,
+        item: &ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+        data_projection_age: Option<f64>,
+    ) -> Result<ObjectSlot, WorldItemPlacementError> {
+        let slot = construct_floor_prefix(
+            self.cell,
+            self.rand,
+            item,
+            x,
+            y,
+            height,
+            data_projection_age,
+        )?;
         let object = slot.ref_handle();
         // Native transfer sees the canonical whole receiver, not a future
         // success-only owner or a by-value component staging container.
@@ -411,10 +674,10 @@ impl MutationEnv<'_> {
         Ok(slot)
     }
 
-    /// Complete only the string overload's post-constructor continuation.
-    /// Its real optional autoAge phase must already have run; no age/factory
-    /// success is invented here. Backlink publication precedes both lists.
-    pub fn finish_created_world_inventory_item(
+    /// Explicit data-projection created continuation, retaining the native
+    /// relative backlink/list order without claiming constructor/autoAge or
+    /// Sprite completion. Never used by the production native floor service.
+    pub fn finish_created_world_inventory_item_data_projection(
         &mut self,
         pos: SquarePos,
         slot: ObjectSlot,
@@ -529,11 +792,9 @@ impl MutationEnv<'_> {
         Ok(WorldItemPlaced::Object(r))
     }
 
-    fn apparent_z(&self, pos: SquarePos, dx: f32, dy: f32) -> f32 {
-        let fbo = self.render.fbo_render_chunk();
-        self.sq(pos).map_or(pos.2 as f32, |sq| {
-            sq.borrow().get_apparent_z(dx, dy, self.sprites, fbo)
-        })
+    fn apparent_z(&self, pos: SquarePos, dx: f32, dy: f32) -> HostResult<f32> {
+        self.cell
+            .try_get_apparent_z(pos, dx, dy, self.sprites, self.render.fbo_render_chunk())
     }
 }
 
@@ -544,31 +805,41 @@ impl MutationEnv<'_> {
 /// [`super::RenderSquareHooks::fbo_render_chunk`].
 pub struct FloorDropEnv<'e, 'a> {
     pub env: &'e mut MutationEnv<'a>,
-    pub world_age_hours: f64,
+    data_projection_age: Option<f64>,
     pub placed: Vec<WorldItemPlaced>,
 }
 
 impl<'e, 'a> FloorDropEnv<'e, 'a> {
-    pub fn new(env: &'e mut MutationEnv<'a>, world_age_hours: f64) -> Self {
+    pub fn new_data_projection(env: &'e mut MutationEnv<'a>, world_age_hours: f64) -> Self {
         FloorDropEnv {
             env,
-            world_age_hours,
+            data_projection_age: Some(world_age_hours),
+            placed: Vec::new(),
+        }
+    }
+
+    pub fn new_native(env: &'e mut MutationEnv<'a>) -> Self {
+        FloorDropEnv {
+            env,
+            data_projection_age: None,
             placed: Vec::new(),
         }
     }
 }
 
 impl FloorWorld for FloorDropEnv<'_, '_> {
-    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<SquarePos> {
-        self.env.cell.get_solid_floor_at(x, y, z, self.env.sprites)
+    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<SquarePos>> {
+        self.env
+            .cell
+            .try_get_solid_floor_at(x, y, z, self.env.sprites)
     }
 
-    fn apparent_z(&self, sq: SquarePos, dx: f32, dy: f32) -> f32 {
+    fn apparent_z(&self, sq: SquarePos, dx: f32, dy: f32) -> HostResult<f32> {
         self.env.apparent_z(sq, dx, dy)
     }
 
-    fn rand_float(&mut self, min: f32, max: f32) -> f32 {
-        self.env.rand.next_float_range(min, max)
+    fn rand_float(&mut self, min: f32, max: f32) -> HostResult<f32> {
+        Ok(self.env.rand.next_float_range(min, max))
     }
 
     fn add_world_inventory_item(
@@ -579,17 +850,22 @@ impl FloorWorld for FloorDropEnv<'_, '_> {
         y: f32,
         height: f32,
     ) -> pz_inventory::floor_drop::HostResult<()> {
-        let p = self
-            .env
-            .try_add_world_inventory_item(sq, item, x, y, height, self.world_age_hours)
-            .map_err(|error| match error {
-                WorldItemPlacementError::Component(error) => error,
-                WorldItemPlacementError::Binding(_) => {
-                    pz_inventory::floor_drop::RuntimeHostError::InvalidHostState(
-                        "floor constructor whole-owner binding failed",
-                    )
-                }
-            })?;
+        let placed = match self.data_projection_age {
+            Some(age) => self
+                .env
+                .try_add_world_inventory_item_data_projection(sq, item, x, y, height, age),
+            None => self
+                .env
+                .try_add_world_inventory_item(sq, item, x, y, height),
+        };
+        let p = placed.map_err(|error| match error {
+            WorldItemPlacementError::Component(error) => error,
+            WorldItemPlacementError::Binding(_) => {
+                pz_inventory::floor_drop::RuntimeHostError::InvalidHostState(
+                    "floor constructor whole-owner binding failed",
+                )
+            }
+        })?;
         self.placed.push(p);
         Ok(())
     }

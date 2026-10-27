@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 pz-world.workspace = true
 pz-characters.workspace = true
+pz-inventory.workspace = true
 pz-anim.workspace = true
 pz-pathfind.workspace = true
 pz-world-popman.workspace = true
@@ -16,5 +17,4 @@ pz-popman.workspace = true
 pz-scripts.workspace = true
 pz-classfile.workspace = true
 pz-fs.workspace = true
-pz-inventory.workspace = true
 pz-entity.workspace = true

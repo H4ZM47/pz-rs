@@ -104,14 +104,14 @@ struct World {
 }
 
 impl FloorWorld for World {
-    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<SquarePos> {
-        (z >= 0).then_some((x, y, 0))
+    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<SquarePos>> {
+        Ok((z >= 0).then_some((x, y, 0)))
     }
-    fn apparent_z(&self, sq: SquarePos, dx: f32, _dy: f32) -> f32 {
-        sq.2 as f32 + dx / 2.0
+    fn apparent_z(&self, sq: SquarePos, dx: f32, _dy: f32) -> HostResult<f32> {
+        Ok(sq.2 as f32 + dx / 2.0)
     }
-    fn rand_float(&mut self, min: f32, max: f32) -> f32 {
-        min + self.draws.remove(0) * (max - min)
+    fn rand_float(&mut self, min: f32, max: f32) -> HostResult<f32> {
+        Ok(min + self.draws.remove(0) * (max - min))
     }
     fn add_world_inventory_item(
         &mut self,
@@ -323,13 +323,13 @@ struct FailingWorld {
     attempts: Vec<i32>,
 }
 impl FloorWorld for FailingWorld {
-    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<SquarePos> {
+    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<SquarePos>> {
         self.inner.solid_floor_at(x, y, z)
     }
-    fn apparent_z(&self, sq: SquarePos, dx: f32, dy: f32) -> f32 {
+    fn apparent_z(&self, sq: SquarePos, dx: f32, dy: f32) -> HostResult<f32> {
         self.inner.apparent_z(sq, dx, dy)
     }
-    fn rand_float(&mut self, min: f32, max: f32) -> f32 {
+    fn rand_float(&mut self, min: f32, max: f32) -> HostResult<f32> {
         self.inner.rand_float(min, max)
     }
     fn add_world_inventory_item(
@@ -477,4 +477,326 @@ fn rejected_last_hand_item_is_pinned_until_outer_foreign_guard_ends() {
     }
     crate::component_host::drain_retired_components();
     assert_eq!(drops.get(), 1);
+}
+
+/// Actual separately borrowed query state: host borrow failures are not
+/// encoded as an absent floor or a fabricated height.
+struct GuardedQueries {
+    floor: Rc<RefCell<Option<SquarePos>>>,
+    height: Rc<RefCell<f32>>,
+    inner: World,
+}
+impl GuardedQueries {
+    fn new() -> Self {
+        Self {
+            floor: Rc::new(RefCell::new(Some((10, 20, 0)))),
+            height: Rc::new(RefCell::new(0.0)),
+            inner: world(),
+        }
+    }
+}
+impl FloorWorld for GuardedQueries {
+    fn solid_floor_at(&self, _: i32, _: i32, _: i32) -> HostResult<Option<SquarePos>> {
+        self.floor
+            .try_borrow()
+            .map(|floor| *floor)
+            .map_err(|_| RuntimeHostError::Borrowed("actual solid floor query"))
+    }
+    fn apparent_z(&self, _: SquarePos, _: f32, _: f32) -> HostResult<f32> {
+        self.height
+            .try_borrow()
+            .map(|height| *height)
+            .map_err(|_| RuntimeHostError::Borrowed("actual apparent height query"))
+    }
+    fn rand_float(&mut self, min: f32, max: f32) -> HostResult<f32> {
+        self.inner.rand_float(min, max)
+    }
+    fn add_world_inventory_item(
+        &mut self,
+        sq: SquarePos,
+        item: &ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> HostResult<()> {
+        self.inner.add_world_inventory_item(sq, item, x, y, height)
+    }
+}
+
+#[test]
+fn held_solid_floor_query_stops_force_heavy_and_hand_drop_before_removal_or_rng() {
+    for action in ["force", "heavy", "hands"] {
+        let first = item(ItemClass::Normal, "Generator", 60.0, 1);
+        let second = item(ItemClass::Normal, "Rock", 1.0, 2);
+        let mut chr = Chr::new(&[&first, &second]);
+        chr.primary = Some(first.clone());
+        chr.secondary = Some(second.clone());
+        let mut queries = GuardedQueries::new();
+        let floor = queries.floor.clone();
+        let _guard = floor.borrow_mut();
+        let error = match action {
+            "force" => force_drop_too_heavy(&mut chr, &mut queries, true, Some(&first))
+                .map(|_| ())
+                .unwrap_err(),
+            "heavy" => drop_heavy_items(&mut chr, &mut queries)
+                .map(|_| ())
+                .unwrap_err(),
+            _ => drop_hand_items(&mut chr, &mut queries, false)
+                .map(|_| ())
+                .unwrap_err(),
+        };
+        assert_eq!(
+            error,
+            RuntimeHostError::Borrowed("actual solid floor query")
+        );
+        assert!(Rc::ptr_eq(chr.primary.as_ref().unwrap(), &first));
+        assert!(Rc::ptr_eq(chr.secondary.as_ref().unwrap(), &second));
+        assert_eq!(chr.inv.borrow().items.len(), 2);
+        assert!(shared::container_of(&first).is_some());
+        assert!(chr.log.is_empty());
+        assert_eq!(queries.inner.draws.len(), 6);
+        assert!(queries.inner.added.is_empty());
+    }
+}
+
+#[test]
+fn genuine_missing_floor_is_no_drop_and_absent_current_square_does_not_query_host() {
+    let first = item(ItemClass::Normal, "Generator", 60.0, 1);
+    let mut chr = Chr::new(&[&first]);
+    chr.primary = Some(first.clone());
+    let mut queries = GuardedQueries::new();
+    *queries.floor.borrow_mut() = None;
+    assert_eq!(
+        drop_hand_items(&mut chr, &mut queries, false),
+        Ok(Vec::new())
+    );
+    assert!(Rc::ptr_eq(chr.primary.as_ref().unwrap(), &first));
+    assert!(shared::container_of(&first).is_some());
+    chr.square = None;
+    let floor = queries.floor.clone();
+    let _guard = floor.borrow_mut();
+    assert_eq!(drop_heavy_items(&mut chr, &mut queries), Ok(Vec::new()));
+    assert!(chr.log.is_empty());
+    assert_eq!(queries.inner.draws.len(), 6);
+    assert!(queries.inner.added.is_empty());
+}
+
+#[test]
+fn held_height_query_keeps_removal_and_two_draws_but_retires_last_item_before_outer_drop() {
+    struct Probe(Rc<RefCell<()>>, Rc<std::cell::Cell<usize>>);
+    impl pz_kahlua::LuaObject for Probe {
+        fn class_name(&self) -> &str {
+            "test.RejectedHeightQuery"
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            assert!(self.0.try_borrow_mut().is_ok());
+            self.1.set(self.1.get() + 1);
+        }
+    }
+    crate::component_host::drain_retired_components();
+    let foreign = Rc::new(RefCell::new(()));
+    let drops = Rc::new(std::cell::Cell::new(0));
+    let first = item(ItemClass::Normal, "Generator", 1.0, 1);
+    let weak = Rc::downgrade(&first);
+    crate::moddata::set_mod_data_value_ref(
+        &first,
+        "probe",
+        Some(pz_kahlua::Value::Object(Rc::new(Probe(
+            foreign.clone(),
+            drops.clone(),
+        )))),
+    )
+    .unwrap();
+    let second = item(ItemClass::Normal, "Rock", 1.0, 2);
+    let mut chr = Chr::new(&[&first, &second]);
+    chr.primary = Some(first.clone());
+    chr.secondary = Some(second.clone());
+    drop(first);
+    crate::component_host::drain_retired_components();
+    let mut queries = GuardedQueries::new();
+    let height = queries.height.clone();
+    {
+        let _foreign_guard = foreign.borrow_mut();
+        let _height_guard = height.borrow_mut();
+        assert_eq!(
+            drop_hand_items(&mut chr, &mut queries, false),
+            Err(RuntimeHostError::Borrowed("actual apparent height query"))
+        );
+        assert!(chr.primary.is_none());
+        assert!(Rc::ptr_eq(chr.secondary.as_ref().unwrap(), &second));
+        assert!(shared::container_of(&weak.upgrade().unwrap()).is_none());
+        assert_eq!(
+            queries.inner.draws.len(),
+            4,
+            "x/y precede the native height query"
+        );
+        assert!(queries.inner.added.is_empty());
+        assert_eq!(chr.log, ["primary=null"]);
+        assert_eq!(drops.get(), 0);
+    }
+    crate::component_host::drain_retired_components();
+    assert!(weak.upgrade().is_none());
+    assert_eq!(drops.get(), 1);
+}
+
+struct BorrowedDraws {
+    queries: GuardedQueries,
+    streams: [Rc<RefCell<Vec<f32>>>; 2],
+    attempted: usize,
+    completed: usize,
+    heights: std::cell::Cell<usize>,
+}
+impl FloorWorld for BorrowedDraws {
+    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<SquarePos>> {
+        self.queries.solid_floor_at(x, y, z)
+    }
+    fn apparent_z(&self, sq: SquarePos, x: f32, y: f32) -> HostResult<f32> {
+        self.heights.set(self.heights.get() + 1);
+        self.queries.apparent_z(sq, x, y)
+    }
+    fn rand_float(&mut self, min: f32, max: f32) -> HostResult<f32> {
+        let index = self.attempted;
+        self.attempted += 1;
+        let mut stream = self.streams[index]
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("actual floor RNG"))?;
+        let value = stream.remove(0);
+        self.completed += 1;
+        Ok(min + value * (max - min))
+    }
+    fn add_world_inventory_item(
+        &mut self,
+        sq: SquarePos,
+        item: &ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> HostResult<()> {
+        self.queries
+            .add_world_inventory_item(sq, item, x, y, height)
+    }
+}
+
+fn check_held_random_prefix(failed_draw: usize) {
+    struct Probe(Rc<RefCell<()>>, Rc<std::cell::Cell<usize>>);
+    impl pz_kahlua::LuaObject for Probe {
+        fn class_name(&self) -> &str {
+            "test.RejectedRandomQuery"
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            assert!(self.0.try_borrow_mut().is_ok());
+            self.1.set(self.1.get() + 1);
+        }
+    }
+    crate::component_host::drain_retired_components();
+    let foreign = Rc::new(RefCell::new(()));
+    let drops = Rc::new(std::cell::Cell::new(0));
+    let first = item(ItemClass::Normal, "Generator", 1.0, 1);
+    let weak = Rc::downgrade(&first);
+    crate::moddata::set_mod_data_value_ref(
+        &first,
+        "probe",
+        Some(pz_kahlua::Value::Object(Rc::new(Probe(
+            foreign.clone(),
+            drops.clone(),
+        )))),
+    )
+    .unwrap();
+    let second = item(ItemClass::Normal, "Rock", 1.0, 2);
+    let mut chr = Chr::new(&[&first, &second]);
+    chr.primary = Some(first.clone());
+    chr.secondary = Some(second.clone());
+    drop(first);
+    crate::component_host::drain_retired_components();
+    let mut world = BorrowedDraws {
+        queries: GuardedQueries::new(),
+        streams: [
+            Rc::new(RefCell::new(vec![0.5])),
+            Rc::new(RefCell::new(vec![0.25])),
+        ],
+        attempted: 0,
+        completed: 0,
+        heights: std::cell::Cell::new(0),
+    };
+    let blocked = world.streams[failed_draw - 1].clone();
+    {
+        let _foreign_guard = foreign.borrow_mut();
+        let rng_guard = blocked.borrow_mut();
+        assert_eq!(
+            drop_hand_items(&mut chr, &mut world, false),
+            Err(RuntimeHostError::Borrowed("actual floor RNG"))
+        );
+        assert_eq!(world.attempted, failed_draw);
+        assert_eq!(world.completed, failed_draw - 1);
+        assert_eq!(rng_guard.len(), 1, "failed draw consumes no random value");
+        assert_eq!(
+            world.heights.get(),
+            0,
+            "height is after both native RNG phases"
+        );
+        assert!(world.queries.inner.added.is_empty());
+        assert!(chr.primary.is_none());
+        assert!(Rc::ptr_eq(chr.secondary.as_ref().unwrap(), &second));
+        assert_eq!(chr.log, ["primary=null"]);
+        assert!(shared::container_of(&weak.upgrade().unwrap()).is_none());
+        assert_eq!(drops.get(), 0);
+    }
+    crate::component_host::drain_retired_components();
+    assert!(weak.upgrade().is_none());
+    assert_eq!(drops.get(), 1);
+}
+
+#[test]
+fn held_first_random_draw_stops_after_removal_and_defers_last_item_pin() {
+    check_held_random_prefix(1);
+}
+
+#[test]
+fn held_second_random_draw_keeps_first_draw_prefix_and_defers_last_item_pin() {
+    check_held_random_prefix(2);
+}
+
+#[test]
+fn forced_drop_null_current_square_is_an_explicit_diagnostic_boundary_before_queries() {
+    let first = item(ItemClass::Normal, "Generator", 60.0, 1);
+    let mut chr = Chr::new(&[&first]);
+    chr.primary = Some(first.clone());
+    chr.square = None;
+    let mut queries = GuardedQueries::new();
+    let floor = queries.floor.clone();
+    let _guard = floor.borrow_mut();
+    assert!(matches!(
+        force_drop_too_heavy(&mut chr, &mut queries, true, Some(&first)),
+        Err(RuntimeHostError::Unsupported {
+            operation: "forceDropTooHeavy null current-square diagnostic",
+            kind: None,
+        })
+    ));
+    // The force gate still precedes the required receiver. Other drop methods
+    // have genuine null-square no-op branches and must not query the provider.
+    assert!(
+        force_drop_too_heavy(&mut chr, &mut queries, false, Some(&first))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        drop_hand_items(&mut chr, &mut queries, false),
+        Ok(Vec::new())
+    );
+    assert_eq!(drop_heavy_items(&mut chr, &mut queries), Ok(Vec::new()));
+    assert!(Rc::ptr_eq(chr.primary.as_ref().unwrap(), &first));
+    assert!(shared::container_of(&first).is_some());
+    assert!(chr.log.is_empty());
+    assert_eq!(queries.inner.draws.len(), 6);
+    assert!(queries.inner.added.is_empty());
 }

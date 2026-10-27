@@ -103,6 +103,33 @@ pub fn with_world<R>(f: impl FnOnce(&mut WorldState) -> R) -> R {
     with_world_state_cell(|w| f(&mut w.borrow_mut()))
 }
 
+/// Fallible access to the same actual world state from a native host service.
+/// Missing cell/meta fields remain genuine `None` for the caller to inspect.
+/// Collection stays deferred until the world guard has ended, including errors.
+pub fn try_with_world<R>(
+    f: impl FnOnce(&mut WorldState) -> pz_entity::runtime_load::HostResult<R>,
+) -> pz_entity::runtime_load::HostResult<R> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
+    WORLD
+        .try_with(|world| {
+            let mut world = world
+                .try_borrow_mut()
+                .map_err(|_| RuntimeHostError::Borrowed("Lua actual world state"))?;
+            f(&mut world)
+        })
+        .map_err(|_| RuntimeHostError::Unsupported {
+            operation: "Lua actual world state is unavailable",
+            kind: None,
+        })?
+}
+
+/// The current cell session, including clears/replacements of the same data.
+/// Retained host services use this token to reject a previous session's owners.
+pub fn cell_generation() -> u64 {
+    CELL_GEN.with(Cell::get)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Key {
     World,

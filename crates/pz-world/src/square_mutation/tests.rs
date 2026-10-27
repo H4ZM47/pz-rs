@@ -129,6 +129,18 @@ impl RenderSquareHooks for H {
 }
 
 impl SquareMutationHooks for H {
+    // Explicit hand-authored data/trace fixture, not a live registry host.
+    fn try_world_call(
+        &mut self,
+        obj: ObjectRef,
+        object: IsoObjectRef,
+        rand: &mut dyn GameRand,
+        call: WorldCall,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        self.world_call(obj, object, rand, call);
+        Ok(())
+    }
+
     fn lua_event(&mut self, sq: crate::SquareRef, ev: LuaEvent) {
         let sq = sq.borrow();
         let s = match ev {
@@ -786,6 +798,18 @@ fn floor_placement_callbacks_keep_original_receiver_after_same_id_replacement() 
         designated: bool,
     }
     impl SquareMutationHooks for Calls {
+        // Explicit hand-authored data/trace fixture, not a live registry host.
+        fn try_world_call(
+            &mut self,
+            obj: ObjectRef,
+            object: IsoObjectRef,
+            rand: &mut dyn GameRand,
+            call: WorldCall,
+        ) -> pz_entity::runtime_load::HostResult<()> {
+            self.world_call(obj, object, rand, call);
+            Ok(())
+        }
+
         fn world_call(
             &mut self,
             _: ObjectRef,
@@ -831,7 +855,7 @@ fn floor_placement_callbacks_keep_original_receiver_after_same_id_replacement() 
         let mut env = w.env();
         env.world = &mut calls;
         assert!(matches!(
-            env.add_world_inventory_item(p, &item, 0.5, 0.5, 0.0, 0.0),
+            env.add_world_inventory_item_data_projection(p, &item, 0.5, 0.5, 0.0, 0.0),
             WorldItemPlaced::Object(_)
         ));
     }
@@ -1226,6 +1250,18 @@ fn floor_constructor_preserves_fluid_identity_without_backlink_then_supplied_add
         seen: bool,
     }
     impl SquareMutationHooks for OnAdd {
+        // Explicit hand-authored data/trace fixture, not a live registry host.
+        fn try_world_call(
+            &mut self,
+            obj: ObjectRef,
+            object: IsoObjectRef,
+            rand: &mut dyn GameRand,
+            call: WorldCall,
+        ) -> pz_entity::runtime_load::HostResult<()> {
+            self.world_call(obj, object, rand, call);
+            Ok(())
+        }
+
         fn world_call(
             &mut self,
             _: ObjectRef,
@@ -1278,7 +1314,7 @@ fn floor_constructor_preserves_fluid_identity_without_backlink_then_supplied_add
         let actual = if constructor_only {
             let slot = w
                 .env()
-                .construct_world_inventory_item(&item, 0.2, 0.3, 0.0, 4.0)
+                .construct_world_inventory_item_data_projection(&item, 0.2, 0.3, 0.0, 4.0)
                 .unwrap();
             assert!(item.borrow().world_item_slot().is_none());
             assert!(w.sq(p).borrow().world_objects.borrow().is_empty());
@@ -1292,7 +1328,7 @@ fn floor_constructor_preserves_fluid_identity_without_backlink_then_supplied_add
             let placed = {
                 let mut env = w.env();
                 env.world = &mut hook;
-                env.try_add_world_inventory_item(p, &item, 0.2, 0.3, 0.0, 4.0)
+                env.try_add_world_inventory_item_data_projection(p, &item, 0.2, 0.3, 0.0, 4.0)
                     .unwrap()
             };
             assert!(matches!(placed, WorldItemPlaced::Object(_)));
@@ -1343,16 +1379,17 @@ fn created_and_supplied_floor_insertion_faults_preserve_distinct_native_backlink
         let before = square.borrow().objects.len();
         let slot = created.then(|| {
             w.env()
-                .construct_world_inventory_item(&item, 0.2, 0.3, 0.0, 4.0)
+                .construct_world_inventory_item_data_projection(&item, 0.2, 0.3, 0.0, 4.0)
                 .unwrap()
         });
         assert!(item.borrow().world_item_slot().is_none());
         let guard = list.borrow_mut();
         let result = if let Some(slot) = slot {
-            w.env().finish_created_world_inventory_item(p, slot)
+            w.env()
+                .finish_created_world_inventory_item_data_projection(p, slot)
         } else {
             w.env()
-                .try_add_world_inventory_item(p, &item, 0.2, 0.3, 0.0, 4.0)
+                .try_add_world_inventory_item_data_projection(p, &item, 0.2, 0.3, 0.0, 4.0)
         };
         assert!(matches!(
             result,
@@ -1415,7 +1452,7 @@ fn world_item_joins_the_square() {
     let before = w.sq(p).borrow().objects.len();
     let placed = w
         .env()
-        .add_world_inventory_item(p, &item, 0.0, 0.5, 0.25, 123.5);
+        .add_world_inventory_item_data_projection(p, &item, 0.0, 0.5, 0.25, 123.5);
     let WorldItemPlaced::Object(r) = placed else {
         panic!("{placed:?}");
     };
@@ -1474,7 +1511,7 @@ fn world_item_joins_the_square() {
     let item2 = world_item("Nail", 10);
     item2.borrow_mut().world_z_rotation = 90.0;
     w.env()
-        .add_world_inventory_item(p, &item2, 0.3, 0.4, 0.0, 1.0);
+        .add_world_inventory_item_data_projection(p, &item2, 0.3, 0.4, 0.0, 1.0);
     assert!(w.rand.0.is_empty());
     assert_eq!(w.sq(p).borrow().world_objects.borrow().len(), 2);
     let total = w
@@ -1527,13 +1564,13 @@ fn corpses_generators_and_animals_go_to_hooks() {
     let corpse = world_item("CorpseMale", 1);
     assert_eq!(
         w.env()
-            .add_world_inventory_item(p, &corpse, 0.5, 0.5, 0.0, 0.0),
+            .add_world_inventory_item_data_projection(p, &corpse, 0.5, 0.5, 0.0, 0.0),
         WorldItemPlaced::NotPlaced
     );
     let gen = world_item("Generator", 2);
     assert_eq!(
         w.env()
-            .add_world_inventory_item(p, &gen, 0.5, 0.5, 0.0, 0.0),
+            .add_world_inventory_item_data_projection(p, &gen, 0.5, 0.5, 0.0, 0.0),
         WorldItemPlaced::NotPlaced
     );
     let mut t = (*gen.borrow().template).clone();
@@ -1542,7 +1579,7 @@ fn corpses_generators_and_animals_go_to_hooks() {
     let animal = Rc::new(RefCell::new(InventoryItem::create(Rc::new(t), 1)));
     assert_eq!(
         w.env()
-            .add_world_inventory_item(p, &animal, 0.5, 0.5, 0.0, 0.0),
+            .add_world_inventory_item_data_projection(p, &animal, 0.5, 0.5, 0.0, 0.0),
         WorldItemPlaced::Animal
     );
     assert!(w.sq(p).borrow().world_objects.borrow().is_empty());
@@ -1627,7 +1664,7 @@ fn too_heavy_worn_item_drops_to_the_floor_below() {
     }
     let mut chr = Carrier { inv };
     let mut env = w.env();
-    let mut floor = FloorDropEnv::new(&mut env, 10.0);
+    let mut floor = FloorDropEnv::new_data_projection(&mut env, 10.0);
     let d = pz_inventory::floor_drop::force_drop_too_heavy(&mut chr, &mut floor, true, Some(&coat))
         .unwrap()
         .unwrap();
@@ -1656,6 +1693,18 @@ fn removal_callback_pins_actual_receiver_recomputes_index_and_rejects_equal_repl
         calls: usize,
     }
     impl SquareMutationHooks for Callback {
+        // Explicit hand-authored data/trace fixture, not a live registry host.
+        fn try_world_call(
+            &mut self,
+            obj: ObjectRef,
+            object: IsoObjectRef,
+            rand: &mut dyn GameRand,
+            call: WorldCall,
+        ) -> pz_entity::runtime_load::HostResult<()> {
+            self.world_call(obj, object, rand, call);
+            Ok(())
+        }
+
         fn lua_event(&mut self, square: crate::SquareRef, event: LuaEvent) {
             let mut square = square.borrow_mut();
             if let LuaEvent::ObjectAboutToBeRemoved { index, ref object } = event {
@@ -1735,6 +1784,18 @@ fn detached_remove_from_world_mutates_actual_receiver_without_reinsertion() {
         count: usize,
     }
     impl SquareMutationHooks for Calls {
+        // Explicit hand-authored data/trace fixture, not a live registry host.
+        fn try_world_call(
+            &mut self,
+            obj: ObjectRef,
+            object: IsoObjectRef,
+            rand: &mut dyn GameRand,
+            call: WorldCall,
+        ) -> pz_entity::runtime_load::HostResult<()> {
+            self.world_call(obj, object, rand, call);
+            Ok(())
+        }
+
         fn world_call(
             &mut self,
             _: ObjectRef,
@@ -1778,6 +1839,18 @@ fn detached_receiver_removal_event_keeps_original_argument_and_same_id_replaceme
         seen: bool,
     }
     impl SquareMutationHooks for Event {
+        // Explicit hand-authored data/trace fixture, not a live registry host.
+        fn try_world_call(
+            &mut self,
+            obj: ObjectRef,
+            object: IsoObjectRef,
+            rand: &mut dyn GameRand,
+            call: WorldCall,
+        ) -> pz_entity::runtime_load::HostResult<()> {
+            self.world_call(obj, object, rand, call);
+            Ok(())
+        }
+
         fn lua_event(&mut self, _: crate::SquareRef, event: LuaEvent) {
             match event {
                 LuaEvent::ObjectAboutToBeRemoved { .. } => panic!("detached receiver is absent"),
@@ -1830,4 +1903,289 @@ fn detached_receiver_removal_event_keeps_original_argument_and_same_id_replaceme
         .last()
         .unwrap()
         .ptr_eq_ref(&replacement_handle));
+}
+
+#[test]
+fn data_projection_floor_lifecycle_does_not_archive_clone_actual_item_graph() {
+    let mut world = World::new();
+    let item = world_item("Bandage", 5);
+    pz_inventory::moddata::set_mod_data_value_ref(
+        &item,
+        "live",
+        Some(pz_kahlua::Value::Bool(true)),
+    )
+    .unwrap();
+    let table = pz_inventory::moddata::get_mod_data_ref(&item).unwrap();
+    let _held = table.try_borrow_body_mut().unwrap();
+    let placed = world
+        .env()
+        .try_add_world_inventory_item_data_projection((2, 2, 0), &item, 0.2, 0.3, 0.0, 1.0)
+        .unwrap();
+    assert!(matches!(placed, WorldItemPlaced::Object(_)));
+    let slot = item.borrow().world_item_slot().cloned().unwrap();
+    let actual = slot.try_handle::<IsoObject>().unwrap();
+    assert!(actual.borrow().added_to_world_or_equipped);
+    assert!(Rc::ptr_eq(
+        &crate::floor_object::runtime::item_ref(&actual)
+            .unwrap()
+            .unwrap(),
+        &item
+    ));
+}
+
+struct CheckedRemoval {
+    fail_on: Option<WorldCall>,
+    calls: Vec<(WorldCall, bool)>,
+}
+impl SquareMutationHooks for CheckedRemoval {
+    fn try_world_call(
+        &mut self,
+        _: ObjectRef,
+        object: IsoObjectRef,
+        _: &mut dyn GameRand,
+        call: WorldCall,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        self.calls
+            .push((call, object.borrow().added_to_world_or_equipped));
+        if self.fail_on == Some(call) {
+            return Err(pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                "actual removal registry",
+            ));
+        }
+        Ok(())
+    }
+}
+fn removal_receiver(world: &mut World, floor: bool) -> IsoObjectRef {
+    if floor {
+        world
+            .env()
+            .construct_world_inventory_item_data_projection(
+                &world_item("Bandage", 5),
+                0.2,
+                0.3,
+                0.0,
+                1.0,
+            )
+            .unwrap()
+            .ref_handle()
+    } else {
+        ObjectSlot::new(world.obj("crate")).ref_handle()
+    }
+}
+
+#[test]
+fn checked_remove_clears_added_flag_after_unregister_for_both_initial_bits_and_classes() {
+    for floor in [false, true] {
+        for initially_added in [false, true] {
+            let mut world = World::new();
+            let object = removal_receiver(&mut world, floor);
+            object.borrow_mut().added_to_world_or_equipped = initially_added;
+            let mut calls = CheckedRemoval {
+                fail_on: None,
+                calls: Vec::new(),
+            };
+            let location = ObjectRef {
+                pos: (2, 2, 0),
+                id: object.borrow().id,
+            };
+            {
+                let mut env = world.env();
+                env.world = &mut calls;
+                env.object_remove_from_world_detached(location, &object)
+                    .unwrap();
+            }
+            let unreg = calls
+                .calls
+                .iter()
+                .position(|(call, _)| *call == WorldCall::UnregisterEntity)
+                .unwrap();
+            assert_eq!(
+                calls.calls[unreg].1, initially_added,
+                "PC13 sees previous bit"
+            );
+            assert_eq!(
+                calls.calls[unreg + 1],
+                (WorldCall::ProcessIsoObjectRemove, false),
+                "PC18 clears before next system"
+            );
+            assert!(calls.calls[unreg + 1..].iter().all(|(_, flag)| !flag));
+            assert!(!object.borrow().added_to_world_or_equipped);
+        }
+    }
+}
+
+#[test]
+fn failed_unregister_preserves_added_flag_and_stops_generic_and_floor_remove_prefix() {
+    for floor in [false, true] {
+        let mut world = World::new();
+        let object = removal_receiver(&mut world, floor);
+        object.borrow_mut().added_to_world_or_equipped = true;
+        let mut calls = CheckedRemoval {
+            fail_on: Some(WorldCall::UnregisterEntity),
+            calls: Vec::new(),
+        };
+        let location = ObjectRef {
+            pos: (2, 2, 0),
+            id: object.borrow().id,
+        };
+        let result = {
+            let mut env = world.env();
+            env.world = &mut calls;
+            env.object_remove_from_world_detached(location, &object)
+        };
+        assert!(matches!(
+            result,
+            Err(pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                "actual removal registry"
+            ))
+        ));
+        let expected = if floor {
+            vec![
+                WorldCall::ProcessWorldItems { add: false },
+                WorldCall::WorldItemRemoved,
+                WorldCall::WorldItemContainer { add: false },
+                WorldCall::UnregisterEntity,
+            ]
+        } else {
+            vec![WorldCall::UnregisterEntity]
+        };
+        assert_eq!(
+            calls
+                .calls
+                .iter()
+                .map(|(call, _)| *call)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(calls.calls.iter().all(|(_, flag)| *flag));
+        assert!(object.borrow().added_to_world_or_equipped);
+    }
+}
+
+#[test]
+fn post_unregister_host_fault_keeps_cleared_flag_and_stops_following_systems() {
+    let mut world = World::new();
+    let object = removal_receiver(&mut world, false);
+    object.borrow_mut().added_to_world_or_equipped = true;
+    let mut calls = CheckedRemoval {
+        fail_on: Some(WorldCall::ProcessIsoObjectRemove),
+        calls: Vec::new(),
+    };
+    let location = ObjectRef {
+        pos: (2, 2, 0),
+        id: object.borrow().id,
+    };
+    let result = {
+        let mut env = world.env();
+        env.world = &mut calls;
+        env.object_remove_from_world_detached(location, &object)
+    };
+    assert!(result.is_err());
+    assert_eq!(
+        calls.calls,
+        vec![
+            (WorldCall::UnregisterEntity, true),
+            (WorldCall::ProcessIsoObjectRemove, false)
+        ]
+    );
+    assert!(!object.borrow().added_to_world_or_equipped);
+}
+
+#[test]
+fn absent_live_lifecycle_capability_never_becomes_successful_projection() {
+    let mut world = World::new();
+    let object = removal_receiver(&mut world, false);
+    object.borrow_mut().added_to_world_or_equipped = true;
+    let location = ObjectRef {
+        pos: (2, 2, 0),
+        id: object.borrow().id,
+    };
+    let result = {
+        let mut env = world.env();
+        let mut missing = NoMutationHooks;
+        env.world = &mut missing;
+        env.object_remove_from_world_detached(location, &object)
+    };
+    assert!(matches!(
+        result,
+        Err(RuntimeHostError::Unsupported {
+            operation: "native world lifecycle hook",
+            ..
+        })
+    ));
+    assert!(object.borrow().added_to_world_or_equipped);
+    // The archive/geometry profile must be requested by name; it is no live
+    // Native registry claim, even when its scalar/list projection completes.
+    let mut projection = DataProjectionMutationHooks;
+    {
+        let mut env = world.env();
+        env.world = &mut projection;
+        env.object_remove_from_world_detached(location, &object)
+            .unwrap();
+    }
+    assert!(!object.borrow().added_to_world_or_equipped);
+}
+
+#[test]
+fn native_render_hook_requires_actual_capability_before_constructor_while_projection_is_explicit() {
+    let mut world = World::new();
+    let item = world_item("Bandage", 5);
+    {
+        let mut body = item.borrow_mut();
+        body.world_x_rotation = 22.0;
+        body.world_y_rotation = 33.0;
+        body.world_z_rotation = 9.0;
+    }
+    let result = world
+        .env()
+        .try_add_world_inventory_item((2, 2, 0), &item, 0.2, 0.3, 0.0);
+    assert!(matches!(
+        result,
+        Err(WorldItemPlacementError::Component(
+            RuntimeHostError::Unsupported {
+                operation: "native floor render invalidation",
+                ..
+            }
+        ))
+    ));
+    assert_eq!(
+        (
+            item.borrow().world_x_rotation,
+            item.borrow().world_y_rotation
+        ),
+        (22.0, 33.0)
+    );
+    assert!(
+        world.take_log().is_empty(),
+        "missing Native capability must not invoke legacy trace"
+    );
+    assert!(
+        world.cell.take_retired_objects().is_empty(),
+        "PC20 fails before actual constructor receiver"
+    );
+    assert!(item.borrow().world_item_slot().is_none());
+
+    let result = world
+        .env()
+        .try_add_world_inventory_item_data_projection((2, 2, 0), &item, 0.2, 0.3, 0.0, 1.0)
+        .unwrap();
+    assert!(matches!(result, WorldItemPlaced::Object(_)));
+    assert!(world
+        .take_log()
+        .iter()
+        .any(|call| call == "render 0,0,0 68"));
+    assert_eq!(
+        (
+            item.borrow().world_x_rotation,
+            item.borrow().world_y_rotation
+        ),
+        (0.0, 0.0)
+    );
+    let owner = item.borrow().world_item_slot().cloned().unwrap();
+    let actual = owner.try_handle::<IsoObject>().unwrap();
+    assert_eq!(
+        actual.borrow().pending_floor_visual_tail,
+        Some(crate::objects::FloorVisualTail::ConstructorUpdateSprite),
+        "explicit projection does not become Native visual completion"
+    );
 }

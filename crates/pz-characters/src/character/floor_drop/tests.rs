@@ -19,14 +19,14 @@ pub(crate) struct TestFloor {
 }
 
 impl FloorWorld for TestFloor {
-    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<SquarePos> {
-        Some((x, y, z))
+    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<SquarePos>> {
+        Ok(Some((x, y, z)))
     }
-    fn apparent_z(&self, sq: SquarePos, _dx: f32, _dy: f32) -> f32 {
-        sq.2 as f32
+    fn apparent_z(&self, sq: SquarePos, _dx: f32, _dy: f32) -> HostResult<f32> {
+        Ok(sq.2 as f32)
     }
-    fn rand_float(&mut self, _min: f32, _max: f32) -> f32 {
-        0.5
+    fn rand_float(&mut self, _min: f32, _max: f32) -> HostResult<f32> {
+        Ok(0.5)
     }
     fn add_world_inventory_item(&mut self, sq: SquarePos, item: &ItemRef, x: f32, y: f32, height: f32) -> HostResult<()> {
         self.attempts += 1;

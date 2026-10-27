@@ -130,6 +130,7 @@ mod animation_bridge_tests {
                 movers: Vec::new(),
                 models: RefCell::new(Some(&mut models)),
                 animation_time_delta: 0.5,
+                floor_world: None,
             };
             let mut world = StatesWorldAdapter::new(
                 &mut cell,
@@ -194,12 +195,60 @@ struct EngineStates<'a> {
     /// root-motion query through StateWorld's immutable query method.
     models: RefCell<Option<&'a mut WorldModels>>,
     animation_time_delta: f32,
+    floor_world: Option<Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
 }
 
 impl StatesEngine for EngineStates<'_> {
     fn rand(&mut self) -> &mut dyn GameRand {
         &mut self.rand
     }
+    fn validate_floor_session(&self) -> HostResult<()> {
+        let floor = self.floor_world.as_ref().ok_or(
+            pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+                operation: "actual state floor service",
+                kind: None,
+            },
+        )?;
+        let floor = floor.try_borrow().map_err(|_| {
+            pz_inventory::floor_drop::RuntimeHostError::Borrowed("actual state floor service")
+        })?;
+        floor.validate()
+    }
+    fn floor_fbo_render_chunk(&self) -> HostResult<bool> {
+        let floor = self.floor_world.as_ref().ok_or(
+            pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+                operation: "actual state floor service",
+                kind: None,
+            },
+        )?;
+        let floor = floor.try_borrow().map_err(|_| {
+            pz_inventory::floor_drop::RuntimeHostError::Borrowed("actual state floor service")
+        })?;
+        floor.fbo_render_chunk()
+    }
+    fn add_world_inventory_item(
+        &mut self,
+        cell: &mut IsoCell,
+        meta: &IsoMetaGrid,
+        sprites: &mut IsoSpriteManager,
+        square: (i32, i32, i32),
+        item: &pz_inventory::shared::ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> HostResult<()> {
+        let floor = self.floor_world.as_ref().ok_or(
+            pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+                operation: "actual state floor service",
+                kind: None,
+            },
+        )?;
+        let floor = floor.try_borrow().map_err(|_| {
+            pz_inventory::floor_drop::RuntimeHostError::Borrowed("actual state floor service")
+        })?;
+        floor.place_borrowed(cell, meta, sprites, square, item, x, y, height)
+    }
+
     /// `!square.getMovingObjects().isEmpty()` for the players and animals;
     /// the population host counts the real zombies itself.
     fn has_moving_objects(&self, sq: (i32, i32, i32)) -> bool {
@@ -294,11 +343,12 @@ fn player_positions() -> [Option<PlayerPos>; MAX_PLAYERS] {
 
 /// Runs `f` over the character states' world (`StatesWorldAdapter` over
 /// the current cell); `None` without a cell.
-fn with_states<R>(
+pub(crate) fn with_states<R>(
     sprites: &Rc<RefCell<IsoSpriteManager>>,
     runtime: &mut StatesRuntime,
     models: Option<&mut WorldModels>,
     sim: &FrameSim,
+    floor_world: Option<&Rc<RefCell<crate::floor_world::LiveFloorWorld>>>,
     f: impl FnOnce(&mut StatesWorldAdapter<'_>) -> R,
 ) -> Option<R> {
     let movers = player_squares();
@@ -315,6 +365,7 @@ fn with_states<R>(
             movers,
             models: RefCell::new(models),
             animation_time_delta,
+            floor_world: floor_world.cloned(),
         };
         let mut sprites = sprites.borrow_mut();
         let mut adapter = StatesWorldAdapter::new(
@@ -418,7 +469,7 @@ impl IsoWorld {
             // the meta grid needs the render invalidation's `BuildingCtx`).
             with_world(|w| {
                 if let Some(cell) = w.cell.as_ref() {
-                    r.update(cell, &sp.borrow(), player);
+                    r.borrow_mut().update(cell, &sp.borrow(), player);
                 }
             });
         }
@@ -502,29 +553,37 @@ impl IsoWorld {
                         states_runtime,
                         action_groups,
                         models,
+                        floor_world,
                         ..
                     } = self;
                     let Some(sprites) = sprites.as_mut() else {
                         return Ok(());
                     };
-                    with_states(sprites, states_runtime, models.as_mut(), sim, |w| {
-                        if first_phase {
-                            fill_square_environment(&mut chr, w.cell);
-                        }
-                        pz_lua_api::bind_states::with_state_registry(|reg| {
-                            let chars = chars.borrow();
-                            let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
-                            let step = chr.advance_player_update(
-                                phase,
-                                &input,
-                                reg,
-                                action_groups,
-                                &mut u,
-                                &mut cx,
-                            );
-                            (cx.host_result(), step)
-                        })
-                    })
+                    with_states(
+                        sprites,
+                        states_runtime,
+                        models.as_mut(),
+                        sim,
+                        floor_world.as_ref(),
+                        |w| {
+                            if first_phase {
+                                fill_square_environment(&mut chr, w.cell);
+                            }
+                            pz_lua_api::bind_states::with_state_registry(|reg| {
+                                let chars = chars.borrow();
+                                let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
+                                let step = chr.advance_player_update(
+                                    phase,
+                                    &input,
+                                    reg,
+                                    action_groups,
+                                    &mut u,
+                                    &mut cx,
+                                );
+                                (cx.host_result(), step)
+                            })
+                        },
+                    )
                 };
                 first_phase = false;
                 match r {
@@ -540,9 +599,9 @@ impl IsoWorld {
                             }
                             pz_characters::character::player::PlayerUpdateStep::TimedActions => {
                                 pz_lua_api::timed_actions::update(&mut lua.thread, &p);
-                                let IsoWorld { sprites, states_runtime, models, .. } = self;
+                                let IsoWorld { sprites, states_runtime, models, floor_world, .. } = self;
                                 if let Some(sprites) = sprites.as_mut() {
-                                    let result = with_states(sprites, states_runtime, models.as_mut(), sim, |w| {
+                                    let result = with_states(sprites, states_runtime, models.as_mut(), sim, floor_world.as_ref(), |w| {
                                         pz_lua_api::bind_states::with_state_registry(|_| {
                                             let chars = chars.borrow();
                                             let mut cx = StateCx::new(&sm, &chars, &player_sim, w);
@@ -595,28 +654,36 @@ impl IsoWorld {
             action_groups,
             zombies,
             models,
+            floor_world,
             ..
         } = self;
         let Some(sprites) = sprites.as_mut() else {
             return Ok(());
         };
-        let errors = with_states(sprites, states_runtime, models.as_mut(), sim, |w| {
-            pz_lua_api::bind_states::with_state_registry(|reg| {
-                let chars = chars.borrow();
-                let mut errors = Vec::new();
-                for z in zombies.iter_mut() {
-                    z.preupdate_zombie();
-                    fill_square_environment(z, w.cell);
-                    let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
-                    let result = z.update_zombie(reg, action_groups, &mut cx);
-                    cx.host_result()?;
-                    if let Err(e) = result {
-                        errors.push(format!("IsoZombie.update: {e}"));
+        let errors = with_states(
+            sprites,
+            states_runtime,
+            models.as_mut(),
+            sim,
+            floor_world.as_ref(),
+            |w| {
+                pz_lua_api::bind_states::with_state_registry(|reg| {
+                    let chars = chars.borrow();
+                    let mut errors = Vec::new();
+                    for z in zombies.iter_mut() {
+                        z.preupdate_zombie();
+                        fill_square_environment(z, w.cell);
+                        let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
+                        let result = z.update_zombie(reg, action_groups, &mut cx);
+                        cx.host_result()?;
+                        if let Err(e) = result {
+                            errors.push(format!("IsoZombie.update: {e}"));
+                        }
                     }
-                }
-                Ok::<_, pz_inventory::floor_drop::RuntimeHostError>(errors)
-            })
-        });
+                    Ok::<_, pz_inventory::floor_drop::RuntimeHostError>(errors)
+                })
+            },
+        );
         match errors {
             Some(Ok(errors)) => {
                 for e in errors {
@@ -644,26 +711,34 @@ impl IsoWorld {
             states_runtime,
             zombies,
             models,
+            floor_world,
             ..
         } = self;
         let Some(sprites) = sprites.as_mut() else {
             return Ok(());
         };
-        let result = with_states(sprites, states_runtime, models.as_mut(), sim, |w| {
-            let chars = chars.borrow();
-            for p in players.iter().flatten() {
-                pz_lua_api::bind_players::set_player_instance(Some(p.clone()));
-                let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
-                p.borrow_mut().postupdate_player(&mut cx);
-                cx.host_result()?;
-            }
-            for z in zombies.iter_mut() {
-                let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
-                z.postupdate_zombie(&mut cx);
-                cx.host_result()?;
-            }
-            Ok::<_, pz_inventory::floor_drop::RuntimeHostError>(())
-        });
+        let result = with_states(
+            sprites,
+            states_runtime,
+            models.as_mut(),
+            sim,
+            floor_world.as_ref(),
+            |w| {
+                let chars = chars.borrow();
+                for p in players.iter().flatten() {
+                    pz_lua_api::bind_players::set_player_instance(Some(p.clone()));
+                    let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
+                    p.borrow_mut().postupdate_player(&mut cx);
+                    cx.host_result()?;
+                }
+                for z in zombies.iter_mut() {
+                    let mut cx = StateCx::new(&sm, &chars, sim, &mut *w);
+                    z.postupdate_zombie(&mut cx);
+                    cx.host_result()?;
+                }
+                Ok::<_, pz_inventory::floor_drop::RuntimeHostError>(())
+            },
+        );
         if let Some(Err(error)) = result {
             return self.finish_state_host_fault(lua, None, sim, Vec::new(), error);
         }
@@ -784,6 +859,7 @@ impl IsoWorld {
                                 &mut self.states_runtime,
                                 Some(&mut models),
                                 sim,
+                                self.floor_world.as_ref(),
                                 |w| {
                                     let chars = chars.borrow();
                                     let mut cx = StateCx::new(&sm, &chars, sim, w);
@@ -821,6 +897,7 @@ impl IsoWorld {
                             &mut self.states_runtime,
                             Some(&mut models),
                             sim,
+                            self.floor_world.as_ref(),
                             |w| {
                                 let chars = chars.borrow();
                                 let mut cx = StateCx::new(&sm, &chars, sim, w);
@@ -879,6 +956,7 @@ impl IsoWorld {
             key_spawn_chance_d100,
             states_runtime,
             models,
+            floor_world,
             ..
         } = self;
         let (Some(pop), Some(streamer), Some(sprites)) =
@@ -918,6 +996,7 @@ impl IsoWorld {
                 movers,
                 models: RefCell::new(models.as_mut()),
                 animation_time_delta,
+                floor_world: floor_world.clone(),
             };
             let mut adapter = StatesWorldAdapter::new(
                 cell,
@@ -1035,7 +1114,7 @@ impl IsoWorld {
                 .map_err(|e| e.to_string())
                 .and_then(|j| pz_world::square_mutation::DoorTables::from_jar(&j))
             {
-                Ok(d) => self.door_tables = Some(d),
+                Ok(d) => self.door_tables = Some(Rc::new(d)),
                 Err(e) => {
                     self.log_update_error(format!("IsoDoor tables: {e}"));
                     return Ok(());
@@ -1070,8 +1149,9 @@ impl IsoWorld {
         let mut sprites = sprites.borrow_mut();
         let water = sprites.tables.flag.water;
         let mut no_regions = None;
-        let regions = match regions.as_mut() {
-            Some(r) => r,
+        let mut regions_guard = regions.as_ref().map(|r| r.borrow_mut());
+        let regions = match regions_guard.as_mut() {
+            Some(r) => &mut **r,
             None => no_regions.get_or_insert_with(|| IsoRegions::new(0)),
         };
         // The pathfinder hears of the changed squares once the fire update
@@ -1084,6 +1164,7 @@ impl IsoWorld {
             };
             let mut no_hooks = pz_world::square_mutation::NoMutationHooks;
             let mut no_render = pz_world::square_mutation::NoMutationHooks;
+            let mut render = render.borrow_mut();
             let mut inv = render.as_mut().map(|r| r.invalidation(water, num_players));
             let render: &mut dyn pz_world::square_mutation::RenderSquareHooks = match inv.as_mut() {
                 Some(i) => i,
@@ -1117,6 +1198,7 @@ impl IsoWorld {
             pf.apply(h, &sprites);
         }
         drop(sprites);
+        drop(regions_guard);
         if let Err(e) = &r {
             self.log_exception(e.clone());
         }
@@ -1529,6 +1611,14 @@ impl IsoWorld {
     /// `ZombiePopulationManager.stop`, the pathfinder, then
     /// `PlayerDB.close` and `VehiclesDB2.Reset` (`world_save::close_stores`).
     pub fn stop(&mut self) {
+        // Invalidate the installed provider before teardown can run actions;
+        // retained old service handles fail their distinct session token.
+        let retired_floor = pz_lua_api::bind_character_sim::reset_floor_world();
+        let old_engine_floor = self.floor_world.take();
+        self.floor_session = None;
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_payload(Box::new((retired_floor, old_engine_floor)));
+        pz_inventory::component_host::retire_components(retired);
         self.with_stream(|s, cell, ctx| s.stop(cell, ctx));
         self.hand_off_events();
         // TODO(port): `LightingThread.stop`, `AnimalPopulationManager.stop`,

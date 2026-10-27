@@ -42,11 +42,12 @@ pub struct Dropped {
 pub trait FloorWorld {
     /// `IsoGameCharacter.getSolidFloorAt(x, y, z)`: the first square from
     /// `z` down to 0 that exists and `TreatAsSolidFloor()`.
-    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<SquarePos>;
+    /// An unavailable/borrowed actual host is Err, not a missing floor.
+    fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<SquarePos>>;
     /// `getApparentZ(dx, dy)` of the square at `sq`.
-    fn apparent_z(&self, sq: SquarePos, dx: f32, dy: f32) -> f32;
+    fn apparent_z(&self, sq: SquarePos, dx: f32, dy: f32) -> HostResult<f32>;
     /// `Rand.Next(min, max)` (floats).
-    fn rand_float(&mut self, min: f32, max: f32) -> f32;
+    fn rand_float(&mut self, min: f32, max: f32) -> HostResult<f32>;
     /// `sq.AddWorldInventoryItem(item, x, y, height)` (the item has left
     /// its container already).
     fn add_world_inventory_item(
@@ -309,9 +310,9 @@ pub fn drop_on_floor(
     let mut retired = pz_entity::RetiredComponents::new();
     retired.push_owner(pz_entity::EntityOwner::from_ref(item));
     crate::component_host::retire_components(retired);
-    let x = world.rand_float(0.1, 0.9);
-    let y = world.rand_float(0.1, 0.9);
-    let z = world.apparent_z(sq, x, y) - sq.2 as f32;
+    let x = world.rand_float(0.1, 0.9)?;
+    let y = world.rand_float(0.1, 0.9)?;
+    let z = world.apparent_z(sq, x, y)? - sq.2 as f32;
     world.add_world_inventory_item(sq, item, x, y, z)?;
     Ok(Dropped {
         square: sq,
@@ -321,10 +322,13 @@ pub fn drop_on_floor(
     })
 }
 
-/// `getSolidFloorAt(sq.x, sq.y, sq.z)` of the current square (`None`
-/// without one, where the original throws for `setWornItem`).
-fn floor_under(chr: &dyn DropCharacter, world: &dyn FloorWorld) -> Option<SquarePos> {
-    let (x, y, z) = chr.current_square()?;
+/// `getSolidFloorAt(sq.x, sq.y, sq.z)` after the caller's own
+/// current-square gate. The forced worn-item branch checks its required
+/// receiver separately because native code dereferences a null square.
+fn floor_under(chr: &dyn DropCharacter, world: &dyn FloorWorld) -> HostResult<Option<SquarePos>> {
+    let Some((x, y, z)) = chr.current_square() else {
+        return Ok(None);
+    };
     world.solid_floor_at(x, y, z)
 }
 
@@ -347,7 +351,15 @@ pub fn force_drop_too_heavy(
     if !force_drop_too_heavy || !chr.is_player() || has_room_for(chr, item_cur) {
         return Ok(None);
     }
-    let Some(sq) = floor_under(chr, world) else {
+    if chr.current_square().is_none() {
+        // setWornItem(bool) PC125 dereferences the required square's x.
+        // Its JVM-generated NullPointerException diagnostic is not ported.
+        return Err(RuntimeHostError::Unsupported {
+            operation: "forceDropTooHeavy null current-square diagnostic",
+            kind: None,
+        });
+    }
+    let Some(sq) = floor_under(chr, world)? else {
         return Ok(None);
     };
     remove(chr, item_cur);
@@ -384,7 +396,7 @@ fn drop_hands(
     if item1.is_none() && item2.is_none() {
         return Ok(out);
     }
-    let Some(sq) = floor_under(chr, world) else {
+    let Some(sq) = floor_under(chr, world)? else {
         return Ok(out);
     };
     let drops = |i: &Option<ItemRef>| {

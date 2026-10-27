@@ -153,6 +153,7 @@ impl App {
             .is_some_and(|s| s.borrow().class_name() == "zombie.gameStates.IngameState");
         let (screen_w, screen_h) = self.screen_size();
         let Some(lua) = self.lua.as_mut() else {
+            crate::floor_world::retire_installed_floor_world();
             drop(collection_deferral);
             drain_retired_host_owners();
             return;
@@ -184,6 +185,7 @@ impl App {
             world.stop();
         }
         self.world = None;
+        crate::floor_world::retire_installed_floor_world();
         // A close during loading does not pass through IngameState.KillCell.
         // Retire the in-process host's current cell after its owners stop.
         pz_lua_api::bind_world::set_cell(None);

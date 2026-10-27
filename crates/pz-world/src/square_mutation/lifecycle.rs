@@ -158,6 +158,14 @@ fn call(env: &mut MutationEnv<'_>, r: &Receiver, c: WorldCall) {
     env.world
         .world_call(r.location, r.object.clone(), &mut *env.rand, c);
 }
+fn call_checked(
+    env: &mut MutationEnv<'_>,
+    r: &Receiver,
+    c: WorldCall,
+) -> pz_entity::runtime_load::HostResult<()> {
+    env.world
+        .try_world_call(r.location, r.object.clone(), &mut *env.rand, c)
+}
 fn with_obj<T>(_env: &MutationEnv<'_>, r: &Receiver, f: impl FnOnce(&IsoObject) -> T) -> Option<T> {
     Some(f(&r.object.borrow()))
 }
@@ -194,6 +202,9 @@ fn could_be_powered_by_generator(env: &mut MutationEnv<'_>, r: &Receiver) -> boo
 /// `IsoObject.addToWorld()`.
 fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) {
     call(env, r, WorldCall::RegisterEntity);
+    // GameEntity.addToWorld writes this after RegisterEntity even when the
+    // manager's empty-component branch performs no registration.
+    r.object.borrow_mut().added_to_world_or_equipped = true;
     {
         let sprites = &*env.sprites;
         let mut o = r.object.borrow_mut();
@@ -214,10 +225,14 @@ fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) {
     if could_be_powered_by_generator(env, r) {
         call(env, r, WorldCall::PoweredByGenerator { add: true });
     }
-    let Some(o) = with_obj(env, r, |o| o.clone()) else {
+    // These checks need only scalar sprite/class data. Cloning a whole live
+    // floor object here would archive-copy its retained item/component graph.
+    let Some((sprite, is_tree)) = with_obj(env, r, |o| {
+        (o.sprite, matches!(o.kind, ObjectKind::Tree(_)))
+    }) else {
         return;
     };
-    let spr = o.sprite.map(|s| &env.sprites.sprites[s]);
+    let spr = sprite.map(|s| &env.sprites.sprites[s]);
     let water_piped = env.sprites.tables.flag_from_string("waterPiped");
     let piped = spr
         .zip(water_piped)
@@ -229,15 +244,23 @@ fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) {
             && (s.tile_sheet_index == 0 || s.tile_sheet_index == 3)
     });
     let ambient = spr.is_some_and(|s| env.sprites.has_prop(s, "AmbientSound"));
-    let fridge_powered =
-        fridge_index(&o).is_some_and(|i| env.world.container_powered(r.location, &o, i));
+    let fridge_powered = {
+        let object = r.object.borrow();
+        fridge_index(&object).is_some_and(|i| env.world.container_powered(r.location, &object, i))
+    };
     let emitter = if fridge_powered {
         Some((AmbientEmitterKind::FridgeHum, true))
-    } else if piped && env.world.fluid_amount(r.location, &o) > 0.0 && env.rand.next(15) == 0 {
+    } else if piped
+        && {
+            let object = r.object.borrow();
+            env.world.fluid_amount(r.location, &object) > 0.0
+        }
+        && env.rand.next(15) == 0
+    {
         Some((AmbientEmitterKind::WaterDrip, false))
     } else if tent {
         Some((AmbientEmitterKind::TentAmbiance, false))
-    } else if matches!(o.kind, ObjectKind::Tree(_)) && env.rand.next(40) == 0 {
+    } else if is_tree && env.rand.next(40) == 0 {
         Some((AmbientEmitterKind::TreeAmbiance, false))
     } else {
         None
@@ -262,6 +285,14 @@ fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) {
 
 /// `obj.addToWorld()` for the object's class.
 fn add_to_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
+    // Class dispatch must not clone the floor payload and its actual item
+    // graph merely to select this branch.
+    if with_obj(env, r, |o| matches!(o.kind, ObjectKind::WorldInventory(_))).unwrap_or(false) {
+        call(env, r, WorldCall::ProcessWorldItems { add: true });
+        call(env, r, WorldCall::WorldItemContainer { add: true });
+        base_add(env, r);
+        return;
+    }
     let Some(kind) = kind_of(env, r) else {
         return;
     };
@@ -399,9 +430,17 @@ fn add_to_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
     }
 }
 
+/// Checked live base lifecycle. Unregister failure preserves the added flag.
+fn base_remove(env: &mut MutationEnv<'_>, r: &Receiver) -> pz_entity::runtime_load::HostResult<()> {
+    remove_world_item_base(env, r)
+}
+
+/// Legacy fire-manager data projection only. Its infallible trace capability
+/// cannot stand in for a checked Native registry host.
 /// `IsoObject.removeFromWorld()`.
-fn base_remove(env: &mut MutationEnv<'_>, r: &Receiver) {
+fn base_remove_data_projection(env: &mut MutationEnv<'_>, r: &Receiver) {
     call(env, r, WorldCall::UnregisterEntity);
+    r.object.borrow_mut().added_to_world_or_equipped = false;
     call(env, r, WorldCall::ProcessIsoObjectRemove);
     call(env, r, WorldCall::StaticUpdater { add: false });
     let n = with_obj(env, r, |o| o.container_count()).unwrap_or(0);
@@ -429,126 +468,154 @@ fn base_remove(env: &mut MutationEnv<'_>, r: &Receiver) {
 }
 
 /// `obj.removeFromWorld()` for the object's class.
-fn remove_from_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
-    let Some(kind) = kind_of(env, r) else {
-        return;
-    };
+fn remove_from_world_on(
+    env: &mut MutationEnv<'_>,
+    r: &Receiver,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let kind = r
+        .object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld class"))?
+        .kind
+        .clone();
     use ObjectKind as K;
     match kind {
         K::ButcherHook => {
-            call(env, r, WorldCall::ButcherHookAnimal);
-            call(env, r, WorldCall::StopEmitter);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::ButcherHookAnimal)?;
+            call_checked(env, r, WorldCall::StopEmitter)?;
+            base_remove(env, r)?;
         }
         K::Barbecue(_) => {
-            call(env, r, WorldCall::RemoveHeatSource);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::RemoveHeatSource)?;
+            base_remove(env, r)?;
         }
         K::CarBatteryCharger(_) => {
-            call(env, r, WorldCall::StopChargingSound);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::StopChargingSound)?;
+            base_remove(env, r)?;
         }
         K::Door(_) => {
-            base_remove(env, r);
-            call(env, r, WorldCall::DancingDoor { add: false });
+            base_remove(env, r)?;
+            call_checked(env, r, WorldCall::DancingDoor { add: false })?;
         }
         K::FeedingTrough(_) => {
-            call(env, r, WorldCall::FeedingTroughZoneRemove);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::FeedingTroughZoneRemove)?;
+            base_remove(env, r)?;
         }
         K::Fire(f) => {
             if !f.perm {
-                call(env, r, WorldCall::FireManager { add: false });
+                call_checked(env, r, WorldCall::FireManager { add: false })?;
             }
-            call(env, r, WorldCall::FireStopSound);
-            call(env, r, WorldCall::RemoveObjectLamppost);
-            call(env, r, WorldCall::RemoveHeatSource);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::FireStopSound)?;
+            call_checked(env, r, WorldCall::RemoveObjectLamppost)?;
+            call_checked(env, r, WorldCall::RemoveHeatSource)?;
+            base_remove(env, r)?;
         }
         K::Fireplace(_) => {
-            call(env, r, WorldCall::RemoveObjectLamppost);
-            call(env, r, WorldCall::RemoveHeatSource);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::RemoveObjectLamppost)?;
+            call_checked(env, r, WorldCall::RemoveHeatSource)?;
+            base_remove(env, r)?;
         }
         K::Generator(_) => {
-            call(env, r, WorldCall::Generators { add: false });
-            call(env, r, WorldCall::StopEmitter);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::Generators { add: false })?;
+            call_checked(env, r, WorldCall::StopEmitter)?;
+            base_remove(env, r)?;
         }
         K::Hutch(_) => {
-            base_remove(env, r);
-            call(env, r, WorldCall::HutchManager { add: false });
+            base_remove(env, r)?;
+            call_checked(env, r, WorldCall::HutchManager { add: false })?;
         }
         K::LightSwitch(_) => {
-            let (light_room, lights) = with_obj(env, r, |o| match &o.kind {
-                ObjectKind::LightSwitch(s) => (s.light_room, s.lights.len()),
-                _ => (true, 0),
-            })
-            .unwrap_or((true, 0));
+            let (light_room, lights) = {
+                let body = r
+                    .object
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld light switch"))?;
+                match &body.kind {
+                    ObjectKind::LightSwitch(s) => (s.light_room, s.lights.len()),
+                    _ => {
+                        return Err(RuntimeHostError::InvalidHostState(
+                            "light switch class changed",
+                        ))
+                    }
+                }
+            };
             if !light_room && lights > 0 {
                 for i in 0..lights {
-                    if let Some(mut o) = obj_mut(env, r) {
+                    {
+                        let mut o = r.object.try_borrow_mut().map_err(|_| {
+                            RuntimeHostError::Borrowed("removeFromWorld light switch")
+                        })?;
                         let ObjectKind::LightSwitch(s) = &mut o.kind else {
-                            unreachable!()
+                            return Err(RuntimeHostError::InvalidHostState(
+                                "light switch class changed",
+                            ));
                         };
                         s.lights[i].active = false;
                     }
-                    call(
+                    call_checked(
                         env,
                         r,
                         WorldCall::SwitchLamppost {
                             light: i,
                             add: false,
                         },
-                    );
+                    )?;
                 }
-                if let Some(mut o) = obj_mut(env, r) {
+                {
+                    let mut o = r
+                        .object
+                        .try_borrow_mut()
+                        .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld light switch"))?;
                     let ObjectKind::LightSwitch(s) = &mut o.kind else {
-                        unreachable!()
+                        return Err(RuntimeHostError::InvalidHostState(
+                            "light switch class changed",
+                        ));
                     };
                     s.lights.clear();
                 }
             }
             if light_room {
-                call(env, r, WorldCall::RoomLightSwitchRemove);
+                call_checked(env, r, WorldCall::RoomLightSwitchRemove)?;
             }
-            call(env, r, WorldCall::ClearOnOverlay);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::ClearOnOverlay)?;
+            base_remove(env, r)?;
         }
         K::Mannequin(_) => {
-            base_remove(env, r);
-            call(env, r, WorldCall::MannequinListRemove);
+            base_remove(env, r)?;
+            call_checked(env, r, WorldCall::MannequinListRemove)?;
         }
         K::Thumpable(_) => {
-            call(env, r, WorldCall::RemoveObjectLamppost);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::RemoveObjectLamppost)?;
+            base_remove(env, r)?;
         }
         K::Trap(_) => {
-            call(env, r, WorldCall::StopEmitter);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::StopEmitter)?;
+            base_remove(env, r)?;
         }
         K::Radio(_) | K::Television(_) => {
-            call(env, r, WorldCall::RadioDevice { add: false });
-            call(env, r, WorldCall::LightSource { add: false });
-            call(env, r, WorldCall::RadioCleanSounds);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::RadioDevice { add: false })?;
+            call_checked(env, r, WorldCall::LightSource { add: false })?;
+            call_checked(env, r, WorldCall::RadioCleanSounds)?;
+            base_remove(env, r)?;
         }
         K::Window(_) => {
-            base_remove(env, r);
-            call(env, r, WorldCall::WindowList { add: false });
+            base_remove(env, r)?;
+            call_checked(env, r, WorldCall::WindowList { add: false })?;
         }
         K::WorldInventory(_) => {
-            call(env, r, WorldCall::ProcessWorldItems { add: false });
-            call(env, r, WorldCall::WorldItemRemoved);
-            call(env, r, WorldCall::WorldItemContainer { add: false });
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::ProcessWorldItems { add: false })?;
+            call_checked(env, r, WorldCall::WorldItemRemoved)?;
+            call_checked(env, r, WorldCall::WorldItemContainer { add: false })?;
+            base_remove(env, r)?;
         }
         K::Pushable(_) => {
-            call(env, r, WorldCall::MovingObjectRemove);
-            base_remove(env, r);
+            call_checked(env, r, WorldCall::MovingObjectRemove)?;
+            base_remove(env, r)?;
         }
-        _ => base_remove(env, r),
+        _ => base_remove(env, r)?,
     }
+    Ok(())
 }
 
 pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
@@ -584,9 +651,9 @@ pub(super) fn remove_from_world_handle(
             location: r,
             object: object.clone(),
         };
-        call(env, &receiver, WorldCall::ProcessWorldItems { add: false });
-        call(env, &receiver, WorldCall::WorldItemRemoved);
-        call(env, &receiver, WorldCall::WorldItemContainer { add: false });
+        call_checked(env, &receiver, WorldCall::ProcessWorldItems { add: false })?;
+        call_checked(env, &receiver, WorldCall::WorldItemRemoved)?;
+        call_checked(env, &receiver, WorldCall::WorldItemContainer { add: false })?;
         return remove_world_item_base(env, &receiver);
     }
     remove_from_world_on(
@@ -595,8 +662,7 @@ pub(super) fn remove_from_world_handle(
             location: r,
             object: object.clone(),
         },
-    );
-    Ok(())
+    )
 }
 
 fn remove_world_item_base(
@@ -604,30 +670,36 @@ fn remove_world_item_base(
     r: &Receiver,
 ) -> pz_entity::runtime_load::HostResult<()> {
     use pz_entity::runtime_load::RuntimeHostError;
-    call(env, r, WorldCall::UnregisterEntity);
-    call(env, r, WorldCall::ProcessIsoObjectRemove);
-    call(env, r, WorldCall::StaticUpdater { add: false });
+    call_checked(env, r, WorldCall::UnregisterEntity)?;
+    // GameEntity.removeFromWorld: UnregisterEntity PC13, then flag PC18.
+    // Do not clear before a failed unregister or execute a later system phase.
+    r.object
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld added flag"))?
+        .added_to_world_or_equipped = false;
+    call_checked(env, r, WorldCall::ProcessIsoObjectRemove)?;
+    call_checked(env, r, WorldCall::StaticUpdater { add: false })?;
     let count = r
         .object
         .try_borrow()
         .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld containers"))?
         .container_count();
     for container in 0..count {
-        call(
+        call_checked(
             env,
             r,
             WorldCall::ProcessItems {
                 container,
                 add: false,
             },
-        );
+        )?;
     }
-    call(env, r, WorldCall::StopEmitter);
-    call(env, r, WorldCall::RemoveAmbientEmitters);
-    call(env, r, WorldCall::LightSource { add: false });
-    call(env, r, WorldCall::ClearOnOverlay);
+    call_checked(env, r, WorldCall::StopEmitter)?;
+    call_checked(env, r, WorldCall::RemoveAmbientEmitters)?;
+    call_checked(env, r, WorldCall::LightSource { add: false })?;
+    call_checked(env, r, WorldCall::ClearOnOverlay)?;
     if env.render.fbo_render_chunk() {
-        call(env, r, WorldCall::UnregisterHighlight);
+        call_checked(env, r, WorldCall::UnregisterHighlight)?;
     }
     let powered = {
         let body = r
@@ -637,9 +709,9 @@ fn remove_world_item_base(
         env.world.piped_fuel_amount(r.location, &body) > 0 || fridge_index(&body).is_some()
     };
     if powered {
-        call(env, r, WorldCall::PoweredByGenerator { add: false });
+        call_checked(env, r, WorldCall::PoweredByGenerator { add: false })?;
     }
-    call(env, r, WorldCall::FlagForHotSave);
+    call_checked(env, r, WorldCall::FlagForHotSave)?;
     Ok(())
 }
 
@@ -742,8 +814,12 @@ impl MutationEnv<'_> {
     pub(crate) fn world_call_on(&mut self, r: ObjectRef, obj: &IsoObjectRef, c: WorldCall) {
         self.world.world_call(r, obj.clone(), &mut *self.rand, c);
     }
-    pub(crate) fn base_remove_from_world_detached(&mut self, r: ObjectRef, obj: &IsoObjectRef) {
-        base_remove(
+    pub(crate) fn base_remove_from_world_detached_data_projection(
+        &mut self,
+        r: ObjectRef,
+        obj: &IsoObjectRef,
+    ) {
+        base_remove_data_projection(
             self,
             &Receiver {
                 location: r,

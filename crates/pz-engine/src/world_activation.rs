@@ -63,6 +63,7 @@ impl IsoWorld {
                                 return Err("object activation requires sprites, regions and native door tables".into());
                             };
                             {
+                                let mut regions = regions.borrow_mut();
                                 let mut sprites = sprites.borrow_mut();
                                 let activated = with_world(|w| {
                                     if let (Some(cell), Some(meta)) =
@@ -74,7 +75,7 @@ impl IsoWorld {
                                             cell,
                                             meta,
                                             sprites: &mut sprites,
-                                            regions,
+                                            regions: &mut regions,
                                             rand: &mut self.rand,
                                             doors,
                                             world: &mut calls,

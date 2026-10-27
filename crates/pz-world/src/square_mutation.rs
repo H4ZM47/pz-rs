@@ -59,7 +59,8 @@ mod lifecycle;
 mod world_item;
 pub use lifecycle::{AmbientEmitterKind, WorldCall};
 pub use world_item::{
-    render_square, FloorDropEnv, WorldItemPlaced, WorldItemPlacementError, WORLD_ITEM_ADDED,
+    render_square, FloorDropEnv, NativeFloorPlacement, NativeFloorRender, WorldItemPlaced,
+    WorldItemPlacementError, WORLD_ITEM_ADDED,
 };
 
 #[cfg(test)]
@@ -130,6 +131,22 @@ pub trait RenderSquareHooks {
     /// `(wx, wy)` (it does nothing unless `fboRenderChunk`, and on a
     /// server).
     fn invalidate_render_chunk_level(&mut self, _wx: i32, _wy: i32, _level: i32, _flags: u64) {}
+
+    /// Checked Native renderer entry. Missing PC20 invalidation capability
+    /// cannot become a successful legacy trace. Data projections explicitly
+    /// use the separate infallible method above.
+    fn try_invalidate_render_chunk_level(
+        &mut self,
+        _wx: i32,
+        _wy: i32,
+        _level: i32,
+        _flags: u64,
+    ) -> HostResult<()> {
+        Err(RuntimeHostError::Unsupported {
+            operation: "native floor render invalidation",
+            kind: None,
+        })
+    }
 
     /// `IsoChunk.invalidateVispolyChunkLevel(level)`.
     fn invalidate_vispoly_chunk_level(&mut self, _wx: i32, _wy: i32, _level: i32) {}
@@ -211,6 +228,21 @@ pub trait SquareMutationHooks {
         _rand: &mut dyn GameRand,
         _call: WorldCall,
     ) {
+    }
+
+    /// Checked live lifecycle entry. An absent host capability is not a
+    /// successful legacy trace; explicit data profiles must opt in separately.
+    fn try_world_call(
+        &mut self,
+        _obj: ObjectRef,
+        _object: IsoObjectRef,
+        _rand: &mut dyn GameRand,
+        _call: WorldCall,
+    ) -> HostResult<()> {
+        Err(RuntimeHostError::Unsupported {
+            operation: "native world lifecycle hook",
+            kind: None,
+        })
     }
 
     /// `ItemContainer.isPowered()` of `obj`'s container `container`
@@ -322,6 +354,22 @@ pub struct NoMutationHooks;
 impl PathfindSquareHooks for NoMutationHooks {}
 impl RenderSquareHooks for NoMutationHooks {}
 impl SquareMutationHooks for NoMutationHooks {}
+
+/// Explicit archive/geometry fixture profile. This records no Native system
+/// effects; use only when projecting object/list data, never as a live host.
+pub struct DataProjectionMutationHooks;
+impl SquareMutationHooks for DataProjectionMutationHooks {
+    fn try_world_call(
+        &mut self,
+        obj: ObjectRef,
+        object: IsoObjectRef,
+        rand: &mut dyn GameRand,
+        call: WorldCall,
+    ) -> HostResult<()> {
+        self.world_call(obj, object, rand, call);
+        Ok(())
+    }
+}
 
 /// `IsoDoor`'s double-door offset tables (`DoubleDoorNorthClosedXOffset`
 /// and the seven others), read from the installed game.

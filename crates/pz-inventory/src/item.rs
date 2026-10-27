@@ -241,6 +241,9 @@ pub struct FoodData {
     pub chef: Option<String>,
     pub off_age: i32,
     pub off_age_max: i32,
+    /// Actual mutable Food.replaceOnRotten, copied by InstanceItem PC813.
+    /// Food.save/load omit it; load preserves the receiver's current value.
+    pub replace_on_rotten: Option<String>,
     pub pain_reduction: f32,
     pub flu_reduction: i32,
     pub food_sickness_change: i32,
@@ -455,6 +458,12 @@ pub struct InventoryItem {
     pub color_blue: f32,
     pub worker: Option<String>,
     pub wet_cooldown: f32,
+    /// Base InventoryItem.itemHeat, initially 1 and preserved by item load.
+    /// Distinct from both Food.heat and DrainableComboItem.heat.
+    pub item_heat: f32,
+    /// Actual DrainableComboItem.heat; absent for every other native class.
+    /// Constructors initialize 1; inherited item save/load omit this field.
+    pub drainable_heat: Option<f32>,
     pub favorite: bool,
     pub stash_map: Option<String>,
     pub zombie_infected: bool,
@@ -597,6 +606,8 @@ impl InventoryItem {
             worker: None,
             // `item.setWetCooldown(this.wetCooldown)`.
             wet_cooldown: t.wet_cooldown,
+            item_heat: 1.0,
+            drainable_heat: (t.class == ItemClass::Drainable).then_some(1.0),
             favorite: false,
             stash_map: None,
             zombie_infected: false,
@@ -1471,6 +1482,7 @@ impl FoodData {
             chef: None,
             off_age: t.days_fresh,
             off_age_max: t.days_totally_rotten,
+            replace_on_rotten: t.replace_on_rotten.clone(),
             pain_reduction: 0.0,
             flu_reduction: 0,
             food_sickness_change: 0,

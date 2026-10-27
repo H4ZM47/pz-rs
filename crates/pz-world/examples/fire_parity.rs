@@ -27,7 +27,7 @@ use pz_world::fire::{FireFrame, FireHooks, FireMutation, FireSettings, FireWorld
 use pz_world::isoregion::IsoRegions;
 use pz_world::save::chunk_file::{chunk_path, load_chunk};
 use pz_world::save::{NoSaveHooks, SaveCtx, SaveSettings, SaveTables};
-use pz_world::square_mutation::{DoorTables, NoMutationHooks};
+use pz_world::square_mutation::{DataProjectionMutationHooks, DoorTables, NoMutationHooks};
 use pz_world::{GameRand, IsoCell, IsoMetaGrid, IsoSpriteManager, SpriteTables};
 
 /// `java.util.Random`, counting generator steps.
@@ -295,7 +295,11 @@ fn main() {
     writeln!(out, "{}", java.lines().next().unwrap()).unwrap();
     let doors = DoorTables::from_jar(&jar).unwrap();
     let mut regions = IsoRegions::new(13);
-    let (mut mw, mut mp, mut mr) = (NoMutationHooks, NoMutationHooks, NoMutationHooks);
+    let (mut mw, mut mp, mut mr) = (
+        DataProjectionMutationHooks,
+        NoMutationHooks,
+        NoMutationHooks,
+    );
     let mut w = FireWorld {
         cell: &mut cell,
         meta: &meta,
