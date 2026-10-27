@@ -6,12 +6,34 @@ parity requires separate verification. Current continuation is on
 `codex/gameplay-continuation`, based on Claude's `ws/integration` and
 `ws/ingame-loop`; the older `main` checkout is not the current engine.
 
-The current pool/statistics continuation has independent review of its 14 source
+The current list-foundation/read-state continuation passes workspace all-target
+compilation, 2,105 affected tests (zero failed, nine ignored across 36 summaries
+in 18 packages), and the native client build. All 1,423 recorded Rust/Cargo
+inputs stay unchanged; all 33 new tests execute. Its 16 source paths have
+independent review. Raw ArrayList storage has a separate fixed backing array,
+two permanent empty-array roots, exact mutation counts and ordinary iterator
+state. Searches retain the captured array across comparison callbacks and keep
+the original callback error. EMPTY is published before DEFAULT allocation,
+preserving that first static owner on failure. Physical collection and deferred
+retirement use the VM's shared safe boundary.
+
+This raw foundation is not yet wired to Script/Literature/Character recipe-list
+fields or a public actual-list Lua backend. Existing legacy lists remain a
+separate representation. Native seen/heard methods now support their actual
+negative-index and category exits; selected positive media work stops at its
+missing actual radio service. Map checks use immutable class metadata for null
+and nonMap exits, support the current nonnull stash field (including empty),
+and query the actual character read set afterward. Missing nullable MapID and
+positive loaded-media producers remain explicit gaps. These source checks have
+no new committed platform or installed runtime result yet.
+
+The preceding pool/statistics continuation has independent review of its 14 source
 paths and passes workspace all-target compilation, 2,072 affected tests (zero
 failed, nine ignored across 36 summaries) and the native client build. The 18
 tested packages include core; all 16 new tests execute. All 1,412 recorded
-Rust/Cargo inputs stay unchanged through those checks. This source still needs
-its own committed platform/runtime results.
+Rust/Cargo inputs stay unchanged through those checks. Committed `90370298`
+passes all four native builds/full suites and 24 actual GPU readbacks; its own
+installed runtime result remains pending.
 It gives ObjectPoolCounter and PoolStatistic their permanent class-static owners,
 including the signed counter, actual counter map and two distinct Lua tables.
 The counter captures the same pool retained by ObjectPool's set. Construction

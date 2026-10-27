@@ -24,6 +24,7 @@
 
 mod native_item_code_on_create;
 mod reading;
+pub(crate) mod row_read_flags;
 
 use crate::bind_java_util::JavaList;
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg};
@@ -1768,6 +1769,7 @@ pub fn register(thread: &mut Thread) {
     register_container(thread);
     register_weapon_part(thread);
     reading::register(thread);
+    row_read_flags::register(thread);
     for c in [
         "zombie.inventory.types.ComboItem",
         "zombie.inventory.types.AnimalInventoryItem",

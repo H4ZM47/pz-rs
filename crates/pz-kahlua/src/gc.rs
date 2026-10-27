@@ -78,7 +78,7 @@ pub fn retire_table_values(values: RetiredTableValues) {
     }
 }
 
-struct RetirementDrain;
+pub(crate) struct RetirementDrain;
 impl Drop for RetirementDrain {
     fn drop(&mut self) {
         let _ = RETIREMENT_DRAIN_ACTIVE.try_with(|active| active.set(false));
@@ -89,7 +89,7 @@ impl Drop for RetirementDrain {
 /// have ended. Destructors may register objects or enqueue later retirements;
 /// no queue or collector borrow spans their execution. Dropping a collection
 /// deferral never calls this function implicitly.
-pub fn drain_retired_table_values() -> usize {
+pub(crate) fn try_enter_retirement_drain() -> Option<RetirementDrain> {
     if COLLECTION_DEFERRALS
         .try_with(|depth| depth.get() != 0)
         .unwrap_or(true)
@@ -100,9 +100,13 @@ pub fn drain_retired_table_values() -> usize {
             .try_with(|active| active.replace(true))
             .unwrap_or(true)
     {
-        return 0;
+        return None;
     }
-    let _drain = RetirementDrain;
+    Some(RetirementDrain)
+}
+
+pub fn drain_retired_table_values() -> usize {
+    let Some(_drain) = try_enter_retirement_drain() else { return 0; };
     let retired = RETIRED_TABLE_VALUES.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
     let count = retired.iter().map(RetiredTableValues::len).sum();
     drop(retired);
@@ -240,6 +244,7 @@ pub enum CollectionResult {
 /// other handles held by the caller remain ordinary strong roots.
 pub fn collect_pending() -> CollectionResult {
     drain_retired_table_values();
+    crate::native_list::drain_retired();
     if COLLECTOR
         .try_with(|collector| collector.borrow().pending)
         .unwrap_or(false)
@@ -302,6 +307,8 @@ pub fn collect_tables() -> CollectionResult {
 
 #[cfg(test)]
 mod deferral_tests;
+#[cfg(test)]
+mod native_list_tests;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum NodeId {

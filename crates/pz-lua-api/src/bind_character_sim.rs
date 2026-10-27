@@ -79,6 +79,7 @@ mod grapple_tests;
 mod key_ring;
 pub(crate) mod known_poison;
 mod reading;
+pub(crate) mod read_flags;
 #[cfg(test)]
 mod running_tests;
 #[cfg(test)]
@@ -1750,6 +1751,7 @@ fn register_character(
     }
     known_poison::register(&b, sm, chars);
     reading::register(&b);
+    read_flags::register(&b);
     b.method("createKeyRing", key_ring::create_key_ring);
     b.method("getModData", |c| {
         let table = chr_of(c)?.borrow_mut().get_mod_data();

@@ -27,6 +27,7 @@ pub mod java;
 pub mod key_namer;
 pub mod light;
 pub mod literature;
+pub mod row_read_flags;
 pub mod lua_table;
 pub mod moddata;
 pub mod model;
