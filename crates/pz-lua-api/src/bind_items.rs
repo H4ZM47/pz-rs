@@ -22,6 +22,8 @@
 //! objects whose `tostring` is the id). `getVisual`, `getClothingItem`
 //! and `canBeEquipped` live in [`crate::bind_item_visual`].
 
+mod native_item_code_on_create;
+
 use crate::bind_java_util::JavaList;
 use crate::expose::{bool_arg, enum_value, expose_class, expose_enum, int_arg, num_arg, str_arg};
 use pz_inventory::api::Offline;
@@ -1728,6 +1730,7 @@ pub fn register(thread: &mut Thread) {
                 .unwrap_or_default(),
         ))
     });
+    native_item_code_on_create::register(thread);
 }
 
 #[cfg(test)]

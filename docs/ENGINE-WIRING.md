@@ -60,6 +60,16 @@ alone does not establish that boundary. Generic VM stack/upvalue teardown,
 legacy direct TableRef methods, reloadReplace, native reference-literal branches
 and the complete Java ItemCodeOnCreate class remain separate work.
 
+The genuine ItemCodeOnCreate class now exposes onCreateRecipeMagazine for
+actual Literature receivers: get the actual ModData table, read full type,
+then rawset literatureTitle, retaining unrelated entries and returning no
+values. This implements one of 58 public callbacks. The other 57 callbacks,
+constructor/private helpers, successful resolver cache and native factory
+callback ordering still need work. Supported argument conversion order and
+messages follow the installed invoker; unavailable reflected-null diagnostics
+and concrete Java implementation-class diagnostics fail explicitly as host
+capabilities. Native validation print/breakpoint/history effects remain open.
+
 Returning to the menu rebuilds script/Lua/UI owners before menu entry;
 native shutdown skips that rebuild. A failed rebuild stops the client
 instead of entering a menu with mixed owners. Character `getModData`
