@@ -1224,17 +1224,17 @@ impl IsoWorld {
             let Some(tables) = self.save_tables.as_ref() else {
                 return Err("SaveTables".into());
             };
-            let items: &dyn pz_inventory::env::ItemEnv = match self.items.as_ref() {
-                Some(i) => i,
-                None => &AllItems,
-            };
+            // Actual receiver entry requires the production factory/assets environment.
+            // AllItems is an archive fixture and would falsely turn every record into null.
+            let items: &dyn pz_inventory::env::ItemEnv = self.items.as_ref()
+                .ok_or("pz.host.Unsupported: actual player item factory environment")?;
             let env = SaveEnv { items, tables };
             let mut on_fire = false;
             let mut r = pz_inventory::io::Reader::new(&data.bytes);
-            let mut c = chr.borrow_mut();
-            let res = c.load_player(
+            let res = pz_characters::character::save::load_player_ref(
+                &chr,
                 &sm,
-                &mut chars.borrow_mut(),
+                &chars,
                 &ctx,
                 &env,
                 &mut r,
@@ -1242,6 +1242,7 @@ impl IsoWorld {
                 &mut |_| on_fire = true,
             );
             if res.is_ok() && data.is_dead {
+                let mut c = chr.borrow_mut();
                 c.body_damage.overall_body_health = 0.0;
                 c.set_health(&ctx, 0.0);
             }
@@ -1250,7 +1251,6 @@ impl IsoWorld {
             if res.is_ok() {
                 self.player_sql_ids[0] = data.sql_id;
             }
-            drop(c);
             if on_fire {
                 // TODO(port): `SetOnFire()` (`pz_world::fire::character::set_on_fire`
                 // needs the world's `IsoFireManager`).
@@ -1272,6 +1272,7 @@ impl IsoWorld {
                 );
             }
             Err(e) => {
+                if e.is_host_fault() { return Err(format!("PlayerDB.loadPlayer host failure: {e}")); }
                 self.log_error(format!("PlayerDB.loadPlayer: IsoPlayer.load: {e:?}"));
                 return Ok(());
             }

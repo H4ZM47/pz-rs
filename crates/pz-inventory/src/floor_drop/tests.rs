@@ -293,7 +293,7 @@ fn capacity_and_rounding() {
     };
     assert_eq!(get_capacity(&c), 100);
     let bag = item(ItemClass::Container, "Bag", 0.5, 1);
-    c.containing_item = Some(Rc::downgrade(&bag));
+    c.containing_item = Some(bag.clone());
     assert_eq!(get_capacity(&c), 50);
 }
 
@@ -1026,4 +1026,97 @@ fn forced_drop_null_current_square_is_an_explicit_diagnostic_boundary_before_que
     assert!(chr.log.is_empty());
     assert_eq!(queries.inner.draws.len(), 6);
     assert!(queries.inner.added.is_empty());
+}
+
+
+#[test]
+fn force_remove_hand_only_temporary_retires_before_held_inventory_error() {
+    struct Probe(Rc<RefCell<()>>, Rc<std::cell::Cell<usize>>);
+    impl pz_kahlua::value::LuaObject for Probe {
+        fn class_name(&self) -> &str {
+            "test.HandOnlyRemoveOwner"
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            assert!(
+                self.0.try_borrow_mut().is_ok(),
+                "final drop under foreign host guard"
+            );
+            self.1.set(self.1.get() + 1);
+        }
+    }
+    crate::component_host::drain_retired_components();
+    let foreign = Rc::new(RefCell::new(()));
+    let drops = Rc::new(std::cell::Cell::new(0));
+    let held_item = item(ItemClass::Normal, "HandOnly", 1.0, 1);
+    crate::moddata::set_mod_data_value_ref(
+        &held_item,
+        "probe",
+        Some(pz_kahlua::Value::Object(Rc::new(Probe(
+            foreign.clone(),
+            drops.clone(),
+        )))),
+    )
+    .unwrap();
+    let weak = Rc::downgrade(&held_item);
+    let mut chr = Chr::new(&[]);
+    chr.primary = Some(held_item.clone());
+    drop(held_item);
+    crate::component_host::drain_retired_components();
+    let inventory = chr.inv.clone();
+    {
+        let _foreign = foreign.borrow_mut();
+        let body = inventory.borrow_mut();
+        assert_eq!(
+            try_remove(&mut chr, &weak.upgrade().unwrap()),
+            Err(RuntimeHostError::Borrowed("character Remove inventory"))
+        );
+        assert!(chr.primary.is_none());
+        assert!(body.items.is_empty());
+        assert_eq!(chr.log, ["primary=null"]);
+        assert!(weak.upgrade().is_some());
+        assert_eq!(drops.get(), 0);
+    }
+    crate::component_host::drain_retired_components();
+    assert!(weak.upgrade().is_none());
+    assert_eq!(drops.get(), 1);
+}
+
+#[test]
+fn native_remove_clears_membership_before_item_field_and_only_then_publishes_dirty_flags() {
+    let container=shared::SharedContainer::new(1,"remove-prefix").into_ref();
+    let value=item(ItemClass::Normal,"RemovePrefix",1.0,1);
+    shared::try_add_item(&container,&value).unwrap();
+    {let mut body=container.borrow_mut();body.dirty=false;body.draw_dirty=false;}
+    let held=value.borrow_mut();
+    assert_eq!(shared::try_remove_item(&container,&value),Err(RuntimeHostError::Borrowed("item container setter")));
+    {let body=container.borrow();assert!(body.items.is_empty());assert!(!body.dirty&&!body.draw_dirty);}
+    assert!(Rc::ptr_eq(held.container_slot().unwrap(),&container));
+    drop(held);
+    shared::try_set_container(&value,None).unwrap();
+    shared::try_add_item(&container,&value).unwrap();
+    assert!(shared::try_remove_item(&container,&value).unwrap());
+    assert!(shared::try_container_of(&value).unwrap().is_none());
+    assert!(container.borrow().dirty&&container.borrow().draw_dirty);
+    crate::component_host::drain_retired_components();
+}
+
+#[test]
+fn native_do_remove_dirty_depends_on_actual_parent_but_draw_dirty_always_precedes_field_clear() {
+    for parent in [false,true] {
+        let container=shared::SharedContainer::new(1,"do-remove-prefix").into_ref();
+        let value=item(ItemClass::Normal,"DoRemovePrefix",1.0,1);
+        shared::try_add_item(&container,&value).unwrap();
+        {let mut body=container.borrow_mut();body.dirty=false;body.draw_dirty=false;if parent {body.parent=Some(Rc::new(()));}}
+        let held=value.borrow_mut();
+        assert_eq!(try_do_remove_item(&container,&value),Err(RuntimeHostError::Borrowed("item container setter")));
+        {let body=container.borrow();assert!(body.items.is_empty());assert!(body.draw_dirty);assert_eq!(body.dirty,parent);}
+        assert!(Rc::ptr_eq(held.container_slot().unwrap(),&container));
+        drop(held);shared::try_set_container(&value,None).unwrap();
+        crate::component_host::drain_retired_components();
+    }
 }

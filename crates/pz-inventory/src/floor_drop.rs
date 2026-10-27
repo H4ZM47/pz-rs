@@ -328,29 +328,52 @@ fn on_before_remove_from_container(_item: &ItemRef) {}
 /// `getInventory().Remove(item)`: the item leaves the character's hands
 /// and the inventory. Returns whether it was there.
 pub fn remove(chr: &mut dyn DropCharacter, item: &ItemRef) -> bool {
+    try_remove(chr, item).expect("legacy unborrowed character Remove")
+}
+pub fn try_remove(chr: &mut dyn DropCharacter, item: &ItemRef) -> HostResult<bool> {
+    shared::pin_owner(item);
     chr.remove_from_hands(item);
     let inv = chr.inventory();
-    if inv.borrow().index_of(item).is_none() {
-        return false;
+    shared::pin_owner(&inv);
+    let present = inv
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("character Remove inventory"))?
+        .index_of(item)
+        .is_some();
+    if !present {
+        return Ok(false);
     }
     on_before_remove_from_container(item);
-    shared::remove_item(&inv, item)
+    shared::try_remove_item(&inv, item)
 }
 
-/// `ItemContainer.DoRemoveItem(item)` of a container with a parent:
-/// `drawDirty` and `dirty` are set and the item, when there, leaves it.
-pub fn do_remove_item(c: &ContainerRef, item: &ItemRef) {
+/// Draw/dirty flags precede removal and the final direct item-container field
+/// assignment. Typed host faults stop the action at the completed prefix.
+pub fn try_do_remove_item(c: &ContainerRef, item: &ItemRef) -> HostResult<()> {
+    shared::pin_owner(c);
+    shared::pin_owner(item);
     {
-        let mut s = c.borrow_mut();
-        s.draw_dirty = true;
-        s.dirty = true;
+        let mut body = c
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("DoRemoveItem flags"))?;
+        body.draw_dirty = true;
+        if body.parent.is_some() { body.dirty = true; }
     }
+    shared::observe_container(c);
     on_before_remove_from_container(item);
-    let i = c.borrow().index_of(item);
-    if let Some(i) = i {
-        c.borrow_mut().items.remove(i);
+    {
+        let mut body = c
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("DoRemoveItem list"))?;
+        if let Some(index) = body.index_of(item) {
+            shared::pin_owner(&body.items.remove(index));
+        }
     }
-    shared::set_container(item, None);
+    shared::observe_container(c);
+    shared::try_set_container(item, None)
+}
+pub fn do_remove_item(c: &ContainerRef, item: &ItemRef) {
+    try_do_remove_item(c, item).expect("legacy unborrowed DoRemoveItem");
 }
 
 /// The drop the four call sites share: `Rand.Next(0.1f, 0.9f)` for x
@@ -430,7 +453,7 @@ pub fn force_drop_too_heavy(
     let Some(sq) = floor_under(chr, world)? else {
         return Ok(None);
     };
-    remove(chr, item_cur);
+    try_remove(chr, item_cur)?;
     drop_on_floor(world, &sq, item_cur).map(Some)
 }
 
@@ -441,7 +464,7 @@ fn drop_hand(
     sq: &FloorSquare,
     item: &ItemRef,
 ) -> HostResult<Dropped> {
-    do_remove_item(&chr.inventory(), item);
+    try_do_remove_item(&chr.inventory(), item)?;
     let d = drop_on_floor(world, sq, item)?;
     chr.on_container_update();
     chr.on_item_fall(item);

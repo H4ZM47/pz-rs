@@ -189,7 +189,7 @@ impl ArchiveCopyCheck {
             self.mod_table_at(table, depth + 1)?;
         }
         match &item.kind {
-            ItemKind::Container(bag) => self.shared_container(&bag.container, depth + 1)?,
+            ItemKind::Container(bag) => if let Some(container) = bag.container.slot() { self.shared_container(container, depth + 1)? },
             ItemKind::Weapon(weapon) => {
                 for attachment in &weapon.attachments {
                     self.item(attachment, depth + 1)?;
@@ -263,8 +263,9 @@ mod tests {
         inventory.borrow_mut().items.clear();
         let mut nested = item(ItemClass::Container);
         nested.kind = ItemKind::Container(Box::new(ContainerData {
+            capacity: 0,
             weight_reduction: 0,
-            container: inventory.clone(),
+            container: inventory.clone().into(),
         }));
         let mut weapon = item(ItemClass::Weapon);
         let ItemKind::Weapon(data) = &mut weapon.kind else {

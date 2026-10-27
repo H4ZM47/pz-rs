@@ -253,7 +253,18 @@ pub fn create_from_template_ref(
 ) -> Result<crate::shared::ItemRef, FactoryItemFailure> {
     // Publish the same actual receiver before any captured constructor read.
     // Archive creation remains the explicitly separate value API above.
-    let value = InventoryItem::create(template.clone(), registry_id);
+    let mut value = InventoryItem::create(template.clone(), registry_id);
+    // Native InventoryContainer string constructor leaves its own two ints
+    // at Java defaults, distinct from the noarg child container's capacity50.
+    if let crate::ItemKind::Container(bag) = &mut value.kind {
+        bag.capacity = 0;
+        bag.weight_reduction = 0;
+        bag.container.borrow_mut().capacity = 50;
+        bag.container.borrow_mut().weight_reduction = 0;
+        value.item_capacity = -1.0;
+        value.weight = 1.0;
+        value.actual_weight = 1.0;
+    }
     let item = crate::shared::try_new_item(value).map_err(|failure| FactoryItemFailure {
         error: failure.error,
         item: Some(failure.item),
@@ -266,6 +277,11 @@ pub fn create_from_template_ref(
             item: Some(item.clone()),
             retired: pz_entity::RetiredComponents::new(),
         }
+    })?;
+    copy_bag_capacity_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error,
+        item: Some(item.clone()),
+        retired: std::mem::take(&mut retired),
     })?;
     // Native Food construction (including all texture capture) has returned
     // before Item.InstanceItem PC632 reads this current argument script field.
@@ -295,12 +311,26 @@ pub fn create_from_template_ref(
             retired,
         });
     }
+    // Native common weight setters occur after the bag capacity warning and
+    // before retaining scriptItem. Both read the CURRENT argument separately.
+    copy_bag_common_weight_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error,
+        item: Some(item.clone()),
+        retired: std::mem::take(&mut retired),
+    })?;
     crate::item_texture::set_script_item_ref(&item, template.script.as_ref()).map_err(|error| {
         FactoryItemFailure {
             error,
             item: Some(item.clone()),
             retired: pz_entity::RetiredComponents::new(),
         }
+    })?;
+    // Native common InstanceItem PC3694 overwrites the earlier bag PC365
+    // itemCapacity from the CURRENT argument's distinct itemCapacity field.
+    copy_common_item_capacity_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error,
+        item: Some(item.clone()),
+        retired: std::mem::take(&mut retired),
     })?;
     crate::item_texture::constructor_masks_ref(&item, &template).map_err(|error| {
         FactoryItemFailure {
@@ -436,6 +466,153 @@ fn create_template_prefix(
     item.condition = item.condition_max.max(0).min(item.condition_max);
     item.broken = item.condition <= 0;
     item
+}
+
+fn copy_bag_capacity_ref(
+    item: &crate::shared::ItemRef,
+    template: &ItemTemplate,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    if template.class != ItemClass::Container {
+        return Ok(());
+    }
+    let capacity = || -> pz_entity::runtime_load::HostResult<i32> {
+        match &template.script {
+            Some(script) => Ok(script
+                .0
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag capacity script"))?
+                .capacity),
+            None => Ok(template.capacity), // Explicit captured fixture input.
+        }
+    };
+    let first = capacity()?;
+    item.try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag itemCapacity"))?
+        .item_capacity = first as f32;
+    let capacity = capacity()?;
+    let child = {
+        let mut body = item
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag raw capacity"))?;
+        let actual_weight = body.actual_weight;
+        let crate::ItemKind::Container(bag) = &mut body.kind else {
+            return Err(RuntimeHostError::InvalidHostState(
+                "InstanceItem bag receiver",
+            ));
+        };
+        bag.capacity = capacity;
+        // General.warn uses genuine Java Object identity in InventoryItem's
+        // toString. Never invent that diagnostic or proceed beyond its phase.
+        if capacity as f32 > 50.0f32 - actual_weight {
+            return Err(RuntimeHostError::Unsupported {
+                operation: "native bag capacity identity warning",
+                kind: None,
+            });
+        }
+        bag.container
+            .slot()
+            .cloned()
+            .ok_or(RuntimeHostError::Unsupported {
+                operation: "native null bag factory child diagnostic",
+                kind: None,
+            })?
+    };
+    crate::shared::pin_owner(&child);
+    child
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag child capacity"))?
+        .capacity = capacity;
+    crate::shared::observe_container(&child);
+    let reduction = match &template.script {
+        Some(script) => {
+            script
+                .0
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag weightReduction script"))?
+                .weight_reduction
+        }
+        None => template.weight_reduction,
+    }
+    .clamp(0, 100);
+    let child = {
+        let mut body = item
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag weightReduction"))?;
+        let crate::ItemKind::Container(bag) = &mut body.kind else {
+            return Err(RuntimeHostError::InvalidHostState(
+                "InstanceItem bag receiver",
+            ));
+        };
+        bag.weight_reduction = reduction;
+        bag.container
+            .slot()
+            .cloned()
+            .ok_or(RuntimeHostError::Unsupported {
+                operation: "native null bag factory child diagnostic",
+                kind: None,
+            })?
+    };
+    crate::shared::pin_owner(&child);
+    child
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag child weightReduction"))?
+        .weight_reduction = reduction;
+    crate::shared::observe_container(&child);
+    crate::shared::observe_item(item);
+    Ok(())
+}
+
+fn copy_bag_common_weight_ref(
+    item: &crate::shared::ItemRef,
+    template: &ItemTemplate,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    if template.class != ItemClass::Container {
+        return Ok(());
+    }
+    let current = || -> pz_entity::runtime_load::HostResult<f32> {
+        match &template.script {
+            Some(script) => Ok(script
+                .0
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag common weight script"))?
+                .actual_weight),
+            None => Ok(template.actual_weight), // Explicit captured input.
+        }
+    };
+    let weight = current()?;
+    item.try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag actualWeight"))?
+        .actual_weight = if weight < 0.0 { 0.0 } else { weight };
+    let weight = current()?;
+    item.try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem bag weight"))?
+        .weight = if weight < 0.0 { 0.0 } else { weight };
+    crate::shared::observe_item(item);
+    Ok(())
+}
+
+fn copy_common_item_capacity_ref(
+    item: &crate::shared::ItemRef,
+    template: &ItemTemplate,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let capacity = match &template.script {
+        Some(script) => {
+            script
+                .0
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("InstanceItem common itemCapacity script"))?
+                .item_capacity
+        }
+        None => template.item_capacity, // Explicit captured fixture input.
+    };
+    item.try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("InstanceItem common itemCapacity receiver"))?
+        .item_capacity = capacity as f32;
+    crate::shared::observe_item(item);
+    Ok(())
 }
 
 fn copy_food_minutes_to_cook_ref(

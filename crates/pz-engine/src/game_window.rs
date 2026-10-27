@@ -160,7 +160,9 @@ impl App {
         };
         if in_game {
             if let Some(world) = self.world.as_mut() {
-                world.save_on_quit(lua);
+                if let Err(error) = world.save_on_quit(lua) {
+                    self.error = Some(format!("PlayerDB save host failure: {error}"));
+                }
             }
         }
         if let Some(current) = current {

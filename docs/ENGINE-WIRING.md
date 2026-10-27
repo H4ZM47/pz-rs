@@ -6,6 +6,49 @@ parity requires separate verification. Current continuation is on
 `codex/gameplay-continuation`, based on Claude's `ws/integration` and
 `ws/ingame-loop`; the older `main` checkout is not the current engine.
 
+The October 27 actual-reference continuation routes production player load/save
+through the same retained container and saved-inventory list. Resolved compressed
+records construct fresh actual items, capturing script textures before body load;
+repeated records reread the original buffer, retain nullable obsolete positions,
+and install container backlinks only after compression completes. Bags reuse
+the actual child allocation and keep distinct strong `containingItem` and
+`inventoryContainer` fields. Raw capacity and current script weight/capacity
+writes follow the native constructor/common phases. Main-list allocation
+replacement and nullable main entries remain separate unsupported capabilities.
+
+Player saved indices retain actual references; the existing hand/worn ID fields
+use an explicit unique-main-member bridge. Ambiguous or off-main aliases stop
+at the needed phase. Actual character ModData keeps its live table and original
+cursor, and save metadata is captured before item callbacks. Factories and
+nested bag save/load phases run after player/manager guards end. Rust host borrow/capability
+failures retain the completed item/character prefix and terminate the actual
+engine path. Older database ID allocation and per-player queue timing remain
+separate orchestration work; a later player's failure is not certified to
+preserve every earlier database-queue effect.
+Non-null loaded hand equip hooks, burning-character setup and the older
+character model, stats/XP and lifecycle tails remain separate parity work.
+
+The same VM table serializer now writes directly to an item's native comparison
+buffer. It preserves primitive/string failure prefixes and immediate overflow;
+comparison retries still restore real item IDs and share the actual per-thread
+buffer. Strong item/container/bag and saved-list slots have physical collection
+descriptors, typed canonical container userdata and nullable direct bag setters.
+Actual cleanup tests use the application's outer retirement/collector boundary.
+Character userdata, parent/state wrappers and legacy JavaList closures retain
+conservative ownership; this is not full collection of every character graph.
+
+Floor update predicates now read the actual object's current square, first
+pointer membership in its world-object list, and stored exterior flag. They use
+the service's captured immutable tables without borrowing the sprite manager.
+Needed process registries, designation, model/render and other lifecycle branches
+still report their own missing capabilities. This batch passes the workspace
+all-target check, 1,901 affected tests (zero failed, nine ignored across 35
+summaries), and the native client build. All 1,384 recorded Rust/Cargo inputs
+remain unchanged; all 49 changed compiled inputs have independent source review.
+These local results do not turn the previous installed-assets failure into a
+success; the next exact compiled-client probe must establish runtime progress
+separately.
+
 The October 25 continuation connects live player/zombie models and the same
 animation rigs to state-world root motion, thump timing and turn targets.
 It also restores the pending world-Lua registries, fixes population chunk
@@ -36,8 +79,9 @@ keep completed components; unavailable Rust capabilities still stop the host.
 ContextMenuConfig has a genuine fieldless body; Durability has a canonical
 nullable material and preserves native partial load/save and tooltip failures.
 Context entries still need actual script-list/entry ownership before exposure.
-Loaded archive-to-live routing, nested container/weapon/map references,
-equipped manager state, world callbacks and full inventory icons remain open.
+Remaining archive-to-live producers, nested weapon/map references, equipped
+manager state, world callbacks and full inventory icons remain open. Production
+player/container loading and retained nested bag ownership are connected above.
 
 Item ModData now uses one exclusive archive or live-table slot. The actual
 `getModData` allocation is shared by Lua reads/writes, item persistence,
@@ -159,10 +203,10 @@ value-container codec. The new path saves actual item/container references,
 releases parent guards before nested bag assets, and models lazy duplicate
 comparison with temporary actual IDs, finally restoration and the same per-thread
 comparison buffer. Bounded buffer growth, cursor and retry behavior are distinct
-from the older append-only output. Selected live ModData/component scratch
+from the older append-only output. Selected component scratch
 serialization, owned weapon attachments, actual MapItem symbols, nonnull ByteData
 comparison and native pooled returned-list identity
-remain explicit limitations until their own adapters exist. Character and world
+remain explicit limitations until their own adapters exist. Remaining world/chunk and reanimated character
 save producers that still build value snapshots also need separate routing; a
 reference-container round trip alone cannot certify those complete save paths.
 
@@ -172,12 +216,16 @@ its current and later queued notifications. These changes do not implement the
 per-frame world-item model/draw stream: actual visible squares, current world
 object lists, live script gates and model jobs still need their native producer
 and ordering. A cached blank sprite, forced two-dimensional icon or successful
-source test cannot establish visible item parity. The combined batch passes the workspace all-target check, 1,709 affected tests
-(zero failed, nine ignored across 33 summaries) and the native client build.
-All 1,376 recorded Rust/Cargo inputs remained unchanged through those checks;
-158 changed compiled inputs have exact independent source coverage. The new
-installed outcome and foreign-platform results must be recorded separately;
-these local checks do not establish a completed native placement or visual parity.
+source test cannot establish visible item parity. Historical checkpoint
+`b0a2593b` passes the workspace all-target check, 1,709 affected tests (zero
+failed, nine ignored) and the client build. Its 1,376 recorded inputs remain
+unchanged and its 158 changed compiled inputs have independent coverage. Native
+builds/full suites also pass on Windows, Linux and both Mac architectures with
+24 actual GPU readbacks. Its installed-assets run nevertheless fails: inventory
+UI uses archive items without live textures, and the actual Bandage drop stops
+at the world-object-index query. The current actual-reference work above must
+have its own exact compilation and installed outcome recorded separately;
+these historical checks do not establish placement or visual parity.
 
 Returning to the menu rebuilds script/Lua/UI owners before menu entry;
 native shutdown skips that rebuild. A failed rebuild stops the client

@@ -14,9 +14,12 @@ struct Fixture {
     old_world: Option<pz_lua_api::bind_world::WorldState>,
     old_core: Rc<RefCell<pz_core::core::Core>>,
     dir: PathBuf,
+    _observers: Observers,
 }
 impl Fixture {
     fn new(no_save: bool) -> Self {
+        // Real allocation metadata must precede the bag/container backedges.
+        let observers = Observers::new();
         let dir = std::env::temp_dir().join(format!(
             "pz-stream-retirement-{}-{}",
             std::process::id(),
@@ -55,7 +58,35 @@ impl Fixture {
             old_world: Some(old_world),
             old_core,
             dir,
+            _observers: observers,
         }
+    }
+    /// Match the App's outer owner drain after WORLD and sprites are free.
+    /// Strong native bag/container aliases need a real collector pass after
+    /// the host retirement pins have been released.
+    fn collect_safe(&self) -> pz_kahlua::gc::CollectionResult {
+        with_world(|w| assert!(w.cell.is_some()));
+        {
+            let _sprites = self
+                .world
+                .sprites
+                .as_ref()
+                .unwrap()
+                .try_borrow_mut()
+                .unwrap();
+        }
+        drain_retired_world_objects();
+        pz_inventory::component_host::drain_retired_components();
+        pz_kahlua::gc::drain_retired_table_values();
+        pz_lua_api::component_gc::retry_pending();
+        pz_kahlua::gc::request_collection();
+        pz_kahlua::gc::collect_pending()
+    }
+    fn safe_boundary(&self) {
+        assert!(matches!(
+            self.collect_safe(),
+            pz_kahlua::gc::CollectionResult::Collected(_)
+        ));
     }
     fn install_bag(&mut self) -> (Weak<RefCell<InventoryItem>>, Rc<Cell<usize>>) {
         let drops = Rc::new(Cell::new(0));
@@ -107,15 +138,54 @@ impl Fixture {
         drop(chunk.take_retired_owners());
         let old = with_world(|w| w.cell.as_mut().unwrap().chunks.insert((10, 10), chunk));
         drop(old);
+        // Entry pins may go now: the actual square/object still roots the bag.
+        pz_inventory::component_host::drain_retired_components();
         (weak, drops)
     }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        let _ = self.world.with_stream(|s, cell, ctx| s.stop(cell, ctx));
+        // Tear down session roots outside WORLD while the test cell is still
+        // Some, so final Probe drops reenter the session that owned them.
+        let cell = with_world(|w| w.cell.replace(IsoCell::default()));
+        drop(cell);
+        self.safe_boundary();
         let retired = with_world(|w| std::mem::replace(w, self.old_world.take().unwrap()));
         drop(retired);
         pz_lua_api::bind_core::install_core(self.old_core.clone());
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+// Restore the exact prior hooks after the fixture's real collector boundary.
+struct Observers {
+    item: Option<shared::ItemObserver>,
+    container: Option<shared::ContainerObserver>,
+    object: Option<pz_world::object_slot::ObjectObserver>,
+    square: Option<pz_world::square_slot::SquareObserver>,
+}
+impl Observers {
+    fn new() -> Self {
+        Self {
+            item: shared::install_item_observer(Some(pz_lua_api::component_gc::observe_item)),
+            container: shared::install_container_observer(Some(
+                pz_lua_api::component_gc::observe_container,
+            )),
+            object: pz_world::object_slot::install_object_observer(Some(
+                pz_lua_api::component_gc::observe_object,
+            )),
+            square: pz_world::square_slot::install_square_observer(Some(
+                pz_lua_api::component_gc::observe_square,
+            )),
+        }
+    }
+}
+impl Drop for Observers {
+    fn drop(&mut self) {
+        shared::install_item_observer(self.item);
+        shared::install_container_observer(self.container);
+        pz_world::object_slot::install_object_observer(self.object);
+        pz_world::square_slot::install_square_observer(self.square);
     }
 }
 struct Probe {
@@ -147,6 +217,12 @@ fn stop_drops_final_bag_only_after_world_and_sprite_guards_end() {
             assert!(!cell.chunks.contains_key(&(10, 10)));
         })
         .unwrap();
+    assert_eq!(
+        drops.get(),
+        0,
+        "strong aliases wait for the outer GC boundary"
+    );
+    f.safe_boundary();
     assert_eq!(drops.get(), 1);
     assert!(weak.upgrade().is_none());
     assert!(matches!(
@@ -184,6 +260,8 @@ fn queued_save_all_outcomes_drop_final_bag_outside_both_guards() {
                 assert!(weak.upgrade().is_some());
             })
             .unwrap();
+        assert_eq!(drops.get(), 0, "{mode}: strong aliases await collection");
+        f.safe_boundary();
         assert_eq!(drops.get(), 1, "{mode}");
         assert!(weak.upgrade().is_none());
         let events = f.world.streamer.as_mut().unwrap().take_events();
@@ -226,10 +304,12 @@ fn unwind_keeps_retired_payload_for_next_safe_boundary_and_preserves_user_root()
         f.world
             .with_stream(|_, _, _| assert_eq!(drops.get(), 0))
             .unwrap();
+        f.safe_boundary();
         if let Some(held) = held {
             assert_eq!(drops.get(), 0, "caller-retained item is still an owner");
             assert!(Rc::ptr_eq(&held, &weak.upgrade().unwrap()));
             drop(held);
+            f.safe_boundary();
         }
         assert_eq!(drops.get(), 1);
         assert!(weak.upgrade().is_none());
@@ -272,6 +352,7 @@ fn whole_object_retirement_releases_parents_only_at_stream_or_frame_boundaries()
                     assert_eq!(drops.get(), 0);
                     drain_retired_world_objects();
                 }
+                f.safe_boundary();
                 if let Some(owner) = retained {
                     assert_eq!(drops.get(), 0);
                     {
@@ -289,6 +370,7 @@ fn whole_object_retirement_releases_parents_only_at_stream_or_frame_boundaries()
                         ));
                     }
                     drop(owner);
+                    f.safe_boundary();
                 }
                 assert_eq!(drops.get(), 1);
                 assert!(weak_item.upgrade().is_none());
@@ -370,6 +452,7 @@ fn whole_square_retirement_keeps_retained_payload_and_releases_after_both_guards
                     }
                     drain_retired_world_objects();
                 }
+                f.safe_boundary();
                 if let Some(square) = held {
                     assert_eq!(drops.get(), 0);
                     {
@@ -396,6 +479,7 @@ fn whole_square_retirement_keeps_retained_payload_and_releases_after_both_guards
                         ));
                     }
                     drop(square);
+                    f.safe_boundary();
                 }
                 assert_eq!(drops.get(), 1);
                 assert!(weak_item.upgrade().is_none());
@@ -417,6 +501,8 @@ fn borrowed_retired_square_waits_for_next_safe_owner_drain() {
                 .unwrap();
             assert_eq!(drops.get(), 0);
             assert_eq!(held.objects.len(), 1);
+            assert_eq!(f.collect_safe(), pz_kahlua::gc::CollectionResult::Deferred);
+            assert_eq!(held.objects.len(), 1);
             drop(held);
         } else {
             let held = square.borrow();
@@ -424,6 +510,8 @@ fn borrowed_retired_square_waits_for_next_safe_owner_drain() {
                 .with_stream(|_, cell, _| retire_object_path(cell, "set_square"))
                 .unwrap();
             assert_eq!(drops.get(), 0);
+            assert_eq!(held.objects.len(), 1);
+            assert_eq!(f.collect_safe(), pz_kahlua::gc::CollectionResult::Deferred);
             assert_eq!(held.objects.len(), 1);
             drop(held);
         }
@@ -436,6 +524,7 @@ fn borrowed_retired_square_waits_for_next_safe_owner_drain() {
         f.world
             .with_stream(|_, _, _| assert_eq!(drops.get(), 0))
             .unwrap();
+        f.safe_boundary();
         assert_eq!(drops.get(), 1);
         assert!(weak_item.upgrade().is_none());
     }
@@ -481,6 +570,7 @@ fn stopped_chunk_keeps_borrowed_square_cleanup_queued_while_user_retains_it() {
         f.world
             .with_stream(|_, _, _| assert_eq!(drops.get(), 0))
             .unwrap();
+        f.safe_boundary();
         assert_eq!(drops.get(), 1);
         assert!(weak_item.upgrade().is_none());
         assert!(square.borrow().world_objects.borrow().is_empty());

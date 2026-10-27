@@ -454,7 +454,10 @@ impl GameState for IngameState {
             // `PlayerDB.saveLocalPlayersForce()`, `GameWindow.save(true)`,
             // `OnPostSave`.
             if let Some(w) = cx.world.as_mut() {
-                w.save_on_quit(cx.lua);
+                if let Err(error) = w.save_on_quit(cx.lua) {
+                    *cx.error = Some(format!("PlayerDB save host failure: {error}"));
+                    return StateAction::Remain;
+                }
             }
             println!("IngameState Exiting done.");
             return StateAction::Continue;

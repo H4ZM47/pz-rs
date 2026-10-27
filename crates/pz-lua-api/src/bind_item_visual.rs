@@ -978,6 +978,8 @@ mod tests {
         let visual = get_visual(&item).unwrap();
         assert!(matches!(visual, Value::Object(_)));
         drop(visual);
+        // Complete factory retirement before testing the visual cache alone.
+        pz_inventory::component_host::drain_retired_components();
         drop(item);
         assert!(
             weak_item.upgrade().is_some(),

@@ -798,7 +798,7 @@ fn set_worn_item(
     })?;
     if changed && id.is_some() {
         let item = crate::bind_items::item_arg(c, item)?;
-        if let Some(container) = pz_inventory::shared::container_of(&item) {
+        if let Some(container) = pz_inventory::shared::try_container_of(&item).map_err(crate::bind_world_object::host_error)? {
             set_character_parent(&container, chr, character_value(chr));
         }
     }

@@ -123,6 +123,26 @@ pub fn local_player_data<I: ItemIdentity + 'static>(
     })
 }
 
+/// Actual receiver producer. No player/manager body guard crosses item save.
+pub fn local_player_data_ref<I: ItemIdentity + 'static>(
+    player: &pz_characters::character::GameCharacterRef<I>, sql_id: i32,
+    sm: &ScriptManager, chars: &std::rc::Rc<std::cell::RefCell<Characters>>,
+    ctx: &dyn SimContext, env: &SaveEnv<'_>,
+) -> pz_characters::character::save::CharacterPersistenceResult<PlayerData> {
+    use pz_inventory::floor_drop::RuntimeHostError;
+    let (x,y,z,is_dead,name) = {
+        let body = player.try_borrow().map_err(|_| RuntimeHostError::Borrowed("PlayerData name player"))?;
+        let (x,y,z,is_dead)=(body.vars.x,body.vars.y,body.vars.z,body.is_dead());
+        let descriptor = body.descriptor.as_ref().ok_or_else(|| ScriptError::new("java.lang.NullPointerException"))?;
+        let descriptor = descriptor.try_borrow().map_err(|_| RuntimeHostError::Borrowed("PlayerData name descriptor"))?;
+        let name=format!("{} {}", descriptor.forename.as_deref().unwrap_or("null"), descriptor.surname.as_deref().unwrap_or("null"));
+        (x,y,z,is_dead,name)
+    };
+    let mut writer = Writer::new();
+    pz_characters::character::save::save_player_ref(player, sm, chars, ctx, env, &mut writer)?;
+    Ok(PlayerData { sql_id, x,y,z,is_dead, name: Some(name), world_version: WORLD_VERSION, bytes: writer.buf })
+}
+
 /// The world state [`save_game`] saves.
 pub struct SaveGame<'a> {
     /// The current save folder (`ZomboidFileSystem.getCurrentSaveDir`).

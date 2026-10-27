@@ -87,8 +87,7 @@ fn floor_item_consumes_decoded_bag_and_links_its_actual_inventory() {
             .containing_item
             .as_ref()
             .unwrap()
-            .upgrade()
-            .unwrap(),
+            .clone(),
         &actual
     ));
     assert!(Rc::ptr_eq(
@@ -126,8 +125,7 @@ fn floor_item_archive_clone_and_snapshot_deep_copy_nested_bags() {
             .containing_item
             .as_ref()
             .unwrap()
-            .upgrade()
-            .unwrap(),
+            .clone(),
         &copied_bag
     ));
     let copied_nested = copied_contents.borrow().items[0].clone();

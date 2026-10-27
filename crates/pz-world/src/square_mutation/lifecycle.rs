@@ -17,6 +17,7 @@ mod native_tests;
 pub fn native_floor_add_to_world(
     object: &IsoObjectRef,
     _supplied_square: &crate::SquareRef,
+    tables: &crate::sprite::SpriteTables,
     retired: &mut pz_entity::RetiredComponents,
 ) -> pz_entity::runtime_load::HostResult<()> {
     use pz_entity::runtime_load::RuntimeHostError;
@@ -26,7 +27,10 @@ pub fn native_floor_add_to_world(
     };
     let item = crate::floor_object::runtime::item_ref(object)?;
     if let Some(item) = item {
-        if pz_inventory::world_update::should_update_in_world_ref(&item, &PlainFloorContext)? {
+        if pz_inventory::world_update::should_update_in_world_ref(
+            &item,
+            &PlainFloorContext { tables },
+        )? {
             return Err(unsupported("actual cell processWorldItems registry"));
         }
         if matches!(
@@ -125,8 +129,10 @@ pub fn native_floor_add_to_world(
     try_flag_object_for_hot_save(object)
 }
 
-struct PlainFloorContext;
-impl pz_inventory::world_update::WorldItemUpdateContext for PlainFloorContext {
+struct PlainFloorContext<'a> {
+    tables: &'a crate::sprite::SpriteTables,
+}
+impl pz_inventory::world_update::WorldItemUpdateContext for PlainFloorContext<'_> {
     fn is_server(&self) -> pz_entity::runtime_load::HostResult<bool> {
         Ok(false)
     }
@@ -135,21 +141,71 @@ impl pz_inventory::world_update::WorldItemUpdateContext for PlainFloorContext {
     }
     fn world_object_index(
         &self,
-        _: &pz_entity::EntityOwner,
+        owner: &pz_entity::EntityOwner,
     ) -> pz_entity::runtime_load::HostResult<i32> {
-        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
-            operation: "actual floor process world-object index",
-            kind: None,
-        })
+        use pz_entity::runtime_load::RuntimeHostError;
+        let object = owner
+            .try_handle::<IsoObject>()
+            .ok_or(RuntimeHostError::InvalidHostState(
+                "floor predicate world-item allocation",
+            ))?;
+        let square = {
+            let body = object
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("floor predicate object.square"))?;
+            // Native returns -1 for null square or a non-WorldInventory
+            // receiver without consulting that square's list/body.
+            let Some(square) = body.square_slot() else {
+                return Ok(-1);
+            };
+            if !matches!(body.kind, ObjectKind::WorldInventory(_)) {
+                return Ok(-1);
+            }
+            std::rc::Rc::clone(square)
+        };
+        let list = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor predicate square.worldObjects"))?
+            .world_objects
+            .clone();
+        let list = list
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor predicate worldObjects"))?;
+        // ArrayList.indexOf uses this actual object identity and returns the
+        // first match. Other/null entries neither cast nor borrow their bodies.
+        let index = list.entry_slots().position(|entry| {
+            matches!(entry, crate::world_objects::WorldObjectEntry::Object(candidate)
+                if std::rc::Rc::ptr_eq(candidate, &object))
+        });
+        match index {
+            Some(index) => i32::try_from(index).map_err(|_| {
+                RuntimeHostError::InvalidHostState("floor worldObjects Java index range")
+            }),
+            None => Ok(-1),
+        }
     }
     fn world_square_outside(
         &self,
-        _: &pz_entity::EntityOwner,
+        owner: &pz_entity::EntityOwner,
     ) -> pz_entity::runtime_load::HostResult<Option<bool>> {
-        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
-            operation: "actual floor square outside query",
-            kind: None,
-        })
+        use pz_entity::runtime_load::RuntimeHostError;
+        let object = owner
+            .try_handle::<IsoObject>()
+            .ok_or(RuntimeHostError::InvalidHostState(
+                "floor predicate world-item allocation",
+            ))?;
+        let square = object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor predicate object.square"))?
+            .square_slot()
+            .cloned();
+        let Some(square) = square else {
+            return Ok(None);
+        };
+        let square = square
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor predicate square.properties"))?;
+        Ok(Some(square.properties.has(self.tables.flag.exterior)))
     }
     fn rotten_food_removal_days(&self) -> pz_entity::runtime_load::HostResult<i32> {
         Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
@@ -527,6 +583,7 @@ fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) -> pz_entity::runtime_load:
 /// trace hooks. A successful true means the actual native phase completed.
 fn try_native_add_to_world_dispatch(
     object: &IsoObjectRef,
+    tables: &crate::sprite::SpriteTables,
     retired: &mut pz_entity::RetiredComponents,
 ) -> pz_entity::runtime_load::HostResult<bool> {
     use pz_entity::runtime_load::RuntimeHostError;
@@ -558,7 +615,7 @@ fn try_native_add_to_world_dispatch(
         })?;
     retired.push_owner(pz_entity::EntityOwner::from_ref(object));
     retired.push_owner(pz_entity::EntityOwner::from_ref(&square));
-    native_floor_add_to_world(object, &square, retired)?;
+    native_floor_add_to_world(object, &square, tables, retired)?;
     Ok(true)
 }
 
@@ -568,7 +625,7 @@ fn add_to_world_on(
     r: &Receiver,
 ) -> pz_entity::runtime_load::HostResult<()> {
     let mut retired = pz_entity::RetiredComponents::new();
-    let native = try_native_add_to_world_dispatch(&r.object, &mut retired);
+    let native = try_native_add_to_world_dispatch(&r.object, &env.sprites.tables, &mut retired);
     env.cell.retire_components(retired);
     if native? {
         return Ok(());

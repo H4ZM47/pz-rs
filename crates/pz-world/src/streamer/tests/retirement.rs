@@ -1,4 +1,7 @@
-//! Real floor-item owners must outlive the streamer's caller borrows.
+//! Archive-profile floor payloads must outlive the streamer's caller borrows.
+//! These leaf-crate tests cover pending value saves and owner retirement. The
+//! actual adopted bag's strong child cycles require the application collector;
+//! engine stream-retirement and Lua container-GC tests cover that live profile.
 use super::*;
 use std::cell::Cell;
 use std::rc::{Rc, Weak};
@@ -14,19 +17,21 @@ impl Drop for DropProbe {
     }
 }
 
-fn bag_chunk(
+fn archive_bag_chunk(
     wx: i32,
     wy: i32,
     drops: Rc<Cell<usize>>,
 ) -> (IsoChunk, Weak<std::cell::RefCell<InventoryItem>>) {
-    let bag = shared::new_item(InventoryItem::create(
+    // Wrap the owned archive fixture directly; no Native adoption/backlinks
+    // are introduced or later removed merely to make a drop assertion pass.
+    let bag = Rc::new(std::cell::RefCell::new(InventoryItem::create(
         Rc::new(ItemTemplate::new(
             ItemClass::Container,
             "Base",
             "AuthoredRetirementBag",
         )),
         1,
-    ));
+    )));
     shared::inventory_of(&bag.borrow())
         .unwrap()
         .borrow_mut()
@@ -63,7 +68,7 @@ fn bag_chunk(
 }
 
 #[test]
-fn queued_save_success_error_and_no_save_keep_actual_bag_until_retirement_drain() {
+fn archive_queued_save_success_error_and_no_save_keep_payload_until_retirement_drain() {
     for mode in ["success", "error", "no_save"] {
         let mut f = Fixture::new();
         f.no_save = mode == "no_save";
@@ -73,7 +78,7 @@ fn queued_save_success_error_and_no_save_keep_actual_bag_until_retirement_drain(
         }
         let mut s = ChunkStreamer::new(1, 1);
         let drops = Rc::new(Cell::new(0));
-        let (chunk, weak) = bag_chunk(10, 10, drops.clone());
+        let (chunk, weak) = archive_bag_chunk(10, 10, drops.clone());
         s.save_queue.push_back(QueuedSave {
             wx: 10,
             wy: 10,
@@ -113,12 +118,12 @@ fn queued_save_success_error_and_no_save_keep_actual_bag_until_retirement_drain(
 }
 
 #[test]
-fn user_retained_item_keeps_exact_owner_after_chunk_retirement() {
+fn archive_user_retained_item_keeps_exact_owner_after_chunk_retirement() {
     let mut f = Fixture::new();
     f.no_save = true;
     let mut s = ChunkStreamer::new(1, 1);
     let drops = Rc::new(Cell::new(0));
-    let (chunk, weak) = bag_chunk(10, 10, drops.clone());
+    let (chunk, weak) = archive_bag_chunk(10, 10, drops.clone());
     let held = weak.upgrade().unwrap();
     s.save_queue.push_back(QueuedSave {
         wx: 10,
@@ -134,20 +139,20 @@ fn user_retained_item_keeps_exact_owner_after_chunk_retirement() {
 }
 
 #[test]
-fn rejected_handoff_and_replaced_cell_chunk_are_retired_without_losing_new_chunk() {
+fn archive_rejected_handoff_and_replaced_cell_chunk_are_retired_without_losing_new_chunk() {
     let mut f = Fixture::new();
     let mut cell = IsoCell::default();
     let mut s = ChunkStreamer::new(1, 1);
     let drops = Rc::new(Cell::new(0));
     let id = s.new_chunk(10, 10);
-    let (chunk, weak) = bag_chunk(10, 10, drops.clone());
+    let (chunk, weak) = archive_bag_chunk(10, 10, drops.clone());
     assert!(!s.hand_off(id, chunk, &mut cell, &mut f.ctx()));
     assert_eq!(short(&s.take_events()), ["D 10,10"]);
     assert!(weak.upgrade().is_some());
     drop(s.take_retired_chunks());
     assert_eq!(drops.get(), 1);
 
-    let (old, weak) = bag_chunk(10, 10, drops.clone());
+    let (old, weak) = archive_bag_chunk(10, 10, drops.clone());
     cell.chunks.insert((10, 10), old);
     s.set_initial_pos(0, 10, 10);
     let id = s.new_chunk(10, 10);
@@ -167,7 +172,7 @@ fn rejected_handoff_and_replaced_cell_chunk_are_retired_without_losing_new_chunk
 }
 
 #[test]
-fn stop_retires_loaded_chunk_but_preserves_pending_served_ownership() {
+fn archive_stop_retires_loaded_chunk_but_preserves_pending_served_ownership() {
     let mut f = Fixture::new();
     let mut cell = IsoCell::default();
     let mut s = ChunkStreamer::new(1, 1);
@@ -176,10 +181,10 @@ fn stop_retires_loaded_chunk_but_preserves_pending_served_ownership() {
     s.take_events();
     f.log.0.clear();
     let drops = Rc::new(Cell::new(0));
-    let (loaded, loaded_weak) = bag_chunk(10, 10, drops.clone());
+    let (loaded, loaded_weak) = archive_bag_chunk(10, 10, drops.clone());
     cell.chunks.insert((10, 10), loaded);
     let pending_id = s.new_chunk(11, 10);
-    let (pending, pending_weak) = bag_chunk(11, 10, drops.clone());
+    let (pending, pending_weak) = archive_bag_chunk(11, 10, drops.clone());
     s.load_grid_square.push_back((pending_id, pending));
     s.stop(&mut cell, &mut f.ctx());
     assert_eq!(short(&s.take_events()), ["X 10,10"]);
@@ -208,7 +213,7 @@ impl ChunkLoadHook for PanicUnload {
 }
 
 #[test]
-fn unload_hook_unwind_retires_owner_without_publishing_partial_save() {
+fn archive_unload_hook_unwind_retires_owner_without_publishing_partial_save() {
     for stop in [false, true] {
         let mut f = Fixture::new();
         let mut cell = IsoCell::default();
@@ -217,7 +222,7 @@ fn unload_hook_unwind_retires_owner_without_publishing_partial_save() {
         drop(s.take_retired_chunks());
         s.take_events();
         let drops = Rc::new(Cell::new(0));
-        let (chunk, weak) = bag_chunk(10, 10, drops.clone());
+        let (chunk, weak) = archive_bag_chunk(10, 10, drops.clone());
         cell.chunks.insert((10, 10), chunk);
         let id = s.get_chunk(0, 0, 0).unwrap();
         let mut hook = PanicUnload;
@@ -268,14 +273,14 @@ impl BrandNewHook for GenerateExtra {
             .copied()
             .find(|&c| c != (10, 10))
             .unwrap();
-        let (chunk, weak) = bag_chunk(wx, wy, self.drops.clone());
+        let (chunk, weak) = archive_bag_chunk(wx, wy, self.drops.clone());
         *chunks.get_mut(wx, wy).unwrap() = chunk;
         self.weak = Some(weak);
     }
 }
 
 #[test]
-fn brand_new_extra_chunks_are_retained_until_caller_drains_them() {
+fn archive_brand_new_extra_chunks_are_retained_until_caller_drains_them() {
     let mut f = Fixture::new();
     let mut s = ChunkStreamer::new(1, 1);
     let drops = Rc::new(Cell::new(0));
@@ -299,7 +304,7 @@ fn brand_new_extra_chunks_are_retained_until_caller_drains_them() {
 }
 
 #[test]
-fn retained_bag_mutation_after_unload_is_written_by_real_pending_save() {
+fn archive_retained_bag_mutation_after_unload_is_written_by_real_pending_save() {
     struct BagEnv(Rc<ItemTemplate>);
     impl pz_inventory::env::ItemEnv for BagEnv {
         fn template(&self, id: i16) -> Option<Rc<ItemTemplate>> {
@@ -313,7 +318,7 @@ fn retained_bag_mutation_after_unload_is_written_by_real_pending_save() {
     drop(s.take_retired_chunks());
     s.take_events();
     let drops = Rc::new(Cell::new(0));
-    let (chunk, weak) = bag_chunk(10, 10, drops.clone());
+    let (chunk, weak) = archive_bag_chunk(10, 10, drops.clone());
     cell.chunks.insert((10, 10), chunk);
     let held = weak.upgrade().unwrap();
     let id = s.get_chunk(0, 0, 0).unwrap();

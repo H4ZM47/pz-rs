@@ -8,11 +8,13 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
 
+use pz_characters::character::save::SavedInventoryListRef;
 use pz_entity::runtime_attributes::{AttributeRef, RuntimeAttributeInstance};
 use pz_entity::tables::{AttributeTypeDefinition, AttributeTypeRef};
 use pz_entity::{ComponentRef, RetiredComponents, RuntimeComponent, RuntimeEntryView};
-use pz_inventory::shared::ItemRef;
+use pz_inventory::shared::{ContainerRef, ItemRef, SharedContainer};
 use pz_inventory::InventoryItem;
+use pz_inventory::ItemKind;
 use pz_kahlua::gc::{self, RegistrationError, TraceDescriptor, TraceVisitor, UserdataDescriptor};
 use pz_render::{LuaTexture, TextureRef};
 use pz_scripts::objects::entity::components::attributes::AttributesScript;
@@ -27,6 +29,7 @@ use pz_world::sprite::runtime::{
 use pz_world::{IsoGridSquare, SquareRef};
 
 use crate::bind_fluid_container::LuaFluidContainer;
+use crate::bind_item_container::LuaItemContainer;
 use crate::bind_items::LuaInventoryItem;
 use crate::bind_misc_classes::Color;
 use crate::bind_world_object::LuaWorldObject;
@@ -71,6 +74,8 @@ enum Pending {
     Texture(Weak<LuaTexture>),
 
     Item(Weak<RefCell<InventoryItem>>),
+    Container(Weak<RefCell<SharedContainer>>),
+    SavedInventory(Weak<RefCell<Vec<Option<ItemRef>>>>),
     Object(Weak<RefCell<IsoObject>>),
     Floor(Weak<RefCell<IsoWorldInventoryObject>>),
     Component(Weak<RefCell<RuntimeComponent>>),
@@ -81,6 +86,7 @@ enum Pending {
     Attribute(Weak<RefCell<RuntimeAttributeInstance>>),
     AttributeType(Weak<RefCell<AttributeTypeDefinition>>),
     ItemUserdata(Weak<LuaInventoryItem>),
+    ContainerUserdata(Weak<LuaItemContainer>),
     FluidUserdata(Weak<LuaFluidContainer>),
     ColorUserdata(Weak<Color>),
     WorldUserdata(Weak<LuaWorldObject>),
@@ -97,6 +103,8 @@ impl Pending {
             Self::WorldObjects(w) => ("WorldObjects", w.as_ptr() as usize),
             Self::Texture(w) => ("Texture", w.as_ptr() as usize),
             Self::Item(w) => ("InventoryItem", w.as_ptr() as usize),
+            Self::Container(w) => ("ItemContainer", w.as_ptr() as usize),
+            Self::SavedInventory(w) => ("savedInventoryItems", w.as_ptr() as usize),
             Self::Object(w) => ("IsoObject", w.as_ptr() as usize),
             Self::Floor(w) => ("IsoWorldInventoryObject payload", w.as_ptr() as usize),
             Self::Component(w) => ("Component", w.as_ptr() as usize),
@@ -107,6 +115,7 @@ impl Pending {
             Self::Attribute(w) => ("AttributeInstance", w.as_ptr() as usize),
             Self::AttributeType(w) => ("AttributeType", w.as_ptr() as usize),
             Self::ItemUserdata(w) => ("InventoryItem userdata", w.as_ptr() as usize),
+            Self::ContainerUserdata(w) => ("ItemContainer userdata", w.as_ptr() as usize),
             Self::FluidUserdata(w) => ("FluidContainer userdata", w.as_ptr() as usize),
             Self::ColorUserdata(w) => ("Color userdata", w.as_ptr() as usize),
             Self::WorldUserdata(w) => ("IsoObject userdata", w.as_ptr() as usize),
@@ -123,6 +132,8 @@ impl Pending {
             Self::WorldObjects(w) => w.strong_count() != 0,
             Self::Texture(w) => w.strong_count() != 0,
             Self::Item(w) => w.strong_count() != 0,
+            Self::Container(w) => w.strong_count() != 0,
+            Self::SavedInventory(w) => w.strong_count() != 0,
             Self::Object(w) => w.strong_count() != 0,
             Self::Floor(w) => w.strong_count() != 0,
             Self::Component(w) => w.strong_count() != 0,
@@ -133,6 +144,7 @@ impl Pending {
             Self::Attribute(w) => w.strong_count() != 0,
             Self::AttributeType(w) => w.strong_count() != 0,
             Self::ItemUserdata(w) => w.strong_count() != 0,
+            Self::ContainerUserdata(w) => w.strong_count() != 0,
             Self::FluidUserdata(w) => w.strong_count() != 0,
             Self::ColorUserdata(w) => w.strong_count() != 0,
             Self::WorldUserdata(w) => w.strong_count() != 0,
@@ -201,6 +213,14 @@ fn merged(a: MetadataStatus, b: MetadataStatus) -> MetadataStatus {
 pub struct ItemDescriptor;
 impl TraceDescriptor<InventoryItem> for ItemDescriptor {
     fn trace(item: &InventoryItem, visitor: &mut TraceVisitor) {
+        if let Some(container) = item.container_slot() {
+            visitor.owner(container);
+        }
+        if let ItemKind::Container(bag) = &item.kind {
+            if let Some(container) = bag.container.slot() {
+                visitor.owner(container);
+            }
+        }
         if let Some(textures) = item.textures.live_slot() {
             for texture in textures.slots() {
                 visitor.userdata(texture);
@@ -226,18 +246,69 @@ impl TraceDescriptor<InventoryItem> for ItemDescriptor {
                 visitor.owner(component);
             }
         }
-        // Existing templates, bags, attachments and opaque holder payloads
+        // Existing templates, attachments and opaque holder payloads
         // keep their prior conservative ownership. They are not invented
         // transitive component edges or cloned traversal snapshots.
     }
 
     fn detach(item: &mut InventoryItem) -> Option<Box<dyn std::any::Any>> {
+        let bag = match &mut item.kind {
+            ItemKind::Container(bag) => bag.container.take_for_gc(),
+            _ => None,
+        };
         Some(Box::new((
+            item.take_container_for_gc(),
+            bag,
             item.components.take_entries(),
             item.take_mod_data_for_gc(),
             item.take_world_item_for_gc(),
             item.take_texture_slots_for_gc(),
         )))
+    }
+}
+
+/// Every list slot is a separate owning edge, including aliases between
+/// main items, includingObsoleteItems, and containingItem. Opaque parent/grid
+/// wrappers retain their prior conservative ownership; never call getters or
+/// trace through those wrappers as if their Values were direct container slots.
+pub struct ContainerDescriptor;
+impl TraceDescriptor<SharedContainer> for ContainerDescriptor {
+    fn trace(container: &SharedContainer, visitor: &mut TraceVisitor) {
+        for item in &container.items {
+            visitor.owner(item);
+        }
+        for item in container.including_obsolete_items.iter().flatten() {
+            visitor.owner(item);
+        }
+        if let Some(item) = &container.containing_item {
+            visitor.owner(item);
+        }
+        if let Some(item) = &container.inventory_container {
+            visitor.owner(item);
+        }
+    }
+    fn detach(container: &mut SharedContainer) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new((
+            std::mem::take(&mut container.items),
+            std::mem::take(&mut container.including_obsolete_items),
+            container.containing_item.take(),
+            container.inventory_container.take(),
+            container.parent.take(),
+            container.source_grid.take(),
+            std::mem::take(&mut container.raw_items),
+        )))
+    }
+}
+
+pub struct SavedInventoryDescriptor;
+impl TraceDescriptor<Vec<Option<ItemRef>>> for SavedInventoryDescriptor {
+    fn trace(items: &Vec<Option<ItemRef>>, visitor: &mut TraceVisitor) {
+        for item in items.iter().flatten() {
+            visitor.owner(item);
+        }
+    }
+    fn detach(items: &mut Vec<Option<ItemRef>>) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(std::mem::take(items)))
     }
 }
 
@@ -514,6 +585,24 @@ impl UserdataDescriptor<LuaInventoryItem> for ItemUserdataDescriptor {
     }
 }
 
+pub struct ContainerUserdataDescriptor;
+impl UserdataDescriptor<LuaItemContainer> for ContainerUserdataDescriptor {
+    fn trace(
+        container: &LuaItemContainer,
+        visitor: &mut TraceVisitor,
+    ) -> Result<(), gc::TraceDeferred> {
+        visitor.owner(&container.container);
+        let cached = container
+            .items_list
+            .try_borrow()
+            .map_err(|_| gc::TraceDeferred)?;
+        if let Some(list) = cached.as_ref() {
+            visitor.value(list);
+        }
+        Ok(())
+    }
+}
+
 pub struct FluidUserdataDescriptor;
 impl UserdataDescriptor<LuaFluidContainer> for FluidUserdataDescriptor {
     fn trace(
@@ -699,6 +788,8 @@ fn register_chunk_hot_save(
 
 enum OwnerNode {
     Item(ItemRef),
+    Container(ContainerRef),
+    SavedInventory(SavedInventoryListRef),
     Object(IsoObjectRef),
     Floor(FloorObjectRef),
     Square(SquareRef),
@@ -733,6 +824,14 @@ fn register_owner_graph(root: OwnerNode) -> Result<MetadataStatus, RegistrationF
                     status = merged(status, MetadataStatus::Deferred);
                     continue;
                 };
+                if let Some(container) = body.container_slot() {
+                    work.push_back(OwnerNode::Container(container.clone()));
+                }
+                if let ItemKind::Container(bag) = &body.kind {
+                    if let Some(container) = bag.container.slot() {
+                        work.push_back(OwnerNode::Container(container.clone()));
+                    }
+                }
                 for entry in body.components.entry_slots() {
                     if let RuntimeEntryView::Live { component, .. } = entry {
                         status = merged(status, component_slots(component)?);
@@ -751,6 +850,55 @@ fn register_owner_graph(root: OwnerNode) -> Result<MetadataStatus, RegistrationF
                     .and_then(|owner| owner.try_handle::<IsoObject>())
                 {
                     work.push_back(OwnerNode::Object(object));
+                }
+            }
+            OwnerNode::Container(container) => {
+                if !visited.insert(("container", Rc::as_ptr(&container) as usize)) {
+                    continue;
+                }
+                status = merged(
+                    status,
+                    registered(
+                        gc::register_existing::<_, ContainerDescriptor>(&container),
+                        Pending::Container(Rc::downgrade(&container)),
+                    )?,
+                );
+                let Ok(body) = container.try_borrow() else {
+                    pending(Pending::Container(Rc::downgrade(&container)));
+                    status = merged(status, MetadataStatus::Deferred);
+                    continue;
+                };
+                for item in &body.items {
+                    work.push_back(OwnerNode::Item(item.clone()));
+                }
+                for item in body.including_obsolete_items.iter().flatten() {
+                    work.push_back(OwnerNode::Item(item.clone()));
+                }
+                if let Some(item) = &body.containing_item {
+                    work.push_back(OwnerNode::Item(item.clone()));
+                }
+                if let Some(item) = &body.inventory_container {
+                    work.push_back(OwnerNode::Item(item.clone()));
+                }
+            }
+            OwnerNode::SavedInventory(items) => {
+                if !visited.insert(("savedInventoryItems", Rc::as_ptr(&items) as usize)) {
+                    continue;
+                }
+                status = merged(
+                    status,
+                    registered(
+                        gc::register_existing::<_, SavedInventoryDescriptor>(&items),
+                        Pending::SavedInventory(Rc::downgrade(&items)),
+                    )?,
+                );
+                let Ok(body) = items.try_borrow() else {
+                    pending(Pending::SavedInventory(Rc::downgrade(&items)));
+                    status = merged(status, MetadataStatus::Deferred);
+                    continue;
+                };
+                for item in body.iter().flatten() {
+                    work.push_back(OwnerNode::Item(item.clone()));
                 }
             }
             OwnerNode::Object(object) => {
@@ -926,6 +1074,16 @@ pub fn register_item(item: &ItemRef) -> Result<MetadataStatus, RegistrationFault
     register_owner_graph(OwnerNode::Item(Rc::clone(item)))
 }
 
+pub fn register_container(container: &ContainerRef) -> Result<MetadataStatus, RegistrationFault> {
+    register_owner_graph(OwnerNode::Container(container.clone()))
+}
+
+pub fn register_saved_inventory(
+    items: &SavedInventoryListRef,
+) -> Result<MetadataStatus, RegistrationFault> {
+    register_owner_graph(OwnerNode::SavedInventory(items.clone()))
+}
+
 pub fn register_object(object: &IsoObjectRef) -> Result<MetadataStatus, RegistrationFault> {
     register_owner_graph(OwnerNode::Object(Rc::clone(object)))
 }
@@ -955,6 +1113,16 @@ pub fn register_item_userdata(
         Pending::ItemUserdata(Rc::downgrade(item)),
     )?;
     Ok(merged(status, register_item(&item.item)?))
+}
+
+pub fn register_container_userdata(
+    container: &Rc<LuaItemContainer>,
+) -> Result<MetadataStatus, RegistrationFault> {
+    let status = registered(
+        gc::register_userdata::<_, ContainerUserdataDescriptor>(container),
+        Pending::ContainerUserdata(Rc::downgrade(container)),
+    )?;
+    Ok(merged(status, register_container(&container.container)?))
 }
 
 pub fn register_fluid_userdata(
@@ -990,6 +1158,12 @@ pub fn register_world_userdata(
 pub fn observe_item(item: &ItemRef) {
     let _ = register_item(item);
 }
+pub fn observe_container(container: &ContainerRef) {
+    let _ = register_container(container);
+}
+pub fn observe_saved_inventory(items: &SavedInventoryListRef) {
+    let _ = register_saved_inventory(items);
+}
 pub fn observe_object(object: &IsoObjectRef, native_class: &'static str) {
     if matches!(
         crate::bind_world_object::remember_class(object, native_class),
@@ -1005,6 +1179,8 @@ pub fn observe_object(object: &IsoObjectRef, native_class: &'static str) {
 
 pub fn install_observers() {
     pz_inventory::shared::install_item_observer(Some(observe_item));
+    pz_inventory::shared::install_container_observer(Some(observe_container));
+    pz_characters::character::save::install_saved_inventory_observer(Some(observe_saved_inventory));
     pz_world::object_slot::install_object_observer(Some(observe_object));
     pz_world::square_slot::install_square_observer(Some(observe_square));
     pz_world::sprite::runtime::install_sprite_observer(Some(observe_sprite));
@@ -1086,6 +1262,16 @@ pub fn retry_pending() {
                     let _ = register_item(&v);
                 }
             }
+            Pending::Container(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_container(&v);
+                }
+            }
+            Pending::SavedInventory(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_saved_inventory(&v);
+                }
+            }
             Pending::Object(w) => {
                 if let Some(v) = w.upgrade() {
                     let _ = register_object(&v);
@@ -1136,6 +1322,11 @@ pub fn retry_pending() {
                     let _ = register_item_userdata(&v);
                 }
             }
+            Pending::ContainerUserdata(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_container_userdata(&v);
+                }
+            }
             Pending::FluidUserdata(w) => {
                 if let Some(v) = w.upgrade() {
                     let _ = register_fluid_userdata(&v);
@@ -1171,3 +1362,6 @@ mod sprite_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod container_tests;

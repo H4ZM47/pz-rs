@@ -372,9 +372,8 @@ pub struct GameCharacter<I: 'static> {
     pub mod_data: Option<pz_kahlua::TableRef>,
     /// `getVisual()` (`IsoPlayer.humanVisual`) as saved; `None` until loaded.
     pub human_visual: Option<pz_world::save::visual::HumanVisual>,
-    /// `savedInventoryItems`: the list saved indices refer to, as the ids of
-    /// the inventory's items (`None` for an item that could not be loaded).
-    pub saved_inventory_items: Vec<Option<i32>>,
+    /// Native actual references, or an explicitly selected owned archive profile.
+    pub saved_inventory_items: save::SavedInventoryItems,
     /// `readBooks`.
     pub read_books: Vec<save::ReadBook>,
     /// `lastHourSleeped`.
@@ -510,7 +509,7 @@ impl<I: 'static> GameCharacter<I> {
             seen: zombie::SeenFields::default(),
             mod_data: None,
             human_visual: None,
-            saved_inventory_items: Vec::new(),
+            saved_inventory_items: save::SavedInventoryItems::actual_empty(),
             read_books: Vec::new(),
             last_hour_sleeped: 0,
             beard_grow_timing: -1.0,

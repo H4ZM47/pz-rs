@@ -1487,7 +1487,7 @@ impl IsoWorld {
     /// Each file phase releases the singletons before Lua runs. `OnSave`
     /// observes the live world after the prelude and before the chunks,
     /// cell and population, so its changes reach the saved files.
-    pub fn save_on_quit(&mut self, lua: &mut LuaManager) {
+    pub fn save_on_quit(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
         use pz_lua_api::world_save::{
             save_game_before_event, save_game_cell, save_game_finish, SaveGame, SaveReport,
         };
@@ -1552,26 +1552,27 @@ impl IsoWorld {
             let chars = shared_characters();
             let mut errors = Vec::new();
             if let Some(tables) = self.save_tables.as_ref() {
-                let items: &dyn pz_inventory::env::ItemEnv = match self.items.as_ref() {
-                    Some(i) => i,
-                    None => &pz_world::save::items::AllItems,
-                };
-                let env = pz_characters::character::save::SaveEnv { items, tables };
                 for (n, p) in local_players().iter().enumerate() {
                     let Some(p) = p else { continue };
-                    let r = pz_lua_api::world_save::local_player_data(
-                        &mut p.borrow_mut(),
+                    let items: &dyn pz_inventory::env::ItemEnv = self.items.as_ref().ok_or(
+                        pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+                            operation: "actual player save item environment", kind: None,
+                        })?;
+                    let env = pz_characters::character::save::SaveEnv { items, tables };
+                    let r = pz_lua_api::world_save::local_player_data_ref(
+                        p,
                         self.player_sql_ids[n],
                         &sm,
-                        &chars.borrow(),
+                        &chars,
                         &sim,
                         &env,
                     );
                     match r {
                         Ok(d) => rows.push((n, d)),
-                        Err(e) => errors.push(format!(
-                            "PlayerDB.saveLocalPlayersForce: IsoPlayer.save: {e}"
-                        )),
+                        Err(e) => {
+                            if e.is_host_fault() { return Err(e); }
+                            errors.push(format!("PlayerDB.saveLocalPlayersForce: IsoPlayer.save: {e}"));
+                        }
                     }
                 }
             }
@@ -1627,6 +1628,7 @@ impl IsoWorld {
         for e in report.errors.drain(..) {
             self.log_update_error(e);
         }
+        Ok(())
     }
 
     /// The stops of `IngameState.exit`: `WorldStreamer.stop` (the queued
@@ -1933,7 +1935,7 @@ mod quit_save_tests {
             end)
         "#,
         );
-        world.save_on_quit(&mut lua);
+        world.save_on_quit(&mut lua).unwrap();
         assert_eq!(
             lua.thread.globals().get_str("saveCount").as_num(),
             Some(1.0)
@@ -1979,7 +1981,7 @@ mod quit_save_tests {
                 Events.OnPostSave.Add(function() postSaveCount = postSaveCount + 1 end)
             "#,
             );
-            world.save_on_quit(&mut lua);
+            world.save_on_quit(&mut lua).unwrap();
             assert_eq!(
                 lua.thread.globals().get_str("saveCount").as_num(),
                 Some(0.0),

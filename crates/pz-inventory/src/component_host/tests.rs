@@ -126,6 +126,8 @@ fn actual_transfer_keeps_allocation_and_old_owner_pin_until_outer_retirement() {
         "detached native owner is retained outside all guards"
     );
     drop(retired);
+    // Allocation/strong-link entry pins also retire at the outer safe point.
+    crate::component_host::drain_retired_components();
     assert!(old_source.upgrade().is_none());
     let mut retired = RetiredComponents::new();
     detach_component_for_transfer(&target, ComponentType::FluidContainer, &mut retired).unwrap();

@@ -134,30 +134,50 @@ impl ItemModData {
                 table.save(writer);
                 Ok(())
             }
-            Self::Live(table) => {
-                // The VM codec currently writes directly into a growable Vec.
-                // It cannot bypass a native comparison buffer's capacity,
-                // cursor, and immediate-overflow contract.
-                if writer.is_native_buffer() {
-                    // The genuinely empty table needs only its zero count;
-                    // no direct-Vec traversal capability is selected.
-                    if table.try_is_empty()? {
-                        writer.i32(0);
-                        return Ok(());
-                    }
-                    return Err(ModDataError::Unsupported(
-                        "live ModData bounded native comparison writer",
-                    ));
-                }
-                Ok(table_save::try_save_table(
-                    table,
-                    &mut writer.buf,
-                    Flavor::ByteBuffer,
-                )?)
-            }
+            Self::Live(table) => save_live_table_to_writer(table, writer),
         }
     }
 }
+/// Save an actual VM table directly into the caller's current ByteBuffer
+/// writer. Callers must end item/character/table guards before entry. Native
+/// immediate writer control and completed prefixes are preserved unchanged.
+pub fn save_live_table_to_writer(table: &TableRef, writer: &mut Writer) -> ModDataResult<()> {
+    Ok(table_save::try_save_table_to(
+        table,
+        &mut ItemTableWriter(writer),
+        Flavor::ByteBuffer,
+    )?)
+}
+
+/// Adapter to the SAME output/cursor. Native Writer primitives stop by their
+/// private control marker immediately; no catch/reclassification/staging here.
+struct ItemTableWriter<'a>(&'a mut Writer);
+impl table_save::TableSaveWriter for ItemTableWriter<'_> {
+    fn write_i8(&mut self, value: i8) -> Result<(), TableCodecError> {
+        self.0.i8(value);
+        Ok(())
+    }
+    fn write_i32(&mut self, value: i32) -> Result<(), TableCodecError> {
+        self.0.i32(value);
+        Ok(())
+    }
+    fn write_f64(&mut self, value: f64) -> Result<(), TableCodecError> {
+        self.0.f64(value);
+        Ok(())
+    }
+    fn write_string(&mut self, value: &str, flavor: Flavor) -> Result<(), TableCodecError> {
+        match flavor {
+            Flavor::ByteBuffer => {
+                self.0.string(value);
+                Ok(())
+            }
+            Flavor::DataStream => Err(TableCodecError::Unsupported {
+                capability: "item ModData DataStream output adapter",
+            }),
+        }
+    }
+}
+
 impl Clone for ItemModData {
     /// Legacy synchronous archive copy; production callers preflight or use
     /// the fallible item archive operation before invoking derived Clone.
@@ -552,7 +572,7 @@ mod native_writer_tests {
     };
 
     #[test]
-    fn live_moddata_native_writer_rejects_direct_vec_before_any_table_bytes() {
+    fn live_moddata_native_writer_streams_fields_into_same_cursor_without_vec_escape() {
         let table = TableRef::new();
         let mut values = RetiredTableValues::new();
         table
@@ -562,22 +582,20 @@ mod native_writer_tests {
         let buffer = new_native_save_buffer();
         let mut writer = Writer::for_native_buffer(&buffer);
         catch_native_overflow(|| writer.i8(42)).unwrap();
-        let result = catch_native_overflow(|| data.save(&mut writer)).unwrap();
+        catch_native_overflow(|| data.save(&mut writer))
+            .unwrap()
+            .unwrap();
+        let mut expected = vec![42, 0, 0, 0, 1, 0, 0, 3, b'k', b'e', b'y', 1];
+        expected.extend(7.0f64.to_be_bytes());
+        assert_eq!(native_buffer_position(&buffer).unwrap(), expected.len());
         assert_eq!(
-            result,
-            Err(ModDataError::Unsupported(
-                "live ModData bounded native comparison writer"
-            ))
-        );
-        assert_eq!(native_buffer_position(&buffer).unwrap(), 1);
-        assert_eq!(
-            native_buffer_bytes(&buffer, 0, 5).unwrap(),
-            [42, 0, 0, 0, 0]
+            native_buffer_bytes(&buffer, 0, expected.len()).unwrap(),
+            expected
         );
         assert!(writer.buf.is_empty());
         let mut legacy = Writer::new();
         data.save(&mut legacy).unwrap();
-        assert_eq!(&legacy.buf[..4], &1_i32.to_be_bytes());
+        assert_eq!(legacy.buf, expected[1..]);
     }
 
     #[test]
@@ -623,5 +641,70 @@ mod native_writer_tests {
             Err(crate::io::NativeWriterFault::Overflow)
         );
         assert_eq!(native_buffer_position(&buffer).unwrap(), 1022);
+    }
+
+    #[test]
+    fn live_nested_borrow_preserves_native_parent_count_key_and_table_tag() {
+        let table = TableRef::new();
+        let nested = TableRef::new();
+        table.set_str("child", Value::Table(nested.clone()));
+        let data = ItemModData::Live(table);
+        let buffer = new_native_save_buffer();
+        let mut writer = Writer::for_native_buffer(&buffer);
+        let held = nested.try_borrow_body_mut().unwrap();
+        assert_eq!(
+            catch_native_overflow(|| data.save(&mut writer)).unwrap(),
+            Err(ModDataError::Borrowed("item ModData table"))
+        );
+        assert_eq!(native_buffer_position(&buffer).unwrap(), 13);
+        assert_eq!(
+            native_buffer_bytes(&buffer, 0, 13).unwrap(),
+            [0, 0, 0, 1, 0, 0, 5, b'c', b'h', b'i', b'l', b'd', 2]
+        );
+        assert!(writer.buf.is_empty());
+        drop(held);
+    }
+
+    #[test]
+    fn live_key_string_overflow_stops_before_held_nested_value_and_keeps_short_prefix() {
+        let table = TableRef::new();
+        let nested = TableRef::new();
+        table.set_str("abc", Value::Table(nested.clone()));
+        let data = ItemModData::Live(table);
+        let buffer = new_native_save_buffer();
+        let mut writer = Writer::for_native_buffer(&buffer);
+        crate::io::native_buffer_set_position(&buffer, 1015).unwrap();
+        let held = nested.try_borrow_body_mut().unwrap();
+        assert_eq!(
+            catch_native_overflow(|| data.save(&mut writer)),
+            Err(crate::io::NativeWriterFault::Overflow)
+        );
+        assert_eq!(native_buffer_position(&buffer).unwrap(), 1022);
+        assert_eq!(
+            native_buffer_bytes(&buffer, 1015, 1024).unwrap(),
+            [0, 0, 0, 1, 0, 0, 3, 0, 0]
+        );
+        assert!(writer.buf.is_empty());
+        drop(held);
+    }
+
+    #[test]
+    fn live_value_utf8_payload_overflow_keeps_tag_and_byte_length_without_partial_payload() {
+        let table = TableRef::new();
+        table.set_str("key", Value::str("éé"));
+        let data = ItemModData::Live(table);
+        let buffer = new_native_save_buffer();
+        let mut writer = Writer::for_native_buffer(&buffer);
+        crate::io::native_buffer_set_position(&buffer, 1008).unwrap();
+        assert_eq!(
+            catch_native_overflow(|| data.save(&mut writer)),
+            Err(crate::io::NativeWriterFault::Overflow)
+        );
+        assert_eq!(native_buffer_position(&buffer).unwrap(), 1021);
+        assert_eq!(
+            native_buffer_bytes(&buffer, 1008, 1024).unwrap(),
+            [0, 0, 0, 1, 0, 0, 3, b'k', b'e', b'y', 0, 0, 4, 0, 0, 0]
+        );
+        assert!(writer.buf.is_empty());
     }
 }

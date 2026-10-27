@@ -5,7 +5,31 @@ use pz_sound::backend::*;
 fn item(class: ItemClass, id: i32) -> ItemRef {
     let mut item = InventoryItem::create(Rc::new(ItemTemplate::new(class, "Base", "QueueItem")), 1);
     item.id = id;
-    pz_inventory::shared::new_item(item)
+    let item = pz_inventory::shared::new_item(item);
+    pz_inventory::component_host::drain_retired_components();
+    item
+}
+
+struct NativeOwnerMetadata {
+    item: Option<pz_inventory::shared::ItemObserver>,
+    container: Option<pz_inventory::shared::ContainerObserver>,
+}
+impl NativeOwnerMetadata {
+    fn new() -> Self {
+        Self {
+            item: pz_inventory::shared::install_item_observer(Some(crate::component_gc::observe_item)),
+            container: pz_inventory::shared::install_container_observer(Some(crate::component_gc::observe_container)),
+        }
+    }
+}
+impl Drop for NativeOwnerMetadata {
+    fn drop(&mut self) {
+        pz_inventory::shared::install_item_observer(self.item);
+        pz_inventory::shared::install_container_observer(self.container);
+        pz_inventory::component_host::drain_retired_components();
+        crate::component_gc::retry_pending();
+        let _ = pz_kahlua::gc::collect_tables();
+    }
 }
 
 #[test]
@@ -237,6 +261,7 @@ fn item_sound_delayed_final_owner_drop_can_reenter_sound_and_manager() {
     crate::bind_audio::install_sound_system(sound.clone());
     reset();
     let manager = shared_manager();
+    let _metadata = NativeOwnerMetadata::new();
     let dropped = Rc::new(std::cell::Cell::new(false));
     let bag = item(ItemClass::Container, 5);
     let weak = Rc::downgrade(&bag);
@@ -258,7 +283,15 @@ fn item_sound_delayed_final_owner_drop_can_reenter_sound_and_manager() {
         "first phase only queues delayed retirement"
     );
     assert!(!dropped.get());
+    assert!(manager.borrow().to_stop.iter().any(|pair| {
+        Rc::ptr_eq(&pair.item, &weak.upgrade().unwrap())
+    }), "first update must still own the actual delayed item");
     update();
+    assert!(manager.borrow().to_stop.is_empty());
+    pz_inventory::component_host::drain_retired_components();
+    assert!(weak.upgrade().is_some(), "actual bag owner cycle remains after manager release");
+    crate::component_gc::retry_pending();
+    assert!(matches!(pz_kahlua::gc::collect_tables(), pz_kahlua::gc::CollectionResult::Collected(_)));
     assert!(weak.upgrade().is_none());
     assert!(dropped.get());
     reset();

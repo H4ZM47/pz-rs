@@ -256,7 +256,9 @@ fn comparison_overflow_retries_before_later_provider_and_reentrant_save_shares_b
     let _restore = Restore::new();
     let t = asset_template(ItemClass::Normal, "Large");
     let item = actual(t.clone(), 1, 64);
-    item.borrow_mut().name = "x".repeat(4000);
+    crate::moddata::set_mod_data_value_ref(
+        &item, "payload", Some(pz_kahlua::Value::str(&"x".repeat(4000))),
+    ).unwrap();
     let root = crate::shared::SharedContainer::default().into_ref();
     root.borrow_mut().items.push(item.clone());
     let small_t = Rc::new(template(ItemClass::Normal, "Small"));
@@ -384,7 +386,7 @@ fn bag_tail_rereads_current_inventory_after_parent_asset_callback() {
         let ItemKind::Container(data) = &mut body.kind else {
             panic!("bag")
         };
-        data.container = new.clone();
+        data.container = new.clone().into();
         data.weight_reduction = 57;
         Ok(None)
     })));
@@ -546,4 +548,107 @@ fn selected_unported_subclass_payloads_stop_after_their_native_prefix() {
         .buf
         .windows(4)
         .any(|bytes| bytes == 0x1122_3344i32.to_be_bytes()));
+}
+
+
+#[test]
+fn nested_live_moddata_borrow_restores_actual_id_and_keeps_first_comparison_prefix() {
+    let _restore = Restore::new();
+    let t = Rc::new(template(ItemClass::Normal, "NestedTable"));
+    let item = actual(t.clone(), 1, 55);
+    let nested = pz_kahlua::TableRef::new();
+    crate::moddata::set_mod_data_value_ref(
+        &item,
+        "child",
+        Some(pz_kahlua::Value::Table(nested.clone())),
+    )
+    .unwrap();
+    let root = crate::shared::SharedContainer::default().into_ref();
+    root.borrow_mut().items.push(item.clone());
+    let held = nested.try_borrow_body_mut().unwrap();
+    let mut writer = Writer::new();
+    let failure = save_container_ref(&root, &mut writer, &Env(vec![t])).unwrap_err();
+    assert!(matches!(
+        failure,
+        ItemPersistenceError::Host(RuntimeHostError::Borrowed(_))
+    ));
+    assert_eq!(item.borrow().id, 55);
+    let mut prefix = Writer::new();
+    prefix.string("none");
+    prefix.bool(false);
+    prefix.i16(0);
+    assert_eq!(
+        writer.buf, prefix.buf,
+        "no run count or actual sized record before comparison completes"
+    );
+    let buffer = current_buffer();
+    let end = io::native_buffer_position(&buffer).unwrap();
+    let bytes = io::native_buffer_bytes(&buffer, 0, end).unwrap();
+    assert!(bytes.ends_with(&[0, 0, 0, 1, 0, 0, 5, b'c', b'h', b'i', b'l', b'd', 2]));
+    assert_eq!(
+        &bytes[..4],
+        &[0, 0, 0, 0],
+        "scratch length patch is success-only"
+    );
+    drop(held);
+}
+
+#[test]
+fn live_moddata_overflow_replays_before_provider_failure_and_restores_real_id() {
+    let _restore = Restore::new();
+    let t = asset_template(ItemClass::Normal, "LiveLarge");
+    let item = actual(t.clone(), 1, 91);
+    crate::moddata::set_mod_data_value_ref(
+        &item,
+        "payload",
+        Some(pz_kahlua::Value::str(&"x".repeat(4000))),
+    )
+    .unwrap();
+    let table = crate::moddata::get_mod_data_ref(&item).unwrap();
+    let root = crate::shared::SharedContainer::default().into_ref();
+    root.borrow_mut().items.push(item.clone());
+    let calls = Rc::new(Cell::new(0));
+    let seen = calls.clone();
+    let receiver = item.clone();
+    let parent = root.clone();
+    pz_render::install_texture_ref_loader(Some(Rc::new(move |_, name| {
+        assert_eq!(name, QUESTION_TEXTURE);
+        seen.set(seen.get() + 1);
+        assert!(
+            io::native_buffer_capacity(&current_buffer()).unwrap() > 1024,
+            "the whole string must fit before later native provider phase"
+        );
+        assert_eq!(receiver.try_borrow_mut().unwrap().id, 0);
+        assert!(parent.try_borrow_mut().is_ok());
+        Err(pz_render::TextureHostError::Borrowed(
+            "after ModData overflow replay",
+        ))
+    })));
+    let mut writer = Writer::new();
+    let error = save_container_ref(&root, &mut writer, &Env(vec![t])).unwrap_err();
+    assert!(matches!(
+        error,
+        ItemPersistenceError::Host(RuntimeHostError::Borrowed("after ModData overflow replay"))
+    ));
+    assert_eq!(
+        calls.get(),
+        1,
+        "overflow cannot invoke later provider or become Native absence"
+    );
+    assert_eq!(item.borrow().id, 91);
+    assert!(table.ptr_eq(&crate::moddata::get_mod_data_ref(&item).unwrap()));
+    assert_eq!(
+        table
+            .try_rawget(&pz_kahlua::Value::str("payload"))
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .len(),
+        4000
+    );
+    let mut prefix = Writer::new();
+    prefix.string("none");
+    prefix.bool(false);
+    prefix.i16(0);
+    assert_eq!(writer.buf, prefix.buf);
 }

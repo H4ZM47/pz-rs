@@ -54,7 +54,7 @@ use pz_inventory::{InventoryItem, ItemClass};
 use pz_kahlua::value::LuaObject;
 use pz_kahlua::{LuaError, LuaResult, NativeCall, Thread, Value};
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
@@ -78,7 +78,7 @@ pub struct LuaRef(pub Value);
 pub struct LuaItemContainer {
     pub container: ContainerRef,
     /// `getItems()` (the same list object each call).
-    items_list: RefCell<Option<Value>>,
+    pub(crate) items_list: RefCell<Option<Value>>,
 }
 
 impl LuaObject for LuaItemContainer {
@@ -97,7 +97,10 @@ impl LuaObject for LuaItemContainer {
 }
 
 thread_local! {
-    static OBJECTS: RefCell<HashMap<usize, Weak<dyn LuaObject>>> = RefCell::new(HashMap::new());
+    static OBJECTS: RefCell<HashMap<usize, Weak<LuaItemContainer>>> = RefCell::new(HashMap::new());
+    static NEXT_OBJECT_PRUNE: Cell<usize> = const { Cell::new(64) };
+    #[cfg(test)]
+    static OBJECT_PRUNES: Cell<usize> = const { Cell::new(0) };
 }
 
 /// The Lua object of `c` (the same object while it is alive). This is
@@ -105,23 +108,40 @@ thread_local! {
 /// inventory is `c`.
 pub fn container_value(c: &ContainerRef) -> Value {
     let key = Rc::as_ptr(c) as *const () as usize;
-    OBJECTS.with(|m| {
-        let mut m = m.borrow_mut();
-        if let Some(o) = m.get(&key).and_then(Weak::upgrade) {
-            if let Some(l) = o.as_any().downcast_ref::<LuaItemContainer>() {
-                if Rc::ptr_eq(&l.container, c) {
-                    return Value::Object(o);
-                }
+    let object = OBJECTS.with(|objects| {
+        let mut objects = objects.borrow_mut();
+        if let Some(object) = objects.get(&key).and_then(Weak::upgrade) {
+            if Rc::ptr_eq(&object.container, c) {
+                return object;
             }
         }
-        let o: Rc<dyn LuaObject> = Rc::new(LuaItemContainer {
+        objects.remove(&key);
+        // Prune on pressure instead of scanning all live containers at every
+        // allocation/getter. Weak stale hits are discarded directly above.
+        NEXT_OBJECT_PRUNE.with(|next| {
+            if objects.len() >= next.get() {
+                objects.retain(|_, weak| weak.strong_count() != 0);
+                next.set(objects.len().saturating_mul(2).saturating_add(64).max(64));
+                #[cfg(test)]
+                OBJECT_PRUNES.with(|count| count.set(count.get() + 1));
+            }
+        });
+        let object = Rc::new(LuaItemContainer {
             container: c.clone(),
             items_list: RefCell::new(None),
         });
-        m.retain(|_, w| w.strong_count() > 0);
-        m.insert(key, Rc::downgrade(&o));
-        Value::Object(o)
-    })
+        objects.insert(key, Rc::downgrade(&object));
+        object
+    });
+    // Register the ACTUAL typed allocation before erasing it. A cache hit
+    // retries metadata too; no container body borrow is needed for identity.
+    let _ = crate::component_gc::register_container_userdata(&object);
+    Value::Object(object)
+}
+
+#[cfg(test)]
+pub(crate) fn container_cache_prune_count() -> usize {
+    OBJECT_PRUNES.with(Cell::get)
 }
 
 /// The container of `v`, if it is a container object.
@@ -313,8 +333,34 @@ impl ItemOwner for ContainerOwner {
 }
 
 /// `item.getContainer()` as a Lua value.
-pub fn item_container_value(item: &ItemRef) -> Value {
-    container_of(item).map_or(Value::Nil, |c| container_value(&c))
+pub fn item_container_value(item: &ItemRef) -> LuaResult<Value> {
+    Ok(shared::try_container_of(item)
+        .map_err(crate::bind_world_object::host_error)?
+        .map_or(Value::Nil, |container| container_value(&container)))
+}
+
+/// Actual getter phases, with no legacy expect or coordinate/ID projection.
+fn actual_outermost_container(item: &ItemRef) -> pz_entity::runtime_load::HostResult<Option<ContainerRef>> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let Some(mut outer) = shared::try_container_of(item)? else { return Ok(None) };
+    if outer.try_borrow().map_err(|_| RuntimeHostError::Borrowed("outermost container type"))?.kind == "floor" {
+        return Ok(None);
+    }
+    loop {
+        let containing = outer.try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("outermost containingItem"))?
+            .containing_item.clone();
+        let next = match containing {
+            Some(bag) => shared::try_container_of(&bag)?,
+            None => None,
+        };
+        let Some(next) = next else { break };
+        if next.try_borrow().map_err(|_| RuntimeHostError::Borrowed("outer container type"))?.kind == "floor" {
+            break;
+        }
+        outer = next;
+    }
+    Ok(Some(outer))
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -1513,15 +1559,31 @@ fn has_fluid_container(i: &InventoryItem) -> bool {
 pub(crate) fn on_fluid_update(item: &ItemRef) -> pz_entity::runtime_load::HostResult<()> {
     use pz_entity::runtime_load::RuntimeHostError;
     let borrowed = |operation| RuntimeHostError::Borrowed(operation);
-    let Some(mut outer) = shared::container_of(item) else { return Ok(()); };
+    let Some(mut outer) = shared::try_container_of(item)? else { return Ok(()); };
     if outer.try_borrow().map_err(|_| borrowed("fluid outermost container"))?.kind == "floor" {
         return Ok(());
     }
     loop {
-        let containing = outer.try_borrow().map_err(|_| borrowed("fluid containing item"))?
-            .containing_item.as_ref().and_then(Weak::upgrade);
-        let Some(next) = containing.and_then(|bag| shared::container_of(&bag)) else { break; };
-        if next.try_borrow().map_err(|_| borrowed("fluid outer container kind"))?.kind == "floor" { break; }
+        let containing = outer
+            .try_borrow()
+            .map_err(|_| borrowed("fluid containing item"))?
+            .containing_item
+            .clone();
+        let next = match containing {
+            Some(bag) => shared::try_container_of(&bag)?,
+            None => None,
+        };
+        let Some(next) = next else {
+            break;
+        };
+        if next
+            .try_borrow()
+            .map_err(|_| borrowed("fluid outer container kind"))?
+            .kind
+            == "floor"
+        {
+            break;
+        }
         outer = next;
     }
     let parent = {
@@ -1539,7 +1601,7 @@ pub(crate) fn on_fluid_update(item: &ItemRef) -> pz_entity::runtime_load::HostRe
     };
     if instance_of(&parent, ISO_PLAYER) {
         // The original reads item.getContainer again after the predicate.
-        if let Some(direct) = shared::container_of(item) {
+        if let Some(direct) = shared::try_container_of(item)? {
             let mut direct = direct.try_borrow_mut().map_err(|_| borrowed("fluid direct container flags"))?;
             direct.draw_dirty = true;
             direct.dirty = true;
@@ -3536,24 +3598,34 @@ pub fn register(thread: &mut Thread) {
     );
     ib.method("getContainer", |c| {
         let item = opt_item_arg(c, 0)?.ok_or_else(npe)?;
-        Ok(c.push(item_container_value(&item)))
+        Ok(c.push(item_container_value(&item)?))
     });
     ib.method("getOutermostContainer", |c| {
         let item = opt_item_arg(c, 0)?.ok_or_else(npe)?;
-        let v = shared::outermost_container_of(&item).map_or(Value::Nil, |o| container_value(&o));
+        let v = actual_outermost_container(&item)
+            .map_err(crate::bind_world_object::host_error)?
+            .map_or(Value::Nil, |outer| container_value(&outer));
         Ok(c.push(v))
     });
     register_bag(thread);
 }
 
 /// The bag item and its argument checks.
+fn actual_bag_inventory(item: &ItemRef) -> LuaResult<Option<ContainerRef>> {
+    let field = {
+        let body = item.try_borrow().map_err(|_| crate::bind_world_object::borrowed("bag inventory field"))?;
+        match &body.kind {
+            ItemKind::Container(data) => Some(data.container.slot().cloned()),
+            _ => None,
+        }
+    };
+    field.ok_or_else(|| class_cast(&item_value(item), "zombie.inventory.types.InventoryContainer"))
+}
+
 fn bag_this(c: &NativeCall<'_>) -> LuaResult<(ItemRef, ContainerRef)> {
     let item = opt_item_arg(c, 0)?.ok_or_else(npe)?;
-    let inv = bag(&item).ok_or_else(|| {
-        class_cast(
-            &item_value(&item),
-            "zombie.inventory.types.InventoryContainer",
-        )
+    let inv = actual_bag_inventory(&item)?.ok_or_else(|| {
+        crate::bind_world_object::unsupported("native null InventoryContainer.container receiver")
     })?;
     Ok((item, inv))
 }
@@ -3571,22 +3643,66 @@ fn register_bag(thread: &mut Thread) {
         Some(crate::bind_items::INVENTORY_ITEM_CLASS),
     );
     let inventory = |c: &mut NativeCall<'_>| -> LuaResult<usize> {
-        let (_, inv) = bag_this(c)?;
-        Ok(c.push(container_value(&inv)))
+        let item = opt_item_arg(c, 0)?.ok_or_else(npe)?;
+        // Native getInventory is the direct nullable field return. Only
+        // methods dereferencing that field select a null-receiver diagnostic.
+        let value = actual_bag_inventory(&item)?.map_or(Value::Nil, |inv| container_value(&inv));
+        Ok(c.push(value))
     };
     b.method("getInventory", inventory);
     b.method("getItemContainer", inventory);
     b.method("setItemContainer", |c| {
-        let (item, _) = bag_this(c)?;
-        let v = c.arg(1);
-        let Some(inv) = container_of_value(&v) else {
-            // A null container: the shared form always has one.
-            return Err(LuaError::runtime(
-                "InventoryContainer.setItemContainer(null) is not supported",
-            ));
+        let item = opt_item_arg(c, 0)?.ok_or_else(npe)?;
+        if c.nargs() != 2 {
+            return Err(LuaError::runtime(format!(
+                "expected 1 argument, got {}",
+                c.nargs().saturating_sub(1)
+            )));
+        }
+        let argument = c.arg(1);
+        let incoming = match &argument {
+            Value::Nil => None,
+            Value::Object(object) => {
+                match (&**object as &dyn Any).downcast_ref::<LuaItemContainer>() {
+                    Some(container) => Some(container.container.clone()),
+                    None => return Err(class_cast(&argument, ITEM_CONTAINER_CLASS)),
+                }
+            }
+            _ => return Err(class_cast(&argument, ITEM_CONTAINER_CLASS)),
         };
-        if let ItemKind::Container(d) = &mut item.borrow_mut().kind {
-            d.container = inv;
+        // The native setter is only a nullable field write. In particular it
+        // never reads the old container or rewrites either parent-bag slot.
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_erased(item.clone());
+        if let Some(container) = &incoming {
+            retired.push_erased(container.clone());
+            shared::observe_container(container);
+        }
+        shared::observe_item(&item);
+        let result: LuaResult<bool> = (|| {
+            let mut body = item
+                .try_borrow_mut()
+                .map_err(|_| crate::bind_world_object::borrowed("bag container setter"))?;
+            match &mut body.kind {
+                ItemKind::Container(data) => {
+                    data.container.replace(incoming.as_ref(), &mut retired);
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        })();
+        // Both rejection and replacement can hold a final actual owner. Drop
+        // those pins only at the outer host boundary, after all foreign guards.
+        pz_inventory::component_host::retire_components(retired);
+        shared::observe_item(&item);
+        if let Some(container) = &incoming {
+            shared::observe_container(container);
+        }
+        if !result? {
+            return Err(class_cast(
+                &item_value(&item),
+                "zombie.inventory.types.InventoryContainer",
+            ));
         }
         Ok(0)
     });
@@ -3668,3 +3784,6 @@ fn set_capacity(s: &ContainerRef, cap: i32, me: &Value) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod actual_ref_tests;

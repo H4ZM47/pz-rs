@@ -81,7 +81,7 @@ fn construct_floor_prefix(
             i.world_z_rotation = rand.next_range(0, 360) as f32;
         }
     }
-    shared::set_container(item, None);
+    shared::try_set_container(item, None).map_err(WorldItemPlacementError::Component)?;
     let xoff = if x == 0.0 {
         rand.next(1000) as f32 / 1000.0
     } else {

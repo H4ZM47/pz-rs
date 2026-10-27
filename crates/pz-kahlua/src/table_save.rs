@@ -152,25 +152,58 @@ pub fn save_table(t: &TableRef, out: &mut Vec<u8>, flavor: Flavor) -> io::Result
     try_save_table(t, out, flavor).map_err(legacy_io_error)
 }
 
+/// Direct primitive sink for the native table save phases. Implementations
+/// must stop at the first failed primitive and preserve its completed prefix.
+/// String writes must preserve the selected length-prefix/bulk-payload order.
+/// The sink may not mutate source Lua tables or invoke arbitrary callbacks;
+/// the existing stable-table snapshot/depth profile remains explicit.
+pub trait TableSaveWriter {
+    fn write_i8(&mut self, value: i8) -> Result<(), TableCodecError>;
+    fn write_i32(&mut self, value: i32) -> Result<(), TableCodecError>;
+    fn write_f64(&mut self, value: f64) -> Result<(), TableCodecError>;
+    fn write_string(&mut self, value: &str, flavor: Flavor) -> Result<(), TableCodecError>;
+}
+impl TableSaveWriter for Vec<u8> {
+    fn write_i8(&mut self, value: i8) -> Result<(), TableCodecError> {
+        self.put_i8(value);
+        Ok(())
+    }
+    fn write_i32(&mut self, value: i32) -> Result<(), TableCodecError> {
+        self.put_i32(value);
+        Ok(())
+    }
+    fn write_f64(&mut self, value: f64) -> Result<(), TableCodecError> {
+        self.put_f64(value);
+        Ok(())
+    }
+    fn write_string(&mut self, value: &str, flavor: Flavor) -> Result<(), TableCodecError> {
+        match flavor {
+            Flavor::ByteBuffer => self.write_string_utf(Some(value)),
+            Flavor::DataStream => self.write_string_chars(Some(value)),
+        }
+        Ok(())
+    }
+}
+
 struct SaveFrame {
     _table: TableRef,
     entries: std::vec::IntoIter<(Value, Value)>,
     depth: usize,
 }
 
-fn save_frame(
+fn save_frame<W: TableSaveWriter + ?Sized>(
     table: &TableRef,
-    out: &mut Vec<u8>,
+    out: &mut W,
     depth: usize,
 ) -> Result<SaveFrame, TableCodecError> {
     depth_check(depth)?;
     let entries = table.try_entries()?;
-    out.put_i32(
+    out.write_i32(
         entries
             .iter()
             .filter(|(key, value)| can_save(key, value))
             .count() as i32,
-    );
+    )?;
     Ok(SaveFrame {
         _table: table.clone(),
         entries: entries.into_iter(),
@@ -178,24 +211,38 @@ fn save_frame(
     })
 }
 
-fn save_scalar(out: &mut Vec<u8>, sbyt: i8, value: &Value, flavor: Flavor) {
-    out.put_i8(sbyt);
+fn save_scalar<W: TableSaveWriter + ?Sized>(
+    out: &mut W,
+    sbyt: i8,
+    value: &Value,
+    flavor: Flavor,
+) -> Result<(), TableCodecError> {
+    out.write_i8(sbyt)?;
     match value {
-        Value::Str(s) => match flavor {
-            Flavor::ByteBuffer => out.write_string_utf(Some(s)),
-            Flavor::DataStream => out.write_string_chars(Some(s)),
-        },
-        Value::Num(n) => out.put_f64(*n),
-        Value::Bool(b) => out.put_bool(*b),
+        Value::Str(s) => out.write_string(s, flavor)?,
+        Value::Num(n) => out.write_f64(*n)?,
+        Value::Bool(b) => out.write_i8(*b as i8)?,
         _ => unreachable!("scalar tag selected only after native save filtering"),
     }
+    Ok(())
 }
 
-/// Saves directly into the caller's output, including the completed prefix
-/// when a later nested table cannot be borrowed. No success-only staging.
+/// Compatibility Vec sink, using the same direct codec as bounded hosts.
 pub fn try_save_table(
     table: &TableRef,
     out: &mut Vec<u8>,
+    flavor: Flavor,
+) -> Result<(), TableCodecError> {
+    try_save_table_to(table, out, flavor)
+}
+
+/// Saves directly into the caller's primitive sink, including the completed
+/// prefix when a later nested table is held or a primitive overflows. Private
+/// native writer control unwinds pass through unchanged; this codec catches
+/// neither overflow nor unrelated panics and never stages completed bytes.
+pub fn try_save_table_to<W: TableSaveWriter + ?Sized>(
+    table: &TableRef,
+    out: &mut W,
     flavor: Flavor,
 ) -> Result<(), TableCodecError> {
     let mut stack = vec![save_frame(table, out, 0)?];
@@ -208,12 +255,12 @@ pub fn try_save_table(
         let (Some(kb), Some(vb)) = (key_byte(&key), value_byte(&value)) else {
             continue;
         };
-        save_scalar(out, kb, &key, flavor);
+        save_scalar(out, kb, &key, flavor)?;
         if let Value::Table(child) = value {
-            out.put_i8(vb);
+            out.write_i8(vb)?;
             stack.push(save_frame(&child, out, depth + 1)?);
         } else {
-            save_scalar(out, vb, &value, flavor);
+            save_scalar(out, vb, &value, flavor)?;
         }
     }
     Ok(())
@@ -613,3 +660,7 @@ mod tests {
 #[cfg(test)]
 #[path = "table_save_native_tests.rs"]
 mod native_tests;
+
+#[cfg(test)]
+#[path = "table_save_sink_tests.rs"]
+mod sink_tests;

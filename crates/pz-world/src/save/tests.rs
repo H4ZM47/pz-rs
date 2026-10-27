@@ -489,8 +489,7 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
             .containing_item
             .as_ref()
             .unwrap()
-            .upgrade()
-            .unwrap(),
+            .clone(),
         &actual
     ));
     let loaded_key = contents.borrow().items[0].clone();

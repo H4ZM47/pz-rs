@@ -8,7 +8,9 @@ fn item(id: i32) -> ItemRef {
         1,
     );
     i.id = id;
-    pz_inventory::shared::new_item(i)
+    let item = pz_inventory::shared::new_item(i);
+    pz_inventory::component_host::drain_retired_components();
+    item
 }
 
 fn thread() -> Thread {
@@ -24,6 +26,28 @@ fn run(t: &mut Thread, src: &str) -> Vec<Value> {
     let f = pz_kahlua::stdlib::load_string(src, Some("process-items-test"), t.globals().clone())
         .unwrap();
     t.call(&f, &[]).unwrap()
+}
+
+struct NativeOwnerMetadata {
+    item: Option<pz_inventory::shared::ItemObserver>,
+    container: Option<pz_inventory::shared::ContainerObserver>,
+}
+impl NativeOwnerMetadata {
+    fn new() -> Self {
+        Self {
+            item: pz_inventory::shared::install_item_observer(Some(crate::component_gc::observe_item)),
+            container: pz_inventory::shared::install_container_observer(Some(crate::component_gc::observe_container)),
+        }
+    }
+}
+impl Drop for NativeOwnerMetadata {
+    fn drop(&mut self) {
+        pz_inventory::shared::install_item_observer(self.item);
+        pz_inventory::shared::install_container_observer(self.container);
+        pz_inventory::component_host::drain_retired_components();
+        crate::component_gc::retry_pending();
+        let _ = pz_kahlua::gc::collect_tables();
+    }
 }
 
 #[test]
@@ -209,7 +233,7 @@ fn process_container_floor_skips_sound_removal_but_nonfloor_retires() {
 }
 
 #[test]
-fn process_cell_replacement_drops_final_item_owners_outside_world_borrow() {
+fn process_cell_replacement_and_outer_gc_drop_final_item_owners_outside_world_borrow() {
     struct ReenterWorld(Rc<std::cell::Cell<bool>>);
     impl Drop for ReenterWorld {
         fn drop(&mut self) {
@@ -220,6 +244,7 @@ fn process_cell_replacement_drops_final_item_owners_outside_world_borrow() {
         }
     }
     crate::bind_world::set_cell(Some(pz_world::IsoCell::default()));
+    let _metadata = NativeOwnerMetadata::new();
     let dropped = Rc::new(std::cell::Cell::new(false));
     let bag = pz_inventory::shared::new_item(InventoryItem::create(
         Rc::new(ItemTemplate::new(ItemClass::Container, "Base", "Bag")),
@@ -237,6 +262,11 @@ fn process_cell_replacement_drops_final_item_owners_outside_world_borrow() {
     });
     drop(bag);
     crate::bind_world::set_cell(Some(pz_world::IsoCell::default()));
+    pz_inventory::component_host::drain_retired_components();
+    assert!(weak.upgrade().is_some(), "real bag backedges await actual collection");
+    assert!(!dropped.get());
+    crate::component_gc::retry_pending();
+    assert!(matches!(pz_kahlua::gc::collect_tables(), pz_kahlua::gc::CollectionResult::Collected(_)));
     assert!(weak.upgrade().is_none());
     assert!(dropped.get());
     crate::bind_world::set_cell(None);

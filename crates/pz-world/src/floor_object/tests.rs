@@ -64,8 +64,7 @@ fn floor_object_explicit_handles_alias_but_archive_clone_is_deep() {
             .containing_item
             .as_ref()
             .unwrap()
-            .upgrade()
-            .unwrap(),
+            .clone(),
         &copy_item
     ));
     assert!(!Rc::ptr_eq(

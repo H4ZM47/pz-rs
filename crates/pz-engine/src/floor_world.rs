@@ -182,7 +182,12 @@ impl pz_world::square_mutation::NativeFloorHost for LiveNativeFloorHost<'_> {
         retired: &mut pz_entity::RetiredComponents,
     ) -> HostResult<()> {
         self.0.validate()?;
-        pz_world::square_mutation::native_floor_add_to_world(object, square, retired)
+        pz_world::square_mutation::native_floor_add_to_world(
+            object,
+            square,
+            &self.0.sprite_tables,
+            retired,
+        )
     }
     fn designation_item_on_ground(
         &mut self,

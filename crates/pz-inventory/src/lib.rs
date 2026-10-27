@@ -33,6 +33,7 @@ pub mod naming;
 pub mod saved;
 pub mod shared;
 pub mod shared_save;
+pub mod shared_load;
 pub mod template;
 pub mod visual;
 pub mod world_item;

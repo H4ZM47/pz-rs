@@ -1884,6 +1884,7 @@ dependencies = [
  "pz-audio",
  "pz-bullet",
  "pz-core",
+ "pz-entity",
  "pz-fs",
  "pz-inventory",
  "pz-kahlua",

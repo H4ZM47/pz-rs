@@ -7,15 +7,28 @@ use std::cell::Cell;
 struct Restore {
     item: Option<pz_inventory::shared::ItemObserver>,
     object: Option<pz_world::object_slot::ObjectObserver>,
+    container: Option<pz_inventory::shared::ContainerObserver>,
+    saved: Option<fn(&SavedInventoryListRef)>,
+    square: Option<pz_world::square_slot::SquareObserver>,
+    sprite: Option<pz_world::sprite::runtime::SpriteObserver>,
+    instance: Option<pz_world::sprite::runtime::SpriteInstanceObserver>,
+    texture: Option<pz_render::TextureObserver>,
 }
 
 impl Restore {
     fn new() -> Self {
+        pz_inventory::component_host::drain_retired_components();
         let _ = gc::collect_tables();
         let _ = take_registration_faults();
         Self {
             item: pz_inventory::shared::install_item_observer(Some(observe_item)),
             object: pz_world::object_slot::install_object_observer(Some(observe_object)),
+            container: pz_inventory::shared::install_container_observer(Some(observe_container)),
+            saved: pz_characters::character::save::install_saved_inventory_observer(Some(observe_saved_inventory)),
+            square: pz_world::square_slot::install_square_observer(Some(observe_square)),
+            sprite: pz_world::sprite::runtime::install_sprite_observer(Some(observe_sprite)),
+            instance: pz_world::sprite::runtime::install_instance_observer(Some(observe_sprite_instance)),
+            texture: pz_render::install_texture_observer(Some(observe_texture)),
         }
     }
 }
@@ -24,6 +37,12 @@ impl Drop for Restore {
     fn drop(&mut self) {
         pz_inventory::shared::install_item_observer(self.item);
         pz_world::object_slot::install_object_observer(self.object);
+        pz_inventory::shared::install_container_observer(self.container);
+        pz_characters::character::save::install_saved_inventory_observer(self.saved);
+        pz_world::square_slot::install_square_observer(self.square);
+        pz_world::sprite::runtime::install_sprite_observer(self.sprite);
+        pz_world::sprite::runtime::install_instance_observer(self.instance);
+        pz_render::install_texture_observer(self.texture);
         pz_inventory::component_host::drain_retired_components();
         retry_pending();
         let _ = gc::collect_tables();
@@ -43,6 +62,8 @@ fn item(class: ItemClass) -> (ItemRef, ComponentRef) {
         .unwrap();
     let item = pz_inventory::shared::try_new_item(item).unwrap();
     let component = item.borrow().get_fluid_ref().unwrap().unwrap();
+    // Constructor/adoption pins retire at this guard-free host boundary.
+    pz_inventory::component_host::drain_retired_components();
     (item, component)
 }
 
@@ -469,6 +490,7 @@ fn actual_attribute_instance_guard_defers_gc_and_raw_component_keeps_its_real_ow
         .push_ref_if_absent(component.clone())
         .unwrap();
     let item = pz_inventory::shared::try_new_item(value).unwrap();
+    pz_inventory::component_host::drain_retired_components();
     let weak_item = Rc::downgrade(&item);
     drop(retired);
     drop(item);
@@ -574,6 +596,7 @@ fn native_script_template_and_instance_edges_collect_without_native_reset_or_poo
         .push_ref_if_absent(script_info.clone())
         .unwrap();
     let item = pz_inventory::shared::try_new_item(value).unwrap();
+    pz_inventory::component_host::drain_retired_components();
     let weak_item = Rc::downgrade(&item);
     let weak_info = Rc::downgrade(&script_info);
     let weak_definition = Rc::downgrade(&definition);

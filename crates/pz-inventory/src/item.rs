@@ -15,7 +15,7 @@ use crate::env::ItemEnv;
 use crate::io::{has, read_header, BitHeaderWrite, Reader, SaveError, SaveResult, Writer};
 use crate::item_components::ItemComponents;
 use crate::moddata::{ItemModData, ModDataResult};
-use crate::shared::{ContainerRef, SharedContainer};
+use crate::shared::SharedContainer;
 use crate::template::{ItemClass, ItemTemplate};
 use crate::visual::ItemVisual;
 use pz_kahlua::Value;
@@ -363,25 +363,36 @@ pub struct MoveableData {
 /// shared object, see [`crate::shared::new_item`]).
 #[derive(Debug)]
 pub struct ContainerData {
+    /// Actual InventoryContainer.capacity; distinct from current child capacity.
+    pub capacity: i32,
     pub weight_reduction: i32,
-    pub container: ContainerRef,
+    pub container: crate::shared::ContainerField,
 }
 
 impl Clone for ContainerData {
     /// A copy of the bag holds a copy of its contents.
     fn clone(&self) -> Self {
         ContainerData {
+            capacity: self.capacity,
             weight_reduction: self.weight_reduction,
-            container: self.container.borrow().deep_clone(),
+            container: self
+                .container
+                .slot()
+                .map(|c| c.borrow().deep_clone().into())
+                .unwrap_or_default(),
         }
     }
 }
 
 impl PartialEq for ContainerData {
     fn eq(&self, o: &Self) -> bool {
-        self.weight_reduction == o.weight_reduction
-            && (Rc::ptr_eq(&self.container, &o.container)
-                || *self.container.borrow() == *o.container.borrow())
+        self.capacity == o.capacity
+            && self.weight_reduction == o.weight_reduction
+            && match (self.container.slot(), o.container.slot()) {
+                (Some(a), Some(b)) => Rc::ptr_eq(a, b) || *a.borrow() == *b.borrow(),
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
@@ -420,6 +431,7 @@ pub struct InventoryItem {
     /// Actual `worldItem` reference. Runtime identity is deliberately excluded
     /// from Rust archive copies/equality; native item load preserves this slot.
     pub(crate) world_item: crate::world_item::WorldItemSlot,
+    pub(crate) container: crate::shared::ItemContainerSlot,
     pub template: Rc<ItemTemplate>,
     /// `itemType`: a per-instance reference, independent of later script
     /// changes. `isItemType` compares the canonical object by identity.
@@ -568,8 +580,9 @@ impl InventoryItem {
                 Box::default(),
             ),
             ItemClass::Container => ItemKind::Container(Box::new(ContainerData {
+                capacity: t.capacity,
                 weight_reduction: t.weight_reduction.clamp(0, 100),
-                container: SharedContainer::new_bag(t).into_ref(),
+                container: SharedContainer::new_bag(t).into_ref().into(),
             })),
             ItemClass::Map => ItemKind::Map {
                 map_id: String::new(),
@@ -579,6 +592,7 @@ impl InventoryItem {
         };
         InventoryItem {
             world_item: crate::world_item::WorldItemSlot::default(),
+            container: crate::shared::ItemContainerSlot::default(),
             item_type: t.item_type.clone(),
             equipped_location: if matches!(kind, ItemKind::Container(_) | ItemKind::Radio(..)) {
                 t.script

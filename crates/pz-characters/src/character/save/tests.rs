@@ -222,7 +222,7 @@ fn player_record_round_trips() {
     let mut c = dressed(&sm, &mut chars, &ctx, &locs);
     let data = save(&sm, &chars, &ctx, &mut c);
     // The written order groups the two identical things.
-    assert_eq!(c.saved_inventory_items, [Some(101), Some(103), Some(102), Some(104)]);
+    assert_eq!(c.saved_inventory_items.archive_ids().unwrap(), &[Some(101), Some(103), Some(102), Some(104)]);
     let mut back = load(&sm, &mut chars, &ctx, &data);
     assert_eq!((back.vars.x, back.vars.y), (10_123.5, 9_876.25));
     assert_eq!(back.vars.dir, pz_world::square::IsoDirections::SW);
@@ -288,7 +288,7 @@ fn saved_indices_count_items_that_cannot_load() {
     c.items.secondary_hand_item = Some(102);
     let data = save(&sm, &chars, &ctx, &mut c);
     let back = load(&sm, &mut chars, &ctx, &data);
-    assert_eq!(back.saved_inventory_items, [Some(101), None, Some(104)]);
+    assert_eq!(back.saved_inventory_items.archive_ids().unwrap(), &[Some(101), None, Some(104)]);
     let ids: Vec<i32> = back.items.inventory.borrow().to_container().items.iter().map(|i| i.id()).collect();
     assert_eq!(ids, [101, 104]);
     assert_eq!(back.items.worn_ids(), [101, 104]);

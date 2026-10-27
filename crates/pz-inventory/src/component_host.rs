@@ -145,19 +145,20 @@ pub fn notify_fluid_update(outcome: &FluidRecalcOutcome) -> HostResult<()> {
     }
     // InventoryItem and every current item subclass inherit the exact empty
     // GameEntity callback. The dirty predicate still needs actual parent type.
-    let mut container = shared::container_of(&item);
+    let mut container = shared::try_container_of(&item)?;
     let mut outer = None;
     while let Some(current) = container {
         let containing = {
             let body = current
                 .try_borrow()
                 .map_err(|_| RuntimeHostError::Borrowed("fluid outermost container"))?;
-            body.containing_item
-                .as_ref()
-                .and_then(std::rc::Weak::upgrade)
+            body.containing_item.clone()
         };
         outer = Some(current);
-        container = containing.and_then(|bag| shared::container_of(&bag));
+        container = match containing {
+            Some(bag) => shared::try_container_of(&bag)?,
+            None => None,
+        };
     }
     if let Some(outer) = outer {
         if outer
@@ -718,13 +719,12 @@ pub fn load_item_ref(
     ) {
         return Err(fail(error, retired, reader.pos, None));
     }
-    let nested = match item.try_borrow() {
-        Ok(body) => matches!(
-            body.kind,
-            crate::ItemKind::Container(_)
-                | crate::ItemKind::Weapon(_)
-                | crate::ItemKind::Map { .. }
-        ),
+    let subclass = match item.try_borrow() {
+        Ok(body) => match body.kind {
+            crate::ItemKind::Container(_) => 1,
+            crate::ItemKind::Weapon(_) | crate::ItemKind::Map { .. } => 2,
+            _ => 0,
+        },
         Err(_) => {
             return Err(fail(
                 RuntimeHostError::Borrowed("item subclass load dispatch"),
@@ -734,7 +734,14 @@ pub fn load_item_ref(
             ))
         }
     };
-    if nested {
+    if subclass == 1 {
+        if let Err(error) = crate::shared_load::load_bag_tail_ref(item, reader, world_version, env)
+        {
+            return Err(fail(error, retired, reader.pos, None));
+        }
+        return Ok(retired);
+    }
+    if subclass == 2 {
         return Err(fail(
             RuntimeHostError::Unsupported {
                 operation: "nested/original-buffer item subclass load continuation",

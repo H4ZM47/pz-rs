@@ -202,7 +202,7 @@ fn bag_inventory(item: &ItemRef) -> Result<ContainerRef> {
         let ItemKind::Container(bag) = &body.kind else {
             return Err(unsupported("InventoryContainer cast diagnostic").into());
         };
-        bag.container.clone()
+        bag.container.slot().cloned().ok_or_else(|| unsupported("native null bag inventory save diagnostic"))?
     };
     pin(&inventory);
     Ok(inventory)

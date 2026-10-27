@@ -55,6 +55,8 @@ struct Host {
     append_on_add: Option<ItemRef>,
     change_max_in_holes: bool,
     create_parent: Option<Rc<dyn std::any::Any>>,
+    /// Only the acyclic archive Drop fixture omits actual bag adoption.
+    archive_drop_fixture: bool,
 }
 
 impl Host {
@@ -136,6 +138,7 @@ impl Host {
             append_on_add: None,
             change_max_in_holes: false,
             create_parent: None,
+            archive_drop_fixture: false,
         }
     }
     fn free_guards(&self, item: Option<&ItemRef>) {
@@ -152,7 +155,15 @@ impl Host {
         item.borrow().template.script.as_ref().unwrap().0.clone()
     }
     fn raw_create(&self, ty: &str) -> Option<ItemRef> {
-        create_item_by_type(&FactoryEnv, &self.sm, ty, 1.0, true, &|_| None).map(shared::new_item)
+        create_item_by_type(&FactoryEnv, &self.sm, ty, 1.0, true, &|_| None).map(|value| {
+            if self.archive_drop_fixture {
+                // Explicit owned archive profile: it never had Native strong
+                // bag backedges. Real cycles are tested with the Lua collector.
+                Rc::new(RefCell::new(value))
+            } else {
+                shared::new_item(value)
+            }
+        })
     }
 }
 
@@ -501,7 +512,7 @@ fn container_loop_reads_live_worn_size_and_condition_max_after_holes() {
 }
 
 #[test]
-fn clear_and_same_location_eviction_release_opaque_parents_outside_worn_guards() {
+fn archive_clear_and_same_location_eviction_release_opaque_parents_outside_worn_guards() {
     struct Probe {
         worn: std::rc::Weak<RefCell<WornItems<ItemRef>>>,
         drops: Rc<std::cell::Cell<usize>>,
@@ -518,6 +529,7 @@ fn clear_and_same_location_eviction_release_opaque_parents_outside_worn_guards()
     }
     for clear in [false, true] {
         let mut h = Host::new();
+        h.archive_drop_fixture = true;
         let worn = h.worn.clone();
         let drops = Rc::new(std::cell::Cell::new(0));
         h.create_parent = Some(Rc::new(Probe {

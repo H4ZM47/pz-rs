@@ -407,3 +407,51 @@ fn the_item_tracker_log_goes_to_the_cache_folder() {
     t.load_file(&d.0, false).unwrap();
     assert_eq!(t.get(pz_core::save_trackers::ITEMS, "Base.Axe"), 1);
 }
+
+#[test]
+fn actual_player_data_captures_metadata_before_reentrant_item_texture_save() {
+    use pz_characters::character::{CharacterKind, DefaultSimContext};
+    use pz_inventory::item_texture::CapturedScriptTextures;
+    use pz_inventory::{ItemClass, ItemEnv, ItemTemplate};
+    use std::cell::{Cell,RefCell};
+    use std::rc::Rc;
+    struct Env;
+    impl ItemEnv for Env {}
+    struct Restore(Option<pz_render::TextureRefLoader>);
+    impl Drop for Restore { fn drop(&mut self) {drop(pz_render::install_texture_ref_loader(self.0.take()));pz_inventory::component_host::drain_retired_components();} }
+    let restore=Restore(pz_render::install_texture_ref_loader(None));
+    let sm=ScriptManager::new();
+    let profession=sm.registries.get("character_profession").unwrap().borrow_mut().register_id("fixture:unemployed",false).unwrap();
+    sm.statics.items.borrow_mut().constants.insert("character_profession","UNEMPLOYED",&profession.location.id());
+    let chars=Rc::new(RefCell::new(Characters::default()));
+    let player=Rc::new(RefCell::new(GameCharacter::<()>::new(&sm,CharacterKind::Player)));
+    {
+        let mut body=player.borrow_mut();
+        body.vars.x=12.0;body.vars.y=34.0;body.vars.z=1.0;
+        body.descriptor=Some(Rc::new(RefCell::new(pz_characters::survivor::SurvivorDesc::new_unregistered(&mut chars.borrow_mut(),&sm).unwrap())));
+        body.init_worn_items(&sm,chars.borrow_mut().body_locations.get_group("Human").unwrap());
+    }
+    let texture=Rc::new(pz_render::LuaTexture::new(pz_render::Texture::empty("Fixture")));
+    let script=pz_inventory::template::ScriptItemRef(Rc::new(RefCell::new(pz_scripts::objects::items::Item::new())));
+    let mut template=ItemTemplate::new(ItemClass::Key,"Base","MetadataKey");
+    template.texture_capture=Some(CapturedScriptTextures::new(Some(texture.clone()),vec![]));
+    let item=pz_inventory::env::create_from_template_ref(&Env,Rc::new(template),1).unwrap();
+    if let pz_inventory::item_texture::ItemTextures::Live(live)=&mut item.borrow_mut().textures {live.script_item=Some(script);}else{panic!("actual factory texture slots");}
+    pz_inventory::item_texture::set_texture_ref(&item,Some(&texture)).unwrap();
+    pz_inventory::shared::try_add_item(&player.borrow().items.inventory.clone(),&item).unwrap();
+    let weak=Rc::downgrade(&player);
+    let manager=Rc::downgrade(&chars);
+    let called=Rc::new(Cell::new(false));let recorded=called.clone();
+    pz_render::install_texture_ref_loader(Some(Rc::new(move |_,_| {
+        assert!(manager.upgrade().unwrap().try_borrow_mut().is_ok());
+        let player=weak.upgrade().unwrap();let mut body=player.try_borrow_mut().expect("save held player body during texture callback");
+        body.vars.x=99.0;body.vars.y=88.0;body.vars.z=2.0;
+        recorded.set(true);Ok(None)
+    })));
+    let data=local_player_data_ref(&player,7,&sm,&chars,&DefaultSimContext,&SaveEnv {items:&Env,tables:&pz_world::save::SaveTables {factory:vec![(1,"Player".into())],blood_body_parts:0,character_stats:vec![]}}).unwrap();
+    assert!(called.get());
+    assert_eq!((data.sql_id,data.x,data.y,data.z),(7,12.0,34.0,1.0));
+    assert_eq!((player.borrow().vars.x,player.borrow().vars.y),(99.0,88.0));
+    pz_inventory::shared::try_set_container(&item,None).unwrap();
+    drop(restore);
+}
