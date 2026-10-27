@@ -1343,3 +1343,151 @@ fn opaque_factory_only_accepts_proven_component_free_definition() {
     let item = crate::env::create_from_template_ref(&PlainEnv, value().template, 1).unwrap();
     assert!(item.borrow().components.is_empty());
 }
+
+#[test]
+fn fieldless_context_menu_factory_uses_actual_pool_and_current_script_owner() {
+    let (manager, script) = actual_attributes_script_from(
+        "module Base { item ActualAttributes { ItemType = test:normal, component ContextMenuConfig { } } }",
+    );
+    let context = BasicContext::default();
+    let env = AttributesEnv(crate::component::EntityCodec { ctx: &context });
+    let first = actual_attributes_item(&env, &manager);
+    let component = first
+        .borrow()
+        .components
+        .get_ref(ComponentType::ContextMenuConfig)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        component.borrow().value_snapshot().unwrap(),
+        Component::Empty(ComponentType::ContextMenuConfig)
+    ));
+    assert!(component
+        .borrow()
+        .owner_slot()
+        .unwrap()
+        .ptr_eq(&EntityOwner::from_ref(&first)));
+    let first_script = first
+        .borrow()
+        .components
+        .get_ref(ComponentType::Script)
+        .unwrap()
+        .unwrap();
+    assert!(first_script
+        .borrow()
+        .script_cache_slot()
+        .unwrap()
+        .ptr_eq(&EntityOwner::from_ref(&script)));
+    let mut retired = RetiredComponents::new();
+    let mut first_host = ItemComponentHost::new(&first, &context);
+    let removed = first_host
+        .remove(&component, &mut retired)
+        .unwrap()
+        .unwrap();
+    first_host
+        .release_component(&removed, &mut retired)
+        .unwrap();
+    assert!(component.borrow().owner_slot().is_none());
+    let second = actual_attributes_item(&env, &manager);
+    let reused = second
+        .borrow()
+        .components
+        .get_ref(ComponentType::ContextMenuConfig)
+        .unwrap()
+        .unwrap();
+    assert!(Rc::ptr_eq(&component, &reused));
+    assert!(component
+        .borrow()
+        .owner_slot()
+        .unwrap()
+        .ptr_eq(&EntityOwner::from_ref(&second)));
+    // No entries are copied into the fieldless component. Exposing its real
+    // script-owned ArrayList is a separate, still unsupported operation.
+    for item in [&first, &second] {
+        for kind in [ComponentType::ContextMenuConfig, ComponentType::Script] {
+            detach_component_for_transfer(item, kind, &mut retired).unwrap();
+        }
+    }
+}
+
+#[test]
+fn durability_factory_reuses_native_body_and_overwrites_material_with_script_null() {
+    use pz_scripts::objects::entity::components::combat::MaterialType;
+    let (first_manager, _) = actual_attributes_script_from(
+        "module Base { item ActualAttributes { ItemType = test:normal, component Durability { MaxHitPoints = 7.25, Material = Glass, } } }",
+    );
+    let (second_manager, _) = actual_attributes_script_from(
+        "module Base { item ActualAttributes { ItemType = test:normal, component Durability { MaxHitPoints = 2.5, } } }",
+    );
+    let context = BasicContext::default();
+    let env = AttributesEnv(crate::component::EntityCodec { ctx: &context });
+    let first = actual_attributes_item(&env, &first_manager);
+    let component = first
+        .borrow()
+        .components
+        .get_ref(ComponentType::Durability)
+        .unwrap()
+        .unwrap();
+    {
+        let body = component.borrow();
+        let durability = body.durability().unwrap();
+        assert_eq!(durability.current_hit_points, 7.25);
+        assert_eq!(durability.max_hit_points, 7.25);
+        assert_eq!(durability.material, Some(MaterialType::Glass));
+    }
+    {
+        let mut body = component.borrow_mut();
+        let durability = body.durability_mut().unwrap();
+        durability.current_hit_points = -3.0;
+        durability.max_hit_points = 99.0;
+        durability.material = Some(MaterialType::Metal);
+    }
+    let mut retired = RetiredComponents::new();
+    let mut first_host = ItemComponentHost::new(&first, &context);
+    let removed = first_host
+        .remove(&component, &mut retired)
+        .unwrap()
+        .unwrap();
+    first_host
+        .release_component(&removed, &mut retired)
+        .unwrap();
+    {
+        let body = component.borrow();
+        let durability = body.durability().unwrap();
+        assert_eq!(durability.current_hit_points, -3.0);
+        assert_eq!(durability.max_hit_points, 99.0);
+        assert_eq!(durability.material, Some(MaterialType::Metal));
+    }
+    let second = actual_attributes_item(&env, &second_manager);
+    let reused = second
+        .borrow()
+        .components
+        .get_ref(ComponentType::Durability)
+        .unwrap()
+        .unwrap();
+    assert!(Rc::ptr_eq(&component, &reused));
+    {
+        let body = component.borrow();
+        let durability = body.durability().unwrap();
+        assert_eq!(durability.current_hit_points, 2.5);
+        assert_eq!(durability.max_hit_points, 2.5);
+        assert_eq!(
+            durability.material, None,
+            "the native script null must overwrite the retained pooled value"
+        );
+        assert!(matches!(
+            body.value_snapshot(),
+            Err(RuntimeError::UnsupportedRuntime(_))
+        ));
+    }
+    assert!(component
+        .borrow()
+        .owner_slot()
+        .unwrap()
+        .ptr_eq(&EntityOwner::from_ref(&second)));
+    for item in [&first, &second] {
+        for kind in [ComponentType::Durability, ComponentType::Script] {
+            detach_component_for_transfer(item, kind, &mut retired).unwrap();
+        }
+    }
+}

@@ -44,6 +44,10 @@ impl WorldMapMetaGrid for WorldMetaGrid {
 pub struct WorldMapHost {
     pub players: Box<dyn WorldMapPlayers>,
     pub meta_grid: Box<dyn WorldMapMetaGrid>,
+    /// `MapFiles.getCurrentMapFiles()` (cell priority and the clipping of
+    /// lower-priority cells). Owner: the world workstream (pz-world
+    /// `MapFiles`).
+    pub map_files: Box<dyn pz_worldmap::triangulate::MapFilesInfo>,
 }
 
 impl Default for WorldMapHost {
@@ -51,6 +55,7 @@ impl Default for WorldMapHost {
         WorldMapHost {
             players: Box::new(NoHost),
             meta_grid: Box::new(WorldMetaGrid),
+            map_files: Box::new(pz_worldmap::triangulate::NoMapFiles),
         }
     }
 }

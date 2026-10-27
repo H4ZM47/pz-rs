@@ -276,7 +276,9 @@ impl Gpu {
             ],
         });
         self.textures.insert(id, bg);
+        self.filters.insert(id, (false, false, false, clamp));
         self.nearest.remove(&id);
+        self.sampled.retain(|(texture, _), _| *texture != id);
         tex
     }
 
@@ -426,7 +428,9 @@ impl Gpu {
         self.combiner.targets.remove(&id);
         self.textures.remove(&id);
         self.views.remove(&id);
+        self.filters.remove(&id);
         self.nearest.remove(&id);
+        self.sampled.retain(|(texture, _), _| *texture != id);
     }
 
     /// A combined texture's pixels, RGBA, in GL row order (the first row is

@@ -934,7 +934,7 @@ fn tail_rows(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout
             layout.add_item().label(&tr("Tooltip_IsFishingLure"), LABEL);
         }
     }
-    components::do_tooltip(cx, item, tip, layout);
+    components::do_tooltip(cx, item, tip, layout)?;
     let it = item.borrow();
     let vision = sv(&it, |s| s.vision_modifier);
     let vision = if script(&it).is_some() { vision } else { 1.0 };

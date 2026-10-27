@@ -26,6 +26,19 @@ The platform workflow builds the native client and runs workspace tests on
 Windows, Linux, Apple Silicon and Intel Mac runners. Installed game assets
 are excluded, so a green source check alone cannot establish gameplay parity.
 
+The October 26 continuation connects actual item component storage, class
+pools and owner slots to factory and native load phases. Fluid userdata
+retains the same component and mutable cached Color. Attributes use actual
+type and instance references, decoded static bounds and an eager/lazy template
+on the original script definition. The template and item context share the
+same type registry across menu reloads. Protected native factory exceptions
+keep completed components; unavailable Rust capabilities still stop the host.
+ContextMenuConfig has a genuine fieldless body; Durability has a canonical
+nullable material and preserves native partial load/save and tooltip failures.
+Context entries still need actual script-list/entry ownership before exposure.
+Loaded archive-to-live routing, nested container/weapon/map references,
+equipped manager state, world callbacks and full inventory icons remain open.
+
 Returning to the menu rebuilds script/Lua/UI owners before menu entry;
 native shutdown skips that rebuild. A failed rebuild stops the client
 instead of entering a menu with mixed owners. Character `getModData`
@@ -45,7 +58,9 @@ are reserved, and one allocation cannot also register as a host owner. A checked
 visitor can trace a physical `Rc<dyn Any>` slot that directly owns a registered
 `RefCell<T>`, preserving that allocation through a crate boundary without cloning
 or borrowing its contents. Wrong types and node kinds stay conservative. Production
-engine userdata and floor-item backlinks are not connected to this protocol yet.
+item/component/fluid/Color userdata and corresponding actual component, script,
+attribute and world-object owner slots now participate in this protocol.
+Floor-item reciprocal backlinks and broader engine userdata remain unfinished.
 Other native captures, coroutines, prototypes and engine-owned references
 remain opaque roots; character/action cycles and some old LuaManager
 environments can remain retained. Heap
@@ -1493,10 +1508,27 @@ registered):
       meta_zones.rs/zone_save.rs) (#69).
 
 ## World map
+- [x] Recover Claude's renderer/drawer, triangulation, rasterizer, VBO recorder,
+      image-pyramid cache and UI presentation from the preserved code commits.
+      Native numeric/counter and presentation edge repairs have separate tests;
+      source integration does not establish original-game rendering parity.
 - [ ] Map inputs: `pz_lua_api::worldmap::host::install(WorldMapHost {
-      players, meta_grid })` with the live local players (position, or
+      players, meta_grid, map_files })` with the live local players (position, or
       the vehicle's; username) for the map's player dots, and
       `IsoMetaGrid`'s cell bounds for `setBoundsFromWorld` (#213). The
       default `meta_grid` (`host::WorldMetaGrid`) already reads the grid
       installed with `bind_world::set_meta_grid`; pass it when installing
       players (#223).
+- [ ] Supply the live `MapFilesInfo` cell priority and directory from the
+      world's actual MapFiles. The standalone no-files profile is not a
+      substitute for the game's map-priority input.
+- [ ] Move `WorldMapImages.startFrame/endFrame` from each UI map draw to the
+      global SpriteRenderer frame boundary. Restore native file-thread queue
+      scheduling and shared per-frame loading budget across multiple maps.
+- [ ] Native request-counter reset ties depend on Java HashMap values order;
+      the current Rust map order does not establish that tie behavior. The
+      actual Core debug threshold is latched on first production image use;
+      precise native class-initialization timing remains separate.
+- [ ] Reconcile and wire the preserved untracked `visited.rs` implementation,
+      symbols, streets, player models and other overlays. Keep its source and
+      the preserved module-only stash until that work is integrated.

@@ -22,6 +22,7 @@ use crate::entity::{Component, Components};
 use crate::fluids::FluidContainer;
 use crate::io::{EntityError, Reader, Writer};
 use crate::runtime_attributes::RuntimeAttributes;
+use crate::runtime_durability::RuntimeDurability;
 use crate::runtime_fluid::{
     FluidColorRef, FluidPropertiesRef, FluidRecalcOutcome, RuntimeFluidState,
 };
@@ -205,17 +206,18 @@ pub enum ComponentBodyMut<'a> {
     MetaTag(&'a mut MetaTag),
     Resources(&'a mut Resources),
     CraftBench(&'a mut CraftBench),
-    Durability(&'a mut Durability),
+    Durability(&'a mut RuntimeDurability),
     SpriteOverlayConfig(&'a mut SpriteOverlayConfig),
     Empty,
 }
 
 /// The actual body has one authority. Attributes owns real instance slots;
-/// other represented components retain their original data bodies. A live
-/// Attributes allocation never contains an editable AttributeContainer DTO.
+/// Durability owns its nullable native fields. Neither live allocation keeps
+/// an editable legacy DTO alongside its actual state.
 #[derive(Debug)]
 pub enum RuntimeBody {
     Attributes(RuntimeAttributes),
+    Durability(RuntimeDurability),
     Data(Component),
 }
 
@@ -270,6 +272,9 @@ impl RuntimeComponent {
             Component::Attributes(value) => {
                 RuntimeBody::Attributes(RuntimeAttributes::from_archive(value))
             }
+            Component::Durability(value) => {
+                RuntimeBody::Durability(RuntimeDurability::from_archive(value))
+            }
             value => RuntimeBody::Data(value),
         };
         Self {
@@ -294,6 +299,7 @@ impl RuntimeComponent {
             RuntimeBody::Attributes(attributes) => {
                 Ok(Component::Attributes(attributes.value_snapshot()?))
             }
+            RuntimeBody::Durability(value) => Ok(Component::Durability(value.value_snapshot()?)),
             RuntimeBody::Data(value) => Ok(value.clone()),
         }
     }
@@ -318,9 +324,33 @@ impl RuntimeComponent {
         }
     }
 
+    pub fn durability(&self) -> Option<&RuntimeDurability> {
+        match &self.body {
+            RuntimeBody::Durability(value) => Some(value),
+            _ => None,
+        }
+    }
+    pub fn durability_mut(&mut self) -> Option<&mut RuntimeDurability> {
+        match &mut self.body {
+            RuntimeBody::Durability(value) => Some(value),
+            _ => None,
+        }
+    }
+    pub fn read_durability_script(
+        &mut self,
+        script: &pz_scripts::objects::entity::components::combat::DurabilityScript,
+    ) -> Result<(), RuntimeError> {
+        let kind = self.kind;
+        self.durability_mut()
+            .ok_or(RuntimeError::InvalidBody(kind))?
+            .read_from_script(script);
+        Ok(())
+    }
+
     pub fn typed_mut(&mut self) -> ComponentBodyMut<'_> {
         match &mut self.body {
             RuntimeBody::Attributes(c) => ComponentBodyMut::Attributes(c),
+            RuntimeBody::Durability(c) => ComponentBodyMut::Durability(c),
             RuntimeBody::Data(Component::FluidContainer(c)) => {
                 c.cache_invalidated = true;
                 ComponentBodyMut::FluidContainer(c)
@@ -335,12 +365,13 @@ impl RuntimeComponent {
             RuntimeBody::Data(Component::MetaTag(c)) => ComponentBodyMut::MetaTag(c),
             RuntimeBody::Data(Component::Resources(c)) => ComponentBodyMut::Resources(c),
             RuntimeBody::Data(Component::CraftBench(c)) => ComponentBodyMut::CraftBench(c),
-            RuntimeBody::Data(Component::Durability(c)) => ComponentBodyMut::Durability(c),
             RuntimeBody::Data(Component::SpriteOverlayConfig(c)) => {
                 ComponentBodyMut::SpriteOverlayConfig(c)
             }
             RuntimeBody::Data(Component::Empty(_)) => ComponentBodyMut::Empty,
-            RuntimeBody::Data(Component::Opaque { .. } | Component::Attributes(_)) => {
+            RuntimeBody::Data(
+                Component::Opaque { .. } | Component::Attributes(_) | Component::Durability(_),
+            ) => {
                 unreachable!("invalid actual data body")
             }
         }
@@ -610,7 +641,9 @@ impl RuntimeComponent {
         }
         match &mut self.body {
             RuntimeBody::Attributes(attributes) => attributes.clear(retired),
+            RuntimeBody::Durability(_) => Ok(()), // actual inherited Component.reset
             RuntimeBody::Data(Component::Script(_)) => Ok(()), // actual inherited Component.reset
+            RuntimeBody::Data(Component::Empty(ComponentType::ContextMenuConfig)) => Ok(()),
             RuntimeBody::Data(Component::FluidContainer(body)) => self
                 .fluid_runtime
                 .as_mut()
@@ -647,6 +680,7 @@ impl RuntimeComponent {
     ) -> Result<(), RuntimeError> {
         match &mut self.body {
             RuntimeBody::Attributes(attributes) => attributes.load(reader, ctx, retired)?,
+            RuntimeBody::Durability(value) => value.load(reader)?,
             // Native field decoding precedes the real cache/properties and
             // guard-free owner phases driven by RuntimeLoadHost. The legacy
             // DTO loader must not publish its amount-only cache prematurely.
@@ -678,6 +712,7 @@ impl RuntimeComponent {
     pub fn write_payload(&self, writer: &mut Writer) -> Result<(), RuntimeError> {
         match &self.body {
             RuntimeBody::Attributes(attributes) => attributes.write(writer)?,
+            RuntimeBody::Durability(value) => value.write(writer)?,
             RuntimeBody::Data(body) => body.save(writer),
         }
         Ok(())
@@ -693,6 +728,7 @@ impl RuntimeComponent {
                 RuntimeBody::Attributes(attributes) => {
                     RuntimeBody::Attributes(attributes.archive_copy()?)
                 }
+                RuntimeBody::Durability(value) => RuntimeBody::Durability(value.clone()),
                 RuntimeBody::Data(body) => RuntimeBody::Data(body.clone()),
             },
             owner: None,

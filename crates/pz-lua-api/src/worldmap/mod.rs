@@ -5,6 +5,7 @@
 //! Inputs from other workstreams come through the traits in [`host`].
 
 pub mod host;
+pub mod present;
 pub mod style;
 pub mod ui;
 
@@ -116,6 +117,8 @@ fn f32_arg(c: &NativeCall<'_>, i: usize) -> f32 {
 }
 
 thread_local! {
+    /// The colours `setUnvisitedRGBA` and `setUnvisitedGridRGBA` set.
+    static UNVISITED: std::cell::RefCell<[[f32; 4]; 2]> = const { std::cell::RefCell::new([[0.0; 4]; 2]) };
     /// `ZomboidFileSystem.instance` for resolving data file names.
     static FS: std::cell::RefCell<Option<Rc<std::cell::RefCell<pz_fs::GameFs>>>> = const { std::cell::RefCell::new(None) };
 }
@@ -132,12 +135,68 @@ pub fn fs_get_string(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+/// The native ImagePyramid class samples Core.debug once. This host
+/// seam uses the actual shared Core and preserves a borrow failure before
+/// publishing any image; standalone library users choose their own profile.
+fn initialize_pyramid_class() -> LuaResult<()> {
+    if !pz_worldmap::pyramid::class_initialized() {
+        let core = crate::bind_core::shared_core();
+        let debug = core
+            .try_borrow()
+            .map_err(|_| LuaError::runtime("Core is borrowed while initializing ImagePyramid"))?
+            .get_debug();
+        pz_worldmap::pyramid::initialize_class(debug);
+    }
+    Ok(())
+}
+
+/// Pyramid tiles as textures in the shared `TextureManager`.
+struct SharedTileTextures;
+
+impl pz_worldmap::pyramid::TileTextures for SharedTileTextures {
+    fn create(
+        &mut self,
+        name: &str,
+        w: i32,
+        h: i32,
+        pixels: Vec<u8>,
+        min_n: bool,
+        mag_n: bool,
+        clamp: bool,
+    ) -> Option<pz_render::Texture> {
+        use pz_render::flags;
+        let f = if min_n { flags::FILTER_MIN_NEAREST } else { 0 }
+            | if mag_n { flags::FILTER_MAG_NEAREST } else { 0 }
+            | if clamp { flags::CLAMP_TO_EDGE } else { 0 };
+        Some(
+            crate::bind_render::textures()
+                .borrow_mut()
+                .texture_from_pixels(name, w, h, pixels, f),
+        )
+    }
+    fn destroy(&mut self, t: &pz_render::Texture) {
+        if let Some(id) = t.id {
+            crate::bind_render::textures().borrow_mut().destroy_data(id);
+        }
+    }
+}
+
 /// Register the world-map classes.
 pub fn register(thread: &mut Thread) {
+    pz_worldmap::pyramid::install_tile_textures(Box::new(SharedTileTextures));
     register_element(thread);
     register_api(thread);
     register_option(thread);
     style::register(thread);
+    // `LuaManager.GlobalObject.fileExists`, which `MapUtils` checks the
+    // data files with (registered here unless another binding has it).
+    if thread.globals().get_str("fileExists").is_nil() {
+        crate::expose::global(thread, "fileExists", |c| {
+            let name = str_arg(c, 0).unwrap_or_default();
+            let path = fs_get_string(&name.replace('\\', "/"));
+            Ok(c.push(std::path::Path::new(&path).exists()))
+        });
+    }
 }
 
 fn register_element(thread: &mut Thread) {
@@ -255,6 +314,24 @@ fn register_api(thread: &mut Thread) {
         })?;
         Ok(0)
     });
+    b.method("addImages", |c| {
+        let dir = str_arg(c, 1);
+        with_map(c, |el, m| -> LuaResult<()> {
+            let has_images = m.st().world_map.has_images();
+            if let Some(dir) = dir.filter(|d| !d.trim().is_empty()) {
+                let zip = fs_get_string(&format!("{dir}/pyramid.zip"));
+                let forest = fs_get_string(&format!("{dir}/forest.pyramid.zip"));
+                initialize_pyramid_class()?;
+                m.st_mut().world_map.add_images(&zip, &forest);
+            }
+            if !has_images && el.get_width() > 0.0 && el.get_height() > 0.0 {
+                m.set_map_from(el);
+                reset_view(m);
+            }
+            Ok(())
+        })??;
+        Ok(0)
+    });
     b.method("clearData", |c| {
         with_map(c, |_, m| m.st_mut().world_map.clear_data())?;
         Ok(0)
@@ -304,8 +381,8 @@ fn register_api(thread: &mut Thread) {
         Ok(0)
     });
     b.method("setBoundsFromWorld", |c| {
-        let (x0, y0, x1, y1) = host::with_host(|h| h.meta_grid.cell_bounds())
-            .ok_or(LuaError::Runtime {
+        let (x0, y0, x1, y1) =
+            host::with_host(|h| h.meta_grid.cell_bounds()).ok_or(LuaError::Runtime {
                 message: String::new(),
                 class: "java.lang.NullPointerException",
             })?;
@@ -468,6 +545,16 @@ fn register_api(thread: &mut Thread) {
         with_map(c, |_, m| m.st_mut().renderer.set_drop_shadow_width(w))?;
         Ok(0)
     });
+    // WorldMapVisited.getInstance().setUnvisitedRGBA / GridRGBA.
+    // TODO(worldmap visited): the fog of war's colours.
+    for (name, grid) in [("setUnvisitedRGBA", false), ("setUnvisitedGridRGBA", true)] {
+        b.method(name, move |c| {
+            map_el(c)?;
+            let col = [f32_arg(c, 1), f32_arg(c, 2), f32_arg(c, 3), f32_arg(c, 4)];
+            UNVISITED.with(|u| u.borrow_mut()[grid as usize] = col);
+            Ok(0)
+        });
+    }
     b.method("getOptionCount", |c| {
         let v = with_map(c, |_, m| m.st().renderer.get_option_count())?;
         Ok(c.push(v as f64))
@@ -550,6 +637,54 @@ fn register_api(thread: &mut Thread) {
         let v = with_map(c, |_, m| m.st().world_map.get_data_height_in_cells())?;
         Ok(c.push(v as f64))
     });
+    b.method("addImagePyramid", |c| {
+        let name = str_arg(c, 1);
+        with_map(c, |el, m| -> LuaResult<()> {
+            let Some(mut name) = name.map(|n| n.to_string()) else {
+                return Ok(());
+            };
+            if name.starts_with("media/") {
+                name = fs_get_string(&name);
+            }
+            let has_images = m.st().world_map.has_images();
+            if !name.trim().is_empty() {
+                initialize_pyramid_class()?;
+            }
+            m.st_mut().world_map.add_image_pyramid(&name);
+            if !has_images && m.st().world_map.get_width_in_squares() > 1 && el.get_width() > 0.0 {
+                m.set_map_from(el);
+                reset_view(m);
+            }
+            Ok(())
+        })??;
+        Ok(0)
+    });
+    for (name, which) in [
+        ("getImagePyramidMinX", 0),
+        ("getImagePyramidMinY", 1),
+        ("getImagePyramidMaxX", 2),
+        ("getImagePyramidMaxY", 3),
+        ("getImagePyramidWidthInSquares", 4),
+        ("getImagePyramidHeightInSquares", 5),
+    ] {
+        b.method(name, move |c| {
+            let file = str_arg(c, 1).unwrap_or_default();
+            let v = with_map(c, |_, m| {
+                let s = m.st();
+                s.world_map
+                    .get_world_map_images_by_file_name(&file)
+                    .map_or(-1, |i| match which {
+                        0 => i.get_min_x(),
+                        1 => i.get_min_y(),
+                        2 => i.get_max_x(),
+                        3 => i.get_max_y(),
+                        4 => i.get_width_in_squares(),
+                        _ => i.get_height_in_squares(),
+                    })
+            })?;
+            Ok(c.push(v as f64))
+        });
+    }
     b.method("clearImages", |c| {
         with_map(c, |_, m| m.st_mut().world_map.clear_images())?;
         Ok(0)

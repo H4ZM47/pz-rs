@@ -25,6 +25,7 @@ pub mod java;
 pub mod meta;
 pub mod runtime;
 pub mod runtime_attributes;
+pub mod runtime_durability;
 pub mod runtime_fluid;
 pub mod runtime_load;
 pub mod runtime_pool;
@@ -46,6 +47,7 @@ pub use runtime::{
     RejectedComponent, RejectedComponentRef, RejectedEncoded, RejectedValues, RetiredComponents,
     RuntimeComponent, RuntimeComponents, RuntimeEntryView, RuntimeError,
 };
+pub use runtime_durability::RuntimeDurability;
 pub use tables::{
     AttributeTypeDefinition, AttributeTypeRef, AttributeTypes, NumericAttributeBounds,
     NumericAttributeValidation,

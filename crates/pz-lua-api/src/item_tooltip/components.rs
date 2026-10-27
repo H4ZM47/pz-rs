@@ -310,24 +310,25 @@ fn name_ui(name: &str) -> String {
 
 /// `AttributeContainer.DoTooltip`: the visible attributes by UI name
 /// (every attribute the game registers is hidden; the debug option lists
-/// them). Numeric bars need the types' bounds, which no registered type
-/// sets (TODO(attributes): `getDisplayAsBarUnit`).
-fn attributes_tooltip(cx: &Cx<'_>, it: &InventoryItem, layout: &mut Layout) {
+/// them). Native numeric bar presentation remains unfinished.
+fn attributes_tooltip(
+    cx: &Cx<'_>,
+    it: &InventoryItem,
+    layout: &mut Layout,
+) -> pz_kahlua::LuaResult<()> {
     let e = item_env();
     let Some(ctx) = e.entity() else {
-        return;
+        return Ok(());
     };
-    let Some(comps) = it.decode_components(ctx) else {
-        return;
-    };
-    let Some(a) = comps.list.iter().find_map(|c| match c {
-        Component::Attributes(a) => Some(a),
-        _ => None,
-    }) else {
-        return;
+    let Some(Component::Attributes(a)) = it
+        .components
+        .value_snapshot(pz_entity::ComponentType::Attributes, ctx)
+        .map_err(|error| pz_kahlua::LuaError::runtime(error.to_string()))?
+    else {
+        return Ok(());
     };
     if a.attributes.is_empty() {
-        return;
+        return Ok(());
     }
     let info = |id: i16| ctx.attribute_type(id);
     let row = |layout: &mut Layout, name: &str, v: &AttributeValue| {
@@ -372,6 +373,7 @@ fn attributes_tooltip(cx: &Cx<'_>, it: &InventoryItem, layout: &mut Layout) {
             .add_item()
             .label("[Debug End Attributes]", [blue[0], blue[1], blue[2], 1.0]);
     }
+    Ok(())
 }
 
 /// `String.compareTo` (UTF-16 code units).
@@ -626,46 +628,101 @@ fn fluid_tooltip(cx: &Cx<'_>, fc: &FluidContainer, ctx: &dyn EntityContext, layo
     }
 }
 
-/// `Durability.DoTooltip`.
-fn durability_tooltip(d: &pz_entity::components::basic::Durability, layout: &mut Layout) {
-    layout
-        .add_item()
-        .label("Material:", LABEL)
-        .value(&format!("{:?}", d.material), WHITE);
+/// Read the actual nullable leaf, or explicitly decode an unowned archive
+/// for presentation. Never project a live null through the nonnullable DTO.
+fn durability_tooltip(
+    item: &ItemRef,
+    context: &dyn EntityContext,
+    layout: &mut Layout,
+) -> pz_kahlua::LuaResult<()> {
+    use pz_entity::{ComponentType, RuntimeDurability, RuntimeError};
+    use pz_kahlua::LuaError;
+    let item = item
+        .try_borrow()
+        .map_err(|_| LuaError::runtime("InventoryItem is in use"))?;
+    let state = match item.components.get_ref(ComponentType::Durability) {
+        Ok(Some(component)) => {
+            let body = component
+                .try_borrow()
+                .map_err(|_| LuaError::runtime("Durability is in use"))?;
+            Some(
+                body.durability()
+                    .ok_or_else(|| LuaError::runtime("Durability allocation has an invalid class"))?
+                    .clone(),
+            )
+        }
+        Ok(None) => None,
+        Err(RuntimeError::NeedsPromotion { .. }) => {
+            match item
+                .components
+                .value_snapshot(ComponentType::Durability, context)
+                .map_err(|error| LuaError::runtime(error.to_string()))?
+            {
+                Some(Component::Durability(value)) => Some(RuntimeDurability {
+                    current_hit_points: value.current_hit_points,
+                    max_hit_points: value.max_hit_points,
+                    material: Some(value.material),
+                }),
+                None => None,
+                _ => return Err(LuaError::runtime("Durability archive has an invalid class")),
+            }
+        }
+        Err(error) => return Err(LuaError::runtime(error.to_string())),
+    };
+    drop(item);
+    let Some(state) = state else {
+        return Ok(());
+    };
+    // Native appends the Material row before dereferencing material.name().
+    // A null therefore leaves the label prefix visible to a retained layout.
+    let row = layout.add_item();
+    row.label("Material:", LABEL);
+    let material = state.material.ok_or_else(|| LuaError::Runtime {
+        message: "null".into(),
+        class: "java.lang.NullPointerException",
+    })?;
+    row.value(material.name(), WHITE);
     layout
         .add_item()
         .label("Hit Points:", LABEL)
-        .value(&super::fstr(d.current_hit_points), WHITE);
+        .value(&super::fstr(state.current_hit_points), WHITE);
+    Ok(())
 }
 
 /// The component rows: attributes, the fluid container, (an item in an
 /// inventory has no world item) and durability.
-pub fn do_tooltip(cx: &mut Cx<'_>, item: &ItemRef, _tip: &Tip<'_>, layout: &mut Layout) {
+pub fn do_tooltip(
+    cx: &mut Cx<'_>,
+    item: &ItemRef,
+    _tip: &Tip<'_>,
+    layout: &mut Layout,
+) -> pz_kahlua::LuaResult<()> {
     let it = item.borrow();
-    attributes_tooltip(cx, &it, layout);
+    attributes_tooltip(cx, &it, layout)?;
     let e = item_env();
     let Some(ctx) = e.entity() else {
-        return;
+        return Ok(());
     };
-    let Some(comps) = it.decode_components(ctx) else {
-        return;
-    };
-    for c in &comps.list {
-        if let Component::FluidContainer(fc) = c {
-            fluid_tooltip(cx, fc, ctx, layout);
-        }
+    let fluid = it
+        .components
+        .value_snapshot(pz_entity::ComponentType::FluidContainer, ctx)
+        .map_err(|error| pz_kahlua::LuaError::runtime(error.to_string()))?;
+    drop(it);
+    if let Some(Component::FluidContainer(fluid)) = fluid {
+        fluid_tooltip(cx, &fluid, ctx, layout);
     }
-    for c in &comps.list {
-        if let Component::Durability(d) = c {
-            durability_tooltip(d, layout);
-        }
-    }
+    durability_tooltip(item, ctx, layout)?;
     let _ = trc;
+    Ok(())
 }
 
 #[cfg(test)]
 #[path = "components/attributes_tests.rs"]
 mod attributes_tests;
+
+#[cfg(test)]
+#[path = "components/durability_tests.rs"]
+mod durability_tests;
 
 #[cfg(test)]
 mod tests {

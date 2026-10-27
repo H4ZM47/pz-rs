@@ -181,6 +181,10 @@ pub enum DrawCmd {
     Quad { texture: Option<Texture>, x: f32, y: f32, w: f32, h: f32, color: Rgba },
     /// A quad as `SpriteRenderer` records it.
     Sprite(Sprite),
+    /// A captured VBO run's texture sampling overrides. `false` inherits
+    /// the uploaded texture's setting; nearest disables mip sampling.
+    /// Ordinary sprites keep their existing sampler.
+    SampledSprite { sprite: Sprite, nearest: bool, repeat: bool },
     SetBlend(Blend),
     /// `glBlendFunc(src, dst)` with GL enum values.
     BlendFunc(u32, u32),

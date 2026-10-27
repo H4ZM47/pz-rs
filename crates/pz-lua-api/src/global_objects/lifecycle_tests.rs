@@ -8,7 +8,10 @@ use crate::{
 use pz_core::core::Core;
 use pz_kahlua::stdlib;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture {
     thread: Thread,
@@ -30,11 +33,18 @@ impl Fixture {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "pz-rs-global-lifecycle-{}-{stamp}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&dir).unwrap();
+        let dir = loop {
+            let serial = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+            let candidate = std::env::temp_dir().join(format!(
+                "pz-rs-global-lifecycle-{}-{stamp}-{serial}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create lifecycle fixture: {error}"),
+            }
+        };
         global_objects_save::set_save_dir(Some(dir.clone()));
         init_lookup(GridBounds {
             min_x: -2,

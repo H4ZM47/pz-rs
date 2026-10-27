@@ -1,7 +1,8 @@
 //! Native item component phases over the actual ItemRef.
 //!
 //! No entity/component guard spans lifecycle or owner notification. Supported
-//! FluidContainer, AttributeContainer and EntityScriptInfo inherit the
+//! FluidContainer, AttributeContainer, Durability, ContextMenuConfig and
+//! EntityScriptInfo inherit the
 //! authenticated empty owner hooks. Other classes require their actual hook
 //! implementations.
 //! The current add/connect factory path covers fresh, unequipped receivers.
@@ -196,7 +197,11 @@ pub(crate) fn native_component_error(error: RuntimeError) -> RuntimeHostError {
 
 fn supported_owner_hook(kind: ComponentType, operation: &'static str) -> HostResult<()> {
     match kind {
-        ComponentType::FluidContainer | ComponentType::Attributes | ComponentType::Script => Ok(()),
+        ComponentType::FluidContainer
+        | ComponentType::Attributes
+        | ComponentType::Durability
+        | ComponentType::ContextMenuConfig
+        | ComponentType::Script => Ok(()),
         _ => Err(RuntimeHostError::Unsupported {
             operation,
             kind: Some(kind),

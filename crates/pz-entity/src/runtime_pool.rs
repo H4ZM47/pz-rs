@@ -108,7 +108,11 @@ impl RuntimeComponentFactory {
     pub fn ensure_pool(&mut self, kind: ComponentType) -> Result<(), PoolError> {
         if !matches!(
             kind,
-            ComponentType::Attributes | ComponentType::FluidContainer | ComponentType::Script
+            ComponentType::Attributes
+                | ComponentType::FluidContainer
+                | ComponentType::Script
+                | ComponentType::ContextMenuConfig
+                | ComponentType::Durability
         ) {
             return Err(PoolError::UnsupportedClass(kind));
         }

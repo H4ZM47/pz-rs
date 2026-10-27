@@ -210,6 +210,7 @@ impl ComponentCodec for EntityCodec<'_> {
         use pz_entity::runtime_load::RuntimeHostError;
         use pz_entity::{ComponentType, EntityOwner};
         use pz_scripts::objects::entity::components::attributes::AttributesScript;
+        use pz_scripts::objects::entity::components::combat::DurabilityScript;
         use pz_scripts::objects::entity::components::fluids::FluidContainerScript;
         let Some(script_ref) = template.script.as_ref() else {
             return Ok(());
@@ -242,6 +243,26 @@ impl ComponentCodec for EntityCodec<'_> {
                     .map_err(crate::component_host::pool_error)?;
                 retired.push_component(component.clone());
                 match kind {
+                    ComponentType::ContextMenuConfig => {
+                        // This concrete class has no fields and inherits the
+                        // exact return-only Component.readFromScript method.
+                        // Entries remain on the owner's current script.
+                    }
+                    ComponentType::Durability => {
+                        let durability_script = component_script
+                            .as_any()
+                            .downcast_ref::<DurabilityScript>()
+                            .ok_or(RuntimeHostError::InvalidHostState(
+                                "Durability script class mismatch",
+                            ))?;
+                        component
+                            .try_borrow_mut()
+                            .map_err(|_| {
+                                RuntimeHostError::Borrowed("pooled durability script body")
+                            })?
+                            .read_durability_script(durability_script)
+                            .map_err(crate::component_host::native_component_error)?;
+                    }
                     ComponentType::Attributes => {
                         let attributes_script = component_script
                             .as_any()
