@@ -130,10 +130,6 @@ pub enum WorldCall {
     /// `addToProcessItemsRemove(item)`, `ItemSoundManager.removeItem(item)`,
     /// `item.atlasTexture = null`.
     WorldItemRemoved,
-    /// `GameEntityFactory.TransferComponent(obj, item, FluidContainer)`
-    /// (`IsoWorldInventoryObject.removeFromSquare` of an object with a
-    /// fluid container).
-    WorldItemTransferFluid,
     /// `IsoMovingObject.removeFromWorld`: the cell's object, add and
     /// remove lists and `MovingObjectUpdateScheduler` (pushables in the
     /// object list).
@@ -186,9 +182,9 @@ fn fridge_index(o: &IsoObject) -> Option<usize> {
 
 /// `couldBePoweredByGenerator()`.
 fn could_be_powered_by_generator(env: &mut MutationEnv<'_>, r: &Receiver) -> bool {
-    let Some(o) = with_obj(env, r, |o| o.clone()) else {
-        return false;
-    };
+    // Synchronous property query: do not archive-copy live components or
+    // nested item graphs merely to read power/container information.
+    let o = r.object.borrow();
     if env.world.piped_fuel_amount(r.location, &o) > 0 {
         return true;
     }
@@ -569,16 +565,30 @@ pub(super) fn add_to_world_handle(env: &mut MutationEnv<'_>, r: ObjectRef, objec
         },
     );
 }
-pub(super) fn remove_from_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
-    if let Some(r) = receiver(env, r) {
-        remove_from_world_on(env, &r);
-    }
-}
 pub(super) fn remove_from_world_handle(
     env: &mut MutationEnv<'_>,
     r: ObjectRef,
     object: &IsoObjectRef,
-) {
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    // Reading the class must not clone the floor payload and its item graph.
+    let world_item = matches!(
+        object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld receiver"))?
+            .kind,
+        ObjectKind::WorldInventory(_)
+    );
+    if world_item {
+        let receiver = Receiver {
+            location: r,
+            object: object.clone(),
+        };
+        call(env, &receiver, WorldCall::ProcessWorldItems { add: false });
+        call(env, &receiver, WorldCall::WorldItemRemoved);
+        call(env, &receiver, WorldCall::WorldItemContainer { add: false });
+        return remove_world_item_base(env, &receiver);
+    }
     remove_from_world_on(
         env,
         &Receiver {
@@ -586,6 +596,51 @@ pub(super) fn remove_from_world_handle(
             object: object.clone(),
         },
     );
+    Ok(())
+}
+
+fn remove_world_item_base(
+    env: &mut MutationEnv<'_>,
+    r: &Receiver,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    call(env, r, WorldCall::UnregisterEntity);
+    call(env, r, WorldCall::ProcessIsoObjectRemove);
+    call(env, r, WorldCall::StaticUpdater { add: false });
+    let count = r
+        .object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld containers"))?
+        .container_count();
+    for container in 0..count {
+        call(
+            env,
+            r,
+            WorldCall::ProcessItems {
+                container,
+                add: false,
+            },
+        );
+    }
+    call(env, r, WorldCall::StopEmitter);
+    call(env, r, WorldCall::RemoveAmbientEmitters);
+    call(env, r, WorldCall::LightSource { add: false });
+    call(env, r, WorldCall::ClearOnOverlay);
+    if env.render.fbo_render_chunk() {
+        call(env, r, WorldCall::UnregisterHighlight);
+    }
+    let powered = {
+        let body = r
+            .object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld power query"))?;
+        env.world.piped_fuel_amount(r.location, &body) > 0 || fridge_index(&body).is_some()
+    };
+    if powered {
+        call(env, r, WorldCall::PoweredByGenerator { add: false });
+    }
+    call(env, r, WorldCall::FlagForHotSave);
+    Ok(())
 }
 
 /// Remove only this actual receiver; a same-ID replacement is a different object.
@@ -593,41 +648,68 @@ pub(super) fn remove_from_square_handle(
     env: &mut MutationEnv<'_>,
     r: ObjectRef,
     object: &IsoObjectRef,
-) -> Option<ObjectSlot> {
-    let (world_item, has_fluid_container) = {
-        let o = object.borrow();
-        (
-            matches!(o.kind, ObjectKind::WorldInventory(_)),
-            !matches!(o.components.runtime().presence(pz_entity::ComponentType::FluidContainer), pz_entity::EntryPresence::Absent),
-        )
-    };
-    if world_item && has_fluid_container {
-        call(
-            env,
-            &Receiver {
-                location: r,
-                object: object.clone(),
-            },
-            WorldCall::WorldItemTransferFluid,
-        );
-    }
-    let sq_owner = env.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2)?;
-    let mut sq = sq_owner.borrow_mut();
-    if world_item {
-        let removed = sq.world_objects.borrow_mut().remove_first_object(object);
-        if let Some(crate::world_objects::WorldObjectEntry::Object(owner)) = removed {
-            sq.retire_object(ObjectSlot::retain(&owner));
+) -> pz_entity::runtime_load::HostResult<Option<ObjectSlot>> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let mut retired = pz_entity::RetiredComponents::new();
+    retired.push_owner(pz_entity::EntityOwner::from_ref(object));
+    let result = (|| {
+        let (world_item, fluid) = {
+            let body = object
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("removeFromSquare receiver"))?;
+            let world_item = matches!(body.kind, ObjectKind::WorldInventory(_));
+            let fluid = if world_item {
+                body.components
+                    .get_ref(pz_entity::ComponentType::FluidContainer)
+                    .map_err(RuntimeHostError::Storage)?
+            } else {
+                None
+            };
+            (world_item, fluid)
+        };
+        if let Some(fluid) = fluid {
+            retired.push_component(fluid);
+            let item = crate::floor_object::runtime::item_ref(object)?.ok_or(
+                RuntimeHostError::InvalidHostState(
+                    "world fluid transfer requires a live floor item",
+                ),
+            )?;
+            retired.push_owner(pz_entity::EntityOwner::from_ref(&item));
+            // Native transfer runs before either membership is removed. The
+            // item.worldItem field is independent and is not cleared here.
+            crate::floor_object::runtime::fluid_to_item(object, &item, &mut retired)?;
         }
-    }
-    let removed = sq
-        .objects
-        .iter()
-        .position(|o| o.ptr_eq_ref(object))
-        .map(|i| sq.remove_object_slot(i));
-    if let Some(i) = sq.special_objects.iter().position(|&s| s == r.id) {
-        sq.special_objects.remove(i);
-    }
-    removed
+        let Some(sq_owner) = env.cell.get_grid_square_mut(r.pos.0, r.pos.1, r.pos.2) else {
+            return Ok(None);
+        };
+        let mut sq = sq_owner
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("removeFromSquare square"))?;
+        if world_item {
+            let removed = sq
+                .world_objects
+                .try_borrow_mut()
+                .map_err(|_| RuntimeHostError::Borrowed("removeFromSquare world list"))?
+                .remove_first_object(object);
+            if let Some(crate::world_objects::WorldObjectEntry::Object(owner)) = removed {
+                retired.push_owner(pz_entity::EntityOwner::from_ref(&owner));
+                sq.retire_object(ObjectSlot::retain(&owner));
+            }
+        }
+        let removed = sq
+            .objects
+            .iter()
+            .position(|o| o.ptr_eq_ref(object))
+            .map(|i| sq.remove_object_slot(i));
+        if let Some(i) = sq.special_objects.iter().position(|&s| s == r.id) {
+            sq.special_objects.remove(i);
+        }
+        Ok(removed)
+    })();
+    // Both success and every partial-prefix error hand off physical pins
+    // before returning through any enclosing world/sprite guards.
+    env.cell.retire_components(retired);
+    result
 }
 impl MutationEnv<'_> {
     /// Invoke `addToWorld` on the selected actual receiver. Host callbacks
@@ -635,13 +717,27 @@ impl MutationEnv<'_> {
     pub fn object_add_to_world(&mut self, r: ObjectRef, object: &IsoObjectRef) {
         add_to_world_handle(self, r, object);
     }
-    pub(crate) fn object_remove_from_world(&mut self, r: ObjectRef) {
-        remove_from_world(self, r);
+    pub(crate) fn object_remove_from_world(
+        &mut self,
+        r: ObjectRef,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        let Some(object) = self.try_object_handle(r)? else {
+            return Ok(());
+        };
+        self.object_remove_from_world_detached(r, &object)
     }
     /// A detached Java receiver is reachable by reference, never reinserted
     /// into square lists merely to execute its method.
-    pub(crate) fn object_remove_from_world_detached(&mut self, r: ObjectRef, obj: &IsoObjectRef) {
-        remove_from_world_handle(self, r, obj);
+    pub(crate) fn object_remove_from_world_detached(
+        &mut self,
+        r: ObjectRef,
+        obj: &IsoObjectRef,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_owner(pz_entity::EntityOwner::from_ref(obj));
+        let result = remove_from_world_handle(self, r, obj);
+        self.cell.retire_components(retired);
+        result
     }
     pub(crate) fn world_call_on(&mut self, r: ObjectRef, obj: &IsoObjectRef, c: WorldCall) {
         self.world.world_call(r, obj.clone(), &mut *self.rand, c);

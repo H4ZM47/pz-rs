@@ -653,7 +653,7 @@ impl IsoFireManager {
         w: &mut FireWorld<'_>,
         rand: &mut dyn GameRand,
         (x, y, z): (i32, i32, i32),
-    ) {
+    ) -> Result<(), String> {
         for n in (0..self.fire_stack.len()).rev() {
             let Some(&r) = self.fire_stack.get(n) else {
                 continue;
@@ -667,9 +667,10 @@ impl IsoFireManager {
                 continue;
             };
             if let Some(object) = Self::object(w.cell, r) {
-                self.extinct(w, rand, r, &object, &mut f);
+                self.extinct(w, rand, r, &object, &mut f)?;
             }
         }
+        Ok(())
     }
 
     /// `IsoGridSquare.stopFire()`.
@@ -678,8 +679,8 @@ impl IsoFireManager {
         w: &mut FireWorld<'_>,
         rand: &mut dyn GameRand,
         at: (i32, i32, i32),
-    ) {
-        self.remove_all_on(w, rand, at);
+    ) -> Result<(), String> {
+        self.remove_all_on(w, rand, at)?;
         let (burnt, burning) = (w.sprites.tables.flag.burntOut, w.flags.burning);
         if let Some(sq_owner) = w.sq_mut(at.0, at.1, at.2) {
             let mut sq = sq_owner.borrow_mut();
@@ -687,6 +688,7 @@ impl IsoFireManager {
             sq.properties.unset_flag(burning);
             sq.burnt_out = true;
         }
+        Ok(())
     }
 
     /// `extinctFire()`: the square's flags, `RemoveAttachedAnims`, out of
@@ -700,7 +702,7 @@ impl IsoFireManager {
         r: FireRef,
         object: &IsoObjectRef,
         fire: &mut IsoFire,
-    ) {
+    ) -> Result<(), String> {
         let flags = w.flags;
         if let Some(sq_owner) = w.sq_mut(r.x, r.y, r.z) {
             let mut sq = sq_owner.borrow_mut();
@@ -723,7 +725,8 @@ impl IsoFireManager {
         // A fire is never multi-square, so either branch of
         // RemoveTileObject(obj) ends in RemoveTileObject(obj, false).
         w.env(rand)
-            .remove_tile_object_receiver((r.x, r.y, r.z), r.id, Some(object.clone()));
+            .remove_tile_object_receiver((r.x, r.y, r.z), r.id, Some(object.clone()))
+            .map_err(|error| format!("world removal host fault: {error:?}"))?;
         fire.life = 0;
         self.fire_remove_from_world(w, r, fire);
         let _removed = obj;
@@ -733,6 +736,7 @@ impl IsoFireManager {
             id: r.id,
         };
         w.env(rand).base_remove_from_world_detached(or, &object);
+        Ok(())
     }
 
     /// `IsoFire.Spread()`.
@@ -958,7 +962,7 @@ impl FireCallbacks for Step<'_, '_, '_> {
             }
             FireEvent::Spread => self.mgr.spread(self.w, rand, r, &self.object, fire),
             FireEvent::Extinct => {
-                self.mgr.extinct(self.w, rand, r, &self.object, fire);
+                self.mgr.extinct(self.w, rand, r, &self.object, fire)?;
                 self.gone = true;
             }
             // The new light is read after the update (FireHooks::fire_updated).

@@ -563,6 +563,47 @@ pub enum ObjectKind {
 }
 
 impl ObjectKind {
+    /// Exact class paths authenticated against installed JAR entries. This
+    /// immutable allocation stamp can be published before any owner cycles.
+    pub fn native_class_name(&self) -> &'static str {
+        match self.class_name() {
+            "IsoObject" => "zombie.iso.IsoObject",
+            "IsoPushableObject" => "zombie.iso.IsoPushableObject",
+            "IsoButcherHook" => "zombie.iso.IsoButcherHook",
+            "IsoAnimalTrack" => "zombie.iso.objects.IsoAnimalTrack",
+            "IsoBarbecue" => "zombie.iso.objects.IsoBarbecue",
+            "IsoBarricade" => "zombie.iso.objects.IsoBarricade",
+            "IsoBrokenGlass" => "zombie.iso.objects.IsoBrokenGlass",
+            "IsoCarBatteryCharger" => "zombie.iso.objects.IsoCarBatteryCharger",
+            "IsoClothingDryer" => "zombie.iso.objects.IsoClothingDryer",
+            "IsoClothingWasher" => "zombie.iso.objects.IsoClothingWasher",
+            "IsoCombinationWasherDryer" => "zombie.iso.objects.IsoCombinationWasherDryer",
+            "IsoCompost" => "zombie.iso.objects.IsoCompost",
+            "IsoCurtain" => "zombie.iso.objects.IsoCurtain",
+            "IsoDoor" => "zombie.iso.objects.IsoDoor",
+            "IsoFeedingTrough" => "zombie.iso.objects.IsoFeedingTrough",
+            "IsoFire" => "zombie.iso.objects.IsoFire",
+            "IsoFireplace" => "zombie.iso.objects.IsoFireplace",
+            "IsoGenerator" => "zombie.iso.objects.IsoGenerator",
+            "IsoHutch" => "zombie.iso.objects.IsoHutch",
+            "IsoJukebox" => "zombie.iso.objects.IsoJukebox",
+            "IsoLightSwitch" => "zombie.iso.objects.IsoLightSwitch",
+            "IsoMannequin" => "zombie.iso.objects.IsoMannequin",
+            "IsoRadio" => "zombie.iso.objects.IsoRadio",
+            "IsoStackedWasherDryer" => "zombie.iso.objects.IsoStackedWasherDryer",
+            "IsoStove" => "zombie.iso.objects.IsoStove",
+            "IsoTelevision" => "zombie.iso.objects.IsoTelevision",
+            "IsoThumpable" => "zombie.iso.objects.IsoThumpable",
+            "IsoTrap" => "zombie.iso.objects.IsoTrap",
+            "IsoTree" => "zombie.iso.objects.IsoTree",
+            "IsoWheelieBin" => "zombie.iso.objects.IsoWheelieBin",
+            "IsoWindow" => "zombie.iso.objects.IsoWindow",
+            "IsoWindowFrame" => "zombie.iso.objects.IsoWindowFrame",
+            "IsoWorldInventoryObject" => "zombie.iso.objects.IsoWorldInventoryObject",
+            _ => unreachable!("ObjectKind class stamp must cover every native class"),
+        }
+    }
+
     /// The Java class name.
     pub fn class_name(&self) -> &'static str {
         match self {
@@ -721,6 +762,14 @@ pub struct OverlaySprite {
 pub use pz_inventory::component::ComponentBlob;
 pub use pz_inventory::ItemComponents;
 
+/// Explicit continuation left by the existing data/renderer projection. These
+/// are not successful native Sprite operations or serialized game fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloorVisualTail {
+    ConstructorUpdateSprite,
+    LoadedTextureAndSprite,
+}
+
 /// `IsoObject` plus its class.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IsoObject {
@@ -731,6 +780,8 @@ pub struct IsoObject {
     /// know (`IsoSprite.CreateSprite` gives such sprites id 20000000).
     /// Only used when `sprite` is `None`.
     pub sprite_id_override: Option<i32>,
+    /// Native Sprite/texture work not represented by this data-profile object.
+    pub pending_floor_visual_tail: Option<FloorVisualTail>,
     /// `tile`: the map tile name the object was created from.
     pub tile: Option<String>,
     pub sx: f32,
@@ -775,6 +826,7 @@ impl IsoObject {
             kind,
             sprite,
             sprite_id_override: None,
+            pending_floor_visual_tail: None,
             tile: None,
             sx: 0.0,
             attached_anim_sprite: None,

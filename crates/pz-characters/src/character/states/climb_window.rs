@@ -111,11 +111,13 @@ impl<I: 'static> GameCharacter<I> {
     /// the character can climb through puts it in the window's opening,
     /// then `setParams` and `EventClimbWindow`.
     pub fn climb_through_window(&mut self, window: ObjectRef, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let Some(w) = cx.world.window_climb(&*self, mover_kind(self), window) else { return };
         if !matches!(w.portal, ThumpKind::Window | ThumpKind::Thumpable) || !w.portal_can_climb {
             return;
         }
         self.drop_heavy_items_in(cx);
+        if cx.has_host_error() { return; }
         let ox = self.vars.x - fastfloor(self.vars.x) as f32;
         let oy = self.vars.y - fastfloor(self.vars.y) as f32;
         let (wx, wy) = (w.square.0 as f32, w.square.1 as f32);
@@ -129,11 +131,13 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `climbThroughWindowFrame(frame)`.
     pub fn climb_through_window_frame(&mut self, frame: ObjectRef, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let Some(w) = cx.world.window_climb(&*self, mover_kind(self), frame) else { return };
         if w.portal != ThumpKind::WindowFrame || !w.portal_can_climb {
             return;
         }
         self.drop_heavy_items_in(cx);
+        if cx.has_host_error() { return; }
         set_params(self, frame, cx);
         self.report_event("EventClimbWindow");
     }
@@ -143,18 +147,24 @@ impl<I: 'static> GameCharacter<I> {
     /// `climbThroughWindowFrame`, `climbSheetRope`, `climbDownSheetRope`
     /// and `IsoPlayer.climbOverWall` run it first.
     pub fn drop_heavy_items_in(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let (sm, ctx) = (cx.sm, cx.ctx);
         if let Some(floor) = cx.world.floor() {
-            self.drop_heavy_items(sm, FloorCx::new(ctx, floor));
+            if let Err(error) = self.drop_heavy_items(sm, FloorCx::new(ctx, floor)) {
+                cx.record_host_error(error);
+            }
         }
     }
 
     /// `dropHandItems()` into the states' world ([`crate::character::state::StateWorld::floor`];
     /// nothing drops without one).
     pub fn drop_hand_items_in(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let (sm, ctx) = (cx.sm, cx.ctx);
         if let Some(floor) = cx.world.floor() {
-            self.drop_hand_items(sm, FloorCx::new(ctx, floor));
+            if let Err(error) = self.drop_hand_items(sm, FloorCx::new(ctx, floor)) {
+                cx.record_host_error(error);
+            }
         }
     }
 }

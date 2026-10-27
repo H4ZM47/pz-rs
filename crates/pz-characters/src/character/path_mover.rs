@@ -103,9 +103,10 @@ impl<I: 'static> GameCharacter<I> {
         }) {
             return;
         }
-        let all = std::mem::take(&mut self.path.requests);
+        if cx.has_host_error() { return; }
+        let mut all = std::mem::take(&mut self.path.requests).into_iter();
         let mut rest = Vec::new();
-        for r in all {
+        while let Some(r) = all.next() {
             match r {
                 PathMoverRequest::ClimbOverFence(d) => self.do_climb_over_fence(d, cx),
                 PathMoverRequest::ClimbThroughWindow(w) => self.climb_through_window(w, cx),
@@ -114,6 +115,12 @@ impl<I: 'static> GameCharacter<I> {
                     self.climb_over_wall(d, cx);
                 }
                 other => rest.push(other),
+            }
+            if cx.has_host_error() {
+                rest.extend(all);
+                rest.append(&mut self.path.requests);
+                self.path.requests = rest;
+                return;
             }
         }
         rest.append(&mut self.path.requests);

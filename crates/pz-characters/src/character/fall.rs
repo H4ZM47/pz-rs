@@ -174,6 +174,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `DoLand(impactIsoSpeed)`: nothing while climbing or in a ragdoll
     /// fall, else the impact of a fall.
     pub fn do_land(&mut self, impact_iso_speed: f32, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if self.vars.climbing || self.vars.ragdoll_fall {
             self.clear_fall_damage();
             return;
@@ -189,6 +190,7 @@ impl<I: 'static> GameCharacter<I> {
     /// `handleLandingImpact(fallDamage)`, with `IsoPlayer`'s override (the
     /// `DeathFall` voice stops, a hard landing resets the boredom).
     pub fn handle_landing_impact(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if self.is_player() {
             let f = self.fall_damage;
             if f.is_damaging_fall() {
@@ -208,6 +210,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `IsoGameCharacter.handleLandingImpact(fallDamage)`.
     fn handle_landing_impact_character(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let f = self.fall_damage;
         let damaging = f.is_damaging_fall();
         let more_than_light = f.is_more_than_light_fall();
@@ -258,7 +261,9 @@ impl<I: 'static> GameCharacter<I> {
         }
         if more_than_light {
             self.fallen_on_knees(true, cx);
+            if cx.has_host_error() { return; }
             self.drop_hand_items_in(cx);
+            if cx.has_host_error() { return; }
         } else {
             self.helmet_fall(false, cx);
         }
@@ -362,6 +367,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// `fallenOnKnees()`.
     pub fn fallen_on_knees_soft(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         self.fallen_on_knees(false, cx);
     }
 
@@ -369,6 +375,7 @@ impl<I: 'static> GameCharacter<I> {
     /// get dirty, and with bad luck the hand items drop and a part is
     /// torn and scratched (or, scratched already, deeply wounded).
     pub fn fallen_on_knees(&mut self, hard_fall: bool, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         if ctx.is_client() || self.is_god_mod(ctx) {
             return;
@@ -395,6 +402,7 @@ impl<I: 'static> GameCharacter<I> {
         }
         if ctx.debug_always_trip_over_fence() {
             self.drop_hand_items_in(cx);
+            if cx.has_host_error() { return; }
         }
         let ctx = cx.ctx;
         let nimble = self.perk_level(chars.perks.constant("Nimble").as_ref());
@@ -403,6 +411,7 @@ impl<I: 'static> GameCharacter<I> {
         }
         if ctx.rand_next(4) == 0 {
             self.drop_hand_items_in(cx);
+            if cx.has_host_error() { return; }
         }
         let ctx = cx.ctx;
         self.items.add_hole(sm, ctx, part as usize, false);
@@ -442,6 +451,7 @@ impl<I: 'static> GameCharacter<I> {
     /// the action queue stops, a sleeper wakes, the hand items drop, and
     /// the rest is the engine's ([`SimEvent::PlayerDeath`]).
     pub fn player_on_death(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         cx.ctx.event(SimEvent::CharacterDeath);
         if cx.ctx.is_server() {
             return;
@@ -452,6 +462,7 @@ impl<I: 'static> GameCharacter<I> {
             self.asleep = false;
         }
         self.drop_hand_items_in(cx);
+        if cx.has_host_error() { return; }
         let local = self.is_local_player(cx.ctx);
         cx.ctx.event(SimEvent::PlayerDeath { local });
     }
@@ -705,5 +716,26 @@ mod tests {
                 format!("{:?}", SimEvent::PlayerDeath { local: true }),
             ]
         );
+    }
+
+    #[test]
+    fn failed_death_drop_preserves_earlier_wake_prefix_and_stops_later_death_event() {
+        let (sm, mut chars) = body_fixture();
+        let ctx = Ctx::default();
+        let mut w = Floor::default();
+        w.floor.fail_at = Some(1);
+        let mut c = player(&sm, &mut chars);
+        c.path.current_square = Some((4, 5, 0));
+        c.asleep = true;
+        give_item(&sm, &mut c, ItemClass::Normal, "Spoon", 2, |_| {}, |_| {});
+        c.set_primary_hand_item(&sm, Some(2));
+        let mut cx = StateCx::new(&sm, &chars, &ctx, &mut w);
+        c.player_on_death(&mut cx);
+        assert_eq!(cx.host_result(), Err(pz_inventory::floor_drop::RuntimeHostError::Borrowed("actual floor allocation")));
+        assert!(!c.asleep);
+        assert!(c.items.primary_hand_item.is_none());
+        assert_eq!(events(&ctx), [format!("{:?}", SimEvent::CharacterDeath), format!("{:?}", SimEvent::StopAllActionQueue), format!("{:?}", SimEvent::FadeIn(0.5))]);
+        drop(cx);
+        assert!(w.floor.put.is_empty());
     }
 }

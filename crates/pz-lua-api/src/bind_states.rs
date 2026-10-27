@@ -12,7 +12,7 @@
 //! nothing but the character itself by default) and the simulation context
 //! of [`crate::bind_character_sim`].
 
-use crate::bind_character_sim::{chr_of, with_ctx, LuaGameCharacter, ISO_GAME_CHARACTER_CLASS};
+use crate::bind_character_sim::{chr_of, with_ctx_host, LuaGameCharacter, ISO_GAME_CHARACTER_CLASS};
 use crate::bind_characters::{shared_characters, LuaItem};
 use crate::bind_registry::shared_script_manager;
 use crate::expose::{bool_arg, expose_class, num_arg, str_arg, with_this};
@@ -115,12 +115,15 @@ pub(crate) fn with_state_cx<R>(
     let sm = shared_script_manager();
     let chars = shared_characters();
     let world = WORLD.with(|w| w.borrow().clone());
-    with_ctx(c, &this, |ctx| {
-        let chars = chars.borrow();
-        let mut world = world.borrow_mut();
+    with_ctx_host(c, &this, |ctx| {
+        use pz_entity::runtime_load::RuntimeHostError;
+        let chars = chars.try_borrow().map_err(|_| RuntimeHostError::Borrowed("state characters"))?;
+        let mut world = world.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("state world"))?;
         let mut cx = StateCx::new(&sm, &chars, ctx, &mut *world);
-        let mut chr = chr.borrow_mut();
-        Ok(f(&mut chr, &mut cx))
+        let mut chr = chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("state character"))?;
+        let result = f(&mut chr, &mut cx);
+        cx.host_result()?;
+        Ok(result)
     })
 }
 
@@ -286,6 +289,39 @@ pub fn register_shared(thread: &mut Thread) {
 mod tests {
     use super::*;
     use pz_kahlua::TableRef;
+
+    #[test]
+    fn state_context_surfaces_first_host_fault_after_guards_and_completed_prefix_event() {
+        use pz_entity::runtime_load::RuntimeHostError;
+        let (mut t, player, _)=crate::bind_character_sim::tests::setup_with(ScriptManager::new());
+        let world=WORLD.with(|world|world.borrow().clone());
+        let observed=Rc::new(std::cell::Cell::new(0));
+        let sink_count=observed.clone();
+        let sink_player=player.clone();
+        let sink_world=world.clone();
+        crate::bind_character_sim::install_event_sink(Rc::new(move |_: &mut Thread, name: &str, _: &[Value]| {
+            assert!(sink_player.try_borrow_mut().is_ok());
+            assert!(sink_world.try_borrow_mut().is_ok());
+            assert_eq!(name,"OnContainerUpdate");
+            sink_count.set(sink_count.get()+1);
+        }));
+        let later=Rc::new(std::cell::Cell::new(false));
+        let ran=later.clone();
+        t.globals().set_str("stateProbe",Value::Native(pz_kahlua::vm::NativeFunction::new("stateProbe",move |c| {
+            with_state_cx(c,|_,cx| {
+                cx.ctx.event(pz_characters::character::SimEvent::ContainerUpdate);
+                cx.record_host_error(RuntimeHostError::Borrowed("first state phase"));
+                cx.record_host_error(RuntimeHostError::Unsupported {operation:"later state phase",kind:None});
+            })?;
+            ran.set(true);
+            Ok(0)
+        })));
+        let error=crate::bind_character_sim::tests::run(&mut t,"stateProbe(player)").unwrap_err();
+        assert!(error.contains("first state phase") && error.contains("pz.host.Borrowed"));
+        assert!(!error.contains("later state phase"));
+        assert_eq!(observed.get(),1);
+        assert!(!later.get());
+    }
 
     #[test]
     fn singletons_are_canonical() {

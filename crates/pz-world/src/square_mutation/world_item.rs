@@ -206,6 +206,8 @@ impl MutationEnv<'_> {
     /// without it).
     ///
     /// STUB: `updateSprite()` (the world texture and scale; render state).
+    /// Legacy synchronous archive/fixture adapter. Production callers use the
+    /// fallible try_add_world_inventory_item path and propagate Host faults.
     pub fn add_world_inventory_item(
         &mut self,
         pos: SquarePos,
@@ -224,19 +226,35 @@ impl MutationEnv<'_> {
     /// Native world-manager/meta registration still requires its real host;
     /// component storage movement alone does not complete that lifecycle.
     pub fn try_add_world_inventory_item(
-        &mut self, pos: SquarePos, item: &ItemRef, x: f32, y: f32,
-        height: f32, world_age_hours: f64,
+        &mut self,
+        pos: SquarePos,
+        item: &ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+        world_age_hours: f64,
     ) -> Result<WorldItemPlaced, WorldItemPlacementError> {
         if self.sq(pos).is_none() {
             return Ok(WorldItemPlaced::NotPlaced);
         }
         // `tryAddCorpseToWorld(item, x, y)`.
         let corpse = {
-            let i = item.borrow();
+            let i = item.try_borrow().map_err(|_| {
+                WorldItemPlacementError::Component(
+                    pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement item"),
+                )
+            })?;
             i.is_human_corpse() || i.is_animal_corpse()
         };
         if corpse {
-            let body = self.world.corpse_from_item(pos, &item.borrow());
+            let body = self.world.corpse_from_item(
+                pos,
+                &*item.try_borrow().map_err(|_| {
+                    WorldItemPlacementError::Component(
+                        pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement item"),
+                    )
+                })?,
+            );
             let Some(mut body) = body else {
                 return Ok(WorldItemPlaced::NotPlaced);
             };
@@ -244,7 +262,12 @@ impl MutationEnv<'_> {
             body.base.y = pos.1 as f32 + y;
             body.base.z = self.apparent_z(pos, x, y);
             self.add_corpse(pos, body);
-            self.world.process_items_remove(&item.borrow());
+            self.world
+                .process_items_remove(&*item.try_borrow().map_err(|_| {
+                    WorldItemPlacementError::Component(
+                        pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement item"),
+                    )
+                })?);
             let index = self
                 .sq(pos)
                 .map_or(0, |sq| sq.borrow().static_moving.len() - 1);
@@ -252,31 +275,88 @@ impl MutationEnv<'_> {
         }
         self.invalidate_render(pos, WORLD_ITEM_ADDED);
         let generator = {
-            let i = item.borrow();
+            let i = item.try_borrow().map_err(|_| {
+                WorldItemPlacementError::Component(
+                    pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement item"),
+                )
+            })?;
             i.get_full_type().contains(".Generator")
                 || i.has_tag("base:generator") && i.template.world_object_sprite.is_some()
         };
         if generator {
-            let obj = self.world.generator_from_item(pos, &item.borrow());
+            let obj = self.world.generator_from_item(
+                pos,
+                &*item.try_borrow().map_err(|_| {
+                    WorldItemPlacementError::Component(
+                        pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement item"),
+                    )
+                })?,
+            );
             let Some(obj) = obj else {
                 return Ok(WorldItemPlaced::NotPlaced);
             };
             let id = self.add_special_object(pos, obj, -1);
-            self.world.process_items_remove(&item.borrow());
+            self.world
+                .process_items_remove(&*item.try_borrow().map_err(|_| {
+                    WorldItemPlacementError::Component(
+                        pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement item"),
+                    )
+                })?);
             return Ok(match id {
                 Some(id) => WorldItemPlaced::Generator(ObjectRef { pos, id }),
                 None => WorldItemPlaced::NotPlaced,
             });
         }
-        if item.borrow().template.class == ItemClass::Animal {
-            self.world.animal_dropped(pos, &item.borrow());
-            self.world.process_items_remove(&item.borrow());
+        if item
+            .try_borrow()
+            .map_err(|_| {
+                WorldItemPlacementError::Component(
+                    pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement item"),
+                )
+            })?
+            .template
+            .class
+            == ItemClass::Animal
+        {
+            self.world.animal_dropped(
+                pos,
+                &*item.try_borrow().map_err(|_| {
+                    WorldItemPlacementError::Component(
+                        pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement item"),
+                    )
+                })?,
+            );
+            self.world
+                .process_items_remove(&*item.try_borrow().map_err(|_| {
+                    WorldItemPlacementError::Component(
+                        pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement item"),
+                    )
+                })?);
             return Ok(WorldItemPlaced::Animal);
         }
-        // `new IsoWorldInventoryObject(item, sq, x, y, height)`.
-        let mut components = pz_inventory::ItemComponents::new();
+        let slot = self.construct_world_inventory_item(item, x, y, height, world_age_hours)?;
+        self.finish_world_inventory_item(pos, slot, false)
+    }
+
+    /// The actual native floor constructor. It deliberately does not set the
+    /// item's worldItem field. A string-overload caller can retain this owned
+    /// continuation, perform genuine setAutoAge outside host guards, and then
+    /// call finish_created_world_inventory_item. It must not use the supplied
+    /// overload's corpse/generator/animal branches.
+    pub fn construct_world_inventory_item(
+        &mut self,
+        item: &ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+        world_age_hours: f64,
+    ) -> Result<ObjectSlot, WorldItemPlacementError> {
         {
-            let mut i = item.borrow_mut();
+            let mut i = item.try_borrow_mut().map_err(|_| {
+                WorldItemPlacementError::Component(
+                    pz_entity::runtime_load::RuntimeHostError::Borrowed("floor constructor item"),
+                )
+            })?;
             i.world_x_rotation = 0.0;
             i.world_y_rotation = 0.0;
             if i.world_z_rotation < 0.0 {
@@ -284,41 +364,15 @@ impl MutationEnv<'_> {
             }
         }
         shared::set_container(item, None);
-        let mut xoff = x;
-        let mut yoff = y;
-        if xoff == 0.0 {
-            xoff = self.rand.next(1000) as f32 / 1000.0;
-        }
-        if yoff == 0.0 {
-            yoff = self.rand.next(1000) as f32 / 1000.0;
-        }
-        let mut retired = pz_entity::RetiredComponents::new();
-        let moved = pz_inventory::component_host::detach_component_for_transfer(
-            item, pz_entity::ComponentType::FluidContainer, &mut retired,
-        );
-        let moved = match moved {
-            Ok(moved) => moved,
-            Err(error) => {
-                self.cell.retire_components(retired);
-                return Err(WorldItemPlacementError::Component(error));
-            }
+        let xoff = if x == 0.0 {
+            self.rand.next(1000) as f32 / 1000.0
+        } else {
+            x
         };
-        if let Some(component) = moved {
-            if let Err(rejected) = components.runtime_mut().push_ref_if_absent(component) {
-                let error = rejected.error;
-                retired.push_component(rejected.component);
-                self.cell.retire_components(retired);
-                return Err(WorldItemPlacementError::Component(pz_entity::runtime_load::RuntimeHostError::Storage(error)));
-            }
-        }
-        self.cell.retire_components(retired);
-        let (name, key_id) = {
-            let i = item.borrow();
-            let name = self
-                .world
-                .item_display_name(&i)
-                .unwrap_or_else(|| i.get_name().to_string());
-            (name, i.get_key_id())
+        let yoff = if y == 0.0 {
+            self.rand.next(1000) as f32 / 1000.0
+        } else {
+            y
         };
         let mut obj = IsoObject::new(
             0,
@@ -338,26 +392,137 @@ impl MutationEnv<'_> {
             None,
         );
         obj.sprite_id_override = Some(UNREGISTERED_SPRITE_ID);
+        obj.pending_floor_visual_tail =
+            Some(crate::objects::FloorVisualTail::ConstructorUpdateSprite);
         obj.outline_on_mouseover = true;
-        obj.has_components = !components.is_empty();
-        obj.components = components;
-        obj.name = Some(ObjectName::Str(name));
-        obj.key_id = key_id;
         let slot = ObjectSlot::try_new(obj).map_err(|failure| {
             self.cell.retire_object(ObjectSlot::retain(&failure.object));
             WorldItemPlacementError::Binding(failure.error)
         })?;
-        let sq_owner = self.sq_mut(pos).unwrap();
-        let mut sq = sq_owner.borrow_mut();
-        let id = sq.new_object_id();
-        slot.borrow_mut().id = id;
         let object = slot.ref_handle();
-        sq.objects.push(slot);
-        sq.world_objects.borrow_mut().push_object(&object);
-        drop(sq);
+        // Native transfer sees the canonical whole receiver, not a future
+        // success-only owner or a by-value component staging container.
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_owner(pz_entity::EntityOwner::from_ref(&object));
+        let result =
+            crate::floor_object::runtime::fluid_from_item_before_world(item, &object, &mut retired);
+        self.cell.retire_components(retired);
+        result.map_err(WorldItemPlacementError::Component)?;
+        Ok(slot)
+    }
+
+    /// Complete only the string overload's post-constructor continuation.
+    /// Its real optional autoAge phase must already have run; no age/factory
+    /// success is invented here. Backlink publication precedes both lists.
+    pub fn finish_created_world_inventory_item(
+        &mut self,
+        pos: SquarePos,
+        slot: ObjectSlot,
+    ) -> Result<WorldItemPlaced, WorldItemPlacementError> {
+        self.finish_world_inventory_item(pos, slot, true)
+    }
+
+    fn finish_world_inventory_item(
+        &mut self,
+        pos: SquarePos,
+        slot: ObjectSlot,
+        created: bool,
+    ) -> Result<WorldItemPlaced, WorldItemPlacementError> {
+        let object = slot.ref_handle();
+        // Pin the incoming receiver before any failure can discard the last
+        // local owner inside an outer WORLD/sprite guard.
+        self.cell.retire_object(ObjectSlot::retain(&object));
+        let item = crate::floor_object::runtime::item_ref(&object)
+            .map_err(WorldItemPlacementError::Component)?
+            .ok_or_else(|| {
+                WorldItemPlacementError::Component(
+                    pz_entity::runtime_load::RuntimeHostError::InvalidHostState(
+                        "null floor placement item",
+                    ),
+                )
+            })?;
+        let mut retired = pz_entity::RetiredComponents::new();
+        if created {
+            let result =
+                crate::floor_object::runtime::publish_item_backlink(&object, &item, &mut retired);
+            self.cell.retire_components(std::mem::take(&mut retired));
+            result.map_err(WorldItemPlacementError::Component)?;
+        }
+        let (name, key_id) = {
+            let i = item.try_borrow().map_err(|_| {
+                WorldItemPlacementError::Component(
+                    pz_entity::runtime_load::RuntimeHostError::Borrowed("floor item name/key"),
+                )
+            })?;
+            (
+                self.world
+                    .item_display_name(&i)
+                    .unwrap_or_else(|| i.get_name().to_string()),
+                i.get_key_id(),
+            )
+        };
+        {
+            let mut obj = object.try_borrow_mut().map_err(|_| {
+                WorldItemPlacementError::Component(
+                    pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                        "floor name/key destination",
+                    ),
+                )
+            })?;
+            if created {
+                obj.key_id = key_id;
+                obj.name = Some(ObjectName::Str(name));
+            } else {
+                obj.name = Some(ObjectName::Str(name));
+                obj.key_id = key_id;
+            }
+        }
+        let sq_owner = self.sq_mut(pos).ok_or_else(|| {
+            WorldItemPlacementError::Component(
+                pz_entity::runtime_load::RuntimeHostError::InvalidHostState(
+                    "floor placement square disappeared",
+                ),
+            )
+        })?;
+        let id = {
+            let mut sq = sq_owner.try_borrow_mut().map_err(|_| {
+                WorldItemPlacementError::Component(
+                    pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement square"),
+                )
+            })?;
+            let id = sq.new_object_id();
+            object
+                .try_borrow_mut()
+                .map_err(|_| {
+                    WorldItemPlacementError::Component(
+                        pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement id"),
+                    )
+                })?
+                .id = id;
+            sq.objects.push(slot);
+            sq.world_objects
+                .try_borrow_mut()
+                .map_err(|_| {
+                    WorldItemPlacementError::Component(
+                        pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                            "floor placement worldObjects",
+                        ),
+                    )
+                })?
+                .push_object(&object);
+            id
+        };
+        if !created {
+            let result =
+                crate::floor_object::runtime::publish_item_backlink(&object, &item, &mut retired);
+            self.cell.retire_components(retired);
+            result.map_err(WorldItemPlacementError::Component)?;
+        }
         let r = ObjectRef { pos, id };
-        super::lifecycle::add_to_world_handle(self, r, &object);
-        self.world.designation_zone_item_on_ground(r, object);
+        if !created {
+            super::lifecycle::add_to_world_handle(self, r, &object);
+            self.world.designation_zone_item_on_ground(r, object);
+        }
         if let Some(rs) = render_square(self.cell, pos) {
             self.invalidate_render(rs, WORLD_ITEM_ADDED);
         }
@@ -413,10 +578,19 @@ impl FloorWorld for FloorDropEnv<'_, '_> {
         x: f32,
         y: f32,
         height: f32,
-    ) {
+    ) -> pz_inventory::floor_drop::HostResult<()> {
         let p = self
             .env
-            .add_world_inventory_item(sq, item, x, y, height, self.world_age_hours);
+            .try_add_world_inventory_item(sq, item, x, y, height, self.world_age_hours)
+            .map_err(|error| match error {
+                WorldItemPlacementError::Component(error) => error,
+                WorldItemPlacementError::Binding(_) => {
+                    pz_inventory::floor_drop::RuntimeHostError::InvalidHostState(
+                        "floor constructor whole-owner binding failed",
+                    )
+                }
+            })?;
         self.placed.push(p);
+        Ok(())
     }
 }

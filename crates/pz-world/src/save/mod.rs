@@ -345,6 +345,12 @@ impl SaveSettings {
 /// Hooks into systems outside this crate. The defaults behave like a game
 /// with no animal or Lua definitions loaded and no animal zones.
 pub trait SaveHooks {
+    /// Actual LoadSingleTexture outcome in IsoWorldInventoryObject.load.
+    /// Unknown is not converted to a fabricated successful texture. The
+    /// existing render projection does not supply a native Sprite allocation.
+    fn floor_load_texture_status(&self, _object: &crate::IsoObjectRef) -> pz_entity::Lookup<bool> {
+        pz_entity::Lookup::Unknown
+    }
     /// Components the class's `(IsoCell)` constructor adds before `load`,
     /// as their saved bytes, besides the ones this crate builds itself
     /// (the `IsoFeedingTrough` fluid container). A loaded component of the

@@ -70,6 +70,33 @@ messages follow the installed invoker; unavailable reflected-null diagnostics
 and concrete Java implementation-class diagnostics fail explicitly as host
 capabilities. Native validation print/breakpoint/history effects remain open.
 
+The item `worldItem` field retains one nullable reference to the complete
+world-object allocation. Native construction leaves it null. Supplied-item
+placement assigns it after both list insertions; the created-item continuation
+assigns it before those insertions. Live floor loading publishes the same actual
+item and backlink before tint and later fields, retaining the receiver and
+completed cursor/mutation prefix on failure. Ordinary removal keeps the backlink.
+Native explicit item-container removal still needs its separate clearing
+coordinator. Rust archive copies instead bind copied floor items to their copied
+complete owners.
+
+Lua world receivers share canonical userdata and immutable allocation-time
+native class metadata. Physical collector edges follow object, floor payload,
+item and backlink without invoking native removal or substituting archive bodies.
+Class conflicts remain explicit permanent faults. Weak metadata pruning is
+amortized across allocations and cache hits.
+
+Placement failures retain their typed host error through worn-item actions and
+the character state context. Nested states and ragdoll/animation callbacks stop
+immediately; outer Lua/engine boundaries dispatch already-produced supported
+events after releasing guards, then return the first fault before later work.
+This does not complete the existing unported item-fall and sound event handling.
+Floor visual loading and swap tails still require their genuine texture, sprite,
+processing and manager phases. Named owned continuations and unsupported host
+results preserve these boundaries; they do not certify a completed native tail.
+The actual square-list Lua bridge, captured icon textures/masks and full inventory
+row rendering remain separate integration work.
+
 Returning to the menu rebuilds script/Lua/UI owners before menu entry;
 native shutdown skips that rebuild. A failed rebuild stops the client
 instead of entering a menu with mixed owners. Character `getModData`
@@ -91,7 +118,8 @@ visitor can trace a physical `Rc<dyn Any>` slot that directly owns a registered
 or borrowing its contents. Wrong types and node kinds stay conservative. Production
 item/component/fluid/Color userdata and corresponding actual component, script,
 attribute and world-object owner slots now participate in this protocol.
-Floor-item reciprocal backlinks and broader engine userdata remain unfinished.
+Floor-item reciprocal backlinks participate through their physical owner slots;
+broader engine userdata and lifecycle coverage remain unfinished.
 Other native captures, coroutines, prototypes and engine-owned references
 remain opaque roots; character/action cycles and some old LuaManager
 environments can remain retained. Heap

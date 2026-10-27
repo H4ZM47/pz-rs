@@ -6,7 +6,7 @@ use std::cell::Cell;
 
 struct Restore {
     item: Option<pz_inventory::shared::ItemObserver>,
-    object: Option<fn(&IsoObjectRef)>,
+    object: Option<pz_world::object_slot::ObjectObserver>,
 }
 
 impl Restore {

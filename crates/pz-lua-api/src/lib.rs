@@ -32,6 +32,7 @@ pub mod bind_fs;
 pub mod bind_global_objects;
 pub mod bind_globals;
 pub mod bind_item_container;
+pub mod bind_world_object;
 pub(crate) mod bind_item_age;
 pub mod bind_item_name;
 pub mod bind_item_visual;

@@ -149,7 +149,7 @@ fn floor_item_raw_record_preserves_bytes_framing_and_never_promotes() {
     let raw = vec![0, 3, 0xff, 0, 0, 0, 42, 0xde, 0xad, 0, 0xff];
     let saved = SavedItem::Raw(raw.clone());
     let floor = FloorItem::from_saved(saved.clone());
-    assert_eq!(floor.registry_id(), 3);
+    assert_eq!(floor.registry_id(), Some(3));
     assert!(floor.item_ref().is_none());
     assert!(floor.borrow_item().is_none());
     assert!(floor.borrow_item_mut().is_none());

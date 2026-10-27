@@ -410,6 +410,9 @@ pub enum ItemKind {
 /// `InventoryItem` state that saving and loading touch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InventoryItem {
+    /// Actual `worldItem` reference. Runtime identity is deliberately excluded
+    /// from Rust archive copies/equality; native item load preserves this slot.
+    pub(crate) world_item: crate::world_item::WorldItemSlot,
     pub template: Rc<ItemTemplate>,
     /// `itemType`: a per-instance reference, independent of later script
     /// changes. `isItemType` compares the canonical object by identity.
@@ -554,6 +557,7 @@ impl InventoryItem {
             ItemClass::Animal => ItemKind::Plain,
         };
         InventoryItem {
+            world_item: crate::world_item::WorldItemSlot::default(),
             item_type: t.item_type.clone(),
             equipped_location: if matches!(kind, ItemKind::Container(_) | ItemKind::Radio(..)) {
                 t.script
@@ -921,6 +925,9 @@ impl InventoryItem {
         retired: &mut pz_entity::RetiredComponents,
         notices: &mut Vec<pz_kahlua::java_io::JavaIoNotice>,
     ) -> ModDataResult<ItemLoadContinuation> {
+        // Native InventoryItem.load never assigns worldItem. In particular,
+        // the scalar reset below must preserve the actual runtime backlink
+        // even when a later field/component read fails.
         if let ItemKind::Weapon(w) = &mut self.kind {
             // clearAllWeaponParts
             w.attachments.clear();

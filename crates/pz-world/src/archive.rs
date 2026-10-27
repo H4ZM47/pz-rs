@@ -26,6 +26,7 @@ pub enum SquareArchiveError {
     },
     BorrowedObject(usize),
     BorrowedFloor(usize),
+    WorldOwner(pz_entity::runtime_load::RuntimeHostError),
     BorrowedMannequinWorn(ArchiveLocation),
     Components {
         location: ArchiveLocation,
@@ -107,11 +108,17 @@ fn check_object(
     let inventory_error = |cause| SquareArchiveError::Inventory { location, cause };
     for (index, entry) in object.components.entry_slots().enumerate() {
         if let pz_entity::RuntimeEntryView::Live { kind, component } = entry {
-            let body = component.try_borrow().map_err(|_| SquareArchiveError::Components {
-                location,
-                cause: pz_entity::RuntimeError::BorrowedComponent { index: Some(index), kind },
-            })?;
-            body.check_archive_copy().map_err(|cause| SquareArchiveError::Components { location, cause })?;
+            let body = component
+                .try_borrow()
+                .map_err(|_| SquareArchiveError::Components {
+                    location,
+                    cause: pz_entity::RuntimeError::BorrowedComponent {
+                        index: Some(index),
+                        kind,
+                    },
+                })?;
+            body.check_archive_copy()
+                .map_err(|cause| SquareArchiveError::Components { location, cause })?;
         }
     }
     for container in object.containers() {
@@ -285,9 +292,11 @@ pub(crate) fn copy_objects(
         .into_iter()
         .map(|(source, _)| {
             let key = Rc::as_ptr(&source) as usize;
-            (key, ObjectSlot::new(source.borrow().clone()).ref_handle())
+            ObjectSlot::from_archive_value(source.borrow().clone())
+                .map(|slot| (key, slot.ref_handle()))
+                .map_err(SquareArchiveError::WorldOwner)
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     let main = square
         .objects
         .iter()

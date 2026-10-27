@@ -41,7 +41,9 @@ pub struct IngameState {
 
 /// `SoundManager.instance.setMusicState(name)`.
 fn set_music_state(name: &str) {
-    pz_lua_api::bind_audio::sound_system().borrow_mut().with(|m, _| m.set_music_state(name));
+    pz_lua_api::bind_audio::sound_system()
+        .borrow_mut()
+        .with(|m, _| m.set_music_state(name));
 }
 
 /// `LuaManager.call(name, null)`: the global function `name`, if there is
@@ -99,7 +101,10 @@ impl IngameState {
         let (hearing, fire_spread) = match sandbox(cx.lua) {
             Some(sb) => {
                 let sb = sb.borrow();
-                (opt_int(&sb, "ZombieLore.Hearing"), opt_bool(&sb, "FireSpread"))
+                (
+                    opt_int(&sb, "ZombieLore.Hearing"),
+                    opt_bool(&sb, "FireSpread"),
+                )
             }
             None => (2, true),
         };
@@ -112,7 +117,14 @@ impl IngameState {
                 // wraps `IsoFireManager.Update` in its own
                 // `catch (Exception)`: an `Err` is logged (`update_fire`
                 // does) and the frame goes on.
-                let _ = w.update_fire(&sim, pz_world::fire::FireSettings { fire_spread, raining: false, tutorial });
+                let _ = w.update_fire(
+                    &sim,
+                    pz_world::fire::FireSettings {
+                        fire_spread,
+                        raining: false,
+                        tutorial,
+                    },
+                );
                 // TODO(port): `RainManager.Update`, `Meta.instance.update`,
                 // `VirtualZombieManager.instance.update`.
                 // `MapCollisionData.updateMain` +
@@ -145,9 +157,15 @@ impl IngameState {
     /// `RenderSettings.applyRenderSettings(n)`'s inputs: the climate's
     /// render values, the sandbox night darkness and the player's
     /// `WeatherShader` inputs.
-    fn render_settings(&mut self, lua: &mut LuaManager, n: usize) -> (ClimateSettings, ScreenParams) {
+    fn render_settings(
+        &mut self,
+        lua: &mut LuaManager,
+        n: usize,
+    ) -> (ClimateSettings, ScreenParams) {
         let night_darkness = sandbox(lua).map_or(3, |sb| opt_int(&sb.borrow(), "NightDarkness"));
-        let last_stand = pz_lua_api::bind_core::shared_core().borrow().is_last_stand();
+        let last_stand = pz_lua_api::bind_core::shared_core()
+            .borrow()
+            .is_last_stand();
         let gt = pz_lua_api::bind_climate::shared_game_time();
         let g = gt.borrow();
         // TODO(port): `SceneShaderStore.weatherShader` (the screen pass
@@ -170,14 +188,17 @@ impl IngameState {
             last_stand,
         };
         drop(g);
-        if let Err(e) = pz_lua_api::bind_search_mode::update_render_inputs(n, &mut self.render_inputs[n]) {
+        if let Err(e) =
+            pz_lua_api::bind_search_mode::update_render_inputs(n, &mut self.render_inputs[n])
+        {
             eprintln!("RenderSettings.updateRenderSettings: {e}");
         }
         let mut players = [PlayerRenderInput::default(); MAX_PLAYERS];
         players[n].night_vision_goggles = self.render_inputs[n].night_vision_goggles;
         let settings = ClimateSettings { climate, players };
         let params = settings.screen_params(n, ScreenParams::default());
-        let params = pz_lua_api::bind_search_mode::apply_screen_inputs(params, n, &self.render_inputs[n]);
+        let params =
+            pz_lua_api::bind_search_mode::apply_screen_inputs(params, n, &self.render_inputs[n]);
         let lock_fps = pz_lua_api::bind_climate::climate_settings().lock_fps;
         (settings, self.screen_timer.apply(params, lock_fps))
     }
@@ -194,13 +215,20 @@ impl IngameState {
             let c = p.borrow();
             (c.vars.x, c.vars.y, c.vars.z, c.vars.dir)
         };
-        let Some(chunk_map) = w.streamer.as_ref().filter(|s| n < s.num_players()).map(|s| {
-            let m = s.chunk_map(n);
-            (m.world_x - s.width / 2, m.world_y - s.width / 2, s.width)
-        }) else {
+        let Some(chunk_map) = w
+            .streamer
+            .as_ref()
+            .filter(|s| n < s.num_players())
+            .map(|s| {
+                let m = s.chunk_map(n);
+                (m.world_x - s.width / 2, m.world_y - s.width / 2, s.width)
+            })
+        else {
             return;
         };
-        let zoom = pz_lua_api::bind_core::shared_core().borrow().get_zoom(n as i32);
+        let zoom = pz_lua_api::bind_core::shared_core()
+            .borrow()
+            .get_zoom(n as i32);
         // TODO(port): split screen (`IsoCamera.getScreenWidth/Height`).
         let mut view = RenderView {
             player: n,
@@ -220,7 +248,8 @@ impl IngameState {
         // `IsoCamera`: the player's camera, for the HUD and the player's
         // input. TODO(port): `PlayerCamera` (deferred movement, the
         // right-click pan).
-        let cam = pz_iso_render::Camera::player(x, y, z, view.width as i32, view.height as i32, zoom);
+        let cam =
+            pz_iso_render::Camera::player(x, y, z, view.width as i32, view.height as i32, zoom);
         {
             let mut f = self.cameras.borrow_mut();
             f.cameras[n] = Some(cam);
@@ -229,7 +258,12 @@ impl IngameState {
         }
         pz_player_input::set_camera_info(
             n,
-            pz_player_input::CameraInfo { off_x: cam.off_x as f32, off_y: cam.off_y as f32, right_click_x: 0.0, right_click_y: 0.0 },
+            pz_player_input::CameraInfo {
+                off_x: cam.off_x as f32,
+                off_y: cam.off_y as f32,
+                right_click_x: 0.0,
+                right_click_y: 0.0,
+            },
         );
         // TODO(port): `ModelOutlines.startFrameMain`/`endFrameMain`,
         // `RenderSettings.legacyPostRender`.
@@ -290,7 +324,9 @@ impl GameState for IngameState {
                 s.process_all_load_grid_square(cell, ctx);
                 s.chunk_map_update(0, cell, ctx);
             });
-            if let Err(error) = w.activate_streamed_chunks(cx.lua) { w.errors.push(error); }
+            if let Err(error) = w.activate_streamed_chunks(cx.lua) {
+                w.errors.push(error);
+            }
             w.hand_off_events();
             // TODO(port): `VehiclesDB2.instance.loadVehiclesInMeta()`
             // (`vehicles_db::load_vehicles_in_meta`), and
@@ -298,7 +334,9 @@ impl GameState for IngameState {
         }
         self.loading = false;
         if let Some(w) = cx.world.as_mut() {
-            w.key_spawn_chance_d100 = sandbox(cx.lua).map_or(0.0, |sb| (opt_f64(&sb.borrow(), "KeyLootNew") * 50.0).min(90.0) as f32);
+            w.key_spawn_chance_d100 = sandbox(cx.lua).map_or(0.0, |sb| {
+                (opt_f64(&sb.borrow(), "KeyLootNew") * 50.0).min(90.0) as f32
+            });
             // `MapCollisionData.instance.startGame()`.
             w.start_population(&FrameSim::capture());
         }
@@ -334,7 +372,9 @@ impl GameState for IngameState {
         // TODO(port): `ModelManager.Reset`, `ZombieSpawnRecorder.quit`,
         // `Core.offscreenBuffer.destroy`, `WeatherFxMask.destroy`.
         pz_lua_api::bind_players::reset();
-        pz_lua_api::bind_core::shared_core().borrow_mut().num_players = 1;
+        pz_lua_api::bind_core::shared_core()
+            .borrow_mut()
+            .num_players = 1;
         // TODO(port): `Temperature.reset`.
         if let Err(e) = pz_lua_api::hud::world_markers::with_markers(|m| m.reset()) {
             eprintln!("WorldMarkers.reset: {e:?}");
@@ -350,11 +390,16 @@ impl GameState for IngameState {
         // `IsoWorld.instance.KillCell()`: the cell and the world's state go.
         pz_lua_api::bind_world::set_cell(None);
         *cx.world = None;
-        let retired_emitters = pz_lua_api::bind_audio::sound_system().borrow_mut().world_emitters.reset();
+        let retired_emitters = pz_lua_api::bind_audio::sound_system()
+            .borrow_mut()
+            .world_emitters
+            .reset();
         drop(retired_emitters);
         pz_lua_api::item_sound::reset();
         // `BaseSoundManager.stop`, before the new menu environment starts.
-        pz_lua_api::bind_audio::sound_system().borrow_mut().with(|manager, ctx| manager.stop(ctx));
+        pz_lua_api::bind_audio::sound_system()
+            .borrow_mut()
+            .with(|manager, ctx| manager.stop(ctx));
         pz_lua_api::bind_misc::set_ingame_state(false);
         // The original rebuilds scripts and Lua before redirecting to the
         // menu. Registry ids cannot carry across worlds whose dictionary
@@ -366,7 +411,11 @@ impl GameState for IngameState {
     }
 
     fn redirect_state(&mut self, _cx: &mut StateCx<'_>) -> Option<StateRef> {
-        Some(self.redirect.take().unwrap_or_else(|| state(crate::main_screen::MainScreenState::default())))
+        Some(
+            self.redirect
+                .take()
+                .unwrap_or_else(|| state(crate::main_screen::MainScreenState::default())),
+        )
     }
 
     fn reenter(&mut self, _cx: &mut StateCx<'_>) {
@@ -377,7 +426,8 @@ impl GameState for IngameState {
         self.tick_count += 1;
         // TODO(port): the first 60 ticks set each player's
         // `dirtyRecalcGridStackTime = 20`.
-        cx.lua.trigger_event("OnTickEvenPaused", &[Value::Num(self.number_ticks as f64)]);
+        cx.lua
+            .trigger_event("OnTickEvenPaused", &[Value::Num(self.number_ticks as f64)]);
         // TODO(port): `DebugFileWatcher.instance.update()`,
         // `AdvancedAnimator.checkModifiedFiles()`.
         let exiting = {
@@ -397,7 +447,8 @@ impl GameState for IngameState {
         }
         // TODO(network): `GameWindow.serverDisconnected`.
         // TODO(port): the debug states (`DebugChunkState`, the editors).
-        let all_dead = pz_lua_api::bind_players::player_instance().is_some() && pz_lua_api::bind_players::all_players_dead();
+        let all_dead = pz_lua_api::bind_players::player_instance().is_some()
+            && pz_lua_api::bind_players::all_players_dead();
         if all_dead {
             // TODO(port): `UIManager.getSpeedControls().SetCurrentGameSpeed(1)`,
             // `IsoCamera.update()`.
@@ -409,8 +460,15 @@ impl GameState for IngameState {
                 // (`IsoWorld.doChunkMapUpdate`).
                 w.process_chunk_pos(cx.lua);
                 let sim = FrameSim::capture();
-                pz_lua_api::bind_character_sim::install_sim_context(std::rc::Rc::new(FrameSim::capture()));
-                w.update(cx.lua, &sim);
+                pz_lua_api::bind_character_sim::install_sim_context(std::rc::Rc::new(
+                    FrameSim::capture(),
+                ));
+                if let Err(error) = w.update(cx.lua, &sim) {
+                    // A typed character host fault is not an ordinary script
+                    // update error. Stop this frame before later callbacks.
+                    *cx.error = Some(format!("IsoWorld host fault: {error:?}"));
+                    return StateAction::Remain;
+                }
             }
             // TODO(port): `ObjectAmbientEmitters` (threaded),
             // `GameEntityManager.Update`, `AnimalController.update`,
@@ -431,7 +489,14 @@ impl GameState for IngameState {
     fn render(&mut self, cx: &mut StateCx<'_>, out: &mut DrawList) {
         // `renderInternal`: each local player's world frame (the first
         // clears), then their text, then the UI.
-        out.renderi(None, 0, 0, cx.screen_w, cx.screen_h, Rgba(0.0, 0.0, 0.0, 1.0));
+        out.renderi(
+            None,
+            0,
+            0,
+            cx.screen_w,
+            cx.screen_h,
+            Rgba(0.0, 0.0, 0.0, 1.0),
+        );
         for n in 0..MAX_PLAYERS {
             let Some(p) = player(n) else {
                 // TODO(port): `SpriteRenderer.prePopulating` for slot 0.

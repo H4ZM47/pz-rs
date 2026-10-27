@@ -141,6 +141,7 @@ impl<I: 'static> GameCharacter<I> {
         out: &mut PlayerUpdate,
         cx: &mut StateCx<'_, I>,
     ) -> ScriptResult<PlayerUpdateStep> {
+        if cx.has_host_error() { return Ok(PlayerUpdateStep::Done); }
         let step = match phase {
             PlayerUpdatePhase::Start => {
                 self.player.now_ms = input.current_time_ms();
@@ -158,6 +159,7 @@ impl<I: 'static> GameCharacter<I> {
                 self.update_internal2_tail(strafe_x, strafe_y, cx)?
             }
         };
+        if cx.has_host_error() { return Ok(PlayerUpdateStep::Done); }
         match step {
             ControlFlow::Break((reason, resume)) => Ok(PlayerUpdateStep::StopActionQueue { reason, resume }),
             ControlFlow::Continue(update_base) => {
@@ -1359,6 +1361,7 @@ impl<I: 'static> GameCharacter<I> {
 
     /// Resume after the host's borrow-free timed-action callbacks.
     pub fn update_player_after_actions(&mut self, out: &mut PlayerUpdate, cx: &mut StateCx<'_, I>) -> ScriptResult {
+        if cx.has_host_error() { return Ok(()); }
         let (sm, chars, ctx) = (cx.sm, cx.chars, cx.ctx);
         let fps = ctx.thirty_fps_multiplier();
         if ctx.do_character_stats() {
@@ -1379,6 +1382,7 @@ impl<I: 'static> GameCharacter<I> {
             self.vars.state_event_delay_timer -= fps;
         }
         self.state_machine_update(cx);
+        if cx.has_host_error() { return Ok(()); }
         // ensureOnTile, RainManager: world.
         self.update_fire(cx);
         // updateTextObjects (the chat element's part is queued).
@@ -1577,11 +1581,14 @@ impl<I: 'static> GameCharacter<I> {
     /// and its collisions, the turning flags and the action context), the
     /// stale hit reaction, and the body parts' last state.
     pub fn postupdate_player(&mut self, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         let had_hit_reaction = !self.vars.hit_reaction.is_empty();
         self.moving_postupdate(cx);
+        if cx.has_host_error() { return; }
         // postUpdateAnimating: the animation player is the animation's;
         // the action context runs here.
         self.update_action_context(cx);
+        if cx.has_host_error() { return; }
         self.clear_attack_vars_post();
         if had_hit_reaction
             && !self.vars.hit_reaction.is_empty()

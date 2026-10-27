@@ -5,7 +5,7 @@
 //! point. Collector detachment is distinct from remove/reset/pool release.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::{Rc, Weak};
 
 use pz_entity::runtime_attributes::{AttributeRef, RuntimeAttributeInstance};
@@ -17,12 +17,14 @@ use pz_kahlua::gc::{self, RegistrationError, TraceDescriptor, TraceVisitor, User
 use pz_scripts::objects::entity::components::attributes::AttributesScript;
 use pz_scripts::objects::entity::GameEntityScript;
 use pz_scripts::objects::items::Item as ItemScript;
+use pz_world::floor_object::FloorObjectRef;
 use pz_world::object_slot::IsoObjectRef;
-use pz_world::objects::IsoObject;
+use pz_world::objects::{IsoObject, IsoWorldInventoryObject, ObjectKind};
 
 use crate::bind_fluid_container::LuaFluidContainer;
 use crate::bind_items::LuaInventoryItem;
 use crate::bind_misc_classes::Color;
+use crate::bind_world_object::LuaWorldObject;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MetadataStatus {
@@ -30,6 +32,9 @@ pub enum MetadataStatus {
     /// A temporary host borrow or unavailable registry retained conservative
     /// ownership. The weak pending queue must be retried before a safe drain.
     Deferred,
+    /// GC slots remain described, but immutable native class metadata is
+    /// invalid. The permanent typed fault is separate from retryable borrow.
+    InvalidClass,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +59,7 @@ impl std::error::Error for RegistrationFault {}
 enum Pending {
     Item(Weak<RefCell<InventoryItem>>),
     Object(Weak<RefCell<IsoObject>>),
+    Floor(Weak<RefCell<IsoWorldInventoryObject>>),
     Component(Weak<RefCell<RuntimeComponent>>),
     Color(Weak<RefCell<pz_entity::color::Rgba>>),
     Properties(Weak<RefCell<pz_entity::fluids::SealedFluidProperties>>),
@@ -64,6 +70,7 @@ enum Pending {
     ItemUserdata(Weak<LuaInventoryItem>),
     FluidUserdata(Weak<LuaFluidContainer>),
     ColorUserdata(Weak<Color>),
+    WorldUserdata(Weak<LuaWorldObject>),
 }
 
 impl Pending {
@@ -71,6 +78,7 @@ impl Pending {
         match self {
             Self::Item(w) => ("InventoryItem", w.as_ptr() as usize),
             Self::Object(w) => ("IsoObject", w.as_ptr() as usize),
+            Self::Floor(w) => ("IsoWorldInventoryObject payload", w.as_ptr() as usize),
             Self::Component(w) => ("Component", w.as_ptr() as usize),
             Self::Color(w) => ("Color", w.as_ptr() as usize),
             Self::Properties(w) => ("SealedFluidProperties", w.as_ptr() as usize),
@@ -81,6 +89,7 @@ impl Pending {
             Self::ItemUserdata(w) => ("InventoryItem userdata", w.as_ptr() as usize),
             Self::FluidUserdata(w) => ("FluidContainer userdata", w.as_ptr() as usize),
             Self::ColorUserdata(w) => ("Color userdata", w.as_ptr() as usize),
+            Self::WorldUserdata(w) => ("IsoObject userdata", w.as_ptr() as usize),
         }
     }
 
@@ -88,6 +97,7 @@ impl Pending {
         match self {
             Self::Item(w) => w.strong_count() != 0,
             Self::Object(w) => w.strong_count() != 0,
+            Self::Floor(w) => w.strong_count() != 0,
             Self::Component(w) => w.strong_count() != 0,
             Self::Color(w) => w.strong_count() != 0,
             Self::Properties(w) => w.strong_count() != 0,
@@ -98,6 +108,7 @@ impl Pending {
             Self::ItemUserdata(w) => w.strong_count() != 0,
             Self::FluidUserdata(w) => w.strong_count() != 0,
             Self::ColorUserdata(w) => w.strong_count() != 0,
+            Self::WorldUserdata(w) => w.strong_count() != 0,
         }
     }
 }
@@ -152,7 +163,9 @@ fn registered(
 }
 
 fn merged(a: MetadataStatus, b: MetadataStatus) -> MetadataStatus {
-    if a == MetadataStatus::Complete && b == MetadataStatus::Complete {
+    if a == MetadataStatus::InvalidClass || b == MetadataStatus::InvalidClass {
+        MetadataStatus::InvalidClass
+    } else if a == MetadataStatus::Complete && b == MetadataStatus::Complete {
         MetadataStatus::Complete
     } else {
         MetadataStatus::Deferred
@@ -162,7 +175,16 @@ fn merged(a: MetadataStatus, b: MetadataStatus) -> MetadataStatus {
 pub struct ItemDescriptor;
 impl TraceDescriptor<InventoryItem> for ItemDescriptor {
     fn trace(item: &InventoryItem, visitor: &mut TraceVisitor) {
-        if let Some(table) = item.mod_data_slot().as_ref().and_then(|data| data.as_live_slot()) {
+        if let Some(owner) = item.world_item_slot() {
+            if owner.is::<IsoObject>() {
+                visitor.owner_erased::<IsoObject>(owner.erased_slot());
+            }
+        }
+        if let Some(table) = item
+            .mod_data_slot()
+            .as_ref()
+            .and_then(|data| data.as_live_slot())
+        {
             visitor.table(table);
         }
         for entry in item.components.entry_slots() {
@@ -179,6 +201,7 @@ impl TraceDescriptor<InventoryItem> for ItemDescriptor {
         Some(Box::new((
             item.components.take_entries(),
             item.take_mod_data_for_gc(),
+            item.take_world_item_for_gc(),
         )))
     }
 }
@@ -186,6 +209,11 @@ impl TraceDescriptor<InventoryItem> for ItemDescriptor {
 pub struct ObjectDescriptor;
 impl TraceDescriptor<IsoObject> for ObjectDescriptor {
     fn trace(object: &IsoObject, visitor: &mut TraceVisitor) {
+        if let ObjectKind::WorldInventory(floor) = &object.kind {
+            if let Some(payload) = floor.payload_slot() {
+                visitor.owner(payload);
+            }
+        }
         for entry in object.components.entry_slots() {
             if let RuntimeEntryView::Live { component, .. } = entry {
                 visitor.owner(component);
@@ -194,7 +222,31 @@ impl TraceDescriptor<IsoObject> for ObjectDescriptor {
     }
 
     fn detach(object: &mut IsoObject) -> Option<Box<dyn std::any::Any>> {
-        Some(Box::new(object.components.take_entries()))
+        let floor = match &mut object.kind {
+            ObjectKind::WorldInventory(floor) => floor.take_payload_for_gc(),
+            _ => None,
+        };
+        Some(Box::new((object.components.take_entries(), floor)))
+    }
+}
+
+pub struct FloorDescriptor;
+impl TraceDescriptor<IsoWorldInventoryObject> for FloorDescriptor {
+    fn trace(floor: &IsoWorldInventoryObject, visitor: &mut TraceVisitor) {
+        if let Some(item) = floor.item.item_slot() {
+            visitor.owner(item);
+        }
+    }
+    fn detach(floor: &mut IsoWorldInventoryObject) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(floor.item.take_item_for_gc()))
+    }
+}
+
+pub struct WorldUserdataDescriptor;
+impl UserdataDescriptor<LuaWorldObject> for WorldUserdataDescriptor {
+    fn trace(world: &LuaWorldObject, visitor: &mut TraceVisitor) -> Result<(), gc::TraceDeferred> {
+        visitor.owner(&world.object);
+        Ok(())
     }
 }
 
@@ -487,38 +539,124 @@ pub fn register_entity_script(
     Ok(status)
 }
 
-pub fn register_item(item: &ItemRef) -> Result<MetadataStatus, RegistrationFault> {
-    let mut status = registered(
-        gc::register_existing::<_, ItemDescriptor>(item),
-        Pending::Item(Rc::downgrade(item)),
-    )?;
-    let Ok(body) = item.try_borrow() else {
-        pending(Pending::Item(Rc::downgrade(item)));
-        return Ok(MetadataStatus::Deferred);
-    };
-    for entry in body.components.entry_slots() {
-        if let RuntimeEntryView::Live { component, .. } = entry {
-            status = merged(status, component_slots(component)?);
+enum OwnerNode {
+    Item(ItemRef),
+    Object(IsoObjectRef),
+    Floor(FloorObjectRef),
+}
+
+/// Metadata traversal follows actual slots using temporary pins. The visited
+/// set is local and owns no game allocations; cycles never recurse or grow a
+/// persistent strong mirror. Trace descriptors themselves borrow physical
+/// slots and never report these traversal pins.
+fn register_owner_graph(root: OwnerNode) -> Result<MetadataStatus, RegistrationFault> {
+    let mut status = MetadataStatus::Complete;
+    let mut work = VecDeque::from([root]);
+    let mut visited = HashSet::new();
+    while let Some(node) = work.pop_front() {
+        match node {
+            OwnerNode::Item(item) => {
+                if !visited.insert(("item", Rc::as_ptr(&item) as usize)) {
+                    continue;
+                }
+                status = merged(
+                    status,
+                    registered(
+                        gc::register_existing::<_, ItemDescriptor>(&item),
+                        Pending::Item(Rc::downgrade(&item)),
+                    )?,
+                );
+                let Ok(body) = item.try_borrow() else {
+                    pending(Pending::Item(Rc::downgrade(&item)));
+                    status = merged(status, MetadataStatus::Deferred);
+                    continue;
+                };
+                for entry in body.components.entry_slots() {
+                    if let RuntimeEntryView::Live { component, .. } = entry {
+                        status = merged(status, component_slots(component)?);
+                    }
+                }
+                if let Some(object) = body
+                    .world_item_slot()
+                    .and_then(|owner| owner.try_handle::<IsoObject>())
+                {
+                    work.push_back(OwnerNode::Object(object));
+                }
+            }
+            OwnerNode::Object(object) => {
+                if !visited.insert(("object", Rc::as_ptr(&object) as usize)) {
+                    continue;
+                }
+                status = merged(
+                    status,
+                    registered(
+                        gc::register_existing::<_, ObjectDescriptor>(&object),
+                        Pending::Object(Rc::downgrade(&object)),
+                    )?,
+                );
+                let Ok(body) = object.try_borrow() else {
+                    pending(Pending::Object(Rc::downgrade(&object)));
+                    status = merged(status, MetadataStatus::Deferred);
+                    continue;
+                };
+                if let Err(error) =
+                    crate::bind_world_object::ensure_class(&object, body.kind.native_class_name())
+                {
+                    if matches!(
+                        error,
+                        pz_kahlua::LuaError::Runtime {
+                            class: "pz.host.Borrowed",
+                            ..
+                        }
+                    ) {
+                        pending(Pending::Object(Rc::downgrade(&object)));
+                        status = merged(status, MetadataStatus::Deferred);
+                    } else {
+                        status = MetadataStatus::InvalidClass;
+                    }
+                }
+                for entry in body.components.entry_slots() {
+                    if let RuntimeEntryView::Live { component, .. } = entry {
+                        status = merged(status, component_slots(component)?);
+                    }
+                }
+                if let ObjectKind::WorldInventory(floor) = &body.kind {
+                    if let Some(payload) = floor.payload_slot() {
+                        work.push_back(OwnerNode::Floor(Rc::clone(payload)));
+                    }
+                }
+            }
+            OwnerNode::Floor(floor) => {
+                if !visited.insert(("floor", Rc::as_ptr(&floor) as usize)) {
+                    continue;
+                }
+                status = merged(
+                    status,
+                    registered(
+                        gc::register_existing::<_, FloorDescriptor>(&floor),
+                        Pending::Floor(Rc::downgrade(&floor)),
+                    )?,
+                );
+                let Ok(body) = floor.try_borrow() else {
+                    pending(Pending::Floor(Rc::downgrade(&floor)));
+                    status = merged(status, MetadataStatus::Deferred);
+                    continue;
+                };
+                if let Some(item) = body.item.item_slot() {
+                    work.push_back(OwnerNode::Item(Rc::clone(item)));
+                }
+            }
         }
     }
     Ok(status)
 }
 
+pub fn register_item(item: &ItemRef) -> Result<MetadataStatus, RegistrationFault> {
+    register_owner_graph(OwnerNode::Item(Rc::clone(item)))
+}
+
 pub fn register_object(object: &IsoObjectRef) -> Result<MetadataStatus, RegistrationFault> {
-    let mut status = registered(
-        gc::register_existing::<_, ObjectDescriptor>(object),
-        Pending::Object(Rc::downgrade(object)),
-    )?;
-    let Ok(body) = object.try_borrow() else {
-        pending(Pending::Object(Rc::downgrade(object)));
-        return Ok(MetadataStatus::Deferred);
-    };
-    for entry in body.components.entry_slots() {
-        if let RuntimeEntryView::Live { component, .. } = entry {
-            status = merged(status, component_slots(component)?);
-        }
-    }
-    Ok(status)
+    register_owner_graph(OwnerNode::Object(Rc::clone(object)))
 }
 
 pub fn register_component(component: &ComponentRef) -> Result<MetadataStatus, RegistrationFault> {
@@ -566,12 +704,31 @@ pub fn register_color_userdata(color: &Rc<Color>) -> Result<MetadataStatus, Regi
     Ok(merged(status, register_color(color.actual_slot())?))
 }
 
+pub fn register_world_userdata(
+    world: &Rc<LuaWorldObject>,
+) -> Result<MetadataStatus, RegistrationFault> {
+    let status = registered(
+        gc::register_userdata::<_, WorldUserdataDescriptor>(world),
+        Pending::WorldUserdata(Rc::downgrade(world)),
+    )?;
+    Ok(merged(status, register_object(&world.object)?))
+}
+
 /// Capture-free callbacks installed before any actual entity owner cycle is
 /// attached. Deferred registrations remain weak and conservative until retry.
 pub fn observe_item(item: &ItemRef) {
     let _ = register_item(item);
 }
-pub fn observe_object(object: &IsoObjectRef) {
+pub fn observe_object(object: &IsoObjectRef, native_class: &'static str) {
+    if matches!(
+        crate::bind_world_object::remember_class(object, native_class),
+        Err(pz_kahlua::LuaError::Runtime {
+            class: "pz.host.Borrowed",
+            ..
+        })
+    ) {
+        pending(Pending::Object(Rc::downgrade(object)));
+    }
     let _ = register_object(object);
 }
 
@@ -604,6 +761,11 @@ pub fn retry_pending() {
             Pending::Object(w) => {
                 if let Some(v) = w.upgrade() {
                     let _ = register_object(&v);
+                }
+            }
+            Pending::Floor(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_owner_graph(OwnerNode::Floor(v));
                 }
             }
             Pending::Component(w) => {
@@ -656,6 +818,11 @@ pub fn retry_pending() {
                     let _ = register_color_userdata(&v);
                 }
             }
+            Pending::WorldUserdata(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_world_userdata(&v);
+                }
+            }
         }
     }
 }
@@ -667,6 +834,9 @@ pub fn take_registration_faults() -> Vec<RegistrationFault> {
         .try_with(|faults| std::mem::take(&mut *faults.borrow_mut()))
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+mod world_item_tests;
 
 #[cfg(test)]
 mod tests;

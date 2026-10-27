@@ -369,6 +369,7 @@ impl<I: 'static> State<I> for ClimbOverFenceState {
             cx.ctx.event(SimEvent::ObstacleSound { name: param.to_string(), parameter: "TripObstacleType", value: info.trip_type as f32, movement_speed: true });
         } else if name.eq_ignore_ascii_case("VaultSprintFallLanded") {
             owner.drop_hand_items_in(cx);
+            if cx.has_host_error() { return; }
             owner.fallen_on_knees_soft(cx);
         } else if name.eq_ignore_ascii_case("FallenOnKnees") {
             owner.fallen_on_knees_soft(cx);

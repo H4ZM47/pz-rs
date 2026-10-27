@@ -201,6 +201,9 @@ pub struct RagdollHit {
 
 /// What `RagdollController` reads and writes on its `IsoGameCharacter`.
 pub trait RagdollCharacter {
+    /// Host control only: the actual typed failure stays with the character.
+    /// Controllers must stop at this flag before subsequent physics work.
+    fn host_action_failed(&self) -> bool { false }
     /// `getID()` (the ragdoll's id in the physics world).
     fn id(&self) -> i32;
     /// `getX()`, `getY()`, `getZ()`.
@@ -380,6 +383,7 @@ impl RagdollController {
 
     /// `initialize()`.
     fn initialize(&mut self, player: &mut AnimationPlayer, env: &mut RagdollEnv) -> bool {
+        if env.character.host_action_failed() { return false; }
         if self.is_initialized {
             return true;
         }
@@ -393,12 +397,14 @@ impl RagdollController {
 
     /// `reset()` (`onReleased`).
     pub fn reset(&mut self, env: &mut RagdollEnv) {
+        if env.character.host_action_failed() { return; }
         self.remove_from_world(env);
         self.state = RagdollStateData::default();
         self.is_upright = true;
         self.is_on_back = false;
         self.simulation_state = -1;
         env.character.set_ragdoll_fall(false);
+        if env.character.host_action_failed() { return; }
         self.is_initialized = false;
         self.added_to_world_frame_no = -1;
         env.character.set_use_physic_hit_reaction(false);
@@ -406,13 +412,16 @@ impl RagdollController {
 
     /// `reinitialize()`.
     pub fn reinitialize(&mut self, player: &mut AnimationPlayer, env: &mut RagdollEnv) {
+        if env.character.host_action_failed() { return; }
         self.reset(env);
+        if env.character.host_action_failed() { return; }
         self.added_to_world_frame_no = -1;
         self.is_initialized = self.initialize(player, env);
     }
 
     /// `setActive(active)`.
     pub fn set_active(&mut self, player: &AnimationPlayer, env: &mut RagdollEnv, active: bool) {
+        if env.character.host_action_failed() { return; }
         self.update_ragdoll_world_transform(player, env);
         env.bullet.set_ragdoll_active(env.character.id(), active);
     }
@@ -447,6 +456,7 @@ impl RagdollController {
     /// `updateRagdollSkeleton()`: uploads the animated pose (and its
     /// velocities).
     pub fn update_ragdoll_skeleton(&mut self, player: &AnimationPlayer, env: &mut RagdollEnv) {
+        if env.character.host_action_failed() { return; }
         let id = env.character.id();
         self.set_ragdoll_local_rotation(env);
         self.update_ragdoll_world_transform(player, env);
@@ -464,6 +474,7 @@ impl RagdollController {
 
     /// `update(deltaT, ragdollWorldPosition, ragdollWorldRotation)`.
     pub fn update(&mut self, player: &mut AnimationPlayer, env: &mut RagdollEnv, _dt: f32) {
+        if env.character.host_action_failed() { return; }
         if !self.is_initialized {
             self.added_to_world_frame_no = -1;
             self.is_initialized = self.initialize(player, env);
@@ -476,7 +487,9 @@ impl RagdollController {
 
     /// `postUpdate(deltaT)`.
     pub fn post_update(&mut self, player: &AnimationPlayer, env: &mut RagdollEnv, dt: f32) {
+        if env.character.host_action_failed() { return; }
         self.calculate_simulation_data(player, env, dt);
+        if env.character.host_action_failed() { return; }
         self.update_simulation_timeout(player, env);
     }
 
@@ -496,7 +509,9 @@ impl RagdollController {
 
     /// `simulateHitReaction()`.
     fn simulate_hit_reaction(&mut self, env: &mut RagdollEnv) {
-        let Some(hit) = env.character.take_ragdoll_hit() else {
+        let hit = env.character.take_ragdoll_hit();
+        if env.character.host_action_failed() { return; }
+        let Some(hit) = hit else {
             return;
         };
         if hit.body_part == crate::RagdollBodyPart::Count as i32 || !env.debug.physics_hit_reaction
@@ -658,6 +673,7 @@ impl RagdollController {
         let ground = bone_to_world(player, pos, size, 0);
         self.is_upright = self.head_position.z > ground.z + 0.6 - 0.2;
         env.character.set_on_floor(!self.is_upright);
+        if env.character.host_action_failed() { return; }
         self.state.pelvis_direction = match b.pelvis_bone {
             Some(p) => bone_z_direction_to_world(player, pos, p, 0.5),
             None => bone_z_direction_to_world(player, pos, 0, 0.5),
@@ -692,6 +708,7 @@ impl RagdollController {
         self.state.is_calculated = true;
         dir.normalize();
         env.character.set_fall_on_front(!self.is_on_back);
+        if env.character.host_action_failed() { return; }
         env.character.set_ragdoll_fall(true);
     }
 
@@ -699,6 +716,7 @@ impl RagdollController {
     /// answers: `is_collided` (`lastCollidedVehicle.isCollided`) and
     /// `touching` (`testTouchingVehicle`), both `None` without a vehicle.
     pub fn vehicle_collision(&mut self, env: &mut RagdollEnv, vehicle: Option<(bool, bool)>) {
+        if env.character.host_action_failed() { return; }
         let mut touching = false;
         if let Some((collided, t)) = vehicle {
             self.state.is_contacting_vehicle = collided;
@@ -804,6 +822,9 @@ pub struct RagdollFrame<'a> {
 }
 
 impl RagdollHost for RagdollFrame<'_> {
+    fn host_action_failed(&self) -> bool {
+        self.env.character.host_action_failed()
+    }
     fn has_character(&self) -> bool {
         true
     }
@@ -822,11 +843,13 @@ impl RagdollHost for RagdollFrame<'_> {
     }
 
     fn alloc_controller(&mut self) {
+        if self.host_action_failed() { return; }
         *self.controller = Some(RagdollController::new());
         self.env.character.on_ragdoll_simulation_started();
     }
 
     fn release_controller(&mut self) {
+        if self.host_action_failed() { return; }
         if let Some(mut c) = self.controller.take() {
             c.reset(&mut self.env);
         }
@@ -871,12 +894,14 @@ impl RagdollHost for RagdollFrame<'_> {
     }
 
     fn update(&mut self, player: &mut AnimationPlayer, dt: f32) {
+        if self.host_action_failed() { return; }
         if let Some(c) = self.controller.as_mut() {
             c.update(player, &mut self.env, dt);
         }
     }
 
     fn post_update(&mut self, player: &mut AnimationPlayer, dt: f32) {
+        if self.host_action_failed() { return; }
         if let Some(c) = self.controller.as_mut() {
             c.post_update(player, &mut self.env, dt);
         }
@@ -888,6 +913,7 @@ impl RagdollHost for RagdollFrame<'_> {
     }
 
     fn do_deferred_movement_from_ragdoll(&mut self, player: &AnimationPlayer, m: Vector3f) {
+        if self.host_action_failed() { return; }
         self.env
             .character
             .do_deferred_movement_from_ragdoll(player, Vec3::new(m.x, m.y, m.z));
@@ -897,3 +923,6 @@ impl RagdollHost for RagdollFrame<'_> {
         self.multiplier
     }
 }
+
+#[cfg(test)]
+mod host_abort_tests;

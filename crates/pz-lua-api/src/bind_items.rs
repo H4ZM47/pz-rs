@@ -750,21 +750,36 @@ macro_rules! envd {
 fn register_inventory_item(thread: &mut Thread) {
     let entity = expose_class(thread, GAME_ENTITY_CLASS, None);
     entity.method("getFluidContainer", |c| {
-        let item = this(c)?;
-        let component = {
-            let item = item
-                .try_borrow()
-                .map_err(|_| LuaError::runtime("InventoryItem is in use"))?;
-            item.get_fluid_ref()
-                .map_err(|error| LuaError::runtime(error.to_string()))?
-        };
+        let component = crate::bind_world_object::fluid_component(&c.arg(0))?;
         let value = match component {
             Some(component) => crate::bind_fluid_container::fluid_value(&component)?,
             None => Value::Nil,
         };
         Ok(c.push(value))
     });
+    crate::bind_world_object::register_classes(thread);
     let b = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
+    b.method("getWorldItem", |c| {
+        let item = crate::bind_world_object::item_argument(&c.arg(0))?;
+        if c.nargs() != 1 {
+            return Err(LuaError::runtime(format!(
+                "expected 0 arguments, got {}",
+                c.nargs().saturating_sub(1)
+            )));
+        }
+        Ok(c.push(crate::bind_world_object::get_world_item(&item)?))
+    });
+    b.method("setWorldItem", |c| {
+        let item = crate::bind_world_object::item_argument(&c.arg(0))?;
+        if c.nargs() != 2 {
+            return Err(LuaError::runtime(format!(
+                "expected 1 argument, got {}",
+                c.nargs().saturating_sub(1)
+            )));
+        }
+        crate::bind_world_object::set_world_item(&item, &c.arg(1))?;
+        Ok(0)
+    });
     b.method("getModData", |c| {
         let item = this(c)?;
         let table = pz_inventory::moddata::get_mod_data_ref(&item)

@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 pub type IsoObjectRef = Rc<RefCell<IsoObject>>;
 
-pub type ObjectObserver = fn(&IsoObjectRef);
+pub type ObjectObserver = fn(&IsoObjectRef, &'static str);
 
 thread_local! {
     static OBJECT_OBSERVER: Cell<Option<ObjectObserver>> = const { Cell::new(None) };
@@ -20,9 +20,11 @@ pub fn install_object_observer(observer: Option<ObjectObserver>) -> Option<Objec
     OBJECT_OBSERVER.with(|slot| slot.replace(observer))
 }
 
-pub fn observe_object(object: &IsoObjectRef) {
+pub fn observe_object(object: &IsoObjectRef, native_class: &'static str) {
     let observer = OBJECT_OBSERVER.with(Cell::get);
-    if let Some(observer) = observer { observer(object); }
+    if let Some(observer) = observer {
+        observer(object, native_class);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,7 +50,10 @@ pub struct ObjectSlot {
 impl ObjectSlot {
     pub fn new(object: IsoObject) -> Self {
         Self::try_new(object).unwrap_or_else(|failure| {
-            panic!("object allocation requires unowned, unborrowed components: {:?}", failure.error)
+            panic!(
+                "object allocation requires unowned, unborrowed components: {:?}",
+                failure.error
+            )
         })
     }
 
@@ -56,26 +61,47 @@ impl ObjectSlot {
     /// This is not native add/remove/connect/manager lifecycle; those phases
     /// require the guard-free host coordinator at their real call sites.
     pub fn try_new(mut object: IsoObject) -> Result<Self, ObjectBindingFailure> {
+        let native_class = object.kind.native_class_name();
         if object.components.is_bound() {
-            return Err(ObjectBindingFailure { error: ObjectBindingError::AlreadyBound, object: Rc::new(RefCell::new(object)) });
+            let object = Rc::new(RefCell::new(object));
+            observe_object(&object, native_class);
+            return Err(ObjectBindingFailure {
+                error: ObjectBindingError::AlreadyBound,
+                object,
+            });
         }
         object.components.mark_bound();
         let object = Rc::new(RefCell::new(object));
         // Register every actual owner/component before introducing cycles.
-        observe_object(&object);
-        let components: Vec<_> = object.borrow().components.entry_slots().filter_map(|entry| match entry {
-            pz_entity::RuntimeEntryView::Live { kind, component } => Some((kind, Rc::clone(component))),
-            pz_entity::RuntimeEntryView::Encoded(_) => None,
-        }).collect();
+        observe_object(&object, native_class);
+        let components: Vec<_> = object
+            .borrow()
+            .components
+            .entry_slots()
+            .filter_map(|entry| match entry {
+                pz_entity::RuntimeEntryView::Live { kind, component } => {
+                    Some((kind, Rc::clone(component)))
+                }
+                pz_entity::RuntimeEntryView::Encoded(_) => None,
+            })
+            .collect();
         let owner = pz_entity::EntityOwner::from_ref(&object);
         for (kind, component) in &components {
             let mut body = match component.try_borrow_mut() {
                 Ok(body) => body,
-                Err(_) => return Err(ObjectBindingFailure { error: ObjectBindingError::BorrowedComponent(*kind), object }),
+                Err(_) => {
+                    return Err(ObjectBindingFailure {
+                        error: ObjectBindingError::BorrowedComponent(*kind),
+                        object,
+                    })
+                }
             };
             if body.owner_slot().is_some() {
                 drop(body);
-                return Err(ObjectBindingFailure { error: ObjectBindingError::ExistingOwner(*kind), object });
+                return Err(ObjectBindingFailure {
+                    error: ObjectBindingError::ExistingOwner(*kind),
+                    object,
+                });
             }
             let former = body.replace_owner(Some(&owner));
             debug_assert!(former.is_none());
@@ -102,6 +128,57 @@ impl ObjectSlot {
     pub fn ptr_eq_ref(&self, other: &IsoObjectRef) -> bool {
         Rc::ptr_eq(&self.object, other)
     }
+
+    /// Explicit Rust archive reconstruction policy: copied floor item values
+    /// are owned by their copied complete floor receiver. This is not the
+    /// native constructor and never attaches the source object's backlink.
+    pub(crate) fn from_archive_value(
+        object: IsoObject,
+    ) -> Result<Self, pz_entity::runtime_load::RuntimeHostError> {
+        let slot = Self::try_new(object).map_err(|failure| {
+            let mut retired = pz_entity::RetiredComponents::new();
+            retired.push_owner(pz_entity::EntityOwner::from_ref(&failure.object));
+            pz_inventory::component_host::retire_components(retired);
+            pz_entity::runtime_load::RuntimeHostError::InvalidHostState(
+                "archive whole owner binding failed",
+            )
+        })?;
+        let object = slot.ref_handle();
+        let item = {
+            let body = object.try_borrow().map_err(|_| {
+                pz_entity::runtime_load::RuntimeHostError::Borrowed("archive full object")
+            })?;
+            match &body.kind {
+                crate::ObjectKind::WorldInventory(floor) => {
+                    let payload = floor.payload_slot().ok_or(
+                        pz_entity::runtime_load::RuntimeHostError::InvalidHostState(
+                            "collected archive floor payload",
+                        ),
+                    )?;
+                    let item = payload
+                        .try_borrow()
+                        .map_err(|_| {
+                            pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                                "archive floor payload",
+                            )
+                        })?
+                        .item
+                        .item_slot()
+                        .cloned();
+                    item
+                }
+                _ => None,
+            }
+        };
+        if let Some(item) = item {
+            let mut retired = pz_entity::RetiredComponents::new();
+            let result =
+                crate::floor_object::runtime::publish_item_backlink(&object, &item, &mut retired);
+            pz_inventory::component_host::retire_components(retired);
+            result?;
+        }
+        Ok(slot)
+    }
 }
 impl From<IsoObject> for ObjectSlot {
     fn from(object: IsoObject) -> Self {
@@ -110,7 +187,8 @@ impl From<IsoObject> for ObjectSlot {
 }
 impl Clone for ObjectSlot {
     fn clone(&self) -> Self {
-        Self::new(self.borrow().clone())
+        Self::from_archive_value(self.borrow().clone())
+            .expect("archive copy requires unborrowed independent receiver graph")
     }
 }
 impl PartialEq for ObjectSlot {

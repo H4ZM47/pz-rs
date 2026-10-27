@@ -334,7 +334,7 @@ fn remove_tile_object_events_and_table_tops() {
     cup.render_y_offset = 30.0;
     let c = w.env().add_tile_object(p, (cup).into(), -1).unwrap();
     w.take_log();
-    let (index, removed) = w.env().remove_tile_object(p, t);
+    let (index, removed) = w.env().remove_tile_object(p, t).unwrap();
     assert_eq!(index, 1);
     assert_eq!(removed.unwrap().borrow().id, t);
     let cup_owner = w
@@ -359,9 +359,12 @@ fn remove_tile_object_events_and_table_tops() {
     assert!(about < render && render < unreg && unreg < collision);
     assert!(collision < gone && gone < pathfind);
     // Not on the square: -1, and only the notifications.
-    let (index, removed) = w.env().remove_tile_object_with(p, 999, false);
+    let (index, removed) = w.env().remove_tile_object_with(p, 999, false).unwrap();
     assert_eq!((index, removed.is_none()), (-1, true));
-    let (index, _) = w.env().transmit_remove_item_from_square(p, 999, true);
+    let (index, _) = w
+        .env()
+        .transmit_remove_item_from_square(p, 999, true)
+        .unwrap();
     assert_eq!(index, -1);
 }
 
@@ -373,7 +376,7 @@ fn add_floor_replaces_floors_keeps_rugs_and_builds_below() {
     w.env().add_tile_object(p, (rug).into(), -1);
     let grass = w.obj("blends_grassoverlays_x");
     w.env().add_tile_object(p, (grass).into(), -1);
-    w.env().add_floor(p, "floor2");
+    w.env().add_floor(p, "floor2").unwrap();
     // The old floor and the grass overlay are gone; the new floor goes
     // under the rug and its sprite becomes a solid floor.
     assert_eq!(w.names(p), ["floor2", "floors_rugs_x"]);
@@ -384,7 +387,7 @@ fn add_floor_replaces_floors_keeps_rugs_and_builds_below() {
     // column is filled, so only the existing square below gets a roof.
     w.env().create_new_grid_square((5, 5, 2), false);
     w.take_log();
-    w.env().add_floor((5, 5, 2), "floor");
+    w.env().add_floor((5, 5, 2), "floor").unwrap();
     assert!(w.cell.get_grid_square(4, 4, 2).is_some());
     assert!(w.cell.get_grid_square(6, 6, 1).is_some());
     assert!(!w.sq((5, 5, 1)).borrow().have_roof);
@@ -408,7 +411,7 @@ fn check_have_roof_follows_rain_blocking_squares() {
     w.env().check_have_roof(1, 1);
     assert!(w.sq((1, 1, 0)).borrow().have_roof);
     assert!(!w.sq((1, 1, 3)).borrow().have_roof);
-    w.env().remove_tile_object((1, 1, 3), id);
+    w.env().remove_tile_object((1, 1, 3), id).unwrap();
     assert!(!w.sq((1, 1, 0)).borrow().have_roof);
 }
 
@@ -423,7 +426,7 @@ fn special_objects_and_sheet_ropes() {
     // The sheet rope moves back on top.
     assert_eq!(w.names(p), ["floor", "crate", "rope"]);
     assert_eq!(w.sq(p).borrow().special_objects, [r, c]);
-    let (i, _) = w.env().remove_tile_object(p, c);
+    let (i, _) = w.env().remove_tile_object(p, c).unwrap();
     assert_eq!(i, 1);
     assert_eq!(w.sq(p).borrow().special_objects, [r]);
 }
@@ -436,7 +439,7 @@ fn erosion_removal_only_recalculates_properties() {
     let id = w.env().add_tile_object(p, (wall).into(), -1).unwrap();
     let before = w.sq(p).borrow().collide_matrix;
     w.take_log();
-    let (i, removed) = w.env().remove_tile_object_erosion_no_recalc(p, id);
+    let (i, removed) = w.env().remove_tile_object_erosion_no_recalc(p, id).unwrap();
     assert_eq!((i, removed.is_some()), (1, true));
     assert!(!w.sq(p).borrow().has(w.m.tables.flag.collideN));
     // The matrices are left as they were.
@@ -489,7 +492,7 @@ fn double_doors_are_removed_together() {
             id: a
         })
     );
-    let (i, removed) = w.env().remove_tile_object((4, 6, 0), b);
+    let (i, removed) = w.env().remove_tile_object((4, 6, 0), b).unwrap();
     assert_eq!((i, removed.map(|o| o.borrow().id)), (1, Some(b)));
     assert_eq!(w.names((3, 6, 0)), ["floor"]);
 }
@@ -507,7 +510,7 @@ fn regions_hear_about_wall_changes() {
     assert_eq!(w.regions.get_square_flags(2, 2, 0), flags);
     // A later change of a known chunk is a square update.
     let id = w.sq((2, 2, 0)).borrow().objects[1].borrow().id;
-    w.env().remove_tile_object((2, 2, 0), id);
+    w.env().remove_tile_object((2, 2, 0), id).unwrap();
     assert!(w.regions.queued_jobs().any(|j| matches!(
         j,
         crate::isoregion::RegionJob::SquareUpdate { x: 2, y: 2, .. }
@@ -854,62 +857,32 @@ fn floor_placement_callbacks_keep_original_receiver_after_same_id_replacement() 
     );
 }
 
+fn live_world_component(
+    actual: &IsoObjectRef,
+    kind: pz_entity::ComponentType,
+) -> pz_entity::ComponentRef {
+    let component =
+        pz_entity::RuntimeComponent::new_unowned(pz_entity::Component::create(kind).unwrap())
+            .unwrap();
+    let mut retired = pz_entity::RetiredComponents::new();
+    assert!(
+        crate::floor_object::runtime::add_before_world(actual, &component, &mut retired).unwrap()
+    );
+    drop(retired);
+    component
+}
+
 #[test]
-fn floor_removal_notifies_fluid_before_removing_only_first_actual_membership() {
+fn floor_removal_transfers_actual_fluid_and_removes_only_first_actual_membership() {
     use crate::world_objects::WorldObjectEntry as Entry;
-    struct Calls {
-        square: crate::SquareRef,
-        actual: IsoObjectRef,
-        notifications: usize,
-    }
-    impl SquareMutationHooks for Calls {
-        fn world_call(
-            &mut self,
-            _: ObjectRef,
-            actual: IsoObjectRef,
-            _: &mut dyn GameRand,
-            call: WorldCall,
-        ) {
-            assert_eq!(call, WorldCall::WorldItemTransferFluid);
-            assert!(Rc::ptr_eq(&actual, &self.actual));
-            let square = self
-                .square
-                .try_borrow_mut()
-                .expect("fluid notification retained the square guard");
-            let list = square
-                .world_objects
-                .try_borrow_mut()
-                .expect("fluid notification retained the world-list guard");
-            assert_eq!(list.len(), 4);
-            assert_eq!(
-                square
-                    .objects
-                    .iter()
-                    .filter(|o| o.ptr_eq_ref(&actual))
-                    .count(),
-                2
-            );
-            actual
-                .try_borrow_mut()
-                .expect("fluid notification retained the receiver guard")
-                .key_id = 555;
-            self.notifications += 1;
-        }
-    }
     let mut w = World::new();
     let p = (2, 2, 0);
     let item = world_item("A", 1);
     let actual = floor_owner(700, crate::floor_item::FloorItem::retain(&item));
-    {
-        let mut object = actual.borrow_mut();
-        object.has_components = true;
-        // Empty fluid still qualifies: native checks the component's type,
-        // not its current amount or the presence of unrelated components.
-        object
-            .components.push_encoded_blob(pz_inventory::component::encode_component(
-                pz_entity::Component::FluidContainer(Default::default()),
-            ), 249).unwrap();
-    }
+    let fluid = live_world_component(&actual, pz_entity::ComponentType::FluidContainer);
+    let mut retired = pz_entity::RetiredComponents::new();
+    crate::floor_object::runtime::publish_item_backlink(&actual, &item, &mut retired).unwrap();
+    drop(retired);
     let replacement = ObjectSlot::new(actual.borrow().clone());
     let replacement_owner = replacement.ref_handle();
     let sq = w.sq(p);
@@ -925,24 +898,45 @@ fn floor_removal_notifies_fluid_before_removing_only_first_actual_membership() {
         list.push_object(&replacement_owner);
         list.push_object(&actual);
     }
-    let mut calls = Calls {
-        square: sq.clone(),
-        actual: actual.clone(),
-        notifications: 0,
-    };
-    let removed = {
-        let mut env = w.env();
-        env.world = &mut calls;
-        super::lifecycle::remove_from_square_handle(
-            &mut env,
-            ObjectRef { pos: p, id: 700 },
-            &actual,
-        )
-    }
+    let removed = super::lifecycle::remove_from_square_handle(
+        &mut w.env(),
+        ObjectRef { pos: p, id: 700 },
+        &actual,
+    )
+    .unwrap()
     .unwrap();
-    assert_eq!(calls.notifications, 1);
     assert!(removed.ptr_eq_ref(&actual));
-    assert_eq!(actual.borrow().key_id, 555);
+    assert!(actual
+        .borrow()
+        .components
+        .get_ref(pz_entity::ComponentType::FluidContainer)
+        .unwrap()
+        .is_none());
+    assert!(Rc::ptr_eq(
+        &item
+            .borrow()
+            .components
+            .get_ref(pz_entity::ComponentType::FluidContainer)
+            .unwrap()
+            .unwrap(),
+        &fluid
+    ));
+    assert!(fluid
+        .borrow()
+        .owner_slot()
+        .unwrap()
+        .ptr_eq(&pz_entity::EntityOwner::from_ref(&item)));
+    assert!(
+        item.borrow()
+            .world_item_slot()
+            .unwrap()
+            .ptr_eq(&pz_entity::EntityOwner::from_ref(&actual)),
+        "native removal must not clear worldItem"
+    );
+    assert!(
+        w.h.0.borrow().is_empty(),
+        "fluid transfer is an actual storage phase, not a WorldCall notification"
+    );
     let sq = sq.borrow();
     assert_eq!(
         sq.objects.iter().filter(|o| o.ptr_eq_ref(&actual)).count(),
@@ -961,7 +955,7 @@ fn floor_removal_notifies_fluid_before_removing_only_first_actual_membership() {
 }
 
 #[test]
-fn floor_removal_fluid_notification_requires_real_component_and_floor_kind() {
+fn floor_removal_transfer_requires_real_fluid_component_and_floor_kind() {
     use pz_entity::ComponentType;
     for (floor, marker, component) in [
         (true, false, None),
@@ -982,12 +976,9 @@ fn floor_removal_fluid_notification_requires_real_component_and_floor_kind() {
         {
             let mut object = actual.borrow_mut();
             object.has_components = marker;
-            if let Some(kind) = component {
-                object
-                    .components.push_encoded_blob(pz_inventory::component::encode_component(
-                        pz_entity::Component::create(kind).unwrap(),
-                    ), 249).unwrap();
-            }
+        }
+        if let Some(kind) = component {
+            live_world_component(&actual, kind);
         }
         let square = w.sq(p);
         {
@@ -1001,6 +992,7 @@ fn floor_removal_fluid_notification_requires_real_component_and_floor_kind() {
             ObjectRef { pos: p, id: 700 },
             &actual,
         )
+        .unwrap()
         .unwrap();
         assert!(removed.ptr_eq_ref(&actual));
         assert!(
@@ -1011,6 +1003,159 @@ fn floor_removal_fluid_notification_requires_real_component_and_floor_kind() {
         assert!(!square.objects.iter().any(|o| o.ptr_eq_ref(&actual)));
         assert!(square.special_objects.is_empty());
         assert_eq!(square.world_objects.borrow().len(), usize::from(!floor));
+    }
+}
+
+#[test]
+fn floor_transfer_precedes_list_removal_and_preserves_completed_prefix_on_list_borrow_fault() {
+    let mut w = World::new();
+    let p = (2, 2, 0);
+    let item = world_item("A", 1);
+    let actual = floor_owner(700, crate::floor_item::FloorItem::retain(&item));
+    let fluid = live_world_component(&actual, pz_entity::ComponentType::FluidContainer);
+    let square = w.sq(p);
+    let list = square.borrow().world_objects.clone();
+    square
+        .borrow_mut()
+        .objects
+        .push(ObjectSlot::retain(&actual));
+    list.borrow_mut().push_object(&actual);
+    let before_main: Vec<_> = square
+        .borrow()
+        .objects
+        .iter()
+        .map(ObjectSlot::ref_handle)
+        .collect();
+    let guard = list.borrow();
+    let error = super::lifecycle::remove_from_square_handle(
+        &mut w.env(),
+        ObjectRef { pos: p, id: 700 },
+        &actual,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        pz_entity::runtime_load::RuntimeHostError::Borrowed("removeFromSquare world list")
+    ));
+    assert!(actual
+        .borrow()
+        .components
+        .get_ref(pz_entity::ComponentType::FluidContainer)
+        .unwrap()
+        .is_none());
+    assert!(Rc::ptr_eq(
+        &item
+            .borrow()
+            .components
+            .get_ref(pz_entity::ComponentType::FluidContainer)
+            .unwrap()
+            .unwrap(),
+        &fluid
+    ));
+    assert!(fluid
+        .borrow()
+        .owner_slot()
+        .unwrap()
+        .ptr_eq(&pz_entity::EntityOwner::from_ref(&item)));
+    assert_eq!(guard.len(), 1);
+    {
+        let square = square.borrow();
+        assert_eq!(square.objects.len(), before_main.len());
+        for (after, before) in square.objects.iter().zip(&before_main) {
+            assert!(
+                after.ptr_eq_ref(before),
+                "every preexisting and appended main-list owner keeps its position"
+            );
+        }
+    }
+    assert!(w.h.0.borrow().is_empty());
+    drop(guard);
+}
+
+#[test]
+fn floor_transfer_faults_are_visible_and_do_not_remove_memberships() {
+    use pz_entity::runtime_load::RuntimeHostError;
+    for fault in ["encoded", "raw", "borrowed-item", "borrowed-component"] {
+        let mut w = World::new();
+        let p = (2, 2, 0);
+        let item = world_item("A", 1);
+        let floor = if fault == "raw" {
+            crate::floor_item::FloorItem::from_saved(pz_inventory::SavedItem::Raw(vec![0, 7, 0xff]))
+        } else {
+            crate::floor_item::FloorItem::retain(&item)
+        };
+        let actual = floor_owner(700, floor);
+        let fluid = if fault == "encoded" {
+            actual
+                .borrow_mut()
+                .components
+                .push_encoded_blob(
+                    pz_inventory::component::encode_component(
+                        pz_entity::Component::FluidContainer(Default::default()),
+                    ),
+                    249,
+                )
+                .unwrap();
+            None
+        } else {
+            Some(live_world_component(
+                &actual,
+                pz_entity::ComponentType::FluidContainer,
+            ))
+        };
+        let square = w.sq(p);
+        square
+            .borrow_mut()
+            .objects
+            .push(ObjectSlot::retain(&actual));
+        square
+            .borrow()
+            .world_objects
+            .borrow_mut()
+            .push_object(&actual);
+        let before_main: Vec<_> = square
+            .borrow()
+            .objects
+            .iter()
+            .map(ObjectSlot::ref_handle)
+            .collect();
+        let item_guard = (fault == "borrowed-item").then(|| item.borrow());
+        let component_guard =
+            (fault == "borrowed-component").then(|| fluid.as_ref().unwrap().borrow());
+        let error = super::lifecycle::remove_from_square_handle(
+            &mut w.env(),
+            ObjectRef { pos: p, id: 700 },
+            &actual,
+        )
+        .unwrap_err();
+        assert!(
+            match fault {
+                "encoded" => matches!(error, RuntimeHostError::Storage(_)),
+                "raw" => matches!(error, RuntimeHostError::Unsupported { .. }),
+                _ => matches!(error, RuntimeHostError::Borrowed(_)),
+            },
+            "{fault}: {error:?}"
+        );
+        {
+            let square = square.borrow();
+            assert_eq!(square.objects.len(), before_main.len(), "{fault}");
+            for (after, before) in square.objects.iter().zip(&before_main) {
+                assert!(
+                    after.ptr_eq_ref(before),
+                    "{fault}: every preexisting and appended main-list owner keeps its position"
+                );
+            }
+        }
+        assert_eq!(square.borrow().world_objects.borrow().len(), 1);
+        assert!(w.h.0.borrow().is_empty());
+        drop(component_guard);
+        drop(item_guard);
+        let weak = Rc::downgrade(&actual);
+        // Failed receivers and detached component prefixes remain in the
+        // cell's outer-boundary retirement queue, never dropped under guards.
+        drop(actual);
+        assert!(weak.upgrade().is_some());
+        drop(w.cell.take_retired_owners());
     }
 }
 
@@ -1045,13 +1190,6 @@ fn detached_floor_list_removal_retires_final_owner_until_guards_end() {
         drops: drops.clone(),
     }));
     let actual = floor_owner(700, crate::floor_item::FloorItem::retain(&bag));
-    // The generic marker is deliberately left false. Native hasComponents
-    // derives its answer from the actual component collection.
-    actual
-        .borrow_mut()
-        .components.push_encoded_blob(pz_inventory::component::encode_component(
-            pz_entity::Component::FluidContainer(Default::default()),
-        ), 249).unwrap();
     let weak = Rc::downgrade(&actual);
     list.borrow_mut().push_object(&actual);
     drop(inventory);
@@ -1063,11 +1201,9 @@ fn detached_floor_list_removal_retires_final_owner_until_guards_end() {
         ObjectRef { pos: p, id: 700 },
         &actual
     )
+    .unwrap()
     .is_none());
-    assert_eq!(
-        w.h.0.borrow().as_slice(),
-        ["world 700 WorldItemTransferFluid"]
-    );
+    assert!(w.h.0.borrow().is_empty());
     drop(actual);
     assert!(list.borrow().is_empty());
     assert!(weak.upgrade().is_some());
@@ -1076,8 +1212,184 @@ fn detached_floor_list_removal_retires_final_owner_until_guards_end() {
     assert_eq!(retired.len(), 1);
     assert_eq!(drops.get(), 0);
     drop(retired);
+    drop(w.cell.take_retired_owners());
     assert!(weak.upgrade().is_none());
     assert_eq!(drops.get(), 1);
+}
+
+#[test]
+fn floor_constructor_preserves_fluid_identity_without_backlink_then_supplied_add_publishes_after_lists(
+) {
+    struct OnAdd {
+        square: crate::SquareRef,
+        item: pz_inventory::shared::ItemRef,
+        seen: bool,
+    }
+    impl SquareMutationHooks for OnAdd {
+        fn world_call(
+            &mut self,
+            _: ObjectRef,
+            object: IsoObjectRef,
+            _: &mut dyn GameRand,
+            call: WorldCall,
+        ) {
+            if call != (WorldCall::ProcessWorldItems { add: true }) {
+                return;
+            }
+            let square = self
+                .square
+                .try_borrow_mut()
+                .expect("addToWorld retained square guard");
+            let list = square
+                .world_objects
+                .try_borrow_mut()
+                .expect("addToWorld retained world list guard");
+            assert!(square.objects.iter().any(|slot| slot.ptr_eq_ref(&object)));
+            assert!(list.contains_object(&object));
+            assert!(self
+                .item
+                .try_borrow()
+                .unwrap()
+                .world_item_slot()
+                .unwrap()
+                .ptr_eq(&pz_entity::EntityOwner::from_ref(&object)));
+            assert!(object.try_borrow_mut().is_ok());
+            self.seen = true;
+        }
+    }
+    for constructor_only in [true, false] {
+        let mut w = World::new();
+        let p = (2, 2, 0);
+        let item = world_item("WaterBottle", 1);
+        let fluid = pz_entity::RuntimeComponent::new_unowned(pz_entity::Component::FluidContainer(
+            Default::default(),
+        ))
+        .unwrap();
+        let color = fluid.borrow().fluid_color_slot().unwrap().clone();
+        let mut retired = pz_entity::RetiredComponents::new();
+        pz_inventory::component_host::ItemComponentHost::new(
+            &item,
+            &pz_entity::BasicContext::default(),
+        )
+        .add(&fluid, &mut retired)
+        .unwrap();
+        drop(retired);
+        assert!(item.borrow().world_item_slot().is_none());
+        let actual = if constructor_only {
+            let slot = w
+                .env()
+                .construct_world_inventory_item(&item, 0.2, 0.3, 0.0, 4.0)
+                .unwrap();
+            assert!(item.borrow().world_item_slot().is_none());
+            assert!(w.sq(p).borrow().world_objects.borrow().is_empty());
+            slot.ref_handle()
+        } else {
+            let mut hook = OnAdd {
+                square: w.sq(p),
+                item: item.clone(),
+                seen: false,
+            };
+            let placed = {
+                let mut env = w.env();
+                env.world = &mut hook;
+                env.try_add_world_inventory_item(p, &item, 0.2, 0.3, 0.0, 4.0)
+                    .unwrap()
+            };
+            assert!(matches!(placed, WorldItemPlaced::Object(_)));
+            assert!(hook.seen);
+            w.sq(p).borrow().objects.last().unwrap().ref_handle()
+        };
+        assert!(item
+            .borrow()
+            .components
+            .get_ref(pz_entity::ComponentType::FluidContainer)
+            .unwrap()
+            .is_none());
+        assert!(Rc::ptr_eq(
+            &actual
+                .borrow()
+                .components
+                .get_ref(pz_entity::ComponentType::FluidContainer)
+                .unwrap()
+                .unwrap(),
+            &fluid
+        ));
+        assert!(Rc::ptr_eq(
+            fluid.borrow().fluid_color_slot().unwrap(),
+            &color
+        ));
+        assert!(fluid
+            .borrow()
+            .owner_slot()
+            .unwrap()
+            .ptr_eq(&pz_entity::EntityOwner::from_ref(&actual)));
+        assert!(Rc::ptr_eq(
+            &crate::floor_object::runtime::item_ref(&actual)
+                .unwrap()
+                .unwrap(),
+            &item
+        ));
+    }
+}
+
+#[test]
+fn created_and_supplied_floor_insertion_faults_preserve_distinct_native_backlink_prefixes() {
+    for created in [true, false] {
+        let mut w = World::new();
+        let p = (2, 2, 0);
+        let item = world_item("WaterBottle", 1);
+        let square = w.sq(p);
+        let list = square.borrow().world_objects.clone();
+        let before = square.borrow().objects.len();
+        let slot = created.then(|| {
+            w.env()
+                .construct_world_inventory_item(&item, 0.2, 0.3, 0.0, 4.0)
+                .unwrap()
+        });
+        assert!(item.borrow().world_item_slot().is_none());
+        let guard = list.borrow_mut();
+        let result = if let Some(slot) = slot {
+            w.env().finish_created_world_inventory_item(p, slot)
+        } else {
+            w.env()
+                .try_add_world_inventory_item(p, &item, 0.2, 0.3, 0.0, 4.0)
+        };
+        assert!(matches!(
+            result,
+            Err(WorldItemPlacementError::Component(
+                pz_entity::runtime_load::RuntimeHostError::Borrowed("floor placement worldObjects")
+            ))
+        ));
+        assert_eq!(
+            square.borrow().objects.len(),
+            before + 1,
+            "main insertion is the completed native prefix"
+        );
+        assert!(guard.is_empty());
+        let actual = square.borrow().objects.last().unwrap().ref_handle();
+        if created {
+            assert!(item
+                .borrow()
+                .world_item_slot()
+                .unwrap()
+                .ptr_eq(&pz_entity::EntityOwner::from_ref(&actual)));
+        } else {
+            assert!(item.borrow().world_item_slot().is_none());
+        }
+        assert!(Rc::ptr_eq(
+            &crate::floor_object::runtime::item_ref(&actual)
+                .unwrap()
+                .unwrap(),
+            &item
+        ));
+        assert!(!w
+            .h
+            .0
+            .borrow()
+            .iter()
+            .any(|line| line.contains("ProcessWorldItems { add: true }")));
+        drop(guard);
+    }
 }
 
 #[test]
@@ -1088,12 +1400,17 @@ fn world_item_joins_the_square() {
     let inv = pz_inventory::SharedContainer::default().into_ref();
     pz_inventory::shared::add_item(&inv, &item);
     pz_inventory::shared::remove_item(&inv, &item);
-    let fluid = pz_entity::RuntimeComponent::new_unowned(
-        pz_entity::Component::FluidContainer(Default::default()),
-    ).unwrap();
+    let fluid = pz_entity::RuntimeComponent::new_unowned(pz_entity::Component::FluidContainer(
+        Default::default(),
+    ))
+    .unwrap();
     let mut retired = pz_entity::RetiredComponents::new();
-    pz_inventory::component_host::ItemComponentHost::new(&item, &pz_entity::BasicContext::default())
-        .add(&fluid, &mut retired).unwrap();
+    pz_inventory::component_host::ItemComponentHost::new(
+        &item,
+        &pz_entity::BasicContext::default(),
+    )
+    .add(&fluid, &mut retired)
+    .unwrap();
     drop(retired);
     let before = w.sq(p).borrow().objects.len();
     let placed = w
@@ -1115,8 +1432,18 @@ fn world_item_joins_the_square() {
     assert_eq!(o.key_id, 77);
     assert!(o.outline_on_mouseover && o.has_components);
     assert_eq!(o.components.len(), 1);
-    assert!(Rc::ptr_eq(&o.components.get_ref(pz_entity::ComponentType::FluidContainer).unwrap().unwrap(), &fluid));
-    assert!(fluid.borrow().owner_slot().unwrap().ptr_eq(&pz_entity::EntityOwner::from_ref(&o_owner)));
+    assert!(Rc::ptr_eq(
+        &o.components
+            .get_ref(pz_entity::ComponentType::FluidContainer)
+            .unwrap()
+            .unwrap(),
+        &fluid
+    ));
+    assert!(fluid
+        .borrow()
+        .owner_slot()
+        .unwrap()
+        .ptr_eq(&pz_entity::EntityOwner::from_ref(&o_owner)));
     let ObjectKind::WorldInventory(wi) = &o.kind else {
         panic!()
     };
@@ -1302,6 +1629,7 @@ fn too_heavy_worn_item_drops_to_the_floor_below() {
     let mut env = w.env();
     let mut floor = FloorDropEnv::new(&mut env, 10.0);
     let d = pz_inventory::floor_drop::force_drop_too_heavy(&mut chr, &mut floor, true, Some(&coat))
+        .unwrap()
         .unwrap();
     // `Rand.Next(0.1f, 0.9f)` with a generator answering 0.
     assert_eq!((d.square, d.x, d.y, d.z), ((3, 3, 0), 0.1, 0.1, 0.0));
@@ -1380,12 +1708,17 @@ fn removal_callback_pins_actual_receiver_recomputes_index_and_rejects_equal_repl
             env.remove_tile_object_with(p, id, false)
         }));
         if replacement {
-            assert!(result.is_err());
+            assert!(matches!(
+                result.unwrap(),
+                Err(pz_entity::runtime_load::RuntimeHostError::InvalidHostState(
+                    _
+                ))
+            ));
             assert_eq!(callback.calls, 0);
             assert!(!w.sq(p).borrow().objects[1].ptr_eq_ref(&actual));
             assert_eq!(actual.borrow().key_id, 771);
         } else {
-            let (index, removed) = result.unwrap();
+            let (index, removed) = result.unwrap().unwrap();
             assert_eq!(index, 0); // callback removed preceding floor
             assert!(removed.unwrap().ptr_eq_ref(&actual));
             assert!(callback.calls > 0);
@@ -1429,7 +1762,8 @@ fn detached_remove_from_world_mutates_actual_receiver_without_reinsertion() {
     {
         let mut env = w.env();
         env.world = &mut calls;
-        env.object_remove_from_world_detached(ObjectRef { pos: p, id }, &actual);
+        env.object_remove_from_world_detached(ObjectRef { pos: p, id }, &actual)
+            .unwrap();
     }
     assert!(calls.count > 0);
     assert_eq!(actual.borrow().key_id, calls.count as i32 - 1); // initial keyId is -1
@@ -1482,7 +1816,8 @@ fn detached_receiver_removal_event_keeps_original_argument_and_same_id_replaceme
         let mut env = w.env();
         env.world = &mut event;
         env.remove_tile_object_receiver(p, id, Some(actual.clone()))
-    };
+    }
+    .unwrap();
     assert_eq!(index, -1);
     assert!(removed.is_none());
     assert!(event.seen);

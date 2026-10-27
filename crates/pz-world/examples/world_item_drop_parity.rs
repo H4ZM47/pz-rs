@@ -387,12 +387,17 @@ fn main() {
     // world object.
     struct WorldFluidAmount(Option<f32>);
     impl pz_inventory::context::ItemOwner for WorldFluidAmount {
-        fn world_item_fluid_amount(&self, _: &InventoryItem) -> Option<f32> { self.0 }
+        fn world_item_fluid_amount(&self, _: &InventoryItem) -> Option<f32> {
+            self.0
+        }
     }
     let weight = |o: &pz_world::IsoObject, i: &InventoryItem| {
         // Detached read-only diagnostic data; never reattach a copied fluid
         // to an item to stand in for the world's actual component reference.
-        let values = o.components.values_snapshot(ectx).expect("world component diagnostic snapshot");
+        let values = o
+            .components
+            .values_snapshot(ectx)
+            .expect("world component diagnostic snapshot");
         let amount = values.fluid_container().map(|fluid| fluid.get_amount());
         i.get_unequipped_weight(&ctx, &WorldFluidAmount(amount))
     };
@@ -485,7 +490,9 @@ fn main() {
                         &mut floor,
                         true,
                         Some(&item),
-                    ) {
+                    )
+                    .expect("archive parity fixture needs successful real floor placement")
+                    {
                         None => s.push_str(" nofloor"),
                         Some(d) => {
                             drop_sq = Some(d.square);

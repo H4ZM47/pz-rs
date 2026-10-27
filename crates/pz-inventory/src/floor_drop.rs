@@ -17,6 +17,10 @@
 
 use std::rc::Rc;
 
+// Public carrier for downstream character callers without a direct entity
+// dependency. Host faults remain distinct from native absence/no-drop.
+pub use pz_entity::runtime_load::{HostResult, RuntimeHostError};
+
 use crate::item::{InventoryItem, ItemKind};
 use crate::shared::{self, ContainerRef, ItemRef, SharedContainer};
 use crate::template::ItemClass;
@@ -52,7 +56,7 @@ pub trait FloorWorld {
         x: f32,
         y: f32,
         height: f32,
-    );
+    ) -> HostResult<()>;
 }
 
 /// The character whose items drop (`IsoGameCharacter`), as the drops and
@@ -294,17 +298,27 @@ pub fn do_remove_item(c: &ContainerRef, item: &ItemRef) {
 /// The drop the four call sites share: `Rand.Next(0.1f, 0.9f)` for x
 /// then y, `sq.getApparentZ(x, y) - sq.z` and
 /// `sq.AddWorldInventoryItem(item, x, y, z)`.
-pub fn drop_on_floor(world: &mut dyn FloorWorld, sq: SquarePos, item: &ItemRef) -> Dropped {
+pub fn drop_on_floor(
+    world: &mut dyn FloorWorld,
+    sq: SquarePos,
+    item: &ItemRef,
+) -> HostResult<Dropped> {
+    // Remove/hand clearing precedes placement. If placement fails before a
+    // world allocation retains this item, the local hand pin could otherwise
+    // be its final owner under the caller's character/WORLD guard.
+    let mut retired = pz_entity::RetiredComponents::new();
+    retired.push_owner(pz_entity::EntityOwner::from_ref(item));
+    crate::component_host::retire_components(retired);
     let x = world.rand_float(0.1, 0.9);
     let y = world.rand_float(0.1, 0.9);
     let z = world.apparent_z(sq, x, y) - sq.2 as f32;
-    world.add_world_inventory_item(sq, item, x, y, z);
-    Dropped {
+    world.add_world_inventory_item(sq, item, x, y, z)?;
+    Ok(Dropped {
         square: sq,
         x,
         y,
         z,
-    }
+    })
 }
 
 /// `getSolidFloorAt(sq.x, sq.y, sq.z)` of the current square (`None`
@@ -326,14 +340,18 @@ pub fn force_drop_too_heavy(
     world: &mut dyn FloorWorld,
     force_drop_too_heavy: bool,
     item_cur: Option<&ItemRef>,
-) -> Option<Dropped> {
-    let item_cur = item_cur?;
+) -> HostResult<Option<Dropped>> {
+    let Some(item_cur) = item_cur else {
+        return Ok(None);
+    };
     if !force_drop_too_heavy || !chr.is_player() || has_room_for(chr, item_cur) {
-        return None;
+        return Ok(None);
     }
-    let sq = floor_under(chr, world)?;
+    let Some(sq) = floor_under(chr, world) else {
+        return Ok(None);
+    };
     remove(chr, item_cur);
-    Some(drop_on_floor(world, sq, item_cur))
+    drop_on_floor(world, sq, item_cur).map(Some)
 }
 
 /// One hand item dropping in `dropHeavyItems` / `dropHandItems`.
@@ -342,13 +360,13 @@ fn drop_hand(
     world: &mut dyn FloorWorld,
     sq: SquarePos,
     item: &ItemRef,
-) -> Dropped {
+) -> HostResult<Dropped> {
     do_remove_item(&chr.inventory(), item);
-    let d = drop_on_floor(world, sq, item);
+    let d = drop_on_floor(world, sq, item)?;
     chr.on_container_update();
     chr.on_item_fall(item);
     chr.play_drop_item_sound(item);
-    d
+    Ok(d)
 }
 
 /// The hand items of `dropHeavyItems` (`heavy`) or `dropHandItems`.
@@ -356,18 +374,18 @@ fn drop_hands(
     chr: &mut dyn DropCharacter,
     world: &mut dyn FloorWorld,
     heavy: bool,
-) -> Vec<Dropped> {
+) -> HostResult<Vec<Dropped>> {
     let mut out = Vec::new();
     if chr.current_square().is_none() {
-        return out;
+        return Ok(out);
     }
     let item1 = chr.primary_hand_item();
     let item2 = chr.secondary_hand_item();
     if item1.is_none() && item2.is_none() {
-        return out;
+        return Ok(out);
     }
     let Some(sq) = floor_under(chr, world) else {
-        return out;
+        return Ok(out);
     };
     let drops = |i: &Option<ItemRef>| {
         if heavy {
@@ -379,24 +397,27 @@ fn drop_hands(
     if drops(&item1) {
         let i = item1.as_ref().unwrap();
         chr.set_primary_hand_item(None);
-        out.push(drop_hand(chr, world, sq, i));
+        out.push(drop_hand(chr, world, sq, i)?);
     }
     if drops(&item2) {
         let i = item2.as_ref().unwrap();
         chr.set_secondary_hand_item(None);
         let both = item1.as_ref().is_some_and(|a| Rc::ptr_eq(a, i));
         if !both {
-            out.push(drop_hand(chr, world, sq, i));
+            out.push(drop_hand(chr, world, sq, i)?);
         }
     }
-    out
+    Ok(out)
 }
 
 /// `dropHeavyItems()`: the heavy hand items ([`is_heavy_item`]) leave the
 /// hands and the inventory for the solid floor under the character
 /// (`OnContainerUpdate`, `onItemFall` and the drop sound after each; an
 /// item in both hands drops once). Returns the drops in order.
-pub fn drop_heavy_items(chr: &mut dyn DropCharacter, world: &mut dyn FloorWorld) -> Vec<Dropped> {
+pub fn drop_heavy_items(
+    chr: &mut dyn DropCharacter,
+    world: &mut dyn FloorWorld,
+) -> HostResult<Vec<Dropped>> {
     drop_hands(chr, world, true)
 }
 
@@ -407,13 +428,13 @@ pub fn drop_hand_items(
     chr: &mut dyn DropCharacter,
     world: &mut dyn FloorWorld,
     tutorial: bool,
-) -> Vec<Dropped> {
+) -> HostResult<Vec<Dropped>> {
     if tutorial || chr.is_player() && !chr.is_local_player() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let mut out = drop_heavy_items(chr, world);
-    out.extend(drop_hands(chr, world, false));
-    out
+    let mut out = drop_heavy_items(chr, world)?;
+    out.extend(drop_hands(chr, world, false)?);
+    Ok(out)
 }
 
 #[cfg(test)]

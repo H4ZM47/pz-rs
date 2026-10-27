@@ -406,6 +406,7 @@ impl<I: 'static> State<I> for PathFindState {
         use crate::character::state::BehaviorResult;
         let result = cx.world.path_update(owner);
         owner.run_path_requests(cx);
+        if cx.has_host_error() { return; }
         match result {
             BehaviorResult::Failed => {
                 owner.set_var_bool("bPathfind", false);

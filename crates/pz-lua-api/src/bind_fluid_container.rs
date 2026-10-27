@@ -203,7 +203,7 @@ pub(crate) fn cached_color(component: &ComponentRef) -> LuaResult<Value> {
 fn owner_value(component: &ComponentRef) -> LuaResult<Value> {
     let owner = component
         .try_borrow()
-        .map_err(|_| LuaError::runtime("Component is in use"))?
+        .map_err(|_| crate::bind_world_object::borrowed("Component.getOwner"))?
         .owner_slot()
         .cloned();
     let Some(owner) = owner else {
@@ -212,7 +212,10 @@ fn owner_value(component: &ComponentRef) -> LuaResult<Value> {
     if let Some(item) = owner.try_handle::<pz_inventory::InventoryItem>() {
         return crate::bind_items::try_item_value(&item);
     }
-    Err(LuaError::runtime(
+    if let Some(object) = owner.try_handle::<pz_world::IsoObject>() {
+        return crate::bind_world_object::object_value(&object);
+    }
+    Err(crate::bind_world_object::unsupported(
         "Component.getOwner: actual owner class has no Lua binding",
     ))
 }

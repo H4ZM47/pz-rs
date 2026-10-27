@@ -54,6 +54,8 @@ use crate::bind_skills::{perk_arg, perk_value};
 use crate::expose::{bool_arg, expose_class, expose_enum, int_arg, num_arg, str_arg, with_this};
 use pz_characters::character::item_owner::CharacterItemOwner;
 use pz_characters::character::FloorCx;
+use pz_characters::character::floor_drop::{CharacterActionError, CharacterActionResult};
+use pz_inventory::floor_drop::{HostResult, RuntimeHostError};
 use pz_characters::character::{CharacterStatRef, CharacterStats};
 use pz_characters::character::{
     ChevronColor, DefaultSimContext, GameCharacter, MoodleLevel, Moodles, SimContext, SimEvent,
@@ -270,6 +272,39 @@ pub(crate) fn with_ctx<R>(
     chr: &Value,
     f: impl FnOnce(&dyn SimContext) -> Result<R, ScriptError>,
 ) -> LuaResult<R> {
+    with_ctx_result(c, chr, f, java_error)
+}
+
+pub(crate) fn with_ctx_host<R>(
+    c: &mut NativeCall<'_>,
+    chr: &Value,
+    f: impl FnOnce(&dyn SimContext) -> HostResult<R>,
+) -> LuaResult<R> {
+    with_ctx_result(c, chr, f, crate::bind_world_object::host_error)
+}
+
+fn character_action_error(error: CharacterActionError) -> LuaError {
+    match error {
+        CharacterActionError::Script(error) => java_error(error),
+        CharacterActionError::Host(error) => crate::bind_world_object::host_error(error),
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn with_ctx_action<R>(
+    c: &mut NativeCall<'_>,
+    chr: &Value,
+    f: impl FnOnce(&dyn SimContext) -> CharacterActionResult<R>,
+) -> LuaResult<R> {
+    with_ctx_result(c, chr, f, character_action_error)
+}
+
+fn with_ctx_result<R, E>(
+    c: &mut NativeCall<'_>,
+    chr: &Value,
+    f: impl FnOnce(&dyn SimContext) -> Result<R, E>,
+    convert: impl FnOnce(E) -> LuaError,
+) -> LuaResult<R> {
     let ctx = CallContext {
         base: CONTEXT.with(|c| c.borrow().clone()),
         events: RefCell::default(),
@@ -323,7 +358,7 @@ pub(crate) fn with_ctx<R>(
             sink(c.thread, name, &args);
         }
     }
-    r.map_err(java_error)
+    r.map_err(convert)
 }
 
 /// Runs `f` with the installed context and the shared `ClimateManager`,
@@ -623,12 +658,13 @@ fn set_worn_item(
     let floor = floor_world();
     let changed = crate::bind_appearance::with_styles(c.thread, |st| {
         let ctx = current_sim_context();
-        let mut f = floor.as_ref().map(|f| f.borrow_mut());
+        let mut f = floor.as_ref().map(|f| f.try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("worn item floor world"))).transpose()?;
         let cx = f.as_deref_mut().map(|f| FloorCx::new(&*ctx, f));
-        chr.borrow_mut()
+        chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("worn item character"))?
             .set_worn_item(sm, Some(st), location, id, force_drop_too_heavy, cx)
     })
-    .map_err(java_error)?;
+    .map_err(character_action_error)?;
     if changed && id.is_some() {
         let item = crate::bind_items::item_arg(c, item)?;
         if let Some(container) = pz_inventory::shared::container_of(&item) {
@@ -678,12 +714,13 @@ fn register_clothing(thread: &mut Thread, sm: &Rc<ScriptManager>) {
         let floor = floor_world();
         crate::bind_appearance::with_styles(c.thread, |st| {
             let ctx = current_sim_context();
-            let mut f = floor.as_ref().map(|f| f.borrow_mut());
+            let mut f = floor.as_ref().map(|f| f.try_borrow_mut()
+                .map_err(|_| RuntimeHostError::Borrowed("remove worn item floor world"))).transpose()?;
             let cx = f.as_deref_mut().map(|f| FloorCx::new(&*ctx, f));
-            chr.borrow_mut()
+            chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("remove worn item character"))?
                 .remove_worn_item(&s, Some(st), id, force, cx)
         })
-        .map_err(java_error)?;
+        .map_err(character_action_error)?;
         Ok(0)
     });
     // `dropHandItems()` / `dropHeavyItems()` into the installed floor
@@ -697,14 +734,14 @@ fn register_clothing(thread: &mut Thread, sm: &Rc<ScriptManager>) {
                 return Ok(0);
             };
             let v = character_value(&chr);
-            with_ctx(c, &v, |ctx| {
-                let mut f = floor.borrow_mut();
+            with_ctx_host(c, &v, |ctx| {
+                let mut f = floor.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("drop floor world"))?;
                 let cx = FloorCx::new(ctx, &mut *f);
-                let mut chr = chr.borrow_mut();
+                let mut chr = chr.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("drop character"))?;
                 if hand {
-                    chr.drop_hand_items(&s, cx);
+                    chr.drop_hand_items(&s, cx)?;
                 } else {
-                    chr.drop_heavy_items(&s, cx);
+                    chr.drop_heavy_items(&s, cx)?;
                 }
                 Ok(())
             })?;
@@ -1921,7 +1958,7 @@ fn register_character(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use pz_characters::SurvivorDesc;
     use pz_kahlua::TableRef;
@@ -1929,7 +1966,7 @@ mod tests {
         BuiltinTables, CharacterStatDecl, MoodleStatDecl, PerkDecl, PerkInit,
     };
 
-    pub(super) fn run(t: &mut Thread, src: &str) -> Result<(), String> {
+    pub(crate) fn run(t: &mut Thread, src: &str) -> Result<(), String> {
         let p = pz_kahlua::compiler::compile(src, Some("test"), Some("test"), None).unwrap();
         let f = Value::Closure(pz_kahlua::vm::LuaClosure::new(
             Rc::new(p),
@@ -1945,7 +1982,7 @@ mod tests {
         setup_with(ScriptManager::new())
     }
 
-    pub(super) fn setup_with(
+    pub(crate) fn setup_with(
         sm: ScriptManager,
     ) -> (Thread, LuaGameCharacterRef, Rc<RefCell<Vec<String>>>) {
         let mut t = Thread::new(TableRef::new());
@@ -2392,9 +2429,74 @@ mod tests {
             _x: f32,
             _y: f32,
             _h: f32,
-        ) {
+        ) -> HostResult<()> {
             self.0.push((sq, item.borrow().id));
+            Ok(())
         }
+    }
+
+    #[test]
+    fn drop_host_failure_preserves_typed_error_and_only_completed_prefix_events() {
+        struct FailingFloor { calls: Rc<std::cell::Cell<usize>>, fail_at: usize }
+        impl FloorWorld for FailingFloor {
+            fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> Option<(i32,i32,i32)> { Some((x,y,z)) }
+            fn apparent_z(&self, sq: (i32,i32,i32), _: f32, _: f32) -> f32 { sq.2 as f32 }
+            fn rand_float(&mut self, min: f32, _: f32) -> f32 { min }
+            fn add_world_inventory_item(&mut self, _: (i32,i32,i32), _: &pz_inventory::shared::ItemRef, _: f32, _: f32, _: f32) -> HostResult<()> {
+                self.calls.set(self.calls.get()+1);
+                if self.calls.get()==self.fail_at {
+                    return Err(RuntimeHostError::Unsupported { operation: "fixture floor placement phase", kind: None });
+                }
+                Ok(())
+            }
+        }
+        struct Restore(Option<FloorWorldRef>);
+        impl Drop for Restore { fn drop(&mut self) { install_floor_world(self.0.take()); } }
+        for fail_at in [1,2] {
+            let (mut t, player, log) = setup_with(clothing_scripts());
+            let _restore = Restore(floor_world());
+            crate::bind_items::install_item_env(Rc::new(crate::bind_items::GameItemEnv::new(None)));
+            crate::bind_items::register(&mut t);
+            crate::bind_item_container::register(&mut t);
+            crate::bind_item_visual::register(&mut t);
+            player.borrow_mut().path.current_square=Some((4,6,0));
+            run(&mut t, "local inv=player:getInventory(); first=inv:AddItem('Base.TestBoots'); second=inv:AddItem('Base.TestBoots'); player:setPrimaryHandItem(first); player:setSecondaryHandItem(second)").unwrap();
+            let calls=Rc::new(std::cell::Cell::new(0));
+            install_floor_world(Some(Rc::new(RefCell::new(FailingFloor {calls:calls.clone(),fail_at}))));
+            log.borrow_mut().clear();
+            let error=run(&mut t,"player:dropHandItems(); error('false success after failed placement')").unwrap_err();
+            assert!(error.contains("fixture floor placement phase") && error.contains("pz.host.Unsupported"));
+            assert!(!error.contains("false success"));
+            assert_eq!(calls.get(),fail_at);
+            let events=log.borrow();
+            assert_eq!(events.iter().filter(|e|e.starts_with("OnContainerUpdate ")).count(),fail_at-1);
+            assert_eq!(events.iter().filter(|e|e.starts_with("onItemFall ")).count(),fail_at-1);
+            assert!(player.borrow().items.primary_hand_item.is_none());
+            if fail_at==1 { assert!(player.borrow().items.secondary_hand_item.is_some()); }
+        }
+    }
+
+    #[test]
+    fn held_drop_world_is_typed_borrow_and_does_not_run_later_drop_work() {
+        let (mut t, player, log)=setup_with(clothing_scripts());
+        crate::bind_items::install_item_env(Rc::new(crate::bind_items::GameItemEnv::new(None)));
+        crate::bind_items::register(&mut t);
+        crate::bind_item_container::register(&mut t);
+        crate::bind_item_visual::register(&mut t);
+        player.borrow_mut().path.current_square=Some((4,6,0));
+        run(&mut t,"local inv=player:getInventory(); first=inv:AddItem('Base.TestBoots'); player:setPrimaryHandItem(first)").unwrap();
+        log.borrow_mut().clear();
+        let old=floor_world();
+        let floor=Rc::new(RefCell::new(RecFloor::default()));
+        install_floor_world(Some(floor.clone()));
+        let guard=floor.borrow_mut();
+        let error=run(&mut t,"player:dropHandItems(); error('false success')").unwrap_err();
+        assert!(error.contains("pz.host.Borrowed") && !error.contains("false success"));
+        assert!(guard.0.is_empty());
+        assert!(log.borrow().is_empty());
+        assert!(player.borrow().items.primary_hand_item.is_some());
+        drop(guard);
+        install_floor_world(old);
     }
 
     /// `setWornItem`'s `forceDropTooHeavy` and `dropHandItems` from Lua

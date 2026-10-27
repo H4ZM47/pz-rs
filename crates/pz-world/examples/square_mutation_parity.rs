@@ -422,15 +422,22 @@ fn do_op(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos, op: usize) -
         };
         drop(o);
         let (r, _) = if op < 72 {
-            w.env().remove_tile_object(p, id)
+            w.env()
+                .remove_tile_object(p, id)
+                .expect("archive parity fixture removal")
         } else {
-            w.env().transmit_remove_item_from_square(p, id, true)
+            w.env()
+                .transmit_remove_item_from_square(p, id, true)
+                .expect("archive parity fixture removal")
         };
         return format!("{what} {i} {name} -> {r}");
     }
     if op < 92 {
         let s = pools.floors[rng.next(pools.floors.len())].clone();
-        let id = w.env().add_floor(p, &s);
+        let id = w
+            .env()
+            .add_floor(p, &s)
+            .expect("archive parity fixture add floor");
         return format!("addFloor {s} -> {}", w.index_of(p, id));
     }
     if n == 0 {
@@ -441,7 +448,10 @@ fn do_op(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos, op: usize) -
     let o = o_owner.borrow();
     let (id, name) = (o.id, w.name_of(&o));
     drop(o);
-    let (r, _) = w.env().remove_tile_object_erosion_no_recalc(p, id);
+    let (r, _) = w
+        .env()
+        .remove_tile_object_erosion_no_recalc(p, id)
+        .expect("archive parity fixture erosion removal");
     format!("erosionRemove {i} {name} -> {r}")
 }
 
@@ -478,7 +488,9 @@ fn build_room(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos) -> Stri
                 if w.sq((x, y, zz)).is_none() && !w.create((x, y, zz)) {
                     continue;
                 }
-                w.env().add_floor((x, y, zz), &pools.floor);
+                w.env()
+                    .add_floor((x, y, zz), &pools.floor)
+                    .expect("archive parity fixture add floor");
                 n += 1;
             }
         }

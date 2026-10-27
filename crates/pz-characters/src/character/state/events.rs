@@ -16,10 +16,12 @@ impl<I: 'static> GameCharacter<I> {
     /// `actionContext.reportEvent(stateName, eventName)`, then
     /// `stateMachine.stateAnimEvent(layerDepth, ...)`.
     pub fn on_anim_event(&mut self, event: &AnimEventRecord, cx: &mut StateCx<'_, I>) {
+        if cx.has_host_error() { return; }
         if pz_anim::vars::is_null_or_whitespace(&event.event.event_name) {
             return;
         }
         self.character_anim_event(event, cx);
+        if cx.has_host_error() { return; }
         let state = event.state_name.clone();
         self.state.action_context.report_event(state.as_deref(), &event.event.event_name);
         self.state_anim_event(event.layer_depth, event, cx);

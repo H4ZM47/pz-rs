@@ -14,6 +14,8 @@ use crate::character::ZomboidGlobals;
 #[derive(Default)]
 pub(crate) struct TestFloor {
     pub put: Vec<(SquarePos, i32, f32, f32, f32)>,
+    pub fail_at: Option<usize>,
+    pub attempts: usize,
 }
 
 impl FloorWorld for TestFloor {
@@ -26,8 +28,13 @@ impl FloorWorld for TestFloor {
     fn rand_float(&mut self, _min: f32, _max: f32) -> f32 {
         0.5
     }
-    fn add_world_inventory_item(&mut self, sq: SquarePos, item: &ItemRef, x: f32, y: f32, height: f32) {
+    fn add_world_inventory_item(&mut self, sq: SquarePos, item: &ItemRef, x: f32, y: f32, height: f32) -> HostResult<()> {
+        self.attempts += 1;
+        if self.fail_at == Some(self.attempts) {
+            return Err(RuntimeHostError::Borrowed("actual floor allocation"));
+        }
         self.put.push((sq, item.borrow().id, x, y, height));
+        Ok(())
     }
 }
 
@@ -126,7 +133,7 @@ fn heavy_and_hand_items_drop() {
     c.set_primary_hand_item(&sm, Some(1));
     c.set_secondary_hand_item(&sm, Some(2));
     // dropHeavyItems: only the bag, with its events and drop sound.
-    let d = c.drop_heavy_items(&sm, FloorCx::new(&ctx, &mut floor));
+    let d = c.drop_heavy_items(&sm, FloorCx::new(&ctx, &mut floor)).unwrap();
     assert_eq!(d.len(), 1);
     assert_eq!(floor.put, [((3, 4, 1), 1, 0.5, 0.5, 0.0)]);
     assert!(c.items.primary_hand_item.is_none() && c.items.item(1).is_none());
@@ -141,8 +148,25 @@ fn heavy_and_hand_items_drop() {
             "Tutorial"
         }
     }
-    assert!(c.drop_hand_items(&sm, FloorCx::new(&Tutorial, &mut floor)).is_empty());
-    assert_eq!(c.drop_hand_items(&sm, FloorCx::new(&ctx, &mut floor)).len(), 1);
+    assert!(c.drop_hand_items(&sm, FloorCx::new(&Tutorial, &mut floor)).unwrap().is_empty());
+    assert_eq!(c.drop_hand_items(&sm, FloorCx::new(&ctx, &mut floor)).unwrap().len(), 1);
     assert_eq!(floor.put.last().map(|p| p.1), Some(2));
     assert!(c.items.secondary_hand_item.is_none() && c.items.inventory_items().is_empty());
+}
+
+#[test]
+fn worn_swap_reports_typed_host_fault_after_worn_and_removal_prefix_before_later_changes() {
+    let (sm, mut chars) = fixture();
+    let ctx = ctx();
+    let (mut c, jacket) = dressed(&sm, &mut chars);
+    c.set_worn_item(&sm, None, Some(jacket.clone()), Some(1), false, None).unwrap();
+    ctx.events.borrow_mut().clear();
+    let mut floor = TestFloor { fail_at: Some(1), ..Default::default() };
+    let result = c.set_worn_item(&sm, None, Some(jacket), Some(2), true, Some(FloorCx::new(&ctx, &mut floor)));
+    assert_eq!(result, Err(CharacterActionError::Host(RuntimeHostError::Borrowed("actual floor allocation"))));
+    assert_eq!(c.items.worn_ids(), [2], "completed native worn prefix is retained");
+    assert!(c.items.item(1).is_none(), "completed inventory removal prefix is retained");
+    assert_eq!(floor.attempts, 1);
+    assert!(floor.put.is_empty());
+    assert!(ctx.events.borrow().is_empty(), "no later clothing callback or drop sound");
 }

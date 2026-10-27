@@ -26,13 +26,14 @@ pub mod java;
 pub mod key_namer;
 pub mod light;
 pub mod lua_table;
-pub mod model;
 pub mod moddata;
+pub mod model;
 pub mod naming;
 pub mod saved;
 pub mod shared;
 pub mod template;
 pub mod visual;
+pub mod world_item;
 pub mod worn_items;
 
 pub use assets::{BloodClothingTypes, ClothingItem, ClothingItems, ItemAssets};

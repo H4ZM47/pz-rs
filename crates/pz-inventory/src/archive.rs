@@ -14,6 +14,9 @@ use crate::{InventoryItem, ItemContainer, ItemKind, SavedItem};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArchiveCopyError {
+    /// A runtime world object may contain the native null item reference;
+    /// SavedItem has no representation for that state.
+    NullItem,
     BorrowedItem,
     BorrowedContainer,
     BorrowedComponent,
@@ -324,8 +327,10 @@ mod tests {
 }
 
 impl InventoryItem {
-    /// Independent bounded Rust archive copy. Actual opaque objects retain
-    /// their VM references; this does not implement native debug createCloneItem.
+    /// Independent bounded Rust archive copy. Actual opaque ModData objects
+    /// retain their VM references, but the runtime worldItem backlink is
+    /// omitted. A copied floor graph must explicitly bind its own new owner.
+    /// This does not implement native debug createCloneItem.
     pub fn try_archive_copy(&self) -> Result<Self, ArchiveCopyError> {
         ArchiveCopyCheck::default().item(self, 0)?;
         Ok(self.clone())

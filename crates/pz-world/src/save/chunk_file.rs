@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use super::io::{crc32, err, has, BitHeaderWrite, Reader, SaveResult, Writer};
 use super::lua_table::LuaTable;
-use super::object_io::{load_object, save_object};
+use super::object_io::{load_object_slot, save_object};
 use super::vehicle::BaseVehicle;
 use super::visual::IsoDeadBody;
 use super::{SaveCtx, WORLD_VERSION};
@@ -284,7 +284,12 @@ pub fn load_chunk(bb: &[u8], wx: i32, wy: i32, ctx: &SaveCtx<'_>) -> SaveResult<
 /// Whether `IsoGridSquare.load` keeps a loaded world item (the removal
 /// check, with obsolete and unknown items dropped).
 fn keep_world_item(ctx: &SaveCtx<'_>, wi: &crate::objects::IsoWorldInventoryObject) -> bool {
-    let reg = wi.item.registry_id();
+    if wi.item.is_null() {
+        return false;
+    }
+    let Some(reg) = wi.item.registry_id() else {
+        return false;
+    };
     if !ctx.items.exists(reg) {
         return false;
     }
@@ -333,11 +338,16 @@ pub fn load_square(
                 let special = flags & 2 != 0;
                 let world = flags & 4 != 0;
                 let id = sq.new_object_id();
-                let Some(obj) = load_object(r, ctx, wv, id)? else {
+                let Some(slot) = load_object_slot(r, ctx, wv, id)
+                    .map_err(|failure| failure.into_error_and_retire())?
+                else {
                     continue;
                 };
+                let obj = slot.borrow();
                 if let ObjectKind::WorldInventory(wi) = &obj.kind {
                     if !keep_world_item(ctx, &wi.borrow()) {
+                        drop(obj);
+                        sq.retire_object(slot);
                         continue;
                     }
                 }
@@ -346,11 +356,13 @@ pub fn load_square(
                         .sprite
                         .and_then(|s| ctx.sprites.sprites[s].name.as_deref());
                     if matches!(name, Some("walls_special_01_8" | "walls_special_01_9")) {
+                        drop(obj);
+                        sq.retire_object(slot);
                         continue;
                     }
                 }
                 let is_world_item = matches!(obj.kind, ObjectKind::WorldInventory(_));
-                let slot = ObjectSlot::new(obj);
+                drop(obj);
                 let actual = slot.ref_handle();
                 sq.objects.push(slot);
                 if special {

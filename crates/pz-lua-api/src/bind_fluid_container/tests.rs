@@ -7,7 +7,7 @@ use pz_kahlua::TableRef;
 struct Restore {
     env: Rc<dyn crate::bind_items::ItemLuaEnv>,
     item: Option<pz_inventory::shared::ItemObserver>,
-    object: Option<fn(&pz_world::object_slot::IsoObjectRef)>,
+    object: Option<pz_world::object_slot::ObjectObserver>,
     fluid: Option<pz_inventory::component_host::ItemFluidObserver>,
     white: Rgba,
 }
