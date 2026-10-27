@@ -2353,3 +2353,5 @@ fn successful_native_add_lifecycle_stops_before_unported_square_tail() {
         drop(sprite.borrow_mut().take_slots_for_gc());
     }
 }
+
+mod lifecycle_dispatch;

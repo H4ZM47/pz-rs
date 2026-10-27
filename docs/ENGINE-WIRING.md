@@ -6,7 +6,22 @@ parity requires separate verification. Current continuation is on
 `codex/gameplay-continuation`, based on Claude's `ws/integration` and
 `ws/ingame-loop`; the older `main` checkout is not the current engine.
 
-The current reviewed continuation adds a typed engine failure channel and immediate
+The current world lifecycle change dispatches on a fieldless class tag instead
+of cloning the live object kind and its nested inventory. Mannequin add/remove
+therefore keep the supplied inventory and worn-item owners even when their
+bodies are borrowed. Fire reads `perm` at the branch. Hutch registration reads
+the current `linkedX > 0 && linkedY > 0` predicate after base add, matching the
+installed `isSlave` call; archive master-payload presence is not that predicate.
+Independent review covers all 32 object-kind mappings and the exact seven new
+regressions. Against unchanged production, six expose the old failures and the
+fire control passes; with the fix, all seven pass. Full local world tests pass
+385 tests with no failures or ignores; the workspace all-target check and client
+build also pass against 1,431 unchanged Rust/Cargo inputs. Committed platform
+and installed-assets checks for this world batch are still pending. These registry trace fixtures do not
+establish complete native mannequin/hutch activation or live registry parity.
+The archive DTO/wire migration remains separate and held.
+
+The preceding reviewed engine/Core checkpoint (`41269d8`) adds a typed engine failure channel and immediate
 state lifecycle abort checks. `StateCx` and the window retain the original owned
 `LuaError`; later teardown reports cannot overwrite the first failure. Error
 reporting uses structural labels without invoking payload formatting, and raw
@@ -25,12 +40,16 @@ The current-Core formatter helpers read only an already installed authority,
 reacquire it at each call, and return typed missing/borrowed failures. They never
 initialize a default singleton. The larger formatter integration remains held.
 
-At this source freeze, the workspace all-target check, full affected Engine/Lua
+At the engine/Core source freeze, the workspace all-target check, full affected Engine/Lua
 suites and native client build pass against 1,430 unchanged Rust/Cargo inputs:
 602 passed, zero failed and four existing ignores across five summaries in two
 packages. All sixteen new tests execute (four Core, twelve error-boundary tests).
-The client is pinned; committed installed-assets and platform checks for this
-new batch are pending. This local test selection makes no GPU readback claim.
+The client is pinned. Subsequent four-platform checks for committed `41269d8`
+pass, including six GPU readbacks on each platform. Its installed-assets checks
+pass the five actual item-owner probes and inventory refresh; row drawing still
+stops at `isFavouriteRecipeInput` (`renderdetails:2338`). Those checks precede the
+new world lifecycle source above. The local Engine/Lua test selection itself
+makes no GPU readback claim.
 
 Committed `a9e3e55d`, the preceding ten source changes, adds a selected READY noarg `List.of`
 empty-list role and same-target ArrayList construction, plus authentic

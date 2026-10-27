@@ -460,8 +460,97 @@ fn obj_mut<'r>(_env: &mut MutationEnv<'_>, r: &'r Receiver) -> Option<RefMut<'r,
     Some(r.object.borrow_mut())
 }
 
-fn kind_of(env: &MutationEnv<'_>, r: &Receiver) -> Option<ObjectKind> {
-    with_obj(env, r, |o| o.kind.clone())
+// Only the dispatch tag is captured. Live inventories, components and VM
+// metadata stay with the retained receiver, never a whole-kind archive copy.
+#[derive(Clone, Copy)]
+enum LifecycleClass {
+    Base,
+    Barbecue,
+    CarBatteryCharger,
+    Thumpable,
+    ClothingDryer,
+    ClothingWasher,
+    CombinationWasherDryer,
+    StackedWasherDryer,
+    Compost,
+    Trap,
+    Door,
+    FeedingTrough,
+    Fire,
+    Fireplace,
+    Generator,
+    Hutch,
+    Jukebox,
+    LightSwitch,
+    Mannequin,
+    Stove,
+    Radio,
+    Television,
+    Window,
+    WorldInventory,
+    Pushable,
+    ButcherHook,
+}
+impl LifecycleClass {
+    fn of(kind: &ObjectKind) -> Self {
+        match kind {
+            ObjectKind::Barbecue(_) => Self::Barbecue,
+            ObjectKind::CarBatteryCharger(_) => Self::CarBatteryCharger,
+            ObjectKind::Thumpable(_) => Self::Thumpable,
+            ObjectKind::ClothingDryer(_) => Self::ClothingDryer,
+            ObjectKind::ClothingWasher(_) => Self::ClothingWasher,
+            ObjectKind::CombinationWasherDryer(_) => Self::CombinationWasherDryer,
+            ObjectKind::StackedWasherDryer(_) => Self::StackedWasherDryer,
+            ObjectKind::Compost(_) => Self::Compost,
+            ObjectKind::Trap(_) => Self::Trap,
+            ObjectKind::Door(_) => Self::Door,
+            ObjectKind::FeedingTrough(_) => Self::FeedingTrough,
+            ObjectKind::Fire(_) => Self::Fire,
+            ObjectKind::Fireplace(_) => Self::Fireplace,
+            ObjectKind::Generator(_) => Self::Generator,
+            ObjectKind::Hutch(_) => Self::Hutch,
+            ObjectKind::Jukebox => Self::Jukebox,
+            ObjectKind::LightSwitch(_) => Self::LightSwitch,
+            ObjectKind::Mannequin(_) => Self::Mannequin,
+            ObjectKind::Stove(_) => Self::Stove,
+            ObjectKind::Radio(_) => Self::Radio,
+            ObjectKind::Television(_) => Self::Television,
+            ObjectKind::Window(_) => Self::Window,
+            ObjectKind::WorldInventory(_) => Self::WorldInventory,
+            ObjectKind::Pushable(_) => Self::Pushable,
+            ObjectKind::ButcherHook => Self::ButcherHook,
+            ObjectKind::Object
+            | ObjectKind::Curtain(_)
+            | ObjectKind::WindowFrame { .. }
+            | ObjectKind::Tree(_)
+            | ObjectKind::BrokenGlass
+            | ObjectKind::Barricade(_)
+            | ObjectKind::AnimalTrack(_) => Self::Base,
+        }
+    }
+}
+
+fn lifecycle_class(
+    r: &Receiver,
+    operation: &'static str,
+) -> pz_entity::runtime_load::HostResult<LifecycleClass> {
+    let object = r
+        .object
+        .try_borrow()
+        .map_err(|_| pz_entity::runtime_load::RuntimeHostError::Borrowed(operation))?;
+    Ok(LifecycleClass::of(&object.kind))
+}
+
+fn fire_perm(r: &Receiver) -> pz_entity::runtime_load::HostResult<bool> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let object = r
+        .object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("fire lifecycle perm"))?;
+    match &object.kind {
+        ObjectKind::Fire(fire) => Ok(fire.perm),
+        _ => Err(RuntimeHostError::InvalidHostState("fire class changed")),
+    }
 }
 
 fn container_types(o: &IsoObject) -> Vec<Option<String>> {
@@ -638,38 +727,36 @@ fn add_to_world_on(
         base_add(env, r)?;
         return Ok(());
     }
-    let Some(kind) = kind_of(env, r) else {
-        return Ok(());
-    };
-    use ObjectKind as K;
-    match kind {
-        K::Barbecue(_) | K::CarBatteryCharger(_) | K::Thumpable(_) => {
+    let class = lifecycle_class(r, "addToWorld class")?;
+    use LifecycleClass as K;
+    match class {
+        K::Barbecue | K::CarBatteryCharger | K::Thumpable => {
             base_add(env, r)?;
             call(env, r, WorldCall::ProcessIsoObjectAdd);
         }
-        K::ClothingDryer(_)
-        | K::ClothingWasher(_)
-        | K::CombinationWasherDryer(_)
-        | K::StackedWasherDryer(_)
-        | K::Compost(_)
-        | K::Trap(_) => call(env, r, WorldCall::ProcessIsoObjectAdd),
-        K::Door(_) => {
+        K::ClothingDryer
+        | K::ClothingWasher
+        | K::CombinationWasherDryer
+        | K::StackedWasherDryer
+        | K::Compost
+        | K::Trap => call(env, r, WorldCall::ProcessIsoObjectAdd),
+        K::Door => {
             base_add(env, r)?;
             call(env, r, WorldCall::DancingDoor { add: true });
         }
-        K::FeedingTrough(_) => {
+        K::FeedingTrough => {
             base_add(env, r)?;
             call(env, r, WorldCall::ProcessIsoObjectAdd);
             call(env, r, WorldCall::FeedingTroughCheck);
         }
-        K::Fire(f) => {
-            if f.perm {
+        K::Fire => {
+            if fire_perm(r)? {
                 call(env, r, WorldCall::StaticUpdater { add: true });
             } else {
                 call(env, r, WorldCall::FireManager { add: true });
             }
         }
-        K::Fireplace(_) => {
+        K::Fireplace => {
             call(env, r, WorldCall::ProcessIsoObjectAdd);
             let capacity = {
                 let object = r.object.try_borrow().map_err(|_| {
@@ -691,13 +778,26 @@ fn add_to_world_on(
                 );
             }
         }
-        K::Generator(_) => {
+        K::Generator => {
             call(env, r, WorldCall::ProcessIsoObjectAdd);
             call(env, r, WorldCall::Generators { add: true });
         }
-        K::Hutch(h) => {
+        K::Hutch => {
             base_add(env, r)?;
-            if h.master.is_some() {
+            // IsoHutch.isSlave reads linkedX/linkedY AFTER the base call.
+            // The archive-only master payload is not the native predicate.
+            let is_slave = {
+                use pz_entity::runtime_load::RuntimeHostError;
+                let object = r
+                    .object
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("addToWorld hutch isSlave"))?;
+                match &object.kind {
+                    ObjectKind::Hutch(hutch) => hutch.linked_x > 0 && hutch.linked_y > 0,
+                    _ => return Err(RuntimeHostError::InvalidHostState("hutch class changed")),
+                }
+            };
+            if !is_slave {
                 call(env, r, WorldCall::HutchManager { add: true });
             }
         }
@@ -705,7 +805,7 @@ fn add_to_world_on(
             base_add(env, r)?;
             call(env, r, WorldCall::StaticUpdater { add: true });
         }
-        K::LightSwitch(_) => {
+        K::LightSwitch => {
             let (light_room, lights, can_be_modified) = {
                 let Some(mut o) = obj_mut(env, r) else {
                     return Ok(());
@@ -738,11 +838,11 @@ fn add_to_world_on(
                 call(env, r, WorldCall::PoweredByGenerator { add: true });
             }
         }
-        K::Mannequin(_) => {
+        K::Mannequin => {
             base_add(env, r)?;
             call(env, r, WorldCall::MannequinInit);
         }
-        K::Stove(_) => {
+        K::Stove => {
             base_add(env, r)?;
             if with_obj(env, r, |o| o.container.is_none()).unwrap_or(true) {
                 return Ok(());
@@ -759,21 +859,21 @@ fn add_to_world_on(
             call(env, r, WorldCall::StoveSetActivated);
             call(env, r, WorldCall::LightSource { add: true });
         }
-        K::Radio(_) | K::Television(_) => {
+        K::Radio | K::Television => {
             call(env, r, WorldCall::RadioDevice { add: true });
             call(env, r, WorldCall::StaticUpdater { add: true });
             base_add(env, r)?;
         }
-        K::Window(_) => {
+        K::Window => {
             base_add(env, r)?;
             call(env, r, WorldCall::WindowList { add: true });
         }
-        K::WorldInventory(_) => {
+        K::WorldInventory => {
             call(env, r, WorldCall::ProcessWorldItems { add: true });
             call(env, r, WorldCall::WorldItemContainer { add: true });
             base_add(env, r)?;
         }
-        _ => base_add(env, r)?,
+        K::Base | K::ButcherHook | K::Pushable => base_add(env, r)?,
     }
     Ok(())
 }
@@ -821,37 +921,32 @@ fn remove_from_world_on(
     r: &Receiver,
 ) -> pz_entity::runtime_load::HostResult<()> {
     use pz_entity::runtime_load::RuntimeHostError;
-    let kind = r
-        .object
-        .try_borrow()
-        .map_err(|_| RuntimeHostError::Borrowed("removeFromWorld class"))?
-        .kind
-        .clone();
-    use ObjectKind as K;
-    match kind {
+    let class = lifecycle_class(r, "removeFromWorld class")?;
+    use LifecycleClass as K;
+    match class {
         K::ButcherHook => {
             call_checked(env, r, WorldCall::ButcherHookAnimal)?;
             call_checked(env, r, WorldCall::StopEmitter)?;
             base_remove(env, r)?;
         }
-        K::Barbecue(_) => {
+        K::Barbecue => {
             call_checked(env, r, WorldCall::RemoveHeatSource)?;
             base_remove(env, r)?;
         }
-        K::CarBatteryCharger(_) => {
+        K::CarBatteryCharger => {
             call_checked(env, r, WorldCall::StopChargingSound)?;
             base_remove(env, r)?;
         }
-        K::Door(_) => {
+        K::Door => {
             base_remove(env, r)?;
             call_checked(env, r, WorldCall::DancingDoor { add: false })?;
         }
-        K::FeedingTrough(_) => {
+        K::FeedingTrough => {
             call_checked(env, r, WorldCall::FeedingTroughZoneRemove)?;
             base_remove(env, r)?;
         }
-        K::Fire(f) => {
-            if !f.perm {
+        K::Fire => {
+            if !fire_perm(r)? {
                 call_checked(env, r, WorldCall::FireManager { add: false })?;
             }
             call_checked(env, r, WorldCall::FireStopSound)?;
@@ -859,21 +954,21 @@ fn remove_from_world_on(
             call_checked(env, r, WorldCall::RemoveHeatSource)?;
             base_remove(env, r)?;
         }
-        K::Fireplace(_) => {
+        K::Fireplace => {
             call_checked(env, r, WorldCall::RemoveObjectLamppost)?;
             call_checked(env, r, WorldCall::RemoveHeatSource)?;
             base_remove(env, r)?;
         }
-        K::Generator(_) => {
+        K::Generator => {
             call_checked(env, r, WorldCall::Generators { add: false })?;
             call_checked(env, r, WorldCall::StopEmitter)?;
             base_remove(env, r)?;
         }
-        K::Hutch(_) => {
+        K::Hutch => {
             base_remove(env, r)?;
             call_checked(env, r, WorldCall::HutchManager { add: false })?;
         }
-        K::LightSwitch(_) => {
+        K::LightSwitch => {
             let (light_room, lights) = {
                 let body = r
                     .object
@@ -929,39 +1024,46 @@ fn remove_from_world_on(
             call_checked(env, r, WorldCall::ClearOnOverlay)?;
             base_remove(env, r)?;
         }
-        K::Mannequin(_) => {
+        K::Mannequin => {
             base_remove(env, r)?;
             call_checked(env, r, WorldCall::MannequinListRemove)?;
         }
-        K::Thumpable(_) => {
+        K::Thumpable => {
             call_checked(env, r, WorldCall::RemoveObjectLamppost)?;
             base_remove(env, r)?;
         }
-        K::Trap(_) => {
+        K::Trap => {
             call_checked(env, r, WorldCall::StopEmitter)?;
             base_remove(env, r)?;
         }
-        K::Radio(_) | K::Television(_) => {
+        K::Radio | K::Television => {
             call_checked(env, r, WorldCall::RadioDevice { add: false })?;
             call_checked(env, r, WorldCall::LightSource { add: false })?;
             call_checked(env, r, WorldCall::RadioCleanSounds)?;
             base_remove(env, r)?;
         }
-        K::Window(_) => {
+        K::Window => {
             base_remove(env, r)?;
             call_checked(env, r, WorldCall::WindowList { add: false })?;
         }
-        K::WorldInventory(_) => {
+        K::WorldInventory => {
             call_checked(env, r, WorldCall::ProcessWorldItems { add: false })?;
             call_checked(env, r, WorldCall::WorldItemRemoved)?;
             call_checked(env, r, WorldCall::WorldItemContainer { add: false })?;
             base_remove(env, r)?;
         }
-        K::Pushable(_) => {
+        K::Pushable => {
             call_checked(env, r, WorldCall::MovingObjectRemove)?;
             base_remove(env, r)?;
         }
-        _ => base_remove(env, r)?,
+        K::Base
+        | K::ClothingDryer
+        | K::ClothingWasher
+        | K::CombinationWasherDryer
+        | K::StackedWasherDryer
+        | K::Compost
+        | K::Jukebox
+        | K::Stove => base_remove(env, r)?,
     }
     Ok(())
 }
