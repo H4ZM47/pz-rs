@@ -620,7 +620,7 @@ fn fail_second_static_array(observed: ListObserved<'_>) {
             }
         }
         ListObserved::List(_) => STATIC_LIST_OBSERVATIONS.with(|n| n.set(n.get() + 1)),
-        ListObserved::Iterator(_) => {}
+        ListObserved::Iterator(_) | ListObserved::ListN(_) => {}
     }
 }
 #[test]

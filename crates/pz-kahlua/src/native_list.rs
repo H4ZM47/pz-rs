@@ -7,11 +7,16 @@ use crate::{gc, Value};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+mod empty_ready;
 mod observation;
 mod retirement;
+pub use empty_ready::{
+    install_selected_ready_empty_list_role, list_n_empty_to_array, list_of_empty_ready,
+    NativeListN, NativeListNRef,
+};
 pub use observation::{
-    install_observer, observe_array, observe_iterator, observe_list, retry_observation,
-    ListObserved, ListObserver, ObservationStatus,
+    install_observer, observe_array, observe_iterator, observe_list, observe_list_n,
+    retry_observation, ListObserved, ListObserver, ObservationStatus,
 };
 pub use retirement::{drain_retired, NativeListRetired};
 
@@ -119,6 +124,19 @@ pub struct NativeArrayList {
     element_data: Option<NativeArrayRef>,
     size: i32,
     mod_count: i32,
+}
+/// Structural Rust diagnostics only; never Java ArrayList.toString or a Value walk.
+impl std::fmt::Debug for NativeArrayList {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeArrayList")
+            .field("size", &self.size)
+            .field("mod_count", &self.mod_count)
+            .field(
+                "element_data_ptr",
+                &self.element_data.as_ref().map(NativeArrayRef::ptr_id),
+            )
+            .finish()
+    }
 }
 impl NativeArrayList {
     pub fn array_slot(&self) -> Option<&NativeArrayRef> {
@@ -446,16 +464,88 @@ fn copy_of(
     }
     Ok(copy)
 }
+/// AbstractList.<init> writes modCount=0 AFTER allocation and argument
+/// evaluation. Allocation's zero default does not replace this field phase.
+fn initialize_super(list: &NativeListRef, retired: &mut NativeListRetired) -> ListResult<()> {
+    retired.keep_list(list);
+    list.try_borrow_mut()
+        .map_err(|_| borrow("ArrayList superclass modCount initializer"))?
+        .mod_count = 0;
+    Ok(())
+}
+
+/// A transient owner of the actual uninitialized receiver. Non-Clone and
+/// privately constructed, so a completed arbitrary list cannot be reinitialized.
+/// No second mutable list body or native owner field is introduced.
+#[must_use = "finish this same receiver, or let Drop retire its native prefix"]
+pub struct ArrayListConstruction {
+    receiver: NativeListRef,
+}
+impl ArrayListConstruction {
+    pub fn receiver_slot(&self) -> &NativeListRef {
+        &self.receiver
+    }
+    pub fn initialize(
+        self,
+        source: KnownCollectionRef<'_>,
+        retired: &mut NativeListRetired,
+    ) -> ListResult<NativeListRef> {
+        retired.keep_list(&self.receiver);
+        // Pin both actual arguments before the first fallible body access.
+        match source {
+            KnownCollectionRef::ArrayList(value) => retired.keep_list(value),
+            KnownCollectionRef::EmptyReadyListN(value) => retired.keep_list_n(value),
+        }
+        initialize_super(&self.receiver, retired)?;
+        let array = match source {
+            KnownCollectionRef::ArrayList(value) => to_array(value, retired)?,
+            KnownCollectionRef::EmptyReadyListN(value) => list_n_empty_to_array(value, retired)?,
+        };
+        set_size(&self.receiver, array.length)?;
+        if array.length == 0 {
+            let empty = empty_arrays(retired)?.empty;
+            publish(&self.receiver, &empty, retired)?;
+        } else {
+            // The only admitted nonempty source is the exact ArrayList class.
+            // Its native constructor uses the returned toArray allocation directly.
+            publish(&self.receiver, &array, retired)?;
+        }
+        Ok(self.receiver.clone())
+    }
+}
+impl Drop for ArrayListConstruction {
+    fn drop(&mut self) {
+        let mut retired = NativeListRetired::new();
+        retired.keep_list(&self.receiver);
+    }
+}
+#[derive(Clone, Copy)]
+pub enum KnownCollectionRef<'a> {
+    ArrayList(&'a NativeListRef),
+    EmptyReadyListN(&'a NativeListNRef),
+}
+/// Native NEW phase only: ArrayList class bootstrap precedes raw allocation,
+/// while superclass writes and source.toArray wait until initialize is called.
+pub fn allocate_for_collection(
+    retired: &mut NativeListRetired,
+) -> ListResult<ArrayListConstruction> {
+    empty_arrays(retired)?;
+    Ok(ArrayListConstruction {
+        receiver: raw_list(retired)?,
+    })
+}
 /// Constructors support the actual ArrayList class, not arbitrary Collection.
 pub fn new_default(retired: &mut NativeListRetired) -> ListResult<NativeListRef> {
     let arrays = empty_arrays(retired)?;
     let list = raw_list(retired)?;
+    initialize_super(&list, retired)?;
     publish(&list, &arrays.default, retired)?;
     Ok(list)
 }
 pub fn new_capacity(capacity: i32, retired: &mut NativeListRetired) -> ListResult<NativeListRef> {
     let arrays = empty_arrays(retired)?;
     let list = raw_list(retired)?;
+    initialize_super(&list, retired)?;
     let array = if capacity > 0 {
         new_array(capacity, retired)?
     } else if capacity == 0 {
@@ -474,20 +564,7 @@ pub fn new_from_actual(
     retired: &mut NativeListRetired,
 ) -> ListResult<NativeListRef> {
     retired.keep_list(source);
-    let arrays = empty_arrays(retired)?;
-    let list = raw_list(retired)?;
-    let array = to_array(source, retired)?;
-    set_size(&list, array.length)?;
-    publish(
-        &list,
-        if array.length == 0 {
-            &arrays.empty
-        } else {
-            &array
-        },
-        retired,
-    )?;
-    Ok(list)
+    allocate_for_collection(retired)?.initialize(KnownCollectionRef::ArrayList(source), retired)
 }
 pub fn size(list: &NativeListRef, retired: &mut NativeListRetired) -> ListResult<i32> {
     retired.keep_list(list);

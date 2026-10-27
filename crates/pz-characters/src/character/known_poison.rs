@@ -148,6 +148,14 @@ fn full_name<I: 'static>(
         .full_name();
     Ok(name)
 }
+/// Actual base getFullName result with argument/descriptor pins retained past
+/// every enclosing host guard. Animal's real override stays an explicit
+/// capability; no translation/data state is fabricated for it.
+pub fn full_name_ref<I: 'static>(character: &Rc<RefCell<GameCharacter<I>>>) -> HostResult<String> {
+    let mut pins = Pins::new();
+    pins.keep(character);
+    full_name(character, &mut pins)
+}
 
 pub fn is_known_poison_item<I: 'static>(
     character: &Rc<RefCell<GameCharacter<I>>>,

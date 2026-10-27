@@ -8,6 +8,7 @@ pub enum ListObserved<'a> {
     List(&'a NativeListRef),
     Array(&'a NativeArrayRef),
     Iterator(&'a NativeIteratorRef),
+    ListN(&'a NativeListNRef),
 }
 /// Pure metadata notification only: no Lua/user callbacks, semantic mutations,
 /// collection or held foreign guards. Node publication is not yet complete.
@@ -64,13 +65,26 @@ impl gc::TraceDescriptor<NativeArrayListItr> for IteratorDescriptor {
         Some(Box::new(v.take_for_gc()))
     }
 }
+struct ListNDescriptor;
+impl gc::TraceDescriptor<NativeListN> for ListNDescriptor {
+    fn trace(value: &NativeListN, visitor: &mut gc::TraceVisitor) {
+        if let Some(array) = value.elements_slot() {
+            visitor.owner(array.owner_slot());
+        }
+    }
+    fn detach(value: &mut NativeListN) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(value.take_for_gc()))
+    }
+}
 enum Pending {
     List(Weak<RefCell<NativeArrayList>>),
+    ListN(Weak<RefCell<NativeListN>>),
     Array(Weak<RefCell<NativeObjectArray>>, i32),
     Iterator(Weak<RefCell<NativeArrayListItr>>),
 }
 enum Node {
     List(NativeListRef),
+    ListN(NativeListNRef),
     Array(NativeArrayRef),
     Iterator(NativeIteratorRef),
 }
@@ -78,6 +92,7 @@ impl Node {
     fn key(&self) -> (&'static str, usize) {
         match self {
             Self::List(v) => ("list", Rc::as_ptr(v) as usize),
+            Self::ListN(v) => ("list-n", Rc::as_ptr(v) as usize),
             Self::Array(v) => ("array", v.ptr_id()),
             Self::Iterator(v) => ("iterator", Rc::as_ptr(v) as usize),
         }
@@ -85,6 +100,7 @@ impl Node {
     fn weak(&self) -> Pending {
         match self {
             Self::List(v) => Pending::List(Rc::downgrade(v)),
+            Self::ListN(v) => Pending::ListN(Rc::downgrade(v)),
             Self::Array(v) => Pending::Array(Rc::downgrade(&v.owner), v.length),
             Self::Iterator(v) => Pending::Iterator(Rc::downgrade(v)),
         }
@@ -94,6 +110,7 @@ impl Pending {
     fn upgrade(self) -> Option<Node> {
         match self {
             Self::List(v) => v.upgrade().map(Node::List),
+            Self::ListN(v) => v.upgrade().map(Node::ListN),
             Self::Array(v, length) => v
                 .upgrade()
                 .map(|owner| Node::Array(NativeArrayRef { owner, length })),
@@ -118,6 +135,7 @@ fn register(root: Node) -> Result<ObservationStatus, gc::RegistrationError> {
         }
         let result = match &node {
             Node::List(v) => gc::register_existing::<_, ListDescriptor>(v),
+            Node::ListN(v) => gc::register_existing::<_, ListNDescriptor>(v),
             Node::Array(v) => gc::register_existing::<_, ArrayDescriptor>(&v.owner),
             Node::Iterator(v) => gc::register_existing::<_, IteratorDescriptor>(v),
         };
@@ -135,6 +153,17 @@ fn register(root: Node) -> Result<ObservationStatus, gc::RegistrationError> {
                 Ok(b) => {
                     if let Some(a) = &b.element_data {
                         work.push_back(Node::Array(a.clone()));
+                    }
+                }
+                Err(_) => {
+                    pending(node.weak());
+                    status = ObservationStatus::Deferred;
+                }
+            },
+            Node::ListN(v) => match v.try_borrow() {
+                Ok(body) => {
+                    if let Some(array) = body.elements_slot() {
+                        work.push_back(Node::Array(array.clone()));
                     }
                 }
                 Err(_) => {
@@ -161,6 +190,11 @@ fn register(root: Node) -> Result<ObservationStatus, gc::RegistrationError> {
 pub fn observe_list(list: &NativeListRef) -> Result<ObservationStatus, gc::RegistrationError> {
     let result = register(Node::List(list.clone()));
     notify(ListObserved::List(list));
+    result
+}
+pub fn observe_list_n(list: &NativeListNRef) -> Result<ObservationStatus, gc::RegistrationError> {
+    let result = register(Node::ListN(list.clone()));
+    notify(ListObserved::ListN(list));
     result
 }
 pub fn observe_array(array: &NativeArrayRef) -> Result<ObservationStatus, gc::RegistrationError> {

@@ -21,6 +21,9 @@ impl Payload {
     pub(super) fn keep_array(&mut self, v: &NativeArrayRef) {
         self.owners.push(v.owner.clone());
     }
+    fn keep_list_n(&mut self, v: &NativeListNRef) {
+        self.owners.push(v.clone());
+    }
     fn keep_iterator(&mut self, v: &NativeIteratorRef) {
         self.owners.push(v.clone());
     }
@@ -70,6 +73,9 @@ impl NativeListRetired {
     }
     pub fn keep_array(&mut self, value: &NativeArrayRef) {
         self.payload.keep_array(value);
+    }
+    pub fn keep_list_n(&mut self, value: &NativeListNRef) {
+        self.payload.keep_list_n(value);
     }
     pub fn keep_iterator(&mut self, value: &NativeIteratorRef) {
         self.payload.keep_iterator(value);

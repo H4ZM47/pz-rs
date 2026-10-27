@@ -6,7 +6,42 @@ parity requires separate verification. Current continuation is on
 `codex/gameplay-continuation`, based on Claude's `ws/integration` and
 `ws/ingame-loop`; the older `main` checkout is not the current engine.
 
-The current list-foundation/read-state continuation passes workspace all-target
+The next ten reviewed source changes add a selected READY noarg `List.of`
+empty-list role and same-target ArrayList construction, plus authentic
+`InventoryItem.isNoRecipes`. The final combined run passes the workspace all-target check, 2,123 affected
+tests (zero failed, nine ignored across 36 summaries in 18 packages), and client
+build against 1,425 unchanged Rust/Cargo inputs. All eighteen new tests execute.
+Independent review of the first run found nine test-only outer GC deferrals
+missing from held-state fixtures. The corrected fixtures retain every assertion
+and production input; the full second run passes. The preceding focused list
+run also passes 31 tests, including all eleven new constructor tests. Committed
+platform and installed runtime verification for this batch are still pending.
+
+The READY role has its own immutable ListN owner and distinct empty backing
+array. Installation is explicit; a runtime getter never creates a missing
+singleton. Raw ArrayList allocation precedes source evaluation. Its real
+superclass modification-count initializer runs afterward, before `toArray`,
+size and backing-array publication. The empty Collection constructor uses the
+actual ArrayList EMPTY array and grows to capacity one on its first append.
+Intrinsic collection tracing and safe retirement cover the physical owners.
+Structural Rust diagnostics read scalar/pointer metadata without formatting
+stored values. Controlled bundled-JDK runs with automatic archive sharing and with sharing
+disabled confirm the selected READY role graph; this is not an observation
+of the original game's live heap or a full JVM initializer/archive port.
+
+The actual `isNoRecipes` frontend admits nullable Player/Animal arguments before
+its method body. Null player returns before item/ModData access; a null stored
+entry returns before reading the player. Otherwise it captures the real ModData
+value, evaluates the genuine full name, then invokes the supported stored-value
+equals branch. Scalar guaranteed-negative comparisons still evaluate the name.
+Unknown object equality and the required Animal full-name override remain
+explicit capabilities at their actual phases. The tooltip uses this same body.
+Seven new tests cover these branches and captured-owner retirement. The next
+installed UI expression, `isFavouriteRecipeInput`, requires genuine scratch and
+Script used-in-recipe lists and their post-world-dictionary producer; this
+continuation introduces no empty-Vec or false fallback for it.
+
+Committed `8fb5abe7`, the preceding list-foundation/read-state continuation, passes workspace all-target
 compilation, 2,105 affected tests (zero failed, nine ignored across 36 summaries
 in 18 packages), and the native client build. All 1,423 recorded Rust/Cargo
 inputs stay unchanged; all 33 new tests execute. Its 16 source paths have
@@ -24,16 +59,23 @@ negative-index and category exits; selected positive media work stops at its
 missing actual radio service. Map checks use immutable class metadata for null
 and nonMap exits, support the current nonnull stash field (including empty),
 and query the actual character read set afterward. Missing nullable MapID and
-positive loaded-media producers remain explicit gaps. These source checks have
-no new committed platform or installed runtime result yet.
+positive loaded-media producers remain explicit gaps. All four native builds
+and full suites pass for this commit: both Macs 2,707 tests, Linux 2,706 and
+Windows 2,704, with zero failures and 19 ignored each. All 24 graphics readbacks
+complete; independent saved-log/tree review confirms the exact source. Its
+unchanged 120-frame installed-assets check passes Bandage ownership and two-row
+refresh, but drawing stops at the then-unbound `isNoRecipes` call in
+`renderdetails:2336`. The reviewed saved image has blank rows. These bounded
+results do not establish completed drawing, original-game comparison or foreign
+installed gameplay, and exclude the next ten source changes above.
 
 The preceding pool/statistics continuation has independent review of its 14 source
 paths and passes workspace all-target compilation, 2,072 affected tests (zero
 failed, nine ignored across 36 summaries) and the native client build. The 18
 tested packages include core; all 16 new tests execute. All 1,412 recorded
 Rust/Cargo inputs stay unchanged through those checks. Committed `90370298`
-passes all four native builds/full suites and 24 actual GPU readbacks; its own
-installed runtime result remains pending.
+passes all four native builds/full suites and 24 actual GPU readbacks. It has no
+separate installed run; the later `8fb5abe7` installed check includes this source.
 It gives ObjectPoolCounter and PoolStatistic their permanent class-static owners,
 including the signed counter, actual counter map and two distinct Lua tables.
 The counter captures the same pool retained by ObjectPool's set. Construction

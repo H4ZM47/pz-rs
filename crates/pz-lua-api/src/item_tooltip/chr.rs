@@ -231,14 +231,7 @@ pub fn recipe_flags(_cx: &mut Cx<'_>, _item: &ItemRef) -> LuaResult<(usize, bool
 /// `isNoRecipes(player)`: the item's `itemNoRecipes` mod data equals the
 /// player's full name.
 pub fn is_no_recipes(cx: &mut Cx<'_>, item: &ItemRef) -> LuaResult<bool> {
-    if cx.player.is_nil() {
-        return Ok(false);
-    }
-    let value = mod_value(item, "itemNoRecipes")?;
-    let Some(Value::Str(v)) = value else { return Ok(false) };
-    let player = cx.player.clone();
-    let name = call_or(cx.t, &player, "getFullName", &[], Value::Nil)?;
-    Ok(s(&name).is_some_and(|n| n == v.as_ref()))
+    crate::bind_items::row_read_flags::is_no_recipes_value(item, &cx.player)
 }
 
 /// `isUnwanted(player)`.
