@@ -4,6 +4,7 @@ use pz_kahlua::TableRef;
 struct Restore {
     context: Option<DesignationContext>,
     observer: Option<designation::DesignationObserver>,
+    statistics: Option<pz_core::pool_statistics::StatisticsObserver>,
 }
 impl Restore {
     fn new() -> Self {
@@ -12,6 +13,7 @@ impl Restore {
         let _ = take_native_class_faults();
         Self {
             context: install_context(None),
+            statistics: pz_core::pool_statistics::install_observer(None),
             observer: designation::install_designation_observer(Some(
                 crate::component_gc::observe_designation,
             )),
@@ -22,6 +24,7 @@ impl Drop for Restore {
     fn drop(&mut self) {
         install_context(self.context.take());
         designation::install_designation_observer(self.observer);
+        pz_core::pool_statistics::install_observer(self.statistics);
         pz_inventory::component_host::drain_retired_components();
         crate::component_gc::retry_pending();
         let _ = pz_kahlua::gc::collect_tables();
@@ -394,21 +397,19 @@ fn conflicting_native_kind_metadata_remains_faulted_after_retry_and_rejects_cach
 }
 
 #[test]
-fn real_lua_animal_constructor_preserves_base_and_seven_lists_before_counter_capability_fault() {
+fn real_lua_animal_constructor_publishes_real_counter_and_pool_before_null_cell_check_return() {
     let _restore = Restore::new();
+    crate::component_gc::install_designation_observer();
     let (mut thread, registry, _host, calls) = fixture();
-    let error = call(
+    let values = call(
         &mut thread,
         "return DesignationZoneAnimal.new('Partial',9,8,2,3,4,false)",
     )
-    .unwrap_err();
-    assert!(
-        matches!(error,LuaError::Runtime {class:"pz.host.Unsupported",message} if message=="ObjectPoolCounter PoolStatistic constructor")
-    );
-    assert_eq!(&*calls.borrow(), &["rand"]);
+    .unwrap();
+    assert_eq!(&*calls.borrow(), &["rand", "cell"]);
     assert_eq!(
         (zones_len(&registry, false), zones_len(&registry, true)),
-        (1, 0)
+        (1, 1)
     );
     let zone = designation::try_get_base_zone(&registry, 4, 5, 2)
         .unwrap()
@@ -427,15 +428,15 @@ fn real_lua_animal_constructor_preserves_base_and_seven_lists_before_counter_cap
         ]
         .iter()
         .all(|list| list.is_some()));
-        assert!(body.position3d_pool.is_none());
+        assert!(body.position3d_pool.is_some());
         assert_eq!(body.id, 100001.0);
     }
     let value = zone_value(&zone).unwrap();
+    assert!(values[0].raw_equals(&value));
     let queried = call(
         &mut thread,
         "return DesignationZone.getZoneByName('Partial'),DesignationZoneAnimal.getZone(4,5,2)",
     )
     .unwrap();
-    assert!(queried[0].raw_equals(&value));
-    assert!(queried[1].is_nil());
+    assert!(queried[0].raw_equals(&value) && queried[1].raw_equals(&value));
 }

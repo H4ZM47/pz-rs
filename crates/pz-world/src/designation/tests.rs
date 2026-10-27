@@ -148,7 +148,7 @@ fn separate_class_lists_and_live_query_order_in_explicit_data_projection() {
 }
 
 #[test]
-fn native_random_collision_skips_base_add_but_still_reaches_real_pool_gate() {
+fn native_random_collision_skips_base_add_but_registers_actual_animal_pool_then_checks() {
     let registry = new_registry();
     let mut host = Host::default();
     let mut retired = RetiredComponents::new();
@@ -168,29 +168,25 @@ fn native_random_collision_skips_base_add_but_still_reaches_real_pool_gate() {
     )
     .unwrap();
     host.trace.clear();
-    assert!(matches!(
-        try_new_animal(
-            &registry,
-            Some("second"),
-            0,
-            0,
-            0,
-            3,
-            3,
-            true,
-            &mut host,
-            &mut retired
-        ),
-        Err(RuntimeHostError::Unsupported {
-            operation: "ObjectPoolCounter PoolStatistic constructor",
-            ..
-        })
-    ));
-    assert_eq!(host.trace, vec!["rand:9999999"]);
+    let animal = try_new_animal(
+        &registry,
+        Some("second"),
+        0,
+        0,
+        0,
+        3,
+        3,
+        true,
+        &mut host,
+        &mut retired,
+    )
+    .unwrap();
+    assert_eq!(host.trace, vec!["rand:9999999", "cell"]);
     let all = zones(&list(&registry, false));
     assert_eq!(all.len(), 1);
     assert!(Rc::ptr_eq(&all[0], &base));
-    assert!(zones(&list(&registry, true)).is_empty());
+    assert!(Rc::ptr_eq(&zones(&list(&registry, true))[0], &animal));
+    assert!(animal.borrow().position3d_pool.is_some());
 }
 
 #[test]
@@ -282,7 +278,7 @@ fn load_header_truncation_does_not_query_registry_or_construct() {
 }
 
 #[test]
-fn native_constructor_pool_gate_retains_base_prefix_random_id_and_consumed_header() {
+fn native_constructor_check_gate_retains_pool_memberships_random_id_and_consumed_header() {
     let registry = new_registry();
     let bytes = record(800.0, "loaded", 10, 11, 3, 4, 71);
     let mut reader = JavaReader::new(&bytes);
@@ -296,7 +292,7 @@ fn native_constructor_pool_gate_retains_base_prefix_random_id_and_consumed_heade
     assert!(matches!(
         try_load_zone(&registry, &mut reader, &mut host, &mut retired),
         Err(DesignationIoError::Host(RuntimeHostError::Unsupported {
-            operation: "ObjectPoolCounter PoolStatistic constructor",
+            operation: "DesignationZoneAnimal.getAllDZones during check",
             ..
         }))
     ));
@@ -304,12 +300,22 @@ fn native_constructor_pool_gate_retains_base_prefix_random_id_and_consumed_heade
     let base = zones(&list(&registry, false));
     let animals = zones(&list(&registry, true));
     assert_eq!(base.len(), 1);
-    assert!(animals.is_empty());
-    assert_eq!(host.trace, vec!["rand:9999999"]);
+    assert_eq!(animals.len(), 1);
+    assert!(Rc::ptr_eq(&base[0], &animals[0]));
+    assert_eq!(
+        host.trace,
+        vec![
+            "rand:9999999",
+            "cell",
+            "corner:10,11,3",
+            "corner:12,14,3",
+            "cell"
+        ]
+    );
     let z = base[0].borrow();
     assert_eq!(z.id, 100033.0);
     assert_eq!(z.hour_last_seen, 0);
-    assert!(z.position3d_pool.is_none());
+    assert!(z.position3d_pool.is_some());
     assert!([
         &z.animals,
         &z.corpses,
@@ -344,7 +350,7 @@ fn both_corner_queries_run_and_second_reads_mutated_current_zone() {
 }
 
 #[test]
-fn fully_streamed_empty_actor_prefix_clears_only_native_lists_before_pool_fault() {
+fn explicit_data_pool_nonempty_roof_stops_at_release_after_native_list_clear_prefix() {
     let registry = new_registry();
     let zone = animal_data_projection(&registry, 5);
     let object = ObjectSlot::new(IsoObject::new(2, ObjectKind::Object, None)).ref_handle();
@@ -391,7 +397,7 @@ fn fully_streamed_empty_actor_prefix_clears_only_native_lists_before_pool_fault(
     assert!(matches!(
         try_check(&registry, &zone, &mut host, &mut retired),
         Err(RuntimeHostError::Unsupported {
-            operation: "Designation position3dPool.releaseAll during check",
+            operation: "ObjectPool.release data-projection receiver",
             ..
         })
     ));
@@ -561,6 +567,10 @@ fn observer_runs_after_guards_and_clear_retirement_defers_reentrant_final_drop()
                 assert_eq!(v.kind(), kind);
             }
             DesignationObserved::Pool(v) => assert!(v.try_borrow_mut().is_ok()),
+            DesignationObserved::PoolDeque(v) => assert!(v.try_borrow_mut().is_ok()),
+            DesignationObserved::PoolSet(v) => assert!(v.try_borrow_mut().is_ok()),
+            DesignationObserved::PoolAllocator(v) => assert!(v.try_borrow_mut().is_ok()),
+            DesignationObserved::Position(v) => assert!(v.try_borrow_mut().is_ok()),
         }
         SEEN.with(|v| v.set(v.get() + 1));
     }
@@ -613,4 +623,54 @@ fn observer_runs_after_guards_and_clear_retirement_defers_reentrant_final_drop()
     assert!(weak.upgrade().is_none());
     assert!(released.get());
     assert!(SEEN.with(Cell::get) > 10);
+}
+
+#[test]
+fn native_counter_store_host_fault_retains_base_lists_without_animal_publication() {
+    use pz_core::pool_statistics as stats;
+    let mut stats_retired = stats::StatisticsRetired::default();
+    let globals = stats::try_class_statics(&mut stats_retired).unwrap();
+    let statistic = stats::try_instance(&globals, &mut stats_retired).unwrap();
+    let map = statistic.borrow().counters_slot().unwrap().clone();
+    let id = globals.borrow().id_slot().unwrap().clone();
+    let before = id.borrow().get();
+    let registry = new_registry();
+    let mut host = Host::default();
+    let mut retired = RetiredComponents::new();
+    let held = map.borrow_mut();
+    assert!(matches!(
+        try_new_animal(
+            &registry,
+            Some("partial-super"),
+            0,
+            0,
+            0,
+            2,
+            2,
+            false,
+            &mut host,
+            &mut retired
+        ),
+        Err(RuntimeHostError::Borrowed("Statistic.store map put"))
+    ));
+    assert_eq!(id.borrow().get(), before.wrapping_add(1));
+    assert_eq!(host.trace, vec!["rand:9999999"]);
+    let all = zones(&list(&registry, false));
+    assert_eq!(all.len(), 1);
+    assert!(zones(&list(&registry, true)).is_empty());
+    let body = all[0].borrow();
+    assert!(body.position3d_pool.is_none());
+    assert!([
+        &body.animals,
+        &body.corpses,
+        &body.troughs,
+        &body.hutchs,
+        &body.food_on_ground,
+        &body.near_water_squares,
+        &body.roof_areas
+    ]
+    .iter()
+    .all(|slot| slot.is_some()));
+    drop(body);
+    drop(held);
 }

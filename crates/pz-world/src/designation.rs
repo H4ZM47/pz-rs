@@ -67,14 +67,11 @@ impl DesignationList {
     }
 }
 
-/// Partial pool receiver or explicit data-projection storage. Native construction
-/// stops at the required superclass/statistics service before publishing this
-/// allocation into a zone. No allocator, counter-root, or release parity is
-/// implied by this storage type or its Default implementation.
-#[derive(Default)]
-pub struct DesignationPositionPool {
-    pub released_positions: Vec<EntityOwner>,
-}
+mod pool;
+pub use pool::{
+    DesignationPositionPool, Position3d, Position3dRef, PositionAllocator, PositionAllocatorRef,
+    PositionDeque, PositionDequeRef, PositionPoolAuthority, PositionSet, PositionSetRef,
+};
 
 pub struct DesignationRegistry {
     all_zones: Option<DesignationListRef>,
@@ -176,6 +173,10 @@ pub enum DesignationObserved<'a> {
     List(&'a DesignationListRef),
     Zone(&'a DesignationZoneRef, DesignationZoneKind),
     Pool(&'a DesignationPoolRef),
+    PoolDeque(&'a PositionDequeRef),
+    PoolSet(&'a PositionSetRef),
+    PoolAllocator(&'a PositionAllocatorRef),
+    Position(&'a Position3dRef),
 }
 pub type DesignationObserver = for<'a> fn(DesignationObserved<'a>);
 thread_local! { static OBSERVER: Cell<Option<DesignationObserver>> = const { Cell::new(None) }; }
@@ -521,14 +522,13 @@ pub fn try_new_zone(
     }
     if kind == DesignationZoneKind::Animal {
         initialize_animal_lists(&zone)?;
-        // Native allocates the pool receiver, then its superclass constructs a
-        // Counter and publishes it into the real PoolStatistic singleton. The
-        // required service/bootstrap is not ported. Do not publish a fabricated
-        // successful pool or continue to animal registration/check.
-        let pool = Rc::new(RefCell::new(DesignationPositionPool::default()));
-        retired.push_owner(EntityOwner::from_ref(&pool));
-        observe(DesignationObserved::Pool(&pool));
-        return Err(unsupported("ObjectPoolCounter PoolStatistic constructor"));
+        let pool = pool::try_construct_native(retired)?;
+        zone.try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("Designation pool publication"))?
+            .position3d_pool = Some(pool);
+        observe_zone(&zone, kind);
+        append_zone(registry, true, &zone)?;
+        try_check(registry, &zone, host, retired)?;
     }
     Ok(zone)
 }
@@ -591,7 +591,7 @@ pub fn seed_animal_data_projection(
         body.hour_last_seen = data.hour_last_seen;
     }
     initialize_animal_lists(&zone)?;
-    let pool = Rc::new(RefCell::new(DesignationPositionPool::default()));
+    let pool = Rc::new(RefCell::new(DesignationPositionPool::data_projection()));
     retired.push_owner(EntityOwner::from_ref(&pool));
     observe(DesignationObserved::Pool(&pool));
     zone.try_borrow_mut()
@@ -695,8 +695,22 @@ pub fn try_check(
         z.nb_of_feather = 0;
     }
     observe_zone(zone, DesignationZoneKind::Animal);
+    let pool = zone
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("Designation check pool field"))?
+        .position3d_pool
+        .clone()
+        .ok_or_else(|| unsupported("Designation check null pool diagnostic"))?;
+    let roofs = zone
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("Designation check roof field"))?
+        .roof_areas
+        .clone()
+        .ok_or_else(|| unsupported("Designation check detached roof list"))?;
+    pool::try_release_roofs(&pool, &roofs, retired)?;
+    clear_list(&roofs, retired)?;
     Err(unsupported(
-        "Designation position3dPool.releaseAll during check",
+        "DesignationZoneAnimal.getAllDZones during check",
     ))
 }
 /// Base removal changes only allZones, even for an animal receiver. Animal

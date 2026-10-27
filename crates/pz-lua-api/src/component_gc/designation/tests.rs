@@ -205,7 +205,7 @@ fn retaining_actual_food_list_roots_zone_cycle_but_empty_actual_position_pool_ha
         ));
         assert_eq!(weak_zone.upgrade().is_some(), retain_food);
         assert_eq!(weak_item.upgrade().is_some(), retain_food);
-        assert!(pool.borrow().released_positions.is_empty());
+        assert!(pool.borrow().data_projection_entries().unwrap().is_empty());
         drop(retained_food);
         assert!(matches!(
             gc::collect_tables(),
@@ -213,7 +213,7 @@ fn retaining_actual_food_list_roots_zone_cycle_but_empty_actual_position_pool_ha
         ));
         assert!(weak_zone.upgrade().is_none() && weak_item.upgrade().is_none());
         assert!(
-            pool.borrow().released_positions.is_empty(),
+            pool.borrow().data_projection_entries().unwrap().is_empty(),
             "GC does not perform Native pool release/reset"
         );
     }

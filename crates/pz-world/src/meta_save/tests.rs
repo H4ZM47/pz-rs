@@ -343,7 +343,7 @@ fn live_empty_designation_phases_keep_same_registry_and_original_reader() {
 }
 
 #[test]
-fn live_animal_meta_load_stops_at_real_pool_gate_after_guard_free_rng() {
+fn live_animal_meta_load_checks_after_real_pool_constructor_outside_world_guard() {
     use crate::designation::*;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -358,13 +358,14 @@ fn live_animal_meta_load_stops_at_real_pool_gate_after_guard_free_rng() {
             Ok(22)
         }
         fn current_cell_present(&mut self) -> HostResult<bool> {
-            panic!("pool gate precedes check")
+            assert!(self.world.try_borrow_mut().is_ok());
+            Ok(false)
         }
         fn corner_square(
             &mut self,
             _: DesignationCorner<'_>,
         ) -> HostResult<Option<crate::SquareRef>> {
-            panic!("pool gate precedes check")
+            panic!("null current cell skips corners")
         }
     }
     let registry = new_registry();
@@ -387,28 +388,22 @@ fn live_animal_meta_load_stops_at_real_pool_gate_after_guard_free_rng() {
         calls: 0,
     };
     let mut retired = RetiredComponents::new();
-    assert!(matches!(
-        phase.load(&mut reader, &mut host, &mut retired),
-        Err(DesignationIoError::Host(RuntimeHostError::Unsupported {
-            operation: "ObjectPoolCounter PoolStatistic constructor",
-            ..
-        }))
-    ));
+    phase.load(&mut reader, &mut host, &mut retired).unwrap();
     assert_eq!(host.calls, 1);
     assert_eq!(world.borrow().unique_rds_spawned, vec!["oldSuffix"]);
     assert!(reader.position() < bytes.len());
     let all = registry.borrow().all_zones_slot().unwrap().clone();
     let animals = registry.borrow().animal_zones_slot().unwrap().clone();
-    assert!(animals.borrow().is_empty());
+    assert_eq!(animals.borrow().len(), 1);
     let body = all.borrow();
     let DesignationList::Zones(zones) = &*body else {
         panic!("zones")
     };
     assert_eq!(zones.len(), 1);
     let zone = zones[0].borrow();
-    assert_eq!(zone.id, 100022.0);
-    assert_eq!(zone.hour_last_seen, 0);
-    assert!(zone.position3d_pool.is_none());
+    assert_eq!(zone.id, 123456.0);
+    assert_eq!(zone.hour_last_seen, 40);
+    assert!(zone.position3d_pool.is_some());
     assert_eq!(
         reader.get_i32().unwrap(),
         1,

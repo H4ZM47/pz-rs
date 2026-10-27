@@ -6,7 +6,26 @@ parity requires separate verification. Current continuation is on
 `codex/gameplay-continuation`, based on Claude's `ws/integration` and
 `ws/ingame-loop`; the older `main` checkout is not the current engine.
 
-The current reading continuation passes the workspace all-target check, 1,987
+The current pool/statistics continuation has independent review of its 14 source
+paths and passes workspace all-target compilation, 2,072 affected tests (zero
+failed, nine ignored across 36 summaries) and the native client build. The 18
+tested packages include core; all 16 new tests execute. All 1,412 recorded
+Rust/Cargo inputs stay unchanged through those checks. This source still needs
+its own committed platform/runtime results.
+It gives ObjectPoolCounter and PoolStatistic their permanent class-static owners,
+including the signed counter, actual counter map and two distinct Lua tables.
+The counter captures the same pool retained by ObjectPool's set. Construction
+registers the counter before allocating the deque/set and publishing allocator,
+maximum and pool; Animal then publishes class-list membership before check.
+The null-current-cell check can complete. Streamed traversal and nonempty pool
+release still stop at their required unported dependencies. Nonempty statistics
+update clears the actual numeric map and local table before stopping at native
+HashMap iteration; it never substitutes Rust iteration. Physical collection
+follows the real counter/capture/pool/set slots. General JVM concurrency,
+generated noncapturing-lambda reuse and the public null PrometheusGauge field
+surface remain outside this slice.
+
+The preceding reading continuation passes the workspace all-target check, 1,987
 affected tests (zero failed, nine ignored across 35 summaries), and the native
 client build. All 1,406 recorded Rust/Cargo inputs stay unchanged through those
 checks. It implements the actual Literature allocation, constructor and factory
@@ -19,7 +38,12 @@ reading the live clock and lazy Sandbox option, and preserve signed wrapping
 and the native strict comparison. Null collection keys and complete shared
 native collection ownership remain incomplete. The earlier fixture compile
 and setup failures are preserved; the corrected fixtures and final combined
-run pass. This source still needs its own installed-assets result.
+run pass. Its committed `12822eef` installed-assets check passes inventory
+refresh and the actual Bandage owner probe. Drawing now stops at the next
+unbound call, `item:hasBeenSeen(player)`, in `renderdetails:2327`, after the
+reading helper completes; the old inner line-2608 error is absent. The saved
+frame still has blank rows. The unchanged probe does not separately count
+execution of every getter. These runtime results exclude the next pool source.
 
 The preceding designation/KnownPoison source batch passes the workspace all-target
 check, 1,961 affected tests (zero failed, nine ignored across 35 summaries), and
@@ -35,12 +59,13 @@ fields. Synchronization reads actual list membership before client/server roles;
 network sends remain explicit capabilities.
 
 The genuine empty animal list now supports the null-zone placement branch.
-New animal-zone construction preserves base registration and seven list
+At that preceding checkpoint, new animal-zone construction preserves base registration and seven list
 allocations, then stops at the unimplemented ObjectPoolCounter/PoolStatistic
 owners before publishing its pool or animal-list entry. Later query,
 reset and collection tests use an explicitly named test-only data projection.
-Found-zone classification, mutable JavaList exposure, pool/statistics owners
-and full actor processing remain incomplete.
+Found-zone classification, mutable JavaList exposure and full actor processing
+remain incomplete. The next pool source above advances the owner boundary;
+it does not complete these later operations.
 
 Both poison-detection overloads now use real class-global ItemTag/ItemType
 references. Final static fields retain their original references when mutable

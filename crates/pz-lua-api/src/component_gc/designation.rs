@@ -2,13 +2,15 @@
 //! objects. Worklist clones are temporary registration pins, never trace edges.
 use super::*;
 use crate::bind_designation::LuaDesignationZone;
+use pz_core::pool_statistics as stats;
 use pz_world::designation::{
     DesignationList, DesignationListRef, DesignationObserved, DesignationPoolRef,
     DesignationPositionPool, DesignationRegistry, DesignationRegistryRef, DesignationZone,
-    DesignationZoneRef,
+    DesignationZoneRef, Position3d, PositionAllocator, PositionDeque, PositionPoolAuthority,
+    PositionSet,
 };
 
-fn trace_erased(owner: &pz_entity::EntityOwner, visitor: &mut TraceVisitor) {
+pub(super) fn trace_erased(owner: &pz_entity::EntityOwner, visitor: &mut TraceVisitor) {
     if owner.is::<IsoObject>() {
         visitor.owner_erased::<IsoObject>(owner.erased_slot());
     } else if owner.is::<InventoryItem>() {
@@ -23,11 +25,19 @@ fn trace_erased(owner: &pz_entity::EntityOwner, visitor: &mut TraceVisitor) {
         visitor.owner_erased::<DesignationList>(owner.erased_slot());
     } else if owner.is::<DesignationPositionPool>() {
         visitor.owner_erased::<DesignationPositionPool>(owner.erased_slot());
+    } else if owner.is::<PositionDeque>() {
+        visitor.owner_erased::<PositionDeque>(owner.erased_slot());
+    } else if owner.is::<PositionSet>() {
+        visitor.owner_erased::<PositionSet>(owner.erased_slot());
+    } else if owner.is::<PositionAllocator>() {
+        visitor.owner_erased::<PositionAllocator>(owner.erased_slot());
+    } else if owner.is::<Position3d>() {
+        visitor.owner_erased::<Position3d>(owner.erased_slot());
     }
     // Unported actor/position classes retain conservative ownership. A copied
     // actor DTO or a guessed transitive body would not describe this Rc slot.
 }
-fn enqueue_erased(
+pub(super) fn enqueue_erased(
     owner: &pz_entity::EntityOwner,
     work: &mut VecDeque<Node>,
     status: &mut MetadataStatus,
@@ -40,6 +50,14 @@ fn enqueue_erased(
         work.push_back(Node::List(value));
     } else if let Some(value) = owner.try_handle::<DesignationPositionPool>() {
         work.push_back(Node::Pool(value));
+    } else if let Some(value) = owner.try_handle::<PositionDeque>() {
+        work.push_back(Node::PoolDeque(value));
+    } else if let Some(value) = owner.try_handle::<PositionSet>() {
+        work.push_back(Node::PoolSet(value));
+    } else if let Some(value) = owner.try_handle::<PositionAllocator>() {
+        work.push_back(Node::PoolAllocator(value));
+    } else if let Some(value) = owner.try_handle::<Position3d>() {
+        work.push_back(Node::Position(value));
     } else if let Some(value) = owner.try_handle::<IsoObject>() {
         *status = merged(*status, super::register_object(&value)?);
     } else if let Some(value) = owner.try_handle::<InventoryItem>() {
@@ -121,12 +139,32 @@ impl TraceDescriptor<DesignationZone> for DesignationZoneDescriptor {
 pub struct DesignationPoolDescriptor;
 impl TraceDescriptor<DesignationPositionPool> for DesignationPoolDescriptor {
     fn trace(value: &DesignationPositionPool, visitor: &mut TraceVisitor) {
-        for owner in &value.released_positions {
-            trace_erased(owner, visitor);
+        match &value.authority {
+            PositionPoolAuthority::Native {
+                queue,
+                contains_set,
+                allocator,
+                ..
+            } => {
+                if let Some(v) = queue {
+                    visitor.owner(v);
+                }
+                if let Some(v) = contains_set {
+                    visitor.owner(v);
+                }
+                if let Some(v) = allocator {
+                    visitor.owner(v);
+                }
+            }
+            PositionPoolAuthority::DataProjection { released_positions } => {
+                for owner in released_positions {
+                    trace_erased(owner, visitor);
+                }
+            }
         }
     }
     fn detach(value: &mut DesignationPositionPool) -> Option<Box<dyn std::any::Any>> {
-        Some(Box::new(std::mem::take(&mut value.released_positions)))
+        Some(value.take_owner_slots_for_gc())
     }
 }
 pub struct DesignationUserdataDescriptor;
@@ -140,22 +178,56 @@ impl UserdataDescriptor<LuaDesignationZone> for DesignationUserdataDescriptor {
     }
 }
 
-enum Node {
+pub(super) enum Node {
     Registry(DesignationRegistryRef),
     List(DesignationListRef),
     Zone(DesignationZoneRef),
     Pool(DesignationPoolRef),
+    StatsGlobals(stats::ClassStaticsRef),
+    Statistic(stats::StatisticRef),
+    CounterMap(stats::CounterMapRef),
+    NumberMap(stats::NumberMapRef),
+    Counter(stats::CounterRef),
+    Capture(stats::CaptureRef),
+    AtomicLong(stats::AtomicLongRef),
+    AtomicDouble(stats::AtomicDoubleRef),
+    PoolDeque(pz_world::designation::PositionDequeRef),
+    PoolSet(pz_world::designation::PositionSetRef),
+    PoolAllocator(pz_world::designation::PositionAllocatorRef),
+    Position(pz_world::designation::Position3dRef),
 }
-fn register_graph(root: Node) -> Result<MetadataStatus, RegistrationFault> {
+impl Node {
+    fn key(&self) -> (&'static str, usize) {
+        match self {
+            Self::Registry(v) => ("designation registry", Rc::as_ptr(v) as usize),
+            Self::List(v) => ("designation list", Rc::as_ptr(v) as usize),
+            Self::Zone(v) => ("designation zone", Rc::as_ptr(v) as usize),
+            Self::Pool(v) => ("designation pool", Rc::as_ptr(v) as usize),
+            Self::StatsGlobals(v) => ("pool statistics statics", Rc::as_ptr(v) as usize),
+            Self::Statistic(v) => ("pool statistic", Rc::as_ptr(v) as usize),
+            Self::CounterMap(v) => ("pool counter map", Rc::as_ptr(v) as usize),
+            Self::NumberMap(v) => ("pool number map", Rc::as_ptr(v) as usize),
+            Self::Counter(v) => ("pool counter", Rc::as_ptr(v) as usize),
+            Self::Capture(v) => ("pool counter capture", Rc::as_ptr(v) as usize),
+            Self::AtomicLong(v) => ("pool atomic long", Rc::as_ptr(v) as usize),
+            Self::AtomicDouble(v) => ("pool atomic double", Rc::as_ptr(v) as usize),
+            Self::PoolDeque(v) => ("position deque", Rc::as_ptr(v) as usize),
+            Self::PoolSet(v) => ("position set", Rc::as_ptr(v) as usize),
+            Self::PoolAllocator(v) => ("position allocator", Rc::as_ptr(v) as usize),
+            Self::Position(v) => ("position3d", Rc::as_ptr(v) as usize),
+        }
+    }
+}
+pub(super) fn register_graph(root: Node) -> Result<MetadataStatus, RegistrationFault> {
     let mut work = VecDeque::from([root]);
     let mut visited = HashSet::new();
     let mut status = MetadataStatus::Complete;
     while let Some(node) = work.pop_front() {
+        if !visited.insert(node.key()) {
+            continue;
+        }
         match node {
             Node::Registry(value) => {
-                if !visited.insert(("designation registry", Rc::as_ptr(&value) as usize)) {
-                    continue;
-                }
                 status = merged(
                     status,
                     registered(
@@ -177,9 +249,6 @@ fn register_graph(root: Node) -> Result<MetadataStatus, RegistrationFault> {
                 }
             }
             Node::List(value) => {
-                if !visited.insert(("designation list", Rc::as_ptr(&value) as usize)) {
-                    continue;
-                }
                 status = merged(
                     status,
                     registered(
@@ -219,9 +288,6 @@ fn register_graph(root: Node) -> Result<MetadataStatus, RegistrationFault> {
                 }
             }
             Node::Zone(value) => {
-                if !visited.insert(("designation zone", Rc::as_ptr(&value) as usize)) {
-                    continue;
-                }
                 status = merged(
                     status,
                     registered(
@@ -267,9 +333,6 @@ fn register_graph(root: Node) -> Result<MetadataStatus, RegistrationFault> {
                 }
             }
             Node::Pool(value) => {
-                if !visited.insert(("designation pool", Rc::as_ptr(&value) as usize)) {
-                    continue;
-                }
                 status = merged(
                     status,
                     registered(
@@ -282,10 +345,31 @@ fn register_graph(root: Node) -> Result<MetadataStatus, RegistrationFault> {
                     status = merged(status, MetadataStatus::Deferred);
                     continue;
                 };
-                for owner in &body.released_positions {
-                    enqueue_erased(owner, &mut work, &mut status)?;
+                match &body.authority {
+                    PositionPoolAuthority::Native {
+                        queue,
+                        contains_set,
+                        allocator,
+                        ..
+                    } => {
+                        if let Some(v) = queue {
+                            work.push_back(Node::PoolDeque(v.clone()));
+                        }
+                        if let Some(v) = contains_set {
+                            work.push_back(Node::PoolSet(v.clone()));
+                        }
+                        if let Some(v) = allocator {
+                            work.push_back(Node::PoolAllocator(v.clone()));
+                        }
+                    }
+                    PositionPoolAuthority::DataProjection { released_positions } => {
+                        for owner in released_positions {
+                            enqueue_erased(owner, &mut work, &mut status)?;
+                        }
+                    }
                 }
             }
+            other => super::pool_statistics::register_node(other, &mut work, &mut status)?,
         }
     }
     Ok(status)
@@ -342,10 +426,17 @@ pub fn observe_designation(value: DesignationObserved<'_>) {
         DesignationObserved::Pool(value) => {
             let _ = register_designation_pool(value);
         }
+        DesignationObserved::PoolDeque(value) => super::pool_statistics::observe_pool_deque(value),
+        DesignationObserved::PoolSet(value) => super::pool_statistics::observe_pool_set(value),
+        DesignationObserved::PoolAllocator(value) => {
+            super::pool_statistics::observe_pool_allocator(value)
+        }
+        DesignationObserved::Position(value) => super::pool_statistics::observe_position(value),
     }
 }
 /// Install before the first class-list/zone allocation, including early boot.
 pub fn install_designation_observer() {
+    super::pool_statistics::install_statistics_observer();
     pz_world::designation::install_designation_observer(Some(observe_designation));
 }
 
