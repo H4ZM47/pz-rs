@@ -49,7 +49,11 @@ pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<
     // Same real asset owner before any Item.DoParam. The immutable load
     // scope permits nested provider reads; population gets a later mut scope.
     pz_lua_api::bind_render::install_texture_capture(fs.clone());
-    let sm = pz_scripts::ScriptManager::new();
+    let jar=pz_classfile::Jar::open(game_dir.join("projectzomboid.jar"))
+        .map_err(|error|format!("native item key registry jar: {error}"))?;
+    let native_keys=pz_scripts::native_item_keys::native_item_key_statics(&jar)
+        .map_err(|error|format!("native item key statics: {error}"))?;
+    let sm=pz_scripts::ScriptManager::with_native_item_key_statics(&native_keys);
     sm.load_builtin_registries(&game_dir.join("projectzomboid.jar"))
         .map_err(|e| format!("built-in registries: {e}"))?;
     let mut chars = pz_characters::Characters::default();
@@ -65,8 +69,6 @@ pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<
             .map_err(|e| format!("character statics: {e}"))?;
     }
     pz_lua_api::bind_characters::install_characters(Rc::new(RefCell::new(chars)));
-    let jar = pz_classfile::Jar::open(game_dir.join("projectzomboid.jar"))
-        .map_err(|error| format!("attribute registry jar: {error}"))?;
     let attributes = native_attribute_types(&jar)?;
     pz_lua_api::attribute_templates::install(attributes.clone());
     let loaded = {
@@ -96,6 +98,8 @@ pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<
         .map_err(|e| eprintln!("item assets: {e}"))
         .ok();
     pz_lua_api::bind_items::install_item_runtime(assets, entity);
+    crate::designation::install_actual_designation_classes()
+        .map_err(|error| format!("designation class statics: {error:?}"))?;
     Ok(())
 }
 

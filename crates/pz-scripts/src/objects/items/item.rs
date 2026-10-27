@@ -49,7 +49,7 @@ impl KeySet {
     /// `contains`.
     pub fn contains(&self, key: Option<&Rc<RegistryKey>>) -> bool {
         self.0.iter().any(|k| match (k, key) {
-            (Some(a), Some(b)) => a.location == b.location,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
         })
@@ -1138,7 +1138,7 @@ impl Item {
     /// `isItemType(ItemType)`.
     pub fn is_item_type_key(&self, item_type: Option<&Rc<RegistryKey>>) -> bool {
         match (&self.item_type, item_type) {
-            (Some(a), Some(b)) => a.location == b.location,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
         }
@@ -1152,7 +1152,7 @@ impl Item {
     /// `isBodyLocation`.
     pub fn is_body_location(&self, location: Option<&Rc<RegistryKey>>) -> bool {
         match (&self.body_location, location) {
-            (Some(a), Some(b)) => a.location == b.location,
+            (Some(a), Some(b)) => Rc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
         }

@@ -29,7 +29,7 @@ use pz_scripts::{ScriptError, ScriptManager};
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 pub const RESOURCE_LOCATION_CLASS: &str = "zombie.scripting.objects.ResourceLocation";
 pub const CHARACTER_TRAIT_CLASS: &str = "zombie.scripting.objects.CharacterTrait";
@@ -62,13 +62,13 @@ pub fn key_class(registry: &str) -> Option<&'static str> {
 
 thread_local! {
     static SHARED: RefCell<Option<Rc<ScriptManager>>> = const { RefCell::new(None) };
-    static KEYS: RefCell<HashMap<*const RegistryKey, Value>> = RefCell::new(HashMap::new());
+    static KEYS: RefCell<HashMap<*const RegistryKey, Weak<KeyObject>>> = RefCell::new(HashMap::new());
 }
 
-/// Drop canonical keys belonging to the previous Lua environment. The
-/// shared ScriptManager is replaced explicitly by the engine bootstrap.
+/// Prune expired weak metadata. A retained actual key userdata remains the
+/// canonical object across Lua environment reset, like its Java singleton.
 pub(crate) fn reset_session_handles() {
-    KEYS.with(|k| k.borrow_mut().clear());
+    KEYS.with(|k| k.borrow_mut().retain(|_, object| object.strong_count() != 0));
 }
 
 /// Make `sm` the instance `register_all` binds.
@@ -127,11 +127,14 @@ impl LuaObject for KeyObject {
 /// The canonical Lua object for `key` (nil for `None`).
 pub fn key_value(class: &'static str, key: Option<&Rc<RegistryKey>>) -> Value {
     let Some(key) = key else { return Value::Nil };
-    KEYS.with(|k| {
-        k.borrow_mut()
-            .entry(Rc::as_ptr(key))
-            .or_insert_with(|| Value::Object(Rc::new(KeyObject { class, key: key.clone() })))
-            .clone()
+    KEYS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(object) = cache.get(&Rc::as_ptr(key)).and_then(Weak::upgrade) {
+            return Value::Object(object);
+        }
+        let object = Rc::new(KeyObject { class, key: Rc::clone(key) });
+        cache.insert(Rc::as_ptr(key), Rc::downgrade(&object));
+        Value::Object(object)
     })
 }
 
@@ -315,23 +318,17 @@ pub fn register(thread: &mut Thread, sm: Rc<ScriptManager>) {
 
     for &(class, registry) in KEY_CLASSES {
         let b = expose_class(thread, class, None);
-        let constants: Vec<(String, String)> = sm
-            .statics
-            .items
-            .borrow()
-            .constants
-            .constants(registry)
-            .into_iter()
-            .map(|(f, id)| (f.to_string(), id.to_string()))
-            .collect();
-        for (field, id) in constants {
-            let key = ResourceLocation::of(&id)
-                .ok()
-                .and_then(|l| sm.registries.get(registry).expect("known registry").borrow().get(&l));
-            if let Some(key) = key {
-                b.field(&field, key_value(class, Some(&key)));
-            }
-        }
+        let constants: Vec<(String, Rc<RegistryKey>)> = if let Some(native) = sm.native_item_key_statics().filter(|_| registry == "item_tag" || registry == "item_type") {
+            native.constants(registry).map(|(field, key)| (field.to_owned(), Rc::clone(key))).collect()
+        } else {
+            let declarations: Vec<(String, String)> = sm.statics.items.borrow().constants.constants(registry)
+                .into_iter().map(|(field, id)| (field.to_owned(), id.to_owned())).collect();
+            declarations.into_iter().filter_map(|(field, id)| {
+                let location = ResourceLocation::of(&id).ok()?;
+                sm.registries.get(registry).expect("known registry").borrow().get(&location).map(|key| (field, key))
+            }).collect()
+        };
+        for (field, key) in constants { b.field(&field, key_value(class, Some(&key))); }
         let s = sm.clone();
         b.static_fn("get", move |c| {
             let key = match location_arg(c, 0)? {

@@ -1489,7 +1489,7 @@ impl IsoWorld {
     /// cell and population, so its changes reach the saved files.
     pub fn save_on_quit(&mut self, lua: &mut LuaManager) -> pz_characters::character::save::CharacterPersistenceResult<()> {
         use pz_lua_api::world_save::{
-            save_game_before_event, save_game_cell, save_game_finish, SaveGame, SaveReport,
+            save_game_before_event, save_game_cell_actual as save_game_cell, save_game_finish, SaveGame, SaveReport,
         };
 
         // Lend the live meta grid only for one file phase. No reference
@@ -1601,9 +1601,11 @@ impl IsoWorld {
                     });
                     self.hand_off_events();
                     let mut hooks = QuitSaveHooks;
-                    with_game(self, &sandbox, |g| {
-                        save_game_cell(g, &mut hooks, &mut report)
-                    });
+                    match with_game(self, &sandbox, |g| save_game_cell(g,&mut hooks,&mut report)) {
+                        Some(Ok(()))=>{},
+                        Some(Err(error))=>return Err(error.into()),
+                        None=>return Err(pz_inventory::floor_drop::RuntimeHostError::InvalidHostState("actual save world disappeared after OnSave").into()),
+                    }
                     let sim = FrameSim::capture();
                     self.with_population(&sim, &mut |pop, host, _| pop.save(&host.zombies.infos()));
                     with_game(self, &sandbox, |g| {

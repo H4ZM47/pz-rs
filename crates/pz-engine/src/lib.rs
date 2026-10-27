@@ -2,6 +2,7 @@
 //! states (`MainScreenState`, `GameLoadingState`, `IngameState`).
 
 pub mod boot;
+mod designation;
 mod floor_world;
 pub mod game_loading;
 pub mod game_state;

@@ -124,6 +124,19 @@ pub fn try_with_world<R>(
         })?
 }
 
+/// Read the actual current world without requiring a mutable WORLD guard.
+/// The closure must be a callback-free query; no Lua/lifecycle call may cross it.
+pub fn try_with_world_read<R>(
+    f: impl FnOnce(&WorldState) -> pz_entity::runtime_load::HostResult<R>,
+) -> pz_entity::runtime_load::HostResult<R> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let _collection_deferral = pz_kahlua::gc::defer_collection();
+    WORLD.try_with(|world| {
+        let world=world.try_borrow().map_err(|_|RuntimeHostError::Borrowed("Lua actual world read"))?;
+        f(&world)
+    }).map_err(|_|RuntimeHostError::Unsupported {operation:"Lua actual world read unavailable",kind:None})?
+}
+
 /// The current cell session, including clears/replacements of the same data.
 /// Retained host services use this token to reject a previous session's owners.
 pub fn cell_generation() -> u64 {

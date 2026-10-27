@@ -72,7 +72,7 @@ fn main() {
             file.cells.max_y,
             w.safehouses.len(),
             w.factions.len(),
-            w.designation_zones.len(),
+            w.designation_zones.archive().expect("archive file profile").len(),
             w.stash.as_ref().map(|s| (s.possible_stashes.len(), s.buildings_to_do.len(), s.already_read_map.len())),
             w.unique_rds_spawned.len()
         );
@@ -239,7 +239,7 @@ fn main() {
             sh.datetime_created = 1_700_000_000_000;
             sh.location = Some("Muldraugh, KY".into());
             m.world.safehouses.push(sh);
-            m.world.designation_zones.push(DesignationZone {
+            m.world.designation_zones.archive_mut().expect("archive file profile").push(DesignationZone {
                 id: 1234567.0,
                 x: 10600,
                 y: 9400,

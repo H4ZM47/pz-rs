@@ -3,8 +3,8 @@
 //! tags, body locations, traits, ...) that scripts and mods refer to.
 //!
 //! The original's key classes (`ItemTag`, `CharacterTrait`, ...) are thin
-//! objects whose identity is their registry location; here every key is a
-//! [`RegistryKey`] behind an `Rc`, compared by location.
+//! objects with identity equality. Runtime item-tag/type class statics retain
+//! the same actual keys independently of their mutable registry maps.
 
 pub mod builtin;
 
@@ -123,6 +123,9 @@ pub struct Registry {
     name: String,
     by_location: JHashMap<Rc<RegistryKey>>,
     values: Vec<Rc<RegistryKey>>,
+    /// Actual Registry.byObject owner slots, keyed by physical identity.
+    by_object: std::collections::HashMap<usize, Rc<RegistryKey>>,
+    native_identity: bool,
 }
 
 impl fmt::Debug for Registry {
@@ -133,7 +136,11 @@ impl fmt::Debug for Registry {
 
 impl Registry {
     pub fn new(name: &str) -> Self {
-        Registry { name: name.to_string(), by_location: JHashMap::with_hasher(ResourceLocation::hash_id), values: Vec::new() }
+        Registry { name: name.to_string(), by_location: JHashMap::with_hasher(ResourceLocation::hash_id), values: Vec::new(), by_object: Default::default(), native_identity: false }
+    }
+
+    pub(crate) fn native(name: &str) -> Self {
+        Self { native_identity: true, ..Self::new(name) }
     }
 
     pub fn name(&self) -> &str {
@@ -148,12 +155,19 @@ impl Registry {
         item_key: Option<&str>,
     ) -> ScriptResult<Rc<RegistryKey>> {
         let id = location.id();
-        if self.by_location.contains_key(&id) {
+        let duplicate = self.by_location.contains_key(&id);
+        if duplicate && !self.native_identity {
             return Err(illegal_argument(&format!("Tried to register duplicate object: {id} in: {}", self.name)));
         }
         let key = Rc::new(RegistryKey { location, name: name.to_string(), item_key: item_key.map(str::to_string) });
-        self.by_location.insert(id, key.clone());
+        self.by_object.insert(Rc::as_ptr(&key) as usize, key.clone());
+        self.by_location.insert(id.clone(), key.clone());
         self.values.push(key.clone());
+        // Native Registry.register mutates all three collections before it
+        // throws for a duplicate. Previously retained static fields survive.
+        if duplicate {
+            return Err(illegal_argument(&format!("Tried to register duplicate object: {id} in: {}", self.name)));
+        }
         Ok(key)
     }
 
@@ -197,6 +211,7 @@ impl Registry {
         for id in removed {
             self.by_location.remove(&id);
         }
+        self.by_object.retain(|_, key| key.location.namespace == DEFAULT_NAMESPACE);
         self.values.retain(|k| k.location.namespace == DEFAULT_NAMESPACE);
     }
 }
@@ -245,22 +260,27 @@ pub const REGISTRY_NAMES: &[&str] = &[
 /// whoever provides them; mods add theirs from `media/registries.lua`
 /// (`ModRegistries.init`).
 pub struct Registries {
-    registries: Vec<RefCell<Registry>>,
+    registries: Vec<Rc<RefCell<Registry>>>,
 }
 
 impl Default for Registries {
     fn default() -> Self {
-        Registries { registries: REGISTRY_NAMES.iter().map(|n| RefCell::new(Registry::new(n))).collect() }
+        Registries { registries: REGISTRY_NAMES.iter().map(|n| Rc::new(RefCell::new(Registry::new(n)))).collect() }
     }
 }
 
 impl Registries {
-    pub fn get(&self, name: &str) -> Option<&RefCell<Registry>> {
-        let i = REGISTRY_NAMES.iter().position(|n| *n == name)?;
-        Some(&self.registries[i])
+    pub(crate) fn replace_ref(&mut self, name: &str, registry: &Rc<RefCell<Registry>>) {
+        let index = REGISTRY_NAMES.iter().position(|n| *n == name).expect("known registry");
+        self.registries[index] = Rc::clone(registry);
     }
 
-    pub fn all(&self) -> &[RefCell<Registry>] {
+    pub fn get(&self, name: &str) -> Option<&RefCell<Registry>> {
+        let i = REGISTRY_NAMES.iter().position(|n| *n == name)?;
+        Some(self.registries[i].as_ref())
+    }
+
+    pub fn all(&self) -> &[Rc<RefCell<Registry>>] {
         &self.registries
     }
 

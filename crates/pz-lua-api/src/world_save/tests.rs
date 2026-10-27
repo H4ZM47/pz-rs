@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pz_world::zone_save::ClockUuids;
+use pz_world::meta_save::save_map_meta;
 
 use super::*;
 
@@ -152,6 +153,57 @@ impl World {
             on_game_thread: true,
         }
     }
+}
+
+fn live_designation(w: &mut World) -> pz_world::designation::DesignationRegistryRef {
+    let registry = pz_world::designation::new_registry();
+    w.meta_world = MetaWorld::with_designation_registry(registry.clone());
+    registry
+}
+
+#[test]
+fn actual_cell_save_reads_live_class_list_and_does_not_catch_host_borrow_as_file_error() {
+    let d = Dir::new();
+    let mut w = World::new();
+    let registry = live_designation(&mut w);
+    let expected = try_save_map_meta(&w.meta, &w.meta_world, NetRole::SinglePlayer).unwrap();
+    let mut hooks = Log { dir: &d.0, calls: Vec::new() };
+    let mut report = SaveReport { saved: true, ..Default::default() };
+    save_game_cell_actual(&mut w.game(&d.0, &[vec![9]]), &mut hooks, &mut report).unwrap();
+    assert_eq!(std::fs::read(d.0.join("map_meta.bin")).unwrap(), expected);
+    assert!(d.0.join("reanimated.bin").exists());
+
+    // The same physical class list is read again on the next save. A host
+    // access failure must leave the already-written cell/time prefix, escape
+    // the native file-error catch, and skip the following zombie file.
+    std::fs::remove_file(d.0.join("map_meta.bin")).unwrap();
+    std::fs::remove_file(d.0.join("reanimated.bin")).unwrap();
+    let list = registry.borrow().all_zones_slot().unwrap().clone();
+    let held = list.borrow_mut();
+    let mut report = SaveReport { saved: true, ..Default::default() };
+    let error = save_game_cell_actual(&mut w.game(&d.0, &[vec![8]]), &mut hooks, &mut report).unwrap_err();
+    assert!(matches!(error, pz_entity::runtime_load::RuntimeHostError::Borrowed(_)));
+    assert!(report.errors.is_empty(), "host failure became a native file error");
+    assert!(d.0.join("map.bin").exists() && d.0.join("map_t.bin").exists());
+    assert!(!d.0.join("map_meta.bin").exists());
+    assert!(!d.0.join("reanimated.bin").exists());
+    drop(held);
+}
+
+#[test]
+fn actual_hot_save_host_failure_escapes_before_any_buffer_is_written() {
+    let d = Dir::new();
+    let mut w = World::new();
+    let registry = live_designation(&mut w);
+    let held = registry.borrow_mut();
+    let error = hot_save_ancillary_actual(&mut HotSave {
+        save_dir: &d.0, no_save: false, meta: &mut w.meta,
+        meta_world: &w.meta_world, spawned_zones: &w.spawned,
+        uuids: &mut w.uuids, game_time: &w.gt, core: &w.core,
+    }).unwrap_err();
+    assert!(matches!(error, pz_entity::runtime_load::RuntimeHostError::Borrowed(_)));
+    assert!(d.names().is_empty());
+    drop(held);
 }
 
 #[test]

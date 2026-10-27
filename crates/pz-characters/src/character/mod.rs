@@ -49,6 +49,7 @@ pub mod floor_drop;
 pub mod fitness;
 pub mod item_owner;
 pub mod items;
+pub mod known_poison;
 pub mod metabolics;
 pub mod mod_data;
 pub mod moodles;

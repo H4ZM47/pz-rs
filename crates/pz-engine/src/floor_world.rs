@@ -30,6 +30,7 @@ pub(crate) struct LiveFloorWorld {
     session_owner: Weak<()>,
     // Parsed immutable class constants, independent of manager body guards.
     sprite_tables: pz_world::sprite::SpriteTables,
+    designation: Weak<RefCell<pz_world::designation::DesignationRegistry>>,
 }
 
 impl LiveFloorWorld {
@@ -191,13 +192,14 @@ impl pz_world::square_mutation::NativeFloorHost for LiveNativeFloorHost<'_> {
     }
     fn designation_item_on_ground(
         &mut self,
-        _object: &pz_world::IsoObjectRef,
-        _square: &pz_world::SquareRef,
+        object: &pz_world::IsoObjectRef,
+        square: &pz_world::SquareRef,
     ) -> HostResult<()> {
-        // Native performs an actual designation-zone registry query first.
-        // Neither a missing runtime registry nor a nonfood item proves null.
-        Err(unsupported("actual DesignationZoneAnimal.getZone registry"))
+        self.0.validate()?;
+        let registry=self.0.designation.upgrade().ok_or_else(||unsupported("actual DesignationZoneAnimal.getZone registry"))?;
+        pz_world::designation::try_add_item_on_ground(&registry,object,square)
     }
+
 }
 
 /// Authenticated no-prefix path of ComboItem.getName(null). The full virtual
@@ -515,6 +517,9 @@ impl IsoWorld {
             render: Rc::downgrade(&self.render),
             session_owner: Rc::downgrade(&session_owner),
             sprite_tables,
+            // An archive/default MetaWorld does not authenticate an empty class list.
+            // Only the genuine initialized live class owner supplies this field.
+            designation: self.meta_world.designation_zones.live_slot().map(Rc::downgrade).unwrap_or_default(),
         }));
         let floor: pz_lua_api::bind_character_sim::FloorWorldRef = service.clone();
         let old = install_floor_world(Some(floor));

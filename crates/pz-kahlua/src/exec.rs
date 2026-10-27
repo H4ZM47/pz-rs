@@ -302,6 +302,12 @@ impl Thread {
             // KahluaThread.call(int) wraps exceptions from a directly called
             // Java function as "<class> <message> in <function>".
             Value::Native(nf) => self.call_native(&nf, base + 1, base, nargs).map_err(|e| {
+                // Rust host access/capability faults are a separate transport
+                // domain. A native metamethod must not turn one into a Java
+                // exception that an outer native file-error catch can swallow.
+                if matches!(&e, LuaError::Runtime { class, .. } if class.starts_with("pz.host.")) {
+                    return e;
+                }
                 let (class, msg) = match &e {
                     LuaError::Kahlua(v) => ("se.krka.kahlua.vm.KahluaException", java_value_of(v)),
                     LuaError::Runtime { message, class } => (*class, message.clone()),

@@ -52,8 +52,13 @@ impl ItemKeys<'_> {
 /// Registers every built-in key of [`KEY_CLASSES`] into `registries`, in the
 /// order the original's static initializers run.
 pub fn register_builtin(registries: &Registries, jar: &Jar) -> ScriptResult {
+    register_builtin_except(registries, jar, &[])
+}
+
+pub(crate) fn register_builtin_except(registries: &Registries, jar: &Jar, skip: &[&str]) -> ScriptResult {
     let mut item_keys = ItemKeys { jar, classes: HashMap::new() };
     for (registry, class) in KEY_CLASSES {
+        if skip.contains(registry) { continue; }
         let cf = load_class(jar, class).map_err(class_error)?;
         let mut reg = registries.get(registry).expect("known registry").borrow_mut();
         for init in static_inits(&cf).map_err(class_error)? {

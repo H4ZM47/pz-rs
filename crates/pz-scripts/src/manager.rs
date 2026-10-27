@@ -359,6 +359,7 @@ pub struct ScriptManager {
     pub statics: crate::objects::Statics,
     /// `Registries` (the original's static registries).
     pub registries: crate::registry::Registries,
+    native_item_keys: Option<crate::native_item_keys::NativeItemKeyStaticsRef>,
     /// Built-in name tables (perks, ragdoll bones, vehicle enums).
     pub builtin_tables: RefCell<crate::registry::builtin::BuiltinTables>,
 }
@@ -397,15 +398,37 @@ impl ScriptManager {
             log: RefCell::default(),
             statics: Default::default(),
             registries: Default::default(),
+            native_item_keys: None,
             builtin_tables: Default::default(),
         }
+    }
+
+    /// Production class-global item keys; `new` is the independent data profile.
+    pub fn with_native_item_key_statics(keys: &crate::native_item_keys::NativeItemKeyStaticsRef) -> Self {
+        let mut sm = Self::new();
+        sm.registries.replace_ref("item_tag", keys.registry("item_tag").expect("tag registry"));
+        sm.registries.replace_ref("item_type", keys.registry("item_type").expect("type registry"));
+        sm.native_item_keys = Some(Rc::clone(keys));
+        sm
+    }
+
+    pub fn native_item_key_statics(&self) -> Option<&crate::native_item_keys::NativeItemKeyStaticsRef> {
+        self.native_item_keys.as_ref()
+    }
+
+    /// Only the genuine RegistryReset.resetAll callers invoke this, before
+    /// ScriptManager.Reset. Ordinary script loads do not reset class globals.
+    pub fn try_reset_native_item_key_registries(&self) -> Result<(), crate::native_item_keys::ScriptAccessError> {
+        let keys = self.native_item_keys.as_ref().ok_or(crate::native_item_keys::ScriptAccessError::Unsupported("offline item key statics"))?;
+        keys.try_reset()
     }
 
     /// Registers the game's built-in registry keys, read from the installed
     /// `projectzomboid.jar` (the `Registries` bootstrap).
     pub fn load_builtin_registries(&self, jar_path: &Path) -> ScriptResult {
         let jar = pz_classfile::Jar::open(jar_path).map_err(|e| ScriptError::new(format!("{}: {e}", jar_path.display())))?;
-        crate::registry::builtin::register_builtin(&self.registries, &jar)?;
+        crate::registry::builtin::register_builtin_except(&self.registries, &jar,
+            if self.native_item_keys.is_some() { &["item_tag", "item_type"] } else { &[] })?;
         *self.builtin_tables.borrow_mut() = crate::registry::builtin::BuiltinTables::load(&jar)?;
         crate::objects::items::load_builtin_constants(self, jar_path)
     }
@@ -608,6 +631,53 @@ impl ScriptManager {
         } else {
             None
         }
+    }
+
+    /// Fallible counterpart of the native module lookup used by actual
+    /// runtime predicates. No borrowed map is converted to missing data.
+    pub fn try_get_module(&self, name: &str) -> Result<Option<Rc<ScriptModule>>, crate::native_item_keys::ScriptAccessError> {
+        self.try_get_module_depth(name, 0)
+    }
+    fn try_get_module_depth(&self, name: &str, depth: usize) -> Result<Option<Rc<ScriptModule>>, crate::native_item_keys::ScriptAccessError> {
+        use crate::native_item_keys::ScriptAccessError as E;
+        if depth >= 64 { return Err(E::Unsupported("script module recursion boundary")); }
+        if java::trim(name) == BASE || name.starts_with(BASE_MODULE) {
+            return Ok(self.module_map.try_borrow().map_err(|_| E::Borrowed("script module map"))?.get(BASE).cloned());
+        }
+        if let Some(module) = self.cached_modules.try_borrow().map_err(|_| E::Borrowed("script module cache"))?.get(name).cloned() {
+            return Ok(Some(module));
+        }
+        let name = self.module_aliases.try_borrow().map_err(|_| E::Borrowed("script module aliases"))?.get(name).cloned().unwrap_or_else(|| name.to_owned());
+        if let Some(module) = self.cached_modules.try_borrow().map_err(|_| E::Borrowed("script module cache"))?.get(&name).cloned() {
+            return Ok(Some(module));
+        }
+        let module = self.module_map.try_borrow().map_err(|_| E::Borrowed("script module map"))?.get(&name).cloned().filter(|module| !module.is_disabled());
+        let module = match module {
+            Some(module) => Some(module),
+            None if name.contains('.') => self.try_get_module_depth(name.split_once('.').unwrap().0, depth + 1)?,
+            None => None,
+        };
+        if let Some(module) = module {
+            self.cached_modules.try_borrow_mut().map_err(|_| E::Borrowed("script module cache"))?.insert(name, Rc::clone(&module));
+            return Ok(Some(module));
+        }
+        Ok(self.module_map.try_borrow().map_err(|_| E::Borrowed("script module map"))?.get(BASE).cloned())
+    }
+
+    pub fn try_get_script(&self, kind: ScriptType, name: &str) -> Result<Option<ScriptRef>, crate::native_item_keys::ScriptAccessError> {
+        self.try_get_script_depth(kind, name, 0)
+    }
+    pub(crate) fn try_get_script_depth(&self, kind: ScriptType, name: &str, depth: usize) -> Result<Option<ScriptRef>, crate::native_item_keys::ScriptAccessError> {
+        use crate::native_item_keys::ScriptAccessError as E;
+        if depth >= 64 { return Err(E::Unsupported("script import recursion boundary")); }
+        let collection = self.collection(kind);
+        if kind.has_flag(Flag::CacheFullType) && name.contains('.') {
+            if let Some(script) = collection.full_type_to_script_map.try_borrow().map_err(|_| E::Borrowed("script full type map"))?.get(name).cloned() {
+                return Ok(Some(script));
+            }
+        }
+        let Some(module) = self.try_get_module(if name.contains('.') { name } else { BASE })? else { return Ok(None) };
+        module.bucket(kind).try_get_depth(self, &module, Self::get_item_name(name), depth)
     }
 
     /// `getModuleNoDisableCheck`.

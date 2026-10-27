@@ -242,6 +242,10 @@ pub struct FoodData {
     pub poison_detection_level: i32,
     pub spices: Option<Vec<String>>,
     pub poison_power: i32,
+    /// Runtime Food fields: recipe level is distinct from detection, and
+    /// neither it nor herbalistType is serialized by Food.save/load.
+    pub poison_level_for_recipe: i32,
+    pub herbalist_type: Option<String>,
     pub chef: Option<String>,
     pub off_age: i32,
     pub off_age_max: i32,
@@ -1597,6 +1601,8 @@ impl FoodData {
             poison_detection_level: -1,
             spices: None,
             poison_power: t.poison_power,
+            poison_level_for_recipe: t.poison_detection_level,
+            herbalist_type: t.herbalist_type.clone(),
             chef: None,
             off_age: t.days_fresh,
             off_age_max: t.days_totally_rotten,
@@ -1604,7 +1610,7 @@ impl FoodData {
             pain_reduction: 0.0,
             flu_reduction: 0,
             food_sickness_change: 0,
-            poison: false,
+            poison: t.poison,
             use_for_poison: 0,
             can_be_frozen: true,
             freezing_time: 0.0,

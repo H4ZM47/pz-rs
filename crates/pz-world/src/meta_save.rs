@@ -9,18 +9,23 @@
 //! Part 1 is the world-wide state saved alongside: safehouses, non-PvP
 //! zones, factions, designation (animal) zones, the stash system and the
 //! names of unique randomized-building stories already spawned. These are
-//! ported as plain data ([`MetaWorld`]) since the systems themselves are
-//! not.
+//! kept as archive data except designation zones, which have an exclusive
+//! archive/runtime authority. Production designation loads use phased callbacks
+//! after releasing world/grid guards; the legacy raw codec remains explicit.
 //!
 //! The file is split into a raw form ([`MetaCells`], [`MetaWorld`]) that
 //! reads and writes exactly what is there, and the grid side
 //! ([`IsoMetaGrid::apply_meta_cells`] / [`IsoMetaGrid::meta_cells`]) that
 //! matches records to the loaded map by meta id the way the original does.
 
+use crate::designation::{self, DesignationHost, DesignationIoError, DesignationRegistryRef};
 use crate::IsoMetaGrid;
+use pz_entity::runtime_load::{HostResult, RuntimeHostError};
+use pz_entity::RetiredComponents;
 use pz_kahlua::java_io::{JavaReader, JavaWrite};
 use std::io;
 use std::path::Path;
+use std::rc::Rc;
 
 /// `IsoWorld.getWorldVersion()` in this build.
 pub const WORLD_VERSION: i32 = 249;
@@ -425,6 +430,138 @@ pub struct DesignationZone {
     pub hour_last_seen: i32,
 }
 
+/// Exclusive designation authority. `Clone` of Live is explicitly a shared
+/// runtime handle; it never creates or refreshes an editable scalar mirror.
+/// Archive copies must use `try_archive_snapshot` and can fail on a held body.
+#[derive(Clone)]
+pub enum DesignationState {
+    Archive(Vec<DesignationZone>),
+    Live(DesignationRegistryRef),
+}
+impl Default for DesignationState {
+    fn default() -> Self {
+        Self::Archive(Vec::new())
+    }
+}
+impl std::fmt::Debug for DesignationState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Archive(v) => f.debug_tuple("Archive").field(v).finish(),
+            Self::Live(r) => f.debug_tuple("Live").field(&Rc::as_ptr(r)).finish(),
+        }
+    }
+}
+impl PartialEq for DesignationState {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Archive(a), Self::Archive(b)) => a == b,
+            (Self::Live(a), Self::Live(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+impl DesignationState {
+    pub fn archive(&self) -> Option<&Vec<DesignationZone>> {
+        if let Self::Archive(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+    pub fn archive_mut(&mut self) -> Option<&mut Vec<DesignationZone>> {
+        if let Self::Archive(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+    pub fn live_slot(&self) -> Option<&DesignationRegistryRef> {
+        if let Self::Live(r) = self {
+            Some(r)
+        } else {
+            None
+        }
+    }
+    pub fn try_archive_snapshot(&self) -> HostResult<Vec<DesignationZone>> {
+        let Self::Live(registry) = self else {
+            return Ok(self.archive().unwrap().clone());
+        };
+        let list = registry
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("designation archive registry"))?
+            .all_zones_slot()
+            .cloned()
+            .ok_or(RuntimeHostError::Unsupported {
+                operation: "detached designation archive registry",
+                kind: None,
+            })?;
+        let mut result = Vec::new();
+        let mut index = 0;
+        loop {
+            let zone = {
+                let body = list
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("designation archive list"))?;
+                let designation::DesignationList::Zones(zones) = &*body else {
+                    return Err(RuntimeHostError::Unsupported {
+                        operation: "designation archive list type",
+                        kind: None,
+                    });
+                };
+                zones.get(index).cloned()
+            };
+            let Some(zone) = zone else {
+                break;
+            };
+            let z = zone
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("designation archive zone"))?;
+            // Nullable native strings cannot be represented by the legacy DTO.
+            let zone_type = z.zone_type.clone().ok_or(RuntimeHostError::Unsupported {
+                operation: "archive nullable designation type",
+                kind: None,
+            })?;
+            let name = z.name.clone().ok_or(RuntimeHostError::Unsupported {
+                operation: "archive nullable designation name",
+                kind: None,
+            })?;
+            result.push(DesignationZone {
+                id: z.id,
+                x: z.x,
+                y: z.y,
+                z: z.z,
+                w: z.w,
+                h: z.h,
+                zone_type,
+                name,
+                hour_last_seen: z.hour_last_seen,
+            });
+            index += 1;
+        }
+        Ok(result)
+    }
+}
+
+/// A guard-free continuation: only this actual registry handle and the original
+/// count cross the world/grid guard boundary, never a copied designation DTO.
+pub struct DesignationLoadPhase {
+    pub registry: DesignationRegistryRef,
+    pub count: i32,
+}
+impl DesignationLoadPhase {
+    pub fn load(
+        &self,
+        r: &mut JavaReader<'_>,
+        host: &mut dyn DesignationHost,
+        retired: &mut RetiredComponents,
+    ) -> Result<(), DesignationIoError> {
+        for _ in 0..self.count.max(0) {
+            designation::try_load_zone(&self.registry, r, host, retired)?;
+        }
+        Ok(())
+    }
+}
+
 /// `StashSystem.StashBuilding`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StashBuilding {
@@ -452,7 +589,7 @@ pub struct MetaWorld {
     pub factions: Vec<Faction>,
     /// `DesignationZone.allZones`. Not cleared by a load: loaded zones are
     /// merged by id.
-    pub designation_zones: Vec<DesignationZone>,
+    pub designation_zones: DesignationState,
     /// `None` while `StashSystem.allStashes` is null, in which case nothing
     /// is written for it. Loading always initialises it.
     pub stash: Option<StashState>,
@@ -534,6 +671,41 @@ impl MetaWorld {
     /// `savePart(output, 1, …)`. `out` must hold the file from its start:
     /// the server form records the absolute end of the stash data.
     pub fn save(&self, out: &mut Vec<u8>, role: NetRole) {
+        assert!(matches!(self.designation_zones,DesignationState::Archive(_)), "MetaWorld::save is the explicit archive-only compatibility codec; use try_save for Live");
+        self.try_save(out, role)
+            .expect("archive designation save is infallible");
+    }
+
+    /// Runtime save keeps designation state authoritative and typed. The Vec
+    /// writer is the existing unbounded Rust output profile, not native buffer
+    /// capacity/allocation parity.
+    pub fn try_save(&self, out: &mut Vec<u8>, role: NetRole) -> Result<(), DesignationIoError> {
+        self.save_prefix_fields(out);
+        match &self.designation_zones {
+            DesignationState::Archive(zones) => write_archive_designations(out, zones),
+            DesignationState::Live(registry) => designation::try_save_registry(registry, out)?,
+        }
+        self.save_suffix_after_designation(out, role);
+        Ok(())
+    }
+
+    /// Split native coordinator seam: release world/grid guards before using
+    /// the returned registry in `designation::try_save_registry`.
+    pub fn save_prefix_to_designation(
+        &self,
+        out: &mut Vec<u8>,
+    ) -> HostResult<DesignationRegistryRef> {
+        self.save_prefix_fields(out);
+        self.designation_zones
+            .live_slot()
+            .cloned()
+            .ok_or(RuntimeHostError::Unsupported {
+                operation: "actual designation save requires Live authority",
+                kind: None,
+            })
+    }
+
+    fn save_prefix_fields(&self, out: &mut Vec<u8>) {
         out.put_i32(self.safehouses.len() as i32);
         for s in &self.safehouses {
             s.save(out);
@@ -566,18 +738,9 @@ impl MetaWorld {
                 out.write_string_utf(Some(p));
             }
         }
-        out.put_i32(self.designation_zones.len() as i32);
-        for z in &self.designation_zones {
-            out.put_f64(z.id);
-            out.put_i32(z.x);
-            out.put_i32(z.y);
-            out.put_i32(z.z);
-            out.put_i32(z.h);
-            out.put_i32(z.w);
-            out.write_string_utf(Some(&z.zone_type));
-            out.write_string_utf(Some(&z.name));
-            out.put_i32(z.hour_last_seen);
-        }
+    }
+
+    pub fn save_suffix_after_designation(&self, out: &mut Vec<u8>, role: NetRole) {
         match role {
             NetRole::Server => {
                 let at = out.len();
@@ -611,6 +774,43 @@ impl MetaWorld {
         role: NetRole,
         env: &mut dyn MetaLoadEnv,
     ) -> io::Result<()> {
+        if !matches!(self.designation_zones, DesignationState::Archive(_)) {
+            return Err(io::Error::new(io::ErrorKind::Unsupported,"archive MetaWorld::load cannot load Live designation state; use the phased native coordinator"));
+        }
+        let count = self.load_prefix_fields(r, wv, env)?;
+        for _ in 0..count.max(0) {
+            self.load_designation_zone(r)?;
+        }
+        self.load_suffix_after_designation(r, role)
+    }
+
+    /// Mutate the ordinary prefix, then return actual identity before any
+    /// designation constructor/streaming callbacks. Caller must end all WORLD
+    /// and grid guards before `phase.load` and reacquire only for the suffix.
+    pub fn load_prefix_to_designation(
+        &mut self,
+        r: &mut JavaReader<'_>,
+        wv: i32,
+        env: &mut dyn MetaLoadEnv,
+    ) -> Result<DesignationLoadPhase, DesignationIoError> {
+        let count = self.load_prefix_fields(r, wv, env)?;
+        let registry =
+            self.designation_zones
+                .live_slot()
+                .cloned()
+                .ok_or(RuntimeHostError::Unsupported {
+                    operation: "actual designation load requires Live authority",
+                    kind: None,
+                })?;
+        Ok(DesignationLoadPhase { registry, count })
+    }
+
+    fn load_prefix_fields(
+        &mut self,
+        r: &mut JavaReader<'_>,
+        wv: i32,
+        env: &mut dyn MetaLoadEnv,
+    ) -> io::Result<i32> {
         self.safehouses.clear();
         for _ in 0..r.get_i32()?.max(0) {
             let s = SafeHouse::load(r, wv, env)?;
@@ -656,9 +856,14 @@ impl MetaWorld {
                 players,
             });
         }
-        for _ in 0..r.get_i32()?.max(0) {
-            self.load_designation_zone(r)?;
-        }
+        r.get_i32()
+    }
+
+    pub fn load_suffix_after_designation(
+        &mut self,
+        r: &mut JavaReader<'_>,
+        role: NetRole,
+    ) -> io::Result<()> {
         match role {
             NetRole::Server => {
                 r.get_i32()?;
@@ -695,8 +900,13 @@ impl MetaWorld {
         }
         // `Double.equals`: bitwise, NaN equal to NaN.
         let same = |a: f64| a.to_bits() == id.to_bits() || (a.is_nan() && id.is_nan());
-        if let Some(zone) = self
-            .designation_zones
+        let zones = self.designation_zones.archive_mut().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "archive designation decoder requires Archive authority",
+            )
+        })?;
+        if let Some(zone) = zones
             .iter_mut()
             .find(|d| d.zone_type == "AnimalZone" && same(d.id))
         {
@@ -718,7 +928,7 @@ impl MetaWorld {
         if y1 > y2 {
             std::mem::swap(&mut y1, &mut y2);
         }
-        self.designation_zones.push(DesignationZone {
+        zones.push(DesignationZone {
             id,
             x: x1,
             y: y1,
@@ -731,6 +941,50 @@ impl MetaWorld {
         });
         Ok(())
     }
+}
+
+fn write_archive_designations(out: &mut Vec<u8>, zones: &[DesignationZone]) {
+    out.put_i32(zones.len() as i32);
+    for z in zones {
+        out.put_f64(z.id);
+        out.put_i32(z.x);
+        out.put_i32(z.y);
+        out.put_i32(z.z);
+        out.put_i32(z.h);
+        out.put_i32(z.w);
+        out.write_string_utf(Some(&z.zone_type));
+        out.write_string_utf(Some(&z.name));
+        out.put_i32(z.hour_last_seen);
+    }
+}
+
+impl MetaWorld {
+    pub fn with_designation_registry(registry: DesignationRegistryRef) -> Self {
+        Self {
+            designation_zones: DesignationState::Live(registry),
+            ..Self::default()
+        }
+    }
+    /// Independent scalar archive projection, never an editable runtime mirror.
+    pub fn try_archive_snapshot(&self) -> HostResult<Self> {
+        let mut copy = self.clone();
+        copy.designation_zones =
+            DesignationState::Archive(self.designation_zones.try_archive_snapshot()?);
+        Ok(copy)
+    }
+}
+
+/// Fallible runtime convenience. Engine code requiring guard-free load/save
+/// phases can instead use the explicit prefix/designation/suffix seams.
+pub fn try_save_map_meta(
+    grid: &IsoMetaGrid,
+    world: &MetaWorld,
+    role: NetRole,
+) -> Result<Vec<u8>, DesignationIoError> {
+    let mut out = Vec::new();
+    grid.meta_cells().write(&mut out);
+    world.try_save(&mut out, role)?;
+    Ok(out)
 }
 
 /// `IsoMetaGrid.save(ByteBuffer)`: the whole of `map_meta.bin`.

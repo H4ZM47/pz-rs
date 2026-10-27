@@ -319,9 +319,9 @@ fn native_recalculation_dirties_immediate_bag_only_when_outermost_actual_parent_
         ),
     ));
     let inventory = actor.borrow().items.inventory.clone();
-    let actor_value = Value::Object(Rc::new(crate::bind_character_sim::CharacterObject(
-        actor.clone(),
-    )));
+    let actor_value = Value::Object(Rc::new(
+        crate::bind_character_sim::CharacterObject::try_new(&actor).unwrap(),
+    ));
     crate::bind_item_container::set_parent(&inventory, actor_value);
     let bag = shared::try_new_item(InventoryItem::create(
         Rc::new(ItemTemplate::new(ItemClass::Container, "Base", "Bag")),

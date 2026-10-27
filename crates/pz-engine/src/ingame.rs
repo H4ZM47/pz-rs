@@ -403,6 +403,16 @@ impl GameState for IngameState {
         // the atlases and `FBORenderChunkManager.Reset`.
         // `IsoWorld.instance.KillCell()`: the cell and the world's state go.
         pz_lua_api::bind_world::set_cell(None);
+        // Native KillCell precedes DesignationZone.Reset/Animal.Reset. The
+        // permanent class lists retain identity; reset only their contents.
+        if let Some(world) = cx.world.as_mut() {
+            if world.meta_world.designation_zones.live_slot().is_some() {
+                if let Err(error) = world.reset_designation_registry() {
+                    *cx.error = Some(format!("designation exit reset host failure: {error:?}"));
+                    return;
+                }
+            }
+        }
         *cx.world = None;
         let retired_emitters = pz_lua_api::bind_audio::sound_system()
             .borrow_mut()
@@ -419,6 +429,16 @@ impl GameState for IngameState {
         // menu. Registry ids cannot carry across worlds whose dictionary
         // assigns a different id to the same type. Native shutdown skips
         // the menu rebuild, retaining the just-completed save events.
+        // Exact RegistryReset.resetAll phase before rebuilding scripts.
+        // The older fresh-manager reconstruction is still a separate
+        // ScriptManager.Reset/retained-manager parity boundary.
+        let manager = pz_lua_api::bind_registry::shared_script_manager();
+        if manager.native_item_key_statics().is_some() {
+            if let Err(error) = manager.try_reset_native_item_key_registries() {
+                *cx.error = Some(format!("native item key reset: {error:?}"));
+                return;
+            }
+        }
         if !cx.shutdown {
             rebuild_main_menu_with(cx, crate::boot::reload_main_menu_environment);
         }

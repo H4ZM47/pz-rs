@@ -67,6 +67,28 @@ fn retained_drop(world: &IsoWorld, item: &ItemRef) -> HostResult<()> {
     service.add_world_inventory_item_on(&target, item, 0.2, 0.3, 0.0)
 }
 
+#[test]
+fn designation_placement_uses_the_initialized_physical_class_list_before_item_reads() {
+    use pz_world::square_mutation::NativeFloorHost;
+    let (_restore, mut world, square) = fixture();
+    let registry = pz_world::designation::new_registry();
+    world.meta_world = pz_world::meta_save::MetaWorld::with_designation_registry(registry.clone());
+    world.install_floor_world().unwrap();
+    let service = world.floor_world.as_ref().unwrap().borrow();
+    let mut host = LiveNativeFloorHost(&service);
+    let object = ObjectSlot::new(IsoObject::new(8, ObjectKind::Object, None)).ref_handle();
+    let object_guard = object.borrow_mut();
+    // A genuinely initialized empty animal class list returns before the
+    // object/item read, even while the actual object body is held.
+    host.designation_item_on_ground(&object, &square).unwrap();
+    let list = registry.borrow().animal_zones_slot().unwrap().clone();
+    let guard = list.borrow_mut();
+    assert!(matches!(host.designation_item_on_ground(&object, &square), Err(RuntimeHostError::Borrowed(_))));
+    drop(guard);
+    drop(object_guard);
+    drop(service);
+}
+
 fn actual_plain_name_item() -> (ItemRef, Rc<RefCell<pz_scripts::objects::items::Item>>) {
     let script = Rc::new(RefCell::new(pz_scripts::objects::items::Item::new()));
     let manager = pz_scripts::ScriptManager::new();

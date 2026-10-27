@@ -1473,7 +1473,7 @@ fn register_food(thread: &mut Thread) {
     get!(b, "getHungerChange", |i| f(i.get_hunger_change()));
     get!(b, "getHungChange", |i| f(i.get_hung_change()));
     get!(b, "getBaseHunger", |i| f(i.get_base_hunger()));
-    get!(b, "getPoisonPower", |i| Value::from(i.get_poison_power()));
+    crate::bind_character_sim::known_poison::register_food_fields(&b);
     get!(b, "isTainted", |i| Value::from(i.is_tainted()));
     get!(b, "isbDangerousUncooked", |i| Value::from(
         i.is_b_dangerous_uncooked()

@@ -214,6 +214,21 @@ pub fn item_tint_ref(item: &ItemRef) -> HostResult<[f32; 4]> {
 pub fn get_script_item_ref(item: &ItemRef) -> HostResult<Option<ScriptItemRef>> {
     read(item, |body| Ok(body.textures.live()?.script_item.clone()))
 }
+/// InventoryItem.hasTag reads its actual mutable scriptItem field. A null
+/// script is a native null receiver boundary, never a template fallback.
+pub fn has_tag_ref(item: &ItemRef, tag: Option<&Rc<pz_scripts::registry::RegistryKey>>) -> HostResult<bool> {
+    let mut retired = RetiredComponents::new();
+    retired.push_payload(Box::new(Rc::clone(item)));
+    let result = (|| {
+        let script = get_script_item_ref(item)?.ok_or_else(|| unsupported("InventoryItem.hasTag null scriptItem"))?;
+        retired.push_payload(Box::new(script.clone()));
+        let body = script.0.try_borrow().map_err(|_| RuntimeHostError::Borrowed("InventoryItem.hasTag script"))?;
+        Ok(body.has_tag(tag))
+    })();
+    crate::component_host::retire_components(retired);
+    result
+}
+
 pub fn script_scale_world_icon(script: &ScriptItemRef) -> HostResult<f32> {
     let script = script
         .0
@@ -316,12 +331,30 @@ fn current_script_capture(template: &crate::ItemTemplate) -> HostResult<Captured
         })
     }
 }
+fn initialize_food_java_fields(item: &ItemRef) -> HostResult<()> {
+    let mut item = item.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("Food allocation fields"))?;
+    if let ItemKind::Food(food) = &mut item.kind {
+        food.poison = false;
+        food.poison_power = 0;
+        food.poison_detection_level = 0;
+        food.poison_level_for_recipe = 0;
+        food.herbalist_type = None;
+    }
+    Ok(())
+}
+fn finish_food_super_fields(item: &ItemRef) -> HostResult<()> {
+    let mut item = item.try_borrow_mut().map_err(|_| RuntimeHostError::Borrowed("Food constructor fields"))?;
+    if let ItemKind::Food(food) = &mut item.kind { food.poison_detection_level = -1; }
+    Ok(())
+}
+
 pub(crate) fn constructor_script_ref(
     item: &ItemRef,
     template: &crate::ItemTemplate,
 ) -> HostResult<()> {
     // The script constructor only reads its argument. The retained scriptItem
     // field stays null until Item.InstanceItem.setScriptItem at PC3398.
+    initialize_food_java_fields(item)?;
     begin_native_constructor(item, None)?;
     let capture = current_script_capture(template)?;
     set_texture_ref(item, capture.normal.as_ref())?;
@@ -335,6 +368,7 @@ pub(crate) fn constructor_script_ref(
         live.world_name = capture.world_name.clone();
     }
     if template.class == crate::ItemClass::Food {
+        finish_food_super_fields(item)?;
         pz_render::set_warn_fail_find_texture(false);
         for (n, index) in [3, 4, 5].into_iter().enumerate() {
             if let Some(texture) = capture.special.get(n) {
@@ -670,6 +704,7 @@ impl InventoryItem {
 /// Texture portion of the genuine nonnull string constructor. This is a
 /// distinct native producer, never a fallback for an uncaptured script item.
 pub fn constructor_string_ref(item: &ItemRef, name: &str) -> HostResult<()> {
+    initialize_food_java_fields(item)?;
     begin_native_constructor(item, None)?;
     let texture = pz_render::try_get_texture_ref(name).map_err(texture_host_error)?;
     set_texture_ref(item, texture.as_ref())?;
@@ -693,6 +728,7 @@ pub fn constructor_string_ref(item: &ItemRef, name: &str) -> HostResult<()> {
     }
     let food = read(item, |body| Ok(matches!(body.kind, ItemKind::Food(_))))?;
     if food {
+        finish_food_super_fields(item)?;
         pz_render::set_warn_fail_find_texture(false);
         let mut world_suffixes = ["Rotten.png", "Cooked.png", "Overdone.png"];
         let variants: [(usize, &[(&str, &str)]); 3] = [

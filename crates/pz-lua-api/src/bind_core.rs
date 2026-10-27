@@ -1168,6 +1168,12 @@ fn register_methods(b: &ClassBuilder, cx: &Rc<Ctx>) {
 
     // ---- Lua reset (queued for the engine) ----
     def(b, cx, "ResetLua", |cx, c| {
+        // Production Native ResetLua reaches SpriteRenderer/RenderThread
+        // before RegistryReset27 and ScriptManager.Reset33. The queued
+        // offline request cannot claim that synchronous native prefix.
+        if crate::bind_registry::shared_script_manager().native_item_key_statics().is_some() {
+            return Err(crate::bind_world_object::unsupported("Core.ResetLua actual SpriteRenderer/RenderThread prefix"));
+        }
         let mods = match c.arg(1) {
             Value::Bool(_) => "default".to_string(),
             _ => opt_str(c, 1).unwrap_or_else(|| "null".into()),

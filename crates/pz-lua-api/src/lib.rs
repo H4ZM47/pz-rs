@@ -19,6 +19,7 @@ pub mod bind_erosion;
 pub mod bind_colors;
 pub mod bind_core;
 pub mod bind_date;
+pub mod bind_designation;
 pub mod bind_credits;
 pub mod bind_debug;
 pub mod bind_climate;
@@ -244,6 +245,7 @@ pub fn register_all(mgr: &mut LuaManager) {
     bind_puddles::register(&mut mgr.thread);
     bind_mods::register(mgr);
     bind_map_symbols::register(mgr);
+    bind_designation::register(&mut mgr.thread);
     bind_world::register_with_events(&mut mgr.thread, mgr.events.clone());
     bind_world::lua_world::register(&mut mgr.thread, mgr.fs.clone());
     bind_basements::register(&mut mgr.thread);

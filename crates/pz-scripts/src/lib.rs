@@ -9,6 +9,7 @@ pub mod java;
 pub mod manager;
 pub mod math;
 pub mod module;
+pub mod native_item_keys;
 pub mod objects;
 pub mod parser;
 pub mod registry;

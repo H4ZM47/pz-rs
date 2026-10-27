@@ -19,7 +19,7 @@ use pz_lua_api::LuaManager;
 use pz_world::chunk::IsoCell;
 use pz_world::fix2x::Fix2xTable;
 use pz_world::isoregion::IsoRegions;
-use pz_world::meta_save::{DefaultMetaEnv, MetaWorld};
+use pz_world::meta_save::{DefaultMetaEnv, MetaWorld, NetRole};
 use pz_world::save::items::AllItems;
 use pz_world::save::{NoSaveHooks, SaveSettings, SaveTables};
 use pz_world::streamer::{calc_chunk_width, ChunkStreamer, StreamCtx};
@@ -670,11 +670,12 @@ impl IsoWorld {
         pz_lua_api::bind_climate::init_climate_manager(&mut lua.thread, bounds);
         // TODO(port): `SafeHouse.init`, `VirtualZombieManager.instance.init`,
         // `StashSystem.init`.
+        self.init_designation_registry()?;
         pz_lua_api::bind_basements::before_on_load_map_zones();
         lua.trigger_event("OnLoadMapZones", &[]);
         self.before_load_meta_grid();
         // TODO(port): `BuildingRoomsEditor.load`.
-        self.load_meta_grid_files();
+        self.load_meta_grid_files()?;
         // `Basements.afterLoadMetaGrid()` releases the spawn locations and
         // headers; the port keeps the headers for `onNewChunkLoaded`.
         println!("triggerEvent OnLoadedMapZones");
@@ -1044,33 +1045,56 @@ impl IsoWorld {
 
     /// `metaGrid.load()` (`map_meta.bin`), `map_zone.bin`, the meta cells
     /// and animal zones, then `processZones()`.
-    fn load_meta_grid_files(&mut self) {
-        let IsoWorld {
-            save_dir,
-            meta_world,
-            spawned_zones,
-            uuids,
-            errors,
-            ..
-        } = self;
-        with_world(|w| {
-            let Some(g) = w.meta_grid.as_mut() else {
-                return;
-            };
-            if let Err(e) = pz_world::meta_save::load_map_meta_file(
-                g,
-                meta_world,
-                save_dir,
-                &mut DefaultMetaEnv,
-            ) {
-                errors.push(format!("IsoMetaGrid.load: {e}"));
-            }
-            if let Err(e) = g.load_zones_file(save_dir, spawned_zones, uuids) {
-                errors.push(format!("IsoMetaGrid.loadZone: {e}"));
-            }
-            errors.extend(pz_lua_api::world_save::load_meta_grid_extras(g, save_dir));
-            g.process_zones();
-        });
+    fn load_meta_grid_files(&mut self) -> Result<(),String> {
+        use pz_world::designation::DesignationIoError;
+        use pz_world::meta_save::MetaCells;
+        use pz_lua_api::bind_world::{try_with_world,try_with_world_read};
+        let has_grid=try_with_world_read(|world|Ok(world.meta_grid.is_some()))
+            .map_err(|error|format!("metadata current world: {error:?}"))?;
+        if !has_grid {return Ok(());}
+        match std::fs::read(self.save_dir.join("map_meta.bin")) {
+            Ok(data)=>{
+                let mut reader=pz_kahlua::java_io::JavaReader::new(&data);
+                let result=(|| -> Result<(),DesignationIoError> {
+                    let cells=MetaCells::read(&mut reader)?;
+                    try_with_world(|world| {
+                        let grid=world.meta_grid.as_mut().ok_or(pz_entity::runtime_load::RuntimeHostError::InvalidHostState("metadata grid disappeared"))?;
+                        grid.apply_meta_cells(&cells);
+                        Ok(())
+                    })?;
+                    // No WORLD/grid guard crosses a real designation constructor,
+                    // current-cell query, or future synchronization capability.
+                    let phase=self.meta_world.load_prefix_to_designation(&mut reader,cells.world_version,&mut DefaultMetaEnv)?;
+                    let mut retired=pz_entity::RetiredComponents::new();
+                    let loaded=phase.load(&mut reader,&mut crate::designation::ActualDesignationHost,&mut retired);
+                    pz_inventory::component_host::retire_components(retired);
+                    loaded?;
+                    self.meta_world.load_suffix_after_designation(&mut reader,NetRole::SinglePlayer)?;
+                    Ok(())
+                })();
+                let notices=reader.take_notices();
+                pz_inventory::component_host::emit_mod_data_notices(&notices)
+                    .map_err(|error|format!("metadata StringUTF diagnostics host failure: {error:?}"))?;
+                match result {
+                    Ok(())=>{},
+                    Err(DesignationIoError::Io(error))=>self.errors.push(format!("IsoMetaGrid.load: {error}")),
+                    Err(DesignationIoError::Host(error))=>return Err(format!("IsoMetaGrid.load host failure: {error:?}")),
+                }
+            },
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>{},
+            Err(error)=>self.errors.push(format!("IsoMetaGrid.load: {error}")),
+        }
+        let save_dir=&self.save_dir;
+        let spawned_zones=&mut self.spawned_zones;
+        let uuids=&mut self.uuids;
+        let errors=&mut self.errors;
+        try_with_world(|world| {
+            let grid=world.meta_grid.as_mut().ok_or(pz_entity::runtime_load::RuntimeHostError::InvalidHostState("metadata grid disappeared before zones"))?;
+            if let Err(error)=grid.load_zones_file(save_dir,spawned_zones,uuids) {errors.push(format!("IsoMetaGrid.loadZone: {error}"));}
+            errors.extend(pz_lua_api::world_save::load_meta_grid_extras(grid,save_dir));
+            grid.process_zones();
+            Ok(())
+        }).map_err(|error|format!("metadata zones host failure: {error:?}"))
     }
 
     /// `MapCollisionData.instance.init(metaGrid)` then

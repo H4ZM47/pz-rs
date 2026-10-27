@@ -464,6 +464,25 @@ impl ScriptBucket {
         self.get_depth(sm, module, name, 0)
     }
 
+    pub(crate) fn try_get_depth(&self, sm: &ScriptManager, module: &ScriptModule, name: &str, depth: usize) -> Result<Option<ScriptRef>, crate::native_item_keys::ScriptAccessError> {
+        use crate::native_item_keys::ScriptAccessError as E;
+        if depth >= MAX_IMPORT_DEPTH { return Err(E::Unsupported("script import recursion boundary")); }
+        if name.contains('.') && !self.inner.try_borrow().map_err(|_| E::Borrowed("script bucket"))?.dot_in_name.contains(name) {
+            return sm.try_get_script_depth(self.script_type, name, depth + 1);
+        }
+        if let Some(script) = self.inner.try_borrow().map_err(|_| E::Borrowed("script bucket"))?.script_map.get(name).cloned() {
+            return Ok(Some(script));
+        }
+        if self.script_type.has_flag(Flag::SeekImports) {
+            let imports = module.imports.try_borrow().map_err(|_| E::Borrowed("script module imports"))?.clone();
+            for module_name in imports {
+                let Some(import) = sm.try_get_module(&module_name)? else { continue };
+                if let Some(script) = import.bucket(self.script_type).try_get_depth(sm, &import, name, depth + 1)? { return Ok(Some(script)); }
+            }
+        }
+        Ok(None)
+    }
+
     fn get_depth(&self, sm: &ScriptManager, module: &ScriptModule, name: &str, depth: usize) -> Option<ScriptRef> {
         if name.contains('.') && !self.inner.borrow().dot_in_name.contains(name) {
             return sm.collection(self.script_type).get_script(sm, name);

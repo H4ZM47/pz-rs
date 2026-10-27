@@ -732,3 +732,74 @@ fn food_constructor_default_and_later_instance_copy_survive_texture_failures_at_
     });
     failure.into_error_and_retire();
 }
+
+#[test]
+fn food_poison_factory_copies_current_argument_after_super_and_keeps_distinct_detection() {
+    let _restore = Restore::new();
+    pz_render::install_texture_ref_loader(Some(Rc::new(|_, _| Ok(None))));
+    let definition = script("PoisonFields");
+    {
+        let mut script = definition.0.borrow_mut();
+        script.poison = true;
+        script.poison_power = 27;
+        script.poison_detection_level = 8;
+        script.herbalist_type = Some("CurrentHerb".into());
+    }
+    let mut t = template(ItemClass::Food, None);
+    t.poison_power = 123;
+    t.herbalist_type = Some("StaleTemplate".into());
+    t.script = Some(definition.clone());
+    let item = actual(t);
+    food(&item, |food| {
+        assert!(food.poison);
+        assert_eq!(food.poison_power, 27);
+        assert_eq!(food.poison_detection_level, -1);
+        assert_eq!(food.poison_level_for_recipe, 8);
+        assert_eq!(food.herbalist_type.as_deref(), Some("CurrentHerb"));
+    });
+    definition.0.borrow_mut().poison_power = 99;
+    definition.0.borrow_mut().herbalist_type = None;
+    let held = definition.0.borrow_mut();
+    food(&item, |food| {
+        assert_eq!(food.poison_power, 27);
+        assert_eq!(food.herbalist_type.as_deref(), Some("CurrentHerb"));
+    });
+    drop(held);
+}
+
+#[test]
+fn food_super_capture_failure_precedes_subclass_detection_default_and_factory_copies() {
+    let _restore = Restore::new();
+    let mut t = ItemTemplate::new(ItemClass::Food, "Base", "UncapturedPoison");
+    t.poison_power = 123;
+    t.herbalist_type = Some("Stale".into());
+    let failure = crate::env::create_from_template_ref(&Env, Rc::new(t), 1).unwrap_err();
+    let item = failure.item.as_ref().unwrap();
+    food(item, |food| {
+        assert_eq!(food.poison_power, 0);
+        assert_eq!(food.poison_detection_level, 0, "Java default until Food constructor PC16 after super");
+        assert_eq!(food.poison_level_for_recipe, 0);
+        assert!(food.herbalist_type.is_none());
+    });
+    failure.into_error_and_retire();
+}
+
+#[test]
+fn food_load_keeps_unsaved_herbalist_recipe_level_but_resets_and_loads_signed_poison_bytes() {
+    let _restore = Restore::new();
+    let item = actual(template(ItemClass::Food, None));
+    food(&item, |food| { food.poison_power = -7; food.poison_detection_level = 9; food.herbalist_type = Some("Old".into()); food.poison_level_for_recipe = 11; });
+    let mut first = Writer::new(); save_item_ref(&item, &mut first, &Env).unwrap();
+    food(&item, |food| { food.herbalist_type = Some("Retained".into()); food.poison_level_for_recipe = 91; });
+    let mut second = Writer::new(); save_item_ref(&item, &mut second, &Env).unwrap();
+    assert_eq!(first.buf, second.buf, "neither runtime field is a Food save wire field");
+    food(&item, |food| { food.poison_power = 54; food.poison_detection_level = 77; });
+    let mut reader = Reader::new(&first.buf[3..]);
+    crate::component_host::load_item_ref(&item, &mut reader, 249, &Env).unwrap();
+    food(&item, |food| {
+        assert_eq!(food.poison_power, -7);
+        assert_eq!(food.poison_detection_level, 9);
+        assert_eq!(food.herbalist_type.as_deref(), Some("Retained"));
+        assert_eq!(food.poison_level_for_recipe, 91);
+    });
+}

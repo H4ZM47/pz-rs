@@ -77,6 +77,7 @@ mod direction_tests;
 #[cfg(test)]
 mod grapple_tests;
 mod key_ring;
+pub(crate) mod known_poison;
 #[cfg(test)]
 mod running_tests;
 #[cfg(test)]
@@ -87,6 +88,8 @@ mod timed_action_phases_tests;
 mod timed_actions_tests;
 #[cfg(test)]
 mod floor_bridge_tests;
+#[cfg(test)]
+mod class_identity_tests;
 
 pub const ISO_GAME_CHARACTER_CLASS: &str = "zombie.characters.IsoGameCharacter";
 pub const ISO_PLAYER_CLASS: &str = "zombie.characters.IsoPlayer";
@@ -506,12 +509,25 @@ pub(crate) fn with_sim_context<R>(f: impl FnOnce(&dyn SimContext) -> R) -> R {
 
 // ---- objects ------------------------------------------------------------
 
-/// A character (`IsoGameCharacter` and its subclasses).
-pub struct CharacterObject(pub LuaGameCharacterRef);
+/// A character (`IsoGameCharacter` and its subclasses). Its allocation-time
+/// class is immutable; class dispatch must not acquire the mutable body.
+pub struct CharacterObject(pub LuaGameCharacterRef, CharacterKind);
+
+impl CharacterObject {
+    /// Capture the actual class before this userdata is published. A cold
+    /// conversion under a conflicting character guard is a host fault.
+    pub fn try_new(chr: &LuaGameCharacterRef) -> HostResult<Self> {
+        let kind = chr
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("character userdata class"))?
+            .kind;
+        Ok(Self(chr.clone(), kind))
+    }
+}
 
 impl LuaObject for CharacterObject {
     fn class_name(&self) -> &str {
-        match self.0.borrow().kind {
+        match self.1 {
             CharacterKind::Player => ISO_PLAYER_CLASS,
             CharacterKind::Survivor => ISO_SURVIVOR_CLASS,
             CharacterKind::Zombie => ISO_ZOMBIE_CLASS,
@@ -522,7 +538,7 @@ impl LuaObject for CharacterObject {
         const LIVING: &str = "zombie.characters.IsoLivingCharacter";
         const MOVING: &str = "zombie.iso.IsoMovingObject";
         const OBJECT: &str = "zombie.iso.IsoObject";
-        match self.0.borrow().kind {
+        match self.1 {
             CharacterKind::Player | CharacterKind::Survivor => {
                 &[LIVING, ISO_GAME_CHARACTER_CLASS, MOVING, OBJECT]
             }
@@ -559,17 +575,50 @@ fn canonical(id: (Handle, usize, usize), make: impl FnOnce() -> Value) -> Value 
     HANDLES.with(|h| h.borrow_mut().entry(id).or_insert_with(make).clone())
 }
 
-/// The canonical Lua object of `chr`. Making it makes it the parent of
-/// the character's inventory (`inventory.parent = this`), so the
-/// container's Lua methods call back into this object.
-pub fn character_value(chr: &LuaGameCharacterRef) -> Value {
+/// The canonical Lua object of `chr`. Existing identity and immutable class
+/// metadata need no character or inventory body access. Cold publication
+/// reports needed body conflicts before publishing the userdata or parent.
+pub fn try_character_value(chr: &LuaGameCharacterRef) -> HostResult<Value> {
+    let id = (Handle::Character, Rc::as_ptr(chr) as usize, 0);
+    if let Some(value) = HANDLES.with(|handles| handles.borrow().get(&id).cloned()) {
+        return Ok(value);
+    }
+    let (kind, inventory) = {
+        let body = chr
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("character userdata publication"))?;
+        (body.kind, body.items.inventory.clone())
+    };
+    let value = Value::Object(Rc::new(CharacterObject(chr.clone(), kind)));
+    let parent: Rc<dyn Any> = Rc::new(crate::bind_item_container::LuaParent {
+        value: value.clone(),
+        owner: Rc::new(CharacterItemOwner::new(chr)),
+    });
+    let old_parent = {
+        let mut body = inventory
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("character userdata inventory parent"))?;
+        body.parent.replace(parent)
+    };
+    let mut retired = pz_entity::RetiredComponents::default();
+    if let Some(old_parent) = old_parent {
+        retired.push_erased(old_parent);
+    }
+    pz_inventory::component_host::retire_components(retired);
+    HANDLES.with(|handles| handles.borrow_mut().insert(id, value.clone()));
+    // No map, character or inventory guard spans these attachment/metadata
+    // operations. A nested conversion now sees the published same identity.
     crate::chat::characters::attach_chat_element(chr);
-    canonical((Handle::Character, Rc::as_ptr(chr) as usize, 0), || {
-        let v = Value::Object(Rc::new(CharacterObject(chr.clone())));
-        let inv = chr.borrow().items.inventory.clone();
-        set_character_parent(&inv, chr, v.clone());
-        v
-    })
+    pz_inventory::shared::observe_container(&inventory);
+    Ok(value)
+}
+
+/// Legacy infallible adapter; cold publication requires available character
+/// and inventory bodies. Native fallible producers use `try_character_value`.
+pub fn character_value(chr: &LuaGameCharacterRef) -> Value {
+    try_character_value(chr).expect(
+        "character_value requires unborrowed publication bodies or existing canonical userdata",
+    )
 }
 
 /// `container.parent = chr` with the character answering for the items
@@ -1698,6 +1747,7 @@ fn register_character(
     ] {
         expose_class(thread, class, Some(ISO_GAME_CHARACTER_CLASS));
     }
+    known_poison::register(&b, sm, chars);
     b.method("createKeyRing", key_ring::create_key_ring);
     b.method("getModData", |c| {
         let table = chr_of(c)?.borrow_mut().get_mod_data();

@@ -6,7 +6,43 @@ parity requires separate verification. Current continuation is on
 `codex/gameplay-continuation`, based on Claude's `ws/integration` and
 `ws/ingame-loop`; the older `main` checkout is not the current engine.
 
-The October 27 actual-reference continuation routes production player load/save
+The current designation/KnownPoison source batch passes the workspace all-target
+check, 1,961 affected tests (zero failed, nine ignored across 35 summaries), and
+the native client build. All 1,398 recorded Rust/Cargo inputs stay unchanged
+through those checks; all 53 changed source inputs have independent review.
+The compiled client is pinned for the next installed-assets check.
+Its permanent designation class lists are initialized before menu Lua, shared
+with the world's live metadata and floor service, and cleared without replacing
+their allocations on exit. Metadata load resumes the original reader outside
+WORLD guards; live save propagates host access faults separately from native
+file errors. Streaming reads the actual current cell before each corner's zone
+fields. Synchronization reads actual list membership before client/server roles;
+network sends remain explicit capabilities.
+
+The genuine empty animal list now supports the null-zone placement branch.
+New animal-zone construction preserves base registration and seven list
+allocations, then stops at the unimplemented ObjectPoolCounter/PoolStatistic
+owners before publishing its pool or animal-list entry. Later query,
+reset and collection tests use an explicitly named test-only data projection.
+Found-zone classification, mutable JavaList exposure, pool/statistics owners
+and full actor processing remain incomplete.
+
+Both poison-detection overloads now use real class-global ItemTag/ItemType
+references. Final static fields retain their original references when mutable
+registry entries change. Runtime Food fields follow their actual
+constructor/factory phases; selected recipe knowledge, Cooking level, full name
+and live ModData reads follow native short-circuit order. Animal full-name and
+Core.ResetLua render-thread dependencies stop at their first needed unported
+phase. Cheat knowledge uses the existing non-null inline representation and a
+field lease across pure static-role reads; retained/publicly replaced CheatRef
+identity remains unsupported. Generic invoker diagnostics are incomplete;
+unsupported Food argument conversions or arity fail before mutation.
+This source does not yet have a new installed-assets result; the last
+committed `d7b5bb79` probe still fails at `isKnownPoison:2324` and the missing
+designation registry. Its inventory window/refresh are restored, with blank
+drawn rows. All four native build/full-suite checks pass for that prior commit.
+
+The preceding October 27 actual-reference continuation routes production player load/save
 through the same retained container and saved-inventory list. Resolved compressed
 records construct fresh actual items, capturing script textures before body load;
 repeated records reread the original buffer, retain nullable obsolete positions,
@@ -41,7 +77,7 @@ Floor update predicates now read the actual object's current square, first
 pointer membership in its world-object list, and stored exterior flag. They use
 the service's captured immutable tables without borrowing the sprite manager.
 Needed process registries, designation, model/render and other lifecycle branches
-still report their own missing capabilities. This batch passes the workspace
+still report their own missing capabilities. That preceding actual-reference batch passed the workspace
 all-target check, 1,901 affected tests (zero failed, nine ignored across 35
 summaries), and the native client build. All 1,384 recorded Rust/Cargo inputs
 remain unchanged; all 49 changed compiled inputs have independent source review.

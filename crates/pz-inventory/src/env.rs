@@ -283,6 +283,9 @@ pub fn create_from_template_ref(
         item: Some(item.clone()),
         retired: std::mem::take(&mut retired),
     })?;
+    copy_food_poison_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error, item: Some(item.clone()), retired: std::mem::take(&mut retired),
+    })?;
     // Native Food construction (including all texture capture) has returned
     // before Item.InstanceItem PC632 reads this current argument script field.
     // Any earlier constructor failure retains the raw 60-minute default.
@@ -290,6 +293,9 @@ pub fn create_from_template_ref(
         error,
         item: Some(item.clone()),
         retired: std::mem::take(&mut retired),
+    })?;
+    copy_food_herbalist_ref(&item, &template).map_err(|error| FactoryItemFailure {
+        error, item: Some(item.clone()), retired: std::mem::take(&mut retired),
     })?;
     finish_constructor_prefix(env, &mut item.borrow_mut());
     // Item.InstanceItem PC3336/3345: common condition setters follow the
@@ -612,6 +618,34 @@ fn copy_common_item_capacity_ref(
         .map_err(|_| RuntimeHostError::Borrowed("InstanceItem common itemCapacity receiver"))?
         .item_capacity = capacity as f32;
     crate::shared::observe_item(item);
+    Ok(())
+}
+
+// InstanceItem PC504,516,534 read the current constructor argument, after
+// Food's superclass and subclass initialization, separately from PC742.
+fn copy_food_poison_ref(item: &crate::shared::ItemRef, template: &ItemTemplate) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError as E;
+    if template.class != ItemClass::Food { return Ok(()); }
+    for phase in 0..3 {
+        let value = if let Some(script) = &template.script {
+            let script = script.0.try_borrow().map_err(|_| E::Borrowed("InstanceItem Food poison script"))?;
+            match phase { 0 => i32::from(script.poison), 1 => script.poison_detection_level, _ => script.poison_power }
+        } else { match phase { 0 => i32::from(template.poison), 1 => template.poison_detection_level, _ => template.poison_power } };
+        let mut item = item.try_borrow_mut().map_err(|_| E::Borrowed("InstanceItem Food poison receiver"))?;
+        let crate::ItemKind::Food(food) = &mut item.kind else { return Err(E::InvalidHostState("Food receiver class")) };
+        match phase { 0 => food.poison = value != 0, 1 => food.poison_level_for_recipe = value, _ => food.poison_power = value }
+    }
+    Ok(())
+}
+fn copy_food_herbalist_ref(item: &crate::shared::ItemRef, template: &ItemTemplate) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError as E;
+    if template.class != ItemClass::Food { return Ok(()); }
+    let herbalist = if let Some(script) = &template.script {
+        script.0.try_borrow().map_err(|_| E::Borrowed("InstanceItem Food herbalist script"))?.herbalist_type.clone()
+    } else { template.herbalist_type.clone() };
+    let mut item = item.try_borrow_mut().map_err(|_| E::Borrowed("InstanceItem Food herbalist receiver"))?;
+    let crate::ItemKind::Food(food) = &mut item.kind else { return Err(E::InvalidHostState("Food receiver class")) };
+    food.herbalist_type = herbalist;
     Ok(())
 }
 

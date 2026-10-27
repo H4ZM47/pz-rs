@@ -28,7 +28,9 @@ use pz_core::game_time_save;
 use pz_core::save_trackers::{InstanceTracker, MetaTracker, Statistics};
 use pz_core::thumbnail::{self, Thumbnail};
 use pz_kahlua::java_io::JavaWrite;
-use pz_world::meta_save::{save_map_meta, MetaWorld, NetRole};
+use pz_world::meta_save::{try_save_map_meta, MetaWorld, NetRole};
+use pz_entity::runtime_load::HostResult;
+use pz_world::designation::DesignationIoError;
 use pz_world::save::vehicle::VehicleRow;
 use pz_world::save::vehicles_db::{self, ChunkVehiclesUnloaded};
 use pz_world::zone_save::{SpawnedZombieZones, UuidSource};
@@ -326,8 +328,14 @@ pub fn save_game_before_event(g: &SaveGame<'_>) -> io::Result<SaveReport> {
 /// read again after the event, since its handlers can change the clock,
 /// world and global objects. A skipped prelude remains a skipped save.
 pub fn save_game_cell(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks, report: &mut SaveReport) {
+    assert!(g.meta_world.designation_zones.archive().is_some(), "owned archive save_game_cell profile; use save_game_cell_actual for Live");
+    save_game_cell_actual(g,hooks,report).expect("archive save_game_cell has no host phase");
+}
+
+/// Actual save phase; host failures never become native file-error strings.
+pub fn save_game_cell_actual(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks, report: &mut SaveReport) -> HostResult<()> {
     if !report.saved {
-        return;
+        return Ok(());
     }
     let dir = g.save_dir;
     let log = |r: &mut SaveReport, what: &str, e: io::Result<()>| {
@@ -359,7 +367,7 @@ pub fn save_game_cell(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks, repor
         let gt_ok = gt.is_ok();
         log(report, "map_t.bin", gt);
         if gt_ok {
-            save_meta_grid(g, report);
+            save_meta_grid(g, report)?;
             if g.players.is_some() && g.can_save_players {
                 report.force_save_players = true;
             }
@@ -369,6 +377,7 @@ pub fn save_game_cell(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks, repor
             }
         }
     }
+    Ok(())
 }
 
 /// The remaining systems after [`save_game_cell`]: animals, population,
@@ -391,9 +400,17 @@ pub fn save_game_finish(g: &mut SaveGame<'_>, hooks: &mut dyn SaveGameHooks, rep
 /// `IsoMetaGrid.save()`: `map_meta.bin`, `map_zone.bin`, `map_animals.bin`,
 /// then `metagrid/metacell_*.bin` for the queued cells; the first failure
 /// ends it (logged).
-fn save_meta_grid(g: &mut SaveGame<'_>, report: &mut SaveReport) {
+fn save_meta_grid(g: &mut SaveGame<'_>, report: &mut SaveReport) -> HostResult<()> {
     let dir = g.save_dir;
-    let meta = save_map_meta(g.meta, g.meta_world, NetRole::SinglePlayer);
+    let meta = match try_save_map_meta(g.meta,g.meta_world,NetRole::SinglePlayer) {
+        Ok(meta)=>meta,
+        Err(DesignationIoError::Host(error))=>return Err(error),
+        Err(DesignationIoError::Io(error))=>{
+            eprintln!("ERROR: IsoMetaGrid.save: {error}");
+            report.errors.push(format!("IsoMetaGrid.save: {error}"));
+            return Ok(());
+        }
+    };
     let r = write(dir, "map_meta.bin", &meta)
         .and_then(|_| g.meta.save_zones_file(dir, g.spawned_zones, &mut *g.uuids))
         .and_then(|_| g.meta.save_animal_zones_file(dir, &mut *g.uuids))
@@ -402,6 +419,7 @@ fn save_meta_grid(g: &mut SaveGame<'_>, report: &mut SaveReport) {
         eprintln!("ERROR: IsoMetaGrid.save: {e}");
         report.errors.push(format!("IsoMetaGrid.save: {e}"));
     }
+    Ok(())
 }
 
 /// The meta-grid loads of `IsoWorld.init` after `map_zone.bin`:
@@ -514,14 +532,20 @@ pub struct HotSave<'a> {
 /// `save()` methods. Failures are logged and returned; the other files
 /// are still written.
 pub fn hot_save_ancillary(h: &mut HotSave<'_>) -> Vec<String> {
+    assert!(h.meta_world.designation_zones.archive().is_some(), "owned archive hot-save profile; use hot_save_ancillary_actual for Live");
+    hot_save_ancillary_actual(h).expect("archive hot-save has no host phase")
+}
+
+pub fn hot_save_ancillary_actual(h: &mut HotSave<'_>) -> HostResult<Vec<String>> {
     let mut errors = Vec::new();
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    files.push((
-        "map_meta.bin".into(),
-        save_map_meta(h.meta, h.meta_world, NetRole::SinglePlayer),
-    ));
+    let metadata_prefix_ok=match try_save_map_meta(h.meta,h.meta_world,NetRole::SinglePlayer) {
+        Ok(bytes)=>{files.push(("map_meta.bin".into(),bytes));true},
+        Err(DesignationIoError::Host(error))=>return Err(error),
+        Err(DesignationIoError::Io(error))=>{errors.push(format!("IsoMetaGrid.saveToBufferMap: {error}"));false},
+    };
     // `saveToBufferMap`: the first failure ends the meta grid's part.
-    let meta = h
+    let meta = if metadata_prefix_ok { h
         .meta
         .save_zones(h.spawned_zones, &mut *h.uuids)
         .and_then(|z| {
@@ -530,7 +554,7 @@ pub fn hot_save_ancillary(h: &mut HotSave<'_>) -> Vec<String> {
             files.push(("map_animals.bin".into(), a));
             files.extend(h.meta.save_cells());
             Ok(())
-        });
+        }) } else { Ok(()) };
     if let Err(e) = meta {
         errors.push(format!("IsoMetaGrid.saveToBufferMap: {e}"));
     }
@@ -548,7 +572,7 @@ pub fn hot_save_ancillary(h: &mut HotSave<'_>) -> Vec<String> {
     for e in &errors {
         eprintln!("ERROR: {e}");
     }
-    errors
+    Ok(errors)
 }
 
 #[cfg(test)]

@@ -34,6 +34,11 @@ use crate::bind_items::LuaInventoryItem;
 use crate::bind_misc_classes::Color;
 use crate::bind_world_object::LuaWorldObject;
 
+mod designation;
+pub use designation::{install_designation_observer, observe_designation, register_designation_registry, register_designation_list, register_designation_zone, register_designation_pool, register_designation_userdata};
+use crate::bind_designation::LuaDesignationZone;
+use pz_world::designation::{DesignationRegistry, DesignationList, DesignationZone, DesignationPositionPool};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MetadataStatus {
     Complete,
@@ -65,6 +70,11 @@ impl std::fmt::Display for RegistrationFault {
 impl std::error::Error for RegistrationFault {}
 
 enum Pending {
+    DesignationRegistry(Weak<RefCell<DesignationRegistry>>),
+    DesignationList(Weak<RefCell<DesignationList>>),
+    DesignationZone(Weak<RefCell<DesignationZone>>),
+    DesignationPool(Weak<RefCell<DesignationPositionPool>>),
+    DesignationUserdata(Weak<LuaDesignationZone>),
     Square(Weak<RefCell<IsoGridSquare>>),
     Sprite(Weak<RefCell<RuntimeSprite>>),
     SpriteInstance(Weak<RefCell<RuntimeSpriteInstance>>),
@@ -95,6 +105,11 @@ enum Pending {
 impl Pending {
     fn key(&self) -> (&'static str, usize) {
         match self {
+            Self::DesignationRegistry(w) => ("Designation registry", w.as_ptr() as usize),
+            Self::DesignationList(w) => ("Designation list", w.as_ptr() as usize),
+            Self::DesignationZone(w) => ("Designation zone", w.as_ptr() as usize),
+            Self::DesignationPool(w) => ("Designation position pool", w.as_ptr() as usize),
+            Self::DesignationUserdata(w) => ("Designation userdata", w.as_ptr() as usize),
             Self::Square(w) => ("Square", w.as_ptr() as usize),
             Self::Sprite(w) => ("RuntimeSprite", w.as_ptr() as usize),
             Self::SpriteInstance(w) => ("RuntimeSpriteInstance", w.as_ptr() as usize),
@@ -124,6 +139,11 @@ impl Pending {
 
     fn alive(&self) -> bool {
         match self {
+            Self::DesignationRegistry(w) => w.strong_count() != 0,
+            Self::DesignationList(w) => w.strong_count() != 0,
+            Self::DesignationZone(w) => w.strong_count() != 0,
+            Self::DesignationPool(w) => w.strong_count() != 0,
+            Self::DesignationUserdata(w) => w.strong_count() != 0,
             Self::Square(w) => w.strong_count() != 0,
             Self::Sprite(w) => w.strong_count() != 0,
             Self::SpriteInstance(w) => w.strong_count() != 0,
@@ -1178,6 +1198,7 @@ pub fn observe_object(object: &IsoObjectRef, native_class: &'static str) {
 }
 
 pub fn install_observers() {
+    install_designation_observer();
     pz_inventory::shared::install_item_observer(Some(observe_item));
     pz_inventory::shared::install_container_observer(Some(observe_container));
     pz_characters::character::save::install_saved_inventory_observer(Some(observe_saved_inventory));
@@ -1222,6 +1243,11 @@ pub fn retry_pending() {
         .unwrap_or_default();
     for (_, record) in records {
         match record {
+            Pending::DesignationRegistry(w) => { if let Some(v)=w.upgrade() {let _=register_designation_registry(&v);} }
+            Pending::DesignationList(w) => { if let Some(v)=w.upgrade() {let _=register_designation_list(&v);} }
+            Pending::DesignationZone(w) => { if let Some(v)=w.upgrade() {let _=register_designation_zone(&v);} }
+            Pending::DesignationPool(w) => { if let Some(v)=w.upgrade() {let _=register_designation_pool(&v);} }
+            Pending::DesignationUserdata(w) => { if let Some(v)=w.upgrade() {let _=register_designation_userdata(&v);} }
             Pending::Square(w) => {
                 if let Some(v) = w.upgrade() {
                     let _ = register_owner_graph(OwnerNode::Square(v));

@@ -456,6 +456,9 @@ fn drain_retired_host_owners() {
     for fault in pz_lua_api::bind_world_object::take_native_class_faults() {
         eprintln!("world native class registration: {fault}");
     }
+    for fault in pz_lua_api::bind_designation::take_native_class_faults() {
+        eprintln!("designation native class registration: {fault}");
+    }
     let _ = pz_kahlua::gc::collect_pending();
 }
 
