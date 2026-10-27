@@ -1868,6 +1868,7 @@ dependencies = [
  "pz-gpu",
  "pz-inventory",
  "pz-iso-render",
+ "pz-kahlua",
  "pz-lighting",
  "pz-model",
  "pz-ragdoll",
@@ -2029,6 +2030,7 @@ version = "0.1.0"
 dependencies = [
  "pz-classfile",
  "pz-entity",
+ "pz-kahlua",
  "pz-scripts",
 ]
 

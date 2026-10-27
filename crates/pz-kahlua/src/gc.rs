@@ -25,7 +25,7 @@
 //! Hosts holding world or rendering guards across such calls must keep a
 //! collection deferral alive until those guards end, then drain explicitly.
 
-use crate::table::Table;
+use crate::table::{RetiredTableValues, Table};
 use crate::value::Value;
 use crate::vm::{LuaClosure, NativeFunction, UpValue, UpValueRef};
 use std::any::TypeId;
@@ -66,6 +66,47 @@ struct Collector {
 thread_local! {
     static COLLECTOR: RefCell<Collector> = RefCell::new(Collector::default());
     static COLLECTION_DEFERRALS: Cell<usize> = const { Cell::new(0) };
+    static RETIRED_TABLE_VALUES: RefCell<Vec<RetiredTableValues>> = const { RefCell::new(Vec::new()) };
+    static RETIREMENT_DRAIN_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Keep replaced physical table owners alive until the outer host boundary.
+/// This queue is an ordinary external root, not another editable table.
+pub fn retire_table_values(values: RetiredTableValues) {
+    if !values.is_empty() {
+        RETIRED_TABLE_VALUES.with(|queue| queue.borrow_mut().push(values));
+    }
+}
+
+struct RetirementDrain;
+impl Drop for RetirementDrain {
+    fn drop(&mut self) {
+        let _ = RETIREMENT_DRAIN_ACTIVE.try_with(|active| active.set(false));
+    }
+}
+
+/// Release one generation of replaced owners after all enclosing host guards
+/// have ended. Destructors may register objects or enqueue later retirements;
+/// no queue or collector borrow spans their execution. Dropping a collection
+/// deferral never calls this function implicitly.
+pub fn drain_retired_table_values() -> usize {
+    if COLLECTION_DEFERRALS
+        .try_with(|depth| depth.get() != 0)
+        .unwrap_or(true)
+        || COLLECTOR
+            .try_with(|collector| collector.try_borrow().map_or(true, |c| c.active))
+            .unwrap_or(true)
+        || RETIREMENT_DRAIN_ACTIVE
+            .try_with(|active| active.replace(true))
+            .unwrap_or(true)
+    {
+        return 0;
+    }
+    let _drain = RetirementDrain;
+    let retired = RETIRED_TABLE_VALUES.with(|queue| std::mem::take(&mut *queue.borrow_mut()));
+    let count = retired.iter().map(RetiredTableValues::len).sum();
+    drop(retired);
+    count
 }
 
 /// Prevent collection while a host holds guards that final destructors may
@@ -198,6 +239,7 @@ pub enum CollectionResult {
 /// Drain a queued request at a host safe point. Returned Lua values and any
 /// other handles held by the caller remain ordinary strong roots.
 pub fn collect_pending() -> CollectionResult {
+    drain_retired_table_values();
     if COLLECTOR
         .try_with(|collector| collector.borrow().pending)
         .unwrap_or(false)
@@ -228,7 +270,8 @@ impl Drop for ActivePass {
 pub fn collect_tables() -> CollectionResult {
     let deferred = COLLECTION_DEFERRALS
         .try_with(|depth| depth.get() != 0)
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || RETIREMENT_DRAIN_ACTIVE.try_with(Cell::get).unwrap_or(true);
     let started = COLLECTOR.try_with(|collector| {
         let mut collector = collector.borrow_mut();
         if deferred || collector.active {

@@ -211,8 +211,13 @@ impl WorldModels {
         Ok(())
     }
 
-    pub fn action_movement_modifiers(&self, chr: &LuaGameCharacter) -> Option<pz_characters::character::state::MoveDeltaModifiers> {
-        self.characters.get(&chr.id).map(|model| base_deltas(model, chr))
+    pub fn action_movement_modifiers(
+        &self,
+        chr: &LuaGameCharacter,
+    ) -> Option<pz_characters::character::state::MoveDeltaModifiers> {
+        self.characters
+            .get(&chr.id)
+            .map(|model| base_deltas(model, chr))
     }
 
     /// Resume once the host releases its borrows and calls the Lua modifier.
@@ -222,7 +227,10 @@ impl WorldModels {
         dt: f32,
         modifiers: Option<pz_characters::character::state::MoveDeltaModifiers>,
     ) -> Result<Vec<AnimEventRecord>, String> {
-        let model = self.characters.get_mut(&chr.id).ok_or("character model is not initialized")?;
+        let model = self
+            .characters
+            .get_mut(&chr.id)
+            .ok_or("character model is not initialized")?;
         apply_deltas(model, chr, modifiers);
         model.player.update(dt, Some(&*chr));
         model.animator.dispatch_track_events(&mut model.player, chr);
@@ -480,7 +488,10 @@ fn update_direction_and_turning(model: &mut CharacterModel, chr: &mut LuaGameCha
     }
 }
 
-fn base_deltas(model: &CharacterModel, chr: &LuaGameCharacter) -> pz_characters::character::state::MoveDeltaModifiers {
+fn base_deltas(
+    model: &CharacterModel,
+    chr: &LuaGameCharacter,
+) -> pz_characters::character::state::MoveDeltaModifiers {
     let mut deltas = pz_characters::character::state::MoveDeltaModifiers {
         move_delta: chr.vars.move_delta,
         turn_delta: if model.zombie {
@@ -503,7 +514,11 @@ fn base_deltas(model: &CharacterModel, chr: &LuaGameCharacter) -> pz_characters:
     deltas
 }
 
-fn apply_deltas(model: &mut CharacterModel, chr: &LuaGameCharacter, modifiers: Option<pz_characters::character::state::MoveDeltaModifiers>) {
+fn apply_deltas(
+    model: &mut CharacterModel,
+    chr: &LuaGameCharacter,
+    modifiers: Option<pz_characters::character::state::MoveDeltaModifiers>,
+) {
     let mut deltas = modifiers.unwrap_or_else(|| base_deltas(model, chr));
     if deltas.twist_delta == -1.0 {
         deltas.twist_delta = deltas.turn_delta * 1.8;
@@ -560,35 +575,54 @@ fn release_textures(textures: &mut Vec<Texture>, combiner: &mut dyn Combiner) {
 fn equipment_key(
     e: &EquippedModels<'_>,
     scripts: &dyn pz_character_model::model_tree::ModelScripts,
-) -> String {
-    fn key(h: &HeldItem<'_>, scripts: &dyn pz_character_model::model_tree::ModelScripts) -> String {
-        format!(
+) -> pz_inventory::ModDataResult<String> {
+    fn key(
+        h: &HeldItem<'_>,
+        scripts: &dyn pz_character_model::model_tree::ModelScripts,
+    ) -> pz_inventory::ModDataResult<String> {
+        Ok(format!(
             "{:?}",
             (
                 h.item.id,
-                h.static_model(scripts),
-                h.static_model_exception(scripts),
+                h.try_static_model(scripts)?,
+                h.try_static_model_exception(scripts)?,
                 h.texture_init(),
                 h.visual.as_ref(),
                 h.replacement_primary_hand(),
                 h.replacement_second_hand(),
                 h.weapon_part_models()
             )
-        )
+        ))
     }
-    format!(
+    let primary = e.primary.as_ref().map(|h| key(h, scripts)).transpose()?;
+    let secondary = e.secondary.as_ref().map(|h| key(h, scripts)).transpose()?;
+    let action = e
+        .action
+        .as_ref()
+        .map(|a| -> pz_inventory::ModDataResult<_> {
+            Ok((
+                a.primary_item
+                    .as_ref()
+                    .map(|h| key(h, scripts))
+                    .transpose()?,
+                a.secondary_item
+                    .as_ref()
+                    .map(|h| key(h, scripts))
+                    .transpose()?,
+                &a.primary_model,
+                &a.secondary_model,
+            ))
+        })
+        .transpose()?;
+    let attached = e
+        .attached
+        .iter()
+        .map(|a| Ok((&a.attachment_name, key(&a.item, scripts)?)))
+        .collect::<pz_inventory::ModDataResult<Vec<_>>>()?;
+    Ok(format!(
         "{:?}",
-        (
-            e.primary.as_ref().map(|h| key(h, scripts)),
-            e.secondary.as_ref().map(|h| key(h, scripts)),
-            e.hide_weapon_model,
-            e.action.as_ref().map(|a| (a.primary_item.as_ref().map(|h| key(h, scripts)), a.secondary_item.as_ref().map(|h| key(h, scripts)), &a.primary_model, &a.secondary_model)),
-            e.attached
-                .iter()
-                .map(|a| (&a.attachment_name, key(&a.item, scripts)))
-                .collect::<Vec<_>>()
-        )
-    )
+        (primary, secondary, e.hide_weapon_model, action, attached)
+    ))
 }
 
 fn rebuild_if_changed(
@@ -625,13 +659,20 @@ fn rebuild_if_changed(
                 return Err("worn-item visual assets are unavailable".into());
             };
             let loc = chr.items.worn_location(id);
-            if let Some(v) = ResolvedItemVisual::from_item(
-                &mut item.borrow_mut(),
+            pz_inventory::moddata::prepare_clothing_mod_data_ref(&item)
+                .map_err(|error| error.to_string())?;
+            let mut item_body = item
+                .try_borrow_mut()
+                .map_err(|_| "worn item visual body is already borrowed")?;
+            if let Some(v) = ResolvedItemVisual::try_from_item(
+                &mut item_body,
                 assets,
                 chr,
                 env.visual_rng(),
                 loc,
-            ) {
+            )
+            .map_err(|error| error.to_string())?
+            {
                 visuals.push(v);
             };
         }
@@ -641,12 +682,59 @@ fn rebuild_if_changed(
     let secondary = chr.items.secondary_hand_item();
     let action = chr.character_actions.borrow().first().and_then(|a| {
         let a = a.borrow();
-        a.override_hand_models.then(|| (a.primary_item.clone(), a.secondary_item.clone(), a.primary_model.clone(), a.secondary_model.clone()))
+        a.override_hand_models.then(|| {
+            (
+                a.primary_item.clone(),
+                a.secondary_item.clone(),
+                a.primary_model.clone(),
+                a.secondary_model.clone(),
+            )
+        })
     });
-    let action_primary = action.as_ref().and_then(|a| a.0.as_ref()).map(|i| i.borrow());
-    let action_secondary = action.as_ref().and_then(|a| a.1.as_ref()).map(|i| i.borrow());
-    let pb = primary.as_ref().map(|i| i.borrow());
-    let sb = secondary.as_ref().map(|i| i.borrow());
+    // Publish actual lazy ModData slots before any item guard. Held table
+    // bodies remain explicit errors in the subsequent model/cache queries.
+    for item in [
+        primary.as_ref(),
+        secondary.as_ref(),
+        action.as_ref().and_then(|a| a.0.as_ref()),
+        action.as_ref().and_then(|a| a.1.as_ref()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        pz_inventory::moddata::prepare_static_model_mod_data_ref(item)
+            .map_err(|error| error.to_string())?;
+    }
+    let action_primary = action
+        .as_ref()
+        .and_then(|a| a.0.as_ref())
+        .map(|i| {
+            i.try_borrow()
+                .map_err(|_| "action primary item body is already borrowed")
+        })
+        .transpose()?;
+    let action_secondary = action
+        .as_ref()
+        .and_then(|a| a.1.as_ref())
+        .map(|i| {
+            i.try_borrow()
+                .map_err(|_| "action secondary item body is already borrowed")
+        })
+        .transpose()?;
+    let pb = primary
+        .as_ref()
+        .map(|i| {
+            i.try_borrow()
+                .map_err(|_| "primary item body is already borrowed")
+        })
+        .transpose()?;
+    let sb = secondary
+        .as_ref()
+        .map(|i| {
+            i.try_borrow()
+                .map_err(|_| "secondary item body is already borrowed")
+        })
+        .transpose()?;
     let held = |i| {
         let mut h = HeldItem::new(i);
         if let Some(assets) = item_assets {
@@ -685,7 +773,8 @@ fn rebuild_if_changed(
         action: action.as_ref().map(|a| ActionHandModels {
             primary_item: action_primary.as_deref().map(held),
             secondary_item: action_secondary.as_deref().map(held),
-            primary_model: a.2.clone(), secondary_model: a.3.clone(),
+            primary_model: a.2.clone(),
+            secondary_model: a.3.clone(),
         }),
         ..Default::default()
     };
@@ -711,7 +800,7 @@ fn rebuild_if_changed(
     let mut appearance = Appearance {
         human: hv.clone(),
         worn: visuals,
-        equipment: equipment_key(&equipped, &*sm),
+        equipment: equipment_key(&equipped, &*sm).map_err(|error| error.to_string())?,
         simple_clothing,
         simple_weapon,
     };
@@ -736,7 +825,7 @@ fn rebuild_if_changed(
         &body_visuals,
     );
     let bone_index = |n: &str| model.player.skinning_bone_index(n, -1);
-    let mut slot = ModelSlot::build(&CharacterModelInput {
+    let mut slot = ModelSlot::try_build(&CharacterModelInput {
         human: &human,
         item_visuals: &appearance.worn,
         equipped: &equipped,
@@ -746,7 +835,8 @@ fn rebuild_if_changed(
         scripts: &*sm,
         body_model_script: None,
         bone_index: &bone_index,
-    });
+    })
+    .map_err(|error| error.to_string())?;
     let fs = fs.borrow();
     let decals = |name: &str| {
         a.pop
@@ -774,4 +864,52 @@ fn rebuild_if_changed(
     model.appearance = Some(appearance);
     model.jobs = Some(jobs.jobs);
     Ok(())
+}
+
+#[cfg(test)]
+mod mod_data_tests {
+    use super::*;
+    use pz_kahlua::Value;
+    #[test]
+    fn equipment_cache_key_reads_actual_table_changes_and_propagates_held_body_fault() {
+        let mut template = pz_inventory::ItemTemplate::new(
+            pz_inventory::ItemClass::Normal,
+            "Base",
+            "LiveEquipmentKey",
+        );
+        template.static_model = Some("Base.First".into());
+        let actual = pz_inventory::shared::try_new_item(pz_inventory::InventoryItem::create(
+            Rc::new(template),
+            1,
+        ))
+        .unwrap();
+        let table = pz_inventory::moddata::get_mod_data_ref(&actual).unwrap();
+        let scripts: HashMap<String, pz_character_model::data::ModelScriptRef> = HashMap::new();
+        let key = || {
+            let body = actual.borrow();
+            equipment_key(
+                &EquippedModels {
+                    primary: Some(HeldItem::new(&body)),
+                    ..Default::default()
+                },
+                &scripts,
+            )
+        };
+        let first = key().unwrap();
+        pz_inventory::moddata::set_mod_data_value_ref(
+            &actual,
+            "staticModel",
+            Some(Value::str("Base.Second")),
+        )
+        .unwrap();
+        let second = key().unwrap();
+        assert_ne!(first, second);
+        let guard = table.try_borrow_body_mut().unwrap();
+        assert!(matches!(
+            key(),
+            Err(pz_inventory::ModDataError::Borrowed(_))
+        ));
+        drop(guard);
+        assert_eq!(key().unwrap(), second);
+    }
 }

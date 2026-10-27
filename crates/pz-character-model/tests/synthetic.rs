@@ -134,11 +134,11 @@ fn build(visuals: &[ResolvedItemVisual], eq: &EquippedModels) -> ModelSlot {
     build_with(visuals, eq, &HashMap::new())
 }
 
-fn build_with(
+fn try_build_with(
     visuals: &[ResolvedItemVisual],
     eq: &EquippedModels,
     scripts: &HashMap<String, ModelScriptRef>,
-) -> ModelSlot {
+) -> pz_inventory::ModDataResult<ModelSlot> {
     let hs = styles();
     let mut hv = human_visual();
     let h = human(&mut hv, &hs);
@@ -148,7 +148,7 @@ fn build_with(
         "Bip01_Prop2" => 33,
         _ => -1,
     };
-    ModelSlot::build(&CharacterModelInput {
+    ModelSlot::try_build(&CharacterModelInput {
         human: &h,
         item_visuals: visuals,
         equipped: eq,
@@ -159,6 +159,14 @@ fn build_with(
         body_model_script: None,
         bone_index: &bi,
     })
+}
+
+fn build_with(
+    visuals: &[ResolvedItemVisual],
+    eq: &EquippedModels,
+    scripts: &HashMap<String, ModelScriptRef>,
+) -> ModelSlot {
+    try_build_with(visuals, eq, scripts).expect("synthetic unborrowed item model data")
 }
 
 #[test]
@@ -642,7 +650,7 @@ fn static_model_getters() {
         LuaKey::Str("staticModel".into()),
         Some(LuaValue::Str("Base.Pot".into())),
     );
-    p.table = Some(t);
+    p.table = Some(t.into());
     let h = HeldItem::new(&p);
     assert_eq!(h.static_model(&scripts).as_deref(), Some("Base.Pot"));
     assert_eq!(
@@ -797,4 +805,61 @@ fn equipped_texture_jobs() {
         fluid_tint: None,
     };
     assert!(equipped_texture_job(tex, &clean, &|_| true).is_none());
+}
+
+#[test]
+fn actual_mod_data_changes_attached_model_and_table_borrow_propagates_through_model_and_atlas() {
+    use pz_inventory::moddata::{get_mod_data_ref, set_mod_data_value_ref};
+    use pz_inventory::ModDataError;
+    use pz_kahlua::Value;
+    let (item, _) = plain("ActualModel", Some("Base.Initial"));
+    let item = pz_inventory::shared::try_new_item(item).unwrap();
+    let table = get_mod_data_ref(&item).unwrap();
+    let scripts: HashMap<String, ModelScriptRef> = [
+        ("Base.Initial".into(), model_script("Initial", "initial")),
+        ("Base.Changed".into(), model_script("Changed", "changed")),
+    ]
+    .into();
+    let model_mesh = || {
+        let body = item.borrow();
+        let eq = EquippedModels {
+            attached: vec![AttachedModel {
+                attachment_name: Some("test".into()),
+                item: HeldItem::new(&body),
+            }],
+            ..Default::default()
+        };
+        let slot = try_build_with(&[], &eq, &scripts).unwrap();
+        slot.instance(slot.attached_models[0]).mesh_name.clone()
+    };
+    assert_eq!(model_mesh(), "initial");
+    set_mod_data_value_ref(&item, "staticModel", Some(Value::str("Base.Changed"))).unwrap();
+    assert_eq!(model_mesh(), "changed");
+    {
+        let _guard = table.try_borrow_body_mut().unwrap();
+        let body = item.borrow();
+        let eq = EquippedModels {
+            attached: vec![AttachedModel {
+                attachment_name: None,
+                item: HeldItem::new(&body),
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            try_build_with(&[], &eq, &scripts),
+            Err(ModDataError::Borrowed(_))
+        ));
+        assert!(matches!(
+            pz_character_model::world_item::try_item_params(&body, &scripts, &Res, false),
+            Err(ModDataError::Borrowed(_))
+        ));
+    }
+    set_mod_data_value_ref(&item, "worldStaticModel", Some(Value::Bool(true))).unwrap();
+    assert!(matches!(
+        pz_character_model::world_item::try_item_params(&item.borrow(), &scripts, &Res, false),
+        Err(ModDataError::Native {
+            class: "java.lang.ClassCastException",
+            ..
+        })
+    ));
 }

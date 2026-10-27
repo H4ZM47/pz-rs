@@ -3,6 +3,8 @@
 //! This is a value-tree copy policy, not a native object-graph clone. Repeated
 //! bag children are copied per occurrence. Cycles and excessively deep or large
 //! trees are rejected before the existing recursive `Clone` implementations run.
+use crate::moddata::ItemModData;
+use pz_kahlua::{TableRef, Value};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -15,6 +17,8 @@ pub enum ArchiveCopyError {
     BorrowedItem,
     BorrowedContainer,
     BorrowedComponent,
+    BorrowedTable,
+    CyclicTable,
     CyclicContainer,
     DepthLimit,
     SizeLimit,
@@ -34,6 +38,7 @@ impl std::error::Error for ArchiveCopyError {}
 #[derive(Default)]
 pub struct ArchiveCopyCheck {
     active_containers: HashSet<usize>,
+    active_tables: HashSet<usize>,
     occurrences: usize,
 }
 
@@ -76,6 +81,19 @@ impl ArchiveCopyCheck {
         self.shared_container(container, 0)
     }
 
+    pub fn shared_container_body(
+        &mut self,
+        container: &crate::shared::SharedContainer,
+    ) -> Result<(), ArchiveCopyError> {
+        self.enter(0)?;
+        for item in &container.items {
+            self.item_ref(item)?;
+        }
+        for item in &container.raw_items {
+            self.saved_item(item)?;
+        }
+        Ok(())
+    }
     pub fn table(&mut self, table: &LuaTable) -> Result<(), ArchiveCopyError> {
         self.table_at(table, 0)
     }
@@ -85,6 +103,50 @@ impl ArchiveCopyCheck {
             self.table(table)?;
         }
         Ok(())
+    }
+    pub fn optional_mod_data(
+        &mut self,
+        table: &Option<ItemModData>,
+    ) -> Result<(), ArchiveCopyError> {
+        if let Some(table) = table {
+            self.mod_table_at(table, 0)?;
+        }
+        Ok(())
+    }
+
+    fn mod_table_at(&mut self, table: &ItemModData, depth: usize) -> Result<(), ArchiveCopyError> {
+        match table {
+            ItemModData::Archive(table) => self.table_at(table, depth),
+            ItemModData::Live(table) => self.live_table_at(table, depth),
+        }
+    }
+    fn live_table_at(&mut self, table: &TableRef, depth: usize) -> Result<(), ArchiveCopyError> {
+        self.enter(depth)?;
+        if !self.active_tables.insert(table.ptr_id()) {
+            return Err(ArchiveCopyError::CyclicTable);
+        }
+        let result = (|| {
+            for (key, value) in table
+                .try_entries()
+                .map_err(|_| ArchiveCopyError::BorrowedTable)?
+            {
+                for value in [key, value] {
+                    match value {
+                        Value::Table(table) => self.live_table_at(&table, depth + 1)?,
+                        _ => self.enter(depth + 1)?,
+                    }
+                }
+            }
+            if let Some(meta) = table
+                .try_metatable()
+                .map_err(|_| ArchiveCopyError::BorrowedTable)?
+            {
+                self.live_table_at(&meta, depth + 1)?;
+            }
+            Ok(())
+        })();
+        self.active_tables.remove(&table.ptr_id());
+        result
     }
 
     fn table_at(&mut self, table: &LuaTable, depth: usize) -> Result<(), ArchiveCopyError> {
@@ -118,7 +180,7 @@ impl ArchiveCopyCheck {
             }
         }
         if let Some(table) = &item.table {
-            self.table_at(table, depth + 1)?;
+            self.mod_table_at(table, depth + 1)?;
         }
         match &item.kind {
             ItemKind::Container(bag) => self.shared_container(&bag.container, depth + 1)?,
@@ -258,5 +320,14 @@ mod tests {
             ArchiveCopyCheck::default().table(&table),
             Err(ArchiveCopyError::DepthLimit)
         );
+    }
+}
+
+impl InventoryItem {
+    /// Independent bounded Rust archive copy. Actual opaque objects retain
+    /// their VM references; this does not implement native debug createCloneItem.
+    pub fn try_archive_copy(&self) -> Result<Self, ArchiveCopyError> {
+        ArchiveCopyCheck::default().item(self, 0)?;
+        Ok(self.clone())
     }
 }

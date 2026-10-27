@@ -169,6 +169,70 @@ fn floor_item_raw_record_preserves_bytes_framing_and_never_promotes() {
 }
 
 #[test]
+fn fallible_floor_snapshot_keeps_live_moddata_and_metatable_independent() {
+    use pz_inventory::ItemModData;
+    use pz_kahlua::{TableRef, Value};
+    let env = Env::new();
+    let table = TableRef::new();
+    let nested = TableRef::new();
+    let meta = TableRef::new();
+    nested.set_str("line", "Base.FishingLine");
+    meta.set_str("inherited", "original");
+    table.set_str("fishing", nested.clone());
+    table.set_metatable(Some(meta.clone()));
+    let mut raw = InventoryItem::create(env.templates[0].clone(), 1);
+    raw.table = Some(ItemModData::Live(table.clone()));
+    let actual = shared::new_item(raw);
+    let floor = FloorItem::retain(&actual);
+    let saved = floor.try_to_saved_snapshot().unwrap();
+    let Some(ItemModData::Live(copied)) = saved.as_item().unwrap().table.as_ref() else {
+        panic!("an explicit graph snapshot retains an independent live-table representation")
+    };
+    assert_ne!(table.ptr_id(), copied.ptr_id());
+    let copied_nested = copied.get_str("fishing").as_table().unwrap().clone();
+    let copied_meta = copied.metatable().unwrap();
+    assert_ne!(nested.ptr_id(), copied_nested.ptr_id());
+    assert_ne!(meta.ptr_id(), copied_meta.ptr_id());
+    copied_nested.set_str("line", "changed");
+    copied_meta.set_str("inherited", "changed");
+    assert_eq!(nested.get_str("line").as_str(), Some("Base.FishingLine"));
+    assert_eq!(meta.get_str("inherited").as_str(), Some("original"));
+    assert!(Rc::ptr_eq(&floor.item_ref().unwrap(), &actual));
+    assert!(matches!(table.get_str("fishing"), Value::Table(_)));
+}
+
+#[test]
+fn fallible_floor_snapshot_rejects_borrowed_and_cyclic_live_moddata_without_mutation() {
+    use pz_inventory::ItemModData;
+    use pz_kahlua::{TableRef, Value};
+    let env = Env::new();
+    let table = TableRef::new();
+    table.set_str("retained", "original");
+    let mut raw = InventoryItem::create(env.templates[0].clone(), 1);
+    raw.table = Some(ItemModData::Live(table.clone()));
+    let actual = shared::new_item(raw);
+    let floor = FloorItem::retain(&actual);
+    let item_guard = actual.borrow_mut();
+    assert_eq!(
+        floor.try_to_saved_snapshot().unwrap_err(),
+        pz_inventory::archive::ArchiveCopyError::BorrowedItem
+    );
+    drop(item_guard);
+    let table_guard = table.try_borrow_body_mut().unwrap();
+    assert!(floor.try_to_saved_snapshot().is_err());
+    drop(table_guard);
+    table.set_str("cycle", table.clone());
+    assert!(floor.try_to_saved_snapshot().is_err());
+    assert_eq!(table.get_str("retained").as_str(), Some("original"));
+    assert_eq!(
+        table.get_str("cycle").as_table().unwrap().ptr_id(),
+        table.ptr_id()
+    );
+    table.rawset(Value::str("cycle"), Value::Nil);
+    assert!(floor.try_to_saved_snapshot().is_ok());
+}
+
+#[test]
 fn floor_item_live_mutation_is_serialized_and_decoded_owner_is_reused() {
     let env = Env::new();
     let item = env.item(3, 19);

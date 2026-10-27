@@ -17,6 +17,11 @@ pub enum SavedItem {
 }
 
 impl SavedItem {
+    pub fn try_archive_copy(&self) -> Result<Self, crate::archive::ArchiveCopyError> {
+        crate::archive::ArchiveCopyCheck::default().saved_item(self)?;
+        Ok(self.clone())
+    }
+
     /// `getRegistry_id()`.
     pub fn registry_id(&self) -> i16 {
         match self {

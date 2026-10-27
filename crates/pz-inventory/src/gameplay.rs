@@ -10,10 +10,11 @@ use crate::assets::{ClothingItem, ItemAssets};
 use crate::container::ItemContainer;
 use crate::context::{wet_dry_state, ItemContext, ItemOwner, WetDryState};
 use crate::item::{ClothingData, InventoryItem, ItemKind};
-use crate::lua_table::{LuaKey, LuaTable, LuaValue};
+use crate::moddata::{ModDataError, ModDataResult};
 use crate::saved::SavedItem;
 use crate::template::ItemClass;
 use crate::visual::{ItemVisual, VisualRng};
+use pz_kahlua::Value;
 use pz_scripts::objects::items::ItemReplacement;
 
 /// `ItemTag` registry ids these methods test.
@@ -34,6 +35,7 @@ pub mod tags {
 pub enum ItemError {
     /// `NullPointerException` (what was null).
     NullPointer(&'static str),
+    ModData(ModDataError),
 }
 
 /// `getAlternateModelName()` values.
@@ -131,21 +133,17 @@ pub fn module_dot_type(module: &str, t: &str) -> String {
     }
 }
 
-fn str_key(k: &str) -> LuaKey {
-    LuaKey::Str(k.to_string())
-}
-
 impl InventoryItem {
     // ----- Visual -----
 
     /// `getAlternateModelName()` (`Clothing` adds `WithoutDrainable` for a
     /// gas mask without a filter or an SCBA without a tank). `None` is the
     /// base field's null.
-    pub fn get_alternate_model_name(
+    pub fn try_get_alternate_model_name(
         &self,
         assets: Option<&ItemAssets>,
         owner: &dyn ItemOwner,
-    ) -> Option<&'static str> {
+    ) -> ModDataResult<Option<&'static str>> {
         let t = &self.template;
         if is_clothing(self) {
             let without = || {
@@ -154,22 +152,31 @@ impl InventoryItem {
                         .as_deref()
                         .is_some_and(|n| assets.is_some_and(|a| a.clothing_items.get(n).is_some()))
             };
-            if self.is_gas_mask() && !self.has_filter() && without() {
-                return Some(alternate_model::WITHOUT_DRAINABLE);
+            if self.is_gas_mask() && !self.try_has_filter()? && without() {
+                return Ok(Some(alternate_model::WITHOUT_DRAINABLE));
             }
-            if self.has_tag(tags::SCBA) && !self.has_tank() && without() {
-                return Some(alternate_model::WITHOUT_DRAINABLE);
+            if self.has_tag(tags::SCBA) && !self.try_has_tank()? && without() {
+                return Ok(Some(alternate_model::WITHOUT_DRAINABLE));
             }
         }
         if owner.has_container(self) {
             if owner.is_primary_hand_item(self) && t.replace_primary_hand.is_some() {
-                return Some(alternate_model::RIGHT_HAND);
+                return Ok(Some(alternate_model::RIGHT_HAND));
             }
             if owner.is_secondary_hand_item(self) && t.replace_second_hand.is_some() {
-                return Some(alternate_model::LEFT_HAND);
+                return Ok(Some(alternate_model::LEFT_HAND));
             }
         }
-        None
+        Ok(None)
+    }
+
+    pub fn get_alternate_model_name(
+        &self,
+        assets: Option<&ItemAssets>,
+        owner: &dyn ItemOwner,
+    ) -> Option<&'static str> {
+        self.try_get_alternate_model_name(assets, owner)
+            .expect("unborrowed clothing model ModData")
     }
 
     /// `getClothingItem()`: the asset of the script's `clothingItem`, or of
@@ -187,51 +194,62 @@ impl InventoryItem {
         self.template.replace_second_hand.as_ref()
     }
 
+    pub fn try_get_clothing_item<'a>(
+        &self,
+        assets: Option<&'a ItemAssets>,
+        owner: &dyn ItemOwner,
+    ) -> ModDataResult<Option<&'a ClothingItem>> {
+        let Some(a) = assets else {
+            return Ok(None);
+        };
+        let t = &self.template;
+        let get = |n: &Option<String>| n.as_deref().and_then(|n| a.clothing_items.get(n));
+        match self.try_get_alternate_model_name(assets, owner)? {
+            Some(alternate_model::RIGHT_HAND) => {
+                return Ok(t
+                    .replace_primary_hand
+                    .as_ref()
+                    .and_then(|r| get(&r.clothing_item_name)));
+            }
+            Some(alternate_model::LEFT_HAND) => {
+                return Ok(t
+                    .replace_second_hand
+                    .as_ref()
+                    .and_then(|r| get(&r.clothing_item_name)));
+            }
+            Some(alternate_model::WITHOUT_DRAINABLE) => {
+                if let Some(c) = get(&t.without_drainable_clothing_item) {
+                    return Ok(Some(c));
+                }
+            }
+            _ => {}
+        }
+        Ok(get(&t.clothing_item))
+    }
+
     pub fn get_clothing_item<'a>(
         &self,
         assets: Option<&'a ItemAssets>,
         owner: &dyn ItemOwner,
     ) -> Option<&'a ClothingItem> {
-        let a = assets?;
-        let t = &self.template;
-        let get = |n: &Option<String>| n.as_deref().and_then(|n| a.clothing_items.get(n));
-        match self.get_alternate_model_name(assets, owner) {
-            Some(alternate_model::RIGHT_HAND) => {
-                return t
-                    .replace_primary_hand
-                    .as_ref()
-                    .and_then(|r| get(&r.clothing_item_name));
-            }
-            Some(alternate_model::LEFT_HAND) => {
-                return t
-                    .replace_second_hand
-                    .as_ref()
-                    .and_then(|r| get(&r.clothing_item_name));
-            }
-            Some(alternate_model::WITHOUT_DRAINABLE) => {
-                if let Some(c) = get(&t.without_drainable_clothing_item) {
-                    return Some(c);
-                }
-            }
-            _ => {}
-        }
-        get(&t.clothing_item)
+        self.try_get_clothing_item(assets, owner)
+            .expect("unborrowed clothing model ModData")
     }
 
     /// `getVisual()`: drops the visual when there is no ready clothing
     /// item, else creates it (`pickUninitializedValues`) and sets its
     /// clothing item and alternate model names.
-    pub fn get_visual(
+    pub fn try_get_visual(
         &mut self,
         assets: Option<&ItemAssets>,
         owner: &dyn ItemOwner,
         rng: &dyn VisualRng,
-    ) -> Option<&mut ItemVisual> {
-        let Some(c) = self.get_clothing_item(assets, owner) else {
+    ) -> ModDataResult<Option<&mut ItemVisual>> {
+        let Some(c) = self.try_get_clothing_item(assets, owner)? else {
             self.visual = None;
-            return None;
+            return Ok(None);
         };
-        let alt = self.get_alternate_model_name(assets, owner);
+        let alt = self.try_get_alternate_model_name(assets, owner)?;
         let full = self.get_full_type();
         let v = self.visual.get_or_insert_with(|| {
             let mut v = ItemVisual::new(&full);
@@ -240,7 +258,17 @@ impl InventoryItem {
         });
         v.clothing_item_name = c.name.clone();
         v.alternate_model_name = alt.unwrap_or("").to_string();
-        Some(v)
+        Ok(Some(v))
+    }
+
+    pub fn get_visual(
+        &mut self,
+        assets: Option<&ItemAssets>,
+        owner: &dyn ItemOwner,
+        rng: &dyn VisualRng,
+    ) -> Option<&mut ItemVisual> {
+        self.try_get_visual(assets, owner, rng)
+            .expect("unborrowed visual ModData")
     }
 
     /// `synchWithVisual()` for the visual part: `Clothing` and
@@ -248,23 +276,23 @@ impl InventoryItem {
     /// clothing type recomputes its blood and dirt levels, and the item
     /// colour follows the tint. (`modelIndex` and the icon texture, drawn
     /// from `Rand` and the texture manager, are not modelled.)
-    pub fn synch_with_visual(
+    pub fn try_synch_with_visual(
         &mut self,
         assets: Option<&ItemAssets>,
         owner: &dyn ItemOwner,
         rng: &dyn VisualRng,
-    ) {
+    ) -> ModDataResult<()> {
         if !is_clothing(self) && !matches!(self.kind, ItemKind::Container(_)) {
-            return;
+            return Ok(());
         }
-        if self.get_visual(assets, owner, rng).is_none() {
-            return;
+        if self.try_get_visual(assets, owner, rng)?.is_none() {
+            return Ok(());
         }
         let assets = assets.expect("a visual needs assets");
         if is_clothing(self) && self.template.blood_clothing_type.is_some() {
             self.calc_total_blood_and_dirt(assets);
         }
-        let c = self.get_clothing_item(Some(assets), owner).unwrap();
+        let c = self.try_get_clothing_item(Some(assets), owner)?.unwrap();
         let tint = self.visual.as_ref().and_then(|v| v.tint);
         if c.allow_random_tint && !self.custom_color {
             let t = tint.unwrap_or([1.0, 1.0, 1.0]);
@@ -272,6 +300,17 @@ impl InventoryItem {
         } else {
             self.col = [self.color_red, self.color_green, self.color_blue, 1.0];
         }
+        Ok(())
+    }
+
+    pub fn synch_with_visual(
+        &mut self,
+        assets: Option<&ItemAssets>,
+        owner: &dyn ItemOwner,
+        rng: &dyn VisualRng,
+    ) {
+        self.try_synch_with_visual(assets, owner, rng)
+            .expect("unborrowed visual ModData")
     }
 
     /// `BloodClothingType.calcTotalBloodLevel` and `calcTotalDirtLevel`.
@@ -719,17 +758,20 @@ impl InventoryItem {
     /// `Clothing.getCorpseSicknessDefense()`: 0 when broken; a mask with a
     /// filter gives at least the basic mask defense, and the improvised or
     /// standard gas mask defense while the filter lasts.
-    pub fn get_corpse_sickness_defense_with(&self, ctx: &dyn ItemContext) -> f32 {
+    pub fn try_get_corpse_sickness_defense_with(
+        &self,
+        ctx: &dyn ItemContext,
+    ) -> ModDataResult<f32> {
         if !is_clothing(self) {
-            return self.template.corpse_sickness_defense;
+            return Ok(self.template.corpse_sickness_defense);
         }
         if self.condition <= 0 {
-            return 0.0;
+            return Ok(0.0);
         }
         let mut defense = self.template.corpse_sickness_defense;
-        if self.has_filter() {
+        if self.try_has_filter()? {
             let mut value = ctx.basic_mask_defense();
-            if self.used_delta() > 0.0 {
+            if self.try_used_delta()? > 0.0 {
                 value = if self.has_tag(tags::IMPROVISED_GAS_MASK) {
                     ctx.improvised_gas_mask_defense()
                 } else {
@@ -740,10 +782,15 @@ impl InventoryItem {
                 defense = value;
             }
         }
-        if self.has_filter() && ctx.basic_mask_defense() > defense {
+        if self.try_has_filter()? && ctx.basic_mask_defense() > defense {
             defense = ctx.basic_mask_defense();
         }
-        defense
+        Ok(defense)
+    }
+
+    pub fn get_corpse_sickness_defense_with(&self, ctx: &dyn ItemContext) -> f32 {
+        self.try_get_corpse_sickness_defense_with(ctx)
+            .expect("unborrowed defense ModData")
     }
 
     // ----- Wetness -----
@@ -847,114 +894,107 @@ impl InventoryItem {
 
     // ----- Gas masks and SCBAs -----
 
-    fn mod_data_str(&self, key: &str) -> Option<&str> {
-        match self.table.as_ref()?.rawget(&str_key(key))? {
-            LuaValue::Str(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    fn mod_data_present(&self, key: &str) -> bool {
-        self.table
-            .as_ref()
-            .is_some_and(|t| t.rawget(&str_key(key)).is_some())
-    }
-
     /// Has one of the `GasMask`, `Respirator`, `ImprovisedGasMask` tags.
     pub fn is_gas_mask(&self) -> bool {
         self.has_tag(tags::GAS_MASK)
             || self.has_tag(tags::RESPIRATOR)
             || self.has_tag(tags::IMPROVISED_GAS_MASK)
     }
-
-    /// `Clothing.getFilterType()`. (The original's test against `"none"`
-    /// compares references, which a loaded or Lua-made string never
-    /// matches, so any string is a filter.)
-    pub fn get_filter_type(&self) -> Option<&str> {
-        self.mod_data_str("filterType")
+    pub fn try_get_filter_type(&self) -> ModDataResult<Option<String>> {
+        self.mod_data_string("filterType")
     }
-
-    /// `Clothing.hasFilter()`.
+    pub fn try_get_tank_type(&self) -> ModDataResult<Option<String>> {
+        self.mod_data_string("tankType")
+    }
+    pub fn try_has_filter(&self) -> ModDataResult<bool> {
+        Ok(is_clothing(self) && self.is_gas_mask() && self.try_get_filter_type()?.is_some())
+    }
+    pub fn try_has_tank(&self) -> ModDataResult<bool> {
+        Ok(is_clothing(self) && self.has_tag(tags::SCBA) && self.try_get_tank_type()?.is_some())
+    }
+    pub fn try_set_filter_type(&mut self, filter: &str) -> ModDataResult<()> {
+        self.set_mod_data_value("filterType", Some(Value::str(filter)))
+    }
+    pub fn try_set_tank_type(&mut self, tank: &str) -> ModDataResult<()> {
+        self.set_mod_data_value("tankType", Some(Value::str(tank)))
+    }
+    pub fn try_used_delta(&self) -> ModDataResult<f32> {
+        match self.mod_data_value("usedDelta")? {
+            None => Ok(0.0),
+            Some(Value::Num(value)) => Ok(value as f32),
+            Some(_) => Err(ModDataError::cast("java.lang.Double")),
+        }
+    }
+    pub fn try_get_used_delta(&mut self) -> ModDataResult<f32> {
+        if self.mod_data_value("usedDelta")?.is_none() {
+            self.try_set_used_delta(0.0)?;
+        }
+        self.try_used_delta()
+    }
+    pub fn try_set_used_delta(&mut self, delta: f32) -> ModDataResult<()> {
+        self.set_mod_data_value(
+            "usedDelta",
+            Some(Value::Num((if delta < 0.0 { 0.0 } else { delta }) as f64)),
+        )
+    }
+    // Legacy synchronous callers require unborrowed actual tables. Production
+    // Lua and tooltip adapters use the fallible methods above.
+    pub fn get_filter_type(&self) -> Option<String> {
+        self.try_get_filter_type()
+            .expect("unborrowed ModData string")
+    }
+    pub fn get_tank_type(&self) -> Option<String> {
+        self.try_get_tank_type().expect("unborrowed ModData string")
+    }
     pub fn has_filter(&self) -> bool {
-        is_clothing(self)
-            && self.is_gas_mask()
-            && self.mod_data_present("filterType")
-            && self.get_filter_type().is_some()
+        self.try_has_filter().expect("unborrowed filter ModData")
     }
-
-    /// `Clothing.getTankType()`.
-    pub fn get_tank_type(&self) -> Option<&str> {
-        self.mod_data_str("tankType")
-    }
-
-    /// `Clothing.hasTank()`.
     pub fn has_tank(&self) -> bool {
-        is_clothing(self)
-            && self.has_tag(tags::SCBA)
-            && self.mod_data_present("tankType")
-            && self.get_tank_type().is_some()
+        self.try_has_tank().expect("unborrowed tank ModData")
     }
-
-    /// `Clothing.setFilterType(type)` (without the improvised gas mask's
-    /// custom icon).
     pub fn set_filter_type(&mut self, filter: &str) {
-        self.table
-            .get_or_insert_with(LuaTable::default)
-            .rawset(str_key("filterType"), Some(LuaValue::Str(filter.into())));
+        self.try_set_filter_type(filter)
+            .expect("unborrowed filter ModData")
     }
-
-    /// `Clothing.setTankType(type)` (without the custom icon).
     pub fn set_tank_type(&mut self, tank: &str) {
-        self.table
-            .get_or_insert_with(LuaTable::default)
-            .rawset(str_key("tankType"), Some(LuaValue::Str(tank.into())));
+        self.try_set_tank_type(tank)
+            .expect("unborrowed tank ModData")
     }
-
-    /// The `usedDelta` mod data value `getUsedDelta` returns (0 when it is
-    /// missing; non-numbers read as 0).
     pub fn used_delta(&self) -> f32 {
-        match self
-            .table
-            .as_ref()
-            .and_then(|t| t.rawget(&str_key("usedDelta")))
-        {
-            Some(LuaValue::Num(d)) => *d as f32,
-            _ => 0.0,
-        }
+        self.try_used_delta().expect("unborrowed usedDelta ModData")
     }
-
-    /// `Clothing.getUsedDelta()` (sets 0 when missing).
     pub fn get_used_delta(&mut self) -> f32 {
-        if !self.mod_data_present("usedDelta") {
-            self.set_used_delta(0.0);
-        }
-        self.used_delta()
+        self.try_get_used_delta()
+            .expect("unborrowed usedDelta ModData")
     }
-
-    /// `Clothing.setUsedDelta(delta)` (stored as a double, at least 0).
     pub fn set_used_delta(&mut self, delta: f32) {
-        let d = delta.max(0.0);
-        self.table
-            .get_or_insert_with(LuaTable::default)
-            .rawset(str_key("usedDelta"), Some(LuaValue::Num(d as f64)));
+        self.try_set_used_delta(delta)
+            .expect("unborrowed usedDelta ModData")
     }
 
     /// `Clothing.drainGasMask(rate)`: the filter's `UseDelta` times the
     /// rate and the game time multiplier. Throws (`getItem` null) when the
     /// filter script does not exist. Network sync is not modelled.
     pub fn drain_gas_mask(&mut self, rate: f32, ctx: &dyn ItemContext) -> Result<(), ItemError> {
-        if !self.is_gas_mask() || !self.has_filter() || self.get_used_delta() <= 0.0 {
+        if !self.is_gas_mask()
+            || !self.try_has_filter().map_err(ItemError::ModData)?
+            || self.try_get_used_delta().map_err(ItemError::ModData)? <= 0.0
+        {
             return Ok(());
         }
-        let filter = self.get_filter_type().unwrap().to_string();
+        let filter = self
+            .try_get_filter_type()
+            .map_err(ItemError::ModData)?
+            .unwrap()
+            .to_string();
         let s = ctx
             .script(&filter)
             .ok_or(ItemError::NullPointer("ScriptManager.getItem(filterType)"))?;
         let rate2 = rate * s.use_delta * ctx.multiplier();
-        let d = self.get_used_delta() - rate2;
-        self.set_used_delta(d);
-        if self.get_used_delta() < 0.0 {
-            self.set_used_delta(0.0);
+        let d = self.try_get_used_delta().map_err(ItemError::ModData)? - rate2;
+        self.try_set_used_delta(d).map_err(ItemError::ModData)?;
+        if self.try_get_used_delta().map_err(ItemError::ModData)? < 0.0 {
+            self.try_set_used_delta(0.0).map_err(ItemError::ModData)?;
         }
         Ok(())
     }
@@ -962,27 +1002,31 @@ impl InventoryItem {
     /// `Clothing.drainSCBA()`: an activated SCBA with a tank loses
     /// `0.001 * tank UseDelta * multiplier`, and turns off when empty.
     pub fn drain_scba(&mut self, ctx: &dyn ItemContext) -> Result<(), ItemError> {
-        if self.get_used_delta() <= 0.0 {
+        if self.try_get_used_delta().map_err(ItemError::ModData)? <= 0.0 {
             self.activated = false;
         }
         if !self.has_tag(tags::SCBA)
-            || !self.has_tank()
+            || !self.try_has_tank().map_err(ItemError::ModData)?
             || !self.activated
-            || self.get_used_delta() <= 0.0
+            || self.try_get_used_delta().map_err(ItemError::ModData)? <= 0.0
         {
             return Ok(());
         }
-        let tank = self.get_tank_type().unwrap().to_string();
+        let tank = self
+            .try_get_tank_type()
+            .map_err(ItemError::ModData)?
+            .unwrap()
+            .to_string();
         let s = ctx
             .script(&tank)
             .ok_or(ItemError::NullPointer("ScriptManager.getItem(tankType)"))?;
         let rate2 = 0.001 * s.use_delta * ctx.multiplier();
-        let d = self.get_used_delta() - rate2;
-        self.set_used_delta(d);
-        if self.get_used_delta() < 0.0 {
-            self.set_used_delta(0.0);
+        let d = self.try_get_used_delta().map_err(ItemError::ModData)? - rate2;
+        self.try_set_used_delta(d).map_err(ItemError::ModData)?;
+        if self.try_get_used_delta().map_err(ItemError::ModData)? < 0.0 {
+            self.try_set_used_delta(0.0).map_err(ItemError::ModData)?;
         }
-        if self.get_used_delta() <= 0.0 {
+        if self.try_get_used_delta().map_err(ItemError::ModData)? <= 0.0 {
             self.activated = false;
         }
         Ok(())
@@ -1203,12 +1247,16 @@ impl InventoryItem {
     /// `copyConditionStatesFrom(other)` without the clothing copy, head
     /// condition and sharpness (components not modelled here).
     pub fn copy_condition_states_from(&mut self, other: &InventoryItem, ctx: &dyn ItemContext) {
-        if let Some(t) = other.table.as_ref() {
-            for (k, v) in &t.entries {
-                if matches!(k, LuaKey::Str(s) if s.starts_with("condition:")) {
-                    self.table
-                        .get_or_insert_with(LuaTable::default)
-                        .rawset(k.clone(), Some(v.clone()));
+        // Legacy synchronous adapter. The actual Lua caller uses a fallible
+        // source enumeration and preserves the actual values' identities.
+        for (key, value) in other
+            .mod_data_own_entries()
+            .expect("unborrowed condition ModData")
+        {
+            if let Value::Str(key) = key {
+                if key.starts_with("condition:") {
+                    self.set_mod_data_value(&key, Some(value))
+                        .expect("unborrowed condition ModData");
                 }
             }
         }

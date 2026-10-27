@@ -39,6 +39,27 @@ Context entries still need actual script-list/entry ownership before exposure.
 Loaded archive-to-live routing, nested container/weapon/map references,
 equipped manager state, world callbacks and full inventory icons remain open.
 
+Item ModData now uses one exclusive archive or live-table slot. The actual
+`getModData` allocation is shared by Lua reads/writes, item persistence,
+tooltips and model selection. `hasModData` checks own entries without allocating.
+Native item load retires the old slot and publishes its replacement before
+decoding, retaining completed pairs on failure. Live table persistence filters
+unsupported save values without rewriting the runtime table; boxed Java Float
+stays userdata and has its own Java map-key equality, distinct from Double.
+`copyModData` retains the destination allocation/metatable and copies nested
+value tables per occurrence. Rust archive snapshots instead copy the complete
+bounded table/key/value/metatable graph and explicitly reject borrowed or cyclic
+inputs. These policies are separate from the unported debug native item clone.
+
+Fallible interpreter and standard-library table operations expose held-body
+conflicts as host capability errors. Replaced table slots and consumed mutator
+inputs retain their owners until an outer retirement boundary. Hosts must keep
+`pz_kahlua::gc::defer_collection()` alive across every world/sprite guard spanning
+Lua callbacks, then drain after those guards end; an empty interpreter stack
+alone does not establish that boundary. Generic VM stack/upvalue teardown,
+legacy direct TableRef methods, reloadReplace, native reference-literal branches
+and the complete Java ItemCodeOnCreate class remain separate work.
+
 Returning to the menu rebuilds script/Lua/UI owners before menu entry;
 native shutdown skips that rebuild. A failed rebuild stops the client
 instead of entering a menu with mixed owners. Character `getModData`

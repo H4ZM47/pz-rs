@@ -98,9 +98,24 @@ impl FloorItem {
     /// An explicit archive snapshot. Nested bag contents are copied by
     /// value; live container/parent handles are not substituted into it.
     pub fn to_saved_snapshot(&self) -> SavedItem {
+        self.try_to_saved_snapshot()
+            .expect("floor-item archive snapshot needs available, bounded data")
+    }
+
+    /// Fallible archive snapshot of the same actual floor item. Live VM
+    /// tables must be copied independently, never shared by Rust Clone.
+    pub fn try_to_saved_snapshot(
+        &self,
+    ) -> Result<SavedItem, pz_inventory::archive::ArchiveCopyError> {
         match &self.payload {
-            Payload::Live(item) => SavedItem::Item(Box::new(item.borrow().clone())),
-            Payload::Raw(raw) => raw.clone(),
+            Payload::Live(item) => {
+                let item = item
+                    .try_borrow()
+                    .map_err(|_| pz_inventory::archive::ArchiveCopyError::BorrowedItem)?;
+                item.try_archive_copy()
+                    .map(|copy| SavedItem::Item(Box::new(copy)))
+            }
+            Payload::Raw(raw) => Ok(raw.clone()),
         }
     }
 }

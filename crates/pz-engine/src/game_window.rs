@@ -432,6 +432,7 @@ fn drain_retired_host_owners() {
     crate::iso_world::drain_retired_world_objects();
     pz_inventory::component_host::drain_retired_components();
     drop(pz_scripts::objects::entity::components::attributes::take_retired_attribute_templates());
+    pz_kahlua::gc::drain_retired_table_values();
     pz_lua_api::component_gc::retry_pending();
     for fault in pz_lua_api::component_gc::take_registration_faults() {
         eprintln!("component registration: {fault}");
@@ -641,6 +642,6 @@ fn headless(launch: Launch, frames: u32, gpu: bool) -> Result<(u32, u32, Option<
 }
 
 #[cfg(test)]
-mod session_tests;
-#[cfg(test)]
 mod retirement_tests;
+#[cfg(test)]
+mod session_tests;

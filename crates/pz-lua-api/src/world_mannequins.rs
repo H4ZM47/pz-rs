@@ -220,14 +220,20 @@ impl WornItemsInventoryHost for InventoryHost<'_> {
     fn copy_visual_and_sync(&mut self, item: &ItemRef, from: &ItemVisual) -> ScriptResult {
         let env = crate::bind_items::item_env();
         let owner = env.owner(item);
+        if env.context().assets().is_some() {
+            pz_inventory::moddata::prepare_clothing_mod_data_ref(item)
+                .map_err(|error| ScriptError::new(error.to_string()))?;
+        }
         let mut item = item
             .try_borrow_mut()
             .map_err(|_| borrowed("InventoryItem"))?;
-        if let Some(visual) =
-            item.get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
+        if let Some(visual) = item
+            .try_get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
+            .map_err(|error| ScriptError::new(error.to_string()))?
         {
             *visual = from.clone();
-            item.synch_with_visual(env.context().assets(), owner.as_ref(), env.visual_rng());
+            item.try_synch_with_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
+                .map_err(|error| ScriptError::new(error.to_string()))?;
         }
         Ok(())
     }
@@ -251,10 +257,15 @@ impl WornItemsInventoryHost for InventoryHost<'_> {
     fn get_holes_number(&mut self, item: &ItemRef) -> ScriptResult<i32> {
         let env = crate::bind_items::item_env();
         let owner = env.owner(item);
+        if env.context().assets().is_some() {
+            pz_inventory::moddata::prepare_clothing_mod_data_ref(item)
+                .map_err(|error| ScriptError::new(error.to_string()))?;
+        }
         let mut item = item
             .try_borrow_mut()
             .map_err(|_| borrowed("InventoryItem"))?;
-        item.get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
+        item.try_get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
+            .map_err(|error| ScriptError::new(error.to_string()))?
             .map(|v| v.get_holes_number())
             .ok_or_else(|| ScriptError::new("java.lang.NullPointerException: item visual"))
     }
@@ -461,11 +472,16 @@ pub fn activate(
     let mut visuals = Vec::new();
     for item in items {
         let owner = env.owner(&item);
+        if env.context().assets().is_some() {
+            pz_inventory::moddata::prepare_clothing_mod_data_ref(&item)
+                .map_err(|error| ScriptError::new(error.to_string()))?;
+        }
         let mut item = item
             .try_borrow_mut()
             .map_err(|_| borrowed("InventoryItem"))?;
-        if let Some(visual) =
-            item.get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
+        if let Some(visual) = item
+            .try_get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
+            .map_err(|error| ScriptError::new(error.to_string()))?
         {
             visuals.push(visual.clone());
         }

@@ -3,7 +3,7 @@
 //! method the binding lacks answers as a character without that state
 //! would (level 0, no trait, nothing read).
 
-use super::{mod_str, sv, Cx, LABEL};
+use super::{mod_java_string, mod_value, sv, Cx, LABEL};
 use crate::bind_items::{item_arg_value, item_value, ItemRef};
 use pz_kahlua::{LuaResult, Thread, Value};
 use pz_ui::tooltip::Layout;
@@ -231,27 +231,35 @@ pub fn recipe_flags(_cx: &mut Cx<'_>, _item: &ItemRef) -> LuaResult<(usize, bool
 /// `isNoRecipes(player)`: the item's `itemNoRecipes` mod data equals the
 /// player's full name.
 pub fn is_no_recipes(cx: &mut Cx<'_>, item: &ItemRef) -> LuaResult<bool> {
-    let Some(v) = mod_str(&item.borrow(), "itemNoRecipes") else {
+    if cx.player.is_nil() {
         return Ok(false);
-    };
+    }
+    let value = mod_value(item, "itemNoRecipes")?;
+    let Some(Value::Str(v)) = value else { return Ok(false) };
     let player = cx.player.clone();
     let name = call_or(cx.t, &player, "getFullName", &[], Value::Nil)?;
-    Ok(s(&name).is_some_and(|n| n == v))
+    Ok(s(&name).is_some_and(|n| n == v.as_ref()))
 }
 
 /// `isUnwanted(player)`.
 pub fn is_unwanted(cx: &mut Cx<'_>, item: &ItemRef) -> LuaResult<bool> {
-    let (media, keyed, full) = {
+    let (media, full) = {
         let it = item.borrow();
-        let keyed = ["literatureTitle", "printMedia", "collectibleKey"]
-            .iter()
-            .find_map(|k| mod_str(&it, k));
         let full = sv(&it, |s| s.module_dot_type.clone());
-        (it.recorded_media_index >= 0, keyed, full)
+        (it.recorded_media_index >= 0, full)
     };
     if media {
         // TODO(RecordedMedia): player.isUnwanted(getMediaData().getId()).
         return Ok(false);
+    }
+    let mut keyed = None;
+    for key in ["literatureTitle", "printMedia", "collectibleKey"] {
+        if let Some(value) = mod_value(item, key)? {
+            // Native invokes Object.toString here, unlike the strict
+            // String casts in Literature.DoTooltip.
+            keyed = Some(mod_java_string(&value)?);
+            break;
+        }
     }
     let id = keyed.unwrap_or(full);
     let player = cx.player.clone();

@@ -197,7 +197,13 @@ fn line(i: &InventoryItem) -> String {
     write!(
         o,
         " md={} visual={}",
-        i.table.as_ref().map_or(-1, |t| t.entries.len() as i64),
+        if i.table.is_none() {
+            -1
+        } else {
+            i.mod_data_own_entries()
+                .expect("item field dump requires readable ModData")
+                .len() as i64
+        },
         b(i.visual.is_some())
     )
     .unwrap();

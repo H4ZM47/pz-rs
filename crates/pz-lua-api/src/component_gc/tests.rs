@@ -1,6 +1,7 @@
 use super::*;
 use pz_entity::{Component, Components, EntityOwner, FluidContainer};
 use pz_inventory::{ItemClass, ItemTemplate};
+use pz_kahlua::Value;
 use std::cell::Cell;
 
 struct Restore {
@@ -68,6 +69,71 @@ fn never_exposed_actual_item_component_cycle_collects_after_last_root() {
     ));
     assert!(weak_item.upgrade().is_none());
     assert!(weak_component.upgrade().is_none());
+}
+
+#[test]
+fn actual_item_mod_data_nested_and_metatable_owner_cycles_collect() {
+    let _restore = Restore::new();
+    let (item, component) = item(ItemClass::Normal);
+    let table = pz_inventory::moddata::get_mod_data_ref(&item).unwrap();
+    let nested = pz_kahlua::TableRef::new();
+    let meta = pz_kahlua::TableRef::new();
+    let mut retired = pz_kahlua::table::RetiredTableValues::new();
+    let owner = crate::bind_items::try_item_value(&item).unwrap();
+    table.try_rawset(&Value::str("owner"), &owner, &mut retired).unwrap();
+    table.try_rawset(&Value::str("nested"), &Value::Table(nested.clone()), &mut retired).unwrap();
+    nested.try_rawset(&Value::str("back"), &Value::Table(table.clone()), &mut retired).unwrap();
+    meta.try_rawset(&Value::str("owner"), &owner, &mut retired).unwrap();
+    table.try_set_metatable(&Some(meta.clone()), &mut retired).unwrap();
+    let weak_item = Rc::downgrade(&item);
+    let weak_component = Rc::downgrade(&component);
+    drop(retired);
+    drop(owner);
+    drop(nested);
+    drop(meta);
+    drop(table);
+    drop(component);
+    drop(item);
+    assert!(weak_item.upgrade().is_some(), "real table/userdata/component backedges form a cycle");
+    assert!(matches!(gc::collect_tables(), gc::CollectionResult::Collected(_)));
+    assert!(weak_item.upgrade().is_none());
+    assert!(weak_component.upgrade().is_none());
+}
+
+#[test]
+fn retained_actual_mod_data_roots_owner_and_survives_collector_detach_unchanged() {
+    let _restore = Restore::new();
+    let (item, component) = item(ItemClass::Normal);
+    let table = pz_inventory::moddata::get_mod_data_ref(&item).unwrap();
+    let mut retired = pz_kahlua::table::RetiredTableValues::new();
+    table.try_rawset(&Value::str("marker"), &Value::Num(42.0), &mut retired).unwrap();
+    table.try_rawset(&Value::str("owner"), &crate::bind_items::try_item_value(&item).unwrap(), &mut retired).unwrap();
+    {
+        let guard = table.try_borrow_body_mut().unwrap();
+        let same = pz_inventory::moddata::get_mod_data_ref(&item).unwrap();
+        assert!(same.ptr_eq(&table), "pointer-only getter must not borrow table body");
+        assert!(pz_inventory::moddata::has_mod_data_ref(&item).is_err());
+        assert_eq!(gc::collect_tables(), gc::CollectionResult::Deferred);
+        drop(same);
+        drop(guard);
+    }
+    let weak_item = Rc::downgrade(&item);
+    let weak_component = Rc::downgrade(&component);
+    drop(component);
+    drop(item);
+    assert!(matches!(gc::collect_tables(), gc::CollectionResult::Collected(_)));
+    {
+        let rooted = weak_item.upgrade().expect("retained table has a real owner userdata edge");
+        let same = pz_inventory::moddata::get_mod_data_ref(&rooted).unwrap();
+        assert!(same.ptr_eq(&table));
+    }
+    table.try_rawset(&Value::str("owner"), &Value::Nil, &mut retired).unwrap();
+    drop(retired);
+    assert!(matches!(gc::collect_tables(), gc::CollectionResult::Collected(_)));
+    assert!(weak_item.upgrade().is_none());
+    assert!(weak_component.upgrade().is_none());
+    assert_eq!(table.try_get_own(&Value::str("marker")).unwrap().as_num(), Some(42.0));
+    assert_eq!(table.try_size().unwrap(), 1, "GC detaches the item slot without wiping an externally held table");
 }
 
 #[test]

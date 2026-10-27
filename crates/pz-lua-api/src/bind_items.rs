@@ -15,7 +15,7 @@
 //! items through it; see [`crate::bind_item_visual`].
 //!
 //! Not exposed yet: methods returning or taking objects that have no Lua
-//! binding here (`getScriptItem`, `getModData`, `getWorldItem`,
+//! binding here (`getScriptItem`, `getWorldItem`,
 //! `getTags`; `getContainer` and `InventoryContainer.getInventory` are in
 //! [`crate::bind_item_container`]), the registry-object
 //! returns (`getBloodClothingType` a list of names, `hasTag` takes ids or
@@ -590,11 +590,12 @@ pub fn item_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<ItemRef> {
 }
 
 /// `InventoryItem.getTexture()`.
-pub fn item_texture(item: &ItemRef) -> Option<pz_render::Texture> {
+pub fn item_texture(item: &ItemRef) -> LuaResult<Option<pz_render::Texture>> {
     use pz_inventory::naming::{ItemTexture, QUESTION_TEXTURE};
-    let custom = item.borrow().custom_inventory_icon().map(str::to_string);
+    pz_inventory::moddata::prepare_existing_mod_data_ref(item).map_err(|error| error.to_lua_error())?;
+    let custom = moddata_read(item, |body| body.try_custom_inventory_icon())?;
     if let Some(t) = custom.and_then(|n| crate::bind_render::get_shared_texture(&n)) {
-        return Some(t);
+        return Ok(Some(t));
     }
     let base_textures = {
         let i = item.borrow();
@@ -606,18 +607,50 @@ pub fn item_texture(item: &ItemRef) -> Option<pz_render::Texture> {
             drop(i);
             let e = env();
             let owner = e.owner(item);
-            let i = item.borrow();
-            i.get_clothing_item(e.context().assets(), owner.as_ref()).map(|c| c.base_textures.len())
+            if e.context().assets().is_some() { ensure_clothing_mod_data(item)?; }
+            moddata_read(item, |body| body.try_get_clothing_item(e.context().assets(), owner.as_ref()).map(|value| value.map(|c| c.base_textures.len())))?
         } else {
             None
         }
     };
-    let t = item.borrow().texture(base_textures)?;
-    match t {
+    let Some(t) = item.borrow().texture(base_textures) else { return Ok(None) };
+    Ok(match t {
         ItemTexture::Shared(n) => crate::bind_render::get_shared_texture(&n),
         ItemTexture::Try { name, fallback } => crate::bind_render::try_get_texture(&name)
             .or_else(|| fallback.then(|| crate::bind_render::get_shared_texture(QUESTION_TEXTURE)).flatten()),
+    })
+}
+
+fn moddata_read<T>(item: &ItemRef, read: impl FnOnce(&InventoryItem) -> pz_inventory::moddata::ModDataResult<T>) -> LuaResult<T> {
+    let result = {
+        let body = item.try_borrow().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item ModData body").to_lua_error())?;
+        read(&body)
+    };
+    result.map_err(|error| error.to_lua_error())
+}
+
+fn moddata_write<T>(item: &ItemRef, write: impl FnOnce(&mut InventoryItem) -> pz_inventory::moddata::ModDataResult<T>) -> LuaResult<T> {
+    let result = {
+        let mut body = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item ModData body").to_lua_error())?;
+        write(&mut body)
+    };
+    pz_inventory::shared::observe_item(item);
+    result.map_err(|error| error.to_lua_error())
+}
+
+/// Clothing's filter/tank queries call getModData only after their tag
+/// gates. Adopt outside the body guard before those actual queries.
+pub(crate) fn ensure_clothing_mod_data(item: &ItemRef) -> LuaResult<()> {
+    pz_inventory::moddata::prepare_clothing_mod_data_ref(item).map_err(|error| error.to_lua_error())
+}
+
+fn prepare_mod_data_when(item: &ItemRef, reads: impl FnOnce(&InventoryItem) -> bool) -> LuaResult<()> {
+    if moddata_read(item, |body| Ok(reads(body)))? {
+        pz_inventory::moddata::get_mod_data_ref(item).map_err(|error| error.to_lua_error())?;
+    } else {
+        pz_inventory::moddata::prepare_existing_mod_data_ref(item).map_err(|error| error.to_lua_error())?;
     }
+    Ok(())
 }
 
 fn this(c: &NativeCall<'_>) -> LuaResult<ItemRef> {
@@ -626,6 +659,7 @@ fn this(c: &NativeCall<'_>) -> LuaResult<ItemRef> {
 
 fn java_error(e: ItemError) -> LuaError {
     match e {
+        ItemError::ModData(error) => error.to_lua_error(),
         ItemError::NullPointer(what) => LuaError::Runtime {
             message: format!("{what} is null"),
             class: "java.lang.NullPointerException",
@@ -729,6 +763,33 @@ fn register_inventory_item(thread: &mut Thread) {
         Ok(c.push(value))
     });
     let b = expose_class(thread, INVENTORY_ITEM_CLASS, Some(GAME_ENTITY_CLASS));
+    b.method("getModData", |c| {
+        let item = this(c)?;
+        let table = pz_inventory::moddata::get_mod_data_ref(&item)
+            .map_err(|error| error.to_lua_error())?;
+        Ok(c.push(Value::Table(table)))
+    });
+    b.method("hasModData", |c| {
+        let item = this(c)?;
+        let value = pz_inventory::moddata::has_mod_data_ref(&item)
+            .map_err(|error| error.to_lua_error())?;
+        Ok(c.push(Value::Bool(value)))
+    });
+    for name in ["copyModData", "CopyModData"] {
+        b.method(name, |c| {
+            let item = this(c)?;
+            let table = match c.arg(1) {
+                Value::Nil => None,
+                Value::Table(table) => Some(table),
+                value => return Err(crate::bind_java_util::class_cast(
+                    &value, "se.krka.kahlua.vm.KahluaTable",
+                )),
+            };
+            pz_inventory::moddata::copy_mod_data_ref(&item, table.as_ref())
+                .map_err(|error| error.to_lua_error())?;
+            Ok(0)
+        });
+    }
     b.method("updateAge", |c| {
         let item = this(c)?;
         let argument = match c.nargs() {
@@ -801,7 +862,7 @@ fn register_inventory_item(thread: &mut Thread) {
     for name in ["getTex", "getTexture", "getIcon"] {
         b.method(name, |c| {
             let item = this(c)?;
-            Ok(c.push(crate::bind_render::texture_value(item_texture(&item))))
+            Ok(c.push(crate::bind_render::texture_value(item_texture(&item)?)))
         });
     }
     // `nameAfterDescriptor(SurvivorDesc)` / `monogramAfterDescriptor`.
@@ -1062,10 +1123,11 @@ fn register_inventory_item(thread: &mut Thread) {
         );
         Ok(Value::from(clothing && o.is_worn(&i)))
     });
-    envd!(b, "getAlternateModelName", |r, e, ctx, o, _c| Ok(opt_str(
-        r.borrow()
-            .get_alternate_model_name(ctx.assets(), o.as_ref())
-    )));
+    envd!(b, "getAlternateModelName", |r, e, ctx, o, _c| {
+        ensure_clothing_mod_data(&r)?;
+        let value = moddata_read(&r, |body| body.try_get_alternate_model_name(ctx.assets(), o.as_ref()))?;
+        Ok(opt_str(value.as_deref()))
+    });
     envd!(b, "setCondition", |r, e, ctx, o, c| {
         let cond = int_arg(c, 1);
         let out = if c.nargs() > 2 {
@@ -1133,10 +1195,28 @@ fn register_clothing(thread: &mut Thread) {
         i.template.can_have_holes
     ));
     get!(b, "isCosmetic", |i| Value::from(i.template.cosmetic));
-    get!(b, "hasFilter", |i| Value::from(i.has_filter()));
-    get!(b, "hasTank", |i| Value::from(i.has_tank()));
-    get!(b, "getFilterType", |i| opt_str(i.get_filter_type()));
-    get!(b, "getTankType", |i| opt_str(i.get_tank_type()));
+    b.method("hasFilter", |c| {
+        let item = this(c)?;
+        prepare_mod_data_when(&item, |body| body.is_gas_mask())?;
+        Ok(c.push(Value::Bool(moddata_read(&item, |body| body.try_has_filter())?)))
+    });
+    b.method("hasTank", |c| {
+        let item = this(c)?;
+        prepare_mod_data_when(&item, |body| body.has_tag("base:scba"))?;
+        Ok(c.push(Value::Bool(moddata_read(&item, |body| body.try_has_tank())?)))
+    });
+    b.method("getFilterType", |c| {
+        let item = this(c)?;
+        pz_inventory::moddata::get_mod_data_ref(&item).map_err(|error| error.to_lua_error())?;
+        let value = moddata_read(&item, |body| body.try_get_filter_type())?;
+        Ok(c.push(opt_str(value.as_deref())))
+    });
+    b.method("getTankType", |c| {
+        let item = this(c)?;
+        pz_inventory::moddata::get_mod_data_ref(&item).map_err(|error| error.to_lua_error())?;
+        let value = moddata_read(&item, |body| body.try_get_tank_type())?;
+        Ok(c.push(opt_str(value.as_deref())))
+    });
     get!(b, "getHolesNumber", |i| Value::from(
         i.visual.as_ref().map_or(0, |v| v.get_holes_number())
     ));
@@ -1149,22 +1229,33 @@ fn register_clothing(thread: &mut Thread) {
         i.set_wetness(num_arg(c, 1) as f32);
         Ok(Value::Nil)
     });
-    with!(b, "setFilterType", |i, c| {
-        i.set_filter_type(&str_arg(c, 1).unwrap_or_else(|| Rc::from("")));
-        Ok(Value::Nil)
+    b.method("setFilterType", |c| {
+        let item = this(c)?;
+        let value = str_arg(c, 1).unwrap_or_else(|| Rc::from(""));
+        moddata_write(&item, |body| body.try_set_filter_type(&value))?;
+        Ok(0)
     });
-    with!(b, "setTankType", |i, c| {
-        i.set_tank_type(&str_arg(c, 1).unwrap_or_else(|| Rc::from("")));
-        Ok(Value::Nil)
+    b.method("setTankType", |c| {
+        let item = this(c)?;
+        let value = str_arg(c, 1).unwrap_or_else(|| Rc::from(""));
+        moddata_write(&item, |body| body.try_set_tank_type(&value))?;
+        Ok(0)
     });
-    with!(b, "getUsedDelta", |i, _c| Ok(f(i.get_used_delta())));
-    with!(b, "setUsedDelta", |i, c| {
-        i.set_used_delta(num_arg(c, 1) as f32);
-        Ok(Value::Nil)
+    b.method("getUsedDelta", |c| {
+        let item = this(c)?;
+        let value = moddata_write(&item, |body| body.try_get_used_delta())?;
+        Ok(c.push(f(value)))
     });
-    envd!(b, "getCorpseSicknessDefense", |r, e, ctx, _o, _c| Ok(f(r
-        .borrow()
-        .get_corpse_sickness_defense_with(ctx))));
+    b.method("setUsedDelta", |c| {
+        let item = this(c)?;
+        let value = num_arg(c, 1) as f32;
+        moddata_write(&item, |body| body.try_set_used_delta(value))?;
+        Ok(0)
+    });
+    envd!(b, "getCorpseSicknessDefense", |r, e, ctx, _o, _c| {
+        prepare_mod_data_when(&r, |body| body.condition > 0 && body.is_gas_mask())?;
+        Ok(f(moddata_read(&r, |body| body.try_get_corpse_sickness_defense_with(ctx))?))
+    });
     envd!(b, "getDefForPart", |r, e, ctx, _o, c| {
         let Some(a) = ctx.assets() else {
             return Err(java_error(ItemError::NullPointer("getVisual()")));
@@ -1203,13 +1294,18 @@ fn register_clothing(thread: &mut Thread) {
         } else {
             1.0
         };
-        r.borrow_mut()
-            .drain_gas_mask(rate, ctx)
-            .map_err(java_error)?;
+        prepare_mod_data_when(&r, |body| body.is_gas_mask())?;
+        let result = r.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item ModData drain body").to_lua_error())?
+            .drain_gas_mask(rate, ctx);
+        pz_inventory::shared::observe_item(&r);
+        result.map_err(java_error)?;
         Ok(Value::Nil)
     });
     envd!(b, "drainSCBA", |r, e, ctx, _o, _c| {
-        r.borrow_mut().drain_scba(ctx).map_err(java_error)?;
+        ensure_clothing_mod_data(&r)?;
+        let result = r.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item ModData drain body").to_lua_error())?.drain_scba(ctx);
+        pz_inventory::shared::observe_item(&r);
+        result.map_err(java_error)?;
         Ok(Value::Nil)
     });
     let a = expose_class(
@@ -1635,6 +1731,10 @@ pub fn register(thread: &mut Thread) {
 }
 
 #[cfg(test)]
+#[path = "bind_items/moddata_tests.rs"]
+mod moddata_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use pz_inventory::ItemTemplate;
@@ -1855,7 +1955,7 @@ mod tests {
         assert_eq!(num(&r[4]) as f32, 0.1);
         assert!(matches!(r[5], Value::Bool(true)));
         assert!(matches!(r[6], Value::Bool(true)));
-        assert!(battery.borrow().table.is_none(), "no usedDelta mod data");
+        assert!(battery.borrow().mod_data_slot().is_none(), "no usedDelta mod data");
     }
 
     /// A gas can's `setCurrentUsesFloat` / `setUsedDelta` run the

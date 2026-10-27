@@ -162,6 +162,9 @@ fn merged(a: MetadataStatus, b: MetadataStatus) -> MetadataStatus {
 pub struct ItemDescriptor;
 impl TraceDescriptor<InventoryItem> for ItemDescriptor {
     fn trace(item: &InventoryItem, visitor: &mut TraceVisitor) {
+        if let Some(table) = item.mod_data_slot().as_ref().and_then(|data| data.as_live_slot()) {
+            visitor.table(table);
+        }
         for entry in item.components.entry_slots() {
             if let RuntimeEntryView::Live { component, .. } = entry {
                 visitor.owner(component);
@@ -173,7 +176,10 @@ impl TraceDescriptor<InventoryItem> for ItemDescriptor {
     }
 
     fn detach(item: &mut InventoryItem) -> Option<Box<dyn std::any::Any>> {
-        Some(Box::new(item.components.take_entries()))
+        Some(Box::new((
+            item.components.take_entries(),
+            item.take_mod_data_for_gc(),
+        )))
     }
 }
 

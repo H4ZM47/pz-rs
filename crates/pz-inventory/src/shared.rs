@@ -223,6 +223,10 @@ impl SharedContainer {
     /// A copy as a new container: the items are copied (bags with their
     /// contents) and are the new container's; the owner links
     /// (`parent`, `sourceGrid`, `containingItem`) are not copied.
+    pub fn try_deep_clone(&self) -> Result<ContainerRef, crate::archive::ArchiveCopyError> {
+        crate::archive::ArchiveCopyCheck::default().shared_container_body(self)?;
+        Ok(self.deep_clone())
+    }
     pub fn deep_clone(&self) -> ContainerRef {
         let r = SharedContainer {
             kind: self.kind.clone(),
@@ -300,6 +304,10 @@ impl SharedContainer {
     }
 
     /// The saved form (a copy of the items, then the raw records).
+    pub fn try_to_container(&self) -> Result<ItemContainer, crate::archive::ArchiveCopyError> {
+        crate::archive::ArchiveCopyCheck::default().shared_container_body(self)?;
+        Ok(self.to_container())
+    }
     pub fn to_container(&self) -> ItemContainer {
         ItemContainer {
             kind: Some(self.kind.clone()),

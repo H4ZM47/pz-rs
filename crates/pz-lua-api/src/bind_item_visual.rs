@@ -306,26 +306,32 @@ fn visual_value(item: &ItemRef) -> Value {
 }
 
 /// `InventoryItem.getVisual()` through the installed environment.
-pub fn get_visual(item: &ItemRef) -> Value {
+pub fn get_visual(item: &ItemRef) -> LuaResult<Value> {
     let e = item_env();
     let owner = e.owner(item);
-    let has = item
-        .borrow_mut()
-        .get_visual(e.context().assets(), owner.as_ref(), e.visual_rng())
-        .is_some();
-    if has {
+    if e.context().assets().is_some() { crate::bind_items::ensure_clothing_mod_data(item)?; }
+    let result = {
+        let mut body = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item visual body").to_lua_error())?;
+        body.try_get_visual(e.context().assets(), owner.as_ref(), e.visual_rng()).map(|value| value.is_some())
+    };
+    pz_inventory::shared::observe_item(item);
+    let has = result.map_err(|error| error.to_lua_error())?;
+    Ok(if has {
         visual_value(item)
     } else {
         Value::Nil
-    }
+    })
 }
 
-fn clothing_of(item: &ItemRef) -> Option<ClothingItem> {
+fn clothing_of(item: &ItemRef) -> LuaResult<Option<ClothingItem>> {
     let e = item_env();
     let owner = e.owner(item);
-    let i = item.borrow();
-    i.get_clothing_item(e.context().assets(), owner.as_ref())
-        .cloned()
+    if e.context().assets().is_some() { crate::bind_items::ensure_clothing_mod_data(item)?; }
+    let result = {
+        let body = item.try_borrow().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item visual body").to_lua_error())?;
+        body.try_get_clothing_item(e.context().assets(), owner.as_ref()).map(|value| value.cloned())
+    };
+    result.map_err(|error| error.to_lua_error())
 }
 
 /// `ItemVisual.getClothingItem()`: by the visual's alternate model name.
@@ -595,22 +601,25 @@ fn register_item_methods(thread: &mut Thread) {
     let b = expose_class(thread, INVENTORY_ITEM_CLASS, None);
     b.method("getVisual", |c| {
         let item = this_item(c)?;
-        Ok(c.push(get_visual(&item)))
+        Ok(c.push(get_visual(&item)?))
     });
     b.method("getClothingItem", |c| {
         let item = this_item(c)?;
-        Ok(c.push(clothing_item_value(clothing_of(&item).as_ref())))
+        Ok(c.push(clothing_item_value(clothing_of(&item)?.as_ref())))
     });
     b.method("allowRandomTint", |c| {
         let item = this_item(c)?;
-        Ok(c.push(clothing_of(&item).is_some_and(|ci| ci.allow_random_tint)))
+        Ok(c.push(clothing_of(&item)?.is_some_and(|ci| ci.allow_random_tint)))
     });
     b.method("synchWithVisual", |c| {
         let item = this_item(c)?;
         let e = item_env();
         let owner = e.owner(&item);
-        item.borrow_mut()
-            .synch_with_visual(e.context().assets(), owner.as_ref(), e.visual_rng());
+        if e.context().assets().is_some() { crate::bind_items::ensure_clothing_mod_data(&item)?; }
+        let result = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item visual body").to_lua_error())?
+            .try_synch_with_visual(e.context().assets(), owner.as_ref(), e.visual_rng());
+        pz_inventory::shared::observe_item(&item);
+        result.map_err(|error| error.to_lua_error())?;
         Ok(0)
     });
     b.method("canBeEquipped", |c| {
@@ -668,7 +677,7 @@ fn all_decal_names(c: &mut NativeCall<'_>) -> LuaResult<usize> {
     let mut out = Vec::new();
     if let Value::Object(o) = c.arg(0) {
         if let Some(l) = o.as_any().downcast_ref::<LuaInventoryItem>() {
-            let group = clothing_of(&l.item)
+            let group = clothing_of(&l.item)?
                 .and_then(|ci| ci.decal_group)
                 .filter(|g| !g.trim().is_empty());
             if let Some(g) = group {
@@ -721,16 +730,23 @@ pub fn set_worn_items_from_item_visuals(
         // have already been cleared; reacquire its current fields afterward.
         crate::bind_items::initialise_item(thread, &item);
         let owner = e.owner(&item);
-        {
-            let mut i = item.borrow_mut();
+        if e.context().assets().is_some() {
+            crate::bind_items::ensure_clothing_mod_data(&item)
+                .map_err(|error| pz_scripts::ScriptError::new(format!("{error:?}")))?;
+        }
+        let visual_result = (|| {
+            let mut i = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item visual copy"))?;
             let assets = e.context().assets();
-            if i.get_visual(assets, owner.as_ref(), e.visual_rng())
+            if i.try_get_visual(assets, owner.as_ref(), e.visual_rng())?
                 .is_some()
             {
                 copy_visual_from(&mut i, other, assets, owner.as_ref(), e.as_ref());
-                i.synch_with_visual(assets, owner.as_ref(), e.visual_rng());
+                i.try_synch_with_visual(assets, owner.as_ref(), e.visual_rng())?;
             }
-        }
+            Ok::<(), pz_inventory::moddata::ModDataError>(())
+        })();
+        pz_inventory::shared::observe_item(&item);
+        visual_result.map_err(|error| pz_scripts::ScriptError::new(error.to_string()))?;
         let i = item.borrow();
         let location = if matches!(
             i.kind,
@@ -907,7 +923,7 @@ mod tests {
         thread.globals().set_str("firstClothing", first.clone());
         let item = crate::bind_items::create_item("Base.Tshirt_Test", 1.0).unwrap();
         let weak_item = Rc::downgrade(&item);
-        let visual = get_visual(&item);
+        let visual = get_visual(&item).unwrap();
         assert!(matches!(visual, Value::Object(_)));
         drop(visual);
         drop(item);

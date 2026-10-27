@@ -2,7 +2,7 @@
 
 use crate::compiler::*;
 use crate::number::{java_double_to_string, number_to_string};
-use crate::table::TableRef;
+use crate::table::{RetiredTableValues, TableAccessError, TableRef};
 use crate::value::Value;
 use crate::vm::*;
 use std::cell::RefCell;
@@ -12,6 +12,54 @@ const MAX_STACK_SIZE: usize = 3000;
 const MAX_CALL_FRAMES: usize = 1000;
 const MAX_INDEX_RECURSION: usize = 100;
 const FIELDS_PER_FLUSH: usize = 50;
+
+#[cfg(test)]
+#[path = "exec_table_tests.rs"]
+mod table_access_tests;
+
+pub(crate) fn table_access_error(error: TableAccessError) -> LuaError {
+    LuaError::Runtime {
+        class: match error {
+            TableAccessError::Borrowed => "pz.host.Borrowed",
+            TableAccessError::TraversalLimit => "pz.host.Unsupported",
+        },
+        message: error.to_string(),
+    }
+}
+
+/// Keep removed owners past interpreter callbacks and enclosing host guards.
+/// The actual mutation still happens now; only final destruction is delayed.
+pub(crate) fn table_raw_set(table: &TableRef, key: &Value, value: &Value) -> LuaResult<()> {
+    let mut retired = RetiredTableValues::new();
+    let result = table
+        .try_rawset(key, value, &mut retired)
+        .map_err(table_access_error);
+    crate::gc::retire_table_values(retired);
+    result
+}
+
+/// The same Kahlua length search, with fallible access to every live read.
+pub(crate) fn table_length(table: &TableRef) -> LuaResult<i64> {
+    let mut low = 0i64;
+    let mut high = 2 * table.try_size().map_err(table_access_error)? as i64;
+    let get = |i| {
+        table
+            .try_rawget(&Value::Num(i as f64))
+            .map_err(table_access_error)
+    };
+    while low < high {
+        let middle = (high + low + 1) >> 1;
+        if get(middle)?.is_nil() {
+            high = middle - 1;
+        } else {
+            low = middle;
+        }
+    }
+    while !get(low + 1)?.is_nil() {
+        low += 1;
+    }
+    Ok(low)
+}
 
 fn meta_op_name(op: u32) -> &'static str {
     match op {
@@ -120,7 +168,11 @@ impl Thread {
     /// A thread over `env` (the global table). Install the standard library
     /// with [`crate::stdlib::install`].
     pub fn new(env: TableRef) -> Self {
-        let root = Rc::new(RefCell::new(Coroutine { env: Some(env.clone()), status: CoStatus::Running, ..Default::default() }));
+        let root = Rc::new(RefCell::new(Coroutine {
+            env: Some(env.clone()),
+            status: CoStatus::Running,
+            ..Default::default()
+        }));
         Thread {
             current: root.clone(),
             root,
@@ -146,7 +198,11 @@ impl Thread {
     /// Environment of the running coroutine (`callFrame.getEnvironment()`
     /// for a Java function).
     pub fn current_env(&self) -> TableRef {
-        self.current.borrow().env.clone().unwrap_or_else(|| self.env.clone())
+        self.current
+            .borrow()
+            .env
+            .clone()
+            .unwrap_or_else(|| self.env.clone())
     }
 
     // ---- stack ----
@@ -157,7 +213,8 @@ impl Thread {
                 return Err(LuaError::runtime("Stack overflow"));
             }
             if self.stack.len() < new_top {
-                self.stack.resize(new_top.max(self.stack.len() * 2), Value::Nil);
+                self.stack
+                    .resize(new_top.max(self.stack.len() * 2), Value::Nil);
             }
         } else {
             for v in &mut self.stack[new_top..self.top] {
@@ -204,7 +261,11 @@ impl Thread {
 
     /// `pcall` that also returns the error itself (the Java exception
     /// object the original passes as pcall's fourth result).
-    pub fn pcall_ex(&mut self, f: &Value, args: &[Value]) -> Result<Vec<Value>, (Value, String, LuaError)> {
+    pub fn pcall_ex(
+        &mut self,
+        f: &Value,
+        args: &[Value],
+    ) -> Result<Vec<Value>, (Value, String, LuaError)> {
         let depth = self.frames.len();
         let base = self.top;
         let upv_floor = self.frames.last().map(|f| f.local_base).unwrap_or(0);
@@ -255,7 +316,7 @@ impl Thread {
             Value::Nil => Err(LuaError::runtime("tried to call nil")),
             _ => {
                 // __call through the metatable, with the object as first arg.
-                let mf = self.get_meta_op(&f, "__call");
+                let mf = self.get_meta_op(&f, "__call")?;
                 if mf.is_function() {
                     self.set_top(base + nargs + 1)?;
                     self.stack.copy_within_values(base, base + 1, nargs + 1);
@@ -268,7 +329,13 @@ impl Thread {
         }
     }
 
-    fn call_native(&mut self, f: &Rc<NativeFunction>, local_base: usize, return_base: usize, nargs: usize) -> LuaResult<usize> {
+    fn call_native(
+        &mut self,
+        f: &Rc<NativeFunction>,
+        local_base: usize,
+        return_base: usize,
+        nargs: usize,
+    ) -> LuaResult<usize> {
         if self.frames.len() >= MAX_CALL_FRAMES {
             return Err(LuaError::runtime("Stack overflow"));
         }
@@ -283,7 +350,11 @@ impl Thread {
             restore_top: false,
         });
         let r = {
-            let mut call = NativeCall { thread: self, base: local_base, nargs };
+            let mut call = NativeCall {
+                thread: self,
+                base: local_base,
+                nargs,
+            };
             (f.f)(&mut call)
         };
         let n = match r {
@@ -303,7 +374,14 @@ impl Thread {
         Ok(n)
     }
 
-    fn push_frame(&mut self, c: Rc<LuaClosure>, local_base: usize, return_base: usize, nargs: usize, from_lua: bool) -> LuaResult<()> {
+    fn push_frame(
+        &mut self,
+        c: Rc<LuaClosure>,
+        local_base: usize,
+        return_base: usize,
+        nargs: usize,
+        from_lua: bool,
+    ) -> LuaResult<()> {
         if self.frames.len() >= MAX_CALL_FRAMES {
             return Err(LuaError::runtime("Stack overflow"));
         }
@@ -386,7 +464,12 @@ impl Thread {
                 if Rc::ptr_eq(coroutine, &self.current) {
                     self.stack[*index].clone()
                 } else {
-                    coroutine.borrow().stack.get(*index).cloned().unwrap_or_default()
+                    coroutine
+                        .borrow()
+                        .stack
+                        .get(*index)
+                        .cloned()
+                        .unwrap_or_default()
                 }
             }
         }
@@ -408,68 +491,78 @@ impl Thread {
 
     // ---- metatables and indexing ----
 
-    /// `getmetatable(o, raw=true)`.
-    pub fn raw_metatable(&self, o: &Value) -> Option<TableRef> {
+    /// `getmetatable(o, raw=true)`. A borrowed body is an explicit host
+    /// error, never an absent metatable.
+    pub fn raw_metatable(&self, o: &Value) -> LuaResult<Option<TableRef>> {
+        let class = |name: &str| -> LuaResult<Option<TableRef>> {
+            Ok(self
+                .class_metatables
+                .try_rawget(&Value::str(name))
+                .map_err(table_access_error)?
+                .as_table()
+                .cloned())
+        };
         match o {
-            Value::Nil => None,
-            Value::Table(t) => t.metatable(),
-            Value::Str(_) => self.class_metatables.get_str("java.lang.String").as_table().cloned(),
-            Value::Num(_) => self.class_metatables.get_str("java.lang.Double").as_table().cloned(),
-            Value::Bool(_) => self.class_metatables.get_str("java.lang.Boolean").as_table().cloned(),
+            Value::Nil => Ok(None),
+            Value::Table(t) => t.try_metatable().map_err(table_access_error),
+            Value::Str(_) => class("java.lang.String"),
+            Value::Num(_) => class("java.lang.Double"),
+            Value::Bool(_) => class("java.lang.Boolean"),
             Value::Object(obj) => {
-                if let Value::Table(m) = self.class_metatables.get_str(obj.class_name()) {
-                    return Some(m);
+                if let Some(m) = class(obj.class_name())? {
+                    return Ok(Some(m));
                 }
                 for c in obj.super_classes() {
-                    if let Value::Table(m) = self.class_metatables.get_str(c) {
-                        return Some(m);
+                    if let Some(m) = class(c)? {
+                        return Ok(Some(m));
                     }
                 }
-                None
+                Ok(None)
             }
-            Value::Coroutine(_) => self.class_metatables.get_str("se.krka.kahlua.vm.Coroutine").as_table().cloned(),
-            Value::Closure(_) | Value::Native(_) => None,
+            Value::Coroutine(_) => class("se.krka.kahlua.vm.Coroutine"),
+            Value::Closure(_) | Value::Native(_) => Ok(None),
         }
     }
 
     /// `getmetatable(o, raw=false)`: honours `__metatable`.
-    pub fn metatable(&self, o: &Value) -> Value {
-        match self.raw_metatable(o) {
+    pub fn metatable(&self, o: &Value) -> LuaResult<Value> {
+        match self.raw_metatable(o)? {
             Some(m) => {
-                let mm = m.rawget(&Value::str("__metatable"));
-                if mm.is_nil() {
-                    Value::Table(m)
-                } else {
-                    mm
-                }
+                let mm = m
+                    .try_rawget(&Value::str("__metatable"))
+                    .map_err(table_access_error)?;
+                Ok(if mm.is_nil() { Value::Table(m) } else { mm })
             }
-            None => Value::Nil,
+            None => Ok(Value::Nil),
         }
     }
 
-    pub fn get_meta_op(&self, o: &Value, op: &str) -> Value {
-        match self.raw_metatable(o) {
-            Some(m) => m.rawget(&Value::str(op)),
-            None => Value::Nil,
+    pub fn get_meta_op(&self, o: &Value, op: &str) -> LuaResult<Value> {
+        match self.raw_metatable(o)? {
+            Some(m) => m.try_rawget(&Value::str(op)).map_err(table_access_error),
+            None => Ok(Value::Nil),
         }
     }
 
-    fn get_bin_meta_op(&self, a: &Value, b: &Value, op: &str) -> Value {
-        let m = self.get_meta_op(a, op);
+    fn get_bin_meta_op(&self, a: &Value, b: &Value, op: &str) -> LuaResult<Value> {
+        let m = self.get_meta_op(a, op)?;
         if !m.is_nil() {
-            return m;
+            return Ok(m);
         }
         self.get_meta_op(b, op)
     }
 
-    fn get_comp_meta_op(&self, a: &Value, b: &Value, op: &str) -> Value {
-        let (Some(m1), Some(m2)) = (self.raw_metatable(a), self.raw_metatable(b)) else { return Value::Nil };
-        let o1 = m1.rawget(&Value::str(op));
-        let o2 = m2.rawget(&Value::str(op));
-        if o1.is_nil() || !o1.raw_equals(&o2) {
-            return Value::Nil;
-        }
-        o1
+    fn get_comp_meta_op(&self, a: &Value, b: &Value, op: &str) -> LuaResult<Value> {
+        let (Some(m1), Some(m2)) = (self.raw_metatable(a)?, self.raw_metatable(b)?) else {
+            return Ok(Value::Nil);
+        };
+        let o1 = m1.try_rawget(&Value::str(op)).map_err(table_access_error)?;
+        let o2 = m2.try_rawget(&Value::str(op)).map_err(table_access_error)?;
+        Ok(if o1.is_nil() || !o1.raw_equals(&o2) {
+            Value::Nil
+        } else {
+            o1
+        })
     }
 
     /// `KahluaThread.tableget`.
@@ -477,12 +570,12 @@ impl Thread {
         let mut cur = table.clone();
         for _ in 0..MAX_INDEX_RECURSION {
             if let Value::Table(t) = &cur {
-                let r = t.rawget(key);
+                let r = t.try_rawget(key).map_err(table_access_error)?;
                 if !r.is_nil() {
                     return Ok(r);
                 }
             }
-            let meta = self.get_meta_op(&cur, "__index");
+            let meta = self.get_meta_op(&cur, "__index")?;
             if meta.is_nil() {
                 if matches!(cur, Value::Table(_)) {
                     if let (Value::Object(o), Some(h)) = (table, self.on_missing_member.as_mut()) {
@@ -490,7 +583,11 @@ impl Thread {
                     }
                     return Ok(Value::Nil);
                 }
-                let msg = format!("attempted index: {} of non-table: {}", java_value_of(key), java_value_of(&cur));
+                let msg = format!(
+                    "attempted index: {} of non-table: {}",
+                    java_value_of(key),
+                    java_value_of(&cur)
+                );
                 self.log_error(&format!(
                     "-------------------------------------------------------------\n{msg}"
                 ));
@@ -507,27 +604,37 @@ impl Thread {
 
     /// `KahluaThread.tableSet`.
     pub fn table_set(&mut self, table: &Value, key: &Value, value: Value) -> LuaResult<()> {
+        let result = self.table_set_value(table, key, &value);
+        // The owned input may be its last host reference, even when a held
+        // table rejects the write or the native operation ignores a nil key.
+        let mut retired = RetiredTableValues::new();
+        retired.push(value);
+        crate::gc::retire_table_values(retired);
+        result
+    }
+
+    fn table_set_value(&mut self, table: &Value, key: &Value, value: &Value) -> LuaResult<()> {
         let mut cur = table.clone();
         for _ in 0..MAX_INDEX_RECURSION {
             let meta;
             if let Value::Table(t) = &cur {
-                if !t.rawget(key).is_nil() {
-                    t.rawset(key.clone(), value);
+                if !t.try_rawget(key).map_err(table_access_error)?.is_nil() {
+                    table_raw_set(t, key, value)?;
                     return Ok(());
                 }
-                meta = self.get_meta_op(&cur, "__newindex");
+                meta = self.get_meta_op(&cur, "__newindex")?;
                 if meta.is_nil() {
-                    t.rawset(key.clone(), value);
+                    table_raw_set(t, key, value)?;
                     return Ok(());
                 }
             } else {
-                meta = self.get_meta_op(&cur, "__newindex");
+                meta = self.get_meta_op(&cur, "__newindex")?;
                 if meta.is_nil() {
                     return Err(LuaError::runtime("attempted index of non-table"));
                 }
             }
             if meta.is_function() {
-                self.call(&meta, &[table.clone(), key.clone(), value])?;
+                self.call(&meta, &[table.clone(), key.clone(), value.clone()])?;
                 return Ok(());
             }
             cur = meta;
@@ -555,7 +662,7 @@ impl Thread {
                 return Ok(java_value_of(&r));
             }
         }
-        let f = self.get_meta_op(o, "__tostring");
+        let f = self.get_meta_op(o, "__tostring")?;
         if !f.is_nil() {
             let r = self.call1(&f, std::slice::from_ref(o))?;
             return Ok(java_value_of(&r));
@@ -564,15 +671,23 @@ impl Thread {
             let mut s = self.table_to_string(o)?;
             s.push_str("{ ");
             let mut any = false;
-            for (k, v) in t.entries() {
+            for (k, v) in t.try_entries().map_err(table_access_error)? {
                 if any {
                     s.push_str(", ");
                 }
                 any = true;
-                let ks = if matches!(k, Value::Table(_)) { self.table_to_string(&k)? } else { self.tostring(&k)? };
+                let ks = if matches!(k, Value::Table(_)) {
+                    self.table_to_string(&k)?
+                } else {
+                    self.tostring(&k)?
+                };
                 s.push_str(&ks);
                 s.push('=');
-                let vs = if matches!(v, Value::Table(_)) { self.table_to_string(&v)? } else { self.tostring(&v)? };
+                let vs = if matches!(v, Value::Table(_)) {
+                    self.table_to_string(&v)?
+                } else {
+                    self.tostring(&v)?
+                };
                 s.push_str(&vs);
             }
             s.push_str(" }");
@@ -600,9 +715,11 @@ impl Thread {
             return Ok(Value::Num(primitive_math(x, y, op)));
         }
         let name = meta_op_name(op);
-        let mf = self.get_bin_meta_op(b, c, name);
+        let mf = self.get_bin_meta_op(b, c, name)?;
         if mf.is_nil() {
-            return Err(LuaError::runtime(format!("{name} not defined for operands in {fname}")));
+            return Err(LuaError::runtime(format!(
+                "{name} not defined for operands in {fname}"
+            )));
         }
         self.call1(&mf, &[b.clone(), c.clone()])
     }
@@ -692,7 +809,9 @@ impl Thread {
                 let env = Value::Table(closure.env.borrow().clone());
                 let v = self.table_get(&env, &k[bx(op)])?;
                 if v.is_nil() {
-                    if let (Some(h), Value::Str(name)) = (self.on_missing_global.as_mut(), &k[bx(op)]) {
+                    if let (Some(h), Value::Str(name)) =
+                        (self.on_missing_global.as_mut(), &k[bx(op)])
+                    {
                         h(name);
                     }
                 }
@@ -744,7 +863,7 @@ impl Thread {
                 let r = match raw_tonumber(&b) {
                     Some(n) => Value::Num(-n),
                     None => {
-                        let mf = self.get_meta_op(&b, "__unm");
+                        let mf = self.get_meta_op(&b, "__unm")?;
                         self.call1(&mf, &[b.clone()])?
                     }
                 };
@@ -757,10 +876,10 @@ impl Thread {
             OP_LEN => {
                 let o = self.stack[base + b9(op)].clone();
                 let r = match &o {
-                    Value::Table(t) => Value::Num(t.len() as f64),
+                    Value::Table(t) => Value::Num(table_length(t)? as f64),
                     Value::Str(s) => Value::Num(java_len(s) as f64),
                     _ => {
-                        let f = self.get_meta_op(&o, "__len");
+                        let f = self.get_meta_op(&o, "__len")?;
                         if f.is_nil() {
                             return Err(LuaError::runtime("__len not defined for operand"));
                         }
@@ -805,7 +924,7 @@ impl Thread {
                         break;
                     }
                     let left = self.stack[base + left_idx].clone();
-                    let mf = self.get_bin_meta_op(&left, &res, "__concat");
+                    let mf = self.get_bin_meta_op(&left, &res, "__concat")?;
                     if mf.is_nil() {
                         return Err(LuaError::runtime(format!(
                             "__concat not defined for operands: {} and {}",
@@ -841,9 +960,9 @@ impl Thread {
                         } else {
                             let mut invert = false;
                             let name = meta_op_name(opc);
-                            let mut mf = self.get_comp_meta_op(&bo, &co, name);
+                            let mut mf = self.get_comp_meta_op(&bo, &co, name)?;
                             if mf.is_nil() && opc == OP_LE {
-                                mf = self.get_comp_meta_op(&bo, &co, "__lt");
+                                mf = self.get_comp_meta_op(&bo, &co, "__lt")?;
                                 std::mem::swap(&mut bo, &mut co);
                                 invert = true;
                             }
@@ -851,7 +970,9 @@ impl Thread {
                                 bo.raw_equals(&co)
                             } else {
                                 if mf.is_nil() {
-                                    return Err(LuaError::runtime(format!("{name} not defined for operand")));
+                                    return Err(LuaError::runtime(format!(
+                                        "{name} not defined for operand"
+                                    )));
                                 }
                                 self.call1(&mf, &[bo.clone(), co.clone()])?.truthy()
                             };
@@ -952,7 +1073,11 @@ impl Thread {
                     return Err(LuaError::runtime("SETLIST on non-table"));
                 };
                 for i in 1..=b {
-                    t.rawset(Value::Num((offset + i) as f64), self.stack[base + a + i].clone());
+                    table_raw_set(
+                        &t,
+                        &Value::Num((offset + i) as f64),
+                        &self.stack[base + a + i],
+                    )?;
                 }
             }
             OP_CLOSE => self.close_upvalues(base + a8(op)),
@@ -989,7 +1114,13 @@ impl Thread {
         f.pc = (f.pc as isize + off) as usize;
     }
 
-    fn push_varargs(&mut self, base: usize, index: usize, n: isize, proto: &Prototype) -> LuaResult<()> {
+    fn push_varargs(
+        &mut self,
+        base: usize,
+        index: usize,
+        n: isize,
+        proto: &Prototype,
+    ) -> LuaResult<()> {
         let nargs = self.frame().n_arguments;
         let nparams = proto.num_params as usize;
         let mut nvarargs = nargs.saturating_sub(nparams);
@@ -1035,12 +1166,14 @@ impl Thread {
                 .or_else(|| closure.prototype.name.clone())
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "unknown".into());
-            return Err(LuaError::runtime(format!("Object tried to call nil in {name}")));
+            return Err(LuaError::runtime(format!(
+                "Object tried to call nil in {name}"
+            )));
         }
         let fun = if fun_obj.is_function() {
             fun_obj.clone()
         } else {
-            let m = self.get_meta_op(&fun_obj, "__call");
+            let m = self.get_meta_op(&fun_obj, "__call")?;
             if m.is_nil() {
                 return Err(LuaError::runtime(format!(
                     "Object {} did not have __call metatable set",
@@ -1062,12 +1195,23 @@ impl Thread {
                     return Ok(Flow::Return);
                 }
                 if self.frame().restore_top {
-                    let max = self.frame().closure.as_ref().unwrap().prototype.max_stack_size as usize;
+                    let max = self
+                        .frame()
+                        .closure
+                        .as_ref()
+                        .unwrap()
+                        .prototype
+                        .max_stack_size as usize;
                     let lb = self.frame().local_base;
                     self.set_top(lb + max)?;
                 }
             }
-            other => return Err(LuaError::runtime(format!("Tried to call a non-function: {}", java_value_of(&other)))),
+            other => {
+                return Err(LuaError::runtime(format!(
+                    "Tried to call a non-function: {}",
+                    java_value_of(&other)
+                )))
+            }
         }
         Ok(Flow::Continue)
     }
@@ -1091,9 +1235,11 @@ impl Thread {
         let fun = if fun_obj.is_function() {
             fun_obj.clone()
         } else {
-            let m = self.get_meta_op(&fun_obj, "__call");
+            let m = self.get_meta_op(&fun_obj, "__call")?;
             if m.is_nil() {
-                return Err(LuaError::runtime("Object did not have __call metatable set"));
+                return Err(LuaError::runtime(
+                    "Object did not have __call metatable set",
+                ));
             }
             local_base = return_base;
             nargs += 1;
@@ -1123,13 +1269,22 @@ impl Thread {
                     return Ok(Flow::Return);
                 }
                 if self.frame().restore_top {
-                    let max = self.frame().closure.as_ref().unwrap().prototype.max_stack_size as usize;
+                    let max = self
+                        .frame()
+                        .closure
+                        .as_ref()
+                        .unwrap()
+                        .prototype
+                        .max_stack_size as usize;
                     let lb = self.frame().local_base;
                     self.set_top(lb + max)?;
                 }
                 Ok(Flow::Continue)
             }
-            other => Err(LuaError::runtime(format!("Tried to call a non-function: {}", java_value_of(&other)))),
+            other => Err(LuaError::runtime(format!(
+                "Tried to call a non-function: {}",
+                java_value_of(&other)
+            ))),
         }
     }
 
@@ -1188,7 +1343,12 @@ impl Thread {
         let env = f.env.borrow().clone();
         let mut stack = vec![Value::Nil; 64];
         stack[0] = Value::Closure(f);
-        Rc::new(RefCell::new(Coroutine { stack, top: 1, env: Some(env), ..Default::default() }))
+        Rc::new(RefCell::new(Coroutine {
+            stack,
+            top: 1,
+            env: Some(env),
+            ..Default::default()
+        }))
     }
 
     pub fn coroutine_status(&self, co: &CoroutineRef) -> &'static str {
@@ -1213,10 +1373,16 @@ impl Thread {
 
     /// `coroutine.resume`: `Ok(values)` when it yields or returns,
     /// `Err((message, trace))` when it errors.
-    pub fn resume(&mut self, co: &CoroutineRef, args: &[Value]) -> LuaResult<Result<Vec<Value>, (Value, String)>> {
+    pub fn resume(
+        &mut self,
+        co: &CoroutineRef,
+        args: &[Value],
+    ) -> LuaResult<Result<Vec<Value>, (Value, String)>> {
         let status = self.coroutine_status(co);
         if status != "suspended" {
-            return Err(LuaError::runtime(format!("Can not resume coroutine that is in status: {status}")));
+            return Err(LuaError::runtime(format!(
+                "Can not resume coroutine that is in status: {status}"
+            )));
         }
         let parent = self.current.clone();
         parent.borrow_mut().status = CoStatus::Normal;
@@ -1290,7 +1456,9 @@ impl Thread {
 
     /// `coroutine.yield` from a native called directly by coroutine code.
     pub fn yield_values(&mut self, values: Vec<Value>) -> LuaResult<()> {
-        if Rc::ptr_eq(&self.current, &self.root) || self.current.borrow().resume_level != self.exec_level {
+        if Rc::ptr_eq(&self.current, &self.root)
+            || self.current.borrow().resume_level != self.exec_level
+        {
             return Err(LuaError::runtime("Can not yield outside of a coroutine"));
         }
         self.current.borrow_mut().yielded = Some(values);
@@ -1353,7 +1521,11 @@ fn frame_trace(fr: &CallFrame) -> String {
     if let Some(c) = &fr.closure {
         let lines = &c.prototype.lines;
         if fr.pc >= 1 && fr.pc - 1 < lines.len() {
-            return format!("at {}:{}\n", c.prototype.name.as_deref().unwrap_or("null"), lines[fr.pc - 1]);
+            return format!(
+                "at {}:{}\n",
+                c.prototype.name.as_deref().unwrap_or("null"),
+                lines[fr.pc - 1]
+            );
         }
         return String::new();
     }

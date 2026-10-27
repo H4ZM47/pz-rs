@@ -13,20 +13,12 @@ use pz_scripts::objects::items::ModelWeaponPart;
 
 use crate::component::{ComponentBlob, COMPONENT_WORLD_VERSION};
 use crate::item::{InventoryItem, ItemKind};
-use crate::lua_table::{LuaKey, LuaValue};
+use crate::moddata::ModDataResult;
 
 /// `ItemTag.USE_WORLD_STATIC_MODEL`.
 pub const TAG_USE_WORLD_STATIC_MODEL: &str = "base:useworldstaticmodel";
 
 impl InventoryItem {
-    fn mod_data_string(&self, key: &str) -> Option<Option<&str>> {
-        let v = self.table.as_ref()?.rawget(&LuaKey::Str(key.to_string()))?;
-        Some(match v {
-            LuaValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        })
-    }
-
     /// `getStaticModelsByIndex()`.
     pub fn get_static_models_by_index(&self) -> Option<&Rc<Vec<String>>> {
         self.static_models_by_index.as_ref()
@@ -71,18 +63,22 @@ impl InventoryItem {
 
     /// `InventoryItem.getStaticModel()` (without the subclass overrides): a
     /// `staticModel` mod data string, the indexed instance model, or the
-    /// script's. A non-string mod data value (the original's cast throws)
-    /// and an index past the list's end give `None`.
-    pub fn get_base_static_model(&self) -> Option<String> {
-        if let Some(v) = self.mod_data_string("staticModel") {
-            return v.map(str::to_string);
+    /// script's. A non-string value returns the native cast error; a host
+    /// borrow conflict remains a distinct capability error.
+    pub fn try_get_base_static_model(&self) -> ModDataResult<Option<String>> {
+        if let Some(value) = self.mod_data_string("staticModel")? {
+            return Ok(Some(value));
         }
         if self.model_index != -1 {
-            if let Some(l) = &self.static_models_by_index {
-                return index(l, self.model_index);
+            if let Some(models) = &self.static_models_by_index {
+                return Ok(index(models, self.model_index));
             }
         }
-        self.template.static_model.clone()
+        Ok(self.template.static_model.clone())
+    }
+    pub fn get_base_static_model(&self) -> Option<String> {
+        self.try_get_base_static_model()
+            .expect("unborrowed model ModData with native string values")
     }
 
     /// `getStaticModel()` with the `HandWeapon` (indexed weapon sprite, then
@@ -91,40 +87,51 @@ impl InventoryItem {
     ///
     /// `model_script` is `ScriptManager.getModelScript(name)` answering the
     /// script's `getName()`.
+    pub fn try_get_static_model(
+        &self,
+        model_script: &dyn Fn(&str) -> Option<String>,
+    ) -> ModDataResult<Option<String>> {
+        if let ItemKind::Weapon(w) = &self.kind {
+            if self.model_index != -1 {
+                if let Some(l) = &w.weapon_sprites_by_index {
+                    return Ok(index(l, self.model_index));
+                }
+            }
+            return Ok(w.weapon_sprite.clone());
+        }
+        if let ItemKind::Food(f) = &self.kind {
+            let variant = |suffix: &str| {
+                let base = self.try_get_base_static_model()?;
+                Ok::<_, crate::ModDataError>(model_script(&format!(
+                    "{}{suffix}",
+                    base.as_deref().unwrap_or("null")
+                )))
+            };
+            if f.burnt {
+                if let Some(n) = variant("Burnt")? {
+                    return Ok(Some(n));
+                }
+            }
+            if self.is_rotten() {
+                if let Some(n) = variant("Rotten")? {
+                    return Ok(Some(n));
+                }
+            }
+            if f.cooked {
+                if let Some(n) = variant("Cooked")? {
+                    return Ok(Some(n));
+                }
+            }
+        }
+        self.try_get_base_static_model()
+    }
+
     pub fn get_static_model(
         &self,
         model_script: &dyn Fn(&str) -> Option<String>,
     ) -> Option<String> {
-        if let ItemKind::Weapon(w) = &self.kind {
-            if self.model_index != -1 {
-                if let Some(l) = &w.weapon_sprites_by_index {
-                    return index(l, self.model_index);
-                }
-            }
-            return w.weapon_sprite.clone();
-        }
-        if let ItemKind::Food(f) = &self.kind {
-            let variant = |suffix: &str| {
-                let base = self.get_base_static_model();
-                model_script(&format!("{}{suffix}", base.as_deref().unwrap_or("null")))
-            };
-            if f.burnt {
-                if let Some(n) = variant("Burnt") {
-                    return Some(n);
-                }
-            }
-            if self.is_rotten() {
-                if let Some(n) = variant("Rotten") {
-                    return Some(n);
-                }
-            }
-            if f.cooked {
-                if let Some(n) = variant("Cooked") {
-                    return Some(n);
-                }
-            }
-        }
-        self.get_base_static_model()
+        self.try_get_static_model(model_script)
+            .expect("unborrowed model ModData with native string values")
     }
 
     /// `tryGetWorldStaticModelByIndex(index)`.
@@ -141,25 +148,34 @@ impl InventoryItem {
     /// value is (by identity) the literal `"true"`, which only holds for the
     /// value `Moveable` sets at runtime, not for one read from a save. That
     /// runtime path is not ported, so the branch never applies here.
-    pub fn get_world_static_model(&self) -> Option<String> {
-        if let Some(v) = self.mod_data_string("worldStaticModel") {
-            return v.map(str::to_string);
+    pub fn try_get_world_static_model(&self) -> ModDataResult<Option<String>> {
+        if let Some(value) = self.mod_data_string("worldStaticModel")? {
+            return Ok(Some(value));
         }
-        if let Some(m) = self.try_get_world_static_model_by_index(self.model_index) {
-            return Some(m);
+        if let Some(model) = self.try_get_world_static_model_by_index(self.model_index) {
+            return Ok(Some(model));
         }
-        self.template.world_static_model.clone()
+        Ok(self.template.world_static_model.clone())
     }
-
-    /// `getStaticModelException()`.
+    pub fn get_world_static_model(&self) -> Option<String> {
+        self.try_get_world_static_model()
+            .expect("unborrowed world model ModData with native string values")
+    }
+    pub fn try_get_static_model_exception(
+        &self,
+        model_script: &dyn Fn(&str) -> Option<String>,
+    ) -> ModDataResult<Option<String>> {
+        if self.has_tag(TAG_USE_WORLD_STATIC_MODEL) {
+            return self.try_get_world_static_model();
+        }
+        self.try_get_static_model(model_script)
+    }
     pub fn get_static_model_exception(
         &self,
         model_script: &dyn Fn(&str) -> Option<String>,
     ) -> Option<String> {
-        if self.has_tag(TAG_USE_WORLD_STATIC_MODEL) {
-            return self.get_world_static_model();
-        }
-        self.get_static_model(model_script)
+        self.try_get_static_model_exception(model_script)
+            .expect("unborrowed model ModData with native string values")
     }
 
     /// The model index part of `synchWithVisual`: an item with model lists
@@ -453,10 +469,8 @@ mod tests {
         );
         assert_eq!(i.get_world_static_model().as_deref(), Some("Base.MugWorld"));
         // Mod data overrides both.
-        i.table.get_or_insert_with(Default::default).rawset(
-            LuaKey::Str("staticModel".into()),
-            Some(LuaValue::Str("Base.Other".into())),
-        );
+        i.set_mod_data_value("staticModel", Some(pz_kahlua::Value::str("Base.Other")))
+            .unwrap();
         assert_eq!(i.get_static_model(&|_| None).as_deref(), Some("Base.Other"));
         // An item that already has an index keeps it.
         i.pick_model_index(&mut |_| panic!("no draw"));

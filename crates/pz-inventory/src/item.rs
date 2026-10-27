@@ -12,12 +12,13 @@ use std::rc::Rc;
 use crate::container::ItemContainer;
 use crate::device::DeviceData;
 use crate::env::ItemEnv;
-use crate::io::{err, has, read_header, BitHeaderWrite, Reader, SaveError, SaveResult, Writer};
+use crate::io::{has, read_header, BitHeaderWrite, Reader, SaveError, SaveResult, Writer};
 use crate::item_components::ItemComponents;
-use crate::lua_table::{present, LuaKey, LuaTable, LuaValue};
+use crate::moddata::{ItemModData, ModDataResult};
 use crate::shared::{ContainerRef, SharedContainer};
 use crate::template::{ItemClass, ItemTemplate};
 use crate::visual::ItemVisual;
+use pz_kahlua::Value;
 use pz_scripts::objects::items::ModelWeaponPart;
 use pz_scripts::registry::RegistryKey;
 
@@ -431,7 +432,7 @@ pub struct InventoryItem {
     pub custom_color: bool,
     pub col: Rgba,
     pub item_capacity: f32,
-    pub table: Option<LuaTable>,
+    pub table: Option<ItemModData>,
     pub activated: bool,
     pub have_been_repaired: i32,
     pub name: String,
@@ -705,9 +706,11 @@ impl InventoryItem {
             w.f32(self.item_capacity);
         }
         let mut bits = BitHeaderWrite::alloc(w, 4);
-        if let Some(t) = present(&self.table) {
-            bits.add(1);
-            t.save(w);
+        if let Some(t) = &self.table {
+            if !t.try_is_empty().map_err(SaveError::from)? {
+                bits.add(1);
+                t.save(w).map_err(SaveError::from)?;
+            }
         }
         if self.activated {
             bits.add(2);
@@ -869,7 +872,12 @@ impl InventoryItem {
                 w.bytes(symbols);
             }
             ItemKind::Container(c) => {
-                let saved = c.container.borrow().to_container();
+                let saved = c
+                    .container
+                    .try_borrow()
+                    .map_err(|_| SaveError("host borrow conflict: save bag container".into()))?
+                    .try_to_container()
+                    .map_err(|error| SaveError(error.to_string()))?;
                 w.i32(saved.id);
                 w.i32(c.weight_reduction);
                 saved.save(w, env)?;
@@ -881,17 +889,28 @@ impl InventoryItem {
     /// `InventoryItem.load` and the subclass `load` (after the registry
     /// id and save type).
     pub fn load(&mut self, r: &mut Reader<'_>, wv: i32, env: &dyn ItemEnv) -> SaveResult<()> {
-        let continuation = self.load_prefix(r, wv, env)?;
-        if continuation.entity_present {
-            // Explicit value/archive entry point. Actual shared entities use
-            // component_host::load_item_ref, with no item guard over hooks.
-            let retired = env
-                .components()
-                .load_archive_entity(r, wv, &mut self.components)?;
-            drop(retired); // This archive body is unowned; no host owner drops.
-        }
-        self.load_suffix(continuation, r, wv, env)?;
-        self.load_kind_and_sync(r, wv, env)
+        let mut retired = pz_entity::RetiredComponents::new();
+        let mut notices = Vec::new();
+        let result = (|| {
+            let continuation = self
+                .load_prefix(r, wv, env, &mut retired, &mut notices)
+                .map_err(SaveError::from)?;
+            if continuation.entity_present {
+                retired.append(env.components().load_archive_entity(
+                    r,
+                    wv,
+                    &mut self.components,
+                )?);
+            }
+            self.load_suffix(continuation, r, wv, env)?;
+            self.load_kind_and_sync(r, wv, env)
+        })();
+        // Even an archive receiver may replace a formerly actual live table.
+        // Keep all former slots until the engine's outer safe boundary.
+        crate::component_host::retire_components(retired);
+        crate::component_host::emit_mod_data_notices(&notices)
+            .map_err(|error| SaveError(format!("{error:?}")))?;
+        result
     }
 
     pub(crate) fn load_prefix(
@@ -899,7 +918,9 @@ impl InventoryItem {
         r: &mut Reader<'_>,
         wv: i32,
         env: &dyn ItemEnv,
-    ) -> SaveResult<ItemLoadContinuation> {
+        retired: &mut pz_entity::RetiredComponents,
+        notices: &mut Vec<pz_kahlua::java_io::JavaIoNotice>,
+    ) -> ModDataResult<ItemLoadContinuation> {
         if let ItemKind::Weapon(w) = &mut self.kind {
             // clearAllWeaponParts
             w.attachments.clear();
@@ -912,7 +933,9 @@ impl InventoryItem {
         self.custom_color = false;
         self.col = WHITE;
         self.item_capacity = -1.0;
-        self.table = None;
+        if let Some(old) = self.table.take() {
+            retired.push_payload(Box::new(old));
+        }
         self.activated = false;
         self.have_been_repaired = 0;
         self.custom_name = false;
@@ -981,7 +1004,7 @@ impl InventoryItem {
             if has(header, 64) {
                 let bits = read_header(r, 4)?;
                 if has(bits, 1) {
-                    self.table = Some(LuaTable::load(r, wv)?);
+                    self.load_mod_data(r, wv, retired, notices)?;
                 }
                 self.activated = has(bits, 2);
                 if has(bits, 4) {
@@ -993,7 +1016,7 @@ impl InventoryItem {
                 if has(bits, 16) {
                     let n = r.i32()?;
                     if n < 0 {
-                        return err("negative byteData size");
+                        return Err(SaveError("negative byteData size".into()).into());
                     }
                     self.byte_data = Some(r.bytes(n as usize)?.to_vec());
                 }
@@ -1009,10 +1032,7 @@ impl InventoryItem {
                 }
                 // setCustomName also stores the name in the mod data.
                 self.custom_name = has(bits, 64);
-                self.table.get_or_insert_with(LuaTable::default).rawset(
-                    LuaKey::Str("customName".into()),
-                    Some(LuaValue::Str(self.name.clone())),
-                );
+                self.set_mod_data_value("customName", Some(Value::str(&self.name.clone())))?;
                 if has(bits, 128) {
                     let weight = r.f32()?;
                     if weight >= 0.0 {
@@ -1305,14 +1325,14 @@ impl InventoryItem {
             } else {
                 format!("{name} ({}/{count})", index + 1)
             };
-            self.table.get_or_insert_with(LuaTable::default).rawset(
-                LuaKey::Str("Flatpack".into()),
-                Some(LuaValue::Str("true".into())),
-            );
         }
         m.custom_name_full = name.clone();
         self.name = name;
         m.has_read_world_sprite = true;
+        if info.sprite_grid.is_some() {
+            self.set_mod_data_value("Flatpack", Some(Value::str("true")))
+                .expect("unowned Moveable ModData initialization");
+        }
         true
     }
 }

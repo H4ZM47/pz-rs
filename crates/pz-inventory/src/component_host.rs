@@ -76,6 +76,18 @@ pub fn install_native_notice_logger(
     NATIVE_NOTICE_LOGGER.with(|slot| slot.replace(logger))
 }
 
+/// Forward the owned native StringUTF diagnostic prefix after all item/table
+/// guards, including failed table loads.
+pub fn emit_mod_data_notices(notices: &[pz_kahlua::java_io::JavaIoNotice]) -> HostResult<()> {
+    let notices: Vec<_> = notices
+        .iter()
+        .map(|notice| {
+            pz_entity::runtime_fluid::RuntimeNativeNotice::GeneralError(notice.native_message())
+        })
+        .collect();
+    emit_native_notices(&notices)
+}
+
 pub fn emit_native_notices(
     notices: &[pz_entity::runtime_fluid::RuntimeNativeNotice],
 ) -> HostResult<()> {
@@ -589,25 +601,23 @@ pub fn load_item_ref(
         position,
         component_phase,
     };
-    let continuation = item
+    let mut notices = Vec::new();
+    let prefix = item
         .try_borrow_mut()
-        .map_err(|_| {
-            fail(
-                RuntimeHostError::Borrowed("item load prefix"),
-                RetiredComponents::new(),
-                reader.pos,
-                None,
-            )
-        })?
-        .load_prefix(reader, world_version, env)
-        .map_err(|error| {
-            fail(
-                RuntimeHostError::NativeException(EntityError(error.0)),
-                RetiredComponents::new(),
-                reader.pos,
-                None,
-            )
-        })?;
+        .map_err(|_| RuntimeHostError::Borrowed("item load prefix"))
+        .and_then(|mut body| {
+            body.load_prefix(reader, world_version, env, &mut retired, &mut notices)
+                .map_err(crate::ModDataError::into_host)
+        });
+    shared::observe_item(item);
+    let diagnostics = emit_mod_data_notices(&notices);
+    if let Err(error) = diagnostics {
+        return Err(fail(error, retired, reader.pos, None));
+    }
+    let continuation = match prefix {
+        Ok(continuation) => continuation,
+        Err(error) => return Err(fail(error, retired, reader.pos, None)),
+    };
     if continuation.entity_present {
         let Some(context) = env.components().entity_context() else {
             return Err(fail(
@@ -627,7 +637,7 @@ pub fn load_item_ref(
                 .map_err(|error| {
                     fail(
                         RuntimeHostError::NativeException(error),
-                        RetiredComponents::new(),
+                        std::mem::take(&mut retired),
                         original_position,
                         None,
                     )
@@ -647,9 +657,10 @@ pub fn load_item_ref(
                 for component in failure.report.loaded.drain(..) {
                     failure.report.retired.push_component(component);
                 }
+                retired.append(failure.report.retired);
                 return Err(fail(
                     failure.error,
-                    failure.report.retired,
+                    retired,
                     reader.pos,
                     Some(failure.phase),
                 ));
@@ -661,9 +672,10 @@ pub fn load_item_ref(
                 for component in failure.report.loaded.drain(..) {
                     failure.report.retired.push_component(component);
                 }
+                retired.append(failure.report.retired);
                 return Err(fail(
                     failure.error,
-                    failure.report.retired,
+                    retired,
                     reader.pos,
                     Some(failure.phase),
                 ));

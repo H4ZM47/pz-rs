@@ -14,6 +14,7 @@
 //! one.
 
 use crate::java_io::{JavaReader, JavaWrite};
+use crate::table::{RetiredTableValues, TableAccessError};
 use crate::{TableRef, Value};
 use std::io;
 
@@ -31,9 +32,97 @@ const SBYT_DOUBLE: i8 = 1;
 const SBYT_TABLE: i8 = 2;
 const SBYT_BOOLEAN: i8 = 3;
 
-/// Deeper nesting than this is an error instead of a stack overflow (the
-/// original throws `StackOverflowError` on a cyclic table).
+/// Explicit host safety boundary. Native has no such depth counter; this is
+/// never reported as a measured native StackOverflowError.
 const MAX_DEPTH: usize = 2000;
+
+#[derive(Debug)]
+pub enum TableCodecError {
+    Access(TableAccessError),
+    Native {
+        class: &'static str,
+        message: String,
+    },
+    Unsupported {
+        capability: &'static str,
+    },
+}
+
+impl std::fmt::Display for TableCodecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Access(error) => error.fmt(f),
+            Self::Native { class, message } if message.is_empty() => f.write_str(class),
+            Self::Native { class, message } => write!(f, "{class}: {message}"),
+            Self::Unsupported { capability } => write!(f, "host unsupported: {capability}"),
+        }
+    }
+}
+impl std::error::Error for TableCodecError {}
+impl From<TableAccessError> for TableCodecError {
+    fn from(error: TableAccessError) -> Self {
+        Self::Access(error)
+    }
+}
+
+fn input_error(error: io::Error, flavor: Flavor) -> TableCodecError {
+    let text = error.to_string();
+    let class = if error.kind() == io::ErrorKind::UnexpectedEof {
+        match flavor {
+            Flavor::ByteBuffer => "java.nio.BufferUnderflowException",
+            Flavor::DataStream => "java.io.EOFException",
+        }
+    } else if text.starts_with("IllegalArgumentException:") {
+        "java.lang.IllegalArgumentException"
+    } else if text.starts_with("NegativeArraySizeException:") {
+        "java.lang.NegativeArraySizeException"
+    } else {
+        "java.lang.RuntimeException"
+    };
+    TableCodecError::Native {
+        class,
+        message: if error.kind() == io::ErrorKind::UnexpectedEof {
+            // Native relative ByteBuffer getters/stream primitives throw
+            // these exceptions without a diagnostic message.
+            String::new()
+        } else {
+            text.strip_prefix("IllegalArgumentException: ")
+                .or_else(|| text.strip_prefix("NegativeArraySizeException: "))
+                .unwrap_or(&text)
+                .to_string()
+        },
+    }
+}
+fn depth_check(depth: usize) -> Result<(), TableCodecError> {
+    if depth > MAX_DEPTH {
+        Err(TableCodecError::Unsupported {
+            capability: "table nesting exceeds explicit host depth boundary (2000)",
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn legacy_io_error(error: TableCodecError) -> io::Error {
+    match error {
+        TableCodecError::Native { class, message } => {
+            let kind = if class == "java.nio.BufferUnderflowException"
+                || class == "java.io.EOFException"
+            {
+                io::ErrorKind::UnexpectedEof
+            } else {
+                io::ErrorKind::InvalidData
+            };
+            let message = if message.is_empty() {
+                class.rsplit('.').next().unwrap_or(class).to_string()
+            } else {
+                message
+            };
+            io::Error::new(kind, message)
+        }
+        error => io::Error::other(error),
+    }
+}
 
 fn key_byte(v: &Value) -> Option<i8> {
     match v {
@@ -60,46 +149,72 @@ pub fn can_save(key: &Value, value: &Value) -> bool {
 
 /// `table.save(output)`.
 pub fn save_table(t: &TableRef, out: &mut Vec<u8>, flavor: Flavor) -> io::Result<()> {
-    save_inner(t, out, flavor, 0)
+    try_save_table(t, out, flavor).map_err(legacy_io_error)
 }
 
-fn save_inner(t: &TableRef, out: &mut Vec<u8>, flavor: Flavor, depth: usize) -> io::Result<()> {
-    if depth > MAX_DEPTH {
-        return Err(io::Error::other(
-            "StackOverflowError: table nesting too deep",
-        ));
-    }
-    // The original iterates a key snapshot twice: once to count, once to write.
-    let entries = t.entries();
-    let count = entries.iter().filter(|(k, v)| can_save(k, v)).count();
-    out.put_i32(count as i32);
-    for (k, v) in &entries {
-        let (Some(kb), Some(vb)) = (key_byte(k), value_byte(v)) else {
-            continue;
-        };
-        save_value(out, kb, k, flavor, depth)?;
-        save_value(out, vb, v, flavor, depth)?;
-    }
-    Ok(())
-}
-
-fn save_value(
-    out: &mut Vec<u8>,
-    sbyt: i8,
-    v: &Value,
-    flavor: Flavor,
+struct SaveFrame {
+    _table: TableRef,
+    entries: std::vec::IntoIter<(Value, Value)>,
     depth: usize,
-) -> io::Result<()> {
+}
+
+fn save_frame(
+    table: &TableRef,
+    out: &mut Vec<u8>,
+    depth: usize,
+) -> Result<SaveFrame, TableCodecError> {
+    depth_check(depth)?;
+    let entries = table.try_entries()?;
+    out.put_i32(
+        entries
+            .iter()
+            .filter(|(key, value)| can_save(key, value))
+            .count() as i32,
+    );
+    Ok(SaveFrame {
+        _table: table.clone(),
+        entries: entries.into_iter(),
+        depth,
+    })
+}
+
+fn save_scalar(out: &mut Vec<u8>, sbyt: i8, value: &Value, flavor: Flavor) {
     out.put_i8(sbyt);
-    match v {
+    match value {
         Value::Str(s) => match flavor {
             Flavor::ByteBuffer => out.write_string_utf(Some(s)),
             Flavor::DataStream => out.write_string_chars(Some(s)),
         },
         Value::Num(n) => out.put_f64(*n),
         Value::Bool(b) => out.put_bool(*b),
-        Value::Table(t) => save_inner(t, out, flavor, depth + 1)?,
-        _ => unreachable!("filtered by value_byte"),
+        _ => unreachable!("scalar tag selected only after native save filtering"),
+    }
+}
+
+/// Saves directly into the caller's output, including the completed prefix
+/// when a later nested table cannot be borrowed. No success-only staging.
+pub fn try_save_table(
+    table: &TableRef,
+    out: &mut Vec<u8>,
+    flavor: Flavor,
+) -> Result<(), TableCodecError> {
+    let mut stack = vec![save_frame(table, out, 0)?];
+    while let Some(frame) = stack.last_mut() {
+        let depth = frame.depth;
+        let Some((key, value)) = frame.entries.next() else {
+            stack.pop();
+            continue;
+        };
+        let (Some(kb), Some(vb)) = (key_byte(&key), value_byte(&value)) else {
+            continue;
+        };
+        save_scalar(out, kb, &key, flavor);
+        if let Value::Table(child) = value {
+            out.put_i8(vb);
+            stack.push(save_frame(&child, out, depth + 1)?);
+        } else {
+            save_scalar(out, vb, &value, flavor);
+        }
     }
     Ok(())
 }
@@ -111,78 +226,287 @@ pub fn load_table(
     world_version: i32,
     flavor: Flavor,
 ) -> io::Result<()> {
-    load_inner(t, input, world_version, flavor, 0)
+    // Compatibility wrapper. Actual hosts use try_load_table with an outer
+    // retirement sink so removed arbitrary runtime values outlive guards.
+    let mut retired = RetiredTableValues::new();
+    try_load_table(t, input, world_version, flavor, &mut retired).map_err(legacy_io_error)
 }
 
-fn load_inner(
-    t: &TableRef,
+fn begin_load(
+    table: &TableRef,
     input: &mut JavaReader<'_>,
-    world_version: i32,
     flavor: Flavor,
     depth: usize,
-) -> io::Result<()> {
-    if depth > MAX_DEPTH {
-        return Err(io::Error::other(
-            "StackOverflowError: table nesting too deep",
-        ));
-    }
-    let count = input.get_i32()?;
+    retired: &mut RetiredTableValues,
+) -> Result<i32, TableCodecError> {
+    depth_check(depth)?;
+    // Count is consumed before wipe, including for a held destination body.
+    let count = input.get_i32().map_err(|e| input_error(e, flavor))?;
     if flavor == Flavor::ByteBuffer {
-        t.wipe();
+        table.try_wipe(retired)?;
     }
-    for _ in 0..count.max(0) {
-        if world_version >= 25 {
-            let kb = input.get_i8()?;
-            let key = load_value(input, world_version, kb, flavor, depth)?;
-            let vb = input.get_i8()?;
-            let value = load_value(input, world_version, vb, flavor, depth)?;
-            t.rawset(key, value);
-        } else {
-            let vb = input.get_i8()?;
-            let key = Value::str(&read_string(input, flavor)?);
-            let value = load_value(input, world_version, vb, flavor, depth)?;
-            t.rawset(key, value);
-        }
-    }
-    Ok(())
+    Ok(count)
 }
 
-fn read_string(input: &mut JavaReader<'_>, flavor: Flavor) -> io::Result<String> {
+fn read_string(input: &mut JavaReader<'_>, flavor: Flavor) -> Result<String, TableCodecError> {
     match flavor {
         Flavor::ByteBuffer => input.read_string_utf(),
         Flavor::DataStream => input.read_string_chars(),
     }
+    .map_err(|e| input_error(e, flavor))
 }
 
-fn load_value(
+fn load_scalar(
     input: &mut JavaReader<'_>,
-    world_version: i32,
     sbyt: i8,
     flavor: Flavor,
-    depth: usize,
-) -> io::Result<Value> {
+) -> Result<Value, TableCodecError> {
     Ok(match sbyt {
         SBYT_STRING => Value::str(&read_string(input, flavor)?),
-        SBYT_DOUBLE => Value::Num(input.get_f64()?),
+        SBYT_DOUBLE => Value::Num(input.get_f64().map_err(|e| input_error(e, flavor))?),
         SBYT_BOOLEAN => {
-            let b = input.get_i8()?;
+            let b = input.get_i8().map_err(|e| input_error(e, flavor))?;
             Value::Bool(match flavor {
                 Flavor::ByteBuffer => b != 0,
                 Flavor::DataStream => b == 1,
             })
         }
-        SBYT_TABLE => {
-            let sub = TableRef::new();
-            load_inner(&sub, input, world_version, flavor, depth + 1)?;
-            Value::Table(sub)
-        }
         other => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid lua table type {other}"),
-            ))
+            return Err(TableCodecError::Native {
+                class: "java.lang.RuntimeException",
+                message: format!("invalid lua table type {other}"),
+            });
         }
     })
+}
+
+enum LoadTask {
+    Pair {
+        table: TableRef,
+        remaining: i32,
+        depth: usize,
+    },
+    AfterKey {
+        table: TableRef,
+        remaining: i32,
+        depth: usize,
+        key: TableRef,
+    },
+    Value {
+        table: TableRef,
+        remaining: i32,
+        depth: usize,
+        key: Value,
+        tag: Option<i8>,
+    },
+    Publish {
+        table: TableRef,
+        remaining: i32,
+        depth: usize,
+        key: Value,
+        value: TableRef,
+    },
+}
+
+/// Loads into the actual destination. Only complete pairs are published;
+/// nested value tables remain unpublished until their complete load returns.
+pub fn try_load_table(
+    table: &TableRef,
+    input: &mut JavaReader<'_>,
+    world_version: i32,
+    flavor: Flavor,
+    retired: &mut RetiredTableValues,
+) -> Result<(), TableCodecError> {
+    let count = begin_load(table, input, flavor, 0, retired)?;
+    let mut stack = vec![LoadTask::Pair {
+        table: table.clone(),
+        remaining: count,
+        depth: 0,
+    }];
+    while let Some(task) = stack.pop() {
+        match task {
+            LoadTask::Pair {
+                table,
+                remaining,
+                depth,
+            } => {
+                if remaining <= 0 {
+                    continue;
+                }
+                let tag = input.get_i8().map_err(|e| input_error(e, flavor))?;
+                if world_version < 25 {
+                    let key = Value::str(&read_string(input, flavor)?);
+                    stack.push(LoadTask::Value {
+                        table,
+                        remaining,
+                        depth,
+                        key,
+                        tag: Some(tag),
+                    });
+                } else if tag == SBYT_TABLE {
+                    let key = TableRef::new();
+                    let count = begin_load(&key, input, flavor, depth + 1, retired)?;
+                    stack.push(LoadTask::AfterKey {
+                        table,
+                        remaining,
+                        depth,
+                        key: key.clone(),
+                    });
+                    stack.push(LoadTask::Pair {
+                        table: key,
+                        remaining: count,
+                        depth: depth + 1,
+                    });
+                } else {
+                    let key = load_scalar(input, tag, flavor)?;
+                    stack.push(LoadTask::Value {
+                        table,
+                        remaining,
+                        depth,
+                        key,
+                        tag: None,
+                    });
+                }
+            }
+            LoadTask::AfterKey {
+                table,
+                remaining,
+                depth,
+                key,
+            } => {
+                stack.push(LoadTask::Value {
+                    table,
+                    remaining,
+                    depth,
+                    key: Value::Table(key),
+                    tag: None,
+                });
+            }
+            LoadTask::Value {
+                table,
+                remaining,
+                depth,
+                key,
+                tag,
+            } => {
+                let tag = match tag {
+                    Some(tag) => tag,
+                    None => input.get_i8().map_err(|e| input_error(e, flavor))?,
+                };
+                if tag == SBYT_TABLE {
+                    let value = TableRef::new();
+                    let count = begin_load(&value, input, flavor, depth + 1, retired)?;
+                    stack.push(LoadTask::Publish {
+                        table,
+                        remaining,
+                        depth,
+                        key,
+                        value: value.clone(),
+                    });
+                    stack.push(LoadTask::Pair {
+                        table: value,
+                        remaining: count,
+                        depth: depth + 1,
+                    });
+                } else {
+                    let value = load_scalar(input, tag, flavor)?;
+                    table.try_rawset(&key, &value, retired)?;
+                    stack.push(LoadTask::Pair {
+                        table,
+                        remaining: remaining - 1,
+                        depth,
+                    });
+                }
+            }
+            LoadTask::Publish {
+                table,
+                remaining,
+                depth,
+                key,
+                value,
+            } => {
+                table.try_rawset(&key, &Value::Table(value), retired)?;
+                stack.push(LoadTask::Pair {
+                    table,
+                    remaining: remaining - 1,
+                    depth,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+enum CopyTask {
+    Entries {
+        target: TableRef,
+        entries: std::vec::IntoIter<(Value, Value)>,
+        depth: usize,
+    },
+    Publish {
+        target: TableRef,
+        key: Value,
+        child: TableRef,
+    },
+}
+
+/// LuaManager.copyTable's value-copy semantics, distinct from an archive
+/// snapshot or a native save/load clone. No memo: shared nested values split
+/// per occurrence. A cycle stops at an explicit host capability boundary.
+pub fn copy_table_values(
+    target: &TableRef,
+    source: Option<&TableRef>,
+    retired: &mut RetiredTableValues,
+) -> Result<(), TableCodecError> {
+    target.try_wipe(retired)?;
+    let Some(source) = source else {
+        return Ok(());
+    };
+    let entries = source.try_entries()?;
+    let mut stack = vec![CopyTask::Entries {
+        target: target.clone(),
+        entries: entries.into_iter(),
+        depth: 0,
+    }];
+    while let Some(task) = stack.pop() {
+        match task {
+            CopyTask::Entries {
+                target,
+                mut entries,
+                depth,
+            } => {
+                let Some((key, value)) = entries.next() else {
+                    continue;
+                };
+                stack.push(CopyTask::Entries {
+                    target: target.clone(),
+                    entries,
+                    depth,
+                });
+                if let Value::Table(source_child) = value {
+                    depth_check(depth + 1)?;
+                    let child = TableRef::new();
+                    let entries = source_child.try_entries()?;
+                    stack.push(CopyTask::Publish {
+                        target,
+                        key,
+                        child: child.clone(),
+                    });
+                    stack.push(CopyTask::Entries {
+                        target: child,
+                        entries: entries.into_iter(),
+                        depth: depth + 1,
+                    });
+                } else {
+                    target.try_rawset(&key, &value, retired)?;
+                }
+            }
+            CopyTask::Publish { target, key, child } => {
+                target.try_rawset(&key, &Value::Table(child), retired)?
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -265,12 +589,27 @@ mod tests {
     #[test]
     fn invalid_type_is_an_error() {
         let data = [0, 0, 0, 1, 9];
-        assert!(load_table(
+        let error = load_table(
             &TableRef::new(),
             &mut JavaReader::new(&data),
             249,
-            Flavor::ByteBuffer
+            Flavor::ByteBuffer,
         )
-        .is_err());
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "invalid lua table type 9");
+        let error = load_table(
+            &TableRef::new(),
+            &mut JavaReader::new(&[0, 0, 0]),
+            249,
+            Flavor::ByteBuffer,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(error.to_string(), "BufferUnderflowException");
     }
 }
+
+#[cfg(test)]
+#[path = "table_save_native_tests.rs"]
+mod native_tests;

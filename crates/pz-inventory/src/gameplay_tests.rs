@@ -7,7 +7,6 @@ use crate::assets::{BloodClothingTypes, ClothingItem, ClothingItems, ItemAssets}
 use crate::context::{ItemContext, ItemOwner, ItemPlace, Loose, NoOwner};
 use crate::gameplay::tags;
 use crate::item::{ClothingPatch, InventoryItem, ItemKind};
-use crate::lua_table::{LuaKey, LuaValue};
 use crate::saved::SavedItem;
 use crate::template::{ItemClass, ItemTemplate};
 use crate::visual::NoVisualRng;
@@ -487,11 +486,10 @@ fn gas_masks() {
     // getUsedDelta writes 0 when missing.
     let mut n = item(shirt());
     assert_eq!(n.get_used_delta(), 0.0);
-    let t = n.table.as_ref().unwrap();
-    assert_eq!(
-        t.rawget(&LuaKey::Str("usedDelta".into())),
-        Some(&LuaValue::Num(0.0))
-    );
+    assert!(matches!(
+        n.mod_data_value("usedDelta").unwrap(),
+        Some(pz_kahlua::Value::Num(0.0))
+    ));
 }
 
 #[test]

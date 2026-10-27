@@ -4,7 +4,7 @@
 //! mod-data entry). Looking the texture up is the caller's.
 
 use crate::item::InventoryItem;
-use crate::lua_table::{LuaKey, LuaValue};
+use crate::moddata::ModDataResult;
 
 /// `media/inventory/Question_On.png`: the texture of an icon that does not
 /// load.
@@ -46,8 +46,17 @@ impl InventoryItem {
     /// `nameAfterDescriptor(desc)`: `display` is
     /// `Translator.getText(scriptItem.getDisplayName())`; a `null` name is
     /// Java's "null".
-    pub fn name_after_descriptor(&mut self, display: &str, forename: Option<&str>, surname: Option<&str>) {
-        let name = format!("{display}: {} {}", forename.unwrap_or("null"), surname.unwrap_or("null"));
+    pub fn name_after_descriptor(
+        &mut self,
+        display: &str,
+        forename: Option<&str>,
+        surname: Option<&str>,
+    ) {
+        let name = format!(
+            "{display}: {} {}",
+            forename.unwrap_or("null"),
+            surname.unwrap_or("null")
+        );
         self.set_name(&name);
     }
 
@@ -62,7 +71,10 @@ impl InventoryItem {
         let initial = |s: Option<&str>| -> Result<char, &'static str> {
             let s = s.ok_or("java.lang.NullPointerException")?;
             // `charAt(0)`: the first UTF-16 unit.
-            let u = s.encode_utf16().next().ok_or("java.lang.StringIndexOutOfBoundsException")?;
+            let u = s
+                .encode_utf16()
+                .next()
+                .ok_or("java.lang.StringIndexOutOfBoundsException")?;
             Ok(char::from_u32(u as u32).unwrap_or('\u{fffd}'))
         };
         let (f, s) = (initial(forename)?, initial(surname)?);
@@ -72,11 +84,28 @@ impl InventoryItem {
 
     /// The `customInventoryIcon` mod-data string `getTexture()` prefers
     /// (when that texture exists).
-    pub fn custom_inventory_icon(&self) -> Option<&str> {
-        match self.table.as_ref()?.rawget(&LuaKey::Str("customInventoryIcon".into()))? {
-            LuaValue::Str(s) => Some(s),
-            _ => None,
+    pub fn try_custom_inventory_icon(&self) -> ModDataResult<Option<String>> {
+        // Native getTexture checks own nonemptiness before rawget, then
+        // instanceof String. Non-string values fall back to the texture field.
+        if self
+            .table
+            .as_ref()
+            .map(|table| table.try_is_empty())
+            .transpose()?
+            .unwrap_or(true)
+        {
+            return Ok(None);
         }
+        Ok(match self.mod_data_value("customInventoryIcon")? {
+            Some(pz_kahlua::Value::Str(value)) => Some(value.to_string()),
+            _ => None,
+        })
+    }
+    /// Legacy synchronous archive adapter; runtime texture lookup propagates
+    /// `try_custom_inventory_icon` failures instead.
+    pub fn custom_inventory_icon(&self) -> Option<String> {
+        self.try_custom_inventory_icon()
+            .expect("unborrowed custom inventory icon ModData")
     }
 
     /// The `texture` field: the script's `normalTexture` (its `Icon`, or
@@ -102,7 +131,11 @@ impl InventoryItem {
             t = Some(ItemTexture::Shared(name.clone()));
         }
         if self.model_index != -1 {
-            let icon = icons.and_then(|i| usize::try_from(self.model_index).ok().and_then(|m| i.get(m)));
+            let icon = icons.and_then(|i| {
+                usize::try_from(self.model_index)
+                    .ok()
+                    .and_then(|m| i.get(m))
+            });
             if let Some(icon) = icon.filter(|s| !blank(s)) {
                 t = Some(ItemTexture::Try {
                     name: format!("Item_{icon}"),
@@ -110,7 +143,9 @@ impl InventoryItem {
                 });
             }
         }
-        if let (Some(base_textures), Some(v), Some(icons)) = (clothing_base_textures, &self.visual, icons) {
+        if let (Some(base_textures), Some(v), Some(icons)) =
+            (clothing_base_textures, &self.visual, icons)
+        {
             if base_textures > 1 || v.texture_choice > -1 {
                 let pick = |i: i8| usize::try_from(i).ok().and_then(|i| icons.get(i));
                 let icon = if v.base_texture > -1 && icons.len() > v.base_texture as usize {
@@ -149,9 +184,12 @@ mod tests {
         let mut i = item(|_| {});
         i.name_after_descriptor("ID Card", Some("Kate"), None);
         assert_eq!(i.name, "ID Card: Kate null");
-        i.monogram_after_descriptor("Badge", Some("Kate"), Some("Baldwin")).unwrap();
+        i.monogram_after_descriptor("Badge", Some("Kate"), Some("Baldwin"))
+            .unwrap();
         assert_eq!(i.name, "Badge: KB");
-        assert!(i.monogram_after_descriptor("Badge", Some(""), Some("B")).is_err());
+        assert!(i
+            .monogram_after_descriptor("Badge", Some(""), Some("B"))
+            .is_err());
         i.set_name(&"\u{1F600}".repeat(200));
         // 128 surrogate pairs fit in 256 UTF-16 units.
         assert_eq!(i.name.chars().count(), 128);
@@ -161,13 +199,34 @@ mod tests {
     fn textures() {
         assert_eq!(item(|_| {}).texture(None), None);
         let i = item(|t| t.icon = Some("IDcard".into()));
-        assert_eq!(i.texture(None), Some(ItemTexture::Try { name: "Item_IDcard".into(), fallback: true }));
+        assert_eq!(
+            i.texture(None),
+            Some(ItemTexture::Try {
+                name: "Item_IDcard".into(),
+                fallback: true
+            })
+        );
         let mut i = item(|t| t.icons_for_texture = Some(vec!["A".into(), "B".into()]));
-        assert_eq!(i.texture(None), Some(ItemTexture::Try { name: "Item_A".into(), fallback: false }));
+        assert_eq!(
+            i.texture(None),
+            Some(ItemTexture::Try {
+                name: "Item_A".into(),
+                fallback: false
+            })
+        );
         i.model_index = 1;
-        assert_eq!(i.texture(None), Some(ItemTexture::Try { name: "Item_B".into(), fallback: true }));
+        assert_eq!(
+            i.texture(None),
+            Some(ItemTexture::Try {
+                name: "Item_B".into(),
+                fallback: true
+            })
+        );
         i.model_index = -1;
         i.texture_override = Some("Item_Saved".into());
-        assert_eq!(i.texture(None), Some(ItemTexture::Shared("Item_Saved".into())));
+        assert_eq!(
+            i.texture(None),
+            Some(ItemTexture::Shared("Item_Saved".into()))
+        );
     }
 }

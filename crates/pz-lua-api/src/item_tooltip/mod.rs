@@ -284,41 +284,69 @@ pub(crate) fn created_display_name(full_type: &str) -> Option<String> {
     crate::bind_items::script_display_name(full_type)
 }
 
-/// `getModData().rawget(key)` as a string.
-pub(crate) fn mod_str(it: &InventoryItem, key: &str) -> Option<String> {
-    use pz_inventory::lua_table::{LuaKey, LuaValue};
-    match it.table.as_ref()?.rawget(&LuaKey::Str(key.into()))? {
-        LuaValue::Str(s) => Some(s.clone()),
-        LuaValue::Num(n) => Some(pz_core::config::double_to_string(*n)),
-        LuaValue::Bool(b) => Some(b.to_string()),
-        _ => Some(String::new()),
+/// The actual `getModData().rawget(key)`, after pointer adoption has
+/// released every item guard. No detached table or false borrow absence.
+pub(crate) fn mod_value(item: &ItemRef, key: &str) -> LuaResult<Option<Value>> {
+    let table = pz_inventory::moddata::get_mod_data_ref(item)
+        .map_err(|error| error.to_lua_error())?;
+    let value = table.try_rawget(&Value::str(key))
+        .map_err(|error| pz_inventory::moddata::ModDataError::from(error).to_lua_error())?;
+    Ok((!value.is_nil()).then_some(value))
+}
+
+/// Native String cast where the caller requires one.
+pub(crate) fn mod_str(item: &ItemRef, key: &str) -> LuaResult<Option<String>> {
+    match mod_value(item, key)? {
+        None => Ok(None),
+        Some(Value::Str(value)) => Ok(Some(value.to_string())),
+        Some(value) => Err(crate::bind_java_util::class_cast(&value, "java.lang.String")),
     }
 }
 
 /// `getModData().rawget(key) != null`.
-pub(crate) fn mod_has(it: &InventoryItem, key: &str) -> bool {
-    use pz_inventory::lua_table::LuaKey;
-    it.table
-        .as_ref()
-        .and_then(|t| t.rawget(&LuaKey::Str(key.into())))
-        .is_some()
+pub(crate) fn mod_has(item: &ItemRef, key: &str) -> LuaResult<bool> {
+    Ok(mod_value(item, key)?.is_some())
 }
 
 /// `getModData().rawget(key)` as a number.
-pub(crate) fn mod_num(it: &InventoryItem, key: &str) -> Option<f64> {
-    use pz_inventory::lua_table::{LuaKey, LuaValue};
-    match it.table.as_ref()?.rawget(&LuaKey::Str(key.into()))? {
-        LuaValue::Num(n) => Some(*n),
-        _ => None,
+pub(crate) fn mod_num(item: &ItemRef, key: &str) -> LuaResult<Option<f64>> {
+    match mod_value(item, key)? {
+        None => Ok(None),
+        Some(Value::Num(value)) => Ok(Some(value)),
+        Some(value) => Err(crate::bind_java_util::class_cast(&value, "java.lang.Double")),
     }
 }
 
 /// `getModData().rawset(key, value)`.
-pub(crate) fn mod_set(it: &mut InventoryItem, key: &str, v: pz_inventory::lua_table::LuaValue) {
-    use pz_inventory::lua_table::{LuaKey, LuaTable};
-    it.table
-        .get_or_insert_with(LuaTable::default)
-        .rawset(LuaKey::Str(key.into()), Some(v));
+pub(crate) fn mod_set(item: &ItemRef, key: &str, value: Option<Value>) -> LuaResult<()> {
+    pz_inventory::moddata::set_mod_data_value_ref(item, key, value)
+        .map_err(|error| error.to_lua_error())
+}
+
+/// Native Object.toString on a ModData value. Query a real table's Type
+/// field fallibly, and keep known item userdata body conflicts in the host
+/// domain rather than calling an infallible formatter through a guard.
+pub(crate) fn mod_java_string(value: &Value) -> LuaResult<String> {
+    match value {
+        Value::Table(table) => {
+            let kind = table.try_rawget(&Value::str("Type"))
+                .map_err(|error| pz_inventory::moddata::ModDataError::from(error).to_lua_error())?;
+            let hash = pz_kahlua::exec::identity_hash(value);
+            Ok(match kind {
+                Value::Str(kind) => format!("{kind} 0x{hash}"),
+                _ => format!("table 0x{hash}"),
+            })
+        }
+        Value::Object(object) => {
+            if let Some(item) = (&**object as &dyn std::any::Any).downcast_ref::<crate::bind_items::LuaInventoryItem>() {
+                let body = item.item.try_borrow().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item ModData value formatter").to_lua_error())?;
+                Ok(format!("{}:{}@{:x}", body.get_full_type(), object.class_name(), std::rc::Rc::as_ptr(&item.item) as usize))
+            } else {
+                Ok(object.to_lua_string())
+            }
+        }
+        _ => Ok(pz_kahlua::exec::java_value_of(value)),
+    }
 }
 
 /// `instanceof DrainableComboItem`.
@@ -725,6 +753,7 @@ fn rows(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout) -> 
             .value(&names.join(", ").replace(['[', ']'], ""), WHITE);
     }
     if cx.tooltip_info() {
+        if ctx.assets().is_some() { crate::bind_items::ensure_clothing_mod_data(item)?; }
         let it = item.borrow();
         let mut dbg = |l: &str, v: f32| {
             layout
@@ -764,7 +793,7 @@ fn rows(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout) -> 
             .add_item()
             .label("DictionaryID", LABEL)
             .set_value_right_no_plus_int(it.registry_id as i32);
-        if let Some(c) = it.get_clothing_item(ctx.assets(), owner.as_ref()) {
+        if let Some(c) = it.try_get_clothing_item(ctx.assets(), owner.as_ref()).map_err(|error| error.to_lua_error())? {
             layout
                 .add_item()
                 .label("ClothingItem", WHITE)
@@ -993,7 +1022,14 @@ fn tail_rows(cx: &mut Cx<'_>, item: &ItemRef, tip: &Tip<'_>, layout: &mut Layout
             );
         }
     }
-    let text = mod_str(&it, "Tooltip").or_else(|| sv(&it, |s| s.tooltip.clone()));
+    let fallback = sv(&it, |s| s.tooltip.clone());
+    drop(it);
+    // InventoryItem.getTooltip uses instanceof String, falling back to
+    // its script field for every other non-null value.
+    let text = match mod_value(item, "Tooltip")? {
+        Some(Value::Str(value)) => Some(value.to_string()),
+        _ => fallback,
+    };
     if let Some(text) = text {
         layout.add_item().label(&tr(&text), LABEL);
     }
