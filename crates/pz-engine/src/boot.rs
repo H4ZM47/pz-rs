@@ -45,7 +45,10 @@ pub fn load_key_bindings(lua: &mut pz_lua_api::LuaManager) -> Result<(), String>
 /// `VoiceStyles`, with `ModelManager`'s `PopTemplateManager.init`) of
 /// `GameWindow.initShared`, shared with the Lua API; then the `ClothingItem`
 /// assets item visuals read. TODO: mod script folders, `CustomPerks`.
-pub fn load_scripts(game_dir: &Path, fs: &mut pz_fs::GameFs) -> Result<(), String> {
+pub fn load_scripts(game_dir: &Path, fs: &Rc<RefCell<pz_fs::GameFs>>) -> Result<(), String> {
+    // Same real asset owner before any Item.DoParam. The immutable load
+    // scope permits nested provider reads; population gets a later mut scope.
+    pz_lua_api::bind_render::install_texture_capture(fs.clone());
     let sm = pz_scripts::ScriptManager::new();
     sm.load_builtin_registries(&game_dir.join("projectzomboid.jar"))
         .map_err(|e| format!("built-in registries: {e}"))?;
@@ -66,7 +69,10 @@ pub fn load_scripts(game_dir: &Path, fs: &mut pz_fs::GameFs) -> Result<(), Strin
         .map_err(|error| format!("attribute registry jar: {error}"))?;
     let attributes = native_attribute_types(&jar)?;
     pz_lua_api::attribute_templates::install(attributes.clone());
-    let loaded = sm.load(fs, &[]);
+    let loaded = {
+        let fs = fs.try_borrow().map_err(|_| "script texture file system is borrowed")?;
+        sm.load_with_textures(&fs, &[])
+    };
     pz_lua_api::attribute_templates::flush_notices()
         .map_err(|error| format!("attribute template diagnostics: {error:?}"))?;
     loaded.map_err(|e| format!("ScriptManager.Load failed: {e}"))?;
@@ -80,7 +86,10 @@ pub fn load_scripts(game_dir: &Path, fs: &mut pz_fs::GameFs) -> Result<(), Strin
     });
     pz_lua_api::bind_registry::install_script_manager(Rc::new(sm));
     let mut pop = pz_characters::population::Population::default();
-    pop.init(fs);
+    {
+        let mut fs = fs.try_borrow_mut().map_err(|_| "population file system is borrowed")?;
+        pop.init(&mut fs);
+    }
     pz_lua_api::bind_appearance::install_population(Rc::new(RefCell::new(pop)));
     // The `ClothingItem` assets item visuals read (`instanceItem`).
     let assets = pz_inventory::ItemAssets::load(game_dir)
@@ -104,7 +113,7 @@ pub fn reload_main_menu_environment(
     // Read the installation before retiring the current Lua/UI owners.
     // Later failures retain the LuaManager value but cannot roll back
     // every shared host registry changed during initialization.
-    load_scripts(&launch.game_dir, &mut fs.borrow_mut())?;
+    load_scripts(&launch.game_dir, &fs)?;
     replace_menu_environment(lua, fs, |fresh| {
         pz_lua_api::bind_text::boot(
             &fresh.fs.borrow(),

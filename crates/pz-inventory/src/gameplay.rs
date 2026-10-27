@@ -424,7 +424,7 @@ impl InventoryItem {
 
     /// `isBroken()`.
     pub fn is_broken(&self) -> bool {
-        self.condition <= 0
+        self.broken
     }
 
     // ----- Weight -----
@@ -661,9 +661,10 @@ impl InventoryItem {
         out
     }
 
-    /// `setBroken(broken)`: the `OnBreak` call (the broken flag is
-    /// `condition <= 0` here).
+    /// `setBroken(broken)`: stores the independent bit before the client check
+    /// and the optional `OnBreak` callback outcome. It never changes condition.
     pub fn set_broken(&mut self, broken: bool, ctx: &dyn ItemContext) -> ConditionOutcome {
+        self.broken = broken;
         let mut out = ConditionOutcome::default();
         if !ctx.is_client() && broken {
             if let Some(f) = self.template.on_break.clone() {
@@ -671,6 +672,19 @@ impl InventoryItem {
             }
         }
         out
+    }
+
+    /// `setConditionWhileLoading`: condition and broken are published together;
+    /// this path never invokes `setBroken` or an `OnBreak` callback.
+    pub fn set_condition_while_loading(&mut self, condition: i32) {
+        self.condition = if condition < 0 {
+            0
+        } else if condition > self.condition_max {
+            self.condition_max
+        } else {
+            condition
+        };
+        self.broken = self.condition <= 0;
     }
 
     /// `setCondition(condition)` (`Clothing` also re-breaks at 0 and takes

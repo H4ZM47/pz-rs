@@ -9,8 +9,40 @@ use std::rc::Rc;
 use crate::item::ItemKind;
 use crate::shared::{ContainerRef, ItemRef};
 use crate::visual::ItemVisual;
+use pz_entity::runtime_load::RuntimeHostError;
 use pz_scripts::registry::RegistryKey;
-use pz_scripts::{ScriptError, ScriptResult};
+use pz_scripts::ScriptError;
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum WornInventoryError {
+    Script(ScriptError),
+    Host(RuntimeHostError),
+}
+pub type WornInventoryResult<T = ()> = Result<T, WornInventoryError>;
+impl From<ScriptError> for WornInventoryError {
+    fn from(value: ScriptError) -> Self {
+        Self::Script(value)
+    }
+}
+impl From<RuntimeHostError> for WornInventoryError {
+    fn from(value: RuntimeHostError) -> Self {
+        Self::Host(value)
+    }
+}
+impl From<crate::ModDataError> for WornInventoryError {
+    fn from(value: crate::ModDataError) -> Self {
+        Self::Host(value.into_host())
+    }
+}
+impl std::fmt::Display for WornInventoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Script(error) => std::fmt::Display::fmt(error, f),
+            Self::Host(error) => write!(f, "{error:?}"),
+        }
+    }
+}
+impl std::error::Error for WornInventoryError {}
 
 use super::{ItemIdentity, WornItems};
 
@@ -29,12 +61,12 @@ impl ItemIdentity for ItemRef {
 pub trait WornItemsInventoryHost {
     /// Ordinary `InventoryItemFactory.CreateItem(type)`. Native null means
     /// `Ok(None)` and skips only this visual. Preserve ordinary factory hooks.
-    fn create_item(&mut self, item_type: &str) -> ScriptResult<Option<ItemRef>>;
+    fn create_item(&mut self, item_type: &str) -> WornInventoryResult<Option<ItemRef>>;
 
     /// Call actual `item.getVisual()`. If it is nonnull, copy the source into
     /// that visual, then `item.synchWithVisual()` using live assets/owner/RNG.
     /// A null visual skips both copying and synchronization.
-    fn copy_visual_and_sync(&mut self, item: &ItemRef, visual: &ItemVisual) -> ScriptResult;
+    fn copy_visual_and_sync(&mut self, item: &ItemRef, visual: &ItemVisual) -> WornInventoryResult;
 
     /// Actual `getBodyLocation()` for Clothing, `canBeEquipped()` for EVERY
     /// other subclass. Return the existing registry key, including native null.
@@ -42,23 +74,23 @@ pub trait WornItemsInventoryHost {
         &mut self,
         item: &ItemRef,
         clothing: bool,
-    ) -> ScriptResult<Option<Rc<RegistryKey>>>;
+    ) -> WornInventoryResult<Option<Rc<RegistryKey>>>;
 
     /// Actual `getVisual().getHolesNumber()`; null visual is an error here,
     /// unlike the optional visual in `setFromItemVisuals` above.
-    fn get_holes_number(&mut self, item: &ItemRef) -> ScriptResult<i32>;
+    fn get_holes_number(&mut self, item: &ItemRef) -> WornInventoryResult<i32>;
 
     /// Actual `setConditionNoSound`, including any real OnBreak outcome.
     /// Dispatch callbacks after releasing the item's mutable guard.
-    fn set_condition_no_sound(&mut self, item: &ItemRef, condition: i32) -> ScriptResult;
+    fn set_condition_no_sound(&mut self, item: &ItemRef, condition: i32) -> WornInventoryResult;
 
     /// Actual `container.AddItem(item)` with this SAME owner, retaining native
     /// container/move behavior. No worn-list mutation is implied by insertion.
-    fn add_item(&mut self, container: &ContainerRef, item: &ItemRef) -> ScriptResult;
+    fn add_item(&mut self, container: &ContainerRef, item: &ItemRef) -> WornInventoryResult;
 }
 
-fn borrowed(what: &str) -> ScriptError {
-    ScriptError::new(format!("host borrow conflict: {what}"))
+fn borrowed(what: &'static str) -> WornInventoryError {
+    RuntimeHostError::Borrowed(what).into()
 }
 
 /// `WornItems.setFromItemVisuals`: clear before the first factory request,
@@ -71,7 +103,7 @@ pub fn set_from_item_visuals<H: WornItemsInventoryHost + ?Sized>(
     worn: &InventoryWornItemsRef,
     visuals: &[ItemVisual],
     host: &mut H,
-) -> ScriptResult {
+) -> WornInventoryResult {
     let retired = {
         let mut worn = worn.try_borrow_mut().map_err(|_| borrowed("WornItems"))?;
         std::mem::take(&mut worn.items)
@@ -115,7 +147,7 @@ pub fn add_items_to_item_container<H: WornItemsInventoryHost + ?Sized>(
     worn: &InventoryWornItemsRef,
     container: &ContainerRef,
     host: &mut H,
-) -> ScriptResult {
+) -> WornInventoryResult {
     let mut index = 0;
     loop {
         let item = {

@@ -226,7 +226,11 @@ impl IsoObject {
                 if t.is_door && !t.open && t.closed_sprite.is_some() {
                     return hop(t.closed_sprite);
                 }
-                hop(self.sprite) || t.is_hoppable
+                self.sprite
+                    .metadata_projection(m)
+                    .expect("synchronous hoppable metadata read requires unborrowed native sprite")
+                    .is_some_and(|s| s.properties.has(f.HoppableN) || s.properties.has(f.HoppableW))
+                    || t.is_hoppable
             }
             _ => self.get_hoppable_direction(m).is_some(),
         }
@@ -250,7 +254,10 @@ impl IsoObject {
                 return tall(t.closed_sprite);
             }
         }
-        tall(self.sprite)
+        self.sprite
+            .metadata_projection(m)
+            .expect("synchronous tall hoppable metadata read requires unborrowed native sprite")
+            .is_some_and(|s| flags.into_iter().flatten().any(|f| s.properties.has(f)))
     }
 
     /// `isNorthHoppable()`.
@@ -340,11 +347,10 @@ impl<'a> CollideEnv<'a> {
     }
 
     fn has_prop(&self, obj: &IsoObject, name: &str) -> bool {
-        obj.sprite.is_some_and(|s| {
-            self.sprites.sprites[s]
-                .properties
-                .has_name(&self.sprites.alias, name)
-        })
+        obj.sprite
+            .metadata_projection(self.sprites)
+            .expect("synchronous collision metadata read requires unborrowed native sprite")
+            .is_some_and(|s| s.properties.has_name(&self.sprites.alias, name))
     }
 
     /// `getSpecialWall(north)`: the closed door, window, thumpable or window
@@ -408,7 +414,9 @@ impl<'a> CollideEnv<'a> {
                 continue;
             }
             if o.sprite
-                .is_some_and(|s| self.sprites.sprites[s].properties.has(f.solidtrans))
+                .metadata_projection(self.sprites)
+                .expect("synchronous collision metadata read requires unborrowed native sprite")
+                .is_some_and(|s| s.properties.has(f.solidtrans))
                 && self.adjacent_to_window_or_hoppable(sq)
             {
                 return None;

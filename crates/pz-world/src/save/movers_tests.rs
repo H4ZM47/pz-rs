@@ -430,7 +430,7 @@ fn animal_tracks_and_pushables_in_chunks() {
         .borrow_mut()
         .objects[1]
         .borrow_mut()
-        .sprite = None;
+        .sprite = crate::objects::ObjectSprite::None;
     assert!(save_chunk(&bad, &ctx).is_err());
 }
 

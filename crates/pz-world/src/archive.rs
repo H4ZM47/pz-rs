@@ -27,6 +27,10 @@ pub enum SquareArchiveError {
     BorrowedObject(usize),
     BorrowedFloor(usize),
     WorldOwner(pz_entity::runtime_load::RuntimeHostError),
+    Sprite {
+        location: ArchiveLocation,
+        cause: pz_entity::runtime_load::RuntimeHostError,
+    },
     BorrowedMannequinWorn(ArchiveLocation),
     Components {
         location: ArchiveLocation,
@@ -105,6 +109,10 @@ fn check_object(
 ) -> Result<(), SquareArchiveError> {
     let object = object.try_borrow().map_err(|_| origin.borrowed_object())?;
     let location = origin.location();
+    object
+        .sprite
+        .check_archive_copy()
+        .map_err(|cause| SquareArchiveError::Sprite { location, cause })?;
     let inventory_error = |cause| SquareArchiveError::Inventory { location, cause };
     for (index, entry) in object.components.entry_slots().enumerate() {
         if let pz_entity::RuntimeEntryView::Live { kind, component } = entry {

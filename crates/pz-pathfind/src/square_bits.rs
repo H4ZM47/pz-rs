@@ -7,6 +7,10 @@
 //! properties, objects, rooms, neighbours through a [`GetSquare`]). Flag and
 //! object-type ordinals come from the runtime [`SpriteTables`]; the ones
 //! `pz-world` does not name are resolved by name in [`BitsTables`].
+//! These synchronous, infallible queries require unborrowed object/native
+//! sprite bodies and resolved metadata. They read current actual metadata
+//! per phase; an unavailable/borrowed body is not treated as an absent sprite.
+//! A fallible pathfinding host carrier is outside this scalar adapter.
 //!
 //! State `pz-world` does not model yet goes through [`SquareBitsHooks`]; its
 //! defaults are a fresh single-player world:
@@ -291,8 +295,11 @@ pub struct SquareBits<'a, G: GetSquare> {
 }
 
 /// `IsoObject.getProperties()`: the sprite's properties.
-fn props<'m>(m: &'m IsoSpriteManager, o: &IsoObject) -> Option<&'m PropertyContainer> {
-    o.sprite.map(|s| &m.sprites[s].properties)
+fn props(m: &IsoSpriteManager, o: &IsoObject) -> Option<PropertyContainer> {
+    o.sprite
+        .try_read(m)
+        .expect("synchronous path properties require unborrowed resolved sprite metadata")
+        .map(|sprite| sprite.properties.clone())
 }
 
 /// `square.getSpecialObjects()`, skipping identities no longer in
@@ -489,11 +496,14 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
     /// `f_bushes_1` or has a `Bush` property (`IsoObject.isBush()`).
     pub fn has_bush(&self, sq: &IsoGridSquare) -> bool {
         sq.objects.iter().any(|o| {
-            o.borrow().sprite.is_some_and(|s| {
-                let sp = &self.sprites.sprites[s];
-                sp.tileset_name.as_deref() == Some("f_bushes_1")
-                    || sp.properties.get(&self.sprites.alias, "Bush").is_some()
-            })
+            o.borrow()
+                .sprite
+                .metadata_projection(self.sprites)
+                .expect("synchronous bush query requires unborrowed resolved sprite metadata")
+                .is_some_and(|sp| {
+                    sp.tileset_name.as_deref() == Some("f_bushes_1")
+                        || sp.properties.get(&self.sprites.alias, "Bush").is_some()
+                })
         })
     }
 
@@ -582,10 +592,12 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
             return Some(closed_edge);
         }
         let p = props(self.sprites, obj);
-        if p.is_some_and(|p| p.has_name(&self.sprites.alias, "GarageDoor")) {
+        if p.as_ref()
+            .is_some_and(|p| p.has_name(&self.sprites.alias, "GarageDoor"))
+        {
             return Some(closed_edge);
         }
-        Some(self.open_edge(p, north))
+        Some(self.open_edge(p.as_ref(), north))
     }
 
     /// `IsoThumpable.getSpriteEdge(ignoreOpen)`.
@@ -605,7 +617,7 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
                 IsoDirections::W
             });
         }
-        Some(self.open_edge(props(self.sprites, obj), th.north))
+        Some(self.open_edge(props(self.sprites, obj).as_ref(), th.north))
     }
 
     /// The open-door edge shared by `IsoDoor` and `IsoThumpable`.
@@ -641,10 +653,10 @@ impl<'a, G: GetSquare> SquareBits<'a, G> {
         &self,
         obj: &IsoObject,
         th: &IsoThumpable,
-    ) -> Option<&PropertyContainer> {
+    ) -> Option<PropertyContainer> {
         if th.is_door && !th.open {
             if let Some(cs) = th.closed_sprite {
-                return Some(&self.sprites.sprites[cs].properties);
+                return Some(self.sprites.sprites[cs].properties.clone());
             }
         }
         props(self.sprites, obj)

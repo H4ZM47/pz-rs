@@ -8,6 +8,7 @@
 use crate::iso_world::{IsoWorld, RenderChunkEvents};
 use crate::world_models::{CharacterView, WorldModels};
 use pz_character_model::lights::LightContext;
+use pz_entity::runtime_load::{HostResult, RuntimeHostError};
 use pz_fs::GameFs;
 use pz_iso_render::cache::ChunkCache;
 use pz_iso_render::chunk::dirty;
@@ -29,6 +30,9 @@ use pz_world_render::{
     WorldLighting, WorldView,
 };
 use std::time::Instant;
+
+#[cfg(test)]
+mod host_tests;
 
 /// `IsoPlayer.MAX`.
 const MAX_PLAYERS: usize = 4;
@@ -172,7 +176,7 @@ impl WorldRender {
         regions: &IsoRegions,
         fs: &GameFs,
         tm: &mut TextureManager,
-    ) {
+    ) -> HostResult<()> {
         let mut tex = GameTextures {
             fs,
             textures: tm,
@@ -194,7 +198,8 @@ impl WorldRender {
                 regions,
                 perf_puddles,
             },
-        );
+        )?;
+        Ok(())
     }
 
     /// The chunks that entered the cell get their render squares and
@@ -206,7 +211,7 @@ impl WorldRender {
         events: &mut RenderChunkEvents,
         fs: &GameFs,
         tm: &mut TextureManager,
-    ) {
+    ) -> HostResult<()> {
         for (wx, wy) in events.removed.drain(..) {
             self.world.remove_chunk(wx, wy);
             self.lighting.remove_chunk(wx, wy);
@@ -221,10 +226,12 @@ impl WorldRender {
         // TODO(port): `NoWorldHooks`: thumpables, barricades, power and
         // the players' torches (`WorldHooks`).
         let hooks = NoWorldHooks;
-        for (wx, wy) in events.added.drain(..) {
+        // Preserve the current and remaining host notifications on a fault;
+        // a Drain destructor would silently discard every unprocessed entry.
+        while let Some(&(wx, wy)) = events.added.first() {
             for level in self
                 .world
-                .build_chunk(view, wx, wy, &mut self.sprites, &mut tex)
+                .build_chunk(view, wx, wy, &mut self.sprites, &mut tex)?
             {
                 for c in self.caches.iter_mut() {
                     c.invalidate(level.0, level.1, level.2, dirty::CREATE);
@@ -236,8 +243,10 @@ impl WorldRender {
                     c.invalidate_chunk(nx, ny, dirty::REDRAW);
                 }
             }
-            self.lighting.sync_chunk(view, wx, wy, &hooks);
+            self.lighting.sync_chunk(view, wx, wy, &hooks)?;
+            events.added.remove(0);
         }
+        Ok(())
     }
 
     /// One player's world frame (`FBORenderCell.renderInternal` and what
@@ -436,7 +445,7 @@ impl IsoWorld {
         fs: &mut GameFs,
         tm: &std::rc::Rc<std::cell::RefCell<TextureManager>>,
         out: &mut Vec<DrawCmd>,
-    ) {
+    ) -> HostResult<()> {
         // TODO(port): `drawWorld`; `sceneCullZombies`/`sceneCullAnimals`,
         // `WeatherFxMask.initMask`, `DeadBodyAtlas`/`WorldItemAtlas.render`.
         // Each local player's chunk map for the lighting's cell lights
@@ -458,42 +467,66 @@ impl IsoWorld {
             zombies,
             ..
         } = self;
-        let no_regions;
-        let regions_guard = regions.as_ref().map(|r| r.borrow());
-        let regions = match regions_guard.as_ref() {
-            Some(r) => &**r,
-            None => {
-                no_regions = IsoRegions::new(0);
-                &no_regions
-            }
-        };
-        let Some(sprites) = sprites.as_ref() else {
-            return;
-        };
-        let mut render = render.borrow_mut();
-        let r = render.get_or_insert_with(|| {
-            let mut r = WorldRender::new(game_dir, fs, &mut tm.borrow_mut());
-            pz_lua_api::bind_world::with_world(|w| {
-                if let Some(meta) = w.meta_grid.as_ref() {
-                    r.world.set_buildings(meta);
-                }
-            });
-            r
-        });
-        pz_lua_api::bind_world::with_world(|w| {
-            let (Some(meta), Some(cell)) = (w.meta_grid.as_ref(), w.cell.as_ref()) else {
-                return;
-            };
-            let sprites = sprites.borrow();
+        let regions_owner = regions.as_ref().ok_or(RuntimeHostError::Unsupported {
+            operation: "actual render regions owner",
+            kind: None,
+        })?;
+        let regions_guard = regions_owner
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("actual render regions"))?;
+        let regions = &*regions_guard;
+        let sprites = sprites.as_ref().ok_or(RuntimeHostError::Unsupported {
+            operation: "actual render sprite owner",
+            kind: None,
+        })?;
+        let mut render = render
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("actual world renderer"))?;
+        if render.is_none() {
+            let mut textures = tm
+                .try_borrow_mut()
+                .map_err(|_| RuntimeHostError::Borrowed("actual render texture manager"))?;
+            let mut fresh = WorldRender::new(game_dir, fs, &mut textures);
+            drop(textures);
+            pz_lua_api::bind_world::try_with_world(|world| {
+                let meta = world
+                    .meta_grid
+                    .as_ref()
+                    .ok_or(RuntimeHostError::Unsupported {
+                        operation: "actual render meta grid",
+                        kind: None,
+                    })?;
+                fresh.world.set_buildings(meta);
+                Ok(())
+            })?;
+            *render = Some(fresh);
+        }
+        let r = render.as_mut().ok_or(RuntimeHostError::InvalidHostState(
+            "initialized world renderer",
+        ))?;
+        pz_lua_api::bind_world::try_with_world(|w| {
+            let meta = w.meta_grid.as_ref().ok_or(RuntimeHostError::Unsupported {
+                operation: "actual render meta grid",
+                kind: None,
+            })?;
+            let cell = w.cell.as_ref().ok_or(RuntimeHostError::Unsupported {
+                operation: "actual render cell",
+                kind: None,
+            })?;
+            let sprites = sprites
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("actual render sprite manager"))?;
             let wv = WorldView {
                 cell,
                 meta,
                 sprites: &sprites,
             };
             {
-                let mut textures = tm.borrow_mut();
-                r.sync_chunks(&wv, render_chunks, fs, &mut textures);
-                r.apply_pending(&wv, regions, fs, &mut textures);
+                let mut textures = tm
+                    .try_borrow_mut()
+                    .map_err(|_| RuntimeHostError::Borrowed("actual render texture manager"))?;
+                r.sync_chunks(&wv, render_chunks, fs, &mut textures)?;
+                r.apply_pending(&wv, regions, fs, &mut textures)?;
             }
             // Character resources may lazily load hair or equipped-item
             // file textures. Release the shared texture owner first.
@@ -503,9 +536,11 @@ impl IsoWorld {
             // `currentCell.render()`.
             r.render_player(&wv, view, models.as_mut(), zombies, out);
             check_changed_buildings(&mut r.lighting, &mut r.caches, &mut r.pending, num_players);
-        });
+            Ok(())
+        })?;
         // TODO(port): `Gizmos.render`, `DrawIsoCursorHelper`, the
         // pathfinding/sound/vocals debug renders, `FBORenderAreaHighlights`,
         // `LineDrawer.render`, `SkyBox.render`.
+        Ok(())
     }
 }

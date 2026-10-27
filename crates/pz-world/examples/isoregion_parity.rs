@@ -120,11 +120,11 @@ fn main() {
         let v: Vec<i32> = q.split(',').map(|x| x.parse().unwrap()).collect();
         if let Some(sq) = cell.get_grid_square(v[0], v[1], v[2]) {
             for o in sq.borrow().objects.iter().map(ObjectSlot::borrow) {
-                let sp = o.sprite.map(|s| &sprites.sprites[s]);
+                let sp = o.sprite.tile_projection().map(|s| &sprites.sprites[s]);
                 let f = &sprites.tables.flag;
                 eprintln!(
                     "obj {:?} sprite={:?} kind={:?} cutW={:?} WindowW={:?} cut_n={:?}",
-                    o.sprite,
+                    o.sprite.tile_projection(),
                     sp.and_then(|s| s.name.clone()),
                     std::mem::discriminant(&o.kind),
                     sp.map(|s| s.properties.has(f.cutW)),

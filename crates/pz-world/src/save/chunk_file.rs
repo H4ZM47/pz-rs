@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use super::io::{crc32, err, has, BitHeaderWrite, Reader, SaveResult, Writer};
 use super::lua_table::LuaTable;
-use super::object_io::{load_object_slot, save_object};
+use super::object_io::{load_object_slot_data_projection, save_object};
 use super::vehicle::BaseVehicle;
 use super::visual::IsoDeadBody;
 use super::{SaveCtx, WORLD_VERSION};
@@ -338,7 +338,7 @@ pub fn load_square(
                 let special = flags & 2 != 0;
                 let world = flags & 4 != 0;
                 let id = sq.new_object_id();
-                let Some(slot) = load_object_slot(r, ctx, wv, id)
+                let Some(slot) = load_object_slot_data_projection(r, ctx, wv, id)
                     .map_err(|failure| failure.into_error_and_retire())?
                 else {
                     continue;
@@ -352,9 +352,15 @@ pub fn load_square(
                     }
                 }
                 if let ObjectKind::Window(_) = obj.kind {
-                    let name = obj
+                    let sprite = obj
                         .sprite
-                        .and_then(|s| ctx.sprites.sprites[s].name.as_deref());
+                        .metadata_projection(ctx.sprites)
+                        .map_err(|error| {
+                            super::io::SaveError(format!(
+                                "archive window sprite metadata: {error:?}"
+                            ))
+                        })?;
+                    let name = sprite.as_ref().and_then(|s| s.name.as_deref());
                     if matches!(name, Some("walls_special_01_8" | "walls_special_01_9")) {
                         drop(obj);
                         sq.retire_object(slot);
@@ -428,13 +434,15 @@ pub fn load_square(
     let room = ctx.meta.and_then(|meta| sq.room_def(meta));
     let (x, y, z) = (sq.x, sq.y, sq.z);
     for mut o in sq.objects.iter().map(ObjectSlot::borrow_mut) {
-        let sprite = o.sprite;
+        let sprite = o.sprite.metadata_projection(ctx.sprites).map_err(|error| {
+            super::io::SaveError(format!("archive light sprite metadata: {error:?}"))
+        })?;
         let ObjectKind::LightSwitch(s) = &mut o.kind else {
             continue;
         };
         match room {
             Some(room) if s.light_room => s.activated = room.lights_active.get(),
-            _ => load_light_source(ctx, sprite, s, (x, y, z))?,
+            _ => load_light_source(ctx, sprite.as_ref(), s, (x, y, z))?,
         }
     }
     Ok(())
@@ -447,12 +455,12 @@ pub fn load_square(
 /// the engine's; it reads [`IsoLightSwitch::lights`].
 fn load_light_source(
     ctx: &SaveCtx<'_>,
-    sprite: Option<crate::sprite::SpriteIdx>,
+    sprite: Option<&crate::sprite::IsoSprite>,
     s: &mut crate::objects::IsoLightSwitch,
     (x, y, z): (i32, i32, i32),
 ) -> SaveResult<()> {
     let m = ctx.sprites;
-    let prop = |name: &str| sprite.and_then(|sp| m.prop(&m.sprites[sp], name));
+    let prop = |name: &str| sprite.and_then(|sp| m.prop(sp, name));
     let float = |name: &str| -> SaveResult<f32> {
         let v = prop(name).ok_or_else(|| super::io::SaveError("NullPointerException".into()))?;
         crate::java::parse_float(v)
@@ -474,7 +482,7 @@ fn load_light_source(
         return err("NullPointerException: IsoLightSwitch.createLightSource with no sprite");
     };
     let mut radius = 8;
-    if let Some(v) = m.prop(&m.sprites[sp], "LightRadius") {
+    if let Some(v) = m.prop(sp, "LightRadius") {
         let n = crate::java::parse_int(v)
             .ok_or_else(|| super::io::SaveError(format!("NumberFormatException: {v}")))?;
         if n > 0 {

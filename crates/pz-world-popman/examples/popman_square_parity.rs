@@ -202,7 +202,11 @@ fn objects(sq: &IsoGridSquare, m: &IsoSpriteManager) -> String {
             format!(
                 "{}:{};",
                 o.kind.class_name(),
-                o.sprite.map_or("null", |s| m.sprites[s].name())
+                o.sprite
+                    .try_read(m)
+                    .expect("diagnostic sprite output requires resolved unborrowed metadata")
+                    .as_ref()
+                    .map_or("null", |sprite| sprite.name())
             )
         })
         .collect()

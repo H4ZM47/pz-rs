@@ -103,6 +103,7 @@ mod tests {
 
     fn setup() -> (Thread, LuaGameCharacterRef) {
         let sm = ScriptManager::new();
+        sm.enable_texture_capture();
         for (field, id) in [
             ("CONTAINER", "base:container"),
             ("KEY", "base:key"),
@@ -298,14 +299,31 @@ mod tests {
             (1, ring.borrow().template.clone()),
             (2, key.borrow().template.clone()),
         ]);
+        let inventory = chr.borrow().items.inventory.clone();
         let mut output = pz_inventory::io::Writer::new();
-        chr.borrow()
-            .items
-            .inventory
-            .borrow()
-            .to_container()
-            .save(&mut output, &env)
-            .unwrap();
+        {
+            struct RestoreCapture(Option<pz_render::TextureRefLoader>);
+            impl Drop for RestoreCapture {
+                fn drop(&mut self) {
+                    let displaced = pz_render::install_texture_ref_loader(self.0.take());
+                    drop(displaced);
+                }
+            }
+            // The genuine no-Icon script capture owns null base textures.
+            // Native save skips Question/provider lookup for that null branch;
+            // an accidental lookup must fail, rather than receive a fake null.
+            let _capture = RestoreCapture(pz_render::install_texture_ref_loader(None));
+            assert!(pz_inventory::item_texture::get_texture_ref(&ring)
+                .unwrap()
+                .is_none());
+            assert!(pz_inventory::item_texture::get_texture_ref(&key)
+                .unwrap()
+                .is_none());
+            // Save the actual container with no character/container/item body
+            // guard spanning its nested item or native comparison phases.
+            pz_inventory::shared_save::save_container_ref(&inventory, &mut output, &env).unwrap();
+        }
+        assert_eq!((ring.borrow().id, key.borrow().id), ids);
         let mut decoded = pz_inventory::container::ItemContainer::new(Some("none"));
         decoded
             .load(&mut pz_inventory::io::Reader::new(&output.buf), 249, &env)

@@ -203,6 +203,23 @@ pub trait StatesEngine {
         })
     }
 
+    fn add_world_inventory_item_on(
+        &mut self,
+        _cell: &mut IsoCell,
+        _meta: &IsoMetaGrid,
+        _sprites: &mut IsoSpriteManager,
+        _square: &pz_world::SquareRef,
+        _item: &pz_inventory::shared::ItemRef,
+        _x: f32,
+        _y: f32,
+        _height: f32,
+    ) -> pz_inventory::floor_drop::HostResult<()> {
+        Err(pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+            operation: "actual retained state floor placement service",
+            kind: None,
+        })
+    }
+
     fn validate_floor_session(&self) -> pz_inventory::floor_drop::HostResult<()> {
         Err(pz_inventory::floor_drop::RuntimeHostError::Unsupported {
             operation: "actual state floor session",
@@ -524,6 +541,21 @@ impl<'a> StatesWorldAdapter<'a> {
     /// The read-only queries over the cell.
     pub fn env(&self) -> Env<'_> {
         Env::new(self.cell, self.sprites, self.meta)
+    }
+
+    /// Retain an overwritten actual sprite until the outer host retirement
+    /// boundary, after the object guard and any caller WORLD guard are gone.
+    fn replace_object_sprite_tile(&mut self, object: &IsoObjectRef, sprite: Option<usize>) {
+        let (old, native_class) = {
+            let mut object = object.borrow_mut();
+            let native_class = object.kind.native_class_name();
+            let old = std::mem::replace(&mut object.sprite, sprite.into());
+            (old, native_class)
+        };
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_payload(Box::new(old));
+        self.cell.retire_components(retired);
+        pz_world::object_slot::observe_object(object, native_class);
     }
 
     fn at(&self, p: (i32, i32, i32)) -> Option<pz_world::SquareRef> {
@@ -856,7 +888,6 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
                 s.objects
                     .iter()
                     .filter_map(|o| env.sprite_name(&o.borrow()))
-                    .map(str::to_string)
                     .collect()
             })
             .unwrap_or_default()
@@ -1087,8 +1118,7 @@ impl<I: 'static> StateWorld<I> for StatesWorldAdapter<'_> {
                 let s = s.borrow();
                 s.has_type(self.sprites.tables.ty.tree)
                     || s.objects.iter().any(|o| {
-                        o.borrow().sprite.is_some_and(|i| {
-                            let spr = &self.sprites.sprites[i];
+                        env.metadata(&o.borrow()).is_some_and(|spr| {
                             spr.tileset_name.as_deref() == Some("f_bushes_1")
                                 || spr.properties.get(&self.sprites.alias, "Bush").is_some()
                         })

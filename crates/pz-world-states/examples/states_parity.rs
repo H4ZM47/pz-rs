@@ -336,10 +336,7 @@ fn main() {
             let ObjectKind::Barricade(b) = &o.kind else {
                 break;
             };
-            let spr = o
-                .sprite
-                .and_then(|s| a.sprites.sprites[s].name.clone())
-                .unwrap_or_else(|| "null".into());
+            let spr = a.env().sprite_name(&o).unwrap_or_else(|| "null".into());
             let p = b.plank_health;
             write!(
                 out,

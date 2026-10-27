@@ -8,6 +8,237 @@ use crate::objects::{IsoObject, ObjectKind};
 use crate::{IsoObjectRef, ObjectSlot};
 use std::cell::RefMut;
 
+#[cfg(test)]
+mod native_tests;
+
+/// Genuine supported native floor lifecycle, separate from the data-profile
+/// WorldCall recorder. Unknown registry/process/property branches stop at the
+/// phase that needs them and preserve prior entity/event effects.
+pub fn native_floor_add_to_world(
+    object: &IsoObjectRef,
+    _supplied_square: &crate::SquareRef,
+    retired: &mut pz_entity::RetiredComponents,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let unsupported = |operation| RuntimeHostError::Unsupported {
+        operation,
+        kind: None,
+    };
+    let item = crate::floor_object::runtime::item_ref(object)?;
+    if let Some(item) = item {
+        if pz_inventory::world_update::should_update_in_world_ref(&item, &PlainFloorContext)? {
+            return Err(unsupported("actual cell processWorldItems registry"));
+        }
+        if matches!(
+            item.try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("floor addToWorld inventory class"))?
+                .kind,
+            pz_inventory::ItemKind::Container(_)
+        ) {
+            return Err(unsupported("actual floor inventory addItemsToProcessItems"));
+        }
+    }
+    // GameEntityManager.RegisterEntity returns for no components. Its
+    // nonempty manager branch must not be replaced by a successful trace.
+    {
+        let body = object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor RegisterEntity receiver"))?;
+        if !body.components.is_empty() {
+            return Err(unsupported("actual floor GameEntityManager.RegisterEntity"));
+        }
+    }
+    object
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("floor addedToWorld flag"))?
+        .added_to_world_or_equipped = true;
+    pz_entity::runtime_event::send_entity_event(
+        &mut PlainFloorEventHost(object),
+        pz_entity::runtime_event::EntityEventType::AddedToWorld,
+        retired,
+    )?;
+
+    // Fresh static sprites have actual empty PropertyContainer fields.
+    // Nonempty property evaluation/container producers remain a distinct
+    // capability; arena/name snapshots cannot authenticate these branches.
+    let sprite = object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("floor sprite properties"))?
+        .sprite
+        .native_slot()
+        .cloned()
+        .ok_or_else(|| unsupported("actual unmanaged floor sprite properties"))?;
+    {
+        let sprite = sprite
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor createContainers sprite"))?;
+        if !sprite.data.properties.is_empty() || sprite.data.properties.flags() != (0, 0) {
+            return Err(unsupported(
+                "native nonempty floor sprite property evaluation",
+            ));
+        }
+    }
+    if object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("floor containers"))?
+        .container_count()
+        != 0
+    {
+        return Err(unsupported("actual floor container processItems registry"));
+    }
+    // getPipedFuelAmount first consults actual object ModData, even when
+    // the sprite has no FuelAmount property. Its live table path is pending.
+    if object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("floor piped fuel ModData"))?
+        .mod_data
+        .is_some()
+    {
+        return Err(unsupported("actual floor piped fuel ModData query"));
+    }
+    // With no containers and no property flags the generator, fridge and
+    // waterPiped branches are authenticated false. No RNG is consumed.
+    {
+        let sprite = sprite
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor tent sprite name"))?;
+        if sprite
+            .data
+            .name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("camping_01"))
+            && matches!(sprite.data.tile_sheet_index, 0 | 3)
+        {
+            return Err(unsupported("actual floor tent ambient emitter"));
+        }
+    }
+    // This entry accepts the actual WorldInventory subclass only, which is
+    // neither Door/Window nor Tree. Empty properties lack AmbientSound/RGB.
+    {
+        let sprite = sprite
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("floor wind sprite"))?;
+        if sprite.data.move_with_wind {
+            return Err(unsupported("actual floor wind render effect"));
+        }
+    }
+    try_flag_object_for_hot_save(object)
+}
+
+struct PlainFloorContext;
+impl pz_inventory::world_update::WorldItemUpdateContext for PlainFloorContext {
+    fn is_server(&self) -> pz_entity::runtime_load::HostResult<bool> {
+        Ok(false)
+    }
+    fn is_client(&self) -> pz_entity::runtime_load::HostResult<bool> {
+        Ok(false)
+    }
+    fn world_object_index(
+        &self,
+        _: &pz_entity::EntityOwner,
+    ) -> pz_entity::runtime_load::HostResult<i32> {
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "actual floor process world-object index",
+            kind: None,
+        })
+    }
+    fn world_square_outside(
+        &self,
+        _: &pz_entity::EntityOwner,
+    ) -> pz_entity::runtime_load::HostResult<Option<bool>> {
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "actual floor square outside query",
+            kind: None,
+        })
+    }
+    fn rotten_food_removal_days(&self) -> pz_entity::runtime_load::HostResult<i32> {
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "actual floor rotten removal sandbox query",
+            kind: None,
+        })
+    }
+}
+
+struct PlainFloorEventHost<'a>(&'a IsoObjectRef);
+impl pz_entity::runtime_event::EntityEventHost for PlainFloorEventHost<'_> {
+    fn entity_owner(&self) -> pz_entity::runtime_load::HostResult<pz_entity::EntityOwner> {
+        Ok(pz_entity::EntityOwner::from_ref(self.0))
+    }
+    fn has_component_container(&self) -> pz_entity::runtime_load::HostResult<bool> {
+        // The supported fresh receiver has no component container. An
+        // allocated empty representation makes the same no-callback branch.
+        Ok(!self
+            .0
+            .try_borrow()
+            .map_err(|_| {
+                pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                    "floor event component container",
+                )
+            })?
+            .components
+            .is_empty())
+    }
+    fn component_count(&self) -> pz_entity::runtime_load::HostResult<usize> {
+        Ok(self
+            .0
+            .try_borrow()
+            .map_err(|_| {
+                pz_entity::runtime_load::RuntimeHostError::Borrowed("floor event components")
+            })?
+            .components
+            .len())
+    }
+    fn component_event(
+        &mut self,
+        _: usize,
+        _: &pz_entity::runtime_event::EntityEventRef,
+        _: &mut pz_entity::RetiredComponents,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "actual floor component onEntityEvent",
+            kind: None,
+        })
+    }
+    // Current native client profile has Java desiredAssertionStatus disabled.
+    fn assertions_enabled(&self) -> bool {
+        false
+    }
+    fn debug_enabled(&self) -> pz_entity::runtime_load::HostResult<bool> {
+        Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+            operation: "native entity-event Core.debug assertion profile",
+            kind: None,
+        })
+    }
+}
+
+/// Reads the current actual object.square slot at the native phase. The
+/// retained chunk-state association survives coordinate/cell replacement.
+pub fn try_flag_object_for_hot_save(
+    object: &IsoObjectRef,
+) -> pz_entity::runtime_load::HostResult<()> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let square = object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("flagForHotSave object.square"))?
+        .square_slot()
+        .cloned();
+    let Some(square) = square else {
+        return Ok(());
+    };
+    let state = square
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("flagForHotSave square.chunk"))?
+        .chunk_hot_save
+        .clone();
+    if let Some(state) = state {
+        state
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("flagForHotSave actual chunk"))?
+            .flag_for_hot_save();
+    }
+    Ok(())
+}
+
 /// `ObjectAmbientEmitters` logic `IsoObject.addToWorld` attaches
 /// (`chunk.addObjectAmbientEmitter(obj, logic)`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,7 +431,7 @@ fn could_be_powered_by_generator(env: &mut MutationEnv<'_>, r: &Receiver) -> boo
 }
 
 /// `IsoObject.addToWorld()`.
-fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) {
+fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) -> pz_entity::runtime_load::HostResult<()> {
     call(env, r, WorldCall::RegisterEntity);
     // GameEntity.addToWorld writes this after RegisterEntity even when the
     // manager's empty-component branch performs no registration.
@@ -228,22 +459,30 @@ fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) {
     // These checks need only scalar sprite/class data. Cloning a whole live
     // floor object here would archive-copy its retained item/component graph.
     let Some((sprite, is_tree)) = with_obj(env, r, |o| {
-        (o.sprite, matches!(o.kind, ObjectKind::Tree(_)))
+        (o.sprite.retained(), matches!(o.kind, ObjectKind::Tree(_)))
     }) else {
-        return;
+        return Ok(());
     };
-    let spr = sprite.map(|s| &env.sprites.sprites[s]);
+    let spr = match &sprite {
+        // Explicit old archive-ID data profile; no actual sprite is inferred.
+        crate::objects::ObjectSprite::ArchiveUnmanaged(_) => None,
+        _ => sprite.try_read(env.sprites)?,
+    };
     let water_piped = env.sprites.tables.flag_from_string("waterPiped");
     let piped = spr
+        .as_ref()
         .zip(water_piped)
         .is_some_and(|(s, f)| s.properties.has(f));
-    let tent = spr.is_some_and(|s| {
+    let tent = spr.as_ref().is_some_and(|s| {
         s.name
             .as_deref()
             .is_some_and(|n| n.starts_with("camping_01"))
             && (s.tile_sheet_index == 0 || s.tile_sheet_index == 3)
     });
-    let ambient = spr.is_some_and(|s| env.sprites.has_prop(s, "AmbientSound"));
+    let ambient = spr
+        .as_ref()
+        .is_some_and(|s| env.sprites.has_prop(s, "AmbientSound"));
+    drop(spr);
     let fridge_powered = {
         let object = r.object.borrow();
         fridge_index(&object).is_some_and(|i| env.world.container_powered(r.location, &object, i))
@@ -281,25 +520,74 @@ fn base_add(env: &mut MutationEnv<'_>, r: &Receiver) {
     call(env, r, WorldCall::CheckMoveWithWind);
     call(env, r, WorldCall::LightSource { add: true });
     call(env, r, WorldCall::FlagForHotSave);
+    Ok(())
+}
+
+/// Native allocations never enter tile-only property adapters or legacy
+/// trace hooks. A successful true means the actual native phase completed.
+fn try_native_add_to_world_dispatch(
+    object: &IsoObjectRef,
+    retired: &mut pz_entity::RetiredComponents,
+) -> pz_entity::runtime_load::HostResult<bool> {
+    use pz_entity::runtime_load::RuntimeHostError;
+    let native_class = {
+        let body = object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("addToWorld sprite authority"))?;
+        body.sprite
+            .native_slot()
+            .map(|_| matches!(body.kind, ObjectKind::WorldInventory(_)))
+    };
+    let Some(world_item) = native_class else {
+        return Ok(false);
+    };
+    if !world_item {
+        return Err(RuntimeHostError::Unsupported {
+            operation: "actual native sprite subclass addToWorld",
+            kind: None,
+        });
+    }
+    let square = object
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("native addToWorld actual square"))?
+        .square_slot()
+        .cloned()
+        .ok_or(RuntimeHostError::Unsupported {
+            operation: "native floor addToWorld null-square capability",
+            kind: None,
+        })?;
+    retired.push_owner(pz_entity::EntityOwner::from_ref(object));
+    retired.push_owner(pz_entity::EntityOwner::from_ref(&square));
+    native_floor_add_to_world(object, &square, retired)?;
+    Ok(true)
 }
 
 /// `obj.addToWorld()` for the object's class.
-fn add_to_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
+fn add_to_world_on(
+    env: &mut MutationEnv<'_>,
+    r: &Receiver,
+) -> pz_entity::runtime_load::HostResult<()> {
+    let mut retired = pz_entity::RetiredComponents::new();
+    let native = try_native_add_to_world_dispatch(&r.object, &mut retired);
+    env.cell.retire_components(retired);
+    if native? {
+        return Ok(());
+    }
     // Class dispatch must not clone the floor payload and its actual item
     // graph merely to select this branch.
     if with_obj(env, r, |o| matches!(o.kind, ObjectKind::WorldInventory(_))).unwrap_or(false) {
         call(env, r, WorldCall::ProcessWorldItems { add: true });
         call(env, r, WorldCall::WorldItemContainer { add: true });
-        base_add(env, r);
-        return;
+        base_add(env, r)?;
+        return Ok(());
     }
     let Some(kind) = kind_of(env, r) else {
-        return;
+        return Ok(());
     };
     use ObjectKind as K;
     match kind {
         K::Barbecue(_) | K::CarBatteryCharger(_) | K::Thumpable(_) => {
-            base_add(env, r);
+            base_add(env, r)?;
             call(env, r, WorldCall::ProcessIsoObjectAdd);
         }
         K::ClothingDryer(_)
@@ -309,11 +597,11 @@ fn add_to_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
         | K::Compost(_)
         | K::Trap(_) => call(env, r, WorldCall::ProcessIsoObjectAdd),
         K::Door(_) => {
-            base_add(env, r);
+            base_add(env, r)?;
             call(env, r, WorldCall::DancingDoor { add: true });
         }
         K::FeedingTrough(_) => {
-            base_add(env, r);
+            base_add(env, r)?;
             call(env, r, WorldCall::ProcessIsoObjectAdd);
             call(env, r, WorldCall::FeedingTroughCheck);
         }
@@ -326,13 +614,15 @@ fn add_to_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
         }
         K::Fireplace(_) => {
             call(env, r, WorldCall::ProcessIsoObjectAdd);
-            let capacity = with_obj(env, r, |o| {
-                o.sprite.is_some_and(|s| {
-                    env.sprites
-                        .has_prop(&env.sprites.sprites[s], "ContainerCapacity")
-                })
-            })
-            .unwrap_or(false);
+            let capacity = {
+                let object = r.object.try_borrow().map_err(|_| {
+                    pz_entity::runtime_load::RuntimeHostError::Borrowed("fireplace sprite")
+                })?;
+                let sprite = object.sprite.try_read(env.sprites)?;
+                sprite
+                    .as_ref()
+                    .is_some_and(|sprite| env.sprites.has_prop(sprite, "ContainerCapacity"))
+            };
             if capacity {
                 call(
                     env,
@@ -349,22 +639,22 @@ fn add_to_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
             call(env, r, WorldCall::Generators { add: true });
         }
         K::Hutch(h) => {
-            base_add(env, r);
+            base_add(env, r)?;
             if h.master.is_some() {
                 call(env, r, WorldCall::HutchManager { add: true });
             }
         }
         K::Jukebox => {
-            base_add(env, r);
+            base_add(env, r)?;
             call(env, r, WorldCall::StaticUpdater { add: true });
         }
         K::LightSwitch(_) => {
             let (light_room, lights, can_be_modified) = {
                 let Some(mut o) = obj_mut(env, r) else {
-                    return;
+                    return Ok(());
                 };
                 let ObjectKind::LightSwitch(s) = &mut o.kind else {
-                    return;
+                    return Ok(());
                 };
                 if !s.activated {
                     s.last_minute_stamp = -1;
@@ -392,13 +682,13 @@ fn add_to_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
             }
         }
         K::Mannequin(_) => {
-            base_add(env, r);
+            base_add(env, r)?;
             call(env, r, WorldCall::MannequinInit);
         }
         K::Stove(_) => {
-            base_add(env, r);
+            base_add(env, r)?;
             if with_obj(env, r, |o| o.container.is_none()).unwrap_or(true) {
-                return;
+                return Ok(());
             }
             call(env, r, WorldCall::ProcessIsoObjectAdd);
             call(
@@ -415,19 +705,20 @@ fn add_to_world_on(env: &mut MutationEnv<'_>, r: &Receiver) {
         K::Radio(_) | K::Television(_) => {
             call(env, r, WorldCall::RadioDevice { add: true });
             call(env, r, WorldCall::StaticUpdater { add: true });
-            base_add(env, r);
+            base_add(env, r)?;
         }
         K::Window(_) => {
-            base_add(env, r);
+            base_add(env, r)?;
             call(env, r, WorldCall::WindowList { add: true });
         }
         K::WorldInventory(_) => {
             call(env, r, WorldCall::ProcessWorldItems { add: true });
             call(env, r, WorldCall::WorldItemContainer { add: true });
-            base_add(env, r);
+            base_add(env, r)?;
         }
-        _ => base_add(env, r),
+        _ => base_add(env, r)?,
     }
+    Ok(())
 }
 
 /// Checked live base lifecycle. Unregister failure preserves the added flag.
@@ -618,19 +909,27 @@ fn remove_from_world_on(
     Ok(())
 }
 
-pub(super) fn add_to_world(env: &mut MutationEnv<'_>, r: ObjectRef) {
+pub(super) fn add_to_world(
+    env: &mut MutationEnv<'_>,
+    r: ObjectRef,
+) -> pz_entity::runtime_load::HostResult<()> {
     if let Some(r) = receiver(env, r) {
-        add_to_world_on(env, &r);
+        add_to_world_on(env, &r)?;
     }
+    Ok(())
 }
-pub(super) fn add_to_world_handle(env: &mut MutationEnv<'_>, r: ObjectRef, object: &IsoObjectRef) {
+pub(super) fn add_to_world_handle(
+    env: &mut MutationEnv<'_>,
+    r: ObjectRef,
+    object: &IsoObjectRef,
+) -> pz_entity::runtime_load::HostResult<()> {
     add_to_world_on(
         env,
         &Receiver {
             location: r,
             object: object.clone(),
         },
-    );
+    )
 }
 pub(super) fn remove_from_world_handle(
     env: &mut MutationEnv<'_>,
@@ -786,8 +1085,12 @@ pub(super) fn remove_from_square_handle(
 impl MutationEnv<'_> {
     /// Invoke `addToWorld` on the selected actual receiver. Host callbacks
     /// must be staged outside enclosing world/sprite guards by the caller.
-    pub fn object_add_to_world(&mut self, r: ObjectRef, object: &IsoObjectRef) {
-        add_to_world_handle(self, r, object);
+    pub fn object_add_to_world(
+        &mut self,
+        r: ObjectRef,
+        object: &IsoObjectRef,
+    ) -> pz_entity::runtime_load::HostResult<()> {
+        add_to_world_handle(self, r, object)
     }
     pub(crate) fn object_remove_from_world(
         &mut self,

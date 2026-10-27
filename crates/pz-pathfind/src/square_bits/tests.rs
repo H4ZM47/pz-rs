@@ -542,6 +542,63 @@ fn cost_of_trees_and_bushes() {
 }
 
 #[test]
+fn native_sprite_metadata_mutation_changes_bush_cost_and_open_door_edge() {
+    use pz_world::sprite::runtime::{create_runtime_sprite, ObjectSprite};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let world = World::new();
+    let native_manager = Rc::new(RefCell::new(IsoSpriteManager::new(world.m.tables.clone())));
+    let arena_before = native_manager.borrow().sprites.len();
+    let mut retired = Default::default();
+    let sprite = create_runtime_sprite(&native_manager, &world.m.tables, &mut retired).unwrap();
+    let bits = SquareBits::new(&world.m, &world.meta, &world.cell, &DefaultBitsHooks).unwrap();
+    {
+        let mut actual = sprite.borrow_mut();
+        actual.data.tileset_name = Some("f_bushes_1".into());
+        actual.data.properties.set_flag(bits.t.attachedE);
+    }
+    let mut object = IsoObject::new(
+        1,
+        ObjectKind::Door(IsoDoor {
+            north: true,
+            open: true,
+            ..Default::default()
+        }),
+        None,
+    );
+    object.sprite = ObjectSprite::Native(sprite.clone());
+    let mut square = IsoGridSquare::new(9, 9, 0);
+    square.objects.push(pz_world::ObjectSlot::new(object));
+    assert!(bits.has_bush(&square));
+    assert_eq!(bits.get_cost(&square), 5);
+    assert_eq!(
+        bits.door_sprite_edge(&square.objects[0].borrow(), true, true, false),
+        Some(IsoDirections::E)
+    );
+
+    {
+        let mut actual = sprite.borrow_mut();
+        actual.data.tileset_name = Some("different_tileset".into());
+        actual.data.properties.unset_flag(bits.t.attachedE);
+        actual.data.properties.set_flag(bits.t.attachedS);
+    }
+    assert!(!bits.has_bush(&square));
+    assert_eq!(bits.get_cost(&square), 0);
+    assert_eq!(
+        bits.door_sprite_edge(&square.objects[0].borrow(), true, true, false),
+        Some(IsoDirections::S)
+    );
+    assert!(Rc::ptr_eq(
+        square.objects[0].borrow().sprite.native_slot().unwrap(),
+        &sprite
+    ));
+    assert_eq!(native_manager.borrow().sprites.len(), arena_before);
+    let detached = { sprite.borrow_mut().take_slots_for_gc() };
+    drop(detached);
+}
+
+#[test]
 fn chunk_buffer_layout_and_square_update() {
     let mut w = World::new();
     w.put(9, 10, 0, &["floor", "tree"]);

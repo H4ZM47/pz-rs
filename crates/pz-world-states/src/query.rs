@@ -2,7 +2,13 @@
 //! `isSameStaircase`, `getGridSneakModifier` and the sheet-rope tests, and
 //! `isBlockedTo`, `getSpecialWall`, `getSpecialSolid` and
 //! `testCollideSpecialObjects` through pz-world's `CollideEnv`.
+//!
+//! Existing synchronous state interfaces require unborrowed object/sprite
+//! bodies and resolved metadata. The `try_` sprite reads preserve typed host
+//! errors for fallible callers; legacy wrappers never convert those errors
+//! into an absent sprite or a tile-arena projection.
 
+use pz_entity::runtime_load::HostResult;
 use pz_world::java::{fastfloor, parse_int};
 use pz_world::objects::{IsoObject, IsoThumpable, ObjectId};
 use pz_world::sprite::IsoFlagType;
@@ -53,35 +59,90 @@ impl<'a> Env<'a> {
         self.flag(name).is_some_and(|f| sq.has(f))
     }
 
-    /// `obj.getProperties()` (the sprite's), `None` without a sprite.
-    pub fn props(&self, obj: &IsoObject) -> Option<&'a pz_world::sprite::PropertyContainer> {
-        obj.sprite.map(|s| &self.sprites.sprites[s].properties)
+    /// Current sprite metadata, captured only for this query phase. A live
+    /// sprite is read from its actual body, including when absent from the
+    /// tile arena; an unresolved archive ID is a host capability error.
+    pub fn try_metadata(&self, obj: &IsoObject) -> HostResult<Option<pz_world::sprite::IsoSprite>> {
+        Ok(obj
+            .sprite
+            .try_read(self.sprites)?
+            .map(|sprite| (*sprite).clone()))
+    }
+
+    /// Legacy synchronous state queries require unborrowed sprite bodies and
+    /// resolved metadata. They have no host-error return carrier.
+    pub fn metadata(&self, obj: &IsoObject) -> Option<pz_world::sprite::IsoSprite> {
+        self.try_metadata(obj)
+            .expect("state query requires unborrowed, resolved sprite metadata")
+    }
+
+    /// `obj.getProperties()` as owned phase data; no borrow survives a caller
+    /// callback or a later mutation of the same actual sprite.
+    pub fn try_props(
+        &self,
+        obj: &IsoObject,
+    ) -> HostResult<Option<pz_world::sprite::PropertyContainer>> {
+        Ok(obj
+            .sprite
+            .try_read(self.sprites)?
+            .map(|sprite| sprite.properties.clone()))
+    }
+
+    /// Infallible legacy wrapper with the same precondition as `metadata`.
+    pub fn props(&self, obj: &IsoObject) -> Option<pz_world::sprite::PropertyContainer> {
+        self.try_props(obj)
+            .expect("state query requires unborrowed, resolved sprite properties")
+    }
+
+    pub fn try_obj_has_flag(&self, obj: &IsoObject, name: &str) -> HostResult<bool> {
+        Ok(match (self.try_props(obj)?, self.flag(name)) {
+            (Some(p), Some(f)) => p.has(f),
+            _ => false,
+        })
     }
 
     /// `obj.getProperties().has(IsoFlagType.<name>)`.
     pub fn obj_has_flag(&self, obj: &IsoObject, name: &str) -> bool {
-        match (self.props(obj), self.flag(name)) {
-            (Some(p), Some(f)) => p.has(f),
-            _ => false,
-        }
+        self.try_obj_has_flag(obj, name)
+            .expect("state query requires unborrowed, resolved sprite properties")
+    }
+
+    pub fn try_obj_has_prop(&self, obj: &IsoObject, name: &str) -> HostResult<bool> {
+        Ok(self
+            .try_props(obj)?
+            .is_some_and(|p| p.has_name(&self.sprites.alias, name)))
     }
 
     /// `obj.getProperties().has(<property name>)`.
     pub fn obj_has_prop(&self, obj: &IsoObject, name: &str) -> bool {
-        self.props(obj)
-            .is_some_and(|p| p.has_name(&self.sprites.alias, name))
+        self.try_obj_has_prop(obj, name)
+            .expect("state query requires unborrowed, resolved sprite properties")
     }
 
-    /// `obj.getProperties().get(<property name>)`.
-    pub fn obj_prop(&self, obj: &IsoObject, name: &str) -> Option<&'a str> {
-        self.props(obj)
-            .and_then(|p| p.get(&self.sprites.alias, name))
+    pub fn try_obj_prop(&self, obj: &IsoObject, name: &str) -> HostResult<Option<String>> {
+        Ok(self
+            .try_props(obj)?
+            .and_then(|p| p.get(&self.sprites.alias, name).map(str::to_owned)))
     }
 
-    /// The sprite name of `obj` (`getSprite().getName()`).
-    pub fn sprite_name(&self, obj: &IsoObject) -> Option<&'a str> {
-        obj.sprite
-            .and_then(|s| self.sprites.sprites[s].name.as_deref())
+    /// `obj.getProperties().get(<property name>)` as an owned phase value.
+    pub fn obj_prop(&self, obj: &IsoObject, name: &str) -> Option<String> {
+        self.try_obj_prop(obj, name)
+            .expect("state query requires unborrowed, resolved sprite properties")
+    }
+
+    pub fn try_sprite_name(&self, obj: &IsoObject) -> HostResult<Option<String>> {
+        Ok(obj
+            .sprite
+            .try_read(self.sprites)?
+            .and_then(|sprite| sprite.name.clone()))
+    }
+
+    /// The current sprite name of `obj` (`getSprite().getName()`). The legacy
+    /// wrapper requires unborrowed, resolved sprite metadata.
+    pub fn sprite_name(&self, obj: &IsoObject) -> Option<String> {
+        self.try_sprite_name(obj)
+            .expect("state query requires unborrowed, resolved sprite name")
     }
 
     /// The mover-aware collision queries over the same cell

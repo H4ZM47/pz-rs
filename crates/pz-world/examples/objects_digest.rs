@@ -92,7 +92,7 @@ fn object_line(m: &IsoSpriteManager, o: &IsoObject) -> String {
     let mut l = format!(
         "  {} {} tile={} out={} tint={:x},{:x},{:x} ry={:x}",
         o.kind.class_name(),
-        name(m, o.sprite),
+        name(m, o.sprite.tile_projection()),
         o.tile.as_deref().unwrap_or("null"),
         o.outline_on_mouseover as u8,
         o.tint_r.to_bits(),

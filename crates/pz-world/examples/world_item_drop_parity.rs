@@ -321,12 +321,12 @@ fn main() {
         while i < sq.borrow().objects.len() {
             let o_owner = sq.borrow().objects[i].ref_handle();
             let mut o = o_owner.borrow_mut();
-            let name = o.sprite.and_then(|s| sprites.sprites[s].name.clone());
+            let name = o.sprite.tile_projection().and_then(|s| sprites.sprites[s].name.clone());
             match java.get(i) {
                 Some(&(class, spr)) if class == o.kind.class_name() => {
                     if name.as_deref().unwrap_or("null") != spr {
                         if let Some(&s) = sprites.named_map.get(spr) {
-                            o.sprite = Some(s);
+                            o.sprite = Some(s).into();
                         }
                     }
                     i += 1;

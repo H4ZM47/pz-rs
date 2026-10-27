@@ -213,6 +213,33 @@ impl FloorAccess {
 }
 
 impl FloorWorld for FloorAccess {
+    fn solid_floor_ref_at(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> HostResult<Option<pz_inventory::floor_drop::FloorSquare>> {
+        self.read(|service| service.solid_floor_ref_at(x, y, z))
+    }
+    fn apparent_z_on(
+        &self,
+        square: &pz_inventory::floor_drop::FloorSquare,
+        x: f32,
+        y: f32,
+    ) -> HostResult<f32> {
+        self.read(|service| service.apparent_z_on(square, x, y))
+    }
+    fn add_world_inventory_item_on(
+        &mut self,
+        square: &pz_inventory::floor_drop::FloorSquare,
+        item: &pz_inventory::shared::ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> HostResult<()> {
+        self.write(|service| service.add_world_inventory_item_on(square, item, x, y, height))
+    }
+
     fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<(i32, i32, i32)>> {
         self.read(|service| service.solid_floor_at(x, y, z))
     }
@@ -2259,6 +2286,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, "module Base { item TestBrick { DisplayName = Test Brick, ItemType = base:normal, Weight = 2.5, } }").unwrap();
         let sm = ScriptManager::new();
+        sm.enable_texture_capture();
         sm.registries
             .get("item_type")
             .unwrap()
@@ -2368,6 +2396,7 @@ pub(crate) mod tests {
         );
         std::fs::write(&p, src).unwrap();
         let sm = ScriptManager::new();
+        sm.enable_texture_capture();
         for (reg, id, field) in [
             ("item_type", "t:clothing", "CLOTHING"),
             ("item_body_location", "t:hat", "HAT"),
@@ -2513,6 +2542,43 @@ pub(crate) mod tests {
     struct RecFloor(Vec<((i32, i32, i32), i32)>);
 
     impl FloorWorld for RecFloor {
+        fn solid_floor_ref_at(
+            &self,
+            x: i32,
+            y: i32,
+            z: i32,
+        ) -> pz_inventory::floor_drop::HostResult<Option<pz_inventory::floor_drop::FloorSquare>>
+        {
+            self.solid_floor_at(x, y, z)
+                .map(|sq| sq.map(pz_inventory::floor_drop::FloorSquare::data_projection))
+        }
+        fn apparent_z_on(
+            &self,
+            sq: &pz_inventory::floor_drop::FloorSquare,
+            x: f32,
+            y: f32,
+        ) -> pz_inventory::floor_drop::HostResult<f32> {
+            assert!(
+                sq.owner_slot().is_none(),
+                "explicit coordinate-only test profile"
+            );
+            self.apparent_z(sq.position(), x, y)
+        }
+        fn add_world_inventory_item_on(
+            &mut self,
+            sq: &pz_inventory::floor_drop::FloorSquare,
+            item: &pz_inventory::shared::ItemRef,
+            x: f32,
+            y: f32,
+            h: f32,
+        ) -> pz_inventory::floor_drop::HostResult<()> {
+            assert!(
+                sq.owner_slot().is_none(),
+                "explicit coordinate-only test profile"
+            );
+            self.add_world_inventory_item(sq.position(), item, x, y, h)
+        }
+
         fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<(i32, i32, i32)>> {
             Ok(Some((x, y, z)))
         }
@@ -2539,13 +2605,71 @@ pub(crate) mod tests {
     fn drop_host_failure_preserves_typed_error_and_only_completed_prefix_events() {
         struct FailingFloor { calls: Rc<std::cell::Cell<usize>>, fail_at: usize }
         impl FloorWorld for FailingFloor {
-            fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<(i32,i32,i32)>> { Ok(Some((x,y,z))) }
-            fn apparent_z(&self, sq: (i32,i32,i32), _: f32, _: f32) -> HostResult<f32> { Ok(sq.2 as f32) }
-            fn rand_float(&mut self, min: f32, _: f32) -> HostResult<f32> { Ok(min) }
-            fn add_world_inventory_item(&mut self, _: (i32,i32,i32), _: &pz_inventory::shared::ItemRef, _: f32, _: f32, _: f32) -> HostResult<()> {
-                self.calls.set(self.calls.get()+1);
-                if self.calls.get()==self.fail_at {
-                    return Err(RuntimeHostError::Unsupported { operation: "fixture floor placement phase", kind: None });
+            fn solid_floor_ref_at(
+                &self,
+                x: i32,
+                y: i32,
+                z: i32,
+            ) -> pz_inventory::floor_drop::HostResult<Option<pz_inventory::floor_drop::FloorSquare>>
+            {
+                self.solid_floor_at(x, y, z)
+                    .map(|sq| sq.map(pz_inventory::floor_drop::FloorSquare::data_projection))
+            }
+            fn apparent_z_on(
+                &self,
+                sq: &pz_inventory::floor_drop::FloorSquare,
+                x: f32,
+                y: f32,
+            ) -> pz_inventory::floor_drop::HostResult<f32> {
+                assert!(
+                    sq.owner_slot().is_none(),
+                    "explicit coordinate-only test profile"
+                );
+                self.apparent_z(sq.position(), x, y)
+            }
+            fn add_world_inventory_item_on(
+                &mut self,
+                sq: &pz_inventory::floor_drop::FloorSquare,
+                item: &pz_inventory::shared::ItemRef,
+                x: f32,
+                y: f32,
+                h: f32,
+            ) -> pz_inventory::floor_drop::HostResult<()> {
+                assert!(
+                    sq.owner_slot().is_none(),
+                    "explicit coordinate-only test profile"
+                );
+                self.add_world_inventory_item(sq.position(), item, x, y, h)
+            }
+
+            fn solid_floor_at(
+                &self,
+                x: i32,
+                y: i32,
+                z: i32,
+            ) -> HostResult<Option<(i32, i32, i32)>> {
+                Ok(Some((x, y, z)))
+            }
+            fn apparent_z(&self, sq: (i32, i32, i32), _: f32, _: f32) -> HostResult<f32> {
+                Ok(sq.2 as f32)
+            }
+            fn rand_float(&mut self, min: f32, _: f32) -> HostResult<f32> {
+                Ok(min)
+            }
+            fn add_world_inventory_item(
+                &mut self,
+                _: (i32, i32, i32),
+                _: &pz_inventory::shared::ItemRef,
+                _: f32,
+                _: f32,
+                _: f32,
+            ) -> HostResult<()> {
+                self.calls.set(self.calls.get() + 1);
+                if self.calls.get() == self.fail_at {
+                    return Err(RuntimeHostError::Unsupported {
+                        operation: "fixture floor placement phase",
+                        kind: None,
+                    });
                 }
                 Ok(())
             }

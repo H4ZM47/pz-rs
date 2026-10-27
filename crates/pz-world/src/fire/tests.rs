@@ -250,7 +250,7 @@ impl World {
             .objects
             .iter()
             .map(ObjectSlot::borrow)
-            .map(|o| match o.sprite {
+            .map(|o| match o.sprite.tile_projection() {
                 Some(s) => self.m.sprites[s].name().to_string(),
                 None => o.kind.class_name().to_string(),
             })
@@ -261,6 +261,75 @@ impl World {
 /// Records the hooks the fire calls.
 #[derive(Default)]
 struct Log(Vec<String>);
+
+#[test]
+fn actual_native_sprite_burn_is_unsupported_before_skip_or_archive_clone() {
+    use crate::sprite::runtime::{create_runtime_sprite, ObjectSprite};
+    for floor in [false, true] {
+        let mut world = World::new();
+        world.put(2, 2, true, &[]);
+        let tables = world.m.tables.clone();
+        let manager = std::rc::Rc::new(std::cell::RefCell::new(IsoSpriteManager::new(
+            tables.clone(),
+        )));
+        let mut retired = pz_entity::RetiredComponents::new();
+        let sprite = create_runtime_sprite(&manager, &tables, &mut retired).unwrap();
+        let kind = if floor {
+            let item = pz_inventory::shared::try_new_item(pz_inventory::InventoryItem::create(
+                std::rc::Rc::new(pz_inventory::ItemTemplate::new(
+                    pz_inventory::ItemClass::Normal,
+                    "Base",
+                    "BurnNative",
+                )),
+                1,
+            ))
+            .unwrap();
+            ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(
+                crate::objects::IsoWorldInventoryObject {
+                    xoff: 0.0,
+                    yoff: 0.0,
+                    zoff: 0.0,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                    item: crate::floor_item::FloorItem::retain(&item),
+                    drop_time: 0.0,
+                    ignore_remove_sandbox: false,
+                    extended_placement: false,
+                },
+            ))
+        } else {
+            ObjectKind::Object
+        };
+        let mut object = IsoObject::new(91, kind, None);
+        object.sprite = ObjectSprite::Native(sprite.clone());
+        let slot = crate::ObjectSlot::new(object);
+        let actual = slot.ref_handle();
+        world.sq(2, 2).borrow_mut().objects.push(slot);
+        let held = sprite.borrow_mut();
+        let mut manager = IsoFireManager::new();
+        let mut log = Log::default();
+        let mut rand = Script::new(&[]);
+        let result = burn::burn_walls(
+            &mut manager,
+            &mut world.fw(&mut log),
+            &mut rand,
+            (2, 2, 0),
+            false,
+            false,
+        );
+        assert!(result
+            .unwrap_err()
+            .contains("actual native sprite is unsupported"));
+        assert!(world.sq(2, 2).borrow().objects[0].ptr_eq_ref(&actual));
+        assert!(std::rc::Rc::ptr_eq(
+            actual.borrow().sprite.native_slot().unwrap(),
+            &sprite
+        ));
+        assert!(rand.calls.is_empty());
+        drop(held);
+        drop(retired);
+    }
+}
 
 impl sound::FireSoundHooks for Log {}
 impl FireHooks for Log {

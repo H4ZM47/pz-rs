@@ -391,8 +391,8 @@ impl<'a> ObjectHooks<'a> {
     /// `WindowN` or `WindowW`.
     pub fn object_is_window(&self, obj: &IsoObject) -> bool {
         let f = &self.sprites.tables.flag;
-        obj.sprite.is_some_and(|s| {
-            let p = &self.sprites.sprites[s].properties;
+        obj.sprite.metadata_projection(self.sprites).expect("synchronous window metadata read requires unborrowed native sprite").is_some_and(|s| {
+            let p = &s.properties;
             p.has(f.WindowN) || p.has(f.WindowW)
         })
     }
@@ -411,7 +411,7 @@ impl<'a> ObjectHooks<'a> {
                 return hoppable(s);
             }
         }
-        obj.sprite.is_some_and(hoppable) || t.is_hoppable
+        obj.sprite.metadata_projection(self.sprites).expect("synchronous hoppable metadata read requires unborrowed native sprite").is_some_and(|s| s.properties.has(f.HoppableN) || s.properties.has(f.HoppableW)) || t.is_hoppable
     }
 
     /// The `IsoThumpable` / `IsoBarricade` / `IsoFire` facts the square

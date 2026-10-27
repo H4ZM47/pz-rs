@@ -266,7 +266,7 @@ fn chunk_load_replaces_and_grows() {
         .find(|o| matches!(&o.name, Some(ObjectName::Str(n)) if n.starts_with("Tree")))
         .unwrap();
     // update() then staged it with the erosion sprite set (`t_*_1_<n>`).
-    let name = sprites.sprites[tree.sprite.unwrap()].name.clone().unwrap();
+    let name = sprites.sprites[tree.sprite.tile_projection().unwrap()].name.clone().unwrap();
     drop(tree);
     assert!(
         name.starts_with("t_a_1_") || name.starts_with("t_b_1_"),

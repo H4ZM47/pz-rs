@@ -385,8 +385,10 @@ impl StatesWorldAdapter<'_> {
             ("collideW", "HoppableW")
         };
         sq.objects.iter().map(|o| o.borrow()).find(|o| {
-            let Some(s) = o.sprite else { return false };
-            self.sprites.sprites[s].tile_type == wall
+            let Some(sprite) = env.metadata(o) else {
+                return false;
+            };
+            sprite.tile_type == wall
                 && !env.obj_has_flag(&o, "CantClimb")
                 && env.obj_has_flag(&o, collide)
                 && !env.obj_has_flag(&o, hoppable)
@@ -411,10 +413,12 @@ impl StatesWorldAdapter<'_> {
             IsoDirections::S => self.climbable_wall(&e, true),
             _ => None,
         }?;
-        Some(match self.env().obj_prop(&fence, "FenceTypeHigh") {
-            Some("Metal") => 1,
-            Some("MetalGate") => 2,
-            _ => 0,
-        })
+        Some(
+            match self.env().obj_prop(&fence, "FenceTypeHigh").as_deref() {
+                Some("Metal") => 1,
+                Some("MetalGate") => 2,
+                _ => 0,
+            },
+        )
     }
 }

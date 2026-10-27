@@ -84,12 +84,15 @@ impl IsoWorld {
                                             num_players: 1,
                                         };
                                         let id = object.borrow().id;
-                                        env.object_add_to_world(ObjectRef { pos, id }, &object);
-                                        true
+                                        env.object_add_to_world(ObjectRef { pos, id }, &object)
+                                            .map_err(|error| {
+                                                format!("object activation: {error:?}")
+                                            })?;
+                                        Ok::<bool, String>(true)
                                     } else {
-                                        false
+                                        Ok(false)
                                     }
-                                });
+                                })?;
                                 if !activated {
                                     return Err(
                                         "object activation requires live cell and meta grid".into(),
@@ -111,10 +114,23 @@ impl IsoWorld {
                                         }
                                         let no_black_clothes =
                                             opt_bool(&sandbox.borrow(), "NoBlackClothes");
-                                        let sprite_name = self.sprites.as_ref().and_then(|s| {
-                                            let index = receiver.borrow().sprite?;
-                                            s.borrow().sprites.get(index)?.name.clone()
-                                        });
+                                        let sprite_name = {
+                                            let sprites=self.sprites.as_ref().ok_or("mannequin activation requires actual sprite manager")?;
+                                            let sprites = sprites.try_borrow().map_err(|_| {
+                                                "mannequin activation sprite manager is borrowed"
+                                            })?;
+                                            let object = receiver.try_borrow().map_err(|_| {
+                                                "mannequin activation receiver is borrowed"
+                                            })?;
+                                            let sprite = object.sprite.try_read(&sprites).map_err(
+                                                |error| {
+                                                    format!(
+                                                        "mannequin activation sprite: {error:?}"
+                                                    )
+                                                },
+                                            )?;
+                                            sprite.and_then(|sprite| sprite.name.clone())
+                                        };
                                         let zone = with_world(|w| {
                                             let attached = square
                                                 .borrow()

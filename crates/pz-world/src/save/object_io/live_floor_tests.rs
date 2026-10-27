@@ -18,6 +18,17 @@ impl pz_inventory::ItemEnv for Env<'_> {
         &self.codec
     }
 }
+fn template() -> Rc<ItemTemplate> {
+    let mut template = ItemTemplate::new(ItemClass::Normal, "Base", "FloorLoad");
+    // This fixture knows the actual nullable script asset slots. An absent
+    // capture means an archive-only input and must not impersonate this case.
+    template.texture_capture = Some(pz_inventory::item_texture::CapturedScriptTextures::new(
+        None,
+        Vec::new(),
+    ));
+    Rc::new(template)
+}
+
 fn bytes(
     env: &Env<'_>,
     tables: &super::super::SaveTables,
@@ -50,7 +61,7 @@ fn actual_floor_load_failure_after_item_keeps_same_backlink_tint_and_cursor_pref
     let context = pz_entity::BasicContext::default();
     let env = Env {
         codec: EntityCodec { ctx: &context },
-        template: Rc::new(ItemTemplate::new(ItemClass::Normal, "Base", "FloorLoad")),
+        template: template(),
     };
     let sprites = crate::sprite::IsoSpriteManager::new(crate::sprite::test_tables());
     let tables = super::super::SaveTables::for_tests();
@@ -65,7 +76,7 @@ fn actual_floor_load_failure_after_item_keeps_same_backlink_tint_and_cursor_pref
     };
     let bytes = bytes(&env, &tables, None, None);
     let mut reader = Reader::new(&bytes);
-    let mut failure = load_object_slot(&mut reader, &ctx, 249, 4).unwrap_err();
+    let mut failure = load_object_slot_data_projection(&mut reader, &ctx, 249, 4).unwrap_err();
     assert_eq!(failure.phase, "dropTime");
     assert_eq!(reader.pos, bytes.len());
     assert_eq!(failure.position, bytes.len());
@@ -112,7 +123,7 @@ fn actual_floor_load_publishes_each_offset_and_retains_receiver_on_truncation() 
     let context = pz_entity::BasicContext::default();
     let env = Env {
         codec: EntityCodec { ctx: &context },
-        template: Rc::new(ItemTemplate::new(ItemClass::Normal, "Base", "FloorLoad")),
+        template: template(),
     };
     let sprites = crate::sprite::IsoSpriteManager::new(crate::sprite::test_tables());
     let tables = super::super::SaveTables::for_tests();
@@ -131,7 +142,7 @@ fn actual_floor_load_publishes_each_offset_and_retains_receiver_on_truncation() 
     writer.f32(0.625);
     writer.i8(99);
     let mut reader = Reader::new(&writer.buf);
-    let failure = load_object_slot(&mut reader, &ctx, 249, 17).unwrap_err();
+    let failure = load_object_slot_data_projection(&mut reader, &ctx, 249, 17).unwrap_err();
     assert_eq!(reader.pos, 6);
     assert_eq!(failure.position, 6);
     let object = failure.object.as_ref().unwrap();
@@ -148,7 +159,7 @@ fn actual_floor_null_item_consumes_trailer_without_fabricating_raw_or_entity_fie
     let context = pz_entity::BasicContext::default();
     let env = Env {
         codec: EntityCodec { ctx: &context },
-        template: Rc::new(ItemTemplate::new(ItemClass::Normal, "Base", "FloorLoad")),
+        template: template(),
     };
     let sprites = crate::sprite::IsoSpriteManager::new(crate::sprite::test_tables());
     let tables = super::super::SaveTables::for_tests();
@@ -176,7 +187,7 @@ fn actual_floor_null_item_consumes_trailer_without_fabricating_raw_or_entity_fie
     let end = writer.buf.len();
     writer.i32(0x12345678);
     let mut reader = Reader::new(&writer.buf);
-    let slot = load_object_slot(&mut reader, &ctx, 249, 4)
+    let slot = load_object_slot_data_projection(&mut reader, &ctx, 249, 4)
         .unwrap()
         .unwrap();
     assert_eq!(reader.pos, end);
@@ -195,7 +206,7 @@ fn actual_floor_data_success_marks_named_native_visual_continuation() {
     let context = pz_entity::BasicContext::default();
     let env = Env {
         codec: EntityCodec { ctx: &context },
-        template: Rc::new(ItemTemplate::new(ItemClass::Normal, "Base", "FloorLoad")),
+        template: template(),
     };
     let sprites = crate::sprite::IsoSpriteManager::new(crate::sprite::test_tables());
     let tables = super::super::SaveTables::for_tests();
@@ -210,7 +221,7 @@ fn actual_floor_data_success_marks_named_native_visual_continuation() {
     };
     let bytes = bytes(&env, &tables, Some(12.5), Some(5));
     let mut reader = Reader::new(&bytes);
-    let slot = load_object_slot(&mut reader, &ctx, 249, 4)
+    let slot = load_object_slot_data_projection(&mut reader, &ctx, 249, 4)
         .unwrap()
         .unwrap();
     assert_eq!(reader.pos, bytes.len());

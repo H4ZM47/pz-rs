@@ -589,7 +589,7 @@ fn first_object_diff(ctx: &SaveCtx<'_>, r: &IsoChunk, j: &IsoChunk, out: &mut St
             let _ = save_object(&mut b, ctx, &jo);
             if a.buf != b.buf {
                 let name = ro
-                    .sprite
+                    .sprite.tile_projection()
                     .and_then(|s| ctx.sprites.sprites[s].name.clone())
                     .unwrap_or_default();
                 writeln!(

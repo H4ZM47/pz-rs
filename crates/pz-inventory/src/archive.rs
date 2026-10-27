@@ -3,6 +3,9 @@
 //! This is a value-tree copy policy, not a native object-graph clone. Repeated
 //! bag children are copied per occurrence. Cycles and excessively deep or large
 //! trees are rejected before the existing recursive `Clone` implementations run.
+//! Captured TextureRef assets intentionally retain canonical Rc identity, including
+//! mutable asset bodies; copying an item never deep-copies those shared assets.
+//! Actual world links remain excluded. This is a Rust archive policy, not Native clone.
 use crate::moddata::ItemModData;
 use pz_kahlua::{TableRef, Value};
 use std::collections::HashSet;

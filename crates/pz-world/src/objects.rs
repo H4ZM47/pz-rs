@@ -11,7 +11,30 @@ use crate::save::items::ItemBlob;
 use crate::save::lua_table::LuaTable;
 use crate::save::movers::{AnimalTracks, IsoPushableObject};
 use crate::save::visual::{HumanVisual, ItemVisual};
+pub use crate::sprite::runtime::ObjectSprite;
 use crate::sprite::SpriteIdx;
+
+/// Runtime-only owning square slot. Rust archive copies detach this owner;
+/// native field assignment/retention is always explicit.
+#[derive(Default)]
+pub struct ObjectSquare(Option<crate::SquareRef>);
+impl std::fmt::Debug for ObjectSquare {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ObjectSquare")
+            .field(&self.0.as_ref().map(std::rc::Rc::as_ptr))
+            .finish()
+    }
+}
+impl Clone for ObjectSquare {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+impl PartialEq for ObjectSquare {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
 
 /// Identity of an object within its square (stands in for Java object
 /// identity, e.g. for `specialObjects`).
@@ -772,15 +795,12 @@ pub enum FloorVisualTail {
 }
 
 /// `IsoObject` plus its class.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct IsoObject {
     pub id: ObjectId,
     pub kind: ObjectKind,
-    pub sprite: Option<SpriteIdx>,
-    /// The id of a sprite the object holds that `IsoSpriteManager` does not
-    /// know (`IsoSprite.CreateSprite` gives such sprites id 20000000).
-    /// Only used when `sprite` is `None`.
-    pub sprite_id_override: Option<i32>,
+    pub sprite: ObjectSprite,
+    square: ObjectSquare,
     /// Native Sprite/texture work not represented by this data-profile object.
     pub pending_floor_visual_tail: Option<FloorVisualTail>,
     /// `tile`: the map tile name the object was created from.
@@ -799,6 +819,8 @@ pub struct IsoObject {
     pub has_components: bool,
     /// Actual GameEntity lifecycle field; distinct from manager registration.
     pub added_to_world_or_equipped: bool,
+    /// Distinct native manager membership; never inferred from components.
+    pub added_to_entity_manager: bool,
     /// Sole component authority. Explicit archive imports may remain encoded;
     /// a live component has one actual allocation and mutable body.
     pub components: ItemComponents,
@@ -822,13 +844,72 @@ pub struct IsoObject {
     pub reroute_collide: Option<ObjectId>,
 }
 
+// Rust archive copy: runtime square and entity registration flags are not
+// copied native ownership/lifecycle. Shared assets follow ObjectSprite policy.
+impl Clone for IsoObject {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            kind: self.kind.clone(),
+            sprite: self.sprite.clone(),
+            square: ObjectSquare::default(),
+            pending_floor_visual_tail: self.pending_floor_visual_tail.clone(),
+            tile: self.tile.clone(),
+            sx: self.sx.clone(),
+            attached_anim_sprite: self.attached_anim_sprite.clone(),
+            container: self.container.clone(),
+            secondary_containers: self.secondary_containers.clone(),
+            outline_on_mouseover: self.outline_on_mouseover.clone(),
+            tint_r: self.tint_r.clone(),
+            tint_g: self.tint_g.clone(),
+            tint_b: self.tint_b.clone(),
+            render_y_offset: self.render_y_offset.clone(),
+            has_components: self.has_components.clone(),
+            added_to_world_or_equipped: false,
+            added_to_entity_manager: false,
+            components: self.components.clone(),
+            name: self.name.clone(),
+            sprite_name: self.sprite_name.clone(),
+            custom_color: self.custom_color.clone(),
+            do_not_sync: self.do_not_sync.clone(),
+            wall_blood_splats: self.wall_blood_splats.clone(),
+            mod_data: self.mod_data.clone(),
+            special_tooltip: self.special_tooltip.clone(),
+            key_id: self.key_id.clone(),
+            uses_external_water_source: self.uses_external_water_source.clone(),
+            sheet_rope: self.sheet_rope.clone(),
+            sheet_rope_health: self.sheet_rope_health.clone(),
+            overlay_sprite: self.overlay_sprite.clone(),
+            moved_thumpable: self.moved_thumpable.clone(),
+            sprite_model_name: self.sprite_model_name.clone(),
+            reroute_collide: self.reroute_collide.clone(),
+        }
+    }
+}
+
 impl IsoObject {
+    pub fn square_slot(&self) -> Option<&crate::SquareRef> {
+        self.square.0.as_ref()
+    }
+    pub fn replace_square(
+        &mut self,
+        square: Option<&crate::SquareRef>,
+        retired: &mut pz_entity::RetiredComponents,
+    ) {
+        if let Some(old) = std::mem::replace(&mut self.square.0, square.cloned()) {
+            retired.push_owner(pz_entity::EntityOwner::from_ref(&old));
+        }
+    }
+    pub fn take_square_for_gc(&mut self) -> Option<crate::SquareRef> {
+        self.square.0.take()
+    }
+
     pub fn new(id: ObjectId, kind: ObjectKind, sprite: Option<SpriteIdx>) -> Self {
         IsoObject {
             id,
             kind,
-            sprite,
-            sprite_id_override: None,
+            sprite: ObjectSprite::from_tile(sprite),
+            square: ObjectSquare::default(),
             pending_floor_visual_tail: None,
             tile: None,
             sx: 0.0,
@@ -842,6 +923,7 @@ impl IsoObject {
             render_y_offset: 0.0,
             has_components: false,
             added_to_world_or_equipped: false,
+            added_to_entity_manager: false,
             components: ItemComponents::new(),
             name: None,
             sprite_name: None,

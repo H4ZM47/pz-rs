@@ -682,14 +682,40 @@ pub fn load_item_ref(
             }
         }
     }
+    let pending_texture = item
+        .try_borrow_mut()
+        .map_err(|_| RuntimeHostError::Borrowed("item load pre-texture suffix"))
+        .and_then(|mut body| {
+            body.load_suffix_before_texture(continuation, reader)
+                .map_err(|error| RuntimeHostError::NativeException(EntityError(error.0)))
+        });
+    shared::observe_item(item);
+    let pending_texture = match pending_texture {
+        Ok(name) => name,
+        Err(error) => return Err(fail(error, retired, reader.pos, None)),
+    };
+    if let Some(name) = pending_texture {
+        if let Err(error) = crate::item_texture::load_texture_ref(item, &name) {
+            return Err(fail(error, retired, reader.pos, None));
+        }
+    }
     let suffix = item
         .try_borrow_mut()
-        .map_err(|_| RuntimeHostError::Borrowed("item load suffix"))
+        .map_err(|_| RuntimeHostError::Borrowed("item load post-texture suffix"))
         .and_then(|mut body| {
-            body.load_suffix(continuation, reader, world_version, env)
+            body.load_suffix_after_texture(continuation, reader, world_version)
                 .map_err(|error| RuntimeHostError::NativeException(EntityError(error.0)))
         });
     if let Err(error) = suffix {
+        return Err(fail(error, retired, reader.pos, None));
+    }
+    if let Err(error) = crate::item_texture::synch_with_visual_ref(
+        item,
+        env.assets(),
+        &crate::context::NoOwner,
+        env.visual_rng(),
+        &mut |m| env.rand_next(m),
+    ) {
         return Err(fail(error, retired, reader.pos, None));
     }
     let nested = match item.try_borrow() {
@@ -723,7 +749,7 @@ pub fn load_item_ref(
         .try_borrow_mut()
         .map_err(|_| RuntimeHostError::Borrowed("item subclass body load"))
         .and_then(|mut body| {
-            body.load_kind_and_sync(reader, world_version, env)
+            body.load_kind_native(reader, world_version, env)
                 .map_err(|error| RuntimeHostError::NativeException(EntityError(error.0)))
         });
     if let Err(error) = loaded {

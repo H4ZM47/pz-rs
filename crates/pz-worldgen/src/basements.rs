@@ -782,10 +782,13 @@ fn add_to_iso_chunk(
                         i -= 1;
                         let object = square.borrow().objects[i].ref_handle();
                         let o = object.borrow();
-                        let spr = o.sprite.map(|s| &m.sprites[s]);
-                        let is_floor = spr.is_some_and(|s| s.solidfloor);
+                        let spr = o
+                            .sprite
+                            .try_read(m)
+                            .expect("legacy world generation requires unborrowed resolved actual sprite metadata");
+                        let is_floor = spr.as_ref().is_some_and(|s| s.solidfloor);
                         let has = |f: Option<pz_world::sprite::IsoFlagType>| {
-                            f.is_some_and(|f| spr.is_some_and(|s| s.properties.has(f)))
+                            f.is_some_and(|f| spr.as_ref().is_some_and(|s| s.properties.has(f)))
                         };
                         let is_wall = spr.is_some()
                             && (has(wall_w) || has(wall_n) || has(wall_nw) || has(wall_se));
@@ -797,6 +800,7 @@ fn add_to_iso_chunk(
                             continue;
                         }
                         let id = o.id;
+                        drop(spr);
                         drop(o);
                         square.borrow_mut().remove_object_slot(i);
                         square.borrow_mut().special_objects.retain(|&s| s != id);
@@ -836,7 +840,7 @@ fn add_to_iso_chunk(
                     .borrow_mut()
                     .fix_stackable_objects(m);
             }
-            remove_floors_above_stairs(chunk, env, x - cx, y - cy, tz + header.levels);
+            remove_floors_above_stairs(chunk, env, x - cx, y - cy, tz + header.levels)?;
         }
     }
     Ok(())
@@ -850,30 +854,43 @@ fn remove_floors_above_stairs(
     lx: i32,
     ly: i32,
     z: i32,
-) {
+) -> Result<(), String> {
     if chunk.get_grid_square(lx, ly, z).is_none() {
-        return;
+        return Ok(());
     }
     let m = &*env.sprites;
     let Some(below_owner) = chunk.get_grid_square_mut(lx, ly, z - 1) else {
-        return;
+        return Ok(());
     };
     let mut below = below_owner.borrow_mut();
     below.recalc_properties(m);
     if !below.has_stairs(m) && !below.has_sloped_surface() {
-        return;
+        return Ok(());
     }
     drop(below);
     let square_owner = chunk.get_grid_square_mut(lx, ly, z).expect("square");
     let mut square = square_owner.borrow_mut();
     let f = m.tables.flag.solidfloor;
-    if let Some(i) = square.objects.iter().position(|o| {
-        o.borrow()
+    let mut floor = None;
+    for (i, object) in square.objects.iter().enumerate() {
+        let object = object
+            .owner_slot()
+            .try_borrow()
+            .expect("legacy world generation requires unborrowed actual object bodies");
+        if object
             .sprite
-            .is_some_and(|s| m.sprites[s].properties.has(f))
-    }) {
+            .try_read(m)
+            .expect("legacy world generation requires unborrowed resolved actual sprite metadata")
+            .is_some_and(|sprite| sprite.properties.has(f))
+        {
+            floor = Some(i);
+            break;
+        }
+    }
+    if let Some(i) = floor {
         square.remove_object_slot(i);
     }
+    Ok(())
 }
 
 #[cfg(test)]

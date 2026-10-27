@@ -134,11 +134,27 @@ impl ItemModData {
                 table.save(writer);
                 Ok(())
             }
-            Self::Live(table) => Ok(table_save::try_save_table(
-                table,
-                &mut writer.buf,
-                Flavor::ByteBuffer,
-            )?),
+            Self::Live(table) => {
+                // The VM codec currently writes directly into a growable Vec.
+                // It cannot bypass a native comparison buffer's capacity,
+                // cursor, and immediate-overflow contract.
+                if writer.is_native_buffer() {
+                    // The genuinely empty table needs only its zero count;
+                    // no direct-Vec traversal capability is selected.
+                    if table.try_is_empty()? {
+                        writer.i32(0);
+                        return Ok(());
+                    }
+                    return Err(ModDataError::Unsupported(
+                        "live ModData bounded native comparison writer",
+                    ));
+                }
+                Ok(table_save::try_save_table(
+                    table,
+                    &mut writer.buf,
+                    Flavor::ByteBuffer,
+                )?)
+            }
         }
     }
 }
@@ -526,4 +542,86 @@ pub fn prepare_static_model_mod_data_ref(item: &ItemRef) -> ModDataResult<()> {
         prepare_existing_mod_data_ref(item)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod native_writer_tests {
+    use super::*;
+    use crate::io::{
+        catch_native_overflow, native_buffer_bytes, native_buffer_position, new_native_save_buffer,
+    };
+
+    #[test]
+    fn live_moddata_native_writer_rejects_direct_vec_before_any_table_bytes() {
+        let table = TableRef::new();
+        let mut values = RetiredTableValues::new();
+        table
+            .try_rawset(&Value::str("key"), &Value::Num(7.0), &mut values)
+            .unwrap();
+        let data = ItemModData::Live(table);
+        let buffer = new_native_save_buffer();
+        let mut writer = Writer::for_native_buffer(&buffer);
+        catch_native_overflow(|| writer.i8(42)).unwrap();
+        let result = catch_native_overflow(|| data.save(&mut writer)).unwrap();
+        assert_eq!(
+            result,
+            Err(ModDataError::Unsupported(
+                "live ModData bounded native comparison writer"
+            ))
+        );
+        assert_eq!(native_buffer_position(&buffer).unwrap(), 1);
+        assert_eq!(
+            native_buffer_bytes(&buffer, 0, 5).unwrap(),
+            [42, 0, 0, 0, 0]
+        );
+        assert!(writer.buf.is_empty());
+        let mut legacy = Writer::new();
+        data.save(&mut legacy).unwrap();
+        assert_eq!(&legacy.buf[..4], &1_i32.to_be_bytes());
+    }
+
+    #[test]
+    fn explicit_archive_moddata_uses_bounded_primitives_without_vec_escape() {
+        let mut table = LuaTable::default();
+        table.rawset(LuaKey::Str("key".into()), Some(LuaValue::Num(7.0)));
+        let data = ItemModData::Archive(table);
+        let mut legacy = Writer::new();
+        data.save(&mut legacy).unwrap();
+        let buffer = new_native_save_buffer();
+        let mut native = Writer::for_native_buffer(&buffer);
+        catch_native_overflow(|| data.save(&mut native))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            native_buffer_bytes(&buffer, 0, native_buffer_position(&buffer).unwrap()).unwrap(),
+            legacy.buf
+        );
+        assert!(native.buf.is_empty());
+    }
+
+    #[test]
+    fn genuinely_empty_live_table_writes_bounded_zero_count_and_preserves_typed_borrow() {
+        let table = TableRef::new();
+        let data = ItemModData::Live(table.clone());
+        let buffer = new_native_save_buffer();
+        let mut writer = Writer::for_native_buffer(&buffer);
+        catch_native_overflow(|| data.save(&mut writer))
+            .unwrap()
+            .unwrap();
+        assert_eq!(native_buffer_position(&buffer).unwrap(), 4);
+        assert_eq!(native_buffer_bytes(&buffer, 0, 4).unwrap(), [0, 0, 0, 0]);
+        let held = table.try_borrow_body_mut().unwrap();
+        assert_eq!(
+            catch_native_overflow(|| data.save(&mut writer)).unwrap(),
+            Err(ModDataError::Borrowed("item ModData table"))
+        );
+        assert_eq!(native_buffer_position(&buffer).unwrap(), 4);
+        drop(held);
+        crate::io::native_buffer_set_position(&buffer, 1022).unwrap();
+        assert_eq!(
+            catch_native_overflow(|| data.save(&mut writer)),
+            Err(crate::io::NativeWriterFault::Overflow)
+        );
+        assert_eq!(native_buffer_position(&buffer).unwrap(), 1022);
+    }
 }

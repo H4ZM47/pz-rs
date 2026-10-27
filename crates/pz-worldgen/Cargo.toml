@@ -10,3 +10,6 @@ pz-classfile.workspace = true
 pz-fs.workspace = true
 png.workspace = true
 regex.workspace = true
+
+[dev-dependencies]
+pz-world = { workspace = true, features = ["test-util"] }

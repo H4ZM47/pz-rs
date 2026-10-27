@@ -230,7 +230,10 @@ fn main() {
             chunks.iter().map(|c| c.1).min().unwrap(),
             chunks.iter().map(|c| c.1).max().unwrap(),
         );
-        let blood_body_parts = pz_world::save::SaveTables::from_game_jar(&game.join("projectzomboid.jar")).expect("visual body tables").blood_body_parts;
+        let blood_body_parts =
+            pz_world::save::SaveTables::from_game_jar(&game.join("projectzomboid.jar"))
+                .expect("visual body tables")
+                .blood_body_parts;
         let mut cell = IsoCell::default();
         let mut cache = LotCache::default();
         let mut order = Vec::new();
@@ -277,7 +280,11 @@ fn main() {
                         format!(
                             "{}:{}",
                             o.kind.class_name(),
-                            o.sprite.map_or("null", |s| sprites.sprites[s].name())
+                            o.sprite
+                                .try_read(&sprites)
+                                .expect("worldgen replay requires unborrowed actual sprite")
+                                .as_ref()
+                                .map_or("null", |s| s.name())
                         )
                     })
                     .collect::<Vec<_>>()

@@ -13,6 +13,8 @@ pub mod objects;
 pub mod parser;
 pub mod registry;
 pub mod script_type;
+pub mod texture_capture;
+pub use texture_capture::CapturedScriptLoadError;
 
 pub use base::{BaseScriptObject, ScriptError, ScriptObject, ScriptRef, ScriptResult};
 pub use manager::{ModScriptDirs, ScriptHooks, ScriptManager};

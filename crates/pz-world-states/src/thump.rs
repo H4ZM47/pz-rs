@@ -353,7 +353,7 @@ impl StatesWorldAdapter<'_> {
     fn breakable(&self, o: &IsoObject) -> bool {
         self.env()
             .sprite_name(&o)
-            .is_some_and(|n| self.engine.is_breakable_fence(n))
+            .is_some_and(|n| self.engine.is_breakable_fence(&n))
     }
 
     /// `IsoThumpable.isTallHoppable()` / `IsoObject.isTallHoppable()`.
@@ -374,7 +374,11 @@ impl StatesWorldAdapter<'_> {
                 }
             }
         }
-        tall(o.sprite)
+        env.props(o).is_some_and(|p| {
+            ["TallHoppableN", "TallHoppableW"]
+                .into_iter()
+                .any(|n| env.flag(n).is_some_and(|f| p.has(f)))
+        })
     }
 
     /// `IsoDoor.isHoppable()`.
@@ -554,7 +558,7 @@ impl StatesWorldAdapter<'_> {
             .obj_prop(&o, "ThumpSound")
             .filter(|s| !s.trim().is_empty());
         match &o.kind {
-            ObjectKind::Door(_) => own.map(str::to_string).unwrap_or_else(|| {
+            ObjectKind::Door(_) => own.unwrap_or_else(|| {
                 by_prefix(&self.sound_prefix(o))
                     .unwrap_or("ZombieThumpGeneric")
                     .to_string()
@@ -960,7 +964,8 @@ impl StatesWorldAdapter<'_> {
                 if let ObjectKind::Window(w) = &mut o.kind {
                     w.destroyed = true;
                 }
-                o.sprite = smashed;
+                drop(o);
+                self.replace_object_sprite_tile(&o_owner, smashed);
             }
             self.engine.square_changed((r.x, r.y, r.z));
             self.add_broken_glass(r, t);
@@ -1057,7 +1062,7 @@ impl StatesWorldAdapter<'_> {
             if let ObjectKind::Window(w) = &mut o.kind {
                 w.destroyed = true;
             }
-            o.sprite = smashed;
+            let old = std::mem::replace(&mut o.sprite, smashed.into());
             if let Some(list) = o.attached_anim_sprite.as_mut() {
                 let mut k = 0;
                 list.retain(|_| {
@@ -1065,6 +1070,12 @@ impl StatesWorldAdapter<'_> {
                     !attached_to_glass[k - 1]
                 });
             }
+            let native_class = o.kind.native_class_name();
+            drop(o);
+            let mut retired = pz_entity::RetiredComponents::new();
+            retired.push_payload(Box::new(old));
+            self.cell.retire_components(retired);
+            pz_world::object_slot::observe_object(&o_owner, native_class);
         }
         if do_alarm {
             if let Some(b) = alarm_building {
@@ -1243,8 +1254,7 @@ impl StatesWorldAdapter<'_> {
         let s = self.sprites.named_map.get(&name).copied();
         drop(b);
         if let Some(o_owner) = self.object_ref(r) {
-            let mut o = o_owner.borrow_mut();
-            o.sprite = s;
+            self.replace_object_sprite_tile(&o_owner, s);
         }
     }
 
@@ -1333,7 +1343,7 @@ impl StatesWorldAdapter<'_> {
         }
         let mats: Vec<String> = ["Material", "Material2", "Material3"]
             .into_iter()
-            .filter_map(|k| env.obj_prop(&o, k).map(str::to_string))
+            .filter_map(|k| env.obj_prop(&o, k))
             .collect();
         let has_curtain = d.has_curtain;
         let key = self.check_key_id(&sq, &o, d.north, d.locked);
@@ -1444,7 +1454,7 @@ impl StatesWorldAdapter<'_> {
         let Some(v) = self.env().obj_prop(&o, prop) else {
             return -1;
         };
-        let Some(i) = parse_int(v) else { return -1 };
+        let Some(i) = parse_int(&v) else { return -1 };
         if !(1..=max).contains(&i) {
             return -1;
         }
@@ -1648,7 +1658,7 @@ impl StatesWorldAdapter<'_> {
                     .map(|o| {
                         (
                             o.ref_handle(),
-                            env.sprite_name(&o.borrow()).unwrap_or("").to_string(),
+                            env.sprite_name(&o.borrow()).unwrap_or_default(),
                         )
                     })
             };
@@ -1664,7 +1674,8 @@ impl StatesWorldAdapter<'_> {
                     parts.get(1).unwrap_or(&""),
                     index + 40
                 );
-                object.borrow_mut().sprite = self.sprites.named_map.get(&new).copied();
+                let sprite = self.sprites.named_map.get(&new).copied();
+                self.replace_object_sprite_tile(&object, sprite);
             }
             if z == 7 {
                 break;
@@ -1693,7 +1704,7 @@ impl StatesWorldAdapter<'_> {
                 let env = self.env();
                 sq.objects
                     .iter()
-                    .find(|o| env.sprite_name(&o.borrow()) == Some(tile))
+                    .find(|o| env.sprite_name(&o.borrow()).as_deref() == Some(tile))
                     .map(|o| oref(&sq, &o.borrow()))
             };
             if let Some(r) = receiver {

@@ -183,9 +183,8 @@ impl BentFences {
 type Found<'s> = (&'s IsoGridSquare, &'s IsoObject);
 
 impl StatesWorldAdapter<'_> {
-    fn obj_sprite_name<'s>(&'s self, o: &IsoObject) -> Option<&'s str> {
-        o.sprite
-            .and_then(|s| self.sprites.sprites[s].name.as_deref())
+    fn obj_sprite_name(&self, o: &IsoObject) -> Option<String> {
+        self.env().sprite_name(o)
     }
 
     /// `getBendStage(obj, entry)`.
@@ -194,7 +193,7 @@ impl StatesWorldAdapter<'_> {
             return -1;
         };
         for i in 0..e.stage_count() {
-            if e.stage(i).is_some_and(|t| t.iter().any(|x| x == name)) {
+            if e.stage(i).is_some_and(|t| t.iter().any(|x| x == &name)) {
                 return i;
             }
         }
@@ -210,7 +209,7 @@ impl StatesWorldAdapter<'_> {
     ) -> Option<pz_world::IsoObjectRef> {
         sq.objects
             .iter()
-            .find(|o| self.obj_sprite_name(&o.borrow()) == Some(tiles[index].as_str()))
+            .find(|o| self.obj_sprite_name(&o.borrow()).as_deref() == Some(tiles[index].as_str()))
             .map(|o| o.ref_handle())
     }
 
@@ -262,7 +261,7 @@ impl StatesWorldAdapter<'_> {
         if let Some(name) = self.obj_sprite_name(&o) {
             for (i, t) in tiles.iter().enumerate() {
                 let i = i as i32;
-                if t != name || !self.bf_valid_span(tiles, sq, e, i) {
+                if t != &name || !self.bf_valid_span(tiles, sq, e, i) {
                     continue;
                 }
                 if force_first || i == center {
@@ -297,8 +296,8 @@ impl StatesWorldAdapter<'_> {
 
     fn is_stairs_object(&self, o: &IsoObject) -> bool {
         let ty = &self.sprites.tables.ty;
-        o.sprite.is_some_and(|s| {
-            let t = self.sprites.sprites[s].tile_type;
+        self.env().metadata(o).is_some_and(|s| {
+            let t = s.tile_type;
             [
                 ty.stairsTN,
                 ty.stairsMN,
@@ -427,7 +426,7 @@ impl StatesWorldAdapter<'_> {
     ) -> Option<usize> {
         let name = self.obj_sprite_name(f.1)?;
         let mut matched: Option<usize> = None;
-        for &i in bf.fence_map.get(name)?.iter() {
+        for &i in bf.fence_map.get(&name)?.iter() {
             let e = &bf.entries[i];
             if dir.is_some() && e.dir != dir {
                 continue;
@@ -632,8 +631,7 @@ impl StatesWorldAdapter<'_> {
     fn set_object_sprite(&mut self, r: ObjectRef, name: &str) {
         let s = self.sprite_named(name);
         if let Some(o_owner) = self.object_ref(r) {
-            let mut o = o_owner.borrow_mut();
-            o.sprite = Some(s);
+            self.replace_object_sprite_tile(&o_owner, Some(s));
         }
     }
 
@@ -699,8 +697,7 @@ impl StatesWorldAdapter<'_> {
         let thump_sound = self
             .env()
             .obj_prop(&f.1, "ThumpSound")
-            .unwrap_or("ZombieThumpGeneric")
-            .to_string();
+            .unwrap_or_else(|| "ZombieThumpGeneric".into());
         let sqp = (f.0.x, f.0.y, f.0.z);
         drop(f_object);
         drop(f_square);
@@ -899,8 +896,8 @@ impl StatesWorldAdapter<'_> {
         let o = o_owner.borrow();
         let env = self.env();
         let (Some(cn), Some(cw)) = (
-            env.obj_prop(&o, "CornerNorthWall").map(str::to_string),
-            env.obj_prop(&o, "CornerWestWall").map(str::to_string),
+            env.obj_prop(&o, "CornerNorthWall"),
+            env.obj_prop(&o, "CornerWestWall"),
         ) else {
             return;
         };
@@ -1014,7 +1011,7 @@ impl StatesWorldAdapter<'_> {
             .map(|o| o.borrow())
             .find(|o| {
                 self.obj_sprite_name(&o)
-                    .is_some_and(|n| self.engine.is_breakable_fence(n))
+                    .is_some_and(|n| self.engine.is_breakable_fence(&n))
                     && (north && self.obj_flag(&o, "collideN")
                         || !north && self.obj_flag(&o, "collideW"))
             })
@@ -1113,7 +1110,7 @@ impl StatesWorldAdapter<'_> {
                     let o = o.borrow();
                     if self
                         .obj_sprite_name(&o)
-                        .is_some_and(|nm| bf.collapsed_tiles.contains(nm))
+                        .is_some_and(|nm| bf.collapsed_tiles.contains(&nm))
                     {
                         let id = o.id;
                         drop(o);
@@ -1189,7 +1186,7 @@ impl StatesWorldAdapter<'_> {
                         z: p.2,
                         id: o.id,
                     };
-                    let name = self.obj_sprite_name(&o).map(str::to_string);
+                    let name = self.obj_sprite_name(&o);
                     if name
                         .as_deref()
                         .is_some_and(|n| self.engine.is_breakable_fence(n))

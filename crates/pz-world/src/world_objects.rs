@@ -97,6 +97,9 @@ impl WorldObjects {
     pub fn snapshot_entries(&self) -> Vec<WorldObjectEntry> {
         self.entries.clone()
     }
+    pub fn entry_slots(&self) -> impl Iterator<Item = &WorldObjectEntry> {
+        self.entries.iter()
+    }
 
     pub fn push_object(&mut self, owner: &IsoObjectRef) {
         self.push_entry(WorldObjectEntry::Object(Rc::clone(owner)));

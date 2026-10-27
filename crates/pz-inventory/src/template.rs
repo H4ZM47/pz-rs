@@ -128,6 +128,8 @@ pub struct ItemTemplate {
     pub icon: Option<String>,
     /// `IconsForTexture`.
     pub icons_for_texture: Option<Vec<String>>,
+    /// Actual script texture capture; None is an explicit uncaptured profile.
+    pub texture_capture: Option<crate::item_texture::CapturedScriptTextures>,
     pub condition_max: i32,
     /// `Item.spriteName` (`Clothing.spriteName` at creation).
     pub sprite_name: Option<String>,
@@ -186,6 +188,8 @@ pub struct ItemTemplate {
     /// Item.InstanceItem setReplaceOnRotten input; copied to the instance.
     pub replace_on_rotten: Option<String>,
     pub is_cookable: bool,
+    /// Script input to Item.InstanceItem PC632, before float conversion.
+    pub minutes_to_cook: i32,
     pub dangerous_uncooked: bool,
     pub good_hot: bool,
     pub bad_cold: bool,
@@ -393,6 +397,7 @@ impl ItemTemplate {
             display_name: type_.into(),
             icon: None,
             icons_for_texture: None,
+            texture_capture: None,
             condition_max: 10,
             sprite_name: None,
             weapon_sprite: None,
@@ -433,6 +438,7 @@ impl ItemTemplate {
             days_totally_rotten: 1_000_000_000,
             replace_on_rotten: None,
             is_cookable: false,
+            minutes_to_cook: 60,
             dangerous_uncooked: false,
             good_hot: false,
             bad_cold: false,
@@ -576,6 +582,17 @@ impl ItemTemplate {
             display_name: item.display_name.clone().unwrap_or_default(),
             icon: item.icon.clone(),
             icons_for_texture: item.icons_for_texture.clone(),
+            texture_capture: item.texture_capture_complete().then(|| {
+                let mut captured = crate::item_texture::CapturedScriptTextures::new(
+                    item.normal_texture_slot().cloned(),
+                    item.special_texture_slots().to_vec(),
+                );
+                captured.world_name = item.world_texture_name.clone();
+                captured.special_world_names = item.special_world_texture_names.clone();
+                captured.color_mask_name = item.icon_color_mask.clone();
+                captured.fluid_mask_name = item.icon_fluid_mask.clone();
+                captured
+            }),
             condition_max: item.condition_max,
             sprite_name: item.sprite_name.clone(),
             weapon_sprite: item.weapon_sprite.clone(),
@@ -619,6 +636,7 @@ impl ItemTemplate {
             days_totally_rotten: item.days_totally_rotten,
             replace_on_rotten: item.replace_on_rotten.clone(),
             is_cookable: item.is_cookable,
+            minutes_to_cook: item.minutes_to_cook,
             dangerous_uncooked: item.dangerous_uncooked,
             good_hot: item.good_hot,
             bad_cold: item.bad_cold,

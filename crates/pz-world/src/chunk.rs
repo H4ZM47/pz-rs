@@ -6,7 +6,9 @@
 //! `addFloor`, ...) are [`crate::square_mutation`].
 
 use crate::{RetiredWorldOwners, SquareRef, SquareSlot};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use pz_core::debug::{self, JulLevel, StackElement};
 
@@ -40,6 +42,9 @@ pub struct IsoGridSquare {
     pub x: i32,
     pub y: i32,
     pub z: i32,
+    /// Sole hot-save fields of the actual owning chunk. This bounded host
+    /// capability is not a substitute for a complete chunk receiver.
+    pub chunk_hot_save: Option<ChunkHotSaveRef>,
     pub room_id: i64,
     /// `roofHideBuilding`: the building of the `emptyoutside` room here.
     pub roof_hide_building: Option<BuildingIdx>,
@@ -125,6 +130,8 @@ impl IsoGridSquare {
             x: self.x,
             y: self.y,
             z: self.z,
+            // Archive copies are detached until inserted into an actual chunk.
+            chunk_hot_save: None,
             room_id: self.room_id,
             roof_hide_building: self.roof_hide_building,
             associated_building: self.associated_building,
@@ -161,6 +168,7 @@ impl IsoGridSquare {
             x,
             y,
             z,
+            chunk_hot_save: None,
             room_id: -1,
             roof_hide_building: None,
             associated_building: None,
@@ -321,8 +329,26 @@ impl ChunkGenerationStatusSet {
     }
 }
 
+/// The actual chunk's mutable `preventHotSave` and `requiresHotSave` slots.
+/// Squares retain this one state allocation across chunk/cell replacement.
+/// No coordinates are resolved when `flagForHotSave` operates on it.
+#[derive(Debug, Default)]
+pub struct ChunkHotSaveState {
+    pub prevent_hot_save: bool,
+    pub requires_hot_save: bool,
+}
+pub type ChunkHotSaveRef = Rc<RefCell<ChunkHotSaveState>>;
+impl ChunkHotSaveState {
+    pub fn flag_for_hot_save(&mut self) {
+        if !self.prevent_hot_save {
+            self.requires_hot_save = true;
+        }
+    }
+}
+
 /// `IsoChunk` (map-loading fields).
 pub struct IsoChunk {
+    pub hot_save: ChunkHotSaveRef,
     pub wx: i32,
     pub wy: i32,
     pub min_level: i32,
@@ -501,6 +527,7 @@ impl IsoChunk {
 
     pub fn new(wx: i32, wy: i32) -> Self {
         IsoChunk {
+            hot_save: Rc::new(RefCell::new(ChunkHotSaveState::default())),
             wx,
             wy,
             min_level: 0,
@@ -606,16 +633,41 @@ impl IsoChunk {
     }
 
     pub fn set_square(&mut self, x: i32, y: i32, z: i32, square: Option<SquareSlot>) {
+        self.try_set_square(x, y, z, square)
+            .expect("set_square requires an unborrowed incoming square");
+    }
+
+    /// Fallible runtime association. The incoming square is pinned before
+    /// either a borrow fault or indexing failure; displaced owners retire later.
+    pub fn try_set_square(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        square: Option<SquareSlot>,
+    ) -> pz_entity::runtime_load::HostResult<()> {
         // Pin the incoming allocation before any indexing work can unwind.
         if let Some(sq) = &square {
             self.retired_squares
                 .push(SquareSlot::retain(&sq.ref_handle()));
+        }
+        if let Some(sq) = &square {
+            let handle = sq.ref_handle();
+            handle
+                .try_borrow_mut()
+                .map_err(|_| {
+                    pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                        "set_square chunk association",
+                    )
+                })?
+                .chunk_hot_save = Some(self.hot_save.clone());
         }
         self.set_min_max_level(self.min_level.min(z), self.max_level.max(z));
         let zz = (z - self.min_level) as usize;
         if let Some(old) = std::mem::replace(&mut self.squares[zz][(x + y * 8) as usize], square) {
             self.retired_squares.push(old);
         }
+        Ok(())
     }
 
     pub fn get_grid_square(&self, x: i32, y: i32, z: i32) -> Option<SquareRef> {
@@ -1191,6 +1243,9 @@ impl IsoCell {
             .get_grid_square(x - wx * 8, y - wy * 8, z)
     }
 }
+
+#[cfg(test)]
+mod hot_save_tests;
 
 #[cfg(test)]
 mod generation_status_tests {

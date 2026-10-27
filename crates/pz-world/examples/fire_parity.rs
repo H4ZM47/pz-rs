@@ -410,7 +410,7 @@ fn main() {
                         .map(ObjectSlot::borrow)
                         .map(|o| {
                             let n = o
-                                .sprite
+                                .sprite.tile_projection()
                                 .and_then(|s| w.sprites.sprites[s].name.clone())
                                 .unwrap_or_else(|| "null".into());
                             let class = o.kind.class_name();

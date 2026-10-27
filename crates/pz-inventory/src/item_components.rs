@@ -274,10 +274,21 @@ impl ItemComponents {
     /// Writes current live bodies directly. Transfer the completed writer
     /// prefix even on failure; a save does not mutate or reload components.
     pub fn write_to(&self, writer: &mut Writer, world_version: i32) -> SaveResult<()> {
+        self.write_to_runtime(writer, world_version)
+            .map_err(|error| SaveError(format!("entity: {error}")))
+    }
+
+    /// Actual save carrier keeps host/component faults typed. The entity
+    /// codec's completed byte prefix is transferred even when it fails.
+    pub(crate) fn write_to_runtime(
+        &self,
+        writer: &mut Writer,
+        world_version: i32,
+    ) -> Result<(), RuntimeError> {
         let mut entity_writer = pz_entity::io::Writer::new();
         let result = self.runtime.write_to(&mut entity_writer, world_version);
         writer.bytes(&entity_writer.buf);
-        result.map_err(|error| SaveError(format!("entity: {error}")))
+        result
     }
 
     /// Explicit legacy opaque archive load. Bytes remain the sole encoded

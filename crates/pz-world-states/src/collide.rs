@@ -187,7 +187,7 @@ impl HoppableHooks for AdapterHoppableHooks<'_, '_> {
         self.adapter
             .env()
             .sprite_name(obj)
-            .is_some_and(|n| self.adapter.engine.is_unbent_fence(n, facing))
+            .is_some_and(|n| self.adapter.engine.is_unbent_fence(&n, facing))
     }
 }
 
@@ -276,8 +276,7 @@ impl StatesWorldAdapter<'_> {
         };
         let s = s_owner.borrow();
         let is_bush = |o: &IsoObject| {
-            o.sprite.is_some_and(|i| {
-                let spr = &self.sprites.sprites[i];
+            self.env().metadata(o).is_some_and(|spr| {
                 spr.tileset_name.as_deref() == Some("f_bushes_1")
                     || spr.properties.get(&self.sprites.alias, "Bush").is_some()
             })
@@ -315,8 +314,9 @@ impl StatesWorldAdapter<'_> {
         let t = &m.tables;
         for o in &sq.objects {
             let o = o.borrow();
-            let Some(si) = o.sprite else { continue };
-            let sp = &m.sprites[si];
+            let Some(sp) = self.env().metadata(&o) else {
+                continue;
+            };
             let p = &sp.properties;
             if p.has(t.flag.WallSE) {
                 continue;

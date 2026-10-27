@@ -222,6 +222,7 @@ impl ScriptBucketCollection {
         for m in modules {
             let bucket = m.bucket(self.script_type);
             bucket.load_scripts(sm, mode);
+            if sm.texture_capture_aborted() { return Ok(()); }
             {
                 let mut lf = self.load_files.borrow_mut();
                 for f in bucket.load_files() {
@@ -331,6 +332,9 @@ pub struct ModScriptDirs {
 pub struct ScriptManager {
     /// `Core.debug`.
     pub debug: bool,
+    pub(crate) texture_capture_enabled: Cell<bool>,
+    pub(crate) texture_host_fault: RefCell<Option<pz_render::TextureHostError>>,
+    pub(crate) texture_load_operation_depth: Cell<usize>,
     current_file_name: RefCell<Option<String>>,
     load_file_names: RefCell<Vec<String>>,
     module_map: RefCell<JHashMap<Rc<ScriptModule>>>,
@@ -369,6 +373,9 @@ impl ScriptManager {
     pub fn new() -> Self {
         ScriptManager {
             debug: false,
+            texture_capture_enabled: Cell::new(false),
+            texture_host_fault: RefCell::new(None),
+            texture_load_operation_depth: Cell::new(0),
             current_file_name: RefCell::default(),
             load_file_names: RefCell::default(),
             module_map: RefCell::default(),
@@ -742,8 +749,10 @@ impl ScriptManager {
         self.resolve_active_file(rel).is_some()
     }
 
-    /// `ScriptManager.Load()`: reads every script file of the game and the
-    /// given mods (in load order), then loads all script types.
+    /// Legacy script parser/data entry. With a fresh manager, texture fields
+    /// remain explicitly uncaptured. Real asset hosts use load_with_textures;
+    /// they must consume its typed first-fault result before continuing boot.
+    /// Reads files/mods in load order, then loads all script types.
     pub fn load(&self, fs: &GameFs, mods: &[ModScriptDirs]) -> ScriptResult {
         self.load_file_names.borrow_mut().clear();
         self.temp_file_to_mod_map.borrow_mut().clear();
@@ -757,6 +766,7 @@ impl ScriptManager {
             self.log_exception(&e);
         }
         self.load_scripts(ScriptLoadMode::Init, ScriptType::ALL);
+        if self.texture_capture_aborted() { return Ok(()); }
         if self.debug && self.has_load_errors(false) {
             return Err(ScriptError::new("java.io.IOException: Script load errors."));
         }
@@ -818,6 +828,7 @@ impl ScriptManager {
 
     fn load_scripts(&self, mode: ScriptLoadMode, types: &[ScriptType]) {
         if let Err(e) = self.load_scripts_inner(mode, types) {
+            if self.texture_capture_aborted() { return; }
             self.log_exception(&e);
             self.has_load_errors.set(true);
         }
@@ -845,6 +856,7 @@ impl ScriptManager {
         }
         for c in self.collections.iter().filter(selected) {
             c.load_scripts(self, mode)?;
+            if self.texture_capture_aborted() { return Ok(()); }
         }
         for c in self.collections.iter().filter(selected) {
             c.post_load_scripts(self, mode)?;
@@ -898,6 +910,11 @@ impl ScriptManager {
 
     /// `Reset`.
     pub fn reset(&self) {
+        // A native reset inside a currently failing/nested load cannot erase
+        // the host fault which the outer operation still must surface.
+        if self.texture_load_operation_depth.get() == 0 {
+            *self.texture_host_fault.borrow_mut() = None;
+        }
         for m in self.module_list.borrow().iter() {
             m.reset();
         }

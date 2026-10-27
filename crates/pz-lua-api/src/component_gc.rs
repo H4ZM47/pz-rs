@@ -14,12 +14,17 @@ use pz_entity::{ComponentRef, RetiredComponents, RuntimeComponent, RuntimeEntryV
 use pz_inventory::shared::ItemRef;
 use pz_inventory::InventoryItem;
 use pz_kahlua::gc::{self, RegistrationError, TraceDescriptor, TraceVisitor, UserdataDescriptor};
+use pz_render::{LuaTexture, TextureRef};
 use pz_scripts::objects::entity::components::attributes::AttributesScript;
 use pz_scripts::objects::entity::GameEntityScript;
 use pz_scripts::objects::items::Item as ItemScript;
 use pz_world::floor_object::FloorObjectRef;
 use pz_world::object_slot::IsoObjectRef;
 use pz_world::objects::{IsoObject, IsoWorldInventoryObject, ObjectKind};
+use pz_world::sprite::runtime::{
+    RuntimeSprite, RuntimeSpriteInstance, RuntimeSpriteRef, SpriteInstanceRef,
+};
+use pz_world::{IsoGridSquare, SquareRef};
 
 use crate::bind_fluid_container::LuaFluidContainer;
 use crate::bind_items::LuaInventoryItem;
@@ -57,6 +62,14 @@ impl std::fmt::Display for RegistrationFault {
 impl std::error::Error for RegistrationFault {}
 
 enum Pending {
+    Square(Weak<RefCell<IsoGridSquare>>),
+    Sprite(Weak<RefCell<RuntimeSprite>>),
+    SpriteInstance(Weak<RefCell<RuntimeSpriteInstance>>),
+    SpriteManager(Weak<RefCell<pz_world::sprite::IsoSpriteManager>>),
+    ChunkHotSave(Weak<RefCell<pz_world::chunk::ChunkHotSaveState>>),
+    WorldObjects(Weak<RefCell<pz_world::world_objects::WorldObjects>>),
+    Texture(Weak<LuaTexture>),
+
     Item(Weak<RefCell<InventoryItem>>),
     Object(Weak<RefCell<IsoObject>>),
     Floor(Weak<RefCell<IsoWorldInventoryObject>>),
@@ -76,6 +89,13 @@ enum Pending {
 impl Pending {
     fn key(&self) -> (&'static str, usize) {
         match self {
+            Self::Square(w) => ("Square", w.as_ptr() as usize),
+            Self::Sprite(w) => ("RuntimeSprite", w.as_ptr() as usize),
+            Self::SpriteInstance(w) => ("RuntimeSpriteInstance", w.as_ptr() as usize),
+            Self::SpriteManager(w) => ("IsoSpriteManager", w.as_ptr() as usize),
+            Self::ChunkHotSave(w) => ("ChunkHotSaveState", w.as_ptr() as usize),
+            Self::WorldObjects(w) => ("WorldObjects", w.as_ptr() as usize),
+            Self::Texture(w) => ("Texture", w.as_ptr() as usize),
             Self::Item(w) => ("InventoryItem", w.as_ptr() as usize),
             Self::Object(w) => ("IsoObject", w.as_ptr() as usize),
             Self::Floor(w) => ("IsoWorldInventoryObject payload", w.as_ptr() as usize),
@@ -95,6 +115,13 @@ impl Pending {
 
     fn alive(&self) -> bool {
         match self {
+            Self::Square(w) => w.strong_count() != 0,
+            Self::Sprite(w) => w.strong_count() != 0,
+            Self::SpriteInstance(w) => w.strong_count() != 0,
+            Self::SpriteManager(w) => w.strong_count() != 0,
+            Self::ChunkHotSave(w) => w.strong_count() != 0,
+            Self::WorldObjects(w) => w.strong_count() != 0,
+            Self::Texture(w) => w.strong_count() != 0,
             Self::Item(w) => w.strong_count() != 0,
             Self::Object(w) => w.strong_count() != 0,
             Self::Floor(w) => w.strong_count() != 0,
@@ -123,7 +150,6 @@ thread_local! {
 fn pending(record: Pending) {
     let _ = PENDING.try_with(|queue| {
         if let Ok(mut queue) = queue.try_borrow_mut() {
-            queue.retain(|_, record| record.alive());
             queue.insert(record.key(), record);
         }
     });
@@ -175,6 +201,14 @@ fn merged(a: MetadataStatus, b: MetadataStatus) -> MetadataStatus {
 pub struct ItemDescriptor;
 impl TraceDescriptor<InventoryItem> for ItemDescriptor {
     fn trace(item: &InventoryItem, visitor: &mut TraceVisitor) {
+        if let Some(textures) = item.textures.live_slot() {
+            for texture in textures.slots() {
+                visitor.userdata(texture);
+            }
+            if let Some(script) = &textures.script_item {
+                visitor.owner(&script.0);
+            }
+        }
         if let Some(owner) = item.world_item_slot() {
             if owner.is::<IsoObject>() {
                 visitor.owner_erased::<IsoObject>(owner.erased_slot());
@@ -202,6 +236,7 @@ impl TraceDescriptor<InventoryItem> for ItemDescriptor {
             item.components.take_entries(),
             item.take_mod_data_for_gc(),
             item.take_world_item_for_gc(),
+            item.take_texture_slots_for_gc(),
         )))
     }
 }
@@ -209,6 +244,12 @@ impl TraceDescriptor<InventoryItem> for ItemDescriptor {
 pub struct ObjectDescriptor;
 impl TraceDescriptor<IsoObject> for ObjectDescriptor {
     fn trace(object: &IsoObject, visitor: &mut TraceVisitor) {
+        if let Some(square) = object.square_slot() {
+            visitor.owner(square);
+        }
+        if let Some(sprite) = object.sprite.native_slot() {
+            visitor.owner(sprite);
+        }
         if let ObjectKind::WorldInventory(floor) = &object.kind {
             if let Some(payload) = floor.payload_slot() {
                 visitor.owner(payload);
@@ -226,7 +267,81 @@ impl TraceDescriptor<IsoObject> for ObjectDescriptor {
             ObjectKind::WorldInventory(floor) => floor.take_payload_for_gc(),
             _ => None,
         };
-        Some(Box::new((object.components.take_entries(), floor)))
+        let sprite = std::mem::replace(&mut object.sprite, pz_world::objects::ObjectSprite::None);
+        Some(Box::new((
+            object.components.take_entries(),
+            floor,
+            object.take_square_for_gc(),
+            sprite,
+        )))
+    }
+}
+
+pub struct SquareDescriptor;
+impl TraceDescriptor<IsoGridSquare> for SquareDescriptor {
+    fn trace(square: &IsoGridSquare, visitor: &mut TraceVisitor) {
+        for object in &square.objects {
+            visitor.owner(object.owner_slot());
+        }
+        visitor.owner(&square.world_objects);
+        if let Some(chunk) = &square.chunk_hot_save {
+            visitor.owner(chunk);
+        }
+    }
+    fn detach(square: &mut IsoGridSquare) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new((
+            std::mem::take(&mut square.objects),
+            std::mem::replace(
+                &mut square.world_objects,
+                pz_world::world_objects::WorldObjects::new_ref(),
+            ),
+            square.chunk_hot_save.take(),
+        )))
+    }
+}
+pub struct SpriteDescriptor;
+impl TraceDescriptor<RuntimeSprite> for SpriteDescriptor {
+    fn trace(sprite: &RuntimeSprite, visitor: &mut TraceVisitor) {
+        if let Some(manager) = sprite.parent_manager_slot() {
+            visitor.owner(manager);
+        }
+        if let Some(tint) = sprite.tint_slot() {
+            visitor.owner(tint);
+        }
+        if let Some(def) = sprite.def_slot() {
+            visitor.owner(def);
+        }
+        if let Some(texture) = sprite.texture_slot() {
+            visitor.userdata(texture);
+        }
+    }
+    fn detach(sprite: &mut RuntimeSprite) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(sprite.take_slots_for_gc()))
+    }
+}
+pub struct SpriteInstanceDescriptor;
+impl TraceDescriptor<RuntimeSpriteInstance> for SpriteInstanceDescriptor {
+    fn trace(instance: &RuntimeSpriteInstance, visitor: &mut TraceVisitor) {
+        if let Some(sprite) = instance.parent_sprite_slot() {
+            visitor.owner(sprite);
+        }
+    }
+    fn detach(instance: &mut RuntimeSpriteInstance) -> Option<Box<dyn std::any::Any>> {
+        Some(Box::new(instance.take_parent_for_gc()))
+    }
+}
+pub struct SpriteManagerDescriptor;
+impl TraceDescriptor<pz_world::sprite::IsoSpriteManager> for SpriteManagerDescriptor {
+    fn trace(_: &pz_world::sprite::IsoSpriteManager, _: &mut TraceVisitor) {}
+}
+pub struct ChunkHotSaveDescriptor;
+impl TraceDescriptor<pz_world::chunk::ChunkHotSaveState> for ChunkHotSaveDescriptor {
+    fn trace(_: &pz_world::chunk::ChunkHotSaveState, _: &mut TraceVisitor) {}
+}
+pub struct TextureDescriptor;
+impl UserdataDescriptor<LuaTexture> for TextureDescriptor {
+    fn trace(_: &LuaTexture, _: &mut TraceVisitor) -> Result<(), gc::TraceDeferred> {
+        Ok(())
     }
 }
 
@@ -352,10 +467,22 @@ fn detach_script_templates(script: &GameEntityScript) -> Option<Box<dyn std::any
 pub struct ItemScriptDescriptor;
 impl TraceDescriptor<ItemScript> for ItemScriptDescriptor {
     fn trace(script: &ItemScript, visitor: &mut TraceVisitor) {
+        if let Some(texture) = script.normal_texture_slot() {
+            visitor.userdata(texture);
+        }
+        if let Some(texture) = script.world_texture_slot() {
+            visitor.userdata(texture);
+        }
+        for texture in script.special_texture_slots().iter().flatten() {
+            visitor.userdata(texture);
+        }
         trace_script_templates(&script.entity, visitor);
     }
     fn detach(script: &mut ItemScript) -> Option<Box<dyn std::any::Any>> {
-        detach_script_templates(&script.entity)
+        Some(Box::new((
+            detach_script_templates(&script.entity),
+            script.take_texture_slots_for_gc(),
+        )))
     }
 }
 
@@ -514,6 +641,14 @@ pub fn register_item_script(
         pending(Pending::ItemScript(Rc::downgrade(script)));
         return Ok(MetadataStatus::Deferred);
     };
+    for texture in body
+        .normal_texture_slot()
+        .into_iter()
+        .chain(body.world_texture_slot())
+        .chain(body.special_texture_slots().iter().flatten())
+    {
+        status = merged(status, register_texture(texture)?);
+    }
     status = merged(status, register_script_templates(&body.entity)?);
     if status == MetadataStatus::Deferred {
         pending(Pending::ItemScript(Rc::downgrade(script)));
@@ -539,10 +674,37 @@ pub fn register_entity_script(
     Ok(status)
 }
 
+pub fn register_texture(texture: &TextureRef) -> Result<MetadataStatus, RegistrationFault> {
+    registered(
+        gc::register_userdata::<_, TextureDescriptor>(texture),
+        Pending::Texture(Rc::downgrade(texture)),
+    )
+}
+fn register_sprite_manager(
+    manager: &pz_world::sprite::runtime::SpriteManagerRef,
+) -> Result<MetadataStatus, RegistrationFault> {
+    registered(
+        gc::register_existing::<_, SpriteManagerDescriptor>(manager),
+        Pending::SpriteManager(Rc::downgrade(manager)),
+    )
+}
+fn register_chunk_hot_save(
+    chunk: &pz_world::chunk::ChunkHotSaveRef,
+) -> Result<MetadataStatus, RegistrationFault> {
+    registered(
+        gc::register_existing::<_, ChunkHotSaveDescriptor>(chunk),
+        Pending::ChunkHotSave(Rc::downgrade(chunk)),
+    )
+}
+
 enum OwnerNode {
     Item(ItemRef),
     Object(IsoObjectRef),
     Floor(FloorObjectRef),
+    Square(SquareRef),
+    Sprite(RuntimeSpriteRef),
+    SpriteInstance(SpriteInstanceRef),
+    WorldObjects(pz_world::WorldObjectsRef),
 }
 
 /// Metadata traversal follows actual slots using temporary pins. The visited
@@ -574,6 +736,14 @@ fn register_owner_graph(root: OwnerNode) -> Result<MetadataStatus, RegistrationF
                 for entry in body.components.entry_slots() {
                     if let RuntimeEntryView::Live { component, .. } = entry {
                         status = merged(status, component_slots(component)?);
+                    }
+                }
+                if let Some(textures) = body.textures.live_slot() {
+                    for texture in textures.slots() {
+                        status = merged(status, register_texture(texture)?);
+                    }
+                    if let Some(script) = &textures.script_item {
+                        status = merged(status, register_item_script(&script.0)?);
                     }
                 }
                 if let Some(object) = body
@@ -624,6 +794,107 @@ fn register_owner_graph(root: OwnerNode) -> Result<MetadataStatus, RegistrationF
                     if let Some(payload) = floor.payload_slot() {
                         work.push_back(OwnerNode::Floor(Rc::clone(payload)));
                     }
+                }
+                if let Some(square) = body.square_slot() {
+                    work.push_back(OwnerNode::Square(square.clone()));
+                }
+                if let Some(sprite) = body.sprite.native_slot() {
+                    work.push_back(OwnerNode::Sprite(sprite.clone()));
+                }
+            }
+            OwnerNode::Square(square) => {
+                if !visited.insert(("square", Rc::as_ptr(&square) as usize)) {
+                    continue;
+                }
+                status = merged(
+                    status,
+                    registered(
+                        gc::register_existing::<_, SquareDescriptor>(&square),
+                        Pending::Square(Rc::downgrade(&square)),
+                    )?,
+                );
+                let Ok(body) = square.try_borrow() else {
+                    pending(Pending::Square(Rc::downgrade(&square)));
+                    status = merged(status, MetadataStatus::Deferred);
+                    continue;
+                };
+                for object in &body.objects {
+                    work.push_back(OwnerNode::Object(object.ref_handle()));
+                }
+                work.push_back(OwnerNode::WorldObjects(body.world_objects.clone()));
+                if let Some(chunk) = &body.chunk_hot_save {
+                    status = merged(status, register_chunk_hot_save(chunk)?);
+                }
+            }
+            OwnerNode::WorldObjects(list) => {
+                if !visited.insert(("worldObjects", Rc::as_ptr(&list) as usize)) {
+                    continue;
+                }
+                status = merged(
+                    status,
+                    registered(
+                        pz_world::world_objects::register_world_objects(&list),
+                        Pending::WorldObjects(Rc::downgrade(&list)),
+                    )?,
+                );
+                let Ok(body) = list.try_borrow() else {
+                    pending(Pending::WorldObjects(Rc::downgrade(&list)));
+                    status = merged(status, MetadataStatus::Deferred);
+                    continue;
+                };
+                for entry in body.entry_slots() {
+                    if let pz_world::world_objects::WorldObjectEntry::Object(object) = entry {
+                        work.push_back(OwnerNode::Object(object.clone()));
+                    }
+                }
+            }
+            OwnerNode::Sprite(sprite) => {
+                if !visited.insert(("sprite", Rc::as_ptr(&sprite) as usize)) {
+                    continue;
+                }
+                status = merged(
+                    status,
+                    registered(
+                        gc::register_existing::<_, SpriteDescriptor>(&sprite),
+                        Pending::Sprite(Rc::downgrade(&sprite)),
+                    )?,
+                );
+                let Ok(body) = sprite.try_borrow() else {
+                    pending(Pending::Sprite(Rc::downgrade(&sprite)));
+                    status = merged(status, MetadataStatus::Deferred);
+                    continue;
+                };
+                if let Some(manager) = body.parent_manager_slot() {
+                    status = merged(status, register_sprite_manager(manager)?);
+                }
+                if let Some(tint) = body.tint_slot() {
+                    status = merged(status, register_color(tint)?);
+                }
+                if let Some(def) = body.def_slot() {
+                    work.push_back(OwnerNode::SpriteInstance(def.clone()));
+                }
+                if let Some(texture) = body.texture_slot() {
+                    status = merged(status, register_texture(texture)?);
+                }
+            }
+            OwnerNode::SpriteInstance(instance) => {
+                if !visited.insert(("spriteInstance", Rc::as_ptr(&instance) as usize)) {
+                    continue;
+                }
+                status = merged(
+                    status,
+                    registered(
+                        gc::register_existing::<_, SpriteInstanceDescriptor>(&instance),
+                        Pending::SpriteInstance(Rc::downgrade(&instance)),
+                    )?,
+                );
+                let Ok(body) = instance.try_borrow() else {
+                    pending(Pending::SpriteInstance(Rc::downgrade(&instance)));
+                    status = merged(status, MetadataStatus::Deferred);
+                    continue;
+                };
+                if let Some(sprite) = body.parent_sprite_slot() {
+                    work.push_back(OwnerNode::Sprite(sprite.clone()));
                 }
             }
             OwnerNode::Floor(floor) => {
@@ -735,7 +1006,29 @@ pub fn observe_object(object: &IsoObjectRef, native_class: &'static str) {
 pub fn install_observers() {
     pz_inventory::shared::install_item_observer(Some(observe_item));
     pz_world::object_slot::install_object_observer(Some(observe_object));
+    pz_world::square_slot::install_square_observer(Some(observe_square));
+    pz_world::sprite::runtime::install_sprite_observer(Some(observe_sprite));
+    pz_world::sprite::runtime::install_instance_observer(Some(observe_sprite_instance));
+    install_texture_observer();
     retry_pending();
+}
+
+pub fn observe_square(square: &SquareRef) {
+    let _ = register_owner_graph(OwnerNode::Square(square.clone()));
+}
+pub fn observe_sprite(sprite: &RuntimeSpriteRef) {
+    let _ = register_owner_graph(OwnerNode::Sprite(sprite.clone()));
+}
+pub fn observe_sprite_instance(instance: &SpriteInstanceRef) {
+    let _ = register_owner_graph(OwnerNode::SpriteInstance(instance.clone()));
+}
+pub fn observe_texture(texture: &TextureRef) {
+    let _ = register_texture(texture);
+}
+/// Early boot may install the leaf observer before ScriptManager.load;
+/// actual item/world observers are installed by ordinary registration.
+pub fn install_texture_observer() {
+    pz_render::install_texture_observer(Some(observe_texture));
 }
 
 /// Retry only metadata. Hosts call this after world/sprite/entity guards end
@@ -753,6 +1046,41 @@ pub fn retry_pending() {
         .unwrap_or_default();
     for (_, record) in records {
         match record {
+            Pending::Square(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_owner_graph(OwnerNode::Square(v));
+                }
+            }
+            Pending::Sprite(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_owner_graph(OwnerNode::Sprite(v));
+                }
+            }
+            Pending::SpriteInstance(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_owner_graph(OwnerNode::SpriteInstance(v));
+                }
+            }
+            Pending::WorldObjects(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_owner_graph(OwnerNode::WorldObjects(v));
+                }
+            }
+            Pending::SpriteManager(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_sprite_manager(&v);
+                }
+            }
+            Pending::ChunkHotSave(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_chunk_hot_save(&v);
+                }
+            }
+            Pending::Texture(w) => {
+                if let Some(v) = w.upgrade() {
+                    let _ = register_texture(&v);
+                }
+            }
             Pending::Item(w) => {
                 if let Some(v) = w.upgrade() {
                     let _ = register_item(&v);
@@ -837,6 +1165,9 @@ pub fn take_registration_faults() -> Vec<RegistrationFault> {
 
 #[cfg(test)]
 mod world_item_tests;
+
+#[cfg(test)]
+mod sprite_tests;
 
 #[cfg(test)]
 mod tests;

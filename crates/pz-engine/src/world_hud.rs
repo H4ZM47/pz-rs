@@ -155,14 +155,26 @@ impl<H: PickHooks> PickWorld for EnginePick<'_, H> {
         self.world.camera_offset()
     }
 
-    fn objects(&self, x: i32, y: i32, z: i32) -> Option<Vec<PickObject>> {
-        let sq = self.world.square(x, y, z)?;
-        let objs = self.world.objects(x, y, z)?;
-        Some(
+    fn objects(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> pz_entity::runtime_load::HostResult<Option<Vec<PickObject>>> {
+        let Some(sq) = self.world.square(x, y, z) else {
+            return Ok(None);
+        };
+        let Some(objs) = self.world.objects(x, y, z)? else {
+            return Ok(None);
+        };
+        let square = sq.try_borrow().map_err(|_| {
+            pz_entity::runtime_load::RuntimeHostError::Borrowed("actual HUD pick square")
+        })?;
+        Ok(Some(
             objs.into_iter()
-                .map(|o| self.pick_object(&sq.borrow(), o))
+                .map(|object| self.pick_object(&square, object))
                 .collect(),
-        )
+        ))
     }
 
     fn corpses(&self, x: i32, y: i32, z: i32) -> Vec<PickObject> {
@@ -213,6 +225,58 @@ pub fn install_hud_camera(frame: SharedCameraFrame) {
 mod tests {
     use super::*;
     use pz_iso_render::Camera;
+
+    #[test]
+    fn actual_pick_square_borrow_fault_is_not_absent_and_skips_later_hooks() {
+        use pz_lua_api::hud::picking::PickWorld;
+        use pz_world::{IsoCell, IsoChunk, IsoGridSquare, IsoMetaGrid, IsoSpriteManager};
+        use pz_world_render::{RenderWorld, WorldView};
+        use std::cell::Cell;
+        struct Hooks(Cell<usize>);
+        impl PickHooks for Hooks {
+            fn player0(&self) -> Option<PickPlayer> {
+                None
+            }
+            fn square_value(&self, _: &IsoGridSquare) -> Value {
+                self.0.set(self.0.get() + 1);
+                Value::Nil
+            }
+        }
+        let mut chunk = IsoChunk::new(0, 0);
+        chunk.set_square(1, 1, 0, Some(IsoGridSquare::new(1, 1, 0).into()));
+        let square = chunk.get_grid_square(1, 1, 0).unwrap();
+        let mut cell = IsoCell::default();
+        cell.chunks.insert((0, 0), chunk);
+        let meta = IsoMetaGrid::with_bounds(0, 0, 1, 1);
+        let sprites = IsoSpriteManager::new(pz_world::sprite::test_tables());
+        let render = RenderWorld::new();
+        let infos = pz_iso_render::RenderInfos::new();
+        let pick = EnginePick {
+            world: WorldPick {
+                view: WorldView {
+                    cell: &cell,
+                    meta: &meta,
+                    sprites: &sprites,
+                },
+                render: &render,
+                infos: &infos,
+                player: 0,
+                camera: Camera::centred(1.0, 1.0, 0.0, 1280, 720, 1.0),
+            },
+            hooks: Hooks(Cell::new(0)),
+        };
+        let held = square.borrow_mut();
+        assert!(matches!(
+            pick.objects(1, 1, 0),
+            Err(pz_entity::runtime_load::RuntimeHostError::Borrowed(
+                "pick square"
+            ))
+        ));
+        assert_eq!(pick.hooks.0.get(), 0);
+        drop(held);
+        assert!(pick.objects(1, 1, 0).unwrap().unwrap().is_empty());
+        assert!(pick.objects(7, 7, 0).unwrap().is_none());
+    }
 
     #[test]
     fn hud_camera_reads_the_frame() {

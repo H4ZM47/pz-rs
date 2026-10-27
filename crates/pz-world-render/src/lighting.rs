@@ -17,6 +17,7 @@ use pz_world::{IsoGridSquare, ObjectKind};
 use crate::hooks::{lighting_barricade, WorldHooks};
 use crate::render_world::{RenderWorld, WorldView};
 use crate::settings::RenderSettingsSource;
+use crate::{HostResult, RuntimeHostError};
 
 /// `MetaObject` type of a light switch (`RoomDef.objects`, used by
 /// `IsoRoom.hasLightSwitches`).
@@ -54,29 +55,44 @@ pub fn grid_square(
     hooks: &dyn WorldHooks,
     light_level: i32,
     seen_by: u8,
-) -> GridSquare {
+) -> HostResult<GridSquare> {
     let t = &w.sprites.tables;
     let mut special_objects = Vec::new();
     for &id in &sq.special_objects {
-        let Some(i) = sq.object_index(id) else {
-            continue;
-        };
-        let o = sq.objects[i].borrow();
-        let sp = o.sprite.map(|s| &w.sprites.sprites[s]);
-        let prop = |n: &str| {
-            sp.and_then(|sp| sp.properties.get(&w.sprites.alias, n))
-                .map(str::to_string)
-        };
-        let has_name = |n: &str| sp.is_some_and(|sp| sp.properties.has_name(&w.sprites.alias, n));
+        let mut index = None;
+        for (i, object) in sq.objects.iter().enumerate() {
+            let object = object
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("lighting special-object lookup"))?;
+            if object.id == id {
+                index = Some(i);
+                break;
+            }
+        }
+        let Some(i) = index else { continue };
+        let o = sq.objects[i]
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("lighting object"))?;
         match &o.kind {
             ObjectKind::Door(d) => {
+                let (door_trans, garage_door) = {
+                    let sp = o.sprite.try_read(w.sprites)?;
+                    (
+                        sp.as_deref().is_some_and(|sp| {
+                            sp.properties.has_name(&w.sprites.alias, "doorTrans")
+                        }),
+                        sp.as_deref().is_some_and(|sp| {
+                            sp.properties.has_name(&w.sprites.alias, "GarageDoor")
+                        }),
+                    )
+                };
                 let (same, opposite) = hooks.barricades(sq, &o);
                 let curtain = hooks.door_curtain(sq, &o);
                 special_objects.push(SpecialObject::Door(Door {
                     north: d.north,
                     open: d.open,
-                    door_trans: has_name("doorTrans"),
-                    garage_door: has_name("GarageDoor"),
+                    door_trans,
+                    garage_door,
                     has_curtain: curtain.is_some(),
                     curtain_open: curtain.unwrap_or(false),
                     barricade_same: same,
@@ -93,7 +109,13 @@ pub fn grid_square(
                 }));
             }
             ObjectKind::Curtain(c) => {
-                let kind = match sp.map(|sp| sp.tile_type) {
+                let sp = o.sprite.try_read(w.sprites)?;
+                let prop = |name| {
+                    sp.as_deref()
+                        .and_then(|sp| sp.properties.get(&w.sprites.alias, name))
+                        .map(str::to_string)
+                };
+                let kind = match sp.as_deref().map(|sp| sp.tile_type) {
                     Some(k) if k == t.ty.curtainW => CurtainType::W,
                     Some(k) if k == t.ty.curtainN => CurtainType::N,
                     Some(k) if k == t.ty.curtainE => CurtainType::E,
@@ -112,17 +134,25 @@ pub fn grid_square(
                 }));
             }
             ObjectKind::Thumpable(th) => {
+                let (is_window, door_trans) = {
+                    let sp = o.sprite.try_read(w.sprites)?;
+                    (
+                        sp.as_deref().is_some_and(|sp| {
+                            sp.properties.has(t.flag.WindowN) || sp.properties.has(t.flag.WindowW)
+                        }),
+                        sp.as_deref().is_some_and(|sp| {
+                            sp.properties.has_name(&w.sprites.alias, "doorTrans")
+                        }),
+                    )
+                };
                 let (same, opposite) = hooks.barricades(sq, &o);
-                let flag = &t.flag;
                 special_objects.push(SpecialObject::Thumpable(Thumpable {
                     north: th.north,
                     open: th.open,
                     is_door: th.is_door,
-                    is_window: sp.is_some_and(|sp| {
-                        sp.properties.has(flag.WindowN) || sp.properties.has(flag.WindowW)
-                    }),
+                    is_window,
                     can_pass_through: th.can_pass_through,
-                    door_trans: has_name("doorTrans"),
+                    door_trans,
                     barricade_same: same,
                     barricade_opposite: opposite,
                 }));
@@ -134,7 +164,7 @@ pub fn grid_square(
         }
     }
     special_objects.extend(hooks.extra_special_objects(sq));
-    GridSquare {
+    Ok(GridSquare {
         x: sq.x,
         y: sq.y,
         z: sq.z,
@@ -146,7 +176,7 @@ pub fn grid_square(
         light_level,
         seen_by,
         special_objects,
-    }
+    })
 }
 
 /// A lamp (`IsoLightSwitch.lights` of a switch that is not a room switch).
@@ -336,12 +366,20 @@ impl WorldLighting {
         }
     }
 
-    fn rebuild_squares(&mut self, w: &WorldView<'_>, wx: i32, wy: i32, hooks: &dyn WorldHooks) {
+    fn rebuild_squares(
+        &mut self,
+        w: &WorldView<'_>,
+        wx: i32,
+        wy: i32,
+        hooks: &dyn WorldHooks,
+    ) -> HostResult<()> {
         let Some(ch) = w.cell.chunks.get(&(wx, wy)) else {
-            return;
+            return Ok(());
         };
         for sq_owner in ch.squares() {
-            let sq = sq_owner.borrow();
+            let sq = sq_owner
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("lighting chunk square"))?;
             let p = (sq.x, sq.y, sq.z);
             // A square new to lighting starts with the `seen` flags it
             // was loaded with (`IsoGridSquare.load` sets `lighting[i].bSeen`
@@ -353,7 +391,7 @@ impl WorldLighting {
                 .map_or((0, loaded_seen_by(&sq)), |g| (g.light_level, g.seen_by));
             self.squares
                 .0
-                .insert(p, grid_square(w, &sq, hooks, ll, seen));
+                .insert(p, grid_square(w, &sq, hooks, ll, seen)?);
         }
         let st = self.chunks.entry((wx, wy)).or_insert(ChunkState {
             min_level: 0,
@@ -365,22 +403,30 @@ impl WorldLighting {
         st.max_level = ch.max_level;
         st.light_check = [true; 4];
         st.level_light_check = vec![[true; 4]; (ch.max_level - ch.min_level + 1) as usize];
+        Ok(())
     }
 
     /// A chunk was loaded or its squares changed (after
     /// `IsoCell::recalc_chunk_squares`): rebuilds its lighting squares, its
     /// lamps and room lights, refreshes the neighbouring chunks (their edge
     /// matrices changed) and flags them all for a lighting update.
-    pub fn sync_chunk(&mut self, w: &WorldView<'_>, wx: i32, wy: i32, hooks: &dyn WorldHooks) {
-        self.rebuild_squares(w, wx, wy, hooks);
+    pub fn sync_chunk(
+        &mut self,
+        w: &WorldView<'_>,
+        wx: i32,
+        wy: i32,
+        hooks: &dyn WorldHooks,
+    ) -> HostResult<()> {
+        self.rebuild_squares(w, wx, wy, hooks)?;
         for dy in -1..=1 {
             for dx in -1..=1 {
                 if (dx, dy) != (0, 0) && self.chunks.contains_key(&(wx + dx, wy + dy)) {
-                    self.rebuild_squares(w, wx + dx, wy + dy, hooks);
+                    self.rebuild_squares(w, wx + dx, wy + dy, hooks)?;
                 }
             }
         }
-        self.sync_chunk_lights(w, wx, wy);
+        self.sync_chunk_lights(w, wx, wy)?;
+        Ok(())
     }
 
     /// Rebuilds the lighting squares of chunk `(wx, wy)` alone and flags
@@ -392,8 +438,8 @@ impl WorldLighting {
         wx: i32,
         wy: i32,
         hooks: &dyn WorldHooks,
-    ) {
-        self.rebuild_squares(w, wx, wy, hooks);
+    ) -> HostResult<()> {
+        self.rebuild_squares(w, wx, wy, hooks)
     }
 
     /// Rebuilds the lighting square at `(x, y, z)` from the world (keeping
@@ -406,23 +452,25 @@ impl WorldLighting {
         w: &WorldView<'_>,
         (x, y, z): (i32, i32, i32),
         hooks: &dyn WorldHooks,
-    ) {
+    ) -> HostResult<()> {
         let (wx, wy) = (x.div_euclid(8), y.div_euclid(8));
         let Some(ch) = w.cell.chunks.get(&(wx, wy)) else {
-            return;
+            return Ok(());
         };
         let Some(st) = self.chunks.get(&(wx, wy)) else {
             // Not given to lighting yet: `sync_chunk` sends it whole.
-            return;
+            return Ok(());
         };
         if (st.min_level, st.max_level) != (ch.min_level, ch.max_level) {
-            self.rebuild_squares(w, wx, wy, hooks);
-            return;
+            self.rebuild_squares(w, wx, wy, hooks)?;
+            return Ok(());
         }
         let p = (x, y, z);
         match w.cell.get_grid_square(x, y, z) {
             Some(sq) => {
-                let sq = sq.borrow();
+                let sq = sq
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("lighting square"))?;
                 let (ll, seen) = self
                     .squares
                     .0
@@ -430,27 +478,32 @@ impl WorldLighting {
                     .map_or((0, loaded_seen_by(&sq)), |g| (g.light_level, g.seen_by));
                 self.squares
                     .0
-                    .insert(p, grid_square(w, &sq, hooks, ll, seen));
+                    .insert(p, grid_square(w, &sq, hooks, ll, seen)?);
             }
             None => {
                 self.squares.0.remove(&p);
             }
         }
         self.mark_level(wx, wy, z);
+        Ok(())
     }
 
     /// Rescans chunk `(wx, wy)`'s light switches and room switches into
     /// its lamps and room lights (removed lamps are sent once as not
     /// alive).
-    pub fn sync_chunk_lights(&mut self, w: &WorldView<'_>, wx: i32, wy: i32) {
+    pub fn sync_chunk_lights(&mut self, w: &WorldView<'_>, wx: i32, wy: i32) -> HostResult<()> {
         let Some(ch) = w.cell.chunks.get(&(wx, wy)) else {
-            return;
+            return Ok(());
         };
         let mut cl = ChunkLights::default();
         for sq_owner in ch.squares() {
-            let sq = sq_owner.borrow();
+            let sq = sq_owner
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("light-switch square"))?;
             for o in &sq.objects {
-                let o = o.borrow();
+                let o = o
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("light-switch object"))?;
                 let ObjectKind::LightSwitch(s) = &o.kind else {
                     continue;
                 };
@@ -513,6 +566,7 @@ impl WorldLighting {
                 });
             }
         }
+        Ok(())
     }
 
     /// A chunk was unloaded.

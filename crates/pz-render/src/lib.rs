@@ -20,7 +20,13 @@ pub mod tile_depth;
 use std::rc::Rc;
 
 pub use image::{ImageData, Mask, MipLevel};
-pub use lua::{get_shared_texture, install_shared_texture_loader, LuaTexture};
+pub use lua::{
+    get_shared_texture, install_shared_texture_loader, LuaTexture,
+    TextureRef, TextureHostError, TextureResult, TextureLookup, TextureRefLoader,
+    TextureObserver, install_texture_ref_loader, install_texture_observer,
+    observe_texture_ref, try_get_texture_ref, get_shared_texture_ref, try_texture_descriptor,
+    warn_fail_find_texture, set_warn_fail_find_texture, take_retired_texture_loaders,
+};
 pub use manager::{SharedTextures, TextureData, TextureManager};
 pub use screen::{ScreenParams, ScreenTimer, ScreenUniforms, SearchModeShader};
 

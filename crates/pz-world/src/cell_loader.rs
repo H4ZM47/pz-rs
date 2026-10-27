@@ -54,18 +54,37 @@ pub struct ObjectEnv<'a> {
 
 /// Square lookups (`IsoGridSquare` methods) that need sprite data.
 impl IsoGridSquare {
-    fn spr<'m>(m: &'m IsoSpriteManager, o: &IsoObject) -> Option<&'m IsoSprite> {
-        o.sprite.map(|s| &m.sprites[s])
+    fn spr(m: &IsoSpriteManager, o: &IsoObject) -> Option<IsoSprite> {
+        o.sprite
+            .metadata_projection(m)
+            .expect("synchronous geometry metadata read requires unborrowed native sprite")
     }
 
     /// `getFloor()`: index of the first object whose sprite is a
     /// `solidfloor`.
     pub fn floor_index(&self, m: &IsoSpriteManager) -> Option<usize> {
+        self.try_floor_index(m)
+            .expect("synchronous tile-data floor lookup requires unborrowed actual sprite metadata")
+    }
+
+    pub fn try_floor_index(
+        &self,
+        m: &IsoSpriteManager,
+    ) -> pz_entity::runtime_load::HostResult<Option<usize>> {
         let f = m.tables.flag.solidfloor;
-        self.objects
-            .iter()
-            .map(ObjectSlot::borrow)
-            .position(|o| Self::spr(m, &o).is_some_and(|s| s.properties.has(f)))
+        for (index, object) in self.objects.iter().enumerate() {
+            let object = object.owner_slot().try_borrow().map_err(|_| {
+                pz_entity::runtime_load::RuntimeHostError::Borrowed("actual floor lookup object")
+            })?;
+            if object
+                .sprite
+                .try_read(m)?
+                .is_some_and(|sprite| sprite.properties.has(f))
+            {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
     }
 
     /// `getWall(north)`.
@@ -122,7 +141,7 @@ impl IsoGridSquare {
         self.objects
             .iter()
             .map(ObjectSlot::borrow)
-            .rposition(|o| Self::spr(m, &o).is_some_and(|s| m.has_prop(s, "CountertopAttach")))
+            .rposition(|o| Self::spr(m, &o).is_some_and(|s| m.has_prop(&s, "CountertopAttach")))
     }
 
     /// Position of the object with identity `id` in `objects`.
@@ -159,7 +178,7 @@ impl IsoGridSquare {
                 || s.treat_as_wall_order
         };
         let find_walls = is_door(s.tile_type);
-        let find_doors = !find_walls && wall_like(s);
+        let find_doors = !find_walls && wall_like(&s);
         if !(find_doors || find_walls) {
             return index;
         }
@@ -171,7 +190,7 @@ impl IsoGridSquare {
             if find_doors && is_door(o.tile_type) {
                 needle = i as i32;
             }
-            if find_walls && wall_like(o) {
+            if find_walls && wall_like(&o) {
                 needle = i as i32;
             }
         }
@@ -192,20 +211,26 @@ impl IsoGridSquare {
             if matches!(self.objects[i].borrow().kind, ObjectKind::WorldInventory(_)) {
                 continue;
             }
-            let Some(mut s) = self.objects[i].borrow().sprite else {
+            let Some(mut sprite) = Self::spr(m, &self.objects[i].borrow()) else {
                 continue;
             };
-            let mut info = m.sprites[s].properties.surface_info(&m.alias);
+            let mut info = sprite.properties.surface_info(&m.alias);
             if info.stack_replace_tile_offset != 0 {
-                let id = m.sprites[s].id.wrapping_add(info.stack_replace_tile_offset);
-                self.objects[i].borrow_mut().sprite = m.idx_by_id(id);
-                let Some(s2) = self.objects[i].borrow().sprite else {
+                let id = sprite.id.wrapping_add(info.stack_replace_tile_offset);
+                let old = std::mem::replace(
+                    &mut self.objects[i].borrow_mut().sprite,
+                    (m.idx_by_id(id)).into(),
+                );
+                let mut retired = pz_entity::RetiredComponents::new();
+                retired.push_payload(Box::new(old));
+                pz_inventory::component_host::retire_components(retired);
+                let Some(next) = Self::spr(m, &self.objects[i].borrow()) else {
                     continue;
                 };
-                s = s2;
-                info = m.sprites[s].properties.surface_info(&m.alias);
+                sprite = next;
+                info = sprite.properties.surface_info(&m.alias);
             }
-            if info.is_table && !m.has_prop(&m.sprites[s], "Countertop") || info.is_table_top {
+            if info.is_table && !m.has_prop(&sprite, "Countertop") || info.is_table_top {
                 let offset = if info.is_surface_offset {
                     info.surface as f32
                 } else {
@@ -230,9 +255,13 @@ impl IsoGridSquare {
 
 /// `IsoObject.getSurfaceOffset()`.
 fn surface_offset(m: &IsoSpriteManager, o: &IsoObject) -> f32 {
-    match o.sprite {
+    match o
+        .sprite
+        .metadata_projection(m)
+        .expect("synchronous surface metadata read requires unborrowed native sprite")
+    {
         Some(s) => {
-            let info = m.sprites[s].properties.surface_info(&m.alias);
+            let info = s.properties.surface_info(&m.alias);
             if info.is_table {
                 info.surface as f32
             } else {
@@ -245,10 +274,14 @@ fn surface_offset(m: &IsoSpriteManager, o: &IsoObject) -> f32 {
 
 /// `IsoDoor.getGarageDoorIndex(obj)`.
 fn garage_door_index(m: &IsoSpriteManager, o: &IsoObject) -> JavaResult<i32> {
-    let Some(s) = o.sprite else {
+    let Some(s) = o
+        .sprite
+        .metadata_projection(m)
+        .map_err(|error| format!("actual garage sprite metadata: {error:?}"))?
+    else {
         return Ok(-1);
     };
-    let Some(v) = m.prop(&m.sprites[s], "GarageDoor") else {
+    let Some(v) = m.prop(&s, "GarageDoor") else {
         return Ok(-1);
     };
     let index = int(Some(v))?;
@@ -294,13 +327,17 @@ fn add_object(
 /// `GameEntityFactory.CreateIsoEntityFromCellLoading`: the property test is
 /// ported; entity creation is the hook's.
 fn create_iso_entity_from_cell_loading(env: &mut ObjectEnv<'_>, obj: &IsoObjectRef) {
-    let Some(s) = obj.borrow().sprite else {
+    let m = &*env.sprites;
+    let Some(spr) = obj
+        .borrow()
+        .sprite
+        .metadata_projection(m)
+        .expect("synchronous cell entity metadata read requires unborrowed native sprite")
+    else {
         return;
     };
-    let m = &*env.sprites;
-    let spr = &m.sprites[s];
     let wanted = spr.properties.has(m.tables.flag.EntityScript)
-        || m.has_prop(spr, "IsMoveAble") && m.has_prop(spr, "CustomItem");
+        || m.has_prop(&spr, "IsMoveAble") && m.has_prop(&spr, "CustomItem");
     if wanted && env.hooks.create_iso_entity(obj.clone(), env.rand) {
         obj.borrow_mut().has_components = true;
     }
@@ -316,7 +353,11 @@ fn treat_window_frame_as_overlay(
     let sp = &m.sprites[spr].properties;
     for i in (0..sq.objects.len()).rev() {
         let o = sq.objects[i].borrow();
-        let Some(os) = o.sprite.map(|s| &m.sprites[s]) else {
+        let Some(os) = o
+            .sprite
+            .metadata_projection(m)
+            .expect("synchronous overlay metadata read requires unborrowed native sprite")
+        else {
             continue;
         };
         let west = os.properties.has(f.cutW) && sp.has(f.WindowW);
@@ -389,7 +430,7 @@ pub fn do_tile_object_creation(
                         if let Some(a) = &mut floor.attached_anim_sprite {
                             a.clear();
                         }
-                        floor.sprite = Some(spr);
+                        floor.sprite = (Some(spr)).into();
                         return Ok(());
                     }
                 }
@@ -504,10 +545,12 @@ pub fn do_tile_object_creation(
             .iter()
             .map(ObjectSlot::borrow)
             .position(|o| {
-                o.sprite.is_some_and(|s| {
-                    let sp = &m.sprites[s];
-                    !sp.properties.has(wall_se) && (sp.cut_n && north || sp.cut_w && !north)
-                })
+                o.sprite
+                    .metadata_projection(m)
+                    .expect("synchronous wall metadata read requires unborrowed native sprite")
+                    .is_some_and(|sp| {
+                        !sp.properties.has(wall_se) && (sp.cut_n && north || sp.cut_w && !north)
+                    })
             });
         if let Some(i) = wall {
             sq.borrow().objects[i].borrow_mut().reroute_collide = Some(id);
@@ -648,9 +691,11 @@ pub fn do_tile_object_creation(
         let sname = m.sprites[spr].name.as_deref();
         if sname.is_some_and(|n| n.starts_with("vegetation_trees")) {
             let natural = sq.borrow().floor_index(m).is_some_and(|fi| {
-                IsoGridSquare::spr(m, &sq.borrow().objects[fi].borrow())
-                    .and_then(|s| s.name.as_deref())
-                    .is_some_and(|n| n.starts_with("blends_natural"))
+                IsoGridSquare::spr(m, &sq.borrow().objects[fi].borrow()).is_some_and(|s| {
+                    s.name
+                        .as_deref()
+                        .is_some_and(|n| n.starts_with("blends_natural"))
+                })
             });
             if !natural {
                 return Ok(());
@@ -683,8 +728,13 @@ pub fn do_tile_object_creation(
         env.sprites,
         &mut sq.borrow().objects[i].borrow_mut(),
     )?;
-    let s = sq.borrow().objects[i].borrow().sprite.ok_or_else(npe)?;
-    if env.sprites.sprites[s].properties.has(f.vegitation) {
+    let sprite = sq.borrow().objects[i]
+        .borrow()
+        .sprite
+        .metadata_projection(env.sprites)
+        .map_err(|error| format!("actual vegetation sprite metadata: {error:?}"))?
+        .ok_or_else(npe)?;
+    if sprite.properties.has(f.vegitation) {
         let object = sq.borrow().objects[i].ref_handle();
         let mut o = object.borrow_mut();
         o.tint_r = 0.7 + env.rand.next(30) as f32 / 100.0;
@@ -1015,13 +1065,17 @@ pub(crate) fn create_containers_from_sprite_properties(
     m: &IsoSpriteManager,
     o: &mut IsoObject,
 ) -> JavaResult<()> {
-    let Some(s) = o.sprite else {
+    let Some(sp) = o
+        .sprite
+        .metadata_projection(m)
+        .map_err(|error| format!("actual container sprite metadata: {error:?}"))?
+    else {
         return Ok(());
     };
     if o.container.is_some() {
         return Ok(());
     }
-    let sp = &m.sprites[s];
+    let sp = &sp;
     let kind = m.prop(sp, "container");
     if matches!(
         kind,

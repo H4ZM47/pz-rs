@@ -267,8 +267,7 @@ impl IsoGridSquare {
         let mut non_transparent_cut_w = false;
         let mut force_render = false;
         for obj in self.objects.iter().map(ObjectSlot::borrow) {
-            let Some(s) = obj.sprite else { continue };
-            let sp = &m.sprites[s];
+            let Some(sp) = obj.sprite.metadata_projection(m).expect("synchronous square metadata read requires unborrowed native sprite") else { continue };
             let p = &sp.properties;
             if p.has(f.blueprint) {
                 continue;
@@ -1274,15 +1273,15 @@ impl IsoObject {
     /// `isWindow()`: the sprite has `WindowN` or `WindowW`.
     pub fn is_window(&self, m: &IsoSpriteManager) -> bool {
         let f = &m.tables.flag;
-        self.sprite.is_some_and(|s| {
-            let p = &m.sprites[s].properties;
+        self.sprite.metadata_projection(m).expect("synchronous window metadata read requires unborrowed native sprite").is_some_and(|s| {
+            let p = &s.properties;
             p.has(f.WindowN) || p.has(f.WindowW)
         })
     }
 
     fn sprite_has(&self, m: &IsoSpriteManager, flag: IsoFlagType) -> bool {
-        self.sprite
-            .is_some_and(|s| m.sprites[s].properties.has(flag))
+        self.sprite.metadata_projection(m).expect("synchronous property read requires unborrowed native sprite")
+            .is_some_and(|s| s.properties.has(flag))
     }
 
     /// `getHoppableDirection()`.
@@ -1336,7 +1335,7 @@ impl IsoObject {
         hooks: &dyn SquareHooks,
     ) -> (VisionResult, VisionClass) {
         use VisionResult::*;
-        let sprite_has = |name: &str| self.sprite.is_some_and(|s| m.has_prop(&m.sprites[s], name));
+        let sprite_has = |name: &str| self.sprite.metadata_projection(m).expect("synchronous vision metadata read requires unborrowed native sprite").is_some_and(|s| m.has_prop(&s, name));
         // The edge test the doors, thumpables and windows share: whether
         // `to` is across this object's edge from `from`.
         let across = |north: bool| {
@@ -1415,7 +1414,7 @@ impl IsoObject {
                 if to.z != from.z {
                     return (NoEffect, VisionClass::Curtain);
                 }
-                let ty = self.sprite.map(|s| m.sprites[s].tile_type);
+                let ty = self.sprite.metadata_projection(m).expect("synchronous curtain metadata read requires unborrowed native sprite").map(|s| s.tile_type);
                 let tt = &m.tables.ty;
                 let near = is(from, square) && (ty == Some(tt.curtainW) || ty == Some(tt.curtainN))
                     || !is(from, square) && (ty == Some(tt.curtainE) || ty == Some(tt.curtainS));
@@ -1749,8 +1748,7 @@ impl IsoGridSquare {
         };
         let has = |p: &PropertyContainer, f: Option<IsoFlagType>| f.is_some_and(|f| p.has(f));
         self.objects.iter().map(ObjectSlot::borrow).any(|o| {
-            let Some(s) = o.sprite else { return false };
-            let spr = &m.sprites[s];
+            let Some(spr) = o.sprite.metadata_projection(m).expect("synchronous wall metadata read requires unborrowed native sprite") else { return false };
             if excluded.contains(&spr.name) {
                 return false;
             }

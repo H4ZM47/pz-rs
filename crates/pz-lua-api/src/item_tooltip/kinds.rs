@@ -950,16 +950,26 @@ fn container(cx: &mut Cx<'_>, item: &ItemRef, layout: &mut Layout) -> LuaResult<
 
 /// The rest of `InventoryContainer.DoTooltip(tooltipUI)`: one icon per
 /// item name of the contents (last first), in a row below the layout.
-pub fn container_icons(tip: &Tip<'_>, item: &ItemRef) {
+pub fn container_icons(tip: &Tip<'_>, item: &ItemRef) -> LuaResult<()> {
     let el = tip.el;
     let mut y = el.get_height() as i32;
     y -= tip.tt.pad_bottom.get();
     if el.get_width() < 160.0 {
         el.set_width(160.0);
     }
-    let items: Vec<ItemRef> = match &item.borrow().kind {
-        ItemKind::Container(c) => c.container.borrow().items.clone(),
-        _ => return,
+    let items: Vec<ItemRef> = {
+        let body = item
+            .try_borrow()
+            .map_err(|_| crate::bind_world_object::borrowed("tooltip container item"))?;
+        match &body.kind {
+            ItemKind::Container(c) => {
+                let contents = c.container.try_borrow().map_err(|_| {
+                    crate::bind_world_object::borrowed("tooltip contained item list")
+                })?;
+                contents.items.clone()
+            }
+            _ => return Ok(()),
+        }
     };
     if !items.is_empty() {
         let mut x = tip.tt.pad_left.get();
@@ -967,11 +977,15 @@ pub fn container_icons(tip: &Tip<'_>, item: &ItemRef) {
         let mut names = HashSet::new();
         let icon = 16.max(pz_ui::draw::font_height(Some(ObjectTooltip::font())));
         for i in items.iter().rev() {
-            let i = i.borrow();
-            if !names.insert(i.name.clone()) {
+            let name = i
+                .try_borrow()
+                .map_err(|_| crate::bind_world_object::borrowed("tooltip contained item name"))?
+                .name
+                .clone();
+            if !names.insert(name) {
                 continue;
             }
-            let tex = item_texture(&i);
+            let tex = item_texture(i)?;
             tip.tt.draw_texture_scaled_aspect(
                 el,
                 tex.as_ref(),
@@ -993,6 +1007,7 @@ pub fn container_icons(tip: &Tip<'_>, item: &ItemRef) {
     }
     y += tip.tt.pad_bottom.get();
     el.set_height(y as f64);
+    Ok(())
 }
 
 /// `Literature.DoTooltip`.

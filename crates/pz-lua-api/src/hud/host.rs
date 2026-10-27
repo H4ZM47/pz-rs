@@ -208,8 +208,8 @@ pub trait HudMoodles {
 /// thread (picking).
 pub trait HudPicking {
     /// The picked tile object, if any.
-    fn picked_tile(&self) -> Option<pz_ui::tooltip::TooltipObject> {
-        None
+    fn picked_tile(&self) -> pz_kahlua::LuaResult<Option<pz_ui::tooltip::TooltipObject>> {
+        Ok(None)
     }
     /// An `IsoGridSquare` Lua object's x, y, z.
     fn square_coords(&self, _square: &pz_kahlua::Value) -> Option<(i32, i32, i32)> {

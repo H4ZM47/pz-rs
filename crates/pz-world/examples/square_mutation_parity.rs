@@ -110,8 +110,8 @@ impl Rec {
         self.dirty = 0;
     }
     fn name(&self, o: &IsoObject) -> String {
-        match o.sprite {
-            None if o.sprite_id_override.is_some() => "nil".into(),
+        match o.sprite.tile_projection() {
+            None if matches!(o.sprite, pz_world::objects::ObjectSprite::ArchiveUnmanaged(_)) => "nil".into(),
             None => "nosprite".into(),
             Some(s) => self.names.get(&s).cloned().unwrap_or_else(|| "nil".into()),
         }
@@ -236,7 +236,7 @@ impl SquareMutationHooks for H {
         };
         let changed = if add {
             lights(&o)
-                && o.sprite.is_some_and(|s| rec.light_sprites.contains(&s))
+                && o.sprite.tile_projection().is_some_and(|s| rec.light_sprites.contains(&s))
                 && rec.lit.insert(r)
         } else {
             rec.lit.remove(&r)
@@ -322,7 +322,7 @@ impl World {
     }
 
     fn name_of(&self, o: &IsoObject) -> String {
-        match o.sprite {
+        match o.sprite.tile_projection() {
             None => "null".into(),
             Some(s) => self.sprites.sprites[s]
                 .name
@@ -362,7 +362,7 @@ impl World {
             write!(s, " powered={}", self.rec.borrow().powered.unwrap_or(false)).unwrap();
         }
         let piped = self.sprites.tables.flag_from_string("waterPiped");
-        if o.sprite
+        if o.sprite.tile_projection()
             .zip(piped)
             .is_some_and(|(sp, f)| self.sprites.sprites[sp].properties.has(f))
         {
@@ -411,6 +411,7 @@ fn do_op(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos, op: usize) -
         } else {
             w.env().add_tile_object(p, (o).into(), index)
         };
+        let id = match id { Ok(id)=>id, Err(error)=>return format!("world add host fault: {error:?}") };
         return format!(
             "{} {s} {index} -> {}{}",
             if special { "addSpecial" } else { "add" },
@@ -477,7 +478,8 @@ fn build_room(w: &mut World, pools: &Pools, rng: &mut Lcg, p: SquarePos) -> Stri
             return;
         }
         let o = w.new_object(spr);
-        w.env().add_tile_object((x, y, z), (o).into(), -1);
+        w.env().add_tile_object((x, y, z), (o).into(), -1)
+            .expect("explicit tile data profile lifecycle");
         n += 1;
     };
     for y in y0..y0 + h {
@@ -896,12 +898,12 @@ fn main() {
         while i < sq.borrow().objects.len() {
             let o_owner = sq.borrow().objects[i].ref_handle();
             let mut o = o_owner.borrow_mut();
-            let name = o.sprite.and_then(|s| sprites.sprites[s].name.clone());
+            let name = o.sprite.tile_projection().and_then(|s| sprites.sprites[s].name.clone());
             match java.get(i) {
                 Some(&(class, spr)) if class == o.kind.class_name() => {
                     if name.as_deref().unwrap_or("null") != spr {
                         if let Some(&s) = sprites.named_map.get(spr) {
-                            o.sprite = Some(s);
+                            o.sprite = Some(s).into();
                             aligned.0 += 1;
                         }
                     }

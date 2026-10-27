@@ -45,6 +45,10 @@ pub const IMMUTABLE_COLOR_CLASS: &str = "zombie.core.ImmutableColor";
 
 type VisualObjects = HashMap<usize, (Weak<RefCell<pz_inventory::InventoryItem>>, Value)>;
 
+#[cfg(test)]
+#[path = "bind_item_visual/sync_capture_tests.rs"]
+mod sync_capture_tests;
+
 thread_local! {
     static CLOTHING: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
     static VISUALS: RefCell<VisualObjects> = RefCell::new(HashMap::new());
@@ -311,8 +315,11 @@ pub fn get_visual(item: &ItemRef) -> LuaResult<Value> {
     let owner = e.owner(item);
     if e.context().assets().is_some() { crate::bind_items::ensure_clothing_mod_data(item)?; }
     let result = {
-        let mut body = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item visual body").to_lua_error())?;
-        body.try_get_visual(e.context().assets(), owner.as_ref(), e.visual_rng()).map(|value| value.is_some())
+        let mut body = item.try_borrow_mut().map_err(|_| {
+            pz_inventory::moddata::ModDataError::Borrowed("item visual body").to_lua_error()
+        })?;
+        body.try_get_visual(e.context().assets(), owner.as_ref(), e.visual_rng())
+            .map(|value| value.is_some())
     };
     pz_inventory::shared::observe_item(item);
     let has = result.map_err(|error| error.to_lua_error())?;
@@ -328,8 +335,11 @@ fn clothing_of(item: &ItemRef) -> LuaResult<Option<ClothingItem>> {
     let owner = e.owner(item);
     if e.context().assets().is_some() { crate::bind_items::ensure_clothing_mod_data(item)?; }
     let result = {
-        let body = item.try_borrow().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item visual body").to_lua_error())?;
-        body.try_get_clothing_item(e.context().assets(), owner.as_ref()).map(|value| value.cloned())
+        let body = item.try_borrow().map_err(|_| {
+            pz_inventory::moddata::ModDataError::Borrowed("item visual body").to_lua_error()
+        })?;
+        body.try_get_clothing_item(e.context().assets(), owner.as_ref())
+            .map(|value| value.cloned())
     };
     result.map_err(|error| error.to_lua_error())
 }
@@ -615,11 +625,14 @@ fn register_item_methods(thread: &mut Thread) {
         let item = this_item(c)?;
         let e = item_env();
         let owner = e.owner(&item);
-        if e.context().assets().is_some() { crate::bind_items::ensure_clothing_mod_data(&item)?; }
-        let result = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item visual body").to_lua_error())?
-            .try_synch_with_visual(e.context().assets(), owner.as_ref(), e.visual_rng());
-        pz_inventory::shared::observe_item(&item);
-        result.map_err(|error| error.to_lua_error())?;
+        pz_inventory::item_texture::synch_with_visual_ref(
+            &item,
+            e.context().assets(),
+            owner.as_ref(),
+            e.visual_rng(),
+            &mut |m| e.rand_next(m),
+        )
+        .map_err(crate::bind_world_object::host_error)?;
         Ok(0)
     });
     b.method("canBeEquipped", |c| {
@@ -703,11 +716,11 @@ pub fn set_worn_items_from_item_visuals(
     thread: &mut Thread,
     desc: &Rc<RefCell<LuaSurvivorDesc>>,
     visuals: &[ItemVisual],
-) -> Result<(), pz_scripts::ScriptError> {
+) -> pz_inventory::worn_items::WornInventoryResult {
     let retired = {
-        let mut desc = desc.try_borrow_mut().map_err(|_| pz_scripts::ScriptError::new(
-            "descriptor is borrowed while clearing worn items",
-        ))?;
+        let mut desc = desc.try_borrow_mut().map_err(|_| {
+            pz_scripts::ScriptError::new("descriptor is borrowed while clearing worn items")
+        })?;
         desc.worn_items.take_items_for_retirement()
     };
     if !retired.is_empty() {
@@ -717,8 +730,7 @@ pub fn set_worn_items_from_item_visuals(
     }
     let e = item_env();
     for other in visuals {
-        let Some(item) = crate::bind_items::try_create_item(&other.full_type, 1.0)
-            .map_err(|error| pz_scripts::ScriptError::new(format!("{error:?}")))? else {
+        let Some(item) = crate::bind_items::try_create_item_host(&other.full_type, 1.0)? else {
             continue;
         };
         // The method may still be inside its caller's world/sprite scope.
@@ -731,8 +743,7 @@ pub fn set_worn_items_from_item_visuals(
         crate::bind_items::initialise_item(thread, &item);
         let owner = e.owner(&item);
         if e.context().assets().is_some() {
-            crate::bind_items::ensure_clothing_mod_data(&item)
-                .map_err(|error| pz_scripts::ScriptError::new(format!("{error:?}")))?;
+            pz_inventory::moddata::prepare_clothing_mod_data_ref(&item)?;
         }
         let visual_result = (|| {
             let mut i = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item visual copy"))?;
@@ -741,12 +752,20 @@ pub fn set_worn_items_from_item_visuals(
                 .is_some()
             {
                 copy_visual_from(&mut i, other, assets, owner.as_ref(), e.as_ref());
-                i.try_synch_with_visual(assets, owner.as_ref(), e.visual_rng())?;
+                return Ok(true);
             }
-            Ok::<(), pz_inventory::moddata::ModDataError>(())
+            Ok::<bool, pz_inventory::moddata::ModDataError>(false)
         })();
         pz_inventory::shared::observe_item(&item);
-        visual_result.map_err(|error| pz_scripts::ScriptError::new(error.to_string()))?;
+        if visual_result? {
+            pz_inventory::item_texture::synch_with_visual_ref(
+                &item,
+                e.context().assets(),
+                owner.as_ref(),
+                e.visual_rng(),
+                &mut |m| e.rand_next(m),
+            )?;
+        }
         let i = item.borrow();
         let location = if matches!(
             i.kind,
@@ -757,19 +776,25 @@ pub fn set_worn_items_from_item_visuals(
             can_be_equipped(&i)
         };
         drop(i);
-        let prior = desc.try_borrow().map_err(|_| pz_scripts::ScriptError::new(
-            "descriptor is borrowed while retaining worn items",
-        ))?.worn_items.items().to_vec();
+        let prior = desc
+            .try_borrow()
+            .map_err(|_| {
+                pz_scripts::ScriptError::new("descriptor is borrowed while retaining worn items")
+            })?
+            .worn_items
+            .items()
+            .to_vec();
         if !prior.is_empty() {
             let mut pins = pz_entity::RetiredComponents::new();
             pins.push_payload(Box::new(prior));
             pz_inventory::component_host::retire_components(pins);
         }
         let result = {
-            let mut desc = desc.try_borrow_mut().map_err(|_| pz_scripts::ScriptError::new(
-                "descriptor is borrowed while setting a worn item",
-            ))?;
-            desc.worn_items.set_item(location, Some(LuaItem(item_value(&item))))
+            let mut desc = desc.try_borrow_mut().map_err(|_| {
+                pz_scripts::ScriptError::new("descriptor is borrowed while setting a worn item")
+            })?;
+            desc.worn_items
+                .set_item(location, Some(LuaItem(item_value(&item))))
         };
         result?;
     }
@@ -845,6 +870,33 @@ mod tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, SCRIPTS).unwrap();
         let sm = ScriptManager::new();
+        sm.enable_texture_capture();
+        // Preserve the authored Icon parameter and resolve it through a real
+        // fixture filesystem/texture manager before publishing actual items.
+        let fs = Rc::new(pz_fs::GameFs::new(dir.clone()));
+        let lookup_fs = fs.clone();
+        struct RestoreCapture(Option<pz_render::TextureRefLoader>);
+        impl Drop for RestoreCapture {
+            fn drop(&mut self) {
+                let displaced = pz_render::install_texture_ref_loader(self.0.take());
+                drop(displaced);
+            }
+        }
+        let _capture = RestoreCapture(pz_render::install_texture_ref_loader(Some(Rc::new(
+            move |lookup, name| {
+                let descriptor = {
+                    let manager = crate::bind_render::textures();
+                    let mut manager = manager.try_borrow_mut().map_err(|_| {
+                        pz_render::TextureHostError::Borrowed("visual fixture texture manager")
+                    })?;
+                    match lookup {
+                        pz_render::TextureLookup::Try => manager.try_get_texture(&lookup_fs, name),
+                        pz_render::TextureLookup::Shared => manager.shared_texture(&lookup_fs, name),
+                    }
+                };
+                crate::bind_render::texture_ref(descriptor)
+            },
+        ))));
         for (reg, id) in [
             ("item_type", "base:clothing"),
             ("item_type", "base:normal"),
@@ -869,7 +921,7 @@ mod tests {
             .insert("item_type", "CONTAINER", "base:container");
         st.constants.insert("item_type", "RADIO", "base:radio");
         drop(st);
-        sm.load(&pz_fs::GameFs::new(dir.clone()), &[]).unwrap();
+        sm.load(&fs, &[]).unwrap();
         std::fs::remove_dir_all(dir).unwrap();
         Rc::new(sm)
     }
@@ -1137,23 +1189,53 @@ mod tests {
             .get_or_create_location(tshirt.clone())
             .unwrap();
         let desc = Rc::new(RefCell::new(LuaSurvivorDesc::new(&mut chars, &sm).unwrap()));
-        let prior = crate::bind_items::try_create_item("Base.Rock", 1.0).unwrap().unwrap();
-        desc.borrow_mut().worn_items.set_item(tshirt.clone(), Some(LuaItem(item_value(&prior)))).unwrap();
-        sm.get::<pz_scripts::objects::items::Item>(pz_scripts::ScriptType::Item, "Base.Tshirt_Test")
-            .unwrap().borrow_mut().lua_create = Some("wornInitProbe".into());
+        let prior = crate::bind_items::try_create_item("Base.Rock", 1.0)
+            .unwrap()
+            .unwrap();
+        desc.borrow_mut()
+            .worn_items
+            .set_item(tshirt.clone(), Some(LuaItem(item_value(&prior))))
+            .unwrap();
+        sm.get::<pz_scripts::objects::items::Item>(
+            pz_scripts::ScriptType::Item,
+            "Base.Tshirt_Test",
+        )
+        .unwrap()
+        .borrow_mut()
+        .lua_create = Some("wornInitProbe".into());
         let created = Rc::new(RefCell::new(None::<ItemRef>));
         let (probe_desc, probe_created) = (desc.clone(), created.clone());
-        t.globals().set_str("wornInitProbe", Value::Native(pz_kahlua::NativeFunction::new("wornInitProbe", move |call| {
-            let desc = probe_desc.try_borrow_mut().expect("initialization must release descriptor guards");
-            assert!(desc.worn_items.items().is_empty(), "native clear precedes the first factory callback");
-            drop(desc);
-            let Value::Object(object) = call.arg(0) else { panic!("actual initialization receiver") };
-            let item = &object.as_any().downcast_ref::<LuaInventoryItem>().unwrap().item;
-            assert!(item.borrow().is_initialised, "native flag precedes LuaCreate");
-            item.borrow_mut().condition = 6;
-            *probe_created.borrow_mut() = Some(item.clone());
-            Ok(0)
-        })));
+        t.globals().set_str(
+            "wornInitProbe",
+            Value::Native(pz_kahlua::NativeFunction::new(
+                "wornInitProbe",
+                move |call| {
+                    let desc = probe_desc
+                        .try_borrow_mut()
+                        .expect("initialization must release descriptor guards");
+                    assert!(
+                        desc.worn_items.items().is_empty(),
+                        "native clear precedes the first factory callback"
+                    );
+                    drop(desc);
+                    let Value::Object(object) = call.arg(0) else {
+                        panic!("actual initialization receiver")
+                    };
+                    let item = &object
+                        .as_any()
+                        .downcast_ref::<LuaInventoryItem>()
+                        .unwrap()
+                        .item;
+                    assert!(
+                        item.borrow().is_initialised,
+                        "native flag precedes LuaCreate"
+                    );
+                    item.borrow_mut().condition = 6;
+                    *probe_created.borrow_mut() = Some(item.clone());
+                    Ok(0)
+                },
+            )),
+        );
         let mut v = ItemVisual::new("Base.Tshirt_Test");
         v.texture_choice = 1;
         v.tint = Some([0.25, 0.5, 0.75]);

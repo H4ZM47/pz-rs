@@ -75,6 +75,42 @@ struct RecordingFloor {
 }
 
 impl FloorWorld for RecordingFloor {
+    fn solid_floor_ref_at(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> pz_inventory::floor_drop::HostResult<Option<pz_inventory::floor_drop::FloorSquare>> {
+        self.solid_floor_at(x, y, z)
+            .map(|sq| sq.map(pz_inventory::floor_drop::FloorSquare::data_projection))
+    }
+    fn apparent_z_on(
+        &self,
+        sq: &pz_inventory::floor_drop::FloorSquare,
+        x: f32,
+        y: f32,
+    ) -> pz_inventory::floor_drop::HostResult<f32> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.apparent_z(sq.position(), x, y)
+    }
+    fn add_world_inventory_item_on(
+        &mut self,
+        sq: &pz_inventory::floor_drop::FloorSquare,
+        item: &pz_inventory::shared::ItemRef,
+        x: f32,
+        y: f32,
+        h: f32,
+    ) -> pz_inventory::floor_drop::HostResult<()> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.add_world_inventory_item(sq.position(), item, x, y, h)
+    }
+
     fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<(i32, i32, i32)>> {
         self.calls.borrow_mut().push(format!("{}:floor", self.name));
         if let Some(replacement) = &self.replacement {
@@ -215,6 +251,42 @@ impl Drop for DropProbe {
     }
 }
 impl FloorWorld for DropProbe {
+    fn solid_floor_ref_at(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> pz_inventory::floor_drop::HostResult<Option<pz_inventory::floor_drop::FloorSquare>> {
+        self.solid_floor_at(x, y, z)
+            .map(|sq| sq.map(pz_inventory::floor_drop::FloorSquare::data_projection))
+    }
+    fn apparent_z_on(
+        &self,
+        sq: &pz_inventory::floor_drop::FloorSquare,
+        x: f32,
+        y: f32,
+    ) -> pz_inventory::floor_drop::HostResult<f32> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.apparent_z(sq.position(), x, y)
+    }
+    fn add_world_inventory_item_on(
+        &mut self,
+        sq: &pz_inventory::floor_drop::FloorSquare,
+        item: &pz_inventory::shared::ItemRef,
+        x: f32,
+        y: f32,
+        h: f32,
+    ) -> pz_inventory::floor_drop::HostResult<()> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.add_world_inventory_item(sq.position(), item, x, y, h)
+    }
+
     fn solid_floor_at(&self, _: i32, _: i32, _: i32) -> HostResult<Option<(i32, i32, i32)>> {
         Err(FloorAccess::unavailable())
     }

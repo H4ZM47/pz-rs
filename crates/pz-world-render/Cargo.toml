@@ -6,6 +6,8 @@ publish.workspace = true
 description = "Turns pz-world squares and objects into pz-iso-render and pz-lighting inputs"
 
 [dependencies]
+pz-entity.workspace = true
+pz-inventory.workspace = true
 pz-world.workspace = true
 pz-lighting.workspace = true
 pz-render.workspace = true
@@ -13,7 +15,7 @@ pz-fs.workspace = true
 pz-iso-render = { path = "../pz-iso-render" }
 
 [dev-dependencies]
-pz-inventory.workspace = true
+pz-scripts.workspace = true
 pz-core = { path = "../pz-core" }
 pz-gpu = { path = "../pz-gpu" }
 png.workspace = true

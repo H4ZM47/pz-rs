@@ -3,10 +3,22 @@
 //! Retaining a receiver is explicit. `try_archive_copy` makes a checked,
 //! independent archive allocation without pending host roots.
 use crate::{IsoGridSquare, ObjectSlot};
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
 
 pub type SquareRef = Rc<RefCell<IsoGridSquare>>;
+pub type SquareObserver = fn(&SquareRef);
+thread_local! {
+    static SQUARE_OBSERVER: Cell<Option<SquareObserver>> = const { Cell::new(None) };
+}
+pub fn install_square_observer(observer: Option<SquareObserver>) -> Option<SquareObserver> {
+    SQUARE_OBSERVER.with(|slot| slot.replace(observer))
+}
+pub fn observe_square(square: &SquareRef) {
+    if let Some(observer) = SQUARE_OBSERVER.with(Cell::get) {
+        observer(square);
+    }
+}
 
 #[derive(Debug)]
 pub struct SquareSlot {
@@ -14,9 +26,9 @@ pub struct SquareSlot {
 }
 impl SquareSlot {
     pub fn new(square: IsoGridSquare) -> Self {
-        Self {
-            square: Rc::new(RefCell::new(square)),
-        }
+        let square = Rc::new(RefCell::new(square));
+        observe_square(&square);
+        Self { square }
     }
     pub fn ref_handle(&self) -> SquareRef {
         Rc::clone(&self.square)
@@ -74,7 +86,8 @@ impl RetiredWorldOwners {
     pub fn append(&mut self, other: &mut Self) {
         self.objects.append(&mut other.objects);
         self.squares.append(&mut other.squares);
-        self.components.append(std::mem::take(&mut other.components));
+        self.components
+            .append(std::mem::take(&mut other.components));
     }
 }
 

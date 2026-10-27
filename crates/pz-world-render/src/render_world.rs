@@ -18,6 +18,8 @@ use pz_world::square::IsoDirections;
 use pz_world::{BuildingIdx, GetSquare, IsoCell, IsoGridSquare, IsoMetaGrid, IsoSpriteManager};
 
 use crate::sprites::{SpriteCache, SpriteTextures};
+use crate::{HostResult, RuntimeHostError};
+use pz_world::sprite::runtime::ObjectSprite;
 
 /// The world data the builders read.
 pub struct WorldView<'a> {
@@ -56,34 +58,119 @@ pub fn render_square(
     sq: &IsoGridSquare,
     cache: &mut SpriteCache,
     tex: &mut dyn SpriteTextures,
-) -> RenderSquare {
+) -> HostResult<RenderSquare> {
     let mut rs = RenderSquare::new(sq.x, sq.y, sq.z);
     rs.cut = cutaway_info(w, sq);
     for o in &sq.objects {
-        let o = o.borrow();
+        let o = o
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("render object"))?;
         let kind = match &o.kind {
             pz_world::ObjectKind::Door(d) => ObjectKind::Door { open: d.open },
             pz_world::ObjectKind::Window(win) => ObjectKind::Window { north: win.north },
             pz_world::ObjectKind::Tree(_) => ObjectKind::Tree,
+            pz_world::ObjectKind::WorldInventory(_) => ObjectKind::WorldInventory,
             _ => ObjectKind::Plain,
         };
-        let mut ro = RenderObject::new(kind, o.sprite.map(|s| cache.get(w.sprites, s, tex)));
+        let world_item = kind == ObjectKind::WorldInventory;
+        let hidden_item = world_item && native_world_item_hidden(&o)?;
+        // Native WorldInventory.render dispatches through its actual item
+        // before consulting ANY nullable/tile/native sprite representation.
+        if world_item && !hidden_item {
+            return Err(RuntimeHostError::Unsupported {
+                operation: "native world-item render/model host", kind: None,
+            });
+        }
+        let sprite = if hidden_item {
+            // Authenticated WorldRender=false returns before sprite/model
+            // reads. This is a hidden render view, not a null native sprite.
+            None
+        } else {
+            match &o.sprite {
+                ObjectSprite::None => None,
+                ObjectSprite::Tile(index) => {
+                    w.sprites
+                        .sprites
+                        .get(*index)
+                        .ok_or(RuntimeHostError::InvalidHostState(
+                            "render tile sprite index",
+                        ))?;
+                    Some(cache.get(w.sprites, *index, tex))
+                }
+                ObjectSprite::Native(_) => {
+                    return Err(RuntimeHostError::Unsupported {
+                        operation: if kind == ObjectKind::WorldInventory {
+                            "native world-item render/model host"
+                        } else {
+                            "native runtime sprite render host"
+                        },
+                        kind: None,
+                    })
+                }
+                ObjectSprite::ArchiveUnmanaged(_) => {
+                    return Err(RuntimeHostError::Unsupported {
+                        operation: "archive unmanaged sprite render body",
+                        kind: None,
+                    })
+                }
+            }
+        };
+        let mut ro = RenderObject::new(kind, sprite);
         ro.id = o.id;
         ro.render_y_offset = o.render_y_offset;
         ro.tint = [o.tint_r, o.tint_g, o.tint_b];
         ro.container_count = u32::from(o.container.is_some()) + o.secondary_containers.len() as u32;
-        if let Some(att) = &o.attached_anim_sprite {
-            ro.attached = att
-                .iter()
-                .map(|s| AttachedSprite {
-                    sprite: cache.get(w.sprites, s.sprite, tex),
-                    alpha: s.alpha,
-                })
-                .collect();
+        if !hidden_item {
+            for attached in o.attached_anim_sprite.iter().flatten() {
+                w.sprites.sprites.get(attached.sprite).ok_or(
+                    RuntimeHostError::InvalidHostState("render attached sprite index"),
+                )?;
+                ro.attached.push(AttachedSprite {
+                    sprite: cache.get(w.sprites, attached.sprite, tex),
+                    alpha: attached.alpha,
+                });
+            }
         }
         rs.objects.push(ro);
     }
-    rs
+    Ok(rs)
+}
+
+fn native_world_item_hidden(object: &pz_world::IsoObject) -> HostResult<bool> {
+    let pz_world::ObjectKind::WorldInventory(floor) = &object.kind else {
+        return Ok(false);
+    };
+    let item = {
+        let floor = floor
+            .payload_slot()
+            .ok_or(RuntimeHostError::InvalidHostState(
+                "world render floor payload",
+            ))?;
+        let floor = floor
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("world render floor payload"))?;
+        floor
+            .item
+            .item_slot()
+            .cloned()
+            .ok_or(RuntimeHostError::Unsupported {
+                operation: "world render requires actual item",
+                kind: None,
+            })?
+    };
+    // Native reads the instance's getScriptItem field, not its definition
+    // blueprint. Pointer retrieval occurs after the floor/item guards end.
+    let script = pz_inventory::item_texture::get_script_item_ref(&item)?.ok_or(
+        RuntimeHostError::Unsupported {
+            operation: "native world render null script diagnostic",
+            kind: None,
+        },
+    )?;
+    let script = script
+        .0
+        .try_borrow()
+        .map_err(|_| RuntimeHostError::Borrowed("world render item script"))?;
+    Ok(!script.world_render)
 }
 
 /// What cutaways and occlusion read from `sq` (lighting fields keep their
@@ -114,33 +201,39 @@ pub fn cutaway_info(w: &WorldView<'_>, sq: &IsoGridSquare) -> SquareCutawayInfo 
 /// `exterior`, `water`, `collideW` and `collideN` flags,
 /// `hasSlopedSurface()` and `getPuddlesDir()` (`isInARoom()` and the
 /// attached sprites' names).
-pub fn puddle_square(w: &WorldView<'_>, regions: &IsoRegions, sq: &IsoGridSquare) -> PuddleSquare {
+pub fn puddle_square(
+    w: &WorldView<'_>,
+    regions: &IsoRegions,
+    sq: &IsoGridSquare,
+) -> HostResult<PuddleSquare> {
     let f = &w.sprites.tables.flag;
-    let names = sq
-        .objects
-        .iter()
-        .flat_map(|o| {
-            o.borrow()
-                .attached_anim_sprite
-                .iter()
-                .flatten()
-                .map(|a| a.sprite)
-                .collect::<Vec<_>>()
-        })
-        .filter_map(|sprite| w.sprites.sprites[sprite].name.as_deref());
-    PuddleSquare {
+    let mut names = Vec::new();
+    for object in &sq.objects {
+        let object = object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("puddle object"))?;
+        for attached in object.attached_anim_sprite.iter().flatten() {
+            let sprite = w.sprites.sprites.get(attached.sprite).ok_or(
+                RuntimeHostError::InvalidHostState("puddle attached sprite index"),
+            )?;
+            if let Some(name) = sprite.name.as_deref() {
+                names.push(name);
+            }
+        }
+    }
+    Ok(PuddleSquare {
         exterior: sq.has(f.exterior),
         water: sq.has(f.water),
         collide_w: sq.has(f.collideW),
         collide_n: sq.has(f.collideN),
         sloped: sq.has_sloped_surface(),
-        puddles_dir: puddles_dir(sq.is_in_a_room(w.meta, regions), names),
-    }
+        puddles_dir: puddles_dir(sq.is_in_a_room(w.meta, regions), names.into_iter()),
+    })
 }
 
 /// `getWallType()`: 1 north wall, 4 west wall (5 for `WallNW`), 8 the east
 /// neighbour has a west wall, 2 the south neighbour has a north wall.
-pub fn wall_type(w: &WorldView<'_>, sq: &IsoGridSquare) -> i32 {
+pub fn wall_type(w: &WorldView<'_>, sq: &IsoGridSquare) -> HostResult<i32> {
     let t = &w.sprites.tables;
     let flag =
         |s: &IsoGridSquare, n: &str| t.flag_from_string(n).is_some_and(|f: IsoFlagType| s.has(f));
@@ -155,54 +248,85 @@ pub fn wall_type(w: &WorldView<'_>, sq: &IsoGridSquare) -> i32 {
         ty |= 5;
     }
     if let Some(e) = sq.get_adjacent_square(IsoDirections::E, w.cell) {
-        let e = e.borrow();
+        let e = e
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("wall east square"))?;
         if flag(&e, "WallW") || flag(&e, "WallNW") {
             ty |= 8;
         }
     }
     if let Some(s) = sq.get_adjacent_square(IsoDirections::S, w.cell) {
-        let s = s.borrow();
+        let s = s
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("wall south square"))?;
         if flag(&s, "WallN") || flag(&s, "WallNW") {
             ty |= 2;
         }
     }
-    ty
+    Ok(ty)
 }
 
 /// `getWindowFrame(GridSquareEdgeFacingDirection)`: an `IsoWindowFrame` in
 /// `objects` on the north (`north`) or west edge.
-pub fn has_window_frame(sq: &IsoGridSquare, north: bool) -> bool {
-    sq.objects.iter().any(
-        |o| matches!(o.borrow().kind, pz_world::ObjectKind::WindowFrame { north: n } if n == north),
-    )
+pub fn has_window_frame(sq: &IsoGridSquare, north: bool) -> HostResult<bool> {
+    for object in &sq.objects {
+        let object = object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("window frame object"))?;
+        if matches!(object.kind, pz_world::ObjectKind::WindowFrame { north:n } if n==north) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-/// The neighbour tests of `renderSeamFix2_Floor` / `renderSeamFix2_Wall`
-/// for `sq`. Water uses the `water` flag; the shore test
-/// (`IsoWaterGeometry`) is not ported.
-pub fn seam_neighbours(w: &WorldView<'_>, sq: &IsoGridSquare) -> SeamNeighbours {
+/// The live seam reads retain faults from actual neighbour/sprite bodies.
+pub fn seam_neighbours(w: &WorldView<'_>, sq: &IsoGridSquare) -> HostResult<SeamNeighbours> {
     let t = &w.sprites.tables;
     let flag =
         |s: &IsoGridSquare, n: &str| t.flag_from_string(n).is_some_and(|f: IsoFlagType| s.has(f));
     let s_owner = sq.get_adjacent_square(IsoDirections::S, w.cell);
     let e_owner = sq.get_adjacent_square(IsoDirections::E, w.cell);
-    let s_guard = s_owner.as_ref().map(|s| s.borrow());
-    let e_guard = e_owner.as_ref().map(|s| s.borrow());
+    let s_guard = s_owner
+        .as_ref()
+        .map(|s| {
+            s.try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("seam south square"))
+        })
+        .transpose()?;
+    let e_guard = e_owner
+        .as_ref()
+        .map(|s| {
+            s.try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("seam east square"))
+        })
+        .transpose()?;
     let s = s_guard.as_deref();
     let e = e_guard.as_deref();
-    let floor = |s: &IsoGridSquare| s.floor_index(w.sprites).is_some();
-    SeamNeighbours {
-        s_floor: s.is_some_and(floor),
-        e_floor: e.is_some_and(floor),
+    Ok(SeamNeighbours {
+        s_floor: match s {
+            Some(s) => s.try_floor_index(w.sprites)?.is_some(),
+            None => false,
+        },
+        e_floor: match e {
+            Some(e) => e.try_floor_index(w.sprites)?.is_some(),
+            None => false,
+        },
         s_water: s.is_some_and(|s| s.has(t.flag.water)),
         e_water: e.is_some_and(|e| e.has(t.flag.water)),
-        s_wall_w: s.is_some_and(|s| {
-            wall_type(w, s) & 4 != 0 || has_window_frame(s, false) || flag(s, "DoorWallW")
-        }),
-        e_wall_n: e.is_some_and(|e| {
-            wall_type(w, e) & 1 != 0 || has_window_frame(e, true) || flag(e, "DoorWallN")
-        }),
-    }
+        s_wall_w: match s {
+            Some(s) => {
+                wall_type(w, s)? & 4 != 0 || has_window_frame(s, false)? || flag(s, "DoorWallW")
+            }
+            None => false,
+        },
+        e_wall_n: match e {
+            Some(e) => {
+                wall_type(w, e)? & 1 != 0 || has_window_frame(e, true)? || flag(e, "DoorWallN")
+            }
+            None => false,
+        },
+    })
 }
 
 impl RenderWorld {
@@ -243,20 +367,22 @@ impl RenderWorld {
         wy: i32,
         cache: &mut SpriteCache,
         tex: &mut dyn SpriteTextures,
-    ) -> Vec<(i32, i32, i32)> {
+    ) -> HostResult<Vec<(i32, i32, i32)>> {
         self.remove_chunk(wx, wy);
         let Some(ch) = w.cell.chunks.get(&(wx, wy)) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         self.chunks.insert((wx, wy), (ch.min_level, ch.max_level));
         for sq_owner in ch.squares() {
-            let sq = sq_owner.borrow();
+            let sq = sq_owner
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("render chunk square"))?;
             self.squares
-                .insert((sq.x, sq.y, sq.z), render_square(w, &sq, cache, tex));
+                .insert((sq.x, sq.y, sq.z), render_square(w, &sq, cache, tex)?);
             self.puddles_recalc.insert((sq.x, sq.y, sq.z));
         }
-        self.refresh_seams(w, wx, wy);
-        (ch.min_level..=ch.max_level).map(|z| (wx, wy, z)).collect()
+        self.refresh_seams(w, wx, wy)?;
+        Ok((ch.min_level..=ch.max_level).map(|z| (wx, wy, z)).collect())
     }
 
     /// Rebuilds the render square at `(x, y, z)` from the world after its
@@ -271,20 +397,22 @@ impl RenderWorld {
         (x, y, z): (i32, i32, i32),
         cache: &mut SpriteCache,
         tex: &mut dyn SpriteTextures,
-    ) {
+    ) -> HostResult<()> {
         let (wx, wy) = (x.div_euclid(8), y.div_euclid(8));
         if !self.chunks.contains_key(&(wx, wy)) {
-            return;
+            return Ok(());
         }
         if let Some(ch) = w.cell.chunks.get(&(wx, wy)) {
             self.chunks.insert((wx, wy), (ch.min_level, ch.max_level));
         }
         let Some(sq_owner) = w.cell.get_grid_square(x, y, z) else {
             self.squares.remove(&(x, y, z));
-            return;
+            return Ok(());
         };
-        let sq = sq_owner.borrow();
-        let mut rs = render_square(w, &sq, cache, tex);
+        let sq = sq_owner
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("render rebuild square"))?;
+        let mut rs = render_square(w, &sq, cache, tex)?;
         if let Some(old) = self.squares.get(&(x, y, z)) {
             rs.light_info = old.light_info;
             rs.vert_lights = old.vert_lights;
@@ -298,16 +426,20 @@ impl RenderWorld {
         } else {
             self.puddles_recalc.insert((x, y, z));
         }
-        rs.seam = seam_neighbours(w, &sq);
+        rs.seam = seam_neighbours(w, &sq)?;
         self.squares.insert((x, y, z), rs);
         for p in [(x - 1, y, z), (x, y - 1, z)] {
             if let (Some(sq), Some(rs)) = (
                 w.cell.get_grid_square(p.0, p.1, p.2),
                 self.squares.get_mut(&p),
             ) {
-                rs.seam = seam_neighbours(w, &sq.borrow());
+                let sq = sq
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("seam square"))?;
+                rs.seam = seam_neighbours(w, &sq)?;
             }
         }
+        Ok(())
     }
 
     /// `IsoPuddlesGeometry.recalcIfNeeded()` for the render square at
@@ -321,23 +453,48 @@ impl RenderWorld {
         regions: &IsoRegions,
         (x, y, z): (i32, i32, i32),
         perf_puddles: i32,
-    ) {
+    ) -> HostResult<()> {
         let (Some(sq), Some(rs)) = (
             w.cell.get_grid_square(x, y, z),
             self.squares.get_mut(&(x, y, z)),
         ) else {
-            return;
+            return Ok(());
         };
+        let sq = sq
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("puddle square"))?;
+        let input = puddle_square(w, regions, &sq)?;
+        // The pure geometry callback is infallible. Record the first host
+        // fault and reject the whole uncommitted geometry after it returns.
+        // No false-absence geometry is published and no later body is read.
+        let fault = std::cell::RefCell::new(None);
         let at = |dx: i32, dy: i32| {
-            w.cell
-                .get_grid_square(x + dx, y + dy, z)
-                .map(|n| puddle_square(w, regions, &n.borrow()))
+            if fault.borrow().is_some() {
+                return None;
+            }
+            let Some(n) = w.cell.get_grid_square(x + dx, y + dy, z) else {
+                return None;
+            };
+            let value = (|| {
+                let n = n
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("puddle neighbour square"))?;
+                puddle_square(w, regions, &n)
+            })();
+            match value {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    *fault.borrow_mut() = Some(error);
+                    None
+                }
+            }
         };
-        rs.puddles = Some(PuddlesGeometry::init(
-            &puddle_square(w, regions, &sq.borrow()),
-            perf_puddles,
-            at,
-        ));
+        let geometry = PuddlesGeometry::init(&input, perf_puddles, at);
+        if let Some(error) = fault.into_inner() {
+            return Err(error);
+        }
+        rs.puddles = Some(geometry);
+        Ok(())
     }
 
     /// Drops chunk `(wx, wy)`'s squares.
@@ -353,13 +510,15 @@ impl RenderWorld {
 
     /// Recomputes [`SeamNeighbours`] for chunk `(wx, wy)` and for the
     /// squares west and north of it whose east/south neighbour is in it.
-    pub fn refresh_seams(&mut self, w: &WorldView<'_>, wx: i32, wy: i32) {
+    pub fn refresh_seams(&mut self, w: &WorldView<'_>, wx: i32, wy: i32) -> HostResult<()> {
         let mut targets = Vec::new();
         if let Some(ch) = w.cell.chunks.get(&(wx, wy)) {
-            targets.extend(ch.squares().map(|s| {
-                let s = s.borrow();
-                (s.x, s.y, s.z)
-            }));
+            for sq in ch.squares() {
+                let sq = sq
+                    .try_borrow()
+                    .map_err(|_| RuntimeHostError::Borrowed("seam chunk square"))?;
+                targets.push((sq.x, sq.y, sq.z));
+            }
         }
         let (x0, y0) = (wx * 8, wy * 8);
         for (_, &(min, max)) in self
@@ -381,8 +540,12 @@ impl RenderWorld {
             ) else {
                 continue;
             };
-            rs.seam = seam_neighbours(w, &sq.borrow());
+            let sq = sq
+                .try_borrow()
+                .map_err(|_| RuntimeHostError::Borrowed("seam square"))?;
+            rs.seam = seam_neighbours(w, &sq)?;
         }
+        Ok(())
     }
 
     /// The squares of chunk `(wx, wy)` at level `z`, index `x + y * 8`.

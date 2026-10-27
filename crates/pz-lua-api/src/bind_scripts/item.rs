@@ -201,14 +201,16 @@ pub fn register(thread: &mut Thread, sm: &Rc<ScriptManager>) {
     void(&b, "resolveModelScripts", move |_, h| h.write(|i: &mut Item| i.resolve_model_scripts(&s)));
     let s = sm.clone();
     void(&b, "DoParam", move |c, h| {
-        let r = if c.nargs() > 2 {
-            let (p, v) = (req_str(c, 1)?, req_str(c, 2)?);
-            h.write(|i: &mut Item| i.do_param(&s, &p, &v))?
-        } else {
-            let p = req_str(c, 1)?;
-            h.write(|i: &mut Item| i.do_param_str(&s, &p))?
-        };
-        r.map_err(java_error)
+        super::with_texture_load_operation(&s, || {
+            let r = if c.nargs() > 2 {
+                let (p, v) = (req_str(c, 1)?, req_str(c, 2)?);
+                h.write(|i: &mut Item| i.do_param(&s, &p, &v))?
+            } else {
+                let p = req_str(c, 1)?;
+                h.write(|i: &mut Item| i.do_param_str(&s, &p))?
+            };
+            r.map_err(java_error)
+        })
     });
     let s = sm.clone();
     void(&b, "addResearchableRecipe", move |c, h| {

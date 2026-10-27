@@ -354,7 +354,10 @@ fn create_item_with(
 /// `InventoryItemFactory.CreateItem(itemType, useDelta)` through the
 /// installed environment (its `Rand`, `OutfitRNG` and assets) and the
 /// shared `ScriptManager`: `None` for an unknown type.
-pub fn try_create_item(item_type: &str, use_delta: f32) -> LuaResult<Option<ItemRef>> {
+pub fn try_create_item_host(
+    item_type: &str,
+    use_delta: f32,
+) -> pz_entity::runtime_load::HostResult<Option<ItemRef>> {
     let e = env();
     let sm = crate::bind_registry::shared_script_manager();
     let ce = CreateEnv {
@@ -373,10 +376,12 @@ pub fn try_create_item(item_type: &str, use_delta: f32) -> LuaResult<Option<Item
         true,
         &translated_name,
     )
-    .map_err(|failure| {
-        let error = failure.into_error_and_retire();
-        LuaError::runtime(format!("InventoryItemFactory.CreateItem: {error:?}"))
-    })
+    .map_err(|failure| failure.into_error_and_retire())
+}
+
+/// Native Lua adapter preserves typed host failures after factory guards end.
+pub fn try_create_item(item_type: &str, use_delta: f32) -> LuaResult<Option<ItemRef>> {
+    try_create_item_host(item_type, use_delta).map_err(crate::bind_world_object::host_error)
 }
 
 /// Legacy synchronous adapter. Production Lua uses [`try_create_item`] so
@@ -392,7 +397,9 @@ pub fn create_item(item_type: &str, use_delta: f32) -> Option<ItemRef> {
 pub fn initialise_item(thread: &mut Thread, item: &ItemRef) {
     let (full_type, script) = {
         let mut item = item.borrow_mut();
-        if item.is_initialised { return }
+        if item.is_initialised {
+            return;
+        }
         item.is_initialised = true;
         (item.get_full_type(), item.template.script.clone())
     };
@@ -591,49 +598,32 @@ pub fn item_arg(c: &NativeCall<'_>, i: usize) -> LuaResult<ItemRef> {
     }
 }
 
-/// `InventoryItem.getTexture()`.
-pub fn item_texture(item: &ItemRef) -> LuaResult<Option<pz_render::Texture>> {
-    use pz_inventory::naming::{ItemTexture, QUESTION_TEXTURE};
-    pz_inventory::moddata::prepare_existing_mod_data_ref(item).map_err(|error| error.to_lua_error())?;
-    let custom = moddata_read(item, |body| body.try_custom_inventory_icon())?;
-    if let Some(t) = custom.and_then(|n| crate::bind_render::get_shared_texture(&n)) {
-        return Ok(Some(t));
-    }
-    let base_textures = {
-        let i = item.borrow();
-        let bag_or_clothing = matches!(
-            i.kind,
-            ItemKind::Clothing(_) | ItemKind::AlarmClockClothing(..) | ItemKind::Container(_)
-        );
-        if bag_or_clothing && i.visual.is_some() {
-            drop(i);
-            let e = env();
-            let owner = e.owner(item);
-            if e.context().assets().is_some() { ensure_clothing_mod_data(item)?; }
-            moddata_read(item, |body| body.try_get_clothing_item(e.context().assets(), owner.as_ref()).map(|value| value.map(|c| c.base_textures.len())))?
-        } else {
-            None
-        }
-    };
-    let Some(t) = item.borrow().texture(base_textures) else { return Ok(None) };
-    Ok(match t {
-        ItemTexture::Shared(n) => crate::bind_render::get_shared_texture(&n),
-        ItemTexture::Try { name, fallback } => crate::bind_render::try_get_texture(&name)
-            .or_else(|| fallback.then(|| crate::bind_render::get_shared_texture(QUESTION_TEXTURE)).flatten()),
-    })
+/// The actual canonical `InventoryItem.getTexture()` reference.
+pub fn item_texture(item: &ItemRef) -> LuaResult<Option<pz_render::TextureRef>> {
+    pz_inventory::item_texture::get_texture_ref(item).map_err(crate::bind_world_object::host_error)
 }
 
-fn moddata_read<T>(item: &ItemRef, read: impl FnOnce(&InventoryItem) -> pz_inventory::moddata::ModDataResult<T>) -> LuaResult<T> {
+fn moddata_read<T>(
+    item: &ItemRef,
+    read: impl FnOnce(&InventoryItem) -> pz_inventory::moddata::ModDataResult<T>,
+) -> LuaResult<T> {
     let result = {
-        let body = item.try_borrow().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item ModData body").to_lua_error())?;
+        let body = item.try_borrow().map_err(|_| {
+            pz_inventory::moddata::ModDataError::Borrowed("item ModData body").to_lua_error()
+        })?;
         read(&body)
     };
     result.map_err(|error| error.to_lua_error())
 }
 
-fn moddata_write<T>(item: &ItemRef, write: impl FnOnce(&mut InventoryItem) -> pz_inventory::moddata::ModDataResult<T>) -> LuaResult<T> {
+fn moddata_write<T>(
+    item: &ItemRef,
+    write: impl FnOnce(&mut InventoryItem) -> pz_inventory::moddata::ModDataResult<T>,
+) -> LuaResult<T> {
     let result = {
-        let mut body = item.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item ModData body").to_lua_error())?;
+        let mut body = item.try_borrow_mut().map_err(|_| {
+            pz_inventory::moddata::ModDataError::Borrowed("item ModData body").to_lua_error()
+        })?;
         write(&mut body)
     };
     pz_inventory::shared::observe_item(item);
@@ -646,7 +636,10 @@ pub(crate) fn ensure_clothing_mod_data(item: &ItemRef) -> LuaResult<()> {
     pz_inventory::moddata::prepare_clothing_mod_data_ref(item).map_err(|error| error.to_lua_error())
 }
 
-fn prepare_mod_data_when(item: &ItemRef, reads: impl FnOnce(&InventoryItem) -> bool) -> LuaResult<()> {
+fn prepare_mod_data_when(
+    item: &ItemRef,
+    reads: impl FnOnce(&InventoryItem) -> bool,
+) -> LuaResult<()> {
     if moddata_read(item, |body| Ok(reads(body)))? {
         pz_inventory::moddata::get_mod_data_ref(item).map_err(|error| error.to_lua_error())?;
     } else {
@@ -798,9 +791,12 @@ fn register_inventory_item(thread: &mut Thread) {
             let table = match c.arg(1) {
                 Value::Nil => None,
                 Value::Table(table) => Some(table),
-                value => return Err(crate::bind_java_util::class_cast(
-                    &value, "se.krka.kahlua.vm.KahluaTable",
-                )),
+                value => {
+                    return Err(crate::bind_java_util::class_cast(
+                        &value,
+                        "se.krka.kahlua.vm.KahluaTable",
+                    ))
+                }
             };
             pz_inventory::moddata::copy_mod_data_ref(&item, table.as_ref())
                 .map_err(|error| error.to_lua_error())?;
@@ -826,7 +822,8 @@ fn register_inventory_item(thread: &mut Thread) {
     b.method("getItemType", |c| {
         let item = this(c)?;
         let key = crate::bind_registry::key_value(
-            crate::bind_registry::ITEM_TYPE_CLASS, item.borrow().item_type.as_ref()
+            crate::bind_registry::ITEM_TYPE_CLASS,
+            item.borrow().item_type.as_ref(),
         );
         Ok(c.push(key))
     });
@@ -835,11 +832,25 @@ fn register_inventory_item(thread: &mut Thread) {
             let item = this(c)?;
             let key = match c.arg(1) {
                 Value::Nil => None,
-                Value::Object(o) => match o.as_any().downcast_ref::<crate::bind_registry::KeyObject>() {
-                    Some(key) if key.class == crate::bind_registry::ITEM_TYPE_CLASS => Some(key.key.clone()),
-                    _ => return Err(crate::bind_java_util::class_cast(&Value::Object(o), crate::bind_registry::ITEM_TYPE_CLASS)),
-                },
-                other => return Err(crate::bind_java_util::class_cast(&other, crate::bind_registry::ITEM_TYPE_CLASS)),
+                Value::Object(o) => {
+                    match o.as_any().downcast_ref::<crate::bind_registry::KeyObject>() {
+                        Some(key) if key.class == crate::bind_registry::ITEM_TYPE_CLASS => {
+                            Some(key.key.clone())
+                        }
+                        _ => {
+                            return Err(crate::bind_java_util::class_cast(
+                                &Value::Object(o),
+                                crate::bind_registry::ITEM_TYPE_CLASS,
+                            ))
+                        }
+                    }
+                }
+                other => {
+                    return Err(crate::bind_java_util::class_cast(
+                        &other,
+                        crate::bind_registry::ITEM_TYPE_CLASS,
+                    ))
+                }
             };
             if set {
                 item.borrow_mut().item_type = key;
@@ -874,16 +885,39 @@ fn register_inventory_item(thread: &mut Thread) {
         crate::bind_item_name::item_name(&i, env().as_ref())
     ));
     get!(b, "getID", |i| Value::from(i.id));
-    // `getTex()` / `getTexture()` / `getIcon()`: the `customInventoryIcon` mod-data
-    // texture when it exists, else `texture`.
-    for name in ["getTex", "getTexture", "getIcon"] {
-        b.method(name, |c| {
+    // Distinct native virtual getters preserve actual Food dispatch and
+    // canonical asset identity; no texture is rebuilt from a name here.
+    for (name, getter) in [
+        (
+            "getTex",
+            pz_inventory::item_texture::get_tex_ref
+                as fn(
+                    &ItemRef,
+                )
+                    -> pz_entity::runtime_load::HostResult<Option<pz_render::TextureRef>>,
+        ),
+        ("getTexture", pz_inventory::item_texture::get_texture_ref),
+        ("getIcon", pz_inventory::item_texture::get_icon_ref),
+        (
+            "getTextureColorMask",
+            pz_inventory::item_texture::get_texture_color_mask_ref,
+        ),
+        (
+            "getTextureFluidMask",
+            pz_inventory::item_texture::get_texture_fluid_mask_ref,
+        ),
+    ] {
+        b.method(name, move |c| {
             let item = this(c)?;
-            Ok(c.push(crate::bind_render::texture_value(item_texture(&item)?)))
+            let texture = getter(&item).map_err(crate::bind_world_object::host_error)?;
+            Ok(c.push(crate::bind_render::texture_value_ref(texture.as_ref())))
         });
     }
     // `nameAfterDescriptor(SurvivorDesc)` / `monogramAfterDescriptor`.
-    for (name, mono) in [("nameAfterDescriptor", false), ("monogramAfterDescriptor", true)] {
+    for (name, mono) in [
+        ("nameAfterDescriptor", false),
+        ("monogramAfterDescriptor", true),
+    ] {
         b.method(name, move |c| {
             let item = this(c)?;
             if c.arg(1).is_nil() {
@@ -903,7 +937,10 @@ fn register_inventory_item(thread: &mut Thread) {
             let mut i = item.borrow_mut();
             if mono {
                 i.monogram_after_descriptor(&display, fore.as_deref(), sur.as_deref())
-                    .map_err(|class| LuaError::Runtime { message: String::new(), class })?;
+                    .map_err(|class| LuaError::Runtime {
+                        message: String::new(),
+                        class,
+                    })?;
             } else {
                 i.name_after_descriptor(&display, fore.as_deref(), sur.as_deref());
             }
@@ -1142,7 +1179,9 @@ fn register_inventory_item(thread: &mut Thread) {
     });
     envd!(b, "getAlternateModelName", |r, e, ctx, o, _c| {
         ensure_clothing_mod_data(&r)?;
-        let value = moddata_read(&r, |body| body.try_get_alternate_model_name(ctx.assets(), o.as_ref()))?;
+        let value = moddata_read(&r, |body| {
+            body.try_get_alternate_model_name(ctx.assets(), o.as_ref())
+        })?;
         Ok(opt_str(value.as_deref()))
     });
     envd!(b, "setCondition", |r, e, ctx, o, c| {
@@ -1215,12 +1254,16 @@ fn register_clothing(thread: &mut Thread) {
     b.method("hasFilter", |c| {
         let item = this(c)?;
         prepare_mod_data_when(&item, |body| body.is_gas_mask())?;
-        Ok(c.push(Value::Bool(moddata_read(&item, |body| body.try_has_filter())?)))
+        Ok(c.push(Value::Bool(moddata_read(&item, |body| {
+            body.try_has_filter()
+        })?)))
     });
     b.method("hasTank", |c| {
         let item = this(c)?;
         prepare_mod_data_when(&item, |body| body.has_tag("base:scba"))?;
-        Ok(c.push(Value::Bool(moddata_read(&item, |body| body.try_has_tank())?)))
+        Ok(c.push(Value::Bool(moddata_read(&item, |body| {
+            body.try_has_tank()
+        })?)))
     });
     b.method("getFilterType", |c| {
         let item = this(c)?;
@@ -1271,7 +1314,9 @@ fn register_clothing(thread: &mut Thread) {
     });
     envd!(b, "getCorpseSicknessDefense", |r, e, ctx, _o, _c| {
         prepare_mod_data_when(&r, |body| body.condition > 0 && body.is_gas_mask())?;
-        Ok(f(moddata_read(&r, |body| body.try_get_corpse_sickness_defense_with(ctx))?))
+        Ok(f(moddata_read(&r, |body| {
+            body.try_get_corpse_sickness_defense_with(ctx)
+        })?))
     });
     envd!(b, "getDefForPart", |r, e, ctx, _o, c| {
         let Some(a) = ctx.assets() else {
@@ -1312,7 +1357,12 @@ fn register_clothing(thread: &mut Thread) {
             1.0
         };
         prepare_mod_data_when(&r, |body| body.is_gas_mask())?;
-        let result = r.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item ModData drain body").to_lua_error())?
+        let result = r
+            .try_borrow_mut()
+            .map_err(|_| {
+                pz_inventory::moddata::ModDataError::Borrowed("item ModData drain body")
+                    .to_lua_error()
+            })?
             .drain_gas_mask(rate, ctx);
         pz_inventory::shared::observe_item(&r);
         result.map_err(java_error)?;
@@ -1320,7 +1370,13 @@ fn register_clothing(thread: &mut Thread) {
     });
     envd!(b, "drainSCBA", |r, e, ctx, _o, _c| {
         ensure_clothing_mod_data(&r)?;
-        let result = r.try_borrow_mut().map_err(|_| pz_inventory::moddata::ModDataError::Borrowed("item ModData drain body").to_lua_error())?.drain_scba(ctx);
+        let result = r
+            .try_borrow_mut()
+            .map_err(|_| {
+                pz_inventory::moddata::ModDataError::Borrowed("item ModData drain body")
+                    .to_lua_error()
+            })?
+            .drain_scba(ctx);
         pz_inventory::shared::observe_item(&r);
         result.map_err(java_error)?;
         Ok(Value::Nil)
@@ -1819,9 +1875,13 @@ mod tests {
     fn inventory_classification_uses_live_instance_type_and_category_override() {
         use crate::bind_registry::{key_value, ITEM_TAG_CLASS, ITEM_TYPE_CLASS};
         use pz_scripts::registry::{RegistryKey, ResourceLocation};
-        let key = |name: &str| Rc::new(RegistryKey {
-            location: ResourceLocation::of(name).unwrap(), name: name.into(), item_key: None,
-        });
+        let key = |name: &str| {
+            Rc::new(RegistryKey {
+                location: ResourceLocation::of(name).unwrap(),
+                name: name.into(),
+                item_key: None,
+            })
+        };
         let container = key("test:container");
         let other = key("test:normal");
         // Equal spelling does not make two separately allocated Java
@@ -1829,28 +1889,41 @@ mod tests {
         let duplicate = key("test:container");
         let mut thread = item_thread();
         for (name, value) in [
-            ("containerType", key_value(ITEM_TYPE_CLASS, Some(&container))),
+            (
+                "containerType",
+                key_value(ITEM_TYPE_CLASS, Some(&container)),
+            ),
             ("otherType", key_value(ITEM_TYPE_CLASS, Some(&other))),
-            ("duplicateType", key_value(ITEM_TYPE_CLASS, Some(&duplicate))),
-            ("wrongKind", key_value(ITEM_TAG_CLASS, Some(&key("test:tag")))),
+            (
+                "duplicateType",
+                key_value(ITEM_TYPE_CLASS, Some(&duplicate)),
+            ),
+            (
+                "wrongKind",
+                key_value(ITEM_TAG_CLASS, Some(&key("test:tag"))),
+            ),
         ] {
             thread.globals().set_str(name, value);
         }
-        let item = make(ItemClass::Container, "AuthoredBag", |t| t.item_type = Some(container.clone()));
+        let item = make(ItemClass::Container, "AuthoredBag", |t| {
+            t.item_type = Some(container.clone())
+        });
         thread.globals().set_str("item", item_value(&item));
         let values = run(&mut thread, r#"
             return item:getCategory() == "Container",
                 item:getItemType() == containerType,
                 item:isItemType(containerType), not item:isItemType(otherType),
                 not item:isItemType(duplicateType), not item:isItemType(nil)
-        "#);
+        "#,
+        );
         assert_eq!(values.len(), 6);
         assert!(values.iter().all(|v| matches!(v, Value::Bool(true))));
         let values = run(&mut thread, r#"
             item:setItemType(otherType)
             return item:getItemType() == otherType, item:isItemType(otherType),
                 not item:isItemType(containerType), item:getCategory() == "Container"
-        "#);
+        "#,
+        );
         assert!(values.iter().all(|v| matches!(v, Value::Bool(true))));
         item.borrow_mut().main_category = Some("Custom category".into());
         assert_eq!(run(&mut thread, "return item:getCategory()")[0].as_str(), Some("Custom category"));
@@ -1867,7 +1940,8 @@ mod tests {
             local first = pcall(function() item:setItemType(wrongKind) end)
             local second, message = pcall(function() item:isItemType('test:normal') end)
             return first, second, message
-        "#);
+        "#,
+        );
         assert_eq!(rejected.len(), 3);
         assert!(matches!(rejected[0], Value::Bool(false)));
         assert!(matches!(rejected[1], Value::Bool(false)));
@@ -1912,7 +1986,8 @@ mod tests {
                 item:setName('created')
                 error('protected fixture failure')
             end
-        "#);
+        "#,
+        );
         initialise_item(&mut thread, &item);
         initialise_item(&mut thread, &item);
         assert!(item.borrow().is_initialised);
@@ -1945,7 +2020,8 @@ mod tests {
         let values = run(&mut thread, r#"
             local ok, message = pcall(function() return missing:isHidden() end)
             return ok, message
-        "#);
+        "#,
+        );
         assert!(matches!(values[0], Value::Bool(false)));
         assert!(pz_kahlua::exec::java_value_of(&values[1]).contains("NullPointerException"));
     }

@@ -441,7 +441,7 @@ impl StatesWorldAdapter<'_> {
         let mats = ["Material", "Material2", "Material3"].map(|k| env.obj_prop(&o, k));
         if mats
             .iter()
-            .any(|m| matches!(m, Some("MetalBars") | Some("MetalWire")))
+            .any(|m| matches!(m.as_deref(), Some("MetalBars") | Some("MetalWire")))
         {
             return true;
         }
@@ -472,7 +472,7 @@ impl StatesWorldAdapter<'_> {
             {
                 return (3, 3);
             }
-            let fence = match low {
+            let fence = match low.as_str() {
                 "Wood" => 0,
                 "Metal" => 1,
                 "Sandbag" => 2,
@@ -492,7 +492,7 @@ impl StatesWorldAdapter<'_> {
             return (fence, trip);
         }
         if let Some(high) = env.obj_prop(&o, "FenceTypeHigh") {
-            return match high {
+            return match high.as_str() {
                 "Metal" => (1, 1),
                 "MetalGate" => (6, 8),
                 _ => (WOOD, WOOD),
@@ -538,13 +538,11 @@ impl StatesWorldAdapter<'_> {
     pub fn floor_sprite_name_at(&self, p: (i32, i32, i32)) -> Option<String> {
         let sq_owner = self.cell.get_grid_square(p.0, p.1, p.2)?;
         let sq = sq_owner.borrow();
-        let floor = sq.objects.iter().map(|o| o.borrow()).find(|o| {
-            o.sprite.is_some_and(|s| {
-                self.sprites.sprites[s]
-                    .properties
-                    .has(self.sprites.tables.flag.solidfloor)
-            })
-        })?;
-        self.env().sprite_name(&floor).map(str::to_string)
+        let floor = sq
+            .objects
+            .iter()
+            .map(|o| o.borrow())
+            .find(|o| self.env().obj_has_flag(o, "solidfloor"))?;
+        self.env().sprite_name(&floor)
     }
 }

@@ -94,8 +94,9 @@ This does not complete the existing unported item-fall and sound event handling.
 Floor visual loading and swap tails still require their genuine texture, sprite,
 processing and manager phases. Named owned continuations and unsupported host
 results preserve these boundaries; they do not certify a completed native tail.
-The actual square-list Lua bridge, captured icon textures/masks and full inventory
-row rendering remain separate integration work.
+The actual square-list Lua bridge and complete DrawItemIcon/inventory-row
+rendering remain separate integration work; captured icon/mask producers are
+connected in the current batch.
 
 The installed-session check at `d873dfa9` reaches the actual pane's next failure,
 `isKnownPoison` at `ISInventoryPane.renderdetails:2324`. Its real Bandage drop
@@ -112,17 +113,71 @@ native no-hands, Tutorial and other early returns avoid borrowing the provider.
 Render invalidation runs at the supplied-item method's PC20 after corpse dispatch;
 later region/door bodies cannot preempt that prefix.
 
-The strict native placement path currently stops at `IsoSprite.CreateSprite`
-PC128. It retains the allocated receiver and earlier changes, before later
-`updateSprite`, square, drop-time, Fluid transfer, list and backlink phases.
-Explicit `*_data_projection` APIs preserve the older Rust projection separately.
-An absent projected sprite cannot stand in for a native empty-sprite result.
-New fallible lifecycle/render hooks reject unavailable capabilities; the actual
-added-to-world flag clears only after successful unregister. Captured item
-textures and actual sprite/instance ownership remain required before a native
-placement completion claim. The installed session still needs this new pinned
-service build; no successful Bandage placement or inventory-row rendering is
-established by its 1,145 passing affected tests.
+The installed check at `c45263aa` verifies the floor service connection and
+then stops at the missing native sprite constructor. It does not place the
+Bandage successfully. Its inventory pane separately stops at `isKnownPoison`
+(`ISInventoryPane.renderdetails:2324`). All four native platform suites passed
+for that committed source; those results do not cover the subsequent batch.
+
+The next source batch captures the actual nullable script and inventory texture
+references while scripts load, through the same shared texture manager and file
+system. Normal/world/special slots retain their real texture allocations. Lua
+getters expose those same canonical references; Food's `getTex` selects burnt,
+rotten or cooked state independently of the ordinary texture getter. The actual
+broken flag remains separate from condition. Food's cooked setter uses its
+actual per-instance cooking threshold, copied from the current script during
+factory initialization; it advances cooking time only on the native ordered
+comparison. Loading restores cooking state directly and preserves that threshold
+without adding a save field. Texture lookup failures keep their
+typed host domain through direct script parameters, item visual synchronization,
+worn-item actions and native Lua boundaries. Direct visual synchronization reaches
+its first texture phase before allocating gas-mask ModData.
+
+Actual floor objects now retain an exclusive sprite slot: a managed tile,
+explicit archive sprite, actual runtime sprite, or native null. Runtime sprites
+own their real metadata, texture, tint, manager and pooled default instance.
+Native creation, single-texture loading, scale and tint use those same bodies;
+collection traces and detaches their physical references without running native
+pool resets. Immutable sprite class tables remain independent of the mutable
+manager body. Native floor loading has a separate visual-host entry; the engine
+chunk codec still uses its explicitly named data projection until a genuine load
+host is connected.
+
+Placement carries the same retained square across random draws, height and
+constructor phases. It preserves tint/texture changes, actual square, drop time,
+item name/key publication, list insertion and backlink in native order, including
+completed changes when a later phase fails. The bounded empty-component native
+lifecycle sets the actual added flag, allocates and releases the real entity
+event, and flags the actual retained chunk's hot-save state. Selected processing,
+container and entity registries still fail explicitly. The designation-zone
+registry and adjacent-square render capability remain missing. Ordinary native
+AddTileObject tails also require genuine fallible recalculation capabilities;
+legacy data projection helpers cannot certify a completed native addition.
+
+Actual reference persistence is being connected separately from the older
+value-container codec. The new path saves actual item/container references,
+releases parent guards before nested bag assets, and models lazy duplicate
+comparison with temporary actual IDs, finally restoration and the same per-thread
+comparison buffer. Bounded buffer growth, cursor and retry behavior are distinct
+from the older append-only output. Selected live ModData/component scratch
+serialization, owned weapon attachments, actual MapItem symbols, nonnull ByteData
+comparison and native pooled returned-list identity
+remain explicit limitations until their own adapters exist. Character and world
+save producers that still build value snapshots also need separate routing; a
+reference-container round trip alone cannot certify those complete save paths.
+
+Render snapshots and HUD picking read actual sprite metadata and propagate host
+failures through the engine/UI boundary. A failed chunk notification preserves
+its current and later queued notifications. These changes do not implement the
+per-frame world-item model/draw stream: actual visible squares, current world
+object lists, live script gates and model jobs still need their native producer
+and ordering. A cached blank sprite, forced two-dimensional icon or successful
+source test cannot establish visible item parity. The combined batch passes the workspace all-target check, 1,709 affected tests
+(zero failed, nine ignored across 33 summaries) and the native client build.
+All 1,376 recorded Rust/Cargo inputs remained unchanged through those checks;
+158 changed compiled inputs have exact independent source coverage. The new
+installed outcome and foreign-platform results must be recorded separately;
+these local checks do not establish a completed native placement or visual parity.
 
 Returning to the menu rebuilds script/Lua/UI owners before menu entry;
 native shutdown skips that rebuild. A failed rebuild stops the client
@@ -169,7 +224,7 @@ this supplies inventory layout geometry but does not implement split-screen
 world rendering. Inventory category/type queries use the real per-item
 reference and original subclass constructor behavior, including null types
 and the WeaponPart constructor's WEAPON value. `getTex` delegates to the
-same live texture lookup as `getTexture`. `isHidden` reads the retained
+actual texture slot with native subclass selection. `isHidden` reads the retained
 script item at use time, so the shipped inventory pane can refresh rows.
 
 The window reads the real single-player speed-control pause state after UI
@@ -211,9 +266,10 @@ prevent complete inventory screen setup and interaction.
 The global `getCell()` entry now returns that same live cell. Square
 `canReachTo` uses the actual door, window and barricade owners together with
 the live nullable sprite-exclusion list. Decoded floor items now become shared
-runtime items once, and placement retains the supplied item. Saving reads that
-same owner, including later nested bag mutations; explicit archive copies keep
-their independent value semantics. Squares now store stable allocations for the
+runtime items once, and placement retains the supplied item. The existing floor
+value-save path reads from that owner but still needs routing to the actual
+reference serializer for captured assets and nested bags. Explicit archive copies
+keep their independent value semantics. Squares now store stable allocations for the
 entire object, including its base fields and components. Runtime handles retain
 that allocation across removal and chunk moves; explicit archive copies remain
 independent. Lifecycle and removal hooks receive the actual object between

@@ -114,53 +114,93 @@ struct Kinds<'m> {
     m: &'m IsoSpriteManager,
 }
 
+/// Read one actual sprite metadata phase. This owned result is temporary,
+/// never a second writable authority. This legacy generator has Native-error
+/// catch-and-continue callers, so actual host faults stop at the explicit
+/// unborrowed/resolved-body precondition rather than entering JResult.
+fn sprite_metadata(
+    m: &IsoSpriteManager,
+    o: &IsoObject,
+) -> JResult<Option<pz_world::sprite::IsoSprite>> {
+    Ok(o.sprite
+        .try_read(m)
+        .expect("legacy world generation requires unborrowed resolved actual sprite metadata")
+        .map(|sprite| (*sprite).clone()))
+}
+
 impl Kinds<'_> {
-    fn name<'a>(&'a self, o: &IsoObject) -> Option<&'a str> {
-        o.sprite.and_then(|s| self.m.sprites[s].name.as_deref())
+    fn name(&self, o: &IsoObject) -> JResult<Option<String>> {
+        Ok(sprite_metadata(self.m, o)?.and_then(|sprite| sprite.name))
     }
     fn tree(&self, o: &IsoObject) -> bool {
         matches!(o.kind, ObjectKind::Tree(_))
     }
-    fn bush(&self, o: &IsoObject) -> bool {
-        let Some(s) = o.sprite else { return false };
-        let s = &self.m.sprites[s];
-        s.tileset_name.as_deref() == Some("f_bushes_1")
-            || s.properties.get(&self.m.alias, "Bush").is_some()
+    fn bush(&self, o: &IsoObject) -> JResult<bool> {
+        let Some(s) = sprite_metadata(self.m, o)? else {
+            return Ok(false);
+        };
+        Ok(s.tileset_name.as_deref() == Some("f_bushes_1")
+            || s.properties.get(&self.m.alias, "Bush").is_some())
     }
-    fn grass(&self, o: &IsoObject) -> bool {
-        self.name(o)
-            .is_some_and(|n| n.starts_with("e_newgrass_") || n.starts_with("blends_grassoverlays_"))
+    fn grass(&self, o: &IsoObject) -> JResult<bool> {
+        Ok(self.name(o)?.is_some_and(|n| {
+            n.starts_with("e_newgrass_") || n.starts_with("blends_grassoverlays_")
+        }))
     }
-    fn grass_like(&self, o: &IsoObject) -> bool {
-        self.grass(o)
-            || self.name(o).is_some_and(|n| {
+    fn grass_like(&self, o: &IsoObject) -> JResult<bool> {
+        Ok(self.grass(o)?
+            || self.name(o)?.is_some_and(|n| {
                 n.starts_with("d_plants_")
                     || n.starts_with("d_generic_1_")
                     || n.starts_with("d_floorleaves_")
                     || n.starts_with("vegetation_groundcover_")
-            })
+            }))
     }
-    fn ores(&self, o: &IsoObject) -> bool {
-        self.name(o)
-            .is_some_and(|n| n.starts_with("boulders_") || n.starts_with("crafting_ore_"))
+    fn ores(&self, o: &IsoObject) -> JResult<bool> {
+        Ok(self
+            .name(o)?
+            .is_some_and(|n| n.starts_with("boulders_") || n.starts_with("crafting_ore_")))
     }
-    fn first(&self, sq: &IsoGridSquare, f: impl Fn(&Self, &IsoObject) -> bool) -> Option<ObjectId> {
-        sq.objects
-            .iter()
-            .map(|o| o.borrow())
-            .find(|o| f(self, o))
-            .map(|o| o.id)
+    fn first(
+        &self,
+        sq: &IsoGridSquare,
+        f: impl Fn(&Self, &IsoObject) -> JResult<bool>,
+    ) -> JResult<Option<ObjectId>> {
+        for object in &sq.objects {
+            let object = object
+                .owner_slot()
+                .try_borrow()
+                .expect("legacy world generation requires unborrowed actual object bodies");
+            if f(self, &object)? {
+                return Ok(Some(object.id));
+            }
+        }
+        Ok(None)
     }
-    fn count(&self, sq: &IsoGridSquare, f: impl Fn(&Self, &IsoObject) -> bool) -> usize {
-        sq.objects.iter().filter(|o| f(self, &o.borrow())).count()
+    fn count(
+        &self,
+        sq: &IsoGridSquare,
+        f: impl Fn(&Self, &IsoObject) -> JResult<bool>,
+    ) -> JResult<usize> {
+        let mut count = 0;
+        for object in &sq.objects {
+            let object = object
+                .owner_slot()
+                .try_borrow()
+                .expect("legacy world generation requires unborrowed actual object bodies");
+            if f(self, &object)? {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
     /// `getTree()`, `getBush()`, `getGrass()` for TREE, BUSH, PLANT.
-    fn current(&self, sq: &IsoGridSquare, ty: FeatureType) -> Option<ObjectId> {
+    fn current(&self, sq: &IsoGridSquare, ty: FeatureType) -> JResult<Option<ObjectId>> {
         match ty {
-            FeatureType::Tree => self.first(sq, Self::tree),
+            FeatureType::Tree => self.first(sq, |k, o| Ok(k.tree(o))),
             FeatureType::Bush => self.first(sq, Self::bush),
             FeatureType::Plant => self.first(sq, Self::grass),
-            _ => None,
+            _ => Ok(None),
         }
     }
 }
@@ -323,8 +363,8 @@ impl WorldGen {
                 }
                 self.gen_map_chunk(&mut ctx, (x, y))?;
                 let ch = chunks.get_mut(x, y).expect("chunk");
-                self.clean_chunk(ch, env.sprites, "Sand", "vegetation_groundcover_01");
-                self.clean_chunk(ch, env.sprites, "Road_*", "vegetation_groundcover_01");
+                self.clean_chunk(ch, env.sprites, "Sand", "vegetation_groundcover_01")?;
+                self.clean_chunk(ch, env.sprites, "Road_*", "vegetation_groundcover_01")?;
             }
         }
         Ok(())
@@ -507,7 +547,10 @@ impl WorldGen {
             return Ok(());
         };
         let sq = sq_owner.borrow();
-        let Some(fi) = sq.floor_index(m) else {
+        let Some(fi) = sq
+            .try_floor_index(m)
+            .expect("legacy world generation requires unborrowed resolved actual sprite metadata")
+        else {
             return Ok(());
         };
         let floor_id = sq.objects[fi].borrow().id;
@@ -546,8 +589,9 @@ impl WorldGen {
             let sq = sq_owner.borrow();
             let f = sq.objects.iter().find(|o| o.borrow().id == floor_id);
             // The floor object itself is never deleted here.
-            f.and_then(|o| o.borrow().sprite)
-                .and_then(|s| c.env.sprites.sprites[s].name.clone())
+            let object = f.ok_or_else(|| npe("floor object"))?.borrow();
+            sprite_metadata(c.env.sprites, &object)?
+                .and_then(|s| s.name)
                 .ok_or_else(|| npe("floor sprite name"))?
         };
         let current: Vec<(FeatureType, Option<ObjectId>)> = {
@@ -556,8 +600,8 @@ impl WorldGen {
             let sq = sq_owner.borrow();
             FeatureType::ALL
                 .iter()
-                .map(|&t| (t, k.current(&sq, t)))
-                .collect()
+                .map(|&t| Ok((t, k.current(&sq, t)?)))
+                .collect::<JResult<Vec<_>>>()?
         };
         for &(ty, cur) in &current {
             let Some(cur) = cur else { continue };
@@ -565,13 +609,15 @@ impl WorldGen {
                 let sq_owner = square(c.chunks, &at).expect("square");
                 let sq = sq_owner.borrow();
                 // A deleted object has had its sprite cleared.
-                match sq
-                    .objects
-                    .iter()
-                    .find(|o| o.borrow().id == cur)
-                    .and_then(|o| o.borrow().sprite)
-                {
-                    Some(s) => c.env.sprites.sprites[s].name.clone().unwrap_or_default(),
+                let Some(object) = sq.objects.iter().find(|o| o.borrow().id == cur) else {
+                    continue;
+                };
+                let metadata = {
+                    let object = object.borrow();
+                    sprite_metadata(c.env.sprites, &object)?
+                };
+                match metadata {
+                    Some(sprite) => sprite.name.unwrap_or_default(),
                     None => continue,
                 }
             };
@@ -615,7 +661,9 @@ impl WorldGen {
                     let mut i = 1;
                     while i < sq.objects.len() {
                         let o = sq.objects[i].borrow();
-                        if o.sprite != r.1 && (k.tree(&o) || k.bush(&o) || k.grass_like(&o)) {
+                        if o.sprite != pz_world::sprite::runtime::ObjectSprite::from_tile(r.1)
+                            && (k.tree(&o) || k.bush(&o)? || k.grass_like(&o)?)
+                        {
                             drop(o);
                             sq.remove_object_slot(i);
                         }
@@ -626,7 +674,7 @@ impl WorldGen {
                     let mut i = 1;
                     while i < sq.objects.len() {
                         let o = sq.objects[i].borrow();
-                        if k.tree(&o) || k.bush(&o) || k.ores(&o) || k.grass_like(&o) {
+                        if k.tree(&o) || k.bush(&o)? || k.ores(&o)? || k.grass_like(&o)? {
                             drop(o);
                             sq.remove_object_slot(i);
                         }
@@ -644,11 +692,14 @@ impl WorldGen {
             let k = Kinds { m: c.env.sprites };
             let sq_owner = square(c.chunks, &at).expect("square");
             let sq = sq_owner.borrow();
-            sq.objects
-                .iter()
-                .filter(|o| k.grass_like(&o.borrow()))
-                .map(|o| o.borrow().id)
-                .collect()
+            let mut out = Vec::new();
+            for object in &sq.objects {
+                let object = object.borrow();
+                if k.grass_like(&object)? {
+                    out.push(object.id);
+                }
+            }
+            out
         };
         let n = square(c.chunks, &at)
             .expect("square")
@@ -723,9 +774,9 @@ impl WorldGen {
                 let sq_owner = square(c.chunks, at).ok_or_else(|| npe("square"))?;
                 let sq = sq_owner.borrow();
                 [
-                    k.current(&sq, FeatureType::Tree),
-                    k.current(&sq, FeatureType::Bush),
-                    k.current(&sq, FeatureType::Plant),
+                    k.current(&sq, FeatureType::Tree)?,
+                    k.current(&sq, FeatureType::Bush)?,
+                    k.current(&sq, FeatureType::Plant)?,
                 ]
             };
             match tile.as_str() {
@@ -814,11 +865,9 @@ impl WorldGen {
                 let sq = sq_owner.borrow();
                 let Some(o) = sq.objects.get(i) else { break };
                 let o = o.borrow();
-                let s = o.sprite.ok_or_else(|| npe("object sprite"))?;
-                (
-                    o.id,
-                    c.env.sprites.sprites[s].name.clone().unwrap_or_default(),
-                )
+                let sprite =
+                    sprite_metadata(c.env.sprites, &o)?.ok_or_else(|| npe("object sprite"))?;
+                (o.id, sprite.name.unwrap_or_default())
             };
             i += 1;
             let Some(features) = repl.get(&name) else {
@@ -1022,21 +1071,23 @@ impl WorldGen {
                     return Ok(false);
                 };
                 let sq = sq_owner.borrow();
-                let Some(fi) = sq.floor_index(m) else {
+                let Some(fi) = sq.try_floor_index(m).expect(
+                    "legacy world generation requires unborrowed resolved actual sprite metadata",
+                ) else {
                     return Ok(false);
                 };
                 let n = sq.objects.len();
                 let human = n as i64
-                    - k.count(&sq, Kinds::grass_like) as i64
-                    - k.count(&sq, Kinds::bush) as i64
-                    - k.count(&sq, Kinds::ores) as i64
+                    - k.count(&sq, Kinds::grass_like)? as i64
+                    - k.count(&sq, Kinds::bush)? as i64
+                    - k.count(&sq, Kinds::ores)? as i64
                     > 1
-                    && k.first(&sq, Kinds::tree).is_none();
+                    && k.first(&sq, |k, o| Ok(k.tree(o)))?.is_none();
                 if human {
                     return Ok(false);
                 }
                 let floor_name = k
-                    .name(&sq.objects[fi].borrow())
+                    .name(&sq.objects[fi].borrow())?
                     .ok_or_else(|| npe("floor name"))?
                     .to_string();
                 if !self.can_place(placement, &floor_name)? {
@@ -1301,7 +1352,13 @@ impl WorldGen {
     /// `cleanChunk(chunk, material, filter)`: on floors whose
     /// `FloorMaterial` matches, removes objects whose sprite name starts
     /// with `filter`.
-    fn clean_chunk(&self, ch: &mut IsoChunk, m: &IsoSpriteManager, material: &str, filter: &str) {
+    fn clean_chunk(
+        &self,
+        ch: &mut IsoChunk,
+        m: &IsoSpriteManager,
+        material: &str,
+        filter: &str,
+    ) -> JResult<()> {
         let re = wildcard_regex(material);
         for x in 0..8 {
             for y in 0..8 {
@@ -1309,21 +1366,30 @@ impl WorldGen {
                     continue;
                 };
                 let mut sq = sq_owner.borrow_mut();
-                let Some(fi) = sq.floor_index(m) else {
+                let Some(fi) = sq.try_floor_index(m).expect(
+                    "legacy world generation requires unborrowed resolved actual sprite metadata",
+                ) else {
                     continue;
                 };
-                let fs = sq.objects[fi].borrow().sprite.expect("floor sprite");
-                let mat = m.sprites[fs].properties.get(&m.alias, "FloorMaterial");
+                let sprite = sprite_metadata(m, &sq.objects[fi].borrow())?
+                    .ok_or_else(|| npe("floor sprite"))?;
+                let mat = sprite.properties.get(&m.alias, "FloorMaterial");
                 if mat.is_some_and(|mat| self.wild.matches_regex(&re, mat)) {
-                    sq.retain_objects(|o| {
-                        !o.borrow()
-                            .sprite
-                            .and_then(|s| m.sprites[s].name.as_deref())
-                            .is_some_and(|n| n.starts_with(filter))
-                    });
+                    let mut i = 0;
+                    while i < sq.objects.len() {
+                        let remove = sprite_metadata(m, &sq.objects[i].borrow())?
+                            .and_then(|sprite| sprite.name)
+                            .is_some_and(|name| name.starts_with(filter));
+                        if remove {
+                            sq.remove_object_slot(i);
+                        } else {
+                            i += 1;
+                        }
+                    }
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -1407,5 +1473,162 @@ mod tests {
             }
         }
         assert!(!has_empty_squares_on_level_zero(&ch));
+    }
+}
+
+#[cfg(test)]
+mod actual_sprite_tests {
+    use super::*;
+    use pz_world::sprite::runtime::{create_runtime_sprite, ObjectSprite};
+
+    #[test]
+    fn generation_classifies_current_actual_sprite_and_reports_body_borrow() {
+        let tables = pz_world::sprite::test_tables();
+        let manager = Rc::new(RefCell::new(IsoSpriteManager::new(tables.clone())));
+        let arena_len = manager.borrow().sprites.len();
+        let mut retired = Default::default();
+        let sprite = create_runtime_sprite(&manager, &tables, &mut retired).unwrap();
+        let mut object = IsoObject::new(19, ObjectKind::Object, None);
+        object.sprite = ObjectSprite::Native(sprite.clone());
+        let manager_guard = manager.borrow();
+        let kinds = Kinds { m: &manager_guard };
+        sprite.borrow_mut().data.name = Some("e_newgrass_1".into());
+        assert!(kinds.grass(&object).unwrap());
+        assert!(!kinds.ores(&object).unwrap());
+        sprite.borrow_mut().data.name = Some("crafting_ore_7".into());
+        assert!(!kinds.grass(&object).unwrap());
+        assert!(kinds.ores(&object).unwrap());
+        sprite.borrow_mut().data.tileset_name = Some("f_bushes_1".into());
+        assert!(kinds.bush(&object).unwrap());
+        assert!(Rc::ptr_eq(object.sprite.native_slot().unwrap(), &sprite));
+        assert_eq!(manager_guard.sprites.len(), arena_len);
+        let held = sprite.borrow_mut();
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kinds.name(&object)));
+        assert!(
+            fault.is_err(),
+            "selected borrowed actual body must stop at the legacy host precondition"
+        );
+        drop(held);
+        let detached = sprite.borrow_mut().take_slots_for_gc();
+        drop(detached);
+        drop(retired);
+    }
+
+    #[test]
+    fn generation_actual_null_is_distinct_from_archive_sprite_host_failure() {
+        let manager = IsoSpriteManager::new(pz_world::sprite::test_tables());
+        let kinds = Kinds { m: &manager };
+        let mut object = IsoObject::new(3, ObjectKind::Object, None);
+        assert_eq!(kinds.name(&object).unwrap(), None);
+        assert!(!kinds.bush(&object).unwrap());
+        object.sprite = ObjectSprite::ArchiveUnmanaged(20_000_000);
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kinds.name(&object)));
+        assert!(
+            fault.is_err(),
+            "unresolved archive metadata cannot become Native absence/error"
+        );
+    }
+
+    #[test]
+    fn actual_host_precondition_bypasses_native_generator_catch_without_logging_or_clearing() {
+        use pz_world::chunk::BrandNewHook;
+        let tables = pz_world::sprite::test_tables();
+        let manager = Rc::new(RefCell::new(IsoSpriteManager::new(tables.clone())));
+        let mut retired = Default::default();
+        let sprite = create_runtime_sprite(&manager, &tables, &mut retired).unwrap();
+        sprite
+            .borrow_mut()
+            .data
+            .properties
+            .set_flag(tables.flag.solidfloor);
+        let mut chunk = IsoChunk::new(0, 0);
+        for x in 0..8 {
+            for y in 0..8 {
+                let mut square = IsoGridSquare::new(x, y, 0);
+                let mut object = IsoObject::new(1, ObjectKind::Object, None);
+                if (x, y) == (0, 0) {
+                    object.sprite = ObjectSprite::Native(sprite.clone());
+                }
+                square.objects.push(pz_world::ObjectSlot::new(object));
+                chunk.set_square(x, y, 0, Some(square.into()));
+            }
+        }
+        let actual_square = chunk.get_grid_square(0, 0, 0).unwrap();
+        let actual_object = actual_square.borrow().objects[0].ref_handle();
+        let mut chunks = ChunksCache::default();
+        chunks.put(0, 0, chunk);
+        // No map raster/noise is selected: all64 squares are already nonempty.
+        // The real hook reaches clean_chunk's first actual floor metadata read.
+        let simplex =
+            crate::simplex::SimplexTables::new(&(0..256).collect::<Vec<_>>(), vec![[0.0; 3]; 12])
+                .unwrap();
+        let gen = WorldGen::new(
+            WorldGenParams::new("host-boundary-fixture"),
+            WorldGenSimplexGenerator::new(simplex, 0),
+            vec![],
+            vec![],
+            Default::default(),
+            vec![],
+            Veins::new(vec![]),
+            HashMap::new(),
+            vec![],
+            BiomeMap::new(
+                Rc::new(pz_fs::GameFs::new("unused-no-maps")),
+                &[],
+                HashMap::new(),
+            ),
+            WorldGenZones::default(),
+        );
+        let mut hook = crate::WorldGenHook::new(gen);
+        let meta = IsoMetaGrid::empty();
+        let fix = pz_world::fix2x::Fix2xTable::default();
+        let object_tables = pz_world::objects::ObjectTables {
+            logs_per_size: vec![],
+            locked_house_frequency: vec![],
+        };
+        let mut rand = JavaRandom::new(0);
+        let mut hooks = pz_world::objects::NoHooks;
+        let held = sprite.borrow_mut();
+        let result = {
+            let mut manager = manager.borrow_mut();
+            let mut env = ChunkLoadEnv {
+                sprites: &mut manager,
+                fix2x: &fix,
+                rand: &mut rand,
+                tables: &object_tables,
+                blood_body_parts: 0,
+                settings: Default::default(),
+                hooks: &mut hooks,
+            };
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                BrandNewHook::generate_chunks(&mut hook, &mut chunks, &meta, &mut env)
+            }))
+        };
+        let fault =
+            result.expect_err("host conflict cannot return Native Err and be logged/continued");
+        let message = fault
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| fault.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(message.contains(
+            "legacy world generation requires unborrowed resolved actual sprite metadata"
+        ));
+        assert!(
+            hook.gen.errors.is_empty(),
+            "no native failure log or catch-and-continue"
+        );
+        let after = chunks.get(0, 0).unwrap().get_grid_square(0, 0, 0).unwrap();
+        assert!(Rc::ptr_eq(&after, &actual_square));
+        assert_eq!(after.borrow().objects.len(), 1);
+        assert!(after.borrow().objects[0].ptr_eq_ref(&actual_object));
+        assert!(Rc::ptr_eq(
+            actual_object.borrow().sprite.native_slot().unwrap(),
+            &sprite
+        ));
+        drop(held);
+        let slots = sprite.borrow_mut().take_slots_for_gc();
+        drop(slots);
+        drop(retired);
     }
 }

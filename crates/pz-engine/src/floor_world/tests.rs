@@ -61,6 +61,109 @@ fn item() -> ItemRef {
     ))
 }
 
+fn retained_drop(world: &IsoWorld, item: &ItemRef) -> HostResult<()> {
+    let mut service = world.floor_world.as_ref().unwrap().borrow_mut();
+    let target = service.solid_floor_ref_at(2, 2, 0)?.unwrap();
+    service.add_world_inventory_item_on(&target, item, 0.2, 0.3, 0.0)
+}
+
+fn actual_plain_name_item() -> (ItemRef, Rc<RefCell<pz_scripts::objects::items::Item>>) {
+    let script = Rc::new(RefCell::new(pz_scripts::objects::items::Item::new()));
+    let manager = pz_scripts::ScriptManager::new();
+    manager.enable_texture_capture();
+    // A genuine no-Icon load completes known nullable capture on this SAME
+    // actual script; the instance constructor must never use template fallback.
+    pz_scripts::ScriptObject::load(
+        &mut *script.borrow_mut(),
+        &manager,
+        "NameProbe",
+        "item NameProbe { }",
+    )
+    .unwrap();
+    let mut template = ItemTemplate::new(ItemClass::Normal, "Base", "NameProbe");
+    template.display_name = "Retained name".into();
+    template.script = Some(pz_inventory::template::ScriptItemRef(script.clone()));
+    template.texture_capture = Some(pz_inventory::item_texture::CapturedScriptTextures::new(
+        None,
+        vec![],
+    ));
+    let item = pz_inventory::env::create_from_template_ref(
+        &pz_inventory::env::NoItemEnv,
+        Rc::new(template),
+        1,
+    )
+    .map_err(|failure| failure.into_error_and_retire())
+    .unwrap();
+    (item, script)
+}
+
+#[test]
+fn actual_plain_get_name_reads_current_retained_script_before_prefix_fields() {
+    let (item, script) = actual_plain_name_item();
+    assert_eq!(plain_item_display_name(&item).unwrap(), "Retained name");
+    script.borrow_mut().vehicle_type = 1;
+    item.borrow_mut().broken = true;
+    assert_eq!(
+        plain_item_display_name(&item),
+        Err(unsupported("actual getName mechanic-type translation"))
+    );
+    let guard = script.borrow_mut();
+    assert_eq!(
+        plain_item_display_name(&item),
+        Err(RuntimeHostError::Borrowed(
+            "getName retained script vehicleType"
+        ))
+    );
+    drop(guard);
+    pz_inventory::component_host::drain_retired_components();
+}
+
+#[test]
+fn actual_plain_get_name_uses_independent_broken_boolean() {
+    let (item, _script) = actual_plain_name_item();
+    {
+        let mut item = item.borrow_mut();
+        // Legal independent native field state: setBroken(false) can follow a
+        // zero condition; this must not be reconstructed from condition.
+        item.condition = 0;
+        item.condition_max = 0;
+        item.broken = false;
+    }
+    assert_eq!(plain_item_display_name(&item).unwrap(), "Retained name");
+    item.borrow_mut().broken = true;
+    assert_eq!(
+        plain_item_display_name(&item),
+        Err(unsupported("actual getName broken translation"))
+    );
+    pz_inventory::component_host::drain_retired_components();
+}
+
+#[test]
+fn actual_plain_get_name_stops_at_first_selected_translation_branch() {
+    let (item, script) = actual_plain_name_item();
+    script.borrow_mut().vehicle_type = 1;
+    item.borrow_mut().remote_control_id = 12;
+    assert_eq!(
+        plain_item_display_name(&item),
+        Err(unsupported("actual getName controller-linked translation"))
+    );
+    item.borrow_mut().remote_control_id = -1;
+    script.borrow_mut().vehicle_type = 0;
+    item.borrow_mut().condition = 1;
+    assert_eq!(
+        plain_item_display_name(&item),
+        Err(unsupported("actual getName worn translation"))
+    );
+    item.borrow_mut().condition = 10;
+    item.borrow_mut().can_be_activated = true;
+    item.borrow_mut().activated = true;
+    assert_eq!(
+        plain_item_display_name(&item),
+        Err(unsupported("actual getName activated translation"))
+    );
+    pz_inventory::component_host::drain_retired_components();
+}
+
 #[test]
 fn installed_service_uses_same_resources_and_typed_actual_world_and_square_queries() {
     let (_restore, world, square) = fixture();
@@ -145,7 +248,7 @@ fn actual_cell_replacement_invalidates_old_service_while_old_resources_are_retai
 }
 
 #[test]
-fn native_service_stops_at_visual_constructor_before_time_transfer_lists_and_backlink() {
+fn native_service_publishes_sprite_before_missing_capture_stops_time_transfer_lists_and_backlink() {
     let (_restore, world, square) = fixture();
     let item = item();
     item.borrow_mut().world_x_rotation = 22.0;
@@ -157,16 +260,11 @@ fn native_service_stops_at_visual_constructor_before_time_transfer_lists_and_bac
         .iter()
         .map(ObjectSlot::ref_handle)
         .collect();
-    let result = world
-        .floor_world
-        .as_ref()
-        .unwrap()
-        .borrow_mut()
-        .add_world_inventory_item((2, 2, 0), &item, 0.2, 0.3, 0.0);
+    let result = retained_drop(&world, &item);
     assert!(matches!(
         result,
         Err(RuntimeHostError::Unsupported {
-            operation: "native IsoSprite.CreateSprite/LoadSingleTexture constructor",
+            operation: "actual item textures are uncaptured archive data",
             ..
         })
     ));
@@ -192,9 +290,10 @@ fn native_service_stops_at_visual_constructor_before_time_transfer_lists_and_bac
     let body = receiver.borrow();
     assert_eq!(
         body.pending_floor_visual_tail,
-        Some(pz_world::objects::FloorVisualTail::ConstructorCreateSprite)
+        Some(pz_world::objects::FloorVisualTail::ConstructorUpdateSprite)
     );
-    assert!(body.sprite.is_none() && body.sprite_id_override.is_none());
+    assert!(body.sprite.native_slot().is_some());
+    assert!(body.square_slot().is_none());
     assert!(!body.added_to_world_or_equipped);
     let ObjectKind::WorldInventory(floor) = &body.kind else {
         panic!("actual floor receiver")
@@ -223,11 +322,12 @@ fn actual_state_adapter_uses_borrowed_entry_without_reentering_world_or_sprite_g
             >::floor(adapter)
             .unwrap();
             assert_eq!(floor.solid_floor_at(2, 2, 0), Ok(Some((2, 2, 0))));
-            floor.add_world_inventory_item((2, 2, 0), &item, 0.2, 0.3, 0.0)
+            let target = floor.solid_floor_ref_at(2, 2, 0).unwrap().unwrap();
+            floor.add_world_inventory_item_on(&target, &item, 0.2, 0.3, 0.0)
         },
     )
     .unwrap();
-    assert!(matches!(result,Err(RuntimeHostError::Unsupported { operation:"native IsoSprite.CreateSprite/LoadSingleTexture constructor", .. })),"must reach strict native constructor rather than fail reentrant WORLD/sprite borrow: {result:?}");
+    assert!(matches!(result,Err(RuntimeHostError::Unsupported { operation:"actual item textures are uncaptured archive data", .. })),"must publish actual sprite and reach genuine missing texture capture without reentrant WORLD/sprite borrow: {result:?}");
 }
 
 #[test]
@@ -314,17 +414,12 @@ fn held_regions_do_not_precede_native_constructor_but_renderer_borrow_is_at_pc20
         body.world_z_rotation = 9.0;
     }
     let _held_regions = world.regions.as_ref().unwrap().borrow_mut();
-    let result = world
-        .floor_world
-        .as_ref()
-        .unwrap()
-        .borrow_mut()
-        .add_world_inventory_item((2, 2, 0), &item, 0.2, 0.3, 0.0);
+    let result = retained_drop(&world, &item);
     assert!(
         matches!(
             result,
             Err(RuntimeHostError::Unsupported {
-                operation: "native IsoSprite.CreateSprite/LoadSingleTexture constructor",
+                operation: "actual item textures are uncaptured archive data",
                 ..
             })
         ),
@@ -345,12 +440,7 @@ fn held_regions_do_not_precede_native_constructor_but_renderer_borrow_is_at_pc20
     item.borrow_mut().world_x_rotation = 44.0;
     item.borrow_mut().world_y_rotation = 55.0;
     let _held_render = world.render.borrow_mut();
-    let result = world
-        .floor_world
-        .as_ref()
-        .unwrap()
-        .borrow_mut()
-        .add_world_inventory_item((2, 2, 0), &item, 0.2, 0.3, 0.0);
+    let result = retained_drop(&world, &item);
     assert!(matches!(
         result,
         Err(RuntimeHostError::Borrowed("actual floor renderer"))

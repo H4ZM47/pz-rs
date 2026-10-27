@@ -209,7 +209,7 @@ impl App {
         pz_lua_api::bind_render::textures()
             .borrow_mut()
             .load_ui_packs(&fs.borrow());
-        crate::boot::load_scripts(&self.launch.game_dir, &mut fs.borrow_mut())?;
+        crate::boot::load_scripts(&self.launch.game_dir, &fs)?;
         // SoundManager.init / FMODManager.init (windowed runs; headless
         // runs keep the silent system).
         if self.window.is_some() {
@@ -316,7 +316,12 @@ impl App {
         }
         pz_lua_api::bind_input::update(lua, dt);
         pz_lua_api::bind_misc::ui_transition_update_all();
-        UIManager::update(&mut lua.thread);
+        if let Err(error) = UIManager::update(&mut lua.thread) {
+            self.error = Some(format!("UIManager.update: {error:?}"));
+            drop(collection_deferral);
+            drain_retired_host_owners();
+            return;
+        }
         pz_lua_api::bind_input::after_ui_update(lua);
         if let Some(w) = self.window.as_ref() {
             apply_window_requests(w, pz_lua_api::bind_input::take_window_requests());
@@ -407,6 +412,11 @@ impl App {
             };
             self.states.render(&mut cx, &mut dl);
         }
+        if self.error.is_some() {
+            drop(collection_deferral);
+            drain_retired_host_owners();
+            return;
+        }
         if let Some(gpu) = self.gpu.as_mut() {
             let tm = pz_lua_api::bind_render::textures();
             let params = pz_gpu::FrameParams {
@@ -434,6 +444,8 @@ fn drain_retired_host_owners() {
     crate::iso_world::drain_retired_world_objects();
     pz_inventory::component_host::drain_retired_components();
     drop(pz_scripts::objects::entity::components::attributes::take_retired_attribute_templates());
+    drop(pz_scripts::texture_capture::take_retired_textures());
+    drop(pz_render::take_retired_texture_loaders());
     pz_kahlua::gc::drain_retired_table_values();
     pz_lua_api::component_gc::retry_pending();
     for fault in pz_lua_api::component_gc::take_registration_faults() {

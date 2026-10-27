@@ -43,7 +43,9 @@ fn add(shapes: &mut [i32; 4], count: usize, shape: i32) -> usize {
 }
 
 /// `calcPhysics(x, y, z, shapes)` for one square. `mesh_index` is
-/// `Bullet.physicsShapeNameToIndex` (full `Module.Name` keys).
+/// `Bullet.physicsShapeNameToIndex` (full `Module.Name` keys). This existing
+/// synchronous API requires unborrowed object and sprite bodies when selected;
+/// it has no typed host-error carrier.
 pub fn calc_physics(
     sq: Option<&IsoGridSquare>,
     z: i32,
@@ -65,8 +67,11 @@ pub fn calc_physics(
         let mut column = false;
         for o in &sq.objects {
             let o = o.borrow();
-            let spr = o.sprite.map(|i| &m.sprites[i]);
-            let has_shape = spr.is_some_and(|s| m.has_prop(s, "PhysicsShape"));
+            let spr = o
+                .sprite
+                .try_read(m)
+                .expect("legacy calcPhysics requires unborrowed actual sprite metadata");
+            let has_shape = spr.as_ref().is_some_and(|s| m.has_prop(s, "PhysicsShape"));
             let Some(s) = spr else { continue };
             if has_shape {
                 continue;
@@ -82,7 +87,7 @@ pub fn calc_physics(
             if !lamp {
                 continue;
             }
-            if m.has_prop(s, "MoveType") && m.prop(s, "MoveType") == Some("WallObject") {
+            if m.has_prop(&s, "MoveType") && m.prop(&s, "MoveType") == Some("WallObject") {
                 continue;
             }
             column = true;
@@ -339,6 +344,88 @@ impl ChunkPhysics {
 #[cfg(test)]
 mod dirty_tests {
     use super::ChunkPhysics;
+
+    #[test]
+    fn native_sprite_lamp_and_shape_mutations_change_current_chunk_physics() {
+        use super::{calc_physics, PhysicsShape};
+        use pz_world::sprite::runtime::{create_runtime_sprite, ObjectSprite};
+        use pz_world::sprite::{test_tables, PropertyValueMap, TilePropertyAliasMap};
+        use pz_world::{IsoGridSquare, IsoObject, IsoSpriteManager, ObjectKind, ObjectSlot};
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let tables = test_tables();
+        let manager = Rc::new(RefCell::new(IsoSpriteManager::new(tables.clone())));
+        let mut properties = PropertyValueMap::default();
+        properties.put("PhysicsShape", vec!["Solid".into()]);
+        properties.put("MoveType", vec!["WallObject".into(), "FloorObject".into()]);
+        manager.borrow_mut().alias = TilePropertyAliasMap::generate(&properties, &[]);
+        let arena_len = manager.borrow().sprites.len();
+        let mut retired = Default::default();
+        let sprite = create_runtime_sprite(&manager, &tables, &mut retired).unwrap();
+        sprite.borrow_mut().data.name = Some("lighting_outdoor_actual".into());
+        let mut object = IsoObject::new(1, ObjectKind::Object, None);
+        object.sprite = ObjectSprite::Native(sprite.clone());
+        let mut square = IsoGridSquare::new(0, 0, 0);
+        square.objects.push(ObjectSlot::new(object));
+        let read = || calc_physics(Some(&square), 0, &manager.borrow(), &|_| None);
+        let column = [PhysicsShape::Tree as i32, -1, -1, -1];
+        assert_eq!(
+            read(),
+            column,
+            "unmanaged Native sprite is not absent tile metadata"
+        );
+        assert_eq!(manager.borrow().sprites.len(), arena_len);
+        sprite.borrow_mut().data.name = Some("ordinary".into());
+        assert_eq!(read(), [-1; 4]);
+        sprite.borrow_mut().data.name = Some("lighting_outdoor_actual".into());
+        {
+            let manager = manager.borrow();
+            sprite
+                .borrow_mut()
+                .data
+                .properties
+                .set_raw(&manager.alias, "PhysicsShape", "Solid");
+        }
+        assert_eq!(
+            read(),
+            [-1; 4],
+            "actual PhysicsShape suppresses lamp column"
+        );
+        {
+            let manager = manager.borrow();
+            let mut body = sprite.borrow_mut();
+            body.data.properties.unset(&manager.alias, "PhysicsShape");
+            body.data
+                .properties
+                .set_raw(&manager.alias, "MoveType", "WallObject");
+        }
+        assert_eq!(read(), [-1; 4]);
+        {
+            let manager = manager.borrow();
+            sprite
+                .borrow_mut()
+                .data
+                .properties
+                .set_raw(&manager.alias, "MoveType", "FloorObject");
+        }
+        assert_eq!(
+            read(),
+            column,
+            "later call rereads the same actual mutable sprite"
+        );
+        {
+            let _held = sprite.borrow_mut();
+            assert_eq!(
+                calc_physics(Some(&square), 1, &manager.borrow(), &|_| None),
+                [-1; 4],
+                "non-ground branch does not read the lamp sprite"
+            );
+        }
+        let slots = { sprite.borrow_mut().take_slots_for_gc() };
+        drop(slots);
+        drop(retired);
+    }
 
     #[test]
     fn marked_levels_wait_for_the_next_update() {

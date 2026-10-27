@@ -269,7 +269,21 @@ impl IngameState {
         // `RenderSettings.legacyPostRender`.
         let fs = cx.lua.fs.clone();
         let tm = pz_lua_api::bind_render::textures();
-        w.render(&mut view, &mut fs.borrow_mut(), &tm, &mut out.cmds);
+        let result = {
+            let fs = fs.try_borrow_mut().map_err(|_| {
+                pz_entity::runtime_load::RuntimeHostError::Borrowed("world render file system")
+            });
+            match fs {
+                Ok(mut fs) => w.render(&mut view, &mut fs, &tm, &mut out.cmds),
+                Err(error) => Err(error),
+            }
+        };
+        if let Err(error) = result {
+            if cx.error.is_none() {
+                *cx.error = Some(format!("IsoWorld.render: {error:?}"));
+            }
+            return;
+        }
         cx.lua.trigger_event("OnPostRender", &[]);
         // TODO(port): `LineDrawer.clear`, the animation debug key.
     }
@@ -506,6 +520,9 @@ impl GameState for IngameState {
             // `Core.StartFrame(n, clear)`, `IsoCamera.frameState.set(n)`.
             pz_lua_api::bind_players::set_player_instance(Some(p));
             self.renderframe(cx, n, out);
+            if cx.error.is_some() {
+                return;
+            }
         }
         // TODO(port): `FBORenderObjectHighlight.clearHighlightOnceFlag`.
         for n in 0..MAX_PLAYERS {

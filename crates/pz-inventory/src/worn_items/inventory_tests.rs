@@ -50,6 +50,7 @@ struct Host {
     log: Vec<String>,
     made: Vec<std::rc::Weak<RefCell<InventoryItem>>>,
     factory_error: Option<String>,
+    sync_host_error_at: Option<usize>,
     break_error: bool,
     append_on_add: Option<ItemRef>,
     change_max_in_holes: bool,
@@ -130,6 +131,7 @@ impl Host {
             log: Vec::new(),
             made: Vec::new(),
             factory_error: None,
+            sync_host_error_at: None,
             break_error: false,
             append_on_add: None,
             change_max_in_holes: false,
@@ -155,12 +157,12 @@ impl Host {
 }
 
 impl WornItemsInventoryHost for Host {
-    fn create_item(&mut self, ty: &str) -> ScriptResult<Option<ItemRef>> {
+    fn create_item(&mut self, ty: &str) -> WornInventoryResult<Option<ItemRef>> {
         self.free_guards(None);
         self.log
             .push(format!("factory {ty} worn={}", self.worn.borrow().size()));
         if self.factory_error.as_deref() == Some(ty) {
-            return Err(ScriptError::new("authored factory error"));
+            return Err(ScriptError::new("authored factory error").into());
         }
         let item = self.raw_create(ty);
         if let Some(item) = &item {
@@ -174,10 +176,20 @@ impl WornItemsInventoryHost for Host {
         }
         Ok(item)
     }
-    fn copy_visual_and_sync(&mut self, item: &ItemRef, source: &ItemVisual) -> ScriptResult {
+    fn copy_visual_and_sync(&mut self, item: &ItemRef, source: &ItemVisual) -> WornInventoryResult {
         self.free_guards(Some(item));
         self.log
             .push(format!("visual {}", item.borrow().get_full_type()));
+        if self.sync_host_error_at
+            == Some(
+                self.log
+                    .iter()
+                    .filter(|line| line.starts_with("visual "))
+                    .count(),
+            )
+        {
+            return Err(RuntimeHostError::Borrowed("actual worn texture provider").into());
+        }
         let mut item = item.borrow_mut();
         if let Some(visual) = item.get_visual(Some(&self.assets), &NoOwner, &NoVisualRng) {
             *visual = source.clone();
@@ -189,7 +201,7 @@ impl WornItemsInventoryHost for Host {
         &mut self,
         item: &ItemRef,
         clothing: bool,
-    ) -> ScriptResult<Option<Rc<RegistryKey>>> {
+    ) -> WornInventoryResult<Option<Rc<RegistryKey>>> {
         self.free_guards(Some(item));
         self.log.push(format!(
             "location {} clothing={clothing}",
@@ -202,7 +214,7 @@ impl WornItemsInventoryHost for Host {
         };
         Ok(result)
     }
-    fn get_holes_number(&mut self, item: &ItemRef) -> ScriptResult<i32> {
+    fn get_holes_number(&mut self, item: &ItemRef) -> WornInventoryResult<i32> {
         self.free_guards(Some(item));
         self.log
             .push(format!("holes {}", item.borrow().get_full_type()));
@@ -213,8 +225,9 @@ impl WornItemsInventoryHost for Host {
         item.get_visual(Some(&self.assets), &NoOwner, &NoVisualRng)
             .map(|v| v.get_holes_number())
             .ok_or_else(super::super::npe)
+            .map_err(Into::into)
     }
-    fn set_condition_no_sound(&mut self, item: &ItemRef, condition: i32) -> ScriptResult {
+    fn set_condition_no_sound(&mut self, item: &ItemRef, condition: i32) -> WornInventoryResult {
         self.free_guards(Some(item));
         self.log.push(format!(
             "condition {} {condition}",
@@ -226,11 +239,11 @@ impl WornItemsInventoryHost for Host {
         assert!(outcome.sounds.is_empty());
         self.free_guards(Some(item));
         if self.break_error && !outcome.on_break_calls.is_empty() {
-            return Err(ScriptError::new("authored host condition failure"));
+            return Err(ScriptError::new("authored host condition failure").into());
         }
         Ok(())
     }
-    fn add_item(&mut self, container: &ContainerRef, item: &ItemRef) -> ScriptResult {
+    fn add_item(&mut self, container: &ContainerRef, item: &ItemRef) -> WornInventoryResult {
         self.free_guards(Some(item));
         self.log
             .push(format!("add {}", item.borrow().get_full_type()));
@@ -583,4 +596,44 @@ fn archive_item_mapping_preserves_membership_after_group_rules_change() {
     assert_eq!(result.unwrap_err(), "authored map error");
     assert_eq!(calls.get(), 1);
     assert_eq!(worn.borrow().size(), 2);
+}
+
+#[test]
+fn typed_texture_host_error_keeps_first_worn_conversion_and_stops_later_factory() {
+    let mut host = Host::new();
+    let worn = host.worn.clone();
+    host.sync_host_error_at = Some(2);
+    let result = set_from_item_visuals(
+        &worn,
+        &[
+            visual("Base.Shirt", 0),
+            visual("Base.Coat", 0),
+            visual("Base.Bag", 0),
+        ],
+        &mut host,
+    );
+    assert_eq!(
+        result,
+        Err(WornInventoryError::Host(RuntimeHostError::Borrowed(
+            "actual worn texture provider"
+        )))
+    );
+    assert_eq!(worn.borrow().size(), 1);
+    assert_eq!(
+        worn.borrow()
+            .item_by_index(0)
+            .unwrap()
+            .borrow()
+            .get_full_type(),
+        "Base.Shirt"
+    );
+    assert!(host.log.iter().all(|line| !line.contains("Base.Bag")));
+    assert!(worn.try_borrow_mut().is_ok());
+    let mut script_host = Host::new();
+    script_host.factory_error = Some("Base.Shirt".into());
+    let script_worn = script_host.worn.clone();
+    assert!(matches!(
+        set_from_item_visuals(&script_worn, &[visual("Base.Shirt", 0)], &mut script_host),
+        Err(WornInventoryError::Script(_))
+    ));
 }

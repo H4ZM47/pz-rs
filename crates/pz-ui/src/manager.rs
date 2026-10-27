@@ -18,7 +18,7 @@
 use crate::element::UIElement;
 use crate::sprite::SpriteRenderer;
 use crate::text::TextRenderer;
-use pz_kahlua::{Thread, Value};
+use pz_kahlua::{LuaResult, Thread, Value};
 use pz_render::Blend;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -27,7 +27,7 @@ use std::rc::Rc;
 pub type EventSink = Rc<dyn Fn(&mut Thread, &str, &[Value])>;
 
 /// `UIManager.updateTooltip(mx, my)`, supplied by pz-lua-api.
-pub type TooltipHook = Rc<dyn Fn(&mut Thread, i32, i32)>;
+pub type TooltipHook = Rc<dyn Fn(&mut Thread, i32, i32) -> LuaResult<()>>;
 
 /// `Gizmos.getInstance().hitTest(mx, my)`, supplied by pz-lua-api: true
 /// when a gizmo drag takes the left button.
@@ -452,8 +452,10 @@ impl UIManager {
 
     // ---- per-frame update ----
 
-    /// `UIManager.update()`.
-    pub fn update(t: &mut Thread) {
+    /// `UIManager.update()`. A failed actual tooltip phase preserves the
+    /// completed update prefix, including `updating = true`; no native finally
+    /// resets it or runs later work after that fault.
+    pub fn update(t: &mut Thread) -> LuaResult<()> {
         let now = now_ms();
         let Some((mx, my)) = with_ui(|m| {
             if m.suspend {
@@ -480,7 +482,7 @@ impl UIManager {
             m.updating = true;
             Some((m.mouse.x, m.mouse.y))
         }) else {
-            return;
+            return Ok(());
         };
 
         let consumed = Self::update_mouse_buttons(t, mx, my);
@@ -519,10 +521,11 @@ impl UIManager {
         Self::update_ui_elements(t);
         // updateTooltip (the shared tooltip over picked objects).
         if let Some(h) = with_ui(|m| m.update_tooltip_hook.clone()) {
-            h(t, mx, my);
+            h(t, mx, my)?;
         }
         // TODO(world): handleZoomKeys, IsoCamera last offsets.
         with_ui(|m| m.updating = false);
+        Ok(())
     }
 
     /// The z-order pass of `update()`: always-on-top and `bringToTop`ped

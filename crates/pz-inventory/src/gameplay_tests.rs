@@ -18,6 +18,7 @@ struct Ctx {
     raining: bool,
     rain: f32,
     age: f64,
+    client: bool,
 }
 
 impl Ctx {
@@ -28,6 +29,7 @@ impl Ctx {
             raining: false,
             rain: 0.0,
             age: 10.0,
+            client: false,
         }
     }
     fn add(&mut self, t: ItemTemplate) -> Rc<ItemTemplate> {
@@ -38,6 +40,9 @@ impl Ctx {
 }
 
 impl ItemContext for Ctx {
+    fn is_client(&self) -> bool {
+        self.client
+    }
     fn world_age_hours(&self) -> f64 {
         self.age
     }
@@ -580,4 +585,34 @@ fn script_flags() {
     assert!(i.is_equipped_no_sprint() && i.is_protect_from_rain_while_equipped());
     assert_eq!(i.get_blood_clothing_type().unwrap(), ["Shirt".to_string()]);
     assert!(i.is_spiked_front() && !i.is_spiked_behind());
+}
+
+#[test]
+fn broken_is_independent_state_and_setter_publishes_before_callback_outcome() {
+    let mut t = ItemTemplate::new(ItemClass::Normal, "Base", "BrokenAuthority");
+    t.condition_max = 0;
+    t.on_break = Some("ActualOnBreak".into());
+    let mut i = item(t);
+    assert_eq!(i.condition, 0);
+    assert!(
+        !i.is_broken(),
+        "raw Java constructor defaults the independent bit false"
+    );
+    i.condition = 7;
+    let out = i.set_broken(true, &Ctx::new());
+    assert!(i.is_broken());
+    assert_eq!(i.condition, 7, "setBroken does not change condition");
+    assert_eq!(out.on_break_calls, ["ActualOnBreak"]);
+    let out = i.set_broken(false, &Ctx::new());
+    assert!(!i.is_broken());
+    assert!(out.on_break_calls.is_empty());
+    let mut client = Ctx::new();
+    client.client = true;
+    assert!(i.set_broken(true, &client).on_break_calls.is_empty());
+    assert!(
+        i.is_broken(),
+        "client suppression follows the field publication"
+    );
+    i.set_condition_while_loading(0);
+    assert!(i.is_broken());
 }

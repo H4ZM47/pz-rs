@@ -14,6 +14,7 @@ use pz_characters::worn_items::{
 use pz_inventory::shared::{ContainerRef, ItemRef, SharedContainer};
 use pz_inventory::visual::human::HumanVisualOwner;
 use pz_inventory::visual::ItemVisual;
+use pz_inventory::worn_items::WornInventoryResult;
 use pz_kahlua::Thread;
 use pz_scripts::objects::models::MannequinScript;
 use pz_scripts::registry::RegistryKey;
@@ -209,31 +210,45 @@ impl HumanVisualOwner for VisualOwner {
 
 struct InventoryHost<'a>(&'a mut Thread);
 impl WornItemsInventoryHost for InventoryHost<'_> {
-    fn create_item(&mut self, item_type: &str) -> ScriptResult<Option<ItemRef>> {
-        let item = crate::bind_items::try_create_item(item_type, 1.0)
-            .map_err(|error| pz_scripts::ScriptError::new(format!("{error:?}")))?;
+    fn create_item(&mut self, item_type: &str) -> WornInventoryResult<Option<ItemRef>> {
+        let item = crate::bind_items::try_create_item_host(item_type, 1.0)?;
         if let Some(item) = &item {
+            // Keep the incoming receiver beyond caller world/sprite guards,
+            // including initializer and later native visual-sync failures.
+            let mut retired = pz_entity::RetiredComponents::new();
+            retired.push_owner(pz_entity::EntityOwner::from_ref(item));
+            pz_inventory::component_host::retire_components(retired);
             crate::bind_items::initialise_item(self.0, item);
         }
         Ok(item)
     }
-    fn copy_visual_and_sync(&mut self, item: &ItemRef, from: &ItemVisual) -> ScriptResult {
+    fn copy_visual_and_sync(&mut self, item: &ItemRef, from: &ItemVisual) -> WornInventoryResult {
         let env = crate::bind_items::item_env();
         let owner = env.owner(item);
         if env.context().assets().is_some() {
-            pz_inventory::moddata::prepare_clothing_mod_data_ref(item)
-                .map_err(|error| ScriptError::new(error.to_string()))?;
+            pz_inventory::moddata::prepare_clothing_mod_data_ref(item)?;
         }
-        let mut item = item
-            .try_borrow_mut()
-            .map_err(|_| borrowed("InventoryItem"))?;
-        if let Some(visual) = item
-            .try_get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
-            .map_err(|error| ScriptError::new(error.to_string()))?
-        {
-            *visual = from.clone();
-            item.try_synch_with_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
-                .map_err(|error| ScriptError::new(error.to_string()))?;
+        let needs_sync = {
+            let mut body = item
+                .try_borrow_mut()
+                .map_err(|_| borrowed("InventoryItem"))?;
+            if let Some(visual) =
+                body.try_get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())?
+            {
+                *visual = from.clone();
+                true
+            } else {
+                false
+            }
+        };
+        if needs_sync {
+            pz_inventory::item_texture::synch_with_visual_ref(
+                item,
+                env.context().assets(),
+                owner.as_ref(),
+                env.visual_rng(),
+                &mut |m| env.rand_next(m),
+            )?;
         }
         Ok(())
     }
@@ -241,7 +256,7 @@ impl WornItemsInventoryHost for InventoryHost<'_> {
         &mut self,
         item: &ItemRef,
         clothing: bool,
-    ) -> ScriptResult<Option<Rc<RegistryKey>>> {
+    ) -> WornInventoryResult<Option<Rc<RegistryKey>>> {
         let item = item.try_borrow().map_err(|_| borrowed("InventoryItem"))?;
         if !clothing {
             return Ok(item.can_be_equipped());
@@ -254,22 +269,20 @@ impl WornItemsInventoryHost for InventoryHost<'_> {
         let location = script.0.borrow().body_location.clone();
         Ok(location)
     }
-    fn get_holes_number(&mut self, item: &ItemRef) -> ScriptResult<i32> {
+    fn get_holes_number(&mut self, item: &ItemRef) -> WornInventoryResult<i32> {
         let env = crate::bind_items::item_env();
         let owner = env.owner(item);
         if env.context().assets().is_some() {
-            pz_inventory::moddata::prepare_clothing_mod_data_ref(item)
-                .map_err(|error| ScriptError::new(error.to_string()))?;
+            pz_inventory::moddata::prepare_clothing_mod_data_ref(item)?;
         }
         let mut item = item
             .try_borrow_mut()
             .map_err(|_| borrowed("InventoryItem"))?;
-        item.try_get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())
-            .map_err(|error| ScriptError::new(error.to_string()))?
+        item.try_get_visual(env.context().assets(), owner.as_ref(), env.visual_rng())?
             .map(|v| v.get_holes_number())
-            .ok_or_else(|| ScriptError::new("java.lang.NullPointerException: item visual"))
+            .ok_or_else(|| ScriptError::new("java.lang.NullPointerException: item visual").into())
     }
-    fn set_condition_no_sound(&mut self, item: &ItemRef, condition: i32) -> ScriptResult {
+    fn set_condition_no_sound(&mut self, item: &ItemRef, condition: i32) -> WornInventoryResult {
         let env = crate::bind_items::item_env();
         let owner = env.owner(item);
         let out = item
@@ -279,10 +292,10 @@ impl WornItemsInventoryHost for InventoryHost<'_> {
         env.outcome(item, crate::bind_items::ItemOutcome::Condition(out));
         Ok(())
     }
-    fn add_item(&mut self, container: &ContainerRef, item: &ItemRef) -> ScriptResult {
+    fn add_item(&mut self, container: &ContainerRef, item: &ItemRef) -> WornInventoryResult {
         crate::bind_item_container::add_item(self.0, container, Some(item.clone()))
             .map(|_| ())
-            .map_err(|e| ScriptError::new(e.to_string()))
+            .map_err(|e| ScriptError::new(e.to_string()).into())
     }
 }
 
@@ -296,7 +309,7 @@ pub fn activate(
     zone: Option<&MannequinZoneData>,
     game_dir: &Path,
     no_black_clothes: bool,
-) -> ScriptResult {
+) -> WornInventoryResult {
     let scripts = crate::bind_registry::shared_script_manager();
     promote_loaded_inventory(object, &scripts)?;
     let group = crate::bind_characters::shared_characters()
@@ -328,9 +341,9 @@ pub fn activate(
         if first {
             m.init = true;
             if sprite_name.is_none() {
-                return Err(ScriptError::new(
-                    "java.lang.NullPointerException: mannequin sprite",
-                ));
+                return Err(
+                    ScriptError::new("java.lang.NullPointerException: mannequin sprite").into(),
+                );
             }
             properties_from_sprite(m, sprite_name);
             if let Some(zone) = zone {
@@ -341,7 +354,7 @@ pub fn activate(
         first
     };
     if first {
-        let result =
+        let result: ScriptResult =
             crate::bind_appearance::with_dress_context_options(thread, no_black_clothes, |ctx| {
                 let mut object = object
                     .try_borrow_mut()

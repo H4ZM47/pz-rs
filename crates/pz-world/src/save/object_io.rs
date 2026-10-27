@@ -8,6 +8,7 @@ use super::lua_table::{present, LuaKey, LuaTable, LuaValue};
 use super::visual::{load_container, save_container, HumanVisual};
 use super::SaveCtx;
 use crate::objects::*;
+use crate::sprite::runtime::ObjectSprite;
 use crate::sprite::SpriteIdx;
 
 #[cfg(test)]
@@ -135,11 +136,31 @@ impl WorldObjectLoadFailure {
 /// Production floor loading allocates the full receiver BEFORE any load field
 /// writes. The same reference is assigned to item.worldItem before tint and
 /// later reads. Context-free archive fixtures retain their explicit value path.
-pub fn load_object_slot(
+pub fn load_object_slot_data_projection(
     r: &mut Reader<'_>,
     ctx: &SaveCtx<'_>,
     wv: i32,
     id: ObjectId,
+) -> Result<Option<crate::ObjectSlot>, WorldObjectLoadFailure> {
+    load_object_slot_profile(r, ctx, wv, id, None)
+}
+
+pub fn load_object_slot_with_visual_host(
+    r: &mut Reader<'_>,
+    ctx: &SaveCtx<'_>,
+    wv: i32,
+    id: ObjectId,
+    host: &mut dyn crate::square_mutation::NativeFloorHost,
+) -> Result<Option<crate::ObjectSlot>, WorldObjectLoadFailure> {
+    load_object_slot_profile(r, ctx, wv, id, Some(host))
+}
+
+fn load_object_slot_profile(
+    r: &mut Reader<'_>,
+    ctx: &SaveCtx<'_>,
+    wv: i32,
+    id: ObjectId,
+    visual_host: Option<&mut dyn crate::square_mutation::NativeFloorHost>,
 ) -> Result<Option<crate::ObjectSlot>, WorldObjectLoadFailure> {
     use pz_entity::runtime_load::RuntimeHostError;
     let original = r.pos;
@@ -166,7 +187,7 @@ pub fn load_object_slot(
         }
     };
     if ctx.tables.class_name(class_id) != Some("WorldInventoryItem")
-        || ctx.items.components().entity_context().is_none()
+        || visual_host.is_none() && ctx.items.components().entity_context().is_none()
     {
         r.pos = original;
         let value = load_object(r, ctx, wv, id).map_err(|error| WorldObjectLoadFailure {
@@ -219,7 +240,7 @@ pub fn load_object_slot(
     let mut retired = pz_entity::RetiredComponents::new();
     retired.push_owner(pz_entity::EntityOwner::from_ref(&object));
     let mut phase = "offsets";
-    let result = load_floor_into_actual(r, ctx, wv, &object, &mut retired, &mut phase);
+    let result = load_floor_into_actual(r, ctx, wv, &object, &mut retired, &mut phase, visual_host);
     match result {
         Ok(()) => {
             pz_inventory::component_host::retire_components(retired);
@@ -242,6 +263,7 @@ fn load_floor_into_actual(
     object: &crate::IsoObjectRef,
     retired: &mut pz_entity::RetiredComponents,
     phase: &mut &'static str,
+    mut visual_host: Option<&mut dyn crate::square_mutation::NativeFloorHost>,
 ) -> pz_entity::runtime_load::HostResult<()> {
     use pz_entity::runtime_load::{RuntimeHostError, RuntimeLoadOptions};
     let native = |error: super::io::SaveError| {
@@ -263,10 +285,25 @@ fn load_floor_into_actual(
         .zoff = r.f32().map_err(native)?;
     r.f32().map_err(native)?;
     r.f32().map_err(native)?;
-    object
-        .try_borrow_mut()
-        .map_err(|_| RuntimeHostError::Borrowed("floor CreateSprite projection"))?
-        .sprite_id_override = Some(UNREGISTERED_SPRITE_ID);
+    *phase = "CreateSprite";
+    let sprite = if let Some(host) = visual_host.as_deref_mut() {
+        ObjectSprite::Native(crate::sprite::runtime::create_runtime_sprite(
+            &host.sprite_manager()?,
+            &host.sprite_tables()?,
+            retired,
+        )?)
+    } else {
+        ObjectSprite::ArchiveUnmanaged(UNREGISTERED_SPRITE_ID)
+    };
+    let old = std::mem::replace(
+        &mut object
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("floor CreateSprite publication"))?
+            .sprite,
+        sprite,
+    );
+    retired.push_payload(Box::new(old));
+    crate::object_slot::observe_object(object, "zombie.iso.objects.IsoWorldInventoryObject");
     *phase = "loadItem";
     let loaded = match pz_inventory::saved::load_item_record(r, wv, ctx.items, None) {
         Ok(loaded) => loaded,
@@ -308,7 +345,32 @@ fn load_floor_into_actual(
             .map_err(|_| RuntimeHostError::Borrowed("floor item tint"))?;
         [item.col[0], item.col[1], item.col[2]]
     };
-    {
+    if visual_host.is_some() {
+        // load writes R/G/B on the stable sprite ColorInfo and preserves A.
+        let sprite = object
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("loaded sprite tint pointer"))?
+            .sprite
+            .native_slot()
+            .cloned()
+            .ok_or(RuntimeHostError::InvalidHostState(
+                "loaded native sprite absent",
+            ))?;
+        let tint_slot = sprite
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("loaded sprite tint pointer"))?
+            .tint_slot()
+            .cloned()
+            .ok_or(RuntimeHostError::InvalidHostState(
+                "loaded native tint absent",
+            ))?;
+        for (channel, value) in tint.into_iter().enumerate() {
+            tint_slot
+                .try_borrow_mut()
+                .map_err(|_| RuntimeHostError::Borrowed("loaded sprite tint channel"))?[channel] =
+                value;
+        }
+    } else {
         let mut object = object
             .try_borrow_mut()
             .map_err(|_| RuntimeHostError::Borrowed("floor sprite tint projection"))?;
@@ -385,6 +447,20 @@ fn load_floor_into_actual(
         .try_borrow_mut()
         .map_err(|_| RuntimeHostError::Borrowed("floor visual continuation"))?
         .pending_floor_visual_tail = Some(FloorVisualTail::LoadedTextureAndSprite);
+    let actual_texture_loaded = if let Some(host) = visual_host.as_deref_mut() {
+        *phase = "native loaded texture and scale";
+        let nonnull = crate::square_mutation::load_floor_sprite_visual(object, host, retired)?;
+        object
+            .try_borrow_mut()
+            .map_err(|_| RuntimeHostError::Borrowed("loaded native visual completion"))?
+            .pending_floor_visual_tail = None;
+        if !nonnull {
+            return Ok(());
+        }
+        Some(true)
+    } else {
+        None
+    };
     // The pre-existing renderer uses item/model inputs instead of an actual
     // Java Sprite object. Do not fabricate a successful LoadSingleTexture to
     // decide the later conditional duplicate-Fluid removal.
@@ -404,7 +480,10 @@ fn load_floor_into_actual(
             != pz_entity::EntryPresence::Absent;
     if both_fluid {
         *phase = "native texture-dependent duplicate Fluid removal";
-        match ctx.hooks.floor_load_texture_status(object) {
+        match actual_texture_loaded
+            .map(pz_entity::Lookup::Found)
+            .unwrap_or_else(|| ctx.hooks.floor_load_texture_status(object))
+        {
             pz_entity::Lookup::Found(false) => (),
             pz_entity::Lookup::Found(true) => {
                 if let Some(component) =
@@ -530,7 +609,10 @@ fn load_entity_archive(
         .map_err(|error| super::io::SaveError(error.to_string()))?;
     let loaded = ctx.items.components().load_entity(r, wv, &mut blobs)?;
     if loaded.contains(&SPRITE_CONFIG_ID) {
-        sprite_config_archive_projection(ctx, obj.sprite, &mut blobs);
+        if matches!(obj.sprite, ObjectSprite::Native(_)) {
+            return err("native SpriteConfig load requires actual runtime sprite-grid ownership");
+        }
+        sprite_config_archive_projection(ctx, obj.sprite.tile_projection(), &mut blobs);
     }
     obj.components = ItemComponents::from_encoded_entries(
         blobs
@@ -616,11 +698,12 @@ fn save_entity(w: &mut Writer, obj: &IsoObject) -> SaveResult<()> {
 fn load_base(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) -> SaveResult<()> {
     let m = ctx.sprites;
     let sid = r.i32()?;
-    o.sprite = if sid == -1 {
+    o.sprite = (if sid == -1 {
         m.named_map.get("").copied()
     } else {
         sprite_or_null(ctx, sid)
-    };
+    })
+    .into();
     let header = r.i8()? as i64 as u64;
     if header != 0 {
         if has(header, 1) {
@@ -795,38 +878,54 @@ fn load_base(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
         }
     }
     if o.sprite.is_none() {
-        o.sprite_id_override = Some(UNREGISTERED_SPRITE_ID);
+        o.sprite = ObjectSprite::ArchiveUnmanaged(UNREGISTERED_SPRITE_ID);
     }
     Ok(())
 }
 
 /// The id `IsoObject.save` writes for the object's sprite.
 pub fn sprite_save_id(ctx: &SaveCtx<'_>, o: &IsoObject) -> i32 {
-    match o.sprite {
-        Some(s) => ctx.sprite_id(s),
-        None => o.sprite_id_override.unwrap_or(-1),
-    }
+    try_sprite_save_id(ctx, o).expect("archive sprite id requires an unborrowed runtime sprite")
+}
+
+pub fn try_sprite_save_id(
+    ctx: &SaveCtx<'_>,
+    o: &IsoObject,
+) -> pz_entity::runtime_load::HostResult<i32> {
+    o.sprite.try_id(ctx.sprites)
 }
 
 /// `getObjectName()`.
 pub fn object_name(ctx: &SaveCtx<'_>, o: &IsoObject) -> String {
+    try_object_name(ctx, o).expect("archive object name requires unborrowed native sprite metadata")
+}
+
+pub fn try_object_name(
+    ctx: &SaveCtx<'_>,
+    o: &IsoObject,
+) -> pz_entity::runtime_load::HostResult<String> {
     if let Some(n) = o.kind.object_name() {
-        return n.to_string();
+        return Ok(n.to_string());
     }
     match &o.name {
-        Some(ObjectName::Grass) => return "Grass".into(),
-        Some(ObjectName::Str(s)) => return s.clone(),
+        Some(ObjectName::Grass) => return Ok("Grass".into()),
+        Some(ObjectName::Str(s)) => return Ok(s.clone()),
         // A dictionary name never names a factory class.
-        Some(ObjectName::Dict(_)) => return "IsoObject".into(),
+        Some(ObjectName::Dict(_)) => return Ok("IsoObject".into()),
         None => {}
     }
-    if let Some(p) = o
-        .sprite
-        .and_then(|s| ctx.sprites.sprites[s].parent_object_name.as_deref())
-    {
-        return p.to_string();
+    // Archive-only IDs have no metadata body. This explicit archive helper
+    // retains its existing factory-name policy; native sprites read actual data.
+    if !matches!(o.sprite, ObjectSprite::ArchiveUnmanaged(_)) {
+        if let Some(p) = o
+            .sprite
+            .try_read(ctx.sprites)?
+            .and_then(|sprite| sprite.parent_object_name.clone())
+        {
+            return Ok(p);
+        }
     }
-    "IsoObject".into()
+    Ok("IsoObject".into())
 }
 
 /// `IsoObject.save`, with the `IsoMannequin`/`IsoFire`/`IsoGenerator`
@@ -841,7 +940,10 @@ fn save_base(
 ) -> SaveResult<()> {
     w.i8(1);
     w.i8(ctx.class_id(&object_name(ctx, o))?);
-    w.i32(sprite_save_id(ctx, o));
+    w.i32(
+        try_sprite_save_id(ctx, o)
+            .map_err(|error| super::io::SaveError(format!("archive sprite field: {error:?}")))?,
+    );
     let mut header = BitHeaderWrite::alloc(w, 1);
     if let Some(list) = o.attached_anim_sprite.as_ref().filter(|_| with_attached) {
         header.add(1);
@@ -1055,9 +1157,19 @@ fn load_dryer(r: &mut Reader<'_>) -> SaveResult<DryerLogic> {
 
 /// The `load` overrides of classes that call `IsoObject.load` first.
 fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) -> SaveResult<()> {
-    let sprite = o.sprite;
     let m = ctx.sprites;
-    let prop = |name: &str| sprite.and_then(|s| m.prop(&m.sprites[s], name).map(str::to_string));
+    let sprite_data = o
+        .sprite
+        .metadata_projection(m)
+        .map_err(|error| super::io::SaveError(format!("archive sprite metadata: {error:?}")))?;
+    let prop = |name: &str| {
+        sprite_data
+            .as_ref()
+            .and_then(|sprite| m.prop(sprite, name).map(str::to_string))
+    };
+    // Sprite-valued subclass fields in this legacy archive decoder are
+    // managed indices. Native floor decoding uses the separate actual host.
+    let sprite = o.sprite.tile_projection();
     match &mut o.kind {
         ObjectKind::Object
         | ObjectKind::Jukebox
@@ -1134,7 +1246,9 @@ fn load_tail(r: &mut Reader<'_>, ctx: &SaveCtx<'_>, wv: i32, o: &mut IsoObject) 
             }
             s.last_minute_stamp = r.i64()?;
             s.bulb_burn_minutes = r.i32()?;
-            s.street_light = sprite.is_some_and(|sp| m.has_prop(&m.sprites[sp], "streetlight"));
+            s.street_light = sprite_data
+                .as_ref()
+                .is_some_and(|sp| m.has_prop(sp, "streetlight"));
         }
         ObjectKind::Tree(t) => {
             t.log_yield = r.i8()? as i32;
@@ -1584,8 +1698,8 @@ fn load_special(
             // IsoSpriteManager.getSprite(int): null for an unknown id. A
             // wheelie bin keeps the unregistered sprite CreateSprite made.
             match sprite {
-                Some(id) => o.sprite = sprite_or_null(ctx, id),
-                None => o.sprite_id_override = Some(UNREGISTERED_SPRITE_ID),
+                Some(id) => o.sprite = (sprite_or_null(ctx, id)).into(),
+                None => o.sprite = ObjectSprite::ArchiveUnmanaged(UNREGISTERED_SPRITE_ID),
             }
             o.container = container;
             o.kind = ObjectKind::Pushable(Box::new(p));
@@ -1622,13 +1736,15 @@ fn load_special(
             if !exists {
                 // The item is null: the square drops the object. The entity
                 // block (if any) is not read, as upstream.
-                o.sprite_id_override = None;
+                if matches!(o.sprite, ObjectSprite::ArchiveUnmanaged(_)) {
+                    o.sprite = ObjectSprite::None;
+                }
                 return Ok(());
             }
             if has(bits, 2) {
                 load_entity_archive(r, ctx, wv, o)?;
             }
-            o.sprite_id_override = Some(UNREGISTERED_SPRITE_ID);
+            o.sprite = ObjectSprite::ArchiveUnmanaged(UNREGISTERED_SPRITE_ID);
             return Ok(());
         }
         "Barricade" => {
@@ -1654,7 +1770,7 @@ fn load_special(
             let Some(n) = b.sprite_name() else {
                 return err("NullPointerException: IsoBarricade.chooseSprite with no sprite");
             };
-            o.sprite = ctx.sprites.named_map.get(&n).copied();
+            o.sprite = (ctx.sprites.named_map.get(&n).copied()).into();
             o.kind = ObjectKind::Barricade(b);
             return Ok(());
         }
@@ -1703,8 +1819,14 @@ fn load_special(
             let (max_water, max_feed) = if linked_x > 0 && linked_y > 0 {
                 (0.0, 0)
             } else {
-                o.sprite
-                    .and_then(|s| ctx.sprites.sprites[s].name.as_deref())
+                let sprite_data = o.sprite.metadata_projection(ctx.sprites).map_err(|error| {
+                    super::io::SaveError(format!(
+                        "archive feeding-trough sprite metadata: {error:?}"
+                    ))
+                })?;
+                sprite_data
+                    .as_ref()
+                    .and_then(|s| s.name.as_deref())
                     .and_then(|n| ctx.hooks.feeding_trough_def(n))
                     .unwrap_or((0.0, 0))
             };
@@ -1730,8 +1852,10 @@ fn load_special(
                 let sprite_name = r.string()?;
                 // this.sprite = IsoSpriteManager.instance.getSprite(spriteName)
                 if let Some(&s) = ctx.sprites.named_map.get(&sprite_name) {
-                    o.sprite = Some(s);
-                    o.sprite_id_override = None;
+                    o.sprite = (Some(s)).into();
+                    if matches!(o.sprite, ObjectSprite::ArchiveUnmanaged(_)) {
+                        o.sprite = ObjectSprite::None;
+                    }
                 }
                 let open = r.bool()?;
                 let open_egg_hatch = r.bool()?;
@@ -1874,8 +1998,10 @@ fn load_special(
             }))
         }
         "Fire" => {
-            o.sprite = None;
-            o.sprite_id_override = None;
+            o.sprite = (None).into();
+            if matches!(o.sprite, ObjectSprite::ArchiveUnmanaged(_)) {
+                o.sprite = ObjectSprite::None;
+            }
             let mut life = || r.i32();
             let mut s = crate::fire::FireSave {
                 life: life()?,
@@ -1936,7 +2062,13 @@ pub fn save_object(w: &mut Writer, ctx: &SaveCtx<'_>, o: &IsoObject) -> SaveResu
         }
         ObjectKind::Pushable(p) => {
             let class = ctx.class_id(p.object_name())?;
-            let sprite = o.sprite.map(|s| ctx.sprite_id(s));
+            let sprite = if o.sprite.is_none() {
+                None
+            } else {
+                Some(try_sprite_save_id(ctx, o).map_err(|error| {
+                    super::io::SaveError(format!("archive pushable sprite field: {error:?}"))
+                })?)
+            };
             return p.save(w, class, sprite, o.container.as_ref(), ctx.items);
         }
         ObjectKind::Barricade(b) => {

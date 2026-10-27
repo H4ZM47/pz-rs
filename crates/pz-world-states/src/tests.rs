@@ -1158,7 +1158,7 @@ fn vegetation_rustles_past_the_first_object() {
         let spr = w.m.named_map["shrub"];
         let sq_owner = w.cell.get_grid_square_mut(11, 10, 0).unwrap();
         let mut sq = sq_owner.borrow_mut();
-        sq.objects[0].borrow_mut().sprite = Some(spr);
+        sq.objects[0].borrow_mut().sprite = Some(spr).into();
         sq.recalc_properties(&w.m);
     }
     let ctx = DrawCtx::default();
@@ -1504,4 +1504,182 @@ fn removal_callback_can_mutate_and_retain_the_actual_whole_object() {
         .is_none());
     drop(removed);
     assert_eq!(w.engine.removed_owners[0].borrow().tint_r, 0.375);
+}
+
+#[test]
+fn actual_sprite_query_values_are_owned_and_host_faults_are_not_absence() {
+    use pz_entity::runtime_load::RuntimeHostError;
+    use pz_world::sprite::runtime::{create_runtime_sprite, ObjectSprite};
+    use std::{cell::RefCell, rc::Rc};
+
+    let w = World::new();
+    let arena_before = w.m.sprites.len();
+    let native_manager = Rc::new(RefCell::new(manager()));
+    let mut retired = pz_entity::RetiredComponents::new();
+    let sprite = create_runtime_sprite(&native_manager, &w.m.tables, &mut retired).unwrap();
+    let mut object = IsoObject::new(99, ObjectKind::Object, None);
+    object.sprite = ObjectSprite::Native(sprite.clone());
+    {
+        let mut body = sprite.borrow_mut();
+        body.data.name = Some("actual_before".into());
+        body.data.properties.set_raw(&w.m.alias, "Material", "Wood");
+        body.data.properties.set_flag(w.m.tables.flag.collideN);
+    }
+    let env = Env::new(&w.cell, &w.m, &w.meta);
+    let name = env.try_sprite_name(&object).unwrap().unwrap();
+    let material = env.try_obj_prop(&object, "Material").unwrap().unwrap();
+    let properties = env.try_props(&object).unwrap().unwrap();
+    {
+        let mut body = sprite.borrow_mut();
+        body.data.name = Some("actual_after".into());
+        body.data.properties.unset(&w.m.alias, "Material");
+        body.data.properties.unset_flag(w.m.tables.flag.collideN);
+    }
+    assert_eq!(name, "actual_before");
+    assert_eq!(material, "Wood");
+    assert!(properties.has(w.m.tables.flag.collideN));
+    assert_eq!(env.sprite_name(&object).as_deref(), Some("actual_after"));
+    assert_eq!(env.obj_prop(&object, "Material"), None);
+    assert!(!env.obj_has_flag(&object, "collideN"));
+    assert_eq!(w.m.sprites.len(), arena_before);
+
+    let held = sprite.borrow_mut();
+    assert!(matches!(
+        env.try_sprite_name(&object),
+        Err(RuntimeHostError::Borrowed(_))
+    ));
+    assert!(matches!(
+        env.try_props(&object),
+        Err(RuntimeHostError::Borrowed(_))
+    ));
+    assert!(matches!(
+        env.try_metadata(&object),
+        Err(RuntimeHostError::Borrowed(_))
+    ));
+    let absent = IsoObject::new(100, ObjectKind::Object, None);
+    assert_eq!(env.try_sprite_name(&absent).unwrap(), None);
+    drop(held);
+    object.sprite = ObjectSprite::ArchiveUnmanaged(-1);
+    assert!(matches!(
+        env.try_sprite_name(&object),
+        Err(RuntimeHostError::Unsupported { .. })
+    ));
+    let detached = { sprite.borrow_mut().take_slots_for_gc() };
+    drop(detached);
+    drop(retired);
+}
+
+#[test]
+fn state_fence_floor_and_bush_reads_follow_actual_sprite_mutation_and_retire_replacements() {
+    use pz_world::sprite::runtime::{create_runtime_sprite, ObjectSprite};
+    use std::{cell::RefCell, rc::Rc};
+
+    let mut w = World::new();
+    let r = w.add(10, 10, "crate", ObjectKind::Object, false);
+    let native_manager = Rc::new(RefCell::new(manager()));
+    let mut retired = pz_entity::RetiredComponents::new();
+    let arena_before = w.m.sprites.len();
+    let sprite = create_runtime_sprite(&native_manager, &w.m.tables, &mut retired).unwrap();
+    let (floor, object) = {
+        let sq = w.cell.get_grid_square(10, 10, 0).unwrap();
+        let sq = sq.borrow();
+        (sq.objects[0].ref_handle(), sq.objects[1].ref_handle())
+    };
+    floor.borrow_mut().sprite = ObjectSprite::Native(sprite.clone());
+    object.borrow_mut().sprite = ObjectSprite::Native(sprite.clone());
+    {
+        let mut body = sprite.borrow_mut();
+        body.data.name = Some("actual_floor".into());
+        body.data.tileset_name = Some("f_bushes_1".into());
+        body.data.tile_type = w.m.tables.ty.wall;
+        body.data.cut_n = true;
+        body.data.properties.set_flag(w.m.tables.flag.solidfloor);
+    }
+    {
+        let adapter = w.adapter();
+        assert_eq!(adapter.rustle_targets((10, 10, 0)), vec![(r, false, false)]);
+        assert_eq!(
+            adapter.floor_sprite_name_at((10, 10, 0)).as_deref(),
+            Some("actual_floor")
+        );
+        let sq = adapter.cell.get_grid_square(10, 10, 0).unwrap();
+        assert!(adapter.has_non_hoppable_wall(&sq.borrow(), true));
+    }
+    {
+        let mut body = sprite.borrow_mut();
+        body.data.name = Some("actual_changed".into());
+        body.data.tileset_name = None;
+        body.data.cut_n = false;
+        body.data.properties.unset_flag(w.m.tables.flag.solidfloor);
+    }
+    {
+        let adapter = w.adapter();
+        assert!(adapter.rustle_targets((10, 10, 0)).is_empty());
+        assert_eq!(adapter.floor_sprite_name_at((10, 10, 0)), None);
+        let sq = adapter.cell.get_grid_square(10, 10, 0).unwrap();
+        assert!(!adapter.has_non_hoppable_wall(&sq.borrow(), true));
+    }
+    assert!(Rc::ptr_eq(
+        object.borrow().sprite.native_slot().unwrap(),
+        &sprite
+    ));
+    assert_eq!(w.m.sprites.len(), arena_before);
+    let pins_before = Rc::strong_count(&sprite);
+    let tile = w.m.named_map["crate"];
+    w.adapter().replace_object_sprite_tile(&object, Some(tile));
+    assert_eq!(object.borrow().sprite.tile_projection(), Some(tile));
+    assert!(Rc::ptr_eq(
+        floor.borrow().sprite.native_slot().unwrap(),
+        &sprite
+    ));
+    assert_eq!(
+        Rc::strong_count(&sprite),
+        pins_before,
+        "old actual slot must be queued"
+    );
+    let retired_world = w.cell.take_retired_owners();
+    assert_eq!(Rc::strong_count(&sprite), pins_before);
+    drop(retired_world);
+    assert_eq!(Rc::strong_count(&sprite), pins_before - 1);
+    let detached = { sprite.borrow_mut().take_slots_for_gc() };
+    drop(detached);
+    drop(retired);
+}
+
+#[test]
+fn sprite_replacement_observes_full_native_class_after_object_guards() {
+    use pz_world::object_slot::{install_object_observer, ObjectObserver};
+    use std::cell::RefCell;
+    thread_local! {
+        static CLASSES: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+    }
+    fn observed(object: &pz_world::IsoObjectRef, native_class: &'static str) {
+        let body = object
+            .try_borrow_mut()
+            .expect("object guard survived observation");
+        assert_eq!(native_class, body.kind.native_class_name());
+        CLASSES.with(|classes| classes.borrow_mut().push(native_class));
+    }
+    struct Restore(Option<ObjectObserver>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            install_object_observer(self.0);
+        }
+    }
+
+    let mut w = World::new();
+    let plain = w.add(10, 10, "crate", ObjectKind::Object, false);
+    let win = w.add(11, 10, "window_w", window(&w, 50), true);
+    let owner = w.object(plain).unwrap();
+    CLASSES.with(|classes| classes.borrow_mut().clear());
+    let _restore = Restore(install_object_observer(Some(observed)));
+    let tile = w.m.named_map["floor"];
+    w.adapter().replace_object_sprite_tile(&owner, Some(tile));
+    w.adapter().smash_window(win, false);
+    CLASSES.with(|classes| {
+        assert_eq!(
+            *classes.borrow(),
+            ["zombie.iso.IsoObject", "zombie.iso.objects.IsoWindow"]
+        );
+    });
 }

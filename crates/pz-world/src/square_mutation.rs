@@ -57,10 +57,13 @@ use pz_inventory::InventoryItem;
 
 mod lifecycle;
 mod world_item;
-pub use lifecycle::{AmbientEmitterKind, WorldCall};
+pub use lifecycle::{
+    native_floor_add_to_world, try_flag_object_for_hot_save, AmbientEmitterKind, WorldCall,
+};
 pub use world_item::{
-    render_square, FloorDropEnv, NativeFloorPlacement, NativeFloorRender, WorldItemPlaced,
-    WorldItemPlacementError, WORLD_ITEM_ADDED,
+    load_floor_sprite_visual, render_square, update_floor_sprite, FloorDropEnv, NativeFloorHost,
+    NativeFloorPlacement, NativeFloorRender, WorldItemPlaced, WorldItemPlacementError,
+    WORLD_ITEM_ADDED,
 };
 
 #[cfg(test)]
@@ -451,8 +454,15 @@ impl MutationEnv<'_> {
         self.cell.get_grid_square_mut(pos.0, pos.1, pos.2)
     }
 
-    fn spr(&self, o: &IsoObject) -> Option<&crate::sprite::IsoSprite> {
-        o.sprite.map(|s| &self.sprites.sprites[s])
+    fn try_spr(&self, o: &IsoObject) -> HostResult<Option<crate::sprite::IsoSprite>> {
+        o.sprite.metadata_projection(self.sprites)
+    }
+
+    // Legacy synchronous mutation entry points have no host-error carrier.
+    // Their metadata query still reads Native directly; it never means null.
+    fn spr(&self, o: &IsoObject) -> Option<crate::sprite::IsoSprite> {
+        self.try_spr(o)
+            .expect("legacy mutation requires unborrowed actual sprite metadata")
     }
 
     fn flag(&self, name: &str) -> Option<crate::sprite::IsoFlagType> {
@@ -870,7 +880,7 @@ impl MutationEnv<'_> {
         pos: SquarePos,
         obj: ObjectSlot,
         index: i32,
-    ) -> Option<ObjectId> {
+    ) -> HostResult<Option<ObjectId>> {
         self.add_object(pos, obj, index, false)
     }
 
@@ -882,12 +892,16 @@ impl MutationEnv<'_> {
         pos: SquarePos,
         obj: ObjectSlot,
         index: i32,
-    ) -> Option<ObjectId> {
+    ) -> HostResult<Option<ObjectId>> {
         self.add_object(pos, obj, index, true)
     }
 
     /// `AddSpecialTileObject(obj)`: `AddSpecialObject(obj)`.
-    pub fn add_special_tile_object(&mut self, pos: SquarePos, obj: ObjectSlot) -> Option<ObjectId> {
+    pub fn add_special_tile_object(
+        &mut self,
+        pos: SquarePos,
+        obj: ObjectSlot,
+    ) -> HostResult<Option<ObjectId>> {
         self.add_special_object(pos, obj, -1)
     }
 
@@ -898,7 +912,7 @@ impl MutationEnv<'_> {
         pos: SquarePos,
         obj: ObjectSlot,
         index: i32,
-    ) -> Option<ObjectId> {
+    ) -> HostResult<Option<ObjectId>> {
         self.add_tile_object(pos, obj, index)
     }
 
@@ -908,13 +922,17 @@ impl MutationEnv<'_> {
         obj: ObjectSlot,
         index: i32,
         special: bool,
-    ) -> Option<ObjectId> {
-        self.cell
-            .retire_object(ObjectSlot::retain(&obj.ref_handle()));
-        self.sq(pos)?;
+    ) -> HostResult<Option<ObjectId>> {
+        let actual = obj.ref_handle();
+        self.cell.retire_object(ObjectSlot::retain(&actual));
+        if self.sq(pos).is_none() {
+            return Ok(None);
+        }
         self.regions_set_previous_flags(pos);
         let world_item = matches!(obj.borrow().kind, ObjectKind::WorldInventory(_));
-        let id = self.insert_object(pos, obj, index)?;
+        let Some(id) = self.insert_object(pos, obj, index) else {
+            return Ok(None);
+        };
         let sq_owner = self.sq_mut(pos).unwrap();
         let mut sq = sq_owner.borrow_mut();
         if special {
@@ -922,7 +940,27 @@ impl MutationEnv<'_> {
         }
         sq.burnt_out = false;
         drop(sq);
-        lifecycle::add_to_world(self, ObjectRef { pos, id });
+        lifecycle::add_to_world(self, ObjectRef { pos, id })?;
+        // The following void helpers retain their arena-data preconditions.
+        // A genuine native receiver has completed addToWorld at this point;
+        // do not turn its actual sprite into absent tile metadata or enter
+        // those helpers before their native host phases are implemented.
+        if actual
+            .try_borrow()
+            .map_err(|_| RuntimeHostError::Borrowed("addObject post-lifecycle sprite"))?
+            .sprite
+            .native_slot()
+            .is_some()
+        {
+            return Err(RuntimeHostError::Unsupported {
+                operation: if special {
+                    "native addObject restackSheetRope"
+                } else {
+                    "native addObject RecalcAllWithNeighbours"
+                },
+                kind: None,
+            });
+        }
         if special {
             self.restack_sheet_rope(pos);
         }
@@ -938,7 +976,7 @@ impl MutationEnv<'_> {
         self.polygonal_map2_square_changed(pos);
         self.regions_square_changed(pos, false);
         self.invalidate_render(pos, dirty::OBJECT_ADDED);
-        Some(id)
+        Ok(Some(id))
     }
 
     /// `addFloor(sprite)`: the floors, vegetation, tainted water and grass
@@ -1164,27 +1202,29 @@ impl MutationEnv<'_> {
             let mut adjustments = Vec::new();
             if let Some(i) = actual_index {
                 let m = &*self.sprites;
-                let info = |o: &IsoObject| {
-                    o.sprite
-                        .map(|s| m.sprites[s].properties.surface_info(&m.alias))
-                        .unwrap_or_default()
+                let info = |o: &IsoObject| -> HostResult<_> {
+                    Ok(o.sprite
+                        .metadata_projection(m)?
+                        .map(|s| s.properties.surface_info(&m.alias))
+                        .unwrap_or_default())
                 };
                 let this_owner = sq.objects[i].ref_handle();
                 let this = info(
                     &*this_owner
                         .try_borrow()
                         .map_err(|_| RuntimeHostError::Borrowed("remove tile receiver"))?,
-                );
+                )?;
                 if this.is_table {
                     for slot in sq.objects.iter().skip(i + 1) {
                         let owner = slot.ref_handle();
                         let o = owner.try_borrow().map_err(|_| {
                             RuntimeHostError::Borrowed("remove tile table neighbour")
                         })?;
-                        let other = info(&o);
+                        let other = info(&o)?;
                         let countertop = o
                             .sprite
-                            .is_some_and(|s| m.has_prop(&m.sprites[s], "Countertop"));
+                            .metadata_projection(m)?
+                            .is_some_and(|s| m.has_prop(&s, "Countertop"));
                         if other.is_table_top || other.is_table && !countertop {
                             adjustments.push((slot.ref_handle(), this.surface as f32));
                         }
@@ -1349,7 +1389,7 @@ impl MutationEnv<'_> {
 
     fn int_prop(&self, o: &IsoObject, name: &str) -> Option<i32> {
         let s = self.spr(&o)?;
-        let v = self.sprites.prop(s, name)?;
+        let v = self.sprites.prop(&s, name)?;
         crate::java::parse_int(v)
     }
 
@@ -1510,8 +1550,14 @@ impl MutationEnv<'_> {
 
     fn sprite_grid(&self, r: ObjectRef) -> Option<(SpriteIdx, usize)> {
         let o = self.object(r)?;
-        let s = o.borrow().sprite?;
-        Some((s, self.sprites.sprites[s].sprite_grid?))
+        let body = o.borrow();
+        let metadata = self.spr(&body)?;
+        let grid = metadata.sprite_grid?;
+        let s = body
+            .sprite
+            .tile_projection()
+            .expect("legacy arena sprite-grid query cannot represent a Native member");
+        Some((s, grid))
     }
 
     /// Legacy synchronous/archive inspection. Production removal and fire
@@ -1567,7 +1613,10 @@ impl MutationEnv<'_> {
                             .objects
                             .iter()
                             .map(ObjectSlot::borrow)
-                            .find(|o| o.sprite.is_some() && o.sprite == test)
+                            .find(|o| {
+                                o.sprite.tile_projection().is_some()
+                                    && o.sprite.tile_projection() == test
+                            })
                             .map(|o| o.id)
                     });
                     out.push(ObjectRef { pos: p, id: found? });
@@ -1584,8 +1633,12 @@ impl MutationEnv<'_> {
         let body = owner
             .try_borrow()
             .map_err(|_| RuntimeHostError::Borrowed("multi-square door"))?;
-        let Some(index) = self.int_prop(&body, if garage { "GarageDoor" } else { "DoubleDoor" })
-        else {
+        let index = self.try_spr(&body)?.and_then(|sprite| {
+            self.sprites
+                .prop(&sprite, if garage { "GarageDoor" } else { "DoubleDoor" })
+                .and_then(crate::java::parse_int)
+        });
+        let Some(index) = index else {
             return Ok(-1);
         };
         let limit = if garage { 6 } else { 8 };
@@ -1734,9 +1787,9 @@ impl MutationEnv<'_> {
         if self.world.sprite_config_multi_square(r, &body).is_some() {
             return Ok(true);
         }
-        Ok(body
-            .sprite
-            .is_some_and(|sprite| self.sprites.sprites[sprite].sprite_grid.is_some()))
+        Ok(self
+            .try_spr(&body)?
+            .is_some_and(|sprite| sprite.sprite_grid.is_some()))
     }
 
     pub fn try_get_all_multi_tile_objects(
@@ -1779,11 +1832,17 @@ impl MutationEnv<'_> {
         if let Some(all) = self.world.sprite_config_multi_square(r, &body) {
             return Ok(all);
         }
-        let Some(sprite) = body.sprite else {
+        let Some(metadata) = self.try_spr(&body)? else {
             return Ok(None);
         };
-        let Some(grid) = self.sprites.sprites[sprite].sprite_grid else {
+        let Some(grid) = metadata.sprite_grid else {
             return Ok(None);
+        };
+        let Some(sprite) = body.sprite.tile_projection() else {
+            return Err(RuntimeHostError::Unsupported {
+                operation: "native sprite grid membership requires actual sprite references",
+                kind: None,
+            });
         };
         let grid = &self.sprites.grids[grid];
         let Some((ox, oy, oz)) = grid.sprite_pos(sprite) else {
@@ -1806,7 +1865,9 @@ impl MutationEnv<'_> {
                         let object = owner.try_borrow().map_err(|_| {
                             RuntimeHostError::Borrowed("multi-square sprite candidate")
                         })?;
-                        if object.sprite.is_some() && object.sprite == grid.get_sprite(x, y, z) {
+                        if object.sprite.tile_projection().is_some()
+                            && object.sprite.tile_projection() == grid.get_sprite(x, y, z)
+                        {
                             found = Some(object.id);
                             break;
                         }

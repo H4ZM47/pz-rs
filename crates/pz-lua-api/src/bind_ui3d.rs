@@ -761,7 +761,7 @@ mod tests {
             "avatar.javaObject:reportEvent('EventWalk'); avatar.javaObject:reportEvent(' ')",
         );
         with_ui(|m| m.time_override_ms = Some(1_000_000));
-        UIManager::update(&mut t);
+        UIManager::update(&mut t).unwrap();
         UIManager::render(&mut t);
         {
             let l = log.borrow();

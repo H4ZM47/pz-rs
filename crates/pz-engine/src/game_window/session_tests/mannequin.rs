@@ -15,10 +15,16 @@ pub(super) fn install_outfit_fixtures(
     let (square, sprite) = with_world(|world| {
         let cell = world.cell.as_ref().unwrap();
         let original = cell.get_grid_square(10710, 9402, 0).unwrap();
-        let sprite = original.borrow().objects.iter().find_map(|o| {
-            let object = o.borrow();
-            matches!(object.kind, ObjectKind::Mannequin(_)).then_some(object.sprite)
-        }).expect("installed map mannequin");
+        let sprite = original
+            .borrow()
+            .objects
+            .iter()
+            .find_map(|o| {
+                let object = o.borrow();
+                matches!(object.kind, ObjectKind::Mannequin(_))
+                    .then_some(object.sprite.tile_projection())
+            })
+            .expect("installed map mannequin");
         // Adjacent to the one-tile authored map zone, in the same saved chunk.
         (cell.get_grid_square(10710, 9403, 0).unwrap(), sprite)
     });

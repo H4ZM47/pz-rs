@@ -249,6 +249,29 @@ impl StatesEngine for EngineStates<'_> {
         floor.place_borrowed(cell, meta, sprites, square, item, x, y, height)
     }
 
+    fn add_world_inventory_item_on(
+        &mut self,
+        cell: &mut IsoCell,
+        _meta: &IsoMetaGrid,
+        _sprites: &mut IsoSpriteManager,
+        square: &pz_world::SquareRef,
+        item: &pz_inventory::shared::ItemRef,
+        x: f32,
+        y: f32,
+        height: f32,
+    ) -> HostResult<()> {
+        let floor = self.floor_world.as_ref().ok_or(
+            pz_inventory::floor_drop::RuntimeHostError::Unsupported {
+                operation: "actual state floor service",
+                kind: None,
+            },
+        )?;
+        let floor = floor.try_borrow().map_err(|_| {
+            pz_inventory::floor_drop::RuntimeHostError::Borrowed("actual state floor service")
+        })?;
+        floor.place_retained(cell, square, item, x, y, height)
+    }
+
     /// `!square.getMovingObjects().isEmpty()` for the players and animals;
     /// the population host counts the real zombies itself.
     fn has_moving_objects(&self, sq: (i32, i32, i32)) -> bool {

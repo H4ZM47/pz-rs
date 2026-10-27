@@ -252,8 +252,12 @@ impl FireWorld<'_> {
     /// `getFloor().getSprite().firerequirement`.
     pub fn floor_fire_requirement(&self, sq: &IsoGridSquare) -> Option<i32> {
         let i = sq.floor_index(self.sprites)?;
-        let s = sq.objects[i].borrow().sprite?;
-        Some(self.sprites.sprites[s].firerequirement)
+        let object = sq.objects[i].borrow();
+        let sprite = object
+            .sprite
+            .metadata_projection(self.sprites)
+            .expect("legacy fire requirement query requires unborrowed actual sprite metadata")?;
+        Some(sprite.firerequirement)
     }
 
     /// `IsoFire.CanAddFire(square, canBurnAnywhere, smoke)` in single

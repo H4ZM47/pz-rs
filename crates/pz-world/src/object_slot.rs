@@ -111,6 +111,10 @@ impl ObjectSlot {
     pub fn ref_handle(&self) -> IsoObjectRef {
         Rc::clone(&self.object)
     }
+    /// Borrow the one actual owning field for physical graph tracing.
+    pub fn owner_slot(&self) -> &IsoObjectRef {
+        &self.object
+    }
     pub fn retain(object: &IsoObjectRef) -> Self {
         Self {
             object: Rc::clone(object),
@@ -118,6 +122,10 @@ impl ObjectSlot {
     }
     pub fn borrow(&self) -> Ref<'_, IsoObject> {
         self.object.borrow()
+    }
+    /// Fallibly borrow the same actual owner without cloning a handle.
+    pub fn try_borrow(&self) -> Result<Ref<'_, IsoObject>, std::cell::BorrowError> {
+        self.object.try_borrow()
     }
     pub fn borrow_mut(&self) -> RefMut<'_, IsoObject> {
         self.object.borrow_mut()

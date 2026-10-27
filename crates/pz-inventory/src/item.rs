@@ -231,6 +231,10 @@ pub struct FoodData {
     pub heat: f32,
     pub last_cook_minute: i32,
     pub cooking_time: f32,
+    /// Actual inherited InventoryItem.minutesToCook. Constructors set 60;
+    /// InstanceItem copies its current script argument at PC632. Not saved;
+    /// loading preserves this receiver's value.
+    pub minutes_to_cook: f32,
     pub cooked: bool,
     pub burnt: bool,
     pub is_cookable: bool,
@@ -434,6 +438,8 @@ pub struct InventoryItem {
     pub uses: i32,
     pub condition: i32,
     pub condition_max: i32,
+    /// Actual independent `InventoryItem.broken`; Java defaults false. Not saved.
+    pub broken: bool,
     pub visual: Option<ItemVisual>,
     pub custom_color: bool,
     pub col: Rgba,
@@ -478,8 +484,8 @@ pub struct InventoryItem {
     /// Sole live/explicit-archive component authority.
     pub components: ItemComponents,
     pub animal_tracks: Option<AnimalTracks>,
-    /// A texture name saved because it differs from the script icon.
-    pub texture_override: Option<String>,
+    /// Sole actual asset slots or explicitly uncaptured archive profile.
+    pub textures: crate::item_texture::ItemTextures,
     pub model_index: i32,
     /// `staticModelsByIndex` / `worldStaticModelsByIndex`: the script's
     /// lists when not empty (`Item.InstanceItem`), not saved.
@@ -498,6 +504,12 @@ pub struct InventoryItem {
     /// saved).
     pub vehicle_part: crate::template::VehiclePartStats,
     pub kind: ItemKind,
+}
+
+/// Direct writer continuation at native texture save phase PC1074.
+pub(crate) struct ItemSaveContinuation {
+    header: BitHeaderWrite,
+    bits: BitHeaderWrite,
 }
 
 /// Scalar prefix continuation at the native entity-data phase.
@@ -582,6 +594,7 @@ impl InventoryItem {
             uses: 1,
             condition: t.condition_max,
             condition_max: t.condition_max,
+            broken: false,
             visual: None,
             custom_color: false,
             col: WHITE,
@@ -621,7 +634,7 @@ impl InventoryItem {
             is_initialised: false,
             components: ItemComponents::new(),
             animal_tracks: None,
-            texture_override: None,
+            textures: crate::item_texture::ItemTextures::default(),
             model_index: -1,
             static_models_by_index: t.static_models_by_index.clone().filter(|l| !l.is_empty()),
             world_static_models_by_index: t
@@ -696,6 +709,30 @@ impl InventoryItem {
     }
 
     fn save_fields(&self, w: &mut Writer, env: &dyn ItemEnv) -> SaveResult<()> {
+        let continuation = self.save_fields_prefix(w, env).map_err(SaveError::from)?;
+        let name = self
+            .textures
+            .archive_saved_name()
+            .map_err(|error| SaveError(format!("{error:?}")))?;
+        self.save_fields_suffix(w, env, continuation, name)
+    }
+
+    pub(crate) fn save_native_prefix(
+        &self,
+        w: &mut Writer,
+        env: &dyn ItemEnv,
+    ) -> Result<ItemSaveContinuation, crate::item_texture::ItemPersistenceError> {
+        w.i16(self.registry_id);
+        w.i8(-1);
+        w.i32(self.id);
+        self.save_fields_prefix(w, env)
+    }
+
+    fn save_fields_prefix(
+        &self,
+        w: &mut Writer,
+        _env: &dyn ItemEnv,
+    ) -> Result<ItemSaveContinuation, crate::item_texture::ItemPersistenceError> {
         let mut header = BitHeaderWrite::alloc(w, 1);
         let uses = self.get_current_uses();
         if uses != 1 {
@@ -722,9 +759,9 @@ impl InventoryItem {
         }
         let mut bits = BitHeaderWrite::alloc(w, 4);
         if let Some(t) = &self.table {
-            if !t.try_is_empty().map_err(SaveError::from)? {
+            if !t.try_is_empty()? {
                 bits.add(1);
-                t.save(w).map_err(SaveError::from)?;
+                t.save(w)?;
             }
         }
         if self.activated {
@@ -823,16 +860,49 @@ impl InventoryItem {
         }
         if !self.components.is_empty() {
             bits.add(0x4000000);
+            if w.is_native_buffer() {
+                return Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+                    operation: "bounded scratch component writer",
+                    kind: None,
+                }.into());
+            }
             self.components
-                .write_to(w, crate::component::COMPONENT_WORLD_VERSION)?;
+                .write_to_runtime(w, crate::component::COMPONENT_WORLD_VERSION)
+                .map_err(pz_entity::runtime_load::RuntimeHostError::Storage)?;
         }
         if let Some(t) = &self.animal_tracks {
             bits.add(0x8000000);
             t.save(w);
         }
-        if let Some(t) = &self.texture_override {
+        Ok(ItemSaveContinuation { header, bits })
+    }
+
+    pub(crate) fn save_fields_suffix(
+        &self,
+        w: &mut Writer,
+        env: &dyn ItemEnv,
+        continuation: ItemSaveContinuation,
+        texture_name: Option<&str>,
+    ) -> SaveResult<()> {
+        self.save_native_suffix_base(w, continuation, texture_name)?;
+        self.save_kind(w, env)
+    }
+
+    /// Complete InventoryItem.save before any subclass continuation. Actual
+    /// bags resume only after the parent guard is released.
+    pub(crate) fn save_native_suffix_base(
+        &self,
+        w: &mut Writer,
+        continuation: ItemSaveContinuation,
+        texture_name: Option<&str>,
+    ) -> SaveResult<()> {
+        let ItemSaveContinuation {
+            mut header,
+            mut bits,
+        } = continuation;
+        if let Some(name) = texture_name {
             bits.add(0x10000000);
-            w.string(t);
+            w.string(name);
         }
         if self.model_index > -1 {
             bits.add(0x20000000);
@@ -854,10 +924,10 @@ impl InventoryItem {
             bits.discard(w);
         }
         header.write(w);
-        self.save_kind(w, env)
+        Ok(())
     }
 
-    fn save_kind(&self, w: &mut Writer, env: &dyn ItemEnv) -> SaveResult<()> {
+    pub(crate) fn save_kind(&self, w: &mut Writer, env: &dyn ItemEnv) -> SaveResult<()> {
         match &self.kind {
             ItemKind::Plain => {}
             ItemKind::Food(f) => f.save(w),
@@ -994,15 +1064,10 @@ impl InventoryItem {
                 }
             }
             if has(header, 4) {
-                // setConditionWhileLoading: PZMath.clamp(c, 0, conditionMax).
+                // Only this flag calls setConditionWhileLoading. The earlier
+                // raw condition reset deliberately preserves the old broken bit.
                 let c = r.i8()? as i32;
-                self.condition = if c < 0 {
-                    0
-                } else if c > self.condition_max {
-                    self.condition_max
-                } else {
-                    c
-                };
+                self.set_condition_while_loading(c);
             }
             if has(header, 8) {
                 self.visual = Some(ItemVisual::load(r, env.blood_body_parts())?);
@@ -1131,14 +1196,45 @@ impl InventoryItem {
         wv: i32,
         env: &dyn ItemEnv,
     ) -> SaveResult<()> {
+        if let Some(name) = self.load_suffix_before_texture(continuation, r)? {
+            match &mut self.textures {
+                crate::item_texture::ItemTextures::Archive(profile) => {
+                    profile.saved_name = env.texture_round_trip(&self.template, &name)
+                }
+                crate::item_texture::ItemTextures::Live(_) => {
+                    return Err(SaveError(
+                        "live texture load requires actual ItemRef continuation".into(),
+                    ))
+                }
+            }
+        }
+        self.load_suffix_after_texture(continuation, r, wv)?;
+        self.pick_model_index(&mut |m| env.rand_next(m));
+        Ok(())
+    }
+
+    pub(crate) fn load_suffix_before_texture(
+        &mut self,
+        continuation: ItemLoadContinuation,
+        r: &mut Reader<'_>,
+    ) -> SaveResult<Option<String>> {
         let bits = continuation.bits;
         if has(bits, 0x8000000) {
             self.animal_tracks = Some(AnimalTracks::load(r)?);
         }
         if has(bits, 0x10000000) {
-            let name = r.string()?;
-            self.texture_override = env.texture_round_trip(&self.template, &name);
+            return r.string().map(Some);
         }
+        Ok(None)
+    }
+
+    pub(crate) fn load_suffix_after_texture(
+        &mut self,
+        continuation: ItemLoadContinuation,
+        r: &mut Reader<'_>,
+        wv: i32,
+    ) -> SaveResult<()> {
+        let bits = continuation.bits;
         if has(bits, 0x20000000) {
             self.model_index = r.i32()?;
         }
@@ -1152,10 +1248,16 @@ impl InventoryItem {
                 self.world_x_rotation = r.i32()? as f32;
             }
         }
-        // The end of `InventoryItem.load`: `synchWithVisual` (its model
-        // index draw; the visual part runs after the subclass fields here).
-        self.pick_model_index(&mut |m| env.rand_next(m));
         Ok(())
+    }
+
+    pub(crate) fn load_kind_native(
+        &mut self,
+        r: &mut Reader<'_>,
+        wv: i32,
+        env: &dyn ItemEnv,
+    ) -> SaveResult<()> {
+        self.load_kind(r, wv, env)
     }
 
     pub(crate) fn load_kind_and_sync(
@@ -1300,7 +1402,8 @@ impl InventoryItem {
 
     /// `Moveable.ReadFromWorldSprite`: the item state the sprite's
     /// properties give, with the flatpack colour of a multi-tile sprite
-    /// drawn from `Rand` (textures are not modelled).
+    /// drawn from `Rand`. This data sprite projection does not perform the
+    /// native moveable texture override; actual callers must bound that phase.
     pub fn read_from_world_sprite(&mut self, sprite: &str, env: &dyn ItemEnv) -> bool {
         let (ItemKind::Moveable(m) | ItemKind::Radio(m, _)) = &mut self.kind else {
             return false;
@@ -1472,6 +1575,7 @@ impl FoodData {
             heat: 1.0,
             last_cook_minute: 0,
             cooking_time: 0.0,
+            minutes_to_cook: 60.0,
             cooked: false,
             burnt: false,
             is_cookable: t.is_cookable,
@@ -1875,6 +1979,14 @@ impl WeaponData {
     }
 
     fn save(&self, w: &mut Writer, env: &dyn ItemEnv, t: &ItemTemplate) -> SaveResult<()> {
+        self.save_with_mode(w, env, t, false).map_err(SaveError::from)
+    }
+
+    pub(crate) fn save_native(&self, w: &mut Writer, env: &dyn ItemEnv, t: &ItemTemplate) -> Result<(), crate::item_texture::ItemPersistenceError> {
+        self.save_with_mode(w, env, t, true)
+    }
+
+    fn save_with_mode(&self, w: &mut Writer, env: &dyn ItemEnv, t: &ItemTemplate, actual: bool) -> Result<(), crate::item_texture::ItemPersistenceError> {
         let mut bits = BitHeaderWrite::alloc(w, 4);
         if self.max_range != 1.0 {
             bits.add(1);
@@ -1914,6 +2026,12 @@ impl WeaponData {
         if !self.attachments.is_empty() {
             bits.add(1024);
             w.i8(self.attachments.len() as i8);
+            if actual {
+                return Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+                    operation: "actual weapon attachment owner/serializer",
+                    kind: None,
+                }.into());
+            }
             for p in &self.attachments {
                 p.save(w, env)?;
             }

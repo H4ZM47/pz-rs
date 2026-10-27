@@ -138,8 +138,10 @@ fn build(view: &WorldView<'_>) -> (RenderWorld, WorldLighting) {
     let mut cache = SpriteCache::new();
     for wx in 1..=3 {
         for wy in 1..=3 {
-            world.build_chunk(view, wx, wy, &mut cache, &mut NoTextures);
-            lighting.sync_chunk(view, wx, wy, &NoWorldHooks);
+            world
+                .build_chunk(view, wx, wy, &mut cache, &mut NoTextures)
+                .unwrap();
+            lighting.sync_chunk(view, wx, wy, &NoWorldHooks).unwrap();
         }
     }
     (world, lighting)
@@ -196,10 +198,10 @@ fn render_squares_from_world() {
     assert_eq!(wall.tile_type, pz_iso_render::TileType::Wall);
     // The square west of the wall sees it as its east neighbour's west wall.
     assert_eq!(
-        wall_type(&view, &cell.get_grid_square(19, 15, 0).unwrap().borrow()) & 8,
+        wall_type(&view, &cell.get_grid_square(19, 15, 0).unwrap().borrow()).unwrap() & 8,
         8
     );
-    let seam = seam_neighbours(&view, &cell.get_grid_square(20, 14, 0).unwrap().borrow());
+    let seam = seam_neighbours(&view, &cell.get_grid_square(20, 14, 0).unwrap().borrow()).unwrap();
     assert!(seam.s_floor && seam.e_floor && seam.s_wall_w);
     assert!(world.squares[&(20, 14, 0)].seam.s_wall_w);
     // The roof blocks vision down, and the square under it is not exterior.
@@ -448,7 +450,8 @@ fn world_state_feeds_lighting() {
         &ws,
         0,
         0,
-    );
+    )
+    .unwrap();
     match &g.special_objects[..] {
         [SpecialObject::Door(d)] => {
             assert!(d.has_curtain && !d.curtain_open);
@@ -464,7 +467,8 @@ fn world_state_feeds_lighting() {
         &ws,
         0,
         0,
-    );
+    )
+    .unwrap();
     let metal = Barricade {
         dir: Some(IsoDirection::N),
         metal_health: 77,
@@ -490,7 +494,8 @@ fn world_state_feeds_lighting() {
         &NoWorldHooks,
         0,
         0,
-    );
+    )
+    .unwrap();
     assert!(
         matches!(&g.special_objects[..], [SpecialObject::Door(d)] if !d.has_curtain && d.barricade_opposite.is_none())
     );
@@ -532,7 +537,9 @@ fn lit_world(view: &WorldView<'_>, lighting: &mut WorldLighting, frames: usize) 
     let mut cache = SpriteCache::new();
     for wx in 1..=3 {
         for wy in 1..=3 {
-            world.build_chunk(view, wx, wy, &mut cache, &mut NoTextures);
+            world
+                .build_chunk(view, wx, wy, &mut cache, &mut NoTextures)
+                .unwrap();
         }
     }
     run(view, lighting, &mut Night, frames, IsoDirection::E);
@@ -745,3 +752,6 @@ fn a_cell_light_stays_while_inside_any_players_chunk_map() {
     assert_eq!(lighting.lampposts().count(), 0);
     assert_eq!(lighting.light_id(key), None);
 }
+
+#[path = "scene/actual_sprite.rs"]
+mod actual_sprite;

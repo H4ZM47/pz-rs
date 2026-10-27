@@ -1,7 +1,7 @@
 //! `InventoryItem.setName`, `nameAfterDescriptor` / `monogramAfterDescriptor`,
-//! and which texture `getTexture()` returns (`texture`, as the item's
-//! creation, load and `synchWithVisual` set it, or the `customInventoryIcon`
-//! mod-data entry). Looking the texture up is the caller's.
+//! and explicitly named archive texture requests. Actual Native captured
+//! texture fields/getters/producers live in crate::item_texture; these archive
+//! name requests never reconstruct a live item asset.
 
 use crate::item::InventoryItem;
 use crate::moddata::ModDataResult;
@@ -115,7 +115,16 @@ impl InventoryItem {
     /// texture choice). `clothing_base_textures` is the item's
     /// `ClothingItem.baseTextures.size()` when it has a visual and a
     /// clothing item (`None` otherwise). `None`: no texture.
-    pub fn texture(&self, clothing_base_textures: Option<usize>) -> Option<ItemTexture> {
+    pub fn archive_texture_request(
+        &self,
+        clothing_base_textures: Option<usize>,
+    ) -> pz_entity::runtime_load::HostResult<Option<ItemTexture>> {
+        if self.textures.live_slot().is_some() {
+            return Err(pz_entity::runtime_load::RuntimeHostError::Unsupported {
+                operation: "name reconstruction is archive data projection only",
+                kind: None,
+            });
+        }
         let icons = self.template.icons_for_texture.as_deref();
         let mut t = match &self.template.icon {
             Some(icon) => Some(ItemTexture::Try {
@@ -127,8 +136,10 @@ impl InventoryItem {
                 fallback: false,
             }),
         };
-        if let Some(name) = &self.texture_override {
-            t = Some(ItemTexture::Shared(name.clone()));
+        if let crate::item_texture::ItemTextures::Archive(profile) = &self.textures {
+            if let Some(name) = &profile.saved_name {
+                t = Some(ItemTexture::Shared(name.clone()));
+            }
         }
         if self.model_index != -1 {
             let icon = icons.and_then(|i| {
@@ -163,7 +174,7 @@ impl InventoryItem {
                 }
             }
         }
-        t
+        Ok(t)
     }
 }
 
@@ -197,10 +208,10 @@ mod tests {
 
     #[test]
     fn textures() {
-        assert_eq!(item(|_| {}).texture(None), None);
+        assert_eq!(item(|_| {}).archive_texture_request(None).unwrap(), None);
         let i = item(|t| t.icon = Some("IDcard".into()));
         assert_eq!(
-            i.texture(None),
+            i.archive_texture_request(None).unwrap(),
             Some(ItemTexture::Try {
                 name: "Item_IDcard".into(),
                 fallback: true
@@ -208,7 +219,7 @@ mod tests {
         );
         let mut i = item(|t| t.icons_for_texture = Some(vec!["A".into(), "B".into()]));
         assert_eq!(
-            i.texture(None),
+            i.archive_texture_request(None).unwrap(),
             Some(ItemTexture::Try {
                 name: "Item_A".into(),
                 fallback: false
@@ -216,16 +227,20 @@ mod tests {
         );
         i.model_index = 1;
         assert_eq!(
-            i.texture(None),
+            i.archive_texture_request(None).unwrap(),
             Some(ItemTexture::Try {
                 name: "Item_B".into(),
                 fallback: true
             })
         );
         i.model_index = -1;
-        i.texture_override = Some("Item_Saved".into());
+        i.textures = crate::item_texture::ItemTextures::Archive(
+            crate::item_texture::ArchiveTextureProfile {
+                saved_name: Some("Item_Saved".into()),
+            },
+        );
         assert_eq!(
-            i.texture(None),
+            i.archive_texture_request(None).unwrap(),
             Some(ItemTexture::Shared("Item_Saved".into()))
         );
     }

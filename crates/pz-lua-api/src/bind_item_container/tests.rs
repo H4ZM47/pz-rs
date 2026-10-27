@@ -33,6 +33,9 @@ fn scripts() -> Rc<ScriptManager> {
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     std::fs::write(&p, SCRIPTS).unwrap();
     let sm = ScriptManager::new();
+    // These authored scripts have no Icon: successful load records genuine
+    // known-null texture capture before the actual factory is invoked.
+    sm.enable_texture_capture();
     for id in ["base:normal", "base:food"] {
         sm.registries
             .get("item_type")

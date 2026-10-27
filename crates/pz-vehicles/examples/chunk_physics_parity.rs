@@ -204,7 +204,9 @@ fn main() {
                     .map(|o| {
                         let o = o.borrow();
                         o.sprite
-                            .and_then(|i| sprites.sprites[i].name.clone())
+                            .try_read(&sprites)
+                            .expect("physics parity example requires resolved unborrowed sprite")
+                            .and_then(|sprite| sprite.name.clone())
                             .unwrap_or_else(|| "null".into())
                     })
                     .collect();

@@ -119,8 +119,8 @@ fn main() {
     let hooks = NoWorldHooks;
     let mut lighting = WorldLighting::new();
     for &(wx, wy) in &order {
-        world.build_chunk(&view, wx, wy, &mut cache, &mut tex);
-        lighting.sync_chunk(&view, wx, wy, &hooks);
+        world.build_chunk(&view, wx, wy, &mut cache, &mut tex).expect("world render requires supported sprite bodies");
+        lighting.sync_chunk(&view, wx, wy, &hooks).expect("world lighting requires unborrowed sprite bodies");
     }
 
     if !unlit {

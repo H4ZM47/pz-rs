@@ -5,6 +5,10 @@
 //! have had `recalc_properties` run, as the original's chunk load does
 //! before `ErosionMain.LoadGridsquare`. Squares outside the chunk come
 //! from [`WorldView`].
+//!
+//! This legacy host has infallible query methods. Sprite metadata reads require
+//! an unborrowed actual body, as the square/object queries already do; a Native
+//! sprite is read directly and never treated as a missing managed tile.
 
 use pz_inventory::dictionary::WorldDictionary;
 use pz_world::object_slot::{IsoObjectRef, ObjectSlot};
@@ -14,6 +18,9 @@ use pz_world::{IsoChunk, IsoSpriteManager};
 
 use crate::host::{Attached, ErosionHost, ObjId, Sq, SqFlag};
 use crate::ice_queen::get_sprite;
+
+#[cfg(test)]
+mod native_sprite_tests;
 
 /// What erosion reads beyond the chunk it processes: squares in other
 /// chunks (neighbours across the chunk edge) and the object state
@@ -121,6 +128,15 @@ impl ChunkHost<'_> {
         object
     }
 
+    fn sprite_metadata(&self, sq: Sq, o: ObjId) -> Option<pz_world::sprite::IsoSprite> {
+        let owner = self.obj(sq, o)?;
+        let object = owner.borrow();
+        object
+            .sprite
+            .metadata_projection(self.sprites)
+            .expect("legacy erosion requires unborrowed actual sprite metadata")
+    }
+
     fn remove(&mut self, sq: Sq, o: ObjId, special_too: bool) {
         if let Some(owner) = self.square_mut(sq) {
             let mut s = owner.borrow_mut();
@@ -217,21 +233,17 @@ impl ErosionHost for ChunkHost<'_> {
     }
 
     fn sprite_name(&self, sq: Sq, o: ObjId) -> Option<String> {
-        let s = self.obj(sq, o)?.borrow().sprite?;
-        self.sprites.sprites[s].name.clone()
+        self.sprite_metadata(sq, o)?.name
     }
 
     fn sprite_tile_sheet_index(&self, sq: Sq, o: ObjId) -> i32 {
-        self.obj(sq, o)
-            .and_then(|x| x.borrow().sprite)
-            .map_or(0, |s| self.sprites.sprites[s].tile_sheet_index)
+        self.sprite_metadata(sq, o)
+            .map_or(0, |s| s.tile_sheet_index)
     }
 
     fn sprite_custom_name(&self, sq: Sq, o: ObjId) -> Option<String> {
-        let s = self.obj(sq, o)?.borrow().sprite?;
-        self.sprites
-            .prop(&self.sprites.sprites[s], "CustomName")
-            .map(str::to_string)
+        let s = self.sprite_metadata(sq, o)?;
+        self.sprites.prop(&s, "CustomName").map(str::to_string)
     }
 
     fn named_sprite_custom_name(&self, name: &str) -> Option<Option<String>> {
@@ -265,8 +277,14 @@ impl ErosionHost for ChunkHost<'_> {
         let s = get_sprite(self.sprites, sprite);
         if let Some(owner) = self.obj(sq, o) {
             let mut obj = owner.borrow_mut();
-            obj.sprite = Some(s);
+            let mut retired = pz_entity::RetiredComponents::new();
+            if let Some(sprite) = obj.sprite.native_slot() {
+                retired.push_erased(sprite.clone());
+            }
+            obj.sprite = Some(s).into();
             obj.do_not_sync = true;
+            drop(obj);
+            pz_inventory::component_host::retire_components(retired);
         }
     }
 

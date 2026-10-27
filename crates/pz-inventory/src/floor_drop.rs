@@ -28,6 +28,35 @@ use crate::template::ItemClass;
 /// A square position `(x, y, z)`.
 pub type SquarePos = (i32, i32, i32);
 
+/// An actual retained square receiver plus its immutable geometric position.
+/// The erased owner holds the square allocation itself across host callbacks.
+/// Coordinate-only profiles must be constructed explicitly for data fixtures.
+#[derive(Clone, Debug)]
+pub struct FloorSquare {
+    position: SquarePos,
+    owner: Option<pz_entity::EntityOwner>,
+}
+impl FloorSquare {
+    pub fn actual(position: SquarePos, owner: pz_entity::EntityOwner) -> Self {
+        Self {
+            position,
+            owner: Some(owner),
+        }
+    }
+    pub fn data_projection(position: SquarePos) -> Self {
+        Self {
+            position,
+            owner: None,
+        }
+    }
+    pub fn position(&self) -> SquarePos {
+        self.position
+    }
+    pub fn owner_slot(&self) -> Option<&pz_entity::EntityOwner> {
+        self.owner.as_ref()
+    }
+}
+
 /// Where [`drop_on_floor`] put an item: the square and the offsets passed
 /// to `AddWorldInventoryItem`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -40,6 +69,34 @@ pub struct Dropped {
 
 /// The world items fall into.
 pub trait FloorWorld {
+    /// Retain the same actual result before returning from the native query.
+    /// Implementations must never resolve this receiver again by coordinates.
+    fn solid_floor_ref_at(&self, _x: i32, _y: i32, _z: i32) -> HostResult<Option<FloorSquare>> {
+        Err(RuntimeHostError::Unsupported {
+            operation: "actual retained floor query",
+            kind: None,
+        })
+    }
+    fn apparent_z_on(&self, _square: &FloorSquare, _dx: f32, _dy: f32) -> HostResult<f32> {
+        Err(RuntimeHostError::Unsupported {
+            operation: "actual retained floor height",
+            kind: None,
+        })
+    }
+    fn add_world_inventory_item_on(
+        &mut self,
+        _square: &FloorSquare,
+        _item: &ItemRef,
+        _x: f32,
+        _y: f32,
+        _height: f32,
+    ) -> HostResult<()> {
+        Err(RuntimeHostError::Unsupported {
+            operation: "actual retained floor placement",
+            kind: None,
+        })
+    }
+
     /// `IsoGameCharacter.getSolidFloorAt(x, y, z)`: the first square from
     /// `z` down to 0 that exists and `TreatAsSolidFloor()`.
     /// An unavailable/borrowed actual host is Err, not a missing floor.
@@ -301,7 +358,7 @@ pub fn do_remove_item(c: &ContainerRef, item: &ItemRef) {
 /// `sq.AddWorldInventoryItem(item, x, y, z)`.
 pub fn drop_on_floor(
     world: &mut dyn FloorWorld,
-    sq: SquarePos,
+    sq: &FloorSquare,
     item: &ItemRef,
 ) -> HostResult<Dropped> {
     // Remove/hand clearing precedes placement. If placement fails before a
@@ -310,12 +367,17 @@ pub fn drop_on_floor(
     let mut retired = pz_entity::RetiredComponents::new();
     retired.push_owner(pz_entity::EntityOwner::from_ref(item));
     crate::component_host::retire_components(retired);
+    if let Some(owner) = sq.owner_slot() {
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_owner(owner.clone());
+        crate::component_host::retire_components(retired);
+    }
     let x = world.rand_float(0.1, 0.9)?;
     let y = world.rand_float(0.1, 0.9)?;
-    let z = world.apparent_z(sq, x, y)? - sq.2 as f32;
-    world.add_world_inventory_item(sq, item, x, y, z)?;
+    let z = world.apparent_z_on(sq, x, y)? - sq.position().2 as f32;
+    world.add_world_inventory_item_on(sq, item, x, y, z)?;
     Ok(Dropped {
-        square: sq,
+        square: sq.position(),
         x,
         y,
         z,
@@ -325,11 +387,17 @@ pub fn drop_on_floor(
 /// `getSolidFloorAt(sq.x, sq.y, sq.z)` after the caller's own
 /// current-square gate. The forced worn-item branch checks its required
 /// receiver separately because native code dereferences a null square.
-fn floor_under(chr: &dyn DropCharacter, world: &dyn FloorWorld) -> HostResult<Option<SquarePos>> {
+fn floor_under(chr: &dyn DropCharacter, world: &dyn FloorWorld) -> HostResult<Option<FloorSquare>> {
     let Some((x, y, z)) = chr.current_square() else {
         return Ok(None);
     };
-    world.solid_floor_at(x, y, z)
+    let target = world.solid_floor_ref_at(x, y, z)?;
+    if let Some(owner) = target.as_ref().and_then(FloorSquare::owner_slot) {
+        let mut retired = pz_entity::RetiredComponents::new();
+        retired.push_owner(owner.clone());
+        crate::component_host::retire_components(retired);
+    }
+    Ok(target)
 }
 
 /// The `forceDropTooHeavy` branch of `setWornItem(location, item,
@@ -363,14 +431,14 @@ pub fn force_drop_too_heavy(
         return Ok(None);
     };
     remove(chr, item_cur);
-    drop_on_floor(world, sq, item_cur).map(Some)
+    drop_on_floor(world, &sq, item_cur).map(Some)
 }
 
 /// One hand item dropping in `dropHeavyItems` / `dropHandItems`.
 fn drop_hand(
     chr: &mut dyn DropCharacter,
     world: &mut dyn FloorWorld,
-    sq: SquarePos,
+    sq: &FloorSquare,
     item: &ItemRef,
 ) -> HostResult<Dropped> {
     do_remove_item(&chr.inventory(), item);
@@ -409,14 +477,14 @@ fn drop_hands(
     if drops(&item1) {
         let i = item1.as_ref().unwrap();
         chr.set_primary_hand_item(None);
-        out.push(drop_hand(chr, world, sq, i)?);
+        out.push(drop_hand(chr, world, &sq, i)?);
     }
     if drops(&item2) {
         let i = item2.as_ref().unwrap();
         chr.set_secondary_hand_item(None);
         let both = item1.as_ref().is_some_and(|a| Rc::ptr_eq(a, i));
         if !both {
-            out.push(drop_hand(chr, world, sq, i)?);
+            out.push(drop_hand(chr, world, &sq, i)?);
         }
     }
     Ok(out)

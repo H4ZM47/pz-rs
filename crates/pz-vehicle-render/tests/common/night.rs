@@ -150,7 +150,7 @@ pub fn light_from(
     let mut cache = SpriteCache::new();
     for wx in 1..=3 {
         for wy in 1..=3 {
-            world.build_chunk(view, wx, wy, &mut cache, &mut NoTextures);
+            world.build_chunk(view, wx, wy, &mut cache, &mut NoTextures).unwrap();
         }
     }
     for f in 0..frames {
@@ -194,7 +194,7 @@ pub fn new_lighting(view: &WorldView<'_>, hooks: &dyn WorldHooks) -> WorldLighti
     let mut lighting = WorldLighting::new();
     for wx in 1..=3 {
         for wy in 1..=3 {
-            lighting.sync_chunk(view, wx, wy, hooks);
+            lighting.sync_chunk(view, wx, wy, hooks).unwrap();
         }
     }
     lighting

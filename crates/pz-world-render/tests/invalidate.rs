@@ -152,8 +152,9 @@ impl Scene {
         for wx in 1..=3 {
             for wy in 1..=3 {
                 s.render
-                    .build_chunk(&view, wx, wy, &mut s.sprite_cache, &mut NoTextures);
-                s.lighting.sync_chunk(&view, wx, wy, &NoWorldHooks);
+                    .build_chunk(&view, wx, wy, &mut s.sprite_cache, &mut NoTextures)
+                    .unwrap();
+                s.lighting.sync_chunk(&view, wx, wy, &NoWorldHooks).unwrap();
                 // Recorded once: clean until invalidated.
                 for c in &mut s.caches {
                     c.begin_level(wx, wy, 0, 0, 0);
@@ -188,18 +189,20 @@ impl Scene {
             meta: &self.meta,
             sprites: &self.m,
         };
-        self.pending.apply(
-            &view,
-            &mut self.render,
-            &mut self.lighting,
-            &NoWorldHooks,
-            &mut self.sprite_cache,
-            &mut NoTextures,
-            PuddleInputs {
-                regions: &self.regions,
-                perf_puddles: self.perf_puddles,
-            },
-        );
+        self.pending
+            .apply(
+                &view,
+                &mut self.render,
+                &mut self.lighting,
+                &NoWorldHooks,
+                &mut self.sprite_cache,
+                &mut NoTextures,
+                PuddleInputs {
+                    regions: &self.regions,
+                    perf_puddles: self.perf_puddles,
+                },
+            )
+            .unwrap();
         let input = PlayerFrameInput {
             index: 0,
             player: default_player(14.5, 15.5, 0.0, IsoDirection::E),
@@ -450,7 +453,7 @@ fn adding_a_wall_re_records_its_chunk_level_and_relights() {
         for y in 10..=21 {
             let o = IsoObject::new(0, ObjectKind::Object, Some(wall));
             env.add_tile_object((17, y, 0), pz_world::ObjectSlot::new(o), -1)
-                .unwrap();
+                .unwrap().unwrap();
         }
     }
     // The chunk levels holding the wall are dirty (OBJECT_ADD), for every
@@ -584,9 +587,51 @@ fn loaded_squares_get_puddles_on_the_first_frame() {
         sprites: &s.m,
     };
     s.render
-        .build_chunk(&view, 2, 2, &mut s.sprite_cache, &mut NoTextures);
+        .build_chunk(&view, 2, 2, &mut s.sprite_cache, &mut NoTextures)
+        .unwrap();
     assert_eq!(s.render.squares[&(20, 20, 0)].puddles, None);
     assert_eq!(s.render.puddles_recalc.len(), 64);
     s.frame();
     assert_eq!(s.render.squares[&(20, 20, 0)].puddles, Some(open));
+}
+
+#[test]
+fn failed_actual_rebuild_keeps_pending_work_and_puddle_geometry_for_retry() {
+    let mut scene = Scene::new();
+    let target = scene.sq(17, 9);
+    scene.hooks().properties_recalculated(target.clone());
+    let before = scene.render.squares[&(17, 9, 0)].puddles;
+    let held = target.borrow_mut();
+    let result = {
+        let view = WorldView {
+            cell: &scene.cell,
+            meta: &scene.meta,
+            sprites: &scene.m,
+        };
+        scene.pending.apply(
+            &view,
+            &mut scene.render,
+            &mut scene.lighting,
+            &NoWorldHooks,
+            &mut scene.sprite_cache,
+            &mut NoTextures,
+            PuddleInputs {
+                regions: &scene.regions,
+                perf_puddles: scene.perf_puddles,
+            },
+        )
+    };
+    assert!(matches!(
+        result,
+        Err(pz_world_render::RuntimeHostError::Borrowed(
+            "render rebuild square"
+        ))
+    ));
+    assert!(scene.pending.has_rebuilds());
+    assert!(scene.pending.puddles.contains(&(17, 9, 0)));
+    assert_eq!(scene.render.squares[&(17, 9, 0)].puddles, before);
+    drop(held);
+    scene.frame();
+    assert!(!scene.pending.has_rebuilds());
+    assert!(scene.pending.puddles.is_empty());
 }

@@ -223,7 +223,7 @@ fn sample_chunk(m: &IsoSpriteManager, t: &SaveTables) -> IsoChunk {
         ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(wi)),
         None,
     );
-    o.sprite_id_override = Some(object_io::UNREGISTERED_SPRITE_ID);
+    o.sprite = crate::objects::ObjectSprite::ArchiveUnmanaged(object_io::UNREGISTERED_SPRITE_ID);
     let slot = ObjectSlot::new(o);
     sq.world_objects
         .borrow_mut()
@@ -410,7 +410,7 @@ fn live_floor_bag_mutations_survive_chunk_save_and_fresh_load() {
         )),
         None,
     );
-    obj.sprite_id_override = Some(object_io::UNREGISTERED_SPRITE_ID);
+    obj.sprite = crate::objects::ObjectSprite::ArchiveUnmanaged(object_io::UNREGISTERED_SPRITE_ID);
     let slot = ObjectSlot::new(obj);
     sq.world_objects
         .borrow_mut()
@@ -1239,7 +1239,7 @@ fn world_membership_save_uses_actual_owners_and_fresh_load_normalizes_raw_list()
             )),
             None,
         );
-        object.sprite_id_override = Some(object_io::UNREGISTERED_SPRITE_ID);
+        object.sprite = crate::objects::ObjectSprite::ArchiveUnmanaged(object_io::UNREGISTERED_SPRITE_ID);
         ObjectSlot::new(object)
     };
     let a = floor(0.25, 11);

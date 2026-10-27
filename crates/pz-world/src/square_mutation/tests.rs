@@ -264,7 +264,7 @@ impl World {
             .objects
             .iter()
             .map(ObjectSlot::borrow)
-            .map(|o| self.m.sprites[o.sprite.unwrap()].name())
+            .map(|o| self.m.sprites[o.sprite.tile_projection().unwrap()].name())
             .collect()
     }
 
@@ -282,7 +282,7 @@ fn add_tile_object_order_and_hooks() {
     let mut w = World::new();
     let p = (3, 3, 0);
     let wall = w.obj("wall_n");
-    let id = w.env().add_tile_object(p, (wall).into(), -1).unwrap();
+    let id = w.env().add_tile_object(p, (wall).into(), -1).unwrap().unwrap();
     assert!(w.sq(p).borrow().has(w.m.tables.flag.collideN));
     assert!(blocked(w.sq(p).borrow().collide_matrix, 0, -1, 0));
     assert!(blocked(w.sq((3, 2, 0)).borrow().collide_matrix, 0, 1, 0));
@@ -306,10 +306,10 @@ fn add_tile_object_order_and_hooks() {
     assert_eq!(log, expected);
     // A door goes after the walls, a wall before an existing door.
     let door = w.obj("door_n");
-    w.env().add_tile_object(p, (door).into(), 0);
+    w.env().add_tile_object(p, (door).into(), 0).unwrap().unwrap();
     assert_eq!(w.names(p), ["floor", "wall_n", "door_n"]);
     let wall = w.obj("wall_w");
-    w.env().add_tile_object(p, (wall).into(), -1);
+    w.env().add_tile_object(p, (wall).into(), -1).unwrap().unwrap();
     assert_eq!(w.names(p), ["floor", "wall_n", "wall_w", "door_n"]);
 }
 
@@ -322,17 +322,17 @@ fn add_to_world_draws_rand_for_trees_and_dripping_water() {
         log_yield: 1,
         damage: 0,
     });
-    w.env().add_tile_object((1, 1, 0), (tree).into(), -1);
+    w.env().add_tile_object((1, 1, 0), (tree).into(), -1).unwrap().unwrap();
     assert_eq!(w.rand.0, [40]);
     let sink = w.obj("sink");
-    w.env().add_tile_object((2, 1, 0), (sink).into(), -1);
+    w.env().add_tile_object((2, 1, 0), (sink).into(), -1).unwrap().unwrap();
     assert_eq!(w.rand.0, [40, 15]);
     let log = w.take_log().join("\n");
     assert!(log.contains("AmbientEmitter(TreeAmbiance)"));
     assert!(log.contains("AmbientEmitter(WaterDrip)"));
     // A plain object with the tree sprite is not an `IsoTree`: no draw.
     let tree = w.obj("tree");
-    w.env().add_tile_object((3, 1, 0), (tree).into(), -1);
+    w.env().add_tile_object((3, 1, 0), (tree).into(), -1).unwrap().unwrap();
     assert_eq!(w.rand.0, [40, 15]);
 }
 
@@ -341,10 +341,10 @@ fn remove_tile_object_events_and_table_tops() {
     let mut w = World::new();
     let p = (4, 4, 0);
     let table = w.obj("table");
-    let t = w.env().add_tile_object(p, (table).into(), -1).unwrap();
+    let t = w.env().add_tile_object(p, (table).into(), -1).unwrap().unwrap();
     let mut cup = w.obj("cup");
     cup.render_y_offset = 30.0;
-    let c = w.env().add_tile_object(p, (cup).into(), -1).unwrap();
+    let c = w.env().add_tile_object(p, (cup).into(), -1).unwrap().unwrap();
     w.take_log();
     let (index, removed) = w.env().remove_tile_object(p, t).unwrap();
     assert_eq!(index, 1);
@@ -385,9 +385,9 @@ fn add_floor_replaces_floors_keeps_rugs_and_builds_below() {
     let mut w = World::new();
     let p = (2, 2, 0);
     let rug = w.obj("floors_rugs_x");
-    w.env().add_tile_object(p, (rug).into(), -1);
+    w.env().add_tile_object(p, (rug).into(), -1).unwrap().unwrap();
     let grass = w.obj("blends_grassoverlays_x");
-    w.env().add_tile_object(p, (grass).into(), -1);
+    w.env().add_tile_object(p, (grass).into(), -1).unwrap().unwrap();
     w.env().add_floor(p, "floor2").unwrap();
     // The old floor and the grass overlay are gone; the new floor goes
     // under the rug and its sprite becomes a solid floor.
@@ -419,7 +419,7 @@ fn check_have_roof_follows_rain_blocking_squares() {
     let id = w
         .env()
         .add_tile_object((1, 1, 3), (floor).into(), -1)
-        .unwrap();
+        .unwrap().unwrap();
     w.env().check_have_roof(1, 1);
     assert!(w.sq((1, 1, 0)).borrow().have_roof);
     assert!(!w.sq((1, 1, 3)).borrow().have_roof);
@@ -432,9 +432,9 @@ fn special_objects_and_sheet_ropes() {
     let mut w = World::new();
     let p = (6, 6, 0);
     let rope = w.obj("rope");
-    let r = w.env().add_special_object(p, (rope).into(), -1).unwrap();
+    let r = w.env().add_special_object(p, (rope).into(), -1).unwrap().unwrap();
     let crate_ = w.obj("crate");
-    let c = w.env().add_special_object(p, (crate_).into(), -1).unwrap();
+    let c = w.env().add_special_object(p, (crate_).into(), -1).unwrap().unwrap();
     // The sheet rope moves back on top.
     assert_eq!(w.names(p), ["floor", "crate", "rope"]);
     assert_eq!(w.sq(p).borrow().special_objects, [r, c]);
@@ -448,7 +448,7 @@ fn erosion_removal_only_recalculates_properties() {
     let mut w = World::new();
     let p = (7, 1, 0);
     let wall = w.obj("wall_n");
-    let id = w.env().add_tile_object(p, (wall).into(), -1).unwrap();
+    let id = w.env().add_tile_object(p, (wall).into(), -1).unwrap().unwrap();
     let before = w.sq(p).borrow().collide_matrix;
     w.take_log();
     let (i, removed) = w.env().remove_tile_object_erosion_no_recalc(p, id).unwrap();
@@ -475,7 +475,7 @@ fn double_doors_are_removed_together() {
             pushed_strength: 0,
             pushed_max_strength: 0,
             open_sprite: None,
-            closed_sprite: o.sprite,
+            closed_sprite: o.sprite.tile_projection(),
             has_curtain: false,
             curtain_open: false,
             curtain_inside: false,
@@ -486,12 +486,12 @@ fn double_doors_are_removed_together() {
     let a = w
         .env()
         .add_special_object((3, 6, 0), (d1).into(), -1)
-        .unwrap();
+        .unwrap().unwrap();
     let d2 = door(&w, "dd_2");
     let b = w
         .env()
         .add_special_object((4, 6, 0), (d2).into(), -1)
-        .unwrap();
+        .unwrap().unwrap();
     let r = ObjectRef {
         pos: (4, 6, 0),
         id: b,
@@ -513,7 +513,7 @@ fn double_doors_are_removed_together() {
 fn regions_hear_about_wall_changes() {
     let mut w = World::new();
     let wall = w.obj("wall_n");
-    w.env().add_tile_object((2, 2, 0), (wall).into(), -1);
+    w.env().add_tile_object((2, 2, 0), (wall).into(), -1).unwrap().unwrap();
     // The first change reads the chunks around it into the region data.
     assert!(w.regions.queued_jobs().count() > 0);
     w.regions.worker_tick();
@@ -597,7 +597,7 @@ fn recalculating_properties_clears_the_chunk_collision_data() {
     assert_eq!(*ch.collision.init(0, || 9u32).unwrap(), 7);
     assert!(ch.collision.init(8, || 0u32).is_none());
     let wall = w.obj("wall_n");
-    w.env().add_tile_object((3, 3, 0), (wall).into(), -1);
+    w.env().add_tile_object((3, 3, 0), (wall).into(), -1).unwrap().unwrap();
     let ch = w.cell.chunks.get_mut(&(0, 0)).unwrap();
     // `clear()` only flags; the levels are dropped at the next `init`.
     assert!(ch.collision.is_clear_pending());
@@ -609,7 +609,7 @@ fn recalculating_properties_clears_the_chunk_collision_data() {
     // neighbourhood does not reach it here, so it is untouched).
     assert!(!w.cell.chunks[&(1, 0)].collision.is_clear_pending());
     let wall = w.obj("wall_w");
-    w.env().add_tile_object((8, 3, 0), (wall).into(), -1);
+    w.env().add_tile_object((8, 3, 0), (wall).into(), -1).unwrap().unwrap();
     assert!(w.cell.chunks[&(0, 0)].collision.is_clear_pending());
     assert!(w.cell.chunks[&(1, 0)].collision.is_clear_pending());
     // Unloading clears it as `IsoChunk.removeFromWorld` does.
@@ -1595,7 +1595,7 @@ fn solid_floor_and_apparent_z() {
     assert_eq!(w.cell.get_solid_floor_at(40, 4, 0, &w.m), None);
     let p = (5, 5, 0);
     let o = w.obj("stairs_tn");
-    w.env().add_tile_object(p, (o).into(), -1);
+    w.env().add_tile_object(p, (o).into(), -1).unwrap().unwrap();
     let sq = w.sq(p);
     assert!(sq.borrow().has_type(w.m.tables.ty.stairsTN));
     let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
@@ -1745,7 +1745,7 @@ fn removal_callback_pins_actual_receiver_recomputes_index_and_rejects_equal_repl
         let p = (2, 2, 0);
         let slot = ObjectSlot::new(w.obj("crate"));
         let actual = slot.ref_handle();
-        let id = w.env().add_tile_object(p, slot, -1).unwrap();
+        let id = w.env().add_tile_object(p, slot, -1).unwrap().unwrap();
         let mut callback = Callback {
             replacement,
             target: actual.clone(),
@@ -1812,7 +1812,7 @@ fn detached_remove_from_world_mutates_actual_receiver_without_reinsertion() {
     let p = (2, 2, 0);
     let slot = ObjectSlot::new(w.obj("crate"));
     let actual = slot.ref_handle();
-    let id = w.env().add_tile_object(p, slot, -1).unwrap();
+    let id = w.env().add_tile_object(p, slot, -1).unwrap().unwrap();
     let removed = w.env().delete_tile_object(p, id).unwrap();
     assert!(removed.ptr_eq_ref(&actual));
     let count = w.sq(p).borrow().objects.len();
@@ -1869,7 +1869,7 @@ fn detached_receiver_removal_event_keeps_original_argument_and_same_id_replaceme
     let p = (2, 2, 0);
     let original = ObjectSlot::new(w.obj("crate"));
     let actual = original.ref_handle();
-    let id = w.env().add_tile_object(p, original, -1).unwrap();
+    let id = w.env().add_tile_object(p, original, -1).unwrap().unwrap();
     drop(w.env().delete_tile_object(p, id));
     let mut replacement = actual.borrow().clone();
     replacement.key_id = 555;
@@ -2188,4 +2188,168 @@ fn native_render_hook_requires_actual_capability_before_constructor_while_projec
         Some(crate::objects::FloorVisualTail::ConstructorUpdateSprite),
         "explicit projection does not become Native visual completion"
     );
+}
+
+
+#[test]
+fn add_object_host_failure_keeps_inserted_prefix_and_stops_restack_and_lighting() {
+    use crate::sprite::runtime::{self, ObjectSprite};
+    let mut world = World::new();
+    let pos = (3, 3, 0);
+    let rope = world.obj("rope");
+    world
+        .env()
+        .add_special_object(pos, rope.into(), -1)
+        .unwrap()
+        .unwrap();
+    world.take_log();
+    world.sq(pos).borrow_mut().burnt_out = true;
+    let before: Vec<_> = world
+        .sq(pos)
+        .borrow()
+        .objects
+        .iter()
+        .map(ObjectSlot::ref_handle)
+        .collect();
+    let manager = Rc::new(RefCell::new(IsoSpriteManager::new(test_tables())));
+    let mut retired = pz_entity::RetiredComponents::new();
+    let sprite = runtime::create_runtime_sprite(&manager, &test_tables(), &mut retired).unwrap();
+    let mut value = IsoObject::new(0, ObjectKind::Object, None);
+    value.sprite = ObjectSprite::Native(sprite.clone());
+    let slot = ObjectSlot::new(value);
+    let actual = slot.ref_handle();
+    let result = world.env().add_special_object(pos, slot, -1);
+    assert!(matches!(
+        result,
+        Err(RuntimeHostError::Unsupported {
+            operation: "actual native sprite subclass addToWorld",
+            ..
+        })
+    ));
+    let square = world.sq(pos);
+    let square = square.borrow();
+    assert!(!square.burnt_out, "the completed add prefix cleared burntOut");
+    assert_eq!(square.objects.len(), before.len() + 1);
+    for (left, right) in square.objects.iter().zip(&before) {
+        assert!(left.ptr_eq_ref(right));
+    }
+    assert!(square.objects.last().unwrap().ptr_eq_ref(&actual));
+    assert_eq!(square.special_objects.last(), Some(&actual.borrow().id));
+    assert!(Rc::ptr_eq(
+        actual.borrow().sprite.native_slot().unwrap(),
+        &sprite
+    ));
+    assert!(!actual.borrow().added_to_world_or_equipped);
+    assert!(
+        world.take_log().is_empty(),
+        "no later restack, lighting, region, path or render work after typed host failure"
+    );
+    drop(square);
+    let absent_slot = ObjectSlot::new(world.obj("crate"));
+    let absent = world
+        .env()
+        .transmit_add_object_to_square((99, 99, 0), absent_slot, -1);
+    assert!(
+        matches!(absent, Ok(None)),
+        "genuine missing receiver remains separate from a host error"
+    );
+}
+
+#[test]
+fn successful_native_add_lifecycle_stops_before_unported_square_tail() {
+    use crate::sprite::runtime::{self, ObjectSprite};
+    for special in [false, true] {
+        let mut world = World::new();
+        let pos = (3, 3, 0);
+        let rope = world.obj("rope");
+        world
+            .env()
+            .add_special_object(pos, rope.into(), -1)
+            .unwrap()
+            .unwrap();
+        world.take_log();
+        let square = world.sq(pos);
+        square.borrow_mut().burnt_out = true;
+        let before: Vec<_> = square
+            .borrow()
+            .objects
+            .iter()
+            .map(ObjectSlot::ref_handle)
+            .collect();
+        let manager = Rc::new(RefCell::new(IsoSpriteManager::new(test_tables())));
+        let mut retired = pz_entity::RetiredComponents::new();
+        let sprite =
+            runtime::create_runtime_sprite(&manager, &test_tables(), &mut retired).unwrap();
+        let payload = crate::objects::IsoWorldInventoryObject {
+            xoff: 0.5,
+            yoff: 0.5,
+            zoff: 0.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            item: crate::floor_item::FloorItem::null(),
+            drop_time: 1.0,
+            ignore_remove_sandbox: false,
+            extended_placement: false,
+        };
+        let mut value = IsoObject::new(
+            0,
+            ObjectKind::WorldInventory(crate::floor_object::FloorObject::new(payload)),
+            None,
+        );
+        value.sprite = ObjectSprite::Native(sprite.clone());
+        value.replace_square(Some(&square), &mut retired);
+        let object = ObjectSlot::new(value);
+        let actual = object.ref_handle();
+        assert!(
+            !world.cell.chunks[&(0, 0)]
+                .hot_save
+                .borrow()
+                .requires_hot_save
+        );
+        let result = if special {
+            world.env().add_special_object(pos, object, -1)
+        } else {
+            world.env().add_tile_object(pos, object, -1)
+        };
+        assert_eq!(
+            result,
+            Err(RuntimeHostError::Unsupported {
+                operation: if special {
+                    "native addObject restackSheetRope"
+                } else {
+                    "native addObject RecalcAllWithNeighbours"
+                },
+                kind: None,
+            })
+        );
+        let body = square.borrow();
+        assert!(!body.burnt_out);
+        assert_eq!(body.objects.len(), before.len() + 1);
+        for (left, right) in body.objects.iter().zip(&before) {
+            assert!(left.ptr_eq_ref(right));
+        }
+        assert!(body.objects.last().unwrap().ptr_eq_ref(&actual));
+        assert_eq!(body.special_objects.contains(&actual.borrow().id), special);
+        assert!(actual.borrow().added_to_world_or_equipped);
+        assert!(!actual.borrow().added_to_entity_manager);
+        assert!(Rc::ptr_eq(
+            actual.borrow().sprite.native_slot().unwrap(),
+            &sprite
+        ));
+        assert!(
+            world.cell.chunks[&(0, 0)]
+                .hot_save
+                .borrow()
+                .requires_hot_save
+        );
+        assert!(pz_entity::runtime_event::entity_event_pool().len().unwrap() > 0);
+        assert!(
+            world.take_log().is_empty(),
+            "completed native lifecycle is retained without legacy restack/recalc or later hooks"
+        );
+        drop(body);
+        // Collector-style fixture teardown, without Native lifecycle/reset hooks.
+        drop(actual.borrow_mut().take_square_for_gc());
+        drop(sprite.borrow_mut().take_slots_for_gc());
+    }
 }

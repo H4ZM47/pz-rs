@@ -368,6 +368,7 @@ impl ScriptBucket {
         for name in names {
             let r = self.load_one(sm, mode, &name);
             sm.set_current_script_object(None);
+            if sm.texture_capture_aborted() { return; }
             if let Err(e) = r {
                 sm.log_exception(&e);
                 self.set_load_error();
@@ -404,6 +405,9 @@ impl ScriptBucket {
                 script.borrow_mut().reset();
             }
             let r = script.borrow_mut().load(sm, &data_name, body);
+            // A typed host capability fault is neither a native parse error
+            // nor a successful definition: stop before diagnostics/publication.
+            if sm.texture_capture_aborted() { return Ok(()); }
             match r {
                 Ok(()) => {
                     sm.println(self.script_type, &format!(" - Load: '{data_name}' {}", script.borrow().base().debug_string()));

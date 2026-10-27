@@ -4,6 +4,89 @@ use std::rc::Rc;
 use super::*;
 use crate::template::ItemTemplate;
 
+#[test]
+fn retained_floor_receiver_survives_replacement_between_random_draws_and_placement() {
+    struct Square {
+        height: f32,
+        placed: usize,
+    }
+    struct RetainedWorld {
+        current: Rc<RefCell<Square>>,
+        original: Rc<RefCell<Square>>,
+        draws: usize,
+    }
+    impl FloorWorld for RetainedWorld {
+        fn solid_floor_ref_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<FloorSquare>> {
+            Ok(Some(FloorSquare::actual(
+                (x, y, z),
+                pz_entity::EntityOwner::from_ref(&self.current),
+            )))
+        }
+        fn apparent_z_on(&self, square: &FloorSquare, _: f32, _: f32) -> HostResult<f32> {
+            let retained = square.owner_slot().unwrap().try_handle::<Square>().unwrap();
+            assert!(Rc::ptr_eq(&retained, &self.original));
+            let height = retained.borrow().height;
+            Ok(height)
+        }
+        fn add_world_inventory_item_on(
+            &mut self,
+            square: &FloorSquare,
+            _: &ItemRef,
+            _: f32,
+            _: f32,
+            height: f32,
+        ) -> HostResult<()> {
+            let retained = square.owner_slot().unwrap().try_handle::<Square>().unwrap();
+            assert!(Rc::ptr_eq(&retained, &self.original));
+            assert_eq!(height, 0.75);
+            retained.borrow_mut().placed += 1;
+            Ok(())
+        }
+        fn rand_float(&mut self, _: f32, _: f32) -> HostResult<f32> {
+            self.draws += 1;
+            if self.draws == 1 {
+                self.current = Rc::new(RefCell::new(Square {
+                    height: 99.0,
+                    placed: 0,
+                }));
+            }
+            Ok(0.5)
+        }
+        fn solid_floor_at(&self, _: i32, _: i32, _: i32) -> HostResult<Option<SquarePos>> {
+            panic!("coordinate projection must not supply native target")
+        }
+        fn apparent_z(&self, _: SquarePos, _: f32, _: f32) -> HostResult<f32> {
+            panic!("must use retained square")
+        }
+        fn add_world_inventory_item(
+            &mut self,
+            _: SquarePos,
+            _: &ItemRef,
+            _: f32,
+            _: f32,
+            _: f32,
+        ) -> HostResult<()> {
+            panic!("must use retained square")
+        }
+    }
+    let original = Rc::new(RefCell::new(Square {
+        height: 2.75,
+        placed: 0,
+    }));
+    let mut world = RetainedWorld {
+        current: original.clone(),
+        original: original.clone(),
+        draws: 0,
+    };
+    let target = world.solid_floor_ref_at(2, 2, 2).unwrap().unwrap();
+    let item = item(ItemClass::Normal, "Bandage", 1.0, 1);
+    let dropped = drop_on_floor(&mut world, &target, &item).unwrap();
+    assert_eq!(dropped.square, (2, 2, 2));
+    assert_eq!(original.borrow().placed, 1);
+    assert_eq!(world.current.borrow().placed, 0);
+    crate::component_host::drain_retired_components();
+}
+
 fn item(class: ItemClass, ty: &str, weight: f32, id: i32) -> ItemRef {
     let mut t = ItemTemplate::new(class, "Base", ty);
     t.actual_weight = weight;
@@ -104,6 +187,42 @@ struct World {
 }
 
 impl FloorWorld for World {
+    fn solid_floor_ref_at(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> crate::floor_drop::HostResult<Option<crate::floor_drop::FloorSquare>> {
+        self.solid_floor_at(x, y, z)
+            .map(|sq| sq.map(crate::floor_drop::FloorSquare::data_projection))
+    }
+    fn apparent_z_on(
+        &self,
+        sq: &crate::floor_drop::FloorSquare,
+        x: f32,
+        y: f32,
+    ) -> crate::floor_drop::HostResult<f32> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.apparent_z(sq.position(), x, y)
+    }
+    fn add_world_inventory_item_on(
+        &mut self,
+        sq: &crate::floor_drop::FloorSquare,
+        item: &crate::shared::ItemRef,
+        x: f32,
+        y: f32,
+        h: f32,
+    ) -> crate::floor_drop::HostResult<()> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.add_world_inventory_item(sq.position(), item, x, y, h)
+    }
+
     fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<SquarePos>> {
         Ok((z >= 0).then_some((x, y, 0)))
     }
@@ -323,6 +442,42 @@ struct FailingWorld {
     attempts: Vec<i32>,
 }
 impl FloorWorld for FailingWorld {
+    fn solid_floor_ref_at(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> crate::floor_drop::HostResult<Option<crate::floor_drop::FloorSquare>> {
+        self.solid_floor_at(x, y, z)
+            .map(|sq| sq.map(crate::floor_drop::FloorSquare::data_projection))
+    }
+    fn apparent_z_on(
+        &self,
+        sq: &crate::floor_drop::FloorSquare,
+        x: f32,
+        y: f32,
+    ) -> crate::floor_drop::HostResult<f32> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.apparent_z(sq.position(), x, y)
+    }
+    fn add_world_inventory_item_on(
+        &mut self,
+        sq: &crate::floor_drop::FloorSquare,
+        item: &crate::shared::ItemRef,
+        x: f32,
+        y: f32,
+        h: f32,
+    ) -> crate::floor_drop::HostResult<()> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.add_world_inventory_item(sq.position(), item, x, y, h)
+    }
+
     fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<SquarePos>> {
         self.inner.solid_floor_at(x, y, z)
     }
@@ -496,6 +651,42 @@ impl GuardedQueries {
     }
 }
 impl FloorWorld for GuardedQueries {
+    fn solid_floor_ref_at(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> crate::floor_drop::HostResult<Option<crate::floor_drop::FloorSquare>> {
+        self.solid_floor_at(x, y, z)
+            .map(|sq| sq.map(crate::floor_drop::FloorSquare::data_projection))
+    }
+    fn apparent_z_on(
+        &self,
+        sq: &crate::floor_drop::FloorSquare,
+        x: f32,
+        y: f32,
+    ) -> crate::floor_drop::HostResult<f32> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.apparent_z(sq.position(), x, y)
+    }
+    fn add_world_inventory_item_on(
+        &mut self,
+        sq: &crate::floor_drop::FloorSquare,
+        item: &crate::shared::ItemRef,
+        x: f32,
+        y: f32,
+        h: f32,
+    ) -> crate::floor_drop::HostResult<()> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.add_world_inventory_item(sq.position(), item, x, y, h)
+    }
+
     fn solid_floor_at(&self, _: i32, _: i32, _: i32) -> HostResult<Option<SquarePos>> {
         self.floor
             .try_borrow()
@@ -652,6 +843,42 @@ struct BorrowedDraws {
     heights: std::cell::Cell<usize>,
 }
 impl FloorWorld for BorrowedDraws {
+    fn solid_floor_ref_at(
+        &self,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> crate::floor_drop::HostResult<Option<crate::floor_drop::FloorSquare>> {
+        self.solid_floor_at(x, y, z)
+            .map(|sq| sq.map(crate::floor_drop::FloorSquare::data_projection))
+    }
+    fn apparent_z_on(
+        &self,
+        sq: &crate::floor_drop::FloorSquare,
+        x: f32,
+        y: f32,
+    ) -> crate::floor_drop::HostResult<f32> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.apparent_z(sq.position(), x, y)
+    }
+    fn add_world_inventory_item_on(
+        &mut self,
+        sq: &crate::floor_drop::FloorSquare,
+        item: &crate::shared::ItemRef,
+        x: f32,
+        y: f32,
+        h: f32,
+    ) -> crate::floor_drop::HostResult<()> {
+        assert!(
+            sq.owner_slot().is_none(),
+            "explicit coordinate-only test profile"
+        );
+        self.add_world_inventory_item(sq.position(), item, x, y, h)
+    }
+
     fn solid_floor_at(&self, x: i32, y: i32, z: i32) -> HostResult<Option<SquarePos>> {
         self.queries.solid_floor_at(x, y, z)
     }

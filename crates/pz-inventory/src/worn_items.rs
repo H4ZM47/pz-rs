@@ -9,8 +9,8 @@
 
 mod inventory;
 pub use inventory::{
-    add_items_to_item_container, set_from_item_visuals, InventoryWornItemsRef,
-    WornItemsInventoryHost,
+    add_items_to_item_container, set_from_item_visuals, InventoryWornItemsRef, WornInventoryError,
+    WornInventoryResult, WornItemsInventoryHost,
 };
 
 use std::cell::RefCell;

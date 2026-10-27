@@ -135,14 +135,26 @@ fn remove_sheet_rope(
     let (t1, t2, mut cur) = if sq_has(w, at, own_top) {
         (own_top, own_rope, Some(at))
     } else if sq_has(w, adj, adj_top) {
-        let hook = w.sq(at.0, at.1, at.2).and_then(|sq| {
-            sq.borrow()
-                .objects
-                .iter()
-                .map(ObjectSlot::borrow)
-                .find(|o| o.sprite.and_then(|s| w.sprites.sprites[s].name.as_deref()) == Some(tile))
-                .map(|o| o.id)
-        });
+        let mut hook = None;
+        if let Some(square) = w.sq(at.0, at.1, at.2) {
+            let square = square
+                .try_borrow()
+                .map_err(|_| "fire rope square is borrowed".to_string())?;
+            for slot in &square.objects {
+                let object = slot
+                    .owner_slot()
+                    .try_borrow()
+                    .map_err(|_| "fire rope object is borrowed".to_string())?;
+                let metadata = object
+                    .sprite
+                    .metadata_projection(w.sprites)
+                    .map_err(|error| format!("fire rope sprite: {error:?}"))?;
+                if metadata.as_ref().and_then(|sprite| sprite.name.as_deref()) == Some(tile) {
+                    hook = Some(object.id);
+                    break;
+                }
+            }
+        }
         if let Some(id) = hook {
             transmit_remove(w, rand, at, id)?;
         }
@@ -155,13 +167,23 @@ fn remove_sheet_rope(
             return Ok(());
         };
         let sq = sq_owner.borrow();
-        let has = |o: &IsoObject, f: Option<IsoFlagType>| f.is_some_and(|f| obj_has(w, o, f));
-        let rope = sq
-            .objects
-            .iter()
-            .map(ObjectSlot::borrow)
-            .find(|o| has(o, t1) || has(o, t2))
-            .map(|o| o.id);
+        let mut rope = None;
+        for slot in &sq.objects {
+            let object = slot
+                .owner_slot()
+                .try_borrow()
+                .map_err(|_| "fire rope object is borrowed".to_string())?;
+            let has = |flag| -> Result<bool, String> {
+                match flag {
+                    Some(flag) => obj_has(w, &object, flag),
+                    None => Ok(false),
+                }
+            };
+            if has(t1)? || has(t2)? {
+                rope = Some(object.id);
+                break;
+            }
+        }
         let Some(id) = rope else {
             return Ok(());
         };
@@ -217,9 +239,11 @@ fn remove_window_sheet(
 }
 
 /// `IsoObject.getProperties().has(flag)` (the sprite's).
-fn obj_has(w: &FireWorld<'_>, o: &IsoObject, f: IsoFlagType) -> bool {
-    o.sprite
-        .is_some_and(|s| w.sprites.sprites[s].properties.has(f))
+fn obj_has(w: &FireWorld<'_>, o: &IsoObject, f: IsoFlagType) -> Result<bool, String> {
+    Ok(o.sprite
+        .metadata_projection(w.sprites)
+        .map_err(|error| format!("fire actual sprite properties: {error:?}"))?
+        .is_some_and(|sprite| sprite.properties.has(f)))
 }
 
 /// `IsoThumpable.haveSheetRope()` (`!canAddSheetRope()`), with the
@@ -239,10 +263,10 @@ fn thumpable_have_sheet_rope(w: &FireWorld<'_>, at: At, o: &IsoObject) -> Option
     let hoppable = if t.is_door && !t.open && t.closed_sprite.is_some() {
         props_hoppable(t.closed_sprite)
     } else {
-        props_hoppable(o.sprite) || t.is_hoppable
+        props_hoppable(o.sprite.tile_projection()) || t.is_hoppable
     };
     // isWindow().
-    let window = o.sprite.is_some_and(|s| {
+    let window = o.sprite.tile_projection().is_some_and(|s| {
         let p = &w.sprites.sprites[s].properties;
         p.has(f.WindowW) || p.has_name(&w.sprites.alias, "WindowN")
     });
@@ -290,6 +314,14 @@ fn burn_snapshot(owner: &IsoObjectRef) -> Result<IsoObject, String> {
     let body = owner
         .try_borrow()
         .map_err(|_| "fire burn receiver is borrowed".to_string())?;
+    check_burn_snapshot(&body)?;
+    Ok(body.clone())
+}
+
+fn check_burn_snapshot(body: &IsoObject) -> Result<(), String> {
+    if matches!(body.sprite, crate::sprite::runtime::ObjectSprite::Native(_)) {
+        return Err("fire burn classification of an actual native sprite is unsupported".into());
+    }
     if matches!(body.kind, ObjectKind::WorldInventory(_))
         || body
             .components
@@ -300,7 +332,7 @@ fn burn_snapshot(owner: &IsoObjectRef) -> Result<IsoObject, String> {
             "fire burn classification of live component/floor owners is unsupported".into(),
         );
     }
-    Ok(body.clone())
+    Ok(())
 }
 
 fn burn_specials(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) -> Result<(), String> {
@@ -364,7 +396,7 @@ pub fn add_ashes(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) {
         return;
     }
     let name = format!("{FLOORS_BURNT_SPRITE_PREFIX}{}", rand.next_range(1, 2));
-    let s = w.sprites.create_sprite();
+    let s = w.sprites.create_sprite_data_projection();
     let Some(sq_owner) = w.sq_mut(at.0, at.1, at.2) else {
         return;
     };
@@ -377,20 +409,39 @@ pub fn add_ashes(w: &mut FireWorld<'_>, rand: &mut dyn GameRand, at: At) {
 
 /// `getSpriteGridObjects(result, addSelf)` of `r`: the objects with the
 /// same sprite grid on the grid's squares (z, then y, then x).
-fn sprite_grid_objects(w: &FireWorld<'_>, r: ObjectRef, add_self: bool) -> Vec<ObjectRef> {
+fn sprite_grid_objects(
+    w: &FireWorld<'_>,
+    r: ObjectRef,
+    add_self: bool,
+) -> Result<Vec<ObjectRef>, String> {
     let Some(obj) = w.sq(r.pos.0, r.pos.1, r.pos.2).and_then(|sq| {
         let sq = sq.borrow();
         sq.object_index(r.id).map(|i| sq.objects[i].ref_handle())
     }) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    let grid_of = |o: &IsoObject| o.sprite.and_then(|s| w.sprites.sprites[s].sprite_grid);
-    let Some(gi) = grid_of(&obj.borrow()) else {
-        return if add_self { vec![r] } else { Vec::new() };
+    let grid_of = |o: &IsoObject| -> Result<Option<usize>, String> {
+        let metadata = o
+            .sprite
+            .metadata_projection(w.sprites)
+            .map_err(|error| format!("fire actual sprite grid: {error:?}"))?;
+        let grid = metadata.and_then(|sprite| sprite.sprite_grid);
+        if grid.is_some() && o.sprite.native_slot().is_some() {
+            return Err("native sprite grid membership requires actual sprite references".into());
+        }
+        Ok(grid)
+    };
+    let Some(gi) = grid_of(&obj.borrow())? else {
+        return Ok(if add_self { vec![r] } else { Vec::new() });
     };
     let g = &w.sprites.grids[gi];
-    let Some((gx, gy, gz)) = obj.borrow().sprite.and_then(|s| g.sprite_pos(s)) else {
-        return Vec::new();
+    let Some((gx, gy, gz)) = obj
+        .borrow()
+        .sprite
+        .tile_projection()
+        .and_then(|s| g.sprite_pos(s))
+    else {
+        return Ok(Vec::new());
     };
     let (cx, cy, cz) = r.pos;
     let mut out = Vec::new();
@@ -403,7 +454,7 @@ fn sprite_grid_objects(w: &FireWorld<'_>, r: ObjectRef, add_self: bool) -> Vec<O
                 let sq = sq_owner.borrow();
                 for o in sq.objects.iter().map(ObjectSlot::borrow) {
                     let is_self = (x, y, z) == r.pos && o.id == r.id;
-                    if (is_self && !add_self) || grid_of(&o) != Some(gi) {
+                    if (is_self && !add_self) || grid_of(&o)? != Some(gi) {
                         continue;
                     }
                     out.push(oref((x, y, z), o.id));
@@ -411,7 +462,7 @@ fn sprite_grid_objects(w: &FireWorld<'_>, r: ObjectRef, add_self: bool) -> Vec<O
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// `IsoHutch.getHutch()`: the master hutch object of `r`.
@@ -497,7 +548,7 @@ fn trough_handle_burning(
     r: ObjectRef,
 ) -> Result<(), String> {
     let mut burn_squares = vec![r.pos];
-    for o in sprite_grid_objects(w, r, false) {
+    for o in sprite_grid_objects(w, r, false)? {
         let trough = w.sq(o.pos.0, o.pos.1, o.pos.2).is_some_and(|sq| {
             sq.borrow().object_index(o.id).is_some_and(|i| {
                 matches!(
@@ -640,13 +691,18 @@ pub fn burn_walls(
             let detached = w
                 .sq(x, y, z)
                 .is_none_or(|s| !s.borrow().objects.iter().any(|s| s.ptr_eq_ref(&obj)));
+            check_burn_snapshot(
+                &*obj
+                    .try_borrow()
+                    .map_err(|_| "fire wall receiver is borrowed".to_string())?,
+            )?;
             let void_wall = basement_wall_next_to_void(
                 w,
                 at,
                 &*obj
                     .try_borrow()
                     .map_err(|_| "fire wall receiver is borrowed".to_string())?,
-            );
+            )?;
             let outcome = burn_object(w, rand, at, &obj, void_wall, &mut power)?;
             // The removals are by object (`objects.remove(obj)`,
             // `RemoveTileObject(obj)`; for a detached object the latter
@@ -680,7 +736,7 @@ pub fn burn_walls(
                 }
                 Outcome::Keep { replace: rep } => {
                     if rep || matches!(obj.borrow().kind, ObjectKind::Thumpable(_)) {
-                        let s = obj.borrow().sprite;
+                        let s = obj.borrow().sprite.tile_projection();
                         remove_from_world(w, rand, r, detached, &obj)?;
                         set_at(w, at, set_n, s)?;
                     } else {
@@ -773,16 +829,28 @@ fn burn_object(
     void_wall: bool,
     power: &mut i32,
 ) -> Result<Outcome, String> {
-    if receiver
-        .try_borrow()
-        .map_err(|_| "fire burn receiver is borrowed".to_string())?
-        .sprite
-        .is_none()
     {
-        return Ok(Outcome::Skip);
+        let body = receiver
+            .try_borrow()
+            .map_err(|_| "fire burn receiver is borrowed".to_string())?;
+        // Never turn an unsupported live native owner into a null-sprite
+        // Skip, and never archive-clone its mutable Sprite/def graph.
+        check_burn_snapshot(&body)?;
+        if body.sprite.is_none() {
+            return Ok(Outcome::Skip);
+        }
+        if matches!(
+            body.sprite,
+            crate::sprite::runtime::ObjectSprite::ArchiveUnmanaged(_)
+        ) {
+            return Err(
+                "fire burn classification of an archive unmanaged sprite body is unsupported"
+                    .into(),
+            );
+        }
     }
     let obj = burn_snapshot(receiver)?;
-    let Some(s) = obj.sprite else {
+    let Some(s) = obj.sprite.tile_projection() else {
         return Ok(Outcome::Skip);
     };
     let f = w.sprites.tables.flag;
@@ -813,7 +881,7 @@ fn burn_object(
     }
     let set_sprite = |w: &mut FireWorld<'_>, name: &str| {
         let ns = w.sprite_named(name);
-        receiver.borrow_mut().sprite = Some(ns);
+        receiver.borrow_mut().sprite = (Some(ns)).into();
     };
     let clear_overlay = |_w: &mut FireWorld<'_>, anims: bool| {
         let mut o = receiver.borrow_mut();
@@ -993,30 +1061,35 @@ fn burn_object(
 }
 
 /// `IsoCell.isBasementWallAdjacentToTheVoid_North/West(obj)`.
-fn basement_wall_next_to_void(w: &FireWorld<'_>, at: At, obj: &IsoObject) -> bool {
-    let has = |f: Option<IsoFlagType>| f.is_some_and(|f| obj_has(w, obj, f));
-    let nw = has(w.flags.WallNW);
+fn basement_wall_next_to_void(w: &FireWorld<'_>, at: At, obj: &IsoObject) -> Result<bool, String> {
+    let has = |flag| -> Result<bool, String> {
+        match flag {
+            Some(flag) => obj_has(w, obj, flag),
+            None => Ok(false),
+        }
+    };
+    let nw = has(w.flags.WallNW)?;
     let floorless = |x: i32, y: i32| {
         w.sq(x, y, at.2)
             .is_none_or(|sq| sq.borrow().floor_index(w.sprites).is_none())
     };
     if at.2 >= 0 {
-        return false;
+        return Ok(false);
     }
     let Some(sq_owner) = w.sq(at.0, at.1, at.2) else {
-        return false;
+        return Ok(false);
     };
     let sq = sq_owner.borrow();
     let own_floor = sq.floor_index(w.sprites).is_some();
     for (wall, (dx, dy)) in [(w.flags.WallN, (0, -1)), (w.flags.WallW, (-1, 0))] {
-        if !has(wall) && !nw {
+        if !has(wall)? && !nw {
             continue;
         }
         if !own_floor || floorless(at.0 + dx, at.1 + dy) {
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
 
 /// `IsoGridSquare.BurnTick()`: corpses on a burning square burn for ten
